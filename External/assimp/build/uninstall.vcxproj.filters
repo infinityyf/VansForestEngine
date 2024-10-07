@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\build\CMakeFiles\af6296f73b4c56b098ed614622e8c6b6\uninstall.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\build\CMakeFiles\uninstall" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{2F49EDE8-2B1B-3F85-8378-013A57CF1D89}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

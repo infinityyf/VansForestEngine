@@ -1,0 +1,134 @@
+{
+    "scene" : [
+        {
+            "rendernode" : [
+                {
+                    "name" : "Object0",
+                    "mesh" : "torus",
+                    "material" : "UnlitMaterial",
+                    "type" : 1
+                },
+                {
+                    "name" : "Postprocess",
+                    "mesh" : "fullScreenQuad",
+                    "material" : "PostprocessMaterial",
+                    "type" : 4
+                },
+                {
+                    "name" : "SkyBox",
+                    "mesh" : "cube",
+                    "material" : "SkyBoxMaterial",
+                    "type" : 8
+                }               
+            ],
+            "light" :[
+                {
+                    "name" : "DirectionalLight",
+                    "type" : 0,
+                    "color" : [1.0, 1.0, 1.0],
+                    "intensity" : 1.0,
+                    "direction" : [0.0, -1.0, -1.0]
+                },
+                {
+                    "name" : "PointLight",
+                    "type" : 1,
+                    "color" : [1.0, 1.0, 1.0],
+                    "intensity" : 1.0,
+                    "position" : [0.0, 0.0, 0.0],
+                    "radius" : 10.0
+                },
+                {
+                    "name" : "SpotLight",
+                    "type" : 2,
+                    "color" : [1.0, 1.0, 1.0],
+                    "intensity" : 1.0,
+                    "position" : [0.0, 0.0, 0.0],
+                    "direction" : [0.0, 0.0, -1.0],
+                    "radius" : 10.0,
+                    "innercutoff" : 30.0,
+                    "outerCutoff" : 45.0
+                }
+            ]
+        }
+    ],
+    "mesh" : [
+        {
+            "name" : "torus",
+            "path" : "EngineAssets/Models/catmark_torus_creases0.obj"
+        },
+        {
+            "name" : "fullScreenQuad",
+            "path" : "EngineAssets/Models/fullscreen.obj"
+        },
+        {
+            "name" : "cube",
+            "path" : "EngineAssets/Models/cube.obj"
+        }
+    ],
+
+    "shader" : [
+        {
+            "name" : "Unlit",
+            "path" : "EngineAssets/Shaders/Unlit",
+            "depthTest" : true,
+            "depthWrite" : true,
+            "depthCompareOp" : 3,
+            "cullMode" : 2
+
+        },
+        {
+            "name" : "Postprocess",
+            "path" : "EngineAssets/Shaders/PostProcess",
+            "depthTest" : true,
+            "depthWrite" : false,
+            "depthCompareOp" : 7,
+            "cullMode" : 0
+        },
+        {
+            "name" : "SkyBox",
+            "path" : "EngineAssets/Shaders/SkyBox",
+            "depthTest" : true,
+            "depthWrite" : true,
+            "depthCompareOp" : 7,
+            "cullMode" : 0
+        }
+    ],
+
+    
+    "texture" : [
+        {
+            "name" : "testTexture",
+            "path" : "EngineAssets/Textures/test.png",
+            "type" : 0
+        },
+        {
+            "name" : "skyboxTexture",
+            "path" : "EngineAssets/Textures/SkyBox",
+            "type" : 2
+        }
+    ],
+
+    "material" : [
+        {
+            "name" : "UnlitMaterial",
+            "type" : 0,
+            "shader" : "Unlit",
+            "texture" : "testTexture",
+            "albedo" : [1.0, 1.0, 1.0],
+            "roughness" : 0.0,
+            "metallic" : 0.0,
+            "ao" : 1.0
+        },
+        {
+            "name" : "SkyBoxMaterial",
+            "type" : 4,
+            "shader" : "SkyBox",
+            "texture" : "skyboxTexture"
+        },
+        {
+            "name" : "PostprocessMaterial",
+            "type" : 1,
+            "shader" : "Postprocess"
+        }
+    ]
+}

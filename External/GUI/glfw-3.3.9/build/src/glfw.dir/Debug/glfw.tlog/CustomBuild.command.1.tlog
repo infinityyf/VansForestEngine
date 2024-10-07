@@ -1,0 +1,10 @@
+^C:\USERS\INFINITYYF\PROJECTS\FORESTENGINE\FORESTENGINE\FORESTENGINE\EXTERNAL\GUI\GLFW-3.3.9\SRC\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/GUI/glfw-3.3.9 -BC:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/GUI/glfw-3.3.9/build --check-stamp-file C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/GUI/glfw-3.3.9/build/src/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

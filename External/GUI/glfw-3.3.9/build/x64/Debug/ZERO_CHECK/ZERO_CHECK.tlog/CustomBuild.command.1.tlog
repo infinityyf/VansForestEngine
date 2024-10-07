@@ -1,0 +1,10 @@
+^C:\USERS\INFINITYYF\PROJECTS\FORESTENGINE\FORESTENGINE\FORESTENGINE\EXTERNAL\GUI\GLFW-3.3.9\BUILD\CMAKEFILES\F551B2E0C8F4205E1E57A91CDD359BD8\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/GUI/glfw-3.3.9 -BC:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/GUI/glfw-3.3.9/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/GUI/glfw-3.3.9/build/GLFW.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

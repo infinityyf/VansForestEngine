@@ -1,0 +1,5 @@
+﻿  Building Custom Rule C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/GUI/glfw-3.3.9/tests/CMakeLists.txt
+  triangle-vulkan.c
+  glad_vulkan.c
+  正在生成代码...
+  triangle-vulkan.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\GUI\glfw-3.3.9\build\tests\Release\triangle-vulkan.exe

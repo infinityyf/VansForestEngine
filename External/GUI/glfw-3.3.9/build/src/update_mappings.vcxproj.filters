@@ -1,0 +1,24 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\GUI\glfw-3.3.9\build\CMakeFiles\99181fae26420b48528d9d4a0566d906\update_mappings.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\GUI\glfw-3.3.9\src\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\GUI\glfw-3.3.9\src\mappings.h.in">
+      <Filter>Header Files</Filter>
+    </None>
+    <None Include="C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\GUI\glfw-3.3.9\CMake\GenerateMappings.cmake" />
+    <None Include="C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\GUI\glfw-3.3.9\build\src\CMakeFiles\update_mappings" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{FD0EFD50-E044-3FD8-A6DE-735EED9FF9E5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{A80177DC-A97D-30F9-AEEE-98D57CB9F37E}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

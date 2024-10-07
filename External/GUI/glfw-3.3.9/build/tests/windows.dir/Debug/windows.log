@@ -1,0 +1,6 @@
+﻿  Building Custom Rule C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/GUI/glfw-3.3.9/tests/CMakeLists.txt
+  windows.c
+  getopt.c
+  glad_gl.c
+  正在生成代码...
+  windows.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\GUI\glfw-3.3.9\build\tests\Debug\windows.exe

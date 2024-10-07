@@ -1,0 +1,39 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/CMake/share/cmake-3.28/Modules/BasicConfigVersion-SameMajorVersion.cmake.in
+C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeCInformation.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeCXXInformation.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeCommonLanguageInclude.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeGenericSystem.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeInitializeConfigs.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeLanguageInformation.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CMakePackageConfigHelpers.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeRCInformation.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeSystemSpecificInformation.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeSystemSpecificInitialize.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CheckFunctionExists.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CheckIncludeFile.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CheckIncludeFileCXX.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CheckTypeSize.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/Compiler/CMakeCommonCompilerMacros.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/Compiler/MSVC-C.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/Compiler/MSVC-CXX.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/Compiler/MSVC.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows-Initialize.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows-MSVC-C.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows-MSVC-CXX.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows-MSVC.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/WindowsPaths.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/WriteBasicConfigVersionFile.cmake
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/CMakeLists.txt
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/assimp.pc.in
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/build/CMakeFiles/3.28.3/CMakeCCompiler.cmake
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/build/CMakeFiles/3.28.3/CMakeCXXCompiler.cmake
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/build/CMakeFiles/3.28.3/CMakeRCCompiler.cmake
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/build/CMakeFiles/3.28.3/CMakeSystem.cmake
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/cmake-modules/FindPkgMacros.cmake
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/cmake-modules/PrecompiledHeader.cmake
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/cmake-modules/assimp-plain-config.cmake.in
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/cmake-modules/cmake_uninstall.cmake.in
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/include/assimp/config.h.in
+C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/External/assimp/include/assimp/revision.h.in
