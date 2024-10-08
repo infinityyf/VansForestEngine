@@ -1,6 +1,7 @@
 #include "../Common/Common.glsl"
 
-layout(set=3, binding=5) uniform MaterialData
+//brdf data set
+layout(set=3, binding=0) uniform MaterialData
 {
     vec4 albedo;
     float roughness;
@@ -8,7 +9,8 @@ layout(set=3, binding=5) uniform MaterialData
     float ao;
 };
 
-layout( set = 4, binding = 10) uniform samplerCube PreConvDiffuseEnvironment;
+//pbr texture set
+layout(set=4, binding=1) uniform samplerCube PreConvDiffuseEnvironment;
 
 
 struct BRDFData

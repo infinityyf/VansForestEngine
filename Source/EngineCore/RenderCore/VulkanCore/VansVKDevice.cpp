@@ -894,7 +894,7 @@ namespace VansVulkan
 		//创建输出cube
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_PreConvDiffuse = new VansTexture();
-		manager->m_PreConvDiffuse->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true);
+		manager->m_PreConvDiffuse->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true, false);
 
 		VansComputeShader* m_Shader = new VansComputeShader();
 		m_Shader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConDiffuseEnvironment");
@@ -958,7 +958,7 @@ namespace VansVulkan
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
 		m_VansVKCommandBuffer.EnsureComputeShader(*m_Shader, { manager->m_PreDiffuseConvSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*m_Shader, 512, 512, 6, manager->m_PreDiffuseConvtDescriptorSets);
+		m_VansVKCommandBuffer.DispatchCompute(*m_Shader, 512, 512, 1, manager->m_PreDiffuseConvtDescriptorSets);
 
 		//将outtexture 转为 read only
 

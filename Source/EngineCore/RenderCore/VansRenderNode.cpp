@@ -53,17 +53,16 @@ void VansGraphics::VansRenderNode::CreateDescriptorSets()
 	if ((m_NodeType & POSTPROCESS_NODE) != NONE_NODE)
 	{
 		//ºó´¦Àí
-	VkDescriptorSetLayoutBinding inputAttachmentBinding =
-	{
-		VansVKDescriptorManager::m_InputAttachment0SetBinding,
-		VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
-		1,
-		VK_SHADER_STAGE_FRAGMENT_BIT,
-		nullptr
-	};
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ inputAttachmentBinding }, frameBufferInputLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ frameBufferInputLayout }, frameBufferInputDescriptorSets);
-
+		VkDescriptorSetLayoutBinding inputAttachmentBinding =
+		{
+			VansVKDescriptorManager::m_InputAttachment0SetBinding,
+			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ inputAttachmentBinding }, frameBufferInputLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ frameBufferInputLayout }, frameBufferInputDescriptorSets);
 
 		m_UsedDescSetLayouts.push_back(frameBufferInputLayout);
 		m_UsedDescSets.push_back(frameBufferInputDescriptorSets[0]);

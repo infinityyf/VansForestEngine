@@ -195,18 +195,19 @@ void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buf
 	command_buffer.ResetCommandBuffer(false);
 }
 
-void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube)
+void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip)
 {
 	VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
 	VansVKDevice* vkDevicePtr = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevicePtr->GetLogicDevice();
 	VkQueue graphicsQueue = vkDevicePtr->GetGraphicsQueue();
 	VkFormat format = CheckTextureFormat(num_components, false);
+	int mipNum = generateMip ? static_cast<int>(std::floor( std::log2(static_cast<float>(width)))) + 1 : 1;
 	m_Image.CreateVulkanImage(
 		nativeDevice,
 		extent,
 		format,
-		1,
+		mipNum,
 		1,
 		VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,

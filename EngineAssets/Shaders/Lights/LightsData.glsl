@@ -37,7 +37,7 @@ struct LightResult
 #define MAX_SPOT_LIGHTS 10
 
 
-layout(set=2, binding=3) uniform LightsData
+layout(set=2, binding=0) uniform LightsData
 {
     DirectionLightData uDirectionLights[MAX_DIRECTION_LIGHTS];
     PointLightData uPointLights[MAX_POINT_LIGHTS];

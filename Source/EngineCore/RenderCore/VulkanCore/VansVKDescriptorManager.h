@@ -59,13 +59,14 @@ namespace VansVulkan
 	{
 	public:
 		static const uint32_t m_CameraBufferSetBinding = 0;
-		static const uint32_t m_LightsBufferSetBinding = 3;
+		static const uint32_t m_LightsBufferSetBinding = 0;
 
-		static const uint32_t m_MaterialBufferSetBinding = 5;
+		static const uint32_t m_MaterialBufferSetBinding = 0;
 
-		static const uint32_t m_InputAttachment0SetBinding = 1;
-		static const uint32_t m_SampleTexture0SetBinding = 2;
-		static const uint32_t m_UAVTexture0SetBinding = 10;
+		static const uint32_t m_InputAttachment0SetBinding = 0;
+		static const uint32_t m_SampleTexture0SetBinding = 0;
+
+		static const uint32_t m_UAVTexture0SetBinding = 1;
 	private:
 
 		//各个类似的描述符在这个pool中的最大数量，不是在一个set中的

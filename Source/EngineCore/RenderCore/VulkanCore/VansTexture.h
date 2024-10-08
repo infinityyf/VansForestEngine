@@ -25,7 +25,7 @@ namespace VansGraphics
 		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path);
 
 		//直接创建一个GPU上的texture
-		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube);
+		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip);
 
 		VansVKImage& GetImage() { return m_Image; }
 
