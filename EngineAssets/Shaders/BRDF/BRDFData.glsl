@@ -11,7 +11,7 @@ layout(set=3, binding=0) uniform MaterialData
 
 //pbr texture set
 layout(set=4, binding=1) uniform samplerCube PreConvDiffuseEnvironment;
-
+layout(set=4, binding=2) uniform samplerCube PreConvSpecularEnvironment;
 
 struct BRDFData
 {
@@ -62,9 +62,10 @@ vec3 FresnelSchlick(float cosTheta, vec3 F0)
     return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
-void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse)
+void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
 {
     diffuse = texture(PreConvDiffuseEnvironment, brdf.normal).rgb;
+    specular = texture(PreConvSpecularEnvironment, viewDirection).rgb;
 }
 
 void DirectBRDF(BRDFData brdf, vec3 lightDirection, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)

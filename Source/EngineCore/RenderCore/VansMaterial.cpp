@@ -74,7 +74,7 @@ void VansGraphics::VansMaterial::UpdatePBRMaterialData(VansMaterialManager& mate
 	);
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
-			materialManager.m_PreDiffuseConvtDescriptorSets[0],
+			materialManager.m_PreConvtDescriptorSets[0],
 			VansVKDescriptorManager::m_UAVTexture0SetBinding,
 			0,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -82,6 +82,21 @@ void VansGraphics::VansMaterial::UpdatePBRMaterialData(VansMaterialManager& mate
 				{
 					materialManager.m_PreConvDiffuse->GetImage().GetSampler(),
 					materialManager.m_PreConvDiffuse->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_GENERAL
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			materialManager.m_PreConvtDescriptorSets[0],
+			VansVKDescriptorManager::m_UAVTexture1SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{
+				{
+					materialManager.m_PreConvSpecular->GetImage().GetSampler(),
+					materialManager.m_PreConvSpecular->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}

@@ -87,8 +87,8 @@ void VansGraphics::VansRenderNode::RegistMaterialDescriptor(VansMaterialManager&
 		m_UsedDescSets.push_back(materialManager.m_MaterialPBRBaseDataDescriptorSets[0]);
 
 		//Ô¤¾í»ý
-		m_UsedDescSetLayouts.push_back(materialManager.m_PreDiffuseConvSetLayout);
-		m_UsedDescSets.push_back(materialManager.m_PreDiffuseConvtDescriptorSets[0]);
+		m_UsedDescSetLayouts.push_back(materialManager.m_PreConvSetLayout);
+		m_UsedDescSets.push_back(materialManager.m_PreConvtDescriptorSets[0]);
 	}
 }
 

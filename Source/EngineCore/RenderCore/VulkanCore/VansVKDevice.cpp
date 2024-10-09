@@ -896,8 +896,16 @@ namespace VansVulkan
 		manager->m_PreConvDiffuse = new VansTexture();
 		manager->m_PreConvDiffuse->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true, false);
 
-		VansComputeShader* m_Shader = new VansComputeShader();
-		m_Shader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConDiffuseEnvironment");
+		//预过滤环境贴图
+		manager->m_PreConvSpecular = new VansTexture();
+		manager->m_PreConvSpecular->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true, true);
+
+		VansComputeShader* m_PreConvDiffuseShader = new VansComputeShader();
+		m_PreConvDiffuseShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConDiffuseEnvironment");
+
+		VansComputeShader* m_PreConvSpecularShader = new VansComputeShader();
+		m_PreConvSpecularShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConSpecularEnvironment");
+
 
 		//创建描述符
 		VkDescriptorSetLayoutBinding samplerCubeBinding =
@@ -908,7 +916,7 @@ namespace VansVulkan
 			VK_SHADER_STAGE_COMPUTE_BIT,
 			nullptr
 		};
-		VkDescriptorSetLayoutBinding uavCubeBinding =
+		VkDescriptorSetLayoutBinding uavCubeBinding0 =
 		{
 			VansVKDescriptorManager::m_UAVTexture0SetBinding,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -916,15 +924,24 @@ namespace VansVulkan
 			VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerCubeBinding,uavCubeBinding }, manager->m_PreDiffuseConvSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_PreDiffuseConvSetLayout }, manager->m_PreDiffuseConvtDescriptorSets);
+
+		VkDescriptorSetLayoutBinding uavCubeBinding1 =
+		{
+			VansVKDescriptorManager::m_UAVTexture1SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerCubeBinding,uavCubeBinding0,uavCubeBinding1 }, manager->m_PreConvSetLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_PreConvSetLayout }, manager->m_PreConvtDescriptorSets);
 
 		//更新描述符
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
-				manager->m_PreDiffuseConvtDescriptorSets[0],
+				manager->m_PreConvtDescriptorSets[0],
 				VansVKDescriptorManager::m_SampleTexture0SetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -939,7 +956,7 @@ namespace VansVulkan
 		);
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
-				manager->m_PreDiffuseConvtDescriptorSets[0],
+				manager->m_PreConvtDescriptorSets[0],
 				VansVKDescriptorManager::m_UAVTexture0SetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -952,15 +969,33 @@ namespace VansVulkan
 				}
 			}
 		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_PreConvtDescriptorSets[0],
+				VansVKDescriptorManager::m_UAVTexture1SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{
+					{
+						manager->m_PreConvSpecular->GetImage().GetSampler(),
+						manager->m_PreConvSpecular->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
 		//record command buffer
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-		m_VansVKCommandBuffer.EnsureComputeShader(*m_Shader, { manager->m_PreDiffuseConvSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*m_Shader, 512, 512, 1, manager->m_PreDiffuseConvtDescriptorSets);
+		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvDiffuseShader, { manager->m_PreConvSetLayout });
+		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvDiffuseShader, 512, 512, 1, manager->m_PreConvtDescriptorSets);
 
-		//将outtexture 转为 read only
+		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvSpecularShader, { manager->m_PreConvSetLayout });
+		//生成多个mip
+		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvSpecularShader, 512, 512, 1, manager->m_PreConvtDescriptorSets);
+
 
 		//end record
 		m_VansVKCommandBuffer.EndCommandBufferRecord();

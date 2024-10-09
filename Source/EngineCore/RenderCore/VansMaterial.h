@@ -37,11 +37,13 @@ namespace VansGraphics
 		std::vector<VkDescriptorSet> m_MaterialPBRBaseDataDescriptorSets;
 
 		//PBR预卷积
-		VkDescriptorSetLayout m_PreDiffuseConvSetLayout;
-		std::vector<VkDescriptorSet> m_PreDiffuseConvtDescriptorSets;
+		VkDescriptorSetLayout m_PreConvSetLayout;
+		std::vector<VkDescriptorSet> m_PreConvtDescriptorSets;
 
 		//保存全局的一些texture数据
 		VansTexture* m_PreConvDiffuse;
+
+		VansTexture* m_PreConvSpecular;
 
 		VansMaterialManager();
 	};

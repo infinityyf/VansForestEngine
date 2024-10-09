@@ -67,6 +67,7 @@ namespace VansVulkan
 		static const uint32_t m_SampleTexture0SetBinding = 0;
 
 		static const uint32_t m_UAVTexture0SetBinding = 1;
+		static const uint32_t m_UAVTexture1SetBinding = 2;
 	private:
 
 		//各个类似的描述符在这个pool中的最大数量，不是在一个set中的
