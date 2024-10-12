@@ -13,6 +13,8 @@ layout(set=3, binding=0) uniform MaterialData
 layout(set=4, binding=1) uniform samplerCube PreConvDiffuseEnvironment;
 layout(set=4, binding=2) uniform samplerCube PreConvSpecularEnvironment;
 
+layout(set=5, binding=0) uniform sampler2D BRDFLUT;
+
 struct BRDFData
 {
     vec3 albedo;
@@ -66,6 +68,8 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
 {
     diffuse = texture(PreConvDiffuseEnvironment, brdf.normal).rgb;
     specular = texture(PreConvSpecularEnvironment, viewDirection).rgb;
+    float weight = texture(BRDFLUT, vec2(0,0)).r;
+    diffuse *= weight;
 }
 
 void DirectBRDF(BRDFData brdf, vec3 lightDirection, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)

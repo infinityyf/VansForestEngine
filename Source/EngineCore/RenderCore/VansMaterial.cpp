@@ -72,6 +72,7 @@ void VansGraphics::VansMaterial::UpdatePBRMaterialData(VansMaterialManager& mate
 			}
 		}
 	);
+
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			materialManager.m_PreConvtDescriptorSets[0],
@@ -97,6 +98,21 @@ void VansGraphics::VansMaterial::UpdatePBRMaterialData(VansMaterialManager& mate
 				{
 					materialManager.m_PreConvSpecular->GetImage().GetSampler(),
 					materialManager.m_PreConvSpecular->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_GENERAL
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			materialManager.m_BRDFIntegralLUTDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			{
+				{
+					materialManager.m_BRDFIntegralLUT->GetImage().GetSampler(),
+					materialManager.m_BRDFIntegralLUT->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}

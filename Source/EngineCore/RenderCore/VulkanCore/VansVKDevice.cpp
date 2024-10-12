@@ -900,6 +900,23 @@ namespace VansVulkan
 		manager->m_PreConvSpecular = new VansTexture();
 		manager->m_PreConvSpecular->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true, true);
 
+		//brdf lut
+		manager->m_BRDFIntegralLUT = new VansTexture();
+		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png");
+
+		VkDescriptorSetLayoutBinding samplerLUTBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding }, manager->m_BRDFIntegralLUTLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BRDFIntegralLUTLayout }, manager->m_BRDFIntegralLUTDescriptorSets);
+
+		
+		//¾í»ýcompute shader
 		VansComputeShader* m_PreConvDiffuseShader = new VansComputeShader();
 		m_PreConvDiffuseShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConDiffuseEnvironment");
 

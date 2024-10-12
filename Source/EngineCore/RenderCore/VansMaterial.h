@@ -40,10 +40,16 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_PreConvSetLayout;
 		std::vector<VkDescriptorSet> m_PreConvtDescriptorSets;
 
+		//BRDFLUT
+		VkDescriptorSetLayout m_BRDFIntegralLUTLayout;
+		std::vector<VkDescriptorSet> m_BRDFIntegralLUTDescriptorSets;
+
 		//保存全局的一些texture数据
 		VansTexture* m_PreConvDiffuse;
 
 		VansTexture* m_PreConvSpecular;
+
+		VansTexture* m_BRDFIntegralLUT;
 
 		VansMaterialManager();
 	};

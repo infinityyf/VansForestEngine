@@ -89,6 +89,10 @@ void VansGraphics::VansRenderNode::RegistMaterialDescriptor(VansMaterialManager&
 		//Ô¤¾í»ý
 		m_UsedDescSetLayouts.push_back(materialManager.m_PreConvSetLayout);
 		m_UsedDescSets.push_back(materialManager.m_PreConvtDescriptorSets[0]);
+
+		//LUT
+		m_UsedDescSetLayouts.push_back(materialManager.m_BRDFIntegralLUTLayout);
+		m_UsedDescSets.push_back(materialManager.m_BRDFIntegralLUTDescriptorSets[0]);
 	}
 }
 
