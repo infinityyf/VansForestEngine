@@ -37,12 +37,8 @@ namespace VansGraphics
 		std::vector<VkDescriptorSet> m_MaterialPBRBaseDataDescriptorSets;
 
 		//PBR预卷积
-		VkDescriptorSetLayout m_PreConvSetLayout;
-		std::vector<VkDescriptorSet> m_PreConvtDescriptorSets;
-
-		//BRDFLUT
-		VkDescriptorSetLayout m_BRDFIntegralLUTLayout;
-		std::vector<VkDescriptorSet> m_BRDFIntegralLUTDescriptorSets;
+		VkDescriptorSetLayout m_BRDFInterationTexSetLayout;
+		std::vector<VkDescriptorSet> m_BRDFInterationTextDescriptorSets;
 
 		//保存全局的一些texture数据
 		VansTexture* m_PreConvDiffuse;

@@ -4,7 +4,7 @@
             "rendernode" : [
                 {
                     "name" : "Object0",
-                    "mesh" : "torus",
+                    "mesh" : "sphere",
                     "material" : "UnlitMaterial",
                     "type" : 1
                 },
@@ -63,6 +63,10 @@
         {
             "name" : "cube",
             "path" : "EngineAssets/Models/cube.obj"
+        },
+        {
+            "name" : "sphere",
+            "path" : "EngineAssets/Models/sphere.obj"
         }
     ],
 

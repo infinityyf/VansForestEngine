@@ -72,13 +72,27 @@ void VansGraphics::VansMaterial::UpdatePBRMaterialData(VansMaterialManager& mate
 			}
 		}
 	);
-
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
-			materialManager.m_PreConvtDescriptorSets[0],
-			VansVKDescriptorManager::m_UAVTexture0SetBinding,
+			materialManager.m_BRDFInterationTextDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture0SetBinding,
 			0,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					materialManager.m_BRDFIntegralLUT->GetImage().GetSampler(),
+					materialManager.m_BRDFIntegralLUT->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			materialManager.m_BRDFInterationTextDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture1SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
 					materialManager.m_PreConvDiffuse->GetImage().GetSampler(),
@@ -90,10 +104,10 @@ void VansGraphics::VansMaterial::UpdatePBRMaterialData(VansMaterialManager& mate
 	);
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
-			materialManager.m_PreConvtDescriptorSets[0],
-			VansVKDescriptorManager::m_UAVTexture1SetBinding,
+			materialManager.m_BRDFInterationTextDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture2SetBinding,
 			0,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
 					materialManager.m_PreConvSpecular->GetImage().GetSampler(),
@@ -103,20 +117,6 @@ void VansGraphics::VansMaterial::UpdatePBRMaterialData(VansMaterialManager& mate
 			}
 		}
 	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			materialManager.m_BRDFIntegralLUTDescriptorSets[0],
-			VansVKDescriptorManager::m_SampleTexture0SetBinding,
-			0,
-			VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-			{
-				{
-					materialManager.m_BRDFIntegralLUT->GetImage().GetSampler(),
-					materialManager.m_BRDFIntegralLUT->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_GENERAL
-				}
-			}
-		}
-	);
+
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }

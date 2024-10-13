@@ -1,6 +1,2 @@
-﻿  VansVKDevice.cpp
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.h(44): warning C4267: “return”: 从“size_t”转换到“uint32_t”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(276,4): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(277,4): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(462,5): warning C4838: 从“int”转换到“VkFenceCreateFlags”需要收缩转换
+﻿  VansMaterial.cpp
   ForestEngine.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\x64\Debug\ForestEngine.exe

@@ -894,15 +894,16 @@ namespace VansVulkan
 		//创建输出cube
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_PreConvDiffuse = new VansTexture();
-		manager->m_PreConvDiffuse->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true, false);
+		manager->m_PreConvDiffuse->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true, false, true);
 
 		//预过滤环境贴图
 		manager->m_PreConvSpecular = new VansTexture();
-		manager->m_PreConvSpecular->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true, true);
+		manager->m_PreConvSpecular->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true, true, true);
 
 		//brdf lut
 		manager->m_BRDFIntegralLUT = new VansTexture();
 		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png");
+
 
 		VkDescriptorSetLayoutBinding samplerLUTBinding =
 		{
@@ -912,8 +913,25 @@ namespace VansVulkan
 			VK_SHADER_STAGE_FRAGMENT_BIT,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding }, manager->m_BRDFIntegralLUTLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BRDFIntegralLUTLayout }, manager->m_BRDFIntegralLUTDescriptorSets);
+		VkDescriptorSetLayoutBinding sampleDiffuseConvBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture1SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+
+		VkDescriptorSetLayoutBinding sampleSpecularConBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture2SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding,sampleDiffuseConvBinding,sampleSpecularConBinding }, manager->m_BRDFInterationTexSetLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BRDFInterationTexSetLayout }, manager->m_BRDFInterationTextDescriptorSets);
 
 		
 		//卷积compute shader
@@ -938,7 +956,7 @@ namespace VansVulkan
 			VansVKDescriptorManager::m_UAVTexture0SetBinding,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			1,
-			VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			VK_SHADER_STAGE_COMPUTE_BIT,
 			nullptr
 		};
 
@@ -947,18 +965,21 @@ namespace VansVulkan
 			VansVKDescriptorManager::m_UAVTexture1SetBinding,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			1,
-			VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			VK_SHADER_STAGE_COMPUTE_BIT,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerCubeBinding,uavCubeBinding0,uavCubeBinding1 }, manager->m_PreConvSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_PreConvSetLayout }, manager->m_PreConvtDescriptorSets);
+		//PBR预卷积 compute shader 描述符
+		VkDescriptorSetLayout m_PreConvSetLayout;
+		std::vector<VkDescriptorSet> m_PreConvtDescriptorSets;
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerCubeBinding,uavCubeBinding0,uavCubeBinding1 }, m_PreConvSetLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_PreConvSetLayout }, m_PreConvtDescriptorSets);
 
 		//更新描述符
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
-				manager->m_PreConvtDescriptorSets[0],
+				m_PreConvtDescriptorSets[0],
 				VansVKDescriptorManager::m_SampleTexture0SetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -973,7 +994,7 @@ namespace VansVulkan
 		);
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
-				manager->m_PreConvtDescriptorSets[0],
+				m_PreConvtDescriptorSets[0],
 				VansVKDescriptorManager::m_UAVTexture0SetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -988,7 +1009,7 @@ namespace VansVulkan
 		);
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
-				manager->m_PreConvtDescriptorSets[0],
+				m_PreConvtDescriptorSets[0],
 				VansVKDescriptorManager::m_UAVTexture1SetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -1006,12 +1027,14 @@ namespace VansVulkan
 		//record command buffer
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvDiffuseShader, { manager->m_PreConvSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvDiffuseShader, 512, 512, 1, manager->m_PreConvtDescriptorSets);
+		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvDiffuseShader, { m_PreConvSetLayout });
+		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvDiffuseShader, 512, 512, 1, m_PreConvtDescriptorSets);
 
-		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvSpecularShader, { manager->m_PreConvSetLayout });
+		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvSpecularShader, { m_PreConvSetLayout });
 		//生成多个mip
-		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvSpecularShader, 512, 512, 1, manager->m_PreConvtDescriptorSets);
+		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvSpecularShader, 512, 512, 1, m_PreConvtDescriptorSets);
+
+		//切换layout
 
 
 		//end record

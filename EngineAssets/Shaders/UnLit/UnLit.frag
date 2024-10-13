@@ -26,6 +26,7 @@ void main()
 
     AmbientBRDF(brdfData,-cameraDirection.rgb, lightResult.ambientDiffuse, lightResult.ambientSpecular);
 
-    frag_color.rgb = lightResult.directDiffuse * GetDirectionLight(0).color.rgb + lightResult.directSpecular + lightResult.ambientDiffuse;// texture( mainTexture, frag_uv0 );
+    frag_color.rgb = lightResult.directDiffuse * GetDirectionLight(0).color.rgb + lightResult.directSpecular;// texture( mainTexture, frag_uv0 );
+    frag_color.rgb = lightResult.ambientDiffuse + lightResult.ambientSpecular;
     frag_color.a = 1;
 }

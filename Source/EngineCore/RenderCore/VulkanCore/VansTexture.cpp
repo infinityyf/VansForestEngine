@@ -195,7 +195,7 @@ void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buf
 	command_buffer.ResetCommandBuffer(false);
 }
 
-void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip)
+void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite)
 {
 	VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
 	VansVKDevice* vkDevicePtr = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
@@ -224,7 +224,7 @@ void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& comm
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
 			m_Image.GetImageLayout(),
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			enabeRandonWrite ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_Image.GetImageAspect()
