@@ -2,7 +2,6 @@
 //caerma set
 layout(set=0, binding=0) uniform    CameraUniformBuffer 
 {
-    mat4 ModelMatrix;
     vec4 cameraPosition;
     vec4 cameraDirection;
     mat4 ViewMatrix;

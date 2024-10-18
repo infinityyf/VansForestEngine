@@ -3,6 +3,7 @@
 
 #include "../Common/CameraData.glsl"
 
+
 layout( location = 0 ) in vec4 position;
 layout( location = 0 ) out vec3 frag_uv;
 

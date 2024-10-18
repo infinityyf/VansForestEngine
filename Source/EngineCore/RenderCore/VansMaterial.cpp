@@ -30,7 +30,7 @@ void VansGraphics::VansMaterial::CreatePBRMaterialDataBuffer(VkDevice& logic_dev
 	);
 }
 
-void VansGraphics::VansMaterial::UpdateMaterialData(VansMaterialManager& materialManager)
+void VansGraphics::VansMaterial::UpdateMaterialDescriporSet(VansMaterialManager& materialManager)
 {
 	switch (m_MaterialType)
 	{

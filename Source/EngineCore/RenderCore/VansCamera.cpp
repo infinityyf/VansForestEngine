@@ -56,6 +56,35 @@ void VansGraphics::VansCamera::HandleKeyboardInput(int key, int scancode, int ac
     }
 }
 
+void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix)
+{
+    m_CameraData.CameraPosition = glm::vec4(view_matrix[3]);
+    m_CameraData.CameraDirection = glm::vec4(-view_matrix[2]);
+    m_CameraData.ViewMatrix = view_matrix;
+    m_CameraData.ProjectionMatrix = projective_matrix;
+
+    m_CameraDataBuffer.SetBufferData(&m_CameraData, 0, sizeof(m_CameraData));
+
+    VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+    VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+        {
+            m_CameraBufferDescriptorSets[0],
+            VansVKDescriptorManager::m_CameraBufferSetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            {
+                {
+                    m_CameraDataBuffer.GetMativeBuffer(),
+                    0,
+                    m_CameraDataBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
+    VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+}
+
 glm::mat4 VansGraphics::VansCamera::GetViewMatrix()
 {
     glm::vec3 front;
@@ -73,9 +102,16 @@ glm::mat4 VansGraphics::VansCamera::GetProjectiveMatrix()
     return glm::perspective(glm::radians(m_Fov), m_AspectRatio, m_NearClip, m_FarClip);
 }
 
+VansGraphics::VansCamera::~VansCamera()
+{
+    VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(m_CameraBufferLayout);
+    VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(m_CameraBufferDescriptorSets);
+
+    m_CameraDataBuffer.DestroyVulkanBuffer(static_cast<VansVKDevice*>(m_RenderDevice)->GetLogicDevice());
+}
 void VansGraphics::VansCamera::Rendering()
 {
-    m_RenderDevice->SetCameraData(GetViewMatrix(), GetProjectiveMatrix());
+    SetCameraData(GetViewMatrix(), GetProjectiveMatrix());
     m_RenderDevice->Rendering();
 }
 

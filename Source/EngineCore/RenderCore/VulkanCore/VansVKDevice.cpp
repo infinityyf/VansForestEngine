@@ -328,14 +328,6 @@ namespace VansVulkan
 		//这里自动创建color和depth
 		renderPassManager->SetupVansRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer , m_VansVKGraphicsQueue, m_VansVKSurface);
 
-		//填充model矩阵
-		m_CameraData.ModelMatrix = glm::mat4x4(1.0f);
-		
-		//创建一个uniform buffer
-		m_CameraDataBuffer.CreatVulkanBuffer(m_VansVKLogicDevice, sizeof(m_CameraData), VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT| VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-
 		//预计算渲染数据
 		PrepareRenderingData();
 
@@ -351,9 +343,6 @@ namespace VansVulkan
 		{
 			std::cout << "AcquireVulkanSwapChainImages failed" << std::endl;
 		}
-
-		//更新相机CB数据
-		m_CameraDataBuffer.SetBufferData(&m_CameraData, 0, sizeof(m_CameraData));
 
 		//更新场景数据
 		//灯光数据
@@ -433,13 +422,9 @@ namespace VansVulkan
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 		renderPassManager->DestroyRenderPass();
 
-
-		m_CameraDataBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
-
 		DestroyVKSemaphore(m_SwapChainImageAcquiredSemaphore);
 		DestroyVKSemaphore(m_CommandBufferReadyToPresentSemaphore);
 		DestroyVKFence(m_SwapChainImageAcquiredFence);
-
 
 	}
 
@@ -577,7 +562,7 @@ namespace VansVulkan
 		VkResult result = vkCreateInstance(&instance_create_info, nullptr, &m_VansVKInstance);
 		if ((result != VK_SUCCESS) || (m_VansVKInstance == VK_NULL_HANDLE))
 		{
-			std::cout << "Could not create Vulkan Instance." << std::endl;
+			std::cout << "Could not -create Vulkan Instance." << std::endl;
 			return false;
 		}
 		return true;
@@ -883,6 +868,7 @@ namespace VansVulkan
 		return true;
 	}
 
+
 	void VansVKDevice::PrepareRenderingData()
 	{
 		//计算预卷积环境漫反射贴图
@@ -1035,7 +1021,6 @@ namespace VansVulkan
 		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvSpecularShader, 512, 512, 1, m_PreConvtDescriptorSets);
 
 		//切换layout
-
 
 		//end record
 		m_VansVKCommandBuffer.EndCommandBufferRecord();

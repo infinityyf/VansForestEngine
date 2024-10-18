@@ -24,6 +24,9 @@ int main()
 	VansCamera camera(glm::vec3(1,1,5), glm::vec3(0,-90,0), m_GraphicsDevice);
 
 	m_Scene = new VansScene();
+	
+	m_Scene->InjectCamera(&camera);
+
 	m_GraphicsDevice->BeforeRendering();
 
 	//run the editor

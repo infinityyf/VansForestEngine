@@ -1,14 +1,37 @@
 #pragma once
 #include "VansCommonUtils.h"
 #include "VansGraphicsDevice.h"
+#include "VulkanCore/VansVKDevice.h"
+#include "VulkanCore/VansVKDescriptorManager.h"
+#include <vector>
 namespace VansGraphics
 {
+    struct alignas(16) CameraDataStruct
+    {
+        glm::vec4   CameraPosition;
+        glm::vec4	CameraDirection;
+        glm::mat4x4 ViewMatrix;
+        glm::mat4x4 ProjectionMatrix;
+    };
+
+
+
 	class VansCamera
 	{
     private:
 
         //render backend引用
         VansGraphicsDevice* m_RenderDevice;
+
+        CameraDataStruct m_CameraData;
+
+    public:
+
+        VkDescriptorSetLayout m_CameraBufferLayout;
+        std::vector<VkDescriptorSet> m_CameraBufferDescriptorSets;
+
+        //uniform buffer
+        VansVKBuffer m_CameraDataBuffer;
 
     public:
 
@@ -17,6 +40,9 @@ namespace VansGraphics
         void HandleKeyboardInput(int key, int scancode, int action, int mods, float deltaTime);
 
     private:
+
+        void SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix);
+
 
         glm::mat4 GetViewMatrix();
 
@@ -38,7 +64,25 @@ namespace VansGraphics
             : m_Position(startPosition), m_Rotation(startRotation), m_RenderDevice(device)
         {
             m_AspectRatio = m_RenderDevice->GetAspectRatio();
+
+            VkDescriptorSetLayoutBinding uniformBufferBinding =
+            {
+                VansVKDescriptorManager::m_CameraBufferSetBinding,
+                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                1,
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                nullptr
+            };
+            VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ uniformBufferBinding }, m_CameraBufferLayout);
+            VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_CameraBufferLayout }, m_CameraBufferDescriptorSets);
+
+            //创建一个uniform buffer
+            m_CameraDataBuffer.CreatVulkanBuffer(static_cast<VansVKDevice*>(device)->GetLogicDevice(), sizeof(m_CameraData), VK_FORMAT_R32_SFLOAT,
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         }
+
+        ~VansCamera();
 
         void Rendering();
 

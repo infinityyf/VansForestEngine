@@ -1,32 +1,55 @@
 #include "VansRenderNode.h"
+#include "VansCamera.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansRenderPass.h"
 using namespace VansVulkan;
 
-VansGraphics::VansRenderNode::VansRenderNode(RenderNodeType typee)
+VansGraphics::VansRenderNode::VansRenderNode(VkDevice& device, RenderNodeType typee)
 {
 	m_NodeType = typee;
+
+	m_RenderNodeDataBuffer.CreatVulkanBuffer(device, sizeof(ModelDataStruct), VK_FORMAT_R32_SFLOAT,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 }
 
 VansGraphics::VansRenderNode::~VansRenderNode()
 {
 	DestroyDescriptorSets();
+
+	//m_RenderNodeDataBuffer.DestroyVulkanBuffer();
 }
+
+void VansGraphics::VansRenderNode::RegistCameraDescriptor(VansCamera* camera)
+{
+	if ((m_NodeType & OPAQUE_NODE) != NONE_NODE)
+	{
+		m_UsedDescSetLayouts.push_back(camera->m_CameraBufferLayout);
+		m_UsedDescSets.push_back(camera->m_CameraBufferDescriptorSets[0]);
+	}
+
+	if ((m_NodeType & SKY_BOX_NODE) != NONE_NODE)
+	{
+		m_UsedDescSetLayouts.push_back(camera->m_CameraBufferLayout);
+		m_UsedDescSets.push_back(camera->m_CameraBufferDescriptorSets[0]);
+	}
+}
+
 
 void VansGraphics::VansRenderNode::CreateDescriptorSets()
 {
 	//创建uniform buffer以及对应的描述符,可以同时包含多个类型的desc
-	VkDescriptorSetLayoutBinding uniformBufferBinding =
+	VkDescriptorSetLayoutBinding modelBufferBinding =
 	{
-		VansVKDescriptorManager::m_CameraBufferSetBinding,
+		VansVKDescriptorManager::m_ModelBufferSetBinding,
 		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 		1,
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		nullptr
 	};
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ uniformBufferBinding }, cameraBufferLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ cameraBufferLayout }, cameraBufferDescriptorSets);
+	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ modelBufferBinding }, modelBufferLayout);
+	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ modelBufferLayout }, modelBufferDescriptorSets);
 
 	//创建资源给fs采样
 	VkDescriptorSetLayoutBinding samplerBinding =
@@ -41,11 +64,16 @@ void VansGraphics::VansRenderNode::CreateDescriptorSets()
 	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ textureResourceLayout }, textureResourceDescriptorSets);
 
 	
-	if ((m_NodeType & OPAQUE_NODE) != NONE_NODE ||
-		(m_NodeType & SKY_BOX_NODE) != NONE_NODE)
+	if ((m_NodeType & OPAQUE_NODE) != NONE_NODE)
 	{
-		m_UsedDescSetLayouts.push_back(cameraBufferLayout);
-		m_UsedDescSets.push_back(cameraBufferDescriptorSets[0]);
+		m_UsedDescSetLayouts.push_back(modelBufferLayout);
+		m_UsedDescSets.push_back(modelBufferDescriptorSets[0]);
+		m_UsedDescSetLayouts.push_back(textureResourceLayout);
+		m_UsedDescSets.push_back(textureResourceDescriptorSets[0]);
+	}
+
+	if ((m_NodeType & SKY_BOX_NODE) != NONE_NODE)
+	{
 		m_UsedDescSetLayouts.push_back(textureResourceLayout);
 		m_UsedDescSets.push_back(textureResourceDescriptorSets[0]);
 	}
@@ -92,11 +120,12 @@ void VansGraphics::VansRenderNode::RegistMaterialDescriptor(VansMaterialManager&
 	}
 }
 
+
 void VansGraphics::VansRenderNode::DestroyDescriptorSets()
 {
-	//销毁描述符pool
-	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(cameraBufferLayout);
-	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(cameraBufferDescriptorSets);
+	//销毁描述符poo
+	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(modelBufferLayout);
+	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(modelBufferDescriptorSets);
 
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(textureResourceLayout);
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(textureResourceDescriptorSets);
@@ -105,25 +134,24 @@ void VansGraphics::VansRenderNode::DestroyDescriptorSets()
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(frameBufferInputDescriptorSets);
 }
 
-void VansGraphics::VansRenderNode::UpdateDescriptorSets(VansVKDevice* device, VansMaterialManager& materialManager)
+void VansGraphics::VansRenderNode::UpdateDescriptorSets(VansVKDevice* device, VansMaterialManager& materialManager, VansCamera* camera)
 {
 	//这里需要根据每个node用到的资源进行更新
-	if ((m_NodeType & OPAQUE_NODE) != NONE_NODE || 
-		(m_NodeType & SKY_BOX_NODE) != NONE_NODE)
+	if ((m_NodeType & OPAQUE_NODE) != NONE_NODE)
 	{
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
-				cameraBufferDescriptorSets[0],
-				VansVKDescriptorManager::m_CameraBufferSetBinding,
+				modelBufferDescriptorSets[0],
+				VansVKDescriptorManager::m_ModelBufferSetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 				{
 					{
-						device->GetCameraDataBuffer().GetMativeBuffer(),
+						m_RenderNodeDataBuffer.GetMativeBuffer(),
 						0,
-						device->GetCameraDataBuffer().GetBufferSize()
+						m_RenderNodeDataBuffer.GetBufferSize()
 					}
 				}
 			}
@@ -150,6 +178,32 @@ void VansGraphics::VansRenderNode::UpdateDescriptorSets(VansVKDevice* device, Va
 		}
 
 
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	}
+
+	if ((m_NodeType & SKY_BOX_NODE) != NONE_NODE)
+	{
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+		if (m_Material->m_Texture.size() > 0)
+		{
+			VansVKImage image = m_Material->m_Texture[0]->GetImage();
+			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+				{
+					textureResourceDescriptorSets[0],
+					VansVKDescriptorManager::m_SampleTexture0SetBinding,
+					0,
+					VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					{
+						{
+							image.GetSampler(),
+							image.GetImageView(),
+							VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+						}
+					}
+				}
+			);
+		}
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 	}
 
@@ -183,11 +237,22 @@ void VansGraphics::VansRenderNode::UpdateDescriptorSets(VansVKDevice* device, Va
 	//更新全局数据
 	//1. 预计算环境漫反射
 	//2. 高光lut
-	m_Material->UpdateMaterialData(materialManager);
+	m_Material->UpdateMaterialDescriporSet(materialManager);
+}
+
+void VansGraphics::VansRenderNode::BeforeDrawCall()
+{
+	//更新CPU
+	m_ModelData.ModelMatrix = glm::mat4x4(1.0f);
+
+	//更新模型数据到PUG
+	m_RenderNodeDataBuffer.SetBufferData(&m_ModelData,0, sizeof(m_ModelData));
 }
 
 void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalStateData)
 {
+	BeforeDrawCall();
+
 	//apply mesh
 	cmd.BindMesh(*m_Mesh, 0, globalStateData);
 

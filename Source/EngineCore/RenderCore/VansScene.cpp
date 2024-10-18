@@ -244,11 +244,15 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
         VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
 
         RenderNodeType type = sceneRenderNode["type"];
-        VansRenderNode* renderNode = new VansRenderNode(type);
+        VansRenderNode* renderNode = new VansRenderNode(device, type);
 
         renderNode->m_Mesh = mesh;
         renderNode->m_Material = material;
+        //绑定相机cb
+        renderNode->RegistCameraDescriptor(m_Camera);
+
         renderNode->CreateDescriptorSets();
+
         //绑定灯光cb
         renderNode->RegistLightDescriptor(m_LightManager);
         //绑定材质cb
@@ -279,7 +283,7 @@ void VansGraphics::VansScene::DrawSkyBoxNode()
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     //更新desc
-    m_SkyBoxNode->UpdateDescriptorSets(vkDevice, m_MaterialManager);
+    m_SkyBoxNode->UpdateDescriptorSets(vkDevice, m_MaterialManager, m_Camera);
 
     m_SkyBoxNode->Draw(cmd, globalStateData);
 }
@@ -292,7 +296,7 @@ void VansGraphics::VansScene::DrawOpaqueNodes()
     for (auto& node : m_OpaqueRenderNodes)
     {
         //更新desc
-        node->UpdateDescriptorSets(vkDevice, m_MaterialManager);
+        node->UpdateDescriptorSets(vkDevice, m_MaterialManager, m_Camera);
 
         node->Draw(cmd, globalStateData);
     }
@@ -325,7 +329,7 @@ void VansGraphics::VansScene::DrawPostProcessNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node  : m_PostProcessRenderNodes)
     {
-        node->UpdateDescriptorSets(vkDevice, m_MaterialManager);
+        node->UpdateDescriptorSets(vkDevice, m_MaterialManager, m_Camera);
 
         //apply mesh
         node->Draw(cmd, globalStateData);

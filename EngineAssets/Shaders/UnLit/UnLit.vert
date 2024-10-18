@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "../Common/CameraData.glsl"
+#include "../Common/ModelData.glsl"
 
 layout( location = 0 ) in vec4 position;
 layout( location = 1 ) in vec2 uv;

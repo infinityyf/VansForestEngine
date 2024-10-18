@@ -81,7 +81,7 @@ namespace VansVulkan
 		VkPhysicalDevice GetPhysicalDevice() { return m_VansVKPhysicalDevice; }
 
 		//获取logic device
-		VkDevice GetLogicDevice() { return m_VansVKLogicDevice; }
+		VkDevice& GetLogicDevice() { return m_VansVKLogicDevice; }
 
 		VkInstance GetInstance() { return m_VansVKInstance; }
 
@@ -98,16 +98,13 @@ namespace VansVulkan
 
 		GlobalStateData& GetGlobalRenderStateData() { return m_globalRenderStateData; }
 
-		VansVKBuffer& GetCameraDataBuffer() { return m_CameraDataBuffer; }
-
 		uint32_t GetGraphicsQueueFamilyIndex() { return m_GraphicsQueueFamilyIndex; }
 
 		void PrepareRenderingData();
 
 	private:
 
-		//uniform buffer
-		VansVKBuffer m_CameraDataBuffer;
+		
 
 		//相机视野
 		VkViewport m_Viewport;
@@ -204,7 +201,6 @@ namespace VansVulkan
 
 		bool DestroyVulkanInstance();
 
-	private:
 		bool VulkanSetUp(VkExtent2D resolution);
 
 		bool VulkanDestroy();

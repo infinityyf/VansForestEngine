@@ -73,7 +73,7 @@ namespace VansGraphics
 		//定义GPU数据
 		void CreatePBRMaterialDataBuffer(VkDevice& logic_device);
 
-		void UpdateMaterialData(VansMaterialManager& materialManager);
+		void UpdateMaterialDescriporSet(VansMaterialManager& materialManager);
 	};
 
 

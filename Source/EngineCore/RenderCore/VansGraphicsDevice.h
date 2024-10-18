@@ -9,15 +9,6 @@ namespace VansGraphics
 		VULKAN = 1,
 	};
 
-	struct alignas(16) CameraDataStruct
-	{
-		glm::mat4x4 ModelMatrix;
-		glm::vec4   CameraPosition;
-		glm::vec4	CameraDirection;
-		glm::mat4x4 ViewMatrix;
-		glm::mat4x4 ProjectionMatrix;
-	};
-
 
 	class VansGraphicsDevice
 	{
@@ -25,8 +16,6 @@ namespace VansGraphics
 		GRAPHICS_API m_GraphicsAPI;
 
 	protected:
-
-		CameraDataStruct m_CameraData;
 
 		uint32_t m_RenderWidth;
 		uint32_t m_RenderHeight;
@@ -46,8 +35,6 @@ namespace VansGraphics
 		virtual void* GetNativeGraphicsDevice() = 0;
 
 		virtual void* GetNativeCommandBuffer() = 0;
-
-		void SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix);
 
 		float GetAspectRatio();
 	};

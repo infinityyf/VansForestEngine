@@ -59,6 +59,7 @@ namespace VansVulkan
 	{
 	public:
 		static const uint32_t m_CameraBufferSetBinding = 0;
+		static const uint32_t m_ModelBufferSetBinding = 0;
 		static const uint32_t m_LightsBufferSetBinding = 0;
 
 		static const uint32_t m_MaterialBufferSetBinding = 0;

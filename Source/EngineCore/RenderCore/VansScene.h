@@ -1,5 +1,6 @@
 #pragma once
 #include "VansRenderNode.h"
+#include "VansCamera.h"
 #include "BRDFData/VansLight.h"
 #include <vector>
 
@@ -10,6 +11,8 @@ namespace VansGraphics
 	class VansScene
 	{
 	private:
+
+		VansCamera* m_Camera;
 
 		VansLightManager m_LightManager;
 
@@ -46,6 +49,8 @@ namespace VansGraphics
 
 		std::vector<VansRenderNode*> m_PostProcessRenderNodes;
 
+	public:
+		//editor
 		VansRenderNode* m_SelectedNode;
 
 	public:
@@ -67,7 +72,14 @@ namespace VansGraphics
 
 		void DrawPostProcessNodes();
 
+		void InjectCamera(VansCamera* camera) { m_Camera = camera; }
+
 		VansMaterialManager* GetMaterialManager() { return &m_MaterialManager; }
+
+		VansLightManager* GetLightManager() { return &m_LightManager; }
+
+		VansCamera* GetCamera() { return m_Camera; }
+
 	};
 }
 

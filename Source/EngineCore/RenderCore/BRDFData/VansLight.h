@@ -73,6 +73,12 @@ namespace VansGraphics
 		//Create light gpu data
 		void CreateLightUniformData(VkDevice& logic_device);
 
+		std::vector<VansDirectionalLight>& GetDirectionLights() { return m_DirectionalLights; }
+
+		std::vector<VansPointLight>& GetPointLights() { return m_PointLights; }
+
+		std::vector<VansSpotLight>& GetSpotLight() { return m_SpotLights; }
+
 		~VansLightManager();
 	};
 }

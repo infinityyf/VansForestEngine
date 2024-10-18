@@ -15,11 +15,18 @@ namespace VansGraphics
 		POSTPROCESS_NODE = 1 <<2,
 		SKY_BOX_NODE = 1 <<3,
 	};
+
+	struct alignas(16) ModelDataStruct
+	{
+		glm::mat4x4 ModelMatrix;
+	};
+
+	class VansCamera;
 	class VansRenderNode
 	{
 	public:
 
-		VansRenderNode(RenderNodeType typee);
+		VansRenderNode(VkDevice& device, RenderNodeType type);
 
 		~VansRenderNode();
 
@@ -32,13 +39,18 @@ namespace VansGraphics
 		//transform数据
 		VansTransform m_Transform;
 
+		//GPU 数据
+		ModelDataStruct m_ModelData;
+
 	private:
 
 		RenderNodeType m_NodeType;
 
 		//描述符相关
-		VkDescriptorSetLayout cameraBufferLayout;
-		std::vector<VkDescriptorSet> cameraBufferDescriptorSets;
+
+
+		VkDescriptorSetLayout modelBufferLayout;
+		std::vector<VkDescriptorSet> modelBufferDescriptorSets;
 
 		//sampler imgae 描述符
 		VkDescriptorSetLayout textureResourceLayout;
@@ -47,6 +59,9 @@ namespace VansGraphics
 		//描述符相关
 		VkDescriptorSetLayout frameBufferInputLayout;
 		std::vector<VkDescriptorSet> frameBufferInputDescriptorSets;
+
+		//uniform buffer
+		VansVKBuffer m_RenderNodeDataBuffer;
 
 		void DestroyDescriptorSets();
 
@@ -61,7 +76,11 @@ namespace VansGraphics
 
 		void RegistMaterialDescriptor(VansMaterialManager& materialManager);
 
-		void UpdateDescriptorSets(VansVKDevice* device, VansMaterialManager& materialManager);
+		void RegistCameraDescriptor(VansCamera* camera);
+
+		void UpdateDescriptorSets(VansVKDevice* device, VansMaterialManager& materialManager, VansCamera* camera);
+
+		void BeforeDrawCall();
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
