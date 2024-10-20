@@ -20,6 +20,8 @@ namespace VansGraphics
 
 		void DrawPBRMaterialParameters(VansBasePBRParam& param);
 
+		void DrawAtmosphereParameters(VansAtmospherePBRParam& param);
+
 		void ShowWindow(VansVKDevice& device) override;
 	};
 }

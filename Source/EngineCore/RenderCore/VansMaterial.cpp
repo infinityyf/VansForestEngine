@@ -30,7 +30,17 @@ void VansGraphics::VansMaterial::CreatePBRMaterialDataBuffer(VkDevice& logic_dev
 	);
 }
 
-void VansGraphics::VansMaterial::UpdateMaterialDescriporSet(VansMaterialManager& materialManager)
+void VansGraphics::VansMaterial::CreateAtmosphereMaterialDataBuffer(VkDevice& logic_device)
+{
+	VkDeviceSize bufferSize = sizeof(m_AtmospherePBRParam);
+	m_AtmospherePBRDataBuffer.CreatVulkanBuffer(
+		logic_device, bufferSize, VK_FORMAT_R32_SFLOAT,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+	);
+}
+
+void VansGraphics::VansMaterial::UpdateMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager)
 {
 	switch (m_MaterialType)
 	{
@@ -42,6 +52,9 @@ void VansGraphics::VansMaterial::UpdateMaterialDescriporSet(VansMaterialManager&
 	case VansGraphics::VAN_TRANSPARENT:
 		break;
 	case VansGraphics::VAN_POST_PROCESS:
+		break;
+	case VansGraphics::VAN_SKY_BOX:
+		UpdateAtmosphereMaterialData(materialManager, lightManager);
 		break;
 	default:
 		break;
@@ -118,5 +131,34 @@ void VansGraphics::VansMaterial::UpdatePBRMaterialData(VansMaterialManager& mate
 		}
 	);
 
+	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+}
+
+void VansGraphics::VansMaterial::UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager)
+{
+	uint32_t offset = 0;
+	uint32_t size = sizeof(VansAtmospherePBRParam);
+	m_AtmospherePBRParam.m_SunDirection = lightManager.GetDirectionLights()[0].m_Direction;
+	m_AtmospherePBRParam.m_SunDirection = glm::normalize(m_AtmospherePBRParam.m_SunDirection);
+	m_AtmospherePBRDataBuffer.SetBufferData(&m_AtmospherePBRParam, offset, size);
+
+	//update descriptor
+	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+		{
+			materialManager.m_MaterialAtmosphereDataDescriptorSets[0],
+			VansVKDescriptorManager::m_AtmosphereBufferSetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{
+				{
+					m_AtmospherePBRDataBuffer.GetMativeBuffer(),
+					0,
+					m_AtmospherePBRDataBuffer.GetBufferSize()
+				}
+			}
+		}
+	);
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }

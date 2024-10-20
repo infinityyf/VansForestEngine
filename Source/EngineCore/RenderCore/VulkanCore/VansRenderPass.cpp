@@ -121,7 +121,7 @@ void VansVulkan::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_devi
 	{
 		{
 			0,
-			VK_FORMAT_R8G8B8A8_UNORM,
+			VK_FORMAT_R16G16B16A16_UNORM,
 			VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -143,7 +143,7 @@ void VansVulkan::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_devi
 		},
 		{
 			0,
-			VK_FORMAT_B8G8R8A8_UNORM,
+			VK_FORMAT_R8G8B8A8_SRGB,
 			VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,
 			VK_ATTACHMENT_STORE_OP_STORE,
@@ -226,7 +226,7 @@ void VansVulkan::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_devi
 	m_ColorImage.CreateVulkanImage(
 		logic_device, 
 		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_R8G8B8A8_UNORM, 
+		VK_FORMAT_R16G16B16A16_UNORM,
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,

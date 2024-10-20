@@ -1,6 +1,6 @@
 #include "VansLight.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansVKDescriptorManager.h"
-
+#include <iostream>
 void VansGraphics::VansLightManager::AddDirectionalLight(const VansDirectionalLight& light)
 {
 	m_DirectionalLights.push_back(light);

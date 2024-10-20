@@ -175,6 +175,20 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
             material->CreatePBRMaterialDataBuffer(nativeDevice);
         }
         
+        //大气材质
+        if (material->m_MaterialType == VansMaterialType::VAN_SKY_BOX)
+        {
+            material->m_AtmospherePBRParam.m_PlanetRadius = 6340;
+            material->m_AtmospherePBRParam.m_AtmosphereWidth = 80;
+            material->m_AtmospherePBRParam.m_RayleighScalarHeight = 8.5;
+            material->m_AtmospherePBRParam.m_MieScalarHeight = 1.2;
+            material->m_AtmospherePBRParam.m_MieAnisotropy = 0.5;
+            material->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25;
+            material->m_AtmospherePBRParam.m_OzoneLevelWidth = 15;
+            material->m_AtmospherePBRParam.m_SunLuminance = 1000;
+            material->CreateAtmosphereMaterialDataBuffer(nativeDevice);
+        }
+
         m_Materials.push_back(material);
         material->SetName(sceneMaterial["name"]);
     }
@@ -201,8 +215,8 @@ void VansGraphics::VansScene::LoadLights(VkDevice& device, json& light_node)
         if (type == VansLightType::DIRECTIONAL)
         {
             VansDirectionalLight dirLight;
-            dirLight.m_Direction = glm::vec3(light["direction"][0], light["direction"][1], light["direction"][2]);
-            dirLight.m_Direction = glm::normalize(dirLight.m_Direction);
+            dirLight.m_Direction = glm::vec3(light["direction"][0], light ["direction"][1], light["direction"][2]);
+            dirLight.m_Direction = -glm::normalize(dirLight.m_Direction);
 			dirLight.m_Color = glm::vec3(light["color"][0], light["color"][1], light["color"][2]);
             dirLight.m_Intensity = light["intensity"];
             m_LightManager.AddDirectionalLight(dirLight);
@@ -221,7 +235,7 @@ void VansGraphics::VansScene::LoadLights(VkDevice& device, json& light_node)
             VansSpotLight spotLight;
 			spotLight.m_Position = glm::vec3(light["position"][0], light["position"][1], light["position"][2]);
 			spotLight.m_Direction = glm::vec3(light["direction"][0], light["direction"][1], light["direction"][2]);
-            spotLight.m_Direction = glm::normalize(spotLight.m_Direction);
+            spotLight.m_Direction = -glm::normalize(spotLight.m_Direction);
             spotLight.m_Color = glm::vec3(light["color"][0], light["color"][1], light["color"][2]);
             spotLight.m_Intensity = light["intensity"];
             spotLight.m_InnerCutOff = light["innercutoff"];
@@ -283,7 +297,7 @@ void VansGraphics::VansScene::DrawSkyBoxNode()
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     //更新desc
-    m_SkyBoxNode->UpdateDescriptorSets(vkDevice, m_MaterialManager, m_Camera);
+    m_SkyBoxNode->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
 
     m_SkyBoxNode->Draw(cmd, globalStateData);
 }
@@ -296,7 +310,7 @@ void VansGraphics::VansScene::DrawOpaqueNodes()
     for (auto& node : m_OpaqueRenderNodes)
     {
         //更新desc
-        node->UpdateDescriptorSets(vkDevice, m_MaterialManager, m_Camera);
+        node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
 
         node->Draw(cmd, globalStateData);
     }
@@ -329,7 +343,7 @@ void VansGraphics::VansScene::DrawPostProcessNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node  : m_PostProcessRenderNodes)
     {
-        node->UpdateDescriptorSets(vkDevice, m_MaterialManager, m_Camera);
+        node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
 
         //apply mesh
         node->Draw(cmd, globalStateData);

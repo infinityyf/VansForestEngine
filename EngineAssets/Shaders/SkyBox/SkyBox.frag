@@ -1,8 +1,25 @@
 #version 450
- layout( location = 0 ) in vec3 frag_uv;
- layout( set = 1, binding = 0 ) uniform samplerCube Cubemap;
+#extension GL_GOOGLE_include_directive : require
+#include "../Common/CameraData.glsl"
+#include "../Common/Atmosphere.glsl"
+
+ layout( location = 0 ) in vec3 direction;
  layout( location = 0 ) out vec4 frag_color;
  void main() 
  {
-    frag_color = texture( Cubemap, frag_uv );
+    AtmosphereParam param;
+    param.planetRadius = planetRadius;
+    param.atmosphereWidth = atmosphereWidth;
+    param.rayleighScalarHeight = rayleighScalarHeight;
+    param.mieScalarHeight = mieScalarHeight;
+    param.mieAnisotropy = mieAnisotropy;
+    param.ozoneLevelCenterHeight = ozoneLevelCenterHeight;
+    param.ozoneLevelWidth = ozoneLevelWidth;
+    param.sunLuminance = sunLuminance;
+    param.sunDirection = sunDirection.xyz;
+    param.viewDirection = normalize(direction);
+   
+    vec3 viewPosition = cameraPosition.xyz + vec3(0,planetRadius,0);
+    frag_color = vec4(SingleScatter(param, viewPosition),1);
+
  }

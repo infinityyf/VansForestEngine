@@ -16,4 +16,17 @@ namespace VansGraphics
 	{
 	};
 
+	struct alignas(16)  VansAtmospherePBRParam
+	{
+		glm::vec3			m_SunDirection;
+		alignas(16) float	m_SunLuminance;
+		float				m_PlanetRadius;
+		float				m_AtmosphereWidth;
+		float				m_RayleighScalarHeight;
+		float				m_MieScalarHeight;
+		float				m_MieAnisotropy;
+		float				m_OzoneLevelCenterHeight;
+		float				m_OzoneLevelWidth;
+	};
+
 }

@@ -6,6 +6,7 @@
 #include "../RenderCore/VansCamera.h"
 #include "../VansTimer.h"
 #include "Windows/VansHierachyWindow.h"
+#include "Windows/VansLightWindow.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
@@ -75,6 +76,9 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 {
     VansHierachuWindow* hierachyWindow = new VansHierachuWindow();
     m_Windows.push_back(hierachyWindow);
+
+    VansLightWindow* lightWindow = new VansLightWindow();
+    m_Windows.push_back(lightWindow);
 }
 
 void VansGraphics::VansEditorWindow::KeyBoardInputCallBack(GLFWwindow* window, int key, int scancode, int action, int mods)

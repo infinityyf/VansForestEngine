@@ -78,7 +78,7 @@ namespace VansGraphics
 
 		void RegistCameraDescriptor(VansCamera* camera);
 
-		void UpdateDescriptorSets(VansVKDevice* device, VansMaterialManager& materialManager, VansCamera* camera);
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera);
 
 		void BeforeDrawCall();
 

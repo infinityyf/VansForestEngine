@@ -5,11 +5,11 @@
 
 
 layout( location = 0 ) in vec4 position;
-layout( location = 0 ) out vec3 frag_uv;
+layout( location = 0 ) out vec3 direction;
 
 void main() 
 {
     vec3 positionWS = (position).xyz;
     gl_Position = (ProjectionMatrix * vec4( positionWS, 0.0 )).xyzz;
-    frag_uv = position.xyz;
+    direction = position.xyz;
 }

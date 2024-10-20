@@ -7,6 +7,14 @@ void VansGraphics::VansHierachuWindow::DrawRenderNodeList()
 {
     ImGui::Begin("Render Nodes");
 
+    if (ImGui::CollapsingHeader("Sky Node"))
+    {
+        if (ImGui::Selectable(m_Scene->m_SkyBoxNode->m_NodeName.c_str(), m_Scene->m_SelectedNode == m_Scene->m_SkyBoxNode))
+        {
+            m_Scene->m_SelectedNode = m_Scene->m_SkyBoxNode;
+        }
+    }
+
     if (ImGui::CollapsingHeader("Opaque Nodes"))
     {
         for (auto& node : m_Scene->m_OpaqueRenderNodes)
@@ -67,18 +75,33 @@ void VansGraphics::VansHierachuWindow::DrawMaterialDetail(VansMaterial& material
 {
 	switch (material.m_MaterialType)
 	{
-    case VansMaterialType::VAN_PBR:
-            DrawPBRMaterialParameters(material.m_BasePBRParam);
-			break;
-		default:
-			break;
-    }
+	case VansMaterialType::VAN_PBR:
+		DrawPBRMaterialParameters(material.m_BasePBRParam);
+		break;
+	case VansMaterialType::VAN_SKY_BOX:
+        DrawAtmosphereParameters(material.m_AtmospherePBRParam);
+		break;
+	default:
+		break;
+	}
 }
 
 void VansGraphics::VansHierachuWindow::DrawPBRMaterialParameters(VansBasePBRParam& param)
 {
     ImGui::SliderFloat("metalic", &param.m_metallic, 0, 1);
     ImGui::SliderFloat("roughness", &param.m_roughness, 0, 1);
+}
+
+void VansGraphics::VansHierachuWindow::DrawAtmosphereParameters(VansAtmospherePBRParam& param)
+{
+    ImGui::InputFloat("planet radius", &param.m_PlanetRadius);
+    ImGui::InputFloat("sun luminace", &param.m_SunLuminance);
+    ImGui::InputFloat("atmosphere width", &param.m_AtmosphereWidth);
+    ImGui::InputFloat("rayleigh scalar height", &param.m_RayleighScalarHeight);
+    ImGui::InputFloat("mie scalar height", &param.m_MieScalarHeight);
+    ImGui::InputFloat("mie anisotropy", &param.m_MieAnisotropy);
+    ImGui::InputFloat("ozone center height", &param.m_OzoneLevelCenterHeight);
+    ImGui::InputFloat("ozone width", &param.m_OzoneLevelWidth);
 }
 
 void VansGraphics::VansHierachuWindow::ShowWindow(VansVKDevice& device)

@@ -5,6 +5,7 @@
 #include "VulkanCore/VansVKBuffer.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "BRDFData/VansPBR.h"
+#include "BRDFData/VansLight.h"
 #include "VansAsset.h"
 #include <vector>
 
@@ -36,6 +37,9 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_MaterialPBRBaseDataLayout;
 		std::vector<VkDescriptorSet> m_MaterialPBRBaseDataDescriptorSets;
 
+		VkDescriptorSetLayout m_MaterialAtmosphereDataLayout;
+		std::vector<VkDescriptorSet> m_MaterialAtmosphereDataDescriptorSets;
+
 		//PBR预卷积
 		VkDescriptorSetLayout m_BRDFInterationTexSetLayout;
 		std::vector<VkDescriptorSet> m_BRDFInterationTextDescriptorSets;
@@ -58,7 +62,11 @@ namespace VansGraphics
 		//pbr数据data buffer
 		VansVKBuffer m_BasePBRDataBuffer;
 
+		VansVKBuffer m_AtmospherePBRDataBuffer;
+
 		void UpdatePBRMaterialData(VansMaterialManager& materialManager);
+
+		void UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
 
 	public:
 		VansMaterialType m_MaterialType;
@@ -70,10 +78,15 @@ namespace VansGraphics
 		//材质参数
 		VansBasePBRParam m_BasePBRParam;
 
+		//大气材质参数
+		VansAtmospherePBRParam m_AtmospherePBRParam;
+
 		//定义GPU数据
 		void CreatePBRMaterialDataBuffer(VkDevice& logic_device);
 
-		void UpdateMaterialDescriporSet(VansMaterialManager& materialManager);
+		void CreateAtmosphereMaterialDataBuffer(VkDevice& logic_device);
+
+		void UpdateMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
 	};
 
 
