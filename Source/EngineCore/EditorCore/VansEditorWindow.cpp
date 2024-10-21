@@ -166,8 +166,8 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
 
     //×¢²á»Øµ÷
-    //glfwSetKeyCallback(m_VansEditorWindow.m_VansGraphicsHandle, VansGraphics::VansEditorWindow::KeyBoardInputCallBack);
-    //glfwSetCursorPosCallback(m_VansEditorWindow.m_VansGraphicsHandle, VansGraphics::VansEditorWindow::MouseInputCallBack);
+    glfwSetKeyCallback(m_VansEditorWindow.m_VansGraphicsHandle, VansGraphics::VansEditorWindow::KeyBoardInputCallBack);
+    glfwSetCursorPosCallback(m_VansEditorWindow.m_VansGraphicsHandle, VansGraphics::VansEditorWindow::MouseInputCallBack);
 
 
     // Main loop

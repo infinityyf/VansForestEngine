@@ -10,6 +10,6 @@ layout( location = 0 ) out vec3 direction;
 void main() 
 {
     vec3 positionWS = (position).xyz;
-    gl_Position = (ProjectionMatrix * vec4( positionWS, 0.0 )).xyzz;
+    gl_Position = (ProjectionMatrix * ViewMatrix * vec4( positionWS, 0.0 )).xyzz;
     direction = position.xyz;
 }

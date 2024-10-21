@@ -178,17 +178,16 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         //´óÆø²ÄÖÊ
         if (material->m_MaterialType == VansMaterialType::VAN_SKY_BOX)
         {
-            material->m_AtmospherePBRParam.m_PlanetRadius = 6340;
-            material->m_AtmospherePBRParam.m_AtmosphereWidth = 80;
-            material->m_AtmospherePBRParam.m_RayleighScalarHeight = 8.5;
-            material->m_AtmospherePBRParam.m_MieScalarHeight = 1.2;
-            material->m_AtmospherePBRParam.m_MieAnisotropy = 0.5;
-            material->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25;
-            material->m_AtmospherePBRParam.m_OzoneLevelWidth = 15;
-            material->m_AtmospherePBRParam.m_SunLuminance = 1000;
+            material->m_AtmospherePBRParam.m_PlanetRadius = 6340000;
+            material->m_AtmospherePBRParam.m_AtmosphereWidth = 80000;
+            material->m_AtmospherePBRParam.m_RayleighScalarHeight = 8500;
+            material->m_AtmospherePBRParam.m_MieScalarHeight = 1200;
+            material->m_AtmospherePBRParam.m_MieAnisotropy = 0.78;
+            material->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25000;
+            material->m_AtmospherePBRParam.m_OzoneLevelWidth = 15000;
+            material->m_AtmospherePBRParam.m_SunLuminance = 10;
             material->CreateAtmosphereMaterialDataBuffer(nativeDevice);
         }
-
         m_Materials.push_back(material);
         material->SetName(sceneMaterial["name"]);
     }

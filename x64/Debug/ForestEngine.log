@@ -1,6 +1,64 @@
-﻿  VansEditorWindow.cpp
+﻿  imgui_impl_glfw.cpp
+  imgui_impl_vulkan.cpp
+  imgui.cpp
+  imgui_demo.cpp
+  imgui_draw.cpp
+  imgui_tables.cpp
+  imgui_widgets.cpp
+  VansEditorWindow.cpp
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\EditorCore\VansEditorWindow.cpp(91,98): warning C4244: “参数”: 从“double”转换到“float”，可能丢失数据
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\EditorCore\VansEditorWindow.cpp(118,45): warning C4244: “参数”: 从“double”转换到“float”，可能丢失数据
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\EditorCore\VansEditorWindow.cpp(118,37): warning C4244: “参数”: 从“double”转换到“float”，可能丢失数据
+  VansHierachyWindow.cpp
+  VansLightWindow.cpp
+  VansLight.cpp
+C:\Program Files (x86)\Windows Kits\10\Include\10.0.22000.0\shared\minwindef.h(130,1): warning C4005: “APIENTRY”: 宏重定义
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\GUI\glfw-3.3.9\include\GLFW\glfw3.h(123,1): message : 参见“APIENTRY”的前一个定义
+  VansCamera.cpp
+  VansGraphicsDevice.cpp
+  VansMaterial.cpp
+  VansRenderNode.cpp
+  VansScene.cpp
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.h(44): warning C4267: “return”: 从“size_t”转换到“uint32_t”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansScene.cpp(185,66): warning C4305: “=”: 从“double”到“float”截断
+  VansTransform.cpp
+  VansGUIVulkanBackEnd.cpp
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansGUIVulkanBackEnd.cpp(34,49): warning C4267: “=”: 从“size_t”转换到“uint32_t”，可能丢失数据
+  VansMesh.cpp
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.h(44): warning C4267: “return”: 从“size_t”转换到“uint32_t”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp(186,92): warning C4267: “参数”: 从“size_t”转换到“int”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp(187,101): warning C4267: “参数”: 从“size_t”转换到“int”，可能丢失数据
+  VansPipeline.cpp
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansPipeline.cpp(192,42): warning C4838: 从“unsigned __int64”转换到“uint32_t”需要收缩转换
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansPipeline.cpp(196,2): warning C4267: “初始化”: 从“size_t”转换到“uint32_t”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansPipeline.cpp(354,30): warning C4838: 从“unsigned __int64”转换到“uint32_t”需要收缩转换
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansPipeline.cpp(358,2): warning C4267: “初始化”: 从“size_t”转换到“uint32_t”，可能丢失数据
+  正在生成代码...
+  正在编译...
+  VansShader.cpp
+  VansTexture.cpp
+  VansVKDescriptorManager.cpp
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDescriptorManager.cpp(20,4): warning C4838: 从“int”转换到“VkDescriptorPoolCreateFlags”需要收缩转换
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDescriptorManager.cpp(21,4): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
+  VansRenderPass.cpp
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.cpp(250,46): warning C4018: “<”: 有符号/无符号不匹配
+  VansVKBuffer.cpp
+  VansVKCommandBuffer.cpp
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.h(44): warning C4267: “return”: 从“size_t”转换到“uint32_t”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKCommandBuffer.cpp(287,3): warning C4838: 从“VkCommandBufferUsageFlagBits”转换到“VkCommandBufferUsageFlags”需要收缩转换
+  VansVKDevice.cpp
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.h(44): warning C4267: “return”: 从“size_t”转换到“uint32_t”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(276,4): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(277,4): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(447,5): warning C4838: 从“int”转换到“VkFenceCreateFlags”需要收缩转换
+  VansVKDevice.h
+  VansVKImage.cpp
+  VansVKMemoryManager.cpp
+  VansVKSampler.cpp
+  VansVKSurface.cpp
+  VansTimer.cpp
+  ForestEngineEntry.cpp
+  VansVKFunctions.cpp
+  正在生成代码...
 x64\Debug\VansVKDevice.obj : warning LNK4042: 对象被多次指定；已忽略多余的指定
   ForestEngine.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\x64\Debug\ForestEngine.exe

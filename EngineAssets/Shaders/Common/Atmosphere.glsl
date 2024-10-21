@@ -61,7 +61,7 @@ float MiePhase(AtmosphereParam param, float cos_theta)
 
 vec3 Scattering(AtmosphereParam param, vec3 scatter_position)
 {
-    float cos_theta = dot(param.sunDirection, -param.viewDirection);
+    float cos_theta = dot(param.sunDirection, param.viewDirection);
     float height =  length(scatter_position) - param.planetRadius;
     vec3 rayleigh = RayleighScatterCoeff(param, height) * RayleiPhase(param, cos_theta);
     vec3 mie = MieCoeff(param, height) * MiePhase(param, cos_theta);
@@ -123,7 +123,7 @@ float RayIntersectSphere(vec3 center, float radius, vec3 rayStart, vec3 rayDir)
     float t2 = SH + PH;
     float t = (t1 < 0) ? t2 : t1;
 
-    return min(t,100);
+    return min(t,100000);
 }
 
 vec3 SingleScatter(AtmosphereParam param, vec3 start_position)
@@ -131,6 +131,11 @@ vec3 SingleScatter(AtmosphereParam param, vec3 start_position)
     vec3 color = vec3(0,0,0);
     int sample_count = 32;
     float distanceAtmosphere = RayIntersectSphere(vec3(0, 0, 0), param.planetRadius + param.atmosphereWidth, start_position, param.viewDirection);
+    float distanceSurface = RayIntersectSphere(vec3(0, 0, 0), param.planetRadius, start_position, param.viewDirection);
+    if(distanceSurface > 0)
+    {
+        distanceAtmosphere = min(distanceAtmosphere, distanceSurface);
+    }
     float step = distanceAtmosphere / sample_count;
     vec3 pScatterPosition = start_position;
     for(int i=0; i < sample_count; i++)
