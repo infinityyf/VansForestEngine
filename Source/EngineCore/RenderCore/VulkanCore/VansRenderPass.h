@@ -73,6 +73,12 @@ namespace VansVulkan
 
 		VansVKImage m_DepthImage;
 
+		VansVKImage m_NormalImage;
+
+		VansVKImage m_GBufferImage0; // albedo + roughness
+
+		VansVKImage m_GBufferImage1; // metalic + materialID
+
 	private:
 		static VansRenderPassManager* instance;
 
@@ -84,6 +90,8 @@ namespace VansVulkan
 
 		std::vector<VkClearValue> m_ClearValues;
 
+		std::vector<VkClearValue> m_DeferredClearValues;
+
 		VkDevice m_LogicDevice;
 
 	public:
@@ -91,6 +99,9 @@ namespace VansVulkan
 
 		//framebuffer大小
 		void SetupVansRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surrface);
+
+		//延迟渲染
+		void SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surrface);
 
 		//渲染区域大小
 		void BeginRenderPass(VkCommandBuffer command_buffer, const VkRect2D& render_area, GlobalStateData& global_state_data, int swap_chain_index);

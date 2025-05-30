@@ -11,6 +11,7 @@ layout(set=1, binding=0) uniform  AtmosphereUniformBuffer
     vec4 sunDirection;
     float sunLuminance;
     float planetRadius;
+    float initSeaLevel;
     float atmosphereWidth;
     float rayleighScalarHeight;
     float mieScalarHeight;

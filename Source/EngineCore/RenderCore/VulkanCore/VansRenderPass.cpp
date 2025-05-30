@@ -303,6 +303,200 @@ void VansVulkan::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_devi
 	command_buffer.ResetCommandBuffer(false);
 }
 
+void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surrface)
+{
+	//设置Gbuffer的attachment描述符
+	std::vector<VkAttachmentDescription> attachments_descriptions =
+	{
+		//color， 用于defer shading的结果
+		{
+			0,
+			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		},
+
+		//normal
+		{
+			0,
+			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		},
+		//gbuffer0
+		{
+			0,
+			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		},
+
+		//gbuffer1
+		{
+			0,
+			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		},
+
+		//depth
+		{
+			0,
+			VK_FORMAT_D16_UNORM,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		},
+
+		//swap chain
+		{
+			0,
+			VK_FORMAT_R8G8B8A8_SRGB,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,//第二个subpass使用，直接present
+		},
+	};
+
+	VkAttachmentReference depth_stencil_attachment =
+	{
+		 4,
+		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	};
+
+	std::vector<SubpassParameters> subpass_parameters =
+	{
+		// #0 subpass
+		// gbuffer
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{
+				{
+					1,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				},
+				{
+					2,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				},
+				{
+					3,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				}
+			},
+			{},
+			&depth_stencil_attachment,
+			{}
+		},
+		// #1 subpass
+		// shading
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{
+				{
+					1,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				},
+				{
+					2,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				},
+				{
+					3,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			},
+			{
+				{
+					0,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				}
+			},
+			{},
+			nullptr,
+			{}
+		},
+		// #2 subpass 
+		// post process
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{
+				{
+					0,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			},
+			{
+				{
+					5,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				}
+			},
+			{},
+			nullptr,
+			{}
+		}
+	};
+
+	std::vector<VkSubpassDependency> subpass_dependencies =
+	{
+		 {
+			 0,
+			 1,
+			 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			 VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
+			 VK_DEPENDENCY_BY_REGION_BIT
+		 },
+		 {
+			 1,
+			 2,
+			 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			 VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
+			 VK_DEPENDENCY_BY_REGION_BIT
+		 }
+	};
+
+	m_DeferredClearValues =
+	{
+		{ 0.0f, 0.0f, 0.0f, 1.0f },
+		{ 1.0f, 0 },
+		{ 0.0f, 0.0f, 0.0f, 1.0f },
+	};
+}
+
 void VansVulkan::VansRenderPassManager::BeginRenderPass(VkCommandBuffer command_buffer,const VkRect2D& render_area, GlobalStateData& global_state_data, int swap_chain_index)
 {
 	//将当前render pass 记录到globaldata中

@@ -179,6 +179,7 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         if (material->m_MaterialType == VansMaterialType::VAN_SKY_BOX)
         {
             material->m_AtmospherePBRParam.m_PlanetRadius = 6340000;
+            material->m_AtmospherePBRParam.m_InitSeaLevel = 200;
             material->m_AtmospherePBRParam.m_AtmosphereWidth = 80000;
             material->m_AtmospherePBRParam.m_RayleighScalarHeight = 8500;
             material->m_AtmospherePBRParam.m_MieScalarHeight = 1200;

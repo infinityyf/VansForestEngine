@@ -21,6 +21,7 @@ namespace VansGraphics
 		glm::vec3			m_SunDirection;
 		alignas(16) float	m_SunLuminance;
 		float				m_PlanetRadius;
+		float				m_InitSeaLevel;
 		float				m_AtmosphereWidth;
 		float				m_RayleighScalarHeight;
 		float				m_MieScalarHeight;

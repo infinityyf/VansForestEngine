@@ -95,6 +95,7 @@ void VansGraphics::VansHierachuWindow::DrawPBRMaterialParameters(VansBasePBRPara
 void VansGraphics::VansHierachuWindow::DrawAtmosphereParameters(VansAtmospherePBRParam& param)
 {
     ImGui::InputFloat("planet radius", &param.m_PlanetRadius);
+    ImGui::InputFloat("init sea level", &param.m_InitSeaLevel);
     ImGui::InputFloat("sun luminace", &param.m_SunLuminance);
     ImGui::InputFloat("atmosphere width", &param.m_AtmosphereWidth);
     ImGui::InputFloat("rayleigh scalar height", &param.m_RayleighScalarHeight);

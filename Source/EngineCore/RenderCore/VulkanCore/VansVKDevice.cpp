@@ -405,6 +405,7 @@ namespace VansVulkan
 			}
 		);
 
+
 		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, { wait_semaphore_infos }, { m_CommandBufferReadyToPresentSemaphore });
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 

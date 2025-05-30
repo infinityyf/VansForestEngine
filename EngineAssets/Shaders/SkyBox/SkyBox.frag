@@ -19,7 +19,7 @@
     param.sunDirection = sunDirection.xyz;
     param.viewDirection = normalize(direction);
    
-    vec3 viewPosition = cameraPosition.xyz + vec3(0,planetRadius,0);
+    vec3 viewPosition = cameraPosition.xyz + vec3(0,planetRadius + initSeaLevel,0);
     frag_color = vec4(SingleScatter(param, viewPosition),1);
 
  }
