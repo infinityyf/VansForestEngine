@@ -20,6 +20,7 @@ namespace VansVulkan
 		std::vector<float> Priorities;
 	};
 
+	class VansRenderPassManager;
 
 	class VansVKDevice: public VansGraphicsDevice
 	{
@@ -102,9 +103,11 @@ namespace VansVulkan
 
 		void PrepareRenderingData();
 
-	private:
+		void DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
-		
+		void DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
+
+	private:
 
 		//œ‡ª˙ ”“∞
 		VkViewport m_Viewport;

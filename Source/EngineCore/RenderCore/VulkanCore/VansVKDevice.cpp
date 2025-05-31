@@ -326,7 +326,14 @@ namespace VansVulkan
 
 		//create renderpass,and frame buffer
 		//这里自动创建color和depth
-		renderPassManager->SetupVansRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer , m_VansVKGraphicsQueue, m_VansVKSurface);
+		if (renderPassManager->m_EnableDeferredRendering)
+		{
+			renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface);
+		}
+		else
+		{
+			renderPassManager->SetupVansRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer , m_VansVKGraphicsQueue, m_VansVKSurface);
+		}
 
 		//预计算渲染数据
 		PrepareRenderingData();
@@ -357,11 +364,40 @@ namespace VansVulkan
 		//record command buffer
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 		
-		m_VansVKCommandBuffer.ClearColor(renderPassManager->m_ColorImage,
-			{
-				0.0f,0.0f,0.0f,0.0f
-			}
-		);
+
+		if (renderPassManager->m_EnableDeferredRendering)
+		{
+			m_VansVKCommandBuffer.ClearMRTColor(
+				{
+					renderPassManager->m_ColorImage ,
+					renderPassManager->m_NormalImage ,
+					renderPassManager->m_GBufferImage0 ,
+					renderPassManager->m_GBufferImage1
+				},
+				{
+					{
+						0.0f,0.0f,0.0f,0.0f
+					},
+					{
+						0.0f,0.0f,0.0f,0.0f
+					},
+					{
+						0.0f,0.0f,0.0f,0.0f
+					},				
+					{
+						0.0f,0.0f,0.0f,0.0f
+					}
+				}
+				);
+		}
+		else
+		{
+			m_VansVKCommandBuffer.ClearColor(renderPassManager->m_ColorImage,
+				{
+					0.0f,0.0f,0.0f,0.0f
+				}
+			);
+		}
 		m_VansVKCommandBuffer.ClearDepthStencil(renderPassManager->m_DepthImage, {0,0});
 
 		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
@@ -373,15 +409,14 @@ namespace VansVulkan
 		m_VansVKCommandBuffer.SetViewport(0, { m_Viewport });
 		m_VansVKCommandBuffer.SetScissor(0, { m_Scissor });
 
-		//绘制天空盒
-		m_Scene->DrawSkyBoxNode();
-
-		m_Scene->DrawOpaqueNodes();
-
-		//切换进行present
-		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
-
-		m_Scene->DrawPostProcessNodes();
+		if (renderPassManager->m_EnableDeferredRendering)
+		{
+			DrawSceneDeferred(renderPassManager, cmd);
+		}
+		else
+		{
+			DrawSceneForward(renderPassManager, cmd);
+		}
 	}
 
 	void VansVKDevice::Present()
@@ -1027,6 +1062,36 @@ namespace VansVulkan
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
 		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {});
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+	}
+
+	void VansVKDevice::DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
+	{
+		//绘制天空盒
+		m_Scene->DrawSkyBoxNode();
+
+		m_Scene->DrawOpaqueNodes();
+
+		//切换进行present
+		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
+
+		m_Scene->DrawPostProcessNodes();
+	}
+
+	void VansVKDevice::DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
+	{
+		//m_Scene->DrawOpaqueNodesDeferred();
+
+		//切换进行present
+		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
+
+		//m_Scene->DeferredShading();
+
+		m_Scene->DrawSkyBoxNode();
+
+		//切换进行present
+		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
+
+		m_Scene->DrawPostProcessNodes();
 	}
 
 	void VansVKDevice::InitViewPortScissor()

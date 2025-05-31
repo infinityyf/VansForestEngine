@@ -68,6 +68,11 @@ namespace VansVulkan
 	class VansRenderPassManager
 	{
 		friend class VansVKDevice;
+
+	public:
+
+		bool m_EnableDeferredRendering;
+
 	private:
 		VansVKImage m_ColorImage;
 
@@ -89,8 +94,6 @@ namespace VansVulkan
 		std::vector<VansFrameBuffer> m_FrameBuffers;
 
 		std::vector<VkClearValue> m_ClearValues;
-
-		std::vector<VkClearValue> m_DeferredClearValues;
 
 		VkDevice m_LogicDevice;
 
@@ -119,5 +122,11 @@ namespace VansVulkan
 		VansVKImage& GetColor() { return m_ColorImage; }
 
 		VansVKImage& GetDepth() { return m_DepthImage; }
+
+		VansVKImage& GetNormal() { return m_NormalImage; }
+
+		VansVKImage& GetGbuffer0() { return m_GBufferImage0; }
+
+		VansVKImage& GetGbuffet1() { return m_GBufferImage1; }
 	};
 }

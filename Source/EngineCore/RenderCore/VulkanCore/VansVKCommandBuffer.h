@@ -66,6 +66,8 @@ namespace VansVulkan
 	public :
 		void ClearColor(VansVKImage& image, const VkClearColorValue& value);
 
+		void ClearMRTColor(const std::vector<VansVKImage>& images, const std::vector<VkClearColorValue>& values);
+
 		void ClearDepthStencil(VansVKImage& image, const VkClearDepthStencilValue& value);
 
 		//用于subpass中对attachment进行clear,只能应用于renderpass中

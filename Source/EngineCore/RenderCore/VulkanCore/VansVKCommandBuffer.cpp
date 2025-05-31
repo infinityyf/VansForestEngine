@@ -86,6 +86,30 @@ void VansVulkan::VansVKCommandBuffer::ClearColor(VansVKImage& image, const VkCle
 		&image_subresource_range);
 }
 
+void VansVulkan::VansVKCommandBuffer::ClearMRTColor(const std::vector<VansVKImage>& images, const std::vector<VkClearColorValue>& values)
+{
+	VkImageSubresourceRange image_subresource_range =
+	{
+		VK_IMAGE_ASPECT_COLOR_BIT,
+		0,
+		1,
+		0,
+		1,
+	};
+
+	for (int imageIndex = 0; imageIndex < images.size(); imageIndex++)
+	{
+		auto& image = images[imageIndex];
+		vkCmdClearColorImage(
+			m_VansVKCommandBuffer,
+			image.m_VansVKImage,
+			image.m_ImageLayout,
+			&values[imageIndex],
+			1,
+			&image_subresource_range);
+	}
+}
+
 void VansVulkan::VansVKCommandBuffer::ClearDepthStencil(VansVKImage& image, const VkClearDepthStencilValue& value)
 {
 	VkImageSubresourceRange image_subresource_range =
