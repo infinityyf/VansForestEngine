@@ -10,10 +10,11 @@ namespace VansGraphics
 	enum  RenderNodeType
 	{
 		NONE_NODE = 0,
-		OPAQUE_NODE = 1<<0,
-		TRANSPARENT_NODE = 1 <<1,
-		POSTPROCESS_NODE = 1 <<2,
-		SKY_BOX_NODE = 1 <<3,
+		OPAQUE_NODE = 1 << 0,
+		TRANSPARENT_NODE = 1 << 1,
+		POSTPROCESS_NODE = 1 << 2,
+		SKY_BOX_NODE = 1 << 3,
+		DEFERRED_NODE = 1 << 4,
 	};
 
 	struct alignas(16) ModelDataStruct

@@ -34,6 +34,12 @@ void VansGraphics::VansRenderNode::RegistCameraDescriptor(VansCamera* camera)
 		m_UsedDescSetLayouts.push_back(camera->m_CameraBufferLayout);
 		m_UsedDescSets.push_back(camera->m_CameraBufferDescriptorSets[0]);
 	}
+
+	if ((m_NodeType & DEFERRED_NODE) != NONE_NODE)
+	{
+		m_UsedDescSetLayouts.push_back(camera->m_CameraBufferLayout);
+		m_UsedDescSets.push_back(camera->m_CameraBufferDescriptorSets[0]);
+	}
 }
 
 
@@ -89,11 +95,57 @@ void VansGraphics::VansRenderNode::CreateDescriptorSets()
 		m_UsedDescSetLayouts.push_back(frameBufferInputLayout);
 		m_UsedDescSets.push_back(frameBufferInputDescriptorSets[0]);
 	}
+
+	if ((m_NodeType & DEFERRED_NODE) != NONE_NODE)
+	{
+		//延迟管线
+		VkDescriptorSetLayoutBinding inputAttachment0Binding =
+		{
+			VansVKDescriptorManager::m_InputAttachment0SetBinding,
+			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding inputAttachment1Binding =
+		{
+			VansVKDescriptorManager::m_InputAttachment1SetBinding,
+			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding inputAttachment2Binding =
+		{
+			VansVKDescriptorManager::m_InputAttachment2SetBinding,
+			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
+			{ 
+				inputAttachment0Binding, 
+				inputAttachment1Binding, 
+				inputAttachment2Binding 
+			}, 
+				frameBufferInputLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ frameBufferInputLayout }, frameBufferInputDescriptorSets);
+
+		m_UsedDescSetLayouts.push_back(frameBufferInputLayout);
+		m_UsedDescSets.push_back(frameBufferInputDescriptorSets[0]);
+	}
 }
 
 void VansGraphics::VansRenderNode::RegistLightDescriptor(VansLightManager& lightManager)
 {
 	if ((m_NodeType & OPAQUE_NODE) != NONE_NODE)
+	{
+		m_UsedDescSetLayouts.push_back(lightManager.m_LightDataDescriptorSetLayout);
+		m_UsedDescSets.push_back(lightManager.m_LightDataDescriptorSets[0]);
+	}
+
+	if ((m_NodeType & DEFERRED_NODE) != NONE_NODE)
 	{
 		m_UsedDescSetLayouts.push_back(lightManager.m_LightDataDescriptorSetLayout);
 		m_UsedDescSets.push_back(lightManager.m_LightDataDescriptorSets[0]);
@@ -213,7 +265,59 @@ void VansGraphics::VansRenderNode::UpdateRenderData(VansVKDevice* device, VansMa
 		);
 		//只需要变化时更新，有的时候会绑定其他资源，所以需要update
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	}
 
+	if ((m_NodeType & DEFERRED_NODE) != NONE_NODE)
+	{
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				frameBufferInputDescriptorSets[0],
+				VansVKDescriptorManager::m_InputAttachment0SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+				{
+					{
+						VK_NULL_HANDLE,
+						VansRenderPassManager::GetInstance()->GetNormal().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				frameBufferInputDescriptorSets[0],
+				VansVKDescriptorManager::m_InputAttachment1SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+				{
+					{
+						VK_NULL_HANDLE,
+						VansRenderPassManager::GetInstance()->GetGbuffer0().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				frameBufferInputDescriptorSets[0],
+				VansVKDescriptorManager::m_InputAttachment2SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+				{
+					{
+						VK_NULL_HANDLE,
+						VansRenderPassManager::GetInstance()->GetGbuffet1().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		//只需要变化时更新，有的时候会绑定其他资源，所以需要update
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 	}
 
 

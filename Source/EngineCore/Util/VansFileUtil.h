@@ -142,13 +142,14 @@ bool CheckFolderExist(const std::string& check_string)
     return (attribs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-void SwitchToDeferredShaderPath(std::string& string)
+bool SwitchToDeferredShaderPath(std::string& string)
 {
     auto temp_string = string + "/Deferred";
     //检查是否含有这个路径，如果没有就不转换，并输出
     if (!CheckFolderExist(temp_string))
     {
-        return;
+        return false;
     }
     string = temp_string;
+    return true;
 }

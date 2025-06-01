@@ -95,6 +95,14 @@
             "depthWrite" : true,
             "depthCompareOp" : 3,
             "cullMode" : 0
+        },
+        {
+            "name" : "Deferred",
+            "path" : "EngineAssets/Shaders/Deferred",
+            "depthTest" : false,
+            "depthWrite" : false,
+            "depthCompareOp" : 0,
+            "cullMode" : 0
         }
     ],
 
@@ -133,6 +141,11 @@
             "name" : "PostprocessMaterial",
             "type" : 1,
             "shader" : "Postprocess"
+        },
+        {
+            "name" : "DeferredMaterial",
+            "type" : 16,
+            "shader" : "Deferred"
         }
     ]
 }

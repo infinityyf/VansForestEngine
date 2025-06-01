@@ -62,6 +62,10 @@ namespace VansVulkan
 		bool TranslateToSPIRV(const std::string& shader_folder);
 
 		VkDevice m_LogicDevice;
+
+	protected:
+
+		bool m_SupportMRTOutput;
 	};
 
 	class VansComputeShader : public VansShader
@@ -119,6 +123,7 @@ namespace VansVulkan
 		VansVKGraphicsPipeline* m_GraphicsPipeline;
 
 		VkGraphicsPipelineCreateInfo m_VkGraphicsPipelineCreateInfo;
+
 	private:
 		void InitGraphicsPipelinInfo(GlobalStateData& global_state_data);
 

@@ -43,6 +43,8 @@ namespace VansGraphics
 	public:
 		VansRenderNode* m_SkyBoxNode;
 
+		VansRenderNode* m_DeferredNode;
+
 		std::vector<VansRenderNode*> m_OpaqueRenderNodes;
 
 		std::vector<VansRenderNode*> m_TransParentRenderNodes;
@@ -60,6 +62,8 @@ namespace VansGraphics
 
 		void LoadRenderNodes(VkDevice& device, json& render_node);
 
+		void AddDeferredNode(VkDevice& device);
+
 		void UnLoadScene();
 
 		void UpdateSceneData();
@@ -71,6 +75,8 @@ namespace VansGraphics
 		void DrawTransParentNodes();
 
 		void DrawPostProcessNodes();
+
+		void DeferredShading();
 
 		void InjectCamera(VansCamera* camera) { m_Camera = camera; }
 

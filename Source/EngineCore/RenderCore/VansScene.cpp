@@ -1,5 +1,6 @@
 #include "VansScene.h"
 #include "BRDFData/VansLight.h"
+#include "../Configration/VansConfigration.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -68,6 +69,9 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
 	case SKY_BOX_NODE:
 		m_SkyBoxNode = renderNode;
 		break;
+    case DEFERRED_NODE:
+        m_DeferredNode = renderNode;
+        break;
 	case OPAQUE_NODE:
 		m_OpaqueRenderNodes.push_back(renderNode);
 		break;
@@ -204,6 +208,13 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
     //根据引用关系创建render node
     LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
 
+    //如果是延迟管线，需要添加一个延迟node
+    auto vansConfig = VansConfigration::GetInstance();
+    if (vansConfig->m_EnableDeferredRendering)
+    {
+        AddDeferredNode(nativeDevice);
+    }
+
     return true;
 }
 
@@ -277,6 +288,31 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
     }
 }
 
+void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
+{
+    VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset("fullScreenQuad"));
+    std::string materialName = "DeferredMaterial";
+    VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
+
+    RenderNodeType type = RenderNodeType::DEFERRED_NODE;
+    VansRenderNode* renderNode = new VansRenderNode(device, type);
+
+    renderNode->m_Mesh = mesh;
+    renderNode->m_Material = material;
+    //绑定相机cb
+    renderNode->RegistCameraDescriptor(m_Camera);
+
+    renderNode->CreateDescriptorSets();
+
+    //绑定灯光cb
+    renderNode->RegistLightDescriptor(m_LightManager);
+    //绑定材质cb
+    renderNode->RegistMaterialDescriptor(m_MaterialManager);
+    renderNode->SetName("DeferredNode");
+
+    RegistRenderNode(renderNode, type);
+}
+
 void VansGraphics::VansScene::UnLoadScene()
 {
     //delete mesh;
@@ -348,6 +384,18 @@ void VansGraphics::VansScene::DrawPostProcessNodes()
         //apply mesh
         node->Draw(cmd, globalStateData);
     }
+}
+
+void VansGraphics::VansScene::DeferredShading()
+{
+    //绘制全屏mesh
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+
+    m_DeferredNode->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
+
+    m_DeferredNode->Draw(cmd, globalStateData);
 }
 
 VansGraphics::VansScene* m_Scene = nullptr;

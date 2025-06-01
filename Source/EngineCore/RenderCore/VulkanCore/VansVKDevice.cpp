@@ -1088,7 +1088,7 @@ namespace VansVulkan
 		//ÇÐ»»½øÐÐpresent
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 
-		//m_Scene->DeferredShading();
+		m_Scene->DeferredShading();
 
 		m_Scene->DrawSkyBoxNode();
 
