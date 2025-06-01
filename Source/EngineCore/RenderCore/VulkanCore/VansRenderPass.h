@@ -68,11 +68,6 @@ namespace VansVulkan
 	class VansRenderPassManager
 	{
 		friend class VansVKDevice;
-
-	public:
-
-		bool m_EnableDeferredRendering;
-
 	private:
 		VansVKImage m_ColorImage;
 
@@ -82,7 +77,7 @@ namespace VansVulkan
 
 		VansVKImage m_GBufferImage0; // albedo + roughness
 
-		VansVKImage m_GBufferImage1; // metalic + materialID
+		VansVKImage m_GBufferImage1; // metalic + ao + materialID
 
 	private:
 		static VansRenderPassManager* instance;

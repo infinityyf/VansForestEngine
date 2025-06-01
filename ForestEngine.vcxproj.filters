@@ -175,6 +175,9 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\Configration\VansConfigration.h">
+      <Filter>EngineCore\Configrarion</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl">
@@ -286,6 +289,9 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp">
+      <Filter>EngineCore\Configrarion</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -46,7 +46,11 @@ std::vector<std::string> GetFilesInFolder(const std::string& directory)
     do {
         // Convert the wstring to a string
         const std::string fileOrDir = converter.to_bytes(findFileData.cFileName);
-        if (fileOrDir != "." && fileOrDir != "..") 
+
+        //过滤掉dir只获取文件
+        bool isDir = findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
+
+        if (!isDir && fileOrDir != "." && fileOrDir != "..")
         {
             files.push_back(fileOrDir);
         }
@@ -128,4 +132,23 @@ void ReadFile(const std::string& file_path, std::vector<unsigned char>& result)
     }
 }
 
+bool CheckFolderExist(const std::string& check_string)
+{
+    DWORD attribs = GetFileAttributesA(check_string.c_str());
+    if (attribs == INVALID_FILE_ATTRIBUTES)
+    {
+        return false;
+    }
+    return (attribs & FILE_ATTRIBUTE_DIRECTORY);
+}
 
+void SwitchToDeferredShaderPath(std::string& string)
+{
+    auto temp_string = string + "/Deferred";
+    //检查是否含有这个路径，如果没有就不转换，并输出
+    if (!CheckFolderExist(temp_string))
+    {
+        return;
+    }
+    string = temp_string;
+}

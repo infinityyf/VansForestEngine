@@ -4,13 +4,23 @@
 #include "VansVKCommandBuffer.h"
 #include "VansVKDescriptorManager.h"
 #include "../../Util/VansFileUtil.h"
+#include "../../Configration/VansConfigration.h"
 #include <iostream>
 #include <cstdlib>
 
 
 bool VansVulkan::VansShader::InitShader(VkDevice& logic_device, const std::string& shader_folder)
 {
-	bool result = TranslateToSPIRV(shader_folder);
+	auto vansConfigration = VansConfigration::GetInstance();
+	std::string shader_folder_string = shader_folder;
+
+	//如果是延迟管线需要切换使用的shader
+	if (vansConfigration->m_EnableDeferredRendering)
+	{
+		SwitchToDeferredShaderPath(shader_folder_string);
+	}
+
+	bool result = TranslateToSPIRV(shader_folder_string);
 	if (!result)
 	{
 		std::cout << "shader translation failed" << std::endl;
@@ -162,10 +172,51 @@ void VansVulkan::VansGraphicsShader::SetDrawStateData(VkBool32 depthTestEnable, 
 	m_DrawStateData.cullMode = cullmode;
 }
 
-
+void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>& states ,bool enableDeferred)
+{
+	if (enableDeferred)
+	{
+		states.resize(3,
+			{
+				false,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_OP_ADD,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_OP_ADD,
+				 VK_COLOR_COMPONENT_R_BIT |
+				 VK_COLOR_COMPONENT_G_BIT |
+				 VK_COLOR_COMPONENT_B_BIT |
+				 VK_COLOR_COMPONENT_A_BIT
+			});
+	}
+	else
+	{
+		states = 
+		{
+			 {
+				false,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_OP_ADD,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_OP_ADD,
+				 VK_COLOR_COMPONENT_R_BIT |
+				 VK_COLOR_COMPONENT_G_BIT |
+				 VK_COLOR_COMPONENT_B_BIT |
+				 VK_COLOR_COMPONENT_A_BIT
+			 }
+		};
+	}
+}
 
 void VansVulkan::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& global_state_data)
 {
+	auto vansConfig = VansConfigration::GetInstance();
+	bool enableDeferred = vansConfig->m_EnableDeferredRendering;
+
 	//便利所有的module data来创建params
 	for (auto& shader_module_data : m_ShaderModuleDataMap)
 	{
@@ -254,22 +305,9 @@ void VansVulkan::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& gl
 		 m_DrawStateData.maxDepthBounds
 	};
 
-	m_GraphicsPipelineCreateInfo.attachment_blend_states =
-	{
-		 {
-			false,
-			 VK_BLEND_FACTOR_ONE,
-			 VK_BLEND_FACTOR_ONE,
-			 VK_BLEND_OP_ADD,
-			 VK_BLEND_FACTOR_ONE,
-			 VK_BLEND_FACTOR_ONE,
-			 VK_BLEND_OP_ADD,
-			 VK_COLOR_COMPONENT_R_BIT |
-			 VK_COLOR_COMPONENT_G_BIT |
-			 VK_COLOR_COMPONENT_B_BIT |
-			 VK_COLOR_COMPONENT_A_BIT
-		 }
-	};
+	//需要根据deferred的模式，设置每个rt的blend state，不然shader写不到对应的rt上
+	
+	InitAttachmentBlendStates(m_GraphicsPipelineCreateInfo.attachment_blend_states, enableDeferred);
 }
 
 bool VansVulkan::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data)

@@ -6,6 +6,7 @@
 #include "VansRenderPass.h"
 #include "VansMesh.h"
 #include "VansShader.h"
+#include "../../Configration/VansConfigration.h"
 
 #include "../VansScene.h"
 //#if defined FOREST_EDITOR
@@ -323,10 +324,11 @@ namespace VansVulkan
 		CreateVKFence(false, m_SwapChainImageAcquiredFence);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
+		auto vansConfigration = VansConfigration::GetInstance();
 
 		//create renderpass,and frame buffer
 		//这里自动创建color和depth
-		if (renderPassManager->m_EnableDeferredRendering)
+		if (vansConfigration->m_EnableDeferredRendering)
 		{
 			renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface);
 		}
@@ -360,12 +362,13 @@ namespace VansVulkan
 
 		//开始record渲染指令
 		auto renderPassManager = VansRenderPassManager::GetInstance();
+		auto vansConfigration = VansConfigration::GetInstance();
 
 		//record command buffer
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 		
 
-		if (renderPassManager->m_EnableDeferredRendering)
+		if (vansConfigration->m_EnableDeferredRendering)
 		{
 			m_VansVKCommandBuffer.ClearMRTColor(
 				{
@@ -409,7 +412,7 @@ namespace VansVulkan
 		m_VansVKCommandBuffer.SetViewport(0, { m_Viewport });
 		m_VansVKCommandBuffer.SetScissor(0, { m_Scissor });
 
-		if (renderPassManager->m_EnableDeferredRendering)
+		if (vansConfigration->m_EnableDeferredRendering)
 		{
 			DrawSceneDeferred(renderPassManager, cmd);
 		}
@@ -1079,7 +1082,8 @@ namespace VansVulkan
 
 	void VansVKDevice::DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
 	{
-		//m_Scene->DrawOpaqueNodesDeferred();
+		//绘制GBuffer
+		m_Scene->DrawOpaqueNodes();
 
 		//切换进行present
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);

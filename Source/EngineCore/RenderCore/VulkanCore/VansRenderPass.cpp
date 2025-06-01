@@ -100,8 +100,7 @@ void VansVulkan::VansFrameBuffer::DestroyFrameBuffer(VkDevice& logic_device)
 	}
 }
 
-VansVulkan::VansRenderPassManager::VansRenderPassManager():
-	m_EnableDeferredRendering(true)
+VansVulkan::VansRenderPassManager::VansRenderPassManager()
 {
 
 }

@@ -1,6 +1,5 @@
-c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vc143.pdb
-c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vc143.idb
-c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vanspipeline.obj
+c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vc143_tmp.pdb
+c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vc143_tmp.idb
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vansmesh.obj
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vansguivulkanbackend.obj
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vanstransform.obj
@@ -13,6 +12,7 @@ c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\va
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vanslightwindow.obj
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vanshierachywindow.obj
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vanseditorwindow.obj
+c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vansconfigration.obj
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\imgui_widgets.obj
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\imgui_tables.obj
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\imgui_draw.obj
@@ -34,6 +34,7 @@ c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\va
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vansvkdescriptormanager.obj
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vanstexture.obj
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vansshader.obj
+c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\vanspipeline.obj
 c:\users\infinityyf\projects\forestengine\forestengine\x64\debug\forestengine.exe
 c:\users\infinityyf\projects\forestengine\forestengine\forestengine\x64\debug\forestengine.ilk
 c:\users\infinityyf\projects\forestengine\forestengine\x64\debug\forestengine.pdb

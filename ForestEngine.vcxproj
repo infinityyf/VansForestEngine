@@ -105,6 +105,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\json\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\STBImge;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -122,6 +123,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\json\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\STBImge;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -143,6 +145,7 @@
     <ClInclude Include="External\GUI\imgui-1.90.2\imstb_rectpack.h" />
     <ClInclude Include="External\GUI\imgui-1.90.2\imstb_textedit.h" />
     <ClInclude Include="External\GUI\imgui-1.90.2\imstb_truetype.h" />
+    <ClInclude Include="Source\EngineCore\Configration\VansConfigration.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAssetWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansBaseWindowComponent.h" />
@@ -188,6 +191,7 @@
     <ClCompile Include="External\GUI\imgui-1.90.2\imgui_draw.cpp" />
     <ClCompile Include="External\GUI\imgui-1.90.2\imgui_tables.cpp" />
     <ClCompile Include="External\GUI\imgui-1.90.2\imgui_widgets.cpp" />
+    <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.cpp" />
