@@ -442,7 +442,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 				}
 			},
 			{},
-			nullptr,
+			& depth_stencil_attachment,
 			{}
 		},
 		// #2 subpass 

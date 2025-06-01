@@ -93,7 +93,7 @@
             "path" : "EngineAssets/Shaders/SkyBox",
             "depthTest" : true,
             "depthWrite" : true,
-            "depthCompareOp" : 7,
+            "depthCompareOp" : 3,
             "cullMode" : 0
         }
     ],

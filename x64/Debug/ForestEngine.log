@@ -1,2 +1,4 @@
-﻿  VansShader.cpp
+﻿  VansRenderPass.cpp
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.cpp(250,46): warning C4018: “<”: 有符号/无符号不匹配
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.cpp(563,46): warning C4018: “<”: 有符号/无符号不匹配
   ForestEngine.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\x64\Debug\ForestEngine.exe
