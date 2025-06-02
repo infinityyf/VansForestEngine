@@ -249,7 +249,10 @@ void VansVulkan::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_devi
 	m_FrameBuffers.resize(surface.m_VansVKImageCount);
 	for (int swapChainIndex = 0; swapChainIndex < surface.m_VansVKImageCount; swapChainIndex++)
 	{
-		std::vector<VkImageView> image_views = { m_ColorImage.GetImageView(), m_DepthImage.GetImageView() ,surface.GetSwapChainImageView(swapChainIndex) };
+		std::vector<VkImageView> image_views = {
+			m_ColorImage.GetImageView(),
+			m_DepthImage.GetImageView() ,
+			surface.GetSwapChainImageView(swapChainIndex) };
 		m_FrameBuffers[swapChainIndex].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, image_views, {resolution.width, resolution.height, 1});
 
 	}
@@ -359,6 +362,19 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		},
 
+		//gbuffer2
+		{
+			0,
+			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		},
+
 		//depth
 		{
 			0,
@@ -388,7 +404,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 
 	VkAttachmentReference depth_stencil_attachment =
 	{
-		 4,
+		 5,
 		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 	};
 
@@ -411,6 +427,10 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 				{
 					3,
 					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				},
+				{
+					4,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
 				}
 			},
 			{},
@@ -432,6 +452,10 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 				},
 				{
 					3,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				},
+				{
+					4,
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			},
@@ -457,7 +481,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 			},
 			{
 				{
-					5,
+					6,
 					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
 				}
 			},
@@ -491,6 +515,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 
 	m_ClearValues =
 	{
+		{ 0.0f, 0.0f, 0.0f, 1.0f },
 		{ 0.0f, 0.0f, 0.0f, 1.0f },
 		{ 0.0f, 0.0f, 0.0f, 1.0f },
 		{ 0.0f, 0.0f, 0.0f, 1.0f },
@@ -558,6 +583,17 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		VK_SAMPLE_COUNT_1_BIT
 	);
 
+	m_GBufferImage2.CreateVulkanImage(
+		logic_device,
+		{ resolution.width,resolution.height,1 },
+		VK_FORMAT_R16G16B16A16_UNORM,
+		1,
+		1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT
+	);
+
 	//framebuffer的image view数量和attachment 的数量需要一致
 	m_FrameBuffers.resize(surface.m_VansVKImageCount);
 	for (int swapChainIndex = 0; swapChainIndex < surface.m_VansVKImageCount; swapChainIndex++)
@@ -567,6 +603,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 			m_NormalImage.GetImageView() ,
 			m_GBufferImage0.GetImageView(),
 			m_GBufferImage1.GetImageView(),
+			m_GBufferImage2.GetImageView(),
 			m_DepthImage.GetImageView() ,
 			surface.GetSwapChainImageView(swapChainIndex)};
 		m_FrameBuffers[swapChainIndex].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
@@ -623,6 +660,18 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_GBufferImage1.m_ImageAspect
+		});
+
+	m_GBufferImage2.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_GBufferImage2.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_GBufferImage2.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_GBufferImage2.m_ImageAspect
 		});
 
 	m_DepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -697,6 +746,7 @@ void VansVulkan::VansRenderPassManager::DestroyRenderPass()
 	m_NormalImage.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage0.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage1.DestroyVulkanImage(m_LogicDevice);
+	m_GBufferImage2.DestroyVulkanImage(m_LogicDevice);
 
 	for (int i = 0; i < m_FrameBuffers.size(); i++)
 	{

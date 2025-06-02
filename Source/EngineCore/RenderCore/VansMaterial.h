@@ -19,6 +19,7 @@ namespace VansGraphics
 		VAN_TRANSPARENT = 2,
 		VAN_POST_PROCESS = 3,
 		VAN_SKY_BOX = 4,
+		VAN_DEFERRED = 5,
 	};
 
 
@@ -64,7 +65,8 @@ namespace VansGraphics
 
 		VansVKBuffer m_AtmospherePBRDataBuffer;
 
-		void UpdatePBRMaterialData(VansMaterialManager& materialManager);
+		void UpdatePBRUniformData(VansMaterialManager& materialManager);
+		void UpdatePBRLutData(VansMaterialManager& materialManager);
 
 		void UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
 

@@ -123,11 +123,20 @@ void VansGraphics::VansRenderNode::CreateDescriptorSets()
 			VK_SHADER_STAGE_FRAGMENT_BIT,
 			nullptr
 		};
+		VkDescriptorSetLayoutBinding inputAttachment3Binding =
+		{
+			VansVKDescriptorManager::m_InputAttachment3SetBinding,
+			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
 		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
 			{ 
 				inputAttachment0Binding, 
 				inputAttachment1Binding, 
-				inputAttachment2Binding 
+				inputAttachment2Binding,
+				inputAttachment3Binding
 			}, 
 				frameBufferInputLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ frameBufferInputLayout }, frameBufferInputDescriptorSets);
@@ -181,6 +190,13 @@ void VansGraphics::VansRenderNode::RegistMaterialDescriptor(VansMaterialManager&
 
 		m_UsedDescSetLayouts.push_back(materialManager.m_MaterialAtmosphereDataLayout);
 		m_UsedDescSets.push_back(materialManager.m_MaterialAtmosphereDataDescriptorSets[0]);
+	}
+
+	if (m_Material->m_MaterialType == VAN_DEFERRED)
+	{
+		//Ô¤¾í»ý _ lut
+		m_UsedDescSetLayouts.push_back(materialManager.m_BRDFInterationTexSetLayout);
+		m_UsedDescSets.push_back(materialManager.m_BRDFInterationTextDescriptorSets[0]);
 	}
 }
 
@@ -311,6 +327,21 @@ void VansGraphics::VansRenderNode::UpdateRenderData(VansVKDevice* device, VansMa
 					{
 						VK_NULL_HANDLE,
 						VansRenderPassManager::GetInstance()->GetGbuffet1().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				frameBufferInputDescriptorSets[0],
+				VansVKDescriptorManager::m_InputAttachment3SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+				{
+					{
+						VK_NULL_HANDLE,
+						VansRenderPassManager::GetInstance()->GetGbuffet2().GetImageView(),
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}

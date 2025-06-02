@@ -1,7 +1,11 @@
 #include "../Common/Common.glsl"
 
 //brdf data set
-layout(set=4, binding=0) uniform MaterialData
+#if !defined(PBRDataSetBind)
+    #define PBRDataSetBind 4
+#endif
+
+layout(set=PBRDataSetBind, binding=0) uniform MaterialData
 {
     vec4 albedo;
     float roughness;
@@ -9,11 +13,15 @@ layout(set=4, binding=0) uniform MaterialData
     float ao;
 };
 
+
+#if !defined(PBRLutSetBind)
+    #define PBRLutSetBind 5
+#endif
 //intergration lut
-layout(set=5, binding=0) uniform sampler2D BRDFLUT;
+layout(set=PBRLutSetBind, binding=0) uniform sampler2D BRDFLUT;
 //pbr texture set
-layout(set=5, binding=1) uniform samplerCube PreConvDiffuseEnvironment;
-layout(set=5, binding=2) uniform samplerCube PreConvSpecularEnvironment;
+layout(set=PBRLutSetBind, binding=1) uniform samplerCube PreConvDiffuseEnvironment;
+layout(set=PBRLutSetBind, binding=2) uniform samplerCube PreConvSpecularEnvironment;
 
 
 

@@ -68,6 +68,7 @@ namespace VansVulkan
 		static const uint32_t m_InputAttachment0SetBinding = 0;
 		static const uint32_t m_InputAttachment1SetBinding = 1;
 		static const uint32_t m_InputAttachment2SetBinding = 2;
+		static const uint32_t m_InputAttachment3SetBinding = 3;
 
 		static const uint32_t m_SampleTexture0SetBinding = 0;
 		static const uint32_t m_SampleTexture1SetBinding = 1;

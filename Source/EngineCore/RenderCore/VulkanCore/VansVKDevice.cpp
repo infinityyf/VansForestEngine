@@ -375,7 +375,8 @@ namespace VansVulkan
 					renderPassManager->m_ColorImage ,
 					renderPassManager->m_NormalImage ,
 					renderPassManager->m_GBufferImage0 ,
-					renderPassManager->m_GBufferImage1
+					renderPassManager->m_GBufferImage1,
+					renderPassManager->m_GBufferImage2,
 				},
 				{
 					{
@@ -387,6 +388,9 @@ namespace VansVulkan
 					{
 						0.0f,0.0f,0.0f,0.0f
 					},				
+					{
+						0.0f,0.0f,0.0f,0.0f
+					},
 					{
 						0.0f,0.0f,0.0f,0.0f
 					}

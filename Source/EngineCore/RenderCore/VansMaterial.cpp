@@ -44,8 +44,12 @@ void VansGraphics::VansMaterial::UpdateMaterialData(VansMaterialManager& materia
 {
 	switch (m_MaterialType)
 	{
+	case VansGraphics::VAN_DEFERRED:
+		UpdatePBRLutData(materialManager);
+		break;
 	case VansGraphics::VAN_PBR:
-		UpdatePBRMaterialData(materialManager);
+		UpdatePBRUniformData(materialManager);
+		UpdatePBRLutData(materialManager);
 		break;
 	case VansGraphics::VAN_COAT:
 		break;
@@ -61,30 +65,12 @@ void VansGraphics::VansMaterial::UpdateMaterialData(VansMaterialManager& materia
 	}
 }
 
-void VansGraphics::VansMaterial::UpdatePBRMaterialData(VansMaterialManager& materialManager)
+void VansGraphics::VansMaterial::UpdatePBRLutData(VansMaterialManager& materialManager)
 {
-	uint32_t offset = 0;
-	uint32_t size = sizeof(VansBasePBRParam);
-	m_BasePBRDataBuffer.SetBufferData(&m_BasePBRParam, offset, size);
-
 	//update descriptor
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
-		{
-			materialManager.m_MaterialPBRBaseDataDescriptorSets[0],
-			VansVKDescriptorManager::m_MaterialBufferSetBinding,
-			0,
-			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			{
-				{
-					m_BasePBRDataBuffer.GetMativeBuffer(),
-					0,
-					m_BasePBRDataBuffer.GetBufferSize()
-				}
-			}
-		}
-	);
+
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			materialManager.m_BRDFInterationTextDescriptorSets[0],
@@ -131,6 +117,33 @@ void VansGraphics::VansMaterial::UpdatePBRMaterialData(VansMaterialManager& mate
 		}
 	);
 
+	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+}
+
+void VansGraphics::VansMaterial::UpdatePBRUniformData(VansMaterialManager& materialManager)
+{
+	uint32_t offset = 0;
+	uint32_t size = sizeof(VansBasePBRParam);
+	m_BasePBRDataBuffer.SetBufferData(&m_BasePBRParam, offset, size);
+
+	//update descriptor
+	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+		{
+			materialManager.m_MaterialPBRBaseDataDescriptorSets[0],
+			VansVKDescriptorManager::m_MaterialBufferSetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{
+				{
+					m_BasePBRDataBuffer.GetMativeBuffer(),
+					0,
+					m_BasePBRDataBuffer.GetBufferSize()
+				}
+			}
+		}
+	);
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 

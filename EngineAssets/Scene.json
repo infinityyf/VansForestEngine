@@ -139,12 +139,12 @@
         },
         {
             "name" : "PostprocessMaterial",
-            "type" : 1,
+            "type" : 2,
             "shader" : "Postprocess"
         },
         {
             "name" : "DeferredMaterial",
-            "type" : 16,
+            "type" : 5,
             "shader" : "Deferred"
         }
     ]

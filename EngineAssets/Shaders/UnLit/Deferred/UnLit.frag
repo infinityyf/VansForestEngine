@@ -13,6 +13,7 @@ layout( set=2, binding=0 ) uniform sampler2D mainTexture;
 layout (location = 0) out vec4 outNormal;
 layout (location = 1) out vec4 outGBuffer0;
 layout (location = 2) out vec4 outGBuffer1;
+layout (location = 3) out vec4 outGBuffer2;
 
 void main() 
 { 
@@ -26,4 +27,5 @@ void main()
     outNormal = vec4(normalize(normal), 1.0);
     outGBuffer0 = vec4(albedo, roughness);
     outGBuffer1 = vec4(metallic, ao, 0, 1.0);
+    outGBuffer2 = vec4(position_world, 1.0);
 }

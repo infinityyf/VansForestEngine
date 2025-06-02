@@ -177,7 +177,7 @@ void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>&
 {
 	if (enableDeferred)
 	{
-		states.resize(3,
+		states.resize(4,
 			{
 				false,
 				 VK_BLEND_FACTOR_ONE,

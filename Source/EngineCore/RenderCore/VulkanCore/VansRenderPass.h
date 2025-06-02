@@ -79,6 +79,8 @@ namespace VansVulkan
 
 		VansVKImage m_GBufferImage1; // metalic + ao + materialID
 
+		VansVKImage m_GBufferImage2; // worldposition
+
 	private:
 		static VansRenderPassManager* instance;
 
@@ -123,5 +125,7 @@ namespace VansVulkan
 		VansVKImage& GetGbuffer0() { return m_GBufferImage0; }
 
 		VansVKImage& GetGbuffet1() { return m_GBufferImage1; }
+
+		VansVKImage& GetGbuffet2() { return m_GBufferImage2; }
 	};
 }
