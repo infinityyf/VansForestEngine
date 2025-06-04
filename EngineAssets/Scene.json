@@ -103,6 +103,14 @@
             "depthWrite" : false,
             "depthCompareOp" : 0,
             "cullMode" : 0
+        },
+        {
+            "name" : "SSAO",
+            "path" : "EngineAssets/Shaders/ScreenSpaceFeature/SSAO",
+            "depthTest" : false,
+            "depthWrite" : false,
+            "depthCompareOp" : 0,
+            "cullMode" : 0
         }
     ],
 
@@ -146,6 +154,11 @@
             "name" : "DeferredMaterial",
             "type" : 5,
             "shader" : "Deferred"
+        },
+        {
+            "name" : "SSAO",
+            "type" : 6,
+            "shader" : "SSAO"
         }
     ]
 }

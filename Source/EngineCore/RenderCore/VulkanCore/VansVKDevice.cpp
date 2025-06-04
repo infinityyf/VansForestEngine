@@ -933,6 +933,9 @@ namespace VansVulkan
 		manager->m_BRDFIntegralLUT = new VansTexture();
 		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png");
 
+		//SSAO结果
+		manager->m_SSAOResult = new VansTexture();
+		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, false, false, true);
 
 		VkDescriptorSetLayoutBinding samplerLUTBinding =
 		{
@@ -1073,6 +1076,7 @@ namespace VansVulkan
 
 	void VansVKDevice::DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
 	{
+		
 		//绘制天空盒
 		m_Scene->DrawSkyBoxNode();
 
@@ -1091,6 +1095,8 @@ namespace VansVulkan
 
 		//切换进行present
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
+
+		m_Scene->DrawScreenSpaceFeatureNode();
 
 		m_Scene->DeferredShading();
 

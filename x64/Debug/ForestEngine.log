@@ -1,4 +1,2 @@
-﻿  VansScene.cpp
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.h(44): warning C4267: “return”: 从“size_t”转换到“uint32_t”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansScene.cpp(190,66): warning C4305: “=”: 从“double”到“float”截断
+﻿  VansRenderNode.cpp
   ForestEngine.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\x64\Debug\ForestEngine.exe

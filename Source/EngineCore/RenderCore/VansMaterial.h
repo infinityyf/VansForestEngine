@@ -20,6 +20,8 @@ namespace VansGraphics
 		VAN_POST_PROCESS = 3,
 		VAN_SKY_BOX = 4,
 		VAN_DEFERRED = 5,
+		VAN_SCREEN_SPACE_AO = 6,
+		VAN_SCREEN_SPACE_REFLECTION = 6,
 	};
 
 
@@ -51,6 +53,8 @@ namespace VansGraphics
 		VansTexture* m_PreConvSpecular;
 
 		VansTexture* m_BRDFIntegralLUT;
+
+		VansTexture* m_SSAOResult;
 
 		VansMaterialManager();
 	};

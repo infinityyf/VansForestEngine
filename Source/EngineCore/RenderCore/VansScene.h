@@ -51,6 +51,8 @@ namespace VansGraphics
 
 		std::vector<VansRenderNode*> m_PostProcessRenderNodes;
 
+		std::vector<VansRenderNode*> m_ScreenSpaceRenderNodes;
+
 	public:
 		//editor
 		VansRenderNode* m_SelectedNode;
@@ -64,6 +66,8 @@ namespace VansGraphics
 
 		void AddDeferredNode(VkDevice& device);
 
+		void AddScreenSpaceFeatureNode(VkDevice& device);
+
 		void UnLoadScene();
 
 		void UpdateSceneData();
@@ -75,6 +79,8 @@ namespace VansGraphics
 		void DrawTransParentNodes();
 
 		void DrawPostProcessNodes();
+
+		void DrawScreenSpaceFeatureNode();
 
 		void DeferredShading();
 

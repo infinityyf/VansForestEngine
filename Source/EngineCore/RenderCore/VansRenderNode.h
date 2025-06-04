@@ -15,6 +15,7 @@ namespace VansGraphics
 		POSTPROCESS_NODE = 1 << 2,
 		SKY_BOX_NODE = 1 << 3,
 		DEFERRED_NODE = 1 << 4,
+		SCREEN_SPACE_NODE = 1 << 5,
 	};
 
 	struct alignas(16) ModelDataStruct

@@ -45,33 +45,35 @@ void VansGraphics::VansRenderNode::RegistCameraDescriptor(VansCamera* camera)
 
 void VansGraphics::VansRenderNode::CreateDescriptorSets()
 {
-	//创建uniform buffer以及对应的描述符,可以同时包含多个类型的desc
-	VkDescriptorSetLayoutBinding modelBufferBinding =
-	{
-		VansVKDescriptorManager::m_ModelBufferSetBinding,
-		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		1,
-		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-		nullptr
-	};
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ modelBufferBinding }, modelBufferLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ modelBufferLayout }, modelBufferDescriptorSets);
-
-	//创建资源给fs采样
-	VkDescriptorSetLayoutBinding samplerBinding =
-	{
-		VansVKDescriptorManager::m_SampleTexture0SetBinding,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		1,
-		VK_SHADER_STAGE_FRAGMENT_BIT,
-		nullptr
-	};
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerBinding }, textureResourceLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ textureResourceLayout }, textureResourceDescriptorSets);
 
 	
 	if ((m_NodeType & OPAQUE_NODE) != NONE_NODE)
 	{
+		//创建uniform buffer以及对应的描述符,可以同时包含多个类型的desc
+		VkDescriptorSetLayoutBinding modelBufferBinding =
+		{
+			VansVKDescriptorManager::m_ModelBufferSetBinding,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			1,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ modelBufferBinding }, modelBufferLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ modelBufferLayout }, modelBufferDescriptorSets);
+
+		//创建资源给fs采样
+		VkDescriptorSetLayoutBinding samplerBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerBinding }, textureResourceLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ textureResourceLayout }, textureResourceDescriptorSets);
+
+
 		m_UsedDescSetLayouts.push_back(modelBufferLayout);
 		m_UsedDescSets.push_back(modelBufferDescriptorSets[0]);
 		m_UsedDescSetLayouts.push_back(textureResourceLayout);
@@ -96,7 +98,7 @@ void VansGraphics::VansRenderNode::CreateDescriptorSets()
 		m_UsedDescSets.push_back(frameBufferInputDescriptorSets[0]);
 	}
 
-	if ((m_NodeType & DEFERRED_NODE) != NONE_NODE)
+	if ((m_NodeType & (DEFERRED_NODE)) != NONE_NODE)
 	{
 		//延迟管线
 		VkDescriptorSetLayoutBinding inputAttachment0Binding =
@@ -131,18 +133,96 @@ void VansGraphics::VansRenderNode::CreateDescriptorSets()
 			VK_SHADER_STAGE_FRAGMENT_BIT,
 			nullptr
 		};
+		VkDescriptorSetLayoutBinding inputAttachment4Binding =
+		{
+			VansVKDescriptorManager::m_InputAttachment4SetBinding,
+			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+
 		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
 			{ 
 				inputAttachment0Binding, 
 				inputAttachment1Binding, 
 				inputAttachment2Binding,
-				inputAttachment3Binding
+				inputAttachment3Binding,
+				inputAttachment4Binding
 			}, 
 				frameBufferInputLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ frameBufferInputLayout }, frameBufferInputDescriptorSets);
 
 		m_UsedDescSetLayouts.push_back(frameBufferInputLayout);
 		m_UsedDescSets.push_back(frameBufferInputDescriptorSets[0]);
+	}
+
+	//屏幕空间feature将input设置为sample状态，可以随机访问，然后将写入的rt设置为uav
+	if ((m_NodeType & SCREEN_SPACE_NODE) != NONE_NODE)
+	{
+		VkDescriptorSetLayoutBinding textureInput0 =
+		{
+			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding textureInput1 =
+		{
+			VansVKDescriptorManager::m_SampleTexture1SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding textureInput2 =
+		{
+			VansVKDescriptorManager::m_SampleTexture2SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding textureInput3 =
+		{
+			VansVKDescriptorManager::m_SampleTexture3SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding textureInput4 =
+		{
+			VansVKDescriptorManager::m_SampleTexture4SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+
+		VkDescriptorSetLayoutBinding uavOutputBinding0 =
+		{
+			VansVKDescriptorManager::m_UAVTexture4SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
+			{
+				textureInput0,
+				textureInput1,
+				textureInput2,
+				textureInput3,
+				textureInput4,
+				uavOutputBinding0
+			},
+			textureResourceLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ textureResourceLayout }, textureResourceDescriptorSets);
+
+		m_UsedDescSetLayouts.push_back(textureResourceLayout);
+		m_UsedDescSets.push_back(textureResourceDescriptorSets[0]);
 	}
 }
 
@@ -283,7 +363,7 @@ void VansGraphics::VansRenderNode::UpdateRenderData(VansVKDevice* device, VansMa
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 	}
 
-	if ((m_NodeType & DEFERRED_NODE) != NONE_NODE)
+	if ((m_NodeType & (DEFERRED_NODE)) != NONE_NODE)
 	{
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
@@ -326,7 +406,7 @@ void VansGraphics::VansRenderNode::UpdateRenderData(VansVKDevice* device, VansMa
 				{
 					{
 						VK_NULL_HANDLE,
-						VansRenderPassManager::GetInstance()->GetGbuffet1().GetImageView(),
+						VansRenderPassManager::GetInstance()->GetGbuffer1().GetImageView(),
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
@@ -341,8 +421,121 @@ void VansGraphics::VansRenderNode::UpdateRenderData(VansVKDevice* device, VansMa
 				{
 					{
 						VK_NULL_HANDLE,
-						VansRenderPassManager::GetInstance()->GetGbuffet2().GetImageView(),
+						VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(),
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				frameBufferInputDescriptorSets[0],
+				VansVKDescriptorManager::m_InputAttachment4SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+				{
+					{
+						VK_NULL_HANDLE,
+						VansRenderPassManager::GetInstance()->GetDepth().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		//只需要变化时更新，有的时候会绑定其他资源，所以需要update
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	}
+
+	if ((m_NodeType & (SCREEN_SPACE_NODE)) != NONE_NODE)
+	{
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				textureResourceDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture0SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						VansRenderPassManager::GetInstance()->GetNormal().GetSampler(),
+						VansRenderPassManager::GetInstance()->GetNormal().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				textureResourceDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture1SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						VansRenderPassManager::GetInstance()->GetGbuffer0().GetSampler(),
+						VansRenderPassManager::GetInstance()->GetGbuffer0().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				textureResourceDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture2SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						VansRenderPassManager::GetInstance()->GetGbuffer1().GetSampler(),
+						VansRenderPassManager::GetInstance()->GetGbuffer1().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				textureResourceDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture3SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						VansRenderPassManager::GetInstance()->GetGbuffer2().GetSampler(),
+						VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				textureResourceDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture4SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						VansRenderPassManager::GetInstance()->GetDepth().GetSampler(),
+						VansRenderPassManager::GetInstance()->GetDepth().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				textureResourceDescriptorSets[0],
+				VansVKDescriptorManager::m_UAVTexture4SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{
+					{
+						materialManager.m_SSAOResult->GetImage().GetSampler(),
+						materialManager.m_SSAOResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
 			}

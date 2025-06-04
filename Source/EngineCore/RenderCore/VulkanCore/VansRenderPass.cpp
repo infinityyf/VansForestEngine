@@ -457,6 +457,10 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 				{
 					4,
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				},
+				{
+					5,
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			},
 			{
@@ -546,8 +550,11 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true
 	);
 
 	m_NormalImage.CreateVulkanImage(
@@ -558,7 +565,10 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		1,
 		VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true
 	);
 
 	m_GBufferImage0.CreateVulkanImage(
@@ -569,7 +579,10 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		1,
 		VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true
 	);
 
 	m_GBufferImage1.CreateVulkanImage(
@@ -580,7 +593,10 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		1,
 		VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true
 	);
 
 	m_GBufferImage2.CreateVulkanImage(
@@ -591,7 +607,10 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		1,
 		VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true
 	);
 
 	//framebuffer的image view数量和attachment 的数量需要一致
@@ -770,6 +789,54 @@ void VansVulkan::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComman
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_ColorImage.m_ImageAspect
+		});
+
+	m_NormalImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_NormalImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_NormalImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_NormalImage.m_ImageAspect
+		});
+
+	m_GBufferImage0.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_GBufferImage0.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_GBufferImage0.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_GBufferImage0.m_ImageAspect
+		});
+
+	m_GBufferImage1.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_GBufferImage1.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_GBufferImage1.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_GBufferImage1.m_ImageAspect
+		});
+
+	m_GBufferImage2.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_GBufferImage2.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_GBufferImage2.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_GBufferImage2.m_ImageAspect
 		});
 	m_DepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{

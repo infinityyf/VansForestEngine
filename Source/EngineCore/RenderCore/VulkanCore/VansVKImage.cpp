@@ -45,11 +45,12 @@ VkImageAspectFlags VansVulkan::VansVKImage::ConvertImageViewAspect(VkImageUsageF
     if (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
     {
 		aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
-        //aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+        return aspect;
 	}
     if (usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
     {
         aspect |= VK_IMAGE_ASPECT_COLOR_BIT;
+        return aspect;
     }
 	return aspect;
 }

@@ -12,6 +12,7 @@ layout(set = 1, binding = 0, input_attachment_index = 0) uniform subpassInput no
 layout(set = 1, binding = 1, input_attachment_index = 1) uniform subpassInput gbufferInput0;
 layout(set = 1, binding = 2, input_attachment_index = 2) uniform subpassInput gbufferInput1;
 layout(set = 1, binding = 3, input_attachment_index = 3) uniform subpassInput gbufferInput2;
+layout(set = 1, binding = 4, input_attachment_index = 4) uniform subpassInput depthInput;
 layout(location = 0) out vec4 outColor;
 
 void main() 
@@ -23,6 +24,7 @@ void main()
     float ao = subpassLoad(gbufferInput1).y;
     float materialID = subpassLoad(gbufferInput1).z;
     vec3 position_world = subpassLoad(gbufferInput2).xyz;
+    float depth = subpassLoad(depthInput).x;
 
     //材质属性
     BRDFData brdfData;
@@ -42,5 +44,5 @@ void main()
 
     outColor.rgb = lightResult.directDiffuse * GetDirectionLight(0).color.rgb + lightResult.directSpecular;
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
-    outColor.a = 1;
+    outColor.a = depth;
 }

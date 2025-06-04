@@ -81,6 +81,8 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
     case POSTPROCESS_NODE:
 		m_PostProcessRenderNodes.push_back(renderNode);
 		break;
+    case SCREEN_SPACE_NODE:
+        m_ScreenSpaceRenderNodes.push_back(renderNode);
 	default:
 		break;
     }
@@ -213,6 +215,8 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
     if (vansConfig->m_EnableDeferredRendering)
     {
         AddDeferredNode(nativeDevice);
+
+        AddScreenSpaceFeatureNode(nativeDevice);
     }
 
     return true;
@@ -313,6 +317,40 @@ void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
     RegistRenderNode(renderNode, type);
 }
 
+void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
+{
+    VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset("fullScreenQuad"));
+
+    std::vector<std::string> featureName = {
+        "SSAO"
+    };
+
+    for (auto& name : featureName)
+    {
+        std::string materialName = name;
+        VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
+
+        RenderNodeType type = RenderNodeType::SCREEN_SPACE_NODE;
+        VansRenderNode* renderNode = new VansRenderNode(device, type);
+
+        renderNode->m_Mesh = mesh;
+        renderNode->m_Material = material;
+
+        //绑定相机cb
+        renderNode->RegistCameraDescriptor(m_Camera);
+
+        renderNode->CreateDescriptorSets();
+
+        //绑定灯光cb
+        renderNode->RegistLightDescriptor(m_LightManager);
+        //绑定材质cb
+        renderNode->RegistMaterialDescriptor(m_MaterialManager);
+        renderNode->SetName(name);
+
+        RegistRenderNode(renderNode, type);
+    }
+}
+
 void VansGraphics::VansScene::UnLoadScene()
 {
     //delete mesh;
@@ -378,6 +416,23 @@ void VansGraphics::VansScene::DrawPostProcessNodes()
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node  : m_PostProcessRenderNodes)
+    {
+        node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
+
+        //apply mesh
+        node->Draw(cmd, globalStateData);
+    }
+}
+
+//ssao
+//ssr
+//contact shadow
+void VansGraphics::VansScene::DrawScreenSpaceFeatureNode()
+{
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    for (auto& node : m_ScreenSpaceRenderNodes)
     {
         node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
 
