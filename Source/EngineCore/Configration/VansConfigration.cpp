@@ -2,8 +2,7 @@
 
 VansConfigration*  VansConfigration::instance = nullptr;
 
-VansConfigration::VansConfigration():
-	m_EnableDeferredRendering(true)
+VansConfigration::VansConfigration()
 {
 
 }

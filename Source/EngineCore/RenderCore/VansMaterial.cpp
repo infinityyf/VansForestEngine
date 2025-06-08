@@ -40,31 +40,6 @@ void VansGraphics::VansMaterial::CreateAtmosphereMaterialDataBuffer(VkDevice& lo
 	);
 }
 
-void VansGraphics::VansMaterial::UpdateMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager)
-{
-	switch (m_MaterialType)
-	{
-	case VansGraphics::VAN_DEFERRED:
-		UpdatePBRLutData(materialManager);
-		break;
-	case VansGraphics::VAN_PBR:
-		UpdatePBRUniformData(materialManager);
-		UpdatePBRLutData(materialManager);
-		break;
-	case VansGraphics::VAN_COAT:
-		break;
-	case VansGraphics::VAN_TRANSPARENT:
-		break;
-	case VansGraphics::VAN_POST_PROCESS:
-		break;
-	case VansGraphics::VAN_SKY_BOX:
-		UpdateAtmosphereMaterialData(materialManager, lightManager);
-		break;
-	default:
-		break;
-	}
-}
-
 void VansGraphics::VansMaterial::UpdatePBRLutData(VansMaterialManager& materialManager)
 {
 	//update descriptor

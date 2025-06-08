@@ -15,11 +15,8 @@ bool VansVulkan::VansShader::InitShader(VkDevice& logic_device, const std::strin
 	std::string shader_folder_string = shader_folder;
 
 	//如果是延迟管线需要切换使用的shader
-	if (vansConfigration->m_EnableDeferredRendering)
-	{
-		bool supportDeferred = SwitchToDeferredShaderPath(shader_folder_string);
-		m_SupportMRTOutput = supportDeferred;
-	}
+	bool supportDeferred = SwitchToDeferredShaderPath(shader_folder_string);
+	m_SupportMRTOutput = supportDeferred;
 
 	bool result = TranslateToSPIRV(shader_folder_string);
 	if (!result)
@@ -215,8 +212,7 @@ void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>&
 
 void VansVulkan::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& global_state_data)
 {
-	auto vansConfig = VansConfigration::GetInstance();
-	bool enableDeferred = vansConfig->m_EnableDeferredRendering && m_SupportMRTOutput;
+	bool enableDeferred = m_SupportMRTOutput;
 
 	//便利所有的module data来创建params
 	for (auto& shader_module_data : m_ShaderModuleDataMap)

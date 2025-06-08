@@ -1,5 +1,7 @@
 #pragma once
 #include <GLFW/glfw3.h>
+//#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+//#define GLM_FORCE_LEFT_HANDED
 #include <../../GLM/vec3.hpp>
 #include <../../GLM/vec4.hpp>
 #include <../../GLM/mat4x4.hpp>

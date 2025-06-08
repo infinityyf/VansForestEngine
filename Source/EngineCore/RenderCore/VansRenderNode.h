@@ -21,6 +21,8 @@ namespace VansGraphics
 	struct alignas(16) ModelDataStruct
 	{
 		glm::mat4x4 ModelMatrix;
+		alignas(16) glm::vec3 Postion;
+		alignas(16) glm::vec3 Scale;
 	};
 
 	class VansCamera;
@@ -30,7 +32,7 @@ namespace VansGraphics
 
 		VansRenderNode(VkDevice& device, RenderNodeType type);
 
-		~VansRenderNode();
+		virtual ~VansRenderNode();
 
 		std::string m_NodeName;
 
@@ -38,13 +40,16 @@ namespace VansGraphics
 
 		VansMaterial* m_Material;
 
-		//transform数据
-		VansTransform m_Transform;
-
+		
 		//GPU 数据
 		ModelDataStruct m_ModelData;
 
 	private:
+
+		//transform数据
+		VansTransform m_Transform;
+
+	protected:
 
 		RenderNodeType m_NodeType;
 
@@ -71,16 +76,16 @@ namespace VansGraphics
 		std::vector<VkDescriptorSetLayout> m_UsedDescSetLayouts;
 
 		std::vector<VkDescriptorSet> m_UsedDescSets;
-	public:
-		void CreateDescriptorSets();
+
+		//统一被CreateDescriptorSets调用
+		void RegistCameraDescriptor(VansCamera* camera);
 
 		void RegistLightDescriptor(VansLightManager& lightManager);
 
-		void RegistMaterialDescriptor(VansMaterialManager& materialManager);
+	public:
+		void virtual CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) {};
 
-		void RegistCameraDescriptor(VansCamera* camera);
-
-		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera);
+		void virtual UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) {};
 
 		void BeforeDrawCall();
 
@@ -90,5 +95,72 @@ namespace VansGraphics
 		{
 			m_NodeName = name;
 		}
+
+		void SetTransformData(glm::vec3 postion = glm::vec3(0,0,0), glm::vec3 rotation = glm::vec3(0, 0, 0), glm::vec3 scale = glm::vec3(1, 1, 1))
+		{
+			m_Transform.m_Position = postion;
+			m_Transform.m_Rotation = rotation;
+			m_Transform.m_Scale = scale;
+		}
+	};
+
+	//更新材质参数,更新全局数据
+	//1. 预计算环境漫反射
+	//2. 高光lut
+	//3. 大气
+
+	class VansCommonRenderNode : public VansRenderNode
+	{
+	public:
+
+		VansCommonRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+	};
+
+	class VansSkyBoxRenderNode : public VansRenderNode
+	{
+	public:
+
+		VansSkyBoxRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+	};
+
+	class VansPostProcessRenderNode : public VansRenderNode
+	{
+	public:
+
+		VansPostProcessRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+	};
+
+	class VansDeferredRenderNode : public VansRenderNode
+	{
+	public:
+
+		VansDeferredRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+	};
+
+	class VansScreenSpaceRenderNode : public VansRenderNode
+	{
+	public:
+
+		VansScreenSpaceRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 	};
 }

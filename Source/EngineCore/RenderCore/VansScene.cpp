@@ -199,10 +199,8 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         material->SetName(sceneMaterial["name"]);
     }
 
-
     //找到scene 节点，包含rendernode， camera，light数据
     json sceneNode = sceneData["scene"];
-
 
     //loadLightsData
     LoadLights(nativeDevice, sceneNode[0]["light"]);
@@ -210,14 +208,9 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
     //根据引用关系创建render node
     LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
 
-    //如果是延迟管线，需要添加一个延迟node
-    auto vansConfig = VansConfigration::GetInstance();
-    if (vansConfig->m_EnableDeferredRendering)
-    {
-        AddDeferredNode(nativeDevice);
+    AddDeferredNode(nativeDevice);
 
-        AddScreenSpaceFeatureNode(nativeDevice);
-    }
+    AddScreenSpaceFeatureNode(nativeDevice);
 
     return true;
 }
@@ -273,19 +266,45 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
         VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
 
         RenderNodeType type = sceneRenderNode["type"];
-        VansRenderNode* renderNode = new VansRenderNode(device, type);
+        VansRenderNode* renderNode = nullptr;
+        switch (type)
+        {
+        case VansGraphics::NONE_NODE:
+            break;
+        case VansGraphics::OPAQUE_NODE:
+        case VansGraphics::TRANSPARENT_NODE:
+            renderNode = new VansCommonRenderNode(device, type);
+            break;
+        case VansGraphics::POSTPROCESS_NODE:
+            renderNode = new VansPostProcessRenderNode(device, type);
+            break;
+        case VansGraphics::SKY_BOX_NODE:
+            renderNode = new VansSkyBoxRenderNode(device, type);
+            break;
+        default:
+            break;
+        }
 
+        if (renderNode == nullptr)
+        {
+            continue;
+        }
+
+        //获取transform数据
+        if (sceneRenderNode.contains("transform"))
+        {
+            auto& transform = sceneRenderNode["transform"];
+            glm::vec3 postion = glm::vec3(transform["position"][0], transform["position"][1], transform["position"][2]);
+            glm::vec3 rotation = glm::vec3(transform["rotation"][0], transform["rotation"][1], transform["rotation"][2]);
+            glm::vec3 scale = glm::vec3(transform["scale"][0], transform["scale"][1], transform["scale"][2]);
+            renderNode->SetTransformData(postion, rotation, scale);
+        }
+        
         renderNode->m_Mesh = mesh;
         renderNode->m_Material = material;
-        //绑定相机cb
-        renderNode->RegistCameraDescriptor(m_Camera);
 
-        renderNode->CreateDescriptorSets();
+        renderNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
 
-        //绑定灯光cb
-        renderNode->RegistLightDescriptor(m_LightManager);
-        //绑定材质cb
-        renderNode->RegistMaterialDescriptor(m_MaterialManager);
         renderNode->SetName(sceneRenderNode["name"]);
 
         RegistRenderNode(renderNode, type);
@@ -299,19 +318,13 @@ void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
     VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
 
     RenderNodeType type = RenderNodeType::DEFERRED_NODE;
-    VansRenderNode* renderNode = new VansRenderNode(device, type);
+    VansRenderNode* renderNode = new VansDeferredRenderNode(device, type);
 
     renderNode->m_Mesh = mesh;
     renderNode->m_Material = material;
-    //绑定相机cb
-    renderNode->RegistCameraDescriptor(m_Camera);
 
-    renderNode->CreateDescriptorSets();
+    renderNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
 
-    //绑定灯光cb
-    renderNode->RegistLightDescriptor(m_LightManager);
-    //绑定材质cb
-    renderNode->RegistMaterialDescriptor(m_MaterialManager);
     renderNode->SetName("DeferredNode");
 
     RegistRenderNode(renderNode, type);
@@ -331,20 +344,13 @@ void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
         VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
 
         RenderNodeType type = RenderNodeType::SCREEN_SPACE_NODE;
-        VansRenderNode* renderNode = new VansRenderNode(device, type);
+        VansRenderNode* renderNode = new VansScreenSpaceRenderNode(device, type);
 
         renderNode->m_Mesh = mesh;
         renderNode->m_Material = material;
 
-        //绑定相机cb
-        renderNode->RegistCameraDescriptor(m_Camera);
+        renderNode->CreateDescriptorSets(m_Camera, m_LightManager,m_MaterialManager);
 
-        renderNode->CreateDescriptorSets();
-
-        //绑定灯光cb
-        renderNode->RegistLightDescriptor(m_LightManager);
-        //绑定材质cb
-        renderNode->RegistMaterialDescriptor(m_MaterialManager);
         renderNode->SetName(name);
 
         RegistRenderNode(renderNode, type);

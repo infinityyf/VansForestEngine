@@ -69,11 +69,6 @@ namespace VansGraphics
 
 		VansVKBuffer m_AtmospherePBRDataBuffer;
 
-		void UpdatePBRUniformData(VansMaterialManager& materialManager);
-		void UpdatePBRLutData(VansMaterialManager& materialManager);
-
-		void UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
-
 	public:
 		VansMaterialType m_MaterialType;
 
@@ -92,7 +87,11 @@ namespace VansGraphics
 
 		void CreateAtmosphereMaterialDataBuffer(VkDevice& logic_device);
 
-		void UpdateMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
+		void UpdatePBRUniformData(VansMaterialManager& materialManager);
+
+		void UpdatePBRLutData(VansMaterialManager& materialManager);
+
+		void UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
 	};
 
 

@@ -1,8 +1,8 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #define CameraCBBind 0
-#define LightCBBind 2
-#define PBRLutSetBind 3
+#define LightCBBind 3
+#define PBRLutSetBind 4
 
 #include "../Lights/LightsData.glsl"
 #include "../BRDF/BRDFData.glsl"
@@ -13,6 +13,10 @@ layout(set = 1, binding = 1, input_attachment_index = 1) uniform subpassInput gb
 layout(set = 1, binding = 2, input_attachment_index = 2) uniform subpassInput gbufferInput1;
 layout(set = 1, binding = 3, input_attachment_index = 3) uniform subpassInput gbufferInput2;
 layout(set = 1, binding = 4, input_attachment_index = 4) uniform subpassInput depthInput;
+
+layout(set = 2, binding = 0) uniform sampler2D ssao;
+
+layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
 
 void main() 
@@ -26,13 +30,15 @@ void main()
     vec3 position_world = subpassLoad(gbufferInput2).xyz;
     float depth = subpassLoad(depthInput).x;
 
+    float ssaoValue = texture(ssao, fragTexCoord).r;
+
     //材质属性
     BRDFData brdfData;
     brdfData.normal = normal;
     brdfData.albedo = color.rgb;
     brdfData.roughness = roughness;
     brdfData.metallic = metallic;
-    brdfData.ao = ao;
+    brdfData.ao = ssaoValue;
     brdfData.fresnel0 = vec3(0.04);
     vec3 viewDirection = normalize(cameraPosition.xyz - position_world);
 
@@ -43,6 +49,6 @@ void main()
     AmbientBRDF(brdfData,viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
 
     outColor.rgb = lightResult.directDiffuse * GetDirectionLight(0).color.rgb + lightResult.directSpecular;
-    outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
+    outColor.rgb += lightResult.ambientDiffuse * ssaoValue + lightResult.ambientSpecular;
     outColor.a = depth;
 }

@@ -37,6 +37,10 @@ namespace VansGraphics
 		virtual void* GetNativeCommandBuffer() = 0;
 
 		float GetAspectRatio();
+
+		float GetNativeRenderWidth() { return m_RenderWidth; }
+
+		float GetNativeRenderHeight() { return m_RenderHeight; }
 	};
 
 	class VansGUIBackEnd

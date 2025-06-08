@@ -328,14 +328,8 @@ namespace VansVulkan
 
 		//create renderpass,and frame buffer
 		//这里自动创建color和depth
-		if (vansConfigration->m_EnableDeferredRendering)
-		{
-			renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface);
-		}
-		else
-		{
-			renderPassManager->SetupVansRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer , m_VansVKGraphicsQueue, m_VansVKSurface);
-		}
+		renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface);
+		//renderPassManager->SetupVansRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer , m_VansVKGraphicsQueue, m_VansVKSurface);
 
 		//预计算渲染数据
 		PrepareRenderingData();
@@ -367,17 +361,15 @@ namespace VansVulkan
 		//record command buffer
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 		
-
-		if (vansConfigration->m_EnableDeferredRendering)
-		{
-			m_VansVKCommandBuffer.ClearMRTColor(
-				{
-					renderPassManager->m_ColorImage ,
-					renderPassManager->m_NormalImage ,
-					renderPassManager->m_GBufferImage0 ,
-					renderPassManager->m_GBufferImage1,
-					renderPassManager->m_GBufferImage2,
-				},
+		//clear mrt和color
+		m_VansVKCommandBuffer.ClearMRTColor(
+			{
+				renderPassManager->m_ColorImage ,
+				renderPassManager->m_NormalImage ,
+				renderPassManager->m_GBufferImage0 ,
+				renderPassManager->m_GBufferImage1,
+				renderPassManager->m_GBufferImage2,
+			},
 				{
 					{
 						0.0f,0.0f,0.0f,0.0f
@@ -387,7 +379,7 @@ namespace VansVulkan
 					},
 					{
 						0.0f,0.0f,0.0f,0.0f
-					},				
+					},
 					{
 						0.0f,0.0f,0.0f,0.0f
 					},
@@ -396,15 +388,6 @@ namespace VansVulkan
 					}
 				}
 				);
-		}
-		else
-		{
-			m_VansVKCommandBuffer.ClearColor(renderPassManager->m_ColorImage,
-				{
-					0.0f,0.0f,0.0f,0.0f
-				}
-			);
-		}
 		m_VansVKCommandBuffer.ClearDepthStencil(renderPassManager->m_DepthImage, {0,0});
 
 		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
@@ -416,14 +399,8 @@ namespace VansVulkan
 		m_VansVKCommandBuffer.SetViewport(0, { m_Viewport });
 		m_VansVKCommandBuffer.SetScissor(0, { m_Scissor });
 
-		if (vansConfigration->m_EnableDeferredRendering)
-		{
-			DrawSceneDeferred(renderPassManager, cmd);
-		}
-		else
-		{
-			DrawSceneForward(renderPassManager, cmd);
-		}
+		DrawSceneDeferred(renderPassManager, cmd);
+		//DrawSceneForward(renderPassManager, cmd);
 	}
 
 	void VansVKDevice::Present()
@@ -935,7 +912,7 @@ namespace VansVulkan
 
 		//SSAO结果
 		manager->m_SSAOResult = new VansTexture();
-		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, false, false, true);
+		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true);
 
 		VkDescriptorSetLayoutBinding samplerLUTBinding =
 		{

@@ -1,4 +1,5 @@
 #include "VansCamera.h"
+#include "../VansTimer.h"
 
 #include <iostream>
 
@@ -63,6 +64,14 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     m_CameraData.ViewMatrix = view_matrix;
     m_CameraData.ProjectionMatrix = projective_matrix;
 
+	float width = m_RenderDevice->GetNativeRenderWidth();
+	float height = m_RenderDevice->GetNativeRenderHeight();
+	m_CameraData.ScreenParams = glm::vec4(width, height, 1 / width, 1 / height);
+
+    float time = VansTimer::GetFrameTime();
+    m_CameraData.FrameParams = glm::vec4(m_RenderFrameIndex, time, 0, 0);
+	m_CameraData.CameraParams = glm::vec4(m_NearClip, m_FarClip, m_Fov, m_AspectRatio);
+
     m_CameraDataBuffer.SetBufferData(&m_CameraData, 0, sizeof(m_CameraData));
 
     VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
@@ -113,6 +122,8 @@ void VansGraphics::VansCamera::Rendering()
 {
     SetCameraData(GetViewMatrix(), GetProjectiveMatrix());
     m_RenderDevice->Rendering();
+
+    m_RenderFrameIndex++;
 }
 
 void VansGraphics::VansCamera::Present()

@@ -12,6 +12,12 @@ namespace VansGraphics
         glm::vec4	CameraDirection;
         glm::mat4x4 ViewMatrix;
         glm::mat4x4 ProjectionMatrix;
+        //resolution, 1/resolution
+        glm::vec4 ScreenParams;
+        //frame index, time
+        glm::vec4 FrameParams;
+        //x: near, y: far, z: fov, w: aspect
+        glm::vec4 CameraParams;
     };
 
 
@@ -24,6 +30,8 @@ namespace VansGraphics
         VansGraphicsDevice* m_RenderDevice;
 
         CameraDataStruct m_CameraData;
+
+        uint32_t m_RenderFrameIndex;
 
     public:
 
@@ -80,6 +88,8 @@ namespace VansGraphics
             m_CameraDataBuffer.CreatVulkanBuffer(static_cast<VansVKDevice*>(device)->GetLogicDevice(), sizeof(m_CameraData), VK_FORMAT_R32_SFLOAT,
                 VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+            m_RenderFrameIndex = 0;
         }
 
         ~VansCamera();

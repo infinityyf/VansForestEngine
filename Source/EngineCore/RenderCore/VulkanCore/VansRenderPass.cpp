@@ -327,7 +327,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		//normal
 		{
 			0,
-			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_FORMAT_R16G16B16A16_SFLOAT,
 			VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -365,7 +365,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		//gbuffer2
 		{
 			0,
-			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_FORMAT_R16G16B16A16_SFLOAT,
 			VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -560,7 +560,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 	m_NormalImage.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_R16G16B16A16_UNORM,
+		VK_FORMAT_R16G16B16A16_SFLOAT,
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
@@ -602,7 +602,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 	m_GBufferImage2.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_R16G16B16A16_UNORM,
+		VK_FORMAT_R16G16B16A16_SFLOAT,
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,

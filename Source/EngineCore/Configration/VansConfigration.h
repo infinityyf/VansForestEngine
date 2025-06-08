@@ -9,6 +9,4 @@ private:
 
 public:
 	static VansConfigration* GetInstance();
-
-	bool m_EnableDeferredRendering;
 };

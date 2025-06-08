@@ -9,4 +9,5 @@ void main() {
     gl_Position = vec4(inPosition, 1.0);
     // Calculate texture coordinates from vertex position
     fragTexCoord = inPosition.xy * 0.5 + 0.5;
+    fragTexCoord.y = 1.0 - fragTexCoord.y;
 }
