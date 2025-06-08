@@ -14,7 +14,7 @@ layout(set = 1, binding = 2, input_attachment_index = 2) uniform subpassInput gb
 layout(set = 1, binding = 3, input_attachment_index = 3) uniform subpassInput gbufferInput2;
 layout(set = 1, binding = 4, input_attachment_index = 4) uniform subpassInput depthInput;
 
-layout(set = 2, binding = 0) uniform sampler2D ssao;
+layout(set = 2, binding = 0, rgba32f ) uniform image2D ssao;
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -30,7 +30,8 @@ void main()
     vec3 position_world = subpassLoad(gbufferInput2).xyz;
     float depth = subpassLoad(depthInput).x;
 
-    float ssaoValue = texture(ssao, fragTexCoord).r;
+    //获取ssao
+    float ssaoValue = imageLoad(ssao,ivec2(fragTexCoord * ScreenParams.xy)).r;//texture(ssao, fragTexCoord).r;
 
     //材质属性
     BRDFData brdfData;
@@ -49,6 +50,6 @@ void main()
     AmbientBRDF(brdfData,viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
 
     outColor.rgb = lightResult.directDiffuse * GetDirectionLight(0).color.rgb + lightResult.directSpecular;
-    outColor.rgb += lightResult.ambientDiffuse * ssaoValue + lightResult.ambientSpecular;
+    outColor.rgb += (lightResult.ambientDiffuse  + lightResult.ambientSpecular) * ssaoValue;
     outColor.a = depth;
 }

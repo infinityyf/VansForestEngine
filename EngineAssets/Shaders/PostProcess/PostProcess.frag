@@ -8,14 +8,14 @@ void main() {
     // Sample the input attachment
     vec4 color = subpassLoad(colorInput);
 
-    //linear to sRGB
-    //remap to LDR
-    color.rgb = color.rgb / (color.rgb + vec3(1.0));
-    color.rgb = pow(color.rgb, vec3(1.0/2.2));  
+    // //linear to sRGB
+    // //remap to LDR
+    // color.rgb = color.rgb / (color.rgb + vec3(1.0));
+    // color.rgb = pow(color.rgb, vec3(1.0/2.2));  
 
-    // Apply a grayscale effect
-    float gray = dot(color.rgb, vec3(0.299, 0.587, 0.114));
-    vec4 grayscaleColor = vec4(vec3(gray), color.a);
+    // // Apply a grayscale effect
+    // float gray = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+    // vec4 grayscaleColor = vec4(vec3(gray), color.a);
 
     // Output the processed color
     outColor = color;
