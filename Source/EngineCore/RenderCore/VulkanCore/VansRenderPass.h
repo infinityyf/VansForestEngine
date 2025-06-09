@@ -46,6 +46,13 @@ namespace VansVulkan
 		void DestroyRenderPass(VkDevice& logic_device);
 
 		VkRenderPass GetRenderPass() { return m_RenderPass; }
+
+	private:
+
+		std::vector<VansFrameBuffer> m_FrameBuffers;
+
+		std::vector<VkClearValue> m_ClearValues;
+
 	private:
 		//attachments
 		//render pass 使用的resources 叫做attacments
@@ -88,9 +95,7 @@ namespace VansVulkan
 
 		VansVKRenderPass m_VansRenderPass;
 
-		std::vector<VansFrameBuffer> m_FrameBuffers;
-
-		std::vector<VkClearValue> m_ClearValues;
+		VansVKRenderPass m_VansShadowPass;
 
 		VkDevice m_LogicDevice;
 
@@ -103,8 +108,11 @@ namespace VansVulkan
 		//延迟渲染
 		void SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surrface);
 
+		//阴影渲染
+		void SetupVansShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue);
+
 		//渲染区域大小
-		void BeginRenderPass(VkCommandBuffer command_buffer, const VkRect2D& render_area, GlobalStateData& global_state_data, int swap_chain_index);
+		void BeginRenderPass(VansVKRenderPass& renderPass, VkCommandBuffer command_buffer, const VkRect2D& render_area, GlobalStateData& global_state_data, int swap_chain_index = 0);
 
 		void NextSubPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data);
 

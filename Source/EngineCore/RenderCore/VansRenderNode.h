@@ -40,11 +40,10 @@ namespace VansGraphics
 
 		VansMaterial* m_Material;
 
-		
+	private:
+
 		//GPU 数据
 		ModelDataStruct m_ModelData;
-
-	private:
 
 		//transform数据
 		VansTransform m_Transform;
@@ -54,8 +53,6 @@ namespace VansGraphics
 		RenderNodeType m_NodeType;
 
 		//描述符相关
-
-
 		VkDescriptorSetLayout modelBufferLayout;
 		std::vector<VkDescriptorSet> modelBufferDescriptorSets;
 
@@ -63,7 +60,6 @@ namespace VansGraphics
 		VkDescriptorSetLayout textureResourceLayout;
 		std::vector<VkDescriptorSet> textureResourceDescriptorSets;
 
-		//描述符相关
 		VkDescriptorSetLayout frameBufferInputLayout;
 		std::vector<VkDescriptorSet> frameBufferInputDescriptorSets;
 
@@ -91,6 +87,8 @@ namespace VansGraphics
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
+		void DrawWithMaterial(VansMaterial* material ,VansVKCommandBuffer& cmd, GlobalStateData& global_state);
+
 		void SetName(const std::string& name)
 		{
 			m_NodeName = name;
@@ -112,8 +110,9 @@ namespace VansGraphics
 	class VansCommonRenderNode : public VansRenderNode
 	{
 	public:
+		bool m_SupportShadow;
 
-		VansCommonRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
+		VansCommonRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type), m_SupportShadow(false) {}
 
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
@@ -158,6 +157,17 @@ namespace VansGraphics
 	public:
 
 		VansScreenSpaceRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+	};
+
+	class VansShadowRenderNode : public VansRenderNode
+	{
+	public:
+
+		VansShadowRenderNode(VkDevice& device) : VansRenderNode(device, NONE_NODE) {}
 
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 

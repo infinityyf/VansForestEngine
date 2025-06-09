@@ -20,7 +20,7 @@ namespace VansGraphics
 		glm::vec3				m_Direction;
 		alignas(16) glm::vec3	m_Color;
 		alignas(16) float		m_Intensity;
-		float					padding[3];
+		glm::mat4x4				m_ShadowMatrix;
 	};
 
 	struct alignas(16) VansPointLight

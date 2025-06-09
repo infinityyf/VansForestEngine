@@ -331,6 +331,9 @@ namespace VansVulkan
 		renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface);
 		//renderPassManager->SetupVansRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer , m_VansVKGraphicsQueue, m_VansVKSurface);
 
+		//创建阴影pass
+		renderPassManager->SetupVansShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
+
 		//预计算渲染数据
 		PrepareRenderingData();
 
@@ -361,12 +364,19 @@ namespace VansVulkan
 		//record command buffer
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 		
+		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+
+		//绘制阴影
+		//renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowRenderPass ,cmd, { {0,0}, 2048,2048 }, m_globalRenderStateData);
+		//DrawShadowMap(renderPassManager, cmd);
+		//renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+
 		//clear mrt和color
 		m_VansVKCommandBuffer.ClearMRTColor(
 			{
 				renderPassManager->m_ColorImage ,
 				renderPassManager->m_NormalImage ,
-				renderPassManager->m_GBufferImage0 ,
+				renderPassManager->m_GBufferImage0,
 				renderPassManager->m_GBufferImage1,
 				renderPassManager->m_GBufferImage2,
 			},
@@ -388,12 +398,10 @@ namespace VansVulkan
 					}
 				}
 				);
-		m_VansVKCommandBuffer.ClearDepthStencil(renderPassManager->m_DepthImage, {0,0});
-
-		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+		m_VansVKCommandBuffer.ClearDepthStencil(renderPassManager->m_DepthImage, { 0,0 });
 
 		//绘制指令
-		renderPassManager->BeginRenderPass(cmd, { {0,0}, m_VansVKSurface.m_VansVKSwapChainImageExtent }, m_globalRenderStateData, m_SwapChainImageIndex);
+		renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass ,cmd, { {0,0}, m_VansVKSurface.m_VansVKSwapChainImageExtent }, m_globalRenderStateData, m_SwapChainImageIndex);
 
 		//apply camera
 		m_VansVKCommandBuffer.SetViewport(0, { m_Viewport });
@@ -1049,6 +1057,11 @@ namespace VansVulkan
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
 		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {});
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+	}
+
+	void VansVKDevice::DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
+	{
+		m_Scene->DrawShadowNodes();
 	}
 
 	void VansVKDevice::DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)

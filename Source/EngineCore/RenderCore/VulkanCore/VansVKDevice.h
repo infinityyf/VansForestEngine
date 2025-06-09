@@ -103,6 +103,8 @@ namespace VansVulkan
 
 		void PrepareRenderingData();
 
+		void DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
+
 		void DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
 		void DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);

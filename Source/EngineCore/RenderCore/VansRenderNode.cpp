@@ -78,6 +78,20 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 	cmd.DrawMesh(*m_Mesh, *(m_Material->m_Shader), 1);
 }
 
+void VansGraphics::VansRenderNode::DrawWithMaterial(VansMaterial* material, VansVKCommandBuffer& cmd, GlobalStateData& global_state)
+{
+	BeforeDrawCall();
+
+	//apply mesh
+	cmd.BindMesh(*m_Mesh, 0, global_state);
+
+	cmd.EnsureGraphicsShader(*(material->m_Shader), global_state, m_UsedDescSetLayouts);
+
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *(material->m_Shader), 0, m_UsedDescSets, {});
+
+	cmd.DrawMesh(*m_Mesh, *(material->m_Shader), 1);
+}
+
 void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	RegistCameraDescriptor(camera);
@@ -585,4 +599,28 @@ void VansGraphics::VansSkyBoxRenderNode::CreateDescriptorSets(VansCamera* camera
 void VansGraphics::VansSkyBoxRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
 	m_Material->UpdateAtmosphereMaterialData(materialManager, lightManager);
+}
+
+void VansGraphics::VansShadowRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
+{
+	//创建uniform buffer以及对应的描述符,可以同时包含多个类型的desc
+	VkDescriptorSetLayoutBinding modelBufferBinding =
+	{
+		VansVKDescriptorManager::m_ModelBufferSetBinding,
+		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		1,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ modelBufferBinding }, modelBufferLayout);
+	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ modelBufferLayout }, modelBufferDescriptorSets);
+
+	m_UsedDescSetLayouts.push_back(modelBufferLayout);
+	m_UsedDescSets.push_back(modelBufferDescriptorSets[0]);
+
+	RegistLightDescriptor(lightManager);
+}
+
+void VansGraphics::VansShadowRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
+{
 }

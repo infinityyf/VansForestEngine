@@ -3,6 +3,7 @@ struct DirectionLightData
     vec4 direction;
     vec4 color;
     float intensity;
+    mat4x4 shadowMatrix;
 };
 
 struct PointLightData

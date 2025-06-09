@@ -199,6 +199,18 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         material->SetName(sceneMaterial["name"]);
     }
 
+    //创建默认阴影材质
+    VansGraphicsShader* shadowShader = static_cast<VansGraphicsShader*>(GetShaderAsset("Shadow"));
+    if (shadowShader != nullptr)
+    {
+        VansMaterial* shadowMaterial = new VansMaterial();
+        shadowMaterial->m_Shader = shadowShader;
+        shadowMaterial->m_MaterialType = VansMaterialType::VAN_SHAODW;
+        shadowMaterial->SetName("ShadowMaterial");
+        m_Materials.push_back(shadowMaterial);
+    }
+
+
     //找到scene 节点，包含rendernode， camera，light数据
     json sceneNode = sceneData["scene"];
 
@@ -227,6 +239,7 @@ void VansGraphics::VansScene::LoadLights(VkDevice& device, json& light_node)
             dirLight.m_Direction = -glm::normalize(dirLight.m_Direction);
 			dirLight.m_Color = glm::vec3(light["color"][0], light["color"][1], light["color"][2]);
             dirLight.m_Intensity = light["intensity"];
+            dirLight.m_ShadowMatrix = glm::mat4x4(1.0f);
             m_LightManager.AddDirectionalLight(dirLight);
 		}
         else if (type == VansLightType::POINT)
@@ -274,6 +287,11 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
         case VansGraphics::OPAQUE_NODE:
         case VansGraphics::TRANSPARENT_NODE:
             renderNode = new VansCommonRenderNode(device, type);
+            if (sceneRenderNode.contains("support_shadow"))
+            {
+                auto* node = static_cast<VansCommonRenderNode*>(renderNode);
+                node->m_SupportShadow = sceneRenderNode["support_shadow"];
+            }
             break;
         case VansGraphics::POSTPROCESS_NODE:
             renderNode = new VansPostProcessRenderNode(device, type);
@@ -308,6 +326,23 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
         renderNode->SetName(sceneRenderNode["name"]);
 
         RegistRenderNode(renderNode, type);
+
+
+        //需要判断opaque是否产生阴影，创建阴影节点
+        VansMaterial* shadowMaterial = static_cast<VansMaterial*>(GetMaterialAsset("ShadowMaterial"));
+        if (type == OPAQUE_NODE && shadowMaterial!= nullptr)
+        {
+            auto* node = static_cast<VansCommonRenderNode*>(renderNode);
+            if (node->m_SupportShadow)
+            {
+                VansRenderNode* shadowNode = new VansShadowRenderNode(device);
+                shadowNode->m_Mesh = mesh;
+                shadowNode->m_Material = shadowMaterial;
+                shadowNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+                shadowNode->SetName("shadow");
+                m_ShadowRenderNodes.push_back(shadowNode);
+            }
+        }
     }
 }
 
@@ -369,6 +404,20 @@ void VansGraphics::VansScene::UnLoadScene()
 void VansGraphics::VansScene::UpdateSceneData()
 {
     m_LightManager.UpdateLightCPUData();
+}
+
+void VansGraphics::VansScene::DrawShadowNodes()
+{
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    for (auto& node : m_ShadowRenderNodes)
+    {
+        //更新desc
+        node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
+
+        node->Draw(cmd, globalStateData);
+    }
 }
 
 void VansGraphics::VansScene::DrawSkyBoxNode()

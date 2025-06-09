@@ -53,6 +53,8 @@ namespace VansGraphics
 
 		std::vector<VansRenderNode*> m_ScreenSpaceRenderNodes;
 
+		std::vector<VansRenderNode*> m_ShadowRenderNodes;
+
 	public:
 		//editor
 		VansRenderNode* m_SelectedNode;
@@ -72,6 +74,10 @@ namespace VansGraphics
 
 		void UpdateSceneData();
 
+	public:
+
+		void DrawShadowNodes();
+
 		void DrawSkyBoxNode();
 
 		void DrawOpaqueNodes();
@@ -83,6 +89,8 @@ namespace VansGraphics
 		void DrawScreenSpaceFeatureNode();
 
 		void DeferredShading();
+
+	public:
 
 		void InjectCamera(VansCamera* camera) { m_Camera = camera; }
 
