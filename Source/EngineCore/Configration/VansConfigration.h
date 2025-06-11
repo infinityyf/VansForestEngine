@@ -7,6 +7,17 @@ private:
 
 	VansConfigration();
 
+private:
+
+	int ShadowMapWidth;
+
+	int ShadowMapHeight;
+
 public:
+
 	static VansConfigration* GetInstance();
+
+	int GetShadowMapWidth() { return ShadowMapWidth; }
+
+	int GetShadowMapHeight() { return ShadowMapHeight; }
 };

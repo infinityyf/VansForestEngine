@@ -4,14 +4,12 @@
 #include "VansVKCommandBuffer.h"
 #include "VansVKDescriptorManager.h"
 #include "../../Util/VansFileUtil.h"
-#include "../../Configration/VansConfigration.h"
 #include <iostream>
 #include <cstdlib>
 
 
 bool VansVulkan::VansShader::InitShader(VkDevice& logic_device, const std::string& shader_folder)
 {
-	auto vansConfigration = VansConfigration::GetInstance();
 	std::string shader_folder_string = shader_folder;
 
 	//如果是延迟管线需要切换使用的shader

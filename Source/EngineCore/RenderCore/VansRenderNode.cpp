@@ -623,4 +623,22 @@ void VansGraphics::VansShadowRenderNode::CreateDescriptorSets(VansCamera* camera
 
 void VansGraphics::VansShadowRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
+	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+		{
+			modelBufferDescriptorSets[0],
+			VansVKDescriptorManager::m_ModelBufferSetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{
+				{
+					m_RenderNodeDataBuffer.GetMativeBuffer(),
+					0,
+					m_RenderNodeDataBuffer.GetBufferSize()
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }

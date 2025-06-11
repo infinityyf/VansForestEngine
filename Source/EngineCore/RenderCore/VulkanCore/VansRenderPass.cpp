@@ -3,13 +3,31 @@
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
 #include "VansVKSurface.h"
+#include "../../Configration/VansConfigration.h"
 #include <iostream>
 #include <vector>
 
 VansVulkan::VansRenderPassManager* VansVulkan::VansRenderPassManager::instance = nullptr;
 
-void VansVulkan::VansVKRenderPass::CreateRenderPass(VkDevice& logic_device, std::vector<VkAttachmentDescription>& attachments, std::vector<SubpassParameters>& subpass_params, std::vector<VkSubpassDependency>& subpass_dependency)
+void VansVulkan::VansVKRenderPass::CreateRenderPass(VkDevice& logic_device, std::vector<VkAttachmentDescription>& attachments, std::vector<SubpassParameters>& subpass_params, std::vector<VkSubpassDependency>& subpass_dependency, const VkExtent2D& resolution)
 {
+	//防止y flip问题
+	//https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
+	m_RenderPassViewport = 
+	{
+			0.0f,
+			(float)resolution.height,
+			(float)resolution.width,
+			-(float)resolution.height,
+			0.0f,
+			1.0f
+	};
+	m_RenderPassScissor =
+	{
+		{0,0},
+		{resolution.width,resolution.height}
+	};
+
 	m_AttachmentDescs.clear();
 	for (auto attachment : attachments)
 	{
@@ -223,11 +241,11 @@ void VansVulkan::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_devi
 		{ 0.0f, 0.0f, 0.0f, 1.0f },
 	};
 
-	m_VansRenderPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies);
+	VkExtent2D resolution = surface.m_VansVKSwapChainImageExtent;
+	m_VansRenderPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
 
 	//创建color,depth
 	//这里先创建renderpass,只是指定了各个attachment的状态，实际数据通过framebuffer来创建
-	VkExtent2D resolution = surface.m_VansVKSwapChainImageExtent;
 	m_ColorImage.CreateVulkanImage(
 		logic_device, 
 		{ resolution.width,resolution.height,1 },
@@ -533,11 +551,12 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		{ 0.0f, 0.0f, 0.0f, 1.0f },
 	};
 
-	m_VansRenderPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies);
+	VkExtent2D resolution = surface.m_VansVKSwapChainImageExtent;
+	m_VansRenderPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
 
 	//创建color,depth,GBuffers
 	//这里先创建renderpass,只是指定了各个attachment的状态，实际数据通过framebuffer来创建
-	VkExtent2D resolution = surface.m_VansVKSwapChainImageExtent;
+	
 	m_ColorImage.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
@@ -731,13 +750,145 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 
 void VansVulkan::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue)
 {
+	std::vector<VkAttachmentDescription> attachments_descriptions =
+	{
+		{
+			0,
+			VK_FORMAT_R32_SFLOAT,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL, //render passbegin的layout
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //这里的final layout会自动切换,render pass结束后的layout
+		},
+		{
+			0,
+			VK_FORMAT_D16_UNORM,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		},
+	};
+
+	VkAttachmentReference depth_stencil_attachment =
+	{
+		 1,
+		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	};
+
+	std::vector<SubpassParameters> subpass_parameters =
+	{
+		// #0 subpass
+		//记录在attachemts中的索引，以及对应需要的layout
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{
+				{
+					0,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				}
+			},
+			{},
+			&depth_stencil_attachment,
+			{}
+		},
+	};
+
+	//shadow 默认1
+	m_VansShadowPass.m_ClearValues =
+	{
+		{ 1.0f, 1.0f, 1.0f, 1.0f },
+		{ 1.0f, 0 },
+	};
+
+	//不切换subpass
+	std::vector<VkSubpassDependency> subpass_dependencies;
+
+	auto vansConfigration = VansConfigration::GetInstance();
+	VkExtent2D resolution = { vansConfigration->GetShadowMapWidth(), vansConfigration->GetShadowMapHeight() };
+
+	m_VansShadowPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
+
+	//创建color,depth
+	m_ShadowMapImage.CreateVulkanImage(
+		logic_device,
+		{ resolution.width,resolution.height,1 },
+		VK_FORMAT_R32_SFLOAT,
+		1,
+		1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT
+	);
+	m_ShadowMapDepthImage.CreateVulkanImage(
+		logic_device,
+		{ resolution.width,resolution.height,1 },
+		VK_FORMAT_D16_UNORM,
+		1,
+		1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT
+	);
+
+	m_VansShadowPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> image_views = {
+			m_ShadowMapImage.GetImageView(),
+			m_ShadowMapDepthImage.GetImageView()};
+	m_VansShadowPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansShadowPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
+
+
+	m_LogicDevice = logic_device;
+
+	//record command buffer
+	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+	//设置colordepoth的layout
+	m_ShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_ShadowMapImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_ShadowMapImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_ShadowMapImage.m_ImageAspect
+		});
+	m_ShadowMapDepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_ShadowMapDepthImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_ShadowMapDepthImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_ShadowMapDepthImage.m_ImageAspect
+		});
+
+	//end record
+	command_buffer.EndCommandBufferRecord();
+
+	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {});
+	command_buffer.ResetCommandBuffer(false);
 }
 
-void VansVulkan::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VkCommandBuffer command_buffer,const VkRect2D& render_area, GlobalStateData& global_state_data, int swap_chain_index)
+void VansVulkan::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index)
 {
 	//将当前render pass 记录到globaldata中
 	global_state_data.currentRenderPass = renderPass.m_RenderPass;
 	global_state_data.currentSubpass = 0;
+
+	//设置viewport和scissor创建管线的时候会使用到
+	global_state_data.viewport = renderPass.m_RenderPassViewport;
+	global_state_data.scissor = renderPass.m_RenderPassScissor;
 
 	VkRenderPassBeginInfo render_pass_begin_info = 
 	{
@@ -745,12 +896,16 @@ void VansVulkan::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& render
 		 nullptr,
 		 renderPass.m_RenderPass,
 		 renderPass.m_FrameBuffers[swap_chain_index].m_FrameBuffer,
-		 render_area,
+		 renderPass.m_RenderPassScissor,
 		 static_cast<uint32_t>(renderPass.m_ClearValues.size()),
 		 renderPass.m_ClearValues.data()
 	};
 
 	vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+	//begin的时候设置viewport和sissor
+	vkCmdSetViewport(command_buffer, 0, 1, &renderPass.m_RenderPassViewport);
+	vkCmdSetScissor(command_buffer, 0, 1, &renderPass.m_RenderPassScissor);
 }
 
 void VansVulkan::VansRenderPassManager::NextSubPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data)
@@ -770,6 +925,9 @@ void VansVulkan::VansRenderPassManager::DestroyRenderPass()
 {
 	m_ColorImage.DestroyVulkanImage(m_LogicDevice);
 	m_DepthImage.DestroyVulkanImage(m_LogicDevice);
+
+	m_ShadowMapImage.DestroyVulkanImage(m_LogicDevice);
+	m_ShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_NormalImage.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage0.DestroyVulkanImage(m_LogicDevice);

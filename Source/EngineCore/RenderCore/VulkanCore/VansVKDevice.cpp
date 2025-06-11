@@ -324,7 +324,6 @@ namespace VansVulkan
 		CreateVKFence(false, m_SwapChainImageAcquiredFence);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
-		auto vansConfigration = VansConfigration::GetInstance();
 
 		//create renderpass,and frame buffer
 		//这里自动创建color和depth
@@ -354,12 +353,8 @@ namespace VansVulkan
 		//灯光数据
 		m_Scene->UpdateSceneData();
 
-		m_globalRenderStateData.viewport = m_Viewport;
-		m_globalRenderStateData.scissor = m_Scissor;
-
 		//开始record渲染指令
 		auto renderPassManager = VansRenderPassManager::GetInstance();
-		auto vansConfigration = VansConfigration::GetInstance();
 
 		//record command buffer
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
@@ -367,46 +362,15 @@ namespace VansVulkan
 		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 
 		//绘制阴影
-		//renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowRenderPass ,cmd, { {0,0}, 2048,2048 }, m_globalRenderStateData);
-		//DrawShadowMap(renderPassManager, cmd);
-		//renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+		auto vansConfigration = VansConfigration::GetInstance();
+		renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
+		DrawShadowMap(renderPassManager, cmd);
+		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 
-		//clear mrt和color
-		m_VansVKCommandBuffer.ClearMRTColor(
-			{
-				renderPassManager->m_ColorImage ,
-				renderPassManager->m_NormalImage ,
-				renderPassManager->m_GBufferImage0,
-				renderPassManager->m_GBufferImage1,
-				renderPassManager->m_GBufferImage2,
-			},
-				{
-					{
-						0.0f,0.0f,0.0f,0.0f
-					},
-					{
-						0.0f,0.0f,0.0f,0.0f
-					},
-					{
-						0.0f,0.0f,0.0f,0.0f
-					},
-					{
-						0.0f,0.0f,0.0f,0.0f
-					},
-					{
-						0.0f,0.0f,0.0f,0.0f
-					}
-				}
-				);
-		m_VansVKCommandBuffer.ClearDepthStencil(renderPassManager->m_DepthImage, { 0,0 });
+		//clear mrt和color[beginrender pass的时候直接通过clearvalue就clear了，但是前提是frambufferload action是clear]
 
 		//绘制指令
-		renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass ,cmd, { {0,0}, m_VansVKSurface.m_VansVKSwapChainImageExtent }, m_globalRenderStateData, m_SwapChainImageIndex);
-
-		//apply camera
-		m_VansVKCommandBuffer.SetViewport(0, { m_Viewport });
-		m_VansVKCommandBuffer.SetScissor(0, { m_Scissor });
-
+		renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass ,cmd, m_globalRenderStateData, m_SwapChainImageIndex);
 		DrawSceneDeferred(renderPassManager, cmd);
 		//DrawSceneForward(renderPassManager, cmd);
 	}
@@ -749,9 +713,6 @@ namespace VansVulkan
 		//创建stage buffer用于上传数据
 		//VK_MEMORY_PROPERTY_HOST_COHERENT_BIT这个标识不需要flush这个memoryrange就可以让驱动知道这个内存被更改了
 		m_StageBuffer.CreatVulkanBuffer(m_VansVKLogicDevice, 1024 * 1024 * 512, VK_FORMAT_R32_SFLOAT,VK_BUFFER_USAGE_TRANSFER_SRC_BIT| VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-		//设置渲染范围
-		InitViewPortScissor();
 
 		return true;
 	}
@@ -1096,26 +1057,5 @@ namespace VansVulkan
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 
 		m_Scene->DrawPostProcessNodes();
-	}
-
-	void VansVKDevice::InitViewPortScissor()
-	{
-		//防止y flip问题
-		//https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
-		m_Viewport =
-		{
-			0.0f,
-			(float)m_RawResolution.height,
-			(float)m_RawResolution.width,
-			-(float)m_RawResolution.height,
-			0.0f,
-			1.0f
-		};
-
-		m_Scissor =
-		{
-			{0,0},
-			{m_RawResolution.width,m_RawResolution.height}
-		};
 	}
 }

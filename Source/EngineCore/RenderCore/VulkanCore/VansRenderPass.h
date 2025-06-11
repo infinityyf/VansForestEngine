@@ -41,11 +41,17 @@ namespace VansVulkan
 		friend class VansRenderPassManager;
 	public:
 
-		void CreateRenderPass(VkDevice& logic_device, std::vector<VkAttachmentDescription>& attachments, std::vector<SubpassParameters>& subpass_params, std::vector<VkSubpassDependency>& subpass_dependency);
+		void CreateRenderPass(VkDevice& logic_device, std::vector<VkAttachmentDescription>& attachments, std::vector<SubpassParameters>& subpass_params, std::vector<VkSubpassDependency>& subpass_dependency, const VkExtent2D& resolution);
 
 		void DestroyRenderPass(VkDevice& logic_device);
 
 		VkRenderPass GetRenderPass() { return m_RenderPass; }
+
+	private:
+
+		VkViewport m_RenderPassViewport;
+
+		VkRect2D m_RenderPassScissor;
 
 	private:
 
@@ -80,6 +86,10 @@ namespace VansVulkan
 
 		VansVKImage m_DepthImage;
 
+		VansVKImage m_ShadowMapImage;
+
+		VansVKImage m_ShadowMapDepthImage;
+
 		VansVKImage m_NormalImage;
 
 		VansVKImage m_GBufferImage0; // albedo + roughness
@@ -112,7 +122,7 @@ namespace VansVulkan
 		void SetupVansShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue);
 
 		//‰÷»æ«¯”Ú¥Û–°
-		void BeginRenderPass(VansVKRenderPass& renderPass, VkCommandBuffer command_buffer, const VkRect2D& render_area, GlobalStateData& global_state_data, int swap_chain_index = 0);
+		void BeginRenderPass(VansVKRenderPass& renderPass, VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index = 0);
 
 		void NextSubPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data);
 

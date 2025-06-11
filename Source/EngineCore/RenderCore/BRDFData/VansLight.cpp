@@ -16,6 +16,18 @@ void VansGraphics::VansLightManager::AddSpotLight(const VansSpotLight& light)
 	m_SpotLights.push_back(light);
 }
 
+void VansGraphics::VansLightManager::UpdateLightShadowMatrixData()
+{
+	int directionLightCount = m_DirectionalLights.size();
+	for (int dirLightIndex = 0; dirLightIndex < directionLightCount; dirLightIndex++)
+	{
+		auto lightDirection = m_DirectionalLights[dirLightIndex].m_Direction;
+		glm::mat4x4 projectionMatrix = glm::ortho<float>(-10,10,-10,10,-10,10);
+		glm::mat4x4 viewMatrix = glm::lookAt(lightDirection, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+		m_DirectionalLights[dirLightIndex].m_ShadowMatrix = projectionMatrix * viewMatrix;
+	}
+}
+
 void VansGraphics::VansLightManager::UpdateLightCPUData()
 {
 	uint32_t offset = 0;
@@ -66,7 +78,7 @@ void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_devi
 		VansVKDescriptorManager::m_LightsBufferSetBinding,
 		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 		1,
-		VK_SHADER_STAGE_FRAGMENT_BIT,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		nullptr
 	};
 	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ lightBufferBinding }, m_LightDataDescriptorSetLayout);

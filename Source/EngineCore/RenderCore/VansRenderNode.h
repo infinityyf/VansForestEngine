@@ -100,6 +100,21 @@ namespace VansGraphics
 			m_Transform.m_Rotation = rotation;
 			m_Transform.m_Scale = scale;
 		}
+
+		glm::vec3 GetTransformPosition()
+		{
+			return m_Transform.m_Position;
+		}
+
+		glm::vec3 GetTransformRotation()
+		{
+			return m_Transform.m_Rotation;
+		}
+
+		glm::vec3 GetTransformScale()
+		{
+			return m_Transform.m_Scale;
+		}
 	};
 
 	//更新材质参数,更新全局数据

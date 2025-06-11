@@ -239,7 +239,6 @@ void VansGraphics::VansScene::LoadLights(VkDevice& device, json& light_node)
             dirLight.m_Direction = -glm::normalize(dirLight.m_Direction);
 			dirLight.m_Color = glm::vec3(light["color"][0], light["color"][1], light["color"][2]);
             dirLight.m_Intensity = light["intensity"];
-            dirLight.m_ShadowMatrix = glm::mat4x4(1.0f);
             m_LightManager.AddDirectionalLight(dirLight);
 		}
         else if (type == VansLightType::POINT)
@@ -338,6 +337,7 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
                 VansRenderNode* shadowNode = new VansShadowRenderNode(device);
                 shadowNode->m_Mesh = mesh;
                 shadowNode->m_Material = shadowMaterial;
+                shadowNode->SetTransformData(node->GetTransformPosition(),node->GetTransformRotation(),node->GetTransformScale());
                 shadowNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
                 shadowNode->SetName("shadow");
                 m_ShadowRenderNodes.push_back(shadowNode);
@@ -403,6 +403,8 @@ void VansGraphics::VansScene::UnLoadScene()
 
 void VansGraphics::VansScene::UpdateSceneData()
 {
+    m_LightManager.UpdateLightShadowMatrixData();
+
     m_LightManager.UpdateLightCPUData();
 }
 

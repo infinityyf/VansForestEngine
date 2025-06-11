@@ -111,17 +111,8 @@ namespace VansVulkan
 
 	private:
 
-		//相机视野
-		VkViewport m_Viewport;
-		VkRect2D m_Scissor;
-
-
 		//记录全局的渲染参数，需要和相机绑定
 		GlobalStateData m_globalRenderStateData;
-
-	private:
-
-		void InitViewPortScissor();
 
 	private:
 
