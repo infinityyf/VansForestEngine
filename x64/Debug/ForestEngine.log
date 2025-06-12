@@ -1,5 +1,6 @@
-﻿  VansLight.cpp
-C:\Program Files (x86)\Windows Kits\10\Include\10.0.22000.0\shared\minwindef.h(130,1): warning C4005: “APIENTRY”: 宏重定义
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\GUI\glfw-3.3.9\include\GLFW\glfw3.h(123,1): message : 参见“APIENTRY”的前一个定义
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\BRDFData\VansLight.cpp(21,54): warning C4267: “初始化”: 从“size_t”转换到“int”，可能丢失数据
+﻿  VansRenderPass.cpp
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.cpp(273,46): warning C4018: “<”: 有符号/无符号不匹配
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.cpp(642,46): warning C4018: “<”: 有符号/无符号不匹配
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.cpp(815,63): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.cpp(815,103): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
   ForestEngine.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\x64\Debug\ForestEngine.exe

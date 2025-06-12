@@ -15,6 +15,7 @@ layout(set = 1, binding = 3, input_attachment_index = 3) uniform subpassInput gb
 layout(set = 1, binding = 4, input_attachment_index = 4) uniform subpassInput depthInput;
 
 layout(set = 2, binding = 0, rgba32f ) uniform image2D ssao;
+layout(set = 2, binding = 1) uniform sampler2D shadowMap;
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -46,6 +47,10 @@ void main()
     //计算光照
     LightResult lightResult;
     DirectBRDF(brdfData, GetDirectionLight(0).direction.rgb, viewDirection,lightResult.directDiffuse,lightResult.directSpecular);
+
+    float shadowValue = SampleShadowMap(position_world, shadowMap);
+    lightResult.directDiffuse *= shadowValue;
+    lightResult.directSpecular *= shadowValue;
 
     AmbientBRDF(brdfData,viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
 

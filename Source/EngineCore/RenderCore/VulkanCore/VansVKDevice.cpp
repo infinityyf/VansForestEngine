@@ -6,7 +6,6 @@
 #include "VansRenderPass.h"
 #include "VansMesh.h"
 #include "VansShader.h"
-#include "../../Configration/VansConfigration.h"
 
 #include "../VansScene.h"
 //#if defined FOREST_EDITOR
@@ -362,13 +361,11 @@ namespace VansVulkan
 		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 
 		//绘制阴影
-		auto vansConfigration = VansConfigration::GetInstance();
 		renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
 		DrawShadowMap(renderPassManager, cmd);
 		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 
 		//clear mrt和color[beginrender pass的时候直接通过clearvalue就clear了，但是前提是frambufferload action是clear]
-
 		//绘制指令
 		renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass ,cmd, m_globalRenderStateData, m_SwapChainImageIndex);
 		DrawSceneDeferred(renderPassManager, cmd);

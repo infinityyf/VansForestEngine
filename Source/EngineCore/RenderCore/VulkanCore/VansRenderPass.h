@@ -134,6 +134,8 @@ namespace VansVulkan
 
 		VansVKRenderPass& GetVansRenderPass() { return m_VansRenderPass; }
 
+		VansVKImage& GetShadowMap() { return m_ShadowMapImage; };
+
 		VansVKImage& GetColor() { return m_ColorImage; }
 
 		VansVKImage& GetDepth() { return m_DepthImage; }
