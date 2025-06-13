@@ -129,8 +129,18 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 	RegistLightDescriptor(lightManager);
 
 	//PBR参数 
-	m_UsedDescSetLayouts.push_back(materialManager.m_MaterialPBRBaseDataLayout);
-	m_UsedDescSets.push_back(materialManager.m_MaterialPBRBaseDataDescriptorSets[0]);
+	VkDescriptorSetLayoutBinding basePBRDataBinding =
+	{
+		VansVKDescriptorManager::m_MaterialBufferSetBinding,
+		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		1,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ basePBRDataBinding }, m_MaterialPBRBaseDataLayout);
+	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_MaterialPBRBaseDataLayout }, m_MaterialPBRBaseDataDescriptorSets);
+	m_UsedDescSetLayouts.push_back(m_MaterialPBRBaseDataLayout);
+	m_UsedDescSets.push_back(m_MaterialPBRBaseDataDescriptorSets[0]);
 
 	//预卷积 _ lut
 	m_UsedDescSetLayouts.push_back(materialManager.m_BRDFInterationTexSetLayout);
@@ -139,6 +149,10 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 
 void VansGraphics::VansCommonRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
+	//更新pbr参数
+	m_Material->UpdatePBRUniformData();
+	
+	//更新描述符
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
@@ -178,8 +192,26 @@ void VansGraphics::VansCommonRenderNode::UpdateRenderData(VansVKDevice* device, 
 	}
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
-	//更新pbr参数
-	m_Material->UpdatePBRUniformData(materialManager);
+	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+		{
+			m_MaterialPBRBaseDataDescriptorSets[0],
+			VansVKDescriptorManager::m_MaterialBufferSetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{
+				{
+					m_Material->GetPBRDataBuffer().GetMativeBuffer(),
+					0,
+					m_Material->GetPBRDataBuffer().GetBufferSize()
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+
+	//更brdflut数据
 	m_Material->UpdatePBRLutData(materialManager);
 }
 

@@ -11,20 +11,72 @@
                     {
                         "position" : [0.0, 0.0, 0.0],
                         "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [1.0, 5.0, 1.0]
+                        "scale" : [1.0, 1.0, 1.0]
                     },
                     "support_shadow" : true
                 },
                 {
-                    "name" : "Object0",
-                    "mesh" : "plane",
+                    "name" : "Object1",
+                    "mesh" : "sphere",
                     "material" : "UnlitMaterial1",
+                    "type" : 1,
+                    "transform" :
+                    {
+                        "position" : [2.0, 0.0, 0.0],
+                        "rotation" : [0.0, 0.0, 0.0],
+                        "scale" : [1.0, 1.0, 1.0]
+                    },
+                    "support_shadow" : true
+                },
+                {
+                    "name" : "Object2",
+                    "mesh" : "sphere",
+                    "material" : "UnlitMaterial2",
+                    "type" : 1,
+                    "transform" :
+                    {
+                        "position" : [4.0, 0.0, 0.0],
+                        "rotation" : [0.0, 0.0, 0.0],
+                        "scale" : [1.0, 1.0, 1.0]
+                    },
+                    "support_shadow" : true
+                },
+                {
+                    "name" : "Object3",
+                    "mesh" : "sphere",
+                    "material" : "UnlitMaterial3",
+                    "type" : 1,
+                    "transform" :
+                    {
+                        "position" : [6.0, 0.0, 0.0],
+                        "rotation" : [0.0, 0.0, 0.0],
+                        "scale" : [1.0, 1.0, 1.0]
+                    },
+                    "support_shadow" : true
+                },
+                {
+                    "name" : "Object4",
+                    "mesh" : "sphere",
+                    "material" : "UnlitMaterial4",
+                    "type" : 1,
+                    "transform" :
+                    {
+                        "position" : [8.0, 0.0, 0.0],
+                        "rotation" : [0.0, 0.0, 0.0],
+                        "scale" : [1.0, 1.0, 1.0]
+                    },
+                    "support_shadow" : true
+                },
+                {
+                    "name" : "Object5",
+                    "mesh" : "plane",
+                    "material" : "UnlitMaterial5",
                     "type" : 1,
                     "transform" :
                     {
                         "position" : [0.0, 0.0, 0.0],
                         "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [5.0, 1.0, 1.0]
+                        "scale" : [5.0, 1.0, 5.0]
                     },
                     "support_shadow" : true
                 },
@@ -167,7 +219,7 @@
             "shader" : "Unlit",
             "texture" : "testTexture",
             "albedo" : [1.0, 1.0, 1.0],
-            "roughness" : 0.5,
+            "roughness" : 0.1,
             "metallic" : 0.0,
             "ao" : 1.0
         },
@@ -177,7 +229,47 @@
             "shader" : "Unlit",
             "texture" : "testTexture",
             "albedo" : [1.0, 1.0, 1.0],
+            "roughness" : 0.3,
+            "metallic" : 0.0,
+            "ao" : 1.0
+        },
+        {
+            "name" : "UnlitMaterial2",
+            "type" : 0,
+            "shader" : "Unlit",
+            "texture" : "testTexture",
+            "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.5,
+            "metallic" : 0.0,
+            "ao" : 1.0
+        },
+        {
+            "name" : "UnlitMaterial3",
+            "type" : 0,
+            "shader" : "Unlit",
+            "texture" : "testTexture",
+            "albedo" : [1.0, 1.0, 1.0],
+            "roughness" : 0.7,
+            "metallic" : 0.0,
+            "ao" : 1.0
+        },
+        {
+            "name" : "UnlitMaterial4",
+            "type" : 0,
+            "shader" : "Unlit",
+            "texture" : "testTexture",
+            "albedo" : [1.0, 1.0, 1.0],
+            "roughness" : 0.9,
+            "metallic" : 0.0,
+            "ao" : 1.0
+        },
+        {
+            "name" : "UnlitMaterial5",
+            "type" : 0,
+            "shader" : "Unlit",
+            "texture" : "testTexture",
+            "albedo" : [1.0, 1.0, 1.0],
+            "roughness" : 0.6,
             "metallic" : 0.0,
             "ao" : 1.0
         },

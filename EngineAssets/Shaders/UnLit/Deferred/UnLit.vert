@@ -16,7 +16,7 @@ layout( location = 2 ) out vec3 position_world;
 void main() 
 {
     gl_Position = ProjectionMatrix * ViewMatrix * ModelMatrix * position;
-    normal_out = normal;
+    normal_out = mat3(transpose(inverse(ModelMatrix))) * normal;
     frag_uv= uv;
     position_world = (ModelMatrix * position).xyz;
 }

@@ -59,7 +59,7 @@ void VansGraphics::VansCamera::HandleKeyboardInput(int key, int scancode, int ac
 
 void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix)
 {
-    m_CameraData.CameraPosition = glm::vec4(view_matrix[3]);
+    m_CameraData.CameraPosition = glm::vec4(m_Position.x, m_Position.y, m_Position.z,1.0f);
     m_CameraData.CameraDirection = glm::vec4(-view_matrix[2]);
     m_CameraData.ViewMatrix = view_matrix;
     m_CameraData.ProjectionMatrix = projective_matrix;

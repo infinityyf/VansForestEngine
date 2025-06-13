@@ -63,6 +63,11 @@ namespace VansGraphics
 		VkDescriptorSetLayout frameBufferInputLayout;
 		std::vector<VkDescriptorSet> frameBufferInputDescriptorSets;
 
+		//PBR²ÎÊý
+		VkDescriptorSetLayout m_MaterialPBRBaseDataLayout;
+		std::vector<VkDescriptorSet> m_MaterialPBRBaseDataDescriptorSets;
+
+
 		//uniform buffer
 		VansVKBuffer m_RenderNodeDataBuffer;
 

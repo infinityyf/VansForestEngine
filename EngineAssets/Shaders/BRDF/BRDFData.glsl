@@ -92,7 +92,7 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
     
     diffuse = texture(PreConvDiffuseEnvironment, brdf.normal).rgb * kD * brdf.albedo;;
 
-    vec3 reflection = reflect(viewDirection, brdf.normal); 
+    vec3 reflection = reflect(-viewDirection, brdf.normal); 
     vec2 intergrationUV = vec2(NdotV, brdf.roughness);
     vec2 environmentBRDF = texture(BRDFLUT, intergrationUV).rg;
 

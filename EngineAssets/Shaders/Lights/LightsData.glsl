@@ -1,3 +1,5 @@
+#include "../Common/Common.glsl"
+
 struct DirectionLightData
 {
     vec4 direction;
@@ -67,6 +69,7 @@ float SampleShadowMap(vec3 position_world, sampler2D shadowMap)
 {
     vec4 clipCoord = GetDirectionLight(0).shadowMatrix * vec4(position_world, 1.0);
     clipCoord.z = clipCoord.z * 0.5 + 0.5;
+    clipCoord.z -= DEPTH_BIAS;
     vec2 shadowUV = clipCoord.xy * 0.5 + 0.5;
     float shadowMapDepth = texture(shadowMap, shadowUV).r;
     return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;

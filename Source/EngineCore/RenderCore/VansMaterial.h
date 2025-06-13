@@ -37,10 +37,6 @@ namespace VansGraphics
 		void InitMaterialDataDescriptors();
 
 	public:
-		//PBR²ÎÊý
-		VkDescriptorSetLayout m_MaterialPBRBaseDataLayout;
-		std::vector<VkDescriptorSet> m_MaterialPBRBaseDataDescriptorSets;
-
 		VkDescriptorSetLayout m_MaterialAtmosphereDataLayout;
 		std::vector<VkDescriptorSet> m_MaterialAtmosphereDataDescriptorSets;
 
@@ -88,7 +84,9 @@ namespace VansGraphics
 
 		void CreateAtmosphereMaterialDataBuffer(VkDevice& logic_device);
 
-		void UpdatePBRUniformData(VansMaterialManager& materialManager);
+		VansVKBuffer& GetPBRDataBuffer() { return m_BasePBRDataBuffer; }
+
+		void UpdatePBRUniformData();
 
 		void UpdatePBRLutData(VansMaterialManager& materialManager);
 

@@ -55,6 +55,6 @@ void main()
     AmbientBRDF(brdfData,viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
 
     outColor.rgb = lightResult.directDiffuse * GetDirectionLight(0).color.rgb + lightResult.directSpecular;
-    outColor.rgb += (lightResult.ambientDiffuse  + lightResult.ambientSpecular) * ssaoValue;
-    outColor.a = depth;
+    //outColor.rgb += (lightResult.ambientDiffuse  + lightResult.ambientSpecular) * ssaoValue;
+    outColor.a = 1;
 }
