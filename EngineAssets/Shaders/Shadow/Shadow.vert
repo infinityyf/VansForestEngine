@@ -15,7 +15,7 @@ layout( location = 0 ) out float shadowDepth;
 
 void main() 
 {
-    vec4 clipCoord = GetDirectionLight(0).shadowMatrix * ModelMatrix * position;
+    vec4 clipCoord = uDirectionLight.shadowMatrix * ModelMatrix * position;
     clipCoord.z = clipCoord.z * 0.5 + 0.5;
     gl_Position = clipCoord;
     shadowDepth = clipCoord.z;

@@ -38,6 +38,7 @@ namespace VansVulkan
 		//specify the parts of an image that should be accessed by the commands
 		//also defines how an image's memory should be interpreted.
 		VkImageView m_VansVKImageView;
+		std::vector<VkImageView> m_VansVKImageMipViews;
 
 		//如果是combined sample image这里持有sampler，可能是空
 		VkSampler m_Sampler;
@@ -73,6 +74,8 @@ namespace VansVulkan
 		void SetImageMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, ImageTransition bufferTransition);
 
 		VkImageView GetImageView();
+
+		VkImageView GetImageMipView(int mip);
 
 		VkImageLayout GetImageLayout();
 

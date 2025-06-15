@@ -34,6 +34,8 @@ void main()
     //获取ssao
     float ssaoValue = imageLoad(ssao,ivec2(fragTexCoord * ScreenParams.xy)).r;//texture(ssao, fragTexCoord).r;
 
+    vec3 viewDirection = normalize(cameraPosition.xyz - position_world);
+
     //材质属性
     BRDFData brdfData;
     brdfData.normal = normal;
@@ -42,19 +44,18 @@ void main()
     brdfData.metallic = metallic;
     brdfData.ao = ssaoValue;
     brdfData.fresnel0 = vec3(0.04);
-    vec3 viewDirection = normalize(cameraPosition.xyz - position_world);
+    brdfData.viewDirection = viewDirection;
+    brdfData.positionWS = position_world;
+    
 
     //计算光照
     LightResult lightResult;
-    DirectBRDF(brdfData, GetDirectionLight(0).direction.rgb, viewDirection,lightResult.directDiffuse,lightResult.directSpecular);
+    CalculateDirectLight(brdfData,shadowMap, lightResult);
 
-    float shadowValue = SampleShadowMap(position_world, shadowMap);
-    lightResult.directDiffuse *= shadowValue;
-    lightResult.directSpecular *= shadowValue;
 
     AmbientBRDF(brdfData,viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
 
-    outColor.rgb = lightResult.directDiffuse * GetDirectionLight(0).color.rgb + lightResult.directSpecular;
-    //outColor.rgb += (lightResult.ambientDiffuse  + lightResult.ambientSpecular) * ssaoValue;
+    outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
+    outColor.rgb += lightResult.ambientDiffuse  + lightResult.ambientSpecular;
     outColor.a = 1;
 }

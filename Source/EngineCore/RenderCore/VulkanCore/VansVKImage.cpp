@@ -123,7 +123,7 @@ bool VansVulkan::VansVKImage::CreateVulkanImage(VkDevice& logical_device, VkExte
              0,
              VK_REMAINING_MIP_LEVELS,
              0,
-             VK_REMAINING_ARRAY_LAYERS
+             isCube ? 6 : VK_REMAINING_ARRAY_LAYERS
          }
     };
 
@@ -159,6 +159,38 @@ bool VansVulkan::VansVKImage::CreateVulkanImage(VkDevice& logical_device, VkExte
         return false;
     }
 
+    //创建多个mip的imageview
+    if (mip_num > 1)
+    {
+        m_VansVKImageMipViews.resize(mip_num);
+        for (int miplevel = 0; miplevel < mip_num; miplevel++)
+        {
+            VkImageViewCreateInfo mip_view_create_info =
+            {
+                 VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                 nullptr,
+                 0,
+                 m_VansVKImage,
+                 view_type,
+                 format,
+                 {
+                     VK_COMPONENT_SWIZZLE_IDENTITY,
+                     VK_COMPONENT_SWIZZLE_IDENTITY,
+                     VK_COMPONENT_SWIZZLE_IDENTITY,
+                     VK_COMPONENT_SWIZZLE_IDENTITY
+                 },
+                 {
+                     m_ImageAspect,
+                     miplevel,
+                     1,
+                     0,
+                     isCube ? 6 : VK_REMAINING_ARRAY_LAYERS
+                 }
+            };
+            vkCreateImageView(logical_device, &mip_view_create_info, nullptr, &m_VansVKImageMipViews[miplevel]);
+        }
+    }
+
     m_Sampler = VK_NULL_HANDLE;
     if (combined_sampler)
     {
@@ -177,7 +209,7 @@ bool VansVulkan::VansVKImage::CreateVulkanImage(VkDevice& logical_device, VkExte
             VK_FALSE, 
             VK_COMPARE_OP_NEVER, 
             0.0f, 
-            0.0f, 
+            mip_num - 1,
             VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK, 
             VK_FALSE
             );
@@ -257,6 +289,16 @@ void VansVulkan::VansVKImage::SetImageMemoryBarrier(VkPipelineStageFlags generat
 VkImageView VansVulkan::VansVKImage::GetImageView()
 {
     return m_VansVKImageView;
+}
+
+VkImageView VansVulkan::VansVKImage::GetImageMipView(int target_mip)
+{
+    if (target_mip >= m_VansVKImageMipViews.size())
+    {
+        return m_VansVKImageView;
+    }
+
+    return m_VansVKImageMipViews[target_mip];
 }
 
 VkImageLayout VansVulkan::VansVKImage::GetImageLayout()

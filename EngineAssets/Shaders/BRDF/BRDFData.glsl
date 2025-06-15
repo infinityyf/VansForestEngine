@@ -1,3 +1,6 @@
+#ifndef COMMON_BRDF_INCLUDED
+#define COMMON_BRDF_INCLUDED
+
 #include "../Common/Common.glsl"
 
 //brdf data set
@@ -33,6 +36,8 @@ struct BRDFData
     float metallic;
     float ao;
     vec3 fresnel0;
+    vec3 viewDirection;
+    vec3 positionWS;
 };
 
 float DistributionTrowbridgeReitzGGX(vec3 normal, vec3 halfvector, float roughness)
@@ -82,6 +87,11 @@ vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
     return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - cosTheta, 5.0);
 }   
 
+float GetMipLevelFromRoughness(float roughness)
+{
+    return roughness * 9.0;
+}
+
 void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
 {
     float NdotV = max(dot(brdf.normal, viewDirection), 0.0);
@@ -90,18 +100,22 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
     vec3 kD = 1.0 - kS;
     kD *= 1.0 - brdf.metallic;
     
-    diffuse = texture(PreConvDiffuseEnvironment, brdf.normal).rgb * kD * brdf.albedo;;
+    diffuse = texture(PreConvDiffuseEnvironment, brdf.normal).rgb * brdf.ao * kD * brdf.albedo;
 
     vec3 reflection = reflect(-viewDirection, brdf.normal); 
     vec2 intergrationUV = vec2(NdotV, brdf.roughness);
+    intergrationUV.y = 1 - intergrationUV.y;
     vec2 environmentBRDF = texture(BRDFLUT, intergrationUV).rg;
 
-    vec3 prefilteredColor = texture(PreConvSpecularEnvironment,reflection).rgb;
+    //reflection specular lod level
+    float lod = GetMipLevelFromRoughness(brdf.roughness);
+    vec3 prefilteredColor = textureLod(PreConvSpecularEnvironment,reflection,lod).rgb;
     specular = prefilteredColor * (F * environmentBRDF.x + environmentBRDF.y);
 }
 
-void DirectBRDF(BRDFData brdf, vec3 lightDirection, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
+void DirectBRDF(BRDFData brdf, vec3 lightDirection, inout vec3 diffuse, inout vec3 specular)
 {
+    vec3 viewDirection = brdf.viewDirection;
     vec3 halfVector = normalize(lightDirection + viewDirection);
     float NdotH = max(dot(brdf.normal, halfVector), 0.0);
     float NdotL = max(dot(brdf.normal, lightDirection), 0.0);
@@ -125,3 +139,4 @@ void DirectBRDF(BRDFData brdf, vec3 lightDirection, vec3 viewDirection, inout ve
     float denominator = 4.0 * max(NdotL, 0.001) * max(NdotV, 0.001);
     specular = numerator / denominator;
 }
+#endif // COMMON_BRDF_INCLUDED

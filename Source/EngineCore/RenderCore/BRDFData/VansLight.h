@@ -52,9 +52,11 @@ namespace VansGraphics
 		std::vector<VansPointLight> m_PointLights;
 		std::vector<VansSpotLight> m_SpotLights;
 
+		uint32_t m_LightCounts[4];
+
 		VansVKBuffer m_LightBuffer;
 
-		const uint32_t m_MaxDirectionLightCount = 4;
+		const uint32_t m_MaxDirectionLightCount = 1;
 		const uint32_t m_MaxPointLightCount = 10;
 		const uint32_t m_MaxSpotLightCount = 10;
 

@@ -880,6 +880,16 @@ namespace VansVulkan
 		manager->m_SSAOResult = new VansTexture();
 		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true);
 
+		VansVKBuffer prefilterCBBuffer;
+		uint32_t mipCount = log2(512);
+		float data[4] = {512,mipCount,512,512};
+		prefilterCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(float) * 4, VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		prefilterCBBuffer.SetBufferData(data,0, sizeof(float) * 4);
+
+
 		VkDescriptorSetLayoutBinding samplerLUTBinding =
 		{
 			VansVKDescriptorManager::m_SampleTexture0SetBinding,
@@ -939,6 +949,15 @@ namespace VansVulkan
 		{
 			VansVKDescriptorManager::m_UAVTexture1SetBinding,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			mipCount,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+
+		VkDescriptorSetLayoutBinding prefilterCB =
+		{
+			3,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			1,
 			VK_SHADER_STAGE_COMPUTE_BIT,
 			nullptr
@@ -946,11 +965,26 @@ namespace VansVulkan
 		//PBR预卷积 compute shader 描述符
 		VkDescriptorSetLayout m_PreConvSetLayout;
 		std::vector<VkDescriptorSet> m_PreConvtDescriptorSets;
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerCubeBinding,uavCubeBinding0,uavCubeBinding1 }, m_PreConvSetLayout);
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerCubeBinding,uavCubeBinding0,uavCubeBinding1,prefilterCB }, m_PreConvSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_PreConvSetLayout }, m_PreConvtDescriptorSets);
 
 		//更新描述符
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				m_PreConvtDescriptorSets[0],
+				3,
+				0,
+				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				{
+					{
+						prefilterCBBuffer.GetMativeBuffer(),
+						0,
+						prefilterCBBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
@@ -982,19 +1016,26 @@ namespace VansVulkan
 				}
 			}
 		);
+
+		//设置每个mip的image信息，每个mip分开绑定
+		std::vector<VkDescriptorImageInfo> cubeMipImageInfos;
+		for (int mipLevel = 0; mipLevel < mipCount; mipLevel++)
+		{
+			cubeMipImageInfos.push_back(
+				{
+					manager->m_PreConvSpecular->GetImage().GetSampler(),
+					manager->m_PreConvSpecular->GetImage().GetImageMipView(mipLevel),
+					VK_IMAGE_LAYOUT_GENERAL
+				}
+			);
+		}
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				m_PreConvtDescriptorSets[0],
 				VansVKDescriptorManager::m_UAVTexture1SetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-				{
-					{
-						manager->m_PreConvSpecular->GetImage().GetSampler(),
-						manager->m_PreConvSpecular->GetImage().GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
-					}
-				}
+				cubeMipImageInfos
 			}
 		);
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
@@ -1007,7 +1048,7 @@ namespace VansVulkan
 
 		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvSpecularShader, { m_PreConvSetLayout });
 		//生成多个mip
-		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvSpecularShader, 512, 512, 1, m_PreConvtDescriptorSets);
+		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvSpecularShader, 512, 512, mipCount, m_PreConvtDescriptorSets);
 
 		//切换layout
 
@@ -1015,6 +1056,9 @@ namespace VansVulkan
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
 		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {});
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+
+		prefilterCBBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
+
 	}
 
 	void VansVKDevice::DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)

@@ -6,38 +6,43 @@
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 layout( set = 0, binding = 0 ) uniform samplerCube inputCubemap;
-layout( set = 0, binding = 2, rgba32f ) uniform imageCube cubemap;
-
-vec3 GetRightDirection(vec2 tangentCoord)
+layout( set = 0, binding = 2, rgba32f ) uniform imageCube cubemap[9];
+layout( set = 0, binding = 3 ) uniform preFilterInfo
 {
-    return vec3(256, tangentCoord);
+    float textureResolution;
+    float maxMiplevel;
+};
+
+vec3 GetRightDirection(vec2 tangentCoord, float halfResolution)
+{
+    return vec3(halfResolution, tangentCoord);
 }
 
 
-vec3 GetLeftDirection(vec2 tangentCoord)
+vec3 GetLeftDirection(vec2 tangentCoord, float halfResolution)
 {
-    return vec3(-256, tangentCoord);
+    return vec3(-halfResolution, tangentCoord);
 }
 
 
-vec3 GetUpDirection(vec2 tangentCoord)
+vec3 GetUpDirection(vec2 tangentCoord, float halfResolution)
 {
-    return vec3(tangentCoord.x,256,-tangentCoord.y);
+    return vec3(tangentCoord.x,halfResolution,-tangentCoord.y);
 }
 
-vec3 GetButtomDirection(vec2 tangentCoord)
+vec3 GetButtomDirection(vec2 tangentCoord, float halfResolution)
 {
-    return vec3(tangentCoord.x,-256,-tangentCoord.y);
+    return vec3(tangentCoord.x,-halfResolution,-tangentCoord.y);
 }
 
-vec3 GetFrontDirection(vec2 tangentCoord)
+vec3 GetFrontDirection(vec2 tangentCoord, float halfResolution)
 {
-    return vec3(tangentCoord,256);
+    return vec3(tangentCoord,halfResolution);
 }
 
-vec3 GetBackDirection(vec2 tangentCoord)
+vec3 GetBackDirection(vec2 tangentCoord, float halfResolution)
 {
-    return vec3(tangentCoord,-256);
+    return vec3(tangentCoord,-halfResolution);
 }
 
 float RadicalInverse_VdC(uint bits) 
@@ -78,7 +83,7 @@ vec3 ImportanceSampleGGX(vec2 Xi, vec3 N, float roughness)
     return normalize(sampleVec);
 }
 
-vec3 CalculateConvResult(vec3 direction)
+vec3 CalculateConvResult(vec3 direction,float roughness)
 {
     vec3 N = normalize(direction);
     vec3 R = N;
@@ -86,11 +91,11 @@ vec3 CalculateConvResult(vec3 direction)
 
     const uint SAMPLE_COUNT = 1024u;
     float totalWeight = 0.0;   
-    vec3 prefilteredColor = vec3(0.0);     
+    vec3 prefilteredColor = vec3(1.0);     
     for(uint i = 0u; i < SAMPLE_COUNT; ++i)
     {
         vec2 Xi = Hammersley(i, SAMPLE_COUNT);
-        vec3 H  = ImportanceSampleGGX(Xi, N, 0);
+        vec3 H  = ImportanceSampleGGX(Xi, N, roughness);
         vec3 L  = normalize(2.0 * dot(V, H) * H - V);
 
         float NdotL = max(dot(N, L), 0.0);
@@ -106,30 +111,51 @@ vec3 CalculateConvResult(vec3 direction)
 
 void main() 
 {
+    uint miplevel = gl_GlobalInvocationID.z;
+    if(miplevel >= uint(maxMiplevel))
+    {
+        return; // out of bounds
+    }
+
+    uint currentMipResolution = uint(pow(2.0, maxMiplevel - miplevel));
+    uint halfResolution = uint(currentMipResolution * 0.5);
+    uint imageCoordBound = uint(currentMipResolution - 1.0);
+    float currentRoughness = float(miplevel) / maxMiplevel;
+
     //gl_GlobalInvocationID : resolution + miplevel
     ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
-    vec2 direction = coords.xy - ivec2(256, 256);
+    if(coords.x >= currentMipResolution || coords.y >= currentMipResolution)
+    {
+        return; // out of bounds
+    }
 
-    coords.xy = coords.yx;
-    coords.y = 512 - coords.y;
-    vec3 irradiance = CalculateConvResult(GetRightDirection(direction));
-    imageStore(cubemap, ivec3(coords.xy,0), vec4(irradiance, 1.0));
+    vec2 direction = coords.xy - ivec2(halfResolution, halfResolution);
 
-    irradiance = CalculateConvResult(GetLeftDirection(direction));
-    imageStore(cubemap, ivec3(coords.xy,1), vec4(irradiance, 1.0));
+    vec2 targetCoord = coords.yx;
+    targetCoord.y = imageCoordBound - targetCoord.y;
+    vec3 irradiance = CalculateConvResult(GetRightDirection(direction,halfResolution),currentRoughness);
+    imageStore(cubemap[miplevel], ivec3(targetCoord,0), vec4(irradiance, 1.0));
 
-    irradiance = CalculateConvResult(GetUpDirection(direction));
-    imageStore(cubemap, ivec3(coords.xy,2), vec4(irradiance, 1.0));
+    targetCoord.x = imageCoordBound - targetCoord.x;
+    irradiance = CalculateConvResult(GetLeftDirection(direction,halfResolution),currentRoughness);
+    imageStore(cubemap[miplevel], ivec3(targetCoord,1), vec4(irradiance, 1.0));
 
-    irradiance = CalculateConvResult(GetButtomDirection(direction));
-    imageStore(cubemap, ivec3(coords.xy,3), vec4(irradiance, 1.0));
+    targetCoord = coords.xy;
+    targetCoord.y = imageCoordBound - targetCoord.y;
+    targetCoord.x = imageCoordBound - targetCoord.x;
+    irradiance = CalculateConvResult(GetUpDirection(direction,halfResolution),currentRoughness);
+    imageStore(cubemap[miplevel], ivec3(targetCoord,2), vec4(irradiance, 1.0));
 
+    irradiance = CalculateConvResult(GetButtomDirection(direction,halfResolution),currentRoughness);
+    imageStore(cubemap[miplevel], ivec3(targetCoord,3), vec4(irradiance, 1.0));
 
-    coords.xy = coords.yx;
-    coords.y = 512 - coords.y;
-    irradiance = CalculateConvResult(GetFrontDirection(direction));
-    imageStore(cubemap, ivec3(coords.xy,4), vec4(irradiance, 1.0));
+    targetCoord = coords.xy;
+    targetCoord.y = imageCoordBound - targetCoord.y;
+    targetCoord.x = imageCoordBound - targetCoord.x;
+    irradiance = CalculateConvResult(GetFrontDirection(direction,halfResolution),currentRoughness);
+    imageStore(cubemap[miplevel], ivec3(targetCoord,4), vec4(irradiance, 1.0));
 
-    irradiance = CalculateConvResult(GetBackDirection(direction));
-    imageStore(cubemap, ivec3(coords.xy,5), vec4(irradiance, 1.0));
+    targetCoord.x = imageCoordBound - targetCoord.x;
+    irradiance = CalculateConvResult(GetBackDirection(direction,halfResolution),currentRoughness);
+    imageStore(cubemap[miplevel], ivec3(targetCoord,5), vec4(irradiance, 1.0));
 }

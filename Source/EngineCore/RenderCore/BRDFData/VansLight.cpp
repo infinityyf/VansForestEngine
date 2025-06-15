@@ -22,7 +22,7 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData()
 	for (int dirLightIndex = 0; dirLightIndex < directionLightCount; dirLightIndex++)
 	{
 		auto lightDirection = m_DirectionalLights[dirLightIndex].m_Direction;
-		glm::mat4x4 projectionMatrix = glm::ortho<float>(-10,10,-10,10,-10,10);
+		glm::mat4x4 projectionMatrix = glm::ortho<float>(-50,50,-50,50,-50,50);
 		glm::mat4x4 viewMatrix = glm::lookAt(lightDirection, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
 		m_DirectionalLights[dirLightIndex].m_ShadowMatrix = projectionMatrix * viewMatrix;
 	}
@@ -31,7 +31,12 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData()
 void VansGraphics::VansLightManager::UpdateLightCPUData()
 {
 	uint32_t offset = 0;
-	uint32_t size = sizeof(VansDirectionalLight) * m_MaxDirectionLightCount;
+	uint32_t size = sizeof(uint32_t) * 4;
+	m_LightCounts[0] = m_PointLights.size();
+	m_LightCounts[1] = m_SpotLights.size();
+	m_LightBuffer.SetBufferData(m_LightCounts, offset, size);
+	offset += size;
+	size = sizeof(VansDirectionalLight) * m_MaxDirectionLightCount;
 	m_LightBuffer.SetBufferData(m_DirectionalLights.data(), offset, size);
 	offset += size;
 	size = sizeof(VansPointLight) * m_MaxPointLightCount;
@@ -63,7 +68,7 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 
 void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_device)
 {
-	uint32_t bufferSize = sizeof(VansDirectionalLight) * m_MaxDirectionLightCount +
+	uint32_t bufferSize = sizeof(uint32_t) * 4 + sizeof(VansDirectionalLight) * m_MaxDirectionLightCount +
 		sizeof(VansPointLight) * m_MaxPointLightCount +
 		sizeof(VansSpotLight) * m_MaxSpotLightCount;
 	m_LightBuffer.CreatVulkanBuffer(

@@ -258,8 +258,8 @@ void VansGraphics::VansScene::LoadLights(VkDevice& device, json& light_node)
             spotLight.m_Direction = -glm::normalize(spotLight.m_Direction);
             spotLight.m_Color = glm::vec3(light["color"][0], light["color"][1], light["color"][2]);
             spotLight.m_Intensity = light["intensity"];
-            spotLight.m_InnerCutOff = light["innercutoff"];
-			spotLight.m_OuterCutOff = light["outerCutoff"];
+            spotLight.m_InnerCutOff = glm::radians<float>(light["innercutoff"]);
+			spotLight.m_OuterCutOff = glm::radians<float>(light["outerCutoff"]);
             spotLight.m_Radius = light["radius"];
             m_LightManager.AddSpotLight(spotLight);
 		}
