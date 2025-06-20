@@ -109,7 +109,7 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ modelBufferLayout }, modelBufferDescriptorSets);
 
 	//创建资源给fs采样
-	VkDescriptorSetLayoutBinding samplerBinding =
+	VkDescriptorSetLayoutBinding baseColorSamplerBinding =
 	{
 		VansVKDescriptorManager::m_SampleTexture0SetBinding,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -117,7 +117,39 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		VK_SHADER_STAGE_FRAGMENT_BIT,
 		nullptr
 	};
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerBinding }, textureResourceLayout);
+	VkDescriptorSetLayoutBinding normalSamplerBinding =
+	{
+		VansVKDescriptorManager::m_SampleTexture1SetBinding,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		1,
+		VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+	VkDescriptorSetLayoutBinding metalSamplerBinding =
+	{
+		VansVKDescriptorManager::m_SampleTexture2SetBinding,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		1,
+		VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+	VkDescriptorSetLayoutBinding roughnessSamplerBinding =
+	{
+		VansVKDescriptorManager::m_SampleTexture3SetBinding,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		1,
+		VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+	VkDescriptorSetLayoutBinding aoSamplerBinding =
+	{
+		VansVKDescriptorManager::m_SampleTexture4SetBinding,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		1,
+		VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ baseColorSamplerBinding,normalSamplerBinding, metalSamplerBinding,roughnessSamplerBinding,aoSamplerBinding }, textureResourceLayout);
 	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ textureResourceLayout }, textureResourceDescriptorSets);
 
 
@@ -171,25 +203,86 @@ void VansGraphics::VansCommonRenderNode::UpdateRenderData(VansVKDevice* device, 
 		}
 	);
 
-	if (m_Material->m_Texture.size() > 0)
-	{
-		VansVKImage image = m_Material->m_Texture[0]->GetImage();
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+	VansVKImage baseColorImage = m_Material->m_BaseColorTexture->GetImage();
+	VansVKImage normalImage = m_Material->m_NormalTexture->GetImage();
+	VansVKImage metalImage = m_Material->m_MetalTexture->GetImage();
+	VansVKImage roughnessImage = m_Material->m_RoughnessTexture->GetImage();
+	VansVKImage aoImage = m_Material->m_AoTexture->GetImage();
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
-				textureResourceDescriptorSets[0],
-				VansVKDescriptorManager::m_SampleTexture0SetBinding,
-				0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
-					{
-						image.GetSampler(),
-						image.GetImageView(),
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-					}
+					baseColorImage.GetSampler(),
+					baseColorImage.GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			}
-		);
-	}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture1SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					normalImage.GetSampler(),
+					normalImage.GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture2SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					metalImage.GetSampler(),
+					metalImage.GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture3SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					roughnessImage.GetSampler(),
+					roughnessImage.GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture4SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					aoImage.GetSampler(),
+					aoImage.GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();

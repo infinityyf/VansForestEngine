@@ -163,17 +163,40 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         
         material->m_Shader = shader;
         material->m_MaterialType = sceneMaterial["type"];
-        if (sceneMaterial.contains("texture"))
-        {
-            for (const auto& textureName : sceneMaterial["texture"])
-            {
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                material->m_Texture.push_back(texture);
-            }
-        }
         //创建材质参数GPU数据
         if (material->m_MaterialType == VansMaterialType::VAN_PBR)
         {
+            if (sceneMaterial.contains("basecolor_texture"))
+            {
+                auto textureName = sceneMaterial["basecolor_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                material->m_BaseColorTexture = texture;
+            }
+            if (sceneMaterial.contains("normal_texture"))
+            {
+                auto textureName = sceneMaterial["normal_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                material->m_NormalTexture = texture;
+            }
+            if (sceneMaterial.contains("metal_texture"))
+            {
+                auto textureName = sceneMaterial["metal_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                material->m_MetalTexture = texture;
+            }
+            if (sceneMaterial.contains("roughness_texture"))
+            {
+                auto textureName = sceneMaterial["roughness_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                material->m_RoughnessTexture = texture;
+            }
+            if (sceneMaterial.contains("ao_texture"))
+            {
+                auto textureName = sceneMaterial["ao_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                material->m_AoTexture = texture;
+            }
+
             material->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
             material->m_BasePBRParam.m_metallic = sceneMaterial["metallic"];
             material->m_BasePBRParam.m_roughness = sceneMaterial["roughness"];

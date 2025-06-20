@@ -3,6 +3,7 @@
 #include "../RenderCore/VansGraphicsDevice.h"
 #include "../../VansBasicWindow.h"
 #include "Windows/VansBaseWindowComponent.h"
+#include "../ScriptCore/VansScriptContext.h"
 #include <vector>
 
 #if defined _WIN32
@@ -41,5 +42,9 @@ namespace VansGraphics
 	public:
 
 		static std::vector<VansBaseWindowComponent*> m_Windows;
+
+	private:
+
+		static VansScriptContext m_ScriptContext;
 	};
 }

@@ -15,7 +15,7 @@ VansGraphics::VansTexture::~VansTexture()
 	m_Image.DestroyVulkanImage(*(VkDevice*)m_GraphicsDevice->GetNativeGraphicsDevice());
 }
 
-void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer, std::string texture_path)
+void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB)
 {
 	int width = 0;
 	int height = 0;
@@ -42,7 +42,7 @@ void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer
 	VansVKDevice* vkDevicePtr = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevicePtr->GetLogicDevice();
 	VkQueue graphicsQueue = vkDevicePtr->GetGraphicsQueue();
-	VkFormat format = CheckTextureFormat(num_components, false);
+	VkFormat format = CheckTextureFormat(num_components, false, isSRGB);
 	m_Image.CreateVulkanImage(
 		nativeDevice,
 		extent,
@@ -81,22 +81,22 @@ void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer
 	command_buffer.ResetCommandBuffer(false);
 }
 
-VkFormat VansGraphics::VansTexture::CheckTextureFormat(int channel, bool isHdr)
+VkFormat VansGraphics::VansTexture::CheckTextureFormat(int channel, bool isHdr, bool isSRGB)
 {
 	VkFormat format = VK_FORMAT_UNDEFINED;
 	switch (channel)
 	{
 	case 1:
-		format = VK_FORMAT_R8_UNORM;
+		format = isSRGB ? VK_FORMAT_R8_SRGB : VK_FORMAT_R8_UNORM;
 		break;
 	case 2:
-		format = VK_FORMAT_R8G8_UNORM;
+		format = isSRGB ? VK_FORMAT_R8G8_SRGB : VK_FORMAT_R8G8_UNORM;
 		break;
 	case 3:
-		format = VK_FORMAT_R8G8B8_UNORM;
+		format = isSRGB ? VK_FORMAT_R8G8B8_SRGB : VK_FORMAT_R8G8B8_UNORM;
 		break;
 	case 4:
-		format = VK_FORMAT_R8G8B8A8_UNORM;
+		format = isSRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
 		break;
 	default:
 		break;
@@ -105,7 +105,7 @@ VkFormat VansGraphics::VansTexture::CheckTextureFormat(int channel, bool isHdr)
 	return format;
 }
 
-void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_parent_path)
+void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_parent_path, bool isSRGB)
 {
 	int width = 0;
 	int height = 0;
@@ -148,7 +148,7 @@ void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buf
 
 		//创建GPU数据
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
-		VkFormat format = CheckTextureFormat(num_components, false);
+		VkFormat format = CheckTextureFormat(num_components,false, isSRGB);
 		
 		if (!isImageCreated)
 		{
@@ -201,7 +201,7 @@ void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& comm
 	VansVKDevice* vkDevicePtr = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevicePtr->GetLogicDevice();
 	VkQueue graphicsQueue = vkDevicePtr->GetGraphicsQueue();
-	VkFormat format = CheckTextureFormat(num_components, false);
+	VkFormat format = CheckTextureFormat(num_components);
 	int mipNum = generateMip ? static_cast<int>(std::floor( std::log2(static_cast<float>(width)))) + 1 : 1;
 	m_Image.CreateVulkanImage(
 		nativeDevice,

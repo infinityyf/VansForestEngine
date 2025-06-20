@@ -46,6 +46,9 @@ std::vector<VansGraphics::VansCamera*> VansGraphics::VansEditorWindow::m_Cameras
 //支持多个窗口
 std::vector<VansGraphics::VansBaseWindowComponent*> VansGraphics::VansEditorWindow::m_Windows;
 
+//脚本上下文
+VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
+
 bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height ,GRAPHICS_API api)
 {
     glfwSetErrorCallback(glfw_error_callback);
@@ -169,6 +172,8 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
     glfwSetKeyCallback(m_VansEditorWindow.m_VansGraphicsHandle, VansGraphics::VansEditorWindow::KeyBoardInputCallBack);
     glfwSetCursorPosCallback(m_VansEditorWindow.m_VansGraphicsHandle, VansGraphics::VansEditorWindow::MouseInputCallBack);
 
+    //初始化脚本环境
+    m_ScriptContext.VansScriptSetup();
 
     // Main loop
     while (!glfwWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle))
@@ -194,7 +199,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // Rendering
         camera.Rendering();
 
-
+        m_ScriptContext.VansScriptUpdate();
         //UI Pass
         DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));
 

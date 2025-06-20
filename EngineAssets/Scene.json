@@ -206,6 +206,31 @@
             "type" : 0
         },
         {
+            "name" : "baseColorTexture",
+            "path" : "EngineAssets/Textures/tiles_albedo.png",
+            "type" : 0
+        },
+        {
+            "name" : "normalTexture",
+            "path" : "EngineAssets/Textures/tiles_normal.png",
+            "type" : 0
+        },
+        {
+            "name" : "metalTexture",
+            "path" : "EngineAssets/Textures/tiles_metal.png",
+            "type" : 0
+        },
+        {
+            "name" : "roughnessTexture",
+            "path" : "EngineAssets/Textures/tiles_roughness.png",
+            "type" : 0
+        },
+                {
+            "name" : "aoTexture",
+            "path" : "EngineAssets/Textures/tiles_ao.png",
+            "type" : 0
+        },
+        {
             "name" : "skyboxTexture",
             "path" : "EngineAssets/Textures/SkyBox",
             "type" : 2
@@ -217,61 +242,86 @@
             "name" : "UnlitMaterial",
             "type" : 0,
             "shader" : "Unlit",
-            "texture" : "testTexture",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.1,
             "metallic" : 0.0,
-            "ao" : 1.0
+            "ao" : 1.0,
+            "basecolor_texture" : "baseColorTexture",
+            "normal_texture" : "normalTexture",
+            "metal_texture" : "metalTexture",
+            "roughness_texture" : "roughnessTexture",
+            "ao_texture" : "aoTexture"
+
         },
         {
             "name" : "UnlitMaterial1",
             "type" : 0,
             "shader" : "Unlit",
-            "texture" : "testTexture",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.3,
             "metallic" : 0.0,
-            "ao" : 1.0
+            "ao" : 1.0,
+            "basecolor_texture" : "baseColorTexture",
+            "normal_texture" : "normalTexture",
+            "metal_texture" : "metalTexture",
+            "roughness_texture" : "roughnessTexture",
+            "ao_texture" : "aoTexture"
         },
         {
             "name" : "UnlitMaterial2",
             "type" : 0,
             "shader" : "Unlit",
-            "texture" : "testTexture",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.5,
             "metallic" : 0.0,
-            "ao" : 1.0
+            "ao" : 1.0,
+            "basecolor_texture" : "baseColorTexture",
+            "normal_texture" : "normalTexture",
+            "metal_texture" : "metalTexture",
+            "roughness_texture" : "roughnessTexture",
+            "ao_texture" : "aoTexture"
         },
         {
             "name" : "UnlitMaterial3",
             "type" : 0,
             "shader" : "Unlit",
-            "texture" : "testTexture",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.7,
             "metallic" : 0.0,
-            "ao" : 1.0
+            "ao" : 1.0,
+            "basecolor_texture" : "baseColorTexture",
+            "normal_texture" : "normalTexture",
+            "metal_texture" : "metalTexture",
+            "roughness_texture" : "roughnessTexture",
+            "ao_texture" : "aoTexture"
         },
         {
             "name" : "UnlitMaterial4",
             "type" : 0,
             "shader" : "Unlit",
-            "texture" : "testTexture",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.9,
             "metallic" : 0.0,
-            "ao" : 1.0
+            "ao" : 1.0,
+            "basecolor_texture" : "baseColorTexture",
+            "normal_texture" : "normalTexture",
+            "metal_texture" : "metalTexture",
+            "roughness_texture" : "roughnessTexture",
+            "ao_texture" : "aoTexture"
         },
         {
             "name" : "UnlitMaterial5",
             "type" : 0,
             "shader" : "Unlit",
-            "texture" : "testTexture",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.0,
             "metallic" : 0.0,
-            "ao" : 1.0
+            "ao" : 1.0,
+            "basecolor_texture" : "baseColorTexture",
+            "normal_texture" : "normalTexture",
+            "metal_texture" : "metalTexture",
+            "roughness_texture" : "roughnessTexture",
+            "ao_texture" : "aoTexture"
         },
         {
             "name" : "SkyBoxMaterial",

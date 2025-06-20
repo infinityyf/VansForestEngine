@@ -69,20 +69,23 @@ namespace VansGraphics
 	public:
 		VansMaterialType m_MaterialType;
 
-		std::vector<VansTexture*> m_Texture;
-		//shader
-		VansGraphicsShader* m_Shader;
+		//pbr
+		VansTexture* m_BaseColorTexture;
+		VansTexture* m_NormalTexture;
+		VansTexture* m_MetalTexture;
+		VansTexture* m_RoughnessTexture;
+		VansTexture* m_AoTexture;
 
-		//材质参数
 		VansBasePBRParam m_BasePBRParam;
 
 		//大气材质参数
 		VansAtmospherePBRParam m_AtmospherePBRParam;
 
+		//shader
+		VansGraphicsShader* m_Shader;
+
 		//定义GPU数据
 		void CreatePBRMaterialDataBuffer(VkDevice& logic_device);
-
-		void CreateAtmosphereMaterialDataBuffer(VkDevice& logic_device);
 
 		VansVKBuffer& GetPBRDataBuffer() { return m_BasePBRDataBuffer; }
 
@@ -90,8 +93,8 @@ namespace VansGraphics
 
 		void UpdatePBRLutData(VansMaterialManager& materialManager);
 
+		void CreateAtmosphereMaterialDataBuffer(VkDevice& logic_device);
+
 		void UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
 	};
-
-
 }

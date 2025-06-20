@@ -874,7 +874,7 @@ namespace VansVulkan
 
 		//brdf lut
 		manager->m_BRDFIntegralLUT = new VansTexture();
-		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png");
+		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png", false);
 
 		//SSAO½á¹û
 		manager->m_SSAOResult = new VansTexture();

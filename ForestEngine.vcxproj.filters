@@ -44,6 +44,9 @@
     <Filter Include="EngineCore\RenderCore\BRDFData">
       <UniqueIdentifier>{aea4ffaa-d2fa-4999-b9ac-007ef3d5064d}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\ScriptCore">
+      <UniqueIdentifier>{ff76fc78-ed05-4d15-9fa7-de160573327d}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -178,6 +181,9 @@
     <ClInclude Include="Source\EngineCore\Configration\VansConfigration.h">
       <Filter>EngineCore\Configrarion</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl">
@@ -292,6 +298,9 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp">
       <Filter>EngineCore\Configrarion</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp">
+      <Filter>EngineCore\ScriptCore</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

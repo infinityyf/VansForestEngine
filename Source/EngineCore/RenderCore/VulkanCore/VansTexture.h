@@ -20,9 +20,9 @@ namespace VansGraphics
 		~VansTexture();
 
 		//读取texture数据
-		void LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path);
+		void LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
 
-		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path);
+		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
 
 		//直接创建一个GPU上的texture
 		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite);
@@ -36,6 +36,6 @@ namespace VansGraphics
 
 		std::vector<unsigned char> m_ImageData;
 
-		VkFormat CheckTextureFormat(int channel, bool isHdr);
+		VkFormat CheckTextureFormat(int channel, bool isHdr = false, bool isSRGB = false);
 	};
 }

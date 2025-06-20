@@ -104,14 +104,15 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\json\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\STBImge;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\json\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\STBImge;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;C:\Users\infinityyf\Projects\githubs\Python-3.13.3\Include;C:\Users\infinityyf\Projects\githubs\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>glfw3.lib;assimp-vc143-mt.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>glfw3.lib;assimp-vc143-mt.lib;python313_d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);C:\Users\infinityyf\Projects\githubs\Python-3.13.3\PCbuild\amd64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -122,7 +123,7 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\json\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\STBImge;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\json\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\STBImge;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;C:\Users\infinityyf\Projects\githubs\Python-3.13.3\Include;C:\Users\infinityyf\Projects\githubs\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
     </ClCompile>
     <Link>
@@ -130,8 +131,8 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>glfw3.lib;assimp-vc143-mt.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>glfw3.lib;assimp-vc143-mt.lib;python313.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);C:\Users\infinityyf\Projects\githubs\Python-3.13.3\PCbuild\amd64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -175,6 +176,7 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryManager.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSampler.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.h" />
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h" />
     <ClInclude Include="Source\EngineCore\Util\VansFileUtil.h" />
     <ClInclude Include="Source\EngineCore\VansTimer.h" />
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h" />
@@ -217,6 +219,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryManager.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSampler.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.cpp" />
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp" />
     <ClCompile Include="Source\EngineCore\VansTimer.cpp" />
     <ClCompile Include="Source\ForestEngineEntry.cpp" />
     <ClCompile Include="Source\Graphics\Vulkan\VansVKFunctions.cpp" />

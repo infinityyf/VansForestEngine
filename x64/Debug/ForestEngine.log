@@ -9,9 +9,9 @@
   VansEditorWindow.cpp
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(41,41): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(43,42): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\EditorCore\VansEditorWindow.cpp(91,98): warning C4244: “参数”: 从“double”转换到“float”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\EditorCore\VansEditorWindow.cpp(118,45): warning C4244: “参数”: 从“double”转换到“float”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\EditorCore\VansEditorWindow.cpp(118,37): warning C4244: “参数”: 从“double”转换到“float”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\EditorCore\VansEditorWindow.cpp(94,98): warning C4244: “参数”: 从“double”转换到“float”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\EditorCore\VansEditorWindow.cpp(121,45): warning C4244: “参数”: 从“double”转换到“float”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\EditorCore\VansEditorWindow.cpp(121,37): warning C4244: “参数”: 从“double”转换到“float”，可能丢失数据
   VansHierachyWindow.cpp
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(41,41): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(43,42): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
@@ -39,7 +39,7 @@ C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\Engin
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(41,41): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(43,42): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.h(44): warning C4267: “return”: 从“size_t”转换到“uint32_t”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansScene.cpp(192,66): warning C4305: “=”: 从“double”到“float”截断
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansScene.cpp(215,66): warning C4305: “=”: 从“double”到“float”截断
   VansTransform.cpp
   VansGUIVulkanBackEnd.cpp
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(41,41): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
@@ -97,6 +97,7 @@ C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\Engin
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(43,42): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
   VansVKSampler.cpp
   VansVKSurface.cpp
+  VansScriptContext.cpp
   VansTimer.cpp
   ForestEngineEntry.cpp
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(41,41): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
