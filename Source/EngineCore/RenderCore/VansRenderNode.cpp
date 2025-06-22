@@ -420,19 +420,28 @@ void VansGraphics::VansDeferredRenderNode::CreateDescriptorSets(VansCamera* came
 	m_UsedDescSets.push_back(frameBufferInputDescriptorSets[0]);
 
 	//·ÇgbufferÊäÈë
-	VkDescriptorSetLayoutBinding textureInput0 =
+	VkDescriptorSetLayoutBinding ssaoInput =
 	{
-		VansVKDescriptorManager::m_SampleTexture0SetBinding,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		VansVKDescriptorManager::m_UAVTextureSetBinding,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		1,
+		VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+
+	VkDescriptorSetLayoutBinding ssgiInput =
+	{
+		VansVKDescriptorManager::m_UAVTexture0SetBinding,
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		1,
 		VK_SHADER_STAGE_FRAGMENT_BIT,
 		nullptr
 	};
 
 	//shadow map
-	VkDescriptorSetLayoutBinding textureInput1 =
+	VkDescriptorSetLayoutBinding mainShadowMapInput =
 	{
-		VansVKDescriptorManager::m_SampleTexture1SetBinding,
+		VansVKDescriptorManager::m_SampleTexture2SetBinding,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		1,
 		VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -440,8 +449,9 @@ void VansGraphics::VansDeferredRenderNode::CreateDescriptorSets(VansCamera* came
 	};
 	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
 		{
-			textureInput0,
-			textureInput1
+			ssaoInput,
+			ssgiInput,
+			mainShadowMapInput
 		},
 		textureResourceLayout);
 	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ textureResourceLayout }, textureResourceDescriptorSets);
@@ -538,7 +548,7 @@ void VansGraphics::VansDeferredRenderNode::UpdateRenderData(VansVKDevice* device
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			textureResourceDescriptorSets[0],
-			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			VansVKDescriptorManager::m_UAVTextureSetBinding,
 			0,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{
@@ -553,7 +563,22 @@ void VansGraphics::VansDeferredRenderNode::UpdateRenderData(VansVKDevice* device
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			textureResourceDescriptorSets[0],
-			VansVKDescriptorManager::m_SampleTexture1SetBinding,
+			VansVKDescriptorManager::m_UAVTexture0SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{
+				{
+					materialManager.m_SSGIResult->GetImage().GetSampler(),
+					materialManager.m_SSGIResult->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_GENERAL
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture2SetBinding,
 			0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{

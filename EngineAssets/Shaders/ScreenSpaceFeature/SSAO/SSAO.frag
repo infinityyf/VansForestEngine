@@ -25,10 +25,11 @@ void main()
 
     vec3 position_world = texture(gbufferInput2, fragTexCoord).xyz;
     vec3 normal = texture(normalInput, fragTexCoord).xyz;
+
     vec3 viewDirection = normalize(cameraPosition.xyz - position_world);
 
     //构建TBN
-    vec3 tangent = normalize(cross(normal, viewDirection));
+    vec3 tangent = normalize(cross(viewDirection,normal));
     vec3 bitangent = cross(normal, tangent);
     mat3x3 TBN = mat3x3(tangent, bitangent, normal);
 

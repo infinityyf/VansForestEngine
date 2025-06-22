@@ -1113,7 +1113,7 @@ namespace VansVulkan
 			VK_SHADER_STAGE_COMPUTE_BIT,
 			nullptr
 		};
-		VkDescriptorSetLayoutBinding skyDiffuseBinding =
+		VkDescriptorSetLayoutBinding positionBinding =
 		{
 			VansVKDescriptorManager::m_SampleTexture3SetBinding,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1121,9 +1121,17 @@ namespace VansVulkan
 			VK_SHADER_STAGE_COMPUTE_BIT,
 			nullptr
 		};
+		VkDescriptorSetLayoutBinding skyDiffuseBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture4SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
 		VkDescriptorSetLayoutBinding SSGIResultBinding =
 		{
-			VansVKDescriptorManager::m_UAVTexture3SetBinding,
+			VansVKDescriptorManager::m_UAVTexture4SetBinding,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			1,
 			VK_SHADER_STAGE_COMPUTE_BIT,
@@ -1131,13 +1139,13 @@ namespace VansVulkan
 		};
 		VkDescriptorSetLayoutBinding SSGICBBinding =
 		{
-			VansVKDescriptorManager::m_CBuffer5SetBinding,
+			VansVKDescriptorManager::m_CBuffer6SetBinding,
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			1,
 			VK_SHADER_STAGE_COMPUTE_BIT,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ normalBinding,depthBinding,colorBinding,skyDiffuseBinding,SSGIResultBinding,SSGICBBinding }, manager->m_SSGITexSetLayout);
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ normalBinding,depthBinding,colorBinding,positionBinding,skyDiffuseBinding,SSGIResultBinding,SSGICBBinding }, manager->m_SSGITexSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSGITexSetLayout }, manager->m_SSGIDescriptorSets);
 	}
 
@@ -1150,7 +1158,7 @@ namespace VansVulkan
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
 				manager->m_SSGIDescriptorSets[0],
-				VansVKDescriptorManager::m_CBuffer5SetBinding,
+				VansVKDescriptorManager::m_CBuffer6SetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 				{
@@ -1167,6 +1175,7 @@ namespace VansVulkan
 		auto& normal = renderPassManager->GetNormal();
 		auto& depth = renderPassManager->GetDepth();
 		auto& color = renderPassManager->GetColor();
+		auto& positionGbuffer = renderPassManager->GetGbuffer2();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				manager->m_SSGIDescriptorSets[0],
@@ -1214,11 +1223,26 @@ namespace VansVulkan
 				}
 			}
 		);
-		//sky
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				manager->m_SSGIDescriptorSets[0],
 				VansVKDescriptorManager::m_SampleTexture3SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						positionGbuffer.GetSampler(),
+						positionGbuffer.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		//sky
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture4SetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
@@ -1234,7 +1258,7 @@ namespace VansVulkan
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				manager->m_SSGIDescriptorSets[0],
-				VansVKDescriptorManager::m_UAVTexture3SetBinding,
+				VansVKDescriptorManager::m_UAVTexture4SetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
@@ -1248,8 +1272,9 @@ namespace VansVulkan
 		);
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
-		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSGIShader, { manager->m_SSGITexSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSGIShader, m_RenderWidth, m_RenderHeight, 1, manager->m_SSGIDescriptorSets);
+		auto camera = m_Scene->GetCamera();
+		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSGIShader, { manager->m_SSGITexSetLayout,camera->m_CameraBufferLayout });
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSGIShader, m_RenderWidth, m_RenderHeight, 1, { manager->m_SSGIDescriptorSets[0],camera ->m_CameraBufferDescriptorSets[0]});
 	}
 
 	void VansVKDevice::PrepareRenderingData()

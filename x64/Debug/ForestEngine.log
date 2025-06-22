@@ -1,16 +1,4 @@
-﻿  VansVKDevice.cpp
+﻿  VansRenderNode.cpp
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(41,41): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(43,42): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.h(44): warning C4267: “return”: 从“size_t”转换到“uint32_t”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(276,4): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(277,4): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(439,5): warning C4838: 从“int”转换到“VkFenceCreateFlags”需要收缩转换
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(883,21): warning C4244: “初始化”: 从“double”转换到“uint32_t”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(884,25): warning C4838: 从“uint32_t”转换到“float”需要收缩转换
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(884,25): warning C4244: “初始化”: 从“uint32_t”转换到“float”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(1021,35): warning C4018: “<”: 有符号/无符号不匹配
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(1081,21): warning C4838: 从“uint32_t”转换到“float”需要收缩转换
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(1081,21): warning C4244: “初始化”: 从“uint32_t”转换到“float”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(1081,36): warning C4838: 从“uint32_t”转换到“float”需要收缩转换
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp(1081,36): warning C4244: “初始化”: 从“uint32_t”转换到“float”，可能丢失数据
   ForestEngine.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\x64\Debug\ForestEngine.exe

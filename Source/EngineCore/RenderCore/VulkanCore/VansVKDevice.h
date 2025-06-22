@@ -11,7 +11,6 @@
 
 #include "../VansCommonUtils.h"
 using namespace VansGraphics;
-
 namespace VansVulkan
 {
 	struct QueueInfo 
@@ -21,6 +20,7 @@ namespace VansVulkan
 	};
 
 	class VansRenderPassManager;
+	
 
 	class VansVKDevice: public VansGraphicsDevice
 	{

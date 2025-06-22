@@ -38,6 +38,7 @@ struct BRDFData
     vec3 fresnel0;
     vec3 viewDirection;
     vec3 positionWS;
+    vec3 indirectDiffuse;
 };
 
 float DistributionTrowbridgeReitzGGX(vec3 normal, vec3 halfvector, float roughness)
@@ -100,7 +101,7 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
     vec3 kD = 1.0 - kS;
     kD *= 1.0 - brdf.metallic;
     
-    diffuse = texture(PreConvDiffuseEnvironment, brdf.normal).rgb * brdf.ao * kD * brdf.albedo;
+    diffuse = brdf.indirectDiffuse * brdf.ao * kD * brdf.albedo;
 
     vec3 reflection = reflect(-viewDirection, brdf.normal); 
     vec2 intergrationUV = vec2(NdotV, brdf.roughness);

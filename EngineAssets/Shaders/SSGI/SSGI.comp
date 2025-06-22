@@ -1,14 +1,17 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#define CameraCBBind 1
 #include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 layout( set = 0, binding = 0 ) uniform sampler2D inputNormal;
 layout( set = 0, binding = 1 ) uniform sampler2D inputDepth;
 layout( set = 0, binding = 2 ) uniform sampler2D inputColor;
-layout( set = 0, binding = 3 ) uniform samplerCube inputSkydiffuse;
-layout( set = 0, binding = 4, rgba32f ) uniform image2D result;
-layout( set = 0, binding = 5 ) uniform ssgiInfo
+layout( set = 0, binding = 3 ) uniform sampler2D inputPosition;
+layout( set = 0, binding = 4 ) uniform samplerCube inputSkydiffuse;
+layout( set = 0, binding = 5, rgba32f ) uniform image2D result;
+layout( set = 0, binding = 6 ) uniform ssgiInfo
 {
     vec4 screenSize;
 };
@@ -18,8 +21,68 @@ void main()
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
     vec2 uv = (vec2(pixelCoord) + 0.5) * screenSize.zw;
     vec3 normal = texture(inputNormal, uv).xyz;
-
     vec3 skydiffuse = texture(inputSkydiffuse, normal).xyz;
 
-    imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(skydiffuse,1.0));
+    //在半球方向进行随机采样，进行trace，如果trance不到或者到屏幕外，就使用skydiffuse
+    vec3 startPosition = texture(inputPosition, uv).xyz;
+    vec3 tracePosition = startPosition;
+    vec3 traceResult = skydiffuse;
+
+
+    //半球随机采样
+    vec3 viewDirection = normalize(cameraPosition.xyz - startPosition);
+
+    //构建TBN
+    vec3 tangent = normalize(cross(viewDirection,normal));
+    vec3 bitangent = cross(normal, tangent);
+    mat3x3 TBN = mat3x3(tangent, bitangent, normal);
+
+    int frame = int(FrameIndex) % 100;
+    vec2 random = HashRandom(uv, float(frame));
+    float phi = TWO_PI * random.x;
+    float cosTheta = random.y;
+    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+
+    vec3 traceDirection = vec3(
+        cos(phi) * sinTheta,
+        sin(phi) * sinTheta,
+        cosTheta
+    );
+    traceDirection = TBN * traceDirection;
+
+    for(int stepIndex = 1; stepIndex < SSGI_MAX_COUNT ; stepIndex++)
+    {
+        tracePosition = startPosition + traceDirection * SSGI_MAX_STEP * float(stepIndex) * float(stepIndex) * 0.005;
+
+        //计算目标在屏幕空间的位置
+        vec4 viewSpacePos = LastViewMatrix * vec4(tracePosition, 1.0);
+        float traceDepth = -viewSpacePos.z; // 视图空间的深度
+
+        vec4 clipSpacePos =LastProjectionMatrix * viewSpacePos;
+        vec2 screenPos = ((clipSpacePos.xy / clipSpacePos.w) * 0.5 + 0.5);
+        screenPos.y = 1.0 - screenPos.y;
+
+        //如果目标位置在屏幕外，就使用skydiffuse
+        if(screenPos.x < 0.0 || screenPos.x > 1.0 || screenPos.y < 0.0 || screenPos.y > 1.0)
+        {
+            break;
+        }
+
+        //获取当前位置的深度和法线
+        float sceneDepth = texture(inputDepth, screenPos).r;
+        vec3 sceneNormal = texture(inputNormal, screenPos).xyz;
+
+        //转到线性空间
+        sceneDepth = LinearizeDepth(sceneDepth, NearPlane, FarPlane);
+        if(traceDepth > sceneDepth )
+        {
+            traceResult = texture(inputColor, screenPos).xyz;
+            break;
+        }
+    }
+    //result源像素颜色减半，加上新颜色混合
+    vec4 currentColor = imageLoad(result, ivec2(gl_GlobalInvocationID.xy));
+    vec3 finalColor = mix(currentColor.xyz, traceResult, 0.5);
+    //存储结果
+    imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(finalColor,1.0));
 }

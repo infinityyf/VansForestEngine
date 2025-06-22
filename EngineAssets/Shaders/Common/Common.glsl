@@ -8,8 +8,11 @@
 #define SSAO_DEPTH_THRESHOLD 1.0
 #define SSAO_DEPHT_BIAS 0.02
 
-#define DEPTH_BIAS 0.01
+#define DEPTH_BIAS 0.001
 #define ESM_C 80.0
+
+#define SSGI_MAX_COUNT 32
+#define SSGI_MAX_STEP 4
 
 float RandomInterLeaved (vec2 uv) 
 {
@@ -30,6 +33,15 @@ float RandomWithScale(vec2 uv, float t)
     vec2 scale = vec2(2.083f, 4.867f);
     uv += t * scale;
     return fract(magic.z * fract(dot(uv, magic.xy)));
+}
+
+vec2 HashRandom(vec2 p,float frameCount)
+{
+    vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    vec3 frameMagicScale = vec3(2.083f, 4.867f,8.65);
+    p3 += frameCount * frameMagicScale;
+    return fract((p3.xx + p3.yz) * p3.zy);
 }
 
 float LinearizeDepth(float depth, float near, float far)

@@ -90,6 +90,7 @@ namespace VansVulkan
 		static const uint32_t m_CBuffer3SetBinding = 3;
 		static const uint32_t m_CBuffer4SetBinding = 4;
 		static const uint32_t m_CBuffer5SetBinding = 5;
+		static const uint32_t m_CBuffer6SetBinding = 6;
 	private:
 
 		//各个类似的描述符在这个pool中的最大数量，不是在一个set中的

@@ -15,7 +15,8 @@ layout(set = 1, binding = 3, input_attachment_index = 3) uniform subpassInput gb
 layout(set = 1, binding = 4, input_attachment_index = 4) uniform subpassInput depthInput;
 
 layout(set = 2, binding = 0, rgba32f ) uniform image2D ssao;
-layout(set = 2, binding = 1) uniform sampler2D shadowMap;
+layout(set = 2, binding = 1, rgba32f ) uniform image2D ssgi;
+layout(set = 2, binding = 2) uniform sampler2D shadowMap;
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -47,6 +48,9 @@ void main()
     brdfData.viewDirection = viewDirection;
     brdfData.positionWS = position_world;
     
+    //indirect diffuse
+    //brdfData.indirectDiffuse = texture(PreConvDiffuseEnvironment, normal).rgb;
+    brdfData.indirectDiffuse = imageLoad(ssgi,ivec2(fragTexCoord * ScreenParams.xy)).rgb;
 
     //计算光照
     LightResult lightResult;
@@ -56,6 +60,6 @@ void main()
     AmbientBRDF(brdfData,viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
 
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
-    outColor.rgb += lightResult.ambientDiffuse  + lightResult.ambientSpecular;
+    outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
     outColor.a = 1;
 }
