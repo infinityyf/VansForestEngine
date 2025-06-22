@@ -4,8 +4,10 @@
 #include "../../BRDF/BRDFData.glsl"
 
 layout( location = 0 ) in vec2 frag_uv;
-layout( location = 1 ) in vec3 normal_input;
-layout( location = 2 ) in vec3 position_world;
+layout( location = 1 ) in vec3 normal_ws;
+layout( location = 2 ) in vec3 tangent_ws;
+layout( location = 3 ) in vec3 bitangent_ws;
+layout( location = 4 ) in vec3 position_world;
 layout( set=2, binding=0 ) uniform sampler2D baseColor;
 layout( set=2, binding=1 ) uniform sampler2D normalMap;
 layout( set=2, binding=2 ) uniform sampler2D metalMap;
@@ -20,14 +22,18 @@ layout (location = 3) out vec4 outGBuffer2;
 
 void main() 
 { 
-    vec3 normal = normal_input;
-    vec3 albedo = texture( baseColor, frag_uv ).rgb;
-    float roughness = texture( roughnessMap, frag_uv ).r;
-    float metallic = texture( metalMap, frag_uv ).r;
-    float ao = texture( aoMap, frag_uv ).r;
+    vec3 normal_sample = texture(normalMap, frag_uv).rgb;
+    normal_sample.rg = normal_sample.rg * 2.0 - 1.0;
+    mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
+    vec3 normal = normalize(TBN * normal_sample);
+
+    vec3 albedo = albedo.rgb * texture( baseColor, frag_uv ).rgb;
+    float roughness = roughness * texture( roughnessMap, frag_uv ).r;
+    float metallic = metallic * texture( metalMap, frag_uv ).r;
+    float ao = ao * texture( aoMap, frag_uv ).r;
     vec3 fresnel0 = vec3(0.04);
     
-    outNormal = vec4(normalize(normal), 1.0);
+    outNormal = vec4(normal, 1.0);
     outGBuffer0 = vec4(albedo, roughness);
     outGBuffer1 = vec4(metallic, ao, 0, 1.0);
     outGBuffer2 = vec4(position_world, 1.0);

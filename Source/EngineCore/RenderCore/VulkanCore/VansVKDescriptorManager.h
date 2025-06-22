@@ -77,11 +77,19 @@ namespace VansVulkan
 		static const uint32_t m_SampleTexture3SetBinding = 3;
 		static const uint32_t m_SampleTexture4SetBinding = 4;
 
+		static const uint32_t m_UAVTextureSetBinding = 0;
 		static const uint32_t m_UAVTexture0SetBinding = 1;
 		static const uint32_t m_UAVTexture1SetBinding = 2;
 		static const uint32_t m_UAVTexture2SetBinding = 3;
 		static const uint32_t m_UAVTexture3SetBinding = 4;
 		static const uint32_t m_UAVTexture4SetBinding = 5;
+
+		static const uint32_t m_CBuffer0SetBinding = 0;
+		static const uint32_t m_CBuffer1SetBinding = 1;
+		static const uint32_t m_CBuffer2SetBinding = 2;
+		static const uint32_t m_CBuffer3SetBinding = 3;
+		static const uint32_t m_CBuffer4SetBinding = 4;
+		static const uint32_t m_CBuffer5SetBinding = 5;
 	private:
 
 		//各个类似的描述符在这个pool中的最大数量，不是在一个set中的

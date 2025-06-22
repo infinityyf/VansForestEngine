@@ -12,6 +12,8 @@ namespace VansGraphics
         glm::vec4	CameraDirection;
         glm::mat4x4 ViewMatrix;
         glm::mat4x4 ProjectionMatrix;
+        glm::mat4x4 LastViewMatrix;
+        glm::mat4x4 LastProjectionMatrix;
         //resolution, 1/resolution
         glm::vec4 ScreenParams;
         //frame index, time

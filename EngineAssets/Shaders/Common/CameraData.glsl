@@ -9,6 +9,8 @@ layout(set=CameraCBBind, binding=0) uniform    CameraUniformBuffer
     vec4 cameraDirection;
     mat4 ViewMatrix;
     mat4 ProjectionMatrix;
+    mat4 LastViewMatrix;
+    mat4 LastProjectionMatrix;
     vec4 ScreenParams;
     vec4 FrameParams;
     vec4 CameraParams; // x: near, y: far, z: fov, w: aspect

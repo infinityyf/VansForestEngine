@@ -42,7 +42,7 @@ void main()
     brdfData.albedo = color.rgb;
     brdfData.roughness = roughness;
     brdfData.metallic = metallic;
-    brdfData.ao = ssaoValue;
+    brdfData.ao = min(ao, ssaoValue);
     brdfData.fresnel0 = vec3(0.04);
     brdfData.viewDirection = viewDirection;
     brdfData.positionWS = position_world;

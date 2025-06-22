@@ -111,7 +111,8 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
     {
         std::string meshPath = pathPrefix+ std::string(sceneMesh["path"]);
         VansMesh* mesh = new VansMesh();
-        mesh->LoadMesh(nativeDevice, meshPath.c_str());
+        bool import_tangent = sceneMesh["need_tangent"];
+        mesh->LoadMesh(nativeDevice, meshPath.c_str(), import_tangent);
         m_Meshes.push_back(mesh);
         mesh->SetName(sceneMesh["name"]);
     }
@@ -138,13 +139,14 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         std::string texturePath = pathPrefix + std::string(sceneTexture["path"]);
         VansTexture* texture = new VansTexture();
         texture->m_TextureType = sceneTexture["type"];
+        bool isSRGB = sceneTexture["sRGB"];
         switch (texture->m_TextureType)
         {
         case TEXTURE_2D:
-            texture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath);
+            texture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB);
             break;
         case TEXTURE_CUBE:
-            texture->LoadCubeTexture(vkDevice->GetCommandBuffer(), texturePath);
+            texture->LoadCubeTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB);
 			break;
         default:
             break;

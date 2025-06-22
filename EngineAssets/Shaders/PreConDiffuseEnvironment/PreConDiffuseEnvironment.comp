@@ -81,31 +81,31 @@ void main()
     vec2 direction = coords.xy - ivec2(halfResolution, halfResolution);
 
     vec2 targetCoord = coords.yx;
-    targetCoord.y = imageCoordBound - targetCoord.y;
+    //targetCoord.y = imageCoordBound - targetCoord.y;
     vec3 irradiance = CalculateConvResult(GetRightDirection(direction));
     imageStore(cubemap, ivec3(targetCoord,0), vec4(irradiance, 1.0));
 
-    targetCoord.x = imageCoordBound - targetCoord.x;
+   // targetCoord.x = imageCoordBound - targetCoord.x;
     irradiance = CalculateConvResult(GetLeftDirection(direction));
     imageStore(cubemap, ivec3(targetCoord,1), vec4(irradiance, 1.0));
 
     targetCoord = coords.xy;
-    targetCoord.y = imageCoordBound - targetCoord.y;
-    targetCoord.x = imageCoordBound - targetCoord.x;
-    irradiance = CalculateConvResult(GetUpDirection(direction));
+    //targetCoord.y = imageCoordBound - targetCoord.y;
+    //targetCoord.x = imageCoordBound - targetCoord.x;
+    irradiance = CalculateConvResult(GetButtomDirection(direction));
     imageStore(cubemap, ivec3(targetCoord,2), vec4(irradiance, 1.0));
 
-    irradiance = CalculateConvResult(GetButtomDirection(direction));
+    irradiance = CalculateConvResult(GetUpDirection(direction));
     imageStore(cubemap, ivec3(targetCoord,3), vec4(irradiance, 1.0));
 
 
     targetCoord = coords.xy;
-    targetCoord.y = imageCoordBound - targetCoord.y;
-    targetCoord.x = imageCoordBound - targetCoord.x;
+    //targetCoord.y = imageCoordBound - targetCoord.y;
+    //targetCoord.x = imageCoordBound - targetCoord.x;
     irradiance = CalculateConvResult(GetFrontDirection(direction));
     imageStore(cubemap, ivec3(targetCoord,4), vec4(irradiance, 1.0));
 
-    targetCoord.x = imageCoordBound - targetCoord.x;
+    //targetCoord.x = imageCoordBound - targetCoord.x;
     irradiance = CalculateConvResult(GetBackDirection(direction));
     imageStore(cubemap, ivec3(targetCoord,5), vec4(irradiance, 1.0));
 }

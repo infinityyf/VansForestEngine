@@ -143,6 +143,10 @@ vec3 SingleScatter(AtmosphereParam param, vec3 start_position)
     {
         pScatterPosition +=  param.viewDirection * step;
         distanceAtmosphere = RayIntersectSphere(vec3(0, 0, 0), param.planetRadius + param.atmosphereWidth, pScatterPosition, param.sunDirection);
+        if(distanceAtmosphere < 1)
+        {
+            break;
+        }
         vec3 atmospherePosition = pScatterPosition + param.sunDirection * distanceAtmosphere;
 
         //single scatter

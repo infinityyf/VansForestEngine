@@ -365,6 +365,9 @@ namespace VansVulkan
 		DrawShadowMap(renderPassManager, cmd);
 		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 
+		//计算上一帧的ssGI数据
+		UpdateGIData(renderPassManager);
+
 		//clear mrt和color[beginrender pass的时候直接通过clearvalue就clear了，但是前提是frambufferload action是clear]
 		//绘制指令
 		renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass ,cmd, m_globalRenderStateData, m_SwapChainImageIndex);
@@ -854,8 +857,7 @@ namespace VansVulkan
 		return true;
 	}
 
-
-	void VansVKDevice::PrepareRenderingData()
+	void VansVKDevice::PrepareSkyRenderData()
 	{
 		//计算预卷积环境漫反射贴图
 		//创建输入贴图
@@ -876,18 +878,15 @@ namespace VansVulkan
 		manager->m_BRDFIntegralLUT = new VansTexture();
 		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png", false);
 
-		//SSAO结果
-		manager->m_SSAOResult = new VansTexture();
-		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true);
-
+		
 		VansVKBuffer prefilterCBBuffer;
 		uint32_t mipCount = log2(512);
-		float data[4] = {512,mipCount,512,512};
+		float data[4] = { 512,mipCount,512,512 };
 		prefilterCBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(float) * 4, VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		prefilterCBBuffer.SetBufferData(data,0, sizeof(float) * 4);
+		prefilterCBBuffer.SetBufferData(data, 0, sizeof(float) * 4);
 
 
 		VkDescriptorSetLayoutBinding samplerLUTBinding =
@@ -918,7 +917,7 @@ namespace VansVulkan
 		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding,sampleDiffuseConvBinding,sampleSpecularConBinding }, manager->m_BRDFInterationTexSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BRDFInterationTexSetLayout }, manager->m_BRDFInterationTextDescriptorSets);
 
-		
+
 		//卷积compute shader
 		VansComputeShader* m_PreConvDiffuseShader = new VansComputeShader();
 		m_PreConvDiffuseShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConDiffuseEnvironment");
@@ -956,7 +955,7 @@ namespace VansVulkan
 
 		VkDescriptorSetLayoutBinding prefilterCB =
 		{
-			3,
+			VansVKDescriptorManager::m_CBuffer3SetBinding,
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			1,
 			VK_SHADER_STAGE_COMPUTE_BIT,
@@ -973,7 +972,7 @@ namespace VansVulkan
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
 				m_PreConvtDescriptorSets[0],
-				3,
+				VansVKDescriptorManager::m_CBuffer3SetBinding,
 				0,
 				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 				{
@@ -1050,15 +1049,216 @@ namespace VansVulkan
 		//生成多个mip
 		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvSpecularShader, 512, 512, mipCount, m_PreConvtDescriptorSets);
 
-		//切换layout
-
 		//end record
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
 		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {});
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 
 		prefilterCBBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
+	}
 
+	void VansVKDevice::PrepareSSAORenderData()
+	{
+		//SSAO结果
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		manager->m_SSAOResult = new VansTexture();
+		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true);
+
+	}
+
+	void VansVKDevice::PrepareSSGIRenderData()
+	{
+		//SSAO结果
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		manager->m_SSGIResult = new VansTexture();
+		manager->m_SSGIResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true);
+		
+		//cs
+		manager->m_SSGIShader = new VansComputeShader();
+		manager->m_SSGIShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSGI");
+
+
+		float data[4] = { m_RenderWidth, m_RenderHeight, 1.0f/ m_RenderWidth, 1.0f/ m_RenderHeight };
+		manager->m_SSGICBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(float) * 4, VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_SSGICBBuffer.SetBufferData(data, 0, sizeof(float) * 4);
+
+		//资源绑定
+		//需要输入
+		//normal,depth,color result,天空diffuse
+		VkDescriptorSetLayoutBinding normalBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding depthBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture1SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+
+		VkDescriptorSetLayoutBinding colorBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture2SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding skyDiffuseBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture3SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding SSGIResultBinding =
+		{
+			VansVKDescriptorManager::m_UAVTexture3SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding SSGICBBinding =
+		{
+			VansVKDescriptorManager::m_CBuffer5SetBinding,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ normalBinding,depthBinding,colorBinding,skyDiffuseBinding,SSGIResultBinding,SSGICBBinding }, manager->m_SSGITexSetLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSGITexSetLayout }, manager->m_SSGIDescriptorSets);
+	}
+
+	void VansVKDevice::UpdateSSGI(VansRenderPassManager* renderPassManager)
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		//更新描述符
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_CBuffer5SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				{
+					{
+						manager->m_SSGICBBuffer.GetMativeBuffer(),
+						0,
+						manager->m_SSGICBBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+		//normal
+		auto& normal = renderPassManager->GetNormal();
+		auto& depth = renderPassManager->GetDepth();
+		auto& color = renderPassManager->GetColor();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture0SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						normal.GetSampler(),
+						normal.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		//depth
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture1SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						depth.GetSampler(),
+						depth.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		//color
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture2SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						color.GetSampler(),
+						color.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		//sky
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture3SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						manager->m_PreConvDiffuse->GetImage().GetSampler(),
+						manager->m_PreConvDiffuse->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_UAVTexture3SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{
+					{
+						manager->m_SSGIResult->GetImage().GetSampler(),
+						manager->m_SSGIResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+
+		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSGIShader, { manager->m_SSGITexSetLayout });
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSGIShader, m_RenderWidth, m_RenderHeight, 1, manager->m_SSGIDescriptorSets);
+	}
+
+	void VansVKDevice::PrepareRenderingData()
+	{
+		PrepareSkyRenderData();
+		
+		PrepareSSAORenderData();
+
+		PrepareSSGIRenderData();
 	}
 
 	void VansVKDevice::DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
@@ -1098,5 +1298,9 @@ namespace VansVulkan
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 
 		m_Scene->DrawPostProcessNodes();
+	}
+	void VansVKDevice::UpdateGIData(VansRenderPassManager* renderPassManager)
+	{
+		UpdateSSGI(renderPassManager);
 	}
 }

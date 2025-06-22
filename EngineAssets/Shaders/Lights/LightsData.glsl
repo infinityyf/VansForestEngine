@@ -74,6 +74,54 @@ float SampleDirectionShadowMap(vec3 position_world, sampler2D shadowMap)
     return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
 }
 
+float SampleDirectionShadowMap_ESM(vec3 position_world, sampler2D shadowMap)
+{
+    vec4 clipCoord = uDirectionLight.shadowMatrix * vec4(position_world, 1.0);
+    clipCoord.z = clipCoord.z * 0.5 + 0.5;
+    vec2 shadowUV = clipCoord.xy * 0.5 + 0.5;
+    shadowUV.y = 1.0 - shadowUV.y;
+
+    float receiverDepth = clipCoord.z - DEPTH_BIAS;
+    float esmShadow = texture(shadowMap, shadowUV).r;
+
+    // ESM 阴影公式
+    float visibility = clamp(esmShadow * exp(-ESM_C * receiverDepth), 0.0, 1.0);
+    // 可选：softness 调整
+    // visibility = pow(visibility, softness);
+
+    return visibility;
+}
+
+float SampleDirectionShadowMap_PCF_Noise(vec3 position_world, sampler2D shadowMap)
+{
+    vec4 clipCoord = uDirectionLight.shadowMatrix * vec4(position_world, 1.0);
+    clipCoord.z = clipCoord.z * 0.5 + 0.5;
+    clipCoord.z -= DEPTH_BIAS;
+    vec2 shadowUV = clipCoord.xy * 0.5 + 0.5;
+    shadowUV.y = 1.0 - shadowUV.y;
+
+    float shadow = 0.0;
+    float samples = 0.0;
+    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+
+    // 随机偏移（可用屏幕坐标或shadowUV作为种子）
+    float noise = RandomInterLeaved(shadowUV * 100.0);
+
+    // 3x3 PCF + 随机扰动
+    for(int x = -1; x <= 1; ++x)
+    {
+        for(int y = -1; y <= 1; ++y)
+        {
+            // 每个采样点加一点噪声扰动
+            vec2 offset = vec2(x, y) + noise;
+            float shadowMapDepth = texture(shadowMap, shadowUV + offset * texelSize).r;
+            shadow += shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
+            samples += 1.0;
+        }
+    }
+    return shadow / samples;
+}
+
 
 void CalculateDirectLight(BRDFData brdfData, sampler2D shadowMap, inout LightResult lightResult)
 {
@@ -86,7 +134,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2D shadowMap, inout LightRes
     DirectBRDF(brdfData, uDirectionLight.direction.rgb ,diffuseResult,specularResult);
     diffuseResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
 
-    float shadowValue = SampleDirectionShadowMap(brdfData.positionWS, shadowMap);
+    float shadowValue = SampleDirectionShadowMap_PCF_Noise(brdfData.positionWS, shadowMap);
     diffuseResult *= shadowValue;
     specularResult *= shadowValue;
 

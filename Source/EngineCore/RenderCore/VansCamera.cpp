@@ -61,6 +61,8 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
 {
     m_CameraData.CameraPosition = glm::vec4(m_Position.x, m_Position.y, m_Position.z,1.0f);
     m_CameraData.CameraDirection = glm::vec4(-view_matrix[2]);
+    m_CameraData.LastViewMatrix = m_CameraData.ViewMatrix;
+    m_CameraData.LastProjectionMatrix = m_CameraData.ProjectionMatrix;
     m_CameraData.ViewMatrix = view_matrix;
     m_CameraData.ProjectionMatrix = projective_matrix;
 

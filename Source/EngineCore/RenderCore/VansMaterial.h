@@ -44,6 +44,10 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_BRDFInterationTexSetLayout;
 		std::vector<VkDescriptorSet> m_BRDFInterationTextDescriptorSets;
 
+		//SSGI
+		VkDescriptorSetLayout m_SSGITexSetLayout;
+		std::vector<VkDescriptorSet> m_SSGIDescriptorSets;
+
 		//保存全局的一些texture数据
 		VansTexture* m_PreConvDiffuse;
 
@@ -53,7 +57,15 @@ namespace VansGraphics
 
 		VansTexture* m_SSAOResult;
 
+		VansTexture* m_SSGIResult;
+
 		VansMaterialManager();
+
+	public:
+
+		VansComputeShader* m_SSGIShader;
+
+		VansVKBuffer m_SSGICBBuffer;
 	};
 
 	class VansMaterial : public VansAsset

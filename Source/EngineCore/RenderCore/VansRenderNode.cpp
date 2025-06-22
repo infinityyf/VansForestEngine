@@ -54,8 +54,18 @@ void VansGraphics::VansRenderNode::BeforeDrawCall()
 {
 	//¸üÐÂCPU
 	m_ModelData.ModelMatrix = glm::translate(glm::mat4x4(1.0f), m_Transform.m_Position);
+
+	glm::vec3 radians = glm::radians(m_Transform.m_Rotation);
+	glm::mat4 rotX = glm::rotate(glm::mat4(1.0f), radians.x, glm::vec3(1, 0, 0));
+	glm::mat4 rotY = glm::rotate(glm::mat4(1.0f), radians.y, glm::vec3(0, 1, 0));
+	glm::mat4 rotZ = glm::rotate(glm::mat4(1.0f), radians.z, glm::vec3(0, 0, 1));
+
+	// XYZ order: first X, then Y, then Z
+	glm::mat4 rotationMatrix = rotZ * rotY * rotX;
+	m_ModelData.ModelMatrix = m_ModelData.ModelMatrix * rotationMatrix;
+
 	m_ModelData.ModelMatrix = glm::scale(m_ModelData.ModelMatrix, m_Transform.m_Scale);
-	//m_ModelData.ModelMatrix = glm::rotate(m_ModelData.ModelMatrix, m_Transform.m_Rotation);
+
 	m_ModelData.Postion = m_Transform.m_Position;
 	m_ModelData.Scale = m_Transform.m_Scale;
 

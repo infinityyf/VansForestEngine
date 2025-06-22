@@ -81,6 +81,19 @@
                     "support_shadow" : true
                 },
                 {
+                    "name" : "Object6",
+                    "mesh" : "plane",
+                    "material" : "UnlitMaterial6",
+                    "type" : 1,
+                    "transform" :
+                    {
+                        "position" : [0.0, 0.0, -5.0],
+                        "rotation" : [90.0, 0.0, 0.0],
+                        "scale" : [5.0, 1.0, 5.0]
+                    },
+                    "support_shadow" : true
+                },
+                {
                     "name" : "Postprocess",
                     "mesh" : "fullScreenQuad",
                     "material" : "PostprocessMaterial",
@@ -126,23 +139,28 @@
     "mesh" : [
         {
             "name" : "torus",
-            "path" : "EngineAssets/Models/catmark_torus_creases0.obj"
+            "path" : "EngineAssets/Models/catmark_torus_creases0.obj",
+            "need_tangent" : true
         },
         {
             "name" : "fullScreenQuad",
-            "path" : "EngineAssets/Models/fullscreen.obj"
+            "path" : "EngineAssets/Models/fullscreen.obj",
+            "need_tangent" : false
         },
         {
             "name" : "cube",
-            "path" : "EngineAssets/Models/cube.obj"
+            "path" : "EngineAssets/Models/cube.obj",
+            "need_tangent" : true
         },
         {
             "name" : "sphere",
-            "path" : "EngineAssets/Models/sphere.obj"
+            "path" : "EngineAssets/Models/sphere.obj",
+            "need_tangent" : true
         },
         {
             "name" : "plane",
-            "path" : "EngineAssets/Models/plane.obj"
+            "path" : "EngineAssets/Models/plane.obj",
+            "need_tangent" : true
         }
     ],
 
@@ -203,37 +221,74 @@
         {
             "name" : "testTexture",
             "path" : "EngineAssets/Textures/test.png",
-            "type" : 0
+            "type" : 0,
+            "sRGB" : true
         },
         {
             "name" : "baseColorTexture",
             "path" : "EngineAssets/Textures/tiles_albedo.png",
-            "type" : 0
+            "type" : 0,
+            "sRGB" : true
         },
         {
             "name" : "normalTexture",
             "path" : "EngineAssets/Textures/tiles_normal.png",
-            "type" : 0
+            "type" : 0,
+            "sRGB" : false
         },
         {
             "name" : "metalTexture",
             "path" : "EngineAssets/Textures/tiles_metal.png",
-            "type" : 0
+            "type" : 0,
+            "sRGB" : false
         },
         {
             "name" : "roughnessTexture",
             "path" : "EngineAssets/Textures/tiles_roughness.png",
-            "type" : 0
+            "type" : 0,
+            "sRGB" : false
         },
-                {
+        {
             "name" : "aoTexture",
             "path" : "EngineAssets/Textures/tiles_ao.png",
-            "type" : 0
+            "type" : 0,
+            "sRGB" : false
+        },
+        {
+            "name" : "wallbaseColor",
+            "path" : "EngineAssets/Textures/wall_albedo.png",
+            "type" : 0,
+            "sRGB" : true
+        },
+        {
+            "name" : "wallnormal",
+            "path" : "EngineAssets/Textures/wall_normal.png",
+            "type" : 0,
+            "sRGB" : false
+        },
+        {
+            "name" : "wallmetal",
+            "path" : "EngineAssets/Textures/wall_metal.png",
+            "type" : 0,
+            "sRGB" : false
+        },
+        {
+            "name" : "wallroughness",
+            "path" : "EngineAssets/Textures/wall_roughness.png",
+            "type" : 0,
+            "sRGB" : false
+        },
+        {
+            "name" : "wallao",
+            "path" : "EngineAssets/Textures/wall_ao.png",
+            "type" : 0,
+            "sRGB" : false
         },
         {
             "name" : "skyboxTexture",
             "path" : "EngineAssets/Textures/SkyBox",
-            "type" : 2
+            "type" : 2,
+            "sRGB" : true
         }
     ],
 
@@ -244,7 +299,7 @@
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.1,
-            "metallic" : 0.0,
+            "metallic" : 1.0,
             "ao" : 1.0,
             "basecolor_texture" : "baseColorTexture",
             "normal_texture" : "normalTexture",
@@ -259,7 +314,7 @@
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.3,
-            "metallic" : 0.0,
+            "metallic" : 1.0,
             "ao" : 1.0,
             "basecolor_texture" : "baseColorTexture",
             "normal_texture" : "normalTexture",
@@ -273,7 +328,7 @@
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.5,
-            "metallic" : 0.0,
+            "metallic" : 1.0,
             "ao" : 1.0,
             "basecolor_texture" : "baseColorTexture",
             "normal_texture" : "normalTexture",
@@ -287,7 +342,7 @@
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.7,
-            "metallic" : 0.0,
+            "metallic" : 1.0,
             "ao" : 1.0,
             "basecolor_texture" : "baseColorTexture",
             "normal_texture" : "normalTexture",
@@ -301,7 +356,7 @@
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
             "roughness" : 0.9,
-            "metallic" : 0.0,
+            "metallic" : 1.0,
             "ao" : 1.0,
             "basecolor_texture" : "baseColorTexture",
             "normal_texture" : "normalTexture",
@@ -314,7 +369,7 @@
             "type" : 0,
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
-            "roughness" : 0.0,
+            "roughness" : 1.0,
             "metallic" : 0.0,
             "ao" : 1.0,
             "basecolor_texture" : "baseColorTexture",
@@ -322,6 +377,20 @@
             "metal_texture" : "metalTexture",
             "roughness_texture" : "roughnessTexture",
             "ao_texture" : "aoTexture"
+        },
+        {
+            "name" : "UnlitMaterial6",
+            "type" : 0,
+            "shader" : "Unlit",
+            "albedo" : [1.0, 1.0, 1.0],
+            "roughness" : 1.0,
+            "metallic" : 0.0,
+            "ao" : 1.0,
+            "basecolor_texture" : "wallbaseColor",
+            "normal_texture" : "wallnormal",
+            "metal_texture" : "wallmetal",
+            "roughness_texture" : "wallroughness",
+            "ao_texture" : "wallao"
         },
         {
             "name" : "SkyBoxMaterial",

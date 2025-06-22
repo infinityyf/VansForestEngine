@@ -69,6 +69,6 @@ namespace VansVulkan
 
 	public:
 
-		void LoadMesh(VkDevice& logic_device,const std::string& file_name);
+		void LoadMesh(VkDevice& logic_device,const std::string& file_name, bool import_tangent = false);
 	};
 }

@@ -4,11 +4,12 @@
 #define PI 3.1415936
 #define TWO_PI 6.28318530718
 #define SSAO_SAMPLE_COUNT 32
-#define SSAO_RADIUS 0.5
-#define SSAO_DEPTH_THRESHOLD 0.6
+#define SSAO_RADIUS 2.0
+#define SSAO_DEPTH_THRESHOLD 1.0
 #define SSAO_DEPHT_BIAS 0.02
 
 #define DEPTH_BIAS 0.01
+#define ESM_C 80.0
 
 float RandomInterLeaved (vec2 uv) 
 {

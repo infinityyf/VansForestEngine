@@ -109,10 +109,20 @@ namespace VansVulkan
 
 		void DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
+		void UpdateGIData(VansRenderPassManager* renderPassManager);
+
 	private:
 
 		//记录全局的渲染参数，需要和相机绑定
 		GlobalStateData m_globalRenderStateData;
+
+		void PrepareSkyRenderData();
+
+		void PrepareSSAORenderData();
+
+		void PrepareSSGIRenderData();
+
+		void UpdateSSGI(VansRenderPassManager* renderPassManager);
 
 	private:
 

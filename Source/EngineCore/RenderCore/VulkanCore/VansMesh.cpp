@@ -29,7 +29,7 @@ VansVulkan::IndexBufferParameters VansVulkan::VansMesh::GetIndexBufferParameter(
 	return p;
 }
 
-void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRawData, std::vector<int>& meshIndex)
+void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRawData, std::vector<int>& meshIndex, bool import_tangent)
 {
 	for (uint32_t i = 0; i < node->mNumMeshes; i++)
 	{
@@ -38,6 +38,8 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRaw
 		{
 			aiVector3D vertex = mesh->mVertices[i];
 			aiVector3D normal = mesh->mNormals[i];
+			aiVector3D tangent(0, 0, 0);
+			aiVector3D bitangent(0, 0, 0);
 			aiVector3D texCoord(0,0,0);
 			if (mesh->mTextureCoords[0]!=nullptr)
 			{
@@ -51,6 +53,23 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRaw
 			meshRawData.emplace_back(normal.x);
 			meshRawData.emplace_back(normal.y);
 			meshRawData.emplace_back(normal.z);
+			if (import_tangent)
+			{
+				if (mesh->mTangents != nullptr)
+				{
+					tangent = mesh->mTangents[i];
+				}
+				if (mesh->mBitangents != nullptr)
+				{
+					bitangent = mesh->mBitangents[i];
+				}
+				meshRawData.emplace_back(tangent.x);
+				meshRawData.emplace_back(tangent.y);
+				meshRawData.emplace_back(tangent.z);
+				meshRawData.emplace_back(bitangent.x);
+				meshRawData.emplace_back(bitangent.y);
+				meshRawData.emplace_back(bitangent.z);
+			}
 		}
 		for (uint32_t i = 0; i < mesh->mNumFaces; i++)
 		{
@@ -63,88 +82,40 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRaw
 
 	for (uint32_t i = 0; i < node->mNumChildren; i++)
 	{
-		ProcessNode(node->mChildren[i], scene, meshRawData, meshIndex);
+		ProcessNode(node->mChildren[i], scene, meshRawData, meshIndex, import_tangent);
 	}
 }
 
-void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& file_name)
+void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& file_name, bool import_tangent)
 {
 	m_LogicalDevice = logic_device;
 	m_MeshRawDataCPULoaded = false;
-	//tinyobj::attrib_t attribs;
-	//std::vector<tinyobj::shape_t> shapes;
-	//std::vector<tinyobj::material_t> materials;
-	//std::string error;
-	//std::string warn;
-	//bool result = tinyobj::LoadObj(&attribs, &shapes, &materials, &warn ,&error, file_name.c_str());
-	//if (!result) 
-	//{
-	//	std::cout << "Could not open '" << file_name << "' file.";
-	//	if (0 < error.size()) 
-	//	{
-	//		std::cout << " " << error;
-	//	}
-	//	std::cout << std::endl;
-	//	return;
-	//}
-	//uint32_t offset = 0;
-	//uint32_t tri_index = 0;
-	//for (auto& shape : shapes)
-	//{
-	//	uint32_t part_offset = offset;
-	//	for (auto& index : shape.mesh.indices)
-	//	{
-	//		m_MeshRawData.emplace_back(attribs.vertices[3 * index.vertex_index + 0]);
-	//		m_MeshRawData.emplace_back(attribs.vertices[3 * index.vertex_index + 1]);
-	//		m_MeshRawData.emplace_back(attribs.vertices[3 * index.vertex_index + 2]);
-	//		m_MeshTriangleIndex.push_back(tri_index++);
-	//		m_MeshTriangleIndex.push_back(tri_index++);
-	//		m_MeshTriangleIndex.push_back(tri_index++);
-	//		++offset;
-	//		if (attribs.texcoords.size() > 0)
-	//		{
-	//			m_MeshRawData.emplace_back(attribs.texcoords[2 * index.texcoord_index + 0]);
-	//			m_MeshRawData.emplace_back(attribs.texcoords[2 * index.texcoord_index + 1]);
-	//		}
-	//		else
-	//		{
-	//			m_MeshRawData.emplace_back(0.0f);
-	//			m_MeshRawData.emplace_back(0.0f);
-	//		}
-	//		if (attribs.normals.size() > 0)
-	//		{
-	//			m_MeshRawData.emplace_back(attribs.normals[3 * index.normal_index + 0]);
-	//			m_MeshRawData.emplace_back(attribs.normals[3 * index.normal_index + 1]);
-	//			m_MeshRawData.emplace_back(attribs.normals[3 * index.normal_index + 2]);
-	//		}
-	//		else
-	//		{
-	//			
-	//			m_MeshRawData.emplace_back(0.0f);
-	//			m_MeshRawData.emplace_back(1.0f);
-	//			m_MeshRawData.emplace_back(0.0f);
-	//		}
-
-	//	}
-	//	m_MeshRawDataCPULoaded = true;
-	//}
-
 
 	//用assimp
 	Assimp::Importer importer;
-	const aiScene* scene = importer.ReadFile(file_name, aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices);
+	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices;
+	if (import_tangent)
+	{
+		processFlag |= aiProcess_CalcTangentSpace;
+	}
+	const aiScene* scene = importer.ReadFile(file_name, processFlag);
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 	{
 		std::cout << "ERROR::ASSIMP::" << importer.GetErrorString() << std::endl;
 		return;
 	}
-	ProcessNode(scene->mRootNode, scene, m_MeshRawData, m_MeshTriangleIndex);
+	ProcessNode(scene->mRootNode, scene, m_MeshRawData, m_MeshTriangleIndex, import_tangent);
 	m_MeshRawDataCPULoaded = true;
 
+	uint32_t vertexStride = 8 * sizeof(float);
+	if (import_tangent)
+	{
+		vertexStride += 6 * sizeof(float);
+	}
 	m_VertexInputBindingDescription = 
 	{
 		0,
-		8 * sizeof(float),
+		vertexStride,
 		VK_VERTEX_INPUT_RATE_VERTEX
 	};
 
@@ -169,6 +140,25 @@ void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& f
 			 5 * sizeof(float)
 		 }
 	};
+	if (import_tangent)
+	{
+		m_VertexInputAttributeDescriptions.push_back(
+			{
+				3,
+				0,
+				VK_FORMAT_R32G32B32_SFLOAT,
+				8 * sizeof(float)
+			}
+		);
+		m_VertexInputAttributeDescriptions.push_back(
+			{
+				4,
+				0,
+				VK_FORMAT_R32G32B32_SFLOAT,
+				11 * sizeof(float)
+			}
+		);
+	}
 
 	//上传数据到GPU
 	//如果不使用stagebuffer，直接map,需要创建的memory设置host visible
