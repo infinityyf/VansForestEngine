@@ -14,10 +14,21 @@
 #define SSGI_MAX_COUNT 32
 #define SSGI_MAX_STEP 4
 
+#define SSR_MAX_COUNT 64
+#define SSR_MAX_STEP 4
+
 float RandomInterLeaved (vec2 uv) 
 {
     return fract(sin(dot(uv.xy,vec2(12.9898,78.233)))*43758.5453123);
 }
+
+// float IGN(int2 pixelCoord, int frame)
+// {
+//     frame = frame % 64; // need to periodically reset frame to avoid numerical issues
+//     float x = float(pixelX) + 5.588238 * float(frame);
+//     float y = float(pixelY) + 5.588238 * float(frame);
+//     return std::fmodf(52.9829189 * std::fmodf(0.06711056*float(x) + 0.00583715*float(y), 1.0), 1.0);
+// }
 
 float RandomInterLeavedWithScale(vec2 uv, float t)
 {
@@ -48,6 +59,24 @@ float LinearizeDepth(float depth, float near, float far)
 {
     float z = depth;
     return (2.0 * near * far) / (far + near - z * (far - near));
+}
+
+vec4 ImportanceSampleGGX(vec2 random, float roughness) 
+{
+	float m = roughness * roughness;
+	float m2 = m * m;
+
+	float Phi = 2 * PI * random.x;
+	float CosTheta = sqrt( (1 - random.y) / ( 1 + (m2 - 1) * random.y) );
+	float SinTheta = sqrt(1 - CosTheta * CosTheta);
+
+	vec3 H = vec3( SinTheta * cos(Phi), SinTheta * sin(Phi), CosTheta );
+			
+	float d = (CosTheta * m2 - CosTheta) * CosTheta + 1;
+	float D = m2 / (PI * d * d);
+			
+	float PDF = D * CosTheta;
+	return vec4(H, PDF);
 }
 
 #endif

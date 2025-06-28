@@ -129,6 +129,11 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         VansGraphicsShader* shader = new VansGraphicsShader();
         shader->InitShader(nativeDevice, shaderPath);
         shader->SetDrawStateData(depthTest, depthWrite, depthCompareOp, cullMode);
+        if (sceneShader.contains("support_push_constant"))
+        {
+            int pushConstantSize = sceneShader["support_push_constant"];
+            shader->SetPushConstant(pushConstantSize);
+        }
         m_Shaders.push_back(shader);
         shader->SetName(sceneShader["name"]);
     }
@@ -233,6 +238,15 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         shadowMaterial->m_MaterialType = VansMaterialType::VAN_SHAODW;
         shadowMaterial->SetName("ShadowMaterial");
         m_Materials.push_back(shadowMaterial);
+    }
+    VansGraphicsShader* punctualShadowShader = static_cast<VansGraphicsShader*>(GetShaderAsset("PunctualShadow"));
+    if (punctualShadowShader != nullptr)
+    {
+        VansMaterial* punctualShadowMaterial = new VansMaterial();
+        punctualShadowMaterial->m_Shader = punctualShadowShader;
+        punctualShadowMaterial->m_MaterialType = VansMaterialType::VAN_SHAODW;
+        punctualShadowMaterial->SetName("PunctualShadowMaterial");
+        m_Materials.push_back(punctualShadowMaterial);
     }
 
 
@@ -368,6 +382,22 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
                 m_ShadowRenderNodes.push_back(shadowNode);
             }
         }
+
+        VansMaterial* punctualShadowMaterial = static_cast<VansMaterial*>(GetMaterialAsset("PunctualShadowMaterial"));
+        if (type == OPAQUE_NODE && punctualShadowMaterial != nullptr)
+        {
+            auto* node = static_cast<VansCommonRenderNode*>(renderNode);
+            if (node->m_SupportShadow)
+            {
+                VansRenderNode* shadowNode = new VansShadowRenderNode(device);
+                shadowNode->m_Mesh = mesh;
+                shadowNode->m_Material = punctualShadowMaterial;
+                shadowNode->SetTransformData(node->GetTransformPosition(), node->GetTransformRotation(), node->GetTransformScale());
+                shadowNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+                shadowNode->SetName("punctual_shadow");
+                m_PunctualShadowRenderNodes.push_back(shadowNode);
+            }
+        }
     }
 }
 
@@ -444,6 +474,82 @@ void VansGraphics::VansScene::DrawShadowNodes()
         node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
 
         node->Draw(cmd, globalStateData);
+    }
+}
+
+void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
+{
+    auto vansConfigration = VansConfigration::GetInstance();
+    float punctualShadowSize = vansConfigration->GetPunctualShadowMapWidth();
+    float patchShadowSize = punctualShadowSize / 8;
+
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    for (int shadowDirection = 0; shadowDirection < 6; shadowDirection++)
+    {
+        float regionOffsetX = (lightIndex * 6 + shadowDirection) % 8 * patchShadowSize;
+        float regionOffsetY = (lightIndex * 6 + shadowDirection) / 8 * patchShadowSize;
+
+        VkViewport viewPort = {};
+        viewPort.x = regionOffsetX;
+        viewPort.y = regionOffsetY;
+        viewPort.width = patchShadowSize;
+        viewPort.height = patchShadowSize;
+        viewPort.minDepth = 0.0f;
+        viewPort.maxDepth = 1.0f;
+
+        VkRect2D scissor = {};
+        scissor.offset = { (int)(regionOffsetX), (int)(regionOffsetY) };
+        scissor.extent = { (uint32_t)(patchShadowSize), (uint32_t)(patchShadowSize) };
+
+        cmd.SetViewport(0, { viewPort });
+        cmd.SetScissor(0, { scissor });
+
+        for (auto& node : m_PunctualShadowRenderNodes)
+        {
+            //更新desc
+            node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
+
+            node->DrawPunctualShadow(cmd, globalStateData, lightIndex, shadowDirection);
+        }
+    }
+}
+
+void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
+{
+    auto vansConfigration = VansConfigration::GetInstance();
+    float punctualShadowSize = vansConfigration->GetPunctualShadowMapWidth();
+    float patchShadowSize = punctualShadowSize / 8;
+
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+
+    float regionOffsetX = (pointCount * 6 + lightIndex) % 8 * patchShadowSize;
+    float regionOffsetY = (pointCount * 6 + lightIndex) / 8 * patchShadowSize;
+
+    VkViewport viewPort = {};
+    viewPort.x = regionOffsetX;
+    viewPort.y = regionOffsetY;
+    viewPort.width = patchShadowSize;
+    viewPort.height = patchShadowSize;
+    viewPort.minDepth = 0.0f;
+    viewPort.maxDepth = 1.0f;
+
+    VkRect2D scissor = {};
+    scissor.offset = { (int)(regionOffsetX), (int)(regionOffsetY) };
+    scissor.extent = { (uint32_t)(patchShadowSize), (uint32_t)(patchShadowSize) };
+
+    cmd.SetViewport(0, { viewPort });
+    cmd.SetScissor(0, { scissor });
+
+    for (auto& node : m_PunctualShadowRenderNodes)
+    {
+        //更新desc
+        node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
+
+        node->DrawPunctualShadow(cmd, globalStateData, pointCount + lightIndex, 0);
     }
 }
 

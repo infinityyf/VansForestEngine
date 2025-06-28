@@ -143,6 +143,8 @@ namespace VansVulkan
 		std::vector<VkPipelineColorBlendAttachmentState> attachment_blend_states;
 
 		std::vector<VkDescriptorSetLayout>			descriptorset_layouts;
+
+		int push_constant_size;
 	};
 
 	class VansVKGraphicsPipeline

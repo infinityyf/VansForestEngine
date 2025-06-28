@@ -140,7 +140,7 @@
                     "type" : 2,
                     "color" : [1.0, 0.0, 0.0],
                     "intensity" : 1000.0,
-                    "position" : [1.0, 3.0, 0.0],
+                    "position" : [3.0, 2.0, 0.0],
                     "direction" : [-1.0, 0.0, 0.0],
                     "radius" : 10.0,
                     "innercutoff" : 30.0,
@@ -226,6 +226,15 @@
             "depthWrite" : true,
             "depthCompareOp" : 3,
             "cullMode" : 0
+        },
+        {
+            "name" : "PunctualShadow",
+            "path" : "EngineAssets/Shaders/PunctualShadow",
+            "depthTest" : true,
+            "depthWrite" : true,
+            "depthCompareOp" : 3,
+            "cullMode" : 0,
+            "support_push_constant" : 8
         }
     ],
 

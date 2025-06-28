@@ -106,6 +106,9 @@ namespace VansVulkan
 		//dispatch
 		void DispatchCompute(VansComputeShader& shader, uint32_t x_size, uint32_t y_size, uint32_t z_size, const std::vector<VkDescriptorSet>& descriptor_sets);
 
+		//blit
+		void BlitImage(VansVKImage& source, int source_mip, VansVKImage& target, int target_mip);
+
 		void ExecuteSecondaryCommandBuffer(std::vector<VkCommandBuffer>& secondary_command_buffers);
 
 		void BindDescriptorSets(VkPipelineBindPoint pipeline_type,
@@ -113,7 +116,6 @@ namespace VansVulkan
 			int index_for_first_set,
 			const std::vector<VkDescriptorSet>& descriptor_sets,
 			const std::vector<uint32_t>& dynamic_offsets);
-
 
 		static bool SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansVulkan::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores);
 

@@ -33,6 +33,9 @@ void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer
 		return;
 	}
 
+	m_TextureWidth = width;
+	m_TextureHeight = height;
+
 	num_components = 4;
 	int data_size = width * height * num_components;
 	m_ImageData.resize(data_size);
@@ -97,6 +100,54 @@ VkFormat VansGraphics::VansTexture::CheckTextureFormat(int channel, bool isHdr, 
 		break;
 	case 4:
 		format = isSRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+		break;
+	default:
+		break;
+	}
+
+	return format;
+}
+
+VkFormat VansGraphics::VansTexture::CheckTextureHighPrecisionFormat(int channel)
+{
+	VkFormat format = VK_FORMAT_UNDEFINED;
+	switch (channel)
+	{
+	case 1:
+		format = VK_FORMAT_R32_SFLOAT;
+		break;
+	case 2:
+		format = VK_FORMAT_R32G32_SFLOAT;
+		break;
+	case 3:
+		format = VK_FORMAT_R32G32B32_SFLOAT;
+		break;
+	case 4:
+		format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		break;
+	default:
+		break;
+	}
+
+	return format;
+}
+
+VkFormat VansGraphics::VansTexture::CheckTextureMidPrecisionFormat(int channel)
+{
+	VkFormat format = VK_FORMAT_UNDEFINED;
+	switch (channel)
+	{
+	case 1:
+		format = VK_FORMAT_R16_UNORM;
+		break;
+	case 2:
+		format = VK_FORMAT_R16G16_UNORM;
+		break;
+	case 3:
+		format = VK_FORMAT_R16G16B16_UNORM;
+		break;
+	case 4:
+		format = VK_FORMAT_R16G16B16A16_UNORM;
 		break;
 	default:
 		break;
@@ -172,7 +223,8 @@ void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buf
 		vkDevicePtr->SetDeviceImageData(m_Image, m_ImageData.data(), 0, data_size, image_offset, extent, 0, textureIndex);
 	}
 
-
+	m_TextureWidth = width;
+	m_TextureHeight = height;
 
 	//ÇÐ»»layoutµ½£ºVK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	//
@@ -195,13 +247,30 @@ void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buf
 	command_buffer.ResetCommandBuffer(false);
 }
 
-void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite)
+void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision)
 {
+	m_TextureWidth = width;
+	m_TextureHeight = height;
+
 	VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
 	VansVKDevice* vkDevicePtr = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevicePtr->GetLogicDevice();
 	VkQueue graphicsQueue = vkDevicePtr->GetGraphicsQueue();
-	VkFormat format = CheckTextureFormat(num_components);
+	VkFormat format = VK_FORMAT_UNDEFINED;
+	switch (texture_precision)
+	{
+	case VansGraphics::LOW_PRES_8:
+		format = CheckTextureFormat(num_components);
+		break;
+	case VansGraphics::MID_PRES_16:
+		format = CheckTextureMidPrecisionFormat(num_components);
+		break;
+	case VansGraphics::HIGH_PRES_32:
+		format = CheckTextureHighPrecisionFormat(num_components);
+		break;
+	default:
+		break;
+	}
 	int mipNum = generateMip ? static_cast<int>(std::floor( std::log2(static_cast<float>(width)))) + 1 : 1;
 	m_Image.CreateVulkanImage(
 		nativeDevice,

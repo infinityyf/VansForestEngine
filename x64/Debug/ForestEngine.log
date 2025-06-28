@@ -1,4 +1,13 @@
-﻿  VansRenderNode.cpp
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(41,41): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(43,42): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
+﻿  VansLight.cpp
+C:\Program Files (x86)\Windows Kits\10\Include\10.0.22000.0\shared\minwindef.h(130,1): warning C4005: “APIENTRY”: 宏重定义
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\GUI\glfw-3.3.9\include\GLFW\glfw3.h(123,1): message : 参见“APIENTRY”的前一个定义
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\BRDFData\VansLight.cpp(22,54): warning C4267: “初始化”: 从“size_t”转换到“int”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\BRDFData\VansLight.cpp(31,44): warning C4267: “初始化”: 从“size_t”转换到“int”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\BRDFData\VansLight.cpp(49,50): warning C4244: “=”: 从“int”转换到“float”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\BRDFData\VansLight.cpp(51,42): warning C4267: “初始化”: 从“size_t”转换到“int”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\BRDFData\VansLight.cpp(62,48): warning C4244: “=”: 从“int”转换到“float”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\BRDFData\VansLight.cpp(69,27): warning C4244: “初始化”: 从“int”转换到“float”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\BRDFData\VansLight.cpp(74,41): warning C4267: “=”: 从“size_t”转换到“uint32_t”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\BRDFData\VansLight.cpp(75,40): warning C4267: “=”: 从“size_t”转换到“uint32_t”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\BRDFData\VansLight.cpp(76,21): warning C4244: “=”: 从“float”转换到“uint32_t”，可能丢失数据
   ForestEngine.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\x64\Debug\ForestEngine.exe

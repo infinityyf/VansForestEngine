@@ -14,6 +14,16 @@ namespace VansGraphics
 		TEXTURE_3D = 1,
 		TEXTURE_CUBE = 2,
 	};
+
+	enum TexturePrecision
+	{
+		LOW_PRES_8 = 0,
+		MID_PRES_16 = 1,
+		HIGH_PRES_32 = 2
+	};
+
+
+
 	class VansTexture : public VansAsset
 	{
 	public:
@@ -25,11 +35,15 @@ namespace VansGraphics
 		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
 
 		//直接创建一个GPU上的texture
-		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite);
+		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision = LOW_PRES_8);
 
 		VansVKImage& GetImage() { return m_Image; }
 
 		TextureType m_TextureType;
+
+		int GetWidth() { return m_TextureWidth; }
+
+		int GetHeight() { return m_TextureHeight; }
 
 	private:
 		VansVKImage m_Image;
@@ -37,5 +51,15 @@ namespace VansGraphics
 		std::vector<unsigned char> m_ImageData;
 
 		VkFormat CheckTextureFormat(int channel, bool isHdr = false, bool isSRGB = false);
+
+		VkFormat CheckTextureHighPrecisionFormat(int channel);
+
+		VkFormat CheckTextureMidPrecisionFormat(int channel);
+
+	private:
+
+		int m_TextureWidth;
+
+		int m_TextureHeight;
 	};
 }

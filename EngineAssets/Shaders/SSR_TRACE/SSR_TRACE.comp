@@ -1,0 +1,79 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#define CameraCBBind 1
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout( set = 0, binding = 0 ) uniform sampler2D inputNormal;
+layout( set = 0, binding = 1 ) uniform sampler2D inputRoughness;
+layout( set = 0, binding = 2 ) uniform sampler2D inputPosition;
+layout( set = 0, binding = 3 ) uniform sampler2D inputHIZ;
+layout( set = 0, binding = 4, rgba32f ) uniform image2D traceHit;
+layout( set = 0, binding = 5, rgba32f ) uniform image2D tracePDF;
+
+void main() 
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec3 normal = texelFetch(inputNormal, pixelCoord,0).xyz;
+    vec3 position = texelFetch(inputPosition, pixelCoord,0).xyz;
+    float roughness = texelFetch(inputRoughness, pixelCoord,0).a;
+
+    //计算视线向量
+    vec3 viewDirection = normalize(cameraPosition.xyz - position);
+    vec3 tracePosition = position;
+    vec4 traceHitInfo = vec4(0.0);
+    vec4 tracePDFInfo = vec4(0.0);
+
+    //计算反射光线的方向
+    vec3 traceDirection = reflect(-viewDirection, normal);
+
+    //根据roughness计算采样的PDF
+    if(roughness > 0.1)
+    {
+        vec2 random = HashRandom(pixelCoord, float(int(FrameIndex) % 100));
+        vec4 pdfrandom = ImportanceSampleGGX(random, roughness);
+        tracePDFInfo.a = pdfrandom.w; // PDF值
+    }
+    else
+    {
+        tracePDFInfo.a = 1;
+    }
+    
+
+    for(int stepIndex = 1; stepIndex < SSR_MAX_COUNT ; stepIndex++)
+    {
+        tracePosition = position + traceDirection * SSR_MAX_STEP * float(stepIndex) * float(stepIndex) * 0.005;
+
+        //计算目标在屏幕空间的位置
+        vec4 viewSpacePos = LastViewMatrix * vec4(tracePosition, 1.0);
+        float traceDepth = -viewSpacePos.z; // 视图空间的深度
+
+        vec4 clipSpacePos =LastProjectionMatrix * viewSpacePos;
+        vec2 screenPos = ((clipSpacePos.xy / clipSpacePos.w) * 0.5 + 0.5);
+        screenPos.y = 1.0 - screenPos.y;
+
+        if(screenPos.x < 0.0 || screenPos.x > 1.0 || screenPos.y < 0.0 || screenPos.y > 1.0)
+        {
+            break;
+        }
+
+        //获取当前位置的深度和法线
+        float sceneDepth = texelFetch(inputHIZ, ivec2(screenPos * ScreenParams.xy), 0).r;
+        vec3 sceneNormal = texelFetch(inputNormal, ivec2(screenPos * ScreenParams.xy), 0).xyz;
+
+        //转到线性空间
+        float sceneDepthV = LinearizeDepth(sceneDepth, NearPlane, FarPlane);
+        if(traceDepth > sceneDepthV )
+        {
+            traceHitInfo.xy = screenPos;
+            traceHitInfo.z  = traceDepth; // 存储深度
+            traceHitInfo.w = 1.0;
+            tracePDFInfo.xyz = sceneNormal;
+            break;
+        }
+    }
+
+    imageStore(traceHit, pixelCoord, traceHitInfo); // 初始化为0
+    imageStore(tracePDF, pixelCoord, tracePDFInfo); // 初始化为
+}

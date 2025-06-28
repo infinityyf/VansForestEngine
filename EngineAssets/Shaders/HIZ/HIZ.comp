@@ -1,0 +1,25 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/Common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout( set = 0, binding = 0, r32f ) uniform image2D hizSource;
+layout( set = 0, binding = 1, r32f ) uniform image2D hizResult;
+
+void main() 
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+
+    // 计算上一层LOD中对应的4个像素坐标
+    ivec2 srcCoord = pixelCoord * 2;
+    float d0 = imageLoad(hizSource, srcCoord).r;
+    float d1 = imageLoad(hizSource, srcCoord + ivec2(1, 0)).r;
+    float d2 = imageLoad(hizSource, srcCoord + ivec2(0, 1)).r;
+    float d3 = imageLoad(hizSource, srcCoord + ivec2(1, 1)).r;
+
+    // 取最大深度（远平面），用于遮挡剔除
+    float maxDepth = min(min(d0, d1), min(d2, d3));
+
+    imageStore(hizResult, pixelCoord, vec4(maxDepth));
+}

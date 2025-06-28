@@ -275,6 +275,35 @@ void VansVulkan::VansVKCommandBuffer::DispatchCompute(VansComputeShader& shader,
 	pipeline->DispatchCompute(m_VansVKCommandBuffer, x_size, y_size, z_size);
 }
 
+void VansVulkan::VansVKCommandBuffer::BlitImage(VansVKImage& source, int source_mip, VansVKImage& target, int target_mip)
+{
+	VkImageCopy copyRegion = {};
+	copyRegion.srcSubresource.aspectMask = source.GetImageAspect();
+	copyRegion.srcSubresource.mipLevel = source_mip;
+	copyRegion.srcSubresource.baseArrayLayer = 0;
+	copyRegion.srcSubresource.layerCount = 1;
+	copyRegion.srcOffset = { 0, 0, 0 };
+
+	copyRegion.dstSubresource.aspectMask = target.GetImageAspect();
+	copyRegion.dstSubresource.mipLevel = target_mip;
+	copyRegion.dstSubresource.baseArrayLayer = 0;
+	copyRegion.dstSubresource.layerCount = 1;
+	copyRegion.dstOffset = { 0, 0, 0 };
+
+	uint32_t width = std::min(source.GetImageDimension().width, target.GetImageDimension().width);
+	uint32_t height = std::min(source.GetImageDimension().height, target.GetImageDimension().height);
+	copyRegion.extent.width = width;
+	copyRegion.extent.height = height;
+	copyRegion.extent.depth = 1;
+
+	vkCmdCopyImage(
+		m_VansVKCommandBuffer,
+		source.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		target.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		1, &copyRegion
+	);
+}
+
 void VansVulkan::VansVKCommandBuffer::BindDescriptorSets(
 	VkPipelineBindPoint pipeline_type, 
 	VansGraphicsShader& shader,

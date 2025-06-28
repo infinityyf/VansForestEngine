@@ -39,6 +39,7 @@ struct BRDFData
     vec3 viewDirection;
     vec3 positionWS;
     vec3 indirectDiffuse;
+    vec4 indirectSpecular; // rgba: color, a: mask
 };
 
 float DistributionTrowbridgeReitzGGX(vec3 normal, vec3 halfvector, float roughness)
@@ -93,6 +94,36 @@ float GetMipLevelFromRoughness(float roughness)
     return roughness * 9.0;
 }
 
+
+float D_GGX(float NoH, float Roughness)
+{
+	Roughness = pow(Roughness,4);
+	float D = (NoH * Roughness - NoH) * NoH + 1;
+	return Roughness / (PI * D*D);
+}
+
+float Vis_SmithGGXCorrelated(float NoL, float NoV, float Roughness)
+{
+	float a = Roughness * Roughness;
+	float LambdaV = NoV * sqrt((-NoL * a + NoL) * NoL + a);
+	float LambdaL = NoL * sqrt((-NoV * a + NoV) * NoV + a);
+	return (0.5 / (LambdaL + LambdaV)) / PI;
+}
+
+float SSR_BRDF(vec3 V, vec3 L, vec3 N, float Roughness)
+{
+	vec3 H = normalize(L + V);
+
+	float NoH = max(dot(N, H), 0);
+	float NoL = max(dot(N, L), 0);
+	float NoV = max(dot(N, V), 0);
+
+	float D = D_GGX(NoH, Roughness);
+	float G = Vis_SmithGGXCorrelated(NoL, NoV, Roughness);
+
+	return max(0, D * G);
+}
+
 void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
 {
     float NdotV = max(dot(brdf.normal, viewDirection), 0.0);
@@ -112,6 +143,8 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
     float lod = GetMipLevelFromRoughness(brdf.roughness);
     vec3 prefilteredColor = textureLod(PreConvSpecularEnvironment,reflection,lod).rgb;
     specular = prefilteredColor * (F * environmentBRDF.x + environmentBRDF.y);
+
+    specular = mix(specular, brdf.indirectSpecular.rgb, brdf.indirectSpecular.a);
 }
 
 void DirectBRDF(BRDFData brdf, vec3 lightDirection, inout vec3 diffuse, inout vec3 specular)

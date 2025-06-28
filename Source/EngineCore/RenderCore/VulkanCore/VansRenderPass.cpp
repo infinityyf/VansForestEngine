@@ -850,7 +850,6 @@ void VansVulkan::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logi
 			m_ShadowMapDepthImage.GetImageView()};
 	m_VansShadowPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansShadowPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
 
-
 	m_LogicDevice = logic_device;
 
 	//record command buffer
@@ -877,6 +876,140 @@ void VansVulkan::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logi
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_ShadowMapDepthImage.m_ImageAspect
+		});
+
+	//end record
+	command_buffer.EndCommandBufferRecord();
+
+	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {});
+	command_buffer.ResetCommandBuffer(false);
+}
+
+void VansVulkan::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue)
+{
+	std::vector<VkAttachmentDescription> attachments_descriptions =
+	{
+		{
+			0,
+			VK_FORMAT_R32_SFLOAT,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL, //render passbegin的layout
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //这里的final layout会自动切换,render pass结束后的layout
+		},
+		{
+			0,
+			VK_FORMAT_D16_UNORM,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		},
+	};
+
+	VkAttachmentReference depth_stencil_attachment =
+	{
+		 1,
+		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	};
+
+	std::vector<SubpassParameters> subpass_parameters =
+	{
+		// #0 subpass
+		//记录在attachemts中的索引，以及对应需要的layout
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{
+				{
+					0,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				}
+			},
+			{},
+			&depth_stencil_attachment,
+			{}
+		},
+	};
+
+	//shadow 默认1
+	m_VansPunctualShadowPass.m_ClearValues =
+	{
+		{ 1.0f, 1.0f, 1.0f, 1.0f },
+		{ 1.0f, 0 },
+	};
+
+	//不切换subpass
+	std::vector<VkSubpassDependency> subpass_dependencies;
+
+	auto vansConfigration = VansConfigration::GetInstance();
+	VkExtent2D resolution = { vansConfigration->GetPunctualShadowMapWidth(), vansConfigration->GetPunctualShadowMapHeight() };
+
+	m_VansPunctualShadowPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
+
+	//创建color,depth
+	m_PunctualShadowMapImage.CreateVulkanImage(
+		logic_device,
+		{ resolution.width,resolution.height,1 },
+		VK_FORMAT_R32_SFLOAT,
+		1,
+		1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true
+	);
+	m_PunctualShadowMapDepthImage.CreateVulkanImage(
+		logic_device,
+		{ resolution.width,resolution.height,1 },
+		VK_FORMAT_D16_UNORM,
+		1,
+		1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT
+	);
+
+	m_VansPunctualShadowPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> image_views = {
+			m_PunctualShadowMapImage.GetImageView(),
+			m_PunctualShadowMapDepthImage.GetImageView() };
+	m_VansPunctualShadowPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansPunctualShadowPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
+
+	m_LogicDevice = logic_device;
+
+	//record command buffer
+	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+	//设置colordepoth的layout
+	m_PunctualShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_PunctualShadowMapImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_PunctualShadowMapImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_PunctualShadowMapImage.m_ImageAspect
+		});
+	m_PunctualShadowMapDepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_PunctualShadowMapDepthImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_PunctualShadowMapDepthImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_PunctualShadowMapDepthImage.m_ImageAspect
 		});
 
 	//end record
@@ -934,6 +1067,8 @@ void VansVulkan::VansRenderPassManager::DestroyRenderPass()
 
 	m_ShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 	m_ShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
+	m_PunctualShadowMapImage.DestroyVulkanImage(m_LogicDevice);
+	m_PunctualShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_NormalImage.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage0.DestroyVulkanImage(m_LogicDevice);
@@ -942,6 +1077,7 @@ void VansVulkan::VansRenderPassManager::DestroyRenderPass()
 
 	m_VansRenderPass.DestroyRenderPass(m_LogicDevice);
 	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
+	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);
 }
 
 void VansVulkan::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex)

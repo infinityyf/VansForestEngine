@@ -332,6 +332,9 @@ namespace VansVulkan
 		//创建阴影pass
 		renderPassManager->SetupVansShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
 
+		//创建精确阴影pass
+		renderPassManager->SetupVansPunctualShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
+
 		//预计算渲染数据
 		PrepareRenderingData();
 
@@ -365,8 +368,19 @@ namespace VansVulkan
 		DrawShadowMap(renderPassManager, cmd);
 		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 
+		//绘制精确阴影
+		renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, cmd, m_globalRenderStateData);
+		DrawPunctualShadowMap(renderPassManager, cmd);
+		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+
+		//计算上一帧的HIZ数据
+		UpdateHZB(renderPassManager);
+
 		//计算上一帧的ssGI数据
 		UpdateGIData(renderPassManager);
+
+		//计算上一帧SSR
+		UpdateSSR(renderPassManager);
 
 		//clear mrt和color[beginrender pass的时候直接通过clearvalue就clear了，但是前提是frambufferload action是clear]
 		//绘制指令
@@ -771,7 +785,7 @@ namespace VansVulkan
 
 		std::vector<char const*> desired_instance_layers =
 		{
-			"VK_LAYER_KHRONOS_validation",
+			//"VK_LAYER_KHRONOS_validation",
 			"VK_LAYER_RENDERDOC_Capture"
 		};
 
@@ -1277,6 +1291,463 @@ namespace VansVulkan
 		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSGIShader, m_RenderWidth, m_RenderHeight, 1, { manager->m_SSGIDescriptorSets[0],camera ->m_CameraBufferDescriptorSets[0]});
 	}
 
+	void VansVKDevice::PrepareHZBRenderData()
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		manager->m_HZBResult = new VansTexture();
+		manager->m_HZBResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, false, true, true, MID_PRES_16);
+
+		manager->m_HZBShader = new VansComputeShader();
+		manager->m_HZBShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/HIZ");
+
+		//计算mip数量
+		manager->m_HIZMipCount = 1 + (int)std::floor(std::log2(std::min(m_RenderWidth, m_RenderHeight)));
+		manager->m_HZBTexSetLayouts.resize(manager->m_HIZMipCount - 1);
+		//创建描述符
+		for (int mipIndex = 0; mipIndex < manager->m_HIZMipCount -1; mipIndex++)
+		{
+			VkDescriptorSetLayoutBinding depthInput =
+			{
+				VansVKDescriptorManager::m_UAVTextureSetBinding,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				1,
+				VK_SHADER_STAGE_COMPUTE_BIT,
+				nullptr
+			};
+			VkDescriptorSetLayoutBinding depthOuput =
+			{
+				VansVKDescriptorManager::m_UAVTexture0SetBinding,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				1,
+				VK_SHADER_STAGE_COMPUTE_BIT,
+				nullptr
+			};
+			VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ depthInput,depthOuput }, manager->m_HZBTexSetLayouts[mipIndex]);
+		}
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(manager->m_HZBTexSetLayouts, manager->m_HZBDescriptorSets);
+	}
+
+	void VansVKDevice::PrepareSSRRenderData()
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		manager->m_SSRHitInfo = new VansTexture();
+		manager->m_SSRHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true, MID_PRES_16);
+
+		manager->m_SSRRayPDF = new VansTexture();
+		manager->m_SSRRayPDF->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true, HIGH_PRES_32);
+
+		manager->m_SSRResult = new VansTexture();
+		manager->m_SSRResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true, MID_PRES_16);
+
+
+		manager->m_SSRTraceShader = new VansComputeShader();
+		manager->m_SSRTraceShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_TRACE");
+
+		manager->m_SSRResolveShader = new VansComputeShader();
+		manager->m_SSRResolveShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_RESOLVE");
+		
+		//需要normal, roughness, hiz
+		VkDescriptorSetLayoutBinding normalInput =
+		{
+			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding roughnessInput =
+		{
+			VansVKDescriptorManager::m_SampleTexture1SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding positionInput =
+		{
+			VansVKDescriptorManager::m_SampleTexture2SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding hizInput =
+		{
+			VansVKDescriptorManager::m_SampleTexture3SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding tranceInfoResult =
+		{
+			VansVKDescriptorManager::m_UAVTexture3SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding trancePDFResult =
+		{
+			VansVKDescriptorManager::m_UAVTexture4SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ normalInput,roughnessInput,positionInput,hizInput,tranceInfoResult,trancePDFResult }, manager->m_SSRTraceSetLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSRTraceSetLayout }, manager->m_SSRTraceDescriptorSets);
+	
+		
+		//resolve
+		//需要color,roughness，hitinfo, pdf
+		VkDescriptorSetLayoutBinding colorInput =
+		{
+			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		roughnessInput =
+		{
+			VansVKDescriptorManager::m_SampleTexture1SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		normalInput =
+		{
+			VansVKDescriptorManager::m_SampleTexture2SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		positionInput =
+		{
+			VansVKDescriptorManager::m_SampleTexture3SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		tranceInfoResult =
+		{
+			VansVKDescriptorManager::m_UAVTexture3SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		trancePDFResult =
+		{
+			VansVKDescriptorManager::m_UAVTexture4SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding resolveResult =
+		{
+			VansVKDescriptorManager::m_UAVTexture5SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ colorInput,roughnessInput,normalInput,positionInput, tranceInfoResult ,trancePDFResult,resolveResult }, manager->m_SSRResolveSetLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSRResolveSetLayout }, manager->m_SSRResolveDescriptorSets);
+
+	}
+
+	void VansVKDevice::UpdateHZB(VansRenderPassManager* renderPassManager)
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		//上一帧场景深度
+		auto& depth = renderPassManager->GetDepth();
+
+		//先blit到mip0
+		m_VansVKCommandBuffer.BlitImage(depth, 0, manager->m_HZBResult->GetImage(), 0);
+
+		for (int mipIndex = 1; mipIndex < manager->m_HIZMipCount; mipIndex++)
+		{
+			int threadGroupSizeX = m_RenderWidth >> (mipIndex);
+			int threadGroupSizeY = m_RenderHeight >> (mipIndex);
+			threadGroupSizeX = std::ceilf(threadGroupSizeX / 16.0f);
+			threadGroupSizeY = std::ceilf(threadGroupSizeY / 16.0f);
+
+			VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+
+			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+				{
+					manager->m_HZBDescriptorSets[mipIndex - 1],
+					VansVKDescriptorManager::m_UAVTextureSetBinding,
+					0,
+					VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+					{
+						{
+							manager->m_HZBResult->GetImage().GetSampler(),
+							manager->m_HZBResult->GetImage().GetImageMipView(mipIndex - 1),
+							VK_IMAGE_LAYOUT_GENERAL
+						}
+					}
+				}
+			);
+			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+				{
+					manager->m_HZBDescriptorSets[mipIndex - 1],
+					VansVKDescriptorManager::m_UAVTexture0SetBinding,
+					0,
+					VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+					{
+						{
+							manager->m_HZBResult->GetImage().GetSampler(),
+							manager->m_HZBResult->GetImage().GetImageMipView(mipIndex),
+							VK_IMAGE_LAYOUT_GENERAL
+						}
+					}
+				}
+			);
+
+			VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+			m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_HZBShader, { manager->m_HZBTexSetLayouts[mipIndex - 1]});
+			m_VansVKCommandBuffer.DispatchCompute(*manager->m_HZBShader, threadGroupSizeX, threadGroupSizeY, 1, { manager->m_HZBDescriptorSets[mipIndex - 1] });
+		}
+	}
+
+	void VansVKDevice::UpdateSSR(VansRenderPassManager* renderPassManager)
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		auto& normal = renderPassManager->GetNormal();
+		auto& position = renderPassManager->GetGbuffer2();
+		auto& roughness = renderPassManager->GetGbuffer0(); // w通道
+		auto& color = renderPassManager->GetColor();
+		auto& hiz = manager->m_HZBResult;
+
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRTraceDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture0SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						normal.GetSampler(),
+						normal.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRTraceDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture1SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						roughness.GetSampler(),
+						roughness.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRTraceDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture2SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						position.GetSampler(),
+						position.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRTraceDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture3SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ,
+				{
+					{
+						manager->m_HZBResult->GetImage().GetSampler(),
+						manager->m_HZBResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRTraceDescriptorSets[0],
+				VansVKDescriptorManager::m_UAVTexture3SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ,
+				{
+					{
+						manager->m_SSRHitInfo->GetImage().GetSampler(),
+						manager->m_SSRHitInfo->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRTraceDescriptorSets[0],
+				VansVKDescriptorManager::m_UAVTexture4SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ,
+				{
+					{
+						manager->m_SSRRayPDF->GetImage().GetSampler(),
+						manager->m_SSRRayPDF->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+
+		auto camera = m_Scene->GetCamera();
+		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSRTraceShader, { manager->m_SSRTraceSetLayout, camera->m_CameraBufferLayout });
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRTraceShader, m_RenderWidth, m_RenderHeight, 1, { manager->m_SSRTraceDescriptorSets[0],camera->m_CameraBufferDescriptorSets[0] });
+		
+		//设置ssr resolve
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRResolveDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture0SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						color.GetSampler(),
+						color.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRResolveDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture1SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						roughness.GetSampler(),
+						roughness.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRResolveDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture2SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						normal.GetSampler(),
+						normal.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRResolveDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture3SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						position.GetSampler(),
+						position.GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRResolveDescriptorSets[0],
+				VansVKDescriptorManager::m_UAVTexture3SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ,
+				{
+					{
+						manager->m_SSRHitInfo->GetImage().GetSampler(),
+						manager->m_SSRHitInfo->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRResolveDescriptorSets[0],
+				VansVKDescriptorManager::m_UAVTexture4SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ,
+				{
+					{
+						manager->m_SSRRayPDF->GetImage().GetSampler(),
+						manager->m_SSRRayPDF->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRResolveDescriptorSets[0],
+				VansVKDescriptorManager::m_UAVTexture5SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ,
+				{
+					{
+						manager->m_SSRResult->GetImage().GetSampler(),
+						manager->m_SSRResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSRResolveShader, { manager->m_SSRResolveSetLayout, camera->m_CameraBufferLayout });
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRResolveShader, m_RenderWidth, m_RenderHeight, 1, { manager->m_SSRResolveDescriptorSets[0],camera->m_CameraBufferDescriptorSets[0] });
+
+	}
+
 	void VansVKDevice::PrepareRenderingData()
 	{
 		PrepareSkyRenderData();
@@ -1284,11 +1755,37 @@ namespace VansVulkan
 		PrepareSSAORenderData();
 
 		PrepareSSGIRenderData();
+
+		PrepareHZBRenderData();
+
+		PrepareSSRRenderData();
 	}
 
 	void VansVKDevice::DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
 	{
 		m_Scene->DrawShadowNodes();
+	}
+
+	void VansVKDevice::DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
+	{
+		VansLightManager* lightManager = m_Scene->GetLightManager();
+
+		auto pointLights = lightManager->GetPointLights();
+		int pointLightCount = pointLights.size();
+		//绘制梭有点光源
+		for (int lightIndex = 0; lightIndex < pointLightCount; lightIndex++)
+		{
+			//绘制六次
+			m_Scene->DrawPointShadow(lightIndex);
+		}
+
+		auto spotLights = lightManager->GetSpotLight();
+		int spotLightCount = spotLights.size();
+		//绘制梭有聚光灯
+		for (int lightIndex = 0; lightIndex < spotLightCount; lightIndex++)
+		{
+			m_Scene->DrawSpotShadow(pointLightCount , lightIndex);
+		}
 	}
 
 	void VansVKDevice::DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)

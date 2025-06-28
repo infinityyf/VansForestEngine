@@ -92,6 +92,8 @@ namespace VansGraphics
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
+		void DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex);
+
 		void DrawWithMaterial(VansMaterial* material ,VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
 		void SetName(const std::string& name)

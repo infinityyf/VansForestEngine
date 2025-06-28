@@ -33,13 +33,13 @@ void main()
     vec3 bitangent = cross(normal, tangent);
     mat3x3 TBN = mat3x3(tangent, bitangent, normal);
 
-
+    vec2 pixelCoord = fragTexCoord * ScreenParams.xy;
     //获取多个采样点
     for (int i = 0; i < SSAO_SAMPLE_COUNT; ++i) 
     {
-        float random0 = RandomInterLeavedWithScale(fragTexCoord,FrameIndex + i);
-        float random1 = RandomInterLeavedWithScale(fragTexCoord,FrameIndex + i * 2);
-        float random2 = RandomInterLeavedWithScale(fragTexCoord,FrameIndex + i * 3);
+        float random0 = RandomInterLeavedWithScale(pixelCoord,FrameIndex + i);
+        float random1 = RandomInterLeavedWithScale(pixelCoord,FrameIndex + i * 2);
+        float random2 = RandomInterLeavedWithScale(pixelCoord,FrameIndex + i * 3);
 
         vec3 randomOffset = vec3(random0 * 2-1, random1 * 2-1, random2);
         randomOffset = normalize(randomOffset);

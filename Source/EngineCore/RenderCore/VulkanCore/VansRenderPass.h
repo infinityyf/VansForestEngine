@@ -90,6 +90,11 @@ namespace VansVulkan
 
 		VansVKImage m_ShadowMapDepthImage;
 
+		VansVKImage m_PunctualShadowMapImage;
+
+		VansVKImage m_PunctualShadowMapDepthImage;
+
+
 		VansVKImage m_NormalImage;
 
 		VansVKImage m_GBufferImage0; // albedo + roughness
@@ -107,6 +112,8 @@ namespace VansVulkan
 
 		VansVKRenderPass m_VansShadowPass;
 
+		VansVKRenderPass m_VansPunctualShadowPass;
+
 		VkDevice m_LogicDevice;
 
 	public:
@@ -121,6 +128,9 @@ namespace VansVulkan
 		//阴影渲染
 		void SetupVansShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue);
 
+		//精确阴影渲染
+		void SetupVansPunctualShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue);
+
 		//渲染区域大小
 		void BeginRenderPass(VansVKRenderPass& renderPass, VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index = 0);
 
@@ -134,7 +144,9 @@ namespace VansVulkan
 
 		VansVKRenderPass& GetVansRenderPass() { return m_VansRenderPass; }
 
-		VansVKImage& GetShadowMap() { return m_ShadowMapImage; };
+		VansVKImage& GetShadowMap() { return m_ShadowMapImage; }
+
+		VansVKImage& GetPunctualShadowMap() { return m_PunctualShadowMapImage; }
 
 		VansVKImage& GetColor() { return m_ColorImage; }
 

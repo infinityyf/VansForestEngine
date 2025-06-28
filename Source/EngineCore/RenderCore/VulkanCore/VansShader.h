@@ -44,6 +44,10 @@ namespace VansVulkan
 		//每个shader一个路径，路径里都是对应的所有shader
 		bool InitShader(VkDevice& logic_device, const std::string& shader_folder);
 
+		void SetPushConstant(int size) { m_PushConstantSize = size; }
+
+		int GetPushConstantSize() const { return m_PushConstantSize; }
+
 		std::map<VkShaderStageFlagBits, ShaderModuleData> m_ShaderModuleDataMap;
 
 		~VansShader()
@@ -66,6 +70,8 @@ namespace VansVulkan
 	protected:
 
 		bool m_SupportMRTOutput;
+
+		int m_PushConstantSize;
 	};
 
 	class VansComputeShader : public VansShader

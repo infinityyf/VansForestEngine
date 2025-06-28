@@ -48,6 +48,17 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_SSGITexSetLayout;
 		std::vector<VkDescriptorSet> m_SSGIDescriptorSets;
 
+		//HIZ
+		std::vector<VkDescriptorSetLayout> m_HZBTexSetLayouts;
+		std::vector<VkDescriptorSet> m_HZBDescriptorSets;
+
+		//SSR
+		VkDescriptorSetLayout m_SSRTraceSetLayout;
+		std::vector<VkDescriptorSet> m_SSRTraceDescriptorSets;
+
+		VkDescriptorSetLayout m_SSRResolveSetLayout;
+		std::vector<VkDescriptorSet> m_SSRResolveDescriptorSets;
+
 		//保存全局的一些texture数据
 		VansTexture* m_PreConvDiffuse;
 
@@ -59,6 +70,14 @@ namespace VansGraphics
 
 		VansTexture* m_SSGIResult;
 
+		VansTexture* m_HZBResult;
+
+		VansTexture* m_SSRHitInfo;
+
+		VansTexture* m_SSRRayPDF;
+
+		VansTexture* m_SSRResult;
+
 		VansMaterialManager();
 
 	public:
@@ -66,6 +85,14 @@ namespace VansGraphics
 		VansComputeShader* m_SSGIShader;
 
 		VansVKBuffer m_SSGICBBuffer;
+
+		uint32_t m_HIZMipCount;
+
+		VansComputeShader* m_HZBShader;
+
+		VansComputeShader* m_SSRTraceShader;
+
+		VansComputeShader* m_SSRResolveShader;
 	};
 
 	class VansMaterial : public VansAsset

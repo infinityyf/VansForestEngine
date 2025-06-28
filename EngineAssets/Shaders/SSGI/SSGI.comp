@@ -38,7 +38,7 @@ void main()
     mat3x3 TBN = mat3x3(tangent, bitangent, normal);
 
     int frame = int(FrameIndex) % 100;
-    vec2 random = HashRandom(uv, float(frame));
+    vec2 random = HashRandom(pixelCoord, float(frame));
     float phi = TWO_PI * random.x;
     float cosTheta = random.y;
     float sinTheta = sqrt(1.0 - cosTheta * cosTheta);

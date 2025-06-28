@@ -13,6 +13,10 @@ private:
 
 	int ShadowMapHeight;
 
+	int PunctualShadowMapWidth;
+
+	int PunctualShadowMapHeight;
+
 public:
 
 	static VansConfigration* GetInstance();
@@ -20,4 +24,8 @@ public:
 	int GetShadowMapWidth() { return ShadowMapWidth; }
 
 	int GetShadowMapHeight() { return ShadowMapHeight; }
+
+	int GetPunctualShadowMapWidth() { return PunctualShadowMapWidth; }
+
+	int GetPunctualShadowMapHeight() { return PunctualShadowMapHeight; }
 };

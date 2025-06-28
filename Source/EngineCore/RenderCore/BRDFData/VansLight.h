@@ -22,6 +22,7 @@ namespace VansGraphics
 		alignas(16) float		m_Intensity;
 		float					padding[3];
 		glm::mat4x4				m_ShadowMatrix;
+		
 	};
 
 	struct alignas(16) VansPointLight
@@ -30,7 +31,9 @@ namespace VansGraphics
 		alignas(16) glm::vec3	m_Color;
 		alignas(16) float		m_Intensity;
 		float					m_Radius;
-		float					padding[2];
+		float					m_ShadowIndex;
+		float					padding;
+		glm::mat4				m_PointShadowMatrix[6];
 	};
 
 	struct alignas(16) VansSpotLight
@@ -42,6 +45,8 @@ namespace VansGraphics
 		float					m_Radius;
 		float					m_InnerCutOff;
 		float					m_OuterCutOff;
+		glm::mat4				m_SpotShadowMatrix;
+		float					m_ShadowIndex;
 	};
 
 	class VansLightManager

@@ -85,6 +85,8 @@ namespace VansVulkan
 
 		VkImageAspectFlags GetImageAspect();
 
+		VkExtent3D GetImageDimension();
+
 	private:
 		void AddTransitionImageAccess(ImageTransition& transition);
 	};

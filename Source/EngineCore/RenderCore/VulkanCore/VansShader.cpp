@@ -32,6 +32,8 @@ bool VansVulkan::VansShader::InitShader(VkDevice& logic_device, const std::strin
 
 	m_LogicDevice = logic_device;
 
+	m_PushConstantSize = 0;
+
 	return true;
 }
 
@@ -148,6 +150,8 @@ VansVulkan::VansVKGraphicsPipeline* VansVulkan::VansGraphicsShader::GetGraphicsP
 	{
 		m_GraphicsPipelineCreateInfo.descriptorset_layouts[i]=descriptorset_layouts[i];
 	}
+
+	m_GraphicsPipelineCreateInfo.push_constant_size = m_PushConstantSize;
 
 	//´´½¨pipeline
 	InitGraphicsPipelinInfo(global_state_data);

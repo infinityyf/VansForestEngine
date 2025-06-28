@@ -55,6 +55,8 @@ namespace VansGraphics
 
 		std::vector<VansRenderNode*> m_ShadowRenderNodes;
 
+		std::vector<VansRenderNode*> m_PunctualShadowRenderNodes;
+
 	public:
 		//editor
 		VansRenderNode* m_SelectedNode;
@@ -77,6 +79,10 @@ namespace VansGraphics
 	public:
 
 		void DrawShadowNodes();
+
+		void DrawPointShadow(int lightIndex);
+
+		void DrawSpotShadow(int pointCount, int lightIndex);
 
 		void DrawSkyBoxNode();
 

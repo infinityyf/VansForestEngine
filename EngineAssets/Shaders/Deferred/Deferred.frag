@@ -16,7 +16,9 @@ layout(set = 1, binding = 4, input_attachment_index = 4) uniform subpassInput de
 
 layout(set = 2, binding = 0, rgba32f ) uniform image2D ssao;
 layout(set = 2, binding = 1, rgba32f ) uniform image2D ssgi;
-layout(set = 2, binding = 2) uniform sampler2D shadowMap;
+layout(set = 2, binding = 2, rgba32f ) uniform image2D ssr;
+layout(set = 2, binding = 3) uniform sampler2D shadowMap;
+layout(set = 2, binding = 4) uniform sampler2D punctualShadowMap;
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -48,13 +50,19 @@ void main()
     brdfData.viewDirection = viewDirection;
     brdfData.positionWS = position_world;
     
+    //remap to last frame screen space
+    vec4 lastFrameClip = LastProjectionMatrix * LastViewMatrix * vec4(position_world, 1.0);
+    lastFrameClip /= lastFrameClip.w;
+    lastFrameClip.y = -lastFrameClip.y; // flip y for screen space
+    vec2 lastFrameUV = (lastFrameClip.xy + 1.0) * 0.5;
     //indirect diffuse
     //brdfData.indirectDiffuse = texture(PreConvDiffuseEnvironment, normal).rgb;
-    brdfData.indirectDiffuse = imageLoad(ssgi,ivec2(fragTexCoord * ScreenParams.xy)).rgb;
+    brdfData.indirectDiffuse = imageLoad(ssgi,ivec2(lastFrameUV * ScreenParams.xy)).rgb;
+    brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy)).rgba;
 
     //计算光照
     LightResult lightResult;
-    CalculateDirectLight(brdfData,shadowMap, lightResult);
+    CalculateDirectLight(brdfData,shadowMap,punctualShadowMap, lightResult);
 
 
     AmbientBRDF(brdfData,viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);

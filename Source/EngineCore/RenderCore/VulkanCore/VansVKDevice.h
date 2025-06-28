@@ -105,11 +105,21 @@ namespace VansVulkan
 
 		void DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
+		void DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
+
 		void DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
 		void DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
 		void UpdateGIData(VansRenderPassManager* renderPassManager);
+
+		void UpdateHZB(VansRenderPassManager* renderPassManager);
+
+		void UpdateSSR(VansRenderPassManager* renderPassManager);
+
+	private:
+
+		void UpdateSSGI(VansRenderPassManager* renderPassManager);
 
 	private:
 
@@ -122,7 +132,9 @@ namespace VansVulkan
 
 		void PrepareSSGIRenderData();
 
-		void UpdateSSGI(VansRenderPassManager* renderPassManager);
+		void PrepareHZBRenderData();
+
+		void PrepareSSRRenderData();
 
 	private:
 

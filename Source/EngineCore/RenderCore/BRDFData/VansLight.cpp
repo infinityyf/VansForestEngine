@@ -1,5 +1,6 @@
 #include "VansLight.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansVKDescriptorManager.h"
+#include "../../../EngineCore/Configration/VansConfigration.h"
 #include <iostream>
 void VansGraphics::VansLightManager::AddDirectionalLight(const VansDirectionalLight& light)
 {
@@ -26,14 +27,54 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData()
 		glm::mat4x4 viewMatrix = glm::lookAt(lightDirection, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
 		m_DirectionalLights[dirLightIndex].m_ShadowMatrix = projectionMatrix * viewMatrix;
 	}
+
+	int pointLightCount = m_PointLights.size();
+	for (int pointLightIndex = 0; pointLightIndex < pointLightCount; pointLightIndex++)
+	{
+		glm::mat4 shadowProj = glm::perspective(glm::radians(90.0f), 1.0f, 0.001f, m_PointLights[pointLightIndex].m_Radius);
+		glm::vec3 lightPos = m_PointLights[pointLightIndex].m_Position;
+
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[0] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(1, 0, 0), glm::vec3(0, -1, 0)); // +X
+
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[1] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(-1, 0, 0), glm::vec3(0, -1, 0)); // -X
+
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[2] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 1, 0), glm::vec3(0, 0, 1)); // +Y
+
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[3] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, -1, 0), glm::vec3(0, 0, -1)); // -Y
+
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[4] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 0, 1), glm::vec3(0, -1, 0)); // +Z
+		
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[5] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 0, -1), glm::vec3(0, -1, 0)); // -Z
+		
+		m_PointLights[pointLightIndex].m_ShadowIndex = pointLightIndex;
+	}
+	int spotLightCount = m_SpotLights.size();
+	for (int spotLightIndex = 0; spotLightIndex < spotLightCount; spotLightIndex++)
+	{
+
+		float spotAngle = m_SpotLights[spotLightIndex].m_OuterCutOff;
+		glm::mat4 shadowProj = glm::perspective(spotAngle * 2, 1.0f, 0.001f, m_SpotLights[spotLightIndex].m_Radius);
+
+		glm::vec3 lightPos = m_SpotLights[spotLightIndex].m_Position;
+		glm::vec3 lightDir = -m_SpotLights[spotLightIndex].m_Direction;
+		glm::mat4 shadowView = glm::lookAt(lightPos, lightPos + lightDir, glm::vec3(0, 1, 0));
+		m_SpotLights[spotLightIndex].m_SpotShadowMatrix = shadowProj * shadowView;
+		m_SpotLights[spotLightIndex].m_ShadowIndex = spotLightIndex;
+	}
 }
 
 void VansGraphics::VansLightManager::UpdateLightCPUData()
 {
+	auto vansConfigration = VansConfigration::GetInstance();
+	float punctualShadowSize = vansConfigration->GetPunctualShadowMapWidth();
+	float patchShadowSize = punctualShadowSize / 8;
+
 	uint32_t offset = 0;
 	uint32_t size = sizeof(uint32_t) * 4;
 	m_LightCounts[0] = m_PointLights.size();
 	m_LightCounts[1] = m_SpotLights.size();
+	m_LightCounts[2] = patchShadowSize;
+	m_LightCounts[3] = 8;
 	m_LightBuffer.SetBufferData(m_LightCounts, offset, size);
 	offset += size;
 	size = sizeof(VansDirectionalLight) * m_MaxDirectionLightCount;

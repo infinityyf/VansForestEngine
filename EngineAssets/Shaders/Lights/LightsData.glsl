@@ -15,6 +15,8 @@ struct PointLightData
     vec4 color;
     float intensity;
     float radius;
+    float shadowIndex;
+    mat4x4 shadowMatrix[6];
 };
 
 struct SpotLightData
@@ -26,6 +28,8 @@ struct SpotLightData
     float radius;
     float innerConeAngle;
     float outerConeAngle;
+    mat4x4 shadowMatrix;
+    float shadowIndex;
 };
 
 struct LightResult
@@ -47,6 +51,8 @@ layout(set=LightCBBind, binding=0) uniform LightsData
 {
     uint uPointLightCount;
     uint uSpotLightCount;
+    uint uShadowAtlasSize;
+    uint uShadowAtlasCount;
     DirectionLightData uDirectionLight;
     PointLightData uPointLights[MAX_POINT_LIGHTS];
     SpotLightData uSpotLights[MAX_SPOT_LIGHTS];
@@ -60,6 +66,19 @@ PointLightData GetPointLight(int index)
 SpotLightData GetSpotLight(int index)
 {
     return uSpotLights[index];
+}
+
+int GetCubemapFaceIndex(vec3 dir)
+{
+    vec3 absDir = abs(dir);
+    int face = 0;
+    if (absDir.x > absDir.y && absDir.x > absDir.z)
+        face = dir.x > 0.0 ? 0 : 1; // +X : -X
+    else if (absDir.y > absDir.z)
+        face = dir.y > 0.0 ? 2 : 3; // +Y : -Y
+    else
+        face = dir.z > 0.0 ? 4 : 5; // +Z : -Z
+    return face;
 }
 
 
@@ -122,8 +141,48 @@ float SampleDirectionShadowMap_PCF_Noise(vec3 position_world, sampler2D shadowMa
     return shadow / samples;
 }
 
+float SamplePointShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIndex)
+{
+    vec3 direction = position_world - uPointLights[shadowIndex].position.xyz;
 
-void CalculateDirectLight(BRDFData brdfData, sampler2D shadowMap, inout LightResult lightResult)
+    //获取采样的方向
+    int shadowDirectionIndex = GetCubemapFaceIndex(direction);
+
+    ivec2 shadowOffset = ivec2((shadowIndex * 6 + shadowDirectionIndex) % uShadowAtlasCount, (shadowIndex * 6 + shadowDirectionIndex) / uShadowAtlasCount);
+    shadowOffset *= int(uShadowAtlasSize);
+
+    mat4x4 shadowMatrix = uPointLights[shadowIndex].shadowMatrix[shadowDirectionIndex];
+    vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
+    clipCoord/=  clipCoord.w;
+    clipCoord.xy  = clipCoord.xy * 0.5 + 0.5;
+
+    ivec2 shadowUV = ivec2(clipCoord.xy * uShadowAtlasSize);
+
+    float shadowMapDepth = texelFetch(shadowMap, shadowUV + shadowOffset,0).r;
+
+    return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
+}
+
+float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIndex)
+{
+    int pointLightCount = int(uPointLightCount);
+    ivec2 shadowOffset = ivec2((pointLightCount * 6 + shadowIndex) % uShadowAtlasCount, (pointLightCount * 6 + shadowIndex) / uShadowAtlasCount);
+    shadowOffset *= int(uShadowAtlasSize);
+
+    mat4x4 shadowMatrix = uSpotLights[shadowIndex].shadowMatrix;
+    vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
+    clipCoord/=  clipCoord.w;
+    clipCoord.xy  = clipCoord.xy * 0.5 + 0.5;
+
+    ivec2 shadowUV = ivec2(clipCoord.xy * uShadowAtlasSize);
+
+    float shadowMapDepth = texelFetch(shadowMap, shadowUV + shadowOffset,0).r;
+
+    return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
+}
+
+
+void CalculateDirectLight(BRDFData brdfData, sampler2D shadowMap, sampler2D punctualShadowMap, inout LightResult lightResult)
 {
     lightResult.directDiffuse = vec3(0);
     lightResult.directSpecular = vec3(0);
@@ -153,6 +212,10 @@ void CalculateDirectLight(BRDFData brdfData, sampler2D shadowMap, inout LightRes
         float attenuation = 1.0 - (distance / pointLight.radius);
         attenuation *= attenuation;
 
+        // 计算阴影
+        float shadowValue = SamplePointShadowMap(brdfData.positionWS, punctualShadowMap, int(pointLight.shadowIndex));
+        attenuation = min(attenuation, shadowValue);
+
         vec3 diffuseResult = vec3(0);
         vec3 specularResult = vec3(0);
         DirectBRDF(brdfData, lightDirection, diffuseResult, specularResult);
@@ -174,6 +237,10 @@ void CalculateDirectLight(BRDFData brdfData, sampler2D shadowMap, inout LightRes
         lightDirection /= distance;
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
+
+        // 计算阴影
+        float shadowValue = SampleSpotShadowMap(brdfData.positionWS, punctualShadowMap, int(spotLight.shadowIndex));
+        attenuation = min(attenuation, shadowValue);
 
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
         if (coneAngle < cos(spotLight.outerConeAngle)) continue;

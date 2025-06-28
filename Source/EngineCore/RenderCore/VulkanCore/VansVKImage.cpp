@@ -57,6 +57,7 @@ VkImageAspectFlags VansVulkan::VansVKImage::ConvertImageViewAspect(VkImageUsageF
 
 bool VansVulkan::VansVKImage::CreateVulkanImage(VkDevice& logical_device, VkExtent3D size, VkFormat format, uint32_t mip_num, uint32_t layer_num, VkImageType type, VkImageUsageFlags usage, VkSampleCountFlagBits samples, bool isCube, bool need_raw_Data, bool combined_sampler)
 {
+    m_ImageDimention = size;
     //VK_IMAGE_TILING_OPTIMAL : 贴图在内存里的排布往往不是线性的，需要适配硬件快速采样，一般linear的tiling用于直接从COU上初始化或读取
 
     VkImageCreateInfo image_create_info = 
@@ -319,4 +320,9 @@ VkImage VansVulkan::VansVKImage::GetImage()
 VkImageAspectFlags VansVulkan::VansVKImage::GetImageAspect()
 {
     return m_ImageAspect;
+}
+
+VkExtent3D VansVulkan::VansVKImage::GetImageDimension()
+{
+    return m_ImageDimention;
 }

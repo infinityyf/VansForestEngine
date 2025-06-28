@@ -183,6 +183,18 @@ VkSampleMaskÊµÖÊÉÏ¾ÍÊÇuint32_t¡£Sample maskµÄ±ÈÌØÓë²ÉÑùµãÒ»Ò»¶ÔÓ¦£¬ÒòÎªÖÁ¶à64¸ö²
 		 dynamic_states.data()
 	};
 
+	int pushConstantRangeCount = 0;
+	VkPushConstantRange pushConstantRange = {};
+	VkPushConstantRange* pushConstantRangeData = nullptr;
+	if (create_info.push_constant_size>0)
+	{
+		pushConstantRangeCount = 1;
+		pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+		pushConstantRange.offset = 0;
+		pushConstantRange.size = create_info.push_constant_size;
+		pushConstantRangeData = &pushConstantRange;
+	}
+
 	//pipe lineºÍdescriptor¹ØÁª
 	VkPipelineLayoutCreateInfo pipeline_layout_create_info = 
 	{
@@ -191,8 +203,8 @@ VkSampleMaskÊµÖÊÉÏ¾ÍÊÇuint32_t¡£Sample maskµÄ±ÈÌØÓë²ÉÑùµãÒ»Ò»¶ÔÓ¦£¬ÒòÎªÖÁ¶à64¸ö²
 		 0,
 		 create_info.descriptorset_layouts.size(),
 		 create_info.descriptorset_layouts.data(),
-		 0,
-		 nullptr
+		 pushConstantRangeCount,
+		 pushConstantRangeData
 	};
 	VkResult vresult = vkCreatePipelineLayout(logic_device, &pipeline_layout_create_info, nullptr, &m_VansPipelineLayout);
 	if (vresult != VK_SUCCESS)
