@@ -111,6 +111,8 @@ namespace VansVulkan
 
 		void DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
+	public:
+
 		void UpdateGIData(VansRenderPassManager* renderPassManager);
 
 		void UpdateHZB(VansRenderPassManager* renderPassManager);
@@ -120,6 +122,16 @@ namespace VansVulkan
 	private:
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager);
+
+		void BilateralFilterSSGI(VansRenderPassManager* renderPassManager);
+
+	private:
+
+		void UpdateGIDataDescriptorSets(VansRenderPassManager* renderPassManager);
+
+		void UpdateHZBDescriptorSets(VansRenderPassManager* renderPassManager);
+
+		void UpdateSSRDescriptorSets(VansRenderPassManager* renderPassManager);
 
 	private:
 
@@ -135,6 +147,8 @@ namespace VansVulkan
 		void PrepareHZBRenderData();
 
 		void PrepareSSRRenderData();
+
+		void PrepareBilaterFilterData();
 
 	private:
 

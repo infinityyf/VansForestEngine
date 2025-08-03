@@ -1,0 +1,78 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/Common.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout( set = 0, binding = 0 ) uniform sampler2D inputColor;
+layout( set = 0, binding = 1 ) uniform sampler2D inputDepth;
+layout( set = 0, binding = 2, rgba32f ) uniform image2D result;
+
+layout(push_constant) uniform FilterParams {
+    float sigmaSpace;   // Spatial sigma (controls distance falloff)
+    float sigmaDepth;   // Depth sigma (controls depth difference falloff)
+    int radius;         // Filter radius
+    float depthThreshold; // Maximum depth difference to consider
+};
+
+void main() 
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 imgSize = textureSize(inputColor, 0);
+    
+    if (pixelCoord.x >= imgSize.x || pixelCoord.y >= imgSize.y) {
+        return;
+    }
+    
+    vec2 centerUV = (vec2(pixelCoord) + 0.5) / vec2(imgSize);
+    vec4 centerColor = texture(inputColor, centerUV);
+    float centerDepth = texture(inputDepth, centerUV).r;
+    
+    vec4 filteredColor = vec4(0.0);
+    float totalWeight = 0.0;
+    
+    // Bilateral filter kernel using depth for edge preservation
+    for (int dx = -radius; dx <= radius; dx++) {
+        for (int dy = -radius; dy <= radius; dy++) {
+            ivec2 sampleCoord = pixelCoord + ivec2(dx, dy);
+            
+            // Skip out-of-bounds samples
+            if (sampleCoord.x < 0 || sampleCoord.x >= imgSize.x || 
+                sampleCoord.y < 0 || sampleCoord.y >= imgSize.y) {
+                continue;
+            }
+            
+            vec2 sampleUV = (vec2(sampleCoord) + 0.5) / vec2(imgSize);
+            vec4 sampleColor = texture(inputColor, sampleUV);
+            float sampleDepth = texture(inputDepth, sampleUV).r;
+            
+            // Skip samples with too different depth (edge detection)
+            float depthDiff = abs(sampleDepth - centerDepth);
+            if (depthDiff > depthThreshold) {
+                continue;
+            }
+            
+            // Spatial weight (Gaussian based on distance)
+            float spatialDist = length(vec2(dx, dy));
+            float spatialWeight = exp(-(spatialDist * spatialDist) / (2.0 * sigmaSpace * sigmaSpace));
+            
+            // Depth weight (Gaussian based on depth difference)
+            float depthWeight = exp(-(depthDiff * depthDiff) / (2.0 * sigmaDepth * sigmaDepth));
+            
+            // Combined weight
+            float weight = spatialWeight * depthWeight;
+            
+            filteredColor += sampleColor * weight;
+            totalWeight += weight;
+        }
+    }
+    
+    // Normalize by total weight
+    if (totalWeight > 0.0) {
+        filteredColor /= totalWeight;
+    } else {
+        filteredColor = centerColor;
+    }
+    
+    imageStore(result, pixelCoord, filteredColor);
+}

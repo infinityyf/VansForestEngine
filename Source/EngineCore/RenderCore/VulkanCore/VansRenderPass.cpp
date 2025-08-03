@@ -577,7 +577,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
 		false,
 		false,
@@ -639,6 +639,35 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 		false,
 		true
 	);
+
+#ifdef _DEBUG
+	VkDebugUtilsObjectNameInfoEXT nameInfo = {};
+	nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_ColorImage.GetImage());
+	nameInfo.pObjectName = "ColorImage";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_DepthImage.GetImage());
+	nameInfo.pObjectName = "DepthImage";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_NormalImage.GetImage());
+	nameInfo.pObjectName = "NormalImage";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_GBufferImage0.GetImage());
+	nameInfo.pObjectName = "GBuffer0Image";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_GBufferImage1.GetImage());
+	nameInfo.pObjectName = "GBuffer1Image";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_GBufferImage2.GetImage());
+	nameInfo.pObjectName = "GBuffer2Image";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+#endif
 
 	//framebuffer的image view数量和attachment 的数量需要一致
 	m_VansRenderPass.m_FrameBuffers.resize(surface.m_VansVKImageCount);
@@ -774,7 +803,7 @@ void VansVulkan::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logi
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 		},
 	};
@@ -843,6 +872,19 @@ void VansVulkan::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logi
 		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT
 	);
+#ifdef _DEBUG
+	VkDebugUtilsObjectNameInfoEXT nameInfo = {};
+	nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_ShadowMapImage.GetImage());
+	nameInfo.pObjectName = "ShadowMap";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_ShadowMapDepthImage.GetImage());
+	nameInfo.pObjectName = "ShadowMapDepth";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+#endif
+
 
 	m_VansShadowPass.m_FrameBuffers.resize(1);
 	std::vector<VkImageView> image_views = {
@@ -872,7 +914,7 @@ void VansVulkan::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logi
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
 			m_ShadowMapDepthImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_ShadowMapDepthImage.m_ImageAspect
@@ -908,7 +950,7 @@ void VansVulkan::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDevi
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 		},
 	};
@@ -978,6 +1020,19 @@ void VansVulkan::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDevi
 		VK_SAMPLE_COUNT_1_BIT
 	);
 
+#ifdef _DEBUG
+	VkDebugUtilsObjectNameInfoEXT nameInfo = {};
+	nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_PunctualShadowMapImage.GetImage());
+	nameInfo.pObjectName = "PunctualShadowMap";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_PunctualShadowMapDepthImage.GetImage());
+	nameInfo.pObjectName = "PunctualShadowMapDepth";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+#endif
+
 	m_VansPunctualShadowPass.m_FrameBuffers.resize(1);
 	std::vector<VkImageView> image_views = {
 			m_PunctualShadowMapImage.GetImageView(),
@@ -1006,7 +1061,7 @@ void VansVulkan::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDevi
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
 			m_PunctualShadowMapDepthImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_PunctualShadowMapDepthImage.m_ImageAspect
@@ -1102,7 +1157,7 @@ void VansVulkan::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComman
 			m_NormalImage.m_VansVKImage,
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
-			m_NormalImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			VK_IMAGE_LAYOUT_GENERAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
@@ -1114,7 +1169,7 @@ void VansVulkan::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComman
 			m_GBufferImage0.m_VansVKImage,
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
-			m_GBufferImage0.m_ImageLayout,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			VK_IMAGE_LAYOUT_GENERAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
@@ -1126,7 +1181,7 @@ void VansVulkan::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComman
 			m_GBufferImage1.m_VansVKImage,
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
-			m_GBufferImage1.m_ImageLayout,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			VK_IMAGE_LAYOUT_GENERAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
@@ -1138,7 +1193,7 @@ void VansVulkan::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComman
 			m_GBufferImage2.m_VansVKImage,
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
-			m_GBufferImage2.m_ImageLayout,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			VK_IMAGE_LAYOUT_GENERAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
@@ -1149,7 +1204,7 @@ void VansVulkan::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComman
 			m_DepthImage.m_VansVKImage,
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			VK_IMAGE_LAYOUT_GENERAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
@@ -1167,6 +1222,30 @@ void VansVulkan::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComman
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_IMAGE_ASPECT_COLOR_BIT
 		}, swapChainIndex);
+
+	m_ShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_ShadowMapImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_ShadowMapImage.m_ImageAspect
+		});
+
+	m_PunctualShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_PunctualShadowMapImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_PunctualShadowMapImage.m_ImageAspect
+		});
 
 	//end record
 	command_buffer.EndCommandBufferRecord();

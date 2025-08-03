@@ -222,7 +222,7 @@ namespace VansVulkan
 		VkDevice m_Device;
 
 	public:
-		bool CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
+		bool CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount = 0, VkPushConstantRange* pushConstRange = nullptr);
 		
 		void BindComputePipeline(VkCommandBuffer& command_buffer);
 

@@ -34,6 +34,8 @@ bool VansVulkan::VansShader::InitShader(VkDevice& logic_device, const std::strin
 
 	m_PushConstantSize = 0;
 
+	m_PushConstantData = nullptr;
+
 	return true;
 }
 
@@ -364,6 +366,18 @@ bool VansVulkan::VansComputeShader::CreateComputePipeline(VkDevice& logic_device
 		 nullptr
 	};
 
-	return m_ComputePipeline->CreateComputePipeline(logic_device, compute_shader_stage, VK_NULL_HANDLE, descriptorset_layouts);
+	int pushConstRangeCount = 0;
+	VkPushConstantRange* pushConstRangePtr = nullptr;
+	VkPushConstantRange pushConstantRange = {};
+	if (m_PushConstantSize > 0)
+	{
+		pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+		pushConstantRange.offset = 0;
+		pushConstantRange.size = m_PushConstantSize;
+		pushConstRangePtr = &pushConstantRange;
+		pushConstRangeCount = 1;
+	}
+
+	return m_ComputePipeline->CreateComputePipeline(logic_device, compute_shader_stage, VK_NULL_HANDLE, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr);
 }
 

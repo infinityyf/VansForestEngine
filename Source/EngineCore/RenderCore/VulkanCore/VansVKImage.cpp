@@ -152,6 +152,15 @@ bool VansVulkan::VansVKImage::CreateVulkanImage(VkDevice& logical_device, VkExte
         return false;
     }
 
+#ifdef _DEBUG
+    VkDebugUtilsObjectNameInfoEXT nameInfo = {};
+    nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+    nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+    nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_VansVKImage);
+    nameInfo.pObjectName = "image";
+    vkSetDebugUtilsObjectNameEXT(logical_device, &nameInfo);
+#endif
+
     //imgee view创建时必须时需要绑定memory
     result = vkCreateImageView(logical_device, &image_view_create_info, nullptr, &m_VansVKImageView);
     if (VK_SUCCESS != result)

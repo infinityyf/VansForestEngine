@@ -354,7 +354,7 @@ bool VansVulkan::VansVKGraphicsPipeline::MergePipelineCache(VkDevice& logic_devi
 	return true;
 }
 
-bool VansVulkan::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
+bool VansVulkan::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount, VkPushConstantRange* pushConstRange)
 {
 	m_Device = logic_device;
 	VkPipelineCreateFlags additional_options = VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
@@ -365,8 +365,8 @@ bool VansVulkan::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_de
 		 0,
 		 descriptorset_layouts.size(),
 		 descriptorset_layouts.data(),
-		 0,
-		 nullptr
+		 pushConstRangeCount,
+		 pushConstRange
 	};
 	VkResult result = vkCreatePipelineLayout(logic_device, &pipeline_layout_create_info, nullptr, &m_VansPipelineLayout);
 	if (result != VK_SUCCESS)

@@ -15,6 +15,9 @@ VansGraphics::VansRenderNode::VansRenderNode(VkDevice& device, RenderNodeType ty
 
 	//初始化 transform数据
 	SetTransformData();
+
+	//用于标记是否需要更新描述符
+	m_DescriptorsetsDirty = true;
 }
 
 VansGraphics::VansRenderNode::~VansRenderNode()
@@ -212,7 +215,19 @@ void VansGraphics::VansCommonRenderNode::UpdateRenderData(VansVKDevice* device, 
 {
 	//更新pbr参数
 	m_Material->UpdatePBRUniformData();
-	
+
+	//更新描述符集
+	UpdateDescripterSets(materialManager);
+}
+
+void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+	{
+		return;
+	}
+	m_DescriptorsetsDirty = false;
+
 	//更新描述符
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
@@ -332,9 +347,6 @@ void VansGraphics::VansCommonRenderNode::UpdateRenderData(VansVKDevice* device, 
 		}
 	);
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
-
-	//更brdflut数据
-	m_Material->UpdatePBRLutData(materialManager);
 }
 
 void VansGraphics::VansPostProcessRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
@@ -357,6 +369,17 @@ void VansGraphics::VansPostProcessRenderNode::CreateDescriptorSets(VansCamera* c
 
 void VansGraphics::VansPostProcessRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
+	UpdateDescripterSets(materialManager);
+}
+
+void VansGraphics::VansPostProcessRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+	{
+		return;
+	}
+	m_DescriptorsetsDirty = false;
+
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
@@ -506,6 +529,17 @@ void VansGraphics::VansDeferredRenderNode::CreateDescriptorSets(VansCamera* came
 
 void VansGraphics::VansDeferredRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
+	UpdateDescripterSets(materialManager);
+}
+
+void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+	{
+		return;
+	}
+	m_DescriptorsetsDirty = false;
+
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
@@ -606,8 +640,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateRenderData(VansVKDevice* device
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{
 				{
-					materialManager.m_SSGIResult->GetImage().GetSampler(),
-					materialManager.m_SSGIResult->GetImage().GetImageView(),
+					materialManager.m_SSGIFilterResult->GetImage().GetSampler(),
+					materialManager.m_SSGIFilterResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}
@@ -638,7 +672,7 @@ void VansGraphics::VansDeferredRenderNode::UpdateRenderData(VansVKDevice* device
 				{
 					VansRenderPassManager::GetInstance()->GetShadowMap().GetSampler(),
 					VansRenderPassManager::GetInstance()->GetShadowMap().GetImageView(),
-					VK_IMAGE_LAYOUT_GENERAL
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			}
 		}
@@ -653,15 +687,13 @@ void VansGraphics::VansDeferredRenderNode::UpdateRenderData(VansVKDevice* device
 				{
 					VansRenderPassManager::GetInstance()->GetPunctualShadowMap().GetSampler(),
 					VansRenderPassManager::GetInstance()->GetPunctualShadowMap().GetImageView(),
-					VK_IMAGE_LAYOUT_GENERAL
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			}
 		}
 	);
 	//只需要变化时更新，有的时候会绑定其他资源，所以需要update
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
-
-	m_Material->UpdatePBRLutData(materialManager);
 }
 
 void VansGraphics::VansScreenSpaceRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
@@ -735,6 +767,17 @@ void VansGraphics::VansScreenSpaceRenderNode::CreateDescriptorSets(VansCamera* c
 
 void VansGraphics::VansScreenSpaceRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
+	UpdateDescripterSets(materialManager);
+}
+
+void VansGraphics::VansScreenSpaceRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+	{
+		return;
+	}
+	m_DescriptorsetsDirty = false;
+
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
@@ -835,17 +878,6 @@ void VansGraphics::VansSkyBoxRenderNode::CreateDescriptorSets(VansCamera* camera
 {
 	RegistCameraDescriptor(camera);
 
-	VkDescriptorSetLayoutBinding stmosphereUnifomBuffer =
-	{
-		VansVKDescriptorManager::m_AtmosphereBufferSetBinding,
-		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		1,
-		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-		nullptr
-	};
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ stmosphereUnifomBuffer }, materialManager.m_MaterialAtmosphereDataLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ materialManager.m_MaterialAtmosphereDataLayout }, materialManager.m_MaterialAtmosphereDataDescriptorSets);
-
 	m_UsedDescSetLayouts.push_back(materialManager.m_MaterialAtmosphereDataLayout);
 	m_UsedDescSets.push_back(materialManager.m_MaterialAtmosphereDataDescriptorSets[0]);
 }
@@ -853,6 +885,19 @@ void VansGraphics::VansSkyBoxRenderNode::CreateDescriptorSets(VansCamera* camera
 void VansGraphics::VansSkyBoxRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
 	m_Material->UpdateAtmosphereMaterialData(materialManager, lightManager);
+
+	UpdateDescripterSets(materialManager);
+}
+
+void VansGraphics::VansSkyBoxRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+	{
+		return;
+	}
+	m_DescriptorsetsDirty = false;
+
+	//描述符集已经统一更新过
 }
 
 void VansGraphics::VansShadowRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
@@ -877,6 +922,17 @@ void VansGraphics::VansShadowRenderNode::CreateDescriptorSets(VansCamera* camera
 
 void VansGraphics::VansShadowRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
+	UpdateDescripterSets(materialManager);
+}
+
+void VansGraphics::VansShadowRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+	{
+		return;
+	}
+	m_DescriptorsetsDirty = false;
+
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(

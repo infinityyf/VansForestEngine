@@ -59,6 +59,10 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_SSRResolveSetLayout;
 		std::vector<VkDescriptorSet> m_SSRResolveDescriptorSets;
 
+		VkDescriptorSetLayout m_BilateralFilterSetLayout;
+		std::vector<VkDescriptorSet> m_BilateralFilterDescriptorSets;
+
+
 		//保存全局的一些texture数据
 		VansTexture* m_PreConvDiffuse;
 
@@ -78,6 +82,8 @@ namespace VansGraphics
 
 		VansTexture* m_SSRResult;
 
+		VansTexture* m_SSGIFilterResult;
+
 		VansMaterialManager();
 
 	public:
@@ -93,6 +99,31 @@ namespace VansGraphics
 		VansComputeShader* m_SSRTraceShader;
 
 		VansComputeShader* m_SSRResolveShader;
+
+		struct BilateralFilterPushConst
+		{
+			float sigmaSpace;
+			float sigmaDepth;
+			int radius;
+			float depthThreshold;
+		};
+
+		BilateralFilterPushConst m_BilateralFilterPushConstant;
+
+		VansComputeShader* m_BilateralFilterShader;
+
+	public:
+
+		VansVKBuffer m_AtmospherePBRDataBuffer;
+
+		
+	public:
+
+		//梭有材质公用
+		void UpdatePBRLutDescriptorSets();
+
+		void UpdateAtmosphereDescriptorSets();
+
 	};
 
 	class VansMaterial : public VansAsset
@@ -102,8 +133,6 @@ namespace VansGraphics
 	private:
 		//pbr数据data buffer
 		VansVKBuffer m_BasePBRDataBuffer;
-
-		VansVKBuffer m_AtmospherePBRDataBuffer;
 
 	public:
 		VansMaterialType m_MaterialType;
@@ -129,10 +158,6 @@ namespace VansGraphics
 		VansVKBuffer& GetPBRDataBuffer() { return m_BasePBRDataBuffer; }
 
 		void UpdatePBRUniformData();
-
-		void UpdatePBRLutData(VansMaterialManager& materialManager);
-
-		void CreateAtmosphereMaterialDataBuffer(VkDevice& logic_device);
 
 		void UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
 	};

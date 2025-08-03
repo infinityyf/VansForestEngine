@@ -272,6 +272,14 @@ void VansVulkan::VansVKCommandBuffer::DispatchCompute(VansComputeShader& shader,
 		0,
 		nullptr);
 
+	int pushConstantSize = shader.GetPushConstantSize();
+	void* pushConstantData = shader.GetPushConstantData();
+	if (pushConstantSize > 0 && pushConstantData != nullptr)
+	{
+		vkCmdPushConstants(m_VansVKCommandBuffer, pipeline->m_VansPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+			0, pushConstantSize, pushConstantData);
+	}
+
 	pipeline->DispatchCompute(m_VansVKCommandBuffer, x_size, y_size, z_size);
 }
 
@@ -302,6 +310,19 @@ void VansVulkan::VansVKCommandBuffer::BlitImage(VansVKImage& source, int source_
 		target.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		1, &copyRegion
 	);
+
+	//结束后转换回来
+	source.SetImageMemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		{
+			source.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			source.m_ImageAspect
+		});
 }
 
 void VansVulkan::VansVKCommandBuffer::BindDescriptorSets(

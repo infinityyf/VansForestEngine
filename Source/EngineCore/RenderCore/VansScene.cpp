@@ -223,7 +223,6 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
             material->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25000;
             material->m_AtmospherePBRParam.m_OzoneLevelWidth = 15000;
             material->m_AtmospherePBRParam.m_SunLuminance = 10;
-            material->CreateAtmosphereMaterialDataBuffer(nativeDevice);
         }
         m_Materials.push_back(material);
         material->SetName(sceneMaterial["name"]);

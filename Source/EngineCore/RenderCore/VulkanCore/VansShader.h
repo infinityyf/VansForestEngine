@@ -48,6 +48,10 @@ namespace VansVulkan
 
 		int GetPushConstantSize() const { return m_PushConstantSize; }
 
+		void SetPushConstantData(void* data) { m_PushConstantData = data; }
+
+		void* GetPushConstantData() { return m_PushConstantData; }
+
 		std::map<VkShaderStageFlagBits, ShaderModuleData> m_ShaderModuleDataMap;
 
 		~VansShader()
@@ -72,6 +76,8 @@ namespace VansVulkan
 		bool m_SupportMRTOutput;
 
 		int m_PushConstantSize;
+
+		void* m_PushConstantData;
 	};
 
 	class VansComputeShader : public VansShader

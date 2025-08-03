@@ -78,6 +78,8 @@ namespace VansGraphics
 
 		std::vector<VkDescriptorSet> m_UsedDescSets;
 
+		bool m_DescriptorsetsDirty;
+
 		//统一被CreateDescriptorSets调用
 		void RegistCameraDescriptor(VansCamera* camera);
 
@@ -87,6 +89,8 @@ namespace VansGraphics
 		void virtual CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) {};
 
 		void virtual UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) {};
+
+		void virtual UpdateDescripterSets(VansMaterialManager& materialManager) {}
 
 		void BeforeDrawCall();
 
@@ -139,6 +143,8 @@ namespace VansGraphics
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+		
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 	};
 
 	class VansSkyBoxRenderNode : public VansRenderNode
@@ -150,6 +156,8 @@ namespace VansGraphics
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 	};
 
 	class VansPostProcessRenderNode : public VansRenderNode
@@ -161,6 +169,8 @@ namespace VansGraphics
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 	};
 
 	class VansDeferredRenderNode : public VansRenderNode
@@ -172,6 +182,8 @@ namespace VansGraphics
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 	};
 
 	class VansScreenSpaceRenderNode : public VansRenderNode
@@ -183,6 +195,8 @@ namespace VansGraphics
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 	};
 
 	class VansShadowRenderNode : public VansRenderNode
@@ -194,5 +208,7 @@ namespace VansGraphics
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 	};
 }
