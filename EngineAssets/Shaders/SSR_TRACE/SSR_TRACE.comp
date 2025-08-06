@@ -59,12 +59,10 @@ void main()
         }
 
         //获取当前位置的深度和法线
-        float sceneDepth = texelFetch(inputHIZ, ivec2(screenPos * ScreenParams.xy), 0).r;
+        float sceneDepth = texelFetch(inputPosition, ivec2(screenPos * ScreenParams.xy), 0).w;
         vec3 sceneNormal = texelFetch(inputNormal, ivec2(screenPos * ScreenParams.xy), 0).xyz;
 
-        //转到线性空间
-        float sceneDepthV = LinearizeDepth(sceneDepth, NearPlane, FarPlane);
-        if(traceDepth > sceneDepthV )
+        if(traceDepth > sceneDepth )
         {
             traceHitInfo.xy = screenPos;
             traceHitInfo.z  = traceDepth; // 存储深度

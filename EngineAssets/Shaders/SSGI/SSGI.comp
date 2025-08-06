@@ -69,11 +69,8 @@ void main()
         }
 
         //获取当前位置的深度和法线
-        float sceneDepth = texture(inputDepth, screenPos).r;
         vec3 sceneNormal = texture(inputNormal, screenPos).xyz;
-
-        //转到线性空间
-        sceneDepth = LinearizeDepth(sceneDepth, NearPlane, FarPlane);
+        float sceneDepth = texture(inputPosition, screenPos).w;
         if(traceDepth > sceneDepth )
         {
             traceResult = texture(inputColor, screenPos).xyz;

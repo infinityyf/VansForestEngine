@@ -47,6 +47,9 @@
     <Filter Include="EngineCore\ScriptCore">
       <UniqueIdentifier>{ff76fc78-ed05-4d15-9fa7-de160573327d}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\AssetsSystem">
+      <UniqueIdentifier>{001f356b-2123-4374-9332-159719700b02}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -183,6 +186,9 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h">
       <Filter>EngineCore\ScriptCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.h">
+      <Filter>EngineCore\AssetsSystem</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

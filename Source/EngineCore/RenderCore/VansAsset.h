@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+
 namespace VansGraphics
 {
 	class VansAsset
@@ -13,5 +14,8 @@ namespace VansGraphics
 		{
 			m_AssetName = name;
 		}
+
+		//需要支持监视路径，并在文件修改时重新导入
+
 	};
 }

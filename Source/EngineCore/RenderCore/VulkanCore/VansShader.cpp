@@ -39,6 +39,11 @@ bool VansVulkan::VansShader::InitShader(VkDevice& logic_device, const std::strin
 	return true;
 }
 
+bool VansVulkan::VansShader::CheckRefreshShader(VkDevice& logic_device)
+{
+	return false;
+}
+
 
 
 bool VansVulkan::VansShader::TranslateToSPIRV(const std::string& shader_folder)

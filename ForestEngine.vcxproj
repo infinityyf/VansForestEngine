@@ -147,6 +147,7 @@
     <ClInclude Include="External\GUI\imgui-1.90.2\imstb_textedit.h" />
     <ClInclude Include="External\GUI\imgui-1.90.2\imstb_truetype.h" />
     <ClInclude Include="Source\EngineCore\Configration\VansConfigration.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAssetWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansBaseWindowComponent.h" />

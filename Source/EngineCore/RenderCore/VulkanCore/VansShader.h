@@ -44,6 +44,8 @@ namespace VansVulkan
 		//每个shader一个路径，路径里都是对应的所有shader
 		bool InitShader(VkDevice& logic_device, const std::string& shader_folder);
 
+		bool CheckRefreshShader(VkDevice& logic_device);
+
 		void SetPushConstant(int size) { m_PushConstantSize = size; }
 
 		int GetPushConstantSize() const { return m_PushConstantSize; }

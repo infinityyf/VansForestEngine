@@ -16,10 +16,22 @@ layout( set = 0, binding = 6, rgba32f ) uniform image2D resolveResult;
 
 void main() 
 {
+    const ivec2 offset[9] =
+    {
+        ivec2(-2.0, -2.0), 
+        ivec2(0.0, -2.0), 
+        ivec2(2.0, -2.0), 
+        ivec2(-2.0, 0.0), 
+        ivec2(0.0, 0.0), 
+        ivec2(2.0, 0.0), 
+        ivec2(-2.0, 2.0),
+        ivec2(0.0, 2.0), 
+        ivec2(2.0, 2.0)
+    };
+
     //获取击中的uv
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
     vec4 hitInfo = imageLoad(traceHit, pixelCoord);
-    vec4 pdfInfo = imageLoad(tracePDF, pixelCoord);
     vec3 normal = texelFetch(inputNormal, pixelCoord, 0).xyz;
     float roughness = texelFetch(inputRoughness, pixelCoord, 0).a;
     vec3 position = texelFetch(inputPosition, pixelCoord, 0).xyz;
@@ -27,15 +39,41 @@ void main()
 
     vec3 viewDirection = normalize(cameraPosition.xyz - position);
 
-    //采样color
-    vec3 color = texelFetch(inputColor, ivec2(hituv * ScreenParams.xy), 0).xyz;
-    vec3 hitPosition = texelFetch(inputPosition, ivec2(hituv * ScreenParams.xy), 0).xyz;
-    vec3 lightDirection = normalize(hitPosition - position);
-    color *= SSR_BRDF(viewDirection, lightDirection,normal, roughness);
+    vec3 resolvedReflectionColor = vec3(0.0);
+    float resolvedWeight = 0.0;
+
+    //使用周围像素的结果，相当于trace了更多的光线
+    for (int i = 0; i < SSR_NUM_RESOLVER; i++)
+	{
+		vec2 offsetUV = offset[i] * ScreenParams.zw;
+		vec2 neighborUV = hituv + offsetUV;
+
+        //采样color
+        vec3 color = texelFetch(inputColor, ivec2(neighborUV * ScreenParams.xy), 0).xyz;
+        vec3 hitPosition = texelFetch(inputPosition, ivec2(neighborUV * ScreenParams.xy), 0).xyz;
+        vec3 lightDirection = normalize(hitPosition - position);
+
+        //采样概率
+        vec4 pdfInfo = imageLoad(tracePDF, ivec2(neighborUV * ScreenParams.xy));
+
+		///SpatioSampler
+		float currentSampleWeight = SSR_BRDF(viewDirection, lightDirection, normal, roughness) / max(1e-5, pdfInfo.a);
+		
+		resolvedReflectionColor += color * currentSampleWeight;
+		resolvedWeight += currentSampleWeight;
+	}
+
+	resolvedReflectionColor /= resolvedWeight;
+
+    // //采样color
+    // vec3 color = texelFetch(inputColor, ivec2(hituv * ScreenParams.xy), 0).xyz;
+    // vec3 hitPosition = texelFetch(inputPosition, ivec2(hituv * ScreenParams.xy), 0).xyz;
+    // vec3 lightDirection = normalize(hitPosition - position);
+    // color *= SSR_BRDF(viewDirection, lightDirection,normal, roughness);
 
     if(hitInfo.w > 0)
     {
-        imageStore(resolveResult, pixelCoord, vec4(color.rgb, 1.0));
+        imageStore(resolveResult, pixelCoord, vec4(resolvedReflectionColor.rgb, 1.0));
     }
     else
     {

@@ -101,7 +101,7 @@ namespace VansVulkan
 
 		VansVKImage m_GBufferImage1; // metalic + ao + materialID
 
-		VansVKImage m_GBufferImage2; // worldposition
+		VansVKImage m_GBufferImage2; // worldposition + linear depth
 
 	private:
 		static VansRenderPassManager* instance;

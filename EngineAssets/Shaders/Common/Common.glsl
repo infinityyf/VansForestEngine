@@ -16,6 +16,7 @@
 
 #define SSR_MAX_COUNT 64
 #define SSR_MAX_STEP 4
+#define SSR_NUM_RESOLVER 9
 
 float RandomInterLeaved (vec2 uv) 
 {

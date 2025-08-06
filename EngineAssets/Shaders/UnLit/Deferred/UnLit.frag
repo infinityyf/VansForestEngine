@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
+#include "../../Common/CameraData.glsl"
 #include "../../BRDF/BRDFData.glsl"
 
 layout( location = 0 ) in vec2 frag_uv;
@@ -36,5 +37,7 @@ void main()
     outNormal = vec4(normal, 1.0);
     outGBuffer0 = vec4(albedo, roughness);
     outGBuffer1 = vec4(metallic, ao, 0, 1.0);
-    outGBuffer2 = vec4(position_world, 1.0);
+
+    float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
+    outGBuffer2 = vec4(position_world, -linearDepth);
 }

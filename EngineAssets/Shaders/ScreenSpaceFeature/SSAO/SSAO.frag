@@ -61,10 +61,12 @@ void main()
         randSampleNDC.xy = randSampleNDC.xy * 0.5 + 0.5; // 转换到NDC坐标系
         randSampleNDC.y = 1.0 - randSampleNDC.y; // 翻转Y轴
 
-        //采样点的场景深度
-        float depth = texture(depthInput, randSampleNDC.xy).x;
-        //转到线性空间
-        depth = LinearizeDepth(depth, NearPlane, FarPlane);
+        // //采样点的场景深度
+        // float depth = texture(depthInput, randSampleNDC.xy).x;
+        // //转到线性空间
+        // depth = LinearizeDepth(depth, NearPlane, FarPlane);
+
+        float depth = texture(gbufferInput2, randSampleNDC.xy).w;
 
         //消除自遮挡
         float ao = (-viewPosition.z > (depth + SSAO_DEPHT_BIAS)) ? 1.0 : 0.0;
