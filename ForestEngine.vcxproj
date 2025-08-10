@@ -155,6 +155,7 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansLight.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansPBR.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansAsset.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansCamera.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansCommonUtils.h" />
@@ -199,6 +200,7 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansLight.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansCamera.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansGraphicsDevice.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansMaterial.cpp" />

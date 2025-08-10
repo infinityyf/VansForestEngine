@@ -10,6 +10,7 @@ namespace VansGraphics
 {
 	class VansScene
 	{
+		friend class VansVKDevice;
 	private:
 
 		VansCamera* m_Camera;

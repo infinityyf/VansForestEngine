@@ -5,7 +5,7 @@
 #include "../Common/CameraData.glsl"
 #include "../BRDF/BRDFData.glsl"
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 layout( set = 0, binding = 0 ) uniform sampler2D inputColor;
 layout( set = 0, binding = 1 ) uniform sampler2D inputRoughness;
 layout( set = 0, binding = 2 ) uniform sampler2D inputNormal;
@@ -14,6 +14,7 @@ layout( set = 0, binding = 4, rgba32f ) uniform image2D traceHit;
 layout( set = 0, binding = 5, rgba32f ) uniform image2D tracePDF;
 layout( set = 0, binding = 6, rgba32f ) uniform image2D resolveResult;
 
+#define SCREEN_SCALE 2
 void main() 
 {
     const ivec2 offset[9] =
@@ -32,9 +33,9 @@ void main()
     //获取击中的uv
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
     vec4 hitInfo = imageLoad(traceHit, pixelCoord);
-    vec3 normal = texelFetch(inputNormal, pixelCoord, 0).xyz;
-    float roughness = texelFetch(inputRoughness, pixelCoord, 0).a;
-    vec3 position = texelFetch(inputPosition, pixelCoord, 0).xyz;
+    vec3 normal = texelFetch(inputNormal, pixelCoord * SCREEN_SCALE, 0).xyz;
+    float roughness = texelFetch(inputRoughness, pixelCoord * SCREEN_SCALE, 0).a;
+    vec3 position = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0).xyz;
     vec2 hituv = hitInfo.xy;
 
     vec3 viewDirection = normalize(cameraPosition.xyz - position);
@@ -54,7 +55,7 @@ void main()
         vec3 lightDirection = normalize(hitPosition - position);
 
         //采样概率
-        vec4 pdfInfo = imageLoad(tracePDF, ivec2(neighborUV * ScreenParams.xy));
+        vec4 pdfInfo = imageLoad(tracePDF, ivec2(neighborUV * ScreenParams.xy / SCREEN_SCALE));
 
 		///SpatioSampler
 		float currentSampleWeight = SSR_BRDF(viewDirection, lightDirection, normal, roughness) / max(1e-5, pdfInfo.a);

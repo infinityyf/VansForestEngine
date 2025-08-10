@@ -8,6 +8,7 @@ VansConfigration::VansConfigration()
 	ShadowMapWidth = 2048;
 	PunctualShadowMapWidth = 2048;
 	PunctualShadowMapHeight = 2048;
+	SupportRayTracing = true;
 }
 
 VansConfigration* VansConfigration::GetInstance()

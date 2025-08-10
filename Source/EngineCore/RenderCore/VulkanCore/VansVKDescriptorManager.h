@@ -92,6 +92,14 @@ namespace VansVulkan
 		static const uint32_t m_CBuffer4SetBinding = 4;
 		static const uint32_t m_CBuffer5SetBinding = 5;
 		static const uint32_t m_CBuffer6SetBinding = 6;
+
+		static const uint32_t m_Buffer0SetBinding = 0;
+		static const uint32_t m_Buffer1SetBinding = 1;
+		static const uint32_t m_Buffer2SetBinding = 2;
+		static const uint32_t m_Buffer3SetBinding = 3;
+		static const uint32_t m_Buffer4SetBinding = 4;
+		static const uint32_t m_Buffer5SetBinding = 5;
+		static const uint32_t m_Buffer6SetBinding = 6;
 	private:
 
 		//各个类似的描述符在这个pool中的最大数量，不是在一个set中的

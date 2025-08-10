@@ -4,7 +4,7 @@
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 layout( set = 0, binding = 0 ) uniform sampler2D inputNormal;
 layout( set = 0, binding = 1 ) uniform sampler2D inputRoughness;
 layout( set = 0, binding = 2 ) uniform sampler2D inputPosition;
@@ -15,9 +15,9 @@ layout( set = 0, binding = 5, rgba32f ) uniform image2D tracePDF;
 void main() 
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
-    vec3 normal = texelFetch(inputNormal, pixelCoord,0).xyz;
-    vec3 position = texelFetch(inputPosition, pixelCoord,0).xyz;
-    float roughness = texelFetch(inputRoughness, pixelCoord,0).a;
+    vec3 normal = texelFetch(inputNormal, pixelCoord * SCREEN_SCALE,0).xyz;
+    vec3 position = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE,0).xyz;
+    float roughness = texelFetch(inputRoughness, pixelCoord * SCREEN_SCALE,0).a;
 
     //计算视线向量
     vec3 viewDirection = normalize(cameraPosition.xyz - position);
@@ -62,7 +62,8 @@ void main()
         float sceneDepth = texelFetch(inputPosition, ivec2(screenPos * ScreenParams.xy), 0).w;
         vec3 sceneNormal = texelFetch(inputNormal, ivec2(screenPos * ScreenParams.xy), 0).xyz;
 
-        if(traceDepth > sceneDepth )
+        // && traceDepth - sceneDepth < SSR_DEPTH_THRESHOLD
+        if(traceDepth > sceneDepth)
         {
             traceHitInfo.xy = screenPos;
             traceHitInfo.z  = traceDepth; // 存储深度

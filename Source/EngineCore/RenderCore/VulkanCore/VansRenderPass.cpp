@@ -325,7 +325,7 @@ void VansVulkan::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_devi
 
 
 
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {});
+	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
 }
 
@@ -776,7 +776,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 	//end record
 	command_buffer.EndCommandBufferRecord();
 
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {});
+	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
 }
 
@@ -923,7 +923,7 @@ void VansVulkan::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logi
 	//end record
 	command_buffer.EndCommandBufferRecord();
 
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {});
+	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
 }
 
@@ -1070,7 +1070,7 @@ void VansVulkan::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDevi
 	//end record
 	command_buffer.EndCommandBufferRecord();
 
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {});
+	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
 }
 

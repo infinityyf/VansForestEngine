@@ -25,8 +25,10 @@ layout(set=PBRLutSetBind, binding=0) uniform sampler2D BRDFLUT;
 //pbr texture set
 layout(set=PBRLutSetBind, binding=1) uniform samplerCube PreConvDiffuseEnvironment;
 layout(set=PBRLutSetBind, binding=2) uniform samplerCube PreConvSpecularEnvironment;
-
-
+layout(set=PBRLutSetBind, binding=3) buffer shCoefficientsBuffer 
+{
+    float shCoefficients[27];
+};
 
 struct BRDFData
 {

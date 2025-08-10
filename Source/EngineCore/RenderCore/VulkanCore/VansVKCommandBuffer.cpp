@@ -395,8 +395,9 @@ bool VansVulkan::VansVKCommandBuffer::ResetCommandBuffer(bool release_buffer_mem
 	return true;
 }
 VkFence VansVulkan::VansVKCommandBuffer::m_CommandBufferFinishSubmitFence = VK_NULL_HANDLE;
+VkFence VansVulkan::VansVKCommandBuffer::m_RayTracingCommandBufferFinishSubmitFence = VK_NULL_HANDLE;
 
-bool VansVulkan::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansVulkan::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores)
+bool VansVulkan::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansVulkan::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence)
 {
 	//semaphores should be waited
 	std::vector<VkSemaphore> wait_semaphore_handles;
@@ -422,17 +423,17 @@ bool VansVulkan::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice& d
 	};
 
 	//send this fence to queue, it will be signaled when the command buffer has finished execution
-	VkResult result = vkQueueSubmit(queue, 1, &submit_info, m_CommandBufferFinishSubmitFence);
+	VkResult result = vkQueueSubmit(queue, 1, &submit_info, fence);
 	if (VK_SUCCESS != result) 
 	{
 		std::cout << "Error occurred during command buffer submission." << std::endl;
 		return false;
 	}
 
-	if (m_CommandBufferFinishSubmitFence != VK_NULL_HANDLE)
+	if (fence != VK_NULL_HANDLE)
 	{
-		vkWaitForFences(device, 1, &m_CommandBufferFinishSubmitFence, VK_TRUE, UINT64_MAX);
-		vkResetFences(device, 1, &m_CommandBufferFinishSubmitFence);
+		vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+		vkResetFences(device, 1, &fence);
 	}
 
 	return true;
@@ -468,6 +469,6 @@ void VansVulkan::VansMultiThreadCommandBufferMangaer::SubmitMultiCommands(VkQueu
 		command_buffers[i] = m_CommandBufferRecordingThreadParameters[i].CommandBuffer;
 	}
 	//submit只能从一个线程，所以需要所有record都join后才能submit
-	VansVKCommandBuffer::SubmitCommands(queue, device, command_buffers, wait_semaphore_infos, signal_semaphores);
+	VansVKCommandBuffer::SubmitCommands(queue, device, command_buffers, wait_semaphore_infos, signal_semaphores, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 
 }

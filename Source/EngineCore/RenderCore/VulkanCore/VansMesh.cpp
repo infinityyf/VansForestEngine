@@ -29,7 +29,7 @@ VansVulkan::IndexBufferParameters VansVulkan::VansMesh::GetIndexBufferParameter(
 	return p;
 }
 
-void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRawData, std::vector<int>& meshIndex, bool import_tangent)
+void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRawData, std::vector<int>& meshIndex, int& vertexCount, bool import_tangent)
 {
 	for (uint32_t i = 0; i < node->mNumMeshes; i++)
 	{
@@ -71,6 +71,7 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRaw
 				meshRawData.emplace_back(bitangent.z);
 			}
 		}
+		vertexCount += mesh->mNumVertices;
 		for (uint32_t i = 0; i < mesh->mNumFaces; i++)
 		{
 			aiFace face = mesh->mFaces[i];
@@ -82,7 +83,7 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRaw
 
 	for (uint32_t i = 0; i < node->mNumChildren; i++)
 	{
-		ProcessNode(node->mChildren[i], scene, meshRawData, meshIndex, import_tangent);
+		ProcessNode(node->mChildren[i], scene, meshRawData, meshIndex, vertexCount, import_tangent);
 	}
 }
 
@@ -90,7 +91,7 @@ void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& f
 {
 	m_LogicalDevice = logic_device;
 	m_MeshRawDataCPULoaded = false;
-
+	m_VertexCount = 0;
 	//”√assimp
 	Assimp::Importer importer;
 	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices;
@@ -104,18 +105,18 @@ void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& f
 		std::cout << "ERROR::ASSIMP::" << importer.GetErrorString() << std::endl;
 		return;
 	}
-	ProcessNode(scene->mRootNode, scene, m_MeshRawData, m_MeshTriangleIndex, import_tangent);
+	ProcessNode(scene->mRootNode, scene, m_MeshRawData, m_MeshTriangleIndex,m_VertexCount, import_tangent);
 	m_MeshRawDataCPULoaded = true;
 
-	uint32_t vertexStride = 8 * sizeof(float);
+	m_VertexDataSize = 8 * sizeof(float);
 	if (import_tangent)
 	{
-		vertexStride += 6 * sizeof(float);
+		m_VertexDataSize += 6 * sizeof(float);
 	}
 	m_VertexInputBindingDescription = 
 	{
 		0,
-		vertexStride,
+		m_VertexDataSize,
 		VK_VERTEX_INPUT_RATE_VERTEX
 	};
 
@@ -165,12 +166,14 @@ void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& f
 	m_VertexBuffer.CreatVulkanBuffer(logic_device,
 		m_MeshRawData.size() * sizeof(float),
 		VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT 
+		| VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 	m_IndexBuffer.CreatVulkanBuffer(logic_device,
 		m_MeshTriangleIndex.size() * sizeof(int),
 		VK_FORMAT_R32_UINT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT| VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT| VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT 
+		| VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
 	m_VertexBuffer.SetBufferData(m_MeshRawData.data(), 0, m_MeshRawData.size() * sizeof(float));

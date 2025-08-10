@@ -7,7 +7,9 @@
 #include "VansMesh.h"
 #include "VansShader.h"
 
+
 #include "../VansScene.h"
+#include "../../Configration/VansConfigration.h"
 //#if defined FOREST_EDITOR
 #include "../../EditorCore/VansEditorWindow.h"
 #include <iostream>
@@ -15,6 +17,12 @@
 
 namespace VansVulkan
 {
+	std::vector<const char*> RayTracingDeviceExtensions =
+	{
+		VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+		VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+		VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+	};
 
 	//get call avaliable extensions
 	bool VansVKDevice::CheckAvaliableInstanceExtensions(std::vector<VkExtensionProperties>& available_extensions)
@@ -163,18 +171,48 @@ namespace VansVulkan
 		return false;
 	}
 
-	bool VansVKDevice::CheckPhysicDeviceFeature(VkPhysicalDevice device, VkPhysicalDeviceFeatures& features)
+	bool VansVKDevice::CheckPhysicDeviceFeature(VkPhysicalDevice device)
 	{
-		//set the feature we need for create device
-		vkGetPhysicalDeviceFeatures(device, &features);
-		vkGetPhysicalDeviceProperties(device, &m_DeviceProperties);
-		if (features.geometryShader == VK_TRUE)
+		//使用1.2
+		m_Features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+		m_Features12.pNext = nullptr;
+
+		m_Features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+		m_Features11.pNext = &m_Features12;
+
+		auto vansConfigration = VansConfigration::GetInstance();
+		if (vansConfigration->GetSupportRayTracing())
 		{
-			features = {};
-			features.geometryShader = VK_TRUE;
-			return true;
+			m_RaytracingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+			m_RaytracingFeature.pNext = nullptr;
+
+			m_AcceralteFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+			m_AcceralteFeature.pNext = &m_RaytracingFeature;
+
+			//static VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddress{};
+			//bufferDeviceAddress.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+			//bufferDeviceAddress.pNext = &acceralteFeature;
+
+			//static VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexing = { };
+			//descriptorIndexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+			//descriptorIndexing.pNext = &bufferDeviceAddress;
+			m_Features12.pNext = &m_AcceralteFeature;
 		}
-		return false;
+
+
+		m_DeviceFeatures2.pNext = &m_Features11;
+		m_DeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+
+		static VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingProp{};
+		rayTracingProp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+		rayTracingProp.pNext = nullptr;
+
+		m_DeviceProperties2.pNext = &rayTracingProp;
+		m_DeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+		//set the feature we need for create device
+		vkGetPhysicalDeviceFeatures2(device, &m_DeviceFeatures2);
+		vkGetPhysicalDeviceProperties2(device, &m_DeviceProperties2);
+		return true;
 	}
 
 
@@ -240,7 +278,7 @@ namespace VansVulkan
 
 
 		//std::vector<WaitSemaphoreInfo> wait_semaphore_infos;
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, {m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {});
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, {m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 		return true;
 	}
@@ -308,7 +346,7 @@ namespace VansVulkan
 			return false;
 		}
 
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {});
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 		return true;
 	}
@@ -340,6 +378,9 @@ namespace VansVulkan
 
 		//加载场景数据
 		m_Scene->LoadScene("C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Scene.json");
+		
+		//准备光线追踪数据
+		//PrepareRayTracingData();
 	}
 
 	void VansVKDevice::Rendering()
@@ -411,7 +452,7 @@ namespace VansVulkan
 		);
 
 
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, { wait_semaphore_infos }, { m_CommandBufferReadyToPresentSemaphore });
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, { wait_semaphore_infos }, { m_CommandBufferReadyToPresentSemaphore }, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 
 		//并进行present
@@ -419,7 +460,7 @@ namespace VansVulkan
 
 		//重置imgae layout
 		renderPassManager->ResetFrameBufferImageLayout(m_VansVKCommandBuffer, m_VansVKSurface, m_SwapChainImageIndex);
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {});
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 	}
 
@@ -510,6 +551,13 @@ namespace VansVulkan
 	}
 	bool VansVKDevice::CreateVulkanInstance(std::vector<char const*>& desired_extensions, std::vector<char const*>& desired_layers)
 	{
+		uint32_t apiVersion = 0;
+		vkEnumerateInstanceVersion(&apiVersion);
+		printf("Vulkan API version: %d.%d.%d\n",
+			VK_VERSION_MAJOR(apiVersion),
+			VK_VERSION_MINOR(apiVersion),
+			VK_VERSION_PATCH(apiVersion));
+
 		std::vector<VkExtensionProperties> available_extensions;
 		if (!CheckAvaliableInstanceExtensions(available_extensions))
 		{
@@ -544,11 +592,11 @@ namespace VansVulkan
 		{
 			 VK_STRUCTURE_TYPE_APPLICATION_INFO,
 			 nullptr,
-			 "ForestEngin",
+			 "ForestEngine",
 			 VK_MAKE_VERSION(1, 0, 0),
-			 "ForestEngin",
+			 "ForestEngine",
 			 VK_MAKE_VERSION(1, 0, 0),
-			 VK_MAKE_VERSION(1, 0, 0)
+			 VK_MAKE_VERSION(1, 2, 0)//api level
 		};
 
 		//instance create info
@@ -620,12 +668,10 @@ namespace VansVulkan
 
 
 			//check feature
-			VkPhysicalDeviceFeatures availableDeviceFeatures;
-			if (!CheckPhysicDeviceFeature(device, availableDeviceFeatures))
+			if (!CheckPhysicDeviceFeature(device))
 			{
 				continue;
 			}
-			
 			
 			//check queuefamily type support
 			if (!CheckAvalialeDeviceQueue(device, m_GraphicsQueueFamilyIndex, VK_QUEUE_GRAPHICS_BIT))
@@ -633,7 +679,7 @@ namespace VansVulkan
 				continue;
 			}
 
-			if (!CheckAvalialeDeviceQueue(device, m_ComputeQueueFamilyIndex, VK_QUEUE_COMPUTE_BIT))
+			if (!CheckAvalialeDeviceQueue(device, m_ComputeQueueFamilyIndex, VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT))
 			{
 				continue;
 			}
@@ -668,10 +714,11 @@ namespace VansVulkan
 
 			//create logical device
 			//device has layers , externsions and features
-			VkDeviceCreateInfo device_create_info = 
+			// Vulkan >= 1.1 uses pNext to enable features, and not pEnabledFeatures
+			VkDeviceCreateInfo device_create_info =
 			{
 				 VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-				 nullptr,
+				 &m_DeviceFeatures2,
 				 0,
 				 static_cast<uint32_t>(queue_create_infos.size()),
 				 queue_create_infos.size() > 0 ? &queue_create_infos[0] : nullptr,
@@ -679,7 +726,7 @@ namespace VansVulkan
 				 nullptr,
 				 static_cast<uint32_t>(desired_extensions.size()),
 				 desired_extensions.size() > 0 ? &desired_extensions[0] : nullptr,
-				 &availableDeviceFeatures
+				 nullptr// &availableDeviceFeatures
 			};
 
 			VkResult result = vkCreateDevice(device, &device_create_info, nullptr, &m_VansVKLogicDevice);
@@ -715,8 +762,17 @@ namespace VansVulkan
 			std::cout << "create m_VansVKCommandBuffer failed" << std::endl;
 			return false;
 		}
+
+		result = m_VansVKRayTracingCommandBuffer.CreateVulkanCommandBuffer(*this, m_ComputeQueueFamilyIndex, params);
+		if (!result)
+		{
+			std::cout << "create m_VansVKRayTracingCommandBuffer failed" << std::endl;
+			return false;
+		}
+
 		//创建fence,用于等待command buffer执行完成
 		CreateVKFence(false,VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		CreateVKFence(false,VansVKCommandBuffer::m_RayTracingCommandBufferFinishSubmitFence);
 
 		VansVKMemoryManager::GetInstance()->BindDevice(m_VansVKCommandBuffer.GetVKCommandBuffer() , *this);
 		VansVKDescriptorManager::GetInstance()->BindDevice(m_VansVKPhysicalDevice, m_VansVKLogicDevice, m_VansVKCommandBuffer.GetVKCommandBuffer());
@@ -741,8 +797,10 @@ namespace VansVulkan
 
 		//销毁command buffer
 		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 
 		DestroyVKFence(VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(VansVKCommandBuffer::m_RayTracingCommandBufferFinishSubmitFence);
 
 		if (m_VansVKLogicDevice)
 		{
@@ -773,6 +831,8 @@ namespace VansVulkan
 		//get WSI externsion before create instance
 		std::vector<char const*> desired_instance_extrensions =
 		{
+			//用于增强查询物理设备特性、设备属性和格式属性的能力。它通过引入可扩展的结构链机制，使得应用程序可以更灵活地获取设备信息，并在设备创建时启用特定功能
+			VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
 			VK_KHR_SURFACE_EXTENSION_NAME,
 #ifdef VK_USE_PLATFORM_WIN32_KHR
 			VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
@@ -790,9 +850,17 @@ namespace VansVulkan
 		{
 #ifdef _DEBUG
 			"VK_LAYER_KHRONOS_validation",
-			"VK_LAYER_RENDERDOC_Capture",
 #endif
 		};
+
+		auto vansConfigration = VansConfigration::GetInstance();
+#ifdef _DEBUG
+		//ray tracing 和 renderdoc是冲突的，同时开启不能创建device
+		if (!vansConfigration->GetSupportRayTracing())
+		{
+			desired_instance_layers.push_back("VK_LAYER_RENDERDOC_Capture");
+		}
+#endif
 
 		//create instance
 		if (!CreateVulkanInstance(desired_instance_extrensions, desired_instance_layers))
@@ -828,7 +896,15 @@ namespace VansVulkan
 		{
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 			VK_KHR_MAINTENANCE1_EXTENSION_NAME,
+			VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
 		};
+
+		
+		if (vansConfigration->GetSupportRayTracing())
+		{
+			desired_device_extrensions.insert(desired_device_extrensions.end(), RayTracingDeviceExtensions.begin(), RayTracingDeviceExtensions.end());
+		}
+
 		if (!CreateVulkanLogicDevice(desired_device_extrensions))
 		{
 			return false;
@@ -907,6 +983,12 @@ namespace VansVulkan
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 		prefilterCBBuffer.SetBufferData(data, 0, sizeof(float) * 4);
 
+		manager->m_SkySHResultBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(float) * 27, VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_SkySHResultBuffer.SetBufferData(data, 0, sizeof(float) * 27);
+
 
 		VkDescriptorSetLayoutBinding samplerLUTBinding =
 		{
@@ -933,7 +1015,16 @@ namespace VansVulkan
 			VK_SHADER_STAGE_FRAGMENT_BIT,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding,sampleDiffuseConvBinding,sampleSpecularConBinding }, manager->m_BRDFInterationTexSetLayout);
+
+		VkDescriptorSetLayoutBinding environmentSHBuffer =
+		{
+			VansVKDescriptorManager::m_Buffer3SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding,sampleDiffuseConvBinding,sampleSpecularConBinding,environmentSHBuffer }, manager->m_BRDFInterationTexSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BRDFInterationTexSetLayout }, manager->m_BRDFInterationTextDescriptorSets);
 
 
@@ -980,10 +1071,19 @@ namespace VansVulkan
 			VK_SHADER_STAGE_COMPUTE_BIT,
 			nullptr
 		};
+
+		VkDescriptorSetLayoutBinding shResultBuffer =
+		{
+			VansVKDescriptorManager::m_Buffer4SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
 		//PBR预卷积 compute shader 描述符
 		VkDescriptorSetLayout m_PreConvSetLayout;
 		std::vector<VkDescriptorSet> m_PreConvtDescriptorSets;
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerCubeBinding,uavCubeBinding0,uavCubeBinding1,prefilterCB }, m_PreConvSetLayout);
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerCubeBinding,uavCubeBinding0,uavCubeBinding1,prefilterCB,shResultBuffer }, m_PreConvSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_PreConvSetLayout }, m_PreConvtDescriptorSets);
 
 		//更新描述符
@@ -996,9 +1096,25 @@ namespace VansVulkan
 				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 				{
 					{
-						prefilterCBBuffer.GetMativeBuffer(),
+						prefilterCBBuffer.GetNativeBuffer(),
 						0,
 						prefilterCBBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				m_PreConvtDescriptorSets[0],
+				VansVKDescriptorManager::m_Buffer4SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				{
+					{
+						manager->m_SkySHResultBuffer.GetNativeBuffer(),
+						0,
+						manager->m_SkySHResultBuffer.GetBufferSize()
 					}
 				}
 			}
@@ -1061,19 +1177,13 @@ namespace VansVulkan
 		//record command buffer
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
+		//除了生成diffuse，这里还生成一下球协
 		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvDiffuseShader, { m_PreConvSetLayout });
 		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvDiffuseShader, 512, 512, 1, m_PreConvtDescriptorSets);
 
 		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvSpecularShader, { m_PreConvSetLayout });
 		//生成多个mip
 		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvSpecularShader, 512, 512, mipCount, m_PreConvtDescriptorSets);
-
-		//end record
-		m_VansVKCommandBuffer.EndCommandBufferRecord();
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {});
-		m_VansVKCommandBuffer.ResetCommandBuffer(false);
-
-		prefilterCBBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
 
 		//天空渲染参数
 		manager->m_AtmospherePBRDataBuffer.CreatVulkanBuffer(
@@ -1120,6 +1230,13 @@ namespace VansVulkan
 				VK_QUEUE_FAMILY_IGNORED,
 				manager->m_PreConvDiffuse->GetImage().m_ImageAspect
 			});
+
+		//end record
+		m_VansVKCommandBuffer.EndCommandBufferRecord();
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+
+		prefilterCBBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
 	}
 
 	void VansVKDevice::PrepareSSAORenderData()
@@ -1136,14 +1253,14 @@ namespace VansVulkan
 		//SSAO结果
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSGIResult = new VansTexture();
-		manager->m_SSGIResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true);
+		manager->m_SSGIResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/4, m_RenderHeight/4, 4, false, false, true);
 		
 		//cs
 		manager->m_SSGIShader = new VansComputeShader();
 		manager->m_SSGIShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSGI");
 
 
-		float data[4] = { m_RenderWidth, m_RenderHeight, 1.0f/ m_RenderWidth, 1.0f/ m_RenderHeight };
+		float data[4] = { std::floor(m_RenderWidth / 4) , std::floor(m_RenderHeight / 4), 4.0f/ m_RenderWidth, 4.0f/ m_RenderHeight };
 		manager->m_SSGICBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(float) * 4, VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
@@ -1216,17 +1333,23 @@ namespace VansVulkan
 
 	void VansVKDevice::UpdateSSGI(VansRenderPassManager* renderPassManager)
 	{
+		uint32_t halfResWidth = std::floor(m_RenderWidth / 4);
+		uint32_t halfResHeight = std::floor(m_RenderHeight / 4);
+
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		auto camera = m_Scene->GetCamera();
 		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSGIShader, { manager->m_SSGITexSetLayout,camera->m_CameraBufferLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSGIShader, m_RenderWidth, m_RenderHeight, 1, { manager->m_SSGIDescriptorSets[0],camera ->m_CameraBufferDescriptorSets[0]});
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSGIShader, halfResWidth, halfResHeight, 1, { manager->m_SSGIDescriptorSets[0],camera ->m_CameraBufferDescriptorSets[0]});
 	}
 
 	void VansVKDevice::BilateralFilterSSGI(VansRenderPassManager* renderPassManager)
 	{
+		uint32_t halfResWidth = std::floor(m_RenderWidth / 4);
+		uint32_t halfResHeight = std::floor(m_RenderHeight / 4);
+
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_BilateralFilterShader, { manager->m_BilateralFilterSetLayout});
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_BilateralFilterShader, m_RenderWidth, m_RenderHeight, 1, { manager->m_BilateralFilterDescriptorSets[0]});
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_BilateralFilterShader, halfResWidth, halfResHeight, 1, { manager->m_BilateralFilterDescriptorSets[0]});
 	}
 
 	void VansVKDevice::UpdateGIDataDescriptorSets(VansRenderPassManager* renderPassManager)
@@ -1250,7 +1373,7 @@ namespace VansVulkan
 				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 				{
 					{
-						manager->m_SSGICBBuffer.GetMativeBuffer(),
+						manager->m_SSGICBBuffer.GetNativeBuffer(),
 						0,
 						manager->m_SSGICBBuffer.GetBufferSize()
 					}
@@ -1735,13 +1858,13 @@ namespace VansVulkan
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSRHitInfo = new VansTexture();
-		manager->m_SSRHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true, MID_PRES_16);
+		manager->m_SSRHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2, 4, false, false, true, MID_PRES_16);
 
 		manager->m_SSRRayPDF = new VansTexture();
-		manager->m_SSRRayPDF->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true, HIGH_PRES_32);
+		manager->m_SSRRayPDF->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2, 4, false, false, true, HIGH_PRES_32);
 
 		manager->m_SSRResult = new VansTexture();
-		manager->m_SSRResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true, MID_PRES_16);
+		manager->m_SSRResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2, 4, false, false, true, MID_PRES_16);
 
 
 		manager->m_SSRTraceShader = new VansComputeShader();
@@ -1870,7 +1993,7 @@ namespace VansVulkan
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSGIFilterResult = new VansTexture();
-		manager->m_SSGIFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true, MID_PRES_16);
+		manager->m_SSGIFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/4, m_RenderHeight/4, 4, false, false, true, MID_PRES_16);
 
 		VkDescriptorSetLayoutBinding colorInput =
 		{
@@ -1904,9 +2027,13 @@ namespace VansVulkan
 		{
 			2.0f,
 			0.02f,
-			5,
+			3,
 			0.01f
 		};
+		// Spatial sigma (controls distance falloff)
+		// Depth sigma (controls depth difference falloff)
+		// Filter radius
+		// Maximum depth difference to consider
 
 		manager->m_BilateralFilterShader = new VansComputeShader();
 		manager->m_BilateralFilterShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/BilateralFilter");
@@ -1949,14 +2076,16 @@ namespace VansVulkan
 		auto& color = renderPassManager->GetColor();
 		auto& hiz = manager->m_HZBResult;
 
-		
+		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
+		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
+
 		auto camera = m_Scene->GetCamera();
 		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSRTraceShader, { manager->m_SSRTraceSetLayout, camera->m_CameraBufferLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRTraceShader, m_RenderWidth, m_RenderHeight, 1, { manager->m_SSRTraceDescriptorSets[0],camera->m_CameraBufferDescriptorSets[0] });
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRTraceShader, halfResWidth, halfResHeight, 1, { manager->m_SSRTraceDescriptorSets[0],camera->m_CameraBufferDescriptorSets[0] });
 		
 		
 		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSRResolveShader, { manager->m_SSRResolveSetLayout, camera->m_CameraBufferLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRResolveShader, m_RenderWidth, m_RenderHeight, 1, { manager->m_SSRResolveDescriptorSets[0],camera->m_CameraBufferDescriptorSets[0] });
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRResolveShader, halfResWidth, halfResHeight, 1, { manager->m_SSRResolveDescriptorSets[0],camera->m_CameraBufferDescriptorSets[0] });
 
 	}
 
@@ -2013,6 +2142,19 @@ namespace VansVulkan
 		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 
 #endif
+	}
+
+	void VansVKDevice::PrepareRayTracingData()
+	{
+		m_VansVKRayTracingCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+		
+		rayTracingContext.BuildBottomLevelAS(this, &m_VansVKRayTracingCommandBuffer, static_cast<VansMesh*>(m_Scene->m_Meshes[0]));
+		rayTracingContext.BuildTopLevelAS(this, &m_VansVKRayTracingCommandBuffer);
+
+		m_VansVKRayTracingCommandBuffer.EndCommandBufferRecord();
+		VansVKCommandBuffer::SubmitCommands(m_VansVKComputeQueue, m_VansVKLogicDevice, { m_VansVKRayTracingCommandBuffer.GetVKCommandBuffer() }, {}, {}, VK_NULL_HANDLE);
+		//m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
 	}
 
 	void VansVKDevice::DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)

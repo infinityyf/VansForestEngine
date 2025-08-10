@@ -17,6 +17,8 @@ private:
 
 	int PunctualShadowMapHeight;
 
+	bool SupportRayTracing;
+
 public:
 
 	static VansConfigration* GetInstance();
@@ -28,4 +30,6 @@ public:
 	int GetPunctualShadowMapWidth() { return PunctualShadowMapWidth; }
 
 	int GetPunctualShadowMapHeight() { return PunctualShadowMapHeight; }
+
+	bool GetSupportRayTracing() { return SupportRayTracing; }
 };

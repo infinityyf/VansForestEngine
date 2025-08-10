@@ -92,6 +92,8 @@ namespace VansGraphics
 
 		VansVKBuffer m_SSGICBBuffer;
 
+		VansVKBuffer m_SkySHResultBuffer;
+
 		uint32_t m_HIZMipCount;
 
 		VansComputeShader* m_HZBShader;

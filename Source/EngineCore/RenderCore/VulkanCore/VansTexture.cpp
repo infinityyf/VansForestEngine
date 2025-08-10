@@ -80,7 +80,7 @@ void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer
 		});
 
 	command_buffer.EndCommandBufferRecord();
-	VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, {command_buffer.GetVKCommandBuffer()}, {}, {});
+	VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, {command_buffer.GetVKCommandBuffer()}, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
 }
 
@@ -243,7 +243,7 @@ void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buf
 		});
 
 	command_buffer.EndCommandBufferRecord();
-	VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {});
+	VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
 }
 
@@ -300,7 +300,7 @@ void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& comm
 		});
 
 	command_buffer.EndCommandBufferRecord();
-	VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {});
+	VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
 }
 

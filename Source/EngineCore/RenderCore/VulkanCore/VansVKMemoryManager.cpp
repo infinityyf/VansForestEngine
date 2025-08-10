@@ -8,7 +8,7 @@
 
 VansVulkan::VansVKMemoryManager* VansVulkan::VansVKMemoryManager::instance = nullptr;
 
-bool VansVulkan::VansVKMemoryManager::AllocateMemory(VkMemoryRequirements& requires, VkDeviceMemory& memory, VkMemoryPropertyFlags memory_properties)
+bool VansVulkan::VansVKMemoryManager::AllocateMemory(VkMemoryRequirements& requires, VkDeviceMemory& memory, VkMemoryPropertyFlags memory_properties, bool needAddressable)
 {
 	for (uint32_t type = 0; type < m_MemoryProperties.memoryTypeCount; ++type) 
 	{
@@ -22,6 +22,16 @@ bool VansVulkan::VansVKMemoryManager::AllocateMemory(VkMemoryRequirements& requi
 				requires.size,
 				type
 			};
+
+			VkMemoryAllocateFlagsInfo allocateFlagsInfo{};
+			if (needAddressable)
+			{
+				allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+				allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+				memory_allocate_info.pNext = &allocateFlagsInfo;
+
+			}
+			
 			VkResult result = vkAllocateMemory(m_LogicalDevice, &memory_allocate_info, nullptr, &memory);
 			if (VK_SUCCESS == result) 
 			{

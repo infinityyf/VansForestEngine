@@ -23,6 +23,19 @@ layout(set = 2, binding = 4) uniform sampler2D punctualShadowMap;
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
 
+vec3 SampleSHColor(vec3 dir) 
+{
+    vec3 v = normalize(dir);
+    vec3 color = vec3(0.0);
+
+    for(int i = 0; i < 9; i++) 
+    {
+        float basis = SHBasis(i, v);
+        color += vec3(shCoefficients[i * 3 + 0],shCoefficients[i * 3 + 1],shCoefficients[i * 3 + 2]) * basis;
+    }
+    return color;
+}
+
 void main() 
 {
     vec3 normal = subpassLoad(normalInput).xyz;
@@ -56,9 +69,12 @@ void main()
     lastFrameClip.y = -lastFrameClip.y; // flip y for screen space
     vec2 lastFrameUV = (lastFrameClip.xy + 1.0) * 0.5;
     //indirect diffuse
-    //brdfData.indirectDiffuse = texture(PreConvDiffuseEnvironment, normal).rgb;
-    brdfData.indirectDiffuse = imageLoad(ssgi,ivec2(lastFrameUV * ScreenParams.xy)).rgb;
-    brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy)).rgba;
+    //a : brdfData.indirectDiffuse = texture(PreConvDiffuseEnvironment, normal).rgb;
+    //gi 使用半分辨率
+    brdfData.indirectDiffuse = imageLoad(ssgi,ivec2(lastFrameUV * ScreenParams.xy / 4)).rgb;
+    //b : 计算球谐
+    //brdfData.indirectDiffuse = SampleSHColor(normal);
+    brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy / 2)).rgba;
 
     //计算光照
     LightResult lightResult;

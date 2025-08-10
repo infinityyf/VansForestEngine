@@ -37,8 +37,10 @@ bool VansVulkan::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkDev
 	vkGetBufferMemoryRequirements(logical_device, m_VansVKBuffer, &memory_requirements);
 
 	m_VansVKBufferMemory = VK_NULL_HANDLE;
+
+	bool needBufferAddressable = usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 	//决定了buffer的访问类型
-	bool allocateResult = VansVKMemoryManager::GetInstance()->AllocateMemory(memory_requirements, m_VansVKBufferMemory, memory_properties);
+	bool allocateResult = VansVKMemoryManager::GetInstance()->AllocateMemory(memory_requirements, m_VansVKBufferMemory, memory_properties, needBufferAddressable);
 	if (!allocateResult)
 	{
 		return false;

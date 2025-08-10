@@ -40,7 +40,7 @@ namespace VansVulkan
 			return (value + alignment - 1) & ~(alignment - 1);
 		}
 
-		bool AllocateMemory(VkMemoryRequirements& requires, VkDeviceMemory& memory, VkMemoryPropertyFlags memory_properties);
+		bool AllocateMemory(VkMemoryRequirements& requires, VkDeviceMemory& memory, VkMemoryPropertyFlags memory_properties, bool needAddressable = false);
 		
 		void FreeMemory(VkDeviceMemory& memory);
 

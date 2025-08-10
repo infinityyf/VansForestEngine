@@ -12,6 +12,10 @@ layout( set = 0, binding = 3 ) uniform preFilterInfo
     float textureResolution;
     float maxMiplevel;
 };
+layout( set=0, std430, binding = 4) buffer shCoefficientsBuffer 
+{
+    float shCoefficients[27];
+};
 
 vec3 GetRightDirection(vec2 tangentCoord)
 {
@@ -71,6 +75,8 @@ vec3 CalculateConvResult(vec3 direction)
     return irradiance;
 }
 
+
+
 void main() 
 {
     float halfResolution = textureResolution * 0.5;
@@ -108,4 +114,36 @@ void main()
     //targetCoord.x = imageCoordBound - targetCoord.x;
     irradiance = CalculateConvResult(GetBackDirection(direction));
     imageStore(cubemap, ivec3(targetCoord,5), vec4(irradiance, 1.0));
+
+    //计算球谐系数
+    if(gl_GlobalInvocationID.x >0 || gl_GlobalInvocationID.y >0)
+        return;
+
+    // 球面积分的权重系数 (4π / SAMPLE_COUNT)
+    float weight = FOUR_PI / SH_SAMPLE_COUNT;
+
+    // 初始化球谐系数
+    for(int i = 0; i < 27; i++)
+    {
+        shCoefficients[i] = 0.0;
+    }
+    
+    // 对球面进行采样并计算系数
+    for(int s = 0; s < SH_SAMPLE_COUNT; s++) 
+    {
+        // 获取采样方向
+        vec3 dir = SampleSphere(s,SH_SAMPLE_COUNT);
+        
+        // 从立方体贴图采样颜色 (假设是线性空间颜色)
+        vec3 color = texture(inputCubemap, dir).rgb;
+        
+        // 计算每个基函数并累积系数
+        for(int i = 0; i < 9; i++) 
+        {
+            float basis = SHBasis(i, dir);
+            shCoefficients[i * 3 + 0] += color.r * basis * weight;  // 红色通道系数
+            shCoefficients[i * 3 + 1] += color.g * basis * weight;  // 绿色通道系数
+            shCoefficients[i * 3 + 2] += color.b * basis * weight;  // 蓝色通道系数
+        }
+    }
 }

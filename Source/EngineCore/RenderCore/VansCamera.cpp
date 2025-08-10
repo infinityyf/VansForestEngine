@@ -86,7 +86,7 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             {
                 {
-                    m_CameraDataBuffer.GetMativeBuffer(),
+                    m_CameraDataBuffer.GetNativeBuffer(),
                     0,
                     m_CameraDataBuffer.GetBufferSize()
                 }

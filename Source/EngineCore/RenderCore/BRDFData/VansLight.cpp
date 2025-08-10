@@ -97,7 +97,7 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			{
 				{
-					m_LightBuffer.GetMativeBuffer(),
+					m_LightBuffer.GetNativeBuffer(),
 					0,
 					m_LightBuffer.GetBufferSize()
 				}

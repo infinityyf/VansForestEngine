@@ -7,6 +7,7 @@
 #include "VansVKCommandBuffer.h"
 #include "VansShader.h"
 #include "../VulkanCore/VansTexture.h"
+#include "../RayTracingCore/VansRayTracing.h"
 #include <vector>
 
 #include "../VansCommonUtils.h"
@@ -103,6 +104,8 @@ namespace VansVulkan
 
 		void PrepareRenderingData();
 
+		void PrepareRayTracingData();
+
 		void DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
 		void DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
@@ -162,6 +165,15 @@ namespace VansVulkan
 		VkSemaphore m_CommandBufferReadyToPresentSemaphore;
 
 		VkPhysicalDeviceProperties m_DeviceProperties;
+		
+		//ray tracing相关的扩展
+		VkPhysicalDeviceRayTracingPipelineFeaturesKHR m_RaytracingFeature;
+		VkPhysicalDeviceAccelerationStructureFeaturesKHR m_AcceralteFeature;
+		VkPhysicalDeviceVulkan12Features m_Features12;
+		VkPhysicalDeviceVulkan11Features m_Features11;
+
+		VkPhysicalDeviceFeatures2 m_DeviceFeatures2;
+		VkPhysicalDeviceProperties2 m_DeviceProperties2;
 
 		VansVKSurface m_VansVKSurface;
 
@@ -178,6 +190,8 @@ namespace VansVulkan
 		//command buffer
 		VansVKCommandBuffer m_VansVKCommandBuffer;
 
+		VansVKCommandBuffer m_VansVKRayTracingCommandBuffer;
+		VansRayTracing rayTracingContext;
 	private:
 		//recored all supported queue before device create
 		uint32_t m_GraphicsQueueFamilyIndex;
@@ -215,7 +229,7 @@ namespace VansVulkan
 
 		bool CheckAvalialeDeviceQueue(VkPhysicalDevice device, uint32_t& queue_family_index, VkQueueFlags desired_capabilty);
 
-		bool CheckPhysicDeviceFeature(VkPhysicalDevice device, VkPhysicalDeviceFeatures& features);
+		bool CheckPhysicDeviceFeature(VkPhysicalDevice device);
 
 		bool IsExtensionSupported(const std::vector<VkExtensionProperties>& available_extensions, char const* desire_extension);
 

@@ -55,7 +55,9 @@ namespace VansVulkan
 
 		bool SetBufferData(void* data, int offset, int size);
 
-		VkBuffer GetMativeBuffer() { return m_VansVKBuffer; }
+		VkBuffer GetNativeBuffer() { return m_VansVKBuffer; }
+
+		VkDeviceMemory GetNativeMemory() { return m_VansVKBufferMemory; }
 
 		VkDeviceSize GetBufferSize() { return m_BufferSize; }
 	private:

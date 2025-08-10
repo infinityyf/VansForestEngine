@@ -239,7 +239,7 @@ void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManage
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			{
 				{
-					m_RenderNodeDataBuffer.GetMativeBuffer(),
+					m_RenderNodeDataBuffer.GetNativeBuffer(),
 					0,
 					m_RenderNodeDataBuffer.GetBufferSize()
 				}
@@ -339,7 +339,7 @@ void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManage
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			{
 				{
-					m_Material->GetPBRDataBuffer().GetMativeBuffer(),
+					m_Material->GetPBRDataBuffer().GetNativeBuffer(),
 					0,
 					m_Material->GetPBRDataBuffer().GetBufferSize()
 				}
@@ -943,7 +943,7 @@ void VansGraphics::VansShadowRenderNode::UpdateDescripterSets(VansMaterialManage
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			{
 				{
-					m_RenderNodeDataBuffer.GetMativeBuffer(),
+					m_RenderNodeDataBuffer.GetNativeBuffer(),
 					0,
 					m_RenderNodeDataBuffer.GetBufferSize()
 				}

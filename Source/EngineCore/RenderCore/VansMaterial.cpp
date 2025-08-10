@@ -10,6 +10,21 @@ void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 {
 	//update descriptor
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+		{
+			m_BRDFInterationTextDescriptorSets[0],
+			VansVKDescriptorManager::m_Buffer3SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{
+				{
+					m_SkySHResultBuffer.GetNativeBuffer(),
+					0,
+					m_SkySHResultBuffer.GetBufferSize()
+				}
+			}
+		}
+	);
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
@@ -74,7 +89,7 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			{
 				{
-					m_AtmospherePBRDataBuffer.GetMativeBuffer(),
+					m_AtmospherePBRDataBuffer.GetNativeBuffer(),
 					0,
 					m_AtmospherePBRDataBuffer.GetBufferSize()
 				}

@@ -50,6 +50,9 @@
     <Filter Include="EngineCore\AssetsSystem">
       <UniqueIdentifier>{001f356b-2123-4374-9332-159719700b02}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\RenderCore\RayTracingCore">
+      <UniqueIdentifier>{1049ca8e-e98e-4441-b818-a58dc39cd35d}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -190,6 +193,9 @@
     <ClInclude Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.h">
       <Filter>EngineCore\AssetsSystem</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.h">
+      <Filter>EngineCore\RenderCore\RayTracingCore</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl">
@@ -307,6 +313,9 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp">
       <Filter>EngineCore\ScriptCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp">
+      <Filter>EngineCore\RenderCore\RayTracingCore</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

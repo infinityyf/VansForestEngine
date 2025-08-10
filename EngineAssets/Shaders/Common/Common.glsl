@@ -3,7 +3,9 @@
 
 #define PI 3.1415936
 #define TWO_PI 6.28318530718
-#define SSAO_SAMPLE_COUNT 32
+#define FOUR_PI 12.566370614359172
+#define SH_SAMPLE_COUNT 1024
+#define SSAO_SAMPLE_COUNT 16
 #define SSAO_RADIUS 2.0
 #define SSAO_DEPTH_THRESHOLD 1.0
 #define SSAO_DEPHT_BIAS 0.02
@@ -14,9 +16,12 @@
 #define SSGI_MAX_COUNT 32
 #define SSGI_MAX_STEP 4
 
-#define SSR_MAX_COUNT 64
+#define SSR_MAX_COUNT 32
 #define SSR_MAX_STEP 4
+#define SSR_DEPTH_THRESHOLD 0.1
 #define SSR_NUM_RESOLVER 9
+
+#define SCREEN_SCALE 2
 
 float RandomInterLeaved (vec2 uv) 
 {
@@ -80,4 +85,37 @@ vec4 ImportanceSampleGGX(vec2 random, float roughness)
 	return vec4(H, PDF);
 }
 
+// 2阶球谐基函数 (实值形式)
+// v: 单位方向向量 (x,y,z)
+float SHBasis(int i, vec3 v) 
+{
+    switch(i) 
+    {
+        case 0:  return 0.282095;                                  // Y00
+        case 1:  return 0.488603 * v.y;                            // Y1-1
+        case 2:  return 0.488603 * v.z;                            // Y10
+        case 3:  return 0.488603 * v.x;                            // Y11
+        case 4:  return 1.092548 * v.x * v.y;                       // Y2-2
+        case 5:  return 1.092548 * v.y * v.z;                       // Y2-1
+        case 6:  return 0.315392 * (3.0 * v.z * v.z - 1.0);         // Y20
+        case 7:  return 1.092548 * v.x * v.z;                       // Y21
+        case 8:  return 0.546274 * (v.x * v.x - v.y * v.y);         // Y22
+        default: return 0.0;
+    }
+}
+
+
+// 生成均匀分布的球面采样点 (使用黄金螺旋算法)
+vec3 SampleSphere(int i, int sampleCount) 
+{
+    float y = 1.0 - (i + 0.5) / sampleCount * 2.0;  // y范围 [-1,1]
+    float radius = sqrt(1.0 - y * y);                // 半径
+    
+    float theta = 6.28318530718 * i / 1.61803398875; // 黄金角
+    
+    float x = cos(theta) * radius;
+    float z = sin(theta) * radius;
+    
+    return vec3(x, y, z);
+}
 #endif
