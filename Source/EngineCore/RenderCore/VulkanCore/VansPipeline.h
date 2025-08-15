@@ -238,4 +238,43 @@ namespace VansVulkan
 			DestroyPipeline(m_Device);
 		}
 	};
+
+	class VansVKRayTracingPipeline
+	{
+		friend class VansVKCommandBuffer;
+		friend class VansRayTracingShader;
+		friend class VansRayTracing;
+		//Compute pipelines cannot be used inside render passes.
+	private:
+
+		VkPipeline m_RayTracingPipeline;
+
+		VkPipelineLayout m_RayTracingLayout;
+
+		VkDevice m_Device;
+
+	private:
+
+		VkStridedDeviceAddressRegionKHR m_RaygenShaderBindingTable{};
+
+		VkStridedDeviceAddressRegionKHR m_MissShaderBindingTable{};
+
+		VkStridedDeviceAddressRegionKHR m_HitShaderBindingTable{};
+
+		VkStridedDeviceAddressRegionKHR m_CallableShaderBindingTable{}; // Œ¥ π”√
+
+	public:
+
+		bool CreateRayTracingPipeline(VkDevice& logic_device, std::vector<VkRayTracingShaderGroupCreateInfoKHR>& shaderGroupCreateInfo, std::vector<VkPipelineShaderStageCreateInfo>& shaderStageCreateInfo,  const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount = 0, VkPushConstantRange* pushConstRange = nullptr);
+
+		void DestroyPipeline(VkDevice& logic_device);
+
+		void DestroyPipelineLayout(VkDevice& logic_device);
+
+		~VansVKRayTracingPipeline()
+		{
+			DestroyPipelineLayout(m_Device);
+			DestroyPipeline(m_Device);
+		}
+	};
 }

@@ -203,11 +203,11 @@ namespace VansVulkan
 		m_DeviceFeatures2.pNext = &m_Features11;
 		m_DeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 
-		static VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingProp{};
-		rayTracingProp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
-		rayTracingProp.pNext = nullptr;
+		
+		m_RayTracingProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+		m_RayTracingProperties.pNext = nullptr;
 
-		m_DeviceProperties2.pNext = &rayTracingProp;
+		m_DeviceProperties2.pNext = &m_RayTracingProperties;
 		m_DeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
 		//set the feature we need for create device
 		vkGetPhysicalDeviceFeatures2(device, &m_DeviceFeatures2);
@@ -380,7 +380,7 @@ namespace VansVulkan
 		m_Scene->LoadScene("C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Scene.json");
 		
 		//准备光线追踪数据
-		//PrepareRayTracingData();
+		PrepareRayTracingData();
 	}
 
 	void VansVKDevice::Rendering()
@@ -422,6 +422,9 @@ namespace VansVulkan
 
 		//计算上一帧SSR
 		UpdateSSR(renderPassManager);
+
+		//光线追踪
+		UpdateRayTracing();
 
 		//clear mrt和color[beginrender pass的时候直接通过clearvalue就clear了，但是前提是frambufferload action是clear]
 		//绘制指令
@@ -1087,7 +1090,7 @@ namespace VansVulkan
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_PreConvSetLayout }, m_PreConvtDescriptorSets);
 
 		//更新描述符
-		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->ResetState();
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
 				m_PreConvtDescriptorSets[0],
@@ -1119,7 +1122,7 @@ namespace VansVulkan
 				}
 			}
 		);
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				m_PreConvtDescriptorSets[0],
@@ -1364,7 +1367,7 @@ namespace VansVulkan
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
 		//更新描述符
-		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->ResetState();
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
 				manager->m_SSGIDescriptorSets[0],
@@ -1380,7 +1383,7 @@ namespace VansVulkan
 				}
 			}
 		);
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+
 		//normal
 		auto& normal = renderPassManager->GetNormal();
 		auto& depth = renderPassManager->GetDepth();
@@ -1483,8 +1486,7 @@ namespace VansVulkan
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
 		//更新描述符
-		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->ResetState();
 
 
 		//color
@@ -1551,8 +1553,7 @@ namespace VansVulkan
 
 		for (int mipIndex = 1; mipIndex < manager->m_HIZMipCount; mipIndex++)
 		{
-			VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+			VansVKDescriptorManager::GetInstance()->ResetState();
 
 			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 				{
@@ -1606,8 +1607,7 @@ namespace VansVulkan
 		auto& color = renderPassManager->GetColor();
 		auto& hiz = manager->m_HZBResult;
 
-		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->ResetState();
 
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
@@ -1705,8 +1705,7 @@ namespace VansVulkan
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
 		//设置ssr resolve
-		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+		VansVKDescriptorManager::GetInstance()->ResetState();
 
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
@@ -1816,6 +1815,17 @@ namespace VansVulkan
 			}
 		);
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	}
+
+	void VansVKDevice::UpdateRayTracing()
+	{
+		//更新push constant数据
+		auto camera = m_Scene->GetCamera();
+		rayTracingContext.m_RayTracingConstant.cameraPos = camera->GetPosition();
+		rayTracingContext.m_RayTracingConstant.cameraDir = camera->GetForward();
+		rayTracingContext.m_RayTracingConstant.cameraRight = camera->GetRight();
+		rayTracingContext.m_RayTracingConstant.cameraUp = camera->GetUp();
+		rayTracingContext.DispatchRayTracing(this, &m_VansVKCommandBuffer);
 	}
 
 	void VansVKDevice::PrepareHZBRenderData()
@@ -2146,15 +2156,18 @@ namespace VansVulkan
 
 	void VansVKDevice::PrepareRayTracingData()
 	{
-		m_VansVKRayTracingCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-		
-		rayTracingContext.BuildBottomLevelAS(this, &m_VansVKRayTracingCommandBuffer, static_cast<VansMesh*>(m_Scene->m_Meshes[0]));
-		rayTracingContext.BuildTopLevelAS(this, &m_VansVKRayTracingCommandBuffer);
+		rayTracingContext.BuildBottomLevelAS(this, &m_VansVKCommandBuffer, static_cast<VansMesh*>(m_Scene->m_Meshes[0]));
+		rayTracingContext.BuildTopLevelAS(this, &m_VansVKCommandBuffer);
 
-		m_VansVKRayTracingCommandBuffer.EndCommandBufferRecord();
-		VansVKCommandBuffer::SubmitCommands(m_VansVKComputeQueue, m_VansVKLogicDevice, { m_VansVKRayTracingCommandBuffer.GetVKCommandBuffer() }, {}, {}, VK_NULL_HANDLE);
-		//m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+		m_VansVKCommandBuffer.EndCommandBufferRecord();
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+
+
+		//创建ray tracing需要的资源和资源描述符
+		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer);
 	}
 
 	void VansVKDevice::DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)

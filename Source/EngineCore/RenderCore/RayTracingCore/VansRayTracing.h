@@ -2,19 +2,51 @@
 #include <vulkan/vulkan.h>
 #include <vector>
 #include "../../RenderCore/VulkanCore/VansVKBuffer.h"
+#include "../../RenderCore/VulkanCore/VansTexture.h"
+#include "../../RenderCore/VulkanCore/VansShader.h"
+#include "../../RenderCore/VansCommonUtils.h"
 namespace VansVulkan
 {
 	class VansVKCommandBuffer;
 	class VansVKDevice;
 	class VansMesh;
+	class VansRayTracingShader;
+
+	struct alignas(16) RayTracingPushConstant
+	{
+		glm::vec4 cameraPos;
+		glm::vec4 cameraDir;
+		glm::vec4 cameraUp;
+		glm::vec4 cameraRight;
+	};
 
 	class VansRayTracing
 	{
+		//由于和正常shader流程差异较大，这里重新做一份shader的解析，编译和管线创建
+
+	private:
+
+		std::vector<VkPipelineShaderStageCreateInfo> m_RayTracingShaderStages;
+
 	public:
 
 		void BuildBottomLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansMesh* mesh);
 
 		void BuildTopLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer);
+
+		void DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer);
+		
+		void CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer);
+
+		void CreateDescriptorSets(VansVKDevice* device);
+
+		RayTracingPushConstant m_RayTracingConstant;
+
+	private:
+		//绑定数据
+		void BindRayTracingData(VansVKDevice* device);
+
+		bool m_DescriptorSetIsDirty;
 
 	private:
 		// 加速结构
@@ -27,5 +59,12 @@ namespace VansVulkan
 		VansVKBuffer m_TopLevelASBuffer;
 
 		VansVKBuffer m_InstanceBuffer;
+
+		VansTexture m_RayTracingResult;
+
+		VansRayTracingShader m_VansRayTracingShader;
+
+		VkDescriptorSetLayout m_RayTracingSetLayout;
+		std::vector<VkDescriptorSet> m_RayTracingDescriptorSets;
 	};
 }

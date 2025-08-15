@@ -9,7 +9,7 @@ VansGraphics::VansMaterialManager::VansMaterialManager()
 void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 {
 	//update descriptor
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->ResetState();
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 		{
 			m_BRDFInterationTextDescriptorSets[0],
@@ -25,7 +25,6 @@ void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 			}
 		}
 	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
 
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
@@ -79,8 +78,7 @@ void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 {
 	//update descriptor
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->ResetState();
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 		{
 			m_MaterialAtmosphereDataDescriptorSets[0],

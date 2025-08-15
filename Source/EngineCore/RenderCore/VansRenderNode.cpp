@@ -229,8 +229,7 @@ void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManage
 	m_DescriptorsetsDirty = false;
 
 	//¸üÐÂÃèÊö·û
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->ResetState();
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 		{
 			modelBufferDescriptorSets[0],
@@ -329,8 +328,7 @@ void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManage
 	);
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->ResetState();
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 		{
 			m_MaterialPBRBaseDataDescriptorSets[0],
@@ -380,8 +378,7 @@ void VansGraphics::VansPostProcessRenderNode::UpdateDescripterSets(VansMaterialM
 	}
 	m_DescriptorsetsDirty = false;
 
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->ResetState();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			frameBufferInputDescriptorSets[0],
@@ -540,8 +537,7 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 	}
 	m_DescriptorsetsDirty = false;
 
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->ResetState();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			frameBufferInputDescriptorSets[0],
@@ -778,8 +774,7 @@ void VansGraphics::VansScreenSpaceRenderNode::UpdateDescripterSets(VansMaterialM
 	}
 	m_DescriptorsetsDirty = false;
 
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->ResetState();
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			textureResourceDescriptorSets[0],
@@ -933,8 +928,7 @@ void VansGraphics::VansShadowRenderNode::UpdateDescripterSets(VansMaterialManage
 	}
 	m_DescriptorsetsDirty = false;
 
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->ResetState();
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 		{
 			modelBufferDescriptorSets[0],

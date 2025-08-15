@@ -7,13 +7,20 @@
 #endif
 #include "vulkan/vulkan.h"
 #include "VansPipeline.h"
+#include "VansVKBuffer.h"
 #include "../VansAsset.h"
 #include <string>
 #include <map>
+#include <unordered_map>
 using namespace VansGraphics;
 
 namespace VansVulkan
 {
+	enum ShaderType
+	{
+		Normal = 0,
+		RayTracing = 1,
+	};
 	struct ShaderModuleData
 	{
 		std::string m_ShaderTextResourceFileName;
@@ -38,11 +45,22 @@ namespace VansVulkan
 		{"comp", VK_SHADER_STAGE_COMPUTE_BIT},
 	};
 
+	const std::unordered_map<std::string, VkShaderStageFlagBits> m_RayTracingShaderTypeMap =
+	{
+		{"rgen", VK_SHADER_STAGE_RAYGEN_BIT_KHR},
+		{"rmiss", VK_SHADER_STAGE_MISS_BIT_KHR},
+		{"rahit", VK_SHADER_STAGE_ANY_HIT_BIT_KHR},
+		{"rchit", VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR},
+		{"rint", VK_SHADER_STAGE_INTERSECTION_BIT_KHR},
+	};
+
 	class VansShader : public VansAsset
 	{
 	public:
 		//每个shader一个路径，路径里都是对应的所有shader
 		bool InitShader(VkDevice& logic_device, const std::string& shader_folder);
+
+		bool InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder);
 
 		bool CheckRefreshShader(VkDevice& logic_device);
 
@@ -69,7 +87,7 @@ namespace VansVulkan
 
 		bool CreateShaderModule(VkDevice& logic_device);
 
-		bool TranslateToSPIRV(const std::string& shader_folder);
+		bool TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType = ShaderType::Normal);
 
 		VkDevice m_LogicDevice;
 
@@ -88,6 +106,11 @@ namespace VansVulkan
 		VansVKComputePipeline* GetComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 
 		VansVKComputePipeline* GetComputePipeline() const { return m_ComputePipeline; };
+
+		VansComputeShader() : m_ComputePipeline(nullptr)
+		{
+
+		}
 
 		~VansComputeShader()
 		{
@@ -119,6 +142,11 @@ namespace VansVulkan
 
 		void SetDrawStateData(VkBool32 depthTestEnable, VkBool32 depthWriteEnable, VkCompareOp depthCompareOp, VkCullModeFlags cullmode);
 
+		VansGraphicsShader() : m_GraphicsPipeline(nullptr)
+		{
+
+		}
+
 		~VansGraphicsShader()
 		{
 			if (m_GraphicsPipeline != nullptr)
@@ -143,5 +171,40 @@ namespace VansVulkan
 
 		bool CreateGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data);
 
+	};
+
+	class VansRayTracingShader : public VansShader
+	{
+	public:
+
+		VansVKRayTracingPipeline* GetRayTracingPipeline(VansVKDevice* device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
+
+		VansVKRayTracingPipeline* GetRayTracingPipeline() const { return m_VansVkRayTracingPipeline; };
+
+		VansRayTracingShader() : m_VansVkRayTracingPipeline(nullptr)
+		{
+		}
+
+		~VansRayTracingShader()
+		{
+			if (m_VansVkRayTracingPipeline != nullptr)
+			{
+				delete m_VansVkRayTracingPipeline;
+			}
+
+			m_SBTBuffer.DestroyVulkanBuffer(m_LogicDevice);
+		}
+
+	private:
+
+		VkDevice m_LogicDevice;
+
+		VansVKBuffer m_SBTBuffer;
+
+		VansVKRayTracingPipeline* m_VansVkRayTracingPipeline;
+
+		void CreateShaderBindingTable(VansVKDevice* device);
+
+		bool CreateRayTracingPipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 	};
 }

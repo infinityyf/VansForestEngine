@@ -90,8 +90,10 @@ namespace VansVulkan
 		//获取device properties
 		VkPhysicalDeviceProperties GetDeviceProperties() { return m_DeviceProperties; }
 
+		VkPhysicalDeviceRayTracingPipelinePropertiesKHR GetRayTracingProperties() { return m_RayTracingProperties; }
+
 		//获取graphics queue
-		VkQueue GetGraphicsQueue() { return m_VansVKGraphicsQueue; };
+		VkQueue& GetGraphicsQueue() { return m_VansVKGraphicsQueue; };
 
 		//获取surface
 		VansVKSurface& GetSurface() { return m_VansVKSurface; }
@@ -138,6 +140,10 @@ namespace VansVulkan
 
 	private:
 
+		void UpdateRayTracing();
+
+	private:
+
 		//记录全局的渲染参数，需要和相机绑定
 		GlobalStateData m_globalRenderStateData;
 
@@ -172,6 +178,8 @@ namespace VansVulkan
 		VkPhysicalDeviceVulkan12Features m_Features12;
 		VkPhysicalDeviceVulkan11Features m_Features11;
 
+		VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_RayTracingProperties;
+
 		VkPhysicalDeviceFeatures2 m_DeviceFeatures2;
 		VkPhysicalDeviceProperties2 m_DeviceProperties2;
 
@@ -192,6 +200,8 @@ namespace VansVulkan
 
 		VansVKCommandBuffer m_VansVKRayTracingCommandBuffer;
 		VansRayTracing rayTracingContext;
+		
+		
 	private:
 		//recored all supported queue before device create
 		uint32_t m_GraphicsQueueFamilyIndex;

@@ -87,8 +87,7 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 	m_LightBuffer.SetBufferData(m_SpotLights.data(), offset, size);
 
 	//update descriptor
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+	VansVKDescriptorManager::GetInstance()->ResetState();
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 		{
 			m_LightDataDescriptorSets[0],

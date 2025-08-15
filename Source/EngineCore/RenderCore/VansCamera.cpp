@@ -57,6 +57,21 @@ void VansGraphics::VansCamera::HandleKeyboardInput(int key, int scancode, int ac
     }
 }
 
+glm::vec4 VansGraphics::VansCamera::GetForward()
+{
+    return m_CameraData.ViewMatrix[2];
+}
+
+glm::vec4 VansGraphics::VansCamera::GetRight()
+{
+    return m_CameraData.ViewMatrix[0];
+}
+
+glm::vec4 VansGraphics::VansCamera::GetUp()
+{
+    return m_CameraData.ViewMatrix[1];
+}
+
 void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix)
 {
     m_CameraData.CameraPosition = glm::vec4(m_Position.x, m_Position.y, m_Position.z,1.0f);
@@ -76,8 +91,7 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
 
     m_CameraDataBuffer.SetBufferData(&m_CameraData, 0, sizeof(m_CameraData));
 
-    VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.clear();
-    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();
+    VansVKDescriptorManager::GetInstance()->ResetState();
     VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
         {
             m_CameraBufferDescriptorSets[0],

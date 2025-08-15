@@ -61,26 +61,29 @@ bool VansVulkan::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkDev
 		return false;
 	}
 
-	//create buffer view: how shader to view the buffer data
-	//set the format
-	VkBufferViewCreateInfo buffer_view_create_info = 
+	if (!needBufferAddressable)
 	{
-		 VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
-		 nullptr,
-		 0,
-		 m_VansVKBuffer,
-		 format,
-		 memory_offset,
-		 memory_range
-	};
+		//create buffer view: how shader to view the buffer data
+		//set the format
+		VkBufferViewCreateInfo buffer_view_create_info =
+		{
+			 VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+			 nullptr,
+			 0,
+			 m_VansVKBuffer,
+			 format,
+			 memory_offset,
+			 memory_range
+		};
 
-	result = vkCreateBufferView(logical_device, &buffer_view_create_info, nullptr, &m_VansVKBufferView );
-	if (VK_SUCCESS != result) 
-	{
-		std::cout << "Could not creat buffer view." << std::endl;
-		return false;
+		result = vkCreateBufferView(logical_device, &buffer_view_create_info, nullptr, &m_VansVKBufferView);
+		if (VK_SUCCESS != result)
+		{
+			std::cout << "Could not creat buffer view." << std::endl;
+			return false;
+		}
 	}
-
+	
 	return true;
 }
 

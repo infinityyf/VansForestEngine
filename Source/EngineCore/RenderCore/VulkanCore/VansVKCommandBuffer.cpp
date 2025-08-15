@@ -432,7 +432,7 @@ bool VansVulkan::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice& d
 
 	if (fence != VK_NULL_HANDLE)
 	{
-		vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+		bool result = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 		vkResetFences(device, 1, &fence);
 	}
 

@@ -44,6 +44,15 @@ namespace VansVulkan
 		std::vector<VkBufferView> TexelBufferViews;
 	};
 
+	struct RayTraceASDescritorInfo
+	{
+		VkDescriptorSet TargetDescriptorSet;
+		uint32_t TargetDescriptorBinding;
+		uint32_t TargetArrayElement;
+		VkDescriptorType TargetDescriptorType;
+		VkAccelerationStructureKHR TargetAS;
+	};
+
 	struct CopyDescriptorInfo 
 	{
 		VkDescriptorSet TargetDescriptorSet;
@@ -100,6 +109,10 @@ namespace VansVulkan
 		static const uint32_t m_Buffer4SetBinding = 4;
 		static const uint32_t m_Buffer5SetBinding = 5;
 		static const uint32_t m_Buffer6SetBinding = 6;
+
+
+		static const uint32_t m_Tlas0Binding = 0;
+
 	private:
 
 		//各个类似的描述符在这个pool中的最大数量，不是在一个set中的
@@ -136,7 +149,7 @@ namespace VansVulkan
 		std::vector<ImageDescriptorInfo> m_ImageDescInfos;
 		std::vector<TexelBufferDescriptorInfo> m_TexelBufferDescInfos;
 		std::vector<CopyDescriptorInfo> m_CopyDescInfos;
-
+		std::vector<RayTraceASDescritorInfo> m_RayTraceASInfos;
 
 	private:
 		static VansVKDescriptorManager* instance;
@@ -159,6 +172,15 @@ namespace VansVulkan
 				instance = new VansVKDescriptorManager();
 			}
 			return instance;
+		}
+
+		void ResetState()
+		{
+			m_BufferDescInfos.clear();
+			m_ImageDescInfos.clear();
+			m_TexelBufferDescInfos.clear();
+			m_CopyDescInfos.clear();
+			m_RayTraceASInfos.clear();
 		}
 
 		void BindDevice(VkPhysicalDevice& physicDevice, VkDevice& logicalDevice, VkCommandBuffer& commandBuffer)

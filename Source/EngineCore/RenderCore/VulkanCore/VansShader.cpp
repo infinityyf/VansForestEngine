@@ -3,6 +3,8 @@
 #include "VansShader.h"
 #include "VansVKCommandBuffer.h"
 #include "VansVKDescriptorManager.h"
+#include "VansVKDevice.h"
+
 #include "../../Util/VansFileUtil.h"
 #include <iostream>
 #include <cstdlib>
@@ -39,6 +41,29 @@ bool VansVulkan::VansShader::InitShader(VkDevice& logic_device, const std::strin
 	return true;
 }
 
+bool VansVulkan::VansShader::InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder)
+{
+	std::string shader_folder_string = shader_folder;
+	bool result = TranslateToSPIRV(shader_folder_string, ShaderType::RayTracing);
+	if (!result)
+	{
+		std::cout << "shader translation failed" << std::endl;
+		return false;
+	}
+	result = CreateShaderModule(logic_device);
+	if (!result)
+	{
+		std::cout << "create shader module failed" << std::endl;
+		return false;
+	}
+	m_LogicDevice = logic_device;
+
+	m_PushConstantSize = 0;
+
+	m_PushConstantData = nullptr;
+	return true;
+}
+
 bool VansVulkan::VansShader::CheckRefreshShader(VkDevice& logic_device)
 {
 	return false;
@@ -46,7 +71,7 @@ bool VansVulkan::VansShader::CheckRefreshShader(VkDevice& logic_device)
 
 
 
-bool VansVulkan::VansShader::TranslateToSPIRV(const std::string& shader_folder)
+bool VansVulkan::VansShader::TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType)
 {
 	//根据路径下文件后缀先读取源glsl
 	std::vector<std::string> shader_files = GetFilesInFolder(shader_folder);
@@ -65,17 +90,43 @@ bool VansVulkan::VansShader::TranslateToSPIRV(const std::string& shader_folder)
 		{
 			continue;
 		}
-		auto shader_type_iter = m_ShaderTypeMap.find(shader_type);
-		if (shader_type_iter == m_ShaderTypeMap.end())
+
+		switch (shaderType)
 		{
-			std::cout << "unknow shader type" << std::endl;
-			return false;
+		case VansVulkan::Normal:
+			{
+				auto shader_type_iter = m_ShaderTypeMap.find(shader_type);
+				if (shader_type_iter == m_ShaderTypeMap.end())
+				{
+					std::cout << "unknow shader type" << std::endl;
+					return false;
+				}
+				VkShaderStageFlagBits shader_stage = shader_type_iter->second;
+				ShaderModuleData shader_module_data;
+				shader_module_data.m_ShaderType = shader_type;
+				shader_module_data.m_ShaderTextResourceFileName = shader_folder + "\\" + shader_file;
+				m_ShaderModuleDataMap[shader_stage] = shader_module_data;
+			}
+			break;
+		case VansVulkan::RayTracing:
+			{
+				auto shader_type_iter = m_RayTracingShaderTypeMap.find(shader_type);
+				if (shader_type_iter == m_RayTracingShaderTypeMap.end())
+				{
+					std::cout << "unknow shader type" << std::endl;
+					return false;
+				}
+				VkShaderStageFlagBits shader_stage = shader_type_iter->second;
+				ShaderModuleData shader_module_data;
+				shader_module_data.m_ShaderType = shader_type;
+				shader_module_data.m_ShaderTextResourceFileName = shader_folder + "\\" + shader_file;
+				m_ShaderModuleDataMap[shader_stage] = shader_module_data;
+			}
+
+			break;
+		default:
+			break;
 		}
-		VkShaderStageFlagBits shader_stage = shader_type_iter->second;
-		ShaderModuleData shader_module_data;
-		shader_module_data.m_ShaderType = shader_type;
-		shader_module_data.m_ShaderTextResourceFileName = shader_folder + "\\" + shader_file;
-		m_ShaderModuleDataMap[shader_stage] = shader_module_data;
 	}
 
 	std::string command = "glslangValidator -V ";
@@ -90,6 +141,7 @@ bool VansVulkan::VansShader::TranslateToSPIRV(const std::string& shader_folder)
 		//构建命令行
 		std::string shader_command = command + " " + shader_module_data.second.m_ShaderTextResourceFileName;
 		shader_command += " -o " + spirv_file_name;
+		shader_command += " --target-env vulkan1.2";
 		int result = system(shader_command.c_str());
 
 		if (result == 0) 
@@ -386,3 +438,195 @@ bool VansVulkan::VansComputeShader::CreateComputePipeline(VkDevice& logic_device
 	return m_ComputePipeline->CreateComputePipeline(logic_device, compute_shader_stage, VK_NULL_HANDLE, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr);
 }
 
+VansVulkan::VansVKRayTracingPipeline* VansVulkan::VansRayTracingShader::GetRayTracingPipeline(VansVKDevice* device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
+{
+	m_LogicDevice = device->GetLogicDevice();
+	if (m_VansVkRayTracingPipeline != VK_NULL_HANDLE)
+	{
+		return m_VansVkRayTracingPipeline;
+	}
+
+	bool result = CreateRayTracingPipeline(m_LogicDevice, descriptorset_layouts);
+	if (!result)
+	{
+		std::cout << "create raytracing pipeline failed" << std::endl;
+		return NULL;
+	}
+
+	//创建并设置SBT
+	CreateShaderBindingTable(device);
+
+	return m_VansVkRayTracingPipeline;
+}
+
+void VansVulkan::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* device)
+{
+	//Shader Binding Table(SBT) : 
+	//the structure that makes this runtime shader selection possible.
+	//This is essentially a table of opaque shader handles(probably device addresses), 
+	//analagous to a C++ vtable
+
+	// 定义SBT条目大小
+	//注意这里要和property 里面的对齐值对齐，并且要和pipeLine中的stage顺序对齐
+	const uint32_t raygenCount = 1;
+	const uint32_t missCount = 1;
+	const uint32_t hitCount = 1;
+	const uint32_t groupCount = raygenCount + missCount + hitCount;
+
+
+	auto properties = device->GetRayTracingProperties();
+	uint32_t handleSize = properties.shaderGroupHandleSize;
+
+	// The SBT (buffer) need to have starting groups to be aligned and handles in the group to be aligned.
+	uint32_t handleSizeAligned = AlignUp(handleSize, properties.shaderGroupHandleAlignment);
+	
+	m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.stride = AlignUp(handleSizeAligned, properties.shaderGroupBaseAlignment);
+	m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.size = m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.stride;  // The size member of pRayGenShaderBindingTable must be equal to its stride member
+	
+	m_VansVkRayTracingPipeline->m_MissShaderBindingTable.stride = handleSizeAligned;
+	m_VansVkRayTracingPipeline->m_MissShaderBindingTable.size = AlignUp(missCount * handleSizeAligned, properties.shaderGroupBaseAlignment);
+	
+	m_VansVkRayTracingPipeline->m_HitShaderBindingTable.stride = handleSizeAligned;
+	m_VansVkRayTracingPipeline->m_HitShaderBindingTable.size = AlignUp(hitCount * handleSizeAligned, properties.shaderGroupBaseAlignment);
+
+	m_SBTBuffer.CreatVulkanBuffer(
+		m_LogicDevice,
+		m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.size + 
+		m_VansVkRayTracingPipeline->m_MissShaderBindingTable.size + 
+		m_VansVkRayTracingPipeline->m_HitShaderBindingTable.size +
+		m_VansVkRayTracingPipeline->m_CallableShaderBindingTable.size,
+		VK_FORMAT_R32_SFLOAT,
+		VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+	//从pipeline中获取handle的数据
+	std::vector<uint8_t> handles(groupCount * handleSize);
+
+	// 获取所有着色器组句柄
+	VkResult result = vkGetRayTracingShaderGroupHandlesKHR(
+		m_LogicDevice,
+		m_VansVkRayTracingPipeline->m_RayTracingPipeline,
+		0,
+		groupCount,
+		groupCount * handleSize,
+		handles.data());
+
+	uint8_t* handleData = handles.data();
+	int offset = 0;
+	m_SBTBuffer.SetBufferData(handleData, offset, handleSize);
+	handleData += handleSize;
+	offset = m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.size;
+	//miss
+	for (uint32_t i = 0; i < missCount; i++)
+	{
+		m_SBTBuffer.SetBufferData(handleData, offset, handleSize);
+		handleData += handleSize;
+		offset += m_VansVkRayTracingPipeline->m_MissShaderBindingTable.stride;
+	}
+
+	offset = m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.size + m_VansVkRayTracingPipeline->m_MissShaderBindingTable.size;
+	// Hit
+	for (uint32_t i = 0; i < hitCount; i++)
+	{
+		m_SBTBuffer.SetBufferData(handleData, offset, handleSize);
+		handleData += handleSize;
+		offset += m_VansVkRayTracingPipeline->m_HitShaderBindingTable.stride;
+	}
+
+	// 设置SBT区域
+	VkBufferDeviceAddressInfoKHR addressInfo{};
+	addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR;
+	addressInfo.buffer = m_SBTBuffer.GetNativeBuffer();
+	addressInfo.pNext = nullptr;
+	VkDeviceAddress sbtAddress = vkGetBufferDeviceAddressKHR(m_LogicDevice, &addressInfo);
+
+	// 射线生成区域
+	m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.deviceAddress = sbtAddress;
+
+	// 未命中区域
+	m_VansVkRayTracingPipeline->m_MissShaderBindingTable.deviceAddress = sbtAddress +
+		m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.size;
+
+	// 命中区域
+	m_VansVkRayTracingPipeline->m_HitShaderBindingTable.deviceAddress =
+		m_VansVkRayTracingPipeline->m_MissShaderBindingTable.deviceAddress + 
+		m_VansVkRayTracingPipeline->m_MissShaderBindingTable.size;
+}
+
+bool VansVulkan::VansRayTracingShader::CreateRayTracingPipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
+{
+	if (m_VansVkRayTracingPipeline == nullptr)
+	{
+		m_VansVkRayTracingPipeline = new VansVKRayTracingPipeline();
+	}
+
+	std::vector<VkRayTracingShaderGroupCreateInfoKHR> shaderGroupCreateInfo;
+	std::vector<VkPipelineShaderStageCreateInfo> rayTracingStages;
+
+	//创建着色器组
+	int shaderStageInfoIndex = 0;
+	for (auto mapIt = m_RayTracingShaderTypeMap.begin(); mapIt != m_RayTracingShaderTypeMap.end(); mapIt++)
+	{
+		auto stageBit = mapIt->second;
+		auto it = m_ShaderModuleDataMap.find(stageBit);
+		if (it != m_ShaderModuleDataMap.end())
+		{
+			VkPipelineShaderStageCreateInfo stage{};
+			stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+			stage.stage = stageBit;
+			stage.module = it->second.m_ShaderModule;
+			stage.pName = "main";
+
+			rayTracingStages.push_back(stage);
+
+			VkRayTracingShaderGroupCreateInfoKHR group{};
+			group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+			group.pNext = nullptr;
+			group.generalShader = VK_SHADER_UNUSED_KHR;
+			group.closestHitShader = VK_SHADER_UNUSED_KHR;
+			group.anyHitShader = VK_SHADER_UNUSED_KHR;
+			group.intersectionShader = VK_SHADER_UNUSED_KHR;
+
+			switch (stageBit)
+			{
+			case VK_SHADER_STAGE_RAYGEN_BIT_KHR:
+				group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+				group.generalShader = shaderStageInfoIndex;
+				break;
+			case VK_SHADER_STAGE_ANY_HIT_BIT_KHR:
+				group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+				group.anyHitShader = shaderStageInfoIndex;
+				break;
+			case VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR:
+				group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+				group.closestHitShader = shaderStageInfoIndex;
+				break;
+			case VK_SHADER_STAGE_MISS_BIT_KHR:
+				group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+				group.generalShader = shaderStageInfoIndex;
+				break;
+			case VK_SHADER_STAGE_INTERSECTION_BIT_KHR:
+				group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+				group.intersectionShader = shaderStageInfoIndex;
+				break;
+			}
+			group.pShaderGroupCaptureReplayHandle = nullptr;
+			shaderGroupCreateInfo.push_back(group);
+
+			shaderStageInfoIndex++;
+		}
+	}
+
+	int pushConstRangeCount = 0;
+	VkPushConstantRange* pushConstRangePtr = nullptr;
+	VkPushConstantRange pushConstantRange = {};
+	if (m_PushConstantSize > 0)
+	{
+		pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR;
+		pushConstantRange.offset = 0;
+		pushConstantRange.size = m_PushConstantSize;
+		pushConstRangePtr = &pushConstantRange;
+		pushConstRangeCount = 1;
+	}
+	return m_VansVkRayTracingPipeline->CreateRayTracingPipeline(logic_device, shaderGroupCreateInfo, rayTracingStages, VK_NULL_HANDLE, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr);
+}

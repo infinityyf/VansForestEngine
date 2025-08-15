@@ -36,6 +36,8 @@ namespace VansVulkan
 	private:
 		VansVKBuffer m_VertexBuffer;
 
+		VansVKBuffer m_VertexPositionBuffer;
+
 		VansVKBuffer m_IndexBuffer;
 
 	public :
@@ -52,6 +54,7 @@ namespace VansVulkan
 		~VansMesh()
 		{
 			m_VertexBuffer.DestroyVulkanBuffer(m_LogicalDevice);
+			m_VertexPositionBuffer.DestroyVulkanBuffer(m_LogicalDevice);
 			m_IndexBuffer.DestroyVulkanBuffer(m_LogicalDevice);
 		}
 
@@ -59,6 +62,8 @@ namespace VansVulkan
 
 		//mesh data
 		std::vector<float> m_MeshRawData;
+
+		std::vector<float> m_MeshRawPositionData;
 
 		std::vector<int> m_MeshTriangleIndex;
 

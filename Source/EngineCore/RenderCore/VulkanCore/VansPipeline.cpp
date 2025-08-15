@@ -420,3 +420,58 @@ void VansVulkan::VansVKComputePipeline::DispatchCompute(VkCommandBuffer& command
 {
 	vkCmdDispatch(command_buffer, x, y, z);
 }
+
+bool VansVulkan::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& logic_device, std::vector<VkRayTracingShaderGroupCreateInfoKHR>& shaderGroupCreateInfo, std::vector<VkPipelineShaderStageCreateInfo>& shaderStageCreateInfo, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount, VkPushConstantRange* pushConstRange)
+{
+	//创建管线layout
+	VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pipelineLayoutInfo.setLayoutCount = descriptorset_layouts.size();
+	pipelineLayoutInfo.pSetLayouts = descriptorset_layouts.data();
+	pipelineLayoutInfo.pushConstantRangeCount = pushConstRangeCount;
+	pipelineLayoutInfo.pPushConstantRanges = pushConstRange;
+
+	VkPipelineLayout pipelineLayout;
+	vkCreatePipelineLayout(logic_device, &pipelineLayoutInfo, nullptr, &m_RayTracingLayout);
+
+	//创建SBT ： shader binding table
+	//shader binding table就是一个装了若干shader group handle的buffer , 不同场景下会有不同的shader的组合
+	//intersection shader，any hit shader和closest hit shader三个shader是紧密关联在一起的，它们会打包成一个shader group并形成一个handle
+	//其它类型的shader(如ray generation和miss)则都是general shader，它们一个shader对应一个shader group
+
+	//创建管线
+	VkRayTracingPipelineCreateInfoKHR pipelineInfo{};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
+	pipelineInfo.stageCount = static_cast<uint32_t>(shaderStageCreateInfo.size());
+	pipelineInfo.pStages = shaderStageCreateInfo.data();
+	pipelineInfo.groupCount = static_cast<uint32_t>(shaderGroupCreateInfo.size());
+	pipelineInfo.pGroups = shaderGroupCreateInfo.data();
+	pipelineInfo.maxPipelineRayRecursionDepth = 1;
+	pipelineInfo.layout = m_RayTracingLayout;
+
+	VkResult result = vkCreateRayTracingPipelinesKHR(logic_device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_RayTracingPipeline);
+	if (VK_SUCCESS != result)
+	{
+		std::cout << "Could not create compute pipeline." << std::endl;
+		return false;
+	}
+	return true;
+}
+
+void VansVulkan::VansVKRayTracingPipeline::DestroyPipeline(VkDevice& logic_device)
+{
+	if (VK_NULL_HANDLE != m_RayTracingPipeline)
+	{
+		vkDestroyPipeline(logic_device, m_RayTracingPipeline, nullptr);
+		m_RayTracingPipeline = VK_NULL_HANDLE;
+	}
+}
+
+void VansVulkan::VansVKRayTracingPipeline::DestroyPipelineLayout(VkDevice& logic_device)
+{
+	if (VK_NULL_HANDLE != m_RayTracingLayout)
+	{
+		vkDestroyPipelineLayout(logic_device, m_RayTracingLayout, nullptr);
+		m_RayTracingLayout = VK_NULL_HANDLE;
+	}
+}

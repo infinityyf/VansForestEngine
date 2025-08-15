@@ -178,6 +178,27 @@ void VansVulkan::VansVKDescriptorManager::UpdateDescriptorSets()
 				texel_buffer_descriptor.TexelBufferViews.data()
 			});
 	}
+	for (auto& as_descriptor : m_RayTraceASInfos)
+	{
+		VkWriteDescriptorSetAccelerationStructureKHR tlasWrite{};
+		tlasWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+		tlasWrite.accelerationStructureCount = 1;
+		tlasWrite.pAccelerationStructures = &as_descriptor.TargetAS;
+
+		write_descriptors.push_back(
+			{
+				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				& tlasWrite,
+				as_descriptor.TargetDescriptorSet,
+				as_descriptor.TargetDescriptorBinding,
+				as_descriptor.TargetArrayElement,
+				1, // 需要和accelerationStructureCount保持一致
+				as_descriptor.TargetDescriptorType,
+				nullptr,
+				nullptr,
+				nullptr
+			});
+	}
 
 	std::vector<VkCopyDescriptorSet> copy_descriptors;
 	for (auto& copy_descriptor : m_CopyDescInfos)

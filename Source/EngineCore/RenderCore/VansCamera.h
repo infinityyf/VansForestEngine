@@ -49,6 +49,13 @@ namespace VansGraphics
 
         void HandleKeyboardInput(int key, int scancode, int action, int mods, float deltaTime);
 
+        glm::vec4 GetPosition() { return glm::vec4(m_Position,1); }
+
+        glm::vec4 GetForward();
+
+        glm::vec4 GetRight();
+
+        glm::vec4 GetUp();
     private:
 
         void SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix);
