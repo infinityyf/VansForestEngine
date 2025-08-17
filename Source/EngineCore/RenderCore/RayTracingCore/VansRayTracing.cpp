@@ -4,6 +4,7 @@
 #include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../RenderCore/VulkanCore/VansVKCommandBuffer.h"
 #include "../../RenderCore/VulkanCore/VansVKDescriptorManager.h"
+#include "../../RenderCore/VansScene.h"
 #include <iostream>
 void VansVulkan::VansRayTracing::BuildBottomLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansMesh* mesh)
 {
@@ -211,9 +212,9 @@ void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, 
     m_VansRayTracingShader.GetRayTracingPipeline(device, { m_RayTracingSetLayout });
 }
 
-void VansVulkan::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer)
+void VansVulkan::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VkAccelerationStructureKHR& tlas)
 {
-    BindRayTracingData(device);
+    BindRayTracingData(device, tlas);
 
     VansVKRayTracingPipeline* vansPipeline = m_VansRayTracingShader.GetRayTracingPipeline(device, { m_RayTracingSetLayout });
 
@@ -266,7 +267,7 @@ void VansVulkan::VansRayTracing::CreateDescriptorSets(VansVKDevice* device)
     VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_RayTracingSetLayout }, m_RayTracingDescriptorSets);
 }
 
-void VansVulkan::VansRayTracing::BindRayTracingData(VansVKDevice* device)
+void VansVulkan::VansRayTracing::BindRayTracingData(VansVKDevice* device, VkAccelerationStructureKHR& tlas)
 {
     if (!m_DescriptorSetIsDirty)
     {
@@ -280,7 +281,7 @@ void VansVulkan::VansRayTracing::BindRayTracingData(VansVKDevice* device)
             VansVKDescriptorManager::m_Tlas0Binding,
             0,
             VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-            m_TopLevelAS
+            tlas
         }
     );
     VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.clear();

@@ -116,6 +116,14 @@ namespace VansVulkan
 
 		void DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
+		VkDeviceAddress GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo);
+
+		VkDeviceAddress GetBufferAddress(VkBufferDeviceAddressInfo* bufferInfo);
+
+		void GetAccelerationStructureBuildSizes(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, uint32_t* maxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR* buildSizeInfo);
+
+		void CreateAccelerationStructure(VkAccelerationStructureCreateInfoKHR* createInfo, VkAccelerationStructureKHR* as);
+
 	public:
 
 		void UpdateGIData(VansRenderPassManager* renderPassManager);

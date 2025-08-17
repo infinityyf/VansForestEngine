@@ -111,6 +111,8 @@ namespace VansVulkan
 
 		void ExecuteSecondaryCommandBuffer(std::vector<VkCommandBuffer>& secondary_command_buffers);
 
+		void BuildAccelerationStructures(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, const VkAccelerationStructureBuildRangeInfoKHR* rangeInfo);
+
 		void BindDescriptorSets(VkPipelineBindPoint pipeline_type,
 			VansGraphicsShader& shader,
 			int index_for_first_set,

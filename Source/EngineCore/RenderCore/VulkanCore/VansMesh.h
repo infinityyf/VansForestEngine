@@ -85,5 +85,16 @@ namespace VansVulkan
 	public:
 
 		void LoadMesh(VkDevice& logic_device,const std::string& file_name, bool import_tangent = false);
+
+		void BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer);
+
+		VkAccelerationStructureKHR GetBLAS() { return m_BottomLevelAS; }
+
+	private:
+
+		//¹âÏß×·×Ùblas
+		VkAccelerationStructureKHR m_BottomLevelAS;
+
+		VansVKBuffer m_BottomLevelASBuffer;
 	};
 }

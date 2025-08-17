@@ -462,6 +462,178 @@ void VansGraphics::VansScene::UpdateSceneData()
     m_LightManager.UpdateLightCPUData();
 }
 
+void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansVKCommandBuffer* vans_commandBuffer)
+{
+    VkDevice device = vans_device->GetLogicDevice();
+    VkCommandBuffer commandBuffer = vans_commandBuffer->GetVKCommandBuffer();
+    for (const auto& meshAsset : m_Meshes)
+    {
+        VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
+        mesh->BuildBLAS(device, commandBuffer);
+    }
+
+    std::cout << "blas build done" << std::endl;
+
+    
+
+    //遍历渲染物体构建tlas
+    for (auto& node : m_OpaqueRenderNodes)
+    {
+        auto transformMatrix = node->GetTransformMatrix();
+
+        // 创建实例缓冲区
+        VkAccelerationStructureInstanceKHR instance{};
+        instance.transform.matrix[0][0] = transformMatrix[0][0];
+        instance.transform.matrix[0][1] = transformMatrix[1][0];
+        instance.transform.matrix[0][2] = transformMatrix[2][0];
+        instance.transform.matrix[0][3] = transformMatrix[3][0]; // translation.x
+
+        instance.transform.matrix[1][0] = transformMatrix[0][1];
+        instance.transform.matrix[1][1] = transformMatrix[1][1];
+        instance.transform.matrix[1][2] = transformMatrix[2][1];
+        instance.transform.matrix[1][3] = transformMatrix[3][1]; // translation.y
+
+        instance.transform.matrix[2][0] = transformMatrix[0][2];
+        instance.transform.matrix[2][1] = transformMatrix[1][2];
+        instance.transform.matrix[2][2] = transformMatrix[2][2];
+        instance.transform.matrix[2][3] = transformMatrix[3][2]; // translation.z
+        //instance.transform = {
+        //    1.0f, 0.0f, 0.0f, 0.0f,
+        //    0.0f, 1.0f, 0.0f, 0.0f,
+        //    0.0f, 0.0f, 1.0f, 0.0f
+        //};
+        instance.instanceCustomIndex = 0;
+        instance.mask = 0xFF;
+        instance.instanceShaderBindingTableRecordOffset = 0;
+        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+
+        // 获取BLAS地址
+        VkAccelerationStructureDeviceAddressInfoKHR asAddressInfo{};
+        asAddressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+        asAddressInfo.accelerationStructure = node->m_Mesh->GetBLAS();
+        instance.accelerationStructureReference = vans_device->GetAccelerationAddress(&asAddressInfo);
+
+        tlasInstancesInfos.push_back(instance);
+    }
+
+    uint32_t countInstance = static_cast<uint32_t>(tlasInstancesInfos.size());
+
+    // 创建实例缓冲区
+    m_InstancesBuffer.CreatVulkanBuffer(
+        device,
+        sizeof(VkAccelerationStructureInstanceKHR) * countInstance,
+        VK_FORMAT_R32_SFLOAT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    m_InstancesBuffer.SetBufferData(tlasInstancesInfos.data(), 0, sizeof(VkAccelerationStructureInstanceKHR) * countInstance);
+
+    VkBufferDeviceAddressInfo bufferAddressInfo;
+    bufferAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    bufferAddressInfo.buffer = m_InstancesBuffer.GetNativeBuffer();
+    bufferAddressInfo.pNext = nullptr;
+    VkDeviceAddress instanceBufferAddress = vans_device->GetBufferAddress(&bufferAddressInfo);
+
+    // Describes instance data in the acceleration structure.
+    VkAccelerationStructureGeometryInstancesDataKHR geometryInstances;
+    geometryInstances.sType =  VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    geometryInstances.arrayOfPointers = VK_FALSE;
+    geometryInstances.data.deviceAddress = instanceBufferAddress;
+
+    // Set up the geometry to use instance data.
+    VkAccelerationStructureGeometryKHR geometry;
+    geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    geometry.geometry.instances = geometryInstances;
+    geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+
+    // Specifies the number of primitives (instances in this case).
+    VkAccelerationStructureBuildRangeInfoKHR rangeInfo{};
+    rangeInfo.primitiveCount = static_cast<uint32_t>(countInstance);
+
+    asGeometry.push_back(geometry);
+    asBuildRangeInfo.push_back(rangeInfo);
+    
+    
+    
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
+    buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    buildInfo.srcAccelerationStructure = VK_NULL_HANDLE;
+    buildInfo.dstAccelerationStructure = VK_NULL_HANDLE;
+    buildInfo.geometryCount = asGeometry.size();
+    buildInfo.pGeometries = asGeometry.data();
+    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.scratchData.deviceAddress = 0;
+
+    std::vector<uint32_t> maxPrimCount(asBuildRangeInfo.size());
+    for (size_t i = 0; i < asBuildRangeInfo.size(); ++i)
+    {
+        maxPrimCount[i] = asBuildRangeInfo[i].primitiveCount;
+    }
+
+    //获取as的预分配大小
+    VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo{};
+    buildSizesInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    vans_device->GetAccelerationStructureBuildSizes(&buildInfo, maxPrimCount.data(), &buildSizesInfo);
+
+    //scratch izhi
+    VansVKBuffer* scratchBuffer = new VansVKBuffer();
+    scratchBuffer->CreatVulkanBuffer(
+        device,
+        buildSizesInfo.buildScratchSize,
+        VK_FORMAT_R32_SFLOAT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VkBufferDeviceAddressInfo scratchBufferAddressInfo;
+    scratchBufferAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    scratchBufferAddressInfo.buffer = scratchBuffer->GetNativeBuffer();
+    scratchBufferAddressInfo.pNext = nullptr;
+    VkDeviceAddress scratchAddress = vans_device->GetBufferAddress(&scratchBufferAddressInfo);
+
+
+    // 创建缓冲区
+    m_TopLevelASBuffer.CreatVulkanBuffer(
+        device,
+        buildSizesInfo.accelerationStructureSize,
+        VK_FORMAT_R32_SFLOAT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    // 构建TLAS
+    VkAccelerationStructureCreateInfoKHR accelCreateInfo = {};
+    accelCreateInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    accelCreateInfo.buffer = m_TopLevelASBuffer.GetNativeBuffer();
+    accelCreateInfo.size = buildSizesInfo.accelerationStructureSize;
+    accelCreateInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    vans_device->CreateAccelerationStructure(&accelCreateInfo, &m_TopLevelAS);
+
+    //as的地址
+    VkAccelerationStructureDeviceAddressInfoKHR asAddressInfo;
+    asAddressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+    asAddressInfo.accelerationStructure = m_TopLevelAS;
+    VkDeviceAddress asAddress = vans_device->GetAccelerationAddress(&asAddressInfo);
+
+    const VkAccelerationStructureBuildRangeInfoKHR* ppRangeInfos[] = 
+    {
+        asBuildRangeInfo.data() // 对于 infoCount=1，仅需一个指针
+    };
+
+    //补全剩下的build info
+    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.srcAccelerationStructure = VK_NULL_HANDLE;
+    buildInfo.dstAccelerationStructure = m_TopLevelAS;
+    buildInfo.scratchData.deviceAddress = scratchAddress;
+    buildInfo.pGeometries = asGeometry.data();  // In case the structure was copied, we need to update the pointer
+
+    
+    vans_commandBuffer->BuildAccelerationStructures(&buildInfo, *ppRangeInfos);
+
+    std::cout << "tlas build done" << std::endl;
+}
+
 void VansGraphics::VansScene::DrawShadowNodes()
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);

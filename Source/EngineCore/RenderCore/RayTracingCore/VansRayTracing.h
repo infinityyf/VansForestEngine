@@ -20,6 +20,7 @@ namespace VansVulkan
 		glm::vec4 cameraRight;
 	};
 
+
 	class VansRayTracing
 	{
 		//由于和正常shader流程差异较大，这里重新做一份shader的解析，编译和管线创建
@@ -34,7 +35,7 @@ namespace VansVulkan
 
 		void BuildTopLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer);
 
-		void DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer);
+		void DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VkAccelerationStructureKHR& tlas);
 		
 		void CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer);
 
@@ -44,7 +45,7 @@ namespace VansVulkan
 
 	private:
 		//绑定数据
-		void BindRayTracingData(VansVKDevice* device);
+		void BindRayTracingData(VansVKDevice* device, VkAccelerationStructureKHR& tlas);
 
 		bool m_DescriptorSetIsDirty;
 

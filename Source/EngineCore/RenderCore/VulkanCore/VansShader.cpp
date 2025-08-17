@@ -50,6 +50,7 @@ bool VansVulkan::VansShader::InitRayTracingShader(VkDevice& logic_device, const 
 		std::cout << "shader translation failed" << std::endl;
 		return false;
 	}
+	std::cout << "before ray tracing create shader module " << std::endl;
 	result = CreateShaderModule(logic_device);
 	if (!result)
 	{

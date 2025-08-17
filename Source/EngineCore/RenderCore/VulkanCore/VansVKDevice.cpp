@@ -1825,7 +1825,7 @@ namespace VansVulkan
 		rayTracingContext.m_RayTracingConstant.cameraDir = camera->GetForward();
 		rayTracingContext.m_RayTracingConstant.cameraRight = camera->GetRight();
 		rayTracingContext.m_RayTracingConstant.cameraUp = camera->GetUp();
-		rayTracingContext.DispatchRayTracing(this, &m_VansVKCommandBuffer);
+		rayTracingContext.DispatchRayTracing(this, &m_VansVKCommandBuffer, m_Scene->GetTopAS());
 	}
 
 	void VansVKDevice::PrepareHZBRenderData()
@@ -2158,8 +2158,11 @@ namespace VansVulkan
 	{
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-		rayTracingContext.BuildBottomLevelAS(this, &m_VansVKCommandBuffer, static_cast<VansMesh*>(m_Scene->m_Meshes[0]));
-		rayTracingContext.BuildTopLevelAS(this, &m_VansVKCommandBuffer);
+		//给所有网格创建一个blas
+		m_Scene->BuildRayTracingAS(this, &m_VansVKCommandBuffer);
+
+		//rayTracingContext.BuildBottomLevelAS(this, &m_VansVKCommandBuffer, static_cast<VansMesh*>(m_Scene->m_Meshes[0]));
+		//rayTracingContext.BuildTopLevelAS(this, &m_VansVKCommandBuffer);
 
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
 		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
@@ -2229,6 +2232,23 @@ namespace VansVulkan
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 
 		m_Scene->DrawPostProcessNodes();
+	}
+	VkDeviceAddress VansVKDevice::GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo)
+	{
+		return vkGetAccelerationStructureDeviceAddressKHR(m_VansVKLogicDevice, addressInfo);
+	}
+	VkDeviceAddress VansVKDevice::GetBufferAddress(VkBufferDeviceAddressInfo* bufferInfo)
+	{
+		return vkGetBufferDeviceAddressKHR(m_VansVKLogicDevice, bufferInfo);
+	}
+	void VansVKDevice::GetAccelerationStructureBuildSizes(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, uint32_t* maxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR* buildSizeInfo)
+	{
+		vkGetAccelerationStructureBuildSizesKHR(m_VansVKLogicDevice, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+			buildInfo, maxPrimitiveCounts, buildSizeInfo);
+	}
+	void VansVKDevice::CreateAccelerationStructure(VkAccelerationStructureCreateInfoKHR* createInfo, VkAccelerationStructureKHR* as)
+	{
+		vkCreateAccelerationStructureKHR(m_VansVKLogicDevice, createInfo, nullptr, as);
 	}
 	void VansVKDevice::UpdateGIData(VansRenderPassManager* renderPassManager)
 	{

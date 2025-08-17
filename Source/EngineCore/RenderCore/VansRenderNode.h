@@ -126,6 +126,11 @@ namespace VansGraphics
 		{
 			return m_Transform.m_Scale;
 		}
+
+		glm::mat4x4 GetTransformMatrix()
+		{
+			return m_Transform.GetModelMatrix();
+		}
 	};
 
 	//更新材质参数,更新全局数据

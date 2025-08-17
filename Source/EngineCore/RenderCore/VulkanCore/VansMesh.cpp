@@ -193,3 +193,90 @@ void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& f
 	m_IndexBuffer.SetBufferData(m_MeshTriangleIndex.data(), 0, m_MeshTriangleIndex.size() * sizeof(int));
 }
 
+void VansVulkan::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer)
+{
+	// 获取顶点缓冲区地址
+	VkBufferDeviceAddressInfo addressInfo{};
+	addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+	addressInfo.buffer = m_VertexPositionBuffer.GetNativeBuffer();
+	addressInfo.pNext = nullptr;
+	VkDeviceAddress vertexBufferAddress = vkGetBufferDeviceAddressKHR(logic_device, &addressInfo);
+
+	addressInfo.buffer = m_IndexBuffer.GetNativeBuffer();
+	VkDeviceAddress indexBufferAddress = vkGetBufferDeviceAddressKHR(logic_device, &addressInfo);
+
+	// 定义几何数据
+	VkAccelerationStructureGeometryTrianglesDataKHR triangles{};
+	triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+	triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+	triangles.vertexData.deviceAddress = vertexBufferAddress;
+	triangles.vertexStride = sizeof(float) * 3;
+	triangles.maxVertex = GetMeshVertexCount() - 1;
+	triangles.indexType = VK_INDEX_TYPE_UINT32;
+	triangles.indexData.deviceAddress = indexBufferAddress;
+	triangles.transformData.deviceAddress = 0;
+
+	VkAccelerationStructureGeometryKHR geometry{};
+	geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+	geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+	geometry.geometry.triangles = triangles;
+	geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+
+
+
+	// 计算构建大小
+	VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfo{};
+	buildGeometryInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+	buildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+	buildGeometryInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	buildGeometryInfo.geometryCount = 1;
+	buildGeometryInfo.pGeometries = &geometry;
+
+	VkAccelerationStructureBuildRangeInfoKHR buildRangeInfo{};
+	buildRangeInfo.firstVertex = 0;
+	buildRangeInfo.primitiveCount = GetIndexCount() / 3;
+	buildRangeInfo.primitiveOffset = 0;
+	buildRangeInfo.transformOffset = 0;
+
+	VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo{};
+	buildSizesInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+	vkGetAccelerationStructureBuildSizesKHR(logic_device,
+		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildGeometryInfo, &buildGeometryInfo.geometryCount, &buildSizesInfo);
+
+	//给blas创建buffer
+	m_BottomLevelASBuffer.CreatVulkanBuffer(
+		logic_device,
+		buildSizesInfo.accelerationStructureSize,
+		VK_FORMAT_R32_SFLOAT,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+	VkAccelerationStructureCreateInfoKHR accelCreateInfo = {};
+	accelCreateInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+	accelCreateInfo.buffer = m_BottomLevelASBuffer.GetNativeBuffer();
+	accelCreateInfo.size = buildSizesInfo.accelerationStructureSize;
+	accelCreateInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+
+	vkCreateAccelerationStructureKHR(logic_device, &accelCreateInfo, nullptr, &m_BottomLevelAS);
+
+	buildGeometryInfo.dstAccelerationStructure = m_BottomLevelAS;
+
+	VansVKBuffer scratchBuffer;
+	scratchBuffer.CreatVulkanBuffer(
+		logic_device,
+		buildSizesInfo.buildScratchSize,
+		VK_FORMAT_R32_SFLOAT,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+	VkBufferDeviceAddressInfo bufferAddressInfo;
+	bufferAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+	bufferAddressInfo.buffer = scratchBuffer.GetNativeBuffer();
+	bufferAddressInfo.pNext = nullptr;
+	buildGeometryInfo.scratchData.deviceAddress = vkGetBufferDeviceAddressKHR(logic_device, &bufferAddressInfo);
+
+	//创建加速结构
+	const VkAccelerationStructureBuildRangeInfoKHR* pRangeInfo = &buildRangeInfo;
+	vkCmdBuildAccelerationStructuresKHR(commandBuffer, 1, &buildGeometryInfo, &pRangeInfo);
+}
+

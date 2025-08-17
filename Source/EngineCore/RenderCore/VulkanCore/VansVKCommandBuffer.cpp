@@ -231,6 +231,11 @@ void VansVulkan::VansVKCommandBuffer::BindMesh(VansMesh& mesh, uint32_t fist_bin
 
 }
 
+void VansVulkan::VansVKCommandBuffer::BuildAccelerationStructures(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, const VkAccelerationStructureBuildRangeInfoKHR* rangeInfo)
+{
+	vkCmdBuildAccelerationStructuresKHR(m_VansVKCommandBuffer, 1, buildInfo, &rangeInfo);
+}
+
 void VansVulkan::VansVKCommandBuffer::EnsureGraphicsShader(VansGraphicsShader& shader, GlobalStateData& global_state_data, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
 	VansVKGraphicsPipeline* pipeline = shader.GetGraphicsPipeline(m_VansVKDevice, global_state_data, descriptorset_layouts);

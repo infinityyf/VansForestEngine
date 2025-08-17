@@ -10,7 +10,6 @@ namespace VansGraphics
 {
 	class VansScene
 	{
-		friend class VansVKDevice;
 	private:
 
 		VansCamera* m_Camera;
@@ -29,7 +28,7 @@ namespace VansGraphics
 
 		void RegistRenderNode(VansRenderNode* renderNode, RenderNodeType type);
 
-	private:
+	public:
 
 		//记录所有资产
 		std::vector<VansAsset*> m_Meshes;
@@ -79,6 +78,10 @@ namespace VansGraphics
 
 	public:
 
+		void BuildRayTracingAS(VansVKDevice* vans_device, VansVKCommandBuffer* vans_commandBuffer);
+
+	public:
+
 		void DrawShadowNodes();
 
 		void DrawPointShadow(int lightIndex);
@@ -106,6 +109,25 @@ namespace VansGraphics
 		VansLightManager* GetLightManager() { return &m_LightManager; }
 
 		VansCamera* GetCamera() { return m_Camera; }
+
+		VkAccelerationStructureKHR& GetTopAS() { return m_TopLevelAS; }
+
+	private:
+
+		//光线追踪加速结构
+		VkAccelerationStructureKHR m_TopLevelAS;
+
+		VansVKBuffer m_TopLevelASBuffer;
+
+		VansVKBuffer m_InstancesBuffer;
+
+		std::vector<VkAccelerationStructureInstanceKHR> tlasInstancesInfos;
+
+		// Collection of geometries for the acceleration structure.
+		std::vector<VkAccelerationStructureGeometryKHR> asGeometry;
+
+		// Build range information corresponding to each geometry.
+		std::vector<VkAccelerationStructureBuildRangeInfoKHR> asBuildRangeInfo;
 
 	};
 }
