@@ -511,6 +511,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         VkAccelerationStructureDeviceAddressInfoKHR asAddressInfo{};
         asAddressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
         asAddressInfo.accelerationStructure = node->m_Mesh->GetBLAS();
+        asAddressInfo.pNext = nullptr;
         instance.accelerationStructureReference = vans_device->GetAccelerationAddress(&asAddressInfo);
 
         tlasInstancesInfos.push_back(instance);
@@ -539,6 +540,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     geometryInstances.sType =  VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
     geometryInstances.arrayOfPointers = VK_FALSE;
     geometryInstances.data.deviceAddress = instanceBufferAddress;
+    geometryInstances.pNext = nullptr;
 
     // Set up the geometry to use instance data.
     VkAccelerationStructureGeometryKHR geometry;
@@ -546,6 +548,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
     geometry.geometry.instances = geometryInstances;
     geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    geometry.pNext = nullptr;
 
     // Specifies the number of primitives (instances in this case).
     VkAccelerationStructureBuildRangeInfoKHR rangeInfo{};
@@ -614,6 +617,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     VkAccelerationStructureDeviceAddressInfoKHR asAddressInfo;
     asAddressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
     asAddressInfo.accelerationStructure = m_TopLevelAS;
+    asAddressInfo.pNext = nullptr;
     VkDeviceAddress asAddress = vans_device->GetAccelerationAddress(&asAddressInfo);
 
     const VkAccelerationStructureBuildRangeInfoKHR* ppRangeInfos[] = 
