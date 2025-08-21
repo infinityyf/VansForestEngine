@@ -118,4 +118,9 @@ vec3 SampleSphere(int i, int sampleCount)
     
     return vec3(x, y, z);
 }
+
+struct RayTracePayload
+{
+    vec4 positionHit;
+};
 #endif

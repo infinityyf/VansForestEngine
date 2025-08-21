@@ -106,8 +106,7 @@ namespace VansVulkan
 
 		void PrepareRenderingData();
 
-		void PrepareRayTracingData();
-
+		
 		void DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
 		void DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
@@ -166,6 +165,10 @@ namespace VansVulkan
 		void PrepareSSRRenderData();
 
 		void PrepareBilaterFilterData();
+
+		void PrepareRayTracingData();
+
+		void PrepareGlobalIllumiationData();
 
 	private:
 

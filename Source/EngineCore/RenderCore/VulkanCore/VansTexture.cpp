@@ -247,12 +247,15 @@ void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buf
 	command_buffer.ResetCommandBuffer(false);
 }
 
-void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision)
+void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision)
 {
 	m_TextureWidth = width;
 	m_TextureHeight = height;
+	m_TextureSlice = slice;
 
-	VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
+	bool createTexture3D = slice > 1 ? true : false;
+
+	VkExtent3D extent = { (uint32_t)width, (uint32_t)height, (uint32_t)slice };
 	VansVKDevice* vkDevicePtr = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevicePtr->GetLogicDevice();
 	VkQueue graphicsQueue = vkDevicePtr->GetGraphicsQueue();
@@ -278,7 +281,7 @@ void VansGraphics::VansTexture::InitTextureWithoutData(VansVKCommandBuffer& comm
 		format,
 		mipNum,
 		1,
-		VK_IMAGE_TYPE_2D,
+		createTexture3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
 		isCube,

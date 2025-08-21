@@ -966,11 +966,11 @@ namespace VansVulkan
 		//创建输出cube
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_PreConvDiffuse = new VansTexture();
-		manager->m_PreConvDiffuse->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true, false, true);
+		manager->m_PreConvDiffuse->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512,1, 4, true, false, true);
 
 		//预过滤环境贴图
 		manager->m_PreConvSpecular = new VansTexture();
-		manager->m_PreConvSpecular->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 4, true, true, true);
+		manager->m_PreConvSpecular->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512,1, 4, true, true, true);
 
 		//brdf lut
 		manager->m_BRDFIntegralLUT = new VansTexture();
@@ -1247,7 +1247,7 @@ namespace VansVulkan
 		//SSAO结果
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSAOResult = new VansTexture();
-		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 4, false, false, true);
+		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight,1, 4, false, false, true);
 
 	}
 
@@ -1256,7 +1256,7 @@ namespace VansVulkan
 		//SSAO结果
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSGIResult = new VansTexture();
-		manager->m_SSGIResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/4, m_RenderHeight/4, 4, false, false, true);
+		manager->m_SSGIResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/4, m_RenderHeight/4,1, 4, false, false, true);
 		
 		//cs
 		manager->m_SSGIShader = new VansComputeShader();
@@ -1826,13 +1826,16 @@ namespace VansVulkan
 		rayTracingContext.m_RayTracingConstant.cameraRight = camera->GetRight();
 		rayTracingContext.m_RayTracingConstant.cameraUp = camera->GetUp();
 		rayTracingContext.DispatchRayTracing(this, &m_VansVKCommandBuffer, m_Scene->GetTopAS());
+
+		VansLightManager* lightManager = m_Scene->GetLightManager();
+		rayTracingContext.UpdateGIProbe(this, &m_VansVKCommandBuffer, lightManager);
 	}
 
 	void VansVKDevice::PrepareHZBRenderData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_HZBResult = new VansTexture();
-		manager->m_HZBResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, false, true, true, MID_PRES_16);
+		manager->m_HZBResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 1, false, true, true, MID_PRES_16);
 
 		manager->m_HZBShader = new VansComputeShader();
 		manager->m_HZBShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/HIZ");
@@ -1868,13 +1871,13 @@ namespace VansVulkan
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSRHitInfo = new VansTexture();
-		manager->m_SSRHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2, 4, false, false, true, MID_PRES_16);
+		manager->m_SSRHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2,1, 4, false, false, true, MID_PRES_16);
 
 		manager->m_SSRRayPDF = new VansTexture();
-		manager->m_SSRRayPDF->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2, 4, false, false, true, HIGH_PRES_32);
+		manager->m_SSRRayPDF->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2,1, 4, false, false, true, HIGH_PRES_32);
 
 		manager->m_SSRResult = new VansTexture();
-		manager->m_SSRResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2, 4, false, false, true, MID_PRES_16);
+		manager->m_SSRResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2,1, 4, false, false, true, MID_PRES_16);
 
 
 		manager->m_SSRTraceShader = new VansComputeShader();
@@ -2003,7 +2006,7 @@ namespace VansVulkan
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSGIFilterResult = new VansTexture();
-		manager->m_SSGIFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/4, m_RenderHeight/4, 4, false, false, true, MID_PRES_16);
+		manager->m_SSGIFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/4, m_RenderHeight/4,1, 4, false, false, true, MID_PRES_16);
 
 		VkDescriptorSetLayoutBinding colorInput =
 		{
@@ -2171,6 +2174,11 @@ namespace VansVulkan
 
 		//创建ray tracing需要的资源和资源描述符
 		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer);
+	}
+
+	void VansVKDevice::PrepareGlobalIllumiationData()
+	{
+		
 	}
 
 	void VansVKDevice::DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)

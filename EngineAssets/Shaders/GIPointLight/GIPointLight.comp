@@ -1,0 +1,68 @@
+//convole the environment map to get the diffuse irradiance
+//use different mip level to map different roughness
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+
+#include "../Common/Common.glsl"
+
+#define LightCBBind 0
+#include "../Lights/LightsData.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout( set = 1, binding = 0, std430 ) buffer directLightResult
+{
+    vec4 directLight[];
+} directLightBuffer;
+
+layout( set = 1, binding = 1, std430 ) buffer indirectLightResult
+{
+    vec4 indirectLight[];
+} indirectLightBuffer;
+
+layout( set = 1, binding = 2, std430 ) buffer hitBuffer
+{
+    vec4 hitPosition[];
+} hitInfoBuffer;
+
+layout(push_constant) uniform PushConstants 
+{
+    vec4 cameraPos;
+    vec4 cameraDir;
+    vec4 cameraUp;
+    vec4 cameraRight;
+    vec4 originParams;
+} pushConstants;
+
+void main() 
+{
+    ivec3 probeIndex = ivec3(gl_GlobalInvocationID);
+    int originCount = int(pushConstants.originParams.x);
+    int sampleCount = int(pushConstants.originParams.z);
+
+    int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
+    int bufferOffset = bufferIndex * sampleCount;
+
+    for(int hitIndex = 0; hitIndex < sampleCount; hitIndex++)
+    {
+        int resultIndex = bufferOffset + hitIndex;
+        vec4 hitPos = hitInfoBuffer.hitPosition[resultIndex];
+        if(hitPos.w == 0.0)
+        {
+            //没有击中应该设置成环境球的颜色这里先设置为白色
+            directLightBuffer.directLight[resultIndex] = vec4(1.0);
+            indirectLightBuffer.indirectLight[resultIndex] = vec4(1.0);
+            continue;
+        }
+        vec3 directDiffuse = vec3(0);
+        CalculateDirectDiffuse(hitPos.xyz, directDiffuse);
+
+        //计算当前点的直接光diffse
+        directLightBuffer.directLight[resultIndex] = vec4(directDiffuse, 1.0);
+        indirectLightBuffer.indirectLight[resultIndex] = vec4(0.0);
+    }
+    
+
+    
+}

@@ -62,7 +62,6 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_BilateralFilterSetLayout;
 		std::vector<VkDescriptorSet> m_BilateralFilterDescriptorSets;
 
-
 		//保存全局的一些texture数据
 		VansTexture* m_PreConvDiffuse;
 

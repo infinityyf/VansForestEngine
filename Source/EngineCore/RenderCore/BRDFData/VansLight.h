@@ -65,6 +65,8 @@ namespace VansGraphics
 		const uint32_t m_MaxPointLightCount = 10;
 		const uint32_t m_MaxSpotLightCount = 10;
 
+	public:
+
 		//Descriptor set layout
 		VkDescriptorSetLayout m_LightDataDescriptorSetLayout;
 		std::vector<VkDescriptorSet> m_LightDataDescriptorSets;

@@ -35,7 +35,7 @@ namespace VansGraphics
 		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
 
 		//直接创建一个GPU上的texture
-		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision = LOW_PRES_8);
+		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision = LOW_PRES_8);
 
 		VansVKImage& GetImage() { return m_Image; }
 
@@ -44,6 +44,8 @@ namespace VansGraphics
 		int GetWidth() { return m_TextureWidth; }
 
 		int GetHeight() { return m_TextureHeight; }
+
+		int GetSlice() { return m_TextureSlice; }
 
 	private:
 		VansVKImage m_Image;
@@ -61,5 +63,7 @@ namespace VansGraphics
 		int m_TextureWidth;
 
 		int m_TextureHeight;
+
+		int m_TextureSlice;
 	};
 }

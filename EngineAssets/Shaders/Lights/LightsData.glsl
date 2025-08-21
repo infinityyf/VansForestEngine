@@ -181,6 +181,52 @@ float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIn
     return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
 }
 
+void CalculateDirectDiffuse(vec3 positionWS, inout vec3 diffuseResult)
+{
+    diffuseResult = vec3(0);
+    for (uint i = 0; i < uPointLightCount; ++i)
+    {
+        PointLightData pointLight = GetPointLight(int(i));
+        vec3 lightDirection = pointLight.position.xyz - positionWS;
+        float distance = length(lightDirection);
+        if (distance > pointLight.radius) continue;
+
+        lightDirection /= distance;
+        float attenuation = 1.0 - (distance / pointLight.radius);
+        attenuation *= attenuation;
+
+       
+        vec3 diffuse = vec3(0);
+        diffuse *= pointLight.color.rgb * pointLight.intensity * attenuation;
+        diffuseResult += diffuse;
+    }
+
+    //聚光灯计算
+    for (uint i = 0; i < uSpotLightCount; ++i)
+    {
+        SpotLightData spotLight = GetSpotLight(int(i));
+        vec3 lightDirection = spotLight.position.xyz - positionWS;
+        float distance = length(lightDirection);
+        if (distance > spotLight.radius) continue;
+
+        lightDirection /= distance;
+        float attenuation = 1.0 - (distance / spotLight.radius);
+        attenuation *= attenuation;
+
+        
+        float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
+        if (coneAngle < cos(spotLight.outerConeAngle)) continue;
+
+        float innerConeAngle = cos(spotLight.innerConeAngle);
+        float outerConeAngle = cos(spotLight.outerConeAngle);
+        float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
+
+        vec3 diffuse = vec3(0);
+        diffuse *= spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation;
+
+        diffuseResult += diffuse;
+    }
+}
 
 void CalculateDirectLight(BRDFData brdfData, sampler2D shadowMap, sampler2D punctualShadowMap, inout LightResult lightResult)
 {

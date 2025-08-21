@@ -1,0 +1,65 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/Common.glsl"
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout( set = 0, binding = 0, std430 ) buffer directLightResult
+{
+    vec4 directLight[];
+} directLightBuffer;
+
+layout( set = 0, binding = 1, std430 ) buffer indirectLightResult
+{
+    vec4 indirectLight[];
+} indirectLightBuffer;
+
+layout(set = 0, binding = 2, rgba32f) uniform image3D resultRImage;
+layout(set = 0, binding = 3, rgba32f) uniform image3D resultGImage;
+layout(set = 0, binding = 4, rgba32f) uniform image3D resultBImage;
+
+layout(push_constant) uniform PushConstants 
+{
+    vec4 cameraPos;
+    vec4 cameraDir;
+    vec4 cameraUp;
+    vec4 cameraRight;
+    vec4 originParams;
+} pushConstants;
+
+void main() 
+{
+    ivec3 probeIndex = ivec3(gl_GlobalInvocationID);
+    int originCount = int(pushConstants.originParams.x);
+    int sampleCount = int(pushConstants.originParams.z);
+
+    int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
+    int bufferOffset = bufferIndex * sampleCount;
+
+    // 球面积分的权重系数 (4π / SAMPLE_COUNT)
+    float weight = FOUR_PI / sampleCount;
+
+    vec4 rResult = vec4(0.0);
+    vec4 gResult = vec4(0.0);
+    vec4 bResult = vec4(0.0);
+
+    for(int rayIndex = 0; rayIndex < sampleCount; rayIndex++)
+    {
+        vec3 rayDirection = SampleSphere(rayIndex,sampleCount);
+        vec3 directDiffuse = vec3(0);
+        vec3 indirectDiffuse = vec3(0);
+        vec3 color = directDiffuse + indirectDiffuse;
+
+        // 计算每个基函数并累积系数
+        for(int i = 0; i < 4; i++) 
+        {
+            float basis = SHBasis(i, rayDirection);
+            rResult[i] += color.r * basis * weight;  // 红色通道系数
+            gResult[i] += color.g * basis * weight;  // 绿色通道系数
+            bResult[i] += color.b * basis * weight;  // 蓝色通道系数
+        }
+    }
+    imageStore(resultRImage, probeIndex, rResult);
+    imageStore(resultGImage, probeIndex, gResult);
+    imageStore(resultBImage, probeIndex, bResult);
+}
