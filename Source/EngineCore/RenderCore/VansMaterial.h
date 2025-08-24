@@ -83,6 +83,12 @@ namespace VansGraphics
 
 		VansTexture* m_SSGIFilterResult;
 
+		VansTexture* m_SHRResult;
+
+		VansTexture* m_SHGResult;
+
+		VansTexture* m_SHBResult;
+
 		VansMaterialManager();
 
 	public:

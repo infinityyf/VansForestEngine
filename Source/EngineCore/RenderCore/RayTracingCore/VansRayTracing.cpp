@@ -4,8 +4,10 @@
 #include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../RenderCore/VulkanCore/VansVKCommandBuffer.h"
 #include "../../RenderCore/VulkanCore/VansVKDescriptorManager.h"
+#include "../../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../../RenderCore/BRDFData/VansLight.h"
 #include "../../RenderCore/VansScene.h"
+#include "../../RenderCore//VansMaterial.h"
 
 #include <iostream>
 //void VansVulkan::VansRayTracing::BuildBottomLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansMesh* mesh)
@@ -201,11 +203,14 @@
 //    vkCmdBuildAccelerationStructuresKHR(commandBuffer->GetVKCommandBuffer(), 1, &buildInfo, &pBuildRangeInfos);
 //}
 
-void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer)
+void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
 {
+    int blasMeshCount = scene->GetBLASVertexBuffers().size();
+    std::vector<TLASInstanceData>& instanceData = scene->GetTLASInstanceData();
+
     //ray tracing参数
     m_RayTracingPositionCount = 40;
-    m_RayTracingPositionStride = 0.5f;
+    m_RayTracingPositionStride = 1.0f;
     m_RayCountPerSample = 512;
 
     m_VansRayTracingShader.InitRayTracingShader(device->GetLogicDevice(), "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/RayTracingTest");
@@ -214,13 +219,26 @@ void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, 
     
     m_RayTracingResult.InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, MID_PRES_16);
    
-    m_SHRResult.InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, MID_PRES_16);
-    m_SHGResult.InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, MID_PRES_16);
-    m_SHBResult.InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, MID_PRES_16);
+    VansMaterialManager* materialManager = scene->GetMaterialManager();
+    materialManager->m_SHRResult = new VansTexture();
+    materialManager->m_SHGResult = new VansTexture();
+    materialManager->m_SHBResult = new VansTexture();
+    materialManager->m_SHRResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, HIGH_PRES_32);
+    materialManager->m_SHGResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, HIGH_PRES_32);
+    materialManager->m_SHBResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, HIGH_PRES_32);
 
     //提前生成pipeline
-    CreateRayTraceDescriptorSets(device);
+    CreateRayTraceDescriptorSets(device, blasMeshCount);
     m_VansRayTracingShader.GetRayTracingPipeline(device, { m_RayTracingSetLayout });
+
+    //创建instance data的buffer
+    m_BLASInstanceBuffer.CreatVulkanBuffer(device->GetLogicDevice(), 
+        instanceData.size() * sizeof(TLASInstanceData),
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+    m_BLASInstanceBuffer.SetBufferData(instanceData.data(), 0, instanceData.size() * sizeof(TLASInstanceData));
 
     m_RayTracingHitResult.CreatVulkanBuffer(device->GetLogicDevice(),
         m_RayCountPerSample * m_RayTracingPositionCount * m_RayTracingPositionCount * m_RayTracingPositionCount * sizeof(float) * 4,
@@ -258,11 +276,15 @@ void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, 
     m_GISHUpdateShader->SetPushConstant(sizeof(m_RayTracingConstant));
     m_GISHUpdateShader->SetPushConstantData(&(m_RayTracingConstant));
 
+    CreateGISHUpdateDescriptorSets(device);
+
 }
 
-void VansVulkan::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager)
+void VansVulkan::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager)
 {
     BindGIPointLightData();
+
+    BindGISHData(materialManager);
 
     commandBuffer->EnsureComputeShader(*m_RayTracingPointLighting, { lightManager->m_LightDataDescriptorSetLayout, m_GISamplePositionLightSetLayout});
     commandBuffer->DispatchCompute(
@@ -272,6 +294,13 @@ void VansVulkan::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKComma
         m_RayTracingPositionCount,
         { lightManager->m_LightDataDescriptorSets[0], m_GISamplePositionLightDescriptorSets[0]});
 
+    commandBuffer->EnsureComputeShader(*m_GISHUpdateShader, {m_GISHUpdateSetLayout});
+    commandBuffer->DispatchCompute(
+        *m_GISHUpdateShader,
+        m_RayTracingPositionCount,
+        m_RayTracingPositionCount,
+        m_RayTracingPositionCount,
+        { m_GISHUpdateDescriptorSets[0] });
 }
 
 void VansVulkan::VansRayTracing::BindGIPointLightData()
@@ -328,10 +357,202 @@ void VansVulkan::VansRayTracing::BindGIPointLightData()
             }
         }
     );
+
+    VansMaterialManager* manager = m_Scene->GetMaterialManager();
+    auto& skyImage = manager->m_PreConvSpecular->GetImage();
+    //设置天空盒
+    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+        {
+            m_GISamplePositionLightDescriptorSets[0],
+            VansVKDescriptorManager::m_SampleTexture3SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {
+                {
+                    skyImage.GetSampler(),
+                    skyImage.GetImageView(),
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                }
+            }
+        }
+    );
+
+    auto* rCoeffTexture = manager->m_SHRResult;
+    auto* gCoeffTexture = manager->m_SHGResult;
+    auto* bCoeffTexture = manager->m_SHBResult;
+
+    //设置球谐积分贴图
+    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+        {
+            m_GISamplePositionLightDescriptorSets[0],
+            VansVKDescriptorManager::m_SampleTexture4SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {
+                {
+                    rCoeffTexture->GetImage().GetSampler(),
+                    rCoeffTexture->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_GENERAL
+                }
+            }
+        }
+    );
+    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+        {
+            m_GISamplePositionLightDescriptorSets[0],
+            VansVKDescriptorManager::m_SampleTexture5SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {
+                {
+                    gCoeffTexture->GetImage().GetSampler(),
+                    gCoeffTexture->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_GENERAL
+                }
+            }
+        }
+    );
+    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+        {
+            m_GISamplePositionLightDescriptorSets[0],
+            VansVKDescriptorManager::m_SampleTexture6SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {
+                {
+                    bCoeffTexture->GetImage().GetSampler(),
+                    bCoeffTexture->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_GENERAL
+                }
+            }
+        }
+    );
+    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+        {
+            m_GISamplePositionLightDescriptorSets[0],
+            VansVKDescriptorManager::m_SampleTexture7SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {
+                {
+                    VansRenderPassManager::GetInstance()->GetShadowMap().GetSampler(),
+                    VansRenderPassManager::GetInstance()->GetShadowMap().GetImageView(),
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                }
+            }
+        }
+    );
+    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+        {
+            m_GISamplePositionLightDescriptorSets[0],
+            VansVKDescriptorManager::m_SampleTexture8SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {
+                {
+                    VansRenderPassManager::GetInstance()->GetPunctualShadowMap().GetSampler(),
+                    VansRenderPassManager::GetInstance()->GetPunctualShadowMap().GetImageView(),
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                }
+            }
+        }
+    );
+
     VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 
-void VansVulkan::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VkAccelerationStructureKHR& tlas)
+void VansVulkan::VansRayTracing::BindGISHData(VansMaterialManager* materialManager)
+{
+    if (!m_GISHUpdateDesctiproeSetIsDirty)
+    {
+        return;
+    }
+    m_GISHUpdateDesctiproeSetIsDirty = false;
+
+    VansVKDescriptorManager::GetInstance()->ResetState();
+    VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+        {
+            m_GISHUpdateDescriptorSets[0],
+            VansVKDescriptorManager::m_Buffer0SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {
+                {
+                    m_HitPointDirectLightBuffer.GetNativeBuffer(),
+                    0,
+                    m_HitPointDirectLightBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
+    VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+        {
+            m_GISHUpdateDescriptorSets[0],
+            VansVKDescriptorManager::m_Buffer1SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {
+                {
+                    m_HitPointIndirectLightBuffer.GetNativeBuffer(),
+                    0,
+                    m_HitPointIndirectLightBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
+
+    auto* rCoeffTexture = materialManager->m_SHRResult;
+    auto* gCoeffTexture = materialManager->m_SHGResult;
+    auto* bCoeffTexture = materialManager->m_SHBResult;
+    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+        {
+            m_GISHUpdateDescriptorSets[0],
+            VansVKDescriptorManager::m_UAVTexture1SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            {
+                {
+                    rCoeffTexture->GetImage().GetSampler(),
+                    rCoeffTexture->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_GENERAL
+                }
+            }
+        }
+    );
+    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+        {
+            m_GISHUpdateDescriptorSets[0],
+            VansVKDescriptorManager::m_UAVTexture2SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            {
+                {
+                    gCoeffTexture->GetImage().GetSampler(),
+                    gCoeffTexture->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_GENERAL
+                }
+            }
+        }
+    );
+    VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+        {
+            m_GISHUpdateDescriptorSets[0],
+            VansVKDescriptorManager::m_UAVTexture3SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            {
+                {
+                    bCoeffTexture->GetImage().GetSampler(),
+                    bCoeffTexture->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_GENERAL
+                }
+            }
+        }
+    );
+    VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+}
+
+void VansVulkan::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
 {
     m_RayTracingConstant.dispatchParams = glm::vec4(
         m_RayTracingPositionCount,
@@ -340,7 +561,7 @@ void VansVulkan::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVK
         0
         );
 
-    BindRayTracingData(device, tlas);
+    BindRayTracingData(device, scene);
 
     VansVKRayTracingPipeline* vansPipeline = m_VansRayTracingShader.GetRayTracingPipeline(device, { m_RayTracingSetLayout });
 
@@ -371,14 +592,14 @@ void VansVulkan::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVK
         m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount);
 }
 
-void VansVulkan::VansRayTracing::CreateRayTraceDescriptorSets(VansVKDevice* device)
+void VansVulkan::VansRayTracing::CreateRayTraceDescriptorSets(VansVKDevice* device, int blasMeshCount)
 {
     VkDescriptorSetLayoutBinding tlasBinding =
     {
         VansVKDescriptorManager::m_Tlas0Binding,
         VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
         1,
-        VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
         nullptr
     };
     VkDescriptorSetLayoutBinding resultBinding =
@@ -386,7 +607,7 @@ void VansVulkan::VansRayTracing::CreateRayTraceDescriptorSets(VansVKDevice* devi
         VansVKDescriptorManager::m_UAVTexture0SetBinding,
         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
         1,
-        VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
         nullptr
     };
     VkDescriptorSetLayoutBinding hitResultBinding =
@@ -394,11 +615,49 @@ void VansVulkan::VansRayTracing::CreateRayTraceDescriptorSets(VansVKDevice* devi
         VansVKDescriptorManager::m_Buffer2SetBinding,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         1,
-        VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
         nullptr
     };
 
-    VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ tlasBinding,resultBinding,hitResultBinding }, m_RayTracingSetLayout);
+    //blas data buffer
+    VkDescriptorSetLayoutBinding vertexDataBuffer =
+    {
+        VansVKDescriptorManager::m_Buffer3SetBinding,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        blasMeshCount,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+        nullptr
+    };
+
+    VkDescriptorSetLayoutBinding indexDataBuffer =
+    {
+        VansVKDescriptorManager::m_Buffer4SetBinding,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        blasMeshCount,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+        nullptr
+    };
+
+    //instance data buffer
+    VkDescriptorSetLayoutBinding instanceDataBuffer =
+    {
+        VansVKDescriptorManager::m_Buffer5SetBinding,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        1,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+        nullptr
+    };
+
+	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
+        { 
+            tlasBinding,
+            resultBinding,
+            hitResultBinding,
+            vertexDataBuffer, 
+            indexDataBuffer ,
+            instanceDataBuffer 
+        }, 
+        m_RayTracingSetLayout);
     VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_RayTracingSetLayout }, m_RayTracingDescriptorSets);
     
     m_RayTracingDescriptorSetIsDirty = true;
@@ -438,19 +697,147 @@ void VansVulkan::VansRayTracing::CreateGIPointLightDescriptorSets(VansVKDevice* 
         nullptr
     };
 
-    VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({hitPosition,directResult,indirectResult }, m_GISamplePositionLightSetLayout);
+    //环境天空盒
+    VkDescriptorSetLayoutBinding environmentMap =
+    {
+        VansVKDescriptorManager::m_SampleTexture3SetBinding,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+
+    //RGB SH
+    VkDescriptorSetLayoutBinding SHRChannel =
+    {
+        VansVKDescriptorManager::m_SampleTexture4SetBinding,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+    VkDescriptorSetLayoutBinding SHGChannel =
+    {
+        VansVKDescriptorManager::m_SampleTexture5SetBinding,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+    VkDescriptorSetLayoutBinding SHBChannel =
+    {
+        VansVKDescriptorManager::m_SampleTexture6SetBinding,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+    VkDescriptorSetLayoutBinding mainLightShadowMap =
+    {
+        VansVKDescriptorManager::m_SampleTexture7SetBinding,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+    VkDescriptorSetLayoutBinding punctualLightShadowMap =
+    {
+        VansVKDescriptorManager::m_SampleTexture8SetBinding,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+
+    VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
+        {
+            hitPosition,
+            directResult,
+            indirectResult,
+            environmentMap,
+            SHRChannel,
+            SHGChannel,
+            SHBChannel,
+            mainLightShadowMap,
+            punctualLightShadowMap
+        }, 
+        m_GISamplePositionLightSetLayout);
     VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_GISamplePositionLightSetLayout }, m_GISamplePositionLightDescriptorSets);
 
     m_GIPointLightDescriptorSetIsDirty = true;
 }
 
-void VansVulkan::VansRayTracing::BindRayTracingData(VansVKDevice* device, VkAccelerationStructureKHR& tlas)
+void VansVulkan::VansRayTracing::CreateGISHUpdateDescriptorSets(VansVKDevice* device)
+{
+    //直接光buffer
+    VkDescriptorSetLayoutBinding directResult =
+    {
+        VansVKDescriptorManager::m_Buffer0SetBinding,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+
+    //间接光buffer
+    VkDescriptorSetLayoutBinding indirectResult =
+    {
+        VansVKDescriptorManager::m_Buffer1SetBinding,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+
+    //R通道系数
+    VkDescriptorSetLayoutBinding rSHResult =
+    {
+        VansVKDescriptorManager::m_UAVTexture1SetBinding,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+
+    //g通道系数
+    VkDescriptorSetLayoutBinding gSHResult =
+    {
+        VansVKDescriptorManager::m_UAVTexture2SetBinding,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+
+    //b通道系数
+    VkDescriptorSetLayoutBinding bSHResult =
+    {
+        VansVKDescriptorManager::m_UAVTexture3SetBinding,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        1,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+
+    VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ directResult,indirectResult,rSHResult,gSHResult,bSHResult }, m_GISHUpdateSetLayout);
+    VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_GISHUpdateSetLayout }, m_GISHUpdateDescriptorSets);
+
+    m_GISHUpdateDesctiproeSetIsDirty = true;
+}
+
+void VansVulkan::VansRayTracing::BindRayTracingData(VansVKDevice* device, VansScene* scene)
 {
     if (!m_RayTracingDescriptorSetIsDirty)
     {
         return;
     }
     m_RayTracingDescriptorSetIsDirty = false;
+
+    VkAccelerationStructureKHR& tlas = scene->GetTopAS();
+    std::vector<VansVKBuffer>& vertexBuffers = scene->GetBLASVertexBuffers();
+    std::vector<VansVKBuffer>& indexBuffers = scene->GetBLASIndexBuffers();
+    int blasMeshCount = vertexBuffers.size();
+
     VansVKDescriptorManager::GetInstance()->ResetState();
     VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
         {
@@ -467,6 +854,68 @@ void VansVulkan::VansRayTracing::BindRayTracingData(VansVKDevice* device, VkAcce
             }
         }
     );
+
+
+    std::vector<VkDescriptorBufferInfo> blasVertexBufferInfos;
+    for (int blasMeshIndex = 0; blasMeshIndex < blasMeshCount; blasMeshIndex++)
+    {
+        blasVertexBufferInfos.push_back(
+            {
+                vertexBuffers[blasMeshIndex].GetNativeBuffer(),
+                0,
+                vertexBuffers[blasMeshIndex].GetBufferSize()
+            }
+        );
+    }
+    VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+        {
+            m_RayTracingDescriptorSets[0],
+            VansVKDescriptorManager::m_Buffer3SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            blasVertexBufferInfos
+        }
+    );
+
+    std::vector<VkDescriptorBufferInfo> blasIndexBufferInfos;
+    for (int blasMeshIndex = 0; blasMeshIndex < blasMeshCount; blasMeshIndex++)
+    {
+        blasIndexBufferInfos.push_back(
+            {
+                indexBuffers[blasMeshIndex].GetNativeBuffer(),
+                0,
+                indexBuffers[blasMeshIndex].GetBufferSize()
+            }
+        );
+    }
+    VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+        {
+            m_RayTracingDescriptorSets[0],
+            VansVKDescriptorManager::m_Buffer4SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            blasIndexBufferInfos
+        }
+    );
+
+
+    VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+        {
+            m_RayTracingDescriptorSets[0],
+            VansVKDescriptorManager::m_Buffer5SetBinding,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {
+                {
+                    m_BLASInstanceBuffer.GetNativeBuffer(),
+                    0,
+                    m_BLASInstanceBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
+
+
     VansVKDescriptorManager::GetInstance()->m_RayTraceASInfos.push_back(
         {
             m_RayTracingDescriptorSets[0],

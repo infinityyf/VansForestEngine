@@ -470,11 +470,17 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     {
         VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
         mesh->BuildBLAS(device, commandBuffer);
+
+        int blasIndex = m_BLASVertexData.size();
+        mesh->SetBLASIndex(blasIndex);
+        m_BLASVertexData.push_back(mesh->GetBLASVertexBuffer());
+        m_BLASIndexData.push_back(mesh->GetIndexBuffer());
     }
 
     std::cout << "blas build done" << std::endl;
 
-    
+    //为了将as的数据传递给shader需要记录这里用到的所有buffer数据
+
 
     //遍历渲染物体构建tlas
     for (auto& node : m_OpaqueRenderNodes)
@@ -514,10 +520,17 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         asAddressInfo.pNext = nullptr;
         instance.accelerationStructureReference = vans_device->GetAccelerationAddress(&asAddressInfo);
 
-        tlasInstancesInfos.push_back(instance);
+        m_TlasInstancesInfos.push_back(instance);
+
+        m_TLASInstaneData.push_back(
+            {
+                transformMatrix,
+                node->m_Mesh->GetBLASIndex()
+            }
+        );
     }
 
-    uint32_t countInstance = static_cast<uint32_t>(tlasInstancesInfos.size());
+    uint32_t countInstance = static_cast<uint32_t>(m_TlasInstancesInfos.size());
 
     // 创建实例缓冲区
     m_InstancesBuffer.CreatVulkanBuffer(
@@ -527,7 +540,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    m_InstancesBuffer.SetBufferData(tlasInstancesInfos.data(), 0, sizeof(VkAccelerationStructureInstanceKHR) * countInstance);
+    m_InstancesBuffer.SetBufferData(m_TlasInstancesInfos.data(), 0, sizeof(VkAccelerationStructureInstanceKHR) * countInstance);
 
     VkBufferDeviceAddressInfo bufferAddressInfo;
     bufferAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -554,8 +567,8 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     VkAccelerationStructureBuildRangeInfoKHR rangeInfo{};
     rangeInfo.primitiveCount = static_cast<uint32_t>(countInstance);
 
-    asGeometry.push_back(geometry);
-    asBuildRangeInfo.push_back(rangeInfo);
+    m_AsGeometry.push_back(geometry);
+    m_AsBuildRangeInfo.push_back(rangeInfo);
     
     
     
@@ -565,15 +578,15 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
     buildInfo.srcAccelerationStructure = VK_NULL_HANDLE;
     buildInfo.dstAccelerationStructure = VK_NULL_HANDLE;
-    buildInfo.geometryCount = asGeometry.size();
-    buildInfo.pGeometries = asGeometry.data();
+    buildInfo.geometryCount = m_AsGeometry.size();
+    buildInfo.pGeometries = m_AsGeometry.data();
     buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildInfo.scratchData.deviceAddress = 0;
 
-    std::vector<uint32_t> maxPrimCount(asBuildRangeInfo.size());
-    for (size_t i = 0; i < asBuildRangeInfo.size(); ++i)
+    std::vector<uint32_t> maxPrimCount(m_AsBuildRangeInfo.size());
+    for (size_t i = 0; i < m_AsBuildRangeInfo.size(); ++i)
     {
-        maxPrimCount[i] = asBuildRangeInfo[i].primitiveCount;
+        maxPrimCount[i] = m_AsBuildRangeInfo[i].primitiveCount;
     }
 
     //获取as的预分配大小
@@ -622,7 +635,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 
     const VkAccelerationStructureBuildRangeInfoKHR* ppRangeInfos[] = 
     {
-        asBuildRangeInfo.data() // 对于 infoCount=1，仅需一个指针
+        m_AsBuildRangeInfo.data() // 对于 infoCount=1，仅需一个指针
     };
 
     //补全剩下的build info
@@ -630,7 +643,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     buildInfo.srcAccelerationStructure = VK_NULL_HANDLE;
     buildInfo.dstAccelerationStructure = m_TopLevelAS;
     buildInfo.scratchData.deviceAddress = scratchAddress;
-    buildInfo.pGeometries = asGeometry.data();  // In case the structure was copied, we need to update the pointer
+    buildInfo.pGeometries = m_AsGeometry.data();  // In case the structure was copied, we need to update the pointer
 
     
     vans_commandBuffer->BuildAccelerationStructures(&buildInfo, *ppRangeInfos);

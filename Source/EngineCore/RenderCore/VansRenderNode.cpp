@@ -503,13 +503,45 @@ void VansGraphics::VansDeferredRenderNode::CreateDescriptorSets(VansCamera* came
 		VK_SHADER_STAGE_FRAGMENT_BIT,
 		nullptr
 	};
+
+	//GI texture
+	VkDescriptorSetLayoutBinding SHRCoeffTexture =
+	{
+		VansVKDescriptorManager::m_SampleTexture5SetBinding,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		1,
+		VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+
+	VkDescriptorSetLayoutBinding SHGCoeffTexture =
+	{
+		VansVKDescriptorManager::m_SampleTexture6SetBinding,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		1,
+		VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+
+	VkDescriptorSetLayoutBinding SHBCoeffTexture =
+	{
+		VansVKDescriptorManager::m_SampleTexture7SetBinding,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		1,
+		VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+
 	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
 		{
 			ssaoInput,
 			ssgiInput,
 			ssrInput,
 			mainShadowMapInput,
-			punctualShadowMapInput
+			punctualShadowMapInput,
+			SHRCoeffTexture,
+			SHGCoeffTexture,
+			SHBCoeffTexture
 		},
 		textureResourceLayout);
 	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ textureResourceLayout }, textureResourceDescriptorSets);
@@ -688,6 +720,54 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			}
 		}
 	);
+
+	//设置GI数据
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture5SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					materialManager.m_SHRResult->GetImage().GetSampler(),
+					materialManager.m_SHRResult->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture6SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					materialManager.m_SHGResult->GetImage().GetSampler(),
+					materialManager.m_SHGResult->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture7SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					materialManager.m_SHBResult->GetImage().GetSampler(),
+					materialManager.m_SHBResult->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+
 	//只需要变化时更新，有的时候会绑定其他资源，所以需要update
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }

@@ -11,20 +11,38 @@
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
-layout( set = 1, binding = 0, std430 ) buffer directLightResult
+layout( set = 1, binding = 0, std430 ) buffer hitBuffer
+{
+    vec4 hitPosition[];
+} hitInfoBuffer;
+
+layout( set = 1, binding = 1, std430 ) buffer directLightResult
 {
     vec4 directLight[];
 } directLightBuffer;
 
-layout( set = 1, binding = 1, std430 ) buffer indirectLightResult
+layout( set = 1, binding = 2, std430 ) buffer indirectLightResult
 {
     vec4 indirectLight[];
 } indirectLightBuffer;
 
-layout( set = 1, binding = 2, std430 ) buffer hitBuffer
-{
-    vec4 hitPosition[];
-} hitInfoBuffer;
+
+
+//miss 结果
+layout( set = 1, binding = 3 ) uniform samplerCube environmentMap;
+
+// R通道球谐
+layout( set = 1, binding = 4 ) uniform sampler3D SHRCoeff;
+
+// B通道球谐
+layout( set = 1, binding = 5 ) uniform sampler3D SHGCoeff;
+
+// B通道球谐
+layout( set = 1, binding = 6 ) uniform sampler3D SHBCoeff;
+
+layout( set = 1, binding = 7 ) uniform sampler2D shadowMap;
+layout( set = 1, binding = 8 ) uniform sampler2D punctualShadowMap;
+
 
 layout(push_constant) uniform PushConstants 
 {
@@ -39,30 +57,54 @@ void main()
 {
     ivec3 probeIndex = ivec3(gl_GlobalInvocationID);
     int originCount = int(pushConstants.originParams.x);
+    float originStride = pushConstants.originParams.y;
     int sampleCount = int(pushConstants.originParams.z);
+
+    float originSize = float(originCount) * originStride;
+    vec3 groupOrigin = vec3(-originSize/2,-originSize/2,-originSize/2);
 
     int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;
 
     for(int hitIndex = 0; hitIndex < sampleCount; hitIndex++)
     {
+        vec3 rayDirection = SampleSphere(hitIndex,sampleCount);
+
         int resultIndex = bufferOffset + hitIndex;
         vec4 hitPos = hitInfoBuffer.hitPosition[resultIndex];
-        if(hitPos.w == 0.0)
+        if(hitPos.w < 0.5)
         {
+            vec3 envColor = texture(environmentMap, rayDirection).rgb;
             //没有击中应该设置成环境球的颜色这里先设置为白色
-            directLightBuffer.directLight[resultIndex] = vec4(1.0);
-            indirectLightBuffer.indirectLight[resultIndex] = vec4(1.0);
+            directLightBuffer.directLight[resultIndex] = vec4(0,0,0,1);
+            indirectLightBuffer.indirectLight[resultIndex] = vec4(0,0,0, 1.0);
             continue;
         }
-        vec3 directDiffuse = vec3(0);
-        CalculateDirectDiffuse(hitPos.xyz, directDiffuse);
+        
 
         //计算当前点的直接光diffse
+        vec3 directDiffuse = vec3(0);
+        CalculateDirectDiffuse(hitPos.xyz, shadowMap, punctualShadowMap, directDiffuse);
         directLightBuffer.directLight[resultIndex] = vec4(directDiffuse, 1.0);
-        indirectLightBuffer.indirectLight[resultIndex] = vec4(0.0);
-    }
-    
 
-    
+        //计算当前点的间接漫反射
+        vec3 inDirectDiffuse = vec3(0);
+        //计算当前点在GI区域内的uvw
+        vec3 uvw = (hitPos.xyz - groupOrigin) / originStride;
+
+        //获取球谐系数还原颜色
+        vec4 rCoeff = texture(SHRCoeff, uvw);
+        vec4 gCoeff = texture(SHGCoeff, uvw); 
+        vec4 bCoeff = texture(SHBCoeff, uvw);
+        for(int i = 0; i < 4; i++) 
+        {
+            //这里ray direcction是错的，应该用击中点的法线
+            float basis = SHBasis(i, rayDirection);
+            inDirectDiffuse.r += rCoeff[i] * basis;
+            inDirectDiffuse.g += gCoeff[i] * basis;
+            inDirectDiffuse.b += bCoeff[i] * basis;
+        }
+
+        indirectLightBuffer.indirectLight[resultIndex] = vec4(inDirectDiffuse, 1.0);
+    }
 }

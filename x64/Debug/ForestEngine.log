@@ -1,7 +1,6 @@
-﻿  VansRayTracing.cpp
+﻿  VansMesh.cpp
 C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.h(52): warning C4267: “return”: 从“size_t”转换到“uint32_t”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(41,41): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(43,42): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
-  VansMaterial.cpp
-  正在生成代码...
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp(193,92): warning C4267: “参数”: 从“size_t”转换到“int”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp(194,116): warning C4267: “参数”: 从“size_t”转换到“int”，可能丢失数据
+C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp(195,101): warning C4267: “参数”: 从“size_t”转换到“int”，可能丢失数据
   ForestEngine.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\x64\Debug\ForestEngine.exe

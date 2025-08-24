@@ -46,8 +46,8 @@ void main()
     for(int rayIndex = 0; rayIndex < sampleCount; rayIndex++)
     {
         vec3 rayDirection = SampleSphere(rayIndex,sampleCount);
-        vec3 directDiffuse = vec3(0);
-        vec3 indirectDiffuse = vec3(0);
+        vec3 directDiffuse = directLightBuffer.directLight[bufferOffset + rayIndex].rgb;
+        vec3 indirectDiffuse = indirectLightBuffer.indirectLight[bufferOffset + rayIndex].rgb;
         vec3 color = directDiffuse + indirectDiffuse;
 
         // 计算每个基函数并累积系数

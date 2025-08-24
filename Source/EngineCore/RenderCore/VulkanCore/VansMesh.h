@@ -51,6 +51,14 @@ namespace VansVulkan
 
 		uint32_t GetIndexCount() { return m_MeshTriangleIndex.size(); }
 
+		VansVKBuffer& GetBLASVertexBuffer() { return m_VertexPositionBuffer; }
+
+		VansVKBuffer& GetIndexBuffer() { return m_IndexBuffer; }
+
+		int GetBLASIndex() { return m_BLASIndex; }
+
+		void SetBLASIndex(int index) { m_BLASIndex = index; }
+
 		~VansMesh()
 		{
 			m_VertexBuffer.DestroyVulkanBuffer(m_LogicalDevice);
@@ -96,5 +104,8 @@ namespace VansVulkan
 		VkAccelerationStructureKHR m_BottomLevelAS;
 
 		VansVKBuffer m_BottomLevelASBuffer;
+
+		//用于记录这个blas在整体中的索引
+		int m_BLASIndex;
 	};
 }

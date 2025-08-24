@@ -19,6 +19,13 @@ layout(set = 2, binding = 1, rgba32f ) uniform image2D ssgi;
 layout(set = 2, binding = 2, rgba32f ) uniform image2D ssr;
 layout(set = 2, binding = 3) uniform sampler2D shadowMap;
 layout(set = 2, binding = 4) uniform sampler2D punctualShadowMap;
+// R通道球谐
+layout( set = 2, binding = 5 ) uniform sampler3D SHRCoeff;
+// B通道球谐
+layout( set = 2, binding = 6 ) uniform sampler3D SHGCoeff;
+// B通道球谐
+layout( set = 2, binding = 7 ) uniform sampler3D SHBCoeff;
+
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -34,6 +41,24 @@ vec3 SampleSHColor(vec3 dir)
         color += vec3(shCoefficients[i * 3 + 0],shCoefficients[i * 3 + 1],shCoefficients[i * 3 + 2]) * basis;
     }
     return color;
+}
+
+vec3 CalculateSHDiffuse(vec3 uvw, vec3 normal)
+{
+    vec3 inDirectDiffuse = vec3(0);
+    //获取球谐系数还原颜色
+    vec4 rCoeff = texture(SHRCoeff, uvw);
+    vec4 gCoeff = texture(SHGCoeff, uvw); 
+    vec4 bCoeff = texture(SHBCoeff, uvw);
+    for(int i = 0; i < 4; i++) 
+    {
+        float basis = SHBasis(i, normal);
+        inDirectDiffuse.r += rCoeff[i] * basis;
+        inDirectDiffuse.g += gCoeff[i] * basis;
+        inDirectDiffuse.b += bCoeff[i] * basis;
+    }
+    return inDirectDiffuse;
+
 }
 
 void main() 
@@ -71,10 +96,15 @@ void main()
     //indirect diffuse
     //a : brdfData.indirectDiffuse = texture(PreConvDiffuseEnvironment, normal).rgb;
     //gi 使用半分辨率
-    brdfData.indirectDiffuse = imageLoad(ssgi,ivec2(lastFrameUV * ScreenParams.xy / 4)).rgb;
+    //brdfData.indirectDiffuse = imageLoad(ssgi,ivec2(lastFrameUV * ScreenParams.xy / 4)).rgb;
     //b : 计算球谐
     //brdfData.indirectDiffuse = SampleSHColor(normal);
+    //c : 计算动态GI，探针球谐
+    vec3 probeUVW = (position_world - vec3(-20,-20,-20)) / vec3(40,40,40);
+    brdfData.indirectDiffuse = CalculateSHDiffuse(probeUVW, normal);
+
     brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy / 2)).rgba;
+    
 
     //计算光照
     LightResult lightResult;
@@ -85,5 +115,6 @@ void main()
 
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
+    outColor.rgb = brdfData.indirectDiffuse;
     outColor.a = 1;
 }

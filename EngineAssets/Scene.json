@@ -106,6 +106,19 @@
                     },
                     "support_shadow" : true
                 },
+                                {
+                    "name" : "Object8",
+                    "mesh" : "plane",
+                    "material" : "UnlitMaterial6",
+                    "type" : 1,
+                    "transform" :
+                    {
+                        "position" : [5.0, 0.0, 0.0],
+                        "rotation" : [0.0, 0.0, 90.0],
+                        "scale" : [5.0, 1.0, 5.0]
+                    },
+                    "support_shadow" : true
+                },
                 {
                     "name" : "Postprocess",
                     "mesh" : "fullScreenQuad",
@@ -131,7 +144,7 @@
                     "name" : "PointLight",
                     "type" : 1,
                     "color" : [1.0, 1.0, 1.0],
-                    "intensity" : 1.0,
+                    "intensity" : 0.0,
                     "position" : [0.0, 5.0, 0.0],
                     "radius" : 10.0
                 },
@@ -139,7 +152,7 @@
                     "name" : "SpotLight",
                     "type" : 2,
                     "color" : [1.0, 0.0, 0.0],
-                    "intensity" : 1000.0,
+                    "intensity" : 0.0,
                     "position" : [3.0, 2.0, 0.0],
                     "direction" : [-1.0, 0.0, 0.0],
                     "radius" : 10.0,

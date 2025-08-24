@@ -1825,10 +1825,11 @@ namespace VansVulkan
 		rayTracingContext.m_RayTracingConstant.cameraDir = camera->GetForward();
 		rayTracingContext.m_RayTracingConstant.cameraRight = camera->GetRight();
 		rayTracingContext.m_RayTracingConstant.cameraUp = camera->GetUp();
-		rayTracingContext.DispatchRayTracing(this, &m_VansVKCommandBuffer, m_Scene->GetTopAS());
+		rayTracingContext.DispatchRayTracing(this, &m_VansVKCommandBuffer, m_Scene);
 
 		VansLightManager* lightManager = m_Scene->GetLightManager();
-		rayTracingContext.UpdateGIProbe(this, &m_VansVKCommandBuffer, lightManager);
+		VansMaterialManager* materialManager = m_Scene->GetMaterialManager();
+		rayTracingContext.UpdateGIProbe(this, &m_VansVKCommandBuffer, lightManager, materialManager);
 	}
 
 	void VansVKDevice::PrepareHZBRenderData()
@@ -2173,7 +2174,7 @@ namespace VansVulkan
 
 
 		//创建ray tracing需要的资源和资源描述符
-		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer);
+		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene);
 	}
 
 	void VansVKDevice::PrepareGlobalIllumiationData()

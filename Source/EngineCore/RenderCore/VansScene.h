@@ -8,6 +8,12 @@
 using json = nlohmann::json;
 namespace VansGraphics
 {
+	struct TLASInstanceData
+	{
+		glm::mat4x4 m_MVMatrix;
+		int m_BufferIndex;
+	};
+
 	class VansScene
 	{
 	private:
@@ -112,6 +118,12 @@ namespace VansGraphics
 
 		VkAccelerationStructureKHR& GetTopAS() { return m_TopLevelAS; }
 
+		std::vector<VansVKBuffer>& GetBLASVertexBuffers() { return m_BLASVertexData; }
+
+		std::vector<VansVKBuffer>& GetBLASIndexBuffers() { return m_BLASIndexData; }
+
+		std::vector<TLASInstanceData>& GetTLASInstanceData() { return m_TLASInstaneData; }
+
 	private:
 
 		//光线追踪加速结构
@@ -121,14 +133,19 @@ namespace VansGraphics
 
 		VansVKBuffer m_InstancesBuffer;
 
-		std::vector<VkAccelerationStructureInstanceKHR> tlasInstancesInfos;
+		std::vector<VkAccelerationStructureInstanceKHR> m_TlasInstancesInfos;
 
 		// Collection of geometries for the acceleration structure.
-		std::vector<VkAccelerationStructureGeometryKHR> asGeometry;
+		std::vector<VkAccelerationStructureGeometryKHR> m_AsGeometry;
 
 		// Build range information corresponding to each geometry.
-		std::vector<VkAccelerationStructureBuildRangeInfoKHR> asBuildRangeInfo;
+		std::vector<VkAccelerationStructureBuildRangeInfoKHR> m_AsBuildRangeInfo;
 
+		std::vector<VansVKBuffer> m_BLASVertexData;
+
+		std::vector<VansVKBuffer> m_BLASIndexData;
+
+		std::vector<TLASInstanceData> m_TLASInstaneData;
 	};
 }
 
