@@ -137,14 +137,14 @@
                     "name" : "DirectionalLight",
                     "type" : 0,
                     "color" : [1.0, 1.0, 1.0],
-                    "intensity" : 1.0,
+                    "intensity" : 10.0,
                     "direction" : [1.0, -1.0, 0.0]
                 },
                 {
                     "name" : "PointLight",
                     "type" : 1,
-                    "color" : [1.0, 1.0, 1.0],
-                    "intensity" : 0.0,
+                    "color" : [0.0, 0.0, 1.0],
+                    "intensity" : 0,
                     "position" : [0.0, 5.0, 0.0],
                     "radius" : 10.0
                 },
@@ -152,7 +152,7 @@
                     "name" : "SpotLight",
                     "type" : 2,
                     "color" : [1.0, 0.0, 0.0],
-                    "intensity" : 0.0,
+                    "intensity" : 0,
                     "position" : [3.0, 2.0, 0.0],
                     "direction" : [-1.0, 0.0, 0.0],
                     "radius" : 10.0,
@@ -321,7 +321,7 @@
         },
         {
             "name" : "skyboxTexture",
-            "path" : "EngineAssets/Textures/SkyBox",
+            "path" : "EngineAssets/Textures/SkyBox2",
             "type" : 2,
             "sRGB" : true
         }

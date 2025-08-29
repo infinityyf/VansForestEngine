@@ -11,17 +11,22 @@
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
-layout( set = 1, binding = 0, std430 ) buffer hitBuffer
+layout( set = 1, binding = 0, std430 ) buffer hitPositionBuffer
 {
     vec4 hitPosition[];
-} hitInfoBuffer;
+} hitPositionInfoBuffer;
 
-layout( set = 1, binding = 1, std430 ) buffer directLightResult
+layout( set = 1, binding = 1, std430 ) buffer hitNormalBuffer
+{
+    vec4 hitNormal[];
+} hitNormalInfoBuffer;
+
+layout( set = 1, binding = 2, std430 ) buffer directLightResult
 {
     vec4 directLight[];
 } directLightBuffer;
 
-layout( set = 1, binding = 2, std430 ) buffer indirectLightResult
+layout( set = 1, binding = 3, std430 ) buffer indirectLightResult
 {
     vec4 indirectLight[];
 } indirectLightBuffer;
@@ -29,19 +34,19 @@ layout( set = 1, binding = 2, std430 ) buffer indirectLightResult
 
 
 //miss 结果
-layout( set = 1, binding = 3 ) uniform samplerCube environmentMap;
+layout( set = 1, binding = 4 ) uniform samplerCube environmentMap;
 
 // R通道球谐
-layout( set = 1, binding = 4 ) uniform sampler3D SHRCoeff;
+layout( set = 1, binding = 5 ) uniform sampler3D SHRCoeff;
 
 // B通道球谐
-layout( set = 1, binding = 5 ) uniform sampler3D SHGCoeff;
+layout( set = 1, binding = 6 ) uniform sampler3D SHGCoeff;
 
 // B通道球谐
-layout( set = 1, binding = 6 ) uniform sampler3D SHBCoeff;
+layout( set = 1, binding = 7 ) uniform sampler3D SHBCoeff;
 
-layout( set = 1, binding = 7 ) uniform sampler2D shadowMap;
-layout( set = 1, binding = 8 ) uniform sampler2D punctualShadowMap;
+layout( set = 1, binding = 8 ) uniform sampler2D shadowMap;
+layout( set = 1, binding = 9 ) uniform sampler2D punctualShadowMap;
 
 
 layout(push_constant) uniform PushConstants 
@@ -71,20 +76,21 @@ void main()
         vec3 rayDirection = SampleSphere(hitIndex,sampleCount);
 
         int resultIndex = bufferOffset + hitIndex;
-        vec4 hitPos = hitInfoBuffer.hitPosition[resultIndex];
+        vec4 hitPos = hitPositionInfoBuffer.hitPosition[resultIndex];
+        vec4 hitNrm = hitNormalInfoBuffer.hitNormal[resultIndex];
         if(hitPos.w < 0.5)
         {
             vec3 envColor = texture(environmentMap, rayDirection).rgb;
             //没有击中应该设置成环境球的颜色这里先设置为白色
             directLightBuffer.directLight[resultIndex] = vec4(0,0,0,1);
-            indirectLightBuffer.indirectLight[resultIndex] = vec4(0,0,0, 1.0);
+            indirectLightBuffer.indirectLight[resultIndex] = vec4(envColor, 1.0);
             continue;
         }
         
 
         //计算当前点的直接光diffse
         vec3 directDiffuse = vec3(0);
-        CalculateDirectDiffuse(hitPos.xyz, shadowMap, punctualShadowMap, directDiffuse);
+        CalculateDirectDiffuse(hitPos.xyz,hitNrm.xyz, shadowMap, punctualShadowMap, directDiffuse);
         directLightBuffer.directLight[resultIndex] = vec4(directDiffuse, 1.0);
 
         //计算当前点的间接漫反射

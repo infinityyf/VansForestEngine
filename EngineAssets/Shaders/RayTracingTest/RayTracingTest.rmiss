@@ -8,4 +8,5 @@ layout(location = 0) rayPayloadInEXT RayTracePayload prd;
 void main()
 {
     prd.positionHit = vec4(gl_WorldRayDirectionEXT,0);
+    prd.normalHit = vec4(0,0,0,0);
 }

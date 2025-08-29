@@ -522,12 +522,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 
         m_TlasInstancesInfos.push_back(instance);
 
-        m_TLASInstaneData.push_back(
-            {
-                transformMatrix,
-                node->m_Mesh->GetBLASIndex()
-            }
-        );
+        m_TLASInstaneData.push_back(node->m_Mesh->GetBLASIndex());
     }
 
     uint32_t countInstance = static_cast<uint32_t>(m_TlasInstancesInfos.size());

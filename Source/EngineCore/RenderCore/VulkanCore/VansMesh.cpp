@@ -52,12 +52,19 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRaw
 			meshRawPositionData.emplace_back(vertex.x);
 			meshRawPositionData.emplace_back(vertex.y);
 			meshRawPositionData.emplace_back(vertex.z);
+			meshRawPositionData.emplace_back(0.0);
 
 			meshRawData.emplace_back(texCoord.x);
 			meshRawData.emplace_back(texCoord.y);
 			meshRawData.emplace_back(normal.x);
 			meshRawData.emplace_back(normal.y);
 			meshRawData.emplace_back(normal.z);
+
+			meshRawPositionData.emplace_back(normal.x);
+			meshRawPositionData.emplace_back(normal.y);
+			meshRawPositionData.emplace_back(normal.z);
+			meshRawPositionData.emplace_back(0.0);
+
 			if (import_tangent)
 			{
 				if (mesh->mTangents != nullptr)
@@ -176,7 +183,7 @@ void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& f
 
 	m_VertexPositionBuffer.CreatVulkanBuffer(logic_device,
 		m_MeshRawPositionData.size() * sizeof(float),
-		VK_FORMAT_R32_SFLOAT,
+		VK_FORMAT_R32G32B32_SFLOAT,
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT
 		| VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR|
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -212,7 +219,7 @@ void VansVulkan::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& co
 	triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
 	triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
 	triangles.vertexData.deviceAddress = vertexBufferAddress;
-	triangles.vertexStride = sizeof(float) * 3;
+	triangles.vertexStride = sizeof(float) * 8;
 	triangles.maxVertex = GetMeshVertexCount() - 1;
 	triangles.indexType = VK_INDEX_TYPE_UINT32;
 	triangles.indexData.deviceAddress = indexBufferAddress;

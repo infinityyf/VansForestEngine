@@ -181,10 +181,12 @@ float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIn
     return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
 }
 
-void CalculateDirectDiffuse(vec3 positionWS, sampler2D shadowMap, sampler2D punctualShadowMap,  inout vec3 diffuseResult)
+void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2D punctualShadowMap,  inout vec3 diffuseResult)
 {
     diffuseResult = vec3(0);
-    diffuseResult = uDirectionLight.color.rgb * uDirectionLight.intensity;
+
+    float ndl = max(dot(normalWS, uDirectionLight.direction.xyz), 0.0) / PI; //
+    diffuseResult = ndl * uDirectionLight.color.rgb * uDirectionLight.intensity;
     float shadowValue = SampleDirectionShadowMap(positionWS, shadowMap);
     diffuseResult *= shadowValue;
 
@@ -203,9 +205,10 @@ void CalculateDirectDiffuse(vec3 positionWS, sampler2D shadowMap, sampler2D punc
         shadowValue = SamplePointShadowMap(positionWS, punctualShadowMap, int(pointLight.shadowIndex));
         attenuation = min(attenuation, shadowValue);
 
-       
+        ndl = max(dot(normalWS, lightDirection), 0.0) / PI; //
+
         vec3 diffuse = vec3(0);
-        diffuse = pointLight.color.rgb * pointLight.intensity * attenuation;
+        diffuse = ndl * pointLight.color.rgb * pointLight.intensity * attenuation;
         diffuseResult += diffuse;
     }
 
@@ -233,8 +236,9 @@ void CalculateDirectDiffuse(vec3 positionWS, sampler2D shadowMap, sampler2D punc
         float outerConeAngle = cos(spotLight.outerConeAngle);
         float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
 
+        ndl = max(dot(normalWS, lightDirection), 0.0) / PI;//
         vec3 diffuse = vec3(0);
-        diffuse = spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation;
+        diffuse = ndl * spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation;
 
         diffuseResult += diffuse;
     }

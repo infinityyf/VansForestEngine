@@ -12,10 +12,15 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
 // Output buffer
 layout(set = 0, binding = 1, rgba32f) uniform image3D resultImage;
-layout(set = 0, binding = 2, std430) buffer hitBuffer
+layout(set = 0, binding = 2, std430) buffer hitPositionBuffer
 {
     vec4 hitPosition[];
-} hitInfoBuffer;
+} hitPositionInfoBuffer;
+
+layout(set = 0, binding = 6, std430) buffer hitNormalBuffer
+{
+    vec4 hitNormal[];
+} hitNormalInfoBuffer;
 
 layout(push_constant) uniform PushConstants 
 {
@@ -36,7 +41,7 @@ void main()
     int sampleCount = int(pushConstants.originParams.z);
 
     float originSize = float(originCount) * originStride;
-    vec3 groupOrigin = vec3(-originSize/2,-originSize/2,-originSize/2);
+    vec3 groupOrigin = vec3(-originSize/2 + originStride/2 ,-originSize/2 + originStride/2,-originSize/2 + originStride/2);
 
     ivec3 currentIndex = ivec3(gl_LaunchIDEXT);
     vec3 currentOrigin = groupOrigin + vec3(currentIndex) * originStride;
@@ -60,10 +65,11 @@ void main()
 
         traceRayEXT(tlas,gl_RayFlagsOpaqueEXT,0xFF, 0, 0, 0,currentOrigin, 0.001, rayDirection, 10000.0, 0);
     
-        hitCount += hitResult.positionHit.x;
+        hitCount += hitResult.positionHit.w;
 
         //记录命中点
-        hitInfoBuffer.hitPosition[bufferOffset + rayIndex] = hitResult.positionHit;
+        hitPositionInfoBuffer.hitPosition[bufferOffset + rayIndex] = hitResult.positionHit;
+        hitNormalInfoBuffer.hitNormal[bufferOffset + rayIndex] = hitResult.normalHit;
     }
 
     imageStore(resultImage, pixelCoord, vec4(1 - hitCount/sampleCount, 0, 0, 0));

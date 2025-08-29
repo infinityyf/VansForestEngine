@@ -99,7 +99,8 @@ namespace VansVulkan
 
 		float m_RayTracingPositionStride;
 
-		VansVKBuffer m_RayTracingHitResult;
+		VansVKBuffer m_RayTracingHitPositionResult;
+		VansVKBuffer m_RayTracingHitNormalResult;
 
 		VansVKBuffer m_BLASInstanceBuffer;
 

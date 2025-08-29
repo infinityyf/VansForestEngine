@@ -100,7 +100,7 @@ void main()
     //b : 计算球谐
     //brdfData.indirectDiffuse = SampleSHColor(normal);
     //c : 计算动态GI，探针球谐
-    vec3 probeUVW = (position_world - vec3(-20,-20,-20)) / vec3(40,40,40);
+    vec3 probeUVW = (position_world + normal * 0.5 - vec3(-40,-40,-40)) / vec3(80,80,80);
     brdfData.indirectDiffuse = CalculateSHDiffuse(probeUVW, normal);
 
     brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy / 2)).rgba;
@@ -115,6 +115,6 @@ void main()
 
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
-    outColor.rgb = brdfData.indirectDiffuse;
+    //outColor.rgb = brdfData.indirectDiffuse;
     outColor.a = 1;
 }

@@ -8,11 +8,11 @@
 using json = nlohmann::json;
 namespace VansGraphics
 {
-	struct TLASInstanceData
-	{
-		glm::mat4x4 m_MVMatrix;
-		int m_BufferIndex;
-	};
+	//struct TLASInstanceData
+	//{
+	//	glm::mat4x4 m_MVMatrix;
+	//	int m_BufferIndex;
+	//};
 
 	class VansScene
 	{
@@ -122,7 +122,7 @@ namespace VansGraphics
 
 		std::vector<VansVKBuffer>& GetBLASIndexBuffers() { return m_BLASIndexData; }
 
-		std::vector<TLASInstanceData>& GetTLASInstanceData() { return m_TLASInstaneData; }
+		std::vector<uint32_t>& GetTLASInstanceData() { return m_TLASInstaneData; }
 
 	private:
 
@@ -145,7 +145,7 @@ namespace VansGraphics
 
 		std::vector<VansVKBuffer> m_BLASIndexData;
 
-		std::vector<TLASInstanceData> m_TLASInstaneData;
+		std::vector<uint32_t> m_TLASInstaneData;
 	};
 }
 

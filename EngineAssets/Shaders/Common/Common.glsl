@@ -122,5 +122,6 @@ vec3 SampleSphere(int i, int sampleCount)
 struct RayTracePayload
 {
     vec4 positionHit;
+    vec4 normalHit;
 };
 #endif

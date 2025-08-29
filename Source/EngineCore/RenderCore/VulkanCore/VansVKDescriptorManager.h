@@ -89,6 +89,7 @@ namespace VansVulkan
 		static const uint32_t m_SampleTexture6SetBinding = 6;
 		static const uint32_t m_SampleTexture7SetBinding = 7;
 		static const uint32_t m_SampleTexture8SetBinding = 8;
+		static const uint32_t m_SampleTexture9SetBinding = 9;
 
 		static const uint32_t m_UAVTextureSetBinding = 0;
 		static const uint32_t m_UAVTexture0SetBinding = 1;
