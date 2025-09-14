@@ -71,10 +71,10 @@ void main()
     // vec3 hitPosition = texelFetch(inputPosition, ivec2(hituv * ScreenParams.xy), 0).xyz;
     // vec3 lightDirection = normalize(hitPosition - position);
     // color *= SSR_BRDF(viewDirection, lightDirection,normal, roughness);
-
+    
     if(hitInfo.w > 0)
     {
-        imageStore(resolveResult, pixelCoord, vec4(resolvedReflectionColor.rgb, 1.0));
+        imageStore(resolveResult, pixelCoord, vec4(resolvedReflectionColor, 1.0));
     }
     else
     {

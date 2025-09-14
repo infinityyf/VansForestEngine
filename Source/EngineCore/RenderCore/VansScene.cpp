@@ -10,7 +10,7 @@
 
 VansAsset* VansGraphics::VansScene::GetMeshAsset(const std::string& name)
 {
-    //ËÑË÷¶ÔÓ¦µÄmesh
+    //æœç´¢å¯¹åº”çš„mesh
     for (auto mesh : m_Meshes)
     {
         if (mesh->m_AssetName== name)
@@ -23,7 +23,7 @@ VansAsset* VansGraphics::VansScene::GetMeshAsset(const std::string& name)
 
 VansAsset* VansGraphics::VansScene::GetShaderAsset(const std::string& name)
 {
-    //ËÑË÷¶ÔÓ¦shader
+    //æœç´¢å¯¹åº”shader
     for (auto shader : m_Shaders)
     {
         if (shader->m_AssetName == name)
@@ -36,7 +36,7 @@ VansAsset* VansGraphics::VansScene::GetShaderAsset(const std::string& name)
 
 VansAsset* VansGraphics::VansScene::GetTextureAsset(const std::string& name)
 {
-    //ËÑË÷texture
+    //æœç´¢texture
     for (auto texture : m_Textures)
     {
         if (texture->m_AssetName == name)
@@ -50,7 +50,7 @@ VansAsset* VansGraphics::VansScene::GetTextureAsset(const std::string& name)
 
 VansAsset* VansGraphics::VansScene::GetMaterialAsset(const std::string& name)
 {
-    //ËÑË÷material
+    //æœç´¢material
     for (auto material : m_Materials)
     {
         if (material->m_AssetName == name)
@@ -63,7 +63,7 @@ VansAsset* VansGraphics::VansScene::GetMaterialAsset(const std::string& name)
 
 void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, RenderNodeType type)
 {
-    //½«rendernode¼ÇÂ¼µ½¶ÔÓ¦ÀàĞÍµÄvectorÖĞ
+    //å°†rendernodeè®°å½•åˆ°å¯¹åº”ç±»å‹çš„vectorä¸­
     switch (type)
     {
 	case SKY_BOX_NODE:
@@ -90,145 +90,15 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
 
 bool VansGraphics::VansScene::LoadScene(const char* path)
 {
-    std::string pathPrefix = "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/";
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VkDevice nativeDevice = vkDevice->GetLogicDevice();
 
-    //½âÎöjson
+    //è§£æjson
     std::ifstream jsonFile(path);
     json sceneData = json::parse(jsonFile);
+    LoadSceneResource(sceneData);
 
 
-    //ËÑË÷ËùÓĞ×ÊÔ´½øĞĞ´´½¨
-    json sceneMeshes = sceneData["mesh"];
-    json sceneShaders = sceneData["shader"];
-    json sceneTextures = sceneData["texture"];
-    json sceneMaterials = sceneData["material"];
-
-
-    //¼ÓÔØ²¢import×Ê²ú£¬¼ÇÂ¼µ½sceneÖĞ
-    for (const auto& sceneMesh : sceneMeshes) 
-    {
-        std::string meshPath = pathPrefix+ std::string(sceneMesh["path"]);
-        VansMesh* mesh = new VansMesh();
-        bool import_tangent = sceneMesh["need_tangent"];
-        mesh->LoadMesh(nativeDevice, meshPath.c_str(), import_tangent);
-        m_Meshes.push_back(mesh);
-        mesh->SetName(sceneMesh["name"]);
-    }
-
-    //¼ÓÔØ²¢import×Ê²ú£¬¼ÇÂ¼µ½sceneÖĞ
-    for (const auto& sceneShader : sceneShaders)
-    {
-        std::string shaderPath = pathPrefix + std::string(sceneShader["path"]);
-        VkBool32 depthTest = sceneShader["depthTest"];
-        VkBool32 depthWrite = sceneShader["depthWrite"];
-        VkCompareOp depthCompareOp = sceneShader["depthCompareOp"];
-        VkCullModeFlags cullMode = sceneShader["cullMode"];
-
-        VansGraphicsShader* shader = new VansGraphicsShader();
-        shader->InitShader(nativeDevice, shaderPath);
-        shader->SetDrawStateData(depthTest, depthWrite, depthCompareOp, cullMode);
-        if (sceneShader.contains("support_push_constant"))
-        {
-            int pushConstantSize = sceneShader["support_push_constant"];
-            shader->SetPushConstant(pushConstantSize);
-        }
-        m_Shaders.push_back(shader);
-        shader->SetName(sceneShader["name"]);
-    }
-
-    //¼ÓÔØ²¢import×Ê²ú£¬¼ÇÂ¼µ½sceneÖĞ
-    for (const auto& sceneTexture : sceneTextures)
-    {
-        std::string texturePath = pathPrefix + std::string(sceneTexture["path"]);
-        VansTexture* texture = new VansTexture();
-        texture->m_TextureType = sceneTexture["type"];
-        bool isSRGB = sceneTexture["sRGB"];
-        switch (texture->m_TextureType)
-        {
-        case TEXTURE_2D:
-            texture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB);
-            break;
-        case TEXTURE_CUBE:
-            texture->LoadCubeTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB);
-			break;
-        default:
-            break;
-        }
-        
-        m_Textures.push_back(texture);
-        texture->SetName(sceneTexture["name"]);
-    }
-
-    for (const auto& sceneMaterial : sceneMaterials)
-    {
-        VansMaterial* material = new VansMaterial();
-
-        std::string shaderName = sceneMaterial["shader"];
-        VansGraphicsShader* shader =static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
-        
-        material->m_Shader = shader;
-        material->m_MaterialType = sceneMaterial["type"];
-        //´´½¨²ÄÖÊ²ÎÊıGPUÊı¾İ
-        if (material->m_MaterialType == VansMaterialType::VAN_PBR)
-        {
-            if (sceneMaterial.contains("basecolor_texture"))
-            {
-                auto textureName = sceneMaterial["basecolor_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                material->m_BaseColorTexture = texture;
-            }
-            if (sceneMaterial.contains("normal_texture"))
-            {
-                auto textureName = sceneMaterial["normal_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                material->m_NormalTexture = texture;
-            }
-            if (sceneMaterial.contains("metal_texture"))
-            {
-                auto textureName = sceneMaterial["metal_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                material->m_MetalTexture = texture;
-            }
-            if (sceneMaterial.contains("roughness_texture"))
-            {
-                auto textureName = sceneMaterial["roughness_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                material->m_RoughnessTexture = texture;
-            }
-            if (sceneMaterial.contains("ao_texture"))
-            {
-                auto textureName = sceneMaterial["ao_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                material->m_AoTexture = texture;
-            }
-
-            material->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
-            material->m_BasePBRParam.m_metallic = sceneMaterial["metallic"];
-            material->m_BasePBRParam.m_roughness = sceneMaterial["roughness"];
-            material->m_BasePBRParam.m_ao = sceneMaterial["ao"];
-            material->CreatePBRMaterialDataBuffer(nativeDevice);
-        }
-        
-        //´óÆø²ÄÖÊ
-        if (material->m_MaterialType == VansMaterialType::VAN_SKY_BOX)
-        {
-            material->m_AtmospherePBRParam.m_PlanetRadius = 6340000;
-            material->m_AtmospherePBRParam.m_InitSeaLevel = 200;
-            material->m_AtmospherePBRParam.m_AtmosphereWidth = 80000;
-            material->m_AtmospherePBRParam.m_RayleighScalarHeight = 8500;
-            material->m_AtmospherePBRParam.m_MieScalarHeight = 1200;
-            material->m_AtmospherePBRParam.m_MieAnisotropy = 0.78;
-            material->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25000;
-            material->m_AtmospherePBRParam.m_OzoneLevelWidth = 15000;
-            material->m_AtmospherePBRParam.m_SunLuminance = 10;
-        }
-        m_Materials.push_back(material);
-        material->SetName(sceneMaterial["name"]);
-    }
-
-    //´´½¨Ä¬ÈÏÒõÓ°²ÄÖÊ
     VansGraphicsShader* shadowShader = static_cast<VansGraphicsShader*>(GetShaderAsset("Shadow"));
     if (shadowShader != nullptr)
     {
@@ -249,14 +119,30 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
     }
 
 
-    //ÕÒµ½scene ½Úµã£¬°üº¬rendernode£¬ camera£¬lightÊı¾İ
+    //æ‰¾åˆ°scene èŠ‚ç‚¹ï¼ŒåŒ…å«rendernodeï¼Œ cameraï¼Œlightæ•°æ®
     json sceneNode = sceneData["scene"];
 
     //loadLightsData
     LoadLights(nativeDevice, sceneNode[0]["light"]);
 
-    //¸ù¾İÒıÓÃ¹ØÏµ´´½¨render node
+    //æ ¹æ®å¼•ç”¨å…³ç³»åˆ›å»ºrender node
     LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
+
+
+    //ï¿½ï¿½ï¿½ï¿½subsceneï¿½Ğµï¿½ï¿½ï¿½Ô´
+    json subScenes = sceneData["subScene"];
+    //load scene data frome subscenes path
+    for (const auto& ss : subScenes)
+    {
+        std::string subPath = ss["name"].get<std::string>();
+        std::ifstream subFile(subPath);
+        json subSceneData = json::parse(subFile);
+        LoadSceneResource(subSceneData);
+
+        json sceneNode = subSceneData["scene"];
+        //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ã¹ï¿½Ïµï¿½ï¿½ï¿½ï¿½render node
+        LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
+    }
 
     AddDeferredNode(nativeDevice);
 
@@ -345,7 +231,7 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
             continue;
         }
 
-        //»ñÈ¡transformÊı¾İ
+        //è·å–transformæ•°æ®
         if (sceneRenderNode.contains("transform"))
         {
             auto& transform = sceneRenderNode["transform"];
@@ -365,7 +251,7 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
         RegistRenderNode(renderNode, type);
 
 
-        //ĞèÒªÅĞ¶ÏopaqueÊÇ·ñ²úÉúÒõÓ°£¬´´½¨ÒõÓ°½Úµã
+        //éœ€è¦åˆ¤æ–­opaqueæ˜¯å¦äº§ç”Ÿé˜´å½±ï¼Œåˆ›å»ºé˜´å½±èŠ‚ç‚¹
         VansMaterial* shadowMaterial = static_cast<VansMaterial*>(GetMaterialAsset("ShadowMaterial"));
         if (type == OPAQUE_NODE && shadowMaterial!= nullptr)
         {
@@ -462,6 +348,146 @@ void VansGraphics::VansScene::UpdateSceneData()
     m_LightManager.UpdateLightCPUData();
 }
 
+void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
+{
+    std::string pathPrefix = "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/";
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VkDevice nativeDevice = vkDevice->GetLogicDevice();
+
+    //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô´ï¿½ï¿½ï¿½Ğ´ï¿½ï¿½ï¿½
+    json sceneMeshes = sceneData["mesh"];
+    json sceneShaders = sceneData["shader"];
+    json sceneTextures = sceneData["texture"];
+    json sceneMaterials = sceneData["material"];
+
+    //ï¿½ï¿½ï¿½Ø²ï¿½importï¿½Ê²ï¿½ï¿½ï¿½ï¿½ï¿½Â¼ï¿½ï¿½sceneï¿½ï¿½
+    for (const auto& sceneMesh : sceneMeshes)
+    {
+        std::string meshPath = pathPrefix + std::string(sceneMesh["path"]);
+        VansMesh* mesh = new VansMesh();
+        bool import_tangent = sceneMesh["need_tangent"];
+        bool generate_as = false;
+        if (sceneMesh.contains("support_raytracing"))
+        {
+            generate_as = sceneMesh["support_raytracing"];
+        }
+        mesh->LoadMesh(nativeDevice, meshPath.c_str(), true, generate_as);
+        m_Meshes.push_back(mesh);
+        mesh->SetName(sceneMesh["name"]);
+    }
+
+    //ï¿½ï¿½ï¿½Ø²ï¿½importï¿½Ê²ï¿½ï¿½ï¿½ï¿½ï¿½Â¼ï¿½ï¿½sceneï¿½ï¿½
+    for (const auto& sceneShader : sceneShaders)
+    {
+        std::string shaderPath = pathPrefix + std::string(sceneShader["path"]);
+        VkBool32 depthTest = sceneShader["depthTest"];
+        VkBool32 depthWrite = sceneShader["depthWrite"];
+        VkCompareOp depthCompareOp = sceneShader["depthCompareOp"];
+        VkCullModeFlags cullMode = sceneShader["cullMode"];
+
+        VansGraphicsShader* shader = new VansGraphicsShader();
+        shader->InitShader(nativeDevice, shaderPath);
+        shader->SetDrawStateData(depthTest, depthWrite, depthCompareOp, cullMode);
+        if (sceneShader.contains("support_push_constant"))
+        {
+            int pushConstantSize = sceneShader["support_push_constant"];
+            shader->SetPushConstant(pushConstantSize);
+        }
+        m_Shaders.push_back(shader);
+        shader->SetName(sceneShader["name"]);
+    }
+
+    //ï¿½ï¿½ï¿½Ø²ï¿½importï¿½Ê²ï¿½ï¿½ï¿½ï¿½ï¿½Â¼ï¿½ï¿½sceneï¿½ï¿½
+    for (const auto& sceneTexture : sceneTextures)
+    {
+        std::string texturePath = pathPrefix + std::string(sceneTexture["path"]);
+        VansTexture* texture = new VansTexture();
+        texture->m_TextureType = sceneTexture["type"];
+        bool isSRGB = sceneTexture["sRGB"];
+        switch (texture->m_TextureType)
+        {
+        case TEXTURE_2D:
+            texture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB,true);
+            break;
+        case TEXTURE_CUBE:
+            texture->LoadCubeTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB);
+            break;
+        default:
+            break;
+        }
+
+        m_Textures.push_back(texture);
+        texture->SetName(sceneTexture["name"]);
+    }
+
+    for (const auto& sceneMaterial : sceneMaterials)
+    {
+        VansMaterial* material = new VansMaterial();
+
+        std::string shaderName = sceneMaterial["shader"];
+        VansGraphicsShader* shader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
+
+        material->m_Shader = shader;
+        material->m_MaterialType = sceneMaterial["type"];
+        //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê²ï¿½ï¿½ï¿½GPUï¿½ï¿½ï¿½ï¿½
+        if (material->m_MaterialType == VansMaterialType::VAN_PBR)
+        {
+            if (sceneMaterial.contains("basecolor_texture"))
+            {
+                auto textureName = sceneMaterial["basecolor_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                material->m_BaseColorTexture = texture;
+            }
+            if (sceneMaterial.contains("normal_texture"))
+            {
+                auto textureName = sceneMaterial["normal_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                material->m_NormalTexture = texture;
+            }
+            if (sceneMaterial.contains("metal_texture"))
+            {
+                auto textureName = sceneMaterial["metal_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                material->m_MetalTexture = texture;
+            }
+            if (sceneMaterial.contains("roughness_texture"))
+            {
+                auto textureName = sceneMaterial["roughness_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                material->m_RoughnessTexture = texture;
+            }
+            if (sceneMaterial.contains("ao_texture"))
+            {
+                auto textureName = sceneMaterial["ao_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                material->m_AoTexture = texture;
+            }
+
+            material->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
+            material->m_BasePBRParam.m_metallic = sceneMaterial["metallic"];
+            material->m_BasePBRParam.m_roughness = sceneMaterial["roughness"];
+            material->m_BasePBRParam.m_ao = sceneMaterial["ao"];
+            material->CreatePBRMaterialDataBuffer(nativeDevice);
+        }
+
+        //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+        if (material->m_MaterialType == VansMaterialType::VAN_SKY_BOX)
+        {
+            material->m_AtmospherePBRParam.m_PlanetRadius = 6340000;
+            material->m_AtmospherePBRParam.m_InitSeaLevel = 200;
+            material->m_AtmospherePBRParam.m_AtmosphereWidth = 80000;
+            material->m_AtmospherePBRParam.m_RayleighScalarHeight = 8500;
+            material->m_AtmospherePBRParam.m_MieScalarHeight = 1200;
+            material->m_AtmospherePBRParam.m_MieAnisotropy = 0.78;
+            material->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25000;
+            material->m_AtmospherePBRParam.m_OzoneLevelWidth = 15000;
+            material->m_AtmospherePBRParam.m_SunLuminance = 10;
+        }
+        m_Materials.push_back(material);
+        material->SetName(sceneMaterial["name"]);
+    }
+}
+
 void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansVKCommandBuffer* vans_commandBuffer)
 {
     VkDevice device = vans_device->GetLogicDevice();
@@ -469,25 +495,33 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     for (const auto& meshAsset : m_Meshes)
     {
         VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
+        if (!mesh->m_SupportRayTracing)
+        {
+            continue;
+        }
+
         mesh->BuildBLAS(device, commandBuffer);
 
         int blasIndex = m_BLASVertexData.size();
         mesh->SetBLASIndex(blasIndex);
         m_BLASVertexData.push_back(mesh->GetBLASVertexBuffer());
         m_BLASIndexData.push_back(mesh->GetIndexBuffer());
+
+        std::cout << "blas build done" << mesh->m_AssetName << std::endl;
     }
 
-    std::cout << "blas build done" << std::endl;
-
-    //ÎªÁË½«asµÄÊı¾İ´«µİ¸øshaderĞèÒª¼ÇÂ¼ÕâÀïÓÃµ½µÄËùÓĞbufferÊı¾İ
-
-
-    //±éÀúäÖÈ¾ÎïÌå¹¹½¨tlas
+   
+    //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È¾ï¿½ï¿½ï¿½å¹¹ï¿½ï¿½tlas
     for (auto& node : m_OpaqueRenderNodes)
     {
+        if (!node->m_Mesh->m_SupportRayTracing)
+        {
+            continue;
+        }
+
         auto transformMatrix = node->GetTransformMatrix();
 
-        // ´´½¨ÊµÀı»º³åÇø
+        // åˆ›å»ºå®ä¾‹ç¼“å†²åŒº
         VkAccelerationStructureInstanceKHR instance{};
         instance.transform.matrix[0][0] = transformMatrix[0][0];
         instance.transform.matrix[0][1] = transformMatrix[1][0];
@@ -513,7 +547,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         instance.instanceShaderBindingTableRecordOffset = 0;
         instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
 
-        // »ñÈ¡BLASµØÖ·
+        // è·å–BLASåœ°å€
         VkAccelerationStructureDeviceAddressInfoKHR asAddressInfo{};
         asAddressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
         asAddressInfo.accelerationStructure = node->m_Mesh->GetBLAS();
@@ -527,7 +561,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 
     uint32_t countInstance = static_cast<uint32_t>(m_TlasInstancesInfos.size());
 
-    // ´´½¨ÊµÀı»º³åÇø
+    // åˆ›å»ºå®ä¾‹ç¼“å†²åŒº
     m_InstancesBuffer.CreatVulkanBuffer(
         device,
         sizeof(VkAccelerationStructureInstanceKHR) * countInstance,
@@ -584,14 +618,13 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         maxPrimCount[i] = m_AsBuildRangeInfo[i].primitiveCount;
     }
 
-    //»ñÈ¡asµÄÔ¤·ÖÅä´óĞ¡
+    //è·å–asçš„é¢„åˆ†é…å¤§å°
     VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo{};
     buildSizesInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
     vans_device->GetAccelerationStructureBuildSizes(&buildInfo, maxPrimCount.data(), &buildSizesInfo);
 
     //scratch izhi
-    VansVKBuffer* scratchBuffer = new VansVKBuffer();
-    scratchBuffer->CreatVulkanBuffer(
+    m_TLASScratchBuffer.CreatVulkanBuffer(
         device,
         buildSizesInfo.buildScratchSize,
         VK_FORMAT_R32_SFLOAT,
@@ -600,12 +633,12 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 
     VkBufferDeviceAddressInfo scratchBufferAddressInfo;
     scratchBufferAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-    scratchBufferAddressInfo.buffer = scratchBuffer->GetNativeBuffer();
+    scratchBufferAddressInfo.buffer = m_TLASScratchBuffer.GetNativeBuffer();
     scratchBufferAddressInfo.pNext = nullptr;
     VkDeviceAddress scratchAddress = vans_device->GetBufferAddress(&scratchBufferAddressInfo);
 
 
-    // ´´½¨»º³åÇø
+    // åˆ›å»ºç¼“å†²åŒº
     m_TopLevelASBuffer.CreatVulkanBuffer(
         device,
         buildSizesInfo.accelerationStructureSize,
@@ -613,7 +646,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    // ¹¹½¨TLAS
+    // æ„å»ºTLAS
     VkAccelerationStructureCreateInfoKHR accelCreateInfo = {};
     accelCreateInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
     accelCreateInfo.buffer = m_TopLevelASBuffer.GetNativeBuffer();
@@ -621,7 +654,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     accelCreateInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
     vans_device->CreateAccelerationStructure(&accelCreateInfo, &m_TopLevelAS);
 
-    //asµÄµØÖ·
+    //asçš„åœ°å€
     VkAccelerationStructureDeviceAddressInfoKHR asAddressInfo;
     asAddressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
     asAddressInfo.accelerationStructure = m_TopLevelAS;
@@ -630,10 +663,10 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 
     const VkAccelerationStructureBuildRangeInfoKHR* ppRangeInfos[] = 
     {
-        m_AsBuildRangeInfo.data() // ¶ÔÓÚ infoCount=1£¬½öĞèÒ»¸öÖ¸Õë
+        m_AsBuildRangeInfo.data() // å¯¹äº infoCount=1ï¼Œä»…éœ€ä¸€ä¸ªæŒ‡é’ˆ
     };
 
-    //²¹È«Ê£ÏÂµÄbuild info
+    //è¡¥å…¨å‰©ä¸‹çš„build info
     buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildInfo.srcAccelerationStructure = VK_NULL_HANDLE;
     buildInfo.dstAccelerationStructure = m_TopLevelAS;
@@ -646,6 +679,18 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     std::cout << "tlas build done" << std::endl;
 }
 
+void VansGraphics::VansScene::ReleaseASTempBuffer(VansVKDevice* vans_device)
+{
+    VkDevice device = vans_device->GetLogicDevice();
+    for (const auto& meshAsset : m_Meshes)
+    {
+        VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
+        mesh->ReleaseASTempData(device);
+    }
+
+    m_TLASScratchBuffer.DestroyVulkanBuffer(device);
+}
+
 void VansGraphics::VansScene::DrawShadowNodes()
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
@@ -653,7 +698,7 @@ void VansGraphics::VansScene::DrawShadowNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_ShadowRenderNodes)
     {
-        //¸üĞÂdesc
+        //æ›´æ–°desc
         node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
 
         node->Draw(cmd, globalStateData);
@@ -691,7 +736,7 @@ void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
 
         for (auto& node : m_PunctualShadowRenderNodes)
         {
-            //¸üĞÂdesc
+            //æ›´æ–°desc
             node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
 
             node->DrawPunctualShadow(cmd, globalStateData, lightIndex, shadowDirection);
@@ -729,7 +774,7 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
 
     for (auto& node : m_PunctualShadowRenderNodes)
     {
-        //¸üĞÂdesc
+        //æ›´æ–°desc
         node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
 
         node->DrawPunctualShadow(cmd, globalStateData, pointCount + lightIndex, 0);
@@ -741,7 +786,7 @@ void VansGraphics::VansScene::DrawSkyBoxNode()
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    //¸üĞÂdesc
+    //æ›´æ–°desc
     m_SkyBoxNode->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
 
     m_SkyBoxNode->Draw(cmd, globalStateData);
@@ -754,9 +799,8 @@ void VansGraphics::VansScene::DrawOpaqueNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_OpaqueRenderNodes)
     {
-        //¸üĞÂdesc
+        //æ›´æ–°desc
         node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
-
         node->Draw(cmd, globalStateData);
     }
 }
@@ -772,7 +816,7 @@ void VansGraphics::VansScene::DrawTransParentNodes()
         ////apply mesh
         //cmd.BindMesh(*node.m_Mesh, 0, globalStateData);
 
-        ////apply shader£¬È·ÈÏpipelineÒÔ¼°´´½¨Íê±Ï
+        ////apply shaderï¼Œç¡®è®¤pipelineä»¥åŠåˆ›å»ºå®Œæ¯•
         //cmd.BindShader(*(node.m_Material->m_Shader), globalStateData, { uniformBufferLayout,textureResourceLayout });
 
         //cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *(node.m_Material->m_Shader), 0, { uniformBufferDescriptorSets[0],textureResourceDescriptorSets[0] }, {});
@@ -814,7 +858,7 @@ void VansGraphics::VansScene::DrawScreenSpaceFeatureNode()
 
 void VansGraphics::VansScene::DeferredShading()
 {
-    //»æÖÆÈ«ÆÁmesh
+    //ç»˜åˆ¶å…¨å±mesh
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();

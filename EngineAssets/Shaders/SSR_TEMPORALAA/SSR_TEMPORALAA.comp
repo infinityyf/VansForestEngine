@@ -1,0 +1,105 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#define CameraCBBind 1
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout( set = 0, binding = 0 ) uniform sampler2D inputColor;
+layout( set = 0, binding = 1 ) uniform sampler2D inputPosition;
+layout( set = 0, binding = 2, rgba32f ) uniform image2D aaResult;
+
+#define SCREEN_SCALE 2
+
+vec2 GetVelocity(vec3 worldPos)
+{
+    vec4 prevClipPos = LastProjectionMatrix * LastViewMatrix * vec4(worldPos,1.0);
+    vec4 curClipPos = ProjectionMatrix * ViewMatrix * vec4(worldPos, 1.0);
+
+    vec2 prevHPos = prevClipPos.xy / prevClipPos.w;
+    vec2 curHPos = curClipPos.xy / curClipPos.w;
+
+    vec2 vPosPrev = (prevHPos.xy + 1) / 2;
+    vec2 vPosCur = (curHPos.xy + 1) / 2;
+    return vPosCur - vPosPrev;
+}
+
+void ResolverAABB(sampler2D currColor, float Sharpness, float ExposureScale, float AABBScale, vec2 uv, vec2 TexelSize, inout float Variance, inout vec4 MinColor, inout vec4 MaxColor, inout vec4 FilterColor)
+{
+    const ivec2 SampleOffset[9] = ivec2[](
+        ivec2(-1, -1),
+        ivec2( 0, -1),
+        ivec2( 1, -1),
+        ivec2(-1,  0),
+        ivec2( 0,  0),
+        ivec2( 1,  0),
+        ivec2(-1,  1),
+        ivec2( 0,  1),
+        ivec2( 1,  1)
+    );
+    vec4 SampleColors[9];
+
+    for(uint i = 0; i < 9; i++)
+    {
+        // use GLSL texture() and proper texel offset math (offset * TexelSize)
+        SampleColors[i] = texture(currColor, uv + (vec2(SampleOffset[i]) * TexelSize));
+    }
+
+    vec4 m1 = vec4(0.0);
+    vec4 m2 = vec4(0.0);
+    for(uint x = 0; x < 9; x++)
+    {
+        m1 += SampleColors[x];
+        m2 += SampleColors[x] * SampleColors[x];
+    }
+
+    vec4 mean = m1 / 9.0;
+    vec4 stddev = sqrt((m2 / 9.0) - pow2(mean));
+
+    MinColor = mean - AABBScale * stddev;
+    MaxColor = mean + AABBScale * stddev;
+
+    FilterColor = SampleColors[4];
+    MinColor = min(MinColor, FilterColor);
+    MaxColor = max(MaxColor, FilterColor);
+
+    float TotalVariance = 0.0;
+    for(uint z = 0; z < 9; z++)
+    {
+        TotalVariance += pow2(Luminance(SampleColors[z].xyz) - Luminance(mean.xyz));
+    }
+    // saturate -> clamp in GLSL
+    Variance = clamp((TotalVariance / 9.0) * 256.0, 0.0, 1.0);
+    Variance *= FilterColor.a;
+}
+
+void main() 
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = pixelCoord * ScreenParams.zw * SCREEN_SCALE;
+
+    vec3 position = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0).xyz;
+
+	/////Get Reprojection Velocity
+	vec2 Ray_Velocity = GetVelocity(position);
+
+	/////Get AABB ClipBox
+	float SSR_Variance = 0;
+	vec4 SSR_CurrColor = vec4(0);
+	vec4 SSR_MinColor = vec4(0);
+    vec4 SSR_MaxColor = vec4(0);
+	ResolverAABB(inputColor, 0, 10, 1, uv, ScreenParams.xy / SCREEN_SCALE, SSR_Variance, SSR_MinColor, SSR_MaxColor, SSR_CurrColor);
+
+	/////Clamp TemporalColor
+    vec2 prevUV = clamp(uv - Ray_Velocity, vec2(0.0), vec2(1.0));
+    ivec2 prevPixel = ivec2((prevUV * ScreenParams.xy / SCREEN_SCALE));
+	vec4 SSR_PrevColor = texelFetch(inputColor, prevPixel, 0);
+
+	//half4 SSR_PrevColor = Bilateralfilter(_SSR_TemporalPrev_RT, UV - Velocity, _SSR_ScreenSize.xy);
+	SSR_PrevColor = clamp(SSR_PrevColor, SSR_MinColor, SSR_MaxColor);
+
+	/////Combine TemporalColor
+	vec4 ReflectionColor = mix(SSR_CurrColor, SSR_PrevColor, 0.2);
+    imageStore(aaResult, pixelCoord, vec4(ReflectionColor.rgb,1.0));
+}

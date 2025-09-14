@@ -43,22 +43,70 @@ vec3 SampleSHColor(vec3 dir)
     return color;
 }
 
-vec3 CalculateSHDiffuse(vec3 uvw, vec3 normal)
+vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal)
 {
-    vec3 inDirectDiffuse = vec3(0);
-    //获取球谐系数还原颜色
-    vec4 rCoeff = texture(SHRCoeff, uvw);
-    vec4 gCoeff = texture(SHGCoeff, uvw); 
-    vec4 bCoeff = texture(SHBCoeff, uvw);
-    for(int i = 0; i < 4; i++) 
-    {
-        float basis = SHBasis(i, normal);
-        inDirectDiffuse.r += rCoeff[i] * basis;
-        inDirectDiffuse.g += gCoeff[i] * basis;
-        inDirectDiffuse.b += bCoeff[i] * basis;
-    }
-    return inDirectDiffuse;
+vec3 inDirectDiffuse = vec3(0);
+    vec3 uvw = (position_world - vec3(-12.5,-12.5 + 6,-12.5)) / vec3(25,25,25);
 
+    ivec3 texSize = textureSize(SHRCoeff, 0);
+    vec3 texPos = uvw * vec3(texSize) - 0.5;
+    ivec3 base = ivec3(floor(texPos));
+
+    // Store the 8 samples
+    vec3 samples[8];
+    vec3 positionWeights;
+    int idx = 0;
+    float totalWeight = 0.0;
+
+    for(int dz = 0; dz <= 1; dz++)
+    for(int dy = 0; dy <= 1; dy++)
+    for(int dx = 0; dx <= 1; dx++)
+    {
+        ivec3 offset = ivec3(dx, dy, dz);
+        ivec3 samplePos = base + offset;
+        samplePos = clamp(samplePos, ivec3(0), texSize - 1);
+
+         // Direction weight
+        vec3 sampleUVW = (vec3(samplePos) + 0.5) / vec3(texSize);
+        vec3 texelWorld = sampleUVW * vec3(25,25,25) + vec3(-12.5,-12.5 + 6,-12.5);
+        float dirWeight = max(dot(normalize(texelWorld - position_world), normal), 0.0);
+
+        vec4 rCoeff = texelFetch(SHRCoeff, samplePos, 0);
+        vec4 gCoeff = texelFetch(SHGCoeff, samplePos, 0);
+        vec4 bCoeff = texelFetch(SHBCoeff, samplePos, 0);
+
+        vec3 tempDiffuse = vec3(0);
+        for(int i = 0; i < 4; i++)
+        {
+            float basis = SHBasis(i, normal);
+            tempDiffuse.r += rCoeff[i] * basis / PI;
+            tempDiffuse.g += gCoeff[i] * basis / PI;
+            tempDiffuse.b += bCoeff[i] * basis / PI;
+        }
+        samples[idx] = tempDiffuse * dirWeight;
+        totalWeight += dirWeight;
+        idx++;
+    }
+
+    positionWeights = (texPos - vec3(base));
+
+    // vec3 a = mix(samples[0], samples[1], positionWeights.x);    // 000, 100
+    // vec3 b = mix(samples[2], samples[3], positionWeights.x);    // 010, 110
+    // vec3 c = mix(samples[4], samples[5], positionWeights.x);    // 001, 101
+    // vec3 d = mix(samples[6], samples[7], positionWeights.x);    // 011, 111
+    // vec3 e = mix(a, b, positionWeights.y);
+    // vec3 f = mix(c, d, positionWeights.y);
+    // inDirectDiffuse = mix(e, f, positionWeights.z); 
+    // Interpolate the result
+    for(int i = 0; i < 8; i++)
+    {
+        inDirectDiffuse += samples[i];
+    }
+
+    if(totalWeight > 0.0)
+        inDirectDiffuse /= totalWeight;
+    inDirectDiffuse = max(vec3(0, 0, 0), inDirectDiffuse);
+    return inDirectDiffuse;
 }
 
 void main() 
@@ -96,12 +144,11 @@ void main()
     //indirect diffuse
     //a : brdfData.indirectDiffuse = texture(PreConvDiffuseEnvironment, normal).rgb;
     //gi 使用半分辨率
-    //brdfData.indirectDiffuse = imageLoad(ssgi,ivec2(lastFrameUV * ScreenParams.xy / 4)).rgb;
+    brdfData.indirectDiffuse = imageLoad(ssgi,ivec2(lastFrameUV * ScreenParams.xy / 4)).rgb;
     //b : 计算球谐
     //brdfData.indirectDiffuse = SampleSHColor(normal);
     //c : 计算动态GI，探针球谐
-    vec3 probeUVW = (position_world + normal * 0.5 - vec3(-40,-40,-40)) / vec3(80,80,80);
-    brdfData.indirectDiffuse = CalculateSHDiffuse(probeUVW, normal);
+    brdfData.indirectDiffuse = CalculateSHDiffuse(position_world, normal);
 
     brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy / 2)).rgba;
     
@@ -115,6 +162,6 @@ void main()
 
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
-    //outColor.rgb = brdfData.indirectDiffuse;
+    //outColor.rgb = lightResult.ambientSpecular;
     outColor.a = 1;
 }

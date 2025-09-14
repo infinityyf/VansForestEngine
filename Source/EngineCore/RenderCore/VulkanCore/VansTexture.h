@@ -30,7 +30,7 @@ namespace VansGraphics
 		~VansTexture();
 
 		//¶ÁÈ¡textureÊý¾Ý
-		void LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
+		void LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true, bool useCompress = false);
 
 		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
 

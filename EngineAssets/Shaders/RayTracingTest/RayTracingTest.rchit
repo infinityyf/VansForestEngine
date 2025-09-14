@@ -5,19 +5,25 @@
 //用于性能优化，提示编译器，不同线程组会访问不同索引的资源
 #extension GL_EXT_nonuniform_qualifier : require
 
+//取消padding
+#extension GL_EXT_scalar_block_layout : require
+
 #include "../Common/Common.glsl"
 
 //vertex data
 struct Vertex 
 {
     vec4 position;
-    vec4 normal;
+    vec2 uv;
+    vec3 normal;
+    vec3 tangent;
+    vec3 bitangent;
 };
 
 layout(location = 0) rayPayloadInEXT RayTracePayload prd;
 hitAttributeEXT vec2 attribs;
 
-layout(set = 0, binding = 3, std430) buffer VertexBuffers {
+layout(set = 0, binding = 3, std430, scalar) buffer VertexBuffers {
     Vertex vertices[];
 } vertexBuffers[];
 
@@ -52,10 +58,11 @@ void main()
     mat3 normalMat = transpose(mat3(gl_WorldToObjectEXT));
     vec3 worldNormal = normalize(normalMat * normal); // Transforming the normal to world space
 
-    prd.positionHit = vec4(position,1);
+    
     if (gl_HitKindEXT == gl_HitKindBackFacingTriangleEXT)
     {
         worldNormal = -worldNormal;
     }
-    prd.normalHit = vec4(worldNormal,0);
+    prd.positionHit = vec4(position,1);
+    prd.normalHit = vec4(worldNormal,1);
 }

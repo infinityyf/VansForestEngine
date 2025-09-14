@@ -5,117 +5,65 @@
                 {
                     "name" : "Object0",
                     "mesh" : "sphere",
-                    "material" : "UnlitMaterial",
+                    "material" : "BaseUnlitMaterial",
                     "type" : 1,
                     "transform" :
                     {
                         "position" : [0.0, 1.0, 0.0],
                         "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [1.0, 1.0, 1.0]
+                        "scale" : [0.25, 0.25, 0.25]
                     },
                     "support_shadow" : true
                 },
                 {
                     "name" : "Object1",
                     "mesh" : "sphere",
-                    "material" : "UnlitMaterial1",
+                    "material" : "BaseUnlitMaterial1",
                     "type" : 1,
                     "transform" :
                     {
-                        "position" : [2.0, 1.0, 0.0],
+                        "position" : [0.5, 1.0, 0.0],
                         "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [1.0, 1.0, 1.0]
+                        "scale" : [0.25, 0.25, 0.25]
                     },
                     "support_shadow" : true
                 },
                 {
                     "name" : "Object2",
                     "mesh" : "sphere",
-                    "material" : "UnlitMaterial2",
+                    "material" : "BaseUnlitMaterial2",
                     "type" : 1,
                     "transform" :
                     {
-                        "position" : [4.0, 1.0, 0.0],
+                        "position" : [1, 1.0, 0.0],
                         "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [1.0, 1.0, 1.0]
+                        "scale" : [0.25, 0.25, 0.25]
                     },
                     "support_shadow" : true
                 },
                 {
                     "name" : "Object3",
                     "mesh" : "sphere",
-                    "material" : "UnlitMaterial3",
+                    "material" : "BaseUnlitMaterial3",
                     "type" : 1,
                     "transform" :
                     {
-                        "position" : [6.0, 1.0, 0.0],
+                        "position" : [1.5, 1.0, 0.0],
                         "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [1.0, 1.0, 1.0]
+                        "scale" : [0.25, 0.25, 0.25]
                     },
                     "support_shadow" : true
                 },
                 {
                     "name" : "Object4",
                     "mesh" : "sphere",
-                    "material" : "UnlitMaterial4",
+                    "material" : "BaseUnlitMaterial4",
                     "type" : 1,
                     "transform" :
                     {
-                        "position" : [8.0, 1.0, 0.0],
+                        "position" : [2, 1.0, 0.0],
                         "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [1.0, 1.0, 1.0]
-                    },
-                    "support_shadow" : true
-                },
-                {
-                    "name" : "Object5",
-                    "mesh" : "plane",
-                    "material" : "UnlitMaterial5",
-                    "type" : 1,
-                    "transform" :
-                    {
-                        "position" : [0.0, 0.0, 0.0],
-                        "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [5.0, 1.0, 5.0]
-                    },
-                    "support_shadow" : true
-                },
-                {
-                    "name" : "Object6",
-                    "mesh" : "plane",
-                    "material" : "UnlitMaterial6",
-                    "type" : 1,
-                    "transform" :
-                    {
-                        "position" : [0.0, 0.0, -5.0],
-                        "rotation" : [90.0, 0.0, 0.0],
-                        "scale" : [5.0, 1.0, 5.0]
-                    },
-                    "support_shadow" : true
-                },
-                {
-                    "name" : "Object7",
-                    "mesh" : "plane",
-                    "material" : "UnlitMaterial6",
-                    "type" : 1,
-                    "transform" :
-                    {
-                        "position" : [-5.0, 0.0, 0.0],
-                        "rotation" : [0.0, 0.0, -90.0],
-                        "scale" : [5.0, 1.0, 5.0]
-                    },
-                    "support_shadow" : true
-                },
-                                {
-                    "name" : "Object8",
-                    "mesh" : "plane",
-                    "material" : "UnlitMaterial6",
-                    "type" : 1,
-                    "transform" :
-                    {
-                        "position" : [5.0, 0.0, 0.0],
-                        "rotation" : [0.0, 0.0, 90.0],
-                        "scale" : [5.0, 1.0, 5.0]
+                        "scale" : [0.25, 0.25, 0.25]
                     },
                     "support_shadow" : true
                 },
@@ -166,17 +114,20 @@
         {
             "name" : "torus",
             "path" : "EngineAssets/Models/catmark_torus_creases0.obj",
-            "need_tangent" : true
+            "need_tangent" : true,
+            "support_raytracing" : true
         },
         {
             "name" : "fullScreenQuad",
             "path" : "EngineAssets/Models/fullscreen.obj",
-            "need_tangent" : false
+            "need_tangent" : false,
+            "support_raytracing" : true
         },
         {
             "name" : "cube",
             "path" : "EngineAssets/Models/cube.obj",
-            "need_tangent" : true
+            "need_tangent" : true,
+            "support_raytracing" : true
         },
         {
             "name" : "sphere",
@@ -186,7 +137,8 @@
         {
             "name" : "plane",
             "path" : "EngineAssets/Models/plane.obj",
-            "need_tangent" : true
+            "need_tangent" : true,
+            "support_raytracing" : true
         }
     ],
 
@@ -211,6 +163,14 @@
         {
             "name" : "SkyBox",
             "path" : "EngineAssets/Shaders/SkyBox",
+            "depthTest" : true,
+            "depthWrite" : true,
+            "depthCompareOp" : 3,
+            "cullMode" : 0
+        },
+        {
+            "name" : "VolumetricCloud",
+            "path" : "EngineAssets/Shaders/VolumeCloud",
             "depthTest" : true,
             "depthWrite" : true,
             "depthCompareOp" : 3,
@@ -321,7 +281,7 @@
         },
         {
             "name" : "skyboxTexture",
-            "path" : "EngineAssets/Textures/SkyBox2",
+            "path" : "EngineAssets/Textures/SkyBox",
             "type" : 2,
             "sRGB" : true
         }
@@ -329,7 +289,7 @@
 
     "material" : [
         {
-            "name" : "UnlitMaterial",
+            "name" : "BaseUnlitMaterial",
             "type" : 0,
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
@@ -344,7 +304,7 @@
 
         },
         {
-            "name" : "UnlitMaterial1",
+            "name" : "BaseUnlitMaterial1",
             "type" : 0,
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
@@ -358,7 +318,7 @@
             "ao_texture" : "aoTexture"
         },
         {
-            "name" : "UnlitMaterial2",
+            "name" : "BaseUnlitMaterial2",
             "type" : 0,
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
@@ -372,7 +332,7 @@
             "ao_texture" : "aoTexture"
         },
         {
-            "name" : "UnlitMaterial3",
+            "name" : "BaseUnlitMaterial3",
             "type" : 0,
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
@@ -386,7 +346,7 @@
             "ao_texture" : "aoTexture"
         },
         {
-            "name" : "UnlitMaterial4",
+            "name" : "BaseUnlitMaterial4",
             "type" : 0,
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
@@ -400,7 +360,7 @@
             "ao_texture" : "aoTexture"
         },
         {
-            "name" : "UnlitMaterial5",
+            "name" : "BaseUnlitMaterial5",
             "type" : 0,
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
@@ -414,7 +374,7 @@
             "ao_texture" : "aoTexture"
         },
         {
-            "name" : "UnlitMaterial6",
+            "name" : "BaseUnlitMaterial6",
             "type" : 0,
             "shader" : "Unlit",
             "albedo" : [1.0, 1.0, 1.0],
@@ -447,6 +407,11 @@
             "name" : "SSAO",
             "type" : 6,
             "shader" : "SSAO"
+        }
+    ],
+    "subScene" : [
+        {
+            "name" : "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/SceneSponza3.json"
         }
     ]
 }

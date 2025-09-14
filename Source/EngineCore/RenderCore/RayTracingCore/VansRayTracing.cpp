@@ -205,15 +205,16 @@
 
 void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
 {
+
     int blasMeshCount = scene->GetBLASVertexBuffers().size();
     std::vector<uint32_t>& instanceData = scene->GetTLASInstanceData();
 
     //ray tracing参数
-    m_RayTracingPositionCount = 80;
-    m_RayTracingPositionStride = 1.0f;
-    m_RayCountPerSample = 64;
+    m_RayTracingPositionCount = 50;
+    m_RayTracingPositionStride = 0.5f;
+    m_RayCountPerSample = 256;
 
-    m_VansRayTracingShader.InitRayTracingShader(device->GetLogicDevice(), "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/RayTracingTest");
+    m_VansRayTracingShader.InitRayTracingShader(device->GetLogicDevice(), "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/RayTracingTest");
     m_VansRayTracingShader.SetPushConstant(sizeof(m_RayTracingConstant));
     m_VansRayTracingShader.SetPushConstantData(&(m_RayTracingConstant));
     
@@ -234,7 +235,7 @@ void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, 
     //创建instance data的buffer
     m_BLASInstanceBuffer.CreatVulkanBuffer(device->GetLogicDevice(), 
         instanceData.size() * sizeof(uint32_t),
-        VK_FORMAT_R32G32B32A32_SFLOAT,
+        VK_FORMAT_R32_UINT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
@@ -269,7 +270,7 @@ void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, 
     );
 
     m_RayTracingPointLighting = new VansComputeShader();
-    m_RayTracingPointLighting->InitShader(device->GetLogicDevice(), "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/GIPointLight");
+    m_RayTracingPointLighting->InitShader(device->GetLogicDevice(), "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/GIPointLight");
     m_RayTracingPointLighting->SetPushConstant(sizeof(m_RayTracingConstant));
     m_RayTracingPointLighting->SetPushConstantData(&(m_RayTracingConstant));
 
@@ -278,11 +279,13 @@ void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, 
     CreateGIPointLightDescriptorSets(device);
 
     m_GISHUpdateShader = new VansComputeShader();
-    m_GISHUpdateShader->InitShader(device->GetLogicDevice(), "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/GISHUpdate");
+    m_GISHUpdateShader->InitShader(device->GetLogicDevice(), "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/GISHUpdate");
     m_GISHUpdateShader->SetPushConstant(sizeof(m_RayTracingConstant));
     m_GISHUpdateShader->SetPushConstantData(&(m_RayTracingConstant));
 
     CreateGISHUpdateDescriptorSets(device);
+
+    m_HitPositionCalculateDone = false;
 
 }
 
@@ -295,17 +298,17 @@ void VansVulkan::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKComma
     commandBuffer->EnsureComputeShader(*m_RayTracingPointLighting, { lightManager->m_LightDataDescriptorSetLayout, m_GISamplePositionLightSetLayout});
     commandBuffer->DispatchCompute(
         *m_RayTracingPointLighting, 
-        m_RayTracingPositionCount, 
-        m_RayTracingPositionCount, 
-        m_RayTracingPositionCount,
+        m_RayTracingPositionCount / 4, 
+        m_RayTracingPositionCount / 4,
+        m_RayTracingPositionCount / 4,
         { lightManager->m_LightDataDescriptorSets[0], m_GISamplePositionLightDescriptorSets[0]});
 
     commandBuffer->EnsureComputeShader(*m_GISHUpdateShader, {m_GISHUpdateSetLayout});
     commandBuffer->DispatchCompute(
         *m_GISHUpdateShader,
-        m_RayTracingPositionCount,
-        m_RayTracingPositionCount,
-        m_RayTracingPositionCount,
+        m_RayTracingPositionCount / 4,
+        m_RayTracingPositionCount / 4,
+        m_RayTracingPositionCount / 4,
         { m_GISHUpdateDescriptorSets[0] });
 }
 
@@ -576,6 +579,13 @@ void VansVulkan::VansRayTracing::BindGISHData(VansMaterialManager* materialManag
 
 void VansVulkan::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
 {
+    if (m_HitPositionCalculateDone)
+    {
+        return;
+    }
+
+    m_HitPositionCalculateDone = true;
+
     m_RayTracingConstant.dispatchParams = glm::vec4(
         m_RayTracingPositionCount,
         m_RayTracingPositionStride,

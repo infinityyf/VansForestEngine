@@ -199,13 +199,20 @@ namespace VansVulkan
 			m_Features12.pNext = &m_AcceralteFeature;
 		}
 
+		//支持struct
+		m_ScalarBlockFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
+		m_ScalarBlockFeature.scalarBlockLayout = VK_TRUE;
+		m_ScalarBlockFeature.pNext = &m_Features11;
 
-		m_DeviceFeatures2.pNext = &m_Features11;
+
+		m_DeviceFeatures2.pNext = &m_ScalarBlockFeature;
 		m_DeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 
-		
+		m_AccelerationProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+		m_AccelerationProps.pNext = nullptr;
+
 		m_RayTracingProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
-		m_RayTracingProperties.pNext = nullptr;
+		m_RayTracingProperties.pNext = &m_AccelerationProps;
 
 		m_DeviceProperties2.pNext = &m_RayTracingProperties;
 		m_DeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
@@ -377,7 +384,7 @@ namespace VansVulkan
 		PrepareRenderingData();
 
 		//加载场景数据
-		m_Scene->LoadScene("C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Scene.json");
+		m_Scene->LoadScene("D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Scene.json");
 		
 		//准备光线追踪数据
 		PrepareRayTracingData();
@@ -409,10 +416,10 @@ namespace VansVulkan
 		DrawShadowMap(renderPassManager, cmd);
 		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 
-		//绘制精确阴影
-		renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, cmd, m_globalRenderStateData);
-		DrawPunctualShadowMap(renderPassManager, cmd);
-		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+		////绘制精确阴影
+		//renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, cmd, m_globalRenderStateData);
+		//DrawPunctualShadowMap(renderPassManager, cmd);
+		//renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 
 		//计算上一帧的HIZ数据
 		UpdateHZB(renderPassManager);
@@ -960,7 +967,7 @@ namespace VansVulkan
 		//计算预卷积环境漫反射贴图
 		//创建输入贴图
 		VansTexture* texture = new VansTexture();
-		texture->LoadCubeTexture(m_VansVKCommandBuffer, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/SkyBox");
+		texture->LoadCubeTexture(m_VansVKCommandBuffer, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/SkyBox");
 
 
 		//创建输出cube
@@ -974,7 +981,7 @@ namespace VansVulkan
 
 		//brdf lut
 		manager->m_BRDFIntegralLUT = new VansTexture();
-		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png", false);
+		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png", false);
 
 		
 		VansVKBuffer prefilterCBBuffer;
@@ -1033,10 +1040,10 @@ namespace VansVulkan
 
 		//卷积compute shader
 		VansComputeShader* m_PreConvDiffuseShader = new VansComputeShader();
-		m_PreConvDiffuseShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConDiffuseEnvironment");
+		m_PreConvDiffuseShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConDiffuseEnvironment");
 
 		VansComputeShader* m_PreConvSpecularShader = new VansComputeShader();
-		m_PreConvSpecularShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConSpecularEnvironment");
+		m_PreConvSpecularShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConSpecularEnvironment");
 
 
 		//创建描述符
@@ -1260,7 +1267,7 @@ namespace VansVulkan
 		
 		//cs
 		manager->m_SSGIShader = new VansComputeShader();
-		manager->m_SSGIShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSGI");
+		manager->m_SSGIShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSGI");
 
 
 		float data[4] = { std::floor(m_RenderWidth / 4) , std::floor(m_RenderHeight / 4), 4.0f/ m_RenderWidth, 4.0f/ m_RenderHeight };
@@ -1815,6 +1822,55 @@ namespace VansVulkan
 			}
 		);
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+
+		//设置ssr temporal aa
+		VansVKDescriptorManager::GetInstance()->ResetState();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRAADescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture0SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						manager->m_SSRResult->GetImage().GetSampler(),
+						manager->m_SSRResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRAADescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture1SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						position.GetSampler(),
+						position.GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRAADescriptorSets[0],
+				VansVKDescriptorManager::m_UAVTexture1SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ,
+				{
+					{
+						manager->m_SSRAAResult->GetImage().GetSampler(),
+						manager->m_SSRAAResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 	}
 
 	void VansVKDevice::UpdateRayTracing()
@@ -1839,7 +1895,7 @@ namespace VansVulkan
 		manager->m_HZBResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 1, false, true, true, MID_PRES_16);
 
 		manager->m_HZBShader = new VansComputeShader();
-		manager->m_HZBShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/HIZ");
+		manager->m_HZBShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/HIZ");
 
 		//计算mip数量
 		manager->m_HIZMipCount = 1 + (int)std::floor(std::log2(std::min(m_RenderWidth, m_RenderHeight)));
@@ -1878,15 +1934,20 @@ namespace VansVulkan
 		manager->m_SSRRayPDF->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2,1, 4, false, false, true, HIGH_PRES_32);
 
 		manager->m_SSRResult = new VansTexture();
-		manager->m_SSRResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2,1, 4, false, false, true, MID_PRES_16);
+		manager->m_SSRResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/2, m_RenderHeight/2,1, 4, false, false, true, HIGH_PRES_32);
 
+		manager->m_SSRAAResult = new VansTexture();
+		manager->m_SSRAAResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
 
 		manager->m_SSRTraceShader = new VansComputeShader();
-		manager->m_SSRTraceShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_TRACE");
+		manager->m_SSRTraceShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_TRACE");
 
 		manager->m_SSRResolveShader = new VansComputeShader();
-		manager->m_SSRResolveShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_RESOLVE");
+		manager->m_SSRResolveShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_RESOLVE");
 		
+		manager->m_SSRTemporalAAShader = new VansComputeShader();
+		manager->m_SSRTemporalAAShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_TEMPORALAA");
+
 		//需要normal, roughness, hiz
 		VkDescriptorSetLayoutBinding normalInput =
 		{
@@ -2001,6 +2062,33 @@ namespace VansVulkan
 		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ colorInput,roughnessInput,normalInput,positionInput, tranceInfoResult ,trancePDFResult,resolveResult }, manager->m_SSRResolveSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSRResolveSetLayout }, manager->m_SSRResolveDescriptorSets);
 
+		//temporal AA
+		colorInput =
+		{
+			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		positionInput =
+		{
+			VansVKDescriptorManager::m_SampleTexture1SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding aaResult =
+		{
+			VansVKDescriptorManager::m_UAVTexture1SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ colorInput,positionInput, tranceInfoResult ,aaResult }, manager->m_SSRAASetLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSRAASetLayout }, manager->m_SSRAADescriptorSets);
 	}
 
 	void VansVKDevice::PrepareBilaterFilterData()
@@ -2050,7 +2138,7 @@ namespace VansVulkan
 		// Maximum depth difference to consider
 
 		manager->m_BilateralFilterShader = new VansComputeShader();
-		manager->m_BilateralFilterShader->InitShader(m_VansVKLogicDevice, "C:/Users/infinityyf/Projects/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/BilateralFilter");
+		manager->m_BilateralFilterShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/BilateralFilter");
 		manager->m_BilateralFilterShader->SetPushConstant(sizeof(manager->m_BilateralFilterPushConstant));
 		manager->m_BilateralFilterShader->SetPushConstantData(&(manager->m_BilateralFilterPushConstant));
 	}
@@ -2084,12 +2172,6 @@ namespace VansVulkan
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		auto& normal = renderPassManager->GetNormal();
-		auto& position = renderPassManager->GetGbuffer2();
-		auto& roughness = renderPassManager->GetGbuffer0(); // w通道
-		auto& color = renderPassManager->GetColor();
-		auto& hiz = manager->m_HZBResult;
-
 		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
 		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
 
@@ -2100,6 +2182,9 @@ namespace VansVulkan
 		
 		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSRResolveShader, { manager->m_SSRResolveSetLayout, camera->m_CameraBufferLayout });
 		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRResolveShader, halfResWidth, halfResHeight, 1, { manager->m_SSRResolveDescriptorSets[0],camera->m_CameraBufferDescriptorSets[0] });
+
+		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSRTemporalAAShader, { manager->m_SSRAASetLayout, camera->m_CameraBufferLayout });
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRTemporalAAShader, halfResWidth, halfResHeight, 1, { manager->m_SSRAADescriptorSets[0],camera->m_CameraBufferDescriptorSets[0] });
 
 	}
 
@@ -2165,13 +2250,12 @@ namespace VansVulkan
 		//给所有网格创建一个blas
 		m_Scene->BuildRayTracingAS(this, &m_VansVKCommandBuffer);
 
-		//rayTracingContext.BuildBottomLevelAS(this, &m_VansVKCommandBuffer, static_cast<VansMesh*>(m_Scene->m_Meshes[0]));
-		//rayTracingContext.BuildTopLevelAS(this, &m_VansVKCommandBuffer);
-
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
 		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 
+		//清空所有的AS temp buffer
+		m_Scene->ReleaseASTempBuffer(this);
 
 		//创建ray tracing需要的资源和资源描述符
 		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene);

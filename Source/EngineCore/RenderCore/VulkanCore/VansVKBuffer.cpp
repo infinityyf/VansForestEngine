@@ -43,6 +43,7 @@ bool VansVulkan::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkDev
 	bool allocateResult = VansVKMemoryManager::GetInstance()->AllocateMemory(memory_requirements, m_VansVKBufferMemory, memory_properties, needBufferAddressable);
 	if (!allocateResult)
 	{
+		std::cerr << "alloc buffer memory failed" << std::endl;
 		return false;
 	}
 	VkDeviceSize memory_offset = 0;

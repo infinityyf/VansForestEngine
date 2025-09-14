@@ -36,7 +36,7 @@ namespace VansVulkan
 	private:
 		VansVKBuffer m_VertexBuffer;
 
-		VansVKBuffer m_VertexPositionBuffer;
+		//VansVKBuffer m_VertexPositionBuffer;
 
 		VansVKBuffer m_IndexBuffer;
 
@@ -49,9 +49,9 @@ namespace VansVulkan
 
 		uint32_t GetMeshVertexCount() { return m_VertexCount; }
 
-		uint32_t GetIndexCount() { return m_MeshTriangleIndex.size(); }
+		uint32_t GetIndexCount() { return m_IndexCount; }
 
-		VansVKBuffer& GetBLASVertexBuffer() { return m_VertexPositionBuffer; }
+		VansVKBuffer& GetBLASVertexBuffer() { return m_VertexBuffer; }
 
 		VansVKBuffer& GetIndexBuffer() { return m_IndexBuffer; }
 
@@ -62,7 +62,7 @@ namespace VansVulkan
 		~VansMesh()
 		{
 			m_VertexBuffer.DestroyVulkanBuffer(m_LogicalDevice);
-			m_VertexPositionBuffer.DestroyVulkanBuffer(m_LogicalDevice);
+			//m_VertexPositionBuffer.DestroyVulkanBuffer(m_LogicalDevice);
 			m_IndexBuffer.DestroyVulkanBuffer(m_LogicalDevice);
 		}
 
@@ -90,13 +90,19 @@ namespace VansVulkan
 
 		int m_VertexCount;
 
+		int m_IndexCount;
+
 	public:
 
-		void LoadMesh(VkDevice& logic_device,const std::string& file_name, bool import_tangent = false);
+		void LoadMesh(VkDevice& logic_device,const std::string& file_name, bool import_tangent = false, bool supportRayTracing = false);
 
 		void BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer);
 
+		void ReleaseASTempData(VkDevice& logic_device);
+
 		VkAccelerationStructureKHR GetBLAS() { return m_BottomLevelAS; }
+
+		bool m_SupportRayTracing;
 
 	private:
 
@@ -104,6 +110,8 @@ namespace VansVulkan
 		VkAccelerationStructureKHR m_BottomLevelAS;
 
 		VansVKBuffer m_BottomLevelASBuffer;
+
+		VansVKBuffer m_BLASScratchBuffer;
 
 		//用于记录这个blas在整体中的索引
 		int m_BLASIndex;

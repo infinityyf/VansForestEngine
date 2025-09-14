@@ -59,6 +59,9 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_SSRResolveSetLayout;
 		std::vector<VkDescriptorSet> m_SSRResolveDescriptorSets;
 
+		VkDescriptorSetLayout m_SSRAASetLayout;
+		std::vector<VkDescriptorSet> m_SSRAADescriptorSets;
+
 		VkDescriptorSetLayout m_BilateralFilterSetLayout;
 		std::vector<VkDescriptorSet> m_BilateralFilterDescriptorSets;
 
@@ -80,6 +83,8 @@ namespace VansGraphics
 		VansTexture* m_SSRRayPDF;
 
 		VansTexture* m_SSRResult;
+
+		VansTexture* m_SSRAAResult;
 
 		VansTexture* m_SSGIFilterResult;
 
@@ -106,6 +111,8 @@ namespace VansGraphics
 		VansComputeShader* m_SSRTraceShader;
 
 		VansComputeShader* m_SSRResolveShader;
+
+		VansComputeShader* m_SSRTemporalAAShader;
 
 		struct BilateralFilterPushConst
 		{

@@ -99,10 +99,12 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRaw
 	}
 }
 
-void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& file_name, bool import_tangent)
+void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& file_name, bool import_tangent, bool supportRayTracing)
 {
+	std::cout << "Load Mesh : " << file_name << std::endl;
 	m_LogicalDevice = logic_device;
 	m_MeshRawDataCPULoaded = false;
+	m_SupportRayTracing = true;// supportRayTracing;
 	m_VertexCount = 0;
 	//用assimp
 	Assimp::Importer importer;
@@ -119,6 +121,8 @@ void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& f
 	}
 	ProcessNode(scene->mRootNode, scene, m_MeshRawData, m_MeshRawPositionData, m_MeshTriangleIndex,m_VertexCount, import_tangent);
 	m_MeshRawDataCPULoaded = true;
+
+	m_IndexCount = m_MeshTriangleIndex.size();
 
 	m_VertexDataSize = 8 * sizeof(float);
 	if (import_tangent)
@@ -178,16 +182,18 @@ void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& f
 	m_VertexBuffer.CreatVulkanBuffer(logic_device,
 		m_MeshRawData.size() * sizeof(float),
 		VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-
-	m_VertexPositionBuffer.CreatVulkanBuffer(logic_device,
-		m_MeshRawPositionData.size() * sizeof(float),
-		VK_FORMAT_R32G32B32_SFLOAT,
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT
 		| VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR|
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+	//m_VertexPositionBuffer.CreatVulkanBuffer(logic_device,
+	//	m_MeshRawPositionData.size() * sizeof(float),
+	//	VK_FORMAT_R32G32B32_SFLOAT,
+	//	VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT
+	//	| VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR|
+	//	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+	//	VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
 	m_IndexBuffer.CreatVulkanBuffer(logic_device,
 		m_MeshTriangleIndex.size() * sizeof(int),
@@ -198,8 +204,15 @@ void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& f
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
 	m_VertexBuffer.SetBufferData(m_MeshRawData.data(), 0, m_MeshRawData.size() * sizeof(float));
-	m_VertexPositionBuffer.SetBufferData(m_MeshRawPositionData.data(), 0, m_MeshRawPositionData.size() * sizeof(float));
+	//m_VertexPositionBuffer.SetBufferData(m_MeshRawPositionData.data(), 0, m_MeshRawPositionData.size() * sizeof(float));
 	m_IndexBuffer.SetBufferData(m_MeshTriangleIndex.data(), 0, m_MeshTriangleIndex.size() * sizeof(int));
+
+	//释放CPU端内存数据
+	m_MeshRawData.clear();
+	m_MeshRawPositionData.clear();
+	m_MeshTriangleIndex.clear();
+
+
 }
 
 void VansVulkan::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer)
@@ -207,7 +220,7 @@ void VansVulkan::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& co
 	// 获取顶点缓冲区地址
 	VkBufferDeviceAddressInfo addressInfo{};
 	addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-	addressInfo.buffer = m_VertexPositionBuffer.GetNativeBuffer();
+	addressInfo.buffer = m_VertexBuffer.GetNativeBuffer();
 	addressInfo.pNext = nullptr;
 	VkDeviceAddress vertexBufferAddress = vkGetBufferDeviceAddressKHR(logic_device, &addressInfo);
 
@@ -219,7 +232,7 @@ void VansVulkan::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& co
 	triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
 	triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
 	triangles.vertexData.deviceAddress = vertexBufferAddress;
-	triangles.vertexStride = sizeof(float) * 8;
+	triangles.vertexStride = m_VertexDataSize;
 	triangles.maxVertex = GetMeshVertexCount() - 1;
 	triangles.indexType = VK_INDEX_TYPE_UINT32;
 	triangles.indexData.deviceAddress = indexBufferAddress;
@@ -247,10 +260,14 @@ void VansVulkan::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& co
 	buildRangeInfo.primitiveOffset = 0;
 	buildRangeInfo.transformOffset = 0;
 
+	// primitive counts array: number of primitives (triangles)
+	uint32_t primCount = GetIndexCount() / 3; // indexed triangles
+	uint32_t primitiveCounts[1] = { primCount };
+
 	VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo{};
 	buildSizesInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 	vkGetAccelerationStructureBuildSizesKHR(logic_device,
-		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildGeometryInfo, &buildGeometryInfo.geometryCount, &buildSizesInfo);
+		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildGeometryInfo, primitiveCounts, &buildSizesInfo);
 
 	//给blas创建buffer
 	m_BottomLevelASBuffer.CreatVulkanBuffer(
@@ -270,8 +287,7 @@ void VansVulkan::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& co
 
 	buildGeometryInfo.dstAccelerationStructure = m_BottomLevelAS;
 
-	VansVKBuffer scratchBuffer;
-	scratchBuffer.CreatVulkanBuffer(
+	m_BLASScratchBuffer.CreatVulkanBuffer(
 		logic_device,
 		buildSizesInfo.buildScratchSize,
 		VK_FORMAT_R32_SFLOAT,
@@ -280,12 +296,17 @@ void VansVulkan::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& co
 
 	VkBufferDeviceAddressInfo bufferAddressInfo;
 	bufferAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-	bufferAddressInfo.buffer = scratchBuffer.GetNativeBuffer();
+	bufferAddressInfo.buffer = m_BLASScratchBuffer.GetNativeBuffer();
 	bufferAddressInfo.pNext = nullptr;
 	buildGeometryInfo.scratchData.deviceAddress = vkGetBufferDeviceAddressKHR(logic_device, &bufferAddressInfo);
 
 	//创建加速结构
 	const VkAccelerationStructureBuildRangeInfoKHR* pRangeInfo = &buildRangeInfo;
 	vkCmdBuildAccelerationStructuresKHR(commandBuffer, 1, &buildGeometryInfo, &pRangeInfo);
+}
+
+void VansVulkan::VansMesh::ReleaseASTempData(VkDevice& logic_device)
+{
+	m_BLASScratchBuffer.DestroyVulkanBuffer(logic_device);
 }
 

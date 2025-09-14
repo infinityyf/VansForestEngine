@@ -9,7 +9,7 @@
 #define LightCBBind 0
 #include "../Lights/LightsData.glsl"
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
 layout( set = 1, binding = 0, std430 ) buffer hitPositionBuffer
 {
@@ -58,6 +58,55 @@ layout(push_constant) uniform PushConstants
     vec4 originParams;
 } pushConstants;
 
+vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal, vec3 origin, vec3 size)
+{
+    const float ACoeff[4] = {3.1415, 2.0943, 2.0943, 2.0943}; 
+    vec3 inDirectDiffuse = vec3(0);
+    vec3 uvw = (position_world - origin) / size;
+
+    ivec3 texSize = textureSize(SHRCoeff, 0);
+    vec3 texPos = uvw * vec3(texSize) - 0.5;
+    ivec3 base = ivec3(floor(texPos));
+    vec3 frac = texPos - floor(texPos);
+
+    float totalWeight = 0.0;
+    for(int dz = 0; dz <= 1; dz++)
+    for(int dy = 0; dy <= 1; dy++)
+    for(int dx = 0; dx <= 1; dx++)
+    {
+        ivec3 offset = ivec3(dx, dy, dz);
+        ivec3 samplePos = base + offset;
+        // Clamp to texture bounds
+        samplePos = clamp(samplePos, ivec3(0), texSize - 1);
+
+        vec3 sampleUVW = (vec3(samplePos) + 0.5) / vec3(texSize);
+        vec3 texelWorld = sampleUVW * size + origin;
+
+        float w = max(dot(normalize(texelWorld - position_world), normal), 0.0);
+
+        float distanceWeight = length(texelWorld - position_world) / size.x;
+
+        vec4 rCoeff = texelFetch(SHRCoeff, samplePos, 0);
+        vec4 gCoeff = texelFetch(SHGCoeff, samplePos, 0);
+        vec4 bCoeff = texelFetch(SHBCoeff, samplePos, 0);
+
+        vec3 tempDiffuse = vec3(0);
+        for(int i = 0; i < 4; i++)
+        {
+            float basis = SHBasis(i, normal);
+            tempDiffuse.r += rCoeff[i] * basis / PI;
+            tempDiffuse.g += gCoeff[i] * basis / PI;
+            tempDiffuse.b += bCoeff[i] * basis / PI;
+        }
+        inDirectDiffuse += tempDiffuse * w;
+        totalWeight += w;
+    }
+    if(totalWeight > 0.0)
+        inDirectDiffuse /= totalWeight;
+    inDirectDiffuse = max(vec3(0, 0, 0), inDirectDiffuse);
+    return inDirectDiffuse;
+}
+
 void main() 
 {
     ivec3 probeIndex = ivec3(gl_GlobalInvocationID);
@@ -67,6 +116,7 @@ void main()
 
     float originSize = float(originCount) * originStride;
     vec3 groupOrigin = vec3(-originSize/2,-originSize/2,-originSize/2);
+    groupOrigin.y += 6;
 
     int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;
@@ -82,8 +132,8 @@ void main()
         {
             vec3 envColor = texture(environmentMap, rayDirection).rgb;
             //没有击中应该设置成环境球的颜色这里先设置为白色
-            directLightBuffer.directLight[resultIndex] = vec4(0,0,0,1);
-            indirectLightBuffer.indirectLight[resultIndex] = vec4(envColor, 1.0);
+            directLightBuffer.directLight[resultIndex] = vec4(0,0,0,0.5);
+            indirectLightBuffer.indirectLight[resultIndex] = vec4(envColor, 0.5);
             continue;
         }
         
@@ -93,23 +143,27 @@ void main()
         CalculateDirectDiffuse(hitPos.xyz,hitNrm.xyz, shadowMap, punctualShadowMap, directDiffuse);
         directLightBuffer.directLight[resultIndex] = vec4(directDiffuse, 1.0);
 
-        //计算当前点的间接漫反射
-        vec3 inDirectDiffuse = vec3(0);
-        //计算当前点在GI区域内的uvw
-        vec3 uvw = (hitPos.xyz - groupOrigin) / originStride;
+        // //计算当前点的间接漫反射
+        // vec3 inDirectDiffuse = vec3(0);
+        // //计算当前点在GI区域内的uvw
+        // vec3 uvw = (hitPos.xyz - groupOrigin) / originSize;
 
-        //获取球谐系数还原颜色
-        vec4 rCoeff = texture(SHRCoeff, uvw);
-        vec4 gCoeff = texture(SHGCoeff, uvw); 
-        vec4 bCoeff = texture(SHBCoeff, uvw);
-        for(int i = 0; i < 4; i++) 
-        {
-            //这里ray direcction是错的，应该用击中点的法线
-            float basis = SHBasis(i, rayDirection);
-            inDirectDiffuse.r += rCoeff[i] * basis;
-            inDirectDiffuse.g += gCoeff[i] * basis;
-            inDirectDiffuse.b += bCoeff[i] * basis;
-        }
+        // //获取球谐系数还原颜色
+        // vec4 rCoeff = texture(SHRCoeff, uvw);
+        // vec4 gCoeff = texture(SHGCoeff, uvw); 
+        // vec4 bCoeff = texture(SHBCoeff, uvw);
+        // for(int i = 0; i < 4; i++) 
+        // {
+        //     //这里ray direcction是错的，应该用击中点的法线
+        //     float basis = SHBasis(i, hitNrm.xyz);
+        //     inDirectDiffuse.r += rCoeff[i] * basis / PI;
+        //     inDirectDiffuse.g += gCoeff[i] * basis / PI;
+        //     inDirectDiffuse.b += bCoeff[i] * basis / PI;
+        // }
+        // inDirectDiffuse = max(vec3(0, 0, 0), inDirectDiffuse);
+
+        //计算当前点的间接漫反射
+        vec3 inDirectDiffuse = CalculateSHDiffuse(hitPos.xyz, hitNrm.xyz,groupOrigin,vec3(originSize));
 
         indirectLightBuffer.indirectLight[resultIndex] = vec4(inDirectDiffuse, 1.0);
     }

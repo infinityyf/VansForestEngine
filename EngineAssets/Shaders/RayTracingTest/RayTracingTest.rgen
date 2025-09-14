@@ -42,6 +42,7 @@ void main()
 
     float originSize = float(originCount) * originStride;
     vec3 groupOrigin = vec3(-originSize/2 + originStride/2 ,-originSize/2 + originStride/2,-originSize/2 + originStride/2);
+    groupOrigin.y += 6;
 
     ivec3 currentIndex = ivec3(gl_LaunchIDEXT);
     vec3 currentOrigin = groupOrigin + vec3(currentIndex) * originStride;
@@ -63,7 +64,7 @@ void main()
     {
         vec3 rayDirection = SampleSphere(rayIndex,sampleCount);
 
-        traceRayEXT(tlas,gl_RayFlagsOpaqueEXT,0xFF, 0, 0, 0,currentOrigin, 0.001, rayDirection, 10000.0, 0);
+        traceRayEXT(tlas,gl_RayFlagsOpaqueEXT,0xFF, 0, 0, 0,currentOrigin, 0.001, rayDirection, 100.0, 0);
     
         hitCount += hitResult.positionHit.w;
 

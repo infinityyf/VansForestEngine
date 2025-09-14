@@ -82,9 +82,15 @@ namespace VansGraphics
 
 		void UpdateSceneData();
 
+	private:
+
+		void LoadSceneResource(json& sceneData);
+
 	public:
 
 		void BuildRayTracingAS(VansVKDevice* vans_device, VansVKCommandBuffer* vans_commandBuffer);
+
+		void ReleaseASTempBuffer(VansVKDevice* vans_device);
 
 	public:
 
@@ -132,6 +138,8 @@ namespace VansGraphics
 		VansVKBuffer m_TopLevelASBuffer;
 
 		VansVKBuffer m_InstancesBuffer;
+
+		VansVKBuffer m_TLASScratchBuffer;
 
 		std::vector<VkAccelerationStructureInstanceKHR> m_TlasInstancesInfos;
 

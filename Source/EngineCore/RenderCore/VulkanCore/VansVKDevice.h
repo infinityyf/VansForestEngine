@@ -189,6 +189,9 @@ namespace VansVulkan
 		VkPhysicalDeviceVulkan12Features m_Features12;
 		VkPhysicalDeviceVulkan11Features m_Features11;
 
+		VkPhysicalDeviceScalarBlockLayoutFeatures m_ScalarBlockFeature;
+
+		VkPhysicalDeviceAccelerationStructurePropertiesKHR m_AccelerationProps;
 		VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_RayTracingProperties;
 
 		VkPhysicalDeviceFeatures2 m_DeviceFeatures2;

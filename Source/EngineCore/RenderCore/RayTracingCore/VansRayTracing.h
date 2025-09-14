@@ -113,5 +113,7 @@ namespace VansVulkan
 		VansVKBuffer m_HitPointDirectLightBuffer;
 
 		VansVKBuffer m_HitPointIndirectLightBuffer;
+
+		bool m_HitPositionCalculateDone;
 	};
 }

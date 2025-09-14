@@ -23,6 +23,26 @@
 
 #define SCREEN_SCALE 2
 
+float pow2(float x)
+{
+    return x * x;
+}
+
+vec2 pow2(vec2 x)
+{
+    return x * x;
+}
+
+vec3 pow2(vec3 x)
+{
+    return x * x;
+}
+
+vec4 pow2(vec4 x)
+{
+    return x * x;
+}
+
 float RandomInterLeaved (vec2 uv) 
 {
     return fract(sin(dot(uv.xy,vec2(12.9898,78.233)))*43758.5453123);
@@ -85,6 +105,26 @@ vec4 ImportanceSampleGGX(vec2 random, float roughness)
 	return vec4(H, PDF);
 }
 
+mat3 GetTangentBasis(vec3 TangentZ) 
+{
+    vec3 UpVector = abs(TangentZ.z) < 0.999 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+    vec3 TangentX = normalize(cross(UpVector, TangentZ));
+    vec3 TangentY = normalize(cross(TangentZ, TangentX));
+    return mat3(TangentX, TangentY, TangentZ);
+}
+
+vec3 TangentToWorld(vec3 Vec, vec3 TangentZ)
+{
+    return GetTangentBasis(TangentZ) * Vec;
+}
+
+float Luminance(vec3 c)
+{
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+
+
 // 2阶球谐基函数 (实值形式)
 // v: 单位方向向量 (x,y,z)
 float SHBasis(int i, vec3 v) 
@@ -92,8 +132,8 @@ float SHBasis(int i, vec3 v)
     switch(i) 
     {
         case 0:  return 0.282095;                                  // Y00
-        case 1:  return 0.488603 * v.y;                            // Y1-1
-        case 2:  return 0.488603 * v.z;                            // Y10
+        case 1:  return 0.488603 * v.z;                            // Y1-1
+        case 2:  return 0.488603 * v.y;                            // Y10
         case 3:  return 0.488603 * v.x;                            // Y11
         case 4:  return 1.092548 * v.x * v.y;                       // Y2-2
         case 5:  return 1.092548 * v.y * v.z;                       // Y2-1

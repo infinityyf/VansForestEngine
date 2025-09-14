@@ -6,7 +6,10 @@
 #define MieAbsorpSigma vec3(4.4,4.4,4.4) * 1e-6
 #define OzoneAbsorpSigma vec3(0.650, 1.881, 0.085) * 1e-6
 
-layout(set=1, binding=0) uniform  AtmosphereUniformBuffer
+#if !defined(AtmosphereCBBind)
+    #define AtmosphereCBBind 1
+#endif
+layout(set=AtmosphereCBBind, binding=0) uniform  AtmosphereUniformBuffer
 {
     vec4 sunDirection;
     float sunLuminance;
@@ -58,6 +61,14 @@ float MiePhase(AtmosphereParam param, float cos_theta)
     float g = param.mieAnisotropy;
     float phase = (3.0 / (8.0 * PI)) * (1 - g*g)/(2 + g*g) * (1 + cos_theta*cos_theta) / pow(1 + g*g - 2*g*cos_theta, 1.5);
     return phase;
+}
+
+//HG phase
+float HGPhase(float cosTheta, float g)
+{
+    float g2 = g * g;
+    float denom = 1.0 + g2 - 2.0 * g * cosTheta;
+    return (1.0 - g2) / (4.0 * PI * pow(max(denom, 1e-6), 1.5));
 }
 
 vec3 Scattering(AtmosphereParam param, vec3 scatter_position)

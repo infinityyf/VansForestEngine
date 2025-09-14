@@ -144,9 +144,8 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
     //reflection specular lod level
     float lod = GetMipLevelFromRoughness(brdf.roughness);
     vec3 prefilteredColor = textureLod(PreConvSpecularEnvironment,reflection,lod).rgb;
+    prefilteredColor = mix(prefilteredColor, brdf.indirectSpecular.rgb, brdf.indirectSpecular.a);
     specular = prefilteredColor * (F * environmentBRDF.x + environmentBRDF.y);
-
-    specular = mix(specular, brdf.indirectSpecular.rgb, brdf.indirectSpecular.a);
 }
 
 void DirectBRDF(BRDFData brdf, vec3 lightDirection, inout vec3 diffuse, inout vec3 specular)

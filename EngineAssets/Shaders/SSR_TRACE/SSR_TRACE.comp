@@ -26,18 +26,24 @@ void main()
     vec4 tracePDFInfo = vec4(0.0);
 
     //计算反射光线的方向
-    vec3 traceDirection = reflect(-viewDirection, normal);
+    vec3 traceDirection =vec3(0,1,0);
 
     //根据roughness计算采样的PDF
     if(roughness > 0.1)
     {
         vec2 random = HashRandom(pixelCoord, float(int(FrameIndex) % 100));
+        random *= 0.3;
         vec4 pdfrandom = ImportanceSampleGGX(random, roughness);
         tracePDFInfo.a = pdfrandom.w; // PDF值
+
+        //tangent space to world space
+        vec3 jitterNormal =  TangentToWorld(pdfrandom.xyz, normal);
+        traceDirection = reflect(-viewDirection, jitterNormal.xyz);
     }
     else
     {
         tracePDFInfo.a = 1;
+        traceDirection = reflect(-viewDirection, normal);
     }
     
 

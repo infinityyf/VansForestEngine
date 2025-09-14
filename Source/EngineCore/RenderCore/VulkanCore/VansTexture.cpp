@@ -5,18 +5,36 @@
 using namespace VansGraphics;
 #include "../VansGraphicsDevice.h"
 #include <iostream>
+#include <vector>
+#include <algorithm>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <../../STBImge/stb_image.h>
 
+// Add stb_dxt implementation
+#define STB_DXT_IMPLEMENTATION
+#include <../../STBImge/stb_dxt.h>
+
+// Replace with your compressor implementation (stb_dxt/squish/ISPC/BasisU)
+// outDst must receive bytesPerBlock bytes for a single 4x4 RGBA block (row-major, RGBA8 per texel).
+static void compress_block(uint8_t* outDst, const uint8_t rgba4x4[16*4], bool hasAlpha)
+{
+    // stb_compress_dxt_block(output, input_rgba16, alpha, mode)
+    // alpha: 0 -> DXT1 (8 bytes), 1 -> DXT5 (16 bytes)
+    // mode: 0 = default/fast, 1 = high quality (if supported)
+    int alpha = hasAlpha ? 1 : 0;
+    int mode = 0;
+    stb_compress_dxt_block(outDst, rgba4x4, alpha, mode);
+}
 
 VansGraphics::VansTexture::~VansTexture()
 {
 	m_Image.DestroyVulkanImage(*(VkDevice*)m_GraphicsDevice->GetNativeGraphicsDevice());
 }
 
-void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB)
+void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB, bool useCompress)
 {
+	std::cout << "Load Texture : " << texture_path << std::endl;
 	int width = 0;
 	int height = 0;
 	int num_components = 0;
@@ -33,8 +51,111 @@ void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer
 		return;
 	}
 
-	m_TextureWidth = width;
-	m_TextureHeight = height;
+	// ---------------- compress into block layout (tight packed) ----------------
+    VansVKDevice* vkDevicePtr = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VkPhysicalDevice phys = vkDevicePtr->GetPhysicalDevice();
+    bool hasAlpha = true; // we forced 4 components above
+
+    // Choose compressed format (BC1/BC3)
+	VkFormat chosenFormat;
+	if (hasAlpha) 
+	{
+		// prefer sRGB variant if requested and supported
+		chosenFormat = isSRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+	}
+	else 
+	{
+		chosenFormat = isSRGB ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+	}
+
+	if(useCompress)
+    {
+        const uint8_t* src = stbi_data.get();
+        int blocksX = (width + 3) / 4;
+        int blocksY = (height + 3) / 4;
+        int bytesPerBlock = hasAlpha ? 16 : 8; // DXT5/BC3 -> 16, DXT1/BC1 -> 8
+        size_t compressedSize = size_t(blocksX) * size_t(blocksY) * size_t(bytesPerBlock);
+        std::vector<uint8_t> compressed;
+        compressed.resize(compressedSize);
+
+        auto sample = [&](int sx, int sy, int c)->uint8_t {
+            sx = std::min(std::max(sx, 0), width-1);
+            sy = std::min(std::max(sy, 0), height-1);
+            return src[(sy * width + sx) * 4 + c];
+        };
+
+        uint8_t blockRGBA[16*4];
+        uint8_t* dstPtr = compressed.data();
+        for (int by = 0; by < blocksY; ++by) {
+            for (int bx = 0; bx < blocksX; ++bx) {
+                // gather 4x4 block (row-major)
+                for (int y = 0; y < 4; ++y) {
+                    for (int x = 0; x < 4; ++x) {
+                        int sx = bx*4 + x;
+                        int sy = by*4 + y;
+                        int idx = (y*4 + x) * 4;
+                        blockRGBA[idx + 0] = sample(sx, sy, 0);
+                        blockRGBA[idx + 1] = sample(sx, sy, 1);
+                        blockRGBA[idx + 2] = sample(sx, sy, 2);
+                        blockRGBA[idx + 3] = sample(sx, sy, 3);
+                    }
+                }
+                // compress blockRGBA -> dstPtr
+                compress_block(dstPtr, blockRGBA, hasAlpha);
+                dstPtr += bytesPerBlock;
+            }
+        }
+
+        m_TextureWidth = width;
+        m_TextureHeight = height;
+
+        // Create compressed Vulkan image (use chosenFormat)
+        VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
+        VkDevice nativeDevice = vkDevicePtr->GetLogicDevice();
+        VkQueue graphicsQueue = vkDevicePtr->GetGraphicsQueue();
+
+        m_Image.CreateVulkanImage(
+            nativeDevice,
+            extent,
+            chosenFormat,        // use compressed format here
+            1,
+            1,
+            VK_IMAGE_TYPE_2D,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_SAMPLE_COUNT_1_BIT,
+            false,
+            true,
+            true
+        );
+
+        // Upload compressed data:
+        // IMPORTANT: SetDeviceImageData must copy compressed data with bufferRowLength=0 and bufferImageHeight=0
+        // (i.e. tightly packed) because compressed formats are block-packed.
+        VkOffset3D image_offset = { 0, 0, 0 };
+        vkDevicePtr->SetDeviceImageData(m_Image, compressed.data(), 0, static_cast<uint32_t>(compressed.size()), image_offset, extent, 0, 0);
+
+        // Transition to shader read only
+        command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+        m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            {
+                m_Image.GetImage(),
+                VK_ACCESS_NONE,
+                VK_ACCESS_NONE,
+                m_Image.GetImageLayout(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_QUEUE_FAMILY_IGNORED,
+                VK_QUEUE_FAMILY_IGNORED,
+                m_Image.GetImageAspect()
+            });
+
+        command_buffer.EndCommandBufferRecord();
+        VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, {command_buffer.GetVKCommandBuffer()}, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+        command_buffer.ResetCommandBuffer(false);
+
+        // free CPU compressed buffer automatically by vector destructor
+        return;
+    }
+
 
 	num_components = 4;
 	int data_size = width * height * num_components;
@@ -42,7 +163,6 @@ void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer
 	std::memcpy(m_ImageData.data(), stbi_data.get(), data_size);
 
 	VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
-	VansVKDevice* vkDevicePtr = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevicePtr->GetLogicDevice();
 	VkQueue graphicsQueue = vkDevicePtr->GetGraphicsQueue();
 	VkFormat format = CheckTextureFormat(num_components, false, isSRGB);
@@ -63,7 +183,7 @@ void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer
 	VkOffset3D image_offset = { 0, 0, 0 };
 	vkDevicePtr->SetDeviceImageData(m_Image, m_ImageData.data(), 0, data_size, image_offset, extent, 0, 0);
 
-	//切换layout到：VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	//鍒囨崲layout鍒帮細VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	//
 
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
@@ -82,6 +202,8 @@ void VansGraphics::VansTexture::LoadTexture( VansVKCommandBuffer& command_buffer
 	command_buffer.EndCommandBufferRecord();
 	VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, {command_buffer.GetVKCommandBuffer()}, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
+
+	m_ImageData.clear();
 }
 
 VkFormat VansGraphics::VansTexture::CheckTextureFormat(int channel, bool isHdr, bool isSRGB)
@@ -197,7 +319,7 @@ void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buf
 		m_ImageData.resize(data_size);
 		std::memcpy(m_ImageData.data(), stbi_data.get(), data_size);
 
-		//创建GPU数据
+		//鍒涘缓GPU鏁版嵁
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
 		VkFormat format = CheckTextureFormat(num_components,false, isSRGB);
 		
@@ -226,7 +348,7 @@ void VansGraphics::VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buf
 	m_TextureWidth = width;
 	m_TextureHeight = height;
 
-	//切换layout到：VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	//鍒囨崲layout鍒帮細VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	//
 
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);

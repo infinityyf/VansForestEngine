@@ -3,14 +3,66 @@
 #include "../Common/CameraData.glsl"
 #include "../Common/Atmosphere.glsl"
 
- layout( location = 0 ) in vec3 direction;
- layout( location = 0 ) out vec4 frag_color;
+// #define LightCBBind 2
+// #include "../Lights/LightsData.glsl"
 
+// layout(set=1, binding=0) uniform  VolumeCloudUniformBuffer
+// {
+//     float cloudMinHeight;
+//     float cloudMaxHeight;
+//     float cloudScatterCoeff;
+//     float cloudAbsorbCoeff;
+//     float cloudPhaseG;
+// };
 #define cloudMinHeight 1500
 #define cloudMaxHeight 2100
 #define cloudScatterCoeff 0.002f
 #define cloudAbsorbCoeff 0.01f
 #define cloudPhaseG 0.76f
+
+layout( location = 0 ) in vec3 direction;
+layout( location = 0 ) out vec4 frag_color;
+
+// vec3 VolumeSingleScatter(vec3 viewDirection,vec3 start_position)
+// {
+//     vec3 color = vec3(0,0,0);
+//     int sample_count = 128;
+//     int sub_sample_count = 16;
+//     float distanceCloudMin = RayIntersectSphere(vec3(0, 0, 0), planetRadius + cloudMinHeight, start_position, viewDirection);
+//     float distanceCloudMax = RayIntersectSphere(vec3(0, 0, 0), planetRadius + cloudMaxHeight, start_position, viewDirection);
+//     float distanceVolume = distanceCloudMax - distanceCloudMin;
+
+//     float step = distanceVolume / sample_count;
+//     vec3 pScatterPosition = start_position + viewDirection * distanceCloudMin;
+
+//     float cos_theta = dot(sunDirection.xyz, viewDirection);
+
+//     vec3 transmittance = vec3(1.0);
+//     for(int i=0; i < sample_count; i++)
+//     {
+//         float density = 0.1;
+//         float distanceSun = RayIntersectSphere(vec3(0, 0, 0), planetRadius + cloudMaxHeight, pScatterPosition, sunDirection.xyz);
+//         float stepToSun = distanceSun / sub_sample_count;
+//         vec3 pToSun = pScatterPosition;
+
+//         //当前点的光源输入
+//         vec3 sunTransmittance = vec3(1.0);
+//         //累计每个采样点的散射结果，并且计算到光源的散射结果
+//         for(int j=0; j < sub_sample_count; j++)
+//         {
+//             //当前点的浓度
+//             sunTransmittance *= exp(-stepToSun * (cloudAbsorbCoeff * density));
+//             pToSun += sunDirection.xyz * stepToSun;
+//         }
+//         transmittance *= exp(-step * (cloudAbsorbCoeff * density));
+
+//         vec3 scattering = cloudScatterCoeff * step * sunTransmittance * HGPhase(cos_theta,cloudPhaseG);
+//         color += transmittance * scattering;
+//         pScatterPosition += viewDirection * step;
+//     }
+//     return color;
+// }
+
 #define cloudSpeed 0.02
 #define cloudDensity 0.03
 
@@ -238,10 +290,10 @@ vec3 calculateVolumetricClouds(vec3 viewPosition, vec3 viewDirection, vec3 atoms
 	const int steps = volumetricCloudSteps;
     const float iSteps = 1.0 / float(steps);
     
-   //  if (viewDirection.y < 0.0)
-   //  {
-   //     return vec3(0);
-   //  }
+    if (viewDirection.y < 0.0)
+    {
+       return vec3(0);
+    }
     
     float bottomSphere = RayIntersectSphere(vec3(0, 0, 0), planetRadius + cloudMinHeight, viewPosition, viewDirection);
     float topSphere = RayIntersectSphere(vec3(0, 0, 0), planetRadius + cloudMaxHeight, viewPosition, viewDirection);
@@ -276,32 +328,17 @@ vec3 calculateVolumetricClouds(vec3 viewPosition, vec3 viewDirection, vec3 atoms
     return mix(atomsphereColor * transmittance + scattering, atomsphereColor, clamp((length(startPosition) - planetRadius - initSeaLevel) * 0.00001, 0.0, 1.0));
 }
 
-
- void main() 
- {
-    AtmosphereParam param;
-    param.planetRadius = planetRadius;
-    param.atmosphereWidth = atmosphereWidth;
-    param.rayleighScalarHeight = rayleighScalarHeight;
-    param.mieScalarHeight = mieScalarHeight;
-    param.mieAnisotropy = mieAnisotropy;
-    param.ozoneLevelCenterHeight = ozoneLevelCenterHeight;
-    param.ozoneLevelWidth = ozoneLevelWidth;
-    param.sunLuminance = sunLuminance;
-    param.sunDirection = sunDirection.xyz;
-    param.viewDirection = normalize(direction);
-   
+void main() 
+{
+    //从当前相机方向发出射线，得到云层此时的积分厚度
     vec3 viewPosition = cameraPosition.xyz + vec3(0,planetRadius + initSeaLevel,0);
-
-    vec3 skyColor = SingleScatter(param, viewPosition);
-
-    vec3 viewDirection = param.viewDirection;
+    vec3 viewDirection = normalize(direction);
     float dither = bayer64(gl_FragCoord.xy);
 
     vec3 lightAbsorb = calcAtomsphereSunAbsorbLight(sunDirection.xyz);
     
-    vec3 color = calculateVolumetricClouds(viewPosition,viewDirection, skyColor, dither, lightAbsorb);
+    vec3 color = calculateVolumetricClouds(viewPosition,viewDirection, vec3(0.0f), dither, lightAbsorb);
 
     //都积分128次，每次进行一次单向散射，并考虑powder effect
     frag_color = vec4(color,1);
- }
+}

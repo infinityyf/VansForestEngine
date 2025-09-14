@@ -3,6 +3,7 @@
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansRenderPass.h"
+#include <iostream>
 using namespace VansVulkan;
 
 VansGraphics::VansRenderNode::VansRenderNode(VkDevice& device, RenderNodeType typee)
@@ -683,8 +684,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{
 				{
-					materialManager.m_SSRResult->GetImage().GetSampler(),
-					materialManager.m_SSRResult->GetImage().GetImageView(),
+					materialManager.m_SSRAAResult->GetImage().GetSampler(),
+					materialManager.m_SSRAAResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}
