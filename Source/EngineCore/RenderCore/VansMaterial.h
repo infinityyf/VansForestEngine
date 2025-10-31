@@ -9,7 +9,7 @@
 #include "VansAsset.h"
 #include <vector>
 
-using namespace VansVulkan;
+using namespace VansGraphics;
 namespace VansGraphics
 {
 	enum VansMaterialType
@@ -65,6 +65,9 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_BilateralFilterSetLayout;
 		std::vector<VkDescriptorSet> m_BilateralFilterDescriptorSets;
 
+		VkDescriptorSetLayout m_VolumetricFogSetLayout;
+		std::vector<VkDescriptorSet> m_VolumetricFogDescriptorSets;
+
 		//保存全局的一些texture数据
 		VansTexture* m_PreConvDiffuse;
 
@@ -84,15 +87,20 @@ namespace VansGraphics
 
 		VansTexture* m_SSRResult;
 
+		VansTexture* m_SSRAAResultA;
+		VansTexture* m_SSRAAResultB;
 		VansTexture* m_SSRAAResult;
 
-		VansTexture* m_SSGIFilterResult;
+		//VansTexture* m_SSGIFilterResult;
+		VansTexture* m_SSAOFilterResult;
 
 		VansTexture* m_SHRResult;
 
 		VansTexture* m_SHGResult;
 
 		VansTexture* m_SHBResult;
+
+		VansTexture* m_VolumetricFogResult;
 
 		VansMaterialManager();
 
@@ -125,6 +133,8 @@ namespace VansGraphics
 		BilateralFilterPushConst m_BilateralFilterPushConstant;
 
 		VansComputeShader* m_BilateralFilterShader;
+
+		VansComputeShader* m_VolumetrcFogShader;
 
 	public:
 

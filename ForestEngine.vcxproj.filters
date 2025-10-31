@@ -53,6 +53,9 @@
     <Filter Include="EngineCore\RenderCore\RayTracingCore">
       <UniqueIdentifier>{1049ca8e-e98e-4441-b818-a58dc39cd35d}</UniqueIdentifier>
     </Filter>
+    <Filter Include="External\SPIRV_CROSS">
+      <UniqueIdentifier>{cedd4eb5-87f8-4a1a-8466-30db0352e9e5}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -196,6 +199,57 @@
     <ClInclude Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.h">
       <Filter>EngineCore\RenderCore\RayTracingCore</Filter>
     </ClInclude>
+    <ClInclude Include="External\spirv_cross\GLSL.std.450.h">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv.h">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_cfg.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_common.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_cpp.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_cross.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_cross_c.h">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_cross_containers.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_cross_error_handling.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_cross_parsed_ir.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_cross_util.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_glsl.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_hlsl.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_msl.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_parser.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
+    <ClInclude Include="External\spirv_cross\spirv_reflect.hpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl">
@@ -316,6 +370,39 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp">
       <Filter>EngineCore\RenderCore\RayTracingCore</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_cfg.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_cpp.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_cross.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_cross_c.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_cross_parsed_ir.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_cross_util.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_glsl.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_hlsl.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_msl.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_parser.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="External\spirv_cross\spirv_reflect.cpp">
+      <Filter>External\SPIRV_CROSS</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -43,29 +43,39 @@ void main()
     vec3 resolvedReflectionColor = vec3(0.0);
     float resolvedWeight = 0.0;
 
+    vec2 rnd = HashRandom(pixelCoord, float(int(FrameIndex) % 100));
+    vec2 jitterTexel = ivec2(floor(rnd * 3.0)) - ivec2(1); // maps [0,1) -> { -1,0,1 }
+
     //使用周围像素的结果，相当于trace了更多的光线
     for (int i = 0; i < SSR_NUM_RESOLVER; i++)
 	{
-		vec2 offsetUV = offset[i] * ScreenParams.zw;
-		vec2 neighborUV = hituv + offsetUV;
+        //对offset加上扰动
+		vec2 neighborUV = (pixelCoord + offset[i] + jitterTexel);
+
+        vec4 neighborHitInfo = imageLoad(traceHit, ivec2(neighborUV));
+
+        vec2 neighborHituv = neighborHitInfo.xy;
 
         //采样color
-        vec3 color = texelFetch(inputColor, ivec2(neighborUV * ScreenParams.xy), 0).xyz;
-        vec3 hitPosition = texelFetch(inputPosition, ivec2(neighborUV * ScreenParams.xy), 0).xyz;
+        vec3 color = texelFetch(inputColor, ivec2(neighborHituv * ScreenParams.xy), 0).xyz;
+        vec3 hitPosition = texelFetch(inputPosition, ivec2(neighborHituv * ScreenParams.xy), 0).xyz;
         vec3 lightDirection = normalize(hitPosition - position);
 
         //采样概率
-        vec4 pdfInfo = imageLoad(tracePDF, ivec2(neighborUV * ScreenParams.xy / SCREEN_SCALE));
+        vec4 pdfInfo = imageLoad(tracePDF, ivec2(neighborUV));
 
 		///SpatioSampler
 		float currentSampleWeight = SSR_BRDF(viewDirection, lightDirection, normal, roughness) / max(1e-5, pdfInfo.a);
-		
+
 		resolvedReflectionColor += color * currentSampleWeight;
 		resolvedWeight += currentSampleWeight;
 	}
 
-	resolvedReflectionColor /= resolvedWeight;
-
+    if(resolvedWeight > 1e-5)
+    {
+        resolvedReflectionColor /= resolvedWeight;
+    }
+	
     // //采样color
     // vec3 color = texelFetch(inputColor, ivec2(hituv * ScreenParams.xy), 0).xyz;
     // vec3 hitPosition = texelFetch(inputPosition, ivec2(hituv * ScreenParams.xy), 0).xyz;

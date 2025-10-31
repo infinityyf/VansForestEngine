@@ -1,5 +1,5 @@
 #include "VansMaterial.h"
-using namespace VansVulkan;
+using namespace VansGraphics;
 
 VansGraphics::VansMaterialManager::VansMaterialManager()
 {

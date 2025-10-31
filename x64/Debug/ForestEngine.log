@@ -1,6 +1,13 @@
-﻿  VansMesh.cpp
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.h(52): warning C4267: “return”: 从“size_t”转换到“uint32_t”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp(193,92): warning C4267: “参数”: 从“size_t”转换到“int”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp(194,116): warning C4267: “参数”: 从“size_t”转换到“int”，可能丢失数据
-C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp(195,101): warning C4267: “参数”: 从“size_t”转换到“int”，可能丢失数据
-  ForestEngine.vcxproj -> C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\x64\Debug\ForestEngine.exe
+﻿  VansRayTracing.cpp
+D:\WorkSpace\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(41,41): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
+  (编译源文件“Source/EngineCore/RenderCore/RayTracingCore/VansRayTracing.cpp”)
+  
+D:\WorkSpace\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\VansGraphicsDevice.h(43,42): warning C4244: “return”: 从“uint32_t”转换到“float”，可能丢失数据
+  (编译源文件“Source/EngineCore/RenderCore/RayTracingCore/VansRayTracing.cpp”)
+  
+D:\WorkSpace\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp(210,23): warning C4267: “初始化”: 从“size_t”转换到“int”，可能丢失数据
+D:\WorkSpace\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp(244,84): warning C4267: “参数”: 从“size_t”转换到“int”，可能丢失数据
+D:\WorkSpace\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp(677,9): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
+D:\WorkSpace\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp(686,9): warning C4838: 从“int”转换到“uint32_t”需要收缩转换
+D:\WorkSpace\ForestEngine\ForestEngine\ForestEngine\Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp(900,23): warning C4267: “初始化”: 从“size_t”转换到“int”，可能丢失数据
+  ForestEngine.vcxproj -> D:\WorkSpace\ForestEngine\ForestEngine\x64\Debug\ForestEngine.exe

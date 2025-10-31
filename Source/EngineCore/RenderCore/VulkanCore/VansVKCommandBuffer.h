@@ -10,7 +10,7 @@
 #include <functional>
 #include <thread>
 
-namespace VansVulkan
+namespace VansGraphics
 {
 	struct CommandBufferCreateParams
 	{
@@ -119,7 +119,7 @@ namespace VansVulkan
 			const std::vector<VkDescriptorSet>& descriptor_sets,
 			const std::vector<uint32_t>& dynamic_offsets);
 
-		static bool SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansVulkan::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence);
+		static bool SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence);
 
 		//Í¬²½fence
 		static VkFence m_CommandBufferFinishSubmitFence;

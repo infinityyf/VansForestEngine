@@ -81,26 +81,6 @@ float calcParticleThicknessConst(const float depth){
 	return 100000.0 / max(depth * 2.0 - 0.01, 0.01);   
 }
 
-float rayleighPhase(float x){
-	return 0.375 * (1.0 + x*x);
-}
-
-float hgPhase(float x, float g)
-{
-    float g2 = g*g;
-	return 0.25 * ((1.0 - g2) * pow(1.0 + g2 - 2.0*g*x, -1.5));
-}
-
-float miePhaseSky(float x, float depth)
-{
- 	return hgPhase(x, exp2(-0.000003 * depth));
-}
-
-float powder(float od)
-{
-	return 1.0 - exp2(-od * 2.0);
-}
-
 float calculateScatterIntergral(float opticalDepth, float coeff){
     float a = -coeff * rLOG2;
     float b = -1.0 / coeff;
@@ -209,16 +189,7 @@ float getSunVisibility(vec3 p)
     return exp2(-transmittance * rSteps);
 }
 
-float phase2Lobes(float x)
-{
-    const float m = 0.6;
-    const float gm = 0.8;
-    
-	float lobe1 = hgPhase(x, 0.8 * gm);
-    float lobe2 = hgPhase(x, -0.5 * gm);
-    
-    return mix(lobe2, lobe1, m);
-}
+
 
 vec3 getVolumetricCloudsScattering(float opticalDepth, float phase, vec3 p, vec3 sunColor, vec3 skyLight)
 {

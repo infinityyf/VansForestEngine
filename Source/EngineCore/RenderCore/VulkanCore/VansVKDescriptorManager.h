@@ -8,7 +8,7 @@
 #include <vector>
 
 
-namespace VansVulkan
+namespace VansGraphics
 {
 	//用于updating descriptor sets，这里将desc和具体的资源进行关联
 	//desc只是一个和pipeline打交道的接口，将GPU和具体的资源绑定解耦

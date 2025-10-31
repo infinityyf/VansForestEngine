@@ -7,7 +7,7 @@
 #define LoadFunction dlsym
 #endif
 
-namespace VansVulkan
+namespace VansGraphics
 {
 	//funtion points definition
 	#define EXPORTED_VULKAN_FUNCTION( name ) PFN_##name name;

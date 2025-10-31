@@ -2,7 +2,6 @@
 #include <vulkan/vulkan.h>
 #include <vector>
 #include "../../RenderCore/VulkanCore/VansVKBuffer.h"
-#include "../../RenderCore/VulkanCore/VansTexture.h"
 #include "../../RenderCore/VulkanCore/VansShader.h"
 #include "../../RenderCore/BRDFData/VansLight.h"
 #include "../../RenderCore/VansCommonUtils.h"
@@ -12,12 +11,13 @@ namespace VansGraphics
 	class VansScene;
 	class VansMaterialManager;
 }
-namespace VansVulkan
+namespace VansGraphics
 {
 	class VansVKCommandBuffer;
 	class VansVKDevice;
 	class VansMesh;
 	class VansRayTracingShader;
+	class VansTexture;
 
 	struct alignas(16) RayTracingPushConstant
 	{
@@ -26,6 +26,7 @@ namespace VansVulkan
 		glm::vec4 cameraUp;
 		glm::vec4 cameraRight;
 		glm::vec4 dispatchParams;
+		glm::vec4 frameParams;
 	};
 
 	class VansRayTracing
@@ -73,7 +74,7 @@ namespace VansVulkan
 
 	private:
 
-		VansTexture m_RayTracingResult;
+		VansTexture* m_RayTracingResult;
 
 		
 		VansRayTracingShader m_VansRayTracingShader;
@@ -115,5 +116,7 @@ namespace VansVulkan
 		VansVKBuffer m_HitPointIndirectLightBuffer;
 
 		bool m_HitPositionCalculateDone;
+
+		int m_GIUpdateFrameIndex;
 	};
 }

@@ -1,9 +1,12 @@
+﻿#include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
+
+#include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
 #include <iostream>
 #include <fstream>
 
@@ -354,13 +357,11 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VkDevice nativeDevice = vkDevice->GetLogicDevice();
 
-    //����������Դ���д���
     json sceneMeshes = sceneData["mesh"];
     json sceneShaders = sceneData["shader"];
     json sceneTextures = sceneData["texture"];
     json sceneMaterials = sceneData["material"];
 
-    //���ز�import�ʲ�����¼��scene��
     for (const auto& sceneMesh : sceneMeshes)
     {
         std::string meshPath = pathPrefix + std::string(sceneMesh["path"]);
@@ -376,7 +377,7 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         mesh->SetName(sceneMesh["name"]);
     }
 
-    //���ز�import�ʲ�����¼��scene��
+
     for (const auto& sceneShader : sceneShaders)
     {
         std::string shaderPath = pathPrefix + std::string(sceneShader["path"]);
@@ -386,6 +387,10 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         VkCullModeFlags cullMode = sceneShader["cullMode"];
 
         VansGraphicsShader* shader = new VansGraphicsShader();
+
+		//监控shader文件变化
+        m_SceneFileWatcher->AddWatch(shaderPath);
+
         shader->InitShader(nativeDevice, shaderPath);
         shader->SetDrawStateData(depthTest, depthWrite, depthCompareOp, cullMode);
         if (sceneShader.contains("support_push_constant"))
@@ -397,7 +402,7 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         shader->SetName(sceneShader["name"]);
     }
 
-    //���ز�import�ʲ�����¼��scene��
+
     for (const auto& sceneTexture : sceneTextures)
     {
         std::string texturePath = pathPrefix + std::string(sceneTexture["path"]);
@@ -429,7 +434,6 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
 
         material->m_Shader = shader;
         material->m_MaterialType = sceneMaterial["type"];
-        //�������ʲ���GPU����
         if (material->m_MaterialType == VansMaterialType::VAN_PBR)
         {
             if (sceneMaterial.contains("basecolor_texture"))
@@ -486,6 +490,24 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         m_Materials.push_back(material);
         material->SetName(sceneMaterial["name"]);
     }
+}
+
+VkDeviceAddress VansVKDevice::GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo)
+{
+    return vkGetAccelerationStructureDeviceAddressKHR(m_VansVKLogicDevice, addressInfo);
+}
+VkDeviceAddress VansVKDevice::GetBufferAddress(VkBufferDeviceAddressInfo* bufferInfo)
+{
+    return vkGetBufferDeviceAddressKHR(m_VansVKLogicDevice, bufferInfo);
+}
+void VansVKDevice::GetAccelerationStructureBuildSizes(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, uint32_t* maxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR* buildSizeInfo)
+{
+    vkGetAccelerationStructureBuildSizesKHR(m_VansVKLogicDevice, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+        buildInfo, maxPrimitiveCounts, buildSizeInfo);
+}
+void VansVKDevice::CreateAccelerationStructure(VkAccelerationStructureCreateInfoKHR* createInfo, VkAccelerationStructureKHR* as)
+{
+    vkCreateAccelerationStructureKHR(m_VansVKLogicDevice, createInfo, nullptr, as);
 }
 
 void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansVKCommandBuffer* vans_commandBuffer)
@@ -869,3 +891,5 @@ void VansGraphics::VansScene::DeferredShading()
 }
 
 VansGraphics::VansScene* m_Scene = nullptr;
+
+VansAssetsFileWatcher* m_SceneFileWatcher = nullptr;

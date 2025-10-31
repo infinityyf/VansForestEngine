@@ -4,7 +4,7 @@
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include <vector>
-using namespace VansVulkan;
+using namespace VansGraphics;
 namespace VansGraphics
 {
     struct alignas(16) CameraDataStruct

@@ -5,7 +5,6 @@
 #include <string>
 #include <vector>
 
-using namespace VansVulkan;
 namespace VansGraphics
 {
 	enum TextureType

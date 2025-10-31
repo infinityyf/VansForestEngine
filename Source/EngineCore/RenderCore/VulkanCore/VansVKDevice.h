@@ -1,18 +1,16 @@
 #pragma once
-#include "vulkan/vulkan.h"
 #include "../VansGraphicsDevice.h"
+#include "vulkan/vulkan.h"
 #include "VansVKSurface.h"
 #include "VansVKBuffer.h"
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
 #include "VansShader.h"
-#include "../VulkanCore/VansTexture.h"
 #include "../RayTracingCore/VansRayTracing.h"
 #include <vector>
 
 #include "../VansCommonUtils.h"
-using namespace VansGraphics;
-namespace VansVulkan
+namespace VansGraphics
 {
 	struct QueueInfo 
 	{
@@ -25,26 +23,6 @@ namespace VansVulkan
 
 	class VansVKDevice: public VansGraphicsDevice
 	{
-	public :
-		VansVKDevice(VkExtent2D resolution)
-		{
-			m_RenderWidth = resolution.width;
-			m_RenderHeight = resolution.height;
-			m_GraphicsAPI = GRAPHICS_API::VULKAN;
-			VulkanSetUp(resolution);
-		}
-
-		~VansVKDevice()
-		{
-			m_GraphicsAPI = GRAPHICS_API::INVALIDE;
-			VulkanDestroy();
-		}
-
-		// vkQueueWaitIdle wait for all command buffer in this queue
-		bool WaitForQueue(VkQueue queue);
-
-		bool WaitForDevice();
-
 	private :
 		//memory update
 		VansVKBuffer m_StageBuffer;
@@ -131,11 +109,13 @@ namespace VansVulkan
 
 		void UpdateSSR(VansRenderPassManager* renderPassManager);
 
+		void UpdateVolumetricFog(VansRenderPassManager* renderPassManager);
+
 	private:
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager);
 
-		void BilateralFilterSSGI(VansRenderPassManager* renderPassManager);
+		void BilateralFilterSSAO(VansRenderPassManager* renderPassManager);
 
 	private:
 
@@ -144,6 +124,8 @@ namespace VansVulkan
 		void UpdateHZBDescriptorSets(VansRenderPassManager* renderPassManager);
 
 		void UpdateSSRDescriptorSets(VansRenderPassManager* renderPassManager);
+
+		void UpdateVolumetricFogSets(VansRenderPassManager* renderPassManager);
 
 	private:
 
@@ -163,6 +145,8 @@ namespace VansVulkan
 		void PrepareHZBRenderData();
 
 		void PrepareSSRRenderData();
+
+		void PrepareVolumetricData();
 
 		void PrepareBilaterFilterData();
 
@@ -274,6 +258,26 @@ namespace VansVulkan
 		bool VulkanSetUp(VkExtent2D resolution);
 
 		bool VulkanDestroy();
+	public:
+		VansVKDevice(VkExtent2D resolution)
+		{
+			m_RenderWidth = resolution.width;
+			m_RenderHeight = resolution.height;
+			m_GraphicsAPI = GRAPHICS_API::VULKAN;
+			VulkanSetUp(resolution);
+		}
+
+		~VansVKDevice()
+		{
+			m_GraphicsAPI = GRAPHICS_API::INVALIDE;
+			VulkanDestroy();
+		}
+
+		// vkQueueWaitIdle wait for all command buffer in this queue
+		bool WaitForQueue(VkQueue queue);
+
+		bool WaitForDevice();
+
 	};
 }
 

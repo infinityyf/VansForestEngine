@@ -106,10 +106,26 @@ float D_GGX(float NoH, float Roughness)
 
 float Vis_SmithGGXCorrelated(float NoL, float NoV, float Roughness)
 {
-	float a = Roughness * Roughness;
-	float LambdaV = NoV * sqrt((-NoL * a + NoL) * NoL + a);
-	float LambdaL = NoL * sqrt((-NoV * a + NoV) * NoV + a);
-	return (0.5 / (LambdaL + LambdaV)) / PI;
+    // sanitize inputs to avoid NaNs and negative sqrt arguments
+    NoL = clamp(NoL, 0.0, 1.0);
+    NoV = clamp(NoV, 0.0, 1.0);
+    float r = max(Roughness, 0.0);
+
+    float a = r * r;
+    // compute safe radicands
+    float radV = (-NoL * a + NoL) * NoV + a;
+    float radL = (-NoV * a + NoV) * NoL + a;
+    radV = max(radV, 0.0);
+    radL = max(radL, 0.0);
+
+    float LambdaV = NoV * sqrt(radV);
+    float LambdaL = NoL * sqrt(radL);
+
+    float denom = LambdaL + LambdaV;
+    const float EPS = 1e-6;
+    if (denom <= EPS) return 0.0;
+
+    return (0.5 / denom) / PI;
 }
 
 float SSR_BRDF(vec3 V, vec3 L, vec3 N, float Roughness)

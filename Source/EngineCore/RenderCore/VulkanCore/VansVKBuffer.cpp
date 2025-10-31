@@ -4,7 +4,7 @@
 #include "VansVKMemoryManager.h"
 #include <iostream>
 
-bool VansVulkan::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkDeviceSize size, VkFormat format, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_properties)
+bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkDeviceSize size, VkFormat format, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_properties)
 {
 	m_BufferSize = size;
 	m_BufferFormat = format;
@@ -88,7 +88,7 @@ bool VansVulkan::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkDev
 	return true;
 }
 
-void VansVulkan::VansVKBuffer::DestroyVulkanBuffer(VkDevice& logical_device)
+void VansGraphics::VansVKBuffer::DestroyVulkanBuffer(VkDevice& logical_device)
 {
 	if (VK_NULL_HANDLE != m_VansVKBufferView) 
 	{
@@ -105,7 +105,7 @@ void VansVulkan::VansVKBuffer::DestroyVulkanBuffer(VkDevice& logical_device)
 	VansVKMemoryManager::GetInstance()->FreeMemory(m_VansVKBufferMemory);
 }
 
-void VansVulkan::VansVKBuffer::AddTransitionBufferAccess(BufferTransition& transition)
+void VansGraphics::VansVKBuffer::AddTransitionBufferAccess(BufferTransition& transition)
 {
 	//creat barrier
 	m_BufferMemoryBarriers.push_back(
@@ -123,7 +123,7 @@ void VansVulkan::VansVKBuffer::AddTransitionBufferAccess(BufferTransition& trans
 	);
 }
 
-void VansVulkan::VansVKBuffer::SetBufferMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition)
+void VansGraphics::VansVKBuffer::SetBufferMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition)
 {
 	this->AddTransitionBufferAccess(bufferTransition);
 	VansVKMemoryManager::GetInstance()->SetBufferMemoryBarrier(m_BufferMemoryBarriers, generating_stages, consuming_stages);
@@ -131,7 +131,7 @@ void VansVulkan::VansVKBuffer::SetBufferMemoryBarrier(VkPipelineStageFlags gener
 
 }
 
-bool VansVulkan::VansVKBuffer::SetBufferData(void* data, int offset, int size)
+bool VansGraphics::VansVKBuffer::SetBufferData(void* data, int offset, int size)
 {
 	return VansVKMemoryManager::GetInstance()->MapMemoryFromHost(m_VansVKBufferMemory, offset, size,data,true);
 }

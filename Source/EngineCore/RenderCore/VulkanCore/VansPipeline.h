@@ -9,7 +9,7 @@
 
 #include "VansVKImage.h"
 
-namespace VansVulkan
+namespace VansGraphics
 {
 	struct ViewportInfo 
 	{
@@ -207,6 +207,8 @@ namespace VansVulkan
 
 	public :
 		static bool MergePipelineCache(VkDevice& logic_device, std::vector<VkPipelineCache>& source_pipeline_caches, VkPipelineCache& merged_cache);
+	
+		static VkPipeline CurrentValidGraphicsPipeline;
 	};
 
 	class VansVKComputePipeline

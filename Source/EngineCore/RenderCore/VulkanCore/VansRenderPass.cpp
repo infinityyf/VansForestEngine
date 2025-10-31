@@ -7,9 +7,9 @@
 #include <iostream>
 #include <vector>
 
-VansVulkan::VansRenderPassManager* VansVulkan::VansRenderPassManager::instance = nullptr;
+VansGraphics::VansRenderPassManager* VansGraphics::VansRenderPassManager::instance = nullptr;
 
-void VansVulkan::VansVKRenderPass::CreateRenderPass(VkDevice& logic_device, std::vector<VkAttachmentDescription>& attachments, std::vector<SubpassParameters>& subpass_params, std::vector<VkSubpassDependency>& subpass_dependency, const VkExtent2D& resolution)
+void VansGraphics::VansVKRenderPass::CreateRenderPass(VkDevice& logic_device, std::vector<VkAttachmentDescription>& attachments, std::vector<SubpassParameters>& subpass_params, std::vector<VkSubpassDependency>& subpass_dependency, const VkExtent2D& resolution)
 {
 	//防止y flip问题
 	//https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
@@ -78,7 +78,7 @@ void VansVulkan::VansVKRenderPass::CreateRenderPass(VkDevice& logic_device, std:
 	}
 }
 
-void VansVulkan::VansVKRenderPass::DestroyRenderPass(VkDevice& logic_device)
+void VansGraphics::VansVKRenderPass::DestroyRenderPass(VkDevice& logic_device)
 {
 	for (int i = 0; i < m_FrameBuffers.size(); i++)
 	{
@@ -92,7 +92,7 @@ void VansVulkan::VansVKRenderPass::DestroyRenderPass(VkDevice& logic_device)
 	}
 }
 
-void VansVulkan::VansFrameBuffer::CreateFrameBuffer(VkDevice& logic_device, VkRenderPass& render_pass, const std::vector<VkImageView>& image_views, VkExtent3D framebuffer_size)
+void VansGraphics::VansFrameBuffer::CreateFrameBuffer(VkDevice& logic_device, VkRenderPass& render_pass, const std::vector<VkImageView>& image_views, VkExtent3D framebuffer_size)
 {
 	VkFramebufferCreateInfo framebuffer_create_info = 
 	{
@@ -114,7 +114,7 @@ void VansVulkan::VansFrameBuffer::CreateFrameBuffer(VkDevice& logic_device, VkRe
 	}
 }
 
-void VansVulkan::VansFrameBuffer::DestroyFrameBuffer(VkDevice& logic_device)
+void VansGraphics::VansFrameBuffer::DestroyFrameBuffer(VkDevice& logic_device)
 {
 	if (m_FrameBuffer != VK_NULL_HANDLE)
 	{
@@ -123,12 +123,12 @@ void VansVulkan::VansFrameBuffer::DestroyFrameBuffer(VkDevice& logic_device)
 	}
 }
 
-VansVulkan::VansRenderPassManager::VansRenderPassManager()
+VansGraphics::VansRenderPassManager::VansRenderPassManager()
 {
 
 }
 
-VansVulkan::VansRenderPassManager* VansVulkan::VansRenderPassManager::GetInstance()
+VansGraphics::VansRenderPassManager* VansGraphics::VansRenderPassManager::GetInstance()
 {
 	if (instance == nullptr)
 	{
@@ -138,7 +138,7 @@ VansVulkan::VansRenderPassManager* VansVulkan::VansRenderPassManager::GetInstanc
 }
 
 //创建一个默认的固定render pass先
-void VansVulkan::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface)
+void VansGraphics::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface)
 {
 	std::vector<VkAttachmentDescription> attachments_descriptions = 
 	{
@@ -329,7 +329,7 @@ void VansVulkan::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_devi
 	command_buffer.ResetCommandBuffer(false);
 }
 
-void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface)
+void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface)
 {
 	//设置Gbuffer的attachment描述符
 	std::vector<VkAttachmentDescription> attachments_descriptions =
@@ -780,7 +780,7 @@ void VansVulkan::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& lo
 	command_buffer.ResetCommandBuffer(false);
 }
 
-void VansVulkan::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue)
+void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue)
 {
 	std::vector<VkAttachmentDescription> attachments_descriptions =
 	{
@@ -927,7 +927,7 @@ void VansVulkan::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logi
 	command_buffer.ResetCommandBuffer(false);
 }
 
-void VansVulkan::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue)
+void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue)
 {
 	std::vector<VkAttachmentDescription> attachments_descriptions =
 	{
@@ -1074,7 +1074,7 @@ void VansVulkan::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDevi
 	command_buffer.ResetCommandBuffer(false);
 }
 
-void VansVulkan::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index)
+void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index)
 {
 	//将当前render pass 记录到globaldata中
 	global_state_data.currentRenderPass = renderPass.m_RenderPass;
@@ -1102,20 +1102,20 @@ void VansVulkan::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& render
 	vkCmdSetScissor(command_buffer, 0, 1, &renderPass.m_RenderPassScissor);
 }
 
-void VansVulkan::VansRenderPassManager::NextSubPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data)
+void VansGraphics::VansRenderPassManager::NextSubPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data)
 {
 	global_state_data.currentSubpass++;
 	vkCmdNextSubpass(command_buffer, VK_SUBPASS_CONTENTS_INLINE);
 }
 
-void VansVulkan::VansRenderPassManager::EndRenderPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data)
+void VansGraphics::VansRenderPassManager::EndRenderPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data)
 {
 	global_state_data.currentRenderPass = VK_NULL_HANDLE;
 	global_state_data.currentSubpass = 0;
 	vkCmdEndRenderPass(command_buffer);
 }
 
-void VansVulkan::VansRenderPassManager::DestroyRenderPass()
+void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 {
 	m_ColorImage.DestroyVulkanImage(m_LogicDevice);
 	m_DepthImage.DestroyVulkanImage(m_LogicDevice);
@@ -1135,7 +1135,7 @@ void VansVulkan::VansRenderPassManager::DestroyRenderPass()
 	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);
 }
 
-void VansVulkan::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex)
+void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex)
 {
 	//record command buffer
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);

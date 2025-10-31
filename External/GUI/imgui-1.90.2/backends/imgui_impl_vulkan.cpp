@@ -85,7 +85,7 @@
 //  2016-08-27: Vulkan: Fix Vulkan example for use when a depth buffer is active.
 
 #include "../../../Source/Graphics/Vulkan/VansVKFunctions.h"
-using namespace VansVulkan;
+using namespace VansGraphics;
 
 
 #include "imgui.h"
@@ -404,7 +404,7 @@ static uint32_t ImGui_ImplVulkan_MemoryType(VkMemoryPropertyFlags properties, ui
     ImGui_ImplVulkan_Data* bd = ImGui_ImplVulkan_GetBackendData();
     ImGui_ImplVulkan_InitInfo* v = &bd->VulkanInitInfo;
     VkPhysicalDeviceMemoryProperties prop;
-    VansVulkan::vkGetPhysicalDeviceMemoryProperties(v->PhysicalDevice, &prop);
+    VansGraphics::vkGetPhysicalDeviceMemoryProperties(v->PhysicalDevice, &prop);
     for (uint32_t i = 0; i < prop.memoryTypeCount; i++)
         if ((prop.memoryTypes[i].propertyFlags & properties) == properties && type_bits & (1 << i))
             return i;
@@ -433,9 +433,9 @@ static void CreateOrResizeBuffer(VkBuffer& buffer, VkDeviceMemory& buffer_memory
     ImGui_ImplVulkan_InitInfo* v = &bd->VulkanInitInfo;
     VkResult err;
     if (buffer != VK_NULL_HANDLE)
-        VansVulkan::vkDestroyBuffer(v->Device, buffer, v->Allocator);
+        VansGraphics::vkDestroyBuffer(v->Device, buffer, v->Allocator);
     if (buffer_memory != VK_NULL_HANDLE)
-        VansVulkan::vkFreeMemory(v->Device, buffer_memory, v->Allocator);
+        VansGraphics::vkFreeMemory(v->Device, buffer_memory, v->Allocator);
 
     VkDeviceSize buffer_size_aligned = AlignBufferSize(IM_MAX(v->MinAllocationSize, new_size), bd->BufferMemoryAlignment);
     VkBufferCreateInfo buffer_info = {};
@@ -443,20 +443,20 @@ static void CreateOrResizeBuffer(VkBuffer& buffer, VkDeviceMemory& buffer_memory
     buffer_info.size = buffer_size_aligned;
     buffer_info.usage = usage;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    err = VansVulkan::vkCreateBuffer(v->Device, &buffer_info, v->Allocator, &buffer);
+    err = VansGraphics::vkCreateBuffer(v->Device, &buffer_info, v->Allocator, &buffer);
     check_vk_result(err);
 
     VkMemoryRequirements req;
-    VansVulkan::vkGetBufferMemoryRequirements(v->Device, buffer, &req);
+    VansGraphics::vkGetBufferMemoryRequirements(v->Device, buffer, &req);
     bd->BufferMemoryAlignment = (bd->BufferMemoryAlignment > req.alignment) ? bd->BufferMemoryAlignment : req.alignment;
     VkMemoryAllocateInfo alloc_info = {};
     alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     alloc_info.allocationSize = req.size;
     alloc_info.memoryTypeIndex = ImGui_ImplVulkan_MemoryType(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, req.memoryTypeBits);
-    err = VansVulkan::vkAllocateMemory(v->Device, &alloc_info, v->Allocator, &buffer_memory);
+    err = VansGraphics::vkAllocateMemory(v->Device, &alloc_info, v->Allocator, &buffer_memory);
     check_vk_result(err);
 
-    err = VansVulkan::vkBindBufferMemory(v->Device, buffer, buffer_memory, 0);
+    err = VansGraphics::vkBindBufferMemory(v->Device, buffer, buffer_memory, 0);
     check_vk_result(err);
     buffer_size = buffer_size_aligned;
 }
@@ -467,7 +467,7 @@ static void ImGui_ImplVulkan_SetupRenderState(ImDrawData* draw_data, VkPipeline 
 
     // Bind pipeline:
     {
-        VansVulkan::vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        VansGraphics::vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     }
 
     // Bind Vertex And Index Buffer:
@@ -475,8 +475,8 @@ static void ImGui_ImplVulkan_SetupRenderState(ImDrawData* draw_data, VkPipeline 
     {
         VkBuffer vertex_buffers[1] = { rb->VertexBuffer };
         VkDeviceSize vertex_offset[1] = { 0 };
-        VansVulkan::vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers, vertex_offset);
-        VansVulkan::vkCmdBindIndexBuffer(command_buffer, rb->IndexBuffer, 0, sizeof(ImDrawIdx) == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+        VansGraphics::vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers, vertex_offset);
+        VansGraphics::vkCmdBindIndexBuffer(command_buffer, rb->IndexBuffer, 0, sizeof(ImDrawIdx) == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
     }
 
     // Setup viewport:
@@ -488,7 +488,7 @@ static void ImGui_ImplVulkan_SetupRenderState(ImDrawData* draw_data, VkPipeline 
         viewport.height = (float)fb_height;
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
-        VansVulkan::vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+        VansGraphics::vkCmdSetViewport(command_buffer, 0, 1, &viewport);
     }
 
     // Setup scale and translation:
@@ -500,8 +500,8 @@ static void ImGui_ImplVulkan_SetupRenderState(ImDrawData* draw_data, VkPipeline 
         float translate[2];
         translate[0] = -1.0f - draw_data->DisplayPos.x * scale[0];
         translate[1] = -1.0f - draw_data->DisplayPos.y * scale[1];
-        VansVulkan::vkCmdPushConstants(command_buffer, bd->PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(float) * 0, sizeof(float) * 2, scale);
-        VansVulkan::vkCmdPushConstants(command_buffer, bd->PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(float) * 2, sizeof(float) * 2, translate);
+        VansGraphics::vkCmdPushConstants(command_buffer, bd->PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(float) * 0, sizeof(float) * 2, scale);
+        VansGraphics::vkCmdPushConstants(command_buffer, bd->PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(float) * 2, sizeof(float) * 2, translate);
     }
 }
 
@@ -547,9 +547,9 @@ void ImGui_ImplVulkan_RenderDrawData(ImDrawData* draw_data, VkCommandBuffer comm
         // Upload vertex/index data into a single contiguous GPU buffer
         ImDrawVert* vtx_dst = nullptr;
         ImDrawIdx* idx_dst = nullptr;
-        VkResult err = VansVulkan::vkMapMemory(v->Device, rb->VertexBufferMemory, 0, vertex_size, 0, (void**)&vtx_dst);
+        VkResult err = VansGraphics::vkMapMemory(v->Device, rb->VertexBufferMemory, 0, vertex_size, 0, (void**)&vtx_dst);
         check_vk_result(err);
-        err = VansVulkan::vkMapMemory(v->Device, rb->IndexBufferMemory, 0, index_size, 0, (void**)&idx_dst);
+        err = VansGraphics::vkMapMemory(v->Device, rb->IndexBufferMemory, 0, index_size, 0, (void**)&idx_dst);
         check_vk_result(err);
         for (int n = 0; n < draw_data->CmdListsCount; n++)
         {
@@ -566,10 +566,10 @@ void ImGui_ImplVulkan_RenderDrawData(ImDrawData* draw_data, VkCommandBuffer comm
         range[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         range[1].memory = rb->IndexBufferMemory;
         range[1].size = VK_WHOLE_SIZE;
-        err = VansVulkan::vkFlushMappedMemoryRanges(v->Device, 2, range);
+        err = VansGraphics::vkFlushMappedMemoryRanges(v->Device, 2, range);
         check_vk_result(err);
-        VansVulkan::vkUnmapMemory(v->Device, rb->VertexBufferMemory);
-        VansVulkan::vkUnmapMemory(v->Device, rb->IndexBufferMemory);
+        VansGraphics::vkUnmapMemory(v->Device, rb->VertexBufferMemory);
+        VansGraphics::vkUnmapMemory(v->Device, rb->IndexBufferMemory);
     }
 
     // Setup desired Vulkan state
@@ -618,7 +618,7 @@ void ImGui_ImplVulkan_RenderDrawData(ImDrawData* draw_data, VkCommandBuffer comm
                 scissor.offset.y = (int32_t)(clip_min.y);
                 scissor.extent.width = (uint32_t)(clip_max.x - clip_min.x);
                 scissor.extent.height = (uint32_t)(clip_max.y - clip_min.y);
-                VansVulkan::vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+                VansGraphics::vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
                 // Bind DescriptorSet with font or user texture
                 VkDescriptorSet desc_set[1] = { (VkDescriptorSet)pcmd->TextureId };
@@ -628,10 +628,10 @@ void ImGui_ImplVulkan_RenderDrawData(ImDrawData* draw_data, VkCommandBuffer comm
                     IM_ASSERT(pcmd->TextureId == (ImTextureID)bd->FontDescriptorSet);
                     desc_set[0] = bd->FontDescriptorSet;
                 }
-                VansVulkan::vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bd->PipelineLayout, 0, 1, desc_set, 0, nullptr);
+                VansGraphics::vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bd->PipelineLayout, 0, 1, desc_set, 0, nullptr);
 
                 // Draw
-                VansVulkan::vkCmdDrawIndexed(command_buffer, pcmd->ElemCount, 1, pcmd->IdxOffset + global_idx_offset, pcmd->VtxOffset + global_vtx_offset, 0);
+                VansGraphics::vkCmdDrawIndexed(command_buffer, pcmd->ElemCount, 1, pcmd->IdxOffset + global_idx_offset, pcmd->VtxOffset + global_vtx_offset, 0);
             }
         }
         global_idx_offset += cmd_list->IdxBuffer.Size;
@@ -646,7 +646,7 @@ void ImGui_ImplVulkan_RenderDrawData(ImDrawData* draw_data, VkCommandBuffer comm
     // In theory we should aim to backup/restore those values but I am not sure this is possible.
     // We perform a call to vkCmdSetScissor() to set back a full viewport which is likely to fix things for 99% users but technically this is not perfect. (See github #4644)
     VkRect2D scissor = { { 0, 0 }, { (uint32_t)fb_width, (uint32_t)fb_height } };
-    VansVulkan::vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    VansGraphics::vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 }
 
 bool ImGui_ImplVulkan_CreateFontsTexture()
@@ -659,7 +659,7 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
     // Destroy existing texture (if any)
     if (bd->FontView || bd->FontImage || bd->FontMemory || bd->FontDescriptorSet)
     {
-        VansVulkan::vkQueueWaitIdle(v->Queue);
+        VansGraphics::vkQueueWaitIdle(v->Queue);
         ImGui_ImplVulkan_DestroyFontsTexture();
     }
 
@@ -670,7 +670,7 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
         info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         info.flags = 0;
         info.queueFamilyIndex = v->QueueFamily;
-        VansVulkan::vkCreateCommandPool(v->Device, &info, v->Allocator, &bd->FontCommandPool);
+        VansGraphics::vkCreateCommandPool(v->Device, &info, v->Allocator, &bd->FontCommandPool);
     }
     if (bd->FontCommandBuffer == VK_NULL_HANDLE)
     {
@@ -678,18 +678,18 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
         info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         info.commandPool = bd->FontCommandPool;
         info.commandBufferCount = 1;
-        err = VansVulkan::vkAllocateCommandBuffers(v->Device, &info, &bd->FontCommandBuffer);
+        err = VansGraphics::vkAllocateCommandBuffers(v->Device, &info, &bd->FontCommandBuffer);
         check_vk_result(err);
     }
 
     // Start command buffer
     {
-        err = VansVulkan::vkResetCommandPool(v->Device, bd->FontCommandPool, 0);
+        err = VansGraphics::vkResetCommandPool(v->Device, bd->FontCommandPool, 0);
         check_vk_result(err);
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        err = VansVulkan::vkBeginCommandBuffer(bd->FontCommandBuffer, &begin_info);
+        err = VansGraphics::vkBeginCommandBuffer(bd->FontCommandBuffer, &begin_info);
         check_vk_result(err);
     }
 
@@ -714,17 +714,17 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
         info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        err = VansVulkan::vkCreateImage(v->Device, &info, v->Allocator, &bd->FontImage);
+        err = VansGraphics::vkCreateImage(v->Device, &info, v->Allocator, &bd->FontImage);
         check_vk_result(err);
         VkMemoryRequirements req;
-        VansVulkan::vkGetImageMemoryRequirements(v->Device, bd->FontImage, &req);
+        VansGraphics::vkGetImageMemoryRequirements(v->Device, bd->FontImage, &req);
         VkMemoryAllocateInfo alloc_info = {};
         alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         alloc_info.allocationSize = IM_MAX(v->MinAllocationSize, req.size);
         alloc_info.memoryTypeIndex = ImGui_ImplVulkan_MemoryType(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, req.memoryTypeBits);
-        err = VansVulkan::vkAllocateMemory(v->Device, &alloc_info, v->Allocator, &bd->FontMemory);
+        err = VansGraphics::vkAllocateMemory(v->Device, &alloc_info, v->Allocator, &bd->FontMemory);
         check_vk_result(err);
-        err = VansVulkan::vkBindImageMemory(v->Device, bd->FontImage, bd->FontMemory, 0);
+        err = VansGraphics::vkBindImageMemory(v->Device, bd->FontImage, bd->FontMemory, 0);
         check_vk_result(err);
     }
 
@@ -738,7 +738,7 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
         info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         info.subresourceRange.levelCount = 1;
         info.subresourceRange.layerCount = 1;
-        err = VansVulkan::vkCreateImageView(v->Device, &info, v->Allocator, &bd->FontView);
+        err = VansGraphics::vkCreateImageView(v->Device, &info, v->Allocator, &bd->FontView);
         check_vk_result(err);
     }
 
@@ -754,34 +754,34 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
         buffer_info.size = upload_size;
         buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        err = VansVulkan::vkCreateBuffer(v->Device, &buffer_info, v->Allocator, &upload_buffer);
+        err = VansGraphics::vkCreateBuffer(v->Device, &buffer_info, v->Allocator, &upload_buffer);
         check_vk_result(err);
         VkMemoryRequirements req;
-        VansVulkan::vkGetBufferMemoryRequirements(v->Device, upload_buffer, &req);
+        VansGraphics::vkGetBufferMemoryRequirements(v->Device, upload_buffer, &req);
         bd->BufferMemoryAlignment = (bd->BufferMemoryAlignment > req.alignment) ? bd->BufferMemoryAlignment : req.alignment;
         VkMemoryAllocateInfo alloc_info = {};
         alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         alloc_info.allocationSize = IM_MAX(v->MinAllocationSize, req.size);
         alloc_info.memoryTypeIndex = ImGui_ImplVulkan_MemoryType(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, req.memoryTypeBits);
-        err = VansVulkan::vkAllocateMemory(v->Device, &alloc_info, v->Allocator, &upload_buffer_memory);
+        err = VansGraphics::vkAllocateMemory(v->Device, &alloc_info, v->Allocator, &upload_buffer_memory);
         check_vk_result(err);
-        err = VansVulkan::vkBindBufferMemory(v->Device, upload_buffer, upload_buffer_memory, 0);
+        err = VansGraphics::vkBindBufferMemory(v->Device, upload_buffer, upload_buffer_memory, 0);
         check_vk_result(err);
     }
 
     // Upload to Buffer:
     {
         char* map = nullptr;
-        err = VansVulkan::vkMapMemory(v->Device, upload_buffer_memory, 0, upload_size, 0, (void**)(&map));
+        err = VansGraphics::vkMapMemory(v->Device, upload_buffer_memory, 0, upload_size, 0, (void**)(&map));
         check_vk_result(err);
         memcpy(map, pixels, upload_size);
         VkMappedMemoryRange range[1] = {};
         range[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         range[0].memory = upload_buffer_memory;
         range[0].size = upload_size;
-        err = VansVulkan::vkFlushMappedMemoryRanges(v->Device, 1, range);
+        err = VansGraphics::vkFlushMappedMemoryRanges(v->Device, 1, range);
         check_vk_result(err);
-        VansVulkan::vkUnmapMemory(v->Device, upload_buffer_memory);
+        VansGraphics::vkUnmapMemory(v->Device, upload_buffer_memory);
     }
 
     // Copy to Image:
@@ -797,7 +797,7 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
         copy_barrier[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         copy_barrier[0].subresourceRange.levelCount = 1;
         copy_barrier[0].subresourceRange.layerCount = 1;
-        VansVulkan::vkCmdPipelineBarrier(bd->FontCommandBuffer, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, copy_barrier);
+        VansGraphics::vkCmdPipelineBarrier(bd->FontCommandBuffer, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, copy_barrier);
 
         VkBufferImageCopy region = {};
         region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -805,7 +805,7 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
         region.imageExtent.width = width;
         region.imageExtent.height = height;
         region.imageExtent.depth = 1;
-        VansVulkan::vkCmdCopyBufferToImage(bd->FontCommandBuffer, upload_buffer, bd->FontImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        VansGraphics::vkCmdCopyBufferToImage(bd->FontCommandBuffer, upload_buffer, bd->FontImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
         VkImageMemoryBarrier use_barrier[1] = {};
         use_barrier[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -819,7 +819,7 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
         use_barrier[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         use_barrier[0].subresourceRange.levelCount = 1;
         use_barrier[0].subresourceRange.layerCount = 1;
-        VansVulkan::vkCmdPipelineBarrier(bd->FontCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, use_barrier);
+        VansGraphics::vkCmdPipelineBarrier(bd->FontCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, use_barrier);
     }
 
     // Store our identifier
@@ -830,16 +830,16 @@ bool ImGui_ImplVulkan_CreateFontsTexture()
     end_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     end_info.commandBufferCount = 1;
     end_info.pCommandBuffers = &bd->FontCommandBuffer;
-    err = VansVulkan::vkEndCommandBuffer(bd->FontCommandBuffer);
+    err = VansGraphics::vkEndCommandBuffer(bd->FontCommandBuffer);
     check_vk_result(err);
-    err = VansVulkan::vkQueueSubmit(v->Queue, 1, &end_info, VK_NULL_HANDLE);
-    check_vk_result(err);
-
-    err = VansVulkan::vkQueueWaitIdle(v->Queue);
+    err = VansGraphics::vkQueueSubmit(v->Queue, 1, &end_info, VK_NULL_HANDLE);
     check_vk_result(err);
 
-    VansVulkan::vkDestroyBuffer(v->Device, upload_buffer, v->Allocator);
-    VansVulkan::vkFreeMemory(v->Device, upload_buffer_memory, v->Allocator);
+    err = VansGraphics::vkQueueWaitIdle(v->Queue);
+    check_vk_result(err);
+
+    VansGraphics::vkDestroyBuffer(v->Device, upload_buffer, v->Allocator);
+    VansGraphics::vkFreeMemory(v->Device, upload_buffer_memory, v->Allocator);
 
     return true;
 }
@@ -858,9 +858,9 @@ void ImGui_ImplVulkan_DestroyFontsTexture()
         io.Fonts->SetTexID(0);
     }
 
-    if (bd->FontView)   { VansVulkan::vkDestroyImageView(v->Device, bd->FontView, v->Allocator); bd->FontView = VK_NULL_HANDLE; }
-    if (bd->FontImage)  { VansVulkan::vkDestroyImage(v->Device, bd->FontImage, v->Allocator); bd->FontImage = VK_NULL_HANDLE; }
-    if (bd->FontMemory) { VansVulkan::vkFreeMemory(v->Device, bd->FontMemory, v->Allocator); bd->FontMemory = VK_NULL_HANDLE; }
+    if (bd->FontView)   { VansGraphics::vkDestroyImageView(v->Device, bd->FontView, v->Allocator); bd->FontView = VK_NULL_HANDLE; }
+    if (bd->FontImage)  { VansGraphics::vkDestroyImage(v->Device, bd->FontImage, v->Allocator); bd->FontImage = VK_NULL_HANDLE; }
+    if (bd->FontMemory) { VansGraphics::vkFreeMemory(v->Device, bd->FontMemory, v->Allocator); bd->FontMemory = VK_NULL_HANDLE; }
 }
 
 static void ImGui_ImplVulkan_CreateShaderModules(VkDevice device, const VkAllocationCallbacks* allocator)
@@ -873,7 +873,7 @@ static void ImGui_ImplVulkan_CreateShaderModules(VkDevice device, const VkAlloca
         vert_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vert_info.codeSize = sizeof(__glsl_shader_vert_spv);
         vert_info.pCode = (uint32_t*)__glsl_shader_vert_spv;
-        VkResult err = VansVulkan::vkCreateShaderModule(device, &vert_info, allocator, &bd->ShaderModuleVert);
+        VkResult err = VansGraphics::vkCreateShaderModule(device, &vert_info, allocator, &bd->ShaderModuleVert);
         check_vk_result(err);
     }
     if (bd->ShaderModuleFrag == VK_NULL_HANDLE)
@@ -882,7 +882,7 @@ static void ImGui_ImplVulkan_CreateShaderModules(VkDevice device, const VkAlloca
         frag_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         frag_info.codeSize = sizeof(__glsl_shader_frag_spv);
         frag_info.pCode = (uint32_t*)__glsl_shader_frag_spv;
-        VkResult err = VansVulkan::vkCreateShaderModule(device, &frag_info, allocator, &bd->ShaderModuleFrag);
+        VkResult err = VansGraphics::vkCreateShaderModule(device, &frag_info, allocator, &bd->ShaderModuleFrag);
         check_vk_result(err);
     }
 }
@@ -998,7 +998,7 @@ static void ImGui_ImplVulkan_CreatePipeline(VkDevice device, const VkAllocationC
     }
 #endif
 
-    VkResult err = VansVulkan::vkCreateGraphicsPipelines(device, pipelineCache, 1, &info, allocator, pipeline);
+    VkResult err = VansGraphics::vkCreateGraphicsPipelines(device, pipelineCache, 1, &info, allocator, pipeline);
     check_vk_result(err);
 }
 
@@ -1022,7 +1022,7 @@ bool ImGui_ImplVulkan_CreateDeviceObjects()
         info.minLod = -1000;
         info.maxLod = 1000;
         info.maxAnisotropy = 1.0f;
-        err = VansVulkan::vkCreateSampler(v->Device, &info, v->Allocator, &bd->FontSampler);
+        err = VansGraphics::vkCreateSampler(v->Device, &info, v->Allocator, &bd->FontSampler);
         check_vk_result(err);
     }
 
@@ -1036,7 +1036,7 @@ bool ImGui_ImplVulkan_CreateDeviceObjects()
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         info.bindingCount = 1;
         info.pBindings = binding;
-        err = VansVulkan::vkCreateDescriptorSetLayout(v->Device, &info, v->Allocator, &bd->DescriptorSetLayout);
+        err = VansGraphics::vkCreateDescriptorSetLayout(v->Device, &info, v->Allocator, &bd->DescriptorSetLayout);
         check_vk_result(err);
     }
 
@@ -1054,7 +1054,7 @@ bool ImGui_ImplVulkan_CreateDeviceObjects()
         layout_info.pSetLayouts = set_layout;
         layout_info.pushConstantRangeCount = 1;
         layout_info.pPushConstantRanges = push_constants;
-        err = VansVulkan::vkCreatePipelineLayout(v->Device, &layout_info, v->Allocator, &bd->PipelineLayout);
+        err = VansGraphics::vkCreatePipelineLayout(v->Device, &layout_info, v->Allocator, &bd->PipelineLayout);
         check_vk_result(err);
     }
 
@@ -1070,15 +1070,15 @@ void    ImGui_ImplVulkan_DestroyDeviceObjects()
     ImGui_ImplVulkanH_DestroyAllViewportsRenderBuffers(v->Device, v->Allocator);
     ImGui_ImplVulkan_DestroyFontsTexture();
 
-    if (bd->FontCommandBuffer)    { VansVulkan::vkFreeCommandBuffers(v->Device, bd->FontCommandPool, 1, &bd->FontCommandBuffer); bd->FontCommandBuffer = VK_NULL_HANDLE; }
-    if (bd->FontCommandPool)      { VansVulkan::vkDestroyCommandPool(v->Device, bd->FontCommandPool, v->Allocator); bd->FontCommandPool = VK_NULL_HANDLE; }
-    if (bd->ShaderModuleVert)     { VansVulkan::vkDestroyShaderModule(v->Device, bd->ShaderModuleVert, v->Allocator); bd->ShaderModuleVert = VK_NULL_HANDLE; }
-    if (bd->ShaderModuleFrag)     { VansVulkan::vkDestroyShaderModule(v->Device, bd->ShaderModuleFrag, v->Allocator); bd->ShaderModuleFrag = VK_NULL_HANDLE; }
-    if (bd->FontSampler)          { VansVulkan::vkDestroySampler(v->Device, bd->FontSampler, v->Allocator); bd->FontSampler = VK_NULL_HANDLE; }
-    if (bd->DescriptorSetLayout)  { VansVulkan::vkDestroyDescriptorSetLayout(v->Device, bd->DescriptorSetLayout, v->Allocator); bd->DescriptorSetLayout = VK_NULL_HANDLE; }
-    if (bd->PipelineLayout)       { VansVulkan::vkDestroyPipelineLayout(v->Device, bd->PipelineLayout, v->Allocator); bd->PipelineLayout = VK_NULL_HANDLE; }
-    if (bd->Pipeline)             { VansVulkan::vkDestroyPipeline(v->Device, bd->Pipeline, v->Allocator); bd->Pipeline = VK_NULL_HANDLE; }
-    if (bd->PipelineForViewports) { VansVulkan::vkDestroyPipeline(v->Device, bd->PipelineForViewports, v->Allocator); bd->PipelineForViewports = VK_NULL_HANDLE; }
+    if (bd->FontCommandBuffer)    { VansGraphics::vkFreeCommandBuffers(v->Device, bd->FontCommandPool, 1, &bd->FontCommandBuffer); bd->FontCommandBuffer = VK_NULL_HANDLE; }
+    if (bd->FontCommandPool)      { VansGraphics::vkDestroyCommandPool(v->Device, bd->FontCommandPool, v->Allocator); bd->FontCommandPool = VK_NULL_HANDLE; }
+    if (bd->ShaderModuleVert)     { VansGraphics::vkDestroyShaderModule(v->Device, bd->ShaderModuleVert, v->Allocator); bd->ShaderModuleVert = VK_NULL_HANDLE; }
+    if (bd->ShaderModuleFrag)     { VansGraphics::vkDestroyShaderModule(v->Device, bd->ShaderModuleFrag, v->Allocator); bd->ShaderModuleFrag = VK_NULL_HANDLE; }
+    if (bd->FontSampler)          { VansGraphics::vkDestroySampler(v->Device, bd->FontSampler, v->Allocator); bd->FontSampler = VK_NULL_HANDLE; }
+    if (bd->DescriptorSetLayout)  { VansGraphics::vkDestroyDescriptorSetLayout(v->Device, bd->DescriptorSetLayout, v->Allocator); bd->DescriptorSetLayout = VK_NULL_HANDLE; }
+    if (bd->PipelineLayout)       { VansGraphics::vkDestroyPipelineLayout(v->Device, bd->PipelineLayout, v->Allocator); bd->PipelineLayout = VK_NULL_HANDLE; }
+    if (bd->Pipeline)             { VansGraphics::vkDestroyPipeline(v->Device, bd->Pipeline, v->Allocator); bd->Pipeline = VK_NULL_HANDLE; }
+    if (bd->PipelineForViewports) { VansGraphics::vkDestroyPipeline(v->Device, bd->PipelineForViewports, v->Allocator); bd->PipelineForViewports = VK_NULL_HANDLE; }
 }
 
 bool    ImGui_ImplVulkan_LoadFunctions(PFN_vkVoidFunction(*loader_func)(const char* function_name, void* user_data), void* user_data)
@@ -1117,8 +1117,8 @@ bool    ImGui_ImplVulkan_Init(ImGui_ImplVulkan_InitInfo* info)
     {
 #ifdef IMGUI_IMPL_VULKAN_HAS_DYNAMIC_RENDERING
 #ifndef IMGUI_IMPL_VULKAN_USE_LOADER
-        ImGuiImplVulkanFuncs_vkCmdBeginRenderingKHR = reinterpret_cast<PFN_vkCmdBeginRenderingKHR>(VansVulkan::vkGetInstanceProcAddr(info->Instance, "vkCmdBeginRenderingKHR"));
-        ImGuiImplVulkanFuncs_vkCmdEndRenderingKHR = reinterpret_cast<PFN_vkCmdEndRenderingKHR>(VansVulkan::vkGetInstanceProcAddr(info->Instance, "vkCmdEndRenderingKHR"));
+        ImGuiImplVulkanFuncs_vkCmdBeginRenderingKHR = reinterpret_cast<PFN_vkCmdBeginRenderingKHR>(VansGraphics::vkGetInstanceProcAddr(info->Instance, "vkCmdBeginRenderingKHR"));
+        ImGuiImplVulkanFuncs_vkCmdEndRenderingKHR = reinterpret_cast<PFN_vkCmdEndRenderingKHR>(VansGraphics::vkGetInstanceProcAddr(info->Instance, "vkCmdEndRenderingKHR"));
 #endif
         IM_ASSERT(ImGuiImplVulkanFuncs_vkCmdBeginRenderingKHR != nullptr);
         IM_ASSERT(ImGuiImplVulkanFuncs_vkCmdEndRenderingKHR != nullptr);
@@ -1204,7 +1204,7 @@ void ImGui_ImplVulkan_SetMinImageCount(uint32_t min_image_count)
 
     IM_ASSERT(0); // FIXME-VIEWPORT: Unsupported. Need to recreate all swap chains!
     ImGui_ImplVulkan_InitInfo* v = &bd->VulkanInitInfo;
-    VkResult err = VansVulkan::vkDeviceWaitIdle(v->Device);
+    VkResult err = VansGraphics::vkDeviceWaitIdle(v->Device);
     check_vk_result(err);
     ImGui_ImplVulkanH_DestroyAllViewportsRenderBuffers(v->Device, v->Allocator);
 
@@ -1226,7 +1226,7 @@ VkDescriptorSet ImGui_ImplVulkan_AddTexture(VkSampler sampler, VkImageView image
         alloc_info.descriptorPool = v->DescriptorPool;
         alloc_info.descriptorSetCount = 1;
         alloc_info.pSetLayouts = &bd->DescriptorSetLayout;
-        VkResult err = VansVulkan::vkAllocateDescriptorSets(v->Device, &alloc_info, &descriptor_set);
+        VkResult err = VansGraphics::vkAllocateDescriptorSets(v->Device, &alloc_info, &descriptor_set);
         check_vk_result(err);
     }
 
@@ -1242,7 +1242,7 @@ VkDescriptorSet ImGui_ImplVulkan_AddTexture(VkSampler sampler, VkImageView image
         write_desc[0].descriptorCount = 1;
         write_desc[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         write_desc[0].pImageInfo = desc_image;
-        VansVulkan::vkUpdateDescriptorSets(v->Device, 1, write_desc, 0, nullptr);
+        VansGraphics::vkUpdateDescriptorSets(v->Device, 1, write_desc, 0, nullptr);
     }
     return descriptor_set;
 }
@@ -1251,15 +1251,15 @@ void ImGui_ImplVulkan_RemoveTexture(VkDescriptorSet descriptor_set)
 {
     ImGui_ImplVulkan_Data* bd = ImGui_ImplVulkan_GetBackendData();
     ImGui_ImplVulkan_InitInfo* v = &bd->VulkanInitInfo;
-    VansVulkan::vkFreeDescriptorSets(v->Device, v->DescriptorPool, 1, &descriptor_set);
+    VansGraphics::vkFreeDescriptorSets(v->Device, v->DescriptorPool, 1, &descriptor_set);
 }
 
 void ImGui_ImplVulkan_DestroyFrameRenderBuffers(VkDevice device, ImGui_ImplVulkan_FrameRenderBuffers* buffers, const VkAllocationCallbacks* allocator)
 {
-    if (buffers->VertexBuffer) { VansVulkan::vkDestroyBuffer(device, buffers->VertexBuffer, allocator); buffers->VertexBuffer = VK_NULL_HANDLE; }
-    if (buffers->VertexBufferMemory) { VansVulkan::vkFreeMemory(device, buffers->VertexBufferMemory, allocator); buffers->VertexBufferMemory = VK_NULL_HANDLE; }
-    if (buffers->IndexBuffer) { VansVulkan::vkDestroyBuffer(device, buffers->IndexBuffer, allocator); buffers->IndexBuffer = VK_NULL_HANDLE; }
-    if (buffers->IndexBufferMemory) { VansVulkan::vkFreeMemory(device, buffers->IndexBufferMemory, allocator); buffers->IndexBufferMemory = VK_NULL_HANDLE; }
+    if (buffers->VertexBuffer) { VansGraphics::vkDestroyBuffer(device, buffers->VertexBuffer, allocator); buffers->VertexBuffer = VK_NULL_HANDLE; }
+    if (buffers->VertexBufferMemory) { VansGraphics::vkFreeMemory(device, buffers->VertexBufferMemory, allocator); buffers->VertexBufferMemory = VK_NULL_HANDLE; }
+    if (buffers->IndexBuffer) { VansGraphics::vkDestroyBuffer(device, buffers->IndexBuffer, allocator); buffers->IndexBuffer = VK_NULL_HANDLE; }
+    if (buffers->IndexBufferMemory) { VansGraphics::vkFreeMemory(device, buffers->IndexBufferMemory, allocator); buffers->IndexBufferMemory = VK_NULL_HANDLE; }
     buffers->VertexBufferSize = 0;
     buffers->IndexBufferSize = 0;
 }
@@ -1301,10 +1301,10 @@ VkSurfaceFormatKHR ImGui_ImplVulkanH_SelectSurfaceFormat(VkPhysicalDevice physic
     // Additionally several new color spaces were introduced with Vulkan Spec v1.0.40,
     // hence we must make sure that a format with the mostly available color space, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, is found and used.
     uint32_t avail_count;
-    VansVulkan::vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &avail_count, nullptr);
+    VansGraphics::vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &avail_count, nullptr);
     ImVector<VkSurfaceFormatKHR> avail_format;
     avail_format.resize((int)avail_count);
-    VansVulkan::vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &avail_count, avail_format.Data);
+    VansGraphics::vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &avail_count, avail_format.Data);
 
     // First check if only one format, VK_FORMAT_UNDEFINED, is available, which would imply that any format is available
     if (avail_count == 1)
@@ -1343,10 +1343,10 @@ VkPresentModeKHR ImGui_ImplVulkanH_SelectPresentMode(VkPhysicalDevice physical_d
 
     // Request a certain mode and confirm that it is available. If not use VK_PRESENT_MODE_FIFO_KHR which is mandatory
     uint32_t avail_count = 0;
-    VansVulkan::vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &avail_count, nullptr);
+    VansGraphics::vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &avail_count, nullptr);
     ImVector<VkPresentModeKHR> avail_modes;
     avail_modes.resize((int)avail_count);
-    VansVulkan::vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &avail_count, avail_modes.Data);
+    VansGraphics::vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &avail_count, avail_modes.Data);
     //for (uint32_t avail_i = 0; avail_i < avail_count; avail_i++)
     //    printf("[vulkan] avail_modes[%d] = %d\n", avail_i, avail_modes[avail_i]);
 
@@ -1373,7 +1373,7 @@ void ImGui_ImplVulkanH_CreateWindowCommandBuffers(VkPhysicalDevice physical_devi
             info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
             info.flags = 0;
             info.queueFamilyIndex = queue_family;
-            err = VansVulkan::vkCreateCommandPool(device, &info, allocator, &fd->CommandPool);
+            err = VansGraphics::vkCreateCommandPool(device, &info, allocator, &fd->CommandPool);
             check_vk_result(err);
         }
         {
@@ -1382,14 +1382,14 @@ void ImGui_ImplVulkanH_CreateWindowCommandBuffers(VkPhysicalDevice physical_devi
             info.commandPool = fd->CommandPool;
             info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
             info.commandBufferCount = 1;
-            err = VansVulkan::vkAllocateCommandBuffers(device, &info, &fd->CommandBuffer);
+            err = VansGraphics::vkAllocateCommandBuffers(device, &info, &fd->CommandBuffer);
             check_vk_result(err);
         }
         {
             VkFenceCreateInfo info = {};
             info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
             info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-            err = VansVulkan::vkCreateFence(device, &info, allocator, &fd->Fence);
+            err = VansGraphics::vkCreateFence(device, &info, allocator, &fd->Fence);
             check_vk_result(err);
         }
     }
@@ -1400,9 +1400,9 @@ void ImGui_ImplVulkanH_CreateWindowCommandBuffers(VkPhysicalDevice physical_devi
         {
             VkSemaphoreCreateInfo info = {};
             info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            err = VansVulkan::vkCreateSemaphore(device, &info, allocator, &fsd->ImageAcquiredSemaphore);
+            err = VansGraphics::vkCreateSemaphore(device, &info, allocator, &fsd->ImageAcquiredSemaphore);
             check_vk_result(err);
-            err = VansVulkan::vkCreateSemaphore(device, &info, allocator, &fsd->RenderCompleteSemaphore);
+            err = VansGraphics::vkCreateSemaphore(device, &info, allocator, &fsd->RenderCompleteSemaphore);
             check_vk_result(err);
         }
     }
@@ -1426,7 +1426,7 @@ void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, V
     VkResult err;
     VkSwapchainKHR old_swapchain = wd->Swapchain;
     wd->Swapchain = VK_NULL_HANDLE;
-    err = VansVulkan::vkDeviceWaitIdle(device);
+    err = VansGraphics::vkDeviceWaitIdle(device);
     check_vk_result(err);
 
     // We don't use ImGui_ImplVulkanH_DestroyWindow() because we want to preserve the old swapchain to create the new one.
@@ -1441,7 +1441,7 @@ void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, V
     wd->FrameSemaphores = nullptr;
     wd->ImageCount = 0;
     if (wd->RenderPass)
-        VansVulkan::vkDestroyRenderPass(device, wd->RenderPass, allocator);
+        VansGraphics::vkDestroyRenderPass(device, wd->RenderPass, allocator);
 
     // If min image count was not specified, request different count of images dependent on selected present mode
     if (min_image_count == 0)
@@ -1464,7 +1464,7 @@ void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, V
         info.clipped = VK_TRUE;
         info.oldSwapchain = old_swapchain;
         VkSurfaceCapabilitiesKHR cap;
-        err = VansVulkan::vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, wd->Surface, &cap);
+        err = VansGraphics::vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, wd->Surface, &cap);
         check_vk_result(err);
         if (info.minImageCount < cap.minImageCount)
             info.minImageCount = cap.minImageCount;
@@ -1481,14 +1481,14 @@ void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, V
             info.imageExtent.width = wd->Width = cap.currentExtent.width;
             info.imageExtent.height = wd->Height = cap.currentExtent.height;
         }
-        err = VansVulkan::vkCreateSwapchainKHR(device, &info, allocator, &wd->Swapchain);
+        err = VansGraphics::vkCreateSwapchainKHR(device, &info, allocator, &wd->Swapchain);
         check_vk_result(err);
-        err = VansVulkan::vkGetSwapchainImagesKHR(device, wd->Swapchain, &wd->ImageCount, nullptr);
+        err = VansGraphics::vkGetSwapchainImagesKHR(device, wd->Swapchain, &wd->ImageCount, nullptr);
         check_vk_result(err);
         VkImage backbuffers[16] = {};
         IM_ASSERT(wd->ImageCount >= min_image_count);
         IM_ASSERT(wd->ImageCount < IM_ARRAYSIZE(backbuffers));
-        err = VansVulkan::vkGetSwapchainImagesKHR(device, wd->Swapchain, &wd->ImageCount, backbuffers);
+        err = VansGraphics::vkGetSwapchainImagesKHR(device, wd->Swapchain, &wd->ImageCount, backbuffers);
         check_vk_result(err);
 
         IM_ASSERT(wd->Frames == nullptr && wd->FrameSemaphores == nullptr);
@@ -1501,7 +1501,7 @@ void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, V
             wd->Frames[i].Backbuffer = backbuffers[i];
     }
     if (old_swapchain)
-        VansVulkan::vkDestroySwapchainKHR(device, old_swapchain, allocator);
+        VansGraphics::vkDestroySwapchainKHR(device, old_swapchain, allocator);
 
     // Create the Render Pass
     if (wd->UseDynamicRendering == false)
@@ -1537,7 +1537,7 @@ void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, V
         info.pSubpasses = &subpass;
         info.dependencyCount = 1;
         info.pDependencies = &dependency;
-        err = VansVulkan::vkCreateRenderPass(device, &info, allocator, &wd->RenderPass);
+        err = VansGraphics::vkCreateRenderPass(device, &info, allocator, &wd->RenderPass);
         check_vk_result(err);
 
         // We do not create a pipeline by default as this is also used by examples' main.cpp,
@@ -1561,7 +1561,7 @@ void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, V
         {
             ImGui_ImplVulkanH_Frame* fd = &wd->Frames[i];
             info.image = fd->Backbuffer;
-            err = VansVulkan::vkCreateImageView(device, &info, allocator, &fd->BackbufferView);
+            err = VansGraphics::vkCreateImageView(device, &info, allocator, &fd->BackbufferView);
             check_vk_result(err);
         }
     }
@@ -1582,7 +1582,7 @@ void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, V
         {
             ImGui_ImplVulkanH_Frame* fd = &wd->Frames[i];
             attachment[0] = fd->BackbufferView;
-            err = VansVulkan::vkCreateFramebuffer(device, &info, allocator, &fd->Framebuffer);
+            err = VansGraphics::vkCreateFramebuffer(device, &info, allocator, &fd->Framebuffer);
             check_vk_result(err);
         }
     }
@@ -1600,7 +1600,7 @@ void ImGui_ImplVulkanH_CreateOrResizeWindow(VkInstance instance, VkPhysicalDevic
 
 void ImGui_ImplVulkanH_DestroyWindow(VkInstance instance, VkDevice device, ImGui_ImplVulkanH_Window* wd, const VkAllocationCallbacks* allocator)
 {
-    VansVulkan::vkDeviceWaitIdle(device); // FIXME: We could wait on the Queue if we had the queue in wd-> (otherwise VulkanH functions can't use globals)
+    VansGraphics::vkDeviceWaitIdle(device); // FIXME: We could wait on the Queue if we had the queue in wd-> (otherwise VulkanH functions can't use globals)
     //vkQueueWaitIdle(bd->Queue);
 
     for (uint32_t i = 0; i < wd->ImageCount; i++)
@@ -1611,30 +1611,30 @@ void ImGui_ImplVulkanH_DestroyWindow(VkInstance instance, VkDevice device, ImGui
     IM_FREE(wd->FrameSemaphores);
     wd->Frames = nullptr;
     wd->FrameSemaphores = nullptr;
-    VansVulkan:: vkDestroyRenderPass(device, wd->RenderPass, allocator);
-    VansVulkan:: vkDestroySwapchainKHR(device, wd->Swapchain, allocator);
-    VansVulkan:: vkDestroySurfaceKHR(instance, wd->Surface, allocator);
+    VansGraphics:: vkDestroyRenderPass(device, wd->RenderPass, allocator);
+    VansGraphics:: vkDestroySwapchainKHR(device, wd->Swapchain, allocator);
+    VansGraphics:: vkDestroySurfaceKHR(instance, wd->Surface, allocator);
 
     *wd = ImGui_ImplVulkanH_Window();
 }
 
 void ImGui_ImplVulkanH_DestroyFrame(VkDevice device, ImGui_ImplVulkanH_Frame* fd, const VkAllocationCallbacks* allocator)
 {
-    VansVulkan::vkDestroyFence(device, fd->Fence, allocator);
-    VansVulkan::vkFreeCommandBuffers(device, fd->CommandPool, 1, &fd->CommandBuffer);
-    VansVulkan::vkDestroyCommandPool(device, fd->CommandPool, allocator);
+    VansGraphics::vkDestroyFence(device, fd->Fence, allocator);
+    VansGraphics::vkFreeCommandBuffers(device, fd->CommandPool, 1, &fd->CommandBuffer);
+    VansGraphics::vkDestroyCommandPool(device, fd->CommandPool, allocator);
     fd->Fence = VK_NULL_HANDLE;
     fd->CommandBuffer = VK_NULL_HANDLE;
     fd->CommandPool = VK_NULL_HANDLE;
 
-    VansVulkan::vkDestroyImageView(device, fd->BackbufferView, allocator);
-    VansVulkan::vkDestroyFramebuffer(device, fd->Framebuffer, allocator);
+    VansGraphics::vkDestroyImageView(device, fd->BackbufferView, allocator);
+    VansGraphics::vkDestroyFramebuffer(device, fd->Framebuffer, allocator);
 }
 
 void ImGui_ImplVulkanH_DestroyFrameSemaphores(VkDevice device, ImGui_ImplVulkanH_FrameSemaphores* fsd, const VkAllocationCallbacks* allocator)
 {
-    VansVulkan::vkDestroySemaphore(device, fsd->ImageAcquiredSemaphore, allocator);
-    VansVulkan::vkDestroySemaphore(device, fsd->RenderCompleteSemaphore, allocator);
+    VansGraphics::vkDestroySemaphore(device, fsd->ImageAcquiredSemaphore, allocator);
+    VansGraphics::vkDestroySemaphore(device, fsd->RenderCompleteSemaphore, allocator);
     fsd->ImageAcquiredSemaphore = fsd->RenderCompleteSemaphore = VK_NULL_HANDLE;
 }
 
@@ -1667,7 +1667,7 @@ static void ImGui_ImplVulkan_CreateWindow(ImGuiViewport* viewport)
 
     // Check for WSI support
     VkBool32 res;
-    VansVulkan::vkGetPhysicalDeviceSurfaceSupportKHR(v->PhysicalDevice, v->QueueFamily, wd->Surface, &res);
+    VansGraphics::vkGetPhysicalDeviceSurfaceSupportKHR(v->PhysicalDevice, v->QueueFamily, wd->Surface, &res);
     if (res != VK_TRUE)
     {
         IM_ASSERT(0); // Error: no WSI support on physical device
@@ -1748,7 +1748,7 @@ static void ImGui_ImplVulkan_RenderWindow(ImGuiViewport* viewport, void*)
     ImGui_ImplVulkanH_FrameSemaphores* fsd = &wd->FrameSemaphores[wd->SemaphoreIndex];
     {
         {
-            err = VansVulkan::vkAcquireNextImageKHR(v->Device, wd->Swapchain, UINT64_MAX, fsd->ImageAcquiredSemaphore, VK_NULL_HANDLE, &wd->FrameIndex);
+            err = VansGraphics::vkAcquireNextImageKHR(v->Device, wd->Swapchain, UINT64_MAX, fsd->ImageAcquiredSemaphore, VK_NULL_HANDLE, &wd->FrameIndex);
             if (err == VK_ERROR_OUT_OF_DATE_KHR)
             {
                 // Since we are not going to swap this frame anyway, it's ok that recreation happens on next frame.
@@ -1760,18 +1760,18 @@ static void ImGui_ImplVulkan_RenderWindow(ImGuiViewport* viewport, void*)
         }
         for (;;)
         {
-            err = VansVulkan::vkWaitForFences(v->Device, 1, &fd->Fence, VK_TRUE, 100);
+            err = VansGraphics::vkWaitForFences(v->Device, 1, &fd->Fence, VK_TRUE, 100);
             if (err == VK_SUCCESS) break;
             if (err == VK_TIMEOUT) continue;
             check_vk_result(err);
         }
         {
-            err = VansVulkan::vkResetCommandPool(v->Device, fd->CommandPool, 0);
+            err = VansGraphics::vkResetCommandPool(v->Device, fd->CommandPool, 0);
             check_vk_result(err);
             VkCommandBufferBeginInfo info = {};
             info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
             info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            err = VansVulkan::vkBeginCommandBuffer(fd->CommandBuffer, &info);
+            err = VansGraphics::vkBeginCommandBuffer(fd->CommandBuffer, &info);
             check_vk_result(err);
         }
         {
@@ -1791,7 +1791,7 @@ static void ImGui_ImplVulkan_RenderWindow(ImGuiViewport* viewport, void*)
             barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             barrier.subresourceRange.levelCount = 1;
             barrier.subresourceRange.layerCount = 1;
-            VansVulkan::vkCmdPipelineBarrier(fd->CommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+            VansGraphics::vkCmdPipelineBarrier(fd->CommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
             VkRenderingAttachmentInfo attachmentInfo = {};
             attachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
@@ -1824,7 +1824,7 @@ static void ImGui_ImplVulkan_RenderWindow(ImGuiViewport* viewport, void*)
             info.renderArea.extent.height = wd->Height;
             info.clearValueCount = (viewport->Flags & ImGuiViewportFlags_NoRendererClear) ? 0 : 1;
             info.pClearValues = (viewport->Flags & ImGuiViewportFlags_NoRendererClear) ? nullptr : &wd->ClearValue;
-            VansVulkan::vkCmdBeginRenderPass(fd->CommandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
+            VansGraphics::vkCmdBeginRenderPass(fd->CommandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
         }
     }
 
@@ -1846,12 +1846,12 @@ static void ImGui_ImplVulkan_RenderWindow(ImGuiViewport* viewport, void*)
             barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             barrier.subresourceRange.levelCount = 1;
             barrier.subresourceRange.layerCount = 1;
-            VansVulkan::vkCmdPipelineBarrier(fd->CommandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+            VansGraphics::vkCmdPipelineBarrier(fd->CommandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
         }
         else
 #endif
         {
-            VansVulkan::vkCmdEndRenderPass(fd->CommandBuffer);
+            VansGraphics::vkCmdEndRenderPass(fd->CommandBuffer);
         }
         {
             VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1865,11 +1865,11 @@ static void ImGui_ImplVulkan_RenderWindow(ImGuiViewport* viewport, void*)
             info.signalSemaphoreCount = 1;
             info.pSignalSemaphores = &fsd->RenderCompleteSemaphore;
 
-            err = VansVulkan::vkEndCommandBuffer(fd->CommandBuffer);
+            err = VansGraphics::vkEndCommandBuffer(fd->CommandBuffer);
             check_vk_result(err);
-            err = VansVulkan::vkResetFences(v->Device, 1, &fd->Fence);
+            err = VansGraphics::vkResetFences(v->Device, 1, &fd->Fence);
             check_vk_result(err);
-            err = VansVulkan::vkQueueSubmit(v->Queue, 1, &info, fd->Fence);
+            err = VansGraphics::vkQueueSubmit(v->Queue, 1, &info, fd->Fence);
             check_vk_result(err);
         }
     }
@@ -1896,7 +1896,7 @@ static void ImGui_ImplVulkan_SwapBuffers(ImGuiViewport* viewport, void*)
     info.swapchainCount = 1;
     info.pSwapchains = &wd->Swapchain;
     info.pImageIndices = &present_index;
-    err = VansVulkan::vkQueuePresentKHR(v->Queue, &info);
+    err = VansGraphics::vkQueuePresentKHR(v->Queue, &info);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR)
     {
         vd->SwapChainNeedRebuild = true;

@@ -3,7 +3,9 @@
 #include "VansVKDescriptorManager.h"
 #include <iostream>
 
-bool VansVulkan::VansVKGraphicsPipeline::CreateGraphicsPipelineInfo(VkDevice& logic_device, GraphicsPipeCreateInfo& create_info, GlobalStateData& global_state_data, VkGraphicsPipelineCreateInfo& final_create_info)
+VkPipeline VansGraphics::VansVKGraphicsPipeline::CurrentValidGraphicsPipeline = VK_NULL_HANDLE;
+
+bool VansGraphics::VansVKGraphicsPipeline::CreateGraphicsPipelineInfo(VkDevice& logic_device, GraphicsPipeCreateInfo& create_info, GlobalStateData& global_state_data, VkGraphicsPipelineCreateInfo& final_create_info)
 {
 	shader_stage_create_infos.clear();
 	for (auto& shader_stage : create_info.shader_stage_params)
@@ -242,7 +244,7 @@ VkSampleMask µ÷ …œæÕ «uint32_t°£Sample maskµƒ±»Ãÿ”Î≤…—˘µ„“ª“ª∂‘”¶£¨“ÚŒ™÷¡∂‡64∏ˆ≤
 	return true;
 }
 
-bool VansVulkan::VansVKGraphicsPipeline::CreateGraphicsPipeline(VkDevice& logic_device, const VkGraphicsPipelineCreateInfo& create_info)
+bool VansGraphics::VansVKGraphicsPipeline::CreateGraphicsPipeline(VkDevice& logic_device, const VkGraphicsPipelineCreateInfo& create_info)
 {
 	m_Device = logic_device;
 	/*
@@ -265,7 +267,7 @@ bool VansVulkan::VansVKGraphicsPipeline::CreateGraphicsPipeline(VkDevice& logic_
 	return true;
 }
 
-bool VansVulkan::VansVKGraphicsPipeline::CreatePipelineCache(VkDevice& logic_device)
+bool VansGraphics::VansVKGraphicsPipeline::CreatePipelineCache(VkDevice& logic_device)
 {
 	std::vector<unsigned char>  cache_data;
 
@@ -288,7 +290,7 @@ bool VansVulkan::VansVKGraphicsPipeline::CreatePipelineCache(VkDevice& logic_dev
 	return true;
 }
 
-bool VansVulkan::VansVKGraphicsPipeline::GetPipelineCacheData(VkDevice& logic_device)
+bool VansGraphics::VansVKGraphicsPipeline::GetPipelineCacheData(VkDevice& logic_device)
 {
 	std::vector<unsigned char> pipeline_cache_data;
 	size_t data_size = 0;
@@ -311,12 +313,12 @@ bool VansVulkan::VansVKGraphicsPipeline::GetPipelineCacheData(VkDevice& logic_de
 	return true;
 }
 
-void VansVulkan::VansVKGraphicsPipeline::BindGraphicsPipeline(VkCommandBuffer& command_buffer)
+void VansGraphics::VansVKGraphicsPipeline::BindGraphicsPipeline(VkCommandBuffer& command_buffer)
 {
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
 }
 
-void VansVulkan::VansVKGraphicsPipeline::DestroyPipeline(VkDevice& logic_device)
+void VansGraphics::VansVKGraphicsPipeline::DestroyPipeline(VkDevice& logic_device)
 {
 	if (VK_NULL_HANDLE != m_GraphicsPipeline)
 	{
@@ -325,7 +327,7 @@ void VansVulkan::VansVKGraphicsPipeline::DestroyPipeline(VkDevice& logic_device)
 	}
 }
 
-void VansVulkan::VansVKGraphicsPipeline::DestroyPipelineCache(VkDevice& logic_device)
+void VansGraphics::VansVKGraphicsPipeline::DestroyPipelineCache(VkDevice& logic_device)
 {
 	if (VK_NULL_HANDLE != m_PipelineCache)
 	{
@@ -334,7 +336,7 @@ void VansVulkan::VansVKGraphicsPipeline::DestroyPipelineCache(VkDevice& logic_de
 	}
 }
 
-void VansVulkan::VansVKGraphicsPipeline::DestroyPipelineLayout(VkDevice& logic_device)
+void VansGraphics::VansVKGraphicsPipeline::DestroyPipelineLayout(VkDevice& logic_device)
 {
 	if (VK_NULL_HANDLE != m_VansPipelineLayout)
 	{
@@ -343,7 +345,7 @@ void VansVulkan::VansVKGraphicsPipeline::DestroyPipelineLayout(VkDevice& logic_d
 	}
 }
 
-bool VansVulkan::VansVKGraphicsPipeline::MergePipelineCache(VkDevice& logic_device, std::vector<VkPipelineCache>& source_pipeline_caches, VkPipelineCache& merged_cache)
+bool VansGraphics::VansVKGraphicsPipeline::MergePipelineCache(VkDevice& logic_device, std::vector<VkPipelineCache>& source_pipeline_caches, VkPipelineCache& merged_cache)
 {
 	VkResult result = vkMergePipelineCaches(logic_device, merged_cache, static_cast<uint32_t>(source_pipeline_caches.size()), source_pipeline_caches.data());
 	if (VK_SUCCESS != result) 
@@ -354,7 +356,7 @@ bool VansVulkan::VansVKGraphicsPipeline::MergePipelineCache(VkDevice& logic_devi
 	return true;
 }
 
-bool VansVulkan::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount, VkPushConstantRange* pushConstRange)
+bool VansGraphics::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount, VkPushConstantRange* pushConstRange)
 {
 	m_Device = logic_device;
 	VkPipelineCreateFlags additional_options = VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
@@ -393,12 +395,12 @@ bool VansVulkan::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_de
 	return true;
 }
 
-void VansVulkan::VansVKComputePipeline::BindComputePipeline(VkCommandBuffer& command_buffer)
+void VansGraphics::VansVKComputePipeline::BindComputePipeline(VkCommandBuffer& command_buffer)
 {
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComputePipeline);
 }
 
-void VansVulkan::VansVKComputePipeline::DestroyPipeline(VkDevice& logic_device)
+void VansGraphics::VansVKComputePipeline::DestroyPipeline(VkDevice& logic_device)
 {
 	if (VK_NULL_HANDLE != m_ComputePipeline)
 	{
@@ -407,7 +409,7 @@ void VansVulkan::VansVKComputePipeline::DestroyPipeline(VkDevice& logic_device)
 	}
 }
 
-void VansVulkan::VansVKComputePipeline::DestroyPipelineLayout(VkDevice& logic_device)
+void VansGraphics::VansVKComputePipeline::DestroyPipelineLayout(VkDevice& logic_device)
 {
 	if (VK_NULL_HANDLE != m_VansPipelineLayout)
 	{
@@ -416,12 +418,12 @@ void VansVulkan::VansVKComputePipeline::DestroyPipelineLayout(VkDevice& logic_de
 	}
 }
 
-void VansVulkan::VansVKComputePipeline::DispatchCompute(VkCommandBuffer& command_buffer, int x, int y, int z)
+void VansGraphics::VansVKComputePipeline::DispatchCompute(VkCommandBuffer& command_buffer, int x, int y, int z)
 {
 	vkCmdDispatch(command_buffer, x, y, z);
 }
 
-bool VansVulkan::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& logic_device, std::vector<VkRayTracingShaderGroupCreateInfoKHR>& shaderGroupCreateInfo, std::vector<VkPipelineShaderStageCreateInfo>& shaderStageCreateInfo, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount, VkPushConstantRange* pushConstRange)
+bool VansGraphics::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& logic_device, std::vector<VkRayTracingShaderGroupCreateInfoKHR>& shaderGroupCreateInfo, std::vector<VkPipelineShaderStageCreateInfo>& shaderStageCreateInfo, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount, VkPushConstantRange* pushConstRange)
 {
 	//¥¥Ω®π‹œﬂlayout
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
@@ -458,7 +460,7 @@ bool VansVulkan::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& lo
 	return true;
 }
 
-void VansVulkan::VansVKRayTracingPipeline::DestroyPipeline(VkDevice& logic_device)
+void VansGraphics::VansVKRayTracingPipeline::DestroyPipeline(VkDevice& logic_device)
 {
 	if (VK_NULL_HANDLE != m_RayTracingPipeline)
 	{
@@ -467,7 +469,7 @@ void VansVulkan::VansVKRayTracingPipeline::DestroyPipeline(VkDevice& logic_devic
 	}
 }
 
-void VansVulkan::VansVKRayTracingPipeline::DestroyPipelineLayout(VkDevice& logic_device)
+void VansGraphics::VansVKRayTracingPipeline::DestroyPipelineLayout(VkDevice& logic_device)
 {
 	if (VK_NULL_HANDLE != m_RayTracingLayout)
 	{

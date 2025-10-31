@@ -1,10 +1,12 @@
 #include "VansRenderNode.h"
 #include "VansCamera.h"
+#include "VansScene.h"
+#include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansRenderPass.h"
 #include <iostream>
-using namespace VansVulkan;
+using namespace VansGraphics;
 
 VansGraphics::VansRenderNode::VansRenderNode(VkDevice& device, RenderNodeType typee)
 {
@@ -39,6 +41,18 @@ void VansGraphics::VansRenderNode::RegistLightDescriptor(VansLightManager& light
 {
 	m_UsedDescSetLayouts.push_back(lightManager.m_LightDataDescriptorSetLayout);
 	m_UsedDescSets.push_back(lightManager.m_LightDataDescriptorSets[0]);
+}
+
+bool VansGraphics::VansRenderNode::CheckRenderNodeState()
+{
+	auto shader = m_Material->m_Shader;
+	if (shader!= nullptr && m_SceneFileWatcher->ConsumeUpdated(shader->GetShaderFolder()))
+	{
+		std::cout << "pipe get failed " << shader->GetShaderFolder() << std::endl;
+		//return false;
+	}
+
+	return true;
 }
 
 void VansGraphics::VansRenderNode::DestroyDescriptorSets()
@@ -79,6 +93,11 @@ void VansGraphics::VansRenderNode::BeforeDrawCall()
 
 void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalStateData)
 {
+	if (!CheckRenderNodeState())
+	{
+		return;
+	}
+
 	BeforeDrawCall();
 
 	//apply mesh
@@ -533,6 +552,15 @@ void VansGraphics::VansDeferredRenderNode::CreateDescriptorSets(VansCamera* came
 		nullptr
 	};
 
+	VkDescriptorSetLayoutBinding FogTexture =
+	{
+		VansVKDescriptorManager::m_SampleTexture8SetBinding,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		1,
+		VK_SHADER_STAGE_FRAGMENT_BIT,
+		nullptr
+	};
+
 	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
 		{
 			ssaoInput,
@@ -542,7 +570,8 @@ void VansGraphics::VansDeferredRenderNode::CreateDescriptorSets(VansCamera* came
 			punctualShadowMapInput,
 			SHRCoeffTexture,
 			SHGCoeffTexture,
-			SHBCoeffTexture
+			SHBCoeffTexture,
+			FogTexture
 		},
 		textureResourceLayout);
 	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ textureResourceLayout }, textureResourceDescriptorSets);
@@ -654,8 +683,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{
 				{
-					materialManager.m_SSAOResult->GetImage().GetSampler(),
-					materialManager.m_SSAOResult->GetImage().GetImageView(),
+					materialManager.m_SSAOFilterResult->GetImage().GetSampler(),
+					materialManager.m_SSAOFilterResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}
@@ -669,8 +698,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{
 				{
-					materialManager.m_SSGIFilterResult->GetImage().GetSampler(),
-					materialManager.m_SSGIFilterResult->GetImage().GetImageView(),
+					materialManager.m_SSGIResult->GetImage().GetSampler(),
+					materialManager.m_SSGIResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}
@@ -763,6 +792,22 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 				{
 					materialManager.m_SHBResult->GetImage().GetSampler(),
 					materialManager.m_SHBResult->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+	//ÉèÖÃÎíÐ§
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			VansVKDescriptorManager::m_SampleTexture8SetBinding,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					materialManager.m_VolumetricFogResult->GetImage().GetSampler(),
+					materialManager.m_VolumetricFogResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			}

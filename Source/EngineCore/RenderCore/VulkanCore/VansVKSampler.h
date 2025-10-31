@@ -8,7 +8,7 @@
 #include <vector>
 
 
-namespace VansVulkan
+namespace VansGraphics
 {
 	class VansVKSampler
 	{

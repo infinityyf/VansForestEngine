@@ -10,7 +10,7 @@
 #include "vulkan/vulkan.h"
 #include <vector>
 
-namespace VansVulkan
+namespace VansGraphics
 {
 	#define EXPORTED_VULKAN_FUNCTION( name ) extern PFN_##name name;
 	#define GLOBAL_LEVEL_VULKAN_FUNCTION( name ) extern PFN_##name name;
@@ -21,7 +21,7 @@ namespace VansVulkan
 	#include "ListOfVulkanFunctions.inl"
 }
 
-namespace VansVulkan
+namespace VansGraphics
 {
 #if defined _WIN32
 	extern HMODULE vulkan_library;

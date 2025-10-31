@@ -25,13 +25,21 @@ layout(push_constant) uniform PushConstants
     vec4 cameraUp;
     vec4 cameraRight;
     vec4 originParams;
+    vec4 frameParams;
 } pushConstants;
 
 void main() 
 {
     ivec3 probeIndex = ivec3(gl_GlobalInvocationID);
+    probeIndex *= 2;
     int originCount = int(pushConstants.originParams.x);
     int sampleCount = int(pushConstants.originParams.z);
+
+    //分帧计算每次计算1/8的采样点
+    const int kNumFrames = 8;
+    int frameIndex = int(pushConstants.frameParams.x) % kNumFrames;
+    probeIndex += kFrameOffsets[frameIndex];
+
 
     int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;

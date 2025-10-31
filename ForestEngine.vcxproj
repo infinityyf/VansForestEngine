@@ -104,7 +104,7 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\json\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\STBImge;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;C:\Users\infinityyf\Projects\githubs\Python-3.13.3\Include;C:\Users\infinityyf\Projects\githubs\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;D:\WorkSpace\githubs\\Python-3.13.3\Include;D:\WorkSpace\githubs\\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
     </ClCompile>
@@ -112,7 +112,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>glfw3.lib;assimp-vc143-mt.lib;python313_d.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);C:\Users\infinityyf\Projects\githubs\Python-3.13.3\PCbuild\amd64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(SolutionDir)\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);D:\WorkSpace\githubs\Python-3.13.3\PCbuild\amd64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -123,7 +123,7 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\json\include;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\STBImge;C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;C:\Users\infinityyf\Projects\githubs\Python-3.13.3\Include;C:\Users\infinityyf\Projects\githubs\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;D:\WorkSpace\githubs\Python-3.13.3\Include;D:\WorkSpace\githubs\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
     </ClCompile>
     <Link>
@@ -132,7 +132,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>glfw3.lib;assimp-vc143-mt.lib;python313.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\Users\infinityyf\Projects\ForestEngine\ForestEngine\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);C:\Users\infinityyf\Projects\githubs\Python-3.13.3\PCbuild\amd64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(SolutionDir)\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);D:\WorkSpace\githubs\Python-3.13.3\PCbuild\amd64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -146,6 +146,23 @@
     <ClInclude Include="External\GUI\imgui-1.90.2\imstb_rectpack.h" />
     <ClInclude Include="External\GUI\imgui-1.90.2\imstb_textedit.h" />
     <ClInclude Include="External\GUI\imgui-1.90.2\imstb_truetype.h" />
+    <ClInclude Include="External\spirv_cross\GLSL.std.450.h" />
+    <ClInclude Include="External\spirv_cross\spirv.h" />
+    <ClInclude Include="External\spirv_cross\spirv.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cfg.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_common.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cpp.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cross.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cross_c.h" />
+    <ClInclude Include="External\spirv_cross\spirv_cross_containers.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cross_error_handling.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cross_parsed_ir.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cross_util.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_glsl.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_hlsl.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_msl.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_parser.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_reflect.hpp" />
     <ClInclude Include="Source\EngineCore\Configration\VansConfigration.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorWindow.h" />
@@ -173,6 +190,7 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansTexture.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKBuffer.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKCommandBuffer.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDescriptorManager.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKImage.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryManager.h" />
@@ -195,6 +213,17 @@
     <ClCompile Include="External\GUI\imgui-1.90.2\imgui_draw.cpp" />
     <ClCompile Include="External\GUI\imgui-1.90.2\imgui_tables.cpp" />
     <ClCompile Include="External\GUI\imgui-1.90.2\imgui_widgets.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cfg.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cpp.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cross.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cross_c.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cross_parsed_ir.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cross_util.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_glsl.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_hlsl.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_msl.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_parser.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_reflect.cpp" />
     <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.cpp" />
@@ -217,7 +246,6 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKBuffer.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKCommandBuffer.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp" />
-    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.h" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKImage.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryManager.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSampler.cpp" />

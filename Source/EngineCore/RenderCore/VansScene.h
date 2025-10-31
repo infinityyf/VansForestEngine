@@ -158,3 +158,6 @@ namespace VansGraphics
 }
 
 extern VansGraphics::VansScene* m_Scene;
+
+class VansAssetsFileWatcher;
+extern VansAssetsFileWatcher* m_SceneFileWatcher;

@@ -10,9 +10,9 @@
 #include "VansVKDevice.h"
 #include "../VansGraphicsDevice.h"
 
-namespace VansVulkan
+namespace VansGraphics
 {
-	class VansVulkanGUIBackEnd : public VansGUIBackEnd
+	class VansGraphicsGUIBackEnd : public VansGUIBackEnd
 	{
 	private:
 		VkDescriptorPool m_ImGUIPool;

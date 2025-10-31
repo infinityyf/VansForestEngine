@@ -56,6 +56,7 @@ layout(push_constant) uniform PushConstants
     vec4 cameraUp;
     vec4 cameraRight;
     vec4 originParams;
+    vec4 frameParams;
 } pushConstants;
 
 vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal, vec3 origin, vec3 size)
@@ -98,7 +99,7 @@ vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal, vec3 origin, vec3 size
             tempDiffuse.g += gCoeff[i] * basis / PI;
             tempDiffuse.b += bCoeff[i] * basis / PI;
         }
-        inDirectDiffuse += tempDiffuse * w;
+        inDirectDiffuse += tempDiffuse * w ;
         totalWeight += w;
     }
     if(totalWeight > 0.0)
@@ -110,6 +111,9 @@ vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal, vec3 origin, vec3 size
 void main() 
 {
     ivec3 probeIndex = ivec3(gl_GlobalInvocationID);
+    probeIndex *= 2;
+
+
     int originCount = int(pushConstants.originParams.x);
     float originStride = pushConstants.originParams.y;
     int sampleCount = int(pushConstants.originParams.z);
@@ -117,6 +121,12 @@ void main()
     float originSize = float(originCount) * originStride;
     vec3 groupOrigin = vec3(-originSize/2,-originSize/2,-originSize/2);
     groupOrigin.y += 6;
+
+    //分帧计算每次计算1/8的采样点
+    const int kNumFrames = 8;
+    int frameIndex = int(pushConstants.frameParams.x) % kNumFrames;
+    probeIndex += kFrameOffsets[frameIndex];
+
 
     int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;

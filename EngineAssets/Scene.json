@@ -169,14 +169,6 @@
             "cullMode" : 0
         },
         {
-            "name" : "VolumetricCloud",
-            "path" : "EngineAssets/Shaders/VolumeCloud",
-            "depthTest" : true,
-            "depthWrite" : true,
-            "depthCompareOp" : 3,
-            "cullMode" : 0
-        },
-        {
             "name" : "Deferred",
             "path" : "EngineAssets/Shaders/Deferred",
             "depthTest" : false,

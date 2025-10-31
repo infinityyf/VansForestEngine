@@ -9,7 +9,7 @@
 #include "../VansGraphicsBuffer.h"
 #include <vector>
 using namespace VansGraphics;
-namespace VansVulkan
+namespace VansGraphics
 {
 	struct BufferTransition
 	{

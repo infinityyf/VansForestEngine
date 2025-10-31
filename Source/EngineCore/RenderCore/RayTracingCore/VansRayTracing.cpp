@@ -1,6 +1,7 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansRayTracing.h"
 #include "../../RenderCore/VulkanCore/VansMesh.h"
+#include "../../RenderCore/VulkanCore/VansTexture.h"
 #include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../RenderCore/VulkanCore/VansVKCommandBuffer.h"
 #include "../../RenderCore/VulkanCore/VansVKDescriptorManager.h"
@@ -10,7 +11,7 @@
 #include "../../RenderCore//VansMaterial.h"
 
 #include <iostream>
-//void VansVulkan::VansRayTracing::BuildBottomLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansMesh* mesh)
+//void VansGraphics::VansRayTracing::BuildBottomLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansMesh* mesh)
 //{
 //    // 获取顶点缓冲区地址
 //    VkBufferDeviceAddressInfo addressInfo{};
@@ -98,7 +99,7 @@
 //
 //}
 //
-//void VansVulkan::VansRayTracing::BuildTopLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer)
+//void VansGraphics::VansRayTracing::BuildTopLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer)
 //{
 //    // 创建实例缓冲区
 //    VkAccelerationStructureInstanceKHR instance{};
@@ -203,22 +204,23 @@
 //    vkCmdBuildAccelerationStructuresKHR(commandBuffer->GetVKCommandBuffer(), 1, &buildInfo, &pBuildRangeInfos);
 //}
 
-void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
+void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
 {
 
     int blasMeshCount = scene->GetBLASVertexBuffers().size();
     std::vector<uint32_t>& instanceData = scene->GetTLASInstanceData();
 
     //ray tracing参数
-    m_RayTracingPositionCount = 50;
-    m_RayTracingPositionStride = 0.5f;
+    m_RayTracingPositionCount = 80;
+    m_RayTracingPositionStride = 0.25f;
     m_RayCountPerSample = 256;
 
     m_VansRayTracingShader.InitRayTracingShader(device->GetLogicDevice(), "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/RayTracingTest");
     m_VansRayTracingShader.SetPushConstant(sizeof(m_RayTracingConstant));
     m_VansRayTracingShader.SetPushConstantData(&(m_RayTracingConstant));
     
-    m_RayTracingResult.InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, MID_PRES_16);
+    m_RayTracingResult = new VansTexture();
+    m_RayTracingResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, MID_PRES_16);
    
     VansMaterialManager* materialManager = scene->GetMaterialManager();
     materialManager->m_SHRResult = new VansTexture();
@@ -287,32 +289,40 @@ void VansVulkan::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, 
 
     m_HitPositionCalculateDone = false;
 
+    m_GIUpdateFrameIndex = 0;
 }
 
-void VansVulkan::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager)
+void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager)
 {
     BindGIPointLightData();
 
     BindGISHData(materialManager);
 
+    m_RayTracingConstant.frameParams = glm::vec4(
+        m_GIUpdateFrameIndex++,
+        0,
+        0,
+        0
+    );
+
     commandBuffer->EnsureComputeShader(*m_RayTracingPointLighting, { lightManager->m_LightDataDescriptorSetLayout, m_GISamplePositionLightSetLayout});
     commandBuffer->DispatchCompute(
         *m_RayTracingPointLighting, 
-        m_RayTracingPositionCount / 4, 
-        m_RayTracingPositionCount / 4,
-        m_RayTracingPositionCount / 4,
+        m_RayTracingPositionCount / 8, 
+        m_RayTracingPositionCount / 8,
+        m_RayTracingPositionCount / 8,
         { lightManager->m_LightDataDescriptorSets[0], m_GISamplePositionLightDescriptorSets[0]});
 
     commandBuffer->EnsureComputeShader(*m_GISHUpdateShader, {m_GISHUpdateSetLayout});
     commandBuffer->DispatchCompute(
         *m_GISHUpdateShader,
-        m_RayTracingPositionCount / 4,
-        m_RayTracingPositionCount / 4,
-        m_RayTracingPositionCount / 4,
+        m_RayTracingPositionCount / 8,
+        m_RayTracingPositionCount / 8,
+        m_RayTracingPositionCount / 8,
         { m_GISHUpdateDescriptorSets[0] });
 }
 
-void VansVulkan::VansRayTracing::BindGIPointLightData()
+void VansGraphics::VansRayTracing::BindGIPointLightData()
 {
     if (!m_GIPointLightDescriptorSetIsDirty)
     {
@@ -486,7 +496,7 @@ void VansVulkan::VansRayTracing::BindGIPointLightData()
     VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 
-void VansVulkan::VansRayTracing::BindGISHData(VansMaterialManager* materialManager)
+void VansGraphics::VansRayTracing::BindGISHData(VansMaterialManager* materialManager)
 {
     if (!m_GISHUpdateDesctiproeSetIsDirty)
     {
@@ -577,7 +587,7 @@ void VansVulkan::VansRayTracing::BindGISHData(VansMaterialManager* materialManag
     VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 
-void VansVulkan::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
+void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
 {
     if (m_HitPositionCalculateDone)
     {
@@ -624,7 +634,7 @@ void VansVulkan::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVK
         m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount);
 }
 
-void VansVulkan::VansRayTracing::CreateRayTraceDescriptorSets(VansVKDevice* device, int blasMeshCount)
+void VansGraphics::VansRayTracing::CreateRayTraceDescriptorSets(VansVKDevice* device, int blasMeshCount)
 {
     VkDescriptorSetLayoutBinding tlasBinding =
     {
@@ -704,7 +714,7 @@ void VansVulkan::VansRayTracing::CreateRayTraceDescriptorSets(VansVKDevice* devi
     m_RayTracingDescriptorSetIsDirty = true;
 }
 
-void VansVulkan::VansRayTracing::CreateGIPointLightDescriptorSets(VansVKDevice* device)
+void VansGraphics::VansRayTracing::CreateGIPointLightDescriptorSets(VansVKDevice* device)
 {
     //光源信息在light manager里面已经创建过了
 
@@ -818,7 +828,7 @@ void VansVulkan::VansRayTracing::CreateGIPointLightDescriptorSets(VansVKDevice* 
     m_GIPointLightDescriptorSetIsDirty = true;
 }
 
-void VansVulkan::VansRayTracing::CreateGISHUpdateDescriptorSets(VansVKDevice* device)
+void VansGraphics::VansRayTracing::CreateGISHUpdateDescriptorSets(VansVKDevice* device)
 {
     //直接光buffer
     VkDescriptorSetLayoutBinding directResult =
@@ -876,7 +886,7 @@ void VansVulkan::VansRayTracing::CreateGISHUpdateDescriptorSets(VansVKDevice* de
     m_GISHUpdateDesctiproeSetIsDirty = true;
 }
 
-void VansVulkan::VansRayTracing::BindRayTracingData(VansVKDevice* device, VansScene* scene)
+void VansGraphics::VansRayTracing::BindRayTracingData(VansVKDevice* device, VansScene* scene)
 {
     if (!m_RayTracingDescriptorSetIsDirty)
     {
@@ -998,8 +1008,8 @@ void VansVulkan::VansRayTracing::BindRayTracingData(VansVKDevice* device, VansSc
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             {
                 {
-                    m_RayTracingResult.GetImage().GetSampler(),
-                    m_RayTracingResult.GetImage().GetImageView(),
+                    m_RayTracingResult->GetImage().GetSampler(),
+                    m_RayTracingResult->GetImage().GetImageView(),
                     VK_IMAGE_LAYOUT_GENERAL
                 }
             }

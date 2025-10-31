@@ -2,13 +2,13 @@
 #include "VansVKDescriptorManager.h"
 #include <iostream>
 
-VansVulkan::VansVKDescriptorManager* VansVulkan::VansVKDescriptorManager::instance = nullptr;
+VansGraphics::VansVKDescriptorManager* VansGraphics::VansVKDescriptorManager::instance = nullptr;
 
-VansVulkan::VansVKDescriptorManager::VansVKDescriptorManager()
+VansGraphics::VansVKDescriptorManager::VansVKDescriptorManager()
 {
 }
 
-void VansVulkan::VansVKDescriptorManager::CreateDescriptorPool(bool free_individual_sets)
+void VansGraphics::VansVKDescriptorManager::CreateDescriptorPool(bool free_individual_sets)
 {
 	//类似command buffer pool，用于allocate descriptor sets
 	//指定最大set数量，以及每个类型额描述符数量
@@ -30,7 +30,7 @@ void VansVulkan::VansVKDescriptorManager::CreateDescriptorPool(bool free_individ
 	}
 }
 
-bool VansVulkan::VansVKDescriptorManager::ResetDescriptorPool()
+bool VansGraphics::VansVKDescriptorManager::ResetDescriptorPool()
 {
 	VkResult result = vkResetDescriptorPool(m_LogicalDevice, m_DescriptorPool, 0);
 	if (VK_SUCCESS != result) {
@@ -40,7 +40,7 @@ bool VansVulkan::VansVKDescriptorManager::ResetDescriptorPool()
 	return true;
 }
 
-void VansVulkan::VansVKDescriptorManager::DestroyDescriptorPool()
+void VansGraphics::VansVKDescriptorManager::DestroyDescriptorPool()
 {
 	if (VK_NULL_HANDLE != m_DescriptorPool)
 	{
@@ -50,7 +50,7 @@ void VansVulkan::VansVKDescriptorManager::DestroyDescriptorPool()
 }
 
 
-bool VansVulkan::VansVKDescriptorManager::CreateDesciptorSetLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings, VkDescriptorSetLayout& descriptor_set_layout)
+bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings, VkDescriptorSetLayout& descriptor_set_layout)
 {
 	//每一个资源都需要被一个descriptor set包含
 	//这里记录了梭有的bingding信息，binding point 和类型
@@ -81,7 +81,7 @@ bool VansVulkan::VansVKDescriptorManager::CreateDesciptorSetLayout(const std::ve
 	return true;
 }
 
-void VansVulkan::VansVKDescriptorManager::DestroyDescriptorSetLayout(VkDescriptorSetLayout& descriptor_set_layout)
+void VansGraphics::VansVKDescriptorManager::DestroyDescriptorSetLayout(VkDescriptorSetLayout& descriptor_set_layout)
 {
 	if (VK_NULL_HANDLE != descriptor_set_layout) 
 	{
@@ -90,7 +90,7 @@ void VansVulkan::VansVKDescriptorManager::DestroyDescriptorSetLayout(VkDescripto
 	}
 }
 
-bool VansVulkan::VansVKDescriptorManager::AllocateDescriptorSet(const std::vector<VkDescriptorSetLayout>& discriptor_set_layout, std::vector<VkDescriptorSet>& descriptor_sets)
+bool VansGraphics::VansVKDescriptorManager::AllocateDescriptorSet(const std::vector<VkDescriptorSetLayout>& discriptor_set_layout, std::vector<VkDescriptorSet>& descriptor_sets)
 {
 	VkDescriptorSetAllocateInfo descriptor_set_allocate_info = 
 	{
@@ -111,7 +111,7 @@ bool VansVulkan::VansVKDescriptorManager::AllocateDescriptorSet(const std::vecto
 	return true;
 }
 
-bool VansVulkan::VansVKDescriptorManager::DestroyDescriptorSet(std::vector<VkDescriptorSet>& descriptor_sets)
+bool VansGraphics::VansVKDescriptorManager::DestroyDescriptorSet(std::vector<VkDescriptorSet>& descriptor_sets)
 {
 	VkResult result = vkFreeDescriptorSets(m_LogicalDevice, m_DescriptorPool, static_cast<uint32_t>(descriptor_sets.size()), descriptor_sets.data());
 	if (VK_SUCCESS != result) 
@@ -124,7 +124,7 @@ bool VansVulkan::VansVKDescriptorManager::DestroyDescriptorSet(std::vector<VkDes
 	return true;
 }
 
-void VansVulkan::VansVKDescriptorManager::UpdateDescriptorSets()
+void VansGraphics::VansVKDescriptorManager::UpdateDescriptorSets()
 {
 	std::vector<VkWriteDescriptorSet> write_descriptors;
 	//TargetArrayElement is the starting element in that array.

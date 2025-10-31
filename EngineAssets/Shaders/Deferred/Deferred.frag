@@ -25,7 +25,7 @@ layout( set = 2, binding = 5 ) uniform sampler3D SHRCoeff;
 layout( set = 2, binding = 6 ) uniform sampler3D SHGCoeff;
 // B通道球谐
 layout( set = 2, binding = 7 ) uniform sampler3D SHBCoeff;
-
+layout( set = 2, binding = 8 ) uniform sampler2D fogResult;
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -45,8 +45,8 @@ vec3 SampleSHColor(vec3 dir)
 
 vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal)
 {
-vec3 inDirectDiffuse = vec3(0);
-    vec3 uvw = (position_world - vec3(-12.5,-12.5 + 6,-12.5)) / vec3(25,25,25);
+    vec3 inDirectDiffuse = vec3(0);
+    vec3 uvw = (position_world - vec3(-10,-10 + 6,-10)) / vec3(20,20,20);
 
     ivec3 texSize = textureSize(SHRCoeff, 0);
     vec3 texPos = uvw * vec3(texSize) - 0.5;
@@ -68,8 +68,11 @@ vec3 inDirectDiffuse = vec3(0);
 
          // Direction weight
         vec3 sampleUVW = (vec3(samplePos) + 0.5) / vec3(texSize);
-        vec3 texelWorld = sampleUVW * vec3(25,25,25) + vec3(-12.5,-12.5 + 6,-12.5);
+        vec3 texelWorld = sampleUVW * vec3(20,20,20) + vec3(-10,-10 + 6,-10);
         float dirWeight = max(dot(normalize(texelWorld - position_world), normal), 0.0);
+
+        // distance weight
+        float distWeight = length(texelWorld - position_world) / 0.25f;
 
         vec4 rCoeff = texelFetch(SHRCoeff, samplePos, 0);
         vec4 gCoeff = texelFetch(SHGCoeff, samplePos, 0);
@@ -163,5 +166,9 @@ void main()
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
     //outColor.rgb = lightResult.ambientSpecular;
+    //混合雾效
+    vec4 fogData = texture(fogResult, fragTexCoord);
+    float fogDensity = fogData.a;
+    outColor.rgb = mix(outColor.rgb, fogData.rgb, fogDensity);
     outColor.a = 1;
 }

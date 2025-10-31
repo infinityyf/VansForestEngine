@@ -53,6 +53,7 @@ layout(set=LightCBBind, binding=0) uniform LightsData
     uint uSpotLightCount;
     uint uShadowAtlasSize;
     uint uShadowAtlasCount;
+    vec4 softShadowParams;
     DirectionLightData uDirectionLight;
     PointLightData uPointLights[MAX_POINT_LIGHTS];
     SpotLightData uSpotLights[MAX_SPOT_LIGHTS];
@@ -119,26 +120,77 @@ float SampleDirectionShadowMap_PCF_Noise(vec3 position_world, sampler2D shadowMa
     vec2 shadowUV = clipCoord.xy * 0.5 + 0.5;
     shadowUV.y = 1.0 - shadowUV.y;
 
-    float shadow = 0.0;
-    float samples = 0.0;
-    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+        // outside shadow map -> treat as lit
+    if (shadowUV.x < 0.0 || shadowUV.x > 1.0 || shadowUV.y < 0.0 || shadowUV.y > 1.0)
+        return 1.0;
 
-    // 随机偏移（可用屏幕坐标或shadowUV作为种子）
-    float noise = RandomInterLeaved(shadowUV * 100.0);
 
-    // 3x3 PCF + 随机扰动
-    for(int x = -1; x <= 1; ++x)
+    ivec2 sz = textureSize(shadowMap, 0);
+    vec2 texelSize = 1.0 / vec2(sz);
+
+    float visibility = 0.0;
+    int count = 0;
+    float sampleCountInverse = 1.0 / float(DISK_SAMPLE_COUNT);
+    float blockSearchRadius = 3.0;
+
+    //pcf radius
+    float receiverDepth = clipCoord.z;
+    float avgBlockerDepth = 0;
+    // noise in range [-0.5, 0.5]
+    float frameIndex = softShadowParams.x;
+    float sampleJitterAngle = RandomInterLeavedWithScale(shadowUV * vec2(sz), frameIndex) * 2.0 * PI;
+    vec2 jitter = vec2(sin(sampleJitterAngle), cos(sampleJitterAngle));
+
+    //计算遮挡物距离
+    for(int i = 0; i < DISK_SAMPLE_COUNT; ++i)
     {
-        for(int y = -1; y <= 1; ++y)
+        float sampleDistNorm = 0;
+        vec2 offset = ComputeFibonacciSpiralDiskSampleClumped(i, sampleCountInverse, sampleDistNorm);
+        //增加Temporal Jitter
+        offset = vec2(offset.x * jitter.y + offset.y * jitter.x, offset.x * -jitter.x + offset.y * jitter.y);
+
+        //搜索半径需要动态调整
+        vec2 sampleCoord = shadowUV + offset * texelSize *blockSearchRadius;
+        sampleCoord = clamp(sampleCoord, vec2(0.0), vec2(1.0));
+
+        float texDepth = texture(shadowMap, sampleCoord).r;
+        if(texDepth < receiverDepth)
         {
-            // 每个采样点加一点噪声扰动
-            vec2 offset = vec2(x, y) + noise;
-            float shadowMapDepth = texture(shadowMap, shadowUV + offset * texelSize).r;
-            shadow += shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
-            samples += 1.0;
+            avgBlockerDepth += texDepth;
+            count++;
         }
     }
-    return shadow / samples;
+    if(count == 0)
+    {
+        avgBlockerDepth = receiverDepth;
+    }
+    else
+    {
+        avgBlockerDepth /= float(count);
+    }
+
+    //计算模糊半径
+    float radius = (receiverDepth - avgBlockerDepth) / 0.05;
+    radius = mix(1.0, 8.0, clamp(radius,0,1));
+
+    
+    for(int i = 0; i < DISK_SAMPLE_COUNT; ++i)
+    {
+        float sampleDistNorm = 0;
+        vec2 offset = ComputeFibonacciSpiralDiskSampleClumped(i, sampleCountInverse, sampleDistNorm);
+        //增加Temporal Jitter
+        offset = vec2(offset.x * jitter.y + offset.y * jitter.x, offset.x * -jitter.x + offset.y * jitter.y);
+
+        //搜索半径需要动态调整
+        vec2 sampleCoord = shadowUV + offset * texelSize * radius;
+        sampleCoord = clamp(sampleCoord, vec2(0.0), vec2(1.0));
+
+        float texDepth = texture(shadowMap, sampleCoord).r;
+        visibility += (texDepth < clipCoord.z) ? 0.0 : 1.0;
+        count++;
+    }
+
+    return visibility / float(count);
 }
 
 float SamplePointShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIndex)

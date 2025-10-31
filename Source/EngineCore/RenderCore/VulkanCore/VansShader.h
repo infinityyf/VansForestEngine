@@ -14,7 +14,7 @@
 #include <unordered_map>
 using namespace VansGraphics;
 
-namespace VansVulkan
+namespace VansGraphics
 {
 	enum ShaderType
 	{
@@ -72,16 +72,14 @@ namespace VansVulkan
 
 		void* GetPushConstantData() { return m_PushConstantData; }
 
+		std::string GetShaderFolder() { return m_ShaderFolder; }
+
 		std::map<VkShaderStageFlagBits, ShaderModuleData> m_ShaderModuleDataMap;
 
 		~VansShader()
 		{
 			DestroyShaderMoulde();
 		}
-
-	public:
-		VkDescriptorSet m_DescriptorSet;
-
 	private:
 		void DestroyShaderMoulde();
 
@@ -90,6 +88,8 @@ namespace VansVulkan
 		bool TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType = ShaderType::Normal);
 
 		VkDevice m_LogicDevice;
+
+		std::string m_ShaderFolder;
 
 	protected:
 

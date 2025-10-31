@@ -13,7 +13,7 @@
 #include <string>
 using namespace VansGraphics;
 
-namespace VansVulkan
+namespace VansGraphics
 {
 	struct IndexBufferParameters
 	{

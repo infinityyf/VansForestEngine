@@ -85,6 +85,8 @@ namespace VansGraphics
 
 		void RegistLightDescriptor(VansLightManager& lightManager);
 
+		bool CheckRenderNodeState();
+
 	public:
 		void virtual CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) {};
 

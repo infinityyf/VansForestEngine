@@ -9,7 +9,7 @@
 #include <vector>
 
 
-namespace VansVulkan
+namespace VansGraphics
 {
 	class VansVKCommandBuffer;
 	class VansVKBuffer;

@@ -1,0 +1,80 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#define CameraCBBind 1
+#define LightCBBind 2
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+#include "../Lights/LightsData.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout( set = 0, binding = 0 ) uniform sampler2D inputPosition;
+layout( set = 0, binding = 1 ) uniform sampler2D mainLightShadowMap;
+layout( set = 0, binding = 2, rgba32f ) uniform image2D fogResult;
+#define SCREEN_SCALE 2
+
+#define VOLUMETRIX_TRACE_STEP 128
+#define VOLUMETRIX_START_OFFSET 0.1
+
+const vec3 c_fogColorUnlit = vec3(0.1,0.5,0.2);
+const vec3 c_fogColorLit = vec3(0.5,0.8,1.0);
+const float c_fogDensity = 0.002;
+const float c_fogHeight = 5.0f;
+
+vec3 GetSunScattering(vec3 samplePosition, vec3 sunLightDirection,float shadow, float phase)
+{
+    float fogThickness = max(c_fogHeight - samplePosition.y,0) / max(1.0f,abs(sunLightDirection.y));
+
+    vec3 sunLighting = uDirectionLight.color.xyz * shadow * phase * HALF_PI;
+
+    return sunLighting * exp2(-c_fogDensity * fogThickness);
+}
+
+
+void main() 
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    
+    // calculate how much of the ray is in direct light by taking a fixed number of steps down the ray
+    // and calculating the percent.
+    // Note: in a rasterizer, you'd replace the RayVsScene raytracing with a shadow map lookup!
+    vec3 cameraPositionWS = cameraPosition.xyz;
+    vec3 positionWS = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0).xyz;
+
+    float positionDistance = length(positionWS - cameraPositionWS);
+    vec3 viewDirection = normalize(positionWS - cameraPositionWS);
+    vec3 rayDir = uDirectionLight.direction.xyz;
+
+    float fogTransmittance = 1.0f;
+    float stepLength = positionDistance / float(VOLUMETRIX_TRACE_STEP);
+    vec3 sunLightScattering = vec3(0.0);
+
+    float lDotW = dot(rayDir, viewDirection);
+    float phase = phase2Lobes(lDotW);
+
+    for (int i = 0; i < VOLUMETRIX_TRACE_STEP; ++i)
+    {
+        vec3 testPos = cameraPositionWS + viewDirection * stepLength * (float(i) + VOLUMETRIX_START_OFFSET);
+        
+        if(testPos.y > c_fogHeight)
+            continue;
+
+        //计算是否处于阴影
+        float shadow = 1.0;
+        vec4 lightSpacePos = uDirectionLight.shadowMatrix * vec4(testPos, 1.0);
+        lightSpacePos.z = lightSpacePos.z * 0.5 + 0.5;
+        vec2 shadowUV = lightSpacePos.xy * 0.5 + 0.5;
+        shadowUV.y = 1.0 - shadowUV.y;
+
+        float shadowMapDepth = texture(mainLightShadowMap, shadowUV).r;
+        if (shadowMapDepth < lightSpacePos.z - DEPTH_BIAS)
+        {
+            shadow = 0.0;
+        }
+
+        sunLightScattering += GetSunScattering(testPos, rayDir, shadow, phase) * fogTransmittance;
+        fogTransmittance *= exp2(-stepLength * c_fogDensity);
+    }
+
+    imageStore(fogResult, pixelCoord, vec4(sunLightScattering,1 - fogTransmittance));
+
+}

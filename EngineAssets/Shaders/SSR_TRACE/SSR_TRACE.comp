@@ -11,7 +11,7 @@ layout( set = 0, binding = 2 ) uniform sampler2D inputPosition;
 layout( set = 0, binding = 3 ) uniform sampler2D inputHIZ;
 layout( set = 0, binding = 4, rgba32f ) uniform image2D traceHit;
 layout( set = 0, binding = 5, rgba32f ) uniform image2D tracePDF;
-
+#define SCREEN_SCALE 2
 void main() 
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
@@ -32,7 +32,7 @@ void main()
     if(roughness > 0.1)
     {
         vec2 random = HashRandom(pixelCoord, float(int(FrameIndex) % 100));
-        random *= 0.3;
+        random.y *= roughness * 0.3;
         vec4 pdfrandom = ImportanceSampleGGX(random, roughness);
         tracePDFInfo.a = pdfrandom.w; // PDF值
 
@@ -46,6 +46,8 @@ void main()
         traceDirection = reflect(-viewDirection, normal);
     }
     
+        
+    vec3 lastTracePos = position;
 
     for(int stepIndex = 1; stepIndex < SSR_MAX_COUNT ; stepIndex++)
     {
@@ -71,12 +73,44 @@ void main()
         // && traceDepth - sceneDepth < SSR_DEPTH_THRESHOLD
         if(traceDepth > sceneDepth)
         {
-            traceHitInfo.xy = screenPos;
-            traceHitInfo.z  = traceDepth; // 存储深度
-            traceHitInfo.w = 1.0;
-            tracePDFInfo.xyz = sceneNormal;
-            break;
+            // 命中：从上一追踪位置开始，用更小步长细化寻找
+            float fineStep = SSR_MAX_STEP * SSR_FINE_FACTOR;
+            vec3  refinePos = lastTracePos;
+
+            for (int r = 0; r < SSR_REFINE_STEPS; ++r)
+            {
+                refinePos += traceDirection * fineStep;
+
+                vec4 rv  = LastViewMatrix * vec4(refinePos, 1.0);
+                float rd = -rv.z;
+
+                vec4 rc  = LastProjectionMatrix * rv;
+                vec2 ruv = (rc.xy / rc.w) * 0.5 + 0.5;
+                ruv.y    = 1.0 - ruv.y;
+
+                if (ruv.x < 0.0 || ruv.x > 1.0 || ruv.y < 0.0 || ruv.y > 1.0)
+                    break;
+
+                float sDepth = texelFetch(inputPosition, ivec2(ruv * ScreenParams.xy), 0).w;
+                vec3  sNorm  = texelFetch(inputNormal,   ivec2(ruv * ScreenParams.xy), 0).xyz;
+
+                if (rd > sDepth)
+                {
+                    traceHitInfo.xy = ruv;
+                    traceHitInfo.z  = rd;
+                    traceHitInfo.w  = 1.0;
+                    tracePDFInfo.xyz = sNorm;
+                    break;
+                }
+            }
+
+            // 若细化找到命中，退出外层循环
+            if (traceHitInfo.w > 0.5)
+                break;
         }
+
+        // 保存本次位置供下一轮细化参考
+        lastTracePos = tracePosition;
     }
 
     imageStore(traceHit, pixelCoord, traceHitInfo); // 初始化为0

@@ -8,7 +8,9 @@
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 layout( set = 0, binding = 0 ) uniform sampler2D inputColor;
 layout( set = 0, binding = 1 ) uniform sampler2D inputPosition;
-layout( set = 0, binding = 2, rgba32f ) uniform image2D aaResult;
+layout( set = 0, binding = 2, rgba32f ) uniform image2D aaResultA;
+layout( set = 0, binding = 3, rgba32f ) uniform image2D aaResultB;
+layout( set = 0, binding = 4, rgba32f ) uniform image2D aaResult;
 
 #define SCREEN_SCALE 2
 
@@ -94,12 +96,22 @@ void main()
 	/////Clamp TemporalColor
     vec2 prevUV = clamp(uv - Ray_Velocity, vec2(0.0), vec2(1.0));
     ivec2 prevPixel = ivec2((prevUV * ScreenParams.xy / SCREEN_SCALE));
-	vec4 SSR_PrevColor = texelFetch(inputColor, prevPixel, 0);
+
+    int frameIndex = int(FrameIndex) % 2;
+	vec4 SSR_PrevColor = frameIndex == 0 ? imageLoad(aaResultA, prevPixel) : imageLoad(aaResultB, prevPixel);
 
 	//half4 SSR_PrevColor = Bilateralfilter(_SSR_TemporalPrev_RT, UV - Velocity, _SSR_ScreenSize.xy);
-	SSR_PrevColor = clamp(SSR_PrevColor, SSR_MinColor, SSR_MaxColor);
+	//SSR_PrevColor = clamp(SSR_PrevColor, SSR_MinColor, SSR_MaxColor);
 
 	/////Combine TemporalColor
-	vec4 ReflectionColor = mix(SSR_CurrColor, SSR_PrevColor, 0.2);
+	vec4 ReflectionColor = mix(SSR_CurrColor, SSR_PrevColor, 0.5);
+    if(frameIndex == 0)
+    {
+        imageStore(aaResultB, pixelCoord, vec4(ReflectionColor.rgb,1.0));
+    }
+    else
+    {
+        imageStore(aaResultA, pixelCoord, vec4(ReflectionColor.rgb,1.0));
+    }
     imageStore(aaResult, pixelCoord, vec4(ReflectionColor.rgb,1.0));
 }

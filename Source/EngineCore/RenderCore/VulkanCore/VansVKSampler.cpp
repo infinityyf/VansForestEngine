@@ -2,7 +2,7 @@
 #include "VansVKSampler.h"
 #include <iostream>
 
-bool VansVulkan::VansVKSampler::CreateSampler(
+bool VansGraphics::VansVKSampler::CreateSampler(
 	VkDevice&				logical_device,
 	VkSampler&				sampler,
 	VkFilter                magFilter,
@@ -53,7 +53,7 @@ bool VansVulkan::VansVKSampler::CreateSampler(
 	return true;
 }
 
-void VansVulkan::VansVKSampler::DestroySampler(VkDevice& logical_device, VkSampler& sampler)
+void VansGraphics::VansVKSampler::DestroySampler(VkDevice& logical_device, VkSampler& sampler)
 {
 	if (VK_NULL_HANDLE != sampler)
 	{

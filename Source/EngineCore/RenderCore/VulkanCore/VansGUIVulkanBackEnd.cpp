@@ -8,7 +8,7 @@
 
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 
-void VansVulkan::VansVulkanGUIBackEnd::InitBackEnd(VansGraphicsDevice& device, GLFWwindow* window)
+void VansGraphics::VansGraphicsGUIBackEnd::InitBackEnd(VansGraphicsDevice& device, GLFWwindow* window)
 {
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(&device);
 

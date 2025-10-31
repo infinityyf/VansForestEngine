@@ -6,9 +6,9 @@
 #include "VansVKDevice.h"
 #include <iostream>
 
-VansVulkan::VansVKMemoryManager* VansVulkan::VansVKMemoryManager::instance = nullptr;
+VansGraphics::VansVKMemoryManager* VansGraphics::VansVKMemoryManager::instance = nullptr;
 
-bool VansVulkan::VansVKMemoryManager::AllocateMemory(VkMemoryRequirements& requires, VkDeviceMemory& memory, VkMemoryPropertyFlags memory_properties, bool needAddressable)
+bool VansGraphics::VansVKMemoryManager::AllocateMemory(VkMemoryRequirements& requires, VkDeviceMemory& memory, VkMemoryPropertyFlags memory_properties, bool needAddressable)
 {
 	for (uint32_t type = 0; type < m_MemoryProperties.memoryTypeCount; ++type) 
 	{
@@ -42,7 +42,7 @@ bool VansVulkan::VansVKMemoryManager::AllocateMemory(VkMemoryRequirements& requi
 	return false;
 }
 
-void VansVulkan::VansVKMemoryManager::BindDevice(VkCommandBuffer& commandBuffer, VansVKDevice& device)
+void VansGraphics::VansVKMemoryManager::BindDevice(VkCommandBuffer& commandBuffer, VansVKDevice& device)
 {
 	m_PhysicalDevice = device.GetPhysicalDevice();
 	m_LogicalDevice = device.GetLogicDevice();
@@ -51,7 +51,7 @@ void VansVulkan::VansVKMemoryManager::BindDevice(VkCommandBuffer& commandBuffer,
 	vkGetPhysicalDeviceMemoryProperties(m_PhysicalDevice, &m_MemoryProperties);
 }
 
-void VansVulkan::VansVKMemoryManager::FreeMemory(VkDeviceMemory& memory)
+void VansGraphics::VansVKMemoryManager::FreeMemory(VkDeviceMemory& memory)
 {
 	if (VK_NULL_HANDLE != memory)
 	{
@@ -64,7 +64,7 @@ void VansVulkan::VansVKMemoryManager::FreeMemory(VkDeviceMemory& memory)
 //vkCmdpipelineBarrier只是提供了一个显式的依赖执行的约束，而memory的依赖需要memory barrier，传给vkCmdpipelineBarrier
 //否则不能解决缓存可见性问题
 //内存管理（layout比较直观的讲解）https://zhuanlan.zhihu.com/p/166387973
-void VansVulkan::VansVKMemoryManager::SetBufferMemoryBarrier(
+void VansGraphics::VansVKMemoryManager::SetBufferMemoryBarrier(
 	std::vector<VkBufferMemoryBarrier>& bufferMemoryBarriers, 
 	VkPipelineStageFlags generating_stages,
 	VkPipelineStageFlags consuming_stages)
@@ -78,7 +78,7 @@ void VansVulkan::VansVKMemoryManager::SetBufferMemoryBarrier(
 	}
 }
 
-void VansVulkan::VansVKMemoryManager::SetImageMemoryBarrier(
+void VansGraphics::VansVKMemoryManager::SetImageMemoryBarrier(
 	std::vector<VkImageMemoryBarrier>& imageMemoryBarriers,
 	VkPipelineStageFlags generating_stages,
 	VkPipelineStageFlags consuming_stages)
@@ -93,7 +93,7 @@ void VansVulkan::VansVKMemoryManager::SetImageMemoryBarrier(
 	}
 }
 
-bool VansVulkan::VansVKMemoryManager::MapMemoryFromHost(VkDeviceMemory& memory, VkDeviceSize offset, VkDeviceSize size, void* host_data, bool upmap_immediate)
+bool VansGraphics::VansVKMemoryManager::MapMemoryFromHost(VkDeviceMemory& memory, VkDeviceSize offset, VkDeviceSize size, void* host_data, bool upmap_immediate)
 {
 	VkResult result;
 	void* local_pointer;
@@ -135,12 +135,12 @@ bool VansVulkan::VansVKMemoryManager::MapMemoryFromHost(VkDeviceMemory& memory, 
 	return true;
 }
 
-VansVulkan::VansVKMemoryManager::VansVKMemoryManager()
+VansGraphics::VansVKMemoryManager::VansVKMemoryManager()
 {
 
 }
 
-void VansVulkan::VansVKMemoryManager::CopyBufferData(VansVKCommandBuffer& command_buffer, VansVKBuffer& source_buffer, VansVKBuffer& dest_buffer, const std::vector<VkBufferCopy>& regions)
+void VansGraphics::VansVKMemoryManager::CopyBufferData(VansVKCommandBuffer& command_buffer, VansVKBuffer& source_buffer, VansVKBuffer& dest_buffer, const std::vector<VkBufferCopy>& regions)
 {
 	if (regions.size() > 0)
 	{
@@ -148,7 +148,7 @@ void VansVulkan::VansVKMemoryManager::CopyBufferData(VansVKCommandBuffer& comman
 	}
 }
 
-void VansVulkan::VansVKMemoryManager::CopyBufferToImage(VansVKCommandBuffer& command_buffer, VansVKBuffer& source_buffer, VansVKImage& dest_image, VkImageLayout layout, const std::vector<VkBufferImageCopy>& regions)
+void VansGraphics::VansVKMemoryManager::CopyBufferToImage(VansVKCommandBuffer& command_buffer, VansVKBuffer& source_buffer, VansVKImage& dest_image, VkImageLayout layout, const std::vector<VkBufferImageCopy>& regions)
 {
 	if (regions.size() > 0) 
 	{
@@ -156,7 +156,7 @@ void VansVulkan::VansVKMemoryManager::CopyBufferToImage(VansVKCommandBuffer& com
 	}
 }
 
-void VansVulkan::VansVKMemoryManager::CopyImageToBuffer(VansVKCommandBuffer& command_buffer, VansVKImage& source_image, VansVKBuffer& dest_buffer, VkImageLayout layout, const std::vector<VkBufferImageCopy>& regions)
+void VansGraphics::VansVKMemoryManager::CopyImageToBuffer(VansVKCommandBuffer& command_buffer, VansVKImage& source_image, VansVKBuffer& dest_buffer, VkImageLayout layout, const std::vector<VkBufferImageCopy>& regions)
 {
 	if (regions.size() > 0) 
 	{

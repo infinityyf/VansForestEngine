@@ -2,7 +2,7 @@
 #include "../VansCommonUtils.h"
 #include "../VulkanCore/VansVKBuffer.h"
 #include <vector>
-using namespace VansVulkan;
+using namespace VansGraphics;
 
 namespace VansGraphics
 {
@@ -58,6 +58,7 @@ namespace VansGraphics
 		std::vector<VansSpotLight> m_SpotLights;
 
 		uint32_t m_LightCounts[4];
+		float m_SoftShadowParams[4];
 
 		VansVKBuffer m_LightBuffer;
 

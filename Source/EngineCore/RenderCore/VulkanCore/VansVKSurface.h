@@ -13,7 +13,7 @@
 
 #include "VansVKImage.h"
 
-namespace VansVulkan
+namespace VansGraphics
 {
 	struct VansSwapChainCreateParams
 	{

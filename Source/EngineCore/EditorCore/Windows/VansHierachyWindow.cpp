@@ -107,16 +107,6 @@ void VansGraphics::VansHierachuWindow::DrawAtmosphereParameters(VansAtmospherePB
 
 void VansGraphics::VansHierachuWindow::ShowWindow(VansVKDevice& device)
 {
-    //ªÊ÷∆menu bar
-    ImGui::Begin("Another Window", &m_TestButton);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-    ImGui::Text("Hello from another window!");
-    if (ImGui::Button("Close Me"))
-    {
-        m_TestButton = false;
-    }
-
-    ImGui::End();
-    
     DrawRenderNodeList();
 
     DrawRenderNodeDetail();

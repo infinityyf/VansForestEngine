@@ -128,8 +128,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
-    ImGui::ShowDemoWindow();
-
+    
     //绘制所有窗口
     for (VansBaseWindowComponent* window : m_Windows)
     {
@@ -199,7 +198,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // Rendering
         camera.Rendering();
 
-        m_ScriptContext.VansScriptUpdate();
+        //m_ScriptContext.VansScriptUpdate();
         //UI Pass
         DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));
 

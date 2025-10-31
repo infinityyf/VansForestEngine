@@ -6,19 +6,87 @@
 #include "VansVKDevice.h"
 
 #include "../../Util/VansFileUtil.h"
+//#include "spirv_cross/spirv_cross.hpp"
+//#include "spirv_cross/spirv_glsl.hpp"
+
 #include <iostream>
 #include <cstdlib>
 
+//static std::vector<uint32_t> ToUint32Words(const std::vector<unsigned char>& bytes)
+//{
+//	if (bytes.size() % sizeof(uint32_t) != 0)
+//		throw std::runtime_error("SPIR-V size is not a multiple of 4 bytes");
+//	std::vector<uint32_t> words(bytes.size() / sizeof(uint32_t));
+//	memcpy(words.data(), bytes.data(), bytes.size());
+//	return words;
+//}
+//
+//void ReflectShaderResources(const std::vector<uint32_t>& spirv_words)
+//{
+//	if (spirv_words.empty() || spirv_words[0] != 0x07230203u) 
+//	{
+//		std::cerr << "Invalid SPIR-V (bad magic/empty)\n";
+//		return;
+//	}
+//
+//	// 1. Initialize SPIRV-Cross
+//	spirv_cross::Compiler compiler(spirv_words);
+//
+//	// 2. Get a list of all shader resources
+//	spirv_cross::ShaderResources resources = compiler.get_shader_resources();
+//
+//	//std::cout << "--- Uniform Buffers ---" << std::endl;
+//	//for (const auto& resource : resources.uniform_buffers) 
+//	//{
+//	//	// Get resource info
+//	//	std::string name = compiler.get_name(resource.id);
+//	//	uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
+//	//	uint32_t set = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
+//
+//	//	// Get buffer size and member info
+//	//	const auto& type = compiler.get_type(resource.base_type_id);
+//	//	size_t buffer_size = compiler.get_declared_struct_size(type);
+//
+//	//	std::cout << "UBO: " << name
+//	//		<< " | Set: " << set
+//	//		<< " | Binding: " << binding
+//	//		<< " | Size: " << buffer_size << " bytes" << std::endl;
+//	//}
+//
+//	//std::cout << "\n--- Sampled Images (Textures) ---" << std::endl;
+//	//for (const auto& resource : resources.sampled_images) 
+//	//{
+//	//	std::string name = compiler.get_name(resource.id);
+//	//	uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
+//	//	uint32_t set = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
+//
+//	//	std::cout << "Texture: " << name
+//	//		<< " | Set: " << set
+//	//		<< " | Binding: " << binding << std::endl;
+//	//}
+//
+//	//std::cout << "\n--- Stage Outputs ---" << std::endl;
+//	//for (const auto& resource : resources.stage_outputs) 
+//	//{
+//	//	std::string name = compiler.get_name(resource.id);
+//	//	uint32_t location = compiler.get_decoration(resource.id, spv::DecorationLocation);
+//
+//	//	std::cout << "Output: " << name
+//	//		<< " | Location: " << location << std::endl;
+//	//}
+//}
 
-bool VansVulkan::VansShader::InitShader(VkDevice& logic_device, const std::string& shader_folder)
+
+bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::string& shader_folder)
 {
-	std::string shader_folder_string = shader_folder;
+	m_ShaderFolder = shader_folder;
 
 	//如果是延迟管线需要切换使用的shader
-	bool supportDeferred = SwitchToDeferredShaderPath(shader_folder_string);
+	bool supportDeferred = SwitchToDeferredShaderPath(m_ShaderFolder);
+	
 	m_SupportMRTOutput = supportDeferred;
 
-	bool result = TranslateToSPIRV(shader_folder_string);
+	bool result = TranslateToSPIRV(m_ShaderFolder);
 	if (!result)
 	{
 		std::cout << "shader translation failed" << std::endl;
@@ -41,7 +109,7 @@ bool VansVulkan::VansShader::InitShader(VkDevice& logic_device, const std::strin
 	return true;
 }
 
-bool VansVulkan::VansShader::InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder)
+bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder)
 {
 	std::string shader_folder_string = shader_folder;
 	bool result = TranslateToSPIRV(shader_folder_string, ShaderType::RayTracing);
@@ -65,14 +133,14 @@ bool VansVulkan::VansShader::InitRayTracingShader(VkDevice& logic_device, const 
 	return true;
 }
 
-bool VansVulkan::VansShader::CheckRefreshShader(VkDevice& logic_device)
+bool VansGraphics::VansShader::CheckRefreshShader(VkDevice& logic_device)
 {
 	return false;
 }
 
 
 
-bool VansVulkan::VansShader::TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType)
+bool VansGraphics::VansShader::TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType)
 {
 	//根据路径下文件后缀先读取源glsl
 	std::vector<std::string> shader_files = GetFilesInFolder(shader_folder);
@@ -82,6 +150,7 @@ bool VansVulkan::VansShader::TranslateToSPIRV(const std::string& shader_folder, 
 		std::cout << "no shader files found:" << shader_folder << std::endl;
 		return false;
 	}
+	m_ShaderModuleDataMap.clear();
 
 	//根据文件后缀找到对应的shader类型生成module data
 	for (auto& shader_file : shader_files)
@@ -94,7 +163,7 @@ bool VansVulkan::VansShader::TranslateToSPIRV(const std::string& shader_folder, 
 
 		switch (shaderType)
 		{
-		case VansVulkan::Normal:
+		case VansGraphics::Normal:
 			{
 				auto shader_type_iter = m_ShaderTypeMap.find(shader_type);
 				if (shader_type_iter == m_ShaderTypeMap.end())
@@ -109,7 +178,7 @@ bool VansVulkan::VansShader::TranslateToSPIRV(const std::string& shader_folder, 
 				m_ShaderModuleDataMap[shader_stage] = shader_module_data;
 			}
 			break;
-		case VansVulkan::RayTracing:
+		case VansGraphics::RayTracing:
 			{
 				auto shader_type_iter = m_RayTracingShaderTypeMap.find(shader_type);
 				if (shader_type_iter == m_RayTracingShaderTypeMap.end())
@@ -166,7 +235,7 @@ bool VansVulkan::VansShader::TranslateToSPIRV(const std::string& shader_folder, 
 	return true;
 }
 
-void VansVulkan::VansShader::DestroyShaderMoulde()
+void VansGraphics::VansShader::DestroyShaderMoulde()
 {
 	//编译data map destroy shader module data
 	for (auto& shader_module_data : m_ShaderModuleDataMap)
@@ -175,7 +244,7 @@ void VansVulkan::VansShader::DestroyShaderMoulde()
 	}
 }
 
-bool VansVulkan::VansShader::CreateShaderModule(VkDevice& logic_device)
+bool VansGraphics::VansShader::CreateShaderModule(VkDevice& logic_device)
 {
 	//遍历所有的module data
 	for (auto& shader_module_data : m_ShaderModuleDataMap)
@@ -194,11 +263,15 @@ bool VansVulkan::VansShader::CreateShaderModule(VkDevice& logic_device)
 			std::cout << "Could not create a shader module." << std::endl;
 			return false;
 		}
+
+		//// Convert bytes -> words (aligned)
+		//std::vector<uint32_t> spirv_words = ToUint32Words(shader_module_data.second.m_ShaderSPIRVCode);
+		//ReflectShaderResources(spirv_words);
 	}
 	return true;
 }
 
-VansVulkan::VansVKGraphicsPipeline* VansVulkan::VansGraphicsShader::GetGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data,const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
+VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data,const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
 	if (m_GraphicsPipeline != VK_NULL_HANDLE)
 	{
@@ -224,7 +297,7 @@ VansVulkan::VansVKGraphicsPipeline* VansVulkan::VansGraphicsShader::GetGraphicsP
 	return m_GraphicsPipeline;
 }
 
-void VansVulkan::VansGraphicsShader::SetDrawStateData(VkBool32 depthTestEnable, VkBool32 depthWriteEnable, VkCompareOp depthCompareOp, VkCullModeFlags cullmode)
+void VansGraphics::VansGraphicsShader::SetDrawStateData(VkBool32 depthTestEnable, VkBool32 depthWriteEnable, VkCompareOp depthCompareOp, VkCullModeFlags cullmode)
 {
 	m_DrawStateData.depthTestEnable = depthTestEnable;
 	m_DrawStateData.depthWriteEnable = depthWriteEnable;
@@ -272,7 +345,7 @@ void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>&
 	}
 }
 
-void VansVulkan::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& global_state_data)
+void VansGraphics::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& global_state_data)
 {
 	bool enableDeferred = m_SupportMRTOutput;
 
@@ -369,7 +442,7 @@ void VansVulkan::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& gl
 	InitAttachmentBlendStates(m_GraphicsPipelineCreateInfo.attachment_blend_states, enableDeferred);
 }
 
-bool VansVulkan::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data)
+bool VansGraphics::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data)
 {
 	if (m_GraphicsPipeline == nullptr)
 	{
@@ -386,7 +459,7 @@ bool VansVulkan::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_devi
 }
 
 
-VansVulkan::VansVKComputePipeline* VansVulkan::VansComputeShader::GetComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
+VansGraphics::VansVKComputePipeline* VansGraphics::VansComputeShader::GetComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
 	if (m_ComputePipeline != VK_NULL_HANDLE)
 	{
@@ -401,7 +474,7 @@ VansVulkan::VansVKComputePipeline* VansVulkan::VansComputeShader::GetComputePipe
 	return m_ComputePipeline;
 }
 
-bool VansVulkan::VansComputeShader::CreateComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
+bool VansGraphics::VansComputeShader::CreateComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
 	if (m_ComputePipeline == nullptr)
 	{
@@ -439,7 +512,7 @@ bool VansVulkan::VansComputeShader::CreateComputePipeline(VkDevice& logic_device
 	return m_ComputePipeline->CreateComputePipeline(logic_device, compute_shader_stage, VK_NULL_HANDLE, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr);
 }
 
-VansVulkan::VansVKRayTracingPipeline* VansVulkan::VansRayTracingShader::GetRayTracingPipeline(VansVKDevice* device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
+VansGraphics::VansVKRayTracingPipeline* VansGraphics::VansRayTracingShader::GetRayTracingPipeline(VansVKDevice* device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
 	m_LogicDevice = device->GetLogicDevice();
 	if (m_VansVkRayTracingPipeline != VK_NULL_HANDLE)
@@ -460,7 +533,7 @@ VansVulkan::VansVKRayTracingPipeline* VansVulkan::VansRayTracingShader::GetRayTr
 	return m_VansVkRayTracingPipeline;
 }
 
-void VansVulkan::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* device)
+void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* device)
 {
 	//Shader Binding Table(SBT) : 
 	//the structure that makes this runtime shader selection possible.
@@ -554,7 +627,7 @@ void VansVulkan::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* de
 		m_VansVkRayTracingPipeline->m_MissShaderBindingTable.size;
 }
 
-bool VansVulkan::VansRayTracingShader::CreateRayTracingPipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
+bool VansGraphics::VansRayTracingShader::CreateRayTracingPipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
 	if (m_VansVkRayTracingPipeline == nullptr)
 	{

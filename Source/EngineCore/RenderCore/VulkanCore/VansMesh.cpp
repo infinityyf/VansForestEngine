@@ -7,7 +7,7 @@
 #include <assimp/postprocess.h>
 
 
-VansVulkan::VertexBufferParameters VansVulkan::VansMesh::GetVertexBufferParameter()
+VansGraphics::VertexBufferParameters VansGraphics::VansMesh::GetVertexBufferParameter()
 {
 	VertexBufferParameters p = 
 	{ 
@@ -18,7 +18,7 @@ VansVulkan::VertexBufferParameters VansVulkan::VansMesh::GetVertexBufferParamete
 }
 
 
-VansVulkan::IndexBufferParameters VansVulkan::VansMesh::GetIndexBufferParameter()
+VansGraphics::IndexBufferParameters VansGraphics::VansMesh::GetIndexBufferParameter()
 {
 	IndexBufferParameters p =
 	{
@@ -99,7 +99,7 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<float>& meshRaw
 	}
 }
 
-void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& file_name, bool import_tangent, bool supportRayTracing)
+void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& file_name, bool import_tangent, bool supportRayTracing)
 {
 	std::cout << "Load Mesh : " << file_name << std::endl;
 	m_LogicalDevice = logic_device;
@@ -215,7 +215,7 @@ void VansVulkan::VansMesh::LoadMesh(VkDevice& logic_device, const std::string& f
 
 }
 
-void VansVulkan::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer)
+void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer)
 {
 	// 获取顶点缓冲区地址
 	VkBufferDeviceAddressInfo addressInfo{};
@@ -305,7 +305,7 @@ void VansVulkan::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& co
 	vkCmdBuildAccelerationStructuresKHR(commandBuffer, 1, &buildGeometryInfo, &pRangeInfo);
 }
 
-void VansVulkan::VansMesh::ReleaseASTempData(VkDevice& logic_device)
+void VansGraphics::VansMesh::ReleaseASTempData(VkDevice& logic_device)
 {
 	m_BLASScratchBuffer.DestroyVulkanBuffer(logic_device);
 }

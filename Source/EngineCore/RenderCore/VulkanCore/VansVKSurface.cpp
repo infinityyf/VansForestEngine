@@ -4,7 +4,7 @@
 #include <iostream>
 #include <vector>
 
-namespace VansVulkan
+namespace VansGraphics
 {
 
 	bool VansVKSurface::CheckVulkanSurfacePresentMode(VkPhysicalDevice& physical_device, VkPresentModeKHR& desired_present_mode)
