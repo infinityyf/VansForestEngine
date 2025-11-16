@@ -133,7 +133,7 @@ void main()
     {
         // 获取采样方向
         vec3 dir = SampleSphere(s,SH_SAMPLE_COUNT);
-        
+    
         // 从立方体贴图采样颜色 (假设是线性空间颜色)
         vec3 color = texture(inputCubemap, dir).rgb;
         

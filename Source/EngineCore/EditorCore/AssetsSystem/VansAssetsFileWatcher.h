@@ -28,7 +28,7 @@ private:
     std::unordered_map<std::string, std::unordered_map<std::string, FILETIME> > m_Snapshots;
 
     // 每个文件夹对应一个可在线程间共享的 updated 标志
-    std::unordered_map<std::string, std::shared_ptr<std::atomic<bool>>> m_UpdatedFlags;
+    std::unordered_map<std::string, std::atomic<bool>> m_UpdatedFlags;
 
 
     std::thread m_WatchThread;
@@ -43,9 +43,19 @@ private:
         HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);
         if (hFind == INVALID_HANDLE_VALUE) return snap;
         do {
-            if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) 
+            if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
             {
-                snap[findData.cFileName] = findData.ftLastWriteTime;
+                std::string fileName = findData.cFileName;
+
+                // 跳过以 .spv 结尾的文件（不区分大小写）
+                if (fileName.size() >= 4) {
+                    const char* tail = fileName.c_str() + fileName.size() - 4;
+                    if (lstrcmpiA(tail, ".spv") == 0) {
+                        continue;
+                    }
+                }
+
+                snap[fileName] = findData.ftLastWriteTime;
             }
         } 
         while (FindNextFileA(hFind, &findData));
@@ -63,7 +73,7 @@ public:
         m_Folders.push_back(folder);
         m_Snapshots[folder] = SnapshotFolder(folder);
         // 初始化该文件夹的 updated 标志为 false
-        m_UpdatedFlags[folder] = std::make_shared<std::atomic<bool>>(false);
+        m_UpdatedFlags[folder].store(false, std::memory_order_relaxed);
     }
 
     void RemoveWatch(const std::string& folder) 
@@ -103,9 +113,9 @@ public:
                     if (anyChanged)
                     {
                         auto fit = m_UpdatedFlags.find(folder);
-                        if (fit != m_UpdatedFlags.end() && fit->second)
+                        if (fit != m_UpdatedFlags.end())
                         {
-                            fit->second->store(true, std::memory_order_release);
+                            fit->second.store(true, std::memory_order_release);
                         }
                     }
                 }
@@ -122,51 +132,23 @@ public:
         }
     }
 
-        // 仅检查，不清除
-    bool IsUpdated(const std::string& folder)
-    {
-        std::shared_ptr<std::atomic<bool>> flag;
-        {
-            std::lock_guard<std::mutex> lock(m_Mutex);
-            auto it = m_UpdatedFlags.find(folder);
-            if (it != m_UpdatedFlags.end()) flag = it->second;
-        }
-        return flag ? flag->load(std::memory_order_acquire) : false;
-    }
 
     // 读取并清除（常用于“消费一次更新事件”）
     bool ConsumeUpdated(const std::string& folder)
     {
-        std::shared_ptr<std::atomic<bool>> flag;
+        bool result = false;
         {
+            std::atomic<bool> flag;
             std::lock_guard<std::mutex> lock(m_Mutex);
             auto it = m_UpdatedFlags.find(folder);
-            if (it != m_UpdatedFlags.end()) flag = it->second;
+            if (it != m_UpdatedFlags.end())
+            {
+                result = it->second.exchange(false, std::memory_order_acq_rel);
+            }
+            
         }
-        if (!flag) return false;
-        return flag->exchange(false, std::memory_order_acq_rel);
+        return result;
     }
-
-    // 主动清除
-    void ClearUpdated(const std::string& folder)
-    {
-        std::shared_ptr<std::atomic<bool>> flag;
-        {
-            std::lock_guard<std::mutex> lock(m_Mutex);
-            auto it = m_UpdatedFlags.find(folder);
-            if (it != m_UpdatedFlags.end()) flag = it->second;
-        }
-        if (flag) flag->store(false, std::memory_order_release);
-    }
-
-    // 可选：获取该标志的共享指针，shader 对象可持有并直接轮询
-    std::shared_ptr<std::atomic<bool>> GetUpdatedFlag(const std::string& folder)
-    {
-        std::lock_guard<std::mutex> lock(m_Mutex);
-        auto it = m_UpdatedFlags.find(folder);
-        return (it != m_UpdatedFlags.end()) ? it->second : nullptr;
-    }
-
 
     ~VansAssetsFileWatcher()
     { 

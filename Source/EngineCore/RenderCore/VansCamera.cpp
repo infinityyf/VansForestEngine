@@ -74,20 +74,53 @@ glm::vec4 VansGraphics::VansCamera::GetUp()
 
 void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix)
 {
-    m_CameraData.CameraPosition = glm::vec4(m_Position.x, m_Position.y, m_Position.z,1.0f);
-    m_CameraData.CameraDirection = glm::vec4(-view_matrix[2]);
-    m_CameraData.LastViewMatrix = m_CameraData.ViewMatrix;
-    m_CameraData.LastProjectionMatrix = m_CameraData.ProjectionMatrix;
-    m_CameraData.ViewMatrix = view_matrix;
-    m_CameraData.ProjectionMatrix = projective_matrix;
+// Sub‑pixel jitter (Halton 2,3) for TAA / upscale
+    auto halton = [](uint32_t i, uint32_t b)->float {
+        float f = 1.0f;
+        float r = 0.0f;
+        uint32_t x = i;
+        while (x > 0) {
+            f /= float(b);
+            r += f * float(x % b);
+            x /= b;
+        }
+        return r;
+    };
 
-	float width = m_RenderDevice->GetNativeRenderWidth();
-	float height = m_RenderDevice->GetNativeRenderHeight();
-	m_CameraData.ScreenParams = glm::vec4(width, height, 1 / width, 1 / height);
+    float width  = m_RenderDevice->GetNativeRenderWidth();
+    float height = m_RenderDevice->GetNativeRenderHeight();
+
+    uint32_t seqIndex = m_RenderFrameIndex & 1023u; // wrap to avoid precision drift
+    float h2 = halton(seqIndex, 2);
+    float h3 = halton(seqIndex, 3);
+
+    // Centered jitter in [-0.5,0.5]
+    float jitterPixelX = (h2 - 0.5f);
+    float jitterPixelY = (h3 - 0.5f);
+
+    // Convert to clip space offsets (NDC) – multiply by 2 because clip x,y span [-1,1]
+    m_JitterX = (jitterPixelX / width)  * 2.0f;
+    m_JitterY = (jitterPixelY / height) * 2.0f;
+
+    glm::mat4 jitteredProj = projective_matrix;
+    // GLM uses column-major; modify row 2 (Z) columns 0/1 to shift X/Y
+    jitteredProj[2][0] += m_JitterX;
+    jitteredProj[2][1] += m_JitterY;
+
+    // Store camera data
+    m_CameraData.CameraPosition   = glm::vec4(m_Position, 1.0f);
+    m_CameraData.CameraDirection  = glm::vec4(-view_matrix[2]);
+    m_CameraData.LastViewMatrix   = m_CameraData.ViewMatrix;
+    m_CameraData.LastProjectionMatrix = m_CameraData.ProjectionMatrix;
+    m_CameraData.ViewMatrix       = view_matrix;
+    m_CameraData.ProjectionMatrix = jitteredProj;
+    m_CameraData.InverseViewMatrix       = glm::inverse(view_matrix);
+    m_CameraData.InverseProjectionMatrix = glm::inverse(jitteredProj);
+    m_CameraData.ScreenParams     = glm::vec4(width, height, 1.0f / width, 1.0f / height);
 
     float time = VansTimer::GetFrameTime();
-    m_CameraData.FrameParams = glm::vec4(m_RenderFrameIndex, time, 0, 0);
-	m_CameraData.CameraParams = glm::vec4(m_NearClip, m_FarClip, m_Fov, m_AspectRatio);
+    m_CameraData.FrameParams  = glm::vec4(m_RenderFrameIndex, time, 0, 0);
+    m_CameraData.CameraParams = glm::vec4(m_NearClip, m_FarClip, m_Fov, m_AspectRatio);
 
     m_CameraDataBuffer.SetBufferData(&m_CameraData, 0, sizeof(m_CameraData));
 

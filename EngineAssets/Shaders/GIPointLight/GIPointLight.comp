@@ -65,46 +65,57 @@ vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal, vec3 origin, vec3 size
     vec3 inDirectDiffuse = vec3(0);
     vec3 uvw = (position_world - origin) / size;
 
-    ivec3 texSize = textureSize(SHRCoeff, 0);
-    vec3 texPos = uvw * vec3(texSize) - 0.5;
-    ivec3 base = ivec3(floor(texPos));
-    vec3 frac = texPos - floor(texPos);
+    // ivec3 texSize = textureSize(SHRCoeff, 0);
+    // vec3 texPos = uvw * vec3(texSize) - 0.5;
+    // ivec3 base = ivec3(floor(texPos));
+    // vec3 frac = texPos - floor(texPos);
 
-    float totalWeight = 0.0;
-    for(int dz = 0; dz <= 1; dz++)
-    for(int dy = 0; dy <= 1; dy++)
-    for(int dx = 0; dx <= 1; dx++)
+    // float totalWeight = 0.0;
+    // for(int dz = 0; dz <= 1; dz++)
+    // for(int dy = 0; dy <= 1; dy++)
+    // for(int dx = 0; dx <= 1; dx++)
+    // {
+    //     ivec3 offset = ivec3(dx, dy, dz);
+    //     ivec3 samplePos = base + offset;
+    //     // Clamp to texture bounds
+    //     samplePos = clamp(samplePos, ivec3(0), texSize - 1);
+
+    //     vec3 sampleUVW = (vec3(samplePos) + 0.5) / vec3(texSize);
+    //     vec3 texelWorld = sampleUVW * size + origin;
+
+    //     float w = 1;//max(dot(normalize(texelWorld - position_world), normal), 0.0);
+
+    //     float distanceWeight = length(texelWorld - position_world) / size.x;
+
+    //     vec4 rCoeff = texelFetch(SHRCoeff, samplePos, 0);
+    //     vec4 gCoeff = texelFetch(SHGCoeff, samplePos, 0);
+    //     vec4 bCoeff = texelFetch(SHBCoeff, samplePos, 0);
+
+    //     vec3 tempDiffuse = vec3(0);
+    //     for(int i = 0; i < 4; i++)
+    //     {
+    //         float basis = SHBasis(i, normal);
+    //         tempDiffuse.r += rCoeff[i] * basis / PI;
+    //         tempDiffuse.g += gCoeff[i] * basis / PI;
+    //         tempDiffuse.b += bCoeff[i] * basis / PI;
+    //     }
+    //     inDirectDiffuse += tempDiffuse * w ;
+    //     totalWeight += w;
+    // }
+    // if(totalWeight > 0.0)
+    //     inDirectDiffuse /= totalWeight;
+    vec4 rCoeff = texture(SHRCoeff, uvw);
+    vec4 gCoeff = texture(SHGCoeff, uvw);
+    vec4 bCoeff = texture(SHBCoeff, uvw);
+    vec3 tempDiffuse = vec3(0);
+    for(int i = 0; i < 4; i++)
     {
-        ivec3 offset = ivec3(dx, dy, dz);
-        ivec3 samplePos = base + offset;
-        // Clamp to texture bounds
-        samplePos = clamp(samplePos, ivec3(0), texSize - 1);
-
-        vec3 sampleUVW = (vec3(samplePos) + 0.5) / vec3(texSize);
-        vec3 texelWorld = sampleUVW * size + origin;
-
-        float w = max(dot(normalize(texelWorld - position_world), normal), 0.0);
-
-        float distanceWeight = length(texelWorld - position_world) / size.x;
-
-        vec4 rCoeff = texelFetch(SHRCoeff, samplePos, 0);
-        vec4 gCoeff = texelFetch(SHGCoeff, samplePos, 0);
-        vec4 bCoeff = texelFetch(SHBCoeff, samplePos, 0);
-
-        vec3 tempDiffuse = vec3(0);
-        for(int i = 0; i < 4; i++)
-        {
-            float basis = SHBasis(i, normal);
-            tempDiffuse.r += rCoeff[i] * basis / PI;
-            tempDiffuse.g += gCoeff[i] * basis / PI;
-            tempDiffuse.b += bCoeff[i] * basis / PI;
-        }
-        inDirectDiffuse += tempDiffuse * w ;
-        totalWeight += w;
+        float basis = SHBasis(i, normal);
+        tempDiffuse.r += rCoeff[i] * basis / PI;
+        tempDiffuse.g += gCoeff[i] * basis / PI;
+        tempDiffuse.b += bCoeff[i] * basis / PI;
     }
-    if(totalWeight > 0.0)
-        inDirectDiffuse /= totalWeight;
-    inDirectDiffuse = max(vec3(0, 0, 0), inDirectDiffuse);
+    inDirectDiffuse = max(vec3(0, 0, 0), tempDiffuse);
     return inDirectDiffuse;
 }
 
@@ -131,6 +142,8 @@ void main()
     int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;
 
+    float solideAngle = 4.0 * PI / float(sampleCount);
+    vec3 sampleCenter = (groupOrigin + 0.5 * vec3(originStride,originStride,originStride) + vec3(probeIndex) * originStride);
     for(int hitIndex = 0; hitIndex < sampleCount; hitIndex++)
     {
         vec3 rayDirection = SampleSphere(hitIndex,sampleCount);
@@ -140,18 +153,22 @@ void main()
         vec4 hitNrm = hitNormalInfoBuffer.hitNormal[resultIndex];
         if(hitPos.w < 0.5)
         {
-            vec3 envColor = texture(environmentMap, rayDirection).rgb;
-            //没有击中应该设置成环境球的颜色这里先设置为白色
+            vec3 envColor = texture(environmentMap, rayDirection).rgb * 5;
             directLightBuffer.directLight[resultIndex] = vec4(0,0,0,0.5);
             indirectLightBuffer.indirectLight[resultIndex] = vec4(envColor, 0.5);
             continue;
         }
-        
+        // directLightBuffer.directLight[resultIndex] = vec4(0,0,0,0.5);
+        // indirectLightBuffer.indirectLight[resultIndex] = vec4(0,0,0,0.5);
+        // continue;
+
+        float hitDistance = length(hitPos.xyz - sampleCenter);
+        float radius = hitDistance * solideAngle;
 
         //计算当前点的直接光diffse
         vec3 directDiffuse = vec3(0);
-        CalculateDirectDiffuse(hitPos.xyz,hitNrm.xyz, shadowMap, punctualShadowMap, directDiffuse);
-        directLightBuffer.directLight[resultIndex] = vec4(directDiffuse, 1.0);
+        CalculateDirectDiffuse(hitPos.xyz,hitNrm.xyz, shadowMap, punctualShadowMap,radius, directDiffuse);
+        directLightBuffer.directLight[resultIndex] = vec4(directDiffuse * 2, 1.0);
 
         // //计算当前点的间接漫反射
         // vec3 inDirectDiffuse = vec3(0);
@@ -173,7 +190,7 @@ void main()
         // inDirectDiffuse = max(vec3(0, 0, 0), inDirectDiffuse);
 
         //计算当前点的间接漫反射
-        vec3 inDirectDiffuse = CalculateSHDiffuse(hitPos.xyz, hitNrm.xyz,groupOrigin,vec3(originSize));
+        vec3 inDirectDiffuse = CalculateSHDiffuse(hitPos.xyz + hitNrm.xyz * originStride * 1.732, hitNrm.xyz,groupOrigin,vec3(originSize));
 
         indirectLightBuffer.indirectLight[resultIndex] = vec4(inDirectDiffuse, 1.0);
     }

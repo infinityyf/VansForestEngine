@@ -12,12 +12,12 @@ layout( set = 0, binding = 1 ) uniform sampler2D mainLightShadowMap;
 layout( set = 0, binding = 2, rgba32f ) uniform image2D fogResult;
 #define SCREEN_SCALE 2
 
-#define VOLUMETRIX_TRACE_STEP 128
-#define VOLUMETRIX_START_OFFSET 0.1
+#define VOLUMETRIX_TRACE_STEP 32
+#define VOLUMETRIX_START_OFFSET 1.0
 
 const vec3 c_fogColorUnlit = vec3(0.1,0.5,0.2);
 const vec3 c_fogColorLit = vec3(0.5,0.8,1.0);
-const float c_fogDensity = 0.002;
+const float c_fogDensity = 0.001;
 const float c_fogHeight = 5.0f;
 
 vec3 GetSunScattering(vec3 samplePosition, vec3 sunLightDirection,float shadow, float phase)
@@ -38,10 +38,25 @@ void main()
     // and calculating the percent.
     // Note: in a rasterizer, you'd replace the RayVsScene raytracing with a shadow map lookup!
     vec3 cameraPositionWS = cameraPosition.xyz;
-    vec3 positionWS = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0).xyz;
+    vec4 gbuffer = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0);
+    float linearDepth = gbuffer.w;
+    vec3 positionWS = gbuffer.xyz;
+
 
     float positionDistance = length(positionWS - cameraPositionWS);
     vec3 viewDirection = normalize(positionWS - cameraPositionWS);
+    if(linearDepth == 0.0)
+    {
+        positionDistance = 1000.0;
+        vec2 uv = (vec2(pixelCoord) * float(SCREEN_SCALE) + 0.5) / ScreenParams.xy;
+        vec2 ndc = uv * 2.0 - 1.0; // flip Y for clip space
+
+        vec4 clip = vec4(ndc, 1.0, 1.0);
+        // Requires inverse matrices in CameraData.glsl
+        vec3 dirVS = normalize((InverseProjectionMatrix * clip).xyz);
+        viewDirection = normalize((InverseViewMatrix * vec4(dirVS, 0.0)).xyz);
+        viewDirection = vec3(1,0,0);
+    }
     vec3 rayDir = uDirectionLight.direction.xyz;
 
     float fogTransmittance = 1.0f;
@@ -51,9 +66,12 @@ void main()
     float lDotW = dot(rayDir, viewDirection);
     float phase = phase2Lobes(lDotW);
 
+    //添加jitter扰动
+    float sampleJitter = RandomInterLeavedWithScale(pixelCoord, FrameIndex);
+
     for (int i = 0; i < VOLUMETRIX_TRACE_STEP; ++i)
     {
-        vec3 testPos = cameraPositionWS + viewDirection * stepLength * (float(i) + VOLUMETRIX_START_OFFSET);
+        vec3 testPos = cameraPositionWS + viewDirection * stepLength * (float(i) + VOLUMETRIX_START_OFFSET * sampleJitter);
         
         if(testPos.y > c_fogHeight)
             continue;

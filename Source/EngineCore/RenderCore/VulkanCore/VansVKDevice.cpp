@@ -11,7 +11,10 @@
 #include "../../Configration/VansConfigration.h"
 //#if defined FOREST_EDITOR
 #include "../../EditorCore/VansEditorWindow.h"
+#include "../../VansTimer.h"
 #include <iostream>
+
+
 
 
 namespace VansGraphics
@@ -71,7 +74,7 @@ namespace VansGraphics
 	{
 		for (auto& extension : available_extensions)
 		{
-			if (strcmp(extension.extensionName, desire_extension) != 0)
+			if (strcmp(extension.extensionName, desire_extension) == 0)
 			{
 				std::cout << "Extension named '" << desire_extension << "' is supported."
 					<< std::endl;
@@ -87,7 +90,7 @@ namespace VansGraphics
 	{
 		for (auto& layer : available_layers)
 		{
-			if (strcmp(layer.layerName, desire_layer) != 0)
+			if (strcmp(layer.layerName, desire_layer) == 0)
 			{
 				std::cout << "Layer named '" << desire_layer << "' is supported."
 					<< std::endl;
@@ -172,7 +175,7 @@ namespace VansGraphics
 
 	bool VansVKDevice::CheckPhysicDeviceFeature(VkPhysicalDevice device)
 	{
-		//Ê¹ÓÃ1.2
+		//ä½¿ç”¨1.2
 		m_Features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 		m_Features12.pNext = nullptr;
 
@@ -198,7 +201,7 @@ namespace VansGraphics
 			m_Features12.pNext = &m_AcceralteFeature;
 		}
 
-		//Ö§³Östruct
+		//æ”¯æŒstruct
 		m_ScalarBlockFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
 		m_ScalarBlockFeature.scalarBlockLayout = VK_TRUE;
 		m_ScalarBlockFeature.pNext = &m_Features11;
@@ -248,14 +251,14 @@ namespace VansGraphics
 	{
 		m_StageBuffer.SetBufferData(data, data_offset, data_size);
 
-		//Í¨¹ıcommand bufferÇĞ»»bufferµÄusage
+		//é€šè¿‡command bufferåˆ‡æ¢bufferçš„usage
 
 		if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			return false;
 		}
 
-		//ÉèÖÃÔÚpipelineÖĞµÄÍ¬²½µã
+		//è®¾ç½®åœ¨pipelineä¸­çš„åŒæ­¥ç‚¹
 		dest_buffer.SetBufferMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				dest_buffer.m_VansVKBuffer, 
@@ -293,14 +296,14 @@ namespace VansGraphics
 	{
 		m_StageBuffer.SetBufferData(data, data_offset, data_size);
 
-		//Í¨¹ıcommand bufferÇĞ»»bufferµÄusage
+		//é€šè¿‡command bufferåˆ‡æ¢bufferçš„usage
 
 		if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			return false;
 		}
 
-		//ÉèÖÃÔÚpipelineÖĞµÄÍ¬²½µã
+		//è®¾ç½®åœ¨pipelineä¸­çš„åŒæ­¥ç‚¹
 		dest_image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				dest_image.m_VansVKImage,
@@ -357,52 +360,163 @@ namespace VansGraphics
 		return true;
 	}
 
+	void VansVKDevice::PrepareFSRDispatchInputData(float fovy, float nearPlane, float farPlane)
+	{
+		auto renderPassManager = VansRenderPassManager::GetInstance();
+		auto& depth = renderPassManager->GetDepth();
+		auto& motionVector = renderPassManager->GetMotionVector();
+		auto& colorAfterPostProcess = renderPassManager->GetColorAfterPostProcess();
+		m_FSRInput.color = colorAfterPostProcess.GetImage();
+		m_FSRInput.colorCreateInfo = colorAfterPostProcess.GetImageCreateInfo();
+		m_FSRInput.depth = depth.GetImage();
+		m_FSRInput.depthCreateInfo = depth.GetImageCreateInfo();
+		m_FSRInput.motionVectors = motionVector.GetImage();
+		m_FSRInput.motionVectorsCreateInfo = motionVector.GetImageCreateInfo();
+
+		m_FSRInput.fovy = fovy;
+		m_FSRInput.nearPlane = nearPlane;
+		m_FSRInput.farPlane = farPlane;
+	}
+
+	void VansVKDevice::DispatchFSRUpscale()
+	{
+		//è·å–jitter
+		auto camera = m_Scene->GetCamera();
+		m_FSRInput.jitterX = camera->m_JitterX;
+		m_FSRInput.jitterY = camera->m_JitterY;
+
+		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		m_FSRController.DispatchUpscale(m_VansVKCommandBuffer.GetVKCommandBuffer(), m_FSRInput);
+
+		//blit to swapchain image
+		// Destination: swapchain image (assumed GENERAL or PRESENT). Force to TRANSFER_DST_OPTIMAL.
+		VkExtent2D swapchainExtent = m_VansVKSurface.m_VansVKSwapChainImageExtent;
+		VkExtent2D fsrTempImageExtent = m_FSRController.GetDisplayExtent();
+		m_VansVKSurface.SetSwapChainImageBarrier(
+			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			{
+				m_VansVKSurface.GetSwapChainImage(m_SwapChainImageIndex),
+				VK_ACCESS_NONE,
+				VK_ACCESS_TRANSFER_WRITE_BIT,
+				VK_IMAGE_LAYOUT_UNDEFINED, // treat as unknown, transition regardless
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_IMAGE_ASPECT_COLOR_BIT
+			},
+			m_SwapChainImageIndex);
+
+		// Blit region (entire image)
+		VkImageBlit blitRegion{};
+		blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blitRegion.srcSubresource.mipLevel = 0;
+		blitRegion.srcSubresource.baseArrayLayer = 0;
+		blitRegion.srcSubresource.layerCount = 1;
+		blitRegion.srcOffsets[0] = { 0, 0, 0 };
+		blitRegion.srcOffsets[1] = { (int32_t)fsrTempImageExtent.width, (int32_t)fsrTempImageExtent.height, 1 };
+
+		blitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blitRegion.dstSubresource.mipLevel = 0;
+		blitRegion.dstSubresource.baseArrayLayer = 0;
+		blitRegion.dstSubresource.layerCount = 1;
+		blitRegion.dstOffsets[0] = { 0, 0, 0 };
+		blitRegion.dstOffsets[1] = { (int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height, 1 };
+
+		vkCmdBlitImage(
+			m_VansVKCommandBuffer.GetVKCommandBuffer(),
+			m_FSRController.GetTempFSRImage().GetImage(),
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			m_VansVKSurface.GetSwapChainImage(m_SwapChainImageIndex),
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			1,
+			&blitRegion,
+			VK_FILTER_LINEAR);
+
+		// Transition swapchain image to PRESENT_SRC_KHR for presentation
+		m_VansVKSurface.SetSwapChainImageBarrier(
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			{
+				m_VansVKSurface.GetSwapChainImage(m_SwapChainImageIndex),
+				VK_ACCESS_TRANSFER_WRITE_BIT,
+				VK_ACCESS_NONE,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_IMAGE_ASPECT_COLOR_BIT
+			},
+			m_SwapChainImageIndex);
+
+		m_VansVKCommandBuffer.EndCommandBufferRecord();
+
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+	}
+
+	void VansVKDevice::InitializeFSR()
+	{
+		//è¿™é‡Œåº”è·å–äº¤æ¢é“¾çš„åˆ†è¾¨ç‡
+		VkExtent2D swapChainExtent = m_VansVKSurface.m_VansVKSwapChainImageExtent;
+		m_FSRController.InitializeContext(m_VansVKLogicDevice, m_VansVKPhysicalDevice, m_RenderWidth, m_RenderHeight, swapChainExtent.width, swapChainExtent.height);
+	}
+
+	void VansVKDevice::CleanupFSR()
+	{
+		m_FSRController.Cleanup();
+	}
+
 	void VansVKDevice::BeforeRendering()
 	{
-		//´´½¨ĞÅºÅÁ¿
+		//åˆ›å»ºä¿¡å·é‡
 		CreateVKSemaphore(m_SwapChainImageAcquiredSemaphore);
 		CreateVKSemaphore(m_CommandBufferReadyToPresentSemaphore);
 
-		//ÓÃÓÚÈ·±£Ğ´ÈëµÄimageÒÑ¾­acquireÍê³É
+		//ç”¨äºç¡®ä¿å†™å…¥çš„imageå·²ç»acquireå®Œæˆ
 		CreateVKFence(false, m_SwapChainImageAcquiredFence);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 
 		//create renderpass,and frame buffer
-		//ÕâÀï×Ô¶¯´´½¨colorºÍdepth
-		renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface);
+		//è¿™é‡Œè‡ªåŠ¨åˆ›å»ºcolorå’Œdepth
+		renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface, {m_RenderWidth, m_RenderHeight});
 		//renderPassManager->SetupVansRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer , m_VansVKGraphicsQueue, m_VansVKSurface);
 
-		//´´½¨ÒõÓ°pass
+		//åˆ›å»ºé˜´å½±pass
 		renderPassManager->SetupVansShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
 
-		//´´½¨¾«È·ÒõÓ°pass
+		//åˆ›å»ºç²¾ç¡®é˜´å½±pass
 		renderPassManager->SetupVansPunctualShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
 
-		//Ô¤¼ÆËãäÖÈ¾Êı¾İ
+		//é¢„è®¡ç®—æ¸²æŸ“æ•°æ®
 		PrepareRenderingData();
 
-		//¼ÓÔØ³¡¾°Êı¾İ
-		m_Scene->LoadScene("D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Scene.json");
+		//åŠ è½½åœºæ™¯æ•°æ®
+		m_Scene->LoadScene("D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Scenebk.json");
 		
-		//×¼±¸¹âÏß×·×ÙÊı¾İ
+		//å‡†å¤‡å…‰çº¿è¿½è¸ªæ•°æ®
 		PrepareRayTracingData();
+
+		//å‡†å¤‡fsræ•°æ®
+		InitializeFSR();
+		PrepareFSRDispatchInputData(3.14f / 2, 0.01f, 100.0f);
 	}
 
 	void VansVKDevice::Rendering()
 	{
-		//»ñÈ¡swapchain image
+		//è·å–swapchain image
 		bool requireImage = m_VansVKSurface.AcquireVulkanSwapChainImages(m_VansVKLogicDevice, m_SwapChainImageIndex, m_SwapChainImageAcquiredSemaphore, m_SwapChainImageAcquiredFence);
 		if (!requireImage)
 		{
 			std::cout << "AcquireVulkanSwapChainImages failed" << std::endl;
 		}
 
-		//¸üĞÂ³¡¾°Êı¾İ
-		//µÆ¹âÊı¾İ
+		//æ›´æ–°åœºæ™¯æ•°æ®
+		//ç¯å…‰æ•°æ®
 		m_Scene->UpdateSceneData();
 
-		//¿ªÊ¼recordäÖÈ¾Ö¸Áî
+		//å¼€å§‹recordæ¸²æŸ“æŒ‡ä»¤
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 
 		//record command buffer
@@ -410,26 +524,26 @@ namespace VansGraphics
 		
 		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 
-		//»æÖÆÒõÓ°
+		//ç»˜åˆ¶é˜´å½±
 		renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
 		DrawShadowMap(renderPassManager, cmd);
 		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 
-		////»æÖÆ¾«È·ÒõÓ°
+		////ç»˜åˆ¶ç²¾ç¡®é˜´å½±
 		//renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, cmd, m_globalRenderStateData);
 		//DrawPunctualShadowMap(renderPassManager, cmd);
 		//renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 
-		//¼ÆËãÉÏÒ»Ö¡µÄHIZÊı¾İ
+		//è®¡ç®—ä¸Šä¸€å¸§çš„HIZæ•°æ®
 		UpdateHZB(renderPassManager);
 
-		//¼ÆËãÉÏÒ»Ö¡µÄssGIÊı¾İ
+		//è®¡ç®—ä¸Šä¸€å¸§çš„ssGIæ•°æ®
 		UpdateGIData(renderPassManager);
 
-		//¼ÆËãÉÏÒ»Ö¡SSR
+		//è®¡ç®—ä¸Šä¸€å¸§SSR
 		UpdateSSR(renderPassManager);
 
-		//¹âÏß×·×Ù
+		//å…‰çº¿è¿½è¸ª
 		UpdateRayTracing();
 
 
@@ -445,14 +559,14 @@ namespace VansGraphics
 		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 
-		//½áÊøRenderpass
+		//ç»“æŸRenderpass
 		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 
 		//end record
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
 
-		//È·±£imageÒÑ¾­´ÓswapchainÉÏacquired³É¹¦
-		//ÕâÀïÏÈ»ñÈ¡Ö®Ç°ÉèÖÃµÄÍ¬²½ĞÅÏ¢
+		//ç¡®ä¿imageå·²ç»ä»swapchainä¸ŠacquiredæˆåŠŸ
+		//è¿™é‡Œå…ˆè·å–ä¹‹å‰è®¾ç½®çš„åŒæ­¥ä¿¡æ¯
 		std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {};//wait_infos;
 		wait_semaphore_infos.push_back(
 			{
@@ -461,14 +575,28 @@ namespace VansGraphics
 			}
 		);
 
-
 		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, { wait_semaphore_infos }, { m_CommandBufferReadyToPresentSemaphore }, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 
-		//²¢½øĞĞpresent
+
+		//auto camera = m_Scene->GetCamera();
+		//if (camera->GetFrameIndex() % 2 == 0)
+		//{
+		//	//å°†ç»“æœblitåˆ°swapchain imageä¸Š,å¦‚æœå¼€å¯fsrè¿™é‡Œæ’å…¥fsr
+		//	renderPassManager->BlitToSwapChainImage(m_VansVKCommandBuffer, m_VansVKSurface, m_SwapChainImageIndex, { m_RenderWidth, m_RenderHeight });
+
+		//	VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {  }, { }, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		//	m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		//}
+		//else
+		{
+			DispatchFSRUpscale();
+		}
+
+		//å¹¶è¿›è¡Œpresent
 		m_VansVKSurface.PresentImage(m_VansVKLogicDevice, m_VansVKGraphicsQueue, { m_CommandBufferReadyToPresentSemaphore }, m_SwapChainImageIndex);
 
-		//ÖØÖÃimgae layout
+		//é‡ç½®imgae layout
 		renderPassManager->ResetFrameBufferImageLayout(m_VansVKCommandBuffer, m_VansVKSurface, m_SwapChainImageIndex);
 		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
@@ -582,7 +710,7 @@ namespace VansGraphics
 			}
 		}
 
-		//¼ì²élayers
+		//æ£€æŸ¥layers
 		std::vector<VkLayerProperties> avaliable_layers;
 		if (!CheckAvaliableInstanceLayer(avaliable_layers))
 		{
@@ -609,12 +737,10 @@ namespace VansGraphics
 			 VK_MAKE_VERSION(1, 2, 0)//api level
 		};
 
-		//instance create info
-		//instance has layers and externsions
 		VkInstanceCreateInfo instance_create_info =
 		{
 			 VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-			 nullptr,
+			 nullptr, // instance pNext
 			 0,
 			 &application_info,
 			 static_cast<uint32_t>(desired_layers.size()),
@@ -758,8 +884,8 @@ namespace VansGraphics
 		RequestDeviceQueue(m_ComputeQueueFamilyIndex, 0, m_VansVKComputeQueue);
 		
 		//init memory manager
-		//ĞèÒª´´½¨Ò»¸öcommand buffer
-		//Ó¦¸ÃºÍswapchain queireµÄimageÊıÁ¿Ò»ÖÂ
+		//éœ€è¦åˆ›å»ºä¸€ä¸ªcommand buffer
+		//åº”è¯¥å’Œswapchain queireçš„imageæ•°é‡ä¸€è‡´
 		CommandBufferCreateParams params = 
 		{
 			VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -780,7 +906,7 @@ namespace VansGraphics
 			return false;
 		}
 
-		//´´½¨fence,ÓÃÓÚµÈ´ıcommand bufferÖ´ĞĞÍê³É
+		//åˆ›å»ºfence,ç”¨äºç­‰å¾…command bufferæ‰§è¡Œå®Œæˆ
 		CreateVKFence(false,VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 		CreateVKFence(false,VansVKCommandBuffer::m_RayTracingCommandBufferFinishSubmitFence);
 
@@ -790,8 +916,8 @@ namespace VansGraphics
 
 		
 
-		//´´½¨stage bufferÓÃÓÚÉÏ´«Êı¾İ
-		//VK_MEMORY_PROPERTY_HOST_COHERENT_BITÕâ¸ö±êÊ¶²»ĞèÒªflushÕâ¸ömemoryrange¾Í¿ÉÒÔÈÃÇı¶¯ÖªµÀÕâ¸öÄÚ´æ±»¸ü¸ÄÁË
+		//åˆ›å»ºstage bufferç”¨äºä¸Šä¼ æ•°æ®
+		//VK_MEMORY_PROPERTY_HOST_COHERENT_BITè¿™ä¸ªæ ‡è¯†ä¸éœ€è¦flushè¿™ä¸ªmemoryrangeå°±å¯ä»¥è®©é©±åŠ¨çŸ¥é“è¿™ä¸ªå†…å­˜è¢«æ›´æ”¹äº†
 		m_StageBuffer.CreatVulkanBuffer(m_VansVKLogicDevice, 1024 * 1024 * 512, VK_FORMAT_R32_SFLOAT,VK_BUFFER_USAGE_TRANSFER_SRC_BIT| VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
 		return true;
@@ -802,10 +928,10 @@ namespace VansGraphics
 
 		VansVKDescriptorManager::GetInstance()->DestroyDescriptorPool();
 
-		//Ïú»Ùstage buffer
+		//é”€æ¯stage buffer
 		m_StageBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
 
-		//Ïú»Ùcommand buffer
+		//é”€æ¯command buffer
 		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 
@@ -841,7 +967,7 @@ namespace VansGraphics
 		//get WSI externsion before create instance
 		std::vector<char const*> desired_instance_extrensions =
 		{
-			//ÓÃÓÚÔöÇ¿²éÑ¯ÎïÀíÉè±¸ÌØĞÔ¡¢Éè±¸ÊôĞÔºÍ¸ñÊ½ÊôĞÔµÄÄÜÁ¦¡£ËüÍ¨¹ıÒıÈë¿ÉÀ©Õ¹µÄ½á¹¹Á´»úÖÆ£¬Ê¹µÃÓ¦ÓÃ³ÌĞò¿ÉÒÔ¸üÁé»îµØ»ñÈ¡Éè±¸ĞÅÏ¢£¬²¢ÔÚÉè±¸´´½¨Ê±ÆôÓÃÌØ¶¨¹¦ÄÜ
+			//ç”¨äºå¢å¼ºæŸ¥è¯¢ç‰©ç†è®¾å¤‡ç‰¹æ€§ã€è®¾å¤‡å±æ€§å’Œæ ¼å¼å±æ€§çš„èƒ½åŠ›ã€‚å®ƒé€šè¿‡å¼•å…¥å¯æ‰©å±•çš„ç»“æ„é“¾æœºåˆ¶ï¼Œä½¿å¾—åº”ç”¨ç¨‹åºå¯ä»¥æ›´çµæ´»åœ°è·å–è®¾å¤‡ä¿¡æ¯ï¼Œå¹¶åœ¨è®¾å¤‡åˆ›å»ºæ—¶å¯ç”¨ç‰¹å®šåŠŸèƒ½
 			VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
 			VK_KHR_SURFACE_EXTENSION_NAME,
 #ifdef VK_USE_PLATFORM_WIN32_KHR
@@ -865,7 +991,7 @@ namespace VansGraphics
 
 		auto vansConfigration = VansConfigration::GetInstance();
 #ifdef _DEBUG
-		//ray tracing ºÍ renderdocÊÇ³åÍ»µÄ£¬Í¬Ê±¿ªÆô²»ÄÜ´´½¨device
+		//ray tracing å’Œ renderdocæ˜¯å†²çªçš„ï¼ŒåŒæ—¶å¼€å¯ä¸èƒ½åˆ›å»ºdevice
 		if (!vansConfigration->GetSupportRayTracing())
 		{
 			desired_instance_layers.push_back("VK_LAYER_RENDERDOC_Capture");
@@ -884,7 +1010,7 @@ namespace VansGraphics
 			return false;
 		}
 
-		//load instance level externsion functions£¬ needs loaded before create surface
+		//load instance level externsion functionsï¼Œ needs loaded before create surface
 		if (!LoadVulkanInstanceLevelFunctionFromExtension(m_VansVKInstance, desired_instance_extrensions))
 		{
 			return false;
@@ -907,6 +1033,7 @@ namespace VansGraphics
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 			VK_KHR_MAINTENANCE1_EXTENSION_NAME,
 			VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+			VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
 		};
 
 		
@@ -952,6 +1079,7 @@ namespace VansGraphics
 
 	bool VansVKDevice::VulkanDestroy()
 	{
+		CleanupFSR();
 		{
 			m_VansVKSurface.DestroyVulkanSwapChain(m_VansVKLogicDevice);
 			m_VansVKSurface.DestroyVulkanPresentSurface(m_VansVKInstance);
@@ -964,18 +1092,18 @@ namespace VansGraphics
 
 	void VansVKDevice::PrepareSkyRenderData()
 	{
-		//¼ÆËãÔ¤¾í»ı»·¾³Âş·´ÉäÌùÍ¼
-		//´´½¨ÊäÈëÌùÍ¼
+		//è®¡ç®—é¢„å·ç§¯ç¯å¢ƒæ¼«åå°„è´´å›¾
+		//åˆ›å»ºè¾“å…¥è´´å›¾
 		VansTexture* texture = new VansTexture();
-		texture->LoadCubeTexture(m_VansVKCommandBuffer, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/SkyBox");
+		texture->LoadCubeTexture(m_VansVKCommandBuffer, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/SkyBox2");
 
 
-		//´´½¨Êä³öcube
+		//åˆ›å»ºè¾“å‡ºcube
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_PreConvDiffuse = new VansTexture();
 		manager->m_PreConvDiffuse->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512,1, 4, true, false, true);
 
-		//Ô¤¹ıÂË»·¾³ÌùÍ¼
+		//é¢„è¿‡æ»¤ç¯å¢ƒè´´å›¾
 		manager->m_PreConvSpecular = new VansTexture();
 		manager->m_PreConvSpecular->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512,1, 4, true, true, true);
 
@@ -1038,7 +1166,7 @@ namespace VansGraphics
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BRDFInterationTexSetLayout }, manager->m_BRDFInterationTextDescriptorSets);
 
 
-		//¾í»ıcompute shader
+		//å·ç§¯compute shader
 		VansComputeShader* m_PreConvDiffuseShader = new VansComputeShader();
 		m_PreConvDiffuseShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConDiffuseEnvironment");
 
@@ -1046,7 +1174,7 @@ namespace VansGraphics
 		m_PreConvSpecularShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConSpecularEnvironment");
 
 
-		//´´½¨ÃèÊö·û
+		//åˆ›å»ºæè¿°ç¬¦
 		VkDescriptorSetLayoutBinding samplerCubeBinding =
 		{
 			VansVKDescriptorManager::m_SampleTexture0SetBinding,
@@ -1090,13 +1218,13 @@ namespace VansGraphics
 			VK_SHADER_STAGE_COMPUTE_BIT,
 			nullptr
 		};
-		//PBRÔ¤¾í»ı compute shader ÃèÊö·û
+		//PBRé¢„å·ç§¯ compute shader æè¿°ç¬¦
 		VkDescriptorSetLayout m_PreConvSetLayout;
 		std::vector<VkDescriptorSet> m_PreConvtDescriptorSets;
 		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerCubeBinding,uavCubeBinding0,uavCubeBinding1,prefilterCB,shResultBuffer }, m_PreConvSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_PreConvSetLayout }, m_PreConvtDescriptorSets);
 
-		//¸üĞÂÃèÊö·û
+		//æ›´æ–°æè¿°ç¬¦
 		VansVKDescriptorManager::GetInstance()->ResetState();
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
@@ -1161,7 +1289,7 @@ namespace VansGraphics
 			}
 		);
 
-		//ÉèÖÃÃ¿¸ömipµÄimageĞÅÏ¢£¬Ã¿¸ömip·Ö¿ª°ó¶¨
+		//è®¾ç½®æ¯ä¸ªmipçš„imageä¿¡æ¯ï¼Œæ¯ä¸ªmipåˆ†å¼€ç»‘å®š
 		std::vector<VkDescriptorImageInfo> cubeMipImageInfos;
 		for (int mipLevel = 0; mipLevel < mipCount; mipLevel++)
 		{
@@ -1187,15 +1315,15 @@ namespace VansGraphics
 		//record command buffer
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-		//³ıÁËÉú³Édiffuse£¬ÕâÀï»¹Éú³ÉÒ»ÏÂÇòĞ­
+		//é™¤äº†ç”Ÿæˆdiffuseï¼Œè¿™é‡Œè¿˜ç”Ÿæˆä¸€ä¸‹çƒå
 		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvDiffuseShader, { m_PreConvSetLayout });
 		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvDiffuseShader, 512, 512, 1, m_PreConvtDescriptorSets);
 
 		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvSpecularShader, { m_PreConvSetLayout });
-		//Éú³É¶à¸ömip
+		//ç”Ÿæˆå¤šä¸ªmip
 		m_VansVKCommandBuffer.DispatchCompute(*m_PreConvSpecularShader, 512, 512, mipCount, m_PreConvtDescriptorSets);
 
-		//Ìì¿ÕäÖÈ¾²ÎÊı
+		//å¤©ç©ºæ¸²æŸ“å‚æ•°
 		manager->m_AtmospherePBRDataBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(VansAtmospherePBRParam), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
@@ -1213,11 +1341,11 @@ namespace VansGraphics
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_MaterialAtmosphereDataLayout }, manager->m_MaterialAtmosphereDataDescriptorSets);
 
 
-		//Í³Ò»¸üĞÂ¹«ÓÃÃèÊö·û¼¯
+		//ç»Ÿä¸€æ›´æ–°å…¬ç”¨æè¿°ç¬¦é›†
 		manager->UpdatePBRLutDescriptorSets();
 		manager->UpdateAtmosphereDescriptorSets();
 
-		//½«Ìì¿ÕÏà¹ØÌùÍ¼×ª»»³Éshader readonlylayout
+		//å°†å¤©ç©ºç›¸å…³è´´å›¾è½¬æ¢æˆshader readonlylayout
 		manager->m_PreConvSpecular->GetImage().SetImageMemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			{
 				manager->m_PreConvSpecular->GetImage().m_VansVKImage,
@@ -1251,7 +1379,7 @@ namespace VansGraphics
 
 	void VansVKDevice::PrepareSSAORenderData()
 	{
-		//SSAO½á¹û
+		//SSAOç»“æœ
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSAOResult = new VansTexture();
 		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight,1, 4, false, false, true);
@@ -1260,7 +1388,7 @@ namespace VansGraphics
 
 	void VansVKDevice::PrepareSSGIRenderData()
 	{
-		//SSAO½á¹û
+		//SSAOç»“æœ
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSGIResult = new VansTexture();
 		manager->m_SSGIResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/4, m_RenderHeight/4,1, 4, false, false, true);
@@ -1277,9 +1405,9 @@ namespace VansGraphics
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 		manager->m_SSGICBBuffer.SetBufferData(data, 0, sizeof(float) * 4);
 
-		//×ÊÔ´°ó¶¨
-		//ĞèÒªÊäÈë
-		//normal,depth,color result,Ìì¿Õdiffuse
+		//èµ„æºç»‘å®š
+		//éœ€è¦è¾“å…¥
+		//normal,depth,color result,å¤©ç©ºdiffuse
 		VkDescriptorSetLayoutBinding normalBinding =
 		{
 			VansVKDescriptorManager::m_SampleTexture0SetBinding,
@@ -1373,7 +1501,7 @@ namespace VansGraphics
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		//¸üĞÂÃèÊö·û
+		//æ›´æ–°æè¿°ç¬¦
 		VansVKDescriptorManager::GetInstance()->ResetState();
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
@@ -1492,7 +1620,7 @@ namespace VansGraphics
 		);
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
-		//¸üĞÂÃèÊö·û
+		//æ›´æ–°æè¿°ç¬¦
 		VansVKDescriptorManager::GetInstance()->ResetState();
 
 
@@ -1610,7 +1738,7 @@ namespace VansGraphics
 
 		auto& normal = renderPassManager->GetNormal();
 		auto& position = renderPassManager->GetGbuffer2();
-		auto& roughness = renderPassManager->GetGbuffer0(); // wÍ¨µÀ
+		auto& roughness = renderPassManager->GetGbuffer0(); // wé€šé“
 		auto& color = renderPassManager->GetColor();
 		auto& hiz = manager->m_HZBResult;
 
@@ -1711,7 +1839,7 @@ namespace VansGraphics
 
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
-		//ÉèÖÃssr resolve
+		//è®¾ç½®ssr resolve
 		VansVKDescriptorManager::GetInstance()->ResetState();
 
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
@@ -1823,7 +1951,7 @@ namespace VansGraphics
 		);
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
-		//ÉèÖÃssr temporal aa
+		//è®¾ç½®ssr temporal aa
 		VansVKDescriptorManager::GetInstance()->ResetState();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
@@ -1970,7 +2098,7 @@ namespace VansGraphics
 
 	void VansVKDevice::UpdateRayTracing()
 	{
-		//¸üĞÂpush constantÊı¾İ
+		//æ›´æ–°push constantæ•°æ®
 		auto camera = m_Scene->GetCamera();
 		rayTracingContext.m_RayTracingConstant.cameraPos = camera->GetPosition();
 		rayTracingContext.m_RayTracingConstant.cameraDir = camera->GetForward();
@@ -1992,10 +2120,10 @@ namespace VansGraphics
 		manager->m_HZBShader = new VansComputeShader();
 		manager->m_HZBShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/HIZ");
 
-		//¼ÆËãmipÊıÁ¿
+		//è®¡ç®—mipæ•°é‡
 		manager->m_HIZMipCount = 1 + (int)std::floor(std::log2(std::min(m_RenderWidth, m_RenderHeight)));
 		manager->m_HZBTexSetLayouts.resize(manager->m_HIZMipCount - 1);
-		//´´½¨ÃèÊö·û
+		//åˆ›å»ºæè¿°ç¬¦
 		for (int mipIndex = 0; mipIndex < manager->m_HIZMipCount -1; mipIndex++)
 		{
 			VkDescriptorSetLayoutBinding depthInput =
@@ -2048,7 +2176,7 @@ namespace VansGraphics
 		manager->m_SSRTemporalAAShader = new VansComputeShader();
 		manager->m_SSRTemporalAAShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_TEMPORALAA");
 
-		//ĞèÒªnormal, roughness, hiz
+		//éœ€è¦normal, roughness, hiz
 		VkDescriptorSetLayoutBinding normalInput =
 		{
 			VansVKDescriptorManager::m_SampleTexture0SetBinding,
@@ -2102,7 +2230,7 @@ namespace VansGraphics
 	
 		
 		//resolve
-		//ĞèÒªcolor,roughness£¬hitinfo, pdf
+		//éœ€è¦color,roughnessï¼Œhitinfo, pdf
 		VkDescriptorSetLayoutBinding colorInput =
 		{
 			VansVKDescriptorManager::m_SampleTexture0SetBinding,
@@ -2302,10 +2430,10 @@ namespace VansGraphics
 		UpdateHZBDescriptorSets(renderPassManager);
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		//ÉÏÒ»Ö¡³¡¾°Éî¶È
+		//ä¸Šä¸€å¸§åœºæ™¯æ·±åº¦
 		auto& depth = renderPassManager->GetDepth();
 
-		//ÏÈblitµ½mip0
+		//å…ˆblitåˆ°mip0
 		m_VansVKCommandBuffer.BlitImage(depth, 0, manager->m_HZBResult->GetImage(), 0);
 
 		for (int mipIndex = 1; mipIndex < manager->m_HIZMipCount; mipIndex++)
@@ -2395,11 +2523,6 @@ namespace VansGraphics
 		nameInfo.pObjectName = "SSGIResult";
 		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 
-		nameInfo.objectHandle = reinterpret_cast<uint64_t>(manager->m_SSGIFilterResult->GetImage().GetImage());
-		nameInfo.pObjectName = "SSGIFilterResult";
-		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
-
-		
 		nameInfo.objectHandle = reinterpret_cast<uint64_t>(manager->m_SSRResult->GetImage().GetImage());
 		nameInfo.pObjectName = "SSRResult";
 		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
@@ -2419,17 +2542,17 @@ namespace VansGraphics
 	{
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-		//¸øËùÓĞÍø¸ñ´´½¨Ò»¸öblas
+		//ç»™æ‰€æœ‰ç½‘æ ¼åˆ›å»ºä¸€ä¸ªblas
 		m_Scene->BuildRayTracingAS(this, &m_VansVKCommandBuffer);
 
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
 		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 
-		//Çå¿ÕËùÓĞµÄAS temp buffer
+		//æ¸…ç©ºæ‰€æœ‰çš„AS temp buffer
 		m_Scene->ReleaseASTempBuffer(this);
 
-		//´´½¨ray tracingĞèÒªµÄ×ÊÔ´ºÍ×ÊÔ´ÃèÊö·û
+		//åˆ›å»ºray tracingéœ€è¦çš„èµ„æºå’Œèµ„æºæè¿°ç¬¦
 		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene);
 	}
 
@@ -2449,16 +2572,16 @@ namespace VansGraphics
 
 		auto pointLights = lightManager->GetPointLights();
 		int pointLightCount = pointLights.size();
-		//»æÖÆËóÓĞµã¹âÔ´
+		//ç»˜åˆ¶æ¢­æœ‰ç‚¹å…‰æº
 		for (int lightIndex = 0; lightIndex < pointLightCount; lightIndex++)
 		{
-			//»æÖÆÁù´Î
+			//ç»˜åˆ¶å…­æ¬¡
 			m_Scene->DrawPointShadow(lightIndex);
 		}
 
 		auto spotLights = lightManager->GetSpotLight();
 		int spotLightCount = spotLights.size();
-		//»æÖÆËóÓĞ¾Û¹âµÆ
+		//ç»˜åˆ¶æ¢­æœ‰èšå…‰ç¯
 		for (int lightIndex = 0; lightIndex < spotLightCount; lightIndex++)
 		{
 			m_Scene->DrawSpotShadow(pointLightCount , lightIndex);
@@ -2468,12 +2591,12 @@ namespace VansGraphics
 	void VansVKDevice::DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
 	{
 		
-		//»æÖÆÌì¿ÕºĞ
+		//ç»˜åˆ¶å¤©ç©ºç›’
 		m_Scene->DrawSkyBoxNode();
 
 		m_Scene->DrawOpaqueNodes();
 
-		//ÇĞ»»½øĞĞpresent
+		//åˆ‡æ¢è¿›è¡Œpresent
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 
 		m_Scene->DrawPostProcessNodes();
@@ -2481,10 +2604,10 @@ namespace VansGraphics
 
 	void VansVKDevice::DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
 	{
-		//»æÖÆGBuffer
+		//ç»˜åˆ¶GBuffer
 		m_Scene->DrawOpaqueNodes();
 
-		//ÇĞ»»½øĞĞpresent
+		//åˆ‡æ¢è¿›è¡Œpresent
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 
 		m_Scene->DrawScreenSpaceFeatureNode();
@@ -2493,7 +2616,7 @@ namespace VansGraphics
 
 		m_Scene->DrawSkyBoxNode();
 
-		//ÇĞ»»½øĞĞpresent
+		//åˆ‡æ¢è¿›è¡Œpresent
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 
 		m_Scene->DrawPostProcessNodes();

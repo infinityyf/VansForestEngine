@@ -15,6 +15,8 @@ namespace VansGraphics
         glm::mat4x4 ProjectionMatrix;
         glm::mat4x4 LastViewMatrix;
         glm::mat4x4 LastProjectionMatrix;
+        glm::mat4x4 InverseViewMatrix;
+        glm::mat4x4 InverseProjectionMatrix;
         //resolution, 1/resolution
         glm::vec4 ScreenParams;
         //frame index, time
@@ -29,7 +31,7 @@ namespace VansGraphics
 	{
     private:
 
-        //render backend引用
+        //render backend寮曠敤
         VansGraphicsDevice* m_RenderDevice;
 
         CameraDataStruct m_CameraData;
@@ -57,6 +59,11 @@ namespace VansGraphics
         glm::vec4 GetRight();
 
         glm::vec4 GetUp();
+
+        uint32_t GetFrameIndex()
+        {
+            return m_RenderFrameIndex;
+        }
     private:
 
         void SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix);
@@ -75,7 +82,6 @@ namespace VansGraphics
         float m_AspectRatio = 1.0f;
         float m_NearClip = 0.1f;
         float m_FarClip = 100.0f;
-
     public:
 
         VansCamera(glm::vec3 startPosition, glm::vec3 startRotation, VansGraphicsDevice* device)
@@ -94,7 +100,7 @@ namespace VansGraphics
             VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ uniformBufferBinding }, m_CameraBufferLayout);
             VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_CameraBufferLayout }, m_CameraBufferDescriptorSets);
 
-            //创建一个uniform buffer
+            //鍒涘缓涓�涓猽niform buffer
             m_CameraDataBuffer.CreatVulkanBuffer(static_cast<VansVKDevice*>(device)->GetLogicDevice(), sizeof(m_CameraData), VK_FORMAT_R32_SFLOAT,
                 VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
@@ -109,5 +115,8 @@ namespace VansGraphics
         void Present();
 
         void* GetGraphicsDevice() {return m_RenderDevice;}
+
+        float m_JitterX;
+        float m_JitterY;
 	};
 }

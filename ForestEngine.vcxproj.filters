@@ -56,6 +56,9 @@
     <Filter Include="External\SPIRV_CROSS">
       <UniqueIdentifier>{cedd4eb5-87f8-4a1a-8466-30db0352e9e5}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\FidelityFX">
+      <UniqueIdentifier>{9cb06f8b-5023-44d1-be8b-bea27ed9c8c3}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -250,6 +253,12 @@
     <ClInclude Include="External\spirv_cross\spirv_reflect.hpp">
       <Filter>External\SPIRV_CROSS</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.h">
+      <Filter>EngineCore\FidelityFX</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.h">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl">
@@ -257,9 +266,6 @@
     </None>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.h">
-      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
-    </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
@@ -403,6 +409,9 @@
     </ClCompile>
     <ClCompile Include="External\spirv_cross\spirv_reflect.cpp">
       <Filter>External\SPIRV_CROSS</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.cpp">
+      <Filter>EngineCore\FidelityFX</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

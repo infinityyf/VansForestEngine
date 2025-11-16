@@ -593,6 +593,21 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     m_InstancesBuffer.SetBufferData(m_TlasInstancesInfos.data(), 0, sizeof(VkAccelerationStructureInstanceKHR) * countInstance);
 
+    // Barrier: host writes instance buffer -> TLAS build reads
+    {
+        VkMemoryBarrier hostWriteBarrier{};
+        hostWriteBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        hostWriteBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        hostWriteBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        vkCmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            0,
+            1, &hostWriteBarrier,
+            0, nullptr,
+            0, nullptr);
+    }
+
     VkBufferDeviceAddressInfo bufferAddressInfo;
     bufferAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     bufferAddressInfo.buffer = m_InstancesBuffer.GetNativeBuffer();
@@ -695,6 +710,20 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     buildInfo.scratchData.deviceAddress = scratchAddress;
     buildInfo.pGeometries = m_AsGeometry.data();  // In case the structure was copied, we need to update the pointer
 
+    // Barrier: all prior BLAS builds complete -> TLAS build reads them
+    {
+        VkMemoryBarrier blasToTlasBarrier{};
+        blasToTlasBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        blasToTlasBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        blasToTlasBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        vkCmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            0,
+            1, &blasToTlasBarrier,
+            0, nullptr,
+            0, nullptr);
+    }
     
     vans_commandBuffer->BuildAccelerationStructures(&buildInfo, *ppRangeInfos);
 

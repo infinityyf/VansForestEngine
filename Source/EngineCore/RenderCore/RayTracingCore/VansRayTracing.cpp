@@ -212,8 +212,8 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
 
     //ray tracing²ÎÊý
     m_RayTracingPositionCount = 80;
-    m_RayTracingPositionStride = 0.25f;
-    m_RayCountPerSample = 256;
+    m_RayTracingPositionStride = 0.5f;
+    m_RayCountPerSample = 128;
 
     m_VansRayTracingShader.InitRayTracingShader(device->GetLogicDevice(), "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/RayTracingTest");
     m_VansRayTracingShader.SetPushConstant(sizeof(m_RayTracingConstant));
@@ -607,17 +607,32 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
 
     VansVKRayTracingPipeline* vansPipeline = m_VansRayTracingShader.GetRayTracingPipeline(device, { m_RayTracingSetLayout });
 
+    // --- Add explicit barriers before tracing ---
+    VkCommandBuffer cmd = commandBuffer->GetVKCommandBuffer();
 
-    vkCmdBindPipeline(commandBuffer->GetVKCommandBuffer(), VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, 
+    // Make prior AS build/updates visible to RT stage (use a memory barrier)
+    {
+        VkMemoryBarrier mb{};
+        mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        mb.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+            0, 1, &mb, 0, nullptr, 0, nullptr);
+    }
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
         vansPipeline->m_RayTracingPipeline);
     
-    vkCmdBindDescriptorSets(commandBuffer->GetVKCommandBuffer(), 
+    vkCmdBindDescriptorSets(cmd,
         VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, 
         vansPipeline->m_RayTracingLayout,
         0,
         1, m_RayTracingDescriptorSets.data(), 0, nullptr);
 
-    vkCmdPushConstants(commandBuffer->GetVKCommandBuffer(), 
+    vkCmdPushConstants(cmd,
         vansPipeline->m_RayTracingLayout,
         VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR,
         0, 
@@ -629,7 +644,7 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
     auto& rHitRegion = vansPipeline->m_HitShaderBindingTable;
     auto& rCallRegion = vansPipeline->m_CallableShaderBindingTable;
 
-    vkCmdTraceRaysKHR(commandBuffer->GetVKCommandBuffer(), 
+    vkCmdTraceRaysKHR(cmd,
         &rGenRegion, &rMissRegion, &rHitRegion, &rCallRegion,
         m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount);
 }

@@ -212,7 +212,7 @@ namespace VansGraphics
 		vkResetFences(logical_device, 1, &image_acquired_fence);
 		//it may not reture immediately , set time out to 2s
 		//We need to wait for all previously submitted operations that referenced this image to finish
-		//用于在GPU上同步，image是否quri完成
+		//鐢ㄤ簬鍦℅PU涓婂悓姝ワ紝image鏄惁quri瀹屾垚
 		VkResult result = vkAcquireNextImageKHR(logical_device, m_VansVKSwapChain, 2000000000, image_acquired_semaphore, image_acquired_fence, &image_index);
 		vkWaitForFences(logical_device, 1, &image_acquired_fence, VK_TRUE, UINT64_MAX);
 		switch (result) 
@@ -227,6 +227,7 @@ namespace VansGraphics
 
 	bool VansVKSurface::PresentImage(VkDevice& logical_device,VkQueue& queue, const std::vector<VkSemaphore>& rendering_semaphores, uint32_t image_index)
 	{
+
 		VkPresentInfoKHR present_info =
 		{
 			 VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -350,7 +351,7 @@ namespace VansGraphics
 		//set swapchain create params
 		CreateSwapChainCreateParams();
 
-		//初始设置old swapchain
+		//鍒濆璁剧疆old swapchain
 		m_VansVKOldSwapChain = VK_NULL_HANDLE;
 
 		return true;

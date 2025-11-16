@@ -11,7 +11,7 @@ VansGraphics::VansRenderPassManager* VansGraphics::VansRenderPassManager::instan
 
 void VansGraphics::VansVKRenderPass::CreateRenderPass(VkDevice& logic_device, std::vector<VkAttachmentDescription>& attachments, std::vector<SubpassParameters>& subpass_params, std::vector<VkSubpassDependency>& subpass_dependency, const VkExtent2D& resolution)
 {
-	//·ÀÖ¹y flipÎÊÌâ
+	//é˜²æ­¢y flipé—®é¢˜
 	//https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
 	m_RenderPassViewport = 
 	{
@@ -137,207 +137,207 @@ VansGraphics::VansRenderPassManager* VansGraphics::VansRenderPassManager::GetIns
 	return instance;
 }
 
-//´´½¨Ò»¸öÄ¬ÈÏµÄ¹Ì¶¨render passÏÈ
-void VansGraphics::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface)
+////åˆ›å»ºä¸€ä¸ªé»˜è®¤çš„å›ºå®šrender passå…ˆ
+//void VansGraphics::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface)
+//{
+//	std::vector<VkAttachmentDescription> attachments_descriptions = 
+//	{
+//		{
+//			0,
+//			VK_FORMAT_R16G16B16A16_UNORM,
+//			VK_SAMPLE_COUNT_1_BIT,
+//			VK_ATTACHMENT_LOAD_OP_CLEAR,
+//			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+//			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+//			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+//			VK_IMAGE_LAYOUT_GENERAL, //render passbeginçš„layout
+//			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //è¿™é‡Œçš„final layoutä¼šè‡ªåŠ¨åˆ‡æ¢,render passç»“æŸåçš„layout
+//		},
+//		{
+//			0,
+//			VK_FORMAT_D16_UNORM,
+//			VK_SAMPLE_COUNT_1_BIT,
+//			VK_ATTACHMENT_LOAD_OP_CLEAR,
+//			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+//			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+//			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+//			VK_IMAGE_LAYOUT_GENERAL,
+//			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+//		},
+//		{
+//			0,
+//			VK_FORMAT_R8G8B8A8_SRGB,
+//			VK_SAMPLE_COUNT_1_BIT,
+//			VK_ATTACHMENT_LOAD_OP_CLEAR,
+//			VK_ATTACHMENT_STORE_OP_STORE,
+//			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+//			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+//			VK_IMAGE_LAYOUT_GENERAL,
+//			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,//ç¬¬äºŒä¸ªsubpassä½¿ç”¨ï¼Œç›´æ¥present
+//		},
+//	};
+//
+//	VkAttachmentReference depth_stencil_attachment = 
+//	{
+//		 1,
+//		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+//	};
+//
+//	std::vector<SubpassParameters> subpass_parameters = 
+//	{
+//		// #0 subpass
+//		//è®°å½•åœ¨attachemtsä¸­çš„ç´¢å¼•ï¼Œä»¥åŠå¯¹åº”éœ€è¦çš„layout
+//		{
+//			VK_PIPELINE_BIND_POINT_GRAPHICS,
+//			{},
+//			{
+//				{
+//					0,
+//					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+//				}
+//			},
+//			{},
+//			&depth_stencil_attachment,
+//			{}
+//		},
+//		// #1 subpass
+//		{
+//			VK_PIPELINE_BIND_POINT_GRAPHICS,
+//			{
+//				{
+//					0,
+//					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+//				}
+//			},
+//			{
+//				{
+//					2,
+//					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+//				}
+//			},
+//			{},
+//			nullptr,
+//			{}
+//		}
+//	};
+//
+//	std::vector<VkSubpassDependency> subpass_dependencies = 
+//	{
+//		 {
+//			 0,
+//			 1,
+//			 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+//			 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+//			 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+//			 VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
+//			 VK_DEPENDENCY_BY_REGION_BIT
+//		 }
+//	};
+//
+//	m_VansRenderPass.m_ClearValues = 
+//	{
+//		{ 0.0f, 0.0f, 0.0f, 1.0f },
+//		{ 1.0f, 0 },
+//		{ 0.0f, 0.0f, 0.0f, 1.0f },
+//	};
+//
+//	VkExtent2D resolution = surface.m_VansVKSwapChainImageExtent;
+//	m_VansRenderPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
+//
+//	//åˆ›å»ºcolor,depth
+//	//è¿™é‡Œå…ˆåˆ›å»ºrenderpass,åªæ˜¯æŒ‡å®šäº†å„ä¸ªattachmentçš„çŠ¶æ€ï¼Œå®é™…æ•°æ®é€šè¿‡framebufferæ¥åˆ›å»º
+//	m_ColorImage.CreateVulkanImage(
+//		logic_device, 
+//		{ resolution.width,resolution.height,1 },
+//		VK_FORMAT_R16G16B16A16_UNORM,
+//		1,
+//		1,
+//		VK_IMAGE_TYPE_2D,
+//		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+//		VK_SAMPLE_COUNT_1_BIT
+//		);
+//	m_DepthImage.CreateVulkanImage(
+//		logic_device, 
+//		{ resolution.width,resolution.height,1 },
+//		VK_FORMAT_D16_UNORM, 
+//		1,
+//		1,
+//		VK_IMAGE_TYPE_2D,
+//		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+//		VK_SAMPLE_COUNT_1_BIT
+//	);
+//
+//	//framebufferçš„image viewæ•°é‡å’Œattachment çš„æ•°é‡éœ€è¦ä¸€è‡´
+//	//ç”±äºåŒ…å«swap chain image ï¼Œæ‰€ä»¥è¿™é‡Œframe bufferæ•°é‡éœ€è¦å’Œswapchain imagheæ•°é‡ä¸€è‡´
+//	m_VansRenderPass.m_FrameBuffers.resize(surface.m_VansVKImageCount);
+//	for (int swapChainIndex = 0; swapChainIndex < surface.m_VansVKImageCount; swapChainIndex++)
+//	{
+//		std::vector<VkImageView> image_views = {
+//			m_ColorImage.GetImageView(),
+//			m_DepthImage.GetImageView() ,
+//			surface.GetSwapChainImageView(swapChainIndex) };
+//		m_VansRenderPass.m_FrameBuffers[swapChainIndex].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, image_views, {resolution.width, resolution.height, 1});
+//
+//	}
+//	
+//	m_LogicDevice = logic_device;
+//
+//	//record command buffer
+//	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+//	//è®¾ç½®colordepothçš„layout
+//	m_ColorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+//		{
+//			m_ColorImage.m_VansVKImage,
+//			VK_ACCESS_NONE,
+//			VK_ACCESS_NONE,
+//			m_ColorImage.m_ImageLayout,
+//			VK_IMAGE_LAYOUT_GENERAL,
+//			VK_QUEUE_FAMILY_IGNORED,
+//			VK_QUEUE_FAMILY_IGNORED,
+//			m_ColorImage.m_ImageAspect
+//		});
+//	m_DepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+//		{
+//			m_DepthImage.m_VansVKImage,
+//			VK_ACCESS_NONE,
+//			VK_ACCESS_NONE,
+//			m_DepthImage.m_ImageLayout,
+//			VK_IMAGE_LAYOUT_GENERAL,
+//			VK_QUEUE_FAMILY_IGNORED,
+//			VK_QUEUE_FAMILY_IGNORED,
+//			m_DepthImage.m_ImageAspect
+//		});
+//
+//	surface.SetSwapChainImageBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+//		{
+//			VK_NULL_HANDLE,
+//			VK_ACCESS_NONE,
+//			VK_ACCESS_NONE,
+//			VK_IMAGE_LAYOUT_UNDEFINED,
+//			VK_IMAGE_LAYOUT_GENERAL,
+//			VK_QUEUE_FAMILY_IGNORED,
+//			VK_QUEUE_FAMILY_IGNORED,
+//			VK_IMAGE_ASPECT_COLOR_BIT
+//		});
+//
+//	//end record
+//	command_buffer.EndCommandBufferRecord();
+//
+//
+//
+//	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+//	command_buffer.ResetCommandBuffer(false);
+//}
+
+void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution)
 {
-	std::vector<VkAttachmentDescription> attachments_descriptions = 
-	{
-		{
-			0,
-			VK_FORMAT_R16G16B16A16_UNORM,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL, //render passbeginµÄlayout
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //ÕâÀïµÄfinal layout»á×Ô¶¯ÇĞ»»,render pass½áÊøºóµÄlayout
-		},
-		{
-			0,
-			VK_FORMAT_D16_UNORM,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-		},
-		{
-			0,
-			VK_FORMAT_R8G8B8A8_SRGB,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,//µÚ¶ş¸ösubpassÊ¹ÓÃ£¬Ö±½Ópresent
-		},
-	};
-
-	VkAttachmentReference depth_stencil_attachment = 
-	{
-		 1,
-		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-	};
-
-	std::vector<SubpassParameters> subpass_parameters = 
-	{
-		// #0 subpass
-		//¼ÇÂ¼ÔÚattachemtsÖĞµÄË÷Òı£¬ÒÔ¼°¶ÔÓ¦ĞèÒªµÄlayout
-		{
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			{},
-			{
-				{
-					0,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				}
-			},
-			{},
-			&depth_stencil_attachment,
-			{}
-		},
-		// #1 subpass
-		{
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			{
-				{
-					0,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			},
-			{
-				{
-					2,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				}
-			},
-			{},
-			nullptr,
-			{}
-		}
-	};
-
-	std::vector<VkSubpassDependency> subpass_dependencies = 
-	{
-		 {
-			 0,
-			 1,
-			 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-			 VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
-			 VK_DEPENDENCY_BY_REGION_BIT
-		 }
-	};
-
-	m_VansRenderPass.m_ClearValues = 
-	{
-		{ 0.0f, 0.0f, 0.0f, 1.0f },
-		{ 1.0f, 0 },
-		{ 0.0f, 0.0f, 0.0f, 1.0f },
-	};
-
-	VkExtent2D resolution = surface.m_VansVKSwapChainImageExtent;
-	m_VansRenderPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
-
-	//´´½¨color,depth
-	//ÕâÀïÏÈ´´½¨renderpass,Ö»ÊÇÖ¸¶¨ÁË¸÷¸öattachmentµÄ×´Ì¬£¬Êµ¼ÊÊı¾İÍ¨¹ıframebufferÀ´´´½¨
-	m_ColorImage.CreateVulkanImage(
-		logic_device, 
-		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_R16G16B16A16_UNORM,
-		1,
-		1,
-		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT
-		);
-	m_DepthImage.CreateVulkanImage(
-		logic_device, 
-		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_D16_UNORM, 
-		1,
-		1,
-		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT
-	);
-
-	//framebufferµÄimage viewÊıÁ¿ºÍattachment µÄÊıÁ¿ĞèÒªÒ»ÖÂ
-	//ÓÉÓÚ°üº¬swap chain image £¬ËùÒÔÕâÀïframe bufferÊıÁ¿ĞèÒªºÍswapchain imagheÊıÁ¿Ò»ÖÂ
-	m_VansRenderPass.m_FrameBuffers.resize(surface.m_VansVKImageCount);
-	for (int swapChainIndex = 0; swapChainIndex < surface.m_VansVKImageCount; swapChainIndex++)
-	{
-		std::vector<VkImageView> image_views = {
-			m_ColorImage.GetImageView(),
-			m_DepthImage.GetImageView() ,
-			surface.GetSwapChainImageView(swapChainIndex) };
-		m_VansRenderPass.m_FrameBuffers[swapChainIndex].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, image_views, {resolution.width, resolution.height, 1});
-
-	}
-	
-	m_LogicDevice = logic_device;
-
-	//record command buffer
-	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	//ÉèÖÃcolordepothµÄlayout
-	m_ColorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		{
-			m_ColorImage.m_VansVKImage,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			m_ColorImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_ColorImage.m_ImageAspect
-		});
-	m_DepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		{
-			m_DepthImage.m_VansVKImage,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			m_DepthImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_DepthImage.m_ImageAspect
-		});
-
-	surface.SetSwapChainImageBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		{
-			VK_NULL_HANDLE,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_IMAGE_ASPECT_COLOR_BIT
-		});
-
-	//end record
-	command_buffer.EndCommandBufferRecord();
-
-
-
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
-	command_buffer.ResetCommandBuffer(false);
-}
-
-void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface)
-{
-	//ÉèÖÃGbufferµÄattachmentÃèÊö·û
+	//è®¾ç½®Gbufferçš„attachmentæè¿°ç¬¦
 	std::vector<VkAttachmentDescription> attachments_descriptions =
 	{
-		//color£¬ ÓÃÓÚdefer shadingµÄ½á¹û
+		//colorï¼Œ ç”¨äºdefer shadingçš„ç»“æœ
 		{
 			0,
-			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_FORMAT_R16G16B16A16_SFLOAT,
 			VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,
 			VK_ATTACHMENT_STORE_OP_STORE,
@@ -411,7 +411,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 		},
 
-		//swap chain
+		//color after post process
 		{
 			0,
 			VK_FORMAT_R8G8B8A8_SRGB,
@@ -421,7 +421,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
 			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,//µÚ¶ş¸ösubpassÊ¹ÓÃ£¬Ö±½Ópresent
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,//ç¬¬äºŒä¸ªsubpassè¾“å‡ºï¼Œè¿™é‡Œä¸ç›´æ¥presentï¼Œåç»­è¿˜è¦åå¤„ç†
 		},
 	};
 
@@ -544,23 +544,23 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	{
 		{ 0.0f, 0.0f, 0.0f, 1.0f },
 		{ 0.0f, 0.0f, 0.0f, 1.0f },
-		{ 0.0f, 0.0f, 0.0f, 1.0f },
-		{ 0.0f, 0.0f, 0.0f, 1.0f },
-		{ 0.0f, 0.0f, 0.0f, 1.0f },
+		{ 0.0f, 0.0f, 0.0f, 0.0f },
+		{ 0.0f, 0.0f, 0.0f, 0.0f },
+		{ 0.0f, 0.0f, 0.0f, 0.0f },
 		{ 1.0f, 0 },
 		{ 0.0f, 0.0f, 0.0f, 1.0f },
 	};
 
-	VkExtent2D resolution = surface.m_VansVKSwapChainImageExtent;
+	VkExtent2D resolution = renderResolution;
 	m_VansRenderPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
 
-	//´´½¨color,depth,GBuffers
-	//ÕâÀïÏÈ´´½¨renderpass,Ö»ÊÇÖ¸¶¨ÁË¸÷¸öattachmentµÄ×´Ì¬£¬Êµ¼ÊÊı¾İÍ¨¹ıframebufferÀ´´´½¨
+	//åˆ›å»ºcolor,depth,GBuffers
+	//è¿™é‡Œå…ˆåˆ›å»ºrenderpass,åªæ˜¯æŒ‡å®šäº†å„ä¸ªattachmentçš„çŠ¶æ€ï¼Œå®é™…æ•°æ®é€šè¿‡framebufferæ¥åˆ›å»º
 	
 	m_ColorImage.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_R16G16B16A16_UNORM,
+		VK_FORMAT_R16G16B16A16_SFLOAT,
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
@@ -585,6 +585,34 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	);
 
 	m_NormalImage.CreateVulkanImage(
+		logic_device,
+		{ resolution.width,resolution.height,1 },
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		1,
+		1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true
+	);
+
+	m_MotionVectorImage.CreateVulkanImage(
+		logic_device,
+		{ resolution.width,resolution.height,1 },
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		1,
+		1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true
+	);
+
+	m_ColorAfterPostProcessImage.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
 		VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -669,18 +697,20 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 #endif
 
-	//framebufferµÄimage viewÊıÁ¿ºÍattachment µÄÊıÁ¿ĞèÒªÒ»ÖÂ
+	//framebufferçš„image viewæ•°é‡å’Œattachment çš„æ•°é‡éœ€è¦ä¸€è‡´
 	m_VansRenderPass.m_FrameBuffers.resize(surface.m_VansVKImageCount);
 	for (int swapChainIndex = 0; swapChainIndex < surface.m_VansVKImageCount; swapChainIndex++)
 	{
-		std::vector<VkImageView> image_views = {
+		std::vector<VkImageView> image_views = 
+		{
 			m_ColorImage.GetImageView(),
 			m_NormalImage.GetImageView() ,
 			m_GBufferImage0.GetImageView(),
 			m_GBufferImage1.GetImageView(),
 			m_GBufferImage2.GetImageView(),
 			m_DepthImage.GetImageView() ,
-			surface.GetSwapChainImageView(swapChainIndex)};
+			m_ColorAfterPostProcessImage.GetImageView()//surface.GetSwapChainImageView(swapChainIndex)
+		};
 		m_VansRenderPass.m_FrameBuffers[swapChainIndex].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
 	}
 
@@ -688,7 +718,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 
 	//record command buffer
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	//ÉèÖÃcolordepothµÄlayout
+	//è®¾ç½®colordepothçš„layout
 	m_ColorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_ColorImage.m_VansVKImage,
@@ -711,6 +741,30 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_NormalImage.m_ImageAspect
+		});
+
+	m_MotionVectorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_MotionVectorImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_MotionVectorImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_MotionVectorImage.m_ImageAspect
+		});
+
+	m_ColorAfterPostProcessImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_ColorAfterPostProcessImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_ColorAfterPostProcessImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_ColorAfterPostProcessImage.m_ImageAspect
 		});
 
 	m_GBufferImage0.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -792,8 +846,8 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 			VK_ATTACHMENT_STORE_OP_STORE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL, //render passbeginµÄlayout
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //ÕâÀïµÄfinal layout»á×Ô¶¯ÇĞ»»,render pass½áÊøºóµÄlayout
+			VK_IMAGE_LAYOUT_GENERAL, //render passbeginçš„layout
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //è¿™é‡Œçš„final layoutä¼šè‡ªåŠ¨åˆ‡æ¢,render passç»“æŸåçš„layout
 		},
 		{
 			0,
@@ -817,7 +871,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 	std::vector<SubpassParameters> subpass_parameters =
 	{
 		// #0 subpass
-		//¼ÇÂ¼ÔÚattachemtsÖĞµÄË÷Òı£¬ÒÔ¼°¶ÔÓ¦ĞèÒªµÄlayout
+		//è®°å½•åœ¨attachemtsä¸­çš„ç´¢å¼•ï¼Œä»¥åŠå¯¹åº”éœ€è¦çš„layout
 		{
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			{},
@@ -833,14 +887,14 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		},
 	};
 
-	//shadow Ä¬ÈÏ1
+	//shadow é»˜è®¤1
 	m_VansShadowPass.m_ClearValues =
 	{
 		{ 1.0f, 1.0f, 1.0f, 1.0f },
 		{ 1.0f, 0 },
 	};
 
-	//²»ÇĞ»»subpass
+	//ä¸åˆ‡æ¢subpass
 	std::vector<VkSubpassDependency> subpass_dependencies;
 
 	auto vansConfigration = VansConfigration::GetInstance();
@@ -848,7 +902,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 
 	m_VansShadowPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
 
-	//´´½¨color,depth
+	//åˆ›å»ºcolor,depth
 	m_ShadowMapImage.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
@@ -896,7 +950,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 
 	//record command buffer
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	//ÉèÖÃcolordepothµÄlayout
+	//è®¾ç½®colordepothçš„layout
 	m_ShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_ShadowMapImage.m_VansVKImage,
@@ -939,8 +993,8 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 			VK_ATTACHMENT_STORE_OP_STORE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL, //render passbeginµÄlayout
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //ÕâÀïµÄfinal layout»á×Ô¶¯ÇĞ»»,render pass½áÊøºóµÄlayout
+			VK_IMAGE_LAYOUT_GENERAL, //render passbeginçš„layout
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //è¿™é‡Œçš„final layoutä¼šè‡ªåŠ¨åˆ‡æ¢,render passç»“æŸåçš„layout
 		},
 		{
 			0,
@@ -964,7 +1018,7 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 	std::vector<SubpassParameters> subpass_parameters =
 	{
 		// #0 subpass
-		//¼ÇÂ¼ÔÚattachemtsÖĞµÄË÷Òı£¬ÒÔ¼°¶ÔÓ¦ĞèÒªµÄlayout
+		//è®°å½•åœ¨attachemtsä¸­çš„ç´¢å¼•ï¼Œä»¥åŠå¯¹åº”éœ€è¦çš„layout
 		{
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			{},
@@ -980,14 +1034,14 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 		},
 	};
 
-	//shadow Ä¬ÈÏ1
+	//shadow é»˜è®¤1
 	m_VansPunctualShadowPass.m_ClearValues =
 	{
 		{ 1.0f, 1.0f, 1.0f, 1.0f },
 		{ 1.0f, 0 },
 	};
 
-	//²»ÇĞ»»subpass
+	//ä¸åˆ‡æ¢subpass
 	std::vector<VkSubpassDependency> subpass_dependencies;
 
 	auto vansConfigration = VansConfigration::GetInstance();
@@ -995,7 +1049,7 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 
 	m_VansPunctualShadowPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
 
-	//´´½¨color,depth
+	//åˆ›å»ºcolor,depth
 	m_PunctualShadowMapImage.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
@@ -1043,7 +1097,7 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 
 	//record command buffer
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	//ÉèÖÃcolordepothµÄlayout
+	//è®¾ç½®colordepothçš„layout
 	m_PunctualShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_PunctualShadowMapImage.m_VansVKImage,
@@ -1076,11 +1130,11 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 
 void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index)
 {
-	//½«µ±Ç°render pass ¼ÇÂ¼µ½globaldataÖĞ
+	//å°†å½“å‰render pass è®°å½•åˆ°globaldataä¸­
 	global_state_data.currentRenderPass = renderPass.m_RenderPass;
 	global_state_data.currentSubpass = 0;
 
-	//ÉèÖÃviewportºÍscissor´´½¨¹ÜÏßµÄÊ±ºò»áÊ¹ÓÃµ½
+	//è®¾ç½®viewportå’Œscissoråˆ›å»ºç®¡çº¿çš„æ—¶å€™ä¼šä½¿ç”¨åˆ°
 	global_state_data.viewport = renderPass.m_RenderPassViewport;
 	global_state_data.scissor = renderPass.m_RenderPassScissor;
 
@@ -1097,7 +1151,7 @@ void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& rend
 
 	vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
-	//beginµÄÊ±ºòÉèÖÃviewportºÍsissor
+	//beginçš„æ—¶å€™è®¾ç½®viewportå’Œsissor
 	vkCmdSetViewport(command_buffer, 0, 1, &renderPass.m_RenderPassViewport);
 	vkCmdSetScissor(command_buffer, 0, 1, &renderPass.m_RenderPassScissor);
 }
@@ -1115,10 +1169,87 @@ void VansGraphics::VansRenderPassManager::EndRenderPass(VkCommandBuffer command_
 	vkCmdEndRenderPass(command_buffer);
 }
 
+void VansGraphics::VansRenderPassManager::BlitToSwapChainImage(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex, const VkExtent2D& renderResolution)
+{
+    // Blit m_ColorAfterPostProcessImage (attachment index 6 in deferred pass framebuffer)
+    // into the real swapchain image for presentation.
+    // Steps:
+    // 1. Transition source to TRANSFER_SRC_OPTIMAL.
+    // 2. Transition destination (swapchain) to TRANSFER_DST_OPTIMAL.
+    // 3. vkCmdBlitImage
+    // 4. Transition destination to PRESENT_SRC_KHR again (source back to PRESENT optional).
+
+    VkExtent2D swapchainExtent = surface.m_VansVKSwapChainImageExtent;
+
+    command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+    // Destination: swapchain image (assumed GENERAL or PRESENT). Force to TRANSFER_DST_OPTIMAL.
+    surface.SetSwapChainImageBarrier(
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        {
+            surface.GetSwapChainImage(swapChainIndex),
+            VK_ACCESS_NONE,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_IMAGE_LAYOUT_UNDEFINED, // treat as unknown, transition regardless
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_QUEUE_FAMILY_IGNORED,
+            VK_QUEUE_FAMILY_IGNORED,
+            VK_IMAGE_ASPECT_COLOR_BIT
+        },
+        swapChainIndex);
+
+    // Blit region (entire image)
+    VkImageBlit blitRegion{};
+    blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blitRegion.srcSubresource.mipLevel = 0;
+    blitRegion.srcSubresource.baseArrayLayer = 0;
+    blitRegion.srcSubresource.layerCount = 1;
+    blitRegion.srcOffsets[0] = { 0, 0, 0 };
+    blitRegion.srcOffsets[1] = { (int32_t)renderResolution.width, (int32_t)renderResolution.height, 1 };
+
+    blitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blitRegion.dstSubresource.mipLevel = 0;
+    blitRegion.dstSubresource.baseArrayLayer = 0;
+    blitRegion.dstSubresource.layerCount = 1;
+    blitRegion.dstOffsets[0] = { 0, 0, 0 };
+    blitRegion.dstOffsets[1] = { (int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height, 1 };
+
+    vkCmdBlitImage(
+        command_buffer.GetVKCommandBuffer(),
+        m_ColorAfterPostProcessImage.GetImage(),
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        surface.GetSwapChainImage(swapChainIndex),
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &blitRegion,
+        VK_FILTER_LINEAR);
+
+    // Transition swapchain image to PRESENT_SRC_KHR for presentation
+    surface.SetSwapChainImageBarrier(
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        {
+            surface.GetSwapChainImage(swapChainIndex),
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_NONE,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_QUEUE_FAMILY_IGNORED,
+            VK_QUEUE_FAMILY_IGNORED,
+            VK_IMAGE_ASPECT_COLOR_BIT
+        },
+        swapChainIndex);
+
+    command_buffer.EndCommandBufferRecord();
+}
+
 void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 {
 	m_ColorImage.DestroyVulkanImage(m_LogicDevice);
 	m_DepthImage.DestroyVulkanImage(m_LogicDevice);
+	m_MotionVectorImage.DestroyVulkanImage(m_LogicDevice);
+	m_ColorAfterPostProcessImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_ShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 	m_ShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
@@ -1139,7 +1270,7 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 {
 	//record command buffer
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	//ÉèÖÃcolordepothµÄlayout
+	//è®¾ç½®colordepothçš„layout
 	m_ColorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_ColorImage.m_VansVKImage,

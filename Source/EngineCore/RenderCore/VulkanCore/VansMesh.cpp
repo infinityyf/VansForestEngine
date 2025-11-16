@@ -106,7 +106,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, const std::string&
 	m_MeshRawDataCPULoaded = false;
 	m_SupportRayTracing = true;// supportRayTracing;
 	m_VertexCount = 0;
-	//ÓÃassimp
+	//ç”¨assimp
 	Assimp::Importer importer;
 	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices;
 	if (import_tangent)
@@ -177,8 +177,8 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, const std::string&
 		);
 	}
 
-	//ÉÏ´«Êı¾İµ½GPU
-	//Èç¹û²»Ê¹ÓÃstagebuffer£¬Ö±½Ómap,ĞèÒª´´½¨µÄmemoryÉèÖÃhost visible
+	//ä¸Šä¼ æ•°æ®åˆ°GPU
+	//å¦‚æœä¸ä½¿ç”¨stagebufferï¼Œç›´æ¥map,éœ€è¦åˆ›å»ºçš„memoryè®¾ç½®host visible
 	m_VertexBuffer.CreatVulkanBuffer(logic_device,
 		m_MeshRawData.size() * sizeof(float),
 		VK_FORMAT_R32_SFLOAT,
@@ -207,7 +207,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, const std::string&
 	//m_VertexPositionBuffer.SetBufferData(m_MeshRawPositionData.data(), 0, m_MeshRawPositionData.size() * sizeof(float));
 	m_IndexBuffer.SetBufferData(m_MeshTriangleIndex.data(), 0, m_MeshTriangleIndex.size() * sizeof(int));
 
-	//ÊÍ·ÅCPU¶ËÄÚ´æÊı¾İ
+	//é‡Šæ”¾CPUç«¯å†…å­˜æ•°æ®
 	m_MeshRawData.clear();
 	m_MeshRawPositionData.clear();
 	m_MeshTriangleIndex.clear();
@@ -217,7 +217,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, const std::string&
 
 void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer)
 {
-	// »ñÈ¡¶¥µã»º³åÇøµØÖ·
+	// è·å–é¡¶ç‚¹ç¼“å†²åŒºåœ°å€
 	VkBufferDeviceAddressInfo addressInfo{};
 	addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
 	addressInfo.buffer = m_VertexBuffer.GetNativeBuffer();
@@ -227,7 +227,7 @@ void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& 
 	addressInfo.buffer = m_IndexBuffer.GetNativeBuffer();
 	VkDeviceAddress indexBufferAddress = vkGetBufferDeviceAddressKHR(logic_device, &addressInfo);
 
-	// ¶¨Òå¼¸ºÎÊı¾İ
+	// å®šä¹‰å‡ ä½•æ•°æ®
 	VkAccelerationStructureGeometryTrianglesDataKHR triangles{};
 	triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
 	triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
@@ -246,7 +246,7 @@ void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& 
 
 
 
-	// ¼ÆËã¹¹½¨´óĞ¡
+	// è®¡ç®—æ„å»ºå¤§å°
 	VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfo{};
 	buildGeometryInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
 	buildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -269,7 +269,7 @@ void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& 
 	vkGetAccelerationStructureBuildSizesKHR(logic_device,
 		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildGeometryInfo, primitiveCounts, &buildSizesInfo);
 
-	//¸øblas´´½¨buffer
+	//ç»™blasåˆ›å»ºbuffer
 	m_BottomLevelASBuffer.CreatVulkanBuffer(
 		logic_device,
 		buildSizesInfo.accelerationStructureSize,
@@ -300,7 +300,7 @@ void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& 
 	bufferAddressInfo.pNext = nullptr;
 	buildGeometryInfo.scratchData.deviceAddress = vkGetBufferDeviceAddressKHR(logic_device, &bufferAddressInfo);
 
-	//´´½¨¼ÓËÙ½á¹¹
+	//åˆ›å»ºåŠ é€Ÿç»“æ„
 	const VkAccelerationStructureBuildRangeInfoKHR* pRangeInfo = &buildRangeInfo;
 	vkCmdBuildAccelerationStructuresKHR(commandBuffer, 1, &buildGeometryInfo, &pRangeInfo);
 }

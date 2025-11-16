@@ -109,6 +109,25 @@ bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::str
 	return true;
 }
 
+bool VansGraphics::VansShader::RefreshShaderMoudle()
+{
+	bool result = TranslateToSPIRV(m_ShaderFolder);
+	if (!result)
+	{
+		std::cout << "shader translation failed" << std::endl;
+		return false;
+	}
+
+	result = CreateShaderModule(m_LogicDevice);
+	if (!result)
+	{
+		std::cout << "create shader module failed" << std::endl;
+		return false;
+	}
+
+	return true;
+}
+
 bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder)
 {
 	std::string shader_folder_string = shader_folder;
@@ -273,7 +292,7 @@ bool VansGraphics::VansShader::CreateShaderModule(VkDevice& logic_device)
 
 VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data,const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
-	if (m_GraphicsPipeline != VK_NULL_HANDLE)
+	if (m_GraphicsPipeline != nullptr)
 	{
 		return m_GraphicsPipeline;
 	}
@@ -456,6 +475,16 @@ bool VansGraphics::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_de
 		return false;
 	}
 	return m_GraphicsPipeline->CreateGraphicsPipeline(logic_device, m_VkGraphicsPipelineCreateInfo);
+}
+
+void VansGraphics::VansGraphicsShader::TriggerReCreateGraphicsPipeline()
+{
+	if (m_GraphicsPipeline != nullptr)
+	{
+		delete m_GraphicsPipeline;
+		m_GraphicsPipeline = nullptr;
+	}
+	m_GraphicsPipelineCreateInfo.Clear();
 }
 
 

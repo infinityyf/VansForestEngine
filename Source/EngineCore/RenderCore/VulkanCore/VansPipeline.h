@@ -145,6 +145,14 @@ namespace VansGraphics
 		std::vector<VkDescriptorSetLayout>			descriptorset_layouts;
 
 		int push_constant_size;
+
+		void Clear()
+		{
+			shader_stage_params.clear();
+			attachment_blend_states.clear();
+			descriptorset_layouts.clear();
+			push_constant_size = 0;
+		}
 	};
 
 	class VansVKGraphicsPipeline

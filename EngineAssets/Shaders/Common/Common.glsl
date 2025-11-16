@@ -7,8 +7,8 @@
 #define HALF_PI 1.57079632679
 #define SH_SAMPLE_COUNT 1024
 #define SSAO_SAMPLE_COUNT 16
-#define SSAO_RADIUS 2.0
-#define SSAO_DEPTH_THRESHOLD 1.0
+#define SSAO_RADIUS 4.0
+#define SSAO_DEPTH_THRESHOLD 4.0
 #define SSAO_DEPHT_BIAS 0.02
 
 #define DEPTH_BIAS 0.001
@@ -171,6 +171,31 @@ vec3 SampleSphere(int i, int sampleCount)
     return vec3(x, y, z);
 }
 
+float RadicalInverse_VdC(uint bits)
+{
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u)  | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u)  | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u)  | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u)  | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10; // 1/2^32
+}
+
+// // Low-discrepancy sphere sampler (Hammersley sequence)
+// vec3 SampleSphere(int i, int sampleCount)
+// {
+//     float u = (float(i) + 0.5) / float(sampleCount); // stratified in [0,1]
+//     float v = RadicalInverse_VdC(uint(i));           // quasi-random in [0,1]
+
+//     float cosTheta = 1.0 - 2.0 * u;                  // y in [-1,1]
+//     float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+//     float phi = TWO_PI * v;
+
+//     return vec3(cos(phi) * sinTheta,
+//                 cosTheta,
+//                 sin(phi) * sinTheta);
+// }
+
 struct RayTracePayload
 {
     vec4 positionHit;
@@ -307,5 +332,21 @@ vec2 ComputeFibonacciSpiralDiskSampleClumped(int sampleIndex, float sampleCountI
     return fibonacciSpiralDirection[sampleIndex] * sampleDistNorm;
 }
 
+// Disk sample (low discrepancy) in [0,1] radius
+vec2 DiskSample(uint i, uint n)
+{
+    float u = (float(i) + 0.5) / float(n);
+    float r = sqrt(u);
+    float theta = (float(i) * 2.39996323); // golden angle
+    return r * vec2(cos(theta), sin(theta));
+}
+
+// Orthonormal basis from normal
+void BuildTBN(in vec3 N, out vec3 T, out vec3 B)
+{
+    vec3 up = (abs(N.y) < 0.99) ? vec3(0,1,0) : vec3(1,0,0);
+    T = normalize(cross(up, N));
+    B = cross(N, T);
+}
 
 #endif

@@ -32,7 +32,7 @@ void main()
     if(roughness > 0.1)
     {
         vec2 random = HashRandom(pixelCoord, float(int(FrameIndex) % 100));
-        random.y *= roughness * 0.3;
+        random.y *= roughness * 0.1;
         vec4 pdfrandom = ImportanceSampleGGX(random, roughness);
         tracePDFInfo.a = pdfrandom.w; // PDF值
 
@@ -69,6 +69,13 @@ void main()
         //获取当前位置的深度和法线
         float sceneDepth = texelFetch(inputPosition, ivec2(screenPos * ScreenParams.xy), 0).w;
         vec3 sceneNormal = texelFetch(inputNormal, ivec2(screenPos * ScreenParams.xy), 0).xyz;
+
+        //跳过没有深度的区域
+        if(sceneDepth == 0.0)
+        {
+            lastTracePos = tracePosition;
+            continue;
+        }
 
         // && traceDepth - sceneDepth < SSR_DEPTH_THRESHOLD
         if(traceDepth > sceneDepth)

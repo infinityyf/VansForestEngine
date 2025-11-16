@@ -1,6 +1,7 @@
 #include "VansLight.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include "../../../EngineCore/Configration/VansConfigration.h"
+#include "../../../EngineCore/VansTimer.h"
 #include <iostream>
 void VansGraphics::VansLightManager::AddDirectionalLight(const VansDirectionalLight& light)
 {
@@ -65,6 +66,13 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData()
 
 void VansGraphics::VansLightManager::UpdateLightCPUData()
 {
+	int spotLightCount = m_SpotLights.size();
+	for (int spotLightIndex = 0; spotLightIndex < spotLightCount; spotLightIndex++)
+	{
+
+		m_SpotLights[spotLightIndex].m_Position.x = std::sin(VansTimer::GetFrameTime() * 0.5f) * 6;
+	}
+
 	auto vansConfigration = VansConfigration::GetInstance();
 	float punctualShadowSize = vansConfigration->GetPunctualShadowMapWidth();
 	float patchShadowSize = punctualShadowSize / 8;

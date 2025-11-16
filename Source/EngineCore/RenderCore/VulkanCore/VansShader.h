@@ -60,6 +60,8 @@ namespace VansGraphics
 		//每个shader一个路径，路径里都是对应的所有shader
 		bool InitShader(VkDevice& logic_device, const std::string& shader_folder);
 
+		bool RefreshShaderMoudle();
+
 		bool InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder);
 
 		bool CheckRefreshShader(VkDevice& logic_device);
@@ -141,6 +143,8 @@ namespace VansGraphics
 		VansVKGraphicsPipeline* GetGraphicsPipeline() const { return m_GraphicsPipeline; };
 
 		void SetDrawStateData(VkBool32 depthTestEnable, VkBool32 depthWriteEnable, VkCompareOp depthCompareOp, VkCullModeFlags cullmode);
+
+		void TriggerReCreateGraphicsPipeline();
 
 		VansGraphicsShader() : m_GraphicsPipeline(nullptr)
 		{

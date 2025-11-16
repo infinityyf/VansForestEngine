@@ -48,8 +48,11 @@ bool VansGraphics::VansRenderNode::CheckRenderNodeState()
 	auto shader = m_Material->m_Shader;
 	if (shader!= nullptr && m_SceneFileWatcher->ConsumeUpdated(shader->GetShaderFolder()))
 	{
-		std::cout << "pipe get failed " << shader->GetShaderFolder() << std::endl;
-		//return false;
+		std::cout << "pipe update: " << shader->GetShaderFolder() << std::endl;
+		//重新构建pipeline
+		shader->RefreshShaderMoudle();
+		shader->TriggerReCreateGraphicsPipeline();
+		return false;
 	}
 
 	return true;
