@@ -75,13 +75,19 @@ float RandomWithScale(vec2 uv, float t)
     return fract(magic.z * fract(dot(uv, magic.xy)));
 }
 
-vec2 HashRandom(vec2 p,float frameCount)
+vec2 HashRandom(vec2 uv,float t)
 {
-    vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));
-    p3 += dot(p3, p3.yzx + 33.33);
-    vec3 frameMagicScale = vec3(2.083f, 4.867f,8.65);
-    p3 += frameCount * frameMagicScale;
-    return fract((p3.xx + p3.yz) * p3.zy);
+    vec2 scale = vec2(2.083, 4.867);
+    uv += t * scale;
+
+    // First component (original hash)
+    float n1 = fract(sin(dot(uv, vec2(12.9898, 78.233))) * 43758.5453123);
+
+    // Second component (different hash: offset + different constants)
+    vec2 uv2 = uv + vec2(37.713, 17.127);
+    float n2 = fract(sin(dot(uv2, vec2(4.1234, 95.873))) * 23421.631);
+
+    return vec2(n1, n2);
 }
 
 float LinearizeDepth(float depth, float near, float far)
@@ -200,6 +206,7 @@ struct RayTracePayload
 {
     vec4 positionHit;
     vec4 normalHit;
+    vec4 albedoRoughness;
 };
 
 
@@ -347,6 +354,120 @@ void BuildTBN(in vec3 N, out vec3 T, out vec3 B)
     vec3 up = (abs(N.y) < 0.99) ? vec3(0,1,0) : vec3(1,0,0);
     T = normalize(cross(up, N));
     B = cross(N, T);
+}
+
+// HiZ screen-space ray tracing (UV-space march).
+// Strategy:
+// - Start at finest mip (mip=0). Project the WS ray to UV. March pixel-by-pixel.
+// - If no hit (curDepth <= hizMin), climb to coarser mip to skip faster (larger steps).
+// - When a coarse mip reports potential occluder (curDepth > hizMin), descend mip by mip,
+//   continuing the march until finest confirms the hit.
+// Assumptions:
+// - hiz stores MIN linear depth per texel at each mip (sampler2D).
+// - inputPosition.w (or your depth pyramid source) is linear depth in lastView space.
+
+struct HiZTraceResult {
+    bool  hit;
+    vec2  uv;
+    float depth;
+};
+
+// Project helper
+bool ProjectToUV(mat4 lastView, mat4 lastProj, vec3 ws, out vec2 uv)
+{
+    vec4 clip = lastProj * (lastView * vec4(ws, 1.0));
+    if (clip.w == 0.0) return false;
+    uv = (clip.xy / clip.w) * 0.5 + 0.5;
+    uv.y = 1.0 - uv.y;
+    return uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0;
+}
+
+// HiZ UV-space trace (no per-step reprojection)
+// Returns: hit info; marches in UV using a precomputed 2D direction and depth linearization.
+HiZTraceResult TraceHiZ_UV(
+    sampler2D hiz,
+    mat4 lastView,
+    mat4 lastProj,
+    vec3 startWS,
+    vec3 dirWS,
+    float maxDistWorld,   // world units
+    float basePixelStep,  // pixels at mip 0 (e.g., 1.0)
+    float depthBias       // epsilon in linear depth
+) {
+    dirWS = normalize(dirWS);
+
+    // Base UV and direction (in pixels at mip 0)
+    vec2 uv0;
+    if (!ProjectToUV(lastView, lastProj, startWS, uv0))
+        return HiZTraceResult(false, vec2(0.0), 0.0);
+
+    ivec2 baseSize = textureSize(hiz, 0);
+    vec2 uv0_pix = uv0 * vec2(baseSize);
+
+    // Project a small world advance to get UV direction (pixels)
+    const float probeStepWorld = 0.01;
+    vec2 uv1;
+    ProjectToUV(lastView, lastProj, startWS + dirWS * probeStepWorld, uv1);
+    vec2 uv1_pix = uv1 * vec2(baseSize);
+
+    vec2 uvDirPix = normalize(uv1_pix - uv0_pix);
+    if (length(uvDirPix) < 1e-6)
+        return HiZTraceResult(false, uv0, 0.0);
+
+    // World units per pixel along uvDir
+    float pixelsPerWorld = max(length(uv1_pix - uv0_pix) / probeStepWorld, 1e-6);
+    float worldPerPixel  = 1.0 / pixelsPerWorld;
+
+    // Linear depth model along ray: z(t) = z0 + dzPerWorld * t
+    float z0 = -(lastView * vec4(startWS, 1.0)).z;
+    float dzPerWorld = -(lastView * vec4(dirWS, 0.0)).z; // direction depth delta per world unit
+
+    // UV-space march
+    vec2 uv_pix = uv0_pix;
+    float traveledWorld = 0.0;
+    int mip = 0;
+    int maxMip = int(floor(log2(float(max(baseSize.x, baseSize.y)))));
+    bool climbing = false;
+
+    for (int i = 0; i < 4096; ++i) {
+        // Scale pixel step by current mip to skip faster on coarser mips
+        float pixelStepScaled = basePixelStep * float(1 << mip);
+        uv_pix += uvDirPix * pixelStepScaled;
+
+        // Update world distance and depth via linear model
+        traveledWorld += worldPerPixel * pixelStepScaled;
+        if (traveledWorld > maxDistWorld) break;
+
+        vec2 uv = uv_pix / vec2(baseSize);
+
+        // Bounds check
+        if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0) {
+            if (!climbing) return HiZTraceResult(false, vec2(0.0), 0.0);
+            mip = min(mip + 1, maxMip);
+            continue;
+        }
+
+        float curDepth = z0 + dzPerWorld * traveledWorld;
+
+        // Sample hierarchical MIN depth at current mip
+        float hizMin = textureLod(hiz, uv, float(mip)).r;
+
+        // Potential occlusion
+        if (curDepth - hizMin > depthBias) {
+            if (mip == 0) {
+                return HiZTraceResult(true, uv, hizMin);
+            }
+            // Descend to finer mip to confirm
+            mip = max(mip - 1, 0);
+            climbing = false;
+        } else {
+            // No hit; climb to coarser mip to skip quicker
+            mip = min(mip + 1, maxMip);
+            climbing = true;
+        }
+    }
+
+    return HiZTraceResult(false, vec2(0.0), 0.0);
 }
 
 #endif

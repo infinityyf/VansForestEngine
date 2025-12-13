@@ -4,82 +4,166 @@
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout( set = 0, binding = 0 ) uniform sampler2D inputNormal;
 layout( set = 0, binding = 1 ) uniform sampler2D inputDepth;
 layout( set = 0, binding = 2 ) uniform sampler2D inputColor;
 layout( set = 0, binding = 3 ) uniform sampler2D inputPosition;
 layout( set = 0, binding = 4 ) uniform samplerCube inputSkydiffuse;
-layout( set = 0, binding = 5, rgba32f ) uniform image2D result;
+layout( set = 0, binding = 5, rgba32f ) uniform image2D resultR;
 layout( set = 0, binding = 6 ) uniform ssgiInfo
 {
     vec4 screenSize;
 };
+layout( set = 0, binding = 7) uniform sampler3D SHRCoeff;
+layout( set = 0, binding = 8) uniform sampler3D SHGCoeff;
+layout( set = 0, binding = 9) uniform sampler3D SHBCoeff;
 
-void main() 
+//加速trace
+layout( set = 0, binding = 10) uniform sampler2D hizDepth;
+
+vec3 SampleHemisphereCosine(vec2 u, vec3 normal, vec3 viewDir)
+{
+    // Cosine-weighted in local space (y is up)
+    float phi = 2.0 * 3.14159265358979323846 * u.x;
+    float r   = sqrt(u.y);
+    float x = r * cos(phi);
+    float z = r * sin(phi);
+    float y = sqrt(max(0.0, 1.0 - x*x - z*z));
+    vec3 local = vec3(x, y, z);
+
+    // Build TBN: tangent from viewDir to avoid unstable cross when view ~ normal
+    vec3 t = normalize(cross(normalize(viewDir), normal));
+    vec3 b = normalize(cross(normal, t));
+    mat3 TBN = mat3(t, b, normal);
+
+    return normalize(TBN * local);
+}
+
+// Hammersley sequence (low discrepancy)
+float RadicalInverse(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10;
+}
+vec2 Hammersley(uint i, uint N) { return vec2(float(i) / float(N), RadicalInverse(i)); }
+
+void main()
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
-    vec2 uv = (vec2(pixelCoord) + 0.5) * screenSize.zw;
-    vec3 normal = texture(inputNormal, uv).xyz;
-    vec3 skydiffuse = texture(inputSkydiffuse, normal).xyz;
+    vec2  uv         = (vec2(pixelCoord) + 0.5) * screenSize.zw;
 
-    //在半球方向进行随机采样，进行trace，如果trance不到或者到屏幕外，就使用skydiffuse
-    vec3 startPosition = texture(inputPosition, uv).xyz;
-    vec3 tracePosition = startPosition;
-    vec3 traceResult = skydiffuse;
+    vec3 normal        = normalize(texture(inputNormal,  uv).xyz);
+    vec3 startPosition = texture(inputPosition, uv).xyz + normal * 0.05;
+    vec3 viewDir       = normalize(cameraPosition.xyz - startPosition);
 
+    float rnd = fract(sin(dot(vec3(uv, FrameIndex), vec3(12.9898,78.233,37.719))) * 43758.5453);
 
-    //半球随机采样
-    vec3 viewDirection = normalize(cameraPosition.xyz - startPosition);
+    const int   sampleCount    = 32;
+    const float maxTraceDist   = 20.0;
+    const float stepBase       = 0.02;
+    const float depthBias      = 0.01;
+    const float maxDepthDelta  = 1.0;
+    const float cosConeMin     = cos(radians(35.0));
 
-    //构建TBN
-    vec3 tangent = normalize(cross(viewDirection,normal));
-    vec3 bitangent = cross(normal, tangent);
-    mat3x3 TBN = mat3x3(tangent, bitangent, normal);
+    vec3 accumIrradiance = vec3(0.0);
 
-    int frame = int(FrameIndex) % 100;
-    vec2 random = HashRandom(pixelCoord, float(frame));
-    float phi = TWO_PI * random.x;
-    float cosTheta = random.y;
-    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
-
-    vec3 traceDirection = vec3(
-        cos(phi) * sinTheta,
-        sin(phi) * sinTheta,
-        cosTheta
-    );
-    traceDirection = TBN * traceDirection;
-
-    for(int stepIndex = 1; stepIndex < SSGI_MAX_COUNT ; stepIndex++)
+    for (int i = 0; i < sampleCount; ++i)
     {
-        tracePosition = startPosition + traceDirection * SSGI_MAX_STEP * float(stepIndex) * float(stepIndex) * 0.005;
+        vec2 h = Hammersley(uint(i), uint(sampleCount));
+        h.x = fract(h.x + rnd);
 
-        //计算目标在屏幕空间的位置
-        vec4 viewSpacePos = LastViewMatrix * vec4(tracePosition, 1.0);
-        float traceDepth = -viewSpacePos.z; // 视图空间的深度
-
-        vec4 clipSpacePos =LastProjectionMatrix * viewSpacePos;
-        vec2 screenPos = ((clipSpacePos.xy / clipSpacePos.w) * 0.5 + 0.5);
-        screenPos.y = 1.0 - screenPos.y;
-
-        //如果目标位置在屏幕外，就使用skydiffuse
-        if(screenPos.x < 0.0 || screenPos.x > 1.0 || screenPos.y < 0.0 || screenPos.y > 1.0)
-        {
-            break;
+        vec3 dir = SampleHemisphereCosine(h, normal, viewDir);
+        if (dot(dir, normal) < cosConeMin) {
+            float t = (cosConeMin - dot(dir, normal)) * 0.5;
+            dir = normalize(mix(dir, normal, clamp(t, 0.0, 1.0)));
         }
 
-        //获取当前位置的深度和法线
-        vec3 sceneNormal = texture(inputNormal, screenPos).xyz;
-        float sceneDepth = texture(inputPosition, screenPos).w;
-        if(traceDepth > sceneDepth )
+        bool  hit   = false;
+        vec3  tracePos = startPosition;
+        float tDist    = 0.0;
+
+        for (int stepIdx = 0; stepIdx < 1024; ++stepIdx)
         {
-            traceResult = texture(inputColor, screenPos).xyz;
-            break;
+            float stepLen = stepBase * (1.0 + 0.002 * float(stepIdx) * float(stepIdx));
+            tDist += stepLen;
+            if (tDist > maxTraceDist) break;
+
+            tracePos = startPosition + dir * tDist;
+
+            vec4 clip = LastProjectionMatrix * LastViewMatrix * vec4(tracePos, 1.0);
+            if (clip.w == 0.0) break;
+            vec2 ndc = (clip.xy / clip.w) * 0.5 + 0.5;
+            ndc.y = 1.0 - ndc.y;
+
+            if (ndc.x < 0.0 || ndc.x > 1.0 || ndc.y < 0.0 || ndc.y > 1.0)
+                break;
+
+            float sceneDepth = texture(inputPosition, ndc).w;
+            float curDepth   = -(LastViewMatrix * vec4(tracePos, 1.0)).z;
+
+            float dDelta = curDepth - sceneDepth;
+            if (dDelta > depthBias && dDelta < maxDepthDelta)
+            {
+                // Hit occurred. Decide using color or SH based on facing.
+                vec3 hitN = normalize(texture(inputNormal, ndc).xyz);
+
+                // If the surface normal at hit is NOT facing the sampling point,
+                // use SH along the sampling direction instead of the hit color.
+                // Facing test: normal should point roughly toward the sampling point (tracePos -> startPosition).
+                vec3 toSamplePoint = normalize(startPosition - tracePos);
+                bool facingSamplePoint = dot(hitN, toSamplePoint) > 0.0;
+
+                if (facingSamplePoint)
+                {
+                    vec3 hitColor = texture(inputColor, ndc).rgb;
+                    accumIrradiance += hitColor;
+                }
+                else
+                {
+                    vec3 uvw = (startPosition + normal * 0.5 * 1.732 - vec3(-20.0, -14.0, -20.0)) / vec3(40.0, 40.0, 40.0);
+                    vec4 rC = texture(SHRCoeff, uvw);
+                    vec4 gC = texture(SHGCoeff, uvw);
+                    vec4 bC = texture(SHBCoeff, uvw);
+
+                    vec3 shDiffuse = vec3(0.0);
+                    for (int k = 0; k < 4; ++k) {
+                        float b = SHBasis(k, dir);
+                        shDiffuse.r += rC[k] * b;
+                        shDiffuse.g += gC[k] * b;
+                        shDiffuse.b += bC[k] * b;
+                    }
+                    shDiffuse /= PI;
+                    accumIrradiance += max(shDiffuse, vec3(0.0));
+                }
+
+                hit = true;
+                break;
+            }
+        }
+
+        if (!hit)
+        {
+            vec3 uvw = (startPosition + normal * 0.5 * 1.732 - vec3(-20.0, -14.0, -20.0)) / vec3(40.0, 40.0, 40.0);
+            vec4 rC = texture(SHRCoeff, uvw);
+            vec4 gC = texture(SHGCoeff, uvw);
+            vec4 bC = texture(SHBCoeff, uvw);
+
+            vec3 shDiffuse = vec3(0.0);
+            for (int k = 0; k < 4; ++k) {
+                float b = SHBasis(k, dir);
+                shDiffuse.r += rC[k] * b;
+                shDiffuse.g += gC[k] * b;
+                shDiffuse.b += bC[k] * b;
+            }
+            shDiffuse /= PI;
+            accumIrradiance += max(shDiffuse, vec3(0.0));
         }
     }
-    //result源像素颜色减半，加上新颜色混合
-    vec4 currentColor = imageLoad(result, ivec2(gl_GlobalInvocationID.xy));
-    vec3 finalColor = mix(currentColor.xyz, traceResult, 0.5);
-    //存储结果
-    imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(finalColor,1.0));
+
+    vec3 l0 = accumIrradiance / float(sampleCount);
+    imageStore(resultR, pixelCoord, vec4(l0, 1.0));
 }

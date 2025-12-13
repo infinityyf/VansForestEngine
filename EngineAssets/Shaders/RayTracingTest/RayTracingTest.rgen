@@ -22,6 +22,10 @@ layout(set = 0, binding = 6, std430) buffer hitNormalBuffer
     vec4 hitNormal[];
 } hitNormalInfoBuffer;
 
+layout(set = 0, binding = 8, std430) buffer hitAlbedoRoughnessBuffer {
+    vec4 albedoRoughness[];
+} hitAlbedoRoughnessInfoBuffer;
+
 layout(push_constant) uniform PushConstants 
 {
     vec4 cameraPos;
@@ -71,6 +75,7 @@ void main()
         //记录命中点
         hitPositionInfoBuffer.hitPosition[bufferOffset + rayIndex] = hitResult.positionHit;
         hitNormalInfoBuffer.hitNormal[bufferOffset + rayIndex] = hitResult.normalHit;
+        hitAlbedoRoughnessInfoBuffer.albedoRoughness[bufferOffset + rayIndex] = hitResult.albedoRoughness;
     }
 
     imageStore(resultImage, pixelCoord, vec4(1 - hitCount/sampleCount, 0, 0, 0));

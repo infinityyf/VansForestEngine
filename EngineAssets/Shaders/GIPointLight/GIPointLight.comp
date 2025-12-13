@@ -32,7 +32,6 @@ layout( set = 1, binding = 3, std430 ) buffer indirectLightResult
 } indirectLightBuffer;
 
 
-
 //miss 结果
 layout( set = 1, binding = 4 ) uniform samplerCube environmentMap;
 
@@ -48,6 +47,11 @@ layout( set = 1, binding = 7 ) uniform sampler3D SHBCoeff;
 layout( set = 1, binding = 8 ) uniform sampler2D shadowMap;
 layout( set = 1, binding = 9 ) uniform sampler2D punctualShadowMap;
 
+
+layout( set = 1, binding = 10, std430 ) buffer pbrDataBuffer
+{
+    vec4 albedoRoughness[];
+} pbrInfo;
 
 layout(push_constant) uniform PushConstants 
 {
@@ -144,6 +148,7 @@ void main()
 
     float solideAngle = 4.0 * PI / float(sampleCount);
     vec3 sampleCenter = (groupOrigin + 0.5 * vec3(originStride,originStride,originStride) + vec3(probeIndex) * originStride);
+    
     for(int hitIndex = 0; hitIndex < sampleCount; hitIndex++)
     {
         vec3 rayDirection = SampleSphere(hitIndex,sampleCount);
@@ -153,22 +158,22 @@ void main()
         vec4 hitNrm = hitNormalInfoBuffer.hitNormal[resultIndex];
         if(hitPos.w < 0.5)
         {
+            //这里需要根据太阳角度实施修改天空颜色和强度
             vec3 envColor = texture(environmentMap, rayDirection).rgb * 5;
-            directLightBuffer.directLight[resultIndex] = vec4(0,0,0,0.5);
-            indirectLightBuffer.indirectLight[resultIndex] = vec4(envColor, 0.5);
+            directLightBuffer.directLight[resultIndex] = vec4(0,0,0,1);
+            indirectLightBuffer.indirectLight[resultIndex] = vec4(envColor, 1);
             continue;
         }
-        // directLightBuffer.directLight[resultIndex] = vec4(0,0,0,0.5);
-        // indirectLightBuffer.indirectLight[resultIndex] = vec4(0,0,0,0.5);
-        // continue;
+
+        vec4 albedoRoughness = pbrInfo.albedoRoughness[resultIndex];
 
         float hitDistance = length(hitPos.xyz - sampleCenter);
         float radius = hitDistance * solideAngle;
 
         //计算当前点的直接光diffse
         vec3 directDiffuse = vec3(0);
-        CalculateDirectDiffuse(hitPos.xyz,hitNrm.xyz, shadowMap, punctualShadowMap,radius, directDiffuse);
-        directLightBuffer.directLight[resultIndex] = vec4(directDiffuse * 2, 1.0);
+        CalculateDirectDiffuse(hitPos.xyz,hitNrm.xyz, shadowMap, punctualShadowMap,radius, albedoRoughness, directDiffuse);
+        directLightBuffer.directLight[resultIndex] = vec4(directDiffuse, 1.0);
 
         // //计算当前点的间接漫反射
         // vec3 inDirectDiffuse = vec3(0);
@@ -190,8 +195,7 @@ void main()
         // inDirectDiffuse = max(vec3(0, 0, 0), inDirectDiffuse);
 
         //计算当前点的间接漫反射
-        vec3 inDirectDiffuse = CalculateSHDiffuse(hitPos.xyz + hitNrm.xyz * originStride * 1.732, hitNrm.xyz,groupOrigin,vec3(originSize));
-
+        vec3 inDirectDiffuse = CalculateSHDiffuse(hitPos.xyz + hitNrm.xyz * originStride * 0.5, hitNrm.xyz,groupOrigin,vec3(originSize));
         indirectLightBuffer.indirectLight[resultIndex] = vec4(inDirectDiffuse, 1.0);
     }
 }

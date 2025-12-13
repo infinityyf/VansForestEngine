@@ -13,13 +13,16 @@ layout(set = 1, binding = 3) uniform sampler2D  gbufferInput2;
 layout(set = 1, binding = 4) uniform sampler2D  depthInput;
 layout(set = 1, binding = 5, rgba32f ) uniform image2D outColor;
 
+
+#define SCREEN_SCALE 2
+
 void main() 
 {
     float aoResult = 0;
     float currentDepth = texture(depthInput, fragTexCoord).x;
     if(currentDepth == 1.0)
     {
-        imageStore(outColor, ivec2(fragTexCoord * ScreenParams.xy), vec4(1.0, 1.0, 1.0, 1.0));
+        imageStore(outColor, ivec2(fragTexCoord * ScreenParams.xy / SCREEN_SCALE), vec4(1.0, 1.0, 1.0, 1.0));
         return;
     }
 
@@ -33,7 +36,7 @@ void main()
     vec3 bitangent = cross(normal, tangent);
     mat3x3 TBN = mat3x3(tangent, bitangent, normal);
 
-    vec2 pixelCoord = fragTexCoord * ScreenParams.xy;
+    vec2 pixelCoord = fragTexCoord * ScreenParams.xy / SCREEN_SCALE;
     //获取多个采样点
     for (int i = 0; i < SSAO_SAMPLE_COUNT; ++i) 
     {
@@ -80,5 +83,5 @@ void main()
     aoResult /= float(SSAO_SAMPLE_COUNT); // 计算平均值
     aoResult = 1 - aoResult;
 
-    imageStore(outColor, ivec2(fragTexCoord * ScreenParams.xy), vec4(aoResult,aoResult,aoResult, 1.0));
+    imageStore(outColor, ivec2(fragTexCoord * ScreenParams.xy / SCREEN_SCALE), vec4(aoResult,aoResult,aoResult, 1.0));
 }

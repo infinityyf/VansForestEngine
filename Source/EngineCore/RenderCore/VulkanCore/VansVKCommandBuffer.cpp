@@ -154,7 +154,7 @@ void VansGraphics::VansVKCommandBuffer::UpdatePushConstants(VansVKGraphicsPipeli
 
 void VansGraphics::VansVKCommandBuffer::SetViewport(uint32_t first_viewport, const std::vector<VkViewport>& viewports)
 {
-	//first_viewport¼ÇÂ¼¿ªÆôµÄË÷Òıoffset
+	//first_viewportè®°å½•å¼€å¯çš„ç´¢å¼•offset
 	vkCmdSetViewport(
 		m_VansVKCommandBuffer,
 		first_viewport,
@@ -179,7 +179,7 @@ void VansGraphics::VansVKCommandBuffer::SetLineWidth(float line_width)
 void VansGraphics::VansVKCommandBuffer::SetDepthBias(float constant_factor, float clamp, float slope_factor)
 {
 	//clamp:specify the maximal or minimal value of the depth bias
-	//slope_factor is a scalar factor applied to a fragment¡¯s slope in depth bias calculations.
+	//slope_factor is a scalar factor applied to a fragmentâ€™s slope in depth bias calculations.
 	vkCmdSetDepthBias(m_VansVKCommandBuffer, constant_factor, clamp, slope_factor);
 }
 
@@ -225,7 +225,7 @@ void VansGraphics::VansVKCommandBuffer::BindMesh(VansMesh& mesh, uint32_t fist_b
 		iparam.MemoryOffset,
 		iparam.IndexType);
 
-	//¼ÇÂ¼mesh µÄbind data
+	//è®°å½•mesh çš„bind data
 	global_state_data.vertexInputAttributeDescriptions = &mesh.m_VertexInputAttributeDescriptions;
 	global_state_data.vertexInputBindingDescription = &mesh.m_VertexInputBindingDescription;
 
@@ -246,12 +246,14 @@ void VansGraphics::VansVKCommandBuffer::EnsureGraphicsShader(VansGraphicsShader&
 	}
 	//BindGraphicsPipeline(*pipeline);
 
-	//¸ù¾İshaderÉùÃ÷ºÍ²ÄÖÊ°ó¶¨µÄÊı¾İ½øĞĞ°ó¶¨
+	//æ ¹æ®shaderå£°æ˜å’Œæè´¨ç»‘å®šçš„æ•°æ®è¿›è¡Œç»‘å®š
 	//BindDescriptorSets();
 }
 
 void VansGraphics::VansVKCommandBuffer::EnsureComputeShader(VansComputeShader& shader, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
+	//æ£€æŸ¥compute shaderæ˜¯å¦ä¿®æ”¹
+
 	VansVKComputePipeline* pipeline = shader.GetComputePipeline(m_VansVKDevice, descriptorset_layouts);
 	if (pipeline == nullptr)
 	{
@@ -263,10 +265,10 @@ void VansGraphics::VansVKCommandBuffer::EnsureComputeShader(VansComputeShader& s
 void VansGraphics::VansVKCommandBuffer::DispatchCompute(VansComputeShader& shader, uint32_t x_size, uint32_t y_size, uint32_t z_size, const std::vector<VkDescriptorSet>& descriptor_sets)
 {
 	VansVKComputePipeline* pipeline = shader.GetComputePipeline();
-	//°ó¶¨¹ÜÏß
+	//ç»‘å®šç®¡çº¿
 	pipeline->BindComputePipeline(m_VansVKCommandBuffer);
 
-	//°ó¶¨ÃèÊö·û
+	//ç»‘å®šæè¿°ç¬¦
 	vkCmdBindDescriptorSets(
 		m_VansVKCommandBuffer,
 		VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -316,7 +318,7 @@ void VansGraphics::VansVKCommandBuffer::BlitImage(VansVKImage& source, int sourc
 		1, &copyRegion
 	);
 
-	//½áÊøºó×ª»»»ØÀ´
+	//ç»“æŸåè½¬æ¢å›æ¥
 	source.SetImageMemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		{
 			source.m_VansVKImage,
@@ -337,8 +339,8 @@ void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
 	const std::vector<VkDescriptorSet>& descriptor_sets, 
 	const std::vector<uint32_t>& dynamic_offsets)
 {
-	//½«¹ØÁªºÃµÄdescriptor set °ó¶¨µ½ pipeline
-	//Í¨¹ıbindSetCMDÊµÏÖ
+	//å°†å…³è”å¥½çš„descriptor set ç»‘å®šåˆ° pipeline
+	//é€šè¿‡bindSetCMDå®ç°
 	vkCmdBindDescriptorSets(
 		m_VansVKCommandBuffer,
 		pipeline_type,
@@ -408,8 +410,7 @@ bool VansGraphics::VansVKCommandBuffer::ResetCommandBuffer(bool release_buffer_m
 	}
 	return true;
 }
-VkFence VansGraphics::VansVKCommandBuffer::m_CommandBufferFinishSubmitFence = VK_NULL_HANDLE;
-VkFence VansGraphics::VansVKCommandBuffer::m_RayTracingCommandBufferFinishSubmitFence = VK_NULL_HANDLE;
+
 
 bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence)
 {
@@ -482,7 +483,6 @@ void VansGraphics::VansMultiThreadCommandBufferMangaer::SubmitMultiCommands(VkQu
 		m_CommandBufferRecordingThreads[i].join();
 		command_buffers[i] = m_CommandBufferRecordingThreadParameters[i].CommandBuffer;
 	}
-	//submitÖ»ÄÜ´ÓÒ»¸öÏß³Ì£¬ËùÒÔĞèÒªËùÓĞrecord¶¼joinºó²ÅÄÜsubmit
-	VansVKCommandBuffer::SubmitCommands(queue, device, command_buffers, wait_semaphore_infos, signal_semaphores, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
-
+	//submitåªèƒ½ä»ä¸€ä¸ªçº¿ç¨‹ï¼Œæ‰€ä»¥éœ€è¦æ‰€æœ‰recordéƒ½joinåæ‰èƒ½submit
+	//VansVKCommandBuffer::SubmitCommands(queue, device, command_buffers, wait_semaphore_infos, signal_semaphores, command_buffer.m_CommandBufferFinishSubmitFence);
 }

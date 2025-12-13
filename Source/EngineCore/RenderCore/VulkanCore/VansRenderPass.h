@@ -119,6 +119,8 @@ namespace VansGraphics
 
 		VansVKRenderPass m_VansPunctualShadowPass;
 
+		VansVKRenderPass m_VansUIPass;
+
 		VkDevice m_LogicDevice;
 
 	public:
@@ -128,13 +130,16 @@ namespace VansGraphics
 		//void SetupVansRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surrface);
 
 		//延迟渲染
-		void SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surrface, const VkExtent2D& renderResolution);
+		void SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, const VkExtent2D& renderResolution);
 
 		//阴影渲染
 		void SetupVansShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue);
 
 		//精确阴影渲染
 		void SetupVansPunctualShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue);
+
+		//uipass
+		void SetupVansUIRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);
 
 		//渲染区域大小
 		void BeginRenderPass(VansVKRenderPass& renderPass, VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index = 0);

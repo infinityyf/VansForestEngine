@@ -176,7 +176,7 @@ namespace VansGraphics
 				// Upload this mip level (tightly packed)
 				VkExtent3D mipExtent = { (uint32_t)mipW, (uint32_t)mipH, 1 };
 				VkOffset3D image_offset = { 0, 0, 0 };
-				vkDevicePtr->SetDeviceImageData(m_Image, mipCompressed.data(),
+				vkDevicePtr->SetDeviceImageData(m_Image, command_buffer, mipCompressed.data(),
 												0, static_cast<int>(mipCompressed.size()),
 												image_offset, mipExtent, m, 0);
 
@@ -204,7 +204,7 @@ namespace VansGraphics
 					m_Image.GetImageAspect()
 				});
 			command_buffer.EndCommandBufferRecord();
-			VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+			VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
 			command_buffer.ResetCommandBuffer(false);
 			return;
 		}
@@ -239,7 +239,7 @@ namespace VansGraphics
 		);
 
 		VkOffset3D image_offset = { 0, 0, 0 };
-		vkDevicePtr->SetDeviceImageData(m_Image, m_ImageData.data(), 0, data_size, image_offset, extent, 0, 0);
+		vkDevicePtr->SetDeviceImageData(m_Image, command_buffer, m_ImageData.data(), 0, data_size, image_offset, extent, 0, 0);
 
 		//切换layout到：VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		//
@@ -348,7 +348,7 @@ namespace VansGraphics
 		}
 
 		command_buffer.EndCommandBufferRecord();
-		VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
 		command_buffer.ResetCommandBuffer(false);
 
 		m_ImageData.clear();
@@ -490,7 +490,7 @@ namespace VansGraphics
 			}
 
 			VkOffset3D image_offset = { 0, 0, 0 };
-			vkDevicePtr->SetDeviceImageData(m_Image, m_ImageData.data(), 0, data_size, image_offset, extent, 0, textureIndex);
+			vkDevicePtr->SetDeviceImageData(m_Image, command_buffer, m_ImageData.data(), 0, data_size, image_offset, extent, 0, textureIndex);
 		}
 
 		m_TextureWidth = width;
@@ -513,7 +513,7 @@ namespace VansGraphics
 			});
 
 		command_buffer.EndCommandBufferRecord();
-		VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
 		command_buffer.ResetCommandBuffer(false);
 	}
 
@@ -573,7 +573,7 @@ namespace VansGraphics
 			});
 
 		command_buffer.EndCommandBufferRecord();
-		VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
 		command_buffer.ResetCommandBuffer(false);
 	}
 }

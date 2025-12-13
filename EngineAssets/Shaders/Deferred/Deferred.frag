@@ -15,7 +15,7 @@ layout(set = 1, binding = 3, input_attachment_index = 3) uniform subpassInput gb
 layout(set = 1, binding = 4, input_attachment_index = 4) uniform subpassInput depthInput;
 
 layout(set = 2, binding = 0, rgba32f ) uniform image2D ssao;
-layout(set = 2, binding = 1, rgba32f ) uniform image2D ssgi;
+layout(set = 2, binding = 1) uniform sampler2D ssgi;
 layout(set = 2, binding = 2, rgba32f ) uniform image2D ssr;
 layout(set = 2, binding = 3) uniform sampler2D shadowMap;
 layout(set = 2, binding = 4) uniform sampler2D punctualShadowMap;
@@ -46,7 +46,7 @@ vec3 SampleSHColor(vec3 dir)
 vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal)
 {
     vec3 inDirectDiffuse = vec3(0);
-    vec3 uvw = (position_world + normal * 0.5 * 1.732 - vec3(-20,-20 + 6,-20)) / vec3(40,40,40);
+    vec3 uvw = (position_world + normal * 0.5 * 0.5 - vec3(-20,-20 + 6,-20)) / vec3(40,40,40);
 
     vec4 rCoeff = texture(SHRCoeff, uvw);
     vec4 gCoeff = texture(SHGCoeff, uvw);
@@ -77,7 +77,7 @@ void main()
     float depth = subpassLoad(depthInput).x;
 
     //获取ssao
-    float ssaoValue = imageLoad(ssao,ivec2(fragTexCoord * ScreenParams.xy)).r;//texture(ssao, fragTexCoord).r;
+    float ssaoValue = imageLoad(ssao,ivec2(fragTexCoord * ScreenParams.xy / 2)).r;//texture(ssao, fragTexCoord).r;
 
     vec3 viewDirection = normalize(cameraPosition.xyz - position_world);
 
@@ -101,15 +101,14 @@ void main()
     //indirect diffuse
     //a : brdfData.indirectDiffuse = texture(PreConvDiffuseEnvironment, normal).rgb;
     //gi 使用半分辨率
-    //brdfData.indirectDiffuse = imageLoad(ssgi,ivec2(lastFrameUV * ScreenParams.xy / 4)).rgb;
+    brdfData.indirectDiffuse = texture(ssgi, lastFrameUV).rgb;
     //b : 计算球谐
     //brdfData.indirectDiffuse = SampleSHColor(normal);
     //c : 计算动态GI，探针球谐
-    brdfData.indirectDiffuse = CalculateSHDiffuse(position_world, normal);
+    //brdfData.indirectDiffuse = CalculateSHDiffuse(position_world, normal);
 
     brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy / 2)).rgba;
     
-
     //计算光照
     LightResult lightResult;
     CalculateDirectLight(brdfData,shadowMap,punctualShadowMap, lightResult);
@@ -124,6 +123,7 @@ void main()
     vec4 fogData = texture(fogResult, fragTexCoord);
     float fogDensity = 0;//fogData.a;
     outColor.rgb = mix(outColor.rgb, fogData.rgb, fogDensity);
-    //outColor.rgb = brdfData.indirectDiffuse * brdfData.ao;
+    //outColor.rgb = brdfData.indirectDiffuse;
+    //outColor.rgb = CalculateSHDiffuse(position_world, normal);
     outColor.a = 1;
 }

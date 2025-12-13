@@ -92,7 +92,7 @@
                     "name" : "PointLight",
                     "type" : 1,
                     "color" : [0.0, 0.0, 1.0],
-                    "intensity" : 10,
+                    "intensity" : 50,
                     "position" : [0.0, 5.0, 0.0],
                     "radius" : 10.0
                 },
@@ -100,7 +100,7 @@
                     "name" : "SpotLight",
                     "type" : 2,
                     "color" : [1.0, 0.0, 0.0],
-                    "intensity" : 10,
+                    "intensity" : 50,
                     "position" : [3.0, 2.0, 0.0],
                     "direction" : [-1.0, 0.0, 0.0],
                     "radius" : 10.0,
@@ -403,7 +403,7 @@
     ],
     "subScene" : [
         {
-            "name" : "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/SceneSponza3.json"
+            "name" : "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/SceneDust.json"
         }
     ]
 }

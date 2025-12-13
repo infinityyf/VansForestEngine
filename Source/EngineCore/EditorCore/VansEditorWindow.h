@@ -14,7 +14,13 @@
 
 namespace VansGraphics
 {
-	//±à¼­Æ÷´°¿Ú
+	class VansHierachuWindow;
+	class VansLightWindow;
+	class VansProjectWindow;
+	class VansSceneWindow;
+	class VansInspectorWindow;
+
+	//ç¼–è¾‘å™¨çª—å£
 	class VansEditorWindow
 	{
 	public: 
@@ -37,11 +43,23 @@ namespace VansGraphics
 
 		static void MouseInputCallBack(GLFWwindow* window, double xpos, double ypos);
 
+		static void MouseClickCallBack(GLFWwindow* window, int button, int action, int mods);
+
 		static std::vector<VansGraphics::VansCamera*> m_Cameras;
 
 	public:
 
 		static std::vector<VansBaseWindowComponent*> m_Windows;
+
+		static VansHierachuWindow* m_HierachyWindow;
+
+		static VansLightWindow* m_LightWindow;
+
+		static VansProjectWindow* m_ProjectWindow;
+
+		static VansSceneWindow* m_SceneWindow;
+
+		static VansInspectorWindow* m_InspectorWindow;
 
 	private:
 

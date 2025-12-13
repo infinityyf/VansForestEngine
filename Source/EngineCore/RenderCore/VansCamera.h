@@ -15,6 +15,8 @@ namespace VansGraphics
         glm::mat4x4 ProjectionMatrix;
         glm::mat4x4 LastViewMatrix;
         glm::mat4x4 LastProjectionMatrix;
+        glm::mat4x4 LastPrevViewMatrix;
+        glm::mat4x4 LastPrevProjectionMatrix;
         glm::mat4x4 InverseViewMatrix;
         glm::mat4x4 InverseProjectionMatrix;
         //resolution, 1/resolution
@@ -38,6 +40,8 @@ namespace VansGraphics
 
         uint32_t m_RenderFrameIndex;
 
+        bool  m_IsRightMouseDown;
+
     public:
 
         VkDescriptorSetLayout m_CameraBufferLayout;
@@ -47,6 +51,8 @@ namespace VansGraphics
         VansVKBuffer m_CameraDataBuffer;
 
     public:
+
+        void SetRightMouseDown(bool down);
 
         void HandleMouseMovement(float deltaX, float deltaY);
 
@@ -106,6 +112,8 @@ namespace VansGraphics
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
             m_RenderFrameIndex = 0;
+
+            m_IsRightMouseDown = false;
         }
 
         ~VansCamera();

@@ -13,7 +13,7 @@ using namespace VansGraphics;
 int main()
 {
 	//create window
-	VansEditorWindow::CreateVansEditorWindow(1280 * 2,720 * 2,VULKAN);
+	VansEditorWindow::CreateVansEditorWindow(1280 * 2 ,720 * 2,VULKAN);
 
 
 	//setup vulkan backeend

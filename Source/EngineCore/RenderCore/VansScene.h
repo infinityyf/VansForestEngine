@@ -3,6 +3,7 @@
 #include "VansCamera.h"
 #include "BRDFData/VansLight.h"
 #include <vector>
+#include <map>
 
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
@@ -36,14 +37,14 @@ namespace VansGraphics
 
 	public:
 
-		//��¼�����ʲ�
+		//记录所有资产
 		std::vector<VansAsset*> m_Meshes;
 
 		std::vector<VansAsset*> m_Textures;
 
 		std::vector<VansAsset*> m_Shaders;
 
-		//��¼����ʱ����
+		//记录运行时数据
 		std::vector<VansAsset*> m_Materials;
 
 	public:
@@ -83,6 +84,8 @@ namespace VansGraphics
 		void UpdateSceneData();
 
 	private:
+
+		void ImportDefaultTextures(const std::string& path, const std::string& name, VansVKDevice* vkDevice, bool isSRGB);
 
 		void LoadSceneResource(json& sceneData);
 
@@ -130,9 +133,13 @@ namespace VansGraphics
 
 		std::vector<uint32_t>& GetTLASInstanceData() { return m_TLASInstaneData; }
 
+		std::vector<VansVKImage>& GetTLASInstanceTextures() { return m_TlasInstanceTextures; }
+
+		std::vector<uint32_t>& GetTLASInstanceTextureIndex() { return m_TlasInstanceTextureIndex; }
+
 	private:
 
-		//����׷�ټ��ٽṹ
+		//光线追踪加速结构
 		VkAccelerationStructureKHR m_TopLevelAS;
 
 		VansVKBuffer m_TopLevelASBuffer;
@@ -154,6 +161,13 @@ namespace VansGraphics
 		std::vector<VansVKBuffer> m_BLASIndexData;
 
 		std::vector<uint32_t> m_TLASInstaneData;
+
+		//bindless 贴图的索引
+		//每个instance都有一个索引
+		std::vector<uint32_t> m_TlasInstanceTextureIndex;
+		//global的贴图资源，会绑定到bindless descriptor set
+		std::vector<VansVKImage> m_TlasInstanceTextures;
+		std::map<std::string,int> m_TlasInstanceMaterialToIndex;
 	};
 }
 

@@ -24,6 +24,7 @@ namespace VansGraphics
 		VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
 		VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
 		VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+		VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
 	};
 
 	//get call avaliable extensions
@@ -206,9 +207,17 @@ namespace VansGraphics
 		m_ScalarBlockFeature.scalarBlockLayout = VK_TRUE;
 		m_ScalarBlockFeature.pNext = &m_Features11;
 
+		m_DescriptorIndexingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+		m_DescriptorIndexingFeature.pNext = &m_ScalarBlockFeature;
+		m_DescriptorIndexingFeature.runtimeDescriptorArray = VK_TRUE;
+		m_DescriptorIndexingFeature.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+		m_DescriptorIndexingFeature.descriptorBindingPartiallyBound = VK_TRUE;
+		m_DescriptorIndexingFeature.descriptorBindingVariableDescriptorCount = VK_TRUE;
 
-		m_DeviceFeatures2.pNext = &m_ScalarBlockFeature;
+
+		m_DeviceFeatures2.pNext = &m_DescriptorIndexingFeature;
 		m_DeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+
 
 		m_AccelerationProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
 		m_AccelerationProps.pNext = nullptr;
@@ -287,18 +296,18 @@ namespace VansGraphics
 
 
 		//std::vector<WaitSemaphoreInfo> wait_semaphore_infos;
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, {m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, {m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 		return true;
 	}
 
-	bool VansVKDevice::SetDeviceImageData(VansVKImage& dest_image, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level)
+	bool VansVKDevice::SetDeviceImageData(VansVKImage& dest_image, VansVKCommandBuffer& cmd, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level)
 	{
 		m_StageBuffer.SetBufferData(data, data_offset, data_size);
 
 		//通过command buffer切换buffer的usage
 
-		if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		if (!cmd.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			return false;
 		}
@@ -325,7 +334,7 @@ namespace VansGraphics
 			1
 		};
 
-		VansVKMemoryManager::CopyBufferToImage(m_VansVKCommandBuffer, m_StageBuffer, dest_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
+		VansVKMemoryManager::CopyBufferToImage(cmd, m_StageBuffer, dest_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		{
 			{
 				0,
@@ -350,13 +359,13 @@ namespace VansGraphics
 			}
 		);
 
-		if (!m_VansVKCommandBuffer.EndCommandBufferRecord())
+		if (!cmd.EndCommandBufferRecord())
 		{
 			return false;
 		}
 
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
-		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { cmd.GetVKCommandBuffer() }, {}, {}, cmd.m_CommandBufferFinishSubmitFence);
+		cmd.ResetCommandBuffer(false);
 		return true;
 	}
 
@@ -451,7 +460,7 @@ namespace VansGraphics
 
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
 
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 	}
 
@@ -467,6 +476,20 @@ namespace VansGraphics
 		m_FSRController.Cleanup();
 	}
 
+	void VansVKDevice::BeginUIRenderPass()
+	{
+		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+		auto renderPassManager = VansRenderPassManager::GetInstance();
+		renderPassManager->BeginRenderPass(renderPassManager->m_VansUIPass, cmd, m_globalRenderStateData, m_SwapChainImageIndex);
+	}
+
+	void VansVKDevice::EndUIRenderPass()
+	{
+		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+		auto renderPassManager = VansRenderPassManager::GetInstance();
+		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+	}
+
 	void VansVKDevice::BeforeRendering()
 	{
 		//创建信号量
@@ -480,7 +503,7 @@ namespace VansGraphics
 
 		//create renderpass,and frame buffer
 		//这里自动创建color和depth
-		renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface, {m_RenderWidth, m_RenderHeight});
+		renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, {m_RenderWidth, m_RenderHeight});
 		//renderPassManager->SetupVansRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer , m_VansVKGraphicsQueue, m_VansVKSurface);
 
 		//创建阴影pass
@@ -488,6 +511,15 @@ namespace VansGraphics
 
 		//创建精确阴影pass
 		renderPassManager->SetupVansPunctualShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
+
+		//创建UI渲染pass
+		//渲染分辨率和swapchain一致
+		renderPassManager->SetupVansUIRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface, 
+			{ 
+				m_VansVKSurface.m_VansVKSwapChainImageExtent.width ,
+				m_VansVKSurface.m_VansVKSwapChainImageExtent.height
+			}
+		);
 
 		//预计算渲染数据
 		PrepareRenderingData();
@@ -549,22 +581,18 @@ namespace VansGraphics
 
 		UpdateVolumetricFog(renderPassManager);
 
-		renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass ,cmd, m_globalRenderStateData, m_SwapChainImageIndex);
+		renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass ,cmd, m_globalRenderStateData);
 		DrawSceneDeferred(renderPassManager, cmd);
 		//DrawSceneForward(renderPassManager, cmd);
+
+
+		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+		
 	}
 
 	void VansVKDevice::Present()
 	{
-		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
-		auto renderPassManager = VansRenderPassManager::GetInstance();
-
-		//结束Renderpass
-		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-
-		//end record
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
-
 		//确保image已经从swapchain上acquired成功
 		//这里先获取之前设置的同步信息
 		std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {};//wait_infos;
@@ -575,30 +603,32 @@ namespace VansGraphics
 			}
 		);
 
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, { wait_semaphore_infos }, { m_CommandBufferReadyToPresentSemaphore }, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, { wait_semaphore_infos }, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+
+		
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 
+		auto renderPassManager = VansRenderPassManager::GetInstance();
+		////auto camera = m_Scene->GetCamera();
+		////if (camera->GetFrameIndex() % 2 == 0)
+		////{
+		////	//将结果blit到swapchain image上,如果开启fsr这里插入fsr
+		////	renderPassManager->BlitToSwapChainImage(m_VansVKCommandBuffer, m_VansVKSurface, m_SwapChainImageIndex, { m_RenderWidth, m_RenderHeight });
 
-		//auto camera = m_Scene->GetCamera();
-		//if (camera->GetFrameIndex() % 2 == 0)
+		////	VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {  }, { }, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		////	m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		////}
+		////else
 		//{
-		//	//将结果blit到swapchain image上,如果开启fsr这里插入fsr
-		//	renderPassManager->BlitToSwapChainImage(m_VansVKCommandBuffer, m_VansVKSurface, m_SwapChainImageIndex, { m_RenderWidth, m_RenderHeight });
-
-		//	VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {  }, { }, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
-		//	m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		//	DispatchFSRUpscale();
 		//}
-		//else
-		{
-			DispatchFSRUpscale();
-		}
 
 		//并进行present
 		m_VansVKSurface.PresentImage(m_VansVKLogicDevice, m_VansVKGraphicsQueue, { m_CommandBufferReadyToPresentSemaphore }, m_SwapChainImageIndex);
 
 		//重置imgae layout
 		renderPassManager->ResetFrameBufferImageLayout(m_VansVKCommandBuffer, m_VansVKSurface, m_SwapChainImageIndex);
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 	}
 
@@ -898,6 +928,7 @@ namespace VansGraphics
 			std::cout << "create m_VansVKCommandBuffer failed" << std::endl;
 			return false;
 		}
+		CreateVKFence(false, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 
 		result = m_VansVKRayTracingCommandBuffer.CreateVulkanCommandBuffer(*this, m_ComputeQueueFamilyIndex, params);
 		if (!result)
@@ -905,10 +936,16 @@ namespace VansGraphics
 			std::cout << "create m_VansVKRayTracingCommandBuffer failed" << std::endl;
 			return false;
 		}
+		CreateVKFence(false, m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
 
-		//创建fence,用于等待command buffer执行完成
-		CreateVKFence(false,VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
-		CreateVKFence(false,VansVKCommandBuffer::m_RayTracingCommandBufferFinishSubmitFence);
+		result = m_VansEditorCommandBuffer.CreateVulkanCommandBuffer(*this, m_GraphicsQueueFamilyIndex, params);
+		if (!result)
+		{
+			std::cout << "create m_VansEditorCommandBuffer failed" << std::endl;
+			return false;
+		}
+		CreateVKFence(false, m_VansEditorCommandBuffer.m_CommandBufferFinishSubmitFence);
+		
 
 		VansVKMemoryManager::GetInstance()->BindDevice(m_VansVKCommandBuffer.GetVKCommandBuffer() , *this);
 		VansVKDescriptorManager::GetInstance()->BindDevice(m_VansVKPhysicalDevice, m_VansVKLogicDevice, m_VansVKCommandBuffer.GetVKCommandBuffer());
@@ -932,11 +969,13 @@ namespace VansGraphics
 		m_StageBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
 
 		//销毁command buffer
+		DestroyVKFence(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_VansEditorCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_VansEditorCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 
-		DestroyVKFence(VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(VansVKCommandBuffer::m_RayTracingCommandBufferFinishSubmitFence);
 
 		if (m_VansVKLogicDevice)
 		{
@@ -1095,7 +1134,7 @@ namespace VansGraphics
 		//计算预卷积环境漫反射贴图
 		//创建输入贴图
 		VansTexture* texture = new VansTexture();
-		texture->LoadCubeTexture(m_VansVKCommandBuffer, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/SkyBox2");
+		texture->LoadCubeTexture(m_VansVKCommandBuffer, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/SkyBox");
 
 
 		//创建输出cube
@@ -1371,7 +1410,7 @@ namespace VansGraphics
 
 		//end record
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 
 		prefilterCBBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
@@ -1382,17 +1421,19 @@ namespace VansGraphics
 		//SSAO结果
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSAOResult = new VansTexture();
-		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight,1, 4, false, false, true);
+		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
 
 	}
 
 	void VansVKDevice::PrepareSSGIRenderData()
 	{
-		//SSAO结果
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SSGIResult = new VansTexture();
 		manager->m_SSGIResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth/4, m_RenderHeight/4,1, 4, false, false, true);
 		
+		manager->m_SSGIFilterResult = new VansTexture();
+		manager->m_SSGIFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 4, m_RenderHeight / 4, 1, 4, false, false, true);
+
 		//cs
 		manager->m_SSGIShader = new VansComputeShader();
 		manager->m_SSGIShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSGI");
@@ -1465,7 +1506,42 @@ namespace VansGraphics
 			VK_SHADER_STAGE_COMPUTE_BIT,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ normalBinding,depthBinding,colorBinding,positionBinding,skyDiffuseBinding,SSGIResultBinding,SSGICBBinding }, manager->m_SSGITexSetLayout);
+
+		//SHResult
+		VkDescriptorSetLayoutBinding SHRBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture7SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding SHGBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture8SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VkDescriptorSetLayoutBinding SHBBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture9SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+
+		VkDescriptorSetLayoutBinding HIZBinding =
+		{
+			VansVKDescriptorManager::m_SampleTexture10SetBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ normalBinding,depthBinding,colorBinding,positionBinding,skyDiffuseBinding,SSGIResultBinding,SSGICBBinding, SHRBinding, SHGBinding, SHBBinding ,HIZBinding }, manager->m_SSGITexSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSGITexSetLayout }, manager->m_SSGIDescriptorSets);
 	}
 
@@ -1477,13 +1553,23 @@ namespace VansGraphics
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		auto camera = m_Scene->GetCamera();
 		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSGIShader, { manager->m_SSGITexSetLayout,camera->m_CameraBufferLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSGIShader, halfResWidth, halfResHeight, 1, { manager->m_SSGIDescriptorSets[0],camera ->m_CameraBufferDescriptorSets[0]});
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSGIShader, halfResWidth / 8 , halfResHeight / 8 , 1, { manager->m_SSGIDescriptorSets[0],camera ->m_CameraBufferDescriptorSets[0]});
+	}
+
+	void VansVKDevice::BilateralFilterSSGI(VansRenderPassManager* renderPassManager)
+	{
+		uint32_t halfResWidth = std::floor(m_RenderWidth / 4);
+		uint32_t halfResHeight = std::floor(m_RenderHeight / 4);
+
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_BilateralFilterShader, { manager->m_BilateralFilterSetLayout });
+		m_VansVKCommandBuffer.DispatchCompute(*manager->m_BilateralFilterShader, halfResWidth, halfResHeight, 1, { manager->m_BilateralFilterDescriptorSets[1] });
 	}
 
 	void VansVKDevice::BilateralFilterSSAO(VansRenderPassManager* renderPassManager)
 	{
-		uint32_t halfResWidth = std::floor(m_RenderWidth);
-		uint32_t halfResHeight = std::floor(m_RenderHeight);
+		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
+		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_BilateralFilterShader, { manager->m_BilateralFilterSetLayout});
@@ -1618,6 +1704,68 @@ namespace VansGraphics
 				}
 			}
 		);
+
+		//SH
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture7SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						manager->m_SHRResult->GetImage().GetSampler(),
+						manager->m_SHRResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture8SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						manager->m_SHGResult->GetImage().GetSampler(),
+						manager->m_SHGResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture9SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						manager->m_SHBResult->GetImage().GetSampler(),
+						manager->m_SHBResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSGIDescriptorSets[0],
+				VansVKDescriptorManager::m_SampleTexture10SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						manager->m_HZBResult->GetImage().GetSampler(),
+						manager->m_HZBResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
 		//更新描述符
@@ -1667,6 +1815,55 @@ namespace VansGraphics
 					{
 						manager->m_SSAOFilterResult->GetImage().GetSampler(),
 						manager->m_SSAOFilterResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+
+		//color
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_BilateralFilterDescriptorSets[1],
+				VansVKDescriptorManager::m_SampleTexture0SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						manager->m_SSGIResult->GetImage().GetSampler(),
+						manager->m_SSGIResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+		//depth
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_BilateralFilterDescriptorSets[1],
+				VansVKDescriptorManager::m_SampleTexture1SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						depth.GetSampler(),
+						depth.GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+		//result
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_BilateralFilterDescriptorSets[1],
+				VansVKDescriptorManager::m_UAVTexture1SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{
+					{
+						manager->m_SSGIFilterResult->GetImage().GetSampler(),
+						manager->m_SSGIFilterResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -2405,7 +2602,7 @@ namespace VansGraphics
 		};
 
 		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ colorInput,depthInput,result }, manager->m_BilateralFilterSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BilateralFilterSetLayout }, manager->m_BilateralFilterDescriptorSets);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BilateralFilterSetLayout,manager->m_BilateralFilterSetLayout }, manager->m_BilateralFilterDescriptorSets);
 
 		manager->m_BilateralFilterPushConstant = 
 		{
@@ -2546,7 +2743,7 @@ namespace VansGraphics
 		m_Scene->BuildRayTracingAS(this, &m_VansVKCommandBuffer);
 
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 
 		//清空所有的AS temp buffer
@@ -2627,6 +2824,8 @@ namespace VansGraphics
 		UpdateGIDataDescriptorSets(renderPassManager);
 
 		UpdateSSGI(renderPassManager);
+
+		BilateralFilterSSGI(renderPassManager);
 
 		BilateralFilterSSAO(renderPassManager);
 	}

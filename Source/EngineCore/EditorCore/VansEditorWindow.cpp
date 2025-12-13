@@ -1,18 +1,22 @@
 #include "VansEditorWindow.h"
-
 #include "../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../RenderCore/VulkanCore/VansGUIVulkanBackEnd.h"
 #include "../RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include "../RenderCore/VansCamera.h"
+#include "../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../VansTimer.h"
 #include "Windows/VansHierachyWindow.h"
 #include "Windows/VansLightWindow.h"
+#include "Windows/VansProjectWindow.h"
+#include "Windows/VansSceneWindow.h"
+#include "Windows/VansInspectorWindow.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
 
 #include <iostream>
+#include <string>
 
 
 static void glfw_error_callback(int error, const char* description)
@@ -40,13 +44,23 @@ static bool CheckGraphicsAPI(VansGraphics::GRAPHICS_API api)
 }
 
 VansGraphics::VansBasicWindow VansGraphics::VansEditorWindow::m_VansEditorWindow;
-//Ö§³Ö¶à¸öÏà»ú
+//æ”¯æŒå¤šä¸ªç›¸æœº
 std::vector<VansGraphics::VansCamera*> VansGraphics::VansEditorWindow::m_Cameras;
 
-//Ö§³Ö¶à¸ö´°¿Ú
+//æ”¯æŒå¤šä¸ªçª—å£
 std::vector<VansGraphics::VansBaseWindowComponent*> VansGraphics::VansEditorWindow::m_Windows;
 
-//½Å±¾ÉÏÏÂÎÄ
+VansGraphics::VansHierachuWindow* VansGraphics::VansEditorWindow::m_HierachyWindow;
+
+VansGraphics::VansLightWindow* VansGraphics::VansEditorWindow::m_LightWindow;
+
+VansGraphics::VansProjectWindow* VansGraphics::VansEditorWindow::m_ProjectWindow;
+
+VansGraphics::VansSceneWindow* VansGraphics::VansEditorWindow::m_SceneWindow;
+
+VansGraphics::VansInspectorWindow* VansGraphics::VansEditorWindow::m_InspectorWindow;
+
+//è„šæœ¬ä¸Šä¸‹æ–‡
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
 
 bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height ,GRAPHICS_API api)
@@ -68,7 +82,7 @@ bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int heigh
         return false;
     }
 
-    //´´½¨¹¦ÄÜ´°¿Ú
+    //åˆ›å»ºåŠŸèƒ½çª—å£
     CreateWindowComponents();
 
     return true;
@@ -77,18 +91,27 @@ bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int heigh
 
 void VansGraphics::VansEditorWindow::CreateWindowComponents()
 {
-    VansHierachuWindow* hierachyWindow = new VansHierachuWindow();
-    m_Windows.push_back(hierachyWindow);
+    m_HierachyWindow = new VansHierachuWindow();
+    m_Windows.push_back(m_HierachyWindow);
 
-    VansLightWindow* lightWindow = new VansLightWindow();
-    m_Windows.push_back(lightWindow);
+    m_LightWindow = new VansLightWindow();
+    m_Windows.push_back(m_LightWindow);
+
+	m_ProjectWindow = new VansProjectWindow();
+	m_Windows.push_back(m_ProjectWindow);
+
+    m_SceneWindow = new VansSceneWindow();
+    m_Windows.push_back(m_SceneWindow);
+
+    m_InspectorWindow = new VansInspectorWindow();
+	m_Windows.push_back(m_InspectorWindow);
 }
 
 void VansGraphics::VansEditorWindow::KeyBoardInputCallBack(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
     if (action == GLFW_PRESS || action == GLFW_REPEAT) 
     {
-        //½«ÏûÏ¢´«µİ¸øÏà»ú
+        //å°†æ¶ˆæ¯ä¼ é€’ç»™ç›¸æœº
         for (auto camera : m_Cameras)
         {
 			camera->HandleKeyboardInput(key, scancode, action, mods, VansGraphics::VansTimer::GetDeltaTime());
@@ -115,11 +138,25 @@ void VansGraphics::VansEditorWindow::MouseInputCallBack(GLFWwindow* window, doub
 
     lastX = xpos;
     lastY = ypos;
-    //½«ÏûÏ¢´«µİ¸øÏà»ú
+    //å°†æ¶ˆæ¯ä¼ é€’ç»™ç›¸æœº
     for (auto camera : m_Cameras)
     {
         camera->HandleMouseMovement(deltaX, deltaY);
     }
+}
+
+void VansGraphics::VansEditorWindow::MouseClickCallBack(GLFWwindow* window, int button, int action, int mods)
+{
+    bool isDown = (action == GLFW_PRESS);
+    //å°†æ¶ˆæ¯ä¼ é€’ç»™ç›¸æœº
+    for (auto camera : m_Cameras)
+    {
+        camera->SetRightMouseDown(false);
+        if (button == GLFW_MOUSE_BUTTON_RIGHT)
+        {
+            camera->SetRightMouseDown(isDown);
+        }
+	}
 }
 
 void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
@@ -128,17 +165,83 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
-    
-    //»æÖÆËùÓĞ´°¿Ú
-    for (VansBaseWindowComponent* window : m_Windows)
+
+    // -------------------------------------------------------------------------
+    // 2. è®¾ç½®ä¸» DockSpace (ç±»ä¼¼ Unity çš„æ ¹å¸ƒå±€å®¹å™¨)
+    // -------------------------------------------------------------------------
     {
-		window->ShowWindow(*device);
-	}
+        static bool opt_fullscreen = true;
+        static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
+
+        // è®¾ç½®ä¸»çª—å£æ ‡å¿—ï¼šæ— æ ‡é¢˜æ ã€æ— è°ƒæ•´å¤§å°ã€æ— ç§»åŠ¨ã€ä¸å¯åœé ï¼ˆä½œä¸ºå®¹å™¨ï¼‰
+        ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
+        if (opt_fullscreen)
+        {
+            const ImGuiViewport* viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(viewport->WorkPos);
+            ImGui::SetNextWindowSize(viewport->WorkSize);
+            ImGui::SetNextWindowViewport(viewport->ID);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+            window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+            window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+        }
+
+        if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode)
+            window_flags |= ImGuiWindowFlags_NoBackground;
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+
+        // å¼€å§‹ä¸»å®¹å™¨çª—å£
+        ImGui::Begin("ForestEngine Editor", nullptr, window_flags);
+        ImGui::PopStyleVar();
+
+        if (opt_fullscreen)
+            ImGui::PopStyleVar(2);
+
+        // æäº¤ DockSpace
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
+        {
+            ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+            ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+        }
+
+        // é¡¶éƒ¨èœå•æ 
+        if (ImGui::BeginMenuBar())
+        {
+            if (ImGui::BeginMenu("File"))
+            {
+                if (ImGui::MenuItem("Exit")) glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Window"))
+            {
+                ImGui::MenuItem("GbufferWindow", nullptr, true);
+                ImGui::EndMenu();
+            }
+            ImGui::EndMenuBar();
+        }
+
+        //ç»˜åˆ¶æ‰€æœ‰çª—å£
+        for (VansBaseWindowComponent* window : m_Windows)
+        {
+            window->ShowWindow(*device);
+        }
+
+		ImGui::End();
+    }
+
+
 
     //GUI handle rendeing
     ImGui::Render();
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *static_cast<VkCommandBuffer*>(device->GetNativeCommandBuffer()));
 
+    ImDrawData* draw_data = ImGui::GetDrawData();
+
+    device->BeginUIRenderPass();
+    ImGui_ImplVulkan_RenderDrawData(draw_data, *static_cast<VkCommandBuffer*>(device->GetNativeCommandBuffer()));
+	device->EndUIRenderPass();
 }
 
 void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& camera)
@@ -163,15 +266,10 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
-    //³õÊ¼»¯GUIµÄgraphics back end
+    //åˆå§‹åŒ–GUIçš„graphics back end
     m_GUIBackEnd->InitBackEnd(*m_GraphicsDevice, m_VansEditorWindow.m_VansGraphicsHandle);
 
-
-    //×¢²á»Øµ÷
-    glfwSetKeyCallback(m_VansEditorWindow.m_VansGraphicsHandle, VansGraphics::VansEditorWindow::KeyBoardInputCallBack);
-    glfwSetCursorPosCallback(m_VansEditorWindow.m_VansGraphicsHandle, VansGraphics::VansEditorWindow::MouseInputCallBack);
-
-    //³õÊ¼»¯½Å±¾»·¾³
+    //åˆå§‹åŒ–è„šæœ¬ç¯å¢ƒ
     m_ScriptContext.VansScriptSetup();
 
     // Main loop
@@ -192,17 +290,18 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             }
         }
 
-        //¸üĞÂÊ±¼ä
+        //æ›´æ–°æ—¶é—´
         VansGraphics::VansTimer::Update();
 
-        // Rendering
+        // Rendering, è¿™é‡Œä¼šç»“æŸrenderpass
         camera.Rendering();
 
         //m_ScriptContext.VansScriptUpdate();
         //UI Pass
+		m_SceneWindow->RegistCamera(&camera);
         DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));
 
-
+        //ç»“æŸå½•åˆ¶
         camera.Present();
 
         ImDrawData* draw_data = ImGui::GetDrawData();

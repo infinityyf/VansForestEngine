@@ -33,7 +33,7 @@ namespace VansGraphics
 
 		bool SetDeviceBufferData(VansVKBuffer& dest_buffer, void* data, int data_offset, int data_size, VkDeviceSize buffer_offset, VkDeviceSize buffer_size);
 
-		bool SetDeviceImageData(VansVKImage& dest_image, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level);
+		bool SetDeviceImageData(VansVKImage& dest_image, VansVKCommandBuffer& cmd, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level);
 
 	private:
 
@@ -49,6 +49,12 @@ namespace VansGraphics
 		void InitializeFSR();
 
 		void CleanupFSR();
+
+	public:
+
+		void BeginUIRenderPass();
+
+		void EndUIRenderPass();
 
 	public:
 
@@ -94,6 +100,8 @@ namespace VansGraphics
 
 		VansVKCommandBuffer& GetCommandBuffer() { return m_VansVKCommandBuffer; }
 
+		VansVKCommandBuffer& GetEditorCommandBuffer() { return m_VansEditorCommandBuffer; }
+
 		GlobalStateData& GetGlobalRenderStateData() { return m_globalRenderStateData; }
 
 		uint32_t GetGraphicsQueueFamilyIndex() { return m_GraphicsQueueFamilyIndex; }
@@ -130,6 +138,8 @@ namespace VansGraphics
 	private:
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager);
+
+		void BilateralFilterSSGI(VansRenderPassManager* renderPassManager);
 
 		void BilateralFilterSSAO(VansRenderPassManager* renderPassManager);
 
@@ -190,6 +200,7 @@ namespace VansGraphics
 		VkPhysicalDeviceVulkan11Features m_Features11;
 
 		VkPhysicalDeviceScalarBlockLayoutFeatures m_ScalarBlockFeature;
+		VkPhysicalDeviceDescriptorIndexingFeatures m_DescriptorIndexingFeature;
 
 		VkPhysicalDeviceAccelerationStructurePropertiesKHR m_AccelerationProps;
 		VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_RayTracingProperties;
@@ -215,6 +226,7 @@ namespace VansGraphics
 		VansVKCommandBuffer m_VansVKRayTracingCommandBuffer;
 		VansRayTracing rayTracingContext;
 		
+		VansVKCommandBuffer m_VansEditorCommandBuffer;
 		
 	private:
 		//recored all supported queue before device create

@@ -233,18 +233,21 @@ float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIn
     return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
 }
 
-void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2D punctualShadowMap, float sampleRadius,  inout vec3 diffuseResult)
+void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2D punctualShadowMap, float sampleRadius, vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
 {
     diffuseResult = vec3(0);
 
     vec3 T, B;
     BuildTBN(normalWS, T, B);
 
-    int sampleCount = 8;
+    int sampleCount = 4;
     uint n = uint(sampleCount);
     float invN = 1.0 / float(sampleCount);
     float rotAngle = 0;
     float c = cos(rotAngle), s = sin(rotAngle);
+
+    vec3 albedo = surfaceAlbedoRoughness.rgb;
+    float roughness = surfaceAlbedoRoughness.a;
 
     // Limit effective area for stability
     float radius = min(sampleRadius, 10.0); // arbitrary max
@@ -253,9 +256,9 @@ void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap,
         vec2 d2 = DiskSample(i, n);              // in [0,1] radius
         d2 = vec2(d2.x * c - d2.y * s, d2.x * s + d2.y * c); // rotate
         vec3 samplePos = positionWS + (T * d2.x + B * d2.y) * radius;
-        float ndl = max(dot(normalWS, uDirectionLight.direction.xyz), 0.0) / PI;
+        float ndl = max(dot(normalWS, uDirectionLight.direction.xyz), 0);
         float shadowV = SampleDirectionShadowMap(samplePos, shadowMap);
-        diffuseResult += ndl * uDirectionLight.color.rgb * uDirectionLight.intensity * shadowV;
+        diffuseResult += ndl * uDirectionLight.color.rgb *albedo * uDirectionLight.intensity * shadowV;
 
         for (uint i = 0; i < uPointLightCount; ++i)
         {
@@ -272,10 +275,10 @@ void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap,
             float shadowValue = SamplePointShadowMap(positionWS, punctualShadowMap, int(pointLight.shadowIndex));
             attenuation = min(attenuation, shadowValue);
 
-            float ndl = max(dot(normalWS, lightDirection), 0.0) / PI; //
+            float ndl = max(dot(normalWS, lightDirection), 0.0); //
 
             vec3 diffuse = vec3(0);
-            diffuse = ndl * pointLight.color.rgb * pointLight.intensity * attenuation;
+            diffuse = ndl * pointLight.color.rgb * pointLight.intensity * attenuation * albedo;
             diffuseResult += diffuse;
         }
 
@@ -303,9 +306,9 @@ void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap,
             float outerConeAngle = cos(spotLight.outerConeAngle);
             float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
 
-            float ndl = max(dot(normalWS, lightDirection), 0.0) / PI;//
+            float ndl = max(dot(normalWS, lightDirection), 0);//
             vec3 diffuse = vec3(0);
-            diffuse = ndl * spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation;
+            diffuse = ndl * spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation * albedo;
 
             diffuseResult += diffuse;
         }

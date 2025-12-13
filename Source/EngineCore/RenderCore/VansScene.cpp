@@ -1,4 +1,4 @@
-﻿#include "../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
@@ -351,6 +351,17 @@ void VansGraphics::VansScene::UpdateSceneData()
     m_LightManager.UpdateLightCPUData();
 }
 
+void VansGraphics::VansScene::ImportDefaultTextures(const std::string& path, const std::string& name, VansVKDevice* vkDevice, bool isSRGB)
+{
+    //默认pbr贴图
+    std::string texturePath = path;
+    VansTexture* defaultMetalTexture = new VansTexture();
+    defaultMetalTexture->m_TextureType = TEXTURE_2D;
+    defaultMetalTexture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB, true);
+    m_Textures.push_back(defaultMetalTexture);
+    defaultMetalTexture->SetName(name);
+}
+
 void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
 {
     std::string pathPrefix = "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/";
@@ -425,6 +436,12 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         texture->SetName(sceneTexture["name"]);
     }
 
+    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultAlbedo.png", "defaultAlbedo", vkDevice, false);
+    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultMetal.png", "defaultMetal", vkDevice, false);
+    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultRoughness.png","defaultRoughness", vkDevice, false);
+    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultAo.png","defaultAo", vkDevice, false);
+    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultNormal.png","defaultNormal", vkDevice, false);
+
     for (const auto& sceneMaterial : sceneMaterials)
     {
         VansMaterial* material = new VansMaterial();
@@ -440,32 +457,54 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             {
                 auto textureName = sceneMaterial["basecolor_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                {
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
+                }
                 material->m_BaseColorTexture = texture;
             }
             if (sceneMaterial.contains("normal_texture"))
             {
                 auto textureName = sceneMaterial["normal_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                {
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
+                }
                 material->m_NormalTexture = texture;
             }
             if (sceneMaterial.contains("metal_texture"))
             {
                 auto textureName = sceneMaterial["metal_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                {
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultMetal"));
+                }
                 material->m_MetalTexture = texture;
             }
             if (sceneMaterial.contains("roughness_texture"))
             {
                 auto textureName = sceneMaterial["roughness_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                {
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
+                }
                 material->m_RoughnessTexture = texture;
             }
             if (sceneMaterial.contains("ao_texture"))
             {
                 auto textureName = sceneMaterial["ao_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                {
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
+                }
                 material->m_AoTexture = texture;
             }
+
+            //如果没有使用默认贴图
 
             material->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
             material->m_BasePBRParam.m_metallic = sceneMaterial["metallic"];
@@ -474,7 +513,6 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             material->CreatePBRMaterialDataBuffer(nativeDevice);
         }
 
-        //��������
         if (material->m_MaterialType == VansMaterialType::VAN_SKY_BOX)
         {
             material->m_AtmospherePBRParam.m_PlanetRadius = 6340000;
@@ -532,8 +570,6 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         std::cout << "blas build done" << mesh->m_AssetName << std::endl;
     }
 
-   
-    //������Ⱦ���幹��tlas
     for (auto& node : m_OpaqueRenderNodes)
     {
         if (!node->m_Mesh->m_SupportRayTracing)
@@ -567,7 +603,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         instance.instanceCustomIndex = 0;
         instance.mask = 0xFF;
         instance.instanceShaderBindingTableRecordOffset = 0;
-        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        instance.flags = 0;// VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
 
         // 获取BLAS地址
         VkAccelerationStructureDeviceAddressInfoKHR asAddressInfo{};
@@ -579,6 +615,25 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         m_TlasInstancesInfos.push_back(instance);
 
         m_TLASInstaneData.push_back(node->m_Mesh->GetBLASIndex());
+
+        //记录贴图索引
+		int textureIndex = -1;
+        auto textureIndexIT = m_TlasInstanceMaterialToIndex.find(node->m_Material->m_AssetName);
+        if (textureIndexIT == m_TlasInstanceMaterialToIndex.end())
+        {
+            textureIndex = m_TlasInstanceTextures.size();
+			m_TlasInstanceMaterialToIndex.insert(std::make_pair(node->m_Material->m_AssetName, textureIndex));
+			m_TlasInstanceTextures.push_back(node->m_Material->m_BaseColorTexture->GetImage());
+			m_TlasInstanceTextures.push_back(node->m_Material->m_NormalTexture->GetImage());
+			m_TlasInstanceTextures.push_back(node->m_Material->m_MetalTexture->GetImage());
+			m_TlasInstanceTextures.push_back(node->m_Material->m_RoughnessTexture->GetImage());
+			m_TlasInstanceTextures.push_back(node->m_Material->m_AoTexture->GetImage());
+        }
+        else
+        {
+			textureIndex = textureIndexIT->second;
+        }
+        m_TlasInstanceTextureIndex.push_back(textureIndex);
     }
 
     uint32_t countInstance = static_cast<uint32_t>(m_TlasInstancesInfos.size());

@@ -169,6 +169,10 @@ namespace VansGraphics
 			std::cout << "Could not get the number of swapchain images." << std::endl;
 			return false;
 		}
+		else
+		{
+			std::cout << "get the number of swapchain images : " << images_count << std::endl;
+		}
 
 		m_VansVKSwapChainImages.resize(images_count);
 		m_VansVKSwapChainImageViews.resize(images_count);

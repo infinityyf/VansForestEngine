@@ -259,6 +259,15 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProjectWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansSceneWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl">
@@ -412,6 +421,15 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.cpp">
       <Filter>EngineCore\FidelityFX</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansProjectWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansSceneWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

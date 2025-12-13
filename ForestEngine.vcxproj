@@ -171,7 +171,10 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAssetWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansBaseWindowComponent.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProjectWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansSceneWindow.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansLight.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansPBR.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.h" />
@@ -230,7 +233,10 @@
     <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansProjectWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansSceneWindow.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansLight.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp" />

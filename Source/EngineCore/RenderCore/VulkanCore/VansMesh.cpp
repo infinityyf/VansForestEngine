@@ -104,11 +104,11 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, const std::string&
 	std::cout << "Load Mesh : " << file_name << std::endl;
 	m_LogicalDevice = logic_device;
 	m_MeshRawDataCPULoaded = false;
-	m_SupportRayTracing = true;// supportRayTracing;
+	m_SupportRayTracing = supportRayTracing;
 	m_VertexCount = 0;
 	//用assimp
 	Assimp::Importer importer;
-	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices;
+	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals | aiProcess_GenSmoothNormals;
 	if (import_tangent)
 	{
 		processFlag |= aiProcess_CalcTangentSpace;

@@ -2,9 +2,13 @@
 #include "../VansTimer.h"
 
 #include <iostream>
-
+void VansGraphics::VansCamera::SetRightMouseDown(bool down) 
+{ 
+    m_IsRightMouseDown = down; 
+}
 void VansGraphics::VansCamera::HandleMouseMovement(float deltaX, float deltaY)
 {
+    if (!m_IsRightMouseDown) return;
     const float sensitivity = 0.1f;
     m_Rotation.y += deltaX * sensitivity;
     m_Rotation.x -= deltaY * sensitivity;
@@ -16,6 +20,7 @@ void VansGraphics::VansCamera::HandleMouseMovement(float deltaX, float deltaY)
 
 void VansGraphics::VansCamera::HandleKeyboardInput(int key, int scancode, int action, int mods, float deltaTime)
 {
+    if (!m_IsRightMouseDown) return;
     const float speed = 20.0f * deltaTime;
     glm::vec3 front;
     front.x = cos(glm::radians(m_Rotation.y)) * cos(glm::radians(m_Rotation.x));
@@ -99,8 +104,8 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     float jitterPixelY = (h3 - 0.5f);
 
     // Convert to clip space offsets (NDC) – multiply by 2 because clip x,y span [-1,1]
-    m_JitterX = (jitterPixelX / width)  * 2.0f;
-    m_JitterY = (jitterPixelY / height) * 2.0f;
+    m_JitterX =  (jitterPixelX / width) * 2.0f;
+    m_JitterY =  (jitterPixelY / height) * 2.0f;
 
     glm::mat4 jitteredProj = projective_matrix;
     // GLM uses column-major; modify row 2 (Z) columns 0/1 to shift X/Y
@@ -110,7 +115,9 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     // Store camera data
     m_CameraData.CameraPosition   = glm::vec4(m_Position, 1.0f);
     m_CameraData.CameraDirection  = glm::vec4(-view_matrix[2]);
-    m_CameraData.LastViewMatrix   = m_CameraData.ViewMatrix;
+    m_CameraData.LastPrevViewMatrix = m_CameraData.LastViewMatrix;
+    m_CameraData.LastPrevProjectionMatrix = m_CameraData.LastProjectionMatrix;
+    m_CameraData.LastViewMatrix = m_CameraData.ViewMatrix;
     m_CameraData.LastProjectionMatrix = m_CameraData.ProjectionMatrix;
     m_CameraData.ViewMatrix       = view_matrix;
     m_CameraData.ProjectionMatrix = jitteredProj;
@@ -173,6 +180,7 @@ void VansGraphics::VansCamera::Rendering()
     m_RenderDevice->Rendering();
 
     m_RenderFrameIndex++;
+
 }
 
 void VansGraphics::VansCamera::Present()

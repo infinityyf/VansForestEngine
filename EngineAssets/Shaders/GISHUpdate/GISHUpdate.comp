@@ -18,6 +18,11 @@ layout(set = 0, binding = 2, rgba32f) uniform image3D resultRImage;
 layout(set = 0, binding = 3, rgba32f) uniform image3D resultGImage;
 layout(set = 0, binding = 4, rgba32f) uniform image3D resultBImage;
 
+layout( set = 0, binding = 11, std430) buffer ReSTIRIndexBuffer
+{
+    float indexData[];
+} ReSTIRIndexInfo;
+
 layout(push_constant) uniform PushConstants 
 {
     vec4 cameraPos;
@@ -51,12 +56,64 @@ void main()
     vec4 gResult = vec4(0.0);
     vec4 bResult = vec4(0.0);
 
+        
+    float maxLumination = 0;
+    vec3 maxLuminationDir = vec3(0,0,0);
+    float minLumination = 1e20;
+    vec3 minLuminationDir = vec3(0,0,0);
+
     for(int rayIndex = 0; rayIndex < sampleCount; rayIndex++)
     {
         vec3 rayDirection = SampleSphere(rayIndex,sampleCount);
         vec3 directDiffuse = directLightBuffer.directLight[bufferOffset + rayIndex].rgb;
+
         vec3 indirectDiffuse = indirectLightBuffer.indirectLight[bufferOffset + rayIndex].rgb;
         vec3 color = directDiffuse + indirectDiffuse;
+
+        // // --- Directional blur begin ---
+        // const int   kNeighborCount = 10;          // max neighbors to test
+        // const float blurAngle      = 0.78;       // radians: ~14 degrees
+        // vec3 accumColor = color;
+        // int  accumCount = 1;
+
+        // // Simple neighbor selection: next kNeighborCount samples (wrap)
+        // // (Replace with spatial hash / precomputed adjacency if needed)
+        // for(int n = 1; n <= kNeighborCount; n++)
+        // {
+        //     int ni = (rayIndex + n) % sampleCount;
+        //     vec3 ndir = SampleSphere(ni, sampleCount);
+        //     float ang = acos(clamp(dot(rayDirection, ndir), -1.0, 1.0));
+        //     if (ang <= blurAngle)
+        //     {
+        //         vec3 ndirect   = directLightBuffer.directLight[bufferOffset + ni].rgb;
+        //         vec3 nindirect = indirectLightBuffer.indirectLight[bufferOffset + ni].rgb;
+        //         accumColor += (ndirect + nindirect);
+        //         accumCount++;
+        //     }
+        // }
+        // vec3 blurredColor = accumColor / float(accumCount);
+        // color = blurredColor;
+        // // --- Directional blur end ---
+
+        // track max luminance direction
+        float lumination = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        if (lumination > maxLumination) {
+            maxLumination = lumination;
+            maxLuminationDir = rayDirection;
+        }
+        if (lumination < minLumination) {
+            minLumination = lumination;
+            minLuminationDir = rayDirection;
+        }
+
+        // //修正过大数值
+        // float maxChannel = max(max(color.r, color.g), color.b);
+        // float scale = maxChannel <  0.1 ? 1 : log(1 + maxChannel) / (maxChannel);
+        // color *= scale;
+
+        // //如果亮度过小直接跳过
+        // if (lumination < 2)
+        //     continue;
 
         // 计算每个基函数并累积系数
         for(int i = 0; i < 4; i++) 
@@ -67,6 +124,50 @@ void main()
             bResult[i] += color.b * basis * weight;  // 蓝色通道系数
         }
     }
+
+    // // Ensure -d direction has at least 5% of max luminance
+    // if (maxLumination > 0.0 && any(notEqual(maxLuminationDir, vec3(0.0))))
+    // {
+    //     vec3 negD = minLuminationDir;
+
+    //     // Evaluate current SH at -d
+    //     float bvals[4];
+    //     for (int i = 0; i < 4; ++i) bvals[i] = SHBasis(i, negD);
+    //     float vals[4];
+    //     for (int i = 0; i < 4; ++i) vals[i] = SHBasis(i, maxLuminationDir);
+
+    //     vec3 shAtNegD = vec3(0.0);
+    //     for (int i = 0; i < 4; ++i) {
+    //         shAtNegD.r += rResult[i] * bvals[i]/PI;
+    //         shAtNegD.g += gResult[i] * bvals[i]/PI;
+    //         shAtNegD.b += bResult[i] * bvals[i]/PI;
+    //     }
+
+    //     vec3 shAtD = vec3(0.0);
+    //     for (int i = 0; i < 4; ++i) {
+    //         shAtD.r += rResult[i] * vals[i]/PI;
+    //         shAtD.g += gResult[i] * vals[i]/PI;
+    //         shAtD.b += bResult[i] * vals[i]/PI;
+    //     }
+
+    //     vec3 needLum = max(vec3(0,0,0), shAtD);
+
+    //     // Distribute neededLum back into SH coefficients
+    //     for (int i = 0; i < 4; ++i) 
+    //     {
+    //         rResult[i] += (needLum.r * bvals[i]);
+    //         gResult[i] += (needLum.g * bvals[i]);
+    //         bResult[i] += (needLum.b * bvals[i]);
+    //     }
+    // }
+
+    for(int i = 1; i < 4; i++) 
+    {
+        rResult[i] *= 0.5;
+        gResult[i] *= 0.5;
+        bResult[i] *= 0.5;
+    }
+
     imageStore(resultRImage, probeIndex, rResult);
     imageStore(resultGImage, probeIndex, gResult);
     imageStore(resultBImage, probeIndex, bResult);

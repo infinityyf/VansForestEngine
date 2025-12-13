@@ -137,199 +137,7 @@ VansGraphics::VansRenderPassManager* VansGraphics::VansRenderPassManager::GetIns
 	return instance;
 }
 
-////创建一个默认的固定render pass先
-//void VansGraphics::VansRenderPassManager::SetupVansRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface)
-//{
-//	std::vector<VkAttachmentDescription> attachments_descriptions = 
-//	{
-//		{
-//			0,
-//			VK_FORMAT_R16G16B16A16_UNORM,
-//			VK_SAMPLE_COUNT_1_BIT,
-//			VK_ATTACHMENT_LOAD_OP_CLEAR,
-//			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-//			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-//			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-//			VK_IMAGE_LAYOUT_GENERAL, //render passbegin的layout
-//			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //这里的final layout会自动切换,render pass结束后的layout
-//		},
-//		{
-//			0,
-//			VK_FORMAT_D16_UNORM,
-//			VK_SAMPLE_COUNT_1_BIT,
-//			VK_ATTACHMENT_LOAD_OP_CLEAR,
-//			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-//			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-//			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-//			VK_IMAGE_LAYOUT_GENERAL,
-//			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-//		},
-//		{
-//			0,
-//			VK_FORMAT_R8G8B8A8_SRGB,
-//			VK_SAMPLE_COUNT_1_BIT,
-//			VK_ATTACHMENT_LOAD_OP_CLEAR,
-//			VK_ATTACHMENT_STORE_OP_STORE,
-//			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-//			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-//			VK_IMAGE_LAYOUT_GENERAL,
-//			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,//第二个subpass使用，直接present
-//		},
-//	};
-//
-//	VkAttachmentReference depth_stencil_attachment = 
-//	{
-//		 1,
-//		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-//	};
-//
-//	std::vector<SubpassParameters> subpass_parameters = 
-//	{
-//		// #0 subpass
-//		//记录在attachemts中的索引，以及对应需要的layout
-//		{
-//			VK_PIPELINE_BIND_POINT_GRAPHICS,
-//			{},
-//			{
-//				{
-//					0,
-//					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-//				}
-//			},
-//			{},
-//			&depth_stencil_attachment,
-//			{}
-//		},
-//		// #1 subpass
-//		{
-//			VK_PIPELINE_BIND_POINT_GRAPHICS,
-//			{
-//				{
-//					0,
-//					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-//				}
-//			},
-//			{
-//				{
-//					2,
-//					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-//				}
-//			},
-//			{},
-//			nullptr,
-//			{}
-//		}
-//	};
-//
-//	std::vector<VkSubpassDependency> subpass_dependencies = 
-//	{
-//		 {
-//			 0,
-//			 1,
-//			 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-//			 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-//			 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-//			 VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
-//			 VK_DEPENDENCY_BY_REGION_BIT
-//		 }
-//	};
-//
-//	m_VansRenderPass.m_ClearValues = 
-//	{
-//		{ 0.0f, 0.0f, 0.0f, 1.0f },
-//		{ 1.0f, 0 },
-//		{ 0.0f, 0.0f, 0.0f, 1.0f },
-//	};
-//
-//	VkExtent2D resolution = surface.m_VansVKSwapChainImageExtent;
-//	m_VansRenderPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
-//
-//	//创建color,depth
-//	//这里先创建renderpass,只是指定了各个attachment的状态，实际数据通过framebuffer来创建
-//	m_ColorImage.CreateVulkanImage(
-//		logic_device, 
-//		{ resolution.width,resolution.height,1 },
-//		VK_FORMAT_R16G16B16A16_UNORM,
-//		1,
-//		1,
-//		VK_IMAGE_TYPE_2D,
-//		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-//		VK_SAMPLE_COUNT_1_BIT
-//		);
-//	m_DepthImage.CreateVulkanImage(
-//		logic_device, 
-//		{ resolution.width,resolution.height,1 },
-//		VK_FORMAT_D16_UNORM, 
-//		1,
-//		1,
-//		VK_IMAGE_TYPE_2D,
-//		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-//		VK_SAMPLE_COUNT_1_BIT
-//	);
-//
-//	//framebuffer的image view数量和attachment 的数量需要一致
-//	//由于包含swap chain image ，所以这里frame buffer数量需要和swapchain imaghe数量一致
-//	m_VansRenderPass.m_FrameBuffers.resize(surface.m_VansVKImageCount);
-//	for (int swapChainIndex = 0; swapChainIndex < surface.m_VansVKImageCount; swapChainIndex++)
-//	{
-//		std::vector<VkImageView> image_views = {
-//			m_ColorImage.GetImageView(),
-//			m_DepthImage.GetImageView() ,
-//			surface.GetSwapChainImageView(swapChainIndex) };
-//		m_VansRenderPass.m_FrameBuffers[swapChainIndex].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, image_views, {resolution.width, resolution.height, 1});
-//
-//	}
-//	
-//	m_LogicDevice = logic_device;
-//
-//	//record command buffer
-//	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-//	//设置colordepoth的layout
-//	m_ColorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-//		{
-//			m_ColorImage.m_VansVKImage,
-//			VK_ACCESS_NONE,
-//			VK_ACCESS_NONE,
-//			m_ColorImage.m_ImageLayout,
-//			VK_IMAGE_LAYOUT_GENERAL,
-//			VK_QUEUE_FAMILY_IGNORED,
-//			VK_QUEUE_FAMILY_IGNORED,
-//			m_ColorImage.m_ImageAspect
-//		});
-//	m_DepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-//		{
-//			m_DepthImage.m_VansVKImage,
-//			VK_ACCESS_NONE,
-//			VK_ACCESS_NONE,
-//			m_DepthImage.m_ImageLayout,
-//			VK_IMAGE_LAYOUT_GENERAL,
-//			VK_QUEUE_FAMILY_IGNORED,
-//			VK_QUEUE_FAMILY_IGNORED,
-//			m_DepthImage.m_ImageAspect
-//		});
-//
-//	surface.SetSwapChainImageBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-//		{
-//			VK_NULL_HANDLE,
-//			VK_ACCESS_NONE,
-//			VK_ACCESS_NONE,
-//			VK_IMAGE_LAYOUT_UNDEFINED,
-//			VK_IMAGE_LAYOUT_GENERAL,
-//			VK_QUEUE_FAMILY_IGNORED,
-//			VK_QUEUE_FAMILY_IGNORED,
-//			VK_IMAGE_ASPECT_COLOR_BIT
-//		});
-//
-//	//end record
-//	command_buffer.EndCommandBufferRecord();
-//
-//
-//
-//	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
-//	command_buffer.ResetCommandBuffer(false);
-//}
-
-void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution)
+void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, const VkExtent2D& renderResolution)
 {
 	//设置Gbuffer的attachment描述符
 	std::vector<VkAttachmentDescription> attachments_descriptions =
@@ -698,21 +506,18 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 #endif
 
 	//framebuffer的image view数量和attachment 的数量需要一致
-	m_VansRenderPass.m_FrameBuffers.resize(surface.m_VansVKImageCount);
-	for (int swapChainIndex = 0; swapChainIndex < surface.m_VansVKImageCount; swapChainIndex++)
+	m_VansRenderPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> image_views =
 	{
-		std::vector<VkImageView> image_views = 
-		{
-			m_ColorImage.GetImageView(),
-			m_NormalImage.GetImageView() ,
-			m_GBufferImage0.GetImageView(),
-			m_GBufferImage1.GetImageView(),
-			m_GBufferImage2.GetImageView(),
-			m_DepthImage.GetImageView() ,
-			m_ColorAfterPostProcessImage.GetImageView()//surface.GetSwapChainImageView(swapChainIndex)
-		};
-		m_VansRenderPass.m_FrameBuffers[swapChainIndex].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
-	}
+		m_ColorImage.GetImageView(),
+		m_NormalImage.GetImageView() ,
+		m_GBufferImage0.GetImageView(),
+		m_GBufferImage1.GetImageView(),
+		m_GBufferImage2.GetImageView(),
+		m_DepthImage.GetImageView() ,
+		m_ColorAfterPostProcessImage.GetImageView()//surface.GetSwapChainImageView(swapChainIndex)
+	};
+	m_VansRenderPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
 
 	m_LogicDevice = logic_device;
 
@@ -814,23 +619,10 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			VK_QUEUE_FAMILY_IGNORED,
 			m_DepthImage.m_ImageAspect
 		});
-
-	surface.SetSwapChainImageBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		{
-			VK_NULL_HANDLE,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_IMAGE_ASPECT_COLOR_BIT
-		});
-
 	//end record
 	command_buffer.EndCommandBufferRecord();
 
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
 }
 
@@ -977,7 +769,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 	//end record
 	command_buffer.EndCommandBufferRecord();
 
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
 }
 
@@ -1124,8 +916,64 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 	//end record
 	command_buffer.EndCommandBufferRecord();
 
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, VansVKCommandBuffer::m_CommandBufferFinishSubmitFence);
+	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
 	command_buffer.ResetCommandBuffer(false);
+}
+
+void VansGraphics::VansRenderPassManager::SetupVansUIRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution)
+{
+	std::vector<VkAttachmentDescription> attachments_descriptions =
+	{
+		//swapchain image
+		{
+			0,
+			surface.m_VansVKSwapChainImageFormat,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		},
+	};
+	std::vector<SubpassParameters> subpass_parameters =
+	{
+		// #0 subpass
+		//记录在attachemts中的索引，以及对应需要的layout
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{
+				{
+					0,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				}
+			},
+			{},
+			nullptr,
+			{}
+		},
+	};
+	m_VansUIPass.m_ClearValues =
+	{
+		{ 0.0f, 0.0f, 0.0f, 1.0f },
+	};
+	std::vector<VkSubpassDependency> subpass_dependencies;
+	m_VansUIPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, renderResolution);
+	
+	VkExtent2D resolution = renderResolution;
+	m_VansUIPass.m_FrameBuffers.resize(surface.m_VansVKImageCount);
+	for (int swapChainIndex = 0; swapChainIndex < surface.m_VansVKImageCount; swapChainIndex++)
+	{
+		std::vector<VkImageView> image_views =
+		{
+			surface.GetSwapChainImageView(swapChainIndex)
+		};
+		m_VansUIPass.m_FrameBuffers[swapChainIndex].CreateFrameBuffer(logic_device, m_VansUIPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
+	}
+
+	m_LogicDevice = logic_device;
 }
 
 void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index)
@@ -1264,6 +1112,7 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_VansRenderPass.DestroyRenderPass(m_LogicDevice);
 	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
 	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);
+	m_VansUIPass.DestroyRenderPass(m_LogicDevice);
 }
 
 void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex)

@@ -35,6 +35,18 @@ layout(set = 0, binding = 5, std430) buffer InstanceDataBuffer {
     uint instances[];
 } instanceData;
 
+layout(set = 0, binding = 7, std430) buffer InstanceToTextureIndexBuffer {
+    uint indexs[];
+} textureIndexData;
+
+
+layout(set = 0, binding = 50) uniform sampler2D PBRTextures[]; 
+#define ALBEDO_INDEX 0
+#define NORMAL_INDEX 1
+#define METALLIC_INDEX 2
+#define ROUGHNESS_INDEX 3
+#define AO_INDEX 4
+
 void main()
 {
     uint instanceID = gl_InstanceID;
@@ -65,4 +77,12 @@ void main()
     }
     prd.positionHit = vec4(position,1);
     prd.normalHit = vec4(worldNormal,1);
+
+    //获取材质信息
+    uint textureIndex = textureIndexData.indexs[modelIndex];
+    vec2 uv = v0.uv * barycentrics.x + v1.uv* barycentrics.y + v2.uv * barycentrics.z;
+    vec4 albedo = texture(PBRTextures[textureIndex + ALBEDO_INDEX], uv);
+    float ropughness = texture(PBRTextures[textureIndex + ROUGHNESS_INDEX], uv).r;
+    prd.albedoRoughness = vec4(albedo.rgb, ropughness);
+
 }
