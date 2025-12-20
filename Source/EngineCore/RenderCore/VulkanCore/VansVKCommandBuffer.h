@@ -112,6 +112,8 @@ namespace VansGraphics
 		void ExecuteSecondaryCommandBuffer(std::vector<VkCommandBuffer>& secondary_command_buffers);
 
 		void BuildAccelerationStructures(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, const VkAccelerationStructureBuildRangeInfoKHR* rangeInfo);
+		
+		void BindGraphicsPipeline(VansVKGraphicsPipeline& graphicsPipeline);
 
 		void BindDescriptorSets(VkPipelineBindPoint pipeline_type,
 			VansGraphicsShader& shader,
@@ -131,7 +133,6 @@ namespace VansGraphics
 
 		VkDevice m_VansVKDevice;
 
-		void BindGraphicsPipeline(VansVKGraphicsPipeline& graphicsPipeline);
 
 	};
 

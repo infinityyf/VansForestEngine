@@ -28,12 +28,18 @@ namespace VansGraphics
 	public:
 		~VansTexture();
 
-		//读取texture数据
-		void LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true, bool useCompress = false);
+		//璇诲彇texture鏁版嵁
+		void LoadTexture(VansVKCommandBuffer& command_buffer, 
+			std::string texture_path, 
+			bool isSRGB = true, 
+			bool useCompress = false, 
+			bool need_mip = false, 
+			TexturePrecision texture_precesion = LOW_PRES_8, 
+			int import_channel = 4);
 
 		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
 
-		//直接创建一个GPU上的texture
+		//鐩存帴鍒涘缓涓�涓狦PU涓婄殑texture
 		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision = LOW_PRES_8);
 
 		VansVKImage& GetImage() { return m_Image; }

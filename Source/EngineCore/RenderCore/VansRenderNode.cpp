@@ -5,6 +5,7 @@
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansRenderPass.h"
+#include "../../EngineCore/RenderCore/TerrainCore/VansTerrain.h"
 #include <iostream>
 using namespace VansGraphics;
 
@@ -1074,4 +1075,51 @@ void VansGraphics::VansShadowRenderNode::UpdateDescripterSets(VansMaterialManage
 		}
 	);
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+}
+
+VansGraphics::VansTerrainRenderNode::VansTerrainRenderNode(VansVKDevice* device, const std::string& heightmapPath, const std::string& albedoMapPath, RenderNodeType type) : VansRenderNode(device->GetLogicDevice(), TERRAIN_NODE)
+{
+	m_Terrain = new VansTerrain();
+	m_Terrain->Init(device, heightmapPath, albedoMapPath);
+}
+
+
+void VansGraphics::VansTerrainRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
+{
+	RegistCameraDescriptor(camera);
+
+	RegistLightDescriptor(lightManager);
+
+	//预卷积 _ lut
+	m_UsedDescSetLayouts.push_back(materialManager.m_BRDFInterationTexSetLayout);
+	m_UsedDescSets.push_back(materialManager.m_BRDFInterationTextDescriptorSets[0]);
+
+	//terrain 特有的描述符集
+	m_UsedDescSetLayouts.push_back(m_Terrain->m_DescriptorSetLayout);
+	m_UsedDescSets.push_back(m_Terrain->m_DescriptorSets[0]);
+}
+
+void VansGraphics::VansTerrainRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
+{
+	UpdateDescripterSets(materialManager);
+
+	m_Terrain->Update(camera);
+}
+
+void VansGraphics::VansTerrainRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+	{
+		return;
+	}
+	m_DescriptorsetsDirty = false;
+
+
+}
+
+void VansGraphics::VansTerrainRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
+{
+	//不需要调用父类的draw，因为terrain不使用common render node的绘制方式
+	//调用terrain自己的绘制
+	m_Terrain->Draw(cmd, global_state, m_UsedDescSetLayouts, m_UsedDescSets);
 }

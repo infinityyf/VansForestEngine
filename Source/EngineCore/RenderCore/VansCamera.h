@@ -86,8 +86,8 @@ namespace VansGraphics
         //support perspective projection
         float m_Fov = 45.0f;
         float m_AspectRatio = 1.0f;
-        float m_NearClip = 0.1f;
-        float m_FarClip = 100.0f;
+        float m_NearClip = 0.01f;
+        float m_FarClip = 10000.0f;
     public:
 
         VansCamera(glm::vec3 startPosition, glm::vec3 startRotation, VansGraphicsDevice* device)

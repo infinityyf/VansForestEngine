@@ -21,7 +21,7 @@ void VansGraphics::VansCamera::HandleMouseMovement(float deltaX, float deltaY)
 void VansGraphics::VansCamera::HandleKeyboardInput(int key, int scancode, int action, int mods, float deltaTime)
 {
     if (!m_IsRightMouseDown) return;
-    const float speed = 20.0f * deltaTime;
+    const float speed = 200.0f * deltaTime;
     glm::vec3 front;
     front.x = cos(glm::radians(m_Rotation.y)) * cos(glm::radians(m_Rotation.x));
     front.y = sin(glm::radians(m_Rotation.x));

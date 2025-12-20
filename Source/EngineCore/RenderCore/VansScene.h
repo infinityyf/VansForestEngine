@@ -54,6 +54,8 @@ namespace VansGraphics
 
 		std::vector<VansRenderNode*> m_OpaqueRenderNodes;
 
+		VansRenderNode* m_TerrainRenderNode;
+
 		std::vector<VansRenderNode*> m_TransParentRenderNodes;
 
 		std::vector<VansRenderNode*> m_PostProcessRenderNodes;
@@ -74,6 +76,8 @@ namespace VansGraphics
 		void LoadLights(VkDevice& device, json& light_node);
 
 		void LoadRenderNodes(VkDevice& device, json& render_node);
+
+		void AddTerrainNode(VansVKDevice* device);
 
 		void AddDeferredNode(VkDevice& device);
 
@@ -106,6 +110,8 @@ namespace VansGraphics
 		void DrawSkyBoxNode();
 
 		void DrawOpaqueNodes();
+
+		void DrawTerrainNode();
 
 		void DrawTransParentNodes();
 

@@ -1148,7 +1148,7 @@ namespace VansGraphics
 
 		//brdf lut
 		manager->m_BRDFIntegralLUT = new VansTexture();
-		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png", false);
+		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png", false, false,false);
 
 		
 		VansVKBuffer prefilterCBBuffer;
@@ -2803,6 +2803,8 @@ namespace VansGraphics
 	{
 		//绘制GBuffer
 		m_Scene->DrawOpaqueNodes();
+
+		m_Scene->DrawTerrainNode();
 
 		//切换进行present
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);

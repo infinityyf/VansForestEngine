@@ -10,6 +10,7 @@
 #include "Windows/VansProjectWindow.h"
 #include "Windows/VansSceneWindow.h"
 #include "Windows/VansInspectorWindow.h"
+#include "Windows/VansGBufferWindow.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
@@ -43,6 +44,10 @@ static bool CheckGraphicsAPI(VansGraphics::GRAPHICS_API api)
     }
 }
 
+bool VansGraphics::VansEditorWindow::m_GBufferWindowOpen = false;
+
+bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
+
 VansGraphics::VansBasicWindow VansGraphics::VansEditorWindow::m_VansEditorWindow;
 //支持多个相机
 std::vector<VansGraphics::VansCamera*> VansGraphics::VansEditorWindow::m_Cameras;
@@ -59,6 +64,8 @@ VansGraphics::VansProjectWindow* VansGraphics::VansEditorWindow::m_ProjectWindow
 VansGraphics::VansSceneWindow* VansGraphics::VansEditorWindow::m_SceneWindow;
 
 VansGraphics::VansInspectorWindow* VansGraphics::VansEditorWindow::m_InspectorWindow;
+
+VansGraphics::VansGBufferWindow* VansGraphics::VansEditorWindow::m_GBufferWindow;
 
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
@@ -105,6 +112,9 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_InspectorWindow = new VansInspectorWindow();
 	m_Windows.push_back(m_InspectorWindow);
+
+	m_GBufferWindow = new VansGBufferWindow();
+	m_Windows.push_back(m_GBufferWindow);
 }
 
 void VansGraphics::VansEditorWindow::KeyBoardInputCallBack(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -217,7 +227,18 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
             }
             if (ImGui::BeginMenu("Window"))
             {
-                ImGui::MenuItem("GbufferWindow", nullptr, true);
+                if (ImGui::MenuItem("GbufferWindow"))
+                {
+					m_GBufferWindowOpen = !m_GBufferWindowOpen;
+                }
+                ImGui::EndMenu();
+            }
+            // 新增 View 菜单用于控制线框模式
+            if (ImGui::BeginMenu("View"))
+            {
+                if (ImGui::MenuItem("Wireframe", nullptr, &m_WireframeMode))
+                {
+                }
                 ImGui::EndMenu();
             }
             ImGui::EndMenuBar();

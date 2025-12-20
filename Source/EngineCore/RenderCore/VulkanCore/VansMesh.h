@@ -66,6 +66,14 @@ namespace VansGraphics
 			m_IndexBuffer.DestroyVulkanBuffer(m_LogicalDevice);
 		}
 
+	public:
+
+		//attribute data
+		std::vector<VkVertexInputAttributeDescription> m_VertexInputAttributeDescriptions;
+
+		//vertex bind data
+		std::vector <VkVertexInputBindingDescription> m_VertexInputBindingDescriptions;
+
 	private:
 
 		//mesh data
@@ -78,11 +86,7 @@ namespace VansGraphics
 		//标记CPU数据释放生效
 		bool m_MeshRawDataCPULoaded;
 
-		//attribute data
-		std::vector<VkVertexInputAttributeDescription> m_VertexInputAttributeDescriptions;
 
-		//vertex bind data
-		VkVertexInputBindingDescription m_VertexInputBindingDescription;
 
 		VkDevice m_LogicalDevice;
 

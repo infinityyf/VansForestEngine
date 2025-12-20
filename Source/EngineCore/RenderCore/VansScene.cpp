@@ -78,6 +78,9 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
 	case OPAQUE_NODE:
 		m_OpaqueRenderNodes.push_back(renderNode);
 		break;
+    case TERRAIN_NODE:
+        m_TerrainRenderNode = renderNode;
+		break;
     case TRANSPARENT_NODE:
 		m_TransParentRenderNodes.push_back(renderNode);
 		break;
@@ -146,6 +149,9 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         //�������ù�ϵ����render node
         LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
     }
+
+    //添加地形节点
+	AddTerrainNode(vkDevice);
 
     AddDeferredNode(nativeDevice);
 
@@ -218,7 +224,7 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
                 auto* node = static_cast<VansCommonRenderNode*>(renderNode);
                 node->m_SupportShadow = sceneRenderNode["support_shadow"];
             }
-            break;
+			break;
         case VansGraphics::POSTPROCESS_NODE:
             renderNode = new VansPostProcessRenderNode(device, type);
             break;
@@ -289,6 +295,19 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
     }
 }
 
+void VansGraphics::VansScene::AddTerrainNode(VansVKDevice* device)
+{
+    RenderNodeType type = RenderNodeType::TERRAIN_NODE;
+    VansRenderNode* renderNode = new VansTerrainRenderNode(device, 
+        "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/Terrain/TerrainHeight.png", 
+        "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/Terrain/TerrainAlbedo.png",
+        type);
+    renderNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+
+    renderNode->SetName("TerrainNode");
+    RegistRenderNode(renderNode, type);
+}
+
 void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
 {
     VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset("fullScreenQuad"));
@@ -357,7 +376,7 @@ void VansGraphics::VansScene::ImportDefaultTextures(const std::string& path, con
     std::string texturePath = path;
     VansTexture* defaultMetalTexture = new VansTexture();
     defaultMetalTexture->m_TextureType = TEXTURE_2D;
-    defaultMetalTexture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB, true);
+    defaultMetalTexture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB, true, true);
     m_Textures.push_back(defaultMetalTexture);
     defaultMetalTexture->SetName(name);
 }
@@ -423,7 +442,7 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         switch (texture->m_TextureType)
         {
         case TEXTURE_2D:
-            texture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB,true);
+            texture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB,true,true);
             break;
         case TEXTURE_CUBE:
             texture->LoadCubeTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB);
@@ -909,6 +928,19 @@ void VansGraphics::VansScene::DrawOpaqueNodes()
         node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
         node->Draw(cmd, globalStateData);
     }
+}
+
+void VansGraphics::VansScene::DrawTerrainNode()
+{
+    if(m_TerrainRenderNode== nullptr)
+    {
+        return;
+	}
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode)->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
+    static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode)->Draw(cmd, globalStateData);
 }
 
 void VansGraphics::VansScene::DrawTransParentNodes()

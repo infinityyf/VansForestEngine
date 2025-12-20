@@ -131,7 +131,7 @@ void VansGraphics::VansInspectorWindow::ShowTextureAsset(VansVKDevice& device)
 
         VansGraphics::VansVKCommandBuffer editorCommandbuffer = device.GetEditorCommandBuffer();
         
-        previewTexture->LoadTexture(editorCommandbuffer, currentFile.string());
+        previewTexture->LoadTexture(editorCommandbuffer, currentFile.string(), false,true,false);
 
         lastFile = currentFile;
     }

@@ -21,7 +21,7 @@ int main()
 	m_GUIBackEnd = new VansGraphicsGUIBackEnd();
 
 	//wrap back end with camera
-	VansCamera camera(glm::vec3(1,1,5), glm::vec3(0,-90,0), m_GraphicsDevice);
+	VansCamera camera(glm::vec3(1,20,1), glm::vec3(0,-90,0), m_GraphicsDevice);
 
 	m_Scene = new VansScene();
 	m_Scene->InjectCamera(&camera);

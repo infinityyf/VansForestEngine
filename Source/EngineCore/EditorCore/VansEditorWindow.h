@@ -19,10 +19,17 @@ namespace VansGraphics
 	class VansProjectWindow;
 	class VansSceneWindow;
 	class VansInspectorWindow;
+	class VansGBufferWindow;
 
 	//编辑器窗口
 	class VansEditorWindow
 	{
+	public:
+
+		static bool m_GBufferWindowOpen;
+
+		static bool m_WireframeMode;
+
 	public: 
 		static VansBasicWindow m_VansEditorWindow;
 		
@@ -60,6 +67,8 @@ namespace VansGraphics
 		static VansSceneWindow* m_SceneWindow;
 
 		static VansInspectorWindow* m_InspectorWindow;
+
+		static VansGBufferWindow* m_GBufferWindow;
 
 	private:
 

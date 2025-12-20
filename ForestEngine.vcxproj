@@ -170,6 +170,7 @@
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAssetWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansBaseWindowComponent.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.h" />
@@ -179,6 +180,7 @@
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansPBR.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansAsset.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansCamera.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansCommonUtils.h" />
@@ -232,6 +234,7 @@
     <ClCompile Include="External\spirv_cross\spirv_reflect.cpp" />
     <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.cpp" />
@@ -240,6 +243,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansLight.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansCamera.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansGraphicsDevice.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansMaterial.cpp" />

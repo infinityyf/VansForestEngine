@@ -227,7 +227,7 @@ void VansGraphics::VansVKCommandBuffer::BindMesh(VansMesh& mesh, uint32_t fist_b
 
 	//记录mesh 的bind data
 	global_state_data.vertexInputAttributeDescriptions = &mesh.m_VertexInputAttributeDescriptions;
-	global_state_data.vertexInputBindingDescription = &mesh.m_VertexInputBindingDescription;
+	global_state_data.vertexInputBindingDescriptions = &mesh.m_VertexInputBindingDescriptions;
 
 }
 

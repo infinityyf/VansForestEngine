@@ -129,11 +129,13 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, const std::string&
 	{
 		m_VertexDataSize += 6 * sizeof(float);
 	}
-	m_VertexInputBindingDescription = 
+	m_VertexInputBindingDescriptions = 
 	{
-		0,
-		m_VertexDataSize,
-		VK_VERTEX_INPUT_RATE_VERTEX
+		{
+			0,
+			m_VertexDataSize,
+			VK_VERTEX_INPUT_RATE_VERTEX
+		}
 	};
 
 	m_VertexInputAttributeDescriptions =

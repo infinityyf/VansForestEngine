@@ -70,177 +70,221 @@ namespace VansGraphics
 		m_Image.DestroyVulkanImage(*(VkDevice*)m_GraphicsDevice->GetNativeGraphicsDevice());
 	}
 
-	void VansTexture::LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB, bool useCompress)
+	void VansTexture::LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB, bool useCompress, bool need_mip, TexturePrecision texture_precision, int import_channel)
 	{
 		std::cout << "Load Texture : " << texture_path << std::endl;
-		int width = 0;
-		int height = 0;
-		int num_components = 0;
-		std::unique_ptr<unsigned char, void(*)(void*)> stbi_data(stbi_load(
-			texture_path.c_str(), &width, &height, &num_components, 4),
-			stbi_image_free);
+        int width = 0;
+        int height = 0;
+        int num_components = 0;
+        void* pixel_data = nullptr;
+        int bytes_per_channel = 1;
 
-		if ((!stbi_data) ||
-			(0 >= width) ||
-			(0 >= height) ||
-			(0 >= num_components))
-		{
-			std::cout << "Could not read image!" << std::endl;
-			return;
-		}
+        // 1. Load image data based on precision
+        if (texture_precision == VansGraphics::HIGH_PRES_32)
+        {
+            pixel_data = stbi_loadf(texture_path.c_str(), &width, &height, &num_components, import_channel);
+            bytes_per_channel = 4; // float
+        }
+        else if (texture_precision == VansGraphics::MID_PRES_16)
+        {
+            pixel_data = stbi_load_16(texture_path.c_str(), &width, &height, &num_components, import_channel);
+            bytes_per_channel = 2; // uint16
+        }
+        else // LOW_PRES_8
+        {
+            pixel_data = stbi_load(texture_path.c_str(), &width, &height, &num_components, import_channel);
+            bytes_per_channel = 1; // uint8
+        }
 
+        if ((!pixel_data) ||
+            (0 >= width) ||
+            (0 >= height) ||
+            (0 >= num_components))
+        {
+            std::cout << "Could not read image!" << std::endl;
+            return;
+        }
 
-		// ---------------- compress into block layout (tight packed) ----------------
-		VansVKDevice* vkDevicePtr = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-		VkDevice nativeDevice = vkDevicePtr->GetLogicDevice();
-		VkQueue graphicsQueue = vkDevicePtr->GetGraphicsQueue();
-		VkPhysicalDevice phys = vkDevicePtr->GetPhysicalDevice();
+        // If import_channel is set (not 0), stbi forces the output channels to that value.
+        // Otherwise, num_components holds the file's original channel count.
+        if (import_channel != 0)
+        {
+            num_components = import_channel;
+        }
 
-		if (useCompress)
-		{
-			const uint8_t* srcBase = stbi_data.get();
-			bool hasAlpha = true;
-			// Choose compressed format (BC1/BC3)
-			VkFormat chosenFormat = hasAlpha ? (isSRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK)
-											: (isSRGB ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK);
-			int bytesPerBlock = hasAlpha ? 16 : 8;
+        // ---------------- compress into block layout (tight packed) ----------------
+        VansVKDevice* vkDevicePtr = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+        VkDevice nativeDevice = vkDevicePtr->GetLogicDevice();
+        VkQueue graphicsQueue = vkDevicePtr->GetGraphicsQueue();
+        VkPhysicalDevice phys = vkDevicePtr->GetPhysicalDevice();
 
-			// compute full mip chain count
-			int mipLevels = 1 + (int)std::floor(std::log2(std::max(width, height)));
+        // Compression logic currently only supports 8-bit RGBA (4 channels)
+        // If you want to support compression, ensure input is compatible or convert it.
+        // For now, we disable compression if precision is not 8-bit or channels != 4 for simplicity, 
+        // or you can expand the compression logic later.
+        if (useCompress && texture_precision == VansGraphics::LOW_PRES_8 && num_components == 4)
+        {
+            const uint8_t* srcBase = static_cast<uint8_t*>(pixel_data);
+            bool hasAlpha = true;
+            // Choose compressed format (BC1/BC3)
+            VkFormat chosenFormat = hasAlpha ? (isSRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK)
+                                            : (isSRGB ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK);
+            int bytesPerBlock = hasAlpha ? 16 : 8;
 
-			m_TextureWidth = width;
-			m_TextureHeight = height;
+            // compute full mip chain count
+            int mipLevels = 1 + (int)std::floor(std::log2(std::max(width, height)));
 
-			// Create compressed image with all mips
-			VkExtent3D extent0 = { (uint32_t)width, (uint32_t)height, 1 };
-			m_Image.CreateVulkanImage(
-				nativeDevice,
-				extent0,
-				chosenFormat,
-				mipLevels,
-				1,
-				VK_IMAGE_TYPE_2D,
-				VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-				VK_SAMPLE_COUNT_1_BIT,
-				false,
-				true,
-				true
-			);
+            m_TextureWidth = width;
+            m_TextureHeight = height;
 
-			// Build uncompressed mip chain on CPU, then compress each level and upload
-			std::vector<uint8_t> mipRGBA;                 // current level RGBA
-			mipRGBA.assign(srcBase, srcBase + width * height * 4);
+            // Create compressed image with all mips
+            VkExtent3D extent0 = { (uint32_t)width, (uint32_t)height, 1 };
+            m_Image.CreateVulkanImage(
+                nativeDevice,
+                extent0,
+                chosenFormat,
+                mipLevels,
+                1,
+                VK_IMAGE_TYPE_2D,
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                VK_SAMPLE_COUNT_1_BIT,
+                false,
+                true,
+                true
+            );
 
-			int mipW = width, mipH = height;
+            // Build uncompressed mip chain on CPU, then compress each level and upload
+            std::vector<uint8_t> mipRGBA;                 // current level RGBA
+            mipRGBA.assign(srcBase, srcBase + width * height * 4);
 
-			for (int m = 0; m < mipLevels; ++m)
-			{
-				int blocksX = (mipW + 3) / 4;
-				int blocksY = (mipH + 3) / 4;
-				size_t mipCompressedSize = size_t(blocksX) * size_t(blocksY) * size_t(bytesPerBlock);
-				std::vector<uint8_t> mipCompressed(mipCompressedSize);
+            int mipW = width, mipH = height;
 
-				// compress mipRGBA into BC blocks
-				uint8_t blockRGBA[16 * 4];
-				uint8_t* dstPtr = mipCompressed.data();
+            for (int m = 0; m < mipLevels; ++m)
+            {
+                int blocksX = (mipW + 3) / 4;
+                int blocksY = (mipH + 3) / 4;
+                size_t mipCompressedSize = size_t(blocksX) * size_t(blocksY) * size_t(bytesPerBlock);
+                std::vector<uint8_t> mipCompressed(mipCompressedSize);
 
-				auto fetch = [&](int x, int y)->const uint8_t* {
-					x = std::min(std::max(x, 0), mipW - 1);
-					y = std::min(std::max(y, 0), mipH - 1);
-					return &mipRGBA[(y * mipW + x) * 4];
-				};
+                // compress mipRGBA into BC blocks
+                uint8_t blockRGBA[16 * 4];
+                uint8_t* dstPtr = mipCompressed.data();
 
-				for (int by = 0; by < blocksY; ++by)
-				{
-					for (int bx = 0; bx < blocksX; ++bx)
-					{
-						for (int y = 0; y < 4; ++y)
-						{
-							for (int x = 0; x < 4; ++x)
-							{
-								int sx = bx * 4 + x;
-								int sy = by * 4 + y;
-								const uint8_t* s = fetch(sx, sy);
-								int idx = (y * 4 + x) * 4;
-								blockRGBA[idx + 0] = s[0];
-								blockRGBA[idx + 1] = s[1];
-								blockRGBA[idx + 2] = s[2];
-								blockRGBA[idx + 3] = s[3];
-							}
-						}
-						compress_block(dstPtr, blockRGBA, hasAlpha);
-						dstPtr += bytesPerBlock;
-					}
-				}
+                auto fetch = [&](int x, int y)->const uint8_t* {
+                    x = std::min(std::max(x, 0), mipW - 1);
+                    y = std::min(std::max(y, 0), mipH - 1);
+                    return &mipRGBA[(y * mipW + x) * 4];
+                };
 
-				// Upload this mip level (tightly packed)
-				VkExtent3D mipExtent = { (uint32_t)mipW, (uint32_t)mipH, 1 };
-				VkOffset3D image_offset = { 0, 0, 0 };
-				vkDevicePtr->SetDeviceImageData(m_Image, command_buffer, mipCompressed.data(),
-												0, static_cast<int>(mipCompressed.size()),
-												image_offset, mipExtent, m, 0);
+                for (int by = 0; by < blocksY; ++by)
+                {
+                    for (int bx = 0; bx < blocksX; ++bx)
+                    {
+                        for (int y = 0; y < 4; ++y)
+                        {
+                            for (int x = 0; x < 4; ++x)
+                            {
+                                int sx = bx * 4 + x;
+                                int sy = by * 4 + y;
+                                const uint8_t* s = fetch(sx, sy);
+                                int idx = (y * 4 + x) * 4;
+                                blockRGBA[idx + 0] = s[0];
+                                blockRGBA[idx + 1] = s[1];
+                                blockRGBA[idx + 2] = s[2];
+                                blockRGBA[idx + 3] = s[3];
+                            }
+                        }
+                        compress_block(dstPtr, blockRGBA, hasAlpha);
+                        dstPtr += bytesPerBlock;
+                    }
+                }
 
-				// prepare next mip level (downsample)
-				if (m + 1 < mipLevels)
-				{
-					std::vector<uint8_t> nextMip = Downsample2x2_RGBA8(mipRGBA.data(), mipW, mipH);
-					mipRGBA.swap(nextMip);
-					mipW = std::max(1, mipW / 2);
-					mipH = std::max(1, mipH / 2);
-				}
-			}
+                // Upload this mip level (tightly packed)
+                VkExtent3D mipExtent = { (uint32_t)mipW, (uint32_t)mipH, 1 };
+                VkOffset3D image_offset = { 0, 0, 0 };
+                vkDevicePtr->SetDeviceImageData(m_Image, command_buffer, mipCompressed.data(),
+                                                0, static_cast<int>(mipCompressed.size()),
+                                                image_offset, mipExtent, m, 0);
 
-			// Transition all mips to SHADER_READ_ONLY
-			command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-			m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				{
-					m_Image.GetImage(),
-					VK_ACCESS_TRANSFER_WRITE_BIT,
-					VK_ACCESS_SHADER_READ_BIT,
-					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED,
-					m_Image.GetImageAspect()
-				});
-			command_buffer.EndCommandBufferRecord();
-			VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
-			command_buffer.ResetCommandBuffer(false);
-			return;
-		}
+                // prepare next mip level (downsample)
+                if (m + 1 < mipLevels)
+                {
+                    std::vector<uint8_t> nextMip = Downsample2x2_RGBA8(mipRGBA.data(), mipW, mipH);
+                    mipRGBA.swap(nextMip);
+                    mipW = std::max(1, mipW / 2);
+                    mipH = std::max(1, mipH / 2);
+                }
+            }
 
+            // Transition all mips to SHADER_READ_ONLY
+            command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+            m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                {
+                    m_Image.GetImage(),
+                    VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_QUEUE_FAMILY_IGNORED,
+                    VK_QUEUE_FAMILY_IGNORED,
+                    m_Image.GetImageAspect()
+                });
+            command_buffer.EndCommandBufferRecord();
+            VansVKCommandBuffer::SubmitCommands(graphicsQueue, nativeDevice, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
+            command_buffer.ResetCommandBuffer(false);
+            
+            stbi_image_free(pixel_data);
+            return;
+        }
 
-		num_components = 4;
-		int data_size = width * height * num_components;
-		m_ImageData.resize(data_size);
-		std::memcpy(m_ImageData.data(), stbi_data.get(), data_size);
+        // Non-compressed path (supports 8/16/32 bit and 1-4 channels)
+        
+        // Calculate total data size in bytes
+        size_t data_size = (size_t)width * (size_t)height * (size_t)num_components * (size_t)bytes_per_channel;
+        m_ImageData.resize(data_size);
+        std::memcpy(m_ImageData.data(), pixel_data, data_size);
+        
+        stbi_image_free(pixel_data);
 
-		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
-		
-		VkFormat format = CheckTextureFormat(num_components, false, isSRGB);
-		
-		// compute mip levels
-		int mipNum = 1 + static_cast<int>(std::floor(std::log2(std::max(width, height))));
-		m_TextureWidth = width;
-		m_TextureHeight = height;
-		
-		m_Image.CreateVulkanImage(
-			nativeDevice,
-			extent,
-			format,
-			mipNum,
-			1,
-			VK_IMAGE_TYPE_2D,
-			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-			VK_SAMPLE_COUNT_1_BIT,
-			false,
-			true,
-			true
-		);
+        VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
+        
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        switch (texture_precision)
+        {
+        case VansGraphics::LOW_PRES_8:
+            format = CheckTextureFormat(num_components, false, isSRGB);
+            break;
+        case VansGraphics::MID_PRES_16:
+            format = CheckTextureMidPrecisionFormat(num_components);
+            break;
+        case VansGraphics::HIGH_PRES_32:
+            format = CheckTextureHighPrecisionFormat(num_components);
+            break;
+        default:
+            break;
+        }
+        
+        // compute mip levels
+        int mipNum = need_mip ? 1 + static_cast<int>(std::floor(std::log2(std::max(width, height)))) : 1;
+        m_TextureWidth = width;
+        m_TextureHeight = height;
+        
+        m_Image.CreateVulkanImage(
+            nativeDevice,
+            extent,
+            format,
+            mipNum,
+            1,
+            VK_IMAGE_TYPE_2D,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_SAMPLE_COUNT_1_BIT,
+            false,
+            true,
+            true
+        );
 
-		VkOffset3D image_offset = { 0, 0, 0 };
-		vkDevicePtr->SetDeviceImageData(m_Image, command_buffer, m_ImageData.data(), 0, data_size, image_offset, extent, 0, 0);
-
+        VkOffset3D image_offset = { 0, 0, 0 };
+        vkDevicePtr->SetDeviceImageData(m_Image, command_buffer, m_ImageData.data(), 0, data_size, image_offset, extent, 0, 0);
 		//切换layout到：VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		//
 

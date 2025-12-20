@@ -16,6 +16,7 @@ namespace VansGraphics
 		SKY_BOX_NODE = 1 << 3,
 		DEFERRED_NODE = 1 << 4,
 		SCREEN_SPACE_NODE = 1 << 5,
+		TERRAIN_NODE = 1 << 6,
 	};
 
 	struct alignas(16) ModelDataStruct
@@ -42,28 +43,28 @@ namespace VansGraphics
 
 	private:
 
-		//GPU Êı¾İ
+		//GPU æ•°æ®
 		ModelDataStruct m_ModelData;
 
-		//transformÊı¾İ
+		//transformæ•°æ®
 		VansTransform m_Transform;
 
 	protected:
 
 		RenderNodeType m_NodeType;
 
-		//ÃèÊö·ûÏà¹Ø
+		//æè¿°ç¬¦ç›¸å…³
 		VkDescriptorSetLayout modelBufferLayout;
 		std::vector<VkDescriptorSet> modelBufferDescriptorSets;
 
-		//sampler imgae ÃèÊö·û
+		//sampler imgae æè¿°ç¬¦
 		VkDescriptorSetLayout textureResourceLayout;
 		std::vector<VkDescriptorSet> textureResourceDescriptorSets;
 
 		VkDescriptorSetLayout frameBufferInputLayout;
 		std::vector<VkDescriptorSet> frameBufferInputDescriptorSets;
 
-		//PBR²ÎÊı
+		//PBRå‚æ•°
 		VkDescriptorSetLayout m_MaterialPBRBaseDataLayout;
 		std::vector<VkDescriptorSet> m_MaterialPBRBaseDataDescriptorSets;
 
@@ -80,7 +81,7 @@ namespace VansGraphics
 
 		bool m_DescriptorsetsDirty;
 
-		//Í³Ò»±»CreateDescriptorSetsµ÷ÓÃ
+		//ç»Ÿä¸€è¢«CreateDescriptorSetsè°ƒç”¨
 		void RegistCameraDescriptor(VansCamera* camera);
 
 		void RegistLightDescriptor(VansLightManager& lightManager);
@@ -135,10 +136,10 @@ namespace VansGraphics
 		}
 	};
 
-	//¸üĞÂ²ÄÖÊ²ÎÊı,¸üĞÂÈ«¾ÖÊı¾İ
-	//1. Ô¤¼ÆËã»·¾³Âş·´Éä
-	//2. ¸ß¹âlut
-	//3. ´óÆø
+	//æ›´æ–°æè´¨å‚æ•°,æ›´æ–°å…¨å±€æ•°æ®
+	//1. é¢„è®¡ç®—ç¯å¢ƒæ¼«åå°„
+	//2. é«˜å…‰lut
+	//3. å¤§æ°”
 
 	class VansCommonRenderNode : public VansRenderNode
 	{
@@ -217,5 +218,25 @@ namespace VansGraphics
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
 		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+	};
+
+	class VansTerrain;
+	class VansTerrainRenderNode : public VansRenderNode
+	{
+	private:
+
+		VansTerrain* m_Terrain;
+
+	public:
+
+		VansTerrainRenderNode(VansVKDevice* device, const std::string& heightmapPath, const std::string& albedoMapPath, RenderNodeType type);
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+
+		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 	};
 }
