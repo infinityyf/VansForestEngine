@@ -1,4 +1,5 @@
 #include "VansProjectWindow.h"
+#include "../../Configration/VansConfigration.h"
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
@@ -13,7 +14,11 @@ void VansGraphics::VansProjectWindow::ShowWindow(VansVKDevice& device)
     {
         ImGui::Begin("Project");
 
-        static std::filesystem::path currentPath = "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets";
+        auto vansConfigration = VansConfigration::GetInstance();
+        std::string projectRoot = vansConfigration->GetProjectRootPath();
+        std::string assetsPath = projectRoot + "EngineAssets";
+        
+        static std::filesystem::path currentPath = assetsPath;
 
         // Left Panel: Directory Tree
         ImGui::BeginChild("LeftPanel", ImVec2(200, 0), true);
@@ -33,12 +38,12 @@ void VansGraphics::VansProjectWindow::ShowWindow(VansVKDevice& device)
             }
             };
 
-        if (std::filesystem::exists("D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets")) {
+        if (std::filesystem::exists(assetsPath)) {
             if (ImGui::TreeNode("EngineAssets")) {
                 if (ImGui::IsItemClicked()) {
-                    currentPath = "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets";
+                    currentPath = assetsPath;
                 }
-                renderTree("D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets");
+                renderTree(assetsPath);
                 ImGui::TreePop();
             }
         }

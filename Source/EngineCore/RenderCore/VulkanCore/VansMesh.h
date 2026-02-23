@@ -13,6 +13,9 @@
 #include <string>
 using namespace VansGraphics;
 
+struct aiScene;
+struct aiMesh;
+
 namespace VansGraphics
 {
 	struct IndexBufferParameters
@@ -41,6 +44,9 @@ namespace VansGraphics
 		VansVKBuffer m_IndexBuffer;
 
 	public :
+
+		VansMesh(bool needCPUData = false, bool supportRayTracing = false);
+
 		VertexBufferParameters GetVertexBufferParameter();
 
 		IndexBufferParameters GetIndexBufferParameter();
@@ -50,6 +56,10 @@ namespace VansGraphics
 		uint32_t GetMeshVertexCount() { return m_VertexCount; }
 
 		uint32_t GetIndexCount() { return m_IndexCount; }
+
+		// Physics mesh data access
+		const std::vector<float>& GetMeshRawPositionData() const { return m_MeshRawPositionData; }
+		const std::vector<int>& GetMeshTriangleIndex() const { return m_MeshTriangleIndex; }
 
 		VansVKBuffer& GetBLASVertexBuffer() { return m_VertexBuffer; }
 
@@ -77,7 +87,7 @@ namespace VansGraphics
 	private:
 
 		//mesh data
-		std::vector<float> m_MeshRawData;
+		std::vector<uint16_t> m_MeshRawData;
 
 		std::vector<float> m_MeshRawPositionData;
 
@@ -86,7 +96,8 @@ namespace VansGraphics
 		//标记CPU数据释放生效
 		bool m_MeshRawDataCPULoaded;
 
-
+		//标记是否需要访问CPU数据
+		bool m_MeshRawPositionDataEnableCPURead;
 
 		VkDevice m_LogicalDevice;
 
@@ -98,7 +109,34 @@ namespace VansGraphics
 
 	public:
 
-		void LoadMesh(VkDevice& logic_device,const std::string& file_name, bool import_tangent = false, bool supportRayTracing = false);
+		void LoadMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,const std::string& file_name, bool import_tangent = false);
+
+		// Loads only the specified aiMesh index from a file (used for submesh splitting).
+		// Returns false if the index is out of range.
+		bool LoadMeshSubmesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
+			const std::string& file_name, uint32_t submeshIndex, bool import_tangent = false);
+
+		// Static helper: returns the list of (aiMesh flat index -> material name) pairs
+		// without uploading any GPU data. Used by the scene to enumerate submeshes.
+		static std::vector<std::string> GetSubmeshMaterialNames(const std::string& file_name);
+
+		// The MTL/FBX material name that was active when this mesh was loaded as a submesh.
+		// Empty for whole-mesh loads.
+		std::string m_SourceMaterialName;
+
+		// Multi-mesh support: when true this mesh acts as a container for per-material slices.
+		bool m_IsMultiMesh = false;
+
+		// One VansMesh per aiMesh/material group, populated by LoadMultiMesh.
+		std::vector<VansMesh*> m_SubMeshes;
+
+		// Internal helper to populate this mesh from an already-loaded aiScene/aiMesh (avoids re-reading files per submesh).
+		bool LoadMeshSubmeshFromScene(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
+			const aiScene* scene, aiMesh* mesh, bool import_tangent = false);
+
+		// Loads the whole file then splits it into per-material VansMesh slices stored in m_SubMeshes.
+		void LoadMultiMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
+			const std::string& file_name, bool import_tangent = false);
 
 		void BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer);
 
@@ -107,6 +145,9 @@ namespace VansGraphics
 		VkAccelerationStructureKHR GetBLAS() { return m_BottomLevelAS; }
 
 		bool m_SupportRayTracing;
+
+		// When true this mesh was loaded as a submesh slice; ray tracing is not supported.
+		bool m_IsSubmesh = false;
 
 	private:
 

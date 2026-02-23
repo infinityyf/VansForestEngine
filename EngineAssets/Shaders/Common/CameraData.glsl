@@ -9,10 +9,13 @@ layout(set=CameraCBBind, binding=0) uniform    CameraUniformBuffer
     vec4 cameraDirection;
     mat4 ViewMatrix;
     mat4 ProjectionMatrix;
+    mat4 VPMatrix;
     mat4 LastViewMatrix;
     mat4 LastProjectionMatrix;
+    mat4 LastVPMatrix;
     mat4 LastPrevViewMatrix;
     mat4 LastPrevProjectionMatrix;
+    mat4 LastPrevVPMatrix;
     mat4 InverseViewMatrix;
     mat4 InverseProjectionMatrix;
     vec4 ScreenParams;

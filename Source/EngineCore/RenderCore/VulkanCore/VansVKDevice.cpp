@@ -9,6 +9,7 @@
 
 #include "../VansScene.h"
 #include "../../Configration/VansConfigration.h"
+#include "../../Configration/VansConfigration.h"
 //#if defined FOREST_EDITOR
 #include "../../EditorCore/VansEditorWindow.h"
 #include "../../VansTimer.h"
@@ -525,7 +526,18 @@ namespace VansGraphics
 		PrepareRenderingData();
 
 		//加载场景数据
-		m_Scene->LoadScene("D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Scenebk.json");
+		auto vansConfigration = VansConfigration::GetInstance();
+		std::string projectRoot = vansConfigration->GetProjectRootPath();
+		m_Scene->LoadScene((projectRoot + "EngineAssets/Scenebk.json").c_str());
+
+		//准备材质pbrbuffer
+		PreparePBRMaterialData();
+
+		//给所有渲染实例准备model data
+		PrepareInstanceTransformData();
+
+		//给所有node准备描述符
+		m_Scene->CreateNodeDescriptorSets();
 		
 		//准备光线追踪数据
 		PrepareRayTracingData();
@@ -560,6 +572,7 @@ namespace VansGraphics
 		renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
 		DrawShadowMap(renderPassManager, cmd);
 		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+
 
 		////绘制精确阴影
 		//renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, cmd, m_globalRenderStateData);
@@ -1129,12 +1142,193 @@ namespace VansGraphics
 		return true;
 	}
 
+	void VansVKDevice::PreparePBRMaterialData()
+	{
+		//将所有pbr材质参数打包buffer
+		//1. 统计所有pbr材质
+		auto& allmaterials = m_Scene->m_Materials;
+		auto materialManager = m_Scene->GetMaterialManager();
+		//将allmaterials中的所有pbr材质，集中到materialManager的m_GlobalPBRMaterial中
+		int materialCount = allmaterials.size();
+		int pbrMaterialIndex = 0;
+		for(int materialIndex = 0; materialIndex < materialCount; ++materialIndex)
+		{
+			auto material = static_cast<VansMaterial*>(allmaterials[materialIndex]);
+			if (material->m_MaterialType == VansMaterialType::VAN_PBR)
+			{
+				int index = pbrMaterialIndex++;
+				material->m_MaterialPushConstant.materialIndex = index;
+				materialManager->m_GlobalPBRMaterial.push_back(material);
+				materialManager->m_GlobalPBRParamData.push_back(material->m_BasePBRParam);
+				//收集所有pbr贴图
+				materialManager->m_GlobalPBRTextures.push_back(&(material->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(material->m_NormalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(material->m_MetalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(material->m_RoughnessTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(material->m_AoTexture->GetImage()));
+
+			}
+		}
+
+		//2. 创建buffer和cpu数据，之后渲染之前只更新一遍数据，不用每个材质更新
+		materialManager->m_GlobalPBRDataBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRMaterial.size(),
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+		materialManager->m_GlobalPBRDataBuffer.SetBufferData(
+			materialManager->m_GlobalPBRParamData.data(),
+			0,
+			sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRMaterial.size());
+
+		//3. 创建描述符
+		VkDescriptorSetLayoutBinding globalPBRMaterialBufferBinding =
+		{
+			VansVKDescriptorManager::m_MaterialBufferSetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ globalPBRMaterialBufferBinding }, materialManager->m_GlobalPBRDataSetLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ materialManager->m_GlobalPBRDataSetLayout }, materialManager->m_GlobalPBRDataDescriptorSets);
+	
+		//更新描述符
+		VansVKDescriptorManager::GetInstance()->ResetState();
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				materialManager->m_GlobalPBRDataDescriptorSets[0],
+				VansVKDescriptorManager::m_MaterialBufferSetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				{
+					{
+						materialManager->m_GlobalPBRDataBuffer.GetNativeBuffer(),
+						0,
+						materialManager->m_GlobalPBRDataBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+
+		//将所有pbrtexuture创建成bindless descriptor
+		VkDescriptorSetLayoutBinding bindlessTextureArrayBinding =
+		{
+			VansVKDescriptorManager::m_BindlessTextureBinding,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			VansVKDescriptorManager::m_MaxBindlessCount,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+
+
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ bindlessTextureArrayBinding }, materialManager->m_GlobalPBRTexSetLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ materialManager->m_GlobalPBRTexSetLayout }, materialManager->m_GlobalPBRTexDescriptorSets);
+
+
+		auto& bindlessTextures = materialManager->m_GlobalPBRTextures;
+		std::vector<VkDescriptorImageInfo> bindlessTextureInfos;
+		for (size_t i = 0; i < bindlessTextures.size(); i++)
+		{
+			bindlessTextureInfos.push_back(
+				{
+					bindlessTextures[i]->GetSampler(),
+					bindlessTextures[i]->GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			);
+		}
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				materialManager->m_GlobalPBRTexDescriptorSets[0],
+				VansVKDescriptorManager::m_BindlessTextureBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				bindlessTextureInfos
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+
+	}
+
+	void VansVKDevice::PrepareInstanceTransformData()
+	{
+		//收集所有common node, shadow node, punctualshadowode的transform数据
+		std::vector<VansRenderNode*> allRenderNodes;
+		auto& allCommonNodes = m_Scene->m_OpaqueRenderNodes;
+		// [新增] 将所有不透明节点添加到 allRenderNodes 中
+		allRenderNodes.insert(allRenderNodes.end(), allCommonNodes.begin(), allCommonNodes.end());
+		auto& allShadowNodes = m_Scene->m_ShadowRenderNodes;
+		allRenderNodes.insert(allRenderNodes.end(), allShadowNodes.begin(), allShadowNodes.end());
+		auto& allPunctualShadowNodes = m_Scene->m_PunctualShadowRenderNodes;
+		allRenderNodes.insert(allRenderNodes.end(), allPunctualShadowNodes.begin(), allPunctualShadowNodes.end());
+
+		int nodeCount = allRenderNodes.size();
+		//创建buffer
+		m_Scene->m_InstanceTransformDataBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			sizeof(ModelDataStruct) * nodeCount,
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+		//准备cpu数据
+		for (int nodeIndex = 0; nodeIndex < nodeCount; ++nodeIndex)
+		{
+			auto node = allRenderNodes[nodeIndex];
+			node->BeforeDrawCall();
+			m_Scene->m_InstanceTransformData.push_back(node->m_ModelData);
+			node->m_TransfromIndex = nodeIndex;
+		}
+		//上传数据
+		m_Scene->m_InstanceTransformDataBuffer.SetBufferData(
+			m_Scene->m_InstanceTransformData.data(), 
+			0,
+			sizeof(ModelDataStruct) * nodeCount);
+
+		//创建buffer的描述符
+		VkDescriptorSetLayoutBinding instanceTransformBufferBinding =
+		{
+			VansVKDescriptorManager::m_Buffer0SetBinding,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			1,
+			VK_SHADER_STAGE_VERTEX_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ instanceTransformBufferBinding }, m_Scene->m_GlobalTransformDataSetLayout);
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_Scene->m_GlobalTransformDataSetLayout }, m_Scene->m_GlobalTransformDataDescriptorSets);
+		//更新描述符
+		VansVKDescriptorManager::GetInstance()->ResetState();
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				m_Scene->m_GlobalTransformDataDescriptorSets[0],
+				VansVKDescriptorManager::m_Buffer0SetBinding,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				{
+					{
+						m_Scene->m_InstanceTransformDataBuffer.GetNativeBuffer(),
+						0,
+						m_Scene->m_InstanceTransformDataBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	}
+
 	void VansVKDevice::PrepareSkyRenderData()
 	{
 		//计算预卷积环境漫反射贴图
 		//创建输入贴图
+		auto vansConfigration = VansConfigration::GetInstance();
+		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		VansTexture* texture = new VansTexture();
-		texture->LoadCubeTexture(m_VansVKCommandBuffer, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/SkyBox");
+		texture->LoadCubeTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/SkyBox").c_str());
 
 
 		//创建输出cube
@@ -1148,7 +1342,7 @@ namespace VansGraphics
 
 		//brdf lut
 		manager->m_BRDFIntegralLUT = new VansTexture();
-		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Textures/BRDFIntegralLUT.png", false, false,false);
+		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/BRDFIntegralLUT.png").c_str(), false, false,false);
 
 		
 		VansVKBuffer prefilterCBBuffer;
@@ -1207,10 +1401,10 @@ namespace VansGraphics
 
 		//卷积compute shader
 		VansComputeShader* m_PreConvDiffuseShader = new VansComputeShader();
-		m_PreConvDiffuseShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConDiffuseEnvironment");
+		m_PreConvDiffuseShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PreConDiffuseEnvironment").c_str());
 
 		VansComputeShader* m_PreConvSpecularShader = new VansComputeShader();
-		m_PreConvSpecularShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/PreConSpecularEnvironment");
+		m_PreConvSpecularShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PreConSpecularEnvironment").c_str());
 
 
 		//创建描述符
@@ -1435,8 +1629,10 @@ namespace VansGraphics
 		manager->m_SSGIFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 4, m_RenderHeight / 4, 1, 4, false, false, true);
 
 		//cs
+		auto vansConfigration = VansConfigration::GetInstance();
+		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		manager->m_SSGIShader = new VansComputeShader();
-		manager->m_SSGIShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSGI");
+		manager->m_SSGIShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSGI").c_str());
 
 
 		float data[4] = { std::floor(m_RenderWidth / 4) , std::floor(m_RenderHeight / 4), 4.0f/ m_RenderWidth, 4.0f/ m_RenderHeight };
@@ -2314,8 +2510,10 @@ namespace VansGraphics
 		manager->m_HZBResult = new VansTexture();
 		manager->m_HZBResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 1, false, true, true, MID_PRES_16);
 
+		auto vansConfigration = VansConfigration::GetInstance();
+		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		manager->m_HZBShader = new VansComputeShader();
-		manager->m_HZBShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/HIZ");
+		manager->m_HZBShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/HIZ").c_str());
 
 		//计算mip数量
 		manager->m_HIZMipCount = 1 + (int)std::floor(std::log2(std::min(m_RenderWidth, m_RenderHeight)));
@@ -2364,14 +2562,16 @@ namespace VansGraphics
 		manager->m_SSRAAResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
 
 
+		auto vansConfigration = VansConfigration::GetInstance();
+		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		manager->m_SSRTraceShader = new VansComputeShader();
-		manager->m_SSRTraceShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_TRACE");
+		manager->m_SSRTraceShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSR_TRACE").c_str());
 
 		manager->m_SSRResolveShader = new VansComputeShader();
-		manager->m_SSRResolveShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_RESOLVE");
+		manager->m_SSRResolveShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSR_RESOLVE").c_str());
 		
 		manager->m_SSRTemporalAAShader = new VansComputeShader();
-		manager->m_SSRTemporalAAShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/SSR_TEMPORALAA");
+		manager->m_SSRTemporalAAShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSR_TEMPORALAA").c_str());
 
 		//需要normal, roughness, hiz
 		VkDescriptorSetLayoutBinding normalInput =
@@ -2538,8 +2738,10 @@ namespace VansGraphics
 		manager->m_VolumetricFogResult = new VansTexture();
 		manager->m_VolumetricFogResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
 
+		auto vansConfigration = VansConfigration::GetInstance();
+		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		manager->m_VolumetrcFogShader = new VansComputeShader();
-		manager->m_VolumetrcFogShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/VolumetricFog");
+		manager->m_VolumetrcFogShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/VolumetricFog").c_str());
 
 		VkDescriptorSetLayoutBinding positionInput =
 		{
@@ -2616,8 +2818,10 @@ namespace VansGraphics
 		// Filter radius
 		// Maximum depth difference to consider
 
+		auto vansConfigration = VansConfigration::GetInstance();
+		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		manager->m_BilateralFilterShader = new VansComputeShader();
-		manager->m_BilateralFilterShader->InitShader(m_VansVKLogicDevice, "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/BilateralFilter");
+		manager->m_BilateralFilterShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/BilateralFilter").c_str());
 		manager->m_BilateralFilterShader->SetPushConstant(sizeof(manager->m_BilateralFilterPushConstant));
 		manager->m_BilateralFilterShader->SetPushConstantData(&(manager->m_BilateralFilterPushConstant));
 	}
@@ -2761,6 +2965,8 @@ namespace VansGraphics
 	void VansVKDevice::DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
 	{
 		m_Scene->DrawShadowNodes();
+
+		m_Scene->DrawTerrainNode(true);
 	}
 
 	void VansVKDevice::DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)

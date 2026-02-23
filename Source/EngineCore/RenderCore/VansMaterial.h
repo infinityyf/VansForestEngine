@@ -25,6 +25,11 @@ namespace VansGraphics
 		VAN_SHAODW = 8,
 	};
 
+	struct alignas(16) VansMaterialPushConstant
+	{
+		int		materialIndex; //用于索引全局gpu资源  : pbr参数，objectcb， texture bindless
+		int		transfromIndex; //用于索引model matrix
+	};
 
 	class VansMaterialManager
 	{
@@ -67,6 +72,19 @@ namespace VansGraphics
 
 		VkDescriptorSetLayout m_VolumetricFogSetLayout;
 		std::vector<VkDescriptorSet> m_VolumetricFogDescriptorSets;
+
+
+		//全局pbr参数buffer，不每个pbr材质自己持有
+		VansVKBuffer m_GlobalPBRDataBuffer;
+		std::vector<VansMaterial*> m_GlobalPBRMaterial;
+		std::vector<VansBasePBRParam> m_GlobalPBRParamData;
+		VkDescriptorSetLayout m_GlobalPBRDataSetLayout;
+		std::vector<VkDescriptorSet> m_GlobalPBRDataDescriptorSets;
+
+		//全局pbr贴图的bindless descriptor set, 不每个材质自己持有
+		std::vector<VansVKImage*> m_GlobalPBRTextures;
+		VkDescriptorSetLayout m_GlobalPBRTexSetLayout;
+		std::vector<VkDescriptorSet> m_GlobalPBRTexDescriptorSets;
 
 		//保存全局的一些texture数据
 		VansTexture* m_PreConvDiffuse;
@@ -155,8 +173,8 @@ namespace VansGraphics
 		friend class VansScene;
 
 	private:
-		//pbr数据data buffer
-		VansVKBuffer m_BasePBRDataBuffer;
+		////pbr数据data buffer
+		//VansVKBuffer m_BasePBRDataBuffer;
 
 	public:
 		VansMaterialType m_MaterialType;
@@ -176,12 +194,15 @@ namespace VansGraphics
 		//shader
 		VansGraphicsShader* m_Shader;
 
-		//定义GPU数据
-		void CreatePBRMaterialDataBuffer(VkDevice& logic_device);
+		//push constant
+		VansMaterialPushConstant m_MaterialPushConstant;
 
-		VansVKBuffer& GetPBRDataBuffer() { return m_BasePBRDataBuffer; }
+		////定义GPU数据
+		//void CreatePBRMaterialDataBuffer(VkDevice& logic_device);
 
-		void UpdatePBRUniformData();
+		//VansVKBuffer& GetPBRDataBuffer() { return m_BasePBRDataBuffer; }
+
+		//void UpdatePBRUniformData();
 
 		void UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
 	};

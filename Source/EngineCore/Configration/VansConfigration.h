@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 
 class VansConfigration
 {
@@ -19,6 +20,8 @@ private:
 
 	bool SupportRayTracing;
 
+	std::string ProjectRootPath;
+
 public:
 
 	static VansConfigration* GetInstance();
@@ -32,4 +35,6 @@ public:
 	int GetPunctualShadowMapHeight() { return PunctualShadowMapHeight; }
 
 	bool GetSupportRayTracing() { return SupportRayTracing; }
+
+	const std::string& GetProjectRootPath() { return ProjectRootPath; }
 };

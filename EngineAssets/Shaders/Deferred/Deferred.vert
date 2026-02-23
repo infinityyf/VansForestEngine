@@ -1,6 +1,8 @@
 #version 450
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
 
-layout(location = 0) in vec3 inPosition;
+layout(location = 0) in f16vec3 inPosition;
 
 layout(location = 0) out vec2 fragTexCoord;
 

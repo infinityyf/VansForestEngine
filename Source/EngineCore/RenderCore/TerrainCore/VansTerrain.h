@@ -47,6 +47,8 @@ namespace VansGraphics
 
         // 绘制
         void Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets);
+        
+        void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets);
 
     public:
 
@@ -77,6 +79,7 @@ namespace VansGraphics
         
         // Shader & Pipeline
         VansGraphicsShader* m_TerrainShader = nullptr;
+        VansGraphicsShader* m_TerrainShadowShader = nullptr;
 
         VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
         VkPipeline m_Pipeline = VK_NULL_HANDLE;

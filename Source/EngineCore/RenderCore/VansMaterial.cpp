@@ -97,22 +97,22 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 
-void VansGraphics::VansMaterial::CreatePBRMaterialDataBuffer(VkDevice& logic_device)
-{
-	VkDeviceSize bufferSize = sizeof(m_BasePBRParam);
-	m_BasePBRDataBuffer.CreatVulkanBuffer(
-		logic_device, bufferSize, VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-	);
-}
-
-void VansGraphics::VansMaterial::UpdatePBRUniformData()
-{
-	uint32_t offset = 0;
-	uint32_t size = sizeof(VansBasePBRParam);
-	m_BasePBRDataBuffer.SetBufferData(&m_BasePBRParam, offset, size);
-}
+//void VansGraphics::VansMaterial::CreatePBRMaterialDataBuffer(VkDevice& logic_device)
+//{
+//	VkDeviceSize bufferSize = sizeof(m_BasePBRParam);
+//	m_BasePBRDataBuffer.CreatVulkanBuffer(
+//		logic_device, bufferSize, VK_FORMAT_R32_SFLOAT,
+//		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+//		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+//	);
+//}
+//
+//void VansGraphics::VansMaterial::UpdatePBRUniformData()
+//{
+//	uint32_t offset = 0;
+//	uint32_t size = sizeof(VansBasePBRParam);
+//	m_BasePBRDataBuffer.SetBufferData(&m_BasePBRParam, offset, size);
+//}
 
 void VansGraphics::VansMaterial::UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager)
 {

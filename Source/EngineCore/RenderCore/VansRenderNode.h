@@ -2,8 +2,10 @@
 
 //#include "VulkanCore/VansMesh.h"
 #include "VansMaterial.h"
-#include "VansTransform.h"
+#include "../ScriptCore/VansTransform.h"
 #include "BRDFData/VansLight.h"
+#include <vector>
+#include <queue>
 
 namespace VansGraphics
 {
@@ -22,8 +24,9 @@ namespace VansGraphics
 	struct alignas(16) ModelDataStruct
 	{
 		glm::mat4x4 ModelMatrix;
-		alignas(16) glm::vec3 Postion;
-		alignas(16) glm::vec3 Scale;
+		glm::mat4x4 NormalMatrix;
+		glm::vec4 Postion;
+		glm::vec4 Scale;
 	};
 
 	class VansCamera;
@@ -41,13 +44,19 @@ namespace VansGraphics
 
 		VansMaterial* m_Material;
 
-	private:
+		// When true, this node is ignored by the built-in draw passes (drawn elsewhere).
+		bool m_SkipDefaultRender = false;
+
+		// Per-submesh material list, populated for multi-mesh nodes (parallel to m_Mesh->m_SubMeshes).
+		std::vector<VansMaterial*> m_MaterialList;
 
 		//GPU 数据
 		ModelDataStruct m_ModelData;
 
-		//transform数据
-		VansTransform m_Transform;
+		int m_TransfromIndex;
+
+		// ID-based Data Access
+		uint32_t m_TransformID;
 
 	protected:
 
@@ -64,14 +73,6 @@ namespace VansGraphics
 		VkDescriptorSetLayout frameBufferInputLayout;
 		std::vector<VkDescriptorSet> frameBufferInputDescriptorSets;
 
-		//PBR参数
-		VkDescriptorSetLayout m_MaterialPBRBaseDataLayout;
-		std::vector<VkDescriptorSet> m_MaterialPBRBaseDataDescriptorSets;
-
-
-		//uniform buffer
-		VansVKBuffer m_RenderNodeDataBuffer;
-
 		void DestroyDescriptorSets();
 
 
@@ -81,12 +82,19 @@ namespace VansGraphics
 
 		bool m_DescriptorsetsDirty;
 
+		bool m_DescriptorsetsSetDone;
+
 		//统一被CreateDescriptorSets调用
 		void RegistCameraDescriptor(VansCamera* camera);
 
 		void RegistLightDescriptor(VansLightManager& lightManager);
 
+		void RegistPBRDataDescriptor(VansMaterialManager& materialManager);
+
 		bool CheckRenderNodeState();
+
+		// Helper function to compute model matrix from transform
+		void ComputeModelDataFromTransform();
 
 	public:
 		void virtual CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) {};
@@ -95,44 +103,48 @@ namespace VansGraphics
 
 		void virtual UpdateDescripterSets(VansMaterialManager& materialManager) {}
 
+		// New function for updating model data from logic code
+		void UpdateModelData();
+
 		void BeforeDrawCall();
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
 		void DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex);
 
-		void DrawWithMaterial(VansMaterial* material ,VansVKCommandBuffer& cmd, GlobalStateData& global_state);
+		//void DrawWithMaterial(VansMaterial* material ,VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
 		void SetName(const std::string& name)
 		{
 			m_NodeName = name;
 		}
 
-		void SetTransformData(glm::vec3 postion = glm::vec3(0,0,0), glm::vec3 rotation = glm::vec3(0, 0, 0), glm::vec3 scale = glm::vec3(1, 1, 1))
+		void SetTransformData(glm::vec3 postion = glm::vec3(0, 0, 0), glm::vec3 rotation = glm::vec3(0, 0, 0), glm::vec3 scale = glm::vec3(1, 1, 1))
 		{
-			m_Transform.m_Position = postion;
-			m_Transform.m_Rotation = rotation;
-			m_Transform.m_Scale = scale;
+			VansTransform& t = VansTransformStore::GetTransform(m_TransformID);
+			t.m_Position = postion;
+			t.m_Rotation = rotation;
+			t.m_Scale = scale;
 		}
 
 		glm::vec3 GetTransformPosition()
 		{
-			return m_Transform.m_Position;
+			return VansTransformStore::GetTransform(m_TransformID).m_Position;
 		}
 
 		glm::vec3 GetTransformRotation()
 		{
-			return m_Transform.m_Rotation;
+			return VansTransformStore::GetTransform(m_TransformID).m_Rotation;
 		}
 
 		glm::vec3 GetTransformScale()
 		{
-			return m_Transform.m_Scale;
+			return VansTransformStore::GetTransform(m_TransformID).m_Scale;
 		}
 
 		glm::mat4x4 GetTransformMatrix()
 		{
-			return m_Transform.GetModelMatrix();
+			return VansTransformStore::GetTransform(m_TransformID).GetModelMatrix();
 		}
 	};
 
@@ -238,5 +250,8 @@ namespace VansGraphics
 		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
+
+		void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 	};
+
 }

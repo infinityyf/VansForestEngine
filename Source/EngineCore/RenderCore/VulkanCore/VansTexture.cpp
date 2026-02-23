@@ -2,6 +2,7 @@
 #include "VansTexture.h"
 #include "VansVKDevice.h"
 #include "VansVKCommandBuffer.h"
+#include "../../Util/VansJobSystem.h"
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -70,6 +71,28 @@ namespace VansGraphics
 		m_Image.DestroyVulkanImage(*(VkDevice*)m_GraphicsDevice->GetNativeGraphicsDevice());
 	}
 
+	void* VansTexture::ReadTextureFile(std::string texture_path, TexturePrecision texture_precision, int& bytes_per_channel , int& width, int& height, int& num_components, int import_channel)
+	{
+		void* pixel_data = nullptr;
+		// 1. Load image data based on precision
+		if (texture_precision == VansGraphics::HIGH_PRES_32)
+		{
+			pixel_data = stbi_loadf(texture_path.c_str(), &width, &height, &num_components, import_channel);
+			bytes_per_channel = 4; // float
+		}
+		else if (texture_precision == VansGraphics::MID_PRES_16)
+		{
+			pixel_data = stbi_load_16(texture_path.c_str(), &width, &height, &num_components, import_channel);
+			bytes_per_channel = 2; // uint16
+		}
+		else // LOW_PRES_8
+		{
+			pixel_data = stbi_load(texture_path.c_str(), &width, &height, &num_components, import_channel);
+			bytes_per_channel = 1; // uint8
+		}
+		return pixel_data;
+	}
+
 	void VansTexture::LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB, bool useCompress, bool need_mip, TexturePrecision texture_precision, int import_channel)
 	{
 		std::cout << "Load Texture : " << texture_path << std::endl;
@@ -79,22 +102,7 @@ namespace VansGraphics
         void* pixel_data = nullptr;
         int bytes_per_channel = 1;
 
-        // 1. Load image data based on precision
-        if (texture_precision == VansGraphics::HIGH_PRES_32)
-        {
-            pixel_data = stbi_loadf(texture_path.c_str(), &width, &height, &num_components, import_channel);
-            bytes_per_channel = 4; // float
-        }
-        else if (texture_precision == VansGraphics::MID_PRES_16)
-        {
-            pixel_data = stbi_load_16(texture_path.c_str(), &width, &height, &num_components, import_channel);
-            bytes_per_channel = 2; // uint16
-        }
-        else // LOW_PRES_8
-        {
-            pixel_data = stbi_load(texture_path.c_str(), &width, &height, &num_components, import_channel);
-            bytes_per_channel = 1; // uint8
-        }
+		pixel_data = ReadTextureFile(texture_path, texture_precision, bytes_per_channel, width, height, num_components, import_channel);
 
         if ((!pixel_data) ||
             (0 >= width) ||

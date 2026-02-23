@@ -60,11 +60,21 @@ void main()
     vec3 startPosition = texture(inputPosition, uv).xyz + normal * 0.05;
     vec3 viewDir       = normalize(cameraPosition.xyz - startPosition);
 
+    // [Optimization] Move TBN construction out of the loop
+    vec3 t = normalize(cross(viewDir, normal));
+    vec3 b = normalize(cross(normal, t));
+    mat3 TBN = mat3(t, b, normal);
+
+    // [Optimization] Pre-calculate View Space data to avoid full matrix mults in loop
+    // Assumes LastViewMatrix matches the inputPosition buffer
+    vec3 viewSpacePosOrigin = (LastViewMatrix * vec4(startPosition, 1.0)).xyz;
+
     float rnd = fract(sin(dot(vec3(uv, FrameIndex), vec3(12.9898,78.233,37.719))) * 43758.5453);
 
-    const int   sampleCount    = 32;
+    // [Optimization] Reduce sample count (32 -> 8) for performance
+    const int   sampleCount    = 16;
     const float maxTraceDist   = 20.0;
-    const float stepBase       = 0.02;
+    const float stepBase       = 0.05; // Increased step slightly
     const float depthBias      = 0.01;
     const float maxDepthDelta  = 1.0;
     const float cosConeMin     = cos(radians(35.0));
@@ -76,25 +86,39 @@ void main()
         vec2 h = Hammersley(uint(i), uint(sampleCount));
         h.x = fract(h.x + rnd);
 
-        vec3 dir = SampleHemisphereCosine(h, normal, viewDir);
+        // [Optimization] Inline cosine sampling using precomputed TBN
+        float phi = 2.0 * 3.14159265358979323846 * h.x;
+        float r   = sqrt(h.y);
+        float x = r * cos(phi);
+        float z = r * sin(phi);
+        float y = sqrt(max(0.0, 1.0 - x*x - z*z));
+        vec3 local = vec3(x, y, z);
+        vec3 dir = normalize(TBN * local);
+
         if (dot(dir, normal) < cosConeMin) {
-            float t = (cosConeMin - dot(dir, normal)) * 0.5;
-            dir = normalize(mix(dir, normal, clamp(t, 0.0, 1.0)));
+            float tVal = (cosConeMin - dot(dir, normal)) * 0.5;
+            dir = normalize(mix(dir, normal, clamp(tVal, 0.0, 1.0)));
         }
 
+        // [Optimization] Compute View Space Direction once per sample
+        vec3 viewSpaceDir = mat3(LastViewMatrix) * dir; 
+
         bool  hit   = false;
-        vec3  tracePos = startPosition;
+        vec3  tracePos = startPosition; // Keep world pos for SH lookup if needed
         float tDist    = 0.0;
 
-        for (int stepIdx = 0; stepIdx < 1024; ++stepIdx)
+        // [Optimization] Reduced max steps (1024 -> 128)
+        for (int stepIdx = 0; stepIdx < 128; ++stepIdx)
         {
-            float stepLen = stepBase * (1.0 + 0.002 * float(stepIdx) * float(stepIdx));
+            float stepLen = stepBase * (1.0 + 0.005 * float(stepIdx) * float(stepIdx)); // Faster growth
             tDist += stepLen;
             if (tDist > maxTraceDist) break;
 
-            tracePos = startPosition + dir * tDist;
+            // [Optimization] Ray march in View Space
+            vec3 currentViewPos = viewSpacePosOrigin + viewSpaceDir * tDist;
 
-            vec4 clip = LastProjectionMatrix * LastViewMatrix * vec4(tracePos, 1.0);
+            // Only Projection needed now
+            vec4 clip = LastProjectionMatrix * vec4(currentViewPos, 1.0);
             if (clip.w == 0.0) break;
             vec2 ndc = (clip.xy / clip.w) * 0.5 + 0.5;
             ndc.y = 1.0 - ndc.y;
@@ -103,27 +127,26 @@ void main()
                 break;
 
             float sceneDepth = texture(inputPosition, ndc).w;
-            float curDepth   = -(LastViewMatrix * vec4(tracePos, 1.0)).z;
+            // [Optimization] Depth from View Space Z directly
+            float curDepth   = -currentViewPos.z;
 
             float dDelta = curDepth - sceneDepth;
             if (dDelta > depthBias && dDelta < maxDepthDelta)
             {
-                // Hit occurred. Decide using color or SH based on facing.
-                vec3 hitN = normalize(texture(inputNormal, ndc).xyz);
+                // Reconstruct world tracePos only on hit for lighting
+                tracePos = startPosition + dir * tDist;
 
-                // If the surface normal at hit is NOT facing the sampling point,
-                // use SH along the sampling direction instead of the hit color.
-                // Facing test: normal should point roughly toward the sampling point (tracePos -> startPosition).
-                vec3 toSamplePoint = normalize(startPosition - tracePos);
+                vec3 hitN = normalize(texture(inputNormal, ndc).xyz);
+                vec3 toSamplePoint = -dir; // Approximate
                 bool facingSamplePoint = dot(hitN, toSamplePoint) > 0.0;
 
                 if (facingSamplePoint)
                 {
-                    vec3 hitColor = texture(inputColor, ndc).rgb;
-                    accumIrradiance += hitColor;
+                    accumIrradiance += texture(inputColor, ndc).rgb;
                 }
                 else
                 {
+                    // Existing SH Logic
                     vec3 uvw = (startPosition + normal * 0.5 * 1.732 - vec3(-20.0, -14.0, -20.0)) / vec3(40.0, 40.0, 40.0);
                     vec4 rC = texture(SHRCoeff, uvw);
                     vec4 gC = texture(SHGCoeff, uvw);
@@ -147,6 +170,7 @@ void main()
 
         if (!hit)
         {
+           // Copy existing SH miss logic
             vec3 uvw = (startPosition + normal * 0.5 * 1.732 - vec3(-20.0, -14.0, -20.0)) / vec3(40.0, 40.0, 40.0);
             vec4 rC = texture(SHRCoeff, uvw);
             vec4 gC = texture(SHGCoeff, uvw);

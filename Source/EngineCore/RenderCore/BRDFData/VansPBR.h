@@ -1,5 +1,5 @@
 #pragma once
-#include "../VansCommonUtils.h"
+#include "../../ScriptCore/VansCommonUtils.h"
 
 namespace VansGraphics
 {

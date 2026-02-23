@@ -11,16 +11,20 @@ layout(push_constant) uniform LightShadowIndex
 {
     int lightIndex;
     int shadowIndex;
+    int materialIndex;
+    int objectIndex;
 };
 
-layout( location = 0 ) in vec4 position;
-layout( location = 1 ) in vec3 normal;
+layout( location = 0 ) in f16vec4 position;
+layout( location = 1 ) in f16vec3 normal;
 
 layout( location = 0 ) out float shadowDepth;
 
 
 void main() 
 {
+    mat4 ModelMatrix = ModelBuffer.transforms[objectIndex].ModelMatrix;
+
     int pointLightCount = int(uPointLightCount);
     int spotLightCount = int(uSpotLightCount);
     if(lightIndex < pointLightCount)

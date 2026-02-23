@@ -6,22 +6,18 @@ layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
 layout( set = 0, binding = 0, std430 ) buffer directLightResult
 {
-    vec4 directLight[];
+    f16vec4 directLight[];
 } directLightBuffer;
-
-layout( set = 0, binding = 1, std430 ) buffer indirectLightResult
-{
-    vec4 indirectLight[];
-} indirectLightBuffer;
 
 layout(set = 0, binding = 2, rgba32f) uniform image3D resultRImage;
 layout(set = 0, binding = 3, rgba32f) uniform image3D resultGImage;
 layout(set = 0, binding = 4, rgba32f) uniform image3D resultBImage;
 
-layout( set = 0, binding = 11, std430) buffer ReSTIRIndexBuffer
-{
-    float indexData[];
-} ReSTIRIndexInfo;
+
+// layout( set = 0, binding = 5, std430 ) buffer ReservoirBuffer
+// {
+//     ReservoirData reservoirs[];
+// } reservoirInfo;
 
 layout(push_constant) uniform PushConstants 
 {
@@ -49,6 +45,70 @@ void main()
     int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;
 
+
+    // // 1. 读取 ReSTIR 蓄水池结果
+    // ReservoirData reservoir = reservoirInfo.reservoirs[bufferIndex];
+    
+    // float W = reservoir.state.z;              // 最终权重
+    // int selectedRayIndex = int(reservoir.state.w); // 选中的方向索引
+    // vec3 radiance = reservoir.radiance.rgb;    // 选中的辐射度
+
+    // // 2. 重建方向
+    // vec3 rayDirection = SampleSphere(selectedRayIndex, sampleCount);
+
+    // // 3. 计算当前样本的 SH 投影
+    // // ReSTIR 的 W 已经包含了积分所需的权重 (1/pdf * 1/M * w_sum)
+    // // 积分公式: Integral(L * Basis) approx L_sample * Basis_sample * W
+    
+    // vec4 rCurrent = vec4(0.0);
+    // vec4 gCurrent = vec4(0.0);
+    // vec4 bCurrent = vec4(0.0);
+
+    // // 只有当权重有效时才计算
+    // if (W > 0.0 && dot(radiance, radiance) > 0.0)
+    // {
+    //     for(int i = 0; i < 4; i++) 
+    //     {
+    //         float basis = SHBasis(i, rayDirection);
+    //         rCurrent[i] = radiance.r * basis * W;
+    //         gCurrent[i] = radiance.g * basis * W;
+    //         bCurrent[i] = radiance.b * basis * W;
+    //     }
+    // }
+
+    // // 4. 应用预乘系数 (与历史数据格式保持一致)
+    // // 原始逻辑中，L1 频段系数乘以了 0.5
+    // for(int i = 1; i < 4; i++) 
+    // {
+    //     rCurrent[i] *= 0.5;
+    //     gCurrent[i] *= 0.5;
+    //     bCurrent[i] *= 0.5;
+    // }
+
+    // // 5. EMA 平滑 (Exponential Moving Average)
+    // // 读取上一帧的 SH 系数
+    // vec4 rPrev = imageLoad(resultRImage, probeIndex);
+    // vec4 gPrev = imageLoad(resultGImage, probeIndex);
+    // vec4 bPrev = imageLoad(resultBImage, probeIndex);
+
+    // // 混合因子 alpha
+    // // 较小的 alpha 值意味着更平滑但有滞后 (0.05 = 5% 新, 95% 旧)
+    // // 较大的 alpha 值意味着响应快但噪点多
+    // // 可以根据 reservoir.state.y (样本数 M) 动态调整，这里使用固定值保证平滑
+    // float alpha = 1; 
+    
+    // // 如果是第一帧或者历史数据无效(NaN/Inf)，可以直接使用当前值
+    // // 这里简单处理直接混合
+    // vec4 rResult = mix(rPrev, rCurrent, alpha);
+    // vec4 gResult = mix(gPrev, gCurrent, alpha);
+    // vec4 bResult = mix(bPrev, bCurrent, alpha);
+
+    // // 6. 存储结果
+    // imageStore(resultRImage, probeIndex, rResult);
+    // imageStore(resultGImage, probeIndex, gResult);
+    // imageStore(resultBImage, probeIndex, bResult);
+
+
     // 球面积分的权重系数 (4π / SAMPLE_COUNT)
     float weight = FOUR_PI / sampleCount;
 
@@ -65,10 +125,8 @@ void main()
     for(int rayIndex = 0; rayIndex < sampleCount; rayIndex++)
     {
         vec3 rayDirection = SampleSphere(rayIndex,sampleCount);
-        vec3 directDiffuse = directLightBuffer.directLight[bufferOffset + rayIndex].rgb;
-
-        vec3 indirectDiffuse = indirectLightBuffer.indirectLight[bufferOffset + rayIndex].rgb;
-        vec3 color = directDiffuse + indirectDiffuse;
+        vec3 lightResult = directLightBuffer.directLight[bufferOffset + rayIndex].rgb;
+        vec3 color = lightResult;
 
         // // --- Directional blur begin ---
         // const int   kNeighborCount = 10;          // max neighbors to test

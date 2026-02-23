@@ -4,7 +4,7 @@
 #include "../../RenderCore/VulkanCore/VansVKBuffer.h"
 #include "../../RenderCore/VulkanCore/VansShader.h"
 #include "../../RenderCore/BRDFData/VansLight.h"
-#include "../../RenderCore/VansCommonUtils.h"
+#include "../../ScriptCore/VansCommonUtils.h"
 namespace VansGraphics 
 {
 	class VansLightManager;
@@ -27,6 +27,12 @@ namespace VansGraphics
 		glm::vec4 cameraRight;
 		glm::vec4 dispatchParams;
 		glm::vec4 frameParams;
+	};
+
+	struct alignas(16) ResTIRStruct
+	{
+		glm::vec4 state;
+		glm::vec4 radiance;
 	};
 
 	class VansRayTracing
@@ -100,8 +106,6 @@ namespace VansGraphics
 
 		float m_RayTracingPositionStride;
 
-		int m_ReSTIRSampleCount;
-
 		VansVKBuffer m_RayTracingHitPositionResult;
 		VansVKBuffer m_RayTracingHitNormalResult;
 		VansVKBuffer m_RayTracingHitAlbedoRoughnessResult;
@@ -116,6 +120,7 @@ namespace VansGraphics
 		//2 float 方向权重
 		//3 float 方向存在时间
 		VansVKBuffer m_ReSTIRBuffer;
+		std::vector<ResTIRStruct> m_ReSTIRCPUData;
 
 		VansComputeShader* m_RayTracingPointLighting;
 
@@ -123,8 +128,7 @@ namespace VansGraphics
 
 
 		//记录命中点的光照信息
-		VansVKBuffer m_HitPointDirectLightBuffer;
-		VansVKBuffer m_HitPointIndirectLightBuffer;
+		VansVKBuffer m_HitPointLightBuffer;
 
 		bool m_HitPositionCalculateDone;
 

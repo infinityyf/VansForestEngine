@@ -9657,1702 +9657,2036 @@
         {
             "name": "arch_stones_01_sm0",
             "path": "EngineAssets/Models/Sponza/arch_stones_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+            "support_raytracing" : true
         },
         {
             "name": "arch_stones_01_sm1",
             "path": "EngineAssets/Models/Sponza/arch_stones_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_02_sm0",
             "path": "EngineAssets/Models/Sponza/arch_stones_02_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_02_sm1",
             "path": "EngineAssets/Models/Sponza/arch_stones_02_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_03_sm0",
             "path": "EngineAssets/Models/Sponza/arch_stones_03_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_03_sm1",
             "path": "EngineAssets/Models/Sponza/arch_stones_03_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_04_sm0",
             "path": "EngineAssets/Models/Sponza/arch_stones_04_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_04_sm1",
             "path": "EngineAssets/Models/Sponza/arch_stones_04_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_04_sm2",
             "path": "EngineAssets/Models/Sponza/arch_stones_04_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_04_sm3",
             "path": "EngineAssets/Models/Sponza/arch_stones_04_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_04_sm4",
             "path": "EngineAssets/Models/Sponza/arch_stones_04_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_04_sm5",
             "path": "EngineAssets/Models/Sponza/arch_stones_04_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_04_sm6",
             "path": "EngineAssets/Models/Sponza/arch_stones_04_sm6.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_04_sm7",
             "path": "EngineAssets/Models/Sponza/arch_stones_04_sm7.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_04_sm8",
             "path": "EngineAssets/Models/Sponza/arch_stones_04_sm8.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_04_sm9",
             "path": "EngineAssets/Models/Sponza/arch_stones_04_sm9.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_05_sm0",
             "path": "EngineAssets/Models/Sponza/arch_stones_05_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_05_sm1",
             "path": "EngineAssets/Models/Sponza/arch_stones_05_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_stones_05_sm2",
             "path": "EngineAssets/Models/Sponza/arch_stones_05_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_1stfloor_01_sm0",
             "path": "EngineAssets/Models/Sponza/ceiling_1stfloor_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_1stfloor_01_sm1",
             "path": "EngineAssets/Models/Sponza/ceiling_1stfloor_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_1stfloor_01_sm2",
             "path": "EngineAssets/Models/Sponza/ceiling_1stfloor_01_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_1stfloor_02_sm0",
             "path": "EngineAssets/Models/Sponza/ceiling_1stfloor_02_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_1stfloor_02_sm1",
             "path": "EngineAssets/Models/Sponza/ceiling_1stfloor_02_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_1stfloor_02_sm2",
             "path": "EngineAssets/Models/Sponza/ceiling_1stfloor_02_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_1stfloor_02_sm3",
             "path": "EngineAssets/Models/Sponza/ceiling_1stfloor_02_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_1stfloor_02_sm4",
             "path": "EngineAssets/Models/Sponza/ceiling_1stfloor_02_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "columns_1stfloor_01_sm0",
             "path": "EngineAssets/Models/Sponza/columns_1stfloor_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "columns_1stfloor_01_sm1",
             "path": "EngineAssets/Models/Sponza/columns_1stfloor_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "columns_1stfloor_02_sm0",
             "path": "EngineAssets/Models/Sponza/columns_1stfloor_02_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "columns_1stfloor_02_sm1",
             "path": "EngineAssets/Models/Sponza/columns_1stfloor_02_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "columns_1stfloor_03_sm0",
             "path": "EngineAssets/Models/Sponza/columns_1stfloor_03_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "columns_1stfloor_03_sm1",
             "path": "EngineAssets/Models/Sponza/columns_1stfloor_03_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "columns_1stfloor_04_sm0",
             "path": "EngineAssets/Models/Sponza/columns_1stfloor_04_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "columns_1stfloor_04_sm1",
             "path": "EngineAssets/Models/Sponza/columns_1stfloor_04_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "columns_1stfloor_05_sm0",
             "path": "EngineAssets/Models/Sponza/columns_1stfloor_05_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "columns_1stfloor_05_sm1",
             "path": "EngineAssets/Models/Sponza/columns_1stfloor_05_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "exterior_sm0",
             "path": "EngineAssets/Models/Sponza/exterior_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "exterior_sm1",
             "path": "EngineAssets/Models/Sponza/exterior_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "exterior_sm2",
             "path": "EngineAssets/Models/Sponza/exterior_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "floor_1stfloor_01_sm0",
             "path": "EngineAssets/Models/Sponza/floor_1stfloor_01_sm0.fbx",
             "need_tangent": true,
-            "support_raytracing" : true
-
+"support_raytracing" : true
         },
         {
             "name": "floor_1stfloor_01_sm1",
             "path": "EngineAssets/Models/Sponza/floor_1stfloor_01_sm1.fbx",
             "need_tangent": true,
-            "support_raytracing" : true
+"support_raytracing" : true
         },
         {
             "name": "floor_1stfloor_01_sm2",
             "path": "EngineAssets/Models/Sponza/floor_1stfloor_01_sm2.fbx",
             "need_tangent": true,
-            "support_raytracing" : true
+"support_raytracing" : true
         },
         {
             "name": "floor_1stfloor_01_sm3",
             "path": "EngineAssets/Models/Sponza/floor_1stfloor_01_sm3.fbx",
             "need_tangent": true,
-            "support_raytracing" : true
+"support_raytracing" : true
         },
         {
             "name": "lamp_1stfloor_entrance_sm0",
             "path": "EngineAssets/Models/Sponza/lamp_1stfloor_entrance_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "lamp_1stfloor_entrance_sm1",
             "path": "EngineAssets/Models/Sponza/lamp_1stfloor_entrance_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "lamp_1stfloor_entrance_sm2",
             "path": "EngineAssets/Models/Sponza/lamp_1stfloor_entrance_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "lamps_1stfloor_00_sm0",
             "path": "EngineAssets/Models/Sponza/lamps_1stfloor_00_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "lamps_1stfloor_00_sm1",
             "path": "EngineAssets/Models/Sponza/lamps_1stfloor_00_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "lamps_1stfloor_00_sm2",
             "path": "EngineAssets/Models/Sponza/lamps_1stfloor_00_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "lionhead_sm0",
             "path": "EngineAssets/Models/Sponza/lionhead_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_01_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_doors_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_01_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_doors_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_01_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_doors_01_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_01_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_doors_01_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_02_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_doors_02_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_02_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_doors_02_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_02_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_doors_02_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_03_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_doors_03_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_03_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_doors_03_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_03_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_doors_03_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_04_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_doors_04_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_04_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_doors_04_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_04_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_doors_04_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_05_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_doors_05_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_05_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_doors_05_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_05_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_doors_05_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_06_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_doors_06_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_06_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_doors_06_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_06_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_doors_06_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_07_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_doors_07_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_07_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_doors_07_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_07_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_doors_07_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_08_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_doors_08_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_08_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_doors_08_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_08_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_doors_08_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_09_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_doors_09_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_09_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_doors_09_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_09_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_doors_09_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_09_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_doors_09_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_10_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_doors_10_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_10_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_doors_10_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_10_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_doors_10_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_10_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_doors_10_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_10_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_doors_10_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_doors_10_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_doors_10_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_stones_01_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_stones_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_1stfloor_01_sm0",
             "path": "EngineAssets/Models/Sponza/walls_1stfloor_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_1stfloor_01_sm1",
             "path": "EngineAssets/Models/Sponza/walls_1stfloor_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_1stfloor_01_sm2",
             "path": "EngineAssets/Models/Sponza/walls_1stfloor_01_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_1stfloor_01_sm3",
             "path": "EngineAssets/Models/Sponza/walls_1stfloor_01_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_1stfloor_02_sm0",
             "path": "EngineAssets/Models/Sponza/walls_1stfloor_02_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_1stfloor_02_sm1",
             "path": "EngineAssets/Models/Sponza/walls_1stfloor_02_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_1stfloor_02_sm2",
             "path": "EngineAssets/Models/Sponza/walls_1stfloor_02_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "wood_door_sm0",
             "path": "EngineAssets/Models/Sponza/wood_door_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "wood_door_sm1",
             "path": "EngineAssets/Models/Sponza/wood_door_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "wooden_parts_sm0",
             "path": "EngineAssets/Models/Sponza/wooden_parts_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "wooden_parts_sm1",
             "path": "EngineAssets/Models/Sponza/wooden_parts_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "wooden_parts_sm2",
             "path": "EngineAssets/Models/Sponza/wooden_parts_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "wooden_parts_sm3",
             "path": "EngineAssets/Models/Sponza/wooden_parts_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_wall_2ndfloor_sm0",
             "path": "EngineAssets/Models/Sponza/arch_wall_2ndfloor_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_wall_2ndfloor_sm1",
             "path": "EngineAssets/Models/Sponza/arch_wall_2ndfloor_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "arch_wall_2ndfloor_sm2",
             "path": "EngineAssets/Models/Sponza/arch_wall_2ndfloor_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_2ndfloor_sm0",
             "path": "EngineAssets/Models/Sponza/ceiling_2ndfloor_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_2ndfloor_sm1",
             "path": "EngineAssets/Models/Sponza/ceiling_2ndfloor_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_2ndfloor_sm2",
             "path": "EngineAssets/Models/Sponza/ceiling_2ndfloor_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_2ndfloor_sm3",
             "path": "EngineAssets/Models/Sponza/ceiling_2ndfloor_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ceiling_2ndfloor_sm4",
             "path": "EngineAssets/Models/Sponza/ceiling_2ndfloor_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_01_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_01_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_01_sm2",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_01_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_02_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_02_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_02_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_02_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_02_sm2",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_02_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_02_sm3",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_02_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_03_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_03_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_03_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_03_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_03_sm2",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_03_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_03_sm3",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_03_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_04_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_04_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_04_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_04_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_04_sm2",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_04_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_04_sm3",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_04_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_05_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_05_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_05_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_05_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_05_sm2",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_05_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_06_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_06_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_06_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_06_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_06_sm2",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_06_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_06_sm3",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_06_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_07_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_07_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_07_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_07_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_07_sm2",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_07_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_08_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_08_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_08_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_08_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_08_sm2",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_08_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_09_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_09_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_09_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_09_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_10_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_10_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_10_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_10_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_11_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_11_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_11_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_11_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_12_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_12_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_12_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_12_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_13_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_13_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_13_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_13_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_14_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_14_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_14_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_14_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_15_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_15_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_15_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_15_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_16_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_16_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_16_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_16_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_16_sm2",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_16_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_17_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_17_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_17_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_17_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_17_sm2",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_17_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_18_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_18_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_18_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_18_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_19_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_19_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_19_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_19_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_20_sm0",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_20_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "column_2ndfloor_20_sm1",
             "path": "EngineAssets/Models/Sponza/column_2ndfloor_20_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "lamps_2ndfloor_01_sm0",
             "path": "EngineAssets/Models/Sponza/lamps_2ndfloor_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "lamps_2ndfloor_01_sm1",
             "path": "EngineAssets/Models/Sponza/lamps_2ndfloor_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "lamps_2ndfloor_01_sm2",
             "path": "EngineAssets/Models/Sponza/lamps_2ndfloor_01_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_01_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_01_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_01_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_01_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_01_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_01_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_01_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_01_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_01_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_01_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_02_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_02_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_02_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_02_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_02_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_02_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_02_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_02_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_02_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_02_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_02_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_02_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_04_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_04_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_04_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_04_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_04_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_04_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_04_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_04_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_04_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_04_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_05_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_05_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_05_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_05_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_05_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_05_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_05_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_05_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_05_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_05_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_05_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_05_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_06_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_06_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_06_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_06_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_06_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_06_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_06_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_06_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_06_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_06_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_06_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_06_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_07_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_07_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_07_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_07_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_07_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_07_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_07_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_07_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_07_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_07_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_08_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_08_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_08_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_08_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_08_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_08_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_08_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_08_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_08_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_08_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_08_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_08_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_09_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_09_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_09_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_09_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_09_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_09_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_09_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_09_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_09_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_09_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_09_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_09_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_10_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_10_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_10_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_10_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_10_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_10_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_10_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_10_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_10_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_10_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_10_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_10_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_11_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_11_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_11_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_11_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_11_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_11_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_11_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_11_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_11_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_11_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_11_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_11_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_12_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_12_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_12_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_12_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_12_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_12_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_12_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_12_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_12_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_12_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_12_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_12_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_13_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_13_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_13_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_13_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_13_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_13_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_13_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_13_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_13_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_13_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_13_sm5",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_13_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_14_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_14_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_14_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_14_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_14_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_14_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_14_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_14_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_14_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_14_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_15_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_15_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_15_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_15_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_15_sm2",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_15_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_15_sm3",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_15_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_door_2ndfloor_15_sm4",
             "path": "EngineAssets/Models/Sponza/ornament_door_2ndfloor_15_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_stones_2ndfloor_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_stones_2ndfloor_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "stonewalls_2ndfloor_01_sm0",
             "path": "EngineAssets/Models/Sponza/stonewalls_2ndfloor_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "stonewalls_2ndfloor_01_sm1",
             "path": "EngineAssets/Models/Sponza/stonewalls_2ndfloor_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "stonewalls_2ndfloor_01_sm2",
             "path": "EngineAssets/Models/Sponza/stonewalls_2ndfloor_01_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "stonewalls_2ndfloor_02_sm0",
             "path": "EngineAssets/Models/Sponza/stonewalls_2ndfloor_02_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "stonewalls_2ndfloor_02_sm1",
             "path": "EngineAssets/Models/Sponza/stonewalls_2ndfloor_02_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_01_sm0",
             "path": "EngineAssets/Models/Sponza/orn_windows_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_01_sm1",
             "path": "EngineAssets/Models/Sponza/orn_windows_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_01_sm2",
             "path": "EngineAssets/Models/Sponza/orn_windows_01_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_01_sm3",
             "path": "EngineAssets/Models/Sponza/orn_windows_01_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_02_sm0",
             "path": "EngineAssets/Models/Sponza/orn_windows_02_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_02_sm1",
             "path": "EngineAssets/Models/Sponza/orn_windows_02_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_02_sm2",
             "path": "EngineAssets/Models/Sponza/orn_windows_02_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_02_sm3",
             "path": "EngineAssets/Models/Sponza/orn_windows_02_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_03_sm0",
             "path": "EngineAssets/Models/Sponza/orn_windows_03_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_03_sm1",
             "path": "EngineAssets/Models/Sponza/orn_windows_03_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_03_sm2",
             "path": "EngineAssets/Models/Sponza/orn_windows_03_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_03_sm3",
             "path": "EngineAssets/Models/Sponza/orn_windows_03_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_04_sm0",
             "path": "EngineAssets/Models/Sponza/orn_windows_04_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_04_sm1",
             "path": "EngineAssets/Models/Sponza/orn_windows_04_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_04_sm2",
             "path": "EngineAssets/Models/Sponza/orn_windows_04_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_04_sm3",
             "path": "EngineAssets/Models/Sponza/orn_windows_04_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_05_sm0",
             "path": "EngineAssets/Models/Sponza/orn_windows_05_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_05_sm1",
             "path": "EngineAssets/Models/Sponza/orn_windows_05_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_05_sm2",
             "path": "EngineAssets/Models/Sponza/orn_windows_05_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_05_sm3",
             "path": "EngineAssets/Models/Sponza/orn_windows_05_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_06_sm0",
             "path": "EngineAssets/Models/Sponza/orn_windows_06_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_06_sm1",
             "path": "EngineAssets/Models/Sponza/orn_windows_06_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_06_sm2",
             "path": "EngineAssets/Models/Sponza/orn_windows_06_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_07_sm0",
             "path": "EngineAssets/Models/Sponza/orn_windows_07_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_07_sm1",
             "path": "EngineAssets/Models/Sponza/orn_windows_07_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_07_sm2",
             "path": "EngineAssets/Models/Sponza/orn_windows_07_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_08_sm0",
             "path": "EngineAssets/Models/Sponza/orn_windows_08_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_08_sm1",
             "path": "EngineAssets/Models/Sponza/orn_windows_08_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "orn_windows_08_sm2",
             "path": "EngineAssets/Models/Sponza/orn_windows_08_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_roof_sm0",
             "path": "EngineAssets/Models/Sponza/ornament_roof_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "ornament_roof_sm1",
             "path": "EngineAssets/Models/Sponza/ornament_roof_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_01_sm0",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_01_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_01_sm1",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_01_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_02_sm0",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_02_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_02_sm1",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_02_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_05_sm0",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_05_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_05_sm1",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_05_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_05_sm2",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_05_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_05_sm3",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_05_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_05_sm4",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_05_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_05_sm5",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_05_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_05_sm6",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_05_sm6.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_06_sm0",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_06_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_06_sm1",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_06_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_06_sm2",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_06_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_06_sm3",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_06_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_07_sm0",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_07_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_07_sm1",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_07_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_08_sm0",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_08_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_08_sm1",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_08_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_09_sm0",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_09_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_09_sm1",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_09_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_10_sm0",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_10_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "roof_floor_03_10_sm1",
             "path": "EngineAssets/Models/Sponza/roof_floor_03_10_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "sponza_ornament_sm0",
             "path": "EngineAssets/Models/Sponza/sponza_ornament_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_floor_03_sm0",
             "path": "EngineAssets/Models/Sponza/walls_floor_03_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_floor_03_sm1",
             "path": "EngineAssets/Models/Sponza/walls_floor_03_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_floor_03_sm2",
             "path": "EngineAssets/Models/Sponza/walls_floor_03_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_floor_03_sm3",
             "path": "EngineAssets/Models/Sponza/walls_floor_03_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "walls_floor_03_sm4",
             "path": "EngineAssets/Models/Sponza/walls_floor_03_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm0",
             "path": "EngineAssets/Models/Sponza/master_material_sm0.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm1",
             "path": "EngineAssets/Models/Sponza/master_material_sm1.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm2",
             "path": "EngineAssets/Models/Sponza/master_material_sm2.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm3",
             "path": "EngineAssets/Models/Sponza/master_material_sm3.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm4",
             "path": "EngineAssets/Models/Sponza/master_material_sm4.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm5",
             "path": "EngineAssets/Models/Sponza/master_material_sm5.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm6",
             "path": "EngineAssets/Models/Sponza/master_material_sm6.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm7",
             "path": "EngineAssets/Models/Sponza/master_material_sm7.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm8",
             "path": "EngineAssets/Models/Sponza/master_material_sm8.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm9",
             "path": "EngineAssets/Models/Sponza/master_material_sm9.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm10",
             "path": "EngineAssets/Models/Sponza/master_material_sm10.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm11",
             "path": "EngineAssets/Models/Sponza/master_material_sm11.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm12",
             "path": "EngineAssets/Models/Sponza/master_material_sm12.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm13",
             "path": "EngineAssets/Models/Sponza/master_material_sm13.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm14",
             "path": "EngineAssets/Models/Sponza/master_material_sm14.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm15",
             "path": "EngineAssets/Models/Sponza/master_material_sm15.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm16",
             "path": "EngineAssets/Models/Sponza/master_material_sm16.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm17",
             "path": "EngineAssets/Models/Sponza/master_material_sm17.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm18",
             "path": "EngineAssets/Models/Sponza/master_material_sm18.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm19",
             "path": "EngineAssets/Models/Sponza/master_material_sm19.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm20",
             "path": "EngineAssets/Models/Sponza/master_material_sm20.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm21",
             "path": "EngineAssets/Models/Sponza/master_material_sm21.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm22",
             "path": "EngineAssets/Models/Sponza/master_material_sm22.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm23",
             "path": "EngineAssets/Models/Sponza/master_material_sm23.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm24",
             "path": "EngineAssets/Models/Sponza/master_material_sm24.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm25",
             "path": "EngineAssets/Models/Sponza/master_material_sm25.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm26",
             "path": "EngineAssets/Models/Sponza/master_material_sm26.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         },
         {
             "name": "master_material_sm27",
             "path": "EngineAssets/Models/Sponza/master_material_sm27.fbx",
-            "need_tangent": true
+            "need_tangent": true,
+"support_raytracing" : true
         }
     ],
     "texture": [

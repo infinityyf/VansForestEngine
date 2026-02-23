@@ -1,6 +1,9 @@
 #ifndef COMMON_GLSL_INCLUDED
 #define COMMON_GLSL_INCLUDED
 
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
 #define PI 3.1415936
 #define TWO_PI 6.28318530718
 #define FOUR_PI 12.566370614359172
@@ -469,5 +472,12 @@ HiZTraceResult TraceHiZ_UV(
 
     return HiZTraceResult(false, vec2(0.0), 0.0);
 }
+
+// --- 新增：ReSTIR 蓄水池 Buffer ---
+struct ReservoirData 
+{
+    vec4 state;   // x: w_sum (权重和), y: M (样本数), z: W (最终权重), w: sampleIndex (选中的索引)
+    vec4 radiance; // rgb: radiance (选中的颜色), w: padding
+};
 
 #endif

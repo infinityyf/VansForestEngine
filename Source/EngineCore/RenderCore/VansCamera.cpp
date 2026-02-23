@@ -117,10 +117,16 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     m_CameraData.CameraDirection  = glm::vec4(-view_matrix[2]);
     m_CameraData.LastPrevViewMatrix = m_CameraData.LastViewMatrix;
     m_CameraData.LastPrevProjectionMatrix = m_CameraData.LastProjectionMatrix;
+    m_CameraData.LastPrevVPMatrix = m_CameraData.LastVPMatrix;
+
     m_CameraData.LastViewMatrix = m_CameraData.ViewMatrix;
     m_CameraData.LastProjectionMatrix = m_CameraData.ProjectionMatrix;
+    m_CameraData.LastVPMatrix = m_CameraData.VPMatrix;
+
     m_CameraData.ViewMatrix       = view_matrix;
     m_CameraData.ProjectionMatrix = jitteredProj;
+    m_CameraData.VPMatrix = jitteredProj * view_matrix;
+
     m_CameraData.InverseViewMatrix       = glm::inverse(view_matrix);
     m_CameraData.InverseProjectionMatrix = glm::inverse(jitteredProj);
     m_CameraData.ScreenParams     = glm::vec4(width, height, 1.0f / width, 1.0f / height);

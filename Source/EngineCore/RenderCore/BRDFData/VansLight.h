@@ -1,5 +1,5 @@
 #pragma once
-#include "../VansCommonUtils.h"
+#include "../../ScriptCore/VansCommonUtils.h"
 #include "../VulkanCore/VansVKBuffer.h"
 #include <vector>
 using namespace VansGraphics;
@@ -13,8 +13,8 @@ namespace VansGraphics
 		SPOT = 2
 	};
 
-	//±£Ö¤16×Ö½Ú¶ÔÆë
-	//CPUºÍGPUÉÏ±£³ÖÒ»ÖÂ
+	//ï¿½ï¿½Ö¤16ï¿½Ö½Ú¶ï¿½ï¿½ï¿½
+	//CPUï¿½ï¿½GPUï¿½Ï±ï¿½ï¿½ï¿½Ò»ï¿½ï¿½
 	struct alignas(16) VansDirectionalLight
 	{
 		glm::vec3				m_Direction;

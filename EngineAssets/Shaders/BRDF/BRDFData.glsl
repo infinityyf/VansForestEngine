@@ -8,13 +8,28 @@
     #define PBRDataSetBind 4
 #endif
 
-layout(set=PBRDataSetBind, binding=0) uniform MaterialData
+// 1. 定义材质结构体 (注意对齐)
+struct MaterialPayload
 {
     vec4 albedo;
     float roughness;
     float metallic;
     float ao;
+    float padding; // 显式填充：vec4(16) + 3*float(12) = 28。数组元素需要按最大成员(16)对齐，因此补齐到32。
 };
+
+// layout(set=PBRDataSetBind, binding=0) uniform MaterialData
+// {
+//     vec4 albedo;
+//     float roughness;
+//     float metallic;
+//     float ao;
+// };
+
+layout(set=PBRDataSetBind, binding=0, std430) readonly buffer MaterialData
+{
+    MaterialPayload materials[];
+} materialDataBuffer;
 
 
 #if !defined(PBRLutSetBind)

@@ -62,6 +62,9 @@
     <Filter Include="EngineCore\RenderCore\TerrainCore">
       <UniqueIdentifier>{d6145a3e-cf8a-4146-987f-da547ef20ed9}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\PhysicsCore">
+      <UniqueIdentifier>{eaf1286b-794d-4d1d-b61b-7cf7da65388c}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -130,8 +133,8 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VansCamera.h">
       <Filter>EngineCore\RenderCore</Filter>
     </ClInclude>
-    <ClInclude Include="Source\EngineCore\RenderCore\VansCommonUtils.h">
-      <Filter>EngineCore\RenderCore</Filter>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansCommonUtils.h">
+      <Filter>EngineCore\ScriptCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VansGraphicsBuffer.h">
       <Filter>EngineCore\RenderCore</Filter>
@@ -172,8 +175,8 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VansRenderNode.h">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClInclude>
-    <ClInclude Include="Source\EngineCore\RenderCore\VansTransform.h">
-      <Filter>EngineCore\RenderCore\RenderComponent</Filter>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansTransform.h">
+      <Filter>EngineCore\ScriptCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
@@ -277,6 +280,27 @@
     <ClInclude Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.h">
       <Filter>EngineCore\RenderCore\TerrainCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\Util\VansJobSystem.h">
+      <Filter>EngineCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollider.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsCore.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansRigidBody.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysics.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl">
@@ -368,8 +392,8 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansTexture.cpp">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClCompile>
-    <ClCompile Include="Source\EngineCore\RenderCore\VansTransform.cpp">
-      <Filter>EngineCore\RenderCore\RenderComponent</Filter>
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansTransform.cpp">
+      <Filter>EngineCore\ScriptCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VansRenderNode.cpp">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
@@ -445,6 +469,24 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp">
       <Filter>EngineCore\RenderCore\TerrainCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\Util\VansJobSystem.cpp">
+      <Filter>EngineCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollider.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysics.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansRigidBody.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

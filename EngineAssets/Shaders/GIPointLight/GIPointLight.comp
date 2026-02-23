@@ -13,23 +13,18 @@ layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
 layout( set = 1, binding = 0, std430 ) buffer hitPositionBuffer
 {
-    vec4 hitPosition[];
+    f16vec4 hitPosition[];
 } hitPositionInfoBuffer;
 
 layout( set = 1, binding = 1, std430 ) buffer hitNormalBuffer
 {
-    vec4 hitNormal[];
+    f16vec4 hitNormal[];
 } hitNormalInfoBuffer;
 
 layout( set = 1, binding = 2, std430 ) buffer directLightResult
 {
-    vec4 directLight[];
+    f16vec4 directLight[];
 } directLightBuffer;
-
-layout( set = 1, binding = 3, std430 ) buffer indirectLightResult
-{
-    vec4 indirectLight[];
-} indirectLightBuffer;
 
 
 //miss 结果
@@ -50,8 +45,13 @@ layout( set = 1, binding = 9 ) uniform sampler2D punctualShadowMap;
 
 layout( set = 1, binding = 10, std430 ) buffer pbrDataBuffer
 {
-    vec4 albedoRoughness[];
+    f16vec4 albedoRoughness[];
 } pbrInfo;
+
+// layout( set = 1, binding = 11, std430 ) buffer ReservoirBuffer
+// {
+//     ReservoirData reservoirs[];
+// } reservoirInfo;
 
 layout(push_constant) uniform PushConstants 
 {
@@ -62,6 +62,18 @@ layout(push_constant) uniform PushConstants
     vec4 originParams;
     vec4 frameParams;
 } pushConstants;
+
+// 简单的随机数生成器 (Tiny Encryption Algorithm)
+uint tea(uint val0, uint val1) 
+{
+    uint v0 = val0; uint v1 = val1; uint s0 = 0;
+    for(uint n = 0; n < 16; n++) {
+        s0 += 0x9e3779b9;
+        v0 += ((v1 << 4) + 0xa341316c) ^ (v1 + s0) ^ ((v1 >> 5) + 0xc8013ea4);
+        v1 += ((v0 << 4) + 0xad90777d) ^ (v0 + s0) ^ ((v0 >> 5) + 0x7e95761e);
+    }
+    return v0;
+}
 
 vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal, vec3 origin, vec3 size)
 {
@@ -149,7 +161,100 @@ void main()
     float solideAngle = 4.0 * PI / float(sampleCount);
     vec3 sampleCenter = (groupOrigin + 0.5 * vec3(originStride,originStride,originStride) + vec3(probeIndex) * originStride);
     
-    for(int hitIndex = 0; hitIndex < sampleCount; hitIndex++)
+    // //使用蓄水池算法更新采样
+    // // 1. 初始化随机种子
+    // uint seed = tea(uint(bufferIndex), uint(pushConstants.frameParams.x));
+
+    // // 2. 读取历史蓄水池
+    // ReservoirData reservoir = reservoirInfo.reservoirs[bufferIndex];
+
+    // // 3. 时序钳制 (Temporal Clamping)
+    // // 限制历史样本数量，防止历史权重过大导致新样本无法进入（减少鬼影和滞后）
+    // const float kMaxHistory = 128.0;
+    // if (reservoir.state.y > kMaxHistory) 
+    // {
+    //     float ratio = kMaxHistory / reservoir.state.y;
+    //     reservoir.state.x *= ratio; // 缩放 w_sum
+    //     reservoir.state.y = kMaxHistory; // 重置 M
+    // }
+
+    // // 4. 生成当前帧的候选样本 (随机选择一个方向)
+    // int candidateIndex = int(seed % uint(sampleCount));
+
+    // // 5. 计算候选样本的 Radiance
+    // vec3 candidateRadiance = vec3(0.0);
+    // {
+    //     vec3 rayDirection = SampleSphere(candidateIndex, sampleCount);
+    //     int resultIndex = bufferOffset + candidateIndex;
+    //     vec4 hitPos = hitPositionInfoBuffer.hitPosition[resultIndex];
+    //     vec4 hitNrm = hitNormalInfoBuffer.hitNormal[resultIndex];
+
+    //     if(hitPos.w < 0.5)
+    //     {
+    //         // Miss: 天空盒
+    //         vec3 envColor = texture(environmentMap, rayDirection).rgb * 5;
+    //         candidateRadiance = envColor;
+    //     }
+    //     else
+    //     {
+    //         // Hit: 计算光照
+    //         vec4 albedoRoughness = pbrInfo.albedoRoughness[resultIndex];
+    //         float hitDistance = length(hitPos.xyz - sampleCenter);
+    //         float radius = hitDistance * solideAngle;
+
+    //         // 直接光
+    //         vec3 directDiffuse = vec3(0);
+    //         CalculateDirectDiffuse(hitPos.xyz, hitNrm.xyz, shadowMap, punctualShadowMap, radius, albedoRoughness, directDiffuse);
+            
+    //         // 间接光
+    //         vec3 inDirectDiffuse = CalculateSHDiffuse(hitPos.xyz + hitNrm.xyz * originStride * 0.5, hitNrm.xyz, groupOrigin, vec3(originSize));
+            
+    //         candidateRadiance = directDiffuse + inDirectDiffuse;
+    //     }
+    // }
+
+    // // 6. RIS 更新 (Resampled Importance Sampling)
+    // // 目标 PDF (p_hat) 通常取亮度
+    // float p_hat_candidate = dot(candidateRadiance, vec3(0.2126, 0.7152, 0.0722));
+    
+    // // 权重 w = p_hat / source_pdf
+    // // 因为我们是均匀随机选择，source_pdf = 1/sampleCount，是常数，所以 w 正比于 p_hat
+    // float w_candidate = p_hat_candidate;
+
+    // // 更新蓄水池状态
+    // reservoir.state.x += w_candidate; // Update w_sum
+    // reservoir.state.y += 1.0;         // Update M
+
+    // // 决定是否替换当前样本
+    // float r2 = float((seed >> 16) & 0xFFFF) / 65536.0;
+    // if (r2 < (w_candidate / reservoir.state.x)) 
+    // {
+    //     reservoir.state.w = float(candidateIndex); // 更新选中的索引
+    //     reservoir.radiance = vec4(candidateRadiance, 1.0); // 更新选中的 Radiance
+    // }
+
+    // // 7. 计算最终权重 W
+    // // W = w_sum / (M * p_hat_selected)
+    // float p_hat_selected = dot(reservoir.radiance.rgb, vec3(0.2126, 0.7152, 0.0722));
+    // if (p_hat_selected > 0.0) {
+    //     reservoir.state.z = reservoir.state.x / (reservoir.state.y * p_hat_selected) * 4 * PI;
+    // } else {
+    //     reservoir.state.z = 0.0;
+    // }
+
+    // // 8. 写回蓄水池
+    // reservoirInfo.reservoirs[bufferIndex] = reservoir;
+
+    // 分四帧更新所有方向
+    // 注意：必须配合上面的空间分片(kNumFrames=8)进行错频，否则同一批探针永远只算同一个方向切片
+    // 逻辑：每8帧(完成一次所有探针的空间遍历)后，切换下一个方向切片
+    int dirSliceIndex = (int(pushConstants.frameParams.x) / kNumFrames) % 16;
+    
+    // 计算当前帧需要计算的采样范围
+    int startSample = (sampleCount * dirSliceIndex) / 16;
+    int endSample = (sampleCount * (dirSliceIndex + 1)) / 16;
+
+    for(int hitIndex = startSample; hitIndex < endSample; hitIndex++)
     {
         vec3 rayDirection = SampleSphere(hitIndex,sampleCount);
 
@@ -160,8 +265,7 @@ void main()
         {
             //这里需要根据太阳角度实施修改天空颜色和强度
             vec3 envColor = texture(environmentMap, rayDirection).rgb * 5;
-            directLightBuffer.directLight[resultIndex] = vec4(0,0,0,1);
-            indirectLightBuffer.indirectLight[resultIndex] = vec4(envColor, 1);
+            directLightBuffer.directLight[resultIndex] = f16vec4(envColor, 1);
             continue;
         }
 
@@ -173,8 +277,7 @@ void main()
         //计算当前点的直接光diffse
         vec3 directDiffuse = vec3(0);
         CalculateDirectDiffuse(hitPos.xyz,hitNrm.xyz, shadowMap, punctualShadowMap,radius, albedoRoughness, directDiffuse);
-        directLightBuffer.directLight[resultIndex] = vec4(directDiffuse, 1.0);
-
+    
         // //计算当前点的间接漫反射
         // vec3 inDirectDiffuse = vec3(0);
         // //计算当前点在GI区域内的uvw
@@ -196,6 +299,6 @@ void main()
 
         //计算当前点的间接漫反射
         vec3 inDirectDiffuse = CalculateSHDiffuse(hitPos.xyz + hitNrm.xyz * originStride * 0.5, hitNrm.xyz,groupOrigin,vec3(originSize));
-        indirectLightBuffer.indirectLight[resultIndex] = vec4(inDirectDiffuse, 1.0);
+        directLightBuffer.directLight[resultIndex] = f16vec4(directDiffuse + inDirectDiffuse, 1.0);
     }
 }

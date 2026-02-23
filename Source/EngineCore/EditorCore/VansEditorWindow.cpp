@@ -3,14 +3,18 @@
 #include "../RenderCore/VulkanCore/VansGUIVulkanBackEnd.h"
 #include "../RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include "../RenderCore/VansCamera.h"
+#include "../RenderCore/VansScene.h"
 #include "../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../VansTimer.h"
+#include "../PhysicsCore/VansPhysics.h"
 #include "Windows/VansHierachyWindow.h"
 #include "Windows/VansLightWindow.h"
 #include "Windows/VansProjectWindow.h"
 #include "Windows/VansSceneWindow.h"
 #include "Windows/VansInspectorWindow.h"
 #include "Windows/VansGBufferWindow.h"
+
+#include "../Util/VansJobSystem.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
@@ -70,24 +74,35 @@ VansGraphics::VansGBufferWindow* VansGraphics::VansEditorWindow::m_GBufferWindow
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
 
-bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height ,GRAPHICS_API api)
+bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height, GRAPHICS_API api)
 {
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
     {
         return false;
     }
-        
+
     // Create window with Vulkan context
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
     m_VansEditorWindow.m_VansGraphicsHandle = glfwCreateWindow(width, height, "ForestEngine", nullptr, nullptr);
 
     if (!CheckGraphicsAPI(api))
-    { 
+    {
         m_VansEditorWindow.m_VansGraphicsHandle = nullptr;
         return false;
     }
+
+    // Register Physics Pre-Step Callback for Vehicle
+    VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback([](float dt) {
+        if (m_Scene && m_Scene->m_Vehicle)
+        {
+            // This runs on the physics thread!
+            // Thread safety note: ensure m_Scene->m_Vehicle is not deleted while this runs.
+            // Since shutdown stops physics first, this should be safe.
+            m_Scene->m_Vehicle->Step(dt);
+        }
+    });
 
     //创建功能窗口
     CreateWindowComponents();
@@ -104,28 +119,28 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
     m_LightWindow = new VansLightWindow();
     m_Windows.push_back(m_LightWindow);
 
-	m_ProjectWindow = new VansProjectWindow();
-	m_Windows.push_back(m_ProjectWindow);
+    m_ProjectWindow = new VansProjectWindow();
+    m_Windows.push_back(m_ProjectWindow);
 
     m_SceneWindow = new VansSceneWindow();
     m_Windows.push_back(m_SceneWindow);
 
     m_InspectorWindow = new VansInspectorWindow();
-	m_Windows.push_back(m_InspectorWindow);
+    m_Windows.push_back(m_InspectorWindow);
 
-	m_GBufferWindow = new VansGBufferWindow();
-	m_Windows.push_back(m_GBufferWindow);
+    m_GBufferWindow = new VansGBufferWindow();
+    m_Windows.push_back(m_GBufferWindow);
 }
 
 void VansGraphics::VansEditorWindow::KeyBoardInputCallBack(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-    if (action == GLFW_PRESS || action == GLFW_REPEAT) 
+    if (action == GLFW_PRESS || action == GLFW_REPEAT)
     {
         //将消息传递给相机
         for (auto camera : m_Cameras)
         {
-			camera->HandleKeyboardInput(key, scancode, action, mods, VansGraphics::VansTimer::GetDeltaTime());
-		}
+            camera->HandleKeyboardInput(key, scancode, action, mods, VansGraphics::VansTimer::GetDeltaTime());
+        }
     }
 }
 
@@ -166,7 +181,7 @@ void VansGraphics::VansEditorWindow::MouseClickCallBack(GLFWwindow* window, int 
         {
             camera->SetRightMouseDown(isDown);
         }
-	}
+    }
 }
 
 void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
@@ -229,7 +244,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
             {
                 if (ImGui::MenuItem("GbufferWindow"))
                 {
-					m_GBufferWindowOpen = !m_GBufferWindowOpen;
+                    m_GBufferWindowOpen = !m_GBufferWindowOpen;
                 }
                 ImGui::EndMenu();
             }
@@ -250,7 +265,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
             window->ShowWindow(*device);
         }
 
-		ImGui::End();
+        ImGui::End();
     }
 
 
@@ -262,7 +277,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
 
     device->BeginUIRenderPass();
     ImGui_ImplVulkan_RenderDrawData(draw_data, *static_cast<VkCommandBuffer*>(device->GetNativeCommandBuffer()));
-	device->EndUIRenderPass();
+    device->EndUIRenderPass();
 }
 
 void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& camera)
@@ -311,15 +326,39 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             }
         }
 
+        Vans::VansJobSystem::Get().ProcessMainThreadJobs();
+
         //更新时间
         VansGraphics::VansTimer::Update();
+
+        // Step Vehicle Physics - MOVED TO PHYSICS THREAD via Callback
+        if (m_Scene && m_Scene->m_Vehicle)
+        {
+            // Basic vehicle control inputs (hardcoded for test)
+            // Inputs are lightweight and can be set from main thread (atomic/simple types)
+            if (glfwGetKey(m_VansEditorWindow.m_VansGraphicsHandle, GLFW_KEY_W) == GLFW_PRESS)
+                m_Scene->m_Vehicle->SetInputs(1.0f, 0.0f, 0.0f, 0.0f);
+            else if (glfwGetKey(m_VansEditorWindow.m_VansGraphicsHandle, GLFW_KEY_S) == GLFW_PRESS)
+                m_Scene->m_Vehicle->SetInputs(0.0f, 0.5f, 0.0f, 0.0f); // Brake
+            else
+                m_Scene->m_Vehicle->SetInputs(0.0f, 0.0f, 0.0f, 0.0f); // Coast (no brake, no throttle)
+        }
+
+        // Synchronize physics transforms to render transforms
+        // IMPORTANT: This uses PxSceneReadLock internally to prevent race conditions
+        // with the background physics simulation thread
+        VansEngine::VansPhysicsSystem& physics = VansEngine::VansPhysicsSystem::GetInstance();
+        if (physics.IsSimulationRunning() && m_Scene)
+        {
+            m_Scene->UpdatePhysicsTransforms();
+        }
 
         // Rendering, 这里会结束renderpass
         camera.Rendering();
 
         //m_ScriptContext.VansScriptUpdate();
         //UI Pass
-		m_SceneWindow->RegistCamera(&camera);
+        m_SceneWindow->RegistCamera(&camera);
         DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));
 
         //结束录制
@@ -347,6 +386,10 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
 void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
 {
+    // Unregister Physics Callback on shutdown to avoid calling into destroyed objects
+    VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback(nullptr);
+    VansEngine::VansPhysicsSystem::GetInstance().StopSimulation(); // Ensure thread stops
+
     ImGui::DestroyContext();
 
     glfwDestroyWindow(m_VansEditorWindow.m_VansGraphicsHandle);

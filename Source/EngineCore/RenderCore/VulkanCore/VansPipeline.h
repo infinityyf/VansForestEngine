@@ -217,6 +217,8 @@ namespace VansGraphics
 		static bool MergePipelineCache(VkDevice& logic_device, std::vector<VkPipelineCache>& source_pipeline_caches, VkPipelineCache& merged_cache);
 	
 		static VkPipeline CurrentValidGraphicsPipeline;
+
+		VkPipeline GetNativePipeline() { return m_GraphicsPipeline; }
 	};
 
 	class VansVKComputePipeline

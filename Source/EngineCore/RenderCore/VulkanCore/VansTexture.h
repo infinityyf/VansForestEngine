@@ -21,6 +21,28 @@ namespace VansGraphics
 		HIGH_PRES_32 = 2
 	};
 
+	struct TextureUploadInfo
+	{
+		int width = 0;
+		int height = 0;
+		int channels = 0;
+		int mipLevels = 1;
+
+		VkFormat format = VK_FORMAT_UNDEFINED;
+		bool isCompressed = false;
+
+		// For uncompressed data
+		std::vector<uint8_t> rawData;
+
+		// For compressed data
+		struct MipData {
+			int width;
+			int height;
+			std::vector<uint8_t> data;
+		};
+		std::vector<MipData> mips;
+	};
+
 
 
 	class VansTexture : public VansAsset
@@ -36,6 +58,15 @@ namespace VansGraphics
 			bool need_mip = false, 
 			TexturePrecision texture_precesion = LOW_PRES_8, 
 			int import_channel = 4);
+		
+		static TextureUploadInfo PrepareTextureCPU(
+			std::string texture_path,
+			bool isSRGB,
+			bool useCompress,
+			bool need_mip,
+			TexturePrecision texture_precision,
+			int import_channel
+		);
 
 		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
 
@@ -57,11 +88,13 @@ namespace VansGraphics
 
 		std::vector<unsigned char> m_ImageData;
 
-		VkFormat CheckTextureFormat(int channel, bool isHdr = false, bool isSRGB = false);
+		static VkFormat CheckTextureFormat(int channel, bool isHdr = false, bool isSRGB = false);
 
-		VkFormat CheckTextureHighPrecisionFormat(int channel);
+		static VkFormat CheckTextureHighPrecisionFormat(int channel);
 
-		VkFormat CheckTextureMidPrecisionFormat(int channel);
+		static VkFormat CheckTextureMidPrecisionFormat(int channel);
+
+		void* ReadTextureFile(std::string texture_path, TexturePrecision texture_precision, int& bytes_per_channel, int& width, int& height, int& num_components, int import_channel);
 
 	private:
 

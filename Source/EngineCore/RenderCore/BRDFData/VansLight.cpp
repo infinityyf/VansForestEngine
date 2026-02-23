@@ -67,11 +67,11 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData()
 void VansGraphics::VansLightManager::UpdateLightCPUData()
 {
 	int spotLightCount = m_SpotLights.size();
-	for (int spotLightIndex = 0; spotLightIndex < spotLightCount; spotLightIndex++)
-	{
+	//for (int spotLightIndex = 0; spotLightIndex < spotLightCount; spotLightIndex++)
+	//{
 
-		m_SpotLights[spotLightIndex].m_Position.x = std::sin(VansTimer::GetFrameTime() * 0.5f) * 6;
-	}
+	//	m_SpotLights[spotLightIndex].m_Position.x = std::sin(VansTimer::GetFrameTime() * 0.5f) * 6;
+	//}
 
 	auto vansConfigration = VansConfigration::GetInstance();
 	float punctualShadowSize = vansConfigration->GetPunctualShadowMapWidth();
@@ -100,7 +100,31 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 	offset += size;
 	size = sizeof(VansSpotLight) * m_MaxSpotLightCount;
 	m_LightBuffer.SetBufferData(m_SpotLights.data(), offset, size);
-	
+
+}
+
+void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_device)
+{
+	uint32_t bufferSize = sizeof(uint32_t) * 4 + sizeof(VansDirectionalLight) * m_MaxDirectionLightCount +
+		sizeof(VansPointLight) * m_MaxPointLightCount +
+		sizeof(VansSpotLight) * m_MaxSpotLightCount + sizeof(float) * 4;
+	m_LightBuffer.CreatVulkanBuffer(
+		logic_device, bufferSize, VK_FORMAT_R32_SFLOAT,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+	);
+
+	//鍒涘缓璧勬簮
+	VkDescriptorSetLayoutBinding lightBufferBinding =
+	{
+		VansVKDescriptorManager::m_LightsBufferSetBinding,
+		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		1,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
+		nullptr
+	};
+	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ lightBufferBinding }, m_LightDataDescriptorSetLayout);
+	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_LightDataDescriptorSetLayout }, m_LightDataDescriptorSets);
 
 	//update descriptor
 	VansVKDescriptorManager::GetInstance()->ResetState();
@@ -120,30 +144,6 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 		}
 	);
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
-}
-
-void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_device)
-{
-	uint32_t bufferSize = sizeof(uint32_t) * 4 + sizeof(VansDirectionalLight) * m_MaxDirectionLightCount +
-		sizeof(VansPointLight) * m_MaxPointLightCount +
-		sizeof(VansSpotLight) * m_MaxSpotLightCount + sizeof(float) * 4;
-	m_LightBuffer.CreatVulkanBuffer(
-		logic_device, bufferSize, VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-	);
-
-	//创建资源
-	VkDescriptorSetLayoutBinding lightBufferBinding =
-	{
-		VansVKDescriptorManager::m_LightsBufferSetBinding,
-		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		1,
-		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
-		nullptr
-	};
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ lightBufferBinding }, m_LightDataDescriptorSetLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_LightDataDescriptorSetLayout }, m_LightDataDescriptorSets);
 }
 
 VansGraphics::VansLightManager::~VansLightManager()

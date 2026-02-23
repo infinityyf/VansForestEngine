@@ -39,7 +39,7 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 	m_VansVKBufferMemory = VK_NULL_HANDLE;
 
 	bool needBufferAddressable = usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-	//¾ö¶¨ÁËbufferµÄ·ÃÎÊÀàÐÍ
+	//å†³å®šäº†bufferçš„è®¿é—®ç±»åž‹
 	bool allocateResult = VansVKMemoryManager::GetInstance()->AllocateMemory(memory_requirements, m_VansVKBufferMemory, memory_properties, needBufferAddressable);
 	if (!allocateResult)
 	{
@@ -62,7 +62,6 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 		return false;
 	}
 
-	if (!needBufferAddressable)
 	{
 		//create buffer view: how shader to view the buffer data
 		//set the format

@@ -1,5 +1,5 @@
 #pragma once
-#include "VansCommonUtils.h"
+#include "../ScriptCore/VansCommonUtils.h"
 
 namespace VansGraphics
 {
@@ -21,17 +21,17 @@ namespace VansGraphics
 		uint32_t m_RenderHeight;
 
 	public :
-		//³õÊ¼»¯±»äÖÈ¾µÄÊý¾Ý
+		//ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 		virtual void BeforeRendering() = 0;
 
 		virtual void Rendering() = 0;
 
 		virtual void Present() = 0;
 
-		//ÊÍ·Å±»äÖÈ¾Êý¾Ý
+		//ï¿½Í·Å±ï¿½ï¿½ï¿½È¾ï¿½ï¿½ï¿½ï¿½
 		virtual void AfterRendering() = 0;
 
-		//»ñÈ¡µ×²ãdeviceÖ¸Õë
+		//ï¿½ï¿½È¡ï¿½×²ï¿½deviceÖ¸ï¿½ï¿½
 		virtual void* GetNativeGraphicsDevice() = 0;
 
 		virtual void* GetNativeCommandBuffer() = 0;

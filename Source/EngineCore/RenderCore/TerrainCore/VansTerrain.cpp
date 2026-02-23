@@ -1,6 +1,7 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansTerrain.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
+#include "../../Configration/VansConfigration.h"
 #include <iostream>
 #include <cmath>
 
@@ -30,8 +31,10 @@ namespace VansGraphics
         m_TerrainAlbedoMap->LoadTexture(device->GetCommandBuffer(), albedoMapPath, true, true);
 
         // 2. 创建基础 Patch Mesh (16x16 Grid)
+		auto vansConfigration = VansConfigration::GetInstance();
+		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		m_BasePatchMesh = new VansMesh();
-		m_BasePatchMesh->LoadMesh(device->GetLogicDevice(), "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Models/Terrain/TerrainPatch16x16.obj", false, false);
+		m_BasePatchMesh->LoadMesh(device->GetLogicDevice(),device->GetGraphicsQueue(), &(device->GetCommandBuffer()), (projectRoot + "EngineAssets/Models/Terrain/TerrainPatch16x16.obj").c_str(), false);
 
         //添加input的描述支持instance绘制
         m_TerrainInstanceInputAttributeDescriptions = 
@@ -99,8 +102,10 @@ namespace VansGraphics
 
         // 4. 编译 Shader
         m_TerrainShader = new VansGraphicsShader();
-        m_TerrainShader->InitShader(device->GetLogicDevice(), "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/Shaders/Terrain");
+        m_TerrainShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/Terrain").c_str());
 		//m_TerrainShader->SetPolygonMode(VK_POLYGON_MODE_LINE);
+        m_TerrainShadowShader = new VansGraphicsShader();
+        m_TerrainShadowShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/Terrain/Shadow").c_str());
 
         // 5. 创建 Descriptor Set (绑定高度图)
         // Layout: Binding 0 = HeightMap Sampler
@@ -360,6 +365,41 @@ namespace VansGraphics
 
         cmd.BindGraphicsPipeline(*m_TerrainShader->GetGraphicsPipeline());
         
+        // 7. Draw Indexed Indirect or Instanced
+        vkCmdDrawIndexed(cmd.GetVKCommandBuffer(), m_BasePatchMesh->GetIndexCount(), (uint32_t)m_InstanceDataCPU.size(), 0, 0, 0);
+    }
+    void VansTerrain::DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets)
+    {
+        if (m_InstanceDataCPU.empty()) return;
+
+        // 4. 绑定 Vertex Buffer (Mesh) - Binding 0
+        VkBuffer vertexBuffers[] = { m_BasePatchMesh->GetVertexBufferParameter().Buffer };
+        VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(cmd.GetVKCommandBuffer(), 0, 1, vertexBuffers, offsets);
+
+        // 5. 绑定 Instance Buffer - Binding 3 (对应 Shader 中的 layout location 3, 4)
+        // 注意：这里需要你的 Pipeline VertexInputState 定义了 Binding 1 为 Per-Instance Rate
+        // 假设我们在 Pipeline 创建时将 Binding 1 设为 Instance Input
+        VkBuffer instanceBuffers[] = { m_InstanceBuffer.GetNativeBuffer() };
+        VkDeviceSize instanceOffsets[] = { 0 };
+        // 这里的 binding index 取决于你的 Pipeline 定义，通常 Mesh 是 0，Instance 是 1
+        vkCmdBindVertexBuffers(cmd.GetVKCommandBuffer(), 1, 1, instanceBuffers, instanceOffsets);
+
+        // 6. 绑定 Index Buffer
+        vkCmdBindIndexBuffer(cmd.GetVKCommandBuffer(), m_BasePatchMesh->GetIndexBufferParameter().Buffer, 0, VK_INDEX_TYPE_UINT32);
+
+        //记录mesh 的bind data，这里需要手动设置index 的input 描述
+        globalState.vertexInputAttributeDescriptions = &m_BasePatchMesh->m_VertexInputAttributeDescriptions;
+        globalState.vertexInputBindingDescriptions = &m_BasePatchMesh->m_VertexInputBindingDescriptions;
+
+        //apply shader，确认pipeline以及创建完毕
+        cmd.EnsureGraphicsShader(*m_TerrainShadowShader, globalState, layouts);
+
+        cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_TerrainShadowShader, 0, sets, {});
+
+
+        cmd.BindGraphicsPipeline(*m_TerrainShadowShader->GetGraphicsPipeline());
+
         // 7. Draw Indexed Indirect or Instanced
         vkCmdDrawIndexed(cmd.GetVKCommandBuffer(), m_BasePatchMesh->GetIndexCount(), (uint32_t)m_InstanceDataCPU.size(), 0, 0, 0);
     }

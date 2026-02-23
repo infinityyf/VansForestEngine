@@ -9,7 +9,7 @@
 #include "../RayTracingCore/VansRayTracing.h"
 #include <vector>
 
-#include "../VansCommonUtils.h"
+#include "../../ScriptCore/VansCommonUtils.h"
 #include "../FidelityFXCore/VansFSR.h"
 namespace VansGraphics
 {
@@ -161,6 +161,10 @@ namespace VansGraphics
 
 		//记录全局的渲染参数，需要和相机绑定
 		GlobalStateData m_globalRenderStateData;
+
+		void PreparePBRMaterialData();
+
+		void PrepareInstanceTransformData();
 
 		void PrepareSkyRenderData();
 

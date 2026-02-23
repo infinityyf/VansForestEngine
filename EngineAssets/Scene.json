@@ -85,7 +85,7 @@
                     "name" : "DirectionalLight",
                     "type" : 0,
                     "color" : [1.0, 1.0, 1.0],
-                    "intensity" : 10.0,
+                    "intensity" : 50.0,
                     "direction" : [1.0, -1.0, 0.0]
                 },
                 {
@@ -149,8 +149,8 @@
             "depthTest" : true,
             "depthWrite" : true,
             "depthCompareOp" : 3,
-            "cullMode" : 2
-
+            "cullMode" : 2,
+            "support_push_constant" : 8
         },
         {
             "name" : "Postprocess",
@@ -190,7 +190,8 @@
             "depthTest" : true,
             "depthWrite" : true,
             "depthCompareOp" : 3,
-            "cullMode" : 0
+            "cullMode" : 0,
+            "support_push_constant" : 8
         },
         {
             "name" : "PunctualShadow",
@@ -199,7 +200,7 @@
             "depthWrite" : true,
             "depthCompareOp" : 3,
             "cullMode" : 0,
-            "support_push_constant" : 8
+            "support_push_constant" : 16
         }
     ],
 
@@ -403,7 +404,7 @@
     ],
     "subScene" : [
         {
-            "name" : "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/SceneDust.json"
+            "name" : "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/SceneSponza3.json"
         }
     ]
 }

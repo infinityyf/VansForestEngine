@@ -14,16 +14,16 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 1, rgba32f) uniform image3D resultImage;
 layout(set = 0, binding = 2, std430) buffer hitPositionBuffer
 {
-    vec4 hitPosition[];
+    f16vec4 hitPosition[];
 } hitPositionInfoBuffer;
 
 layout(set = 0, binding = 6, std430) buffer hitNormalBuffer
 {
-    vec4 hitNormal[];
+    f16vec4 hitNormal[];
 } hitNormalInfoBuffer;
 
 layout(set = 0, binding = 8, std430) buffer hitAlbedoRoughnessBuffer {
-    vec4 albedoRoughness[];
+    f16vec4 albedoRoughness[];
 } hitAlbedoRoughnessInfoBuffer;
 
 layout(push_constant) uniform PushConstants 
@@ -73,9 +73,9 @@ void main()
         hitCount += hitResult.positionHit.w;
 
         //记录命中点
-        hitPositionInfoBuffer.hitPosition[bufferOffset + rayIndex] = hitResult.positionHit;
-        hitNormalInfoBuffer.hitNormal[bufferOffset + rayIndex] = hitResult.normalHit;
-        hitAlbedoRoughnessInfoBuffer.albedoRoughness[bufferOffset + rayIndex] = hitResult.albedoRoughness;
+        hitPositionInfoBuffer.hitPosition[bufferOffset + rayIndex] = f16vec4(hitResult.positionHit);
+        hitNormalInfoBuffer.hitNormal[bufferOffset + rayIndex] = f16vec4(hitResult.normalHit);
+        hitAlbedoRoughnessInfoBuffer.albedoRoughness[bufferOffset + rayIndex] = f16vec4(hitResult.albedoRoughness);
     }
 
     imageStore(resultImage, pixelCoord, vec4(1 - hitCount/sampleCount, 0, 0, 0));

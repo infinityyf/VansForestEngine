@@ -1,4 +1,6 @@
 #include "VansConfigration.h"
+#include <Windows.h>
+#include <filesystem>
 
 VansConfigration*  VansConfigration::instance = nullptr;
 
@@ -9,6 +11,20 @@ VansConfigration::VansConfigration()
 	PunctualShadowMapWidth = 2048;
 	PunctualShadowMapHeight = 2048;
 	SupportRayTracing = true;
+
+	// Get executable path and compute project root
+	char exePath[MAX_PATH];
+	GetModuleFileNameA(NULL, exePath, MAX_PATH);
+	std::filesystem::path executablePath(exePath);
+	// Go up from executable to project root (typically executable is in x64/Debug or x64/Release)
+	ProjectRootPath = executablePath.parent_path().parent_path().parent_path().string();
+	// Normalize path separators to forward slashes for consistency
+	for (auto& c : ProjectRootPath) {
+		if (c == '\\') c = '/';
+	}
+	if (!ProjectRootPath.empty() && ProjectRootPath.back() != '/') {
+		ProjectRootPath += "/ForestEngine/";
+	}
 }
 
 VansConfigration* VansConfigration::GetInstance()

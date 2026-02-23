@@ -16,13 +16,20 @@ layout( location = 2 ) out vec3 tangent_ws;
 layout( location = 3 ) out vec3 bitangent_ws;
 layout( location = 4 ) out vec3 position_world;
 
-
+layout( push_constant ) uniform MaterialPushConsts
+{
+    int materialIndex;
+    int objectIndex;
+} materialConst;
 
 void main() 
 {
-    gl_Position = ProjectionMatrix * ViewMatrix * ModelMatrix * position;
+    int objectIndex = materialConst.objectIndex;
+    mat4 ModelMatrix = ModelBuffer.transforms[objectIndex].ModelMatrix;
+    mat4 NormalMatrix = ModelBuffer.transforms[objectIndex].NormalMatrix;
 
-    mat3 normalMatrix = mat3(transpose(inverse(ModelMatrix)));
+    gl_Position = VPMatrix * ModelMatrix * position;
+    mat3 normalMatrix = mat3(NormalMatrix);
     normal_ws    = normalize(normalMatrix * normal);
     tangent_ws   = normalize(normalMatrix * tangent);
     bitangent_ws = normalize(normalMatrix * bitangent);

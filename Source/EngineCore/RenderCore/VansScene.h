@@ -2,8 +2,11 @@
 #include "VansRenderNode.h"
 #include "VansCamera.h"
 #include "BRDFData/VansLight.h"
+#include "../PhysicsCore/VansPhysicsNode.h"
+#include "../PhysicsCore/VansPhysicsVehicle.h"
 #include <vector>
 #include <map>
+#include <set>
 
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
@@ -17,6 +20,8 @@ namespace VansGraphics
 
 	class VansScene
 	{
+	public:
+		void CreateNodeDescriptorSets();
 	private:
 
 		VansCamera* m_Camera;
@@ -34,6 +39,7 @@ namespace VansGraphics
 		VansAsset* GetMaterialAsset(const std::string& name);
 
 		void RegistRenderNode(VansRenderNode* renderNode, RenderNodeType type);
+
 
 	public:
 
@@ -66,6 +72,23 @@ namespace VansGraphics
 
 		std::vector<VansRenderNode*> m_PunctualShadowRenderNodes;
 
+		// Physics nodes
+		std::vector<VansEngine::VansPhysicsNode*> m_PhysicsNodes;
+
+		// Vehicle
+		VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
+		// Initialize the vehicle in the scene from JSON-specified parameters.
+		// Render node name bindings are stored on the vehicle itself.
+		void InitVehicle(VansEngine::VansPhysicsSystem* physicsSystem, const glm::vec3& position,
+			const std::string& bodyRenderNodeName, const std::vector<std::string>& tireRenderNodeNames);
+
+	public:
+
+		VansVKBuffer m_InstanceTransformDataBuffer;
+		std::vector<ModelDataStruct> m_InstanceTransformData;
+		VkDescriptorSetLayout m_GlobalTransformDataSetLayout;
+		std::vector<VkDescriptorSet> m_GlobalTransformDataDescriptorSets;
+
 	public:
 		//editor
 		VansRenderNode* m_SelectedNode;
@@ -77,6 +100,11 @@ namespace VansGraphics
 
 		void LoadRenderNodes(VkDevice& device, json& render_node);
 
+		void LoadPhysicsNodes(json& physics_node);
+
+		// Find a render node by name across all render node lists
+		VansRenderNode* FindRenderNodeByName(const std::string& name);
+
 		void AddTerrainNode(VansVKDevice* device);
 
 		void AddDeferredNode(VkDevice& device);
@@ -86,6 +114,12 @@ namespace VansGraphics
 		void UnLoadScene();
 
 		void UpdateSceneData();
+
+		void UpdatePhysicsTransforms();
+
+	private:
+
+		void UpdateTransformRenderData();
 
 	private:
 
@@ -111,7 +145,7 @@ namespace VansGraphics
 
 		void DrawOpaqueNodes();
 
-		void DrawTerrainNode();
+		void DrawTerrainNode(bool shadowPass = false);
 
 		void DrawTransParentNodes();
 

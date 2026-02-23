@@ -1,5 +1,5 @@
 #pragma once
-#include "VansCommonUtils.h"
+#include "../ScriptCore/VansCommonUtils.h"
 #include "VansGraphicsDevice.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
@@ -13,10 +13,13 @@ namespace VansGraphics
         glm::vec4	CameraDirection;
         glm::mat4x4 ViewMatrix;
         glm::mat4x4 ProjectionMatrix;
+        glm::mat4x4 VPMatrix;
         glm::mat4x4 LastViewMatrix;
         glm::mat4x4 LastProjectionMatrix;
+        glm::mat4x4 LastVPMatrix;
         glm::mat4x4 LastPrevViewMatrix;
         glm::mat4x4 LastPrevProjectionMatrix;
+        glm::mat4x4 LastPrevVPMatrix;
         glm::mat4x4 InverseViewMatrix;
         glm::mat4x4 InverseProjectionMatrix;
         //resolution, 1/resolution
