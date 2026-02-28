@@ -1,6 +1,5 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-#define CameraCBBind 0
 
 #include "../../Common/CameraData.glsl"
 #include "../../Common/Common.glsl"

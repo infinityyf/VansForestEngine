@@ -1,9 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-#define ModelCBBind 0
-#define LightCBBind 1
-
 #include "../Common/ModelData.glsl"
 #include "../Lights/LightsData.glsl"
 

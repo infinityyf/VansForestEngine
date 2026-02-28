@@ -1,4 +1,4 @@
-#include "../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
@@ -8,6 +8,8 @@
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
+#include "VulkanCore/VansVKDescriptorManager.h"
+#include "VulkanCore/VansDescriptorSetLayouts.h"
 
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
 #include <iostream>
@@ -139,6 +141,209 @@ void VansGraphics::VansScene::CreateNodeDescriptorSets()
     }
 }
 
+// ============================================================
+// Global Descriptor Set (Set 0) — shared across all render nodes
+// Contains: Camera, Lights, Materials, IBL, Bindless textures
+// ============================================================
+void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
+{
+    auto descManager = VansVKDescriptorManager::GetInstance();
+
+    // Create global layout via factory
+    m_GlobalDescriptorSetLayout = VansDescriptorSetLayoutFactory::CreateGlobalLayout(device);
+
+    // Allocate global descriptor set
+    std::vector<VkDescriptorSet> sets;
+    descManager->AllocateDescriptorSet({ m_GlobalDescriptorSetLayout }, sets);
+    m_GlobalDescriptorSet = sets[0];
+
+    // Create object layout (Set 2: Transform SSBO)
+    m_ObjectDescriptorSetLayout = VansDescriptorSetLayoutFactory::CreateObjectLayout(device);
+    std::vector<VkDescriptorSet> objSets;
+    descManager->AllocateDescriptorSet({ m_ObjectDescriptorSetLayout }, objSets);
+    m_ObjectDescriptorSet = objSets[0];
+
+    // Write transform SSBO to the object set (binding 0)
+    descManager->ResetState();
+    descManager->m_BufferDescInfos.push_back(
+        {
+            m_ObjectDescriptorSet,
+            0, // OBJECT_BINDING_TRANSFORM_SSBO
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {
+                {
+                    m_InstanceTransformDataBuffer.GetNativeBuffer(),
+                    0,
+                    m_InstanceTransformDataBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
+    descManager->UpdateDescriptorSets();
+
+    // Create empty pass layout (Set 1) for passes with no per-pass resources
+    m_EmptyPassLayout = VansDescriptorSetLayoutFactory::CreatePassLayout_Empty(device);
+    std::vector<VkDescriptorSet> emptySets;
+    descManager->AllocateDescriptorSet({ m_EmptyPassLayout }, emptySets);
+    m_EmptyPassDescriptorSet = emptySets[0];
+
+    // Write all global resources into Set 0
+    UpdateGlobalDescriptorSet();
+}
+
+void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
+{
+    auto descManager = VansVKDescriptorManager::GetInstance();
+    descManager->ResetState();
+
+    // Binding 0: Camera UBO
+    descManager->m_BufferDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_CAMERA_UBO,
+            0,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            {
+                {
+                    m_Camera->m_CameraDataBuffer.GetNativeBuffer(),
+                    0,
+                    m_Camera->m_CameraDataBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
+
+    // Binding 1: Lights UBO
+    descManager->m_BufferDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_LIGHTS_UBO,
+            0,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            {
+                {
+                    m_LightManager.GetLightBuffer().GetNativeBuffer(),
+                    0,
+                    m_LightManager.GetLightBuffer().GetBufferSize()
+                }
+            }
+        }
+    );
+
+    // Binding 2: Material SSBO
+    descManager->m_BufferDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_MATERIAL_SSBO,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {
+                {
+                    m_MaterialManager.m_GlobalPBRDataBuffer.GetNativeBuffer(),
+                    0,
+                    m_MaterialManager.m_GlobalPBRDataBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
+
+    // Binding 3: BRDF LUT
+    descManager->m_ImageDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_BRDF_LUT,
+            0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {
+                {
+                    m_MaterialManager.m_BRDFIntegralLUT->GetImage().GetSampler(),
+                    m_MaterialManager.m_BRDFIntegralLUT->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                }
+            }
+        }
+    );
+
+    // Binding 4: Pre-convolved diffuse environment
+    descManager->m_ImageDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_PRECONV_DIFFUSE,
+            0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {
+                {
+                    m_MaterialManager.m_PreConvDiffuse->GetImage().GetSampler(),
+                    m_MaterialManager.m_PreConvDiffuse->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                }
+            }
+        }
+    );
+
+    // Binding 5: Pre-convolved specular environment
+    descManager->m_ImageDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_PRECONV_SPECULAR,
+            0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {
+                {
+                    m_MaterialManager.m_PreConvSpecular->GetImage().GetSampler(),
+                    m_MaterialManager.m_PreConvSpecular->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                }
+            }
+        }
+    );
+
+    // Binding 6: SH coefficients buffer
+    descManager->m_BufferDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_SH_COEFFICIENTS,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {
+                {
+                    m_MaterialManager.m_SkySHResultBuffer.GetNativeBuffer(),
+                    0,
+                    m_MaterialManager.m_SkySHResultBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
+
+    // Binding 50: Bindless PBR textures
+    auto& textures = m_MaterialManager.m_GlobalPBRTextures;
+    if (!textures.empty())
+    {
+        std::vector<VkDescriptorImageInfo> bindlessInfos;
+        bindlessInfos.reserve(textures.size());
+        for (auto* img : textures)
+        {
+            bindlessInfos.push_back({
+                img->GetSampler(),
+                img->GetImageView(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            });
+        }
+        descManager->m_ImageDescInfos.push_back(
+            {
+                m_GlobalDescriptorSet,
+                GLOBAL_BINDING_BINDLESS_TEXTURES,
+                0,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                bindlessInfos
+            }
+        );
+    }
+
+    descManager->UpdateDescriptorSets();
+}
+
 bool VansGraphics::VansScene::LoadScene(const char* path)
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
@@ -186,7 +391,7 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
     }
 
 
-    //����subscene�е���Դ
+    //加载subscene中的资源
     json subScenes = sceneData["subScene"];
     //load scene data frome subscenes path
     for (const auto& ss : subScenes)
@@ -197,7 +402,7 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         LoadSceneResource(subSceneData);
 
         json sceneNode = subSceneData["scene"];
-        //�������ù�ϵ����render node
+        //加载并配置关系的render node
         LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
         
         // Load physics nodes if present in subscene

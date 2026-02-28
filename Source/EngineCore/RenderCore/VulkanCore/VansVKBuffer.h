@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #if defined _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
 #elif defined __linux
@@ -50,7 +50,7 @@ namespace VansGraphics
 
 		void DestroyVulkanBuffer(VkDevice& logical_device);
 
-		//ÉèÖÃbuffer memory barrier
+		//è®¾ç½®buffer memory barrier
 		void SetBufferMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition);
 
 		bool SetBufferData(void* data, int offset, int size);

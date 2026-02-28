@@ -1,4 +1,4 @@
-#include "VansVKSurface.h"
+﻿#include "VansVKSurface.h"
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKMemoryManager.h"
 #include <iostream>

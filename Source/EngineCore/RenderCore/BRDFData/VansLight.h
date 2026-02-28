@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "../VulkanCore/VansVKBuffer.h"
 #include <vector>
@@ -13,8 +13,8 @@ namespace VansGraphics
 		SPOT = 2
 	};
 
-	//��֤16�ֽڶ���
-	//CPU��GPU�ϱ���һ��
+	//保证16字节对齐
+	//CPU和GPU上保持一致
 	struct alignas(16) VansDirectionalLight
 	{
 		glm::vec3				m_Direction;
@@ -73,6 +73,8 @@ namespace VansGraphics
 		std::vector<VkDescriptorSet> m_LightDataDescriptorSets;
 
 	public:
+		VansVKBuffer& GetLightBuffer() { return m_LightBuffer; }
+
 		void AddDirectionalLight(const VansDirectionalLight& light);
 
 		void AddPointLight(const VansPointLight& light);

@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include "GLFW/glfw3.h"
 namespace VansGraphics
 {
@@ -7,7 +7,7 @@ namespace VansGraphics
 		bool	swapChainRebuild : 1;
 	};
 
-	//»ù´¡´°¿Ú
+	//åŸºç¡€çª—å£
 	class VansBasicWindow
 	{
 	public:

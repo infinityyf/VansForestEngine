@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../VulkanCore/VansVKDevice.h"
 #include "../VulkanCore/VansTexture.h"
 #include "../VulkanCore/VansMesh.h"

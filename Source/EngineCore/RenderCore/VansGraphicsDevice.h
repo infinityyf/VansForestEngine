@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../ScriptCore/VansCommonUtils.h"
 
 namespace VansGraphics
@@ -21,17 +21,17 @@ namespace VansGraphics
 		uint32_t m_RenderHeight;
 
 	public :
-		//��ʼ������Ⱦ������
+		//初始化渲染资源
 		virtual void BeforeRendering() = 0;
 
 		virtual void Rendering() = 0;
 
 		virtual void Present() = 0;
 
-		//�ͷű���Ⱦ����
+		//释放渲染资源
 		virtual void AfterRendering() = 0;
 
-		//��ȡ�ײ�deviceָ��
+		//获取底层device指针
 		virtual void* GetNativeGraphicsDevice() = 0;
 
 		virtual void* GetNativeCommandBuffer() = 0;

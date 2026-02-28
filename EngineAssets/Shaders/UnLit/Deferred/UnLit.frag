@@ -16,7 +16,7 @@ layout( location = 4 ) in vec3 position_world;
 // layout( set=2, binding=2 ) uniform sampler2D metalMap;
 // layout( set=2, binding=3 ) uniform sampler2D roughnessMap;
 // layout( set=2, binding=4 ) uniform sampler2D aoMap;
-layout( set = 2, binding = 50 ) uniform sampler2D globalPBRTextures[];
+layout( set = 0, binding = 50 ) uniform sampler2D globalPBRTextures[];
 layout( push_constant ) uniform MaterialPushConsts
 {
     int materialIndex;

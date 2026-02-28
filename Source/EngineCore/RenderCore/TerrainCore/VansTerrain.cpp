@@ -1,4 +1,4 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansTerrain.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../../Configration/VansConfigration.h"
@@ -10,7 +10,7 @@ namespace VansGraphics
     VansTerrain::VansTerrain() {}
     VansTerrain::~VansTerrain() 
     {
-        // 清理资源逻辑 (略，需调用 DestroyVulkanBuffer 等)
+        // 清理资源逻辑 (略，需调用 DestroyVulkanBuffer)
         if(m_BasePatchMesh) delete m_BasePatchMesh;
         if(m_HeightMap) delete m_HeightMap;
         if (m_TerrainAlbedoMap) delete m_TerrainAlbedoMap;
@@ -22,7 +22,7 @@ namespace VansGraphics
     {
         m_Device = device;
 
-        // 1. 加载高度图
+        // 1. 鍔犺浇楂樺害鍥?
         m_HeightMap = new VansTexture();
         m_HeightMap->LoadTexture(device->GetCommandBuffer(), heightMapPath, false, false, false, MID_PRES_16,1); // Linear format for heightmap
 
@@ -90,7 +90,7 @@ namespace VansGraphics
         VkVertexInputBindingDescription m_VertexInputBindingDescription;
 
         // 3. 创建 Instance Buffer (Host Visible 用于频繁更新)
-        // 预估最大 Instance 数量：全部分裂约为 (2048/16)^2 = 16384。
+        // 预估最大Instance 数量：全部分裂约为(2048/16)^2 = 16384个
         VkDeviceSize bufferSize = sizeof(TerrainInstanceData) * 20000; 
         m_InstanceBuffer.CreatVulkanBuffer(
             device->GetLogicDevice(), 
@@ -130,7 +130,7 @@ namespace VansGraphics
         VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
             {
                 m_DescriptorSets[0],
-                VansVKDescriptorManager::m_SampleTexture0SetBinding,
+                PassBinding::TEXTURE_0,
                 0,
                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 {
@@ -145,7 +145,7 @@ namespace VansGraphics
         VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
             {
                 m_DescriptorSets[0],
-                VansVKDescriptorManager::m_SampleTexture1SetBinding,
+                PassBinding::TEXTURE_1,
                 0,
                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 {
@@ -161,13 +161,13 @@ namespace VansGraphics
         VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
     }
 
-    // 辅助函数：计算切比雪夫距离 (Chebyshev Distance)
-    // 返回点 (x, z) 到相机 (camX, camZ) 在 XZ 平面上的最大轴向距离
+    // 辅助函数：计算切比雪夫距离(Chebyshev Distance)
+    // 返回从(x, z) 到相机(camX, camZ) 在XZ 平面上的最大轴向距离
     float GetChebyshevDistance(float x, float z, const glm::vec3& camPos)
     {
         float dx = std::abs(x - camPos.x);
         float dz = std::abs(z - camPos.z);
-        // 如果需要考虑高度 (3D)，可以加入 dy
+        // 如果需要考虑高度 (3D)，可以加上dy
         // float dy = std::abs(0.0f - camPos.y); 
         // return std::max(std::max(dx, dz), dy);
         
@@ -182,8 +182,8 @@ namespace VansGraphics
     bool VansTerrain::ShouldSplit(const TerrainNode& node, const glm::vec3& camPos)
     {
         // 1. 吸附相机位置到当前节点大小的倍数
-        // 这样可以保证在同一个 node.size 的网格内，LOD 判定结果是一致的
-        // 避免相机微小移动导致的 LOD 闪烁
+        // 这样可以保证在同一个node.size 的网格内，LOD 判定结果是一致的
+        // 避免相机微小移动导致的LOD 闪烁
         float snappedCamX = SnapToGrid(camPos.x, node.size);
         float snappedCamZ = SnapToGrid(camPos.z, node.size);
         
@@ -204,7 +204,7 @@ namespace VansGraphics
         return false;
     }
 
-    // 辅助函数：检查指定位置如果存在一个 size 大小的节点，是否需要分裂
+    // 辅助函数：检查指定位置如果存在一个size 大小的节点，是否需要分裂
     bool CheckNodeSplit(float centerX, float centerZ, float size, const glm::vec3& camPos)
     {
         // 同样需要吸附，保持逻辑一致
@@ -220,7 +220,7 @@ namespace VansGraphics
 
     void VansTerrain::UpdateNode(const TerrainNode& node, const glm::vec3& camPos)
     {
-        // 如果已经是最小单元，或者不需要分裂 -> 渲染该节点
+        // 如果已经是最小单元，或者不需要分裂-> 渲染该节点
         if (node.size <= m_PatchGridSize || !ShouldSplit(node, camPos))
         {
             TerrainInstanceData data;
@@ -234,7 +234,7 @@ namespace VansGraphics
             float myCenterX = node.x + node.size * 0.5f;
             float myCenterZ = node.z + node.size * 0.5f;
             
-            // 父节点尺寸
+            // 鐖惰妭鐐瑰昂瀵?
             float parentSize = node.size * 2.0f;
 
             // 判断自己在父节点中的位置 (0: 左/上, 1: 右/下)
@@ -246,11 +246,11 @@ namespace VansGraphics
             bool isLeftChild = (gridX % 2 == 0);
             bool isTopChild  = (gridZ % 2 == 0);
 
-            // Lambda: 检查邻居是否比我粗糙 (即邻居的父节点没分裂)
+            // Lambda: 检查邻居是否比我粗糙(即邻居的父节点没分裂)
             auto CheckNeighborIsCoarser = [&](float neighborParentCenterX, float neighborParentCenterZ) -> bool {
                 // 检查该父节点是否分裂
-                // 如果分裂 (true) -> 邻居同级或更细 -> 不缝合
-                // 如果不分裂 (false) -> 邻居粗糙 -> 缝合
+                // 如果分裂 (true) -> 邻居同级或更细-> 不缝合
+                // 如果不分裂(false) -> 邻居粗糙 -> 缝合
                 return !CheckNodeSplit(neighborParentCenterX, neighborParentCenterZ, parentSize, camPos);
             };
 
@@ -261,9 +261,9 @@ namespace VansGraphics
                 if (isLeftChild) {
                     // 左边堂兄弟的父节点中心：当前中心 - size (向左跨越半个父节点身位)
                     // 几何推导：
-                    // 我是左孩子，我的中心是 ParentCenter - size/2
+                    // 我是左孩子，我的中心是ParentCenter - size/2
                     // 左边邻居是另一个父节点的右孩子，它的中心是 NeighborParentCenter + size/2
-                    // 距离 = size. 所以 NeighborParentCenter = MyCenter - size
+                    // 距离 = size. 所以NeighborParentCenter = MyCenter - size
                     if (CheckNeighborIsCoarser(myCenterX - node.size, myCenterZ)) {
                         stitchFlags |= 1;
                     }
@@ -322,7 +322,7 @@ namespace VansGraphics
     {
         m_InstanceDataCPU.clear();
 
-        // 从根节点开始遍历 (0,0, 2048)
+        // 从根节点开始遍历(0,0, 2048)
         TerrainNode root = { -m_TerrainSize*0.5f, -m_TerrainSize * 0.5f, m_TerrainSize, 0 };
         UpdateNode(root, camera->GetPosition());
 
@@ -343,11 +343,11 @@ namespace VansGraphics
         vkCmdBindVertexBuffers(cmd.GetVKCommandBuffer(), 0, 1, vertexBuffers, offsets);
 
         // 5. 绑定 Instance Buffer - Binding 3 (对应 Shader 中的 layout location 3, 4)
-        // 注意：这里需要你的 Pipeline VertexInputState 定义了 Binding 1 为 Per-Instance Rate
-        // 假设我们在 Pipeline 创建时将 Binding 1 设为 Instance Input
+        // 注意：这里需要你的Pipeline VertexInputState 定义了Binding 1 为Per-Instance Rate
+        // 假设我们在Pipeline 创建时将 Binding 1 设为 Instance Input
         VkBuffer instanceBuffers[] = { m_InstanceBuffer.GetNativeBuffer() };
         VkDeviceSize instanceOffsets[] = { 0 };
-        // 这里的 binding index 取决于你的 Pipeline 定义，通常 Mesh 是 0，Instance 是 1
+        // 这里的binding index 取决于你的Pipeline 定义，通常 Mesh 是0，Instance 是1
         vkCmdBindVertexBuffers(cmd.GetVKCommandBuffer(), 1, 1, instanceBuffers, instanceOffsets);
 
         // 6. 绑定 Index Buffer
@@ -378,11 +378,11 @@ namespace VansGraphics
         vkCmdBindVertexBuffers(cmd.GetVKCommandBuffer(), 0, 1, vertexBuffers, offsets);
 
         // 5. 绑定 Instance Buffer - Binding 3 (对应 Shader 中的 layout location 3, 4)
-        // 注意：这里需要你的 Pipeline VertexInputState 定义了 Binding 1 为 Per-Instance Rate
-        // 假设我们在 Pipeline 创建时将 Binding 1 设为 Instance Input
+        // 注意：这里需要你的Pipeline VertexInputState 定义了Binding 1 为Per-Instance Rate
+        // 假设我们在Pipeline 创建时将 Binding 1 设为 Instance Input
         VkBuffer instanceBuffers[] = { m_InstanceBuffer.GetNativeBuffer() };
         VkDeviceSize instanceOffsets[] = { 0 };
-        // 这里的 binding index 取决于你的 Pipeline 定义，通常 Mesh 是 0，Instance 是 1
+        // 这里的binding index 取决于你的Pipeline 定义，通常 Mesh 是0，Instance 是1
         vkCmdBindVertexBuffers(cmd.GetVKCommandBuffer(), 1, 1, instanceBuffers, instanceOffsets);
 
         // 6. 绑定 Index Buffer

@@ -16,9 +16,11 @@ namespace VansGraphics
 
 		void DrawRenderNodeDetail();
 
-		void DrawMaterialDetail(VansMaterial& material);
+		void DrawTransformDetail(VansRenderNode& node);
 
-		void DrawPBRMaterialParameters(VansBasePBRParam& param);
+		void DrawMaterialDetail(VansMaterial& material, int index = -1);
+
+		void DrawPBRMaterialParameters(VansBasePBRParam& param, int id = 0);
 
 		void DrawAtmosphereParameters(VansAtmospherePBRParam& param);
 

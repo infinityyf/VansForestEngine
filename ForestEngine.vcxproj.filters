@@ -121,6 +121,9 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDescriptorManager.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansDescriptorSetLayouts.h">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
@@ -283,6 +286,9 @@
     <ClInclude Include="Source\EngineCore\Util\VansJobSystem.h">
       <Filter>EngineCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\Util\VansInputManager.h">
+      <Filter>EngineCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollider.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
@@ -348,6 +354,9 @@
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDescriptorManager.cpp">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansDescriptorSetLayouts.cpp">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKImage.cpp">
@@ -471,6 +480,9 @@
       <Filter>EngineCore\RenderCore\TerrainCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\Util\VansJobSystem.cpp">
+      <Filter>EngineCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\Util\VansInputManager.cpp">
       <Filter>EngineCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollider.cpp">

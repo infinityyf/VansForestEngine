@@ -1,4 +1,4 @@
-#include "VansScriptContext.h"
+﻿#include "VansScriptContext.h"
 #include "../Configration/VansConfigration.h"
 #include <cstdlib>
 #include <string>

@@ -1,4 +1,3 @@
-
 #include "VansGUIVulkanBackEnd.h"
 #include "VansRenderPass.h"
 

@@ -5,7 +5,10 @@
 
 //brdf data set
 #if !defined(PBRDataSetBind)
-    #define PBRDataSetBind 4
+    #define PBRDataSetBind 0
+#endif
+#if !defined(PBRDataBinding)
+    #define PBRDataBinding 2
 #endif
 
 // 1. 定义材质结构体 (注意对齐)
@@ -26,21 +29,21 @@ struct MaterialPayload
 //     float ao;
 // };
 
-layout(set=PBRDataSetBind, binding=0, std430) readonly buffer MaterialData
+layout(set=PBRDataSetBind, binding=PBRDataBinding, std430) readonly buffer MaterialData
 {
     MaterialPayload materials[];
 } materialDataBuffer;
 
 
 #if !defined(PBRLutSetBind)
-    #define PBRLutSetBind 5
+    #define PBRLutSetBind 0
 #endif
 //intergration lut
-layout(set=PBRLutSetBind, binding=0) uniform sampler2D BRDFLUT;
+layout(set=PBRLutSetBind, binding=3) uniform sampler2D BRDFLUT;
 //pbr texture set
-layout(set=PBRLutSetBind, binding=1) uniform samplerCube PreConvDiffuseEnvironment;
-layout(set=PBRLutSetBind, binding=2) uniform samplerCube PreConvSpecularEnvironment;
-layout(set=PBRLutSetBind, binding=3) buffer shCoefficientsBuffer 
+layout(set=PBRLutSetBind, binding=4) uniform samplerCube PreConvDiffuseEnvironment;
+layout(set=PBRLutSetBind, binding=5) uniform samplerCube PreConvSpecularEnvironment;
+layout(set=PBRLutSetBind, binding=6) buffer shCoefficientsBuffer 
 {
     float shCoefficients[27];
 };

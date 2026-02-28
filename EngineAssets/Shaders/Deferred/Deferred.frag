@@ -1,8 +1,5 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-#define CameraCBBind 0
-#define LightCBBind 3
-#define PBRLutSetBind 4
 
 #include "../Lights/LightsData.glsl"
 #include "../BRDF/BRDFData.glsl"
@@ -14,18 +11,18 @@ layout(set = 1, binding = 2, input_attachment_index = 2) uniform subpassInput gb
 layout(set = 1, binding = 3, input_attachment_index = 3) uniform subpassInput gbufferInput2;
 layout(set = 1, binding = 4, input_attachment_index = 4) uniform subpassInput depthInput;
 
-layout(set = 2, binding = 0, rgba32f ) uniform image2D ssao;
-layout(set = 2, binding = 1) uniform sampler2D ssgi;
-layout(set = 2, binding = 2, rgba32f ) uniform image2D ssr;
-layout(set = 2, binding = 3) uniform sampler2D shadowMap;
-layout(set = 2, binding = 4) uniform sampler2D punctualShadowMap;
+layout(set = 1, binding = 5, rgba32f ) uniform image2D ssao;
+layout(set = 1, binding = 6) uniform sampler2D ssgi;
+layout(set = 1, binding = 7, rgba32f ) uniform image2D ssr;
+layout(set = 1, binding = 8) uniform sampler2D shadowMap;
+layout(set = 1, binding = 9) uniform sampler2D punctualShadowMap;
 // R通道球谐
-layout( set = 2, binding = 5 ) uniform sampler3D SHRCoeff;
+layout( set = 1, binding = 10 ) uniform sampler3D SHRCoeff;
 // B通道球谐
-layout( set = 2, binding = 6 ) uniform sampler3D SHGCoeff;
+layout( set = 1, binding = 11 ) uniform sampler3D SHGCoeff;
 // B通道球谐
-layout( set = 2, binding = 7 ) uniform sampler3D SHBCoeff;
-layout( set = 2, binding = 8 ) uniform sampler2D fogResult;
+layout( set = 1, binding = 12 ) uniform sampler3D SHBCoeff;
+layout( set = 1, binding = 13 ) uniform sampler2D fogResult;
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -119,10 +116,11 @@ void main()
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
     //outColor.rgb = lightResult.ambientSpecular;
-    //混合雾效
-    vec4 fogData = texture(fogResult, fragTexCoord);
-    float fogDensity = 0;//fogData.a;
-    outColor.rgb = mix(outColor.rgb, fogData.rgb, fogDensity);
+    //混合雾效  fogResult: rgb = in-scatter, a = opacity (1 - transmittance)
+    //vec4 fogData = texture(fogResult, fragTexCoord);
+    //float fogOpacity = fogData.a;
+    // Correct volumetric compositing: scene * transmittance + inscatter
+    //outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
     //outColor.rgb = brdfData.indirectDiffuse;
     //outColor.rgb = CalculateSHDiffuse(position_world, normal);
     outColor.a = 1;

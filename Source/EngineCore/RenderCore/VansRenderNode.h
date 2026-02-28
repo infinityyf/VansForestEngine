@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 //#include "VulkanCore/VansMesh.h"
 #include "VansMaterial.h"
@@ -83,13 +83,6 @@ namespace VansGraphics
 		bool m_DescriptorsetsDirty;
 
 		bool m_DescriptorsetsSetDone;
-
-		//统一被CreateDescriptorSets调用
-		void RegistCameraDescriptor(VansCamera* camera);
-
-		void RegistLightDescriptor(VansLightManager& lightManager);
-
-		void RegistPBRDataDescriptor(VansMaterialManager& materialManager);
 
 		bool CheckRenderNodeState();
 

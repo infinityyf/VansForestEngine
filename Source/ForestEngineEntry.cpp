@@ -18,7 +18,6 @@ using namespace VansEngine;
 bool InitializeEngineCore();
 bool InitializeGraphicsSystem();
 bool InitializePhysicsSystem();
-void CreatePhysicsTestObjects();
 void RunMainLoop(VansCamera& camera);
 void ShutdownEngine();
 
@@ -82,32 +81,6 @@ bool InitializePhysicsSystem()
 	return true;
 }
 
-void CreatePhysicsTestObjects()
-{
-	std::cout << "[ForestEngine] Creating physics test objects..." << std::endl;
-
-	VansPhysicsSystem& physics = VansPhysicsSystem::GetInstance();
-	PxPhysics* physicsSDK = physics.GetPhysics();
-	PxScene* physicsScene = physics.GetScene();
-	
-	// Create a ground plane (static)
-	PxRigidStatic* groundPlane = physicsSDK->createRigidStatic(PxTransform(PxVec3(0, -1, 0)));
-	PxMaterial* defaultMaterial = physicsSDK->createMaterial(0.5f, 0.5f, 0.6f);
-	PxRigidActorExt::createExclusiveShape(*groundPlane, PxBoxGeometry(100.0f, 0.1f, 100.0f), *defaultMaterial);
-	physicsScene->addActor(*groundPlane);
-	std::cout << "[ForestEngine]Ground plane created" << std::endl;
-	
-	// Create some dynamic boxes
-	for (int i = 0; i < 5; i++)
-	{
-		PxRigidDynamic* box = physicsSDK->createRigidDynamic(PxTransform(PxVec3(i * 2.0f, 10.0f + i * 3.0f, 0)));
-		PxShape* boxShape = PxRigidActorExt::createExclusiveShape(*box, PxBoxGeometry(0.5f, 0.5f, 0.5f), *defaultMaterial);
-		PxRigidBodyExt::updateMassAndInertia(*box, 1.0f);
-		physicsScene->addActor(*box);
-	}
-	std::cout << "[ForestEngine]Created 5 dynamic test boxes" << std::endl;
-}
-
 void RunMainLoop(VansCamera& camera)
 {
 	std::cout << "[ForestEngine] Starting main engine loop..." << std::endl;
@@ -117,9 +90,6 @@ void RunMainLoop(VansCamera& camera)
 
 	// Prepare for rendering
 	m_GraphicsDevice->BeforeRendering();
-
-	// Create physics test objects
-	CreatePhysicsTestObjects();
 
 	// Start physics simulation thread
 	VansPhysicsSystem::GetInstance().StartSimulation();

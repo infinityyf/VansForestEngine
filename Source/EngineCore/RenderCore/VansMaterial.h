@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "VulkanCore/VansShader.h"
 #include "VulkanCore/VansTexture.h"
@@ -97,6 +97,12 @@ namespace VansGraphics
 
 		VansTexture* m_SSGIResult;
 
+		// SSGI temporal accumulation: ping-pong history buffers
+		VansTexture* m_SSGITemporalA;		// history read
+		VansTexture* m_SSGITemporalB;		// history write (swap each frame)
+		VansTexture* m_SSGITemporalResult;	// points to the latest accumulated result
+		uint32_t     m_SSGITemporalFrame = 0;
+
 		VansTexture* m_HZBResult;
 
 		VansTexture* m_SSRHitInfo;
@@ -125,6 +131,12 @@ namespace VansGraphics
 	public:
 
 		VansComputeShader* m_SSGIShader;
+
+		// SSGI temporal accumulation shader & descriptors
+		VansComputeShader* m_SSGITemporalShader;
+		VkDescriptorSetLayout m_SSGITemporalSetLayout;
+		std::vector<VkDescriptorSet> m_SSGITemporalDescriptorSets; // [0]=frameA, [1]=frameB
+		VansVKBuffer m_SSGITemporalCBBuffer;
 
 		VansVKBuffer m_SSGICBBuffer;
 

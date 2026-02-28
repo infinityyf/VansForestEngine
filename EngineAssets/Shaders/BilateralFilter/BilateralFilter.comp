@@ -3,10 +3,14 @@
 
 #include "../Common/Common.glsl"
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-layout( set = 0, binding = 0 ) uniform sampler2D inputColor;
-layout( set = 0, binding = 1 ) uniform sampler2D inputDepth;
-layout( set = 0, binding = 2, rgba32f ) uniform image2D result;
+#define GROUP_SIZE 8
+#define MAX_RADIUS 8
+#define TILE_SIZE (GROUP_SIZE + 2 * MAX_RADIUS)
+
+layout(local_size_x = GROUP_SIZE, local_size_y = GROUP_SIZE, local_size_z = 1) in;
+layout( set = 1, binding = 0 ) uniform sampler2D inputColor;
+layout( set = 1, binding = 1 ) uniform sampler2D inputDepth;
+layout( set = 1, binding = 2, rgba32f ) uniform image2D result;
 
 layout(push_constant) uniform FilterParams 
 {
@@ -16,67 +20,77 @@ layout(push_constant) uniform FilterParams
     float depthThreshold;   // Maximum depth difference to consider
 };
 
+// Shared memory tile — cache color + depth to avoid redundant global reads
+shared vec4  tileColor[TILE_SIZE][TILE_SIZE];
+shared float tileDepth[TILE_SIZE][TILE_SIZE];
+
 void main() 
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 imgSize = textureSize(inputColor, 0);
-    
-    if (pixelCoord.x >= imgSize.x || pixelCoord.y >= imgSize.y) {
-        return;
-    }
-    
-    vec2 centerUV = (vec2(pixelCoord) + 0.5) / vec2(imgSize);
-    vec4 centerColor = texture(inputColor, centerUV);
-    float centerDepth = texture(inputDepth, centerUV).r;
-    
-    vec4 filteredColor = vec4(0.0);
-    float totalWeight = 0.0;
-    
-    // Bilateral filter kernel using depth for edge preservation
-    for (int dx = -radius; dx <= radius; dx++) 
+
+    // Tile origin in image space (top-left corner including apron)
+    ivec2 tileOrigin = ivec2(gl_WorkGroupID.xy) * GROUP_SIZE - radius;
+
+    // Each thread loads multiple texels to fill the shared tile (apron included)
+    int totalTilePixels = TILE_SIZE * TILE_SIZE;
+    int threadsPerGroup = GROUP_SIZE * GROUP_SIZE;
+    int localIdx = int(gl_LocalInvocationID.y) * GROUP_SIZE + int(gl_LocalInvocationID.x);
+
+    for (int t = localIdx; t < totalTilePixels; t += threadsPerGroup)
     {
-        for (int dy = -radius; dy <= radius; dy++) 
+        int ty = t / TILE_SIZE;
+        int tx = t - ty * TILE_SIZE;
+        ivec2 sampleCoord = clamp(tileOrigin + ivec2(tx, ty), ivec2(0), imgSize - 1);
+
+        tileColor[ty][tx] = texelFetch(inputColor, sampleCoord, 0);
+        tileDepth[ty][tx] = texelFetch(inputDepth, sampleCoord, 0).r;
+    }
+
+    barrier();
+
+    if (pixelCoord.x >= imgSize.x || pixelCoord.y >= imgSize.y)
+        return;
+
+    // Center pixel in shared memory coords
+    ivec2 center = ivec2(gl_LocalInvocationID.xy) + radius;
+
+    vec4  centerColor = tileColor[center.y][center.x];
+    float centerDepth = tileDepth[center.y][center.x];
+
+    // Precompute inverse sigma² terms
+    float invSigmaSpace2 = -0.5 / (sigmaSpace * sigmaSpace);
+    float invSigmaDepth2 = -0.5 / (sigmaDepth * sigmaDepth);
+
+    vec4  filteredColor = vec4(0.0);
+    float totalWeight   = 0.0;
+
+    int r = min(radius, MAX_RADIUS);
+
+    for (int dy = -r; dy <= r; dy++)
+    {
+        for (int dx = -r; dx <= r; dx++)
         {
-            ivec2 sampleCoord = pixelCoord + ivec2(dx, dy);
-            
-            // Skip out-of-bounds samples
-            if (sampleCoord.x < 0 || sampleCoord.x >= imgSize.x || 
-                sampleCoord.y < 0 || sampleCoord.y >= imgSize.y) {
-                continue;
-            }
-            
-            vec2 sampleUV = (vec2(sampleCoord) + 0.5) / vec2(imgSize);
-            vec4 sampleColor = texture(inputColor, sampleUV);
-            float sampleDepth = texture(inputDepth, sampleUV).r;
-            
-            // Skip samples with too different depth (edge detection)
+            ivec2 tap = center + ivec2(dx, dy);
+            vec4  sampleColor = tileColor[tap.y][tap.x];
+            float sampleDepth = tileDepth[tap.y][tap.x];
+
             float depthDiff = abs(sampleDepth - centerDepth);
-            if (depthDiff > depthThreshold) {
+            if (depthDiff > depthThreshold)
                 continue;
-            }
-            
-            // Spatial weight (Gaussian based on distance)
-            float spatialDist = length(vec2(dx, dy));
-            float spatialWeight = exp(-(spatialDist * spatialDist) / (2.0 * sigmaSpace * sigmaSpace));
-            
-            // Depth weight (Gaussian based on depth difference)
-            float depthWeight = exp(-(depthDiff * depthDiff) / (2.0 * sigmaDepth * sigmaDepth));
-            
-            // Combined weight
-            float weight = spatialWeight * depthWeight;
-            
-            filteredColor += sampleColor * weight;
-            totalWeight += weight;
+
+            float spatialDist2 = float(dx * dx + dy * dy);
+            float w = exp(spatialDist2 * invSigmaSpace2 + depthDiff * depthDiff * invSigmaDepth2);
+
+            filteredColor += sampleColor * w;
+            totalWeight   += w;
         }
     }
-    
-    // Normalize by total weight
-    if (totalWeight > 0.0) 
-    {
+
+    if (totalWeight > 0.0)
         filteredColor /= totalWeight;
-    } else {
+    else
         filteredColor = centerColor;
-    }
-    
+
     imageStore(result, pixelCoord, filteredColor);
 }

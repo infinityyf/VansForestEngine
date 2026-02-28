@@ -150,74 +150,238 @@ namespace VansEngine
         // -- Scale --
         m_Params.scale.scale = 1.0f;
 
-        // -- Rigid Body --
-        m_Params.rigidBodyParams.mass = 1500.0f;
-        m_Params.rigidBodyParams.moi = PxVec3(3200.0f, 3400.0f, 750.0f);
+        // -- Rigid Body (from Base.json) --
+        m_Params.rigidBodyParams.mass = 2014.39990234375f;
+        m_Params.rigidBodyParams.moi = PxVec3(3200.0f, 3414.39990234375f, 750.0f);
 
-        // -- Wheels & Suspension (Generic defaults) --
+        // -- Brake Command Response Params (from Base.json) --
+        // brakeResponseParams[0] = foot brake, brakeResponseParams[1] = handbrake
+        m_Params.brakeResponseParams[0].maxResponse = 1875.0f;
+        for (int i = 0; i < 4; i++)
+            m_Params.brakeResponseParams[0].wheelResponseMultipliers[i] = 1.0f;
+
+        m_Params.brakeResponseParams[1].maxResponse = 0.0f; // handbrake
+        m_Params.brakeResponseParams[1].wheelResponseMultipliers[0] = 0.0f;
+        m_Params.brakeResponseParams[1].wheelResponseMultipliers[1] = 0.0f;
+        m_Params.brakeResponseParams[1].wheelResponseMultipliers[2] = 1.0f;
+        m_Params.brakeResponseParams[1].wheelResponseMultipliers[3] = 1.0f;
+
+        // -- Steer Command Response Params (from Base.json) --
+        m_Params.steerResponseParams.maxResponse = 0.5235990285873413f; // ~30 degrees
+        m_Params.steerResponseParams.wheelResponseMultipliers[0] = 1.0f; // Front left
+        m_Params.steerResponseParams.wheelResponseMultipliers[1] = 1.0f; // Front right
+        m_Params.steerResponseParams.wheelResponseMultipliers[2] = 0.0f; // Rear left
+        m_Params.steerResponseParams.wheelResponseMultipliers[3] = 0.0f; // Rear right
+
+        // -- Ackermann Params (from Base.json) --
+        m_Params.ackermannParams[0].wheelIds[0] = 0;
+        m_Params.ackermannParams[0].wheelIds[1] = 1;
+        m_Params.ackermannParams[0].wheelBase = 2.863219976425171f;
+        m_Params.ackermannParams[0].trackWidth = 1.5510799884796143f;
+        m_Params.ackermannParams[0].strength = 1.0f;
+
+        // -- Wheels & Suspension (from Base.json) --
+        // Wheel positions from Base.json suspension attachment points
+        const PxVec3 suspAttachPos[4] = {
+            PxVec3(-0.7952629923820496f, 0.3161f,  1.377f),   // FL
+            PxVec3( 0.7952629923820496f, 0.3161f,  1.377f),   // FR
+            PxVec3(-0.7952629923820496f, 0.3161f, -1.1787f),   // RL
+            PxVec3( 0.7952629923820496f, 0.3161f, -1.1787f)    // RR
+        };
+        const float suspForceStiffness[4]  = { 32833.30078125f, 33657.3984375f, 26049.0f, 26894.099609375f };
+        const float suspForceDamping[4]    = { 8528.1201171875f, 8742.1904296875f, 6765.97021484375f, 6985.47998046875f };
+        const float suspForceSprungMass[4] = { 553.7739868164063f, 567.6749877929688f, 439.3489990234375f, 453.6029968261719f };
+
         for (int i = 0; i < 4; i++)
         {
-            m_Params.wheelParams[i].radius = 0.35f;
-            m_Params.wheelParams[i].halfWidth = 0.25f * 0.5f;
+            // Wheel params (from Base.json)
+            m_Params.wheelParams[i].radius = 0.3432520031929016f;
+            m_Params.wheelParams[i].halfWidth = 0.15768450498580934f;
             m_Params.wheelParams[i].mass = 20.0f;
-            m_Params.wheelParams[i].moi = 0.5f * 20.0f * 0.35f * 0.35f;
-            
-            // Positions relative to center of mass
-            float x = (i % 2 == 0) ? -0.8f : 0.8f; // Left/Right
-            float z = (i < 2) ? 1.5f : -1.5f;      // Front/Rear
-            float y = -0.5f;                       // Below center
+            m_Params.wheelParams[i].moi = 1.1716899871826172f;
+            m_Params.wheelParams[i].dampingRate = 0.25f;
 
-            m_Params.suspensionParams[i].suspensionAttachment.p = PxVec3(x, y, z);
+            // Suspension params (from Base.json)
+            m_Params.suspensionParams[i].suspensionAttachment.p = suspAttachPos[i];
             m_Params.suspensionParams[i].suspensionAttachment.q = PxQuat(PxIdentity);
             m_Params.suspensionParams[i].suspensionTravelDir = PxVec3(0, -1, 0);
-            m_Params.suspensionParams[i].suspensionTravelDist = 0.2f;
+            m_Params.suspensionParams[i].suspensionTravelDist = 0.221110999584198f;
             m_Params.suspensionParams[i].wheelAttachment.p = PxVec3(0, 0, 0);
             m_Params.suspensionParams[i].wheelAttachment.q = PxQuat(PxIdentity);
 
-            m_Params.suspensionForceParams[i].stiffness = 10000.0f;
-            m_Params.suspensionForceParams[i].damping = 5000.0f;
-            m_Params.suspensionForceParams[i].sprungMass = 1500.0f / 4.0f;
-        
-            m_Params.suspensionParams[i].suspensionAttachment.p = PxVec3(x, 0.0f, z); // Reset for simpler debug
+            // Suspension force params (from Base.json)
+            m_Params.suspensionForceParams[i].stiffness = suspForceStiffness[i];
+            m_Params.suspensionForceParams[i].damping = suspForceDamping[i];
+            m_Params.suspensionForceParams[i].sprungMass = suspForceSprungMass[i];
+
+            // Tire force params (from Base.json)
+            const bool isFront = (i < 2);
+            m_Params.tireForceParams[i].longStiff = 24525.0f;
+            m_Params.tireForceParams[i].latStiffX = 0.009999999776482582f;
+            m_Params.tireForceParams[i].latStiffY = isFront ? 118699.637252138f : 143930.84033118f;
+            m_Params.tireForceParams[i].camberStiff = 0.0f;
+            m_Params.tireForceParams[i].restLoad = isFront ? 5628.72314453125f : 4604.3134765625f;
+            // FrictionVsSlip: flat curve at 1.0
+            m_Params.tireForceParams[i].frictionVsSlip[0][0] = 0.0f;
+            m_Params.tireForceParams[i].frictionVsSlip[0][1] = 1.0f;
+            m_Params.tireForceParams[i].frictionVsSlip[1][0] = 0.1f;
+            m_Params.tireForceParams[i].frictionVsSlip[1][1] = 1.0f;
+            m_Params.tireForceParams[i].frictionVsSlip[2][0] = 1.0f;
+            m_Params.tireForceParams[i].frictionVsSlip[2][1] = 1.0f;
+            // TireLoadFilter
+            m_Params.tireForceParams[i].loadFilter[0][0] = 0.0f;
+            m_Params.tireForceParams[i].loadFilter[0][1] = 0.23080000281333924f;
+            m_Params.tireForceParams[i].loadFilter[1][0] = 3.0f;
+            m_Params.tireForceParams[i].loadFilter[1][1] = 3.0f;
         }
 
-        // -- Engine & Gearbox (Defaults) --
+        // -- Suspension State Calculation Params (from snippet Base.json) --
+        m_Params.suspensionStateCalculationParams.suspensionJounceCalculationType = PxVehicleSuspensionJounceCalculationType::eSWEEP;
+        m_Params.suspensionStateCalculationParams.limitSuspensionExpansionVelocity = false;
+
+        // -- Engine Params (from EngineDrive.json) --
+        m_Params.engineParams.torqueCurve.addPair(0.0f, 1.0f);
+        m_Params.engineParams.torqueCurve.addPair(0.33f, 1.0f);
+        m_Params.engineParams.torqueCurve.addPair(1.0f, 1.0f);
+        m_Params.engineParams.moi = 1.0f;
         m_Params.engineParams.peakTorque = 500.0f;
+        m_Params.engineParams.idleOmega = 0.0f;
         m_Params.engineParams.maxOmega = 600.0f;
-        
-        m_Params.gearBoxParams.neutralGear = 0;
-        m_Params.gearBoxParams.ratios[0] = -4.0f; // Reverse
-        m_Params.gearBoxParams.ratios[1] = 4.0f;  // 1st
-        m_Params.gearBoxParams.ratios[2] = 2.0f;  // 2nd
-        m_Params.gearBoxParams.ratios[3] = 1.5f;  // 3rd
-        m_Params.gearBoxParams.ratios[4] = 1.1f;  // 4th
-        m_Params.gearBoxParams.ratios[5] = 1.0f;  // 5th
-        m_Params.gearBoxParams.nbRatios = 6;
-        m_Params.gearBoxParams.finalRatio = 4.0f;
+        m_Params.engineParams.dampingRateFullThrottle = 0.15f;
+        m_Params.engineParams.dampingRateZeroThrottleClutchEngaged = 2.0f;
+        m_Params.engineParams.dampingRateZeroThrottleClutchDisengaged = 0.35f;
 
-        // -- PhysX Integration --
-        // Create the Actor
+        // -- Gearbox Params (from EngineDrive.json) --
+        // Ratios: [reverse, neutral, 1st, 2nd, 3rd, 4th, 5th] => neutralGear index = 1
+        m_Params.gearBoxParams.neutralGear = 1;
+        m_Params.gearBoxParams.ratios[0] = -4.0f; // Reverse
+        m_Params.gearBoxParams.ratios[1] =  0.0f; // Neutral
+        m_Params.gearBoxParams.ratios[2] =  4.0f; // 1st
+        m_Params.gearBoxParams.ratios[3] =  2.0f; // 2nd
+        m_Params.gearBoxParams.ratios[4] =  1.5f; // 3rd
+        m_Params.gearBoxParams.ratios[5] =  1.1f; // 4th
+        m_Params.gearBoxParams.ratios[6] =  1.0f; // 5th
+        m_Params.gearBoxParams.nbRatios = 7;
+        m_Params.gearBoxParams.finalRatio = 4.0f;
+        m_Params.gearBoxParams.switchTime = 0.5f;
+
+        // -- Autobox Params (from EngineDrive.json) --
+        m_Params.autoboxParams.upRatios[0] = 0.65f;
+        m_Params.autoboxParams.upRatios[1] = 0.15f;
+        m_Params.autoboxParams.upRatios[2] = 0.65f;
+        m_Params.autoboxParams.upRatios[3] = 0.65f;
+        m_Params.autoboxParams.upRatios[4] = 0.65f;
+        m_Params.autoboxParams.upRatios[5] = 0.65f;
+        m_Params.autoboxParams.upRatios[6] = 0.65f;
+        m_Params.autoboxParams.downRatios[0] = 0.5f;
+        m_Params.autoboxParams.downRatios[1] = 0.5f;
+        m_Params.autoboxParams.downRatios[2] = 0.5f;
+        m_Params.autoboxParams.downRatios[3] = 0.5f;
+        m_Params.autoboxParams.downRatios[4] = 0.5f;
+        m_Params.autoboxParams.downRatios[5] = 0.5f;
+        m_Params.autoboxParams.downRatios[6] = 0.5f;
+        m_Params.autoboxParams.latency = 2.0f;
+
+        // -- Clutch Command Response Params (from EngineDrive.json) --
+        m_Params.clutchCommandResponseParams.maxResponse = 10.0f;
+
+        // -- Clutch Params (from EngineDrive.json) --
+        m_Params.clutchParams.accuracyMode = PxVehicleClutchAccuracyMode::eESTIMATE;
+        m_Params.clutchParams.estimateIterations = 5;
+
+        // -- Four Wheel Differential Params (from EngineDrive.json) --
+        m_Params.fourWheelDifferentialParams.torqueRatios[0] = 0.25f;
+        m_Params.fourWheelDifferentialParams.torqueRatios[1] = 0.25f;
+        m_Params.fourWheelDifferentialParams.torqueRatios[2] = 0.25f;
+        m_Params.fourWheelDifferentialParams.torqueRatios[3] = 0.25f;
+        m_Params.fourWheelDifferentialParams.aveWheelSpeedRatios[0] = 0.25f;
+        m_Params.fourWheelDifferentialParams.aveWheelSpeedRatios[1] = 0.25f;
+        m_Params.fourWheelDifferentialParams.aveWheelSpeedRatios[2] = 0.25f;
+        m_Params.fourWheelDifferentialParams.aveWheelSpeedRatios[3] = 0.25f;
+        m_Params.fourWheelDifferentialParams.frontWheelIds[0] = 0;
+        m_Params.fourWheelDifferentialParams.frontWheelIds[1] = 1;
+        m_Params.fourWheelDifferentialParams.rearWheelIds[0] = 2;
+        m_Params.fourWheelDifferentialParams.rearWheelIds[1] = 3;
+        m_Params.fourWheelDifferentialParams.centerBias = 1.3f;
+        m_Params.fourWheelDifferentialParams.centerTarget = 1.29f;
+        m_Params.fourWheelDifferentialParams.frontBias = 1.3f;
+        m_Params.fourWheelDifferentialParams.frontTarget = 1.29f;
+        m_Params.fourWheelDifferentialParams.rearBias = 1.3f;
+        m_Params.fourWheelDifferentialParams.rearTarget = 1.29f;
+        m_Params.fourWheelDifferentialParams.rate = 10.0f;
+
+        // -- PhysX Integration Params --
+        // Set up road geometry query, material friction, suspension limit constraint params
+        // following the snippet's setPhysXIntegrationParams pattern.
         PxPhysics* physics = m_PhysicsSystem->GetPhysics();
-        PxMaterial* material = m_PhysicsSystem->GetScene()->getPhysics().createMaterial(0.5f, 0.5f, 0.6f);
-        
-        PxBoxGeometry bodyGeom(1.0f, 0.5f, 2.0f); // Simple box for car body
-        PxShape* bodyShape = physics->createShape(bodyGeom, *material);
-        m_State.physxActor.rigidBody = physics->createRigidDynamic(startPose);
-        m_State.physxActor.rigidBody->attachShape(*bodyShape);
-        m_State.physxActor.rigidBody->setMass(m_Params.rigidBodyParams.mass);
-        m_State.physxActor.rigidBody->setMassSpaceInertiaTensor(m_Params.rigidBodyParams.moi);
-        
-        // Wheel Shapes
-        for(int i=0; i<4; i++) {
-            m_State.physxActor.wheelShapes[i] = physics->createShape(PxSphereGeometry(m_Params.wheelParams[i].radius), *material);
-            m_Params.physxWheelShapeLocalPoses[i] = PxTransform(PxIdentity); // Will be updated by simulation
-            // In a real app we'd attach these to show them, but often they are just logical shapes for raycasts
-            // For pure raycast suspension, we mostly need the body.
-            // PhysX 5 Vehicle SDK uses scene queries for wheels.
+        PxMaterial* material = physics->createMaterial(0.5f, 0.5f, 0.6f);
+
+        m_Params.physxRoadGeometryQueryParams.roadGeometryQueryType = PxVehiclePhysXRoadGeometryQueryType::eRAYCAST;
+        m_Params.physxRoadGeometryQueryParams.defaultFilterData = PxQueryFilterData(PxFilterData(0, 0, 0, 0), PxQueryFlag::eSTATIC);
+        m_Params.physxRoadGeometryQueryParams.filterCallback = nullptr;
+        m_Params.physxRoadGeometryQueryParams.filterDataEntries = nullptr;
+
+        for (PxU32 i = 0; i < m_Params.axleDescription.nbWheels; i++)
+        {
+            const PxU32 wheelId = m_Params.axleDescription.wheelIdsInAxleOrder[i];
+            m_Params.physxMaterialFrictionParams[wheelId].defaultFriction = 1.0f;
+            m_Params.physxMaterialFrictionParams[wheelId].materialFrictions = nullptr;
+            m_Params.physxMaterialFrictionParams[wheelId].nbMaterialFrictions = 0;
+
+            m_Params.physxSuspensionLimitConstraintParams[wheelId].restitution = 0.0f;
+            m_Params.physxSuspensionLimitConstraintParams[wheelId].directionForSuspensionLimitConstraint =
+                PxVehiclePhysXSuspensionLimitConstraintParams::eROAD_GEOMETRY_NORMAL;
+
+            m_Params.physxWheelShapeLocalPoses[wheelId] = PxTransform(PxIdentity);
         }
 
-        // Add to Scene
+        // CMass local pose, body shape extents & local pose (matching snippet defaults)
+        m_Params.physxActorCMassLocalPose = PxTransform(PxVec3(0.0f, 0.55f, 1.594f), PxQuat(PxIdentity));
+        m_Params.physxActorBoxShapeHalfExtents = PxVec3(0.84097f, 0.65458f, 2.46971f);
+        m_Params.physxActorBoxShapeLocalPose = PxTransform(PxVec3(0.0f, 0.830066f, 1.37003f), PxQuat(PxIdentity));
+
+        // -- Create Rigid Body + Wheel Shapes via PxVehiclePhysXActorCreate --
+        // This creates the PxRigidDynamic, attaches a box body shape and convex-mesh wheel shapes,
+        // sets mass/MOI/CMass, disables gravity (vehicle SDK handles gravity itself).
+        {
+            const PxVehiclePhysXRigidActorParams rigidActorParams(m_Params.rigidBodyParams, nullptr);
+            const PxBoxGeometry boxGeom(m_Params.physxActorBoxShapeHalfExtents);
+            const PxVehiclePhysXRigidActorShapeParams rigidActorShapeParams(
+                boxGeom, m_Params.physxActorBoxShapeLocalPose, *material,
+                PxShapeFlags(0), PxFilterData(), PxFilterData());
+            const PxVehiclePhysXWheelParams physxWheelParams(
+                m_Params.axleDescription, m_Params.wheelParams);
+            const PxVehiclePhysXWheelShapeParams physxWheelShapeParams(
+                *material, PxShapeFlags(0), PxFilterData(), PxFilterData());
+
+            PxVehiclePhysXActorCreate(
+                m_Params.frame,
+                rigidActorParams, m_Params.physxActorCMassLocalPose,
+                rigidActorShapeParams,
+                physxWheelParams, physxWheelShapeParams,
+                *physics, PxCookingParams(PxTolerancesScale()),
+                m_State.physxActor);
+        }
+
+        // -- Create PhysX Constraints (suspension limit & sticky tire) --
+        PxVehicleConstraintsCreate(m_Params.axleDescription, *physics,
+            *m_State.physxActor.rigidBody, m_State.physxConstraints);
+
+        // Apply the start pose and add to the scene
+        m_State.physxActor.rigidBody->setGlobalPose(startPose);
+        m_State.physxActor.rigidBody->setName("VansVehicle");
         m_PhysicsSystem->GetScene()->addActor(*m_State.physxActor.rigidBody);
+
+        // -- Set initial gear state (from snippet initVehicles) --
+        // Set the vehicle in 1st gear (neutralGear + 1)
+        m_State.gearboxState.currentGear = m_Params.gearBoxParams.neutralGear + 1;
+        m_State.gearboxState.targetGear = m_Params.gearBoxParams.neutralGear + 1;
+
+        // Set the vehicle to use the automatic gearbox
+        m_TransmissionCommandState.targetGear = PxVehicleEngineDriveTransmissionCommandState::eAUTOMATIC_GEAR;
+
+        // Set nbBrakes so brake processing works (snippet sets this in stepPhysics)
+        m_CommandState.nbBrakes = 2; // brake + handbrake
 
         // -- Initialize Component Sequence --
         // This order is critical and follows the snippet
@@ -255,19 +419,24 @@ namespace VansEngine
     {
         if (m_State.physxActor.rigidBody)
         {
+            // Destroy constraints first
+            PxVehicleConstraintsDestroy(m_State.physxConstraints);
+
+            // Remove from scene before releasing
             if (m_PhysicsSystem && m_PhysicsSystem->GetScene())
             {
                 m_PhysicsSystem->GetScene()->removeActor(*m_State.physxActor.rigidBody);
             }
-            m_State.physxActor.rigidBody->release();
-            m_State.physxActor.rigidBody = nullptr;
+
+            // Release rigid body + wheel shapes via the PhysX Vehicle helper
+            PxVehiclePhysXActorDestroy(m_State.physxActor);
         }
     }
 
     void VansPhysicsVehicle::Step(float dt)
     {
         m_ComponentSequence.update(dt, m_SimulationContext);
-		std::cout << "[VansVehicle] Step completed. Position: " << GetTransform().p.x << ", " << GetTransform().p.y << ", " << GetTransform().p.z << std::endl;
+		//std::cout << "[VansVehicle] Step completed. Position: " << GetTransform().p.x << ", " << GetTransform().p.y << ", " << GetTransform().p.z << std::endl;
     }
 
     void VansPhysicsVehicle::SetInputs(float throttle, float brake, float steer, float handbrake)

@@ -1,10 +1,11 @@
-#pragma once
+﻿#pragma once
 #if defined _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
 #elif defined __linux
 
 #endif
 #include "vulkan/vulkan.h"
+#include "VansDescriptorSetLayouts.h"
 #include <vector>
 
 
@@ -67,66 +68,6 @@ namespace VansGraphics
 	class VansVKDescriptorManager
 	{
 	public:
-		static const uint32_t m_CameraBufferSetBinding = 0;
-		static const uint32_t m_ModelBufferSetBinding = 0;
-		static const uint32_t m_LightsBufferSetBinding = 0;
-		static const uint32_t m_AtmosphereBufferSetBinding = 0;
-
-		static const uint32_t m_MaterialBufferSetBinding = 0;
-
-		static const uint32_t m_InputAttachment0SetBinding = 0;
-		static const uint32_t m_InputAttachment1SetBinding = 1;
-		static const uint32_t m_InputAttachment2SetBinding = 2;
-		static const uint32_t m_InputAttachment3SetBinding = 3;
-		static const uint32_t m_InputAttachment4SetBinding = 4;
-
-		static const uint32_t m_SampleTexture0SetBinding = 0;
-		static const uint32_t m_SampleTexture1SetBinding = 1;
-		static const uint32_t m_SampleTexture2SetBinding = 2;
-		static const uint32_t m_SampleTexture3SetBinding = 3;
-		static const uint32_t m_SampleTexture4SetBinding = 4;
-		static const uint32_t m_SampleTexture5SetBinding = 5;
-		static const uint32_t m_SampleTexture6SetBinding = 6;
-		static const uint32_t m_SampleTexture7SetBinding = 7;
-		static const uint32_t m_SampleTexture8SetBinding = 8;
-		static const uint32_t m_SampleTexture9SetBinding = 9;
-		static const uint32_t m_SampleTexture10SetBinding = 10;
-		static const uint32_t m_SampleTexture11SetBinding = 11;
-
-		static const uint32_t m_UAVTextureSetBinding = 0;
-		static const uint32_t m_UAVTexture0SetBinding = 1;
-		static const uint32_t m_UAVTexture1SetBinding = 2;
-		static const uint32_t m_UAVTexture2SetBinding = 3;
-		static const uint32_t m_UAVTexture3SetBinding = 4;
-		static const uint32_t m_UAVTexture4SetBinding = 5;
-		static const uint32_t m_UAVTexture5SetBinding = 6;
-
-		static const uint32_t m_CBuffer0SetBinding = 0;
-		static const uint32_t m_CBuffer1SetBinding = 1;
-		static const uint32_t m_CBuffer2SetBinding = 2;
-		static const uint32_t m_CBuffer3SetBinding = 3;
-		static const uint32_t m_CBuffer4SetBinding = 4;
-		static const uint32_t m_CBuffer5SetBinding = 5;
-		static const uint32_t m_CBuffer6SetBinding = 6;
-
-		static const uint32_t m_Buffer0SetBinding = 0;
-		static const uint32_t m_Buffer1SetBinding = 1;
-		static const uint32_t m_Buffer2SetBinding = 2;
-		static const uint32_t m_Buffer3SetBinding = 3;
-		static const uint32_t m_Buffer4SetBinding = 4;
-		static const uint32_t m_Buffer5SetBinding = 5;
-		static const uint32_t m_Buffer6SetBinding = 6;
-		static const uint32_t m_Buffer7SetBinding = 7;
-		static const uint32_t m_Buffer8SetBinding = 8;
-		static const uint32_t m_Buffer9SetBinding = 9;
-		static const uint32_t m_Buffer10SetBinding = 10;
-		static const uint32_t m_Buffer11SetBinding = 11;
-
-		static const uint32_t m_BindlessTextureBinding = 50;
-
-		static const uint32_t m_Tlas0Binding = 0;
-
-		static const uint32_t m_MaxBindlessCount = 500;
 
 	private:
 

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../VansGraphicsDevice.h"
 #include "vulkan/vulkan.h"
 #include "VansVKSurface.h"
@@ -138,6 +138,8 @@ namespace VansGraphics
 	private:
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager);
+
+		void TemporalFilterSSGI(VansRenderPassManager* renderPassManager);
 
 		void BilateralFilterSSGI(VansRenderPassManager* renderPassManager);
 

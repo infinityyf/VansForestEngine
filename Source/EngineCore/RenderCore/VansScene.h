@@ -1,9 +1,10 @@
-#pragma once
+﻿#pragma once
 #include "VansRenderNode.h"
 #include "VansCamera.h"
 #include "BRDFData/VansLight.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
+#include "VulkanCore/VansDescriptorSetLayouts.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -88,6 +89,24 @@ namespace VansGraphics
 		std::vector<ModelDataStruct> m_InstanceTransformData;
 		VkDescriptorSetLayout m_GlobalTransformDataSetLayout;
 		std::vector<VkDescriptorSet> m_GlobalTransformDataDescriptorSets;
+
+		// ===== New: Reorganized descriptor set system =====
+		// Global descriptor set (Set 0): Camera + Lights + Materials + IBL + Bindless
+		VkDescriptorSetLayout m_GlobalDescriptorSetLayout = VK_NULL_HANDLE;
+		VkDescriptorSet m_GlobalDescriptorSet = VK_NULL_HANDLE;
+
+		// Object descriptor set (Set 2): Transform SSBO - reuses m_GlobalTransformDataSetLayout
+		// but with the new object layout for the new convention
+		VkDescriptorSetLayout m_ObjectDescriptorSetLayout = VK_NULL_HANDLE;
+		VkDescriptorSet m_ObjectDescriptorSet = VK_NULL_HANDLE;
+
+		// Empty pass layout (Set 1) for passes that have no per-pass resources
+		VkDescriptorSetLayout m_EmptyPassLayout = VK_NULL_HANDLE;
+		VkDescriptorSet m_EmptyPassDescriptorSet = VK_NULL_HANDLE;
+
+		// Creates the global Set 0 descriptor set and writes all global resources into it
+		void CreateGlobalDescriptorSet(VkDevice device);
+		void UpdateGlobalDescriptorSet();
 
 	public:
 		//editor

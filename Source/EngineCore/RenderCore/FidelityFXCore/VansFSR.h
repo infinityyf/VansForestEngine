@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <ffx_api/ffx_api.hpp>
 #include <ffx_api/ffx_upscale.hpp>
 #include <ffx_api/vk/ffx_api_vk.hpp>

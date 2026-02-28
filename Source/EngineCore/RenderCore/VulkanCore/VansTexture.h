@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
 #include "../VansAsset.h"
@@ -21,28 +21,6 @@ namespace VansGraphics
 		HIGH_PRES_32 = 2
 	};
 
-	struct TextureUploadInfo
-	{
-		int width = 0;
-		int height = 0;
-		int channels = 0;
-		int mipLevels = 1;
-
-		VkFormat format = VK_FORMAT_UNDEFINED;
-		bool isCompressed = false;
-
-		// For uncompressed data
-		std::vector<uint8_t> rawData;
-
-		// For compressed data
-		struct MipData {
-			int width;
-			int height;
-			std::vector<uint8_t> data;
-		};
-		std::vector<MipData> mips;
-	};
-
 
 
 	class VansTexture : public VansAsset
@@ -59,15 +37,6 @@ namespace VansGraphics
 			TexturePrecision texture_precesion = LOW_PRES_8, 
 			int import_channel = 4);
 		
-		static TextureUploadInfo PrepareTextureCPU(
-			std::string texture_path,
-			bool isSRGB,
-			bool useCompress,
-			bool need_mip,
-			TexturePrecision texture_precision,
-			int import_channel
-		);
-
 		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
 
 		//直接创建一个GPU上的texture
@@ -86,22 +55,22 @@ namespace VansGraphics
 	private:
 		VansVKImage m_Image;
 
-		std::vector<unsigned char> m_ImageData;
+		// 格式选择（统一替代原有三个CheckTexture*Format方法）
+		static VkFormat ChooseFormat(int channel, TexturePrecision precision, bool isSRGB = false);
 
-		static VkFormat CheckTextureFormat(int channel, bool isHdr = false, bool isSRGB = false);
+		// 文件读取
+		void* ReadTextureFile(const std::string& texture_path, TexturePrecision texture_precision, int& bytes_per_channel, int& width, int& height, int& num_components, int import_channel);
 
-		static VkFormat CheckTextureHighPrecisionFormat(int channel);
+		// 通用辅助
+		void SubmitAndWait(VansVKCommandBuffer& command_buffer, VkQueue queue, VkDevice device);
+		void GenerateMipmaps(VkCommandBuffer cmd, int width, int height, int mipLevels);
 
-		static VkFormat CheckTextureMidPrecisionFormat(int channel);
-
-		void* ReadTextureFile(std::string texture_path, TexturePrecision texture_precision, int& bytes_per_channel, int& width, int& height, int& num_components, int import_channel);
-
-	private:
+		// 上传路径
+		void UploadCompressedTexture(VansVKCommandBuffer& command_buffer, const uint8_t* srcData, int width, int height, bool isSRGB);
+		void UploadUncompressedTexture(VansVKCommandBuffer& command_buffer, const void* data, size_t dataSize, int width, int height, VkFormat format, bool needMip);
 
 		int m_TextureWidth;
-
 		int m_TextureHeight;
-
 		int m_TextureSlice;
 	};
 }

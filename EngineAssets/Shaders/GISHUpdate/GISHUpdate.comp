@@ -4,14 +4,14 @@
 #include "../Common/Common.glsl"
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
-layout( set = 0, binding = 0, std430 ) buffer directLightResult
+layout( set = 1, binding = 0, std430 ) buffer directLightResult
 {
     f16vec4 directLight[];
 } directLightBuffer;
 
-layout(set = 0, binding = 2, rgba32f) uniform image3D resultRImage;
-layout(set = 0, binding = 3, rgba32f) uniform image3D resultGImage;
-layout(set = 0, binding = 4, rgba32f) uniform image3D resultBImage;
+layout(set = 1, binding = 2, rgba32f) uniform image3D resultRImage;
+layout(set = 1, binding = 3, rgba32f) uniform image3D resultGImage;
+layout(set = 1, binding = 4, rgba32f) uniform image3D resultBImage;
 
 
 // layout( set = 0, binding = 5, std430 ) buffer ReservoirBuffer

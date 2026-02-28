@@ -1,4 +1,4 @@
-#include "VansEditorWindow.h"
+﻿#include "VansEditorWindow.h"
 #include "../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../RenderCore/VulkanCore/VansGUIVulkanBackEnd.h"
 #include "../RenderCore/VulkanCore/VansVKDescriptorManager.h"
@@ -15,6 +15,7 @@
 #include "Windows/VansGBufferWindow.h"
 
 #include "../Util/VansJobSystem.h"
+#include "../Util/VansInputManager.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
@@ -93,6 +94,9 @@ bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int heigh
         return false;
     }
 
+    // Initialize input manager — must be BEFORE ImGui GLFW init so ImGui can chain
+    Vans::VansInputManager::Get().Initialize(m_VansEditorWindow.m_VansGraphicsHandle);
+
     // Register Physics Pre-Step Callback for Vehicle
     VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback([](float dt) {
         if (m_Scene && m_Scene->m_Vehicle)
@@ -132,56 +136,51 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
     m_Windows.push_back(m_GBufferWindow);
 }
 
-void VansGraphics::VansEditorWindow::KeyBoardInputCallBack(GLFWwindow* window, int key, int scancode, int action, int mods)
+void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
 {
-    if (action == GLFW_PRESS || action == GLFW_REPEAT)
-    {
-        //将消息传递给相机
+    Vans::VansInputManager& input = Vans::VansInputManager::Get();
+
+    // Forward keyboard events to all cameras
+    input.AddKeyListener("EditorCamera_Key", [](int key, int scancode, int action, int mods) {
+        if (action == GLFW_PRESS || action == GLFW_REPEAT)
+        {
+            for (auto camera : m_Cameras)
+            {
+                camera->HandleKeyboardInput(key, scancode, action, mods, VansGraphics::VansTimer::GetDeltaTime());
+            }
+        }
+    });
+
+    // Forward mouse move deltas to all cameras
+    input.AddMouseMoveListener("EditorCamera_Move", [](double x, double y) {
+        double dx, dy;
+        Vans::VansInputManager::Get().GetMouseDelta(dx, dy);
         for (auto camera : m_Cameras)
         {
-            camera->HandleKeyboardInput(key, scancode, action, mods, VansGraphics::VansTimer::GetDeltaTime());
+            camera->HandleMouseMovement(static_cast<float>(dx), static_cast<float>(dy));
         }
-    }
-}
+    });
 
-
-void VansGraphics::VansEditorWindow::MouseInputCallBack(GLFWwindow* window, double xpos, double ypos)
-{
-    static bool isInit = false;
-    static double lastX = 0;
-    static double lastY = 0;
-    if (!isInit)
-    {
-        lastX = xpos;
-        lastY = ypos;
-        isInit = true;
-    }
-
-
-    double deltaX = xpos - lastX;
-    double deltaY = ypos - lastY;
-
-    lastX = xpos;
-    lastY = ypos;
-    //将消息传递给相机
-    for (auto camera : m_Cameras)
-    {
-        camera->HandleMouseMovement(deltaX, deltaY);
-    }
-}
-
-void VansGraphics::VansEditorWindow::MouseClickCallBack(GLFWwindow* window, int button, int action, int mods)
-{
-    bool isDown = (action == GLFW_PRESS);
-    //将消息传递给相机
-    for (auto camera : m_Cameras)
-    {
-        camera->SetRightMouseDown(false);
-        if (button == GLFW_MOUSE_BUTTON_RIGHT)
+    // Forward mouse button events to cameras (right-click for look)
+    input.AddMouseClickListener("EditorCamera_Click", [](int button, int action, int mods) {
+        bool isDown = (action == GLFW_PRESS);
+        for (auto camera : m_Cameras)
         {
-            camera->SetRightMouseDown(isDown);
+            camera->SetRightMouseDown(false);
+            if (button == GLFW_MOUSE_BUTTON_RIGHT)
+            {
+                camera->SetRightMouseDown(isDown);
+            }
         }
-    }
+    });
+}
+
+void VansGraphics::VansEditorWindow::UnregisterCameraInputListeners()
+{
+    Vans::VansInputManager& input = Vans::VansInputManager::Get();
+    input.RemoveKeyListener("EditorCamera_Key");
+    input.RemoveMouseMoveListener("EditorCamera_Move");
+    input.RemoveMouseClickListener("EditorCamera_Click");
 }
 
 void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
@@ -280,6 +279,129 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
     device->EndUIRenderPass();
 }
 
+void VansGraphics::VansEditorWindow::SetupImGuiStyle()
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    // --- Font: Consolas Bold ---
+    ImFont* consolasFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\consolab.ttf", 15.0f);
+    if (!consolasFont)
+        io.Fonts->AddFontDefault();
+    io.Fonts->Build();
+
+    // --- Base theme ---
+    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+
+    // --- Shape / Layout ---
+    style.WindowRounding    = 4.0f;
+    style.ChildRounding     = 4.0f;
+    style.FrameRounding     = 3.0f;
+    style.PopupRounding     = 4.0f;
+    style.ScrollbarRounding = 6.0f;
+    style.GrabRounding      = 3.0f;
+    style.TabRounding       = 4.0f;
+
+    style.WindowPadding     = ImVec2(10.0f, 10.0f);
+    style.FramePadding      = ImVec2(6.0f, 4.0f);
+    style.ItemSpacing       = ImVec2(8.0f, 5.0f);
+    style.ItemInnerSpacing  = ImVec2(6.0f, 4.0f);
+    style.IndentSpacing     = 20.0f;
+    style.ScrollbarSize     = 14.0f;
+    style.GrabMinSize       = 12.0f;
+
+    style.WindowBorderSize  = 1.0f;
+    style.ChildBorderSize   = 1.0f;
+    style.FrameBorderSize   = 0.0f;
+    style.PopupBorderSize   = 1.0f;
+    style.TabBorderSize     = 0.0f;
+
+    style.WindowTitleAlign   = ImVec2(0.02f, 0.50f);
+    style.SeparatorTextAlign = ImVec2(0.0f, 0.5f);
+
+    // --- Colors (UE5 charcoal + slate blue accent) ---
+    ImVec4* c = style.Colors;
+
+    // Backgrounds
+    c[ImGuiCol_WindowBg]           = ImVec4(0.067f, 0.067f, 0.067f, 1.00f);
+    c[ImGuiCol_ChildBg]            = ImVec4(0.067f, 0.067f, 0.067f, 1.00f);
+    c[ImGuiCol_PopupBg]            = ImVec4(0.082f, 0.082f, 0.090f, 0.98f);
+    c[ImGuiCol_MenuBarBg]          = ImVec4(0.055f, 0.055f, 0.055f, 1.00f);
+
+    // Borders
+    c[ImGuiCol_Border]             = ImVec4(0.16f, 0.16f, 0.18f, 0.50f);
+    c[ImGuiCol_BorderShadow]       = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+
+    // Frame (input boxes, sliders, checkboxes)
+    c[ImGuiCol_FrameBg]            = ImVec4(0.09f, 0.09f, 0.10f, 1.00f);
+    c[ImGuiCol_FrameBgHovered]     = ImVec4(0.14f, 0.14f, 0.16f, 1.00f);
+    c[ImGuiCol_FrameBgActive]      = ImVec4(0.10f, 0.28f, 0.50f, 0.80f);
+
+    // Title bar
+    c[ImGuiCol_TitleBg]            = ImVec4(0.047f, 0.047f, 0.047f, 1.00f);
+    c[ImGuiCol_TitleBgActive]      = ImVec4(0.059f, 0.059f, 0.059f, 1.00f);
+    c[ImGuiCol_TitleBgCollapsed]   = ImVec4(0.047f, 0.047f, 0.047f, 0.75f);
+
+    // Tabs
+    c[ImGuiCol_Tab]                = ImVec4(0.067f, 0.067f, 0.075f, 1.00f);
+    c[ImGuiCol_TabHovered]         = ImVec4(0.15f, 0.33f, 0.55f, 0.80f);
+    c[ImGuiCol_TabActive]          = ImVec4(0.12f, 0.28f, 0.48f, 1.00f);
+    c[ImGuiCol_TabUnfocused]       = ImVec4(0.055f, 0.055f, 0.060f, 1.00f);
+    c[ImGuiCol_TabUnfocusedActive] = ImVec4(0.08f, 0.08f, 0.09f, 1.00f);
+
+    // Buttons
+    c[ImGuiCol_Button]             = ImVec4(0.13f, 0.13f, 0.15f, 1.00f);
+    c[ImGuiCol_ButtonHovered]      = ImVec4(0.15f, 0.33f, 0.55f, 1.00f);
+    c[ImGuiCol_ButtonActive]       = ImVec4(0.11f, 0.27f, 0.48f, 1.00f);
+
+    // Headers
+    c[ImGuiCol_Header]             = ImVec4(0.10f, 0.10f, 0.12f, 1.00f);
+    c[ImGuiCol_HeaderHovered]      = ImVec4(0.15f, 0.33f, 0.55f, 0.80f);
+    c[ImGuiCol_HeaderActive]       = ImVec4(0.12f, 0.28f, 0.48f, 1.00f);
+
+    // Scrollbar
+    c[ImGuiCol_ScrollbarBg]          = ImVec4(0.05f, 0.05f, 0.05f, 0.60f);
+    c[ImGuiCol_ScrollbarGrab]        = ImVec4(0.22f, 0.22f, 0.24f, 1.00f);
+    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.32f, 0.32f, 0.34f, 1.00f);
+    c[ImGuiCol_ScrollbarGrabActive]  = ImVec4(0.42f, 0.42f, 0.44f, 1.00f);
+
+    // Slider grab
+    c[ImGuiCol_SliderGrab]         = ImVec4(0.22f, 0.46f, 0.73f, 1.00f);
+    c[ImGuiCol_SliderGrabActive]   = ImVec4(0.28f, 0.52f, 0.80f, 1.00f);
+
+    // Check mark
+    c[ImGuiCol_CheckMark]          = ImVec4(0.28f, 0.56f, 0.88f, 1.00f);
+
+    // Separator
+    c[ImGuiCol_Separator]          = ImVec4(0.22f, 0.22f, 0.24f, 0.50f);
+    c[ImGuiCol_SeparatorHovered]   = ImVec4(0.18f, 0.38f, 0.62f, 0.78f);
+    c[ImGuiCol_SeparatorActive]    = ImVec4(0.14f, 0.34f, 0.58f, 1.00f);
+
+    // Resize grip
+    c[ImGuiCol_ResizeGrip]         = ImVec4(0.22f, 0.46f, 0.73f, 0.20f);
+    c[ImGuiCol_ResizeGripHovered]  = ImVec4(0.22f, 0.46f, 0.73f, 0.67f);
+    c[ImGuiCol_ResizeGripActive]   = ImVec4(0.22f, 0.46f, 0.73f, 0.95f);
+
+    // Docking
+    c[ImGuiCol_DockingPreview]     = ImVec4(0.15f, 0.35f, 0.60f, 0.70f);
+    c[ImGuiCol_DockingEmptyBg]     = ImVec4(0.04f, 0.04f, 0.04f, 1.00f);
+
+    // Text
+    c[ImGuiCol_Text]              = ImVec4(0.86f, 0.86f, 0.88f, 1.00f);
+    c[ImGuiCol_TextDisabled]      = ImVec4(0.46f, 0.46f, 0.48f, 1.00f);
+    c[ImGuiCol_TextSelectedBg]    = ImVec4(0.18f, 0.40f, 0.68f, 0.43f);
+
+    // Nav / misc
+    c[ImGuiCol_NavHighlight]      = ImVec4(0.22f, 0.46f, 0.73f, 1.00f);
+    c[ImGuiCol_DragDropTarget]    = ImVec4(0.22f, 0.46f, 0.73f, 0.90f);
+    c[ImGuiCol_ModalWindowDimBg]  = ImVec4(0.00f, 0.00f, 0.00f, 0.58f);
+    c[ImGuiCol_TableHeaderBg]     = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
+    c[ImGuiCol_TableBorderStrong] = ImVec4(0.16f, 0.16f, 0.18f, 1.00f);
+    c[ImGuiCol_TableBorderLight]  = ImVec4(0.12f, 0.12f, 0.14f, 1.00f);
+    c[ImGuiCol_TableRowBg]        = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+    c[ImGuiCol_TableRowBgAlt]     = ImVec4(1.00f, 1.00f, 1.00f, 0.02f);
+}
+
 void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& camera)
 {
     m_Cameras.clear();
@@ -293,20 +415,19 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windowss
-    io.Fonts->AddFontDefault();
-    io.Fonts->Build();
 
-    // Setup Dear ImGui style
-    ImGui::StyleColorsDark();
-    //ImGui::StyleColorsLight();
+    SetupImGuiStyle();
 
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+    ImVec4 clear_color = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
 
     //初始化GUI的graphics back end
     m_GUIBackEnd->InitBackEnd(*m_GraphicsDevice, m_VansEditorWindow.m_VansGraphicsHandle);
 
     //初始化脚本环境
     m_ScriptContext.VansScriptSetup();
+
+    // Register camera input listeners through InputManager
+    RegisterCameraInputListeners();
 
     // Main loop
     while (!glfwWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle))
@@ -328,20 +449,27 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
         Vans::VansJobSystem::Get().ProcessMainThreadJobs();
 
+        //更新输入管理器 (must be before any input queries this frame)
+        Vans::VansInputManager& input = Vans::VansInputManager::Get();
+        input.Update();
+
         //更新时间
         VansGraphics::VansTimer::Update();
 
         // Step Vehicle Physics - MOVED TO PHYSICS THREAD via Callback
         if (m_Scene && m_Scene->m_Vehicle)
         {
-            // Basic vehicle control inputs (hardcoded for test)
-            // Inputs are lightweight and can be set from main thread (atomic/simple types)
-            if (glfwGetKey(m_VansEditorWindow.m_VansGraphicsHandle, GLFW_KEY_W) == GLFW_PRESS)
-                m_Scene->m_Vehicle->SetInputs(1.0f, 0.0f, 0.0f, 0.0f);
-            else if (glfwGetKey(m_VansEditorWindow.m_VansGraphicsHandle, GLFW_KEY_S) == GLFW_PRESS)
-                m_Scene->m_Vehicle->SetInputs(0.0f, 0.5f, 0.0f, 0.0f); // Brake
+            // Vehicle control inputs via InputManager
+            if (input.IsKeyDown(GLFW_KEY_W))
+                m_Scene->m_Vehicle->SetInputs(20.0f, 0.0f, 0.0f, 0.0f);
+            else if (input.IsKeyDown(GLFW_KEY_S))
+                m_Scene->m_Vehicle->SetInputs(0.0f, 100.0f, 0.0f, 0.0f); // Brake
+            else if (input.IsKeyDown(GLFW_KEY_A))
+                m_Scene->m_Vehicle->SetInputs(0.0f, 0.0f, -1.0f, 0.0f);
+            else if (input.IsKeyDown(GLFW_KEY_D))
+                m_Scene->m_Vehicle->SetInputs(0.0f, 0.0f, 1.0f, 0.0f);
             else
-                m_Scene->m_Vehicle->SetInputs(0.0f, 0.0f, 0.0f, 0.0f); // Coast (no brake, no throttle)
+                m_Scene->m_Vehicle->SetInputs(0.0f, 0.0f, 0.0f, 0.0f); // Coast
         }
 
         // Synchronize physics transforms to render transforms
@@ -380,6 +508,9 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         }
     }
 
+    // Unregister camera input listeners
+    UnregisterCameraInputListeners();
+
     m_Cameras.clear();
 
 }
@@ -389,6 +520,9 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     // Unregister Physics Callback on shutdown to avoid calling into destroyed objects
     VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback(nullptr);
     VansEngine::VansPhysicsSystem::GetInstance().StopSimulation(); // Ensure thread stops
+
+    // Shutdown input manager
+    Vans::VansInputManager::Get().Shutdown();
 
     ImGui::DestroyContext();
 

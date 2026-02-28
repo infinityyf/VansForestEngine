@@ -1,4 +1,4 @@
-#include "VansLight.h"
+﻿#include "VansLight.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include "../../../EngineCore/Configration/VansConfigration.h"
 #include "../../../EngineCore/VansTimer.h"
@@ -117,7 +117,7 @@ void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_devi
 	//创建资源
 	VkDescriptorSetLayoutBinding lightBufferBinding =
 	{
-		VansVKDescriptorManager::m_LightsBufferSetBinding,
+		PassBinding::CBUFFER_0,
 		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 		1,
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
@@ -131,7 +131,7 @@ void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_devi
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 		{
 			m_LightDataDescriptorSets[0],
-			VansVKDescriptorManager::m_LightsBufferSetBinding,
+			PassBinding::CBUFFER_0,
 			0,
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			{

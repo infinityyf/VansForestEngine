@@ -1,4 +1,4 @@
-#include "VansCamera.h"
+﻿#include "VansCamera.h"
 #include "../VansTimer.h"
 
 #include <iostream>
@@ -79,7 +79,7 @@ glm::vec4 VansGraphics::VansCamera::GetUp()
 
 void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix)
 {
-// Sub‑pixel jitter (Halton 2,3) for TAA / upscale
+// Sub鈥憄ixel jitter (Halton 2,3) for TAA / upscale
     auto halton = [](uint32_t i, uint32_t b)->float {
         float f = 1.0f;
         float r = 0.0f;
@@ -103,7 +103,7 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     float jitterPixelX = (h2 - 0.5f);
     float jitterPixelY = (h3 - 0.5f);
 
-    // Convert to clip space offsets (NDC) – multiply by 2 because clip x,y span [-1,1]
+    // Convert to clip space offsets (NDC) 鈥?multiply by 2 because clip x,y span [-1,1]
     m_JitterX =  (jitterPixelX / width) * 2.0f;
     m_JitterY =  (jitterPixelY / height) * 2.0f;
 
@@ -141,7 +141,7 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
         {
             m_CameraBufferDescriptorSets[0],
-            VansVKDescriptorManager::m_CameraBufferSetBinding,
+            GLOBAL_BINDING_CAMERA_UBO,
             0,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             {

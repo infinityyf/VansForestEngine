@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../RenderCore/VansCamera.h"
 #include "../RenderCore/VansGraphicsDevice.h"
 #include "../../VansBasicWindow.h"
@@ -46,11 +46,14 @@ namespace VansGraphics
 
 		static void CreateWindowComponents();
 
-		static void KeyBoardInputCallBack(GLFWwindow* window, int key, int scancode, int action, int mods);
+		/// Setup ImGui fonts, style, and color theme
+		static void SetupImGuiStyle();
 
-		static void MouseInputCallBack(GLFWwindow* window, double xpos, double ypos);
+		/// Register camera input listeners with VansInputManager
+		static void RegisterCameraInputListeners();
 
-		static void MouseClickCallBack(GLFWwindow* window, int button, int action, int mods);
+		/// Unregister camera input listeners
+		static void UnregisterCameraInputListeners();
 
 		static std::vector<VansGraphics::VansCamera*> m_Cameras;
 

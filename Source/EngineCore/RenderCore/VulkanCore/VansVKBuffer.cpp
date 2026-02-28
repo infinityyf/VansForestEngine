@@ -1,5 +1,4 @@
-
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKBuffer.h"
 #include "VansVKMemoryManager.h"
 #include <iostream>

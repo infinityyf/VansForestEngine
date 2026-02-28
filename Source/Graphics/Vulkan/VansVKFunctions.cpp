@@ -1,4 +1,4 @@
-#include "VansVKFunctions.h"
+ï»¿#include "VansVKFunctions.h"
 #include <iostream>
 
 #if defined _WIN32
@@ -58,7 +58,7 @@ namespace VansGraphics
 			std::cout << "Could not load exported Vulkan function: " << #name << std::endl;\
 			return false;\
 		}
-		//call the function £º EXPORTED_VULKAN_FUNCTION(vkGetInstanceProcAddr), not declare function
+		//call the function ï¼š EXPORTED_VULKAN_FUNCTION(vkGetInstanceProcAddr), not declare function
 #include "ListOfVulkanFunctions.inl"
 		return true;
 	}

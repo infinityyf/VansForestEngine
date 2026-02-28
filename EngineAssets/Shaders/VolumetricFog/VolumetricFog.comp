@@ -1,98 +1,181 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-#define CameraCBBind 1
-#define LightCBBind 2
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
 #include "../Lights/LightsData.glsl"
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-layout( set = 0, binding = 0 ) uniform sampler2D inputPosition;
-layout( set = 0, binding = 1 ) uniform sampler2D mainLightShadowMap;
-layout( set = 0, binding = 2, rgba32f ) uniform image2D fogResult;
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout( set = 1, binding = 0 ) uniform sampler2D inputPosition;
+layout( set = 1, binding = 1 ) uniform sampler2D mainLightShadowMap;
+layout( set = 1, binding = 2, rgba32f ) uniform image2D fogResult;
+
 #define SCREEN_SCALE 2
 
-#define VOLUMETRIX_TRACE_STEP 32
-#define VOLUMETRIX_START_OFFSET 1.0
+// --- Ray march settings (near range only) ---
+#define VOL_TRACE_STEPS    16
+#define VOL_MAX_DISTANCE   150.0
+#define VOL_FADE_START     120.0
 
-const vec3 c_fogColorUnlit = vec3(0.1,0.5,0.2);
-const vec3 c_fogColorLit = vec3(0.5,0.8,1.0);
-const float c_fogDensity = 0.001;
-const float c_fogHeight = 5.0f;
+// --- Height-exponential fog parameters ---
+const float c_fogDensity    = 0.002;            // base density at y = 0
+const float c_heightFalloff = 0.08;             // exponential height decay rate
+const float c_fogMaxHeight  = 80.0;             // above this height density is negligible
+const vec3  c_ambientFog    = vec3(0.15, 0.18, 0.22); // ambient fog tint
 
-vec3 GetSunScattering(vec3 samplePosition, vec3 sunLightDirection,float shadow, float phase)
+// ============================================================
+// Height-based fog density at a world position
+// density(y) = baseDensity * exp(-falloff * y)
+// ============================================================
+float FogDensityAt(vec3 pos)
 {
-    float fogThickness = max(c_fogHeight - samplePosition.y,0) / max(1.0f,abs(sunLightDirection.y));
-
-    vec3 sunLighting = uDirectionLight.color.xyz * shadow * phase * HALF_PI;
-
-    return sunLighting * exp2(-c_fogDensity * fogThickness);
+    if (pos.y > c_fogMaxHeight) return 0.0;
+    return c_fogDensity * exp(-c_heightFalloff * max(pos.y, 0.0));
 }
 
+// ============================================================
+// Analytical height-exponential fog optical depth (closed-form)
+// Integrates density along the segment [rayOrigin → rayEnd]
+// ============================================================
+float AnalyticalHeightFogOD(vec3 rayOrigin, vec3 rayEnd)
+{
+    float d = length(rayEnd - rayOrigin);
+    if (d < 0.001) return 0.0;
 
-void main() 
+    float y0 = rayOrigin.y;
+    float y1 = rayEnd.y;
+    float dy = y1 - y0;
+
+    float od;
+    if (abs(dy) > 0.001)
+    {
+        // Closed-form: integral of density * exp(-falloff * y) ds
+        od = c_fogDensity * d
+           * (exp(-c_heightFalloff * y0) - exp(-c_heightFalloff * y1))
+           / (c_heightFalloff * dy);
+    }
+    else
+    {
+        // Near-horizontal ray
+        od = c_fogDensity * d * exp(-c_heightFalloff * y0);
+    }
+    return max(od, 0.0);
+}
+
+// ============================================================
+// Sun in-scatter at a sample point (accounts for vertical fog
+// thickness between sample and upper atmosphere)
+// ============================================================
+vec3 GetSunScattering(vec3 samplePos, vec3 sunDir, float shadow, float phase)
+{
+    float verticalOD = exp(-c_heightFalloff * max(samplePos.y, 0.0))
+                     / max(0.01, abs(sunDir.y));
+
+    vec3 sunLight = uDirectionLight.color.xyz * shadow * phase * HALF_PI;
+    return sunLight * exp(-c_fogDensity * verticalOD * 8.0);
+}
+
+// ============================================================
+void main()
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
-    
-    // calculate how much of the ray is in direct light by taking a fixed number of steps down the ray
-    // and calculating the percent.
-    // Note: in a rasterizer, you'd replace the RayVsScene raytracing with a shadow map lookup!
-    vec3 cameraPositionWS = cameraPosition.xyz;
+    ivec2 fogSize = imageSize(fogResult);
+    if (pixelCoord.x >= fogSize.x || pixelCoord.y >= fogSize.y)
+        return;
+
+    // --- Reconstruct world position & view ray ---
+    vec3 camPos  = cameraPosition.xyz;
     vec4 gbuffer = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0);
     float linearDepth = gbuffer.w;
-    vec3 positionWS = gbuffer.xyz;
+    vec3 posWS   = gbuffer.xyz;
 
+    float totalDist = length(posWS - camPos);
+    vec3  viewDir   = normalize(posWS - camPos);
 
-    float positionDistance = length(positionWS - cameraPositionWS);
-    vec3 viewDirection = normalize(positionWS - cameraPositionWS);
-    if(linearDepth == 0.0)
+    // Sky pixels — reconstruct far direction
+    if (linearDepth == 0.0)
     {
-        positionDistance = 1000.0;
-        vec2 uv = (vec2(pixelCoord) * float(SCREEN_SCALE) + 0.5) / ScreenParams.xy;
-        vec2 ndc = uv * 2.0 - 1.0; // flip Y for clip space
-
+        totalDist = 1000.0;
+        vec2 uv  = (vec2(pixelCoord) * float(SCREEN_SCALE) + 0.5) / ScreenParams.xy;
+        vec2 ndc = uv * 2.0 - 1.0;
         vec4 clip = vec4(ndc, 1.0, 1.0);
-        // Requires inverse matrices in CameraData.glsl
         vec3 dirVS = normalize((InverseProjectionMatrix * clip).xyz);
-        viewDirection = normalize((InverseViewMatrix * vec4(dirVS, 0.0)).xyz);
-        viewDirection = vec3(1,0,0);
+        viewDir = normalize((InverseViewMatrix * vec4(dirVS, 0.0)).xyz);
+        posWS   = camPos + viewDir * totalDist;
     }
-    vec3 rayDir = uDirectionLight.direction.xyz;
 
-    float fogTransmittance = 1.0f;
-    float stepLength = positionDistance / float(VOLUMETRIX_TRACE_STEP);
-    vec3 sunLightScattering = vec3(0.0);
+    vec3  sunDir = uDirectionLight.direction.xyz;
+    float lDotV  = dot(sunDir, viewDir);
+    float phase  = phase2Lobes(lDotV);
 
-    float lDotW = dot(rayDir, viewDirection);
-    float phase = phase2Lobes(lDotW);
+    // Temporal jitter
+    float jitter = RandomInterLeavedWithScale(vec2(pixelCoord), FrameIndex);
 
-    //添加jitter扰动
-    float sampleJitter = RandomInterLeavedWithScale(pixelCoord, FrameIndex);
+    // ============================================================
+    // NEAR RANGE — volumetric ray march with shadow sampling
+    // ============================================================
+    float marchDist = min(totalDist, VOL_MAX_DISTANCE);
+    float stepLen   = marchDist / float(VOL_TRACE_STEPS);
 
-    for (int i = 0; i < VOLUMETRIX_TRACE_STEP; ++i)
+    float volTransmittance = 1.0;
+    vec3  volScattering    = vec3(0.0);
+
+    for (int i = 0; i < VOL_TRACE_STEPS; ++i)
     {
-        vec3 testPos = cameraPositionWS + viewDirection * stepLength * (float(i) + VOLUMETRIX_START_OFFSET * sampleJitter);
-        
-        if(testPos.y > c_fogHeight)
+        float t = stepLen * (float(i) + 0.5 + (jitter - 0.5) * 0.8);
+        vec3 samplePos = camPos + viewDir * t;
+
+        float density = FogDensityAt(samplePos);
+        if (density < 1e-6)
             continue;
 
-        //计算是否处于阴影
+        // Shadow map lookup
         float shadow = 1.0;
-        vec4 lightSpacePos = uDirectionLight.shadowMatrix * vec4(testPos, 1.0);
-        lightSpacePos.z = lightSpacePos.z * 0.5 + 0.5;
-        vec2 shadowUV = lightSpacePos.xy * 0.5 + 0.5;
+        vec4 lsPos = uDirectionLight.shadowMatrix * vec4(samplePos, 1.0);
+        lsPos.z = lsPos.z * 0.5 + 0.5;
+        vec2 shadowUV = lsPos.xy * 0.5 + 0.5;
         shadowUV.y = 1.0 - shadowUV.y;
-
-        float shadowMapDepth = texture(mainLightShadowMap, shadowUV).r;
-        if (shadowMapDepth < lightSpacePos.z - DEPTH_BIAS)
+        if (shadowUV.x >= 0.0 && shadowUV.x <= 1.0 &&
+            shadowUV.y >= 0.0 && shadowUV.y <= 1.0)
         {
-            shadow = 0.0;
+            float shadowZ = texture(mainLightShadowMap, shadowUV).r;
+            shadow = (shadowZ < lsPos.z - DEPTH_BIAS) ? 0.0 : 1.0;
         }
 
-        sunLightScattering += GetSunScattering(testPos, rayDir, shadow, phase) * fogTransmittance;
-        fogTransmittance *= exp2(-stepLength * c_fogDensity);
+        float stepOD = density * stepLen;
+
+        // In-scatter: sun + ambient
+        vec3 scatter = GetSunScattering(samplePos, sunDir, shadow, phase)
+                     + c_ambientFog * density * 0.5;
+
+        volScattering    += scatter * volTransmittance * stepLen;
+        volTransmittance *= exp(-stepOD);
     }
 
-    imageStore(fogResult, pixelCoord, vec4(sunLightScattering,1 - fogTransmittance));
+    // ============================================================
+    // FAR RANGE — analytical height-exponential fog (no shadow)
+    // ============================================================
+    float farFogOD   = 0.0;
+    vec3  farScatter = vec3(0.0);
 
+    if (totalDist > VOL_FADE_START)
+    {
+        vec3 farStart = camPos + viewDir * marchDist;
+        farFogOD = AnalyticalHeightFogOD(farStart, posWS);
+
+        // Approximate in-scatter for the analytical region (no per-sample shadow)
+        vec3 farSun     = uDirectionLight.color.xyz * phase * 0.3;
+        vec3 farAmbient = c_ambientFog * 0.5;
+        farScatter = (farSun + farAmbient) * (1.0 - exp(-farFogOD));
+    }
+
+    // ============================================================
+    // Combine near volumetric + far analytical
+    // ============================================================
+    float farTransmittance = exp(-farFogOD);
+
+    vec3  totalScatter      = volScattering + volTransmittance * farScatter;
+    float totalTransmittance = volTransmittance * farTransmittance;
+
+    // .rgb = accumulated in-scatter,  .a = opacity (1 - transmittance)
+    imageStore(fogResult, pixelCoord, vec4(totalScatter, 1.0 - totalTransmittance));
 }

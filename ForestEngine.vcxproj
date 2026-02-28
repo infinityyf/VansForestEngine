@@ -76,6 +76,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -90,6 +91,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -108,6 +110,7 @@
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -127,6 +130,7 @@
       <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -206,12 +210,14 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKCommandBuffer.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDescriptorManager.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansDescriptorSetLayouts.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKImage.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryManager.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSampler.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.h" />
     <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h" />
     <ClInclude Include="Source\EngineCore\Util\VansFileUtil.h" />
+    <ClInclude Include="Source\EngineCore\Util\VansInputManager.h" />
     <ClInclude Include="Source\EngineCore\Util\VansJobSystem.h" />
     <ClInclude Include="Source\EngineCore\VansTimer.h" />
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h" />
@@ -268,6 +274,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansShader.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansTexture.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDescriptorManager.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansDescriptorSetLayouts.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKBuffer.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKCommandBuffer.cpp" />
@@ -277,6 +284,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSampler.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.cpp" />
     <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp" />
+    <ClCompile Include="Source\EngineCore\Util\VansInputManager.cpp" />
     <ClCompile Include="Source\EngineCore\Util\VansJobSystem.cpp" />
     <ClCompile Include="Source\EngineCore\VansTimer.cpp" />
     <ClCompile Include="Source\ForestEngineEntry.cpp" />

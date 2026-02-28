@@ -1,18 +1,17 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-#define CameraCBBind 1
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
 #include "../BRDF/BRDFData.glsl"
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-layout( set = 0, binding = 0 ) uniform sampler2D inputColor;
-layout( set = 0, binding = 1 ) uniform sampler2D inputRoughness;
-layout( set = 0, binding = 2 ) uniform sampler2D inputNormal;
-layout( set = 0, binding = 3 ) uniform sampler2D inputPosition;
-layout( set = 0, binding = 4, rgba32f ) uniform image2D traceHit;
-layout( set = 0, binding = 5, rgba32f ) uniform image2D tracePDF;
-layout( set = 0, binding = 6, rgba32f ) uniform image2D resolveResult;
+layout( set = 1, binding = 0 ) uniform sampler2D inputColor;
+layout( set = 1, binding = 1 ) uniform sampler2D inputRoughness;
+layout( set = 1, binding = 2 ) uniform sampler2D inputNormal;
+layout( set = 1, binding = 3 ) uniform sampler2D inputPosition;
+layout( set = 1, binding = 4, rgba32f ) uniform image2D traceHit;
+layout( set = 1, binding = 5, rgba32f ) uniform image2D tracePDF;
+layout( set = 1, binding = 6, rgba32f ) uniform image2D resolveResult;
 
 #define SCREEN_SCALE 2
 void main() 
@@ -42,17 +41,18 @@ void main()
 
     vec3 resolvedReflectionColor = vec3(0.0);
     float resolvedWeight = 0.0;
-
-    vec2 rnd = HashRandom(pixelCoord, float(int(FrameIndex) % 100));
-    vec2 jitterTexel = ivec2(floor(rnd * 3.0)) - ivec2(1); // maps [0,1) -> { -1,0,1 }
+    float centerDepth = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0).w;
 
     //使用周围像素的结果，相当于trace了更多的光线
     for (int i = 0; i < SSR_NUM_RESOLVER; i++)
 	{
-        //对offset加上扰动
-		vec2 neighborUV = (pixelCoord + offset[i]);
+		ivec2 neighborCoord = pixelCoord + offset[i];
 
-        vec4 neighborHitInfo = imageLoad(traceHit, ivec2(neighborUV));
+        vec4 neighborHitInfo = imageLoad(traceHit, neighborCoord);
+
+        // Skip neighbors with no valid hit — they contribute garbage
+        if (neighborHitInfo.w < 0.5)
+            continue;
 
         vec2 neighborHituv = neighborHitInfo.xy;
 
@@ -61,11 +61,26 @@ void main()
         vec3 hitPosition = texelFetch(inputPosition, ivec2(neighborHituv * ScreenParams.xy), 0).xyz;
         vec3 lightDirection = normalize(hitPosition - position);
 
-        //采样概率
-        vec4 pdfInfo = imageLoad(tracePDF, ivec2(neighborUV));
+        // Fade color near screen edges to avoid hard reflection cutoff
+        float edgeFade = 1.0;
+        edgeFade *= smoothstep(0.0, 0.05, neighborHituv.x) * smoothstep(1.0, 0.95, neighborHituv.x);
+        edgeFade *= smoothstep(0.0, 0.05, neighborHituv.y) * smoothstep(1.0, 0.95, neighborHituv.y);
+        color *= edgeFade;
 
-		///SpatioSampler
-		float currentSampleWeight = SSR_BRDF(viewDirection, lightDirection, normal, roughness) / max(1e-5, pdfInfo.a);
+        //采样概率
+        vec4 pdfInfo = imageLoad(tracePDF, neighborCoord);
+
+        // Bilateral weight: normal similarity between center and neighbor shading point
+        vec3 neighborNormal = texelFetch(inputNormal, neighborCoord * SCREEN_SCALE, 0).xyz;
+        float normalWeight = pow(max(0.0, dot(normal, neighborNormal)), 32.0);
+
+        // Bilateral weight: depth similarity
+        float neighborDepth = texelFetch(inputPosition, neighborCoord * SCREEN_SCALE, 0).w;
+        float depthWeight = exp(-abs(centerDepth - neighborDepth) / max(centerDepth * 0.05, 0.01));
+
+		///SpatioSampler — BRDF importance weight with bilateral filter
+		float brdfWeight = SSR_BRDF(viewDirection, lightDirection, normal, roughness) / max(1e-5, pdfInfo.a);
+        float currentSampleWeight = brdfWeight * normalWeight * depthWeight;
 
 		resolvedReflectionColor += color * currentSampleWeight;
 		resolvedWeight += currentSampleWeight;
@@ -75,14 +90,9 @@ void main()
     {
         resolvedReflectionColor /= resolvedWeight;
     }
-	
-    // //采样color
-    // vec3 color = texelFetch(inputColor, ivec2(hituv * ScreenParams.xy), 0).xyz;
-    // vec3 hitPosition = texelFetch(inputPosition, ivec2(hituv * ScreenParams.xy), 0).xyz;
-    // vec3 lightDirection = normalize(hitPosition - position);
-    // color *= SSR_BRDF(viewDirection, lightDirection,normal, roughness);
-    
-    if(hitInfo.w > 0)
+
+    // Check if ANY neighbor had a valid hit (including center)
+    if(resolvedWeight > 1e-5)
     {
         imageStore(resolveResult, pixelCoord, vec4(resolvedReflectionColor, 1.0));
     }

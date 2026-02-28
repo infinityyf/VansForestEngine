@@ -13,7 +13,7 @@ void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 		{
 			m_BRDFInterationTextDescriptorSets[0],
-			VansVKDescriptorManager::m_Buffer3SetBinding,
+			PassBinding::BUFFER_3,
 			0,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			{
@@ -29,7 +29,7 @@ void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			m_BRDFInterationTextDescriptorSets[0],
-			VansVKDescriptorManager::m_SampleTexture0SetBinding,
+			PassBinding::TEXTURE_0,
 			0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
@@ -44,7 +44,7 @@ void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			m_BRDFInterationTextDescriptorSets[0],
-			VansVKDescriptorManager::m_SampleTexture1SetBinding,
+			PassBinding::TEXTURE_1,
 			0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
@@ -59,7 +59,7 @@ void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			m_BRDFInterationTextDescriptorSets[0],
-			VansVKDescriptorManager::m_SampleTexture2SetBinding,
+			PassBinding::TEXTURE_2,
 			0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
@@ -82,7 +82,7 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 		{
 			m_MaterialAtmosphereDataDescriptorSets[0],
-			VansVKDescriptorManager::m_AtmosphereBufferSetBinding,
+			SKYBOX_BINDING_ATMOSPHERE_UBO,
 			0,
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			{

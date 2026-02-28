@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include <string>
 #include <vector>
 #include <iostream>
@@ -40,14 +40,14 @@ std::vector<std::string> GetFilesInFolder(const std::string& directory)
         return files;
     }
 
-    //ÓÃÓÚ´Ó¿í×Ö·û×ª»»µ½string
+    //ç”¨äºä»å®½å­—ç¬¦è½¬æ¢åˆ°string
     std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
 
     do {
         // Convert the wstring to a string
         const std::string fileOrDir = converter.to_bytes(findFileData.cFileName);
 
-        //¹ıÂËµôdirÖ»»ñÈ¡ÎÄ¼ş
+        //è¿‡æ»¤æ‰diråªè·å–æ–‡ä»¶
         bool isDir = findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
 
         if (!isDir && fileOrDir != "." && fileOrDir != "..")
@@ -82,7 +82,7 @@ std::vector<std::string> GetFilesInFolder(const std::string& directory)
 
 std::string GetFileExtension(const std::string& directory)
 {
-    //»ñÈ¡µ±µØÎÄ¼şÃûµÄºó×º
+    //è·å–å½“åœ°æ–‡ä»¶åçš„åç¼€
     size_t pos = directory.find_last_of('.');
     if (pos == std::string::npos)
     {
@@ -145,7 +145,7 @@ bool CheckFolderExist(const std::string& check_string)
 bool SwitchToDeferredShaderPath(std::string& string)
 {
     auto temp_string = string + "/Deferred";
-    //¼ì²éÊÇ·ñº¬ÓĞÕâ¸öÂ·¾¶£¬Èç¹ûÃ»ÓĞ¾Í²»×ª»»£¬²¢Êä³ö
+    //æ£€æŸ¥æ˜¯å¦å«æœ‰è¿™ä¸ªè·¯å¾„ï¼Œå¦‚æœæ²¡æœ‰å°±ä¸è½¬æ¢ï¼Œå¹¶è¾“å‡º
     if (!CheckFolderExist(temp_string))
     {
         return false;

@@ -1,5 +1,5 @@
 #if !defined(ModelCBBind)
-    #define ModelCBBind 1
+    #define ModelCBBind 2
 #endif
 // layout(set=ModelCBBind, binding=0) uniform    ModelUniformBuffer 
 // {

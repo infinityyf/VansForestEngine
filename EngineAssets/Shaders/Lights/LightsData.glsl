@@ -45,9 +45,12 @@ struct LightResult
 #define MAX_SPOT_LIGHTS 10
 
 #if !defined(LightCBBind)
-    #define LightCBBind 3
+    #define LightCBBind 0
 #endif
-layout(set=LightCBBind, binding=0) uniform LightsData
+#if !defined(LightBinding)
+    #define LightBinding 1
+#endif
+layout(set=LightCBBind, binding=LightBinding) uniform LightsData
 {
     uint uPointLightCount;
     uint uSpotLightCount;
