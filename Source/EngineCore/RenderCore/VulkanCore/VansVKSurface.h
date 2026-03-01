@@ -67,6 +67,9 @@ namespace VansGraphics
 
 		bool DestroyVulkanSwapChain(VkDevice& logical_device);
 
+		// 重建交换链（窗口大小改变时调用）
+		bool RecreateSwapChain(VkPhysicalDevice& physical_device, VkDevice& logical_device);
+
 		bool DestroyVulkanPresentSurface(VkInstance& instance);
 
 		void SetSwapChainImageBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, ImageTransition transition, int swap_chain_index = -1);

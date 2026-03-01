@@ -141,6 +141,12 @@ namespace VansGraphics
 		//uipass
 		void SetupVansUIRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);
 
+		// 销毁UI pass（用于窗口resize）
+		void DestroyUIRenderPass();
+
+		// 重建 UI pass（resize后调用）
+		void RecreateUIRenderPass(VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);
+
 		//渲染区域大小
 		void BeginRenderPass(VansVKRenderPass& renderPass, VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index = 0);
 

@@ -56,6 +56,9 @@ namespace VansGraphics
 
 		void EndUIRenderPass();
 
+		// 窗口大小改变时重建交换链和UI渲染pass
+		void OnWindowResize(uint32_t width, uint32_t height);
+
 	public:
 
 		//初始化被渲染的数据

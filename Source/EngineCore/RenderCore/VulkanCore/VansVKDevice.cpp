@@ -491,6 +491,46 @@ namespace VansGraphics
 		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 	}
 
+	void VansVKDevice::OnWindowResize(uint32_t width, uint32_t height)
+	{
+		if (width == 0 || height == 0)
+			return;
+
+		// Wait for all in-flight GPU work to complete
+		WaitForDevice();
+
+		// 1. Recreate swap chain — picks up new framebuffer size from VkSurfaceCapabilitiesKHR
+		if (!m_VansVKSurface.RecreateSwapChain(m_VansVKPhysicalDevice, m_VansVKLogicDevice))
+		{
+			std::cerr << "OnWindowResize: swap chain recreation failed." << std::endl;
+			return;
+		}
+
+		// NOTE: m_RenderWidth / m_RenderHeight are the internal render resolution and
+		// intentionally kept fixed — SSGI, SSR, GBuffer, HZB, etc. all use this
+		// resolution and are NOT recreated here.
+		VkExtent2D newDisplayExtent = m_VansVKSurface.m_VansVKSwapChainImageExtent;
+
+		// 2. Rebuild UI render pass framebuffers (they reference swap chain image views)
+		auto renderPassManager = VansRenderPassManager::GetInstance();
+		renderPassManager->RecreateUIRenderPass(
+			m_VansVKCommandBuffer, m_VansVKGraphicsQueue,
+			m_VansVKSurface, { newDisplayExtent.width, newDisplayExtent.height }
+		);
+
+		// 3. Rebuild FSR context: render res stays the same, display res follows the window
+		CleanupFSR();
+		m_FSRController.InitializeContext(
+			m_VansVKLogicDevice, m_VansVKPhysicalDevice,
+			m_RenderWidth, m_RenderHeight,
+			newDisplayExtent.width, newDisplayExtent.height
+		);
+		PrepareFSRDispatchInputData(3.14f / 2, 0.01f, 100.0f);
+
+		std::cout << "OnWindowResize: display=" << newDisplayExtent.width << "x" << newDisplayExtent.height
+			<< "  render=" << m_RenderWidth << "x" << m_RenderHeight << std::endl;
+	}
+
 	void VansVKDevice::BeforeRendering()
 	{
 		//创建信号量

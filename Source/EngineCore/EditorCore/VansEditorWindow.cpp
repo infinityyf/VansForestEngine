@@ -97,6 +97,11 @@ bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int heigh
     // Initialize input manager — must be BEFORE ImGui GLFW init so ImGui can chain
     Vans::VansInputManager::Get().Initialize(m_VansEditorWindow.m_VansGraphicsHandle);
 
+    // Register framebuffer resize callback — sets the rebuild flag for the main loop
+    glfwSetFramebufferSizeCallback(m_VansEditorWindow.m_VansGraphicsHandle, [](GLFWwindow*, int, int) {
+        m_VansEditorWindow.m_WindowStatus.swapChainRebuild = true;
+    });
+
     // Register Physics Pre-Step Callback for Vehicle
     VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback([](float dt) {
         if (m_Scene && m_Scene->m_Vehicle)
@@ -431,7 +436,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
     // Main loop
     while (!glfwWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle))
-    {
+    { 
         glfwPollEvents();
 
         // Resize swap chain?
@@ -441,9 +446,18 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             glfwGetFramebufferSize(m_VansEditorWindow.m_VansGraphicsHandle, &width, &height);
             if (width > 0 && height > 0)
             {
-                //ImGui_ImplVulkan_SetMinImageCount(g_MinImageCount);
-                //ImGui_ImplVulkanH_CreateOrResizeWindow(g_Instance, g_PhysicalDevice, g_Device, &g_MainWindowData, g_QueueFamily, g_Allocator, width, height, g_MinImageCount);
+                auto* vkDevice = static_cast<VansVKDevice*>(m_GraphicsDevice);
+                vkDevice->OnWindowResize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+
+                // NOTE: internal render resolution is unchanged, so camera aspect ratio
+                // and all SSGI/SSR/GBuffer render targets are unaffected.
+
                 m_VansEditorWindow.m_WindowStatus.swapChainRebuild = false;
+            }
+            else
+            {
+                // Window minimized — skip rendering this frame
+                continue;
             }
         }
 

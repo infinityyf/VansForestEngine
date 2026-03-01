@@ -257,11 +257,47 @@ namespace VansGraphics
 
 	bool VansVKSurface::DestroyVulkanSwapChain(VkDevice& logical_device)
 	{
+		// Destroy image views before destroying the swap chain
+		for (auto& imageView : m_VansVKSwapChainImageViews)
+		{
+			if (imageView != VK_NULL_HANDLE)
+				vkDestroyImageView(logical_device, imageView, nullptr);
+		}
+		m_VansVKSwapChainImageViews.clear();
+		m_VansVKSwapChainImages.clear();
+
 		if (m_VansVKSwapChain) 
 		{
 			vkDestroySwapchainKHR(logical_device, m_VansVKSwapChain, nullptr);
 			m_VansVKSwapChain = VK_NULL_HANDLE;
 		}
+		return true;
+	}
+
+	bool VansVKSurface::RecreateSwapChain(VkPhysicalDevice& physical_device, VkDevice& logical_device)
+	{
+		// Destroy old image views
+		for (auto& imageView : m_VansVKSwapChainImageViews)
+		{
+			if (imageView != VK_NULL_HANDLE)
+				vkDestroyImageView(logical_device, imageView, nullptr);
+		}
+		m_VansVKSwapChainImageViews.clear();
+		m_VansVKSwapChainImages.clear();
+
+		// Hand old swap chain off — CreateVulkanSwapChain will use it and destroy it
+		m_VansVKOldSwapChain = m_VansVKSwapChain;
+		m_VansVKSwapChain    = VK_NULL_HANDLE;
+
+		if (!CreateVulkanSwapChain(physical_device, logical_device))
+		{
+			std::cout << "RecreateSwapChain: CreateVulkanSwapChain failed." << std::endl;
+			return false;
+		}
+
+		std::cout << "Swap chain recreated: "
+			<< m_VansVKSwapChainImageExtent.width << "x"
+			<< m_VansVKSwapChainImageExtent.height << std::endl;
 		return true;
 	}
 

@@ -11,7 +11,10 @@ namespace VansGraphics
 	class VansBasicWindow
 	{
 	public:
-		VansBasicWindow() : m_VansGraphicsHandle(nullptr) {}
+		VansBasicWindow() : m_VansGraphicsHandle(nullptr)
+		{
+			m_WindowStatus.swapChainRebuild = false;
+		}
 
 	public:
 		GLFWwindow* m_VansGraphicsHandle;

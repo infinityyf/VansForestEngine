@@ -1115,6 +1115,17 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_VansUIPass.DestroyRenderPass(m_LogicDevice);
 }
 
+void VansGraphics::VansRenderPassManager::DestroyUIRenderPass()
+{
+	m_VansUIPass.DestroyRenderPass(m_LogicDevice);
+}
+
+void VansGraphics::VansRenderPassManager::RecreateUIRenderPass(VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution)
+{
+	DestroyUIRenderPass();
+	SetupVansUIRenderPass(m_LogicDevice, command_buffer, queue, surface, renderResolution);
+}
+
 void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex)
 {
 	//record command buffer
