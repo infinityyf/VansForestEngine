@@ -158,6 +158,8 @@ namespace VansGraphics
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 		
 		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+
+		void SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager);
 	};
 
 	class VansSkyBoxRenderNode : public VansRenderNode

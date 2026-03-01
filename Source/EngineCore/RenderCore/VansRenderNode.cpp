@@ -181,12 +181,30 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
 }
 
+void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager)
+{
+	if (mat && mat->m_MaterialType == VansMaterialType::VAN_PBR)
+	{
+		int idx = mat->m_MaterialPushConstant.materialIndex;
+		materialManager.m_GlobalPBRDataBuffer.SetBufferData(
+			&mat->m_BasePBRParam,
+			sizeof(VansBasePBRParam) * idx,
+			sizeof(VansBasePBRParam));
+	}
+}
+
 void VansGraphics::VansCommonRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
-	////鏇存柊pbr鍙傛暟
-	//m_Material->UpdatePBRUniformData();
-
-	//鏇存柊鎻忚堪绗﹂泦
+	// Sync CPU material params to the global GPU PBR buffer so editor changes take effect.
+	if (!m_MaterialList.empty())
+	{
+		for (auto* mat : m_MaterialList)
+			SyncMaterialToGPU(mat, materialManager);
+	}
+	else
+	{
+		SyncMaterialToGPU(m_Material, materialManager);
+	}
 	UpdateDescripterSets(materialManager);
 }
 
