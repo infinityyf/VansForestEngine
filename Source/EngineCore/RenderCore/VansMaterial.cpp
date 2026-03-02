@@ -3,7 +3,37 @@ using namespace VansGraphics;
 
 VansGraphics::VansMaterialManager::VansMaterialManager()
 {
+}
 
+VansGraphics::VansMaterialManager::~VansMaterialManager()
+{
+	ClearRuntimeRenderTextures();
+}
+
+bool VansGraphics::VansMaterialManager::RegisterRuntimeRenderTexture(const std::string& name, VansTexture* texture, bool replaceExisting)
+{
+	return m_RuntimeRenderTextureManager.Add(name, texture, replaceExisting);
+}
+
+VansTexture* VansGraphics::VansMaterialManager::GetRuntimeRenderTexture(const std::string& name) const
+{
+	return m_RuntimeRenderTextureManager.Get(name);
+}
+
+bool VansGraphics::VansMaterialManager::HasRuntimeRenderTexture(const std::string& name) const
+{
+	return m_RuntimeRenderTextureManager.Has(name);
+}
+
+bool VansGraphics::VansMaterialManager::RemoveRuntimeRenderTexture(const std::string& name)
+{
+	return m_RuntimeRenderTextureManager.Remove(name);
+}
+
+void VansGraphics::VansMaterialManager::ClearRuntimeRenderTextures()
+{
+	m_RuntimeRenderTextureManager.Clear();
+	m_SSGITemporalFrame = 0;
 }
 
 void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()

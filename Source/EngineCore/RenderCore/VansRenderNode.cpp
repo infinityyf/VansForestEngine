@@ -472,6 +472,20 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 		}
 	);
 
+	VansTexture* ssaoFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT);
+	VansTexture* ssgiFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT);
+	VansTexture* ssrAaResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT);
+	VansTexture* shRResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
+	VansTexture* shGResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
+	VansTexture* shBResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
+	VansTexture* volumetricFogResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
+
+	if (ssaoFilterResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
+		shRResult == nullptr || shGResult == nullptr || shBResult == nullptr || volumetricFogResult == nullptr)
+	{
+		return;
+	}
+
 	// Bindings 5-13: Screen-space effect results
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
@@ -481,8 +495,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{
 				{
-					materialManager.m_SSAOFilterResult->GetImage().GetSampler(),
-					materialManager.m_SSAOFilterResult->GetImage().GetImageView(),
+					ssaoFilterResult->GetImage().GetSampler(),
+					ssaoFilterResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}
@@ -496,8 +510,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					materialManager.m_SSGIFilterResult->GetImage().GetSampler(),
-					materialManager.m_SSGIFilterResult->GetImage().GetImageView(),
+					ssgiFilterResult->GetImage().GetSampler(),
+					ssgiFilterResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}
@@ -511,8 +525,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{
 				{
-					materialManager.m_SSRAAResult->GetImage().GetSampler(),
-					materialManager.m_SSRAAResult->GetImage().GetImageView(),
+					ssrAaResult->GetImage().GetSampler(),
+					ssrAaResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}
@@ -558,8 +572,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					materialManager.m_SHRResult->GetImage().GetSampler(),
-					materialManager.m_SHRResult->GetImage().GetImageView(),
+					shRResult->GetImage().GetSampler(),
+					shRResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			}
@@ -573,8 +587,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					materialManager.m_SHGResult->GetImage().GetSampler(),
-					materialManager.m_SHGResult->GetImage().GetImageView(),
+					shGResult->GetImage().GetSampler(),
+					shGResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			}
@@ -588,8 +602,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					materialManager.m_SHBResult->GetImage().GetSampler(),
-					materialManager.m_SHBResult->GetImage().GetImageView(),
+					shBResult->GetImage().GetSampler(),
+					shBResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			}
@@ -605,8 +619,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					materialManager.m_VolumetricFogResult->GetImage().GetSampler(),
-					materialManager.m_VolumetricFogResult->GetImage().GetImageView(),
+					volumetricFogResult->GetImage().GetSampler(),
+					volumetricFogResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			}
@@ -759,6 +773,11 @@ void VansGraphics::VansScreenSpaceRenderNode::UpdateDescripterSets(VansMaterialM
 			}
 		}
 	);
+	VansTexture* ssaoResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_RESULT);
+	if (ssaoResult == nullptr)
+	{
+		return;
+	}
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			textureResourceDescriptorSets[0],
@@ -767,8 +786,8 @@ void VansGraphics::VansScreenSpaceRenderNode::UpdateDescripterSets(VansMaterialM
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{
 				{
-					materialManager.m_SSAOResult->GetImage().GetSampler(),
-					materialManager.m_SSAOResult->GetImage().GetImageView(),
+					ssaoResult->GetImage().GetSampler(),
+					ssaoResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}

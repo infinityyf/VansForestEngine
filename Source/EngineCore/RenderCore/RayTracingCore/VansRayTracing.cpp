@@ -227,12 +227,17 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
     m_RayTracingResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, MID_PRES_16);
    
     VansMaterialManager* materialManager = scene->GetMaterialManager();
-    materialManager->m_SHRResult = new VansTexture();
-    materialManager->m_SHGResult = new VansTexture();
-    materialManager->m_SHBResult = new VansTexture();
-    materialManager->m_SHRResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, HIGH_PRES_32);
-    materialManager->m_SHGResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, HIGH_PRES_32);
-    materialManager->m_SHBResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, HIGH_PRES_32);
+    VansTexture* shRResult = new VansTexture();
+    shRResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, HIGH_PRES_32);
+    materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT, shRResult);
+
+    VansTexture* shGResult = new VansTexture();
+    shGResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, HIGH_PRES_32);
+    materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT, shGResult);
+
+    VansTexture* shBResult = new VansTexture();
+    shBResult->InitTextureWithoutData(*commandBuffer, m_RayTracingPositionCount, m_RayTracingPositionCount, m_RayTracingPositionCount, 4, false, false, true, HIGH_PRES_32);
+    materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT, shBResult);
 
     //提前生成pipeline
     CreateRayTraceDescriptorSets(device, blasMeshCount);
@@ -442,9 +447,14 @@ void VansGraphics::VansRayTracing::BindGIPointLightData()
         }
     );
 
-    auto* rCoeffTexture = manager->m_SHRResult;
-    auto* gCoeffTexture = manager->m_SHGResult;
-    auto* bCoeffTexture = manager->m_SHBResult;
+    auto* rCoeffTexture = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
+    auto* gCoeffTexture = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
+    auto* bCoeffTexture = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
+
+    if (rCoeffTexture == nullptr || gCoeffTexture == nullptr || bCoeffTexture == nullptr)
+    {
+        return;
+    }
 
     //设置球谐积分贴图
     VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
@@ -551,9 +561,13 @@ void VansGraphics::VansRayTracing::BindGISHData(VansMaterialManager* materialMan
         }
     );
 
-    auto* rCoeffTexture = materialManager->m_SHRResult;
-    auto* gCoeffTexture = materialManager->m_SHGResult;
-    auto* bCoeffTexture = materialManager->m_SHBResult;
+    auto* rCoeffTexture = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
+    auto* gCoeffTexture = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
+    auto* bCoeffTexture = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
+    if (rCoeffTexture == nullptr || gCoeffTexture == nullptr || bCoeffTexture == nullptr)
+    {
+        return;
+    }
     VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
         {
             m_GISHUpdateDescriptorSets[0],

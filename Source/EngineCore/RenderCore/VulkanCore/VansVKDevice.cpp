@@ -530,6 +530,14 @@ namespace VansGraphics
 		}
 		CreateVKFence(false, m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
 
+		result = m_VansVKComputeCommandBuffer.CreateVulkanCommandBuffer(*this, m_ComputeQueueFamilyIndex, params);
+		if (!result)
+		{
+			std::cout << "create m_VansVKComputeCommandBuffer failed" << std::endl;
+			return false;
+		}
+		CreateVKFence(false, m_VansVKComputeCommandBuffer.m_CommandBufferFinishSubmitFence);
+
 		result = m_VansEditorCommandBuffer.CreateVulkanCommandBuffer(*this, m_GraphicsQueueFamilyIndex, params);
 		if (!result)
 		{
@@ -556,9 +564,11 @@ namespace VansGraphics
 
 		DestroyVKFence(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_VansVKComputeCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansEditorCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_VansVKComputeCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansEditorCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 
 		if (m_VansVKLogicDevice)

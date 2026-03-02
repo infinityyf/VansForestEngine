@@ -670,6 +670,8 @@ void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
 
 void VansGraphics::VansScene::UnLoadScene()
 {
+	m_MaterialManager.ClearRuntimeRenderTextures();
+
     // Clean up physics nodes
     for (auto* physicsNode : m_PhysicsNodes)
     {

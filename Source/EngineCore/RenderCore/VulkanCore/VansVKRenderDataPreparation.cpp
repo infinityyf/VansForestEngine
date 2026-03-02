@@ -438,24 +438,29 @@ namespace VansGraphics
 	void VansVKDevice::PrepareSSAORenderData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		manager->m_SSAOResult = new VansTexture();
-		manager->m_SSAOResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		VansTexture* ssaoResult = new VansTexture();
+		ssaoResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSAO_RESULT, ssaoResult);
 	}
 
 	void VansVKDevice::PrepareSSGIRenderData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		manager->m_SSGIResult = new VansTexture();
-		manager->m_SSGIResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		VansTexture* ssgiResult = new VansTexture();
+		ssgiResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT, ssgiResult);
 
-		manager->m_SSGIFilterResult = new VansTexture();
-		manager->m_SSGIFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		VansTexture* ssgiFilterResult = new VansTexture();
+		ssgiFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT, ssgiFilterResult);
 
-		manager->m_SSGITemporalA = new VansTexture();
-		manager->m_SSGITemporalA->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
-		manager->m_SSGITemporalB = new VansTexture();
-		manager->m_SSGITemporalB->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
-		manager->m_SSGITemporalResult = manager->m_SSGITemporalA;
+		VansTexture* ssgiTemporalA = new VansTexture();
+		ssgiTemporalA->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_A, ssgiTemporalA);
+
+		VansTexture* ssgiTemporalB = new VansTexture();
+		ssgiTemporalB->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_B, ssgiTemporalB);
 		manager->m_SSGITemporalFrame = 0;
 
 		auto vansConfigration = VansConfigration::GetInstance();
@@ -617,8 +622,9 @@ namespace VansGraphics
 	void VansVKDevice::PrepareHZBRenderData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		manager->m_HZBResult = new VansTexture();
-		manager->m_HZBResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 1, false, true, true, MID_PRES_16);
+		VansTexture* hzbResult = new VansTexture();
+		hzbResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 1, false, true, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT, hzbResult);
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
@@ -653,21 +659,29 @@ namespace VansGraphics
 	void VansVKDevice::PrepareSSRRenderData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		manager->m_SSRHitInfo = new VansTexture();
-		manager->m_SSRHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		VansTexture* ssrHitInfo = new VansTexture();
+		ssrHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_HIT_INFO, ssrHitInfo);
 
-		manager->m_SSRRayPDF = new VansTexture();
-		manager->m_SSRRayPDF->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		VansTexture* ssrRayPdf = new VansTexture();
+		ssrRayPdf->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RAY_PDF, ssrRayPdf);
 
-		manager->m_SSRResult = new VansTexture();
-		manager->m_SSRResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		VansTexture* ssrResult = new VansTexture();
+		ssrResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT, ssrResult);
 
-		manager->m_SSRAAResultA = new VansTexture();
-		manager->m_SSRAAResultA->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
-		manager->m_SSRAAResultB = new VansTexture();
-		manager->m_SSRAAResultB->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
-		manager->m_SSRAAResult = new VansTexture();
-		manager->m_SSRAAResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		VansTexture* ssrAaResultA = new VansTexture();
+		ssrAaResultA->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT_A, ssrAaResultA);
+
+		VansTexture* ssrAaResultB = new VansTexture();
+		ssrAaResultB->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT_B, ssrAaResultB);
+
+		VansTexture* ssrAaResult = new VansTexture();
+		ssrAaResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT, ssrAaResult);
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
@@ -837,8 +851,9 @@ namespace VansGraphics
 	void VansVKDevice::PrepareVolumetricData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		manager->m_VolumetricFogResult = new VansTexture();
-		manager->m_VolumetricFogResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		VansTexture* volumetricFogResult = new VansTexture();
+		volumetricFogResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT, volumetricFogResult);
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
@@ -877,8 +892,9 @@ namespace VansGraphics
 	void VansVKDevice::PrepareBilaterFilterData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		manager->m_SSAOFilterResult = new VansTexture();
-		manager->m_SSAOFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		VansTexture* ssaoFilterResult = new VansTexture();
+		ssaoFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT, ssaoFilterResult);
 
 		VkDescriptorSetLayoutBinding colorInput =
 		{
@@ -926,6 +942,9 @@ namespace VansGraphics
 
 	void VansVKDevice::PrepareRenderingData()
 	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		manager->ClearRuntimeRenderTextures();
+
 		PrepareSkyRenderData();
 		PrepareSSAORenderData();
 		PrepareSSGIRenderData();
@@ -935,10 +954,16 @@ namespace VansGraphics
 		PrepareVolumetricData();
 
 #ifdef _DEBUG
-		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		VkDebugUtilsObjectNameInfoEXT nameInfo = {};
 		nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
 		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+
+		VansTexture* ssaoResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_RESULT);
+		VansTexture* ssgiResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT);
+		VansTexture* ssrResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT);
+		VansTexture* ssrHitInfo = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSR_HIT_INFO);
+		VansTexture* ssrRayPdf = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSR_RAY_PDF);
+
 		nameInfo.objectHandle = reinterpret_cast<uint64_t>(manager->m_PreConvDiffuse->GetImage().GetImage());
 		nameInfo.pObjectName = "PreConvDiffuse";
 		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
@@ -947,25 +972,40 @@ namespace VansGraphics
 		nameInfo.pObjectName = "PreConvSpecular";
 		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 
-		nameInfo.objectHandle = reinterpret_cast<uint64_t>(manager->m_SSAOResult->GetImage().GetImage());
-		nameInfo.pObjectName = "SSAOResult";
-		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		if (ssaoResult)
+		{
+			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssaoResult->GetImage().GetImage());
+			nameInfo.pObjectName = "SSAOResult";
+			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		}
 
-		nameInfo.objectHandle = reinterpret_cast<uint64_t>(manager->m_SSGIResult->GetImage().GetImage());
-		nameInfo.pObjectName = "SSGIResult";
-		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		if (ssgiResult)
+		{
+			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssgiResult->GetImage().GetImage());
+			nameInfo.pObjectName = "SSGIResult";
+			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		}
 
-		nameInfo.objectHandle = reinterpret_cast<uint64_t>(manager->m_SSRResult->GetImage().GetImage());
-		nameInfo.pObjectName = "SSRResult";
-		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		if (ssrResult)
+		{
+			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssrResult->GetImage().GetImage());
+			nameInfo.pObjectName = "SSRResult";
+			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		}
 
-		nameInfo.objectHandle = reinterpret_cast<uint64_t>(manager->m_SSRHitInfo->GetImage().GetImage());
-		nameInfo.pObjectName = "SSRHitInfo";
-		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		if (ssrHitInfo)
+		{
+			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssrHitInfo->GetImage().GetImage());
+			nameInfo.pObjectName = "SSRHitInfo";
+			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		}
 
-		nameInfo.objectHandle = reinterpret_cast<uint64_t>(manager->m_SSRRayPDF->GetImage().GetImage());
-		nameInfo.pObjectName = "SSRRayPDF";
-		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		if (ssrRayPdf)
+		{
+			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssrRayPdf->GetImage().GetImage());
+			nameInfo.pObjectName = "SSRRayPDF";
+			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		}
 #endif
 	}
 

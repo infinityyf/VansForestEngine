@@ -456,14 +456,15 @@ bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice&
 
 void VansGraphics::VansMultiThreadCommandBufferMangaer::InitCommandRecordThreads(std::vector<VansGraphics::VansVKCommandBuffer>& vans_command_buffers)
 {
+	m_CommandBufferRecordingThreadParameters.clear();
 	m_CommandBufferRecordingThreadParameters.reserve(vans_command_buffers.size());
 	for (size_t i = 0; i < vans_command_buffers.size(); ++i)
 	{
-		m_CommandBufferRecordingThreadParameters[i] =
+		m_CommandBufferRecordingThreadParameters.push_back(
 		{
 			vans_command_buffers[i].GetVKCommandBuffer(),
 			NULL,
-		};
+		});
 	}
 	assert(m_CommandBufferRecordingThreadParameters.size() > 0);
 	m_CommandBufferRecordingThreads.resize(m_CommandBufferRecordingThreadParameters.size());

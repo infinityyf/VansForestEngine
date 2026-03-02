@@ -6,17 +6,17 @@
 
 namespace VansGraphics
 {
-	void VansVKDevice::UpdateSSGI(VansRenderPassManager* renderPassManager)
+	void VansVKDevice::UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
 		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
 		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSGIShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSGITexSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSGIShader, halfResWidth / 4, halfResHeight / 4, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSGIDescriptorSets[0] });
+		computeCmd.EnsureComputeShader(*manager->m_SSGIShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSGITexSetLayout });
+		computeCmd.DispatchCompute(*manager->m_SSGIShader, halfResWidth / 4, halfResHeight / 4, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSGIDescriptorSets[0] });
 	}
 
-	void VansVKDevice::TemporalFilterSSGI(VansRenderPassManager* renderPassManager)
+	void VansVKDevice::TemporalFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
 		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
 		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
@@ -24,11 +24,11 @@ namespace VansGraphics
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		uint32_t writeIdx = manager->m_SSGITemporalFrame % 2;
 
-		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSGITemporalShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSGITemporalSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSGITemporalShader, halfResWidth / 4, halfResHeight / 4, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSGITemporalDescriptorSets[writeIdx] });
+		computeCmd.EnsureComputeShader(*manager->m_SSGITemporalShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSGITemporalSetLayout });
+		computeCmd.DispatchCompute(*manager->m_SSGITemporalShader, halfResWidth / 4, halfResHeight / 4, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSGITemporalDescriptorSets[writeIdx] });
 	}
 
-	void VansVKDevice::BilateralFilterSSGI(VansRenderPassManager* renderPassManager)
+	void VansVKDevice::BilateralFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
 		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
 		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
@@ -36,22 +36,24 @@ namespace VansGraphics
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		uint32_t writeIdx = manager->m_SSGITemporalFrame % 2;
 		uint32_t bilateralSetIdx = (writeIdx == 0) ? 1 : 2;
-		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_BilateralFilterShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_BilateralFilterSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_BilateralFilterShader, (halfResWidth + 7) / 8, (halfResHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_BilateralFilterDescriptorSets[bilateralSetIdx] });
+		computeCmd.EnsureComputeShader(*manager->m_BilateralFilterShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_BilateralFilterSetLayout });
+		computeCmd.DispatchCompute(*manager->m_BilateralFilterShader, (halfResWidth + 7) / 8, (halfResHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_BilateralFilterDescriptorSets[bilateralSetIdx] });
 	}
 
-	void VansVKDevice::BilateralFilterSSAO(VansRenderPassManager* renderPassManager)
+	void VansVKDevice::BilateralFilterSSAO(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
 		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
 		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_BilateralFilterShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_BilateralFilterSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_BilateralFilterShader, (halfResWidth + 7) / 8, (halfResHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_BilateralFilterDescriptorSets[0] });
+		computeCmd.EnsureComputeShader(*manager->m_BilateralFilterShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_BilateralFilterSetLayout });
+		computeCmd.DispatchCompute(*manager->m_BilateralFilterShader, (halfResWidth + 7) / 8, (halfResHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_BilateralFilterDescriptorSets[0] });
 	}
 
 	void VansVKDevice::UpdateGIDataDescriptorSets(VansRenderPassManager* renderPassManager)
 	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
 		static bool updatedSets = false;
 		if (updatedSets)
 		{
@@ -59,7 +61,28 @@ namespace VansGraphics
 		}
 		updatedSets = true;
 
-		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		auto getRuntimeTexture = [manager](const char* key)
+			{
+				return manager->GetRuntimeRenderTexture(key);
+			};
+
+		VansTexture* ssgiResult = getRuntimeTexture(VansMaterialManager::RT_SSGI_RESULT);
+		VansTexture* shrResult = getRuntimeTexture(VansMaterialManager::RT_SH_R_RESULT);
+		VansTexture* shgResult = getRuntimeTexture(VansMaterialManager::RT_SH_G_RESULT);
+		VansTexture* shbResult = getRuntimeTexture(VansMaterialManager::RT_SH_B_RESULT);
+		VansTexture* hzbResult = getRuntimeTexture(VansMaterialManager::RT_HZB_RESULT);
+		VansTexture* ssgiTemporalA = getRuntimeTexture(VansMaterialManager::RT_SSGI_TEMPORAL_A);
+		VansTexture* ssgiTemporalB = getRuntimeTexture(VansMaterialManager::RT_SSGI_TEMPORAL_B);
+		VansTexture* ssaoResult = getRuntimeTexture(VansMaterialManager::RT_SSAO_RESULT);
+		VansTexture* ssaoFilterResult = getRuntimeTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT);
+		VansTexture* ssgiFilterResult = getRuntimeTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT);
+
+		if (ssgiResult == nullptr || shrResult == nullptr || shgResult == nullptr || shbResult == nullptr ||
+			hzbResult == nullptr || ssgiTemporalA == nullptr || ssgiTemporalB == nullptr ||
+			ssaoResult == nullptr || ssaoFilterResult == nullptr || ssgiFilterResult == nullptr)
+		{
+			return;
+		}
 
 		VansVKDescriptorManager::GetInstance()->ResetState();
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
@@ -166,8 +189,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSGIResult->GetImage().GetSampler(),
-						manager->m_SSGIResult->GetImage().GetImageView(),
+						ssgiResult->GetImage().GetSampler(),
+						ssgiResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -182,8 +205,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
 					{
-						manager->m_SHRResult->GetImage().GetSampler(),
-						manager->m_SHRResult->GetImage().GetImageView(),
+						shrResult->GetImage().GetSampler(),
+						shrResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -197,8 +220,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
 					{
-						manager->m_SHGResult->GetImage().GetSampler(),
-						manager->m_SHGResult->GetImage().GetImageView(),
+						shgResult->GetImage().GetSampler(),
+						shgResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -212,8 +235,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
 					{
-						manager->m_SHBResult->GetImage().GetSampler(),
-						manager->m_SHBResult->GetImage().GetImageView(),
+						shbResult->GetImage().GetSampler(),
+						shbResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -227,8 +250,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
 					{
-						manager->m_HZBResult->GetImage().GetSampler(),
-						manager->m_HZBResult->GetImage().GetImageView(),
+						hzbResult->GetImage().GetSampler(),
+						hzbResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -246,13 +269,13 @@ namespace VansGraphics
 			  { { motionVector.GetSampler(), motionVector.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[0], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_HISTORY_GI, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			  { { manager->m_SSGITemporalB->GetImage().GetSampler(), manager->m_SSGITemporalB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
+			  { { ssgiTemporalB->GetImage().GetSampler(), ssgiTemporalB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[0], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_CURRENT_GI, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			  { { manager->m_SSGIResult->GetImage().GetSampler(), manager->m_SSGIResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
+			  { { ssgiResult->GetImage().GetSampler(), ssgiResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[0], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_ACCUMULATED_GI, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			  { { manager->m_SSGITemporalA->GetImage().GetSampler(), manager->m_SSGITemporalA->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
+			  { { ssgiTemporalA->GetImage().GetSampler(), ssgiTemporalA->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[0], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_INFO_UBO, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			  { { manager->m_SSGITemporalCBBuffer.GetNativeBuffer(), 0, manager->m_SSGITemporalCBBuffer.GetBufferSize() } } });
@@ -267,13 +290,13 @@ namespace VansGraphics
 			  { { motionVector.GetSampler(), motionVector.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[1], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_HISTORY_GI, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			  { { manager->m_SSGITemporalA->GetImage().GetSampler(), manager->m_SSGITemporalA->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
+			  { { ssgiTemporalA->GetImage().GetSampler(), ssgiTemporalA->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[1], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_CURRENT_GI, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			  { { manager->m_SSGIResult->GetImage().GetSampler(), manager->m_SSGIResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
+			  { { ssgiResult->GetImage().GetSampler(), ssgiResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[1], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_ACCUMULATED_GI, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			  { { manager->m_SSGITemporalB->GetImage().GetSampler(), manager->m_SSGITemporalB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
+			  { { ssgiTemporalB->GetImage().GetSampler(), ssgiTemporalB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[1], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_INFO_UBO, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			  { { manager->m_SSGITemporalCBBuffer.GetNativeBuffer(), 0, manager->m_SSGITemporalCBBuffer.GetBufferSize() } } });
@@ -288,8 +311,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
 					{
-						manager->m_SSAOResult->GetImage().GetSampler(),
-						manager->m_SSAOResult->GetImage().GetImageView(),
+						ssaoResult->GetImage().GetSampler(),
+						ssaoResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -318,8 +341,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSAOFilterResult->GetImage().GetSampler(),
-						manager->m_SSAOFilterResult->GetImage().GetImageView(),
+						ssaoFilterResult->GetImage().GetSampler(),
+						ssaoFilterResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -334,8 +357,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
 					{
-						manager->m_SSGITemporalA->GetImage().GetSampler(),
-						manager->m_SSGITemporalA->GetImage().GetImageView(),
+						ssgiTemporalA->GetImage().GetSampler(),
+						ssgiTemporalA->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -364,8 +387,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSGIFilterResult->GetImage().GetSampler(),
-						manager->m_SSGIFilterResult->GetImage().GetImageView(),
+						ssgiFilterResult->GetImage().GetSampler(),
+						ssgiFilterResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -380,8 +403,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
 					{
-						manager->m_SSGITemporalB->GetImage().GetSampler(),
-						manager->m_SSGITemporalB->GetImage().GetImageView(),
+						ssgiTemporalB->GetImage().GetSampler(),
+						ssgiTemporalB->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -410,8 +433,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSGIFilterResult->GetImage().GetSampler(),
-						manager->m_SSGIFilterResult->GetImage().GetImageView(),
+						ssgiFilterResult->GetImage().GetSampler(),
+						ssgiFilterResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -422,6 +445,8 @@ namespace VansGraphics
 
 	void VansVKDevice::UpdateHZBDescriptorSets(VansRenderPassManager* renderPassManager)
 	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
 		static bool updatedSets = false;
 		if (updatedSets)
 		{
@@ -429,7 +454,11 @@ namespace VansGraphics
 		}
 		updatedSets = true;
 
-		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
+		if (hzbResult == nullptr)
+		{
+			return;
+		}
 
 		for (int mipIndex = 1; mipIndex < manager->m_HIZMipCount; mipIndex++)
 		{
@@ -443,8 +472,8 @@ namespace VansGraphics
 					VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 					{
 						{
-							manager->m_HZBResult->GetImage().GetSampler(),
-							manager->m_HZBResult->GetImage().GetImageMipView(mipIndex - 1),
+							hzbResult->GetImage().GetSampler(),
+							hzbResult->GetImage().GetImageMipView(mipIndex - 1),
 							VK_IMAGE_LAYOUT_GENERAL
 						}
 					}
@@ -458,8 +487,8 @@ namespace VansGraphics
 					VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 					{
 						{
-							manager->m_HZBResult->GetImage().GetSampler(),
-							manager->m_HZBResult->GetImage().GetImageMipView(mipIndex),
+							hzbResult->GetImage().GetSampler(),
+							hzbResult->GetImage().GetImageMipView(mipIndex),
 							VK_IMAGE_LAYOUT_GENERAL
 						}
 					}
@@ -472,6 +501,8 @@ namespace VansGraphics
 
 	void VansVKDevice::UpdateSSRDescriptorSets(VansRenderPassManager* renderPassManager)
 	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
 		static bool updatedSets = false;
 		if (updatedSets)
 		{
@@ -479,7 +510,24 @@ namespace VansGraphics
 		}
 		updatedSets = true;
 
-		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		auto getRuntimeTexture = [manager](const char* key)
+			{
+				return manager->GetRuntimeRenderTexture(key);
+			};
+
+		VansTexture* hzbResult = getRuntimeTexture(VansMaterialManager::RT_HZB_RESULT);
+		VansTexture* ssrHitInfo = getRuntimeTexture(VansMaterialManager::RT_SSR_HIT_INFO);
+		VansTexture* ssrRayPdf = getRuntimeTexture(VansMaterialManager::RT_SSR_RAY_PDF);
+		VansTexture* ssrResult = getRuntimeTexture(VansMaterialManager::RT_SSR_RESULT);
+		VansTexture* ssrAaResultA = getRuntimeTexture(VansMaterialManager::RT_SSRAA_RESULT_A);
+		VansTexture* ssrAaResultB = getRuntimeTexture(VansMaterialManager::RT_SSRAA_RESULT_B);
+		VansTexture* ssrAaResult = getRuntimeTexture(VansMaterialManager::RT_SSRAA_RESULT);
+
+		if (hzbResult == nullptr || ssrHitInfo == nullptr || ssrRayPdf == nullptr ||
+			ssrResult == nullptr || ssrAaResultA == nullptr || ssrAaResultB == nullptr || ssrAaResult == nullptr)
+		{
+			return;
+		}
 
 		auto& normal = renderPassManager->GetNormal();
 		auto& position = renderPassManager->GetGbuffer2();
@@ -541,8 +589,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
 					{
-						manager->m_HZBResult->GetImage().GetSampler(),
-						manager->m_HZBResult->GetImage().GetImageView(),
+						hzbResult->GetImage().GetSampler(),
+						hzbResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -557,8 +605,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSRHitInfo->GetImage().GetSampler(),
-						manager->m_SSRHitInfo->GetImage().GetImageView(),
+						ssrHitInfo->GetImage().GetSampler(),
+						ssrHitInfo->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -573,8 +621,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSRRayPDF->GetImage().GetSampler(),
-						manager->m_SSRRayPDF->GetImage().GetImageView(),
+						ssrRayPdf->GetImage().GetSampler(),
+						ssrRayPdf->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -653,8 +701,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSRHitInfo->GetImage().GetSampler(),
-						manager->m_SSRHitInfo->GetImage().GetImageView(),
+						ssrHitInfo->GetImage().GetSampler(),
+						ssrHitInfo->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -669,8 +717,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSRRayPDF->GetImage().GetSampler(),
-						manager->m_SSRRayPDF->GetImage().GetImageView(),
+						ssrRayPdf->GetImage().GetSampler(),
+						ssrRayPdf->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -685,8 +733,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSRResult->GetImage().GetSampler(),
-						manager->m_SSRResult->GetImage().GetImageView(),
+						ssrResult->GetImage().GetSampler(),
+						ssrResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -703,8 +751,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
 					{
-						manager->m_SSRResult->GetImage().GetSampler(),
-						manager->m_SSRResult->GetImage().GetImageView(),
+						ssrResult->GetImage().GetSampler(),
+						ssrResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -733,8 +781,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSRAAResultA->GetImage().GetSampler(),
-						manager->m_SSRAAResultA->GetImage().GetImageView(),
+						ssrAaResultA->GetImage().GetSampler(),
+						ssrAaResultA->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -748,8 +796,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSRAAResultB->GetImage().GetSampler(),
-						manager->m_SSRAAResultB->GetImage().GetImageView(),
+						ssrAaResultB->GetImage().GetSampler(),
+						ssrAaResultB->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -764,8 +812,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_SSRAAResult->GetImage().GetSampler(),
-						manager->m_SSRAAResult->GetImage().GetImageView(),
+						ssrAaResult->GetImage().GetSampler(),
+						ssrAaResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -776,6 +824,8 @@ namespace VansGraphics
 
 	void VansVKDevice::UpdateVolumetricFogSets(VansRenderPassManager* renderPassManager)
 	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
 		static bool updatedSets = false;
 		if (updatedSets)
 		{
@@ -783,7 +833,11 @@ namespace VansGraphics
 		}
 		updatedSets = true;
 
-		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		VansTexture* volumetricFogResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
+		if (volumetricFogResult == nullptr)
+		{
+			return;
+		}
 
 		auto& position = renderPassManager->GetGbuffer2();
 		auto& mainLightShadow = renderPassManager->GetShadowMap();
@@ -827,8 +881,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
 					{
-						manager->m_VolumetricFogResult->GetImage().GetSampler(),
-						manager->m_VolumetricFogResult->GetImage().GetImageView(),
+						volumetricFogResult->GetImage().GetSampler(),
+						volumetricFogResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_GENERAL
 					}
 				}
@@ -837,14 +891,19 @@ namespace VansGraphics
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 	}
 
-	void VansVKDevice::UpdateHZB(VansRenderPassManager* renderPassManager)
+	void VansVKDevice::UpdateHZB(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
 		UpdateHZBDescriptorSets(renderPassManager);
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		auto& depth = renderPassManager->GetDepth();
+		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
+		if (hzbResult == nullptr)
+		{
+			return;
+		}
 
-		m_VansVKCommandBuffer.BlitImage(depth, 0, manager->m_HZBResult->GetImage(), 0);
+		computeCmd.BlitImage(depth, 0, hzbResult->GetImage(), 0);
 
 		for (int mipIndex = 1; mipIndex < manager->m_HIZMipCount; mipIndex++)
 		{
@@ -853,12 +912,12 @@ namespace VansGraphics
 			threadGroupSizeX = std::ceilf(threadGroupSizeX / 16.0f);
 			threadGroupSizeY = std::ceilf(threadGroupSizeY / 16.0f);
 
-			m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_HZBShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_HZBTexSetLayouts[mipIndex - 1] });
-			m_VansVKCommandBuffer.DispatchCompute(*manager->m_HZBShader, threadGroupSizeX, threadGroupSizeY, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_HZBDescriptorSets[mipIndex - 1] });
+			computeCmd.EnsureComputeShader(*manager->m_HZBShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_HZBTexSetLayouts[mipIndex - 1] });
+			computeCmd.DispatchCompute(*manager->m_HZBShader, threadGroupSizeX, threadGroupSizeY, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_HZBDescriptorSets[mipIndex - 1] });
 		}
 	}
 
-	void VansVKDevice::UpdateSSR(VansRenderPassManager* renderPassManager)
+	void VansVKDevice::UpdateSSR(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
 		UpdateSSRDescriptorSets(renderPassManager);
 
@@ -867,17 +926,17 @@ namespace VansGraphics
 		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
 		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
 
-		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSRTraceShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRTraceSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRTraceShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRTraceDescriptorSets[0] });
+		computeCmd.EnsureComputeShader(*manager->m_SSRTraceShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRTraceSetLayout });
+		computeCmd.DispatchCompute(*manager->m_SSRTraceShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRTraceDescriptorSets[0] });
 
-		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSRResolveShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRResolveSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRResolveShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRResolveDescriptorSets[0] });
+		computeCmd.EnsureComputeShader(*manager->m_SSRResolveShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRResolveSetLayout });
+		computeCmd.DispatchCompute(*manager->m_SSRResolveShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRResolveDescriptorSets[0] });
 
-		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_SSRTemporalAAShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRAASetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_SSRTemporalAAShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRAADescriptorSets[0] });
+		computeCmd.EnsureComputeShader(*manager->m_SSRTemporalAAShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRAASetLayout });
+		computeCmd.DispatchCompute(*manager->m_SSRTemporalAAShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRAADescriptorSets[0] });
 	}
 
-	void VansVKDevice::UpdateVolumetricFog(VansRenderPassManager* renderPassManager)
+	void VansVKDevice::UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
 		UpdateVolumetricFogSets(renderPassManager);
 
@@ -889,17 +948,17 @@ namespace VansGraphics
 		uint32_t groupsX = (halfResWidth + 7) / 8;
 		uint32_t groupsY = (halfResHeight + 7) / 8;
 
-		m_VansVKCommandBuffer.EnsureComputeShader(*manager->m_VolumetrcFogShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_VolumetricFogSetLayout });
-		m_VansVKCommandBuffer.DispatchCompute(*manager->m_VolumetrcFogShader, groupsX, groupsY, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_VolumetricFogDescriptorSets[0] });
+		computeCmd.EnsureComputeShader(*manager->m_VolumetrcFogShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_VolumetricFogSetLayout });
+		computeCmd.DispatchCompute(*manager->m_VolumetrcFogShader, groupsX, groupsY, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_VolumetricFogDescriptorSets[0] });
 	}
 
-	void VansVKDevice::UpdateGIData(VansRenderPassManager* renderPassManager)
+	void VansVKDevice::UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
 		UpdateGIDataDescriptorSets(renderPassManager);
-		UpdateSSGI(renderPassManager);
-		TemporalFilterSSGI(renderPassManager);
-		BilateralFilterSSGI(renderPassManager);
+		UpdateSSGI(renderPassManager, computeCmd);
+		TemporalFilterSSGI(renderPassManager, computeCmd);
+		BilateralFilterSSGI(renderPassManager, computeCmd);
 		m_Scene->GetMaterialManager()->m_SSGITemporalFrame++;
-		BilateralFilterSSAO(renderPassManager);
+		BilateralFilterSSAO(renderPassManager, computeCmd);
 	}
 }

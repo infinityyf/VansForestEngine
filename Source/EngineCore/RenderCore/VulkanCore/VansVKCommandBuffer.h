@@ -61,7 +61,12 @@ namespace VansGraphics
 
 		VkCommandBuffer& GetVKCommandBuffer() { return m_VansVKCommandBuffer; }
 
-		VansVKCommandBuffer(){ }
+		VansVKCommandBuffer()
+			: m_CommandBufferFinishSubmitFence(VK_NULL_HANDLE)
+			, m_VansVKCommandPool(VK_NULL_HANDLE)
+			, m_VansVKCommandBuffer(VK_NULL_HANDLE)
+			, m_VansVKDevice(VK_NULL_HANDLE)
+		{ }
 
 	public :
 		void ClearColor(VansVKImage& image, const VkClearColorValue& value);

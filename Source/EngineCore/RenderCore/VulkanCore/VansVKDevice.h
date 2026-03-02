@@ -130,23 +130,23 @@ namespace VansGraphics
 
 	public:
 
-		void UpdateGIData(VansRenderPassManager* renderPassManager);
+		void UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
-		void UpdateHZB(VansRenderPassManager* renderPassManager);
+		void UpdateHZB(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
-		void UpdateSSR(VansRenderPassManager* renderPassManager);
+		void UpdateSSR(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
-		void UpdateVolumetricFog(VansRenderPassManager* renderPassManager);
+		void UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 	private:
 
-		void UpdateSSGI(VansRenderPassManager* renderPassManager);
+		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
-		void TemporalFilterSSGI(VansRenderPassManager* renderPassManager);
+		void TemporalFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
-		void BilateralFilterSSGI(VansRenderPassManager* renderPassManager);
+		void BilateralFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
-		void BilateralFilterSSAO(VansRenderPassManager* renderPassManager);
+		void BilateralFilterSSAO(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 	private:
 
@@ -160,7 +160,7 @@ namespace VansGraphics
 
 	private:
 
-		void UpdateRayTracing();
+		void UpdateRayTracing(VansVKCommandBuffer& computeCmd);
 
 	private:
 
@@ -200,6 +200,13 @@ namespace VansGraphics
 
 		VkSemaphore m_CommandBufferReadyToPresentSemaphore;
 
+		// Async compute semaphores
+		VkSemaphore m_ShadowToComputeSemaphore;
+		VkSemaphore m_AsyncComputeDoneSemaphore;
+
+		// Set to true to enable async compute (3-submit); false = original single-submit
+		bool m_UseAsyncCompute = false;
+
 		VkPhysicalDeviceProperties m_DeviceProperties;
 		
 		//ray tracing相关的扩展
@@ -231,6 +238,8 @@ namespace VansGraphics
 
 		//command buffer
 		VansVKCommandBuffer m_VansVKCommandBuffer;
+
+		VansVKCommandBuffer m_VansVKComputeCommandBuffer;
 
 		VansVKCommandBuffer m_VansVKRayTracingCommandBuffer;
 		VansRayTracing rayTracingContext;

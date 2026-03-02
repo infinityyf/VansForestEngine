@@ -58,6 +58,8 @@ namespace VansGraphics
 	{
 		CreateVKSemaphore(m_SwapChainImageAcquiredSemaphore);
 		CreateVKSemaphore(m_CommandBufferReadyToPresentSemaphore);
+		CreateVKSemaphore(m_ShadowToComputeSemaphore);
+		CreateVKSemaphore(m_AsyncComputeDoneSemaphore);
 		CreateVKFence(false, m_SwapChainImageAcquiredFence);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
@@ -97,38 +99,105 @@ namespace VansGraphics
 		m_Scene->UpdateSceneData();
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
-		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+		if (!m_UseAsyncCompute)
+		{
+			// ── Original single-submit path ─────────────────────────────────
+			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 
-		renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
-		DrawShadowMap(renderPassManager, cmd);
-		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
+			DrawShadowMap(renderPassManager, cmd);
+			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 
-		UpdateHZB(renderPassManager);
-		UpdateGIData(renderPassManager);
-		UpdateSSR(renderPassManager);
-		UpdateRayTracing();
-		UpdateVolumetricFog(renderPassManager);
+			UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
+			UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
+			UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
+			UpdateRayTracing(m_VansVKCommandBuffer);
+			UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
 
-		renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-		DrawSceneDeferred(renderPassManager, cmd);
-		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
+			DrawSceneDeferred(renderPassManager, cmd);
+			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+		}
+		else
+		{
+			// ── Async compute: 3-submit path ────────────────────────────────
+			// CB1: Shadow pass (graphics queue)
+			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+
+			renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
+			DrawShadowMap(renderPassManager, cmd);
+			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+
+			m_VansVKCommandBuffer.EndCommandBufferRecord();
+
+			VansVKCommandBuffer::SubmitCommands(
+				m_VansVKGraphicsQueue, m_VansVKLogicDevice,
+				{ m_VansVKCommandBuffer.GetVKCommandBuffer() },
+				{},
+				{ m_ShadowToComputeSemaphore },
+				m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+			m_VansVKCommandBuffer.ResetCommandBuffer(false);
+
+			// Compute CB: async dispatches (compute queue)
+			m_VansVKComputeCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+			UpdateHZB(renderPassManager, m_VansVKComputeCommandBuffer);
+			UpdateGIData(renderPassManager, m_VansVKComputeCommandBuffer);
+			UpdateSSR(renderPassManager, m_VansVKComputeCommandBuffer);
+			UpdateRayTracing(m_VansVKComputeCommandBuffer);
+			UpdateVolumetricFog(renderPassManager, m_VansVKComputeCommandBuffer);
+
+			m_VansVKComputeCommandBuffer.EndCommandBufferRecord();
+
+			std::vector<WaitSemaphoreInfo> computeWaits = {
+				{ m_ShadowToComputeSemaphore, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
+			};
+			VansVKCommandBuffer::SubmitCommands(
+				m_VansVKComputeQueue, m_VansVKLogicDevice,
+				{ m_VansVKComputeCommandBuffer.GetVKCommandBuffer() },
+				computeWaits,
+				{ m_AsyncComputeDoneSemaphore },
+				m_VansVKComputeCommandBuffer.m_CommandBufferFinishSubmitFence);
+
+			// CB2: Deferred pass (graphics queue)
+			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+
+			renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
+			DrawSceneDeferred(renderPassManager, cmd);
+			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+		}
 	}
 
 	void VansVKDevice::Present()
 	{
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
-		std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {};
-		wait_semaphore_infos.push_back(
-			{
-				m_SwapChainImageAcquiredSemaphore,
-				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-			}
-		);
 
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, { wait_semaphore_infos }, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		if (!m_UseAsyncCompute)
+		{
+			// ── Original single-submit present ──────────────────────────────
+			std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {
+				{ m_SwapChainImageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }
+			};
+
+			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+			m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		}
+		else
+		{
+			// ── Async compute present ───────────────────────────────────────
+			std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {
+				{ m_SwapChainImageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT },
+				{ m_AsyncComputeDoneSemaphore, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
+			};
+
+			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+			m_VansVKCommandBuffer.ResetCommandBuffer(false);
+			m_VansVKComputeCommandBuffer.ResetCommandBuffer(false);
+		}
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 		m_VansVKSurface.PresentImage(m_VansVKLogicDevice, m_VansVKGraphicsQueue, { m_CommandBufferReadyToPresentSemaphore }, m_SwapChainImageIndex);
@@ -145,6 +214,8 @@ namespace VansGraphics
 
 		DestroyVKSemaphore(m_SwapChainImageAcquiredSemaphore);
 		DestroyVKSemaphore(m_CommandBufferReadyToPresentSemaphore);
+		DestroyVKSemaphore(m_ShadowToComputeSemaphore);
+		DestroyVKSemaphore(m_AsyncComputeDoneSemaphore);
 		DestroyVKFence(m_SwapChainImageAcquiredFence);
 	}
 

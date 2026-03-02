@@ -3,11 +3,14 @@
 #include "VulkanCore/VansShader.h"
 #include "VulkanCore/VansTexture.h"
 #include "VulkanCore/VansVKBuffer.h"
+#include "VansRuntimeRenderTextureManager.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "BRDFData/VansPBR.h"
 #include "BRDFData/VansLight.h"
 #include "VansAsset.h"
 #include <vector>
+#include <unordered_map>
+#include <string>
 
 using namespace VansGraphics;
 namespace VansGraphics
@@ -42,6 +45,34 @@ namespace VansGraphics
 		void InitMaterialDataDescriptors();
 
 	public:
+		static constexpr const char* RT_SSAO_RESULT = "Runtime.SSAO.Result";
+		static constexpr const char* RT_SSGI_RESULT = "Runtime.SSGI.Result";
+		static constexpr const char* RT_SSGI_TEMPORAL_A = "Runtime.SSGI.TemporalA";
+		static constexpr const char* RT_SSGI_TEMPORAL_B = "Runtime.SSGI.TemporalB";
+		static constexpr const char* RT_HZB_RESULT = "Runtime.HZB.Result";
+		static constexpr const char* RT_SSR_HIT_INFO = "Runtime.SSR.HitInfo";
+		static constexpr const char* RT_SSR_RAY_PDF = "Runtime.SSR.RayPDF";
+		static constexpr const char* RT_SSR_RESULT = "Runtime.SSR.Result";
+		static constexpr const char* RT_SSRAA_RESULT_A = "Runtime.SSR.AA.ResultA";
+		static constexpr const char* RT_SSRAA_RESULT_B = "Runtime.SSR.AA.ResultB";
+		static constexpr const char* RT_SSRAA_RESULT = "Runtime.SSR.AA.Result";
+		static constexpr const char* RT_SSGI_FILTER_RESULT = "Runtime.SSGI.FilterResult";
+		static constexpr const char* RT_SSAO_FILTER_RESULT = "Runtime.SSAO.FilterResult";
+		static constexpr const char* RT_SH_R_RESULT = "Runtime.RayTracing.SH.R";
+		static constexpr const char* RT_SH_G_RESULT = "Runtime.RayTracing.SH.G";
+		static constexpr const char* RT_SH_B_RESULT = "Runtime.RayTracing.SH.B";
+		static constexpr const char* RT_VOLUMETRIC_FOG_RESULT = "Runtime.VolumetricFog.Result";
+
+		bool RegisterRuntimeRenderTexture(const std::string& name, VansTexture* texture, bool replaceExisting = true);
+
+		VansTexture* GetRuntimeRenderTexture(const std::string& name) const;
+
+		bool HasRuntimeRenderTexture(const std::string& name) const;
+
+		bool RemoveRuntimeRenderTexture(const std::string& name);
+
+		void ClearRuntimeRenderTextures();
+
 		VkDescriptorSetLayout m_MaterialAtmosphereDataLayout;
 		std::vector<VkDescriptorSet> m_MaterialAtmosphereDataDescriptorSets;
 
@@ -93,40 +124,11 @@ namespace VansGraphics
 
 		VansTexture* m_BRDFIntegralLUT;
 
-		VansTexture* m_SSAOResult;
-
-		VansTexture* m_SSGIResult;
-
-		// SSGI temporal accumulation: ping-pong history buffers
-		VansTexture* m_SSGITemporalA;		// history read
-		VansTexture* m_SSGITemporalB;		// history write (swap each frame)
-		VansTexture* m_SSGITemporalResult;	// points to the latest accumulated result
 		uint32_t     m_SSGITemporalFrame = 0;
 
-		VansTexture* m_HZBResult;
-
-		VansTexture* m_SSRHitInfo;
-
-		VansTexture* m_SSRRayPDF;
-
-		VansTexture* m_SSRResult;
-
-		VansTexture* m_SSRAAResultA;
-		VansTexture* m_SSRAAResultB;
-		VansTexture* m_SSRAAResult;
-
-		VansTexture* m_SSGIFilterResult;
-		VansTexture* m_SSAOFilterResult;
-
-		VansTexture* m_SHRResult;
-
-		VansTexture* m_SHGResult;
-
-		VansTexture* m_SHBResult;
-
-		VansTexture* m_VolumetricFogResult;
-
 		VansMaterialManager();
+
+		~VansMaterialManager();
 
 	public:
 
@@ -177,6 +179,8 @@ namespace VansGraphics
 		void UpdatePBRLutDescriptorSets();
 
 		void UpdateAtmosphereDescriptorSets();
+
+		VansRuntimeRenderTextureManager m_RuntimeRenderTextureManager;
 
 	};
 
