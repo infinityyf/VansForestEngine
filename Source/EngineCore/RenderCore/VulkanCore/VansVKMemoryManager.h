@@ -35,6 +35,8 @@ namespace VansGraphics
 
 		void BindDevice(VkCommandBuffer& commandBuffer, VansVKDevice& device);
 
+		const std::vector<uint32_t>& GetSharingQueueFamilyIndices() const;
+
 		VkDeviceSize AlignMemorySizeTo(VkDeviceSize value, VkDeviceSize alignment) 
 		{
 			return (value + alignment - 1) & ~(alignment - 1);
@@ -77,6 +79,8 @@ namespace VansGraphics
 
 	private :
 		VkPhysicalDeviceMemoryProperties m_MemoryProperties;
+
+		VansVKDevice* m_Device = nullptr;
 
 
 	};

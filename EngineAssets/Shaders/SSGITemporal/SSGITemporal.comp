@@ -1,0 +1,100 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+
+// ============================================================================
+// SSGI Temporal Accumulation
+// Blends current 1-SPP GI with reprojected history using variance clipping.
+// ============================================================================
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Inputs
+layout( set = 1, binding = 0 ) uniform sampler2D inputDepth;         // Current frame depth
+layout( set = 1, binding = 1 ) uniform sampler2D inputMotionVector;  // Screen-space motion vectors (xy)
+layout( set = 1, binding = 2 ) uniform sampler2D inputHistoryGI;     // Previous frame accumulated GI
+
+// Current frame GI (from SSGI trace pass — storage image for read)
+layout( set = 1, binding = 3, rgba32f ) readonly uniform image2D inputCurrentGI;
+
+// Output: accumulated GI
+layout( set = 1, binding = 4, rgba32f ) writeonly uniform image2D outputAccumulatedGI;
+
+layout( set = 1, binding = 5 ) uniform ssgiTemporalInfo
+{
+    vec4 screenSize;   // xy = resolution, zw = 1/resolution
+};
+
+// ---- Variance clipping (AABB clamp in color space) ----
+void ComputeNeighborhoodBounds(ivec2 coord, out vec4 boundsMin, out vec4 boundsMax)
+{
+    vec4 m1 = vec4(0.0);
+    vec4 m2 = vec4(0.0);
+
+    for (int y = -1; y <= 1; y++)
+    {
+        for (int x = -1; x <= 1; x++)
+        {
+            vec4 s = imageLoad(inputCurrentGI, coord + ivec2(x, y));
+            m1 += s;
+            m2 += s * s;
+        }
+    }
+
+    m1 *= (1.0 / 9.0);
+    m2 *= (1.0 / 9.0);
+    vec4 sigma = sqrt(max(m2 - m1 * m1, vec4(0.0)));
+
+    // 1.25 sigma AABB — tighter than 2σ to reduce ghosting, looser than 1σ to reduce flicker
+    boundsMin = m1 - sigma * 1.25;
+    boundsMax = m1 + sigma * 1.25;
+}
+
+void main()
+{
+    ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+
+    if (id.x >= int(screenSize.x) || id.y >= int(screenSize.y))
+        return;
+
+    vec2 uv = (vec2(id) + 0.5) * screenSize.zw;
+
+    // Current frame single-sample GI
+    vec4 currentGI = imageLoad(inputCurrentGI, id);
+
+    // Current depth for disocclusion check
+    float currentDepth = texture(inputDepth, uv).r;
+
+    // ---- Reproject using motion vectors ----
+    vec2 motionVector = texture(inputMotionVector, uv).xy;
+    vec2 prevUV = uv - motionVector;
+
+    // Check if reprojected UV is within screen
+    bool valid = all(greaterThan(prevUV, vec2(0.001))) &&
+                 all(lessThan(prevUV, vec2(0.999)));
+
+    // Depth consistency check — reject history if depth changed significantly (disocclusion)
+    if (valid)
+    {
+        float prevDepth = texture(inputDepth, prevUV).r;
+        float depthRatio = abs(currentDepth - prevDepth) / max(abs(currentDepth), 0.0001);
+        valid = depthRatio < 0.05;  // 5% threshold
+    }
+
+    // Sample history
+    vec4 historyGI = texture(inputHistoryGI, prevUV);
+
+    // Apply variance clipping to reject stale history samples
+    vec4 boundsMin, boundsMax;
+    ComputeNeighborhoodBounds(id, boundsMin, boundsMax);
+    historyGI = clamp(historyGI, boundsMin, boundsMax);
+
+    // Blend factor: 
+    //   valid history   -> 0.05 (accumulate ~20 frames before converging)
+    //   invalid history -> 1.0  (use current frame only, restart accumulation)
+    float blendFactor = valid ? 0.05 : 1.0;
+    vec4 result = mix(historyGI, currentGI, blendFactor);
+
+    imageStore(outputAccumulatedGI, id, result);
+}

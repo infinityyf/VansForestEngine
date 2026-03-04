@@ -134,6 +134,9 @@ namespace VansGraphics
 
 		void UpdateSceneData();
 
+		// Update per-node GPU data once per frame before command buffer recording.
+		void UpdateRenderNodesDataBeforeRecord();
+
 		void UpdatePhysicsTransforms();
 
 	private:

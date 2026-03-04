@@ -1,4 +1,4 @@
-﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKCommandBuffer.h"
 #include "VansVKBuffer.h"
 #include "VansVKImage.h"
@@ -411,8 +411,18 @@ bool VansGraphics::VansVKCommandBuffer::ResetCommandBuffer(bool release_buffer_m
 	return true;
 }
 
+bool VansGraphics::VansVKCommandBuffer::WaitForFence(VkDevice& device, const VkFence& fence)
+{
+	if (fence != VK_NULL_HANDLE)
+	{
+		bool result = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+		vkResetFences(device, 1, &fence);
+		return result;
+	}
+	return true;
+}
 
-bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence)
+bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence, bool wait_fence)
 {
 	//semaphores should be waited
 	std::vector<VkSemaphore> wait_semaphore_handles;
@@ -445,10 +455,9 @@ bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice&
 		return false;
 	}
 
-	if (fence != VK_NULL_HANDLE)
+	if (wait_fence)
 	{
-		bool result = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-		vkResetFences(device, 1, &fence);
+		WaitForFence(device, fence);
 	}
 
 	return true;

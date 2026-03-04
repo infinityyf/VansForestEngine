@@ -4,6 +4,7 @@
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
 #include "VansVKDevice.h"
+#include <algorithm>
 #include <iostream>
 
 VansGraphics::VansVKMemoryManager* VansGraphics::VansVKMemoryManager::instance = nullptr;
@@ -48,7 +49,13 @@ void VansGraphics::VansVKMemoryManager::BindDevice(VkCommandBuffer& commandBuffe
 	m_LogicalDevice = device.GetLogicDevice();
 	m_CommandBuffer = commandBuffer;
 	m_DeviceProperties = device.GetDeviceProperties();
+	m_Device = &device;
 	vkGetPhysicalDeviceMemoryProperties(m_PhysicalDevice, &m_MemoryProperties);
+}
+
+const std::vector<uint32_t>& VansGraphics::VansVKMemoryManager::GetSharingQueueFamilyIndices() const
+{
+	return m_Device->GetSharingQueueFamilyIndices();
 }
 
 void VansGraphics::VansVKMemoryManager::FreeMemory(VkDeviceMemory& memory)

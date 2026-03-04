@@ -146,25 +146,59 @@ namespace VansGraphics
 			return false;
 		}
 
-		for (uint32_t index = 0; index < static_cast<uint32_t>(queue_families.size()); ++index)
+		auto queueSupportsDesiredCapability = [&](uint32_t index)
 		{
-			//check device support present surface queue
+			if (queue_families[index].queueCount == 0)
+			{
+				return false;
+			}
+
+			if ((queue_families[index].queueFlags & desired_capabilty) != desired_capabilty)
+			{
+				return false;
+			}
+
 			if ((desired_capabilty & VK_QUEUE_GRAPHICS_BIT) != 0)
 			{
 				VkBool32 present_surface_support = VK_FALSE;
 				VkResult result = vkGetPhysicalDeviceSurfaceSupportKHR(device, index, m_VansVKSurface.m_VansVKPresentSurface, &present_surface_support);
-				if (result != VK_SUCCESS && present_surface_support != VK_TRUE)
+				if (result != VK_SUCCESS || present_surface_support != VK_TRUE)
 				{
-					continue;
+					return false;
 				}
 			}
 
-			if ((queue_families[index].queueCount > 0) &&
-				(queue_families[index].queueFlags & desired_capabilty))
+			return true;
+		};
+
+		// Prefer a dedicated compute family (different from graphics family) when requesting compute.
+		if ((desired_capabilty & VK_QUEUE_COMPUTE_BIT) != 0)
+		{
+			for (uint32_t index = 0; index < static_cast<uint32_t>(queue_families.size()); ++index)
 			{
-				queue_family_index = index;
-				return true;
+				if (!queueSupportsDesiredCapability(index))
+				{
+					continue;
+				}
+
+				if (index != m_GraphicsQueueFamilyIndex)
+				{
+					queue_family_index = index;
+					return true;
+				}
 			}
+		}
+
+		// Fallback: pick the first valid family.
+		for (uint32_t index = 0; index < static_cast<uint32_t>(queue_families.size()); ++index)
+		{
+			if (!queueSupportsDesiredCapability(index))
+			{
+				continue;
+			}
+
+			queue_family_index = index;
+			return true;
 		}
 		return false;
 	}
@@ -441,14 +475,26 @@ namespace VansGraphics
 			}
 
 			//check queuefamily type support
-			if (!CheckAvalialeDeviceQueue(device, m_GraphicsQueueFamilyIndex, VK_QUEUE_GRAPHICS_BIT))
+			if (!CheckAvalialeDeviceQueue(device, m_GraphicsQueueFamilyIndex, VK_QUEUE_GRAPHICS_BIT| VK_QUEUE_COMPUTE_BIT))
 			{
 				continue;
 			}
 
-			if (!CheckAvalialeDeviceQueue(device, m_ComputeQueueFamilyIndex, VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT))
+			if (!CheckAvalialeDeviceQueue(device, m_ComputeQueueFamilyIndex, VK_QUEUE_COMPUTE_BIT))
 			{
 				continue;
+			}
+
+			m_SharingQueueFamilyIndices.clear();
+			m_SharingQueueFamilyIndices.push_back(m_GraphicsQueueFamilyIndex);
+			if (m_ComputeQueueFamilyIndex != m_GraphicsQueueFamilyIndex)
+			{
+				m_SharingQueueFamilyIndices.push_back(m_ComputeQueueFamilyIndex);
+			}
+			if (m_PresentQueueFamilyIndex != m_GraphicsQueueFamilyIndex &&
+				m_PresentQueueFamilyIndex != m_ComputeQueueFamilyIndex)
+			{
+				m_SharingQueueFamilyIndices.push_back(m_PresentQueueFamilyIndex);
 			}
 
 			//recored all need queue family index

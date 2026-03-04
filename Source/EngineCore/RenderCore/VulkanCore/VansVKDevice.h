@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../VansGraphicsDevice.h"
 #include "vulkan/vulkan.h"
 #include "VansVKSurface.h"
@@ -109,6 +109,12 @@ namespace VansGraphics
 
 		uint32_t GetGraphicsQueueFamilyIndex() { return m_GraphicsQueueFamilyIndex; }
 
+		uint32_t GetComputeQueueFamilyIndex() { return m_ComputeQueueFamilyIndex; }
+
+		uint32_t GetPresentQueueFamilyIndex() { return m_PresentQueueFamilyIndex; }
+
+		const std::vector<uint32_t>& GetSharingQueueFamilyIndices() const { return m_SharingQueueFamilyIndices; }
+
 		void PrepareRenderingData();
 
 		
@@ -201,11 +207,10 @@ namespace VansGraphics
 		VkSemaphore m_CommandBufferReadyToPresentSemaphore;
 
 		// Async compute semaphores
-		VkSemaphore m_ShadowToComputeSemaphore;
 		VkSemaphore m_AsyncComputeDoneSemaphore;
 
 		// Set to true to enable async compute (3-submit); false = original single-submit
-		bool m_UseAsyncCompute = false;
+		bool m_UseAsyncCompute = true;
 
 		VkPhysicalDeviceProperties m_DeviceProperties;
 		
@@ -247,6 +252,8 @@ namespace VansGraphics
 		VansVKCommandBuffer m_VansEditorCommandBuffer;
 		
 	private:
+		std::vector<uint32_t> m_SharingQueueFamilyIndices;
+
 		//recored all supported queue before device create
 		uint32_t m_GraphicsQueueFamilyIndex;
 		uint32_t m_ComputeQueueFamilyIndex;

@@ -1,4 +1,4 @@
-﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKBuffer.h"
 #include "VansVKMemoryManager.h"
 #include <iostream>
@@ -8,6 +8,8 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 	m_BufferSize = size;
 	m_BufferFormat = format;
 
+	const auto& sharingFamilies = VansVKMemoryManager::GetInstance()->GetSharingQueueFamilyIndices();
+
 	VkBufferCreateInfo buffer_create_info = 
 	{
 		 VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -15,9 +17,9 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 		 0,
 		 size,
 		 usage,
-		 VK_SHARING_MODE_EXCLUSIVE,
-		 0,
-		 nullptr
+		 VK_SHARING_MODE_CONCURRENT,
+		 static_cast<uint32_t>(sharingFamilies.size()),
+		 sharingFamilies.data()
 	};
 
 	//sharing mode defined wheather the buffer can be access by multi queues multi familis

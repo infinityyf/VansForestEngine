@@ -1,4 +1,4 @@
-﻿#include "VansRenderNode.h"
+#include "VansRenderNode.h"
 #include "VansCamera.h"
 #include "VansScene.h"
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
@@ -13,13 +13,9 @@ VansGraphics::VansRenderNode::VansRenderNode(VkDevice& device, RenderNodeType ty
 {
 	m_NodeType = typee;
 
-	// Allocate ECS Data (浠ｆ浛鍘熸潵鐨勭洿鎺ユ垚鍛樺垵濮嬪寲)
+	// Allocate ECS Data
     m_TransformID = VansTransformStore::AllocateTransform();
-
-	//鍒濆鍖?transform鏁版嵁
 	SetTransformData();
-
-	//鐢ㄤ簬鏍囪鏄惁闇€瑕佹洿鏂版弿杩扮
 	m_DescriptorsetsDirty = true;
 
 	m_DescriptorsetsSetDone = false;
@@ -39,7 +35,6 @@ bool VansGraphics::VansRenderNode::CheckRenderNodeState()
 	if (shader!= nullptr && m_SceneFileWatcher->ConsumeUpdated(shader->GetShaderFolder()))
 	{
 		std::cout << "pipe update: " << shader->GetShaderFolder() << std::endl;
-		//閲嶆柊鏋勫缓pipeline
 		shader->RefreshShaderMoudle();
 		shader->TriggerReCreateGraphicsPipeline();
 		return false;
@@ -50,7 +45,6 @@ bool VansGraphics::VansRenderNode::CheckRenderNodeState()
 
 void VansGraphics::VansRenderNode::DestroyDescriptorSets()
 {
-	//閿€姣佹弿杩扮poo
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(modelBufferLayout);
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(modelBufferDescriptorSets);
 
@@ -821,8 +815,6 @@ void VansGraphics::VansSkyBoxRenderNode::UpdateDescripterSets(VansMaterialManage
 		return;
 	}
 	m_DescriptorsetsDirty = false;
-
-	//鎻忚堪绗﹂泦宸茬粡缁熶竴鏇存柊杩?
 }
 
 void VansGraphics::VansShadowRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)

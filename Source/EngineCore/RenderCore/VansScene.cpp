@@ -1,4 +1,4 @@
-﻿#include "../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
@@ -697,6 +697,55 @@ void VansGraphics::VansScene::UpdateSceneData()
 
     // Update dirty physics transforms to GPU
     UpdateTransformRenderData();
+
+    //update material data
+    UpdateRenderNodesDataBeforeRecord();
+}
+
+void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
+{
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    if (vkDevice == nullptr)
+    {
+        return;
+    }
+
+    auto updateNode = [&](VansRenderNode* node)
+    {
+        if (node)
+        {
+            node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
+        }
+    };
+
+    updateNode(m_SkyBoxNode);
+    updateNode(m_DeferredNode);
+    updateNode(m_TerrainRenderNode);
+
+    for (auto* node : m_OpaqueRenderNodes)
+    {
+        updateNode(node);
+    }
+    for (auto* node : m_TransParentRenderNodes)
+    {
+        updateNode(node);
+    }
+    for (auto* node : m_PostProcessRenderNodes)
+    {
+        updateNode(node);
+    }
+    for (auto* node : m_ScreenSpaceRenderNodes)
+    {
+        updateNode(node);
+    }
+    for (auto* node : m_ShadowRenderNodes)
+    {
+        updateNode(node);
+    }
+    for (auto* node : m_PunctualShadowRenderNodes)
+    {
+        updateNode(node);
+    }
 }
 
 void VansGraphics::VansScene::ImportDefaultTextures(const std::string& path, const std::string& name, VansVKDevice* vkDevice, bool isSRGB)
@@ -1178,9 +1227,6 @@ void VansGraphics::VansScene::DrawShadowNodes()
         {
             continue;
         }
-        //更新desc
-        node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
-
         node->Draw(cmd, globalStateData);
     }
 }
@@ -1220,9 +1266,6 @@ void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
             {
                 continue;
             }
-            //更新desc
-            node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
-
             node->DrawPunctualShadow(cmd, globalStateData, lightIndex, shadowDirection);
         }
     }
@@ -1262,9 +1305,6 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
         {
             continue;
         }
-        //更新desc
-        node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
-
         node->DrawPunctualShadow(cmd, globalStateData, pointCount + lightIndex, 0);
     }
 }
@@ -1274,9 +1314,6 @@ void VansGraphics::VansScene::DrawSkyBoxNode()
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    //更新desc
-    m_SkyBoxNode->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
-
     m_SkyBoxNode->Draw(cmd, globalStateData);
 }
 
@@ -1291,8 +1328,6 @@ void VansGraphics::VansScene::DrawOpaqueNodes()
         {
             continue;
         }
-        //更新desc
-        node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
         node->Draw(cmd, globalStateData);
     }
 }
@@ -1312,7 +1347,6 @@ void VansGraphics::VansScene::DrawTerrainNode(bool shadowPass)
     }
     else
     {
-        static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode)->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
         static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode)->Draw(cmd, globalStateData);
     }
     
@@ -1345,8 +1379,6 @@ void VansGraphics::VansScene::DrawPostProcessNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node  : m_PostProcessRenderNodes)
     {
-        node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
-
         //apply mesh
         node->Draw(cmd, globalStateData);
     }
@@ -1362,8 +1394,6 @@ void VansGraphics::VansScene::DrawScreenSpaceFeatureNode()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_ScreenSpaceRenderNodes)
     {
-        node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
-
         //apply mesh
         node->Draw(cmd, globalStateData);
     }
@@ -1375,8 +1405,6 @@ void VansGraphics::VansScene::DeferredShading()
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-
-    m_DeferredNode->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
 
     m_DeferredNode->Draw(cmd, globalStateData);
 }

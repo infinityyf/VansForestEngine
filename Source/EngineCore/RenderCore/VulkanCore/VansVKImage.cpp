@@ -1,4 +1,4 @@
-﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKImage.h"
 #include "VansVKMemoryManager.h"
 #include "VansVKSampler.h"
@@ -62,6 +62,8 @@ namespace VansGraphics
         m_ImageDimention = size;
         //VK_IMAGE_TILING_OPTIMAL : 贴图在内存里的排布往往不是线性的，需要适配硬件快速采样，一般linear的tiling用于直接从COU上初始化或读取
 
+        const auto& sharingFamilies = VansVKMemoryManager::GetInstance()->GetSharingQueueFamilyIndices();
+
         m_ImageCreateInfo =
         {
              VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -76,9 +78,9 @@ namespace VansGraphics
              VK_IMAGE_TILING_OPTIMAL,
              //如果需要被sample需要设置sample bit
              usage,
-             VK_SHARING_MODE_EXCLUSIVE,
-             0,
-             nullptr,
+             VK_SHARING_MODE_CONCURRENT,
+             static_cast<uint32_t>(sharingFamilies.size()),
+             sharingFamilies.data(),
              VK_IMAGE_LAYOUT_UNDEFINED
         };
         //由于image的内存排布是不确定的，就选哟一个stagig resource去read 或者初始化一个image

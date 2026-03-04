@@ -36,12 +36,16 @@ void main()
     mat3x3 TBN = mat3x3(tangent, bitangent, normal);
 
     vec2 pixelCoord = fragTexCoord * ScreenParams.xy / SCREEN_SCALE;
+    // Restrict FrameIndex to a small period to avoid float precision degradation
+    // in the hash functions at large frame counts, which causes noise to worsen over time
+    float frameIndexRestricted = mod(FrameIndex, 64.0);
     //获取多个采样点
     for (int i = 0; i < SSAO_SAMPLE_COUNT; ++i) 
     {
-        float random0 = RandomInterLeavedWithScale(pixelCoord,FrameIndex + i);
-        float random1 = RandomInterLeavedWithScale(pixelCoord,FrameIndex + i * 2);
-        float random2 = RandomInterLeavedWithScale(pixelCoord,FrameIndex + i * 3);
+        float fi = frameIndexRestricted + float(i);
+        float random0 = RandomInterLeavedWithScale(pixelCoord, fi);
+        float random1 = RandomInterLeavedWithScale(pixelCoord + vec2(17.0, 31.0), fi);
+        float random2 = RandomInterLeavedWithScale(pixelCoord + vec2(53.0, 7.0),  fi);
 
         vec3 randomOffset = vec3(random0 * 2-1, random1 * 2-1, random2);
         randomOffset = normalize(randomOffset);

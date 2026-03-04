@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <vector>
 #if defined _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -126,7 +126,8 @@ namespace VansGraphics
 			const std::vector<VkDescriptorSet>& descriptor_sets,
 			const std::vector<uint32_t>& dynamic_offsets);
 
-		static bool SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence);
+		static bool WaitForFence(VkDevice& device, const VkFence& fence);
+		static bool SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence, bool wait_fence = true);
 
 		//同步fence
 		//应该每个commandbuffer对象对应一个
