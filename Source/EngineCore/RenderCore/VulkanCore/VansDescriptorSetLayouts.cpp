@@ -1,37 +1,31 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansDescriptorSetLayouts.h"
+#include "VansVKDescriptorManager.h"
 #include <cassert>
 
 namespace VansGraphics
 {
 
 // ============================================================
-// Helper to create a layout from a vector of bindings
+// Helper: create layout + allocate N descriptor sets
 // ============================================================
-static VkDescriptorSetLayout CreateLayoutFromBindings(
-	VkDevice device,
+static void CreateLayoutAndAllocateSets(
 	const std::vector<VkDescriptorSetLayoutBinding>& bindings,
-	const VkDescriptorSetLayoutBindingFlagsCreateInfo* pFlagsInfo = nullptr,
-	VkDescriptorSetLayoutCreateFlags flags = 0)
+	VkDescriptorSetLayout& outLayout,
+	std::vector<VkDescriptorSet>& outSets,
+	uint32_t setCount)
 {
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.pNext = pFlagsInfo;
-	layoutInfo.flags = flags;
-	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-	layoutInfo.pBindings = bindings.data();
-
-	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-	VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &layout);
-	assert(result == VK_SUCCESS);
-	return layout;
+	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(bindings, outLayout);
+	std::vector<VkDescriptorSetLayout> layouts(setCount, outLayout);
+	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(layouts, outSets);
 }
 
 // ============================================================
 // Set 0: Global Layout (universal across all pipelines)
 // ============================================================
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreateGlobalLayout(
-	VkDevice device, uint32_t maxBindlessTextures)
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets,
+	uint32_t maxBindlessTextures, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
 		// binding 0: Camera UBO
@@ -59,237 +53,23 @@ VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreateGlobalLayout(
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},
 	};
-
-	// Use simple layout creation (no bindless flags needed since pool
-	// does not support UPDATE_AFTER_BIND)
-	return CreateLayoutFromBindings(device, bindings);
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
 // ============================================================
 // Set 2: Per-Object Layout
 // ============================================================
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreateObjectLayout(VkDevice device)
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
 		{OBJECT_BINDING_TRANSFORM_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
-	return CreateLayoutFromBindings(device, bindings);
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
-// ============================================================
-// Set 1: Per-Pass Layouts
-// ============================================================
 
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_Empty(VkDevice device)
-{
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 0;
-	layoutInfo.pBindings = nullptr;
-
-	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &layout);
-	return layout;
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_DeferredLighting(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		// GBuffer subpass inputs (bindings 0-4)
-		{0,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{1,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{2,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{3,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{4,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// Screen-space effect results (bindings 5-13)
-		{5,  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // SSAO
-		{6,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // SSGI
-		{7,  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // SSR
-		{8,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // Shadow map
-		{9,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // Punctual shadow
-		{10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // SH R
-		{11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // SH G
-		{12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // SH B
-		{13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // Fog
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_SkyBox(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // Atmosphere UBO
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_ScreenSpace(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // normal
-		{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // gbuffer0
-		{2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // gbuffer1
-		{3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // gbuffer2
-		{4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // depth
-		{5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // SSAO output
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_PostProcess(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // Final color input
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_Terrain(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // Height map
-		{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // Albedo map
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-// ============================================================
-// Compute Pass Layouts
-// ============================================================
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_SSGI(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputNormal
-		{1,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputDepth
-		{2,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputColor
-		{3,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputPosition
-		{4,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputSkydiffuse
-		{5,  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // resultR
-		{6,  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // ssgiInfo
-		{7,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // SHRCoeff
-		{8,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // SHGCoeff
-		{9,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // SHBCoeff
-		{10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // hizDepth
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_SSR_Trace(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputNormal
-		{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputRoughness
-		{2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputPosition
-		{3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputHIZ
-		{4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // traceHit
-		{5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // tracePDF
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_SSR_Resolve(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputColor
-		{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputRoughness
-		{2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputNormal
-		{3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputPosition
-		{4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // traceHit
-		{5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // tracePDF
-		{6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // resolveResult
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_SSR_TemporalAA(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputColor
-		{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputPosition
-		{2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // aaResultA
-		{3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // aaResultB
-		{4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // aaResult
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_VolumetricFog(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputPosition
-		{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // mainLightShadowMap
-		{2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // fogResult
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_BilateralFilter(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputColor
-		{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // inputDepth
-		{2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // result
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_HIZ(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // hizSource
-		{1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // hizResult
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_GISHUpdate(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // directLightResult
-		{2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // resultRImage
-		{3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // resultGImage
-		{4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // resultBImage
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_GIPointLight(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0,  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // hitPositionBuffer
-		{1,  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // hitNormalBuffer
-		{2,  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // directLightResult
-		{4,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // environmentMap
-		{5,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // SHRCoeff
-		{6,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // SHGCoeff
-		{7,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // SHBCoeff
-		{8,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // shadowMap
-		{9,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // punctualShadowMap
-		{10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // pbrDataBuffer
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
-
-VkDescriptorSetLayout VansDescriptorSetLayoutFactory::CreatePassLayout_RayTracing(VkDevice device)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_RAYGEN_BIT_KHR, nullptr}, // TLAS
-		{1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,              1, VK_SHADER_STAGE_RAYGEN_BIT_KHR, nullptr}, // resultImage
-		{2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr}, // hitPositionBuffer
-		{3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,        500,    VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr}, // vertexBuffers[]
-		{4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,        500,    VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr}, // indexBuffers[]
-		{5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr}, // instanceDataBuffer
-		{6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr}, // hitNormalBuffer
-		{7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr}, // instanceToTextureIndex
-		{8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr}, // hitAlbedoRoughness
-	};
-	return CreateLayoutFromBindings(device, bindings);
-}
 
 // ============================================================
 // Convenience layout builders
@@ -335,6 +115,257 @@ void VansDescriptorSetLayoutFactory::DestroyLayout(VkDevice device, VkDescriptor
 		vkDestroyDescriptorSetLayout(device, layout, nullptr);
 		layout = VK_NULL_HANDLE;
 	}
+}
+
+// ============================================================
+// Combined Layout + Set Allocation Methods
+// ============================================================
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_PostProcess(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{POSTPROCESS_BINDING_COLOR_INPUT, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		// GBuffer subpass inputs (bindings 0-4)
+		{0,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{1,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{2,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{3,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{4,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// Screen-space effect results (bindings 5-13)
+		{5,  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{6,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{7,  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{8,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{9,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_SkyBox(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{SKYBOX_BINDING_ATMOSPHERE_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_ScreenSpace(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{SCREEN_BINDING_NORMAL,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{SCREEN_BINDING_GBUFFER0,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{SCREEN_BINDING_GBUFFER1,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{SCREEN_BINDING_GBUFFER2,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{SCREEN_BINDING_DEPTH,       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{SCREEN_BINDING_SSAO_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{SSGI_BINDING_NORMAL,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_DEPTH,       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_COLOR,       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_POSITION,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_SKY_DIFFUSE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_RESULT,      VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_INFO_UBO,    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_SH_R,        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_SH_G,        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_SH_B,        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_HIZ_DEPTH,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGITemporal(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{SSGI_TEMPORAL_BINDING_DEPTH,          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_TEMPORAL_BINDING_MOTION_VECTOR,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_TEMPORAL_BINDING_HISTORY_GI,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_TEMPORAL_BINDING_CURRENT_GI,     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_TEMPORAL_BINDING_ACCUMULATED_GI, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_TEMPORAL_BINDING_INFO_UBO,       VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Trace(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{SSR_TRACE_BINDING_NORMAL,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TRACE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TRACE_BINDING_POSITION,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TRACE_BINDING_HIZ,       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TRACE_BINDING_HIT,       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TRACE_BINDING_PDF,       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Resolve(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{SSR_RESOLVE_BINDING_COLOR,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_RESOLVE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_RESOLVE_BINDING_NORMAL,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_RESOLVE_BINDING_POSITION,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_RESOLVE_BINDING_HIT,       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_RESOLVE_BINDING_PDF,       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_RESOLVE_BINDING_RESULT,    VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_TemporalAA(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{SSR_TAA_BINDING_COLOR,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TAA_BINDING_POSITION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TAA_BINDING_RESULT_A, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TAA_BINDING_RESULT_B, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TAA_BINDING_RESULT,   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_VolumetricFog(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{FOG_BINDING_POSITION,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{FOG_BINDING_SHADOW_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{FOG_BINDING_RESULT,     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_BilateralFilter(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{BILATERAL_BINDING_COLOR,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{BILATERAL_BINDING_DEPTH,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{BILATERAL_BINDING_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZ(
+	std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{HIZ_BINDING_SOURCE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{HIZ_BINDING_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(bindings, layout);
+	outLayouts.resize(mipCount);
+	for (uint32_t i = 0; i < mipCount; ++i)
+	{
+		outLayouts[i] = layout;
+	}
+	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(outLayouts, outSets);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_Empty(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings;
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{TERRAIN_BINDING_HEIGHT_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TERRAIN_BINDING_SPLATMAP_0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TERRAIN_BINDING_SPLATMAP_1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TERRAIN_BINDING_ALBEDO_ARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TERRAIN_MAX_LAYERS,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TERRAIN_BINDING_NORMAL_ARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TERRAIN_MAX_LAYERS,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TERRAIN_BINDING_ROUGHNESS_ARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TERRAIN_MAX_LAYERS,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TERRAIN_BINDING_PARAMS_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_GISHUpdate(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{GISH_BINDING_DIRECT_LIGHT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GISH_BINDING_RESULT_R,     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GISH_BINDING_RESULT_G,     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GISH_BINDING_RESULT_B,     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_GIPointLight(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{GIPL_BINDING_HIT_POSITION,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_HIT_NORMAL,      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_DIRECT_LIGHT,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_ENVIRONMENT_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_SH_R,            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_SH_G,            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_SH_B,            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_SHADOW_MAP,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_PBR_DATA,        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_RayTracing(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{RT_BINDING_TLAS,                  VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_RAYGEN_BIT_KHR, nullptr},
+		{RT_BINDING_RESULT_IMAGE,          VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,              1, VK_SHADER_STAGE_RAYGEN_BIT_KHR, nullptr},
+		{RT_BINDING_HIT_POSITION,          VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
+		{RT_BINDING_VERTEX_BUFFERS,        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,        500,    VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
+		{RT_BINDING_INDEX_BUFFERS,         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,        500,    VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
+		{RT_BINDING_INSTANCE_DATA,         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
+		{RT_BINDING_HIT_NORMAL,            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
+		{RT_BINDING_INSTANCE_TEX_INDEX,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
+		{RT_BINDING_HIT_ALBEDO_ROUGHNESS,  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
 } // namespace VansGraphics

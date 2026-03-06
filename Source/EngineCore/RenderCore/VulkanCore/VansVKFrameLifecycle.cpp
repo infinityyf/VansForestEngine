@@ -80,6 +80,7 @@ namespace VansGraphics
 
 		PreparePBRMaterialData();
 		PrepareInstanceTransformData();
+		//创建全局的描述符
 		m_Scene->CreateGlobalDescriptorSet(m_VansVKLogicDevice);
 		m_Scene->CreateNodeDescriptorSets();
 		PrepareRayTracingData();

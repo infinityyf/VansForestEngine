@@ -10,71 +10,98 @@ namespace VansGraphics
     VansTerrain::VansTerrain() {}
     VansTerrain::~VansTerrain() 
     {
-        // 清理资源逻辑 (略，需调用 DestroyVulkanBuffer)
         if(m_BasePatchMesh) delete m_BasePatchMesh;
         if(m_HeightMap) delete m_HeightMap;
-        if (m_TerrainAlbedoMap) delete m_TerrainAlbedoMap;
+        if(m_Splatmap0) delete m_Splatmap0;
+        if(m_Splatmap1) delete m_Splatmap1;
+        if (m_OwnsLayerTextures)
+        {
+            for (uint32_t i = 0; i < m_LayerCount; ++i)
+            {
+                if(m_LayerAlbedos[i])    delete m_LayerAlbedos[i];
+                if(m_LayerNormals[i])    delete m_LayerNormals[i];
+                if(m_LayerRoughness[i])  delete m_LayerRoughness[i];
+            }
+        }
         if(m_TerrainShader) delete m_TerrainShader;
+        m_ParamsUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_InstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
     }
 
-    void VansTerrain::Init(VansVKDevice* device, const std::string& heightMapPath, const std::string& albedoMapPath)
+    void VansTerrain::Init(VansVKDevice* device, const TerrainConfig& config)
     {
         m_Device = device;
 
-        // 1. 鍔犺浇楂樺害鍥?
+        // -------------------------------------------------------
+        // 1. Load heightmap
+        // -------------------------------------------------------
         m_HeightMap = new VansTexture();
-        m_HeightMap->LoadTexture(device->GetCommandBuffer(), heightMapPath, false, false, false, MID_PRES_16,1); // Linear format for heightmap
+        m_HeightMap->LoadTexture(device->GetCommandBuffer(), config.heightmapPath, false, false, false, MID_PRES_16, 1);
 
-        //加载albed
-        m_TerrainAlbedoMap= new VansTexture();
-        m_TerrainAlbedoMap->LoadTexture(device->GetCommandBuffer(), albedoMapPath, true, true);
+        // -------------------------------------------------------
+        // 2. Load splatmaps
+        // -------------------------------------------------------
+        m_Splatmap0 = new VansTexture();
+        m_Splatmap0->LoadTexture(device->GetCommandBuffer(), config.splatmap0Path, false, false);
 
-        // 2. 创建基础 Patch Mesh (16x16 Grid)
+        m_Splatmap1 = new VansTexture();
+        m_Splatmap1->LoadTexture(device->GetCommandBuffer(), config.splatmap1Path, false, false);
+
+        // -------------------------------------------------------
+        // 3. Load per-layer PBR textures
+        // -------------------------------------------------------
+        m_LayerCount = static_cast<uint32_t>(std::min(config.layers.size(), (size_t)TERRAIN_MAX_LAYERS));
+
+        // Check if pre-loaded textures are provided (from scene texture manager)
+        bool hasPreloaded = (m_LayerCount > 0 && config.layers[0].albedoTex != nullptr);
+        m_OwnsLayerTextures = !hasPreloaded;
+
+        for (uint32_t i = 0; i < m_LayerCount; ++i)
+        {
+            const auto& layer = config.layers[i];
+            if (layer.albedoTex && layer.normalTex && layer.roughnessTex)
+            {
+                // Use pre-loaded textures (borrowed, not owned)
+                m_LayerAlbedos[i]   = layer.albedoTex;
+                m_LayerNormals[i]   = layer.normalTex;
+                m_LayerRoughness[i] = layer.roughnessTex;
+            }
+            else
+            {
+                // Fallback: load from path
+                m_LayerAlbedos[i] = new VansTexture();
+                m_LayerAlbedos[i]->LoadTexture(device->GetCommandBuffer(), layer.albedoPath, true, true);
+
+                m_LayerNormals[i] = new VansTexture();
+                m_LayerNormals[i]->LoadTexture(device->GetCommandBuffer(), layer.normalPath, false, true);
+
+                m_LayerRoughness[i] = new VansTexture();
+                m_LayerRoughness[i]->LoadTexture(device->GetCommandBuffer(), layer.roughnessPath, false, true);
+            }
+        }
+
+        // -------------------------------------------------------
+        // 4. Create base patch mesh (16x16 Grid)
+        // -------------------------------------------------------
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		m_BasePatchMesh = new VansMesh();
-		m_BasePatchMesh->LoadMesh(device->GetLogicDevice(),device->GetGraphicsQueue(), &(device->GetCommandBuffer()), (projectRoot + "EngineAssets/Models/Terrain/TerrainPatch16x16.obj").c_str(), false);
+		m_BasePatchMesh->LoadMesh(device->GetLogicDevice(), device->GetGraphicsQueue(), &(device->GetCommandBuffer()), (projectRoot + "EngineAssets/Models/Terrain/TerrainPatch16x16.obj").c_str(), false);
 
-        //添加input的描述支持instance绘制
+        // Instance input descriptions
         m_TerrainInstanceInputAttributeDescriptions = 
 		{
-            {
-                3,
-                1,
-                VK_FORMAT_R32G32_SFLOAT,
-                0
-            },
-            {
-                4,
-                1,
-                VK_FORMAT_R32_SFLOAT,
-                2 * sizeof(float)
-            },
-            {
-                5,
-                1,
-                VK_FORMAT_R32_SFLOAT,
-                3 * sizeof(float)
-            },
-            { 
-                6, 
-                1, 
-                VK_FORMAT_R32_SFLOAT, 
-                4 * sizeof(float) 
-            }    
+            { 3, 1, VK_FORMAT_R32G32_SFLOAT, 0 },
+            { 4, 1, VK_FORMAT_R32_SFLOAT,    2 * sizeof(float) },
+            { 5, 1, VK_FORMAT_R32_SFLOAT,    3 * sizeof(float) },
+            { 6, 1, VK_FORMAT_R32_SFLOAT,    4 * sizeof(float) }
 		};
 
         m_TerrainInstanceInputBindingDescriptions = 
         {
-            {
-                1,
-                sizeof(TerrainInstanceData),
-                VK_VERTEX_INPUT_RATE_INSTANCE
-            }
+            { 1, sizeof(TerrainInstanceData), VK_VERTEX_INPUT_RATE_INSTANCE }
         };
 
-        //将上面两个新增的BindingDescriptions合并到mesh中
         m_BasePatchMesh->m_VertexInputAttributeDescriptions.insert(
             m_BasePatchMesh->m_VertexInputAttributeDescriptions.end(),
             m_TerrainInstanceInputAttributeDescriptions.begin(),
@@ -83,82 +110,120 @@ namespace VansGraphics
         m_BasePatchMesh->m_VertexInputBindingDescriptions.insert(
             m_BasePatchMesh->m_VertexInputBindingDescriptions.end(),
             m_TerrainInstanceInputBindingDescriptions.begin(),
-            m_TerrainInstanceInputBindingDescriptions.end()
-        );
+            m_TerrainInstanceInputBindingDescriptions.end());
 
-        //vertex bind data
-        VkVertexInputBindingDescription m_VertexInputBindingDescription;
-
-        // 3. 创建 Instance Buffer (Host Visible 用于频繁更新)
-        // 预估最大Instance 数量：全部分裂约为(2048/16)^2 = 16384个
+        // -------------------------------------------------------
+        // 5. Create instance buffer
+        // -------------------------------------------------------
         VkDeviceSize bufferSize = sizeof(TerrainInstanceData) * 20000; 
         m_InstanceBuffer.CreatVulkanBuffer(
-            device->GetLogicDevice(), 
-            bufferSize, 
-            VK_FORMAT_R32_SFLOAT,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, // 作为 Vertex Buffer 绑定
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-        );
+            device->GetLogicDevice(), bufferSize, VK_FORMAT_R32_SFLOAT,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-        // 4. 编译 Shader
+        // -------------------------------------------------------
+        // 6. Create terrain params UBO
+        // -------------------------------------------------------
+        TerrainParamsGPU params{};
+        params.layerCountPacked.x = static_cast<int>(m_LayerCount);
+        // std140: each float array element occupies 16 bytes (vec4 stride)
+        for (uint32_t i = 0; i < m_LayerCount; ++i)
+            params.tilingFactors[i * 4] = config.layers[i].tiling;
+        for (uint32_t i = m_LayerCount; i < TERRAIN_MAX_LAYERS; ++i)
+            params.tilingFactors[i * 4] = 1.0f;
+
+        m_ParamsUBO.CreatVulkanBuffer(
+            device->GetLogicDevice(), sizeof(TerrainParamsGPU), VK_FORMAT_R32_SFLOAT,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_ParamsUBO.SetBufferData(&params, 0, sizeof(TerrainParamsGPU));
+
+        // -------------------------------------------------------
+        // 7. Compile shaders
+        // -------------------------------------------------------
         m_TerrainShader = new VansGraphicsShader();
         m_TerrainShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/Terrain").c_str());
-		//m_TerrainShader->SetPolygonMode(VK_POLYGON_MODE_LINE);
         m_TerrainShadowShader = new VansGraphicsShader();
         m_TerrainShadowShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/Terrain/Shadow").c_str());
 
-        // 5. 创建 Descriptor Set (绑定高度图)
-        // Layout: Binding 0 = HeightMap Sampler
-        VkDescriptorSetLayoutBinding heightMapBinding = {
-            0, 
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 
-            1, 
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-            nullptr
-        };
-        VkDescriptorSetLayoutBinding albedoMapBinding = {
-            1, 
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 
-            1, 
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-            nullptr
-        };
-        VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ heightMapBinding,albedoMapBinding }, m_DescriptorSetLayout);
-        VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_DescriptorSetLayout }, m_DescriptorSets);
-        
+        // -------------------------------------------------------
+        // 8. Create descriptor set
+        // -------------------------------------------------------
+        VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(m_DescriptorSetLayout, m_DescriptorSets, 1);
 
-        VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+        auto* descMgr = VansVKDescriptorManager::GetInstance();
+
+        // Binding 0: heightMap
+        descMgr->m_ImageDescInfos.push_back({
+            m_DescriptorSets[0], TERRAIN_BINDING_HEIGHT_MAP, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { m_HeightMap->GetImage().GetSampler(), m_HeightMap->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
+        });
+
+        // Binding 1: splatMap0
+        descMgr->m_ImageDescInfos.push_back({
+            m_DescriptorSets[0], TERRAIN_BINDING_SPLATMAP_0, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { m_Splatmap0->GetImage().GetSampler(), m_Splatmap0->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
+        });
+
+        // Binding 2: splatMap1
+        descMgr->m_ImageDescInfos.push_back({
+            m_DescriptorSets[0], TERRAIN_BINDING_SPLATMAP_1, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { m_Splatmap1->GetImage().GetSampler(), m_Splatmap1->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
+        });
+
+        // Binding 3: albedo array [8]
+        {
+            std::vector<VkDescriptorImageInfo> albedoInfos(TERRAIN_MAX_LAYERS);
+            for (uint32_t i = 0; i < TERRAIN_MAX_LAYERS; ++i)
             {
-                m_DescriptorSets[0],
-                PassBinding::TEXTURE_0,
-                0,
-                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                {
-                    {
-                        m_HeightMap->GetImage().GetSampler(),
-                        m_HeightMap->GetImage().GetImageView(),
-                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                    }
-                }
+                VansTexture* tex = (i < m_LayerCount) ? m_LayerAlbedos[i] : m_LayerAlbedos[0];
+                albedoInfos[i] = { tex->GetImage().GetSampler(), tex->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             }
-        );
-        VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+            descMgr->m_ImageDescInfos.push_back({
+                m_DescriptorSets[0], TERRAIN_BINDING_ALBEDO_ARRAY, 0,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, albedoInfos
+            });
+        }
+
+        // Binding 4: normal array [8]
+        {
+            std::vector<VkDescriptorImageInfo> normalInfos(TERRAIN_MAX_LAYERS);
+            for (uint32_t i = 0; i < TERRAIN_MAX_LAYERS; ++i)
             {
-                m_DescriptorSets[0],
-                PassBinding::TEXTURE_1,
-                0,
-                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                {
-                    {
-                        m_TerrainAlbedoMap->GetImage().GetSampler(),
-                        m_TerrainAlbedoMap->GetImage().GetImageView(),
-                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                    }
-                }
+                VansTexture* tex = (i < m_LayerCount) ? m_LayerNormals[i] : m_LayerNormals[0];
+                normalInfos[i] = { tex->GetImage().GetSampler(), tex->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             }
-        );
-        //只需要变化时更新，有的时候会绑定其他资源，所以需要update
-        VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+            descMgr->m_ImageDescInfos.push_back({
+                m_DescriptorSets[0], TERRAIN_BINDING_NORMAL_ARRAY, 0,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, normalInfos
+            });
+        }
+
+        // Binding 5: roughness array [8]
+        {
+            std::vector<VkDescriptorImageInfo> roughInfos(TERRAIN_MAX_LAYERS);
+            for (uint32_t i = 0; i < TERRAIN_MAX_LAYERS; ++i)
+            {
+                VansTexture* tex = (i < m_LayerCount) ? m_LayerRoughness[i] : m_LayerRoughness[0];
+                roughInfos[i] = { tex->GetImage().GetSampler(), tex->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            }
+            descMgr->m_ImageDescInfos.push_back({
+                m_DescriptorSets[0], TERRAIN_BINDING_ROUGHNESS_ARRAY, 0,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, roughInfos
+            });
+        }
+
+        // Binding 6: terrain params UBO
+        descMgr->m_BufferDescInfos.push_back({
+            m_DescriptorSets[0], TERRAIN_BINDING_PARAMS_UBO, 0,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            { { m_ParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainParamsGPU) } }
+        });
+
+        descMgr->UpdateDescriptorSets();
     }
 
     // 辅助函数：计算切比雪夫距离(Chebyshev Distance)

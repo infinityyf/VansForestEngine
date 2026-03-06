@@ -4,6 +4,7 @@
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
+#include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "VulkanCore/VansRenderPass.h"
 #include "../../EngineCore/RenderCore/TerrainCore/VansTerrain.h"
 #include <iostream>
@@ -221,16 +222,7 @@ void VansGraphics::VansPostProcessRenderNode::CreateDescriptorSets(VansCamera* c
 	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
 
 	// Set 1: Per-Pass (post-process input attachment)
-	VkDescriptorSetLayoutBinding inputAttachmentBinding =
-	{
-		POSTPROCESS_BINDING_COLOR_INPUT,
-		VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
-		1,
-		VK_SHADER_STAGE_FRAGMENT_BIT,
-		nullptr
-	};
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ inputAttachmentBinding }, frameBufferInputLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ frameBufferInputLayout }, frameBufferInputDescriptorSets);
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_PostProcess(frameBufferInputLayout, frameBufferInputDescriptorSets);
 
 	m_UsedDescSetLayouts.push_back(frameBufferInputLayout);
 	m_UsedDescSets.push_back(frameBufferInputDescriptorSets[0]);
@@ -276,99 +268,7 @@ void VansGraphics::VansDeferredRenderNode::CreateDescriptorSets(VansCamera* came
 	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
 
 	// Set 1: Per-Pass (GBuffer inputs + screen-space effect textures merged)
-	// Bindings 0-4: GBuffer subpass inputs
-	VkDescriptorSetLayoutBinding inputAttachment0Binding =
-	{
-		0, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding inputAttachment1Binding =
-	{
-		1, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding inputAttachment2Binding =
-	{
-		2, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding inputAttachment3Binding =
-	{
-		3, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding inputAttachment4Binding =
-	{
-		4, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-
-	// Bindings 5-13: Screen-space effects
-	VkDescriptorSetLayoutBinding ssaoInput =
-	{
-		5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding ssgiInput =
-	{
-		6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding ssrInput =
-	{
-		7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding mainShadowMapInput =
-	{
-		8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding punctualShadowMapInput =
-	{
-		9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding SHRCoeffTexture =
-	{
-		10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding SHGCoeffTexture =
-	{
-		11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding SHBCoeffTexture =
-	{
-		12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding FogTexture =
-	{
-		13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
-		{
-			inputAttachment0Binding,
-			inputAttachment1Binding,
-			inputAttachment2Binding,
-			inputAttachment3Binding,
-			inputAttachment4Binding,
-			ssaoInput,
-			ssgiInput,
-			ssrInput,
-			mainShadowMapInput,
-			punctualShadowMapInput,
-			SHRCoeffTexture,
-			SHGCoeffTexture,
-			SHBCoeffTexture,
-			FogTexture
-		},
-		frameBufferInputLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ frameBufferInputLayout }, frameBufferInputDescriptorSets);
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(frameBufferInputLayout, frameBufferInputDescriptorSets);
 
 	m_UsedDescSetLayouts.push_back(frameBufferInputLayout);
 	m_UsedDescSets.push_back(frameBufferInputDescriptorSets[0]);
@@ -631,48 +531,7 @@ void VansGraphics::VansScreenSpaceRenderNode::CreateDescriptorSets(VansCamera* c
 	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
 
 	// Set 1: Per-Pass (screen-space textures)
-	VkDescriptorSetLayoutBinding textureInput0 =
-	{
-		0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding textureInput1 =
-	{
-		1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding textureInput2 =
-	{
-		2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding textureInput3 =
-	{
-		3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding textureInput4 =
-	{
-		4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-	VkDescriptorSetLayoutBinding uavOutputBinding0 =
-	{
-		5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
-		VK_SHADER_STAGE_FRAGMENT_BIT, nullptr
-	};
-
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
-		{
-			textureInput0,
-			textureInput1,
-			textureInput2,
-			textureInput3,
-			textureInput4,
-			uavOutputBinding0
-		},
-		textureResourceLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ textureResourceLayout }, textureResourceDescriptorSets);
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_ScreenSpace(textureResourceLayout, textureResourceDescriptorSets);
 
 	m_UsedDescSetLayouts.push_back(textureResourceLayout);
 	m_UsedDescSets.push_back(textureResourceDescriptorSets[0]);
@@ -849,10 +708,10 @@ void VansGraphics::VansShadowRenderNode::UpdateDescripterSets(VansMaterialManage
 	// No per-pass or per-object descriptor updates needed for shadows
 }
 
-VansGraphics::VansTerrainRenderNode::VansTerrainRenderNode(VansVKDevice* device, const std::string& heightmapPath, const std::string& albedoMapPath, RenderNodeType type) : VansRenderNode(device->GetLogicDevice(), TERRAIN_NODE)
+VansGraphics::VansTerrainRenderNode::VansTerrainRenderNode(VansVKDevice* device, const TerrainConfig& config, RenderNodeType type) : VansRenderNode(device->GetLogicDevice(), TERRAIN_NODE)
 {
 	m_Terrain = new VansTerrain();
-	m_Terrain->Init(device, heightmapPath, albedoMapPath);
+	m_Terrain->Init(device, config);
 }
 
 

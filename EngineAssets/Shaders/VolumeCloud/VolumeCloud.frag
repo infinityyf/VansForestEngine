@@ -67,10 +67,10 @@ layout( location = 0 ) out vec4 frag_color;
 #define cloudDensity 0.03
 
 
-#define volumetricCloudSteps 16			//Higher is a better result with rendering of clouds.
+#define volumetricCloudSteps 12			//Primary ray-march steps (was 16).
 #define volumetricLightSteps 8			//Higher is a better result with rendering of volumetric light.
 
-#define cloudShadowingSteps 12			//Higher is a better result with shading on clouds.
+#define cloudShadowingSteps 6			//Sun-visibility march steps (was 12).
 #define volumetricLightShadowSteps 4	//Higher is a better result with shading on volumetric light from clouds
 
 #define rayleighCoeff (vec3(0.27, 0.5, 1.0) * 1e-5)	//Not really correct
@@ -90,6 +90,12 @@ float bayer2(vec2 a){
 #define bayer32(a)  (bayer16(.5*(a))*.25+bayer2(a))
 #define bayer64(a)  (bayer32(.5*(a))*.25+bayer2(a))
 #define bayer128(a) (bayer64(.5*(a))*.25+bayer2(a))
+
+// Temporal interleaved gradient noise — less structured than Bayer, good temporal distribution
+float interleavedGradientNoise(vec2 pixel, float frame)
+{
+    return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715)) + frame * 0.61803398875));
+}
 
 
 
@@ -226,18 +232,24 @@ float getClouds(vec3 p)
     
     vec3 cloudCoord = (p * 0.001) + movement;
     
-	float noise = Get3DNoise(cloudCoord) * 0.5;
+    // 3 octaves instead of 4 — the 16x octave caused high-frequency noise / aliasing
+	float noise = Get3DNoise(cloudCoord) * 0.625;
     	  noise += Get3DNoise(cloudCoord * 2.0 + movement) * 0.25;
     	  noise += Get3DNoise(cloudCoord * 7.0 - movement) * 0.125;
-    	  noise += Get3DNoise((cloudCoord + movement) * 16.0) * 0.0625;
     
     const float top = 0.004;
     const float bottom = 0.01;
     
     float horizonHeight = p.y - cloudMinHeight;
+    float cloudLayerThickness = max(float(cloudMaxHeight - cloudMinHeight), 1.0);
+    float normalizedH = clamp(horizonHeight / cloudLayerThickness, 0.0, 1.0);
+    // Parabolic vertical shaping: thins at top and bottom of cloud layer
+    float verticalShape = normalizedH * (1.0 - normalizedH) * 4.0;
     float treshHold = (1.0 - exp2(-bottom * horizonHeight)) * exp2(-top * horizonHeight);
+    treshHold *= clamp(verticalShape, 0.0, 1.0);
     
-    float clouds = smoothstep(0.55, 0.6, noise);
+    // Wider smoothstep band reduces harsh on/off transitions that look noisy
+    float clouds = smoothstep(0.48, 0.62, noise);
           clouds *= treshHold;
     
     return clouds * cloudDensity;
@@ -256,6 +268,9 @@ float getSunVisibility(vec3 p)
     for (int i = 0; i < steps; i++, position += increment)
     {
 		transmittance += getClouds(position);
+
+        if (transmittance * rSteps > 3.5)
+            break;
     }
     
     return exp2(-transmittance * rSteps);
@@ -297,6 +312,9 @@ vec3 calculateVolumetricClouds(vec3 viewPosition, vec3 viewDirection, vec3 atoms
     
     float bottomSphere = RayIntersectSphere(vec3(0, 0, 0), planetRadius + cloudMinHeight, viewPosition, viewDirection);
     float topSphere = RayIntersectSphere(vec3(0, 0, 0), planetRadius + cloudMaxHeight, viewPosition, viewDirection);
+
+    if (bottomSphere < 0.0 || topSphere < 0.0 || topSphere <= bottomSphere)
+        return atomsphereColor;
     
     vec3 startPosition = viewPosition + viewDirection * bottomSphere;
     vec3 endPosition = viewPosition + viewDirection * topSphere;
@@ -312,7 +330,8 @@ vec3 calculateVolumetricClouds(vec3 viewPosition, vec3 viewDirection, vec3 atoms
     float lDotW = dot(sunDirection.xyz, viewDirection);
     float phase = phase2Lobes(lDotW);
     
-    vec3 skyLight = vec3(0);
+    // Minimal ambient sky contribution to fill shadow areas
+    vec3 skyLight = sunColor * 0.08;
     
     for (int i = 0; i < steps; i++, cloudPosition += increment)
     {
@@ -323,6 +342,10 @@ vec3 calculateVolumetricClouds(vec3 viewPosition, vec3 viewDirection, vec3 atoms
         
 		scattering += getVolumetricCloudsScattering(opticalDepth, phase, cloudPosition, sunColor, skyLight) * transmittance;
         transmittance *= exp2(-opticalDepth);
+
+        // Early exit when cloud is opaque enough — saves remaining iterations
+        if (transmittance < 0.03)
+            break;
     }
     
     return mix(atomsphereColor * transmittance + scattering, atomsphereColor, clamp((length(startPosition) - planetRadius - initSeaLevel) * 0.00001, 0.0, 1.0));
@@ -333,7 +356,8 @@ void main()
     //从当前相机方向发出射线，得到云层此时的积分厚度
     vec3 viewPosition = cameraPosition.xyz + vec3(0,planetRadius + initSeaLevel,0);
     vec3 viewDirection = normalize(direction);
-    float dither = bayer64(gl_FragCoord.xy);
+    // Temporal IGN dither — varies per frame, much less visible pattern than static Bayer
+    float dither = interleavedGradientNoise(gl_FragCoord.xy, FrameIndex);
 
     vec3 lightAbsorb = calcAtomsphereSunAbsorbLight(sunDirection.xyz);
     

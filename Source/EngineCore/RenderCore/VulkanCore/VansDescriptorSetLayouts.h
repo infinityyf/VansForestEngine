@@ -46,7 +46,7 @@ namespace VansGraphics
 
 	// ====================================================================
 	// Set 1 Per-Pass Binding Indices
-	// Each enum mirrors the bindings in CreatePassLayout_* factory methods.
+	// Each enum mirrors the bindings in CreateAndAllocate_* factory methods.
 	// ====================================================================
 
 	// --- Deferred Lighting Pass ---
@@ -94,9 +94,16 @@ namespace VansGraphics
 	// --- Terrain Pass ---
 	enum TerrainPassBinding : uint32_t
 	{
-		TERRAIN_BINDING_HEIGHT_MAP  = 0,
-		TERRAIN_BINDING_ALBEDO_MAP = 1,
+		TERRAIN_BINDING_HEIGHT_MAP       = 0,
+		TERRAIN_BINDING_SPLATMAP_0       = 1,
+		TERRAIN_BINDING_SPLATMAP_1       = 2,
+		TERRAIN_BINDING_ALBEDO_ARRAY     = 3,  // descriptorCount = 8
+		TERRAIN_BINDING_NORMAL_ARRAY     = 4,  // descriptorCount = 8
+		TERRAIN_BINDING_ROUGHNESS_ARRAY  = 5,  // descriptorCount = 8
+		TERRAIN_BINDING_PARAMS_UBO       = 6,
 	};
+
+	static constexpr uint32_t TERRAIN_MAX_LAYERS = 8;
 
 	// --- SSGI Compute Pass ---
 	enum SSGIPassBinding : uint32_t
@@ -307,38 +314,15 @@ namespace VansGraphics
 		// ==============================================
 		// Set 0: Global (universal - same for all pipelines)
 		// ==============================================
-		static VkDescriptorSetLayout CreateGlobalLayout(
-			VkDevice device,
-			uint32_t maxBindlessTextures = MAX_BINDLESS_TEXTURES);
 
 		// ==============================================
 		// Set 1: Per-Pass (one creator per pass type)
+		// All pass layouts are now created via CreateAndAllocate_* methods below.
 		// ==============================================
-		static VkDescriptorSetLayout CreatePassLayout_Empty(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_DeferredLighting(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_SkyBox(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_ScreenSpace(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_PostProcess(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_Terrain(VkDevice device);
-
-		// Compute pass layouts
-		static VkDescriptorSetLayout CreatePassLayout_SSGI(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_SSR_Trace(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_SSR_Resolve(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_SSR_TemporalAA(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_VolumetricFog(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_BilateralFilter(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_HIZ(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_GISHUpdate(VkDevice device);
-		static VkDescriptorSetLayout CreatePassLayout_GIPointLight(VkDevice device);
-
-		// Ray tracing pass layout
-		static VkDescriptorSetLayout CreatePassLayout_RayTracing(VkDevice device);
 
 		// ==============================================
 		// Set 2: Per-Object (geometry passes only)
 		// ==============================================
-		static VkDescriptorSetLayout CreateObjectLayout(VkDevice device);
 
 		// ==============================================
 		// Convenience: build pipeline layout arrays
@@ -367,5 +351,29 @@ namespace VansGraphics
 
 		// Cleanup
 		static void DestroyLayout(VkDevice device, VkDescriptorSetLayout& layout);
+
+		// ==============================================
+		// Combined Layout Creation + Set Allocation
+		// Uses VansVKDescriptorManager internally.
+		// ==============================================
+		static void CreateAndAllocate_Global(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t maxBindlessTextures = MAX_BINDLESS_TEXTURES, uint32_t setCount = 1);
+		static void CreateAndAllocate_Object(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_PostProcess(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_DeferredLighting(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_SkyBox(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_ScreenSpace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_Empty(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_Terrain(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_SSGI(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_SSGITemporal(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
+		static void CreateAndAllocate_SSR_Trace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_SSR_Resolve(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_SSR_TemporalAA(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_VolumetricFog(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_BilateralFilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 3);
+		static void CreateAndAllocate_HIZ(std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount);
+		static void CreateAndAllocate_GISHUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_GIPointLight(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_RayTracing(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

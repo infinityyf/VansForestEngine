@@ -1,6 +1,7 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKDevice.h"
 #include "VansVKDescriptorManager.h"
+#include "VansDescriptorSetLayouts.h"
 #include "VansRenderPass.h"
 #include "VansMesh.h"
 #include "VansShader.h"
@@ -391,16 +392,7 @@ namespace VansGraphics
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
-		VkDescriptorSetLayoutBinding stmosphereUnifomBuffer =
-		{
-			SKYBOX_BINDING_ATMOSPHERE_UBO,
-			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			1,
-			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			nullptr
-		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ stmosphereUnifomBuffer }, manager->m_MaterialAtmosphereDataLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_MaterialAtmosphereDataLayout }, manager->m_MaterialAtmosphereDataDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SkyBox(manager->m_MaterialAtmosphereDataLayout, manager->m_MaterialAtmosphereDataDescriptorSets);
 
 		manager->UpdatePBRLutDescriptorSets();
 		manager->UpdateAtmosphereDescriptorSets();
@@ -447,19 +439,19 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		VansTexture* ssgiResult = new VansTexture();
-		ssgiResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		ssgiResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT, ssgiResult);
 
 		VansTexture* ssgiFilterResult = new VansTexture();
-		ssgiFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		ssgiFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT, ssgiFilterResult);
 
 		VansTexture* ssgiTemporalA = new VansTexture();
-		ssgiTemporalA->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		ssgiTemporalA->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_A, ssgiTemporalA);
 
 		VansTexture* ssgiTemporalB = new VansTexture();
-		ssgiTemporalB->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		ssgiTemporalB->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_B, ssgiTemporalB);
 		manager->m_SSGITemporalFrame = 0;
 
@@ -471,7 +463,7 @@ namespace VansGraphics
 		manager->m_SSGITemporalShader = new VansComputeShader();
 		manager->m_SSGITemporalShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSGITemporal").c_str());
 
-		float data[4] = { std::floor(m_RenderWidth / 2) , std::floor(m_RenderHeight / 2), 2.0f / m_RenderWidth, 2.0f / m_RenderHeight };
+		float data[4] = { (float)m_RenderWidth, (float)m_RenderHeight, 1.0f / m_RenderWidth, 1.0f / m_RenderHeight };
 		manager->m_SSGICBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(float) * 4, VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
@@ -484,139 +476,8 @@ namespace VansGraphics
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 		manager->m_SSGITemporalCBBuffer.SetBufferData(data, 0, sizeof(float) * 4);
 
-		VkDescriptorSetLayoutBinding normalBinding =
-		{
-			PassBinding::TEXTURE_0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding depthBinding =
-		{
-			PassBinding::TEXTURE_1,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding colorBinding =
-		{
-			PassBinding::TEXTURE_2,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding positionBinding =
-		{
-			PassBinding::TEXTURE_3,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding skyDiffuseBinding =
-		{
-			PassBinding::TEXTURE_4,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding SSGIResultBinding =
-		{
-			PassBinding::UAV_IMAGE_4,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding SSGICBBinding =
-		{
-			PassBinding::CBUFFER_6,
-			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding SHRBinding =
-		{
-			PassBinding::TEXTURE_7,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding SHGBinding =
-		{
-			PassBinding::TEXTURE_8,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding SHBBinding =
-		{
-			PassBinding::TEXTURE_9,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding HIZBinding =
-		{
-			PassBinding::TEXTURE_10,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ normalBinding,depthBinding,colorBinding,positionBinding,skyDiffuseBinding,SSGIResultBinding,SSGICBBinding, SHRBinding, SHGBinding, SHBBinding ,HIZBinding }, manager->m_SSGITexSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSGITexSetLayout }, manager->m_SSGIDescriptorSets);
-
-		VkDescriptorSetLayoutBinding temporalDepthBinding =
-		{
-			SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_DEPTH,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr
-		};
-		VkDescriptorSetLayoutBinding temporalMotionBinding =
-		{
-			SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_MOTION_VECTOR,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr
-		};
-		VkDescriptorSetLayoutBinding temporalHistoryBinding =
-		{
-			SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_HISTORY_GI,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr
-		};
-		VkDescriptorSetLayoutBinding temporalCurrentBinding =
-		{
-			SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_CURRENT_GI,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr
-		};
-		VkDescriptorSetLayoutBinding temporalAccumBinding =
-		{
-			SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_ACCUMULATED_GI,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr
-		};
-		VkDescriptorSetLayoutBinding temporalInfoBinding =
-		{
-			SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_INFO_UBO,
-			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr
-		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
-			{ temporalDepthBinding, temporalMotionBinding, temporalHistoryBinding, temporalCurrentBinding, temporalAccumBinding, temporalInfoBinding },
-			manager->m_SSGITemporalSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(
-			{ manager->m_SSGITemporalSetLayout, manager->m_SSGITemporalSetLayout },
-			manager->m_SSGITemporalDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(manager->m_SSGITexSetLayout, manager->m_SSGIDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGITemporal(manager->m_SSGITemporalSetLayout, manager->m_SSGITemporalDescriptorSets, 2);
 	}
 
 	void VansVKDevice::PrepareHZBRenderData()
@@ -632,28 +493,7 @@ namespace VansGraphics
 		manager->m_HZBShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/HIZ").c_str());
 
 		manager->m_HIZMipCount = 1 + (int)std::floor(std::log2(std::min(m_RenderWidth, m_RenderHeight)));
-		manager->m_HZBTexSetLayouts.resize(manager->m_HIZMipCount - 1);
-		for (int mipIndex = 0; mipIndex < manager->m_HIZMipCount - 1; mipIndex++)
-		{
-			VkDescriptorSetLayoutBinding depthInput =
-			{
-				PassBinding::UAV_IMAGE,
-				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-				1,
-				VK_SHADER_STAGE_COMPUTE_BIT,
-				nullptr
-			};
-			VkDescriptorSetLayoutBinding depthOuput =
-			{
-				PassBinding::UAV_IMAGE_0,
-				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-				1,
-				VK_SHADER_STAGE_COMPUTE_BIT,
-				nullptr
-			};
-			VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ depthInput,depthOuput }, manager->m_HZBTexSetLayouts[mipIndex]);
-		}
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(manager->m_HZBTexSetLayouts, manager->m_HZBDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZ(manager->m_HZBTexSetLayouts, manager->m_HZBDescriptorSets, manager->m_HIZMipCount - 1);
 	}
 
 	void VansVKDevice::PrepareSSRRenderData()
@@ -694,158 +534,9 @@ namespace VansGraphics
 		manager->m_SSRTemporalAAShader = new VansComputeShader();
 		manager->m_SSRTemporalAAShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSR_TEMPORALAA").c_str());
 
-		VkDescriptorSetLayoutBinding normalInput =
-		{
-			PassBinding::TEXTURE_0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding roughnessInput =
-		{
-			PassBinding::TEXTURE_1,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding positionInput =
-		{
-			PassBinding::TEXTURE_2,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding hizInput =
-		{
-			PassBinding::TEXTURE_3,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding tranceInfoResult =
-		{
-			PassBinding::UAV_IMAGE_3,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding trancePDFResult =
-		{
-			PassBinding::UAV_IMAGE_4,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ normalInput,roughnessInput,positionInput,hizInput,tranceInfoResult,trancePDFResult }, manager->m_SSRTraceSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSRTraceSetLayout }, manager->m_SSRTraceDescriptorSets);
-
-		VkDescriptorSetLayoutBinding colorInput =
-		{
-			PassBinding::TEXTURE_0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		roughnessInput =
-		{
-			PassBinding::TEXTURE_1,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		normalInput =
-		{
-			PassBinding::TEXTURE_2,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		positionInput =
-		{
-			PassBinding::TEXTURE_3,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		tranceInfoResult =
-		{
-			PassBinding::UAV_IMAGE_3,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		trancePDFResult =
-		{
-			PassBinding::UAV_IMAGE_4,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding resolveResult =
-		{
-			PassBinding::UAV_IMAGE_5,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ colorInput,roughnessInput,normalInput,positionInput, tranceInfoResult ,trancePDFResult,resolveResult }, manager->m_SSRResolveSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSRResolveSetLayout }, manager->m_SSRResolveDescriptorSets);
-
-		colorInput =
-		{
-			PassBinding::TEXTURE_0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		positionInput =
-		{
-			PassBinding::TEXTURE_1,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding aaResultA =
-		{
-			PassBinding::UAV_IMAGE_1,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding aaResultB =
-		{
-			PassBinding::UAV_IMAGE_2,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding aaResult =
-		{
-			PassBinding::UAV_IMAGE_3,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ colorInput,positionInput, tranceInfoResult ,aaResultA,aaResultB,aaResult }, manager->m_SSRAASetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_SSRAASetLayout }, manager->m_SSRAADescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Trace(manager->m_SSRTraceSetLayout, manager->m_SSRTraceDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Resolve(manager->m_SSRResolveSetLayout, manager->m_SSRResolveDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_TemporalAA(manager->m_SSRAASetLayout, manager->m_SSRAADescriptorSets);
 	}
 
 	void VansVKDevice::PrepareVolumetricData()
@@ -860,33 +551,7 @@ namespace VansGraphics
 		manager->m_VolumetrcFogShader = new VansComputeShader();
 		manager->m_VolumetrcFogShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/VolumetricFog").c_str());
 
-		VkDescriptorSetLayoutBinding positionInput =
-		{
-			PassBinding::TEXTURE_0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding mainlightShadow =
-		{
-			PassBinding::TEXTURE_1,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding fogResult =
-		{
-			PassBinding::UAV_IMAGE_1,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ positionInput,mainlightShadow, fogResult }, manager->m_VolumetricFogSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_VolumetricFogSetLayout }, manager->m_VolumetricFogDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_VolumetricFog(manager->m_VolumetricFogSetLayout, manager->m_VolumetricFogDescriptorSets);
 	}
 
 	void VansVKDevice::PrepareBilaterFilterData()
@@ -896,33 +561,7 @@ namespace VansGraphics
 		ssaoFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT, ssaoFilterResult);
 
-		VkDescriptorSetLayoutBinding colorInput =
-		{
-			PassBinding::TEXTURE_0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding depthInput =
-		{
-			PassBinding::TEXTURE_1,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-		VkDescriptorSetLayoutBinding result =
-		{
-			PassBinding::UAV_IMAGE_1,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			1,
-			VK_SHADER_STAGE_COMPUTE_BIT,
-			nullptr
-		};
-
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ colorInput,depthInput,result }, manager->m_BilateralFilterSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BilateralFilterSetLayout,manager->m_BilateralFilterSetLayout,manager->m_BilateralFilterSetLayout }, manager->m_BilateralFilterDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_BilateralFilter(manager->m_BilateralFilterSetLayout, manager->m_BilateralFilterDescriptorSets, 3);
 
 		manager->m_BilateralFilterPushConstant =
 		{

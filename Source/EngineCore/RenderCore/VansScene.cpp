@@ -10,6 +10,7 @@
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
+#include "TerrainCore/VansTerrain.h"
 
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
 #include <iostream>
@@ -149,18 +150,14 @@ void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
 {
     auto descManager = VansVKDescriptorManager::GetInstance();
 
-    // Create global layout via factory
-    m_GlobalDescriptorSetLayout = VansDescriptorSetLayoutFactory::CreateGlobalLayout(device);
-
-    // Allocate global descriptor set
+    // Create global layout + set via factory
     std::vector<VkDescriptorSet> sets;
-    descManager->AllocateDescriptorSet({ m_GlobalDescriptorSetLayout }, sets);
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(m_GlobalDescriptorSetLayout, sets);
     m_GlobalDescriptorSet = sets[0];
 
-    // Create object layout (Set 2: Transform SSBO)
-    m_ObjectDescriptorSetLayout = VansDescriptorSetLayoutFactory::CreateObjectLayout(device);
+    // Create object layout + set (Set 2: Transform SSBO)
     std::vector<VkDescriptorSet> objSets;
-    descManager->AllocateDescriptorSet({ m_ObjectDescriptorSetLayout }, objSets);
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(m_ObjectDescriptorSetLayout, objSets);
     m_ObjectDescriptorSet = objSets[0];
 
     // Write transform SSBO to the object set (binding 0)
@@ -183,9 +180,8 @@ void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
     descManager->UpdateDescriptorSets();
 
     // Create empty pass layout (Set 1) for passes with no per-pass resources
-    m_EmptyPassLayout = VansDescriptorSetLayoutFactory::CreatePassLayout_Empty(device);
     std::vector<VkDescriptorSet> emptySets;
-    descManager->AllocateDescriptorSet({ m_EmptyPassLayout }, emptySets);
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_Empty(m_EmptyPassLayout, emptySets);
     m_EmptyPassDescriptorSet = emptySets[0];
 
     // Write all global resources into Set 0
@@ -412,8 +408,11 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         }
     }
 
-    //添加地形节点
-	AddTerrainNode(vkDevice);
+    //添加地形节点（从JSON读取，如果不存在则不创建）
+    if (sceneData.contains("terrain"))
+    {
+        AddTerrainNode(vkDevice, sceneData["terrain"]);
+    }
 
     AddDeferredNode(nativeDevice);
 
@@ -576,19 +575,74 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
     }
 }
 
-void VansGraphics::VansScene::AddTerrainNode(VansVKDevice* device)
+void VansGraphics::VansScene::AddTerrainNode(VansVKDevice* device, json& terrainData)
 {
     auto vansConfigration = VansConfigration::GetInstance();
     std::string projectRoot = vansConfigration->GetProjectRootPath();
-    
-    RenderNodeType type = RenderNodeType::TERRAIN_NODE;
-    VansRenderNode* renderNode = new VansTerrainRenderNode(device, 
-        (projectRoot + "EngineAssets/Textures/Terrain/TerrainHeight.png").c_str(), 
-        (projectRoot + "EngineAssets/Textures/Terrain/TerrainAlbedo.png").c_str(),
-        type);
-    //renderNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
 
-    renderNode->SetName("TerrainNode");
+    TerrainConfig config;
+
+    // Heightmap (required)
+    config.heightmapPath = projectRoot + terrainData["heightmap"].get<std::string>();
+
+    // Splatmaps (required, array of 2)
+    if (terrainData.contains("splatmaps") && terrainData["splatmaps"].is_array())
+    {
+        auto& splatmaps = terrainData["splatmaps"];
+        if (splatmaps.size() >= 1)
+            config.splatmap0Path = projectRoot + splatmaps[0].get<std::string>();
+        if (splatmaps.size() >= 2)
+            config.splatmap1Path = projectRoot + splatmaps[1].get<std::string>();
+    }
+
+    // Layers (up to 8)
+    if (terrainData.contains("layers") && terrainData["layers"].is_array())
+    {
+        for (auto& layerJson : terrainData["layers"])
+        {
+            TerrainLayerConfig layer;
+
+            // Support texture name references (look up from scene texture manager)
+            if (layerJson.contains("albedo_texture"))
+            {
+                std::string texName = layerJson["albedo_texture"].get<std::string>();
+                layer.albedoTex = static_cast<VansTexture*>(GetTextureAsset(texName));
+            }
+            else if (layerJson.contains("albedo"))
+                layer.albedoPath = projectRoot + layerJson["albedo"].get<std::string>();
+
+            if (layerJson.contains("normal_texture"))
+            {
+                std::string texName = layerJson["normal_texture"].get<std::string>();
+                layer.normalTex = static_cast<VansTexture*>(GetTextureAsset(texName));
+            }
+            else if (layerJson.contains("normal"))
+                layer.normalPath = projectRoot + layerJson["normal"].get<std::string>();
+
+            if (layerJson.contains("roughness_texture"))
+            {
+                std::string texName = layerJson["roughness_texture"].get<std::string>();
+                layer.roughnessTex = static_cast<VansTexture*>(GetTextureAsset(texName));
+            }
+            else if (layerJson.contains("roughness"))
+                layer.roughnessPath = projectRoot + layerJson["roughness"].get<std::string>();
+
+            if (layerJson.contains("tiling"))
+                layer.tiling = layerJson["tiling"].get<float>();
+            config.layers.push_back(layer);
+        }
+    }
+
+    RenderNodeType type = RenderNodeType::TERRAIN_NODE;
+    VansRenderNode* renderNode = new VansTerrainRenderNode(device, config, type);
+
+    // Read optional name
+    std::string name = "TerrainNode";
+    if (terrainData.contains("name"))
+    {
+        name = terrainData["name"].get<std::string>();
+    }
+    renderNode->SetName(name);
     RegistRenderNode(renderNode, type);
 }
 

@@ -228,6 +228,7 @@ namespace VansGraphics
 	};
 
 	class VansTerrain;
+	struct TerrainConfig;
 	class VansTerrainRenderNode : public VansRenderNode
 	{
 	private:
@@ -236,7 +237,7 @@ namespace VansGraphics
 
 	public:
 
-		VansTerrainRenderNode(VansVKDevice* device, const std::string& heightmapPath, const std::string& albedoMapPath, RenderNodeType type);
+		VansTerrainRenderNode(VansVKDevice* device, const TerrainConfig& config, RenderNodeType type);
 
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 

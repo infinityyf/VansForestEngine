@@ -1,66 +1,122 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "../../Common/CameraData.glsl"
+
 layout(location = 0) in vec2 inUV;
 layout(location = 1) in vec3 inWorldPos;
 layout(location = 2) in float inHeight;
 
-// 新增：在 Fragment Shader 中访问高度图以计算法线
+// --- Terrain descriptor set (set 1) ---
 layout(set = 1, binding = 0) uniform sampler2D heightMap;
-layout(set = 1, binding = 1) uniform sampler2D albedoMap;
+layout(set = 1, binding = 1) uniform sampler2D splatMap0;
+layout(set = 1, binding = 2) uniform sampler2D splatMap1;
+layout(set = 1, binding = 3) uniform sampler2D terrainAlbedos[8];
+layout(set = 1, binding = 4) uniform sampler2D terrainNormals[8];
+layout(set = 1, binding = 5) uniform sampler2D terrainRoughness[8];
+layout(set = 1, binding = 6) uniform TerrainParams {
+    ivec4 layerCountPacked;   // .x = layerCount
+    float tilingFactors[8];   // std140: each element has vec4 (16-byte) stride
+} terrainParams;
 
-layout(location = 0) out vec4 outNormal; // GBuffer Normal
+// --- GBuffer outputs ---
+layout(location = 0) out vec4 outNormal;
 layout(location = 1) out vec4 outGbuffer0;
 layout(location = 2) out vec4 outGbuffer1;
 layout(location = 3) out vec4 outGbuffer2;
 
-// 必须与 Vertex Shader 中的定义保持一致
 const float TERRAIN_SIZE = 1024.0;
 const float MAX_HEIGHT = 500.0;
 
-// 计算地形法线 (Central Difference Method)
+// Compute terrain normal from heightmap via central differences
 vec3 CalculateTerrainNormal(vec2 uv) {
-    // 获取纹理尺寸
     ivec2 texSize = textureSize(heightMap, 0);
     vec2 texelSize = 1.0 / vec2(texSize);
 
-    // 采样周围四个点的高度 (Left, Right, Down, Up)
     float hL = texture(heightMap, uv - vec2(texelSize.x, 0.0)).r * MAX_HEIGHT;
     float hR = texture(heightMap, uv + vec2(texelSize.x, 0.0)).r * MAX_HEIGHT;
     float hD = texture(heightMap, uv - vec2(0.0, texelSize.y)).r * MAX_HEIGHT;
     float hU = texture(heightMap, uv + vec2(0.0, texelSize.y)).r * MAX_HEIGHT;
 
-    // 计算世界空间步长 (World Space Step)
-    // 两个采样点之间的世界距离 = (地形总大小 / 纹理分辨率) * 2
     vec2 worldStep = (vec2(TERRAIN_SIZE) / vec2(texSize)) * 2.0;
-
-    // 构建切线向量 (Tangent) 和 副切线向量 (Bitangent)
-    // Tangent 指向 X 正方向: (dx, dh, 0)
-    vec3 tangent = vec3(worldStep.x, hR - hL, 0.0);
-    // Bitangent 指向 Z 正方向: (0, dh, dz)
+    vec3 tangent   = vec3(worldStep.x, hR - hL, 0.0);
     vec3 bitangent = vec3(0.0, hU - hD, worldStep.y);
-
-    // 计算法线 (Y-Up 坐标系)
-    // Cross(Bitangent, Tangent) 得到向上的法线
     return normalize(cross(bitangent, tangent));
 }
 
+// Build TBN matrix from geometric normal for normal-map blending
+mat3 BuildTBN(vec3 geometricNormal) {
+    // Choose a reference vector that isn't parallel to the normal
+    vec3 up = abs(geometricNormal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent   = normalize(cross(up, geometricNormal));
+    vec3 bitangent = cross(geometricNormal, tangent);
+    return mat3(tangent, bitangent, geometricNormal);
+}
+
 void main() {
-    // 计算法线
-    vec3 normal = CalculateTerrainNormal(inUV);
+    // --------------------------------------------------
+    // 1. Read splatmap weights
+    // --------------------------------------------------
+    vec4 splat0 = texture(splatMap0, inUV);  // layers 0-3 (R, G, B, A)
+    vec4 splat1 = texture(splatMap1, inUV);  // layers 4-7 (R, G, B, A)
+    float weights[8] = float[8](
+        splat0.r, splat0.g, splat0.b, splat0.a,
+        splat1.r, splat1.g, splat1.b, splat1.a
+    );
 
-    // 简单的基于高度的颜色调试
-    vec3 color = texture(albedoMap, inUV).rgb;
+    // Normalize weights so they sum to 1
+    float totalWeight = 0.0;
+    int layerCount = terrainParams.layerCountPacked.x;
+    for (int i = 0; i < layerCount; ++i)
+        totalWeight += weights[i];
+    if (totalWeight > 0.001)
+        for (int i = 0; i < layerCount; ++i)
+            weights[i] /= totalWeight;
 
-    // 简单的网格线效果 (可选)
-    // if (fract(inWorldPos.x / 16.0) < 0.05 || fract(inWorldPos.z / 16.0) < 0.05) color = vec3(0,0,0);
+    // --------------------------------------------------
+    // 2. Blend PBR layer textures
+    // --------------------------------------------------
+    vec3 blendedAlbedo    = vec3(0.0);
+    vec3 blendedNormal    = vec3(0.0);
+    float blendedRoughness = 0.0;
+    float blendedMetallic  = 0.0;
+    float blendedAO        = 0.0;
 
-    // 输出法线 (映射到 0..1 范围，假设 GBuffer 是 UNORM)
-    outNormal = vec4(normal * 0.5 + 0.5, 1.0); 
-    
-    outGbuffer0 = vec4(color, 1.0); // Albedo
-    outGbuffer1 = vec4(0.0, 1.0, 0.0, 1.0); // Roughness=1.0, Metalness=0.0
-    
+    for (int i = 0; i < layerCount; ++i) {
+        float w = weights[i];
+        if (w < 0.001) continue;
+
+        vec2 tiledUV = inUV * terrainParams.tilingFactors[i];
+
+        // Albedo (sRGB -> linear handled by sampler)
+        vec3 albedo = texture(terrainAlbedos[i], tiledUV).rgb;
+        blendedAlbedo += albedo * w;
+
+        // Normal map (tangent-space, stored as 0..1, decode to -1..1)
+        vec3 nrm = texture(terrainNormals[i], tiledUV).rgb * 2.0 - 1.0;
+        blendedNormal += nrm * w;
+
+        // Roughness texture (R = AO, G = Roughness, B = Metallic — ARM format)
+        // If your textures store only roughness in R channel, adjust accordingly
+        vec3 arm = texture(terrainRoughness[i], tiledUV).rgb;
+        blendedAO        += arm.r * w;
+        blendedRoughness  += arm.g * w;
+        blendedMetallic   += arm.b * w;
+    }
+
+    // --------------------------------------------------
+    // 3. Compute final world-space normal
+    // --------------------------------------------------
+    vec3 geometricNormal = CalculateTerrainNormal(inUV);
+    mat3 TBN = BuildTBN(geometricNormal);
+    vec3 finalNormal = normalize(TBN * normalize(blendedNormal));
+    //blendedAlbedo = vec3(fract(inUV*terrainParams.tilingFactors[0]), 0.0); // debug UV tiling
+    // --------------------------------------------------
+    // 4. Output to GBuffer
+    // --------------------------------------------------
+    outNormal   = vec4(finalNormal, 1.0);
+    outGbuffer0 = vec4(blendedAlbedo, blendedRoughness);
+    outGbuffer1 = vec4(blendedMetallic, blendedAO, 1.0, 1.0);
+
     float linearDepth = (ViewMatrix * vec4(inWorldPos, 1.0)).z;
     outGbuffer2 = vec4(inWorldPos, -linearDepth);
 }

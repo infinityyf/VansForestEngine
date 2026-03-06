@@ -402,6 +402,63 @@
             "shader" : "SSAO"
         }
     ],
+    "terrain" : {
+        "heightmap" : "EngineAssets/Textures/Terrain/TerrainHeight.png",
+        "splatmaps" : [
+            "EngineAssets/Textures/Terrain/Splatmap0.png",
+            "EngineAssets/Textures/Terrain/Splatmap1.png"
+        ],
+        "layers" : [
+            {
+                "albedo"    : "EngineAssets/Textures/Terrain/Grass_albedo.png",
+                "normal"    : "EngineAssets/Textures/Terrain/Grass_normal.png",
+                "roughness" : "EngineAssets/Textures/Terrain/Grass_roughness.png",
+                "tiling"    : 64.0
+            },
+            {
+                "albedo"    : "EngineAssets/Textures/Terrain/Rock_albedo.png",
+                "normal"    : "EngineAssets/Textures/Terrain/Rock_normal.png",
+                "roughness" : "EngineAssets/Textures/Terrain/Rock_roughness.png",
+                "tiling"    : 32.0
+            },
+            {
+                "albedo"    : "EngineAssets/Textures/Terrain/Dirt_albedo.png",
+                "normal"    : "EngineAssets/Textures/Terrain/Dirt_normal.png",
+                "roughness" : "EngineAssets/Textures/Terrain/Dirt_roughness.png",
+                "tiling"    : 48.0
+            },
+            {
+                "albedo"    : "EngineAssets/Textures/Terrain/Sand_albedo.png",
+                "normal"    : "EngineAssets/Textures/Terrain/Sand_normal.png",
+                "roughness" : "EngineAssets/Textures/Terrain/Sand_roughness.png",
+                "tiling"    : 64.0
+            },
+            {
+                "albedo"    : "EngineAssets/Textures/Terrain/Snow_albedo.png",
+                "normal"    : "EngineAssets/Textures/Terrain/Snow_normal.png",
+                "roughness" : "EngineAssets/Textures/Terrain/Snow_roughness.png",
+                "tiling"    : 48.0
+            },
+            {
+                "albedo"    : "EngineAssets/Textures/Terrain/Gravel_albedo.png",
+                "normal"    : "EngineAssets/Textures/Terrain/Gravel_normal.png",
+                "roughness" : "EngineAssets/Textures/Terrain/Gravel_roughness.png",
+                "tiling"    : 40.0
+            },
+            {
+                "albedo"    : "EngineAssets/Textures/Terrain/Mud_albedo.png",
+                "normal"    : "EngineAssets/Textures/Terrain/Mud_normal.png",
+                "roughness" : "EngineAssets/Textures/Terrain/Mud_roughness.png",
+                "tiling"    : 56.0
+            },
+            {
+                "albedo"    : "EngineAssets/Textures/Terrain/Moss_albedo.png",
+                "normal"    : "EngineAssets/Textures/Terrain/Moss_normal.png",
+                "roughness" : "EngineAssets/Textures/Terrain/Moss_roughness.png",
+                "tiling"    : 52.0
+            }
+        ]
+    },
     "subScene" : [
         {
             "name" : "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/SceneSponza3.json"

@@ -8,36 +8,27 @@ namespace VansGraphics
 {
 	void VansVKDevice::UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
-		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
-		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
-
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		computeCmd.EnsureComputeShader(*manager->m_SSGIShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSGITexSetLayout });
-		computeCmd.DispatchCompute(*manager->m_SSGIShader, halfResWidth / 4, halfResHeight / 4, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSGIDescriptorSets[0] });
+		computeCmd.DispatchCompute(*manager->m_SSGIShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSGIDescriptorSets[0] });
 	}
 
 	void VansVKDevice::TemporalFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
-		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
-		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
-
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		uint32_t writeIdx = manager->m_SSGITemporalFrame % 2;
 
 		computeCmd.EnsureComputeShader(*manager->m_SSGITemporalShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSGITemporalSetLayout });
-		computeCmd.DispatchCompute(*manager->m_SSGITemporalShader, halfResWidth / 4, halfResHeight / 4, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSGITemporalDescriptorSets[writeIdx] });
+		computeCmd.DispatchCompute(*manager->m_SSGITemporalShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSGITemporalDescriptorSets[writeIdx] });
 	}
 
 	void VansVKDevice::BilateralFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
-		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
-		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
-
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		uint32_t writeIdx = manager->m_SSGITemporalFrame % 2;
 		uint32_t bilateralSetIdx = (writeIdx == 0) ? 1 : 2;
 		computeCmd.EnsureComputeShader(*manager->m_BilateralFilterShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_BilateralFilterSetLayout });
-		computeCmd.DispatchCompute(*manager->m_BilateralFilterShader, (halfResWidth + 7) / 8, (halfResHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_BilateralFilterDescriptorSets[bilateralSetIdx] });
+		computeCmd.DispatchCompute(*manager->m_BilateralFilterShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_BilateralFilterDescriptorSets[bilateralSetIdx] });
 	}
 
 	void VansVKDevice::BilateralFilterSSAO(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)

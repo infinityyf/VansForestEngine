@@ -32,10 +32,21 @@ layout( set = 1, binding = 9 ) uniform sampler3D SHBCoeff;
 // Hierarchical-Z depth pyramid for accelerated tracing
 layout( set = 1, binding = 10) uniform sampler2D hizDepth;
 
+// ---- GI volume bounds ----
+const vec3 kGIVolumeMin  = vec3(-20.0, -14.0, -20.0);
+const vec3 kGIVolumeSize = vec3( 40.0,  40.0,  40.0);
+
+bool IsInsideGIVolume(vec3 worldPos)
+{
+    vec3 maxBound = kGIVolumeMin + kGIVolumeSize;
+    return all(greaterThanEqual(worldPos, kGIVolumeMin))
+        && all(lessThanEqual(worldPos, maxBound));
+}
+
 // ---- SH fallback helper ----
 vec3 EvaluateSHFallback(vec3 worldPos, vec3 normal, vec3 dir)
 {
-    vec3 uvw = (worldPos + normal * 0.5 * 1.732 - vec3(-20.0, -14.0, -20.0)) / vec3(40.0, 40.0, 40.0);
+    vec3 uvw = (worldPos + normal * 0.5 * 1.732 - kGIVolumeMin) / kGIVolumeSize;
     vec4 rC = texture(SHRCoeff, uvw);
     vec4 gC = texture(SHGCoeff, uvw);
     vec4 bC = texture(SHBCoeff, uvw);
@@ -124,8 +135,16 @@ void main()
     }
     else
     {
-        // Miss — use SH probe fallback
-        irradiance = EvaluateSHFallback(startPosition, normal, dir);
+        // Miss — use SH probes only when shading point is inside GI volume,
+        // otherwise fall back to sky cubemap.
+        if (IsInsideGIVolume(startPosition))
+        {
+            irradiance = EvaluateSHFallback(startPosition, normal, dir);
+        }
+        else
+        {
+            irradiance = texture(inputSkydiffuse, dir).rgb;
+        }
     }
 
     imageStore(resultR, pixelCoord, vec4(irradiance, 1.0));

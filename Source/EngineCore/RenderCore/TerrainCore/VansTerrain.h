@@ -1,16 +1,54 @@
-﻿#pragma once
+#pragma once
 #include "../VulkanCore/VansVKDevice.h"
 #include "../VulkanCore/VansTexture.h"
 #include "../VulkanCore/VansMesh.h"
 #include "../VulkanCore/VansShader.h"
 #include "../VulkanCore/VansVKBuffer.h"
 #include "../VulkanCore/VansVKCommandBuffer.h"
+#include "../VulkanCore/VansDescriptorSetLayouts.h"
 #include "../VansCamera.h"
 #include <vector>
 #include <memory>
+#include <string>
 
 namespace VansGraphics
 {
+    // ----------------------------------------------------------
+    // Configuration structs (populated from JSON)
+    // ----------------------------------------------------------
+    struct TerrainLayerConfig
+    {
+        std::string albedoPath;
+        std::string normalPath;
+        std::string roughnessPath;
+        float tiling = 64.0f;
+
+        // Pre-loaded texture pointers (from scene texture manager)
+        // When set, paths are ignored and these are used directly.
+        VansTexture* albedoTex   = nullptr;
+        VansTexture* normalTex   = nullptr;
+        VansTexture* roughnessTex = nullptr;
+    };
+
+    struct TerrainConfig
+    {
+        std::string heightmapPath;
+        std::string splatmap0Path;
+        std::string splatmap1Path;
+        std::vector<TerrainLayerConfig> layers;  // up to TERRAIN_MAX_LAYERS
+    };
+
+    // ----------------------------------------------------------
+    // GPU-side UBO matching the shader TerrainParams block
+    // ----------------------------------------------------------
+    struct TerrainParamsGPU
+    {
+        glm::ivec4 layerCountPacked;             // .x = layerCount, .yzw = unused (16 bytes, matches std140 ivec4)
+        // std140: array elements have vec4 (16-byte) stride
+        // Each tilingFactor is stored as .x of a vec4
+        float tilingFactors[TERRAIN_MAX_LAYERS * 4];  // [i*4+0] = tiling, [i*4+1..3] = padding
+    };
+
     // 发送给 Shader 的每个 Instance 的数据
     struct TerrainInstanceData
     {
@@ -39,8 +77,8 @@ namespace VansGraphics
         VansTerrain();
         ~VansTerrain();
 
-        // 初始化：加载高度图，生成基础网格，编译 Shader
-        void Init(VansVKDevice* device, const std::string& heightMapPath, const std::string& albedoMapPath);
+        // Initialize with full splatmap terrain config
+        void Init(VansVKDevice* device, const TerrainConfig& config);
 
         // 每帧更新：计算 LOD，更新 Instance Buffer
         void Update(VansCamera* camera);
@@ -66,9 +104,19 @@ namespace VansGraphics
     private:
         VansVKDevice* m_Device = nullptr;
 
-        // 资源
+        // --- Textures ---
         VansTexture* m_HeightMap = nullptr;
-        VansTexture* m_TerrainAlbedoMap = nullptr;
+        VansTexture* m_Splatmap0 = nullptr;
+        VansTexture* m_Splatmap1 = nullptr;
+        VansTexture* m_LayerAlbedos[TERRAIN_MAX_LAYERS]    = {};
+        VansTexture* m_LayerNormals[TERRAIN_MAX_LAYERS]    = {};
+        VansTexture* m_LayerRoughness[TERRAIN_MAX_LAYERS]  = {};
+        uint32_t     m_LayerCount = 0;
+        bool         m_OwnsLayerTextures = true; // false when textures are borrowed from scene
+
+        // Terrain params UBO
+        VansVKBuffer m_ParamsUBO;
+
         VansMesh* m_BasePatchMesh = nullptr; // 16x16 grid
 
         //attribute data

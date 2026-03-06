@@ -124,7 +124,7 @@ namespace VansGraphics
 		// Find a render node by name across all render node lists
 		VansRenderNode* FindRenderNodeByName(const std::string& name);
 
-		void AddTerrainNode(VansVKDevice* device);
+		void AddTerrainNode(VansVKDevice* device, json& terrainData);
 
 		void AddDeferredNode(VkDevice& device);
 
