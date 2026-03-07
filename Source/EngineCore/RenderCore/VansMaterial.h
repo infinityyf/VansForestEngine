@@ -103,6 +103,7 @@ namespace VansGraphics
 
 		VkDescriptorSetLayout m_VolumetricFogSetLayout;
 		std::vector<VkDescriptorSet> m_VolumetricFogDescriptorSets;
+		VansVKBuffer m_FogParamsCBBuffer;
 
 
 		//全局pbr参数buffer，不每个pbr材质自己持有

@@ -97,10 +97,10 @@ void main() {
 
         // Roughness texture (R = AO, G = Roughness, B = Metallic — ARM format)
         // If your textures store only roughness in R channel, adjust accordingly
-        vec3 arm = texture(terrainRoughness[i], tiledUV).rgb;
-        blendedAO        += arm.r * w;
-        blendedRoughness  += arm.g * w;
-        blendedMetallic   += arm.b * w;
+        vec4 arm = texture(terrainRoughness[i], tiledUV);
+        //blendedAO        += arm.r * w;
+        blendedAO  += arm.g * w;
+        blendedRoughness   += (1 - arm.a) * w;
     }
 
     // --------------------------------------------------
@@ -115,7 +115,7 @@ void main() {
     // --------------------------------------------------
     outNormal   = vec4(finalNormal, 1.0);
     outGbuffer0 = vec4(blendedAlbedo, blendedRoughness);
-    outGbuffer1 = vec4(blendedMetallic, blendedAO, 1.0, 1.0);
+    outGbuffer1 = vec4(0.0, blendedAO, 1.0, 1.0);
 
     float linearDepth = (ViewMatrix * vec4(inWorldPos, 1.0)).z;
     outGbuffer2 = vec4(inWorldPos, -linearDepth);

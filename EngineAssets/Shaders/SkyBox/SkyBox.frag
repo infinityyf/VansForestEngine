@@ -5,6 +5,7 @@
 
  layout( location = 0 ) in vec3 direction;
  layout( location = 0 ) out vec4 frag_color;
+ layout( set = 1, binding = 1 ) uniform sampler2D fogResult;
 
 #define cloudMinHeight 1500
 #define cloudMaxHeight 2100
@@ -272,6 +273,11 @@ vec3 calculateVolumetricClouds(vec3 viewPosition, vec3 viewDirection, vec3 atoms
     vec3 lightAbsorb = calcAtomsphereSunAbsorbLight(sunDirection.xyz);
     
     vec3 color = calculateVolumetricClouds(viewPosition,viewDirection, skyColor, dither, lightAbsorb);
+
+    vec2 uv = gl_FragCoord.xy / ScreenParams.xy;
+    vec4 fogData = texture(fogResult, uv);
+    float fogOpacity = fogData.a;
+    color = color * (1.0 - fogOpacity) + fogData.rgb;
 
     //都积分128次，每次进行一次单向散射，并考虑powder effect
     frag_color = vec4(color,1);

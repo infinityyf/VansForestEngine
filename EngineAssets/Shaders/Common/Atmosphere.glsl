@@ -59,7 +59,8 @@ vec3 MieCoeff(AtmosphereParam param, float height)
 float MiePhase(AtmosphereParam param, float cos_theta)
 {
     float g = param.mieAnisotropy;
-    float phase = (3.0 / (8.0 * PI)) * (1 - g*g)/(2 + g*g) * (1 + cos_theta*cos_theta) / pow(1 + g*g - 2*g*cos_theta, 1.5);
+    float denom = max(1e-6, 1.0 + g*g - 2.0*g*cos_theta);
+    float phase = (3.0 / (8.0 * PI)) * (1.0 - g*g)/(2.0 + g*g) * (1.0 + cos_theta*cos_theta) / pow(denom, 1.5);
     return phase;
 }
 
@@ -124,11 +125,12 @@ float RayIntersectSphere(vec3 center, float radius, vec3 rayStart, vec3 rayDir)
 {
     float OS = length(center - rayStart);
     float SH = dot(center - rayStart, rayDir);
-    float OH = sqrt(OS*OS - SH*SH);
-    float PH = sqrt(radius*radius - OH*OH);
+    float OH = sqrt(max(0.0, OS*OS - SH*SH));
 
     // ray miss sphere
     if(OH > radius) return -1;
+
+    float PH = sqrt(max(0.0, radius*radius - OH*OH));
 
     // use min distance
     float t1 = SH - PH;

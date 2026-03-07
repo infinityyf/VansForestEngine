@@ -72,6 +72,8 @@ void main()
     float materialID = subpassLoad(gbufferInput1).z;
     vec3 position_world = subpassLoad(gbufferInput2).xyz;
     float depth = subpassLoad(depthInput).x;
+    float linearDepth = subpassLoad(gbufferInput2).w;
+
 
     //获取ssao
     float ssaoValue = imageLoad(ssao,ivec2(fragTexCoord * ScreenParams.xy / 2)).r;//texture(ssao, fragTexCoord).r;
@@ -104,7 +106,7 @@ void main()
     //c : 计算动态GI，探针球谐
     //brdfData.indirectDiffuse = CalculateSHDiffuse(position_world, normal);
 
-    brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy / 2)).rgba;
+    brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy * 0.5)).rgba;
     
     //计算光照
     LightResult lightResult;
@@ -117,10 +119,10 @@ void main()
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
     //outColor.rgb = lightResult.ambientSpecular;
     //混合雾效  fogResult: rgb = in-scatter, a = opacity (1 - transmittance)
-    //vec4 fogData = texture(fogResult, fragTexCoord);
-    //float fogOpacity = fogData.a;
-    // Correct volumetric compositing: scene * transmittance + inscatter
-    //outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
+    vec4 fogData = texture(fogResult, fragTexCoord);
+    float fogOpacity = fogData.a;
+    outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
+    //outColor.rgb = fogData.rgb * fogOpacity;
     //outColor.rgb = brdfData.indirectDiffuse;
     //outColor.rgb = CalculateSHDiffuse(position_world, normal);
     outColor.a = 1;

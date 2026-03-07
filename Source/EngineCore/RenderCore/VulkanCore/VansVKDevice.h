@@ -210,7 +210,7 @@ namespace VansGraphics
 		VkSemaphore m_AsyncComputeDoneSemaphore;
 
 		// Set to true to enable async compute (3-submit); false = original single-submit
-		bool m_UseAsyncCompute = true;
+		bool m_UseAsyncCompute = false;
 
 		VkPhysicalDeviceProperties m_DeviceProperties;
 		

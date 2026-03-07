@@ -16,7 +16,6 @@ void main()
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
     vec3 normal = texelFetch(inputNormal, pixelCoord * SCREEN_SCALE,0).xyz;
     vec3 position = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE,0).xyz;
-    position = position + normal * 0.05; // Offset to avoid self-intersection
     float roughness = texelFetch(inputRoughness, pixelCoord * SCREEN_SCALE,0).a;
 
     //计算视线向量
@@ -28,101 +27,185 @@ void main()
     //计算反射光线的方向
     vec3 traceDirection =vec3(0,1,0);
 
+    // Early-out: sky / empty GBuffer pixels have no valid world position.
+    if (length(normal) < 0.5)
+    {
+        imageStore(traceHit, pixelCoord, vec4(0.0));
+        imageStore(tracePDF, pixelCoord, vec4(0.0));
+        return;
+    }
+
     //根据roughness计算采样的PDF
     if(roughness > 0.1)
     {
         vec2 random = HashRandom(pixelCoord, mod(FrameIndex, 64.0));
-        random.y *= 0.15;
+        // Do NOT clamp random.y — ImportanceSampleGGX already shapes the lobe
+        // through the roughness parameter.  Clamping it kills spread for rough surfaces.
         vec4 pdfrandom = ImportanceSampleGGX(random, roughness);
         tracePDFInfo.a = pdfrandom.w; // PDF值
 
         //tangent space to world space
-        vec3 jitterNormal =  TangentToWorld(pdfrandom.xyz, normal);
-        traceDirection = reflect(-viewDirection, jitterNormal.xyz);
+        vec3 jitterNormal = normalize(TangentToWorld(pdfrandom.xyz, normal));
+        traceDirection = reflect(-viewDirection, jitterNormal);
     }
     else
     {
-        tracePDFInfo.a = 1;
+        tracePDFInfo.a = 1.0;
         traceDirection = reflect(-viewDirection, normal);
+    }
+
+    // Reject reflection directions that go into the surface.
+    // This happens when the jittered half-vector diverges too far from the
+    // geometric normal — the reflected ray would immediately hit the back
+    // face of the current surface, producing random flickering hits.
+    if (dot(traceDirection, normal) < 0.0)
+    {
+        imageStore(traceHit, pixelCoord, vec4(0.0));
+        imageStore(tracePDF, pixelCoord, tracePDFInfo);
+        return;
     }
     
         
-    vec3 lastTracePos = position;
+    // ─── DDA screen-space ray march ───
+    // Project two world points to derive the UV-space march direction.
+    // No SSR_MAX_DISTANCE — we march until we hit geometry or leave the screen.
 
-    for(int stepIndex = 1; stepIndex < SSR_MAX_COUNT ; stepIndex++)
+    vec3 rayOrigin = position + normal * SSR_START_BIAS + traceDirection * SSR_START_BIAS;
+
+    // ── Project rayOrigin and rayOrigin+dir into last frame's screen space ──
+    vec4 startVS = LastViewMatrix * vec4(rayOrigin, 1.0);
+    float startZ = -startVS.z;
+
+    if (startZ <= NearPlane)
     {
-        tracePosition = position + traceDirection * SSR_MAX_STEP * float(stepIndex) * float(stepIndex) * 0.005;
+        imageStore(traceHit, pixelCoord, vec4(0.0));
+        imageStore(tracePDF, pixelCoord, tracePDFInfo);
+        return;
+    }
 
-        //计算目标在屏幕空间的位置
-        vec4 viewSpacePos = LastViewMatrix * vec4(tracePosition, 1.0);
-        float traceDepth = -viewSpacePos.z; // 视图空间的深度
+    // Project a second point 1 unit along the ray to get the UV direction
+    vec4 dirVS = LastViewMatrix * vec4(rayOrigin + traceDirection, 1.0);
+    float dirZ = -dirVS.z;
 
-        vec4 clipSpacePos =LastProjectionMatrix * viewSpacePos;
-        vec2 screenPos = ((clipSpacePos.xy / clipSpacePos.w) * 0.5 + 0.5);
-        screenPos.y = 1.0 - screenPos.y;
+    vec4 startClip = LastProjectionMatrix * startVS;
+    vec4 dirClip   = LastProjectionMatrix * dirVS;
 
-        if(screenPos.x < 0.0 || screenPos.x > 1.0 || screenPos.y < 0.0 || screenPos.y > 1.0)
-        {
+    if (startClip.w <= 0.0 || dirClip.w <= 0.0)
+    {
+        imageStore(traceHit, pixelCoord, vec4(0.0));
+        imageStore(tracePDF, pixelCoord, tracePDFInfo);
+        return;
+    }
+
+    vec2 startUV = startClip.xy / startClip.w * 0.5 + 0.5;
+    startUV.y = 1.0 - startUV.y;
+    vec2 dirUV = dirClip.xy / dirClip.w * 0.5 + 0.5;
+    dirUV.y = 1.0 - dirUV.y;
+
+    // UV-space ray direction (not normalized in UV — we'll normalize to 1 pixel steps)
+    vec2 rayDirUV = dirUV - startUV;
+
+    if (startUV.x < -0.05 || startUV.x > 1.05 || startUV.y < -0.05 || startUV.y > 1.05)
+    {
+        imageStore(traceHit, pixelCoord, vec4(0.0));
+        imageStore(tracePDF, pixelCoord, tracePDFInfo);
+        return;
+    }
+
+    // Source texel in last frame's screen space for self-intersection guard
+    ivec2 sourceTexel = ivec2(startUV * ScreenParams.xy);
+
+    // ── DDA setup: step 1 pixel at a time along the major screen axis ──
+    // Convert UV direction to pixel-space, then normalize so the major component = ±1 pixel.
+    vec2 rayDirPixel = rayDirUV * ScreenParams.xy;
+    float majorLen = max(abs(rayDirPixel.x), abs(rayDirPixel.y));
+
+    if (majorLen < 1e-4)
+    {
+        imageStore(traceHit, pixelCoord, vec4(0.0));
+        imageStore(tracePDF, pixelCoord, tracePDFInfo);
+        return;
+    }
+
+    // stepUV advances exactly 1 pixel along the major axis
+    vec2 stepUV = rayDirUV / majorLen;
+    // 1/z step for perspective-correct depth interpolation:
+    // Along parameter s (number of pixel-steps), 1/z is linear in screen space.
+    float invStartZ = 1.0 / startZ;
+    float invDirZ   = 1.0 / dirZ;
+    float invZStep  = (invDirZ - invStartZ) / majorLen;
+
+    // ── March pixel by pixel until hit or off-screen ──
+    int maxSteps = int(max(ScreenParams.x, ScreenParams.y)) * 2; // can't exceed screen diagonal
+    vec2  prevUV = startUV;
+    float prevInvZ = invStartZ;
+
+    for (int step = 1; step <= maxSteps; step++)
+    {
+        vec2  uv   = startUV + stepUV * float(step);
+        float invZ = invStartZ + invZStep * float(step);
+        float rayDepth = 1.0 / invZ;
+
+        // Off-screen → stop
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
             break;
-        }
 
-        // Clamp pixel coord 2px inside bounds — border pixels have unreliable gbuffer data
-        // (interpolation artifacts, no geometry) and cause false hits near screen edges
-        ivec2 screenPixel = clamp(ivec2(screenPos * ScreenParams.xy), ivec2(2), ivec2(ScreenParams.xy) - ivec2(3));
+        ivec2 texel = ivec2(uv * ScreenParams.xy);
 
-        //获取当前位置的深度和法线
-        float sceneDepth = texelFetch(inputPosition, screenPixel, 0).w;
-        vec3 sceneNormal = texelFetch(inputNormal, screenPixel, 0).xyz;
+        // Self-intersection guard
+        if (texel == sourceTexel) { prevUV = uv; prevInvZ = invZ; continue; }
 
-        //跳过没有深度的区域
-        if(sceneDepth == 0.0)
+        float sceneDepth = texelFetch(inputPosition, texel, 0).w;
+
+        // Skip sky / empty GBuffer
+        if (sceneDepth == 0.0) { prevUV = uv; prevInvZ = invZ; continue; }
+
+        // ── Projective-aware depth threshold ──
+        // Under perspective projection, z-buffer precision degrades as O(z²).
+        // Scale tolerance with sceneDepth so distant surfaces allow proportionally
+        // more slack, while nearby surfaces use tight matching.
+        float depthThreshold = max(sceneDepth * SSR_DEPTH_TOLERANCE, 0.1);
+
+        // Ray has crossed behind the surface → potential hit
+        if (rayDepth > sceneDepth && rayDepth - sceneDepth < depthThreshold)
         {
-            lastTracePos = tracePosition;
-            continue;
-        }
+            // ── Binary-search refinement for sub-pixel accuracy ──
+            // Refine between previous step (under surface) and current step (over surface)
+            float loS = float(step - 1);
+            float hiS = float(step);
 
-        // && traceDepth - sceneDepth < SSR_DEPTH_THRESHOLD
-        if(traceDepth > sceneDepth)
-        {
-            // 命中：从上一追踪位置开始，用更小步长细化寻找
-            float fineStep = SSR_MAX_STEP * SSR_FINE_FACTOR;
-            vec3  refinePos = lastTracePos;
-
-            for (int r = 0; r < SSR_REFINE_STEPS; ++r)
+            for (int r = 0; r < SSR_REFINE_STEPS; r++)
             {
-                refinePos += traceDirection * fineStep;
+                float midS   = (loS + hiS) * 0.5;
+                vec2  midUV  = startUV + stepUV * midS;
+                float midZ   = 1.0 / (invStartZ + invZStep * midS);
 
-                vec4 rv  = LastViewMatrix * vec4(refinePos, 1.0);
-                float rd = -rv.z;
+                ivec2 midTexel = ivec2(midUV * ScreenParams.xy);
+                if (midTexel == sourceTexel) { loS = midS; continue; }
 
-                vec4 rc  = LastProjectionMatrix * rv;
-                vec2 ruv = (rc.xy / rc.w) * 0.5 + 0.5;
-                ruv.y    = 1.0 - ruv.y;
+                float midScene = texelFetch(inputPosition, midTexel, 0).w;
+                if (midScene == 0.0) { loS = midS; continue; }
 
-                if (ruv.x < 0.0 || ruv.x > 1.0 || ruv.y < 0.0 || ruv.y > 1.0)
-                    break;
+                float midThreshold = max(midScene * SSR_DEPTH_TOLERANCE, 0.1);
 
-                ivec2 refinePixel = clamp(ivec2(ruv * ScreenParams.xy), ivec2(2), ivec2(ScreenParams.xy) - ivec2(3));
-                float sDepth = texelFetch(inputPosition, refinePixel, 0).w;
-                vec3  sNorm  = texelFetch(inputNormal,   refinePixel, 0).xyz;
-
-                if (rd > sDepth)
+                if (midZ > midScene && midZ - midScene < midThreshold)
                 {
-                    traceHitInfo.xy = ruv;
-                    traceHitInfo.z  = rd;
-                    traceHitInfo.w  = 1.0;
-                    tracePDFInfo.xyz = sNorm;
-                    break;
+                    hiS = midS;
+                    traceHitInfo     = vec4(midUV, midZ, 1.0);
+                    tracePDFInfo.xyz = texelFetch(inputNormal, midTexel, 0).xyz;
+                }
+                else
+                {
+                    loS = midS;
                 }
             }
 
-            // 若细化找到命中，退出外层循环
             if (traceHitInfo.w > 0.5)
                 break;
         }
 
-        // 保存本次位置供下一轮细化参考
-        lastTracePos = tracePosition;
+        prevUV   = uv;
+        prevInvZ = invZ;
     }
 
     imageStore(traceHit, pixelCoord, traceHitInfo);

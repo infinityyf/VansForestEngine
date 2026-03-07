@@ -124,6 +124,26 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 			}
 		}
 	);
+
+	VansTexture* volumetricFogResult = GetRuntimeRenderTexture(RT_VOLUMETRIC_FOG_RESULT);
+	if (volumetricFogResult != nullptr)
+	{
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				m_MaterialAtmosphereDataDescriptorSets[0],
+				SKYBOX_BINDING_FOG,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						volumetricFogResult->GetImage().GetSampler(),
+						volumetricFogResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+	}
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 

@@ -499,28 +499,32 @@ namespace VansGraphics
 	void VansVKDevice::PrepareSSRRenderData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		uint32_t halfResWidth = m_RenderWidth / 2;
+		uint32_t halfResHeight = m_RenderHeight / 2;
+
 		VansTexture* ssrHitInfo = new VansTexture();
-		ssrHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		ssrHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_HIT_INFO, ssrHitInfo);
 
 		VansTexture* ssrRayPdf = new VansTexture();
-		ssrRayPdf->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrRayPdf->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RAY_PDF, ssrRayPdf);
 
 		VansTexture* ssrResult = new VansTexture();
-		ssrResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrResult->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT, ssrResult);
 
 		VansTexture* ssrAaResultA = new VansTexture();
-		ssrAaResultA->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrAaResultA->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT_A, ssrAaResultA);
 
 		VansTexture* ssrAaResultB = new VansTexture();
-		ssrAaResultB->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrAaResultB->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT_B, ssrAaResultB);
 
 		VansTexture* ssrAaResult = new VansTexture();
-		ssrAaResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrAaResult->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT, ssrAaResult);
 
 		auto vansConfigration = VansConfigration::GetInstance();
@@ -551,7 +555,17 @@ namespace VansGraphics
 		manager->m_VolumetrcFogShader = new VansComputeShader();
 		manager->m_VolumetrcFogShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/VolumetricFog").c_str());
 
+		// FogParams UBO: { fogDensity, heightFalloff, sunScatterScale, ambientScale, fogMinHeight, skyFogDistance }
+		struct FogParamsData { float fogDensity; float heightFalloff; float sunScatterScale; float ambientScale; float fogMinHeight; float skyFogDistance; };
+		FogParamsData fogDefaults = { 0.002f, 0.08f, 0.3f, 0.5f, -100.0f, 10000.0f };
+		manager->m_FogParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(FogParamsData), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_FogParamsCBBuffer.SetBufferData(&fogDefaults, 0, sizeof(FogParamsData));
+
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_VolumetricFog(manager->m_VolumetricFogSetLayout, manager->m_VolumetricFogDescriptorSets);
+		manager->UpdateAtmosphereDescriptorSets();
 	}
 
 	void VansVKDevice::PrepareBilaterFilterData()

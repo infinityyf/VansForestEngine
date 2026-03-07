@@ -72,6 +72,7 @@ namespace VansGraphics
 	enum SkyBoxPassBinding : uint32_t
 	{
 		SKYBOX_BINDING_ATMOSPHERE_UBO = 0,
+		SKYBOX_BINDING_FOG            = 1,
 	};
 
 	// --- Screen-Space Pass (SSAO etc.) ---
@@ -168,9 +169,9 @@ namespace VansGraphics
 	// --- Volumetric Fog Compute Pass ---
 	enum VolumetricFogPassBinding : uint32_t
 	{
-		FOG_BINDING_POSITION    = 0,
-		FOG_BINDING_SHADOW_MAP  = 1,
-		FOG_BINDING_RESULT      = 2,
+		FOG_BINDING_POSITION = 0,   // inputPosition  (COMBINED_IMAGE_SAMPLER)
+		FOG_BINDING_RESULT   = 1,   // fogResult      (STORAGE_IMAGE)
+		FOG_BINDING_PARAMS   = 2,   // FogParams UBO  (UNIFORM_BUFFER)
 	};
 
 	// --- Bilateral Filter Compute Pass ---

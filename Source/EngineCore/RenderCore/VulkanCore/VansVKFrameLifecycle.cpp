@@ -130,7 +130,6 @@ namespace VansGraphics
 			m_VansVKComputeCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
 			UpdateSSR(renderPassManager, m_VansVKComputeCommandBuffer);
-			UpdateVolumetricFog(renderPassManager, m_VansVKComputeCommandBuffer);
 
 			m_VansVKComputeCommandBuffer.EndCommandBufferRecord();
 
@@ -152,6 +151,7 @@ namespace VansGraphics
 
 			UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
 			UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
+			UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
 			UpdateRayTracing(m_VansVKCommandBuffer);
 
 			renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);

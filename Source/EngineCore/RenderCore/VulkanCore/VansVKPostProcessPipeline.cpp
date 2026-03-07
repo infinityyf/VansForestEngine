@@ -831,13 +831,14 @@ namespace VansGraphics
 		}
 
 		auto& position = renderPassManager->GetGbuffer2();
-		auto& mainLightShadow = renderPassManager->GetShadowMap();
 
 		VansVKDescriptorManager::GetInstance()->ResetState();
+
+		// binding 0 — inputPosition (COMBINED_IMAGE_SAMPLER)
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				manager->m_VolumetricFogDescriptorSets[0],
-				PassBinding::TEXTURE_0,
+				FOG_BINDING_POSITION,
 				0,
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
@@ -849,25 +850,12 @@ namespace VansGraphics
 				}
 			}
 		);
+
+		// binding 1 — fogResult (STORAGE_IMAGE)
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				manager->m_VolumetricFogDescriptorSets[0],
-				PassBinding::TEXTURE_1,
-				0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				{
-					{
-						mainLightShadow.GetSampler(),
-						mainLightShadow.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
-					}
-				}
-			}
-		);
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				manager->m_VolumetricFogDescriptorSets[0],
-				PassBinding::UAV_IMAGE_1,
+				FOG_BINDING_RESULT,
 				0,
 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 				{
@@ -879,6 +867,24 @@ namespace VansGraphics
 				}
 			}
 		);
+
+		// binding 2 — FogParams UBO (UNIFORM_BUFFER)
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				manager->m_VolumetricFogDescriptorSets[0],
+				FOG_BINDING_PARAMS,
+				0,
+				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				{
+					{
+						manager->m_FogParamsCBBuffer.GetNativeBuffer(),
+						0,
+						manager->m_FogParamsCBBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 	}
 
@@ -914,8 +920,8 @@ namespace VansGraphics
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		uint32_t halfResWidth = std::floor(m_RenderWidth / 2);
-		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
+		uint32_t halfResWidth = m_RenderWidth / 2;
+		uint32_t halfResHeight = m_RenderHeight / 2;
 
 		computeCmd.EnsureComputeShader(*manager->m_SSRTraceShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRTraceSetLayout });
 		computeCmd.DispatchCompute(*manager->m_SSRTraceShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRTraceDescriptorSets[0] });
@@ -924,7 +930,7 @@ namespace VansGraphics
 		computeCmd.DispatchCompute(*manager->m_SSRResolveShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRResolveDescriptorSets[0] });
 
 		computeCmd.EnsureComputeShader(*manager->m_SSRTemporalAAShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRAASetLayout });
-		computeCmd.DispatchCompute(*manager->m_SSRTemporalAAShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRAADescriptorSets[0] });
+		computeCmd.DispatchCompute(*manager->m_SSRTemporalAAShader, (halfResWidth + 7) / 8, (halfResHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRAADescriptorSets[0] });
 	}
 
 	void VansVKDevice::UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)

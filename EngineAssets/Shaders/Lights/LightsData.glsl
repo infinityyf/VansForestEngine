@@ -123,28 +123,32 @@ float SampleDirectionShadowMap_PCF_Noise(vec3 position_world, sampler2D shadowMa
     vec2 shadowUV = clipCoord.xy * 0.5 + 0.5;
     shadowUV.y = 1.0 - shadowUV.y;
 
-        // outside shadow map -> treat as lit
-    if (shadowUV.x < 0.0 || shadowUV.x > 1.0 || shadowUV.y < 0.0 || shadowUV.y > 1.0)
-        return 1.0;
+    // Smooth fade at shadow map edges instead of hard cutoff
+    float fadeWidth = 0.05;
+    float edgeFade = smoothstep(0.0, fadeWidth, shadowUV.x)
+                   * smoothstep(0.0, fadeWidth, 1.0 - shadowUV.x)
+                   * smoothstep(0.0, fadeWidth, shadowUV.y)
+                   * smoothstep(0.0, fadeWidth, 1.0 - shadowUV.y);
 
+    if (edgeFade <= 0.0)
+        return 1.0;
 
     ivec2 sz = textureSize(shadowMap, 0);
     vec2 texelSize = 1.0 / vec2(sz);
 
-    float visibility = 0.0;
-    int count = 0;
     float sampleCountInverse = 1.0 / float(DISK_SAMPLE_COUNT);
     float blockSearchRadius = 5.0;
 
-    //pcf radius
     float receiverDepth = clipCoord.z;
-    float avgBlockerDepth = 0;
+    float avgBlockerDepth = 0.0;
+    int blockerCount = 0;
+
     // noise in range [-0.5, 0.5]
     float frameIndex = softShadowParams.x;
     float sampleJitterAngle = RandomInterLeavedWithScale(shadowUV * vec2(sz), frameIndex) * 2.0 * PI;
     vec2 jitter = vec2(sin(sampleJitterAngle), cos(sampleJitterAngle));
 
-    //计算遮挡物距离
+    //计算遮挡物距离 (Blocker Search)
     for(int i = 0; i < DISK_SAMPLE_COUNT; ++i)
     {
         float sampleDistNorm = 0;
@@ -153,30 +157,29 @@ float SampleDirectionShadowMap_PCF_Noise(vec3 position_world, sampler2D shadowMa
         offset = vec2(offset.x * jitter.y + offset.y * jitter.x, offset.x * -jitter.x + offset.y * jitter.y);
 
         //搜索半径需要动态调整
-        vec2 sampleCoord = shadowUV + offset * texelSize *blockSearchRadius;
+        vec2 sampleCoord = shadowUV + offset * texelSize * blockSearchRadius;
         sampleCoord = clamp(sampleCoord, vec2(0.0), vec2(1.0));
 
         float texDepth = texture(shadowMap, sampleCoord).r;
         if(texDepth < receiverDepth)
         {
             avgBlockerDepth += texDepth;
-            count++;
+            blockerCount++;
         }
     }
-    if(count == 0)
-    {
-        avgBlockerDepth = receiverDepth;
-    }
-    else
-    {
-        avgBlockerDepth /= float(count);
-    }
 
-    //计算模糊半径
-    float radius = (receiverDepth - avgBlockerDepth) / 0.05;
-    radius = mix(1.0, 8.0, clamp(radius,0,1));
+    // No blockers -> fully lit
+    if(blockerCount == 0)
+        return 1.0;
 
-    
+    avgBlockerDepth /= float(blockerCount);
+
+    //计算模糊半径 - smoothstep for smoother penumbra transition
+    float penumbraRatio = (receiverDepth - avgBlockerDepth) / 0.05;
+    float radius = mix(1.0, 8.0, smoothstep(0.0, 1.0, penumbraRatio));
+
+    // PCF filtering
+    float visibility = 0.0;
     for(int i = 0; i < DISK_SAMPLE_COUNT; ++i)
     {
         float sampleDistNorm = 0;
@@ -190,10 +193,12 @@ float SampleDirectionShadowMap_PCF_Noise(vec3 position_world, sampler2D shadowMa
 
         float texDepth = texture(shadowMap, sampleCoord).r;
         visibility += (texDepth < clipCoord.z) ? 0.0 : 1.0;
-        count++;
     }
 
-    return visibility / float(count);
+    visibility /= float(DISK_SAMPLE_COUNT);
+
+    // Blend toward fully lit at shadow map edges
+    return mix(1.0, visibility, edgeFade);
 }
 
 float SamplePointShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIndex)

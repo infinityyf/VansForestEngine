@@ -6,72 +6,116 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout( set = 1, binding = 0 ) uniform sampler2D inputPosition;
-layout( set = 1, binding = 1 ) uniform sampler2D mainLightShadowMap;
-layout( set = 1, binding = 2, rgba32f ) uniform image2D fogResult;
+layout( set = 1, binding = 1, rgba32f ) uniform image2D fogResult;
 
 #define SCREEN_SCALE 2
 
-// --- Ray march settings (near range only) ---
-#define VOL_TRACE_STEPS    16
-#define VOL_MAX_DISTANCE   150.0
-#define VOL_FADE_START     120.0
-
-// --- Height-exponential fog parameters ---
-const float c_fogDensity    = 0.002;            // base density at y = 0
-const float c_heightFalloff = 0.08;             // exponential height decay rate
-const float c_fogMaxHeight  = 80.0;             // above this height density is negligible
-const vec3  c_ambientFog    = vec3(0.15, 0.18, 0.22); // ambient fog tint
-
 // ============================================================
-// Height-based fog density at a world position
-// density(y) = baseDensity * exp(-falloff * y)
+// Exposed fog parameters (set = 0, binding = X  or push constant)
 // ============================================================
-float FogDensityAt(vec3 pos)
+layout( set = 1, binding = 2 ) uniform FogParams
 {
-    if (pos.y > c_fogMaxHeight) return 0.0;
-    return c_fogDensity * exp(-c_heightFalloff * max(pos.y, 0.0));
+    float fogDensity;       // base density at y = 0            (e.g. 0.002)
+    float heightFalloff;    // exponential height decay rate     (e.g. 0.08)
+    float sunScatterScale;  // multiplier for sun in-scatter     (e.g. 0.3)
+    float ambientScale;     // multiplier for ambient in-scatter (e.g. 0.5)
+    float fogMinHeight;     // lower bound for height clamping   (e.g. -100.0)
+    float skyFogDistance;   // virtual ray length for sky pixels (e.g. 8000.0)
+                            // controls sky haze density; independent of camera pitch
+} uFog;
+
+// ============================================================
+// Atmospheric scattering helpers — coefficients match SkyBox.frag
+// so fog sun/ambient colors are physically consistent with the sky.
+// ============================================================
+const vec3  c_rayleighCoeff = vec3(0.27, 0.5, 1.0) * 1e-5;
+const vec3  c_mieCoeff      = vec3(0.5e-6);
+const vec3  c_atmTotalCoeff = c_rayleighCoeff + c_mieCoeff;
+const float c_rLOG2         = 1.0 / log(2.0);
+const float c_sunBrightness = 3.0;
+
+// Optical depth through the atmosphere at a given elevation sine
+// (same formula as SkyBox calcParticleThickness)
+float AtmOpticalDepth(float sinElev)
+{
+    float d = sinElev * 2.0;
+    d = max(d + 0.01, 0.01);
+    return 100000.0 / d;
+}
+
+// Attenuated sun colour after passing through the atmosphere.
+// Matches SkyBox calcAtomsphereSunAbsorbLight:
+//   white at zenith, orange/red near horizon.
+vec3 AtmSunColor(vec3 sunDir)
+{
+    float sinElev = dot(sunDir, vec3(0.0, 1.0, 0.0));
+    float od      = AtmOpticalDepth(sinElev);
+    return exp2(-c_atmTotalCoeff * od);   // absorb(totalCoeff, od)
+}
+
+// Sky ambient tint derived from Rayleigh ratio (blue sky colour).
+// Normalised so the dominant (blue) channel = 1.
+vec3 AtmSkyAmbient()
+{
+    // c_rayleighCoeff / c_rayleighCoeff.b  =>  (0.27, 0.5, 1.0)
+    return c_rayleighCoeff / c_rayleighCoeff.b;
 }
 
 // ============================================================
-// Analytical height-exponential fog optical depth (closed-form)
-// Integrates density along the segment [rayOrigin → rayEnd]
+// Analytical height-exponential fog optical depth.
+//
+//   OD = fogDensity × linearDistance × heightDensityFactor
+//
+//   - linearDistance     : length of the ray segment  → fog "thickness"
+//   - heightDensityFactor: analytical mean of exp(-h·y) along the segment
+//                          → height-exp controls how dense the fog is at
+//                            whatever altitude the ray passes through
+//
+// Closed-form of ∫₀ᵈ exp(-h · y(t)) dt  where y(t) = y0 + (dy/d)·t
 // ============================================================
 float AnalyticalHeightFogOD(vec3 rayOrigin, vec3 rayEnd)
 {
-    float d = length(rayEnd - rayOrigin);
-    if (d < 0.001) return 0.0;
+    // --- Linear distance: fog thickness ---
+    float linearDistance = length(rayEnd - rayOrigin);
+    if (linearDistance < 0.001) return 0.0;
 
     float y0 = rayOrigin.y;
     float y1 = rayEnd.y;
     float dy = y1 - y0;
 
-    float od;
+    // --- Height density factor: analytical mean of exp(-h·y) along segment ---
+    float heightDensityFactor;
     if (abs(dy) > 0.001)
     {
-        // Closed-form: integral of density * exp(-falloff * y) ds
-        od = c_fogDensity * d
-           * (exp(-c_heightFalloff * y0) - exp(-c_heightFalloff * y1))
-           / (c_heightFalloff * dy);
+        // Closed-form mean: integral of exp(-h·y) over the vertical span, normalised
+        // Denominator must use signed dy so the result is positive for both
+        // upward (dy>0) and downward (dy<0) rays.
+        heightDensityFactor = (exp(-uFog.heightFalloff * max(y0, uFog.fogMinHeight))
+                             - exp(-uFog.heightFalloff * max(y1, uFog.fogMinHeight)))
+                            / (uFog.heightFalloff * dy);
     }
     else
     {
-        // Near-horizontal ray
-        od = c_fogDensity * d * exp(-c_heightFalloff * y0);
+        // Near-horizontal: density is constant along the segment
+        heightDensityFactor = exp(-uFog.heightFalloff * max(y0, uFog.fogMinHeight));
     }
-    return max(od, 0.0);
+
+    return max(uFog.fogDensity * linearDistance * heightDensityFactor, 0.0);
 }
 
 // ============================================================
-// Sun in-scatter at a sample point (accounts for vertical fog
-// thickness between sample and upper atmosphere)
+// Fog-specific dual-lobe phase function.
+// Uses a much softer forward lobe (g ≈ 0.35) than the sky/cloud
+// phase2Lobes (g ≈ 0.64) to avoid an overly bright, large sun disc
+// bleeding through the fog.  The peak is also soft-clamped.
 // ============================================================
-vec3 GetSunScattering(vec3 samplePos, vec3 sunDir, float shadow, float phase)
+float fogPhase(float cosTheta)
 {
-    float verticalOD = exp(-c_heightFalloff * max(samplePos.y, 0.0))
-                     / max(0.01, abs(sunDir.y));
-
-    vec3 sunLight = uDirectionLight.color.xyz * shadow * phase * HALF_PI;
-    return sunLight * exp(-c_fogDensity * verticalOD * 8.0);
+    float lobe1 = hgPhase(cosTheta, 0.35);   // soft forward scatter
+    float lobe2 = hgPhase(cosTheta, -0.3);   // mild back scatter
+    float p     = mix(lobe2, lobe1, 0.65);
+    // Soft clamp: prevents extreme spikes close to the sun direction.
+    return min(p, 0.45);
 }
 
 // ============================================================
@@ -88,94 +132,69 @@ void main()
     float linearDepth = gbuffer.w;
     vec3 posWS   = gbuffer.xyz;
 
-    float totalDist = length(posWS - camPos);
-    vec3  viewDir   = normalize(posWS - camPos);
+    bool isSky = (linearDepth == 0.0);
+    vec3 viewDir;
 
-    // Sky pixels — reconstruct far direction
-    if (linearDepth == 0.0)
+    if (isSky)
     {
-        totalDist = 1000.0;
+        // Infinite far — posWS is undefined; reconstruct direction from NDC
         vec2 uv  = (vec2(pixelCoord) * float(SCREEN_SCALE) + 0.5) / ScreenParams.xy;
         vec2 ndc = uv * 2.0 - 1.0;
+        ndc.y *= -1.0; // Invert Y for NDC space
         vec4 clip = vec4(ndc, 1.0, 1.0);
         vec3 dirVS = normalize((InverseProjectionMatrix * clip).xyz);
         viewDir = normalize((InverseViewMatrix * vec4(dirVS, 0.0)).xyz);
-        posWS   = camPos + viewDir * totalDist;
+    }
+    else
+    {
+        viewDir = normalize(posWS - camPos);
     }
 
     vec3  sunDir = uDirectionLight.direction.xyz;
     float lDotV  = dot(sunDir, viewDir);
-    float phase  = phase2Lobes(lDotV);
-
-    // Temporal jitter
-    float jitter = RandomInterLeavedWithScale(vec2(pixelCoord), FrameIndex);
+    float phase  = fogPhase(lDotV);
 
     // ============================================================
-    // NEAR RANGE — volumetric ray march with shadow sampling
+    // Analytical height-exponential fog OD
+    //   - geometry pixels: finite integral from camera to surface
+    //   - sky pixels:      virtual endpoint at fixed HORIZONTAL distance,
+    //                      so the fog density is world-space stable and does
+    //                      not shift when the camera pitches up/down.
+    //
+    //   We project skyFogDistance onto the XZ plane: t = skyFogDistance / |xz|
+    //   This keeps the horizontal distance constant for all sky rays.
+    //   viewDir.y is clamped to [0, 1] so below-horizon sky pixels saturate
+    //   at the horizon fog level and do not spike downward.
     // ============================================================
-    float marchDist = min(totalDist, VOL_MAX_DISTANCE);
-    float stepLen   = marchDist / float(VOL_TRACE_STEPS);
-
-    float volTransmittance = 1.0;
-    vec3  volScattering    = vec3(0.0);
-
-    for (int i = 0; i < VOL_TRACE_STEPS; ++i)
+    float fogOD;
+    if (isSky)
     {
-        float t = stepLen * (float(i) + 0.5 + (jitter - 0.5) * 0.8);
-        vec3 samplePos = camPos + viewDir * t;
-
-        float density = FogDensityAt(samplePos);
-        if (density < 1e-6)
-            continue;
-
-        // Shadow map lookup
-        float shadow = 1.0;
-        vec4 lsPos = uDirectionLight.shadowMatrix * vec4(samplePos, 1.0);
-        lsPos.z = lsPos.z * 0.5 + 0.5;
-        vec2 shadowUV = lsPos.xy * 0.5 + 0.5;
-        shadowUV.y = 1.0 - shadowUV.y;
-        if (shadowUV.x >= 0.0 && shadowUV.x <= 1.0 &&
-            shadowUV.y >= 0.0 && shadowUV.y <= 1.0)
-        {
-            float shadowZ = texture(mainLightShadowMap, shadowUV).r;
-            shadow = (shadowZ < lsPos.z - DEPTH_BIAS) ? 0.0 : 1.0;
-        }
-
-        float stepOD = density * stepLen;
-
-        // In-scatter: sun + ambient
-        vec3 scatter = GetSunScattering(samplePos, sunDir, shadow, phase)
-                     + c_ambientFog * density * 0.5;
-
-        volScattering    += scatter * volTransmittance * stepLen;
-        volTransmittance *= exp(-stepOD);
+        // Clamp viewDir.y to [0, 1] so below-horizon sky rays saturate at the
+        // horizon fog level (no downward spike), then re-normalise.
+        // Ray length stays fixed at skyFogDistance — upward rays naturally reach
+        // thinner air and accumulate less OD; no artificial stretching needed.
+        vec3 skyDir = normalize(vec3(viewDir.x, max(viewDir.y, 0.0), viewDir.z));
+        vec3 skyEnd = camPos + skyDir * uFog.skyFogDistance;
+        fogOD = AnalyticalHeightFogOD(camPos, skyEnd);
+    }
+    else
+    {
+        fogOD = AnalyticalHeightFogOD(camPos, posWS);
     }
 
-    // ============================================================
-    // FAR RANGE — analytical height-exponential fog (no shadow)
-    // ============================================================
-    float farFogOD   = 0.0;
-    vec3  farScatter = vec3(0.0);
+    // Attenuate the directional light by the same atmosphere model the skybox uses.
+    // This makes fog turn orange/red at sunset automatically.
+    vec3 attenuatedSun = uDirectionLight.color.xyz
+                       * AtmSunColor(sunDir)
+                       * c_sunBrightness;
 
-    if (totalDist > VOL_FADE_START)
-    {
-        vec3 farStart = camPos + viewDir * marchDist;
-        farFogOD = AnalyticalHeightFogOD(farStart, posWS);
+    // In-scatter: sun (phase-weighted, atmosphere-attenuated) + Rayleigh sky ambient
+    vec3 sunColor     = attenuatedSun   * phase            * uFog.sunScatterScale;
+    vec3 ambientColor = AtmSkyAmbient() * uFog.ambientScale;
+    vec3 inScatter    = (sunColor + ambientColor) * (1.0 - exp(-fogOD));
 
-        // Approximate in-scatter for the analytical region (no per-sample shadow)
-        vec3 farSun     = uDirectionLight.color.xyz * phase * 0.3;
-        vec3 farAmbient = c_ambientFog * 0.5;
-        farScatter = (farSun + farAmbient) * (1.0 - exp(-farFogOD));
-    }
-
-    // ============================================================
-    // Combine near volumetric + far analytical
-    // ============================================================
-    float farTransmittance = exp(-farFogOD);
-
-    vec3  totalScatter      = volScattering + volTransmittance * farScatter;
-    float totalTransmittance = volTransmittance * farTransmittance;
+    float transmittance = exp(-fogOD);
 
     // .rgb = accumulated in-scatter,  .a = opacity (1 - transmittance)
-    imageStore(fogResult, pixelCoord, vec4(totalScatter, 1.0 - totalTransmittance));
+    imageStore(fogResult, pixelCoord, vec4(inScatter, 1.0 - transmittance));
 }

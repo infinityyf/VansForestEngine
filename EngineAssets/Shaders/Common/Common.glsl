@@ -20,12 +20,12 @@
 #define SSGI_MAX_COUNT 32
 #define SSGI_MAX_STEP 4
 
-#define SSR_MAX_COUNT 32
-#define SSR_MAX_STEP 4
-#define SSR_DEPTH_THRESHOLD 0.1
+#define SSR_DEPTH_TOLERANCE 0.01      // base depth tolerance (fraction of scene depth)
 #define SSR_NUM_RESOLVER 9
-#define SSR_REFINE_STEPS 8
-#define SSR_FINE_FACTOR  0.1 // 相对 SSR_MAX_STEP 的细化步长比例
+#define SSR_REFINE_STEPS 16            // binary-search refinement iterations
+#define SSR_START_BIAS 0.05            // world-space bias along normal to avoid self-hit
+#define SSR_RESOLVE_BASE_RADIUS 4.0    // min gather radius in pixels
+#define SSR_RESOLVE_MAX_RADIUS  12.0   // max gather radius (reached at roughness=1)
 
 
 
@@ -221,7 +221,7 @@ float rayleighPhase(float x)
 float hgPhase(float x, float g)
 {
     float g2 = g*g;
-	return 0.25 * ((1.0 - g2) * pow(1.0 + g2 - 2.0*g*x, -1.5));
+	return 0.25 * ((1.0 - g2) * pow(max(1e-6, 1.0 + g2 - 2.0*g*x), -1.5));
 }
 
 float miePhaseSky(float x, float depth)
