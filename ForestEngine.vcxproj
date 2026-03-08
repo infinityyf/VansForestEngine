@@ -1,0 +1,323 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{b069f631-4234-4d6c-b7ab-b6f98177b552}</ProjectGuid>
+    <RootNamespace>ForestEngine</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>PhysXFoundation_64.lib;PhysXCommon_64.lib;PhysX_64.lib;PhysXCooking_64.lib;PhysXExtensions_static_64.lib;PhysXCharacterKinematic_static_64.lib;PhysXPvdSDK_static_64.lib;PhysXVehicle2_static_64.lib;glfw3.lib;assimp-vc143-mt.lib;amd_fidelityfx_vkd.lib;python313_d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)\ForestEngine\External\PhysX\lib\debug;$(SolutionDir)\ForestEngine\External\FidelityFX\PrebuiltSignedDLL;$(SolutionDir)\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);$(SolutionDir)\ForestEngine\External\Python-3.13.3\PCbuild\amd64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>false</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>PhysXFoundation_64.lib;PhysXCommon_64.lib;PhysX_64.lib;PhysXCooking_64.lib;PhysXExtensions_static_64.lib;PhysXCharacterKinematic_static_64.lib;PhysXPvdSDK_static_64.lib;PhysXVehicle2_static_64.lib;glfw3.lib;assimp-vc143-mt.lib;amd_fidelityfx_vk.lib;python313.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)\ForestEngine\External\PhysX\lib\release;$(SolutionDir)\ForestEngine\External\FidelityFX\PrebuiltSignedDLL;$(SolutionDir)\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);$(SolutionDir)\ForestEngine\External\Python-3.13.3\PCbuild\amd64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="External\GUI\glfw-3.3.9\include\GLFW\glfw3.h" />
+    <ClInclude Include="External\GUI\glfw-3.3.9\include\GLFW\glfw3native.h" />
+    <ClInclude Include="External\GUI\imgui-1.90.2\backends\imgui_impl_glfw.h" />
+    <ClInclude Include="External\GUI\imgui-1.90.2\backends\imgui_impl_vulkan.h" />
+    <ClInclude Include="External\GUI\imgui-1.90.2\imconfig.h" />
+    <ClInclude Include="External\GUI\imgui-1.90.2\imgui.h" />
+    <ClInclude Include="External\GUI\imgui-1.90.2\imgui_internal.h" />
+    <ClInclude Include="External\GUI\imgui-1.90.2\imstb_rectpack.h" />
+    <ClInclude Include="External\GUI\imgui-1.90.2\imstb_textedit.h" />
+    <ClInclude Include="External\GUI\imgui-1.90.2\imstb_truetype.h" />
+    <ClInclude Include="External\spirv_cross\GLSL.std.450.h" />
+    <ClInclude Include="External\spirv_cross\spirv.h" />
+    <ClInclude Include="External\spirv_cross\spirv.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cfg.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_common.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cpp.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cross.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cross_c.h" />
+    <ClInclude Include="External\spirv_cross\spirv_cross_containers.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cross_error_handling.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cross_parsed_ir.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_cross_util.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_glsl.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_hlsl.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_msl.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_parser.hpp" />
+    <ClInclude Include="External\spirv_cross\spirv_reflect.hpp" />
+    <ClInclude Include="Source\EngineCore\Configration\VansConfigration.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\VansEditorWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAssetWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansBaseWindowComponent.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProjectWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansSceneWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansScriptorWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansConsoleWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansConsole.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollider.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysics.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsCore.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansRigidBody.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansLight.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansPBR.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansAsset.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansCamera.h" />
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansCommonUtils.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansGraphicsBuffer.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansGraphicsDevice.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansMaterial.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansRenderNode.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansScene.h" />
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansTransform.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansGUIVulkanBackEnd.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansShader.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansTexture.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKBuffer.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKCommandBuffer.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDescriptorManager.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansDescriptorSetLayouts.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKImage.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryManager.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSampler.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.h" />
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h" />
+    <ClInclude Include="Source\EngineCore\Util\VansFileUtil.h" />
+    <ClInclude Include="Source\EngineCore\Util\VansInputManager.h" />
+    <ClInclude Include="Source\EngineCore\Util\VansJobSystem.h" />
+    <ClInclude Include="Source\EngineCore\Util\VansLog.h" />
+    <ClInclude Include="Source\EngineCore\VansTimer.h" />
+    <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h" />
+    <ClInclude Include="Source\VansBasicWindow.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="External\GUI\imgui-1.90.2\backends\imgui_impl_glfw.cpp" />
+    <ClCompile Include="External\GUI\imgui-1.90.2\backends\imgui_impl_vulkan.cpp" />
+    <ClCompile Include="External\GUI\imgui-1.90.2\imgui.cpp" />
+    <ClCompile Include="External\GUI\imgui-1.90.2\imgui_demo.cpp" />
+    <ClCompile Include="External\GUI\imgui-1.90.2\imgui_draw.cpp" />
+    <ClCompile Include="External\GUI\imgui-1.90.2\imgui_tables.cpp" />
+    <ClCompile Include="External\GUI\imgui-1.90.2\imgui_widgets.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cfg.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cpp.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cross.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cross_c.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cross_parsed_ir.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_cross_util.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_glsl.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_hlsl.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_msl.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_parser.cpp" />
+    <ClCompile Include="External\spirv_cross\spirv_reflect.cpp" />
+    <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\VansEditorWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansProjectWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansSceneWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansScriptorWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansConsoleWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollider.cpp" />
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysics.cpp" />
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.cpp" />
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.cpp" />
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansRigidBody.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansLight.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansCamera.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansGraphicsDevice.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansMaterial.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansRenderNode.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansScene.cpp" />
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansTransform.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansGUIVulkanBackEnd.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansShader.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansTexture.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDescriptorManager.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansDescriptorSetLayouts.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKBuffer.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKCommandBuffer.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKRenderer.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKFSRIntegration.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKImage.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryManager.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKRenderFeatures.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKRayTracingPipeline.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKRenderDataPreparation.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKResourceUpload.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSampler.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.cpp" />
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp" />
+    <ClCompile Include="Source\EngineCore\Util\VansInputManager.cpp" />
+    <ClCompile Include="Source\EngineCore\Util\VansJobSystem.cpp" />
+    <ClCompile Include="Source\EngineCore\Util\VansLog.cpp" />
+    <ClCompile Include="Source\EngineCore\VansTimer.cpp" />
+    <ClCompile Include="Source\ForestEngineEntry.cpp" />
+    <ClCompile Include="Source\Graphics\Vulkan\VansVKFunctions.cpp" />
+  </ItemGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <PostBuildEvent>
+      <Command>xcopy /y /d "$(SolutionDir)\ForestEngine\External\PhysX\bin\debug\*.dll" "$(OutDir)"</Command>
+      <Message>Copying PhysX Debug DLLs to output directory</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <PostBuildEvent>
+      <Command>xcopy /y /d "$(SolutionDir)\ForestEngine\External\PhysX\bin\release\*.dll" "$(OutDir)"</Command>
+      <Message>Copying PhysX Release DLLs to output directory</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
