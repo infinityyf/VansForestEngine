@@ -84,7 +84,7 @@ void VansLog::EnsureInitialized()
     std::string filename = "ForestEngine.log";
     std::filesystem::path logPath = logDir / filename;
 
-    m_File.open(logPath, std::ios::app);
+    m_File.open(logPath, std::ios::out | std::ios::trunc);
     if (m_File.is_open())
     {
         m_File << "\n========================================\n";

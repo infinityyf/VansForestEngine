@@ -172,3 +172,65 @@ void VansGraphics::VansMaterial::UpdateAtmosphereMaterialData(VansMaterialManage
 	m_AtmospherePBRParam.m_SunDirection = glm::normalize(m_AtmospherePBRParam.m_SunDirection);
 	materialManager.m_AtmospherePBRDataBuffer.SetBufferData(&m_AtmospherePBRParam, offset, size);
 }
+
+void VansGraphics::VansMaterial::CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings)
+{
+	auto* descManager = VansVKDescriptorManager::GetInstance();
+	descManager->CreateDesciptorSetLayout(bindings, m_TransparentOwnedLayout);
+	std::vector<VkDescriptorSetLayout> layouts(1, m_TransparentOwnedLayout);
+	descManager->AllocateDescriptorSet(layouts, m_TransparentOwnedDescSets);
+}
+
+void VansGraphics::VansMaterial::BuildTransparentTextureDescriptors()
+{
+	// Build one COMBINED_IMAGE_SAMPLER binding per texture slot (in JSON order).
+	const uint32_t slotCount = static_cast<uint32_t>(m_TransparentTextures.size());
+	if (slotCount == 0)
+	{
+		// No textures — create an empty layout so the pipeline still has Set 1.
+		CreateTransparentDescriptorLayout();
+		return;
+	}
+
+	// 1. Build layout bindings
+	std::vector<VkDescriptorSetLayoutBinding> bindings(slotCount);
+	for (uint32_t i = 0; i < slotCount; ++i)
+	{
+		bindings[i] = {};
+		bindings[i].binding            = i;  // binding index == slot order in JSON
+		bindings[i].descriptorType     = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		bindings[i].descriptorCount    = 1;
+		bindings[i].stageFlags         = VK_SHADER_STAGE_FRAGMENT_BIT;
+		bindings[i].pImmutableSamplers = nullptr;
+	}
+
+	// 2. Create layout & allocate descriptor set
+	CreateTransparentDescriptorLayout(bindings);
+
+	// 3. Write texture descriptors
+	auto* descManager = VansVKDescriptorManager::GetInstance();
+	descManager->ResetState();
+	for (uint32_t i = 0; i < slotCount; ++i)
+	{
+		VansTexture* tex = m_TransparentTextures[i];
+		if (tex == nullptr)
+			continue; // skip unresolved slots
+
+		descManager->m_ImageDescInfos.push_back(
+			{
+				m_TransparentOwnedDescSets[0],
+				i,  // binding
+				0,  // array element
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						tex->GetImage().GetSampler(),
+						tex->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+	}
+	descManager->UpdateDescriptorSets();
+}

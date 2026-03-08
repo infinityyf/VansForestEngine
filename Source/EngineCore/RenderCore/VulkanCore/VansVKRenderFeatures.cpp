@@ -885,6 +885,44 @@ namespace VansGraphics
 			}
 		);
 
+		// binding 3 — voxelFogVolume (COMBINED_IMAGE_SAMPLER, ray-march result)
+		VansTexture* fogVoxelRayMarch = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_RAYMARCH);
+		if (fogVoxelRayMarch != nullptr)
+		{
+			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+				{
+					manager->m_VolumetricFogDescriptorSets[0],
+					FOG_BINDING_VOXEL_VOLUME,
+					0,
+					VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					{
+						{
+							fogVoxelRayMarch->GetImage().GetSampler(),
+							fogVoxelRayMarch->GetImage().GetImageView(),
+							VK_IMAGE_LAYOUT_GENERAL
+						}
+					}
+				}
+			);
+		}
+
+		// binding 4 — FogVolumeParams UBO (volumeNear/Far for depth-to-slice in compose)
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				manager->m_VolumetricFogDescriptorSets[0],
+				FOG_BINDING_VOLUME_PARAMS,
+				0,
+				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				{
+					{
+						manager->m_FogVolumeParamsCBBuffer.GetNativeBuffer(),
+						0,
+						manager->m_FogVolumeParamsCBBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 	}
 
@@ -933,8 +971,246 @@ namespace VansGraphics
 		computeCmd.DispatchCompute(*manager->m_SSRTemporalAAShader, (halfResWidth + 7) / 8, (halfResHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRAADescriptorSets[0] });
 	}
 
+	// ================================================================
+	// Fog Light Injection — descriptor set writes (ping-pong)
+	//   set[0]: write→Injection, read←History
+	//   set[1]: write→History,   read←Injection
+	// ================================================================
+	void VansVKDevice::UpdateFogLightInjectionSets(VansRenderPassManager* renderPassManager)
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		static bool updatedSets = false;
+		if (updatedSets) return;
+		updatedSets = true;
+
+		VansTexture* fogVoxelInjection = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION);
+		VansTexture* fogVoxelHistory   = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY);
+		if (fogVoxelInjection == nullptr || fogVoxelHistory == nullptr) return;
+
+		auto& shadowMap = renderPassManager->GetShadowMap();
+
+		// Two ping-pong configurations:
+		//   set[0]: output=Injection, history=History
+		//   set[1]: output=History,   history=Injection
+		VansTexture* writeTextures[2] = { fogVoxelInjection, fogVoxelHistory };
+		VansTexture* readTextures[2]  = { fogVoxelHistory,   fogVoxelInjection };
+
+		for (int i = 0; i < 2; i++)
+		{
+			VansVKDescriptorManager::GetInstance()->ResetState();
+
+			// binding 0 — i_VoxelGrid (STORAGE_IMAGE, 3D) — write target
+			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+				{
+					manager->m_FogLightInjectionDescriptorSets[i],
+					FOG_INJECT_BINDING_VOXEL_GRID,
+					0,
+					VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+					{
+						{
+							writeTextures[i]->GetImage().GetSampler(),
+							writeTextures[i]->GetImage().GetImageView(),
+							VK_IMAGE_LAYOUT_GENERAL
+						}
+					}
+				}
+			);
+
+			// binding 1 — fogShadowMap (COMBINED_IMAGE_SAMPLER)
+			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+				{
+					manager->m_FogLightInjectionDescriptorSets[i],
+					FOG_INJECT_BINDING_SHADOW_MAP,
+					0,
+					VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					{
+						{
+							shadowMap.GetSampler(),
+							shadowMap.GetImageView(),
+							VK_IMAGE_LAYOUT_GENERAL
+						}
+					}
+				}
+			);
+
+			// binding 2 — FogVolumeParams UBO
+			VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+				{
+					manager->m_FogLightInjectionDescriptorSets[i],
+					FOG_INJECT_BINDING_PARAMS,
+					0,
+					VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+					{
+						{
+							manager->m_FogVolumeParamsCBBuffer.GetNativeBuffer(),
+							0,
+							manager->m_FogVolumeParamsCBBuffer.GetBufferSize()
+						}
+					}
+				}
+			);
+
+			// binding 3 — s_History (COMBINED_IMAGE_SAMPLER, 3D) — read from previous frame
+			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+				{
+					manager->m_FogLightInjectionDescriptorSets[i],
+					FOG_INJECT_BINDING_HISTORY,
+					0,
+					VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					{
+						{
+							readTextures[i]->GetImage().GetSampler(),
+							readTextures[i]->GetImage().GetImageView(),
+							VK_IMAGE_LAYOUT_GENERAL
+						}
+					}
+				}
+			);
+
+			VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+		}
+	}
+
+	// ================================================================
+	// Fog Ray March — descriptor set writes
+	// ================================================================
+	void VansVKDevice::UpdateFogRayMarchSets()
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		// Must update each frame: the injection output ping-pongs between two textures
+		uint32_t frameIdx = manager->m_FogTemporalFrame % 2;
+
+		// frameIdx==0 → injection wrote to RT_FOG_VOXEL_INJECTION
+		// frameIdx==1 → injection wrote to RT_FOG_VOXEL_INJECTION_HISTORY
+		const char* currentInjectionRT = (frameIdx == 0)
+			? VansMaterialManager::RT_FOG_VOXEL_INJECTION
+			: VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY;
+
+		VansTexture* fogVoxelInput    = manager->GetRuntimeRenderTexture(currentInjectionRT);
+		VansTexture* fogVoxelRayMarch = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_RAYMARCH);
+		if (fogVoxelInput == nullptr || fogVoxelRayMarch == nullptr) return;
+
+		VansVKDescriptorManager::GetInstance()->ResetState();
+
+		// binding 0 — s_VoxelGrid (COMBINED_IMAGE_SAMPLER input from injection)
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_FogRayMarchDescriptorSets[0],
+				FOG_MARCH_BINDING_INPUT_VOXEL,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						fogVoxelInput->GetImage().GetSampler(),
+						fogVoxelInput->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+
+		// binding 1 — i_RayMarchResult (STORAGE_IMAGE output)
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_FogRayMarchDescriptorSets[0],
+				FOG_MARCH_BINDING_RESULT,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{
+					{
+						fogVoxelRayMarch->GetImage().GetSampler(),
+						fogVoxelRayMarch->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+
+		// binding 2 — FogVolumeParams UBO (volumeNear/Far for slice thickness)
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				manager->m_FogRayMarchDescriptorSets[0],
+				FOG_MARCH_BINDING_VOLUME_PARAMS,
+				0,
+				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				{
+					{
+						manager->m_FogVolumeParamsCBBuffer.GetNativeBuffer(),
+						0,
+						manager->m_FogVolumeParamsCBBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	}
+
+	// ================================================================
+	// Fog Light Injection — dispatch
+	// ================================================================
+	void VansVKDevice::UpdateFogLightInjection(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
+	{
+		UpdateFogLightInjectionSets(renderPassManager);
+
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager->m_FogLightInjectionShader == nullptr) return;
+
+		static constexpr int TILE_SIZE    = 16;
+		static constexpr int VOXEL_GRID_Z = 256;
+		uint32_t gridX = (m_RenderWidth  + TILE_SIZE - 1) / TILE_SIZE;
+		uint32_t gridY = (m_RenderHeight + TILE_SIZE - 1) / TILE_SIZE;
+
+		uint32_t groupsX = (gridX + 3) / 4;  // localSize = 4
+		uint32_t groupsY = (gridY + 3) / 4;
+		uint32_t groupsZ = (VOXEL_GRID_Z + 3) / 4;
+
+		uint32_t frameIdx = manager->m_FogTemporalFrame % 2;
+
+		computeCmd.EnsureComputeShader(*manager->m_FogLightInjectionShader,
+			{ m_Scene->m_GlobalDescriptorSetLayout, manager->m_FogLightInjectionSetLayout });
+		computeCmd.DispatchCompute(*manager->m_FogLightInjectionShader,
+			groupsX, groupsY, groupsZ,
+			{ m_Scene->m_GlobalDescriptorSet, manager->m_FogLightInjectionDescriptorSets[frameIdx] });
+	}
+
+	// ================================================================
+	// Fog Ray March — dispatch
+	// ================================================================
+	void VansVKDevice::UpdateFogRayMarch(VansVKCommandBuffer& computeCmd)
+	{
+		UpdateFogRayMarchSets();
+
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager->m_FogRayMarchShader == nullptr) return;
+
+		static constexpr int TILE_SIZE = 16;
+		uint32_t gridX = (m_RenderWidth  + TILE_SIZE - 1) / TILE_SIZE;
+		uint32_t gridY = (m_RenderHeight + TILE_SIZE - 1) / TILE_SIZE;
+		uint32_t groupsX = (gridX + 7) / 8;  // localSize = 8×8×1
+		uint32_t groupsY = (gridY + 7) / 8;
+
+		computeCmd.EnsureComputeShader(*manager->m_FogRayMarchShader,
+			{ m_Scene->m_GlobalDescriptorSetLayout, manager->m_FogRayMarchSetLayout });
+		computeCmd.DispatchCompute(*manager->m_FogRayMarchShader,
+			groupsX, groupsY, 1,
+			{ m_Scene->m_GlobalDescriptorSet, manager->m_FogRayMarchDescriptorSets[0] });
+	}
+
+	// ================================================================
+	// Volumetric Fog compose — dispatch (injection → ray-march → compose)
+	// ================================================================
 	void VansVKDevice::UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
+		// Pass 1: Light injection into 3D voxel grid
+		UpdateFogLightInjection(renderPassManager, computeCmd);
+
+		// Pass 2: Front-to-back ray march accumulation
+		UpdateFogRayMarch(computeCmd);
+
+		// Pass 3: Compose with height-exponential fog
 		UpdateVolumetricFogSets(renderPassManager);
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
@@ -947,6 +1223,9 @@ namespace VansGraphics
 
 		computeCmd.EnsureComputeShader(*manager->m_VolumetrcFogShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_VolumetricFogSetLayout });
 		computeCmd.DispatchCompute(*manager->m_VolumetrcFogShader, groupsX, groupsY, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_VolumetricFogDescriptorSets[0] });
+
+		// Advance temporal ping-pong counter after all fog passes are done
+		manager->m_FogTemporalFrame++;
 	}
 
 	void VansVKDevice::UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)

@@ -1,0 +1,81 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// ============================================================================
+// Fog Ray March — Compute Shader  (frustum-aligned)
+//
+// For each (x,y) column, march front-to-back through Z slices,
+// accumulating in-scattered light and transmittance.
+//
+// Slice thickness varies due to the exponential depth distribution.
+// ============================================================================
+
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+#include "../Common/FogVolumeCommon.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// ---------------------------------------------------------------------------
+// Descriptor Set 1 — per-pass resources
+// ---------------------------------------------------------------------------
+
+layout(set = 1, binding = 0) uniform sampler3D s_VoxelGrid;
+layout(set = 1, binding = 1, rgba16f) uniform writeonly image3D i_RayMarchResult;
+
+layout(set = 1, binding = 2) uniform FogVolumeParams
+{
+    float density;
+    float anisotropy;
+    float scatterScale;
+    float ambientScale;
+    float volumeNear;
+    float volumeFar;
+    float _pad0;
+    float _pad1;
+    vec4  fogBoxMin;
+    vec4  fogBoxMax;
+} uVolume;
+
+// ---------------------------------------------------------------------------
+vec4 Accumulate(vec3 accumScatter, float accumTransmittance,
+                vec3 sliceScattering, float sliceDensity, float thickness)
+{
+    float sliceTransmittance = exp(-sliceDensity * thickness);
+
+    vec3 scatterIntegral = (sliceDensity > 1e-6)
+        ? sliceScattering * (1.0 - sliceTransmittance) / sliceDensity
+        : sliceScattering * thickness;
+
+    accumScatter += scatterIntegral * accumTransmittance;
+    accumTransmittance *= sliceTransmittance;
+
+    return vec4(accumScatter, accumTransmittance);
+}
+
+// ---------------------------------------------------------------------------
+void main()
+{
+    ivec2 xy       = ivec2(gl_GlobalInvocationID.xy);
+    ivec3 gridSize = imageSize(i_RayMarchResult);
+    if (xy.x >= gridSize.x || xy.y >= gridSize.y)
+        return;
+
+    vec4 accum = vec4(0.0, 0.0, 0.0, 1.0);
+
+    for (int z = 0; z < gridSize.z; z++)
+    {
+        ivec3 coord = ivec3(xy, z);
+        vec4 sliceData = texelFetch(s_VoxelGrid, coord, 0);
+
+        float thickness = SliceThickness(z, FogNear(),
+                                            FogFar(),
+                                            float(gridSize.z));
+
+        accum = Accumulate(accum.rgb, accum.a,
+                           sliceData.rgb, sliceData.a,
+                           thickness);
+
+        imageStore(i_RayMarchResult, coord, accum);
+    }
+}

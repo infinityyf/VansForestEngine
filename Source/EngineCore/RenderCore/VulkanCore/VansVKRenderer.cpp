@@ -250,6 +250,7 @@ namespace VansGraphics
 		m_Scene->DrawScreenSpaceFeatureNode();
 		m_Scene->DeferredShading();
 		m_Scene->DrawSkyBoxNode();
+		m_Scene->DrawTransParentNodes();
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 		m_Scene->DrawPostProcessNodes();
 	}

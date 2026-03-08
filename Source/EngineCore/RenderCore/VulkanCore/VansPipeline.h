@@ -96,6 +96,9 @@ namespace VansGraphics
 		float										minDepthBounds;
 		float										maxDepthBounds;
 
+		//blend
+		VkBool32									enableAlphaBlend;
+
 		DrawStateData():
 			primitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST),
 			primitiveRestartEnable(VK_FALSE),
@@ -120,7 +123,8 @@ namespace VansGraphics
 			front(),
 			back(),
 			minDepthBounds(0.0f),
-			maxDepthBounds(1.0f)
+			maxDepthBounds(1.0f),
+			enableAlphaBlend(VK_FALSE)
 		{}
 	};
 

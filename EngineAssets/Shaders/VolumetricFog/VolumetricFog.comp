@@ -2,11 +2,30 @@
 #extension GL_GOOGLE_include_directive : require
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
+#include "../Common/FogVolumeCommon.glsl"
 #include "../Lights/LightsData.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout( set = 1, binding = 0 ) uniform sampler2D inputPosition;
 layout( set = 1, binding = 1, rgba32f ) uniform image2D fogResult;
+
+// Accumulated voxel fog from FogRayMarch pass (rgb = inscatter, a = transmittance)
+layout( set = 1, binding = 3 ) uniform sampler3D voxelFogVolume;
+
+// Volume parameters (need volumeNear/Far for depth-to-slice conversion)
+layout( set = 1, binding = 4 ) uniform FogVolumeParams
+{
+    float vol_density;
+    float vol_anisotropy;
+    float vol_scatterScale;
+    float vol_ambientScale;
+    float volumeNear;
+    float volumeFar;
+    float _volPad0;
+    float _volPad1;
+    vec4  fogBoxMin;
+    vec4  fogBoxMax;
+} uVolume;
 
 #define SCREEN_SCALE 2
 
@@ -114,8 +133,39 @@ float fogPhase(float cosTheta)
     float lobe1 = hgPhase(cosTheta, 0.35);   // soft forward scatter
     float lobe2 = hgPhase(cosTheta, -0.3);   // mild back scatter
     float p     = mix(lobe2, lobe1, 0.65);
-    // Soft clamp: prevents extreme spikes close to the sun direction.
-    return min(p, 0.45);
+    // Smooth saturation — avoids hard circle edge that min() creates.
+    float maxPhase = 0.45;
+    return maxPhase * (1.0 - exp(-p / maxPhase * 2.0));
+}
+
+// ============================================================
+// Depth-aware voxel fog sampling.
+// Bilinear XY + floor Z — prevents fog from slices deeper than the
+// pixel's surface from bleeding through via trilinear interpolation.
+// Critical for cumulative ray-march data where each successive Z
+// slice contains MORE fog than the previous one.
+// ============================================================
+vec4 SampleVoxelFogDepthAware(sampler3D vol, vec3 uvw)
+{
+    ivec3 size = textureSize(vol, 0);
+    vec3  tc   = uvw * vec3(size) - 0.5;
+
+    // XY: bilinear interpolation (smooth across screen tiles)
+    vec2  fxy = fract(tc.xy);
+    ivec2 c0  = clamp(ivec2(floor(tc.xy)), ivec2(0), ivec2(size.xy) - 1);
+    ivec2 c1  = clamp(c0 + 1,              ivec2(0), ivec2(size.xy) - 1);
+
+    // Z: floor only — never sample beyond the pixel's depth.
+    // For cumulative data, slice N contains fog from camera to depth N.
+    // Sampling slice N+1 would add fog that is behind the surface.
+    int z = clamp(int(floor(tc.z)), 0, size.z - 1);
+
+    vec4 s00 = texelFetch(vol, ivec3(c0.x, c0.y, z), 0);
+    vec4 s10 = texelFetch(vol, ivec3(c1.x, c0.y, z), 0);
+    vec4 s01 = texelFetch(vol, ivec3(c0.x, c1.y, z), 0);
+    vec4 s11 = texelFetch(vol, ivec3(c1.x, c1.y, z), 0);
+
+    return mix(mix(s00, s10, fxy.x), mix(s01, s11, fxy.x), fxy.y);
 }
 
 // ============================================================
@@ -195,6 +245,47 @@ void main()
 
     float transmittance = exp(-fogOD);
 
+    // ============================================================
+    // Compose voxel-based volumetric fog (from ray-march 3D texture)
+    // with the analytical height-exponential fog.
+    //
+    // The voxel fog stores (rgb=accumulated inscatter, a=transmittance).
+    // We sample it using the pixel's world position mapped to volume UVW.
+    // For sky pixels we use the camera's forward direction clamped to volume.
+    //
+    // Blend order:  scene × voxelTransmittance + voxelInscatter
+    //               then: result × heightTransmittance + heightInscatter
+    // Combined:     scene × (voxT × heightT) + (voxInscatter × heightT + heightInscatter)
+    // ============================================================
+    vec3 voxelInscatter = vec3(0.0);
+    float voxelTransmittance = 1.0;
+
+    // Sample frustum-aligned voxel fog using screen UV + view-space Z depth
+    // Use linearDepth (view-space Z) not radial distance, to match the planar
+    // depth distribution in the injection/ray-march passes.
+    float viewZ = isSky ? FogFar() : linearDepth;
+    vec3 uvw = ScreenToFrustumUVW(
+        vec2(pixelCoord) * float(SCREEN_SCALE),
+        viewZ,
+        ScreenParams.xy,
+        FogNear(),
+        FogFar());
+
+    {
+        vec4 voxelData = SampleVoxelFogDepthAware(voxelFogVolume, uvw);
+        voxelInscatter    = voxelData.rgb;
+        voxelTransmittance = voxelData.a;
+    }
+
+    // Proper front-to-back compose:
+    //   scene -> apply voxel fog -> apply height fog
+    //   final = scene * voxelT * heightT + voxelInscatter * heightT + heightInscatter
+    // Voxel inscatter is attenuated by atmospheric height fog (physically correct:
+    // light shafts are dimmed by haze between them and the camera).
+    float combinedTransmittance = voxelTransmittance * transmittance;
+    vec3  combinedInscatter     = voxelInscatter * transmittance + inScatter;
+    float combinedOpacity       = 1.0 - combinedTransmittance;
+
     // .rgb = accumulated in-scatter,  .a = opacity (1 - transmittance)
-    imageStore(fogResult, pixelCoord, vec4(inScatter, 1.0 - transmittance));
+    imageStore(fogResult, pixelCoord, vec4(combinedInscatter, combinedOpacity));
 }

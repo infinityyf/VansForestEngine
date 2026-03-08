@@ -101,7 +101,7 @@ namespace VansGraphics
 
 		void BeforeDrawCall();
 
-		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
+		virtual void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
 		void DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex);
 
@@ -160,6 +160,25 @@ namespace VansGraphics
 		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 
 		void SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager);
+	};
+
+	// ── Transparent render node ───────────────────────────────────────────────────
+	// Each transparent material owns its own descriptor set and layout.
+	// Uses objectIndex push constant to read model data from the Object
+	// transform SSBO. No materialIndex — each material is self-contained.
+	class VansTransparentRenderNode : public VansRenderNode
+	{
+	public:
+		VansTransparentRenderNode(VkDevice& device, RenderNodeType type)
+			: VansRenderNode(device, type) {}
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+
+		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
 	};
 
 	class VansSkyBoxRenderNode : public VansRenderNode

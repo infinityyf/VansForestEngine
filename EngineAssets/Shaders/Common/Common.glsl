@@ -14,6 +14,17 @@
 #define SSAO_DEPTH_THRESHOLD 4.0
 #define SSAO_DEPHT_BIAS 0.02
 
+// ---------------------------------------------------------------------------
+// Material IDs for deferred shading (stored in G-Buffer)
+// ID 0 = skip / no shading
+// ---------------------------------------------------------------------------
+#define MATERIAL_ID_SKIP        0
+#define MATERIAL_ID_PBR         1
+#define MATERIAL_ID_TERRAIN     2
+#define MATERIAL_ID_SKIN        3
+#define MATERIAL_ID_REFRACTION  4
+#define MATERIAL_ID_CLOTH       5
+
 #define DEPTH_BIAS 0.001
 #define ESM_C 80.0
 

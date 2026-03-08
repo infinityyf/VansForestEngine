@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "VulkanCore/VansShader.h"
 #include "VulkanCore/VansTexture.h"
@@ -62,6 +62,9 @@ namespace VansGraphics
 		static constexpr const char* RT_SH_G_RESULT = "Runtime.RayTracing.SH.G";
 		static constexpr const char* RT_SH_B_RESULT = "Runtime.RayTracing.SH.B";
 		static constexpr const char* RT_VOLUMETRIC_FOG_RESULT = "Runtime.VolumetricFog.Result";
+		static constexpr const char* RT_FOG_VOXEL_INJECTION = "Runtime.Fog.VoxelInjection";
+		static constexpr const char* RT_FOG_VOXEL_INJECTION_HISTORY = "Runtime.Fog.VoxelInjectionHistory";
+		static constexpr const char* RT_FOG_VOXEL_RAYMARCH  = "Runtime.Fog.VoxelRayMarch";
 
 		bool RegisterRuntimeRenderTexture(const std::string& name, VansTexture* texture, bool replaceExisting = true);
 
@@ -104,6 +107,16 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_VolumetricFogSetLayout;
 		std::vector<VkDescriptorSet> m_VolumetricFogDescriptorSets;
 		VansVKBuffer m_FogParamsCBBuffer;
+
+		// --- Voxel Fog (Light Injection + Ray March) ---
+		VkDescriptorSetLayout m_FogLightInjectionSetLayout;
+		std::vector<VkDescriptorSet> m_FogLightInjectionDescriptorSets;
+
+		VkDescriptorSetLayout m_FogRayMarchSetLayout;
+		std::vector<VkDescriptorSet> m_FogRayMarchDescriptorSets;
+
+		VansVKBuffer m_FogVolumeParamsCBBuffer;   // FogVolumeParams UBO (density, anisotropy, scatter, ambient)
+		uint32_t     m_FogTemporalFrame = 0;       // ping-pong frame index for fog injection
 
 
 		//全局pbr参数buffer，不每个pbr材质自己持有
@@ -169,6 +182,9 @@ namespace VansGraphics
 
 		VansComputeShader* m_VolumetrcFogShader;
 
+		VansComputeShader* m_FogLightInjectionShader;
+		VansComputeShader* m_FogRayMarchShader;
+
 	public:
 
 		VansVKBuffer m_AtmospherePBRDataBuffer;
@@ -208,6 +224,25 @@ namespace VansGraphics
 		//大气材质参数
 		VansAtmospherePBRParam m_AtmospherePBRParam;
 
+		// ── Transparent material resources ────────────────────────────────────
+		// Textures bound in the order declared in the material JSON "textures" array.
+		// binding index == position in this vector.
+		std::vector<VansTexture*> m_TransparentTextures;
+
+		// Parallel list: (slot label, texture asset name) for debugging / tooling.
+		std::vector<std::pair<std::string, std::string>> m_TransparentTextureMap;
+
+		// Each transparent material holds its own descriptor set layout(s)
+		// instead of using the shared factory layouts.
+		VkDescriptorSetLayout m_TransparentOwnedLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_TransparentOwnedDescSets;
+
+		// Build the descriptor layout from the shader's texture slot count,
+		// allocate the descriptor set, and write all texture bindings.
+		void BuildTransparentTextureDescriptors();
+
+		// Legacy: create layout from explicit bindings list.
+		void CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings = {});
 		//shader
 		VansGraphicsShader* m_Shader;
 

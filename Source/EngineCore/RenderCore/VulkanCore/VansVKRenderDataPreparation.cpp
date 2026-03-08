@@ -117,6 +117,8 @@ namespace VansGraphics
 		std::vector<VansRenderNode*> allRenderNodes;
 		auto& allCommonNodes = m_Scene->m_OpaqueRenderNodes;
 		allRenderNodes.insert(allRenderNodes.end(), allCommonNodes.begin(), allCommonNodes.end());
+		auto& allTransparentNodes = m_Scene->m_TransParentRenderNodes;
+		allRenderNodes.insert(allRenderNodes.end(), allTransparentNodes.begin(), allTransparentNodes.end());
 		auto& allShadowNodes = m_Scene->m_ShadowRenderNodes;
 		allRenderNodes.insert(allRenderNodes.end(), allShadowNodes.begin(), allShadowNodes.end());
 		auto& allPunctualShadowNodes = m_Scene->m_PunctualShadowRenderNodes;
@@ -549,13 +551,55 @@ namespace VansGraphics
 		VansTexture* volumetricFogResult = new VansTexture();
 		volumetricFogResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT, volumetricFogResult);
+		
+		// ================================================================
+		// 3D voxel textures for frustum-aligned volumetric fog
+		// XY = ceil(screenRes / TILE_SIZE),  Z = 256 slices
+		// Format: RGBA16F
+		// ================================================================
+		static constexpr int TILE_SIZE    = 16;
+		static constexpr int VOXEL_GRID_Z = 256;
+		uint32_t gridX = (m_RenderWidth  + TILE_SIZE - 1) / TILE_SIZE;
+		uint32_t gridY = (m_RenderHeight + TILE_SIZE - 1) / TILE_SIZE;
+
+		VansTexture* fogVoxelInjection = new VansTexture();
+		fogVoxelInjection->InitTextureWithoutData(
+			m_VansVKCommandBuffer,
+			gridX, gridY, VOXEL_GRID_Z,
+			4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION, fogVoxelInjection);
+
+		// History texture for temporal reprojection (ping-pong with injection)
+		VansTexture* fogVoxelInjectionHistory = new VansTexture();
+		fogVoxelInjectionHistory->InitTextureWithoutData(
+			m_VansVKCommandBuffer,
+			gridX, gridY, VOXEL_GRID_Z,
+			4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY, fogVoxelInjectionHistory);
+
+		VansTexture* fogVoxelRayMarch = new VansTexture();
+		fogVoxelRayMarch->InitTextureWithoutData(
+			m_VansVKCommandBuffer,
+			gridX, gridY, VOXEL_GRID_Z,
+			4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_RAYMARCH, fogVoxelRayMarch);
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
+
+		// Height-exp fog compose shader (existing)
 		manager->m_VolumetrcFogShader = new VansComputeShader();
 		manager->m_VolumetrcFogShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/VolumetricFog").c_str());
 
-		// FogParams UBO: { fogDensity, heightFalloff, sunScatterScale, ambientScale, fogMinHeight, skyFogDistance }
+		// Light injection compute shader
+		manager->m_FogLightInjectionShader = new VansComputeShader();
+		manager->m_FogLightInjectionShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/FogLightInjection").c_str());
+
+		// Ray march accumulation compute shader
+		manager->m_FogRayMarchShader = new VansComputeShader();
+		manager->m_FogRayMarchShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/FogRayMarch").c_str());
+
+		// FogParams UBO (height-exp fog): { fogDensity, heightFalloff, sunScatterScale, ambientScale, fogMinHeight, skyFogDistance }
 		struct FogParamsData { float fogDensity; float heightFalloff; float sunScatterScale; float ambientScale; float fogMinHeight; float skyFogDistance; };
 		FogParamsData fogDefaults = { 0.002f, 0.08f, 0.3f, 0.5f, -100.0f, 10000.0f };
 		manager->m_FogParamsCBBuffer.CreatVulkanBuffer(
@@ -564,7 +608,31 @@ namespace VansGraphics
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 		manager->m_FogParamsCBBuffer.SetBufferData(&fogDefaults, 0, sizeof(FogParamsData));
 
+		// FogVolumeParams UBO (voxel fog): matches FogVolumeParams in shaders (std140, 64 bytes)
+		struct FogVolumeParamsData {
+			float density;       float anisotropy;    float scatterScale;  float ambientScale;
+			float volumeNear;    float volumeFar;     float _pad0;         float _pad1;
+			float fogBoxMin[4];  // xyz + pad
+			float fogBoxMax[4];  // xyz + pad
+		};
+		FogVolumeParamsData volumeDefaults = {
+			0.05f, 0.6f, 1.0f, 0.05f,           // density, anisotropy, scatterScale, ambientScale
+			0.1f, 1000.0f, 0.0f, 0.0f,           // volumeNear, volumeFar, pad, pad
+			{-50.0f, -50.0f, -50.0f, 0.0f},     // fogBoxMin
+			{ 50.0f,  50.0f,  50.0f, 0.0f}      // fogBoxMax
+		};
+		manager->m_FogVolumeParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(FogVolumeParamsData), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_FogVolumeParamsCBBuffer.SetBufferData(&volumeDefaults, 0, sizeof(FogVolumeParamsData));
+
+		// Descriptor set layouts + allocation
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_VolumetricFog(manager->m_VolumetricFogSetLayout, manager->m_VolumetricFogDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_FogLightInjection(manager->m_FogLightInjectionSetLayout, manager->m_FogLightInjectionDescriptorSets, 2); // 2 sets for ping-pong
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_FogRayMarch(manager->m_FogRayMarchSetLayout, manager->m_FogRayMarchDescriptorSets);
+		manager->m_FogTemporalFrame = 0;
+
 		manager->UpdateAtmosphereDescriptorSets();
 	}
 

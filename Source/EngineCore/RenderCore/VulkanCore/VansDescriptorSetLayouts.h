@@ -166,12 +166,31 @@ namespace VansGraphics
 		SSR_TAA_BINDING_RESULT    = 4,
 	};
 
-	// --- Volumetric Fog Compute Pass ---
+	// --- Volumetric Fog Compose Compute Pass ---
 	enum VolumetricFogPassBinding : uint32_t
 	{
-		FOG_BINDING_POSITION = 0,   // inputPosition  (COMBINED_IMAGE_SAMPLER)
-		FOG_BINDING_RESULT   = 1,   // fogResult      (STORAGE_IMAGE)
-		FOG_BINDING_PARAMS   = 2,   // FogParams UBO  (UNIFORM_BUFFER)
+		FOG_BINDING_POSITION      = 0,   // inputPosition    (COMBINED_IMAGE_SAMPLER)
+		FOG_BINDING_RESULT        = 1,   // fogResult        (STORAGE_IMAGE)
+		FOG_BINDING_PARAMS        = 2,   // FogParams UBO    (UNIFORM_BUFFER)
+		FOG_BINDING_VOXEL_VOLUME  = 3,   // voxelFogVolume   (COMBINED_IMAGE_SAMPLER, 3D)
+		FOG_BINDING_VOLUME_PARAMS = 4,   // FogVolumeParams UBO (UNIFORM_BUFFER)
+	};
+
+	// --- Fog Light Injection Compute Pass ---
+	enum FogLightInjectionPassBinding : uint32_t
+	{
+		FOG_INJECT_BINDING_VOXEL_GRID  = 0,   // i_VoxelGrid   (STORAGE_IMAGE, 3D, rgba16f)
+		FOG_INJECT_BINDING_SHADOW_MAP  = 1,   // fogShadowMap  (COMBINED_IMAGE_SAMPLER)
+		FOG_INJECT_BINDING_PARAMS      = 2,   // FogVolumeParams UBO
+		FOG_INJECT_BINDING_HISTORY     = 3,   // s_History     (COMBINED_IMAGE_SAMPLER, 3D)
+	};
+
+	// --- Fog Ray March Accumulate Compute Pass ---
+	enum FogRayMarchPassBinding : uint32_t
+	{
+		FOG_MARCH_BINDING_INPUT_VOXEL    = 0,   // s_VoxelGrid       (COMBINED_IMAGE_SAMPLER, 3D)
+		FOG_MARCH_BINDING_RESULT         = 1,   // i_RayMarchResult  (STORAGE_IMAGE, 3D, rgba16f)
+		FOG_MARCH_BINDING_VOLUME_PARAMS  = 2,   // FogVolumeParams UBO (UNIFORM_BUFFER)
 	};
 
 	// --- Bilateral Filter Compute Pass ---
@@ -371,6 +390,8 @@ namespace VansGraphics
 		static void CreateAndAllocate_SSR_Resolve(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_TemporalAA(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VolumetricFog(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_FogLightInjection(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_FogRayMarch(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_BilateralFilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 3);
 		static void CreateAndAllocate_HIZ(std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount);
 		static void CreateAndAllocate_GISHUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

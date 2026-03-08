@@ -1,0 +1,200 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// ============================================================================
+// Fog Light Injection — Compute Shader  (frustum-aligned, temporal AA)
+//
+// For each voxel in the frustum-aligned 3D grid:
+//   1. Apply sub-voxel Z-jitter (Halton sequence) for temporal super-sampling
+//   2. Reconstruct world position from (tile, slice + jitter) + camera matrices
+//   3. Query static fog density from the scene's fog box
+//   4. Evaluate shadow-map visibility from the directional light
+//   5. Compute Henyey-Greenstein phase term
+//   6. Reproject world position to previous frame's frustum UVW
+//   7. Blend current result with history (exponential moving average ~5%)
+//   8. Write (inscatter × density, density) into the 3D voxel texture
+// ============================================================================
+
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+#include "../Common/FogVolumeCommon.glsl"
+#include "../Lights/LightsData.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+// ---------------------------------------------------------------------------
+// Descriptor Set 1 — per-pass resources
+// ---------------------------------------------------------------------------
+
+layout(set = 1, binding = 0, rgba16f) uniform image3D i_VoxelGrid;
+layout(set = 1, binding = 1) uniform sampler2D fogShadowMap;
+
+layout(set = 1, binding = 2) uniform FogVolumeParams
+{
+    float density;          // base fog density
+    float anisotropy;       // HG phase g   (-1..1)
+    float scatterScale;     // in-scatter multiplier
+    float ambientScale;     // ambient in-scatter multiplier
+    float volumeNear;       // depth range near
+    float volumeFar;        // depth range far
+    float _pad0;
+    float _pad1;
+    vec4  fogBoxMin;        // static fog AABB min  (xyz)
+    vec4  fogBoxMax;        // static fog AABB max  (xyz)
+} uVolume;
+
+layout(set = 1, binding = 3) uniform sampler3D s_History;
+
+// ---------------------------------------------------------------------------
+// Smooth edge fade for shadow map — avoids hard clamp line at UV boundaries
+// ---------------------------------------------------------------------------
+float ShadowEdgeFade(vec2 uv)
+{
+    // Fade within 5% of each edge for a soft transition
+    const float fadeWidth = 0.05;
+    vec2 fadeMin = smoothstep(vec2(0.0), vec2(fadeWidth), uv);
+    vec2 fadeMax = smoothstep(vec2(0.0), vec2(fadeWidth), vec2(1.0) - uv);
+    return fadeMin.x * fadeMin.y * fadeMax.x * fadeMax.y;
+}
+
+float SampleFogShadow(vec3 worldPos)
+{
+    vec4 clipCoord = uDirectionLight.shadowMatrix * vec4(worldPos, 1.0);
+    clipCoord.z = clipCoord.z * 0.5 + 0.5;
+    clipCoord.z -= DEPTH_BIAS;
+    vec2 shadowUV = clipCoord.xy * 0.5 + 0.5;
+    shadowUV.y = 1.0 - shadowUV.y;
+
+    // Fully outside shadow map — treat as fully lit (no shadow contribution)
+    if (any(greaterThan(shadowUV, vec2(1.0))) || any(lessThan(shadowUV, vec2(0.0))))
+        return 1.0;
+
+    float shadowDepth = texture(fogShadowMap, shadowUV).r;
+    float shadow = (shadowDepth < clipCoord.z) ? 0.0 : 1.0;
+
+    // Blend shadow toward 1.0 (lit) near shadow map edges to remove the clamp line
+    float edgeFade = ShadowEdgeFade(shadowUV);
+    return mix(1.0, shadow, edgeFade);
+}
+
+// ---------------------------------------------------------------------------
+float HGPhase(float cosTheta, float g)
+{
+    float g2 = g * g;
+    float denom = 1.0 + g2 + 2.0 * g * cosTheta;
+    return (1.0 / (4.0 * PI)) * (1.0 - g2) / max(pow(denom, 1.5), 1e-4);
+}
+
+// Dual-lobe phase with smooth saturation — avoids the sharp circle edge
+// that a single high-anisotropy HG lobe creates on the coarse voxel grid.
+float FogInjectionPhase(float cosTheta, float g)
+{
+    // Split into softer forward + mild backward lobe to broaden the peak
+    float gFwd  = g * 0.8;               // slightly soften the requested anisotropy
+    float gBack = -abs(g) * 0.25;        // mild backscatter
+    float lobe1 = HGPhase(cosTheta, gFwd);
+    float lobe2 = HGPhase(cosTheta, gBack);
+    float p     = mix(lobe2, lobe1, 0.7);
+    // Smooth saturation instead of hard min() — no visible clamp circle
+    float maxPhase = 0.5;
+    return maxPhase * (1.0 - exp(-p / maxPhase * 2.0));
+}
+
+// ---------------------------------------------------------------------------
+// Jittered version of VoxelToWorld — adds sub-voxel Z offset for temporal AA
+// ---------------------------------------------------------------------------
+vec3 VoxelToWorldJittered(ivec3 id, ivec3 gridSize, float near, float far, float jitterZ)
+{
+    vec2 uv  = (vec2(id.xy) + 0.5) / vec2(gridSize.xy);
+    vec2 ndc = uv * 2.0 - 1.0;
+    ndc.y   *= -1.0;
+
+    vec3 viewRay = normalize((InverseProjectionMatrix * vec4(ndc, 1.0, 1.0)).xyz);
+
+    // Apply jitter to the Z slice for sub-voxel variation
+    float depth = SliceToDepth(float(id.z) + jitterZ, near, far, float(gridSize.z));
+
+    // Scale ray so view-space Z equals depth (planar, not spherical)
+    vec3 viewPos = viewRay * (depth / abs(viewRay.z));
+    return (InverseViewMatrix * vec4(viewPos, 1.0)).xyz;
+}
+
+// ---------------------------------------------------------------------------
+void main()
+{
+    ivec3 coord    = ivec3(gl_GlobalInvocationID.xyz);
+    ivec3 gridSize = imageSize(i_VoxelGrid);
+    if (any(greaterThanEqual(coord, gridSize)))
+        return;
+
+    // Per-frame Z-jitter using Halton sequence (mapped to [-0.5, +0.5])
+    int frameIdx = int(FrameIndex);
+    float jitterZ = Halton(frameIdx % 256 + 1, 2) - 0.5;
+
+    // Reconstruct world position for this frustum voxel (with jitter)
+    vec3 worldPos = VoxelToWorldJittered(coord, gridSize,
+                                          FogNear(), FogFar(),
+                                          jitterZ);
+
+    // Query static fog density from scene fog box — soft boundary to avoid hard edges
+    vec3 boxCenter = (uVolume.fogBoxMin.xyz + uVolume.fogBoxMax.xyz) * 0.5;
+    vec3 boxHalf   = (uVolume.fogBoxMax.xyz - uVolume.fogBoxMin.xyz) * 0.5;
+    vec3 localPos  = abs(worldPos - boxCenter) / max(boxHalf, vec3(1e-4));
+    // Smooth falloff in the outer 10% of the box
+    float edgeDist = max(max(localPos.x, localPos.y), localPos.z);
+    float boxFade  = 1.0 - smoothstep(0.9, 1.0, edgeDist);
+    float d = uVolume.density * boxFade;
+
+    // Compute inscatter even for empty voxels so blending is correct
+    vec4 current = vec4(0.0);
+    if (d > 1e-6)
+    {
+        vec3 Wo = normalize(cameraPosition.xyz - worldPos);
+        vec3 Li = normalize(uDirectionLight.direction.xyz);
+
+        float phase = FogInjectionPhase(dot(Wo, -Li), uVolume.anisotropy);
+        float vis   = SampleFogShadow(worldPos);
+
+        vec3 lightColor      = uDirectionLight.color.rgb * uDirectionLight.intensity;
+        vec3 directInscatter = vis * lightColor * phase * uVolume.scatterScale;
+        vec3 ambientInscatter = lightColor * uVolume.ambientScale * (1.0 / (4.0 * PI));
+
+        vec3 totalInscatter = directInscatter + ambientInscatter;
+        current = vec4(totalInscatter * d, d);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Temporal reprojection: blend with previous frame's data
+    // ---------------------------------------------------------------------------
+    vec4 lastUVW = WorldToLastFrameUVW(worldPos, FogNear(), FogFar(),
+                                        vec2(gridSize.xy) * float(TILE_SIZE));
+    vec4 history = vec4(0.0);
+    float blendFactor = 0.05;  // 5% current, 95% history
+
+    if (lastUVW.w > 0.5)
+    {
+        history = texture(s_History, lastUVW.xyz);
+
+        // Neighbourhood clamp to prevent ghosting: clamp history to ±range of current
+        // Simple approach: reject history if it differs too much from current
+        vec4 diff = abs(history - current);
+        float maxDiff = max(max(diff.r, diff.g), max(diff.b, diff.a));
+        if (maxDiff > 2.0)
+        {
+            // History is too stale — increase blend toward current
+            blendFactor = 0.5;
+        }
+    }
+    else
+    {
+        // Reprojection failed (camera turned too much, disocclusion, etc.)
+        blendFactor = 1.0;
+    }
+
+    // First few frames: bias toward current to fill the volume quickly
+    if (frameIdx < 8)
+        blendFactor = max(blendFactor, 1.0 / float(frameIdx + 1));
+
+    vec4 result = mix(history, current, blendFactor);
+    imageStore(i_VoxelGrid, coord, result);
+}

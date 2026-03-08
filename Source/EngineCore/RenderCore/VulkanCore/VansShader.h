@@ -146,6 +146,8 @@ namespace VansGraphics
 
 		void SetPolygonMode(VkPolygonMode mode);
 
+		void SetEnableAlphaBlend(VkBool32 enable) { m_DrawStateData.enableAlphaBlend = enable; }
+
 		void TriggerReCreateGraphicsPipeline();
 
 		VansGraphicsShader() : m_GraphicsPipeline(nullptr)

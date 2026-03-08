@@ -216,6 +216,75 @@ void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManage
 	// No per-object descriptor updates needed
 }
 
+// ============================================================
+// VansTransparentRenderNode
+// ============================================================
+
+void VansGraphics::VansTransparentRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
+{
+	// Set 0: Global (Camera UBO is universal, still needed for VP matrices)
+	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
+	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+
+	// Set 1: Material-owned resources (layout held by VansMaterial, not the factory)
+	if (m_Material->m_TransparentOwnedLayout == VK_NULL_HANDLE)
+	{
+		// Build layout, allocate set, and write texture bindings from shader slot order
+		m_Material->BuildTransparentTextureDescriptors();
+	}
+	m_UsedDescSetLayouts.push_back(m_Material->m_TransparentOwnedLayout);
+	if (!m_Material->m_TransparentOwnedDescSets.empty())
+	{
+		m_UsedDescSets.push_back(m_Material->m_TransparentOwnedDescSets[0]);
+	}
+
+	// Set 2: Object Transforms SSBO (accessed via objectIndex push constant)
+	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
+	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
+}
+
+void VansGraphics::VansTransparentRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
+{
+	UpdateDescripterSets(materialManager);
+}
+
+void VansGraphics::VansTransparentRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+	{
+		return;
+	}
+	m_DescriptorsetsDirty = false;
+
+	// Per-material descriptor updates will be added per shader variant.
+}
+
+void VansGraphics::VansTransparentRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalStateData)
+{
+	if (!CheckRenderNodeState())
+	{
+		return;
+	}
+
+	cmd.BindMesh(*m_Mesh, 0, globalStateData);
+
+	VansGraphicsShader& shader = *(m_Material->m_Shader);
+	cmd.EnsureGraphicsShader(shader, globalStateData, m_UsedDescSetLayouts);
+
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, shader, 0, m_UsedDescSets, {});
+
+	// Push objectIndex to look up model data from the transform SSBO
+	if (m_Material->m_Shader->GetPushConstantSize() > 0)
+	{
+		int objectIndex = m_TransfromIndex;
+		cmd.UpdatePushConstants(*shader.GetGraphicsPipeline(),
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof(int), &objectIndex);
+	}
+
+	cmd.DrawMesh(*m_Mesh, shader, 1);
+}
+
 void VansGraphics::VansPostProcessRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	// Set 0: Global

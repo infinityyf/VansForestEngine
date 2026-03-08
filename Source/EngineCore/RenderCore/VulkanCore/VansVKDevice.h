@@ -144,6 +144,10 @@ namespace VansGraphics
 
 		void UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
+		void UpdateFogLightInjection(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+
+		void UpdateFogRayMarch(VansVKCommandBuffer& computeCmd);
+
 	private:
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
@@ -163,6 +167,10 @@ namespace VansGraphics
 		void UpdateSSRDescriptorSets(VansRenderPassManager* renderPassManager);
 
 		void UpdateVolumetricFogSets(VansRenderPassManager* renderPassManager);
+
+		void UpdateFogLightInjectionSets(VansRenderPassManager* renderPassManager);
+
+		void UpdateFogRayMarchSets();
 
 	private:
 

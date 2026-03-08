@@ -18,6 +18,50 @@
 #include <fstream>
 #include <unordered_map>
 
+// ---------------------------------------------------------------------------
+// JSON type-string helpers
+// ---------------------------------------------------------------------------
+static VansMaterialType ParseMaterialType(const json& typeValue, const std::string& materialName)
+{
+    if (typeValue.is_number_integer())
+        return static_cast<VansMaterialType>(typeValue.get<int>());
+    if (typeValue.is_string())
+    {
+        const std::string s = typeValue.get<std::string>();
+        if (s == "pbr")          return VansMaterialType::VAN_PBR;
+        if (s == "coat")         return VansMaterialType::VAN_COAT;
+        if (s == "transparent")  return VansMaterialType::VAN_TRANSPARENT;
+        if (s == "post_process") return VansMaterialType::VAN_POST_PROCESS;
+        if (s == "sky_box")      return VansMaterialType::VAN_SKY_BOX;
+        if (s == "deferred")     return VansMaterialType::VAN_DEFERRED;
+        if (s == "ssao")         return VansMaterialType::VAN_SCREEN_SPACE_AO;
+        if (s == "ssr")          return VansMaterialType::VAN_SCREEN_SPACE_REFLECTION;
+        if (s == "shadow")       return VansMaterialType::VAN_SHAODW;
+        VANS_LOG_WARN("[LoadSceneResource] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
+    }
+    return VansMaterialType::VAN_PBR;
+}
+
+static VansGraphics::RenderNodeType ParseRenderNodeType(const json& typeValue, const std::string& nodeName)
+{
+    if (typeValue.is_number_integer())
+        return static_cast<VansGraphics::RenderNodeType>(typeValue.get<int>());
+    if (typeValue.is_string())
+    {
+        const std::string s = typeValue.get<std::string>();
+        if (s == "opaque")       return VansGraphics::OPAQUE_NODE;
+        if (s == "transparent")  return VansGraphics::TRANSPARENT_NODE;
+        if (s == "post_process") return VansGraphics::POSTPROCESS_NODE;
+        if (s == "sky_box")      return VansGraphics::SKY_BOX_NODE;
+        if (s == "deferred")     return VansGraphics::DEFERRED_NODE;
+        if (s == "screen_space") return VansGraphics::SCREEN_SPACE_NODE;
+        if (s == "terrain")      return VansGraphics::TERRAIN_NODE;
+        if (s == "none")         return VansGraphics::NONE_NODE;
+        VANS_LOG_WARN("[LoadRenderNodes] Node '" << nodeName << "': unknown type string '" << s << "', defaulting to none.");
+    }
+    return VansGraphics::NONE_NODE;
+}
+
 
 VansAsset* VansGraphics::VansScene::GetMeshAsset(const std::string& name)
 {
@@ -467,7 +511,7 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
 {
     for (const auto& sceneRenderNode : render_node)
     {
-        RenderNodeType type = sceneRenderNode["type"];
+        RenderNodeType type = ParseRenderNodeType(sceneRenderNode["type"], sceneRenderNode.value("name", "<unnamed>"));
         std::string meshName = sceneRenderNode.value("mesh", "");
 
         // ── Resolve mesh ──────────────────────────────────────────────────────
@@ -483,13 +527,15 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
         case VansGraphics::NONE_NODE:
             break;
         case VansGraphics::OPAQUE_NODE:
-        case VansGraphics::TRANSPARENT_NODE:
             renderNode = new VansCommonRenderNode(device, type);
             if (sceneRenderNode.contains("support_shadow"))
             {
                 auto* node = static_cast<VansCommonRenderNode*>(renderNode);
                 node->m_SupportShadow = sceneRenderNode["support_shadow"];
             }
+            break;
+        case VansGraphics::TRANSPARENT_NODE:
+            renderNode = new VansTransparentRenderNode(device, type);
             break;
         case VansGraphics::POSTPROCESS_NODE:
             renderNode = new VansPostProcessRenderNode(device, type);
@@ -680,8 +726,19 @@ void VansGraphics::VansScene::InitVehicle(VansEngine::VansPhysicsSystem* physics
 void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
 {
     VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset("fullScreenQuad"));
-    std::string materialName = "DeferredMaterial";
-    VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
+
+    // Build material directly from the already-loaded "Deferred" shader — no JSON material entry needed.
+    VansGraphicsShader* deferredShader = static_cast<VansGraphicsShader*>(GetShaderAsset("Deferred"));
+    if (deferredShader == nullptr)
+    {
+        VANS_LOG_WARN("[VansScene] AddDeferredNode: shader 'Deferred' not found, node skipped.");
+        return;
+    }
+    VansMaterial* material = new VansMaterial();
+    material->m_Shader = deferredShader;
+    material->m_MaterialType = VansMaterialType::VAN_DEFERRED;
+    material->SetName("DeferredMaterial");
+    m_Materials.push_back(material);
 
     RenderNodeType type = RenderNodeType::DEFERRED_NODE;
     VansRenderNode* renderNode = new VansDeferredRenderNode(device, type);
@@ -700,14 +757,28 @@ void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
 {
     VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset("fullScreenQuad"));
 
-    std::vector<std::string> featureName = {
-        "SSAO"
+    // Each entry: { node/material name, shader name, material type }.
+    // Materials are built internally — no JSON material entries needed.
+    struct FeatureEntry { const char* name; const char* shaderName; VansMaterialType matType; };
+    static const FeatureEntry features[] =
+    {
+        { "SSAO", "SSAO", VansMaterialType::VAN_SCREEN_SPACE_AO },
     };
 
-    for (auto& name : featureName)
+    for (const auto& feature : features)
     {
-        std::string materialName = name;
-        VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
+        VansGraphicsShader* shader = static_cast<VansGraphicsShader*>(GetShaderAsset(feature.shaderName));
+        if (shader == nullptr)
+        {
+            VANS_LOG_WARN("[VansScene] AddScreenSpaceFeatureNode: shader '" << feature.shaderName << "' not found, node '" << feature.name << "' skipped.");
+            continue;
+        }
+
+        VansMaterial* material = new VansMaterial();
+        material->m_Shader = shader;
+        material->m_MaterialType = feature.matType;
+        material->SetName(feature.name);
+        m_Materials.push_back(material);
 
         RenderNodeType type = RenderNodeType::SCREEN_SPACE_NODE;
         VansRenderNode* renderNode = new VansScreenSpaceRenderNode(device, type);
@@ -717,7 +788,7 @@ void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
 
         //renderNode->CreateDescriptorSets(m_Camera, m_LightManager,m_MaterialManager);
 
-        renderNode->SetName(name);
+        renderNode->SetName(feature.name);
 
         RegistRenderNode(renderNode, type);
     }
@@ -880,6 +951,10 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             int pushConstantSize = sceneShader["support_push_constant"];
             shader->SetPushConstant(pushConstantSize);
         }
+        if (sceneShader.contains("enableAlphaBlend") && sceneShader["enableAlphaBlend"].get<bool>())
+        {
+            shader->SetEnableAlphaBlend(VK_TRUE);
+        }
         m_Shaders.push_back(shader);
         shader->SetName(sceneShader["name"]);
     }
@@ -921,7 +996,7 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         VansGraphicsShader* shader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
 
         material->m_Shader = shader;
-        material->m_MaterialType = sceneMaterial["type"];
+        material->m_MaterialType = ParseMaterialType(sceneMaterial["type"], sceneMaterial.value("name", "<unnamed>"));
         if (material->m_MaterialType == VansMaterialType::VAN_PBR)
         {
             if (sceneMaterial.contains("basecolor_texture"))
@@ -981,6 +1056,30 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             material->m_BasePBRParam.m_metallic = sceneMaterial["metallic"];
             material->m_BasePBRParam.m_roughness = sceneMaterial["roughness"];
             material->m_BasePBRParam.m_ao = sceneMaterial["ao"];
+        }
+
+        // ── Transparent material: load textures declared in material JSON ──
+        if (material->m_MaterialType == VansMaterialType::VAN_TRANSPARENT)
+        {
+            if (sceneMaterial.contains("textures") && sceneMaterial["textures"].is_array())
+            {
+                for (const auto& entry : sceneMaterial["textures"])
+                {
+                    std::string slotName   = entry.value("slot", "");
+                    std::string textureName = entry.value("texture", "");
+                    VansTexture* tex = nullptr;
+                    if (!textureName.empty())
+                    {
+                        tex = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                    }
+                    if (tex == nullptr)
+                    {
+                        VANS_LOG_WARN("[LoadSceneResource] Transparent material '" << sceneMaterial.value("name", "<unnamed>") << "': could not resolve texture for slot '" << slotName << "'");
+                    }
+                    material->m_TransparentTextureMap.push_back({ slotName, textureName });
+                    material->m_TransparentTextures.push_back(tex);
+                }
+            }
         }
 
         if (material->m_MaterialType == VansMaterialType::VAN_SKY_BOX)
@@ -1414,16 +1513,11 @@ void VansGraphics::VansScene::DrawTransParentNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_TransParentRenderNodes)
     {
-
-        ////apply mesh
-        //cmd.BindMesh(*node.m_Mesh, 0, globalStateData);
-
-        ////apply shader，确认pipeline以及创建完毕
-        //cmd.BindShader(*(node.m_Material->m_Shader), globalStateData, { uniformBufferLayout,textureResourceLayout });
-
-        //cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *(node.m_Material->m_Shader), 0, { uniformBufferDescriptorSets[0],textureResourceDescriptorSets[0] }, {});
-
-        //cmd.DrawMesh(*node.m_Mesh, *(node.m_Material->m_Shader), 1);
+        if (node == nullptr || node->m_SkipDefaultRender)
+        {
+            continue;
+        }
+        node->Draw(cmd, globalStateData);
     }
 }
 
@@ -1739,6 +1833,10 @@ void VansGraphics::VansScene::UpdateTransformRenderData()
     {
         node->UpdateModelData();
 	}
+    for (auto node : m_TransParentRenderNodes)
+    {
+        node->UpdateModelData();
+    }
     VansGraphics::VansTransformStore::TransformIDToTransformDirty.clear();
 }
 
