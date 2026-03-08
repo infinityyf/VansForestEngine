@@ -1,4 +1,5 @@
 #include "VansPhysicsVehicle.h"
+#include "../Util/VansLog.h"
 #include <iostream>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -35,7 +36,7 @@ namespace VansEngine
         std::ifstream file(path);
         if (!file.is_open())
         {
-            std::cerr << "[VansVehicle] Failed to open vehicle config: " << path << std::endl;
+            VANS_LOG_ERROR("[VansVehicle] Failed to open vehicle config: " << path);
             return false;
         }
 
@@ -98,7 +99,7 @@ namespace VansEngine
         }
         catch (const std::exception& e)
         {
-            std::cerr << "[VansVehicle] JSON parsing error: " << e.what() << std::endl;
+            VANS_LOG_ERROR("[VansVehicle] JSON parsing error: " << e.what());
             return false;
         }
     }

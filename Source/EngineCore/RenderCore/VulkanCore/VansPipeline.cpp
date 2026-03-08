@@ -1,6 +1,7 @@
 ﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansPipeline.h"
 #include "VansVKDescriptorManager.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 
 VkPipeline VansGraphics::VansVKGraphicsPipeline::CurrentValidGraphicsPipeline = VK_NULL_HANDLE;
@@ -209,7 +210,7 @@ VkSampleMask实质上就是uint32_t。Sample mask的比特与采样点一一对�
 	VkResult vresult = vkCreatePipelineLayout(logic_device, &pipeline_layout_create_info, nullptr, &m_VansPipelineLayout);
 	if (vresult != VK_SUCCESS)
 	{
-		std::cerr << "create pipeline layout failed" << std::endl;
+		VANS_LOG_ERROR("create pipeline layout failed");
 		return false;
 	}
 
@@ -259,7 +260,7 @@ bool VansGraphics::VansVKGraphicsPipeline::CreateGraphicsPipeline(VkDevice& logi
 		&create_info, nullptr, &m_GraphicsPipeline);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not create a graphics pipeline." << std::endl;
+		VANS_LOG_ERROR("Could not create a graphics pipeline.");
 		return false;
 	}
 	return true;
@@ -282,7 +283,7 @@ bool VansGraphics::VansVKGraphicsPipeline::CreatePipelineCache(VkDevice& logic_d
 	VkResult result = vkCreatePipelineCache(logic_device, &pipeline_cache_create_info, nullptr, &m_PipelineCache);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not create pipeline cache." << std::endl;
+		VANS_LOG_ERROR("Could not create pipeline cache.");
 		return false;
 	}
 	return true;
@@ -296,8 +297,7 @@ bool VansGraphics::VansVKGraphicsPipeline::GetPipelineCacheData(VkDevice& logic_
 	result = vkGetPipelineCacheData(logic_device, m_PipelineCache, &data_size, nullptr);
 	if ((VK_SUCCESS != result) ||(0 == data_size)) 
 	{
-		std::cout << "Could not get the size of the pipeline cache." <<
-			std::endl;
+		VANS_LOG_ERROR("Could not get the size of the pipeline cache.");
 		return false;
 	}
 	pipeline_cache_data.resize(data_size);
@@ -305,7 +305,7 @@ bool VansGraphics::VansVKGraphicsPipeline::GetPipelineCacheData(VkDevice& logic_
 	result = vkGetPipelineCacheData(logic_device, m_PipelineCache, &data_size, pipeline_cache_data.data());
 	if ((VK_SUCCESS != result) || (0 == data_size)) 
 	{
-		std::cout << "Could not acquire pipeline cache data." << std::endl;
+		VANS_LOG_ERROR("Could not acquire pipeline cache data.");
 		return false;
 	}
 	return true;
@@ -348,7 +348,7 @@ bool VansGraphics::VansVKGraphicsPipeline::MergePipelineCache(VkDevice& logic_de
 	VkResult result = vkMergePipelineCaches(logic_device, merged_cache, static_cast<uint32_t>(source_pipeline_caches.size()), source_pipeline_caches.data());
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not merge pipeline cache objects." << std::endl;
+		VANS_LOG_ERROR("Could not merge pipeline cache objects.");
 		return false;
 	}
 	return true;
@@ -371,7 +371,7 @@ bool VansGraphics::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_
 	VkResult result = vkCreatePipelineLayout(logic_device, &pipeline_layout_create_info, nullptr, &m_VansPipelineLayout);
 	if (result != VK_SUCCESS)
 	{
-		std::cerr << "create pipeline layout failed" << std::endl;
+		VANS_LOG_ERROR("create pipeline layout failed");
 		return false;
 	}
 	VkComputePipelineCreateInfo compute_pipeline_create_info = 
@@ -387,7 +387,7 @@ bool VansGraphics::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_
 	result = vkCreateComputePipelines(logic_device, pipeline_cache,1, &compute_pipeline_create_info, nullptr, &m_ComputePipeline);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not create compute pipeline." << std::endl;
+		VANS_LOG_ERROR("Could not create compute pipeline.");
 		return false;
 	}
 	return true;
@@ -452,7 +452,7 @@ bool VansGraphics::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& 
 	VkResult result = vkCreateRayTracingPipelinesKHR(logic_device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_RayTracingPipeline);
 	if (VK_SUCCESS != result)
 	{
-		std::cout << "Could not create compute pipeline." << std::endl;
+		VANS_LOG_ERROR("Could not create compute pipeline.");
 		return false;
 	}
 	return true;

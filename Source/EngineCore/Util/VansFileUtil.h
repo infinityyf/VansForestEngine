@@ -4,6 +4,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include "VansLog.h"
 
 
 #if defined _WIN32
@@ -36,7 +37,7 @@ std::vector<std::string> GetFilesInFolder(const std::string& directory)
 
     if (hFind == INVALID_HANDLE_VALUE) 
     {
-        std::cerr << "FindFirstFile failed (" << GetLastError() << ")" << std::endl;
+        VANS_LOG_ERROR("FindFirstFile failed (" << GetLastError() << ")");
         return files;
     }
 
@@ -62,7 +63,7 @@ std::vector<std::string> GetFilesInFolder(const std::string& directory)
     std::vector<std::string> files;
     DIR* dir = opendir(directory.c_str());
     if (dir == nullptr) {
-        std::cerr << "Failed to open directory: " << directory << std::endl;
+        VANS_LOG_ERROR("Failed to open directory: " << directory);
         return files;
     }
 
@@ -114,7 +115,7 @@ void ReadFile(const std::string& file_path, std::vector<unsigned char>& result)
     std::ifstream file(file_path, std::ios::binary);
     if (!file) 
     {
-        std::cout << "file open failed"<< file_path << std::endl;
+        VANS_LOG_ERROR("file open failed" << file_path);
         return;
     }
 
@@ -127,7 +128,7 @@ void ReadFile(const std::string& file_path, std::vector<unsigned char>& result)
     result.resize(fileSize);
     if (!file.read(reinterpret_cast<char*>(result.data()), fileSize))
     {
-        std::cout << "read open failed" << file_path << std::endl;
+        VANS_LOG_ERROR("read open failed" << file_path);
         return;
     }
 }

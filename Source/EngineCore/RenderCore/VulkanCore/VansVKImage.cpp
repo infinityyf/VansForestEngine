@@ -2,6 +2,7 @@
 #include "VansVKImage.h"
 #include "VansVKMemoryManager.h"
 #include "VansVKSampler.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 
 namespace VansGraphics
@@ -101,7 +102,7 @@ namespace VansGraphics
         VkResult result = vkCreateImage(logical_device, &m_ImageCreateInfo, nullptr, &m_VansVKImage);
         if (VK_SUCCESS != result)
         {
-            std::cout << "Could not create an image." << std::endl;
+            VANS_LOG_ERROR("Could not create an image.");
             return false;
         }
 
@@ -145,14 +146,14 @@ namespace VansGraphics
         bool allocateResult = VansVKMemoryManager::GetInstance()->AllocateMemory(memory_requirements, m_VansVKImageMemory, memory_properties);
         if (!allocateResult || VK_NULL_HANDLE == m_VansVKImageMemory)
         {
-            std::cout << "Could not allocate memory for an image." << std::endl;
+            VANS_LOG_ERROR("Could not allocate memory for an image.");
             return false;
         }
 
         result = vkBindImageMemory(logical_device, m_VansVKImage, m_VansVKImageMemory, 0);
         if (VK_SUCCESS != result)
         {
-            std::cout << "Could not bind memory object to an image." << std::endl;
+            VANS_LOG_ERROR("Could not bind memory object to an image.");
             return false;
         }
 
@@ -169,7 +170,7 @@ namespace VansGraphics
         result = vkCreateImageView(logical_device, &image_view_create_info, nullptr, &m_VansVKImageView);
         if (VK_SUCCESS != result)
         {
-            std::cout << "Could not create an image view." << std::endl;
+            VANS_LOG_ERROR("Could not create an image view.");
             return false;
         }
 
@@ -230,7 +231,7 @@ namespace VansGraphics
 
             if (!result)
             {
-                std::cout << "sampler created failed" << std::endl;
+                VANS_LOG_ERROR("sampler created failed");
                 return false;
             }
         }

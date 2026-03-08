@@ -7,6 +7,7 @@
 #include "VansRenderPass.h"
 #include "VansPipeline.h"
 #include "VansVKDevice.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 #include <cassert>
 
@@ -30,7 +31,7 @@ bool VansGraphics::VansVKCommandBuffer::CreateVulkanCommandBuffer(VansVKDevice& 
 	VkResult result = vkCreateCommandPool(m_VansVKDevice, &command_pool_create_info, nullptr, &m_VansVKCommandPool);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not create command pool." << std::endl;
+		VANS_LOG_ERROR("Could not create command pool.");
 		return false;
 	}
 
@@ -46,7 +47,7 @@ bool VansGraphics::VansVKCommandBuffer::CreateVulkanCommandBuffer(VansVKDevice& 
 	result = vkAllocateCommandBuffers(m_VansVKDevice, &command_buffer_allocate_info, &m_VansVKCommandBuffer);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not allocate command buffers." << std::endl;
+		VANS_LOG_ERROR("Could not allocate command buffers.");
 		return false;
 	}
 
@@ -241,7 +242,7 @@ void VansGraphics::VansVKCommandBuffer::EnsureGraphicsShader(VansGraphicsShader&
 	VansVKGraphicsPipeline* pipeline = shader.GetGraphicsPipeline(m_VansVKDevice, global_state_data, descriptorset_layouts);
 	if (pipeline == nullptr)
 	{
-		std::cout << "pipe get failed" << std::endl;
+		VANS_LOG_ERROR("pipe get failed");
 		return;
 	}
 	//BindGraphicsPipeline(*pipeline);
@@ -257,7 +258,7 @@ void VansGraphics::VansVKCommandBuffer::EnsureComputeShader(VansComputeShader& s
 	VansVKComputePipeline* pipeline = shader.GetComputePipeline(m_VansVKDevice, descriptorset_layouts);
 	if (pipeline == nullptr)
 	{
-		std::cout << "compute pipe get failed" << std::endl;
+		VANS_LOG_ERROR("compute pipe get failed");
 		return;
 	}
 }
@@ -381,7 +382,7 @@ bool VansGraphics::VansVKCommandBuffer::BeginCommandBufferRecord(VkCommandBuffer
 	VkResult result = vkBeginCommandBuffer(m_VansVKCommandBuffer, &command_buffer_begin_info);
 	if (VK_SUCCESS != result)
 	{
-		std::cout << "Could not begin command buffer." << std::endl;
+		VANS_LOG_ERROR("Could not begin command buffer.");
 		return false;
 	}
 	return true;
@@ -392,7 +393,7 @@ bool VansGraphics::VansVKCommandBuffer::EndCommandBufferRecord()
 	VkResult result = vkEndCommandBuffer(m_VansVKCommandBuffer);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Error occurred during command buffer recording." << std::endl;
+		VANS_LOG_ERROR("Error occurred during command buffer recording.");
 		return false;
 	}
 	return true;
@@ -405,7 +406,7 @@ bool VansGraphics::VansVKCommandBuffer::ResetCommandBuffer(bool release_buffer_m
 		VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT : 0);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Error occurred during command buffer reset." << std::endl;
+		VANS_LOG_ERROR("Error occurred during command buffer reset.");
 		return false;
 	}
 	return true;
@@ -451,7 +452,7 @@ bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice&
 	VkResult result = vkQueueSubmit(queue, 1, &submit_info, fence);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Error occurred during command buffer submission." << std::endl;
+		VANS_LOG_ERROR("Error occurred during command buffer submission.");
 		return false;
 	}
 

@@ -4,6 +4,7 @@
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
 #include "VansVKDevice.h"
+#include "../../Util/VansLog.h"
 #include <algorithm>
 #include <iostream>
 
@@ -107,7 +108,7 @@ bool VansGraphics::VansVKMemoryManager::MapMemoryFromHost(VkDeviceMemory& memory
 	result = vkMapMemory(m_LogicalDevice, memory, offset, size, 0, &local_pointer);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not map memory object." << std::endl;
+		VANS_LOG_ERROR("Could not map memory object.");
 		return false;
 	}
 
@@ -130,7 +131,7 @@ bool VansGraphics::VansVKMemoryManager::MapMemoryFromHost(VkDeviceMemory& memory
 	//vkFlushMappedMemoryRanges(m_LogicalDevice, static_cast<uint32_t>(memory_ranges.size()), &memory_ranges[0]);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not flush mapped memory." << std::endl;
+		VANS_LOG_ERROR("Could not flush mapped memory.");
 		return false;
 	}
 

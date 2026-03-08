@@ -1,4 +1,5 @@
 ﻿#include "VansVKFunctions.h"
+#include "../../Source/EngineCore/Util/VansLog.h"
 #include <iostream>
 
 #if defined _WIN32
@@ -33,7 +34,7 @@ namespace VansGraphics
 #endif
 		if (vulkan_library == nullptr)
 		{
-			std::cout << "Could not connect with a Vulkan Runtime library." << std::endl;
+			VANS_LOG_ERROR("Could not connect with a Vulkan Runtime library.");
 			return false;
 		}
 		return true;
@@ -55,7 +56,7 @@ namespace VansGraphics
 #define EXPORTED_VULKAN_FUNCTION( name ) name = (PFN_##name)LoadFunction( vulkan_library, #name );\
 		if( name == nullptr )\
 		{\
-			std::cout << "Could not load exported Vulkan function: " << #name << std::endl;\
+			VANS_LOG_ERROR("Could not load exported Vulkan function: " << #name);\
 			return false;\
 		}
 		//call the function ： EXPORTED_VULKAN_FUNCTION(vkGetInstanceProcAddr), not declare function
@@ -68,7 +69,7 @@ namespace VansGraphics
 #define GLOBAL_LEVEL_VULKAN_FUNCTION( name ) name = (PFN_##name)vkGetInstanceProcAddr( nullptr, #name );\
 		if( name == nullptr )\
 		{\
-			std::cout << "Could not load global level Vulkan function: " << #name << std::endl;\
+			VANS_LOG_ERROR("Could not load global level Vulkan function: " << #name);\
 			return false;\
 		}
 #include "ListOfVulkanFunctions.inl"
@@ -80,7 +81,7 @@ namespace VansGraphics
 #define INSTANCE_LEVEL_VULKAN_FUNCTION( name ) name = (PFN_##name)vkGetInstanceProcAddr( instance, #name ); \
 		if( name == nullptr ) \
 		{ \
-			std::cout << "Could not load instance-level Vulkan function named: " << #name << std::endl; \
+			VANS_LOG_ERROR("Could not load instance-level Vulkan function named: " << #name); \
 			return false; \
 		}
 #include "ListOfVulkanFunctions.inl"
@@ -97,7 +98,7 @@ namespace VansGraphics
 				name = (PFN_##name)vkGetInstanceProcAddr(instance, #name); \
 				if (name == nullptr) \
 				{ \
-					std::cout << "Could not load instance-level Vulkan function named: "<< #name << std::endl; \
+					VANS_LOG_ERROR("Could not load instance-level Vulkan function named: " << #name); \
 					return false; \
 				} \
 			} \
@@ -111,7 +112,7 @@ namespace VansGraphics
 #define DEVICE_LEVEL_VULKAN_FUNCTION( name ) name = (PFN_##name)vkGetDeviceProcAddr( device, #name ); \
 		if( name == nullptr )\
 		{ \
-			std::cout << "Could not load device-level Vulkan function named: " #name << std::endl; \
+			VANS_LOG_ERROR("Could not load device-level Vulkan function named: " << #name); \
 			return false; \
 		}
 #include "ListOfVulkanFunctions.inl"
@@ -128,7 +129,7 @@ namespace VansGraphics
 				name = (PFN_##name)vkGetDeviceProcAddr(device, #name); \
 				if (name == nullptr) \
 				{\
-					std::cout << "Could not load device-level Vulkan function named: " #name << std::endl; \
+					VANS_LOG_ERROR("Could not load device-level Vulkan function named: " << #name); \
 					return false; \
 				} \
 			} \

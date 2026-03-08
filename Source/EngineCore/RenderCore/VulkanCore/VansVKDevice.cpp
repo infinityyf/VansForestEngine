@@ -9,6 +9,7 @@
 #include "../../Configration/VansConfigration.h"
 #include "../../EditorCore/VansEditorWindow.h"
 #include "../../VansTimer.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 #include <cstring>
 
@@ -30,8 +31,7 @@ namespace VansGraphics
 		result = vkEnumerateInstanceExtensionProperties(nullptr, &extensions_count, nullptr);
 		if ((result != VK_SUCCESS) || (extensions_count == 0))
 		{
-			std::cout << "Could not get the number of Instance extensions." <<
-				std::endl;
+			VANS_LOG_ERROR("Could not get the number of Instance extensions.");
 			return false;
 		}
 
@@ -39,7 +39,7 @@ namespace VansGraphics
 		result = vkEnumerateInstanceExtensionProperties(nullptr, &extensions_count, &available_extensions[0]);
 		if ((result != VK_SUCCESS) || (extensions_count == 0))
 		{
-			std::cout << "Could not enumerate Instance extensions." << std::endl;
+			VANS_LOG_ERROR("Could not enumerate Instance extensions.");
 			return false;
 		}
 		return true;
@@ -52,15 +52,14 @@ namespace VansGraphics
 		result = vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
 		if ((result != VK_SUCCESS) || (layer_count == 0))
 		{
-			std::cout << "Could not get the number of Instance layers." <<
-				std::endl;
+			VANS_LOG_ERROR("Could not get the number of Instance layers.");
 			return false;
 		}
 		available_layers.resize(layer_count);
 		result = vkEnumerateInstanceLayerProperties(&layer_count, available_layers.data());
 		if ((result != VK_SUCCESS) || (layer_count == 0))
 		{
-			std::cout << "Could not enumerate Instance extensions." << std::endl;
+			VANS_LOG_ERROR("Could not enumerate Instance extensions.");
 			return false;
 		}
 		return true;
@@ -72,13 +71,11 @@ namespace VansGraphics
 		{
 			if (strcmp(extension.extensionName, desire_extension) == 0)
 			{
-				std::cout << "Extension named '" << desire_extension << "' is supported."
-					<< std::endl;
+				VANS_LOG("Extension named '" << desire_extension << "' is supported.");
 				return true;
 			}
 		}
-		std::cout << "Extension named '" << desire_extension << "' is not supported."
-			<< std::endl;
+		VANS_LOG_WARN("Extension named '" << desire_extension << "' is not supported.");
 		return false;
 	}
 
@@ -88,13 +85,11 @@ namespace VansGraphics
 		{
 			if (strcmp(layer.layerName, desire_layer) == 0)
 			{
-				std::cout << "Layer named '" << desire_layer << "' is supported."
-					<< std::endl;
+				VANS_LOG("Layer named '" << desire_layer << "' is supported.");
 				return true;
 			}
 		}
-		std::cout << "Layer named '" << desire_layer << "' is not supported."
-			<< std::endl;
+		VANS_LOG_WARN("Layer named '" << desire_layer << "' is not supported.");
 		return false;
 	}
 
@@ -110,7 +105,7 @@ namespace VansGraphics
 		result = vkEnumerateDeviceExtensionProperties(device, nullptr, &extensions_count, nullptr);
 		if ((result != VK_SUCCESS) || (extensions_count == 0))
 		{
-			std::cout << "Could not get the number of device extensions." << std::endl;
+			VANS_LOG_ERROR("Could not get the number of device extensions.");
 			return false;
 		}
 
@@ -119,7 +114,7 @@ namespace VansGraphics
 		result = vkEnumerateDeviceExtensionProperties(device, nullptr, &extensions_count, &available_extensions[0]);
 		if ((result != VK_SUCCESS) || (extensions_count == 0))
 		{
-			std::cout << "Could not enumerate device extensions." << std::endl;
+			VANS_LOG_ERROR("Could not enumerate device extensions.");
 			return false;
 		}
 		return true;
@@ -133,7 +128,7 @@ namespace VansGraphics
 		vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families_count, nullptr);
 		if (queue_families_count == 0)
 		{
-			std::cout << "Could not get the number of queue families." << std::endl;
+			VANS_LOG_ERROR("Could not get the number of queue families.");
 			return false;
 		}
 
@@ -142,7 +137,7 @@ namespace VansGraphics
 		vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families_count, &queue_families[0]);
 		if (queue_families_count == 0)
 		{
-			std::cout << "Could not acquire properties of queue families." << std::endl;
+			VANS_LOG_ERROR("Could not acquire properties of queue families.");
 			return false;
 		}
 
@@ -260,7 +255,7 @@ namespace VansGraphics
 		VkResult result = vkQueueWaitIdle(queue);
 		if (VK_SUCCESS != result)
 		{
-			std::cout << "Waiting for all operations submitted to queue failed." << std::endl;
+			VANS_LOG_ERROR("Waiting for all operations submitted to queue failed.");
 			return false;
 		}
 		return true;
@@ -271,7 +266,7 @@ namespace VansGraphics
 		VkResult result = vkDeviceWaitIdle(m_VansVKLogicDevice);
 		if (VK_SUCCESS != result)
 		{
-			std::cout << "Waiting on a device failed." << std::endl;
+			VANS_LOG_ERROR("Waiting on a device failed.");
 			return false;
 		}
 		return true;
@@ -299,7 +294,7 @@ namespace VansGraphics
 		VkResult result = vkCreateFence(m_VansVKLogicDevice, &fence_create_info, nullptr, &fence);
 		if (VK_SUCCESS != result)
 		{
-			std::cout << "Could not create a fence." << std::endl;
+			VANS_LOG_ERROR("Could not create a fence.");
 			return false;
 		}
 		return true;
@@ -317,7 +312,7 @@ namespace VansGraphics
 		VkResult result = vkCreateSemaphore(m_VansVKLogicDevice, &semaphore_create_info, nullptr, &semaphore);
 		if (VK_SUCCESS != result)
 		{
-			std::cout << "Could not create a semaphore." << std::endl;
+			VANS_LOG_ERROR("Could not create a semaphore.");
 			return false;
 		}
 		return true;
@@ -356,10 +351,7 @@ namespace VansGraphics
 	{
 		uint32_t apiVersion = 0;
 		vkEnumerateInstanceVersion(&apiVersion);
-		printf("Vulkan API version: %d.%d.%d\n",
-			VK_VERSION_MAJOR(apiVersion),
-			VK_VERSION_MINOR(apiVersion),
-			VK_VERSION_PATCH(apiVersion));
+		VANS_LOG("Vulkan API version: " << VK_VERSION_MAJOR(apiVersion) << "." << VK_VERSION_MINOR(apiVersion) << "." << VK_VERSION_PATCH(apiVersion));
 
 		std::vector<VkExtensionProperties> available_extensions;
 		if (!CheckAvaliableInstanceExtensions(available_extensions))
@@ -417,7 +409,7 @@ namespace VansGraphics
 		VkResult result = vkCreateInstance(&instance_create_info, nullptr, &m_VansVKInstance);
 		if ((result != VK_SUCCESS) || (m_VansVKInstance == VK_NULL_HANDLE))
 		{
-			std::cout << "Could not -create Vulkan Instance." << std::endl;
+			VANS_LOG_ERROR("Could not create Vulkan Instance.");
 			return false;
 		}
 		return true;
@@ -430,7 +422,7 @@ namespace VansGraphics
 		result = vkEnumeratePhysicalDevices(m_VansVKInstance, &devices_count, nullptr);
 		if ((result != VK_SUCCESS) || (devices_count == 0))
 		{
-			std::cout << "Could not get the number of available physical devices." << std::endl;
+			VANS_LOG_ERROR("Could not get the number of available physical devices.");
 			return false;
 		}
 
@@ -439,7 +431,7 @@ namespace VansGraphics
 		result = vkEnumeratePhysicalDevices(m_VansVKInstance, &devices_count, &available_devices[0]);
 		if ((result != VK_SUCCESS) || (devices_count == 0))
 		{
-			std::cout << "Could not enumerate physical devices." << std::endl;
+			VANS_LOG_ERROR("Could not enumerate physical devices.");
 			return false;
 		}
 
@@ -539,7 +531,7 @@ namespace VansGraphics
 			VkResult result = vkCreateDevice(device, &device_create_info, nullptr, &m_VansVKLogicDevice);
 			if ((result != VK_SUCCESS) || (m_VansVKLogicDevice == VK_NULL_HANDLE))
 			{
-				std::cout << "Could not create logical device." << std::endl;
+				VANS_LOG_ERROR("Could not create logical device.");
 				return false;
 			}
 
@@ -563,7 +555,7 @@ namespace VansGraphics
 		bool result = m_VansVKCommandBuffer.CreateVulkanCommandBuffer(*this, m_GraphicsQueueFamilyIndex, params);
 		if (!result)
 		{
-			std::cout << "create m_VansVKCommandBuffer failed" << std::endl;
+			VANS_LOG_ERROR("create m_VansVKCommandBuffer failed");
 			return false;
 		}
 		CreateVKFence(false, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
@@ -571,7 +563,7 @@ namespace VansGraphics
 		result = m_VansVKRayTracingCommandBuffer.CreateVulkanCommandBuffer(*this, m_ComputeQueueFamilyIndex, params);
 		if (!result)
 		{
-			std::cout << "create m_VansVKRayTracingCommandBuffer failed" << std::endl;
+			VANS_LOG_ERROR("create m_VansVKRayTracingCommandBuffer failed");
 			return false;
 		}
 		CreateVKFence(false, m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
@@ -579,7 +571,7 @@ namespace VansGraphics
 		result = m_VansVKComputeCommandBuffer.CreateVulkanCommandBuffer(*this, m_ComputeQueueFamilyIndex, params);
 		if (!result)
 		{
-			std::cout << "create m_VansVKComputeCommandBuffer failed" << std::endl;
+			VANS_LOG_ERROR("create m_VansVKComputeCommandBuffer failed");
 			return false;
 		}
 		CreateVKFence(false, m_VansVKComputeCommandBuffer.m_CommandBufferFinishSubmitFence);
@@ -587,7 +579,7 @@ namespace VansGraphics
 		result = m_VansEditorCommandBuffer.CreateVulkanCommandBuffer(*this, m_GraphicsQueueFamilyIndex, params);
 		if (!result)
 		{
-			std::cout << "create m_VansEditorCommandBuffer failed" << std::endl;
+			VANS_LOG_ERROR("create m_VansEditorCommandBuffer failed");
 			return false;
 		}
 		CreateVKFence(false, m_VansEditorCommandBuffer.m_CommandBufferFinishSubmitFence);

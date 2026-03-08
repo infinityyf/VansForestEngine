@@ -3,6 +3,7 @@
 #include "VansVKDevice.h"
 #include "VansVKCommandBuffer.h"
 #include "../../Util/VansJobSystem.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -331,7 +332,7 @@ namespace VansGraphics
 
 	void VansTexture::LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB, bool useCompress, bool need_mip, TexturePrecision texture_precision, int import_channel)
 	{
-		std::cout << "Load Texture : " << texture_path << std::endl;
+		VANS_LOG("Load Texture : " << texture_path);
 
 		// 1. 读取文件
 		int width = 0, height = 0, num_components = 0, bytes_per_channel = 1;
@@ -339,7 +340,7 @@ namespace VansGraphics
 
 		if (!pixel_data || width <= 0 || height <= 0 || num_components <= 0)
 		{
-			std::cout << "Could not read image!" << std::endl;
+			VANS_LOG_ERROR("Could not read image!");
 			return;
 		}
 
@@ -384,7 +385,7 @@ namespace VansGraphics
 
 			if (!stbi_data || width <= 0 || height <= 0)
 			{
-				std::cout << "Could not read image!" << std::endl;
+				VANS_LOG_ERROR("Could not read image!");
 				return;
 			}
 

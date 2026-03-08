@@ -1,6 +1,7 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKBuffer.h"
 #include "VansVKMemoryManager.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 
 bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkDeviceSize size, VkFormat format, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_properties)
@@ -29,7 +30,7 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 	VkResult result = vkCreateBuffer(logical_device, &buffer_create_info, nullptr, &m_VansVKBuffer);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not create a buffer." << std::endl;
+		VANS_LOG_ERROR("Could not create a buffer.");
 		return false;
 	}
 
@@ -44,7 +45,7 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 	bool allocateResult = VansVKMemoryManager::GetInstance()->AllocateMemory(memory_requirements, m_VansVKBufferMemory, memory_properties, needBufferAddressable);
 	if (!allocateResult)
 	{
-		std::cerr << "alloc buffer memory failed" << std::endl;
+		VANS_LOG_ERROR("alloc buffer memory failed");
 		return false;
 	}
 	VkDeviceSize memory_offset = 0;
@@ -53,13 +54,13 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 	//bind memory to buffer
 	if (VK_NULL_HANDLE == m_VansVKBufferMemory) 
 	{
-		std::cout << "Could not allocate memory for a buffer." << std::endl;
+		VANS_LOG_ERROR("Could not allocate memory for a buffer.");
 		return false;
 	}
 	result = vkBindBufferMemory(logical_device, m_VansVKBuffer, m_VansVKBufferMemory, 0);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not bind memory object to a buffer." << std::endl;
+		VANS_LOG_ERROR("Could not bind memory object to a buffer.");
 		return false;
 	}
 
@@ -80,7 +81,7 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 		result = vkCreateBufferView(logical_device, &buffer_view_create_info, nullptr, &m_VansVKBufferView);
 		if (VK_SUCCESS != result)
 		{
-			std::cout << "Could not creat buffer view." << std::endl;
+			VANS_LOG_ERROR("Could not creat buffer view.");
 			return false;
 		}
 	}

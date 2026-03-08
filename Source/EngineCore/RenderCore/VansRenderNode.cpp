@@ -7,6 +7,7 @@
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "VulkanCore/VansRenderPass.h"
 #include "../../EngineCore/RenderCore/TerrainCore/VansTerrain.h"
+#include "../Util/VansLog.h"
 #include <iostream>
 using namespace VansGraphics;
 
@@ -35,7 +36,7 @@ bool VansGraphics::VansRenderNode::CheckRenderNodeState()
 	auto shader = m_Material->m_Shader;
 	if (shader!= nullptr && m_SceneFileWatcher->ConsumeUpdated(shader->GetShaderFolder()))
 	{
-		std::cout << "pipe update: " << shader->GetShaderFolder() << std::endl;
+		VANS_LOG("pipe update: " << shader->GetShaderFolder());
 		shader->RefreshShaderMoudle();
 		shader->TriggerReCreateGraphicsPipeline();
 		return false;

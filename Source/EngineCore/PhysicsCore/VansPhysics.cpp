@@ -1,4 +1,5 @@
 #include "VansPhysics.h"
+#include "../Util/VansLog.h"
 #include <iostream>
 #include <chrono>
 #include <vehicle2/PxVehicleAPI.h>
@@ -24,7 +25,7 @@ namespace VansEngine
 		case PxErrorCode::ePERF_WARNING: errorCode = "PERF_WARNING"; break;
 		}
 		
-		std::cerr << "[PhysX Error] " << errorCode << ": " << message << " (File: " << file << ", Line: " << line << ")" << std::endl;
+		VANS_LOG_ERROR("[PhysX Error] " << errorCode << ": " << message << " (File: " << file << ", Line: " << line << ")");
 	}
 
 	// ============================================================================
@@ -64,7 +65,7 @@ namespace VansEngine
 		m_Foundation = PxCreateFoundation(PX_PHYSICS_VERSION, m_Allocator, m_ErrorCallback);
 		if (!m_Foundation)
 		{
-			std::cerr << "[PhysX] Failed to create Foundation" << std::endl;
+			VANS_LOG_ERROR("[PhysX] Failed to create Foundation");
 			return false;
 		}
 
@@ -81,33 +82,33 @@ namespace VansEngine
 				bool pvdConnected = m_Pvd->connect(*transport, PxPvdInstrumentationFlag::eALL);
 				if (pvdConnected)
 				{
-					std::cout << "[PhysX PVD] Connected to PhysX Visual Debugger at 127.0.0.1:5425" << std::endl;
-					std::cout << "[PhysX PVD] Open PhysX Visual Debugger application to see real-time physics data" << std::endl;
+					VANS_LOG("[PhysX PVD] Connected to PhysX Visual Debugger at 127.0.0.1:5425");
+					VANS_LOG("[PhysX PVD] Open PhysX Visual Debugger application to see real-time physics data");
 				}
 				else
 				{
-					std::cout << "[PhysX PVD] Failed to connect to PhysX Visual Debugger (is PVD application running?)" << std::endl;
+					VANS_LOG_WARN("[PhysX PVD] Failed to connect to PhysX Visual Debugger (is PVD application running?)");
 				}
 			}
 			else
 			{
-				std::cout << "[PhysX PVD] Failed to create PVD transport" << std::endl;
+				VANS_LOG_ERROR("[PhysX PVD] Failed to create PVD transport");
 			}
 		}
 		else
 		{
-			std::cout << "[PhysX PVD] Failed to create PVD instance" << std::endl;
+				VANS_LOG_ERROR("[PhysX PVD] Failed to create PVD instance");
 		}
 #else
 		m_Pvd = nullptr;
-		std::cout << "[PhysX] PVD disabled in Release mode" << std::endl;
+		VANS_LOG("[PhysX] PVD disabled in Release mode");
 #endif
 
 		// Create Physics
 		m_Physics = PxCreatePhysics(PX_PHYSICS_VERSION, *m_Foundation, PxTolerancesScale(), true, m_Pvd);
 		if (!m_Physics)
 		{
-			std::cerr << "[PhysX] Failed to create Physics" << std::endl;
+			VANS_LOG_ERROR("[PhysX] Failed to create Physics");
 			return false;
 		}
 
@@ -129,7 +130,7 @@ namespace VansEngine
 		m_Scene = m_Physics->createScene(sceneDesc);
 		if (!m_Scene)
 		{
-			std::cerr << "[PhysX] Failed to create Scene" << std::endl;
+			VANS_LOG_ERROR("[PhysX] Failed to create Scene");
 			return false;
 		}
 
@@ -142,14 +143,14 @@ namespace VansEngine
 				pvdClient->setScenePvdFlag(PxPvdSceneFlag::eTRANSMIT_CONSTRAINTS, true);
 				pvdClient->setScenePvdFlag(PxPvdSceneFlag::eTRANSMIT_CONTACTS, true);
 				pvdClient->setScenePvdFlag(PxPvdSceneFlag::eTRANSMIT_SCENEQUERIES, true);
-				std::cout << "[PhysX PVD] Scene instrumentation enabled for debugging" << std::endl;
+				VANS_LOG("[PhysX PVD] Scene instrumentation enabled for debugging");
 			}
 		}
 
 		// Create Default Material
 		m_DefaultMaterial = m_Physics->createMaterial(0.5f, 0.5f, 0.6f); // static friction, dynamic friction, restitution
 
-		std::cout << "[PhysX] Initialized successfully" << std::endl;
+		VANS_LOG("[PhysX] Initialized successfully");
 		return true;
 	}
 
@@ -165,7 +166,7 @@ namespace VansEngine
 		if (m_Foundation) m_Foundation->release();
 		if (m_CookingParams) delete m_CookingParams;
 
-		std::cout << "[PhysX] Shutdown complete" << std::endl;
+		VANS_LOG("[PhysX] Shutdown complete");
 	}
 
 	void VansPhysicsSystem::StartSimulation()
@@ -176,7 +177,7 @@ namespace VansEngine
 		m_ShouldExit = false;
 		m_SimulationThread = std::thread(&VansPhysicsSystem::SimulationThread, this);
 
-		std::cout << "[PhysX] Simulation thread started" << std::endl;
+		VANS_LOG("[PhysX] Simulation thread started");
 	}
 
 	void VansPhysicsSystem::StopSimulation()
@@ -192,7 +193,7 @@ namespace VansEngine
 		}
 
 		m_IsRunning = false;
-		std::cout << "[PhysX] Simulation thread stopped" << std::endl;
+		VANS_LOG("[PhysX] Simulation thread stopped");
 	}
 
 	void VansPhysicsSystem::SimulationThread()
@@ -200,10 +201,10 @@ namespace VansEngine
 		using Clock = std::chrono::high_resolution_clock;
 		auto lastTime = Clock::now();
 
-		std::cout << "[PhysX] Simulation thread running with fixed timestep: " << m_FixedTimeStep << "s" << std::endl;
+		VANS_LOG("[PhysX] Simulation thread running with fixed timestep: " << m_FixedTimeStep << "s");
 		if (IsPvdConnected())
 		{
-			std::cout << "[PhysX PVD] Real-time physics data streaming active" << std::endl;
+			VANS_LOG("[PhysX PVD] Real-time physics data streaming active");
 		}
 
 		while (!m_ShouldExit)
@@ -241,7 +242,7 @@ namespace VansEngine
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 		
-		std::cout << "[PhysX] Simulation thread stopped" << std::endl;
+		VANS_LOG("[PhysX] Simulation thread stopped");
 	}
 
 	std::mutex& VansPhysicsSystem::GetSimulationMutex()
@@ -282,7 +283,7 @@ namespace VansEngine
 	{
 		if (!m_Physics || !m_CookingParams)
 		{
-			std::cerr << "[PhysX] Physics or cooking params not initialized for cooking convex mesh" << std::endl;
+			VANS_LOG_ERROR("[PhysX] Physics or cooking params not initialized for cooking convex mesh");
 			return nullptr;
 		}
 
@@ -295,7 +296,7 @@ namespace VansEngine
 	{
 		if (!m_Physics || !m_CookingParams)
 		{
-			std::cerr << "[PhysX] Physics or cooking params not initialized for cooking triangle mesh" << std::endl;
+			VANS_LOG_ERROR("[PhysX] Physics or cooking params not initialized for cooking triangle mesh");
 			return nullptr;
 		}
 
@@ -308,7 +309,7 @@ namespace VansEngine
 	{
 		if (!m_Physics)
 		{
-			std::cerr << "[PhysX] Physics not initialized for cooking height field" << std::endl;
+			VANS_LOG_ERROR("[PhysX] Physics not initialized for cooking height field");
 			return nullptr;
 		}
 

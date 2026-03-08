@@ -1,5 +1,6 @@
 ﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKDescriptorManager.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 
 VansGraphics::VansVKDescriptorManager* VansGraphics::VansVKDescriptorManager::instance = nullptr;
@@ -26,7 +27,7 @@ void VansGraphics::VansVKDescriptorManager::CreateDescriptorPool(bool free_indiv
 	VkResult result = vkCreateDescriptorPool(m_LogicalDevice, &descriptor_pool_create_info, nullptr, &m_DescriptorPool);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not create a descriptor pool." << std::endl;
+		VANS_LOG_ERROR("Could not create a descriptor pool.");
 	}
 }
 
@@ -34,7 +35,7 @@ bool VansGraphics::VansVKDescriptorManager::ResetDescriptorPool()
 {
 	VkResult result = vkResetDescriptorPool(m_LogicalDevice, m_DescriptorPool, 0);
 	if (VK_SUCCESS != result) {
-		std::cout << "Error occurred during descriptor pool reset." << std::endl;
+		VANS_LOG_ERROR("Error occurred during descriptor pool reset.");
 		return false;
 	}
 	return true;
@@ -74,8 +75,7 @@ bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayout(const std::
 	VkResult result = vkCreateDescriptorSetLayout(m_LogicalDevice, &descriptor_set_layout_create_info, nullptr, &descriptor_set_layout);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not create a layout for descriptor sets." <<
-			std::endl;
+		VANS_LOG_ERROR("Could not create a layout for descriptor sets.");
 		return false;
 	}
 	return true;
@@ -105,7 +105,7 @@ bool VansGraphics::VansVKDescriptorManager::AllocateDescriptorSet(const std::vec
 	VkResult result = vkAllocateDescriptorSets(m_LogicalDevice,&descriptor_set_allocate_info, descriptor_sets.data());
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not allocate descriptor sets." << std::endl;
+		VANS_LOG_ERROR("Could not allocate descriptor sets.");
 		return false;
 	}
 	return true;
@@ -116,8 +116,7 @@ bool VansGraphics::VansVKDescriptorManager::DestroyDescriptorSet(std::vector<VkD
 	VkResult result = vkFreeDescriptorSets(m_LogicalDevice, m_DescriptorPool, static_cast<uint32_t>(descriptor_sets.size()), descriptor_sets.data());
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Error occurred during freeing descriptor sets." <<
-			std::endl;
+		VANS_LOG_ERROR("Error occurred during freeing descriptor sets.");
 		return false;
 	}
 	descriptor_sets.clear();

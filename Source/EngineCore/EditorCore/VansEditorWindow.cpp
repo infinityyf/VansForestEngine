@@ -13,9 +13,12 @@
 #include "Windows/VansSceneWindow.h"
 #include "Windows/VansInspectorWindow.h"
 #include "Windows/VansGBufferWindow.h"
+#include "Windows/VansScriptorWindow.h"
+#include "Windows/VansConsoleWindow.h"
 
 #include "../Util/VansJobSystem.h"
 #include "../Util/VansInputManager.h"
+#include "../Util/VansLog.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
@@ -27,7 +30,7 @@
 
 static void glfw_error_callback(int error, const char* description)
 {
-    std::cout << "GLFW Error " << error << ":" << description << std::endl;
+    VANS_LOG_ERROR("GLFW Error " << error << ":" << description);
 }
 
 static bool CheckGraphicsAPI(VansGraphics::GRAPHICS_API api)
@@ -37,7 +40,7 @@ static bool CheckGraphicsAPI(VansGraphics::GRAPHICS_API api)
     case VansGraphics::VULKAN:
         if (!glfwVulkanSupported())
         {
-            std::cout << "GLFW: Vulkan Not Supported" << std::endl;
+            VANS_LOG_ERROR("GLFW: Vulkan Not Supported");
             return false;
         }
         return true;
@@ -71,6 +74,10 @@ VansGraphics::VansSceneWindow* VansGraphics::VansEditorWindow::m_SceneWindow;
 VansGraphics::VansInspectorWindow* VansGraphics::VansEditorWindow::m_InspectorWindow;
 
 VansGraphics::VansGBufferWindow* VansGraphics::VansEditorWindow::m_GBufferWindow;
+
+VansGraphics::VansScriptorWindow* VansGraphics::VansEditorWindow::m_ScriptorWindow;
+
+VansGraphics::VansConsoleWindow* VansGraphics::VansEditorWindow::m_ConsoleWindow;
 
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
@@ -139,6 +146,12 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_GBufferWindow = new VansGBufferWindow();
     m_Windows.push_back(m_GBufferWindow);
+
+    m_ScriptorWindow = new VansScriptorWindow();
+    m_Windows.push_back(m_ScriptorWindow);
+
+    m_ConsoleWindow = new VansConsoleWindow();
+    m_Windows.push_back(m_ConsoleWindow);
 }
 
 void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
@@ -498,7 +511,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // Rendering, 这里会结束renderpass
         camera.Rendering();
 
-        //m_ScriptContext.VansScriptUpdate();
+        m_ScriptContext.VansScriptUpdate();
         //UI Pass
         m_SceneWindow->RegistCamera(&camera);
         DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));

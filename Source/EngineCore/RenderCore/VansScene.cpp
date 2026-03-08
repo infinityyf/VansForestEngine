@@ -13,6 +13,7 @@
 #include "TerrainCore/VansTerrain.h"
 
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
+#include "../Util/VansLog.h"
 #include <iostream>
 #include <fstream>
 #include <unordered_map>
@@ -672,8 +673,8 @@ void VansGraphics::VansScene::InitVehicle(VansEngine::VansPhysicsSystem* physics
     // Initialize with default parameters (empty path triggers built-in defaults)
     m_Vehicle->Initialize(physicsSystem, "", startPose);
 
-    std::cout << "[VansScene] Vehicle initialized at " << position.x << ", " << position.y << ", " << position.z
-              << ", bodyNode='" << bodyRenderNodeName << "', tires=" << tireRenderNodeNames.size() << std::endl;
+    VANS_LOG("[VansScene] Vehicle initialized at " << position.x << ", " << position.y << ", " << position.z
+              << ", bodyNode='" << bodyRenderNodeName << "', tires=" << tireRenderNodeNames.size());
 }
 
 void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
@@ -1036,7 +1037,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         m_BLASVertexData.push_back(mesh->GetBLASVertexBuffer());
         m_BLASIndexData.push_back(mesh->GetIndexBuffer());
 
-        std::cout << "blas build done" << mesh->m_AssetName << std::endl;
+        VANS_LOG("blas build done" << mesh->m_AssetName);
     }
 
     for (auto& node : m_OpaqueRenderNodes)
@@ -1251,7 +1252,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     
     vans_commandBuffer->BuildAccelerationStructures(&buildInfo, *ppRangeInfos);
 
-    std::cout << "tlas build done" << std::endl;
+    VANS_LOG("tlas build done");
 }
 
 void VansGraphics::VansScene::ReleaseASTempBuffer(VansVKDevice* vans_device)
@@ -1474,7 +1475,7 @@ void VansGraphics::VansScene::LoadPhysicsNodes(json& physics_node)
         {
             if (m_Vehicle)
             {
-                std::cerr << "[VansScene] LoadPhysicsNodes: vehicle node already initialized, skipping." << std::endl;
+                VANS_LOG_WARN("[VansScene] LoadPhysicsNodes: vehicle node already initialized, skipping.");
                 continue;
             }
 

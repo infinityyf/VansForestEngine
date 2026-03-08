@@ -4,6 +4,7 @@
 #include "VansVKCommandBuffer.h"
 #include "VansVKSurface.h"
 #include "../../Configration/VansConfigration.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 #include <vector>
 
@@ -74,7 +75,7 @@ void VansGraphics::VansVKRenderPass::CreateRenderPass(VkDevice& logic_device, st
 	VkResult result = vkCreateRenderPass(logic_device, &render_pass_create_info, nullptr, &m_RenderPass);
 	if (VK_SUCCESS != result)
 	{
-		std::cout << "Could not create a render pass." << std::endl;
+		VANS_LOG_ERROR("Could not create a render pass.");
 	}
 }
 
@@ -110,7 +111,7 @@ void VansGraphics::VansFrameBuffer::CreateFrameBuffer(VkDevice& logic_device, Vk
 	VkResult result = vkCreateFramebuffer(logic_device, &framebuffer_create_info, nullptr, &m_FrameBuffer);
 	if (VK_SUCCESS != result) 
 	{
-		std::cout << "Could not create a framebuffer." << std::endl;
+		VANS_LOG_ERROR("Could not create a framebuffer.");
 	}
 }
 

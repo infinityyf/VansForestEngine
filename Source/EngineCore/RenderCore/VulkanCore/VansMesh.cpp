@@ -1,6 +1,7 @@
 ﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansMesh.h"
 #include "VansVKCommandBuffer.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 
 #include <assimp/Importer.hpp>
@@ -124,7 +125,7 @@ VansGraphics::VansMesh::VansMesh(bool needCPUData, bool supportRayTracing)
 
 void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent)
 {
-	std::cout << "Load Mesh : " << file_name << std::endl;
+	VANS_LOG("Load Mesh : " << file_name);
 	m_LogicalDevice = logic_device;
 	m_MeshRawDataCPULoaded = false;
 	m_VertexCount = 0;
@@ -138,7 +139,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 	const aiScene* scene = importer.ReadFile(file_name, processFlag);
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 	{
-		std::cout << "ERROR::ASSIMP::" << importer.GetErrorString() << std::endl;
+		VANS_LOG_ERROR("ERROR::ASSIMP::" << importer.GetErrorString());
 		return;
 	}
 	ProcessNode(scene->mRootNode, scene, m_MeshRawData, m_MeshRawPositionData, m_MeshTriangleIndex,m_VertexCount, import_tangent);
@@ -392,7 +393,7 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 	const aiScene* scene = importer.ReadFile(file_name, processFlag);
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 	{
-		std::cout << "ERROR::ASSIMP (LoadMultiMesh)::" << importer.GetErrorString() << std::endl;
+		VANS_LOG_ERROR("ERROR::ASSIMP (LoadMultiMesh)::" << importer.GetErrorString());
 		return;
 	}
 
@@ -400,7 +401,7 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 	CollectAiMeshes(scene->mRootNode, scene, allMeshes);
 	if (allMeshes.empty())
 	{
-		std::cout << "[LoadMultiMesh] No submeshes found in: " << file_name << std::endl;
+		VANS_LOG_WARN("[LoadMultiMesh] No submeshes found in: " << file_name);
 		return;
 	}
 
@@ -417,14 +418,14 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		}
 	}
 
-	std::cout << "[LoadMultiMesh] Loaded " << m_SubMeshes.size() << " submeshes from: " << file_name << std::endl;
+	VANS_LOG("[LoadMultiMesh] Loaded " << m_SubMeshes.size() << " submeshes from: " << file_name);
 }
 
 bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& queue,
 	VansVKCommandBuffer* commandbuffer, const std::string& file_name,
 	uint32_t submeshIndex, bool import_tangent)
 {
-	std::cout << "Load Submesh [" << submeshIndex << "] from : " << file_name << std::endl;
+	VANS_LOG("Load Submesh [" << submeshIndex << "] from : " << file_name);
 
 	m_LogicalDevice = logic_device;
 	m_MeshRawDataCPULoaded = false;
@@ -440,7 +441,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& qu
 	const aiScene* scene = importer.ReadFile(file_name, processFlag);
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 	{
-		std::cout << "ERROR::ASSIMP (LoadMeshSubmesh)::" << importer.GetErrorString() << std::endl;
+		VANS_LOG_ERROR("ERROR::ASSIMP (LoadMeshSubmesh)::" << importer.GetErrorString());
 		return false;
 	}
 
@@ -450,7 +451,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& qu
 
 	if (submeshIndex >= static_cast<uint32_t>(allMeshes.size()))
 	{
-		std::cout << "ERROR: submeshIndex " << submeshIndex << " out of range (total=" << allMeshes.size() << ")" << std::endl;
+		VANS_LOG_ERROR("ERROR: submeshIndex " << submeshIndex << " out of range (total=" << allMeshes.size() << ")");
 		return false;
 	}
 
@@ -617,7 +618,7 @@ std::vector<std::string> VansGraphics::VansMesh::GetSubmeshMaterialNames(const s
 		aiProcess_Triangulate | aiProcess_GenNormals);
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 	{
-		std::cout << "ERROR::ASSIMP (GetSubmeshMaterialNames)::" << importer.GetErrorString() << std::endl;
+		VANS_LOG_ERROR("ERROR::ASSIMP (GetSubmeshMaterialNames)::" << importer.GetErrorString());
 		return result;
 	}
 

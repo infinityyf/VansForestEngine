@@ -6,6 +6,7 @@
 #include "VansVKDevice.h"
 
 #include "../../Util/VansFileUtil.h"
+#include "../../Util/VansLog.h"
 //#include "spirv_cross/spirv_cross.hpp"
 //#include "spirv_cross/spirv_glsl.hpp"
 
@@ -89,14 +90,14 @@ bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::str
 	bool result = TranslateToSPIRV(m_ShaderFolder);
 	if (!result)
 	{
-		std::cout << "shader translation failed" << std::endl;
+		VANS_LOG_ERROR("shader translation failed");
 		return false;
 	}
 
 	result = CreateShaderModule(logic_device);
 	if (!result)
 	{
-		std::cout << "create shader module failed" << std::endl;
+		VANS_LOG_ERROR("create shader module failed");
 		return false;
 	}
 
@@ -114,14 +115,14 @@ bool VansGraphics::VansShader::RefreshShaderMoudle()
 	bool result = TranslateToSPIRV(m_ShaderFolder);
 	if (!result)
 	{
-		std::cout << "shader translation failed" << std::endl;
+		VANS_LOG_ERROR("shader translation failed");
 		return false;
 	}
 
 	result = CreateShaderModule(m_LogicDevice);
 	if (!result)
 	{
-		std::cout << "create shader module failed" << std::endl;
+		VANS_LOG_ERROR("create shader module failed");
 		return false;
 	}
 
@@ -134,14 +135,14 @@ bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, cons
 	bool result = TranslateToSPIRV(shader_folder_string, ShaderType::RayTracing);
 	if (!result)
 	{
-		std::cout << "shader translation failed" << std::endl;
+		VANS_LOG_ERROR("shader translation failed");
 		return false;
 	}
-	std::cout << "before ray tracing create shader module " << std::endl;
+	VANS_LOG("before ray tracing create shader module");
 	result = CreateShaderModule(logic_device);
 	if (!result)
 	{
-		std::cout << "create shader module failed" << std::endl;
+		VANS_LOG_ERROR("create shader module failed");
 		return false;
 	}
 	m_LogicDevice = logic_device;
@@ -166,7 +167,7 @@ bool VansGraphics::VansShader::TranslateToSPIRV(const std::string& shader_folder
 
 	if (shader_files.size() == 0)
 	{
-		std::cout << "no shader files found:" << shader_folder << std::endl;
+		VANS_LOG_WARN("no shader files found:" << shader_folder);
 		return false;
 	}
 	m_ShaderModuleDataMap.clear();
@@ -187,7 +188,7 @@ bool VansGraphics::VansShader::TranslateToSPIRV(const std::string& shader_folder
 				auto shader_type_iter = m_ShaderTypeMap.find(shader_type);
 				if (shader_type_iter == m_ShaderTypeMap.end())
 				{
-					std::cout << "unknow shader type" << std::endl;
+					VANS_LOG_WARN("unknown shader type");
 					return false;
 				}
 				VkShaderStageFlagBits shader_stage = shader_type_iter->second;
@@ -202,7 +203,7 @@ bool VansGraphics::VansShader::TranslateToSPIRV(const std::string& shader_folder
 				auto shader_type_iter = m_RayTracingShaderTypeMap.find(shader_type);
 				if (shader_type_iter == m_RayTracingShaderTypeMap.end())
 				{
-					std::cout << "unknow shader type" << std::endl;
+					VANS_LOG_WARN("unknown shader type");
 					return false;
 				}
 				VkShaderStageFlagBits shader_stage = shader_type_iter->second;
@@ -235,11 +236,11 @@ bool VansGraphics::VansShader::TranslateToSPIRV(const std::string& shader_folder
 
 		if (result == 0) 
 		{
-			std::cout << "glslangValidator pass " << shader_module_data.first << std::endl;
+			VANS_LOG("glslangValidator pass " << shader_module_data.first);
 		}
 		else 
 		{
-			std::cerr << "glslangValidator failed "<< std::endl;
+			VANS_LOG_ERROR("glslangValidator failed");
 			return false;
 		}
 
@@ -247,7 +248,7 @@ bool VansGraphics::VansShader::TranslateToSPIRV(const std::string& shader_folder
 		ReadFile(spirv_file_name, shader_module_data.second.m_ShaderSPIRVCode);
 		if (shader_module_data.second.m_ShaderSPIRVCode.empty())
 		{
-			std::cout << "read spirv file failed" << std::endl;
+			VANS_LOG_ERROR("read spirv file failed");
 			return false;
 		}
 	}
@@ -279,7 +280,7 @@ bool VansGraphics::VansShader::CreateShaderModule(VkDevice& logic_device)
 		VkResult result = vkCreateShaderModule(logic_device, &shader_module_create_info, nullptr, &shader_module_data.second.m_ShaderModule);
 		if (VK_SUCCESS != result)
 		{
-			std::cout << "Could not create a shader module." << std::endl;
+			VANS_LOG_ERROR("Could not create a shader module.");
 			return false;
 		}
 
@@ -310,7 +311,7 @@ VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraph
 	bool result = CreateGraphicsPipeline(logic_device, global_state_data);
 	if (!result)
 	{
-		std::cout << "create graphics pipeline failed" << std::endl;
+		VANS_LOG_ERROR("create graphics pipeline failed");
 		return NULL;
 	}
 	return m_GraphicsPipeline;
@@ -476,7 +477,7 @@ bool VansGraphics::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_de
 	bool result = m_GraphicsPipeline->CreateGraphicsPipelineInfo(logic_device, m_GraphicsPipelineCreateInfo, global_state_data, m_VkGraphicsPipelineCreateInfo);
 	if (!result)
 	{
-		std::cout << "create graphics pipeline info failed" << std::endl;
+		VANS_LOG_ERROR("create graphics pipeline info failed");
 		return false;
 	}
 	return m_GraphicsPipeline->CreateGraphicsPipeline(logic_device, m_VkGraphicsPipelineCreateInfo);
@@ -502,7 +503,7 @@ VansGraphics::VansVKComputePipeline* VansGraphics::VansComputeShader::GetCompute
 	bool result = CreateComputePipeline(logic_device, descriptorset_layouts);
 	if (!result)
 	{
-		std::cout << "create compute pipeline failed" << std::endl;
+		VANS_LOG_ERROR("create compute pipeline failed");
 		return NULL;
 	}
 	return m_ComputePipeline;
@@ -557,7 +558,7 @@ VansGraphics::VansVKRayTracingPipeline* VansGraphics::VansRayTracingShader::GetR
 	bool result = CreateRayTracingPipeline(m_LogicDevice, descriptorset_layouts);
 	if (!result)
 	{
-		std::cout << "create raytracing pipeline failed" << std::endl;
+		VANS_LOG_ERROR("create raytracing pipeline failed");
 		return NULL;
 	}
 

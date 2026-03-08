@@ -1,4 +1,5 @@
 #include "VansInputManager.h"
+#include "VansLog.h"
 #include "GLFW/glfw3.h"
 
 #include <iostream>
@@ -24,7 +25,7 @@ namespace Vans
     {
         if (m_Initialized)
         {
-            std::cout << "[VansInputManager] Already initialized." << std::endl;
+            VANS_LOG_WARN("[VansInputManager] Already initialized.");
             return;
         }
 
@@ -42,7 +43,7 @@ namespace Vans
         glfwSetMouseButtonCallback(window, GLFWMouseButtonCallback);
         glfwSetScrollCallback(window, GLFWScrollCallback);
 
-        std::cout << "[VansInputManager] Initialized." << std::endl;
+        VANS_LOG("[VansInputManager] Initialized.");
     }
 
     void VansInputManager::Shutdown()
@@ -70,7 +71,7 @@ namespace Vans
         m_Window = nullptr;
         m_Initialized = false;
 
-        std::cout << "[VansInputManager] Shutdown." << std::endl;
+        VANS_LOG("[VansInputManager] Shutdown.");
     }
 
     // -------------------------------------------------------------------------

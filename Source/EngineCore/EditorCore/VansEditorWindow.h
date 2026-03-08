@@ -20,6 +20,8 @@ namespace VansGraphics
 	class VansSceneWindow;
 	class VansInspectorWindow;
 	class VansGBufferWindow;
+	class VansScriptorWindow;
+	class VansConsoleWindow;
 
 	//编辑器窗口
 	class VansEditorWindow
@@ -72,6 +74,10 @@ namespace VansGraphics
 		static VansInspectorWindow* m_InspectorWindow;
 
 		static VansGBufferWindow* m_GBufferWindow;
+
+		static VansScriptorWindow* m_ScriptorWindow;
+
+		static VansConsoleWindow* m_ConsoleWindow;
 
 	private:
 

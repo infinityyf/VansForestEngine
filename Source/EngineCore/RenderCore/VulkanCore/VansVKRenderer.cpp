@@ -3,6 +3,7 @@
 #include "VansVKDescriptorManager.h"
 #include "../VansScene.h"
 #include "../../Configration/VansConfigration.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 
 namespace VansGraphics
@@ -30,7 +31,7 @@ namespace VansGraphics
 
 		if (!m_VansVKSurface.RecreateSwapChain(m_VansVKPhysicalDevice, m_VansVKLogicDevice))
 		{
-			std::cerr << "OnWindowResize: swap chain recreation failed." << std::endl;
+			VANS_LOG_ERROR("OnWindowResize: swap chain recreation failed.");
 			return;
 		}
 
@@ -50,8 +51,8 @@ namespace VansGraphics
 		);
 		PrepareFSRDispatchInputData(3.14f / 2, 0.01f, 100.0f);
 
-		std::cout << "OnWindowResize: display=" << newDisplayExtent.width << "x" << newDisplayExtent.height
-			<< "  render=" << m_RenderWidth << "x" << m_RenderHeight << std::endl;
+		VANS_LOG("OnWindowResize: display=" << newDisplayExtent.width << "x" << newDisplayExtent.height
+			<< "  render=" << m_RenderWidth << "x" << m_RenderHeight);
 	}
 
 	void VansVKDevice::BeforeRendering()
@@ -93,7 +94,7 @@ namespace VansGraphics
 		bool requireImage = m_VansVKSurface.AcquireVulkanSwapChainImages(m_VansVKLogicDevice, m_SwapChainImageIndex, m_SwapChainImageAcquiredSemaphore, m_SwapChainImageAcquiredFence);
 		if (!requireImage)
 		{
-			std::cout << "AcquireVulkanSwapChainImages failed" << std::endl;
+			VANS_LOG_ERROR("AcquireVulkanSwapChainImages failed");
 		}
 
 		m_Scene->UpdateSceneData();

@@ -1,6 +1,7 @@
 #include "VansPhysicsNode.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../ScriptCore/VansTransform.h"
+#include "../Util/VansLog.h"
 #include <iostream>
 
 namespace VansEngine
@@ -91,7 +92,7 @@ namespace VansEngine
 
         if (!physics || !scene)
         {
-            std::cerr << "Physics system not initialized!" << std::endl;
+            VANS_LOG_ERROR("Physics system not initialized!");
             return;
         }
 
@@ -128,7 +129,7 @@ namespace VansEngine
 
         if (!m_Actor)
         {
-            std::cerr << "Failed to create physics actor!" << std::endl;
+            VANS_LOG_ERROR("Failed to create physics actor!");
             return;
         }
 
@@ -223,15 +224,15 @@ namespace VansEngine
         //Triangle mesh validation: NOT supported for dynamic bodies
         if (m_Properties.bodyType == PhysicsBodyType::Dynamic)
         {
-            std::cerr << "[PhysX Error] Triangle mesh colliders are NOT supported for dynamic rigid bodies!" << std::endl;
-            std::cerr << "              Use 'convex' collider type instead for dynamic objects, or change bodyType to 'static'/'kinematic'." << std::endl;
-            std::cerr << "              Falling back to box collider..." << std::endl;
+            VANS_LOG_ERROR("[PhysX Error] Triangle mesh colliders are NOT supported for dynamic rigid bodies!");
+            VANS_LOG_ERROR("              Use 'convex' collider type instead for dynamic objects, or change bodyType to 'static'/'kinematic'.");
+            VANS_LOG_ERROR("              Falling back to box collider...");
             return CreateBoxShape();
         }
 
         if (!m_Mesh || !m_Properties.useMeshCollider)
         {
-            std::cerr << "Mesh collider requested but no mesh available, falling back to box" << std::endl;
+            VANS_LOG_ERROR("Mesh collider requested but no mesh available, falling back to box");
             return CreateBoxShape();
         }
 
@@ -253,7 +254,7 @@ namespace VansEngine
         
         if (!m_TriangleMesh)
         {
-            std::cerr << "Failed to cook triangle mesh, falling back to box" << std::endl;
+            VANS_LOG_ERROR("Failed to cook triangle mesh, falling back to box");
             return CreateBoxShape();
         }
 
@@ -269,7 +270,7 @@ namespace VansEngine
     {
         if (!m_Mesh || !m_Properties.useMeshCollider)
         {
-            std::cerr << "Convex mesh collider requested but no mesh available, falling back to box" << std::endl;
+            VANS_LOG_ERROR("Convex mesh collider requested but no mesh available, falling back to box");
             return CreateBoxShape();
         }
 
@@ -289,7 +290,7 @@ namespace VansEngine
         
         if (!m_ConvexMesh)
         {
-            std::cerr << "Failed to cook convex mesh, falling back to box" << std::endl;
+            VANS_LOG_ERROR("Failed to cook convex mesh, falling back to box");
             return CreateBoxShape();
         }
 

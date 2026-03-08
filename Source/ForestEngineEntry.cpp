@@ -10,6 +10,7 @@
 #include "EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
 #include "EngineCore/Util/VansJobSystem.h"
 #include "EngineCore/PhysicsCore/VansPhysics.h"
+#include "EngineCore/Util/VansLog.h"
 
 using namespace VansGraphics;
 using namespace VansEngine;
@@ -23,16 +24,16 @@ void ShutdownEngine();
 
 bool InitializeEngineCore()
 {
-	std::cout << "[ForestEngine] Initializing core systems..." << std::endl;
+	VANS_LOG("[ForestEngine] Initializing core systems...");
 	
 	// Initialize Job System
 	Vans::VansJobSystem::Get().Initialize();
-	std::cout << "[ForestEngine]Job system initialized" << std::endl;
+	VANS_LOG("[ForestEngine] Job system initialized");
 
 	// Initialize Physics System
 	if (!InitializePhysicsSystem())
 	{
-		std::cerr << "[ForestEngine] Failed to initialize physics system!" << std::endl;
+		VANS_LOG_ERROR("[ForestEngine] Failed to initialize physics system!");
 		return false;
 	}
 
@@ -41,35 +42,35 @@ bool InitializeEngineCore()
 
 bool InitializeGraphicsSystem()
 {
-	std::cout << "[ForestEngine] Initializing graphics system..." << std::endl;
+	VANS_LOG("[ForestEngine] Initializing graphics system...");
 
 	// Create window
 	VansEditorWindow::CreateVansEditorWindow(1280 * 2, 720 * 2, VULKAN);
-	std::cout << "[ForestEngine]Editor window created" << std::endl;
+	VANS_LOG("[ForestEngine] Editor window created");
 
 	// Setup vulkan backend
 	m_GraphicsDevice = new VansVKDevice({ 1280, 720 });
 	m_GUIBackEnd = new VansGraphicsGUIBackEnd();
-	std::cout << "[ForestEngine]Vulkan backend initialized" << std::endl;
+	VANS_LOG("[ForestEngine] Vulkan backend initialized");
 
 	// Initialize scene
 	m_Scene = new VansScene();
-	std::cout << "[ForestEngine]Scene system initialized" << std::endl;
+	VANS_LOG("[ForestEngine] Scene system initialized");
 
 	// Setup file watcher
 	m_SceneFileWatcher = new VansAssetsFileWatcher();
 	m_SceneFileWatcher->Start([](const std::string& folder, const std::string& filename) 
 	{
-		std::cout << "[FileWatcher] File changed: " << folder + "\\" + filename << std::endl;
+		VANS_LOG("[FileWatcher] File changed: " << folder + "\\" + filename);
 	});
-	std::cout << "[ForestEngine]Asset file watcher started" << std::endl;
+	VANS_LOG("[ForestEngine] Asset file watcher started");
 
 	return true;
 }
 
 bool InitializePhysicsSystem()
 {
-	std::cout << "[ForestEngine] Initializing physics system..." << std::endl;
+	VANS_LOG("[ForestEngine] Initializing physics system...");
 
 	VansPhysicsSystem& physics = VansPhysicsSystem::GetInstance();
 	if (!physics.Initialize())
@@ -77,13 +78,13 @@ bool InitializePhysicsSystem()
 		return false;
 	}
 
-	std::cout << "[ForestEngine]Physics system initialized successfully" << std::endl;
+	VANS_LOG("[ForestEngine] Physics system initialized successfully");
 	return true;
 }
 
 void RunMainLoop(VansCamera& camera)
 {
-	std::cout << "[ForestEngine] Starting main engine loop..." << std::endl;
+	VANS_LOG("[ForestEngine] Starting main engine loop...");
 
 	// Inject camera into scene
 	m_Scene->InjectCamera(&camera);
@@ -93,7 +94,7 @@ void RunMainLoop(VansCamera& camera)
 
 	// Start physics simulation thread
 	VansPhysicsSystem::GetInstance().StartSimulation();
-	std::cout << "[ForestEngine] Physics simulation started" << std::endl;
+	VANS_LOG("[ForestEngine] Physics simulation started");
 
 	// Run the editor main loop
 	VansEditorWindow::StartEditorLoop(camera);
@@ -101,18 +102,18 @@ void RunMainLoop(VansCamera& camera)
 	// End rendering
 	m_GraphicsDevice->AfterRendering();
 	
-	std::cout << "[ForestEngine] Main loop finished" << std::endl;
+	VANS_LOG("[ForestEngine] Main loop finished");
 }
 
 void ShutdownEngine()
 {
-	std::cout << "[ForestEngine] Shutting down engine systems..." << std::endl;
+	VANS_LOG("[ForestEngine] Shutting down engine systems...");
 
 	// Shutdown physics simulation
 	VansPhysicsSystem& physics = VansPhysicsSystem::GetInstance();
 	physics.StopSimulation();
 	physics.Shutdown();
-	std::cout << "[ForestEngine]Physics system shutdown complete" << std::endl;
+	VANS_LOG("[ForestEngine] Physics system shutdown complete");
 
 	// Unload scene
 	if (m_Scene)
@@ -120,7 +121,7 @@ void ShutdownEngine()
 		m_Scene->UnLoadScene();
 		delete m_Scene;
 		m_Scene = nullptr;
-		std::cout << "[ForestEngine]Scene unloaded" << std::endl;
+		VANS_LOG("[ForestEngine] Scene unloaded");
 	}
 
 	// Cleanup components
@@ -128,38 +129,38 @@ void ShutdownEngine()
 	{
 		delete m_SceneFileWatcher;
 		m_SceneFileWatcher = nullptr;
-		std::cout << "[ForestEngine]File watcher stopped" << std::endl;
+		VANS_LOG("[ForestEngine] File watcher stopped");
 	}
 
 	if (m_GraphicsDevice)
 	{
 		delete m_GraphicsDevice;
 		m_GraphicsDevice = nullptr;
-		std::cout << "[ForestEngine]Graphics device released" << std::endl;
+		VANS_LOG("[ForestEngine] Graphics device released");
 	}
 
 	if (m_GUIBackEnd)
 	{
 		delete m_GUIBackEnd;
 		m_GUIBackEnd = nullptr;
-		std::cout << "[ForestEngine]GUI backend released" << std::endl;
+		VANS_LOG("[ForestEngine] GUI backend released");
 	}
 
 	// Shutdown job system
 	Vans::VansJobSystem::Get().Shutdown();
-	std::cout << "[ForestEngine]Job system shutdown complete" << std::endl;
+	VANS_LOG("[ForestEngine] Job system shutdown complete");
 	
-	std::cout << "[ForestEngine] Engine shutdown complete!" << std::endl;
+	VANS_LOG("[ForestEngine] Engine shutdown complete!");
 }
 
 int main()
 {
-	std::cout << "=== ForestEngine Starting ===" << std::endl;
+	VANS_LOG("=== ForestEngine Starting ===");
 
 	// Initialize core engine systems
 	if (!InitializeEngineCore())
 	{
-		std::cerr << "[ForestEngine] Failed to initialize core systems!" << std::endl;
+		VANS_LOG_ERROR("[ForestEngine] Failed to initialize core systems!");
 		ShutdownEngine();
 		return -1;
 	}
@@ -167,7 +168,7 @@ int main()
 	// Initialize graphics systems
 	if (!InitializeGraphicsSystem())
 	{
-		std::cerr << "[ForestEngine] Failed to initialize graphics systems!" << std::endl;
+		VANS_LOG_ERROR("[ForestEngine] Failed to initialize graphics systems!");
 		ShutdownEngine();
 		return -1;
 	}
@@ -181,6 +182,6 @@ int main()
 	// Shutdown all systems
 	ShutdownEngine();
 
-	std::cout << "=== ForestEngine Exited ===" << std::endl;
+	VANS_LOG("=== ForestEngine Exited ===");
 	return 0;
 }

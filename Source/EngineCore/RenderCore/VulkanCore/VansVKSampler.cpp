@@ -1,5 +1,6 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKSampler.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 
 bool VansGraphics::VansVKSampler::CreateSampler(
@@ -47,7 +48,7 @@ bool VansGraphics::VansVKSampler::CreateSampler(
 	VkResult result = vkCreateSampler(logical_device, &sampler_create_info, nullptr, &sampler);
 	if (VK_SUCCESS != result)
 	{
-		std::cout << "Could not create sampler." << std::endl;
+		VANS_LOG_ERROR("Could not create sampler.");
 		return false;
 	}
 	return true;

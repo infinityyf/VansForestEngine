@@ -1,6 +1,7 @@
 ﻿#include "VansVKSurface.h"
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKMemoryManager.h"
+#include "../../Util/VansLog.h"
 #include <iostream>
 #include <vector>
 
@@ -14,7 +15,7 @@ namespace VansGraphics
 		VkResult result = vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, m_VansVKPresentSurface, &present_modes_count, nullptr);
 		if (result != VK_SUCCESS || present_modes_count == 0)
 		{
-			std::cout << "Could not get the number of available present modes. Dont suppoty FIFO MODE" << std::endl;
+			VANS_LOG_ERROR("Could not get the number of available present modes. Dont suppoty FIFO MODE");
 			return false;
 		}
 
@@ -23,7 +24,7 @@ namespace VansGraphics
 		result = vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, m_VansVKPresentSurface, &present_modes_count, &present_modes[0]);
 		if (result != VK_SUCCESS)
 		{
-			std::cout << "Could not enumerate present modes." << std::endl;
+			VANS_LOG_ERROR("Could not enumerate present modes.");
 			return false;
 		}
 
@@ -119,7 +120,7 @@ namespace VansGraphics
 		VkResult result = vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, m_VansVKPresentSurface, &formats_count, nullptr);
 		if ((VK_SUCCESS != result) || (0 == formats_count))
 		{
-			std::cout << "Could not get the number of supported surface formats." << std::endl;
+			VANS_LOG_ERROR("Could not get the number of supported surface formats.");
 			return false;
 		}
 
@@ -127,7 +128,7 @@ namespace VansGraphics
 		result = vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, m_VansVKPresentSurface, &formats_count, &surface_formats[0]);
 		if ((VK_SUCCESS != result) || (0 == formats_count)) 
 		{
-			std::cout << "Could not enumerate supported surface formats." << std::endl;
+			VANS_LOG_ERROR("Could not enumerate supported surface formats.");
 			return false;
 		}
 
@@ -152,7 +153,7 @@ namespace VansGraphics
 			}
 			if (!foundSurfaceFormat)
 			{
-				std::cout << "Could not found desired surface formats." << std::endl;
+				VANS_LOG_ERROR("Could not found desired surface formats.");
 				return false;
 			}
 		}
@@ -166,12 +167,12 @@ namespace VansGraphics
 		result = vkGetSwapchainImagesKHR(logical_device, swapchain, &images_count, nullptr);
 		if ((VK_SUCCESS != result) || (0 == images_count)) 
 		{
-			std::cout << "Could not get the number of swapchain images." << std::endl;
+			VANS_LOG_ERROR("Could not get the number of swapchain images.");
 			return false;
 		}
 		else
 		{
-			std::cout << "get the number of swapchain images : " << images_count << std::endl;
+			VANS_LOG("get the number of swapchain images : " << images_count);
 		}
 
 		m_VansVKSwapChainImages.resize(images_count);
@@ -179,7 +180,7 @@ namespace VansGraphics
 		result = vkGetSwapchainImagesKHR(logical_device, swapchain, &images_count, &m_VansVKSwapChainImages[0]);
 		if ((VK_SUCCESS != result) || (0 == images_count)) 
 		{
-			std::cout << "Could not enumerate swapchain images." << std::endl;
+			VANS_LOG_ERROR("Could not enumerate swapchain images.");
 			return false;
 		}
 
@@ -203,7 +204,7 @@ namespace VansGraphics
 
 			if (vkCreateImageView(logical_device, &createInfo, nullptr, &m_VansVKSwapChainImageViews[i]) != VK_SUCCESS)
 			{
-				std::cerr << "Failed to create image view for swapchain image " << i << std::endl;
+				VANS_LOG_ERROR("Failed to create image view for swapchain image " << i);
 				return false;
 			}
 		}
@@ -291,13 +292,11 @@ namespace VansGraphics
 
 		if (!CreateVulkanSwapChain(physical_device, logical_device))
 		{
-			std::cout << "RecreateSwapChain: CreateVulkanSwapChain failed." << std::endl;
+			VANS_LOG_ERROR("RecreateSwapChain: CreateVulkanSwapChain failed.");
 			return false;
 		}
 
-		std::cout << "Swap chain recreated: "
-			<< m_VansVKSwapChainImageExtent.width << "x"
-			<< m_VansVKSwapChainImageExtent.height << std::endl;
+		VANS_LOG("Swap chain recreated: " << m_VansVKSwapChainImageExtent.width << "x" << m_VansVKSwapChainImageExtent.height);
 		return true;
 	}
 
@@ -384,7 +383,7 @@ namespace VansGraphics
 		result = glfwCreateWindowSurface(instance, window, nullptr, &m_VansVKPresentSurface);
 		if (result != VK_SUCCESS || m_VansVKPresentSurface == VK_NULL_HANDLE)
 		{
-			std::cout << "Could not create presentation surface." << std::endl;
+			VANS_LOG_ERROR("Could not create presentation surface.");
 			return false;
 		}
 
@@ -409,7 +408,7 @@ namespace VansGraphics
 		VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, m_VansVKPresentSurface, &surface_capabilities);
 		if (result != VK_SUCCESS)
 		{
-			std::cout << "Could not get the capabilities of the presentation surface." << std::endl;
+			VANS_LOG_ERROR("Could not get the capabilities of the presentation surface.");
 			return false;
 		}
 
@@ -456,7 +455,7 @@ namespace VansGraphics
 		result = vkCreateSwapchainKHR(logical_device, &swapchain_create_info, nullptr, &m_VansVKSwapChain);
 		if ((VK_SUCCESS != result) || (VK_NULL_HANDLE == m_VansVKSwapChain)) 
 		{
-			std::cout << "Could not create a swapchain." << std::endl;
+			VANS_LOG_ERROR("Could not create a swapchain.");
 			return false;
 		}
 
