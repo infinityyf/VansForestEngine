@@ -18,19 +18,10 @@
 #define TILE_SIZE      16
 #define VOXEL_GRID_Z  256
 
-// Minimum near distance for the fog exponential depth distribution.
-// Camera near plane is often tiny (0.01m) which wastes almost all 128 slices
-// on the first few centimetres, leaving no resolution for actual fog distances.
-// Clamping to 0.5m ensures slices have meaningful thickness.
-#define FOG_DEPTH_MIN_NEAR 0.5
-
-// Maximum far distance for fog — beyond this the grid has negligible density anyway.
-#define FOG_DEPTH_MAX_FAR 1000.0
-
-// Use these instead of raw NearPlane / FarPlane for all fog depth calculations.
-// Requires CameraData.glsl.
-float FogNear() { return max(NearPlane, FOG_DEPTH_MIN_NEAR); }
-float FogFar()  { return min(FarPlane, FOG_DEPTH_MAX_FAR); }
+// Near/far for the fog depth distribution are taken from the FogVolumeParams UBO
+// (uVolume.volumeNear / uVolume.volumeFar) so that they are artist-controllable
+// at runtime.  Each shader that includes this header must pass them explicitly
+// to SliceToDepth / DepthToSlice / SliceThickness / ScreenToFrustumUVW etc.
 
 // ---------------------------------------------------------------------------
 // Exponential depth distribution  (Frostbite / DICE style)
@@ -84,9 +75,14 @@ vec3 VoxelToWorld(ivec3 id, ivec3 gridSize, float near, float far)
 // Screen pixel + distance → UVW for sampling the frustum-aligned 3D texture.
 //
 //   pixelCoord : full-resolution pixel position (float)
-//   dist       : radial distance from camera  (length(posWS - camPos))
-//   screenSize : full-res screen dimensions   (ScreenParams.xy)
-//   near/far   : fog volume depth range
+//   dist       : view-space Z (planar depth, NOT radial distance)
+//                must match the planar depth convention used by
+//                SliceToDepth / VoxelToWorld in the injection pass.
+//   screenSize : texel-aligned screen extent = vec2(gridXY) * TILE_SIZE.
+//                NOT raw ScreenParams — the voxel grid may cover more
+//                virtual pixels than the screen when the resolution is
+//                not evenly divisible by TILE_SIZE.
+//   near/far   : fog volume depth range (FogNear / FogFar)
 // ---------------------------------------------------------------------------
 vec3 ScreenToFrustumUVW(vec2 pixelCoord, float dist,
                         vec2 screenSize, float near, float far)

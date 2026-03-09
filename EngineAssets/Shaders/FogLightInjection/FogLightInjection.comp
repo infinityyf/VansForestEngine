@@ -133,7 +133,7 @@ void main()
 
     // Reconstruct world position for this frustum voxel (with jitter)
     vec3 worldPos = VoxelToWorldJittered(coord, gridSize,
-                                          FogNear(), FogFar(),
+                                          uVolume.volumeNear, uVolume.volumeFar,
                                           jitterZ);
 
     // Query static fog density from scene fog box — soft boundary to avoid hard edges
@@ -166,7 +166,7 @@ void main()
     // ---------------------------------------------------------------------------
     // Temporal reprojection: blend with previous frame's data
     // ---------------------------------------------------------------------------
-    vec4 lastUVW = WorldToLastFrameUVW(worldPos, FogNear(), FogFar(),
+    vec4 lastUVW = WorldToLastFrameUVW(worldPos, uVolume.volumeNear, uVolume.volumeFar,
                                         vec2(gridSize.xy) * float(TILE_SIZE));
     vec4 history = vec4(0.0);
     float blendFactor = 0.05;  // 5% current, 95% history

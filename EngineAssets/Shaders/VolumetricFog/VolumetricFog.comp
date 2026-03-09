@@ -148,22 +148,36 @@ float fogPhase(float cosTheta)
 vec4 SampleVoxelFogDepthAware(sampler3D vol, vec3 uvw)
 {
     ivec3 size = textureSize(vol, 0);
-    vec3  tc   = uvw * vec3(size) - 0.5;
 
-    // XY: bilinear interpolation (smooth across screen tiles)
-    vec2  fxy = fract(tc.xy);
-    ivec2 c0  = clamp(ivec2(floor(tc.xy)), ivec2(0), ivec2(size.xy) - 1);
-    ivec2 c1  = clamp(c0 + 1,              ivec2(0), ivec2(size.xy) - 1);
+    // XY: standard texel-center bilinear interpolation
+    vec2  tc_xy = uvw.xy * vec2(size.xy) - 0.5;
+    vec2  fxy   = fract(tc_xy);
+    ivec2 c0    = clamp(ivec2(floor(tc_xy)), ivec2(0), ivec2(size.xy) - 1);
+    ivec2 c1    = clamp(c0 + 1,              ivec2(0), ivec2(size.xy) - 1);
 
-    // Z: floor only — never sample beyond the pixel's depth.
-    // For cumulative data, slice N contains fog from camera to depth N.
-    // Sampling slice N+1 would add fog that is behind the surface.
-    int z = clamp(int(floor(tc.z)), 0, size.z - 1);
+    // Z: floor-only lookup for CUMULATIVE ray-march data (no Z interpolation).
+    //
+    // The ray march stores accumulated fog at each slice:
+    //   texel z = fog from camera through the END of slice z.
+    // Each successive slice contains MORE fog than the previous one.
+    //
+    // Linear Z interpolation would blend the current slice with the next
+    // deeper slice, leaking fog that exists behind the pixel's actual depth.
+    // At large depths (far slices) the per-slice fog delta is bigger, making
+    // the leak visually obvious.  Using floor-only avoids this entirely:
+    // we read the last fully-accumulated slice that is <= pixel depth.
+    //
+    // Offset by -1.0 (boundary convention) so that
+    //   DepthToSlice = k   → texel k-1  (fog up to start of slice k)
+    //   DepthToSlice = k+1 → texel k    (fog through entire slice k)
+    float fz_cont = uvw.z * float(size.z) - 1.0;
+    int   zi = clamp(int(floor(fz_cont)), 0, size.z - 1);
 
-    vec4 s00 = texelFetch(vol, ivec3(c0.x, c0.y, z), 0);
-    vec4 s10 = texelFetch(vol, ivec3(c1.x, c0.y, z), 0);
-    vec4 s01 = texelFetch(vol, ivec3(c0.x, c1.y, z), 0);
-    vec4 s11 = texelFetch(vol, ivec3(c1.x, c1.y, z), 0);
+    // Fetch 4 neighbours for bilinear XY at the floor Z slice
+    vec4 s00 = texelFetch(vol, ivec3(c0.x, c0.y, zi), 0);
+    vec4 s10 = texelFetch(vol, ivec3(c1.x, c0.y, zi), 0);
+    vec4 s01 = texelFetch(vol, ivec3(c0.x, c1.y, zi), 0);
+    vec4 s11 = texelFetch(vol, ivec3(c1.x, c1.y, zi), 0);
 
     return mix(mix(s00, s10, fxy.x), mix(s01, s11, fxy.x), fxy.y);
 }
@@ -260,16 +274,24 @@ void main()
     vec3 voxelInscatter = vec3(0.0);
     float voxelTransmittance = 1.0;
 
-    // Sample frustum-aligned voxel fog using screen UV + view-space Z depth
+    // Sample frustum-aligned voxel fog using screen UV + view-space Z depth.
     // Use linearDepth (view-space Z) not radial distance, to match the planar
     // depth distribution in the injection/ray-march passes.
-    float viewZ = isSky ? FogFar() : linearDepth;
+    //
+    // XY UV must use the tile-aligned extent (gridXY × TILE_SIZE), NOT the raw
+    // screen resolution.  When the screen is not evenly divisible by TILE_SIZE,
+    // the voxel grid covers slightly MORE virtual pixels than the screen
+    // (e.g. 1080p → 68 tiles × 16 = 1088 ≠ 1080).  Using ScreenParams here
+    // would mis-map pixels to the wrong tiles by up to 0.5 texels.
+    float viewZ = isSky ? uVolume.volumeFar : linearDepth;
+    ivec3 volSize = textureSize(voxelFogVolume, 0);
+    vec2  tileAlignedExtent = vec2(volSize.xy) * float(TILE_SIZE);
     vec3 uvw = ScreenToFrustumUVW(
         vec2(pixelCoord) * float(SCREEN_SCALE),
         viewZ,
-        ScreenParams.xy,
-        FogNear(),
-        FogFar());
+        tileAlignedExtent,
+        uVolume.volumeNear,
+        uVolume.volumeFar);
 
     {
         vec4 voxelData = SampleVoxelFogDepthAware(voxelFogVolume, uvw);

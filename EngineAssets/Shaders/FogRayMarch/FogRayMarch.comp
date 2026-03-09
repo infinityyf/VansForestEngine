@@ -68,8 +68,8 @@ void main()
         ivec3 coord = ivec3(xy, z);
         vec4 sliceData = texelFetch(s_VoxelGrid, coord, 0);
 
-        float thickness = SliceThickness(z, FogNear(),
-                                            FogFar(),
+        float thickness = SliceThickness(z, uVolume.volumeNear,
+                                            uVolume.volumeFar,
                                             float(gridSize.z));
 
         accum = Accumulate(accum.rgb, accum.a,

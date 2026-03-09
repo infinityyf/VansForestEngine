@@ -554,7 +554,7 @@ namespace VansGraphics
 		
 		// ================================================================
 		// 3D voxel textures for frustum-aligned volumetric fog
-		// XY = ceil(screenRes / TILE_SIZE),  Z = 256 slices
+		// XY = ceil(screenRes / TILE_SIZE),  Z = 128 slices
 		// Format: RGBA16F
 		// ================================================================
 		static constexpr int TILE_SIZE    = 16;
@@ -617,7 +617,7 @@ namespace VansGraphics
 		};
 		FogVolumeParamsData volumeDefaults = {
 			0.05f, 0.6f, 1.0f, 0.05f,           // density, anisotropy, scatterScale, ambientScale
-			0.1f, 1000.0f, 0.0f, 0.0f,           // volumeNear, volumeFar, pad, pad
+			1.0f, 500.0f, 0.0f, 0.0f,            // volumeNear, volumeFar, pad, pad
 			{-50.0f, -50.0f, -50.0f, 0.0f},     // fogBoxMin
 			{ 50.0f,  50.0f,  50.0f, 0.0f}      // fogBoxMax
 		};

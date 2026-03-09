@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 //创建一个python的上下文环境用于调用python的逻辑
 //1. 每帧会调用VansScriptUpdate函数，这里会调用对应python上下文的函数
 //2. 剩下的交给python, python里会去找梭有的python对象，调用update函数，这个update函数则是引擎暴露出去的接口
@@ -73,8 +73,20 @@ public:
 class VansScriptTransform : public VansScriptComponent
 {
 public:
-
-	float positionX;
-	float positionY;
-	float positionZ;
+	
+	int m_TransformID;
 };
+
+//class VansScriptRenderer : public VansScriptComponent
+//{
+//public:
+//
+//	VansGraphics::VansRenderNode* m_RenderNode;
+//};
+//
+//class VansScriptPhysics : public VansScriptComponent
+//{
+//public:
+//
+//	VansEngine::VansPhysicsNode* m_PhysicsNode;
+//};

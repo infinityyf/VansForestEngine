@@ -28,8 +28,8 @@ namespace VansGraphics
 			float anisotropy   = 0.6f;
 			float scatterScale = 1.0f;
 			float ambientScale = 0.05f;
-			float volumeNear   = 0.1f;
-			float volumeFar    = 1000.0f;
+			float volumeNear   = 1.0f;
+			float volumeFar    = 500.0f;
 			float _pad0        = 0.0f;
 			float _pad1        = 0.0f;
 			float fogBoxMin[4] = {-50.0f, -50.0f, -50.0f, 0.0f};
