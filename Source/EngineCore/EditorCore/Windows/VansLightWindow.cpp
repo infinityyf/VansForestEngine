@@ -64,6 +64,7 @@ void VansGraphics::VansLightWindow::DrawFogVolumeParameters(VansVKDevice& device
     changed |= ImGui::DragFloat("Volume Ambient Scale", &m_FogVolumeParams.ambientScale, 0.005f, 0.0f,   5.0f,  "%.4f");
     changed |= ImGui::DragFloat("Volume Near",         &m_FogVolumeParams.volumeNear,   0.1f,   0.01f, 100.0f, "%.2f");
     changed |= ImGui::DragFloat("Volume Far",          &m_FogVolumeParams.volumeFar,    1.0f,   1.0f,  2000.0f, "%.1f");
+    changed |= ImGui::DragFloat("Slice Power",         &m_FogVolumeParams.slicePower,   0.05f,  0.1f,  10.0f,  "%.2f");
 
     ImGui::Separator();
     changed |= ImGui::DragFloat3("Fog Box Min", m_FogVolumeParams.fogBoxMin, 0.5f, -10000.0f, 10000.0f, "%.1f");

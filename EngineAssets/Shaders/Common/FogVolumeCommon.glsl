@@ -15,7 +15,7 @@
 //   the injection pass tests each voxel against it to query density.
 // ============================================================================
 
-#define TILE_SIZE      16
+#define TILE_SIZE      8
 #define VOXEL_GRID_Z  256
 
 // Near/far for the fog depth distribution are taken from the FogVolumeParams UBO
@@ -24,23 +24,33 @@
 // to SliceToDepth / DepthToSlice / SliceThickness / ScreenToFrustumUVW etc.
 
 // ---------------------------------------------------------------------------
-// Exponential depth distribution  (Frostbite / DICE style)
-//   depth(z) = near × pow(far/near, (z + 0.5) / gridZ)
+// Power-curve depth distribution
+//   depth(z) = mix(near, far, pow((z + 0.5) / gridZ, powerCoeff))
+//
+//   powerCoeff > 1  concentrates slices near the camera (default ~2.0)
+//   powerCoeff = 1  gives a uniform (linear) distribution
 // ---------------------------------------------------------------------------
-float SliceToDepth(float z, float near, float far, float gridZ)
+float SliceToDepth(float z, float near, float far, float gridZ, float powerCoeff)
 {
-    return near * pow(far / near, (z + 0.5) / gridZ);
+    float x = (z + 0.5) / gridZ;
+    float t = pow(x, powerCoeff);
+    return mix(near, far, t);
 }
 
-float DepthToSlice(float depth, float near, float far, float gridZ)
+int DepthToSlice(float depth, float near, float far, float gridZ, float powerCoeff)
 {
-    return gridZ * log(depth / near) / log(far / near);
+    float t = clamp((depth - near) / (far - near), 0.0, 1.0);
+    float x = pow(t, 1.0 / powerCoeff);
+    return clamp(int(floor(x * gridZ)), 0, int(gridZ) - 1);
 }
 
-float SliceThickness(int z, float near, float far, float gridZ)
+float SliceThickness(int z, float near, float far, float gridZ, float powerCoeff)
 {
-    float d0 = near * pow(far / near, float(z)     / gridZ);
-    float d1 = near * pow(far / near, float(z + 1) / gridZ);
+    float x0 = float(z) / gridZ;
+    float x1 = float(z + 1) / gridZ;
+
+    float d0 = mix(near, far, pow(x0, powerCoeff));
+    float d1 = mix(near, far, pow(x1, powerCoeff));
     return d1 - d0;
 }
 
@@ -51,7 +61,7 @@ float SliceThickness(int z, float near, float far, float gridZ)
 //   gridSize : ivec3(tilesX, tilesY, VOXEL_GRID_Z)
 //   near/far : fog volume depth range
 // ---------------------------------------------------------------------------
-vec3 VoxelToWorld(ivec3 id, ivec3 gridSize, float near, float far)
+vec3 VoxelToWorld(ivec3 id, ivec3 gridSize, float near, float far, float powerCoeff)
 {
     // Tile centre → screen UV
     vec2 uv  = (vec2(id.xy) + 0.5) / vec2(gridSize.xy);
@@ -63,8 +73,8 @@ vec3 VoxelToWorld(ivec3 id, ivec3 gridSize, float near, float far)
     // View-space ray direction (NOT normalized — preserves Z component for planar depth)
     vec3 viewRay = normalize((InverseProjectionMatrix * vec4(ndc, 1.0, 1.0)).xyz);
 
-    // Exponential depth for this Z slice
-    float depth = SliceToDepth(float(id.z), near, far, float(gridSize.z));
+    // Power-curve depth for this Z slice
+    float depth = SliceToDepth(float(id.z), near, far, float(gridSize.z), powerCoeff);
 
     // Scale ray so view-space Z equals depth (planar, not spherical)
     vec3 viewPos = viewRay * (depth / abs(viewRay.z));
@@ -85,10 +95,11 @@ vec3 VoxelToWorld(ivec3 id, ivec3 gridSize, float near, float far)
 //   near/far   : fog volume depth range (FogNear / FogFar)
 // ---------------------------------------------------------------------------
 vec3 ScreenToFrustumUVW(vec2 pixelCoord, float dist,
-                        vec2 screenSize, float near, float far)
+                        vec2 screenSize, float near, float far,
+                        float powerCoeff)
 {
     vec2 uv = (pixelCoord + 0.5) / screenSize;
-    float z = DepthToSlice(max(dist, near), near, far, float(VOXEL_GRID_Z));
+    float z = float(DepthToSlice(max(dist, near), near, far, float(VOXEL_GRID_Z), powerCoeff));
     float w = clamp(z / float(VOXEL_GRID_Z), 0.0, 1.0);
     return vec3(uv, w);
 }
@@ -107,7 +118,8 @@ bool IsInsideFogBox(vec3 worldPos, vec3 boxMin, vec3 boxMax)
 //   Returns vec4(uvw, valid)  where valid > 0.5 means the sample is usable.
 //   Requires CameraData.glsl for LastVPMatrix.
 // ---------------------------------------------------------------------------
-vec4 WorldToLastFrameUVW(vec3 worldPos, float near, float far, vec2 screenSize)
+vec4 WorldToLastFrameUVW(vec3 worldPos, float near, float far, vec2 screenSize,
+                         float powerCoeff)
 {
     // Project into previous frame clip space
     vec4 lastClip = LastVPMatrix * vec4(worldPos, 1.0);
@@ -121,7 +133,7 @@ vec4 WorldToLastFrameUVW(vec3 worldPos, float near, float far, vec2 screenSize)
     // lastNDC.z is in [0,1] for Vulkan; reconstruct view-space depth
     // via inverse projection.  Z = near * far / (far - ndc.z * (far - near))
     float linearDepth = near * far / (far - lastNDC.z * (far - near));
-    float z = DepthToSlice(max(linearDepth, near), near, far, float(VOXEL_GRID_Z));
+    float z = float(DepthToSlice(max(linearDepth, near), near, far, float(VOXEL_GRID_Z), powerCoeff));
     float w = clamp(z / float(VOXEL_GRID_Z), 0.0, 1.0);
 
     // Validity: UV in [0,1] and depth in fog range

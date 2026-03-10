@@ -31,7 +31,7 @@ layout(set = 1, binding = 2) uniform FogVolumeParams
     float ambientScale;
     float volumeNear;
     float volumeFar;
-    float _pad0;
+    float slicePower;
     float _pad1;
     vec4  fogBoxMin;
     vec4  fogBoxMax;
@@ -70,7 +70,8 @@ void main()
 
         float thickness = SliceThickness(z, uVolume.volumeNear,
                                             uVolume.volumeFar,
-                                            float(gridSize.z));
+                                            float(gridSize.z),
+                                            uVolume.slicePower);
 
         accum = Accumulate(accum.rgb, accum.a,
                            sliceData.rgb, sliceData.a,

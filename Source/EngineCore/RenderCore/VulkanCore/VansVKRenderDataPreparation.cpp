@@ -557,7 +557,7 @@ namespace VansGraphics
 		// XY = ceil(screenRes / TILE_SIZE),  Z = 128 slices
 		// Format: RGBA16F
 		// ================================================================
-		static constexpr int TILE_SIZE    = 16;
+		static constexpr int TILE_SIZE    = 8;
 		static constexpr int VOXEL_GRID_Z = 256;
 		uint32_t gridX = (m_RenderWidth  + TILE_SIZE - 1) / TILE_SIZE;
 		uint32_t gridY = (m_RenderHeight + TILE_SIZE - 1) / TILE_SIZE;
@@ -611,13 +611,13 @@ namespace VansGraphics
 		// FogVolumeParams UBO (voxel fog): matches FogVolumeParams in shaders (std140, 64 bytes)
 		struct FogVolumeParamsData {
 			float density;       float anisotropy;    float scatterScale;  float ambientScale;
-			float volumeNear;    float volumeFar;     float _pad0;         float _pad1;
+			float volumeNear;    float volumeFar;     float slicePower;    float _pad1;
 			float fogBoxMin[4];  // xyz + pad
 			float fogBoxMax[4];  // xyz + pad
 		};
 		FogVolumeParamsData volumeDefaults = {
 			0.05f, 0.6f, 1.0f, 0.05f,           // density, anisotropy, scatterScale, ambientScale
-			1.0f, 500.0f, 0.0f, 0.0f,            // volumeNear, volumeFar, pad, pad
+			2.0f, 200.0f, 2.0f, 0.0f,            // volumeNear, volumeFar, slicePower, pad
 			{-50.0f, -50.0f, -50.0f, 0.0f},     // fogBoxMin
 			{ 50.0f,  50.0f,  50.0f, 0.0f}      // fogBoxMax
 		};

@@ -1158,7 +1158,7 @@ namespace VansGraphics
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		if (manager->m_FogLightInjectionShader == nullptr) return;
 
-		static constexpr int TILE_SIZE    = 16;
+		static constexpr int TILE_SIZE    = 8;
 		static constexpr int VOXEL_GRID_Z = 256;
 		uint32_t gridX = (m_RenderWidth  + TILE_SIZE - 1) / TILE_SIZE;
 		uint32_t gridY = (m_RenderHeight + TILE_SIZE - 1) / TILE_SIZE;
@@ -1186,7 +1186,7 @@ namespace VansGraphics
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		if (manager->m_FogRayMarchShader == nullptr) return;
 
-		static constexpr int TILE_SIZE = 16;
+		static constexpr int TILE_SIZE = 8;
 		uint32_t gridX = (m_RenderWidth  + TILE_SIZE - 1) / TILE_SIZE;
 		uint32_t gridY = (m_RenderHeight + TILE_SIZE - 1) / TILE_SIZE;
 		uint32_t groupsX = (gridX + 7) / 8;  // localSize = 8×8×1

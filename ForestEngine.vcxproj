@@ -182,6 +182,7 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansSceneWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansScriptorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansConsoleWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProfilerWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansConsole.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollider.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysics.h" />
@@ -224,6 +225,7 @@
     <ClInclude Include="Source\EngineCore\Util\VansInputManager.h" />
     <ClInclude Include="Source\EngineCore\Util\VansJobSystem.h" />
     <ClInclude Include="Source\EngineCore\Util\VansLog.h" />
+    <ClInclude Include="Source\EngineCore\Util\VansProfiler.h" />
     <ClInclude Include="Source\EngineCore\VansTimer.h" />
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h" />
     <ClInclude Include="Source\VansBasicWindow.h" />
@@ -260,6 +262,7 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansSceneWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansScriptorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansConsoleWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansProfilerWindow.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollider.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysics.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.cpp" />
@@ -301,6 +304,7 @@
     <ClCompile Include="Source\EngineCore\Util\VansInputManager.cpp" />
     <ClCompile Include="Source\EngineCore\Util\VansJobSystem.cpp" />
     <ClCompile Include="Source\EngineCore\Util\VansLog.cpp" />
+    <ClCompile Include="Source\EngineCore\Util\VansProfiler.cpp" />
     <ClCompile Include="Source\EngineCore\VansTimer.cpp" />
     <ClCompile Include="Source\ForestEngineEntry.cpp" />
     <ClCompile Include="Source\Graphics\Vulkan\VansVKFunctions.cpp" />

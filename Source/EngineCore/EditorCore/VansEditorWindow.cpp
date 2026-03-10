@@ -15,7 +15,9 @@
 #include "Windows/VansGBufferWindow.h"
 #include "Windows/VansScriptorWindow.h"
 #include "Windows/VansConsoleWindow.h"
+#include "Windows/VansProfilerWindow.h"
 
+#include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
 #include "../Util/VansInputManager.h"
 #include "../Util/VansLog.h"
@@ -78,6 +80,8 @@ VansGraphics::VansGBufferWindow* VansGraphics::VansEditorWindow::m_GBufferWindow
 VansGraphics::VansScriptorWindow* VansGraphics::VansEditorWindow::m_ScriptorWindow;
 
 VansGraphics::VansConsoleWindow* VansGraphics::VansEditorWindow::m_ConsoleWindow;
+
+VansGraphics::VansProfilerWindow* VansGraphics::VansEditorWindow::m_ProfilerWindow;
 
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
@@ -152,6 +156,9 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_ConsoleWindow = new VansConsoleWindow();
     m_Windows.push_back(m_ConsoleWindow);
+
+    m_ProfilerWindow = new VansProfilerWindow();
+    m_Windows.push_back(m_ProfilerWindow);
 }
 
 void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
@@ -441,6 +448,17 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
     //初始化GUI的graphics back end
     m_GUIBackEnd->InitBackEnd(*m_GraphicsDevice, m_VansEditorWindow.m_VansGraphicsHandle);
 
+    // Initialize GPU profiler
+#if VANS_PROFILER_ENABLED
+    {
+        auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
+        Vans::VansGpuProfiler::Get().Init(
+            vkDev->GetLogicDevice(),
+            vkDev->GetPhysicalDevice(),
+            vkDev->GetGraphicsQueueFamilyIndex());
+    }
+#endif
+
     //初始化脚本环境
     m_ScriptContext.VansScriptSetup();
 
@@ -508,6 +526,9 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             m_Scene->UpdatePhysicsTransforms();
         }
 
+        // --- Profiler: begin frame ---
+        VANS_PROFILER_BEGIN_FRAME();
+
         // Rendering, 这里会结束renderpass
         camera.Rendering();
 
@@ -515,6 +536,12 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         //UI Pass
         m_SceneWindow->RegistCamera(&camera);
         DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));
+
+        // --- Profiler: end frame (resolve GPU, merge, compute FPS) ---
+        {
+            auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
+            VANS_PROFILER_END_FRAME(vkDev->GetLogicDevice());
+        }
 
         //结束录制
         camera.Present();
@@ -544,6 +571,11 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
 void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
 {
+    // Destroy GPU profiler
+#if VANS_PROFILER_ENABLED
+    Vans::VansGpuProfiler::Get().Destroy();
+#endif
+
     // Unregister Physics Callback on shutdown to avoid calling into destroyed objects
     VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback(nullptr);
     VansEngine::VansPhysicsSystem::GetInstance().StopSimulation(); // Ensure thread stops

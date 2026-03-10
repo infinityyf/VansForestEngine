@@ -283,6 +283,9 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansConsoleWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProfilerWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansConsole.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
@@ -318,6 +321,9 @@
       <Filter>EngineCore\Utils</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\Util\VansLog.h">
+      <Filter>EngineCore\Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\Util\VansProfiler.h">
       <Filter>EngineCore\Utils</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\VansTimer.h">
@@ -513,6 +519,9 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansConsoleWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansProfilerWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp">
       <Filter>EngineCore\RenderCore\TerrainCore</Filter>
     </ClCompile>
@@ -539,6 +548,9 @@
       <Filter>EngineCore\Utils</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\Util\VansLog.cpp">
+      <Filter>EngineCore\Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\Util\VansProfiler.cpp">
       <Filter>EngineCore\Utils</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\VansTimer.cpp">

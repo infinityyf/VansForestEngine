@@ -21,7 +21,7 @@ layout( set = 1, binding = 4 ) uniform FogVolumeParams
     float vol_ambientScale;
     float volumeNear;
     float volumeFar;
-    float _volPad0;
+    float slicePower;
     float _volPad1;
     vec4  fogBoxMin;
     vec4  fogBoxMax;
@@ -291,7 +291,8 @@ void main()
         viewZ,
         tileAlignedExtent,
         uVolume.volumeNear,
-        uVolume.volumeFar);
+        uVolume.volumeFar,
+        uVolume.slicePower);
 
     {
         vec4 voxelData = SampleVoxelFogDepthAware(voxelFogVolume, uvw);

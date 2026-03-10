@@ -37,7 +37,7 @@ layout(set = 1, binding = 2) uniform FogVolumeParams
     float ambientScale;     // ambient in-scatter multiplier
     float volumeNear;       // depth range near
     float volumeFar;        // depth range far
-    float _pad0;
+    float slicePower;       // power-curve exponent for depth slicing (>1 = more near slices)
     float _pad1;
     vec4  fogBoxMin;        // static fog AABB min  (xyz)
     vec4  fogBoxMax;        // static fog AABB max  (xyz)
@@ -103,16 +103,17 @@ float FogInjectionPhase(float cosTheta, float g)
 // ---------------------------------------------------------------------------
 // Jittered version of VoxelToWorld — adds sub-voxel Z offset for temporal AA
 // ---------------------------------------------------------------------------
-vec3 VoxelToWorldJittered(ivec3 id, ivec3 gridSize, float near, float far, float jitterZ)
+vec3 VoxelToWorldJittered(ivec3 id, ivec3 gridSize, float near, float far,
+                          vec2 jitterXY, float jitterZ, float powerCoeff)
 {
-    vec2 uv  = (vec2(id.xy) + 0.5) / vec2(gridSize.xy);
+    vec2 uv  = (vec2(id.xy) + 0.5 + jitterXY) / vec2(gridSize.xy);
     vec2 ndc = uv * 2.0 - 1.0;
     ndc.y   *= -1.0;
 
     vec3 viewRay = normalize((InverseProjectionMatrix * vec4(ndc, 1.0, 1.0)).xyz);
 
     // Apply jitter to the Z slice for sub-voxel variation
-    float depth = SliceToDepth(float(id.z) + jitterZ, near, far, float(gridSize.z));
+    float depth = SliceToDepth(float(id.z) + jitterZ, near, far, float(gridSize.z), powerCoeff);
 
     // Scale ray so view-space Z equals depth (planar, not spherical)
     vec3 viewPos = viewRay * (depth / abs(viewRay.z));
@@ -127,14 +128,18 @@ void main()
     if (any(greaterThanEqual(coord, gridSize)))
         return;
 
-    // Per-frame Z-jitter using Halton sequence (mapped to [-0.5, +0.5])
+    // Per-frame jitter using Halton sequence for temporal super-sampling
     int frameIdx = int(FrameIndex);
-    float jitterZ = Halton(frameIdx % 256 + 1, 2) - 0.5;
+    int haltonIdx = frameIdx % 256 + 1;
+    float jitterX = Halton(haltonIdx, 2) - 0.5;   // X: base 2, mapped to [-0.5, +0.5]
+    float jitterY = Halton(haltonIdx, 3) - 0.5;   // Y: base 3
+    float jitterZ = Halton(haltonIdx, 5) - 0.5;   // Z: base 5 (decorrelated from XY)
 
     // Reconstruct world position for this frustum voxel (with jitter)
     vec3 worldPos = VoxelToWorldJittered(coord, gridSize,
                                           uVolume.volumeNear, uVolume.volumeFar,
-                                          jitterZ);
+                                          vec2(jitterX, jitterY), jitterZ,
+                                          uVolume.slicePower);
 
     // Query static fog density from scene fog box — soft boundary to avoid hard edges
     vec3 boxCenter = (uVolume.fogBoxMin.xyz + uVolume.fogBoxMax.xyz) * 0.5;
@@ -167,7 +172,8 @@ void main()
     // Temporal reprojection: blend with previous frame's data
     // ---------------------------------------------------------------------------
     vec4 lastUVW = WorldToLastFrameUVW(worldPos, uVolume.volumeNear, uVolume.volumeFar,
-                                        vec2(gridSize.xy) * float(TILE_SIZE));
+                                        vec2(gridSize.xy) * float(TILE_SIZE),
+                                        uVolume.slicePower);
     vec4 history = vec4(0.0);
     float blendFactor = 0.05;  // 5% current, 95% history
 

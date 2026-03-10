@@ -4,6 +4,7 @@
 #include "../VansScene.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansProfiler.h"
 #include <iostream>
 
 namespace VansGraphics
@@ -107,19 +108,33 @@ namespace VansGraphics
 			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 
-			renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
-			DrawShadowMap(renderPassManager, cmd);
-			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			// Reset GPU profiler query pool for this frame
+#if VANS_PROFILER_ENABLED
+			Vans::VansGpuProfiler::Get().BeginFrame(cmd);
+#endif
 
-			UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
-			UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
-			UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
-			UpdateRayTracing(m_VansVKCommandBuffer);
-			UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
+			{
+				VANS_GPU_SCOPE(cmd, "Shadow Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
+				DrawShadowMap(renderPassManager, cmd);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
 
-			renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-			DrawSceneDeferred(renderPassManager, cmd);
-			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			{
+				VANS_GPU_SCOPE(cmd, "Post Processing");
+				UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
+				UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
+				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
+				UpdateRayTracing(m_VansVKCommandBuffer);
+				UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
+			}
+
+			{
+				VANS_GPU_SCOPE(cmd, "Deferred Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
+				DrawSceneDeferred(renderPassManager, cmd);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
 		}
 		else
 		{
