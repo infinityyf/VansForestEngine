@@ -8,11 +8,23 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <unordered_map>
 
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 namespace VansGraphics
 {
+	// A logical group representing a multi-mesh parent and all its auto-expanded child render nodes.
+	struct MultiMeshGroup
+	{
+		std::string parentName;
+		glm::vec3 position = glm::vec3(0);
+		glm::vec3 rotation = glm::vec3(0);
+		glm::vec3 scale    = glm::vec3(1);
+		uint32_t sharedTransformID = 0;            // transform owned by the first child
+		std::vector<VansRenderNode*> childNodes;   // opaque + transparent children
+		std::vector<VansRenderNode*> shadowNodes;  // shadow children
+	};
 	//struct TLASInstanceData
 	//{
 	//	glm::mat4x4 m_MVMatrix;
@@ -72,6 +84,10 @@ namespace VansGraphics
 		std::vector<VansRenderNode*> m_ShadowRenderNodes;
 
 		std::vector<VansRenderNode*> m_PunctualShadowRenderNodes;
+
+		// Multi-mesh parent groups for hierarchical display in the editor.
+		// Key = parent group name, Value = group info with child node pointers.
+		std::unordered_map<std::string, MultiMeshGroup> m_MultiMeshGroups;
 
 		// Physics nodes
 		std::vector<VansEngine::VansPhysicsNode*> m_PhysicsNodes;
@@ -148,6 +164,28 @@ namespace VansGraphics
 		void ImportDefaultTextures(const std::string& path, const std::string& name, VansVKDevice* vkDevice, bool isSRGB);
 
 		void LoadSceneResource(json& sceneData);
+
+		// ── Multi-mesh auto-splitting ─────────────────────────────────────────
+		// Given a multi-mesh asset, automatically creates one render node per
+		// submesh with auto-generated materials + textures based on FBX data.
+		// parentTransform carries the transform from the JSON render node entry.
+		// supportShadow controls whether shadow nodes are also created.
+		void ExpandMultiMeshToRenderNodes(
+			VkDevice& device,
+			VansMesh* multiMesh,
+			const std::string& parentName,
+			const glm::vec3& position,
+			const glm::vec3& rotation,
+			const glm::vec3& scale,
+			bool supportShadow);
+
+		// Helper: loads or reuses a texture by its absolute file path.
+		// Returns the existing VansTexture* if one with the same name was already loaded.
+		VansTexture* LoadOrGetTexture(const std::string& absPath, bool isSRGB);
+
+		// Helper: returns the default shader for a given material type.
+		// Loads the shader on first use and caches it in the scene shader list.
+		VansGraphicsShader* GetOrCreateDefaultShader(VansMaterialType matType, VkDevice& device);
 
 	public:
 

@@ -3,6 +3,62 @@
 
 #include "imgui.h"
 
+// ── Helper: draw a node list, grouping multi-mesh children under a tree node ──
+void VansGraphics::VansHierachuWindow::DrawNodeListWithGroups(const std::vector<VansRenderNode*>& nodes)
+{
+    // Track which groups we have already drawn in this pass
+    std::set<std::string> drawnGroups;
+
+    for (auto& node : nodes)
+    {
+        if (node->m_ParentGroupName.empty())
+        {
+            // Regular (non-grouped) node – use pointer as unique ID
+            ImGui::PushID(node);
+            if (ImGui::Selectable(node->m_NodeName.c_str(), m_Scene->m_SelectedNode == node))
+            {
+                m_Scene->m_SelectedNode = node;
+            }
+            ImGui::PopID();
+        }
+        else
+        {
+            // This node belongs to a multi-mesh group.
+            // Only draw the tree once per group.
+            const std::string& groupName = node->m_ParentGroupName;
+            if (drawnGroups.count(groupName))
+                continue;
+            drawnGroups.insert(groupName);
+
+            auto groupIt = m_Scene->m_MultiMeshGroups.find(groupName);
+            if (groupIt == m_Scene->m_MultiMeshGroups.end())
+                continue;
+
+            const MultiMeshGroup& group = groupIt->second;
+
+            // Tree node for the parent group – use group name pointer as stable ID
+            ImGui::PushID(groupName.c_str());
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
+            bool treeOpen = ImGui::TreeNodeEx(groupName.c_str(), flags);
+
+            if (treeOpen)
+            {
+                for (auto* child : group.childNodes)
+                {
+                    ImGui::PushID(child);
+                    if (ImGui::Selectable(child->m_NodeName.c_str(), m_Scene->m_SelectedNode == child))
+                    {
+                        m_Scene->m_SelectedNode = child;
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+    }
+}
+
 void VansGraphics::VansHierachuWindow::DrawRenderNodeList()
 {
     ImGui::Begin("Render Nodes");
@@ -17,24 +73,12 @@ void VansGraphics::VansHierachuWindow::DrawRenderNodeList()
 
     if (ImGui::CollapsingHeader("Opaque Nodes"))
     {
-        for (auto& node : m_Scene->m_OpaqueRenderNodes)
-        {
-            if (ImGui::Selectable(node->m_NodeName.c_str(), m_Scene->m_SelectedNode == node))
-            {
-                m_Scene->m_SelectedNode = node;
-            }
-        }
+        DrawNodeListWithGroups(m_Scene->m_OpaqueRenderNodes);
     }
 
     if (ImGui::CollapsingHeader("Transparent Nodes"))
     {
-        for (auto& node : m_Scene->m_TransParentRenderNodes)
-        {
-            if (ImGui::Selectable(node->m_NodeName.c_str(), m_Scene->m_SelectedNode == node))
-            {
-                m_Scene->m_SelectedNode = node;
-            }
-        }
+        DrawNodeListWithGroups(m_Scene->m_TransParentRenderNodes);
     }
 
     if (ImGui::CollapsingHeader("Post Process Nodes"))
@@ -59,6 +103,10 @@ void VansGraphics::VansHierachuWindow::DrawRenderNodeDetail()
 
         VansRenderNode* node = m_Scene->m_SelectedNode;
         ImGui::Text("Node: %s", node->m_NodeName.c_str());
+        if (!node->m_ParentGroupName.empty())
+        {
+            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Parent Group: %s", node->m_ParentGroupName.c_str());
+        }
         ImGui::Separator();
 
         // --- Transform ---
@@ -67,24 +115,8 @@ void VansGraphics::VansHierachuWindow::DrawRenderNodeDetail()
             DrawTransformDetail(*node);
         }
 
-        // --- Material(s) ---
-        if (!node->m_MaterialList.empty())
-        {
-            // Multiple materials (sub-meshes)
-            for (int i = 0; i < (int)node->m_MaterialList.size(); ++i)
-            {
-                if (node->m_MaterialList[i] != nullptr)
-                {
-                    char label[64];
-                    snprintf(label, sizeof(label), "Material [%d]", i);
-                    if (ImGui::CollapsingHeader(label))
-                    {
-                        DrawMaterialDetail(*node->m_MaterialList[i], i);
-                    }
-                }
-            }
-        }
-        else if (node->m_Material != nullptr)
+        // --- Material ---
+        if (node->m_Material != nullptr)
         {
             if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen))
             {

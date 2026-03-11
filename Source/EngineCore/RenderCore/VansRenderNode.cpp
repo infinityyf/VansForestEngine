@@ -27,7 +27,8 @@ VansGraphics::VansRenderNode::~VansRenderNode()
 {
 	DestroyDescriptorSets();
 
-	VansTransformStore::FreeTransform(m_TransformID);
+	if (m_OwnsTransform)
+		VansTransformStore::FreeTransform(m_TransformID);
 	//m_RenderNodeDataBuffer.DestroyVulkanBuffer();
 }
 
@@ -192,15 +193,7 @@ void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, Va
 void VansGraphics::VansCommonRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
 	// Sync CPU material params to the global GPU PBR buffer so editor changes take effect.
-	if (!m_MaterialList.empty())
-	{
-		for (auto* mat : m_MaterialList)
-			SyncMaterialToGPU(mat, materialManager);
-	}
-	else
-	{
-		SyncMaterialToGPU(m_Material, materialManager);
-	}
+	SyncMaterialToGPU(m_Material, materialManager);
 	UpdateDescripterSets(materialManager);
 }
 

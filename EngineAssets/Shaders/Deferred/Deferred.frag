@@ -3,6 +3,7 @@
 
 #include "../Lights/LightsData.glsl"
 #include "../BRDF/BRDFData.glsl"
+#include "../BRDF/BRDFSkin.glsl"
 #include "../Common/CameraData.glsl"
 
 layout(set = 1, binding = 0, input_attachment_index = 0) uniform subpassInput normalInput;
@@ -110,10 +111,26 @@ void main()
     
     //计算光照
     LightResult lightResult;
-    CalculateDirectLight(brdfData,shadowMap,punctualShadowMap, lightResult);
+    lightResult.directDiffuse = vec3(0);
+    lightResult.directSpecular = vec3(0);
+    lightResult.ambientDiffuse = vec3(0);
+    lightResult.ambientSpecular = vec3(0);
 
-
-    AmbientBRDF(brdfData,viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+    int matID = int(round(materialID));
+    if (matID == MATERIAL_ID_SKIN)
+    {
+        // --- Skin BRDF path ---
+        // Curvature was stored in normalInput.w by UnlitSkin.frag
+        float curvature = subpassLoad(normalInput).w;
+        CalculateDirectLight_Skin(brdfData, curvature, shadowMap, punctualShadowMap, lightResult);
+        AmbientBRDF_Skin(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+    }
+    else
+    {
+        // --- Default PBR path ---
+        CalculateDirectLight(brdfData, shadowMap, punctualShadowMap, lightResult);
+        AmbientBRDF(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+    }
 
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;

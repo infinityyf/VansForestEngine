@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "../../Common/CameraData.glsl"
+#include "../../Common/Common.glsl"
 
 layout(location = 0) in vec2 inUV;
 layout(location = 1) in vec3 inWorldPos;
@@ -115,7 +116,7 @@ void main() {
     // --------------------------------------------------
     outNormal   = vec4(finalNormal, 1.0);
     outGbuffer0 = vec4(blendedAlbedo, blendedRoughness);
-    outGbuffer1 = vec4(0.0, blendedAO, 1.0, 1.0);
+    outGbuffer1 = vec4(0.0, blendedAO, float(MATERIAL_ID_PBR), 1.0);
 
     float linearDepth = (ViewMatrix * vec4(inWorldPos, 1.0)).z;
     outGbuffer2 = vec4(inWorldPos, -linearDepth);

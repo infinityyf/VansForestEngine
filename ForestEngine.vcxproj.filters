@@ -62,6 +62,9 @@
     <Filter Include="EngineCore\RenderCore\TerrainCore">
       <UniqueIdentifier>{d6145a3e-cf8a-4146-987f-da547ef20ed9}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\AnimationCore">
+      <UniqueIdentifier>{a1b2c3d4-e5f6-7890-abcd-ef1234567890}</UniqueIdentifier>
+    </Filter>
     <Filter Include="EngineCore\PhysicsCore">
       <UniqueIdentifier>{eaf1286b-794d-4d1d-b61b-7cf7da65388c}</UniqueIdentifier>
     </Filter>
@@ -291,6 +294,18 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.h">
       <Filter>EngineCore\RenderCore\TerrainCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationTypes.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClip.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationNode.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.h">
+      <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollider.h">
       <Filter>EngineCore\PhysicsCore</Filter>
@@ -524,6 +539,18 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp">
       <Filter>EngineCore\RenderCore\TerrainCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationTypes.cpp">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClip.cpp">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationNode.cpp">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.cpp">
+      <Filter>EngineCore\AnimationCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollider.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>

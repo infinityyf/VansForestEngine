@@ -184,6 +184,10 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansConsoleWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProfilerWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansConsole.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationTypes.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClip.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationNode.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollider.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysics.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsCore.h" />
@@ -263,6 +267,10 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansScriptorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansConsoleWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansProfilerWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationTypes.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClip.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationNode.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollider.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysics.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.cpp" />

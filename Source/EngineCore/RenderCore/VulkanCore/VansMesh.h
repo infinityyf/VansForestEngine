@@ -10,6 +10,8 @@
 #include "../VansAsset.h"
 #include "VansVKBuffer.h"
 #include <string>
+#include <vector>
+#include <unordered_map>
 using namespace VansGraphics;
 
 struct aiScene;
@@ -17,6 +19,33 @@ struct aiMesh;
 
 namespace VansGraphics
 {
+	// ── FBX/OBJ sub-mesh material info extracted by Assimp ──────────────────
+	// Populated during LoadMultiMesh so the scene loader can auto-create
+	// materials and textures without manual JSON entries.
+	struct FBXSubmeshMaterialInfo
+	{
+		std::string materialName;        // aiMaterial name (e.g. "car_chassis")
+
+		// Texture file paths extracted from aiMaterial (empty if not present)
+		std::string diffuseTexPath;      // aiTextureType_DIFFUSE
+		std::string normalTexPath;       // aiTextureType_NORMALS / aiTextureType_HEIGHT
+		std::string metallicTexPath;     // aiTextureType_METALNESS
+		std::string roughnessTexPath;    // aiTextureType_DIFFUSE_ROUGHNESS / aiTextureType_SHININESS
+		std::string aoTexPath;           // aiTextureType_AMBIENT_OCCLUSION / aiTextureType_LIGHTMAP
+		std::string opacityTexPath;      // aiTextureType_OPACITY
+
+		// Basic material parameters from aiMaterial
+		float opacity = 1.0f;            // AI_MATKEY_OPACITY
+		float metallic = 0.0f;
+		float roughness = 0.5f;
+
+		// Returns true if the submesh should use a transparent material
+		bool IsTransparent() const
+		{
+			return !opacityTexPath.empty() || opacity < 0.99f;
+		}
+	};
+
 	struct IndexBufferParameters
 	{
 		VkBuffer Buffer;
@@ -129,13 +158,25 @@ namespace VansGraphics
 		// One VansMesh per aiMesh/material group, populated by LoadMultiMesh.
 		std::vector<VansMesh*> m_SubMeshes;
 
+		// Per-submesh material info extracted from the FBX/OBJ file (parallel to m_SubMeshes).
+		std::vector<FBXSubmeshMaterialInfo> m_SubmeshMaterialInfos;
+
 		// Internal helper to populate this mesh from an already-loaded aiScene/aiMesh (avoids re-reading files per submesh).
 		bool LoadMeshSubmeshFromScene(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
-			const aiScene* scene, aiMesh* mesh, bool import_tangent = false);
+			const aiScene* scene, aiMesh* mesh, bool import_tangent = false, bool supportRayTracing = false);
 
 		// Loads the whole file then splits it into per-material VansMesh slices stored in m_SubMeshes.
+		// Also populates m_SubmeshMaterialInfos with texture paths and material metadata.
 		void LoadMultiMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
-			const std::string& file_name, bool import_tangent = false);
+			const std::string& file_name, bool import_tangent = false,
+			bool supportRayTracing = false, bool needCPUData = false);
+
+		// Static helper: extract FBXSubmeshMaterialInfo for each submesh from a file without GPU upload.
+		static std::vector<FBXSubmeshMaterialInfo> GetSubmeshMaterialInfos(const std::string& file_name);
+
+		// Lightweight probe: open the file with Assimp and return the number of aiMeshes
+		// without uploading any GPU data.  Used by the scene loader for auto-detection.
+		static uint32_t ProbeSubmeshCount(const std::string& file_name);
 
 		void BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer);
 

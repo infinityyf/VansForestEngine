@@ -40,15 +40,15 @@ namespace VansGraphics
 
 		std::string m_NodeName;
 
+		// If non-empty, this node was auto-generated as part of a multi-mesh group.
+		// The hierarchy window uses this to group children under a parent tree node.
+		std::string m_ParentGroupName;
+
 		VansMesh* m_Mesh;
 
 		VansMaterial* m_Material;
 
-		// When true, this node is ignored by the built-in draw passes (drawn elsewhere).
-		bool m_SkipDefaultRender = false;
 
-		// Per-submesh material list, populated for multi-mesh nodes (parallel to m_Mesh->m_SubMeshes).
-		std::vector<VansMaterial*> m_MaterialList;
 
 		//GPU 数据
 		ModelDataStruct m_ModelData;
@@ -57,6 +57,18 @@ namespace VansGraphics
 
 		// ID-based Data Access
 		uint32_t m_TransformID;
+
+		// When false, this node shares another node's transform and must NOT free it.
+		bool m_OwnsTransform = true;
+
+		// Make this node share another node's transform (does not allocate/free).
+		void ShareTransform(uint32_t sharedID)
+		{
+			if (m_OwnsTransform)
+				VansTransformStore::FreeTransform(m_TransformID);
+			m_TransformID = sharedID;
+			m_OwnsTransform = false;
+		}
 
 	protected:
 

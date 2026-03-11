@@ -4,6 +4,7 @@
 #include "../../RenderCore/VansMaterial.h"
 #include <string>
 #include <vector>
+#include <set>
 namespace VansGraphics
 {
 	class VansHierachuWindow : public VansBaseWindowComponent
@@ -15,6 +16,9 @@ namespace VansGraphics
 		void DrawRenderNodeList();
 
 		void DrawRenderNodeDetail();
+
+		// Draw a list of render nodes, grouping multi-mesh children under a collapsible parent tree node.
+		void DrawNodeListWithGroups(const std::vector<VansRenderNode*>& nodes);
 
 		void DrawTransformDetail(VansRenderNode& node);
 

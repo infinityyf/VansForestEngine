@@ -56,7 +56,7 @@ void main()
     
     outNormal = vec4(normal, 1.0);
     outGBuffer0 = vec4(albedo, roughness);
-    outGBuffer1 = vec4(metallic, ao, 0, 1.0);
+    outGBuffer1 = vec4(metallic, ao, float(MATERIAL_ID_PBR), 1.0);
 
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
     outGBuffer2 = vec4(position_world, -linearDepth);

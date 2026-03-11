@@ -7,8 +7,78 @@
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
+#include <assimp/material.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/packing.hpp>
+#include <filesystem>
+
+// ---------------------------------------------------------------------------
+// Helper: extract texture path from aiMaterial for a given texture type.
+// Resolves relative paths against the directory containing the source file.
+// ---------------------------------------------------------------------------
+static std::string ExtractTexturePath(const aiMaterial* mat, aiTextureType type, const std::string& baseDir)
+{
+	if (mat->GetTextureCount(type) == 0)
+		return {};
+
+	aiString aiPath;
+	if (mat->GetTexture(type, 0, &aiPath) != AI_SUCCESS)
+		return {};
+
+	std::string raw = aiPath.C_Str();
+	if (raw.empty())
+		return {};
+
+	// Build absolute path relative to the model file directory
+	std::filesystem::path texPath(raw);
+	if (texPath.is_relative())
+		texPath = std::filesystem::path(baseDir) / texPath;
+
+	// Normalise separators
+	return texPath.lexically_normal().string();
+}
+
+// ---------------------------------------------------------------------------
+// Helper: build FBXSubmeshMaterialInfo from an aiMaterial.
+// ---------------------------------------------------------------------------
+static VansGraphics::FBXSubmeshMaterialInfo BuildSubmeshMaterialInfo(const aiScene* scene, const aiMesh* mesh, const std::string& baseDir)
+{
+	VansGraphics::FBXSubmeshMaterialInfo info;
+
+	if (mesh->mMaterialIndex < scene->mNumMaterials)
+	{
+		const aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
+
+		aiString matName;
+		mat->Get(AI_MATKEY_NAME, matName);
+		info.materialName = matName.C_Str();
+
+		// Extract texture paths
+		info.diffuseTexPath   = ExtractTexturePath(mat, aiTextureType_DIFFUSE,            baseDir);
+		info.normalTexPath    = ExtractTexturePath(mat, aiTextureType_NORMALS,             baseDir);
+		if (info.normalTexPath.empty())
+			info.normalTexPath = ExtractTexturePath(mat, aiTextureType_HEIGHT,             baseDir);
+		info.metallicTexPath  = ExtractTexturePath(mat, aiTextureType_METALNESS,           baseDir);
+		info.roughnessTexPath = ExtractTexturePath(mat, aiTextureType_DIFFUSE_ROUGHNESS,   baseDir);
+		if (info.roughnessTexPath.empty())
+			info.roughnessTexPath = ExtractTexturePath(mat, aiTextureType_SHININESS,       baseDir);
+		info.aoTexPath        = ExtractTexturePath(mat, aiTextureType_AMBIENT_OCCLUSION,   baseDir);
+		if (info.aoTexPath.empty())
+			info.aoTexPath     = ExtractTexturePath(mat, aiTextureType_LIGHTMAP,           baseDir);
+		info.opacityTexPath   = ExtractTexturePath(mat, aiTextureType_OPACITY,             baseDir);
+
+		// Scalar parameters
+		float val;
+		if (mat->Get(AI_MATKEY_OPACITY, val) == AI_SUCCESS)
+			info.opacity = val;
+		if (mat->Get(AI_MATKEY_METALLIC_FACTOR, val) == AI_SUCCESS)
+			info.metallic = val;
+		if (mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, val) == AI_SUCCESS)
+			info.roughness = val;
+	}
+
+	return info;
+}
 
 VansGraphics::VertexBufferParameters VansGraphics::VansMesh::GetVertexBufferParameter()
 {
@@ -379,7 +449,8 @@ void VansGraphics::VansMesh::ReleaseASTempData(VkDevice& logic_device)
 }
 
 void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queue,
-	VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent)
+	VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent,
+	bool supportRayTracing, bool needCPUData)
 {
 	m_IsMultiMesh = true;
 	m_SupportRayTracing = false;
@@ -397,6 +468,9 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		return;
 	}
 
+	// Derive base directory for resolving relative texture paths
+	std::string baseDir = std::filesystem::path(file_name).parent_path().string();
+
 	std::vector<aiMesh*> allMeshes;
 	CollectAiMeshes(scene->mRootNode, scene, allMeshes);
 	if (allMeshes.empty())
@@ -407,10 +481,11 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 
 	for (aiMesh* mesh : allMeshes)
 	{
-		VansMesh* slice = new VansMesh(/*needCPUData=*/false, /*supportRayTracing=*/false);
-		if (slice->LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, mesh, import_tangent))
+		VansMesh* slice = new VansMesh(needCPUData, supportRayTracing);
+		if (slice->LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, mesh, import_tangent, supportRayTracing))
 		{
 			m_SubMeshes.push_back(slice);
+			m_SubmeshMaterialInfos.push_back(BuildSubmeshMaterialInfo(scene, mesh, baseDir));
 		}
 		else
 		{
@@ -460,7 +535,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& qu
 }
 
 bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, VkQueue& queue,
-	VansVKCommandBuffer* commandbuffer, const aiScene* scene, aiMesh* mesh, bool import_tangent)
+	VansVKCommandBuffer* commandbuffer, const aiScene* scene, aiMesh* mesh, bool import_tangent, bool supportRayTracing)
 {
 	if (!scene || !mesh)
 	{
@@ -478,7 +553,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 	m_MeshRawDataCPULoaded = false;
 	m_VertexCount = 0;
 	m_IsSubmesh = true;
-	m_SupportRayTracing = false;
+	m_SupportRayTracing = supportRayTracing;
 
 	// Store source material name
 	if (mesh->mMaterialIndex < scene->mNumMaterials)
@@ -639,4 +714,44 @@ std::vector<std::string> VansGraphics::VansMesh::GetSubmeshMaterialNames(const s
 	}
 
 	return result;
+}
+
+std::vector<VansGraphics::FBXSubmeshMaterialInfo> VansGraphics::VansMesh::GetSubmeshMaterialInfos(const std::string& file_name)
+{
+	std::vector<FBXSubmeshMaterialInfo> result;
+
+	Assimp::Importer importer;
+	const aiScene* scene = importer.ReadFile(file_name,
+		aiProcess_Triangulate | aiProcess_GenNormals);
+	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
+	{
+		VANS_LOG_ERROR("ERROR::ASSIMP (GetSubmeshMaterialInfos)::" << importer.GetErrorString());
+		return result;
+	}
+
+	std::string baseDir = std::filesystem::path(file_name).parent_path().string();
+
+	std::vector<aiMesh*> allMeshes;
+	CollectAiMeshes(scene->mRootNode, scene, allMeshes);
+
+	result.reserve(allMeshes.size());
+	for (aiMesh* mesh : allMeshes)
+	{
+		result.push_back(BuildSubmeshMaterialInfo(scene, mesh, baseDir));
+	}
+
+	return result;
+}
+
+uint32_t VansGraphics::VansMesh::ProbeSubmeshCount(const std::string& file_name)
+{
+	Assimp::Importer importer;
+	const aiScene* scene = importer.ReadFile(file_name,
+		aiProcess_Triangulate | aiProcess_GenNormals);
+	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
+		return 0;
+
+	std::vector<aiMesh*> allMeshes;
+	CollectAiMeshes(scene->mRootNode, scene, allMeshes);
+	return static_cast<uint32_t>(allMeshes.size());
 }

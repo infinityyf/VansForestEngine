@@ -17,6 +17,7 @@
 #include <iostream>
 #include <fstream>
 #include <unordered_map>
+#include <filesystem>
 
 // ---------------------------------------------------------------------------
 // JSON type-string helpers
@@ -517,6 +518,26 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
         // ── Resolve mesh ──────────────────────────────────────────────────────
         VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset(meshName));
 
+        // ── Multi-mesh auto-expansion ─────────────────────────────────────────
+        // When the mesh is a multi-mesh container, automatically split it into
+        // separate render nodes (one per submesh) with auto-created materials.
+        if (mesh && mesh->m_IsMultiMesh)
+        {
+            glm::vec3 position(0), rotation(0), scale(1);
+            if (sceneRenderNode.contains("transform"))
+            {
+                auto& transform = sceneRenderNode["transform"];
+                position = glm::vec3(transform["position"][0], transform["position"][1], transform["position"][2]);
+                rotation = glm::vec3(transform["rotation"][0], transform["rotation"][1], transform["rotation"][2]);
+                scale    = glm::vec3(transform["scale"][0],    transform["scale"][1],    transform["scale"][2]);
+            }
+            bool supportShadow = sceneRenderNode.value("support_shadow", false);
+            std::string parentName = sceneRenderNode.value("name", "MultiMesh");
+
+            ExpandMultiMeshToRenderNodes(device, mesh, parentName, position, rotation, scale, supportShadow);
+            continue; // The expand function already registered all sub-nodes
+        }
+
         std::string materialName = sceneRenderNode.value("material", "");
         VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
 
@@ -552,9 +573,6 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
             continue;
         }
 
-        // Multi-mesh nodes are rendered via a custom path; skip default passes.
-        renderNode->m_SkipDefaultRender = (mesh && mesh->m_IsMultiMesh);
-
         if (sceneRenderNode.contains("transform"))
         {
             auto& transform = sceneRenderNode["transform"];
@@ -567,23 +585,6 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
         renderNode->m_Mesh     = mesh;
         renderNode->m_Material = material;
         renderNode->SetName(sceneRenderNode["name"]);
-
-        // ── Multi-mesh: build per-submesh material list ───────────────────────
-        if (mesh && mesh->m_IsMultiMesh && sceneRenderNode.contains("submeshMaterials"))
-        {
-            std::unordered_map<std::string, std::string> matOverrides;
-            for (auto& [key, val] : sceneRenderNode["submeshMaterials"].items())
-                matOverrides[key] = val.get<std::string>();
-
-            for (auto* sub : mesh->m_SubMeshes)
-            {
-                VansMaterial* mat = nullptr;
-                auto it = matOverrides.find(sub->m_SourceMaterialName);
-                if (it != matOverrides.end())
-                    mat = static_cast<VansMaterial*>(GetMaterialAsset(it->second));
-                renderNode->m_MaterialList.push_back(mat);
-            }
-        }
 
         RegistRenderNode(renderNode, type);
 
@@ -599,7 +600,6 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
                 shadowNode->m_Material = shadowMaterial;
                 shadowNode->SetTransformData(node->GetTransformPosition(), node->GetTransformRotation(), node->GetTransformScale());
                 shadowNode->SetName("shadow");
-                shadowNode->m_SkipDefaultRender = renderNode->m_SkipDefaultRender;
                 m_ShadowRenderNodes.push_back(shadowNode);
             }
         }
@@ -615,7 +615,6 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
                 shadowNode->m_Material = punctualShadowMaterial;
                 shadowNode->SetTransformData(node->GetTransformPosition(), node->GetTransformRotation(), node->GetTransformScale());
                 shadowNode->SetName("punctual_shadow");
-                shadowNode->m_SkipDefaultRender = renderNode->m_SkipDefaultRender;
                 m_PunctualShadowRenderNodes.push_back(shadowNode);
             }
         }
@@ -900,34 +899,31 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
     for (const auto& sceneMesh : sceneMeshes)
     {
         std::string meshPath = pathPrefix + std::string(sceneMesh["path"]);
-        std::string meshType = sceneMesh.value("mesh_type", "single_mesh");
         bool import_tangent = sceneMesh.value("need_tangent", false);
 
-        // Multi-mesh assets are loaded up front and will be skipped by default passes.
-        if (meshType == "multi_mesh")
+        // Check explicit multi-mesh flag (default: false – load as single mesh).
+        bool loadMultiMesh = sceneMesh.value("load_multi_mesh", false);
+
+        if (loadMultiMesh)
         {
-            VansMesh* mesh = new VansMesh(/*needCPUData=*/false, /*supportRayTracing=*/false);
-            mesh->LoadMultiMesh(nativeDevice, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath, import_tangent);
+            // Multi-mesh asset – loaded as a container with per-material slices.
+            bool generate_as = sceneMesh.value("support_raytracing", false);
+            bool needCpuData = sceneMesh.value("need_cpu_data", false);
+            VansMesh* mesh = new VansMesh(needCpuData, /*supportRayTracing=*/false);
+            mesh->LoadMultiMesh(nativeDevice, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath, import_tangent, generate_as, needCpuData);
             mesh->SetName(sceneMesh["name"]);
             m_Meshes.push_back(mesh);
-            continue;
         }
-
-        bool generate_as = false;
-        if (sceneMesh.contains("support_raytracing"))
+        else
         {
-            generate_as = sceneMesh["support_raytracing"];
+            // Single-mesh asset – supports ray tracing and CPU-side data if requested.
+            bool generate_as = sceneMesh.value("support_raytracing", false);
+            bool needCpuData = sceneMesh.value("need_cpu_data", false);
+            VansMesh* mesh = new VansMesh(needCpuData, generate_as);
+            mesh->LoadMesh(nativeDevice, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath.c_str(), import_tangent);
+            mesh->SetName(sceneMesh["name"]);
+            m_Meshes.push_back(mesh);
         }
-		bool needCpuData = false;
-        if (sceneMesh.contains("need_cpu_data"))
-        {
-			needCpuData = sceneMesh["need_cpu_data"];
-        }
-        VansMesh* mesh = new VansMesh(needCpuData, generate_as);
-
-        mesh->LoadMesh(nativeDevice, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath.c_str(), import_tangent);
-        m_Meshes.push_back(mesh);
-        mesh->SetName(sceneMesh["name"]);
     }
 
 
@@ -1096,6 +1092,273 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         }
         m_Materials.push_back(material);
         material->SetName(sceneMaterial["name"]);
+    }
+}
+
+// ===========================================================================
+// Multi-mesh auto-expansion: one render node per sub-mesh
+// ===========================================================================
+
+VansTexture* VansGraphics::VansScene::LoadOrGetTexture(const std::string& absPath, bool isSRGB)
+{
+    if (absPath.empty())
+        return nullptr;
+
+    // Derive a unique name from the file path
+    std::string texName = std::filesystem::path(absPath).stem().string();
+
+    // Check if already loaded
+    VansTexture* existing = static_cast<VansTexture*>(GetTextureAsset(texName));
+    if (existing)
+        return existing;
+
+    // Check if the file exists on disk
+    if (!std::filesystem::exists(absPath))
+    {
+        VANS_LOG_WARN("[LoadOrGetTexture] Texture file not found: " << absPath);
+        return nullptr;
+    }
+
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+
+    VansTexture* texture = new VansTexture();
+    texture->m_TextureType = TEXTURE_2D;
+    texture->LoadTexture(vkDevice->GetCommandBuffer(), absPath, isSRGB, true, true);
+    texture->SetName(texName);
+    m_Textures.push_back(texture);
+
+    VANS_LOG("[LoadOrGetTexture] Loaded texture: " << texName << " from " << absPath);
+    return texture;
+}
+
+VansGraphicsShader* VansGraphics::VansScene::GetOrCreateDefaultShader(VansMaterialType matType, VkDevice& device)
+{
+    // Map material type -> shader name and path
+    struct DefaultShaderEntry
+    {
+        const char* name;
+        const char* relativePath;
+        VkBool32 depthWrite;
+        VkCullModeFlags cullMode;
+        bool alphaBlend;
+        int pushConstantSize;
+    };
+
+    // Default shader assignments:
+    // PBR       -> Unlit (deferred GBuffer shader)
+    // Transparent -> UnlitTransparent/SimpleColor (forward alpha-blend shader)
+    static const std::unordered_map<int, DefaultShaderEntry> defaults =
+    {
+        { VAN_PBR,         { "Unlit",                          "EngineAssets/Shaders/UnLit",                       VK_TRUE,  VK_CULL_MODE_BACK_BIT, false, 8 } },
+        { VAN_TRANSPARENT, { "UnlitTransparentSimpleColor",   "EngineAssets/Shaders/UnlitTransparent/SimpleColor", VK_TRUE,  VK_CULL_MODE_NONE,    true,  8 } },
+    };
+
+    auto it = defaults.find(static_cast<int>(matType));
+    if (it == defaults.end())
+    {
+        VANS_LOG_WARN("[GetOrCreateDefaultShader] No default shader for material type " << static_cast<int>(matType));
+        return nullptr;
+    }
+
+    const auto& entry = it->second;
+
+    // Check if already loaded
+    VansGraphicsShader* existing = static_cast<VansGraphicsShader*>(GetShaderAsset(entry.name));
+    if (existing)
+        return existing;
+
+    auto vansConfigration = VansConfigration::GetInstance();
+    std::string fullPath = vansConfigration->GetProjectRootPath() + entry.relativePath;
+
+    VansGraphicsShader* shader = new VansGraphicsShader();
+    m_SceneFileWatcher->AddWatch(fullPath);
+    shader->InitShader(device, fullPath);
+    shader->SetDrawStateData(VK_TRUE, entry.depthWrite, VK_COMPARE_OP_LESS_OR_EQUAL, entry.cullMode);
+    if (entry.pushConstantSize > 0)
+        shader->SetPushConstant(entry.pushConstantSize);
+    if (entry.alphaBlend)
+        shader->SetEnableAlphaBlend(VK_TRUE);
+
+    shader->SetName(entry.name);
+    m_Shaders.push_back(shader);
+
+    VANS_LOG("[GetOrCreateDefaultShader] Created default shader: " << entry.name);
+    return shader;
+}
+
+void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
+    VkDevice& device,
+    VansMesh* multiMesh,
+    const std::string& parentName,
+    const glm::vec3& position,
+    const glm::vec3& rotation,
+    const glm::vec3& scale,
+    bool supportShadow)
+{
+    if (!multiMesh || !multiMesh->m_IsMultiMesh)
+        return;
+
+    // ── Create or retrieve the multi-mesh group for hierarchy display ─────
+    MultiMeshGroup& group = m_MultiMeshGroups[parentName];
+    group.parentName = parentName;
+    group.position   = position;
+    group.rotation   = rotation;
+    group.scale      = scale;
+
+    const auto& subMeshes  = multiMesh->m_SubMeshes;
+    const auto& matInfos   = multiMesh->m_SubmeshMaterialInfos;
+
+    for (size_t i = 0; i < subMeshes.size(); ++i)
+    {
+        VansMesh* subMesh = subMeshes[i];
+
+        // Strict 1:1 submesh-to-material mapping.
+        // If the material info array is shorter than the submesh array,
+        // fall back to the first material info ("if has multi material use first one").
+        const FBXSubmeshMaterialInfo& fbxInfo = matInfos.empty()
+            ? FBXSubmeshMaterialInfo{}
+            : (i < matInfos.size() ? matInfos[i] : matInfos[0]);
+
+        // ── Determine material type ───────────────────────────────────────
+        VansMaterialType matType = fbxInfo.IsTransparent()
+            ? VansMaterialType::VAN_TRANSPARENT
+            : VansMaterialType::VAN_PBR;
+
+        // ── Unique material name (one per submesh, keyed by index) ─────────
+        std::string matKey = parentName + "_" + fbxInfo.materialName + "_sub" + std::to_string(i);
+
+        VansMaterial* material = nullptr;
+        {
+            material = new VansMaterial();
+            material->m_MaterialType = matType;
+            material->SetName(matKey);
+
+            // Assign default shader
+            VansGraphicsShader* defaultShader = GetOrCreateDefaultShader(matType, device);
+            material->m_Shader = defaultShader;
+
+            if (matType == VansMaterialType::VAN_PBR)
+            {
+                // ── PBR material: load textures from FBX info ─────────────────
+                VansTexture* diffTex  = LoadOrGetTexture(fbxInfo.diffuseTexPath, true);
+                VansTexture* normTex  = LoadOrGetTexture(fbxInfo.normalTexPath, false);
+                VansTexture* metalTex = LoadOrGetTexture(fbxInfo.metallicTexPath, false);
+                VansTexture* roughTex = LoadOrGetTexture(fbxInfo.roughnessTexPath, false);
+                VansTexture* aoTex    = LoadOrGetTexture(fbxInfo.aoTexPath, false);
+
+                material->m_BaseColorTexture = diffTex  ? diffTex  : static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
+                material->m_NormalTexture    = normTex  ? normTex  : static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
+                material->m_MetalTexture     = metalTex ? metalTex : static_cast<VansTexture*>(GetTextureAsset("defaultMetal"));
+                material->m_RoughnessTexture = roughTex ? roughTex : static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
+                material->m_AoTexture        = aoTex    ? aoTex    : static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
+
+                material->m_BasePBRParam.m_albedo    = glm::vec3(1.0f);
+                material->m_BasePBRParam.m_metallic  = fbxInfo.metallic;
+                material->m_BasePBRParam.m_roughness = fbxInfo.roughness;
+                material->m_BasePBRParam.m_ao        = 1.0f;
+            }
+            else if (matType == VansMaterialType::VAN_TRANSPARENT)
+            {
+                // ── Transparent material: load diffuse + opacity as texture slots ─
+                VansTexture* diffTex    = LoadOrGetTexture(fbxInfo.diffuseTexPath, true);
+                VansTexture* opacityTex = LoadOrGetTexture(fbxInfo.opacityTexPath, false);
+
+                if (diffTex)
+                {
+                    material->m_TransparentTextureMap.push_back({ "diffuse", diffTex->m_AssetName });
+                    material->m_TransparentTextures.push_back(diffTex);
+                }
+                if (opacityTex)
+                {
+                    material->m_TransparentTextureMap.push_back({ "opacity", opacityTex->m_AssetName });
+                    material->m_TransparentTextures.push_back(opacityTex);
+                }
+            }
+
+            m_Materials.push_back(material);
+
+            VANS_LOG("[ExpandMultiMesh] Auto-created material: " << matKey
+                     << " (type=" << static_cast<int>(matType) << ")");
+        }
+
+        // ── Create render node for this submesh ──────────────────────────
+        RenderNodeType nodeType = (matType == VansMaterialType::VAN_TRANSPARENT)
+            ? RenderNodeType::TRANSPARENT_NODE
+            : RenderNodeType::OPAQUE_NODE;
+
+        VansRenderNode* renderNode = nullptr;
+        if (nodeType == RenderNodeType::OPAQUE_NODE)
+        {
+            auto* opaque = new VansCommonRenderNode(device, nodeType);
+            opaque->m_SupportShadow = supportShadow;
+            renderNode = opaque;
+        }
+        else
+        {
+            // Ray tracing is only supported for opaque submeshes
+            subMesh->m_SupportRayTracing = false;
+            renderNode = new VansTransparentRenderNode(device, nodeType);
+        }
+
+        std::string nodeName = parentName + "_" + fbxInfo.materialName + "_sub" + std::to_string(i);
+
+        renderNode->m_Mesh     = subMesh;
+        renderNode->m_Material = material;
+        renderNode->m_ParentGroupName = parentName;
+
+        // All children share the first child's transform so they move together.
+        if (group.childNodes.empty())
+        {
+            // First child – owns the transform; set position from JSON.
+            renderNode->SetTransformData(position, rotation, scale);
+            group.sharedTransformID = renderNode->m_TransformID;
+        }
+        else
+        {
+            // Subsequent children – share the first child's transform.
+            renderNode->ShareTransform(group.sharedTransformID);
+        }
+        renderNode->SetName(nodeName);
+
+        // Register the sub-mesh in the scene asset list so it can be found by name
+        subMesh->SetName(nodeName + "_mesh");
+        m_Meshes.push_back(subMesh);
+
+        RegistRenderNode(renderNode, nodeType);
+        group.childNodes.push_back(renderNode);
+
+        // ── Shadow nodes ──────────────────────────────────────────────────
+        if (nodeType == RenderNodeType::OPAQUE_NODE && supportShadow)
+        {
+            VansMaterial* shadowMaterial = static_cast<VansMaterial*>(GetMaterialAsset("ShadowMaterial"));
+            if (shadowMaterial)
+            {
+                VansRenderNode* shadowNode = new VansShadowRenderNode(device);
+                shadowNode->m_Mesh     = subMesh;
+                shadowNode->m_Material = shadowMaterial;
+                shadowNode->m_ParentGroupName = parentName;
+                shadowNode->ShareTransform(group.sharedTransformID);
+                shadowNode->SetName(nodeName + "_shadow");
+                m_ShadowRenderNodes.push_back(shadowNode);
+                group.shadowNodes.push_back(shadowNode);
+            }
+
+            VansMaterial* punctualShadowMaterial = static_cast<VansMaterial*>(GetMaterialAsset("PunctualShadowMaterial"));
+            if (punctualShadowMaterial)
+            {
+                VansRenderNode* shadowNode = new VansShadowRenderNode(device);
+                shadowNode->m_Mesh     = subMesh;
+                shadowNode->m_Material = punctualShadowMaterial;
+                shadowNode->m_ParentGroupName = parentName;
+                shadowNode->ShareTransform(group.sharedTransformID);
+                shadowNode->SetName(nodeName + "_punctual_shadow");
+                m_PunctualShadowRenderNodes.push_back(shadowNode);
+                group.shadowNodes.push_back(shadowNode);
+            }
+        }
+
+        VANS_LOG("[ExpandMultiMesh] Created render node: " << nodeName
+                 << " (type=" << (nodeType == OPAQUE_NODE ? "OPAQUE" : "TRANSPARENT") << ")");
     }
 }
 
@@ -1377,7 +1640,7 @@ void VansGraphics::VansScene::DrawShadowNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_ShadowRenderNodes)
     {
-        if (node == nullptr || node->m_SkipDefaultRender)
+        if (node == nullptr)
         {
             continue;
         }
@@ -1416,7 +1679,7 @@ void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
 
         for (auto& node : m_PunctualShadowRenderNodes)
         {
-            if (node == nullptr || node->m_SkipDefaultRender)
+            if (node == nullptr)
             {
                 continue;
             }
@@ -1455,7 +1718,7 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
 
     for (auto& node : m_PunctualShadowRenderNodes)
     {
-        if (node == nullptr || node->m_SkipDefaultRender)
+        if (node == nullptr)
         {
             continue;
         }
@@ -1478,7 +1741,7 @@ void VansGraphics::VansScene::DrawOpaqueNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_OpaqueRenderNodes)
     {
-        if (node == nullptr || node->m_SkipDefaultRender)
+        if (node == nullptr)
         {
             continue;
         }
@@ -1513,7 +1776,7 @@ void VansGraphics::VansScene::DrawTransParentNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_TransParentRenderNodes)
     {
-        if (node == nullptr || node->m_SkipDefaultRender)
+        if (node == nullptr)
         {
             continue;
         }
