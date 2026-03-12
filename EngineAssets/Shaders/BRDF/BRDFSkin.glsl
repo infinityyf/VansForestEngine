@@ -11,12 +11,42 @@
 //   - Shadow-map thickness estimation for transmission / back-lighting
 // =============================================================================
 
-// Pre-integrated skin scattering LUT
-// U = NdotL * 0.5 + 0.5,  V = curvature [0..1]
-#if !defined(PBRLutSetBind)
-    #define PBRLutSetBind 0
-#endif
-layout(set = PBRLutSetBind, binding = 7) uniform sampler2D SkinPreIntegratedLUT;
+
+// ---------------------------------------------------------------------------
+// Sample the pre-integrated SSS LUT.
+// U = NdotL remapped from [-1,1] to [0,1],  V = curvature [0,1].
+// Returns the pre-integrated scattering color.
+// ---------------------------------------------------------------------------
+vec3 SampleSSSLUT(float NdotL, float curvature)
+{
+    float u = NdotL * 0.5 + 0.5;   // Map [-1,1] -> [0,1]
+    float v = clamp(curvature, 0.0, 1.0);
+    return texture(SkinPreIntegratedLUT, vec2(u, v)).rgb;
+}
+
+// ---------------------------------------------------------------------------
+// Compute subsurface scattering tint at grazing angles.
+// Simulates light passing through blood vessels beneath the skin surface.
+// sssColor : subsurface color (typically reddish, e.g. vec3(1.0, 0.2, 0.1))
+// sssScale : intensity scale (1.0 default)
+// ---------------------------------------------------------------------------
+vec3 ComputeSkinSSSColor(float NdotL, float curvature, vec3 sssColor, float sssScale)
+{
+    float sssAmount = max(1.0 - max(NdotL, 0.0), 0.0);   // More SSS at grazing angles
+    sssAmount *= curvature * sssScale;
+    return mix(vec3(1.0), sssColor, clamp(sssAmount * 0.5, 0.0, 1.0));
+}
+
+// ---------------------------------------------------------------------------
+// Compute skin-specific Fresnel reflectance (F0).
+// Skin has ~2.8% reflectance at normal incidence; the oil / sweat layer
+// can raise this slightly.  A small albedo tint is mixed in for realism.
+// ---------------------------------------------------------------------------
+vec3 ComputeSkinF0(vec3 albedo)
+{
+    vec3 F0 = vec3(0.028);              // Base skin specular reflectance
+    return mix(F0, albedo, 0.2);        // Slight tint from skin color
+}
 
 // ---------------------------------------------------------------------------
 // Estimate light-space thickness through the object using the shadow map.
@@ -64,12 +94,15 @@ void DirectBRDF_Skin(BRDFData brdf, vec3 lightDirection, float curvature,
     float NdotH = max(dot(brdf.normal, halfVector),    0.0);
 
     // --- Pre-integrated skin diffuse (wraps NdotL via LUT) ---
-    vec2 lutUV       = vec2(NdotL * 0.5 + 0.5, curvature);
-    vec3 skinScatter = texture(SkinPreIntegratedLUT, lutUV).rgb;
-    diffuse = skinScatter * brdf.albedo / PI;
+    vec3 skinScatter = SampleSSSLUT(NdotL, curvature);
+
+    // Apply SSS tint – reddish glow at grazing angles from blood vessels
+    vec3 sssTint = ComputeSkinSSSColor(NdotL, curvature, vec3(1.0, 0.2, 0.1), 1.0);
+    diffuse = skinScatter * brdf.albedo * sssTint / PI;
 
     // --- Dual-lobe specular ---
-    vec3 F0 = brdf.fresnel0;
+    // Skin-specific F0 (~2.8% base reflectance, slight albedo tint)
+    vec3 F0 = ComputeSkinF0(brdf.albedo);
     vec3 F  = FresnelSchlick(NdotH, F0);
 
     // Primary lobe – original roughness

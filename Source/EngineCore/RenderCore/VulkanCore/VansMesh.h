@@ -5,6 +5,7 @@
 
 #endif
 #include "vulkan/vulkan.h"
+#include <assimp/matrix4x4.h>
 
 #include "../VansGraphicsBuffer.h"
 #include "../VansAsset.h"
@@ -163,7 +164,8 @@ namespace VansGraphics
 
 		// Internal helper to populate this mesh from an already-loaded aiScene/aiMesh (avoids re-reading files per submesh).
 		bool LoadMeshSubmeshFromScene(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
-			const aiScene* scene, aiMesh* mesh, bool import_tangent = false, bool supportRayTracing = false);
+			const aiScene* scene, aiMesh* mesh, const aiMatrix4x4* meshTransform = nullptr,
+			bool import_tangent = false, bool supportRayTracing = false);
 
 		// Loads the whole file then splits it into per-material VansMesh slices stored in m_SubMeshes.
 		// Also populates m_SubmeshMaterialInfos with texture paths and material metadata.

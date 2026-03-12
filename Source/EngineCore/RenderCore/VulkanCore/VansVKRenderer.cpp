@@ -60,7 +60,7 @@ namespace VansGraphics
 	{
 		CreateVKSemaphore(m_SwapChainImageAcquiredSemaphore);
 		CreateVKSemaphore(m_CommandBufferReadyToPresentSemaphore);
-		CreateVKSemaphore(m_AsyncComputeDoneSemaphore);
+		CreateVKEvent(m_AsyncComputeCompletedEvent);
 		CreateVKFence(false, m_SwapChainImageAcquiredFence);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
@@ -132,7 +132,7 @@ namespace VansGraphics
 			{
 				VANS_GPU_SCOPE(cmd, "Deferred Pass");
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-				DrawSceneDeferred(renderPassManager, cmd);
+				DrawSceneDeferred(renderPassManager, m_VansVKCommandBuffer);
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 		}
@@ -141,11 +141,13 @@ namespace VansGraphics
 			// ── Async compute: SSR + VolumetricFog on compute queue ──────────
 			// Record and submit COMPUTE FIRST so the GPU starts it before shadow
 			// even reaches the graphics queue, guaranteeing true overlap.
+			m_VansVKCommandBuffer.ResetEvent(m_AsyncComputeCompletedEvent);
 
 			// Submit 1: SSR + VolumetricFog — queued to compute queue before shadow is even submitted
 			m_VansVKComputeCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
 			UpdateSSR(renderPassManager, m_VansVKComputeCommandBuffer);
+			m_VansVKComputeCommandBuffer.SetEvent(m_AsyncComputeCompletedEvent, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 			m_VansVKComputeCommandBuffer.EndCommandBufferRecord();
 
@@ -153,9 +155,8 @@ namespace VansGraphics
 				m_VansVKComputeQueue, m_VansVKLogicDevice,
 				{ m_VansVKComputeCommandBuffer.GetVKCommandBuffer() },
 				{},
-				{ m_AsyncComputeDoneSemaphore },
+				{},
 				m_VansVKComputeCommandBuffer.m_CommandBufferFinishSubmitFence, false);
-
 
 			// Submit 2: Shadow — submitted AFTER compute is already queued on GPU
 			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
@@ -171,7 +172,7 @@ namespace VansGraphics
 			UpdateRayTracing(m_VansVKCommandBuffer);
 
 			renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-			DrawSceneDeferred(renderPassManager, cmd);
+			DrawSceneDeferred(renderPassManager, m_VansVKCommandBuffer);
 			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 		}
 	}
@@ -195,7 +196,6 @@ namespace VansGraphics
 			// ── Async compute present ───────────────────────────────────────
 			std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {
 				{ m_SwapChainImageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }
-				//{ m_AsyncComputeDoneSemaphore, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
 			};
 
 			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
@@ -220,7 +220,7 @@ namespace VansGraphics
 
 		DestroyVKSemaphore(m_SwapChainImageAcquiredSemaphore);
 		DestroyVKSemaphore(m_CommandBufferReadyToPresentSemaphore);
-		DestroyVKSemaphore(m_AsyncComputeDoneSemaphore);
+		DestroyVKEvent(m_AsyncComputeCompletedEvent);
 		DestroyVKFence(m_SwapChainImageAcquiredFence);
 	}
 
@@ -257,12 +257,32 @@ namespace VansGraphics
 		m_Scene->DrawPostProcessNodes();
 	}
 
-	void VansVKDevice::DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
+	void VansVKDevice::DrawSceneDeferred(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
+		VkCommandBuffer& cmd = commandBuffer.GetVKCommandBuffer();
+
 		m_Scene->DrawOpaqueNodes();
 		m_Scene->DrawTerrainNode();
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 		m_Scene->DrawScreenSpaceFeatureNode();
+
+		if (m_UseAsyncCompute)
+		{
+			VkMemoryBarrier asyncComputeBarrier =
+			{
+				VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+				nullptr,
+				VK_ACCESS_SHADER_WRITE_BIT,
+				VK_ACCESS_SHADER_READ_BIT
+			};
+
+			commandBuffer.WaitEvents(
+				{ m_AsyncComputeCompletedEvent },
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				{ asyncComputeBarrier });
+		}
+
 		m_Scene->DeferredShading();
 		m_Scene->DrawSkyBoxNode();
 		m_Scene->DrawTransParentNodes();

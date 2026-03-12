@@ -138,7 +138,7 @@ namespace VansGraphics
 		void LoadPhysicsNodes(json& physics_node);
 
 		// Find a render node by name across all render node lists
-		VansRenderNode* FindRenderNodeByName(const std::string& name);
+		VansRenderNode* FindRenderNodeByName(const std::string& name) const;
 
 		void AddTerrainNode(VansVKDevice* device, json& terrainData);
 

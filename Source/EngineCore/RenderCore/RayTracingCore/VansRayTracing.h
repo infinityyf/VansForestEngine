@@ -133,5 +133,8 @@ namespace VansGraphics
 		bool m_HitPositionCalculateDone;
 
 		int m_GIUpdateFrameIndex;
+
+		// True after CreateRayTracingResource succeeds (scene has RT geometry).
+		bool m_RTResourcesReady = false;
 	};
 }

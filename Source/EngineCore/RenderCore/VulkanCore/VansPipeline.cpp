@@ -431,8 +431,12 @@ bool VansGraphics::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& 
 	pipelineLayoutInfo.pushConstantRangeCount = pushConstRangeCount;
 	pipelineLayoutInfo.pPushConstantRanges = pushConstRange;
 
-	VkPipelineLayout pipelineLayout;
-	vkCreatePipelineLayout(logic_device, &pipelineLayoutInfo, nullptr, &m_RayTracingLayout);
+	VkResult layoutResult = vkCreatePipelineLayout(logic_device, &pipelineLayoutInfo, nullptr, &m_RayTracingLayout);
+	if (VK_SUCCESS != layoutResult)
+	{
+		VANS_LOG_ERROR("Could not create ray tracing pipeline layout. VkResult: " << layoutResult);
+		return false;
+	}
 
 	//创建SBT ： shader binding table
 	//shader binding table就是一个装了若干shader group handle的buffer , 不同场景下会有不同的shader的组合
@@ -452,7 +456,9 @@ bool VansGraphics::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& 
 	VkResult result = vkCreateRayTracingPipelinesKHR(logic_device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_RayTracingPipeline);
 	if (VK_SUCCESS != result)
 	{
-		VANS_LOG_ERROR("Could not create compute pipeline.");
+		VANS_LOG_ERROR("Could not create ray tracing pipeline. VkResult: " << result
+			<< " stageCount=" << pipelineInfo.stageCount
+			<< " groupCount=" << pipelineInfo.groupCount);
 		return false;
 	}
 	return true;

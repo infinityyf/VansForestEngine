@@ -318,6 +318,24 @@ namespace VansGraphics
 		return true;
 	}
 
+	bool VansVKDevice::CreateVKEvent(VkEvent& eventHandle)
+	{
+		VkEventCreateInfo event_create_info =
+		{
+			VK_STRUCTURE_TYPE_EVENT_CREATE_INFO,
+			nullptr,
+			0
+		};
+
+		VkResult result = vkCreateEvent(m_VansVKLogicDevice, &event_create_info, nullptr, &eventHandle);
+		if (VK_SUCCESS != result)
+		{
+			VANS_LOG_ERROR("Could not create an event.");
+			return false;
+		}
+		return true;
+	}
+
 	void VansVKDevice::DestroyVKFence(VkFence& fence)
 	{
 		vkDestroyFence(m_VansVKLogicDevice, fence, nullptr);
@@ -326,6 +344,11 @@ namespace VansGraphics
 	void VansVKDevice::DestroyVKSemaphore(VkSemaphore& semaphore)
 	{
 		vkDestroySemaphore(m_VansVKLogicDevice, semaphore, nullptr);
+	}
+
+	void VansVKDevice::DestroyVKEvent(VkEvent& eventHandle)
+	{
+		vkDestroyEvent(m_VansVKLogicDevice, eventHandle, nullptr);
 	}
 
 	bool VansVKDevice::PrepareVulkanLibrary()

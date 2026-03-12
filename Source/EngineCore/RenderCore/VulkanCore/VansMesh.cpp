@@ -8,6 +8,7 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <assimp/material.h>
+#include <assimp/matrix3x3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/packing.hpp>
 #include <filesystem>
@@ -178,13 +179,40 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& mesh
 	}
 }
 
-// ─── Walk node tree and collect every aiMesh* in ProcessNode order ───────────
-static void CollectAiMeshes(aiNode* node, const aiScene* scene, std::vector<aiMesh*>& out)
+struct CollectedAiMesh
 {
+	aiMesh* mesh;
+	aiMatrix4x4 transform;
+};
+
+static aiVector3D TransformPosition(const aiMatrix4x4& transform, const aiVector3D& position)
+{
+	return transform * position;
+}
+
+static aiVector3D TransformDirection(const aiMatrix4x4& transform, const aiVector3D& direction)
+{
+	aiMatrix3x3 normalMatrix(transform);
+	normalMatrix.Inverse().Transpose();
+	aiVector3D transformed = normalMatrix * direction;
+	if (transformed.SquareLength() > 0.0f)
+	{
+		transformed.Normalize();
+	}
+	return transformed;
+}
+
+// ─── Walk node tree and collect every aiMesh* with accumulated node transform ─
+static void CollectAiMeshes(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform, std::vector<CollectedAiMesh>& out)
+{
+	aiMatrix4x4 accumulatedTransform = parentTransform * node->mTransformation;
+
 	for (uint32_t i = 0; i < node->mNumMeshes; i++)
-		out.push_back(scene->mMeshes[node->mMeshes[i]]);
+	{
+		out.push_back({ scene->mMeshes[node->mMeshes[i]], accumulatedTransform });
+	}
 	for (uint32_t i = 0; i < node->mNumChildren; i++)
-		CollectAiMeshes(node->mChildren[i], scene, out);
+		CollectAiMeshes(node->mChildren[i], scene, accumulatedTransform, out);
 }
 
 VansGraphics::VansMesh::VansMesh(bool needCPUData, bool supportRayTracing)
@@ -471,21 +499,22 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 	// Derive base directory for resolving relative texture paths
 	std::string baseDir = std::filesystem::path(file_name).parent_path().string();
 
-	std::vector<aiMesh*> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, allMeshes);
+	aiMatrix4x4 identityTransform;
+	std::vector<CollectedAiMesh> allMeshes;
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, allMeshes);
 	if (allMeshes.empty())
 	{
 		VANS_LOG_WARN("[LoadMultiMesh] No submeshes found in: " << file_name);
 		return;
 	}
 
-	for (aiMesh* mesh : allMeshes)
+	for (const CollectedAiMesh& collectedMesh : allMeshes)
 	{
 		VansMesh* slice = new VansMesh(needCPUData, supportRayTracing);
-		if (slice->LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, mesh, import_tangent, supportRayTracing))
+		if (slice->LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, collectedMesh.mesh, &collectedMesh.transform, import_tangent, supportRayTracing))
 		{
 			m_SubMeshes.push_back(slice);
-			m_SubmeshMaterialInfos.push_back(BuildSubmeshMaterialInfo(scene, mesh, baseDir));
+			m_SubmeshMaterialInfos.push_back(BuildSubmeshMaterialInfo(scene, collectedMesh.mesh, baseDir));
 		}
 		else
 		{
@@ -521,8 +550,9 @@ bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& qu
 	}
 
 	// Collect all aiMesh* in traversal order
-	std::vector<aiMesh*> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, allMeshes);
+	aiMatrix4x4 identityTransform;
+	std::vector<CollectedAiMesh> allMeshes;
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, allMeshes);
 
 	if (submeshIndex >= static_cast<uint32_t>(allMeshes.size()))
 	{
@@ -530,17 +560,25 @@ bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& qu
 		return false;
 	}
 
-	aiMesh* mesh = allMeshes[submeshIndex];
-	return LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, mesh, import_tangent);
+	const CollectedAiMesh& collectedMesh = allMeshes[submeshIndex];
+	return LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, collectedMesh.mesh, &collectedMesh.transform, import_tangent);
 }
 
 bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, VkQueue& queue,
-	VansVKCommandBuffer* commandbuffer, const aiScene* scene, aiMesh* mesh, bool import_tangent, bool supportRayTracing)
+	VansVKCommandBuffer* commandbuffer, const aiScene* scene, aiMesh* mesh, const aiMatrix4x4* meshTransform, bool import_tangent, bool supportRayTracing)
 {
 	if (!scene || !mesh)
 	{
 		return false;
 	}
+
+	aiMatrix4x4 transform;
+	if (meshTransform)
+	{
+		transform = *meshTransform;
+	}
+	aiMatrix3x3 normalTransform(transform);
+	normalTransform.Inverse().Transpose();
 
 	// reset state per submesh
 	m_MeshRawData.clear();
@@ -568,6 +606,8 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 	{
 		aiVector3D vertex  = mesh->mVertices[i];
 		aiVector3D normal  = mesh->mNormals ? mesh->mNormals[i] : aiVector3D(0, 1, 0);
+		vertex = TransformPosition(transform, vertex);
+		normal = TransformDirection(transform, normal);
 		aiVector3D texCoord(0, 0, 0);
 		if (mesh->mTextureCoords[0])
 			texCoord = mesh->mTextureCoords[0][i];
@@ -597,6 +637,8 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 			aiVector3D tangent(0, 0, 0), bitangent(0, 0, 0);
 			if (mesh->mTangents)   tangent   = mesh->mTangents[i];
 			if (mesh->mBitangents) bitangent = mesh->mBitangents[i];
+			tangent = TransformDirection(transform, tangent);
+			bitangent = TransformDirection(transform, bitangent);
 			m_MeshRawData.emplace_back(FloatToHalf(tangent.x));
 			m_MeshRawData.emplace_back(FloatToHalf(tangent.y));
 			m_MeshRawData.emplace_back(FloatToHalf(tangent.z));
@@ -639,26 +681,79 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 	// Upload to GPU (same path as LoadMesh)
 	VkDeviceSize vertexBufferSize = m_MeshRawData.size() * sizeof(uint16_t);
 	VkDeviceSize indexBufferSize  = m_MeshTriangleIndex.size() * sizeof(uint32_t);
+	VkDeviceSize totalUploadSize = vertexBufferSize + indexBufferSize;
+
+	VANS_LOG("[LoadMeshSubmeshFromScene] material='" << m_SourceMaterialName
+		<< "' vertices=" << m_VertexCount
+		<< " indices=" << m_IndexCount
+		<< " triangles=" << (m_IndexCount / 3)
+		<< " vertexBytes=" << vertexBufferSize
+		<< " indexBytes=" << indexBufferSize
+		<< " totalUploadBytes=" << totalUploadSize);
 
 	VansVKBuffer stagingVertex, stagingIndex;
-	stagingVertex.CreatVulkanBuffer(logic_device, vertexBufferSize, VK_FORMAT_UNDEFINED,
+	if (!stagingVertex.CreatVulkanBuffer(logic_device, vertexBufferSize, VK_FORMAT_UNDEFINED,
 		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	stagingIndex.CreatVulkanBuffer(logic_device, indexBufferSize, VK_FORMAT_UNDEFINED,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+	{
+		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to create vertex staging buffer. bytes=" << vertexBufferSize);
+		return false;
+	}
+	if (!stagingIndex.CreatVulkanBuffer(logic_device, indexBufferSize, VK_FORMAT_UNDEFINED,
 		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+	{
+		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to create index staging buffer. bytes=" << indexBufferSize);
+		stagingVertex.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
 
-	stagingVertex.SetBufferData(m_MeshRawData.data(), 0, vertexBufferSize);
-	stagingIndex.SetBufferData(m_MeshTriangleIndex.data(), 0, indexBufferSize);
+	if (!stagingVertex.SetBufferData(m_MeshRawData.data(), 0, static_cast<int>(vertexBufferSize)))
+	{
+		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to upload vertex staging data. bytes=" << vertexBufferSize);
+		stagingVertex.DestroyVulkanBuffer(logic_device);
+		stagingIndex.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+	if (!stagingIndex.SetBufferData(m_MeshTriangleIndex.data(), 0, static_cast<int>(indexBufferSize)))
+	{
+		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to upload index staging data. bytes=" << indexBufferSize);
+		stagingVertex.DestroyVulkanBuffer(logic_device);
+		stagingIndex.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
 
-	// Submesh nodes never need ray tracing acceleration structures
 	VkBufferUsageFlags vertexUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 	VkBufferUsageFlags indexUsage  = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 
-	m_VertexBuffer.CreatVulkanBuffer(logic_device, vertexBufferSize, VK_FORMAT_R16_SFLOAT,
-		vertexUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	m_IndexBuffer.CreatVulkanBuffer(logic_device, indexBufferSize, VK_FORMAT_R32_UINT,
-		indexUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	// When ray tracing is requested, add device-address and AS build-input flags
+	// so that BuildBLAS can query buffer addresses and use them as geometry input.
+	if (m_SupportRayTracing)
+	{
+		vertexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+			| VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+			| VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+		indexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+			| VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+			| VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	}
+
+	if (!m_VertexBuffer.CreatVulkanBuffer(logic_device, vertexBufferSize, VK_FORMAT_R16_SFLOAT,
+		vertexUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+	{
+		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to create GPU vertex buffer. bytes=" << vertexBufferSize);
+		stagingVertex.DestroyVulkanBuffer(logic_device);
+		stagingIndex.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+	if (!m_IndexBuffer.CreatVulkanBuffer(logic_device, indexBufferSize, VK_FORMAT_R32_UINT,
+		indexUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+	{
+		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to create GPU index buffer. bytes=" << indexBufferSize);
+		stagingVertex.DestroyVulkanBuffer(logic_device);
+		stagingIndex.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
 
 	commandbuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 	VkBufferCopy copyRegion{};
@@ -697,17 +792,18 @@ std::vector<std::string> VansGraphics::VansMesh::GetSubmeshMaterialNames(const s
 		return result;
 	}
 
-	std::vector<aiMesh*> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, allMeshes);
+	aiMatrix4x4 identityTransform;
+	std::vector<CollectedAiMesh> allMeshes;
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, allMeshes);
 
 	result.reserve(allMeshes.size());
-	for (aiMesh* mesh : allMeshes)
+	for (const CollectedAiMesh& collectedMesh : allMeshes)
 	{
 		std::string matName;
-		if (mesh->mMaterialIndex < scene->mNumMaterials)
+		if (collectedMesh.mesh->mMaterialIndex < scene->mNumMaterials)
 		{
 			aiString aiMatName;
-			scene->mMaterials[mesh->mMaterialIndex]->Get(AI_MATKEY_NAME, aiMatName);
+			scene->mMaterials[collectedMesh.mesh->mMaterialIndex]->Get(AI_MATKEY_NAME, aiMatName);
 			matName = aiMatName.C_Str();
 		}
 		result.push_back(matName);
@@ -731,13 +827,14 @@ std::vector<VansGraphics::FBXSubmeshMaterialInfo> VansGraphics::VansMesh::GetSub
 
 	std::string baseDir = std::filesystem::path(file_name).parent_path().string();
 
-	std::vector<aiMesh*> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, allMeshes);
+	aiMatrix4x4 identityTransform;
+	std::vector<CollectedAiMesh> allMeshes;
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, allMeshes);
 
 	result.reserve(allMeshes.size());
-	for (aiMesh* mesh : allMeshes)
+	for (const CollectedAiMesh& collectedMesh : allMeshes)
 	{
-		result.push_back(BuildSubmeshMaterialInfo(scene, mesh, baseDir));
+		result.push_back(BuildSubmeshMaterialInfo(scene, collectedMesh.mesh, baseDir));
 	}
 
 	return result;
@@ -751,7 +848,8 @@ uint32_t VansGraphics::VansMesh::ProbeSubmeshCount(const std::string& file_name)
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 		return 0;
 
-	std::vector<aiMesh*> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, allMeshes);
+	aiMatrix4x4 identityTransform;
+	std::vector<CollectedAiMesh> allMeshes;
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, allMeshes);
 	return static_cast<uint32_t>(allMeshes.size());
 }

@@ -47,6 +47,9 @@ layout(set=PBRLutSetBind, binding=6) buffer shCoefficientsBuffer
 {
     float shCoefficients[27];
 };
+// Pre-integrated skin scattering LUT
+// U = NdotL * 0.5 + 0.5,  V = curvature [0..1]
+layout(set = PBRLutSetBind, binding = 7) uniform sampler2D SkinPreIntegratedLUT;
 
 struct BRDFData
 {

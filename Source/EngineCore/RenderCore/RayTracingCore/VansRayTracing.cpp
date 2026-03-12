@@ -10,6 +10,7 @@
 #include "../../RenderCore/VansScene.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../RenderCore//VansMaterial.h"
+#include "../../Util/VansLog.h"
 
 #include <iostream>
 //void VansGraphics::VansRayTracing::BuildBottomLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansMesh* mesh)
@@ -212,6 +213,16 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
     std::vector<uint32_t>& instanceData = scene->GetTLASInstanceData();
 	std::vector<uint32_t>& instanceTextureIndex = scene->GetTLASInstanceTextureIndex();
 
+    // No RT geometry in the scene – nothing to set up.
+    if (blasMeshCount == 0 || instanceData.empty())
+    {
+        VANS_LOG_WARN("[CreateRayTracingResource] No ray-tracing geometry found, skipping RT resource creation.");
+        m_RTResourcesReady = false;
+        return;
+    }
+
+    m_RTResourcesReady = true;
+
     //ray tracing参数
     m_RayTracingPositionCount = 80;
     m_RayTracingPositionStride = 0.5f;
@@ -328,6 +339,9 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
 
 void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager)
 {
+    if (!m_RTResourcesReady)
+        return;
+
     BindGIPointLightData();
 
     BindGISHData(materialManager);
@@ -618,7 +632,7 @@ void VansGraphics::VansRayTracing::BindGISHData(VansMaterialManager* materialMan
 
 void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
 {
-    if (m_HitPositionCalculateDone)
+    if (!m_RTResourcesReady || m_HitPositionCalculateDone)
     {
         return;
     }

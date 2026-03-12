@@ -84,6 +84,7 @@ namespace VansGraphics
 		uint32_t m_MaxUniformBufferDynamicDescCount = 20000;
 		uint32_t m_MaxStorageBufferDynamicDescCount = 20000;
 		uint32_t m_MaxInputAttachDescCount = 800;
+		uint32_t m_MaxAccelerationStructureDescCount = 16;
 
 		std::vector<VkDescriptorPoolSize> m_DescriptorPoolSizes = 
 		{
@@ -98,6 +99,7 @@ namespace VansGraphics
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, m_MaxUniformBufferDynamicDescCount },
 			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, m_MaxStorageBufferDynamicDescCount },
 			{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, m_MaxInputAttachDescCount },
+			{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, m_MaxAccelerationStructureDescCount },
 		};
 	public:
 		//待更新的各种类型的descinfo

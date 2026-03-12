@@ -412,6 +412,45 @@ bool VansGraphics::VansVKCommandBuffer::ResetCommandBuffer(bool release_buffer_m
 	return true;
 }
 
+bool VansGraphics::VansVKCommandBuffer::ResetEvent(VkEvent eventHandle)
+{
+	VkResult result = vkResetEvent(m_VansVKDevice, eventHandle);
+	if (VK_SUCCESS != result)
+	{
+		VANS_LOG_ERROR("Error occurred during event reset.");
+		return false;
+	}
+
+	return true;
+}
+
+void VansGraphics::VansVKCommandBuffer::SetEvent(VkEvent eventHandle, VkPipelineStageFlags stageMask)
+{
+	vkCmdSetEvent(m_VansVKCommandBuffer, eventHandle, stageMask);
+}
+
+void VansGraphics::VansVKCommandBuffer::WaitEvents(
+	const std::vector<VkEvent>& events,
+	VkPipelineStageFlags srcStageMask,
+	VkPipelineStageFlags dstStageMask,
+	const std::vector<VkMemoryBarrier>& memoryBarriers,
+	const std::vector<VkBufferMemoryBarrier>& bufferMemoryBarriers,
+	const std::vector<VkImageMemoryBarrier>& imageMemoryBarriers)
+{
+	vkCmdWaitEvents(
+		m_VansVKCommandBuffer,
+		static_cast<uint32_t>(events.size()),
+		events.empty() ? nullptr : events.data(),
+		srcStageMask,
+		dstStageMask,
+		static_cast<uint32_t>(memoryBarriers.size()),
+		memoryBarriers.empty() ? nullptr : memoryBarriers.data(),
+		static_cast<uint32_t>(bufferMemoryBarriers.size()),
+		bufferMemoryBarriers.empty() ? nullptr : bufferMemoryBarriers.data(),
+		static_cast<uint32_t>(imageMemoryBarriers.size()),
+		imageMemoryBarriers.empty() ? nullptr : imageMemoryBarriers.data());
+}
+
 bool VansGraphics::VansVKCommandBuffer::WaitForFence(VkDevice& device, const VkFence& fence)
 {
 	if (fence != VK_NULL_HANDLE)

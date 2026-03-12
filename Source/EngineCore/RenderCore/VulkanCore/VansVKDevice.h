@@ -78,9 +78,13 @@ namespace VansGraphics
 
 		bool CreateVKSemaphore(VkSemaphore& semaphore);
 
+		bool CreateVKEvent(VkEvent& eventHandle);
+
 		void DestroyVKFence(VkFence& fence);
 
 		void DestroyVKSemaphore(VkSemaphore& semaphore);
+
+		void DestroyVKEvent(VkEvent& eventHandle);
 
 		//获取physics device
 		VkPhysicalDevice GetPhysicalDevice() { return m_VansVKPhysicalDevice; }
@@ -124,7 +128,7 @@ namespace VansGraphics
 
 		void DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
-		void DrawSceneDeferred(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
+		void DrawSceneDeferred(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 
 		VkDeviceAddress GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo);
 
@@ -214,10 +218,10 @@ namespace VansGraphics
 
 		VkSemaphore m_CommandBufferReadyToPresentSemaphore;
 
-		// Async compute semaphores
-		VkSemaphore m_AsyncComputeDoneSemaphore;
+		// Async compute event used for compute -> graphics synchronization.
+		VkEvent m_AsyncComputeCompletedEvent;
 
-		// Set to true to enable async compute (3-submit); false = original single-submit
+		// Set to true to enable async compute.
 		bool m_UseAsyncCompute = false;
 
 		VkPhysicalDeviceProperties m_DeviceProperties;

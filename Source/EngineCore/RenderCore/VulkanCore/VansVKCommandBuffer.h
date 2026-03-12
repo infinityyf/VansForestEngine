@@ -59,6 +59,18 @@ namespace VansGraphics
 
 		bool ResetCommandBuffer(bool release_buffer_memory);
 
+		bool ResetEvent(VkEvent eventHandle);
+
+		void SetEvent(VkEvent eventHandle, VkPipelineStageFlags stageMask);
+
+		void WaitEvents(
+			const std::vector<VkEvent>& events,
+			VkPipelineStageFlags srcStageMask,
+			VkPipelineStageFlags dstStageMask,
+			const std::vector<VkMemoryBarrier>& memoryBarriers = {},
+			const std::vector<VkBufferMemoryBarrier>& bufferMemoryBarriers = {},
+			const std::vector<VkImageMemoryBarrier>& imageMemoryBarriers = {});
+
 		VkCommandBuffer& GetVKCommandBuffer() { return m_VansVKCommandBuffer; }
 
 		VansVKCommandBuffer()

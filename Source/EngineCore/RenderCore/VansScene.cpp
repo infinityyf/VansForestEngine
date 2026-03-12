@@ -63,6 +63,70 @@ static VansGraphics::RenderNodeType ParseRenderNodeType(const json& typeValue, c
     return VansGraphics::NONE_NODE;
 }
 
+static bool HasMeshAssetName(const VansGraphics::VansScene& scene, const std::string& name)
+{
+    for (auto* mesh : scene.m_Meshes)
+    {
+        if (mesh && mesh->m_AssetName == name)
+            return true;
+    }
+    return false;
+}
+
+static bool HasMaterialAssetName(const VansGraphics::VansScene& scene, const std::string& name)
+{
+    for (auto* material : scene.m_Materials)
+    {
+        if (material && material->m_AssetName == name)
+            return true;
+    }
+    return false;
+}
+
+static std::string MakeUniqueMultiMeshGroupName(const VansGraphics::VansScene& scene, const std::string& baseName)
+{
+    std::string candidate = baseName;
+    int suffix = 1;
+    while (scene.m_MultiMeshGroups.find(candidate) != scene.m_MultiMeshGroups.end())
+    {
+        candidate = baseName + "_grp" + std::to_string(suffix++);
+    }
+    return candidate;
+}
+
+static std::string MakeUniqueMaterialName(const VansGraphics::VansScene& scene, const std::string& baseName)
+{
+    std::string candidate = baseName;
+    int suffix = 1;
+    while (HasMaterialAssetName(scene, candidate))
+    {
+        candidate = baseName + "_mat" + std::to_string(suffix++);
+    }
+    return candidate;
+}
+
+static std::string MakeUniqueRenderNodeName(const VansGraphics::VansScene& scene, const std::string& baseName)
+{
+    std::string candidate = baseName;
+    int suffix = 1;
+    while (scene.FindRenderNodeByName(candidate) != nullptr)
+    {
+        candidate = baseName + "_node" + std::to_string(suffix++);
+    }
+    return candidate;
+}
+
+static std::string MakeUniqueMeshName(const VansGraphics::VansScene& scene, const std::string& baseName)
+{
+    std::string candidate = baseName;
+    int suffix = 1;
+    while (HasMeshAssetName(scene, candidate))
+    {
+        candidate = baseName + "_mesh" + std::to_string(suffix++);
+    }
+    return candidate;
+}
+
 
 VansAsset* VansGraphics::VansScene::GetMeshAsset(const std::string& name)
 {
@@ -692,7 +756,7 @@ void VansGraphics::VansScene::AddTerrainNode(VansVKDevice* device, json& terrain
     RegistRenderNode(renderNode, type);
 }
 
-VansGraphics::VansRenderNode* VansGraphics::VansScene::FindRenderNodeByName(const std::string& name)
+VansGraphics::VansRenderNode* VansGraphics::VansScene::FindRenderNodeByName(const std::string& name) const
 {
     // Search across all render node lists that store mesh nodes
     for (auto* node : m_OpaqueRenderNodes)
@@ -1198,9 +1262,16 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
     if (!multiMesh || !multiMesh->m_IsMultiMesh)
         return;
 
+    const std::string resolvedParentName = MakeUniqueMultiMeshGroupName(*this, parentName);
+    if (resolvedParentName != parentName)
+    {
+        VANS_LOG_WARN("[ExpandMultiMesh] Parent group name conflict for '" << parentName
+            << "', renamed to '" << resolvedParentName << "'.");
+    }
+
     // ── Create or retrieve the multi-mesh group for hierarchy display ─────
-    MultiMeshGroup& group = m_MultiMeshGroups[parentName];
-    group.parentName = parentName;
+    MultiMeshGroup& group = m_MultiMeshGroups[resolvedParentName];
+    group.parentName = resolvedParentName;
     group.position   = position;
     group.rotation   = rotation;
     group.scale      = scale;
@@ -1208,9 +1279,42 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
     const auto& subMeshes  = multiMesh->m_SubMeshes;
     const auto& matInfos   = multiMesh->m_SubmeshMaterialInfos;
 
+    VANS_LOG("[ExpandMultiMesh] Group '" << resolvedParentName << "' has "
+        << subMeshes.size() << " submeshes and " << matInfos.size() << " material infos.");
+
+    if (subMeshes.size() != matInfos.size())
+    {
+        VANS_LOG_WARN("[ExpandMultiMesh] Submesh/material-info count mismatch for group '"
+            << resolvedParentName << "': submeshes=" << subMeshes.size()
+            << ", materialInfos=" << matInfos.size());
+    }
+
     for (size_t i = 0; i < subMeshes.size(); ++i)
     {
         VansMesh* subMesh = subMeshes[i];
+        if (subMesh == nullptr || subMesh->GetMeshVertexCount() > 11000)
+        {
+            VANS_LOG_WARN("[ExpandMultiMesh] Submesh[" << i << "] is null in group '"
+                << resolvedParentName << "'. Skipping.");
+            continue;
+        }
+
+        const uint32_t vertexCount = subMesh->GetMeshVertexCount();
+        const uint32_t indexCount = subMesh->GetIndexCount();
+        const uint32_t triangleCount = indexCount / 3;
+
+        VANS_LOG("[ExpandMultiMesh] Submesh[" << i << "] info: vertices="
+            << vertexCount << ", indices=" << indexCount
+            << ", triangles=" << triangleCount
+            << ", sourceMaterial='" << subMesh->m_SourceMaterialName << "'");
+
+        if (vertexCount == 0 || triangleCount == 0)
+        {
+            VANS_LOG_WARN("[ExpandMultiMesh] Submesh[" << i << "] is invalid for group '"
+                << resolvedParentName << "' (vertices=" << vertexCount
+                << ", triangles=" << triangleCount << "). Skipping.");
+            continue;
+        }
 
         // Strict 1:1 submesh-to-material mapping.
         // If the material info array is shorter than the submesh array,
@@ -1225,7 +1329,8 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
             : VansMaterialType::VAN_PBR;
 
         // ── Unique material name (one per submesh, keyed by index) ─────────
-        std::string matKey = parentName + "_" + fbxInfo.materialName + "_sub" + std::to_string(i);
+        const std::string materialBaseName = resolvedParentName + "_" + fbxInfo.materialName + "_sub" + std::to_string(i);
+        std::string matKey = MakeUniqueMaterialName(*this, materialBaseName);
 
         VansMaterial* material = nullptr;
         {
@@ -1287,6 +1392,10 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
             : RenderNodeType::OPAQUE_NODE;
 
         VansRenderNode* renderNode = nullptr;
+        // Multi-mesh sub-meshes do not support ray tracing; their buffers
+        // are not created with the required RT flags.  Force RT off.
+        subMesh->m_SupportRayTracing = false;
+
         if (nodeType == RenderNodeType::OPAQUE_NODE)
         {
             auto* opaque = new VansCommonRenderNode(device, nodeType);
@@ -1295,16 +1404,16 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
         }
         else
         {
-            // Ray tracing is only supported for opaque submeshes
-            subMesh->m_SupportRayTracing = false;
             renderNode = new VansTransparentRenderNode(device, nodeType);
         }
 
-        std::string nodeName = parentName + "_" + fbxInfo.materialName + "_sub" + std::to_string(i);
+        const std::string nodeBaseName = resolvedParentName + "_" + fbxInfo.materialName + "_sub" + std::to_string(i);
+        std::string nodeName = MakeUniqueRenderNodeName(*this, nodeBaseName);
+        std::string meshName = MakeUniqueMeshName(*this, nodeName + "_mesh");
 
         renderNode->m_Mesh     = subMesh;
         renderNode->m_Material = material;
-        renderNode->m_ParentGroupName = parentName;
+        renderNode->m_ParentGroupName = resolvedParentName;
 
         // All children share the first child's transform so they move together.
         if (group.childNodes.empty())
@@ -1321,7 +1430,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
         renderNode->SetName(nodeName);
 
         // Register the sub-mesh in the scene asset list so it can be found by name
-        subMesh->SetName(nodeName + "_mesh");
+        subMesh->SetName(meshName);
         m_Meshes.push_back(subMesh);
 
         RegistRenderNode(renderNode, nodeType);
@@ -1336,7 +1445,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
                 VansRenderNode* shadowNode = new VansShadowRenderNode(device);
                 shadowNode->m_Mesh     = subMesh;
                 shadowNode->m_Material = shadowMaterial;
-                shadowNode->m_ParentGroupName = parentName;
+                shadowNode->m_ParentGroupName = resolvedParentName;
                 shadowNode->ShareTransform(group.sharedTransformID);
                 shadowNode->SetName(nodeName + "_shadow");
                 m_ShadowRenderNodes.push_back(shadowNode);
@@ -1349,7 +1458,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
                 VansRenderNode* shadowNode = new VansShadowRenderNode(device);
                 shadowNode->m_Mesh     = subMesh;
                 shadowNode->m_Material = punctualShadowMaterial;
-                shadowNode->m_ParentGroupName = parentName;
+                shadowNode->m_ParentGroupName = resolvedParentName;
                 shadowNode->ShareTransform(group.sharedTransformID);
                 shadowNode->SetName(nodeName + "_punctual_shadow");
                 m_PunctualShadowRenderNodes.push_back(shadowNode);
@@ -1469,6 +1578,13 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     }
 
     uint32_t countInstance = static_cast<uint32_t>(m_TlasInstancesInfos.size());
+
+    // No RT instances to build – skip TLAS entirely
+    if (countInstance == 0)
+    {
+        VANS_LOG_WARN("[BuildRayTracingAS] No ray-tracing instances found, skipping TLAS build.");
+        return;
+    }
 
     // 创建实例缓冲区
     m_InstancesBuffer.CreatVulkanBuffer(
