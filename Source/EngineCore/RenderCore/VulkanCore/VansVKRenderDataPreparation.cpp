@@ -7,6 +7,7 @@
 #include "VansShader.h"
 #include "../VansScene.h"
 #include "../../Configration/VansConfigration.h"
+#include "../../Util/VansLog.h"
 #include <cmath>
 
 namespace VansGraphics
@@ -23,7 +24,7 @@ namespace VansGraphics
 			if (material->m_MaterialType == VansMaterialType::VAN_PBR)
 			{
 				int index = pbrMaterialIndex++;
-				material->m_MaterialPushConstant.materialIndex = index;
+				material->m_MaterialIndex = index;
 				materialManager->m_GlobalPBRMaterial.push_back(material);
 				materialManager->m_GlobalPBRParamData.push_back(material->m_BasePBRParam);
 				materialManager->m_GlobalPBRTextures.push_back(&(material->m_BaseColorTexture->GetImage()));
@@ -45,6 +46,9 @@ namespace VansGraphics
 			materialManager->m_GlobalPBRParamData.data(),
 			0,
 			sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRMaterial.size());
+
+		// Keep the PBR material buffer persistently mapped for fast per-frame CPU writes
+		materialManager->m_GlobalPBRDataBuffer.PersistentMap();
 
 		VkDescriptorSetLayoutBinding globalPBRMaterialBufferBinding =
 		{
@@ -144,6 +148,9 @@ namespace VansGraphics
 			0,
 			sizeof(ModelDataStruct) * nodeCount);
 
+		// Keep the transform buffer persistently mapped for fast per-frame CPU writes
+		m_Scene->m_InstanceTransformDataBuffer.PersistentMap();
+
 		VkDescriptorSetLayoutBinding instanceTransformBufferBinding =
 		{
 			PassBinding::BUFFER_0,
@@ -189,6 +196,9 @@ namespace VansGraphics
 
 		manager->m_BRDFIntegralLUT = new VansTexture();
 		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/BRDFIntegralLUT.png").c_str(), false, false, false);
+
+		manager->m_SkinBSDFLUT = new VansTexture();
+		manager->m_SkinBSDFLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/SkinBSDFLUT.png").c_str(), false, false, false);
 
 		VansVKBuffer prefilterCBBuffer;
 		uint32_t mipCount = log2(512);
@@ -239,7 +249,15 @@ namespace VansGraphics
 			VK_SHADER_STAGE_FRAGMENT_BIT,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding,sampleDiffuseConvBinding,sampleSpecularConBinding,environmentSHBuffer }, manager->m_BRDFInterationTexSetLayout);
+		VkDescriptorSetLayoutBinding skinBSDFLUTBinding =
+		{
+			PassBinding::TEXTURE_4,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding,sampleDiffuseConvBinding,sampleSpecularConBinding,environmentSHBuffer,skinBSDFLUTBinding }, manager->m_BRDFInterationTexSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BRDFInterationTexSetLayout }, manager->m_BRDFInterationTextDescriptorSets);
 
 		VansComputeShader* m_PreConvDiffuseShader = new VansComputeShader();

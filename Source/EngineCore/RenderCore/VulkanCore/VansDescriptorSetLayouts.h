@@ -12,7 +12,8 @@ namespace VansGraphics
 	{
 		DS_GLOBAL       = 0,  // Per-frame global data (Camera, Lights, Materials, IBL, Bindless)
 		DS_PASS         = 1,  // Per-pass data (varies per render pass / compute dispatch)
-		DS_OBJECT       = 2,  // Per-object data (Transform SSBO, geometry passes only)
+		DS_OBJECT       = 2,  // Per-object data (Transform SSBO, shared by all geometry nodes)
+		DS_ANIMATION    = 3,  // Per-node animation data (Bone matrices + bone weight SSBOs)
 		DS_COUNT
 	};
 
@@ -28,6 +29,7 @@ namespace VansGraphics
 		GLOBAL_BINDING_PRECONV_DIFFUSE          = 4,
 		GLOBAL_BINDING_PRECONV_SPECULAR         = 5,
 		GLOBAL_BINDING_SH_COEFFICIENTS          = 6,
+		GLOBAL_BINDING_SKIN_BSDF_LUT            = 7,
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -36,13 +38,36 @@ namespace VansGraphics
 	// ====================================================================
 	enum ObjectBinding : uint32_t
 	{
-		OBJECT_BINDING_TRANSFORM_SSBO   = 0,
+		OBJECT_BINDING_TRANSFORM_SSBO   = 0,   // Transform matrix SSBO (shared by all nodes)
+	};
+
+	// ====================================================================
+	// Set 3 (Per-Node Animation) Binding Indices
+	// Only used by VansCommonRenderNode for deferred opaque geometry.
+	// Animated nodes get real bone/weight buffers; static nodes get shared dummies.
+	// ====================================================================
+	enum AnimationBinding : uint32_t
+	{
+		ANIMATION_BINDING_BONEID_SSBO      = 0,   // Per-vertex bone IDs SSBO (ivec4 per vertex, per-submesh)
+		ANIMATION_BINDING_BONE_SSBO        = 1,   // Bone matrices SSBO (mat4[MAX_BONES])
+		ANIMATION_BINDING_BONEWEIGHT_SSBO  = 2,   // Per-vertex bone weights SSBO (vec4 per vertex, per-submesh)
+	};
+
+	// ====================================================================
+	// Set 4 (Per-Node Skin Texture) Binding Indices
+	// Only used by VansCommonRenderNode when the material type is VAN_SKIN.
+	// Each skin node owns its descriptor set with dedicated albedo + normal textures.
+	// ====================================================================
+	enum SkinTextureBinding : uint32_t
+	{
+		SKIN_TEXTURE_BINDING_ALBEDO  = 0,   // Skin albedo texture (COMBINED_IMAGE_SAMPLER)
+		SKIN_TEXTURE_BINDING_NORMAL  = 1,   // Skin normal texture (COMBINED_IMAGE_SAMPLER)
 	};
 
 	// ====================================================================
 	// Constants
 	// ====================================================================
-	static constexpr uint32_t MAX_BINDLESS_TEXTURES = 500;
+	static constexpr uint32_t MAX_BINDLESS_TEXTURES = 2048;
 
 	// ====================================================================
 	// Set 1 Per-Pass Binding Indices
@@ -378,6 +403,7 @@ namespace VansGraphics
 		// ==============================================
 		static void CreateAndAllocate_Global(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t maxBindlessTextures = MAX_BINDLESS_TEXTURES, uint32_t setCount = 1);
 		static void CreateAndAllocate_Object(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_Animation(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_PostProcess(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_DeferredLighting(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SkyBox(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -397,5 +423,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_GISHUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GIPointLight(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_RayTracing(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_SkinTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

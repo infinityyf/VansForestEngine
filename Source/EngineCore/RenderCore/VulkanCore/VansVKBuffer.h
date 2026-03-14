@@ -41,6 +41,9 @@ namespace VansGraphics
 
 		std::vector<VkBufferMemoryBarrier> m_BufferMemoryBarriers;
 
+		// Persistent mapping: cached host pointer (nullptr when not mapped)
+		void* m_MappedPtr = nullptr;
+
 	private:
 		VkBufferView m_VansVKBufferView;
 
@@ -54,6 +57,23 @@ namespace VansGraphics
 		void SetBufferMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition);
 
 		bool SetBufferData(void* data, int offset, int size);
+
+		// ── Persistent mapping API ────────────────────────────────────
+		// Map the whole buffer once and keep the pointer cached.
+		// Subsequent writes go through UpdateMapped() with zero Vulkan overhead.
+		bool PersistentMap();
+
+		// Unmap a previously persistent-mapped buffer.
+		void Unmap();
+
+		// Write data into the persistently mapped region (no vkMapMemory call).
+		// The buffer must have been PersistentMap()'d first.
+		void UpdateMapped(const void* data, VkDeviceSize offset, VkDeviceSize size);
+
+		// Returns true when the buffer is currently persistently mapped.
+		bool IsMapped() const { return m_MappedPtr != nullptr; }
+
+		void* GetMappedPtr() const { return m_MappedPtr; }
 
 		VkBuffer GetNativeBuffer() { return m_VansVKBuffer; }
 

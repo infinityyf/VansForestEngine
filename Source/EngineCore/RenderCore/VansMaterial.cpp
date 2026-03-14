@@ -102,6 +102,22 @@ void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 		}
 	);
 
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			m_BRDFInterationTextDescriptorSets[0],
+			PassBinding::TEXTURE_4,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					m_SkinBSDFLUT->GetImage().GetSampler(),
+					m_SkinBSDFLUT->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 
@@ -232,5 +248,44 @@ void VansGraphics::VansMaterial::BuildTransparentTextureDescriptors()
 			}
 		);
 	}
+	descManager->UpdateDescriptorSets();
+}
+
+void VansGraphics::VansMaterial::BuildSkinTextureDescriptors()
+{
+	// Allocate the skin texture descriptor set (Set 4: albedo + normal).
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_SkinTexture(m_SkinOwnedLayout, m_SkinOwnedDescSets);
+
+	auto* descManager = VansVKDescriptorManager::GetInstance();
+	descManager->ResetState();
+
+	if (m_BaseColorTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_SkinOwnedDescSets[0],
+			SKIN_TEXTURE_BINDING_ALBEDO, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_BaseColorTexture->GetImage().GetSampler(),
+				m_BaseColorTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_NormalTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_SkinOwnedDescSets[0],
+			SKIN_TEXTURE_BINDING_NORMAL, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_NormalTexture->GetImage().GetSampler(),
+				m_NormalTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
 	descManager->UpdateDescriptorSets();
 }

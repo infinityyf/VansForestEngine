@@ -123,7 +123,7 @@ void main()
         // Curvature was stored in normalInput.w by UnlitSkin.frag
         float curvature = subpassLoad(normalInput).w;
         CalculateDirectLight_Skin(brdfData, curvature, shadowMap, punctualShadowMap, lightResult);
-        AmbientBRDF_Skin(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+        //AmbientBRDF_Skin(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else
     {

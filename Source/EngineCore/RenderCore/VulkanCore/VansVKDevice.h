@@ -245,6 +245,10 @@ namespace VansGraphics
 
 		VkInstance m_VansVKInstance;
 
+#ifdef _DEBUG
+		VkDebugUtilsMessengerEXT m_DebugMessenger = VK_NULL_HANDLE;
+#endif
+
 		VkPhysicalDevice m_VansVKPhysicalDevice;
 
 		VkDevice m_VansVKLogicDevice;
@@ -291,6 +295,12 @@ namespace VansGraphics
 	private :
 
 		bool PrepareVulkanLibrary();
+
+#ifdef _DEBUG
+		static VkDebugUtilsMessengerCreateInfoEXT MakeDebugMessengerCreateInfo();
+		bool SetupDebugMessenger();
+		void DestroyDebugMessenger();
+#endif
 
 	private:
 		//get call avaliable extensions

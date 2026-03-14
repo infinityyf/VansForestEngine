@@ -91,6 +91,9 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 
 void VansGraphics::VansVKBuffer::DestroyVulkanBuffer(VkDevice& logical_device)
 {
+	// Unmap persistent mapping before destroying resources
+	Unmap();
+
 	if (VK_NULL_HANDLE != m_VansVKBufferView) 
 	{
 		vkDestroyBufferView(logical_device, m_VansVKBufferView, nullptr);
@@ -134,7 +137,47 @@ void VansGraphics::VansVKBuffer::SetBufferMemoryBarrier(VkPipelineStageFlags gen
 
 bool VansGraphics::VansVKBuffer::SetBufferData(void* data, int offset, int size)
 {
-	return VansVKMemoryManager::GetInstance()->MapMemoryFromHost(m_VansVKBufferMemory, offset, size,data,true);
+	// Fast path: if the buffer is already persistently mapped, just memcpy.
+	if (m_MappedPtr)
+	{
+		std::memcpy(static_cast<char*>(m_MappedPtr) + offset, data, size);
+		return true;
+	}
+	return VansVKMemoryManager::GetInstance()->MapMemoryFromHost(m_VansVKBufferMemory, offset, size, data, true);
 }
 
+bool VansGraphics::VansVKBuffer::PersistentMap()
+{
+	if (m_MappedPtr)
+		return true; // Already mapped
+
+	VkResult result = vkMapMemory(
+		VansVKMemoryManager::GetInstance()->GetLogicalDevice(),
+		m_VansVKBufferMemory, 0, m_BufferSize, 0, &m_MappedPtr);
+	if (result != VK_SUCCESS)
+	{
+		VANS_LOG_ERROR("PersistentMap: vkMapMemory failed.");
+		m_MappedPtr = nullptr;
+		return false;
+	}
+	return true;
+}
+
+void VansGraphics::VansVKBuffer::Unmap()
+{
+	if (!m_MappedPtr)
+		return;
+
+	vkUnmapMemory(
+		VansVKMemoryManager::GetInstance()->GetLogicalDevice(),
+		m_VansVKBufferMemory);
+	m_MappedPtr = nullptr;
+}
+
+void VansGraphics::VansVKBuffer::UpdateMapped(const void* data, VkDeviceSize offset, VkDeviceSize size)
+{
+	if (!m_MappedPtr)
+		return;
+	std::memcpy(static_cast<char*>(m_MappedPtr) + offset, data, size);
+}
 

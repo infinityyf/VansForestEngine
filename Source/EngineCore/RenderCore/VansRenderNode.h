@@ -30,24 +30,43 @@ namespace VansGraphics
 	};
 
 	class VansCamera;
+	class VansAnimationNode;
 	class VansRenderNode
 	{
-	public:
+		public:
 
-		VansRenderNode(VkDevice& device, RenderNodeType type);
+			VansRenderNode(VkDevice& device, RenderNodeType type);
 
-		virtual ~VansRenderNode();
+			virtual ~VansRenderNode();
 
-		std::string m_NodeName;
+			std::string m_NodeName;
 
-		// If non-empty, this node was auto-generated as part of a multi-mesh group.
-		// The hierarchy window uses this to group children under a parent tree node.
-		std::string m_ParentGroupName;
+			// If non-empty, this node was auto-generated as part of a multi-mesh group.
+			// The hierarchy window uses this to group children under a parent tree node.
+			std::string m_ParentGroupName;
 
-		VansMesh* m_Mesh;
+			VansMesh* m_Mesh;
 
-		VansMaterial* m_Material;
+			VansMaterial* m_Material;
 
+			// ── Animation support ───────────────────────────────────────────────
+			// True when this node's mesh has a skeleton (bones), regardless of whether
+			// any animation clips are currently playing.  Controls whether the real
+			// bone matrix + bone weight buffers are bound in Set 3 (descriptor setup time).
+			bool m_HasSkeletonBone = false;
+			// True when the animation system is actively driving this node (clips playing).
+			// Pushed to the shader each draw call as animationEnabled push constant so the
+			// vertex shader knows whether to run the skinning math.
+			bool m_AnimationEnabled = false;
+			// Back-reference to the owning VansAnimationNode (null for static nodes).
+			VansAnimationNode* m_AnimOwner = nullptr;
+			// Index of this submesh within the animation node's per-submesh buffer arrays.
+			// Used to look up the correct bone ID and weight buffers.
+			uint32_t m_AnimSubmeshIndex = 0;
+			// Pointers to this submesh's individual bone ID and weight GPU buffers.
+			// Set by ExpandMultiMeshToRenderNodes; null for static / whole-mesh nodes.
+			VansVKBuffer* m_AnimBoneIDBuffer     = nullptr;
+			VansVKBuffer* m_AnimBoneWeightBuffer  = nullptr;
 
 
 		//GPU 数据

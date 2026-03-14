@@ -169,6 +169,9 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.h">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansSubMesh.h">
+      <Filter>EngineCore\RenderCore\RenderComponent</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansTexture.h">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClInclude>
@@ -325,7 +328,6 @@
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
-    <ClInclude Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.h" />
     <ClInclude Include="Source\EngineCore\Util\VansFileUtil.h">
       <Filter>EngineCore\Utils</Filter>
     </ClInclude>
@@ -343,6 +345,9 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\VansTimer.h">
       <Filter>EngineCore\Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.h">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -447,7 +452,19 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VansScene.cpp">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VansSceneLoader.cpp">
+      <Filter>EngineCore\RenderCore\RenderComponent</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VansSceneDraw.cpp">
+      <Filter>EngineCore\RenderCore\RenderComponent</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VansScenePhysics.cpp">
+      <Filter>EngineCore\RenderCore\RenderComponent</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp">
+      <Filter>EngineCore\RenderCore\RenderComponent</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansSubMesh.cpp">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansTexture.cpp">
@@ -567,7 +584,6 @@
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
-    <ClCompile Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.cpp" />
     <ClCompile Include="Source\EngineCore\Util\VansInputManager.cpp">
       <Filter>EngineCore\Utils</Filter>
     </ClCompile>
@@ -582,6 +598,9 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\VansTimer.cpp">
       <Filter>EngineCore\Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.cpp">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

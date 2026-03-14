@@ -8,6 +8,7 @@
 #include "VulkanCore/VansRenderPass.h"
 #include "../../EngineCore/RenderCore/TerrainCore/VansTerrain.h"
 #include "../Util/VansLog.h"
+#include "../AnimationCore/VansAnimationNode.h"
 #include <iostream>
 using namespace VansGraphics;
 
@@ -89,12 +90,12 @@ void VansGraphics::VansRenderNode::UpdateModelData()
 {
 	ComputeModelDataFromTransform();
 	
-	// Push updated data to GPU using the global instance buffer in VansScene
+	// Push updated data to GPU using the persistently mapped instance buffer in VansScene
 	// Update at the offset specified by m_TransfromIndex
 	if (m_Scene && m_TransfromIndex >= 0)
 	{
 		size_t offset = m_TransfromIndex * sizeof(ModelDataStruct);
-		m_Scene->m_InstanceTransformDataBuffer.SetBufferData(&m_ModelData, offset, sizeof(m_ModelData));
+		m_Scene->m_InstanceTransformDataBuffer.UpdateMapped(&m_ModelData, offset, sizeof(m_ModelData));
 	}
 }
 
@@ -114,17 +115,16 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 	VansGraphicsShader& shader = *(m_Material->m_Shader);
 	cmd.EnsureGraphicsShader(shader, globalStateData, m_UsedDescSetLayouts);
 
-	//切换shader进行一次处理
-	if (VansVKGraphicsPipeline::CurrentValidGraphicsPipeline != (shader.GetGraphicsPipeline()->GetNativePipeline()))
-	{
-		cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, shader, 0, m_UsedDescSets, {});
-	}
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, shader, 0, m_UsedDescSets, {});
 
 	if (m_Material->m_Shader->GetPushConstantSize() > 0)
 	{
-		m_Material->m_MaterialPushConstant.transfromIndex = m_TransfromIndex;
+		VansDrawPushConstant pc{};
+		pc.materialIndex    = m_Material->m_MaterialIndex;
+		pc.transformIndex   = m_TransfromIndex;
+		pc.animationEnabled = m_AnimationEnabled ? 1 : 0;
 		cmd.UpdatePushConstants(*shader.GetGraphicsPipeline(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			0, m_Material->m_Shader->GetPushConstantSize(), &(m_Material->m_MaterialPushConstant));
+			0, m_Material->m_Shader->GetPushConstantSize(), &pc);
 	}
 
 	cmd.DrawMesh(*m_Mesh, shader, 1);
@@ -140,7 +140,7 @@ void VansGraphics::VansRenderNode::DrawPunctualShadow(VansVKCommandBuffer& cmd, 
 	//apply shader，确认Pipeline以及创建完毕
 	cmd.EnsureGraphicsShader(*(m_Material->m_Shader), global_state, m_UsedDescSetLayouts);
 
-	int data[4] = { lightIndex, shadowIndex , 0, m_Material->m_MaterialPushConstant.transfromIndex};
+	int data[4] = { lightIndex, shadowIndex , 0, m_TransfromIndex};
 	cmd.UpdatePushConstants(*(m_Material->m_Shader->GetGraphicsPipeline()), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		0, m_Material->m_Shader->GetPushConstantSize(), data);
 
@@ -173,17 +173,52 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 	m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
 	m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
 
-	// Set 2: Per-Object (Transform SSBO)
+	// Set 2: Per-Object — shared Transform SSBO (all nodes, animated or not)
 	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
 	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
+
+	// Set 3: Per-Node Animation (Bone IDs + Bone Matrices + Bone Weights)
+	// Animated nodes get a freshly allocated descriptor set with real GPU buffers.
+	// Each submesh has its own bone ID and weight buffers — no offset needed.
+	// Static nodes reuse the scene-shared dummy set (never accessed when animationEnabled==0).
+	m_UsedDescSetLayouts.push_back(m_Scene->m_AnimationDescriptorSetLayout);
+
+	if (m_HasSkeletonBone && m_AnimOwner && m_AnimBoneIDBuffer && m_AnimBoneWeightBuffer)
+	{
+		auto* descManager = VansVKDescriptorManager::GetInstance();
+		descManager->AllocateDescriptorSet({ m_Scene->m_AnimationDescriptorSetLayout }, modelBufferDescriptorSets);
+
+		m_UsedDescSets.push_back(modelBufferDescriptorSets[0]);
+		VANS_LOG("[VansCommonRenderNode] " << m_NodeName << ": per-node animation descriptor set (Set 3) created");
+	}
+	else
+	{
+		// Static node: bind shared dummy animation set — bone/weight data is never read
+		m_UsedDescSets.push_back(m_Scene->m_AnimationDescriptorSet);
+	}
+
+	// Set 4: Per-Material Skin Texture (albedo + normal)
+	// Owned by VansMaterial; built once and shared by all nodes using this material.
+	if (m_Material && m_Material->m_MaterialType == VansMaterialType::VAN_SKIN)
+	{
+		if (m_Material->m_SkinOwnedLayout == VK_NULL_HANDLE)
+		{
+			m_Material->BuildSkinTextureDescriptors();
+		}
+		m_UsedDescSetLayouts.push_back(m_Material->m_SkinOwnedLayout);
+		if (!m_Material->m_SkinOwnedDescSets.empty())
+		{
+			m_UsedDescSets.push_back(m_Material->m_SkinOwnedDescSets[0]);
+		}
+	}
 }
 
 void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager)
 {
 	if (mat && mat->m_MaterialType == VansMaterialType::VAN_PBR)
 	{
-		int idx = mat->m_MaterialPushConstant.materialIndex;
-		materialManager.m_GlobalPBRDataBuffer.SetBufferData(
+		int idx = mat->m_MaterialIndex;
+		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
 			&mat->m_BasePBRParam,
 			sizeof(VansBasePBRParam) * idx,
 			sizeof(VansBasePBRParam));
@@ -207,6 +242,30 @@ void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManage
 
 	// All resources are now in the global descriptor set (Set 0)
 	// No per-object descriptor updates needed
+	if (m_HasSkeletonBone && m_AnimOwner && m_AnimBoneIDBuffer && m_AnimBoneWeightBuffer)
+	{
+		auto* descManager = VansVKDescriptorManager::GetInstance();
+		descManager->ResetState();
+		// binding 0: Per-vertex Bone IDs SSBO (per-submesh)
+		descManager->m_BufferDescInfos.push_back({
+			modelBufferDescriptorSets[0], ANIMATION_BINDING_BONEID_SSBO, 0,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ m_AnimBoneIDBuffer->GetNativeBuffer(), 0, VK_WHOLE_SIZE }}
+			});
+		// binding 1: Bone Matrices SSBO (shared across all submeshes)
+		descManager->m_BufferDescInfos.push_back({
+			modelBufferDescriptorSets[0], ANIMATION_BINDING_BONE_SSBO, 0,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ m_AnimOwner->GetBoneBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }}
+			});
+		// binding 2: Per-vertex Bone Weights SSBO (per-submesh)
+		descManager->m_BufferDescInfos.push_back({
+			modelBufferDescriptorSets[0], ANIMATION_BINDING_BONEWEIGHT_SSBO, 0,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ m_AnimBoneWeightBuffer->GetNativeBuffer(), 0, VK_WHOLE_SIZE }}
+			});
+		descManager->UpdateDescriptorSets();
+	}
 }
 
 // ============================================================

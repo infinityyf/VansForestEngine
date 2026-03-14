@@ -106,7 +106,7 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -127,7 +127,7 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.3.268.0\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -211,6 +211,7 @@
     <ClInclude Include="Source\EngineCore\ScriptCore\VansTransform.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansGUIVulkanBackEnd.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansSubMesh.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansShader.h" />
@@ -286,9 +287,13 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansRenderNode.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansScene.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansSceneLoader.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansSceneDraw.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansScenePhysics.cpp" />
     <ClCompile Include="Source\EngineCore\ScriptCore\VansTransform.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansGUIVulkanBackEnd.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansSubMesh.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansShader.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansTexture.cpp" />

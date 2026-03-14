@@ -67,6 +67,9 @@ namespace VansGraphics
 
 		static void CopyImageToBuffer(VansVKCommandBuffer& command_buffer, VansVKImage& source_image, VansVKBuffer& dest_buffer, VkImageLayout layout, const std::vector<VkBufferImageCopy>& regions);
 
+	public:
+		VkDevice GetLogicalDevice() const { return m_LogicalDevice; }
+
 	private:
 		//device info
 		VkPhysicalDevice m_PhysicalDevice;

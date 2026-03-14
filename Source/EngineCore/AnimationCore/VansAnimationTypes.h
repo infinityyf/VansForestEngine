@@ -112,6 +112,7 @@ namespace VansGraphics
 	};
 
 	// ─── Vertex Bone Data (per-vertex, 4 influences max) ───
+	// Full struct used during import/extraction on CPU side.
 
 	struct VertexBoneData
 	{
@@ -120,6 +121,19 @@ namespace VansGraphics
 
 		void AddBoneInfluence(int boneID, float weight);
 		void Normalize();
+	};
+
+	// ─── GPU-side split structs (separate SSBO per submesh, no offset needed) ───
+	// Binding 0: Per-vertex bone IDs
+	struct VertexBoneID
+	{
+		int boneIDs[MAX_BONE_INFLUENCE] = { -1, -1, -1, -1 };
+	};
+
+	// Binding 2: Per-vertex bone weights
+	struct VertexBoneWeight
+	{
+		float weights[MAX_BONE_INFLUENCE] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	};
 
 	// ─── Import Result (returned by VansSkinnedMeshLoader) ───

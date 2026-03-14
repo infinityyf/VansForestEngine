@@ -429,6 +429,13 @@ namespace VansGraphics
 			 desired_extensions.size() > 0 ? &desired_extensions[0] : nullptr
 		};
 
+#ifdef _DEBUG
+		// Chain the messenger create info so the validation layer can report
+		// errors that occur during vkCreateInstance / vkDestroyInstance.
+		VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = MakeDebugMessengerCreateInfo();
+		instance_create_info.pNext = &debugCreateInfo;
+#endif
+
 		VkResult result = vkCreateInstance(&instance_create_info, nullptr, &m_VansVKInstance);
 		if ((result != VK_SUCCESS) || (m_VansVKInstance == VK_NULL_HANDLE))
 		{
@@ -679,6 +686,7 @@ namespace VansGraphics
 
 		auto vansConfigration = VansConfigration::GetInstance();
 #ifdef _DEBUG
+		//desired_instance_layers.push_back("VK_LAYER_KHRONOS_validation");
 		if (!vansConfigration->GetSupportRayTracing())
 		{
 			desired_instance_layers.push_back("VK_LAYER_RENDERDOC_Capture");
@@ -699,6 +707,10 @@ namespace VansGraphics
 		{
 			return false;
 		}
+
+#ifdef _DEBUG
+		SetupDebugMessenger();
+#endif
 
 		if (!m_VansVKSurface.CreateVulkanPresentSurface(m_VansVKInstance, VansGraphics::VansEditorWindow::m_VansEditorWindow.m_VansGraphicsHandle))
 		{
@@ -747,6 +759,65 @@ namespace VansGraphics
 		return true;
 	}
 
+	#ifdef _DEBUG
+	VkDebugUtilsMessengerCreateInfoEXT VansVKDevice::MakeDebugMessengerCreateInfo()
+	{
+		VkDebugUtilsMessengerCreateInfoEXT createInfo{};
+		createInfo.sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+		createInfo.messageSeverity =
+			VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+			VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+		createInfo.messageType =
+			VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+			VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+			VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+		// Use OutputDebugStringA – safe to call from any context including inside
+		// a Vulkan API call. Avoid engine logger here to prevent re-entrancy.
+		createInfo.pfnUserCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+			VkDebugUtilsMessageTypeFlagsEXT,
+			const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+			void*) -> VkBool32
+		{
+			// Skip benign layer-naming warnings (e.g. NVIDIA GPU Trace layer)
+			if (pCallbackData->pMessageIdName &&
+				strcmp(pCallbackData->pMessageIdName, "Loader Message") == 0 &&
+				strstr(pCallbackData->pMessage, "does not conform to naming standard"))
+			{
+				return VK_FALSE;
+			}
+			const char* prefix = (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+				? "[VK ERROR] " : "[VK WARN]  ";
+			OutputDebugStringA(prefix);
+			OutputDebugStringA(pCallbackData->pMessage);
+			OutputDebugStringA("\n");
+			return VK_FALSE;
+		};
+		return createInfo;
+	}
+
+	bool VansVKDevice::SetupDebugMessenger()
+	{
+		VkDebugUtilsMessengerCreateInfoEXT createInfo = MakeDebugMessengerCreateInfo();
+		VkResult result = vkCreateDebugUtilsMessengerEXT(m_VansVKInstance, &createInfo, nullptr, &m_DebugMessenger);
+		if (result != VK_SUCCESS)
+		{
+			VANS_LOG_WARN("Could not create debug utils messenger. Validation output will be unavailable.");
+			return false;
+		}
+		VANS_LOG("Vulkan validation layer debug messenger created.");
+		return true;
+	}
+
+	void VansVKDevice::DestroyDebugMessenger()
+	{
+		if (m_DebugMessenger != VK_NULL_HANDLE)
+		{
+			vkDestroyDebugUtilsMessengerEXT(m_VansVKInstance, m_DebugMessenger, nullptr);
+			m_DebugMessenger = VK_NULL_HANDLE;
+		}
+	}
+	#endif
+
 	bool VansVKDevice::VulkanDestroy()
 	{
 		CleanupFSR();
@@ -755,6 +826,9 @@ namespace VansGraphics
 			m_VansVKSurface.DestroyVulkanPresentSurface(m_VansVKInstance);
 		}
 		DestroyVulkanLogicDevice();
+#ifdef _DEBUG
+		DestroyDebugMessenger();
+#endif
 		DestroyVulkanInstance();
 		UnloadVulkanLibrary();
 		return true;

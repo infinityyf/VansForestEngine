@@ -1,4 +1,4 @@
-﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansRenderPass.h"
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
@@ -452,7 +452,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	m_GBufferImage1.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_R16G16B16A16_UNORM,
+		VK_FORMAT_R16G16B16A16_SFLOAT,
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,

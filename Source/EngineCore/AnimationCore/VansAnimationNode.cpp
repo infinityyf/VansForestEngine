@@ -1,5 +1,6 @@
 #include "VansAnimationNode.h"
 #include "../RenderCore/VansRenderNode.h"
+#include "../ScriptCore/VansTransform.h"
 #include "../Util/VansLog.h"
 
 #include <../../GLM/glm.hpp>
@@ -38,7 +39,12 @@ VansAnimationNode::~VansAnimationNode()
 
 void VansAnimationNode::SetRenderNode(VansRenderNode* renderNode)
 {
-	m_RenderNode = renderNode;
+	m_RenderNodes = { renderNode };
+}
+
+void VansAnimationNode::SetRenderNodes(const std::vector<VansRenderNode*>& nodes)
+{
+	m_RenderNodes = nodes;
 }
 
 void VansAnimationNode::SetSkeleton(const Skeleton& skeleton)
@@ -172,12 +178,8 @@ void VansAnimationNode::Resume()
 void VansAnimationNode::Stop()
 {
 	m_State       = AnimationState::Stopped;
-	m_CurrentTime = 0.0f;
 	m_BlendAlpha  = 0.0f;
-
-	// Reset bone matrices to identity
-	for (uint32_t i = 0; i < MAX_BONES; i++)
-		m_BoneMatricesSSBO.boneMatrices[i] = glm::mat4(1.0f);
+	// Keep m_CurrentTime so the pose freezes at the current progress
 }
 
 void VansAnimationNode::SetTime(float time)
@@ -230,6 +232,60 @@ void VansAnimationNode::AddEvent(const std::string& clipName, AnimationEvent eve
 		[](const AnimationEvent& a, const AnimationEvent& b) {
 			return a.triggerTime < b.triggerTime;
 		});
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Root Motion
+// ════════════════════════════════════════════════════════════════
+
+void VansAnimationNode::EnableRootMotion(bool enable)
+{
+	m_RootMotionEnabled = enable;
+	if (enable && m_RootBoneIndex < 0)
+	{
+		m_RootBoneIndex = DetectRootBoneIndex();
+		if (m_RootBoneIndex >= 0)
+		{
+			VANS_LOG("[VansAnimationNode] " << m_Name << ": root motion enabled, root bone = \""
+			         << m_Skeleton.bones[m_RootBoneIndex].name << "\" (index " << m_RootBoneIndex << ")");
+		}
+		else
+		{
+			VANS_LOG_WARN("[VansAnimationNode] " << m_Name << ": root motion enabled but no root bone found!");
+		}
+	}
+	m_RootMotionInitialized = false; // reset so first frame re-samples
+}
+
+void VansAnimationNode::SetTransformID(uint32_t transformID)
+{
+	m_TransformID    = transformID;
+	m_HasTransformID = true;
+}
+
+void VansAnimationNode::SetRootBone(const std::string& boneName)
+{
+	auto it = m_Skeleton.boneNameToIndex.find(boneName);
+	if (it != m_Skeleton.boneNameToIndex.end())
+	{
+		m_RootBoneIndex = it->second;
+		VANS_LOG("[VansAnimationNode] " << m_Name << ": root bone set to \"" << boneName
+		         << "\" (index " << m_RootBoneIndex << ")");
+	}
+	else
+	{
+		VANS_LOG_WARN("[VansAnimationNode] " << m_Name << ": root bone \"" << boneName << "\" not found in skeleton");
+	}
+}
+
+int VansAnimationNode::DetectRootBoneIndex() const
+{
+	for (uint32_t i = 0; i < (uint32_t)m_Skeleton.bones.size(); i++)
+	{
+		if (m_Skeleton.bones[i].parentIndex < 0)
+			return (int)i;
+	}
+	return -1;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -309,10 +365,18 @@ void VansAnimationNode::Update(float deltaTime)
 	// 5. Apply bone overrides (IK / procedural)
 	ApplyBoneOverrides(localTransforms);
 
-	// 6. Update hierarchy: propagate local → global
+	// 5.5 Ensure root bone index is always known (needed by UpdateHierarchy even without root motion)
+	if (m_RootBoneIndex < 0)
+		m_RootBoneIndex = DetectRootBoneIndex();
+
+	// 6. Extract root motion (before hierarchy propagation)
+	if (m_RootMotionEnabled)
+		ExtractRootMotion(localTransforms);
+
+	// 7. Update hierarchy: propagate local → global
 	UpdateHierarchy(localTransforms);
 
-	// 7. Build final matrices: global * offset
+	// 8. Build final matrices: global * offset
 	BuildFinalMatrices();
 }
 
@@ -357,8 +421,92 @@ void VansAnimationNode::DestroyGPUResources()
 	for (auto& buffer : m_BoneBuffers)
 		buffer.DestroyVulkanBuffer(m_Device);
 
+	for (auto& buffer : m_PerSubmeshBoneIDBuffers)
+		buffer.DestroyVulkanBuffer(m_Device);
+
+	for (auto& buffer : m_PerSubmeshBoneWeightBuffers)
+		buffer.DestroyVulkanBuffer(m_Device);
+
 	m_BoneBuffers.clear();
+	m_PerSubmeshBoneIDBuffers.clear();
+	m_PerSubmeshBoneWeightBuffers.clear();
 	m_Device = VK_NULL_HANDLE;
+}
+
+void VansAnimationNode::UploadPerSubmeshBoneBuffers(const std::vector<std::vector<VertexBoneData>>& perSubmeshBoneData)
+{
+	if (perSubmeshBoneData.empty() || m_Device == VK_NULL_HANDLE)
+		return;
+
+	uint32_t submeshCount = static_cast<uint32_t>(perSubmeshBoneData.size());
+	m_PerSubmeshBoneIDBuffers.resize(submeshCount);
+	m_PerSubmeshBoneWeightBuffers.resize(submeshCount);
+
+	for (uint32_t s = 0; s < submeshCount; s++)
+	{
+		const auto& boneData = perSubmeshBoneData[s];
+		if (boneData.empty())
+		{
+			// Create minimal dummy buffers for empty submeshes
+			m_PerSubmeshBoneIDBuffers[s].CreatVulkanBuffer(
+				m_Device, 64, VK_FORMAT_R32_SFLOAT,
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+			m_PerSubmeshBoneWeightBuffers[s].CreatVulkanBuffer(
+				m_Device, 64, VK_FORMAT_R32_SFLOAT,
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+			continue;
+		}
+
+		uint32_t vertexCount = static_cast<uint32_t>(boneData.size());
+
+		// Split VertexBoneData into separate ID and weight arrays
+		std::vector<VertexBoneID> boneIDs(vertexCount);
+		std::vector<VertexBoneWeight> boneWeights(vertexCount);
+		for (uint32_t v = 0; v < vertexCount; v++)
+		{
+			for (uint32_t i = 0; i < MAX_BONE_INFLUENCE; i++)
+			{
+				boneIDs[v].boneIDs[i]     = boneData[v].boneIDs[i];
+				boneWeights[v].weights[i]  = boneData[v].weights[i];
+			}
+		}
+
+		// Upload bone IDs buffer
+		VkDeviceSize idBufferSize = sizeof(VertexBoneID) * vertexCount;
+		bool ok = m_PerSubmeshBoneIDBuffers[s].CreatVulkanBuffer(
+			m_Device, idBufferSize, VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		if (!ok)
+		{
+			VANS_LOG_ERROR("[VansAnimationNode] " << m_Name << ": failed to create bone ID buffer for submesh " << s);
+			continue;
+		}
+		m_PerSubmeshBoneIDBuffers[s].SetBufferData(
+			boneIDs.data(), 0, static_cast<int>(idBufferSize));
+
+		// Upload bone weights buffer
+		VkDeviceSize weightBufferSize = sizeof(VertexBoneWeight) * vertexCount;
+		ok = m_PerSubmeshBoneWeightBuffers[s].CreatVulkanBuffer(
+			m_Device, weightBufferSize, VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		if (!ok)
+		{
+			VANS_LOG_ERROR("[VansAnimationNode] " << m_Name << ": failed to create bone weight buffer for submesh " << s);
+			continue;
+		}
+		m_PerSubmeshBoneWeightBuffers[s].SetBufferData(
+			boneWeights.data(), 0, static_cast<int>(weightBufferSize));
+
+		VANS_LOG("[VansAnimationNode] " << m_Name << ": submesh " << s
+			<< " bone buffers uploaded (" << vertexCount << " vertices)");
+	}
+
+	VANS_LOG("[VansAnimationNode] " << m_Name << ": uploaded per-submesh bone buffers for "
+		<< submeshCount << " submesh(es)");
 }
 
 void VansAnimationNode::UploadBoneMatrices(uint32_t frameIndex)
@@ -428,6 +576,7 @@ void VansAnimationNode::AdvanceTime(float dt)
 					m_CurrentTime = start;
 
 				m_LastEventTime = start;  // reset event tracking on loop
+				m_LoopJustWrapped = true; // signal root motion to skip delta this frame
 			}
 			else
 			{
@@ -554,6 +703,93 @@ void VansAnimationNode::ApplyBoneOverrides(std::vector<glm::mat4>& localTransfor
 }
 
 // ════════════════════════════════════════════════════════════════
+//  Internal: ExtractRootMotion
+//  Extracts the root bone's translation/rotation delta per frame,
+//  applies it to the entity's VansTransformStore, and zeros the
+//  root bone's horizontal translation in the skeleton so the mesh
+//  doesn't double-move.
+// ════════════════════════════════════════════════════════════════
+
+void VansAnimationNode::ExtractRootMotion(std::vector<glm::mat4>& localTransforms)
+{
+	if (m_RootBoneIndex < 0 || m_RootBoneIndex >= (int)localTransforms.size())
+		return;
+
+	// Decompose root bone local transform
+	glm::vec3 rootPos, rootScale, skew;
+	glm::quat rootRot;
+	glm::vec4 perspective;
+	glm::decompose(localTransforms[m_RootBoneIndex], rootScale, rootRot, rootPos, skew, perspective);
+
+	// Reset deltas
+	m_LastRootMotionDelta    = glm::vec3(0.0f);
+	m_LastRootRotationDelta  = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+	if (!m_RootMotionInitialized)
+	{
+		// First frame: just save the root pose, no delta to apply
+		m_PrevRootPosition      = rootPos;
+		m_PrevRootRotation      = rootRot;
+		m_RootMotionInitialized = true;
+	}
+	else if (m_LoopJustWrapped)
+	{
+		// Loop just wrapped — the position jumped back to clip start.
+		// Don't apply a delta this frame; just resample the new start pose.
+		m_PrevRootPosition = rootPos;
+		m_PrevRootRotation = rootRot;
+		m_LoopJustWrapped  = false;
+	}
+	else
+	{
+		// Normal frame: compute delta
+		glm::vec3 deltaPos = rootPos - m_PrevRootPosition;
+		glm::quat deltaRot = rootRot * glm::inverse(m_PrevRootRotation);
+
+		m_PrevRootPosition = rootPos;
+		m_PrevRootRotation = rootRot;
+
+		m_LastRootMotionDelta   = deltaPos;
+		m_LastRootRotationDelta = deltaRot;
+
+		// Apply delta to world transform
+		if (m_HasTransformID)
+		{
+			VansTransform& transform = VansTransformStore::GetTransform(m_TransformID);
+
+			// Rotate the local-space delta into world space using the entity's current Y rotation,
+			// and scale by the entity's transform scale so root motion matches the visual size.
+			float yawRad = glm::radians(transform.m_Rotation.y);
+			glm::mat3 entityYawMat = glm::mat3(glm::rotate(glm::mat4(1.0f), yawRad, glm::vec3(0.0f, 1.0f, 0.0f)));
+			glm::vec3 worldDelta = entityYawMat * (deltaPos * transform.m_Scale);
+
+			transform.m_Position += worldDelta;
+
+			// Extract yaw from delta rotation and apply to entity
+			// deltaRot encodes the rotation change; extract the Y-axis (yaw) component
+			glm::vec3 deltaEuler = glm::degrees(glm::eulerAngles(deltaRot));
+			transform.m_Rotation.y += deltaEuler.y;
+
+			// Mark transform dirty so UpdateTransformRenderData picks it up
+			VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
+		}
+	}
+
+	// Zero out the root bone's position in the local transform so the skeleton
+	// doesn't double-move. Keep the Y component if you want vertical motion
+	// (jumps/crouches) to stay in the skeleton, or zero it for full root motion.
+	// Here we zero XZ (horizontal) and keep Y in skeleton space.
+	glm::vec3 skeletonPos = glm::vec3(0.0f, rootPos.y, 0.0f);
+	glm::mat4 T = glm::translate(glm::mat4(1.0f), skeletonPos);
+	glm::mat4 R = glm::toMat4(rootRot);  // keep full rotation in skeleton (only yaw delta was applied to entity)
+	glm::mat4 S = glm::scale(glm::mat4(1.0f), rootScale);
+	localTransforms[m_RootBoneIndex] = T * R * S;
+
+	// Clear the loop-wrap flag (in case it wasn't cleared above — e.g. root motion disabled mid-frame)
+	m_LoopJustWrapped = false;
+}
+
+// ════════════════════════════════════════════════════════════════
 //  Internal: UpdateHierarchy
 //  Propagate local → global transforms via parent chain (DFS)
 // ════════════════════════════════════════════════════════════════
@@ -561,6 +797,24 @@ void VansAnimationNode::ApplyBoneOverrides(std::vector<glm::mat4>& localTransfor
 void VansAnimationNode::UpdateHierarchy(std::vector<glm::mat4>& localTransforms)
 {
 	uint32_t boneCount = (uint32_t)m_Skeleton.bones.size();
+
+	// When root motion is OFF, strip the root bone's animated translation so the
+	// skeleton stays in place. Keep rotation and scale so the character still
+	// turns/scales in-place via the animation.
+	if (!m_RootMotionEnabled && m_RootBoneIndex >= 0 && m_RootBoneIndex < (int)boneCount)
+	{
+		glm::vec3 pos, scale, skew;
+		glm::quat rot;
+		glm::vec4 perspective;
+		glm::decompose(localTransforms[m_RootBoneIndex], scale, rot, pos, skew, perspective);
+
+		// Keep only Y (vertical) so the mesh doesn't float; zero XZ so it stays planted
+		glm::vec3 clampedPos = glm::vec3(0.0f, pos.y, 0.0f);
+		glm::mat4 T = glm::translate(glm::mat4(1.0f), clampedPos);
+		glm::mat4 R = glm::toMat4(rot);
+		glm::mat4 S = glm::scale(glm::mat4(1.0f), scale);
+		localTransforms[m_RootBoneIndex] = T * R * S;
+	}
 
 	for (uint32_t b = 0; b < boneCount; b++)
 	{

@@ -1,8 +1,11 @@
 #pragma once
 #include "VansBaseWindowComponent.h"
+#include "../../AnimationCore/VansAnimationTypes.h"
+#include "../../AnimationCore/VansAnimationClip.h"
 
 #include <string>
 #include <vector>
+#include <filesystem>
 namespace VansGraphics
 {
 	enum InspectResourceType
@@ -11,6 +14,7 @@ namespace VansGraphics
 		TextAsset,
 		TextureAsset,
 		ModelAsset,
+		AnimationClipAsset,
 	};
 	class VansInspectorWindow : public VansBaseWindowComponent
 	{
@@ -25,5 +29,19 @@ namespace VansGraphics
 		void ShowTextureAsset(VansVKDevice& device);
 
 		void ShowModelTextureAsset(VansVKDevice& device);
+
+		void ShowAnimationClipAsset();
+
+		// ── Cached .vclip data for the inspector ──
+		struct CachedVClipData
+		{
+			std::filesystem::path loadedPath;
+			bool                  valid = false;
+			VansAnimationClip     clip;
+			Skeleton              skeleton;
+			float                 scrubTime   = 0.0f;
+			int                   selectedBone = -1;
+		};
+		CachedVClipData m_VClipCache;
 	};
 }

@@ -5,6 +5,7 @@
 #include "VulkanCore/VansVKBuffer.h"
 #include "VansRuntimeRenderTextureManager.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
+#include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "BRDFData/VansPBR.h"
 #include "BRDFData/VansLight.h"
 #include "VansAsset.h"
@@ -26,12 +27,16 @@ namespace VansGraphics
 		VAN_SCREEN_SPACE_AO = 6,
 		VAN_SCREEN_SPACE_REFLECTION = 7,
 		VAN_SHAODW = 8,
+		VAN_SKIN = 9,
 	};
 
-	struct alignas(16) VansMaterialPushConstant
+	// Lightweight push-constant payload built at draw time.
+	// Each field maps to a global GPU resource index.
+	struct alignas(16) VansDrawPushConstant
 	{
-		int		materialIndex; //用于索引全局gpu资源  : pbr参数，objectcb， texture bindless
-		int		transfromIndex; //用于索引model matrix
+		int materialIndex;    // index into global PBR param SSBO / bindless textures
+		int transformIndex;   // index into per-object transform SSBO
+		int animationEnabled; // 1 = skinned, 0 = static
 	};
 
 	class VansMaterialManager
@@ -138,6 +143,8 @@ namespace VansGraphics
 
 		VansTexture* m_BRDFIntegralLUT;
 
+		VansTexture* m_SkinBSDFLUT;
+
 		uint32_t     m_SSGITemporalFrame = 0;
 
 		VansMaterialManager();
@@ -243,11 +250,20 @@ namespace VansGraphics
 
 		// Legacy: create layout from explicit bindings list.
 		void CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings = {});
+
+		// ── Skin material resources ─────────────────────────────────────────
+		// Each skin material owns its own descriptor set holding dedicated
+		// albedo + normal textures (Set 4 in the pipeline layout).
+		VkDescriptorSetLayout m_SkinOwnedLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_SkinOwnedDescSets;
+
+		// Allocate the skin texture descriptor set and write albedo + normal bindings.
+		void BuildSkinTextureDescriptors();
 		//shader
 		VansGraphicsShader* m_Shader;
 
-		//push constant
-		VansMaterialPushConstant m_MaterialPushConstant;
+		// Global PBR buffer index assigned during scene preparation.
+		int m_MaterialIndex = -1;
 
 		////定义GPU数据
 		//void CreatePBRMaterialDataBuffer(VkDevice& logic_device);

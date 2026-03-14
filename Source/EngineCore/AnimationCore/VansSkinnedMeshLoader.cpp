@@ -2,8 +2,10 @@
 #include "VansAnimationClip.h"
 #include "../Util/VansLog.h"
 
+#include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/anim.h>
+#include <assimp/postprocess.h>
 
 #include <../../GLM/glm.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
@@ -53,27 +55,39 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 		return false;
 	}
 
-	// Step 1: Check if FBX contains animations
-	if (!scene->HasAnimations())
+	// Step 1: Check if any mesh has bones.
+	// Animations are optional – a bind-pose model (no clips) still needs the full
+	// skeleton + bone-weight pipeline so the GPU skinning path is enabled.
+	bool sceneHasBones = false;
+	for (uint32_t m = 0; m < scene->mNumMeshes && !sceneHasBones; m++)
+		if (scene->mMeshes[m]->mNumBones > 0)
+			sceneHasBones = true;
+
+	if (!sceneHasBones)
 	{
 		outResult.hasAnimation = false;
-		VANS_LOG("[VansSkinnedMeshLoader] No animations found in: " << fbxFilePath);
+		VANS_LOG("[VansSkinnedMeshLoader] No bones found in: " << fbxFilePath);
 		return true;
 	}
 
-	outResult.hasAnimation = true;
-	VANS_LOG("[VansSkinnedMeshLoader] Found " << scene->mNumAnimations
-	         << " animation(s) in: " << fbxFilePath);
+	VANS_LOG("[VansSkinnedMeshLoader] Bones detected in: " << fbxFilePath
+	         << (scene->HasAnimations()
+	             ? " (" + std::to_string(scene->mNumAnimations) + " animation clip(s))"
+	             : " (bind-pose only, no animation clips)"));
 
 	// Step 2: Extract skeleton
 	ExtractSkeleton(scene, outResult.skeleton);
 
 	if (outResult.skeleton.bones.empty())
 	{
-		VANS_LOG_WARN("[VansSkinnedMeshLoader] Scene has animations but no bones found!");
+		VANS_LOG_WARN("[VansSkinnedMeshLoader] Meshes have bones but skeleton extraction yielded nothing!");
 		outResult.hasAnimation = false;
 		return true;
 	}
+
+	// Skeleton successfully extracted – mark as having a skeletal rig.
+	// Even without animation clips the bone pipeline must run (identity-pose skinning).
+	outResult.hasAnimation = true;
 
 	// Step 3: Extract bone weights per vertex
 	ExtractVertexBoneData(scene, outResult.skeleton, totalVertexCount, outResult.vertexBoneData);
@@ -107,7 +121,22 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 			Skeleton cachedSkeleton;
 			if (VansAnimationClipIO::Load(vclipPath, clip, cachedSkeleton))
 			{
-				VANS_LOG("[VansSkinnedMeshLoader] Loaded cached clip: " << vclipPath);
+				// Validate that cached skeleton matches the freshly extracted one.
+				// If the bone count changed (e.g. hierarchy-only bones now included),
+				// the cache is stale and must be re-extracted.
+				if (cachedSkeleton.bones.size() != outResult.skeleton.bones.size())
+				{
+					VANS_LOG_WARN("[VansSkinnedMeshLoader] Cached clip bone count ("
+					              << cachedSkeleton.bones.size() << ") != current skeleton ("
+					              << outResult.skeleton.bones.size() << "), re-extracting: " << vclipPath);
+					ExtractClipFromAssimp(anim, outResult.skeleton, clip);
+					clip.clipName = clipName;
+					VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
+				}
+				else
+				{
+					VANS_LOG("[VansSkinnedMeshLoader] Loaded cached clip: " << vclipPath);
+				}
 			}
 			else
 			{
@@ -140,14 +169,50 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 //  ExtractSkeleton
 // ════════════════════════════════════════════════════════════════
 
+// ── Helper: find an aiNode by name in the scene tree ──
+static const aiNode* FindAiNodeByName(const aiNode* node, const std::string& name)
+{
+	if (!node) return nullptr;
+	if (std::string(node->mName.C_Str()) == name)
+		return node;
+	for (uint32_t i = 0; i < node->mNumChildren; i++)
+	{
+		const aiNode* found = FindAiNodeByName(node->mChildren[i], name);
+		if (found) return found;
+	}
+	return nullptr;
+}
+
+// ── Helper: compute the offset matrix for a hierarchy-only node ──
+// The offset matrix transforms from model space to bone-local space.
+// For a bone that is part of the node tree, this is the inverse of the
+// accumulated (model-space) transform of that node.
+static glm::mat4 ComputeOffsetMatrixFromNode(const aiNode* node)
+{
+	// Accumulate transforms from root to this node
+	glm::mat4 modelSpaceTransform = glm::mat4(1.0f);
+	std::vector<const aiNode*> chain;
+	const aiNode* cur = node;
+	while (cur)
+	{
+		chain.push_back(cur);
+		cur = cur->mParent;
+	}
+	// Walk from root → node
+	for (int i = (int)chain.size() - 1; i >= 0; i--)
+		modelSpaceTransform = modelSpaceTransform * ConvertMat4(chain[i]->mTransformation);
+
+	return glm::inverse(modelSpaceTransform);
+}
+
 void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
                                                            Skeleton& outSkeleton)
 {
 	outSkeleton.bones.clear();
 	outSkeleton.boneNameToIndex.clear();
 
-	// Collect all unique bones from all meshes
-	std::unordered_map<std::string, const aiBone*> uniqueBones;
+	// ── Phase 1: Collect all unique bones that have vertex weights (from meshes) ──
+	std::unordered_map<std::string, const aiBone*> weightedBones;
 	for (uint32_t m = 0; m < scene->mNumMeshes; m++)
 	{
 		const aiMesh* mesh = scene->mMeshes[m];
@@ -155,33 +220,105 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 		{
 			const aiBone* bone = mesh->mBones[b];
 			std::string boneName = bone->mName.C_Str();
-			if (uniqueBones.find(boneName) == uniqueBones.end())
-				uniqueBones[boneName] = bone;
+			if (weightedBones.find(boneName) == weightedBones.end())
+				weightedBones[boneName] = bone;
 		}
 	}
 
-	// Create BoneInfo for each unique bone
+	// ── Phase 2: For each weighted bone, walk UP the aiNode tree and collect ──
+	//    all ancestor nodes until we reach the scene root. This ensures
+	//    hierarchy-only bones (like "Bip01") that have no direct vertex
+	//    weights but serve as parents in the bone chain are included.
+	std::unordered_set<std::string> allBoneNames;
+	for (const auto& [name, _] : weightedBones)
+		allBoneNames.insert(name);
+
+	// Also collect ancestor names
+	for (const auto& [name, _] : weightedBones)
+	{
+		const aiNode* node = FindAiNodeByName(scene->mRootNode, name);
+		if (!node) continue;
+
+		// Walk up from parent (the bone itself is already in the set)
+		const aiNode* ancestor = node->mParent;
+		while (ancestor && ancestor != scene->mRootNode)
+		{
+			std::string ancestorName = ancestor->mName.C_Str();
+			if (!ancestorName.empty())
+				allBoneNames.insert(ancestorName);
+			ancestor = ancestor->mParent;
+		}
+	}
+
+	// Also add bones that are referenced by animation channels but have no weights
+	if (scene->HasAnimations())
+	{
+		for (uint32_t a = 0; a < scene->mNumAnimations; a++)
+		{
+			const aiAnimation* anim = scene->mAnimations[a];
+			for (uint32_t c = 0; c < anim->mNumChannels; c++)
+			{
+				std::string channelName = anim->mChannels[c]->mNodeName.C_Str();
+				if (allBoneNames.count(channelName))
+					continue; // already included
+				// Only add if it's an ancestor or descendant of an existing bone
+				const aiNode* node = FindAiNodeByName(scene->mRootNode, channelName);
+				if (node)
+					allBoneNames.insert(channelName);
+			}
+		}
+	}
+
+	// ── Phase 3: Create BoneInfo for each bone name ──
 	int boneIndex = 0;
-	for (const auto& [name, aiBonePtr] : uniqueBones)
+	for (const auto& name : allBoneNames)
 	{
 		BoneInfo info;
 		info.id           = boneIndex;
 		info.name         = name;
-		info.offsetMatrix = ConvertMat4(aiBonePtr->mOffsetMatrix);
 		info.parentIndex  = -1;  // resolved below
+
+		// Use the offset matrix from mesh bone data if available (most accurate).
+		// For hierarchy-only bones, compute from the node's accumulated transform.
+		auto wbIt = weightedBones.find(name);
+		if (wbIt != weightedBones.end())
+		{
+			info.offsetMatrix = ConvertMat4(wbIt->second->mOffsetMatrix);
+		}
+		else
+		{
+			const aiNode* node = FindAiNodeByName(scene->mRootNode, name);
+			if (node)
+				info.offsetMatrix = ComputeOffsetMatrixFromNode(node);
+			else
+				info.offsetMatrix = glm::mat4(1.0f);
+		}
 
 		outSkeleton.bones.push_back(info);
 		outSkeleton.boneNameToIndex[name] = boneIndex;
 		boneIndex++;
 	}
 
-	// Resolve parent-child hierarchy by walking the aiNode tree
+	// ── Phase 4: Resolve parent-child hierarchy by walking the aiNode tree ──
 	BuildHierarchyFromNodeTree(scene->mRootNode, outSkeleton, -1);
 
 	// Store global inverse transform
 	outSkeleton.globalInverseTransform = glm::inverse(ConvertMat4(scene->mRootNode->mTransformation));
 
-	VANS_LOG("[VansSkinnedMeshLoader] Skeleton extracted: " << outSkeleton.bones.size() << " bones");
+	// Log which bones are hierarchy-only (no vertex weights)
+	int hierarchyOnlyCount = 0;
+	for (const auto& bone : outSkeleton.bones)
+	{
+		if (weightedBones.find(bone.name) == weightedBones.end())
+		{
+			hierarchyOnlyCount++;
+			VANS_LOG("[VansSkinnedMeshLoader] Hierarchy-only bone: \"" << bone.name
+			         << "\" (id=" << bone.id << ", parentIndex=" << bone.parentIndex << ")");
+		}
+	}
+
+	VANS_LOG("[VansSkinnedMeshLoader] Skeleton extracted: " << outSkeleton.bones.size()
+	         << " bones (" << hierarchyOnlyCount << " hierarchy-only)");
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -216,6 +353,51 @@ void VansGraphics::VansSkinnedMeshLoader::BuildHierarchyFromNodeTree(
 }
 
 // ════════════════════════════════════════════════════════════════
+//  Helper: build a map from mesh index (scene->mMeshes[]) to the aiNode that owns it.
+//  A mesh can appear in multiple nodes; we record the first one found (depth-first).
+// ════════════════════════════════════════════════════════════════
+
+static void BuildMeshToNodeMap(const aiNode* node,
+                               std::unordered_map<uint32_t, const aiNode*>& meshToNode)
+{
+	if (!node) return;
+	for (uint32_t i = 0; i < node->mNumMeshes; i++)
+	{
+		uint32_t meshIdx = node->mMeshes[i];
+		if (meshToNode.find(meshIdx) == meshToNode.end())
+			meshToNode[meshIdx] = node;
+	}
+	for (uint32_t i = 0; i < node->mNumChildren; i++)
+		BuildMeshToNodeMap(node->mChildren[i], meshToNode);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Helper: walk up the aiNode tree from a given node and return the
+//  bone ID of the nearest ancestor whose name matches a bone in the skeleton.
+//  Returns -1 if no bone ancestor is found.
+// ════════════════════════════════════════════════════════════════
+
+static int FindNearestBoneAncestor(const aiNode* node,
+                                   const VansGraphics::Skeleton& skeleton)
+{
+	// Start from the node itself — its name may already be a bone (e.g. rigid mesh
+	// has the same name as the bone, or the node IS the bone).
+	const aiNode* current = node;
+	while (current)
+	{
+		std::string nodeName = current->mName.C_Str();
+		if (!nodeName.empty())
+		{
+			auto it = skeleton.boneNameToIndex.find(nodeName);
+			if (it != skeleton.boneNameToIndex.end())
+				return it->second;   // found a bone
+		}
+		current = current->mParent;
+	}
+	return -1;
+}
+
+// ════════════════════════════════════════════════════════════════
 //  ExtractVertexBoneData
 // ════════════════════════════════════════════════════════════════
 
@@ -231,13 +413,19 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 	// Track vertex offset as we process each mesh
 	uint32_t vertexOffset = 0;
 
+	// First pass: record per-mesh vertex offset for the second-pass fixup
+	std::vector<uint32_t> meshVertexOffsets(scene->mNumMeshes, 0);
+
 	for (uint32_t m = 0; m < scene->mNumMeshes; m++)
 	{
 		const aiMesh* mesh = scene->mMeshes[m];
+		meshVertexOffsets[m] = vertexOffset;
 
 		for (uint32_t b = 0; b < mesh->mNumBones; b++)
 		{
 			const aiBone* bone = mesh->mBones[b];
+			if (!bone) continue;
+
 			std::string boneName = bone->mName.C_Str();
 
 			auto it = skeleton.boneNameToIndex.find(boneName);
@@ -246,17 +434,87 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 
 			int boneID = it->second;
 
+			// FBX files commonly emit bone entries for the full skeleton in every
+			// sub-mesh, even when a bone has zero influence on that mesh's vertices.
+			// Skip silently — this is expected Assimp behaviour, not an error.
+			if (!bone->mWeights || bone->mNumWeights == 0)
+				continue;
+
 			for (uint32_t w = 0; w < bone->mNumWeights; w++)
 			{
-				uint32_t vertexID = vertexOffset + bone->mWeights[w].mVertexId;
-				float weight      = bone->mWeights[w].mWeight;
+				uint32_t localVertexID  = bone->mWeights[w].mVertexId;
+				uint32_t globalVertexID = vertexOffset + localVertexID;
+				float weight            = bone->mWeights[w].mWeight;
 
-				if (vertexID < totalVertexCount)
-					outData[vertexID].AddBoneInfluence(boneID, weight);
+				if (weight <= 0.0f)
+					continue;  // skip zero-weight influences
+
+				if (globalVertexID < totalVertexCount)
+				{
+					outData[globalVertexID].AddBoneInfluence(boneID, weight);
+				}
+				else
+				{
+					VANS_LOG_WARN("[VansSkinnedMeshLoader] Out-of-bounds vertexID "
+					              << globalVertexID << " >= " << totalVertexCount
+					              << " (bone \"" << boneName << "\", mesh " << m << ")");
+				}
 			}
 		}
 
 		vertexOffset += mesh->mNumVertices;
+	}
+
+	// ── Second pass: rigid-bind fixup for unskinned meshes parented to bones ──
+	// Build mesh-index → aiNode map so we can walk up the node tree.
+	std::unordered_map<uint32_t, const aiNode*> meshToNode;
+	BuildMeshToNodeMap(scene->mRootNode, meshToNode);
+
+	for (uint32_t m = 0; m < scene->mNumMeshes; m++)
+	{
+		const aiMesh* mesh = scene->mMeshes[m];
+
+		// Skip meshes that already have bone data (skinned meshes)
+		if (mesh->mNumBones > 0)
+		{
+			continue;
+		}
+
+		uint32_t start = meshVertexOffsets[m];
+		uint32_t end   = start + mesh->mNumVertices;
+
+		// Check if ALL vertices of this mesh are still unbound (-1)
+		bool allUnbound = true;
+		for (uint32_t v = start; v < end && v < totalVertexCount; v++)
+		{
+			if (outData[v].boneIDs[0] >= 0)
+			{
+				allUnbound = false;
+				break;
+			}
+		}
+		if (!allUnbound)
+			continue;
+
+		// Find the aiNode that owns this mesh, then walk up to find a bone ancestor
+		auto nodeIt = meshToNode.find(m);
+		if (nodeIt == meshToNode.end())
+			continue;
+
+		const aiNode* ownerNode = nodeIt->second;
+		int parentBoneID = FindNearestBoneAncestor(ownerNode, skeleton);
+		if (parentBoneID < 0)
+			continue;   // no bone ancestor found — leave unbound
+
+		// Rigid-bind: assign all vertices to the parent bone with weight 1.0
+		for (uint32_t v = start; v < end && v < totalVertexCount; v++)
+		{
+			outData[v].AddBoneInfluence(parentBoneID, 1.0f);
+		}
+
+		VANS_LOG("[VansSkinnedMeshLoader] Rigid-bind fixup: mesh " << m
+		         << " (" << mesh->mNumVertices << " vertices) → bone \""
+		         << skeleton.bones[parentBoneID].name << "\" (id=" << parentBoneID << ")");
 	}
 
 	// Normalize all weights
@@ -431,4 +689,124 @@ std::string VansGraphics::VansSkinnedMeshLoader::GetFileBaseName(const std::stri
 bool VansGraphics::VansSkinnedMeshLoader::FileExists(const std::string& filePath)
 {
 	return std::filesystem::exists(filePath);
+}
+
+// ═══════════════════════════════════════════════════════
+//  ExtractExternAnimationClips
+//
+//  Opens an external FBX file and extracts ONLY animation clips,
+//  mapping bone channels to the origin model's skeleton by name.
+//  No bone weights are read — those come from the origin model.
+//  Clips are cached as .vclip files alongside the external FBX.
+// ═══════════════════════════════════════════════════════
+
+bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
+	const std::string& externFbxPath,
+	const Skeleton& originSkeleton,
+	std::vector<VansAnimationClip>& outClips)
+{
+	outClips.clear();
+
+	if (externFbxPath.empty())
+	{
+		VANS_LOG_WARN("[VansSkinnedMeshLoader] Extern animation path is empty.");
+		return false;
+	}
+
+	if (!FileExists(externFbxPath))
+	{
+		VANS_LOG_ERROR("[VansSkinnedMeshLoader] Extern animation file not found: " << externFbxPath);
+		return false;
+	}
+
+	if (originSkeleton.bones.empty())
+	{
+		VANS_LOG_ERROR("[VansSkinnedMeshLoader] Cannot load extern animation: origin skeleton has no bones.");
+		return false;
+	}
+
+	// Open the external FBX — only need minimal processing (no tangents, no normals)
+	Assimp::Importer importer;
+	const aiScene* scene = importer.ReadFile(externFbxPath,
+		aiProcess_Triangulate | aiProcess_FlipUVs);
+
+	if (!scene)
+	{
+		VANS_LOG_ERROR("[VansSkinnedMeshLoader] Failed to load extern animation FBX: "
+		               << externFbxPath << " — " << importer.GetErrorString());
+		return false;
+	}
+
+	if (!scene->HasAnimations())
+	{
+		VANS_LOG_WARN("[VansSkinnedMeshLoader] Extern FBX has no animations: " << externFbxPath);
+		return false;
+	}
+
+	VANS_LOG("[VansSkinnedMeshLoader] Loading extern animation from: " << externFbxPath
+	         << " (" << scene->mNumAnimations << " clip(s))");
+
+	std::string clipDir  = GetParentDirectory(externFbxPath);
+	std::string baseName = GetFileBaseName(externFbxPath);
+
+	for (uint32_t i = 0; i < scene->mNumAnimations; i++)
+	{
+		aiAnimation* anim = scene->mAnimations[i];
+		std::string clipName = anim->mName.C_Str();
+		if (clipName.empty())
+			clipName = baseName + "_clip" + std::to_string(i);
+
+		// Sanitize clip name for filesystem
+		for (char& c : clipName)
+		{
+			if (c == ' ' || c == '/' || c == '\\' || c == ':')
+				c = '_';
+		}
+
+		std::string vclipPath = clipDir + "/" + baseName + "_" + clipName + ".vclip";
+
+		VansAnimationClip clip;
+
+		if (FileExists(vclipPath))
+		{
+			Skeleton cachedSkeleton;
+			if (VansAnimationClipIO::Load(vclipPath, clip, cachedSkeleton))
+			{
+				if (cachedSkeleton.bones.size() != originSkeleton.bones.size())
+				{
+					VANS_LOG_WARN("[VansSkinnedMeshLoader] Cached extern clip bone count ("
+					              << cachedSkeleton.bones.size() << ") != origin skeleton ("
+					              << originSkeleton.bones.size() << "), re-extracting: " << vclipPath);
+					ExtractClipFromAssimp(anim, originSkeleton, clip);
+					clip.clipName = clipName;
+					VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
+				}
+				else
+				{
+					VANS_LOG("[VansSkinnedMeshLoader] Loaded cached extern clip: " << vclipPath);
+				}
+			}
+			else
+			{
+				VANS_LOG_WARN("[VansSkinnedMeshLoader] Failed to load cached extern clip, re-extracting: " << vclipPath);
+				ExtractClipFromAssimp(anim, originSkeleton, clip);
+				clip.clipName = clipName;
+				VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
+			}
+		}
+		else
+		{
+			// Extract clip using the ORIGIN skeleton so bone indices match
+			ExtractClipFromAssimp(anim, originSkeleton, clip);
+			clip.clipName = clipName;
+			VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
+			VANS_LOG("[VansSkinnedMeshLoader] Extracted and cached extern clip: " << vclipPath);
+		}
+
+		outClips.push_back(std::move(clip));
+	}
+
+	VANS_LOG("[VansSkinnedMeshLoader] Extern animation import complete: "
+	         << outClips.size() << " clip(s) from " << externFbxPath);
+	return true;
 }

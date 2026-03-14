@@ -158,13 +158,13 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     diffuseResult  *= mix(0.3, 1.0, shadowValue);
     specularResult *= shadowValue;
 
-    // --- Thickness-based transmission (back-lighting through thin skin) ---
-    float thickness   = ComputeSkinThickness(brdfData.positionWS, shadowMap);
-    float NdotL_back  = max(-dot(brdfData.normal, uDirectionLight.direction.rgb), 0.0);
-    vec3  transmission = ComputeSkinTransmission(thickness, brdfData.albedo,
-                                                 uDirectionLight.color.rgb,
-                                                 uDirectionLight.intensity);
-    diffuseResult += transmission * NdotL_back;
+    // // --- Thickness-based transmission (back-lighting through thin skin) ---
+    // float thickness   = ComputeSkinThickness(brdfData.positionWS, shadowMap);
+    // float NdotL_back  = max(-dot(brdfData.normal, uDirectionLight.direction.rgb), 0.0);
+    // vec3  transmission = ComputeSkinTransmission(thickness, brdfData.albedo,
+    //                                              uDirectionLight.color.rgb,
+    //                                              uDirectionLight.intensity);
+    // diffuseResult += transmission * NdotL_back;
 
     lightResult.directDiffuse  += diffuseResult;
     lightResult.directSpecular += specularResult;

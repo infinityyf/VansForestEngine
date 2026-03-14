@@ -49,6 +49,15 @@ namespace VansGraphics
 		                                  const Skeleton& skeleton,
 		                                  VansAnimationClip& outClip);
 
+		// Load animation clips from an external FBX file, mapping bone channels
+		// to an existing (origin model) skeleton. Only animation data is extracted
+		// — no bone weights. Clips are cached as .vclip files alongside the
+		// external FBX. Returns true if at least one clip was extracted.
+		static bool ExtractExternAnimationClips(
+		    const std::string& externFbxPath,
+		    const Skeleton& originSkeleton,
+		    std::vector<VansAnimationClip>& outClips);
+
 	private:
 		// Recursively walk aiNode tree to resolve bone parent-child hierarchy.
 		static void BuildHierarchyFromNodeTree(const aiNode* node,

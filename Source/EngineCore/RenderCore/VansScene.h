@@ -5,6 +5,7 @@
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
+#include "../AnimationCore/VansAnimationNode.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -89,6 +90,16 @@ namespace VansGraphics
 		// Key = parent group name, Value = group info with child node pointers.
 		std::unordered_map<std::string, MultiMeshGroup> m_MultiMeshGroups;
 
+		// ── Skeletal animation nodes ────────────────────────────────────────────────
+		// Created automatically in ExpandMultiMeshToRenderNodes().
+		std::vector<VansAnimationNode*> m_AnimationNodes;
+
+		// Shared dummy buffers for non-animated render nodes (64 bytes, device-local-ish).
+		// Bound at Object descriptor set bindings 1 & 2 instead of real bone data.
+		VansVKBuffer m_DummyBoneIDBuffer;
+		VansVKBuffer m_DummyBoneBuffer;
+		VansVKBuffer m_DummyWeightBuffer;
+
 		// Physics nodes
 		std::vector<VansEngine::VansPhysicsNode*> m_PhysicsNodes;
 
@@ -111,10 +122,14 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_GlobalDescriptorSetLayout = VK_NULL_HANDLE;
 		VkDescriptorSet m_GlobalDescriptorSet = VK_NULL_HANDLE;
 
-		// Object descriptor set (Set 2): Transform SSBO - reuses m_GlobalTransformDataSetLayout
-		// but with the new object layout for the new convention
+		// Object descriptor set (Set 2): Transform SSBO — shared by all geometry nodes
 		VkDescriptorSetLayout m_ObjectDescriptorSetLayout = VK_NULL_HANDLE;
 		VkDescriptorSet m_ObjectDescriptorSet = VK_NULL_HANDLE;
+
+		// Animation descriptor set (Set 3): Bone Matrices SSBO + Bone Weight SSBO
+		// Per-node for animated VansCommonRenderNodes; static nodes bind this shared dummy set.
+		VkDescriptorSetLayout m_AnimationDescriptorSetLayout = VK_NULL_HANDLE;
+		VkDescriptorSet m_AnimationDescriptorSet = VK_NULL_HANDLE;  // shared dummy for static nodes
 
 		// Empty pass layout (Set 1) for passes that have no per-pass resources
 		VkDescriptorSetLayout m_EmptyPassLayout = VK_NULL_HANDLE;
@@ -149,6 +164,9 @@ namespace VansGraphics
 		void UnLoadScene();
 
 		void UpdateSceneData();
+
+		// Per-frame skeletal animation CPU update + GPU bone matrix upload.
+		void UpdateAnimations(float deltaTime);
 
 		// Update per-node GPU data once per frame before command buffer recording.
 		void UpdateRenderNodesDataBeforeRecord();

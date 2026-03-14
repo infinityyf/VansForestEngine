@@ -49,6 +49,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		// binding 6: SH coefficients buffer
 		{GLOBAL_BINDING_SH_COEFFICIENTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 IBL_STAGES, nullptr},
+		// binding 7: Skin pre-integrated BSDF LUT
+		{GLOBAL_BINDING_SKIN_BSDF_LUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 IBL_STAGES, nullptr},
 		// binding 50: Bindless PBR textures (fixed max count, no variable descriptor)
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},
@@ -57,18 +60,42 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 }
 
 // ============================================================
-// Set 2: Per-Object Layout
+// Set 2: Per-Object Layout (1 binding: Transform SSBO only)
+// Shared by all geometry nodes (opaque, transparent, shadow, terrain).
 // ============================================================
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		// binding 0: Instance Transform SSBO (all nodes index into this)
 		{OBJECT_BINDING_TRANSFORM_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
+// ============================================================
+// Set 3: Per-Node Animation Layout (3 bindings: Bone IDs + Bone Matrices + Bone Weights)
+// Used exclusively by VansCommonRenderNode (deferred opaque geometry).
+// Animated nodes get real buffers; static nodes bind scene-shared dummy buffers.
+// Each submesh gets its own bone ID and weight buffers (no offset needed).
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_Animation(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		// binding 0: Per-vertex Bone IDs SSBO (ivec4 per vertex, per-submesh)
+		{ANIMATION_BINDING_BONEID_SSBO,     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		// binding 1: Bone Matrices SSBO (mat4[MAX_BONES])
+		{ANIMATION_BINDING_BONE_SSBO,       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		// binding 2: Per-vertex Bone Weights SSBO (vec4 per vertex, per-submesh)
+		{ANIMATION_BINDING_BONEWEIGHT_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
 
 
 // ============================================================
@@ -391,6 +418,24 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_RayTracing(
 		{RT_BINDING_HIT_NORMAL,            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
 		{RT_BINDING_INSTANCE_TEX_INDEX,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
 		{RT_BINDING_HIT_ALBEDO_ROUGHNESS,  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Set 4: Per-Node Skin Texture Layout (2 bindings: albedo + normal)
+// Each skin render node owns its own descriptor set with dedicated textures.
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_SkinTexture(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		// binding 0: Skin albedo texture
+		{SKIN_TEXTURE_BINDING_ALBEDO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 1: Skin normal texture
+		{SKIN_TEXTURE_BINDING_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
