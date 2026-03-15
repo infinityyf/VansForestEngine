@@ -275,6 +275,8 @@ namespace VansGraphics
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
 		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+
+		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
 	};
 
 	class VansTerrain;

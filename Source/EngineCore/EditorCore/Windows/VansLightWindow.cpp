@@ -13,6 +13,8 @@ void VansGraphics::VansLightWindow::ShowWindow(VansVKDevice& device)
         float direction[3] = { node.m_Direction.x, node.m_Direction.y, node.m_Direction.z };
         ImGui::SliderFloat3("direct light direction", direction, -1, 1);
         node.m_Direction = glm::vec3(direction[0], direction[1], direction[2]);
+
+        ImGui::DragFloat("direct light intensity", &node.m_Intensity, 0.1f, 0.0f, 100.0f, "%.2f");
     }
 
     for (auto& node : m_Scene->GetLightManager()->GetPointLights())

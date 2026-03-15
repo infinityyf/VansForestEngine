@@ -529,7 +529,7 @@ m_MaterialManager.ClearRuntimeRenderTextures();
 
 void VansGraphics::VansScene::UpdateSceneData()
 {
-    m_LightManager.UpdateLightShadowMatrixData();
+    m_LightManager.UpdateLightShadowMatrixData(glm::vec3(m_Camera->GetPosition()));
     m_LightManager.UpdateLightCPUData();
 
     // Per-frame skeletal animation update + GPU bone matrix upload

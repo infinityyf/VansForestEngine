@@ -12,6 +12,14 @@ VansConfigration::VansConfigration()
 	PunctualShadowMapHeight = 2048;
 	SupportRayTracing = true;
 
+	// Cascade Shadow Map defaults
+	CascadeShadowMapSize = 512;
+	CascadeCount = 4;
+	CascadeSplits[0] = 5.0f;
+	CascadeSplits[1] = 20.0f;
+	CascadeSplits[2] = 80.0f;
+	CascadeSplits[3] = 320.0f;
+
 	// Get executable path and compute project root
 	char exePath[MAX_PATH];
 	GetModuleFileNameA(NULL, exePath, MAX_PATH);

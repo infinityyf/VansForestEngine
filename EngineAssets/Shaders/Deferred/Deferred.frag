@@ -15,7 +15,7 @@ layout(set = 1, binding = 4, input_attachment_index = 4) uniform subpassInput de
 layout(set = 1, binding = 5, rgba32f ) uniform image2D ssao;
 layout(set = 1, binding = 6) uniform sampler2D ssgi;
 layout(set = 1, binding = 7, rgba32f ) uniform image2D ssr;
-layout(set = 1, binding = 8) uniform sampler2D shadowMap;
+layout(set = 1, binding = 8) uniform sampler2DArray cascadeShadowMap;
 layout(set = 1, binding = 9) uniform sampler2D punctualShadowMap;
 // R通道球谐
 layout( set = 1, binding = 10 ) uniform sampler3D SHRCoeff;
@@ -122,13 +122,13 @@ void main()
         // --- Skin BRDF path ---
         // Curvature was stored in normalInput.w by UnlitSkin.frag
         float curvature = subpassLoad(normalInput).w;
-        CalculateDirectLight_Skin(brdfData, curvature, shadowMap, punctualShadowMap, lightResult);
-        //AmbientBRDF_Skin(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+        CalculateDirectLight_Skin(brdfData, curvature, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        AmbientBRDF_Skin(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else
     {
         // --- Default PBR path ---
-        CalculateDirectLight(brdfData, shadowMap, punctualShadowMap, lightResult);
+        CalculateDirectLight(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
         AmbientBRDF(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
 

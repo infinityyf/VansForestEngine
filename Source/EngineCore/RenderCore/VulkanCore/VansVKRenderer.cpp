@@ -115,9 +115,15 @@ namespace VansGraphics
 
 			{
 				VANS_GPU_SCOPE(cmd, "Shadow Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
-				DrawShadowMap(renderPassManager, cmd);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+				int cascadeCount = VansConfigration::GetInstance()->GetCascadeCount();
+				for (int cascade = 0; cascade < cascadeCount; ++cascade)
+				{
+					m_globalRenderStateData.cascadeIndex = cascade;
+					renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData, cascade);
+					DrawShadowMap(renderPassManager, cmd);
+					renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+				}
+				m_globalRenderStateData.cascadeIndex = -1;
 			}
 
 			{
@@ -162,9 +168,17 @@ namespace VansGraphics
 			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 
-			renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData);
-			DrawShadowMap(renderPassManager, cmd);
-			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			{
+				int cascadeCount = VansConfigration::GetInstance()->GetCascadeCount();
+				for (int cascade = 0; cascade < cascadeCount; ++cascade)
+				{
+					m_globalRenderStateData.cascadeIndex = cascade;
+					renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData, cascade);
+					DrawShadowMap(renderPassManager, cmd);
+					renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+				}
+				m_globalRenderStateData.cascadeIndex = -1;
+			}
 
 			UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
 			UpdateGIData(renderPassManager, m_VansVKCommandBuffer);

@@ -28,6 +28,12 @@
 #define DEPTH_BIAS 0.001
 #define ESM_C 80.0
 
+// Cascade Shadow Map constants
+#define CASCADE_COUNT 4
+#define CASCADE_BLEND_BAND 0.15
+#define FOG_CASCADE_INDEX 1
+#define RAYTRACING_CASCADE_INDEX 1
+
 #define SSGI_MAX_COUNT 32
 #define SSGI_MAX_STEP 4
 

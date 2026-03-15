@@ -145,6 +145,7 @@ namespace VansGraphics
         m_TerrainShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/Terrain").c_str());
         m_TerrainShadowShader = new VansGraphicsShader();
         m_TerrainShadowShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/Terrain/Shadow").c_str());
+        m_TerrainShadowShader->SetPushConstant(sizeof(int)); // cascadeIndex
 
         // -------------------------------------------------------
         // 8. Create descriptor set
@@ -464,6 +465,14 @@ namespace VansGraphics
 
 
         cmd.BindGraphicsPipeline(*m_TerrainShadowShader->GetGraphicsPipeline());
+
+        // Push cascade index for terrain shadow shader
+        if (m_TerrainShadowShader->GetPushConstantSize() > 0)
+        {
+            int cascadeIndex = globalState.cascadeIndex;
+            cmd.UpdatePushConstants(*m_TerrainShadowShader->GetGraphicsPipeline(),
+                VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(int), &cascadeIndex);
+        }
 
         // 7. Draw Indexed Indirect or Instanced
         vkCmdDrawIndexed(cmd.GetVKCommandBuffer(), m_BasePatchMesh->GetIndexCount(), (uint32_t)m_InstanceDataCPU.size(), 0, 0, 0);

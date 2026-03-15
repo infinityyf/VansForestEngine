@@ -95,6 +95,14 @@ namespace VansGraphics
 
 		VansVKImage m_ShadowMapDepthImage;
 
+		// Cascade shadow map (4 array layers, 512x512 each)
+		VansVKImage m_CascadeShadowMapImage;       // R32_SFLOAT, 512x512, 4 layers
+		VansVKImage m_CascadeShadowMapDepthImage;  // D16_UNORM, 512x512, 4 layers
+		VkImageView m_CascadeColorLayerViews[4];   // per-layer views for framebuffers
+		VkImageView m_CascadeDepthLayerViews[4];   // per-layer views for framebuffers
+		VkImageView m_CascadeShadowArrayView;      // 2D_ARRAY view for sampling
+		VkSampler   m_CascadeShadowSampler;        // reuse sampler for cascade array
+
 		VansVKImage m_PunctualShadowMapImage;
 
 		VansVKImage m_PunctualShadowMapDepthImage;
@@ -162,7 +170,13 @@ namespace VansGraphics
 
 		VansVKRenderPass& GetVansRenderPass() { return m_VansRenderPass; }
 
-		VansVKImage& GetShadowMap() { return m_ShadowMapImage; }
+		VansVKImage& GetShadowMap() { return m_CascadeShadowMapImage; }
+
+		VkImageView GetCascadeShadowArrayView() { return m_CascadeShadowArrayView; }
+
+		VkSampler GetCascadeShadowSampler() { return m_CascadeShadowSampler; }
+
+		VkImageView GetCascadeShadowLayerView(int layer) { return m_CascadeColorLayerViews[layer]; }
 
 		VansVKImage& GetPunctualShadowMap() { return m_PunctualShadowMapImage; }
 

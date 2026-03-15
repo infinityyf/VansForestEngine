@@ -46,6 +46,7 @@ namespace VansGraphics
 		
 		VkViewport								viewport;
 		VkRect2D								scissor;
+		int										cascadeIndex;
 		GlobalStateData() :
 			rasterizationSamples(VK_SAMPLE_COUNT_1_BIT),
 			sampleShadingEnable(VK_FALSE),
@@ -54,7 +55,8 @@ namespace VansGraphics
 			currentRenderPass(VK_NULL_HANDLE),
 			currentSubpass(0),
 			vertexInputAttributeDescriptions(nullptr),
-			vertexInputBindingDescriptions(nullptr)
+			vertexInputBindingDescriptions(nullptr),
+			cascadeIndex(-1)
 		{
 		};
 	};

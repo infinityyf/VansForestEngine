@@ -20,6 +20,11 @@ private:
 
 	bool SupportRayTracing;
 
+	// Cascade Shadow Map
+	int CascadeShadowMapSize;
+	int CascadeCount;
+	float CascadeSplits[4];
+
 	std::string ProjectRootPath;
 
 public:
@@ -37,4 +42,10 @@ public:
 	bool GetSupportRayTracing() { return SupportRayTracing; }
 
 	const std::string& GetProjectRootPath() { return ProjectRootPath; }
+
+	int GetCascadeShadowMapSize() { return CascadeShadowMapSize; }
+
+	int GetCascadeCount() { return CascadeCount; }
+
+	const float* GetCascadeSplits() { return CascadeSplits; }
 };

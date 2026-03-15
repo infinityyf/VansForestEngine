@@ -639,8 +639,8 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 			VK_ATTACHMENT_STORE_OP_STORE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL, //render passbegin的layout
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //这里的final layout会自动切换,render pass结束后的layout
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		},
 		{
 			0,
@@ -663,8 +663,6 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 
 	std::vector<SubpassParameters> subpass_parameters =
 	{
-		// #0 subpass
-		//记录在attachemts中的索引，以及对应需要的layout
 		{
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			{},
@@ -680,28 +678,28 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		},
 	};
 
-	//shadow 默认1
 	m_VansShadowPass.m_ClearValues =
 	{
 		{ 1.0f, 1.0f, 1.0f, 1.0f },
 		{ 1.0f, 0 },
 	};
 
-	//不切换subpass
 	std::vector<VkSubpassDependency> subpass_dependencies;
 
 	auto vansConfigration = VansConfigration::GetInstance();
-	VkExtent2D resolution = { vansConfigration->GetShadowMapWidth(), vansConfigration->GetShadowMapHeight() };
+	int cascadeCount = vansConfigration->GetCascadeCount();
+	uint32_t cascadeSize = (uint32_t)vansConfigration->GetCascadeShadowMapSize();
+	VkExtent2D resolution = { cascadeSize, cascadeSize };
 
 	m_VansShadowPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
 
-	//创建color,depth
-	m_ShadowMapImage.CreateVulkanImage(
+	// Create cascade shadow color image (4 array layers)
+	m_CascadeShadowMapImage.CreateVulkanImage(
 		logic_device,
-		{ resolution.width,resolution.height,1 },
+		{ cascadeSize, cascadeSize, 1 },
 		VK_FORMAT_R32_SFLOAT,
 		1,
-		1,
+		(uint32_t)cascadeCount,
 		VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
@@ -709,65 +707,140 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		false,
 		true
 	);
-	m_ShadowMapDepthImage.CreateVulkanImage(
+
+	// Create cascade shadow depth image (4 array layers)
+	m_CascadeShadowMapDepthImage.CreateVulkanImage(
 		logic_device,
-		{ resolution.width,resolution.height,1 },
+		{ cascadeSize, cascadeSize, 1 },
 		VK_FORMAT_D16_UNORM,
 		1,
-		1,
+		(uint32_t)cascadeCount,
 		VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT
 	);
+
+	// Create per-layer image views for framebuffer attachments
+	for (int i = 0; i < cascadeCount; ++i)
+	{
+		// Color layer view
+		{
+			VkImageViewCreateInfo viewInfo = {};
+			viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+			viewInfo.image = m_CascadeShadowMapImage.GetImage();
+			viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			viewInfo.format = VK_FORMAT_R32_SFLOAT;
+			viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			viewInfo.subresourceRange.baseMipLevel = 0;
+			viewInfo.subresourceRange.levelCount = 1;
+			viewInfo.subresourceRange.baseArrayLayer = (uint32_t)i;
+			viewInfo.subresourceRange.layerCount = 1;
+			vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeColorLayerViews[i]);
+		}
+		// Depth layer view
+		{
+			VkImageViewCreateInfo viewInfo = {};
+			viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+			viewInfo.image = m_CascadeShadowMapDepthImage.GetImage();
+			viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			viewInfo.format = VK_FORMAT_D16_UNORM;
+			viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			viewInfo.subresourceRange.baseMipLevel = 0;
+			viewInfo.subresourceRange.levelCount = 1;
+			viewInfo.subresourceRange.baseArrayLayer = (uint32_t)i;
+			viewInfo.subresourceRange.layerCount = 1;
+			vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeDepthLayerViews[i]);
+		}
+	}
+
+	// Create full-array view (2D_ARRAY) for sampling in deferred pass
+	{
+		VkImageViewCreateInfo viewInfo = {};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = m_CascadeShadowMapImage.GetImage();
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+		viewInfo.format = VK_FORMAT_R32_SFLOAT;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.baseMipLevel = 0;
+		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.baseArrayLayer = 0;
+		viewInfo.subresourceRange.layerCount = (uint32_t)cascadeCount;
+		vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeShadowArrayView);
+	}
+
+	// Create sampler for cascade shadow array
+	{
+		VkSamplerCreateInfo samplerInfo = {};
+		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		samplerInfo.magFilter = VK_FILTER_LINEAR;
+		samplerInfo.minFilter = VK_FILTER_LINEAR;
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.anisotropyEnable = VK_FALSE;
+		samplerInfo.maxAnisotropy = 1.0f;
+		samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+		samplerInfo.unnormalizedCoordinates = VK_FALSE;
+		samplerInfo.compareEnable = VK_FALSE;
+		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		samplerInfo.minLod = 0.0f;
+		samplerInfo.maxLod = 1.0f;
+		vkCreateSampler(logic_device, &samplerInfo, nullptr, &m_CascadeShadowSampler);
+	}
+
 #ifdef _DEBUG
 	VkDebugUtilsObjectNameInfoEXT nameInfo = {};
 	nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
 	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
-	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_ShadowMapImage.GetImage());
-	nameInfo.pObjectName = "ShadowMap";
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_CascadeShadowMapImage.GetImage());
+	nameInfo.pObjectName = "CascadeShadowMap";
 	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
-	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_ShadowMapDepthImage.GetImage());
-	nameInfo.pObjectName = "ShadowMapDepth";
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_CascadeShadowMapDepthImage.GetImage());
+	nameInfo.pObjectName = "CascadeShadowMapDepth";
 	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 #endif
 
-
-	m_VansShadowPass.m_FrameBuffers.resize(1);
-	std::vector<VkImageView> image_views = {
-			m_ShadowMapImage.GetImageView(),
-			m_ShadowMapDepthImage.GetImageView()};
-	m_VansShadowPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansShadowPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
+	// Create 4 framebuffers — one per cascade layer
+	m_VansShadowPass.m_FrameBuffers.resize(cascadeCount);
+	for (int i = 0; i < cascadeCount; ++i)
+	{
+		std::vector<VkImageView> image_views = {
+			m_CascadeColorLayerViews[i],
+			m_CascadeDepthLayerViews[i]
+		};
+		m_VansShadowPass.m_FrameBuffers[i].CreateFrameBuffer(
+			logic_device, m_VansShadowPass.m_RenderPass, image_views,
+			{ cascadeSize, cascadeSize, 1 });
+	}
 
 	m_LogicDevice = logic_device;
 
-	//record command buffer
+	// Transition cascade images to initial layouts
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	//设置colordepoth的layout
-	m_ShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_CascadeShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
-			m_ShadowMapImage.m_VansVKImage,
+			m_CascadeShadowMapImage.m_VansVKImage,
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
-			m_ShadowMapImage.m_ImageLayout,
+			m_CascadeShadowMapImage.m_ImageLayout,
 			VK_IMAGE_LAYOUT_GENERAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
-			m_ShadowMapImage.m_ImageAspect
+			m_CascadeShadowMapImage.m_ImageAspect
 		});
-	m_ShadowMapDepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_CascadeShadowMapDepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
-			m_ShadowMapDepthImage.m_VansVKImage,
+			m_CascadeShadowMapDepthImage.m_VansVKImage,
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
-			m_ShadowMapDepthImage.m_ImageLayout,
+			m_CascadeShadowMapDepthImage.m_ImageLayout,
 			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
-			m_ShadowMapDepthImage.m_ImageAspect
+			m_CascadeShadowMapDepthImage.m_ImageAspect
 		});
 
-	//end record
 	command_buffer.EndCommandBufferRecord();
 
 	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
@@ -1102,6 +1175,22 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 
 	m_ShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 	m_ShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
+
+	// Destroy cascade shadow resources
+	for (int i = 0; i < 4; ++i)
+	{
+		if (m_CascadeColorLayerViews[i] != VK_NULL_HANDLE)
+			vkDestroyImageView(m_LogicDevice, m_CascadeColorLayerViews[i], nullptr);
+		if (m_CascadeDepthLayerViews[i] != VK_NULL_HANDLE)
+			vkDestroyImageView(m_LogicDevice, m_CascadeDepthLayerViews[i], nullptr);
+	}
+	if (m_CascadeShadowArrayView != VK_NULL_HANDLE)
+		vkDestroyImageView(m_LogicDevice, m_CascadeShadowArrayView, nullptr);
+	if (m_CascadeShadowSampler != VK_NULL_HANDLE)
+		vkDestroySampler(m_LogicDevice, m_CascadeShadowSampler, nullptr);
+	m_CascadeShadowMapImage.DestroyVulkanImage(m_LogicDevice);
+	m_CascadeShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
+
 	m_PunctualShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 	m_PunctualShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
 
@@ -1215,16 +1304,16 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			VK_IMAGE_ASPECT_COLOR_BIT
 		}, swapChainIndex);
 
-	m_ShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_CascadeShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
-			m_ShadowMapImage.m_VansVKImage,
+			m_CascadeShadowMapImage.m_VansVKImage,
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			VK_IMAGE_LAYOUT_GENERAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
-			m_ShadowMapImage.m_ImageAspect
+			m_CascadeShadowMapImage.m_ImageAspect
 		});
 
 	m_PunctualShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,

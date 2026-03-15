@@ -21,8 +21,8 @@ namespace VansGraphics
 		alignas(16) glm::vec3	m_Color;
 		alignas(16) float		m_Intensity;
 		float					padding[3];
-		glm::mat4x4				m_ShadowMatrix;
-		
+		glm::mat4x4				m_ShadowMatrix[4];      // one per cascade
+		glm::vec4				m_CascadeSplits;        // view-space far distances per cascade
 	};
 
 	struct alignas(16) VansPointLight
@@ -81,7 +81,7 @@ namespace VansGraphics
 
 		void AddSpotLight(const VansSpotLight& light);
 
-		void UpdateLightShadowMatrixData();
+		void UpdateLightShadowMatrixData(const glm::vec3& cameraPosition);
 
 		void UpdateLightCPUData();
 

@@ -59,7 +59,7 @@ float ShadowEdgeFade(vec2 uv)
 
 float SampleFogShadow(vec3 worldPos)
 {
-    vec4 clipCoord = uDirectionLight.shadowMatrix * vec4(worldPos, 1.0);
+    vec4 clipCoord = uDirectionLight.shadowMatrix[FOG_CASCADE_INDEX] * vec4(worldPos, 1.0);
     clipCoord.z = clipCoord.z * 0.5 + 0.5;
     clipCoord.z -= DEPTH_BIAS;
     vec2 shadowUV = clipCoord.xy * 0.5 + 0.5;

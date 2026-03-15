@@ -30,24 +30,37 @@ layout (location = 3) out vec4 outGBuffer2;
 void main() 
 { 
     // Skin uses dedicated textures, no material index needed
-    float roughness = 0.5;
+    float roughness = 0.9;
     float metallic  = 0.0;
     float ao        = 1.0;
 
     // Sample dedicated skin textures
     vec3 albedo        = texture(skinAlbedoTexture, frag_uv).rgb;
-    vec3 normal_sample = texture(skinNormalTexture, frag_uv).rgb;
+    vec3 normal_sample = textureLod(skinNormalTexture, frag_uv, 0.0).rgb;
 
     normal_sample.rg = normal_sample.rg * 2.0 - 1.0;
+    normal_sample.rg *= 0.2;  // Scale normal strength down
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);
 
-    // Compute curvature from geometric normal (without normal-map detail)
-    // for pre-integrated subsurface scattering lookup
+    // Curvature for pre-integrated subsurface scattering lookup.
+    // Blend geometric + normal-mapped normal derivatives so the result
+    // varies per-pixel (texture sampling) instead of being constant per-triangle
+    // (which is all dFdx of linearly interpolated varyings can give).
     vec3 geoNormal = normalize(normal_ws);
-    float curvature = length(fwidth(geoNormal)) / max(length(fwidth(position_world)), 0.001);
-    curvature = clamp(curvature * 0.5, 0.0, 1.0);
+    vec3 dNdx = dFdx(geoNormal) * 0.5 + dFdx(normal) * 0.5;
+    vec3 dNdy = dFdy(geoNormal) * 0.5 + dFdy(normal) * 0.5;
+    vec3 dPdx = dFdx(position_world);
+    vec3 dPdy = dFdy(position_world);
 
+    // Curvature κ ≈ |dN/ds| in 1/meter.  Typical face values: 5–300.
+    float pixelSize = max(length(dPdx), length(dPdy));
+    float kappa     = (length(dNdx) + length(dNdy)) / max(pixelSize * 2.0, 1e-5);
+
+    // Soft tone-map κ into [0,1] via κ/(κ+K).
+    // K ≈ 20 maps: flat(κ~5)→0.2, medium(κ~20)→0.5, sharp(κ~100)→0.83
+    const float K = 20.0;
+    float curvature = kappa / (kappa + K);
     vec3 fresnel0 = vec3(0.04);
     
     // Store curvature in normal.w for the deferred skin BRDF

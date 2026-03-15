@@ -990,6 +990,10 @@ namespace VansGraphics
 
 		auto& shadowMap = renderPassManager->GetShadowMap();
 
+		// For fog, use cascade layer 1 (matches FOG_CASCADE_INDEX in Common.glsl)
+		VkImageView fogShadowView = renderPassManager->GetCascadeShadowLayerView(1);
+		VkSampler fogShadowSampler = renderPassManager->GetCascadeShadowSampler();
+
 		// Two ping-pong configurations:
 		//   set[0]: output=Injection, history=History
 		//   set[1]: output=History,   history=Injection
@@ -1026,8 +1030,8 @@ namespace VansGraphics
 					VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 					{
 						{
-							shadowMap.GetSampler(),
-							shadowMap.GetImageView(),
+							fogShadowSampler,
+							fogShadowView,
 							VK_IMAGE_LAYOUT_GENERAL
 						}
 					}

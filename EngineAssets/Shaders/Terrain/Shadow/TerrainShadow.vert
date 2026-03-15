@@ -19,6 +19,11 @@ layout(set = 1, binding = 0) uniform sampler2D heightMap;
 
 layout( location = 0 ) out float shadowDepth;
 
+layout( push_constant ) uniform CascadePushConst
+{
+    int cascadeIndex;
+} pushConst;
+
 const float TERRAIN_SIZE = 1024.0;
 const float MAX_HEIGHT = 500.0;
 const float PATCH_SIZE = 16.0;
@@ -73,7 +78,7 @@ void main() {
     //整体平移到原点为中心
     vec3 worldPos = vec3(worldPosXZ.x, height - 23, worldPosXZ.y);
 
-    vec4 clipCoord = uDirectionLight.shadowMatrix * vec4(worldPos, 1.0);
+    vec4 clipCoord = uDirectionLight.shadowMatrix[pushConst.cascadeIndex] * vec4(worldPos, 1.0);
     clipCoord.z = clipCoord.z * 0.5 + 0.5;
     gl_Position = clipCoord;
     shadowDepth = clipCoord.z;

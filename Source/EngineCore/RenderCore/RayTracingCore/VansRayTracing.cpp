@@ -524,8 +524,8 @@ void VansGraphics::VansRayTracing::BindGIPointLightData()
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             {
                 {
-                    VansRenderPassManager::GetInstance()->GetShadowMap().GetSampler(),
-                    VansRenderPassManager::GetInstance()->GetShadowMap().GetImageView(),
+                    VansRenderPassManager::GetInstance()->GetCascadeShadowSampler(),
+                    VansRenderPassManager::GetInstance()->GetCascadeShadowLayerView(1),  // matches RAYTRACING_CASCADE_INDEX in Common.glsl
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                 }
             }

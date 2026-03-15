@@ -13,6 +13,7 @@ layout( push_constant ) uniform MaterialPushConsts
 {
     int materialIndex;
     int objectIndex;
+    int cascadeIndex;
 } materialConst;
 
 void main() 
@@ -20,7 +21,7 @@ void main()
     int objectIndex = materialConst.objectIndex;
     mat4 ModelMatrix = ModelBuffer.transforms[objectIndex].ModelMatrix;
     
-    vec4 clipCoord = uDirectionLight.shadowMatrix * ModelMatrix * position;
+    vec4 clipCoord = uDirectionLight.shadowMatrix[materialConst.cascadeIndex] * ModelMatrix * position;
     clipCoord.z = clipCoord.z * 0.5 + 0.5;
     gl_Position = clipCoord;
     shadowDepth = clipCoord.z;

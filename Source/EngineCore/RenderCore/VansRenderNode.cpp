@@ -551,13 +551,13 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			frameBufferInputDescriptorSets[0],
-			8, // Shadow map
+			8, // Shadow map (cascade array)
 			0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					VansRenderPassManager::GetInstance()->GetShadowMap().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetShadowMap().GetImageView(),
+					VansRenderPassManager::GetInstance()->GetCascadeShadowSampler(),
+					VansRenderPassManager::GetInstance()->GetCascadeShadowArrayView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			}
@@ -828,6 +828,32 @@ void VansGraphics::VansShadowRenderNode::UpdateDescripterSets(VansMaterialManage
 
 	// All resources are now in the global descriptor set (Set 0)
 	// No per-pass or per-object descriptor updates needed for shadows
+}
+
+void VansGraphics::VansShadowRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalStateData)
+{
+	if (!CheckRenderNodeState())
+	{
+		return;
+	}
+
+	cmd.BindMesh(*m_Mesh, 0, globalStateData);
+
+	VansGraphicsShader& shader = *(m_Material->m_Shader);
+	cmd.EnsureGraphicsShader(shader, globalStateData, m_UsedDescSetLayouts);
+
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, shader, 0, m_UsedDescSets, {});
+
+	if (m_Material->m_Shader->GetPushConstantSize() > 0)
+	{
+		// Shadow shader expects: { materialIndex, objectIndex, cascadeIndex }
+		int pushData[3] = { m_Material->m_MaterialIndex, m_TransfromIndex, globalStateData.cascadeIndex };
+		cmd.UpdatePushConstants(*shader.GetGraphicsPipeline(),
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, m_Material->m_Shader->GetPushConstantSize(), pushData);
+	}
+
+	cmd.DrawMesh(*m_Mesh, shader, 1);
 }
 
 VansGraphics::VansTerrainRenderNode::VansTerrainRenderNode(VansVKDevice* device, const TerrainConfig& config, RenderNodeType type) : VansRenderNode(device->GetLogicDevice(), TERRAIN_NODE)

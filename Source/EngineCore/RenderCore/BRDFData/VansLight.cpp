@@ -1,8 +1,10 @@
-﻿#include "VansLight.h"
+#include "VansLight.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include "../../../EngineCore/Configration/VansConfigration.h"
 #include "../../../EngineCore/VansTimer.h"
+#include "../VansCamera.h"
 #include <iostream>
+#include <algorithm>
 void VansGraphics::VansLightManager::AddDirectionalLight(const VansDirectionalLight& light)
 {
 	m_DirectionalLights.push_back(light);
@@ -18,15 +20,53 @@ void VansGraphics::VansLightManager::AddSpotLight(const VansSpotLight& light)
 	m_SpotLights.push_back(light);
 }
 
-void VansGraphics::VansLightManager::UpdateLightShadowMatrixData()
+void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3& cameraPosition)
 {
+	auto vansConfig = VansConfigration::GetInstance();
+	int cascadeCount = vansConfig->GetCascadeCount();
+	const float* cascadeSplits = vansConfig->GetCascadeSplits();
+	int cascadeMapSize = vansConfig->GetCascadeShadowMapSize();
+
 	int directionLightCount = m_DirectionalLights.size();
 	for (int dirLightIndex = 0; dirLightIndex < directionLightCount; dirLightIndex++)
 	{
-		auto lightDirection = m_DirectionalLights[dirLightIndex].m_Direction;
-		glm::mat4x4 projectionMatrix = glm::ortho<float>(-30,30,-30,30,-50,50);
-		glm::mat4x4 viewMatrix = glm::lookAt(lightDirection, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-		m_DirectionalLights[dirLightIndex].m_ShadowMatrix = projectionMatrix * viewMatrix;
+		auto lightDir = glm::normalize(m_DirectionalLights[dirLightIndex].m_Direction);
+
+		// Store cascade split distances for shader usage
+		m_DirectionalLights[dirLightIndex].m_CascadeSplits = glm::vec4(
+			cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]);
+
+		// Coverage margin: each cascade covers 1.5x its split distance
+		const float coverageMargin = 1.5f;
+
+		for (int cascade = 0; cascade < cascadeCount; ++cascade)
+		{
+			float halfExtent = cascadeSplits[cascade] * coverageMargin;
+			float texelSize = 2.0f * halfExtent / (float)cascadeMapSize;
+
+			// Build light view matrix centered on the camera position.
+			// The light "eye" is placed far behind the camera along the light direction
+			// so the ortho frustum covers geometry around where the camera is looking.
+			glm::vec3 lightEye = cameraPosition + lightDir * halfExtent * 2.0f;
+			glm::vec3 up = (std::abs(glm::dot(lightDir, glm::vec3(0, 1, 0))) > 0.99f)
+				? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+			glm::mat4x4 viewMatrix = glm::lookAt(lightEye, cameraPosition, up);
+
+			// Snap the camera's light-space XY to texel grid to reduce shadow swimming
+			glm::vec4 camLS = viewMatrix * glm::vec4(cameraPosition, 1.0f);
+			float snapOffsetX = std::fmod(camLS.x, texelSize);
+			float snapOffsetY = std::fmod(camLS.y, texelSize);
+			glm::mat4x4 snapMatrix = glm::translate(glm::mat4(1.0f), glm::vec3(-snapOffsetX, -snapOffsetY, 0.0f));
+
+			// Generous Z range to capture shadow casters behind the camera (from the light's perspective)
+			float zRange = halfExtent * 4.0f;
+			glm::mat4x4 projectionMatrix = glm::ortho<float>(
+				-halfExtent, halfExtent,
+				-halfExtent, halfExtent,
+				-zRange, zRange);
+
+			m_DirectionalLights[dirLightIndex].m_ShadowMatrix[cascade] = projectionMatrix * snapMatrix * viewMatrix;
+		}
 	}
 
 	int pointLightCount = m_PointLights.size();

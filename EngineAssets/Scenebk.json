@@ -435,7 +435,7 @@
             "depthWrite" : true,
             "depthCompareOp" : 3,
             "cullMode" : 0,
-            "support_push_constant" : 8
+            "support_push_constant" : 12
         },
         {
             "name" : "PunctualShadow",
