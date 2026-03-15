@@ -223,7 +223,7 @@ namespace VansGraphics
 
 	// ----- 压缩贴图上传 -----
 
-	void VansTexture::UploadCompressedTexture(VansVKCommandBuffer& command_buffer, const uint8_t* srcData, int width, int height, bool isSRGB)
+	void VansTexture::UploadCompressedTexture(VansVKCommandBuffer& command_buffer, const uint8_t* srcData, int width, int height, bool isSRGB, VkSamplerAddressMode addressMode)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		VkDevice device = vkDevice->GetLogicDevice();
@@ -241,7 +241,7 @@ namespace VansGraphics
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
 		m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,
 			VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-			VK_SAMPLE_COUNT_1_BIT, false, true, true);
+			VK_SAMPLE_COUNT_1_BIT, false, true, true, addressMode);
 
 		//CPU端逐级降采样 + 压缩 + 上传
 		std::vector<uint8_t> mipRGBA(srcData, srcData + width * height * 4);
@@ -283,7 +283,7 @@ namespace VansGraphics
 
 	// ----- 非压缩贴图上传 -----
 
-	void VansTexture::UploadUncompressedTexture(VansVKCommandBuffer& command_buffer, const void* data, size_t dataSize, int width, int height, VkFormat format, bool needMip)
+	void VansTexture::UploadUncompressedTexture(VansVKCommandBuffer& command_buffer, const void* data, size_t dataSize, int width, int height, VkFormat format, bool needMip, VkSamplerAddressMode addressMode)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		VkDevice device = vkDevice->GetLogicDevice();
@@ -295,7 +295,7 @@ namespace VansGraphics
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
 		m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,
 			VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-			VK_SAMPLE_COUNT_1_BIT, false, true, true);
+			VK_SAMPLE_COUNT_1_BIT, false, true, true, addressMode);
 
 		//上传mip 0
 		VkOffset3D offset = { 0, 0, 0 };
@@ -330,7 +330,7 @@ namespace VansGraphics
 	// 公开接口
 	// =====================================================================
 
-	void VansTexture::LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB, bool useCompress, bool need_mip, TexturePrecision texture_precision, int import_channel)
+	void VansTexture::LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB, bool useCompress, bool need_mip, TexturePrecision texture_precision, int import_channel, VkSamplerAddressMode addressMode)
 	{
 		VANS_LOG("Load Texture : " << texture_path);
 
@@ -355,13 +355,13 @@ namespace VansGraphics
 
 		if (canCompress)
 		{
-			UploadCompressedTexture(command_buffer, static_cast<const uint8_t*>(pixel_data), width, height, isSRGB);
+			UploadCompressedTexture(command_buffer, static_cast<const uint8_t*>(pixel_data), width, height, isSRGB, addressMode);
 		}
 		else
 		{
 			size_t dataSize = (size_t)width * height * num_components * bytes_per_channel;
 			VkFormat format = ChooseFormat(num_components, texture_precision, isSRGB);
-			UploadUncompressedTexture(command_buffer, pixel_data, dataSize, width, height, format, need_mip);
+			UploadUncompressedTexture(command_buffer, pixel_data, dataSize, width, height, format, need_mip, addressMode);
 		}
 
 		stbi_image_free(pixel_data);
@@ -429,7 +429,7 @@ namespace VansGraphics
 		SubmitAndWait(command_buffer, queue, device);
 	}
 
-	void VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision)
+	void VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision, VkSamplerAddressMode addressMode)
 	{
 		m_TextureWidth = width;
 		m_TextureHeight = height;
@@ -447,7 +447,7 @@ namespace VansGraphics
 		m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,
 			is3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
 			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-			VK_SAMPLE_COUNT_1_BIT, isCube, true, true);
+			VK_SAMPLE_COUNT_1_BIT, isCube, true, true, addressMode);
 
 		VkImageLayout targetLayout = enabeRandonWrite ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 

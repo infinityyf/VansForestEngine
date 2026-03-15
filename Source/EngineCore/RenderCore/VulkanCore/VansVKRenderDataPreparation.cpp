@@ -198,7 +198,7 @@ namespace VansGraphics
 		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/BRDFIntegralLUT.png").c_str(), false, false, false);
 
 		manager->m_SkinBSDFLUT = new VansTexture();
-		manager->m_SkinBSDFLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/SkinBSDFLUT.png").c_str(), false, false, false);
+		manager->m_SkinBSDFLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/SkinBSDFLUT.png").c_str(), false, false, false,LOW_PRES_8, 4 , VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 		VansVKBuffer prefilterCBBuffer;
 		uint32_t mipCount = log2(512);
