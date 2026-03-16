@@ -23,15 +23,16 @@ namespace VansGraphics
 			auto material = static_cast<VansMaterial*>(allmaterials[materialIndex]);
 			if (material->m_MaterialType == VansMaterialType::VAN_PBR)
 			{
+				VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(material);
 				int index = pbrMaterialIndex++;
-				material->m_MaterialIndex = index;
-				materialManager->m_GlobalPBRMaterial.push_back(material);
-				materialManager->m_GlobalPBRParamData.push_back(material->m_BasePBRParam);
-				materialManager->m_GlobalPBRTextures.push_back(&(material->m_BaseColorTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(material->m_NormalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(material->m_MetalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(material->m_RoughnessTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(material->m_AoTexture->GetImage()));
+				pbr->m_MaterialIndex = index;
+				materialManager->m_GlobalPBRMaterial.push_back(pbr);
+				materialManager->m_GlobalPBRParamData.push_back(pbr->m_BasePBRParam);
+				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_NormalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_MetalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_RoughnessTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_AoTexture->GetImage()));
 			}
 		}
 

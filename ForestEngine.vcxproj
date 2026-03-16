@@ -208,6 +208,7 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansRenderNode.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansScene.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansShaderRegistry.h" />
     <ClInclude Include="Source\EngineCore\ScriptCore\VansTransform.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansGUIVulkanBackEnd.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.h" />
@@ -290,6 +291,8 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VansSceneLoader.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansSceneDraw.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansScenePhysics.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansShaderRegistry.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansShaderRegistrations.cpp" />
     <ClCompile Include="Source\EngineCore\ScriptCore\VansTransform.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansGUIVulkanBackEnd.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp" />

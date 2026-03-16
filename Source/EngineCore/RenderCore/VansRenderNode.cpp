@@ -120,7 +120,8 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 	if (m_Material->m_Shader->GetPushConstantSize() > 0)
 	{
 		VansDrawPushConstant pc{};
-		pc.materialIndex    = m_Material->m_MaterialIndex;
+		pc.materialIndex    = (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
+			? static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex : -1;
 		pc.transformIndex   = m_TransfromIndex;
 		pc.animationEnabled = m_AnimationEnabled ? 1 : 0;
 		cmd.UpdatePushConstants(*shader.GetGraphicsPipeline(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -198,17 +199,18 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 	}
 
 	// Set 4: Per-Material Skin Texture (albedo + normal)
-	// Owned by VansMaterial; built once and shared by all nodes using this material.
+	// Owned by VansSkinMaterial; built once and shared by all nodes using this material.
 	if (m_Material && m_Material->m_MaterialType == VansMaterialType::VAN_SKIN)
 	{
-		if (m_Material->m_SkinOwnedLayout == VK_NULL_HANDLE)
+		VansSkinMaterial* skin = static_cast<VansSkinMaterial*>(m_Material);
+		if (skin->m_SkinOwnedLayout == VK_NULL_HANDLE)
 		{
-			m_Material->BuildSkinTextureDescriptors();
+			skin->BuildSkinTextureDescriptors();
 		}
-		m_UsedDescSetLayouts.push_back(m_Material->m_SkinOwnedLayout);
-		if (!m_Material->m_SkinOwnedDescSets.empty())
+		m_UsedDescSetLayouts.push_back(skin->m_SkinOwnedLayout);
+		if (!skin->m_SkinOwnedDescSets.empty())
 		{
-			m_UsedDescSets.push_back(m_Material->m_SkinOwnedDescSets[0]);
+			m_UsedDescSets.push_back(skin->m_SkinOwnedDescSets[0]);
 		}
 	}
 }
@@ -217,9 +219,10 @@ void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, Va
 {
 	if (mat && mat->m_MaterialType == VansMaterialType::VAN_PBR)
 	{
-		int idx = mat->m_MaterialIndex;
+		VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(mat);
+		int idx = pbr->m_MaterialIndex;
 		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
-			&mat->m_BasePBRParam,
+			&pbr->m_BasePBRParam,
 			sizeof(VansBasePBRParam) * idx,
 			sizeof(VansBasePBRParam));
 	}
@@ -278,16 +281,17 @@ void VansGraphics::VansTransparentRenderNode::CreateDescriptorSets(VansCamera* c
 	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
 	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
 
-	// Set 1: Material-owned resources (layout held by VansMaterial, not the factory)
-	if (m_Material->m_TransparentOwnedLayout == VK_NULL_HANDLE)
+	// Set 1: Material-owned resources (layout held by VansTransparentMaterial)
+	VansTransparentMaterial* trans = static_cast<VansTransparentMaterial*>(m_Material);
+	if (trans->m_TransparentOwnedLayout == VK_NULL_HANDLE)
 	{
 		// Build layout, allocate set, and write texture bindings from shader slot order
-		m_Material->BuildTransparentTextureDescriptors();
+		trans->BuildTransparentTextureDescriptors();
 	}
-	m_UsedDescSetLayouts.push_back(m_Material->m_TransparentOwnedLayout);
-	if (!m_Material->m_TransparentOwnedDescSets.empty())
+	m_UsedDescSetLayouts.push_back(trans->m_TransparentOwnedLayout);
+	if (!trans->m_TransparentOwnedDescSets.empty())
 	{
-		m_UsedDescSets.push_back(m_Material->m_TransparentOwnedDescSets[0]);
+		m_UsedDescSets.push_back(trans->m_TransparentOwnedDescSets[0]);
 	}
 
 	// Set 2: Object Transforms SSBO (accessed via objectIndex push constant)
@@ -784,7 +788,7 @@ void VansGraphics::VansSkyBoxRenderNode::CreateDescriptorSets(VansCamera* camera
 
 void VansGraphics::VansSkyBoxRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
-	m_Material->UpdateAtmosphereMaterialData(materialManager, lightManager);
+	static_cast<VansSkyBoxMaterial*>(m_Material)->UpdateAtmosphereMaterialData(materialManager, lightManager);
 
 	UpdateDescripterSets(materialManager);
 }
@@ -847,7 +851,9 @@ void VansGraphics::VansShadowRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalSt
 	if (m_Material->m_Shader->GetPushConstantSize() > 0)
 	{
 		// Shadow shader expects: { materialIndex, objectIndex, cascadeIndex }
-		int pushData[3] = { m_Material->m_MaterialIndex, m_TransfromIndex, globalStateData.cascadeIndex };
+		int matIdx = (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
+			? static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex : -1;
+		int pushData[3] = { matIdx, m_TransfromIndex, globalStateData.cascadeIndex };
 		cmd.UpdatePushConstants(*shader.GetGraphicsPipeline(),
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			0, m_Material->m_Shader->GetPushConstantSize(), pushData);

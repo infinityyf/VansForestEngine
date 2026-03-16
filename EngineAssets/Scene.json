@@ -1,467 +1,512 @@
 {
-    "scene" : [
+    "scene": [
         {
-            "rendernode" : [
+            "rendernode": [
                 {
-                    "name" : "Object0",
-                    "mesh" : "sphere",
-                    "material" : "BaseUnlitMaterial",
-                    "type" : 1,
-                    "transform" :
-                    {
-                        "position" : [0.0, 1.0, 0.0],
-                        "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [0.25, 0.25, 0.25]
+                    "name": "Object0",
+                    "mesh": "sphere",
+                    "material": "BaseUnlitMaterial",
+                    "type": 1,
+                    "transform": {
+                        "position": [
+                            0.0,
+                            1.0,
+                            0.0
+                        ],
+                        "rotation": [
+                            0.0,
+                            0.0,
+                            0.0
+                        ],
+                        "scale": [
+                            0.25,
+                            0.25,
+                            0.25
+                        ]
                     },
-                    "support_shadow" : true
+                    "support_shadow": true
                 },
                 {
-                    "name" : "Object1",
-                    "mesh" : "sphere",
-                    "material" : "BaseUnlitMaterial1",
-                    "type" : 1,
-                    "transform" :
-                    {
-                        "position" : [0.5, 1.0, 0.0],
-                        "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [0.25, 0.25, 0.25]
+                    "name": "Object1",
+                    "mesh": "sphere",
+                    "material": "BaseUnlitMaterial1",
+                    "type": 1,
+                    "transform": {
+                        "position": [
+                            0.5,
+                            1.0,
+                            0.0
+                        ],
+                        "rotation": [
+                            0.0,
+                            0.0,
+                            0.0
+                        ],
+                        "scale": [
+                            0.25,
+                            0.25,
+                            0.25
+                        ]
                     },
-                    "support_shadow" : true
+                    "support_shadow": true
                 },
                 {
-                    "name" : "Object2",
-                    "mesh" : "sphere",
-                    "material" : "BaseUnlitMaterial2",
-                    "type" : 1,
-                    "transform" :
-                    {
-                        "position" : [1, 1.0, 0.0],
-                        "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [0.25, 0.25, 0.25]
+                    "name": "Object2",
+                    "mesh": "sphere",
+                    "material": "BaseUnlitMaterial2",
+                    "type": 1,
+                    "transform": {
+                        "position": [
+                            1,
+                            1.0,
+                            0.0
+                        ],
+                        "rotation": [
+                            0.0,
+                            0.0,
+                            0.0
+                        ],
+                        "scale": [
+                            0.25,
+                            0.25,
+                            0.25
+                        ]
                     },
-                    "support_shadow" : true
+                    "support_shadow": true
                 },
                 {
-                    "name" : "Object3",
-                    "mesh" : "sphere",
-                    "material" : "BaseUnlitMaterial3",
-                    "type" : 1,
-                    "transform" :
-                    {
-                        "position" : [1.5, 1.0, 0.0],
-                        "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [0.25, 0.25, 0.25]
+                    "name": "Object3",
+                    "mesh": "sphere",
+                    "material": "BaseUnlitMaterial3",
+                    "type": 1,
+                    "transform": {
+                        "position": [
+                            1.5,
+                            1.0,
+                            0.0
+                        ],
+                        "rotation": [
+                            0.0,
+                            0.0,
+                            0.0
+                        ],
+                        "scale": [
+                            0.25,
+                            0.25,
+                            0.25
+                        ]
                     },
-                    "support_shadow" : true
+                    "support_shadow": true
                 },
                 {
-                    "name" : "Object4",
-                    "mesh" : "sphere",
-                    "material" : "BaseUnlitMaterial4",
-                    "type" : 1,
-                    "transform" :
-                    {
-                        "position" : [2, 1.0, 0.0],
-                        "rotation" : [0.0, 0.0, 0.0],
-                        "scale" : [0.25, 0.25, 0.25]
+                    "name": "Object4",
+                    "mesh": "sphere",
+                    "material": "BaseUnlitMaterial4",
+                    "type": 1,
+                    "transform": {
+                        "position": [
+                            2,
+                            1.0,
+                            0.0
+                        ],
+                        "rotation": [
+                            0.0,
+                            0.0,
+                            0.0
+                        ],
+                        "scale": [
+                            0.25,
+                            0.25,
+                            0.25
+                        ]
                     },
-                    "support_shadow" : true
+                    "support_shadow": true
                 },
                 {
-                    "name" : "Postprocess",
-                    "mesh" : "fullScreenQuad",
-                    "material" : "PostprocessMaterial",
-                    "type" : 4
+                    "name": "Postprocess",
+                    "mesh": "fullScreenQuad",
+                    "material": "PostprocessMaterial",
+                    "type": 4
                 },
                 {
-                    "name" : "SkyBox",
-                    "mesh" : "cube",
-                    "material" : "SkyBoxMaterial",
-                    "type" : 8
-                }               
+                    "name": "SkyBox",
+                    "mesh": "cube",
+                    "material": "SkyBoxMaterial",
+                    "type": 8
+                }
             ],
-            "light" :[
+            "light": [
                 {
-                    "name" : "DirectionalLight",
-                    "type" : 0,
-                    "color" : [1.0, 1.0, 1.0],
-                    "intensity" : 50.0,
-                    "direction" : [1.0, -1.0, 0.0]
+                    "name": "DirectionalLight",
+                    "type": 0,
+                    "color": [
+                        1.0,
+                        1.0,
+                        1.0
+                    ],
+                    "intensity": 50.0,
+                    "direction": [
+                        1.0,
+                        -1.0,
+                        0.0
+                    ]
                 },
                 {
-                    "name" : "PointLight",
-                    "type" : 1,
-                    "color" : [0.0, 0.0, 1.0],
-                    "intensity" : 50,
-                    "position" : [0.0, 5.0, 0.0],
-                    "radius" : 10.0
+                    "name": "PointLight",
+                    "type": 1,
+                    "color": [
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "intensity": 50,
+                    "position": [
+                        0.0,
+                        5.0,
+                        0.0
+                    ],
+                    "radius": 10.0
                 },
                 {
-                    "name" : "SpotLight",
-                    "type" : 2,
-                    "color" : [1.0, 0.0, 0.0],
-                    "intensity" : 50,
-                    "position" : [3.0, 2.0, 0.0],
-                    "direction" : [-1.0, 0.0, 0.0],
-                    "radius" : 10.0,
-                    "innercutoff" : 30.0,
-                    "outerCutoff" : 35.0
+                    "name": "SpotLight",
+                    "type": 2,
+                    "color": [
+                        1.0,
+                        0.0,
+                        0.0
+                    ],
+                    "intensity": 50,
+                    "position": [
+                        3.0,
+                        2.0,
+                        0.0
+                    ],
+                    "direction": [
+                        -1.0,
+                        0.0,
+                        0.0
+                    ],
+                    "radius": 10.0,
+                    "innercutoff": 30.0,
+                    "outerCutoff": 35.0
                 }
             ]
         }
     ],
-    "mesh" : [
+    "mesh": [
         {
-            "name" : "torus",
-            "path" : "EngineAssets/Models/catmark_torus_creases0.obj",
-            "need_tangent" : true,
-            "support_raytracing" : true
+            "name": "torus",
+            "path": "EngineAssets/Models/catmark_torus_creases0.obj",
+            "need_tangent": true,
+            "support_raytracing": true
         },
         {
-            "name" : "fullScreenQuad",
-            "path" : "EngineAssets/Models/fullscreen.obj",
-            "need_tangent" : false,
-            "support_raytracing" : true
+            "name": "fullScreenQuad",
+            "path": "EngineAssets/Models/fullscreen.obj",
+            "need_tangent": false,
+            "support_raytracing": true
         },
         {
-            "name" : "cube",
-            "path" : "EngineAssets/Models/cube.obj",
-            "need_tangent" : true,
-            "support_raytracing" : true
+            "name": "cube",
+            "path": "EngineAssets/Models/cube.obj",
+            "need_tangent": true,
+            "support_raytracing": true
         },
         {
-            "name" : "sphere",
-            "path" : "EngineAssets/Models/sphere.obj",
-            "need_tangent" : true
+            "name": "sphere",
+            "path": "EngineAssets/Models/sphere.obj",
+            "need_tangent": true
         },
         {
-            "name" : "plane",
-            "path" : "EngineAssets/Models/plane.obj",
-            "need_tangent" : true,
-            "support_raytracing" : true
+            "name": "plane",
+            "path": "EngineAssets/Models/plane.obj",
+            "need_tangent": true,
+            "support_raytracing": true
         }
     ],
-
-    "shader" : [
+    "texture": [
         {
-            "name" : "Unlit",
-            "path" : "EngineAssets/Shaders/Unlit",
-            "depthTest" : true,
-            "depthWrite" : true,
-            "depthCompareOp" : 3,
-            "cullMode" : 2,
-            "support_push_constant" : 12
+            "name": "testTexture",
+            "path": "EngineAssets/Textures/test.png",
+            "type": 0,
+            "sRGB": true
         },
         {
-            "name" : "Postprocess",
-            "path" : "EngineAssets/Shaders/PostProcess",
-            "depthTest" : true,
-            "depthWrite" : false,
-            "depthCompareOp" : 7,
-            "cullMode" : 0
+            "name": "baseColorTexture",
+            "path": "EngineAssets/Textures/tiles_albedo.png",
+            "type": 0,
+            "sRGB": true
         },
         {
-            "name" : "SkyBox",
-            "path" : "EngineAssets/Shaders/SkyBox",
-            "depthTest" : true,
-            "depthWrite" : true,
-            "depthCompareOp" : 3,
-            "cullMode" : 0
+            "name": "normalTexture",
+            "path": "EngineAssets/Textures/tiles_normal.png",
+            "type": 0,
+            "sRGB": false
         },
         {
-            "name" : "Deferred",
-            "path" : "EngineAssets/Shaders/Deferred",
-            "depthTest" : false,
-            "depthWrite" : false,
-            "depthCompareOp" : 0,
-            "cullMode" : 0
+            "name": "metalTexture",
+            "path": "EngineAssets/Textures/tiles_metal.png",
+            "type": 0,
+            "sRGB": false
         },
         {
-            "name" : "SSAO",
-            "path" : "EngineAssets/Shaders/ScreenSpaceFeature/SSAO",
-            "depthTest" : false,
-            "depthWrite" : false,
-            "depthCompareOp" : 0,
-            "cullMode" : 0
+            "name": "roughnessTexture",
+            "path": "EngineAssets/Textures/tiles_roughness.png",
+            "type": 0,
+            "sRGB": false
         },
         {
-            "name" : "Shadow",
-            "path" : "EngineAssets/Shaders/Shadow",
-            "depthTest" : true,
-            "depthWrite" : true,
-            "depthCompareOp" : 3,
-            "cullMode" : 0,
-            "support_push_constant" : 12
+            "name": "aoTexture",
+            "path": "EngineAssets/Textures/tiles_ao.png",
+            "type": 0,
+            "sRGB": false
         },
         {
-            "name" : "PunctualShadow",
-            "path" : "EngineAssets/Shaders/PunctualShadow",
-            "depthTest" : true,
-            "depthWrite" : true,
-            "depthCompareOp" : 3,
-            "cullMode" : 0,
-            "support_push_constant" : 16
+            "name": "wallbaseColor",
+            "path": "EngineAssets/Textures/wall_albedo.png",
+            "type": 0,
+            "sRGB": true
+        },
+        {
+            "name": "wallnormal",
+            "path": "EngineAssets/Textures/wall_normal.png",
+            "type": 0,
+            "sRGB": false
+        },
+        {
+            "name": "wallmetal",
+            "path": "EngineAssets/Textures/wall_metal.png",
+            "type": 0,
+            "sRGB": false
+        },
+        {
+            "name": "wallroughness",
+            "path": "EngineAssets/Textures/wall_roughness.png",
+            "type": 0,
+            "sRGB": false
+        },
+        {
+            "name": "wallao",
+            "path": "EngineAssets/Textures/wall_ao.png",
+            "type": 0,
+            "sRGB": false
+        },
+        {
+            "name": "skyboxTexture",
+            "path": "EngineAssets/Textures/SkyBox",
+            "type": 2,
+            "sRGB": true
         }
     ],
-
-    
-    "texture" : [
+    "material": [
         {
-            "name" : "testTexture",
-            "path" : "EngineAssets/Textures/test.png",
-            "type" : 0,
-            "sRGB" : true
+            "name": "BaseUnlitMaterial",
+            "type": 0,
+            "shader": "Unlit",
+            "albedo": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "roughness": 0.1,
+            "metallic": 1.0,
+            "ao": 1.0,
+            "basecolor_texture": "baseColorTexture",
+            "normal_texture": "normalTexture",
+            "metal_texture": "metalTexture",
+            "roughness_texture": "roughnessTexture",
+            "ao_texture": "aoTexture"
         },
         {
-            "name" : "baseColorTexture",
-            "path" : "EngineAssets/Textures/tiles_albedo.png",
-            "type" : 0,
-            "sRGB" : true
+            "name": "BaseUnlitMaterial1",
+            "type": 0,
+            "shader": "Unlit",
+            "albedo": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "roughness": 0.3,
+            "metallic": 1.0,
+            "ao": 1.0,
+            "basecolor_texture": "baseColorTexture",
+            "normal_texture": "normalTexture",
+            "metal_texture": "metalTexture",
+            "roughness_texture": "roughnessTexture",
+            "ao_texture": "aoTexture"
         },
         {
-            "name" : "normalTexture",
-            "path" : "EngineAssets/Textures/tiles_normal.png",
-            "type" : 0,
-            "sRGB" : false
+            "name": "BaseUnlitMaterial2",
+            "type": 0,
+            "shader": "Unlit",
+            "albedo": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "roughness": 0.5,
+            "metallic": 1.0,
+            "ao": 1.0,
+            "basecolor_texture": "baseColorTexture",
+            "normal_texture": "normalTexture",
+            "metal_texture": "metalTexture",
+            "roughness_texture": "roughnessTexture",
+            "ao_texture": "aoTexture"
         },
         {
-            "name" : "metalTexture",
-            "path" : "EngineAssets/Textures/tiles_metal.png",
-            "type" : 0,
-            "sRGB" : false
+            "name": "BaseUnlitMaterial3",
+            "type": 0,
+            "shader": "Unlit",
+            "albedo": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "roughness": 0.7,
+            "metallic": 1.0,
+            "ao": 1.0,
+            "basecolor_texture": "baseColorTexture",
+            "normal_texture": "normalTexture",
+            "metal_texture": "metalTexture",
+            "roughness_texture": "roughnessTexture",
+            "ao_texture": "aoTexture"
         },
         {
-            "name" : "roughnessTexture",
-            "path" : "EngineAssets/Textures/tiles_roughness.png",
-            "type" : 0,
-            "sRGB" : false
+            "name": "BaseUnlitMaterial4",
+            "type": 0,
+            "shader": "Unlit",
+            "albedo": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "roughness": 0.9,
+            "metallic": 1.0,
+            "ao": 1.0,
+            "basecolor_texture": "baseColorTexture",
+            "normal_texture": "normalTexture",
+            "metal_texture": "metalTexture",
+            "roughness_texture": "roughnessTexture",
+            "ao_texture": "aoTexture"
         },
         {
-            "name" : "aoTexture",
-            "path" : "EngineAssets/Textures/tiles_ao.png",
-            "type" : 0,
-            "sRGB" : false
+            "name": "BaseUnlitMaterial5",
+            "type": 0,
+            "shader": "Unlit",
+            "albedo": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "roughness": 1.0,
+            "metallic": 0.0,
+            "ao": 1.0,
+            "basecolor_texture": "baseColorTexture",
+            "normal_texture": "normalTexture",
+            "metal_texture": "metalTexture",
+            "roughness_texture": "roughnessTexture",
+            "ao_texture": "aoTexture"
         },
         {
-            "name" : "wallbaseColor",
-            "path" : "EngineAssets/Textures/wall_albedo.png",
-            "type" : 0,
-            "sRGB" : true
+            "name": "BaseUnlitMaterial6",
+            "type": 0,
+            "shader": "Unlit",
+            "albedo": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "roughness": 1.0,
+            "metallic": 0.0,
+            "ao": 1.0,
+            "basecolor_texture": "wallbaseColor",
+            "normal_texture": "wallnormal",
+            "metal_texture": "wallmetal",
+            "roughness_texture": "wallroughness",
+            "ao_texture": "wallao"
         },
         {
-            "name" : "wallnormal",
-            "path" : "EngineAssets/Textures/wall_normal.png",
-            "type" : 0,
-            "sRGB" : false
+            "name": "SkyBoxMaterial",
+            "type": 4,
+            "shader": "SkyBox",
+            "texture": "skyboxTexture"
         },
         {
-            "name" : "wallmetal",
-            "path" : "EngineAssets/Textures/wall_metal.png",
-            "type" : 0,
-            "sRGB" : false
+            "name": "PostprocessMaterial",
+            "type": 2,
+            "shader": "Postprocess"
         },
         {
-            "name" : "wallroughness",
-            "path" : "EngineAssets/Textures/wall_roughness.png",
-            "type" : 0,
-            "sRGB" : false
+            "name": "DeferredMaterial",
+            "type": 5,
+            "shader": "Deferred"
         },
         {
-            "name" : "wallao",
-            "path" : "EngineAssets/Textures/wall_ao.png",
-            "type" : 0,
-            "sRGB" : false
-        },
-        {
-            "name" : "skyboxTexture",
-            "path" : "EngineAssets/Textures/SkyBox",
-            "type" : 2,
-            "sRGB" : true
+            "name": "SSAO",
+            "type": 6,
+            "shader": "SSAO"
         }
     ],
-
-    "material" : [
-        {
-            "name" : "BaseUnlitMaterial",
-            "type" : 0,
-            "shader" : "Unlit",
-            "albedo" : [1.0, 1.0, 1.0],
-            "roughness" : 0.1,
-            "metallic" : 1.0,
-            "ao" : 1.0,
-            "basecolor_texture" : "baseColorTexture",
-            "normal_texture" : "normalTexture",
-            "metal_texture" : "metalTexture",
-            "roughness_texture" : "roughnessTexture",
-            "ao_texture" : "aoTexture"
-
-        },
-        {
-            "name" : "BaseUnlitMaterial1",
-            "type" : 0,
-            "shader" : "Unlit",
-            "albedo" : [1.0, 1.0, 1.0],
-            "roughness" : 0.3,
-            "metallic" : 1.0,
-            "ao" : 1.0,
-            "basecolor_texture" : "baseColorTexture",
-            "normal_texture" : "normalTexture",
-            "metal_texture" : "metalTexture",
-            "roughness_texture" : "roughnessTexture",
-            "ao_texture" : "aoTexture"
-        },
-        {
-            "name" : "BaseUnlitMaterial2",
-            "type" : 0,
-            "shader" : "Unlit",
-            "albedo" : [1.0, 1.0, 1.0],
-            "roughness" : 0.5,
-            "metallic" : 1.0,
-            "ao" : 1.0,
-            "basecolor_texture" : "baseColorTexture",
-            "normal_texture" : "normalTexture",
-            "metal_texture" : "metalTexture",
-            "roughness_texture" : "roughnessTexture",
-            "ao_texture" : "aoTexture"
-        },
-        {
-            "name" : "BaseUnlitMaterial3",
-            "type" : 0,
-            "shader" : "Unlit",
-            "albedo" : [1.0, 1.0, 1.0],
-            "roughness" : 0.7,
-            "metallic" : 1.0,
-            "ao" : 1.0,
-            "basecolor_texture" : "baseColorTexture",
-            "normal_texture" : "normalTexture",
-            "metal_texture" : "metalTexture",
-            "roughness_texture" : "roughnessTexture",
-            "ao_texture" : "aoTexture"
-        },
-        {
-            "name" : "BaseUnlitMaterial4",
-            "type" : 0,
-            "shader" : "Unlit",
-            "albedo" : [1.0, 1.0, 1.0],
-            "roughness" : 0.9,
-            "metallic" : 1.0,
-            "ao" : 1.0,
-            "basecolor_texture" : "baseColorTexture",
-            "normal_texture" : "normalTexture",
-            "metal_texture" : "metalTexture",
-            "roughness_texture" : "roughnessTexture",
-            "ao_texture" : "aoTexture"
-        },
-        {
-            "name" : "BaseUnlitMaterial5",
-            "type" : 0,
-            "shader" : "Unlit",
-            "albedo" : [1.0, 1.0, 1.0],
-            "roughness" : 1.0,
-            "metallic" : 0.0,
-            "ao" : 1.0,
-            "basecolor_texture" : "baseColorTexture",
-            "normal_texture" : "normalTexture",
-            "metal_texture" : "metalTexture",
-            "roughness_texture" : "roughnessTexture",
-            "ao_texture" : "aoTexture"
-        },
-        {
-            "name" : "BaseUnlitMaterial6",
-            "type" : 0,
-            "shader" : "Unlit",
-            "albedo" : [1.0, 1.0, 1.0],
-            "roughness" : 1.0,
-            "metallic" : 0.0,
-            "ao" : 1.0,
-            "basecolor_texture" : "wallbaseColor",
-            "normal_texture" : "wallnormal",
-            "metal_texture" : "wallmetal",
-            "roughness_texture" : "wallroughness",
-            "ao_texture" : "wallao"
-        },
-        {
-            "name" : "SkyBoxMaterial",
-            "type" : 4,
-            "shader" : "SkyBox",
-            "texture" : "skyboxTexture"
-        },
-        {
-            "name" : "PostprocessMaterial",
-            "type" : 2,
-            "shader" : "Postprocess"
-        },
-        {
-            "name" : "DeferredMaterial",
-            "type" : 5,
-            "shader" : "Deferred"
-        },
-        {
-            "name" : "SSAO",
-            "type" : 6,
-            "shader" : "SSAO"
-        }
-    ],
-    "terrain" : {
-        "heightmap" : "EngineAssets/Textures/Terrain/TerrainHeight.png",
-        "splatmaps" : [
+    "terrain": {
+        "heightmap": "EngineAssets/Textures/Terrain/TerrainHeight.png",
+        "splatmaps": [
             "EngineAssets/Textures/Terrain/Splatmap0.png",
             "EngineAssets/Textures/Terrain/Splatmap1.png"
         ],
-        "layers" : [
+        "layers": [
             {
-                "albedo"    : "EngineAssets/Textures/Terrain/Grass_albedo.png",
-                "normal"    : "EngineAssets/Textures/Terrain/Grass_normal.png",
-                "roughness" : "EngineAssets/Textures/Terrain/Grass_roughness.png",
-                "tiling"    : 64.0
+                "albedo": "EngineAssets/Textures/Terrain/Grass_albedo.png",
+                "normal": "EngineAssets/Textures/Terrain/Grass_normal.png",
+                "roughness": "EngineAssets/Textures/Terrain/Grass_roughness.png",
+                "tiling": 64.0
             },
             {
-                "albedo"    : "EngineAssets/Textures/Terrain/Rock_albedo.png",
-                "normal"    : "EngineAssets/Textures/Terrain/Rock_normal.png",
-                "roughness" : "EngineAssets/Textures/Terrain/Rock_roughness.png",
-                "tiling"    : 32.0
+                "albedo": "EngineAssets/Textures/Terrain/Rock_albedo.png",
+                "normal": "EngineAssets/Textures/Terrain/Rock_normal.png",
+                "roughness": "EngineAssets/Textures/Terrain/Rock_roughness.png",
+                "tiling": 32.0
             },
             {
-                "albedo"    : "EngineAssets/Textures/Terrain/Dirt_albedo.png",
-                "normal"    : "EngineAssets/Textures/Terrain/Dirt_normal.png",
-                "roughness" : "EngineAssets/Textures/Terrain/Dirt_roughness.png",
-                "tiling"    : 48.0
+                "albedo": "EngineAssets/Textures/Terrain/Dirt_albedo.png",
+                "normal": "EngineAssets/Textures/Terrain/Dirt_normal.png",
+                "roughness": "EngineAssets/Textures/Terrain/Dirt_roughness.png",
+                "tiling": 48.0
             },
             {
-                "albedo"    : "EngineAssets/Textures/Terrain/Sand_albedo.png",
-                "normal"    : "EngineAssets/Textures/Terrain/Sand_normal.png",
-                "roughness" : "EngineAssets/Textures/Terrain/Sand_roughness.png",
-                "tiling"    : 64.0
+                "albedo": "EngineAssets/Textures/Terrain/Sand_albedo.png",
+                "normal": "EngineAssets/Textures/Terrain/Sand_normal.png",
+                "roughness": "EngineAssets/Textures/Terrain/Sand_roughness.png",
+                "tiling": 64.0
             },
             {
-                "albedo"    : "EngineAssets/Textures/Terrain/Snow_albedo.png",
-                "normal"    : "EngineAssets/Textures/Terrain/Snow_normal.png",
-                "roughness" : "EngineAssets/Textures/Terrain/Snow_roughness.png",
-                "tiling"    : 48.0
+                "albedo": "EngineAssets/Textures/Terrain/Snow_albedo.png",
+                "normal": "EngineAssets/Textures/Terrain/Snow_normal.png",
+                "roughness": "EngineAssets/Textures/Terrain/Snow_roughness.png",
+                "tiling": 48.0
             },
             {
-                "albedo"    : "EngineAssets/Textures/Terrain/Gravel_albedo.png",
-                "normal"    : "EngineAssets/Textures/Terrain/Gravel_normal.png",
-                "roughness" : "EngineAssets/Textures/Terrain/Gravel_roughness.png",
-                "tiling"    : 40.0
+                "albedo": "EngineAssets/Textures/Terrain/Gravel_albedo.png",
+                "normal": "EngineAssets/Textures/Terrain/Gravel_normal.png",
+                "roughness": "EngineAssets/Textures/Terrain/Gravel_roughness.png",
+                "tiling": 40.0
             },
             {
-                "albedo"    : "EngineAssets/Textures/Terrain/Mud_albedo.png",
-                "normal"    : "EngineAssets/Textures/Terrain/Mud_normal.png",
-                "roughness" : "EngineAssets/Textures/Terrain/Mud_roughness.png",
-                "tiling"    : 56.0
+                "albedo": "EngineAssets/Textures/Terrain/Mud_albedo.png",
+                "normal": "EngineAssets/Textures/Terrain/Mud_normal.png",
+                "roughness": "EngineAssets/Textures/Terrain/Mud_roughness.png",
+                "tiling": 56.0
             },
             {
-                "albedo"    : "EngineAssets/Textures/Terrain/Moss_albedo.png",
-                "normal"    : "EngineAssets/Textures/Terrain/Moss_normal.png",
-                "roughness" : "EngineAssets/Textures/Terrain/Moss_roughness.png",
-                "tiling"    : 52.0
+                "albedo": "EngineAssets/Textures/Terrain/Moss_albedo.png",
+                "normal": "EngineAssets/Textures/Terrain/Moss_normal.png",
+                "roughness": "EngineAssets/Textures/Terrain/Moss_roughness.png",
+                "tiling": 52.0
             }
         ]
     },
-    "subScene" : [
+    "subScene": [
         {
-            "name" : "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/SceneSponza3.json"
+            "name": "D:/WorkSpace/ForestEngine/ForestEngine/ForestEngine/EngineAssets/SceneSponza3.json"
         }
     ]
 }

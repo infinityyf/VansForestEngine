@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "VulkanCore/VansShader.h"
 #include "VulkanCore/VansTexture.h"
@@ -16,6 +16,16 @@
 using namespace VansGraphics;
 namespace VansGraphics
 {
+	// 鈹€鈹€ Forward declarations 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+	class VansPBRMaterial;
+	class VansTransparentMaterial;
+	class VansSkyBoxMaterial;
+	class VansSkinMaterial;
+	class VansPostProcessMaterial;
+	class VansDeferredMaterial;
+	class VansSSAOMaterial;
+	class VansShadowMaterial;
+
 	enum VansMaterialType
 	{
 		VAN_PBR = 0,
@@ -25,7 +35,6 @@ namespace VansGraphics
 		VAN_SKY_BOX = 4,
 		VAN_DEFERRED = 5,
 		VAN_SCREEN_SPACE_AO = 6,
-		VAN_SCREEN_SPACE_REFLECTION = 7,
 		VAN_SHAODW = 8,
 		VAN_SKIN = 9,
 	};
@@ -126,7 +135,7 @@ namespace VansGraphics
 
 		//全局pbr参数buffer，不每个pbr材质自己持有
 		VansVKBuffer m_GlobalPBRDataBuffer;
-		std::vector<VansMaterial*> m_GlobalPBRMaterial;
+		std::vector<VansPBRMaterial*> m_GlobalPBRMaterial;
 		std::vector<VansBasePBRParam> m_GlobalPBRParamData;
 		VkDescriptorSetLayout m_GlobalPBRDataSetLayout;
 		std::vector<VkDescriptorSet> m_GlobalPBRDataDescriptorSets;
@@ -208,70 +217,91 @@ namespace VansGraphics
 
 	};
 
+	// ============================================================
+	// Base Material 鈥?asset name (from VansAsset), type tag, shader
+	// No texture or parameter data lives here.
+	// ============================================================
 	class VansMaterial : public VansAsset
 	{
 		friend class VansScene;
 
-	private:
-		////pbr数据data buffer
-		//VansVKBuffer m_BasePBRDataBuffer;
-
 	public:
-		VansMaterialType m_MaterialType;
+		VansMaterialType    m_MaterialType;
+		VansGraphicsShader* m_Shader = nullptr;
 
-		//pbr
-		VansTexture* m_BaseColorTexture;
-		VansTexture* m_NormalTexture;
-		VansTexture* m_MetalTexture;
-		VansTexture* m_RoughnessTexture;
-		VansTexture* m_AoTexture;
+		virtual ~VansMaterial() = default;
+	};
+
+	// ============================================================
+	// VansPBRMaterial 鈥?opaque PBR surface (type 0)
+	// ============================================================
+	class VansPBRMaterial : public VansMaterial
+	{
+	public:
+		VansTexture* m_BaseColorTexture  = nullptr;
+		VansTexture* m_NormalTexture     = nullptr;
+		VansTexture* m_MetalTexture      = nullptr;
+		VansTexture* m_RoughnessTexture  = nullptr;
+		VansTexture* m_AoTexture         = nullptr;
 
 		VansBasePBRParam m_BasePBRParam;
 
-		//大气材质参数
-		VansAtmospherePBRParam m_AtmospherePBRParam;
-
-		// ── Transparent material resources ────────────────────────────────────
-		// Textures bound in the order declared in the material JSON "textures" array.
-		// binding index == position in this vector.
-		std::vector<VansTexture*> m_TransparentTextures;
-
-		// Parallel list: (slot label, texture asset name) for debugging / tooling.
-		std::vector<std::pair<std::string, std::string>> m_TransparentTextureMap;
-
-		// Each transparent material holds its own descriptor set layout(s)
-		// instead of using the shared factory layouts.
-		VkDescriptorSetLayout m_TransparentOwnedLayout = VK_NULL_HANDLE;
-		std::vector<VkDescriptorSet> m_TransparentOwnedDescSets;
-
-		// Build the descriptor layout from the shader's texture slot count,
-		// allocate the descriptor set, and write all texture bindings.
-		void BuildTransparentTextureDescriptors();
-
-		// Legacy: create layout from explicit bindings list.
-		void CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings = {});
-
-		// ── Skin material resources ─────────────────────────────────────────
-		// Each skin material owns its own descriptor set holding dedicated
-		// albedo + normal textures (Set 4 in the pipeline layout).
-		VkDescriptorSetLayout m_SkinOwnedLayout = VK_NULL_HANDLE;
-		std::vector<VkDescriptorSet> m_SkinOwnedDescSets;
-
-		// Allocate the skin texture descriptor set and write albedo + normal bindings.
-		void BuildSkinTextureDescriptors();
-		//shader
-		VansGraphicsShader* m_Shader;
-
-		// Global PBR buffer index assigned during scene preparation.
+		// Index into the global PBR param SSBO / bindless texture array.
+		// Assigned during PreparePBRMaterialData; used by draw push-constant.
 		int m_MaterialIndex = -1;
+	};
 
-		////定义GPU数据
-		//void CreatePBRMaterialDataBuffer(VkDevice& logic_device);
+	// ============================================================
+	// VansTransparentMaterial 鈥?multi-texture transparent pass (type 2)
+	// ============================================================
+	class VansTransparentMaterial : public VansMaterial
+	{
+	public:
+		// Flat ordered texture list; binding index == position in vector
+		std::vector<VansTexture*>                          m_TransparentTextures;
+		// (slot label, asset name) 鈥?for debugging / tooling
+		std::vector<std::pair<std::string, std::string>>   m_TransparentTextureMap;
 
-		//VansVKBuffer& GetPBRDataBuffer() { return m_BasePBRDataBuffer; }
+		// Owned descriptor set layout / set for this transparent material
+		VkDescriptorSetLayout          m_TransparentOwnedLayout  = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_TransparentOwnedDescSets;
 
-		//void UpdatePBRUniformData();
+		void BuildTransparentTextureDescriptors();
+		void CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings = {});
+	};
+
+	// ============================================================
+	// VansSkyBoxMaterial 鈥?sky / atmosphere (type 4)
+	// ============================================================
+	class VansSkyBoxMaterial : public VansMaterial
+	{
+	public:
+		VansAtmospherePBRParam m_AtmospherePBRParam;
 
 		void UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
 	};
+
+	// ============================================================
+	// VansSkinMaterial 鈥?subsurface skin shading (type 9)
+	// ============================================================
+	class VansSkinMaterial : public VansMaterial
+	{
+	public:
+		VansTexture* m_BaseColorTexture = nullptr;
+		VansTexture* m_NormalTexture    = nullptr;
+
+		VkDescriptorSetLayout          m_SkinOwnedLayout  = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_SkinOwnedDescSets;
+
+		void BuildSkinTextureDescriptors();
+	};
+
+	// ============================================================
+	// Pass-only materials 鈥?carry only the shader (inherited from base)
+	// ============================================================
+	class VansPostProcessMaterial : public VansMaterial {};
+	class VansDeferredMaterial    : public VansMaterial {};
+	class VansSSAOMaterial        : public VansMaterial {};
+	class VansShadowMaterial      : public VansMaterial {};
+
 }

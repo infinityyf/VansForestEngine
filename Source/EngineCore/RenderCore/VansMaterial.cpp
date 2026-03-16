@@ -180,7 +180,7 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 //	m_BasePBRDataBuffer.SetBufferData(&m_BasePBRParam, offset, size);
 //}
 
-void VansGraphics::VansMaterial::UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager)
+void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager)
 {
 	uint32_t offset = 0;
 	uint32_t size = sizeof(VansAtmospherePBRParam);
@@ -189,7 +189,7 @@ void VansGraphics::VansMaterial::UpdateAtmosphereMaterialData(VansMaterialManage
 	materialManager.m_AtmospherePBRDataBuffer.SetBufferData(&m_AtmospherePBRParam, offset, size);
 }
 
-void VansGraphics::VansMaterial::CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings)
+void VansGraphics::VansTransparentMaterial::CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings)
 {
 	auto* descManager = VansVKDescriptorManager::GetInstance();
 	descManager->CreateDesciptorSetLayout(bindings, m_TransparentOwnedLayout);
@@ -197,7 +197,7 @@ void VansGraphics::VansMaterial::CreateTransparentDescriptorLayout(const std::ve
 	descManager->AllocateDescriptorSet(layouts, m_TransparentOwnedDescSets);
 }
 
-void VansGraphics::VansMaterial::BuildTransparentTextureDescriptors()
+void VansGraphics::VansTransparentMaterial::BuildTransparentTextureDescriptors()
 {
 	// Build one COMBINED_IMAGE_SAMPLER binding per texture slot (in JSON order).
 	const uint32_t slotCount = static_cast<uint32_t>(m_TransparentTextures.size());
@@ -251,7 +251,7 @@ void VansGraphics::VansMaterial::BuildTransparentTextureDescriptors()
 	descManager->UpdateDescriptorSets();
 }
 
-void VansGraphics::VansMaterial::BuildSkinTextureDescriptors()
+void VansGraphics::VansSkinMaterial::BuildSkinTextureDescriptors()
 {
 	// Allocate the skin texture descriptor set (Set 4: albedo + normal).
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_SkinTexture(m_SkinOwnedLayout, m_SkinOwnedDescSets);

@@ -165,19 +165,26 @@ void VansGraphics::VansHierachuWindow::DrawMaterialDetail(VansMaterial& material
             ImGui::TextDisabled("  %s: (none)", label);
     };
 
-    if (material.m_MaterialType == VansMaterialType::VAN_PBR
-        || material.m_MaterialType == VansMaterialType::VAN_SKIN)
+    if (material.m_MaterialType == VansMaterialType::VAN_PBR)
     {
+        VansPBRMaterial& pbr = static_cast<VansPBRMaterial&>(material);
         if (ImGui::TreeNode("Textures"))
         {
-            showTex("BaseColor", material.m_BaseColorTexture);
-            showTex("Normal",    material.m_NormalTexture);
-            if (material.m_MaterialType == VansMaterialType::VAN_PBR)
-            {
-                showTex("Metallic",  material.m_MetalTexture);
-                showTex("Roughness", material.m_RoughnessTexture);
-                showTex("AO",        material.m_AoTexture);
-            }
+            showTex("BaseColor", pbr.m_BaseColorTexture);
+            showTex("Normal",    pbr.m_NormalTexture);
+            showTex("Metallic",  pbr.m_MetalTexture);
+            showTex("Roughness", pbr.m_RoughnessTexture);
+            showTex("AO",        pbr.m_AoTexture);
+            ImGui::TreePop();
+        }
+    }
+    else if (material.m_MaterialType == VansMaterialType::VAN_SKIN)
+    {
+        VansSkinMaterial& skin = static_cast<VansSkinMaterial&>(material);
+        if (ImGui::TreeNode("Textures"))
+        {
+            showTex("BaseColor", skin.m_BaseColorTexture);
+            showTex("Normal",    skin.m_NormalTexture);
             ImGui::TreePop();
         }
     }
@@ -187,10 +194,10 @@ void VansGraphics::VansHierachuWindow::DrawMaterialDetail(VansMaterial& material
 	switch (material.m_MaterialType)
 	{
 	case VansMaterialType::VAN_PBR:
-		DrawPBRMaterialParameters(material.m_BasePBRParam, index);
+		DrawPBRMaterialParameters(static_cast<VansPBRMaterial&>(material).m_BasePBRParam, index);
 		break;
 	case VansMaterialType::VAN_SKY_BOX:
-        DrawAtmosphereParameters(material.m_AtmospherePBRParam);
+        DrawAtmosphereParameters(static_cast<VansSkyBoxMaterial&>(material).m_AtmospherePBRParam);
 		break;
 	default:
 		break;

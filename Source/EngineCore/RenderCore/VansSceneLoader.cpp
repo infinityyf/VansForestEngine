@@ -1,5 +1,6 @@
 #include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
+#include "VansShaderRegistry.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
 
@@ -36,7 +37,6 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "sky_box")      return VansMaterialType::VAN_SKY_BOX;
         if (s == "deferred")     return VansMaterialType::VAN_DEFERRED;
         if (s == "ssao")         return VansMaterialType::VAN_SCREEN_SPACE_AO;
-        if (s == "ssr")          return VansMaterialType::VAN_SCREEN_SPACE_REFLECTION;
         if (s == "shadow")       return VansMaterialType::VAN_SHAODW;
         if (s == "skin")         return VansMaterialType::VAN_SKIN;
         VANS_LOG_WARN("[LoadSceneResource] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
@@ -386,7 +386,7 @@ void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
         VANS_LOG_WARN("[VansScene] AddDeferredNode: shader 'Deferred' not found, node skipped.");
         return;
     }
-    VansMaterial* material = new VansMaterial();
+    VansDeferredMaterial* material = new VansDeferredMaterial();
     material->m_Shader = deferredShader;
     material->m_MaterialType = VansMaterialType::VAN_DEFERRED;
     material->SetName("DeferredMaterial");
@@ -426,7 +426,14 @@ void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
             continue;
         }
 
-        VansMaterial* material = new VansMaterial();
+        // Typed factory for screen-space passes
+        VansMaterial* material = nullptr;
+        switch (feature.matType)
+        {
+        case VansMaterialType::VAN_SCREEN_SPACE_AO: material = new VansSSAOMaterial();        break;
+        case VansMaterialType::VAN_POST_PROCESS:    material = new VansPostProcessMaterial(); break;
+        default:                                    material = new VansMaterial();             break;
+        }
         material->m_Shader = shader;
         material->m_MaterialType = feature.matType;
         material->SetName(feature.name);
@@ -450,6 +457,95 @@ void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
 // Resource loading (meshes, shaders, textures, materials)
 // ===========================================================================
 
+void VansGraphics::VansScene::LoadMeshesFromJson(
+    const json& meshData,
+    const std::string& pathPrefix,
+    VkDevice& device,
+    VansVKDevice* vkDevice)
+{
+    for (const auto& sceneMesh : meshData)
+    {
+        std::string meshPath    = pathPrefix + std::string(sceneMesh["path"]);
+        bool import_tangent     = sceneMesh.value("need_tangent", false);
+        bool loadMultiMesh      = sceneMesh.value("load_multi_mesh", false);
+
+        if (loadMultiMesh)
+        {
+            bool generate_as = sceneMesh.value("support_raytracing", false);
+            bool needCpuData = sceneMesh.value("need_cpu_data", false);
+            VansMesh* mesh   = new VansMesh(needCpuData, /*supportRayTracing=*/false);
+
+            // Optional external animation FBX — only animation clips are read from it;
+            // bone weights and skeleton come from the origin model.
+            if (sceneMesh.contains("extern_animation"))
+            {
+                std::string externAnimPath = pathPrefix + sceneMesh["extern_animation"].get<std::string>();
+                mesh->m_ExternAnimationPath = externAnimPath;
+            }
+
+            mesh->m_RootMotion = sceneMesh.value("root_motion", false);
+            if (sceneMesh.contains("root_bone"))
+                mesh->m_RootBoneName = sceneMesh["root_bone"].get<std::string>();
+
+            mesh->LoadMultiMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath, import_tangent, generate_as, needCpuData);
+            mesh->SetName(sceneMesh["name"]);
+            m_Meshes.push_back(mesh);
+        }
+        else
+        {
+            bool generate_as = sceneMesh.value("support_raytracing", false);
+            bool needCpuData = sceneMesh.value("need_cpu_data", false);
+            VansMesh* mesh   = new VansMesh(needCpuData, generate_as);
+            mesh->LoadMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath.c_str(), import_tangent);
+            mesh->SetName(sceneMesh["name"]);
+            m_Meshes.push_back(mesh);
+        }
+    }
+}
+
+void VansGraphics::VansScene::LoadShadersFromRegistry(
+    const std::string& pathPrefix,
+    VkDevice& device)
+{
+    VansGraphics::VansShaderRegistry::Get().ForEach([&](const VansGraphics::VansShaderRegistryEntry& entry)
+    {
+        LoadShaderFromEntry(entry, pathPrefix, device);
+    });
+}
+
+void VansGraphics::VansScene::LoadTexturesFromJson(
+    const json& textureData,
+    const std::string& pathPrefix,
+    VansVKDevice* vkDevice)
+{
+    for (const auto& sceneTexture : textureData)
+    {
+        std::string texturePath = pathPrefix + std::string(sceneTexture["path"]);
+        VansTexture* texture    = new VansTexture();
+        texture->m_TextureType  = sceneTexture["type"];
+        bool isSRGB             = sceneTexture["sRGB"];
+        switch (texture->m_TextureType)
+        {
+        case TEXTURE_2D:
+            texture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB, true, true);
+            break;
+        case TEXTURE_CUBE:
+            texture->LoadCubeTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB);
+            break;
+        default:
+            break;
+        }
+        m_Textures.push_back(texture);
+        texture->SetName(sceneTexture["name"]);
+    }
+
+    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultAlbedo.png",    "defaultAlbedo",    vkDevice, false);
+    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultMetal.png",     "defaultMetal",     vkDevice, false);
+    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultRoughness.png", "defaultRoughness", vkDevice, false);
+    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultAo.png",        "defaultAo",        vkDevice, false);
+    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultNormal.png",    "defaultNormal",    vkDevice, false);
+}
+
 void VansGraphics::VansScene::ImportDefaultTextures(const std::string& path, const std::string& name, VansVKDevice* vkDevice, bool isSRGB)
 {
     //默认pbr贴图
@@ -469,191 +565,103 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
     VkDevice nativeDevice = vkDevice->GetLogicDevice();
 
     json sceneMeshes = sceneData["mesh"];
-    json sceneShaders = sceneData["shader"];
     json sceneTextures = sceneData["texture"];
     json sceneMaterials = sceneData["material"];
 
-    for (const auto& sceneMesh : sceneMeshes)
-    {
-        std::string meshPath = pathPrefix + std::string(sceneMesh["path"]);
-        bool import_tangent = sceneMesh.value("need_tangent", false);
-
-        // Check explicit multi-mesh flag (default: false — load as single mesh).
-        bool loadMultiMesh = sceneMesh.value("load_multi_mesh", false);
-
-        if (loadMultiMesh)
-        {
-            // Multi-mesh asset — loaded as a container with per-material slices.
-            bool generate_as = sceneMesh.value("support_raytracing", false);
-            bool needCpuData = sceneMesh.value("need_cpu_data", false);
-            VansMesh* mesh = new VansMesh(needCpuData, /*supportRayTracing=*/false);
-
-            // Optional external animation FBX — only animation clips are read from it;
-            // bone weights and skeleton come from the origin model.
-            if (sceneMesh.contains("extern_animation"))
-            {
-                std::string externAnimPath = pathPrefix + sceneMesh["extern_animation"].get<std::string>();
-                mesh->m_ExternAnimationPath = externAnimPath;
-            }
-
-            // Root motion flag — read from mesh JSON, applied when animation node is created
-            mesh->m_RootMotion = sceneMesh.value("root_motion", false);
-            if (sceneMesh.contains("root_bone"))
-                mesh->m_RootBoneName = sceneMesh["root_bone"].get<std::string>();
-
-            mesh->LoadMultiMesh(nativeDevice, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath, import_tangent, generate_as, needCpuData);
-            mesh->SetName(sceneMesh["name"]);
-            m_Meshes.push_back(mesh);
-        }
-        else
-        {
-            // Single-mesh asset — supports ray tracing and CPU-side data if requested.
-            bool generate_as = sceneMesh.value("support_raytracing", false);
-            bool needCpuData = sceneMesh.value("need_cpu_data", false);
-            VansMesh* mesh = new VansMesh(needCpuData, generate_as);
-            mesh->LoadMesh(nativeDevice, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath.c_str(), import_tangent);
-            mesh->SetName(sceneMesh["name"]);
-            m_Meshes.push_back(mesh);
-        }
-    }
-
-
-    for (const auto& sceneShader : sceneShaders)
-    {
-        std::string shaderPath = pathPrefix + std::string(sceneShader["path"]);
-        VkBool32 depthTest = sceneShader["depthTest"];
-        VkBool32 depthWrite = sceneShader["depthWrite"];
-        VkCompareOp depthCompareOp = sceneShader["depthCompareOp"];
-        VkCullModeFlags cullMode = sceneShader["cullMode"];
-
-        VansGraphicsShader* shader = new VansGraphicsShader();
-
-		//监控shader文件变化
-        m_SceneFileWatcher->AddWatch(shaderPath);
-
-        shader->InitShader(nativeDevice, shaderPath);
-        shader->SetDrawStateData(depthTest, depthWrite, depthCompareOp, cullMode);
-        if (sceneShader.contains("support_push_constant"))
-        {
-            int pushConstantSize = sceneShader["support_push_constant"];
-            shader->SetPushConstant(pushConstantSize);
-        }
-        if (sceneShader.contains("enableAlphaBlend") && sceneShader["enableAlphaBlend"].get<bool>())
-        {
-            shader->SetEnableAlphaBlend(VK_TRUE);
-        }
-        m_Shaders.push_back(shader);
-        shader->SetName(sceneShader["name"]);
-    }
-
-
-    for (const auto& sceneTexture : sceneTextures)
-    {
-        std::string texturePath = pathPrefix + std::string(sceneTexture["path"]);
-        VansTexture* texture = new VansTexture();
-        texture->m_TextureType = sceneTexture["type"];
-        bool isSRGB = sceneTexture["sRGB"];
-        switch (texture->m_TextureType)
-        {
-        case TEXTURE_2D:
-            texture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB,true,true);
-            break;
-        case TEXTURE_CUBE:
-            texture->LoadCubeTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB);
-            break;
-        default:
-            break;
-        }
-
-        m_Textures.push_back(texture);
-        texture->SetName(sceneTexture["name"]);
-    }
-
-    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultAlbedo.png", "defaultAlbedo", vkDevice, false);
-    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultMetal.png", "defaultMetal", vkDevice, false);
-    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultRoughness.png","defaultRoughness", vkDevice, false);
-    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultAo.png","defaultAo", vkDevice, false);
-    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultNormal.png","defaultNormal", vkDevice, false);
+    LoadMeshesFromJson(sceneMeshes, pathPrefix, nativeDevice, vkDevice);
+    LoadShadersFromRegistry(pathPrefix, nativeDevice);
+    LoadTexturesFromJson(sceneTextures, pathPrefix, vkDevice);
 
     for (const auto& sceneMaterial : sceneMaterials)
     {
-        VansMaterial* material = new VansMaterial();
+        // ── Typed material factory ─────────────────────────────────────────────
+        VansMaterialType matType = ParseMaterialType(sceneMaterial["type"], sceneMaterial.value("name", "<unnamed>"));
 
-        std::string shaderName = sceneMaterial["shader"];
-        VansGraphicsShader* shader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
+        VansMaterial* material = nullptr;
+        switch (matType)
+        {
+        case VansMaterialType::VAN_PBR:
+        case VansMaterialType::VAN_COAT:            material = new VansPBRMaterial();          break;
+        case VansMaterialType::VAN_TRANSPARENT:     material = new VansTransparentMaterial();  break;
+        case VansMaterialType::VAN_POST_PROCESS:    material = new VansPostProcessMaterial();  break;
+        case VansMaterialType::VAN_SKY_BOX:         material = new VansSkyBoxMaterial();       break;
+        case VansMaterialType::VAN_DEFERRED:        material = new VansDeferredMaterial();     break;
+        case VansMaterialType::VAN_SCREEN_SPACE_AO: material = new VansSSAOMaterial();         break;
+        case VansMaterialType::VAN_SHAODW:          material = new VansShadowMaterial();       break;
+        case VansMaterialType::VAN_SKIN:            material = new VansSkinMaterial();         break;
+        default:                                    material = new VansMaterial();             break;
+        }
+        material->m_MaterialType = matType;
+
+        // Optional JSON override — kept for custom/per-scene shaders.
+        VansGraphicsShader* shader = nullptr;
+        const auto* regEntry = VansGraphics::VansShaderRegistry::Get().FindForType(matType);
+        if (regEntry)
+        {
+            shader = static_cast<VansGraphicsShader*>(GetShaderAsset(regEntry->name));
+        }
 
         material->m_Shader = shader;
-        material->m_MaterialType = ParseMaterialType(sceneMaterial["type"], sceneMaterial.value("name", "<unnamed>"));
-        if (material->m_MaterialType == VansMaterialType::VAN_PBR)
+        if (matType == VansMaterialType::VAN_PBR)
         {
+            VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(material);
             if (sceneMaterial.contains("basecolor_texture"))
             {
                 auto textureName = sceneMaterial["basecolor_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
                 if (texture == nullptr)
-                {
                     texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                }
-                material->m_BaseColorTexture = texture;
+                pbr->m_BaseColorTexture = texture;
             }
             if (sceneMaterial.contains("normal_texture"))
             {
                 auto textureName = sceneMaterial["normal_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
                 if (texture == nullptr)
-                {
                     texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-                }
-                material->m_NormalTexture = texture;
+                pbr->m_NormalTexture = texture;
             }
             if (sceneMaterial.contains("metal_texture"))
             {
                 auto textureName = sceneMaterial["metal_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
                 if (texture == nullptr)
-                {
                     texture = static_cast<VansTexture*>(GetTextureAsset("defaultMetal"));
-                }
-                material->m_MetalTexture = texture;
+                pbr->m_MetalTexture = texture;
             }
             if (sceneMaterial.contains("roughness_texture"))
             {
                 auto textureName = sceneMaterial["roughness_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
                 if (texture == nullptr)
-                {
                     texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
-                }
-                material->m_RoughnessTexture = texture;
+                pbr->m_RoughnessTexture = texture;
             }
             if (sceneMaterial.contains("ao_texture"))
             {
                 auto textureName = sceneMaterial["ao_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
                 if (texture == nullptr)
-                {
                     texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
-                }
-                material->m_AoTexture = texture;
+                pbr->m_AoTexture = texture;
             }
-
-            //如果没有使用默认贴图
-            material->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
-            material->m_BasePBRParam.m_metallic = sceneMaterial["metallic"];
-            material->m_BasePBRParam.m_roughness = sceneMaterial["roughness"];
-            material->m_BasePBRParam.m_ao = sceneMaterial["ao"];
+            pbr->m_BasePBRParam.m_albedo    = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
+            pbr->m_BasePBRParam.m_metallic  = sceneMaterial["metallic"];
+            pbr->m_BasePBRParam.m_roughness = sceneMaterial["roughness"];
+            pbr->m_BasePBRParam.m_ao        = sceneMaterial["ao"];
         }
 
         // ── Skin material: load basecolor + normal textures ──
-        if (material->m_MaterialType == VansMaterialType::VAN_SKIN)
+        if (matType == VansMaterialType::VAN_SKIN)
         {
+            VansSkinMaterial* skin = static_cast<VansSkinMaterial*>(material);
             if (sceneMaterial.contains("basecolor_texture"))
             {
                 auto textureName = sceneMaterial["basecolor_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
                 if (texture == nullptr)
                     texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                material->m_BaseColorTexture = texture;
+                skin->m_BaseColorTexture = texture;
             }
             if (sceneMaterial.contains("normal_texture"))
             {
@@ -661,45 +669,43 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
                 if (texture == nullptr)
                     texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-                material->m_NormalTexture = texture;
+                skin->m_NormalTexture = texture;
             }
         }
 
         // ── Transparent material: load textures declared in material JSON ──
-        if (material->m_MaterialType == VansMaterialType::VAN_TRANSPARENT)
+        if (matType == VansMaterialType::VAN_TRANSPARENT)
         {
+            VansTransparentMaterial* trans = static_cast<VansTransparentMaterial*>(material);
             if (sceneMaterial.contains("textures") && sceneMaterial["textures"].is_array())
             {
                 for (const auto& entry : sceneMaterial["textures"])
                 {
-                    std::string slotName   = entry.value("slot", "");
+                    std::string slotName    = entry.value("slot", "");
                     std::string textureName = entry.value("texture", "");
                     VansTexture* tex = nullptr;
                     if (!textureName.empty())
-                    {
                         tex = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                    }
                     if (tex == nullptr)
-                    {
                         VANS_LOG_WARN("[LoadSceneResource] Transparent material '" << sceneMaterial.value("name", "<unnamed>") << "': could not resolve texture for slot '" << slotName << "'");
-                    }
-                    material->m_TransparentTextureMap.push_back({ slotName, textureName });
-                    material->m_TransparentTextures.push_back(tex);
+                    trans->m_TransparentTextureMap.push_back({ slotName, textureName });
+                    trans->m_TransparentTextures.push_back(tex);
                 }
             }
         }
 
-        if (material->m_MaterialType == VansMaterialType::VAN_SKY_BOX)
+        if (matType == VansMaterialType::VAN_SKY_BOX)
         {
-            material->m_AtmospherePBRParam.m_PlanetRadius = 6340000;
-            material->m_AtmospherePBRParam.m_InitSeaLevel = 200;
-            material->m_AtmospherePBRParam.m_AtmosphereWidth = 80000;
-            material->m_AtmospherePBRParam.m_RayleighScalarHeight = 8500;
-            material->m_AtmospherePBRParam.m_MieScalarHeight = 1200;
-            material->m_AtmospherePBRParam.m_MieAnisotropy = 0.78;
-            material->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25000;
-            material->m_AtmospherePBRParam.m_OzoneLevelWidth = 15000;
-            material->m_AtmospherePBRParam.m_SunLuminance = 10;
+            VansSkyBoxMaterial* sky = static_cast<VansSkyBoxMaterial*>(material);
+            sky->m_AtmospherePBRParam.m_PlanetRadius          = 6340000;
+            sky->m_AtmospherePBRParam.m_InitSeaLevel          = 200;
+            sky->m_AtmospherePBRParam.m_AtmosphereWidth       = 80000;
+            sky->m_AtmospherePBRParam.m_RayleighScalarHeight  = 8500;
+            sky->m_AtmospherePBRParam.m_MieScalarHeight       = 1200;
+            sky->m_AtmospherePBRParam.m_MieAnisotropy         = 0.78;
+            sky->m_AtmospherePBRParam.m_OzoneLevelCenterHeight= 25000;
+            sky->m_AtmospherePBRParam.m_OzoneLevelWidth       = 15000;
+            sky->m_AtmospherePBRParam.m_SunLuminance          = 10;
         }
         m_Materials.push_back(material);
         material->SetName(sceneMaterial["name"]);
@@ -742,59 +748,57 @@ VansTexture* VansGraphics::VansScene::LoadOrGetTexture(const std::string& absPat
     return texture;
 }
 
+void VansGraphics::VansScene::LoadShaderFromEntry(
+    const VansGraphics::VansShaderRegistryEntry& entry,
+    const std::string& pathPrefix,
+    VkDevice& device)
+{
+    if (GetShaderAsset(entry.name) != nullptr)
+        return; // already loaded
+
+    std::string fullPath = pathPrefix + entry.relativePath;
+    VansGraphicsShader* shader = new VansGraphicsShader();
+    m_SceneFileWatcher->AddWatch(fullPath);
+    shader->InitShader(device, fullPath);
+    shader->SetDrawStateData(entry.depthTest, entry.depthWrite, entry.depthCompareOp, entry.cullMode);
+    if (entry.pushConstantSize > 0) shader->SetPushConstant(entry.pushConstantSize);
+    if (entry.enableAlphaBlend)     shader->SetEnableAlphaBlend(VK_TRUE);
+    shader->SetName(entry.name);
+    m_Shaders.push_back(shader);
+}
+
 VansGraphicsShader* VansGraphics::VansScene::GetOrCreateDefaultShader(VansMaterialType matType, VkDevice& device)
 {
-    // Map material type -> shader name and path
-    struct DefaultShaderEntry
+    // Delegate completely to the C++ shader registry.
+    const auto* regEntry = VansGraphics::VansShaderRegistry::Get().FindForType(matType);
+    if (!regEntry)
     {
-        const char* name;
-        const char* relativePath;
-        VkBool32 depthWrite;
-        VkCullModeFlags cullMode;
-        bool alphaBlend;
-        int pushConstantSize;
-    };
-
-    // Default shader assignments:
-    // PBR       -> Unlit (deferred GBuffer shader)
-    // Transparent -> UnlitTransparent/SimpleColor (forward alpha-blend shader)
-    static const std::unordered_map<int, DefaultShaderEntry> defaults =
-    {
-        { VAN_PBR,         { "Unlit",                          "EngineAssets/Shaders/UnLit",                       VK_TRUE,  VK_CULL_MODE_BACK_BIT, false, 12 } },
-        { VAN_SKIN,        { "Skin",                           "EngineAssets/Shaders/UnlitSkin",                    VK_TRUE,  VK_CULL_MODE_BACK_BIT, false, 12 } },
-        { VAN_TRANSPARENT, { "UnlitTransparentSimpleColor",   "EngineAssets/Shaders/UnlitTransparent/SimpleColor", VK_TRUE,  VK_CULL_MODE_NONE,    true,  8 } },
-    };
-
-    auto it = defaults.find(static_cast<int>(matType));
-    if (it == defaults.end())
-    {
-        VANS_LOG_WARN("[GetOrCreateDefaultShader] No default shader for material type " << static_cast<int>(matType));
+        VANS_LOG_WARN("[GetOrCreateDefaultShader] No registered shader for material type " << static_cast<int>(matType));
         return nullptr;
     }
 
-    const auto& entry = it->second;
-
-    // Check if already loaded
-    VansGraphicsShader* existing = static_cast<VansGraphicsShader*>(GetShaderAsset(entry.name));
+    // Reuse if already loaded.
+    VansGraphicsShader* existing = static_cast<VansGraphicsShader*>(GetShaderAsset(regEntry->name));
     if (existing)
         return existing;
 
+    // Create a new shader from the registry entry.
     auto vansConfigration = VansConfigration::GetInstance();
-    std::string fullPath = vansConfigration->GetProjectRootPath() + entry.relativePath;
+    std::string fullPath = vansConfigration->GetProjectRootPath() + regEntry->relativePath;
 
     VansGraphicsShader* shader = new VansGraphicsShader();
     m_SceneFileWatcher->AddWatch(fullPath);
     shader->InitShader(device, fullPath);
-    shader->SetDrawStateData(VK_TRUE, entry.depthWrite, VK_COMPARE_OP_LESS_OR_EQUAL, entry.cullMode);
-    if (entry.pushConstantSize > 0)
-        shader->SetPushConstant(entry.pushConstantSize);
-    if (entry.alphaBlend)
+    shader->SetDrawStateData(regEntry->depthTest, regEntry->depthWrite, regEntry->depthCompareOp, regEntry->cullMode);
+    if (regEntry->pushConstantSize > 0)
+        shader->SetPushConstant(regEntry->pushConstantSize);
+    if (regEntry->enableAlphaBlend)
         shader->SetEnableAlphaBlend(VK_TRUE);
 
-    shader->SetName(entry.name);
+    shader->SetName(regEntry->name);
     m_Shaders.push_back(shader);
 
-    VANS_LOG("[GetOrCreateDefaultShader] Created default shader: " << entry.name);
+    VANS_LOG("[GetOrCreateDefaultShader] Created shader from registry: " << regEntry->name);
     return shader;
 }
 
@@ -868,7 +872,12 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
 
         VansMaterial* material = nullptr;
         {
-            material = new VansMaterial();
+            // Typed factory for auto-expanded submesh materials
+            if (matType == VansMaterialType::VAN_TRANSPARENT)
+                material = new VansTransparentMaterial();
+            else
+                material = new VansPBRMaterial();
+
             material->m_MaterialType = matType;
             material->SetName(matKey);
 
@@ -878,6 +887,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
 
             if (matType == VansMaterialType::VAN_PBR)
             {
+                VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(material);
                 // ── PBR material: load textures from FBX info ─────────────────
                 VansTexture* diffTex  = LoadOrGetTexture(fbxInfo.diffuseTexPath, true);
                 VansTexture* normTex  = LoadOrGetTexture(fbxInfo.normalTexPath, false);
@@ -885,32 +895,33 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
                 VansTexture* roughTex = LoadOrGetTexture(fbxInfo.roughnessTexPath, false);
                 VansTexture* aoTex    = LoadOrGetTexture(fbxInfo.aoTexPath, false);
 
-                material->m_BaseColorTexture = diffTex  ? diffTex  : static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                material->m_NormalTexture    = normTex  ? normTex  : static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-                material->m_MetalTexture     = metalTex ? metalTex : static_cast<VansTexture*>(GetTextureAsset("defaultMetal"));
-                material->m_RoughnessTexture = roughTex ? roughTex : static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
-                material->m_AoTexture        = aoTex    ? aoTex    : static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
+                pbr->m_BaseColorTexture = diffTex  ? diffTex  : static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
+                pbr->m_NormalTexture    = normTex  ? normTex  : static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
+                pbr->m_MetalTexture     = metalTex ? metalTex : static_cast<VansTexture*>(GetTextureAsset("defaultMetal"));
+                pbr->m_RoughnessTexture = roughTex ? roughTex : static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
+                pbr->m_AoTexture        = aoTex    ? aoTex    : static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
 
-                material->m_BasePBRParam.m_albedo    = glm::vec3(1.0f);
-                material->m_BasePBRParam.m_metallic  = fbxInfo.metallic;
-                material->m_BasePBRParam.m_roughness = fbxInfo.roughness;
-                material->m_BasePBRParam.m_ao        = 1.0f;
+                pbr->m_BasePBRParam.m_albedo    = glm::vec3(1.0f);
+                pbr->m_BasePBRParam.m_metallic  = fbxInfo.metallic;
+                pbr->m_BasePBRParam.m_roughness = fbxInfo.roughness;
+                pbr->m_BasePBRParam.m_ao        = 1.0f;
             }
             else if (matType == VansMaterialType::VAN_TRANSPARENT)
             {
+                VansTransparentMaterial* trans = static_cast<VansTransparentMaterial*>(material);
                 // ── Transparent material: load diffuse + opacity as texture slots ─
                 VansTexture* diffTex    = LoadOrGetTexture(fbxInfo.diffuseTexPath, true);
                 VansTexture* opacityTex = LoadOrGetTexture(fbxInfo.opacityTexPath, false);
 
                 if (diffTex)
                 {
-                    material->m_TransparentTextureMap.push_back({ "diffuse", diffTex->m_AssetName });
-                    material->m_TransparentTextures.push_back(diffTex);
+                    trans->m_TransparentTextureMap.push_back({ "diffuse", diffTex->m_AssetName });
+                    trans->m_TransparentTextures.push_back(diffTex);
                 }
                 if (opacityTex)
                 {
-                    material->m_TransparentTextureMap.push_back({ "opacity", opacityTex->m_AssetName });
-                    material->m_TransparentTextures.push_back(opacityTex);
+                    trans->m_TransparentTextureMap.push_back({ "opacity", opacityTex->m_AssetName });
+                    trans->m_TransparentTextures.push_back(opacityTex);
                 }
             }
 

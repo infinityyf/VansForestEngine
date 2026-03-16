@@ -1,5 +1,6 @@
 #include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
+#include "VansShaderRegistry.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
 #include "../PhysicsCore/VansPhysics.h"
@@ -421,6 +422,7 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
     //解析json
     std::ifstream jsonFile(path);
     json sceneData = json::parse(jsonFile);
+    RegisterEngineShaders();   // populate shader registry before resource loading
     LoadSceneResource(sceneData);
 
 
@@ -683,11 +685,12 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         {
             textureIndex = m_TlasInstanceTextures.size();
 			m_TlasInstanceMaterialToIndex.insert(std::make_pair(node->m_Material->m_AssetName, textureIndex));
-			m_TlasInstanceTextures.push_back(node->m_Material->m_BaseColorTexture->GetImage());
-			m_TlasInstanceTextures.push_back(node->m_Material->m_NormalTexture->GetImage());
-			m_TlasInstanceTextures.push_back(node->m_Material->m_MetalTexture->GetImage());
-			m_TlasInstanceTextures.push_back(node->m_Material->m_RoughnessTexture->GetImage());
-			m_TlasInstanceTextures.push_back(node->m_Material->m_AoTexture->GetImage());
+			VansPBRMaterial* pbrMat = static_cast<VansPBRMaterial*>(node->m_Material);
+			m_TlasInstanceTextures.push_back(pbrMat->m_BaseColorTexture->GetImage());
+			m_TlasInstanceTextures.push_back(pbrMat->m_NormalTexture->GetImage());
+			m_TlasInstanceTextures.push_back(pbrMat->m_MetalTexture->GetImage());
+			m_TlasInstanceTextures.push_back(pbrMat->m_RoughnessTexture->GetImage());
+			m_TlasInstanceTextures.push_back(pbrMat->m_AoTexture->GetImage());
         }
         else
         {

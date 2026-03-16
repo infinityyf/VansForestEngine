@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include "VansRenderNode.h"
+#include "VansShaderRegistry.h"
 #include "VansCamera.h"
 #include "BRDFData/VansLight.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
@@ -204,6 +205,22 @@ namespace VansGraphics
 		// Helper: returns the default shader for a given material type.
 		// Loads the shader on first use and caches it in the scene shader list.
 		VansGraphicsShader* GetOrCreateDefaultShader(VansMaterialType matType, VkDevice& device);
+
+		// Helper: creates and registers one shader from a registry entry.
+		// No-op if the shader is already loaded. Used by LoadSceneResource.
+		void LoadShaderFromEntry(const VansShaderRegistryEntry& entry,
+			                     const std::string& pathPrefix, VkDevice& device);
+
+		// Loads all scene meshes from the JSON 'mesh' array.
+		void LoadMeshesFromJson(const json& meshData, const std::string& pathPrefix,
+			                    VkDevice& device, VansVKDevice* vkDevice);
+
+		// Loads all shaders from the C++ shader registry.
+		void LoadShadersFromRegistry(const std::string& pathPrefix, VkDevice& device);
+
+		// Loads all scene textures from the JSON 'texture' array and imports engine defaults.
+		void LoadTexturesFromJson(const json& textureData, const std::string& pathPrefix,
+			                      VansVKDevice* vkDevice);
 
 	public:
 
