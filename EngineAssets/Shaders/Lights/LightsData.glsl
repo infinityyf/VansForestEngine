@@ -148,17 +148,22 @@ int SelectCascade(float viewDepth)
 float SampleCascadeShadowMap_PCF(vec3 position_world, sampler2DArray cascadeShadowMap, int cascadeIdx)
 {
     vec4 clipCoord = uDirectionLight.shadowMatrix[cascadeIdx] * vec4(position_world, 1.0);
-    clipCoord.z = clipCoord.z * 0.5 + 0.5;
-    clipCoord.z -= DEPTH_BIAS;
+    float rawZ = clipCoord.z * 0.5 + 0.5;
+    clipCoord.z = rawZ - DEPTH_BIAS;  // biased depth used for shadow comparison
     vec2 shadowUV = clipCoord.xy * 0.5 + 0.5;
     shadowUV.y = 1.0 - shadowUV.y;
 
-    // Smooth fade at shadow map edges
+    // Smooth fade at all six shadow map boundaries (XY + depth range).
+    // Without the Z terms, any position beyond the cascade far plane has
+    // clipCoord.z > 1, making every PCF sample appear in shadow (visibility=0)
+    // while edgeFade (XY only) stays 1, producing a hard black edge with no fade.
     float fadeWidth = 0.05;
     float edgeFade = smoothstep(0.0, fadeWidth, shadowUV.x)
                    * smoothstep(0.0, fadeWidth, 1.0 - shadowUV.x)
                    * smoothstep(0.0, fadeWidth, shadowUV.y)
-                   * smoothstep(0.0, fadeWidth, 1.0 - shadowUV.y);
+                   * smoothstep(0.0, fadeWidth, 1.0 - shadowUV.y)
+                   * smoothstep(0.0, fadeWidth, rawZ)              // cascade near plane
+                   * smoothstep(0.0, fadeWidth, 1.0 - rawZ);      // cascade far plane
 
     if (edgeFade <= 0.0)
         return 1.0;
@@ -174,7 +179,7 @@ float SampleCascadeShadowMap_PCF(vec3 position_world, sampler2DArray cascadeShad
     int blockerCount = 0;
 
     float frameIndex = softShadowParams.x;
-    float sampleJitterAngle = RandomInterLeavedWithScale(shadowUV * vec2(sz.xy), frameIndex) * 2.0 * PI;
+    float sampleJitterAngle = RandomInterLeavedWithScale(shadowUV * vec2(sz.xy), mod(frameIndex,64.0)) * 2.0 * PI;
     vec2 jitter = vec2(sin(sampleJitterAngle), cos(sampleJitterAngle));
 
     for(int i = 0; i < DISK_SAMPLE_COUNT; ++i)
@@ -195,8 +200,8 @@ float SampleCascadeShadowMap_PCF(vec3 position_world, sampler2DArray cascadeShad
         return 1.0;
 
     avgBlockerDepth /= float(blockerCount);
-    float penumbraRatio = (receiverDepth - avgBlockerDepth) / 0.05;
-    float radius = mix(1.0, 8.0, smoothstep(0.0, 1.0, penumbraRatio));
+    float lightSizeScale = softShadowParams.y;
+    float radius = clamp((receiverDepth - avgBlockerDepth) / texelSize.x * lightSizeScale, 1.0, 50.0);
 
     float visibility = 0.0;
     for(int i = 0; i < DISK_SAMPLE_COUNT; ++i)

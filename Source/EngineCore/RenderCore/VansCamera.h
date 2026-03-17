@@ -75,14 +75,14 @@ namespace VansGraphics
         }
 
         void SetAspectRatio(float aspect) { m_AspectRatio = aspect; }
-    private:
-
-        void SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix);
-
 
         glm::mat4 GetViewMatrix();
 
         glm::mat4 GetProjectiveMatrix();
+
+    private:
+
+        void SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix);
 
         glm::vec3 m_Position;
         

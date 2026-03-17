@@ -1,8 +1,10 @@
 ﻿#include "VansSceneWindow.h"
 
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
+#include "ImGuizmo.h"
 #include <filesystem>
 #include <fstream>
 #include "../../RenderCore/VulkanCore/VansTexture.h"
@@ -19,6 +21,42 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
     {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         ImGui::Begin("Scene");
+
+        // ImGuizmo must be told a new frame is starting once per ImGui frame.
+        ImGuizmo::BeginFrame();
+
+        // ── Gizmo mode toolbar ────────────────────────────────────────────────
+        {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
+            ImGui::Spacing();
+            ImGui::Indent(4.0f);
+
+            if (ImGui::RadioButton("T (Translate)##gizmo",
+                m_Gizmos.m_Mode == GizmoMode::Translate))
+                m_Gizmos.m_Mode = GizmoMode::Translate;
+            ImGui::SameLine();
+
+            if (ImGui::RadioButton("R (Rotate)##gizmo",
+                m_Gizmos.m_Mode == GizmoMode::Rotate))
+                m_Gizmos.m_Mode = GizmoMode::Rotate;
+            ImGui::SameLine();
+
+            if (ImGui::RadioButton("S (Scale)##gizmo",
+                m_Gizmos.m_Mode == GizmoMode::Scale))
+                m_Gizmos.m_Mode = GizmoMode::Scale;
+            ImGui::SameLine();
+
+            ImGui::Text("|");
+            ImGui::SameLine();
+
+            bool isWorld = (m_Gizmos.m_Space == GizmoSpace::World);
+            if (ImGui::Checkbox("World##gizmo", &isWorld))
+                m_Gizmos.m_Space = isWorld ? GizmoSpace::World : GizmoSpace::Local;
+
+            ImGui::Unindent(4.0f);
+            ImGui::Spacing();
+            ImGui::PopStyleVar();
+        }
 
         // 获取当前窗口可用区域大小
         ImVec2 viewportSize = ImGui::GetContentRegionAvail();
@@ -89,6 +127,22 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
             ImGui::SetCursorPos(ImVec2(cursor.x + offset.x, cursor.y + offset.y));
 
             ImGui::Image((ImTextureID)sceneTextureDS, drawSize);
+
+            // ── Gizmo overlay (drawn on top of the scene image) ───────────────
+            // Use the exact screen-space rect of the rendered texture, not the
+            // whole panel window, so gizmo clipping and NDC unprojection are accurate.
+            ImVec2 imageScreenPos = ImGui::GetItemRectMin();
+            m_Gizmos.HandleHotkeys(m_Scene);
+            m_Gizmos.Draw(m_Scene, m_Camera, imageScreenPos, drawSize);
+
+            // ── Object picking: LMB click when gizmo is not being dragged ─────
+            if (ImGui::IsWindowHovered()
+                && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                && !ImGuizmo::IsOver())
+            {
+                m_Gizmos.TryPickObject(m_Scene, m_Camera,
+                    ImGui::GetMousePos(), imageScreenPos, drawSize);
+            }
         }
 
         // Input Handling

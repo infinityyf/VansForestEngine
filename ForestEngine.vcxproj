@@ -106,7 +106,7 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\GUI\ImGuizmo;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -127,7 +127,7 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\GUI\ImGuizmo;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -259,6 +259,8 @@
     <ClCompile Include="External\spirv_cross\spirv_parser.cpp" />
     <ClCompile Include="External\spirv_cross\spirv_reflect.cpp" />
     <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp" />
+    <ClCompile Include="External\GUI\ImGuizmo\ImGuizmo.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\VansGizmos.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.cpp" />

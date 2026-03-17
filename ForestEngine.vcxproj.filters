@@ -71,6 +71,9 @@
     <Filter Include="EngineCore\Utils">
       <UniqueIdentifier>{5365ed6d-f1e9-4165-9907-cc4b0b9db7df}</UniqueIdentifier>
     </Filter>
+    <Filter Include="External\imguiZmo">
+      <UniqueIdentifier>{d385f811-9d70-4742-a43e-46e38b5fd871}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -610,6 +613,12 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VansShaderRegistry.cpp">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
+    </ClCompile>
+    <ClCompile Include="External\GUI\ImGuizmo\ImGuizmo.cpp">
+      <Filter>External\imguiZmo</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansGizmos.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

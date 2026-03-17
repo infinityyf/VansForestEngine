@@ -127,7 +127,7 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 	offset += size;
 	size = sizeof(float) * 4;
 	m_SoftShadowParams[0] = m_SoftShadowParams[0] + 1;
-	m_SoftShadowParams[1] = 0;
+	m_SoftShadowParams[1] = 0.3; // 软阴影半径控制
 	m_SoftShadowParams[2] = 0;
 	m_SoftShadowParams[3] = 0;
 	m_LightBuffer.SetBufferData(m_SoftShadowParams, offset, size);

@@ -535,6 +535,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         m_ScriptContext.VansScriptUpdate();
         //UI Pass
         m_SceneWindow->RegistCamera(&camera);
+        m_SceneWindow->RegistScene(m_Scene);
         DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));
 
         // --- Profiler: end frame (resolve GPU, merge, compute FPS) ---
