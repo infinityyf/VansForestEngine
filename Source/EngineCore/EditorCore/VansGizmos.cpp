@@ -119,13 +119,26 @@ void VansGizmos::Draw(VansScene*  scene,
         ImGuizmo::DecomposeMatrixToComponents(
             glm::value_ptr(modelMatrix),
             glm::value_ptr(pos),
-            glm::value_ptr(rotDeg),   // ImGuizmo returns Euler degrees
+            glm::value_ptr(rotDeg),   // degrees, ZYX convention (matches engine GetModelMatrix)
             glm::value_ptr(scale)
         );
 
-        tf.m_Position = pos;
-        tf.m_Rotation = rotDeg;  // engine stores degrees; GetModelMatrix() calls glm::radians() internally
-        tf.m_Scale    = scale;
+        // Only write back the components that the active mode actually changed.
+        // Writing all three every frame causes the other components to be
+        // re-derived from the (potentially singular) Euler decomposition and
+        // produces cascading jitter when only translating or scaling.
+        switch (m_Mode)
+        {
+        case GizmoMode::Translate:
+            tf.m_Position = pos;
+            break;
+        case GizmoMode::Scale:
+            tf.m_Scale = scale;
+            break;
+        case GizmoMode::Rotate:
+            tf.m_Rotation = rotDeg;
+            break;
+        }
 
         // Mark dirty so UpdateTransformRenderData() re-uploads the GPU SSBO.
         VansTransformStore::TransformIDToTransformDirty[node->m_TransformID] = true;
