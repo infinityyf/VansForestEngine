@@ -152,9 +152,9 @@ void VansGraphics::VansHierachuWindow::DrawTransformDetail(VansRenderNode& node)
 void VansGraphics::VansHierachuWindow::DrawMaterialDetail(VansMaterial& material, int index)
 {
     // Show material type label
-    const char* typeNames[] = { "PBR", "Coat", "Transparent", "PostProcess", "SkyBox", "Deferred", "SSAO", "SSR", "Shadow", "Skin" };
+    const char* typeNames[] = { "PBR", "Coat", "Transparent", "PostProcess", "SkyBox", "Deferred", "SSAO", "SSR", "Shadow", "Skin", "Cloth" };
     int typeIdx = (int)material.m_MaterialType;
-    if (typeIdx >= 0 && typeIdx < 10)
+    if (typeIdx >= 0 && typeIdx < 11)
         ImGui::Text("Type: %s", typeNames[typeIdx]);
 
     // Show texture info
@@ -187,6 +187,19 @@ void VansGraphics::VansHierachuWindow::DrawMaterialDetail(VansMaterial& material
             showTex("Normal",    skin.m_NormalTexture);
             ImGui::TreePop();
         }
+    }
+    else if (material.m_MaterialType == VansMaterialType::VAN_CLOTH)
+    {
+        VansClothMaterial& cloth = static_cast<VansClothMaterial&>(material);
+        if (ImGui::TreeNode("Textures"))
+        {
+            showTex("BaseColor",  cloth.m_BaseColorTexture);
+            showTex("Normal",     cloth.m_NormalTexture);
+            showTex("Roughness",  cloth.m_RoughnessTexture);
+            showTex("AO",         cloth.m_AoTexture);
+            ImGui::TreePop();
+        }
+        ImGui::SliderFloat("Sheen Roughness", &cloth.m_SheenRoughness, 0.0f, 1.0f);
     }
 
     ImGui::Separator();

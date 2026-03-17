@@ -39,6 +39,7 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "ssao")         return VansMaterialType::VAN_SCREEN_SPACE_AO;
         if (s == "shadow")       return VansMaterialType::VAN_SHAODW;
         if (s == "skin")         return VansMaterialType::VAN_SKIN;
+        if (s == "cloth")        return VansMaterialType::VAN_CLOTH;
         VANS_LOG_WARN("[LoadSceneResource] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
     }
     return VansMaterialType::VAN_PBR;
@@ -589,6 +590,7 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         case VansMaterialType::VAN_SCREEN_SPACE_AO: material = new VansSSAOMaterial();         break;
         case VansMaterialType::VAN_SHAODW:          material = new VansShadowMaterial();       break;
         case VansMaterialType::VAN_SKIN:            material = new VansSkinMaterial();         break;
+        case VansMaterialType::VAN_CLOTH:           material = new VansClothMaterial();        break;
         default:                                    material = new VansMaterial();             break;
         }
         material->m_MaterialType = matType;
@@ -649,6 +651,45 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             pbr->m_BasePBRParam.m_metallic  = sceneMaterial["metallic"];
             pbr->m_BasePBRParam.m_roughness = sceneMaterial["roughness"];
             pbr->m_BasePBRParam.m_ao        = sceneMaterial["ao"];
+        }
+
+        // ── Cloth material: load basecolor + normal textures + scalar params ──
+        if (matType == VansMaterialType::VAN_CLOTH)
+        {
+            VansClothMaterial* cloth = static_cast<VansClothMaterial*>(material);
+            if (sceneMaterial.contains("basecolor_texture"))
+            {
+                auto textureName = sceneMaterial["basecolor_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
+                cloth->m_BaseColorTexture = texture;
+            }
+            if (sceneMaterial.contains("normal_texture"))
+            {
+                auto textureName = sceneMaterial["normal_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
+                cloth->m_NormalTexture = texture;
+            }
+            if (sceneMaterial.contains("roughness_texture"))
+            {
+                auto textureName = sceneMaterial["roughness_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
+                cloth->m_RoughnessTexture = texture;
+            }
+            if (sceneMaterial.contains("ao_texture"))
+            {
+                auto textureName = sceneMaterial["ao_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
+                cloth->m_AoTexture = texture;
+            }
+            cloth->m_SheenRoughness = sceneMaterial.value("sheenRoughness", 0.5f);
         }
 
         // ── Skin material: load basecolor + normal textures ──

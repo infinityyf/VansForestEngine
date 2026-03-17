@@ -30,6 +30,7 @@ namespace VansGraphics
 		GLOBAL_BINDING_PRECONV_SPECULAR         = 5,
 		GLOBAL_BINDING_SH_COEFFICIENTS          = 6,
 		GLOBAL_BINDING_SKIN_BSDF_LUT            = 7,
+		GLOBAL_BINDING_CLOTH_BRDF_LUT           = 8,
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -62,6 +63,19 @@ namespace VansGraphics
 	{
 		SKIN_TEXTURE_BINDING_ALBEDO  = 0,   // Skin albedo texture (COMBINED_IMAGE_SAMPLER)
 		SKIN_TEXTURE_BINDING_NORMAL  = 1,   // Skin normal texture (COMBINED_IMAGE_SAMPLER)
+	};
+
+	// ====================================================================
+	// Set 4 (Per-Node Cloth Texture) Binding Indices
+	// Only used by VansCommonRenderNode when the material type is VAN_CLOTH.
+	// Each cloth node owns its descriptor set with dedicated albedo + normal textures.
+	// ====================================================================
+	enum ClothTextureBinding : uint32_t
+	{
+		CLOTH_TEXTURE_BINDING_ALBEDO     = 0,   // Cloth albedo texture (COMBINED_IMAGE_SAMPLER)
+		CLOTH_TEXTURE_BINDING_NORMAL     = 1,   // Cloth normal texture (COMBINED_IMAGE_SAMPLER)
+		CLOTH_TEXTURE_BINDING_ROUGHNESS  = 2,   // Cloth roughness texture (COMBINED_IMAGE_SAMPLER)
+		CLOTH_TEXTURE_BINDING_AO         = 3,   // Cloth ambient occlusion texture (COMBINED_IMAGE_SAMPLER)
 	};
 
 	// ====================================================================
@@ -424,5 +438,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_GIPointLight(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_RayTracing(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SkinTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_ClothTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

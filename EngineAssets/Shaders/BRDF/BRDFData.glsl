@@ -51,6 +51,14 @@ layout(set=PBRLutSetBind, binding=6) buffer shCoefficientsBuffer
 // U = NdotL * 0.5 + 0.5,  V = curvature [0..1]
 layout(set = PBRLutSetBind, binding = 7) uniform sampler2D SkinPreIntegratedLUT;
 
+// Cloth pre-integrated DFG LUT  (EngineAssets/Textures/ClothBRDFLUT.png)
+// U = NoV [0..1],  V = perceptualRoughness [0..1]
+// R = split-sum term A  (F-independent, mix start)
+// G = split-sum term B  (F-dependent,   mix end)
+// B = sheen tint (pre-baked directional sheen colour scale)
+// Usage: E = mix(dfg.rrr, dfg.ggg, sheenColor)
+layout(set = PBRLutSetBind, binding = 8) uniform sampler2D ClothBRDFLUT;
+
 struct BRDFData
 {
     vec3 albedo;

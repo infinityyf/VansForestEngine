@@ -201,6 +201,9 @@ namespace VansGraphics
 		manager->m_SkinBSDFLUT = new VansTexture();
 		manager->m_SkinBSDFLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/SkinBSDFLUT.png").c_str(), false, false, false,LOW_PRES_8, 4 , VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
+		manager->m_ClothBRDFLUT = new VansTexture();
+		manager->m_ClothBRDFLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/ClothBRDFLUT.png").c_str(), false, false, false, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
 		VansVKBuffer prefilterCBBuffer;
 		uint32_t mipCount = log2(512);
 		float data[4] = { 512,mipCount,512,512 };
@@ -258,7 +261,15 @@ namespace VansGraphics
 			VK_SHADER_STAGE_FRAGMENT_BIT,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding,sampleDiffuseConvBinding,sampleSpecularConBinding,environmentSHBuffer,skinBSDFLUTBinding }, manager->m_BRDFInterationTexSetLayout);
+		VkDescriptorSetLayoutBinding clothBRDFLUTBinding =
+		{
+			PassBinding::TEXTURE_5,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			1,
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			nullptr
+		};
+		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding,sampleDiffuseConvBinding,sampleSpecularConBinding,environmentSHBuffer,skinBSDFLUTBinding,clothBRDFLUTBinding }, manager->m_BRDFInterationTexSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BRDFInterationTexSetLayout }, manager->m_BRDFInterationTextDescriptorSets);
 
 		VansComputeShader* m_PreConvDiffuseShader = new VansComputeShader();

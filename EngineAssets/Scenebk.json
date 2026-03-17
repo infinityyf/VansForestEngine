@@ -75,14 +75,14 @@
                     "support_shadow": true
                 },
                 {
-                    "name": "Object3",
-                    "mesh": "sphere",
-                    "material": "BaseUnlitMaterial2",
+                    "name": "Cloth",
+                    "mesh": "cloth",
+                    "material": "clothMaterial",
                     "type": "opaque",
                     "transform": {
                         "position": [
                             -6,
-                            3.0,
+                            1,
                             3
                         ],
                         "rotation": [
@@ -542,6 +542,12 @@
             "support_raytracing": false
         },
         {
+            "name" : "cloth",
+            "path" : "EngineAssets/Models/Cloth/cloth.obj",
+            "need_tangent" : true,
+            "support_raytracing" : false
+        },
+        {
             "name": "Adam",
             "path": "EngineAssets/Models/Adam/Adam.FBX",
             "need_tangent": true,
@@ -858,6 +864,30 @@
             "path": "EngineAssets/Textures/Human/HumanNormal.png",
             "type": 0,
             "sRGB": false
+        },
+        {
+            "name" : "clothBaseColor",
+            "path" : "EngineAssets/Textures/Cloth/Cloth_BaseColor.png",
+            "type" : 0,
+            "sRGB" : true
+        },
+        {
+            "name" : "clothNormal",
+            "path" : "EngineAssets/Textures/Cloth/Cloth_Normal.png",
+            "type" : 0,
+            "sRGB" : false
+        },
+        {
+            "name" : "clothRoughness",
+            "path" : "EngineAssets/Textures/Cloth/Cloth_Roughness.png",
+            "type" : 0,
+            "sRGB" : false
+        },
+        {
+            "name" : "clothAO",
+            "path" : "EngineAssets/Textures/Cloth/Cloth_AO.png",
+            "type" : 0,
+            "sRGB" : false
         }
     ],
     "material": [
@@ -947,21 +977,13 @@
             "ao_texture": "aoTexture"
         },
         {
-            "name": "BaseUnlitMaterial5",
-            "type": "pbr",
-            "albedo": [
-                1.0,
-                1.0,
-                1.0
-            ],
-            "roughness": 1.0,
-            "metallic": 0.0,
-            "ao": 1.0,
-            "basecolor_texture": "baseColorTexture",
-            "normal_texture": "normalTexture",
-            "metal_texture": "metalTexture",
-            "roughness_texture": "roughnessTexture",
-            "ao_texture": "aoTexture"
+            "name": "clothMaterial",
+            "type": "cloth",
+            "basecolor_texture": "clothBaseColor",
+            "normal_texture": "clothNormal",
+            "roughness_texture": "clothRoughness",
+            "ao_texture": "clothAO"
+
         },
         {
             "name": "BaseUnlitMaterial6",

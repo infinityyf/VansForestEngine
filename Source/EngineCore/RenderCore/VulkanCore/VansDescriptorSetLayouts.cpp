@@ -440,4 +440,28 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_SkinTexture(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
+// ============================================================
+// Set 4: Per-Node Cloth Texture Layout (4 bindings: albedo + normal + roughness + ao)
+// Each cloth render node owns its own descriptor set with dedicated textures.
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_ClothTexture(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		// binding 0: Cloth albedo texture
+		{CLOTH_TEXTURE_BINDING_ALBEDO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 1: Cloth normal texture
+		{CLOTH_TEXTURE_BINDING_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 2: Cloth roughness texture
+		{CLOTH_TEXTURE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 3: Cloth ambient occlusion texture
+		{CLOTH_TEXTURE_BINDING_AO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
 } // namespace VansGraphics

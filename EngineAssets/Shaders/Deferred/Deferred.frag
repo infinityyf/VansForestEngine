@@ -4,6 +4,7 @@
 #include "../Lights/LightsData.glsl"
 #include "../BRDF/BRDFData.glsl"
 #include "../BRDF/BRDFSkin.glsl"
+#include "../BRDF/BRDFCloth.glsl"
 #include "../Common/CameraData.glsl"
 
 layout(set = 1, binding = 0, input_attachment_index = 0) uniform subpassInput normalInput;
@@ -124,6 +125,16 @@ void main()
         float curvature = subpassLoad(normalInput).w;
         CalculateDirectLight_Skin(brdfData, curvature, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
         AmbientBRDF_Skin(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+    }
+    else if (matID == MATERIAL_ID_CLOTH)
+    {
+        // --- Cloth BRDF path ---
+        // brdfData.roughness holds sheenRoughness (written into outGBuffer0.w by Cloth.frag)
+        // Direct lighting uses the per-light cloth light loop
+        CalculateDirectLight_Cloth(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        // Ambient: ClothBRDFLUT .b channel used as the specular environment term
+        AmbientBRDF_Cloth(brdfData, viewDirection,
+                          lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else
     {

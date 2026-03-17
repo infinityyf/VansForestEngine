@@ -21,6 +21,7 @@ namespace VansGraphics
 	class VansTransparentMaterial;
 	class VansSkyBoxMaterial;
 	class VansSkinMaterial;
+	class VansClothMaterial;
 	class VansPostProcessMaterial;
 	class VansDeferredMaterial;
 	class VansSSAOMaterial;
@@ -37,6 +38,7 @@ namespace VansGraphics
 		VAN_SCREEN_SPACE_AO = 6,
 		VAN_SHAODW = 8,
 		VAN_SKIN = 9,
+		VAN_CLOTH = 10,
 	};
 
 	// Lightweight push-constant payload built at draw time.
@@ -153,6 +155,8 @@ namespace VansGraphics
 		VansTexture* m_BRDFIntegralLUT;
 
 		VansTexture* m_SkinBSDFLUT;
+
+		VansTexture* m_ClothBRDFLUT = nullptr;
 
 		uint32_t     m_SSGITemporalFrame = 0;
 
@@ -295,7 +299,24 @@ namespace VansGraphics
 
 		void BuildSkinTextureDescriptors();
 	};
+	// ============================================================
+	// VansClothMaterial — cloth shading (type 10)
+	// ============================================================
+	class VansClothMaterial : public VansMaterial
+	{
+	public:
+		VansTexture* m_BaseColorTexture  = nullptr;
+		VansTexture* m_NormalTexture     = nullptr;
+		VansTexture* m_RoughnessTexture  = nullptr;
+		VansTexture* m_AoTexture         = nullptr;
 
+		float        m_SheenRoughness    = 0.5f;   // 0 = silk, 1 = rough fabric
+
+		VkDescriptorSetLayout          m_ClothOwnedLayout   = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_ClothOwnedDescSets;
+
+		void BuildClothTextureDescriptors();
+	};
 	// ============================================================
 	// Pass-only materials 鈥?carry only the shader (inherited from base)
 	// ============================================================

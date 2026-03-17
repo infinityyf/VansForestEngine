@@ -213,6 +213,22 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 			m_UsedDescSets.push_back(skin->m_SkinOwnedDescSets[0]);
 		}
 	}
+
+	// Set 4: Per-Material Cloth Texture (albedo + normal)
+	// Owned by VansClothMaterial; built once and shared by all nodes using this material.
+	if (m_Material && m_Material->m_MaterialType == VansMaterialType::VAN_CLOTH)
+	{
+		VansClothMaterial* cloth = static_cast<VansClothMaterial*>(m_Material);
+		if (cloth->m_ClothOwnedLayout == VK_NULL_HANDLE)
+		{
+			cloth->BuildClothTextureDescriptors();
+		}
+		m_UsedDescSetLayouts.push_back(cloth->m_ClothOwnedLayout);
+		if (!cloth->m_ClothOwnedDescSets.empty())
+		{
+			m_UsedDescSets.push_back(cloth->m_ClothOwnedDescSets[0]);
+		}
+	}
 }
 
 void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager)

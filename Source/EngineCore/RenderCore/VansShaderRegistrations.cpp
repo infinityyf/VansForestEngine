@@ -37,6 +37,14 @@ void RegisterEngineShaders()
         12, false
     });
 
+    // ── VAN_CLOTH ─────────────────────────────────────────────────────────────
+    reg.RegisterForType(VansGraphics::VAN_CLOTH, {
+        "Cloth",
+        "EngineAssets/Shaders/Cloth",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        12, false
+    });
+
     // ── VAN_TRANSPARENT ───────────────────────────────────────────────────────
     reg.RegisterForType(VansGraphics::VAN_TRANSPARENT, {
         "UnlitTransparentSimpleColor",
