@@ -3,10 +3,13 @@
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
+#include "../PhysicsCore/VansClothNode.h"
+#include "../PhysicsCore/VansClothSystem.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "../Util/VansLog.h"
+#include <cstring>
 
 // ===========================================================================
 // Vehicle initialization
@@ -71,6 +74,63 @@ void VansGraphics::VansScene::LoadPhysicsNodes(json& physics_node)
             }
 
             InitVehicle(&VansPhysicsSystem::GetInstance(), spawnPos, bodyNodeName, tireNodeNames);
+            continue;
+        }
+        // ── Cloth simulation node ────────────────────────────────────────────
+        if (physicsNodeJson.contains("nodeType") && physicsNodeJson["nodeType"].get<std::string>() == "cloth")
+        {
+            if (!physicsNodeJson.contains("renderNode"))
+            {
+                VANS_LOG_WARN("[VansScene] Cloth node missing 'renderNode' field, skipping.");
+                continue;
+            }
+
+            std::string renderNodeName = physicsNodeJson["renderNode"].get<std::string>();
+            VansRenderNode* renderNode = FindRenderNodeByName(renderNodeName);
+            if (!renderNode)
+            {
+                VANS_LOG_WARN("[VansScene] Cloth node: render node '" << renderNodeName << "' not found, skipping.");
+                continue;
+            }
+
+            VansEngine::ClothNodeProperties clothProps;
+            if (physicsNodeJson.contains("stiffness"))    clothProps.stiffness    = physicsNodeJson["stiffness"].get<float>();
+            if (physicsNodeJson.contains("damping"))      clothProps.damping      = physicsNodeJson["damping"].get<float>();
+            if (physicsNodeJson.contains("friction"))     clothProps.friction     = physicsNodeJson["friction"].get<float>();
+            if (physicsNodeJson.contains("selfCollision")) clothProps.selfCollision = physicsNodeJson["selfCollision"].get<bool>();
+            if (physicsNodeJson.contains("gravity"))
+            {
+                auto& g = physicsNodeJson["gravity"];
+                clothProps.gravity = g[1].get<float>();
+            }
+            if (physicsNodeJson.contains("pinnedParticles"))
+            {
+                for (const auto& idx : physicsNodeJson["pinnedParticles"])
+                    clothProps.pinnedParticleIndices.push_back(idx.get<uint32_t>());
+            }
+
+            VansEngine::VansClothNode* clothNode = new VansEngine::VansClothNode();
+            clothNode->Initialize(clothProps, renderNode);
+            m_ClothNodes.push_back(clothNode);
+
+            // Allocate a scene-owned HOST_VISIBLE staging buffer for this cloth node.
+            VkDeviceSize stagingSize =
+                static_cast<VkDeviceSize>(renderNode->m_Mesh
+                    ? renderNode->m_Mesh->GetMeshVertexCount() : 0) * 8 * sizeof(uint16_t);
+            VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+            VkDevice nativeDev  = vkDev ? vkDev->GetLogicDevice() : VK_NULL_HANDLE;
+            m_ClothStagingBuffers.emplace_back();
+            if (stagingSize > 0 && nativeDev != VK_NULL_HANDLE)
+            {
+                m_ClothStagingBuffers.back().CreatVulkanBuffer(
+                    nativeDev,
+                    stagingSize,
+                    VK_FORMAT_UNDEFINED,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                m_ClothStagingBuffers.back().PersistentMap();
+            }
+            VANS_LOG("[VansScene] Cloth node created for render node '" << renderNodeName << "'");
             continue;
         }
         // ── Regular physics node ─────────────────────────────────────────────
@@ -304,5 +364,91 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
             t.m_Rotation = PxQuatToEulerDeg(wheelPose.q);
             VansTransformStore::TransformIDToTransformDirty.insert({ tireNode->m_TransformID, true });
         }
+    }
+}
+
+// ===========================================================================
+// Cloth simulation update
+// ===========================================================================
+
+void VansGraphics::VansScene::UpdateClothSimulation(float dt)
+{
+    if (m_ClothNodes.empty()) return;
+
+    // Sync all pinned particles to their render node transforms first
+    for (auto* clothNode : m_ClothNodes)
+    {
+        if (clothNode) clothNode->SyncPinnedParticlesToRenderNode();
+    }
+
+    // Advance NvCloth simulation by dt
+    VansEngine::VansClothSystem::GetInstance().SimulateStep(dt);
+}
+
+void VansGraphics::VansScene::WriteClothResultsToStagingBuffers()
+{
+    for (size_t i = 0; i < m_ClothNodes.size(); ++i)
+    {
+        VansEngine::VansClothNode* clothNode = m_ClothNodes[i];
+        if (!clothNode) continue;
+
+        // 1. NvCloth → CPU fp16 buffer (inside ClothNode, no Vulkan)
+        clothNode->WriteSimResults();
+
+        // 2. CPU → scene-owned HOST_VISIBLE staging buffer
+        if (i >= m_ClothStagingBuffers.size()) continue;
+        VansVKBuffer& staging = m_ClothStagingBuffers[i];
+        if (!staging.IsMapped()) continue;
+
+        const std::vector<uint16_t>& cpuData = clothNode->GetSimulatedVertexData();
+        size_t byteSize = cpuData.size() * sizeof(uint16_t);
+        if (byteSize == 0) continue;
+
+        std::memcpy(staging.GetMappedPtr(), cpuData.data(), byteSize);
+    }
+}
+
+void VansGraphics::VansScene::RecordClothVertexUploads(VkCommandBuffer cmd)
+{
+    for (size_t i = 0; i < m_ClothNodes.size(); ++i)
+    {
+        VansEngine::VansClothNode* clothNode = m_ClothNodes[i];
+        if (!clothNode || i >= m_ClothStagingBuffers.size()) continue;
+
+        VansVKBuffer& staging = m_ClothStagingBuffers[i];
+        if (!staging.IsMapped()) continue;
+
+        VansGraphics::VansRenderNode* renderNode = clothNode->GetTargetRenderNode();
+        if (!renderNode || !renderNode->m_Mesh) continue;
+
+        VkBuffer dstBuffer = renderNode->m_Mesh->GetBLASVertexBuffer().GetNativeBuffer();
+        VkDeviceSize size   = clothNode->GetSimulatedDataByteSize();
+        if (size == 0) continue;
+
+        VkBufferCopy region{};
+        region.srcOffset = 0;
+        region.dstOffset = 0;
+        region.size      = size;
+        vkCmdCopyBuffer(cmd, staging.GetNativeBuffer(), dstBuffer, 1, &region);
+
+        // TRANSFER_WRITE → VERTEX_ATTRIBUTE_READ barrier
+        VkBufferMemoryBarrier barrier{};
+        barrier.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        barrier.pNext               = nullptr;
+        barrier.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask       = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer              = dstBuffer;
+        barrier.offset              = 0;
+        barrier.size                = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(
+            cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+            0,
+            0, nullptr,
+            1, &barrier,
+            0, nullptr);
     }
 }

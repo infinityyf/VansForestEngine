@@ -355,6 +355,12 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VansShaderRegistry.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothNode.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothSystem.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl">
@@ -619,6 +625,24 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\VansGizmos.cpp">
       <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="External\NvCloth\extensions\src\ClothFabricCooker.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="External\NvCloth\extensions\src\ClothGeodesicTetherCooker.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="External\NvCloth\extensions\src\ClothMeshQuadifier.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="External\NvCloth\extensions\src\ClothSimpleTetherCooker.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothNode.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothSystem.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

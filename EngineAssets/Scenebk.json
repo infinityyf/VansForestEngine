@@ -394,6 +394,15 @@
                         "Tire2",
                         "Tire3"
                     ]
+                },
+                {
+                "nodeType": "cloth",
+                "renderNode": "Cloth",
+                "stiffness": 0.8,
+                "damping": 0.2,
+                "friction": 0.1,
+                "gravity": [0, -9.81, 0],
+                "pinnedParticles": [0, 1, 2, 3,4,5,6,7]
                 }
             ]
         }
@@ -543,7 +552,7 @@
         },
         {
             "name" : "cloth",
-            "path" : "EngineAssets/Models/Cloth/cloth.obj",
+            "path" : "EngineAssets/Models/Cloth/curtain.obj",
             "need_tangent" : true,
             "support_raytracing" : false
         },

@@ -1,4 +1,5 @@
 #include "VansPhysics.h"
+#include "VansClothSystem.h"
 #include "../Util/VansLog.h"
 #include <iostream>
 #include <chrono>
@@ -151,11 +152,18 @@ namespace VansEngine
 		m_DefaultMaterial = m_Physics->createMaterial(0.5f, 0.5f, 0.6f); // static friction, dynamic friction, restitution
 
 		VANS_LOG("[PhysX] Initialized successfully");
+
+		// Initialize NvCloth CPU simulation
+		VansClothSystem::GetInstance().Initialize();
+
 		return true;
 	}
 
 	void VansPhysicsSystem::Shutdown()
 	{
+		// Shutdown NvCloth before destroying PhysX
+		VansClothSystem::GetInstance().Shutdown();
+
 		StopSimulation();
 
 		if (m_DefaultMaterial) m_DefaultMaterial->release();

@@ -5,6 +5,7 @@
 #include "BRDFData/VansLight.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
+#include "../PhysicsCore/VansClothNode.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include <vector>
@@ -104,6 +105,15 @@ namespace VansGraphics
 		// Physics nodes
 		std::vector<VansEngine::VansPhysicsNode*> m_PhysicsNodes;
 
+		// Cloth simulation nodes
+		std::vector<VansEngine::VansClothNode*> m_ClothNodes;
+
+		// Per-cloth HOST_VISIBLE staging buffers owned by the scene.
+		// Indexed parallel to m_ClothNodes.  Written from the CPU cloth results
+		// each frame and copied to the device-local mesh vertex buffer via
+		// vkCmdCopyBuffer inside the scene's GPU upload pass.
+		std::vector<VansVKBuffer> m_ClothStagingBuffers;
+
 		// Vehicle
 		VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
 		// Initialize the vehicle in the scene from JSON-specified parameters.
@@ -173,6 +183,11 @@ namespace VansGraphics
 		void UpdateRenderNodesDataBeforeRecord();
 
 		void UpdatePhysicsTransforms();
+
+		// Cloth simulation: CPU advance + write results to staging buffers
+		void UpdateClothSimulation(float dt);
+		void WriteClothResultsToStagingBuffers();
+		void RecordClothVertexUploads(VkCommandBuffer cmd);
 
 	private:
 

@@ -522,6 +522,28 @@ m_MaterialManager.ClearRuntimeRenderTextures();
     }
     m_PhysicsNodes.clear();
 
+    // Clean up cloth nodes
+    VansVKDevice* vkDeviceForCloth = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VkDevice nativeDeviceForCloth = vkDeviceForCloth ? vkDeviceForCloth->GetLogicDevice() : VK_NULL_HANDLE;
+    for (auto* clothNode : m_ClothNodes)
+    {
+        if (clothNode)
+        {
+            clothNode->Shutdown();
+            delete clothNode;
+        }
+    }
+    m_ClothNodes.clear();
+
+    // Destroy scene-owned cloth staging buffers
+    for (auto& stagingBuf : m_ClothStagingBuffers)
+    {
+        if (stagingBuf.IsMapped())
+            stagingBuf.Unmap();
+        stagingBuf.DestroyVulkanBuffer(nativeDeviceForCloth);
+    }
+    m_ClothStagingBuffers.clear();
+
     //delete mesh;
     //delete shader;
     //delete fullScreenMesh;
@@ -538,6 +560,10 @@ void VansGraphics::VansScene::UpdateSceneData()
     // Use the cached frame delta - GetDeltaTime() returns ~0 here because
     // VansTimer::Update() already reset lastFrameTime earlier this frame.
     UpdateAnimations(static_cast<float>(VansTimer::GetLastFrameDelta()));
+
+    // Advance cloth simulation and write results to staging buffers
+    UpdateClothSimulation(static_cast<float>(VansTimer::GetLastFrameDelta()));
+    WriteClothResultsToStagingBuffers();
 
     // Update dirty physics transforms to GPU
     UpdateTransformRenderData();
