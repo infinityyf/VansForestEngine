@@ -562,7 +562,7 @@ void VansGraphics::VansScene::UpdateSceneData()
     UpdateAnimations(static_cast<float>(VansTimer::GetLastFrameDelta()));
 
     // Advance cloth simulation and write results to staging buffers
-    UpdateClothSimulation(static_cast<float>(VansTimer::GetLastFrameDelta()));
+    UpdateClothSimulation(0.03f);
     WriteClothResultsToStagingBuffers();
 
     // Update dirty physics transforms to GPU

@@ -114,9 +114,13 @@ void VansGraphics::VansScene::LoadPhysicsNodes(json& physics_node)
             m_ClothNodes.push_back(clothNode);
 
             // Allocate a scene-owned HOST_VISIBLE staging buffer for this cloth node.
+            // Use actual mesh vertex stride (16 bytes without tangent, 28 bytes with tangent)
+            // to match the device-local vertex buffer layout.
             VkDeviceSize stagingSize =
                 static_cast<VkDeviceSize>(renderNode->m_Mesh
-                    ? renderNode->m_Mesh->GetMeshVertexCount() : 0) * 8 * sizeof(uint16_t);
+                    ? renderNode->m_Mesh->GetMeshVertexCount() : 0)
+                * static_cast<VkDeviceSize>(renderNode->m_Mesh
+                    ? renderNode->m_Mesh->GetMeshVertexStride() : 8 * sizeof(uint16_t));
             VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
             VkDevice nativeDev  = vkDev ? vkDev->GetLogicDevice() : VK_NULL_HANDLE;
             m_ClothStagingBuffers.emplace_back();

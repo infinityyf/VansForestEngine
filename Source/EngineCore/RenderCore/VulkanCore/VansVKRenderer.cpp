@@ -108,6 +108,9 @@ namespace VansGraphics
 			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 
+			// Upload cloth simulation results from staging buffers to device-local vertex buffers
+			m_Scene->RecordClothVertexUploads(cmd);
+
 			// Reset GPU profiler query pool for this frame
 #if VANS_PROFILER_ENABLED
 			Vans::VansGpuProfiler::Get().BeginFrame(cmd);
@@ -184,6 +187,9 @@ namespace VansGraphics
 			UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
 			UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
 			UpdateRayTracing(m_VansVKCommandBuffer);
+
+			// Upload cloth simulation results from staging buffers to device-local vertex buffers
+			m_Scene->RecordClothVertexUploads(cmd);
 
 			renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
 			DrawSceneDeferred(renderPassManager, m_VansVKCommandBuffer);

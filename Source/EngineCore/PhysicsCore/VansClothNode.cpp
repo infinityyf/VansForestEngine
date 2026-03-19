@@ -55,6 +55,11 @@ namespace VansEngine
         for (size_t i = 0; i < rawIdx.size(); ++i)
             m_Indices[i] = static_cast<uint32_t>(rawIdx[i]);
 
+        // Detect tangent support from mesh vertex stride.
+        // Without tangent: 8 × uint16_t = 16 bytes.  With tangent: 14 × uint16_t = 28 bytes.
+        m_HasTangent   = (mesh->GetMeshVertexStride() > 8 * sizeof(uint16_t));
+        m_VertexStride = m_HasTangent ? 14 : 8;
+
         // UV comes from the fp16 vertex buffer which is not CPU-accessible after upload.
         // We reconstruct UVs from the half-float raw data stored in m_MeshRawData before
         // it was cleared.  Because needCPUData=true only keeps position+index data, we
@@ -169,11 +174,14 @@ namespace VansEngine
             solver->addCloth(m_Cloth);
 
         // ── 9. Allocate the CPU-side simulation result buffer ─────────────────────
-        // Layout: 8 × uint16_t per vertex (pos xyz + uv xy + nrm xyz)
-        m_SimulatedVertexData.resize(static_cast<size_t>(m_VertexCount) * 8, 0);
+        // Layout: m_VertexStride × uint16_t per vertex
+        //   8  = pos xyz + uv xy + nrm xyz
+        //   14 = pos xyz + uv xy + nrm xyz + tangent xyz + bitangent xyz
+        m_SimulatedVertexData.resize(static_cast<size_t>(m_VertexCount) * m_VertexStride, 0);
 
         VANS_LOG("[VansClothNode] Initialized cloth '" << renderNode->m_NodeName
                   << "', vertices=" << m_VertexCount
+                  << ", hasTangent=" << m_HasTangent
                   << ", pinnedParticles=" << m_PinnedIndices.size());
     }
 
@@ -238,6 +246,15 @@ namespace VansEngine
 
         // ── Recompute smooth per-vertex normals ──────────────────────────────
         std::vector<glm::vec3> normals(m_VertexCount, glm::vec3(0.0f));
+        // Tangent/bitangent accumulators (only used when m_HasTangent)
+        std::vector<glm::vec3> tangents;
+        std::vector<glm::vec3> bitangents;
+        if (m_HasTangent)
+        {
+            tangents.assign(m_VertexCount, glm::vec3(0.0f));
+            bitangents.assign(m_VertexCount, glm::vec3(0.0f));
+        }
+
         const size_t triCount = m_Indices.size() / 3;
         for (size_t t = 0; t < triCount; ++t)
         {
@@ -251,10 +268,33 @@ namespace VansEngine
             normals[i0] += n;
             normals[i1] += n;
             normals[i2] += n;
+
+            // ── Tangent / bitangent from UV gradients ─────────────────────
+            if (m_HasTangent)
+            {
+                glm::vec2 uv0(m_RestTexCoords[i0 * 2 + 0], m_RestTexCoords[i0 * 2 + 1]);
+                glm::vec2 uv1(m_RestTexCoords[i1 * 2 + 0], m_RestTexCoords[i1 * 2 + 1]);
+                glm::vec2 uv2(m_RestTexCoords[i2 * 2 + 0], m_RestTexCoords[i2 * 2 + 1]);
+
+                glm::vec3 edge1 = p1 - p0;
+                glm::vec3 edge2 = p2 - p0;
+                glm::vec2 dUV1  = uv1 - uv0;
+                glm::vec2 dUV2  = uv2 - uv0;
+
+                float det = dUV1.x * dUV2.y - dUV2.x * dUV1.y;
+                float f   = (glm::abs(det) > 1e-8f) ? (1.0f / det) : 0.0f;
+
+                glm::vec3 T = f * (dUV2.y * edge1 - dUV1.y * edge2);
+                glm::vec3 B = f * (-dUV2.x * edge1 + dUV1.x * edge2);
+
+                tangents[i0]   += T;  tangents[i1]   += T;  tangents[i2]   += T;
+                bitangents[i0] += B;  bitangents[i1] += B;  bitangents[i2] += B;
+            }
         }
 
         // ── Pack fp16 vertex data into the CPU buffer ─────────────────────────
-        // Layout: [pos.x pos.y pos.z uv.x uv.y nrm.x nrm.y nrm.z] × uint16_t
+        // Without tangent: [pos.x pos.y pos.z uv.x uv.y nrm.x nrm.y nrm.z] × uint16_t
+        // With tangent:    above + [tan.x tan.y tan.z bitan.x bitan.y bitan.z] × uint16_t
         for (int v = 0; v < m_VertexCount; ++v)
         {
             const physx::PxVec4& p  = particles[v];
@@ -262,7 +302,7 @@ namespace VansEngine
             float                 nl = glm::length(n);
             if (nl > 1e-6f) n /= nl;
 
-            int base = v * 8;
+            int base = v * m_VertexStride;
             m_SimulatedVertexData[base + 0] = F16(p.x);
             m_SimulatedVertexData[base + 1] = F16(p.y);
             m_SimulatedVertexData[base + 2] = F16(p.z);
@@ -271,6 +311,27 @@ namespace VansEngine
             m_SimulatedVertexData[base + 5] = F16(n.x);
             m_SimulatedVertexData[base + 6] = F16(n.y);
             m_SimulatedVertexData[base + 7] = F16(n.z);
+
+            if (m_HasTangent)
+            {
+                // Gram-Schmidt orthogonalise tangent w.r.t. normal
+                glm::vec3 tRaw = tangents[v];
+                glm::vec3 tOrt = tRaw - n * glm::dot(n, tRaw);
+                float     tl   = glm::length(tOrt);
+                if (tl > 1e-6f) tOrt /= tl;
+
+                glm::vec3 bRaw = bitangents[v];
+                glm::vec3 bOrt = bRaw - n * glm::dot(n, bRaw) - tOrt * glm::dot(tOrt, bRaw);
+                float     bl   = glm::length(bOrt);
+                if (bl > 1e-6f) bOrt /= bl;
+
+                m_SimulatedVertexData[base +  8] = F16(tOrt.x);
+                m_SimulatedVertexData[base +  9] = F16(tOrt.y);
+                m_SimulatedVertexData[base + 10] = F16(tOrt.z);
+                m_SimulatedVertexData[base + 11] = F16(bOrt.x);
+                m_SimulatedVertexData[base + 12] = F16(bOrt.y);
+                m_SimulatedVertexData[base + 13] = F16(bOrt.z);
+            }
         }
         // MappedRange destructor unlocks particles automatically.
     }

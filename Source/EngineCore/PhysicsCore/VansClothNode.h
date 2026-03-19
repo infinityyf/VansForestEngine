@@ -70,12 +70,14 @@ namespace VansEngine
 
         // ── CPU data accessors (used by VansScene to upload to GPU) ──────────
         // Returns the packed fp16 vertex data written by WriteSimResults().
-        // Layout per vertex: [pos.x pos.y pos.z uv.x uv.y nrm.x nrm.y nrm.z] × uint16_t
+        // Layout per vertex (no tangent): [pos.x pos.y pos.z uv.x uv.y nrm.x nrm.y nrm.z] × uint16_t  (8)
+        // Layout per vertex (tangent):    [pos.x pos.y pos.z uv.x uv.y nrm.x nrm.y nrm.z tan.x tan.y tan.z bitan.x bitan.y bitan.z] × uint16_t (14)
         const std::vector<uint16_t>& GetSimulatedVertexData() const { return m_SimulatedVertexData; }
         size_t                       GetSimulatedDataByteSize() const
         {
             return m_SimulatedVertexData.size() * sizeof(uint16_t);
         }
+        bool HasTangent() const { return m_HasTangent; }
         VansGraphics::VansRenderNode* GetTargetRenderNode() const { return m_TargetRenderNode; }
 
         // ── Accessors ─────────────────────────────────────────────────────────
@@ -91,8 +93,13 @@ namespace VansEngine
 
         // ── CPU simulation result buffer ──────────────────────────────────────
         // Written by WriteSimResults() each frame; read by VansScene to upload to GPU.
-        // Layout per vertex: [pos.x pos.y pos.z uv.x uv.y nrm.x nrm.y nrm.z] × uint16_t
+        // Layout per vertex: 8 uint16_t (no tangent) or 14 uint16_t (with tangent).
         std::vector<uint16_t> m_SimulatedVertexData;
+
+        // True when the bound mesh was loaded with tangent/bitangent attributes.
+        bool m_HasTangent = false;
+        // Number of uint16_t per vertex: 8 (no tangent) or 14 (with tangent).
+        int  m_VertexStride = 8;
 
         // ── Bound render node (source of mesh + transform) ────────────────────
         VansGraphics::VansRenderNode* m_TargetRenderNode = nullptr;
