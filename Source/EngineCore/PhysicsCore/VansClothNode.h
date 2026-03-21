@@ -15,6 +15,7 @@
 
 #include <vector>
 #include <string>
+#include <cstdint>
 
 namespace VansEngine
 {
@@ -34,6 +35,16 @@ namespace VansEngine
         // Pinned particles have invMass = 0 and their world position is driven
         // by the bound render node's VansTransform every frame.
         std::vector<uint32_t> pinnedParticleIndices;
+
+        // Collision spheres that the cloth should collide against.
+        // Each entry is a render node name + sphere radius.
+        // Positions are synced from the referenced render node's transform each frame.
+        struct CollisionSphereRef
+        {
+            std::string renderNodeName;  // render node whose transform defines the sphere centre
+            float       radius = 1.0f;   // world-space radius of the collision sphere
+        };
+        std::vector<CollisionSphereRef> collisionSphereRefs;
     };
 
     // =========================================================================
@@ -80,6 +91,17 @@ namespace VansEngine
         bool HasTangent() const { return m_HasTangent; }
         VansGraphics::VansRenderNode* GetTargetRenderNode() const { return m_TargetRenderNode; }
 
+        // ── Collision sphere interface ──────────────────────────────────────
+        // Called by VansScene each frame BEFORE SimulateStep() to update
+        // NvCloth collision spheres from render node world positions.
+        // Each PxVec4 is {x, y, z, radius}.
+        void SetCollisionSpheres(const std::vector<physx::PxVec4>& spheres);
+
+        // Returns the collision sphere references parsed from JSON,
+        // so the scene can resolve render node positions each frame.
+        const std::vector<ClothNodeProperties::CollisionSphereRef>& GetCollisionSphereRefs() const
+        { return m_CollisionSphereRefs; }
+
         // ── Accessors ─────────────────────────────────────────────────────────
         bool               IsEnabled()  const { return m_Enabled; }
         void               SetEnabled(bool v) { m_Enabled = v; }
@@ -107,8 +129,15 @@ namespace VansEngine
         // ── Rest-pose CPU data (kept alive for normal recomputation) ──────────
         // Float3 per vertex: x,y,z world-space rest position.
         // Extracted from VansMesh::GetMeshRawPositionData() (which is float4: x,y,z,pad).
-        std::vector<float>    m_RestTexCoords;  // u,v per vertex
-        std::vector<uint32_t> m_Indices;        // triangle indices
+        std::vector<float>    m_RestTexCoords;  // u,v per vertex (original space)
+        std::vector<uint32_t> m_Indices;        // triangle indices (original vertex space)
+
+        // ── Vertex welding (Assimp duplicates vertices at UV/normal seams, but ──
+        // NvCloth needs shared vertices to create constraints across triangles).
+        // m_OrigToWelded maps each original vertex to a unique welded particle.
+        std::vector<uint32_t> m_OrigToWelded;   // [originalVertexIdx] → weldedParticleIdx
+        int m_WeldedVertexCount = 0;            // number of unique NvCloth particles
+        std::vector<uint32_t> m_WeldedIndices;  // triangle indices remapped to welded space
 
         // ── Pinned particle anchoring ─────────────────────────────────────────
         // Local-space anchor positions captured once at Initialize(), relative to
@@ -116,6 +145,11 @@ namespace VansEngine
         std::vector<uint32_t>   m_PinnedIndices;
         std::vector<glm::vec3>  m_PinnedLocalPositions;
         glm::mat4               m_RestNodeTransformInv = glm::mat4(1.0f);
+
+        // ── Collision sphere references (populated by scene loader) ───────────
+        // Stored so the scene can look up render nodes and build PxVec4 arrays
+        // each frame before calling SetCollisionSpheres().
+        std::vector<ClothNodeProperties::CollisionSphereRef> m_CollisionSphereRefs;
 
         int  m_VertexCount = 0;
         bool m_Enabled     = false;

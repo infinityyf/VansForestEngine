@@ -64,6 +64,7 @@ namespace VansGraphics
 		// Physics mesh data access
 		const std::vector<float>& GetMeshRawPositionData() const { return m_MeshRawPositionData; }
 		const std::vector<int>& GetMeshTriangleIndex() const { return m_MeshTriangleIndex; }
+		const std::vector<float>& GetMeshRawTexCoordData() const { return m_MeshRawTexCoordData; }
 
 		VansVKBuffer& GetBLASVertexBuffer() { return m_VertexBuffer; }
 
@@ -94,6 +95,9 @@ namespace VansGraphics
 		std::vector<uint16_t> m_MeshRawData;
 
 		std::vector<float> m_MeshRawPositionData;
+
+		// Per-vertex UV coordinates (2 floats per vertex: u, v). Kept on CPU when needCPUData=true.
+		std::vector<float> m_MeshRawTexCoordData;
 
 		std::vector<int> m_MeshTriangleIndex;
 

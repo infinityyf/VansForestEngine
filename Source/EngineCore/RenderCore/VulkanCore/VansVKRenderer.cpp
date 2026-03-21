@@ -195,6 +195,36 @@ namespace VansGraphics
 			DrawSceneDeferred(renderPassManager, m_VansVKCommandBuffer);
 			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 		}
+
+		// ── FSR Upscale ─────────────────────────────────────────────────────
+		// Dispatch FSR upscale on the current command buffer so the upscaled
+		// image is ready before the UI render pass samples it in the editor
+		// Scene window.
+		{
+			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+			auto camera = m_Scene->GetCamera();
+			m_FSRInput.jitterX = camera->m_JitterX;
+			m_FSRInput.jitterY = camera->m_JitterY;
+
+			m_FSRController.DispatchUpscale(cmd, m_FSRInput);
+
+			// Transition the FSR output image to SHADER_READ_ONLY_OPTIMAL so
+			// ImGui can sample it via the Scene-view descriptor set.
+			VansVKImage& fsrOut = m_FSRController.GetTempFSRImage();
+			fsrOut.SetImageMemoryBarrier(
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				{
+					fsrOut.GetImage(),
+					VK_ACCESS_SHADER_WRITE_BIT,
+					VK_ACCESS_SHADER_READ_BIT,
+					fsrOut.GetImageLayout(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					VK_QUEUE_FAMILY_IGNORED,
+					VK_QUEUE_FAMILY_IGNORED,
+					VK_IMAGE_ASPECT_COLOR_BIT
+				});
+		}
 	}
 
 	void VansVKDevice::Present()
@@ -210,6 +240,7 @@ namespace VansGraphics
 
 			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 			m_VansVKCommandBuffer.ResetCommandBuffer(false);
+
 		}
 		else
 		{

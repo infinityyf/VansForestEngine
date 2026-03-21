@@ -12,6 +12,9 @@
 #include <GLM/gtc/packing.hpp>
 
 #include <cassert>
+#include <map>
+#include <tuple>
+#include <cmath>
 
 // ─── float → half helper (same as VansMesh.cpp) ──────────────────────────────
 static uint16_t F16(float f) { return glm::packHalf1x16(f); }
@@ -60,34 +63,101 @@ namespace VansEngine
         m_HasTangent   = (mesh->GetMeshVertexStride() > 8 * sizeof(uint16_t));
         m_VertexStride = m_HasTangent ? 14 : 8;
 
-        // UV comes from the fp16 vertex buffer which is not CPU-accessible after upload.
-        // We reconstruct UVs from the half-float raw data stored in m_MeshRawData before
-        // it was cleared.  Because needCPUData=true only keeps position+index data, we
-        // set UVs to (0,0) here; if the render node's raw data is available, a caller may
-        // populate m_RestTexCoords before Initialize() or leave it zeroed for a plain cloth.
-        m_RestTexCoords.assign(m_VertexCount * 2, 0.0f);
-
-        // Build NvCloth particle array (PxVec4: x,y,z, invMass).
-        // Default invMass = 1.0 (free particle).
-        std::vector<physx::PxVec4> particles;
-        particles.resize(m_VertexCount);
-        for (int v = 0; v < m_VertexCount; ++v)
+        // Extract UV coordinates from the mesh's cached CPU-side tex-coord data.
+        // When needCPUData=true the mesh retains m_MeshRawTexCoordData (2 floats per vertex).
+        const std::vector<float>& rawUV = mesh->GetMeshRawTexCoordData();
+        if (static_cast<int>(rawUV.size()) >= m_VertexCount * 2)
         {
-            float x = rawPos[v * 8 + 0];
-            float y = rawPos[v * 8 + 1];
-            float z = rawPos[v * 8 + 2];
-            particles[v] = physx::PxVec4(x, y, z, 1.0f);
+            m_RestTexCoords.assign(rawUV.begin(), rawUV.begin() + m_VertexCount * 2);
+        }
+        else
+        {
+            VANS_LOG_WARN("[VansClothNode] Mesh '" << renderNode->m_NodeName
+                          << "' has no CPU-side UV data; UVs will be zero.");
+            m_RestTexCoords.assign(m_VertexCount * 2, 0.0f);
         }
 
-        // ── 3. Capture rest-pose transform for pinned particle anchoring ──────
+        // ── 2b. Weld vertices by position ────────────────────────────────────
+        // Assimp duplicates vertices at UV/normal/tangent seams so each
+        // (pos, uv, normal, tangent) tuple is unique.  For NvCloth we need
+        // shared particles at the same 3D position to create stretch/bend
+        // constraints across the whole mesh, not just per-triangle.
+        {
+            const float WELD_GRID = 1e5f; // quantise to 0.00001 units
+            std::map<std::tuple<int,int,int>, uint32_t> posToWelded;
+            m_OrigToWelded.resize(m_VertexCount);
+            m_WeldedVertexCount = 0;
+
+            for (int v = 0; v < m_VertexCount; ++v)
+            {
+                float x = rawPos[v * 8 + 0];
+                float y = rawPos[v * 8 + 1];
+                float z = rawPos[v * 8 + 2];
+                auto key = std::make_tuple(
+                    static_cast<int>(std::round(x * WELD_GRID)),
+                    static_cast<int>(std::round(y * WELD_GRID)),
+                    static_cast<int>(std::round(z * WELD_GRID)));
+
+                auto it = posToWelded.find(key);
+                if (it != posToWelded.end())
+                {
+                    m_OrigToWelded[v] = it->second;
+                }
+                else
+                {
+                    uint32_t wIdx = static_cast<uint32_t>(m_WeldedVertexCount++);
+                    posToWelded[key] = wIdx;
+                    m_OrigToWelded[v] = wIdx;
+                }
+            }
+
+            VANS_LOG("[VansClothNode] Vertex welding: " << m_VertexCount
+                      << " original → " << m_WeldedVertexCount << " welded particles");
+        }
+
+        // ── 3. Capture rest-pose transform for world-space particle init ──
+        // Apply the render node's rotation & scale (full model matrix) so
+        // NvCloth particles live in WORLD SPACE.  This ensures gravity acts
+        // in the correct direction and collision spheres (also world space)
+        // match up without extra coordinate conversions.
         VansGraphics::VansTransform& restT =
             VansGraphics::VansTransformStore::GetTransform(renderNode->m_TransformID);
         glm::mat4 restMat    = restT.GetModelMatrix();
         m_RestNodeTransformInv = glm::inverse(restMat);
 
+        // Build welded NvCloth particle array (PxVec4: x,y,z, invMass).
+        // Positions are transformed to WORLD SPACE via the rest-pose model matrix.
+        // Default invMass = 1.0 (free particle).
+        std::vector<physx::PxVec4> particles(m_WeldedVertexCount);
+        for (int v = 0; v < m_VertexCount; ++v)
+        {
+            uint32_t wIdx = m_OrigToWelded[v];
+            float x = rawPos[v * 8 + 0];
+            float y = rawPos[v * 8 + 1];
+            float z = rawPos[v * 8 + 2];
+            glm::vec4 worldPos = restMat * glm::vec4(x, y, z, 1.0f);
+            particles[wIdx] = physx::PxVec4(worldPos.x, worldPos.y, worldPos.z, 1.0f);
+        }
+
+        // Build welded triangle indices and discard degenerate triangles.
+        m_WeldedIndices.clear();
+        m_WeldedIndices.reserve(m_Indices.size());
+        for (size_t t = 0; t < m_Indices.size() / 3; ++t)
+        {
+            uint32_t w0 = m_OrigToWelded[m_Indices[t * 3 + 0]];
+            uint32_t w1 = m_OrigToWelded[m_Indices[t * 3 + 1]];
+            uint32_t w2 = m_OrigToWelded[m_Indices[t * 3 + 2]];
+            if (w0 == w1 || w1 == w2 || w0 == w2) continue; // degenerate after weld
+            m_WeldedIndices.push_back(w0);
+            m_WeldedIndices.push_back(w1);
+            m_WeldedIndices.push_back(w2);
+        }
+
         // ── 4. Pin requested particles ────────────────────────────────────────
+        // pinnedParticleIndices are in original vertex space; convert to welded.
         m_PinnedIndices.clear();
         m_PinnedLocalPositions.clear();
+        std::vector<bool> alreadyPinned(m_WeldedVertexCount, false);
         for (uint32_t pi : props.pinnedParticleIndices)
         {
             if (static_cast<int>(pi) >= m_VertexCount)
@@ -95,31 +165,35 @@ namespace VansEngine
                 VANS_LOG_WARN("[VansClothNode] pinnedParticle index " << pi << " is out of range, skipping.");
                 continue;
             }
-            particles[pi].w = 0.0f; // invMass = 0  →  pinned
+            uint32_t wIdx = m_OrigToWelded[pi];
+            if (alreadyPinned[wIdx]) continue; // avoid pinning same welded particle twice
+            alreadyPinned[wIdx] = true;
 
-            glm::vec4 worldPos(particles[pi].x, particles[pi].y, particles[pi].z, 1.0f);
+            particles[wIdx].w = 0.0f; // invMass = 0  →  pinned
+
+            glm::vec4 worldPos(particles[wIdx].x, particles[wIdx].y, particles[wIdx].z, 1.0f);
             glm::vec3 localPos = glm::vec3(m_RestNodeTransformInv * worldPos);
-            m_PinnedIndices.push_back(pi);
+            m_PinnedIndices.push_back(wIdx);
             m_PinnedLocalPositions.push_back(localPos);
         }
 
         // ── 5. Build NvCloth mesh descriptor and cook fabric ─────────────────
         nv::cloth::ClothMeshDesc meshDesc;
         meshDesc.points.data   = particles.data();
-        meshDesc.points.count  = static_cast<uint32_t>(m_VertexCount);
+        meshDesc.points.count  = static_cast<uint32_t>(m_WeldedVertexCount);
         meshDesc.points.stride = sizeof(physx::PxVec4);
 
         // Provide per-vertex invMass so the cooker knows which particles are static
         // (generates tether constraints correctly).
-        std::vector<float> invMasses(m_VertexCount);
-        for (int v = 0; v < m_VertexCount; ++v)
+        std::vector<float> invMasses(m_WeldedVertexCount);
+        for (int v = 0; v < m_WeldedVertexCount; ++v)
             invMasses[v] = particles[v].w;
         meshDesc.invMasses.data   = invMasses.data();
-        meshDesc.invMasses.count  = static_cast<uint32_t>(m_VertexCount);
+        meshDesc.invMasses.count  = static_cast<uint32_t>(m_WeldedVertexCount);
         meshDesc.invMasses.stride = sizeof(float);
 
-        meshDesc.triangles.data   = m_Indices.data();
-        meshDesc.triangles.count  = static_cast<uint32_t>(m_Indices.size() / 3);
+        meshDesc.triangles.data   = m_WeldedIndices.data();
+        meshDesc.triangles.count  = static_cast<uint32_t>(m_WeldedIndices.size() / 3);
         meshDesc.triangles.stride = 3 * sizeof(uint32_t);
 
         // Gravity direction for the cooker (tells it which edges are vertical vs horizontal).
@@ -157,6 +231,15 @@ namespace VansEngine
         m_Cloth->setDamping(physx::PxVec3(props.damping));
         m_Cloth->setFriction(props.friction);
 
+        // Enable continuous collision detection so particles don't tunnel through
+        // collision spheres/capsules between simulation steps.
+        m_Cloth->enableContinuousCollision(true);
+
+        // Collision mass scale controls how quickly particle mass increases during
+        // collision response.  A positive value (default 0) is required for the
+        // solver to push particles out of collision shapes.
+        m_Cloth->setCollisionMassScale(1.0f);
+
         // Apply stiffness to all phases via PhaseConfig.
         uint32_t numPhases = m_Fabric->getNumPhases();
         std::vector<nv::cloth::PhaseConfig> phaseConfigs(numPhases);
@@ -179,8 +262,13 @@ namespace VansEngine
         //   14 = pos xyz + uv xy + nrm xyz + tangent xyz + bitangent xyz
         m_SimulatedVertexData.resize(static_cast<size_t>(m_VertexCount) * m_VertexStride, 0);
 
+        // ── 10. Store collision sphere references for per-frame syncing ───────────
+        m_CollisionSphereRefs = props.collisionSphereRefs;
+
         VANS_LOG("[VansClothNode] Initialized cloth '" << renderNode->m_NodeName
-                  << "', vertices=" << m_VertexCount
+                  << "', origVerts=" << m_VertexCount
+                  << ", weldedParticles=" << m_WeldedVertexCount
+                  << ", weldedTris=" << (m_WeldedIndices.size() / 3)
                   << ", hasTangent=" << m_HasTangent
                   << ", pinnedParticles=" << m_PinnedIndices.size());
     }
@@ -205,6 +293,9 @@ namespace VansEngine
 
         m_PinnedIndices.clear();
         m_PinnedLocalPositions.clear();
+        m_OrigToWelded.clear();
+        m_WeldedIndices.clear();
+        m_WeldedVertexCount = 0;
         m_TargetRenderNode = nullptr;
         m_VertexCount      = 0;
         m_Enabled          = false;
@@ -237,16 +328,52 @@ namespace VansEngine
     }
 
     // =========================================================================
+    void VansClothNode::SetCollisionSpheres(const std::vector<physx::PxVec4>& worldSpaceSpheres)
+    {
+        if (!m_Cloth) return;
+
+        // NvCloth particles now live in WORLD SPACE (transformed during
+        // Initialize), so collision spheres can be passed directly without
+        // any coordinate conversion.
+        nv::cloth::Range<const physx::PxVec4> sphereRange(
+            worldSpaceSpheres.data(), worldSpaceSpheres.data() + worldSpaceSpheres.size());
+        m_Cloth->setSpheres(sphereRange, sphereRange);
+    }
+
+    // =========================================================================
     void VansClothNode::WriteSimResults()
     {
         if (!m_Cloth || m_SimulatedVertexData.empty()) return;
 
-        // Read-only access to current particle positions.
-        nv::cloth::MappedRange<physx::PxVec4> particles = m_Cloth->getCurrentParticles();
+        // ── Transform world-space particles back to model space ───────────────
+        // NvCloth particles are simulated in world space, but the vertex buffer
+        // expects model-space positions (the vertex shader applies the model
+        // matrix).  Compute the inverse of the CURRENT model matrix each frame
+        // so that animated/moving cloth nodes stay correct.
+        glm::mat4 invModel(1.0f);
+        if (m_TargetRenderNode)
+        {
+            VansGraphics::VansTransform& tf =
+                VansGraphics::VansTransformStore::GetTransform(m_TargetRenderNode->m_TransformID);
+            invModel = glm::inverse(tf.GetModelMatrix());
+        }
 
-        // ── Recompute smooth per-vertex normals ──────────────────────────────
+        // Read welded particle positions from NvCloth (world space).
+        nv::cloth::MappedRange<physx::PxVec4> weldedParticles = m_Cloth->getCurrentParticles();
+
+        // Convert world-space particle positions to model space.
+        std::vector<glm::vec3> modelPositions(m_VertexCount);
+        for (int v = 0; v < m_VertexCount; ++v)
+        {
+            const physx::PxVec4& wp = weldedParticles[m_OrigToWelded[v]];
+            glm::vec4 mp = invModel * glm::vec4(wp.x, wp.y, wp.z, 1.0f);
+            modelPositions[v] = glm::vec3(mp);
+        }
+
+        // ── Recompute smooth per-vertex normals from model-space positions ────
+        // Normals are computed in model space so they match the vertex buffer
+        // convention (the shader applies the normal matrix to go to world space).
         std::vector<glm::vec3> normals(m_VertexCount, glm::vec3(0.0f));
-        // Tangent/bitangent accumulators (only used when m_HasTangent)
         std::vector<glm::vec3> tangents;
         std::vector<glm::vec3> bitangents;
         if (m_HasTangent)
@@ -261,9 +388,9 @@ namespace VansEngine
             uint32_t i0 = m_Indices[t * 3 + 0];
             uint32_t i1 = m_Indices[t * 3 + 1];
             uint32_t i2 = m_Indices[t * 3 + 2];
-            glm::vec3 p0(particles[i0].x, particles[i0].y, particles[i0].z);
-            glm::vec3 p1(particles[i1].x, particles[i1].y, particles[i1].z);
-            glm::vec3 p2(particles[i2].x, particles[i2].y, particles[i2].z);
+            glm::vec3 p0 = modelPositions[i0];
+            glm::vec3 p1 = modelPositions[i1];
+            glm::vec3 p2 = modelPositions[i2];
             glm::vec3 n = glm::cross(p1 - p0, p2 - p0); // un-normalised (area-weighted)
             normals[i0] += n;
             normals[i1] += n;
@@ -293,11 +420,11 @@ namespace VansEngine
         }
 
         // ── Pack fp16 vertex data into the CPU buffer ─────────────────────────
-        // Without tangent: [pos.x pos.y pos.z uv.x uv.y nrm.x nrm.y nrm.z] × uint16_t
-        // With tangent:    above + [tan.x tan.y tan.z bitan.x bitan.y bitan.z] × uint16_t
+        // Positions and normals are in model space; each original vertex keeps
+        // its own UV, normal, tangent (per-vertex shading data).
         for (int v = 0; v < m_VertexCount; ++v)
         {
-            const physx::PxVec4& p  = particles[v];
+            glm::vec3             p  = modelPositions[v];
             glm::vec3             n  = normals[v];
             float                 nl = glm::length(n);
             if (nl > 1e-6f) n /= nl;

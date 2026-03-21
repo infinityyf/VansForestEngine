@@ -91,9 +91,9 @@
                             0.0
                         ],
                         "scale": [
-                            0.1,
-                            0.1,
-                            0.1
+                            0.3,
+                            0.3,
+                            0.3
                         ]
                     },
                     "support_shadow": true
@@ -396,13 +396,27 @@
                     ]
                 },
                 {
+                    "name": "Object0Physics",
+                    "enabled": true,
+                    "bodyType": "static",
+                    "colliderType": "sphere",
+                    "sphereRadius": 1.0,
+                    "renderNode": "Object0"
+                },
+                {
                     "nodeType": "cloth",
                     "renderNode": "Cloth",
                     "stiffness": 0.8,
-                    "damping": 0.9,
+                    "damping": 0.7,
                     "friction": 0.1,
-                    "gravity": [0, -1.0, 0],
-                    "pinnedParticles": [0, 1, 2, 3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]
+                    "gravity": [0, -9.8, 0],
+                    "pinnedParticles": [0,1,2,3,4],
+                    "collisionSpheres": [
+                        {
+                            "renderNode": "Object0",
+                            "radius": 0.12
+                        }
+                    ]
                 }
             ]
         }

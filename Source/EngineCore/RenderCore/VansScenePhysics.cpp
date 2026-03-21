@@ -109,6 +109,21 @@ void VansGraphics::VansScene::LoadPhysicsNodes(json& physics_node)
                     clothProps.pinnedParticleIndices.push_back(idx.get<uint32_t>());
             }
 
+            // Parse collision sphere references (render node name + radius)
+            if (physicsNodeJson.contains("collisionSpheres"))
+            {
+                for (const auto& csJson : physicsNodeJson["collisionSpheres"])
+                {
+                    VansEngine::ClothNodeProperties::CollisionSphereRef ref;
+                    if (csJson.contains("renderNode"))
+                        ref.renderNodeName = csJson["renderNode"].get<std::string>();
+                    if (csJson.contains("radius"))
+                        ref.radius = csJson["radius"].get<float>();
+                    if (!ref.renderNodeName.empty())
+                        clothProps.collisionSphereRefs.push_back(ref);
+                }
+            }
+
             VansEngine::VansClothNode* clothNode = new VansEngine::VansClothNode();
             clothNode->Initialize(clothProps, renderNode);
             m_ClothNodes.push_back(clothNode);
@@ -240,6 +255,16 @@ void VansGraphics::VansScene::LoadPhysicsNodes(json& physics_node)
         if (physicsNodeJson.contains("transformID"))
         {
             transformID = physicsNodeJson["transformID"];
+        }
+        else if (physicsNodeJson.contains("renderNode"))
+        {
+            // Explicit render node reference — preferred over name-based matching
+            std::string renderNodeName = physicsNodeJson["renderNode"].get<std::string>();
+            VansRenderNode* rn = FindRenderNodeByName(renderNodeName);
+            if (rn)
+                transformID = rn->m_TransformID;
+            else
+                VANS_LOG_WARN("[VansScene] Physics node: renderNode '" << renderNodeName << "' not found.");
         }
         else if (physicsNodeJson.contains("name"))
         {
@@ -384,6 +409,40 @@ void VansGraphics::VansScene::UpdateClothSimulation(float dt)
     {
         if (clothNode) clothNode->SyncPinnedParticlesToRenderNode();
     }
+
+    // Sync collision spheres from render node world positions for each cloth node.
+    // NOTE: sphere positions are passed in WORLD SPACE, matching the cloth's
+    // world-space particle positions (NvCloth particles are initialized in
+    // world space via the render node's rest-pose transform).
+    static bool loggedOnce = false;
+    for (auto* clothNode : m_ClothNodes)
+    {
+        if (!clothNode) continue;
+        const auto& sphereRefs = clothNode->GetCollisionSphereRefs();
+        if (sphereRefs.empty()) continue;
+
+        std::vector<physx::PxVec4> spheres;
+        spheres.reserve(sphereRefs.size());
+        for (const auto& ref : sphereRefs)
+        {
+            VansRenderNode* rn = FindRenderNodeByName(ref.renderNodeName);
+            if (!rn) continue;
+            const VansTransform& t = VansTransformStore::GetTransform(rn->m_TransformID);
+            // World-space sphere: centre = render node position, radius from JSON
+            // (passed directly in world space — cloth particles are also in world space)
+            spheres.push_back(physx::PxVec4(t.m_Position.x, t.m_Position.y, t.m_Position.z,
+                                            ref.radius));
+            if (!loggedOnce)
+            {
+                VANS_LOG("[VansScene] Cloth collision sphere (world): node='" << ref.renderNodeName
+                          << "' pos=(" << t.m_Position.x << "," << t.m_Position.y << "," << t.m_Position.z
+                          << ") radius=" << ref.radius);
+            }
+        }
+        clothNode->SetCollisionSpheres(spheres);
+    }
+    loggedOnce = true;
+    
 
     // Advance NvCloth simulation by dt
     VansEngine::VansClothSystem::GetInstance().SimulateStep(dt);

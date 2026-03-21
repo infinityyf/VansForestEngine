@@ -1,4 +1,4 @@
-﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansMesh.h"
 #include "VansVKCommandBuffer.h"
 #include "../../Util/VansLog.h"
@@ -39,7 +39,7 @@ uint16_t FloatToHalf(float f)
 	return glm::packHalf1x16(f);
 }
 
-void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& meshRawData, std::vector<float>& meshRawPositionData, std::vector<int>& meshIndex, int& vertexCount, bool import_tangent)
+void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& meshRawData, std::vector<float>& meshRawPositionData, std::vector<float>& meshRawTexCoordData, std::vector<int>& meshIndex, int& vertexCount, bool import_tangent)
 {
 	for (uint32_t i = 0; i < node->mNumMeshes; i++)
 	{
@@ -63,6 +63,9 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& mesh
 			meshRawPositionData.emplace_back(vertex.y);
 			meshRawPositionData.emplace_back(vertex.z);
 			meshRawPositionData.emplace_back(0.0);
+
+			meshRawTexCoordData.emplace_back(texCoord.x);
+			meshRawTexCoordData.emplace_back(texCoord.y);
 
 			meshRawData.emplace_back(FloatToHalf(texCoord.x));
 			meshRawData.emplace_back(FloatToHalf(texCoord.y));
@@ -105,7 +108,7 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& mesh
 
 	for (uint32_t i = 0; i < node->mNumChildren; i++)
 	{
-		ProcessNode(node->mChildren[i], scene, meshRawData, meshRawPositionData, meshIndex, vertexCount, import_tangent);
+		ProcessNode(node->mChildren[i], scene, meshRawData, meshRawPositionData, meshRawTexCoordData, meshIndex, vertexCount, import_tangent);
 	}
 }
 
@@ -125,7 +128,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 	m_VertexCount = 0;
 	//用assimp
 	Assimp::Importer importer;
-	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals | aiProcess_GenSmoothNormals;
+	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals;
 	if (import_tangent)
 	{
 		processFlag |= aiProcess_CalcTangentSpace;
@@ -136,7 +139,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 		VANS_LOG_ERROR("ERROR::ASSIMP::" << importer.GetErrorString());
 		return;
 	}
-	ProcessNode(scene->mRootNode, scene, m_MeshRawData, m_MeshRawPositionData, m_MeshTriangleIndex,m_VertexCount, import_tangent);
+	ProcessNode(scene->mRootNode, scene, m_MeshRawData, m_MeshRawPositionData, m_MeshRawTexCoordData, m_MeshTriangleIndex, m_VertexCount, import_tangent);
 	m_MeshRawDataCPULoaded = true;
 
 	m_IndexCount = m_MeshTriangleIndex.size();
@@ -273,6 +276,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 	if (!m_MeshRawPositionDataEnableCPURead)
 	{
 		m_MeshRawPositionData.clear();
+		m_MeshRawTexCoordData.clear();
 		m_MeshTriangleIndex.clear();
 	}
 }

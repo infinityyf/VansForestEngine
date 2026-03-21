@@ -56,6 +56,9 @@ namespace VansGraphics
 
 		void EndUIRenderPass();
 
+		/// Return the FSR-upscaled output image (display resolution) for editor sampling.
+		VansVKImage& GetFSROutputImage() { return m_FSRController.GetTempFSRImage(); }
+
 		// 窗口大小改变时重建交换链和UI渲染pass
 		void OnWindowResize(uint32_t width, uint32_t height);
 

@@ -64,10 +64,8 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
         // TODO: 检测 viewportSize 是否变化，如果变化则通知渲染器调整 RenderTarget (Framebuffer) 的大小
         // if (viewportSize.x != m_LastWidth || viewportSize.y != m_LastHeight) { ResizeRenderTarget(...); }
 
-       // 获取渲染结果图像 (假设使用 PostProcess 后的结果)
-        auto renderPassManager = VansGraphics::VansRenderPassManager::GetInstance();
-        VansVKImage& sceneImage = renderPassManager->GetColorAfterPostProcess();
-        // 如果 PostProcess 未初始化，可回退到: renderPassManager->GetColor();
+       // 获取 FSR 上采样后的渲染结果图像 (显示分辨率)
+        VansVKImage& sceneImage = device.GetFSROutputImage();
 
         // 静态缓存，防止每帧重复创建 DescriptorSet
         static VkDescriptorSet cachedSceneDS = VK_NULL_HANDLE;
