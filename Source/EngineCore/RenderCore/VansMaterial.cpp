@@ -1,6 +1,20 @@
 #include "VansMaterial.h"
 using namespace VansGraphics;
 
+// ============================================================
+// VansMaterial — pass shader accessors
+// ============================================================
+VansGraphicsShader* VansGraphics::VansMaterial::GetPassShader(const std::string& passName) const
+{
+	auto it = m_PassShaders.find(passName);
+	return (it != m_PassShaders.end()) ? it->second : nullptr;
+}
+
+bool VansGraphics::VansMaterial::HasPass(const std::string& passName) const
+{
+	return m_PassShaders.count(passName) > 0;
+}
+
 VansGraphics::VansMaterialManager::VansMaterialManager()
 {
 }

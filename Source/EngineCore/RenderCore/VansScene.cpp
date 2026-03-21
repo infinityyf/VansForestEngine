@@ -139,14 +139,6 @@ void VansGraphics::VansScene::CreateNodeDescriptorSets()
     {
         node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
     }
-    for (auto node : m_ShadowRenderNodes)
-    {
-        node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
-    }
-    for (auto node : m_PunctualShadowRenderNodes)
-    {
-        node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
-    }
 }
 
 // ============================================================
@@ -426,24 +418,8 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
     LoadSceneResource(sceneData);
 
 
-    VansGraphicsShader* shadowShader = static_cast<VansGraphicsShader*>(GetShaderAsset("Shadow"));
-    if (shadowShader != nullptr)
-    {
-        VansMaterial* shadowMaterial = new VansMaterial();
-        shadowMaterial->m_Shader = shadowShader;
-        shadowMaterial->m_MaterialType = VansMaterialType::VAN_SHAODW;
-        shadowMaterial->SetName("ShadowMaterial");
-        m_Materials.push_back(shadowMaterial);
-    }
-    VansGraphicsShader* punctualShadowShader = static_cast<VansGraphicsShader*>(GetShaderAsset("PunctualShadow"));
-    if (punctualShadowShader != nullptr)
-    {
-        VansMaterial* punctualShadowMaterial = new VansMaterial();
-        punctualShadowMaterial->m_Shader = punctualShadowShader;
-        punctualShadowMaterial->m_MaterialType = VansMaterialType::VAN_SHAODW;
-        punctualShadowMaterial->SetName("PunctualShadowMaterial");
-        m_Materials.push_back(punctualShadowMaterial);
-    }
+    // Shadow materials are no longer created separately — shadow shaders are now
+    // stored in each material's m_PassShaders map (populated from Material Pass Table).
 
 
     //找到scene 节点，包含rendernode，camera，light数据
@@ -612,10 +588,6 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
     for (auto* node : m_PostProcessRenderNodes)
         updateNode(node);
     for (auto* node : m_ScreenSpaceRenderNodes)
-        updateNode(node);
-    for (auto* node : m_ShadowRenderNodes)
-        updateNode(node);
-    for (auto* node : m_PunctualShadowRenderNodes)
         updateNode(node);
 }
 VkDeviceAddress VansVKDevice::GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo)

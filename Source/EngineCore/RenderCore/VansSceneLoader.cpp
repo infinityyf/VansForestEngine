@@ -37,7 +37,6 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "sky_box")      return VansMaterialType::VAN_SKY_BOX;
         if (s == "deferred")     return VansMaterialType::VAN_DEFERRED;
         if (s == "ssao")         return VansMaterialType::VAN_SCREEN_SPACE_AO;
-        if (s == "shadow")       return VansMaterialType::VAN_SHAODW;
         if (s == "skin")         return VansMaterialType::VAN_SKIN;
         if (s == "cloth")        return VansMaterialType::VAN_CLOTH;
         VANS_LOG_WARN("[LoadSceneResource] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
@@ -264,36 +263,8 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
 
         RegistRenderNode(renderNode, type);
 
-        // ── Shadow nodes ──────────────────────────────────────────────────────
-        VansMaterial* shadowMaterial = static_cast<VansMaterial*>(GetMaterialAsset("ShadowMaterial"));
-        if (type == OPAQUE_NODE && shadowMaterial != nullptr)
-        {
-            auto* node = static_cast<VansCommonRenderNode*>(renderNode);
-            if (node->m_SupportShadow)
-            {
-                VansRenderNode* shadowNode = new VansShadowRenderNode(device);
-                shadowNode->m_Mesh     = mesh;
-                shadowNode->m_Material = shadowMaterial;
-                shadowNode->SetTransformData(node->GetTransformPosition(), node->GetTransformRotation(), node->GetTransformScale());
-                shadowNode->SetName("shadow");
-                m_ShadowRenderNodes.push_back(shadowNode);
-            }
-        }
-
-        VansMaterial* punctualShadowMaterial = static_cast<VansMaterial*>(GetMaterialAsset("PunctualShadowMaterial"));
-        if (type == OPAQUE_NODE && punctualShadowMaterial != nullptr)
-        {
-            auto* node = static_cast<VansCommonRenderNode*>(renderNode);
-            if (node->m_SupportShadow)
-            {
-                VansRenderNode* shadowNode = new VansShadowRenderNode(device);
-                shadowNode->m_Mesh     = mesh;
-                shadowNode->m_Material = punctualShadowMaterial;
-                shadowNode->SetTransformData(node->GetTransformPosition(), node->GetTransformRotation(), node->GetTransformScale());
-                shadowNode->SetName("punctual_shadow");
-                m_PunctualShadowRenderNodes.push_back(shadowNode);
-            }
-        }
+        // Shadow nodes are no longer created here — shadow passes now iterate
+        // opaque nodes and use material->GetPassShader(VansPass::SHADOW).
     }
 }
 
@@ -388,8 +359,8 @@ void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
         return;
     }
     VansDeferredMaterial* material = new VansDeferredMaterial();
-    material->m_Shader = deferredShader;
     material->m_MaterialType = VansMaterialType::VAN_DEFERRED;
+    material->m_PassShaders[VansPass::DEFERRED] = deferredShader;
     material->SetName("DeferredMaterial");
     m_Materials.push_back(material);
 
@@ -435,8 +406,18 @@ void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
         case VansMaterialType::VAN_POST_PROCESS:    material = new VansPostProcessMaterial(); break;
         default:                                    material = new VansMaterial();             break;
         }
-        material->m_Shader = shader;
         material->m_MaterialType = feature.matType;
+        // Populate m_PassShaders from registry
+        {
+            auto& reg = VansGraphics::VansShaderRegistry::Get();
+            const auto& passMap = reg.GetMaterialPassMap(feature.matType);
+            for (const auto& [passName, shaderName] : passMap)
+            {
+                VansGraphicsShader* passShader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
+                if (passShader)
+                    material->m_PassShaders[passName] = passShader;
+            }
+        }
         material->SetName(feature.name);
         m_Materials.push_back(material);
 
@@ -508,7 +489,8 @@ void VansGraphics::VansScene::LoadShadersFromRegistry(
     const std::string& pathPrefix,
     VkDevice& device)
 {
-    VansGraphics::VansShaderRegistry::Get().ForEach([&](const VansGraphics::VansShaderRegistryEntry& entry)
+    // Load shaders from the Shader Table
+    VansGraphics::VansShaderRegistry::Get().ForEachShader([&](const VansGraphics::VansShaderRegistryEntry& entry)
     {
         LoadShaderFromEntry(entry, pathPrefix, device);
     });
@@ -588,22 +570,23 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         case VansMaterialType::VAN_SKY_BOX:         material = new VansSkyBoxMaterial();       break;
         case VansMaterialType::VAN_DEFERRED:        material = new VansDeferredMaterial();     break;
         case VansMaterialType::VAN_SCREEN_SPACE_AO: material = new VansSSAOMaterial();         break;
-        case VansMaterialType::VAN_SHAODW:          material = new VansShadowMaterial();       break;
         case VansMaterialType::VAN_SKIN:            material = new VansSkinMaterial();         break;
         case VansMaterialType::VAN_CLOTH:           material = new VansClothMaterial();        break;
         default:                                    material = new VansMaterial();             break;
         }
         material->m_MaterialType = matType;
 
-        // Optional JSON override — kept for custom/per-scene shaders.
-        VansGraphicsShader* shader = nullptr;
-        const auto* regEntry = VansGraphics::VansShaderRegistry::Get().FindForType(matType);
-        if (regEntry)
+        // ── Populate m_PassShaders from the Material Pass Table ──────────────
         {
-            shader = static_cast<VansGraphicsShader*>(GetShaderAsset(regEntry->name));
+            auto& reg = VansGraphics::VansShaderRegistry::Get();
+            const auto& passMap = reg.GetMaterialPassMap(matType);
+            for (const auto& [passName, shaderName] : passMap)
+            {
+                VansGraphicsShader* passShader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
+                if (passShader)
+                    material->m_PassShaders[passName] = passShader;
+            }
         }
-
-        material->m_Shader = shader;
         if (matType == VansMaterialType::VAN_PBR)
         {
             VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(material);
@@ -808,41 +791,6 @@ void VansGraphics::VansScene::LoadShaderFromEntry(
     m_Shaders.push_back(shader);
 }
 
-VansGraphicsShader* VansGraphics::VansScene::GetOrCreateDefaultShader(VansMaterialType matType, VkDevice& device)
-{
-    // Delegate completely to the C++ shader registry.
-    const auto* regEntry = VansGraphics::VansShaderRegistry::Get().FindForType(matType);
-    if (!regEntry)
-    {
-        VANS_LOG_WARN("[GetOrCreateDefaultShader] No registered shader for material type " << static_cast<int>(matType));
-        return nullptr;
-    }
-
-    // Reuse if already loaded.
-    VansGraphicsShader* existing = static_cast<VansGraphicsShader*>(GetShaderAsset(regEntry->name));
-    if (existing)
-        return existing;
-
-    // Create a new shader from the registry entry.
-    auto vansConfigration = VansConfigration::GetInstance();
-    std::string fullPath = vansConfigration->GetProjectRootPath() + regEntry->relativePath;
-
-    VansGraphicsShader* shader = new VansGraphicsShader();
-    m_SceneFileWatcher->AddWatch(fullPath);
-    shader->InitShader(device, fullPath);
-    shader->SetDrawStateData(regEntry->depthTest, regEntry->depthWrite, regEntry->depthCompareOp, regEntry->cullMode);
-    if (regEntry->pushConstantSize > 0)
-        shader->SetPushConstant(regEntry->pushConstantSize);
-    if (regEntry->enableAlphaBlend)
-        shader->SetEnableAlphaBlend(VK_TRUE);
-
-    shader->SetName(regEntry->name);
-    m_Shaders.push_back(shader);
-
-    VANS_LOG("[GetOrCreateDefaultShader] Created shader from registry: " << regEntry->name);
-    return shader;
-}
-
 void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
     VkDevice& device,
     VansMesh* multiMesh,
@@ -922,9 +870,17 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
             material->m_MaterialType = matType;
             material->SetName(matKey);
 
-            // Assign default shader
-            VansGraphicsShader* defaultShader = GetOrCreateDefaultShader(matType, device);
-            material->m_Shader = defaultShader;
+            // Populate m_PassShaders from Material Pass Table
+            {
+                auto& reg = VansGraphics::VansShaderRegistry::Get();
+                const auto& passMap = reg.GetMaterialPassMap(matType);
+                for (const auto& [passName, shaderName] : passMap)
+                {
+                    VansGraphicsShader* passShader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
+                    if (passShader)
+                        material->m_PassShaders[passName] = passShader;
+                }
+            }
 
             if (matType == VansMaterialType::VAN_PBR)
             {
@@ -1022,35 +978,8 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
         RegistRenderNode(renderNode, nodeType);
         group.childNodes.push_back(renderNode);
 
-        // ── Shadow nodes ──────────────────────────────────────────────────
-        if (nodeType == RenderNodeType::OPAQUE_NODE && supportShadow)
-        {
-            VansMaterial* shadowMaterial = static_cast<VansMaterial*>(GetMaterialAsset("ShadowMaterial"));
-            if (shadowMaterial)
-            {
-                VansRenderNode* shadowNode = new VansShadowRenderNode(device);
-                shadowNode->m_Mesh     = subMesh;
-                shadowNode->m_Material = shadowMaterial;
-                shadowNode->m_ParentGroupName = resolvedParentName;
-                shadowNode->ShareTransform(group.sharedTransformID);
-                shadowNode->SetName(renderNodeName + "_shadow");
-                m_ShadowRenderNodes.push_back(shadowNode);
-                group.shadowNodes.push_back(shadowNode);
-            }
-
-            VansMaterial* punctualShadowMaterial = static_cast<VansMaterial*>(GetMaterialAsset("PunctualShadowMaterial"));
-            if (punctualShadowMaterial)
-            {
-                VansRenderNode* shadowNode = new VansShadowRenderNode(device);
-                shadowNode->m_Mesh     = subMesh;
-                shadowNode->m_Material = punctualShadowMaterial;
-                shadowNode->m_ParentGroupName = resolvedParentName;
-                shadowNode->ShareTransform(group.sharedTransformID);
-                shadowNode->SetName(renderNodeName + "_punctual_shadow");
-                m_PunctualShadowRenderNodes.push_back(shadowNode);
-                group.shadowNodes.push_back(shadowNode);
-            }
-        }
+        // Shadow nodes are no longer created here — shadow passes now iterate
+        // opaque nodes and use material->GetPassShader(VansPass::SHADOW).
 
         VANS_LOG("[ExpandMultiMesh] Created render node: " << renderNodeName
                  << " (type=" << (nodeType == OPAQUE_NODE ? "OPAQUE" : "TRANSPARENT") << ")");

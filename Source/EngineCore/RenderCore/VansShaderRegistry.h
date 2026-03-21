@@ -12,8 +12,6 @@ namespace VansGraphics
 {
     // ---------------------------------------------------------------------------
     // Per-shader metadata stored in the registry.
-    // VansMaterialType is used as the key in the typed table, so no
-    // targetMaterialTypes list is needed here.
     // ---------------------------------------------------------------------------
     struct VansShaderRegistryEntry
     {
@@ -29,36 +27,46 @@ namespace VansGraphics
 
     // ---------------------------------------------------------------------------
     // VansShaderRegistry — singleton with two lookup tables:
-    //   m_TypedEntries  : VansMaterialType -> entry  (one entry per type)
-    //   m_NamedEntries  : name string      -> entry  (shaders without type binding)
+    //   Shader Table:        shader name → VansShaderRegistryEntry
+    //   Material Pass Table: VansMaterialType → { pass name → shader name }
     // ---------------------------------------------------------------------------
     class VansShaderRegistry
     {
     public:
         static VansShaderRegistry& Get();
 
-        // Register a shader that is the sole default for a specific material type.
-        // Warns and ignores if the same type is registered twice.
-        void RegisterForType(VansMaterialType type, VansShaderRegistryEntry entry);
+        // ── Shader Table ───────────────────────────────────────────────────────
+        // Register a shader by its unique name.
+        void RegisterShader(const std::string& shaderName, VansShaderRegistryEntry entry);
 
-        // Register a shader that has no material-type binding (loaded by name only).
-        void RegisterNamed(VansShaderRegistryEntry entry);
+        // Lookup shader entry by name. Returns nullptr if not registered.
+        const VansShaderRegistryEntry* FindShader(const std::string& shaderName) const;
 
-        // O(1) lookup — returns nullptr if this type has no registered shader.
-        const VansShaderRegistryEntry* FindForType(VansMaterialType type) const;
+        // ── Material Pass Table ────────────────────────────────────────────────
+        // Register which passes a material type participates in and which shader each pass uses.
+        // passMap: { pass name → shader name }
+        void RegisterMaterialPasses(VansMaterialType type,
+                                    std::unordered_map<std::string, std::string> passMap);
 
-        // Iterate all entries (typed + named) for the scene-load shader loop.
-        // Already-loaded shaders are skipped via the caller's GetShaderAsset check.
-        void ForEach(const std::function<void(const VansShaderRegistryEntry&)>& fn) const;
+        // Get the pass→shader map for a material type. Returns empty map if not registered.
+        const std::unordered_map<std::string, std::string>&
+            GetMaterialPassMap(VansMaterialType type) const;
 
-        // Clear all registrations (useful for re-initialisation in tests).
+        // ── Iteration ──────────────────────────────────────────────────────────
+        // Iterate all shaders for bulk loading at scene startup.
+        void ForEachShader(const std::function<void(const VansShaderRegistryEntry&)>& fn) const;
+
         void Clear();
 
     private:
         VansShaderRegistry() = default;
 
-        std::unordered_map<int, VansShaderRegistryEntry>         m_TypedEntries; // key = (int)VansMaterialType
-        std::unordered_map<std::string, VansShaderRegistryEntry> m_NamedEntries;
+        // shader name → shader entry
+        std::unordered_map<std::string, VansShaderRegistryEntry>               m_Shaders;
+        // material type → { pass name → shader name }
+        std::unordered_map<int, std::unordered_map<std::string, std::string>>  m_MaterialPasses;
+
+        static const std::unordered_map<std::string, std::string> s_EmptyPassMap;
     };
 
 } // namespace VansGraphics

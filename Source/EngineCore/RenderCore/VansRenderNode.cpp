@@ -35,13 +35,16 @@ VansGraphics::VansRenderNode::~VansRenderNode()
 
 bool VansGraphics::VansRenderNode::CheckRenderNodeState()
 {
-	auto shader = m_Material->m_Shader;
-	if (shader!= nullptr && m_SceneFileWatcher->ConsumeUpdated(shader->GetShaderFolder()))
+	// Check all pass shaders for hot-reload (file watcher)
+	for (auto& [passName, shader] : m_Material->m_PassShaders)
 	{
-		VANS_LOG("pipe update: " << shader->GetShaderFolder());
-		shader->RefreshShaderMoudle();
-		shader->TriggerReCreateGraphicsPipeline();
-		return false;
+		if (shader != nullptr && m_SceneFileWatcher->ConsumeUpdated(shader->GetShaderFolder()))
+		{
+			VANS_LOG("pipe update (" << passName << "): " << shader->GetShaderFolder());
+			shader->RefreshShaderMoudle();
+			shader->TriggerReCreateGraphicsPipeline();
+			return false;
+		}
 	}
 
 	return true;
@@ -99,55 +102,101 @@ void VansGraphics::VansRenderNode::UpdateModelData()
 	}
 }
 
+// Helper: map node type to its primary render-pass name.
+static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type)
+{
+	using namespace VansGraphics;
+	switch (type)
+	{
+	case OPAQUE_NODE:       return VansPass::GBUFFER;
+	case TRANSPARENT_NODE:  return VansPass::FORWARD_TRANSPARENT;
+	case SKY_BOX_NODE:      return VansPass::SKY_BOX;
+	case POSTPROCESS_NODE:  return VansPass::POST_PROCESS;
+	case DEFERRED_NODE:     return VansPass::DEFERRED;
+	case SCREEN_SPACE_NODE: return VansPass::SCREEN_SPACE;
+	default:                return VansPass::GBUFFER;
+	}
+}
+
 void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalStateData)
 {
 	if (!CheckRenderNodeState())
-	{
 		return;
-	}
 
-	//BeforeDrawCall();
+	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType));
+	if (!shader) return;
 
-	//apply mesh
 	cmd.BindMesh(*m_Mesh, 0, globalStateData);
 
-	//apply shader，确认Pipeline以及创建完毕
-	VansGraphicsShader& shader = *(m_Material->m_Shader);
-	cmd.EnsureGraphicsShader(shader, globalStateData, m_UsedDescSetLayouts);
+	cmd.EnsureGraphicsShader(*shader, globalStateData, m_UsedDescSetLayouts);
 
-	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, shader, 0, m_UsedDescSets, {});
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, m_UsedDescSets, {});
 
-	if (m_Material->m_Shader->GetPushConstantSize() > 0)
+	if (shader->GetPushConstantSize() > 0)
 	{
 		VansDrawPushConstant pc{};
 		pc.materialIndex    = (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
 			? static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex : -1;
 		pc.transformIndex   = m_TransfromIndex;
 		pc.animationEnabled = m_AnimationEnabled ? 1 : 0;
-		cmd.UpdatePushConstants(*shader.GetGraphicsPipeline(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			0, m_Material->m_Shader->GetPushConstantSize(), &pc);
+		cmd.UpdatePushConstants(*shader->GetGraphicsPipeline(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, shader->GetPushConstantSize(), &pc);
 	}
 
-	cmd.DrawMesh(*m_Mesh, shader, 1);
+	cmd.DrawMesh(*m_Mesh, *shader, 1);
 }
 
 void VansGraphics::VansRenderNode::DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex)
 {
-	//BeforeDrawCall();
+	// Legacy fallback — punctual shadow draws now use DrawPunctualShadowWithPassShader().
+}
 
-	//apply mesh
+void VansGraphics::VansRenderNode::DrawCascadeShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
+                                                                     VansGraphicsShader* passShader,
+                                                                     const std::vector<VkDescriptorSet>& descSets,
+                                                                     const std::vector<VkDescriptorSetLayout>& descSetLayouts)
+{
+	if (!passShader) return;
+
 	cmd.BindMesh(*m_Mesh, 0, global_state);
 
-	//apply shader，确认Pipeline以及创建完毕
-	cmd.EnsureGraphicsShader(*(m_Material->m_Shader), global_state, m_UsedDescSetLayouts);
+	cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
 
-	int data[4] = { lightIndex, shadowIndex , 0, m_TransfromIndex};
-	cmd.UpdatePushConstants(*(m_Material->m_Shader->GetGraphicsPipeline()), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-		0, m_Material->m_Shader->GetPushConstantSize(), data);
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *passShader, 0, descSets, {});
 
-	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *(m_Material->m_Shader), 0, m_UsedDescSets, {});
+	if (passShader->GetPushConstantSize() > 0)
+	{
+		// Shadow shader expects: { materialIndex, objectIndex, cascadeIndex }
+		int matIdx = (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
+			? static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex : -1;
+		int pushData[3] = { matIdx, m_TransfromIndex, global_state.cascadeIndex };
+		cmd.UpdatePushConstants(*passShader->GetGraphicsPipeline(),
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, passShader->GetPushConstantSize(), pushData);
+	}
 
-	cmd.DrawMesh(*m_Mesh, *(m_Material->m_Shader), 1);
+	cmd.DrawMesh(*m_Mesh, *passShader, 1);
+}
+
+void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
+                                                                      VansGraphicsShader* passShader,
+                                                                      const std::vector<VkDescriptorSet>& descSets,
+                                                                      const std::vector<VkDescriptorSetLayout>& descSetLayouts,
+                                                                      int lightIndex, int shadowIndex)
+{
+	if (!passShader) return;
+
+	cmd.BindMesh(*m_Mesh, 0, global_state);
+
+	cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
+
+	int data[4] = { lightIndex, shadowIndex, 0, m_TransfromIndex };
+	cmd.UpdatePushConstants(*passShader->GetGraphicsPipeline(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		0, passShader->GetPushConstantSize(), data);
+
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *passShader, 0, descSets, {});
+
+	cmd.DrawMesh(*m_Mesh, *passShader, 1);
 }
 
 //void VansGraphics::VansRenderNode::DrawWithMaterial(VansMaterial* material, VansVKCommandBuffer& cmd, GlobalStateData& global_state)
@@ -229,6 +278,19 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 			m_UsedDescSets.push_back(cloth->m_ClothOwnedDescSets[0]);
 		}
 	}
+
+	// ── Shadow descriptor sets (first 3 sets only: Global + EmptyPass + Object) ──
+	// These are used when DrawWithPassShader is called for shadow/punctualShadow passes.
+	m_ShadowDescSetLayouts = {
+		m_Scene->m_GlobalDescriptorSetLayout,   // Set 0
+		m_Scene->m_EmptyPassLayout,             // Set 1
+		m_Scene->m_ObjectDescriptorSetLayout,   // Set 2
+	};
+	m_ShadowDescSets = {
+		m_Scene->m_GlobalDescriptorSet,         // Set 0
+		m_Scene->m_EmptyPassDescriptorSet,      // Set 1
+		m_Scene->m_ObjectDescriptorSet,         // Set 2
+	};
 }
 
 void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager)
@@ -334,27 +396,27 @@ void VansGraphics::VansTransparentRenderNode::UpdateDescripterSets(VansMaterialM
 void VansGraphics::VansTransparentRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalStateData)
 {
 	if (!CheckRenderNodeState())
-	{
 		return;
-	}
+
+	VansGraphicsShader* shader = m_Material->GetPassShader(VansPass::FORWARD_TRANSPARENT);
+	if (!shader) return;
 
 	cmd.BindMesh(*m_Mesh, 0, globalStateData);
 
-	VansGraphicsShader& shader = *(m_Material->m_Shader);
-	cmd.EnsureGraphicsShader(shader, globalStateData, m_UsedDescSetLayouts);
+	cmd.EnsureGraphicsShader(*shader, globalStateData, m_UsedDescSetLayouts);
 
-	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, shader, 0, m_UsedDescSets, {});
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, m_UsedDescSets, {});
 
 	// Push objectIndex to look up model data from the transform SSBO
-	if (m_Material->m_Shader->GetPushConstantSize() > 0)
+	if (shader->GetPushConstantSize() > 0)
 	{
 		int objectIndex = m_TransfromIndex;
-		cmd.UpdatePushConstants(*shader.GetGraphicsPipeline(),
+		cmd.UpdatePushConstants(*shader->GetGraphicsPipeline(),
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			0, sizeof(int), &objectIndex);
 	}
 
-	cmd.DrawMesh(*m_Mesh, shader, 1);
+	cmd.DrawMesh(*m_Mesh, *shader, 1);
 }
 
 void VansGraphics::VansPostProcessRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
@@ -818,65 +880,7 @@ void VansGraphics::VansSkyBoxRenderNode::UpdateDescripterSets(VansMaterialManage
 	m_DescriptorsetsDirty = false;
 }
 
-void VansGraphics::VansShadowRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
-{
-	// Set 0: Global
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
-
-	// Set 1: Per-Pass (empty for shadow pass)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
-	m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
-
-	// Set 2: Per-Object (Transform SSBO)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
-}
-
-void VansGraphics::VansShadowRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
-{
-	UpdateDescripterSets(materialManager);
-}
-
-void VansGraphics::VansShadowRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
-{
-	if (!m_DescriptorsetsDirty)
-	{
-		return;
-	}
-	m_DescriptorsetsDirty = false;
-
-	// All resources are now in the global descriptor set (Set 0)
-	// No per-pass or per-object descriptor updates needed for shadows
-}
-
-void VansGraphics::VansShadowRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalStateData)
-{
-	if (!CheckRenderNodeState())
-	{
-		return;
-	}
-
-	cmd.BindMesh(*m_Mesh, 0, globalStateData);
-
-	VansGraphicsShader& shader = *(m_Material->m_Shader);
-	cmd.EnsureGraphicsShader(shader, globalStateData, m_UsedDescSetLayouts);
-
-	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, shader, 0, m_UsedDescSets, {});
-
-	if (m_Material->m_Shader->GetPushConstantSize() > 0)
-	{
-		// Shadow shader expects: { materialIndex, objectIndex, cascadeIndex }
-		int matIdx = (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
-			? static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex : -1;
-		int pushData[3] = { matIdx, m_TransfromIndex, globalStateData.cascadeIndex };
-		cmd.UpdatePushConstants(*shader.GetGraphicsPipeline(),
-			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			0, m_Material->m_Shader->GetPushConstantSize(), pushData);
-	}
-
-	cmd.DrawMesh(*m_Mesh, shader, 1);
-}
+// VansShadowRenderNode removed – shadow pass now uses DrawWithPassShader() on opaque nodes
 
 VansGraphics::VansTerrainRenderNode::VansTerrainRenderNode(VansVKDevice* device, const TerrainConfig& config, RenderNodeType type) : VansRenderNode(device->GetLogicDevice(), TERRAIN_NODE)
 {

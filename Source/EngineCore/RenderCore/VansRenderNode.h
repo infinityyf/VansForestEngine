@@ -136,6 +136,18 @@ namespace VansGraphics
 
 		void DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex);
 
+		// Draw with cascade shadow push constants: { materialIndex, transformIndex, cascadeIndex }
+		void DrawCascadeShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
+		                                     VansGraphicsShader* passShader,
+		                                     const std::vector<VkDescriptorSet>& descSets,
+		                                     const std::vector<VkDescriptorSetLayout>& descSetLayouts);
+
+		void DrawPunctualShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
+		                                      VansGraphicsShader* passShader,
+		                                      const std::vector<VkDescriptorSet>& descSets,
+		                                      const std::vector<VkDescriptorSetLayout>& descSetLayouts,
+		                                      int lightIndex, int shadowIndex);
+
 		//void DrawWithMaterial(VansMaterial* material ,VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
 		void SetName(const std::string& name)
@@ -191,6 +203,11 @@ namespace VansGraphics
 		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 
 		void SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager);
+
+		// ── Per-pass descriptor set arrays ─────────────────────────────────
+		// Shadow pass: { Global, EmptyPass, Object } (3 sets — no animation, no material textures)
+		std::vector<VkDescriptorSet>       m_ShadowDescSets;
+		std::vector<VkDescriptorSetLayout> m_ShadowDescSetLayouts;
 	};
 
 	// ── Transparent render node ───────────────────────────────────────────────────
@@ -262,21 +279,6 @@ namespace VansGraphics
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
 		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
-	};
-
-	class VansShadowRenderNode : public VansRenderNode
-	{
-	public:
-
-		VansShadowRenderNode(VkDevice& device) : VansRenderNode(device, NONE_NODE) {}
-
-		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
-
-		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
-
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
-
-		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
 	};
 
 	class VansTerrain;

@@ -16,13 +16,23 @@ void VansGraphics::VansScene::DrawShadowNodes()
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    for (auto& node : m_ShadowRenderNodes)
+
+    // Iterate opaque nodes instead of dedicated shadow node list
+    for (auto& node : m_OpaqueRenderNodes)
     {
-        if (node == nullptr)
-        {
-            continue;
-        }
-        node->Draw(cmd, globalStateData);
+        if (node == nullptr) continue;
+
+        // Check support_shadow flag on the node
+        auto* opaque = static_cast<VansCommonRenderNode*>(node);
+        if (!opaque->m_SupportShadow) continue;
+
+        // Check if the material has a shadow pass shader
+        VansGraphicsShader* shadowShader = node->m_Material->GetPassShader(VansPass::SHADOW);
+        if (!shadowShader) continue;
+
+        // Draw with shadow shader using cascade shadow push constants
+        node->DrawCascadeShadowWithPassShader(cmd, globalStateData, shadowShader,
+                                               opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts);
     }
 }
 
@@ -55,13 +65,19 @@ void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
         cmd.SetViewport(0, { viewPort });
         cmd.SetScissor(0, { scissor });
 
-        for (auto& node : m_PunctualShadowRenderNodes)
+        for (auto& node : m_OpaqueRenderNodes)
         {
-            if (node == nullptr)
-            {
-                continue;
-            }
-            node->DrawPunctualShadow(cmd, globalStateData, lightIndex, shadowDirection);
+            if (node == nullptr) continue;
+
+            auto* opaque = static_cast<VansCommonRenderNode*>(node);
+            if (!opaque->m_SupportShadow) continue;
+
+            VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
+            if (!shader) continue;
+
+            node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
+                                                    opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
+                                                    lightIndex, shadowDirection);
         }
     }
 }
@@ -94,13 +110,19 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
     cmd.SetViewport(0, { viewPort });
     cmd.SetScissor(0, { scissor });
 
-    for (auto& node : m_PunctualShadowRenderNodes)
+    for (auto& node : m_OpaqueRenderNodes)
     {
-        if (node == nullptr)
-        {
-            continue;
-        }
-        node->DrawPunctualShadow(cmd, globalStateData, pointCount + lightIndex, 0);
+        if (node == nullptr) continue;
+
+        auto* opaque = static_cast<VansCommonRenderNode*>(node);
+        if (!opaque->m_SupportShadow) continue;
+
+        VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
+        if (!shader) continue;
+
+        node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
+                                                opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
+                                                pointCount + lightIndex, 0);
     }
 }
 

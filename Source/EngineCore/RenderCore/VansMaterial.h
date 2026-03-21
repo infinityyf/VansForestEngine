@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "VulkanCore/VansShader.h"
 #include "VulkanCore/VansTexture.h"
@@ -16,7 +16,24 @@
 using namespace VansGraphics;
 namespace VansGraphics
 {
-	// 鈹€鈹€ Forward declarations 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+	// ============================================================
+	// Well-known render-pass name constants.
+	// Each engine render pass queries the material for its unique pass name.
+	// ============================================================
+	namespace VansPass
+	{
+		static constexpr const char* GBUFFER          = "gbuffer";          // opaque GBuffer fill
+		static constexpr const char* SHADOW           = "shadow";           // cascade shadow map
+		static constexpr const char* PUNCTUAL_SHADOW  = "punctualShadow";   // point/spot shadow
+		static constexpr const char* FORWARD_TRANSPARENT = "transparent";   // forward transparent
+		static constexpr const char* SKY_BOX          = "skybox";           // sky box
+		static constexpr const char* DEFERRED         = "deferred";         // deferred lighting resolve
+		static constexpr const char* POST_PROCESS     = "postProcess";      // post-processing
+		static constexpr const char* SCREEN_SPACE     = "screenSpace";      // SSAO / SSR etc.
+		// future
+		static constexpr const char* VELOCITY         = "velocity";
+		static constexpr const char* PRE_DEPTH        = "preDepth";
+	}
 	class VansPBRMaterial;
 	class VansTransparentMaterial;
 	class VansSkyBoxMaterial;
@@ -25,7 +42,6 @@ namespace VansGraphics
 	class VansPostProcessMaterial;
 	class VansDeferredMaterial;
 	class VansSSAOMaterial;
-	class VansShadowMaterial;
 
 	enum VansMaterialType
 	{
@@ -36,7 +52,6 @@ namespace VansGraphics
 		VAN_SKY_BOX = 4,
 		VAN_DEFERRED = 5,
 		VAN_SCREEN_SPACE_AO = 6,
-		VAN_SHAODW = 8,
 		VAN_SKIN = 9,
 		VAN_CLOTH = 10,
 	};
@@ -222,7 +237,7 @@ namespace VansGraphics
 	};
 
 	// ============================================================
-	// Base Material 鈥?asset name (from VansAsset), type tag, shader
+	// Base Material — asset name (from VansAsset), type tag, shader
 	// No texture or parameter data lives here.
 	// ============================================================
 	class VansMaterial : public VansAsset
@@ -231,7 +246,14 @@ namespace VansGraphics
 
 	public:
 		VansMaterialType    m_MaterialType;
-		VansGraphicsShader* m_Shader = nullptr;
+
+		// pass name → shader (populated at scene load from Material Pass Table)
+		std::unordered_map<std::string, VansGraphicsShader*> m_PassShaders;
+
+		// Lookup shader for a specific pass. Returns nullptr if this material
+		// does not participate in that pass.
+		VansGraphicsShader* GetPassShader(const std::string& passName) const;
+		bool                HasPass(const std::string& passName) const;
 
 		virtual ~VansMaterial() = default;
 	};
@@ -323,6 +345,5 @@ namespace VansGraphics
 	class VansPostProcessMaterial : public VansMaterial {};
 	class VansDeferredMaterial    : public VansMaterial {};
 	class VansSSAOMaterial        : public VansMaterial {};
-	class VansShadowMaterial      : public VansMaterial {};
 
 }

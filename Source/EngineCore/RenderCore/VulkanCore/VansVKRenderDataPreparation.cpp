@@ -124,10 +124,6 @@ namespace VansGraphics
 		allRenderNodes.insert(allRenderNodes.end(), allCommonNodes.begin(), allCommonNodes.end());
 		auto& allTransparentNodes = m_Scene->m_TransParentRenderNodes;
 		allRenderNodes.insert(allRenderNodes.end(), allTransparentNodes.begin(), allTransparentNodes.end());
-		auto& allShadowNodes = m_Scene->m_ShadowRenderNodes;
-		allRenderNodes.insert(allRenderNodes.end(), allShadowNodes.begin(), allShadowNodes.end());
-		auto& allPunctualShadowNodes = m_Scene->m_PunctualShadowRenderNodes;
-		allRenderNodes.insert(allRenderNodes.end(), allPunctualShadowNodes.begin(), allPunctualShadowNodes.end());
 
 		int nodeCount = allRenderNodes.size();
 		m_Scene->m_InstanceTransformDataBuffer.CreatVulkanBuffer(
