@@ -38,11 +38,12 @@
 #define SSGI_MAX_STEP 4
 
 #define SSR_DEPTH_TOLERANCE 0.01      // base depth tolerance (fraction of scene depth)
-#define SSR_NUM_RESOLVER 9
+#define SSR_NUM_RESOLVER 24            // spatial resolve samples (was 9 — more needed for rough)
 #define SSR_REFINE_STEPS 16            // binary-search refinement iterations
 #define SSR_START_BIAS 0.05            // world-space bias along normal to avoid self-hit
-#define SSR_RESOLVE_BASE_RADIUS 4.0    // min gather radius in pixels
-#define SSR_RESOLVE_MAX_RADIUS  12.0   // max gather radius (reached at roughness=1)
+#define SSR_RESOLVE_BASE_RADIUS 2.0    // min gather radius in pixels (tight for mirrors)
+#define SSR_RESOLVE_MAX_RADIUS  20.0   // max gather radius (reached at roughness=1)
+#define SSR_FIREFLY_CLAMP 4.0          // max luminance for firefly suppression in resolve
 
 
 
@@ -110,6 +111,28 @@ vec2 HashRandom(vec2 uv,float t)
     return vec2(n1, n2);
 }
 
+// R2 quasi-random sequence (Roberts, 2018) — well-distributed 2D points
+// over [0,1)².  Superior stratification compared to sin-hash for
+// importance-sampled GGX in stochastic SSR.
+vec2 R2Sequence(int index)
+{
+    const float g  = 1.32471795724; // plastic constant
+    const float a1 = 1.0 / g;       // ≈ 0.7548776662
+    const float a2 = 1.0 / (g * g); // ≈ 0.5698402910
+    return fract(vec2(a1, a2) * float(index) + 0.5);
+}
+
+// Per-pixel deterministic seed — decorrelates the quasi-random sequence
+// spatially so neighboring pixels sample different parts of the hemisphere.
+uint PixelSeedHash(ivec2 p)
+{
+    uint seed = uint(p.x) * 1664525u + uint(p.y) * 1013904223u;
+    seed ^= seed >> 16u;
+    seed *= 0x45d9f3bu;
+    seed ^= seed >> 16u;
+    return seed;
+}
+
 float LinearizeDepth(float depth, float near, float far)
 {
     float z = depth;
@@ -151,6 +174,12 @@ float Luminance(vec3 c)
 {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
 }
+
+// Karis tonemap / inverse — compresses HDR before temporal blending so
+// bright firefly pixels don't bias the neighbourhood statistics or the
+// exponential moving average.  Standard technique from Karis (2014).
+vec3 KarisTonemap(vec3 c)        { return c / (1.0 + Luminance(c)); }
+vec3 KarisInverseTonemap(vec3 c) { return c / max(1.0 - Luminance(c), 1e-4); }
 
 const ivec3 kFrameOffsets[8] = ivec3[](
     ivec3(0,0,0), // frame 0

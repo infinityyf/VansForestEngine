@@ -174,7 +174,9 @@ float SSR_BRDF(vec3 V, vec3 L, vec3 N, float Roughness)
 void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
 {
     float NdotV = max(dot(brdf.normal, viewDirection), 0.0);
-    vec3 F = fresnelSchlickRoughness(NdotV, brdf.fresnel0, brdf.roughness);
+    vec3 F0 = mix(brdf.fresnel0, brdf.albedo, brdf.metallic);
+
+    vec3 F = fresnelSchlickRoughness(NdotV, F0, brdf.roughness);
     vec3 kS = F;
     vec3 kD = 1.0 - kS;
     kD *= 1.0 - brdf.metallic;
@@ -183,14 +185,14 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
 
     vec3 reflection = reflect(-viewDirection, brdf.normal); 
     vec2 intergrationUV = vec2(NdotV, brdf.roughness);
-    intergrationUV.y = 1 - intergrationUV.y;
     vec2 environmentBRDF = texture(BRDFLUT, intergrationUV).rg;
 
     //reflection specular lod level
     float lod = GetMipLevelFromRoughness(brdf.roughness);
     vec3 prefilteredColor = textureLod(PreConvSpecularEnvironment,reflection,lod).rgb;
     prefilteredColor = mix(prefilteredColor, brdf.indirectSpecular.rgb, brdf.indirectSpecular.a);
-    specular = prefilteredColor * (F * environmentBRDF.x + environmentBRDF.y);
+    // Split-sum: LUT already integrates Fresnel, so use F0 (not F) here
+    specular = prefilteredColor * (F0 * environmentBRDF.x + environmentBRDF.y);
 }
 
 void DirectBRDF(BRDFData brdf, vec3 lightDirection, inout vec3 diffuse, inout vec3 specular)

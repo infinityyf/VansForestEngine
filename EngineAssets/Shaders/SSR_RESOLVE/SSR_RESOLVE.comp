@@ -25,7 +25,8 @@ void main()
 
     // Per-pixel, per-frame random rotation — dithers the Fibonacci disk
     // across neighbours and across time so TAA can accumulate them.
-    float rotAngle = HashRandom(vec2(pixelCoord), mod(FrameIndex, 64.0)).x * TWO_PI;
+    uint rseed = PixelSeedHash(pixelCoord);
+    float rotAngle = R2Sequence(int((rseed + uint(FrameIndex)) % 256u)).x * TWO_PI;
     vec4 hitInfo = imageLoad(traceHit, pixelCoord);
     vec3 normal = texelFetch(inputNormal, pixelCoord * SCREEN_SCALE, 0).xyz;
     float roughness = texelFetch(inputRoughness, pixelCoord * SCREEN_SCALE, 0).a;
@@ -37,6 +38,10 @@ void main()
     vec3 resolvedReflectionColor = vec3(0.0);
     float resolvedWeight = 0.0;
     float centerDepth = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0).w;
+
+    // Adaptive bilateral: relax normal similarity for rough surfaces so
+    // the spatial filter can average more neighbor samples effectively.
+    float normalPower = mix(32.0, 4.0, roughness);
 
     // Gather radius scales with roughness: mirror surfaces use a tight radius,
     // rough surfaces spread wider to pick up more angular variation.
@@ -64,6 +69,12 @@ void main()
         vec3 hitPosition = texelFetch(inputPosition, ivec2(neighborHituv * ScreenParams.xy), 0).xyz;
         vec3 lightDirection = normalize(hitPosition - position);
 
+        // Firefly suppression: clamp excessively bright samples that cause
+        // single-pixel spikes in the resolve (common on rough surfaces).
+        float sampleLum = Luminance(color);
+        if (sampleLum > SSR_FIREFLY_CLAMP)
+            color *= SSR_FIREFLY_CLAMP / sampleLum;
+
         // Fade color near screen edges to avoid hard reflection cutoff
         float edgeFade = 1.0;
         edgeFade *= smoothstep(0.0, 0.05, neighborHituv.x) * smoothstep(1.0, 0.95, neighborHituv.x);
@@ -73,17 +84,22 @@ void main()
         //采样概率
         vec4 pdfInfo = imageLoad(tracePDF, neighborCoord);
 
-        // Bilateral weight: normal similarity between center and neighbor shading point
+        // Bilateral weight: normal similarity (roughness-adaptive power —
+        // strict for mirrors, relaxed for rough surfaces to gather more)
         vec3 neighborNormal = texelFetch(inputNormal, neighborCoord * SCREEN_SCALE, 0).xyz;
-        float normalWeight = pow(max(0.0, dot(normal, neighborNormal)), 32.0);
+        float normalWeight = pow(max(0.0, dot(normal, neighborNormal)), normalPower);
 
         // Bilateral weight: depth similarity
         float neighborDepth = texelFetch(inputPosition, neighborCoord * SCREEN_SCALE, 0).w;
         float depthWeight = exp(-abs(centerDepth - neighborDepth) / max(centerDepth * 0.05, 0.01));
 
+        // Inverse-luminance weighting (Karis): prevents bright outliers
+        // from dominating the weighted average, reducing firefly noise.
+        float luminanceWeight = 1.0 / (1.0 + Luminance(color));
+
 		///SpatioSampler — BRDF importance weight with bilateral filter
 		float brdfWeight = SSR_BRDF(viewDirection, lightDirection, normal, roughness) / max(1e-5, pdfInfo.a);
-        float currentSampleWeight = brdfWeight * normalWeight * depthWeight;
+        float currentSampleWeight = brdfWeight * normalWeight * depthWeight * luminanceWeight;
 
 		resolvedReflectionColor += color * currentSampleWeight;
 		resolvedWeight += currentSampleWeight;

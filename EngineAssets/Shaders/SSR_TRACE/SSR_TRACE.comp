@@ -38,7 +38,11 @@ void main()
     //根据roughness计算采样的PDF
     if(roughness > 0.1)
     {
-        vec2 random = HashRandom(pixelCoord, mod(FrameIndex, 64.0));
+        // R2 quasi-random sequence with per-pixel hash offset gives much
+        // better stratification over time than the sin-based HashRandom,
+        // reducing structured noise patterns on rough surfaces.
+        uint seed = PixelSeedHash(pixelCoord);
+        vec2 random = R2Sequence(int((seed + uint(FrameIndex)) % 256u));
         // Do NOT clamp random.y — ImportanceSampleGGX already shapes the lobe
         // through the roughness parameter.  Clamping it kills spread for rough surfaces.
         vec4 pdfrandom = ImportanceSampleGGX(random, roughness);

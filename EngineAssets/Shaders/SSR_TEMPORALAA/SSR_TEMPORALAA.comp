@@ -49,6 +49,9 @@ void ResolverAABB(sampler2D currColor, float Sharpness, float ExposureScale, flo
     {
         // use GLSL texture() and proper texel offset math (offset * TexelSize)
         SampleColors[i] = texture(currColor, uv + vec2(SampleOffset[i]) / TexelSize);
+        // Tonemap before computing neighborhood statistics — suppresses HDR
+        // fireflies that would otherwise widen the AABB and leak ghost-noise.
+        SampleColors[i].rgb = KarisTonemap(SampleColors[i].rgb);
     }
 
     vec4 m1 = vec4(0.0);
@@ -112,6 +115,9 @@ void main()
     int frameIndex = int(FrameIndex) % 2;
 	vec4 SSR_PrevColor = frameIndex == 0 ? imageLoad(aaResultA, prevPixel) : imageLoad(aaResultB, prevPixel);
 
+	// Tonemap history into the same perceptual space as the AABB from ResolverAABB
+	SSR_PrevColor.rgb = KarisTonemap(SSR_PrevColor.rgb);
+
 	// AABB clamp previous color to neighborhood — anti-ghosting
 	SSR_PrevColor = clamp(SSR_PrevColor, SSR_MinColor, SSR_MaxColor);
 
@@ -135,10 +141,12 @@ void main()
 	// Adaptive temporal blend: base weight scaled by confidence
 	float temporalWeight = varianceBlend * velocityWeight * edgeFade * depthWeight;
 	// Guarantee a minimum blend so SSR noise always gets smoothed
-	temporalWeight = max(temporalWeight, 0.6 * depthWeight);
+	temporalWeight = max(temporalWeight, 0.75 * depthWeight);
 
 	/////Combine TemporalColor
 	vec4 ReflectionColor = mix(SSR_CurrColor, SSR_PrevColor, temporalWeight);
+	// Inverse-tonemap back to linear HDR after blending in perceptual space
+	ReflectionColor.rgb = KarisInverseTonemap(ReflectionColor.rgb);
     // Preserve alpha (SSR confidence mask) so the deferred pass can
     // fall back to the IBL cubemap where SSR has no valid hit.
     if(frameIndex == 0)
