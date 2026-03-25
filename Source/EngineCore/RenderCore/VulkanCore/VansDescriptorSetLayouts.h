@@ -79,6 +79,21 @@ namespace VansGraphics
 	};
 
 	// ====================================================================
+	// Set 4 (Per-Node Hair Texture) Binding Indices
+	// Only used by VansCommonRenderNode when the material type is VAN_HAIR.
+	// Each hair node owns its descriptor set with dedicated hair textures.
+	// ====================================================================
+	enum HairTextureBinding : uint32_t
+	{
+		HAIR_TEXTURE_BINDING_ALBEDO_ALPHA = 0,  // Hair albedo+alpha texture (COMBINED_IMAGE_SAMPLER)
+		HAIR_TEXTURE_BINDING_NORMAL       = 1,  // Hair normal texture (COMBINED_IMAGE_SAMPLER)
+		HAIR_TEXTURE_BINDING_ROUGHNESS    = 2,  // Hair roughness texture (COMBINED_IMAGE_SAMPLER)
+		HAIR_TEXTURE_BINDING_AO           = 3,  // Hair ambient occlusion texture (COMBINED_IMAGE_SAMPLER)
+		HAIR_TEXTURE_BINDING_SHIFT        = 4,  // Hair strand shift texture (COMBINED_IMAGE_SAMPLER)
+		HAIR_TEXTURE_BINDING_ALPHA        = 5,  // Hair dedicated alpha mask texture (COMBINED_IMAGE_SAMPLER)
+	};
+
+	// ====================================================================
 	// Constants
 	// ====================================================================
 	static constexpr uint32_t MAX_BINDLESS_TEXTURES = 2048;
@@ -439,5 +454,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_RayTracing(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SkinTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_ClothTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_HairTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

@@ -528,31 +528,28 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		uint32_t halfResWidth = m_RenderWidth / 2;
-		uint32_t halfResHeight = m_RenderHeight / 2;
-
 		VansTexture* ssrHitInfo = new VansTexture();
-		ssrHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, MID_PRES_16);
+		ssrHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_HIT_INFO, ssrHitInfo);
 
 		VansTexture* ssrRayPdf = new VansTexture();
-		ssrRayPdf->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrRayPdf->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RAY_PDF, ssrRayPdf);
 
 		VansTexture* ssrResult = new VansTexture();
-		ssrResult->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT, ssrResult);
 
 		VansTexture* ssrAaResultA = new VansTexture();
-		ssrAaResultA->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrAaResultA->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT_A, ssrAaResultA);
 
 		VansTexture* ssrAaResultB = new VansTexture();
-		ssrAaResultB->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrAaResultB->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT_B, ssrAaResultB);
 
 		VansTexture* ssrAaResult = new VansTexture();
-		ssrAaResult->InitTextureWithoutData(m_VansVKCommandBuffer, halfResWidth, halfResHeight, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrAaResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT, ssrAaResult);
 
 		auto vansConfigration = VansConfigration::GetInstance();

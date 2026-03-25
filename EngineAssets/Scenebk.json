@@ -99,6 +99,31 @@
                     "support_shadow": true
                 },
                 {
+                    "name": "HairCard",
+                    "mesh": "hairCard",
+                    "material": "hairMaterial",
+                    "parent": "HumanHead",
+                    "type": "opaque",
+                    "transform": {
+                        "position": [
+                            -4,
+                            2.0,
+                            2.7
+                        ],
+                        "rotation": [
+                            0.0,
+                            0.0,
+                            0.0
+                        ],
+                        "scale": [
+                            1,
+                            1,
+                            1
+                        ]
+                    },
+                    "support_shadow": true
+                },
+                {
                     "name": "Car",
                     "mesh": "car",
                     "material": "BaseUnlitMaterial3",
@@ -580,6 +605,13 @@
             "root_bone": "Bip01",
             "root_motion": false,
             "extern_animation": "EngineAssets/Models/Adam/Adam_Walk.fbx"
+        },
+        {
+            "name" : "hairCard",
+            "path" : "EngineAssets/Models/Hair/long_hair.obj",
+            "need_tangent" : true,
+            "support_raytracing" : false,
+            "need_cpu_data": false
         }
     ],
     "texture": [
@@ -912,6 +944,42 @@
             "path" : "EngineAssets/Textures/Cloth/Cloth_AO.png",
             "type" : 0,
             "sRGB" : false
+        },
+        {
+            "name" : "hairNormal",
+            "path" : "EngineAssets/Textures/Hair/long_hair_normal.png",
+            "type" : 0,
+            "sRGB" : false
+        },
+        {
+            "name" : "hairAO",
+            "path" : "EngineAssets/Textures/Hair/long_hair_ao.png",
+            "type" : 0,
+            "sRGB" : true
+        },
+        {
+            "name" : "hairRoughness",
+            "path" : "EngineAssets/Textures/Hair/long_hair_roughness.png",
+            "type" : 0,
+            "sRGB" : true
+        },
+        {
+            "name" : "hairShift",
+            "path" : "EngineAssets/Textures/Hair/long_hair_shift.png",
+            "type" : 0,
+            "sRGB" : true
+        },
+        {
+            "name" : "hairColor",
+            "path" : "EngineAssets/Textures/Hair/long_hair_color.png",
+            "type" : 0,
+            "sRGB" : true
+        },
+        {
+            "name" : "hairAlpha",
+            "path" : "EngineAssets/Textures/Hair/long_hair_alpha.png",
+            "type" : 0,
+            "sRGB" : false
         }
     ],
     "material": [
@@ -1105,6 +1173,16 @@
             "type": "skin",
             "basecolor_texture": "skinAlbedo",
             "normal_texture": "skinNormal"
+        },
+        {
+            "name": "hairMaterial",
+            "type": "hair",
+            "basecolor_texture": "hairColor",
+            "normal_texture": "hairNormal",
+            "roughness_texture": "hairRoughness",
+            "ao_texture": "hairAO",
+            "shift_texture": "hairShift",
+            "alpha_texture": "hairAlpha"
         }
     ]
 }

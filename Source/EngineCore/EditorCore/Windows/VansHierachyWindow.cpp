@@ -201,6 +201,20 @@ void VansGraphics::VansHierachuWindow::DrawMaterialDetail(VansMaterial& material
         }
         ImGui::SliderFloat("Sheen Roughness", &cloth.m_SheenRoughness, 0.0f, 1.0f);
     }
+    else if (material.m_MaterialType == VansMaterialType::VAN_HAIR)
+    {
+        VansHairMaterial& hair = static_cast<VansHairMaterial&>(material);
+        if (ImGui::TreeNode("Textures"))
+        {
+            showTex("AlbedoAlpha", hair.m_AlbedoAlphaTexture);
+            showTex("Normal",      hair.m_NormalTexture);
+            showTex("Roughness",   hair.m_RoughnessTexture);
+            showTex("AO",          hair.m_AoTexture);
+            showTex("Shift",       hair.m_ShiftTexture);
+            showTex("Alpha",       hair.m_AlphaTexture);
+            ImGui::TreePop();
+        }
+    }
 
     ImGui::Separator();
 

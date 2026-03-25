@@ -5,6 +5,7 @@
 #include "../BRDF/BRDFData.glsl"
 #include "../BRDF/BRDFSkin.glsl"
 #include "../BRDF/BRDFCloth.glsl"
+#include "../BRDF/BRDFHair.glsl"
 #include "../Common/CameraData.glsl"
 
 layout(set = 1, binding = 0, input_attachment_index = 0) uniform subpassInput normalInput;
@@ -108,7 +109,7 @@ void main()
     //c : 计算动态GI，探针球谐
     //brdfData.indirectDiffuse = CalculateSHDiffuse(position_world, normal);
 
-    brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy * 0.5)).rgba;
+    brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy)).rgba;
     
     //计算光照
     LightResult lightResult;
@@ -135,6 +136,27 @@ void main()
         // Ambient: ClothBRDFLUT .b channel used as the specular environment term
         AmbientBRDF_Cloth(brdfData, viewDirection,
                           lightResult.ambientDiffuse, lightResult.ambientSpecular);
+    }
+    else if (matID == MATERIAL_ID_HAIR)
+    {
+        // --- Hair BRDF path (Marschner R / TT / TRT) ---
+        // Hair uses softer AO: the global pow(2.0) is too aggressive for
+        // thin translucent card geometry.  Re-apply with gentler exponent.
+        brdfData.ao = pow(min(ao, ssaoValue), 1.0);
+
+        HairBRDFParams hair;
+        hair.roughness         = brdfData.roughness;
+        hair.specularStrength  = 1.0;   // constant (not stored in GBuffer)
+        hair.scatter           = 0.35;  // constant (not stored in GBuffer)
+        hair.shift             = subpassLoad(normalInput).w * 2.0 - 1.0;
+
+        // Decode hair fiber tangent from octahedral encoding in GBuffer1.x / .w
+        vec2 octT = vec2(metallic, subpassLoad(gbufferInput1).w) * 2.0 - 1.0;
+        hair.tangentWS = OctDecodeHair(octT);
+
+        CalculateDirectLight_Hair(brdfData, hair, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        AmbientBRDF_Hair(brdfData, hair, viewDirection,
+                         lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else
     {

@@ -464,4 +464,34 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_ClothTexture(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
+// ============================================================
+// Set 4: Per-Node Hair Texture Layout (5 bindings: albedo+alpha, normal, roughness, ao, shift)
+// Each hair render node owns its own descriptor set with dedicated textures.
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		// binding 0: Hair albedo + alpha texture
+		{HAIR_TEXTURE_BINDING_ALBEDO_ALPHA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 1: Hair normal texture
+		{HAIR_TEXTURE_BINDING_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 2: Hair roughness texture
+		{HAIR_TEXTURE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 3: Hair ambient occlusion texture
+		{HAIR_TEXTURE_BINDING_AO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 4: Hair strand shift texture
+		{HAIR_TEXTURE_BINDING_SHIFT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 5: Hair dedicated alpha mask texture
+		{HAIR_TEXTURE_BINDING_ALPHA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
 } // namespace VansGraphics

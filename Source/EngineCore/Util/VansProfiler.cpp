@@ -221,6 +221,19 @@ void Vans::VansGpuProfiler::Push(void* cmd, const char* name)
 
     m_StackDepth++;
 
+    // Insert Vulkan debug label so the region is visible in Nsight / RenderDoc
+#ifdef _DEBUG
+    if (VansGraphics::vkCmdBeginDebugUtilsLabelEXT)
+    {
+        VkDebugUtilsLabelEXT labelInfo = {};
+        labelInfo.sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+        labelInfo.pLabelName = name;
+        labelInfo.color[0] = 0.2f; labelInfo.color[1] = 0.6f;
+        labelInfo.color[2] = 1.0f; labelInfo.color[3] = 1.0f;
+        VansGraphics::vkCmdBeginDebugUtilsLabelEXT(static_cast<VkCommandBuffer>(cmd), &labelInfo);
+    }
+#endif
+
     VansGraphics::vkCmdWriteTimestamp(static_cast<VkCommandBuffer>(cmd),
                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                         static_cast<VkQueryPool>(m_Pools[cur]), beginIdx);
@@ -241,6 +254,14 @@ void Vans::VansGpuProfiler::Pop(void* cmd)
             VansGraphics::vkCmdWriteTimestamp(static_cast<VkCommandBuffer>(cmd),
                                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                                 static_cast<VkQueryPool>(m_Pools[cur]), m_Slots[cur][i].endSlot);
+
+            // Close matching Vulkan debug label for Nsight / RenderDoc
+#ifdef _DEBUG
+            if (VansGraphics::vkCmdEndDebugUtilsLabelEXT)
+            {
+                VansGraphics::vkCmdEndDebugUtilsLabelEXT(static_cast<VkCommandBuffer>(cmd));
+            }
+#endif
             break;
         }
     }

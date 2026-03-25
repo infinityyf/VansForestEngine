@@ -53,6 +53,13 @@ void RegisterEngineShaders()
         12, false
     });
 
+    reg.RegisterShader("Hair", {
+        "Hair",
+        "EngineAssets/Shaders/Hair",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        12, false
+    });
+
     reg.RegisterShader("Coat", {
         "Coat",
         "EngineAssets/Shaders/Coat",
@@ -119,6 +126,12 @@ void RegisterEngineShaders()
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_CLOTH, {
         { VansGraphics::VansPass::GBUFFER,          "Cloth"          },
+        { VansGraphics::VansPass::SHADOW,           "Shadow"         },
+        { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
+    });
+
+    reg.RegisterMaterialPasses(VansGraphics::VAN_HAIR, {
+        { VansGraphics::VansPass::GBUFFER,          "Hair"           },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
     });

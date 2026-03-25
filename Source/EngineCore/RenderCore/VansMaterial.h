@@ -39,6 +39,7 @@ namespace VansGraphics
 	class VansSkyBoxMaterial;
 	class VansSkinMaterial;
 	class VansClothMaterial;
+	class VansHairMaterial;
 	class VansPostProcessMaterial;
 	class VansDeferredMaterial;
 	class VansSSAOMaterial;
@@ -54,6 +55,7 @@ namespace VansGraphics
 		VAN_SCREEN_SPACE_AO = 6,
 		VAN_SKIN = 9,
 		VAN_CLOTH = 10,
+		VAN_HAIR = 11,
 	};
 
 	// Lightweight push-constant payload built at draw time.
@@ -338,6 +340,25 @@ namespace VansGraphics
 		std::vector<VkDescriptorSet>   m_ClothOwnedDescSets;
 
 		void BuildClothTextureDescriptors();
+	};
+	// ============================================================
+	// VansHairMaterial — card-based hair shading (type 11)
+	// Textures: albedo+alpha, normal, roughness, AO, strand shift
+	// ============================================================
+	class VansHairMaterial : public VansMaterial
+	{
+	public:
+		VansTexture* m_AlbedoAlphaTexture = nullptr;  // .rgb = albedo, .a = alpha mask
+		VansTexture* m_NormalTexture      = nullptr;  // tangent-space normal
+		VansTexture* m_RoughnessTexture   = nullptr;  // .r = roughness
+		VansTexture* m_AoTexture          = nullptr;  // .r = ambient occlusion
+		VansTexture* m_ShiftTexture       = nullptr;  // .r = strand shift (0.5 = neutral)
+		VansTexture* m_AlphaTexture       = nullptr;  // .r = dedicated alpha mask
+
+		VkDescriptorSetLayout          m_HairOwnedLayout  = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_HairOwnedDescSets;
+
+		void BuildHairTextureDescriptors();
 	};
 	// ============================================================
 	// Pass-only materials 鈥?carry only the shader (inherited from base)

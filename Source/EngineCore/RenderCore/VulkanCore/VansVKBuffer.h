@@ -56,7 +56,7 @@ namespace VansGraphics
 		//设置buffer memory barrier
 		void SetBufferMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition);
 
-		bool SetBufferData(void* data, int offset, int size);
+		bool SetBufferData(const void* data, int offset, int size);
 
 		// ── Persistent mapping API ────────────────────────────────────
 		// Map the whole buffer once and keep the pointer cached.
@@ -75,11 +75,11 @@ namespace VansGraphics
 
 		void* GetMappedPtr() const { return m_MappedPtr; }
 
-		VkBuffer GetNativeBuffer() { return m_VansVKBuffer; }
+		VkBuffer GetNativeBuffer() const { return m_VansVKBuffer; }
 
-		VkDeviceMemory GetNativeMemory() { return m_VansVKBufferMemory; }
+		VkDeviceMemory GetNativeMemory() const { return m_VansVKBufferMemory; }
 
-		VkDeviceSize GetBufferSize() { return m_BufferSize; }
+		VkDeviceSize GetBufferSize() const { return m_BufferSize; }
 	private:
 		//transition a buffer: can transition usage or used queue
 	//add barrier to memory manager

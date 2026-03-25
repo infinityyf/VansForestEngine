@@ -13,7 +13,6 @@ layout( set = 1, binding = 4, rgba32f ) uniform image2D traceHit;
 layout( set = 1, binding = 5, rgba32f ) uniform image2D tracePDF;
 layout( set = 1, binding = 6, rgba32f ) uniform image2D resolveResult;
 
-#define SCREEN_SCALE 2
 // Golden angle in radians: 2*PI*(1 - 1/phi), phi = golden ratio.
 // Distributes N points evenly on a disk without clustering.
 #define GOLDEN_ANGLE 2.399963229728653
@@ -28,16 +27,16 @@ void main()
     uint rseed = PixelSeedHash(pixelCoord);
     float rotAngle = R2Sequence(int((rseed + uint(FrameIndex)) % 256u)).x * TWO_PI;
     vec4 hitInfo = imageLoad(traceHit, pixelCoord);
-    vec3 normal = texelFetch(inputNormal, pixelCoord * SCREEN_SCALE, 0).xyz;
-    float roughness = texelFetch(inputRoughness, pixelCoord * SCREEN_SCALE, 0).a;
-    vec3 position = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0).xyz;
+    vec3 normal = texelFetch(inputNormal, pixelCoord, 0).xyz;
+    float roughness = texelFetch(inputRoughness, pixelCoord, 0).a;
+    vec3 position = texelFetch(inputPosition, pixelCoord, 0).xyz;
     vec2 hituv = hitInfo.xy;
 
     vec3 viewDirection = normalize(cameraPosition.xyz - position);
 
     vec3 resolvedReflectionColor = vec3(0.0);
     float resolvedWeight = 0.0;
-    float centerDepth = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0).w;
+    float centerDepth = texelFetch(inputPosition, pixelCoord, 0).w;
 
     // Adaptive bilateral: relax normal similarity for rough surfaces so
     // the spatial filter can average more neighbor samples effectively.
@@ -86,11 +85,11 @@ void main()
 
         // Bilateral weight: normal similarity (roughness-adaptive power —
         // strict for mirrors, relaxed for rough surfaces to gather more)
-        vec3 neighborNormal = texelFetch(inputNormal, neighborCoord * SCREEN_SCALE, 0).xyz;
+        vec3 neighborNormal = texelFetch(inputNormal, neighborCoord, 0).xyz;
         float normalWeight = pow(max(0.0, dot(normal, neighborNormal)), normalPower);
 
         // Bilateral weight: depth similarity
-        float neighborDepth = texelFetch(inputPosition, neighborCoord * SCREEN_SCALE, 0).w;
+        float neighborDepth = texelFetch(inputPosition, neighborCoord, 0).w;
         float depthWeight = exp(-abs(centerDepth - neighborDepth) / max(centerDepth * 0.05, 0.01));
 
         // Inverse-luminance weighting (Karis): prevents bright outliers

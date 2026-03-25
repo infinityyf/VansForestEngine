@@ -149,6 +149,9 @@ namespace VansGraphics
 		//editor
 		VansRenderNode* m_SelectedNode;
 
+		// ── Transform parenting system ──────────────────────────────────────────
+		VansTransformParentSystem m_TransformParentSystem;
+
 	public:
 		bool LoadScene(const char* path);
 

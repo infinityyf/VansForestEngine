@@ -24,6 +24,7 @@
 #define MATERIAL_ID_SKIN        3
 #define MATERIAL_ID_REFRACTION  4
 #define MATERIAL_ID_CLOTH       5
+#define MATERIAL_ID_HAIR        6
 
 #define DEPTH_BIAS 0.001
 #define ESM_C 80.0

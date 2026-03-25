@@ -39,6 +39,7 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "ssao")         return VansMaterialType::VAN_SCREEN_SPACE_AO;
         if (s == "skin")         return VansMaterialType::VAN_SKIN;
         if (s == "cloth")        return VansMaterialType::VAN_CLOTH;
+        if (s == "hair")         return VansMaterialType::VAN_HAIR;
         VANS_LOG_WARN("[LoadSceneResource] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
     }
     return VansMaterialType::VAN_PBR;
@@ -265,6 +266,31 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
 
         // Shadow nodes are no longer created here — shadow passes now iterate
         // opaque nodes and use material->GetPassShader(VansPass::SHADOW).
+    }
+
+    // ── Resolve transform parent links ────────────────────────────────────
+    // Second pass: now that all render nodes are created, resolve "parent" name
+    // references into transform ID links.
+    for (const auto& sceneRenderNode : render_node)
+    {
+        if (!sceneRenderNode.contains("parent")) continue;
+
+        std::string childName  = sceneRenderNode.value("name", "");
+        std::string parentName = sceneRenderNode["parent"].get<std::string>();
+        if (childName.empty() || parentName.empty()) continue;
+
+        VansRenderNode* childNode  = FindRenderNodeByName(childName);
+        VansRenderNode* parentNode = FindRenderNodeByName(parentName);
+
+        if (childNode && parentNode)
+        {
+            m_TransformParentSystem.SetParent(childNode->m_TransformID, parentNode->m_TransformID);
+            VANS_LOG("[TransformParent] '" << childName << "' parented to '" << parentName << "'");
+        }
+        else
+        {
+            VANS_LOG_WARN("[TransformParent] Could not resolve parent link: child='" << childName << "' parent='" << parentName << "'");
+        }
     }
 }
 
@@ -572,6 +598,7 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         case VansMaterialType::VAN_SCREEN_SPACE_AO: material = new VansSSAOMaterial();         break;
         case VansMaterialType::VAN_SKIN:            material = new VansSkinMaterial();         break;
         case VansMaterialType::VAN_CLOTH:           material = new VansClothMaterial();        break;
+        case VansMaterialType::VAN_HAIR:            material = new VansHairMaterial();         break;
         default:                                    material = new VansMaterial();             break;
         }
         material->m_MaterialType = matType;
@@ -694,6 +721,56 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
                 if (texture == nullptr)
                     texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
                 skin->m_NormalTexture = texture;
+            }
+        }
+
+        // ── Hair material: load albedo+alpha, normal, roughness, ao, shift textures ──
+        if (matType == VansMaterialType::VAN_HAIR)
+        {
+            VansHairMaterial* hair = static_cast<VansHairMaterial*>(material);
+            if (sceneMaterial.contains("basecolor_texture"))
+            {
+                auto textureName = sceneMaterial["basecolor_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
+                hair->m_AlbedoAlphaTexture = texture;
+            }
+            if (sceneMaterial.contains("normal_texture"))
+            {
+                auto textureName = sceneMaterial["normal_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
+                hair->m_NormalTexture = texture;
+            }
+            if (sceneMaterial.contains("roughness_texture"))
+            {
+                auto textureName = sceneMaterial["roughness_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
+                hair->m_RoughnessTexture = texture;
+            }
+            if (sceneMaterial.contains("ao_texture"))
+            {
+                auto textureName = sceneMaterial["ao_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
+                hair->m_AoTexture = texture;
+            }
+            if (sceneMaterial.contains("shift_texture"))
+            {
+                auto textureName = sceneMaterial["shift_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                hair->m_ShiftTexture = texture;  // optional — null is fine
+            }
+            if (sceneMaterial.contains("alpha_texture"))
+            {
+                auto textureName = sceneMaterial["alpha_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                hair->m_AlphaTexture = texture;  // optional — falls back to albedo .a
             }
         }
 

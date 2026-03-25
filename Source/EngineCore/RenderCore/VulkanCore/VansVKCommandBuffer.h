@@ -138,6 +138,21 @@ namespace VansGraphics
 			const std::vector<VkDescriptorSet>& descriptor_sets,
 			const std::vector<uint32_t>& dynamic_offsets);
 
+		// ── Standalone draw / bind helpers (for non-mesh draw like fullscreen passes) ──
+		void BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType);
+
+		void DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance);
+
+		void Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance);
+
+		// ── Pipeline barrier ──
+		void PipelineBarrier(
+			VkPipelineStageFlags srcStageMask,
+			VkPipelineStageFlags dstStageMask,
+			const std::vector<VkMemoryBarrier>& memoryBarriers = {},
+			const std::vector<VkBufferMemoryBarrier>& bufferMemoryBarriers = {},
+			const std::vector<VkImageMemoryBarrier>& imageMemoryBarriers = {});
+
 		static bool WaitForFence(VkDevice& device, const VkFence& fence);
 		static bool SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence, bool wait_fence = true);
 

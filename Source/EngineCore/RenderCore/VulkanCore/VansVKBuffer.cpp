@@ -135,7 +135,7 @@ void VansGraphics::VansVKBuffer::SetBufferMemoryBarrier(VkPipelineStageFlags gen
 
 }
 
-bool VansGraphics::VansVKBuffer::SetBufferData(void* data, int offset, int size)
+bool VansGraphics::VansVKBuffer::SetBufferData(const void* data, int offset, int size)
 {
 	// Fast path: if the buffer is already persistently mapped, just memcpy.
 	if (m_MappedPtr)
@@ -143,7 +143,7 @@ bool VansGraphics::VansVKBuffer::SetBufferData(void* data, int offset, int size)
 		std::memcpy(static_cast<char*>(m_MappedPtr) + offset, data, size);
 		return true;
 	}
-	return VansVKMemoryManager::GetInstance()->MapMemoryFromHost(m_VansVKBufferMemory, offset, size, data, true);
+	return VansVKMemoryManager::GetInstance()->MapMemoryFromHost(m_VansVKBufferMemory, offset, size, const_cast<void*>(data), true);
 }
 
 bool VansGraphics::VansVKBuffer::PersistentMap()

@@ -263,7 +263,7 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		}
 	}
 
-	// Set 4: Per-Material Cloth Texture (albedo + normal)
+	// Set 4: Per-Material Cloth Texture (albedo + normal + roughness + ao)
 	// Owned by VansClothMaterial; built once and shared by all nodes using this material.
 	if (m_Material && m_Material->m_MaterialType == VansMaterialType::VAN_CLOTH)
 	{
@@ -276,6 +276,22 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		if (!cloth->m_ClothOwnedDescSets.empty())
 		{
 			m_UsedDescSets.push_back(cloth->m_ClothOwnedDescSets[0]);
+		}
+	}
+
+	// Set 4: Per-Material Hair Texture (albedo+alpha, normal, roughness, ao, shift)
+	// Owned by VansHairMaterial; built once and shared by all nodes using this material.
+	if (m_Material && m_Material->m_MaterialType == VansMaterialType::VAN_HAIR)
+	{
+		VansHairMaterial* hair = static_cast<VansHairMaterial*>(m_Material);
+		if (hair->m_HairOwnedLayout == VK_NULL_HANDLE)
+		{
+			hair->BuildHairTextureDescriptors();
+		}
+		m_UsedDescSetLayouts.push_back(hair->m_HairOwnedLayout);
+		if (!hair->m_HairOwnedDescSets.empty())
+		{
+			m_UsedDescSets.push_back(hair->m_HairOwnedDescSets[0]);
 		}
 	}
 

@@ -191,6 +191,7 @@ namespace VansGraphics
 			// Upload cloth simulation results from staging buffers to device-local vertex buffers
 			m_Scene->RecordClothVertexUploads(cmd);
 
+
 			renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
 			DrawSceneDeferred(renderPassManager, m_VansVKCommandBuffer);
 			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);

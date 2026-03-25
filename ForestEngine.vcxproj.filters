@@ -626,18 +626,6 @@
     <ClCompile Include="Source\EngineCore\EditorCore\VansGizmos.cpp">
       <Filter>EngineCore\EditorCore</Filter>
     </ClCompile>
-    <ClCompile Include="External\NvCloth\extensions\src\ClothFabricCooker.cpp">
-      <Filter>EngineCore\PhysicsCore</Filter>
-    </ClCompile>
-    <ClCompile Include="External\NvCloth\extensions\src\ClothGeodesicTetherCooker.cpp">
-      <Filter>EngineCore\PhysicsCore</Filter>
-    </ClCompile>
-    <ClCompile Include="External\NvCloth\extensions\src\ClothMeshQuadifier.cpp">
-      <Filter>EngineCore\PhysicsCore</Filter>
-    </ClCompile>
-    <ClCompile Include="External\NvCloth\extensions\src\ClothSimpleTetherCooker.cpp">
-      <Filter>EngineCore\PhysicsCore</Filter>
-    </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothNode.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>

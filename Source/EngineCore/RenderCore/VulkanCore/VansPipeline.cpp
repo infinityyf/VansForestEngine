@@ -40,11 +40,19 @@ bool VansGraphics::VansVKGraphicsPipeline::CreateGraphicsPipelineInfo(VkDevice& 
 	//memory of the same buffer.
 	//意思就是我们可以指定几个vettexbuffer的绑定，以及没给顶点的stride
 	//这里的bind和sheder无关，attrribute中才设计shader,这里只使用了bind0
-	binding_descriptions = *global_state_data.vertexInputBindingDescriptions;
+	// If vertex input pointers are nullptr, use empty arrays (e.g. fullscreen shaders
+	// that fetch all data from SSBOs and have no vertex attributes).
+	if (global_state_data.vertexInputBindingDescriptions)
+		binding_descriptions = *global_state_data.vertexInputBindingDescriptions;
+	else
+		binding_descriptions.clear();
 
 	// 
 	//设置attributer的描述，处于哪个binding,哪个location，以及格式和偏移
-	attribute_descriptions = *global_state_data.vertexInputAttributeDescriptions;
+	if (global_state_data.vertexInputAttributeDescriptions)
+		attribute_descriptions = *global_state_data.vertexInputAttributeDescriptions;
+	else
+		attribute_descriptions.clear();
 	
 	vertex_input_state_create_info =
 	{

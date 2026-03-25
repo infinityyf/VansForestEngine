@@ -6,6 +6,7 @@
 #include "VulkanCore/VansVKDevice.h"
 #include "TerrainCore/VansTerrain.h"
 #include "../Util/VansLog.h"
+#include "VulkanCore/VansRenderPass.h"
 
 // ===========================================================================
 // Draw commands — one per render pass type

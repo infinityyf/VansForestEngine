@@ -195,5 +195,6 @@ namespace VansGraphics
 		VansVKImage& GetGbuffer1() { return m_GBufferImage1; }
 
 		VansVKImage& GetGbuffer2() { return m_GBufferImage2; }
+
 	};
 }

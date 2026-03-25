@@ -520,6 +520,9 @@ m_MaterialManager.ClearRuntimeRenderTextures();
     }
     m_ClothStagingBuffers.clear();
 
+    // Clear transform parenting links
+    m_TransformParentSystem.Clear();
+
     //delete mesh;
     //delete shader;
     //delete fullScreenMesh;
@@ -540,6 +543,9 @@ void VansGraphics::VansScene::UpdateSceneData()
     // Advance cloth simulation and write results to staging buffers
     UpdateClothSimulation(0.03f);
     WriteClothResultsToStagingBuffers();
+
+    // Resolve parent-child transform relationships before GPU upload
+    m_TransformParentSystem.ResolveParentChildTransforms();
 
     // Update dirty physics transforms to GPU
     UpdateTransformRenderData();

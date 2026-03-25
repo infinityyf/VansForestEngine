@@ -10,13 +10,12 @@ layout( set = 1, binding = 2 ) uniform sampler2D inputPosition;
 layout( set = 1, binding = 3 ) uniform sampler2D inputHIZ;
 layout( set = 1, binding = 4, rgba32f ) uniform image2D traceHit;
 layout( set = 1, binding = 5, rgba32f ) uniform image2D tracePDF;
-#define SCREEN_SCALE 2
 void main() 
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
-    vec3 normal = texelFetch(inputNormal, pixelCoord * SCREEN_SCALE,0).xyz;
-    vec3 position = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE,0).xyz;
-    float roughness = texelFetch(inputRoughness, pixelCoord * SCREEN_SCALE,0).a;
+    vec3 normal = texelFetch(inputNormal, pixelCoord, 0).xyz;
+    vec3 position = texelFetch(inputPosition, pixelCoord, 0).xyz;
+    float roughness = texelFetch(inputRoughness, pixelCoord, 0).a;
 
     //计算视线向量
     vec3 viewDirection = normalize(cameraPosition.xyz - position);
@@ -119,8 +118,7 @@ void main()
     // Source texel in last frame's screen space for self-intersection guard
     ivec2 sourceTexel = ivec2(startUV * ScreenParams.xy);
 
-    // ── DDA setup: step 1 pixel at a time along the major screen axis ──
-    // Convert UV direction to pixel-space, then normalize so the major component = ±1 pixel.
+    // ── DDA setup: 1-pixel unit along the major screen axis ──
     vec2 rayDirPixel = rayDirUV * ScreenParams.xy;
     float majorLen = max(abs(rayDirPixel.x), abs(rayDirPixel.y));
 
@@ -131,23 +129,29 @@ void main()
         return;
     }
 
-    // stepUV advances exactly 1 pixel along the major axis
+    // stepUV advances exactly 1 pixel along the major axis (at stride=1)
     vec2 stepUV = rayDirUV / majorLen;
-    // 1/z step for perspective-correct depth interpolation:
-    // Along parameter s (number of pixel-steps), 1/z is linear in screen space.
+    // 1/z step for perspective-correct depth interpolation
     float invStartZ = 1.0 / startZ;
     float invDirZ   = 1.0 / dirZ;
     float invZStep  = (invDirZ - invStartZ) / majorLen;
 
-    // ── March pixel by pixel until hit or off-screen ──
-    int maxSteps = int(max(ScreenParams.x, ScreenParams.y)) * 2; // can't exceed screen diagonal
-    vec2  prevUV = startUV;
-    float prevInvZ = invStartZ;
+    // ── Hierarchical ray march: double stride on miss, halve on hit ──
+    // Covers the full screen fast by growing the stride exponentially in
+    // empty space, then binary-refines by halving back to sub-pixel once
+    // the ray crosses behind a surface.
+    const float MAX_STRIDE     = 64.0;    // maximum pixel stride
+    const float MIN_STRIDE     = 0.5;     // stop refining below this
+    const int   MAX_ITERATIONS = 256;     // total iteration budget
 
-    for (int step = 1; step <= maxSteps; step++)
+    float stride = 2.0;                   // current stride in pixel units
+    float s      = 0.0;                   // parameter along the ray
+
+    for (int i = 0; i < MAX_ITERATIONS; i++)
     {
-        vec2  uv   = startUV + stepUV * float(step);
-        float invZ = invStartZ + invZStep * float(step);
+        s += stride;
+        vec2  uv       = startUV + stepUV * s;
+        float invZ     = invStartZ + invZStep * s;
         float rayDepth = 1.0 / invZ;
 
         // Off-screen → stop
@@ -157,59 +161,47 @@ void main()
         ivec2 texel = ivec2(uv * ScreenParams.xy);
 
         // Self-intersection guard
-        if (texel == sourceTexel) { prevUV = uv; prevInvZ = invZ; continue; }
+        if (texel == sourceTexel) continue;
 
         float sceneDepth = texelFetch(inputPosition, texel, 0).w;
 
-        // Skip sky / empty GBuffer
-        if (sceneDepth == 0.0) { prevUV = uv; prevInvZ = invZ; continue; }
-
-        // ── Projective-aware depth threshold ──
-        // Under perspective projection, z-buffer precision degrades as O(z²).
-        // Scale tolerance with sceneDepth so distant surfaces allow proportionally
-        // more slack, while nearby surfaces use tight matching.
-        float depthThreshold = max(sceneDepth * SSR_DEPTH_TOLERANCE, 0.1);
-
-        // Ray has crossed behind the surface → potential hit
-        if (rayDepth > sceneDepth && rayDepth - sceneDepth < depthThreshold)
+        // Sky / empty GBuffer — accelerate through empty space
+        if (sceneDepth == 0.0)
         {
-            // ── Binary-search refinement for sub-pixel accuracy ──
-            // Refine between previous step (under surface) and current step (over surface)
-            float loS = float(step - 1);
-            float hiS = float(step);
-
-            for (int r = 0; r < SSR_REFINE_STEPS; r++)
-            {
-                float midS   = (loS + hiS) * 0.5;
-                vec2  midUV  = startUV + stepUV * midS;
-                float midZ   = 1.0 / (invStartZ + invZStep * midS);
-
-                ivec2 midTexel = ivec2(midUV * ScreenParams.xy);
-                if (midTexel == sourceTexel) { loS = midS; continue; }
-
-                float midScene = texelFetch(inputPosition, midTexel, 0).w;
-                if (midScene == 0.0) { loS = midS; continue; }
-
-                float midThreshold = max(midScene * SSR_DEPTH_TOLERANCE, 0.1);
-
-                if (midZ > midScene && midZ - midScene < midThreshold)
-                {
-                    hiS = midS;
-                    traceHitInfo     = vec4(midUV, midZ, 1.0);
-                    tracePDFInfo.xyz = texelFetch(inputNormal, midTexel, 0).xyz;
-                }
-                else
-                {
-                    loS = midS;
-                }
-            }
-
-            if (traceHitInfo.w > 0.5)
-                break;
+            stride = min(stride * 2.0, MAX_STRIDE);
+            continue;
         }
 
-        prevUV   = uv;
-        prevInvZ = invZ;
+        float depthThreshold = max(sceneDepth * SSR_DEPTH_TOLERANCE, 0.1);
+
+        if (rayDepth > sceneDepth)
+        {
+            // Ray crossed behind the surface
+            if (rayDepth - sceneDepth < depthThreshold && stride <= 1.0)
+            {
+                // Precise hit — stride is fine enough, accept
+                traceHitInfo     = vec4(uv, rayDepth, 1.0);
+                tracePDFInfo.xyz = texelFetch(inputNormal, texel, 0).xyz;
+                break;
+            }
+
+            if (stride <= MIN_STRIDE)
+            {
+                // Stride exhausted without a clean hit — skip this crossing
+                // and resume coarse marching forward
+                stride = 2.0;
+                continue;
+            }
+
+            // Overshot: step back and halve stride for finer search
+            s -= stride;
+            stride *= 0.5;
+        }
+        else
+        {
+            // Ray still in front of scene — double stride to skip empty space
+            stride = min(stride * 2.0, MAX_STRIDE);
+        }
     }
 
     imageStore(traceHit, pixelCoord, traceHitInfo);

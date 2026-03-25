@@ -389,3 +389,98 @@ void VansGraphics::VansSkinMaterial::BuildSkinTextureDescriptors()
 
 	descManager->UpdateDescriptorSets();
 }
+
+void VansGraphics::VansHairMaterial::BuildHairTextureDescriptors()
+{
+	// Allocate the hair texture descriptor set (Set 4: albedo+alpha, normal, roughness, ao, shift)
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(m_HairOwnedLayout, m_HairOwnedDescSets);
+
+	auto* descManager = VansVKDescriptorManager::GetInstance();
+	descManager->ResetState();
+
+	if (m_AlbedoAlphaTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_HairOwnedDescSets[0],
+			HAIR_TEXTURE_BINDING_ALBEDO_ALPHA, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_AlbedoAlphaTexture->GetImage().GetSampler(),
+				m_AlbedoAlphaTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_NormalTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_HairOwnedDescSets[0],
+			HAIR_TEXTURE_BINDING_NORMAL, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_NormalTexture->GetImage().GetSampler(),
+				m_NormalTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_RoughnessTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_HairOwnedDescSets[0],
+			HAIR_TEXTURE_BINDING_ROUGHNESS, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_RoughnessTexture->GetImage().GetSampler(),
+				m_RoughnessTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_AoTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_HairOwnedDescSets[0],
+			HAIR_TEXTURE_BINDING_AO, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_AoTexture->GetImage().GetSampler(),
+				m_AoTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_ShiftTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_HairOwnedDescSets[0],
+			HAIR_TEXTURE_BINDING_SHIFT, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_ShiftTexture->GetImage().GetSampler(),
+				m_ShiftTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_AlphaTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_HairOwnedDescSets[0],
+			HAIR_TEXTURE_BINDING_ALPHA, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_AlphaTexture->GetImage().GetSampler(),
+				m_AlphaTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	descManager->UpdateDescriptorSets();
+}

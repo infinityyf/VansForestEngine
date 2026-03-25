@@ -958,17 +958,14 @@ namespace VansGraphics
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		uint32_t halfResWidth = m_RenderWidth / 2;
-		uint32_t halfResHeight = m_RenderHeight / 2;
-
 		computeCmd.EnsureComputeShader(*manager->m_SSRTraceShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRTraceSetLayout });
-		computeCmd.DispatchCompute(*manager->m_SSRTraceShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRTraceDescriptorSets[0] });
+		computeCmd.DispatchCompute(*manager->m_SSRTraceShader, m_RenderWidth, m_RenderHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRTraceDescriptorSets[0] });
 
 		computeCmd.EnsureComputeShader(*manager->m_SSRResolveShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRResolveSetLayout });
-		computeCmd.DispatchCompute(*manager->m_SSRResolveShader, halfResWidth, halfResHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRResolveDescriptorSets[0] });
+		computeCmd.DispatchCompute(*manager->m_SSRResolveShader, m_RenderWidth, m_RenderHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRResolveDescriptorSets[0] });
 
 		computeCmd.EnsureComputeShader(*manager->m_SSRTemporalAAShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRAASetLayout });
-		computeCmd.DispatchCompute(*manager->m_SSRTemporalAAShader, (halfResWidth + 7) / 8, (halfResHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRAADescriptorSets[0] });
+		computeCmd.DispatchCompute(*manager->m_SSRTemporalAAShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRAADescriptorSets[0] });
 	}
 
 	// ================================================================

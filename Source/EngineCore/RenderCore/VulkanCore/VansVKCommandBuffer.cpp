@@ -451,6 +451,43 @@ void VansGraphics::VansVKCommandBuffer::WaitEvents(
 		imageMemoryBarriers.empty() ? nullptr : imageMemoryBarriers.data());
 }
 
+// ── Standalone draw / bind helpers ──────────────────────────────────────
+
+void VansGraphics::VansVKCommandBuffer::BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType)
+{
+	vkCmdBindIndexBuffer(m_VansVKCommandBuffer, buffer, offset, indexType);
+}
+
+void VansGraphics::VansVKCommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
+{
+	vkCmdDrawIndexed(m_VansVKCommandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+}
+
+void VansGraphics::VansVKCommandBuffer::Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
+{
+	vkCmdDraw(m_VansVKCommandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+}
+
+void VansGraphics::VansVKCommandBuffer::PipelineBarrier(
+	VkPipelineStageFlags srcStageMask,
+	VkPipelineStageFlags dstStageMask,
+	const std::vector<VkMemoryBarrier>& memoryBarriers,
+	const std::vector<VkBufferMemoryBarrier>& bufferMemoryBarriers,
+	const std::vector<VkImageMemoryBarrier>& imageMemoryBarriers)
+{
+	vkCmdPipelineBarrier(
+		m_VansVKCommandBuffer,
+		srcStageMask,
+		dstStageMask,
+		0,
+		static_cast<uint32_t>(memoryBarriers.size()),
+		memoryBarriers.empty() ? nullptr : memoryBarriers.data(),
+		static_cast<uint32_t>(bufferMemoryBarriers.size()),
+		bufferMemoryBarriers.empty() ? nullptr : bufferMemoryBarriers.data(),
+		static_cast<uint32_t>(imageMemoryBarriers.size()),
+		imageMemoryBarriers.empty() ? nullptr : imageMemoryBarriers.data());
+}
+
 bool VansGraphics::VansVKCommandBuffer::WaitForFence(VkDevice& device, const VkFence& fence)
 {
 	if (fence != VK_NULL_HANDLE)
