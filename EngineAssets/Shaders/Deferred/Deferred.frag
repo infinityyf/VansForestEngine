@@ -6,6 +6,7 @@
 #include "../BRDF/BRDFSkin.glsl"
 #include "../BRDF/BRDFCloth.glsl"
 #include "../BRDF/BRDFHair.glsl"
+#include "../BRDF/BRDFSubsurface.glsl"
 #include "../Common/CameraData.glsl"
 
 layout(set = 1, binding = 0, input_attachment_index = 0) uniform subpassInput normalInput;
@@ -157,6 +158,24 @@ void main()
         CalculateDirectLight_Hair(brdfData, hair, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
         AmbientBRDF_Hair(brdfData, hair, viewDirection,
                          lightResult.ambientDiffuse, lightResult.ambientSpecular);
+    }
+    else if (matID == MATERIAL_ID_SUBSURFACE)
+    {
+        // --- Subsurface Scattering BRDF path ---
+        // Thickness was stored in normalInput.w by Subsurface.frag
+        float thickness = subpassLoad(normalInput).w;
+        // SubsurfacePower was packed into GBuffer1.x as (power / 50.0)
+        float subsurfacePowerPacked = metallic;  // reuses the metallic slot
+        float subsurfacePower = subsurfacePowerPacked * 50.0;
+
+        SubsurfaceParams sss;
+        sss.thickness      = thickness;
+        sss.subsurfacePower = subsurfacePower;
+        sss.subsurfaceColor = vec3(1.0, 0.2, 0.1); // warm reddish scatter tint (default)
+
+        CalculateDirectLight_Subsurface(brdfData, sss, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        AmbientBRDF_Subsurface(brdfData, sss, viewDirection,
+                               lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else
     {

@@ -94,6 +94,19 @@ namespace VansGraphics
 	};
 
 	// ====================================================================
+	// Set 4 (Per-Node Subsurface Texture) Binding Indices
+	// Only used by VansCommonRenderNode when the material type is VAN_SUBSURFACE.
+	// Each subsurface node owns its descriptor set with dedicated textures.
+	// ====================================================================
+	enum SubsurfaceTextureBinding : uint32_t
+	{
+		SUBSURFACE_TEXTURE_BINDING_ALBEDO    = 0,  // Base color texture (COMBINED_IMAGE_SAMPLER)
+		SUBSURFACE_TEXTURE_BINDING_NORMAL    = 1,  // Normal map texture (COMBINED_IMAGE_SAMPLER)
+		SUBSURFACE_TEXTURE_BINDING_THICKNESS = 2,  // Thickness map texture (COMBINED_IMAGE_SAMPLER)
+		SUBSURFACE_TEXTURE_BINDING_ROUGHNESS = 3,  // Roughness texture (COMBINED_IMAGE_SAMPLER)
+	};
+
+	// ====================================================================
 	// Constants
 	// ====================================================================
 	static constexpr uint32_t MAX_BINDLESS_TEXTURES = 2048;
@@ -455,5 +468,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_SkinTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_ClothTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_HairTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_SubsurfaceTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

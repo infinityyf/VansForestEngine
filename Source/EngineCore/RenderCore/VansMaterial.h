@@ -40,6 +40,7 @@ namespace VansGraphics
 	class VansSkinMaterial;
 	class VansClothMaterial;
 	class VansHairMaterial;
+	class VansSubsurfaceMaterial;
 	class VansPostProcessMaterial;
 	class VansDeferredMaterial;
 	class VansSSAOMaterial;
@@ -56,6 +57,7 @@ namespace VansGraphics
 		VAN_SKIN = 9,
 		VAN_CLOTH = 10,
 		VAN_HAIR = 11,
+		VAN_SUBSURFACE = 12,
 	};
 
 	// Lightweight push-constant payload built at draw time.
@@ -361,7 +363,30 @@ namespace VansGraphics
 		void BuildHairTextureDescriptors();
 	};
 	// ============================================================
-	// Pass-only materials 鈥?carry only the shader (inherited from base)
+	// VansSubsurfaceMaterial — subsurface scattering (type 12)
+	// Textures: albedo, normal, thickness map
+	// Parameters: subsurfacePower, subsurfaceColor
+	// ============================================================
+	class VansSubsurfaceMaterial : public VansMaterial
+	{
+	public:
+		VansTexture* m_BaseColorTexture  = nullptr;
+		VansTexture* m_NormalTexture     = nullptr;
+		VansTexture* m_ThicknessTexture  = nullptr;  // .r = normalized thickness [0,1]
+		VansTexture* m_RoughnessTexture  = nullptr;  // .r = perceptual roughness
+
+		float        m_SubsurfacePower   = 12.234f;  // forward-scatter sharpness
+		float        m_Thickness         = 0.5f;      // default constant thickness
+		glm::vec3    m_SubsurfaceColor   = glm::vec3(1.0f, 0.2f, 0.1f); // scatter tint
+
+		VkDescriptorSetLayout          m_SubsurfaceOwnedLayout  = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_SubsurfaceOwnedDescSets;
+
+		void BuildSubsurfaceTextureDescriptors();
+	};
+
+	// ============================================================
+	// Pass-only materials — carry only the shader (inherited from base)
 	// ============================================================
 	class VansPostProcessMaterial : public VansMaterial {};
 	class VansDeferredMaterial    : public VansMaterial {};

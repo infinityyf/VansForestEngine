@@ -4,8 +4,8 @@
             "rendernode": [
                 {
                     "name": "Object0",
-                    "mesh": "sphere",
-                    "material": "BaseUnlitMaterial",
+                    "mesh": "ak",
+                    "material": "SSSMaterial",
                     "type": "opaque",
                     "transform": {
                         "position": [
@@ -148,7 +148,7 @@
                     "support_shadow": true
                 },
                 {
-                    "name": "Object4",
+                    "name": "akgun",
                     "mesh": "ak",
                     "material": "BaseUnlitMaterial8",
                     "type": "opaque",
@@ -1052,21 +1052,19 @@
             "ao_texture": "aoTexture"
         },
         {
-            "name": "BaseUnlitMaterial4",
-            "type": "pbr",
-            "albedo": [
+            "name": "SSSMaterial",
+            "type": "subsurface",
+            "subsurfaceColor": [
                 1.0,
-                1.0,
-                1.0
+                0.0,
+                0.0
             ],
-            "roughness": 0.9,
-            "metallic": 1.0,
-            "ao": 1.0,
-            "basecolor_texture": "baseColorTexture",
-            "normal_texture": "normalTexture",
-            "metal_texture": "metalTexture",
-            "roughness_texture": "roughnessTexture",
-            "ao_texture": "aoTexture"
+            "subsurfacePower": 12.0,
+            "thickness": 0.5,
+            "basecolor_texture": "akbaseColor",
+            "normal_texture": "aknormal",
+            "thickness_texture": "akao",
+            "roughness_texture": "akroughness"
         },
         {
             "name": "clothMaterial",

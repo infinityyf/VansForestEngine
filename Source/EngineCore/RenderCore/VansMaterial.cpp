@@ -484,3 +484,69 @@ void VansGraphics::VansHairMaterial::BuildHairTextureDescriptors()
 
 	descManager->UpdateDescriptorSets();
 }
+
+void VansGraphics::VansSubsurfaceMaterial::BuildSubsurfaceTextureDescriptors()
+{
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_SubsurfaceTexture(m_SubsurfaceOwnedLayout, m_SubsurfaceOwnedDescSets);
+
+	auto* descManager = VansVKDescriptorManager::GetInstance();
+	descManager->ResetState();
+
+	if (m_BaseColorTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_SubsurfaceOwnedDescSets[0],
+			SUBSURFACE_TEXTURE_BINDING_ALBEDO, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_BaseColorTexture->GetImage().GetSampler(),
+				m_BaseColorTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_NormalTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_SubsurfaceOwnedDescSets[0],
+			SUBSURFACE_TEXTURE_BINDING_NORMAL, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_NormalTexture->GetImage().GetSampler(),
+				m_NormalTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_ThicknessTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_SubsurfaceOwnedDescSets[0],
+			SUBSURFACE_TEXTURE_BINDING_THICKNESS, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_ThicknessTexture->GetImage().GetSampler(),
+				m_ThicknessTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_RoughnessTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_SubsurfaceOwnedDescSets[0],
+			SUBSURFACE_TEXTURE_BINDING_ROUGHNESS, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_RoughnessTexture->GetImage().GetSampler(),
+				m_RoughnessTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	descManager->UpdateDescriptorSets();
+}

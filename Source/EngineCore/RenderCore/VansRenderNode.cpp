@@ -295,6 +295,22 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		}
 	}
 
+	// Set 4: Per-Material Subsurface Texture (albedo + normal + thickness)
+	// Owned by VansSubsurfaceMaterial; built once and shared by all nodes using this material.
+	if (m_Material && m_Material->m_MaterialType == VansMaterialType::VAN_SUBSURFACE)
+	{
+		VansSubsurfaceMaterial* sss = static_cast<VansSubsurfaceMaterial*>(m_Material);
+		if (sss->m_SubsurfaceOwnedLayout == VK_NULL_HANDLE)
+		{
+			sss->BuildSubsurfaceTextureDescriptors();
+		}
+		m_UsedDescSetLayouts.push_back(sss->m_SubsurfaceOwnedLayout);
+		if (!sss->m_SubsurfaceOwnedDescSets.empty())
+		{
+			m_UsedDescSets.push_back(sss->m_SubsurfaceOwnedDescSets[0]);
+		}
+	}
+
 	// ── Shadow descriptor sets (first 3 sets only: Global + EmptyPass + Object) ──
 	// These are used when DrawWithPassShader is called for shadow/punctualShadow passes.
 	m_ShadowDescSetLayouts = {

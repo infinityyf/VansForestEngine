@@ -40,6 +40,7 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "skin")         return VansMaterialType::VAN_SKIN;
         if (s == "cloth")        return VansMaterialType::VAN_CLOTH;
         if (s == "hair")         return VansMaterialType::VAN_HAIR;
+        if (s == "subsurface")   return VansMaterialType::VAN_SUBSURFACE;
         VANS_LOG_WARN("[LoadSceneResource] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
     }
     return VansMaterialType::VAN_PBR;
@@ -599,6 +600,7 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         case VansMaterialType::VAN_SKIN:            material = new VansSkinMaterial();         break;
         case VansMaterialType::VAN_CLOTH:           material = new VansClothMaterial();        break;
         case VansMaterialType::VAN_HAIR:            material = new VansHairMaterial();         break;
+        case VansMaterialType::VAN_SUBSURFACE:      material = new VansSubsurfaceMaterial();   break;
         default:                                    material = new VansMaterial();             break;
         }
         material->m_MaterialType = matType;
@@ -771,6 +773,51 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
                 auto textureName = sceneMaterial["alpha_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
                 hair->m_AlphaTexture = texture;  // optional — falls back to albedo .a
+            }
+        }
+
+        // ── Subsurface material: load basecolor + normal + thickness textures + params ──
+        if (matType == VansMaterialType::VAN_SUBSURFACE)
+        {
+            VansSubsurfaceMaterial* sss = static_cast<VansSubsurfaceMaterial*>(material);
+            if (sceneMaterial.contains("basecolor_texture"))
+            {
+                auto textureName = sceneMaterial["basecolor_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
+                sss->m_BaseColorTexture = texture;
+            }
+            if (sceneMaterial.contains("normal_texture"))
+            {
+                auto textureName = sceneMaterial["normal_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
+                sss->m_NormalTexture = texture;
+            }
+            if (sceneMaterial.contains("thickness_texture"))
+            {
+                auto textureName = sceneMaterial["thickness_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                sss->m_ThicknessTexture = texture;  // optional — falls back to constant thickness
+            }
+            if (sceneMaterial.contains("roughness_texture"))
+            {
+                auto textureName = sceneMaterial["roughness_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
+                sss->m_RoughnessTexture = texture;
+            }
+            sss->m_SubsurfacePower = sceneMaterial.value("subsurfacePower", 12.234f);
+            sss->m_Thickness       = sceneMaterial.value("thickness", 0.5f);
+            if (sceneMaterial.contains("subsurfaceColor") && sceneMaterial["subsurfaceColor"].is_array())
+            {
+                sss->m_SubsurfaceColor = glm::vec3(
+                    sceneMaterial["subsurfaceColor"][0],
+                    sceneMaterial["subsurfaceColor"][1],
+                    sceneMaterial["subsurfaceColor"][2]);
             }
         }
 

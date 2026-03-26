@@ -494,4 +494,28 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
+// ============================================================
+// Set 4: Per-Node Subsurface Texture Layout (3 bindings: albedo + normal + thickness)
+// Each subsurface render node owns its own descriptor set with dedicated textures.
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_SubsurfaceTexture(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		// binding 0: Subsurface albedo texture
+		{SUBSURFACE_TEXTURE_BINDING_ALBEDO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 1: Subsurface normal texture
+		{SUBSURFACE_TEXTURE_BINDING_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 2: Subsurface thickness texture
+		{SUBSURFACE_TEXTURE_BINDING_THICKNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 3: Subsurface roughness texture
+		{SUBSURFACE_TEXTURE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
 } // namespace VansGraphics
