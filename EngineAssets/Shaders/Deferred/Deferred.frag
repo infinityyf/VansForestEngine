@@ -7,6 +7,7 @@
 #include "../BRDF/BRDFCloth.glsl"
 #include "../BRDF/BRDFHair.glsl"
 #include "../BRDF/BRDFSubsurface.glsl"
+#include "../BRDF/BRDFVegetation.glsl"
 #include "../Common/CameraData.glsl"
 
 layout(set = 1, binding = 0, input_attachment_index = 0) uniform subpassInput normalInput;
@@ -178,6 +179,27 @@ void main()
         AmbientBRDF_Subsurface(brdfData, sss, viewDirection,
                                lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
+    else if (matID == MATERIAL_ID_GRASS)
+    {
+        // --- Vegetation / Grass BRDF path ---
+        // Translucency was stored in normalInput.w by Grass.frag
+        float translucency = subpassLoad(normalInput).w;
+
+        // Grass AO — match the default PBR path's aggressive power curve
+        brdfData.ao = pow(min(ao, ssaoValue), 2.0);
+
+        VegetationParams veg;
+        veg.translucency   = translucency;
+        veg.scatterWidth   = 0.45;    // wrap diffuse width
+        veg.sssDistortion  = 0.3;     // normal distortion (unused in new scatter)
+        veg.sssAmbient     = 0.05;    // very low constant backlight
+        veg.sssPower        = 14.0;   // high exponent = narrow forward-scatter cone
+
+        CalculateDirectLight_Vegetation(brdfData, veg, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        AmbientBRDF_Vegetation(brdfData, viewDirection,
+                               lightResult.ambientDiffuse, lightResult.ambientSpecular);
+        lightResult.ambientSpecular = vec3(0.0); // grass blades: no ambient specular
+    }
     else
     {
         // --- Default PBR path ---
@@ -193,7 +215,7 @@ void main()
     float fogOpacity = fogData.a;
     outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
     //outColor.rgb = fogData.rgb * fogOpacity;
-    //outColor.rgb = brdfData.indirectDiffuse;
+    //outColor.rgb = lightResult.ambientSpecular;
     //outColor.rgb = CalculateSHDiffuse(position_world, normal);
     outColor.a = 1;
 }

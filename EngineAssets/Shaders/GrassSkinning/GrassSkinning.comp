@@ -90,28 +90,18 @@ void main()
     float weight0   = 1.0 - weight1;
 
     // ── Apply per-instance scale to template vertex ─────────────────────────
-    vec3 scaledPos = vert.position.xyz * inst.scale;
-
-    // ── Apply per-instance Y-axis rotation ──────────────────────────────────
-    float cosR = cos(inst.rotation);
-    float sinR = sin(inst.rotation);
-    vec3 rotatedPos;
-    rotatedPos.x = scaledPos.x * cosR - scaledPos.z * sinR;
-    rotatedPos.y = scaledPos.y;
-    rotatedPos.z = scaledPos.x * sinR + scaledPos.z * cosR;
-
-    vec3 rotatedNorm;
-    rotatedNorm.x = vert.normal.x * cosR - vert.normal.z * sinR;
-    rotatedNorm.y = vert.normal.y;
-    rotatedNorm.z = vert.normal.x * sinR + vert.normal.z * cosR;
+    // Y-axis rotation is already baked into the bone matrices (via seedRight
+    // in GrassBoneSim), so we only apply scale here — no manual rotation.
+    vec3 scaledPos  = vert.position.xyz * inst.scale;
+    vec3 localNorm  = vert.normal.xyz;
 
     // ── Dual-bone skinning ──────────────────────────────────────────────────
     uint boneBase = instanceID * pc.boneCount;
     mat4 skinMat = boneMatrices[boneBase + boneIdx0] * weight0
                  + boneMatrices[boneBase + boneIdx1] * weight1;
 
-    vec4 skinnedPos  = skinMat * vec4(rotatedPos, 1.0);
-    vec4 skinnedNorm = skinMat * vec4(rotatedNorm, 0.0);
+    vec4 skinnedPos  = skinMat * vec4(scaledPos, 1.0);
+    vec4 skinnedNorm = skinMat * vec4(localNorm, 0.0);
 
     // ── Write output ────────────────────────────────────────────────────────
     skinnedPositions[globalIdx] = skinnedPos;

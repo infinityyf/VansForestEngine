@@ -42,17 +42,19 @@ void main()
     if (albedoSample.a < 0.5)
         discard;
 
-    vec3  albedo       = albedoSample.rgb;
-    float roughness    = texture(grassRoughness, frag_uv).r;
+    vec3  albedo       = albedoSample.rgb * vec3(0.3, 0.75, 0.15); // tint grass green
+    float roughness    = 0.5;  // fixed roughness for grass — clear specular highlight
     float translucency = texture(grassTranslucency, frag_uv).r;
     float ao           = texture(grassAO, frag_uv).r;
 
-    // Normal mapping
-    vec3 normal_sample = texture(grassNormal, frag_uv).rgb;
-    normal_sample.rg   = normal_sample.rg * 2.0 - 1.0;
-    normal_sample.rg  *= 0.5;  // moderate normal strength for grass
-    mat3 TBN           = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
-    vec3 normal        = normalize(TBN * normal_sample);
+    // Use interpolated vertex normal directly (skinned and bent by bone animation).
+    // The blade is a two-sided mesh: for back-facing fragments, negate the
+    // geometric normal so the back side is lit by light coming from behind.
+    // This is a winding-based flip (gl_FrontFacing), NOT a view-direction flip,
+    // so specular highlights and directional lighting remain correct.
+    vec3 normal = normalize(normal_ws);
+    if (!gl_FrontFacing)
+        normal = -normal;
 
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
 

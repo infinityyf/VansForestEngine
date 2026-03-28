@@ -506,7 +506,7 @@
     "vegetation": {
         "name": "VegetationNode",
         "material": "grassMaterial",
-        "instanceCount": 10000,
+        "instanceCount": 20000,
         "boneCount": 6
     },
     "mesh": [

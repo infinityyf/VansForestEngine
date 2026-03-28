@@ -65,7 +65,8 @@ const float SEGMENT_LENGTH_BASE = 0.5 / 5.0; // bladeHeight / (boneCount - 1)
 const float MAX_BEND_ANGLE_COS = 0.5;        // cos(60°)
 const float GRAVITY = -9.8;
 const float SEGMENT_MASS = 0.001;
-const float SPRING_K_MAX = 80.0;       // max spring constant when softness = 0
+const float SPRING_K_MAX = 200.0;      // high spring constant keeps blade rigid as a unit
+const float WIND_BEND_MULT = 3.5;      // amplify wind for strong visible bending
 
 // ── Noise function (simple gradient noise for wind) ────────────────────────
 float hash(vec2 p)
@@ -152,8 +153,12 @@ void main()
     float softness       = clamp(pc.softness, 0.0, 1.0);
     float springK        = SPRING_K_MAX * (1.0 - softness);  // stiffer when softness is low
     float effectiveDamp  = mix(0.65, pc.damping, softness);   // more damping when stiff
-    float windScale      = mix(0.15, 1.0, softness);          // less wind response when stiff
-    float bendLimit      = mix(0.85, MAX_BEND_ANGLE_COS, softness); // cos angle: tighter when stiff
+    float windScale      = mix(0.7, 1.0, softness);           // strong wind even when stiff
+    float bendLimit      = mix(0.92, MAX_BEND_ANGLE_COS, softness); // very tight per-segment when stiff
+
+    // Sample wind ONCE at root — all bones share the same wind direction
+    // so the blade bends uniformly instead of waving per-segment.
+    vec3 rootWind = sampleWind(inst.position) * pc.windStrength * windScale * WIND_BEND_MULT;
 
     // Simulate bones 1..5 (Verlet integration)
     for (uint j = 1; j < BONE_COUNT; ++j)
@@ -170,8 +175,9 @@ void main()
         // Spring restoring force — pulls bone back toward rest pose
         vec3 springForce = (restTarget - curPos) * springK;
 
-        // External forces (wind scaled by softness)
-        vec3 wind = sampleWind(curPos) * pc.windStrength * windScale;
+        // Wind force scaled by height: tip gets more force → uniform arc bend
+        float heightRatio = float(j) / float(BONE_COUNT - 1);
+        vec3 wind = rootWind * heightRatio;
         vec3 gravity = vec3(0.0, GRAVITY * SEGMENT_MASS, 0.0);
         vec3 force = wind + gravity + springForce;
 

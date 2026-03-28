@@ -76,7 +76,7 @@ namespace VansGraphics
 		~VansVegetationSystem();
 
 		// ── Initialisation ──────────────────────────────────────────────
-		void Init(VkDevice device, uint32_t instanceCount = 10000,
+		void Init(VkDevice device, uint32_t instanceCount = 20000,
 		          uint32_t boneCountPerInstance = 6);
 
 		// ── Per-frame update: dispatches compute passes ────────────────

@@ -39,36 +39,34 @@ void VansVegetationSystem::Init(VkDevice device, uint32_t instanceCount, uint32_
 // ============================================================================
 // CreateTemplateMesh — grass blade quad-strip
 //
-// With default 6 bones (5 segments):
-// 11 vertices = 5 left/right pairs + 1 tip
+// With default 6 bones (5 segments), we subdivide each segment into
+// SUB_DIVS rows so that bone weight interpolation is smooth everywhere.
+// Extra rows near the tip ensure no visible normal jump.
 //
-//        Tip (v10)
+//        Tip
 //         /\
-//        /  \
-//      v8    v9      ← segment 4
+//        /  \         ← tip triangle
+//      ──────         ← sub-row N  (t close to 1.0)
 //      |      |
-//      v6    v7      ← segment 3
+//      ──────         ...intermediate sub-rows...
 //      |      |
-//      v4    v5      ← segment 2
-//      |      |
-//      v2    v3      ← segment 1
-//      |      |
-//      v0────v1      ← segment 0 (root)
+//      v0────v1       ← sub-row 0 (root, t = 0)
 // ============================================================================
 void VansVegetationSystem::CreateTemplateMesh(VkDevice device)
 {
-	const uint32_t segments = m_BoneCountPerInstance - 1; // 5 segments
+	const uint32_t segments = m_BoneCountPerInstance - 1; // 5 bone segments
+	const uint32_t SUB_DIVS = 3;  // subdivisions per segment
+	const uint32_t totalRows = segments * SUB_DIVS; // number of left/right pair rows
 	const float h = m_BladeHeight;
 	const float w = m_BladeWidthRoot;
 
-	// 11 vertices (with 6 bones): 5 left/right pairs + 1 tip
 	std::vector<GrassVertex> vertices;
-	vertices.reserve(segments * 2 + 1);
+	vertices.reserve(totalRows * 2 + 1);
 
-	// Generate left/right pairs from root to one below tip
-	for (uint32_t i = 0; i < segments; ++i)
+	// Generate left/right pairs from root to just below tip
+	for (uint32_t i = 0; i < totalRows; ++i)
 	{
-		float t = static_cast<float>(i) / static_cast<float>(segments);
+		float t = static_cast<float>(i) / static_cast<float>(totalRows);
 		float y = t * h;
 		float halfW = w * (1.0f - t) * 0.5f; // taper
 
@@ -94,13 +92,13 @@ void VansVegetationSystem::CreateTemplateMesh(VkDevice device)
 
 	m_VertexCount = static_cast<uint32_t>(vertices.size());
 
-	// Indices: quads (2 triangles each) + tip triangles (2)
+	// Indices: quads (2 triangles each) for all adjacent rows + tip triangles
 	std::vector<uint32_t> indices;
-	for (uint32_t i = 0; i < segments - 1; ++i)
+	for (uint32_t i = 0; i < totalRows - 1; ++i)
 	{
-		uint32_t bl = i * 2;       // bottom-left
-		uint32_t br = i * 2 + 1;   // bottom-right
-		uint32_t tl = (i + 1) * 2; // top-left
+		uint32_t bl = i * 2;           // bottom-left
+		uint32_t br = i * 2 + 1;       // bottom-right
+		uint32_t tl = (i + 1) * 2;     // top-left
 		uint32_t tr = (i + 1) * 2 + 1; // top-right
 
 		// Quad as 2 triangles
@@ -108,9 +106,9 @@ void VansVegetationSystem::CreateTemplateMesh(VkDevice device)
 		indices.push_back(bl); indices.push_back(tr); indices.push_back(tl);
 	}
 
-	// Tip triangles (connect last quad pair to tip vertex — 2 triangles for front/back)
-	uint32_t lastLeft  = (segments - 1) * 2;
-	uint32_t lastRight = (segments - 1) * 2 + 1;
+	// Tip triangles (connect last row pair to tip vertex — 2 triangles for front/back)
+	uint32_t lastLeft  = (totalRows - 1) * 2;
+	uint32_t lastRight = (totalRows - 1) * 2 + 1;
 	uint32_t tipIdx    = m_VertexCount - 1;
 	// Front face
 	indices.push_back(lastLeft);  indices.push_back(lastRight); indices.push_back(tipIdx);
@@ -149,7 +147,7 @@ void VansVegetationSystem::CreateInstanceBuffer(VkDevice device)
 	std::vector<GrassInstance> instances(m_InstanceCount);
 	std::mt19937 rng(42);
 	std::uniform_real_distribution<float> posDist(-10.0f, 10.0f);
-	std::uniform_real_distribution<float> scaleDist(0.8f, 1.2f);
+	std::uniform_real_distribution<float> scaleDist(0.4f, 1.5f);
 	std::uniform_real_distribution<float> rotDist(0.0f, 6.28318530718f);
 
 	for (uint32_t i = 0; i < m_InstanceCount; ++i)
@@ -177,13 +175,20 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 	uint32_t totalBones = m_InstanceCount * m_BoneCountPerInstance;
 	std::vector<GrassBone> bones(totalBones);
 
-	float segLength = m_BladeHeight / static_cast<float>(m_BoneCountPerInstance - 1);
+	float baseSegLength = m_BladeHeight / static_cast<float>(m_BoneCountPerInstance - 1);
+
+	// Default wind bend direction (XZ plane).  Matches the default wind
+	// direction passed from Update() so blades start already bent.
+	glm::vec3 windDir3 = glm::normalize(glm::vec3(1.0f, 0.0f, 0.0f)); // default wind X
+
+	// Maximum tilt angle at the tip (radians).  ~25° gives a gentle arc.
+	const float maxTiltRad = glm::radians(25.0f);
 
 	// Read back instance data for root positions
 	// (we just generated it in-line, so regenerate with same seed)
 	std::mt19937 rng(42);
 	std::uniform_real_distribution<float> posDist(-10.0f, 10.0f);
-	std::uniform_real_distribution<float> scaleDist(0.8f, 1.2f);
+	std::uniform_real_distribution<float> scaleDist(0.4f, 1.5f);
 	std::uniform_real_distribution<float> rotDist(0.0f, 6.28318530718f);
 
 	for (uint32_t i = 0; i < m_InstanceCount; ++i)
@@ -191,15 +196,44 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 		glm::vec3 pos(posDist(rng), 0.0f, posDist(rng));
 		float scale = scaleDist(rng);
 		float rot = rotDist(rng);
-		(void)scale; (void)rot;
+		(void)rot;
+
+		// Per-instance segment length based on scale
+		float segLength = baseSegLength * scale;
+
+		// Accumulate position along the pre-bent arc
+		glm::vec3 accumPos = pos;
 
 		for (uint32_t j = 0; j < m_BoneCountPerInstance; ++j)
 		{
 			uint32_t idx = i * m_BoneCountPerInstance + j;
-			float y = static_cast<float>(j) * segLength;
-			bones[idx].position  = glm::vec4(pos.x, pos.y + y, pos.z, 1.0f);
-			bones[idx].velocity  = glm::vec4(pos.x, pos.y + y, pos.z, 0.0f); // prevPosition = position
-			bones[idx].restOffset = glm::vec4(0.0f, segLength, 0.0f, 0.0f);
+
+			if (j == 0)
+			{
+				// Root bone: anchored at ground
+				bones[idx].position  = glm::vec4(accumPos, 1.0f);
+				bones[idx].velocity  = glm::vec4(accumPos, 0.0f);
+				bones[idx].restOffset = glm::vec4(0.0f, segLength, 0.0f, 0.0f);
+			}
+			else
+			{
+				// Progressive tilt: each bone tilts a bit more toward wind
+				float t = static_cast<float>(j) / static_cast<float>(m_BoneCountPerInstance - 1);
+				float tiltAngle = maxTiltRad * t;
+
+				// Rest offset: blend from pure up (0, segLength, 0) toward wind
+				// by rotating the up vector toward windDir3 by tiltAngle
+				glm::vec3 restDir = glm::normalize(
+					glm::vec3(0.0f, 1.0f, 0.0f) * cosf(tiltAngle) +
+					windDir3 * sinf(tiltAngle));
+
+				bones[idx].restOffset = glm::vec4(restDir * segLength, 0.0f);
+
+				// Place bone along the pre-bent arc
+				accumPos += restDir * segLength;
+				bones[idx].position  = glm::vec4(accumPos, 1.0f);
+				bones[idx].velocity  = glm::vec4(accumPos, 0.0f); // prevPos = pos
+			}
 		}
 	}
 
