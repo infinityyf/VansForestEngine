@@ -91,6 +91,7 @@ namespace VansGraphics
 		HAIR_TEXTURE_BINDING_AO           = 3,  // Hair ambient occlusion texture (COMBINED_IMAGE_SAMPLER)
 		HAIR_TEXTURE_BINDING_SHIFT        = 4,  // Hair strand shift texture (COMBINED_IMAGE_SAMPLER)
 		HAIR_TEXTURE_BINDING_ALPHA        = 5,  // Hair dedicated alpha mask texture (COMBINED_IMAGE_SAMPLER)
+		HAIR_TEXTURE_BINDING_FLOW         = 6,  // Hair flow map texture (COMBINED_IMAGE_SAMPLER) — bends tangent/normal
 	};
 
 	// ====================================================================
@@ -104,6 +105,53 @@ namespace VansGraphics
 		SUBSURFACE_TEXTURE_BINDING_NORMAL    = 1,  // Normal map texture (COMBINED_IMAGE_SAMPLER)
 		SUBSURFACE_TEXTURE_BINDING_THICKNESS = 2,  // Thickness map texture (COMBINED_IMAGE_SAMPLER)
 		SUBSURFACE_TEXTURE_BINDING_ROUGHNESS = 3,  // Roughness texture (COMBINED_IMAGE_SAMPLER)
+	};
+
+	// ====================================================================
+	// Set 4 (Per-Node Grass Texture) Binding Indices
+	// Only used by VansVegetationRenderNode when the material type is VAN_GRASS.
+	// Each grass node owns its descriptor set with dedicated vegetation textures.
+	// ====================================================================
+	enum GrassTextureBinding : uint32_t
+	{
+		GRASS_TEXTURE_BINDING_ALBEDO        = 0,  // Grass albedo texture (COMBINED_IMAGE_SAMPLER)
+		GRASS_TEXTURE_BINDING_NORMAL        = 1,  // Grass normal texture (COMBINED_IMAGE_SAMPLER)
+		GRASS_TEXTURE_BINDING_ROUGHNESS     = 2,  // Grass roughness texture (COMBINED_IMAGE_SAMPLER)
+		GRASS_TEXTURE_BINDING_TRANSLUCENCY  = 3,  // Grass translucency/thickness mask (COMBINED_IMAGE_SAMPLER)
+		GRASS_TEXTURE_BINDING_AO            = 4,  // Grass ambient occlusion (COMBINED_IMAGE_SAMPLER)
+	};
+
+	// ====================================================================
+	// Vegetation Compute — Bone Simulation Pass Binding Indices
+	// ====================================================================
+	enum VegetationBoneSimBinding : uint32_t
+	{
+		VEG_SIM_BINDING_INSTANCE_DATA    = 0,  // SSBO (read) — per-instance position/scale/rotation
+		VEG_SIM_BINDING_BONE_DATA        = 1,  // SSBO (read/write) — bone positions + velocities
+		VEG_SIM_BINDING_BONE_MATRICES    = 2,  // SSBO (write) — output bone mat4 matrices
+	};
+
+	// ====================================================================
+	// Vegetation Compute — Vertex Skinning Pass Binding Indices
+	// ====================================================================
+	enum VegetationSkinningBinding : uint32_t
+	{
+		VEG_SKIN_BINDING_TEMPLATE_VERTS   = 0,  // SSBO (read) — template mesh vertices
+		VEG_SKIN_BINDING_BONE_MATRICES    = 1,  // SSBO (read) — bone matrices from sim
+		VEG_SKIN_BINDING_SKINNED_POS      = 2,  // SSBO (write) — skinned positions output
+		VEG_SKIN_BINDING_SKINNED_NORM     = 3,  // SSBO (write) — skinned normals output
+		VEG_SKIN_BINDING_INSTANCE_DATA    = 4,  // SSBO (read) — per-instance data
+	};
+
+	// ====================================================================
+	// Vegetation Draw — Per-Node Skinned Data (Set 3) Binding Indices
+	// ====================================================================
+	enum VegetationDrawBinding : uint32_t
+	{
+		VEG_DRAW_BINDING_SKINNED_POS      = 0,  // SSBO (read) — skinned vertex positions
+		VEG_DRAW_BINDING_SKINNED_NORM     = 1,  // SSBO (read) — skinned vertex normals
+		VEG_DRAW_BINDING_INSTANCE_DATA    = 2,  // SSBO (read) — per-instance position/scale
+		VEG_DRAW_BINDING_TEMPLATE_MESH    = 3,  // SSBO (read) — template mesh (UV source)
 	};
 
 	// ====================================================================
@@ -469,5 +517,9 @@ namespace VansGraphics
 		static void CreateAndAllocate_ClothTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_HairTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SubsurfaceTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_GrassTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_VegetationBoneSim(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_VegetationSkinning(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_VegetationDraw(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

@@ -1,0 +1,119 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// =============================================================================
+// GrassSkinning.comp — Vertex skinning from bone matrices
+//
+// Dispatch: (instanceCount * vertexCount / 64, 1, 1)
+// Each thread skins one vertex of one instance.
+// =============================================================================
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// ── Template mesh vertices (read only) ─────────────────────────────────────
+struct GrassVertex
+{
+    vec4 position;  // .xyz = local position, .w = 0
+    vec4 normal;    // .xyz = local normal,   .w = 0
+    vec2 uv;
+    vec2 padding;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer TemplateMeshBuffer
+{
+    GrassVertex templateVertices[];
+};
+
+// ── Bone matrices (read only, from bone sim) ───────────────────────────────
+layout(std430, set = 0, binding = 1) readonly buffer BoneMatrixBuffer
+{
+    mat4 boneMatrices[];
+};
+
+// ── Skinned output positions (write) ───────────────────────────────────────
+layout(std430, set = 0, binding = 2) writeonly buffer SkinnedPositionBuffer
+{
+    vec4 skinnedPositions[];
+};
+
+// ── Skinned output normals (write) ─────────────────────────────────────────
+layout(std430, set = 0, binding = 3) writeonly buffer SkinnedNormalBuffer
+{
+    vec4 skinnedNormals[];
+};
+
+// ── Instance data (read only — for per-instance rotation/scale) ────────────
+struct GrassInstance
+{
+    vec3  position;
+    float scale;
+    float rotation;
+    int   padding0;
+    int   padding1;
+    int   padding2;
+};
+
+layout(std430, set = 0, binding = 4) readonly buffer InstanceBuffer
+{
+    GrassInstance instances[];
+};
+
+// ── Push constants ─────────────────────────────────────────────────────────
+layout(push_constant) uniform PushConstants
+{
+    uint instanceCount;
+    uint vertexCount;
+    uint boneCount;
+    float grassHeight;
+} pc;
+
+void main()
+{
+    uint globalIdx = gl_GlobalInvocationID.x;
+    uint totalVerts = pc.instanceCount * pc.vertexCount;
+    if (globalIdx >= totalVerts)
+        return;
+
+    uint instanceID = globalIdx / pc.vertexCount;
+    uint vertexID   = globalIdx % pc.vertexCount;
+
+    GrassVertex vert = templateVertices[vertexID];
+    GrassInstance inst = instances[instanceID];
+
+    // ── Bone weight based on Y position (height mapping) ────────────────────
+    float normalizedY = vert.position.y / pc.grassHeight;
+    normalizedY = clamp(normalizedY, 0.0, 1.0);
+    float boneFloat = normalizedY * float(pc.boneCount - 1);
+    uint boneIdx0   = uint(floor(boneFloat));
+    uint boneIdx1   = min(boneIdx0 + 1, pc.boneCount - 1);
+    float weight1   = fract(boneFloat);
+    float weight0   = 1.0 - weight1;
+
+    // ── Apply per-instance scale to template vertex ─────────────────────────
+    vec3 scaledPos = vert.position.xyz * inst.scale;
+
+    // ── Apply per-instance Y-axis rotation ──────────────────────────────────
+    float cosR = cos(inst.rotation);
+    float sinR = sin(inst.rotation);
+    vec3 rotatedPos;
+    rotatedPos.x = scaledPos.x * cosR - scaledPos.z * sinR;
+    rotatedPos.y = scaledPos.y;
+    rotatedPos.z = scaledPos.x * sinR + scaledPos.z * cosR;
+
+    vec3 rotatedNorm;
+    rotatedNorm.x = vert.normal.x * cosR - vert.normal.z * sinR;
+    rotatedNorm.y = vert.normal.y;
+    rotatedNorm.z = vert.normal.x * sinR + vert.normal.z * cosR;
+
+    // ── Dual-bone skinning ──────────────────────────────────────────────────
+    uint boneBase = instanceID * pc.boneCount;
+    mat4 skinMat = boneMatrices[boneBase + boneIdx0] * weight0
+                 + boneMatrices[boneBase + boneIdx1] * weight1;
+
+    vec4 skinnedPos  = skinMat * vec4(rotatedPos, 1.0);
+    vec4 skinnedNorm = skinMat * vec4(rotatedNorm, 0.0);
+
+    // ── Write output ────────────────────────────────────────────────────────
+    skinnedPositions[globalIdx] = skinnedPos;
+    skinnedNormals[globalIdx]   = vec4(normalize(skinnedNorm.xyz), 0.0);
+}

@@ -150,6 +150,7 @@ void main()
         hair.specularStrength  = 1.0;   // constant (not stored in GBuffer)
         hair.scatter           = 0.35;  // constant (not stored in GBuffer)
         hair.shift             = subpassLoad(normalInput).w * 2.0 - 1.0;
+        hair.flowBend          = 0.0;   // flow already baked into GBuffer tangent; set >0 to amplify shift
 
         // Decode hair fiber tangent from octahedral encoding in GBuffer1.x / .w
         vec2 octT = vec2(metallic, subpassLoad(gbufferInput1).w) * 2.0 - 1.0;

@@ -103,6 +103,10 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
 		break;
     case SCREEN_SPACE_NODE:
         m_ScreenSpaceRenderNodes.push_back(renderNode);
+        break;
+    case VEGETATION_NODE:
+        m_VegetationRenderNode = renderNode;
+        break;
 	default:
 		break;
     }
@@ -126,6 +130,10 @@ void VansGraphics::VansScene::CreateNodeDescriptorSets()
     if (m_TerrainRenderNode != nullptr)
     {
         m_TerrainRenderNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+    }
+    if (m_VegetationRenderNode != nullptr)
+    {
+        m_VegetationRenderNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
     }
     for (auto node : m_TransParentRenderNodes)
     {
@@ -465,6 +473,12 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
         AddTerrainNode(vkDevice, sceneData["terrain"]);
     }
 
+    //添加植被节点（从JSON读取，如果不存在则不创建）
+    if (sceneData.contains("vegetation"))
+    {
+        AddVegetationNode(nativeDevice, sceneData["vegetation"]);
+    }
+
     AddDeferredNode(nativeDevice);
 
     AddScreenSpaceFeatureNode(nativeDevice);
@@ -481,6 +495,7 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::FindRenderNodeByName(cons
         if (node && node->m_NodeName == name) return node;
     if (m_SkyBoxNode && m_SkyBoxNode->m_NodeName == name) return m_SkyBoxNode;
     if (m_TerrainRenderNode && m_TerrainRenderNode->m_NodeName == name) return m_TerrainRenderNode;
+    if (m_VegetationRenderNode && m_VegetationRenderNode->m_NodeName == name) return m_VegetationRenderNode;
     return nullptr;
 }
 
@@ -522,6 +537,15 @@ m_MaterialManager.ClearRuntimeRenderTextures();
 
     // Clear transform parenting links
     m_TransformParentSystem.Clear();
+
+    // Clean up vegetation system
+    if (m_VegetationSystem)
+    {
+        m_VegetationSystem->Cleanup(nativeDeviceForCloth);
+        delete m_VegetationSystem;
+        m_VegetationSystem = nullptr;
+    }
+    m_VegetationRenderNode = nullptr;
 
     //delete mesh;
     //delete shader;
@@ -586,6 +610,7 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
     updateNode(m_SkyBoxNode);
     updateNode(m_DeferredNode);
     updateNode(m_TerrainRenderNode);
+    updateNode(m_VegetationRenderNode);
 
     for (auto* node : m_OpaqueRenderNodes)
         updateNode(node);

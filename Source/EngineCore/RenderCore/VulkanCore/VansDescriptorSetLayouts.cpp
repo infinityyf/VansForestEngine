@@ -465,7 +465,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_ClothTexture(
 }
 
 // ============================================================
-// Set 4: Per-Node Hair Texture Layout (5 bindings: albedo+alpha, normal, roughness, ao, shift)
+// Set 4: Per-Node Hair Texture Layout (7 bindings: albedo+alpha, normal, roughness, ao, shift, alpha, flow)
 // Each hair render node owns its own descriptor set with dedicated textures.
 // ============================================================
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(
@@ -489,6 +489,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// binding 5: Hair dedicated alpha mask texture
 		{HAIR_TEXTURE_BINDING_ALPHA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 6: Hair flow map texture (RG = tangent-space flow direction)
+		{HAIR_TEXTURE_BINDING_FLOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
@@ -514,6 +517,84 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_SubsurfaceTexture(
 		// binding 3: Subsurface roughness texture
 		{SUBSURFACE_TEXTURE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Set 4: Per-Node Grass Texture Layout (5 bindings: albedo + normal + roughness + translucency + ao)
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_GrassTexture(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{GRASS_TEXTURE_BINDING_ALBEDO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{GRASS_TEXTURE_BINDING_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{GRASS_TEXTURE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{GRASS_TEXTURE_BINDING_TRANSLUCENCY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{GRASS_TEXTURE_BINDING_AO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Vegetation Compute — Bone Simulation Descriptor Layout
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationBoneSim(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{VEG_SIM_BINDING_INSTANCE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_SIM_BINDING_BONE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_SIM_BINDING_BONE_MATRICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Vegetation Compute — Vertex Skinning Descriptor Layout
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationSkinning(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{VEG_SKIN_BINDING_TEMPLATE_VERTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_SKIN_BINDING_BONE_MATRICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_SKIN_BINDING_SKINNED_POS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_SKIN_BINDING_SKINNED_NORM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_SKIN_BINDING_INSTANCE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Vegetation Draw — Skinned SSBO Data (Set 3) Descriptor Layout
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationDraw(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{VEG_DRAW_BINDING_SKINNED_POS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		{VEG_DRAW_BINDING_SKINNED_NORM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		{VEG_DRAW_BINDING_INSTANCE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		{VEG_DRAW_BINDING_TEMPLATE_MESH, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }

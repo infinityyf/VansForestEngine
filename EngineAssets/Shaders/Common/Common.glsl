@@ -26,6 +26,7 @@
 #define MATERIAL_ID_CLOTH       5
 #define MATERIAL_ID_HAIR        6
 #define MATERIAL_ID_SUBSURFACE  7
+#define MATERIAL_ID_GRASS       8
 
 #define DEPTH_BIAS 0.001
 #define ESM_C 80.0

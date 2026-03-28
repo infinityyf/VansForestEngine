@@ -959,3 +959,81 @@ void VansGraphics::VansTerrainRenderNode::DrawShadow(VansVKCommandBuffer& cmd, G
 {
 	m_Terrain->DrawShadow(cmd, global_state, m_UsedDescSetLayouts, m_UsedDescSets);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VansVegetationRenderNode — GPU-driven grass (indirect draw)
+// ═══════════════════════════════════════════════════════════════════════════════
+#include "VegetationCore/VansVegetationSystem.h"
+
+void VansGraphics::VansVegetationRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
+{
+	if (!m_VegetationSystem || !m_Material)
+	{
+		VANS_LOG_WARN("[VegetationRenderNode] Missing VegetationSystem or Material — skipping descriptor set creation.");
+		return;
+	}
+
+	// Set 0: Global (Camera + Lights + Materials + IBL + Bindless)
+	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
+	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+
+	// Set 1: Per-Pass (empty — vegetation has no pass-specific uniforms)
+	m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
+	m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
+
+	// Set 2: Per-Object — shared Transform SSBO
+	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
+	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
+
+	// Set 3: Vegetation draw (skinned positions + normals + instance data)
+	m_UsedDescSetLayouts.push_back(m_VegetationSystem->GetVegDrawLayout());
+	m_UsedDescSets.push_back(m_VegetationSystem->GetVegDrawDescSet());
+
+	// Set 4: Grass textures (albedo, normal, roughness, translucency, ao)
+	if (m_Material->m_MaterialType == VansMaterialType::VAN_GRASS)
+	{
+		VansGrassMaterial* grass = static_cast<VansGrassMaterial*>(m_Material);
+		if (grass->m_GrassOwnedLayout == VK_NULL_HANDLE)
+		{
+			grass->BuildGrassTextureDescriptors();
+		}
+		if (grass->m_GrassOwnedLayout != VK_NULL_HANDLE && !grass->m_GrassOwnedDescSets.empty())
+		{
+			m_UsedDescSetLayouts.push_back(grass->m_GrassOwnedLayout);
+			m_UsedDescSets.push_back(grass->m_GrassOwnedDescSets[0]);
+		}
+		else
+		{
+			VANS_LOG_WARN("[VegetationRenderNode] Grass texture descriptor allocation failed — Set 4 skipped.");
+		}
+	}
+
+	m_DescriptorsetsSetDone = true;
+}
+
+void VansGraphics::VansVegetationRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
+{
+	// GPU-driven — no per-frame CPU data upload needed
+	UpdateDescripterSets(materialManager);
+}
+
+void VansGraphics::VansVegetationRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+		return;
+	m_DescriptorsetsDirty = false;
+}
+
+void VansGraphics::VansVegetationRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
+{
+	if (!m_VegetationSystem || !m_Material)
+		return;
+
+	auto* gbufferShader = m_Material->GetPassShader(VansPass::GBUFFER);
+	if (!gbufferShader)
+		return;
+
+	m_VegetationSystem->Draw(cmd, *gbufferShader, global_state,
+		m_UsedDescSetLayouts, m_UsedDescSets,
+		0, m_TransfromIndex);
+}

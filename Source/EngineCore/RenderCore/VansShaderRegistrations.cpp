@@ -109,6 +109,13 @@ void RegisterEngineShaders()
         12, false
     });
 
+    reg.RegisterShader("GrassGBuffer", {
+        "GrassGBuffer",
+        "EngineAssets/Shaders/Grass",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        12, false
+    });
+
     // ══════════════════════════════════════════════════════════════════════════
     // Step 2: Register material type → { pass name → shader name } mappings
     // ══════════════════════════════════════════════════════════════════════════
@@ -145,6 +152,12 @@ void RegisterEngineShaders()
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_SUBSURFACE, {
         { VansGraphics::VansPass::GBUFFER,          "Subsurface"     },
+        { VansGraphics::VansPass::SHADOW,           "Shadow"         },
+        { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
+    });
+
+    reg.RegisterMaterialPasses(VansGraphics::VAN_GRASS, {
+        { VansGraphics::VansPass::GBUFFER,          "GrassGBuffer"   },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
     });

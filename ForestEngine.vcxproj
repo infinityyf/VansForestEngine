@@ -201,6 +201,7 @@
     <ClInclude Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VegetationCore\VansVegetationSystem.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansAsset.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansCamera.h" />
     <ClInclude Include="Source\EngineCore\ScriptCore\VansCommonUtils.h" />
@@ -288,6 +289,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VegetationCore\VansVegetationSystem.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansCamera.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansGraphicsDevice.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansMaterial.cpp" />

@@ -7,6 +7,7 @@
 #include "TerrainCore/VansTerrain.h"
 #include "../Util/VansLog.h"
 #include "VulkanCore/VansRenderPass.h"
+#include "../VansTimer.h"
 
 // ===========================================================================
 // Draw commands — one per render pass type
@@ -168,6 +169,36 @@ void VansGraphics::VansScene::DrawTerrainNode(bool shadowPass)
         static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode)->Draw(cmd, globalStateData);
     }
     
+}
+
+void VansGraphics::VansScene::DrawVegetationNode()
+{
+    if (m_VegetationRenderNode == nullptr)
+    {
+        return;
+    }
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    m_VegetationRenderNode->Draw(cmd, globalStateData);
+}
+
+// ===========================================================================
+// RecordVegetationCompute — dispatches bone simulation + skinning compute
+// passes for the vegetation system. Called once per frame BEFORE the deferred
+// render pass so that skinned vertex data is ready for the GBuffer draw.
+// ===========================================================================
+void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
+{
+    if (m_VegetationSystem == nullptr)
+    {
+        return;
+    }
+
+    float deltaTime = static_cast<float>(VansTimer::GetLastFrameDelta());
+    float time      = static_cast<float>(VansTimer::GetFrameTime());
+
+    m_VegetationSystem->Update(cmd, deltaTime, time);
 }
 
 void VansGraphics::VansScene::DrawTransParentNodes()

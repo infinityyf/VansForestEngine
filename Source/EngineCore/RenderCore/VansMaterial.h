@@ -58,6 +58,7 @@ namespace VansGraphics
 		VAN_CLOTH = 10,
 		VAN_HAIR = 11,
 		VAN_SUBSURFACE = 12,
+		VAN_GRASS = 13,
 	};
 
 	// Lightweight push-constant payload built at draw time.
@@ -356,6 +357,7 @@ namespace VansGraphics
 		VansTexture* m_AoTexture          = nullptr;  // .r = ambient occlusion
 		VansTexture* m_ShiftTexture       = nullptr;  // .r = strand shift (0.5 = neutral)
 		VansTexture* m_AlphaTexture       = nullptr;  // .r = dedicated alpha mask
+		VansTexture* m_FlowTexture        = nullptr;  // .rg = tangent-space flow direction (0.5 = neutral)
 
 		VkDescriptorSetLayout          m_HairOwnedLayout  = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet>   m_HairOwnedDescSets;
@@ -392,4 +394,39 @@ namespace VansGraphics
 	class VansDeferredMaterial    : public VansMaterial {};
 	class VansSSAOMaterial        : public VansMaterial {};
 
+	// ============================================================
+	// VansGrassMaterial — GPU-driven vegetation (type 13)
+	// Textures: albedo, normal, roughness, translucency, AO
+	// Parameters: GrassParams struct uploaded to global PBR SSBO
+	// Only participates in GBUFFER pass (no shadows)
+	// ============================================================
+	struct GrassParams
+	{
+		glm::vec4 baseColor       = glm::vec4(0.2f, 0.6f, 0.1f, 1.0f); // sRGB base tint
+		float     roughness       = 0.6f;
+		float     metallic        = 0.0f;
+		float     translucency    = 0.5f;   // 0..1 scatter strength
+		float     scatterWidth    = 0.5f;   // wrap lighting half-angle
+		float     sssDistortion   = 0.2f;   // normal distortion for back-scatter
+		float     sssAmbient      = 0.1f;   // ambient scatter floor
+		float     sssPower        = 3.0f;   // exponent for view-dependent scatter
+		float     aoStrength      = 1.0f;   // AO contribution
+	};
+
+	class VansGrassMaterial : public VansMaterial
+	{
+	public:
+		VansTexture* m_AlbedoTexture        = nullptr;
+		VansTexture* m_NormalTexture        = nullptr;
+		VansTexture* m_RoughnessTexture     = nullptr;
+		VansTexture* m_TranslucencyTexture  = nullptr;
+		VansTexture* m_AOTexture            = nullptr;
+
+		GrassParams  m_GrassParams;
+
+		VkDescriptorSetLayout          m_GrassOwnedLayout  = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_GrassOwnedDescSets;
+
+		void BuildGrassTextureDescriptors();
+	};
 }

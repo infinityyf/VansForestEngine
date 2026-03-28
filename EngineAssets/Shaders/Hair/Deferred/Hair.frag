@@ -17,6 +17,7 @@ layout( set = 4, binding = 2 ) uniform sampler2D hairRoughness;    // .r = rough
 layout( set = 4, binding = 3 ) uniform sampler2D hairAO;           // .r = ambient occlusion
 layout( set = 4, binding = 4 ) uniform sampler2D hairShift;        // .r = strand shift (0.5 = neutral)
 layout( set = 4, binding = 5 ) uniform sampler2D hairAlphaMask;    // .r = dedicated alpha mask
+layout( set = 4, binding = 6 ) uniform sampler2D hairFlowMap;      // .rg = tangent-space flow direction (0.5 = neutral)
 
 // GBuffer MRT outputs
 layout (location = 0) out vec4 outNormal;   // xyz = world normal, w = strand shift
@@ -122,10 +123,28 @@ void main()
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);
 
+    // ── Flow map: bend tangent and normal along a painted UV direction ──
+    // Flow map RG encodes a tangent-space 2D direction (0.5 = neutral).
+    // The flow vector is projected into world space via the TBN matrix,
+    // then used to rotate the fiber tangent and tilt the shading normal.
+    vec3 flowTangent = normalize(tangent_ws);   // default: unmodified fiber tangent
+    vec2 flowSample = texture(hairFlowMap, frag_uv).rg;
+    vec2 flowDir    = flowSample * 2.0 - 1.0;   // remap [0,1] → [-1,1]
+    float flowLen   = length(flowDir);
+    if (flowLen > 0.001)
+    {
+        // Build world-space flow vector from tangent-space direction
+        vec3 flowWS = normalize(TBN * vec3(flowDir, 0.0));
+        // Bend the tangent toward the flow direction
+        flowTangent = normalize(mix(flowTangent, flowWS, flowLen));
+        // Tilt the normal slightly away from the flow (keeps energy)
+        normal = normalize(normal - flowWS * flowLen * 0.25);
+    }
+
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
 
-    // Octahedral-encode the hair fiber tangent into two [0,1] channels
-    vec2 octT = OctEncodeHair(normalize(tangent_ws)) * 0.5 + 0.5;
+    // Octahedral-encode the (possibly flow-bent) hair fiber tangent
+    vec2 octT = OctEncodeHair(flowTangent) * 0.5 + 0.5;
 
     outNormal   = vec4(normal, strandShift);
     outGBuffer0 = vec4(albedo, roughness);

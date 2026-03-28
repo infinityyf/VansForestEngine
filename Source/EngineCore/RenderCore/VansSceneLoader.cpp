@@ -9,6 +9,7 @@
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "TerrainCore/VansTerrain.h"
+#include "VegetationCore/VansVegetationSystem.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
 
@@ -41,6 +42,7 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "cloth")        return VansMaterialType::VAN_CLOTH;
         if (s == "hair")         return VansMaterialType::VAN_HAIR;
         if (s == "subsurface")   return VansMaterialType::VAN_SUBSURFACE;
+        if (s == "grass")        return VansMaterialType::VAN_GRASS;
         VANS_LOG_WARN("[LoadSceneResource] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
     }
     return VansMaterialType::VAN_PBR;
@@ -60,6 +62,7 @@ static VansGraphics::RenderNodeType ParseRenderNodeType(const json& typeValue, c
         if (s == "deferred")     return VansGraphics::DEFERRED_NODE;
         if (s == "screen_space") return VansGraphics::SCREEN_SPACE_NODE;
         if (s == "terrain")      return VansGraphics::TERRAIN_NODE;
+        if (s == "vegetation")   return VansGraphics::VEGETATION_NODE;
         if (s == "none")         return VansGraphics::NONE_NODE;
         VANS_LOG_WARN("[LoadRenderNodes] Node '" << nodeName << "': unknown type string '" << s << "', defaulting to none.");
     }
@@ -601,6 +604,7 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         case VansMaterialType::VAN_CLOTH:           material = new VansClothMaterial();        break;
         case VansMaterialType::VAN_HAIR:            material = new VansHairMaterial();         break;
         case VansMaterialType::VAN_SUBSURFACE:      material = new VansSubsurfaceMaterial();   break;
+        case VansMaterialType::VAN_GRASS:           material = new VansGrassMaterial();        break;
         default:                                    material = new VansMaterial();             break;
         }
         material->m_MaterialType = matType;
@@ -774,6 +778,12 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
                 hair->m_AlphaTexture = texture;  // optional — falls back to albedo .a
             }
+            if (sceneMaterial.contains("flow_texture"))
+            {
+                auto textureName = sceneMaterial["flow_texture"];
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                hair->m_FlowTexture = texture;  // optional — null means no tangent bending
+            }
         }
 
         // ── Subsurface material: load basecolor + normal + thickness textures + params ──
@@ -839,6 +849,47 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
                     trans->m_TransparentTextureMap.push_back({ slotName, textureName });
                     trans->m_TransparentTextures.push_back(tex);
                 }
+            }
+        }
+
+        // ── Grass material: load 5 texture slots ──
+        if (matType == VansMaterialType::VAN_GRASS)
+        {
+            VansGrassMaterial* grass = static_cast<VansGrassMaterial*>(material);
+            if (sceneMaterial.contains("basecolor_texture"))
+            {
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial["basecolor_texture"]));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
+                grass->m_AlbedoTexture = texture;
+            }
+            if (sceneMaterial.contains("normal_texture"))
+            {
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial["normal_texture"]));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
+                grass->m_NormalTexture = texture;
+            }
+            if (sceneMaterial.contains("roughness_texture"))
+            {
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial["roughness_texture"]));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
+                grass->m_RoughnessTexture = texture;
+            }
+            if (sceneMaterial.contains("translucency_texture"))
+            {
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial["translucency_texture"]));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
+                grass->m_TranslucencyTexture = texture;
+            }
+            if (sceneMaterial.contains("ao_texture"))
+            {
+                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial["ao_texture"]));
+                if (texture == nullptr)
+                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
+                grass->m_AOTexture = texture;
             }
         }
 
@@ -1172,4 +1223,41 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
             << multiMesh->m_AnimImportResult.skeleton.bones.size() << " bones, "
             << group.childNodes.size() << " render node(s) tagged animated.");
     }
+}
+
+// ===========================================================================
+// Vegetation node
+// ===========================================================================
+
+void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetationData)
+{
+    // Read optional parameters from JSON
+    uint32_t instanceCount = vegetationData.value("instanceCount", 10000u);
+    uint32_t boneCount     = vegetationData.value("boneCount", 6u);
+    std::string materialName = vegetationData.value("material", "grassMaterial");
+    std::string name         = vegetationData.value("name", "VegetationNode");
+
+    // Create the vegetation system
+    m_VegetationSystem = new VansVegetationSystem();
+    m_VegetationSystem->Init(device, instanceCount, boneCount);
+
+    // Create the vegetation render node
+    RenderNodeType type = RenderNodeType::VEGETATION_NODE;
+    VansVegetationRenderNode* renderNode = new VansVegetationRenderNode(device, type);
+    renderNode->SetVegetationSystem(m_VegetationSystem);
+
+    // Assign the grass material
+    VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
+    if (material == nullptr)
+    {
+        VANS_LOG_WARN("[AddVegetationNode] Material '" << materialName << "' not found, vegetation node skipped.");
+        delete renderNode;
+        return;
+    }
+    renderNode->m_Material = material;
+    renderNode->m_Mesh = nullptr;  // No mesh asset — geometry is compute-generated
+    renderNode->SetName(name);
+
+    RegistRenderNode(renderNode, type);
+    VANS_LOG("[AddVegetationNode] Vegetation node '" << name << "' created with " << instanceCount << " instances.");
 }

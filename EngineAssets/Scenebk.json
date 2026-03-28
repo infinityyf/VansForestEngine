@@ -503,6 +503,12 @@
             }
         ]
     },
+    "vegetation": {
+        "name": "VegetationNode",
+        "material": "grassMaterial",
+        "instanceCount": 10000,
+        "boneCount": 6
+    },
     "mesh": [
         {
             "name": "torus",
@@ -955,13 +961,13 @@
             "name" : "hairAO",
             "path" : "EngineAssets/Textures/Hair/long_hair_ao.png",
             "type" : 0,
-            "sRGB" : true
+            "sRGB" : false
         },
         {
             "name" : "hairRoughness",
             "path" : "EngineAssets/Textures/Hair/long_hair_roughness.png",
             "type" : 0,
-            "sRGB" : true
+            "sRGB" : false
         },
         {
             "name" : "hairShift",
@@ -978,6 +984,12 @@
         {
             "name" : "hairAlpha",
             "path" : "EngineAssets/Textures/Hair/long_hair_alpha.png",
+            "type" : 0,
+            "sRGB" : false
+        },
+        {
+            "name" : "hairFlow",
+            "path" : "EngineAssets/Textures/Hair/long_hair_flow.png",
             "type" : 0,
             "sRGB" : false
         }
@@ -1180,7 +1192,17 @@
             "roughness_texture": "hairRoughness",
             "ao_texture": "hairAO",
             "shift_texture": "hairShift",
-            "alpha_texture": "hairAlpha"
+            "alpha_texture": "hairAlpha",
+            "flow_texture": "hairFlow"
+        },
+        {
+            "name": "grassMaterial",
+            "type": "grass",
+            "basecolor_texture": "defaultAlbedo",
+            "normal_texture": "defaultNormal",
+            "roughness_texture": "defaultRoughness",
+            "translucency_texture": "defaultAo",
+            "ao_texture": "defaultAo"
         }
     ]
 }

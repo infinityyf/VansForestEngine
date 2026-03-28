@@ -1,0 +1,223 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// =============================================================================
+// GrassBoneSim.comp — Verlet-based bone physics for GPU-driven grass
+//
+// Dispatch: (instanceCount / 64, 1, 1)
+// Each thread processes all bones of one grass instance.
+// =============================================================================
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// ── Instance data (read only) ───────────────────────────────────────────────
+struct GrassInstance
+{
+    vec3  position;     // world root position
+    float scale;
+    float rotation;
+    int   padding0;
+    int   padding1;
+    int   padding2;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer InstanceBuffer
+{
+    GrassInstance instances[];
+};
+
+// ── Bone data (read/write) ─────────────────────────────────────────────────
+struct GrassBone
+{
+    vec4 position;      // .xyz = current position, .w = 1.0
+    vec4 velocity;      // .xyz = previous position (Verlet), .w = unused
+    vec4 restOffset;    // .xyz = rest direction offset, .w = unused
+};
+
+layout(std430, set = 0, binding = 1) buffer BoneBuffer
+{
+    GrassBone bones[];
+};
+
+// ── Bone matrices (write only) ─────────────────────────────────────────────
+layout(std430, set = 0, binding = 2) writeonly buffer BoneMatrixBuffer
+{
+    mat4 boneMatrices[];
+};
+
+// ── Push constants ─────────────────────────────────────────────────────────
+layout(push_constant) uniform PushConstants
+{
+    float deltaTime;
+    float time;
+    float windStrength;
+    float windFrequency;
+    float windDirX;
+    float windDirY;
+    float stiffness;
+    float damping;
+    float softness;        // 0.0 = rigid (hard blade), 1.0 = fully soft
+} pc;
+
+// ── Constants ──────────────────────────────────────────────────────────────
+const uint BONE_COUNT = 6;
+const float SEGMENT_LENGTH_BASE = 0.5 / 5.0; // bladeHeight / (boneCount - 1)
+const float MAX_BEND_ANGLE_COS = 0.5;        // cos(60°)
+const float GRAVITY = -9.8;
+const float SEGMENT_MASS = 0.001;
+const float SPRING_K_MAX = 80.0;       // max spring constant when softness = 0
+
+// ── Noise function (simple gradient noise for wind) ────────────────────────
+float hash(vec2 p)
+{
+    p = fract(p * vec2(5.3983, 5.4427));
+    p += dot(p.yx, p.xy + vec2(21.5351, 14.3137));
+    return fract(p.x * p.y * 95.4337);
+}
+
+float gradientNoise(vec2 p)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f); // smoothstep
+
+    float a = hash(i + vec2(0.0, 0.0));
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) * 2.0 - 1.0;
+}
+
+vec3 sampleWind(vec3 worldPos)
+{
+    vec2 windDir = normalize(vec2(pc.windDirX, pc.windDirY));
+    vec2 noiseCoord = worldPos.xz * pc.windFrequency + vec2(pc.time * 0.8);
+    float noise = gradientNoise(noiseCoord);
+
+    vec3 wind;
+    wind.x = windDir.x * noise;
+    wind.y = abs(noise) * 0.2; // slight upward lift
+    wind.z = windDir.y * noise;
+    return wind;
+}
+
+// ── Build bone frame using parallel-transport (twist-free) ─────────────────
+// prevRight: the right vector from the parent bone (or seed for root).
+// Returns the right vector of this bone so the next bone can reuse it.
+vec3 buildBoneMatrixPT(vec3 pos, vec3 tangent, vec3 prevRight, out mat4 m)
+{
+    vec3 t = normalize(tangent);
+
+    // Project parent's right onto the plane perpendicular to new tangent
+    vec3 right = prevRight - dot(prevRight, t) * t;
+    float rLen = length(right);
+
+    // Degenerate case: tangent nearly parallel to prevRight → pick fallback
+    if (rLen < 0.001)
+    {
+        vec3 up = vec3(0.0, 1.0, 0.0);
+        right = cross(up, t);
+        if (length(right) < 0.001)
+            right = cross(vec3(1.0, 0.0, 0.0), t);
+    }
+    right = normalize(right);
+
+    vec3 fwd = normalize(cross(t, right));
+
+    m = mat4(1.0);
+    m[0] = vec4(right, 0.0);
+    m[1] = vec4(t, 0.0);
+    m[2] = vec4(fwd, 0.0);
+    m[3] = vec4(pos, 1.0);
+    return right;
+}
+
+void main()
+{
+    uint instanceID = gl_GlobalInvocationID.x;
+    if (instanceID >= instances.length())
+        return;
+
+    GrassInstance inst = instances[instanceID];
+    float segLength = SEGMENT_LENGTH_BASE * inst.scale;
+    float dt = pc.deltaTime;
+    uint boneBase = instanceID * BONE_COUNT;
+
+    // Root bone is always anchored to instance position
+    bones[boneBase].position = vec4(inst.position, 1.0);
+    bones[boneBase].velocity = vec4(inst.position, 0.0);
+
+    // Derive per-frame simulation parameters from softness
+    float softness       = clamp(pc.softness, 0.0, 1.0);
+    float springK        = SPRING_K_MAX * (1.0 - softness);  // stiffer when softness is low
+    float effectiveDamp  = mix(0.65, pc.damping, softness);   // more damping when stiff
+    float windScale      = mix(0.15, 1.0, softness);          // less wind response when stiff
+    float bendLimit      = mix(0.85, MAX_BEND_ANGLE_COS, softness); // cos angle: tighter when stiff
+
+    // Simulate bones 1..5 (Verlet integration)
+    for (uint j = 1; j < BONE_COUNT; ++j)
+    {
+        uint idx = boneBase + j;
+        vec3 curPos  = bones[idx].position.xyz;
+        vec3 prevPos = bones[idx].velocity.xyz;  // velocity.xyz stores prevPosition
+        vec3 parentPos = bones[idx - 1].position.xyz;
+
+        // Rest-pose target for this bone
+        vec3 restDir   = normalize(bones[idx].restOffset.xyz);
+        vec3 restTarget = parentPos + restDir * segLength;
+
+        // Spring restoring force — pulls bone back toward rest pose
+        vec3 springForce = (restTarget - curPos) * springK;
+
+        // External forces (wind scaled by softness)
+        vec3 wind = sampleWind(curPos) * pc.windStrength * windScale;
+        vec3 gravity = vec3(0.0, GRAVITY * SEGMENT_MASS, 0.0);
+        vec3 force = wind + gravity + springForce;
+
+        // Verlet integration with effective damping
+        vec3 newPos = curPos + (curPos - prevPos) * effectiveDamp + force * dt * dt;
+
+        // Distance constraint: maintain segment length
+        vec3 dir = normalize(newPos - parentPos);
+        newPos = parentPos + dir * segLength;
+
+        // Angle constraint: limit bending from rest pose (tighter when stiff)
+        vec3 newDir = normalize(newPos - parentPos);
+        float cosA = dot(restDir, newDir);
+        if (cosA < bendLimit)
+        {
+            // Blend towards rest direction
+            newDir = normalize(mix(newDir, restDir, pc.stiffness * dt));
+            newPos = parentPos + newDir * segLength;
+        }
+
+        // Store: current becomes prev, new becomes current
+        bones[idx].velocity = vec4(curPos, 0.0);   // prevPosition
+        bones[idx].position = vec4(newPos, 1.0);
+    }
+
+    // Build bone matrices for skinning (parallel-transport to avoid twist)
+    //
+    // Seed the initial right vector from the instance rotation so that the
+    // blade face stays consistent with the per-instance Y-axis rotation.
+    float cosR = cos(inst.rotation);
+    float sinR = sin(inst.rotation);
+    vec3 seedRight = vec3(cosR, 0.0, sinR);  // rotated X-axis
+
+    vec3 prevRight = seedRight;
+    for (uint j = 0; j < BONE_COUNT; ++j)
+    {
+        uint idx = boneBase + j;
+        vec3 pos = bones[idx].position.xyz;
+        vec3 tangent;
+        if (j < BONE_COUNT - 1)
+            tangent = normalize(bones[idx + 1].position.xyz - pos);
+        else
+            tangent = normalize(pos - bones[idx - 1].position.xyz);
+
+        mat4 boneMat;
+        prevRight = buildBoneMatrixPT(pos, tangent, prevRight, boneMat);
+        boneMatrices[instanceID * BONE_COUNT + j] = boneMat;
+    }
+}

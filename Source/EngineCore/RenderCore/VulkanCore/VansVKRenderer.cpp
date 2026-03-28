@@ -111,6 +111,9 @@ namespace VansGraphics
 			// Upload cloth simulation results from staging buffers to device-local vertex buffers
 			m_Scene->RecordClothVertexUploads(cmd);
 
+			// Dispatch vegetation bone-sim + skinning compute passes
+			m_Scene->RecordVegetationCompute(m_VansVKCommandBuffer);
+
 			// Reset GPU profiler query pool for this frame
 #if VANS_PROFILER_ENABLED
 			Vans::VansGpuProfiler::Get().BeginFrame(cmd);
@@ -191,6 +194,8 @@ namespace VansGraphics
 			// Upload cloth simulation results from staging buffers to device-local vertex buffers
 			m_Scene->RecordClothVertexUploads(cmd);
 
+			// Dispatch vegetation bone-sim + skinning compute passes
+			m_Scene->RecordVegetationCompute(m_VansVKCommandBuffer);
 
 			renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
 			DrawSceneDeferred(renderPassManager, m_VansVKCommandBuffer);
@@ -315,6 +320,7 @@ namespace VansGraphics
 
 		m_Scene->DrawOpaqueNodes();
 		m_Scene->DrawTerrainNode();
+		m_Scene->DrawVegetationNode();
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 		m_Scene->DrawScreenSpaceFeatureNode();
 

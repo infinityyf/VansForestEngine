@@ -201,6 +201,11 @@ void VansGraphics::VansVKCommandBuffer::DrawMesh(VansMesh& mesh, VansGraphicsSha
 		0);
 }
 
+void VansGraphics::VansVKCommandBuffer::DrawIndexedIndirect(VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)
+{
+	vkCmdDrawIndexedIndirect(m_VansVKCommandBuffer, buffer, offset, drawCount, stride);
+}
+
 void VansGraphics::VansVKCommandBuffer::ExecuteSecondaryCommandBuffer(std::vector<VkCommandBuffer>& secondary_command_buffers)
 {
 	vkCmdExecuteCommands(

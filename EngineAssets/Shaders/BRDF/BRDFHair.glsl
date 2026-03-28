@@ -19,17 +19,19 @@
 //   [Karis 2016]            Physically Based Hair Shading in Unreal
 //
 // GBuffer convention (written by Hair.frag):
-//   outNormal.xyz   = shaded normal WS
+//   outNormal.xyz   = shaded normal WS (tilted by flow map when present)
 //   outNormal.w     = strand shift [0..1] → remapped to [-1,1]
 //   outGBuffer0.rgb = albedo (hair base color, drives absorption)
 //   outGBuffer0.w   = roughness (longitudinal width β)
-//   outGBuffer1.x   = tangent oct X [0..1] (octahedral-encoded fiber direction)
+//   outGBuffer1.x   = tangent oct X [0..1] (octahedral-encoded fiber direction,
+//                      bent by flow map when present)
 //   outGBuffer1.y   = ao
 //   outGBuffer1.z   = MATERIAL_ID_HAIR
 //   outGBuffer1.w   = tangent oct Y [0..1] (octahedral-encoded fiber direction)
 //
 //   specularStrength = 1.0  (constant, not stored in GBuffer)
 //   scatter          = 0.35 (constant, not stored in GBuffer)
+//   flowBend         = 0.0  (flow already baked into tangent; adjust to amplify shift)
 // ============================================================================
 
 // Hair fiber index of refraction (keratin)
@@ -50,6 +52,7 @@ struct HairBRDFParams
     float specularStrength;
     float scatter;            // TT / backlit transmission intensity
     float shift;              // cuticle tilt α in [-1, 1]
+    float flowBend;           // flow-induced tangent bend strength [0, 1] (0 = no flow)
 };
 
 // ---------------------------------------------------------------------------
@@ -97,6 +100,14 @@ void DirectBRDF_Hair(
     vec3 L = normalize(lightDirection);
     vec3 T = normalize(hair.tangentWS);
 
+    // ── Flow-aware shift: tilt the tangent toward / away from the normal ─
+    // The shift value bends the tangent along the normal direction.
+    // Positive shift pushes the tangent toward the normal (cuticle tip → root),
+    // negative shift pushes it away.  The flow bend strength scales how much
+    // the shift is amplified when a flow map is active.
+    float shiftStrength = hair.shift * (1.0 + hair.flowBend * 0.5);
+    vec3 T_shifted = normalize(T + N * shiftStrength * 0.15);
+
     float NoL = max(dot(N, L), 0.0);
     if (NoL <= 0.0)
     {
@@ -106,8 +117,9 @@ void DirectBRDF_Hair(
     }
 
     // ── Longitudinal angles relative to fiber tangent ────────────────────
-    float sinThetaL = clamp(dot(T, L), -1.0, 1.0);
-    float sinThetaV = clamp(dot(T, V), -1.0, 1.0);
+    // Use the flow+shift-bent tangent for specular lobe placement.
+    float sinThetaL = clamp(dot(T_shifted, L), -1.0, 1.0);
+    float sinThetaV = clamp(dot(T_shifted, V), -1.0, 1.0);
     float cosThetaL = sqrt(max(1.0 - sinThetaL * sinThetaL, 0.0));
     float cosThetaV = sqrt(max(1.0 - sinThetaV * sinThetaV, 0.0));
 
@@ -119,8 +131,8 @@ void DirectBRDF_Hair(
     cosThetaD = max(cosThetaD, 0.001);
 
     // ── Azimuthal angle φ (angle between L and V in the normal plane) ───
-    vec3 Lp = L - sinThetaL * T;   // project onto normal plane
-    vec3 Vp = V - sinThetaV * T;
+    vec3 Lp = L - sinThetaL * T_shifted;   // project onto normal plane
+    vec3 Vp = V - sinThetaV * T_shifted;
     float cosPhi = clamp(dot(Lp, Vp) / max(length(Lp) * length(Vp), 1e-5), -1.0, 1.0);
     float cosHalfPhi = sqrt(max(0.5 + 0.5 * cosPhi, 0.0));   // cos(φ/2)
 
@@ -228,6 +240,10 @@ void AmbientBRDF_Hair(
     vec3 V = normalize(viewDirection);
     vec3 T = normalize(hair.tangentWS);
 
+    // ── Flow-aware shift for ambient specular lobes ─────────────────────
+    float shiftStrength = hair.shift * (1.0 + hair.flowBend * 0.5);
+    vec3 T_shifted = normalize(T + N * shiftStrength * 0.15);
+
     float NoV = max(dot(N, V), 0.0);
 
     // ── Diffuse: SSGI + cubemap fallback + fake scatter ─────────────────
@@ -250,14 +266,15 @@ void AmbientBRDF_Hair(
     // Project the isotropic reflection along the fiber tangent:
     //   R_aniso = normalize(R - T * dot(R,T) * anisotropy)
     // R lobe uses tighter projection; TRT uses wider spread.
+    // Uses the flow+shift-bent tangent for consistent specular placement.
     vec3 R = reflect(-V, N);
-    float RdotT = dot(R, T);
+    float RdotT = dot(R, T_shifted);
 
     const float anisoR   = 0.8;   // R lobe: mostly specular, slight spread
     const float anisoTRT = 0.4;   // TRT lobe: broader internal-bounce spread
 
-    vec3 R_dirR   = normalize(R - T * RdotT * anisoR);
-    vec3 R_dirTRT = normalize(R - T * RdotT * anisoTRT);
+    vec3 R_dirR   = normalize(R - T_shifted * RdotT * anisoR);
+    vec3 R_dirTRT = normalize(R - T_shifted * RdotT * anisoTRT);
 
     // ── Per-lobe roughness (same as direct path) ────────────────────────
     float roughR   = clamp(hair.roughness,       0.04, 1.0);

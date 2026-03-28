@@ -8,6 +8,7 @@
 #include "../PhysicsCore/VansClothNode.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "../AnimationCore/VansAnimationNode.h"
+#include "VegetationCore/VansVegetationSystem.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -76,6 +77,10 @@ namespace VansGraphics
 		std::vector<VansRenderNode*> m_OpaqueRenderNodes;
 
 		VansRenderNode* m_TerrainRenderNode;
+
+		VansRenderNode* m_VegetationRenderNode = nullptr;
+
+		VansVegetationSystem* m_VegetationSystem = nullptr;
 
 		std::vector<VansRenderNode*> m_TransParentRenderNodes;
 
@@ -166,6 +171,8 @@ namespace VansGraphics
 
 		void AddTerrainNode(VansVKDevice* device, json& terrainData);
 
+		void AddVegetationNode(VkDevice& device, json& vegetationData);
+
 		void AddDeferredNode(VkDevice& device);
 
 		void AddScreenSpaceFeatureNode(VkDevice& device);
@@ -186,6 +193,10 @@ namespace VansGraphics
 		void UpdateClothSimulation(float dt);
 		void WriteClothResultsToStagingBuffers();
 		void RecordClothVertexUploads(VkCommandBuffer cmd);
+
+		// Vegetation: dispatch bone-sim + skinning compute passes on the given command buffer.
+		// Must be called after UpdateSceneData() and before the deferred render pass begins.
+		void RecordVegetationCompute(VansVKCommandBuffer& cmd);
 
 	private:
 
@@ -250,6 +261,8 @@ namespace VansGraphics
 		void DrawOpaqueNodes();
 
 		void DrawTerrainNode(bool shadowPass = false);
+
+		void DrawVegetationNode();
 
 		void DrawTransParentNodes();
 

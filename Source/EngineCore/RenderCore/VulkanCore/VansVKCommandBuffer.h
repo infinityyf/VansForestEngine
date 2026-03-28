@@ -145,6 +145,9 @@ namespace VansGraphics
 
 		void Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance);
 
+		// ── Indirect draw ──
+		void DrawIndexedIndirect(VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride);
+
 		// ── Pipeline barrier ──
 		void PipelineBarrier(
 			VkPipelineStageFlags srcStageMask,

@@ -212,6 +212,7 @@ void VansGraphics::VansHierachuWindow::DrawMaterialDetail(VansMaterial& material
             showTex("AO",          hair.m_AoTexture);
             showTex("Shift",       hair.m_ShiftTexture);
             showTex("Alpha",       hair.m_AlphaTexture);
+            showTex("Flow",        hair.m_FlowTexture);
             ImGui::TreePop();
         }
     }

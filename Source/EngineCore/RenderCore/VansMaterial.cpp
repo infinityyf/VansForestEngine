@@ -482,6 +482,20 @@ void VansGraphics::VansHairMaterial::BuildHairTextureDescriptors()
 		});
 	}
 
+	if (m_FlowTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_HairOwnedDescSets[0],
+			HAIR_TEXTURE_BINDING_FLOW, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_FlowTexture->GetImage().GetSampler(),
+				m_FlowTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
 	descManager->UpdateDescriptorSets();
 }
 
@@ -543,6 +557,86 @@ void VansGraphics::VansSubsurfaceMaterial::BuildSubsurfaceTextureDescriptors()
 			{{
 				m_RoughnessTexture->GetImage().GetSampler(),
 				m_RoughnessTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	descManager->UpdateDescriptorSets();
+}
+
+void VansGraphics::VansGrassMaterial::BuildGrassTextureDescriptors()
+{
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_GrassTexture(m_GrassOwnedLayout, m_GrassOwnedDescSets);
+
+	auto* descManager = VansVKDescriptorManager::GetInstance();
+	descManager->ResetState();
+
+	if (m_AlbedoTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_GrassOwnedDescSets[0],
+			GRASS_TEXTURE_BINDING_ALBEDO, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_AlbedoTexture->GetImage().GetSampler(),
+				m_AlbedoTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_NormalTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_GrassOwnedDescSets[0],
+			GRASS_TEXTURE_BINDING_NORMAL, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_NormalTexture->GetImage().GetSampler(),
+				m_NormalTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_RoughnessTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_GrassOwnedDescSets[0],
+			GRASS_TEXTURE_BINDING_ROUGHNESS, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_RoughnessTexture->GetImage().GetSampler(),
+				m_RoughnessTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_TranslucencyTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_GrassOwnedDescSets[0],
+			GRASS_TEXTURE_BINDING_TRANSLUCENCY, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_TranslucencyTexture->GetImage().GetSampler(),
+				m_TranslucencyTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_AOTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_GrassOwnedDescSets[0],
+			GRASS_TEXTURE_BINDING_AO, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_AOTexture->GetImage().GetSampler(),
+				m_AOTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			}}
 		});

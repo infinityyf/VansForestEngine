@@ -19,6 +19,7 @@ namespace VansGraphics
 		DEFERRED_NODE = 1 << 4,
 		SCREEN_SPACE_NODE = 1 << 5,
 		TERRAIN_NODE = 1 << 6,
+		VEGETATION_NODE = 1 << 7,
 	};
 
 	struct alignas(16) ModelDataStruct
@@ -279,6 +280,29 @@ namespace VansGraphics
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
 		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+	};
+
+	// ── Vegetation render node — GPU-driven grass (indirect draw) ──────────────
+	class VansVegetationSystem;
+	class VansVegetationRenderNode : public VansRenderNode
+	{
+	private:
+		VansVegetationSystem* m_VegetationSystem = nullptr;
+
+	public:
+		VansVegetationRenderNode(VkDevice& device, RenderNodeType type)
+			: VansRenderNode(device, type) {}
+
+		void SetVegetationSystem(VansVegetationSystem* system) { m_VegetationSystem = system; }
+		VansVegetationSystem* GetVegetationSystem() const { return m_VegetationSystem; }
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+
+		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
 	};
 
 	class VansTerrain;
