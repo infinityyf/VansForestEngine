@@ -114,8 +114,6 @@ void VansVegetationSystem::CreateTemplateMesh(VkDevice device)
 	uint32_t tipIdx    = m_VertexCount - 1;
 	// Front face
 	indices.push_back(lastLeft);  indices.push_back(lastRight); indices.push_back(tipIdx);
-	// Back face
-	indices.push_back(lastRight); indices.push_back(lastLeft);  indices.push_back(tipIdx);
 
 	m_IndexCount = static_cast<uint32_t>(indices.size());
 
