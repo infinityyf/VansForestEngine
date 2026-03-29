@@ -88,6 +88,11 @@ namespace VansGraphics
         
         void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets);
 
+        // ── Accessors for vegetation terrain integration ────────────────
+        VansTexture* GetHeightMap() const { return m_HeightMap; }
+        float GetTerrainSize() const { return m_TerrainSize; }
+        float GetMaxHeight() const { return m_MaxHeight; }
+
     public:
 
         VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;

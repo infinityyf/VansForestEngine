@@ -129,6 +129,9 @@ namespace VansGraphics
 		VEG_SIM_BINDING_INSTANCE_DATA    = 0,  // SSBO (read) — per-instance position/scale/rotation
 		VEG_SIM_BINDING_BONE_DATA        = 1,  // SSBO (read/write) — bone positions + velocities
 		VEG_SIM_BINDING_BONE_MATRICES    = 2,  // SSBO (write) — output bone mat4 matrices
+		VEG_SIM_BINDING_TERRAIN_HEIGHTMAP = 3, // COMBINED_IMAGE_SAMPLER — terrain heightmap for ground placement
+		VEG_SIM_BINDING_LOD_FACTORS      = 4,  // SSBO (write) — per-instance LOD factor (1=full sim, 0=skip)
+		VEG_SIM_BINDING_SUB_BLADE_ROOTS  = 5,  // SSBO (read/write) — sub-blade root positions; bone sim writes terrain Y
 	};
 
 	// ====================================================================
@@ -141,6 +144,8 @@ namespace VansGraphics
 		VEG_SKIN_BINDING_SKINNED_POS      = 2,  // SSBO (write) — skinned positions output
 		VEG_SKIN_BINDING_SKINNED_NORM     = 3,  // SSBO (write) — skinned normals output
 		VEG_SKIN_BINDING_INSTANCE_DATA    = 4,  // SSBO (read) — per-instance data
+		VEG_SKIN_BINDING_LOD_FACTORS      = 5,  // SSBO (read) — per-instance LOD factor
+		VEG_SKIN_BINDING_SUB_BLADE_ROOTS  = 6,  // SSBO (read) — sub-blade root positions (terrain-snapped by bone sim)
 	};
 
 	// ====================================================================

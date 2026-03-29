@@ -29,6 +29,8 @@ void VansVegetationSystem::Init(VkDevice device, uint32_t instanceCount, uint32_
 	CreateBoneMatrixBuffer(device);
 	CreateSkinnedBuffers(device);
 	CreateIndirectDrawBuffer(device);
+	CreateLodFactorsBuffer(device);
+	CreateSubBladeRootsBuffer(device);
 	LoadComputeShaders(device);
 	CreateDescriptorSets();
 
@@ -146,7 +148,7 @@ void VansVegetationSystem::CreateInstanceBuffer(VkDevice device)
 {
 	std::vector<GrassInstance> instances(m_InstanceCount);
 	std::mt19937 rng(42);
-	std::uniform_real_distribution<float> posDist(-10.0f, 10.0f);
+	std::uniform_real_distribution<float> posDist(-100.0f, 100.0f);
 	std::uniform_real_distribution<float> scaleDist(0.4f, 1.5f);
 	std::uniform_real_distribution<float> rotDist(0.0f, 6.28318530718f);
 
@@ -177,26 +179,33 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 
 	float baseSegLength = m_BladeHeight / static_cast<float>(m_BoneCountPerInstance - 1);
 
-	// Default wind bend direction (XZ plane).  Matches the default wind
-	// direction passed from Update() so blades start already bent.
-	glm::vec3 windDir3 = glm::normalize(glm::vec3(1.0f, 0.0f, 0.0f)); // default wind X
-
-	// Maximum tilt angle at the tip (radians).  ~25° gives a gentle arc.
-	const float maxTiltRad = glm::radians(25.0f);
+	// Maximum tilt angle at the tip (radians). ~45° gives a natural relaxed arc.
+	const float maxTiltRad = glm::radians(45.0f);
 
 	// Read back instance data for root positions
 	// (we just generated it in-line, so regenerate with same seed)
 	std::mt19937 rng(42);
-	std::uniform_real_distribution<float> posDist(-10.0f, 10.0f);
+	std::uniform_real_distribution<float> posDist(-100.0f, 100.0f);
 	std::uniform_real_distribution<float> scaleDist(0.4f, 1.5f);
 	std::uniform_real_distribution<float> rotDist(0.0f, 6.28318530718f);
+	// Per-blade lean deviation: random angle within ±m_InitLeanDeviation around wind direction
+	// NOTE: do NOT add an extra rng draw here — it would break sync with CreateInstanceBuffer
+	//  (both functions use the same seed-42 sequence: posX, posZ, scale, rot per instance).
+	//  Instead we remap rot ∈ [0,2π] → lean deviation ∈ [-initLeanDeviation, +initLeanDeviation].
+	const float windAngle = atan2f(m_InitWindDir.y, m_InitWindDir.x);
+	const float twoPi     = 6.28318530718f;
 
 	for (uint32_t i = 0; i < m_InstanceCount; ++i)
 	{
 		glm::vec3 pos(posDist(rng), 0.0f, posDist(rng));
 		float scale = scaleDist(rng);
-		float rot = rotDist(rng);
-		(void)rot;
+		float rot   = rotDist(rng);   // same draw as CreateInstanceBuffer — RNG stays in sync
+
+		// Map rot uniformly over [0,2π] → deviation ∈ [-m_InitLeanDeviation, +m_InitLeanDeviation].
+		// (rot/twoPi) ∈ [0,1), remapped to [-1,+1] then scaled by the deviation limit.
+		float deviation = (rot / twoPi * 2.0f - 1.0f) * m_InitLeanDeviation;
+		float leanAngle = windAngle + deviation;
+		glm::vec3 leanDir = glm::normalize(glm::vec3(cosf(leanAngle), 0.0f, sinf(leanAngle)));
 
 		// Per-instance segment length based on scale
 		float segLength = baseSegLength * scale;
@@ -210,22 +219,24 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 
 			if (j == 0)
 			{
-				// Root bone: anchored at ground
-				bones[idx].position  = glm::vec4(accumPos, 1.0f);
-				bones[idx].velocity  = glm::vec4(accumPos, 0.0f);
-				bones[idx].restOffset = glm::vec4(0.0f, segLength, 0.0f, 0.0f);
+				// Root bone: anchored at ground; slight lean already in restOffset
+				glm::vec3 rootRestDir = glm::normalize(
+					glm::vec3(0.0f, 1.0f, 0.0f) * cosf(glm::radians(5.0f)) +
+					leanDir * sinf(glm::radians(5.0f)));
+				bones[idx].position   = glm::vec4(accumPos, 1.0f);
+				bones[idx].velocity   = glm::vec4(accumPos, 0.0f);
+				bones[idx].restOffset = glm::vec4(rootRestDir * segLength, 0.0f);
 			}
 			else
 			{
-				// Progressive tilt: each bone tilts a bit more toward wind
+				// Progressive tilt: each bone tilts more toward leanDir
 				float t = static_cast<float>(j) / static_cast<float>(m_BoneCountPerInstance - 1);
 				float tiltAngle = maxTiltRad * t;
 
-				// Rest offset: blend from pure up (0, segLength, 0) toward wind
-				// by rotating the up vector toward windDir3 by tiltAngle
+				// Rest offset: rotate the up vector toward leanDir by tiltAngle
 				glm::vec3 restDir = glm::normalize(
 					glm::vec3(0.0f, 1.0f, 0.0f) * cosf(tiltAngle) +
-					windDir3 * sinf(tiltAngle));
+					leanDir * sinf(tiltAngle));
 
 				bones[idx].restOffset = glm::vec4(restDir * segLength, 0.0f);
 
@@ -261,7 +272,8 @@ void VansVegetationSystem::CreateBoneMatrixBuffer(VkDevice device)
 // ============================================================================
 void VansVegetationSystem::CreateSkinnedBuffers(VkDevice device)
 {
-	uint32_t totalVerts = m_InstanceCount * m_VertexCount;
+	// Each main instance emits m_SubBladeCount blades, all sharing the same bone matrices.
+	uint32_t totalVerts = m_InstanceCount * m_SubBladeCount * m_VertexCount;
 	VkDeviceSize bufferSize = sizeof(glm::vec4) * totalVerts;
 
 	m_SkinnedVertexBuffer.CreatVulkanBuffer(device, bufferSize, VK_FORMAT_R32_SFLOAT,
@@ -280,7 +292,7 @@ void VansVegetationSystem::CreateIndirectDrawBuffer(VkDevice device)
 {
 	VkDrawIndexedIndirectCommand indirectArgs = {};
 	indirectArgs.indexCount    = m_IndexCount;
-	indirectArgs.instanceCount = m_InstanceCount;
+	indirectArgs.instanceCount = m_InstanceCount * m_SubBladeCount;  // one draw per sub-blade
 	indirectArgs.firstIndex    = 0;
 	indirectArgs.vertexOffset  = 0;
 	indirectArgs.firstInstance = 0;
@@ -290,6 +302,77 @@ void VansVegetationSystem::CreateIndirectDrawBuffer(VkDevice device)
 		VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	m_IndirectDrawBuffer.SetBufferData(&indirectArgs, 0, static_cast<int>(bufferSize));
+}
+
+// ============================================================================
+// CreateLodFactorsBuffer — one float per instance, written by bone sim
+// ============================================================================
+void VansVegetationSystem::CreateLodFactorsBuffer(VkDevice device)
+{
+	VkDeviceSize bufferSize = sizeof(float) * m_InstanceCount;
+	m_LodFactorsBuffer.CreatVulkanBuffer(device, bufferSize, VK_FORMAT_R32_SFLOAT,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+}
+
+// ============================================================================
+// CreateSubBladeRootsBuffer
+//
+// Each main instance (bone chain) owns m_SubBladeCount root positions that
+// form a small visual tuft.  Sub-blade 0 is the main root (same XZ as the
+// instance position).  Sub-blades 1..N-1 are scattered within a short radius.
+// Y is initialised to 0 here; the bone-sim compute shader writes the correct
+// terrain-snapped Y value every frame.
+// ============================================================================
+void VansVegetationSystem::CreateSubBladeRootsBuffer(VkDevice device)
+{
+	const uint32_t total = m_InstanceCount * m_SubBladeCount;
+	std::vector<glm::vec4> roots(total, glm::vec4(0.0f));
+
+	// Reproduce the exact same instance XZ positions as CreateInstanceBuffer()
+	// and CreateBoneBuffer() so all three buffers stay in sync.
+	std::mt19937 rng(42);
+	std::uniform_real_distribution<float> posDist(-100.0f, 100.0f);
+	std::uniform_real_distribution<float> scaleDist(0.4f, 1.5f);
+	std::uniform_real_distribution<float> rotDist(0.0f, 6.28318530718f);
+
+	// Separate RNG for sub-blade scatter so it doesn't affect the main sequence.
+	std::mt19937 rngTuft(137);
+	std::uniform_real_distribution<float> radiusDist(m_SubBladeScatterRadiusMin, m_SubBladeScatterRadiusMax);
+	std::uniform_real_distribution<float> angleDist(0.0f, 6.28318530718f);
+
+	for (uint32_t i = 0; i < m_InstanceCount; ++i)
+	{
+		float px = posDist(rng);
+		float pz = posDist(rng);
+		(void)scaleDist(rng);  // consume to stay in sync
+		(void)rotDist(rng);
+
+		// Sub-blade 0 = main blade root (terrain Y corrected by bone sim)
+		roots[i * m_SubBladeCount + 0] = glm::vec4(px, 0.0f, pz, 1.0f);
+
+		// Sub-blades 1..N-1 = nearby positions forming a visual tuft
+		for (uint32_t s = 1; s < m_SubBladeCount; ++s)
+		{
+			float r   = radiusDist(rngTuft);
+			float ang = angleDist(rngTuft);
+			roots[i * m_SubBladeCount + s] = glm::vec4(
+				px + r * cosf(ang),
+				0.0f,
+				pz + r * sinf(ang),
+				1.0f);
+		}
+	}
+
+	VkDeviceSize bufferSize = sizeof(glm::vec4) * total;
+	// HOST_VISIBLE so CPU can upload initial XZ; GPU reads/writes Y each frame.
+	m_SubBladeRootsBuffer.CreatVulkanBuffer(device, bufferSize, VK_FORMAT_R32G32B32A32_SFLOAT,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	m_SubBladeRootsBuffer.SetBufferData(roots.data(), 0, static_cast<int>(bufferSize));
+
+	VANS_LOG("[VegetationSystem] Sub-blade roots buffer: " << m_InstanceCount
+		<< " instances \xc3\x97 " << m_SubBladeCount << " sub-blades = " << total << " roots");
 }
 
 // ============================================================================
@@ -331,17 +414,41 @@ void VansVegetationSystem::WriteBoneSimDescriptors()
 		m_BoneSimDescSets[0], VEG_SIM_BINDING_INSTANCE_DATA, 0,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		{{ m_InstanceBuffer.GetNativeBuffer(), 0, m_InstanceBuffer.GetBufferSize() }}
-	});
+		});
 	descMgr->m_BufferDescInfos.push_back({
 		m_BoneSimDescSets[0], VEG_SIM_BINDING_BONE_DATA, 0,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		{{ m_BoneBuffer.GetNativeBuffer(), 0, m_BoneBuffer.GetBufferSize() }}
-	});
+		});
 	descMgr->m_BufferDescInfos.push_back({
 		m_BoneSimDescSets[0], VEG_SIM_BINDING_BONE_MATRICES, 0,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		{{ m_BoneMatrixBuffer.GetNativeBuffer(), 0, m_BoneMatrixBuffer.GetBufferSize() }}
-	});
+		});
+
+	// Terrain heightmap (binding 3) — always write a valid descriptor
+	if (m_TerrainEnabled && m_TerrainHeightmapView != VK_NULL_HANDLE && m_TerrainHeightmapSampler != VK_NULL_HANDLE)
+	{
+		descMgr->m_ImageDescInfos.push_back({
+			m_BoneSimDescSets[0], VEG_SIM_BINDING_TERRAIN_HEIGHTMAP, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}
+			});
+	}
+
+	// LOD factors buffer (binding 4)
+	descMgr->m_BufferDescInfos.push_back({
+		m_BoneSimDescSets[0], VEG_SIM_BINDING_LOD_FACTORS, 0,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		{{ m_LodFactorsBuffer.GetNativeBuffer(), 0, m_LodFactorsBuffer.GetBufferSize() }}
+		});
+
+	// Sub-blade roots buffer (binding 5) — bone sim writes terrain-snapped Y each frame
+	descMgr->m_BufferDescInfos.push_back({
+		m_BoneSimDescSets[0], VEG_SIM_BINDING_SUB_BLADE_ROOTS, 0,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		{{ m_SubBladeRootsBuffer.GetNativeBuffer(), 0, m_SubBladeRootsBuffer.GetBufferSize() }}
+		});
 
 	descMgr->UpdateDescriptorSets();
 }
@@ -375,6 +482,18 @@ void VansVegetationSystem::WriteSkinningDescriptors()
 		m_SkinningDescSets[0], VEG_SKIN_BINDING_INSTANCE_DATA, 0,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		{{ m_InstanceBuffer.GetNativeBuffer(), 0, m_InstanceBuffer.GetBufferSize() }}
+	});
+	descMgr->m_BufferDescInfos.push_back({
+		m_SkinningDescSets[0], VEG_SKIN_BINDING_LOD_FACTORS, 0,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		{{ m_LodFactorsBuffer.GetNativeBuffer(), 0, m_LodFactorsBuffer.GetBufferSize() }}
+	});
+
+	// Sub-blade roots buffer (binding 6) — skinning reads to compute per-blade position offset
+	descMgr->m_BufferDescInfos.push_back({
+		m_SkinningDescSets[0], VEG_SKIN_BINDING_SUB_BLADE_ROOTS, 0,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		{{ m_SubBladeRootsBuffer.GetNativeBuffer(), 0, m_SubBladeRootsBuffer.GetBufferSize() }}
 	});
 
 	descMgr->UpdateDescriptorSets();
@@ -414,8 +533,9 @@ void VansVegetationSystem::WriteDrawDescriptors()
 // ============================================================================
 void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTime, float time,
                                    const glm::vec2& windDirection, float windStrength,
-                                   float windFrequency, float stiffness, float damping,
-                                   float softness)
+                                   float windFrequency, float windSpeed, float windBendMult,
+                                   float stiffness, float damping,
+                                   float softness, float lodFullDist, float lodFadeDist)
 {
 	if (!m_BoneSimShader || !m_SkinningShader ||
 	    m_BoneSimDescSets.empty() || m_SkinningDescSets.empty())
@@ -430,19 +550,30 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 	simPC.time          = time;
 	simPC.windStrength  = windStrength;
 	simPC.windFrequency = windFrequency;
+	simPC.windSpeed     = windSpeed;
+	simPC.windBendMult  = windBendMult;
 	simPC.windDirX      = windDirection.x;
 	simPC.windDirY      = windDirection.y;
 	simPC.stiffness     = stiffness;
 	simPC.damping       = damping;
 	simPC.softness      = softness;
+	simPC.terrainSize        = m_TerrainSize;
+	simPC.terrainMaxHeight   = m_TerrainMaxHeight;
+	simPC.terrainHeightOffset = m_TerrainHeightOffset;
+	simPC.terrainEnabled     = m_TerrainEnabled ? 1 : 0;
+	simPC.lodFullDist        = lodFullDist;
+	simPC.lodFadeDist        = lodFadeDist;
+	simPC.subBladeCount      = static_cast<int>(m_SubBladeCount);
+	simPC.grassHeight        = m_BladeHeight;
 
 	m_BoneSimShader->SetPushConstantData(&simPC);
 
 	// Ensure compute pipeline is created before dispatching (first frame)
-	computeCmd.EnsureComputeShader(*m_BoneSimShader, { m_BoneSimLayout });
+	// Set 0: global camera UBO, Set 1: bone sim buffers (matches CameraData.glsl convention)
+	computeCmd.EnsureComputeShader(*m_BoneSimShader, { m_GlobalDescSetLayout, m_BoneSimLayout });
 
 	uint32_t simGroupsX = (m_InstanceCount + 63) / 64;
-	computeCmd.DispatchCompute(*m_BoneSimShader, simGroupsX, 1, 1, { m_BoneSimDescSets[0] });
+	computeCmd.DispatchCompute(*m_BoneSimShader, simGroupsX, 1, 1, { m_GlobalDescSet, m_BoneSimDescSets[0] });
 
 	// ── Barrier: bone sim write → skinning read ─────────────────────
 	VkMemoryBarrier simToSkinBarrier = {};
@@ -460,13 +591,14 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 	skinPC.vertexCount   = m_VertexCount;
 	skinPC.boneCount     = m_BoneCountPerInstance;
 	skinPC.grassHeight   = m_BladeHeight;
+	skinPC.subBladeCount = m_SubBladeCount;
 
 	m_SkinningShader->SetPushConstantData(&skinPC);
 
 	// Ensure compute pipeline is created before dispatching (first frame)
 	computeCmd.EnsureComputeShader(*m_SkinningShader, { m_SkinningLayout });
 
-	uint32_t totalVerts   = m_InstanceCount * m_VertexCount;
+	uint32_t totalVerts   = m_InstanceCount * m_SubBladeCount * m_VertexCount;
 	uint32_t skinGroupsX  = (totalVerts + 63) / 64;
 	computeCmd.DispatchCompute(*m_SkinningShader, skinGroupsX, 1, 1, { m_SkinningDescSets[0] });
 
@@ -539,6 +671,8 @@ void VansVegetationSystem::Cleanup(VkDevice device)
 	m_TemplateVertexBuffer.DestroyVulkanBuffer(device);
 	m_TemplateIndexBuffer.DestroyVulkanBuffer(device);
 	m_IndirectDrawBuffer.DestroyVulkanBuffer(device);
+	m_LodFactorsBuffer.DestroyVulkanBuffer(device);
+	m_SubBladeRootsBuffer.DestroyVulkanBuffer(device);
 
 	if (m_BoneSimShader)
 	{
@@ -550,4 +684,27 @@ void VansVegetationSystem::Cleanup(VkDevice device)
 		delete m_SkinningShader;
 		m_SkinningShader = nullptr;
 	}
+}
+
+// ============================================================================
+// SetTerrainHeightmap — connects terrain height data for ground placement
+// ============================================================================
+void VansVegetationSystem::SetTerrainHeightmap(VkImageView imageView, VkSampler sampler,
+                                                float terrainSize, float maxHeight, float heightOffset)
+{
+	m_TerrainHeightmapView    = imageView;
+	m_TerrainHeightmapSampler = sampler;
+	m_TerrainSize             = terrainSize;
+	m_TerrainMaxHeight        = maxHeight;
+	m_TerrainHeightOffset     = heightOffset;
+	m_TerrainEnabled          = (imageView != VK_NULL_HANDLE && sampler != VK_NULL_HANDLE);
+
+	// Re-write bone sim descriptors to include the terrain heightmap
+	if (m_TerrainEnabled && !m_BoneSimDescSets.empty())
+	{
+		WriteBoneSimDescriptors();
+	}
+
+	VANS_LOG("[VegetationSystem] Terrain heightmap " << (m_TerrainEnabled ? "enabled" : "disabled")
+		<< " (size=" << terrainSize << ", maxH=" << maxHeight << ", offset=" << heightOffset << ")");
 }

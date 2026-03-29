@@ -505,9 +505,25 @@
     },
     "vegetation": {
         "name": "VegetationNode",
+        "bladeHeight": 1.5,
         "material": "grassMaterial",
-        "instanceCount": 20000,
-        "boneCount": 6
+        "instanceCount": 200000,
+        "boneCount": 3,
+        "windDirX": 1.0,
+        "windDirZ": 0.3,
+        "leanDeviation": 30.0,
+        "subBladeCount": 15,
+        "subBladeScatterRadiusMin": 0.15,
+        "subBladeScatterRadiusMax": 0.65,
+        "windStrength": 4.0,
+        "windFrequency": 0.5,
+        "windSpeed": 1.5,
+        "windBendMult": 5.0,
+        "stiffness": 15.0,
+        "damping": 0.92,
+        "softness": 0.2,
+        "lodFullDist": 15.0,
+        "lodFadeDist": 20.0
     },
     "mesh": [
         {

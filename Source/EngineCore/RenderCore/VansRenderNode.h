@@ -317,6 +317,8 @@ namespace VansGraphics
 
 		VansTerrainRenderNode(VansVKDevice* device, const TerrainConfig& config, RenderNodeType type);
 
+		VansTerrain* GetTerrain() const { return m_Terrain; }
+
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;

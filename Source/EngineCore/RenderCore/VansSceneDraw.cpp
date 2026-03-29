@@ -198,8 +198,20 @@ void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
     float deltaTime = static_cast<float>(VansTimer::GetLastFrameDelta());
     float time      = static_cast<float>(VansTimer::GetFrameTime());
 
-    m_VegetationSystem->Update(cmd, deltaTime, time);
-}
+    // Camera position is read directly in the shader via the global CameraData UBO (set=0)
+    // All simulation params are stored on the system (loaded from scene JSON via SetSimParams).
+    m_VegetationSystem->Update(cmd, deltaTime, time,
+        m_VegetationSystem->GetWindDirection(),
+        m_VegetationSystem->GetWindStrength(),
+        m_VegetationSystem->GetWindFrequency(),
+        m_VegetationSystem->GetWindSpeed(),
+        m_VegetationSystem->GetWindBendMult(),
+        m_VegetationSystem->GetStiffness(),
+        m_VegetationSystem->GetDamping(),
+        m_VegetationSystem->GetSoftness(),
+        m_VegetationSystem->GetLodFullDist(),
+        m_VegetationSystem->GetLodFadeDist());
+    }
 
 void VansGraphics::VansScene::DrawTransParentNodes()
 {

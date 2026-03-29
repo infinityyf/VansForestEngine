@@ -989,6 +989,11 @@ void VansGraphics::VansVegetationRenderNode::CreateDescriptorSets(VansCamera* ca
 	m_UsedDescSetLayouts.push_back(m_VegetationSystem->GetVegDrawLayout());
 	m_UsedDescSets.push_back(m_VegetationSystem->GetVegDrawDescSet());
 
+	// Wire global camera descriptor set into the vegetation system for bone sim compute
+	m_VegetationSystem->SetGlobalDescriptorSet(
+		m_Scene->m_GlobalDescriptorSetLayout,
+		m_Scene->m_GlobalDescriptorSet);
+
 	// Set 4: Grass textures (albedo, normal, roughness, translucency, ao)
 	if (m_Material->m_MaterialType == VansMaterialType::VAN_GRASS)
 	{

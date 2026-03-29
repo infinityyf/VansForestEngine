@@ -10,6 +10,10 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
+// Set 0: global camera UBO (same pattern as all other engine compute passes)
+#include "../Common/CameraData.glsl"
+
+// Set 1: vegetation simulation buffers
 // ── Instance data (read only) ───────────────────────────────────────────────
 struct GrassInstance
 {
@@ -21,7 +25,7 @@ struct GrassInstance
     int   padding2;
 };
 
-layout(std430, set = 0, binding = 0) readonly buffer InstanceBuffer
+layout(std430, set = 1, binding = 0) readonly buffer InstanceBuffer
 {
     GrassInstance instances[];
 };
@@ -34,17 +38,32 @@ struct GrassBone
     vec4 restOffset;    // .xyz = rest direction offset, .w = unused
 };
 
-layout(std430, set = 0, binding = 1) buffer BoneBuffer
+layout(std430, set = 1, binding = 1) buffer BoneBuffer
 {
     GrassBone bones[];
 };
 
 // ── Bone matrices (write only) ─────────────────────────────────────────────
-layout(std430, set = 0, binding = 2) writeonly buffer BoneMatrixBuffer
+layout(std430, set = 1, binding = 2) writeonly buffer BoneMatrixBuffer
 {
     mat4 boneMatrices[];
 };
 
+// ── Terrain heightmap (read only, for ground placement) ────────────────────
+layout(set = 1, binding = 3) uniform sampler2D terrainHeightmap;
+
+// ── Per-instance LOD factor (write) ────────────────────────────────────────
+layout(std430, set = 1, binding = 4) writeonly buffer LodFactorBuffer
+{
+    float lodFactors[];
+};
+// ── Sub-blade root positions (read/write) ────────────────────────────────
+// Bone sim writes the terrain-snapped Y value into every sub-blade root each frame.
+// CPU initialises the XZ positions; they remain constant after init.
+layout(std430, set = 1, binding = 5) buffer SubBladeRootsBuffer
+{
+    vec4 subBladeRoots[];
+};
 // ── Push constants ─────────────────────────────────────────────────────────
 layout(push_constant) uniform PushConstants
 {
@@ -52,21 +71,32 @@ layout(push_constant) uniform PushConstants
     float time;
     float windStrength;
     float windFrequency;
+    float windSpeed;          // animation rate of wind pattern (higher = faster gusts)
+    float windBendMult;       // overall bend amplification (higher = more dramatic bending)
     float windDirX;
     float windDirY;
     float stiffness;
     float damping;
-    float softness;        // 0.0 = rigid (hard blade), 1.0 = fully soft
+    float softness;           // 0.0 = rigid (hard blade), 1.0 = fully soft
+    float terrainSize;        // terrain world size (e.g. 1024)
+    float terrainMaxHeight;   // max terrain height in world units
+    float terrainHeightOffset;// vertical offset (e.g. -23)
+    int   terrainEnabled;     // 0 = no terrain height, 1 = sample heightmap
+    // LOD distances (camera position comes from CameraData UBO at set=0, not push constant)
+    float lodFullDist;        // full simulation within this XZ radius
+    float lodFadeDist;        // fade zone end; skip entirely beyond this
+    int   subBladeCount;      // number of sub-blades per instance (must match CPU m_SubBladeCount)
+    float grassHeight;         // blade height in world units — controls segment length
 } pc;
 
 // ── Constants ──────────────────────────────────────────────────────────────
-const uint BONE_COUNT = 6;
-const float SEGMENT_LENGTH_BASE = 0.5 / 5.0; // bladeHeight / (boneCount - 1)
+const uint BONE_COUNT = 3;
+const float SEGMENT_LENGTH_BASE = 0.5 / 2.0; // bladeHeight / (boneCount - 1)
 const float MAX_BEND_ANGLE_COS = 0.5;        // cos(60°)
 const float GRAVITY = -9.8;
 const float SEGMENT_MASS = 0.001;
 const float SPRING_K_MAX = 200.0;      // high spring constant keeps blade rigid as a unit
-const float WIND_BEND_MULT = 3.5;      // amplify wind for strong visible bending
+// WIND_BEND_MULT is now controlled via pc.windBendMult (configurable per-scene from JSON)
 
 // ── Noise function (simple gradient noise for wind) ────────────────────────
 float hash(vec2 p)
@@ -93,7 +123,7 @@ float gradientNoise(vec2 p)
 vec3 sampleWind(vec3 worldPos)
 {
     vec2 windDir = normalize(vec2(pc.windDirX, pc.windDirY));
-    vec2 noiseCoord = worldPos.xz * pc.windFrequency + vec2(pc.time * 0.8);
+    vec2 noiseCoord = worldPos.xz * pc.windFrequency + vec2(pc.time * pc.windSpeed);
     float noise = gradientNoise(noiseCoord);
 
     vec3 wind;
@@ -141,13 +171,80 @@ void main()
         return;
 
     GrassInstance inst = instances[instanceID];
-    float segLength = SEGMENT_LENGTH_BASE * inst.scale;
+    // Derive segment length from the runtime blade height so JSON can control blade size.
+    float segLength = (pc.grassHeight / float(BONE_COUNT - 1)) * inst.scale;
     float dt = pc.deltaTime;
     uint boneBase = instanceID * BONE_COUNT;
 
-    // Root bone is always anchored to instance position
-    bones[boneBase].position = vec4(inst.position, 1.0);
-    bones[boneBase].velocity = vec4(inst.position, 0.0);
+    // ── LOD: compute XZ distance to camera (position from CameraData UBO) ──────
+    vec2 camXZ   = vec2(cameraPosition.x, cameraPosition.z);
+    vec2 instXZ  = inst.position.xz;
+    float dist   = distance(instXZ, camXZ);
+
+    // ── Sample terrain heightmap to place root on terrain surface ─────────────
+    vec3 rootPos = inst.position;
+    if (pc.terrainEnabled != 0)
+    {
+        vec2 heightUV = rootPos.xz / pc.terrainSize + 0.5;
+        float terrainHeight = texture(terrainHeightmap, heightUV).r * pc.terrainMaxHeight + pc.terrainHeightOffset;
+        rootPos.y = terrainHeight;
+    }
+
+    // Root bone is always anchored to instance position (with terrain height).
+    // Before overwriting, capture the old Y so we can shift the upper bones to match,
+    // preserving the blade's arc shape when terrain moves the root up or down.
+    float oldRootY = bones[boneBase].position.y;
+    bones[boneBase].position = vec4(rootPos, 1.0);
+    bones[boneBase].velocity = vec4(rootPos, 0.0);
+
+    float terrainDeltaY = rootPos.y - oldRootY;
+    if (abs(terrainDeltaY) > 0.001)
+    {
+        // Shift all non-root bones by the same vertical offset so the whole
+        // blade moves together (important for frozen far-LOD blades that are
+        // never individually updated by the Verlet integrator).
+        for (uint j = 1; j < BONE_COUNT; ++j)
+        {
+            bones[boneBase + j].position.y += terrainDeltaY;
+            bones[boneBase + j].velocity.y += terrainDeltaY;
+        }
+    }
+
+    // ── Assign terrain-snapped Y to all sub-blade roots in this tuft ──────────
+    // CPU fixed the XZ positions; we just propagate the main root’s terrain Y.
+    // Runs before the LOD early-return so even frozen instances stay on terrain.
+    for (int s = 0; s < pc.subBladeCount; ++s)
+    {
+        subBladeRoots[instanceID * uint(pc.subBladeCount) + uint(s)].y = rootPos.y;
+    }
+
+    // ── Beyond fade distance: skip Verlet entirely, freeze at last state ───────
+    if (dist > pc.lodFadeDist)
+    {
+        // Write 1.0 so the skinning pass still runs using the frozen rest-pose matrices.
+        // (writing 0.0 would make the skinning shader skip these blades → invisible)
+        lodFactors[instanceID] = 1.0;
+        float cosR = cos(inst.rotation);
+        float sinR = sin(inst.rotation);
+        vec3 seedRight = vec3(cosR, 0.0, sinR);
+        vec3 prevRight = seedRight;
+        for (uint j = 0; j < BONE_COUNT; ++j)
+        {
+            uint idx = boneBase + j;
+            vec3 pos = bones[idx].position.xyz;
+            vec3 tangent = (j < BONE_COUNT - 1)
+                ? normalize(bones[idx + 1].position.xyz - pos)
+                : normalize(pos - bones[idx - 1].position.xyz);
+            mat4 boneMat;
+            prevRight = buildBoneMatrixPT(pos, tangent, prevRight, boneMat);
+            boneMatrices[instanceID * BONE_COUNT + j] = boneMat;
+        }
+        return;
+    }
+
+    // ── Compute LOD fade factor (1.0 = full sim, approaches 0 at lodFadeDist) ──
+    float lodFactor = 1.0 - smoothstep(pc.lodFullDist, pc.lodFadeDist, dist);
+    lodFactors[instanceID] = lodFactor;
 
     // Derive per-frame simulation parameters from softness
     float softness       = clamp(pc.softness, 0.0, 1.0);
@@ -158,7 +255,7 @@ void main()
 
     // Sample wind ONCE at root — all bones share the same wind direction
     // so the blade bends uniformly instead of waving per-segment.
-    vec3 rootWind = sampleWind(inst.position) * pc.windStrength * windScale * WIND_BEND_MULT;
+    vec3 rootWind = sampleWind(rootPos) * pc.windStrength * windScale * pc.windBendMult;
 
     // Simulate bones 1..5 (Verlet integration)
     for (uint j = 1; j < BONE_COUNT; ++j)
@@ -175,9 +272,9 @@ void main()
         // Spring restoring force — pulls bone back toward rest pose
         vec3 springForce = (restTarget - curPos) * springK;
 
-        // Wind force scaled by height: tip gets more force → uniform arc bend
+        // Wind force scaled by height AND lodFactor: tip bends more, far grass barely moves
         float heightRatio = float(j) / float(BONE_COUNT - 1);
-        vec3 wind = rootWind * heightRatio;
+        vec3 wind = rootWind * heightRatio * lodFactor;
         vec3 gravity = vec3(0.0, GRAVITY * SEGMENT_MASS, 0.0);
         vec3 force = wind + gravity + springForce;
 
@@ -197,6 +294,10 @@ void main()
             newDir = normalize(mix(newDir, restDir, pc.stiffness * dt));
             newPos = parentPos + newDir * segLength;
         }
+
+        // Fade movement toward rest pose as lodFactor decreases
+        // lodFactor=1 → full dynamics, lodFactor=0 → blade snaps to rest target
+        newPos = mix(restTarget, newPos, lodFactor);
 
         // Store: current becomes prev, new becomes current
         bones[idx].velocity = vec4(curPos, 0.0);   // prevPosition

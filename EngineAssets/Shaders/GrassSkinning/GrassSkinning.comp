@@ -58,27 +58,48 @@ layout(std430, set = 0, binding = 4) readonly buffer InstanceBuffer
     GrassInstance instances[];
 };
 
+// ── Per-instance LOD factor (read only) ───────────────────────────────
+layout(std430, set = 0, binding = 5) readonly buffer LodFactorBuffer
+{
+    float lodFactors[];
+};
+
+// ── Sub-blade root positions (read only) ───────────────────────────────
+// Terrain-snapped positions written by bone sim. Size = instanceCount * subBladeCount.
+layout(std430, set = 0, binding = 6) readonly buffer SubBladeRootsBuffer
+{
+    vec4 subBladeRoots[];
+};
+
 // ── Push constants ─────────────────────────────────────────────────────────
 layout(push_constant) uniform PushConstants
 {
-    uint instanceCount;
+    uint instanceCount;   // number of main bone chains
     uint vertexCount;
     uint boneCount;
     float grassHeight;
+    uint subBladeCount;   // sub-blades per instance; total draw count = instanceCount * subBladeCount
 } pc;
 
 void main()
 {
     uint globalIdx = gl_GlobalInvocationID.x;
-    uint totalVerts = pc.instanceCount * pc.vertexCount;
+    // Total threads = mainInstances * subBladeCount * vertsPerBlade
+    uint totalVerts = pc.instanceCount * pc.subBladeCount * pc.vertexCount;
     if (globalIdx >= totalVerts)
         return;
 
-    uint instanceID = globalIdx / pc.vertexCount;
-    uint vertexID   = globalIdx % pc.vertexCount;
+    uint subInstanceID  = globalIdx / pc.vertexCount;     // 0 .. instanceCount*subBladeCount-1
+    uint vertexID       = globalIdx % pc.vertexCount;
+    uint mainInstanceID = subInstanceID / pc.subBladeCount;  // which bone chain
+    uint subID          = subInstanceID % pc.subBladeCount;  // which sub-blade within the tuft
+
+    // ── LOD cull: all sub-blades share their main instance's LOD factor ──────
+    if (lodFactors[mainInstanceID] <= 0.0)
+        return;
 
     GrassVertex vert = templateVertices[vertexID];
-    GrassInstance inst = instances[instanceID];
+    GrassInstance inst = instances[mainInstanceID];
 
     // ── Bone weight based on Y position (height mapping) ────────────────────
     float normalizedY = vert.position.y / pc.grassHeight;
@@ -90,18 +111,32 @@ void main()
     float weight0   = 1.0 - weight1;
 
     // ── Apply per-instance scale to template vertex ─────────────────────────
-    // Y-axis rotation is already baked into the bone matrices (via seedRight
-    // in GrassBoneSim), so we only apply scale here — no manual rotation.
-    vec3 scaledPos  = vert.position.xyz * inst.scale;
-    vec3 localNorm  = vert.normal.xyz;
+    // Y-axis rotation is baked into the bone matrices via seedRight in GrassBoneSim.
+    // localY for each bone = vertex height MINUS the bone's own resting height,
+    // so the offset is relative to the bone position, not the blade root.
+    float segLength  = pc.grassHeight / float(pc.boneCount - 1);
+    float localY0    = (vert.position.y - float(boneIdx0) * segLength) * inst.scale;
+    float localY1    = (vert.position.y - float(boneIdx1) * segLength) * inst.scale;
+    float scaledX    = vert.position.x * inst.scale;
+    float scaledZ    = vert.position.z * inst.scale;
+    vec3 localNorm   = vert.normal.xyz;
 
-    // ── Dual-bone skinning ──────────────────────────────────────────────────
-    uint boneBase = instanceID * pc.boneCount;
-    mat4 skinMat = boneMatrices[boneBase + boneIdx0] * weight0
-                 + boneMatrices[boneBase + boneIdx1] * weight1;
+    // ── Dual-bone skinning (main instance's bone matrices, shared by all sub-blades) ──
+    uint boneBase = mainInstanceID * pc.boneCount;
+    vec4 pos0 = boneMatrices[boneBase + boneIdx0] * vec4(scaledX, localY0, scaledZ, 1.0);
+    vec4 pos1 = boneMatrices[boneBase + boneIdx1] * vec4(scaledX, localY1, scaledZ, 1.0);
+    vec4 nrm0 = boneMatrices[boneBase + boneIdx0] * vec4(localNorm, 0.0);
+    vec4 nrm1 = boneMatrices[boneBase + boneIdx1] * vec4(localNorm, 0.0);
 
-    vec4 skinnedPos  = skinMat * vec4(scaledPos, 1.0);
-    vec4 skinnedNorm = skinMat * vec4(localNorm, 0.0);
+    vec4 skinnedPos  = pos0 * weight0 + pos1 * weight1;
+    vec4 skinnedNorm = nrm0 * weight0 + nrm1 * weight1;
+
+    // ── Sub-blade position offset ─────────────────────────────────────────────
+    // Sub-blade 0 = main blade (zero offset). Sub-blades 1..N-1 are translated
+    // to their own terrain-snapped root — same animation, different world position.
+    vec3 mainRoot = subBladeRoots[mainInstanceID * pc.subBladeCount + 0u].xyz;
+    vec3 subRoot  = subBladeRoots[mainInstanceID * pc.subBladeCount + subID].xyz;
+    skinnedPos.xyz += subRoot - mainRoot;
 
     // ── Write output ────────────────────────────────────────────────────────
     skinnedPositions[globalIdx] = skinnedPos;

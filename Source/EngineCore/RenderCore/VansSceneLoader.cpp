@@ -1232,14 +1232,66 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
 void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetationData)
 {
     // Read optional parameters from JSON
-    uint32_t instanceCount = vegetationData.value("instanceCount", 10000u);
+    uint32_t instanceCount = vegetationData.value("instanceCount", 2000000u);
     uint32_t boneCount     = vegetationData.value("boneCount", 6u);
+    float    bladeHeight   = vegetationData.value("bladeHeight", 0.5f);
+    float    windDirX      = vegetationData.value("windDirX", 1.0f);
+    float    windDirZ      = vegetationData.value("windDirZ", 0.0f);
+    float    leanDeviation = vegetationData.value("leanDeviation", 35.0f);  // degrees
     std::string materialName = vegetationData.value("material", "grassMaterial");
     std::string name         = vegetationData.value("name", "VegetationNode");
 
+    // Read per-frame simulation parameters (all configurable from JSON)
+    uint32_t subBladeCount           = vegetationData.value("subBladeCount",          10u);
+    float    subBladeScatterRadiusMin = vegetationData.value("subBladeScatterRadiusMin", 0.15f);
+    float    subBladeScatterRadiusMax = vegetationData.value("subBladeScatterRadiusMax", 0.45f);
+    float windStrength  = vegetationData.value("windStrength",  4.0f);   // overall wind force
+    float windFrequency = vegetationData.value("windFrequency", 0.5f);   // spatial noise frequency
+    float windSpeed     = vegetationData.value("windSpeed",     1.5f);   // noise scroll rate (animation speed)
+    float windBendMult  = vegetationData.value("windBendMult",  5.0f);   // bend amplification
+    float stiffness     = vegetationData.value("stiffness",    15.0f);
+    float damping       = vegetationData.value("damping",       0.92f);
+    float softness      = vegetationData.value("softness",      0.2f);
+    float lodFullDist   = vegetationData.value("lodFullDist",  15.0f);
+    float lodFadeDist   = vegetationData.value("lodFadeDist",  20.0f);
+
     // Create the vegetation system
     m_VegetationSystem = new VansVegetationSystem();
+    m_VegetationSystem->SetBladeHeight(bladeHeight);   // must be set before Init()
+    m_VegetationSystem->SetInitWindDirection(glm::vec2(windDirX, windDirZ), leanDeviation);
+    m_VegetationSystem->SetSubBladeParams(subBladeCount, subBladeScatterRadiusMin, subBladeScatterRadiusMax);  // must be set before Init()
     m_VegetationSystem->Init(device, instanceCount, boneCount);
+
+    // Apply runtime simulation parameters loaded from JSON
+    m_VegetationSystem->SetSimParams(
+        glm::vec2(windDirX, windDirZ),
+        windStrength, windFrequency, windSpeed, windBendMult,
+        stiffness, damping, softness,
+        lodFullDist, lodFadeDist);
+
+    // ── Connect terrain heightmap for ground placement ──────────────────────
+    if (m_TerrainRenderNode != nullptr)
+    {
+        VansTerrainRenderNode* terrainNode = dynamic_cast<VansTerrainRenderNode*>(m_TerrainRenderNode);
+        if (terrainNode && terrainNode->GetTerrain())
+        {
+            VansTerrain* terrain = terrainNode->GetTerrain();
+            VansTexture* heightMap = terrain->GetHeightMap();
+            if (heightMap)
+            {
+                // Read terrain height params from JSON or use terrain defaults
+                float terrainMaxHeight   = vegetationData.value("terrainMaxHeight", 500.0f);
+                float terrainHeightOffset = vegetationData.value("terrainHeightOffset", -23.0f);
+
+                m_VegetationSystem->SetTerrainHeightmap(
+                    heightMap->GetImage().GetImageView(),
+                    heightMap->GetImage().GetSampler(),
+                    terrain->GetTerrainSize(),
+                    terrainMaxHeight,
+                    terrainHeightOffset);
+            }
+        }
+    }
 
     // Create the vegetation render node
     RenderNodeType type = RenderNodeType::VEGETATION_NODE;
