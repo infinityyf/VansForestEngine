@@ -523,7 +523,14 @@
         "damping": 0.92,
         "softness": 0.2,
         "lodFullDist": 15.0,
-        "lodFadeDist": 20.0
+        "lodFadeDist": 20.0,
+        "renderConfigs": [
+            {
+                "mesh": "",
+                "material": "grassMaterial",
+                "percent": 1.0
+            }
+        ]
     },
     "mesh": [
         {

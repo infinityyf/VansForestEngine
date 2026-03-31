@@ -97,21 +97,23 @@ void main()
     brdfData.viewDirection = viewDirection;
     brdfData.positionWS = position_world;
     
-    //remap to last frame screen space
+    //remap to last frame screen space (used for SSR reprojection)
     vec4 lastFrameClip = LastProjectionMatrix * LastViewMatrix * vec4(position_world, 1.0);
     lastFrameClip /= lastFrameClip.w;
     lastFrameClip.y = -lastFrameClip.y; // flip y for screen space
     vec2 lastFrameUV = (lastFrameClip.xy + 1.0) * 0.5;
-    //indirect diffuse
-    //a : brdfData.indirectDiffuse = texture(PreConvDiffuseEnvironment, normal).rgb;
-    //gi 使用半分辨率
-    brdfData.indirectDiffuse = texture(ssgi, lastFrameUV).rgb;
+
+    // indirect diffuse — SSGI temporal pass already accumulates and aligns to
+    // current frame UV via motion vectors; sample at fragTexCoord, NOT lastFrameUV.
+    // Using lastFrameUV here would double-reproject, adding one extra frame of latency
+    // and blurring edges that the temporal pass already correctly resolved.
+    brdfData.indirectDiffuse = texture(ssgi, fragTexCoord).rgb;
     //b : 计算球谐
     //brdfData.indirectDiffuse = SampleSHColor(normal);
     //c : 计算动态GI，探针球谐
     //brdfData.indirectDiffuse = CalculateSHDiffuse(position_world, normal);
 
-    brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy)).rgba;
+    brdfData.indirectSpecular = imageLoad(ssr,ivec2(fragTexCoord * ScreenParams.xy)).rgba;
     
     //计算光照
     LightResult lightResult;
@@ -215,7 +217,7 @@ void main()
     float fogOpacity = fogData.a;
     outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
     //outColor.rgb = fogData.rgb * fogOpacity;
-    //outColor.rgb = lightResult.ambientSpecular;
+    //outColor.rgb = lightResult.ambientDiffuse;
     //outColor.rgb = CalculateSHDiffuse(position_world, normal);
     outColor.a = 1;
 }

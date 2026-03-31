@@ -967,9 +967,9 @@ void VansGraphics::VansTerrainRenderNode::DrawShadow(VansVKCommandBuffer& cmd, G
 
 void VansGraphics::VansVegetationRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
-	if (!m_VegetationSystem || !m_Material)
+	if (!m_VegetationSystem)
 	{
-		VANS_LOG_WARN("[VegetationRenderNode] Missing VegetationSystem or Material — skipping descriptor set creation.");
+		VANS_LOG_WARN("[VegetationRenderNode] Missing VegetationSystem — skipping descriptor set creation.");
 		return;
 	}
 
@@ -985,31 +985,22 @@ void VansGraphics::VansVegetationRenderNode::CreateDescriptorSets(VansCamera* ca
 	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
 	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
 
-	// Set 3: Vegetation draw (skinned positions + normals + instance data)
-	m_UsedDescSetLayouts.push_back(m_VegetationSystem->GetVegDrawLayout());
-	m_UsedDescSets.push_back(m_VegetationSystem->GetVegDrawDescSet());
+	// Set 3+ (draw desc + grass textures) are bound per-config inside
+	// VansVegetationSystem::Draw() and are NOT stored here.
 
 	// Wire global camera descriptor set into the vegetation system for bone sim compute
 	m_VegetationSystem->SetGlobalDescriptorSet(
 		m_Scene->m_GlobalDescriptorSetLayout,
 		m_Scene->m_GlobalDescriptorSet);
 
-	// Set 4: Grass textures (albedo, normal, roughness, translucency, ao)
-	if (m_Material->m_MaterialType == VansMaterialType::VAN_GRASS)
+	// Ensure grass texture descriptors are built for every material in configs
+	for (auto& cfg : m_VegetationSystem->GetRenderConfigsGPU())
 	{
-		VansGrassMaterial* grass = static_cast<VansGrassMaterial*>(m_Material);
-		if (grass->m_GrassOwnedLayout == VK_NULL_HANDLE)
+		if (cfg.material && cfg.material->m_MaterialType == VansMaterialType::VAN_GRASS)
 		{
-			grass->BuildGrassTextureDescriptors();
-		}
-		if (grass->m_GrassOwnedLayout != VK_NULL_HANDLE && !grass->m_GrassOwnedDescSets.empty())
-		{
-			m_UsedDescSetLayouts.push_back(grass->m_GrassOwnedLayout);
-			m_UsedDescSets.push_back(grass->m_GrassOwnedDescSets[0]);
-		}
-		else
-		{
-			VANS_LOG_WARN("[VegetationRenderNode] Grass texture descriptor allocation failed — Set 4 skipped.");
+			VansGrassMaterial* grass = static_cast<VansGrassMaterial*>(cfg.material);
+			if (grass->m_GrassOwnedLayout == VK_NULL_HANDLE)
+				grass->BuildGrassTextureDescriptors();
 		}
 	}
 
@@ -1031,14 +1022,25 @@ void VansGraphics::VansVegetationRenderNode::UpdateDescripterSets(VansMaterialMa
 
 void VansGraphics::VansVegetationRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
 {
-	if (!m_VegetationSystem || !m_Material)
+	if (!m_VegetationSystem)
 		return;
 
-	auto* gbufferShader = m_Material->GetPassShader(VansPass::GBUFFER);
+	// Use the first config's material as the shader source (all configs share the
+	// same vertex/fragment shader; they only differ in descriptor bindings).
+	VansMaterial* drawMaterial = m_Material;
+	if (!drawMaterial)
+	{
+		const auto& configs = m_VegetationSystem->GetRenderConfigsGPU();
+		if (!configs.empty() && configs[0].material)
+			drawMaterial = configs[0].material;
+	}
+	if (!drawMaterial) return;
+
+	auto* gbufferShader = drawMaterial->GetPassShader(VansPass::GBUFFER);
 	if (!gbufferShader)
 		return;
 
 	m_VegetationSystem->Draw(cmd, *gbufferShader, global_state,
 		m_UsedDescSetLayouts, m_UsedDescSets,
-		0, m_TransfromIndex);
+		m_TransfromIndex);
 }

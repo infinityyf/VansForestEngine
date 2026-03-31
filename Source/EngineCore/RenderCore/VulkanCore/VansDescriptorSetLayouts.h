@@ -135,28 +135,17 @@ namespace VansGraphics
 	};
 
 	// ====================================================================
-	// Vegetation Compute — Vertex Skinning Pass Binding Indices
-	// ====================================================================
-	enum VegetationSkinningBinding : uint32_t
-	{
-		VEG_SKIN_BINDING_TEMPLATE_VERTS   = 0,  // SSBO (read) — template mesh vertices
-		VEG_SKIN_BINDING_BONE_MATRICES    = 1,  // SSBO (read) — bone matrices from sim
-		VEG_SKIN_BINDING_SKINNED_POS      = 2,  // SSBO (write) — skinned positions output
-		VEG_SKIN_BINDING_SKINNED_NORM     = 3,  // SSBO (write) — skinned normals output
-		VEG_SKIN_BINDING_INSTANCE_DATA    = 4,  // SSBO (read) — per-instance data
-		VEG_SKIN_BINDING_LOD_FACTORS      = 5,  // SSBO (read) — per-instance LOD factor
-		VEG_SKIN_BINDING_SUB_BLADE_ROOTS  = 6,  // SSBO (read) — sub-blade root positions (terrain-snapped by bone sim)
-	};
-
-	// ====================================================================
-	// Vegetation Draw — Per-Node Skinned Data (Set 3) Binding Indices
+	// Vegetation Draw — Per-Config SSBO Data (Set 3) Binding Indices
+	// Vertex shader performs bone skinning using bone matrices + weight buffer.
 	// ====================================================================
 	enum VegetationDrawBinding : uint32_t
 	{
-		VEG_DRAW_BINDING_SKINNED_POS      = 0,  // SSBO (read) — skinned vertex positions
-		VEG_DRAW_BINDING_SKINNED_NORM     = 1,  // SSBO (read) — skinned vertex normals
-		VEG_DRAW_BINDING_INSTANCE_DATA    = 2,  // SSBO (read) — per-instance position/scale
-		VEG_DRAW_BINDING_TEMPLATE_MESH    = 3,  // SSBO (read) — template mesh (UV source)
+		VEG_DRAW_BINDING_BONE_MATRICES    = 0,  // SSBO (read) — bone mat4 from bone sim
+		VEG_DRAW_BINDING_BONE_WEIGHTS     = 1,  // SSBO (read) — per-vertex vec4(boneIdx0, boneIdx1, w0, w1)
+		VEG_DRAW_BINDING_INSTANCE_REMAP   = 2,  // SSBO (read) — uint[] maps draw instance → global bone chain
+		VEG_DRAW_BINDING_SUB_BLADE_ROOTS  = 3,  // SSBO (read) — terrain-snapped sub-blade root positions
+		VEG_DRAW_BINDING_LOD_FACTORS      = 4,  // SSBO (read) — per-instance LOD factor
+		VEG_DRAW_BINDING_INSTANCE_DATA    = 5,  // SSBO (read) — per-instance position/scale/rotation
 	};
 
 	// ====================================================================
@@ -524,7 +513,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_SubsurfaceTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GrassTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VegetationBoneSim(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_VegetationSkinning(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VegetationDraw(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

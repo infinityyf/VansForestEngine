@@ -113,7 +113,7 @@ void RegisterEngineShaders()
         "GrassGBuffer",
         "EngineAssets/Shaders/Grass",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        12, false
+        24, false
     });
 
     // ══════════════════════════════════════════════════════════════════════════

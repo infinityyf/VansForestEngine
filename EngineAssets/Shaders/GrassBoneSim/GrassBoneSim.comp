@@ -87,11 +87,14 @@ layout(push_constant) uniform PushConstants
     float lodFadeDist;        // fade zone end; skip entirely beyond this
     int   subBladeCount;      // number of sub-blades per instance (must match CPU m_SubBladeCount)
     float grassHeight;         // blade height in world units — controls segment length
+    uint  boneCount;          // number of bones per instance (must match CPU m_BoneCountPerInstance)
 } pc;
 
 // ── Constants ──────────────────────────────────────────────────────────────
-const uint BONE_COUNT = 3;
-const float SEGMENT_LENGTH_BASE = 0.5 / 2.0; // bladeHeight / (boneCount - 1)
+// BONE_COUNT is now driven by pc.boneCount (push constant) so the shader
+// works for any bone chain length without recompilation.
+// The constant below is kept only for the fallback initialiser guard.
+#define BONE_COUNT_FALLBACK 3u
 const float MAX_BEND_ANGLE_COS = 0.5;        // cos(60°)
 const float GRAVITY = -9.8;
 const float SEGMENT_MASS = 0.001;
@@ -123,7 +126,11 @@ float gradientNoise(vec2 p)
 vec3 sampleWind(vec3 worldPos)
 {
     vec2 windDir = normalize(vec2(pc.windDirX, pc.windDirY));
-    vec2 noiseCoord = worldPos.xz * pc.windFrequency + vec2(pc.time * pc.windSpeed);
+    // Scroll noise in the wind direction so the wave front propagates
+    // along windDir in world XZ.  Previously vec2(t) scrolled diagonally
+    // (+X and +Z equally), making the wind zone appear to shift in X
+    // when the camera moved along Z.
+    vec2 noiseCoord = worldPos.xz * pc.windFrequency + windDir * (pc.time * pc.windSpeed);
     float noise = gradientNoise(noiseCoord);
 
     vec3 wind;
@@ -172,7 +179,8 @@ void main()
 
     GrassInstance inst = instances[instanceID];
     // Derive segment length from the runtime blade height so JSON can control blade size.
-    float segLength = (pc.grassHeight / float(BONE_COUNT - 1)) * inst.scale;
+    uint  BONE_COUNT = pc.boneCount;  // runtime bone count from push constant
+    float segLength = (pc.grassHeight / float(BONE_COUNT - 1u)) * inst.scale;
     float dt = pc.deltaTime;
     uint boneBase = instanceID * BONE_COUNT;
 
@@ -210,19 +218,28 @@ void main()
         }
     }
 
-    // ── Assign terrain-snapped Y to all sub-blade roots in this tuft ──────────
-    // CPU fixed the XZ positions; we just propagate the main root’s terrain Y.
-    // Runs before the LOD early-return so even frozen instances stay on terrain.
+    // ── Assign terrain-snapped Y to every sub-blade root in this tuft ───────────
+    // Sub-blade 0 shares the main root XZ; sub-blades 1..N-1 are scattered and
+    // must each sample the heightmap at their own XZ for correct terrain alignment.
     for (int s = 0; s < pc.subBladeCount; ++s)
     {
-        subBladeRoots[instanceID * uint(pc.subBladeCount) + uint(s)].y = rootPos.y;
+        uint subIdx = instanceID * uint(pc.subBladeCount) + uint(s);
+        float subY = rootPos.y;  // default: use main root terrain Y
+        if (pc.terrainEnabled != 0 && s > 0)
+        {
+            vec2 subXZ = subBladeRoots[subIdx].xz;
+            vec2 subUV = subXZ / pc.terrainSize + 0.5;
+            subY = texture(terrainHeightmap, subUV).r * pc.terrainMaxHeight + pc.terrainHeightOffset;
+        }
+        subBladeRoots[subIdx].y = subY;
     }
 
-    // ── Beyond fade distance: skip Verlet entirely, freeze at last state ───────
-    if (dist > pc.lodFadeDist)
+    // ── Beyond fade distance: skip Verlet entirely, render in frozen rest-pose ─
+    if (dist >= pc.lodFadeDist)
     {
-        // Write 1.0 so the skinning pass still runs using the frozen rest-pose matrices.
-        // (writing 0.0 would make the skinning shader skip these blades → invisible)
+        // Write 1.0 — far grass still renders using the frozen bone matrices below.
+        // lod=1.0 in the vertex shader means full blade, no collapse blend.
+        // Only the smoothstep fade-zone can organically produce lod=0 (→ cull).
         lodFactors[instanceID] = 1.0;
         float cosR = cos(inst.rotation);
         float sinR = sin(inst.rotation);
@@ -232,17 +249,32 @@ void main()
         {
             uint idx = boneBase + j;
             vec3 pos = bones[idx].position.xyz;
-            vec3 tangent = (j < BONE_COUNT - 1)
-                ? normalize(bones[idx + 1].position.xyz - pos)
-                : normalize(pos - bones[idx - 1].position.xyz);
+            vec3 tangent;
+            if (j == 0)
+            {
+                // Force root bone to be world-up so the blade base lies flat on terrain.
+                // Leaning starts from bone 1 upward.
+                tangent = vec3(0.0, 1.0, 0.0);
+            }
+            else if (j < BONE_COUNT - 1)
+            {
+                tangent = normalize(bones[idx + 1].position.xyz - pos);
+            }
+            else
+            {
+                tangent = normalize(pos - bones[idx - 1].position.xyz);
+            }
             mat4 boneMat;
-            prevRight = buildBoneMatrixPT(pos, tangent, prevRight, boneMat);
+            // Store root-relative position so the vertex shader can add subRoot.xyz
+            // (world-space) without double-counting the instance world translation.
+            prevRight = buildBoneMatrixPT(pos - rootPos, tangent, prevRight, boneMat);
             boneMatrices[instanceID * BONE_COUNT + j] = boneMat;
         }
         return;
     }
 
-    // ── Compute LOD fade factor (1.0 = full sim, approaches 0 at lodFadeDist) ──
+    // LOD factor: 1.0 when fully close (≤ lodFullDist), fades to 0.0 at lodFadeDist.
+    // Wind/dynamics are scaled down as blades approach the frozen threshold.
     float lodFactor = 1.0 - smoothstep(pc.lodFullDist, pc.lodFadeDist, dist);
     lodFactors[instanceID] = lodFactor;
 
@@ -318,13 +350,24 @@ void main()
         uint idx = boneBase + j;
         vec3 pos = bones[idx].position.xyz;
         vec3 tangent;
-        if (j < BONE_COUNT - 1)
+        if (j == 0)
+        {
+            // Force root bone to be world-up so base vertices lie flat on terrain.
+            tangent = vec3(0.0, 1.0, 0.0);
+        }
+        else if (j < BONE_COUNT - 1)
+        {
             tangent = normalize(bones[idx + 1].position.xyz - pos);
+        }
         else
+        {
             tangent = normalize(pos - bones[idx - 1].position.xyz);
+        }
 
         mat4 boneMat;
-        prevRight = buildBoneMatrixPT(pos, tangent, prevRight, boneMat);
+        // Store root-relative position so the vertex shader can add subRoot.xyz
+        // (world-space) without double-counting the instance world translation.
+        prevRight = buildBoneMatrixPT(pos - rootPos, tangent, prevRight, boneMat);
         boneMatrices[instanceID * BONE_COUNT + j] = boneMat;
     }
 }

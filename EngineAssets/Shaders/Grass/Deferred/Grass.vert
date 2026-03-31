@@ -4,7 +4,10 @@
 #include "../../Common/CameraData.glsl"
 #include "../../Common/ModelData.glsl"
 
-// ── No vertex attributes — all data fetched from SSBOs ─────────────────────
+// ── Vertex attributes ──────────────────────────────────────────────────────
+layout( location = 0 ) in vec3 inPosition;
+layout( location = 1 ) in vec3 inNormal;
+layout( location = 2 ) in vec2 inUV;
 
 // ── Varyings to fragment shader ────────────────────────────────────────────
 layout( location = 0 ) out vec2 frag_uv;
@@ -14,24 +17,51 @@ layout( location = 3 ) out vec3 bitangent_ws;
 layout( location = 4 ) out vec3 position_world;
 
 // ── Push constants ─────────────────────────────────────────────────────────
-layout( push_constant ) uniform MaterialPushConsts
+layout( push_constant ) uniform GrassDrawPC
 {
-    int materialIndex;
-    int objectIndex;
-    int animationEnabled;
-} materialConst;
+    int   materialIndex;
+    int   objectIndex;
+    int   animationEnabled;
+    uint  boneCount;
+    uint  subBladeCount;
+    float grassHeight;
+} pc;
 
-// ── Set 3: Vegetation draw SSBOs (skinned positions + normals + instances + template) ─
-layout(std430, set = 3, binding = 0) readonly buffer SkinnedPositionBuffer
+// ─────────────────────────────────────────────────────────────────────────────
+// Set 3: Vegetation Draw SSBOs
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Binding 0 — Bone matrices computed by bone-sim (one mat4 per bone per instance)
+layout(std430, set = 3, binding = 0) readonly buffer BoneMatrixBuffer
 {
-    vec4 skinnedPositions[];
+    mat4 boneMatrices[];
 };
 
-layout(std430, set = 3, binding = 1) readonly buffer SkinnedNormalBuffer
+// Binding 1 — Static per-vertex bone weights: vec4(boneIdx0, boneIdx1, w0, w1)
+layout(std430, set = 3, binding = 1) readonly buffer BoneWeightBuffer
 {
-    vec4 skinnedNormals[];
+    vec4 boneWeights[];
 };
 
+// Binding 2 — Instance remap: maps [0..assignedCount) → global instance index
+layout(std430, set = 3, binding = 2) readonly buffer InstanceRemapBuffer
+{
+    uint instanceRemap[];
+};
+
+// Binding 3 — Sub-blade root positions (one vec4 per sub-blade, written by bone-sim)
+layout(std430, set = 3, binding = 3) readonly buffer SubBladeRootsBuffer
+{
+    vec4 subBladeRoots[];
+};
+
+// Binding 4 — LOD factors (one float per main instance, written by bone-sim)
+layout(std430, set = 3, binding = 4) readonly buffer LodFactorsBuffer
+{
+    float lodFactors[];
+};
+
+// Binding 5 — Per-instance data (position, scale, rotation)
 struct GrassInstance
 {
     vec3  position;
@@ -42,50 +72,115 @@ struct GrassInstance
     int   padding2;
 };
 
-layout(std430, set = 3, binding = 2) readonly buffer InstanceBuffer
+layout(std430, set = 3, binding = 5) readonly buffer InstanceDataBuffer
 {
     GrassInstance instances[];
 };
 
-// Template mesh vertex (matches CPU-side GrassVertex struct)
-struct GrassTemplateVertex
+// ── Dual-bone skinning ─────────────────────────────────────────────────────
+vec3 skinPosition(vec3 localPos, uint globalBoneBase, vec4 bw)
 {
-    vec4 position;  // xyz = local position, w = 0
-    vec4 normal;    // xyz = local normal,   w = 0
-    vec2 uv;
-    vec2 padding;
-};
+    uint b0 = uint(bw.x);
+    uint b1 = uint(bw.y);
+    float w0 = bw.z;
+    float w1 = bw.w;
 
-layout(std430, set = 3, binding = 3) readonly buffer TemplateMeshBuffer
+    mat4 m0 = boneMatrices[globalBoneBase + b0];
+    mat4 m1 = boneMatrices[globalBoneBase + b1];
+
+    vec3 p0 = (m0 * vec4(localPos, 1.0)).xyz;
+    vec3 p1 = (m1 * vec4(localPos, 1.0)).xyz;
+    return p0 * w0 + p1 * w1;
+}
+
+vec3 skinNormal(vec3 localNrm, uint globalBoneBase, vec4 bw)
 {
-    GrassTemplateVertex templateVertices[];
-};
+    uint b0 = uint(bw.x);
+    uint b1 = uint(bw.y);
+    float w0 = bw.z;
+    float w1 = bw.w;
 
-void main() 
+    mat3 m0 = mat3(boneMatrices[globalBoneBase + b0]);
+    mat3 m1 = mat3(boneMatrices[globalBoneBase + b1]);
+
+    vec3 n0 = m0 * localNrm;
+    vec3 n1 = m1 * localNrm;
+    return normalize(n0 * w0 + n1 * w1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void main()
 {
-    // Derive vertex count from the template mesh SSBO length (no hardcoding needed)
-    uint vertexCount = uint(templateVertices.length());
+    // gl_InstanceIndex = a * subBladeCount + s  where a ∈ [0..assignedCount)
+    uint subBladeIdx  = gl_InstanceIndex % pc.subBladeCount;
+    uint localInstIdx = gl_InstanceIndex / pc.subBladeCount;
 
-    // Compute which instance and which template vertex this invocation is
-    uint globalVertexIdx = gl_InstanceIndex * vertexCount + gl_VertexIndex;
+    // Remap to global instance index
+    uint globalInstIdx = instanceRemap[localInstIdx];
 
-    // Read skinned world-space position and normal
-    vec3 worldPos = skinnedPositions[globalVertexIdx].xyz;
-    vec3 worldNrm = normalize(skinnedNormals[globalVertexIdx].xyz);
+    // Instance data
+    GrassInstance inst = instances[globalInstIdx];
 
-    // Build tangent frame from normal (grass blades face viewer roughly)
+    // LOD factor (1 = full physics / frozen rest-pose, fades toward 0 at boundary).
+    // We do NOT cull based on lod — even lod≈0 means rest-pose, not invisible.
+    // The smoothstep produces lod≈0 right at lodFadeDist; culling there would create
+    // a camera-tracking invisible ring.  Only skip truly degenerate vertices (lod<0).
+    float lod = lodFactors[globalInstIdx];
+    if (lod < 0.0)
+    {
+        gl_Position = vec4(0.0);
+        return;
+    }
+
+    // Sub-blade root position (terrain-snapped Y from bone-sim)
+    vec4 subRoot = subBladeRoots[globalInstIdx * pc.subBladeCount + subBladeIdx];
+
+    // ── Fetch local-space vertex data from bound mesh ────────────────
+    vec3 localPos = inPosition;
+    vec3 localNrm = inNormal;
+    vec2 uv       = inUV;
+
+    // ── Scale by instance scale ─────────────────────────────────────
+    localPos *= inst.scale;
+
+    // ── Rotation around Y by instance rotation ──────────────────────
+    float cosR = cos(inst.rotation);
+    float sinR = sin(inst.rotation);
+    vec3 rotatedPos = vec3(
+        localPos.x * cosR - localPos.z * sinR,
+        localPos.y,
+        localPos.x * sinR + localPos.z * cosR);
+    vec3 rotatedNrm = vec3(
+        localNrm.x * cosR - localNrm.z * sinR,
+        localNrm.y,
+        localNrm.x * sinR + localNrm.z * cosR);
+
+    // ── Dual-bone skinning ──────────────────────────────────────────
+    uint globalBoneBase = globalInstIdx * pc.boneCount;
+    vec4 bw = boneWeights[gl_VertexIndex]; // per-template-vertex weights
+
+    vec3 skinnedPos = skinPosition(rotatedPos, globalBoneBase, bw);
+    vec3 skinnedNrm = skinNormal(rotatedNrm, globalBoneBase, bw);
+
+    // ── Offset by sub-blade root (world-space XZ scatter + terrain Y) ─
+    vec3 worldPos = skinnedPos + subRoot.xyz;
+
+    // LOD only controls whether Verlet physics ran (compute side).
+    // Blade scale never changes — no size-based LOD collapse here,
+    // which would create a visible discontinuity ring following the camera.
+
+    // ── Build tangent frame ─────────────────────────────────────────
+    vec3 N = normalize(skinnedNrm);
     vec3 up = vec3(0.0, 1.0, 0.0);
-    vec3 T = normalize(cross(up, worldNrm));
-    if (length(cross(up, worldNrm)) < 0.001)
+    vec3 T = normalize(cross(up, N));
+    if (length(cross(up, N)) < 0.001)
         T = vec3(1.0, 0.0, 0.0);
-    vec3 B = cross(worldNrm, T);
+    vec3 B = cross(N, T);
 
-    // Read UV from template mesh SSBO (per-template-vertex, not per-instance)
-    vec2 templateUV = templateVertices[gl_VertexIndex].uv;
-
+    // ── Output ──────────────────────────────────────────────────────
     gl_Position    = VPMatrix * vec4(worldPos, 1.0);
-    frag_uv        = templateUV;
-    normal_ws      = worldNrm;
+    frag_uv        = uv;
+    normal_ws      = N;
     tangent_ws     = T;
     bitangent_ws   = B;
     position_world = worldPos;

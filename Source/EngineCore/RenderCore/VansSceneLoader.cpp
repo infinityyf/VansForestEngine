@@ -1260,6 +1260,31 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
     m_VegetationSystem->SetBladeHeight(bladeHeight);   // must be set before Init()
     m_VegetationSystem->SetInitWindDirection(glm::vec2(windDirX, windDirZ), leanDeviation);
     m_VegetationSystem->SetSubBladeParams(subBladeCount, subBladeScatterRadiusMin, subBladeScatterRadiusMax);  // must be set before Init()
+
+    // ── Parse render configs (multi-mesh/material support) ─────────────────
+    if (vegetationData.contains("renderConfigs") && vegetationData["renderConfigs"].is_array())
+    {
+        std::vector<GrassRenderConfig> configs;
+        for (auto& rc : vegetationData["renderConfigs"])
+        {
+            GrassRenderConfig cfg;
+            cfg.meshName     = rc.value("mesh", std::string(""));
+            cfg.materialName = rc.value("material", materialName);
+            cfg.percent      = rc.value("percent", 1.0f);
+            configs.push_back(cfg);
+        }
+        m_VegetationSystem->SetRenderConfigs(configs);
+    }
+    else
+    {
+        // Backward compatible: single material, procedural blade
+        GrassRenderConfig defaultCfg;
+        defaultCfg.meshName     = "";
+        defaultCfg.materialName = materialName;
+        defaultCfg.percent      = 1.0f;
+        m_VegetationSystem->SetRenderConfigs({ defaultCfg });
+    }
+
     m_VegetationSystem->Init(device, instanceCount, boneCount);
 
     // Apply runtime simulation parameters loaded from JSON
@@ -1293,21 +1318,25 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
         }
     }
 
+    // ── Build per-config GPU resources (allocates bone weights, remap, indirect draw) ──
+    auto meshLookup = [this](const std::string& name) -> VansMesh* {
+        return static_cast<VansMesh*>(GetMeshAsset(name));
+    };
+    auto materialLookup = [this](const std::string& name) -> VansMaterial* {
+        return static_cast<VansMaterial*>(GetMaterialAsset(name));
+    };
+    m_VegetationSystem->BuildRenderConfigs(meshLookup, materialLookup);
+
     // Create the vegetation render node
     RenderNodeType type = RenderNodeType::VEGETATION_NODE;
     VansVegetationRenderNode* renderNode = new VansVegetationRenderNode(device, type);
     renderNode->SetVegetationSystem(m_VegetationSystem);
 
-    // Assign the grass material
+    // Assign the default grass material (kept for backward compat / fallback)
     VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
-    if (material == nullptr)
-    {
-        VANS_LOG_WARN("[AddVegetationNode] Material '" << materialName << "' not found, vegetation node skipped.");
-        delete renderNode;
-        return;
-    }
-    renderNode->m_Material = material;
-    renderNode->m_Mesh = nullptr;  // No mesh asset — geometry is compute-generated
+    if (material)
+        renderNode->m_Material = material;
+    renderNode->m_Mesh = nullptr;  // No mesh asset — geometry is procedural / per-config
     renderNode->SetName(name);
 
     RegistRenderNode(renderNode, type);

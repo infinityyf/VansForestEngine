@@ -458,6 +458,11 @@ void VansGraphics::VansVKCommandBuffer::WaitEvents(
 
 // ── Standalone draw / bind helpers ──────────────────────────────────────
 
+void VansGraphics::VansVKCommandBuffer::BindVertexBuffers(uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* buffers, const VkDeviceSize* offsets)
+{
+	vkCmdBindVertexBuffers(m_VansVKCommandBuffer, firstBinding, bindingCount, buffers, offsets);
+}
+
 void VansGraphics::VansVKCommandBuffer::BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType)
 {
 	vkCmdBindIndexBuffer(m_VansVKCommandBuffer, buffer, offset, indexType);

@@ -139,6 +139,8 @@ namespace VansGraphics
 			const std::vector<uint32_t>& dynamic_offsets);
 
 		// ── Standalone draw / bind helpers (for non-mesh draw like fullscreen passes) ──
+		void BindVertexBuffers(uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* buffers, const VkDeviceSize* offsets);
+
 		void BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType);
 
 		void DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance);

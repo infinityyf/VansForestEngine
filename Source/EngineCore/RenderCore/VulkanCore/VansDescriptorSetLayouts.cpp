@@ -566,44 +566,23 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationBoneSim(
 }
 
 // ============================================================
-// Vegetation Compute — Vertex Skinning Descriptor Layout
-// ============================================================
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationSkinning(
-	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{VEG_SKIN_BINDING_TEMPLATE_VERTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{VEG_SKIN_BINDING_BONE_MATRICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{VEG_SKIN_BINDING_SKINNED_POS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{VEG_SKIN_BINDING_SKINNED_NORM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{VEG_SKIN_BINDING_INSTANCE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{VEG_SKIN_BINDING_LOD_FACTORS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{VEG_SKIN_BINDING_SUB_BLADE_ROOTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
-}
-
-// ============================================================
-// Vegetation Draw — Skinned SSBO Data (Set 3) Descriptor Layout
+// Vegetation Draw — Per-Config VS-Skinning SSBO Data (Set 3) Descriptor Layout
 // ============================================================
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationDraw(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{VEG_DRAW_BINDING_SKINNED_POS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		{VEG_DRAW_BINDING_BONE_MATRICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-		{VEG_DRAW_BINDING_SKINNED_NORM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		{VEG_DRAW_BINDING_BONE_WEIGHTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		{VEG_DRAW_BINDING_INSTANCE_REMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		{VEG_DRAW_BINDING_SUB_BLADE_ROOTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		{VEG_DRAW_BINDING_LOD_FACTORS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 		{VEG_DRAW_BINDING_INSTANCE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-		{VEG_DRAW_BINDING_TEMPLATE_MESH, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);

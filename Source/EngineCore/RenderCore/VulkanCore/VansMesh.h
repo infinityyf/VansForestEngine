@@ -51,6 +51,17 @@ namespace VansGraphics
 
 		VansMesh(bool needCPUData = false, bool supportRayTracing = false);
 
+		// Initialise the mesh from raw vertex/index data (no file I/O, no Assimp).
+		// Used by procedural generators that want to produce a standard VansMesh
+		// compatible with BindMesh / GetMeshRawPositionData / etc.
+		void InitFromRawData(
+			VkDevice device,
+			const void* vertexData, uint32_t vertexCount, uint32_t vertexStride,
+			const uint32_t* indexData, uint32_t indexCount,
+			const std::vector<VkVertexInputBindingDescription>& bindings,
+			const std::vector<VkVertexInputAttributeDescription>& attribs,
+			const std::vector<float>& rawPositionData = {});
+
 		VertexBufferParameters GetVertexBufferParameter();
 
 		IndexBufferParameters GetIndexBufferParameter();
