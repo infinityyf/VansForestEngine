@@ -3,6 +3,8 @@
 #include "VansShaderRegistry.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
+#include "../ScriptCore/VansScriptContext.h"
+#include "../PhysicsCore/VansPhysics.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -182,94 +184,105 @@ void VansGraphics::VansScene::LoadLights(VkDevice& device, json& light_node)
 // Render node loading from JSON
 // ===========================================================================
 
+// ===========================================================================
+// Single render node loading (extracted from LoadRenderNodes loop body)
+// ===========================================================================
+
+VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDevice& device, const json& sceneRenderNode)
+{
+    RenderNodeType type = ParseRenderNodeType(sceneRenderNode["type"], sceneRenderNode.value("name", "<unnamed>"));
+    std::string meshName = sceneRenderNode.value("mesh", "");
+
+    // ── Resolve mesh ──────────────────────────────────────────────────────
+    VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset(meshName));
+
+    // ── Multi-mesh auto-expansion ─────────────────────────────────────────
+    if (mesh && mesh->m_IsMultiMesh)
+    {
+        glm::vec3 position(0), rotation(0), scale(1);
+        if (sceneRenderNode.contains("transform"))
+        {
+            auto& transform = sceneRenderNode["transform"];
+            position = glm::vec3(transform["position"][0], transform["position"][1], transform["position"][2]);
+            rotation = glm::vec3(transform["rotation"][0], transform["rotation"][1], transform["rotation"][2]);
+            scale    = glm::vec3(transform["scale"][0],    transform["scale"][1],    transform["scale"][2]);
+        }
+        bool supportShadow = sceneRenderNode.value("support_shadow", false);
+        std::string parentName = sceneRenderNode.value("name", "MultiMesh");
+
+        ExpandMultiMeshToRenderNodes(device, mesh, parentName, position, rotation, scale, supportShadow);
+
+        auto meshIt = std::find(m_Meshes.begin(), m_Meshes.end(), static_cast<VansAsset*>(mesh));
+        if (meshIt != m_Meshes.end())
+            m_Meshes.erase(meshIt);
+
+        // Multi-mesh expansion creates its own render nodes — return nullptr to indicate
+        // that no single render node was created.
+        return nullptr;
+    }
+
+    std::string materialName = sceneRenderNode.value("material", "");
+    VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
+
+    // ── Standard render node creation ─────────────────────────────────────
+    VansRenderNode* renderNode = nullptr;
+    switch (type)
+    {
+    case VansGraphics::NONE_NODE:
+        break;
+    case VansGraphics::OPAQUE_NODE:
+        renderNode = new VansCommonRenderNode(device, type);
+        if (sceneRenderNode.contains("support_shadow"))
+        {
+            auto* node = static_cast<VansCommonRenderNode*>(renderNode);
+            node->m_SupportShadow = sceneRenderNode["support_shadow"];
+        }
+        break;
+    case VansGraphics::TRANSPARENT_NODE:
+        renderNode = new VansTransparentRenderNode(device, type);
+        break;
+    case VansGraphics::POSTPROCESS_NODE:
+        renderNode = new VansPostProcessRenderNode(device, type);
+        break;
+    case VansGraphics::SKY_BOX_NODE:
+        renderNode = new VansSkyBoxRenderNode(device, type);
+        break;
+    default:
+        break;
+    }
+
+    if (renderNode == nullptr)
+    {
+        return nullptr;
+    }
+
+    if (sceneRenderNode.contains("transform"))
+    {
+        auto& transform = sceneRenderNode["transform"];
+        glm::vec3 postion  = glm::vec3(transform["position"][0], transform["position"][1], transform["position"][2]);
+        glm::vec3 rotation = glm::vec3(transform["rotation"][0], transform["rotation"][1], transform["rotation"][2]);
+        glm::vec3 scale    = glm::vec3(transform["scale"][0],    transform["scale"][1],    transform["scale"][2]);
+        renderNode->SetTransformData(postion, rotation, scale);
+    }
+
+    renderNode->m_Mesh     = mesh;
+    renderNode->m_Material = material;
+    renderNode->SetName(sceneRenderNode["name"]);
+
+    RegistRenderNode(renderNode, type);
+
+    return renderNode;
+}
+
+// ===========================================================================
+// Render node loading from JSON (delegates to LoadSingleRenderNode)
+// ===========================================================================
+
 void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_node)
 {
     for (const auto& sceneRenderNode : render_node)
     {
-        RenderNodeType type = ParseRenderNodeType(sceneRenderNode["type"], sceneRenderNode.value("name", "<unnamed>"));
-        std::string meshName = sceneRenderNode.value("mesh", "");
-
-        // ── Resolve mesh ──────────────────────────────────────────────────────
-        VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset(meshName));
-
-        // ── Multi-mesh auto-expansion ─────────────────────────────────────────
-        // When the mesh is a multi-mesh container, automatically split it into
-        // separate render nodes (one per submesh) with auto-created materials.
-        if (mesh && mesh->m_IsMultiMesh)
-        {
-            glm::vec3 position(0), rotation(0), scale(1);
-            if (sceneRenderNode.contains("transform"))
-            {
-                auto& transform = sceneRenderNode["transform"];
-                position = glm::vec3(transform["position"][0], transform["position"][1], transform["position"][2]);
-                rotation = glm::vec3(transform["rotation"][0], transform["rotation"][1], transform["rotation"][2]);
-                scale    = glm::vec3(transform["scale"][0],    transform["scale"][1],    transform["scale"][2]);
-            }
-            bool supportShadow = sceneRenderNode.value("support_shadow", false);
-            std::string parentName = sceneRenderNode.value("name", "MultiMesh");
-
-            ExpandMultiMeshToRenderNodes(device, mesh, parentName, position, rotation, scale, supportShadow);
-
-            // Remove the multi-mesh container from m_Meshes — it holds no real vertex data.
-            auto meshIt = std::find(m_Meshes.begin(), m_Meshes.end(), static_cast<VansAsset*>(mesh));
-            if (meshIt != m_Meshes.end())
-                m_Meshes.erase(meshIt);
-
-            continue; // The expand function already registered all sub-nodes
-        }
-
-        std::string materialName = sceneRenderNode.value("material", "");
-        VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
-
-        // ── Standard render node creation ─────────────────────────────────────
-        VansRenderNode* renderNode = nullptr;
-        switch (type)
-        {
-        case VansGraphics::NONE_NODE:
-            break;
-        case VansGraphics::OPAQUE_NODE:
-            renderNode = new VansCommonRenderNode(device, type);
-            if (sceneRenderNode.contains("support_shadow"))
-            {
-                auto* node = static_cast<VansCommonRenderNode*>(renderNode);
-                node->m_SupportShadow = sceneRenderNode["support_shadow"];
-            }
-            break;
-        case VansGraphics::TRANSPARENT_NODE:
-            renderNode = new VansTransparentRenderNode(device, type);
-            break;
-        case VansGraphics::POSTPROCESS_NODE:
-            renderNode = new VansPostProcessRenderNode(device, type);
-            break;
-        case VansGraphics::SKY_BOX_NODE:
-            renderNode = new VansSkyBoxRenderNode(device, type);
-            break;
-        default:
-            break;
-        }
-
-        if (renderNode == nullptr)
-        {
-            continue;
-        }
-
-        if (sceneRenderNode.contains("transform"))
-        {
-            auto& transform = sceneRenderNode["transform"];
-            glm::vec3 postion  = glm::vec3(transform["position"][0], transform["position"][1], transform["position"][2]);
-            glm::vec3 rotation = glm::vec3(transform["rotation"][0], transform["rotation"][1], transform["rotation"][2]);
-            glm::vec3 scale    = glm::vec3(transform["scale"][0],    transform["scale"][1],    transform["scale"][2]);
-            renderNode->SetTransformData(postion, rotation, scale);
-        }
-
-        renderNode->m_Mesh     = mesh;
-        renderNode->m_Material = material;
-        renderNode->SetName(sceneRenderNode["name"]);
-
-        RegistRenderNode(renderNode, type);
-
-        // Shadow nodes are no longer created here — shadow passes now iterate
-        // opaque nodes and use material->GetPassShader(VansPass::SHADOW).
+        LoadSingleRenderNode(device, sceneRenderNode);
     }
 
     // ── Resolve transform parent links ────────────────────────────────────
@@ -1341,4 +1354,294 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
 
     RegistRenderNode(renderNode, type);
     VANS_LOG("[AddVegetationNode] Vegetation node '" << name << "' created with " << instanceCount << " instances.");
+}
+
+// ===========================================================================
+// ScriptableObject helpers
+// ===========================================================================
+
+VansScriptObject* VansGraphics::VansScene::FindObjectByName(const std::string& name) const
+{
+    for (auto* obj : m_SceneObjects)
+    {
+        if (obj && obj->m_ObjectName == name)
+            return obj;
+    }
+    return nullptr;
+}
+
+// ===========================================================================
+// LoadSceneObjects  — new "objects" JSON format
+// ===========================================================================
+
+void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsArray)
+{
+    using namespace VansEngine;
+
+    // ── First pass: create all Objects, render / physics / cloth components ──
+    // Defer cloth collision-sphere objectRef resolution to second pass.
+    // Also collect render-node parent links for a third pass.
+    struct ParentLink { std::string childName; std::string parentName; };
+    std::vector<ParentLink> parentLinks;
+
+    for (const auto& objJson : objectsArray)
+    {
+        VansScriptObject* obj = new VansScriptObject();
+        obj->m_ObjectName = objJson.value("name", "");
+
+        auto& components = objJson["components"];
+
+        // ── Render component ──────────────────────────────────────────────
+        if (components.contains("render"))
+        {
+            const auto& renderJson = components["render"];
+            VansRenderNode* rn = LoadSingleRenderNode(device, renderJson);
+            if (rn)
+            {
+                auto* rc = new VansScriptRenderComponent();
+                rc->m_ComponentName = "render";
+                rc->m_RenderNode = rn;
+                obj->AddComponent(rc);
+                obj->m_TransformID = rn->m_TransformID;
+
+                // Collect parent link if present
+                if (renderJson.contains("parent"))
+                {
+                    ParentLink link;
+                    link.childName  = renderJson.value("name", "");
+                    link.parentName = renderJson["parent"].get<std::string>();
+                    parentLinks.push_back(link);
+                }
+            }
+        }
+
+        // ── Physics component ─────────────────────────────────────────────
+        if (components.contains("physics"))
+        {
+            auto* renderComp = obj->GetComponent<VansScriptRenderComponent>();
+            VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
+            VansPhysicsNode* pn = LoadSinglePhysicsNode(components["physics"], associatedNode);
+            if (pn)
+            {
+                auto* pc = new VansScriptPhysicsComponent();
+                pc->m_ComponentName = "physics";
+                pc->m_PhysicsNode = pn;
+                obj->AddComponent(pc);
+            }
+        }
+
+        // ── Cloth component (first pass — collisionSpheres objectRef deferred) ──
+        if (components.contains("cloth"))
+        {
+            auto* renderComp = obj->GetComponent<VansScriptRenderComponent>();
+            VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
+            VansClothNode* cn = LoadSingleClothNode(components["cloth"], associatedNode);
+            if (cn)
+            {
+                auto* cc = new VansScriptClothComponent();
+                cc->m_ComponentName = "cloth";
+                cc->m_ClothNode = cn;
+                obj->AddComponent(cc);
+            }
+        }
+
+        // ── Vehicle component ─────────────────────────────────────────────
+        if (components.contains("vehicle"))
+        {
+            const auto& vehJson = components["vehicle"];
+
+            // Resolve body and tire object references after all objects are loaded.
+            // For now, store the raw JSON names and defer actual InitVehicle to second pass.
+            // We store a placeholder VehicleComponent and resolve in phase 2.
+            auto* vc = new VansScriptVehicleComponent();
+            vc->m_ComponentName = "vehicle";
+            vc->m_Vehicle = nullptr;  // resolved in second pass
+            obj->AddComponent(vc);
+        }
+
+        m_SceneObjects.push_back(obj);
+        VANS_LOG("[LoadSceneObjects] Created object '" << obj->m_ObjectName << "'");
+    }
+
+    // ── Second pass: resolve Vehicle component references ─────────────────
+    int objIndex = 0;
+    for (const auto& objJson : objectsArray)
+    {
+        auto& components = objJson["components"];
+        if (components.contains("vehicle"))
+        {
+            const auto& vehJson = components["vehicle"];
+            VansScriptObject* obj = m_SceneObjects[m_SceneObjects.size() - objectsArray.size() + objIndex];
+            auto* vc = obj->GetComponent<VansScriptVehicleComponent>();
+
+            // Resolve body object → render node name
+            std::string bodyNodeName;
+            if (vehJson.contains("bodyObject"))
+            {
+                std::string bodyObjName = vehJson["bodyObject"].get<std::string>();
+                VansScriptObject* bodyObj = FindObjectByName(bodyObjName);
+                if (bodyObj)
+                {
+                    auto* rc = bodyObj->GetComponent<VansScriptRenderComponent>();
+                    if (rc && rc->m_RenderNode)
+                        bodyNodeName = rc->m_RenderNode->m_NodeName;
+                }
+            }
+            // fallback: legacy bodyRenderNode
+            if (bodyNodeName.empty() && vehJson.contains("bodyRenderNode"))
+                bodyNodeName = vehJson["bodyRenderNode"].get<std::string>();
+
+            // Resolve tire objects → render node names
+            std::vector<std::string> tireNodeNames;
+            if (vehJson.contains("tireObjects"))
+            {
+                for (const auto& t : vehJson["tireObjects"])
+                {
+                    std::string tireObjName = t.get<std::string>();
+                    VansScriptObject* tireObj = FindObjectByName(tireObjName);
+                    if (tireObj)
+                    {
+                        auto* rc = tireObj->GetComponent<VansScriptRenderComponent>();
+                        if (rc && rc->m_RenderNode)
+                        {
+                            tireNodeNames.push_back(rc->m_RenderNode->m_NodeName);
+                            continue;
+                        }
+                    }
+                    tireNodeNames.push_back(tireObjName); // fallback: treat as node name
+                }
+            }
+            // fallback: legacy tireRenderNodes
+            if (tireNodeNames.empty() && vehJson.contains("tireRenderNodes"))
+            {
+                for (const auto& t : vehJson["tireRenderNodes"])
+                    tireNodeNames.push_back(t.get<std::string>());
+            }
+
+            glm::vec3 spawnPos(0.0f, 5.0f, 0.0f);
+            if (vehJson.contains("position"))
+            {
+                auto& p = vehJson["position"];
+                spawnPos = glm::vec3(p[0].get<float>(), p[1].get<float>(), p[2].get<float>());
+            }
+
+            InitVehicle(&VansEngine::VansPhysicsSystem::GetInstance(), spawnPos, bodyNodeName, tireNodeNames);
+            if (vc)
+                vc->m_Vehicle = m_Vehicle;
+        }
+        ++objIndex;
+    }
+
+    // ── Third pass: resolve transform parent links ────────────────────────
+    for (const auto& link : parentLinks)
+    {
+        if (link.childName.empty() || link.parentName.empty()) continue;
+        VansRenderNode* childNode  = FindRenderNodeByName(link.childName);
+        VansRenderNode* parentNode = FindRenderNodeByName(link.parentName);
+        if (childNode && parentNode)
+        {
+            m_TransformParentSystem.SetParent(childNode->m_TransformID, parentNode->m_TransformID);
+            VANS_LOG("[TransformParent] '" << link.childName << "' parented to '" << link.parentName << "'");
+        }
+    }
+}
+
+// ===========================================================================
+// AutoCreateObjectsFromLegacy — wrap old-style nodes into VansScriptObjects
+// ===========================================================================
+
+void VansGraphics::VansScene::AutoCreateObjectsFromLegacy()
+{
+    // Wrap each opaque render node into an implicit object
+    for (auto* rn : m_OpaqueRenderNodes)
+    {
+        if (!rn) continue;
+        VansScriptObject* obj = new VansScriptObject();
+        obj->m_ObjectName  = rn->m_NodeName;
+        obj->m_TransformID = rn->m_TransformID;
+
+        auto* rc = new VansScriptRenderComponent();
+        rc->m_ComponentName = "render";
+        rc->m_RenderNode = rn;
+        obj->AddComponent(rc);
+
+        m_SceneObjects.push_back(obj);
+    }
+
+    // Wrap each transparent render node
+    for (auto* rn : m_TransParentRenderNodes)
+    {
+        if (!rn) continue;
+        VansScriptObject* obj = new VansScriptObject();
+        obj->m_ObjectName  = rn->m_NodeName;
+        obj->m_TransformID = rn->m_TransformID;
+
+        auto* rc = new VansScriptRenderComponent();
+        rc->m_ComponentName = "render";
+        rc->m_RenderNode = rn;
+        obj->AddComponent(rc);
+
+        m_SceneObjects.push_back(obj);
+    }
+
+    // Attach physics nodes to matching objects (by transform ID)
+    for (auto* pn : m_PhysicsNodes)
+    {
+        if (!pn) continue;
+        for (auto* obj : m_SceneObjects)
+        {
+            if (obj->m_TransformID == pn->GetTransformID())
+            {
+                auto* pc = new VansScriptPhysicsComponent();
+                pc->m_ComponentName = "physics";
+                pc->m_PhysicsNode = pn;
+                obj->AddComponent(pc);
+                break;
+            }
+        }
+    }
+
+    // Attach cloth nodes to matching objects (via target render node)
+    for (auto* cn : m_ClothNodes)
+    {
+        if (!cn) continue;
+        VansRenderNode* targetRN = cn->GetTargetRenderNode();
+        if (!targetRN) continue;
+        for (auto* obj : m_SceneObjects)
+        {
+            auto* rc = obj->GetComponent<VansScriptRenderComponent>();
+            if (rc && rc->m_RenderNode == targetRN)
+            {
+                auto* cc = new VansScriptClothComponent();
+                cc->m_ComponentName = "cloth";
+                cc->m_ClothNode = cn;
+                obj->AddComponent(cc);
+                break;
+            }
+        }
+    }
+
+    // Attach vehicle to a matching object (by body render node)
+    if (m_Vehicle)
+    {
+        const std::string& bodyName = m_Vehicle->GetBodyRenderNodeName();
+        VansRenderNode* bodyRN = FindRenderNodeByName(bodyName);
+        if (bodyRN)
+        {
+            for (auto* obj : m_SceneObjects)
+            {
+                auto* rc = obj->GetComponent<VansScriptRenderComponent>();
+                if (rc && rc->m_RenderNode == bodyRN)
+                {
+                    auto* vc = new VansScriptVehicleComponent();
+                    vc->m_ComponentName = "vehicle";
+                    vc->m_Vehicle = m_Vehicle;
+                    obj->AddComponent(vc);
+                    break;
+                }
+            }
+        }
+    }
+
+    VANS_LOG("[AutoCreateObjectsFromLegacy] Created " << m_SceneObjects.size() << " implicit objects from legacy data.");
 }

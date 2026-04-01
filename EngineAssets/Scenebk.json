@@ -1,200 +1,277 @@
 ﻿{
     "scene": [
         {
-            "rendernode": [
+            "objects": [
                 {
-                    "name": "Object0",
-                    "mesh": "ak",
-                    "material": "SSSMaterial",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            -6,
-                            2.0,
-                            2
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.1,
-                            0.1,
-                            0.1
-                        ]
-                    },
-                    "support_shadow": true
+                    "name": "Gun",
+                    "components": {
+                        "render": {
+                            "name": "Object0",
+                            "mesh": "ak",
+                            "material": "SSSMaterial",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [-6, 2.0, 2],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.1, 0.1, 0.1]
+                            },
+                            "support_shadow": true
+                        },
+                        "physics": {
+                            "name": "Object0Physics",
+                            "enabled": true,
+                            "bodyType": "static",
+                            "colliderType": "sphere",
+                            "sphereRadius": 1.0
+                        }
+                    }
                 },
                 {
                     "name": "HumanHead",
-                    "mesh": "HumanHead",
-                    "material": "HumanHeadSkinMaterial",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            -6,
-                            1.3,
-                            2.7
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            1,
-                            1,
-                            1
-                        ]
-                    },
-                    "support_shadow": true
+                    "components": {
+                        "render": {
+                            "name": "HumanHead",
+                            "mesh": "HumanHead",
+                            "material": "HumanHeadSkinMaterial",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [-6, 1.3, 2.7],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [1, 1, 1]
+                            },
+                            "support_shadow": true
+                        }
+                    }
                 },
                 {
-                    "name": "Adam",
-                    "mesh": "Adam",
-                    "material": "BaseUnlitMaterial1",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            -3,
-                            0.05,
-                            2
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.01,
-                            0.01,
-                            0.01
-                        ]
-                    },
-                    "support_shadow": true
+                    "name": "AnimatedCharacter",
+                    "components": {
+                        "render": {
+                            "name": "Adam",
+                            "mesh": "Adam",
+                            "material": "BaseUnlitMaterial1",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [-3, 0.05, 2],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.01, 0.01, 0.01]
+                            },
+                            "support_shadow": true
+                        }
+                    }
                 },
                 {
-                    "name": "Cloth",
-                    "mesh": "cloth",
-                    "material": "clothMaterial",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            -6,
-                            1,
-                            3
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.3,
-                            0.3,
-                            0.3
-                        ]
-                    },
-                    "support_shadow": true
+                    "name": "ClothObject",
+                    "components": {
+                        "render": {
+                            "name": "Cloth",
+                            "mesh": "cloth",
+                            "material": "clothMaterial",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [-6, 1, 3],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.3, 0.3, 0.3]
+                            },
+                            "support_shadow": true
+                        },
+                        "cloth": {
+                            "stiffness": 0.8,
+                            "damping": 0.7,
+                            "friction": 0.1,
+                            "gravity": [0, -9.8, 0],
+                            "pinnedParticles": [0, 1, 2, 3, 4],
+                            "collisionSpheres": [
+                                {
+                                    "objectRef": "Gun",
+                                    "radius": 0.12
+                                }
+                            ]
+                        }
+                    }
                 },
                 {
-                    "name": "HairCard",
-                    "mesh": "hairCard",
-                    "material": "hairMaterial",
-                    "parent": "HumanHead",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            -4,
-                            2.0,
-                            2.7
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            1,
-                            1,
-                            1
-                        ]
-                    },
-                    "support_shadow": true
+                    "name": "HairCardObject",
+                    "components": {
+                        "render": {
+                            "name": "HairCard",
+                            "mesh": "hairCard",
+                            "material": "hairMaterial",
+                            "parent": "HumanHead",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [-4, 2.0, 2.7],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [1, 1, 1]
+                            },
+                            "support_shadow": true
+                        }
+                    }
                 },
                 {
-                    "name": "Car",
-                    "mesh": "car",
-                    "material": "BaseUnlitMaterial3",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            -6,
-                            2.0,
-                            3
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.01,
-                            0.01,
-                            0.01
-                        ]
-                    },
-                    "support_shadow": true
+                    "name": "CarBody",
+                    "components": {
+                        "render": {
+                            "name": "Car",
+                            "mesh": "car",
+                            "material": "BaseUnlitMaterial3",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [-6, 2.0, 3],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.01, 0.01, 0.01]
+                            },
+                            "support_shadow": true
+                        }
+                    }
                 },
                 {
-                    "name": "akgun",
-                    "mesh": "ak",
-                    "material": "BaseUnlitMaterial8",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            2,
-                            1,
-                            2
-                        ],
-                        "rotation": [
-                            0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.05,
-                            0.05,
-                            0.05
-                        ]
-                    },
-                    "support_shadow": true
+                    "name": "AkGunObject",
+                    "components": {
+                        "render": {
+                            "name": "akgun",
+                            "mesh": "ak",
+                            "material": "BaseUnlitMaterial8",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [2, 1, 2],
+                                "rotation": [0, 0.0, 0.0],
+                                "scale": [0.05, 0.05, 0.05]
+                            },
+                            "support_shadow": true
+                        }
+                    }
                 },
                 {
-                    "name": "Vespa",
-                    "mesh": "vespa",
-                    "material": "BaseUnlitMaterial9",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            2,
-                            0,
-                            4
-                        ],
-                        "rotation": [
-                            180,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.04,
-                            0.04,
-                            0.04
-                        ]
-                    },
-                    "support_shadow": true
+                    "name": "VespaObject",
+                    "components": {
+                        "render": {
+                            "name": "Vespa",
+                            "mesh": "vespa",
+                            "material": "BaseUnlitMaterial9",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [2, 0, 4],
+                                "rotation": [180, 0.0, 0.0],
+                                "scale": [0.04, 0.04, 0.04]
+                            },
+                            "support_shadow": true
+                        }
+                    }
                 },
+                {
+                    "name": "HouseObject",
+                    "components": {
+                        "render": {
+                            "name": "House",
+                            "mesh": "house",
+                            "material": "BaseUnlitMaterial7",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [0.0, 0.0, 0.0],
+                                "rotation": [-90.0, 0.0, 0.0],
+                                "scale": [1, 1, 1]
+                            },
+                            "support_shadow": true
+                        }
+                    }
+                },
+                {
+                    "name": "TireFR",
+                    "components": {
+                        "render": {
+                            "name": "Tire0",
+                            "mesh": "tire0",
+                            "material": "BaseUnlitMaterial2",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [-6, 3.0, 3],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.01, 0.01, 0.01]
+                            },
+                            "support_shadow": true
+                        }
+                    }
+                },
+                {
+                    "name": "TireFL",
+                    "components": {
+                        "render": {
+                            "name": "Tire1",
+                            "mesh": "tire1",
+                            "material": "BaseUnlitMaterial2",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [-6, 3.0, 3],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.01, 0.01, 0.01]
+                            },
+                            "support_shadow": true
+                        }
+                    }
+                },
+                {
+                    "name": "TireRR",
+                    "components": {
+                        "render": {
+                            "name": "Tire2",
+                            "mesh": "tire2",
+                            "material": "BaseUnlitMaterial2",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [-6, 3.0, 3],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.01, 0.01, 0.01]
+                            },
+                            "support_shadow": true
+                        }
+                    }
+                },
+                {
+                    "name": "TireRL",
+                    "components": {
+                        "render": {
+                            "name": "Tire3",
+                            "mesh": "tire3",
+                            "material": "BaseUnlitMaterial2",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [-6, 3.0, 3],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.01, 0.01, 0.01]
+                            },
+                            "support_shadow": true
+                        }
+                    }
+                },
+                {
+                    "name": "Vehicle",
+                    "components": {
+                        "vehicle": {
+                            "bodyObject": "CarBody",
+                            "tireObjects": ["TireFR", "TireFL", "TireRR", "TireRL"]
+                        }
+                    }
+                },
+                {
+                    "name": "TransparentBall",
+                    "components": {
+                        "render": {
+                            "name": "TransparentTestObject",
+                            "mesh": "sphere",
+                            "material": "TransparentSimpleColor",
+                            "type": "transparent",
+                            "transform": {
+                                "position": [1, 2.0, 0],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.5, 0.5, 0.5]
+                            },
+                            "support_shadow": false
+                        }
+                    }
+                }
+            ],
+            "rendernode": [
                 {
                     "name": "Postprocess",
                     "mesh": "fullScreenQuad",
@@ -206,150 +283,6 @@
                     "mesh": "cube",
                     "material": "SkyBoxMaterial",
                     "type": "sky_box"
-                },
-                {
-                    "name": "House",
-                    "mesh": "house",
-                    "material": "BaseUnlitMaterial7",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "rotation": [
-                            -90.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            1,
-                            1,
-                            1
-                        ]
-                    },
-                    "support_shadow": true
-                },
-                {
-                    "name": "Tire0",
-                    "mesh": "tire0",
-                    "material": "BaseUnlitMaterial2",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            -6,
-                            3.0,
-                            3
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.01,
-                            0.01,
-                            0.01
-                        ]
-                    },
-                    "support_shadow": true
-                },
-                {
-                    "name": "Tire1",
-                    "mesh": "tire1",
-                    "material": "BaseUnlitMaterial2",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            -6,
-                            3.0,
-                            3
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.01,
-                            0.01,
-                            0.01
-                        ]
-                    },
-                    "support_shadow": true
-                },
-                {
-                    "name": "Tire2",
-                    "mesh": "tire2",
-                    "material": "BaseUnlitMaterial2",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            -6,
-                            3.0,
-                            3
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.01,
-                            0.01,
-                            0.01
-                        ]
-                    },
-                    "support_shadow": true
-                },
-                {
-                    "name": "Tire3",
-                    "mesh": "tire3",
-                    "material": "BaseUnlitMaterial2",
-                    "type": "opaque",
-                    "transform": {
-                        "position": [
-                            -6,
-                            3.0,
-                            3
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.01,
-                            0.01,
-                            0.01
-                        ]
-                    },
-                    "support_shadow": true
-                },
-                {
-                    "name": "TransparentTestObject",
-                    "mesh": "sphere",
-                    "material": "TransparentSimpleColor",
-                    "type": "transparent",
-                    "transform": {
-                        "position": [
-                            1,
-                            2.0,
-                            0
-                        ],
-                        "rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "scale": [
-                            0.5,
-                            0.5,
-                            0.5
-                        ]
-                    },
-                    "support_shadow": false
                 }
             ],
             "light": [
@@ -408,42 +341,7 @@
                     "outerCutoff": 35.0
                 }
             ],
-            "physicsnode": [
-                {
-                    "name": "Vehicle",
-                    "nodeType": "vehicle",
-                    "bodyRenderNode": "Car",
-                    "tireRenderNodes": [
-                        "Tire0",
-                        "Tire1",
-                        "Tire2",
-                        "Tire3"
-                    ]
-                },
-                {
-                    "name": "Object0Physics",
-                    "enabled": true,
-                    "bodyType": "static",
-                    "colliderType": "sphere",
-                    "sphereRadius": 1.0,
-                    "renderNode": "Object0"
-                },
-                {
-                    "nodeType": "cloth",
-                    "renderNode": "Cloth",
-                    "stiffness": 0.8,
-                    "damping": 0.7,
-                    "friction": 0.1,
-                    "gravity": [0, -9.8, 0],
-                    "pinnedParticles": [0,1,2,3,4],
-                    "collisionSpheres": [
-                        {
-                            "renderNode": "Object0",
-                            "radius": 0.12
-                        }
-                    ]
-                }
-            ]
+            "physicsnode": []
         }
     ],
     "terrain": {

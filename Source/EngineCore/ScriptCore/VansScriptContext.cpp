@@ -6,7 +6,11 @@
 #include <cstdlib>
 #include <string>
 #include <algorithm>
-#include "../../../ForestExporter/VansPyExporter.h"
+#include "../../../ForestExporter/VansEngineBridge.h"
+
+// Defined in VansScriptBridge.cpp
+extern void VansInitEngineBridge();
+extern VansEngineBridge* VansGetEngineBridgePtr();
 namespace py = pybind11;
 
 // Singleton instance
@@ -193,6 +197,9 @@ void VansScriptContext::ReloadPydModule(const std::string& moduleName)
         VansConsole::Get().LogPython("[PYD-Reload] Reloaded " + moduleName + " (v" +
             std::to_string(m_PydReloadCounter) + ")");
 
+        // Re-install the engine bridge into the freshly loaded module
+        mod.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetEngineBridgePtr()));
+
         // Reload dependent .py scripts so they pick up the new .pyd
         ReloadAllPyScripts();
     }
@@ -230,6 +237,20 @@ void VansScriptContext::VansScriptSetup()
     // Install stdout/stderr redirect so print() goes to console window
     // (must be after sys.path setup so _engine_redirect.py is findable)
     InstallPythonOutputRedirect();
+
+    // ── Initialize the engine bridge and install it into the .pyd ─────────
+    VansInitEngineBridge();
+    try
+    {
+        py::module vc = py::module::import("vanscomponent");
+        vc.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetEngineBridgePtr()));
+        VansConsole::Get().LogPython("[Bridge] Engine bridge installed into vanscomponent");
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython(std::string("[Bridge] Warning: ") + e.what());
+        VANS_LOG_ERROR("Failed to install engine bridge: " << e.what());
+    }
 
     try 
     {

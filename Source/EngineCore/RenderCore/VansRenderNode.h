@@ -90,6 +90,8 @@ namespace VansGraphics
 			m_OwnsTransform = false;
 		}
 
+		RenderNodeType GetNodeType() const { return m_NodeType; }
+
 	protected:
 
 		RenderNodeType m_NodeType;

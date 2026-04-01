@@ -436,13 +436,36 @@ bool VansGraphics::VansScene::LoadScene(const char* path)
     //loadLightsData
     LoadLights(nativeDevice, sceneNode[0]["light"]);
 
-    //根据引用关系创建render node
-    LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
-
-    // Load physics nodes if present
-    if (sceneNode[0].contains("physicsnode"))
+    // ── New "objects" format vs legacy rendernode/physicsnode ─────────────
+    if (sceneNode[0].contains("objects") && sceneNode[0]["objects"].is_array()
+        && !sceneNode[0]["objects"].empty())
     {
-        LoadPhysicsNodes(sceneNode[0]["physicsnode"]);
+        // New ScriptableObject path
+        LoadSceneObjects(nativeDevice, sceneNode[0]["objects"]);
+
+        // Still load any remaining legacy rendernode / physicsnode that exist
+        // alongside "objects" for a smooth transition period.
+        if (sceneNode[0].contains("rendernode") && !sceneNode[0]["rendernode"].empty())
+        {
+            LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
+        }
+        if (sceneNode[0].contains("physicsnode") && !sceneNode[0]["physicsnode"].empty())
+        {
+            LoadPhysicsNodes(sceneNode[0]["physicsnode"]);
+        }
+    }
+    else
+    {
+        // Legacy path: flat rendernode + physicsnode arrays
+        LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
+
+        if (sceneNode[0].contains("physicsnode"))
+        {
+            LoadPhysicsNodes(sceneNode[0]["physicsnode"]);
+        }
+
+        // Auto-wrap legacy nodes into VansScriptObjects for uniform access
+        AutoCreateObjectsFromLegacy();
     }
 
 
@@ -502,6 +525,13 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::FindRenderNodeByName(cons
 void VansGraphics::VansScene::UnLoadScene()
 {
 m_MaterialManager.ClearRuntimeRenderTextures();
+
+    // Clean up scene objects (wrappers only – does NOT delete underlying Nodes)
+    for (auto* obj : m_SceneObjects)
+    {
+        delete obj;
+    }
+    m_SceneObjects.clear();
 
     // Clean up physics nodes
     for (auto* physicsNode : m_PhysicsNodes)

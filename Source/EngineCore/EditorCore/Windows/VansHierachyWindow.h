@@ -25,6 +25,10 @@ namespace VansGraphics
 		void DrawPBRMaterialParameters(VansBasePBRParam& param, int id = 0);
 		void DrawAtmosphereParameters(VansAtmospherePBRParam& param);
 
+		// ── Objects tab ──
+		void DrawObjectList();
+		void DrawObjectDetail();
+
 		// ── Animation tab ──
 		void DrawAnimationList();
 		void DrawAnimationNodeDetail();

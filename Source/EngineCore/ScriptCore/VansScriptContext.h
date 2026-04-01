@@ -5,10 +5,15 @@
 
 #include <vector>
 #include <string>
+#include <cstdint>
 #include <filesystem>
 #include <unordered_map>
 #include <pybind11/embed.h>
 namespace py = pybind11;
+
+// Forward declarations for Component sub-classes
+namespace VansGraphics { class VansRenderNode; }
+namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; }
 
 class VansScriptContext
 {
@@ -60,13 +65,46 @@ class VansScriptComponent
 {
 public:
 	std::string m_ComponentName;
+
+	virtual ~VansScriptComponent() = default;
 };
 
 class VansScriptObject
 {
 public:
+	std::string m_ObjectName;
 
-	std::vector<VansScriptComponent> m_Components;
+	// All components owned by this object (polymorphic pointers).
+	// The object owns the Component memory, but NOT the Node pointed to by each component.
+	std::vector<VansScriptComponent*> m_Components;
+
+	// Transform ID shared across all components of this object.
+	// Typically taken from the render component's RenderNode.
+	uint32_t m_TransformID = 0;
+
+	// ── Query helpers ────────────────────────────────────────────────
+	template<typename T>
+	T* GetComponent() const
+	{
+		for (auto* comp : m_Components)
+		{
+			T* casted = dynamic_cast<T*>(comp);
+			if (casted) return casted;
+		}
+		return nullptr;
+	}
+
+	void AddComponent(VansScriptComponent* comp)
+	{
+		m_Components.push_back(comp);
+	}
+
+	~VansScriptObject()
+	{
+		for (auto* comp : m_Components)
+			delete comp;
+		m_Components.clear();
+	}
 };
 
 
@@ -77,16 +115,34 @@ public:
 	int m_TransformID;
 };
 
-//class VansScriptRenderer : public VansScriptComponent
-//{
-//public:
-//
-//	VansGraphics::VansRenderNode* m_RenderNode;
-//};
-//
-//class VansScriptPhysics : public VansScriptComponent
-//{
-//public:
-//
-//	VansEngine::VansPhysicsNode* m_PhysicsNode;
-//};
+// ── Render Component ────────────────────────────────────────────────────────
+// Holds a non-owning pointer to a VansRenderNode managed by VansScene.
+class VansScriptRenderComponent : public VansScriptComponent
+{
+public:
+	VansGraphics::VansRenderNode* m_RenderNode = nullptr;
+};
+
+// ── Physics Component ───────────────────────────────────────────────────────
+// Holds a non-owning pointer to a VansPhysicsNode managed by VansScene.
+class VansScriptPhysicsComponent : public VansScriptComponent
+{
+public:
+	VansEngine::VansPhysicsNode* m_PhysicsNode = nullptr;
+};
+
+// ── Cloth Component ─────────────────────────────────────────────────────────
+// Holds a non-owning pointer to a VansClothNode managed by VansScene.
+class VansScriptClothComponent : public VansScriptComponent
+{
+public:
+	VansEngine::VansClothNode* m_ClothNode = nullptr;
+};
+
+// ── Vehicle Component ───────────────────────────────────────────────────────
+// Holds a non-owning pointer to a VansPhysicsVehicle managed by VansScene.
+class VansScriptVehicleComponent : public VansScriptComponent
+{
+public:
+	VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
+};

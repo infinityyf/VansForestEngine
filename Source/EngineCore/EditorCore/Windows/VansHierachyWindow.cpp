@@ -1,5 +1,9 @@
 #include "VansHierachyWindow.h"
 #include "../../RenderCore/VansScene.h"
+#include "../../ScriptCore/VansScriptContext.h"
+#include "../../PhysicsCore/VansPhysicsNode.h"
+#include "../../PhysicsCore/VansClothNode.h"
+#include "../../PhysicsCore/VansPhysicsVehicle.h"
 
 #include "imgui.h"
 #include <cstdio>
@@ -530,6 +534,226 @@ void VansGraphics::VansHierachuWindow::DrawAnimationNodeDetail()
     ImGui::End();
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Objects tab — list VansScriptObjects
+// ════════════════════════════════════════════════════════════════════════════
+void VansGraphics::VansHierachuWindow::DrawObjectList()
+{
+    const auto& objects = m_Scene->m_SceneObjects;
+    if (objects.empty())
+    {
+        ImGui::TextDisabled("(no scene objects)");
+        return;
+    }
+
+    for (auto* obj : objects)
+    {
+        if (!obj) continue;
+
+        ImGui::PushID(obj);
+
+        // Build a short type summary  e.g. "[Render | Physics]"
+        std::string typeHint;
+        if (obj->GetComponent<VansScriptRenderComponent>())   typeHint += "Render ";
+        if (obj->GetComponent<VansScriptPhysicsComponent>())  typeHint += "Physics ";
+        if (obj->GetComponent<VansScriptClothComponent>())    typeHint += "Cloth ";
+        if (obj->GetComponent<VansScriptVehicleComponent>())  typeHint += "Vehicle ";
+
+        char label[256];
+        snprintf(label, sizeof(label), "%s  [%s]", obj->m_ObjectName.c_str(), typeHint.c_str());
+
+        bool isSelected = (m_Scene->m_SelectedObject == obj);
+        if (ImGui::Selectable(label, isSelected))
+        {
+            m_Scene->m_SelectedObject = obj;
+
+            // Sync m_SelectedNode so that gizmos are drawn for this object
+            auto* rc = obj->GetComponent<VansScriptRenderComponent>();
+            m_Scene->m_SelectedNode = (rc && rc->m_RenderNode) ? rc->m_RenderNode : nullptr;
+        }
+
+        ImGui::PopID();
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Object Inspector — shows components of the selected VansScriptObject
+// ════════════════════════════════════════════════════════════════════════════
+void VansGraphics::VansHierachuWindow::DrawObjectDetail()
+{
+    if (!m_Scene->m_SelectedObject) return;
+
+    VansScriptObject* obj = m_Scene->m_SelectedObject;
+
+    ImGui::Begin("Object Inspector");
+
+    // ── Header ─────────────────────────────────────────────────────────
+    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Object: %s", obj->m_ObjectName.c_str());
+    ImGui::Text("Transform ID: %u", obj->m_TransformID);
+    ImGui::Text("Components: %d", (int)obj->m_Components.size());
+    ImGui::Separator();
+
+    // ── Transform (top-level, editable — drives gizmos via m_SelectedNode) ──
+    auto* renderComp = obj->GetComponent<VansScriptRenderComponent>();
+    if (renderComp && renderComp->m_RenderNode)
+    {
+        VansRenderNode* node = renderComp->m_RenderNode;
+        if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            DrawTransformDetail(*node);
+        }
+    }
+
+    // ── Render Component ──────────────────────────────────────────────
+    if (renderComp && renderComp->m_RenderNode)
+    {
+        VansRenderNode* node = renderComp->m_RenderNode;
+        if (ImGui::CollapsingHeader("Render Component", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Text("Node Name: %s", node->m_NodeName.c_str());
+
+            // Node type
+            const char* nodeTypeStr = "Unknown";
+            RenderNodeType ntype = node->GetNodeType();
+            if (ntype & OPAQUE_NODE)       nodeTypeStr = "Opaque";
+            if (ntype & TRANSPARENT_NODE)  nodeTypeStr = "Transparent";
+            if (ntype & POSTPROCESS_NODE)  nodeTypeStr = "PostProcess";
+            if (ntype & SKY_BOX_NODE)      nodeTypeStr = "SkyBox";
+            ImGui::Text("Type: %s", nodeTypeStr);
+
+            if (!node->m_ParentGroupName.empty())
+                ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Group: %s", node->m_ParentGroupName.c_str());
+
+            // Material summary
+            if (node->m_Material)
+            {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "Material");
+                DrawMaterialDetail(*node->m_Material);
+            }
+
+            // Skeleton info
+            if (node->m_HasSkeletonBone)
+            {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.3f, 0.8f, 1.0f, 1.0f), "Has Skeleton Bones");
+                ImGui::Text("Animation Enabled: %s", node->m_AnimationEnabled ? "Yes" : "No");
+            }
+        }
+    }
+
+    // ── Physics Component ─────────────────────────────────────────────
+    auto* physicsComp = obj->GetComponent<VansScriptPhysicsComponent>();
+    if (physicsComp && physicsComp->m_PhysicsNode)
+    {
+        VansEngine::VansPhysicsNode* pNode = physicsComp->m_PhysicsNode;
+        const auto& props = pNode->GetProperties();
+
+        if (ImGui::CollapsingHeader("Physics Component", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Text("Name: %s", pNode->GetName().c_str());
+            ImGui::Text("Enabled: %s", pNode->IsEnabled() ? "Yes" : "No");
+
+            // Body type
+            const char* bodyTypeNames[] = { "Static", "Dynamic", "Kinematic" };
+            int bodyIdx = (int)props.bodyType;
+            if (bodyIdx >= 0 && bodyIdx < 3)
+                ImGui::Text("Body Type: %s", bodyTypeNames[bodyIdx]);
+
+            // Collider type
+            const char* colliderNames[] = { "None", "Box", "Sphere", "Capsule", "Mesh", "ConvexMesh" };
+            int colliderIdx = (int)props.colliderType;
+            if (colliderIdx >= 0 && colliderIdx < 6)
+                ImGui::Text("Collider: %s", colliderNames[colliderIdx]);
+
+            // Shape-specific params
+            switch (props.colliderType)
+            {
+            case VansEngine::PhysicsColliderType::Box:
+                ImGui::Text("Box Extents: (%.2f, %.2f, %.2f)", props.boxExtents.x, props.boxExtents.y, props.boxExtents.z);
+                break;
+            case VansEngine::PhysicsColliderType::Sphere:
+                ImGui::Text("Sphere Radius: %.2f", props.sphereRadius);
+                break;
+            case VansEngine::PhysicsColliderType::Capsule:
+                ImGui::Text("Capsule Radius: %.2f  Half-Height: %.2f", props.capsuleRadius, props.capsuleHalfHeight);
+                break;
+            default:
+                break;
+            }
+
+            ImGui::Text("Mass: %.2f", props.mass);
+
+            // Material
+            if (ImGui::TreeNode("Physics Material"))
+            {
+                ImGui::Text("Static Friction:  %.2f", props.material.staticFriction);
+                ImGui::Text("Dynamic Friction: %.2f", props.material.dynamicFriction);
+                ImGui::Text("Restitution:      %.2f", props.material.restitution);
+                ImGui::TreePop();
+            }
+
+            // Runtime velocities (for dynamic bodies)
+            if (props.bodyType == VansEngine::PhysicsBodyType::Dynamic)
+            {
+                glm::vec3 linVel = pNode->GetLinearVelocity();
+                glm::vec3 angVel = pNode->GetAngularVelocity();
+                ImGui::Text("Linear Vel:  (%.2f, %.2f, %.2f)", linVel.x, linVel.y, linVel.z);
+                ImGui::Text("Angular Vel: (%.2f, %.2f, %.2f)", angVel.x, angVel.y, angVel.z);
+            }
+        }
+    }
+
+    // ── Cloth Component ───────────────────────────────────────────────
+    auto* clothComp = obj->GetComponent<VansScriptClothComponent>();
+    if (clothComp && clothComp->m_ClothNode)
+    {
+        VansEngine::VansClothNode* cNode = clothComp->m_ClothNode;
+
+        if (ImGui::CollapsingHeader("Cloth Component", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Text("Name: %s", cNode->GetName().c_str());
+            ImGui::Text("Enabled: %s", cNode->IsEnabled() ? "Yes" : "No");
+
+            const auto& sphereRefs = cNode->GetCollisionSphereRefs();
+            ImGui::Text("Collision Spheres: %d", (int)sphereRefs.size());
+
+            if (!sphereRefs.empty() && ImGui::TreeNode("Collision Spheres"))
+            {
+                for (size_t i = 0; i < sphereRefs.size(); i++)
+                {
+                    const auto& sph = sphereRefs[i];
+                    ImGui::BulletText("%s  r=%.3f", sph.renderNodeName.c_str(), sph.radius);
+                }
+                ImGui::TreePop();
+            }
+        }
+    }
+
+    // ── Vehicle Component ─────────────────────────────────────────────
+    auto* vehicleComp = obj->GetComponent<VansScriptVehicleComponent>();
+    if (vehicleComp && vehicleComp->m_Vehicle)
+    {
+        VansEngine::VansPhysicsVehicle* vehicle = vehicleComp->m_Vehicle;
+
+        if (ImGui::CollapsingHeader("Vehicle Component", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Text("Body Render Node: %s", vehicle->GetBodyRenderNodeName().c_str());
+
+            const auto& tireNames = vehicle->GetTireRenderNodeNames();
+            ImGui::Text("Wheels: %u", vehicle->GetNumWheels());
+            if (!tireNames.empty() && ImGui::TreeNode("Tire Render Nodes"))
+            {
+                for (size_t i = 0; i < tireNames.size(); i++)
+                    ImGui::BulletText("[%d] %s", (int)i, tireNames[i].c_str());
+                ImGui::TreePop();
+            }
+        }
+    }
+
+    ImGui::End();
+}
+
 void VansGraphics::VansHierachuWindow::ShowWindow(VansVKDevice& device)
 {
     // ── Main hierarchy window with tab bar ───────────────────────────
@@ -537,6 +761,12 @@ void VansGraphics::VansHierachuWindow::ShowWindow(VansVKDevice& device)
 
     if (ImGui::BeginTabBar("HierarchyTabs"))
     {
+        if (ImGui::BeginTabItem("Objects"))
+        {
+            DrawObjectList();
+            ImGui::EndTabItem();
+        }
+
         if (ImGui::BeginTabItem("Scene"))
         {
             DrawRenderNodeList();
@@ -555,6 +785,7 @@ void VansGraphics::VansHierachuWindow::ShowWindow(VansVKDevice& device)
     ImGui::End();
 
     // ── Detail panels (drawn outside the tab window) ─────────────────
+    DrawObjectDetail();
     DrawRenderNodeDetail();
     DrawAnimationNodeDetail();
 }

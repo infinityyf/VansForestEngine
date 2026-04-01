@@ -9,6 +9,7 @@
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "VegetationCore/VansVegetationSystem.h"
+#include "../ScriptCore/VansScriptContext.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -121,6 +122,15 @@ namespace VansGraphics
 		void InitVehicle(VansEngine::VansPhysicsSystem* physicsSystem, const glm::vec3& position,
 			const std::string& bodyRenderNodeName, const std::vector<std::string>& tireRenderNodeNames);
 
+		// ── ScriptableObject layer ──────────────────────────────────────────
+		// Each VansScriptObject groups render / physics / cloth components for
+		// one logical scene entity.  Objects only hold non-owning pointers to
+		// Nodes — the Nodes themselves are still managed by the flat lists above.
+		std::vector<VansScriptObject*> m_SceneObjects;
+
+		// Find an object by its logical name.
+		VansScriptObject* FindObjectByName(const std::string& name) const;
+
 	public:
 
 		VansVKBuffer m_InstanceTransformDataBuffer;
@@ -153,6 +163,7 @@ namespace VansGraphics
 	public:
 		//editor
 		VansRenderNode* m_SelectedNode;
+		VansScriptObject* m_SelectedObject = nullptr;
 
 		// ── Transform parenting system ──────────────────────────────────────────
 		VansTransformParentSystem m_TransformParentSystem;
@@ -165,6 +176,19 @@ namespace VansGraphics
 		void LoadRenderNodes(VkDevice& device, json& render_node);
 
 		void LoadPhysicsNodes(json& physics_node);
+
+		// ── ScriptableObject-based loading (new JSON "objects" format) ───────
+		// Parses the "objects" array from scene JSON: creates VansScriptObjects
+		// with render / physics / cloth / vehicle components.
+		void LoadSceneObjects(VkDevice& device, json& objectsArray);
+
+		// Auto-wrap legacy rendernode + physicsnode data into VansScriptObjects.
+		void AutoCreateObjectsFromLegacy();
+
+		// ── Single-node loading helpers (extracted from batch loaders) ────────
+		VansRenderNode* LoadSingleRenderNode(VkDevice& device, const json& renderNodeJson);
+		VansEngine::VansPhysicsNode* LoadSinglePhysicsNode(const json& physicsNodeJson, VansRenderNode* associatedRenderNode);
+		VansEngine::VansClothNode*   LoadSingleClothNode(const json& clothNodeJson, VansRenderNode* associatedRenderNode);
 
 		// Find a render node by name across all render node lists
 		VansRenderNode* FindRenderNodeByName(const std::string& name) const;

@@ -6,6 +6,7 @@
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansClothSystem.h"
 #include "../Configration/VansConfigration.h"
+#include "../ScriptCore/VansScriptContext.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -38,6 +39,232 @@ void VansGraphics::VansScene::InitVehicle(VansEngine::VansPhysicsSystem* physics
 // Physics node loading from JSON
 // ===========================================================================
 
+// ===========================================================================
+// Single cloth node loading (extracted from LoadPhysicsNodes)
+// ===========================================================================
+
+VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const json& clothNodeJson, VansRenderNode* associatedRenderNode)
+{
+    using namespace VansEngine;
+
+    VansRenderNode* renderNode = associatedRenderNode;
+
+    // If no associated render node was passed, try to find one by name (legacy path)
+    if (!renderNode && clothNodeJson.contains("renderNode"))
+    {
+        std::string renderNodeName = clothNodeJson["renderNode"].get<std::string>();
+        renderNode = FindRenderNodeByName(renderNodeName);
+    }
+
+    if (!renderNode)
+    {
+        VANS_LOG_WARN("[VansScene] LoadSingleClothNode: no valid render node, skipping.");
+        return nullptr;
+    }
+
+    ClothNodeProperties clothProps;
+    if (clothNodeJson.contains("stiffness"))     clothProps.stiffness     = clothNodeJson["stiffness"].get<float>();
+    if (clothNodeJson.contains("damping"))       clothProps.damping       = clothNodeJson["damping"].get<float>();
+    if (clothNodeJson.contains("friction"))      clothProps.friction      = clothNodeJson["friction"].get<float>();
+    if (clothNodeJson.contains("selfCollision")) clothProps.selfCollision = clothNodeJson["selfCollision"].get<bool>();
+    if (clothNodeJson.contains("gravity"))
+    {
+        auto& g = clothNodeJson["gravity"];
+        clothProps.gravity = g[1].get<float>();
+    }
+    if (clothNodeJson.contains("pinnedParticles"))
+    {
+        for (const auto& idx : clothNodeJson["pinnedParticles"])
+            clothProps.pinnedParticleIndices.push_back(idx.get<uint32_t>());
+    }
+
+    // Parse collision sphere references — supports both old ("renderNode") and new ("objectRef") keys
+    if (clothNodeJson.contains("collisionSpheres"))
+    {
+        for (const auto& csJson : clothNodeJson["collisionSpheres"])
+        {
+            ClothNodeProperties::CollisionSphereRef ref;
+            if (csJson.contains("renderNode"))
+                ref.renderNodeName = csJson["renderNode"].get<std::string>();
+            else if (csJson.contains("objectRef"))
+            {
+                // New path: resolve objectRef → render node name
+                std::string objectName = csJson["objectRef"].get<std::string>();
+                VansScriptObject* refObj = FindObjectByName(objectName);
+                if (refObj)
+                {
+                    auto* rc = refObj->GetComponent<VansScriptRenderComponent>();
+                    if (rc && rc->m_RenderNode)
+                        ref.renderNodeName = rc->m_RenderNode->m_NodeName;
+                }
+            }
+            if (csJson.contains("radius"))
+                ref.radius = csJson["radius"].get<float>();
+            if (!ref.renderNodeName.empty())
+                clothProps.collisionSphereRefs.push_back(ref);
+        }
+    }
+
+    VansClothNode* clothNode = new VansClothNode();
+    clothNode->Initialize(clothProps, renderNode);
+    m_ClothNodes.push_back(clothNode);
+
+    // Allocate a scene-owned HOST_VISIBLE staging buffer for this cloth node.
+    VkDeviceSize stagingSize =
+        static_cast<VkDeviceSize>(renderNode->m_Mesh
+            ? renderNode->m_Mesh->GetMeshVertexCount() : 0)
+        * static_cast<VkDeviceSize>(renderNode->m_Mesh
+            ? renderNode->m_Mesh->GetMeshVertexStride() : 8 * sizeof(uint16_t));
+    VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VkDevice nativeDev  = vkDev ? vkDev->GetLogicDevice() : VK_NULL_HANDLE;
+    m_ClothStagingBuffers.emplace_back();
+    if (stagingSize > 0 && nativeDev != VK_NULL_HANDLE)
+    {
+        m_ClothStagingBuffers.back().CreatVulkanBuffer(
+            nativeDev,
+            stagingSize,
+            VK_FORMAT_UNDEFINED,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_ClothStagingBuffers.back().PersistentMap();
+    }
+    VANS_LOG("[VansScene] Cloth node created for render node '" << renderNode->m_NodeName << "'");
+
+    return clothNode;
+}
+
+// ===========================================================================
+// Single physics node loading (extracted from LoadPhysicsNodes)
+// ===========================================================================
+
+VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(const json& physicsNodeJson, VansRenderNode* associatedRenderNode)
+{
+    using namespace VansEngine;
+
+    // Parse physics properties from JSON
+    PhysicsNodeProperties properties;
+
+    if (physicsNodeJson.contains("enabled"))
+        properties.enabled = physicsNodeJson["enabled"];
+    
+    if (!properties.enabled)
+        return nullptr;
+
+    // Body type: "static", "dynamic", "kinematic"
+    if (physicsNodeJson.contains("bodyType"))
+    {
+        std::string bodyTypeStr = physicsNodeJson["bodyType"];
+        if (bodyTypeStr == "static")
+            properties.bodyType = PhysicsBodyType::Static;
+        else if (bodyTypeStr == "dynamic")
+            properties.bodyType = PhysicsBodyType::Dynamic;
+        else if (bodyTypeStr == "kinematic")
+            properties.bodyType = PhysicsBodyType::Kinematic;
+    }
+
+    // Collider type
+    if (physicsNodeJson.contains("colliderType"))
+    {
+        std::string colliderTypeStr = physicsNodeJson["colliderType"];
+        if (colliderTypeStr == "box")
+            properties.colliderType = PhysicsColliderType::Box;
+        else if (colliderTypeStr == "sphere")
+            properties.colliderType = PhysicsColliderType::Sphere;
+        else if (colliderTypeStr == "capsule")
+            properties.colliderType = PhysicsColliderType::Capsule;
+        else if (colliderTypeStr == "mesh")
+            properties.colliderType = PhysicsColliderType::Mesh;
+        else if (colliderTypeStr == "convex")
+            properties.colliderType = PhysicsColliderType::ConvexMesh;
+    }
+
+    if (physicsNodeJson.contains("mass"))
+        properties.mass = physicsNodeJson["mass"];
+    if (physicsNodeJson.contains("useMeshCollider"))
+        properties.useMeshCollider = physicsNodeJson["useMeshCollider"];
+    if (physicsNodeJson.contains("useConvexDecomposition"))
+        properties.useConvexDecomposition = physicsNodeJson["useConvexDecomposition"];
+
+    if (physicsNodeJson.contains("material"))
+    {
+        auto& materialJson = physicsNodeJson["material"];
+        if (materialJson.contains("staticFriction"))
+            properties.material.staticFriction = materialJson["staticFriction"];
+        if (materialJson.contains("dynamicFriction"))
+            properties.material.dynamicFriction = materialJson["dynamicFriction"];
+        if (materialJson.contains("restitution"))
+            properties.material.restitution = materialJson["restitution"];
+    }
+
+    if (physicsNodeJson.contains("boxExtents"))
+    {
+        auto& extents = physicsNodeJson["boxExtents"];
+        properties.boxExtents = glm::vec3(extents[0], extents[1], extents[2]);
+    }
+    if (physicsNodeJson.contains("sphereRadius"))
+        properties.sphereRadius = physicsNodeJson["sphereRadius"];
+    if (physicsNodeJson.contains("capsuleRadius"))
+        properties.capsuleRadius = physicsNodeJson["capsuleRadius"];
+    if (physicsNodeJson.contains("capsuleHalfHeight"))
+        properties.capsuleHalfHeight = physicsNodeJson["capsuleHalfHeight"];
+
+    // Resolve transform ID
+    uint32_t transformID = 0;
+    if (associatedRenderNode)
+    {
+        // New path: use the associated render node from the same ScriptObject
+        transformID = associatedRenderNode->m_TransformID;
+    }
+    else if (physicsNodeJson.contains("transformID"))
+    {
+        transformID = physicsNodeJson["transformID"];
+    }
+    else if (physicsNodeJson.contains("renderNode"))
+    {
+        std::string renderNodeName = physicsNodeJson["renderNode"].get<std::string>();
+        VansRenderNode* rn = FindRenderNodeByName(renderNodeName);
+        if (rn)
+            transformID = rn->m_TransformID;
+        else
+            VANS_LOG_WARN("[VansScene] Physics node: renderNode '" << renderNodeName << "' not found.");
+    }
+    else if (physicsNodeJson.contains("name"))
+    {
+        std::string nodeName = physicsNodeJson["name"];
+        for (auto* renderNode : m_OpaqueRenderNodes)
+        {
+            if (renderNode->m_NodeName == nodeName)
+            { transformID = renderNode->m_TransformID; break; }
+        }
+        for (auto* renderNode : m_TransParentRenderNodes)
+        {
+            if (renderNode->m_NodeName == nodeName)
+            { transformID = renderNode->m_TransformID; break; }
+        }
+    }
+
+    // Get mesh reference if needed
+    VansMesh* mesh = nullptr;
+    if (properties.useMeshCollider && physicsNodeJson.contains("mesh"))
+    {
+        std::string meshName = physicsNodeJson["mesh"];
+        mesh = static_cast<VansMesh*>(GetMeshAsset(meshName));
+    }
+
+    VansPhysicsNode* physicsNode = new VansPhysicsNode();
+    physicsNode->Initialize(properties, transformID, mesh);
+
+    if (physicsNodeJson.contains("name"))
+        physicsNode->SetName(physicsNodeJson["name"]);
+
+    m_PhysicsNodes.push_back(physicsNode);
+    return physicsNode;
+}
+
+// ===========================================================================
+// Physics node loading from JSON (delegates to single-node helpers)
+// ===========================================================================
+
 void VansGraphics::VansScene::LoadPhysicsNodes(json& physics_node)
 {
     using namespace VansEngine;
@@ -53,7 +280,6 @@ void VansGraphics::VansScene::LoadPhysicsNodes(json& physics_node)
                 continue;
             }
 
-            // Spawn position (optional, defaults to safe above-ground origin)
             glm::vec3 spawnPos(0.0f, 5.0f, 0.0f);
             if (physicsNodeJson.contains("position"))
             {
@@ -61,12 +287,10 @@ void VansGraphics::VansScene::LoadPhysicsNodes(json& physics_node)
                 spawnPos = glm::vec3(p[0].get<float>(), p[1].get<float>(), p[2].get<float>());
             }
 
-            // Car body render node name (used to update body mesh transform each frame)
             std::string bodyNodeName;
             if (physicsNodeJson.contains("bodyRenderNode"))
                 bodyNodeName = physicsNodeJson["bodyRenderNode"].get<std::string>();
 
-            // Tire render node names, ordered by wheel index (0=FL, 1=FR, 2=RL, 3=RR)
             std::vector<std::string> tireNodeNames;
             if (physicsNodeJson.contains("tireRenderNodes"))
             {
@@ -85,228 +309,13 @@ void VansGraphics::VansScene::LoadPhysicsNodes(json& physics_node)
                 VANS_LOG_WARN("[VansScene] Cloth node missing 'renderNode' field, skipping.");
                 continue;
             }
-
-            std::string renderNodeName = physicsNodeJson["renderNode"].get<std::string>();
-            VansRenderNode* renderNode = FindRenderNodeByName(renderNodeName);
-            if (!renderNode)
-            {
-                VANS_LOG_WARN("[VansScene] Cloth node: render node '" << renderNodeName << "' not found, skipping.");
-                continue;
-            }
-
-            VansEngine::ClothNodeProperties clothProps;
-            if (physicsNodeJson.contains("stiffness"))    clothProps.stiffness    = physicsNodeJson["stiffness"].get<float>();
-            if (physicsNodeJson.contains("damping"))      clothProps.damping      = physicsNodeJson["damping"].get<float>();
-            if (physicsNodeJson.contains("friction"))     clothProps.friction     = physicsNodeJson["friction"].get<float>();
-            if (physicsNodeJson.contains("selfCollision")) clothProps.selfCollision = physicsNodeJson["selfCollision"].get<bool>();
-            if (physicsNodeJson.contains("gravity"))
-            {
-                auto& g = physicsNodeJson["gravity"];
-                clothProps.gravity = g[1].get<float>();
-            }
-            if (physicsNodeJson.contains("pinnedParticles"))
-            {
-                for (const auto& idx : physicsNodeJson["pinnedParticles"])
-                    clothProps.pinnedParticleIndices.push_back(idx.get<uint32_t>());
-            }
-
-            // Parse collision sphere references (render node name + radius)
-            if (physicsNodeJson.contains("collisionSpheres"))
-            {
-                for (const auto& csJson : physicsNodeJson["collisionSpheres"])
-                {
-                    VansEngine::ClothNodeProperties::CollisionSphereRef ref;
-                    if (csJson.contains("renderNode"))
-                        ref.renderNodeName = csJson["renderNode"].get<std::string>();
-                    if (csJson.contains("radius"))
-                        ref.radius = csJson["radius"].get<float>();
-                    if (!ref.renderNodeName.empty())
-                        clothProps.collisionSphereRefs.push_back(ref);
-                }
-            }
-
-            VansEngine::VansClothNode* clothNode = new VansEngine::VansClothNode();
-            clothNode->Initialize(clothProps, renderNode);
-            m_ClothNodes.push_back(clothNode);
-
-            // Allocate a scene-owned HOST_VISIBLE staging buffer for this cloth node.
-            // Use actual mesh vertex stride (16 bytes without tangent, 28 bytes with tangent)
-            // to match the device-local vertex buffer layout.
-            VkDeviceSize stagingSize =
-                static_cast<VkDeviceSize>(renderNode->m_Mesh
-                    ? renderNode->m_Mesh->GetMeshVertexCount() : 0)
-                * static_cast<VkDeviceSize>(renderNode->m_Mesh
-                    ? renderNode->m_Mesh->GetMeshVertexStride() : 8 * sizeof(uint16_t));
-            VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-            VkDevice nativeDev  = vkDev ? vkDev->GetLogicDevice() : VK_NULL_HANDLE;
-            m_ClothStagingBuffers.emplace_back();
-            if (stagingSize > 0 && nativeDev != VK_NULL_HANDLE)
-            {
-                m_ClothStagingBuffers.back().CreatVulkanBuffer(
-                    nativeDev,
-                    stagingSize,
-                    VK_FORMAT_UNDEFINED,
-                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                m_ClothStagingBuffers.back().PersistentMap();
-            }
-            VANS_LOG("[VansScene] Cloth node created for render node '" << renderNodeName << "'");
+            LoadSingleClothNode(physicsNodeJson, nullptr);
             continue;
         }
         // ── Regular physics node ─────────────────────────────────────────────
-
-        // Parse physics properties from JSON
-        PhysicsNodeProperties properties;
-
-        // Required fields
         if (!physicsNodeJson.contains("enabled"))
-        {
-            continue; // Skip if not marked for physics
-        }
-        
-        properties.enabled = physicsNodeJson["enabled"];
-        
-        if (!properties.enabled)
-        {
-            continue; // Skip disabled physics nodes
-        }
-
-        // Body type: "static", "dynamic", "kinematic"
-        if (physicsNodeJson.contains("bodyType"))
-        {
-            std::string bodyTypeStr = physicsNodeJson["bodyType"];
-            if (bodyTypeStr == "static")
-                properties.bodyType = PhysicsBodyType::Static;
-            else if (bodyTypeStr == "dynamic")
-                properties.bodyType = PhysicsBodyType::Dynamic;
-            else if (bodyTypeStr == "kinematic")
-                properties.bodyType = PhysicsBodyType::Kinematic;
-        }
-
-        // Collider type: "box", "sphere", "capsule", "mesh", "convex"
-        if (physicsNodeJson.contains("colliderType"))
-        {
-            std::string colliderTypeStr = physicsNodeJson["colliderType"];
-            if (colliderTypeStr == "box")
-                properties.colliderType = PhysicsColliderType::Box;
-            else if (colliderTypeStr == "sphere")
-                properties.colliderType = PhysicsColliderType::Sphere;
-            else if (colliderTypeStr == "capsule")
-                properties.colliderType = PhysicsColliderType::Capsule;
-            else if (colliderTypeStr == "mesh")
-                properties.colliderType = PhysicsColliderType::Mesh;
-            else if (colliderTypeStr == "convex")
-                properties.colliderType = PhysicsColliderType::ConvexMesh;
-        }
-
-        // Mass (for dynamic objects)
-        if (physicsNodeJson.contains("mass"))
-        {
-            properties.mass = physicsNodeJson["mass"];
-        }
-
-        // Use mesh collider flag
-        if (physicsNodeJson.contains("useMeshCollider"))
-        {
-            properties.useMeshCollider = physicsNodeJson["useMeshCollider"];
-        }
-
-        // Convex decomposition flag
-        if (physicsNodeJson.contains("useConvexDecomposition"))
-        {
-            properties.useConvexDecomposition = physicsNodeJson["useConvexDecomposition"];
-        }
-
-        // Physics material properties
-        if (physicsNodeJson.contains("material"))
-        {
-            auto& materialJson = physicsNodeJson["material"];
-            if (materialJson.contains("staticFriction"))
-                properties.material.staticFriction = materialJson["staticFriction"];
-            if (materialJson.contains("dynamicFriction"))
-                properties.material.dynamicFriction = materialJson["dynamicFriction"];
-            if (materialJson.contains("restitution"))
-                properties.material.restitution = materialJson["restitution"];
-        }
-
-        // Collision shape parameters
-        if (physicsNodeJson.contains("boxExtents"))
-        {
-            auto& extents = physicsNodeJson["boxExtents"];
-            properties.boxExtents = glm::vec3(extents[0], extents[1], extents[2]);
-        }
-
-        if (physicsNodeJson.contains("sphereRadius"))
-        {
-            properties.sphereRadius = physicsNodeJson["sphereRadius"];
-        }
-
-        if (physicsNodeJson.contains("capsuleRadius"))
-        {
-            properties.capsuleRadius = physicsNodeJson["capsuleRadius"];
-        }
-
-        if (physicsNodeJson.contains("capsuleHalfHeight"))
-        {
-            properties.capsuleHalfHeight = physicsNodeJson["capsuleHalfHeight"];
-        }
-
-        // Get transform ID (link to existing render node)
-        uint32_t transformID = 0;
-        if (physicsNodeJson.contains("transformID"))
-        {
-            transformID = physicsNodeJson["transformID"];
-        }
-        else if (physicsNodeJson.contains("renderNode"))
-        {
-            // Explicit render node reference — preferred over name-based matching
-            std::string renderNodeName = physicsNodeJson["renderNode"].get<std::string>();
-            VansRenderNode* rn = FindRenderNodeByName(renderNodeName);
-            if (rn)
-                transformID = rn->m_TransformID;
-            else
-                VANS_LOG_WARN("[VansScene] Physics node: renderNode '" << renderNodeName << "' not found.");
-        }
-        else if (physicsNodeJson.contains("name"))
-        {
-            // Try to find matching render node by name
-            std::string nodeName = physicsNodeJson["name"];
-            for (auto* renderNode : m_OpaqueRenderNodes)
-            {
-                if (renderNode->m_NodeName == nodeName)
-                {
-                    transformID = renderNode->m_TransformID;
-                    break;
-                }
-            }
-            for (auto* renderNode : m_TransParentRenderNodes)
-            {
-                if (renderNode->m_NodeName == nodeName)
-                {
-                    transformID = renderNode->m_TransformID;
-                    break;
-                }
-            }
-        }
-
-        // Get mesh reference if needed
-        VansMesh* mesh = nullptr;
-        if (properties.useMeshCollider && physicsNodeJson.contains("mesh"))
-        {
-            std::string meshName = physicsNodeJson["mesh"];
-            mesh = static_cast<VansMesh*>(GetMeshAsset(meshName));
-        }
-
-        // Create physics node
-        VansPhysicsNode* physicsNode = new VansPhysicsNode();
-        physicsNode->Initialize(properties, transformID, mesh);
-
-        if (physicsNodeJson.contains("name"))
-        {
-            physicsNode->SetName(physicsNodeJson["name"]);
-        }
-
-        m_PhysicsNodes.push_back(physicsNode);
+            continue;
+        LoadSinglePhysicsNode(physicsNodeJson, nullptr);
     }
 }
 

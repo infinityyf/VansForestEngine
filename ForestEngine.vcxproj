@@ -325,6 +325,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSampler.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.cpp" />
     <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp" />
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptBridge.cpp" />
     <ClCompile Include="Source\EngineCore\Util\VansInputManager.cpp" />
     <ClCompile Include="Source\EngineCore\Util\VansJobSystem.cpp" />
     <ClCompile Include="Source\EngineCore\Util\VansLog.cpp" />

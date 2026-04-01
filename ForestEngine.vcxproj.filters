@@ -512,6 +512,9 @@
     <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp">
       <Filter>EngineCore\ScriptCore</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptBridge.cpp">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp">
       <Filter>EngineCore\RenderCore\RayTracingCore</Filter>
     </ClCompile>
