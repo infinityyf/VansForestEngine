@@ -1459,6 +1459,20 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             obj->AddComponent(vc);
         }
 
+        // ── Python script components ──────────────────────────────────────
+        if (objJson.contains("pyScripts"))
+        {
+            for (const auto& scriptEntry : objJson["pyScripts"])
+            {
+                auto* pyComp = new VanPyScriptComponent();
+                pyComp->m_ComponentName    = "PyScript";
+                pyComp->m_ScriptModuleName = scriptEntry["module"].get<std::string>();
+                pyComp->m_ScriptClassName  = scriptEntry["class"].get<std::string>();
+                pyComp->m_OwnerObject      = obj;
+                obj->AddComponent(pyComp);
+            }
+        }
+
         m_SceneObjects.push_back(obj);
         VANS_LOG("[LoadSceneObjects] Created object '" << obj->m_ObjectName << "'");
     }

@@ -532,6 +532,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // Rendering, 这里会结束renderpass
         camera.Rendering();
 
+        m_ScriptContext.SetScene(m_Scene);
         m_ScriptContext.VansScriptUpdate();
         //UI Pass
         m_SceneWindow->RegistCamera(&camera);

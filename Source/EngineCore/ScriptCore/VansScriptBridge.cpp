@@ -1,7 +1,7 @@
 #include "VansScriptContext.h"
 #include "VansTransform.h"
 #include "../RenderCore/VansRenderNode.h"
-#include "../../../ForestExporter/VansEngineBridge.h"
+#include "../../../../ForestExporter/VansEngineBridge.h"
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  VansScriptBridge.cpp — Fills the VansEngineBridge function-pointer table
@@ -192,6 +192,35 @@ void VansInitEngineBridge()
 	{
 		auto* c = dynamic_cast<VansScriptRenderComponent*>(AsScriptComponent(comp));
 		return c ? static_cast<void*>(c->m_RenderNode) : nullptr;
+	};
+
+	// ── Object component query ───────────────────────────────────────────
+	s_EngineBridge.objectGetComponentCount = [](void* obj) -> int
+	{
+		auto* o = AsScriptObject(obj);
+		return o ? static_cast<int>(o->m_Components.size()) : 0;
+	};
+
+	s_EngineBridge.objectGetComponentByIndex = [](void* obj, int index) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (o && index >= 0 && index < static_cast<int>(o->m_Components.size()))
+			return o->m_Components[index];
+		return nullptr;
+	};
+
+	s_EngineBridge.objectGetRenderComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptRenderComponent>();
+	};
+
+	s_EngineBridge.objectGetTransformComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptTransform>();
 	};
 }
 

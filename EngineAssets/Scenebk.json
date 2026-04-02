@@ -41,7 +41,10 @@
                             },
                             "support_shadow": true
                         }
-                    }
+                    },
+                    "pyScripts": [
+                        { "module": "test", "class": "HeadRotator" }
+                    ]
                 },
                 {
                     "name": "AnimatedCharacter",

@@ -12,14 +12,12 @@
 namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
-namespace VansGraphics { class VansRenderNode; }
+namespace VansGraphics { class VansRenderNode; class VansScene; }
 namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; }
 
 class VansScriptContext
 {
 private:
-	py::module testModule;
-
 	// ---- Hot-reload infrastructure ----
 	std::string m_ScriptDir;  // path to EngineExported/
 
@@ -42,11 +40,20 @@ private:
 	void TrackPyModule(const std::string& name, py::module mod);
 	void CheckAndReloadPyScripts();
 
+	// Called after a .py module is hot-reloaded to re-instantiate script components
+	void OnPyModuleReloaded(const std::string& moduleName);
+
+	// Scene pointer for iterating VanPyScriptComponents during update
+	VansGraphics::VansScene* m_Scene = nullptr;
+
 public:
 
 	void VansScriptSetup();
 
 	void VansScriptUpdate();
+
+	// Set the active scene so the update loop can iterate objects
+	void SetScene(VansGraphics::VansScene* scene) { m_Scene = scene; }
 
 	// Explicit reload called from editor UI
 	void ReloadAllPyScripts();
@@ -145,4 +152,32 @@ class VansScriptVehicleComponent : public VansScriptComponent
 {
 public:
 	VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
+};
+
+// ── Python Script Component ─────────────────────────────────────────────────
+// Holds a reference to a Python script instance bound to this object.
+class VanPyScriptComponent : public VansScriptComponent
+{
+public:
+	// The Python module and class name, e.g. "my_rotator" / "MyRotator"
+	std::string m_ScriptModuleName;
+	std::string m_ScriptClassName;
+
+	// The live Python instance (py::object wrapping a vanspyscript subclass).
+	// When no script is assigned this is py::none().
+	py::object  m_PyInstance = py::none();
+
+	// Back-pointer to the owning VansScriptObject (non-owning, set on AddComponent).
+	VansScriptObject* m_OwnerObject = nullptr;
+
+	// Runtime state
+	bool m_IsEnabled  = false;
+	bool m_IsValid    = false;   // true after successful instantiation
+
+	// ── Lifecycle helpers (called from VansScriptContext) ─────────────
+	void Instantiate();   // import module, create class instance, bind owner
+	void Enable();        // call Python on_enable()
+	void CallUpdate();    // call Python update()
+	void Disable();       // call Python on_disable()
+	void Teardown();      // release py::object, reset state
 };

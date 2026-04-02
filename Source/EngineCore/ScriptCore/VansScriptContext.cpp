@@ -3,10 +3,11 @@
 #include "../EditorCore/Windows/VansConsole.h"
 #include "../Util/VansLog.h"
 #include "../VansTimer.h"
+#include "../RenderCore/VansScene.h"
 #include <cstdlib>
 #include <string>
 #include <algorithm>
-#include "../../../ForestExporter/VansEngineBridge.h"
+#include "../../../../ForestExporter/VansEngineBridge.h"
 
 // Defined in VansScriptBridge.cpp
 extern void VansInitEngineBridge();
@@ -87,11 +88,10 @@ void VansScriptContext::CheckAndReloadPyScripts()
                 // Re-fetch in case the reload created a new module object
                 info.module = py::module::import(name.c_str());
 
-                // If this is the main test module, update our handle
-                if (name == "test")
-                    testModule = info.module;
-
                 VansConsole::Get().LogPython("[Hot-Reload] Reloaded " + name + ".py");
+
+                // Re-instantiate any VanPyScriptComponents using this module
+                OnPyModuleReloaded(name);
             }
         }
         catch (const py::error_already_set& e)
@@ -114,9 +114,6 @@ void VansScriptContext::ReloadAllPyScripts()
         {
             importlib.attr("reload")(info.module);
             info.module = py::module::import(name.c_str());
-
-            if (name == "test")
-                testModule = info.module;
 
             if (std::filesystem::exists(info.filePath))
                 info.lastWriteTime = std::filesystem::last_write_time(info.filePath);
@@ -252,17 +249,6 @@ void VansScriptContext::VansScriptSetup()
         VANS_LOG_ERROR("Failed to install engine bridge: " << e.what());
     }
 
-    try 
-    {
-        testModule = py::module::import("test");
-        TrackPyModule("test", testModule);
-    }
-    catch (const py::error_already_set& e) 
-    {
-        VansConsole::Get().LogPython(std::string("Exception: ") + e.what());
-        VANS_LOG_ERROR("Python exception:\n" << e.what());
-    }
-    
 }
 
 void VansScriptContext::VansScriptUpdate()
@@ -275,14 +261,137 @@ void VansScriptContext::VansScriptUpdate()
         CheckAndReloadPyScripts();
     }
 
-    try
+    // ── Per-object VanPyScriptComponent update ───────────────────────
+    if (!m_Scene) return;
+
+    for (auto* obj : m_Scene->m_SceneObjects)
     {
-        testModule.attr("update")();
-    }
-    catch (const py::error_already_set& e)
-    {
-        VansConsole::Get().LogPython(std::string("Exception: ") + e.what());
+        for (auto* comp : obj->m_Components)
+        {
+            auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
+            if (!pyComp) continue;
+
+            // Lazy instantiation on first encounter
+            if (!pyComp->m_IsValid && !pyComp->m_ScriptClassName.empty())
+            {
+                pyComp->m_OwnerObject = obj;
+                pyComp->Instantiate();
+                pyComp->Enable();
+            }
+
+            pyComp->CallUpdate();
+        }
     }
 
     return;
+}
+// ===========================================================================
+//  OnPyModuleReloaded — re-instantiate script components after hot reload
+// ===========================================================================
+void VansScriptContext::OnPyModuleReloaded(const std::string& moduleName)
+{
+    if (!m_Scene) return;
+
+    for (auto* obj : m_Scene->m_SceneObjects)
+    {
+        for (auto* comp : obj->m_Components)
+        {
+            auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
+            if (!pyComp || pyComp->m_ScriptModuleName != moduleName) continue;
+
+            pyComp->Teardown();
+            pyComp->m_OwnerObject = obj;
+            pyComp->Instantiate();
+            pyComp->Enable();
+        }
+    }
+}
+
+// ===========================================================================
+//  VanPyScriptComponent — lifecycle implementations
+// ===========================================================================
+
+void VanPyScriptComponent::Instantiate()
+{
+    try
+    {
+        py::module scriptMod = py::module::import(m_ScriptModuleName.c_str());
+        py::object cls = scriptMod.attr(m_ScriptClassName.c_str());
+        m_PyInstance = cls();   // call the constructor
+
+        // Validate: the instance must be a vanspyscript subclass
+        py::module vc = py::module::import("vanscomponent");
+        if (!py::isinstance(m_PyInstance, vc.attr("vanspyscript")))
+        {
+            VansConsole::Get().LogPython(
+                "[PyScript] " + m_ScriptModuleName + "." + m_ScriptClassName +
+                " does not inherit from vanspyscript!");
+            m_IsValid = false;
+            return;
+        }
+
+        // Pass the owning VansScriptObject to the Python instance via bridge
+        if (m_OwnerObject)
+        {
+            m_PyInstance.attr("_bind_native_object")(
+                reinterpret_cast<uintptr_t>(m_OwnerObject));
+        }
+
+        m_IsValid = true;
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython(
+            "[PyScript] Failed to instantiate " + m_ScriptModuleName +
+            "." + m_ScriptClassName + ": " + e.what());
+        m_IsValid = false;
+    }
+}
+
+void VanPyScriptComponent::Enable()
+{
+    if (!m_IsValid || m_IsEnabled) return;
+    try
+    {
+        m_PyInstance.attr("on_enable")();
+        m_IsEnabled = true;
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython("[PyScript] on_enable error: " + std::string(e.what()));
+    }
+}
+
+void VanPyScriptComponent::CallUpdate()
+{
+    if (!m_IsValid || !m_IsEnabled) return;
+    try
+    {
+        m_PyInstance.attr("update")();
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython("[PyScript] update error: " + std::string(e.what()));
+    }
+}
+
+void VanPyScriptComponent::Disable()
+{
+    if (!m_IsValid || !m_IsEnabled) return;
+    try
+    {
+        m_PyInstance.attr("on_disable")();
+        m_IsEnabled = false;
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython("[PyScript] on_disable error: " + std::string(e.what()));
+    }
+}
+
+void VanPyScriptComponent::Teardown()
+{
+    if (m_IsEnabled) Disable();
+    m_PyInstance = py::none();
+    m_IsValid = false;
 }
