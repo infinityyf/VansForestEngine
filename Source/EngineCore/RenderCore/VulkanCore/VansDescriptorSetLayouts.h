@@ -268,11 +268,12 @@ namespace VansGraphics
 	// --- SSR Temporal-AA Compute Pass ---
 	enum SSRTemporalAAPassBinding : uint32_t
 	{
-		SSR_TAA_BINDING_COLOR     = 0,
-		SSR_TAA_BINDING_POSITION  = 1,
-		SSR_TAA_BINDING_RESULT_A  = 2,
-		SSR_TAA_BINDING_RESULT_B  = 3,
-		SSR_TAA_BINDING_RESULT    = 4,
+		SSR_TAA_BINDING_COLOR          = 0,
+		SSR_TAA_BINDING_POSITION       = 1,
+		SSR_TAA_BINDING_RESULT_A       = 2,
+		SSR_TAA_BINDING_RESULT_B       = 3,
+		SSR_TAA_BINDING_RESULT         = 4,
+		SSR_TAA_BINDING_MOTION_VECTOR  = 5,
 	};
 
 	// --- Volumetric Fog Compose Compute Pass ---

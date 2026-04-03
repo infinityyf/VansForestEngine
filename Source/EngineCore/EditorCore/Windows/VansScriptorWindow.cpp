@@ -1,6 +1,7 @@
 #include "VansScriptorWindow.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../ScriptCore/VansScriptContext.h"
+#include "../../Util/VansInputManager.h"
 #include "VansConsole.h"
 #include "imgui.h"
 
@@ -77,6 +78,26 @@ void VansGraphics::VansScriptorWindow::ShowWindow(VansVKDevice& device)
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Rebuild vanscomponent, then click here to hot-reload the C++ .pyd module");
 
+    // ── Font scale controls ──────────────────────────────────────────
+    ImGui::SameLine();
+    ImGui::Text("|");
+    ImGui::SameLine();
+    if (ImGui::Button(" - "))
+        m_EditorFontScale = std::max(FONT_SCALE_MIN, m_EditorFontScale - FONT_SCALE_STEP);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80.0f);
+    ImGui::SliderFloat("##fontscale", &m_EditorFontScale, FONT_SCALE_MIN, FONT_SCALE_MAX, "%.0f%%");
+    // Display as percentage: remap the raw 0.5–3.0 value to 50–300 for display
+    // SliderFloat already shows the raw value; override with a centered label
+    m_EditorFontScale = std::clamp(m_EditorFontScale, FONT_SCALE_MIN, FONT_SCALE_MAX);
+    ImGui::SameLine();
+    if (ImGui::Button(" + "))
+        m_EditorFontScale = std::min(FONT_SCALE_MAX, m_EditorFontScale + FONT_SCALE_STEP);
+    ImGui::SameLine();
+    ImGui::Text("%.0f%%", m_EditorFontScale * 100.0f);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Editor text scale (Ctrl+Scroll to adjust)");
+
     if (m_NeedsRefresh)
         RefreshFileList();
 
@@ -118,6 +139,25 @@ void VansGraphics::VansScriptorWindow::ShowWindow(VansVKDevice& device)
 
     // Editor panel – editable text view of the selected file
     ImGui::BeginChild("ScriptEditor", ImVec2(0, 0), true);
+
+    // Ctrl+Scroll wheel to adjust font scale while hovering the editor
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
+    {
+        auto& input = Vans::VansInputManager::Get();
+        if (input.IsKeyDown(GLFW_KEY_LEFT_CONTROL) || input.IsKeyDown(GLFW_KEY_RIGHT_CONTROL))
+        {
+            double scrollX, scrollY;
+            input.GetScrollDelta(scrollX, scrollY);
+            if (scrollY != 0.0)
+            {
+                m_EditorFontScale += static_cast<float>(scrollY) * FONT_SCALE_STEP;
+                m_EditorFontScale = std::clamp(m_EditorFontScale, FONT_SCALE_MIN, FONT_SCALE_MAX);
+            }
+        }
+    }
+
+    ImGui::SetWindowFontScale(m_EditorFontScale);
+
     if (!m_SelectedScript.empty() && std::filesystem::exists(m_SelectedScript))
     {
         // Load the file into the buffer if we haven't yet
@@ -170,6 +210,9 @@ void VansGraphics::VansScriptorWindow::ShowWindow(VansVKDevice& device)
     {
         ImGui::TextDisabled("Select a script to edit.");
     }
+
+    // Reset font scale before ending the child so it doesn't leak
+    ImGui::SetWindowFontScale(1.0f);
     ImGui::EndChild();
 
     ImGui::End();

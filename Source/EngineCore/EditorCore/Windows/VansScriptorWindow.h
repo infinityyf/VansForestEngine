@@ -33,5 +33,11 @@ namespace VansGraphics
         std::string m_EditBuffer;          // in-memory editor content
         std::filesystem::path m_LoadedPath; // path that m_EditBuffer corresponds to
         bool m_Dirty = false;              // unsaved changes?
+
+        // ---- Font scale for the text editor ----
+        float m_EditorFontScale = 1.0f;
+        static constexpr float FONT_SCALE_MIN = 0.5f;
+        static constexpr float FONT_SCALE_MAX = 3.0f;
+        static constexpr float FONT_SCALE_STEP = 0.1f;
     };
 }

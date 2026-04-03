@@ -67,6 +67,7 @@ namespace VansGraphics
 		renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, { m_RenderWidth, m_RenderHeight });
 		renderPassManager->SetupVansShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
 		renderPassManager->SetupVansPunctualShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
+		renderPassManager->SetupVansMotionVectorRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, { m_RenderWidth, m_RenderHeight });
 		renderPassManager->SetupVansUIRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface,
 			{
 				m_VansVKSurface.m_VansVKSwapChainImageExtent.width,
@@ -133,6 +134,13 @@ namespace VansGraphics
 			}
 
 			{
+				VANS_GPU_SCOPE(cmd, "Motion Vector Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansMotionVectorPass, cmd, m_globalRenderStateData);
+				DrawMotionVectorPass(renderPassManager, cmd);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+
+			{
 				VANS_GPU_SCOPE(cmd, "Post Processing");
 				UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
 				UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
@@ -184,6 +192,12 @@ namespace VansGraphics
 					renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 				}
 				m_globalRenderStateData.cascadeIndex = -1;
+			}
+
+			{
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansMotionVectorPass, cmd, m_globalRenderStateData);
+				DrawMotionVectorPass(renderPassManager, cmd);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 
 			UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
@@ -285,6 +299,12 @@ namespace VansGraphics
 	{
 		m_Scene->DrawShadowNodes();
 		m_Scene->DrawTerrainNode(true);
+	}
+
+	void VansVKDevice::DrawMotionVectorPass(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
+	{
+		m_Scene->DrawMotionVectorNodes();
+		m_Scene->DrawTerrainNode(false, true);
 	}
 
 	void VansVKDevice::DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)

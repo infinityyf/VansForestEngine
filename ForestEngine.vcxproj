@@ -175,6 +175,7 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAssetWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansBaseWindowComponent.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansRenderDebugWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.h" />
@@ -266,6 +267,7 @@
     <ClCompile Include="Source\EngineCore\EditorCore\VansGizmos.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansRenderDebugWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.cpp" />

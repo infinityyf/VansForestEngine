@@ -37,7 +37,6 @@ private:
 	static constexpr float FILE_CHECK_INTERVAL = 0.5f;  // seconds
 
 	// Internal helpers
-	void TrackPyModule(const std::string& name, py::module mod);
 	void CheckAndReloadPyScripts();
 
 	// Called after a .py module is hot-reloaded to re-instantiate script components
@@ -47,6 +46,10 @@ private:
 	VansGraphics::VansScene* m_Scene = nullptr;
 
 public:
+
+	// Register a Python module for hot-reload file-watching.
+	// Called from VanPyScriptComponent::Instantiate() and internally.
+	void TrackPyModule(const std::string& name, py::module mod);
 
 	void VansScriptSetup();
 

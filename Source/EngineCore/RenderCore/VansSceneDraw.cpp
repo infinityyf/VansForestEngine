@@ -38,6 +38,28 @@ void VansGraphics::VansScene::DrawShadowNodes()
     }
 }
 
+void VansGraphics::VansScene::DrawMotionVectorNodes()
+{
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+
+    for (auto& node : m_OpaqueRenderNodes)
+    {
+        if (node == nullptr) continue;
+
+        auto* opaque = static_cast<VansCommonRenderNode*>(node);
+
+        // Use the velocity pass shader registered for this material
+        VansGraphicsShader* mvShader = node->m_Material->GetPassShader(VansPass::VELOCITY);
+        if (!mvShader) continue;
+
+        // Reuse shadow descriptor sets (Global / EmptyPass / Object — same 3 sets)
+        node->DrawCascadeShadowWithPassShader(cmd, globalStateData, mvShader,
+                                               opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts);
+    }
+}
+
 void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
 {
     auto vansConfigration = VansConfigration::GetInstance();
@@ -151,7 +173,7 @@ void VansGraphics::VansScene::DrawOpaqueNodes()
     }
 }
 
-void VansGraphics::VansScene::DrawTerrainNode(bool shadowPass)
+void VansGraphics::VansScene::DrawTerrainNode(bool shadowPass, bool motionVectorPass)
 {
     if(m_TerrainRenderNode== nullptr)
     {
@@ -163,6 +185,10 @@ void VansGraphics::VansScene::DrawTerrainNode(bool shadowPass)
     if (shadowPass)
     {
         static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode)->DrawShadow(cmd, globalStateData);
+    }
+    else if (motionVectorPass)
+    {
+        static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode)->DrawMotionVector(cmd, globalStateData);
     }
     else
     {

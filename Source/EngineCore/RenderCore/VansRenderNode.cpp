@@ -960,6 +960,11 @@ void VansGraphics::VansTerrainRenderNode::DrawShadow(VansVKCommandBuffer& cmd, G
 	m_Terrain->DrawShadow(cmd, global_state, m_UsedDescSetLayouts, m_UsedDescSets);
 }
 
+void VansGraphics::VansTerrainRenderNode::DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
+{
+	m_Terrain->DrawMotionVector(cmd, global_state, m_UsedDescSetLayouts, m_UsedDescSets);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // VansVegetationRenderNode — GPU-driven grass (indirect draw)
 // ═══════════════════════════════════════════════════════════════════════════════

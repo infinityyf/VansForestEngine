@@ -127,6 +127,8 @@ namespace VansGraphics
 		
 		void DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
+		void DrawMotionVectorPass(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
+
 		void DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
 		void DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);

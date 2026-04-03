@@ -20,6 +20,7 @@ namespace VansGraphics
 	class VansSceneWindow;
 	class VansInspectorWindow;
 	class VansGBufferWindow;
+	class VansRenderDebugWindow;
 	class VansScriptorWindow;
 	class VansConsoleWindow;
 	class VansProfilerWindow;
@@ -30,6 +31,8 @@ namespace VansGraphics
 	public:
 
 		static bool m_GBufferWindowOpen;
+
+		static bool m_RenderDebugWindowOpen;
 
 		static bool m_WireframeMode;
 
@@ -75,6 +78,8 @@ namespace VansGraphics
 		static VansInspectorWindow* m_InspectorWindow;
 
 		static VansGBufferWindow* m_GBufferWindow;
+
+		static VansRenderDebugWindow* m_RenderDebugWindow;
 
 		static VansScriptorWindow* m_ScriptorWindow;
 

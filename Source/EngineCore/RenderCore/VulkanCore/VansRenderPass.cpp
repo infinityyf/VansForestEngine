@@ -994,6 +994,137 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 	command_buffer.ResetCommandBuffer(false);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Motion-Vector render pass
+//
+// Attachments:
+//   0 — m_MotionVectorImage  (R16G16B16A16_SFLOAT) — color output
+//   1 — m_MotionVectorDepthImage (D16_UNORM) — dedicated depth
+//
+// Draws all opaque geometry using the MotionVector shader to produce
+// per-pixel screen-space velocity.  Placed after shadow, before compute
+// (HZB / GI / SSR) so temporal-reprojection compute shaders can sample it.
+// ═══════════════════════════════════════════════════════════════════════════
+void VansGraphics::VansRenderPassManager::SetupVansMotionVectorRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, const VkExtent2D& renderResolution)
+{
+	std::vector<VkAttachmentDescription> attachments_descriptions =
+	{
+		// Attachment 0: motion-vector color (CLEAR → STORE)
+		{
+			0,
+			VK_FORMAT_R16G16B16A16_SFLOAT,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		},
+		// Attachment 1: dedicated depth (CLEAR → DONT_CARE)
+		{
+			0,
+			VK_FORMAT_D16_UNORM,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		},
+	};
+
+	VkAttachmentReference depth_stencil_attachment =
+	{
+		 1,
+		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	};
+
+	std::vector<SubpassParameters> subpass_parameters =
+	{
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{
+				{
+					0,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				}
+			},
+			{},
+			&depth_stencil_attachment,
+			{}
+		},
+	};
+
+	m_VansMotionVectorPass.m_ClearValues =
+	{
+		{ 0.0f, 0.0f, 0.0f, 0.0f },  // zero motion for pixels without geometry
+		{ 1.0f, 0 },
+	};
+
+	std::vector<VkSubpassDependency> subpass_dependencies;
+
+	VkExtent2D resolution = renderResolution;
+	m_VansMotionVectorPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
+
+	// Dedicated depth image for the motion-vector pass
+	m_MotionVectorDepthImage.CreateVulkanImage(
+		logic_device,
+		{ resolution.width, resolution.height, 1 },
+		VK_FORMAT_D16_UNORM,
+		1,
+		1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT
+	);
+
+#ifdef _DEBUG
+	VkDebugUtilsObjectNameInfoEXT nameInfo = {};
+	nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_MotionVectorImage.GetImage());
+	nameInfo.pObjectName = "MotionVectorImage";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_MotionVectorDepthImage.GetImage());
+	nameInfo.pObjectName = "MotionVectorDepthImage";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+#endif
+
+	// Single framebuffer at render resolution
+	m_VansMotionVectorPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> image_views = {
+		m_MotionVectorImage.GetImageView(),
+		m_MotionVectorDepthImage.GetImageView()
+	};
+	m_VansMotionVectorPass.m_FrameBuffers[0].CreateFrameBuffer(
+		logic_device, m_VansMotionVectorPass.m_RenderPass, image_views,
+		{ resolution.width, resolution.height, 1 });
+
+	m_LogicDevice = logic_device;
+
+	// Transition the dedicated depth image to its initial layout
+	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+	m_MotionVectorDepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_MotionVectorDepthImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			m_MotionVectorDepthImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_MotionVectorDepthImage.m_ImageAspect
+		});
+	command_buffer.EndCommandBufferRecord();
+
+	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
+	command_buffer.ResetCommandBuffer(false);
+}
+
 void VansGraphics::VansRenderPassManager::SetupVansUIRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution)
 {
 	std::vector<VkAttachmentDescription> attachments_descriptions =
@@ -1171,6 +1302,7 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_ColorImage.DestroyVulkanImage(m_LogicDevice);
 	m_DepthImage.DestroyVulkanImage(m_LogicDevice);
 	m_MotionVectorImage.DestroyVulkanImage(m_LogicDevice);
+	m_MotionVectorDepthImage.DestroyVulkanImage(m_LogicDevice);
 	m_ColorAfterPostProcessImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_ShadowMapImage.DestroyVulkanImage(m_LogicDevice);
@@ -1202,6 +1334,7 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_VansRenderPass.DestroyRenderPass(m_LogicDevice);
 	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
 	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);
+	m_VansMotionVectorPass.DestroyRenderPass(m_LogicDevice);
 	m_VansUIPass.DestroyRenderPass(m_LogicDevice);
 }
 
@@ -1290,6 +1423,20 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_DepthImage.m_ImageAspect
+		});
+
+	// Reset motion-vector color image from SHADER_READ_ONLY back to GENERAL
+	// so the next frame's motion-vector pass can begin with LOAD_OP_CLEAR.
+	m_MotionVectorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{
+			m_MotionVectorImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_NONE,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_IMAGE_LAYOUT_GENERAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_MotionVectorImage.m_ImageAspect
 		});
 
 	surface.SetSwapChainImageBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,

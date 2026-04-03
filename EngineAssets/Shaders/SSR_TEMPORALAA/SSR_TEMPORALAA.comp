@@ -10,22 +10,13 @@ layout( set = 1, binding = 1 ) uniform sampler2D inputPosition;
 layout( set = 1, binding = 2, rgba32f ) uniform image2D aaResultA;
 layout( set = 1, binding = 3, rgba32f ) uniform image2D aaResultB;
 layout( set = 1, binding = 4, rgba32f ) uniform image2D aaResult;
+layout( set = 1, binding = 5 ) uniform sampler2D inputMotionVector;  // Screen-space motion vectors (from MotionVector pass)
 
-vec2 GetVelocity(vec3 worldPos)
+// Sample screen-space motion vector from dedicated MotionVector render pass.
+// Returns vec2 velocity in UV-space (current - previous).
+vec2 GetVelocity(vec2 uv)
 {
-    vec4 prevClipPos = ProjectionMatrix * LastPrevViewMatrix * vec4(worldPos,1.0);
-    vec4 curClipPos = ProjectionMatrix * LastViewMatrix * vec4(worldPos, 1.0);
-
-    vec2 prevHPos = prevClipPos.xy / prevClipPos.w;
-    prevHPos.y = -prevHPos.y;
-    vec2 curHPos = curClipPos.xy / curClipPos.w;
-    curHPos.y = -curHPos.y;
-
-    vec2 vPosPrev = (prevHPos.xy + 1) / 2;
-    vec2 vPosCur = (curHPos.xy + 1) / 2;
-    vec2 vel = vPosCur - vPosPrev;
-
-    return vel;
+    return texture(inputMotionVector, uv).xy;
 }
 
 void ResolverAABB(sampler2D currColor, float Sharpness, float ExposureScale, float AABBScale, vec2 uv, vec2 TexelSize, inout float Variance, inout vec4 MinColor, inout vec4 MaxColor, inout vec4 FilterColor)
@@ -96,7 +87,7 @@ void main()
     float depth = positionData.w;
 
 	/////Get Reprojection Velocity
-	vec2 Ray_Velocity = GetVelocity(position);
+	vec2 Ray_Velocity = GetVelocity(uv);
 
 	/////Get AABB ClipBox
 	float SSR_Variance = 0;

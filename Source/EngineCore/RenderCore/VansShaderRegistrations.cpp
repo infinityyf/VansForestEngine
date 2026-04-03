@@ -116,6 +116,13 @@ void RegisterEngineShaders()
         24, false
     });
 
+    reg.RegisterShader("MotionVector", {
+        "MotionVector",
+        "EngineAssets/Shaders/MotionVector",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        8, false
+    });
+
     // ══════════════════════════════════════════════════════════════════════════
     // Step 2: Register material type → { pass name → shader name } mappings
     // ══════════════════════════════════════════════════════════════════════════
@@ -124,18 +131,21 @@ void RegisterEngineShaders()
         { VansGraphics::VansPass::GBUFFER,          "Unlit"          },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
+        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_COAT, {
         { VansGraphics::VansPass::GBUFFER,          "Coat"           },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
+        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_SKIN, {
         { VansGraphics::VansPass::GBUFFER,          "Skin"           },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
+        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_CLOTH, {
@@ -148,12 +158,14 @@ void RegisterEngineShaders()
         { VansGraphics::VansPass::GBUFFER,          "Hair"           },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
+        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_SUBSURFACE, {
         { VansGraphics::VansPass::GBUFFER,          "Subsurface"     },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
+        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_GRASS, {

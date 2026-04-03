@@ -330,6 +330,8 @@ namespace VansGraphics
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
 		void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
+
+		void DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 	};
 
 }

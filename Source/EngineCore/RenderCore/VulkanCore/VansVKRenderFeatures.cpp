@@ -810,6 +810,23 @@ namespace VansGraphics
 				}
 			}
 		);
+
+		auto& motionVectorSSR = renderPassManager->GetMotionVector();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_SSRAADescriptorSets[0],
+				SSRTemporalAAPassBinding::SSR_TAA_BINDING_MOTION_VECTOR,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						motionVectorSSR.GetSampler(),
+						motionVectorSSR.GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 	}
 

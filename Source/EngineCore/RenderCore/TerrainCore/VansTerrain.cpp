@@ -24,6 +24,7 @@ namespace VansGraphics
             }
         }
         if(m_TerrainShader) delete m_TerrainShader;
+        if(m_TerrainMotionVectorShader) delete m_TerrainMotionVectorShader;
         m_ParamsUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_InstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
     }
@@ -146,6 +147,9 @@ namespace VansGraphics
         m_TerrainShadowShader = new VansGraphicsShader();
         m_TerrainShadowShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/Terrain/Shadow").c_str());
         m_TerrainShadowShader->SetPushConstant(sizeof(int)); // cascadeIndex
+
+        m_TerrainMotionVectorShader = new VansGraphicsShader();
+        m_TerrainMotionVectorShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/Terrain/MotionVector").c_str());
 
         // -------------------------------------------------------
         // 8. Create descriptor set
@@ -475,6 +479,36 @@ namespace VansGraphics
         }
 
         // 7. Draw Indexed Indirect or Instanced
+        vkCmdDrawIndexed(cmd.GetVKCommandBuffer(), m_BasePatchMesh->GetIndexCount(), (uint32_t)m_InstanceDataCPU.size(), 0, 0, 0);
+    }
+
+    void VansTerrain::DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets)
+    {
+        if (m_InstanceDataCPU.empty()) return;
+
+        // Bind Vertex Buffer (Mesh) - Binding 0
+        VkBuffer vertexBuffers[] = { m_BasePatchMesh->GetVertexBufferParameter().Buffer };
+        VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(cmd.GetVKCommandBuffer(), 0, 1, vertexBuffers, offsets);
+
+        // Bind Instance Buffer - Binding 1
+        VkBuffer instanceBuffers[] = { m_InstanceBuffer.GetNativeBuffer() };
+        VkDeviceSize instanceOffsets[] = { 0 };
+        vkCmdBindVertexBuffers(cmd.GetVKCommandBuffer(), 1, 1, instanceBuffers, instanceOffsets);
+
+        // Bind Index Buffer
+        vkCmdBindIndexBuffer(cmd.GetVKCommandBuffer(), m_BasePatchMesh->GetIndexBufferParameter().Buffer, 0, VK_INDEX_TYPE_UINT32);
+
+        // Set vertex input descriptions
+        globalState.vertexInputAttributeDescriptions = &m_BasePatchMesh->m_VertexInputAttributeDescriptions;
+        globalState.vertexInputBindingDescriptions = &m_BasePatchMesh->m_VertexInputBindingDescriptions;
+
+        // Apply motion vector shader
+        cmd.EnsureGraphicsShader(*m_TerrainMotionVectorShader, globalState, layouts);
+        cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_TerrainMotionVectorShader, 0, sets, {});
+        cmd.BindGraphicsPipeline(*m_TerrainMotionVectorShader->GetGraphicsPipeline());
+
+        // Draw instanced
         vkCmdDrawIndexed(cmd.GetVKCommandBuffer(), m_BasePatchMesh->GetIndexCount(), (uint32_t)m_InstanceDataCPU.size(), 0, 0, 0);
     }
 }

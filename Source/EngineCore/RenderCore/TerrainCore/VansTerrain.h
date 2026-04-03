@@ -88,6 +88,8 @@ namespace VansGraphics
         
         void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets);
 
+        void DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets);
+
         // ── Accessors for vegetation terrain integration ────────────────
         VansTexture* GetHeightMap() const { return m_HeightMap; }
         float GetTerrainSize() const { return m_TerrainSize; }
@@ -133,6 +135,7 @@ namespace VansGraphics
         // Shader & Pipeline
         VansGraphicsShader* m_TerrainShader = nullptr;
         VansGraphicsShader* m_TerrainShadowShader = nullptr;
+        VansGraphicsShader* m_TerrainMotionVectorShader = nullptr;
 
         VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
         VkPipeline m_Pipeline = VK_NULL_HANDLE;

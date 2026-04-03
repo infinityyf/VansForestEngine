@@ -276,6 +276,8 @@ namespace VansGraphics
 
 		void DrawShadowNodes();
 
+		void DrawMotionVectorNodes();
+
 		void DrawPointShadow(int lightIndex);
 
 		void DrawSpotShadow(int pointCount, int lightIndex);
@@ -284,7 +286,7 @@ namespace VansGraphics
 
 		void DrawOpaqueNodes();
 
-		void DrawTerrainNode(bool shadowPass = false);
+		void DrawTerrainNode(bool shadowPass = false, bool motionVectorPass = false);
 
 		void DrawVegetationNode();
 

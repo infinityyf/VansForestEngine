@@ -108,6 +108,10 @@ void VansScriptContext::ReloadAllPyScripts()
 {
     py::module importlib = py::module::import("importlib");
 
+    // Collect names of modules successfully reloaded so we can
+    // re-instantiate their VanPyScriptComponents afterwards.
+    std::vector<std::string> reloadedModules;
+
     for (auto& [name, info] : m_TrackedPyModules)
     {
         try
@@ -119,11 +123,20 @@ void VansScriptContext::ReloadAllPyScripts()
                 info.lastWriteTime = std::filesystem::last_write_time(info.filePath);
 
             VansConsole::Get().LogPython("[Reload] Reloaded " + name + ".py");
+            reloadedModules.push_back(name);
         }
         catch (const py::error_already_set& e)
         {
             VansConsole::Get().LogPython("[Reload] Error reloading " + name + ": " + e.what());
         }
+    }
+
+    // Teardown + re-instantiate every VanPyScriptComponent whose module was
+    // reloaded so they pick up the new class definitions (new on_enable,
+    // update, on_disable, etc.).
+    for (const auto& modName : reloadedModules)
+    {
+        OnPyModuleReloaded(modName);
     }
 }
 
@@ -316,6 +329,12 @@ void VanPyScriptComponent::Instantiate()
     try
     {
         py::module scriptMod = py::module::import(m_ScriptModuleName.c_str());
+
+        // Register this module for hot-reload tracking (idempotent — skips
+        // if the module is already tracked).
+        if (auto* ctx = VansScriptContext::GetInstance())
+            ctx->TrackPyModule(m_ScriptModuleName, scriptMod);
+
         py::object cls = scriptMod.attr(m_ScriptClassName.c_str());
         m_PyInstance = cls();   // call the constructor
 

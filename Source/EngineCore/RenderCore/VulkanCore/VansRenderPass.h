@@ -88,6 +88,10 @@ namespace VansGraphics
 
 		VansVKImage m_MotionVectorImage;
 
+		// Dedicated depth for the motion-vector pass so the previous-frame
+		// m_DepthImage is preserved for compute passes (HZB / GI / SSR).
+		VansVKImage m_MotionVectorDepthImage;
+
 		//后处理之后需要一张新的图，用于给FSR处理
 		VansVKImage m_ColorAfterPostProcessImage;
 
@@ -127,6 +131,8 @@ namespace VansGraphics
 
 		VansVKRenderPass m_VansPunctualShadowPass;
 
+		VansVKRenderPass m_VansMotionVectorPass;
+
 		VansVKRenderPass m_VansUIPass;
 
 		VkDevice m_LogicDevice;
@@ -145,6 +151,11 @@ namespace VansGraphics
 
 		//精确阴影渲染
 		void SetupVansPunctualShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue);
+
+		// Motion vector pass — writes per-pixel screen-space velocity to m_MotionVectorImage.
+		// Uses a dedicated depth attachment (m_MotionVectorDepthImage) so the previous-frame
+		// m_DepthImage is preserved for HZB / GI / SSR compute passes.
+		void SetupVansMotionVectorRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, const VkExtent2D& renderResolution);
 
 		//uipass
 		void SetupVansUIRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);

@@ -289,6 +289,9 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansRenderDebugWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansScriptorWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
@@ -564,6 +567,9 @@
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansRenderDebugWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansScriptorWindow.cpp">

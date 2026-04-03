@@ -13,6 +13,7 @@
 #include "Windows/VansSceneWindow.h"
 #include "Windows/VansInspectorWindow.h"
 #include "Windows/VansGBufferWindow.h"
+#include "Windows/VansRenderDebugWindow.h"
 #include "Windows/VansScriptorWindow.h"
 #include "Windows/VansConsoleWindow.h"
 #include "Windows/VansProfilerWindow.h"
@@ -56,6 +57,8 @@ static bool CheckGraphicsAPI(VansGraphics::GRAPHICS_API api)
 
 bool VansGraphics::VansEditorWindow::m_GBufferWindowOpen = false;
 
+bool VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen = false;
+
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
 
 VansGraphics::VansBasicWindow VansGraphics::VansEditorWindow::m_VansEditorWindow;
@@ -76,6 +79,8 @@ VansGraphics::VansSceneWindow* VansGraphics::VansEditorWindow::m_SceneWindow;
 VansGraphics::VansInspectorWindow* VansGraphics::VansEditorWindow::m_InspectorWindow;
 
 VansGraphics::VansGBufferWindow* VansGraphics::VansEditorWindow::m_GBufferWindow;
+
+VansGraphics::VansRenderDebugWindow* VansGraphics::VansEditorWindow::m_RenderDebugWindow;
 
 VansGraphics::VansScriptorWindow* VansGraphics::VansEditorWindow::m_ScriptorWindow;
 
@@ -150,6 +155,9 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_GBufferWindow = new VansGBufferWindow();
     m_Windows.push_back(m_GBufferWindow);
+
+    m_RenderDebugWindow = new VansRenderDebugWindow();
+    m_Windows.push_back(m_RenderDebugWindow);
 
     m_ScriptorWindow = new VansScriptorWindow();
     m_Windows.push_back(m_ScriptorWindow);
@@ -269,6 +277,10 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
                 if (ImGui::MenuItem("GbufferWindow"))
                 {
                     m_GBufferWindowOpen = !m_GBufferWindowOpen;
+                }
+                if (ImGui::MenuItem("RenderDebugWindow"))
+                {
+                    m_RenderDebugWindowOpen = !m_RenderDebugWindowOpen;
                 }
                 ImGui::EndMenu();
             }
