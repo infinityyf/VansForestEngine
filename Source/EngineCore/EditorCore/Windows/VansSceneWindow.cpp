@@ -61,6 +61,18 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
         // 获取当前窗口可用区域大小
         ImVec2 viewportSize = ImGui::GetContentRegionAvail();
 
+        // ── No scene loaded: show an empty black region ───────────────────
+        if (!m_Scene || !m_Scene->IsSceneReady())
+        {
+            ImVec2 cursor = ImGui::GetCursorScreenPos();
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            drawList->AddRectFilled(cursor, ImVec2(cursor.x + viewportSize.x, cursor.y + viewportSize.y), IM_COL32(0, 0, 0, 255));
+            ImGui::Dummy(viewportSize);
+            ImGui::End();
+            ImGui::PopStyleVar();
+            return;
+        }
+
         // TODO: 检测 viewportSize 是否变化，如果变化则通知渲染器调整 RenderTarget (Framebuffer) 的大小
         // if (viewportSize.x != m_LastWidth || viewportSize.y != m_LastHeight) { ResizeRenderTarget(...); }
 

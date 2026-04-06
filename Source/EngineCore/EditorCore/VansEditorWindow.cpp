@@ -23,12 +23,15 @@
 #include "../Util/VansInputManager.h"
 #include "../Util/VansLog.h"
 
+#include "../ProjectSystem/VansProjectManager.h"
+
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
 
 #include <iostream>
 #include <string>
+#include <filesystem>
 
 
 static void glfw_error_callback(int error, const char* description)
@@ -91,6 +94,12 @@ VansGraphics::VansProfilerWindow* VansGraphics::VansEditorWindow::m_ProfilerWind
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
 
+// Project selector overlay
+Vans::VansProjectSelector* VansGraphics::VansEditorWindow::m_ProjectSelector = nullptr;
+bool VansGraphics::VansEditorWindow::m_ProjectLoaded = false;
+std::string VansGraphics::VansEditorWindow::m_PendingScenePath;
+std::string VansGraphics::VansEditorWindow::m_PendingResourcePath;
+
 bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height, GRAPHICS_API api)
 {
     glfwSetErrorCallback(glfw_error_callback);
@@ -138,6 +147,9 @@ bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int heigh
 
 void VansGraphics::VansEditorWindow::CreateWindowComponents()
 {
+    // Create the project selector overlay (shown before a project is loaded)
+    m_ProjectSelector = new Vans::VansProjectSelector();
+
     m_HierachyWindow = new VansHierachuWindow();
     m_Windows.push_back(m_HierachyWindow);
 
@@ -223,9 +235,105 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    // -------------------------------------------------------------------------
-    // 2. 设置主 DockSpace (类似 Unity 的根布局容器)
-    // -------------------------------------------------------------------------
+    // ── Project Selector Overlay ──────────────────────────────────────────
+    // When no project is loaded yet, show the full-screen selector instead
+    // of the normal editor windows.
+    if (!m_ProjectLoaded)
+    {
+        auto result = m_ProjectSelector->Render();
+
+        // Helper: after a project is successfully loaded, check for a default
+        // scene in ForestProject.json and auto-load it for rendering.
+        auto tryLoadDefaultScene = [&device]()
+        {
+            auto& mgr = Vans::VansProjectManager::Get();
+
+            // Queue resource loading if resource.json is configured
+            const std::string& resourceFile = mgr.GetConfig().resourceFile;
+            if (!resourceFile.empty())
+            {
+                std::string absResourcePath = mgr.GetProjectRootPath() + resourceFile;
+                if (std::filesystem::exists(absResourcePath))
+                {
+                    VANS_LOG("[Editor] Deferring resource load: " << absResourcePath);
+                    m_PendingResourcePath = absResourcePath;
+                }
+                else
+                {
+                    VANS_LOG_WARN("[Editor] Resource file not found: " << absResourcePath);
+                }
+            }
+
+            // Queue default scene loading
+            const std::string& defaultScene = mgr.GetConfig().defaultScene;
+            if (defaultScene.empty())
+                return;
+
+            // Resolve to absolute path:  projectRoot + defaultScene
+            std::string absScenePath = mgr.GetProjectRootPath() + defaultScene;
+
+            if (!std::filesystem::exists(absScenePath))
+            {
+                VANS_LOG_WARN("[Editor] Default scene not found on disk: " << absScenePath);
+                return;
+            }
+
+            VANS_LOG("[Editor] Deferring default scene load: " << absScenePath);
+            m_PendingScenePath = absScenePath;
+        };
+
+        switch (result)
+        {
+        case Vans::ProjectSelectorResult::OpenExisting:
+        {
+            const std::string& path = m_ProjectSelector->GetSelectedProjectPath();
+            VANS_LOG("[Editor] Opening project: " << path);
+            if (Vans::VansProjectManager::Get().OpenProject(path))
+            {
+                m_ProjectLoaded = true;
+                VANS_LOG("[Editor] Project opened successfully");
+                tryLoadDefaultScene();
+            }
+            else
+            {
+                VANS_LOG_ERROR("[Editor] Failed to open project at " << path);
+            }
+            break;
+        }
+        case Vans::ProjectSelectorResult::CreateNew:
+        {
+            const std::string& path = m_ProjectSelector->GetSelectedProjectPath();
+            const std::string& name = m_ProjectSelector->GetNewProjectName();
+            VANS_LOG("[Editor] Creating project '" << name << "' at " << path);
+            if (Vans::VansProjectManager::Get().CreateProject(path, name))
+            {
+                m_ProjectLoaded = true;
+                VANS_LOG("[Editor] Project created successfully");
+                tryLoadDefaultScene();
+            }
+            else
+            {
+                VANS_LOG_ERROR("[Editor] Failed to create project!");
+            }
+            break;
+        }
+        case Vans::ProjectSelectorResult::Cancelled:
+            glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
+            break;
+        default:
+            break;
+        }
+
+        // Render the ImGui frame (project selector only)
+        ImGui::Render();
+        ImDrawData* draw_data = ImGui::GetDrawData();
+        device->BeginUIRenderPass();
+        ImGui_ImplVulkan_RenderDrawData(draw_data, *static_cast<VkCommandBuffer*>(device->GetNativeCommandBuffer()));
+        device->EndUIRenderPass();
+        return;
+    }
+
+    // ── Normal Editor Windows ─────────────────────────────────────────────
     {
         static bool opt_fullscreen = true;
         static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
@@ -536,6 +644,37 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         if (physics.IsSimulationRunning() && m_Scene)
         {
             m_Scene->UpdatePhysicsTransforms();
+        }
+
+        // ── Deferred resource & scene loading ───────────────────────────
+        // Process pending loads BEFORE command buffer recording.
+
+        // 1) Load project resources (mesh/texture/shader) from resource.json
+        if (!m_PendingResourcePath.empty())
+        {
+            auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
+            VANS_LOG("[Editor] Loading deferred resources: " << m_PendingResourcePath);
+            m_Scene->LoadProjectResources(m_PendingResourcePath.c_str(), vkDev);
+            m_PendingResourcePath.clear();
+        }
+
+        // 2) Load scene content (materials + nodes)
+        if (!m_PendingScenePath.empty())
+        {
+            auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
+            VANS_LOG("[Editor] Loading deferred scene: " << m_PendingScenePath);
+            m_Scene->LoadSceneForRendering(m_PendingScenePath.c_str(), vkDev);
+
+            // Update scene manager current scene (best-effort relative path)
+            auto& projectMgr = Vans::VansProjectManager::Get();
+            if (projectMgr.IsProjectLoaded())
+            {
+                std::string rel = projectMgr.MakeRelativePath(m_PendingScenePath);
+                if (!rel.empty())
+                    projectMgr.GetSceneManager().SetCurrentScene(rel);
+            }
+
+            m_PendingScenePath.clear();
         }
 
         // --- Profiler: begin frame ---

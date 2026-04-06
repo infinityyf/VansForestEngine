@@ -77,6 +77,9 @@
     <Filter Include="External\imguiZmo">
       <UniqueIdentifier>{d385f811-9d70-4742-a43e-46e38b5fd871}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\ProjectSystem">
+      <UniqueIdentifier>{c3a5e7b1-2d4f-6e89-ab01-cd2345ef6789}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -210,6 +213,21 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\Configration\VansConfigration.h">
       <Filter>EngineCore\Configrarion</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectConfig.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansPathResolver.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansSceneManager.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectManager.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectSelector.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h">
       <Filter>EngineCore\ScriptCore</Filter>
@@ -511,6 +529,21 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp">
       <Filter>EngineCore\Configrarion</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectConfig.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansPathResolver.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansSceneManager.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectManager.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectSelector.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp">
       <Filter>EngineCore\ScriptCore</Filter>

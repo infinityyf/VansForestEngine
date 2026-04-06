@@ -21,13 +21,14 @@ private:
 	// ---- Hot-reload infrastructure ----
 	std::string m_ScriptDir;  // path to EngineExported/
 
-	// Track last-write-time for each imported .py file
+	// Track last-write-time for each imported .py file (keyed by script path)
 	struct PyModuleInfo {
 		py::module   module;
+		std::string  moduleName;   // Python module name registered in sys.modules
 		std::filesystem::file_time_type lastWriteTime;
-		std::filesystem::path           filePath;
+		std::filesystem::path           filePath;     // absolute file path
 	};
-	std::unordered_map<std::string, PyModuleInfo> m_TrackedPyModules;
+	std::unordered_map<std::string, PyModuleInfo> m_TrackedPyModules;  // key = script path
 
 	// Counter for unique temp .pyd file names during copy-based reload
 	int m_PydReloadCounter = 0;
@@ -40,7 +41,7 @@ private:
 	void CheckAndReloadPyScripts();
 
 	// Called after a .py module is hot-reloaded to re-instantiate script components
-	void OnPyModuleReloaded(const std::string& moduleName);
+	void OnPyModuleReloaded(const std::string& scriptPath);
 
 	// Scene pointer for iterating VanPyScriptComponents during update
 	VansGraphics::VansScene* m_Scene = nullptr;
@@ -49,7 +50,7 @@ public:
 
 	// Register a Python module for hot-reload file-watching.
 	// Called from VanPyScriptComponent::Instantiate() and internally.
-	void TrackPyModule(const std::string& name, py::module mod);
+	void TrackPyModule(const std::string& scriptPath, const std::string& moduleName, py::module mod, const std::filesystem::path& absPath);
 
 	void VansScriptSetup();
 
@@ -162,9 +163,12 @@ public:
 class VanPyScriptComponent : public VansScriptComponent
 {
 public:
-	// The Python module and class name, e.g. "my_rotator" / "MyRotator"
-	std::string m_ScriptModuleName;
+	// Path to the .py file (relative to project root), e.g. "Scripts/my_rotator.py"
+	std::string m_ScriptPath;
+	// The class name inside the script, e.g. "MyRotator"
 	std::string m_ScriptClassName;
+	// Derived module name (computed from m_ScriptPath during Instantiate)
+	std::string m_ScriptModuleName;
 
 	// The live Python instance (py::object wrapping a vanspyscript subclass).
 	// When no script is assigned this is py::none().

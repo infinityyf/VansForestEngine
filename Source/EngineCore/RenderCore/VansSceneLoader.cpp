@@ -3,6 +3,7 @@
 #include "VansShaderRegistry.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
+#include "../ProjectSystem/VansProjectManager.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "../PhysicsCore/VansPhysics.h"
 
@@ -22,6 +23,68 @@
 #include <algorithm>
 #include <unordered_map>
 #include <filesystem>
+
+namespace VansGraphics
+{
+
+// ===========================================================================
+// LoadProjectResources — 加载项目级资源（mesh/texture/shader）
+// ===========================================================================
+void VansScene::LoadProjectResources(const char* resourceJsonPath, VansVKDevice* device)
+{
+	VANS_LOG("[VansScene] LoadProjectResources: " << resourceJsonPath);
+
+	std::ifstream resFile(resourceJsonPath);
+	if (!resFile.is_open())
+	{
+		VANS_LOG_ERROR("[VansScene] Cannot open resource file: " << resourceJsonPath);
+		return;
+	}
+
+	json resourceData = json::parse(resFile);
+
+	RegisterEngineShaders();
+	LoadResources(resourceData);
+	m_ResourcesLoaded = true;
+
+	VANS_LOG("[VansScene] Project resources loaded");
+}
+
+// ===========================================================================
+// LoadSceneForRendering — 加载场景并准备 GPU 资源
+// ===========================================================================
+void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* device)
+{
+	VANS_LOG("[VansScene] LoadSceneForRendering: " << scenePath);
+
+	if (m_SceneReady)
+	{
+		// 先等待 GPU 空闲，然后卸载旧场景
+		device->WaitForDevice();
+		UnLoadScene();
+		m_SceneReady = false;
+	}
+
+	if (!m_ResourcesLoaded)
+	{
+		VANS_LOG_ERROR("[VansScene] LoadSceneForRendering called before LoadProjectResources!");
+		return;
+	}
+
+	LoadSceneContent(scenePath);
+
+	// 准备 GPU 端资源
+	device->PreparePBRMaterialData();
+	device->PrepareInstanceTransformData();
+	CreateGlobalDescriptorSet(device->GetLogicDevice());
+	CreateNodeDescriptorSets();
+	device->PrepareRayTracingData();
+
+	m_SceneReady = true;
+	VANS_LOG("[VansScene] Scene ready for rendering");
+}
+
+} // namespace VansGraphics
 
 // ---------------------------------------------------------------------------
 // JSON type-string helpers
@@ -45,7 +108,7 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "hair")         return VansMaterialType::VAN_HAIR;
         if (s == "subsurface")   return VansMaterialType::VAN_SUBSURFACE;
         if (s == "grass")        return VansMaterialType::VAN_GRASS;
-        VANS_LOG_WARN("[LoadSceneResource] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
+        VANS_LOG_WARN("[ParseMaterialType] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
     }
     return VansMaterialType::VAN_PBR;
 }
@@ -318,7 +381,10 @@ void VansGraphics::VansScene::LoadRenderNodes(VkDevice& device, json& render_nod
 void VansGraphics::VansScene::AddTerrainNode(VansVKDevice* device, json& terrainData)
 {
     auto vansConfigration = VansConfigration::GetInstance();
-    std::string projectRoot = vansConfigration->GetProjectRootPath();
+    auto& projectMgr = Vans::VansProjectManager::Get();
+    std::string projectRoot = projectMgr.IsProjectLoaded()
+        ? projectMgr.GetProjectRootPath()
+        : vansConfigration->GetProjectRootPath();
 
     TerrainConfig config;
 
@@ -542,6 +608,7 @@ void VansGraphics::VansScene::LoadShadersFromRegistry(
 void VansGraphics::VansScene::LoadTexturesFromJson(
     const json& textureData,
     const std::string& pathPrefix,
+    const std::string& enginePrefix,
     VansVKDevice* vkDevice)
 {
     for (const auto& sceneTexture : textureData)
@@ -565,11 +632,12 @@ void VansGraphics::VansScene::LoadTexturesFromJson(
         texture->SetName(sceneTexture["name"]);
     }
 
-    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultAlbedo.png",    "defaultAlbedo",    vkDevice, false);
-    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultMetal.png",     "defaultMetal",     vkDevice, false);
-    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultRoughness.png", "defaultRoughness", vkDevice, false);
-    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultAo.png",        "defaultAo",        vkDevice, false);
-    ImportDefaultTextures(pathPrefix + "EngineAssets/Textures/Default/defaultNormal.png",    "defaultNormal",    vkDevice, false);
+    // Default textures are always loaded from the engine's EngineAssets directory
+    ImportDefaultTextures(enginePrefix + "EngineAssets/Textures/Default/defaultAlbedo.png",    "defaultAlbedo",    vkDevice, false);
+    ImportDefaultTextures(enginePrefix + "EngineAssets/Textures/Default/defaultMetal.png",     "defaultMetal",     vkDevice, false);
+    ImportDefaultTextures(enginePrefix + "EngineAssets/Textures/Default/defaultRoughness.png", "defaultRoughness", vkDevice, false);
+    ImportDefaultTextures(enginePrefix + "EngineAssets/Textures/Default/defaultAo.png",        "defaultAo",        vkDevice, false);
+    ImportDefaultTextures(enginePrefix + "EngineAssets/Textures/Default/defaultNormal.png",    "defaultNormal",    vkDevice, false);
 }
 
 void VansGraphics::VansScene::ImportDefaultTextures(const std::string& path, const std::string& name, VansVKDevice* vkDevice, bool isSRGB)
@@ -583,22 +651,50 @@ void VansGraphics::VansScene::ImportDefaultTextures(const std::string& path, con
     defaultMetalTexture->SetName(name);
 }
 
-void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
+// ===========================================================================
+// LoadResources — load project-wide resources (mesh, texture, shader)
+// Called once per project from resource.json, before any scene is loaded.
+// ===========================================================================
+
+void VansGraphics::VansScene::LoadResources(json& resourceData)
 {
     auto vansConfigration = VansConfigration::GetInstance();
-    std::string pathPrefix = vansConfigration->GetProjectRootPath();
+    std::string enginePrefix = vansConfigration->GetProjectRootPath();
+
+    auto& projectMgr = Vans::VansProjectManager::Get();
+    std::string assetPrefix = projectMgr.IsProjectLoaded()
+        ? projectMgr.GetProjectRootPath()
+        : enginePrefix;
+
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VkDevice nativeDevice = vkDevice->GetLogicDevice();
 
-    json sceneMeshes = sceneData["mesh"];
-    json sceneTextures = sceneData["texture"];
-    json sceneMaterials = sceneData["material"];
+    if (resourceData.contains("mesh") && resourceData["mesh"].is_array())
+    {
+        LoadMeshesFromJson(resourceData["mesh"], assetPrefix, nativeDevice, vkDevice);
+    }
 
-    LoadMeshesFromJson(sceneMeshes, pathPrefix, nativeDevice, vkDevice);
-    LoadShadersFromRegistry(pathPrefix, nativeDevice);
-    LoadTexturesFromJson(sceneTextures, pathPrefix, vkDevice);
+    LoadShadersFromRegistry(enginePrefix, nativeDevice);
 
-    for (const auto& sceneMaterial : sceneMaterials)
+    if (resourceData.contains("texture") && resourceData["texture"].is_array())
+    {
+        LoadTexturesFromJson(resourceData["texture"], assetPrefix, enginePrefix, vkDevice);
+    }
+
+    VANS_LOG("[VansScene] Resources loaded: "
+             << m_Meshes.size() << " meshes, "
+             << m_Textures.size() << " textures, "
+             << m_Shaders.size() << " shaders");
+}
+
+// ===========================================================================
+// LoadMaterialsFromJson — load materials from scene JSON material array
+// Resources (mesh/texture/shader) must already be loaded.
+// ===========================================================================
+
+void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
+{
+    for (const auto& sceneMaterial : materialData)
     {
         // ── Typed material factory ─────────────────────────────────────────────
         VansMaterialType matType = ParseMaterialType(sceneMaterial["type"], sceneMaterial.value("name", "<unnamed>"));
@@ -682,7 +778,6 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             pbr->m_BasePBRParam.m_ao        = sceneMaterial["ao"];
         }
 
-        // ── Cloth material: load basecolor + normal textures + scalar params ──
         if (matType == VansMaterialType::VAN_CLOTH)
         {
             VansClothMaterial* cloth = static_cast<VansClothMaterial*>(material);
@@ -721,7 +816,6 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             cloth->m_SheenRoughness = sceneMaterial.value("sheenRoughness", 0.5f);
         }
 
-        // ── Skin material: load basecolor + normal textures ──
         if (matType == VansMaterialType::VAN_SKIN)
         {
             VansSkinMaterial* skin = static_cast<VansSkinMaterial*>(material);
@@ -743,7 +837,6 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             }
         }
 
-        // ── Hair material: load albedo+alpha, normal, roughness, ao, shift textures ──
         if (matType == VansMaterialType::VAN_HAIR)
         {
             VansHairMaterial* hair = static_cast<VansHairMaterial*>(material);
@@ -783,23 +876,22 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             {
                 auto textureName = sceneMaterial["shift_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                hair->m_ShiftTexture = texture;  // optional — null is fine
+                hair->m_ShiftTexture = texture;
             }
             if (sceneMaterial.contains("alpha_texture"))
             {
                 auto textureName = sceneMaterial["alpha_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                hair->m_AlphaTexture = texture;  // optional — falls back to albedo .a
+                hair->m_AlphaTexture = texture;
             }
             if (sceneMaterial.contains("flow_texture"))
             {
                 auto textureName = sceneMaterial["flow_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                hair->m_FlowTexture = texture;  // optional — null means no tangent bending
+                hair->m_FlowTexture = texture;
             }
         }
 
-        // ── Subsurface material: load basecolor + normal + thickness textures + params ──
         if (matType == VansMaterialType::VAN_SUBSURFACE)
         {
             VansSubsurfaceMaterial* sss = static_cast<VansSubsurfaceMaterial*>(material);
@@ -823,7 +915,7 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             {
                 auto textureName = sceneMaterial["thickness_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                sss->m_ThicknessTexture = texture;  // optional — falls back to constant thickness
+                sss->m_ThicknessTexture = texture;
             }
             if (sceneMaterial.contains("roughness_texture"))
             {
@@ -844,7 +936,6 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
             }
         }
 
-        // ── Transparent material: load textures declared in material JSON ──
         if (matType == VansMaterialType::VAN_TRANSPARENT)
         {
             VansTransparentMaterial* trans = static_cast<VansTransparentMaterial*>(material);
@@ -858,14 +949,13 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
                     if (!textureName.empty())
                         tex = static_cast<VansTexture*>(GetTextureAsset(textureName));
                     if (tex == nullptr)
-                        VANS_LOG_WARN("[LoadSceneResource] Transparent material '" << sceneMaterial.value("name", "<unnamed>") << "': could not resolve texture for slot '" << slotName << "'");
+                        VANS_LOG_WARN("[LoadMaterials] Transparent material '" << sceneMaterial.value("name", "<unnamed>") << "': could not resolve texture for slot '" << slotName << "'");
                     trans->m_TransparentTextureMap.push_back({ slotName, textureName });
                     trans->m_TransparentTextures.push_back(tex);
                 }
             }
         }
 
-        // ── Grass material: load 5 texture slots ──
         if (matType == VansMaterialType::VAN_GRASS)
         {
             VansGrassMaterial* grass = static_cast<VansGrassMaterial*>(material);
@@ -922,6 +1012,81 @@ void VansGraphics::VansScene::LoadSceneResource(json& sceneData)
         m_Materials.push_back(material);
         material->SetName(sceneMaterial["name"]);
     }
+}
+
+// ===========================================================================
+// LoadSceneContent — load scene file when resources are already loaded
+// Loads materials, nodes, terrain, vegetation, deferred, screen-space.
+// ===========================================================================
+
+bool VansGraphics::VansScene::LoadSceneContent(const char* path)
+{
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VkDevice nativeDevice = vkDevice->GetLogicDevice();
+
+    // Parse scene JSON
+    std::ifstream jsonFile(path);
+    if (!jsonFile.is_open())
+    {
+        VANS_LOG_ERROR("[VansScene] Cannot open scene file: " << path);
+        return false;
+    }
+    json sceneData = json::parse(jsonFile);
+
+    // Load materials (resources are already loaded from resource.json)
+    if (sceneData.contains("material") && sceneData["material"].is_array())
+    {
+        LoadMaterialsFromJson(sceneData["material"]);
+    }
+
+    // Load scene nodes (lights, objects, rendernodes, physics)
+    json sceneNode = sceneData["scene"];
+
+    LoadLights(nativeDevice, sceneNode[0]["light"]);
+
+    if (sceneNode[0].contains("objects") && sceneNode[0]["objects"].is_array()
+        && !sceneNode[0]["objects"].empty())
+    {
+        LoadSceneObjects(nativeDevice, sceneNode[0]["objects"]);
+
+        if (sceneNode[0].contains("rendernode") && !sceneNode[0]["rendernode"].empty())
+        {
+            LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
+        }
+        if (sceneNode[0].contains("physicsnode") && !sceneNode[0]["physicsnode"].empty())
+        {
+            LoadPhysicsNodes(sceneNode[0]["physicsnode"]);
+        }
+    }
+    else
+    {
+        LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
+
+        if (sceneNode[0].contains("physicsnode"))
+        {
+            LoadPhysicsNodes(sceneNode[0]["physicsnode"]);
+        }
+
+        AutoCreateObjectsFromLegacy();
+    }
+
+    // Terrain
+    if (sceneData.contains("terrain"))
+    {
+        AddTerrainNode(vkDevice, sceneData["terrain"]);
+    }
+
+    // Vegetation
+    if (sceneData.contains("vegetation"))
+    {
+        AddVegetationNode(nativeDevice, sceneData["vegetation"]);
+    }
+
+    AddDeferredNode(nativeDevice);
+    AddScreenSpaceFeatureNode(nativeDevice);
+
+    VANS_LOG("[VansScene] Scene content loaded from: " << path);
+    return true;
 }
 
 // ===========================================================================
@@ -1465,10 +1630,10 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             for (const auto& scriptEntry : objJson["pyScripts"])
             {
                 auto* pyComp = new VanPyScriptComponent();
-                pyComp->m_ComponentName    = "PyScript";
-                pyComp->m_ScriptModuleName = scriptEntry["module"].get<std::string>();
-                pyComp->m_ScriptClassName  = scriptEntry["class"].get<std::string>();
-                pyComp->m_OwnerObject      = obj;
+                pyComp->m_ComponentName  = "PyScript";
+                pyComp->m_ScriptPath     = scriptEntry["path"].get<std::string>();
+                pyComp->m_ScriptClassName = scriptEntry["class"].get<std::string>();
+                pyComp->m_OwnerObject    = obj;
                 obj->AddComponent(pyComp);
             }
         }

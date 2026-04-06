@@ -185,14 +185,20 @@ namespace VansGraphics
 
 		void UpdateRayTracing(VansVKCommandBuffer& computeCmd);
 
-	private:
+	public:
 
-		//记录全局的渲染参数，需要和相机绑定
-		GlobalStateData m_globalRenderStateData;
+		// ── GPU 资源准备方法（场景加载时由 VansScene 调用） ───────────
 
 		void PreparePBRMaterialData();
 
 		void PrepareInstanceTransformData();
+
+		void PrepareRayTracingData();
+
+	private:
+
+		//记录全局的渲染参数，需要和相机绑定
+		GlobalStateData m_globalRenderStateData;
 
 		void PrepareSkyRenderData();
 
@@ -207,8 +213,6 @@ namespace VansGraphics
 		void PrepareVolumetricData();
 
 		void PrepareBilaterFilterData();
-
-		void PrepareRayTracingData();
 
 		void PrepareGlobalIllumiationData();
 

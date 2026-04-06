@@ -4,6 +4,7 @@
 #include "../../VansBasicWindow.h"
 #include "Windows/VansBaseWindowComponent.h"
 #include "../ScriptCore/VansScriptContext.h"
+#include "../ProjectSystem/VansProjectSelector.h"
 #include <vector>
 
 #if defined _WIN32
@@ -90,5 +91,18 @@ namespace VansGraphics
 	private:
 
 		static VansScriptContext m_ScriptContext;
+
+		/// ImGui-based project selector overlay (shown until a project is loaded)
+		static Vans::VansProjectSelector* m_ProjectSelector;
+
+		/// True once a project has been successfully opened/created
+		static bool m_ProjectLoaded;
+
+	public:
+		/// Deferred scene load: set during ImGui frame, processed before next Rendering()
+		static std::string m_PendingScenePath;
+
+		/// Deferred resource load: set during ImGui frame, processed before scene load
+		static std::string m_PendingResourcePath;
 	};
 }

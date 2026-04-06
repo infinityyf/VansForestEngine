@@ -1,5 +1,6 @@
 #include "VansScriptContext.h"
 #include "../Configration/VansConfigration.h"
+#include "../ProjectSystem/VansProjectManager.h"
 #include "../EditorCore/Windows/VansConsole.h"
 #include "../Util/VansLog.h"
 #include "../VansTimer.h"
@@ -38,29 +39,28 @@ static void InstallPythonOutputRedirect()
 
 // ---------------------------------------------------------------------------
 // Track a Python module for hot-reload (store its file path + write time)
+// Keyed by the relative script path so each file is tracked exactly once.
 // ---------------------------------------------------------------------------
-void VansScriptContext::TrackPyModule(const std::string& name, py::module mod)
+void VansScriptContext::TrackPyModule(const std::string& scriptPath,
+                                      const std::string& moduleName,
+                                      py::module mod,
+                                      const std::filesystem::path& absPath)
 {
     try
     {
-        // Python module's __file__ attribute gives us the .py path
-        py::object fileAttr = mod.attr("__file__");
-        if (!fileAttr.is_none())
+        if (std::filesystem::exists(absPath))
         {
-            std::filesystem::path filePath(fileAttr.cast<std::string>());
-            if (std::filesystem::exists(filePath))
-            {
-                PyModuleInfo info;
-                info.module = mod;
-                info.filePath = filePath;
-                info.lastWriteTime = std::filesystem::last_write_time(filePath);
-                m_TrackedPyModules[name] = info;
-            }
+            PyModuleInfo info;
+            info.module        = mod;
+            info.moduleName    = moduleName;
+            info.filePath      = absPath;
+            info.lastWriteTime = std::filesystem::last_write_time(absPath);
+            m_TrackedPyModules[scriptPath] = info;
         }
     }
-    catch (const py::error_already_set& e)
+    catch (const std::exception& e)
     {
-        VANS_LOG_ERROR("TrackPyModule(" << name << "): " << e.what());
+        VANS_LOG_ERROR("TrackPyModule(" << scriptPath << "): " << e.what());
     }
 }
 
@@ -71,7 +71,7 @@ void VansScriptContext::CheckAndReloadPyScripts()
 {
     py::module importlib = py::module::import("importlib");
 
-    for (auto& [name, info] : m_TrackedPyModules)
+    for (auto& [scriptPath, info] : m_TrackedPyModules)
     {
         try
         {
@@ -83,20 +83,19 @@ void VansScriptContext::CheckAndReloadPyScripts()
             {
                 info.lastWriteTime = currentTime;
 
-                // Reload the module in-place
-                importlib.attr("reload")(info.module);
-                // Re-fetch in case the reload created a new module object
-                info.module = py::module::import(name.c_str());
+                // Reload the module in-place (importlib.reload uses __file__
+                // which was set correctly by spec_from_file_location)
+                info.module = importlib.attr("reload")(info.module).cast<py::module>();
 
-                VansConsole::Get().LogPython("[Hot-Reload] Reloaded " + name + ".py");
+                VansConsole::Get().LogPython("[Hot-Reload] Reloaded " + scriptPath);
 
-                // Re-instantiate any VanPyScriptComponents using this module
-                OnPyModuleReloaded(name);
+                // Re-instantiate any VanPyScriptComponents using this script path
+                OnPyModuleReloaded(scriptPath);
             }
         }
         catch (const py::error_already_set& e)
         {
-            VansConsole::Get().LogPython("[Hot-Reload] Error reloading " + name + ": " + e.what());
+            VansConsole::Get().LogPython("[Hot-Reload] Error reloading " + scriptPath + ": " + e.what());
         }
     }
 }
@@ -108,35 +107,34 @@ void VansScriptContext::ReloadAllPyScripts()
 {
     py::module importlib = py::module::import("importlib");
 
-    // Collect names of modules successfully reloaded so we can
+    // Collect script paths of modules successfully reloaded so we can
     // re-instantiate their VanPyScriptComponents afterwards.
-    std::vector<std::string> reloadedModules;
+    std::vector<std::string> reloadedPaths;
 
-    for (auto& [name, info] : m_TrackedPyModules)
+    for (auto& [scriptPath, info] : m_TrackedPyModules)
     {
         try
         {
-            importlib.attr("reload")(info.module);
-            info.module = py::module::import(name.c_str());
+            info.module = importlib.attr("reload")(info.module).cast<py::module>();
 
             if (std::filesystem::exists(info.filePath))
                 info.lastWriteTime = std::filesystem::last_write_time(info.filePath);
 
-            VansConsole::Get().LogPython("[Reload] Reloaded " + name + ".py");
-            reloadedModules.push_back(name);
+            VansConsole::Get().LogPython("[Reload] Reloaded " + scriptPath);
+            reloadedPaths.push_back(scriptPath);
         }
         catch (const py::error_already_set& e)
         {
-            VansConsole::Get().LogPython("[Reload] Error reloading " + name + ": " + e.what());
+            VansConsole::Get().LogPython("[Reload] Error reloading " + scriptPath + ": " + e.what());
         }
     }
 
-    // Teardown + re-instantiate every VanPyScriptComponent whose module was
+    // Teardown + re-instantiate every VanPyScriptComponent whose script was
     // reloaded so they pick up the new class definitions (new on_enable,
     // update, on_disable, etc.).
-    for (const auto& modName : reloadedModules)
+    for (const auto& path : reloadedPaths)
     {
-        OnPyModuleReloaded(modName);
+        OnPyModuleReloaded(path);
     }
 }
 
@@ -244,6 +242,15 @@ void VansScriptContext::VansScriptSetup()
     m_ScriptDir = projectRoot + "../ForestExporter/EngineExported";
     sys.attr("path").attr("insert")(0, m_ScriptDir);
 
+    // If a user project is loaded, also add the project root to sys.path
+    // so that user scripts (e.g. Scripts/test.py) can be discovered.
+    auto& projectMgr = Vans::VansProjectManager::Get();
+    if (projectMgr.IsProjectLoaded())
+    {
+        std::string projectScriptDir = projectMgr.GetProjectRootPath();
+        sys.attr("path").attr("insert")(0, projectScriptDir);
+    }
+
     // Install stdout/stderr redirect so print() goes to console window
     // (must be after sys.path setup so _engine_redirect.py is findable)
     InstallPythonOutputRedirect();
@@ -285,7 +292,7 @@ void VansScriptContext::VansScriptUpdate()
             if (!pyComp) continue;
 
             // Lazy instantiation on first encounter
-            if (!pyComp->m_IsValid && !pyComp->m_ScriptClassName.empty())
+            if (!pyComp->m_IsValid && !pyComp->m_ScriptPath.empty() && !pyComp->m_ScriptClassName.empty())
             {
                 pyComp->m_OwnerObject = obj;
                 pyComp->Instantiate();
@@ -301,7 +308,7 @@ void VansScriptContext::VansScriptUpdate()
 // ===========================================================================
 //  OnPyModuleReloaded — re-instantiate script components after hot reload
 // ===========================================================================
-void VansScriptContext::OnPyModuleReloaded(const std::string& moduleName)
+void VansScriptContext::OnPyModuleReloaded(const std::string& scriptPath)
 {
     if (!m_Scene) return;
 
@@ -310,7 +317,7 @@ void VansScriptContext::OnPyModuleReloaded(const std::string& moduleName)
         for (auto* comp : obj->m_Components)
         {
             auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
-            if (!pyComp || pyComp->m_ScriptModuleName != moduleName) continue;
+            if (!pyComp || pyComp->m_ScriptPath != scriptPath) continue;
 
             pyComp->Teardown();
             pyComp->m_OwnerObject = obj;
@@ -328,12 +335,76 @@ void VanPyScriptComponent::Instantiate()
 {
     try
     {
-        py::module scriptMod = py::module::import(m_ScriptModuleName.c_str());
+        // Resolve absolute path — prefer user project root, fall back to engine root
+        auto vansConfigration = VansConfigration::GetInstance();
+        auto& projectMgr = Vans::VansProjectManager::Get();
+        std::string projectRoot = projectMgr.IsProjectLoaded()
+            ? projectMgr.GetProjectRootPath()
+            : vansConfigration->GetProjectRootPath();
 
-        // Register this module for hot-reload tracking (idempotent — skips
-        // if the module is already tracked).
+        std::filesystem::path absPath = std::filesystem::path(projectRoot) / m_ScriptPath;
+
+        if (!std::filesystem::exists(absPath))
+        {
+            VansConsole::Get().LogPython(
+                "[PyScript] Script file not found: " + absPath.string());
+            m_IsValid = false;
+            return;
+        }
+
+        // Ensure the project root is on sys.path so user scripts can import
+        // each other.  This is a lazy update — VansScriptSetup() may run
+        // before the project is opened, so we add it here the first time
+        // a project script is loaded.
+        {
+            py::module sys = py::module::import("sys");
+            py::list   path = sys.attr("path");
+            bool found = false;
+            for (auto item : path)
+            {
+                if (item.cast<std::string>() == projectRoot)
+                { found = true; break; }
+            }
+            if (!found)
+                path.attr("insert")(0, projectRoot);
+        }
+
+        // Derive a unique Python module name from the relative path
+        // e.g. "Scripts/my_rotator.py" -> "Scripts.my_rotator"
+        m_ScriptModuleName = m_ScriptPath;
+        // Strip .py extension
+        if (m_ScriptModuleName.size() > 3 &&
+            m_ScriptModuleName.substr(m_ScriptModuleName.size() - 3) == ".py")
+        {
+            m_ScriptModuleName = m_ScriptModuleName.substr(0, m_ScriptModuleName.size() - 3);
+        }
+        // Replace path separators with dots
+        std::replace(m_ScriptModuleName.begin(), m_ScriptModuleName.end(), '/', '.');
+        std::replace(m_ScriptModuleName.begin(), m_ScriptModuleName.end(), '\\', '.');
+
+        // Load the script from file path using importlib.util
+        py::module importlib_util = py::module::import("importlib.util");
+        py::module sys = py::module::import("sys");
+
+        py::object spec = importlib_util.attr("spec_from_file_location")(
+            m_ScriptModuleName, absPath.string());
+        if (spec.is_none())
+        {
+            VansConsole::Get().LogPython(
+                "[PyScript] Failed to create module spec for: " + absPath.string());
+            m_IsValid = false;
+            return;
+        }
+
+        py::object mod = importlib_util.attr("module_from_spec")(spec);
+        sys.attr("modules")[py::str(m_ScriptModuleName)] = mod;
+        spec.attr("loader").attr("exec_module")(mod);
+
+        py::module scriptMod = mod.cast<py::module>();
+
+        // Register this module for hot-reload tracking (idempotent)
         if (auto* ctx = VansScriptContext::GetInstance())
-            ctx->TrackPyModule(m_ScriptModuleName, scriptMod);
+            ctx->TrackPyModule(m_ScriptPath, m_ScriptModuleName, scriptMod, absPath);
 
         py::object cls = scriptMod.attr(m_ScriptClassName.c_str());
         m_PyInstance = cls();   // call the constructor
@@ -343,7 +414,7 @@ void VanPyScriptComponent::Instantiate()
         if (!py::isinstance(m_PyInstance, vc.attr("vanspyscript")))
         {
             VansConsole::Get().LogPython(
-                "[PyScript] " + m_ScriptModuleName + "." + m_ScriptClassName +
+                "[PyScript] " + m_ScriptPath + "::" + m_ScriptClassName +
                 " does not inherit from vanspyscript!");
             m_IsValid = false;
             return;
@@ -357,12 +428,14 @@ void VanPyScriptComponent::Instantiate()
         }
 
         m_IsValid = true;
+        VansConsole::Get().LogPython(
+            "[PyScript] Loaded " + m_ScriptClassName + " from " + m_ScriptPath);
     }
     catch (const py::error_already_set& e)
     {
         VansConsole::Get().LogPython(
-            "[PyScript] Failed to instantiate " + m_ScriptModuleName +
-            "." + m_ScriptClassName + ": " + e.what());
+            "[PyScript] Failed to instantiate " + m_ScriptPath +
+            "::" + m_ScriptClassName + ": " + e.what());
         m_IsValid = false;
     }
 }

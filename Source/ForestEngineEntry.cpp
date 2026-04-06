@@ -12,6 +12,9 @@
 #include "EngineCore/PhysicsCore/VansPhysics.h"
 #include "EngineCore/Util/VansLog.h"
 
+// Project System
+#include "EngineCore/ProjectSystem/VansProjectManager.h"
+
 using namespace VansGraphics;
 using namespace VansEngine;
 

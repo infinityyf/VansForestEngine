@@ -5,7 +5,9 @@
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 #include <iostream>
+#include <fstream>
 
 namespace VansGraphics
 {
@@ -77,16 +79,10 @@ namespace VansGraphics
 
 		PrepareRenderingData();
 
-		auto vansConfigration = VansConfigration::GetInstance();
-		std::string projectRoot = vansConfigration->GetProjectRootPath();
-		m_Scene->LoadScene((projectRoot + "EngineAssets/Scenebk.json").c_str());
-
-		PreparePBRMaterialData();
-		PrepareInstanceTransformData();
-		//创建全局的描述符
-		m_Scene->CreateGlobalDescriptorSet(m_VansVKLogicDevice);
-		m_Scene->CreateNodeDescriptorSets();
-		PrepareRayTracingData();
+		// Scene loading is deferred — done via LoadSceneForRendering() from the
+		// editor after the user selects a project and opens a scene file.
+		// FSR must be initialised regardless so that VansSceneWindow has a valid
+		// image object (even if its contents are black).
 		InitializeFSR();
 		PrepareFSRDispatchInputData(3.14f / 2, 0.01f, 100.0f);
 	}
@@ -97,6 +93,15 @@ namespace VansGraphics
 		if (!requireImage)
 		{
 			VANS_LOG_ERROR("AcquireVulkanSwapChainImages failed");
+		}
+
+		if (!m_Scene->IsSceneReady())
+		{
+			// No scene loaded yet — begin the command buffer so the UI render
+			// pass (recorded by DrawEditorWindows) can still be appended.
+			// Present() will end the recording and submit.
+			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			return;
 		}
 
 		m_Scene->UpdateSceneData();
@@ -251,9 +256,11 @@ namespace VansGraphics
 	{
 		m_VansVKCommandBuffer.EndCommandBufferRecord();
 
-		if (!m_UseAsyncCompute)
+		// When no scene is loaded, always use the single-submit path because
+		// the async-compute command buffer was never recorded/submitted.
+		if (!m_UseAsyncCompute || !m_Scene->IsSceneReady())
 		{
-			// ── Original single-submit present ──────────────────────────────
+			// ── Single-submit present ───────────────────────────────────────
 			std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {
 				{ m_SwapChainImageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }
 			};

@@ -170,6 +170,11 @@
     <ClInclude Include="External\spirv_cross\spirv_parser.hpp" />
     <ClInclude Include="External\spirv_cross\spirv_reflect.hpp" />
     <ClInclude Include="Source\EngineCore\Configration\VansConfigration.h" />
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectConfig.h" />
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansPathResolver.h" />
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansSceneManager.h" />
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectManager.h" />
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectSelector.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAssetWindow.h" />
@@ -263,6 +268,11 @@
     <ClCompile Include="External\spirv_cross\spirv_parser.cpp" />
     <ClCompile Include="External\spirv_cross\spirv_reflect.cpp" />
     <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp" />
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectConfig.cpp" />
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansPathResolver.cpp" />
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansSceneManager.cpp" />
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectManager.cpp" />
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectSelector.cpp" />
     <ClCompile Include="External\GUI\ImGuizmo\ImGuizmo.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansGizmos.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorWindow.cpp" />

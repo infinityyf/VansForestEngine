@@ -169,7 +169,35 @@ namespace VansGraphics
 		VansTransformParentSystem m_TransformParentSystem;
 
 	public:
-		bool LoadScene(const char* path);
+
+		// ── 场景 / 资源状态查询 ──────────────────────────────────────────
+
+		/// Are project resources loaded? (mesh/texture/shader)
+		bool AreResourcesLoaded() const { return m_ResourcesLoaded; }
+
+		/// Is a scene currently loaded and ready for rendering?
+		bool IsSceneReady() const { return m_SceneReady; }
+
+		// ── 项目资源 / 场景加载入口 ────────────────────────────────────────
+
+		/// Load project-wide resources (mesh, texture, shader) from a
+		/// resource.json file.  Called once after opening a project,
+		/// before any scene is loaded.
+		void LoadProjectResources(const char* resourceJsonPath, VansVKDevice* device);
+
+		/// Load a scene file and prepare all GPU resources (PBR, transform,
+		/// descriptor sets, ray tracing).  Safe to call multiple times;
+		/// will unload the previous scene first.
+		void LoadSceneForRendering(const char* scenePath, VansVKDevice* device);
+
+		/// Load only project-wide resources (mesh, texture, shaders) from a
+		/// parsed resource JSON.  Called once per project, before any scene load.
+		void LoadResources(json& resourceData);
+
+		/// Load scene content (materials, nodes, terrain, vegetation, etc.)
+		/// from a scene file.  Assumes resources are already loaded via
+		/// LoadResources().
+		bool LoadSceneContent(const char* path);
 
 		void LoadLights(VkDevice& device, json& light_node);
 
@@ -230,7 +258,9 @@ namespace VansGraphics
 
 		void ImportDefaultTextures(const std::string& path, const std::string& name, VansVKDevice* vkDevice, bool isSRGB);
 
-		void LoadSceneResource(json& sceneData);
+		/// Load materials from a JSON array.  Resources (meshes, textures,
+		/// shaders) must already be loaded.  Used by LoadSceneContent().
+		void LoadMaterialsFromJson(const json& materialData);
 
 		// ── Multi-mesh auto-splitting ─────────────────────────────────────────
 		// Given a multi-mesh asset, automatically creates one render node per
@@ -251,7 +281,7 @@ namespace VansGraphics
 		VansTexture* LoadOrGetTexture(const std::string& absPath, bool isSRGB);
 
 		// Helper: creates and registers one shader from a registry entry.
-		// No-op if the shader is already loaded. Used by LoadSceneResource.
+		// No-op if the shader is already loaded. Used by LoadShadersFromRegistry.
 		void LoadShaderFromEntry(const VansShaderRegistryEntry& entry,
 			                     const std::string& pathPrefix, VkDevice& device);
 
@@ -263,8 +293,10 @@ namespace VansGraphics
 		void LoadShadersFromRegistry(const std::string& pathPrefix, VkDevice& device);
 
 		// Loads all scene textures from the JSON 'texture' array and imports engine defaults.
+		// pathPrefix    = project root (for scene-relative asset paths)
+		// enginePrefix  = engine root  (for default textures in EngineAssets/)
 		void LoadTexturesFromJson(const json& textureData, const std::string& pathPrefix,
-			                      VansVKDevice* vkDevice);
+			                      const std::string& enginePrefix, VansVKDevice* vkDevice);
 
 	public:
 
@@ -351,6 +383,11 @@ namespace VansGraphics
 		//global的贴图资源，会绑定到bindless descriptor set
 		std::vector<VansVKImage> m_TlasInstanceTextures;
 		std::map<std::string,int> m_TlasInstanceMaterialToIndex;
+
+	private:
+		// ── 场景 / 资源加载状态 ────────────────────────────────────────────
+		bool m_SceneReady = false;
+		bool m_ResourcesLoaded = false;
 	};
 }
 
