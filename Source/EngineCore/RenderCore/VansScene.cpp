@@ -429,64 +429,291 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::FindRenderNodeByName(cons
 
 void VansGraphics::VansScene::UnLoadScene()
 {
-m_MaterialManager.ClearRuntimeRenderTextures();
+	VANS_LOG("[VansScene] UnLoadScene 开始卸载当前场景...");
 
-    // Clean up scene objects (wrappers only – does NOT delete underlying Nodes)
-    for (auto* obj : m_SceneObjects)
-    {
-        delete obj;
-    }
-    m_SceneObjects.clear();
+	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+	VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
 
-    // Clean up physics nodes
-    for (auto* physicsNode : m_PhysicsNodes)
-    {
-        if (physicsNode)
-        {
-            delete physicsNode;
-        }
-    }
-    m_PhysicsNodes.clear();
+	// ── 0. 清除编辑器选中状态 ─────────────────────────────────────────────
+	m_SelectedNode = nullptr;
+	m_SelectedObject = nullptr;
+	VANS_LOG("[VansScene] Step 0: 编辑器选中状态已清除");
 
-    // Clean up cloth nodes
-    VansVKDevice* vkDeviceForCloth = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VkDevice nativeDeviceForCloth = vkDeviceForCloth ? vkDeviceForCloth->GetLogicDevice() : VK_NULL_HANDLE;
-    for (auto* clothNode : m_ClothNodes)
-    {
-        if (clothNode)
-        {
-            clothNode->Shutdown();
-            delete clothNode;
-        }
-    }
-    m_ClothNodes.clear();
+	// ── 1. 清理场景级运行时纹理（SH 系数），保留屏幕空间纹理 ─────────────
+	//  SSGI / SSAO / HZB / SSR / Fog 等屏幕空间纹理在 PrepareRenderingData()
+	//  时创建，不依赖场景内容，无需在场景切换时销毁。
+	//  仅移除场景级纹理（SH 系数），新场景的 CreateRayTracingResource 会重新注册。
+	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
+	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
+	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
+	m_MaterialManager.m_SSGITemporalFrame = 0;
+	m_MaterialManager.m_FogTemporalFrame  = 0;
+	// SH 纹理已移除，标记渲染 Feature 的 descriptor set 需要重新写入
+	if (vkDevice)
+	{
+		vkDevice->ResetFeatureDescriptorSets();
+	}
+	VANS_LOG("[VansScene] Step 1: 场景级运行时纹理已清理 (屏幕空间纹理保留)");
 
-    // Destroy scene-owned cloth staging buffers
-    for (auto& stagingBuf : m_ClothStagingBuffers)
-    {
-        if (stagingBuf.IsMapped())
-            stagingBuf.Unmap();
-        stagingBuf.DestroyVulkanBuffer(nativeDeviceForCloth);
-    }
-    m_ClothStagingBuffers.clear();
+	// ── 2. 清理脚本对象（仅释放 wrapper，不释放底层 Node） ─────────────────
+	// 先 Teardown 所有 VanPyScriptComponent，安全释放 py::object，
+	// 再删除 VansScriptObject（此时 m_PyInstance 已为 py::none()）。
+	for (auto* obj : m_SceneObjects)
+	{
+		if (!obj) continue;
+		for (auto* comp : obj->m_Components)
+		{
+			auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
+			if (pyComp) pyComp->Teardown();
+		}
+	}
+	VANS_LOG("[VansScene] Step 2a: 脚本组件已 Teardown");
 
-    // Clear transform parenting links
-    m_TransformParentSystem.Clear();
+	// ScriptContext 中的 tracked modules 也一并清理
+	if (VansScriptContext::GetInstance())
+	{
+		VansScriptContext::GetInstance()->ClearTrackedModules();
+	}
+	for (auto* obj : m_SceneObjects)
+	{
+		delete obj;
+	}
+	m_SceneObjects.clear();
+	VANS_LOG("[VansScene] Step 2b: SceneObjects 已全部释放");
 
-    // Clean up vegetation system
-    if (m_VegetationSystem)
-    {
-        m_VegetationSystem->Cleanup(nativeDeviceForCloth);
-        delete m_VegetationSystem;
-        m_VegetationSystem = nullptr;
-    }
-    m_VegetationRenderNode = nullptr;
+	// ── 3-5. 清理物理节点 / 载具 / 布料（需要持有物理线程锁） ─────────────
+	// 物理模拟在独立线程运行，必须先获取 SimulationMutex 再操作 PxScene。
+	{
+		auto& physicsSystem = VansEngine::VansPhysicsSystem::GetInstance();
+		std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
 
-    //delete mesh;
-    //delete shader;
-    //delete fullScreenMesh;
-    //delete fullScreenShader;
-    //delete m_Texture;
+		// ── 3. 清理物理节点（析构函数会从 PxScene 移除 actor） ─────────
+		for (auto* physicsNode : m_PhysicsNodes)
+		{
+			if (physicsNode)
+			{
+				delete physicsNode;
+			}
+		}
+		m_PhysicsNodes.clear();
+		VANS_LOG("[VansScene] Step 3: 物理节点已清理 (持锁)");
+
+		// ── 4. 清理载具 ──────────────────────────────────────────────────
+		if (m_Vehicle)
+		{
+			delete m_Vehicle;
+			m_Vehicle = nullptr;
+		}
+		VANS_LOG("[VansScene] Step 4: 载具已清理");
+
+		// ── 5. 清理布料节点和 staging buffer ──────────────────────────────
+		for (auto* clothNode : m_ClothNodes)
+		{
+			if (clothNode)
+			{
+				clothNode->Shutdown();
+				delete clothNode;
+			}
+		}
+		m_ClothNodes.clear();
+		VANS_LOG("[VansScene] Step 5: 布料节点已清理");
+	} // 释放 SimulationMutex
+
+	for (auto& stagingBuf : m_ClothStagingBuffers)
+	{
+		if (stagingBuf.IsMapped())
+			stagingBuf.Unmap();
+		stagingBuf.DestroyVulkanBuffer(nativeDevice);
+	}
+	m_ClothStagingBuffers.clear();
+	VANS_LOG("[VansScene] Step 5b: 布料 staging buffer 已清理");
+
+	// ── 6. 清理 transform 父子系统 ───────────────────────────────────────
+	m_TransformParentSystem.Clear();
+	VANS_LOG("[VansScene] Step 6: Transform 父子系统已清理");
+
+	// ── 7. 清理植被系统 ─────────────────────────────────────────────────
+	if (m_VegetationSystem)
+	{
+		m_VegetationSystem->Cleanup(nativeDevice);
+		delete m_VegetationSystem;
+		m_VegetationSystem = nullptr;
+	}
+	VANS_LOG("[VansScene] Step 7: 植被系统已清理");
+
+	// ── 8. 清理所有渲染节点（必须在动画节点之前，因为渲染节点的 descriptor
+	//       set 引用了动画节点的 bone buffer，需在 buffer 销毁前释放 set）
+	auto deleteRenderNode = [](VansRenderNode* node) {
+		if (node) delete node;
+	};
+
+	for (auto* node : m_OpaqueRenderNodes)
+		deleteRenderNode(node);
+	m_OpaqueRenderNodes.clear();
+
+	for (auto* node : m_TransParentRenderNodes)
+		deleteRenderNode(node);
+	m_TransParentRenderNodes.clear();
+
+	for (auto* node : m_PostProcessRenderNodes)
+		deleteRenderNode(node);
+	m_PostProcessRenderNodes.clear();
+
+	for (auto* node : m_ScreenSpaceRenderNodes)
+		deleteRenderNode(node);
+	m_ScreenSpaceRenderNodes.clear();
+
+	deleteRenderNode(m_SkyBoxNode);
+	m_SkyBoxNode = nullptr;
+
+	deleteRenderNode(m_DeferredNode);
+	m_DeferredNode = nullptr;
+
+	deleteRenderNode(m_TerrainRenderNode);
+	m_TerrainRenderNode = nullptr;
+
+	// VegetationRenderNode 未被列表持有，需单独 delete
+	deleteRenderNode(m_VegetationRenderNode);
+	m_VegetationRenderNode = nullptr;
+	VANS_LOG("[VansScene] Step 8: 渲染节点已全部清理");
+
+	// ── 9. 清理动画节点（析构函数会销毁 GPU bone buffer） ─────────────────
+	for (auto* animNode : m_AnimationNodes)
+	{
+		if (animNode)
+		{
+			delete animNode;
+		}
+	}
+	m_AnimationNodes.clear();
+	VANS_LOG("[VansScene] Step 9: 动画节点已清理");
+
+	// ── 10. 清理 Multi-mesh 分组 ────────────────────────────────────────
+	VANS_LOG("[VansScene] Step 10: 开始清理 Multi-mesh 分组 (数量=" << m_MultiMeshGroups.size() << ")");
+	m_MultiMeshGroups.clear();
+
+	// 移除 ExpandMultiMeshToRenderNodes 添加到 m_Meshes 中的子网格条目。
+	// 子网格对象本身由父级 multi-mesh 的 m_SubMeshes 拥有，此处仅清除查找列表中的条目，
+	// 防止下次 ExpandMultiMeshToRenderNodes 时产生重复。
+	m_Meshes.erase(
+		std::remove_if(m_Meshes.begin(), m_Meshes.end(),
+			[](VansAsset* asset) {
+				return static_cast<VansMesh*>(asset)->m_IsSubmesh;
+			}),
+		m_Meshes.end());
+
+	VANS_LOG("[VansScene] Step 10: Multi-mesh 分组已清理");
+
+	// ── 11. 清理材质（场景级，指针由 Scene 拥有） ───────────────────────
+	VANS_LOG("[VansScene] Step 11: 开始清理材质 (数量=" << m_Materials.size() << ")");
+	for (size_t i = 0; i < m_Materials.size(); ++i)
+	{
+		auto* mat = m_Materials[i];
+		if (mat)
+		{
+			auto* realMat = static_cast<VansMaterial*>(mat);
+			VANS_LOG("[VansScene] Step 11: 删除材质 [" << i << "] type=" << realMat->m_MaterialType << " name=" << mat->m_AssetName);
+			delete mat;
+		}
+	}
+	m_Materials.clear();
+	VANS_LOG("[VansScene] Step 10-11: Multi-mesh 和材质已清理");
+
+	// ── 12. 清理全局 PBR 数据和 descriptor ──────────────────────────────
+	m_MaterialManager.ClearScenePBRData(nativeDevice);
+
+	// ── 13. 清理灯光 CPU 数据和 GPU 资源 ────────────────────────────────
+	m_LightManager.ClearLights();
+	m_LightManager.DestroyGPUResources(nativeDevice);
+	VANS_LOG("[VansScene] Step 12-13: PBR 和灯光 GPU 资源已清理");
+
+	// ── 14. 清理 Ray Tracing TLAS 资源 ─────────────────────────────────
+	if (vkDevice)
+	{
+		vkDevice->GetRayTracingContext().CleanupSceneResources(nativeDevice);
+	}
+
+	// 清理 Scene 持有的 TLAS 数据
+	if (vkDevice && m_TopLevelAS != VK_NULL_HANDLE)
+	{
+		vkDevice->DestroyAccelerationStructure(m_TopLevelAS);
+		m_TopLevelAS = VK_NULL_HANDLE;
+	}
+	m_TopLevelASBuffer.DestroyVulkanBuffer(nativeDevice);
+	m_InstancesBuffer.DestroyVulkanBuffer(nativeDevice);
+	m_TLASScratchBuffer.DestroyVulkanBuffer(nativeDevice);
+
+	m_TlasInstancesInfos.clear();
+	m_AsGeometry.clear();
+	m_AsBuildRangeInfo.clear();
+
+	// BLAS vertex/index data（缓存的引用，不销毁实际的 mesh buffer）
+	m_BLASVertexData.clear();
+	m_BLASIndexData.clear();
+	m_TLASInstaneData.clear();
+	m_TlasInstanceTextureIndex.clear();
+	m_TlasInstanceTextures.clear();
+	m_TlasInstanceMaterialToIndex.clear();
+
+	// 释放项目级 mesh 上残留的 BLAS 加速结构，防止二次 BuildBLAS 时资源泄漏
+	for (const auto& meshAsset : m_Meshes)
+	{
+		VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
+		if (mesh->m_SupportRayTracing)
+		{
+			mesh->DestroyBLAS(nativeDevice);
+		}
+	}
+	VANS_LOG("[VansScene] Step 14: RT/TLAS 资源已清理");
+
+	// ── 15. 清理 Instance Transform Buffer ──────────────────────────────
+	m_InstanceTransformDataBuffer.DestroyVulkanBuffer(nativeDevice);
+	m_InstanceTransformData.clear();
+
+	// 释放 Transform Data descriptor set 和 layout
+	auto descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->DestroyDescriptorSet(m_GlobalTransformDataDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_GlobalTransformDataSetLayout);
+
+	// ── 16. 清理 Global / Object / Animation / Empty Descriptor Sets ─────
+	if (m_GlobalDescriptorSet != VK_NULL_HANDLE)
+	{
+		std::vector<VkDescriptorSet> tmp = { m_GlobalDescriptorSet };
+		descMgr->DestroyDescriptorSet(tmp);
+		m_GlobalDescriptorSet = VK_NULL_HANDLE;
+	}
+	descMgr->DestroyDescriptorSetLayout(m_GlobalDescriptorSetLayout);
+
+	if (m_ObjectDescriptorSet != VK_NULL_HANDLE)
+	{
+		std::vector<VkDescriptorSet> tmp = { m_ObjectDescriptorSet };
+		descMgr->DestroyDescriptorSet(tmp);
+		m_ObjectDescriptorSet = VK_NULL_HANDLE;
+	}
+	descMgr->DestroyDescriptorSetLayout(m_ObjectDescriptorSetLayout);
+
+	if (m_AnimationDescriptorSet != VK_NULL_HANDLE)
+	{
+		std::vector<VkDescriptorSet> tmp = { m_AnimationDescriptorSet };
+		descMgr->DestroyDescriptorSet(tmp);
+		m_AnimationDescriptorSet = VK_NULL_HANDLE;
+	}
+	descMgr->DestroyDescriptorSetLayout(m_AnimationDescriptorSetLayout);
+
+	if (m_EmptyPassDescriptorSet != VK_NULL_HANDLE)
+	{
+		std::vector<VkDescriptorSet> tmp = { m_EmptyPassDescriptorSet };
+		descMgr->DestroyDescriptorSet(tmp);
+		m_EmptyPassDescriptorSet = VK_NULL_HANDLE;
+	}
+	descMgr->DestroyDescriptorSetLayout(m_EmptyPassLayout);
+
+	// ── 17. 清理 Dummy Bone Buffer ──────────────────────────────────────
+	m_DummyBoneIDBuffer.DestroyVulkanBuffer(nativeDevice);
+	m_DummyBoneBuffer.DestroyVulkanBuffer(nativeDevice);
+	m_DummyWeightBuffer.DestroyVulkanBuffer(nativeDevice);
+
+	VANS_LOG("[VansScene] 场景卸载完成");
 }
 
 void VansGraphics::VansScene::UpdateSceneData()
@@ -574,6 +801,14 @@ void VansVKDevice::CreateAccelerationStructure(VkAccelerationStructureCreateInfo
     vkCreateAccelerationStructureKHR(m_VansVKLogicDevice, createInfo, nullptr, as);
 }
 
+void VansVKDevice::DestroyAccelerationStructure(VkAccelerationStructureKHR as)
+{
+    if (as != VK_NULL_HANDLE)
+    {
+        vkDestroyAccelerationStructureKHR(m_VansVKLogicDevice, as, nullptr);
+    }
+}
+
 void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansVKCommandBuffer* vans_commandBuffer)
 {
     VkDevice device = vans_device->GetLogicDevice();
@@ -596,12 +831,32 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         VANS_LOG("blas build done" << mesh->m_AssetName);
     }
 
+    VANS_LOG("[BuildRayTracingAS] BLAS 阶段完成，开始收集 TLAS 实例数据 (opaqueNodes=" << m_OpaqueRenderNodes.size() << ")");
+
+    int nodeIdx = 0;
     for (auto& node : m_OpaqueRenderNodes)
     {
-        if (!node->m_Mesh->m_SupportRayTracing)
+        // 跳过骨骼动画节点（不参与光线追踪）
+        if (node->m_HasSkeletonBone || node->m_AnimOwner)
         {
+            ++nodeIdx;
             continue;
         }
+        // 多网格父容器节点没有自身 Mesh，静默跳过
+        if (!node->m_Mesh)
+        {
+            ++nodeIdx;
+            continue;
+        }
+        if (!node->m_Mesh->m_SupportRayTracing)
+        {
+            ++nodeIdx;
+            continue;
+        }
+
+        VANS_LOG("[BuildRayTracingAS] node[" << nodeIdx << "] '" << node->m_NodeName
+            << "' mesh='" << node->m_Mesh->m_AssetName
+            << "' matType=" << (node->m_Material ? static_cast<int>(node->m_Material->m_MaterialType) : -1));
 
         auto transformMatrix = node->GetTransformMatrix();
 
@@ -642,8 +897,15 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 
         m_TLASInstaneData.push_back(node->m_Mesh->GetBLASIndex());
 
-        //记录贴图索引
+        //记录贴图索引 — 仅对 PBR 材质 (type 0) 收集贴图
 		int textureIndex = -1;
+        if (!node->m_Material || node->m_Material->m_MaterialType != VAN_PBR)
+        {
+            VANS_LOG_WARN("[BuildRayTracingAS] node[" << nodeIdx << "] 非 PBR 材质，跳过贴图收集");
+            m_TlasInstanceTextureIndex.push_back(-1);
+            ++nodeIdx;
+            continue;
+        }
         auto textureIndexIT = m_TlasInstanceMaterialToIndex.find(node->m_Material->m_AssetName);
         if (textureIndexIT == m_TlasInstanceMaterialToIndex.end())
         {
@@ -661,9 +923,12 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 			textureIndex = textureIndexIT->second;
         }
         m_TlasInstanceTextureIndex.push_back(textureIndex);
+        ++nodeIdx;
     }
 
     uint32_t countInstance = static_cast<uint32_t>(m_TlasInstancesInfos.size());
+
+    VANS_LOG("[BuildRayTracingAS] TLAS 实例收集完成 (instances=" << countInstance << ")");
 
     // No RT instances to build — skip TLAS entirely
     if (countInstance == 0)
@@ -673,6 +938,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     }
 
     // 创建实例缓冲区
+    VANS_LOG("[BuildRayTracingAS] 开始创建 TLAS Instance 缓冲区 (size=" << sizeof(VkAccelerationStructureInstanceKHR) * countInstance << " bytes)");
     m_InstancesBuffer.CreatVulkanBuffer(
         device,
         sizeof(VkAccelerationStructureInstanceKHR) * countInstance,
@@ -680,6 +946,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VANS_LOG("[BuildRayTracingAS] Instance 缓冲区创建完成，开始写入数据");
     m_InstancesBuffer.SetBufferData(m_TlasInstancesInfos.data(), 0, sizeof(VkAccelerationStructureInstanceKHR) * countInstance);
 
     // Barrier: host writes instance buffer -> TLAS build reads
@@ -750,12 +1017,14 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     vans_device->GetAccelerationStructureBuildSizes(&buildInfo, maxPrimCount.data(), &buildSizesInfo);
 
     //scratch izhi
+    VANS_LOG("[BuildRayTracingAS] 开始创建 TLAS Scratch 缓冲区 (size=" << buildSizesInfo.buildScratchSize << ")");
     m_TLASScratchBuffer.CreatVulkanBuffer(
         device,
         buildSizesInfo.buildScratchSize,
         VK_FORMAT_R32_SFLOAT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VANS_LOG("[BuildRayTracingAS] TLAS Scratch 缓冲区创建完成");
 
     VkBufferDeviceAddressInfo scratchBufferAddressInfo;
     scratchBufferAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -765,14 +1034,17 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 
 
     // 创建缓冲区
+    VANS_LOG("[BuildRayTracingAS] 开始创建 TLAS AS 缓冲区 (size=" << buildSizesInfo.accelerationStructureSize << ")");
     m_TopLevelASBuffer.CreatVulkanBuffer(
         device,
         buildSizesInfo.accelerationStructureSize,
         VK_FORMAT_R32_SFLOAT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VANS_LOG("[BuildRayTracingAS] TLAS AS 缓冲区创建完成");
 
     // 构建TLAS
+    VANS_LOG("[BuildRayTracingAS] 开始创建 TLAS 加速结构");
     VkAccelerationStructureCreateInfoKHR accelCreateInfo = {};
     accelCreateInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
     accelCreateInfo.buffer = m_TopLevelASBuffer.GetNativeBuffer();
@@ -814,6 +1086,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
             0, nullptr);
     }
     
+    VANS_LOG("[BuildRayTracingAS] 开始提交 TLAS Build 命令");
     vans_commandBuffer->BuildAccelerationStructures(&buildInfo, *ppRangeInfos);
 
     VANS_LOG("tlas build done");

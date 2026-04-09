@@ -622,7 +622,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         VansGraphics::VansTimer::Update();
 
         // Step Vehicle Physics - MOVED TO PHYSICS THREAD via Callback
-        if (m_Scene && m_Scene->m_Vehicle)
+        if (m_Scene && m_Scene->IsSceneReady() && m_Scene->m_Vehicle)
         {
             // Vehicle control inputs via InputManager
             if (input.IsKeyDown(GLFW_KEY_W))
@@ -641,7 +641,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // IMPORTANT: This uses PxSceneReadLock internally to prevent race conditions
         // with the background physics simulation thread
         VansEngine::VansPhysicsSystem& physics = VansEngine::VansPhysicsSystem::GetInstance();
-        if (physics.IsSimulationRunning() && m_Scene)
+        if (physics.IsSimulationRunning() && m_Scene && m_Scene->IsSceneReady())
         {
             m_Scene->UpdatePhysicsTransforms();
         }
@@ -684,7 +684,11 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         camera.Rendering();
 
         m_ScriptContext.SetScene(m_Scene);
-        m_ScriptContext.VansScriptUpdate();
+        // 场景切换过程中跳过脚本更新，避免访问已卸载的数据
+        if (m_Scene && m_Scene->IsSceneReady())
+        {
+            m_ScriptContext.VansScriptUpdate();
+        }
         //UI Pass
         m_SceneWindow->RegistCamera(&camera);
         m_SceneWindow->RegistScene(m_Scene);

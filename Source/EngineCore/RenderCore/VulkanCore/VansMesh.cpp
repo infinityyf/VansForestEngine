@@ -371,6 +371,17 @@ void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& 
 	vkCmdBuildAccelerationStructuresKHR(commandBuffer, 1, &buildGeometryInfo, &pRangeInfo);
 }
 
+void VansGraphics::VansMesh::DestroyBLAS(VkDevice& logic_device)
+{
+	if (m_BottomLevelAS != VK_NULL_HANDLE)
+	{
+		vkDestroyAccelerationStructureKHR(logic_device, m_BottomLevelAS, nullptr);
+		m_BottomLevelAS = VK_NULL_HANDLE;
+	}
+	m_BottomLevelASBuffer.DestroyVulkanBuffer(logic_device);
+	m_BLASScratchBuffer.DestroyVulkanBuffer(logic_device);
+}
+
 void VansGraphics::VansMesh::ReleaseASTempData(VkDevice& logic_device)
 {
 	m_BLASScratchBuffer.DestroyVulkanBuffer(logic_device);

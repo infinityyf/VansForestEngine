@@ -8,6 +8,8 @@ namespace VansGraphics
 	class VansAsset
 	{
 	public:
+		virtual ~VansAsset() = default;
+
 		std::string m_AssetName;
 
 		void SetName(const std::string& name)

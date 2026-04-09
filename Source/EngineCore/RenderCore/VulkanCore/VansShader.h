@@ -83,17 +83,16 @@ namespace VansGraphics
 			DestroyShaderMoulde();
 		}
 	private:
-		void DestroyShaderMoulde();
-
 		bool CreateShaderModule(VkDevice& logic_device);
 
 		bool TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType = ShaderType::Normal);
 
-		VkDevice m_LogicDevice;
-
 		std::string m_ShaderFolder;
 
 	protected:
+		VkDevice m_LogicDevice;
+
+		void DestroyShaderMoulde();
 
 		bool m_SupportMRTOutput;
 
@@ -203,9 +202,21 @@ namespace VansGraphics
 			m_SBTBuffer.DestroyVulkanBuffer(m_LogicDevice);
 		}
 
-	private:
+		/// 场景切换时调用：销毁 pipeline / SBT，使下次 GetRayTracingPipeline 重建
+		void CleanupPipeline()
+		{
+			if (m_VansVkRayTracingPipeline != nullptr)
+			{
+				delete m_VansVkRayTracingPipeline;
+				m_VansVkRayTracingPipeline = nullptr;
+			}
+			m_SBTBuffer.DestroyVulkanBuffer(m_LogicDevice);
 
-		VkDevice m_LogicDevice;
+			// 销毁旧 VkShaderModule，防止泄漏
+			DestroyShaderMoulde();
+		}
+
+	private:
 
 		VansVKBuffer m_SBTBuffer;
 

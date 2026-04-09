@@ -206,6 +206,59 @@
 //    vkCmdBuildAccelerationStructuresKHR(commandBuffer->GetVKCommandBuffer(), 1, &buildInfo, &pBuildRangeInfos);
 //}
 
+void VansGraphics::VansRayTracing::CleanupSceneResources(VkDevice device)
+{
+	if (!m_RTResourcesReady)
+		return;
+
+	auto descMgr = VansVKDescriptorManager::GetInstance();
+
+	// 释放 RT descriptor set 和 layout
+	descMgr->DestroyDescriptorSet(m_RayTracingDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_RayTracingSetLayout);
+
+	descMgr->DestroyDescriptorSet(m_GISamplePositionLightDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_GISamplePositionLightSetLayout);
+
+	descMgr->DestroyDescriptorSet(m_GISHUpdateDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_GISHUpdateSetLayout);
+
+	// 释放 RT 相关 buffer
+	m_RayTracingHitPositionResult.DestroyVulkanBuffer(device);
+	m_RayTracingHitNormalResult.DestroyVulkanBuffer(device);
+	m_RayTracingHitAlbedoRoughnessResult.DestroyVulkanBuffer(device);
+	m_BLASInstanceBuffer.DestroyVulkanBuffer(device);
+	m_TLASInstanceTextureIndexBuffer.DestroyVulkanBuffer(device);
+	m_ReSTIRBuffer.DestroyVulkanBuffer(device);
+	m_HitPointLightBuffer.DestroyVulkanBuffer(device);
+
+	// 释放场景加载时 new 出来的 RT 渲染资源，防止切换场景时泄漏
+	delete m_RayTracingResult;
+	m_RayTracingResult = nullptr;
+
+	delete m_RayTracingPointLighting;
+	m_RayTracingPointLighting = nullptr;
+
+	delete m_GISHUpdateShader;
+	m_GISHUpdateShader = nullptr;
+
+	// 重置 RT 着色器的 pipeline / SBT，下次 CreateRayTracingResource 将重建
+	m_VansRayTracingShader.CleanupPipeline();
+
+	m_ReSTIRCPUData.clear();
+
+	// 标记脏以便下次 CreateRayTracingResource 重新绑定
+	m_RayTracingDescriptorSetIsDirty = true;
+	m_GIPointLightDescriptorSetIsDirty = true;
+	m_GISHUpdateDesctiproeSetIsDirty = true;
+
+	m_HitPositionCalculateDone = false;
+	m_GIUpdateFrameIndex = 0;
+	m_RTResourcesReady = false;
+
+	VANS_LOG("[VansRayTracing] Scene RT resources cleaned up");
+}
+
 void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
 {
 
@@ -360,6 +413,19 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCom
         m_RayTracingPositionCount / 8,
         m_RayTracingPositionCount / 8,
         { m_Scene->m_GlobalDescriptorSet, m_GISamplePositionLightDescriptorSets[0]});
+
+    // GIPointLight 写入 m_HitPointLightBuffer，GISHUpdate 将读取该缓冲区。
+    // 插入 compute→compute 内存屏障防止 RAW 冒险。
+    {
+        VkMemoryBarrier computeBarrier{};
+        computeBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        computeBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        computeBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        commandBuffer->PipelineBarrier(
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            { computeBarrier });
+    }
 
     commandBuffer->EnsureComputeShader(*m_GISHUpdateShader, { m_Scene->m_GlobalDescriptorSetLayout, m_GISHUpdateSetLayout});
     commandBuffer->DispatchCompute(

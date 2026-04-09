@@ -97,14 +97,14 @@ namespace VansGraphics
 		RenderNodeType m_NodeType;
 
 		//描述符相关
-		VkDescriptorSetLayout modelBufferLayout;
+		VkDescriptorSetLayout modelBufferLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> modelBufferDescriptorSets;
 
 		//sampler imgae 描述符
-		VkDescriptorSetLayout textureResourceLayout;
+		VkDescriptorSetLayout textureResourceLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> textureResourceDescriptorSets;
 
-		VkDescriptorSetLayout frameBufferInputLayout;
+		VkDescriptorSetLayout frameBufferInputLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> frameBufferInputDescriptorSets;
 
 		void DestroyDescriptorSets();
@@ -313,11 +313,13 @@ namespace VansGraphics
 	{
 	private:
 
-		VansTerrain* m_Terrain;
+		VansTerrain* m_Terrain = nullptr;
 
 	public:
 
 		VansTerrainRenderNode(VansVKDevice* device, const TerrainConfig& config, RenderNodeType type);
+
+		~VansTerrainRenderNode() override;
 
 		VansTerrain* GetTerrain() const { return m_Terrain; }
 

@@ -24,9 +24,15 @@ namespace VansGraphics
             }
         }
         if(m_TerrainShader) delete m_TerrainShader;
+        if(m_TerrainShadowShader) delete m_TerrainShadowShader;
         if(m_TerrainMotionVectorShader) delete m_TerrainMotionVectorShader;
         m_ParamsUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_InstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
+
+        // 释放地形专属 descriptor set 和 layout
+        auto descMgr = VansVKDescriptorManager::GetInstance();
+        descMgr->DestroyDescriptorSet(m_DescriptorSets);
+        descMgr->DestroyDescriptorSetLayout(m_DescriptorSetLayout);
     }
 
     void VansTerrain::Init(VansVKDevice* device, const TerrainConfig& config)

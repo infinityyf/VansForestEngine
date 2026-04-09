@@ -126,6 +126,40 @@ std::string VansSceneManager::CreateEmptyScene(const std::string& sceneName,
 }
 
 // -----------------------------------------------------------------------
+// Request scene switch — validate and return absolute path
+// -----------------------------------------------------------------------
+std::string VansSceneManager::RequestSceneSwitch(const std::string& relativeScenePath,
+	const std::string& projectRoot) const
+{
+	// 不允许切换到当前已加载的场景
+	if (relativeScenePath == m_CurrentScenePath)
+	{
+		VANS_LOG_WARN("[SceneManager] 目标场景与当前场景相同，跳过切换: " << relativeScenePath);
+		return {};
+	}
+
+	// 验证场景是否在已发现列表中
+	const SceneInfo* info = FindScene(relativeScenePath);
+	if (!info)
+	{
+		VANS_LOG_WARN("[SceneManager] 目标场景未在已发现列表中: " << relativeScenePath);
+	}
+
+	// 构建绝对路径并验证文件存在
+	std::string absPath = projectRoot + "/" + relativeScenePath;
+	std::replace(absPath.begin(), absPath.end(), '\\', '/');
+
+	if (!fs::exists(absPath))
+	{
+		VANS_LOG_ERROR("[SceneManager] 场景文件不存在: " << absPath);
+		return {};
+	}
+
+	VANS_LOG("[SceneManager] 场景切换请求已验证: " << relativeScenePath << " -> " << absPath);
+	return absPath;
+}
+
+// -----------------------------------------------------------------------
 // Clear
 // -----------------------------------------------------------------------
 void VansSceneManager::Clear()

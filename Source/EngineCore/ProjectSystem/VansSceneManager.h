@@ -50,6 +50,13 @@ public:
 	std::string CreateEmptyScene(const std::string& sceneName,
 		const std::string& projectRoot);
 
+	/// 请求切换到指定场景。
+	/// `relativeScenePath` 为项目相对路径（如 "Scenes/MyScene.json"）。
+	/// `projectRoot` 为绝对项目根路径。
+	/// 返回绝对路径供调用方设置 PendingScenePath；若验证失败则返回空字符串。
+	std::string RequestSceneSwitch(const std::string& relativeScenePath,
+		const std::string& projectRoot) const;
+
 	/// Clear all state (used when closing a project).
 	void Clear();
 

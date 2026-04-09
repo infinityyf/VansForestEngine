@@ -29,11 +29,11 @@ namespace VansGraphics
 		friend class VansVKDevice;
 		friend class VansMesh;
 	private:
-		VkBuffer m_VansVKBuffer;
+		VkBuffer m_VansVKBuffer = VK_NULL_HANDLE;
 
-		VkDeviceMemory m_VansVKBufferMemory;
+		VkDeviceMemory m_VansVKBufferMemory = VK_NULL_HANDLE;
 
-		VkDeviceSize m_BufferSize;
+		VkDeviceSize m_BufferSize = 0;
 
 		VkFormat m_BufferFormat;
 
@@ -45,7 +45,7 @@ namespace VansGraphics
 		void* m_MappedPtr = nullptr;
 
 	private:
-		VkBufferView m_VansVKBufferView;
+		VkBufferView m_VansVKBufferView = VK_NULL_HANDLE;
 
 	public:
 

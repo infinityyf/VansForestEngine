@@ -152,6 +152,10 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
 
 void VansGraphics::VansScene::DrawSkyBoxNode()
 {
+    if (m_SkyBoxNode == nullptr)
+    {
+        return;
+    }
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
@@ -283,7 +287,10 @@ void VansGraphics::VansScene::DrawScreenSpaceFeatureNode()
 
 void VansGraphics::VansScene::DeferredShading()
 {
-    //绘制全屏mesh
+    if (m_DeferredNode == nullptr)
+    {
+        return;
+    }
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();

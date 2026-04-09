@@ -53,6 +53,10 @@ namespace VansGraphics
 		
 		void CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene);
 
+		// 场景切换时清理与当前场景绑定的 RT 资源（descriptor set、buffer 等）
+		// BLAS 由 mesh 管理，不在此处释放。
+		void CleanupSceneResources(VkDevice device);
+
 		void UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager);
 		
 		RayTracingPushConstant m_RayTracingConstant;

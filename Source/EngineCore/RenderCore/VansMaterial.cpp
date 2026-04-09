@@ -15,6 +15,52 @@ bool VansGraphics::VansMaterial::HasPass(const std::string& passName) const
 	return m_PassShaders.count(passName) > 0;
 }
 
+// ============================================================
+// Material subclass destructors — release owned Vulkan resources
+// ============================================================
+
+VansGraphics::VansTransparentMaterial::~VansTransparentMaterial()
+{
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->DestroyDescriptorSet(m_TransparentOwnedDescSets);
+	descMgr->DestroyDescriptorSetLayout(m_TransparentOwnedLayout);
+}
+
+VansGraphics::VansSkinMaterial::~VansSkinMaterial()
+{
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->DestroyDescriptorSet(m_SkinOwnedDescSets);
+	descMgr->DestroyDescriptorSetLayout(m_SkinOwnedLayout);
+}
+
+VansGraphics::VansClothMaterial::~VansClothMaterial()
+{
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->DestroyDescriptorSet(m_ClothOwnedDescSets);
+	descMgr->DestroyDescriptorSetLayout(m_ClothOwnedLayout);
+}
+
+VansGraphics::VansHairMaterial::~VansHairMaterial()
+{
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->DestroyDescriptorSet(m_HairOwnedDescSets);
+	descMgr->DestroyDescriptorSetLayout(m_HairOwnedLayout);
+}
+
+VansGraphics::VansSubsurfaceMaterial::~VansSubsurfaceMaterial()
+{
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->DestroyDescriptorSet(m_SubsurfaceOwnedDescSets);
+	descMgr->DestroyDescriptorSetLayout(m_SubsurfaceOwnedLayout);
+}
+
+VansGraphics::VansGrassMaterial::~VansGrassMaterial()
+{
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->DestroyDescriptorSet(m_GrassOwnedDescSets);
+	descMgr->DestroyDescriptorSetLayout(m_GrassOwnedLayout);
+}
+
 VansGraphics::VansMaterialManager::VansMaterialManager()
 {
 }
@@ -48,6 +94,24 @@ void VansGraphics::VansMaterialManager::ClearRuntimeRenderTextures()
 {
 	m_RuntimeRenderTextureManager.Clear();
 	m_SSGITemporalFrame = 0;
+}
+
+void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
+{
+	// 清空 CPU 侧 PBR 数组（指针不拥有所有权，material 由 VansScene 管理）
+	m_GlobalPBRMaterial.clear();
+	m_GlobalPBRParamData.clear();
+	m_GlobalPBRTextures.clear();
+
+	// 销毁 GPU buffer
+	m_GlobalPBRDataBuffer.DestroyVulkanBuffer(device);
+
+	// 释放 descriptor set 和 layout
+	auto descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->DestroyDescriptorSet(m_GlobalPBRDataDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRDataSetLayout);
+	descMgr->DestroyDescriptorSet(m_GlobalPBRTexDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRTexSetLayout);
 }
 
 void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()

@@ -142,8 +142,21 @@ namespace VansGraphics
 		void GetAccelerationStructureBuildSizes(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, uint32_t* maxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR* buildSizeInfo);
 
 		void CreateAccelerationStructure(VkAccelerationStructureCreateInfoKHR* createInfo, VkAccelerationStructureKHR* as);
+		void DestroyAccelerationStructure(VkAccelerationStructureKHR as);
 
 	public:
+		VansRayTracing& GetRayTracingContext() { return rayTracingContext; }
+
+		/// 场景卸载时调用：重置所有渲染 Feature 的 descriptor set 一次性写入标记，
+		/// 使下次场景加载后重新绑定运行时纹理，避免引用已销毁的 VkImageView。
+		void ResetFeatureDescriptorSets()
+		{
+			m_GIDataDescSetsUpdated = false;
+			m_HZBDescSetsUpdated = false;
+			m_SSRDescSetsUpdated = false;
+			m_VolumetricFogDescSetsUpdated = false;
+			m_FogLightInjectionDescSetsUpdated = false;
+		}
 
 		void UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
@@ -158,6 +171,12 @@ namespace VansGraphics
 		void UpdateFogRayMarch(VansVKCommandBuffer& computeCmd);
 
 	private:
+
+		bool m_GIDataDescSetsUpdated = false;
+		bool m_HZBDescSetsUpdated = false;
+		bool m_SSRDescSetsUpdated = false;
+		bool m_VolumetricFogDescSetsUpdated = false;
+		bool m_FogLightInjectionDescSetsUpdated = false;
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 

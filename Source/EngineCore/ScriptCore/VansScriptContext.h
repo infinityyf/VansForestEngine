@@ -59,6 +59,10 @@ public:
 	// Set the active scene so the update loop can iterate objects
 	void SetScene(VansGraphics::VansScene* scene) { m_Scene = scene; }
 
+	// ── 场景切换时清空已跟踪的 Python 模块 ─────────────────────────
+	// 释放 py::module 引用，清空 m_TrackedPyModules，防止跨场景累积。
+	void ClearTrackedModules();
+
 	// Explicit reload called from editor UI
 	void ReloadAllPyScripts();
 

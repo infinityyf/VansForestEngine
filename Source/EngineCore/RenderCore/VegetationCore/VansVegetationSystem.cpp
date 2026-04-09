@@ -287,7 +287,7 @@ void VansVegetationSystem::CreateBoneMatrixBuffer(VkDevice device)
 
 	m_BoneMatrixBuffer.CreatVulkanBuffer(device, bufferSize, VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	m_BoneMatrixBuffer.SetBufferData(identities.data(), 0, static_cast<int>(bufferSize));
 }
 

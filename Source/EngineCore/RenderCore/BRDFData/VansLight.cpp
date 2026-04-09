@@ -191,3 +191,19 @@ VansGraphics::VansLightManager::~VansLightManager()
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(m_LightDataDescriptorSets);
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(m_LightDataDescriptorSetLayout);
 }
+
+void VansGraphics::VansLightManager::ClearLights()
+{
+	m_DirectionalLights.clear();
+	m_PointLights.clear();
+	m_SpotLights.clear();
+	memset(m_LightCounts, 0, sizeof(m_LightCounts));
+	memset(m_SoftShadowParams, 0, sizeof(m_SoftShadowParams));
+}
+
+void VansGraphics::VansLightManager::DestroyGPUResources(VkDevice device)
+{
+	m_LightBuffer.DestroyVulkanBuffer(device);
+	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(m_LightDataDescriptorSets);
+	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(m_LightDataDescriptorSetLayout);
+}

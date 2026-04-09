@@ -19,6 +19,15 @@
 using json = nlohmann::json;
 namespace VansGraphics
 {
+	// ── 场景加载状态枚举 ──────────────────────────────────────────────────
+	enum class VansSceneState
+	{
+		Empty,       // 无场景
+		Unloading,   // 正在卸载旧场景
+		Loading,     // 正在加载新场景
+		Ready        // 场景就绪，可渲染
+	};
+
 	// A logical group representing a multi-mesh parent and all its auto-expanded child render nodes.
 	struct MultiMeshGroup
 	{
@@ -71,13 +80,13 @@ namespace VansGraphics
 		std::vector<VansAsset*> m_Materials;
 
 	public:
-		VansRenderNode* m_SkyBoxNode;
+		VansRenderNode* m_SkyBoxNode = nullptr;
 
-		VansRenderNode* m_DeferredNode;
+		VansRenderNode* m_DeferredNode = nullptr;
 
 		std::vector<VansRenderNode*> m_OpaqueRenderNodes;
 
-		VansRenderNode* m_TerrainRenderNode;
+		VansRenderNode* m_TerrainRenderNode = nullptr;
 
 		VansRenderNode* m_VegetationRenderNode = nullptr;
 
@@ -135,7 +144,7 @@ namespace VansGraphics
 
 		VansVKBuffer m_InstanceTransformDataBuffer;
 		std::vector<ModelDataStruct> m_InstanceTransformData;
-		VkDescriptorSetLayout m_GlobalTransformDataSetLayout;
+		VkDescriptorSetLayout m_GlobalTransformDataSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_GlobalTransformDataDescriptorSets;
 
 		// ===== New: Reorganized descriptor set system =====
@@ -162,7 +171,7 @@ namespace VansGraphics
 
 	public:
 		//editor
-		VansRenderNode* m_SelectedNode;
+		VansRenderNode* m_SelectedNode = nullptr;
 		VansScriptObject* m_SelectedObject = nullptr;
 
 		// ── Transform parenting system ──────────────────────────────────────────
@@ -176,7 +185,17 @@ namespace VansGraphics
 		bool AreResourcesLoaded() const { return m_ResourcesLoaded; }
 
 		/// Is a scene currently loaded and ready for rendering?
-		bool IsSceneReady() const { return m_SceneReady; }
+		bool IsSceneReady() const { return m_SceneState == VansSceneState::Ready; }
+
+		/// 获取当前场景状态
+		VansSceneState GetSceneState() const { return m_SceneState; }
+
+		/// 是否正处于场景切换过程中（卸载或加载）
+		bool IsSceneSwitching() const
+		{
+			return m_SceneState == VansSceneState::Unloading ||
+				   m_SceneState == VansSceneState::Loading;
+		}
 
 		// ── 项目资源 / 场景加载入口 ────────────────────────────────────────
 
@@ -355,7 +374,7 @@ namespace VansGraphics
 	private:
 
 		//光线追踪加速结构
-		VkAccelerationStructureKHR m_TopLevelAS;
+		VkAccelerationStructureKHR m_TopLevelAS = VK_NULL_HANDLE;
 
 		VansVKBuffer m_TopLevelASBuffer;
 
@@ -386,7 +405,7 @@ namespace VansGraphics
 
 	private:
 		// ── 场景 / 资源加载状态 ────────────────────────────────────────────
-		bool m_SceneReady = false;
+		VansSceneState m_SceneState = VansSceneState::Empty;
 		bool m_ResourcesLoaded = false;
 	};
 }

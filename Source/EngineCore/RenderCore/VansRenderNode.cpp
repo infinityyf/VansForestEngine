@@ -920,6 +920,11 @@ VansGraphics::VansTerrainRenderNode::VansTerrainRenderNode(VansVKDevice* device,
 	m_Terrain->Init(device, config);
 }
 
+VansGraphics::VansTerrainRenderNode::~VansTerrainRenderNode()
+{
+	delete m_Terrain;
+	m_Terrain = nullptr;
+}
 
 void VansGraphics::VansTerrainRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {

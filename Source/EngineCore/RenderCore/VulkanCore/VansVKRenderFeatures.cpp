@@ -45,12 +45,10 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		static bool updatedSets = false;
-		if (updatedSets)
+		if (m_GIDataDescSetsUpdated)
 		{
 			return;
 		}
-		updatedSets = true;
 
 		auto getRuntimeTexture = [manager](const char* key)
 			{
@@ -74,6 +72,9 @@ namespace VansGraphics
 		{
 			return;
 		}
+
+		// 标记已更新：仅在所有纹理就绪、即将写入 descriptor 时才设置
+		m_GIDataDescSetsUpdated = true;
 
 		VansVKDescriptorManager::GetInstance()->ResetState();
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
@@ -438,18 +439,18 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		static bool updatedSets = false;
-		if (updatedSets)
+		if (m_HZBDescSetsUpdated)
 		{
 			return;
 		}
-		updatedSets = true;
 
 		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
 		if (hzbResult == nullptr)
 		{
 			return;
 		}
+
+		m_HZBDescSetsUpdated = true;
 
 		for (int mipIndex = 1; mipIndex < manager->m_HIZMipCount; mipIndex++)
 		{
@@ -494,12 +495,10 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		static bool updatedSets = false;
-		if (updatedSets)
+		if (m_SSRDescSetsUpdated)
 		{
 			return;
 		}
-		updatedSets = true;
 
 		auto getRuntimeTexture = [manager](const char* key)
 			{
@@ -519,6 +518,8 @@ namespace VansGraphics
 		{
 			return;
 		}
+
+		m_SSRDescSetsUpdated = true;
 
 		auto& normal = renderPassManager->GetNormal();
 		auto& position = renderPassManager->GetGbuffer2();
@@ -834,18 +835,18 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		static bool updatedSets = false;
-		if (updatedSets)
+		if (m_VolumetricFogDescSetsUpdated)
 		{
 			return;
 		}
-		updatedSets = true;
 
 		VansTexture* volumetricFogResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
 		if (volumetricFogResult == nullptr)
 		{
 			return;
 		}
+
+		m_VolumetricFogDescSetsUpdated = true;
 
 		auto& position = renderPassManager->GetGbuffer2();
 
@@ -994,13 +995,13 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		static bool updatedSets = false;
-		if (updatedSets) return;
-		updatedSets = true;
+		if (m_FogLightInjectionDescSetsUpdated) return;
 
 		VansTexture* fogVoxelInjection = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION);
 		VansTexture* fogVoxelHistory   = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY);
 		if (fogVoxelInjection == nullptr || fogVoxelHistory == nullptr) return;
+
+		m_FogLightInjectionDescSetsUpdated = true;
 
 		auto& shadowMap = renderPassManager->GetShadowMap();
 

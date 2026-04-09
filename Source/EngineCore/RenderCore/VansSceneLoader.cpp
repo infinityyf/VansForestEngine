@@ -57,12 +57,18 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 {
 	VANS_LOG("[VansScene] LoadSceneForRendering: " << scenePath);
 
-	if (m_SceneReady)
+	// ── 卸载旧场景 ──────────────────────────────────────────────────────
+	if (m_SceneState == VansSceneState::Ready)
 	{
-		// 先等待 GPU 空闲，然后卸载旧场景
+		m_SceneState = VansSceneState::Unloading;
+		VANS_LOG("[VansScene] 开始卸载旧场景...");
+
+		// 等待 GPU 空闲，确保所有命令执行完毕
 		device->WaitForDevice();
 		UnLoadScene();
-		m_SceneReady = false;
+
+		m_SceneState = VansSceneState::Empty;
+		VANS_LOG("[VansScene] 旧场景卸载完成");
 	}
 
 	if (!m_ResourcesLoaded)
@@ -70,6 +76,10 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 		VANS_LOG_ERROR("[VansScene] LoadSceneForRendering called before LoadProjectResources!");
 		return;
 	}
+
+	// ── 加载新场景 ──────────────────────────────────────────────────────
+	m_SceneState = VansSceneState::Loading;
+	VANS_LOG("[VansScene] 开始加载新场景: " << scenePath);
 
 	LoadSceneContent(scenePath);
 
@@ -80,8 +90,8 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 	CreateNodeDescriptorSets();
 	device->PrepareRayTracingData();
 
-	m_SceneReady = true;
-	VANS_LOG("[VansScene] Scene ready for rendering");
+	m_SceneState = VansSceneState::Ready;
+	VANS_LOG("[VansScene] 场景就绪，可以开始渲染");
 }
 
 } // namespace VansGraphics
@@ -275,9 +285,9 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
 
         ExpandMultiMeshToRenderNodes(device, mesh, parentName, position, rotation, scale, supportShadow);
 
-        auto meshIt = std::find(m_Meshes.begin(), m_Meshes.end(), static_cast<VansAsset*>(mesh));
-        if (meshIt != m_Meshes.end())
-            m_Meshes.erase(meshIt);
+        // 不从 m_Meshes 中移除父级 multi-mesh，场景切换时仍需通过名称找到它。
+        // 子网格会在 ExpandMultiMeshToRenderNodes 内部被添加到 m_Meshes，
+        // 并在 UnLoadScene Step 10 中清理。
 
         // Multi-mesh expansion creates its own render nodes — return nullptr to indicate
         // that no single render node was created.

@@ -94,6 +94,14 @@ namespace VansGraphics
 
 		std::vector<VansSpotLight>& GetSpotLight() { return m_SpotLights; }
 
+		// ── 场景切换时清空灯光数据 ────────────────────────────────────
+		// 仅清空 CPU 侧灯光列表和计数器，保留 GPU buffer 和 descriptor
+		// 以便下一次 CreateLightUniformData 时复用。
+		void ClearLights();
+
+		// 销毁 GPU buffer 和 descriptor（用于完全卸载场景）
+		void DestroyGPUResources(VkDevice device);
+
 		~VansLightManager();
 	};
 }

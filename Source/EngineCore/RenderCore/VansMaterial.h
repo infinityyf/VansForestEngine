@@ -112,15 +112,20 @@ namespace VansGraphics
 
 		void ClearRuntimeRenderTextures();
 
-		VkDescriptorSetLayout m_MaterialAtmosphereDataLayout;
+		// ── 场景切换时清空场景级 PBR 数据 ─────────────────────────────
+		// 清除 GlobalPBR 数组和对应 GPU buffer / descriptor。
+		// 不释放 PreConv/LUT 等项目级资源。
+		void ClearScenePBRData(VkDevice device);
+
+		VkDescriptorSetLayout m_MaterialAtmosphereDataLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_MaterialAtmosphereDataDescriptorSets;
 
 		//PBR预卷积
-		VkDescriptorSetLayout m_BRDFInterationTexSetLayout;
+		VkDescriptorSetLayout m_BRDFInterationTexSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_BRDFInterationTextDescriptorSets;
 
 		//SSGI
-		VkDescriptorSetLayout m_SSGITexSetLayout;
+		VkDescriptorSetLayout m_SSGITexSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_SSGIDescriptorSets;
 
 		//HIZ
@@ -128,27 +133,27 @@ namespace VansGraphics
 		std::vector<VkDescriptorSet> m_HZBDescriptorSets;
 
 		//SSR
-		VkDescriptorSetLayout m_SSRTraceSetLayout;
+		VkDescriptorSetLayout m_SSRTraceSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_SSRTraceDescriptorSets;
 
-		VkDescriptorSetLayout m_SSRResolveSetLayout;
+		VkDescriptorSetLayout m_SSRResolveSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_SSRResolveDescriptorSets;
 
-		VkDescriptorSetLayout m_SSRAASetLayout;
+		VkDescriptorSetLayout m_SSRAASetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_SSRAADescriptorSets;
 
-		VkDescriptorSetLayout m_BilateralFilterSetLayout;
+		VkDescriptorSetLayout m_BilateralFilterSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_BilateralFilterDescriptorSets;
 
-		VkDescriptorSetLayout m_VolumetricFogSetLayout;
+		VkDescriptorSetLayout m_VolumetricFogSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_VolumetricFogDescriptorSets;
 		VansVKBuffer m_FogParamsCBBuffer;
 
 		// --- Voxel Fog (Light Injection + Ray March) ---
-		VkDescriptorSetLayout m_FogLightInjectionSetLayout;
+		VkDescriptorSetLayout m_FogLightInjectionSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_FogLightInjectionDescriptorSets;
 
-		VkDescriptorSetLayout m_FogRayMarchSetLayout;
+		VkDescriptorSetLayout m_FogRayMarchSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_FogRayMarchDescriptorSets;
 
 		VansVKBuffer m_FogVolumeParamsCBBuffer;   // FogVolumeParams UBO (density, anisotropy, scatter, ambient)
@@ -159,22 +164,22 @@ namespace VansGraphics
 		VansVKBuffer m_GlobalPBRDataBuffer;
 		std::vector<VansPBRMaterial*> m_GlobalPBRMaterial;
 		std::vector<VansBasePBRParam> m_GlobalPBRParamData;
-		VkDescriptorSetLayout m_GlobalPBRDataSetLayout;
+		VkDescriptorSetLayout m_GlobalPBRDataSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_GlobalPBRDataDescriptorSets;
 
 		//全局pbr贴图的bindless descriptor set, 不每个材质自己持有
 		std::vector<VansVKImage*> m_GlobalPBRTextures;
-		VkDescriptorSetLayout m_GlobalPBRTexSetLayout;
+		VkDescriptorSetLayout m_GlobalPBRTexSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_GlobalPBRTexDescriptorSets;
 
 		//保存全局的一些texture数据
-		VansTexture* m_PreConvDiffuse;
+		VansTexture* m_PreConvDiffuse = nullptr;
 
-		VansTexture* m_PreConvSpecular;
+		VansTexture* m_PreConvSpecular = nullptr;
 
-		VansTexture* m_BRDFIntegralLUT;
+		VansTexture* m_BRDFIntegralLUT = nullptr;
 
-		VansTexture* m_SkinBSDFLUT;
+		VansTexture* m_SkinBSDFLUT = nullptr;
 
 		VansTexture* m_ClothBRDFLUT = nullptr;
 
@@ -190,7 +195,7 @@ namespace VansGraphics
 
 		// SSGI temporal accumulation shader & descriptors
 		VansComputeShader* m_SSGITemporalShader;
-		VkDescriptorSetLayout m_SSGITemporalSetLayout;
+		VkDescriptorSetLayout m_SSGITemporalSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_SSGITemporalDescriptorSets; // [0]=frameA, [1]=frameB
 		VansVKBuffer m_SSGITemporalCBBuffer;
 
@@ -288,6 +293,8 @@ namespace VansGraphics
 	class VansTransparentMaterial : public VansMaterial
 	{
 	public:
+		~VansTransparentMaterial() override;
+
 		// Flat ordered texture list; binding index == position in vector
 		std::vector<VansTexture*>                          m_TransparentTextures;
 		// (slot label, asset name) 鈥?for debugging / tooling
@@ -318,6 +325,8 @@ namespace VansGraphics
 	class VansSkinMaterial : public VansMaterial
 	{
 	public:
+		~VansSkinMaterial() override;
+
 		VansTexture* m_BaseColorTexture = nullptr;
 		VansTexture* m_NormalTexture    = nullptr;
 
@@ -332,6 +341,8 @@ namespace VansGraphics
 	class VansClothMaterial : public VansMaterial
 	{
 	public:
+		~VansClothMaterial() override;
+
 		VansTexture* m_BaseColorTexture  = nullptr;
 		VansTexture* m_NormalTexture     = nullptr;
 		VansTexture* m_RoughnessTexture  = nullptr;
@@ -351,6 +362,8 @@ namespace VansGraphics
 	class VansHairMaterial : public VansMaterial
 	{
 	public:
+		~VansHairMaterial() override;
+
 		VansTexture* m_AlbedoAlphaTexture = nullptr;  // .rgb = albedo, .a = alpha mask
 		VansTexture* m_NormalTexture      = nullptr;  // tangent-space normal
 		VansTexture* m_RoughnessTexture   = nullptr;  // .r = roughness
@@ -372,6 +385,8 @@ namespace VansGraphics
 	class VansSubsurfaceMaterial : public VansMaterial
 	{
 	public:
+		~VansSubsurfaceMaterial() override;
+
 		VansTexture* m_BaseColorTexture  = nullptr;
 		VansTexture* m_NormalTexture     = nullptr;
 		VansTexture* m_ThicknessTexture  = nullptr;  // .r = normalized thickness [0,1]
@@ -416,6 +431,8 @@ namespace VansGraphics
 	class VansGrassMaterial : public VansMaterial
 	{
 	public:
+		~VansGrassMaterial() override;
+
 		VansTexture* m_AlbedoTexture        = nullptr;
 		VansTexture* m_NormalTexture        = nullptr;
 		VansTexture* m_RoughnessTexture     = nullptr;

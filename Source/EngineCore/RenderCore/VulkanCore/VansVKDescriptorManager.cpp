@@ -113,6 +113,9 @@ bool VansGraphics::VansVKDescriptorManager::AllocateDescriptorSet(const std::vec
 
 bool VansGraphics::VansVKDescriptorManager::DestroyDescriptorSet(std::vector<VkDescriptorSet>& descriptor_sets)
 {
+	if (descriptor_sets.empty())
+		return true;
+
 	VkResult result = vkFreeDescriptorSets(m_LogicalDevice, m_DescriptorPool, static_cast<uint32_t>(descriptor_sets.size()), descriptor_sets.data());
 	if (VK_SUCCESS != result) 
 	{

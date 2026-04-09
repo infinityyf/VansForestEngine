@@ -262,6 +262,7 @@ void VansGraphics::VansShader::DestroyShaderMoulde()
 	{
 		vkDestroyShaderModule(m_LogicDevice, shader_module_data.second.m_ShaderModule, nullptr);
 	}
+	m_ShaderModuleDataMap.clear();
 }
 
 bool VansGraphics::VansShader::CreateShaderModule(VkDevice& logic_device)

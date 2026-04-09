@@ -101,6 +101,16 @@ void VansScriptContext::CheckAndReloadPyScripts()
 }
 
 // ---------------------------------------------------------------------------
+// 场景切换时清空已跟踪的 Python 模块引用，防止跨场景累积
+// ---------------------------------------------------------------------------
+void VansScriptContext::ClearTrackedModules()
+{
+    m_TrackedPyModules.clear();
+    m_FileCheckAccumulator = 0.0f;
+    VANS_LOG("[VansScriptContext] Tracked Python modules cleared for scene switch");
+}
+
+// ---------------------------------------------------------------------------
 // Explicit reload of all tracked .py modules (called from editor UI)
 // ---------------------------------------------------------------------------
 void VansScriptContext::ReloadAllPyScripts()

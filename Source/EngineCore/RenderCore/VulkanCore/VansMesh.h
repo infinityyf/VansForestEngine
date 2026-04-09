@@ -194,11 +194,14 @@ namespace VansGraphics
 
 		void BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer);
 
+		// 释放 BLAS 加速结构及其 buffer（场景切换时调用，防止资源泄漏）
+		void DestroyBLAS(VkDevice& logic_device);
+
 		void ReleaseASTempData(VkDevice& logic_device);
 
 		VkAccelerationStructureKHR GetBLAS() { return m_BottomLevelAS; }
 
-		bool m_SupportRayTracing;
+		bool m_SupportRayTracing = false;
 
 		// When true this mesh was loaded as a submesh slice; ray tracing is not supported.
 		bool m_IsSubmesh = false;
@@ -206,7 +209,7 @@ namespace VansGraphics
 	private:
 
 		//光线追踪blas
-		VkAccelerationStructureKHR m_BottomLevelAS;
+		VkAccelerationStructureKHR m_BottomLevelAS = VK_NULL_HANDLE;
 
 		VansVKBuffer m_BottomLevelASBuffer;
 
