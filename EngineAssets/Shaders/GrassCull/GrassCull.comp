@@ -1,0 +1,218 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// =============================================================================
+// GrassCull.comp — GPU frustum + distance culling for vegetation instances
+//
+// P0 优化: 在绘制前通过 compute 剔除不可见实例，减少无效顶点处理。
+// 修复: 通过地形高度图采样获取实例真实 Y 坐标，构建正确的包围球。
+//       包围球半径额外扩展 scatterRadiusMax 以覆盖子叶片散布范围。
+//
+// Dispatch: (instanceCount / 64, 1, 1)
+// =============================================================================
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// Set 0: global camera UBO (same pattern as all other engine compute passes)
+#include "../Common/CameraData.glsl"
+
+// Set 1: culling-specific buffers
+// ── Instance data (read only) ───────────────────────────────────────────────
+struct GrassInstance
+{
+    vec3  position;     // world root position (Y=0, terrain height applied at runtime)
+    float scale;
+    float cosR;         // precomputed cos(rotation)
+    float sinR;         // precomputed sin(rotation)
+    int   padding0;
+    int   padding1;
+};
+
+layout(std430, set = 1, binding = 0) readonly buffer InstanceBuffer
+{
+    GrassInstance instances[];
+};
+
+// ── Visibility flags (write) — one uint per instance, 1=visible, 0=culled ───
+layout(std430, set = 1, binding = 1) writeonly buffer VisibilityBuffer
+{
+    uint visibilityFlags[];
+};
+
+// ── Visible count (atomic counter) — reset to 0 before dispatch ─────────────
+layout(std430, set = 1, binding = 2) buffer VisibleCountBuffer
+{
+    uint visibleCount;
+};
+
+// ── Visible index list (write) — compact list of visible instance indices ────
+layout(std430, set = 1, binding = 3) writeonly buffer VisibleIndexBuffer
+{
+    uint visibleIndices[];
+};
+
+// ── Terrain heightmap — 用于采样实例的实际地面高度 ─────────────────────────
+layout(set = 1, binding = 4) uniform sampler2D terrainHeightmap;
+
+// ── Hi-Z depth pyramid — 用于遥测遮挡剪除 (min-depth 降采样) ───────────────
+// HZB 存储每 cell 的最近深度；球前沿深度 > hizSample + bias 时判定为遮挡
+layout(set = 1, binding = 5) uniform sampler2D hizDepth;
+
+// ── Push constants ─────────────────────────────────────────────────────────
+layout(push_constant) uniform CullPushConstants
+{
+    float cullDistance;       // 超出此距离的实例被剔除
+    float grassHeight;       // 草叶高度（用于 bounding sphere）
+    uint  instanceCount;     // 总实例数
+    float scatterRadiusMax;  // 子叶片最大散布半径，扩展包围球
+    float terrainSize;       // 地形尺寸
+    float terrainMaxHeight;  // 地形最大高度
+    float terrainHeightOffset; // 地形高度偏移
+    int   terrainEnabled;    // 是否启用地形高度采样
+    uint  subBladeCount;     // 子叶片数，用于 atomicAdd 直接计算 indirect instanceCount
+    // Hi-Z 遥测剪除参数
+    float hizSampleBias;     // 保守偏差，防止边界处误剪 (0.0 = 最严格, 推荐 0.005)
+    int   hizMipCount;       // Hi-Z 金字塔 mip 层数
+    int   hizEnabled;        // 是否启用 Hi-Z 遥测剪除
+} pc;
+
+// ── 视锥裁剪: 从 VP 矩阵提取六个平面 ───────────────────────────────────────
+// Gribb/Hartmann 方法，从行向量提取裁剪平面（ax+by+cz+d=0 格式）
+struct Plane
+{
+    vec3 normal;
+    float d;
+};
+
+Plane extractPlane(mat4 m, int row, float sign)
+{
+    Plane p;
+    p.normal.x = m[0][3] + sign * m[0][row];
+    p.normal.y = m[1][3] + sign * m[1][row];
+    p.normal.z = m[2][3] + sign * m[2][row];
+    p.d        = m[3][3] + sign * m[3][row];
+    float len = length(p.normal);
+    p.normal /= len;
+    p.d      /= len;
+    return p;
+}
+
+bool sphereInsideFrustum(vec3 center, float radius, Plane planes[6])
+{
+    for (int i = 0; i < 6; ++i)
+    {
+        if (dot(planes[i].normal, center) + planes[i].d + radius < 0.0)
+            return false;
+    }
+    return true;
+}
+
+void main()
+{
+    uint instanceID = gl_GlobalInvocationID.x;
+    if (instanceID >= pc.instanceCount)
+        return;
+
+    GrassInstance inst = instances[instanceID];
+
+    // ── 采样地形高度，获取实例的真实 Y 坐标 ──────────────────────────
+    // 实例 position.y = 0 (CPU 初始化时未设置地形高度)，需要在此处修正
+    float groundY = inst.position.y;
+    if (pc.terrainEnabled != 0)
+    {
+        vec2 terrainUV = inst.position.xz / pc.terrainSize + 0.5;
+        groundY = texture(terrainHeightmap, terrainUV).r * pc.terrainMaxHeight + pc.terrainHeightOffset;
+    }
+    vec3 correctedPos = vec3(inst.position.x, groundY, inst.position.z);
+
+    // ── 距离剔除 ─────────────────────────────────────────────────────
+    vec2 camXZ  = vec2(cameraPosition.x, cameraPosition.z);
+    vec2 instXZ = inst.position.xz;
+    float dist  = distance(instXZ, camXZ);
+
+    if (dist > pc.cullDistance)
+    {
+        visibilityFlags[instanceID] = 0;
+        return;
+    }
+
+    // ── 视锥剔除 ─────────────────────────────────────────────────────
+    // 包围球: 中心 = 地面修正后的位置 + 半高偏移，半径 = 草高 + 散布半径
+    // 散布半径确保子叶片在 XZ 方向的偏移也被包围球覆盖
+    float bladeExtent = pc.grassHeight * inst.scale;
+    float sphereRadius = bladeExtent + pc.scatterRadiusMax;
+    vec3 sphereCenter = correctedPos + vec3(0.0, bladeExtent * 0.5, 0.0);
+
+    // 从 VP 矩阵提取 6 个裁剪平面
+    Plane frustum[6];
+    frustum[0] = extractPlane(VPMatrix, 0,  1.0); // left
+    frustum[1] = extractPlane(VPMatrix, 0, -1.0); // right
+    frustum[2] = extractPlane(VPMatrix, 1,  1.0); // bottom
+    frustum[3] = extractPlane(VPMatrix, 1, -1.0); // top
+    frustum[4] = extractPlane(VPMatrix, 2,  1.0); // near
+    frustum[5] = extractPlane(VPMatrix, 2, -1.0); // far
+
+    if (!sphereInsideFrustum(sphereCenter, sphereRadius, frustum))
+    {
+        visibilityFlags[instanceID] = 0;
+        return;
+    }
+
+    // ── Hi-Z 遥测遮挡剪除 ────────────────────────────────────────────
+    // HZB 使用 min-depth 降采样: 每 cell 存储最近遮挡物深度。
+    // 若球前沿深度 > hizSample + bias，说明球比该区域最近几何体更远 → 遮挡 → 剪除。
+    // 深度约定: GLM 默认投影 NDC Z ∈ [-1,1]，viewport 映射到帧缓冲 [0,1]。
+    // Y 轴: 负视口高度翻转 Y → NDC Y=+1 对应纹理 UV.y=0（顶部）。
+    if (pc.hizEnabled != 0)
+    {
+        vec4 clipCenter = VPMatrix * vec4(sphereCenter, 1.0);
+
+        // 仅对相机前方的实例做测试（w > 0 表示在相机前面）
+        if (clipCenter.w > 0.0001)
+        {
+            vec3 ndcCenter = clipCenter.xyz / clipCenter.w;
+
+            // 将 NDC Z [-1,1] 映射到帧缓冲深度 [0,1]
+            float centerDepth = ndcCenter.z * 0.5 + 0.5;
+
+            // UV 转换（负视口 Y 翻转：NDC +1 → UV 0）
+            vec2 hizUV = vec2(ndcCenter.x * 0.5 + 0.5,
+                              0.5 - ndcCenter.y * 0.5);
+
+            // 保守性检查：UV 在 [0,1] 范围内才采样
+            if (hizUV.x >= 0.0 && hizUV.x <= 1.0 &&
+                hizUV.y >= 0.0 && hizUV.y <= 1.0)
+            {
+                // 计算球在屏幕空间的像素半径，用于选取对应精度的 mip 层
+                // NDC 半径 ≈ sphereRadius / w，像素半径 = ndcRadius * 0.5 * 屏幕宽度
+                // ScreenParams.xy 与 HZB mip0 尺寸相同 (m_RenderWidth × m_RenderHeight)
+                float ndcRadius       = sphereRadius / clipCenter.w;
+                float screenRadiusPx  = ndcRadius * 0.5 * max(ScreenParams.x, ScreenParams.y);
+                // 注意: mip 0 = BlitImage 原始深度拷贝 (未经 min 降采样)
+                // HZB min-depth 金字塔从 mip 1 开始，因此 mipLevel 最小值钳制为 1
+                float mipLevel        = clamp(ceil(log2(max(screenRadiusPx, 1.0))),
+                                             1.0, float(pc.hizMipCount - 1));
+
+                float hizSample = textureLod(hizDepth, hizUV, mipLevel).r;
+
+                // 球前沿深度: 使用赤道深度（球心投影深度）做辞退剔除
+                // 这是保守判断: 若球心深度已被遮挡则整个球体不可见
+                // 避免 ndcRadius 在深度方向的错误减法（NDC XY 半径 ≠ 深度半径）
+                float sphereFrontDepth = centerDepth;
+
+                if (sphereFrontDepth > hizSample + pc.hizSampleBias)
+                {
+                    visibilityFlags[instanceID] = 0;
+                    return;
+                }
+            }
+        }
+    }
+
+    // ── 可见: 写入标记并追加到紧凑列表 ────────────────────────────────
+    visibilityFlags[instanceID] = 1;
+    // atomicAdd 返回旧值作为插入位置，累加 subBladeCount 使 visibleCount
+    // 直接等于 indirect draw 所需的 instanceCount (= 可见数 × 子叶片数)
+    uint slot = atomicAdd(visibleCount, pc.subBladeCount) / pc.subBladeCount;
+    visibleIndices[slot] = instanceID;
+}

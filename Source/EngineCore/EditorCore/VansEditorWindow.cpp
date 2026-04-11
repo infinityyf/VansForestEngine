@@ -428,10 +428,45 @@ void VansGraphics::VansEditorWindow::SetupImGuiStyle()
 {
     ImGuiIO& io = ImGui::GetIO();
 
-    // --- Font: Consolas Bold ---
+    // --- Fonts: Latin UI font + Chinese fallback glyphs ---
     ImFont* consolasFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\consolab.ttf", 15.0f);
     if (!consolasFont)
-        io.Fonts->AddFontDefault();
+        consolasFont = io.Fonts->AddFontDefault();
+
+    ImFontConfig chineseFontConfig;
+    chineseFontConfig.MergeMode = true;
+    chineseFontConfig.PixelSnapH = true;
+
+    const ImWchar* chineseGlyphRanges = io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
+    ImFont* chineseFont = io.Fonts->AddFontFromFileTTF(
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        15.0f,
+        &chineseFontConfig,
+        chineseGlyphRanges);
+
+    if (!chineseFont)
+    {
+        chineseFont = io.Fonts->AddFontFromFileTTF(
+            "C:\\Windows\\Fonts\\simhei.ttf",
+            15.0f,
+            &chineseFontConfig,
+            chineseGlyphRanges);
+    }
+
+    if (!chineseFont)
+    {
+        chineseFont = io.Fonts->AddFontFromFileTTF(
+            "C:\\Windows\\Fonts\\simsun.ttc",
+            15.0f,
+            &chineseFontConfig,
+            chineseGlyphRanges);
+    }
+
+    if (!chineseFont)
+    {
+        VANS_LOG_WARN("[ImGui] Failed to load a Chinese fallback font. UTF-8 Chinese text may render as '?'");
+    }
+
     io.Fonts->Build();
 
     // --- Base theme ---

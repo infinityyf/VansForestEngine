@@ -26,12 +26,14 @@ namespace VansGraphics
 	//   vec3 'position' has base alignment 16 but only occupies 12 bytes;
 	//   the following float 'scale' is placed at the next multiple of 4 → offset 12.
 	//   No padding is inserted between position and scale in std430.
+	// P4 优化: 预计算 sin/cos 旋转角，避免每帧在 GPU 重复计算三角函数
 	struct GrassInstance
 	{
 		glm::vec3 position;     // world XZ, Y = ground  (bytes  0-11)
 		float     scale;        // random in [0.8, 1.2]   (bytes 12-15)
-		float     rotation;     // random in [0, 2π]        (bytes 16-19)
-		uint32_t  padding[3];   // align to 32 bytes      (bytes 20-31)
+		float     cosR;         // cos(rotation)          (bytes 16-19)
+		float     sinR;         // sin(rotation)          (bytes 20-23)
+		uint32_t  padding[2];   // align to 32 bytes      (bytes 24-31)
 	};
 
 	// Per-bone simulation state (GPU only after init)
@@ -77,6 +79,32 @@ namespace VansGraphics
 		uint32_t boneCount;
 		uint32_t subBladeCount;
 		float    grassHeight;
+		// P6a: terrain params for VS heightmap sampling
+		float    terrainSize;
+		float    terrainMaxHeight;
+		float    terrainHeightOffset;
+		int      terrainEnabled;
+		// P1: 子叶片距离 LOD — 远距离减少子叶片数以降低 VS/FS 开销
+		float    lodMidDist;       // 中距离阈值，超过后子叶片数减半
+		float    lodFarDist;       // 远距离阈值，超过后子叶片数降至最少
+	};
+
+	// P0: Push constants for GPU cull compute pass
+	struct GrassCullPushConstants
+	{
+		float    cullDistance;         // 超出此距离的实例被剪除
+		float    grassHeight;          // 草叶高度
+		uint32_t instanceCount;        // 总实例数
+		float    scatterRadiusMax;     // 子叶片最大散布半径—用于包围球扩展
+		float    terrainSize;          // 地形尺寸
+		float    terrainMaxHeight;     // 地形最大高度
+		float    terrainHeightOffset;  // 地形高度偏移
+		int      terrainEnabled;       // 是否启用地形
+		uint32_t subBladeCount;        // 子叶片数，用于 atomicAdd 直接计算 indirect instanceCount
+		// Hi-Z 遥测剪除参数 (HZB 使用 min-depth 降采样，实例深度超过进 cache 的最近几何则判定为遮挪)
+		float    hizSampleBias;        // 才被判为遮挪的保守浮点偏差，防止边界处误剪
+		int      hizMipCount;          // Hi-Z mip 层数
+		int      hizEnabled;           // 是否启用 Hi-Z 剪除
 	};
 
 	// Lightweight vertex used by the procedural grass blade template mesh.
@@ -133,8 +161,9 @@ namespace VansGraphics
 		~VansVegetationSystem();
 
 		// ── Initialisation ──────────────────────────────────────────────
+		// P6b 优化: 默认骨骼数从 6 降为 4，减少 ~33% 顶点量和骨骼矩阵写入
 		void Init(VkDevice device, uint32_t instanceCount = 2000000,
-		          uint32_t boneCountPerInstance = 6);
+		          uint32_t boneCountPerInstance = 4);
 
 		// ── Render configs — call before Init() if JSON has renderConfigs ──
 		void SetRenderConfigs(const std::vector<GrassRenderConfig>& configs) { m_RenderConfigs = configs; }
@@ -155,6 +184,9 @@ namespace VansGraphics
 		            float softness = 0.2f,
 		            float lodFullDist = 15.0f, float lodFadeDist = 20.0f);
 
+		// ── P0: GPU frustum + distance cull — dispatch before Draw() ────
+		void DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance);
+
 		// ── Draw: issues one indirect indexed draw per render config ───
 		void Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsShader& shader,
 		          GlobalStateData& globalState,
@@ -168,6 +200,10 @@ namespace VansGraphics
 		// ── Terrain Integration ────────────────────────────────────────
 		void SetTerrainHeightmap(VkImageView imageView, VkSampler sampler,
 		                         float terrainSize, float maxHeight, float heightOffset);
+
+		// ── Hi-Z 遥测剪除 (HZB 必须在包围球 descriptor 设置前就就绪 初始化) ─────
+		void SetHiZDepth(VkImageView imageView, VkSampler sampler, uint32_t mipCount,
+		                float sampleBias = 0.005f);
 
 		// ── Blade height — must be set before Init() ──────────────────────
 		void SetBladeHeight(float h) { m_BladeHeight = h; }
@@ -232,6 +268,20 @@ namespace VansGraphics
 		uint32_t GetSubBladeCount() const         { return m_SubBladeCount; }
 		float    GetBladeHeight() const           { return m_BladeHeight; }
 
+		// ── P0: Visibility data accessors ──────────────────────────────
+		VansVKBuffer& GetVisibilityBuffer()       { return m_VisibilityBuffer; }
+		VansVKBuffer& GetVisibleCountBuffer()     { return m_VisibleCountBuffer; }
+		VansVKBuffer& GetVisibleIndexBuffer()     { return m_VisibleIndexBuffer; }
+
+		// ── Cull distance (set before or after Init) ─────────────────────
+		void  SetCullDistance(float d) { m_CullDistance = d; }
+		float GetCullDistance() const  { return m_CullDistance; }
+
+		// ── P1: 子叶片距离 LOD 控制 ──────────────────────────────────
+		void SetSubBladeLodDistances(float midDist, float farDist) { m_SubBladeLodMidDist = midDist; m_SubBladeLodFarDist = farDist; }
+		float GetSubBladeLodMidDist() const { return m_SubBladeLodMidDist; }
+		float GetSubBladeLodFarDist() const { return m_SubBladeLodFarDist; }
+
 		// ── Per-config GPU data (for render node to iterate) ──────────
 		const std::vector<GrassRenderConfigGPU>& GetRenderConfigsGPU() const { return m_RenderConfigsGPU; }
 
@@ -251,10 +301,12 @@ namespace VansGraphics
 		void CreateBoneBuffer(VkDevice device);
 		void CreateBoneMatrixBuffer(VkDevice device);
 		void CreateLodFactorsBuffer(VkDevice device);
-		void CreateSubBladeRootsBuffer(VkDevice device);
+		void CreateScatterOffsetUBO(VkDevice device);
+		void CreateCullBuffers(VkDevice device);
 		void CreateDescriptorSets();
 		void LoadComputeShaders(VkDevice device);
 		void WriteBoneSimDescriptors();
+		void WriteCullDescriptors();
 
 		// ── Per-config helpers ──────────────────────────────────────────
 		void GenerateBoneWeights(GrassRenderConfigGPU& cfg, VansMesh* mesh);
@@ -272,6 +324,9 @@ namespace VansGraphics
 		float    m_SubBladeScatterRadiusMax = 1.0f;
 		glm::vec2 m_InitWindDir         = glm::vec2(1.0f, 0.0f);
 		float     m_InitLeanDeviation   = glm::radians(35.0f);
+		float     m_CullDistance        = 100.0f;  // P0: 最大绘制距离，超出则剔除
+		float     m_SubBladeLodMidDist  = 40.0f;   // P1: 中距离子叶片 LOD 阈值
+		float     m_SubBladeLodFarDist  = 70.0f;   // P1: 远距离子叶片 LOD 阈值
 
 		// ── Per-frame simulation parameters ─────────────────────────────
 		glm::vec2 m_SimWindDirection  = glm::vec2(1.0f, 0.0f);
@@ -294,13 +349,23 @@ namespace VansGraphics
 		VansVKBuffer m_BoneBuffer;
 		VansVKBuffer m_BoneMatrixBuffer;
 		VansVKBuffer m_LodFactorsBuffer;
-		VansVKBuffer m_SubBladeRootsBuffer;
+		// P6a 优化: 用共享散布偏移 UBO 替换每实例×每子叶片的 SubBladeRoots 大 SSBO
+		// 仅 m_SubBladeCount 个 vec4 (XZ 偏移)，节省 ~320 MB 显存
+		VansVKBuffer m_ScatterOffsetUBO;
 
 		// ── Procedural template blade mesh (owned by this system) ───────
 		VansMesh* m_TemplateMesh = nullptr;
 
 		// ── Compute Shaders ─────────────────────────────────────────────
 		VansComputeShader* m_BoneSimShader = nullptr;
+		VansComputeShader* m_CullShader    = nullptr;
+
+		// ── P0: GPU Cull Buffers ───────────────────────────────────────
+		VansVKBuffer m_VisibilityBuffer;      // uint per instance: 1=visible 0=culled
+		VansVKBuffer m_VisibleCountBuffer;    // single uint: atomic counter
+		VansVKBuffer m_VisibleIndexBuffer;    // compact list of visible instance indices
+		VkDescriptorSetLayout m_CullLayout        = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_CullDescSets;
 
 		// ── Global descriptor set (camera UBO, set=0 in bone sim compute) ────
 		VkDescriptorSetLayout m_GlobalDescSetLayout = VK_NULL_HANDLE;
@@ -313,7 +378,12 @@ namespace VansGraphics
 		float       m_TerrainMaxHeight        = 500.0f;
 		float       m_TerrainHeightOffset     = -23.0f;
 		bool        m_TerrainEnabled          = false;
-
+		// ── Hi-Z depth pyramid (optional, 通常为上一帧深度) ───────────────
+		VkImageView m_HiZView        = VK_NULL_HANDLE;
+		VkSampler   m_HiZSampler     = VK_NULL_HANDLE;
+		uint32_t    m_HiZMipCount    = 0;
+		float       m_HiZSampleBias  = 0.005f;
+		bool        m_HiZEnabled     = false;
 		VkDevice m_Device = VK_NULL_HANDLE;
 	};
 }

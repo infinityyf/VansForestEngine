@@ -241,6 +241,9 @@ void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
         m_VegetationSystem->GetSoftness(),
         m_VegetationSystem->GetLodFullDist(),
         m_VegetationSystem->GetLodFadeDist());
+
+    // P0: GPU 视锥 + 距离剔除 — 写入每实例的可见性标志，绘制时 VS 早退出不可见实例
+    m_VegetationSystem->DispatchCullPass(cmd, m_VegetationSystem->GetCullDistance());
     }
 
 void VansGraphics::VansScene::DrawTransParentNodes()

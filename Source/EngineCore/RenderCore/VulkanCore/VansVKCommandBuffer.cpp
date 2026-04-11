@@ -206,6 +206,15 @@ void VansGraphics::VansVKCommandBuffer::DrawIndexedIndirect(VkBuffer buffer, VkD
 	vkCmdDrawIndexedIndirect(m_VansVKCommandBuffer, buffer, offset, drawCount, stride);
 }
 
+void VansGraphics::VansVKCommandBuffer::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize srcOffset, VkDeviceSize dstOffset, VkDeviceSize size)
+{
+	VkBufferCopy region = {};
+	region.srcOffset = srcOffset;
+	region.dstOffset = dstOffset;
+	region.size      = size;
+	vkCmdCopyBuffer(m_VansVKCommandBuffer, srcBuffer, dstBuffer, 1, &region);
+}
+
 void VansGraphics::VansVKCommandBuffer::ExecuteSecondaryCommandBuffer(std::vector<VkCommandBuffer>& secondary_command_buffers)
 {
 	vkCmdExecuteCommands(

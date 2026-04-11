@@ -150,6 +150,9 @@ namespace VansGraphics
 		// ── Indirect draw ──
 		void DrawIndexedIndirect(VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride);
 
+		// ── Buffer copy (GPU-side) ──
+		void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize srcOffset, VkDeviceSize dstOffset, VkDeviceSize size);
+
 		// ── Pipeline barrier ──
 		void PipelineBarrier(
 			VkPipelineStageFlags srcStageMask,

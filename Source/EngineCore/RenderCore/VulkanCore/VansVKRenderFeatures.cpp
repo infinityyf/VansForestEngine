@@ -968,6 +968,18 @@ namespace VansGraphics
 			computeCmd.EnsureComputeShader(*manager->m_HZBShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_HZBTexSetLayouts[mipIndex - 1] });
 			computeCmd.DispatchCompute(*manager->m_HZBShader, threadGroupSizeX, threadGroupSizeY, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_HZBDescriptorSets[mipIndex - 1] });
 		}
+
+		// ── Barrier: HIZ compute write → subsequent compute read (e.g. vegetation cull) ──
+		// Required for the async path where RecordVegetationCompute follows UpdateHZB in the
+		// same command buffer; without this barrier the veg cull shader may read stale HZB data.
+		VkMemoryBarrier hizToComputeBarrier = {};
+		hizToComputeBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		hizToComputeBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		hizToComputeBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		computeCmd.PipelineBarrier(
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			{ hizToComputeBarrier });
 	}
 
 	void VansVKDevice::UpdateSSR(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)

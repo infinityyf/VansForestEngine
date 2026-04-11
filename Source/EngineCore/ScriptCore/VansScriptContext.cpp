@@ -5,10 +5,12 @@
 #include "../Util/VansLog.h"
 #include "../VansTimer.h"
 #include "../RenderCore/VansScene.h"
+#include "../PhysicsCore/VansPhysics.h"
 #include <cstdlib>
 #include <string>
 #include <algorithm>
 #include "../../../../ForestExporter/VansEngineBridge.h"
+#include "../../../../ForestExporter/VansPhysicsEventInfo.h"
 
 // Defined in VansScriptBridge.cpp
 extern void VansInitEngineBridge();
@@ -294,6 +296,9 @@ void VansScriptContext::VansScriptUpdate()
     // ── Per-object VanPyScriptComponent update ───────────────────────
     if (!m_Scene) return;
 
+    // ── 调度物理事件（在 CallUpdate 之前） ───────────────────────────
+    DispatchPhysicsEvents();
+
     for (auto* obj : m_Scene->m_SceneObjects)
     {
         for (auto* comp : obj->m_Components)
@@ -496,4 +501,169 @@ void VanPyScriptComponent::Teardown()
     if (m_IsEnabled) Disable();
     m_PyInstance = py::none();
     m_IsValid = false;
+}
+
+// ===========================================================================
+//  Physics event callback methods on VanPyScriptComponent
+// ===========================================================================
+
+void VanPyScriptComponent::CallOnCollisionEnter(const PhysicsEventInfo& info)
+{
+    if (!m_IsValid || !m_IsEnabled) return;
+    try
+    {
+        m_PyInstance.attr("on_collision_enter")(info);
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython("[PyScript] on_collision_enter error: " + std::string(e.what()));
+    }
+}
+
+void VanPyScriptComponent::CallOnCollisionExit(const PhysicsEventInfo& info)
+{
+    if (!m_IsValid || !m_IsEnabled) return;
+    try
+    {
+        m_PyInstance.attr("on_collision_exit")(info);
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython("[PyScript] on_collision_exit error: " + std::string(e.what()));
+    }
+}
+
+void VanPyScriptComponent::CallOnTriggerEnter(const PhysicsEventInfo& info)
+{
+    if (!m_IsValid || !m_IsEnabled) return;
+    try
+    {
+        m_PyInstance.attr("on_trigger_enter")(info);
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython("[PyScript] on_trigger_enter error: " + std::string(e.what()));
+    }
+}
+
+void VanPyScriptComponent::CallOnTriggerExit(const PhysicsEventInfo& info)
+{
+    if (!m_IsValid || !m_IsEnabled) return;
+    try
+    {
+        m_PyInstance.attr("on_trigger_exit")(info);
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython("[PyScript] on_trigger_exit error: " + std::string(e.what()));
+    }
+}
+
+// ===========================================================================
+//  DispatchPhysicsEvents — 从事件队列取出 PhysX 事件并分发到 Python 脚本
+// ===========================================================================
+
+void VansScriptContext::DispatchPhysicsEvents()
+{
+    if (!m_Scene) return;
+
+    auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+    std::vector<VansEngine::PhysicsEventData> events;
+    physics.GetEventQueue().SwapEvents(events);
+
+    if (!events.empty())
+    {
+        VANS_LOG("[PhysX Dispatch] Dispatching " << events.size() << " physics event(s)");
+    }
+
+    for (const auto& event : events)
+    {
+        const char* typeStr = "Unknown";
+        switch (event.type)
+        {
+        case VansEngine::PhysicsEventType::CollisionEnter: typeStr = "CollisionEnter"; break;
+        case VansEngine::PhysicsEventType::CollisionExit:  typeStr = "CollisionExit";  break;
+        case VansEngine::PhysicsEventType::TriggerEnter:   typeStr = "TriggerEnter";   break;
+        case VansEngine::PhysicsEventType::TriggerExit:    typeStr = "TriggerExit";    break;
+        }
+        VANS_LOG("[PhysX Dispatch] Event: type=" << typeStr
+                 << " A='" << event.nameA << "' (tid=" << event.transformID_A << ")"
+                 << " B='" << event.nameB << "' (tid=" << event.transformID_B << ")");
+
+        // 对 A 方分发（other = B）
+        DispatchEventToObject(event, event.transformID_A, event.transformID_B,
+                              event.nameB, event.contactPoint,
+                              event.contactNormal, event.impulse);
+
+        // 对 B 方分发（other = A），仅碰撞事件双向分发
+        if (event.type == VansEngine::PhysicsEventType::CollisionEnter ||
+            event.type == VansEngine::PhysicsEventType::CollisionExit)
+        {
+            DispatchEventToObject(event, event.transformID_B, event.transformID_A,
+                                  event.nameA, event.contactPoint,
+                                  -event.contactNormal, event.impulse);
+        }
+    }
+}
+
+void VansScriptContext::DispatchEventToObject(
+    const VansEngine::PhysicsEventData& event,
+    uint32_t selfTransformID, uint32_t otherTransformID,
+    const std::string& otherName,
+    const glm::vec3& contactPoint, const glm::vec3& contactNormal, float impulse)
+{
+    bool foundObj = false;
+    bool foundPyComp = false;
+
+    for (auto* obj : m_Scene->m_SceneObjects)
+    {
+        if (obj->m_TransformID != selfTransformID) continue;
+        foundObj = true;
+
+        VANS_LOG("[PhysX Dispatch] Found SceneObject for tid=" << selfTransformID
+                 << " name='" << obj->m_ObjectName << "' components=" << obj->m_Components.size());
+
+        // 构建 Python 侧的 PhysicsEventInfo
+        PhysicsEventInfo info;
+        info.otherName          = otherName;
+        info.otherTransformID   = otherTransformID;
+        info.contactPoint       = PyVec3(contactPoint.x, contactPoint.y, contactPoint.z);
+        info.contactNormal      = PyVec3(contactNormal.x, contactNormal.y, contactNormal.z);
+        info.impulse            = impulse;
+
+        // 遍历该对象上的所有 PyScript 组件并调度事件
+        for (auto* comp : obj->m_Components)
+        {
+            auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
+            if (!pyComp) continue;
+            foundPyComp = true;
+
+            VANS_LOG("[PhysX Dispatch] Calling callback on PyComp script='" << pyComp->m_ScriptPath
+                     << "' class='" << pyComp->m_ScriptClassName
+                     << "' valid=" << pyComp->m_IsValid << " enabled=" << pyComp->m_IsEnabled);
+
+            switch (event.type)
+            {
+            case VansEngine::PhysicsEventType::CollisionEnter:
+                pyComp->CallOnCollisionEnter(info); break;
+            case VansEngine::PhysicsEventType::CollisionExit:
+                pyComp->CallOnCollisionExit(info); break;
+            case VansEngine::PhysicsEventType::TriggerEnter:
+                pyComp->CallOnTriggerEnter(info); break;
+            case VansEngine::PhysicsEventType::TriggerExit:
+                pyComp->CallOnTriggerExit(info); break;
+            }
+        }
+        break; // 每个 transformID 只对应一个 ScriptObject
+    }
+
+    if (!foundObj)
+    {
+        VANS_LOG_WARN("[PhysX Dispatch] No SceneObject found for selfTransformID=" << selfTransformID);
+    }
+    else if (!foundPyComp)
+    {
+        VANS_LOG_WARN("[PhysX Dispatch] SceneObject tid=" << selfTransformID
+                      << " has no VanPyScriptComponent");
+    }
 }

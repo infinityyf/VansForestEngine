@@ -1,4 +1,5 @@
 #include "VansPhysics.h"
+#include "VansPhysicsEventCallback.h"
 #include "VansClothSystem.h"
 #include "../Util/VansLog.h"
 #include <iostream>
@@ -7,6 +8,68 @@
 
 namespace VansEngine
 {
+	// ============================================================================
+	// VansCollisionFilterShader — 替代 PxDefaultSimulationFilterShader
+	// ============================================================================
+	PxFilterFlags VansCollisionFilterShader(
+		PxFilterObjectAttributes attributes0, PxFilterData filterData0,
+		PxFilterObjectAttributes attributes1, PxFilterData filterData1,
+		PxPairFlags& pairFlags, const void* constantBlock, PxU32 constantBlockSize)
+	{
+		VANS_LOG("[PhysX FilterShader] Called: layer0=" << filterData0.word0
+		         << " mask0=0x" << std::hex << filterData0.word1 << std::dec
+		         << " trigger0=" << (filterData0.word2 & 0x1)
+		         << " | layer1=" << filterData1.word0
+		         << " mask1=0x" << std::hex << filterData1.word1 << std::dec
+		         << " trigger1=" << (filterData1.word2 & 0x1)
+		         << " | isTriggerObj0=" << PxFilterObjectIsTrigger(attributes0)
+		         << " isTriggerObj1=" << PxFilterObjectIsTrigger(attributes1));
+
+		// PhysX 内建 Trigger 检测（PxShapeFlag::eTRIGGER_SHAPE）
+		if (PxFilterObjectIsTrigger(attributes0) || PxFilterObjectIsTrigger(attributes1))
+		{
+			pairFlags = PxPairFlag::eTRIGGER_DEFAULT
+			          | PxPairFlag::eNOTIFY_TOUCH_FOUND
+			          | PxPairFlag::eNOTIFY_TOUCH_LOST;
+			VANS_LOG("[PhysX FilterShader] -> TRIGGER path (PxShapeFlag), pairFlags=eTRIGGER_DEFAULT");
+			return PxFilterFlag::eDEFAULT;
+		}
+
+		// Layer 碰撞矩阵检查
+		uint32_t layerA = filterData0.word0;
+		uint32_t layerB = filterData1.word0;
+		uint32_t maskA  = filterData0.word1;
+		uint32_t maskB  = filterData1.word1;
+
+		if (!((maskA & (1u << layerB)) && (maskB & (1u << layerA))))
+		{
+			VANS_LOG("[PhysX FilterShader] -> SUPPRESS (layer matrix mismatch)");
+			return PxFilterFlag::eSUPPRESS;
+		}
+
+		// 自定义 Trigger 标志检查（word2 bit0）
+		bool isTriggerA = (filterData0.word2 & 0x1) != 0;
+		bool isTriggerB = (filterData1.word2 & 0x1) != 0;
+
+		if (isTriggerA || isTriggerB)
+		{
+			pairFlags = PxPairFlag::eTRIGGER_DEFAULT
+			          | PxPairFlag::eNOTIFY_TOUCH_FOUND
+			          | PxPairFlag::eNOTIFY_TOUCH_LOST;
+			VANS_LOG("[PhysX FilterShader] -> TRIGGER path (word2 flag), pairFlags=eTRIGGER_DEFAULT");
+			return PxFilterFlag::eDEFAULT;
+		}
+
+		// 正常碰撞
+		pairFlags = PxPairFlag::eCONTACT_DEFAULT
+		          | PxPairFlag::eNOTIFY_TOUCH_FOUND
+		          | PxPairFlag::eNOTIFY_TOUCH_LOST
+		          | PxPairFlag::eNOTIFY_CONTACT_POINTS;
+
+		VANS_LOG("[PhysX FilterShader] -> CONTACT path, pairFlags=eCONTACT_DEFAULT + NOTIFY");
+		return PxFilterFlag::eDEFAULT;
+	}
+
 	// ============================================================================
 	// VansPhysicsErrorCallback
 	// ============================================================================
@@ -126,7 +189,15 @@ namespace VansEngine
 		PxSceneDesc sceneDesc(m_Physics->getTolerancesScale());
 		sceneDesc.gravity = PxVec3(0.0f, -9.81f, 0.0f);
 		sceneDesc.cpuDispatcher = m_Dispatcher;
-		sceneDesc.filterShader = PxDefaultSimulationFilterShader;
+		sceneDesc.filterShader = VansCollisionFilterShader;
+		sceneDesc.kineKineFilteringMode = PxPairFilteringMode::eKEEP;
+		sceneDesc.staticKineFilteringMode = PxPairFilteringMode::eKEEP;
+
+		VANS_LOG("[PhysX] Scene pair filtering enabled: kineKine=eKEEP, staticKine=eKEEP");
+
+		// 注册碰撞 / 触发事件回调
+		m_EventCallback = new VansPhysicsEventCallback(&m_EventQueue);
+		sceneDesc.simulationEventCallback = m_EventCallback;
 		
 		m_Scene = m_Physics->createScene(sceneDesc);
 		if (!m_Scene)
@@ -173,6 +244,7 @@ namespace VansEngine
 		if (m_Pvd) m_Pvd->release();
 		if (m_Foundation) m_Foundation->release();
 		if (m_CookingParams) delete m_CookingParams;
+		if (m_EventCallback) { delete m_EventCallback; m_EventCallback = nullptr; }
 
 		VANS_LOG("[PhysX] Shutdown complete");
 	}

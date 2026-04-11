@@ -126,12 +126,12 @@ namespace VansGraphics
 	// ====================================================================
 	enum VegetationBoneSimBinding : uint32_t
 	{
-		VEG_SIM_BINDING_INSTANCE_DATA    = 0,  // SSBO (read) — per-instance position/scale/rotation
+		VEG_SIM_BINDING_INSTANCE_DATA    = 0,  // SSBO (read) — per-instance position/scale/cosR/sinR
 		VEG_SIM_BINDING_BONE_DATA        = 1,  // SSBO (read/write) — bone positions + velocities
 		VEG_SIM_BINDING_BONE_MATRICES    = 2,  // SSBO (write) — output bone mat4 matrices
 		VEG_SIM_BINDING_TERRAIN_HEIGHTMAP = 3, // COMBINED_IMAGE_SAMPLER — terrain heightmap for ground placement
 		VEG_SIM_BINDING_LOD_FACTORS      = 4,  // SSBO (write) — per-instance LOD factor (1=full sim, 0=skip)
-		VEG_SIM_BINDING_SUB_BLADE_ROOTS  = 5,  // SSBO (read/write) — sub-blade root positions; bone sim writes terrain Y
+		VEG_SIM_BINDING_SCATTER_OFFSETS  = 5,  // UBO (read) — shared sub-blade scatter offsets (P6a)
 	};
 
 	// ====================================================================
@@ -143,9 +143,24 @@ namespace VansGraphics
 		VEG_DRAW_BINDING_BONE_MATRICES    = 0,  // SSBO (read) — bone mat4 from bone sim
 		VEG_DRAW_BINDING_BONE_WEIGHTS     = 1,  // SSBO (read) — per-vertex vec4(boneIdx0, boneIdx1, w0, w1)
 		VEG_DRAW_BINDING_INSTANCE_REMAP   = 2,  // SSBO (read) — uint[] maps draw instance → global bone chain
-		VEG_DRAW_BINDING_SUB_BLADE_ROOTS  = 3,  // SSBO (read) — terrain-snapped sub-blade root positions
+		VEG_DRAW_BINDING_SCATTER_OFFSETS  = 3,  // UBO (read) — shared sub-blade scatter offsets (P6a)
 		VEG_DRAW_BINDING_LOD_FACTORS      = 4,  // SSBO (read) — per-instance LOD factor
-		VEG_DRAW_BINDING_INSTANCE_DATA    = 5,  // SSBO (read) — per-instance position/scale/rotation
+		VEG_DRAW_BINDING_INSTANCE_DATA    = 5,  // SSBO (read) — per-instance position/scale/cosR/sinR
+		VEG_DRAW_BINDING_TERRAIN_HEIGHTMAP = 6, // COMBINED_IMAGE_SAMPLER — terrain heightmap for VS sub-blade Y
+		VEG_DRAW_BINDING_VISIBILITY_FLAGS  = 7, // SSBO (read) — per-instance visibility from GPU cull (P0)
+	};
+
+	// ====================================================================
+	// Vegetation Compute — GPU Cull Pass Binding Indices (P0)
+	// ====================================================================
+	enum VegetationCullBinding : uint32_t
+	{
+		VEG_CULL_BINDING_INSTANCE_DATA    = 0,  // SSBO (read) — per-instance position/scale
+		VEG_CULL_BINDING_VISIBILITY       = 1,  // SSBO (write) — uint per instance: 1=visible, 0=culled
+		VEG_CULL_BINDING_VISIBLE_COUNT    = 2,  // SSBO (read/write) — atomic counter
+		VEG_CULL_BINDING_VISIBLE_INDICES  = 3,  // SSBO (write) — compact list of visible instance indices
+		VEG_CULL_BINDING_TERRAIN_HEIGHTMAP = 4, // COMBINED_IMAGE_SAMPLER — terrain heightmap for correct Y
+		VEG_CULL_BINDING_HIZ              = 5,  // COMBINED_IMAGE_SAMPLER — Hi-Z depth pyramid for occlusion culling
 	};
 
 	// ====================================================================
@@ -515,5 +530,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_GrassTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VegetationBoneSim(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VegetationDraw(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_VegetationCull(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

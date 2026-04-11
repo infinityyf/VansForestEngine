@@ -1,4 +1,9 @@
 #pragma once
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <PxPhysicsAPI.h>
 #include <string>
 #include <memory>
@@ -58,6 +63,13 @@ namespace VansEngine
         float sphereRadius = 1.0f;
         float capsuleRadius = 0.5f;
         float capsuleHalfHeight = 1.0f;
+
+        // ── 碰撞 Layer ──────────────────────────────────────────────
+        std::string layerName = "Default";  // 配置在 JSON 中的 layer 名称
+        int layerIndex = 0;                 // 运行时解析的 layer 索引
+
+        // ── Trigger 模式 ────────────────────────────────────────────
+        bool isTrigger = false;             // 为 true 时作为触发器，不产生物理碰撞响应
     };
 
     // Physics Node - manages physics actor and integrates with scene
@@ -106,6 +118,7 @@ namespace VansEngine
         // Helper methods
         void CreatePhysicsActor();
         void CreateCollisionShape();
+        void ApplyFilterData();
         PxShape* CreateBoxShape();
         PxShape* CreateSphereShape();
         PxShape* CreateCapsuleShape();

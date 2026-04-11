@@ -272,6 +272,61 @@
                             "support_shadow": false
                         }
                     }
+                },
+                {
+                    "name": "TestStaticSphere_A",
+                    "components": {
+                        "render": {
+                            "name": "TestSphereA",
+                            "mesh": "sphere",
+                            "material": "BaseUnlitMaterial1",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [4, 1.0, 2],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.5, 0.5, 0.5]
+                            },
+                            "support_shadow": true
+                        },
+                        "physics": {
+                            "name": "TestSphereAPhysics",
+                            "enabled": true,
+                            "bodyType": "static",
+                            "colliderType": "sphere",
+                            "sphereRadius": 0.5,
+                            "layer": "Default",
+                            "isTrigger": false
+                        }
+                    }
+                },
+                {
+                    "name": "TestStaticSphere_B_Trigger",
+                    "components": {
+                        "render": {
+                            "name": "TestSphereB",
+                            "mesh": "sphere",
+                            "material": "BaseUnlitMaterial1",
+                            "type": "opaque",
+                            "transform": {
+                                "position": [6, 1.0, 2],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": [0.8, 0.8, 0.8]
+                            },
+                            "support_shadow": true
+                        },
+                        "physics": {
+                            "name": "TestSphereBPhysics",
+                            "enabled": true,
+                            "bodyType": "static",
+                            "colliderType": "sphere",
+                            "sphereRadius": 1.5,
+                            "layer": "Trigger",
+                            "isTrigger": true
+                        }
+                    },
+                    "pyScripts": [
+                        { "module": "trigger_zone", "class": "TriggerZone" }
+                    ]
                 }
             ],
             "rendernode": [

@@ -1,4 +1,11 @@
 #pragma once
+
+// Must define NOMINMAX before any header that may pull in windows.h (e.g. pybind11/Python.h)
+// to prevent min/max macros from breaking GLM's std::numeric_limits usage.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 //创建一个python的上下文环境用于调用python的逻辑
 //1. 每帧会调用VansScriptUpdate函数，这里会调用对应python上下文的函数
 //2. 剩下的交给python, python里会去找梭有的python对象，调用update函数，这个update函数则是引擎暴露出去的接口
@@ -9,6 +16,8 @@
 #include <filesystem>
 #include <unordered_map>
 #include <pybind11/embed.h>
+#include "../PhysicsCore/VansPhysicsEvents.h"
+#include "../../../../ForestExporter/VansPhysicsEventInfo.h"
 namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
@@ -42,6 +51,14 @@ private:
 
 	// Called after a .py module is hot-reloaded to re-instantiate script components
 	void OnPyModuleReloaded(const std::string& scriptPath);
+
+	// ── 物理事件调度 ─────────────────────────────────────────────────
+	void DispatchPhysicsEvents();
+	void DispatchEventToObject(
+		const VansEngine::PhysicsEventData& event,
+		uint32_t selfTransformID, uint32_t otherTransformID,
+		const std::string& otherName,
+		const glm::vec3& contactPoint, const glm::vec3& contactNormal, float impulse);
 
 	// Scene pointer for iterating VanPyScriptComponents during update
 	VansGraphics::VansScene* m_Scene = nullptr;
@@ -191,4 +208,10 @@ public:
 	void CallUpdate();    // call Python update()
 	void Disable();       // call Python on_disable()
 	void Teardown();      // release py::object, reset state
+
+	// ── Physics event callbacks (called from VansScriptContext) ───────
+	void CallOnCollisionEnter(const PhysicsEventInfo& info);
+	void CallOnCollisionExit(const PhysicsEventInfo& info);
+	void CallOnTriggerEnter(const PhysicsEventInfo& info);
+	void CallOnTriggerExit(const PhysicsEventInfo& info);
 };

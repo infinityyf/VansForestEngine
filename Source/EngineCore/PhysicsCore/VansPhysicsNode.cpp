@@ -1,4 +1,5 @@
 #include "VansPhysicsNode.h"
+#include "VansCollisionLayerManager.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../ScriptCore/VansTransform.h"
 #include "../Util/VansLog.h"
@@ -106,7 +107,11 @@ namespace VansEngine
         m_Material = CreatePhysicsMaterial();
 
         // Create actor based on body type
-        if (m_Properties.bodyType == PhysicsBodyType::Static)
+        // Trigger 物体如果配置为 Static，需要升级为 Kinematic 以支持 setKinematicTarget
+        bool needsKinematicUpgrade = m_Properties.isTrigger &&
+                                     m_Properties.bodyType == PhysicsBodyType::Static;
+
+        if (m_Properties.bodyType == PhysicsBodyType::Static && !needsKinematicUpgrade)
         {
             m_Actor = physics->createRigidStatic(transform);
         }
@@ -114,7 +119,7 @@ namespace VansEngine
         {
             PxRigidDynamic* dynamicActor = physics->createRigidDynamic(transform);
             
-            if (m_Properties.bodyType == PhysicsBodyType::Kinematic)
+            if (m_Properties.bodyType == PhysicsBodyType::Kinematic || needsKinematicUpgrade)
             {
                 dynamicActor->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, true);
             }
@@ -135,6 +140,12 @@ namespace VansEngine
 
         // Create and attach collision shape
         CreateCollisionShape();
+
+        // 设置碰撞 Layer 的 FilterData
+        ApplyFilterData();
+
+        // 将 VansPhysicsNode* 存入 userData，供碰撞回调使用
+        m_Actor->userData = this;
 
         // Set actor name for debugging
         m_Actor->setName(m_Name.c_str());
@@ -174,6 +185,37 @@ namespace VansEngine
             m_Actor->attachShape(*shape);
             m_Shape = shape;
             shape->release(); // Actor holds a reference
+        }
+    }
+
+    void VansPhysicsNode::ApplyFilterData()
+    {
+        if (!m_Shape) return;
+
+        auto& layerMgr = VansCollisionLayerManager::Get();
+        int layerIdx = layerMgr.GetLayerIndex(m_Properties.layerName);
+
+        PxFilterData filterData;
+        filterData.word0 = static_cast<PxU32>(layerIdx);
+        filterData.word1 = layerMgr.GetCollisionMask(layerIdx);
+        filterData.word2 = m_Properties.isTrigger ? 1u : 0u;
+        filterData.word3 = 0;
+
+        VANS_LOG("[PhysX] ApplyFilterData: node='" << m_Name
+                 << "' layer='" << m_Properties.layerName
+                 << "' layerIdx=" << layerIdx
+                 << " mask=0x" << std::hex << filterData.word1 << std::dec
+                 << " isTrigger=" << m_Properties.isTrigger
+                 << " userData=" << m_Actor->userData);
+
+        m_Shape->setSimulationFilterData(filterData);
+
+        // Trigger 需要特殊 Shape 标志
+        if (m_Properties.isTrigger)
+        {
+            m_Shape->setFlag(PxShapeFlag::eSIMULATION_SHAPE, false);
+            m_Shape->setFlag(PxShapeFlag::eTRIGGER_SHAPE, true);
+            VANS_LOG("[PhysX] ApplyFilterData: set eTRIGGER_SHAPE for '" << m_Name << "'");
         }
     }
 
@@ -350,8 +392,8 @@ namespace VansEngine
         if (!m_Actor || !m_Enabled)
             return;
 
-        // Only update for kinematic actors
-        if (m_Properties.bodyType != PhysicsBodyType::Kinematic)
+        // Kinematic 和 Trigger 都需要从 Transform 同步到 PhysX
+        if (m_Properties.bodyType != PhysicsBodyType::Kinematic && !m_Properties.isTrigger)
             return;
 
         PxRigidDynamic* dynamicActor = m_Actor->is<PxRigidDynamic>();

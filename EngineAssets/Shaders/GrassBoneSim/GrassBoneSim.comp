@@ -15,14 +15,15 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // Set 1: vegetation simulation buffers
 // ── Instance data (read only) ───────────────────────────────────────────────
+// P4 优化: 预计算旋转的 sin/cos，GPU 直接读取避免每帧三角函数运算
 struct GrassInstance
 {
     vec3  position;     // world root position
     float scale;
-    float rotation;
+    float cosR;         // cos(rotation) — precomputed on CPU
+    float sinR;         // sin(rotation) — precomputed on CPU
     int   padding0;
     int   padding1;
-    int   padding2;
 };
 
 layout(std430, set = 1, binding = 0) readonly buffer InstanceBuffer
@@ -57,12 +58,12 @@ layout(std430, set = 1, binding = 4) writeonly buffer LodFactorBuffer
 {
     float lodFactors[];
 };
-// ── Sub-blade root positions (read/write) ────────────────────────────────
-// Bone sim writes the terrain-snapped Y value into every sub-blade root each frame.
-// CPU initialises the XZ positions; they remain constant after init.
-layout(std430, set = 1, binding = 5) buffer SubBladeRootsBuffer
+
+// P6a 优化: 共享散布偏移 UBO — 仅 subBladeCount 个 vec4(dx, 0, dz, 0)
+// Terrain Y 采样移至顶点着色器，bone sim 不再需要读写每个子叶片根位置
+layout(std140, set = 1, binding = 5) uniform ScatterOffsetUBO
 {
-    vec4 subBladeRoots[];
+    vec4 scatterOffsets[32]; // 最多 32 个子叶片，实际使用 pc.subBladeCount 个
 };
 // ── Push constants ─────────────────────────────────────────────────────────
 layout(push_constant) uniform PushConstants
@@ -218,21 +219,8 @@ void main()
         }
     }
 
-    // ── Assign terrain-snapped Y to every sub-blade root in this tuft ───────────
-    // Sub-blade 0 shares the main root XZ; sub-blades 1..N-1 are scattered and
-    // must each sample the heightmap at their own XZ for correct terrain alignment.
-    for (int s = 0; s < pc.subBladeCount; ++s)
-    {
-        uint subIdx = instanceID * uint(pc.subBladeCount) + uint(s);
-        float subY = rootPos.y;  // default: use main root terrain Y
-        if (pc.terrainEnabled != 0 && s > 0)
-        {
-            vec2 subXZ = subBladeRoots[subIdx].xz;
-            vec2 subUV = subXZ / pc.terrainSize + 0.5;
-            subY = texture(terrainHeightmap, subUV).r * pc.terrainMaxHeight + pc.terrainHeightOffset;
-        }
-        subBladeRoots[subIdx].y = subY;
-    }
+    // P6a: Sub-blade terrain Y 采样已移至顶点着色器。
+    // Bone sim 不再写入 subBladeRoots 数据。
 
     // ── Beyond fade distance: skip Verlet entirely, render in frozen rest-pose ─
     if (dist >= pc.lodFadeDist)
@@ -241,8 +229,9 @@ void main()
         // lod=1.0 in the vertex shader means full blade, no collapse blend.
         // Only the smoothstep fade-zone can organically produce lod=0 (→ cull).
         lodFactors[instanceID] = 1.0;
-        float cosR = cos(inst.rotation);
-        float sinR = sin(inst.rotation);
+        // P4: 直接读取预计算的 sin/cos，不再调用三角函数
+        float cosR = inst.cosR;
+        float sinR = inst.sinR;
         vec3 seedRight = vec3(cosR, 0.0, sinR);
         vec3 prevRight = seedRight;
         for (uint j = 0; j < BONE_COUNT; ++j)
@@ -340,8 +329,9 @@ void main()
     //
     // Seed the initial right vector from the instance rotation so that the
     // blade face stays consistent with the per-instance Y-axis rotation.
-    float cosR = cos(inst.rotation);
-    float sinR = sin(inst.rotation);
+    // P4: 直接读取预计算的 sin/cos
+    float cosR = inst.cosR;
+    float sinR = inst.sinR;
     vec3 seedRight = vec3(cosR, 0.0, sinR);  // rotated X-axis
 
     vec3 prevRight = seedRight;

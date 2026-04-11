@@ -358,6 +358,15 @@
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollisionLayerManager.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsEvents.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsEventCallback.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\Util\VansFileUtil.h">
       <Filter>EngineCore\Utils</Filter>
     </ClInclude>
@@ -645,6 +654,12 @@
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollisionLayerManager.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsEventCallback.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\Util\VansInputManager.cpp">

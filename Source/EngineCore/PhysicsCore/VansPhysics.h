@@ -1,4 +1,10 @@
 #pragma once
+
+// Prevent windows.h min/max macros from conflicting with std::numeric_limits and GLM
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <PxPhysicsAPI.h>
 #include <atomic>
 #include <thread>
@@ -6,11 +12,19 @@
 #include <condition_variable>
 #include <functional>
 #include <vector>
+#include "VansPhysicsEvents.h"
 
 using namespace physx;
 
 namespace VansEngine
 {
+	class VansPhysicsEventCallback; // forward declaration
+
+	// 自定义碰撞过滤器（替代 PxDefaultSimulationFilterShader）
+	PxFilterFlags VansCollisionFilterShader(
+		PxFilterObjectAttributes attributes0, PxFilterData filterData0,
+		PxFilterObjectAttributes attributes1, PxFilterData filterData1,
+		PxPairFlags& pairFlags, const void* constantBlock, PxU32 constantBlockSize);
 	// PhysX Error Callback
 	class VansPhysicsErrorCallback : public PxErrorCallback
 	{
@@ -47,6 +61,9 @@ namespace VansEngine
 		PxScene* GetScene() { return m_Scene; }
 		PxPhysics* GetPhysics() { return m_Physics; }
 		const PxCookingParams* GetCookingParams() { return m_CookingParams; }
+		
+		// Event queue access (for VansScriptContext to dispatch events)
+		VansPhysicsEventQueue& GetEventQueue() { return m_EventQueue; }
 		
 		// Gravity
 		void SetGravity(const PxVec3& gravity);
@@ -94,6 +111,8 @@ namespace VansEngine
 		// Callbacks
 		VansPhysicsErrorCallback m_ErrorCallback;
 		VansPhysicsAllocator m_Allocator;
+		VansPhysicsEventCallback* m_EventCallback = nullptr;
+		VansPhysicsEventQueue     m_EventQueue;
 		
 		// Threading
 		std::thread m_SimulationThread;

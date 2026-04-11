@@ -560,7 +560,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationBoneSim(
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{VEG_SIM_BINDING_LOD_FACTORS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{VEG_SIM_BINDING_SUB_BLADE_ROOTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		// P6a: 共享散布偏移改为 UBO
+		{VEG_SIM_BINDING_SCATTER_OFFSETS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
@@ -579,12 +580,42 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationDraw(
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 		{VEG_DRAW_BINDING_INSTANCE_REMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-		{VEG_DRAW_BINDING_SUB_BLADE_ROOTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		// P6a: 共享散布偏移改为 UBO
+		{VEG_DRAW_BINDING_SCATTER_OFFSETS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 		{VEG_DRAW_BINDING_LOD_FACTORS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 		{VEG_DRAW_BINDING_INSTANCE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		// P6a: terrain heightmap for VS sub-blade Y sampling
+		{VEG_DRAW_BINDING_TERRAIN_HEIGHTMAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		// P0: per-instance visibility flags from GPU cull
+		{VEG_DRAW_BINDING_VISIBILITY_FLAGS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Vegetation Compute — GPU Cull Pass Descriptor Layout (P0)
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationCull(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{VEG_CULL_BINDING_INSTANCE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_CULL_BINDING_VISIBILITY, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_CULL_BINDING_VISIBLE_COUNT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_CULL_BINDING_VISIBLE_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_CULL_BINDING_TERRAIN_HEIGHTMAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_CULL_BINDING_HIZ, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }

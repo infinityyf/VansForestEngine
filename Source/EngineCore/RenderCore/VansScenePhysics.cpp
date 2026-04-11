@@ -5,6 +5,7 @@
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansClothSystem.h"
+#include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../Configration/VansConfigration.h"
 #include "../ScriptCore/VansScriptContext.h"
 
@@ -208,6 +209,15 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(cons
     if (physicsNodeJson.contains("capsuleHalfHeight"))
         properties.capsuleHalfHeight = physicsNodeJson["capsuleHalfHeight"];
 
+    // 解析碰撞 Layer
+    if (physicsNodeJson.contains("layer"))
+        properties.layerName = physicsNodeJson["layer"].get<std::string>();
+    properties.layerIndex = VansEngine::VansCollisionLayerManager::Get().GetLayerIndex(properties.layerName);
+
+    // 解析 Trigger 标志
+    if (physicsNodeJson.contains("isTrigger"))
+        properties.isTrigger = physicsNodeJson["isTrigger"].get<bool>();
+
     // Resolve transform ID
     uint32_t transformID = 0;
     if (associatedRenderNode)
@@ -340,11 +350,39 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
     if (!scene)
         return;
     
-    // 2. Now it is safe to acquire the PhysX read lock
-    // Even though we have the mutex, proper PhysX usage still prefers using the ReadLock
-    // just in case internal PxScene operations require it.
+    // 2. Sync editor / script transform changes back into PhysX first.
+    // This is required for gizmo-driven kinematic movement.
+    {
+        PxSceneWriteLock scopedWriteLock(*scene);
+
+        for (auto* physicsNode : m_PhysicsNodes)
+        {
+            if (!physicsNode || !physicsNode->IsEnabled())
+                continue;
+
+            uint32_t transformID = physicsNode->GetTransformID();
+            auto dirtyIt = VansGraphics::VansTransformStore::TransformIDToTransformDirty.find(transformID);
+            if (dirtyIt == VansGraphics::VansTransformStore::TransformIDToTransformDirty.end() || !dirtyIt->second)
+                continue;
+
+            const auto& properties = physicsNode->GetProperties();
+            if (properties.bodyType != PhysicsBodyType::Kinematic && !properties.isTrigger)
+                continue;
+
+            const VansTransform& transformData = VansTransformStore::GetTransform(transformID);
+            VANS_LOG("[PhysX Sync] Push transform -> physics: tid=" << transformID
+                     << " pos=(" << transformData.m_Position.x << ", " << transformData.m_Position.y << ", " << transformData.m_Position.z << ")"
+                     << " rot=(" << transformData.m_Rotation.x << ", " << transformData.m_Rotation.y << ", " << transformData.m_Rotation.z << ")"
+                     << " bodyType=" << static_cast<int>(properties.bodyType)
+                     << " isTrigger=" << properties.isTrigger);
+
+            physicsNode->UpdatePhysicsFromTransform();
+        }
+    }
+
+    // 3. Read back physics simulation results into render transforms.
     PxSceneReadLock scopedLock(*scene);
-    
+
     // Update all physics nodes from physics simulation
     for (auto* physicsNode : m_PhysicsNodes)
     {

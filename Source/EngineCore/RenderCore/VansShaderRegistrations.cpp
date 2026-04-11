@@ -1,4 +1,5 @@
 #include "VansShaderRegistry.h"
+#include "VegetationCore/VansVegetationSystem.h"
 
 // ---------------------------------------------------------------------------
 // RegisterEngineShaders — declares every built-in engine shader in one place.
@@ -113,7 +114,7 @@ void RegisterEngineShaders()
         "GrassGBuffer",
         "EngineAssets/Shaders/Grass",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        24, false
+        sizeof(VansGraphics::GrassDrawPushConstants), false  // P1: 增加 LOD 距离参数，48 字节
     });
 
     reg.RegisterShader("MotionVector", {

@@ -1506,6 +1506,24 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
         }
     }
 
+    // ── 连接 Hi-Z depth pyramid 进行遥测遮挡剪除 ────────────────────────────
+    {
+        VansTexture* hzbTexture = m_MaterialManager.GetRuntimeRenderTexture(
+            VansMaterialManager::RT_HZB_RESULT);
+        if (hzbTexture != nullptr)
+        {
+            m_VegetationSystem->SetHiZDepth(
+                hzbTexture->GetImage().GetImageView(),
+                hzbTexture->GetImage().GetSampler(),
+                static_cast<uint32_t>(m_MaterialManager.m_HIZMipCount),
+                0.005f);
+        }
+        else
+        {
+            VANS_LOG_WARN("[SceneLoader] HZB texture not available — Hi-Z vegetation cull disabled.");
+        }
+    }
+
     // ── Build per-config GPU resources (allocates bone weights, remap, indirect draw) ──
     auto meshLookup = [this](const std::string& name) -> VansMesh* {
         return static_cast<VansMesh*>(GetMeshAsset(name));
