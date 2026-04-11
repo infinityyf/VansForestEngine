@@ -14,6 +14,7 @@ struct TransformData
     mat4 NormalMatrix;
     vec4 Position;
     vec4 Scale;
+    mat4 PrevModelMatrix;
 };
 layout(std430, set = ModelCBBind, binding = 0) readonly buffer ObjectModelBuffer 
 {

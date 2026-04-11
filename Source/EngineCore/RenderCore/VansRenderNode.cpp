@@ -87,10 +87,15 @@ void VansGraphics::VansRenderNode::ComputeModelDataFromTransform()
 void VansGraphics::VansRenderNode::BeforeDrawCall()
 {
 	ComputeModelDataFromTransform();
+	// Initialize PrevModelMatrix to current so first frame has zero motion
+	m_ModelData.PrevModelMatrix = m_ModelData.ModelMatrix;
 }
 
 void VansGraphics::VansRenderNode::UpdateModelData()
 {
+	// Save current ModelMatrix as previous before computing new one
+	m_ModelData.PrevModelMatrix = m_ModelData.ModelMatrix;
+
 	ComputeModelDataFromTransform();
 	
 	// Push updated data to GPU using the persistently mapped instance buffer in VansScene
@@ -609,10 +614,14 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 	VansTexture* shGResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
 	VansTexture* shBResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
 	VansTexture* volumetricFogResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
+	VansTexture* giVisibility = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY);
 
 	if (ssaoFilterResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
-		shRResult == nullptr || shGResult == nullptr || shBResult == nullptr || volumetricFogResult == nullptr)
+		shRResult == nullptr || shGResult == nullptr || shBResult == nullptr || volumetricFogResult == nullptr ||
+		giVisibility == nullptr)
 	{
+		// 不清除 dirty 标记，下帧重试（运行时纹理尚未就绪）
+		m_DescriptorsetsDirty = true;
 		return;
 	}
 
@@ -752,6 +761,23 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 					volumetricFogResult->GetImage().GetSampler(),
 					volumetricFogResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+
+	// GI probe visibility
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			frameBufferInputDescriptorSets[0],
+			14, // GI Visibility
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					giVisibility->GetImage().GetSampler(),
+					giVisibility->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}
 		}

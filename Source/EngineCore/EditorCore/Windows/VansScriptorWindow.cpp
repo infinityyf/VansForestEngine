@@ -1,5 +1,5 @@
 #include "VansScriptorWindow.h"
-#include "../../Configration/VansConfigration.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansInputManager.h"
 #include "VansConsole.h"
@@ -16,20 +16,22 @@ VansGraphics::VansScriptorWindow::VansScriptorWindow()
     RefreshFileList();
 }
 
-// Recursively collect every .py file under the ForestExporter folder.
+// 递归收集当前项目 Scripts/ 目录下的所有 .py 文件
 void VansGraphics::VansScriptorWindow::RefreshFileList()
 {
     m_PythonFiles.clear();
 
-    auto* cfg = VansConfigration::GetInstance();
-    // projectRoot points to  …/ForestEngine/ForestEngine/
-    // EngineExported holds the .pyd and user .py scripts
-    std::string exporterDir = cfg->GetProjectRootPath() + "../ForestExporter/EngineExported";
-
-    if (!std::filesystem::exists(exporterDir))
+    auto& projectMgr = Vans::VansProjectManager::Get();
+    if (!projectMgr.IsProjectLoaded())
         return;
 
-    for (auto& entry : std::filesystem::recursive_directory_iterator(exporterDir))
+    // 当前项目根路径下的 Scripts/ 目录
+    std::string scriptsDir = projectMgr.GetProjectRootPath() + "Scripts";
+
+    if (!std::filesystem::exists(scriptsDir))
+        return;
+
+    for (auto& entry : std::filesystem::recursive_directory_iterator(scriptsDir))
     {
         if (entry.is_regular_file() && entry.path().extension() == ".py")
         {

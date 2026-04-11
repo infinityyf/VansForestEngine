@@ -1,0 +1,59 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+#include "../Common/Common.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 1, binding = 0, std430) readonly buffer HitPositionBuffer {
+    f16vec4 hitPosition[];
+} hitPositionInfoBuffer;
+
+layout(set = 1, binding = 2, rgba32f) uniform image3D visibilityImage;
+
+layout(push_constant) uniform PushConstants {
+    vec4 cameraPos;
+    vec4 cameraDir;
+    vec4 cameraUp;
+    vec4 cameraRight;
+    vec4 originParams;   // x=count, y=stride, z=sampleCount
+    vec4 frameParams;    // x=frameIndex
+} pushConstants;
+
+void main()
+{
+    ivec3 probeIndex = ivec3(gl_GlobalInvocationID);
+
+    int count = int(pushConstants.originParams.x);       // 80
+    int sampleCount = int(pushConstants.originParams.z); // 256
+
+    // 边界检查
+    if (probeIndex.x >= count || probeIndex.y >= count || probeIndex.z >= count)
+        return;
+
+    // 将 3D 探针索引展平为全局 1D 索引
+    int probeLinearIndex = probeIndex.x
+                         + probeIndex.y * count
+                         + probeIndex.z * count * count;
+
+    // 每个探针拥有 sampleCount 条光线，hitPosition 中存储对应的命中信息
+    int baseRay = probeLinearIndex * sampleCount;
+
+    // 统计 miss（天空可见）光线数量
+    int missCount = 0;
+
+    for (int i = 0; i < sampleCount; i++)
+    {
+        f16vec4 hitInfo = hitPositionInfoBuffer.hitPosition[baseRay + i];
+
+        // w == 0 表示 miss（天空），该方向可见
+        if (hitInfo.w == float16_t(0.0))
+            missCount++;
+    }
+
+    // 可见性 = miss 比例，范围 [0, 1]
+    float visibility = float(missCount) / float(sampleCount);
+
+    imageStore(visibilityImage, probeIndex, vec4(visibility, 0.0, 0.0, 0.0));
+}

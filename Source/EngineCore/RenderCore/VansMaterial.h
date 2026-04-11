@@ -97,6 +97,7 @@ namespace VansGraphics
 		static constexpr const char* RT_SH_R_RESULT = "Runtime.RayTracing.SH.R";
 		static constexpr const char* RT_SH_G_RESULT = "Runtime.RayTracing.SH.G";
 		static constexpr const char* RT_SH_B_RESULT = "Runtime.RayTracing.SH.B";
+		static constexpr const char* RT_GI_VISIBILITY = "Runtime.RayTracing.GI.Visibility";
 		static constexpr const char* RT_VOLUMETRIC_FOG_RESULT = "Runtime.VolumetricFog.Result";
 		static constexpr const char* RT_FOG_VOXEL_INJECTION = "Runtime.Fog.VoxelInjection";
 		static constexpr const char* RT_FOG_VOXEL_INJECTION_HISTORY = "Runtime.Fog.VoxelInjectionHistory";

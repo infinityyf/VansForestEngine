@@ -204,9 +204,9 @@ void DirectBRDF_Skin_DualLobe(BRDFData brdf, vec3 lightDirection, float curvatur
 // ---------------------------------------------------------------------------
 // Ambient for skin – standard PBR fallback (SSS mainly affects direct light).
 // ---------------------------------------------------------------------------
-void AmbientBRDF_Skin(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
+void AmbientBRDF_Skin(BRDFData brdf, vec3 viewDirection, vec4 giVisSH, inout vec3 diffuse, inout vec3 specular)
 {
-    AmbientBRDF(brdf, viewDirection, diffuse, specular);
+    AmbientBRDF(brdf, viewDirection, giVisSH, diffuse, specular);
 }
 
 // ---------------------------------------------------------------------------

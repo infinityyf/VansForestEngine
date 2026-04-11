@@ -47,6 +47,8 @@
 #define SSR_RESOLVE_BASE_RADIUS 2.0    // min gather radius in pixels (tight for mirrors)
 #define SSR_RESOLVE_MAX_RADIUS  20.0   // max gather radius (reached at roughness=1)
 #define SSR_FIREFLY_CLAMP 4.0          // max luminance for firefly suppression in resolve
+#define SSR_ROUGHNESS_FADE_START 0.4   // roughness below this: full SSR trust
+#define SSR_ROUGHNESS_FADE_END   0.7   // roughness above this: SSR fully faded out
 
 
 
@@ -214,6 +216,13 @@ float SHBasis(int i, vec3 v)
     }
 }
 
+
+// 从 GI 可见性纹理中取标量可见性 [0,1]
+// shVis.x 存储全方向 miss 比例（暂不使用球谐方向编码）
+float EvalGIVisibility(vec4 shVis, vec3 dir)
+{
+    return shVis.x;
+}
 
 // 生成均匀分布的球面采样点 (使用黄金螺旋算法)
 vec3 SampleSphere(int i, int sampleCount) 

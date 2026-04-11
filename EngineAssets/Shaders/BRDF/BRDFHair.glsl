@@ -233,6 +233,7 @@ void AmbientBRDF_Hair(
     BRDFData brdfData,
     HairBRDFParams hair,
     vec3 viewDirection,
+    vec4 giVisSH,
     out vec3 ambientDiffuse,
     out vec3 ambientSpecular)
 {
@@ -252,6 +253,9 @@ void AmbientBRDF_Hair(
     // around semi-transparent fibers.  Blend in the pre-convolved diffuse
     // cubemap as a floor so hair always receives some environment light.
     vec3 cubemapDiffuse = texture(PreConvDiffuseEnvironment, N).rgb;
+    // Attenuate cubemap diffuse by directional GI probe visibility (indoor occlusion)
+    float giVisDiffuse = EvalGIVisibility(giVisSH, N);
+    cubemapDiffuse *= giVisDiffuse;
     float ssgiLum = dot(brdfData.indirectDiffuse, vec3(0.2126, 0.7152, 0.0722));
     // Smoothly blend: when SSGI is strong, trust it; when weak, add cubemap
     float cubemapWeight = clamp(1.0 - ssgiLum * 4.0, 0.0, 1.0);
@@ -263,15 +267,11 @@ void AmbientBRDF_Hair(
                    + fakeScatter;
 
     // ── Anisotropic reflection direction (per-lobe) ─────────────────────
-    // Project the isotropic reflection along the fiber tangent:
-    //   R_aniso = normalize(R - T * dot(R,T) * anisotropy)
-    // R lobe uses tighter projection; TRT uses wider spread.
-    // Uses the flow+shift-bent tangent for consistent specular placement.
     vec3 R = reflect(-V, N);
     float RdotT = dot(R, T_shifted);
 
-    const float anisoR   = 0.8;   // R lobe: mostly specular, slight spread
-    const float anisoTRT = 0.4;   // TRT lobe: broader internal-bounce spread
+    const float anisoR   = 0.8;
+    const float anisoTRT = 0.4;
 
     vec3 R_dirR   = normalize(R - T_shifted * RdotT * anisoR);
     vec3 R_dirTRT = normalize(R - T_shifted * RdotT * anisoTRT);
@@ -281,17 +281,26 @@ void AmbientBRDF_Hair(
     float roughTRT = clamp(hair.roughness * 2.0, 0.08, 2.0);
 
     // ── Environment lookup per lobe ─────────────────────────────────────
-    // Use the pre-filtered specular cubemap at a mip determined by lobe
-    // roughness, blended with the SSR result (indirectSpecular).
     float lodR   = GetMipLevelFromRoughness(roughR);
     float lodTRT = GetMipLevelFromRoughness(min(roughTRT, 1.0));
 
     vec3 envR   = textureLod(PreConvSpecularEnvironment, R_dirR,   lodR).rgb;
     vec3 envTRT = textureLod(PreConvSpecularEnvironment, R_dirTRT, lodTRT).rgb;
 
-    // Blend with SSR when available (indirectSpecular.a = confidence mask)
-    envR   = mix(envR,   brdfData.indirectSpecular.rgb, brdfData.indirectSpecular.a);
-    envTRT = mix(envTRT, brdfData.indirectSpecular.rgb, brdfData.indirectSpecular.a);
+    // Attenuate cubemap specular lobes by directional GI probe visibility
+    float giVisR   = EvalGIVisibility(giVisSH, R_dirR);
+    float giVisTRT = EvalGIVisibility(giVisSH, R_dirTRT);
+    envR   *= giVisR;
+    envTRT *= giVisTRT;
+
+    // Blend with SSR when available — fade out SSR on rough hair to
+    // avoid noisy screen-space artefacts on the wider TRT lobe.
+    float ssrFadeR   = 1.0 - smoothstep(SSR_ROUGHNESS_FADE_START, SSR_ROUGHNESS_FADE_END, roughR);
+    float ssrFadeTRT = 1.0 - smoothstep(SSR_ROUGHNESS_FADE_START, SSR_ROUGHNESS_FADE_END, min(roughTRT, 1.0));
+    float ssrMaskR   = brdfData.indirectSpecular.a * ssrFadeR;
+    float ssrMaskTRT = brdfData.indirectSpecular.a * ssrFadeTRT;
+    envR   = mix(envR,   brdfData.indirectSpecular.rgb, ssrMaskR);
+    envTRT = mix(envTRT, brdfData.indirectSpecular.rgb, ssrMaskTRT);
 
     // ── Split-sum integration via BRDF LUT ──────────────────────────────
     vec2 brdfR   = texture(BRDFLUT, vec2(NoV, roughR)).rg;

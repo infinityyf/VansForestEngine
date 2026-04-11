@@ -28,6 +28,7 @@ namespace VansGraphics
 		glm::mat4x4 NormalMatrix;
 		glm::vec4 Postion;
 		glm::vec4 Scale;
+		glm::mat4x4 PrevModelMatrix;
 	};
 
 	class VansCamera;

@@ -28,6 +28,7 @@ layout( set = 1, binding = 11 ) uniform sampler3D SHGCoeff;
 // B通道球谐
 layout( set = 1, binding = 12 ) uniform sampler3D SHBCoeff;
 layout( set = 1, binding = 13 ) uniform sampler2D fogResult;
+layout( set = 1, binding = 14 ) uniform sampler3D giVisibility;
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -65,6 +66,24 @@ vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal)
     // inDirectDiffuse = (sumW > 1e-6) ? (inDirectDiffuse / sumW) : vec3(0.0);
     inDirectDiffuse = max(tempDiffuse, vec3(0.0));
     return inDirectDiffuse;
+}
+
+// GI probe volume parameters (must match GIPointLight.comp / GIVisibility.comp)
+#define GI_ORIGIN   vec3(-20.0, -14.0, -20.0)
+#define GI_SIZE     vec3(40.0, 40.0, 40.0)
+
+// Sample the GI probe visibility volume (SH L0+L1, 4 coefficients).
+// Returns vec4 of SH coefficients encoding directional sky visibility.
+// Use EvalGIVisibility(shVis, direction) to get scalar visibility for a specific direction.
+// Outside the GI volume: returns full-sky SH (L0 = 1.0 / Y00, L1 = 0).
+vec4 SampleGIVisibilitySH(vec3 positionWS)
+{
+    vec3 uvw = (positionWS - GI_ORIGIN) / GI_SIZE;
+
+    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0))))
+        return vec4(3.5449077, 0.0, 0.0, 0.0);  // 1.0/Y00 = 1.0/0.282095 → EvalGIVisibility = 1.0
+
+    return texture(giVisibility, uvw);
 }
 
 void main() 
@@ -122,6 +141,9 @@ void main()
     lightResult.ambientDiffuse = vec3(0);
     lightResult.ambientSpecular = vec3(0);
 
+    // Sample GI probe directional sky visibility (SH L0+L1)
+    vec4 giVisSH = SampleGIVisibilitySH(position_world);
+
     int matID = int(round(materialID));
     if (matID == MATERIAL_ID_SKIN)
     {
@@ -129,7 +151,7 @@ void main()
         // Curvature was stored in normalInput.w by UnlitSkin.frag
         float curvature = subpassLoad(normalInput).w;
         CalculateDirectLight_Skin(brdfData, curvature, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
-        AmbientBRDF_Skin(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+        AmbientBRDF_Skin(brdfData, viewDirection, giVisSH, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else if (matID == MATERIAL_ID_CLOTH)
     {
@@ -138,7 +160,7 @@ void main()
         // Direct lighting uses the per-light cloth light loop
         CalculateDirectLight_Cloth(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
         // Ambient: ClothBRDFLUT .b channel used as the specular environment term
-        AmbientBRDF_Cloth(brdfData, viewDirection,
+        AmbientBRDF_Cloth(brdfData, viewDirection, giVisSH,
                           lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else if (matID == MATERIAL_ID_HAIR)
@@ -160,7 +182,7 @@ void main()
         hair.tangentWS = OctDecodeHair(octT);
 
         CalculateDirectLight_Hair(brdfData, hair, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
-        AmbientBRDF_Hair(brdfData, hair, viewDirection,
+        AmbientBRDF_Hair(brdfData, hair, viewDirection, giVisSH,
                          lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else if (matID == MATERIAL_ID_SUBSURFACE)
@@ -178,7 +200,7 @@ void main()
         sss.subsurfaceColor = vec3(1.0, 0.2, 0.1); // warm reddish scatter tint (default)
 
         CalculateDirectLight_Subsurface(brdfData, sss, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
-        AmbientBRDF_Subsurface(brdfData, sss, viewDirection,
+        AmbientBRDF_Subsurface(brdfData, sss, viewDirection, giVisSH,
                                lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else if (matID == MATERIAL_ID_GRASS)
@@ -198,7 +220,7 @@ void main()
         veg.sssPower        = 14.0;   // high exponent = narrow forward-scatter cone
 
         CalculateDirectLight_Vegetation(brdfData, veg, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
-        AmbientBRDF_Vegetation(brdfData, viewDirection,
+        AmbientBRDF_Vegetation(brdfData, viewDirection, giVisSH,
                                lightResult.ambientDiffuse, lightResult.ambientSpecular);
         lightResult.ambientSpecular = vec3(0.0); // grass blades: no ambient specular
     }
@@ -206,7 +228,7 @@ void main()
     {
         // --- Default PBR path ---
         CalculateDirectLight(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
-        AmbientBRDF(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+        AmbientBRDF(brdfData, viewDirection, giVisSH, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
 
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
@@ -217,7 +239,7 @@ void main()
     float fogOpacity = fogData.a;
     outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
     //outColor.rgb = fogData.rgb * fogOpacity;
-    //outColor.rgb = lightResult.ambientDiffuse;
+    //outColor.rgb = lightResult.ambientSpecular;
     //outColor.rgb = CalculateSHDiffuse(position_world, normal);
     outColor.a = 1;
 }

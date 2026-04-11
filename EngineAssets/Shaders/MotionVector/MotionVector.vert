@@ -41,6 +41,7 @@ void main()
     int objectIndex = materialConst.objectIndex;
 
     mat4 currentModel = ModelBuffer.transforms[objectIndex].ModelMatrix;
+    mat4 prevModel    = ModelBuffer.transforms[objectIndex].PrevModelMatrix;
 
     // Current-frame world position
     vec4 worldPos = currentModel * position;
@@ -48,9 +49,11 @@ void main()
     // Current-frame clip position (current camera VP)
     vec4 currentClip = VPMatrix * worldPos;
 
-    // Previous-frame clip position (last frame camera VP, same world pos)
-    // When PrevModelMatrix is available, replace worldPos with prevModel * position.
-    vec4 previousClip = LastVPMatrix * worldPos;
+    // Previous-frame world position (using last frame's model matrix)
+    vec4 prevWorldPos = prevModel * position;
+
+    // Previous-frame clip position (last frame camera VP + last frame model)
+    vec4 previousClip = LastVPMatrix * prevWorldPos;
 
     gl_Position      = currentClip;
     vCurrentClipPos  = currentClip;

@@ -69,6 +69,8 @@ namespace VansGraphics
 
 		void CreateGISHUpdateDescriptorSets(VansVKDevice* device);
 
+		void CreateGIVisibilityDescriptorSets(VansVKDevice* device);
+
 		//绑定数据
 		void BindRayTracingData(VansVKDevice* device, VansScene* scene);
 
@@ -76,11 +78,15 @@ namespace VansGraphics
 
 		void BindGISHData(VansMaterialManager* materialManager);
 
+		void BindGIVisibilityData();
+
 		bool m_RayTracingDescriptorSetIsDirty;
 
 		bool m_GIPointLightDescriptorSetIsDirty;
 
 		bool m_GISHUpdateDesctiproeSetIsDirty;
+
+		bool m_GIVisibilityDescriptorSetIsDirty;
 
 	private:
 
@@ -130,6 +136,16 @@ namespace VansGraphics
 
 		VansComputeShader* m_GISHUpdateShader;
 
+		//GI 可见度计算
+		VansComputeShader* m_GIVisibilityShader;
+
+		VkDescriptorSetLayout m_GIVisibilitySetLayout;
+		std::vector<VkDescriptorSet> m_GIVisibilityDescriptorSets;
+
+		VansTexture* m_VisibilityTexture;
+
+		// 可见度只需计算一次（8帧覆盖所有探针后停止）
+		bool m_GIVisibilityCalculateDone;
 
 		//记录命中点的光照信息
 		VansVKBuffer m_HitPointLightBuffer;

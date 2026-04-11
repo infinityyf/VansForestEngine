@@ -7,8 +7,8 @@
 namespace VansGraphics
 {
     // -----------------------------------------------------------------------
-    // Script browser window – lists all .py files found under ForestExporter
-    // and allows selecting / viewing them.
+    // Script browser window – lists all .py files found under the current
+    // project's Scripts/ directory and allows selecting / editing them.
     // -----------------------------------------------------------------------
     class VansScriptorWindow : public VansBaseWindowComponent
     {

@@ -571,10 +571,10 @@ void VansScriptContext::DispatchPhysicsEvents()
     std::vector<VansEngine::PhysicsEventData> events;
     physics.GetEventQueue().SwapEvents(events);
 
-    if (!events.empty())
-    {
-        VANS_LOG("[PhysX Dispatch] Dispatching " << events.size() << " physics event(s)");
-    }
+    // if (!events.empty())
+    // {
+    //     VANS_LOG("[PhysX Dispatch] Dispatching " << events.size() << " physics event(s)");
+    // }
 
     for (const auto& event : events)
     {
@@ -620,8 +620,8 @@ void VansScriptContext::DispatchEventToObject(
         if (obj->m_TransformID != selfTransformID) continue;
         foundObj = true;
 
-        VANS_LOG("[PhysX Dispatch] Found SceneObject for tid=" << selfTransformID
-                 << " name='" << obj->m_ObjectName << "' components=" << obj->m_Components.size());
+        // VANS_LOG("[PhysX Dispatch] Found SceneObject for tid=" << selfTransformID
+        //          << " name='" << obj->m_ObjectName << "' components=" << obj->m_Components.size());
 
         // 构建 Python 侧的 PhysicsEventInfo
         PhysicsEventInfo info;
@@ -657,13 +657,13 @@ void VansScriptContext::DispatchEventToObject(
         break; // 每个 transformID 只对应一个 ScriptObject
     }
 
-    if (!foundObj)
-    {
-        VANS_LOG_WARN("[PhysX Dispatch] No SceneObject found for selfTransformID=" << selfTransformID);
-    }
-    else if (!foundPyComp)
-    {
-        VANS_LOG_WARN("[PhysX Dispatch] SceneObject tid=" << selfTransformID
-                      << " has no VanPyScriptComponent");
-    }
+    // if (!foundObj)
+    // {
+    //     VANS_LOG_WARN("[PhysX Dispatch] No SceneObject found for selfTransformID=" << selfTransformID);
+    // }
+    // else if (!foundPyComp)
+    // {
+    //     VANS_LOG_WARN("[PhysX Dispatch] SceneObject tid=" << selfTransformID
+    //                   << " has no VanPyScriptComponent");
+    // }
 }

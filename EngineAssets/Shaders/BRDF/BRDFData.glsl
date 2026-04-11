@@ -171,7 +171,7 @@ float SSR_BRDF(vec3 V, vec3 L, vec3 N, float Roughness)
 	return max(0, D * G);
 }
 
-void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
+void AmbientBRDF(BRDFData brdf, vec3 viewDirection, vec4 giVisSH, inout vec3 diffuse, inout vec3 specular)
 {
     float NdotV = max(dot(brdf.normal, viewDirection), 0.0);
     vec3 F0 = mix(brdf.fresnel0, brdf.albedo, brdf.metallic);
@@ -190,7 +190,14 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
     //reflection specular lod level
     float lod = GetMipLevelFromRoughness(brdf.roughness);
     vec3 prefilteredColor = textureLod(PreConvSpecularEnvironment,reflection,lod).rgb;
-    prefilteredColor = mix(prefilteredColor, brdf.indirectSpecular.rgb, brdf.indirectSpecular.a);
+    // Attenuate cubemap by directional GI probe visibility (indoor occlusion)
+    float giVis = EvalGIVisibility(giVisSH, reflection);
+    prefilteredColor *= giVis;
+    // Roughness fade: SSR quality degrades on rough surfaces — smoothly
+    // fall back to the pre-filtered cubemap which is always correct.
+    float ssrFade = 1.0 - smoothstep(SSR_ROUGHNESS_FADE_START, SSR_ROUGHNESS_FADE_END, brdf.roughness);
+    float ssrWeight = brdf.indirectSpecular.a * ssrFade;
+    prefilteredColor = mix(prefilteredColor, brdf.indirectSpecular.rgb, ssrWeight);
     // Split-sum: LUT already integrates Fresnel, so use F0 (not F) here
     specular = prefilteredColor * (F0 * environmentBRDF.x + environmentBRDF.y);
 }

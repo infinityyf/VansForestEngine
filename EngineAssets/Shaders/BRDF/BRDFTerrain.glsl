@@ -18,10 +18,10 @@ void DirectBRDF_Terrain(BRDFData brdf, vec3 lightDirection, inout vec3 diffuse, 
     DirectBRDF(brdf, lightDirection, diffuse, specular);
 }
 
-void AmbientBRDF_Terrain(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
+void AmbientBRDF_Terrain(BRDFData brdf, vec3 viewDirection, vec4 giVisSH, inout vec3 diffuse, inout vec3 specular)
 {
     // Placeholder: fallback to standard PBR
-    AmbientBRDF(brdf, viewDirection, diffuse, specular);
+    AmbientBRDF(brdf, viewDirection, giVisSH, diffuse, specular);
 }
 
 #endif // BRDF_TERRAIN_INCLUDED

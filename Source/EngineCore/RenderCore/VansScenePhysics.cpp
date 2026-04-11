@@ -369,12 +369,12 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
             if (properties.bodyType != PhysicsBodyType::Kinematic && !properties.isTrigger)
                 continue;
 
-            const VansTransform& transformData = VansTransformStore::GetTransform(transformID);
-            VANS_LOG("[PhysX Sync] Push transform -> physics: tid=" << transformID
-                     << " pos=(" << transformData.m_Position.x << ", " << transformData.m_Position.y << ", " << transformData.m_Position.z << ")"
-                     << " rot=(" << transformData.m_Rotation.x << ", " << transformData.m_Rotation.y << ", " << transformData.m_Rotation.z << ")"
-                     << " bodyType=" << static_cast<int>(properties.bodyType)
-                     << " isTrigger=" << properties.isTrigger);
+            // const VansTransform& transformData = VansTransformStore::GetTransform(transformID);
+            // VANS_LOG("[PhysX Sync] Push transform -> physics: tid=" << transformID
+            //          << " pos=(" << transformData.m_Position.x << ", " << transformData.m_Position.y << ", " << transformData.m_Position.z << ")"
+            //          << " rot=(" << transformData.m_Rotation.x << ", " << transformData.m_Rotation.y << ", " << transformData.m_Rotation.z << ")"
+            //          << " bodyType=" << static_cast<int>(properties.bodyType)
+            //          << " isTrigger=" << properties.isTrigger);
 
             physicsNode->UpdatePhysicsFromTransform();
         }
