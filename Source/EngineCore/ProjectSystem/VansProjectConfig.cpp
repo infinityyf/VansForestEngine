@@ -59,6 +59,7 @@ void VansProjectConfig::SetDefaults(const std::string& name)
 	scriptSearchPaths = { "Scripts" };
 	renderSettings = "ProjectSettings/RenderSettings.json";
 	physicsSettings = "ProjectSettings/PhysicsSettings.json";
+	collisionLayerSettings = "ProjectSettings/PhysicsLayers.json";
 }
 
 bool VansProjectConfig::LoadFromFile(const std::string& filePath)
@@ -80,8 +81,9 @@ bool VansProjectConfig::LoadFromFile(const std::string& filePath)
 		lastOpenedAt   = j.value("lastOpenedAt", "");
 		defaultScene   = j.value("defaultScene", "Scenes/MainScene.json");
 		resourceFile   = j.value("resourceFile", "resource.json");
-		renderSettings = j.value("renderSettings", "");
-		physicsSettings = j.value("physicsSettings", "");
+		renderSettings = j.value("renderSettings", "ProjectSettings/RenderSettings.json");
+		physicsSettings = j.value("physicsSettings", "ProjectSettings/PhysicsSettings.json");
+		collisionLayerSettings = j.value("collisionLayerSettings", "ProjectSettings/PhysicsLayers.json");
 
 		assetDirectories.clear();
 		if (j.contains("assetDirectories") && j["assetDirectories"].is_object())
@@ -118,6 +120,7 @@ bool VansProjectConfig::SaveToFile(const std::string& filePath) const
 	j["resourceFile"]   = resourceFile;
 	j["renderSettings"] = renderSettings;
 	j["physicsSettings"] = physicsSettings;
+	j["collisionLayerSettings"] = collisionLayerSettings;
 
 	json dirs = json::object();
 	for (auto& [k, v] : assetDirectories)

@@ -4,6 +4,8 @@
 
 #include <filesystem>
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 
 namespace fs = std::filesystem;
 
@@ -52,6 +54,13 @@ bool VansProjectManager::CreateProject(const std::string& folderPath,
 		return false;
 	}
 
+	m_ProjectSettings.SetDefaults();
+	if (!m_ProjectSettings.SaveToProjectFiles(root, m_Config))
+	{
+		VANS_LOG_ERROR("[ProjectManager] Failed to write project settings files");
+		return false;
+	}
+
 	// Create a default empty scene
 	m_SceneManager.CreateEmptyScene("MainScene", root);
 
@@ -89,6 +98,12 @@ bool VansProjectManager::OpenProject(const std::string& projectRootPath)
 	m_ProjectRootPath = root;
 	m_PathResolver.SetProjectRoot(root);
 	m_Loaded = true;
+	m_ProjectSettings.SetDefaults();
+
+	if (!LoadProjectSettings())
+	{
+		VANS_LOG_WARN("[ProjectManager] Falling back to default project settings");
+	}
 
 	// Update last-opened timestamp and persist
 	m_Config.lastOpenedAt = []() {
@@ -129,8 +144,35 @@ void VansProjectManager::CloseProject()
 
 	m_SceneManager.Clear();
 	m_Config = {};
+	m_ProjectSettings.SetDefaults();
 	m_ProjectRootPath.clear();
 	m_Loaded = false;
+}
+
+bool VansProjectManager::SaveProjectSettings() const
+{
+	if (m_ProjectRootPath.empty())
+	{
+		VANS_LOG_WARN("[ProjectManager] Cannot save project settings without a loaded project");
+		return false;
+	}
+
+	return m_ProjectSettings.SaveToProjectFiles(m_ProjectRootPath, m_Config);
+}
+
+bool VansProjectManager::LoadProjectSettings()
+{
+	if (m_ProjectRootPath.empty())
+	{
+		return false;
+	}
+
+	if (m_ProjectSettings.LoadFromProjectFiles(m_ProjectRootPath, m_Config))
+	{
+		return true;
+	}
+
+	return SaveProjectSettings();
 }
 
 // -----------------------------------------------------------------------

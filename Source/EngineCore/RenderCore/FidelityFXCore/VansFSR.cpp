@@ -91,8 +91,8 @@ void VansGraphics::VansFSR::DispatchUpscale(VkCommandBuffer& commandBuffer, FSRI
 	dispatchUpscale.enableSharpening = true;
 	dispatchUpscale.sharpness = 0.5;
 
-	// Cauldron keeps time in seconds, but FSR expects milliseconds
-	dispatchUpscale.frameTimeDelta = static_cast<float>(VansTimer::GetDeltaTime());
+	// Cauldron keeps time in seconds, but FSR expects milliseconds.
+	dispatchUpscale.frameTimeDelta = static_cast<float>(VansTimer::GetDeltaTime() * 1000.0);
 
 	dispatchUpscale.preExposure = 1.0f;
 	dispatchUpscale.renderSize.width = m_RenderWidth;

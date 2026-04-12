@@ -159,7 +159,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
         if (ImGui::IsWindowHovered() && ImGui::IsMouseDown(ImGuiMouseButton_Right))
         {
             ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
-            float deltaTime = VansGraphics::VansTimer::GetDeltaTime();
+            float deltaTime = static_cast<float>(VansGraphics::VansTimer::GetLastFrameDelta());
 
             m_Camera->SetRightMouseDown(true);
             m_Camera->HandleMouseMovement(mouseDelta.x, mouseDelta.y);

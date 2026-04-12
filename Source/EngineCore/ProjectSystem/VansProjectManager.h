@@ -11,6 +11,7 @@
 // -----------------------------------------------------------------------
 
 #include "VansProjectConfig.h"
+#include "VansProjectSettings.h"
 #include "VansPathResolver.h"
 #include "VansSceneManager.h"
 
@@ -52,8 +53,11 @@ public:
 	const std::string&       GetProjectRootPath() const { return m_ProjectRootPath; }
 	const std::string&       GetProjectName()     const { return m_Config.projectName; }
 	const VansProjectConfig& GetConfig()           const { return m_Config; }
+	VansProjectSettings&     GetProjectSettings()        { return m_ProjectSettings; }
+	const VansProjectSettings& GetProjectSettings() const { return m_ProjectSettings; }
 	VansSceneManager&        GetSceneManager()           { return m_SceneManager; }
 	const VansPathResolver&  GetPathResolver()     const { return m_PathResolver; }
+	bool SaveProjectSettings() const;
 
 	// ── Recent projects (delegates to RecentProjects namespace) ───
 
@@ -65,10 +69,12 @@ private:
 
 	bool ValidateProjectStructure(const std::string& rootPath) const;
 	void CreateDefaultDirectories(const std::string& rootPath);
+	bool LoadProjectSettings();
 
 	bool              m_Loaded = false;
 	std::string       m_ProjectRootPath;  // absolute, trailing '/'
 	VansProjectConfig m_Config;
+	VansProjectSettings m_ProjectSettings;
 	VansPathResolver  m_PathResolver;
 	VansSceneManager  m_SceneManager;
 };

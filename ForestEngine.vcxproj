@@ -171,6 +171,7 @@
     <ClInclude Include="External\spirv_cross\spirv_reflect.hpp" />
     <ClInclude Include="Source\EngineCore\Configration\VansConfigration.h" />
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectConfig.h" />
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectSettings.h" />
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansPathResolver.h" />
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansSceneManager.h" />
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectManager.h" />
@@ -272,6 +273,7 @@
     <ClCompile Include="External\spirv_cross\spirv_reflect.cpp" />
     <ClCompile Include="Source\EngineCore\Configration\VansConfigration.cpp" />
     <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectConfig.cpp" />
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectSettings.cpp" />
     <ClCompile Include="Source\EngineCore\ProjectSystem\VansPathResolver.cpp" />
     <ClCompile Include="Source\EngineCore\ProjectSystem\VansSceneManager.cpp" />
     <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectManager.cpp" />

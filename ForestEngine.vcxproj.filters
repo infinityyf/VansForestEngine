@@ -217,6 +217,9 @@
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectConfig.h">
       <Filter>EngineCore\ProjectSystem</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectSettings.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansPathResolver.h">
       <Filter>EngineCore\ProjectSystem</Filter>
     </ClInclude>
@@ -540,6 +543,9 @@
       <Filter>EngineCore\Configrarion</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectConfig.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectSettings.cpp">
       <Filter>EngineCore\ProjectSystem</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\ProjectSystem\VansPathResolver.cpp">

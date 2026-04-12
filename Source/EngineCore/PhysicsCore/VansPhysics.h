@@ -54,8 +54,8 @@ namespace VansEngine
 		void StartSimulation();
 		void StopSimulation();
 		bool IsSimulationRunning() const { return m_IsRunning; }
-		void SetFixedTimeStep(float deltaTime) { m_FixedTimeStep = deltaTime; }
-		float GetFixedTimeStep() const { return m_FixedTimeStep; }
+		void SetFixedTimeStep(float deltaTime);
+		float GetFixedTimeStep() const { return m_FixedTimeStep.load(); }
 		
 		// Scene Access
 		PxScene* GetScene() { return m_Scene; }
@@ -122,7 +122,7 @@ namespace VansEngine
 		std::condition_variable m_SimulationCV;
 		
 		// Timing
-		float m_FixedTimeStep = 1.0f / 60.0f; // 60 FPS default
+		std::atomic<float> m_FixedTimeStep{ 1.0f / 60.0f }; // 60 FPS default
 		double m_Accumulator = 0.0;
         
         PhysicsStepCallback m_PreSimulateCallback;

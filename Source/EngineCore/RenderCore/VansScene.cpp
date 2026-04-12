@@ -722,8 +722,7 @@ void VansGraphics::VansScene::UpdateSceneData()
     m_LightManager.UpdateLightCPUData();
 
     // Per-frame skeletal animation update + GPU bone matrix upload
-    // Use the cached frame delta - GetDeltaTime() returns ~0 here because
-    // VansTimer::Update() already reset lastFrameTime earlier this frame.
+    // Use the cached frame delta so all per-frame systems observe the same timestep.
     UpdateAnimations(static_cast<float>(VansTimer::GetLastFrameDelta()));
 
     // Advance cloth simulation and write results to staging buffers

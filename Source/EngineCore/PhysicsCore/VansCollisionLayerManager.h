@@ -8,7 +8,7 @@ namespace VansEngine
 	static constexpr int MAX_PHYSICS_LAYERS = 32;
 
 	// ── 碰撞层管理器 ─────────────────────────────────────────────────
-	// 从用户项目的 ProjectSettings/PhysicsLayers.json 加载 Layer 定义和碰撞矩阵。
+	// 从 Project 配置里指定的 collisionLayerSettings 文件加载 Layer 定义和碰撞矩阵。
 	// 如果文件不存在则使用内置默认值（仅 "Default" layer，全碰撞）。
 	class VansCollisionLayerManager
 	{
@@ -23,7 +23,7 @@ namespace VansEngine
 		VansCollisionLayerManager& operator=(const VansCollisionLayerManager&) = delete;
 
 		// ── 初始化 / 加载 ──────────────────────────────────────────────
-		// path 由调用方拼接：projectRoot + "/ProjectSettings/PhysicsLayers.json"
+		// path 由调用方根据 ForestProject.json 中的 collisionLayerSettings 拼接。
 		// 加载失败则保留默认值并返回 false
 		bool LoadFromFile(const std::string& path);
 

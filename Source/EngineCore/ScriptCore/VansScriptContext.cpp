@@ -286,7 +286,7 @@ void VansScriptContext::VansScriptSetup()
 void VansScriptContext::VansScriptUpdate()
 {
     // Periodically check for .py file changes
-    m_FileCheckAccumulator += VansGraphics::VansTimer::GetDeltaTime();
+    m_FileCheckAccumulator += VansGraphics::VansTimer::GetLastFrameDelta();
     if (m_FileCheckAccumulator >= FILE_CHECK_INTERVAL)
     {
         m_FileCheckAccumulator = 0.0f;

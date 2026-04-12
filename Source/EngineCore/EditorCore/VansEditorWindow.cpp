@@ -33,6 +33,23 @@
 #include <string>
 #include <filesystem>
 
+namespace
+{
+    void ApplyProjectTimeSettings()
+    {
+        auto& projectManager = Vans::VansProjectManager::Get();
+        if (!projectManager.IsProjectLoaded())
+        {
+            return;
+        }
+
+        const float physicsDeltaTime = projectManager.GetProjectSettings().GetFixedTimeStep();
+        VansGraphics::VansTimer::SetPhysicsDeltaTime(static_cast<double>(physicsDeltaTime));
+        VansEngine::VansPhysicsSystem::GetInstance().SetFixedTimeStep(physicsDeltaTime);
+        VANS_LOG("[Editor] Applied project physics delta time: " << physicsDeltaTime << "s");
+    }
+}
+
 
 static void glfw_error_callback(int error, const char* description)
 {
@@ -191,7 +208,7 @@ void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
         {
             for (auto camera : m_Cameras)
             {
-                camera->HandleKeyboardInput(key, scancode, action, mods, VansGraphics::VansTimer::GetDeltaTime());
+                camera->HandleKeyboardInput(key, scancode, action, mods, VansGraphics::VansTimer::GetLastFrameDelta());
             }
         }
     });
@@ -290,6 +307,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
             VANS_LOG("[Editor] Opening project: " << path);
             if (Vans::VansProjectManager::Get().OpenProject(path))
             {
+                ApplyProjectTimeSettings();
                 m_ProjectLoaded = true;
                 VANS_LOG("[Editor] Project opened successfully");
                 tryLoadDefaultScene();
@@ -307,6 +325,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
             VANS_LOG("[Editor] Creating project '" << name << "' at " << path);
             if (Vans::VansProjectManager::Get().CreateProject(path, name))
             {
+                ApplyProjectTimeSettings();
                 m_ProjectLoaded = true;
                 VANS_LOG("[Editor] Project created successfully");
                 tryLoadDefaultScene();

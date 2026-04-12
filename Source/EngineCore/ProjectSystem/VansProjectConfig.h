@@ -39,6 +39,7 @@ struct VansProjectConfig
 
 	std::string renderSettings;
 	std::string physicsSettings;
+	std::string collisionLayerSettings;
 
 	// ── Serialisation ──────────────────────────────────────────────
 	/// Load from a ForestProject.json file.  Returns true on success.

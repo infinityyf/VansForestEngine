@@ -276,12 +276,24 @@ namespace VansEngine
 		VANS_LOG("[PhysX] Simulation thread stopped");
 	}
 
+	void VansPhysicsSystem::SetFixedTimeStep(float deltaTime)
+	{
+		if (deltaTime <= 0.0f)
+		{
+			VANS_LOG_WARN("[PhysX] Ignore invalid fixed timestep: " << deltaTime);
+			return;
+		}
+
+		m_FixedTimeStep.store(deltaTime);
+		VANS_LOG("[PhysX] Fixed timestep set to: " << deltaTime << "s");
+	}
+
 	void VansPhysicsSystem::SimulationThread()
 	{
 		using Clock = std::chrono::high_resolution_clock;
 		auto lastTime = Clock::now();
 
-		VANS_LOG("[PhysX] Simulation thread running with fixed timestep: " << m_FixedTimeStep << "s");
+		VANS_LOG("[PhysX] Simulation thread running with fixed timestep: " << GetFixedTimeStep() << "s");
 		if (IsPvdConnected())
 		{
 			VANS_LOG("[PhysX PVD] Real-time physics data streaming active");
@@ -291,12 +303,13 @@ namespace VansEngine
 		{
 			auto currentTime = Clock::now();
 			float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
+			const float fixedTimeStep = m_FixedTimeStep.load();
 			lastTime = currentTime;
 
 			// Fixed timestep accumulator
 			m_Accumulator += deltaTime;
 
-			while (m_Accumulator >= m_FixedTimeStep)
+			while (m_Accumulator >= fixedTimeStep)
 			{
 				{
 					std::lock_guard<std::mutex> lock(m_SimulationMutex);
@@ -304,18 +317,18 @@ namespace VansEngine
                     // Execute Pre-Simulate Callback (e.g. Vehicle Updates)
                     if (m_PreSimulateCallback)
                     {
-                        m_PreSimulateCallback(m_FixedTimeStep);
+						m_PreSimulateCallback(fixedTimeStep);
                     }
 
 					// Step the simulation
-					m_Scene->simulate(m_FixedTimeStep);
+					m_Scene->simulate(fixedTimeStep);
 					m_Scene->fetchResults(true); // Block until simulation is done
 					
 					// PVD data is automatically streamed when connected
 					// The PVD client handles real-time data transmission
 				}
 
-				m_Accumulator -= m_FixedTimeStep;
+				m_Accumulator -= fixedTimeStep;
 			}
 
 			// Sleep to avoid spinning
