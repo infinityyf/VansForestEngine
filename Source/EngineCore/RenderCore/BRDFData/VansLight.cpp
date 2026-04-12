@@ -5,6 +5,80 @@
 #include "../VansCamera.h"
 #include <iostream>
 #include <algorithm>
+#include <cmath>
+#include <cstring>
+
+namespace
+{
+	constexpr float MIN_DIRECTION_LENGTH_SQ = 1e-6f;
+	constexpr float MIN_SPOT_RADIUS = 0.01f;
+	constexpr float MIN_SPOT_OUTER_CUTOFF = 0.00174532925f;
+	constexpr float MAX_SPOT_OUTER_CUTOFF = 1.56206968f;
+
+	bool IsFiniteFloat(float value)
+	{
+		return std::isfinite(value) != 0;
+	}
+
+	bool IsFiniteVec3(const glm::vec3& value)
+	{
+		return IsFiniteFloat(value.x) && IsFiniteFloat(value.y) && IsFiniteFloat(value.z);
+	}
+
+	glm::vec3 NormalizeLightDirectionSafe(const glm::vec3& direction, const glm::vec3& fallbackDirection)
+	{
+		if (IsFiniteVec3(direction) && glm::dot(direction, direction) > MIN_DIRECTION_LENGTH_SQ)
+		{
+			return glm::normalize(direction);
+		}
+
+		if (IsFiniteVec3(fallbackDirection) && glm::dot(fallbackDirection, fallbackDirection) > MIN_DIRECTION_LENGTH_SQ)
+		{
+			return glm::normalize(fallbackDirection);
+		}
+
+		return glm::vec3(0.0f, -1.0f, 0.0f);
+	}
+
+	glm::vec3 ChooseStableUpVector(const glm::vec3& forward)
+	{
+		const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+		if (std::abs(glm::dot(forward, worldUp)) > 0.99f)
+		{
+			return glm::vec3(0.0f, 0.0f, 1.0f);
+		}
+
+		return worldUp;
+	}
+
+	float ClampSpotOuterCutoff(float angle)
+	{
+		if (!IsFiniteFloat(angle))
+		{
+			return MAX_SPOT_OUTER_CUTOFF;
+		}
+
+		return std::clamp(angle, MIN_SPOT_OUTER_CUTOFF, MAX_SPOT_OUTER_CUTOFF);
+	}
+
+	template<typename T>
+	void UploadPaddedLightData(
+		VansGraphics::VansVKBuffer& lightBuffer,
+		uint32_t offset,
+		uint32_t maxCount,
+		const std::vector<T>& lights)
+	{
+		std::vector<T> paddedLights(maxCount);
+		const size_t copyCount = std::min<size_t>(lights.size(), maxCount);
+		if (copyCount > 0)
+		{
+			std::copy_n(lights.begin(), copyCount, paddedLights.begin());
+		}
+
+		lightBuffer.SetBufferData(paddedLights.data(), offset, sizeof(T) * maxCount);
+	}
+}
+
 void VansGraphics::VansLightManager::AddDirectionalLight(const VansDirectionalLight& light)
 {
 	m_DirectionalLights.push_back(light);
@@ -92,13 +166,21 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3
 	int spotLightCount = m_SpotLights.size();
 	for (int spotLightIndex = 0; spotLightIndex < spotLightCount; spotLightIndex++)
 	{
+		glm::vec3 sanitizedDirection = NormalizeLightDirectionSafe(
+			m_SpotLights[spotLightIndex].m_Direction,
+			glm::vec3(0.0f, -1.0f, 0.0f));
+		m_SpotLights[spotLightIndex].m_Direction = sanitizedDirection;
 
-		float spotAngle = m_SpotLights[spotLightIndex].m_OuterCutOff;
-		glm::mat4 shadowProj = glm::perspective(spotAngle * 2, 1.0f, 0.001f, m_SpotLights[spotLightIndex].m_Radius);
+		float spotAngle = ClampSpotOuterCutoff(m_SpotLights[spotLightIndex].m_OuterCutOff);
+		m_SpotLights[spotLightIndex].m_OuterCutOff = spotAngle;
+		m_SpotLights[spotLightIndex].m_Radius = (std::max)(m_SpotLights[spotLightIndex].m_Radius, MIN_SPOT_RADIUS);
+
+		glm::mat4 shadowProj = glm::perspective(spotAngle * 2.0f, 1.0f, 0.001f, m_SpotLights[spotLightIndex].m_Radius);
 
 		glm::vec3 lightPos = m_SpotLights[spotLightIndex].m_Position;
-		glm::vec3 lightDir = -m_SpotLights[spotLightIndex].m_Direction;
-		glm::mat4 shadowView = glm::lookAt(lightPos, lightPos + lightDir, glm::vec3(0, 1, 0));
+		glm::vec3 lightDir = -sanitizedDirection;
+		glm::vec3 upVector = ChooseStableUpVector(lightDir);
+		glm::mat4 shadowView = glm::lookAt(lightPos, lightPos + lightDir, upVector);
 		m_SpotLights[spotLightIndex].m_SpotShadowMatrix = shadowProj * shadowView;
 		m_SpotLights[spotLightIndex].m_ShadowIndex = spotLightIndex;
 	}
@@ -106,8 +188,7 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3
 
 void VansGraphics::VansLightManager::UpdateLightCPUData()
 {
-	int spotLightCount = m_SpotLights.size();
-	//for (int spotLightIndex = 0; spotLightIndex < spotLightCount; spotLightIndex++)
+	//for (int spotLightIndex = 0; spotLightIndex < m_SpotLights.size(); spotLightIndex++)
 	//{
 
 	//	m_SpotLights[spotLightIndex].m_Position.x = std::sin(VansTimer::GetFrameTime() * 0.5f) * 6;
@@ -119,8 +200,8 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 
 	uint32_t offset = 0;
 	uint32_t size = sizeof(uint32_t) * 4;
-	m_LightCounts[0] = m_PointLights.size();
-	m_LightCounts[1] = m_SpotLights.size();
+	m_LightCounts[0] = static_cast<uint32_t>(std::min<size_t>(m_PointLights.size(), m_MaxPointLightCount));
+	m_LightCounts[1] = static_cast<uint32_t>(std::min<size_t>(m_SpotLights.size(), m_MaxSpotLightCount));
 	m_LightCounts[2] = patchShadowSize;
 	m_LightCounts[3] = 8;
 	m_LightBuffer.SetBufferData(m_LightCounts, offset, size);
@@ -133,14 +214,20 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 	m_LightBuffer.SetBufferData(m_SoftShadowParams, offset, size);
 	offset += size;
 	size = sizeof(VansDirectionalLight) * m_MaxDirectionLightCount;
-	m_LightBuffer.SetBufferData(m_DirectionalLights.data(), offset, size);
+	UploadPaddedLightData(m_LightBuffer, offset, m_MaxDirectionLightCount, m_DirectionalLights);
 	offset += size;
 	size = sizeof(VansPointLight) * m_MaxPointLightCount;
-	m_LightBuffer.SetBufferData(m_PointLights.data(), offset, size);
+	UploadPaddedLightData(m_LightBuffer, offset, m_MaxPointLightCount, m_PointLights);
 	offset += size;
 	size = sizeof(VansSpotLight) * m_MaxSpotLightCount;
-	m_LightBuffer.SetBufferData(m_SpotLights.data(), offset, size);
+	UploadPaddedLightData(m_LightBuffer, offset, m_MaxSpotLightCount, m_SpotLights);
 
+}
+
+void VansGraphics::VansLightManager::SyncLightGPUData(const glm::vec3& cameraPosition)
+{
+	UpdateLightShadowMatrixData(cameraPosition);
+	UpdateLightCPUData();
 }
 
 void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_device)

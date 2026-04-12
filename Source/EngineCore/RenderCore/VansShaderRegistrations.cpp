@@ -158,7 +158,6 @@ void RegisterEngineShaders()
     reg.RegisterMaterialPasses(VansGraphics::VAN_HAIR, {
         { VansGraphics::VansPass::GBUFFER,          "Hair"           },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
-        { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
         { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
@@ -171,8 +170,6 @@ void RegisterEngineShaders()
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_GRASS, {
         { VansGraphics::VansPass::GBUFFER,          "GrassGBuffer"   },
-        { VansGraphics::VansPass::SHADOW,           "Shadow"         },
-        { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_TRANSPARENT, {

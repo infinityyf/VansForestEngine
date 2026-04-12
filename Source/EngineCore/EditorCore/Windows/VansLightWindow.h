@@ -38,6 +38,11 @@ namespace VansGraphics
 
 		FogVolumeParamsData m_FogVolumeParams;
 
+		bool DrawDirectionalLights();
+		bool DrawPointLights();
+		bool DrawSpotLights();
+		void SyncLightDataToGPU();
+
 		void DrawFogParameters(VansVKDevice& device);
 		void DrawFogVolumeParameters(VansVKDevice& device);
 		void ShowWindow(VansVKDevice& device) override;

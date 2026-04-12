@@ -364,7 +364,7 @@ void CalculateDirectLight_Hair(
         float attenuation = 1.0 - (distance / pointLight.radius);
         attenuation *= attenuation;
 
-        float shadowValue = SamplePointShadowMap(brdfData.positionWS, punctualShadowMap, int(pointLight.shadowIndex));
+        float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(pointLight.shadowIndex));
         attenuation = min(attenuation, shadowValue);
 
         vec3 diffuseResult = vec3(0.0);
@@ -390,7 +390,7 @@ void CalculateDirectLight_Hair(
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
 
-        float shadowValue = SampleSpotShadowMap(brdfData.positionWS, punctualShadowMap, int(spotLight.shadowIndex));
+        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(spotLight.shadowIndex));
         attenuation = min(attenuation, shadowValue);
 
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));

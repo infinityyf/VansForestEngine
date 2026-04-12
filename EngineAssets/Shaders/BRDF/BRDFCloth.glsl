@@ -158,7 +158,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         float atten  = 1.0 - (dist / pl.radius);
         atten       *= atten;
-        atten        = min(atten, SamplePointShadowMap(brdf.positionWS, punctualShadowMap, int(pl.shadowIndex)));
+        atten        = min(atten, SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(pl.shadowIndex)));
 
         vec3 dR = vec3(0), sR = vec3(0);
         DirectBRDF_Cloth(brdf, lightDir, dR, sR);
@@ -177,7 +177,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         float atten  = 1.0 - (dist / sl.radius);
         atten       *= atten;
-        atten        = min(atten, SampleSpotShadowMap(brdf.positionWS, punctualShadowMap, int(sl.shadowIndex)));
+        atten        = min(atten, SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(sl.shadowIndex)));
 
         float coneAngle = dot(normalize(sl.direction.xyz), lightDir);
         if (coneAngle < cos(sl.outerConeAngle)) continue;

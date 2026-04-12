@@ -107,6 +107,22 @@ bool sphereInsideFrustum(vec3 center, float radius, Plane planes[6])
     return true;
 }
 
+float sampleMinDepthHiZConservative(vec2 uv, vec2 uvRadius, float mipLevel)
+{
+    // 当前 HZB 是 min-depth 金字塔。单次 coarse mip 采样会被前景边缘的最近像素
+    // 污染，导致遮挡判定过于激进。这里对包围球 footprint 做多点采样，并取最大值，
+    // 作为“最不激进”的最近深度近似，以降低边缘误剪。
+    vec2 offset = uvRadius * 0.5;
+
+    float d0 = textureLod(hizDepth, uv, mipLevel).r;
+    float d1 = textureLod(hizDepth, uv + vec2(-offset.x, -offset.y), mipLevel).r;
+    float d2 = textureLod(hizDepth, uv + vec2( offset.x, -offset.y), mipLevel).r;
+    float d3 = textureLod(hizDepth, uv + vec2(-offset.x,  offset.y), mipLevel).r;
+    float d4 = textureLod(hizDepth, uv + vec2( offset.x,  offset.y), mipLevel).r;
+
+    return max(d0, max(d1, max(d2, max(d3, d4))));
+}
+
 void main()
 {
     uint instanceID = gl_GlobalInvocationID.x;
@@ -165,7 +181,8 @@ void main()
     // Y 轴: 负视口高度翻转 Y → NDC Y=+1 对应纹理 UV.y=0（顶部）。
     if (pc.hizEnabled != 0)
     {
-        vec4 clipCenter = VPMatrix * vec4(sphereCenter, 1.0);
+        vec4 viewCenter = ViewMatrix * vec4(sphereCenter, 1.0);
+        vec4 clipCenter = ProjectionMatrix * viewCenter;
 
         // 仅对相机前方的实例做测试（w > 0 表示在相机前面）
         if (clipCenter.w > 0.0001)
@@ -179,26 +196,36 @@ void main()
             vec2 hizUV = vec2(ndcCenter.x * 0.5 + 0.5,
                               0.5 - ndcCenter.y * 0.5);
 
-            // 保守性检查：UV 在 [0,1] 范围内才采样
-            if (hizUV.x >= 0.0 && hizUV.x <= 1.0 &&
-                hizUV.y >= 0.0 && hizUV.y <= 1.0)
+            float ndcRadius       = sphereRadius / clipCenter.w;
+            float screenRadiusPx  = ndcRadius * 0.5 * max(ScreenParams.x, ScreenParams.y);
+            vec2  uvRadius        = vec2(screenRadiusPx * ScreenParams.z,
+                                         screenRadiusPx * ScreenParams.w);
+
+            // 屏幕边缘保护：若包围球 footprint 触到屏幕边界，则跳过 Hi-Z。
+            // min-depth HZB 在边缘和 coarse mip 上容易被前景深度污染，导致误剪。
+            vec2 uvMin = hizUV - uvRadius;
+            vec2 uvMax = hizUV + uvRadius;
+
+            if (uvMin.x >= 0.0 && uvMax.x <= 1.0 &&
+                uvMin.y >= 0.0 && uvMax.y <= 1.0)
             {
-                // 计算球在屏幕空间的像素半径，用于选取对应精度的 mip 层
-                // NDC 半径 ≈ sphereRadius / w，像素半径 = ndcRadius * 0.5 * 屏幕宽度
-                // ScreenParams.xy 与 HZB mip0 尺寸相同 (m_RenderWidth × m_RenderHeight)
-                float ndcRadius       = sphereRadius / clipCenter.w;
-                float screenRadiusPx  = ndcRadius * 0.5 * max(ScreenParams.x, ScreenParams.y);
-                // 注意: mip 0 = BlitImage 原始深度拷贝 (未经 min 降采样)
-                // HZB min-depth 金字塔从 mip 1 开始，因此 mipLevel 最小值钳制为 1
-                float mipLevel        = clamp(ceil(log2(max(screenRadiusPx, 1.0))),
-                                             1.0, float(pc.hizMipCount - 1));
+                // 当前 HZB 是 min-depth 金字塔。为降低前景边缘对 coarse mip 的污染，
+                // 对 vegetation cull 额外向更细一级 mip 偏移，再对 footprint 多点采样。
+                // 注意: mip 0 = BlitImage 原始深度拷贝；这里仍保持最小 mip = 1。
+                float mipLevel = clamp(ceil(log2(max(screenRadiusPx, 1.0))) - 1.0,
+                                       1.0, float(pc.hizMipCount - 1));
 
-                float hizSample = textureLod(hizDepth, hizUV, mipLevel).r;
+                float hizSample = sampleMinDepthHiZConservative(hizUV, uvRadius, mipLevel);
 
-                // 球前沿深度: 使用赤道深度（球心投影深度）做辞退剔除
-                // 这是保守判断: 若球心深度已被遮挡则整个球体不可见
-                // 避免 ndcRadius 在深度方向的错误减法（NDC XY 半径 ≠ 深度半径）
+                // 球前沿深度必须使用离相机最近的球面点，而不是球心深度。
+                // 否则当前景遮挡物只挡住球心、但未挡住球前沿时，会发生误剪。
+                float frontViewZ = min(viewCenter.z + sphereRadius, -0.001);
+                vec4  frontClip  = ProjectionMatrix * vec4(viewCenter.xy, frontViewZ, 1.0);
                 float sphereFrontDepth = centerDepth;
+                if (frontClip.w > 0.0001)
+                {
+                    sphereFrontDepth = clamp(frontClip.z / frontClip.w * 0.5 + 0.5, 0.0, 1.0);
+                }
 
                 if (sphereFrontDepth > hizSample + pc.hizSampleBias)
                 {

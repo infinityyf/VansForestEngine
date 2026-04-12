@@ -89,8 +89,8 @@ float DistributionTrowbridgeReitzGGX(vec3 normal, vec3 halfvector, float roughne
 
 float GeometrySchlickGGX(float NdotV, float roughness)
 {
-    float a = roughness * roughness;
-    float k = ((a + 1.0) * (a + 1.0)) / 8.0;
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
 
     float num = NdotV;
     float denom = NdotV * (1.0 - k) + k;
@@ -209,14 +209,22 @@ void DirectBRDF(BRDFData brdf, vec3 lightDirection, inout vec3 diffuse, inout ve
     float NdotH = max(dot(brdf.normal, halfVector), 0.0);
     float NdotL = max(dot(brdf.normal, lightDirection), 0.0);
     float NdotV = max(dot(brdf.normal, viewDirection), 0.0);
-    float NdotH2 = NdotH * NdotH;
+    float VdotH = max(dot(viewDirection, halfVector), 0.0);
+    float roughness = clamp(brdf.roughness, 0.045, 1.0);
+
+    if (NdotL <= 0.0 || NdotV <= 0.0)
+    {
+        diffuse = vec3(0.0);
+        specular = vec3(0.0);
+        return;
+    }
 
     vec3 F0 = brdf.fresnel0;
     F0 = mix(F0, brdf.albedo, brdf.metallic);
 
-    vec3 F = FresnelSchlick(NdotH, F0);
-    float D = DistributionTrowbridgeReitzGGX(brdf.normal, halfVector, brdf.roughness);
-    float G = GeometrySmith(brdf.normal, viewDirection, lightDirection, brdf.roughness);
+    vec3 F = FresnelSchlick(VdotH, F0);
+    float D = DistributionTrowbridgeReitzGGX(brdf.normal, halfVector, roughness);
+    float G = GeometrySmith(brdf.normal, viewDirection, lightDirection, roughness);
 
     vec3 kS = F;
     vec3 kD = vec3(1.0) - kS;
@@ -226,6 +234,6 @@ void DirectBRDF(BRDFData brdf, vec3 lightDirection, inout vec3 diffuse, inout ve
 
     vec3 numerator = D * G * F;
     float denominator = 4.0 * max(NdotL, 0.001) * max(NdotV, 0.001);
-    specular = numerator / denominator;
+    specular = (numerator / denominator) * NdotL;
 }
 #endif // COMMON_BRDF_INCLUDED

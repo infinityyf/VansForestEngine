@@ -144,7 +144,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         float attenuation = 1.0 - (distance / pointLight.radius);
         attenuation *= attenuation;
 
-        float pShadow = SamplePointShadowMap(brdfData.positionWS, punctualShadowMap, int(pointLight.shadowIndex));
+        float pShadow = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(pointLight.shadowIndex));
 
         vec3 dR = vec3(0), sR = vec3(0), tR = vec3(0);
         DirectBRDF_Vegetation(brdfData, lightDirection, veg, dR, sR, tR);
@@ -166,7 +166,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
 
-        float sShadow = SampleSpotShadowMap(brdfData.positionWS, punctualShadowMap, int(spotLight.shadowIndex));
+        float sShadow = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(spotLight.shadowIndex));
 
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
         if (coneAngle < cos(spotLight.outerConeAngle)) continue;

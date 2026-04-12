@@ -85,6 +85,8 @@ namespace VansGraphics
 
 		void UpdateLightCPUData();
 
+		void SyncLightGPUData(const glm::vec3& cameraPosition);
+
 		//Create light gpu data
 		void CreateLightUniformData(VkDevice& logic_device);
 
@@ -93,6 +95,10 @@ namespace VansGraphics
 		std::vector<VansPointLight>& GetPointLights() { return m_PointLights; }
 
 		std::vector<VansSpotLight>& GetSpotLight() { return m_SpotLights; }
+
+		uint32_t GetMaxPointLightCount() const { return m_MaxPointLightCount; }
+
+		uint32_t GetMaxSpotLightCount() const { return m_MaxSpotLightCount; }
 
 		// ── 场景切换时清空灯光数据 ────────────────────────────────────
 		// 仅清空 CPU 侧灯光列表和计数器，保留 GPU buffer 和 descriptor

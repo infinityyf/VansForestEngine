@@ -29,6 +29,7 @@
 #define MATERIAL_ID_GRASS       8
 
 #define DEPTH_BIAS 0.001
+#define PUNCTUAL_LIGHT_DEPTH_BIAS 0.0002
 #define ESM_C 80.0
 
 // Cascade Shadow Map constants

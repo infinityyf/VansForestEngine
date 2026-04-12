@@ -6,6 +6,7 @@
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
 #include "../../ProjectSystem/VansProjectManager.h"
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 
@@ -139,6 +140,13 @@ namespace VansGraphics
 			}
 
 			{
+				VANS_GPU_SCOPE(cmd, "Punctual light Shadow Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, cmd, m_globalRenderStateData);
+				DrawPunctualShadowMap(renderPassManager, cmd);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+
+			{
 				VANS_GPU_SCOPE(cmd, "Motion Vector Pass");
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansMotionVectorPass, cmd, m_globalRenderStateData);
 				DrawMotionVectorPass(renderPassManager, cmd);
@@ -197,6 +205,12 @@ namespace VansGraphics
 					renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 				}
 				m_globalRenderStateData.cascadeIndex = -1;
+			}
+
+			{
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, cmd, m_globalRenderStateData);
+				DrawPunctualShadowMap(renderPassManager, cmd);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 
 			{
@@ -318,15 +332,15 @@ namespace VansGraphics
 	{
 		VansLightManager* lightManager = m_Scene->GetLightManager();
 
-		auto pointLights = lightManager->GetPointLights();
-		int pointLightCount = pointLights.size();
+		auto& pointLights = lightManager->GetPointLights();
+		int pointLightCount = static_cast<int>(std::min<size_t>(pointLights.size(), lightManager->GetMaxPointLightCount()));
 		for (int lightIndex = 0; lightIndex < pointLightCount; lightIndex++)
 		{
 			m_Scene->DrawPointShadow(lightIndex);
 		}
 
-		auto spotLights = lightManager->GetSpotLight();
-		int spotLightCount = spotLights.size();
+		auto& spotLights = lightManager->GetSpotLight();
+		int spotLightCount = static_cast<int>(std::min<size_t>(spotLights.size(), lightManager->GetMaxSpotLightCount()));
 		for (int lightIndex = 0; lightIndex < spotLightCount; lightIndex++)
 		{
 			m_Scene->DrawSpotShadow(pointLightCount, lightIndex);

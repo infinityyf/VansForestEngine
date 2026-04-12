@@ -129,6 +129,104 @@ float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIn
     return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
 }
 
+float ComputePunctualShadowBias(vec3 normalWS, vec3 lightDirectionWS)
+{
+    float ndl = clamp(dot(normalize(normalWS), normalize(lightDirectionWS)), 0.0, 1.0);
+    return max(PUNCTUAL_LIGHT_DEPTH_BIAS * 0.5, PUNCTUAL_LIGHT_DEPTH_BIAS * (1.0 - ndl) * 4.0);
+}
+
+float ComputePunctualSoftShadowRadius(float distanceToLight, float lightRadius)
+{
+    float safeRadius = max(lightRadius, 1e-4);
+    float distanceRatio = clamp(distanceToLight / safeRadius, 0.0, 1.0);
+    float softnessScale = max(0.75, softShadowParams.y * 6.0);
+    return mix(1.5, 4.5, distanceRatio) * softnessScale;
+}
+
+float SamplePunctualShadowAtlasSoft(
+    sampler2D shadowMap,
+    ivec2 atlasOffset,
+    vec2 localShadowUV,
+    float receiverDepth,
+    float filterRadiusTexels)
+{
+    if (receiverDepth <= 0.0)
+        return 1.0;
+
+    if (localShadowUV.x <= 0.0 || localShadowUV.x >= 1.0 ||
+        localShadowUV.y <= 0.0 || localShadowUV.y >= 1.0)
+        return 1.0;
+
+    const int PUNCTUAL_SOFT_SAMPLE_COUNT = 16;
+    float sampleCountInverse = 1.0 / float(PUNCTUAL_SOFT_SAMPLE_COUNT);
+
+    ivec2 localTexel = ivec2(localShadowUV * float(uShadowAtlasSize));
+    ivec2 atlasMin = atlasOffset;
+    ivec2 atlasMax = atlasOffset + ivec2(int(uShadowAtlasSize) - 1);
+
+    float frameIndex = softShadowParams.x;
+    float jitterAngle = RandomInterLeavedWithScale(vec2(atlasOffset + localTexel), mod(frameIndex, 64.0)) * TWO_PI;
+    vec2 jitter = vec2(sin(jitterAngle), cos(jitterAngle));
+
+    float visibility = 0.0;
+    for (int i = 0; i < PUNCTUAL_SOFT_SAMPLE_COUNT; ++i)
+    {
+        float sampleDistNorm = 0.0;
+        vec2 offset = ComputeFibonacciSpiralDiskSampleClumped(i, sampleCountInverse, sampleDistNorm);
+        offset = vec2(offset.x * jitter.y + offset.y * jitter.x,
+                      offset.x * -jitter.x + offset.y * jitter.y);
+
+        ivec2 sampleTexel = atlasOffset + localTexel + ivec2(round(offset * filterRadiusTexels));
+        sampleTexel = clamp(sampleTexel, atlasMin, atlasMax);
+
+        float shadowDepth = texelFetch(shadowMap, sampleTexel, 0).r;
+        visibility += (shadowDepth < receiverDepth) ? 0.0 : 1.0;
+    }
+
+    return visibility * sampleCountInverse;
+}
+
+float SamplePointShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int shadowIndex)
+{
+    vec3 toLight = position_world - uPointLights[shadowIndex].position.xyz;
+    int shadowDirectionIndex = GetCubemapFaceIndex(toLight);
+
+    ivec2 shadowOffset = ivec2((shadowIndex * 6 + shadowDirectionIndex) % uShadowAtlasCount,
+                               (shadowIndex * 6 + shadowDirectionIndex) / uShadowAtlasCount);
+    shadowOffset *= int(uShadowAtlasSize);
+
+    mat4x4 shadowMatrix = uPointLights[shadowIndex].shadowMatrix[shadowDirectionIndex];
+    vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
+    clipCoord /= clipCoord.w;
+
+    float bias = ComputePunctualShadowBias(normalWS, lightDirectionWS);
+    float receiverDepth = clipCoord.z - bias;
+    vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
+
+    float filterRadiusTexels = ComputePunctualSoftShadowRadius(length(toLight), uPointLights[shadowIndex].radius);
+    return SamplePunctualShadowAtlasSoft(shadowMap, shadowOffset, localShadowUV, receiverDepth, filterRadiusTexels);
+}
+
+float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int shadowIndex)
+{
+    int pointLightCount = int(uPointLightCount);
+    ivec2 shadowOffset = ivec2((pointLightCount * 6 + shadowIndex) % uShadowAtlasCount,
+                               (pointLightCount * 6 + shadowIndex) / uShadowAtlasCount);
+    shadowOffset *= int(uShadowAtlasSize);
+
+    mat4x4 shadowMatrix = uSpotLights[shadowIndex].shadowMatrix;
+    vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
+    clipCoord /= clipCoord.w;
+
+    float bias = ComputePunctualShadowBias(normalWS, lightDirectionWS);
+    float receiverDepth = clipCoord.z - bias;
+    vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
+
+    float distanceToLight = length(uSpotLights[shadowIndex].position.xyz - position_world);
+    float filterRadiusTexels = ComputePunctualSoftShadowRadius(distanceToLight, uSpotLights[shadowIndex].radius);
+    return SamplePunctualShadowAtlasSoft(shadowMap, shadowOffset, localShadowUV, receiverDepth, filterRadiusTexels);
+}
+
 // ============================================================================
 // Cascade Shadow Map sampling
 // ============================================================================
@@ -360,7 +458,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float attenuation = 1.0 - (distance / pointLight.radius);
         attenuation *= attenuation;
 
-        float shadowValue = SamplePointShadowMap(brdfData.positionWS, punctualShadowMap, int(pointLight.shadowIndex));
+        float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(pointLight.shadowIndex));
         attenuation = min(attenuation, shadowValue);
 
         vec3 diffuseResult = vec3(0);
@@ -385,7 +483,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
 
-        float shadowValue = SampleSpotShadowMap(brdfData.positionWS, punctualShadowMap, int(spotLight.shadowIndex));
+        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(spotLight.shadowIndex));
         attenuation = min(attenuation, shadowValue);
 
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
