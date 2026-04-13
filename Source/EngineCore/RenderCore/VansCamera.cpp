@@ -1,7 +1,79 @@
 ﻿#include "VansCamera.h"
 #include "../VansTimer.h"
+#include "../Util/VansLog.h"
 
 #include <iostream>
+
+VansGraphics::VansCamera::VansCamera(VansGraphicsDevice* device)
+    : m_RenderDevice(device)
+{
+    // Default camera parameters (overridden by ApplyCameraSettings if camera node exists in scene JSON)
+    m_Position    = glm::vec3(0.0f, 1.0f, 5.0f);
+    m_Rotation    = glm::vec3(0.0f, -90.0f, 0.0f);
+    m_Fov         = 45.0f;
+    m_NearClip    = 0.01f;
+    m_FarClip     = 10000.0f;
+    m_AspectRatio = m_RenderDevice->GetAspectRatio();
+
+    VkDescriptorSetLayoutBinding uniformBufferBinding =
+    {
+        GLOBAL_BINDING_CAMERA_UBO,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        1,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
+        nullptr
+    };
+    VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ uniformBufferBinding }, m_CameraBufferLayout);
+    VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_CameraBufferLayout }, m_CameraBufferDescriptorSets);
+
+    // Create uniform buffer
+    m_CameraDataBuffer.CreatVulkanBuffer(static_cast<VansVKDevice*>(device)->GetLogicDevice(), sizeof(m_CameraData), VK_FORMAT_R32_SFLOAT,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+    m_RenderFrameIndex = 0;
+    m_IsRightMouseDown = false;
+}
+
+void VansGraphics::VansCamera::ApplyCameraSettings(const json& cameraNode)
+{
+    if (cameraNode.contains("position"))
+    {
+        const auto& pos = cameraNode["position"];
+        m_Position = glm::vec3(pos[0].get<float>(), pos[1].get<float>(), pos[2].get<float>());
+    }
+
+    if (cameraNode.contains("rotation"))
+    {
+        const auto& rot = cameraNode["rotation"];
+        m_Rotation = glm::vec3(rot[0].get<float>(), rot[1].get<float>(), rot[2].get<float>());
+    }
+
+    if (cameraNode.contains("fov"))
+        m_Fov = cameraNode["fov"].get<float>();
+
+    if (cameraNode.contains("nearClip"))
+        m_NearClip = cameraNode["nearClip"].get<float>();
+
+    if (cameraNode.contains("farClip"))
+        m_FarClip = cameraNode["farClip"].get<float>();
+
+    VANS_LOG("[VansCamera] Camera settings applied from scene JSON: pos=("
+        << m_Position.x << ", " << m_Position.y << ", " << m_Position.z
+        << ") rot=(" << m_Rotation.x << ", " << m_Rotation.y << ", " << m_Rotation.z
+        << ") fov=" << m_Fov);
+}
+
+void VansGraphics::VansCamera::ResetToDefaults()
+{
+    m_Position    = glm::vec3(0.0f, 1.0f, 5.0f);
+    m_Rotation    = glm::vec3(0.0f, -90.0f, 0.0f);
+    m_Fov         = 45.0f;
+    m_NearClip    = 0.01f;
+    m_FarClip     = 10000.0f;
+
+    VANS_LOG("[VansCamera] No camera node in scene JSON, using default parameters");
+}
 void VansGraphics::VansCamera::SetRightMouseDown(bool down) 
 { 
     m_IsRightMouseDown = down; 

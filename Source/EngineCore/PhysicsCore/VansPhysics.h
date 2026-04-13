@@ -53,7 +53,11 @@ namespace VansEngine
 		// Simulation Control
 		void StartSimulation();
 		void StopSimulation();
+		// 暂停/恢复物理模拟（不停线程，仅冻结模拟步进）
+		void PauseSimulation();
+		void ResumeSimulation();
 		bool IsSimulationRunning() const { return m_IsRunning; }
+		bool IsSimulationPaused() const { return m_IsPaused.load(); }
 		void SetFixedTimeStep(float deltaTime);
 		float GetFixedTimeStep() const { return m_FixedTimeStep.load(); }
 		
@@ -118,6 +122,8 @@ namespace VansEngine
 		std::thread m_SimulationThread;
 		std::atomic<bool> m_IsRunning{ false };
 		std::atomic<bool> m_ShouldExit{ false };
+		// 物理模拟是否被暂停（线程仍运行，20不步进）
+		std::atomic<bool> m_IsPaused{ false };
 		std::mutex m_SimulationMutex;
 		std::condition_variable m_SimulationCV;
 		

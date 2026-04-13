@@ -273,7 +273,20 @@ namespace VansEngine
 		}
 
 		m_IsRunning = false;
+		m_IsPaused  = false;
 		VANS_LOG("[PhysX] Simulation thread stopped");
+	}
+
+	void VansPhysicsSystem::PauseSimulation()
+	{
+		m_IsPaused = true;
+		VANS_LOG("[PhysX] Simulation paused");
+	}
+
+	void VansPhysicsSystem::ResumeSimulation()
+	{
+		m_IsPaused = false;
+		VANS_LOG("[PhysX] Simulation resumed");
 	}
 
 	void VansPhysicsSystem::SetFixedTimeStep(float deltaTime)
@@ -301,6 +314,14 @@ namespace VansEngine
 
 		while (!m_ShouldExit)
 		{
+			// 物理模拟被暂停时，不步进仅等待
+			if (m_IsPaused.load())
+			{
+				lastTime = Clock::now(); // 防止恢复后积累大量未执行的步进
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+				continue;
+			}
+
 			auto currentTime = Clock::now();
 			float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
 			const float fixedTimeStep = m_FixedTimeStep.load();

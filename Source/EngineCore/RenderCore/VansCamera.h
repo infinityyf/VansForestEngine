@@ -3,8 +3,10 @@
 #include "VansGraphicsDevice.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
+#include <nlohmann/json.hpp>
 #include <vector>
 using namespace VansGraphics;
+using json = nlohmann::json;
 namespace VansGraphics
 {
     struct alignas(16) CameraDataStruct
@@ -80,6 +82,10 @@ namespace VansGraphics
 
         glm::mat4 GetProjectiveMatrix();
 
+        void ApplyCameraSettings(const json& cameraNode);
+
+        void ResetToDefaults();
+
     private:
 
         void SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix);
@@ -95,31 +101,7 @@ namespace VansGraphics
         float m_FarClip = 10000.0f;
     public:
 
-        VansCamera(glm::vec3 startPosition, glm::vec3 startRotation, VansGraphicsDevice* device)
-            : m_Position(startPosition), m_Rotation(startRotation), m_RenderDevice(device)
-        {
-            m_AspectRatio = m_RenderDevice->GetAspectRatio();
-
-            VkDescriptorSetLayoutBinding uniformBufferBinding =
-            {
-                GLOBAL_BINDING_CAMERA_UBO,
-                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                1,
-                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
-                nullptr
-            };
-            VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ uniformBufferBinding }, m_CameraBufferLayout);
-            VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_CameraBufferLayout }, m_CameraBufferDescriptorSets);
-
-            //创建一个uniform buffer
-            m_CameraDataBuffer.CreatVulkanBuffer(static_cast<VansVKDevice*>(device)->GetLogicDevice(), sizeof(m_CameraData), VK_FORMAT_R32_SFLOAT,
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-
-            m_RenderFrameIndex = 0;
-
-            m_IsRightMouseDown = false;
-        }
+        VansCamera(VansGraphicsDevice* device);
 
         ~VansCamera();
 

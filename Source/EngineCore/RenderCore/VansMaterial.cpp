@@ -90,6 +90,11 @@ bool VansGraphics::VansMaterialManager::RemoveRuntimeRenderTexture(const std::st
 	return m_RuntimeRenderTextureManager.Remove(name);
 }
 
+bool VansGraphics::VansMaterialManager::UnregisterRuntimeRenderTexture(const std::string& name)
+{
+	return m_RuntimeRenderTextureManager.Unregister(name);
+}
+
 void VansGraphics::VansMaterialManager::ClearRuntimeRenderTextures()
 {
 	m_RuntimeRenderTextureManager.Clear();

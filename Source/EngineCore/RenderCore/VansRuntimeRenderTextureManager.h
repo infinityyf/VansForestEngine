@@ -17,6 +17,9 @@ namespace VansGraphics
 
 		bool Remove(const std::string& name);
 
+		// 仅从注册表移除条目，不 delete 纹理（所有权归外部管理）
+		bool Unregister(const std::string& name);
+
 		void Clear();
 
 	private:

@@ -117,6 +117,12 @@ bool VansGraphics::VansEditorWindow::m_ProjectLoaded = false;
 std::string VansGraphics::VansEditorWindow::m_PendingScenePath;
 std::string VansGraphics::VansEditorWindow::m_PendingResourcePath;
 
+// 运行控制状态：默认处于编辑模式（时间冻结）
+VansGraphics::VansEditorPlayState VansGraphics::VansEditorWindow::m_PlayState = VansGraphics::VansEditorPlayState::Editing;
+std::string VansGraphics::VansEditorWindow::m_CurrentLoadedScenePath;
+// 延迟加载模式：默认 Editor
+VansGraphics::VansSceneLoadMode VansGraphics::VansEditorWindow::m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Editor;
+
 bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height, GRAPHICS_API api)
 {
     glfwSetErrorCallback(glfw_error_callback);
@@ -161,6 +167,153 @@ bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int heigh
     return true;
 }
 
+
+// ============================================================================
+// 运行控制：OnPlay / OnPause / OnResume / OnStop
+// ============================================================================
+
+void VansGraphics::VansEditorWindow::OnPlay()
+{
+    if (m_PlayState != VansEditorPlayState::Editing)
+        return;
+
+    if (m_CurrentLoadedScenePath.empty())
+    {
+        VANS_LOG_WARN("[Editor] OnPlay: no scene loaded, cannot start");
+        return;
+    }
+
+    // Play = 卸载当前场景，以 Runtime 模式重新加载
+    // 时间解冻、物理启动均在场景加载完成后（延迟块中）执行
+    VANS_LOG("[Editor] Play: reloading scene in Runtime mode: " << m_CurrentLoadedScenePath);
+    m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Runtime;
+    m_PendingScenePath     = m_CurrentLoadedScenePath;
+}
+
+void VansGraphics::VansEditorWindow::OnPause()
+{
+    if (m_PlayState != VansEditorPlayState::Playing)
+        return;
+
+    // 冻结逻辑时间
+    VansTimer::SetTimePaused(true);
+
+    // 暂停物理（线程仍存活，仅冻结步进）
+    VansEngine::VansPhysicsSystem::GetInstance().PauseSimulation();
+
+    m_PlayState = VansEditorPlayState::Paused;
+    VANS_LOG("[Editor] Scene paused");
+}
+
+void VansGraphics::VansEditorWindow::OnResume()
+{
+    if (m_PlayState != VansEditorPlayState::Paused)
+        return;
+
+    // 恢复逻辑时间
+    VansTimer::SetTimePaused(false);
+
+    // 恢复物理步进
+    VansEngine::VansPhysicsSystem::GetInstance().ResumeSimulation();
+
+    m_PlayState = VansEditorPlayState::Playing;
+    VANS_LOG("[Editor] Scene resumed");
+}
+
+void VansGraphics::VansEditorWindow::OnStop()
+{
+    if (m_PlayState == VansEditorPlayState::Editing)
+        return;
+
+    // 冻结时间，防止重载期间推进
+    VansTimer::SetTimePaused(true);
+
+    // 暂停物理（重载时无需模拟）
+    VansEngine::VansPhysicsSystem::GetInstance().PauseSimulation();
+
+    // 提前切回编辑模式，避免重载期间触发脚本 Update
+    m_PlayState = VansEditorPlayState::Editing;
+
+    // Stop = 卸载场景，以 Editor 模式重新加载
+    VANS_LOG("[Editor] Stop: reloading scene in Editor mode: " << m_CurrentLoadedScenePath);
+    m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Editor;
+    m_PendingScenePath     = m_CurrentLoadedScenePath;
+}
+
+// ============================================================================
+// 工具栏 UI：Play / Pause / Resume / Stop 按钮
+// ============================================================================
+
+void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
+{
+    // 此函数在 BeginMenuBar() 内被调用，直接向菜单栏追加控件。
+    // 三个按钮始终同时显示，根据当前状态决定各自是否可点击。
+
+    const bool sceneReady = (m_Scene && m_Scene->IsSceneReady() && !m_Scene->IsSceneSwitching());
+
+    constexpr float BUTTON_WIDTH   = 62.0f;
+    constexpr float BUTTON_HEIGHT  = 18.0f;
+    constexpr float BUTTON_SPACING = 4.0f;
+
+    // 三个按钮始终占据固定宽度，保持菜单栏布局稳定
+    const float totalWidth = BUTTON_WIDTH * 3.0f + BUTTON_SPACING * 2.0f;
+
+    // 居中偏移：将光标移至窗口水平中央
+    const float windowWidth = ImGui::GetWindowWidth();
+    ImGui::SetCursorPosX((windowWidth - totalWidth) * 0.5f);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(BUTTON_SPACING, 0.0f));
+
+    // ── ▶ Play ──────────────────────────────────────────────────────────
+    // Editing 状态下可点击；其余状态置灰
+    const bool canPlay = sceneReady && (m_PlayState == VansEditorPlayState::Editing);
+    if (!canPlay) ImGui::BeginDisabled();
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.13f, 0.45f, 0.13f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.60f, 0.18f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.36f, 0.10f, 1.00f));
+    if (ImGui::Button(u8"\u25b6 Play", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
+        OnPlay();
+    ImGui::PopStyleColor(3);
+    if (!canPlay) ImGui::EndDisabled();
+
+    ImGui::SameLine();
+
+    // ── ⏸ Pause / ▶ Resume ──────────────────────────────────────────────
+    // Playing 时显示 Pause（可点），Paused 时显示 Resume（可点），Editing 时置灰
+    const bool canPause  = sceneReady && (m_PlayState == VansEditorPlayState::Playing);
+    const bool canResume = sceneReady && (m_PlayState == VansEditorPlayState::Paused);
+    const bool pauseActive = canPause || canResume;
+    if (!pauseActive) ImGui::BeginDisabled();
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.50f, 0.40f, 0.05f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.55f, 0.08f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.40f, 0.32f, 0.04f, 1.00f));
+    const char* pauseLabel = (m_PlayState == VansEditorPlayState::Paused)
+        ? u8"\u25b6 Resume"
+        : u8"\u23f8 Pause";
+    if (ImGui::Button(pauseLabel, ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
+    {
+        if (canResume) OnResume();
+        else           OnPause();
+    }
+    ImGui::PopStyleColor(3);
+    if (!pauseActive) ImGui::EndDisabled();
+
+    ImGui::SameLine();
+
+    // ── ⏹ Stop ──────────────────────────────────────────────────────────
+    // Playing 或 Paused 状态下可点击；Editing 时置灰
+    const bool canStop = sceneReady && (m_PlayState != VansEditorPlayState::Editing);
+    if (!canStop) ImGui::BeginDisabled();
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.45f, 0.10f, 0.10f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.65f, 0.14f, 0.14f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.36f, 0.08f, 0.08f, 1.00f));
+    if (ImGui::Button(u8"\u23f9 Stop", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
+        OnStop();
+    ImGui::PopStyleColor(3);
+    if (!canStop) ImGui::EndDisabled();
+
+    ImGui::PopStyleVar(); // ItemSpacing
+}
 
 void VansGraphics::VansEditorWindow::CreateWindowComponents()
 {
@@ -208,7 +361,7 @@ void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
         {
             for (auto camera : m_Cameras)
             {
-                camera->HandleKeyboardInput(key, scancode, action, mods, VansGraphics::VansTimer::GetLastFrameDelta());
+                camera->HandleKeyboardInput(key, scancode, action, mods, VansGraphics::VansTimer::GetEditorDeltaTime());
             }
         }
     });
@@ -243,6 +396,56 @@ void VansGraphics::VansEditorWindow::UnregisterCameraInputListeners()
     input.RemoveKeyListener("EditorCamera_Key");
     input.RemoveMouseMoveListener("EditorCamera_Move");
     input.RemoveMouseClickListener("EditorCamera_Click");
+}
+
+// ============================================================================
+// 延迟场景加载处理
+// ============================================================================
+
+void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
+{
+    if (m_PendingScenePath.empty())
+        return;
+
+    auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
+    VANS_LOG("[Editor] Loading deferred scene: " << m_PendingScenePath
+             << " [mode=" << (m_PendingSceneLoadMode == VansGraphics::VansSceneLoadMode::Editor ? "Editor" : "Runtime") << "]");
+    m_Scene->LoadSceneForRendering(m_PendingScenePath.c_str(), vkDev, m_PendingSceneLoadMode);
+
+    // 记录当前已加载场景路径（用于 Play/Stop 时重载）
+    m_CurrentLoadedScenePath = m_PendingScenePath;
+
+    if (m_PendingSceneLoadMode == VansGraphics::VansSceneLoadMode::Editor)
+    {
+        // Editor 模式：注册相机控制，冻结时间，回到 Editing 状态
+        RegisterCameraInputListeners();
+        VansTimer::SetTimePaused(true);
+        m_PlayState = VansEditorPlayState::Editing;
+    }
+    else
+    {
+        // Runtime 模式：移除相机控制，解冻时间，启动物理，进入 Playing 状态
+        UnregisterCameraInputListeners();
+        VansTimer::SetTimePaused(false);
+        auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+        if (!physics.IsSimulationRunning())
+            physics.StartSimulation();
+        else
+            physics.ResumeSimulation();
+        m_PlayState = VansEditorPlayState::Playing;
+        VANS_LOG("[Editor] Scene started playing (Runtime mode)");
+    }
+
+    // 更新场景管理器当前场景（尽量使用相对路径）
+    auto& projectMgr = Vans::VansProjectManager::Get();
+    if (projectMgr.IsProjectLoaded())
+    {
+        std::string rel = projectMgr.MakeRelativePath(m_PendingScenePath);
+        if (!rel.empty())
+            projectMgr.GetSceneManager().SetCurrentScene(rel);
+    }
+
+    m_PendingScenePath.clear();
 }
 
 void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
@@ -419,6 +622,9 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
                 }
                 ImGui::EndMenu();
             }
+            // 运行控制工具栏：直接在菜单栏内居中渲染按钮
+            DrawPlayControlToolbar();
+
             ImGui::EndMenuBar();
         }
 
@@ -713,23 +919,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         }
 
         // 2) Load scene content (materials + nodes)
-        if (!m_PendingScenePath.empty())
-        {
-            auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
-            VANS_LOG("[Editor] Loading deferred scene: " << m_PendingScenePath);
-            m_Scene->LoadSceneForRendering(m_PendingScenePath.c_str(), vkDev);
-
-            // Update scene manager current scene (best-effort relative path)
-            auto& projectMgr = Vans::VansProjectManager::Get();
-            if (projectMgr.IsProjectLoaded())
-            {
-                std::string rel = projectMgr.MakeRelativePath(m_PendingScenePath);
-                if (!rel.empty())
-                    projectMgr.GetSceneManager().SetCurrentScene(rel);
-            }
-
-            m_PendingScenePath.clear();
-        }
+        ProcessPendingSceneLoad();
 
         // --- Profiler: begin frame ---
         VANS_PROFILER_BEGIN_FRAME();
@@ -738,8 +928,8 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         camera.Rendering();
 
         m_ScriptContext.SetScene(m_Scene);
-        // 场景切换过程中跳过脚本更新，避免访问已卸载的数据
-        if (m_Scene && m_Scene->IsSceneReady())
+        // 仅在 Playing 状态下运行脚本 Update；Editing/Paused 状态下跳过
+        if (m_Scene && m_Scene->IsSceneReady() && m_PlayState == VansEditorPlayState::Playing)
         {
             m_ScriptContext.VansScriptUpdate();
         }

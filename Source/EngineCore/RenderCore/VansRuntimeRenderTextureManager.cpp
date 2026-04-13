@@ -58,6 +58,19 @@ bool VansRuntimeRenderTextureManager::Remove(const std::string& name)
 	return true;
 }
 
+bool VansRuntimeRenderTextureManager::Unregister(const std::string& name)
+{
+	auto it = m_RuntimeRenderTextures.find(name);
+	if (it == m_RuntimeRenderTextures.end())
+	{
+		return false;
+	}
+
+	// 仅从注册表移除，不 delete 纹理对象
+	m_RuntimeRenderTextures.erase(it);
+	return true;
+}
+
 void VansRuntimeRenderTextureManager::Clear()
 {
 	for (auto& kv : m_RuntimeRenderTextures)

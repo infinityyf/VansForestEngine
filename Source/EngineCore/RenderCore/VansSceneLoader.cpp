@@ -53,7 +53,7 @@ void VansScene::LoadProjectResources(const char* resourceJsonPath, VansVKDevice*
 // ===========================================================================
 // LoadSceneForRendering — 加载场景并准备 GPU 资源
 // ===========================================================================
-void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* device)
+void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* device, VansSceneLoadMode mode)
 {
 	VANS_LOG("[VansScene] LoadSceneForRendering: " << scenePath);
 
@@ -89,6 +89,9 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 	CreateGlobalDescriptorSet(device->GetLogicDevice());
 	CreateNodeDescriptorSets();
 	device->PrepareRayTracingData();
+
+	// 记录本次加载模式
+	m_LoadMode = mode;
 
 	m_SceneState = VansSceneState::Ready;
 	VANS_LOG("[VansScene] 场景就绪，可以开始渲染");
@@ -1042,6 +1045,19 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
         return false;
     }
     json sceneData = json::parse(jsonFile);
+
+    // Load camera parameters from scene JSON
+    if (m_Camera != nullptr)
+    {
+        if (sceneData.contains("camera"))
+        {
+            m_Camera->ApplyCameraSettings(sceneData["camera"]);
+        }
+        else
+        {
+            m_Camera->ResetToDefaults();
+        }
+    }
 
     // Load materials (resources are already loaded from resource.json)
     if (sceneData.contains("material") && sceneData["material"].is_array())

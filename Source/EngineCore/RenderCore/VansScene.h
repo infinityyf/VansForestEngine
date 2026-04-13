@@ -28,6 +28,15 @@ namespace VansGraphics
 		Ready        // 场景就绪，可渲染
 	};
 
+	// ── 场景加载模式枚举 ──────────────────────────────────────────────────
+	// Editor：编辑器模式，启用编辑器相机控制，时间默认冻结
+	// Runtime：运行时模式，使用场景配置相机，时间正常推进
+	enum class VansSceneLoadMode
+	{
+		Editor,   // 编辑器模式
+		Runtime   // 运行时模式
+	};
+
 	// A logical group representing a multi-mesh parent and all its auto-expanded child render nodes.
 	struct MultiMeshGroup
 	{
@@ -207,7 +216,7 @@ namespace VansGraphics
 		/// Load a scene file and prepare all GPU resources (PBR, transform,
 		/// descriptor sets, ray tracing).  Safe to call multiple times;
 		/// will unload the previous scene first.
-		void LoadSceneForRendering(const char* scenePath, VansVKDevice* device);
+		void LoadSceneForRendering(const char* scenePath, VansVKDevice* device, VansSceneLoadMode mode = VansSceneLoadMode::Editor);
 
 		/// Load only project-wide resources (mesh, texture, shaders) from a
 		/// parsed resource JSON.  Called once per project, before any scene load.
@@ -359,6 +368,9 @@ namespace VansGraphics
 
 		VansCamera* GetCamera() { return m_Camera; }
 
+		// 获取场景加载模式（Editor / Runtime）
+		VansSceneLoadMode GetLoadMode() const { return m_LoadMode; }
+
 		VkAccelerationStructureKHR& GetTopAS() { return m_TopLevelAS; }
 
 		std::vector<VansVKBuffer>& GetBLASVertexBuffers() { return m_BLASVertexData; }
@@ -405,7 +417,8 @@ namespace VansGraphics
 
 	private:
 		// ── 场景 / 资源加载状态 ────────────────────────────────────────────
-		VansSceneState m_SceneState = VansSceneState::Empty;
+		VansSceneState   m_SceneState    = VansSceneState::Empty;
+		VansSceneLoadMode m_LoadMode     = VansSceneLoadMode::Editor;
 		bool m_ResourcesLoaded = false;
 	};
 }

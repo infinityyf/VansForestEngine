@@ -26,6 +26,17 @@ namespace VansGraphics
 	class VansConsoleWindow;
 	class VansProfilerWindow;
 
+	// 前置声明（定义在 VansScene.h）
+	enum class VansSceneLoadMode;
+
+	/// 编辑器运行控制状态
+	enum class VansEditorPlayState
+	{
+		Editing,  // 默认：场景已加载，时间不推进
+		Playing,  // 运行中：时间推进，物理与脚本均激活
+		Paused,   // 暂停：时间冻结，物理与脚本停止
+	};
+
 	//编辑器窗口
 	class VansEditorWindow
 	{
@@ -62,6 +73,18 @@ namespace VansGraphics
 		/// Unregister camera input listeners
 		static void UnregisterCameraInputListeners();
 
+		/// 处理延迟场景加载（从主循环中提取）
+		static void ProcessPendingSceneLoad();
+
+		/// 绘制顶部运行控制工具栏（Play / Pause / Resume / Stop）
+		static void DrawPlayControlToolbar();
+
+		/// 运行控制动作
+		static void OnPlay();
+		static void OnPause();
+		static void OnResume();
+		static void OnStop();
+
 		static std::vector<VansGraphics::VansCamera*> m_Cameras;
 
 	public:
@@ -97,6 +120,15 @@ namespace VansGraphics
 
 		/// True once a project has been successfully opened/created
 		static bool m_ProjectLoaded;
+
+		/// 当前编辑器运行状态
+		static VansEditorPlayState m_PlayState;
+
+		/// 当前已加载场景的绝对路径（Stop 时用于重载）
+		static std::string m_CurrentLoadedScenePath;
+
+		/// 下一次延迟场景加载所使用的模式（Editor / Runtime）
+		static VansGraphics::VansSceneLoadMode m_PendingSceneLoadMode;
 
 	public:
 		/// Deferred scene load: set during ImGui frame, processed before next Rendering()

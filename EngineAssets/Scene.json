@@ -1,4 +1,11 @@
 {
+    "camera": {
+        "position": [1.0, 1.0, 1.0],
+        "rotation": [0.0, -90.0, 0.0],
+        "fov": 45.0,
+        "nearClip": 0.01,
+        "farClip": 10000.0
+    },
     "scene": [
         {
             "rendernode": [

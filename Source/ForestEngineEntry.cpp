@@ -176,8 +176,8 @@ int main()
 		return -1;
 	}
 
-	// Create camera for the scene
-	VansCamera camera(glm::vec3(1, 1, 1), glm::vec3(0, -90, 0), m_GraphicsDevice);
+	// Create camera for the scene (parameters will be applied from Scene.json in LoadSceneContent)
+	VansCamera camera(m_GraphicsDevice);
 
 	// Run the main engine loop
 	RunMainLoop(camera);

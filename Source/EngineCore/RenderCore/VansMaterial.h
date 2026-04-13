@@ -111,6 +111,9 @@ namespace VansGraphics
 
 		bool RemoveRuntimeRenderTexture(const std::string& name);
 
+		// 仅从注册表移除条目，不 delete 纹理（所有权归外部系统，如 VansRayTracing）
+		bool UnregisterRuntimeRenderTexture(const std::string& name);
+
 		void ClearRuntimeRenderTextures();
 
 		// ── 场景切换时清空场景级 PBR 数据 ─────────────────────────────
