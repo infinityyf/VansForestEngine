@@ -85,6 +85,9 @@ namespace VansGraphics
 		static void OnResume();
 		static void OnStop();
 
+		/// 查询当前是否处于编辑模式（非 Playing / Paused）
+		static bool IsEditing() { return m_PlayState == VansEditorPlayState::Editing; }
+
 		static std::vector<VansGraphics::VansCamera*> m_Cameras;
 
 	public:

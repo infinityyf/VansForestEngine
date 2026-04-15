@@ -1,7 +1,9 @@
 #include "VansScriptContext.h"
 #include "VansTransform.h"
 #include "../RenderCore/VansRenderNode.h"
+#include "../Util/VansInputManager.h"
 #include "../../../../ForestExporter/VansEngineBridge.h"
+#include "../../../../ForestExporter/VansInputBridge.h"
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  VansScriptBridge.cpp — Fills the VansEngineBridge function-pointer table
@@ -230,4 +232,113 @@ void VansInitEngineBridge()
 VansEngineBridge* VansGetEngineBridgePtr()
 {
 	return &s_EngineBridge;
+}
+
+// ===========================================================================
+//  VansInputBridge — 将 VansInputManager 的接口暴露给 vaninput .pyd
+// ===========================================================================
+
+static VansInputBridge s_InputBridge;
+
+void VansInitInputBridge()
+{
+	auto& input = Vans::VansInputManager::Get();
+
+	// ── 键盘 ─────────────────────────────────────────────────────────────
+	s_InputBridge.isKeyDown = [](int key) -> bool
+	{
+		return Vans::VansInputManager::Get().IsKeyDown(key);
+	};
+
+	s_InputBridge.isKeyPressed = [](int key) -> bool
+	{
+		return Vans::VansInputManager::Get().IsKeyPressed(key);
+	};
+
+	s_InputBridge.isKeyReleased = [](int key) -> bool
+	{
+		return Vans::VansInputManager::Get().IsKeyReleased(key);
+	};
+
+	// ── 鼠标按键 ──────────────────────────────────────────────────────────
+	s_InputBridge.isMouseDown = [](int button) -> bool
+	{
+		return Vans::VansInputManager::Get().IsMouseButtonDown(
+			static_cast<Vans::MouseButton>(button));
+	};
+
+	s_InputBridge.isMousePressed = [](int button) -> bool
+	{
+		return Vans::VansInputManager::Get().IsMouseButtonPressed(
+			static_cast<Vans::MouseButton>(button));
+	};
+
+	s_InputBridge.isMouseReleased = [](int button) -> bool
+	{
+		return Vans::VansInputManager::Get().IsMouseButtonReleased(
+			static_cast<Vans::MouseButton>(button));
+	};
+
+	// ── 鼠标位置 / 增量 / 滚轮 ──────────────────────────────────────────
+	s_InputBridge.getMousePosition = [](double& x, double& y)
+	{
+		Vans::VansInputManager::Get().GetMousePosition(x, y);
+	};
+
+	s_InputBridge.getMouseDelta = [](double& dx, double& dy)
+	{
+		Vans::VansInputManager::Get().GetMouseDelta(dx, dy);
+	};
+
+	s_InputBridge.getScrollDelta = [](double& sx, double& sy)
+	{
+		Vans::VansInputManager::Get().GetScrollDelta(sx, sy);
+	};
+
+	// ── Action 系统 ───────────────────────────────────────────────────────
+	s_InputBridge.registerAction = [](const char* name, int key)
+	{
+		Vans::VansInputManager::Get().RegisterAction(std::string(name), key);
+	};
+
+	s_InputBridge.unregisterAction = [](const char* name)
+	{
+		Vans::VansInputManager::Get().UnregisterAction(std::string(name));
+	};
+
+	s_InputBridge.isActionDown = [](const char* name) -> bool
+	{
+		return Vans::VansInputManager::Get().IsActionDown(std::string(name));
+	};
+
+	s_InputBridge.isActionPressed = [](const char* name) -> bool
+	{
+		return Vans::VansInputManager::Get().IsActionPressed(std::string(name));
+	};
+
+	s_InputBridge.isActionReleased = [](const char* name) -> bool
+	{
+		return Vans::VansInputManager::Get().IsActionReleased(std::string(name));
+	};
+
+	// ── Axis 系统 ─────────────────────────────────────────────────────────
+	s_InputBridge.registerAxis = [](const char* name, int posKey, int negKey)
+	{
+		Vans::VansInputManager::Get().RegisterAxis(std::string(name), posKey, negKey);
+	};
+
+	s_InputBridge.unregisterAxis = [](const char* name)
+	{
+		Vans::VansInputManager::Get().UnregisterAxis(std::string(name));
+	};
+
+	s_InputBridge.getAxis = [](const char* name) -> float
+	{
+		return Vans::VansInputManager::Get().GetAxis(std::string(name));
+	};
+}
+
+VansInputBridge* VansGetInputBridgePtr()
+{
+	return &s_InputBridge;
 }

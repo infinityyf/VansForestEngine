@@ -424,8 +424,9 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
     }
     else
     {
-        // Runtime 模式：移除相机控制，解冻时间，启动物理，进入 Playing 状态
-        UnregisterCameraInputListeners();
+        // Runtime 模式：解冻时间，启动物理，进入 Playing 状态
+        // TODO(debug): Play 模式下暂时保留相机控制，正式版需改回 UnregisterCameraInputListeners()
+        RegisterCameraInputListeners();
         VansTimer::SetTimePaused(false);
         auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
         if (!physics.IsSimulationRunning())
@@ -842,12 +843,14 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
     //初始化脚本环境
     m_ScriptContext.VansScriptSetup();
 
-    // Register camera input listeners through InputManager
-    RegisterCameraInputListeners();
-
     // Main loop
     while (!glfwWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle))
     { 
+        // 必须先更新输入帧状态（将 isDown 存入 wasDown），再 PollEvents 接收新事件。
+        // 若顺序反转，glfwPollEvents 写入 isDown 后 Update 立即覆盖 wasDown，
+        // 导致 IsKeyPressed / IsKeyReleased 永远返回 false。
+        Vans::VansInputManager::Get().Update();
+
         glfwPollEvents();
 
         // Resize swap chain?
@@ -874,12 +877,10 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
         Vans::VansJobSystem::Get().ProcessMainThreadJobs();
 
-        //更新输入管理器 (must be before any input queries this frame)
-        Vans::VansInputManager& input = Vans::VansInputManager::Get();
-        input.Update();
-
         //更新时间
         VansGraphics::VansTimer::Update();
+
+        Vans::VansInputManager& input = Vans::VansInputManager::Get();
 
         // Step Vehicle Physics - MOVED TO PHYSICS THREAD via Callback
         if (m_Scene && m_Scene->IsSceneReady() && m_Scene->m_Vehicle)

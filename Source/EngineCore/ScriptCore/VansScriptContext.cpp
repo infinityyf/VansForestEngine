@@ -10,11 +10,14 @@
 #include <string>
 #include <algorithm>
 #include "../../../../ForestExporter/VansEngineBridge.h"
+#include "../../../../ForestExporter/VansInputBridge.h"
 #include "../../../../ForestExporter/VansPhysicsEventInfo.h"
 
 // Defined in VansScriptBridge.cpp
 extern void VansInitEngineBridge();
 extern VansEngineBridge* VansGetEngineBridgePtr();
+extern void VansInitInputBridge();
+extern VansInputBridge* VansGetInputBridgePtr();
 namespace py = pybind11;
 
 // Singleton instance
@@ -217,8 +220,15 @@ void VansScriptContext::ReloadPydModule(const std::string& moduleName)
         VansConsole::Get().LogPython("[PYD-Reload] Reloaded " + moduleName + " (v" +
             std::to_string(m_PydReloadCounter) + ")");
 
-        // Re-install the engine bridge into the freshly loaded module
-        mod.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetEngineBridgePtr()));
+        // Re-install the correct bridge depending on which module was reloaded
+        if (moduleName == "vaninput")
+        {
+            mod.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetInputBridgePtr()));
+        }
+        else
+        {
+            mod.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetEngineBridgePtr()));
+        }
 
         // Reload dependent .py scripts so they pick up the new .pyd
         ReloadAllPyScripts();
@@ -267,7 +277,7 @@ void VansScriptContext::VansScriptSetup()
     // (must be after sys.path setup so _engine_redirect.py is findable)
     InstallPythonOutputRedirect();
 
-    // ── Initialize the engine bridge and install it into the .pyd ─────────
+    // ── 初始化并安装引擎桥接到 vanscomponent ─────────────────────────────
     VansInitEngineBridge();
     try
     {
@@ -279,6 +289,20 @@ void VansScriptContext::VansScriptSetup()
     {
         VansConsole::Get().LogPython(std::string("[Bridge] Warning: ") + e.what());
         VANS_LOG_ERROR("Failed to install engine bridge: " << e.what());
+    }
+
+    // ── 初始化并安装输入桥接到 vaninput ───────────────────────────────────
+    VansInitInputBridge();
+    try
+    {
+        py::module vi = py::module::import("vaninput");
+        vi.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetInputBridgePtr()));
+        VansConsole::Get().LogPython("[Bridge] Input bridge installed into vaninput");
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython(std::string("[Bridge] Warning (vaninput): ") + e.what());
+        VANS_LOG_ERROR("Failed to install input bridge: " << e.what());
     }
 
 }

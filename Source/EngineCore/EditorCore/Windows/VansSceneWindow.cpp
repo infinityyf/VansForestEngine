@@ -155,27 +155,6 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
             }
         }
 
-        // Input Handling
-        if (ImGui::IsWindowHovered() && ImGui::IsMouseDown(ImGuiMouseButton_Right))
-        {
-            ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
-            float deltaTime = static_cast<float>(VansGraphics::VansTimer::GetLastFrameDelta());
-
-            m_Camera->SetRightMouseDown(true);
-            m_Camera->HandleMouseMovement(mouseDelta.x, mouseDelta.y);
-
-            if (ImGui::IsKeyDown(ImGuiKey_W)) m_Camera->HandleKeyboardInput(GLFW_KEY_W, 0, GLFW_PRESS, 0, deltaTime);
-            if (ImGui::IsKeyDown(ImGuiKey_S)) m_Camera->HandleKeyboardInput(GLFW_KEY_S, 0, GLFW_PRESS, 0, deltaTime);
-            if (ImGui::IsKeyDown(ImGuiKey_A)) m_Camera->HandleKeyboardInput(GLFW_KEY_A, 0, GLFW_PRESS, 0, deltaTime);
-            if (ImGui::IsKeyDown(ImGuiKey_D)) m_Camera->HandleKeyboardInput(GLFW_KEY_D, 0, GLFW_PRESS, 0, deltaTime);
-            if (ImGui::IsKeyDown(ImGuiKey_Q)) m_Camera->HandleKeyboardInput(GLFW_KEY_Q, 0, GLFW_PRESS, 0, deltaTime);
-            if (ImGui::IsKeyDown(ImGuiKey_E)) m_Camera->HandleKeyboardInput(GLFW_KEY_E, 0, GLFW_PRESS, 0, deltaTime);
-        }
-        else
-        {
-            m_Camera->SetRightMouseDown(false);
-        }
-
         ImGui::End();
         ImGui::PopStyleVar();
     }
