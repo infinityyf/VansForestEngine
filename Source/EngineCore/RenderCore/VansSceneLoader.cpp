@@ -14,6 +14,9 @@
 #include "TerrainCore/VansTerrain.h"
 #include "VegetationCore/VansVegetationSystem.h"
 #include "../AnimationCore/VansAnimationNode.h"
+#include "../AnimationCore/VansAnimationController.h"
+#include "../AnimationCore/VansAnimatorIO.h"
+#include "../AnimationCore/VansAnimationClipLoader.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
 
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
@@ -579,17 +582,8 @@ void VansGraphics::VansScene::LoadMeshesFromJson(
             bool needCpuData = sceneMesh.value("need_cpu_data", false);
             VansMesh* mesh   = new VansMesh(needCpuData, /*supportRayTracing=*/false);
 
-            // Optional external animation FBX — only animation clips are read from it;
-            // bone weights and skeleton come from the origin model.
-            if (sceneMesh.contains("extern_animation"))
-            {
-                std::string externAnimPath = pathPrefix + sceneMesh["extern_animation"].get<std::string>();
-                mesh->m_ExternAnimationPath = externAnimPath;
-            }
-
-            mesh->m_RootMotion = sceneMesh.value("root_motion", false);
-            if (sceneMesh.contains("root_bone"))
-                mesh->m_RootBoneName = sceneMesh["root_bone"].get<std::string>();
+            // 动画相关字段 (root_bone, root_motion, extern_animation) 已迁移到
+            // Scene JSON 中的 animation_node 配置，由 LoadAnimationNodesFromJson 处理。
 
             mesh->LoadMultiMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath, import_tangent, generate_as, needCpuData);
             mesh->SetName(sceneMesh["name"]);
@@ -1108,6 +1102,22 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
         AddVegetationNode(nativeDevice, sceneData["vegetation"]);
     }
 
+    // Animation nodes (controller-driven, from scene JSON)
+    if (sceneNode[0].contains("animation_node") && sceneNode[0]["animation_node"].is_array())
+    {
+        // 从 scene path 推导 project root
+        std::string scenePath(path);
+        std::string projectRoot = scenePath.substr(0, scenePath.find_last_of("/\\") + 1);
+        // 再向上一级（Scenes/ → 项目根目录）
+        if (!projectRoot.empty())
+        {
+            size_t pos = projectRoot.substr(0, projectRoot.size() - 1).find_last_of("/\\");
+            if (pos != std::string::npos)
+                projectRoot = projectRoot.substr(0, pos + 1);
+        }
+        LoadAnimationNodesFromJson(sceneNode[0]["animation_node"], projectRoot);
+    }
+
     AddDeferredNode(nativeDevice);
     AddScreenSpaceFeatureNode(nativeDevice);
 
@@ -1364,55 +1374,195 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
                  << " (type=" << (nodeType == OPAQUE_NODE ? "OPAQUE" : "TRANSPARENT") << ")");
     }
 
-    // ── Auto-create animation node if the multi-mesh has skeletal animation ──────
-    if (multiMesh->m_HasAnimation && !group.childNodes.empty())
+    // ── 动画节点不再在此创建 ──
+    // AnimationNode + Controller 由 LoadAnimationNodesFromJson 根据
+    // Scene JSON 中的 animation_node 配置独立创建。
+    // ExpandMultiMesh 仅负责几何体 → 渲染节点的展开。
+}
+
+// ===========================================================================
+// LoadAnimationNodesFromJson — 从场景 JSON 加载 controller-based animation nodes
+// ===========================================================================
+
+void VansGraphics::VansScene::LoadAnimationNodesFromJson(json& animNodeArray, const std::string& projectRoot)
+{
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VkDevice device = vkDevice->GetLogicDevice();
+
+    for (auto& entry : animNodeArray)
     {
-        VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+        std::string nodeName      = entry.value("name", "");
+        std::string meshGroupName = entry.value("mesh_group", "");
+        std::string animatorPath  = entry.value("animator", "");
+        std::string externClips   = entry.value("extern_clips", "");
+        bool enableRootMotion     = entry.value("root_motion", false);
+        std::string rootBone      = entry.value("root_bone", "");
 
-        VansAnimationNode* animNode = new VansAnimationNode(resolvedParentName);
-        animNode->SetSkeleton(multiMesh->m_AnimImportResult.skeleton);
-
-        for (auto& clip : multiMesh->m_AnimImportResult.clips)
-            animNode->AddClip(clip);
-
-        animNode->SetRenderNodes(group.childNodes);
-        animNode->InitGPUResources(vkDevice->GetLogicDevice(), 1 /*framesInFlight*/);
-
-        // Upload per-submesh bone ID and bone weight buffers.
-        // This must happen after InitGPUResources (which sets m_Device on the animNode).
-        animNode->UploadPerSubmeshBoneBuffers(multiMesh->m_SubMeshBoneData);
-
-        // Auto-play first clip with looping enabled
-        auto clipNames = animNode->GetClipNames();
-        if (!clipNames.empty())
+        if (nodeName.empty() || meshGroupName.empty())
         {
-            AnimationPlaySettings settings;
-            settings.loop     = true;
-            settings.autoPlay = true;
-            animNode->Play(clipNames.front(), settings);
+            VANS_LOG_WARN("[LoadAnimNode] Skipping animation_node entry with empty name or mesh_group");
+            continue;
         }
 
-        // ── Root motion setup: give the animation node write-access to the shared transform ──
+        // 找到对应的 MultiMeshGroup
+        auto groupIt = m_MultiMeshGroups.find(meshGroupName);
+        if (groupIt == m_MultiMeshGroups.end())
+        {
+            VANS_LOG_WARN("[LoadAnimNode] mesh_group '" << meshGroupName << "' not found for animation_node '" << nodeName << "'");
+            continue;
+        }
+
+        MultiMeshGroup& group = groupIt->second;
+        if (group.childNodes.empty())
+            continue;
+
+        // 查找 mesh 资产（获取 skeleton 和内嵌 clip）
+        VansMesh* meshAsset = nullptr;
+        for (auto* asset : m_Meshes)
+        {
+            if (asset->m_AssetName == meshGroupName)
+            {
+                meshAsset = dynamic_cast<VansMesh*>(asset);
+                break;
+            }
+        }
+
+        if (!meshAsset || !meshAsset->m_HasAnimation)
+        {
+            VANS_LOG_WARN("[LoadAnimNode] mesh_group '" << meshGroupName
+                         << "' has no animation data. Skipping '" << nodeName << "'");
+            continue;
+        }
+
+        // ── 创建 Controller ──────────────────────────────────────────────
+        VansAnimationController* controller = nullptr;
+
+        if (!animatorPath.empty())
+        {
+            // 路径 A: 从 .vanimator 文件加载完整 controller 定义
+            std::string fullAnimatorPath = projectRoot + animatorPath;
+
+            AnimatorAssetData assetData;
+            if (!VansAnimatorIO::Load(fullAnimatorPath, assetData))
+            {
+                VANS_LOG_WARN("[LoadAnimNode] Failed to load .vanimator: " << fullAnimatorPath);
+                continue;
+            }
+
+            auto clipsMap = VansAnimationClipLoader::LoadClipsFromRefs(assetData.clipRefs);
+
+            controller = new VansAnimationController();
+            controller->SetName(assetData.name);
+
+            for (const auto& param : assetData.parameters)
+            {
+                controller->AddParameter(param.name, param.type);
+                switch (param.type)
+                {
+                case AnimatorParamType::Float:   controller->SetFloat(param.name, param.floatVal); break;
+                case AnimatorParamType::Bool:    controller->SetBool(param.name, param.boolVal);   break;
+                case AnimatorParamType::Int:     controller->SetInt(param.name, param.intVal);     break;
+                case AnimatorParamType::Trigger: break;
+                }
+            }
+
+            for (auto& [name, clip] : clipsMap)
+                controller->AddClip(name, std::move(clip));
+
+            for (const auto& state : assetData.states)
+                controller->AddState(state);
+
+            for (const auto& trans : assetData.transitions)
+                controller->AddTransition(trans);
+
+            controller->SetDefaultState(assetData.defaultStateName);
+            controller->BindStateClips();
+
+            VANS_LOG("[LoadAnimNode] Loaded controller from .vanimator: " << fullAnimatorPath);
+        }
+        else
+        {
+            // 路径 B: 自动生成默认 controller（从 FBX 内嵌 clip + 外部 clip）
+            controller = new VansAnimationController();
+            controller->SetName(meshGroupName + "_Controller");
+
+            // 收集 clip: 如果指定了外部 FBX，优先使用外部 clip（与旧方案一致，
+            // 外部 clip 完全替换内嵌 clip，避免默认播放内嵌 clip 导致骨骼矩阵不匹配）
+            bool usedExternClips = false;
+            if (!externClips.empty())
+            {
+                std::string fullExternPath = projectRoot + externClips;
+                std::vector<VansAnimationClip> extClips;
+                if (VansAnimationClipLoader::ExtractClipsFromFBX(
+                        fullExternPath, meshAsset->m_AnimImportResult.skeleton, extClips))
+                {
+                    for (auto& extClip : extClips)
+                        controller->AddClip(extClip.clipName, std::move(extClip));
+
+                    usedExternClips = true;
+                    VANS_LOG("[LoadAnimNode] Loaded " << extClips.size()
+                             << " extern clip(s) from: " << fullExternPath);
+                }
+                else
+                {
+                    VANS_LOG_WARN("[LoadAnimNode] Failed to extract clips from: " << fullExternPath);
+                }
+            }
+
+            // 仅当没有成功加载外部 clip 时，才使用 mesh 内嵌的 clip（fallback）
+            if (!usedExternClips)
+            {
+                for (auto& clip : meshAsset->m_AnimImportResult.clips)
+                    controller->AddClip(clip.clipName, clip);
+            }
+
+            // 为每个 clip 创建同名 state
+            auto clipNames = controller->GetClipNames();
+            for (const auto& clipName : clipNames)
+            {
+                AnimatorState state;
+                state.name        = clipName;
+                state.clipName    = clipName;
+                state.speed       = 1.0f;
+                state.loop        = true;
+                state.rootMotion  = enableRootMotion;
+                controller->AddState(state);
+            }
+
+            if (!clipNames.empty())
+                controller->SetDefaultState(clipNames.front());
+
+            controller->BindStateClips();
+
+            VANS_LOG("[LoadAnimNode] Auto-generated controller for '" << meshGroupName
+                     << "' with " << clipNames.size() << " clip(s)");
+        }
+
+        // Root motion 配置
+        if (enableRootMotion)
+            controller->EnableRootMotion(true);
+
+        // ── 创建 AnimationNode ───────────────────────────────────────────
+        VansAnimationNode* animNode = new VansAnimationNode(nodeName);
+        animNode->SetSkeleton(meshAsset->m_AnimImportResult.skeleton);
+        animNode->SetRenderNodes(group.childNodes);
+        animNode->InitGPUResources(device, 1);
+        animNode->UploadPerSubmeshBoneBuffers(meshAsset->m_SubMeshBoneData);
         animNode->SetTransformID(group.sharedTransformID);
 
-        // Enable root motion if the mesh JSON specified it
-        if (!multiMesh->m_RootBoneName.empty())
-            animNode->SetRootBone(multiMesh->m_RootBoneName);
-        if (multiMesh->m_RootMotion)
-        {
-            animNode->EnableRootMotion(true);
-        }
+        animNode->SetController(controller);
 
-        // Tag all child render nodes as animated and link back to this animation node.
-        // Wire up per-submesh bone ID and weight buffers (no offset needed).
+        if (!rootBone.empty())
+            animNode->SetRootBone(rootBone);
+
+        // Tag render nodes
         for (size_t ci = 0; ci < group.childNodes.size(); ci++)
         {
             VansRenderNode* childNode = group.childNodes[ci];
-            childNode->m_HasSkeletonBone      = true;
-            childNode->m_AnimationEnabled      = true;
-            childNode->m_AnimOwner             = animNode;
-            childNode->m_AnimSubmeshIndex      = static_cast<uint32_t>(ci);
-            // Per-submesh bone ID and weight buffers
+            childNode->m_HasSkeletonBone   = true;
+            childNode->m_AnimationEnabled  = true;
+            childNode->m_AnimOwner         = animNode;
+            childNode->m_AnimSubmeshIndex   = static_cast<uint32_t>(ci);
             if (ci < animNode->GetSubmeshBufferCount())
             {
                 childNode->m_AnimBoneIDBuffer     = &animNode->GetBoneIDBuffer(static_cast<uint32_t>(ci));
@@ -1421,11 +1571,13 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
         }
 
         m_AnimationNodes.push_back(animNode);
+        m_AnimationControllers.push_back(controller);
+        controller->Play();
 
-        VANS_LOG("[ExpandMultiMesh] Animation node created for group '" << resolvedParentName
-            << "': " << clipNames.size() << " clip(s), "
-            << multiMesh->m_AnimImportResult.skeleton.bones.size() << " bones, "
-            << group.childNodes.size() << " render node(s) tagged animated.");
+        VANS_LOG("[LoadAnimNode] Created animation_node '" << nodeName
+                 << "' with " << controller->GetClipNames().size() << " clip(s), "
+                 << meshAsset->m_AnimImportResult.skeleton.bones.size() << " bones, "
+                 << group.childNodes.size() << " render node(s)");
     }
 }
 

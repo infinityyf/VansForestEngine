@@ -319,6 +319,9 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 
 	VANS_LOG("[VansSkinnedMeshLoader] Skeleton extracted: " << outSkeleton.bones.size()
 	         << " bones (" << hierarchyOnlyCount << " hierarchy-only)");
+
+	// ── Phase 5: 构建拓扑遍历顺序（父骨骼在子骨骼之前）──
+	outSkeleton.BuildTopologicalOrder();
 }
 
 // ════════════════════════════════════════════════════════════════

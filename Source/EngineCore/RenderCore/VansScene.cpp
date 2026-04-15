@@ -591,6 +591,14 @@ void VansGraphics::VansScene::UnLoadScene()
 	m_AnimationNodes.clear();
 	VANS_LOG("[VansScene] Step 9: 动画节点已清理");
 
+	// ── 9b. 清理动画控制器（Controller 由 Scene 持有，Node 只存裸指针） ───
+	for (auto* ctrl : m_AnimationControllers)
+	{
+		delete ctrl;
+	}
+	m_AnimationControllers.clear();
+	VANS_LOG("[VansScene] Step 9b: 动画控制器已清理");
+
 	// ── 10. 清理 Multi-mesh 分组 ────────────────────────────────────────
 	VANS_LOG("[VansScene] Step 10: 开始清理 Multi-mesh 分组 (数量=" << m_MultiMeshGroups.size() << ")");
 	m_MultiMeshGroups.clear();

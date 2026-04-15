@@ -6,6 +6,7 @@
 #include "../../PhysicsCore/VansPhysicsVehicle.h"
 
 #include "imgui.h"
+#include <algorithm>
 #include <cstdio>
 #include <../../GLM/glm.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
@@ -384,23 +385,45 @@ void VansGraphics::VansHierachuWindow::DrawAnimationNodeDetail()
 {
     if (!m_SelectedAnimationNode) return;
 
+    // 场景卸载后 m_SelectedAnimationNode 可能悬空，需验证指针仍在当前场景中
+    {
+        const auto& nodes = m_Scene->m_AnimationNodes;
+        if (std::find(nodes.begin(), nodes.end(), m_SelectedAnimationNode) == nodes.end())
+        {
+            m_SelectedAnimationNode = nullptr;
+            return;
+        }
+    }
+
     VansAnimationNode* anim = m_SelectedAnimationNode;
+    VansAnimationController* ctrl = anim->GetController();
 
     ImGui::Begin("Animation Inspector");
 
-    // ── Node name ────────────────────────────────────────────────────
+    // ── Node 名称 ────────────────────────────────────────────────────
     ImGui::Text("Animation Node: %s", anim->GetName().c_str());
+    if (ctrl)
+        ImGui::TextColored(ImVec4(0.5f, 0.9f, 1.0f, 1.0f), "Controller: %s", ctrl->GetName().c_str());
+    else
+        ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "Controller: (none)");
     ImGui::Separator();
 
-    // ── Clip name ────────────────────────────────────────────────────
-    const std::string& clipName = anim->GetCurrentClipName();
-    ImGui::Text("Clip:  %s", clipName.empty() ? "(none)" : clipName.c_str());
+    if (!ctrl)
+    {
+        ImGui::TextDisabled("No controller bound to this animation node.");
+        ImGui::End();
+        return;
+    }
 
-    // ── Playback state label ─────────────────────────────────────────
-    AnimationState state = anim->GetState();
+    // ── 当前状态 ─────────────────────────────────────────────────────
+    std::string stateName = ctrl->GetCurrentStateName();
+    ImGui::Text("State: %s", stateName.empty() ? "(none)" : stateName.c_str());
+
+    // ── 播放状态标签 ─────────────────────────────────────────────────
+    AnimationState playbackState = ctrl->GetPlaybackState();
     const char* stateLabel = "Unknown";
     ImVec4 stateColor = ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-    switch (state)
+    switch (playbackState)
     {
     case AnimationState::Playing:
         stateLabel = "Playing";
@@ -419,46 +442,47 @@ void VansGraphics::VansHierachuWindow::DrawAnimationNodeDetail()
         stateColor = ImVec4(0.3f, 0.6f, 1.0f, 1.0f);
         break;
     }
-    ImGui::TextColored(stateColor, "State: %s", stateLabel);
+    ImGui::TextColored(stateColor, "Playback: %s", stateLabel);
+
+    if (playbackState == AnimationState::Blending)
+    {
+        float blendAlpha = ctrl->GetBlendAlpha();
+        ImGui::ProgressBar(blendAlpha, ImVec2(-1.0f, 0.0f), "Blend");
+    }
 
     ImGui::Separator();
 
-    // ── Progress bar ─────────────────────────────────────────────────
-    float progress  = anim->GetNormalizedTime();
-    float curTime   = anim->GetCurrentTime();
-    float duration  = anim->GetDuration();
+    // ── 进度条 ───────────────────────────────────────────────────────
+    float progress = ctrl->GetNormalizedTime();
+    float curTime  = ctrl->GetCurrentPlayTime();
+    float duration = ctrl->GetCurrentDuration();
     char progressLabel[64];
     std::snprintf(progressLabel, sizeof(progressLabel), "%.2fs / %.2fs", curTime, duration);
     ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), progressLabel);
 
-    // ── Speed ─────────────────────────────────────────────────────────
-    float speed = anim->GetSpeed();
+    // ── 速度 ─────────────────────────────────────────────────────────
+    float speed = ctrl->GetSpeed();
     if (ImGui::SliderFloat("Speed", &speed, 0.0f, 4.0f, "%.2fx"))
-        anim->SetSpeed(speed);
+        ctrl->SetSpeed(speed);
 
     // ── Root Motion ──────────────────────────────────────────────────
-    bool rootMotion = anim->IsRootMotionEnabled();
+    bool rootMotion = ctrl->IsRootMotionEnabled();
     if (ImGui::Checkbox("Root Motion", &rootMotion))
-        anim->EnableRootMotion(rootMotion);
+        ctrl->EnableRootMotion(rootMotion);
 
     ImGui::Spacing();
 
-    // ── Clip list / selector ─────────────────────────────────────────
-    std::vector<std::string> clipNames = anim->GetClipNames();
-    if (!clipNames.empty())
+    // ── 状态选择器 ───────────────────────────────────────────────────
+    std::vector<std::string> stateNames = ctrl->GetStateNames();
+    if (!stateNames.empty())
     {
-        if (ImGui::BeginCombo("Clip", clipName.empty() ? "(none)" : clipName.c_str()))
+        if (ImGui::BeginCombo("State", stateName.empty() ? "(none)" : stateName.c_str()))
         {
-            for (const auto& cn : clipNames)
+            for (const auto& sn : stateNames)
             {
-                bool isCurrent = (cn == clipName);
-                if (ImGui::Selectable(cn.c_str(), isCurrent))
-                {
-                    AnimationPlaySettings settings;
-                    settings.loop  = true;
-                    settings.speed = speed;
-                    anim->Play(cn, settings);
-                }
+                bool isCurrent = (sn == stateName);
+                if (ImGui::Selectable(sn.c_str(), isCurrent))
+                    ctrl->Play(sn);
                 if (isCurrent)
                     ImGui::SetItemDefaultFocus();
             }
@@ -469,54 +493,141 @@ void VansGraphics::VansHierachuWindow::DrawAnimationNodeDetail()
     ImGui::Spacing();
     ImGui::Separator();
 
-    // ── Playback controls ─────────────────────────────────────────────
-    bool isPlaying = (state == AnimationState::Playing || state == AnimationState::Blending);
-    bool isPaused  = (state == AnimationState::Paused);
+    // ── 播放控制 ─────────────────────────────────────────────────────
+    bool isPlaying = (playbackState == AnimationState::Playing || playbackState == AnimationState::Blending);
+    bool isPaused  = (playbackState == AnimationState::Paused);
 
     if (isPlaying)
     {
         if (ImGui::Button("Pause"))
-            anim->Pause();
+            ctrl->Pause();
     }
     else
     {
         if (ImGui::Button("Play"))
         {
             if (isPaused)
-                anim->Resume();
+                ctrl->Resume();
             else
-            {
-                AnimationPlaySettings settings;
-                settings.loop  = true;
-                settings.speed = speed;
-                anim->Play(clipName.empty() ? (clipNames.empty() ? "" : clipNames[0]) : clipName, settings);
-            }
+                ctrl->Play();
         }
     }
 
     ImGui::SameLine();
     if (ImGui::Button("Stop"))
-        anim->Stop();
+        ctrl->Stop();
 
     ImGui::SameLine();
     if (ImGui::Button("Reset"))
+        ctrl->Reset();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    // ── 参数面板 ─────────────────────────────────────────────────────
+    const auto& params = ctrl->GetParameters();
+    if (!params.empty())
     {
-        anim->SetTime(0.0f);
+        if (ImGui::CollapsingHeader("Parameters", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            for (auto& [pName, param] : params)
+            {
+                ImGui::PushID(pName.c_str());
+                switch (param.type)
+                {
+                case AnimatorParamType::Float:
+                {
+                    float val = ctrl->GetFloat(pName);
+                    if (ImGui::DragFloat(pName.c_str(), &val, 0.01f))
+                        ctrl->SetFloat(pName, val);
+                    break;
+                }
+                case AnimatorParamType::Bool:
+                {
+                    bool val = ctrl->GetBool(pName);
+                    if (ImGui::Checkbox(pName.c_str(), &val))
+                        ctrl->SetBool(pName, val);
+                    break;
+                }
+                case AnimatorParamType::Int:
+                {
+                    int val = ctrl->GetInt(pName);
+                    if (ImGui::DragInt(pName.c_str(), &val))
+                        ctrl->SetInt(pName, val);
+                    break;
+                }
+                case AnimatorParamType::Trigger:
+                {
+                    if (ImGui::Button(pName.c_str()))
+                        ctrl->SetTrigger(pName);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(trigger)");
+                    break;
+                }
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::Separator();
+    }
+
+    // ── 状态列表 ─────────────────────────────────────────────────────
+    if (!stateNames.empty() && ImGui::CollapsingHeader("States"))
+    {
+        for (const auto& sn : stateNames)
+        {
+            const AnimatorState* st = ctrl->GetState(sn);
+            if (!st) continue;
+
+            bool isCurrent = (sn == stateName);
+            ImVec4 color = isCurrent ? ImVec4(0.3f, 1.0f, 0.5f, 1.0f) : ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
+
+            ImGui::TextColored(color, "%s%s", st->name.c_str(),
+                               (st->name == ctrl->GetDefaultStateName()) ? "  [Default]" : "");
+            ImGui::SameLine(0.0f, 20.0f);
+            ImGui::TextDisabled("clip=%s  speed=%.2f  loop=%s",
+                                st->clipName.c_str(), st->speed,
+                                st->loop ? "yes" : "no");
+        }
+    }
+
+    // ── 过渡列表 ─────────────────────────────────────────────────────
+    const auto& transitions = ctrl->GetTransitions();
+    if (!transitions.empty() && ImGui::CollapsingHeader("Transitions"))
+    {
+        for (size_t ti = 0; ti < transitions.size(); ti++)
+        {
+            const auto& t = transitions[ti];
+            ImGui::Text("[%d]  %s -> %s  (blend=%.2fs%s)",
+                        (int)ti, t.fromState.c_str(), t.toState.c_str(),
+                        t.blendDuration,
+                        t.hasExitTime ? "  exitTime" : "");
+            if (!t.conditions.empty())
+            {
+                ImGui::Indent(20.0f);
+                for (const auto& cond : t.conditions)
+                    ImGui::TextDisabled("  %s", cond.paramName.c_str());
+                ImGui::Unindent(20.0f);
+            }
+        }
     }
 
     ImGui::Spacing();
     ImGui::Separator();
 
-    // ── Bone Hierarchy ───────────────────────────────────────────
+    // ── 骨骼层级 ─────────────────────────────────────────────────────
     const Skeleton& skeleton = anim->GetSkeleton();
     if (!skeleton.bones.empty())
     {
         ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.7f, 1.0f), "Bone Hierarchy  (%d bones)", (int)skeleton.bones.size());
         ImGui::Spacing();
 
-        // Get the current clip for keyframe display
-        const VansAnimationClip* currentClip = anim->GetClip(anim->GetCurrentClipName());
-        float currentTime = anim->GetCurrentTime();
+        // 从 controller 获取当前 clip 以显示 keyframe 信息
+        const VansAnimationClip* currentClip = nullptr;
+        float currentTime = ctrl->GetCurrentPlayTime();
+        const AnimatorState* curState = ctrl->GetState(stateName);
+        if (curState && curState->clip)
+            currentClip = curState->clip;
 
         ImGui::BeginChild("##animBoneTree", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
         for (int b = 0; b < (int)skeleton.bones.size(); b++)

@@ -194,6 +194,9 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationTypes.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClip.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationNode.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationController.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimatorIO.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothNode.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothSystem.h" />
@@ -294,6 +297,9 @@
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationTypes.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClip.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationNode.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationController.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimatorIO.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollider.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysics.cpp" />

@@ -340,6 +340,15 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationNode.h">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationController.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimatorIO.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.h">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
@@ -642,6 +651,15 @@
       <Filter>EngineCore\AnimationCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationNode.cpp">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationController.cpp">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimatorIO.cpp">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.cpp">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.cpp">

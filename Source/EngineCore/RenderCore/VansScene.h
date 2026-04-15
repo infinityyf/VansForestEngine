@@ -8,6 +8,7 @@
 #include "../PhysicsCore/VansClothNode.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "../AnimationCore/VansAnimationNode.h"
+#include "../AnimationCore/VansAnimationController.h"
 #include "VegetationCore/VansVegetationSystem.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include <vector>
@@ -114,6 +115,9 @@ namespace VansGraphics
 		// ── Skeletal animation nodes ────────────────────────────────────────────────
 		// Created automatically in ExpandMultiMeshToRenderNodes().
 		std::vector<VansAnimationNode*> m_AnimationNodes;
+
+		// ── Animation controllers (每个 AnimationNode 绑定一个)────────────────
+		std::vector<VansAnimationController*> m_AnimationControllers;
 
 		// Shared dummy buffers for non-animated render nodes (64 bytes, device-local-ish).
 		// Bound at Object descriptor set bindings 1 & 2 instead of real bone data.
@@ -237,6 +241,10 @@ namespace VansGraphics
 		// Parses the "objects" array from scene JSON: creates VansScriptObjects
 		// with render / physics / cloth / vehicle components.
 		void LoadSceneObjects(VkDevice& device, json& objectsArray);
+
+		// ── Animation node / controller loading ─────────────────────────────
+		// 根据场景 JSON 中的 animation_node 数组，加载 AnimationNode + Controller
+		void LoadAnimationNodesFromJson(json& animNodeArray, const std::string& projectRoot);
 
 		// Auto-wrap legacy rendernode + physicsnode data into VansScriptObjects.
 		void AutoCreateObjectsFromLegacy();

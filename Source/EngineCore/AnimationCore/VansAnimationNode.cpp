@@ -16,14 +16,13 @@
 using namespace VansGraphics;
 
 // ════════════════════════════════════════════════════════════════
-//  Construction & Destruction
+//  构造 & 析构
 // ════════════════════════════════════════════════════════════════
 
 VansAnimationNode::VansAnimationNode(const std::string& name)
 	: m_Name(name)
 {
 	std::memset(&m_BoneMatricesSSBO, 0, sizeof(BoneMatricesSSBO));
-	// Initialize all bone matrices to identity
 	for (uint32_t i = 0; i < MAX_BONES; i++)
 		m_BoneMatricesSSBO.boneMatrices[i] = glm::mat4(1.0f);
 }
@@ -34,7 +33,7 @@ VansAnimationNode::~VansAnimationNode()
 }
 
 // ════════════════════════════════════════════════════════════════
-//  Setup
+//  关联 RenderNode
 // ════════════════════════════════════════════════════════════════
 
 void VansAnimationNode::SetRenderNode(VansRenderNode* renderNode)
@@ -47,6 +46,10 @@ void VansAnimationNode::SetRenderNodes(const std::vector<VansRenderNode*>& nodes
 	m_RenderNodes = nodes;
 }
 
+// ════════════════════════════════════════════════════════════════
+//  骨骼
+// ════════════════════════════════════════════════════════════════
+
 void VansAnimationNode::SetSkeleton(const Skeleton& skeleton)
 {
 	m_Skeleton = skeleton;
@@ -55,167 +58,101 @@ void VansAnimationNode::SetSkeleton(const Skeleton& skeleton)
 }
 
 // ════════════════════════════════════════════════════════════════
-//  Clip Management
+//  Controller 绑定
 // ════════════════════════════════════════════════════════════════
 
-void VansAnimationNode::AddClip(const VansAnimationClip& clip)
+void VansAnimationNode::SetController(VansAnimationController* controller)
 {
-	m_Clips[clip.clipName] = clip;
-	VANS_LOG("[VansAnimationNode] " << m_Name << ": added clip \"" << clip.clipName
-	         << "\" (duration=" << clip.duration << "s)");
-}
+	m_Controller = controller;
 
-void VansAnimationNode::AddClip(VansAnimationClip&& clip)
-{
-	std::string name = clip.clipName;
-	float dur = clip.duration;
-	m_Clips[name] = std::move(clip);
-	VANS_LOG("[VansAnimationNode] " << m_Name << ": added clip \""
-	         << name << "\" (duration=" << dur << "s)");
-}
+	if (m_Controller)
+	{
+		// 将 Node 侧的骨骼覆盖映射关联到 Controller，以便在 Update 管线中应用
+		m_Controller->SetBoneOverrides(&m_BoneOverrides);
 
-bool VansAnimationNode::RemoveClip(const std::string& clipName)
-{
-	auto it = m_Clips.find(clipName);
-	if (it == m_Clips.end())
-		return false;
-
-	// If this clip is currently playing, stop
-	if (m_CurrentClipName == clipName)
-		Stop();
-
-	m_Clips.erase(it);
-	return true;
-}
-
-const VansAnimationClip* VansAnimationNode::GetClip(const std::string& clipName) const
-{
-	auto it = m_Clips.find(clipName);
-	return (it != m_Clips.end()) ? &it->second : nullptr;
-}
-
-std::vector<std::string> VansAnimationNode::GetClipNames() const
-{
-	std::vector<std::string> names;
-	names.reserve(m_Clips.size());
-	for (const auto& [name, clip] : m_Clips)
-		names.push_back(name);
-	return names;
+		VANS_LOG("[VansAnimationNode] " << m_Name << ": controller '" 
+		         << m_Controller->GetName() << "' bound");
+	}
 }
 
 // ════════════════════════════════════════════════════════════════
-//  Playback Control
+//  播放控制（委托给 Controller）
 // ════════════════════════════════════════════════════════════════
 
-void VansAnimationNode::Play(const std::string& clipName, const AnimationPlaySettings& settings)
+void VansAnimationNode::Play()
 {
-	auto it = m_Clips.find(clipName);
-	if (it == m_Clips.end())
-	{
-		VANS_LOG_WARN("[VansAnimationNode] " << m_Name << ": clip \"" << clipName << "\" not found");
-		return;
-	}
-
-	m_CurrentClipName = clipName;
-	m_PlaySettings    = settings;
-	m_CurrentTime     = settings.startTime;
-	m_State           = AnimationState::Playing;
-	m_LastEventTime   = settings.startTime;
-	m_PingPongReversing = false;
-
-	VANS_LOG("[VansAnimationNode] " << m_Name << ": playing \"" << clipName << "\"");
+	if (m_Controller)
+		m_Controller->Play();
 }
 
-void VansAnimationNode::CrossFade(const std::string& clipName, float blendDuration,
-                                   const AnimationPlaySettings& settings)
+void VansAnimationNode::Play(const std::string& stateName)
 {
-	if (m_State == AnimationState::Stopped)
-	{
-		// Nothing to blend from — just play directly
-		Play(clipName, settings);
-		return;
-	}
-
-	auto it = m_Clips.find(clipName);
-	if (it == m_Clips.end())
-	{
-		VANS_LOG_WARN("[VansAnimationNode] " << m_Name << ": crossfade target \"" << clipName << "\" not found");
-		return;
-	}
-
-	// Save current clip as blend source
-	m_PreviousClipName = m_CurrentClipName;
-	m_PreviousTime     = m_CurrentTime;
-
-	// Switch to new clip
-	m_CurrentClipName = clipName;
-	m_PlaySettings    = settings;
-	m_CurrentTime     = settings.startTime;
-	m_LastEventTime   = settings.startTime;
-	m_PingPongReversing = false;
-
-	// Start blending
-	m_BlendAlpha    = 0.0f;
-	m_BlendDuration = blendDuration;
-	m_State         = AnimationState::Blending;
-
-	VANS_LOG("[VansAnimationNode] " << m_Name << ": crossfade to \""
-	         << clipName << "\" over " << blendDuration << "s");
+	if (m_Controller)
+		m_Controller->Play(stateName);
 }
 
 void VansAnimationNode::Pause()
 {
-	if (m_State == AnimationState::Playing || m_State == AnimationState::Blending)
-		m_State = AnimationState::Paused;
+	if (m_Controller)
+		m_Controller->Pause();
 }
 
 void VansAnimationNode::Resume()
 {
-	if (m_State == AnimationState::Paused)
-		m_State = AnimationState::Playing;
+	if (m_Controller)
+		m_Controller->Resume();
 }
 
 void VansAnimationNode::Stop()
 {
-	m_State       = AnimationState::Stopped;
-	m_BlendAlpha  = 0.0f;
-	// Keep m_CurrentTime so the pose freezes at the current progress
-}
-
-void VansAnimationNode::SetTime(float time)
-{
-	m_CurrentTime = time;
-}
-
-void VansAnimationNode::SetSpeed(float speed)
-{
-	m_PlaySettings.speed = speed;
-}
-
-void VansAnimationNode::SetLoop(bool loop)
-{
-	m_PlaySettings.loop = loop;
+	if (m_Controller)
+		m_Controller->Stop();
 }
 
 // ════════════════════════════════════════════════════════════════
-//  State Queries
+//  状态查询（委托给 Controller）
 // ════════════════════════════════════════════════════════════════
+
+AnimationState VansAnimationNode::GetState() const
+{
+	if (m_Controller)
+		return m_Controller->GetPlaybackState();
+	return AnimationState::Stopped;
+}
+
+float VansAnimationNode::GetCurrentPlayTime() const
+{
+	if (m_Controller)
+		return m_Controller->GetCurrentPlayTime();
+	return 0.0f;
+}
 
 float VansAnimationNode::GetDuration() const
 {
-	auto it = m_Clips.find(m_CurrentClipName);
-	if (it == m_Clips.end())
-		return 0.0f;
-
-	float end = (m_PlaySettings.endTime < 0.0f) ? it->second.duration : m_PlaySettings.endTime;
-	return end - m_PlaySettings.startTime;
+	if (m_Controller)
+		return m_Controller->GetCurrentDuration();
+	return 0.0f;
 }
 
 float VansAnimationNode::GetNormalizedTime() const
 {
-	float dur = GetDuration();
-	if (dur <= 0.0f) return 0.0f;
-	return m_CurrentTime / dur;
+	if (m_Controller)
+		return m_Controller->GetNormalizedTime();
+	return 0.0f;
+}
+
+std::string VansAnimationNode::GetCurrentStateName() const
+{
+	if (m_Controller)
+		return m_Controller->GetCurrentStateName();
+	return "";
+}
+
+float VansAnimationNode::GetSpeed() const
+{
+	if (m_Controller)
+		return m_Controller->GetSpeed();
+	return 1.0f;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -226,7 +163,6 @@ void VansAnimationNode::AddEvent(const std::string& clipName, AnimationEvent eve
 {
 	m_Events[clipName].push_back(std::move(event));
 
-	// Sort events by trigger time for efficient fire checking
 	auto& events = m_Events[clipName];
 	std::sort(events.begin(), events.end(),
 		[](const AnimationEvent& a, const AnimationEvent& b) {
@@ -240,21 +176,15 @@ void VansAnimationNode::AddEvent(const std::string& clipName, AnimationEvent eve
 
 void VansAnimationNode::EnableRootMotion(bool enable)
 {
-	m_RootMotionEnabled = enable;
-	if (enable && m_RootBoneIndex < 0)
-	{
-		m_RootBoneIndex = DetectRootBoneIndex();
-		if (m_RootBoneIndex >= 0)
-		{
-			VANS_LOG("[VansAnimationNode] " << m_Name << ": root motion enabled, root bone = \""
-			         << m_Skeleton.bones[m_RootBoneIndex].name << "\" (index " << m_RootBoneIndex << ")");
-		}
-		else
-		{
-			VANS_LOG_WARN("[VansAnimationNode] " << m_Name << ": root motion enabled but no root bone found!");
-		}
-	}
-	m_RootMotionInitialized = false; // reset so first frame re-samples
+	if (m_Controller)
+		m_Controller->EnableRootMotion(enable);
+}
+
+bool VansAnimationNode::IsRootMotionEnabled() const
+{
+	if (m_Controller)
+		return m_Controller->IsRootMotionEnabled();
+	return false;
 }
 
 void VansAnimationNode::SetTransformID(uint32_t transformID)
@@ -268,9 +198,11 @@ void VansAnimationNode::SetRootBone(const std::string& boneName)
 	auto it = m_Skeleton.boneNameToIndex.find(boneName);
 	if (it != m_Skeleton.boneNameToIndex.end())
 	{
-		m_RootBoneIndex = it->second;
+		if (m_Controller)
+			m_Controller->SetRootBoneIndex(it->second);
+
 		VANS_LOG("[VansAnimationNode] " << m_Name << ": root bone set to \"" << boneName
-		         << "\" (index " << m_RootBoneIndex << ")");
+		         << "\" (index " << it->second << ")");
 	}
 	else
 	{
@@ -278,14 +210,18 @@ void VansAnimationNode::SetRootBone(const std::string& boneName)
 	}
 }
 
-int VansAnimationNode::DetectRootBoneIndex() const
+glm::vec3 VansAnimationNode::GetRootMotionDelta() const
 {
-	for (uint32_t i = 0; i < (uint32_t)m_Skeleton.bones.size(); i++)
-	{
-		if (m_Skeleton.bones[i].parentIndex < 0)
-			return (int)i;
-	}
-	return -1;
+	if (m_Controller)
+		return m_Controller->GetRootMotionDelta();
+	return glm::vec3(0.0f);
+}
+
+glm::quat VansAnimationNode::GetRootRotationDelta() const
+{
+	if (m_Controller)
+		return m_Controller->GetRootRotationDelta();
+	return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -303,85 +239,53 @@ void VansAnimationNode::ClearBoneOverride(const std::string& boneName)
 }
 
 // ════════════════════════════════════════════════════════════════
-//  Per-Frame Update
+//  每帧更新
 // ════════════════════════════════════════════════════════════════
 
 void VansAnimationNode::Update(float deltaTime)
 {
-	if (m_State == AnimationState::Stopped || m_State == AnimationState::Paused)
+	if (!m_Controller)
 		return;
 
-	const VansAnimationClip* currentClip = GetClip(m_CurrentClipName);
-	if (!currentClip)
-		return;
+	// 1. 让 Controller 完成核心更新（状态机 + 关键帧插值 + 混合 + root motion + 矩阵输出）
+	m_Controller->Update(deltaTime, m_Skeleton);
 
-	uint32_t boneCount = (uint32_t)m_Skeleton.bones.size();
-	if (boneCount == 0)
-		return;
-
-	// 1. Advance time
-	AdvanceTime(deltaTime);
-
-	// 2. Fire events
-	FireEvents();
-
-	// 3. Compute bone local transforms for current clip
-	std::vector<glm::mat4> localTransforms(boneCount, glm::mat4(1.0f));
-	ComputeBoneTransforms(m_CurrentClipName, m_CurrentTime, localTransforms);
-
-	// 4. If blending, compute previous clip and blend
-	if (m_State == AnimationState::Blending)
+	// 2. 如果有 root motion，将 delta 应用到 Transform
+	if (m_Controller->IsRootMotionEnabled() && m_HasTransformID)
 	{
-		// Advance blend alpha (real-time, not affected by playback speed)
-		m_BlendAlpha += deltaTime / m_BlendDuration;
-
-		if (m_BlendAlpha >= 1.0f)
+		glm::vec3 deltaPos = m_Controller->GetRootMotionDelta();
+		glm::quat deltaRot = m_Controller->GetRootRotationDelta();
+		ApplyRootMotionToTransform(deltaPos, deltaRot);
+	}
+	else
+	{
+		// 诊断: 仅输出一次
+		static bool s_LoggedOnce = false;
+		if (!s_LoggedOnce)
 		{
-			// Blend complete — transition to Playing
-			m_BlendAlpha = 1.0f;
-			m_State = AnimationState::Playing;
-			m_PreviousClipName.clear();
-		}
-		else
-		{
-			// Compute previous clip transforms
-			std::vector<glm::mat4> prevLocalTransforms(boneCount, glm::mat4(1.0f));
-			ComputeBoneTransforms(m_PreviousClipName, m_PreviousTime, prevLocalTransforms);
-
-			// Also advance previous clip time
-			const VansAnimationClip* prevClip = GetClip(m_PreviousClipName);
-			if (prevClip)
-			{
-				m_PreviousTime += deltaTime * m_PlaySettings.speed;
-				if (m_PreviousTime > prevClip->duration)
-					m_PreviousTime = prevClip->duration;
-			}
-
-			// Blend: lerp from previous → current by blendAlpha
-			BlendTransforms(prevLocalTransforms, localTransforms, m_BlendAlpha, localTransforms);
+			VANS_LOG("[RootMotion] Node '" << m_Name << "' skipped ApplyRootMotion: enabled="
+			         << m_Controller->IsRootMotionEnabled() << " hasTransformID=" << m_HasTransformID);
+			s_LoggedOnce = true;
 		}
 	}
 
-	// 5. Apply bone overrides (IK / procedural)
-	ApplyBoneOverrides(localTransforms);
-
-	// 5.5 Ensure root bone index is always known (needed by UpdateHierarchy even without root motion)
-	if (m_RootBoneIndex < 0)
-		m_RootBoneIndex = DetectRootBoneIndex();
-
-	// 6. Extract root motion (before hierarchy propagation)
-	if (m_RootMotionEnabled)
-		ExtractRootMotion(localTransforms);
-
-	// 7. Update hierarchy: propagate local → global
-	UpdateHierarchy(localTransforms);
-
-	// 8. Build final matrices: global * offset
-	BuildFinalMatrices();
+	// 3. Fire events (Node 侧仍然管理事件)
+	FireEvents();
 }
 
 // ════════════════════════════════════════════════════════════════
-//  GPU Resource Management
+//  结果访问
+// ════════════════════════════════════════════════════════════════
+
+const BoneMatricesSSBO& VansAnimationNode::GetBoneSSBO() const
+{
+	if (m_Controller)
+		return m_Controller->GetBoneMatricesSSBO();
+	return m_BoneMatricesSSBO;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  GPU 资源管理
 // ════════════════════════════════════════════════════════════════
 
 bool VansAnimationNode::InitGPUResources(VkDevice device, uint32_t framesInFlight)
@@ -389,7 +293,7 @@ bool VansAnimationNode::InitGPUResources(VkDevice device, uint32_t framesInFligh
 	m_Device         = device;
 	m_FramesInFlight = framesInFlight;
 
-	VkDeviceSize bufferSize = sizeof(BoneMatricesSSBO);  // MAX_BONES * sizeof(mat4) = 8192 bytes
+	VkDeviceSize bufferSize = sizeof(BoneMatricesSSBO);
 	m_BoneBuffers.resize(framesInFlight);
 
 	for (uint32_t i = 0; i < framesInFlight; i++)
@@ -447,7 +351,6 @@ void VansAnimationNode::UploadPerSubmeshBoneBuffers(const std::vector<std::vecto
 		const auto& boneData = perSubmeshBoneData[s];
 		if (boneData.empty())
 		{
-			// Create minimal dummy buffers for empty submeshes
 			m_PerSubmeshBoneIDBuffers[s].CreatVulkanBuffer(
 				m_Device, 64, VK_FORMAT_R32_SFLOAT,
 				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -461,7 +364,6 @@ void VansAnimationNode::UploadPerSubmeshBoneBuffers(const std::vector<std::vecto
 
 		uint32_t vertexCount = static_cast<uint32_t>(boneData.size());
 
-		// Split VertexBoneData into separate ID and weight arrays
 		std::vector<VertexBoneID> boneIDs(vertexCount);
 		std::vector<VertexBoneWeight> boneWeights(vertexCount);
 		for (uint32_t v = 0; v < vertexCount; v++)
@@ -473,7 +375,6 @@ void VansAnimationNode::UploadPerSubmeshBoneBuffers(const std::vector<std::vecto
 			}
 		}
 
-		// Upload bone IDs buffer
 		VkDeviceSize idBufferSize = sizeof(VertexBoneID) * vertexCount;
 		bool ok = m_PerSubmeshBoneIDBuffers[s].CreatVulkanBuffer(
 			m_Device, idBufferSize, VK_FORMAT_R32_SFLOAT,
@@ -487,7 +388,6 @@ void VansAnimationNode::UploadPerSubmeshBoneBuffers(const std::vector<std::vecto
 		m_PerSubmeshBoneIDBuffers[s].SetBufferData(
 			boneIDs.data(), 0, static_cast<int>(idBufferSize));
 
-		// Upload bone weights buffer
 		VkDeviceSize weightBufferSize = sizeof(VertexBoneWeight) * vertexCount;
 		ok = m_PerSubmeshBoneWeightBuffers[s].CreatVulkanBuffer(
 			m_Device, weightBufferSize, VK_FORMAT_R32_SFLOAT,
@@ -514,178 +414,15 @@ void VansAnimationNode::UploadBoneMatrices(uint32_t frameIndex)
 	if (frameIndex >= m_BoneBuffers.size())
 		return;
 
+	const BoneMatricesSSBO& ssbo = GetBoneSSBO();
 	m_BoneBuffers[frameIndex].SetBufferData(
-		&m_BoneMatricesSSBO,
+		&ssbo,
 		0,
 		sizeof(BoneMatricesSSBO));
 }
 
 // ════════════════════════════════════════════════════════════════
-//  Internal: AdvanceTime
-// ════════════════════════════════════════════════════════════════
-
-void VansAnimationNode::AdvanceTime(float dt)
-{
-	const VansAnimationClip* clip = GetClip(m_CurrentClipName);
-	if (!clip) return;
-
-	float effectiveDuration = (m_PlaySettings.endTime < 0.0f)
-		? clip->duration
-		: m_PlaySettings.endTime;
-	float start = m_PlaySettings.startTime;
-
-	float delta = dt * m_PlaySettings.speed;
-
-	if (m_PlaySettings.pingPong)
-	{
-		if (m_PingPongReversing)
-			m_CurrentTime -= delta;
-		else
-			m_CurrentTime += delta;
-
-		if (m_CurrentTime >= effectiveDuration)
-		{
-			m_CurrentTime = effectiveDuration;
-			m_PingPongReversing = true;
-		}
-		else if (m_CurrentTime <= start)
-		{
-			m_CurrentTime = start;
-			m_PingPongReversing = false;
-
-			if (!m_PlaySettings.loop)
-			{
-				m_State = AnimationState::Stopped;
-				return;
-			}
-		}
-	}
-	else
-	{
-		m_CurrentTime += delta;
-
-		if (m_CurrentTime >= effectiveDuration)
-		{
-			if (m_PlaySettings.loop)
-			{
-				// Wrap around
-				float range = effectiveDuration - start;
-				if (range > 0.0f)
-					m_CurrentTime = start + fmod(m_CurrentTime - start, range);
-				else
-					m_CurrentTime = start;
-
-				m_LastEventTime = start;  // reset event tracking on loop
-				m_LoopJustWrapped = true; // signal root motion to skip delta this frame
-			}
-			else
-			{
-				m_CurrentTime = effectiveDuration;
-				m_State = AnimationState::Stopped;
-			}
-		}
-	}
-}
-
-// ════════════════════════════════════════════════════════════════
-//  Internal: FireEvents
-// ════════════════════════════════════════════════════════════════
-
-void VansAnimationNode::FireEvents()
-{
-	auto it = m_Events.find(m_CurrentClipName);
-	if (it == m_Events.end())
-		return;
-
-	for (const auto& event : it->second)
-	{
-		// Fire if the event time is between last checked time and current time
-		if (event.triggerTime > m_LastEventTime && event.triggerTime <= m_CurrentTime)
-		{
-			if (event.callback)
-				event.callback();
-		}
-	}
-
-	m_LastEventTime = m_CurrentTime;
-}
-
-// ════════════════════════════════════════════════════════════════
-//  Internal: ComputeBoneTransforms
-//  Interpolate keyframes for each bone → produce local transform matrices
-// ════════════════════════════════════════════════════════════════
-
-void VansAnimationNode::ComputeBoneTransforms(const std::string& clipName, float time,
-                                               std::vector<glm::mat4>& outLocalTransforms)
-{
-	const VansAnimationClip* clip = GetClip(clipName);
-	if (!clip) return;
-
-	uint32_t boneCount = (uint32_t)m_Skeleton.bones.size();
-
-	for (uint32_t b = 0; b < boneCount; b++)
-	{
-		if (b >= clip->boneKeyframes.size() || clip->boneKeyframes[b].empty())
-		{
-			outLocalTransforms[b] = glm::mat4(1.0f);
-			continue;
-		}
-
-		glm::vec3 pos;
-		glm::quat rot;
-		glm::vec3 scl;
-		InterpolateKeyframes(clip->boneKeyframes[b], time, pos, rot, scl);
-
-		// Compose TRS → mat4
-		glm::mat4 T = glm::translate(glm::mat4(1.0f), pos);
-		glm::mat4 R = glm::toMat4(rot);
-		glm::mat4 S = glm::scale(glm::mat4(1.0f), scl);
-		outLocalTransforms[b] = T * R * S;
-	}
-}
-
-// ════════════════════════════════════════════════════════════════
-//  Internal: BlendTransforms
-//  Decompose both matrices to TRS, interpolate, recompose
-// ════════════════════════════════════════════════════════════════
-
-void VansAnimationNode::BlendTransforms(const std::vector<glm::mat4>& a,
-                                         const std::vector<glm::mat4>& b,
-                                         float alpha,
-                                         std::vector<glm::mat4>& outBlended)
-{
-	uint32_t count = (uint32_t)(std::min)(a.size(), b.size());
-	outBlended.resize(count);
-
-	for (uint32_t i = 0; i < count; i++)
-	{
-		// Decompose A
-		glm::vec3 scaleA, posA, skewA;
-		glm::quat rotA;
-		glm::vec4 perspA;
-		glm::decompose(a[i], scaleA, rotA, posA, skewA, perspA);
-
-		// Decompose B
-		glm::vec3 scaleB, posB, skewB;
-		glm::quat rotB;
-		glm::vec4 perspB;
-		glm::decompose(b[i], scaleB, rotB, posB, skewB, perspB);
-
-		// Blend
-		glm::vec3 blendedPos   = glm::mix(posA, posB, alpha);
-		glm::quat blendedRot   = glm::slerp(rotA, rotB, alpha);
-		glm::vec3 blendedScale = glm::mix(scaleA, scaleB, alpha);
-
-		// Recompose
-		glm::mat4 T = glm::translate(glm::mat4(1.0f), blendedPos);
-		glm::mat4 R = glm::toMat4(blendedRot);
-		glm::mat4 S = glm::scale(glm::mat4(1.0f), blendedScale);
-		outBlended[i] = T * R * S;
-	}
-}
-
-// ════════════════════════════════════════════════════════════════
-//  Internal: ApplyBoneOverrides
+//  内部方法: ApplyBoneOverrides
 // ════════════════════════════════════════════════════════════════
 
 void VansAnimationNode::ApplyBoneOverrides(std::vector<glm::mat4>& localTransforms)
@@ -696,235 +433,65 @@ void VansAnimationNode::ApplyBoneOverrides(std::vector<glm::mat4>& localTransfor
 		if (it != m_Skeleton.boneNameToIndex.end())
 		{
 			int idx = it->second;
-			if (idx >= 0 && idx < (int)localTransforms.size())
+			if (idx >= 0 && idx < static_cast<int>(localTransforms.size()))
 				localTransforms[idx] = overrideTransform;
 		}
 	}
 }
 
 // ════════════════════════════════════════════════════════════════
-//  Internal: ExtractRootMotion
-//  Extracts the root bone's translation/rotation delta per frame,
-//  applies it to the entity's VansTransformStore, and zeros the
-//  root bone's horizontal translation in the skeleton so the mesh
-//  doesn't double-move.
+//  内部方法: ApplyRootMotionToTransform
 // ════════════════════════════════════════════════════════════════
 
-void VansAnimationNode::ExtractRootMotion(std::vector<glm::mat4>& localTransforms)
+void VansAnimationNode::ApplyRootMotionToTransform(const glm::vec3& deltaPos, const glm::quat& deltaRot)
 {
-	if (m_RootBoneIndex < 0 || m_RootBoneIndex >= (int)localTransforms.size())
+	if (!m_HasTransformID)
 		return;
 
-	// Decompose root bone local transform
-	glm::vec3 rootPos, rootScale, skew;
-	glm::quat rootRot;
-	glm::vec4 perspective;
-	glm::decompose(localTransforms[m_RootBoneIndex], rootScale, rootRot, rootPos, skew, perspective);
+	// 零值 delta 跳过
+	if (glm::length(deltaPos) < 0.00001f && glm::abs(glm::dot(deltaRot, glm::quat(1, 0, 0, 0)) - 1.0f) < 0.00001f)
+		return;
 
-	// Reset deltas
-	m_LastRootMotionDelta    = glm::vec3(0.0f);
-	m_LastRootRotationDelta  = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	VansTransform& transform = VansTransformStore::GetTransform(m_TransformID);
 
-	if (!m_RootMotionInitialized)
-	{
-		// First frame: just save the root pose, no delta to apply
-		m_PrevRootPosition      = rootPos;
-		m_PrevRootRotation      = rootRot;
-		m_RootMotionInitialized = true;
-	}
-	else if (m_LoopJustWrapped)
-	{
-		// Loop just wrapped — the position jumped back to clip start.
-		// Don't apply a delta this frame; just resample the new start pose.
-		m_PrevRootPosition = rootPos;
-		m_PrevRootRotation = rootRot;
-		m_LoopJustWrapped  = false;
-	}
-	else
-	{
-		// Normal frame: compute delta
-		glm::vec3 deltaPos = rootPos - m_PrevRootPosition;
-		glm::quat deltaRot = rootRot * glm::inverse(m_PrevRootRotation);
+	// 将 local-space 的 delta 旋转到世界空间（基于实体当前 Y 旋转）
+	float yawRad = glm::radians(transform.m_Rotation.y);
+	glm::mat3 entityYawMat = glm::mat3(glm::rotate(glm::mat4(1.0f), yawRad, glm::vec3(0.0f, 1.0f, 0.0f)));
+	glm::vec3 worldDelta = entityYawMat * (deltaPos * transform.m_Scale);
 
-		m_PrevRootPosition = rootPos;
-		m_PrevRootRotation = rootRot;
+	transform.m_Position += worldDelta;
 
-		m_LastRootMotionDelta   = deltaPos;
-		m_LastRootRotationDelta = deltaRot;
+	// 从 deltaRot 提取 yaw 分量应用到实体
+	glm::vec3 deltaEuler = glm::degrees(glm::eulerAngles(deltaRot));
+	transform.m_Rotation.y += deltaEuler.y;
 
-		// Apply delta to world transform
-		if (m_HasTransformID)
-		{
-			VansTransform& transform = VansTransformStore::GetTransform(m_TransformID);
-
-			// Rotate the local-space delta into world space using the entity's current Y rotation,
-			// and scale by the entity's transform scale so root motion matches the visual size.
-			float yawRad = glm::radians(transform.m_Rotation.y);
-			glm::mat3 entityYawMat = glm::mat3(glm::rotate(glm::mat4(1.0f), yawRad, glm::vec3(0.0f, 1.0f, 0.0f)));
-			glm::vec3 worldDelta = entityYawMat * (deltaPos * transform.m_Scale);
-
-			transform.m_Position += worldDelta;
-
-			// Extract yaw from delta rotation and apply to entity
-			// deltaRot encodes the rotation change; extract the Y-axis (yaw) component
-			glm::vec3 deltaEuler = glm::degrees(glm::eulerAngles(deltaRot));
-			transform.m_Rotation.y += deltaEuler.y;
-
-			// Mark transform dirty so UpdateTransformRenderData picks it up
-			VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
-		}
-	}
-
-	// Zero out the root bone's position in the local transform so the skeleton
-	// doesn't double-move. Keep the Y component if you want vertical motion
-	// (jumps/crouches) to stay in the skeleton, or zero it for full root motion.
-	// Here we zero XZ (horizontal) and keep Y in skeleton space.
-	glm::vec3 skeletonPos = glm::vec3(0.0f, rootPos.y, 0.0f);
-	glm::mat4 T = glm::translate(glm::mat4(1.0f), skeletonPos);
-	glm::mat4 R = glm::toMat4(rootRot);  // keep full rotation in skeleton (only yaw delta was applied to entity)
-	glm::mat4 S = glm::scale(glm::mat4(1.0f), rootScale);
-	localTransforms[m_RootBoneIndex] = T * R * S;
-
-	// Clear the loop-wrap flag (in case it wasn't cleared above — e.g. root motion disabled mid-frame)
-	m_LoopJustWrapped = false;
+	VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
 }
 
 // ════════════════════════════════════════════════════════════════
-//  Internal: UpdateHierarchy
-//  Propagate local → global transforms via parent chain (DFS)
+//  内部方法: FireEvents
 // ════════════════════════════════════════════════════════════════
 
-void VansAnimationNode::UpdateHierarchy(std::vector<glm::mat4>& localTransforms)
+void VansAnimationNode::FireEvents()
 {
-	uint32_t boneCount = (uint32_t)m_Skeleton.bones.size();
-
-	// When root motion is OFF, strip the root bone's animated translation so the
-	// skeleton stays in place. Keep rotation and scale so the character still
-	// turns/scales in-place via the animation.
-	if (!m_RootMotionEnabled && m_RootBoneIndex >= 0 && m_RootBoneIndex < (int)boneCount)
-	{
-		glm::vec3 pos, scale, skew;
-		glm::quat rot;
-		glm::vec4 perspective;
-		glm::decompose(localTransforms[m_RootBoneIndex], scale, rot, pos, skew, perspective);
-
-		// Keep only Y (vertical) so the mesh doesn't float; zero XZ so it stays planted
-		glm::vec3 clampedPos = glm::vec3(0.0f, pos.y, 0.0f);
-		glm::mat4 T = glm::translate(glm::mat4(1.0f), clampedPos);
-		glm::mat4 R = glm::toMat4(rot);
-		glm::mat4 S = glm::scale(glm::mat4(1.0f), scale);
-		localTransforms[m_RootBoneIndex] = T * R * S;
-	}
-
-	for (uint32_t b = 0; b < boneCount; b++)
-	{
-		m_Skeleton.bones[b].localTransform = localTransforms[b];
-	}
-
-	// Process bones in order — works because parents always have lower IDs than children
-	// (standard Assimp bone ordering)
-	for (uint32_t b = 0; b < boneCount; b++)
-	{
-		BoneInfo& bone = m_Skeleton.bones[b];
-		if (bone.parentIndex >= 0 && bone.parentIndex < (int)boneCount)
-		{
-			bone.globalTransform = m_Skeleton.bones[bone.parentIndex].globalTransform * bone.localTransform;
-		}
-		else
-		{
-			// Root bone: apply global inverse transform
-			bone.globalTransform = bone.localTransform;
-		}
-	}
-}
-
-// ════════════════════════════════════════════════════════════════
-//  Internal: BuildFinalMatrices
-//  finalMatrix[i] = globalInverse * globalTransform[i] * offsetMatrix[i]
-// ════════════════════════════════════════════════════════════════
-
-void VansAnimationNode::BuildFinalMatrices()
-{
-	uint32_t boneCount = (uint32_t)m_Skeleton.bones.size();
-	uint32_t limit = (std::min)(boneCount, MAX_BONES);
-
-	for (uint32_t i = 0; i < limit; i++)
-	{
-		const BoneInfo& bone = m_Skeleton.bones[i];
-		m_BoneMatricesSSBO.boneMatrices[i] =
-			m_Skeleton.globalInverseTransform * bone.globalTransform * bone.offsetMatrix;
-	}
-
-	// Fill remaining slots with identity
-	for (uint32_t i = limit; i < MAX_BONES; i++)
-		m_BoneMatricesSSBO.boneMatrices[i] = glm::mat4(1.0f);
-}
-
-// ════════════════════════════════════════════════════════════════
-//  Internal: InterpolateKeyframes
-//  Binary search for surrounding keyframes, then lerp/slerp
-// ════════════════════════════════════════════════════════════════
-
-void VansAnimationNode::InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,
-                                              float time,
-                                              glm::vec3& outPos, glm::quat& outRot, glm::vec3& outScale)
-{
-	if (keyframes.empty())
-	{
-		outPos   = glm::vec3(0.0f);
-		outRot   = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-		outScale = glm::vec3(1.0f);
+	if (!m_Controller)
 		return;
-	}
 
-	// Clamp: before first keyframe
-	if (time <= keyframes.front().time || keyframes.size() == 1)
-	{
-		outPos   = keyframes.front().position;
-		outRot   = keyframes.front().rotation;
-		outScale = keyframes.front().scale;
+	std::string currentClipName = m_Controller->GetCurrentStateName();
+	float currentTime = m_Controller->GetCurrentPlayTime();
+
+	auto it = m_Events.find(currentClipName);
+	if (it == m_Events.end())
 		return;
-	}
 
-	// Clamp: after last keyframe
-	if (time >= keyframes.back().time)
+	for (const auto& event : it->second)
 	{
-		outPos   = keyframes.back().position;
-		outRot   = keyframes.back().rotation;
-		outScale = keyframes.back().scale;
-		return;
-	}
-
-	// Binary search for the keyframe pair surrounding `time`
-	// Find the first keyframe with time > our target time
-	int lo = 0;
-	int hi = (int)keyframes.size() - 1;
-	int nextIdx = hi;
-
-	while (lo <= hi)
-	{
-		int mid = (lo + hi) / 2;
-		if (keyframes[mid].time <= time)
-			lo = mid + 1;
-		else
+		if (event.triggerTime > m_LastEventTime && event.triggerTime <= currentTime)
 		{
-			nextIdx = mid;
-			hi = mid - 1;
+			if (event.callback)
+				event.callback();
 		}
 	}
 
-	int prevIdx = nextIdx - 1;
-	if (prevIdx < 0) prevIdx = 0;
-
-	const BoneKeyframe& kfA = keyframes[prevIdx];
-	const BoneKeyframe& kfB = keyframes[nextIdx];
-
-	float segmentDuration = kfB.time - kfA.time;
-	float alpha = (segmentDuration > 0.0001f) ? (time - kfA.time) / segmentDuration : 0.0f;
-	alpha = glm::clamp(alpha, 0.0f, 1.0f);
-
-	// Interpolate
-	outPos   = glm::mix(kfA.position, kfB.position, alpha);
-	outRot   = glm::slerp(kfA.rotation, kfB.rotation, alpha);
-	outScale = glm::mix(kfA.scale, kfB.scale, alpha);
+	m_LastEventTime = currentTime;
 }

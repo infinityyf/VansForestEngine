@@ -7,6 +7,7 @@
 #include <../../GLM/gtx/quaternion.hpp>
 #include <string>
 #include <vector>
+#include <queue>
 #include <unordered_map>
 #include <functional>
 
@@ -59,6 +60,48 @@ namespace VansGraphics
 		std::vector<BoneInfo>                    bones;
 		std::unordered_map<std::string, int>     boneNameToIndex;
 		glm::mat4                                globalInverseTransform = glm::mat4(1.0f);
+
+		// 拓扑排序后的骨骼索引序列（父骨骼保证在子骨骼之前）
+		// UpdateHierarchy 必须按此顺序遍历，否则 parent index > child index 时结果错误
+		std::vector<int>                         topologicalOrder;
+
+		// 根据 bones[].parentIndex / children 计算拓扑遍历顺序（BFS）
+		void BuildTopologicalOrder()
+		{
+			const size_t N = bones.size();
+			topologicalOrder.clear();
+			topologicalOrder.reserve(N);
+
+			// BFS 从所有根骨骼开始
+			std::queue<int> q;
+			for (size_t i = 0; i < N; i++)
+			{
+				if (bones[i].parentIndex < 0)
+					q.push(static_cast<int>(i));
+			}
+
+			while (!q.empty())
+			{
+				int idx = q.front();
+				q.pop();
+				topologicalOrder.push_back(idx);
+				for (int child : bones[idx].children)
+					q.push(child);
+			}
+
+			// 安全检查：如果有骨骼未被遍历到（孤立骨骼），追加到末尾
+			if (topologicalOrder.size() < N)
+			{
+				std::vector<bool> visited(N, false);
+				for (int idx : topologicalOrder)
+					visited[idx] = true;
+				for (size_t i = 0; i < N; i++)
+				{
+					if (!visited[i])
+						topologicalOrder.push_back(static_cast<int>(i));
+				}
+			}
+		}
 	};
 
 	// ─── Animation Clip ───
