@@ -1,4 +1,5 @@
 #include "VansHierachyWindow.h"
+#include "VansAnimGraphEditorWindow.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../PhysicsCore/VansPhysicsNode.h"
@@ -414,6 +415,16 @@ void VansGraphics::VansHierachuWindow::DrawAnimationNodeDetail()
         ImGui::End();
         return;
     }
+
+    // ── 打开节点图编辑器按钮 ─────────────────────────────────────────
+    if (m_AnimGraphEditorRef)
+    {
+        if (ImGui::Button("Open Graph Editor"))
+        {
+            m_AnimGraphEditorRef->Open(ctrl, anim);
+        }
+    }
+    ImGui::Separator();
 
     // ── 当前状态 ─────────────────────────────────────────────────────
     std::string stateName = ctrl->GetCurrentStateName();

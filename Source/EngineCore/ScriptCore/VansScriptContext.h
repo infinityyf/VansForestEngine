@@ -21,7 +21,7 @@
 namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
-namespace VansGraphics { class VansRenderNode; class VansScene; }
+namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; }
 namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; }
 
 class VansScriptContext
@@ -85,6 +85,11 @@ public:
 
 	// Reload the .pyd C++ extension module (copy-based hot-reload on Windows)
 	void ReloadPydModule(const std::string& moduleName = "vanscomponent");
+
+	// ── 项目 Python 虚拟环境管理 ─────────────────────────────────────
+	// 为指定项目目录创建/更新 .venv 并安装 requirements.txt 中的依赖。
+	// 在解释器启动后调用（VansScriptSetup 内部或项目打开后由编辑器调用）。
+	void SetupProjectVenv(const std::string& projectRoot);
 
 	// Access from editor windows
 	static VansScriptContext* GetInstance() { return s_Instance; }
@@ -177,6 +182,16 @@ class VansScriptVehicleComponent : public VansScriptComponent
 {
 public:
 	VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
+};
+
+// ── Animation Component ─────────────────────────────────────────────────────
+// 持有对 VansScene 管理的 VansAnimationNode 的非拥有指针。
+// 通过此组件可以在 Python 中控制 AnimationController 的状态。
+class VansScriptAnimationComponent : public VansScriptComponent
+{
+public:
+	// 非拥有指针，生命周期由 VansScene 管理
+	VansGraphics::VansAnimationNode* m_AnimNode = nullptr;
 };
 
 // ── Python Script Component ─────────────────────────────────────────────────

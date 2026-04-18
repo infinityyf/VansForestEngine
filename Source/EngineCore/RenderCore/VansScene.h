@@ -239,12 +239,17 @@ namespace VansGraphics
 
 		// ── ScriptableObject-based loading (new JSON "objects" format) ───────
 		// Parses the "objects" array from scene JSON: creates VansScriptObjects
-		// with render / physics / cloth / vehicle components.
-		void LoadSceneObjects(VkDevice& device, json& objectsArray);
+		// with render / physics / cloth / vehicle / animation components.
+		void LoadSceneObjects(VkDevice& device, json& objectsArray, const std::string& projectRoot);
 
 		// ── Animation node / controller loading ─────────────────────────────
-		// 根据场景 JSON 中的 animation_node 数组，加载 AnimationNode + Controller
+		// Legacy: 根据场景 JSON 顶层 animation_node 数组加载（向后兼容）
 		void LoadAnimationNodesFromJson(json& animNodeArray, const std::string& projectRoot);
+
+		// 单个 animation component 加载（供 LoadSceneObjects 第四阶段调用）
+		VansAnimationNode* LoadSingleAnimationComponent(const json& animJson,
+		                                                const std::string& objectName,
+		                                                const std::string& projectRoot);
 
 		// Auto-wrap legacy rendernode + physicsnode data into VansScriptObjects.
 		void AutoCreateObjectsFromLegacy();

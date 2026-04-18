@@ -1,6 +1,8 @@
 #include "VansScriptContext.h"
 #include "VansTransform.h"
 #include "../RenderCore/VansRenderNode.h"
+#include "../AnimationCore/VansAnimationNode.h"
+#include "../AnimationCore/VansAnimationController.h"
 #include "../Util/VansInputManager.h"
 #include "../../../../ForestExporter/VansEngineBridge.h"
 #include "../../../../ForestExporter/VansInputBridge.h"
@@ -28,6 +30,11 @@ static inline VansScriptObject* AsScriptObject(void* p)
 static inline VansScriptComponent* AsScriptComponent(void* p)
 {
 	return static_cast<VansScriptComponent*>(p);
+}
+
+static inline VansScriptAnimationComponent* AsAnimComp(void* p)
+{
+	return dynamic_cast<VansScriptAnimationComponent*>(static_cast<VansScriptComponent*>(p));
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +230,127 @@ void VansInitEngineBridge()
 		auto* o = AsScriptObject(obj);
 		if (!o) return nullptr;
 		return o->GetComponent<VansScriptTransform>();
+	};
+
+	s_EngineBridge.objectGetAnimComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptAnimationComponent>();
+	};
+
+	// ── AnimationComponent ───────────────────────────────────────────────
+	s_EngineBridge.animPlay = [](void* comp)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode) ac->m_AnimNode->Play();
+	};
+
+	s_EngineBridge.animPlayState = [](void* comp, const char* stateName)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode) ac->m_AnimNode->Play(stateName);
+	};
+
+	s_EngineBridge.animPause = [](void* comp)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode) ac->m_AnimNode->Pause();
+	};
+
+	s_EngineBridge.animResume = [](void* comp)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode) ac->m_AnimNode->Resume();
+	};
+
+	s_EngineBridge.animStop = [](void* comp)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode) ac->m_AnimNode->Stop();
+	};
+
+	s_EngineBridge.animSetFloat = [](void* comp, const char* name, float val)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			ac->m_AnimNode->GetController()->SetFloat(name, val);
+	};
+
+	s_EngineBridge.animSetBool = [](void* comp, const char* name, bool val)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			ac->m_AnimNode->GetController()->SetBool(name, val);
+	};
+
+	s_EngineBridge.animSetInt = [](void* comp, const char* name, int val)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			ac->m_AnimNode->GetController()->SetInt(name, val);
+	};
+
+	s_EngineBridge.animSetTrigger = [](void* comp, const char* name)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			ac->m_AnimNode->GetController()->SetTrigger(name);
+	};
+
+	s_EngineBridge.animGetFloat = [](void* comp, const char* name) -> float
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			return ac->m_AnimNode->GetController()->GetFloat(name);
+		return 0.0f;
+	};
+
+	s_EngineBridge.animGetBool = [](void* comp, const char* name) -> bool
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			return ac->m_AnimNode->GetController()->GetBool(name);
+		return false;
+	};
+
+	s_EngineBridge.animGetInt = [](void* comp, const char* name) -> int
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			return ac->m_AnimNode->GetController()->GetInt(name);
+		return 0;
+	};
+
+	s_EngineBridge.animGetCurrentState = [](void* comp, char* buf, int bufSize)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && bufSize > 0)
+		{
+			std::string state = ac->m_AnimNode->GetCurrentStateName();
+			strncpy_s(buf, bufSize, state.c_str(), _TRUNCATE);
+		}
+	};
+
+	s_EngineBridge.animGetNormalizedTime = [](void* comp) -> float
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode) return ac->m_AnimNode->GetNormalizedTime();
+		return 0.0f;
+	};
+
+	s_EngineBridge.animGetSpeed = [](void* comp) -> float
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode) return ac->m_AnimNode->GetSpeed();
+		return 1.0f;
+	};
+
+	s_EngineBridge.animSetSpeed = [](void* comp, float speed)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			ac->m_AnimNode->GetController()->SetSpeed(speed);
 	};
 }
 

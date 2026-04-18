@@ -1,12 +1,14 @@
 #pragma once
 
 #include "VansAnimationController.h"
+#include "VansAnimGraph.h"
 #include <string>
 #include <vector>
+#include <memory>
 
 namespace VansGraphics
 {
-	constexpr uint32_t VANIMATOR_VERSION = 1;
+	constexpr uint32_t VANIMATOR_VERSION = 2;
 	constexpr char     VANIMATOR_MAGIC[] = "VANIMATOR";
 
 	// .vanimator 中记录的 clip 引用（名称 + 相对路径）
@@ -19,12 +21,18 @@ namespace VansGraphics
 	// 从 .vanimator 文件加载得到的完整定义
 	struct AnimatorAssetData
 	{
+		uint32_t                       version = 1;
 		std::string                    name;
 		std::vector<AnimatorParameter> parameters;
 		std::vector<AnimatorClipRef>   clipRefs;
+
+		// v1: 状态机数据
 		std::vector<AnimatorState>     states;
 		std::vector<AnimatorTransition> transitions;
 		std::string                    defaultStateName;
+
+		// v2: 逻辑图数据
+		std::unique_ptr<VansAnimGraph> animGraph;
 	};
 
 	// ────────────────────────────────────────────────────────────────

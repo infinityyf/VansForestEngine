@@ -233,6 +233,7 @@ bool VansAnimatorIO::Load(const std::string& filePath, AnimatorAssetData& outDat
 	}
 
 	outData.name = root.value("name", "Unnamed");
+	outData.version = root.value("version", 1u);
 	outData.defaultStateName = root.value("defaultState", "");
 
 	// ── 参数 ──
@@ -270,7 +271,17 @@ bool VansAnimatorIO::Load(const std::string& filePath, AnimatorAssetData& outDat
 		}
 	}
 
-	// ── States ──
+	// ── v2: AnimGraph ──
+	if (outData.version >= 2 && root.contains("graph") && root["graph"].is_object())
+	{
+		outData.animGraph = VansAnimGraph::DeserializeFromJsonObject(root["graph"]);
+		if (!outData.animGraph)
+		{
+			VANS_LOG_WARN("[VansAnimatorIO] Failed to deserialize graph in: " << filePath);
+		}
+	}
+
+	// ── States (v1) ──
 	if (root.contains("states") && root["states"].is_array())
 	{
 		for (const auto& s : root["states"])
@@ -323,9 +334,10 @@ bool VansAnimatorIO::Load(const std::string& filePath, AnimatorAssetData& outDat
 		}
 	}
 
-	VANS_LOG("[VansAnimatorIO] Loaded .vanimator: " << filePath
+	VANS_LOG("[VansAnimatorIO] Loaded .vanimator v" << outData.version << ": " << filePath
 	         << " (" << outData.states.size() << " states, "
-	         << outData.parameters.size() << " params)");
+	         << outData.parameters.size() << " params"
+	         << (outData.animGraph ? ", has graph" : "") << ")");
 	return true;
 }
 

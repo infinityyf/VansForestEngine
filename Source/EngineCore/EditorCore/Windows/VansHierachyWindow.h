@@ -8,12 +8,18 @@
 #include <set>
 namespace VansGraphics
 {
+	class VansAnimGraphEditorWindow;
+
 	class VansHierachuWindow : public VansBaseWindowComponent
 	{
 	private:
 		bool m_TestButton = true;
 		VansAnimationNode* m_SelectedAnimationNode = nullptr;
 		int m_SelectedBone = -1;  // selected bone index in the hierarchy tree
+
+	public:
+		// 指向 EditorWindow 持有的 AnimGraphEditor 实例
+		VansAnimGraphEditorWindow* m_AnimGraphEditorRef = nullptr;
 
 	private:
 		// ── Render Node tab ──

@@ -7,6 +7,7 @@
 #include "../RenderCore/VansScene.h"
 #include "../PhysicsCore/VansPhysics.h"
 #include <cstdlib>
+#include <fstream>
 #include <string>
 #include <algorithm>
 #include "../../../../ForestExporter/VansEngineBridge.h"
@@ -244,6 +245,120 @@ void VansScriptContext::ReloadPydModule(const std::string& moduleName)
 }
 
 // ---------------------------------------------------------------------------
+// 读取项目 Scripts/requirements.txt，将缺失的包安装到引擎内嵌 Python 的
+// site-packages。VansScriptSetup 已通过 site.addsitedir() 将该目录加入
+// sys.path，安装完后调用 importlib.invalidate_caches() 刷新缓存即可立即使用。
+// 若 requirements.txt 不存在则自动创建模板。
+// ---------------------------------------------------------------------------
+void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
+{
+	try
+	{
+		// ── 引擎内嵌 Python 可执行文件路径 ──────────────────────────────
+		auto* cfg = VansConfigration::GetInstance();
+		std::string engineRoot = cfg->GetProjectRootPath();
+		std::string pythonExe  = engineRoot + "External/Python-3.13.3/PCbuild/amd64/python.exe";
+		std::replace(pythonExe.begin(), pythonExe.end(), '/', '\\');
+
+		// ── 规范化项目根路径 ──────────────────────────────────────────
+		std::string projRoot = projectRoot;
+		if (!projRoot.empty() && projRoot.back() != '/' && projRoot.back() != '\\')
+			projRoot += '/';
+
+		std::string requirementsPath = projRoot + "Scripts/requirements.txt";
+
+		VansConsole::Get().LogPython(
+			"[PyDeps] Checking requirements: " + requirementsPath);
+
+		// ── 1. 若 requirements.txt 不存在，生成默认模板 ───────────────
+		if (!std::filesystem::exists(requirementsPath))
+		{
+			std::ofstream reqFile(requirementsPath);
+			if (reqFile.is_open())
+			{
+				reqFile << "# 在此处列出项目依赖的 Python 第三方库，每行一个\n";
+				reqFile << "# 示例:\n";
+				reqFile << "# matplotlib\n";
+				reqFile << "# numpy\n";
+				reqFile.close();
+				VansConsole::Get().LogPython(
+					"[PyDeps] Created default requirements.txt: " + requirementsPath);
+			}
+			else
+			{
+				VANS_LOG_WARN("[PyDeps] Cannot create requirements.txt at: " << requirementsPath);
+			}
+			return; // 模板刚创建，无内容可安装
+		}
+
+		// ── 2. 读取 requirements.txt，跳过注释和空行 ───────────────
+		{
+			bool hasRequirements = false;
+			std::ifstream reqIn(requirementsPath);
+			std::string   line;
+			while (std::getline(reqIn, line))
+			{
+				auto first = line.find_first_not_of(" \t\r\n");
+				if (first != std::string::npos && line[first] != '#')
+				{
+					hasRequirements = true;
+					break;
+				}
+			}
+
+			if (!hasRequirements)
+			{
+				VansConsole::Get().LogPython("[PyDeps] requirements.txt has no packages, skipping install.");
+				return;
+			}
+		}
+
+		// ── 3. 用引擎内嵌 python.exe 的 pip 安装到其自身 site-packages ─────
+		// VansScriptSetup 中已通过 site.addsitedir() 将该目录加入 sys.path，
+		// 安装完成后调用 importlib.invalidate_caches() 刷新缓存即可立即使用。
+		VansConsole::Get().LogPython(
+			"[PyDeps] Installing from: " + requirementsPath);
+
+		py::module subprocess = py::module::import("subprocess");
+		py::list   pipCmd;
+		pipCmd.append(pythonExe);
+		pipCmd.append("-m");
+		pipCmd.append("pip");
+		pipCmd.append("install");
+		pipCmd.append("-r");
+		pipCmd.append(requirementsPath);
+		pipCmd.append("--quiet");
+		pipCmd.append("--no-warn-script-location");
+
+		py::object result = subprocess.attr("run")(
+			pipCmd,
+			py::arg("capture_output") = true);
+
+		int rc = result.attr("returncode").cast<int>();
+		if (rc != 0)
+		{
+			std::string err = result.attr("stderr")
+				.attr("decode")("utf-8", "replace").cast<std::string>();
+			VansConsole::Get().LogPython("[PyDeps] pip install failed: " + err);
+		}
+		else
+		{
+			VansConsole::Get().LogPython("[PyDeps] Requirements installed successfully.");
+			// 刷新当前解释器的导入缓存，使子进程刚安装的包立即可见
+			py::module::import("importlib").attr("invalidate_caches")();
+		}
+	}
+	catch (const py::error_already_set& e)
+	{
+		VansConsole::Get().LogPython("[PyDeps] Python error: " + std::string(e.what()));
+	}
+	catch (const std::exception& e)
+	{
+		VANS_LOG_ERROR("[PyDeps] " << e.what());
+	}
+}
+
+// ---------------------------------------------------------------------------
 void VansScriptContext::VansScriptSetup()
 {
     s_Instance = this;
@@ -256,6 +371,13 @@ void VansScriptContext::VansScriptSetup()
     std::string pythonHomeEnv = "PYTHONHOME=" + pythonHome;
     _putenv(pythonHomeEnv.c_str());
 
+    // CPython 源码树中 Tcl/Tk 脚本库位于 externals/tcltk-*/amd64/lib/，
+    // 必须在任何 tkinter/_tkinter 导入前设置 TCL_LIBRARY / TK_LIBRARY，
+    // 否则 TkAgg 后端（matplotlib）初始化时报 "Can't find a usable init.tcl"。
+    std::string tcltkBase = pythonHome + "/externals/tcltk-8.6.15.0/amd64/lib";
+    _putenv(("TCL_LIBRARY=" + tcltkBase + "/tcl8.6").c_str());
+    _putenv(("TK_LIBRARY="  + tcltkBase + "/tk8.6").c_str());
+
     static py::scoped_interpreter guard{};// 每个进程只能创建一个
 
     // Add your script directory to sys.path
@@ -264,6 +386,59 @@ void VansScriptContext::VansScriptSetup()
     m_ScriptDir = projectRoot + "../ForestExporter/EngineExported";
     sys.attr("path").attr("insert")(0, m_ScriptDir);
 
+    // CPython 源码树结构下，内置 C 扩展（_socket.pyd、_ssl.pyd 等）
+    // 编译产物在 PCbuild/amd64/，而非已安装 Python 的 DLLs/ 目录。
+    // PYTHONHOME 指向源码根时 sys.path 只包含 DLLs/（可能为空），
+    // 必须显式将 PCbuild/amd64 插入，否则 socket/ssl 等模块无法加载。
+    std::string pcbuildPath = pythonHome + "/PCbuild/amd64";
+    sys.attr("path").attr("insert")(1, pcbuildPath);
+
+    // pybind11 的 scoped_interpreter 以 Py_NoSiteFlag 启动，不会自动运行 site.py，
+    // 因此 Lib/site-packages 不在 sys.path 中，需手动注入。
+    {
+        std::string sitePackagesPath = pythonHome + "/Lib/site-packages";
+
+        // 1) site.addsitedir：将路径加入 sys.path 并处理 .pth 文件
+        py::module siteModule = py::module::import("site");
+        siteModule.attr("addsitedir")(sitePackagesPath);
+
+        // 2) 双保险：直接插入 sys.path（addsitedir 在路径已存在时可能跳过）
+        sys.attr("path").attr("insert")(1, sitePackagesPath);
+
+        // 3) Windows 嵌入式 Python：pip wheel（delvewheel）把编译包依赖的 DLL
+        //    存放在 site-packages/<pkg>.libs/ 顶层目录（例如 numpy.libs/）。
+        //    嵌入式模式不自动将这些目录注册到 Windows DLL 搜索路径，
+        //    必须手动调用 os.add_dll_directory()，否则 .pyd 扩展加载时报 ImportError。
+        try
+        {
+            py::module osMod = py::module::import("os");
+            std::filesystem::path siteFsPath(sitePackagesPath);
+            if (std::filesystem::exists(siteFsPath))
+            {
+                for (auto& entry : std::filesystem::directory_iterator(siteFsPath))
+                {
+                    if (!entry.is_directory()) continue;
+                    // delvewheel 规范：DLL 目录名以 ".libs" 结尾，位于 site-packages 顶层
+                    // 例如 numpy.libs/、matplotlib.libs/ 等
+                    const std::string dirName = entry.path().filename().string();
+                    if (dirName.size() > 5 &&
+                        dirName.compare(dirName.size() - 5, 5, ".libs") == 0)
+                    {
+                        osMod.attr("add_dll_directory")(entry.path().string());
+                    }
+                }
+            }
+        }
+        catch (const py::error_already_set& ex)
+        {
+            VANS_LOG_WARN("[ScriptSetup] DLL dir scan Python error: " << ex.what());
+        }
+        catch (const std::exception& ex)
+        {
+            VANS_LOG_WARN("[ScriptSetup] DLL dir scan failed: " << ex.what());
+        }
+    }
+
     // If a user project is loaded, also add the project root to sys.path
     // so that user scripts (e.g. Scripts/test.py) can be discovered.
     auto& projectMgr = Vans::VansProjectManager::Get();
@@ -271,6 +446,10 @@ void VansScriptContext::VansScriptSetup()
     {
         std::string projectScriptDir = projectMgr.GetProjectRootPath();
         sys.attr("path").attr("insert")(0, projectScriptDir);
+
+        // ── 确保项目 venv 已创建并将 site-packages 加入 sys.path ─────
+        // （解释器刚启动，此处的 Python subprocess 调用是合法的）
+        SetupProjectVenv(projectScriptDir);
     }
 
     // Install stdout/stderr redirect so print() goes to console window

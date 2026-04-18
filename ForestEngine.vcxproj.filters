@@ -80,6 +80,9 @@
     <Filter Include="EngineCore\ProjectSystem">
       <UniqueIdentifier>{c3a5e7b1-2d4f-6e89-ab01-cd2345ef6789}</UniqueIdentifier>
     </Filter>
+    <Filter Include="External\imguiNode">
+      <UniqueIdentifier>{3b401bf0-7786-4e6c-813a-53760b951c31}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -194,6 +197,9 @@
       <Filter>EngineCore\ScriptCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAnimGraphEditorWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VansAsset.h">
@@ -344,6 +350,9 @@
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimatorIO.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimGraph.h">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.h">
@@ -638,6 +647,9 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansProfilerWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansAnimGraphEditorWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp">
       <Filter>EngineCore\RenderCore\TerrainCore</Filter>
     </ClCompile>
@@ -657,6 +669,9 @@
       <Filter>EngineCore\AnimationCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimatorIO.cpp">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimGraph.cpp">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.cpp">
@@ -721,6 +736,18 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothSystem.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="External\GUI\ImGuiNode\crude_json.cpp">
+      <Filter>External\imguiNode</Filter>
+    </ClCompile>
+    <ClCompile Include="External\GUI\ImGuiNode\imgui_canvas.cpp">
+      <Filter>External\imguiNode</Filter>
+    </ClCompile>
+    <ClCompile Include="External\GUI\ImGuiNode\imgui_node_editor.cpp">
+      <Filter>External\imguiNode</Filter>
+    </ClCompile>
+    <ClCompile Include="External\GUI\ImGuiNode\imgui_node_editor_api.cpp">
+      <Filter>External\imguiNode</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

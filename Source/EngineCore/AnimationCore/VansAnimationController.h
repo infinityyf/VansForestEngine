@@ -4,9 +4,13 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <memory>
 
 namespace VansGraphics
 {
+	// 前向声明 (VansAnimGraph.h 包含本头文件，避免循环依赖)
+	class VansAnimGraph;
+
 	// ─── 参数类型 ───
 
 	enum class AnimatorParamType
@@ -191,6 +195,11 @@ namespace VansGraphics
 		std::string GetName() const { return m_Name; }
 		void SetName(const std::string& name) { m_Name = name; }
 
+		// ─── AnimGraph (v2) ───────────────────────────────────────────
+		void SetGraph(std::unique_ptr<VansAnimGraph> graph);
+		VansAnimGraph* GetGraph() const { return m_Graph.get(); }
+		bool HasGraph() const { return m_Graph != nullptr; }
+
 	private:
 		std::string m_Name;
 
@@ -231,6 +240,9 @@ namespace VansGraphics
 
 		// ─── 输出 ───
 		BoneMatricesSSBO m_BoneMatricesSSBO;
+
+		// ─── AnimGraph (v2) ───
+		std::unique_ptr<VansAnimGraph> m_Graph;
 
 		// ─── 内部方法 ───
 		void AdvanceStateTime(AnimatorState& state, float dt);

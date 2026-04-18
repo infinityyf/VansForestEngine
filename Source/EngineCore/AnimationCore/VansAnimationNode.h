@@ -102,6 +102,10 @@ namespace VansGraphics
 		std::string GetName() const { return m_Name; }
 		const BoneMatricesSSBO& GetBoneSSBO() const;
 
+		// ─── .vanimator 文件路径（编辑器用）───
+		void SetAnimatorFilePath(const std::string& path) { m_AnimatorFilePath = path; }
+		std::string GetAnimatorFilePath() const { return m_AnimatorFilePath; }
+
 	private:
 		std::string m_Name;
 
@@ -113,6 +117,9 @@ namespace VansGraphics
 
 		// ─── 动画控制器（外部持有，Node 不拥有生命周期）───
 		VansAnimationController* m_Controller = nullptr;
+
+		// ─── .vanimator 文件路径 ───
+		std::string m_AnimatorFilePath;
 
 		// ─── Root Motion 应用 ───
 		uint32_t m_TransformID           = 0;

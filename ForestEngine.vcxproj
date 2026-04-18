@@ -106,7 +106,7 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\GUI\ImGuizmo;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\NvCloth\include;$(SolutionDir)\ForestEngine\External\NvCloth\extensions\include;$(SolutionDir)\ForestEngine\External\NvCloth\PxShared\include;$(SolutionDir)\ForestEngine\External\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\GUI\ImGuizmo;$(SolutionDir)\ForestEngine\External\GUI\ImGuiNode;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\NvCloth\include;$(SolutionDir)\ForestEngine\External\NvCloth\extensions\include;$(SolutionDir)\ForestEngine\External\NvCloth\PxShared\include;$(SolutionDir)\ForestEngine\External\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -127,7 +127,7 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\GUI\ImGuizmo;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\NvCloth\include;$(SolutionDir)\ForestEngine\External\NvCloth\extensions\include;$(SolutionDir)\ForestEngine\External\NvCloth\PxShared\include;$(SolutionDir)\ForestEngine\External\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\GUI\ImGuizmo;$(SolutionDir)\ForestEngine\External\GUI\ImGuiNode;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\NvCloth\include;$(SolutionDir)\ForestEngine\External\NvCloth\extensions\include;$(SolutionDir)\ForestEngine\External\NvCloth\PxShared\include;$(SolutionDir)\ForestEngine\External\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -183,6 +183,7 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansRenderDebugWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAnimGraphEditorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansInspectorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProjectWindow.h" />
@@ -198,6 +199,7 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimatorIO.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimGraph.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothNode.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothSystem.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollider.h" />
@@ -294,6 +296,11 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansScriptorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansConsoleWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansProfilerWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansAnimGraphEditorWindow.cpp" />
+    <ClCompile Include="External\GUI\ImGuiNode\imgui_node_editor.cpp" />
+    <ClCompile Include="External\GUI\ImGuiNode\imgui_node_editor_api.cpp" />
+    <ClCompile Include="External\GUI\ImGuiNode\imgui_canvas.cpp" />
+    <ClCompile Include="External\GUI\ImGuiNode\crude_json.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationTypes.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClip.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationNode.cpp" />
@@ -301,6 +308,7 @@
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimatorIO.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimGraph.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollider.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysics.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.cpp" />

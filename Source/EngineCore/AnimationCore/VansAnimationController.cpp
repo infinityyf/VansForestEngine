@@ -1,4 +1,5 @@
 #include "VansAnimationController.h"
+#include "VansAnimGraph.h"
 #include "../Util/VansLog.h"
 
 #include <../../GLM/glm.hpp>
@@ -27,6 +28,11 @@ VansAnimationController::VansAnimationController()
 
 VansAnimationController::~VansAnimationController()
 {
+}
+
+void VansAnimationController::SetGraph(std::unique_ptr<VansAnimGraph> graph)
+{
+	m_Graph = std::move(graph);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -251,6 +257,14 @@ void VansAnimationController::BindStateClips()
 
 void VansAnimationController::Play()
 {
+	// v2: 有 graph 时直接启动播放，无需状态机
+	if (m_Graph)
+	{
+		m_PlaybackState = AnimationState::Playing;
+		m_Graph->ResetAll();
+		return;
+	}
+
 	if (m_DefaultStateName.empty() || m_States.find(m_DefaultStateName) == m_States.end())
 	{
 		// 没有默认状态，尝试用第一个 state
@@ -343,6 +357,19 @@ AnimationState VansAnimationController::GetPlaybackState() const
 
 float VansAnimationController::GetCurrentPlayTime() const
 {
+	// v2: 从 AnimGraph 第一个 ClipNode 读取当前时间
+	if (m_Graph)
+	{
+		for (const auto& [id, node] : m_Graph->GetNodes())
+		{
+			if (node->GetType() == AnimGraphNodeType::Clip)
+			{
+				return static_cast<const AnimGraphClipNode*>(node.get())->m_CurrentTime;
+			}
+		}
+		return 0.0f;
+	}
+
 	auto it = m_States.find(m_CurrentStateName);
 	if (it == m_States.end()) return 0.0f;
 	return it->second.currentTime;
@@ -350,6 +377,22 @@ float VansAnimationController::GetCurrentPlayTime() const
 
 float VansAnimationController::GetCurrentDuration() const
 {
+	// v2: 从 AnimGraph 第一个 ClipNode 的 Clip 读取时长
+	if (m_Graph)
+	{
+		for (const auto& [id, node] : m_Graph->GetNodes())
+		{
+			if (node->GetType() == AnimGraphNodeType::Clip)
+			{
+				const std::string& clipName =
+					static_cast<const AnimGraphClipNode*>(node.get())->m_ClipName;
+				auto it = m_Clips.find(clipName);
+				if (it != m_Clips.end()) return it->second.duration;
+			}
+		}
+		return 0.0f;
+	}
+
 	auto it = m_States.find(m_CurrentStateName);
 	if (it == m_States.end()) return 0.0f;
 
@@ -409,6 +452,51 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 	uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
 	if (boneCount == 0)
 		return;
+
+	// ════════════════════════════════════════════════════════════
+	//  v2 路径: AnimGraph 求值
+	// ════════════════════════════════════════════════════════════
+	if (m_Graph)
+	{
+		// 推进节点内部时间（乘以 GlobalSpeed，使速度滑条生效）
+		m_Graph->AdvanceTime(deltaTime * m_GlobalSpeed);
+
+		// 构建求值上下文
+		AnimGraphContext ctx;
+		ctx.deltaTime  = deltaTime;
+		ctx.skeleton   = &skeleton;
+		ctx.parameters = &m_Parameters;
+		ctx.clips      = &m_Clips;
+
+		// pull 求值: Output → 上游节点递归采样
+		AnimGraphPose pose = m_Graph->Evaluate(ctx);
+		if (!pose.valid || pose.localTransforms.size() != boneCount)
+			return;
+
+		std::vector<glm::mat4> localTransforms = std::move(pose.localTransforms);
+
+		// 骨骼覆盖 / Root Motion / 层级 / 最终矩阵 与 v1 共用
+		ApplyBoneOverrides(localTransforms, skeleton);
+
+		if (m_RootMotionEnabled)
+		{
+			if (m_RootBoneIndex < 0)
+				m_RootBoneIndex = DetectRootBoneIndex(skeleton);
+			ExtractRootMotion(localTransforms, skeleton);
+		}
+		else
+		{
+			m_LoopJustWrapped = false;
+		}
+
+		UpdateHierarchy(localTransforms, skeleton);
+		BuildFinalMatrices(localTransforms, skeleton);
+		return;
+	}
+
+	// ════════════════════════════════════════════════════════════
+	//  v1 路径: 状态机求值（原有逻辑）
+	// ════════════════════════════════════════════════════════════
 
 	// 1. 求值过渡条件
 	EvaluateTransitions();

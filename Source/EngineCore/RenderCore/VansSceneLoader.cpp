@@ -16,6 +16,7 @@
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../AnimationCore/VansAnimatorIO.h"
+#include "../AnimationCore/VansAnimGraph.h"
 #include "../AnimationCore/VansAnimationClipLoader.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
 
@@ -1062,12 +1063,22 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
     // Load scene nodes (lights, objects, rendernodes, physics)
     json sceneNode = sceneData["scene"];
 
+    // 从 scene path 推导 project root（Scenes/ → 项目根目录）
+    std::string scenePath(path);
+    std::string projectRoot = scenePath.substr(0, scenePath.find_last_of("/\\") + 1);
+    if (!projectRoot.empty())
+    {
+        size_t pos = projectRoot.substr(0, projectRoot.size() - 1).find_last_of("/\\");
+        if (pos != std::string::npos)
+            projectRoot = projectRoot.substr(0, pos + 1);
+    }
+
     LoadLights(nativeDevice, sceneNode[0]["light"]);
 
     if (sceneNode[0].contains("objects") && sceneNode[0]["objects"].is_array()
         && !sceneNode[0]["objects"].empty())
     {
-        LoadSceneObjects(nativeDevice, sceneNode[0]["objects"]);
+        LoadSceneObjects(nativeDevice, sceneNode[0]["objects"], projectRoot);
 
         if (sceneNode[0].contains("rendernode") && !sceneNode[0]["rendernode"].empty())
         {
@@ -1102,19 +1113,9 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
         AddVegetationNode(nativeDevice, sceneData["vegetation"]);
     }
 
-    // Animation nodes (controller-driven, from scene JSON)
+    // Legacy top-level animation_node（向后兼容，新代码应使用 object.components.animation）
     if (sceneNode[0].contains("animation_node") && sceneNode[0]["animation_node"].is_array())
     {
-        // 从 scene path 推导 project root
-        std::string scenePath(path);
-        std::string projectRoot = scenePath.substr(0, scenePath.find_last_of("/\\") + 1);
-        // 再向上一级（Scenes/ → 项目根目录）
-        if (!projectRoot.empty())
-        {
-            size_t pos = projectRoot.substr(0, projectRoot.size() - 1).find_last_of("/\\");
-            if (pos != std::string::npos)
-                projectRoot = projectRoot.substr(0, pos + 1);
-        }
         LoadAnimationNodesFromJson(sceneNode[0]["animation_node"], projectRoot);
     }
 
@@ -1449,7 +1450,9 @@ void VansGraphics::VansScene::LoadAnimationNodesFromJson(json& animNodeArray, co
                 continue;
             }
 
-            auto clipsMap = VansAnimationClipLoader::LoadClipsFromRefs(assetData.clipRefs);
+            auto clipsMap = VansAnimationClipLoader::LoadClipsFromRefs(
+                assetData.clipRefs, projectRoot,
+                &meshAsset->m_AnimImportResult.skeleton);
 
             controller = new VansAnimationController();
             controller->SetName(assetData.name);
@@ -1477,6 +1480,10 @@ void VansGraphics::VansScene::LoadAnimationNodesFromJson(json& animNodeArray, co
 
             controller->SetDefaultState(assetData.defaultStateName);
             controller->BindStateClips();
+
+            // v2: 传递 AnimGraph
+            if (assetData.animGraph)
+                controller->SetGraph(std::move(assetData.animGraph));
 
             VANS_LOG("[LoadAnimNode] Loaded controller from .vanimator: " << fullAnimatorPath);
         }
@@ -1552,6 +1559,10 @@ void VansGraphics::VansScene::LoadAnimationNodesFromJson(json& animNodeArray, co
 
         animNode->SetController(controller);
 
+        // 记录 .vanimator 文件路径供编辑器使用
+        if (!animatorPath.empty())
+            animNode->SetAnimatorFilePath(projectRoot + animatorPath);
+
         if (!rootBone.empty())
             animNode->SetRootBone(rootBone);
 
@@ -1579,6 +1590,217 @@ void VansGraphics::VansScene::LoadAnimationNodesFromJson(json& animNodeArray, co
                  << meshAsset->m_AnimImportResult.skeleton.bones.size() << " bones, "
                  << group.childNodes.size() << " render node(s)");
     }
+}
+
+// ===========================================================================
+// LoadSingleAnimationComponent — 从单个 JSON 对象创建 AnimationNode
+// 用于 LoadSceneObjects 中的 "animation" component 字段
+// 返回创建的 VansAnimationNode 指针（失败时返回 nullptr）
+// ===========================================================================
+
+VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationComponent(
+    const json& animJson,
+    const std::string& objectName,
+    const std::string& projectRoot)
+{
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VkDevice device = vkDevice->GetLogicDevice();
+
+    std::string meshGroupName  = animJson.value("mesh_group", "");
+    std::string animatorPath   = animJson.value("animator", "");
+    std::string externClips    = animJson.value("extern_clips", "");
+    bool enableRootMotion      = animJson.value("root_motion", false);
+    std::string rootBone       = animJson.value("root_bone", "");
+
+    // node 名称：优先读取字段，其次用 object 名称
+    std::string nodeName = animJson.value("name", objectName);
+
+    if (meshGroupName.empty())
+    {
+        VANS_LOG_WARN("[LoadAnimComp] animation component on '" << objectName << "' has no mesh_group, skipping");
+        return nullptr;
+    }
+
+    // 查找 MultiMeshGroup
+    auto groupIt = m_MultiMeshGroups.find(meshGroupName);
+    if (groupIt == m_MultiMeshGroups.end())
+    {
+        VANS_LOG_WARN("[LoadAnimComp] mesh_group '" << meshGroupName << "' not found for object '" << objectName << "'");
+        return nullptr;
+    }
+
+    MultiMeshGroup& group = groupIt->second;
+    if (group.childNodes.empty())
+        return nullptr;
+
+    // 查找 mesh 资产
+    VansMesh* meshAsset = nullptr;
+    for (auto* asset : m_Meshes)
+    {
+        if (asset->m_AssetName == meshGroupName)
+        {
+            meshAsset = dynamic_cast<VansMesh*>(asset);
+            break;
+        }
+    }
+
+    if (!meshAsset || !meshAsset->m_HasAnimation)
+    {
+        VANS_LOG_WARN("[LoadAnimComp] mesh_group '" << meshGroupName
+                     << "' has no animation data. Skipping '" << objectName << "'");
+        return nullptr;
+    }
+
+    // ── 创建 Controller ──────────────────────────────────────────────────
+    VansAnimationController* controller = nullptr;
+
+    if (!animatorPath.empty())
+    {
+        // 路径 A: 从 .vanimator 文件加载完整 controller 定义
+        std::string fullAnimatorPath = projectRoot + animatorPath;
+
+        AnimatorAssetData assetData;
+        if (!VansAnimatorIO::Load(fullAnimatorPath, assetData))
+        {
+            VANS_LOG_WARN("[LoadAnimComp] Failed to load .vanimator: " << fullAnimatorPath);
+            return nullptr;
+        }
+
+        auto clipsMap = VansAnimationClipLoader::LoadClipsFromRefs(
+            assetData.clipRefs, projectRoot,
+            &meshAsset->m_AnimImportResult.skeleton);
+
+        controller = new VansAnimationController();
+        controller->SetName(assetData.name);
+
+        for (const auto& param : assetData.parameters)
+        {
+            controller->AddParameter(param.name, param.type);
+            switch (param.type)
+            {
+            case AnimatorParamType::Float:   controller->SetFloat(param.name, param.floatVal); break;
+            case AnimatorParamType::Bool:    controller->SetBool(param.name, param.boolVal);   break;
+            case AnimatorParamType::Int:     controller->SetInt(param.name, param.intVal);     break;
+            case AnimatorParamType::Trigger: break;
+            }
+        }
+
+        for (auto& [name, clip] : clipsMap)
+            controller->AddClip(name, std::move(clip));
+
+        for (const auto& state : assetData.states)
+            controller->AddState(state);
+
+        for (const auto& trans : assetData.transitions)
+            controller->AddTransition(trans);
+
+        controller->SetDefaultState(assetData.defaultStateName);
+        controller->BindStateClips();
+
+        // v2: 传递 AnimGraph
+        if (assetData.animGraph)
+            controller->SetGraph(std::move(assetData.animGraph));
+
+        VANS_LOG("[LoadAnimComp] Loaded controller from .vanimator: " << fullAnimatorPath);
+    }
+    else
+    {
+        // 路径 B: 自动生成默认 controller（外部 clip 优先，fallback 使用内嵌 clip）
+        controller = new VansAnimationController();
+        controller->SetName(meshGroupName + "_Controller");
+
+        bool usedExternClips = false;
+        if (!externClips.empty())
+        {
+            std::string fullExternPath = projectRoot + externClips;
+            std::vector<VansAnimationClip> extClips;
+            if (VansAnimationClipLoader::ExtractClipsFromFBX(
+                    fullExternPath, meshAsset->m_AnimImportResult.skeleton, extClips))
+            {
+                for (auto& extClip : extClips)
+                    controller->AddClip(extClip.clipName, std::move(extClip));
+
+                usedExternClips = true;
+                VANS_LOG("[LoadAnimComp] Loaded " << extClips.size()
+                         << " extern clip(s) from: " << fullExternPath);
+            }
+            else
+            {
+                VANS_LOG_WARN("[LoadAnimComp] Failed to extract clips from: " << fullExternPath);
+            }
+        }
+
+        if (!usedExternClips)
+        {
+            for (auto& clip : meshAsset->m_AnimImportResult.clips)
+                controller->AddClip(clip.clipName, clip);
+        }
+
+        auto clipNames = controller->GetClipNames();
+        for (const auto& clipName : clipNames)
+        {
+            AnimatorState state;
+            state.name       = clipName;
+            state.clipName   = clipName;
+            state.speed      = 1.0f;
+            state.loop       = true;
+            state.rootMotion = enableRootMotion;
+            controller->AddState(state);
+        }
+
+        if (!clipNames.empty())
+            controller->SetDefaultState(clipNames.front());
+
+        controller->BindStateClips();
+
+        VANS_LOG("[LoadAnimComp] Auto-generated controller for '" << meshGroupName
+                 << "' with " << clipNames.size() << " clip(s)");
+    }
+
+    if (enableRootMotion)
+        controller->EnableRootMotion(true);
+
+    // ── 创建 AnimationNode ───────────────────────────────────────────────
+    VansAnimationNode* animNode = new VansAnimationNode(nodeName);
+    animNode->SetSkeleton(meshAsset->m_AnimImportResult.skeleton);
+    animNode->SetRenderNodes(group.childNodes);
+    animNode->InitGPUResources(device, 1);
+    animNode->UploadPerSubmeshBoneBuffers(meshAsset->m_SubMeshBoneData);
+    animNode->SetTransformID(group.sharedTransformID);
+    animNode->SetController(controller);
+
+    // 记录 .vanimator 文件路径供编辑器使用
+    if (!animatorPath.empty())
+        animNode->SetAnimatorFilePath(projectRoot + animatorPath);
+
+    if (!rootBone.empty())
+        animNode->SetRootBone(rootBone);
+
+    // 标记渲染节点
+    for (size_t ci = 0; ci < group.childNodes.size(); ci++)
+    {
+        VansRenderNode* childNode = group.childNodes[ci];
+        childNode->m_HasSkeletonBone  = true;
+        childNode->m_AnimationEnabled = true;
+        childNode->m_AnimOwner        = animNode;
+        childNode->m_AnimSubmeshIndex = static_cast<uint32_t>(ci);
+        if (ci < animNode->GetSubmeshBufferCount())
+        {
+            childNode->m_AnimBoneIDBuffer    = &animNode->GetBoneIDBuffer(static_cast<uint32_t>(ci));
+            childNode->m_AnimBoneWeightBuffer = &animNode->GetBoneWeightBuffer(static_cast<uint32_t>(ci));
+        }
+    }
+
+    m_AnimationNodes.push_back(animNode);
+    m_AnimationControllers.push_back(controller);
+    controller->Play();
+
+    VANS_LOG("[LoadAnimComp] Created animation component '" << nodeName
+             << "' with " << controller->GetClipNames().size() << " clip(s), "
+             << meshAsset->m_AnimImportResult.skeleton.bones.size() << " bones, "
+             << group.childNodes.size() << " render node(s)");
+
+    return animNode;
 }
 
 // ===========================================================================
@@ -1735,15 +1957,25 @@ VansScriptObject* VansGraphics::VansScene::FindObjectByName(const std::string& n
 // LoadSceneObjects  — new "objects" JSON format
 // ===========================================================================
 
-void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsArray)
+void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsArray, const std::string& projectRoot)
 {
     using namespace VansEngine;
 
     // ── First pass: create all Objects, render / physics / cloth components ──
     // Defer cloth collision-sphere objectRef resolution to second pass.
     // Also collect render-node parent links for a third pass.
+    // Defer animation component resolution to a fourth pass (所有 render 节点均已创建后).
     struct ParentLink { std::string childName; std::string parentName; };
-    std::vector<ParentLink> parentLinks;
+    struct PendingAnimComp
+    {
+        VansScriptObject*           obj;
+        VansScriptAnimationComponent* comp;
+        json                        animJson;
+        std::string                 objectName;
+    };
+
+    std::vector<ParentLink>    parentLinks;
+    std::vector<PendingAnimComp> pendingAnimComps;
 
     for (const auto& objJson : objectsArray)
     {
@@ -1818,6 +2050,23 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             vc->m_ComponentName = "vehicle";
             vc->m_Vehicle = nullptr;  // resolved in second pass
             obj->AddComponent(vc);
+        }
+
+        // ── Animation component ───────────────────────────────────────────
+        if (components.contains("animation"))
+        {
+            // 创建占位符，延迟到第四阶段（所有对象的 render 组件全部创建后）再调用
+            // LoadSingleAnimationComponent，确保依赖的 MultiMeshGroup 已存在
+            auto* ac = new VansScriptAnimationComponent();
+            ac->m_ComponentName = "animation";
+            obj->AddComponent(ac);
+
+            PendingAnimComp pending;
+            pending.obj        = obj;
+            pending.comp       = ac;
+            pending.animJson   = components["animation"];
+            pending.objectName = obj->m_ObjectName;
+            pendingAnimComps.push_back(std::move(pending));
         }
 
         // ── Python script components ──────────────────────────────────────
@@ -1917,6 +2166,21 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         {
             m_TransformParentSystem.SetParent(childNode->m_TransformID, parentNode->m_TransformID);
             VANS_LOG("[TransformParent] '" << link.childName << "' parented to '" << link.parentName << "'");
+        }
+    }
+
+    // ── Fourth pass: resolve animation components ─────────────────────────
+    // 此时所有 render 组件（及对应 MultiMeshGroup）均已创建完毕
+    for (auto& pending : pendingAnimComps)
+    {
+        VansAnimationNode* animNode = LoadSingleAnimationComponent(
+            pending.animJson, pending.objectName, projectRoot);
+        pending.comp->m_AnimNode = animNode;
+
+        if (!animNode)
+        {
+            VANS_LOG_WARN("[LoadSceneObjects] Animation component for '"
+                         << pending.objectName << "' could not be created");
         }
     }
 }

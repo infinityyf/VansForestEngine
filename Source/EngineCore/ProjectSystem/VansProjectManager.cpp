@@ -3,6 +3,7 @@
 #include "../Configration/VansConfigration.h"
 
 #include <filesystem>
+#include <fstream>
 #include <algorithm>
 #include <chrono>
 #include <ctime>
@@ -241,6 +242,22 @@ void VansProjectManager::CreateDefaultDirectories(const std::string& rootPath)
 		{
 			fs::create_directories(p);
 			VANS_LOG("[ProjectManager] Created directory: " << p.string());
+		}
+	}
+
+	// 为新项目创建默认 requirements.txt（若不存在），放在 Scripts/ 目录下
+	fs::path reqPath = fs::path(rootPath) / "Scripts" / "requirements.txt";
+	if (!fs::exists(reqPath))
+	{
+		std::ofstream reqFile(reqPath);
+		if (reqFile.is_open())
+		{
+			reqFile << "# 在此处列出项目依赖的 Python 第三方库，每行一个\n";
+			reqFile << "# 示例:\n";
+			reqFile << "# matplotlib\n";
+			reqFile << "# numpy\n";
+			reqFile.close();
+			VANS_LOG("[ProjectManager] Created default requirements.txt");
 		}
 	}
 }

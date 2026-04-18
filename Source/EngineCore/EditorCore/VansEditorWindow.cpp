@@ -17,6 +17,7 @@
 #include "Windows/VansScriptorWindow.h"
 #include "Windows/VansConsoleWindow.h"
 #include "Windows/VansProfilerWindow.h"
+#include "Windows/VansAnimGraphEditorWindow.h"
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
@@ -107,6 +108,8 @@ VansGraphics::VansScriptorWindow* VansGraphics::VansEditorWindow::m_ScriptorWind
 VansGraphics::VansConsoleWindow* VansGraphics::VansEditorWindow::m_ConsoleWindow;
 
 VansGraphics::VansProfilerWindow* VansGraphics::VansEditorWindow::m_ProfilerWindow;
+
+VansGraphics::VansAnimGraphEditorWindow* VansGraphics::VansEditorWindow::m_AnimGraphEditorWindow;
 
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
@@ -349,6 +352,12 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_ProfilerWindow = new VansProfilerWindow();
     m_Windows.push_back(m_ProfilerWindow);
+
+    m_AnimGraphEditorWindow = new VansAnimGraphEditorWindow();
+    m_Windows.push_back(m_AnimGraphEditorWindow);
+
+    // 将 AnimGraphEditor 引用传给 HierachyWindow
+    m_HierachyWindow->m_AnimGraphEditorRef = m_AnimGraphEditorWindow;
 }
 
 void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
@@ -514,6 +523,8 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
                 ApplyProjectTimeSettings();
                 m_ProjectLoaded = true;
                 VANS_LOG("[Editor] Project opened successfully");
+                // ── 确保项目 venv 已建立并将 site-packages 加入 sys.path ──
+                m_ScriptContext.SetupProjectVenv(path);
                 tryLoadDefaultScene();
             }
             else
@@ -532,6 +543,9 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
                 ApplyProjectTimeSettings();
                 m_ProjectLoaded = true;
                 VANS_LOG("[Editor] Project created successfully");
+                // ── 确保项目 venv 已建立并将 site-packages 加入 sys.path ──
+                m_ScriptContext.SetupProjectVenv(
+                    Vans::VansProjectManager::Get().GetProjectRootPath());
                 tryLoadDefaultScene();
             }
             else
