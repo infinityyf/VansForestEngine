@@ -912,13 +912,35 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
                 m_Scene->m_Vehicle->SetInputs(0.0f, 0.0f, 0.0f, 0.0f); // Coast
         }
 
-        // Synchronize physics transforms to render transforms
+        // Synchronize rigid-body physics transforms to render transforms.
         // IMPORTANT: This uses PxSceneReadLock internally to prevent race conditions
-        // with the background physics simulation thread
+        // with the background physics simulation thread.
         VansEngine::VansPhysicsSystem& physics = VansEngine::VansPhysicsSystem::GetInstance();
         if (physics.IsSimulationRunning() && m_Scene && m_Scene->IsSceneReady())
         {
             m_Scene->UpdatePhysicsTransforms();
+        }
+
+        // ── Script update BEFORE CCT flush and BEFORE rendering ──────────
+        // Correct game-loop order:
+        //   ① UpdatePhysicsTransforms  — read async rigid-body results
+        //   ② VansScriptUpdate         — scripts read input, call queue_move(D)
+        //   ③ UpdateCharControllerTransforms — flush D into PhysX (synchronous),
+        //                                      write new physics position back to
+        //                                      TransformStore so the render below
+        //                                      sees the result of THIS frame's input
+        //                                      (zero-frame lag)
+        //   ④ camera.Rendering         — render with up-to-date positions
+        m_ScriptContext.SetScene(m_Scene);
+        if (m_Scene && m_Scene->IsSceneReady() && m_PlayState == VansEditorPlayState::Playing)
+        {
+            m_ScriptContext.VansScriptUpdate();
+        }
+
+        // Flush CCT displacements queued by scripts this frame.
+        if (physics.IsSimulationRunning() && m_Scene && m_Scene->IsSceneReady())
+        {
+            m_Scene->UpdateCharControllerTransforms();
         }
 
         // ── Deferred resource & scene loading ───────────────────────────
@@ -941,13 +963,6 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
         // Rendering, 这里会结束renderpass
         camera.Rendering();
-
-        m_ScriptContext.SetScene(m_Scene);
-        // 仅在 Playing 状态下运行脚本 Update；Editing/Paused 状态下跳过
-        if (m_Scene && m_Scene->IsSceneReady() && m_PlayState == VansEditorPlayState::Playing)
-        {
-            m_ScriptContext.VansScriptUpdate();
-        }
         //UI Pass
         m_SceneWindow->RegistCamera(&camera);
         m_SceneWindow->RegistScene(m_Scene);

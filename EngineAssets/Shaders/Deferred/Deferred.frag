@@ -78,12 +78,22 @@ vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal)
 // Outside the GI volume: returns full-sky SH (L0 = 1.0 / Y00, L1 = 0).
 vec4 SampleGIVisibilitySH(vec3 positionWS)
 {
+    const vec4 k_fullSky = vec4(3.5449077, 0.0, 0.0, 0.0); // EvalGIVisibility = 1.0
+
     vec3 uvw = (positionWS - GI_ORIGIN) / GI_SIZE;
 
-    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0))))
-        return vec4(3.5449077, 0.0, 0.0, 0.0);  // 1.0/Y00 = 1.0/0.282095 → EvalGIVisibility = 1.0
+    // Signed distance to the nearest volume face in UVW space; negative = outside
+    vec3 edgeDist = min(uvw, vec3(1.0) - uvw);
+    float boundaryDist = min(min(edgeDist.x, edgeDist.y), edgeDist.z);
 
-    return texture(giVisibility, uvw);
+    if (boundaryDist < 0.0)
+        return k_fullSky;
+
+    // Smoothly fade to full-sky within the outer 5% of the volume to avoid hard edges
+    const float kFadeMargin = 0.05;
+    float fade = smoothstep(0.0, kFadeMargin, boundaryDist);
+
+    return mix(k_fullSky, texture(giVisibility, uvw), fade);
 }
 
 void main() 

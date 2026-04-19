@@ -520,6 +520,18 @@ void VansGraphics::VansScene::UnLoadScene()
 		}
 		m_ClothNodes.clear();
 		VANS_LOG("[VansScene] Step 5: 布料节点已清理");
+
+		// ── 5b. 清理角色控制器节点 ──────────────────────────────────────
+		for (auto* cctNode : m_CharControllerNodes)
+		{
+			if (cctNode)
+			{
+				cctNode->Release();
+				delete cctNode;
+			}
+		}
+		m_CharControllerNodes.clear();
+		VANS_LOG("[VansScene] Step 5b: 角色控制器节点已清理");
 	} // 释放 SimulationMutex
 
 	for (auto& stagingBuf : m_ClothStagingBuffers)

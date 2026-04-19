@@ -6,6 +6,7 @@
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../PhysicsCore/VansClothNode.h"
+#include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansAnimationController.h"
@@ -130,6 +131,9 @@ namespace VansGraphics
 
 		// Cloth simulation nodes
 		std::vector<VansEngine::VansClothNode*> m_ClothNodes;
+
+		// Character Controller nodes
+		std::vector<VansEngine::VansCharacterControllerNode*> m_CharControllerNodes;
 
 		// Per-cloth HOST_VISIBLE staging buffers owned by the scene.
 		// Indexed parallel to m_ClothNodes.  Written from the CPU cloth results
@@ -281,6 +285,15 @@ namespace VansGraphics
 		void UpdateRenderNodesDataBeforeRecord();
 
 		void UpdatePhysicsTransforms();
+
+		// 每帧：提交所有 CCT 的待执行位移，并将物理位置同步回 Transform
+		// 必须在 UpdatePhysicsTransforms() 之后调用
+		void UpdateCharControllerTransforms();
+
+		// 从 JSON 加载单个 CharController（由 LoadSceneObjects Pass1 调用）
+		VansEngine::VansCharacterControllerNode* LoadSingleCharControllerNode(
+			const json& charCtrlJson,
+			VansRenderNode* associatedRenderNode);
 
 		// Cloth simulation: CPU advance + write results to staging buffers
 		void UpdateClothSimulation(float dt);

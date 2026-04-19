@@ -22,7 +22,7 @@ namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
 namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; }
-namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; }
+namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; }
 
 class VansScriptContext
 {
@@ -192,6 +192,21 @@ class VansScriptAnimationComponent : public VansScriptComponent
 public:
 	// 非拥有指针，生命周期由 VansScene 管理
 	VansGraphics::VansAnimationNode* m_AnimNode = nullptr;
+};
+
+// ── Character Controller Component ─────────────────────────────────────────
+// 持有对 VansScene 管理的 VansCharacterControllerNode 的非拥有指针。
+// 通过此组件可以在 Python/C++ 脚本中调用 QueueMove() 驱动角色运动。
+class VansScriptCharacterControllerComponent : public VansScriptComponent
+{
+public:
+	VansScriptCharacterControllerComponent()
+	{
+		m_ComponentName = "CharacterController";
+	}
+
+	// 非拥有指针，实际 Node 由 VansScene::m_CharControllerNodes 管理
+	VansEngine::VansCharacterControllerNode* m_ControllerNode = nullptr;
 };
 
 // ── Python Script Component ─────────────────────────────────────────────────

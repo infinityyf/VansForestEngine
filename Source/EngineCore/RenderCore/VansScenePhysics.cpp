@@ -5,6 +5,7 @@
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansClothSystem.h"
+#include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../Configration/VansConfigration.h"
 #include "../ScriptCore/VansScriptContext.h"
@@ -442,6 +443,101 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
             VansTransformStore::TransformIDToTransformDirty.insert({ tireNode->m_TransformID, true });
         }
     }
+}
+
+// ===========================================================================
+// Character Controller transform update
+// ===========================================================================
+
+void VansGraphics::VansScene::UpdateCharControllerTransforms()
+{
+    using namespace VansEngine;
+
+    if (m_CharControllerNodes.empty()) return;
+
+    // 在 SimulationMutex 保护下提交 PxController::move() 并同步 Transform
+    VansPhysicsSystem& physics = VansPhysicsSystem::GetInstance();
+    std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
+
+    for (auto* node : m_CharControllerNodes)
+    {
+        if (node && node->IsEnabled())
+            node->FlushMoveAndSync();
+    }
+}
+
+// ===========================================================================
+// Load a single CharacterController from JSON
+// ===========================================================================
+
+VansEngine::VansCharacterControllerNode*
+VansGraphics::VansScene::LoadSingleCharControllerNode(
+    const json& charCtrlJson,
+    VansRenderNode* associatedRenderNode)
+{
+    using namespace VansEngine;
+
+    CharControllerProperties props;
+
+    if (charCtrlJson.contains("radius"))
+        props.m_Radius = charCtrlJson["radius"].get<float>();
+    if (charCtrlJson.contains("height"))
+        props.m_Height = charCtrlJson["height"].get<float>();
+    if (charCtrlJson.contains("slopeLimit"))
+        props.m_SlopeLimit = charCtrlJson["slopeLimit"].get<float>();
+    if (charCtrlJson.contains("stepOffset"))
+        props.m_StepOffset = charCtrlJson["stepOffset"].get<float>();
+    if (charCtrlJson.contains("contactOffset"))
+        props.m_ContactOffset = charCtrlJson["contactOffset"].get<float>();
+    if (charCtrlJson.contains("layer"))
+    {
+        props.m_LayerName  = charCtrlJson["layer"].get<std::string>();
+        props.m_LayerIndex = VansCollisionLayerManager::Get()
+                                 .GetLayerIndex(props.m_LayerName);
+    }
+    if (charCtrlJson.contains("climbingMode"))
+    {
+        std::string cm = charCtrlJson["climbingMode"].get<std::string>();
+        props.m_ClimbingMode = (cm == "constrained")
+            ? PxCapsuleClimbingMode::eCONSTRAINED
+            : PxCapsuleClimbingMode::eEASY;
+    }
+    if (charCtrlJson.contains("positionOffset"))
+    {
+        const auto& o = charCtrlJson["positionOffset"];
+        props.m_PositionOffset = glm::vec3(
+            o[0].get<float>(), o[1].get<float>(), o[2].get<float>());
+    }
+
+    // 解析初始位置
+    uint32_t transformID = 0;
+    glm::vec3 spawnPos(0.0f);
+    if (associatedRenderNode)
+    {
+        transformID = associatedRenderNode->m_TransformID;
+        const VansTransform& t = VansTransformStore::GetTransform(transformID);
+        spawnPos = t.m_Position + props.m_PositionOffset;
+    }
+
+    VansPhysicsSystem& physSys = VansPhysicsSystem::GetInstance();
+    PxControllerManager* manager = physSys.GetControllerManager();
+    if (!manager)
+    {
+        VANS_LOG_ERROR("[VansScene] CharController: PxControllerManager 未初始化");
+        return nullptr;
+    }
+
+    VansCharacterControllerNode* node = new VansCharacterControllerNode();
+    if (!node->Initialize(props, transformID, manager,
+                          physSys.GetDefaultMaterial(), spawnPos))
+    {
+        delete node;
+        return nullptr;
+    }
+
+    m_CharControllerNodes.push_back(node);
+    VANS_LOG("[VansScene] CharController 节点已创建，transformID=" << transformID);
+    return node;
 }
 
 // ===========================================================================

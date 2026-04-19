@@ -209,6 +209,7 @@ namespace VansEngine
                  << " userData=" << m_Actor->userData);
 
         m_Shape->setSimulationFilterData(filterData);
+        m_Shape->setQueryFilterData(filterData);
 
         // Trigger 需要特殊 Shape 标志
         if (m_Properties.isTrigger)

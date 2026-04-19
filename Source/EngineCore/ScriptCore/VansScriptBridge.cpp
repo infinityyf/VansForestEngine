@@ -3,6 +3,7 @@
 #include "../RenderCore/VansRenderNode.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansAnimationController.h"
+#include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../Util/VansInputManager.h"
 #include "../../../../ForestExporter/VansEngineBridge.h"
 #include "../../../../ForestExporter/VansInputBridge.h"
@@ -35,6 +36,12 @@ static inline VansScriptComponent* AsScriptComponent(void* p)
 static inline VansScriptAnimationComponent* AsAnimComp(void* p)
 {
 	return dynamic_cast<VansScriptAnimationComponent*>(static_cast<VansScriptComponent*>(p));
+}
+
+static inline VansScriptCharacterControllerComponent* AsCCTComp(void* p)
+{
+	return dynamic_cast<VansScriptCharacterControllerComponent*>(
+		static_cast<VansScriptComponent*>(p));
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +358,54 @@ void VansInitEngineBridge()
 		auto* ac = AsAnimComp(comp);
 		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
 			ac->m_AnimNode->GetController()->SetSpeed(speed);
+	};
+
+	// ── CharacterController Component ────────────────────────────────────
+	s_EngineBridge.objectGetCCTComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptCharacterControllerComponent>();
+	};
+
+	s_EngineBridge.cctQueueMove = [](void* comp, float dx, float dy, float dz, float dt)
+	{
+		auto* cc = AsCCTComp(comp);
+		if (cc && cc->m_ControllerNode)
+			cc->m_ControllerNode->QueueMove(glm::vec3(dx, dy, dz), dt);
+	};
+
+	s_EngineBridge.cctIsGrounded = [](void* comp) -> bool
+	{
+		auto* cc = AsCCTComp(comp);
+		if (cc && cc->m_ControllerNode)
+			return cc->m_ControllerNode->IsGrounded();
+		return false;
+	};
+
+	s_EngineBridge.cctGetPosition = [](void* comp, float& x, float& y, float& z)
+	{
+		auto* cc = AsCCTComp(comp);
+		if (cc && cc->m_ControllerNode)
+		{
+			glm::vec3 pos = cc->m_ControllerNode->GetPosition();
+			x = pos.x; y = pos.y; z = pos.z;
+		}
+	};
+
+	s_EngineBridge.cctSetPosition = [](void* comp, float x, float y, float z)
+	{
+		auto* cc = AsCCTComp(comp);
+		if (cc && cc->m_ControllerNode)
+			cc->m_ControllerNode->SetPosition(glm::vec3(x, y, z));
+	};
+
+	s_EngineBridge.cctIsEnabled = [](void* comp) -> bool
+	{
+		auto* cc = AsCCTComp(comp);
+		if (cc && cc->m_ControllerNode)
+			return cc->m_ControllerNode->IsEnabled();
+		return false;
 	};
 }
 

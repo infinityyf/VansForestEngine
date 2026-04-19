@@ -376,6 +376,9 @@
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansCharacterControllerNode.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
@@ -687,6 +690,9 @@
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansCharacterControllerNode.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansRigidBody.cpp">

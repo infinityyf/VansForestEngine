@@ -6,6 +6,7 @@
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "../PhysicsCore/VansPhysics.h"
+#include "../PhysicsCore/VansCharacterControllerNode.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -1989,6 +1990,21 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         {
             const auto& renderJson = components["render"];
             VansRenderNode* rn = LoadSingleRenderNode(device, renderJson);
+
+            // 多网格对象（multi-mesh）经由 ExpandMultiMeshToRenderNodes 展开，
+            // LoadSingleRenderNode 会返回 nullptr 而不创建单个节点。
+            // 此处回退为取该 MultiMeshGroup 第一个子节点作为代理，
+            // 使 physics / CCT / cloth 组件能获取到合法的 TransformID。
+            // 所有子节点共享 MultiMeshGroup::sharedTransformID，
+            // 对该 TransformID 的任何写入都会同步移动整个角色。
+            if (!rn)
+            {
+                std::string nodeName = renderJson.value("name", "");
+                auto groupIt = m_MultiMeshGroups.find(nodeName);
+                if (groupIt != m_MultiMeshGroups.end() && !groupIt->second.childNodes.empty())
+                    rn = groupIt->second.childNodes[0];
+            }
+
             if (rn)
             {
                 auto* rc = new VansScriptRenderComponent();
@@ -2035,6 +2051,21 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 cc->m_ComponentName = "cloth";
                 cc->m_ClothNode = cn;
                 obj->AddComponent(cc);
+            }
+        }
+
+        // ── CharController component ──────────────────────────────────────────
+        if (components.contains("charController"))
+        {
+            auto* renderComp = obj->GetComponent<VansScriptRenderComponent>();
+            VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
+            VansEngine::VansCharacterControllerNode* cctNode =
+                LoadSingleCharControllerNode(components["charController"], associatedNode);
+            if (cctNode)
+            {
+                auto* cctComp = new VansScriptCharacterControllerComponent();
+                cctComp->m_ControllerNode = cctNode;
+                obj->AddComponent(cctComp);
             }
         }
 

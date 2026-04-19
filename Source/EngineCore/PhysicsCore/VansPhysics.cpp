@@ -227,6 +227,14 @@ namespace VansEngine
 		// Initialize NvCloth CPU simulation
 		VansClothSystem::GetInstance().Initialize();
 
+		// 创建 CCT Manager（每个 PxScene 只能创建一个）
+		m_ControllerManager = PxCreateControllerManager(*m_Scene);
+		if (!m_ControllerManager)
+		{
+			VANS_LOG_ERROR("[VansPhysics] PxCreateControllerManager 失败");
+			return false;
+		}
+
 		return true;
 	}
 
@@ -236,6 +244,13 @@ namespace VansEngine
 		VansClothSystem::GetInstance().Shutdown();
 
 		StopSimulation();
+
+		// CCT Manager 必须在 PxScene 释放之前释放
+		if (m_ControllerManager)
+		{
+			m_ControllerManager->release();
+			m_ControllerManager = nullptr;
+		}
 
 		if (m_DefaultMaterial) m_DefaultMaterial->release();
 		if (m_Scene) m_Scene->release();

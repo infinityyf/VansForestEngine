@@ -6,6 +6,7 @@
 #endif
 
 #include <PxPhysicsAPI.h>
+#include <characterkinematic/PxControllerManager.h>
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -65,6 +66,10 @@ namespace VansEngine
 		PxScene* GetScene() { return m_Scene; }
 		PxPhysics* GetPhysics() { return m_Physics; }
 		const PxCookingParams* GetCookingParams() { return m_CookingParams; }
+
+		// CCT（角色控制器）访问
+		PxControllerManager* GetControllerManager() { return m_ControllerManager; }
+		PxMaterial* GetDefaultMaterial() { return m_DefaultMaterial; }
 		
 		// Event queue access (for VansScriptContext to dispatch events)
 		VansPhysicsEventQueue& GetEventQueue() { return m_EventQueue; }
@@ -109,6 +114,9 @@ namespace VansEngine
 		PxDefaultCpuDispatcher* m_Dispatcher = nullptr;
 		PxScene* m_Scene = nullptr;
 		PxMaterial* m_DefaultMaterial = nullptr;
+
+		// CCT Manager（每个 PxScene 只能创建一个）
+		PxControllerManager* m_ControllerManager = nullptr;
 		PxCookingParams* m_CookingParams = nullptr;
 		PxPvd* m_Pvd = nullptr; // PhysX Visual Debugger
 		

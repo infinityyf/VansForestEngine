@@ -206,6 +206,7 @@
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysics.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsCore.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansCharacterControllerNode.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollisionLayerManager.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsEvents.h" />
@@ -312,6 +313,7 @@
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollider.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysics.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.cpp" />
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansCharacterControllerNode.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollisionLayerManager.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsEventCallback.cpp" />
