@@ -67,6 +67,10 @@ void main()
         imageStore(tracePDF, pixelCoord, tracePDFInfo);
         return;
     }
+
+    // 将反射方向存入tracePDFInfo.xyz，供miss时resolve阶段采样天空球使用
+    // on hit时会被命中点法线覆盖；on miss时xyz保留为反射方向、w=0.5
+    tracePDFInfo.xyz = traceDirection;
     
         
     // ─── DDA screen-space ray march ───
@@ -81,7 +85,8 @@ void main()
 
     if (startZ <= NearPlane)
     {
-        imageStore(traceHit, pixelCoord, vec4(0.0));
+        // 射线起点在近平面之后，但方向有效，标记为sky miss（w=0.5）
+        imageStore(traceHit, pixelCoord, vec4(0.0, 0.0, 0.0, 0.5));
         imageStore(tracePDF, pixelCoord, tracePDFInfo);
         return;
     }
@@ -95,7 +100,8 @@ void main()
 
     if (startClip.w <= 0.0 || dirClip.w <= 0.0)
     {
-        imageStore(traceHit, pixelCoord, vec4(0.0));
+        // 投影退化，方向仍有效，标记为sky miss（w=0.5）
+        imageStore(traceHit, pixelCoord, vec4(0.0, 0.0, 0.0, 0.5));
         imageStore(tracePDF, pixelCoord, tracePDFInfo);
         return;
     }
@@ -110,7 +116,8 @@ void main()
 
     if (startUV.x < -0.05 || startUV.x > 1.05 || startUV.y < -0.05 || startUV.y > 1.05)
     {
-        imageStore(traceHit, pixelCoord, vec4(0.0));
+        // 射线起点已在屏幕外，反射方向朝向天空，标记为sky miss（w=0.5）
+        imageStore(traceHit, pixelCoord, vec4(0.0, 0.0, 0.0, 0.5));
         imageStore(tracePDF, pixelCoord, tracePDFInfo);
         return;
     }
@@ -124,7 +131,8 @@ void main()
 
     if (majorLen < 1e-4)
     {
-        imageStore(traceHit, pixelCoord, vec4(0.0));
+        // 屏幕空间步进方向退化（射线近似垂直屏幕），标记为sky miss（w=0.5）
+        imageStore(traceHit, pixelCoord, vec4(0.0, 0.0, 0.0, 0.5));
         imageStore(tracePDF, pixelCoord, tracePDFInfo);
         return;
     }
@@ -203,6 +211,10 @@ void main()
             stride = min(stride * 2.0, MAX_STRIDE);
         }
     }
+
+    // march结束未命中几何体：反射方向已存入tracePDFInfo.xyz，标记为sky miss（w=0.5）
+    if (traceHitInfo.w < 0.5)
+        traceHitInfo.w = 0.5;
 
     imageStore(traceHit, pixelCoord, traceHitInfo);
     imageStore(tracePDF, pixelCoord, tracePDFInfo);

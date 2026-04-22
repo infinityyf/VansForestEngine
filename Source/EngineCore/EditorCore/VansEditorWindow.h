@@ -16,6 +16,7 @@
 namespace VansGraphics
 {
 	class VansAnimGraphEditorWindow;
+	class VansUIEditorWindow;
 	class VansHierachuWindow;
 	class VansLightWindow;
 	class VansProjectWindow;
@@ -116,6 +117,8 @@ namespace VansGraphics
 		static VansProfilerWindow* m_ProfilerWindow;
 
 		static VansAnimGraphEditorWindow* m_AnimGraphEditorWindow;
+
+		static VansUIEditorWindow* m_UIEditorWindow;
 
 	private:
 

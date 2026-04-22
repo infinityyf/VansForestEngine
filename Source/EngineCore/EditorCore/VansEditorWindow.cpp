@@ -18,6 +18,7 @@
 #include "Windows/VansConsoleWindow.h"
 #include "Windows/VansProfilerWindow.h"
 #include "Windows/VansAnimGraphEditorWindow.h"
+#include "Windows/VansUIEditorWindow.h"
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
@@ -110,6 +111,8 @@ VansGraphics::VansConsoleWindow* VansGraphics::VansEditorWindow::m_ConsoleWindow
 VansGraphics::VansProfilerWindow* VansGraphics::VansEditorWindow::m_ProfilerWindow;
 
 VansGraphics::VansAnimGraphEditorWindow* VansGraphics::VansEditorWindow::m_AnimGraphEditorWindow;
+
+VansGraphics::VansUIEditorWindow* VansGraphics::VansEditorWindow::m_UIEditorWindow;
 
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
@@ -355,6 +358,9 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_AnimGraphEditorWindow = new VansAnimGraphEditorWindow();
     m_Windows.push_back(m_AnimGraphEditorWindow);
+
+    m_UIEditorWindow = new VansUIEditorWindow();
+    m_Windows.push_back(m_UIEditorWindow);
 
     // 将 AnimGraphEditor 引用传给 HierachyWindow
     m_HierachyWindow->m_AnimGraphEditorRef = m_AnimGraphEditorWindow;

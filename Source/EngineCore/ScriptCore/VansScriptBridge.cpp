@@ -1,6 +1,7 @@
 #include "VansScriptContext.h"
 #include "VansTransform.h"
 #include "../RenderCore/VansRenderNode.h"
+#include "../RenderCore/BRDFData/VansLight.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
@@ -41,6 +42,24 @@ static inline VansScriptAnimationComponent* AsAnimComp(void* p)
 static inline VansScriptCharacterControllerComponent* AsCCTComp(void* p)
 {
 	return dynamic_cast<VansScriptCharacterControllerComponent*>(
+		static_cast<VansScriptComponent*>(p));
+}
+
+static inline VansScriptDirectionalLightComponent* AsDirLightComp(void* p)
+{
+	return dynamic_cast<VansScriptDirectionalLightComponent*>(
+		static_cast<VansScriptComponent*>(p));
+}
+
+static inline VansScriptPointLightComponent* AsPointLightComp(void* p)
+{
+	return dynamic_cast<VansScriptPointLightComponent*>(
+		static_cast<VansScriptComponent*>(p));
+}
+
+static inline VansScriptSpotLightComponent* AsSpotLightComp(void* p)
+{
+	return dynamic_cast<VansScriptSpotLightComponent*>(
 		static_cast<VansScriptComponent*>(p));
 }
 
@@ -406,6 +425,238 @@ void VansInitEngineBridge()
 		if (cc && cc->m_ControllerNode)
 			return cc->m_ControllerNode->IsEnabled();
 		return false;
+	};
+
+	// ── Directional Light Component ───────────────────────────────────────
+	s_EngineBridge.objectGetDirLightComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptDirectionalLightComponent>();
+	};
+
+	s_EngineBridge.dirLightGetColor = [](void* comp, float& r, float& g, float& b)
+	{
+		auto* c = AsDirLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetDirectionLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		r = lights[c->m_LightIndex].m_Color.r;
+		g = lights[c->m_LightIndex].m_Color.g;
+		b = lights[c->m_LightIndex].m_Color.b;
+	};
+
+	s_EngineBridge.dirLightSetColor = [](void* comp, float r, float g, float b)
+	{
+		auto* c = AsDirLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetDirectionLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Color = glm::vec3(r, g, b);
+	};
+
+	s_EngineBridge.dirLightGetIntensity = [](void* comp) -> float
+	{
+		auto* c = AsDirLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetDirectionLights();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return lights[c->m_LightIndex].m_Intensity;
+	};
+
+	s_EngineBridge.dirLightSetIntensity = [](void* comp, float intensity)
+	{
+		auto* c = AsDirLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetDirectionLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Intensity = intensity;
+	};
+
+	s_EngineBridge.dirLightGetDirection = [](void* comp, float& x, float& y, float& z)
+	{
+		auto* c = AsDirLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetDirectionLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		x = lights[c->m_LightIndex].m_Direction.x;
+		y = lights[c->m_LightIndex].m_Direction.y;
+		z = lights[c->m_LightIndex].m_Direction.z;
+	};
+
+	// ── Point Light Component ─────────────────────────────────────────────
+	s_EngineBridge.objectGetPointLightComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptPointLightComponent>();
+	};
+
+	s_EngineBridge.pointLightGetColor = [](void* comp, float& r, float& g, float& b)
+	{
+		auto* c = AsPointLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetPointLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		r = lights[c->m_LightIndex].m_Color.r;
+		g = lights[c->m_LightIndex].m_Color.g;
+		b = lights[c->m_LightIndex].m_Color.b;
+	};
+
+	s_EngineBridge.pointLightSetColor = [](void* comp, float r, float g, float b)
+	{
+		auto* c = AsPointLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetPointLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Color = glm::vec3(r, g, b);
+	};
+
+	s_EngineBridge.pointLightGetIntensity = [](void* comp) -> float
+	{
+		auto* c = AsPointLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetPointLights();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return lights[c->m_LightIndex].m_Intensity;
+	};
+
+	s_EngineBridge.pointLightSetIntensity = [](void* comp, float intensity)
+	{
+		auto* c = AsPointLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetPointLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Intensity = intensity;
+	};
+
+	s_EngineBridge.pointLightGetRadius = [](void* comp) -> float
+	{
+		auto* c = AsPointLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetPointLights();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return lights[c->m_LightIndex].m_Radius;
+	};
+
+	s_EngineBridge.pointLightSetRadius = [](void* comp, float radius)
+	{
+		auto* c = AsPointLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetPointLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Radius = radius;
+	};
+
+	// ── Spot Light Component ──────────────────────────────────────────────
+	s_EngineBridge.objectGetSpotLightComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptSpotLightComponent>();
+	};
+
+	s_EngineBridge.spotLightGetColor = [](void* comp, float& r, float& g, float& b)
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		r = lights[c->m_LightIndex].m_Color.r;
+		g = lights[c->m_LightIndex].m_Color.g;
+		b = lights[c->m_LightIndex].m_Color.b;
+	};
+
+	s_EngineBridge.spotLightSetColor = [](void* comp, float r, float g, float b)
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Color = glm::vec3(r, g, b);
+	};
+
+	s_EngineBridge.spotLightGetIntensity = [](void* comp) -> float
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return lights[c->m_LightIndex].m_Intensity;
+	};
+
+	s_EngineBridge.spotLightSetIntensity = [](void* comp, float intensity)
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Intensity = intensity;
+	};
+
+	s_EngineBridge.spotLightGetRadius = [](void* comp) -> float
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return lights[c->m_LightIndex].m_Radius;
+	};
+
+	s_EngineBridge.spotLightSetRadius = [](void* comp, float radius)
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Radius = radius;
+	};
+
+	s_EngineBridge.spotLightGetInnerCutoff = [](void* comp) -> float
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return glm::degrees(lights[c->m_LightIndex].m_InnerCutOff);
+	};
+
+	s_EngineBridge.spotLightSetInnerCutoff = [](void* comp, float deg)
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_InnerCutOff = glm::radians(deg);
+	};
+
+	s_EngineBridge.spotLightGetOuterCutoff = [](void* comp) -> float
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return glm::degrees(lights[c->m_LightIndex].m_OuterCutOff);
+	};
+
+	s_EngineBridge.spotLightSetOuterCutoff = [](void* comp, float deg)
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_OuterCutOff = glm::radians(deg);
+	};
+
+	s_EngineBridge.spotLightGetDirection = [](void* comp, float& x, float& y, float& z)
+	{
+		auto* c = AsSpotLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetSpotLight();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		x = lights[c->m_LightIndex].m_Direction.x;
+		y = lights[c->m_LightIndex].m_Direction.y;
+		z = lights[c->m_LightIndex].m_Direction.z;
 	};
 }
 

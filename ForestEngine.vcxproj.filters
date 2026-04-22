@@ -83,6 +83,18 @@
     <Filter Include="External\imguiNode">
       <UniqueIdentifier>{3b401bf0-7786-4e6c-813a-53760b951c31}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\RuntimeUI">
+      <UniqueIdentifier>{a2b3c4d5-e6f7-8901-bcde-fa2345678901}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineCore\RuntimeUI\Public">
+      <UniqueIdentifier>{b3c4d5e6-f7a8-9012-cdef-ab3456789012}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineCore\RuntimeUI\Private">
+      <UniqueIdentifier>{c4d5e6f7-a8b9-0123-defa-bc4567890123}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineCore\RuntimeUI\Private\Noesis">
+      <UniqueIdentifier>{d5e6f7a8-b9c0-1234-efab-cd5678901234}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -201,6 +213,39 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAnimGraphEditorWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansUIEditorWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUISystem.h">
+      <Filter>EngineCore\RuntimeUI\Public</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIDocument.h">
+      <Filter>EngineCore\RuntimeUI\Public</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIElementHandle.h">
+      <Filter>EngineCore\RuntimeUI\Public</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIViewModel.h">
+      <Filter>EngineCore\RuntimeUI\Public</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIScreenManager.h">
+      <Filter>EngineCore\RuntimeUI\Public</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RuntimeUI\Private\Noesis\VansNoesisUISystem.h">
+      <Filter>EngineCore\RuntimeUI\Private\Noesis</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RuntimeUI\Private\Noesis\VansNoesisProviders.h">
+      <Filter>EngineCore\RuntimeUI\Private\Noesis</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RuntimeUI\Private\Noesis\VansNoesisInputAdapter.h">
+      <Filter>EngineCore\RuntimeUI\Private\Noesis</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RuntimeUI\Private\Noesis\VansNoesisDocument.h">
+      <Filter>EngineCore\RuntimeUI\Private\Noesis</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RuntimeUI\Private\Noesis\VansNoesisRenderDevice.h">
+      <Filter>EngineCore\RuntimeUI\Private\Noesis</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VansAsset.h">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
@@ -652,6 +697,33 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansAnimGraphEditorWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansUIEditorWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RuntimeUI\VansUISystem.cpp">
+      <Filter>EngineCore\RuntimeUI</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RuntimeUI\VansUIScreenManager.cpp">
+      <Filter>EngineCore\RuntimeUI</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RuntimeUI\VansUIElementHandle.cpp">
+      <Filter>EngineCore\RuntimeUI</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RuntimeUI\Private\Noesis\VansNoesisUISystem.cpp">
+      <Filter>EngineCore\RuntimeUI\Private\Noesis</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RuntimeUI\Private\Noesis\VansNoesisProviders.cpp">
+      <Filter>EngineCore\RuntimeUI\Private\Noesis</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RuntimeUI\Private\Noesis\VansNoesisInputAdapter.cpp">
+      <Filter>EngineCore\RuntimeUI\Private\Noesis</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RuntimeUI\Private\Noesis\VansNoesisDocument.cpp">
+      <Filter>EngineCore\RuntimeUI\Private\Noesis</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RuntimeUI\Private\Noesis\VansNoesisRenderDevice.cpp">
+      <Filter>EngineCore\RuntimeUI\Private\Noesis</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp">
       <Filter>EngineCore\RenderCore\TerrainCore</Filter>

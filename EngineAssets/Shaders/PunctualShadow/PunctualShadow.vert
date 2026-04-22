@@ -15,8 +15,6 @@ layout(push_constant) uniform LightShadowIndex
 layout( location = 0 ) in f16vec4 position;
 layout( location = 1 ) in f16vec3 normal;
 
-layout( location = 0 ) out float shadowDepth;
-
 
 void main() 
 {
@@ -29,7 +27,6 @@ void main()
         mat4x4 shadowMatrix = uPointLights[lightIndex].shadowMatrix[shadowIndex];
         vec4 clipCoord = shadowMatrix * ModelMatrix * position;
         gl_Position = clipCoord;
-        shadowDepth = clipCoord.z / clipCoord.w;
     }
     
     if(lightIndex >= pointLightCount)
@@ -38,6 +35,5 @@ void main()
         mat4x4 shadowMatrix = uSpotLights[spotLightIndex].shadowMatrix;
         vec4 clipCoord = shadowMatrix * ModelMatrix * position;
         gl_Position = clipCoord;
-        shadowDepth = clipCoord.z / clipCoord.w;
     }
 }

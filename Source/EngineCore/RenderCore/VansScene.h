@@ -278,6 +278,10 @@ namespace VansGraphics
 
 		void UpdateSceneData();
 
+		// 每帧在更新灯光阴影矩阵前，将 ScriptObject 的 Transform 同步到灯光结构体。
+		// 方向光/聚光灯同步旋转 Z 轴为 m_Direction；点光源/聚光灯同步 m_Position。
+		void SyncLightTransforms();
+
 		// Per-frame skeletal animation CPU update + GPU bone matrix upload.
 		void UpdateAnimations(float deltaTime);
 

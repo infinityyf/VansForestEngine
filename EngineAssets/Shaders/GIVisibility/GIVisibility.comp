@@ -40,20 +40,27 @@ void main()
     // 每个探针拥有 sampleCount 条光线，hitPosition 中存储对应的命中信息
     int baseRay = probeLinearIndex * sampleCount;
 
-    // 统计 miss（天空可见）光线数量
-    int missCount = 0;
+    // 将 miss 方向投影到 L0+L1 球谐（4 系数）
+    // 蒙特卡洛积分: c = (4π/N) * Σ_i [ v(d_i) * Y(d_i) ]
+    vec4 shCoeffs = vec4(0.0);
 
     for (int i = 0; i < sampleCount; i++)
     {
         f16vec4 hitInfo = hitPositionInfoBuffer.hitPosition[baseRay + i];
 
-        // w == 0 表示 miss（天空），该方向可见
+        // w == 0 表示 miss（天空可见），将该方向投影到 SH 基函数
         if (hitInfo.w == float16_t(0.0))
-            missCount++;
+        {
+            vec3 dir = SampleSphere(i, sampleCount);
+            shCoeffs.x += SHBasis(0, dir); // Y00
+            shCoeffs.y += SHBasis(1, dir); // Y1-1 (dir.z)
+            shCoeffs.z += SHBasis(2, dir); // Y10  (dir.y)
+            shCoeffs.w += SHBasis(3, dir); // Y11  (dir.x)
+        }
     }
 
-    // 可见性 = miss 比例，范围 [0, 1]
-    float visibility = float(missCount) / float(sampleCount);
+    // 乘以蒙特卡洛权重 4π/N
+    shCoeffs *= (4.0 * PI / float(sampleCount));
 
-    imageStore(visibilityImage, probeIndex, vec4(visibility, 0.0, 0.0, 0.0));
+    imageStore(visibilityImage, probeIndex, shCoeffs);
 }

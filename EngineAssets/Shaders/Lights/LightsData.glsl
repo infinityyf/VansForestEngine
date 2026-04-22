@@ -132,7 +132,9 @@ float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIn
 float ComputePunctualShadowBias(vec3 normalWS, vec3 lightDirectionWS)
 {
     float ndl = clamp(dot(normalize(normalWS), normalize(lightDirectionWS)), 0.0, 1.0);
-    return max(PUNCTUAL_LIGHT_DEPTH_BIAS * 0.5, PUNCTUAL_LIGHT_DEPTH_BIAS * (1.0 - ndl) * 4.0);
+    float grazingFactor = 1.0 - ndl;
+    grazingFactor *= grazingFactor;
+    return PUNCTUAL_LIGHT_DEPTH_BIAS * (0.1 + grazingFactor * 0.9);
 }
 
 float ComputePunctualSoftShadowRadius(float distanceToLight, float lightRadius)

@@ -741,6 +741,8 @@ void VansGraphics::VansScene::UnLoadScene()
 
 void VansGraphics::VansScene::UpdateSceneData()
 {
+    // 先将灯光组件 transform 数据同步到灯光结构体，再计算阴影矩阵
+    SyncLightTransforms();
     m_LightManager.UpdateLightShadowMatrixData(glm::vec3(m_Camera->GetPosition()));
     m_LightManager.UpdateLightCPUData();
 
@@ -762,8 +764,70 @@ void VansGraphics::VansScene::UpdateSceneData()
     UpdateRenderNodesDataBeforeRecord();
 }
 
-void VansGraphics::VansScene::UpdateAnimations(float deltaTime)
+// ============================================================
+// SyncLightTransforms — 将 ScriptObject 的 Transform 同步到灯光数据
+// 每帧在 UpdateLightShadowMatrixData 前调用。
+// 约定：Transform 旋转 ZYX 顺序，Z 轴方向为灯光正向（光线传播方向）。
+//        m_Direction 存储朝向光源方向（与正向相反），与原有阴影矩阵代码保持一致。
+// ============================================================
+void VansGraphics::VansScene::SyncLightTransforms()
 {
+    for (auto* obj : m_SceneObjects)
+    {
+        if (!obj) continue;
+
+        // ── 方向光：同步旋转 Z 轴（取反后）为 m_Direction ────────────────
+        auto* dirComp = obj->GetComponent<VansScriptDirectionalLightComponent>();
+        if (dirComp && dirComp->m_LightManager && dirComp->m_LightIndex >= 0)
+        {
+            auto& lights = dirComp->m_LightManager->GetDirectionLights();
+            if (dirComp->m_LightIndex < (int)lights.size())
+            {
+                const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                glm::mat4 rotMat = glm::mat4(1.0f);
+                rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+                rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+                rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+                glm::vec3 forward = glm::normalize(glm::vec3(rotMat[2]));
+                // m_Direction = 朝向光源方向（与光线传播方向相反）
+                lights[dirComp->m_LightIndex].m_Direction = -forward;
+            }
+        }
+
+        // ── 点光源：同步位置 ───────────────────────────────────────────────
+        auto* pointComp = obj->GetComponent<VansScriptPointLightComponent>();
+        if (pointComp && pointComp->m_LightManager && pointComp->m_LightIndex >= 0)
+        {
+            auto& lights = pointComp->m_LightManager->GetPointLights();
+            if (pointComp->m_LightIndex < (int)lights.size())
+            {
+                const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                lights[pointComp->m_LightIndex].m_Position = t.m_Position;
+            }
+        }
+
+        // ── 聚光灯：同步位置与方向 ────────────────────────────────────────
+        auto* spotComp = obj->GetComponent<VansScriptSpotLightComponent>();
+        if (spotComp && spotComp->m_LightManager && spotComp->m_LightIndex >= 0)
+        {
+            auto& lights = spotComp->m_LightManager->GetSpotLight();
+            if (spotComp->m_LightIndex < (int)lights.size())
+            {
+                const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                lights[spotComp->m_LightIndex].m_Position = t.m_Position;
+
+                glm::mat4 rotMat = glm::mat4(1.0f);
+                rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+                rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+                rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+                glm::vec3 forward = glm::normalize(glm::vec3(rotMat[2]));
+                lights[spotComp->m_LightIndex].m_Direction = -forward;
+            }
+        }
+    }
+}
+
+void VansGraphics::VansScene::UpdateAnimations(float deltaTime){
     for (VansAnimationNode* animNode : m_AnimationNodes)
     {
         if (animNode)

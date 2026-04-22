@@ -657,6 +657,78 @@ void VansGraphics::VansHierachuWindow::DrawAnimationNodeDetail()
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// 灯光组件面板 — Object Inspector 中的各灯光类型详情
+// ════════════════════════════════════════════════════════════════════════════
+void VansGraphics::VansHierachuWindow::DrawDirectionalLightComponent(VansScriptDirectionalLightComponent* comp)
+{
+    if (!comp || !comp->m_LightManager || comp->m_LightIndex < 0) return;
+    auto& lights = comp->m_LightManager->GetDirectionLights();
+    if (comp->m_LightIndex >= (int)lights.size()) return;
+
+    VansDirectionalLight& light = lights[comp->m_LightIndex];
+    ImGui::PushID("DirLight");
+
+    ImGui::ColorEdit3("Color", &light.m_Color.x);
+    ImGui::DragFloat("Intensity", &light.m_Intensity, 0.1f, 0.0f, 500.0f);
+
+    // 方向由 Transform 驱动，只读显示
+    ImGui::TextDisabled("Direction (from transform):");
+    ImGui::Text("  (%.3f, %.3f, %.3f)", light.m_Direction.x, light.m_Direction.y, light.m_Direction.z);
+
+    ImGui::PopID();
+}
+
+void VansGraphics::VansHierachuWindow::DrawPointLightComponent(VansScriptPointLightComponent* comp)
+{
+    if (!comp || !comp->m_LightManager || comp->m_LightIndex < 0) return;
+    auto& lights = comp->m_LightManager->GetPointLights();
+    if (comp->m_LightIndex >= (int)lights.size()) return;
+
+    VansPointLight& light = lights[comp->m_LightIndex];
+    ImGui::PushID("PointLight");
+
+    ImGui::ColorEdit3("Color", &light.m_Color.x);
+    ImGui::DragFloat("Intensity", &light.m_Intensity, 0.1f, 0.0f, 500.0f);
+    ImGui::DragFloat("Radius",    &light.m_Radius,    0.1f, 0.01f, 500.0f);
+
+    // 位置由 Transform 驱动，只读显示
+    ImGui::TextDisabled("Position (from transform):");
+    ImGui::Text("  (%.3f, %.3f, %.3f)", light.m_Position.x, light.m_Position.y, light.m_Position.z);
+
+    ImGui::PopID();
+}
+
+void VansGraphics::VansHierachuWindow::DrawSpotLightComponent(VansScriptSpotLightComponent* comp)
+{
+    if (!comp || !comp->m_LightManager || comp->m_LightIndex < 0) return;
+    auto& lights = comp->m_LightManager->GetSpotLight();
+    if (comp->m_LightIndex >= (int)lights.size()) return;
+
+    VansSpotLight& light = lights[comp->m_LightIndex];
+    ImGui::PushID("SpotLight");
+
+    ImGui::ColorEdit3("Color", &light.m_Color.x);
+    ImGui::DragFloat("Intensity",  &light.m_Intensity,  0.1f,  0.0f,  500.0f);
+    ImGui::DragFloat("Radius",     &light.m_Radius,     0.1f,  0.01f, 500.0f);
+
+    // cutoff 存储为弧度，但显示和编辑为角度
+    float innerDeg = glm::degrees(light.m_InnerCutOff);
+    float outerDeg = glm::degrees(light.m_OuterCutOff);
+    if (ImGui::DragFloat("Inner Cutoff (°)", &innerDeg, 0.5f, 0.0f, 89.0f))
+        light.m_InnerCutOff = glm::radians(innerDeg);
+    if (ImGui::DragFloat("Outer Cutoff (°)", &outerDeg, 0.5f, 0.0f, 89.0f))
+        light.m_OuterCutOff = glm::radians(outerDeg);
+
+    // 位置和方向由 Transform 驱动，只读显示
+    ImGui::TextDisabled("Position (from transform):");
+    ImGui::Text("  (%.3f, %.3f, %.3f)", light.m_Position.x, light.m_Position.y, light.m_Position.z);
+    ImGui::TextDisabled("Direction (from transform):");
+    ImGui::Text("  (%.3f, %.3f, %.3f)", light.m_Direction.x, light.m_Direction.y, light.m_Direction.z);
+
+    ImGui::PopID();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // Objects tab — list VansScriptObjects
 // ════════════════════════════════════════════════════════════════════════════
 void VansGraphics::VansHierachuWindow::DrawObjectList()
@@ -676,10 +748,13 @@ void VansGraphics::VansHierachuWindow::DrawObjectList()
 
         // Build a short type summary  e.g. "[Render | Physics]"
         std::string typeHint;
-        if (obj->GetComponent<VansScriptRenderComponent>())   typeHint += "Render ";
-        if (obj->GetComponent<VansScriptPhysicsComponent>())  typeHint += "Physics ";
-        if (obj->GetComponent<VansScriptClothComponent>())    typeHint += "Cloth ";
-        if (obj->GetComponent<VansScriptVehicleComponent>())  typeHint += "Vehicle ";
+        if (obj->GetComponent<VansScriptRenderComponent>())          typeHint += "Render ";
+        if (obj->GetComponent<VansScriptPhysicsComponent>())         typeHint += "Physics ";
+        if (obj->GetComponent<VansScriptClothComponent>())           typeHint += "Cloth ";
+        if (obj->GetComponent<VansScriptVehicleComponent>())         typeHint += "Vehicle ";
+        if (obj->GetComponent<VansScriptDirectionalLightComponent>()) typeHint += "DirLight ";
+        if (obj->GetComponent<VansScriptPointLightComponent>())       typeHint += "PointLight ";
+        if (obj->GetComponent<VansScriptSpotLightComponent>())        typeHint += "SpotLight ";
 
         char label[256];
         snprintf(label, sizeof(label), "%s  [%s]", obj->m_ObjectName.c_str(), typeHint.c_str());
@@ -723,6 +798,21 @@ void VansGraphics::VansHierachuWindow::DrawObjectDetail()
         if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen))
         {
             DrawTransformDetail(*node);
+        }
+    }
+    else if (obj->m_TransformID != 0)
+    {
+        // 灯光等无 RenderNode 的对象：直接编辑 VansTransformStore
+        if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+            bool changed = false;
+
+            if (ImGui::DragFloat3("Position", &t.m_Position.x, 0.1f))   changed = true;
+            if (ImGui::DragFloat3("Rotation", &t.m_Rotation.x, 0.5f))   changed = true;
+            if (ImGui::DragFloat3("Scale",    &t.m_Scale.x,    0.01f, 0.001f, 100.0f)) changed = true;
+
+            (void)changed; // SyncLightTransforms 每帧都读 transform，无需额外标记
         }
     }
 
@@ -870,6 +960,42 @@ void VansGraphics::VansHierachuWindow::DrawObjectDetail()
                     ImGui::BulletText("[%d] %s", (int)i, tireNames[i].c_str());
                 ImGui::TreePop();
             }
+        }
+    }
+
+    // ── Directional Light Component ───────────────────────────────────
+    auto* dirLightComp = obj->GetComponent<VansScriptDirectionalLightComponent>();
+    if (dirLightComp && dirLightComp->m_LightManager && dirLightComp->m_LightIndex >= 0)
+    {
+        auto& dirLights = dirLightComp->m_LightManager->GetDirectionLights();
+        if (dirLightComp->m_LightIndex < (int)dirLights.size())
+        {
+            if (ImGui::CollapsingHeader("Directional Light", ImGuiTreeNodeFlags_DefaultOpen))
+                DrawDirectionalLightComponent(dirLightComp);
+        }
+    }
+
+    // ── Point Light Component ─────────────────────────────────────────
+    auto* pointLightComp = obj->GetComponent<VansScriptPointLightComponent>();
+    if (pointLightComp && pointLightComp->m_LightManager && pointLightComp->m_LightIndex >= 0)
+    {
+        auto& pointLights = pointLightComp->m_LightManager->GetPointLights();
+        if (pointLightComp->m_LightIndex < (int)pointLights.size())
+        {
+            if (ImGui::CollapsingHeader("Point Light", ImGuiTreeNodeFlags_DefaultOpen))
+                DrawPointLightComponent(pointLightComp);
+        }
+    }
+
+    // ── Spot Light Component ──────────────────────────────────────────
+    auto* spotLightComp = obj->GetComponent<VansScriptSpotLightComponent>();
+    if (spotLightComp && spotLightComp->m_LightManager && spotLightComp->m_LightIndex >= 0)
+    {
+        auto& spotLights = spotLightComp->m_LightManager->GetSpotLight();
+        if (spotLightComp->m_LightIndex < (int)spotLights.size())
+        {
+            if (ImGui::CollapsingHeader("Spot Light", ImGuiTreeNodeFlags_DefaultOpen))
+                DrawSpotLightComponent(spotLightComp);
         }
     }
 

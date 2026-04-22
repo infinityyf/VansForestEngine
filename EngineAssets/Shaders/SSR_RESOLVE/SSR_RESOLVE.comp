@@ -57,31 +57,49 @@ void main()
 
         vec4 neighborHitInfo = imageLoad(traceHit, neighborCoord);
 
-        // Skip neighbors with no valid hit — they contribute garbage
-        if (neighborHitInfo.w < 0.5)
+        // 完全无效像素（空GBuffer / 背面反射 w==0）— 跳过
+        if (neighborHitInfo.w < 0.45)
             continue;
 
-        vec2 neighborHituv = neighborHitInfo.xy;
+        // w≈0.5: trace miss，反射方向存于tracePDF.xyz → 采样天空球
+        // w≈1.0: 几何体命中 → 采样屏幕颜色
+        bool isSkyHit = (neighborHitInfo.w < 0.75);
 
-        //采样color
-        vec3 color = texelFetch(inputColor, ivec2(neighborHituv * ScreenParams.xy), 0).xyz;
-        vec3 hitPosition = texelFetch(inputPosition, ivec2(neighborHituv * ScreenParams.xy), 0).xyz;
-        vec3 lightDirection = normalize(hitPosition - position);
+        // PDF在trace阶段已计算（sky/几何体均有效）；sky hit时xyz存储反射方向
+        vec4 pdfInfo = imageLoad(tracePDF, neighborCoord);
+
+        vec3 color;
+        vec3 lightDirection;
+
+        if (isSkyHit)
+        {
+            // trace miss：用存储的反射方向采样预过滤天空球作为fallback
+            vec3 skyDir = normalize(pdfInfo.xyz);
+            float skyLod = GetMipLevelFromRoughness(roughness);
+            color = textureLod(PreConvSpecularEnvironment, skyDir, skyLod).rgb;
+            lightDirection = skyDir;
+        }
+        else
+        {
+            vec2 neighborHituv = neighborHitInfo.xy;
+
+            //采样color
+            color = texelFetch(inputColor, ivec2(neighborHituv * ScreenParams.xy), 0).xyz;
+            vec3 hitPosition = texelFetch(inputPosition, ivec2(neighborHituv * ScreenParams.xy), 0).xyz;
+            lightDirection = normalize(hitPosition - position);
+
+            // Fade color near screen edges to avoid hard reflection cutoff
+            float edgeFade = 1.0;
+            edgeFade *= smoothstep(0.0, 0.05, neighborHituv.x) * smoothstep(1.0, 0.95, neighborHituv.x);
+            edgeFade *= smoothstep(0.0, 0.05, neighborHituv.y) * smoothstep(1.0, 0.95, neighborHituv.y);
+            color *= edgeFade;
+        }
 
         // Firefly suppression: clamp excessively bright samples that cause
         // single-pixel spikes in the resolve (common on rough surfaces).
         float sampleLum = Luminance(color);
         if (sampleLum > SSR_FIREFLY_CLAMP)
             color *= SSR_FIREFLY_CLAMP / sampleLum;
-
-        // Fade color near screen edges to avoid hard reflection cutoff
-        float edgeFade = 1.0;
-        edgeFade *= smoothstep(0.0, 0.05, neighborHituv.x) * smoothstep(1.0, 0.95, neighborHituv.x);
-        edgeFade *= smoothstep(0.0, 0.05, neighborHituv.y) * smoothstep(1.0, 0.95, neighborHituv.y);
-        color *= edgeFade;
-
-        //采样概率
-        vec4 pdfInfo = imageLoad(tracePDF, neighborCoord);
 
         // Bilateral weight: normal similarity (roughness-adaptive power —
         // strict for mirrors, relaxed for rough surfaces to gather more)

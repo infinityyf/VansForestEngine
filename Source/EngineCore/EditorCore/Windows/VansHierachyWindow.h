@@ -6,6 +6,11 @@
 #include <string>
 #include <vector>
 #include <set>
+
+// 灯光组件类前向声明（定义在 VansScriptContext.h）
+class VansScriptDirectionalLightComponent;
+class VansScriptPointLightComponent;
+class VansScriptSpotLightComponent;
 namespace VansGraphics
 {
 	class VansAnimGraphEditorWindow;
@@ -34,6 +39,9 @@ namespace VansGraphics
 		// ── Objects tab ──
 		void DrawObjectList();
 		void DrawObjectDetail();
+		void DrawDirectionalLightComponent(VansScriptDirectionalLightComponent* comp);
+		void DrawPointLightComponent(VansScriptPointLightComponent* comp);
+		void DrawSpotLightComponent(VansScriptSpotLightComponent* comp);
 
 		// ── Animation tab ──
 		void DrawAnimationList();

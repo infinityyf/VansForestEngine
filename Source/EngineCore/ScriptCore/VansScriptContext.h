@@ -21,7 +21,7 @@
 namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
-namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; }
+namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; }
 namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; }
 
 class VansScriptContext
@@ -207,6 +207,51 @@ public:
 
 	// 非拥有指针，实际 Node 由 VansScene::m_CharControllerNodes 管理
 	VansEngine::VansCharacterControllerNode* m_ControllerNode = nullptr;
+};
+
+// ── Directional Light Component ─────────────────────────────────────────────
+// 持有对 VansLightManager 中方向光的非拥有索引引用。
+// 每帧由 VansScene::SyncLightTransforms 将对象旋转变换写入 m_Direction。
+class VansScriptDirectionalLightComponent : public VansScriptComponent
+{
+public:
+	VansScriptDirectionalLightComponent() { m_ComponentName = "DirectionalLight"; }
+
+	// 非拥有指针，生命周期由 VansScene::m_LightManager 管理
+	VansGraphics::VansLightManager* m_LightManager = nullptr;
+
+	// 该灯光在 m_LightManager::m_DirectionalLights 中的索引
+	int m_LightIndex = -1;
+};
+
+// ── Point Light Component ────────────────────────────────────────────────────
+// 持有对 VansLightManager 中点光源的非拥有索引引用。
+// 每帧由 VansScene::SyncLightTransforms 将对象位置写入 m_Position。
+class VansScriptPointLightComponent : public VansScriptComponent
+{
+public:
+	VansScriptPointLightComponent() { m_ComponentName = "PointLight"; }
+
+	// 非拥有指针，生命周期由 VansScene::m_LightManager 管理
+	VansGraphics::VansLightManager* m_LightManager = nullptr;
+
+	// 该灯光在 m_LightManager::m_PointLights 中的索引
+	int m_LightIndex = -1;
+};
+
+// ── Spot Light Component ─────────────────────────────────────────────────────
+// 持有对 VansLightManager 中聚光灯的非拥有索引引用。
+// 每帧由 VansScene::SyncLightTransforms 将对象位置和旋转写入 m_Position/m_Direction。
+class VansScriptSpotLightComponent : public VansScriptComponent
+{
+public:
+	VansScriptSpotLightComponent() { m_ComponentName = "SpotLight"; }
+
+	// 非拥有指针，生命周期由 VansScene::m_LightManager 管理
+	VansGraphics::VansLightManager* m_LightManager = nullptr;
+
+	// 该灯光在 m_LightManager::m_SpotLights 中的索引
+	int m_LightIndex = -1;
 };
 
 // ── Python Script Component ─────────────────────────────────────────────────

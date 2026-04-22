@@ -1074,8 +1074,16 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
             projectRoot = projectRoot.substr(0, pos + 1);
     }
 
-    LoadLights(nativeDevice, sceneNode[0]["light"]);
-
+    // 向后兼容：优先读取旧格式 "light" 数组；新场景应将灯光放入 objects[].components
+    if (sceneNode[0].contains("light") && sceneNode[0]["light"].is_array())
+    {
+        LoadLights(nativeDevice, sceneNode[0]["light"]);
+    }
+    else
+    {
+        // 没有旧格式灯光数组，仍需创建 GPU 灯光 buffer（大小基于最大灯光数量而非实际数量）
+        m_LightManager.CreateLightUniformData(nativeDevice);
+    }
     if (sceneNode[0].contains("objects") && sceneNode[0]["objects"].is_array()
         && !sceneNode[0]["objects"].empty())
     {
@@ -2081,6 +2089,137 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             vc->m_ComponentName = "vehicle";
             vc->m_Vehicle = nullptr;  // resolved in second pass
             obj->AddComponent(vc);
+        }
+
+        // ── Light components (方向光 / 点光源 / 聚光灯) ────────────────────
+        // 无 render 组件时自动分配 TransformID 并从 JSON "transform" 初始化。
+        // SyncLightTransforms 每帧将 Transform 同步到灯光结构体。
+        {
+            bool lightTransformAllocated = false;
+
+            // 通用 lambda：若对象当前无 render 组件，为灯光分配 TransformID
+            auto ensureLightTransform = [&]()
+            {
+                if (!lightTransformAllocated &&
+                    obj->GetComponent<VansScriptRenderComponent>() == nullptr)
+                {
+                    obj->m_TransformID = VansTransformStore::AllocateTransform();
+                    if (objJson.contains("transform"))
+                    {
+                        const auto& tJson = objJson["transform"];
+                        auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                        if (tJson.contains("position") && tJson["position"].is_array())
+                        {
+                            t.m_Position = glm::vec3(tJson["position"][0].get<float>(),
+                                                     tJson["position"][1].get<float>(),
+                                                     tJson["position"][2].get<float>());
+                        }
+                        if (tJson.contains("rotation") && tJson["rotation"].is_array())
+                        {
+                            t.m_Rotation = glm::vec3(tJson["rotation"][0].get<float>(),
+                                                     tJson["rotation"][1].get<float>(),
+                                                     tJson["rotation"][2].get<float>());
+                        }
+                        t.m_Scale = glm::vec3(1.0f);
+                    }
+                    lightTransformAllocated = true;
+                }
+            };
+
+            // ── 方向光 ────────────────────────────────────────────────────
+            if (components.contains("directional_light"))
+            {
+                ensureLightTransform();
+                const auto& dlJson = components["directional_light"];
+                VansDirectionalLight dirLight;
+                if (dlJson.contains("color") && dlJson["color"].is_array())
+                {
+                    dirLight.m_Color = glm::vec3(dlJson["color"][0].get<float>(),
+                                                 dlJson["color"][1].get<float>(),
+                                                 dlJson["color"][2].get<float>());
+                }
+                else
+                {
+                    dirLight.m_Color = glm::vec3(1.0f);
+                }
+                dirLight.m_Intensity  = dlJson.value("intensity", 1.0f);
+                // 方向由 SyncLightTransforms 每帧计算，此处仅给占位初始值
+                dirLight.m_Direction  = glm::vec3(0.0f, 1.0f, 0.0f);
+
+                int idx = (int)m_LightManager.GetDirectionLights().size();
+                m_LightManager.AddDirectionalLight(dirLight);
+
+                auto* dlComp = new VansScriptDirectionalLightComponent();
+                dlComp->m_LightManager = &m_LightManager;
+                dlComp->m_LightIndex   = idx;
+                obj->AddComponent(dlComp);
+                VANS_LOG("[LoadSceneObjects] 创建方向光组件 '" << obj->m_ObjectName << "' idx=" << idx);
+            }
+
+            // ── 点光源 ────────────────────────────────────────────────────
+            if (components.contains("point_light"))
+            {
+                ensureLightTransform();
+                const auto& plJson = components["point_light"];
+                VansPointLight pointLight;
+                if (plJson.contains("color") && plJson["color"].is_array())
+                {
+                    pointLight.m_Color = glm::vec3(plJson["color"][0].get<float>(),
+                                                   plJson["color"][1].get<float>(),
+                                                   plJson["color"][2].get<float>());
+                }
+                else
+                {
+                    pointLight.m_Color = glm::vec3(1.0f);
+                }
+                pointLight.m_Intensity = plJson.value("intensity", 1.0f);
+                pointLight.m_Radius    = plJson.value("radius", 10.0f);
+                // 位置由 SyncLightTransforms 每帧覆盖
+                pointLight.m_Position  = glm::vec3(0.0f);
+
+                int idx = (int)m_LightManager.GetPointLights().size();
+                m_LightManager.AddPointLight(pointLight);
+
+                auto* plComp = new VansScriptPointLightComponent();
+                plComp->m_LightManager = &m_LightManager;
+                plComp->m_LightIndex   = idx;
+                obj->AddComponent(plComp);
+                VANS_LOG("[LoadSceneObjects] 创建点光源组件 '" << obj->m_ObjectName << "' idx=" << idx);
+            }
+
+            // ── 聚光灯 ────────────────────────────────────────────────────
+            if (components.contains("spot_light"))
+            {
+                ensureLightTransform();
+                const auto& slJson = components["spot_light"];
+                VansSpotLight spotLight;
+                if (slJson.contains("color") && slJson["color"].is_array())
+                {
+                    spotLight.m_Color = glm::vec3(slJson["color"][0].get<float>(),
+                                                  slJson["color"][1].get<float>(),
+                                                  slJson["color"][2].get<float>());
+                }
+                else
+                {
+                    spotLight.m_Color = glm::vec3(1.0f);
+                }
+                spotLight.m_Intensity    = slJson.value("intensity", 1.0f);
+                spotLight.m_Radius       = slJson.value("radius", 10.0f);
+                spotLight.m_InnerCutOff  = glm::radians(slJson.value("innercutoff", 30.0f));
+                spotLight.m_OuterCutOff  = glm::radians(slJson.value("outerCutoff", 45.0f));
+                // 位置和方向由 SyncLightTransforms 每帧覆盖
+                spotLight.m_Position     = glm::vec3(0.0f);
+                spotLight.m_Direction    = glm::vec3(0.0f, 1.0f, 0.0f);
+
+                int idx = (int)m_LightManager.GetSpotLight().size();
+                m_LightManager.AddSpotLight(spotLight);
+
+                auto* slComp = new VansScriptSpotLightComponent();
+                slComp->m_LightManager = &m_LightManager;
+                slComp->m_LightIndex   = idx;
+                obj->AddComponent(slComp);
+                VANS_LOG("[LoadSceneObjects] 创建聚光灯组件 '" << obj->m_ObjectName << "' idx=" << idx);
+            }
         }
 
         // ── Animation component ───────────────────────────────────────────

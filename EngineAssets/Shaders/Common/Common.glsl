@@ -218,11 +218,16 @@ float SHBasis(int i, vec3 v)
 }
 
 
-// 从 GI 可见性纹理中取标量可见性 [0,1]
-// shVis.x 存储全方向 miss 比例（暂不使用球谐方向编码）
+// 从 GI 可见性球谐系数（L0+L1，4 系数）中沿指定方向求标量可见性 [0,1]
+// shVis 由 GIVisibility.comp 写入: c = (4π/N) Σ v(d_i)*Y(d_i)
 float EvalGIVisibility(vec4 shVis, vec3 dir)
 {
-    return shVis.x;
+    vec3 d = normalize(dir);
+    float val = shVis.x * SHBasis(0, d)
+              + shVis.y * SHBasis(1, d)
+              + shVis.z * SHBasis(2, d)
+              + shVis.w * SHBasis(3, d);
+    return max(val, 0.0);
 }
 
 // 生成均匀分布的球面采样点 (使用黄金螺旋算法)
