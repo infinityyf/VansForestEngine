@@ -31,6 +31,8 @@ namespace VansGraphics
 		GLOBAL_BINDING_SH_COEFFICIENTS          = 6,
 		GLOBAL_BINDING_SKIN_BSDF_LUT            = 7,
 		GLOBAL_BINDING_CLOTH_BRDF_LUT           = 8,
+		GLOBAL_BINDING_TILE_LIGHT_GRID          = 9,   // TileLight Header SSBO (readonly)
+		GLOBAL_BINDING_TILE_LIGHT_INDICES       = 10,  // TileLight Index SSBO  (readonly)
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -304,10 +306,19 @@ namespace VansGraphics
 	// --- Fog Light Injection Compute Pass ---
 	enum FogLightInjectionPassBinding : uint32_t
 	{
-		FOG_INJECT_BINDING_VOXEL_GRID  = 0,   // i_VoxelGrid   (STORAGE_IMAGE, 3D, rgba16f)
-		FOG_INJECT_BINDING_SHADOW_MAP  = 1,   // fogShadowMap  (COMBINED_IMAGE_SAMPLER)
-		FOG_INJECT_BINDING_PARAMS      = 2,   // FogVolumeParams UBO
-		FOG_INJECT_BINDING_HISTORY     = 3,   // s_History     (COMBINED_IMAGE_SAMPLER, 3D)
+		FOG_INJECT_BINDING_VOXEL_GRID       = 0,   // i_VoxelGrid       (STORAGE_IMAGE, 3D, rgba16f)
+		FOG_INJECT_BINDING_SHADOW_MAP       = 1,   // fogShadowMap      (COMBINED_IMAGE_SAMPLER)
+		FOG_INJECT_BINDING_PARAMS           = 2,   // FogVolumeParams UBO
+		FOG_INJECT_BINDING_HISTORY          = 3,   // s_History         (COMBINED_IMAGE_SAMPLER, 3D)
+		FOG_INJECT_BINDING_PUNCTUAL_SHADOW  = 4,   // punctualShadowMap (COMBINED_IMAGE_SAMPLER)
+	};
+
+	// --- TileLight Build Compute Pass (Set 1, write access) ---
+	enum TileLightBuildPassBinding : uint32_t
+	{
+		TILE_BUILD_BINDING_GRID    = 0,  // TileLightHeader SSBO (write)
+		TILE_BUILD_BINDING_INDICES = 1,  // TileLight Index SSBO  (write)
+		TILE_BUILD_BINDING_PARAMS  = 2,  // TileLightBuildParams UBO (read)
 	};
 
 	// --- Fog Ray March Accumulate Compute Pass ---
@@ -531,5 +542,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_VegetationBoneSim(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VegetationDraw(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VegetationCull(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_TileLightBuild(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

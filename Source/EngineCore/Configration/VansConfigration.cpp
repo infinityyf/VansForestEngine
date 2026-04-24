@@ -8,8 +8,8 @@ VansConfigration::VansConfigration()
 {
 	ShadowMapHeight = 2048;
 	ShadowMapWidth = 2048;
-	PunctualShadowMapWidth = 2048;
-	PunctualShadowMapHeight = 2048;
+	PunctualShadowMapWidth = 4096;
+	PunctualShadowMapHeight = 4096;
 	SupportRayTracing = true;
 
 	// Cascade Shadow Map defaults

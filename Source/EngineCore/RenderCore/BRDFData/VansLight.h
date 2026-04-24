@@ -63,8 +63,8 @@ namespace VansGraphics
 		VansVKBuffer m_LightBuffer;
 
 		const uint32_t m_MaxDirectionLightCount = 1;
-		const uint32_t m_MaxPointLightCount = 10;
-		const uint32_t m_MaxSpotLightCount = 10;
+		const uint32_t m_MaxPointLightCount = 64;
+		const uint32_t m_MaxSpotLightCount = 64;
 
 	public:
 

@@ -1083,7 +1083,7 @@ namespace VansGraphics
 			);
 
 			// binding 3 — s_History (COMBINED_IMAGE_SAMPLER, 3D) — read from previous frame
-			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+				VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 				{
 					manager->m_FogLightInjectionDescriptorSets[i],
 					FOG_INJECT_BINDING_HISTORY,
@@ -1093,6 +1093,23 @@ namespace VansGraphics
 						{
 							readTextures[i]->GetImage().GetSampler(),
 							readTextures[i]->GetImage().GetImageView(),
+							VK_IMAGE_LAYOUT_GENERAL
+						}
+					}
+				}
+			);
+
+			// binding 4 — punctualShadowMap (tile-based point/spot shadow atlas)
+			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+				{
+					manager->m_FogLightInjectionDescriptorSets[i],
+					FOG_INJECT_BINDING_PUNCTUAL_SHADOW,
+					0,
+					VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					{
+						{
+							renderPassManager->GetPunctualShadowMap().GetSampler(),
+							renderPassManager->GetPunctualShadowMap().GetImageView(),
 							VK_IMAGE_LAYOUT_GENERAL
 						}
 					}
@@ -1268,4 +1285,107 @@ namespace VansGraphics
 		m_Scene->GetMaterialManager()->m_SSGITemporalFrame++;
 		BilateralFilterSSAO(renderPassManager, computeCmd);
 	}
-}
+
+	// ================================================================
+	// TileLight Build — descriptor set writes (Set 1)
+	// ================================================================
+	void VansVKDevice::UpdateTileLightBuildSets()
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		if (m_TileLightBuildDescSetsUpdated) return;
+		m_TileLightBuildDescSetsUpdated = true;
+
+		VansVKDescriptorManager::GetInstance()->ResetState();
+
+		// binding 0 — TileLightHeader SSBO (write)
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				manager->m_TileLightBuildDescriptorSets[0],
+				TILE_BUILD_BINDING_GRID,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				{
+					{
+						manager->m_TileLightHeaderBuffer.GetNativeBuffer(),
+						0,
+						manager->m_TileLightHeaderBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+
+		// binding 1 — TileLight Index SSBO (write)
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				manager->m_TileLightBuildDescriptorSets[0],
+				TILE_BUILD_BINDING_INDICES,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				{
+					{
+						manager->m_TileLightIndexBuffer.GetNativeBuffer(),
+						0,
+						manager->m_TileLightIndexBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+
+		// binding 2 — TileLightBuildParams UBO
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				manager->m_TileLightBuildDescriptorSets[0],
+				TILE_BUILD_BINDING_PARAMS,
+				0,
+				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				{
+					{
+						manager->m_TileLightBuildParamsCBBuffer.GetNativeBuffer(),
+						0,
+						manager->m_TileLightBuildParamsCBBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	}
+
+	// ================================================================
+	// TileLight Build — dispatch compute pass
+	// ================================================================
+	void VansVKDevice::BuildTileLightLists(VansVKCommandBuffer& cmd)
+	{
+		UpdateTileLightBuildSets();
+
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager->m_TileLightBuildShader == nullptr) return;
+		if (manager->m_TileLightGridX == 0 || manager->m_TileLightGridY == 0) return;
+
+		uint32_t groupsX = (manager->m_TileLightGridX + 7) / 8;
+		uint32_t groupsY = (manager->m_TileLightGridY + 7) / 8;
+
+		cmd.EnsureComputeShader(
+			*manager->m_TileLightBuildShader,
+			{ m_Scene->m_GlobalDescriptorSetLayout, manager->m_TileLightBuildSetLayout }
+		);
+		cmd.DispatchCompute(
+			*manager->m_TileLightBuildShader,
+			groupsX, groupsY, 1,
+			{ m_Scene->m_GlobalDescriptorSet, manager->m_TileLightBuildDescriptorSets[0] }
+		);
+
+		// Barrier: compute SSBO write → subsequent compute + fragment SSBO read
+		VkMemoryBarrier tileLightBarrier      = {};
+		tileLightBarrier.sType                = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		tileLightBarrier.srcAccessMask        = VK_ACCESS_SHADER_WRITE_BIT;
+		tileLightBarrier.dstAccessMask        = VK_ACCESS_SHADER_READ_BIT;
+		cmd.PipelineBarrier(
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{ tileLightBarrier }
+		);
+	}
+
+} // namespace VansGraphics

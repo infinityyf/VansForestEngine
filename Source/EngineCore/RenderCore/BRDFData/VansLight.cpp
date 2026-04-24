@@ -237,7 +237,7 @@ void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_devi
 		sizeof(VansSpotLight) * m_MaxSpotLightCount + sizeof(float) * 4;
 	m_LightBuffer.CreatVulkanBuffer(
 		logic_device, bufferSize, VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
 	);
 
@@ -245,7 +245,7 @@ void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_devi
 	VkDescriptorSetLayoutBinding lightBufferBinding =
 	{
 		PassBinding::CBUFFER_0,
-		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		1,
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
 		nullptr
@@ -260,7 +260,7 @@ void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_devi
 			m_LightDataDescriptorSets[0],
 			PassBinding::CBUFFER_0,
 			0,
-			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			{
 				{
 					m_LightBuffer.GetNativeBuffer(),

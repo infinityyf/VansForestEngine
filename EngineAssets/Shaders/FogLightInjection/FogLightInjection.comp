@@ -17,6 +17,7 @@
 
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
+#include "../Common/TileLightData.glsl"
 #include "../Common/FogVolumeCommon.glsl"
 #include "../Lights/LightsData.glsl"
 
@@ -44,6 +45,7 @@ layout(set = 1, binding = 2) uniform FogVolumeParams
 } uVolume;
 
 layout(set = 1, binding = 3) uniform sampler3D s_History;
+layout(set = 1, binding = 4) uniform sampler2D punctualShadowMap;
 
 // ---------------------------------------------------------------------------
 // Smooth edge fade for shadow map — avoids hard clamp line at UV boundaries
@@ -165,6 +167,64 @@ void main()
         vec3 ambientInscatter = lightColor * uVolume.ambientScale * (1.0 / (4.0 * PI));
 
         vec3 totalInscatter = directInscatter + ambientInscatter;
+
+        // --- TileLight 穿光灯和聚光灯体积雾 inscatter ---
+        // 靓体素 XY 与 TileLight 格子 XY 直接对应（fogGrid.xy = screen.xy / TILE_SIZE）
+        uint tileIdx = gl_GlobalInvocationID.x +
+                       gl_GlobalInvocationID.y * uint(gridSize.x);
+        TileLightHeader _th = tileLightHeaders[tileIdx];
+
+        // 点光源
+        for (uint _ptk = 0u; _ptk < _th.pointCount; ++_ptk)
+        {
+            uint ptIdx = tileLightIndices[_th.pointOffset + _ptk];
+            PointLightData pl = GetPointLight(int(ptIdx));
+            vec3 toLight = pl.position.xyz - worldPos;
+            float dist   = length(toLight);
+            if (dist > pl.radius) continue;
+
+            float attenuation = 1.0 - (dist / pl.radius);
+            attenuation *= attenuation;
+
+            float shadow = SamplePointShadowMap(worldPos, punctualShadowMap, int(pl.shadowIndex));
+            attenuation *= shadow;
+
+            vec3 lightDir  = toLight / dist;
+            float cosTheta = dot(normalize(cameraPosition.xyz - worldPos), -lightDir);
+            float phase    = FogInjectionPhase(cosTheta, uVolume.anisotropy);
+
+            totalInscatter += pl.color.rgb * pl.intensity * attenuation * phase * uVolume.scatterScale;
+        }
+
+        // 聚光灯
+        for (uint _spk = 0u; _spk < _th.spotCount; ++_spk)
+        {
+            uint spIdx = tileLightIndices[_th.spotOffset + _spk];
+            SpotLightData sl = GetSpotLight(int(spIdx));
+            vec3 toLight = sl.position.xyz - worldPos;
+            float dist   = length(toLight);
+            if (dist > sl.radius) continue;
+
+            float attenuation = 1.0 - (dist / sl.radius);
+            attenuation *= attenuation;
+
+            float coneAngle = dot(normalize(sl.direction.xyz), normalize(toLight / dist));
+            if (coneAngle < cos(sl.outerConeAngle)) continue;
+
+            float innerCone = cos(sl.innerConeAngle);
+            float outerCone = cos(sl.outerConeAngle);
+            float coneAtten = clamp((coneAngle - outerCone) / (innerCone - outerCone), 0.0, 1.0);
+
+            float shadow = SampleSpotShadowMap(worldPos, punctualShadowMap, int(sl.shadowIndex));
+            attenuation *= shadow * coneAtten;
+
+            vec3 lightDir  = toLight / dist;
+            float cosTheta = dot(normalize(cameraPosition.xyz - worldPos), -lightDir);
+            float phase    = FogInjectionPhase(cosTheta, uVolume.anisotropy);
+
+            totalInscatter += sl.color.rgb * sl.intensity * attenuation * phase * uVolume.scatterScale;
+        }
+
         current = vec4(totalInscatter * d, d);
     }
 

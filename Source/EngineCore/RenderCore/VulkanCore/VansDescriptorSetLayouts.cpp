@@ -31,8 +31,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		// binding 0: Camera UBO
 		{GLOBAL_BINDING_CAMERA_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
 		 CAMERA_STAGES, nullptr},
-		// binding 1: Lights UBO
-		{GLOBAL_BINDING_LIGHTS_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+		// binding 1: Lights SSBO (changed from UBO to SSBO to support MAX_POINT_LIGHTS=64)
+		{GLOBAL_BINDING_LIGHTS_UBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 LIGHTS_STAGES, nullptr},
 		// binding 2: Material SSBO
 		{GLOBAL_BINDING_MATERIAL_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -52,6 +52,12 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		// binding 7: Skin pre-integrated BSDF LUT
 		{GLOBAL_BINDING_SKIN_BSDF_LUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 IBL_STAGES, nullptr},
+		// binding 9: TileLight Header SSBO (readonly in shaders)
+		{GLOBAL_BINDING_TILE_LIGHT_GRID,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 GLOBAL_STAGES, nullptr},
+		// binding 10: TileLight Index SSBO (readonly in shaders)
+		{GLOBAL_BINDING_TILE_LIGHT_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 GLOBAL_STAGES, nullptr},
 		// binding 50: Bindless PBR textures (fixed max count, no variable descriptor)
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},
@@ -302,10 +308,11 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_FogLightInjection(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{FOG_INJECT_BINDING_VOXEL_GRID, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{FOG_INJECT_BINDING_SHADOW_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{FOG_INJECT_BINDING_PARAMS,     VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{FOG_INJECT_BINDING_HISTORY,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{FOG_INJECT_BINDING_VOXEL_GRID,       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{FOG_INJECT_BINDING_SHADOW_MAP,       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{FOG_INJECT_BINDING_PARAMS,           VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{FOG_INJECT_BINDING_HISTORY,          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{FOG_INJECT_BINDING_PUNCTUAL_SHADOW,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -618,6 +625,20 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationCull(
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{VEG_CULL_BINDING_HIZ, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_TileLightBuild(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		// binding 0: TileLightHeader SSBO (write)
+		{TILE_BUILD_BINDING_GRID,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		// binding 1: TileLight Index SSBO (write)
+		{TILE_BUILD_BINDING_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		// binding 2: TileLightBuildParams UBO (per-dispatch tile grid dimensions)
+		{TILE_BUILD_BINDING_PARAMS,  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }

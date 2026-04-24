@@ -184,8 +184,9 @@ namespace VansGraphics
 
 		// Creates the global Set 0 descriptor set and writes all global resources into it
 		void CreateGlobalDescriptorSet(VkDevice device);
-		void UpdateGlobalDescriptorSet();
-
+		void UpdateGlobalDescriptorSet();		// Writes only TileLight bindings (9, 10) into the global descriptor set.
+		// Called after PrepareTileLightData() creates the TileLight SSBO buffers.
+		void UpdateGlobalTileLightDescriptors();
 	public:
 		//editor
 		VansRenderNode* m_SelectedNode = nullptr;

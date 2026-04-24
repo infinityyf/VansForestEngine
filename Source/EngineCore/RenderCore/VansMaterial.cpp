@@ -351,6 +351,10 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 
 void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager)
 {
+	// 场景没有方向光时，保持 m_SunDirection 不变，避免空向量访问越界
+	if (lightManager.GetDirectionLights().empty())
+		return;
+
 	uint32_t offset = 0;
 	uint32_t size = sizeof(VansAtmospherePBRParam);
 	m_AtmospherePBRParam.m_SunDirection = lightManager.GetDirectionLights()[0].m_Direction;

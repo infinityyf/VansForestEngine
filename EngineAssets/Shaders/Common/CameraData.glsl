@@ -1,3 +1,6 @@
+#ifndef CAMERA_DATA_GLSL
+#define CAMERA_DATA_GLSL
+
 //可以使用pushconstance频繁修改数据，但是大小有限，同一个shader只能使用一个
 #if !defined(CameraCBBind)
     #define CameraCBBind 0
@@ -30,3 +33,5 @@ layout(set=CameraCBBind, binding=0) uniform    CameraUniformBuffer
 #define FarPlane CameraParams.y
 #define Fov CameraParams.z
 #define Aspect CameraParams.w
+
+#endif // CAMERA_DATA_GLSL

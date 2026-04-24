@@ -155,6 +155,8 @@ namespace VansGraphics
 
 			{
 				VANS_GPU_SCOPE(cmd, "Post Processing");
+				// ★ TileLight Build（依赖相机矩阵 + 光源 SSBO，在 UpdateHZB 前完成）
+				BuildTileLightLists(m_VansVKCommandBuffer);
 				UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
 				UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
 				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
@@ -218,8 +220,8 @@ namespace VansGraphics
 				DrawMotionVectorPass(renderPassManager, cmd);
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
-
-			UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
+			// ★ TileLight Build（依赖相机矩阵 + 光源 SSBO，在 UpdateHZB 前完成）
+			BuildTileLightLists(m_VansVKCommandBuffer);			UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
 			UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
 			UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
 			UpdateRayTracing(m_VansVKCommandBuffer);

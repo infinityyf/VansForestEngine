@@ -42,8 +42,8 @@ struct LightResult
 };
 
 #define MAX_DIRECTION_LIGHTS 1
-#define MAX_POINT_LIGHTS 10
-#define MAX_SPOT_LIGHTS 10
+#define MAX_POINT_LIGHTS 64
+#define MAX_SPOT_LIGHTS  64
 
 #if !defined(LightCBBind)
     #define LightCBBind 0
@@ -51,7 +51,7 @@ struct LightResult
 #if !defined(LightBinding)
     #define LightBinding 1
 #endif
-layout(set=LightCBBind, binding=LightBinding) uniform LightsData
+layout(set=LightCBBind, binding=LightBinding, std430) readonly buffer LightsData
 {
     uint uPointLightCount;
     uint uSpotLightCount;
@@ -159,7 +159,7 @@ float SamplePunctualShadowAtlasSoft(
         localShadowUV.y <= 0.0 || localShadowUV.y >= 1.0)
         return 1.0;
 
-    const int PUNCTUAL_SOFT_SAMPLE_COUNT = 16;
+    const int PUNCTUAL_SOFT_SAMPLE_COUNT = 32;
     float sampleCountInverse = 1.0 / float(PUNCTUAL_SOFT_SAMPLE_COUNT);
 
     ivec2 localTexel = ivec2(localShadowUV * float(uShadowAtlasSize));
@@ -425,7 +425,7 @@ void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap,
             diffuseResult += diffuse;
         }
     }
-    diffuseResult *= invN;
+    diffuseResult *= invN * 5;
 }
 
 
@@ -448,6 +448,70 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
     lightResult.directDiffuse += diffuseResult;
     lightResult.directSpecular += specularResult;
 
+#ifdef TILE_LIGHT
+    // --- TileLight 分格裁剪路径（仅 Fragment Shader，需搭配 TileLightData.glsl + define TILE_LIGHT）---
+    TileLightHeader _tileLightHdr = GetFragTileLightHeader();
+
+    // 点光源（仅遍历当前 tile 内的光源）
+    for (uint _ptk = 0u; _ptk < _tileLightHdr.pointCount; ++_ptk)
+    {
+        uint i = tileLightIndices[_tileLightHdr.pointOffset + _ptk];
+        PointLightData pointLight = GetPointLight(int(i));
+        vec3 lightDirection = pointLight.position.xyz - brdfData.positionWS;
+        float distance = length(lightDirection);
+        if (distance > pointLight.radius) continue;
+
+        lightDirection /= distance;
+        float attenuation = 1.0 - (distance / pointLight.radius);
+        attenuation *= attenuation;
+
+        float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(pointLight.shadowIndex));
+        attenuation = min(attenuation, shadowValue);
+
+        vec3 diffuseResult  = vec3(0);
+        vec3 specularResult = vec3(0);
+        DirectBRDF(brdfData, lightDirection, diffuseResult, specularResult);
+        diffuseResult  *= pointLight.color.rgb * pointLight.intensity * attenuation;
+        specularResult *= pointLight.color.rgb * pointLight.intensity * attenuation;
+
+        lightResult.directDiffuse  += diffuseResult;
+        lightResult.directSpecular += specularResult;
+    }
+
+    // 聚光灯
+    for (uint _spk = 0u; _spk < _tileLightHdr.spotCount; ++_spk)
+    {
+        uint i = tileLightIndices[_tileLightHdr.spotOffset + _spk];
+        SpotLightData spotLight = GetSpotLight(int(i));
+        vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
+        float distance = length(lightDirection);
+        if (distance > spotLight.radius) continue;
+
+        lightDirection /= distance;
+        float attenuation = 1.0 - (distance / spotLight.radius);
+        attenuation *= attenuation;
+
+        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(spotLight.shadowIndex));
+        attenuation = min(attenuation, shadowValue);
+
+        float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
+        if (coneAngle < cos(spotLight.outerConeAngle)) continue;
+
+        float innerConeAngle  = cos(spotLight.innerConeAngle);
+        float outerConeAngle  = cos(spotLight.outerConeAngle);
+        float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
+
+        vec3 diffuseResult  = vec3(0);
+        vec3 specularResult = vec3(0);
+        DirectBRDF(brdfData, lightDirection, diffuseResult, specularResult);
+        diffuseResult  *= spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation;
+        specularResult *= spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation;
+
+        lightResult.directDiffuse  += diffuseResult;
+        lightResult.directSpecular += specularResult;
+    }
+#else
+    // --- 原始 O(N) 全局循环路径（非 TILE_LIGHT 路径）---
     // Point lights
     for (uint i = 0; i < uPointLightCount; ++i)
     {
@@ -504,4 +568,5 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         lightResult.directDiffuse += diffuseResult;
         lightResult.directSpecular += specularResult;
     }
+#endif // TILE_LIGHT
 }

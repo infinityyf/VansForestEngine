@@ -1,6 +1,11 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
+// TileLight：先引入 CameraData（提供 ScreenParams），再定义 TILE_LIGHT，再引入 TileLightData
+#include "../Common/CameraData.glsl"
+#define TILE_LIGHT
+#include "../Common/TileLightData.glsl"
+
 #include "../Lights/LightsData.glsl"
 #include "../BRDF/BRDFData.glsl"
 #include "../BRDF/BRDFSkin.glsl"

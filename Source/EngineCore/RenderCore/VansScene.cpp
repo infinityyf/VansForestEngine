@@ -267,13 +267,13 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
         }
     );
 
-    // Binding 1: Lights UBO
+    // Binding 1: Lights SSBO
     descManager->m_BufferDescInfos.push_back(
         {
             m_GlobalDescriptorSet,
             GLOBAL_BINDING_LIGHTS_UBO,
             0,
-            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             {
                 {
                     m_LightManager.GetLightBuffer().GetNativeBuffer(),
@@ -410,6 +410,51 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             }
         );
     }
+
+    descManager->UpdateDescriptorSets();
+}
+
+// NOTE: TileLight bindings (9 and 10) are written in VansVKDevice::UpdateGlobalTileLightDesc
+//       after PrepareTileLightData allocates m_TileLightHeaderBuffer and m_TileLightIndexBuffer.
+
+void VansGraphics::VansScene::UpdateGlobalTileLightDescriptors()
+{
+    auto descManager = VansVKDescriptorManager::GetInstance();
+    descManager->ResetState();
+
+    // Binding 9: TileLight Header SSBO
+    descManager->m_BufferDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_TILE_LIGHT_GRID,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {
+                {
+                    m_MaterialManager.m_TileLightHeaderBuffer.GetNativeBuffer(),
+                    0,
+                    m_MaterialManager.m_TileLightHeaderBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
+
+    // Binding 10: TileLight Index SSBO
+    descManager->m_BufferDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_TILE_LIGHT_INDICES,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {
+                {
+                    m_MaterialManager.m_TileLightIndexBuffer.GetNativeBuffer(),
+                    0,
+                    m_MaterialManager.m_TileLightIndexBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
 
     descManager->UpdateDescriptorSets();
 }

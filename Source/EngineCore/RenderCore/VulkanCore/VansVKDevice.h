@@ -156,6 +156,7 @@ namespace VansGraphics
 			m_SSRDescSetsUpdated = false;
 			m_VolumetricFogDescSetsUpdated = false;
 			m_FogLightInjectionDescSetsUpdated = false;
+			m_TileLightBuildDescSetsUpdated = false;
 		}
 
 		void UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
@@ -170,6 +171,9 @@ namespace VansGraphics
 
 		void UpdateFogRayMarch(VansVKCommandBuffer& computeCmd);
 
+		// TileLight Build pass: culls lights per tile each frame
+		void BuildTileLightLists(VansVKCommandBuffer& cmd);
+
 	private:
 
 		bool m_GIDataDescSetsUpdated = false;
@@ -177,6 +181,7 @@ namespace VansGraphics
 		bool m_SSRDescSetsUpdated = false;
 		bool m_VolumetricFogDescSetsUpdated = false;
 		bool m_FogLightInjectionDescSetsUpdated = false;
+		bool m_TileLightBuildDescSetsUpdated = false;
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
@@ -199,6 +204,8 @@ namespace VansGraphics
 		void UpdateFogLightInjectionSets(VansRenderPassManager* renderPassManager);
 
 		void UpdateFogRayMarchSets();
+
+		void UpdateTileLightBuildSets();
 
 	private:
 
@@ -230,6 +237,8 @@ namespace VansGraphics
 		void PrepareSSRRenderData();
 
 		void PrepareVolumetricData();
+
+		void PrepareTileLightData();
 
 		void PrepareBilaterFilterData();
 

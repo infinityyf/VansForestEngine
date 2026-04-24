@@ -696,7 +696,7 @@ namespace VansGraphics
 		PrepareHZBRenderData();
 		PrepareSSRRenderData();
 		PrepareVolumetricData();
-
+		PrepareTileLightData();
 #ifdef _DEBUG
 		VkDebugUtilsObjectNameInfoEXT nameInfo = {};
 		nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
@@ -767,4 +767,75 @@ namespace VansGraphics
 	void VansVKDevice::PrepareGlobalIllumiationData()
 	{
 	}
-}
+
+	// ================================================================
+	// PrepareTileLightData — create TileLight SSBOs + build pass resources
+	// ================================================================
+	void VansVKDevice::PrepareTileLightData()
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		const uint32_t TILE_SIZE = 8;
+		uint32_t gridX     = (m_RenderWidth  + TILE_SIZE - 1) / TILE_SIZE;
+		uint32_t gridY     = (m_RenderHeight + TILE_SIZE - 1) / TILE_SIZE;
+		uint32_t totalTiles = gridX * gridY;
+
+		manager->m_TileLightGridX = gridX;
+		manager->m_TileLightGridY = gridY;
+
+		// --- TileLight Header SSBO: 1 × TileLightHeader per tile (4 × uint32 = 16 bytes) ---
+		const uint32_t kHeaderStride = 4 * sizeof(uint32_t); // { pointCount, pointOffset, spotCount, spotOffset }
+		manager->m_TileLightHeaderBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			static_cast<uint32_t>(totalTiles * kHeaderStride),
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+		);
+
+		// --- TileLight Index SSBO: fixed-stride point + spot index slots ---
+		// Point slot for tile T = T * 64; Spot slot = totalTiles*64 + T*64
+		const uint32_t MAX_PER_TILE   = 64; // matches TILE_LIGHT_MAX_PT_PER_TILE / _SP_ in shader
+		const uint32_t indexBufSize   = totalTiles * MAX_PER_TILE * 2 * sizeof(uint32_t);
+		manager->m_TileLightIndexBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			indexBufSize,
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+		);
+
+		// --- TileLightBuildParams UBO (host-visible, written once) ---
+		struct TileLightBuildParams { uint32_t gridX; uint32_t gridY; uint32_t totalTiles; uint32_t _pad; };
+		TileLightBuildParams params = { gridX, gridY, totalTiles, 0u };
+		manager->m_TileLightBuildParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			static_cast<uint32_t>(sizeof(TileLightBuildParams)),
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+		);
+		manager->m_TileLightBuildParamsCBBuffer.SetBufferData(&params, 0, sizeof(TileLightBuildParams));
+
+		// --- Build shader ---
+		auto vansConfigration = VansConfigration::GetInstance();
+		std::string projectRoot = vansConfigration->GetProjectRootPath();
+		manager->m_TileLightBuildShader = new VansComputeShader();
+		manager->m_TileLightBuildShader->InitShader(
+			m_VansVKLogicDevice,
+			(projectRoot + "EngineAssets/Shaders/TileLight").c_str()
+		);
+
+		// --- Descriptor set layout + allocation for Set 1 (write access) ---
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_TileLightBuild(
+			manager->m_TileLightBuildSetLayout,
+			manager->m_TileLightBuildDescriptorSets
+		);
+
+		// NOTE: UpdateGlobalTileLightDescriptors() is intentionally NOT called here.
+		// m_GlobalDescriptorSet is VK_NULL_HANDLE until LoadSceneForRendering() runs.
+		// The call is deferred to VansSceneLoader.cpp::LoadSceneForRendering(),
+		// after CreateGlobalDescriptorSet() allocates the set.
+	}
+
+} // namespace VansGraphics

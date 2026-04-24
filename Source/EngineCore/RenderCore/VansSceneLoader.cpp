@@ -92,6 +92,8 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 	device->PreparePBRMaterialData();
 	device->PrepareInstanceTransformData();
 	CreateGlobalDescriptorSet(device->GetLogicDevice());
+	// Write TileLight SSBOs (created during BeforeRendering) into global Set 0 bindings 9/10.
+	UpdateGlobalTileLightDescriptors();
 	CreateNodeDescriptorSets();
 	device->PrepareRayTracingData();
 

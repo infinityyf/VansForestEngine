@@ -234,6 +234,16 @@ namespace VansGraphics
 		VansComputeShader* m_FogLightInjectionShader;
 		VansComputeShader* m_FogRayMarchShader;
 
+		// ---- TileLight Build Pass ----
+		VansVKBuffer m_TileLightHeaderBuffer;
+		VansVKBuffer m_TileLightIndexBuffer;
+		VkDescriptorSetLayout          m_TileLightBuildSetLayout      = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_TileLightBuildDescriptorSets;
+		VansVKBuffer m_TileLightBuildParamsCBBuffer;
+		VansComputeShader* m_TileLightBuildShader = nullptr;
+		uint32_t m_TileLightGridX = 0;
+		uint32_t m_TileLightGridY = 0;
+
 	public:
 
 		VansVKBuffer m_AtmospherePBRDataBuffer;
