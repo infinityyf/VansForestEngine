@@ -82,9 +82,13 @@ float SampleFogShadow(vec3 worldPos)
 // ---------------------------------------------------------------------------
 float HGPhase(float cosTheta, float g)
 {
-    float g2 = g * g;
+    float g2    = g * g;
     float denom = 1.0 + g2 + 2.0 * g * cosTheta;
-    return (1.0 / (4.0 * PI)) * (1.0 - g2) / max(pow(denom, 1.5), 1e-4);
+    // Clamp denom before pow() to avoid the singularity creating a bright
+    // disc artefact.  Clamping denom (not the result) preserves the smooth
+    // approach toward the maximum value instead of a flat plateau.
+    denom = max(denom, 1e-6);
+    return (1.0 / (4.0 * PI)) * (1.0 - g2) / pow(denom, 1.5);
 }
 
 // Dual-lobe phase with smooth saturation — avoids the sharp circle edge
@@ -213,7 +217,12 @@ void main()
 
             float innerCone = cos(sl.innerConeAngle);
             float outerCone = cos(sl.outerConeAngle);
-            float coneAtten = clamp((coneAngle - outerCone) / (innerCone - outerCone), 0.0, 1.0);
+            // Guard against innerConeAngle == outerConeAngle (hard-edge cone)
+            // which would produce a NaN that poisons the entire voxel.
+            float coneRange = innerCone - outerCone;
+            float coneAtten = (abs(coneRange) > 1e-5)
+                ? clamp((coneAngle - outerCone) / coneRange, 0.0, 1.0)
+                : step(outerCone, coneAngle);
 
             float shadow = SampleSpotShadowMap(worldPos, punctualShadowMap, int(sl.shadowIndex));
             attenuation *= shadow * coneAtten;
@@ -241,15 +250,14 @@ void main()
     {
         history = texture(s_History, lastUVW.xyz);
 
-        // Neighbourhood clamp to prevent ghosting: clamp history to ±range of current
-        // Simple approach: reject history if it differs too much from current
-        vec4 diff = abs(history - current);
+        // Neighbourhood clamp: instead of a hard binary jump (0.05 → 0.5)
+        // that produces visible flickering when the difference oscillates
+        // around the threshold, use a smooth ramp so the blend factor
+        // transitions continuously with the magnitude of the difference.
+        vec4 diff    = abs(history - current);
         float maxDiff = max(max(diff.r, diff.g), max(diff.b, diff.a));
-        if (maxDiff > 2.0)
-        {
-            // History is too stale — increase blend toward current
-            blendFactor = 0.5;
-        }
+        // Smoothly increase blend from 5% toward 80% as diff climbs from 1.0 to 3.0.
+        blendFactor = mix(0.05, 0.8, smoothstep(1.0, 3.0, maxDiff));
     }
     else
     {

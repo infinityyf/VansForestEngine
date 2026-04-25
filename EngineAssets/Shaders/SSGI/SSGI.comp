@@ -46,7 +46,9 @@ bool IsInsideGIVolume(vec3 worldPos)
 // ---- SH fallback helper ----
 vec3 EvaluateSHFallback(vec3 worldPos, vec3 normal, vec3 dir)
 {
-    vec3 uvw = (worldPos + normal * 0.5 * 1.732 - kGIVolumeMin) / kGIVolumeSize;
+    // 法线偏移统一为 0.25m（与 GIPointLight.comp / Deferred.frag 保持一致）
+    // 原值 0.5*1.732=0.866m 会跨越约 2 个探针格，导致室内地面采样到室外探针
+    vec3 uvw = (worldPos + normal * 0.25 - kGIVolumeMin) / kGIVolumeSize;
     vec4 rC = texture(SHRCoeff, uvw);
     vec4 gC = texture(SHGCoeff, uvw);
     vec4 bC = texture(SHBCoeff, uvw);

@@ -29,7 +29,11 @@
 #define MATERIAL_ID_GRASS       8
 
 #define DEPTH_BIAS 0.001
-#define PUNCTUAL_LIGHT_DEPTH_BIAS 0.0002
+// 旧的 NDC 空间固定偏置已废弃，保留用于方向光（正交投影不存在透视放大问题）
+// 点光源/聚光灯改用世界空间法线偏置，见 LightsData.glsl
+#define PUNCTUAL_NORMAL_OFFSET_BASE  0.02   // 世界空间法线偏置基值（米），与光源距离无关
+#define PUNCTUAL_SLOPE_BIAS_SCALE    1.5    // slope = tan(θ) 放大系数
+#define PUNCTUAL_SLOPE_BIAS_MAX      4.0    // tan(θ) 上界，防止 grazing 发散
 #define ESM_C 80.0
 
 // Cascade Shadow Map constants

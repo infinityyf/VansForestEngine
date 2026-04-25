@@ -999,6 +999,40 @@ void VansGraphics::VansHierachuWindow::DrawObjectDetail()
         }
     }
 
+    // ── Camera Component ──────────────────────────────────────────────
+    auto* camComp = obj->GetComponent<VansScriptCameraComponent>();
+    if (camComp && camComp->m_Camera != nullptr)
+    {
+        VansCamera* cam = camComp->m_Camera;
+        if (ImGui::CollapsingHeader("Camera Component", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            // FOV
+            float fov = cam->GetFov();
+            if (ImGui::SliderFloat("FOV", &fov, 10.0f, 170.0f, "%.1f deg"))
+                cam->SetFov(fov);
+
+            // Near / Far clip
+            float nearClip = cam->GetNearClip();
+            float farClip  = cam->GetFarClip();
+            if (ImGui::InputFloat("Near Clip", &nearClip, 0.01f, 0.1f, "%.3f"))
+                cam->SetNearClip((std::max)(0.001f, nearClip));
+            if (ImGui::InputFloat("Far Clip", &farClip, 1.0f, 10.0f, "%.1f"))
+                cam->SetFarClip((std::max)(nearClip + 0.1f, farClip));
+
+            // Read-only position / rotation from Transform
+            if (cam->HasTransform())
+            {
+                auto& t = VansGraphics::VansTransformStore::GetTransform(cam->GetTransformID());
+                ImGui::Separator();
+                ImGui::TextDisabled("Transform (read-only)");
+                ImGui::Text("Position  %.2f  %.2f  %.2f",
+                    t.m_Position.x, t.m_Position.y, t.m_Position.z);
+                ImGui::Text("Pitch/Yaw  %.1f deg  /  %.1f deg",
+                    t.m_Rotation.x, t.m_Rotation.y);
+            }
+        }
+    }
+
     ImGui::End();
 }
 

@@ -99,8 +99,15 @@ vec3 ScreenToFrustumUVW(vec2 pixelCoord, float dist,
                         float powerCoeff)
 {
     vec2 uv = (pixelCoord + 0.5) / screenSize;
-    float z = float(DepthToSlice(max(dist, near), near, far, float(VOXEL_GRID_Z), powerCoeff));
-    float w = clamp(z / float(VOXEL_GRID_Z), 0.0, 1.0);
+
+    // Use continuous W (fractional position in [0,1]) instead of the integer
+    // DepthToSlice result.  Discretising to slice indices prevents hardware
+    // trilinear filtering from working across the Z dimension and causes
+    // visible banding / sudden density jumps at every slice boundary.
+    float rangeRcp = 1.0 / max(far - near, 1e-6);
+    float t = clamp((clamp(dist, near, far) - near) * rangeRcp, 0.0, 1.0);
+    float w = clamp(pow(t, 1.0 / max(powerCoeff, 1e-4)), 0.0, 1.0);
+
     return vec3(uv, w);
 }
 
@@ -129,12 +136,19 @@ vec4 WorldToLastFrameUVW(vec3 worldPos, float near, float far, vec2 screenSize,
     vec2 uv = lastNDC.xy * 0.5 + 0.5;
     uv.y    = 1.0 - uv.y;
 
-    // Linearise clip depth → view-space distance for slice lookup
-    // lastNDC.z is in [0,1] for Vulkan; reconstruct view-space depth
-    // via inverse projection.  Z = near * far / (far - ndc.z * (far - near))
-    float linearDepth = near * far / (far - lastNDC.z * (far - near));
-    float z = float(DepthToSlice(max(linearDepth, near), near, far, float(VOXEL_GRID_Z), powerCoeff));
-    float w = clamp(z / float(VOXEL_GRID_Z), 0.0, 1.0);
+    // Linearise clip depth → view-space distance for slice lookup.
+    // Vulkan NDC z ∈ [0,1]: viewZ = near * far / (far - ndcZ * (far - near))
+    // Guard against near == far and degenerate NDC values to prevent NaN/Inf.
+    float ndcZ        = clamp(lastNDC.z, 0.0, 1.0);
+    float denom       = max(far - ndcZ * (far - near), 1e-6);
+    float linearDepth = (near * far) / denom;
+
+    // Continuous W — same power-curve inverse as ScreenToFrustumUVW so that
+    // both lookups use identical non-discretised coordinates and trilinear
+    // interpolation is applied consistently.
+    float rangeRcp = 1.0 / max(far - near, 1e-6);
+    float t = clamp((clamp(linearDepth, near, far) - near) * rangeRcp, 0.0, 1.0);
+    float w = clamp(pow(t, 1.0 / max(powerCoeff, 1e-4)), 0.0, 1.0);
 
     // Validity: UV in [0,1] and depth in fog range
     float valid = (all(greaterThanEqual(uv, vec2(0.0))) &&

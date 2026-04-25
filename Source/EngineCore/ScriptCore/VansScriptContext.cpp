@@ -447,6 +447,11 @@ void VansScriptContext::VansScriptSetup()
         std::string projectScriptDir = projectMgr.GetProjectRootPath();
         sys.attr("path").attr("insert")(0, projectScriptDir);
 
+        // 将 Scripts/ 子目录也加入 sys.path，使 Scripts/ 下的模块可直接
+        // 用裸名导入（import game_state），方便脚本之间互相引用。
+        std::string projectScriptsSubDir = projectScriptDir + "Scripts";
+        sys.attr("path").attr("insert")(0, projectScriptsSubDir);
+
         // ── 确保项目 venv 已创建并将 site-packages 加入 sys.path ─────
         // （解释器刚启动，此处的 Python subprocess 调用是合法的）
         SetupProjectVenv(projectScriptDir);
@@ -585,6 +590,17 @@ void VanPyScriptComponent::Instantiate()
             }
             if (!found)
                 path.attr("insert")(0, projectRoot);
+
+            // 同步确保 Scripts/ 子目录也在 sys.path 中
+            std::string scriptsSubDir = projectRoot + "Scripts";
+            bool foundScripts = false;
+            for (auto item : path)
+            {
+                if (item.cast<std::string>() == scriptsSubDir)
+                { foundScripts = true; break; }
+            }
+            if (!foundScripts)
+                path.attr("insert")(0, scriptsSubDir);
         }
 
         // Derive a unique Python module name from the relative path

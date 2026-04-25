@@ -1,5 +1,6 @@
 #include "VansScriptContext.h"
 #include "VansTransform.h"
+#include "../RenderCore/VansCamera.h"
 #include "../RenderCore/VansRenderNode.h"
 #include "../RenderCore/BRDFData/VansLight.h"
 #include "../AnimationCore/VansAnimationNode.h"
@@ -60,6 +61,12 @@ static inline VansScriptPointLightComponent* AsPointLightComp(void* p)
 static inline VansScriptSpotLightComponent* AsSpotLightComp(void* p)
 {
 	return dynamic_cast<VansScriptSpotLightComponent*>(
+		static_cast<VansScriptComponent*>(p));
+}
+
+static inline VansScriptCameraComponent* AsCameraComp(void* p)
+{
+	return dynamic_cast<VansScriptCameraComponent*>(
 		static_cast<VansScriptComponent*>(p));
 }
 
@@ -657,6 +664,50 @@ void VansInitEngineBridge()
 		x = lights[c->m_LightIndex].m_Direction.x;
 		y = lights[c->m_LightIndex].m_Direction.y;
 		z = lights[c->m_LightIndex].m_Direction.z;
+	};
+
+	// ── Camera Component ────────────────────────────────────────────────────
+	s_EngineBridge.objectGetCameraComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptCameraComponent>();
+	};
+
+	s_EngineBridge.cameraGetFov = [](void* comp) -> float
+	{
+		auto* c = AsCameraComp(comp);
+		return (c && c->m_Camera) ? c->m_Camera->GetFov() : 60.0f;
+	};
+
+	s_EngineBridge.cameraSetFov = [](void* comp, float fov)
+	{
+		auto* c = AsCameraComp(comp);
+		if (c && c->m_Camera) c->m_Camera->SetFov(fov);
+	};
+
+	s_EngineBridge.cameraGetNearClip = [](void* comp) -> float
+	{
+		auto* c = AsCameraComp(comp);
+		return (c && c->m_Camera) ? c->m_Camera->GetNearClip() : 0.1f;
+	};
+
+	s_EngineBridge.cameraSetNearClip = [](void* comp, float v)
+	{
+		auto* c = AsCameraComp(comp);
+		if (c && c->m_Camera) c->m_Camera->SetNearClip(v);
+	};
+
+	s_EngineBridge.cameraGetFarClip = [](void* comp) -> float
+	{
+		auto* c = AsCameraComp(comp);
+		return (c && c->m_Camera) ? c->m_Camera->GetFarClip() : 1000.0f;
+	};
+
+	s_EngineBridge.cameraSetFarClip = [](void* comp, float v)
+	{
+		auto* c = AsCameraComp(comp);
+		if (c && c->m_Camera) c->m_Camera->SetFarClip(v);
 	};
 }
 

@@ -1044,18 +1044,12 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
     }
     json sceneData = json::parse(jsonFile);
 
-    // Load camera parameters from scene JSON
-    if (m_Camera != nullptr)
-    {
-        if (sceneData.contains("camera"))
-        {
-            m_Camera->ApplyCameraSettings(sceneData["camera"]);
-        }
-        else
-        {
-            m_Camera->ResetToDefaults();
-        }
-    }
+    // ── 相机初始化（旧格式降级备用）────────────────────────────────────────────────
+    // 新格式：相机参数在 LoadSceneObjects 中通过 camera component 处理（含 SetTransformID）。
+    // 旧格式降级：若 objects 中没有挂 camera component 的对象，才读取顶层 "camera" 字段。
+    // 注意：此检查必须在 LoadSceneObjects 之后，m_SceneObjects 已填充后才有效。
+    // 因此旧格式降级逻辑移至 LoadSceneObjects 调用之后（见下方 "相机降级处理" 注释）。
+    // 此处预先读取 JSON，不做相机初始化。
 
     // Load materials (resources are already loaded from resource.json)
     if (sceneData.contains("material") && sceneData["material"].is_array())
@@ -1110,6 +1104,34 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
         }
 
         AutoCreateObjectsFromLegacy();
+    }
+
+    // ── 相机降级处理 ──────────────────────────────────────────────────────────────
+    // LoadSceneObjects 已执行，m_SceneObjects 已填充。
+    // 若没有任何 object 挂载 camera component（新格式），则降级读取顶层 "camera" 字段（旧格式）。
+    if (m_Camera != nullptr)
+    {
+        bool hasCameraComponent = false;
+        for (auto* obj : m_SceneObjects)
+        {
+            if (obj->GetComponent<VansScriptCameraComponent>() != nullptr)
+            {
+                hasCameraComponent = true;
+                break;
+            }
+        }
+
+        if (!hasCameraComponent)
+        {
+            if (sceneNode[0].contains("camera"))
+            {
+                auto& camJson = sceneNode[0]["camera"];
+                if (camJson.contains("fov"))        m_Camera->SetFov(camJson["fov"].get<float>());
+                if (camJson.contains("nearClip"))   m_Camera->SetNearClip(camJson["nearClip"].get<float>());
+                if (camJson.contains("farClip"))    m_Camera->SetFarClip(camJson["farClip"].get<float>());
+                VANS_LOG("[VansScene] 使用旧格式顶层 camera 字段初始化相机");
+            }
+        }
     }
 
     // Terrain
@@ -1988,10 +2010,40 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
     std::vector<ParentLink>    parentLinks;
     std::vector<PendingAnimComp> pendingAnimComps;
 
+    // ── 对象级 Transform 解析 helper ─────────────────────────────────────
+    // 新格式：transform 是 object JSON 的顶层字段，与 components 并列。
+    // LoadSingleRenderNode 仍支持从 renderJson["transform"] 读取（旧格式 rendernode 数组兼容），
+    // 但在 LoadSceneObjects 路径中，创建 render node 后统一用对象级 transform 覆盖。
+    auto parseObjTransform = [](const json& objJson,
+                                glm::vec3& outPos,
+                                glm::vec3& outRot,
+                                glm::vec3& outScl) -> bool
+    {
+        if (!objJson.contains("transform")) return false;
+        const auto& t = objJson["transform"];
+        if (t.contains("position") && t["position"].is_array())
+            outPos = glm::vec3(t["position"][0].get<float>(),
+                               t["position"][1].get<float>(),
+                               t["position"][2].get<float>());
+        if (t.contains("rotation") && t["rotation"].is_array())
+            outRot = glm::vec3(t["rotation"][0].get<float>(),
+                               t["rotation"][1].get<float>(),
+                               t["rotation"][2].get<float>());
+        if (t.contains("scale") && t["scale"].is_array())
+            outScl = glm::vec3(t["scale"][0].get<float>(),
+                               t["scale"][1].get<float>(),
+                               t["scale"][2].get<float>());
+        return true;
+    };
+
     for (const auto& objJson : objectsArray)
     {
         VansScriptObject* obj = new VansScriptObject();
         obj->m_ObjectName = objJson.value("name", "");
+
+        // ── 读取对象级 transform（新格式：与 components 并列）────────────
+        glm::vec3 objPos(0.0f), objRot(0.0f), objScl(1.0f);
+        bool hasObjTransform = parseObjTransform(objJson, objPos, objRot, objScl);
 
         auto& components = objJson["components"];
 
@@ -1999,7 +2051,23 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         if (components.contains("render"))
         {
             const auto& renderJson = components["render"];
-            VansRenderNode* rn = LoadSingleRenderNode(device, renderJson);
+
+            // 新格式：transform 在 objJson 顶层，LoadSingleRenderNode 的 renderJson 中没有 transform。
+            // 为兼容 multi-mesh 路径（ExpandMultiMeshToRenderNodes 内部读取 transform），
+            // 若存在对象级 transform 则注入到 renderJson 的副本中传入。
+            // 单节点路径：LoadSingleRenderNode 返回后再覆盖 transform，更简洁。
+            VansRenderNode* rn = nullptr;
+            if (hasObjTransform)
+            {
+                // 为 multi-mesh 展开传递对象级 transform：构造一个带 transform 的副本
+                json renderJsonWithTransform = renderJson;
+                renderJsonWithTransform["transform"] = objJson["transform"];
+                rn = LoadSingleRenderNode(device, renderJsonWithTransform);
+            }
+            else
+            {
+                rn = LoadSingleRenderNode(device, renderJson);
+            }
 
             // 多网格对象（multi-mesh）经由 ExpandMultiMeshToRenderNodes 展开，
             // LoadSingleRenderNode 会返回 nullptr 而不创建单个节点。
@@ -2017,6 +2085,10 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
 
             if (rn)
             {
+                // 新格式：用对象级 transform 覆盖 render node transform（单节点路径）
+                if (hasObjTransform)
+                    rn->SetTransformData(objPos, objRot, objScl);
+
                 auto* rc = new VansScriptRenderComponent();
                 rc->m_ComponentName = "render";
                 rc->m_RenderNode = rn;
@@ -2093,40 +2165,43 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             obj->AddComponent(vc);
         }
 
-        // ── Light components (方向光 / 点光源 / 聚光灯) ────────────────────
+        // ── Non-render TransformID 分配（灯光 / 相机等无 render 组件的对象）──
         // 无 render 组件时自动分配 TransformID 并从 JSON "transform" 初始化。
         // SyncLightTransforms 每帧将 Transform 同步到灯光结构体。
-        {
-            bool lightTransformAllocated = false;
+        bool lightTransformAllocated = false;
 
-            // 通用 lambda：若对象当前无 render 组件，为灯光分配 TransformID
-            auto ensureLightTransform = [&]()
+        // 通用 lambda：若对象当前无 render 组件，为其分配独立的 TransformID。
+        // 灯光和相机组件均可调用，确保不与其他对象共享 slot 0。
+        auto ensureLightTransform = [&]()
+        {
+            if (!lightTransformAllocated &&
+                obj->GetComponent<VansScriptRenderComponent>() == nullptr)
             {
-                if (!lightTransformAllocated &&
-                    obj->GetComponent<VansScriptRenderComponent>() == nullptr)
+                obj->m_TransformID = VansTransformStore::AllocateTransform();
+                if (objJson.contains("transform"))
                 {
-                    obj->m_TransformID = VansTransformStore::AllocateTransform();
-                    if (objJson.contains("transform"))
+                    const auto& tJson = objJson["transform"];
+                    auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                    if (tJson.contains("position") && tJson["position"].is_array())
                     {
-                        const auto& tJson = objJson["transform"];
-                        auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
-                        if (tJson.contains("position") && tJson["position"].is_array())
-                        {
-                            t.m_Position = glm::vec3(tJson["position"][0].get<float>(),
-                                                     tJson["position"][1].get<float>(),
-                                                     tJson["position"][2].get<float>());
-                        }
-                        if (tJson.contains("rotation") && tJson["rotation"].is_array())
-                        {
-                            t.m_Rotation = glm::vec3(tJson["rotation"][0].get<float>(),
-                                                     tJson["rotation"][1].get<float>(),
-                                                     tJson["rotation"][2].get<float>());
-                        }
-                        t.m_Scale = glm::vec3(1.0f);
+                        t.m_Position = glm::vec3(tJson["position"][0].get<float>(),
+                                                 tJson["position"][1].get<float>(),
+                                                 tJson["position"][2].get<float>());
                     }
-                    lightTransformAllocated = true;
+                    if (tJson.contains("rotation") && tJson["rotation"].is_array())
+                    {
+                        t.m_Rotation = glm::vec3(tJson["rotation"][0].get<float>(),
+                                                 tJson["rotation"][1].get<float>(),
+                                                 tJson["rotation"][2].get<float>());
+                    }
+                    t.m_Scale = glm::vec3(1.0f);
                 }
-            };
+                lightTransformAllocated = true;
+            }
+        };
+
+        // ── Light components (方向光 / 点光源 / 聚光灯) ────────────────────
+        {
 
             // ── 方向光 ────────────────────────────────────────────────────
             if (components.contains("directional_light"))
@@ -2221,6 +2296,41 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 slComp->m_LightIndex   = idx;
                 obj->AddComponent(slComp);
                 VANS_LOG("[LoadSceneObjects] 创建聚光灯组件 '" << obj->m_ObjectName << "' idx=" << idx);
+            }
+        }
+
+        // ── Camera component ──────────────────────────────────────────────
+        if (components.contains("camera"))
+        {
+            // 若对象没有 render 组件（纯相机对象），需为其分配独立的 TransformID，
+            // 否则 obj->m_TransformID 保持默认值 0，会与第一个 render 对象共享 slot。
+            ensureLightTransform();
+
+            if (m_Camera == nullptr)
+            {
+                VANS_LOG_WARN("[LoadSceneObjects] 找到 camera component 但 m_Camera 为 nullptr，跳过");
+            }
+            else
+            {
+                // 应用 fov / nearClip / farClip 等参数
+                const auto& camJson = components["camera"];
+                if (camJson.contains("fov"))
+                    m_Camera->SetFov(camJson["fov"].get<float>());
+                if (camJson.contains("nearClip"))
+                    m_Camera->SetNearClip(camJson["nearClip"].get<float>());
+                if (camJson.contains("farClip"))
+                    m_Camera->SetFarClip(camJson["farClip"].get<float>());
+
+                // 绑定 Transform：input 和渲染同步均通过此 ID 驱动
+                m_Camera->SetTransformID(obj->m_TransformID);
+
+                // 注册组件
+                auto* cameraComp = new VansScriptCameraComponent();
+                cameraComp->m_Camera = m_Camera;
+                obj->AddComponent(cameraComp);
+
+                VANS_LOG("[LoadSceneObjects] Camera component 已挂载到 object: "
+                    << obj->m_ObjectName << "，TransformID=" << obj->m_TransformID);
             }
         }
 

@@ -219,14 +219,30 @@ void main()
     //     }
     // }
 
+    // L1 windowing：标准 Hann/Lanczos 系数 2/3（优于随意的 0.5）
+    // 作用：轻微衰减 L1 方向分量，抑制强方向光导致的 SH ringing 亮斑
     for(int i = 1; i < 4; i++) 
     {
-        rResult[i] *= 0.5;
-        gResult[i] *= 0.5;
-        bResult[i] *= 0.5;
+        rResult[i] *= (2.0 / 3.0);
+        gResult[i] *= (2.0 / 3.0);
+        bResult[i] *= (2.0 / 3.0);
     }
 
-    imageStore(resultRImage, probeIndex, rResult);
-    imageStore(resultGImage, probeIndex, gResult);
-    imageStore(resultBImage, probeIndex, bResult);
+    // 防止探针坐入几何体时 SH L0 系数过大，通过三线性插值泄漏为圆形光晕亮斑
+    const float MAX_L0 = 8.0;
+    rResult[0] = clamp(rResult[0], -MAX_L0, MAX_L0);
+    gResult[0] = clamp(gResult[0], -MAX_L0, MAX_L0);
+    bResult[0] = clamp(bResult[0], -MAX_L0, MAX_L0);
+
+    // EMA 时序平滑：消除方向分片轮转导致的帧间 SH 积分跳变
+    // alpha=0.08：约 8 倍帧周期收敛，平衡响应速度与平滑度
+    vec4 rPrev = imageLoad(resultRImage, probeIndex);
+    vec4 gPrev = imageLoad(resultGImage, probeIndex);
+    vec4 bPrev = imageLoad(resultBImage, probeIndex);
+    bool isFirst = (dot(rPrev, rPrev) + dot(gPrev, gPrev) + dot(bPrev, bPrev)) < 1e-6;
+    float alpha  = isFirst ? 1.0 : 0.08;
+
+    imageStore(resultRImage, probeIndex, mix(rPrev, rResult, alpha));
+    imageStore(resultGImage, probeIndex, mix(gPrev, gResult, alpha));
+    imageStore(resultBImage, probeIndex, mix(bPrev, bResult, alpha));
 }

@@ -1,10 +1,12 @@
 ﻿#pragma once
 #include "../ScriptCore/VansCommonUtils.h"
+#include "../ScriptCore/VansTransform.h"
 #include "VansGraphicsDevice.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include <nlohmann/json.hpp>
 #include <vector>
+#include <climits>
 using namespace VansGraphics;
 using json = nlohmann::json;
 namespace VansGraphics
@@ -45,7 +47,11 @@ namespace VansGraphics
 
         uint32_t m_RenderFrameIndex;
 
-        bool  m_IsRightMouseDown;
+        bool m_IsRightMouseDown;
+
+        // ── Transform 绑定 ──────────────────────────────────────────────────
+        // UINT32_MAX 表示未绑定 Transform（降级路径，直接修改 m_Position/m_Rotation）
+        uint32_t m_TransformID = UINT32_MAX;
 
     public:
 
@@ -77,6 +83,25 @@ namespace VansGraphics
         }
 
         void SetAspectRatio(float aspect) { m_AspectRatio = aspect; }
+
+        // ── 相机参数 Getter / Setter ─────────────────────────────────────────
+        float GetFov()      const { return m_Fov; }
+        float GetNearClip() const { return m_NearClip; }
+        float GetFarClip()  const { return m_FarClip; }
+
+        void SetFov(float fov)       { m_Fov      = fov; }
+        void SetNearClip(float val)  { m_NearClip = val; }
+        void SetFarClip(float val)   { m_FarClip  = val; }
+
+        // ── Transform 绑定与同步 ─────────────────────────────────────────────
+        // 绑定 camera object 的 transformID，之后 input 与渲染均通过 Transform 驱动
+        void     SetTransformID(uint32_t id) { m_TransformID = id; }
+        uint32_t GetTransformID()      const { return m_TransformID; }
+        bool     HasTransform()        const { return m_TransformID != UINT32_MAX; }
+
+        // 从绑定的 Transform 读取 position 和 rotation(pitch/yaw) 写入相机成员。
+        // 每帧在 Rendering() 最前端调用，确保视图矩阵使用最新 transform 数据。
+        void SyncFromTransform();
 
         glm::mat4 GetViewMatrix();
 

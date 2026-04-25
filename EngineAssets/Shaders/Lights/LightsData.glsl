@@ -129,12 +129,17 @@ float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIn
     return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
 }
 
-float ComputePunctualShadowBias(vec3 normalWS, vec3 lightDirectionWS)
+// 计算世界空间法线偏置量（米）。
+// 使用 tan(θ) 斜率模型而非旧的 (1-NdL)² 近似：
+//   tan(θ) 在 grazing 时正确趋向无穷（被 max 限制），在正向光照时为 0。
+// 调用方在投影前将 position_world += normalWS * normalOffset 然后投影，
+// 避免 NDC 空间固定偏置因透视压缩在中等距离（2–5m）产生数十厘米的 peter-panning。
+float ComputePunctualNormalOffset(vec3 normalWS, vec3 lightDirectionWS)
 {
     float ndl = clamp(dot(normalize(normalWS), normalize(lightDirectionWS)), 0.0, 1.0);
-    float grazingFactor = 1.0 - ndl;
-    grazingFactor *= grazingFactor;
-    return PUNCTUAL_LIGHT_DEPTH_BIAS * (0.1 + grazingFactor * 0.9);
+    // tan(θ) = sqrt(1 - NdL²) / NdL，限制上界防止 grazing 发散
+    float slope = min(sqrt(max(0.0, 1.0 - ndl * ndl)) / max(ndl, 0.001), PUNCTUAL_SLOPE_BIAS_MAX);
+    return PUNCTUAL_NORMAL_OFFSET_BASE * (1.0 + slope * PUNCTUAL_SLOPE_BIAS_SCALE);
 }
 
 float ComputePunctualSoftShadowRadius(float distanceToLight, float lightRadius)
@@ -197,12 +202,15 @@ float SamplePointShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDir
                                (shadowIndex * 6 + shadowDirectionIndex) / uShadowAtlasCount);
     shadowOffset *= int(uShadowAtlasSize);
 
+    // 在世界空间沿法线偏置接收点，再投影；避免 NDC 固定 bias 的透视放大问题
+    float normalOffset = ComputePunctualNormalOffset(normalWS, lightDirectionWS);
+    vec3 biasedPos = position_world + normalWS * normalOffset;
+
     mat4x4 shadowMatrix = uPointLights[shadowIndex].shadowMatrix[shadowDirectionIndex];
-    vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
+    vec4 clipCoord = shadowMatrix * vec4(biasedPos, 1.0);
     clipCoord /= clipCoord.w;
 
-    float bias = ComputePunctualShadowBias(normalWS, lightDirectionWS);
-    float receiverDepth = clipCoord.z - bias;
+    float receiverDepth = clipCoord.z;
     vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
 
     float filterRadiusTexels = ComputePunctualSoftShadowRadius(length(toLight), uPointLights[shadowIndex].radius);
@@ -216,12 +224,15 @@ float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDire
                                (pointLightCount * 6 + shadowIndex) / uShadowAtlasCount);
     shadowOffset *= int(uShadowAtlasSize);
 
+    // 在世界空间沿法线偏置接收点，再投影；避免 NDC 固定 bias 的透视放大问题
+    float normalOffset = ComputePunctualNormalOffset(normalWS, lightDirectionWS);
+    vec3 biasedPos = position_world + normalWS * normalOffset;
+
     mat4x4 shadowMatrix = uSpotLights[shadowIndex].shadowMatrix;
-    vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
+    vec4 clipCoord = shadowMatrix * vec4(biasedPos, 1.0);
     clipCoord /= clipCoord.w;
 
-    float bias = ComputePunctualShadowBias(normalWS, lightDirectionWS);
-    float receiverDepth = clipCoord.z - bias;
+    float receiverDepth = clipCoord.z;
     vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
 
     float distanceToLight = length(uSpotLights[shadowIndex].position.xyz - position_world);

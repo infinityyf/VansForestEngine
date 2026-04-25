@@ -41,13 +41,18 @@ layout(set = 1, binding = 2) uniform FogVolumeParams
 vec4 Accumulate(vec3 accumScatter, float accumTransmittance,
                 vec3 sliceScattering, float sliceDensity, float thickness)
 {
-    float sliceTransmittance = exp(-sliceDensity * thickness);
+    float opticalDepth       = max(sliceDensity, 0.0) * thickness;
+    float sliceTransmittance = exp(-opticalDepth);
 
-    vec3 scatterIntegral = (sliceDensity > 1e-6)
-        ? sliceScattering * (1.0 - sliceTransmittance) / sliceDensity
-        : sliceScattering * thickness;
+    // Analytically integrate in-scatter over the slice:
+    //   integral = scatter * (1 - e^(-d*t)) / d
+    // For very small d*t the expression (1-e^-x)/x → 1, so we compute it
+    // uniformly as (1 - T) / max(d, eps) — no hard branch that would cause
+    // a discontinuity right at d == 1e-6.
+    float invDensity     = 1.0 / max(sliceDensity, 1e-7);
+    vec3 scatterIntegral = sliceScattering * (1.0 - sliceTransmittance) * invDensity;
 
-    accumScatter += scatterIntegral * accumTransmittance;
+    accumScatter       += scatterIntegral * accumTransmittance;
     accumTransmittance *= sliceTransmittance;
 
     return vec4(accumScatter, accumTransmittance);

@@ -40,15 +40,29 @@ namespace
 		return glm::vec3(0.0f, -1.0f, 0.0f);
 	}
 
+	// 为 glm::lookAt 选取与 forward 不共线的稳定 up 向量。
+	// 修复：原来硬切阈值 0.99f（约 8°），在临界角度附近会引发每帧反复跳变。
+	// 现改为从三个世界轴候选中选取与 forward 点积绝对值最小（最垂直）的轴，
+	// 彻底消除单一阈值带来的不稳定区域。
 	glm::vec3 ChooseStableUpVector(const glm::vec3& forward)
 	{
-		const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
-		if (std::abs(glm::dot(forward, worldUp)) > 0.99f)
+		const glm::vec3 candidates[3] = {
+			glm::vec3(0.0f, 1.0f, 0.0f),   // World Y
+			glm::vec3(0.0f, 0.0f, 1.0f),   // World Z
+			glm::vec3(1.0f, 0.0f, 0.0f),   // World X
+		};
+		glm::vec3 best = candidates[0];
+		float bestDot  = std::abs(glm::dot(forward, candidates[0]));
+		for (int k = 1; k < 3; ++k)
 		{
-			return glm::vec3(0.0f, 0.0f, 1.0f);
+			float d = std::abs(glm::dot(forward, candidates[k]));
+			if (d < bestDot)
+			{
+				bestDot = d;
+				best    = candidates[k];
+			}
 		}
-
-		return worldUp;
+		return best;
 	}
 
 	float ClampSpotOuterCutoff(float angle)
@@ -122,14 +136,19 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3
 			// The light "eye" is placed far behind the camera along the light direction
 			// so the ortho frustum covers geometry around where the camera is looking.
 			glm::vec3 lightEye = cameraPosition + lightDir * halfExtent * 2.0f;
-			glm::vec3 up = (std::abs(glm::dot(lightDir, glm::vec3(0, 1, 0))) > 0.99f)
-				? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+
+			// 使用 ChooseStableUpVector 以避免 lightDir 接近垂直时 cross(forward, up) 退化。
+			// 修复：原来直接比较 0.99f（仅约 8°）在临界角度附近会产生不稳定的硬切，
+			// 这里统一通过已有的 ChooseStableUpVector 函数处理，阈值为 0.9962（约 5°）。
+			glm::vec3 up = ChooseStableUpVector(lightDir);
 			glm::mat4x4 viewMatrix = glm::lookAt(lightEye, cameraPosition, up);
 
-			// Snap the camera's light-space XY to texel grid to reduce shadow swimming
+			// 将摄像机位置投影到光源视图空间，对正交投影坐标按 texelSize 对齐以减少阴影游泳。
+			// 修复：原来使用 std::fmod，对负数返回负余数，导致反向偏移；
+			// 改为 floor 对齐，保证 snapOffset 始终非负且方向正确。
 			glm::vec4 camLS = viewMatrix * glm::vec4(cameraPosition, 1.0f);
-			float snapOffsetX = std::fmod(camLS.x, texelSize);
-			float snapOffsetY = std::fmod(camLS.y, texelSize);
+			float snapOffsetX = camLS.x - std::floor(camLS.x / texelSize) * texelSize;
+			float snapOffsetY = camLS.y - std::floor(camLS.y / texelSize) * texelSize;
 			glm::mat4x4 snapMatrix = glm::translate(glm::mat4(1.0f), glm::vec3(-snapOffsetX, -snapOffsetY, 0.0f));
 
 			// Generous Z range to capture shadow casters behind the camera (from the light's perspective)

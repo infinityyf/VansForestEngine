@@ -440,8 +440,8 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
     else
     {
         // Runtime 模式：解冻时间，启动物理，进入 Playing 状态
-        // TODO(debug): Play 模式下暂时保留相机控制，正式版需改回 UnregisterCameraInputListeners()
-        RegisterCameraInputListeners();
+        // Play 模式下相机由 Python 脚本接管，注销 Editor 相机控制监听器
+        UnregisterCameraInputListeners();
         VansTimer::SetTimePaused(false);
         auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
         if (!physics.IsSimulationRunning())

@@ -297,7 +297,11 @@ void main()
         // inDirectDiffuse = max(vec3(0, 0, 0), inDirectDiffuse);
 
         //计算当前点的间接漫反射
-        vec3 inDirectDiffuse = CalculateSHDiffuse(hitPos.xyz + hitNrm.xyz * originStride * 0.5, hitNrm.xyz,groupOrigin,vec3(originSize));
+        // clamp 防止正反馈循环：如果附近探针因其他 bug 偏亮，间接光会持续放大亮斑
+        const float MAX_INDIRECT = 2.0;
+        vec3 inDirectDiffuse = min(
+            CalculateSHDiffuse(hitPos.xyz + hitNrm.xyz * originStride * 0.5, hitNrm.xyz, groupOrigin, vec3(originSize)),
+            vec3(MAX_INDIRECT));
         directLightBuffer.directLight[resultIndex] = f16vec4(directDiffuse + inDirectDiffuse, 1.0);
     }
 }

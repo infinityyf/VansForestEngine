@@ -21,7 +21,7 @@
 namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
-namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; }
+namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; }
 namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; }
 
 class VansScriptContext
@@ -253,7 +253,17 @@ public:
 	// 该灯光在 m_LightManager::m_SpotLights 中的索引
 	int m_LightIndex = -1;
 };
+// ── Camera Component ────────────────────────────────────────────────────────────────────
+// 持有对 VansCamera 的非拥有指针；VansCamera 由 VansScene 生命周期管理。
+// Transform 的 position/rotation(pitch/yaw) 每帧由 VansCamera::SyncFromTransform 同步。
+class VansScriptCameraComponent : public VansScriptComponent
+{
+public:
+	VansScriptCameraComponent() { m_ComponentName = "camera"; }
 
+	// 非拥有指针，生命周期由 VansScene::m_Camera 管理
+	VansGraphics::VansCamera* m_Camera = nullptr;
+};
 // ── Python Script Component ─────────────────────────────────────────────────
 // Holds a reference to a Python script instance bound to this object.
 class VanPyScriptComponent : public VansScriptComponent
