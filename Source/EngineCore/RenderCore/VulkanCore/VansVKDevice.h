@@ -153,6 +153,7 @@ namespace VansGraphics
 		{
 			m_GIDataDescSetsUpdated = false;
 			m_HZBDescSetsUpdated = false;
+			m_HIZSeedDescSetsUpdated = false;
 			m_SSRDescSetsUpdated = false;
 			m_VolumetricFogDescSetsUpdated = false;
 			m_FogLightInjectionDescSetsUpdated = false;
@@ -178,6 +179,7 @@ namespace VansGraphics
 
 		bool m_GIDataDescSetsUpdated = false;
 		bool m_HZBDescSetsUpdated = false;
+		bool m_HIZSeedDescSetsUpdated = false;
 		bool m_SSRDescSetsUpdated = false;
 		bool m_VolumetricFogDescSetsUpdated = false;
 		bool m_FogLightInjectionDescSetsUpdated = false;
@@ -194,6 +196,8 @@ namespace VansGraphics
 	private:
 
 		void UpdateGIDataDescriptorSets(VansRenderPassManager* renderPassManager);
+
+		void UpdateHIZSeedDescriptorSet(VansRenderPassManager* renderPassManager);
 
 		void UpdateHZBDescriptorSets(VansRenderPassManager* renderPassManager);
 

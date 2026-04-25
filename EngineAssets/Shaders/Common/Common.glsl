@@ -444,18 +444,45 @@ struct HiZTraceResult {
 };
 
 // Project world position to screen space: returns (uv.x, uv.y, linearDepth)
-vec3 HiZ_ProjectToScreen(mat4 viewMat, mat4 projMat, vec3 ws)
+//   linearDepth = -viewPos.z (正米)，与 HIZ 存储格式一致
+//   uv 已应用引擎使用的负高度 viewport Y 翻转（NDC Y=+1 → UV.y=0）
+//   注意：uv 允许在 [0,1] 外，表示投影有效但在屏幕外；只有 clip.w <= 0 才非法。
+bool HiZ_ProjectToScreenChecked(mat4 viewMat, mat4 projMat, vec3 ws, out vec3 screenPos)
 {
     vec4 viewPos = viewMat * vec4(ws, 1.0);
     float linearDepth = -viewPos.z;
     vec4 clip = projMat * viewPos;
-    if (clip.w <= 0.0) return vec3(-1.0);
+    if (clip.w <= 1e-6 || linearDepth <= 1e-6)
+    {
+        screenPos = vec3(-1.0);
+        return false;
+    }
     vec2 ndc = clip.xy / clip.w;
     vec2 uv = ndc * 0.5 + 0.5;
     uv.y = 1.0 - uv.y;
-    return vec3(uv, linearDepth);
+    screenPos = vec3(uv, linearDepth);
+    return true;
 }
 
+vec3 HiZ_ProjectToScreen(mat4 viewMat, mat4 projMat, vec3 ws)
+{
+    vec3 screenPos;
+    if (!HiZ_ProjectToScreenChecked(viewMat, projMat, ws, screenPos))
+        return vec3(-1.0);
+    return screenPos;
+}
+
+// ============================================================================
+// TraceHiZ_UV — 屏幕空间 HiZ 加速光线追踪（透视正确 per-cell traversal）
+//
+// 核心算法：
+//   1) ray 在屏幕 UV 中是一条直线；沿 UV cell 边界推进。
+//   2) view-space linear depth 不能在 UV 上线性插值，必须插值 1/z 再取倒数。
+//   3) HIZ 是 min linear depth，cell 内若 ray 的 zFar < sceneMinZ，可安全跨过并升 mip。
+//   4) 若可能相交，mip > 0 不推进只下降 mip；mip == 0 解 1/z 方程得到精确 hitUV。
+//
+// 必须 POINT SAMPLE：HZB sampler 默认是 LINEAR，textureLod 会破坏 min-depth 语义。
+// ============================================================================
 HiZTraceResult TraceHiZ_UV(
     sampler2D hiz,
     mat4 lastView,
@@ -463,76 +490,143 @@ HiZTraceResult TraceHiZ_UV(
     vec3 startWS,
     vec3 dirWS,
     float maxDistWorld,
-    float traceStride,
-    float thicknessThreshold
+    float traceStride,           // 保留接口但当前未使用
+    float thicknessThreshold     // 米，命中点前后允许的深度误差
 ) {
     dirWS = normalize(dirWS);
 
-    // Project start and end of ray to screen space
-    vec3 startSS = HiZ_ProjectToScreen(lastView, lastProj, startWS);
-    vec3 endSS   = HiZ_ProjectToScreen(lastView, lastProj, startWS + dirWS * maxDistWorld);
+    // 若 ray 朝相机方向走，固定 maxDistWorld 端点可能越过相机后方，导致投影失败。
+    // 这里把世界空间距离裁到近相机前方一点，保证 endSS 可投影；朝远处走则由调用方传入
+    // 尽可能大的 maxDistWorld（建议 FarPlane）来覆盖屏幕边缘。
+    vec4 startVS4 = lastView * vec4(startWS, 1.0);
+    vec3 dirVS = (lastView * vec4(dirWS, 0.0)).xyz;
+    float traceDistWorld = maxDistWorld;
+    if (dirVS.z > 1e-6)
+    {
+        float distToNear = (-0.01 - startVS4.z) / dirVS.z;
+        traceDistWorld = min(traceDistWorld, max(distToNear, 0.0));
+    }
 
-    if (startSS.x < 0.0 || endSS.x < 0.0)
+    vec3 startSS;
+    vec3 endSS;
+    if (!HiZ_ProjectToScreenChecked(lastView, lastProj, startWS, startSS))
+        return HiZTraceResult(false, vec2(0.0), 0.0);
+    if (traceDistWorld <= 1e-5)
+        return HiZTraceResult(false, vec2(0.0), 0.0);
+    if (!HiZ_ProjectToScreenChecked(lastView, lastProj, startWS + dirWS * traceDistWorld, endSS))
         return HiZTraceResult(false, vec2(0.0), 0.0);
 
-    vec3 raySS = endSS - startSS;
+    vec2 uv0 = startSS.xy;
+    vec2 uv1 = endSS.xy;
+    vec2 rayUV = uv1 - uv0;
+    if (length(rayUV) < 1e-7)
+        return HiZTraceResult(false, vec2(0.0), 0.0); // 几乎垂直于屏幕，退化
 
-    ivec2 baseSize = textureSize(hiz, 0);
-    vec2 rayPixels = raySS.xy * vec2(baseSize);
-    float maxPixelExtent = max(abs(rayPixels.x), abs(rayPixels.y));
+    // 计算从 uv0 沿 rayUV 到屏幕边缘的参数。trace 不应该因为 uv1 在屏幕外而提前失败，
+    // 而应一直走到屏幕边缘、世界最大距离或最大迭代次数。
+    float tScreenExit = 1.0;
+    if (rayUV.x > 1e-8)
+        tScreenExit = min(tScreenExit, (1.0 - uv0.x) / rayUV.x);
+    else if (rayUV.x < -1e-8)
+        tScreenExit = min(tScreenExit, (0.0 - uv0.x) / rayUV.x);
 
+    if (rayUV.y > 1e-8)
+        tScreenExit = min(tScreenExit, (1.0 - uv0.y) / rayUV.y);
+    else if (rayUV.y < -1e-8)
+        tScreenExit = min(tScreenExit, (0.0 - uv0.y) / rayUV.y);
+
+    float tEnd = clamp(tScreenExit, 0.0, 1.0);
+
+    ivec2 size0 = textureSize(hiz, 0);
+    // 与 CPU 端 HIZMipCount = 1+floor(log2(min(w,h))) 对齐，最高 mip 索引
+    int maxMip = int(floor(log2(float(min(size0.x, size0.y)))));
+
+    float maxPixelExtent = max(abs(rayUV.x) * float(size0.x), abs(rayUV.y) * float(size0.y));
     if (maxPixelExtent < 1.0)
         return HiZTraceResult(false, vec2(0.0), 0.0);
 
-    // Normalize so each step ≈ 1 pixel at mip 0
-    vec3 stepSS = raySS / maxPixelExtent;
+    float invZ0 = 1.0 / max(startSS.z, 1e-6);
+    float invZ1 = 1.0 / max(endSS.z, 1e-6);
+    float invZDelta = invZ1 - invZ0;
 
-    // Start a few pixels ahead to avoid self-intersection
-    vec3 pos = startSS + stepSS * max(2.0, traceStride);
+    // 起始 t：跳过 1~traceStride 个 mip0 像素以避免自相交。
+    float t = max(traceStride, 1.0) / maxPixelExtent;
+    float tEpsilon = 0.25 / maxPixelExtent;
 
-    int mipLevel = 1;
-    int maxMip = int(floor(log2(float(max(baseSize.x, baseSize.y)))));
-    int maxSteps = int(min(maxPixelExtent, 512.0));
+    int mipLevel = 0;
+    const int kMaxIterations = 512;
 
-    for (int i = 0; i < maxSteps; i++)
+    for (int iter = 0; iter < kMaxIterations; iter++)
     {
-        // Bounds check
-        if (pos.x <= 0.0 || pos.x >= 1.0 || pos.y <= 0.0 || pos.y >= 1.0)
+        if (t >= tEnd)
             return HiZTraceResult(false, vec2(0.0), 0.0);
 
-        // Sample HiZ depth at current mip
-        float sceneDepth = textureLod(hiz, pos.xy, float(mipLevel)).r;
-        float depthDiff = pos.z - sceneDepth;
-        bool isBehind = depthDiff > 0.0;
+        vec2 uv = uv0 + rayUV * t;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+            return HiZTraceResult(false, vec2(0.0), 0.0);
 
-        if (isBehind)
+        ivec2 mipSize  = textureSize(hiz, mipLevel);
+        vec2  cellSize = 1.0 / vec2(mipSize);
+        ivec2 cellIdx  = clamp(ivec2(uv * vec2(mipSize)), ivec2(0), mipSize - 1);
+
+        // POINT SAMPLE — 必须用 texelFetch，绕过 LINEAR sampler
+        float sceneMinZ = texelFetch(hiz, cellIdx, mipLevel).r;
+
+        // 计算当前 mip cell 的退出边界对应的 ray 参数 tExit。
+        vec2 cellMin = vec2(cellIdx) * cellSize;
+        vec2 cellMax = cellMin + cellSize;
+        vec2 boundary = vec2(rayUV.x >= 0.0 ? cellMax.x : cellMin.x,
+                             rayUV.y >= 0.0 ? cellMax.y : cellMin.y);
+
+        float tx = (abs(rayUV.x) > 1e-8) ? (boundary.x - uv.x) / rayUV.x : 1e9;
+        float ty = (abs(rayUV.y) > 1e-8) ? (boundary.y - uv.y) / rayUV.y : 1e9;
+        float dt = max(0.0, min(tx, ty));
+        float tExit = min(t + dt, tEnd);
+
+        // 透视正确线性深度：在屏幕空间应线性插值 1/z，而不是 z。
+        float zEnter = 1.0 / max(invZ0 + invZDelta * t, 1e-8);
+        float zExit  = 1.0 / max(invZ0 + invZDelta * tExit, 1e-8);
+        float zNear = min(zEnter, zExit);
+        float zFar  = max(zEnter, zExit);
+
+        // min-depth HiZ：cell 内最近几何体在 sceneMinZ 处
+        // 若 ray 整段都比该值更近（zFar < sceneMinZ）→ 不可能撞到任何几何体 → 安全跨过
+        if (sceneMinZ >= 1e4 || zFar < sceneMinZ)
         {
-            if (mipLevel == 0)
-            {
-                // At finest mip: thickness test to confirm real hit
-                if (abs(depthDiff) < thicknessThreshold)
-                {
-                    return HiZTraceResult(true, pos.xy, sceneDepth);
-                }
-                else
-                {
-                    // Passed through thin geometry — skip forward
-                    pos += stepSS * 4.0;
-                    mipLevel = min(mipLevel + 1, maxMip);
-                }
-            }
-            else
-            {
-                // Coarse hit: step back and descend to finer mip for refinement
-                pos -= stepSS * float(1 << mipLevel);
-                mipLevel--;
-            }
+            t = tExit + tEpsilon;
+            mipLevel = min(mipLevel + 1, maxMip);
         }
         else
         {
-            // In front of surface: advance and climb to coarser mip
-            pos += stepSS * float(1 << mipLevel);
-            mipLevel = min(mipLevel + 1, maxMip);
+            // 可能命中：cell 内 ray 深度区间跨过 sceneMinZ。
+            if (mipLevel <= 0)
+            {
+                // 已在最细 mip：解 1/z 方程得到 ray 与当前像素线性深度的交点。
+                if (zNear <= sceneMinZ + thicknessThreshold && sceneMinZ <= zFar + thicknessThreshold)
+                {
+                    float tHit = t;
+                    if (abs(invZDelta) > 1e-8)
+                    {
+                        tHit = (1.0 / max(sceneMinZ, 1e-6) - invZ0) / invZDelta;
+                    }
+
+                    if (tHit >= t - tEpsilon && tHit <= tExit + tEpsilon)
+                    {
+                        vec2 hitUV = uv0 + rayUV * clamp(tHit, 0.0, 1.0);
+                        if (hitUV.x >= 0.0 && hitUV.x <= 1.0 && hitUV.y >= 0.0 && hitUV.y <= 1.0)
+                            return HiZTraceResult(true, hitUV, sceneMinZ);
+                    }
+                }
+
+                // 当前像素内没有有效前向交点，跳过该 cell。
+                t = tExit + tEpsilon;
+                mipLevel = min(mipLevel + 1, maxMip);
+            }
+            else
+            {
+                // mip > 0：命中 coarse cell，不推进，只下降一级 mip 细化。
+                mipLevel--;
+            }
         }
     }
 

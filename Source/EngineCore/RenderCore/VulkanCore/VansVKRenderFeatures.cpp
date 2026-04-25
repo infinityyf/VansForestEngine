@@ -435,6 +435,60 @@ namespace VansGraphics
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 	}
 
+	void VansVKDevice::UpdateHIZSeedDescriptorSet(VansRenderPassManager* renderPassManager)
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		if (m_HIZSeedDescSetsUpdated)
+			return;
+
+		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
+		if (hzbResult == nullptr)
+			return;
+
+		m_HIZSeedDescSetsUpdated = true;
+
+		auto& position = renderPassManager->GetGbuffer2();
+
+		VansVKDescriptorManager::GetInstance()->ResetState();
+
+		// binding 0: GBuffer position 采样器输入
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_HIZSeedDescriptorSets[0],
+				HIZ_SEED_BINDING_POSITION,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						position.GetSampler(),
+						position.GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+
+		// binding 1: HIZ mip 0 存储图像输出（r32f 线性深度）
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_HIZSeedDescriptorSets[0],
+				HIZ_SEED_BINDING_HIZ_MIP0,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{
+					{
+						hzbResult->GetImage().GetSampler(),
+						hzbResult->GetImage().GetImageMipView(0),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	}
+
 	void VansVKDevice::UpdateHZBDescriptorSets(VansRenderPassManager* renderPassManager)
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
@@ -946,40 +1000,54 @@ namespace VansGraphics
 
 	void VansVKDevice::UpdateHZB(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
+		UpdateHIZSeedDescriptorSet(renderPassManager);
 		UpdateHZBDescriptorSets(renderPassManager);
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		auto& depth = renderPassManager->GetDepth();
 		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
 		if (hzbResult == nullptr)
 		{
 			return;
 		}
 
-		computeCmd.BlitImage(depth, 0, hzbResult->GetImage(), 0);
+		// ── Pass 0: HIZ_SEED —— 从 GBuffer position.w 写入 HIZ mip 0（线性深度）──
+		// 取代原来的 BlitImage，完全在 Compute 中完成，无需布局转换
+		int seedGroupsX = (int)std::ceilf(m_RenderWidth  / 16.0f);
+		int seedGroupsY = (int)std::ceilf(m_RenderHeight / 16.0f);
+		computeCmd.EnsureComputeShader(*manager->m_HIZSeedShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_HIZSeedSetLayout });
+		computeCmd.DispatchCompute(*manager->m_HIZSeedShader, seedGroupsX, seedGroupsY, 1,
+			{ m_Scene->m_GlobalDescriptorSet, manager->m_HIZSeedDescriptorSets[0] });
 
-		for (int mipIndex = 1; mipIndex < manager->m_HIZMipCount; mipIndex++)
-		{
-			int threadGroupSizeX = m_RenderWidth >> (mipIndex);
-			int threadGroupSizeY = m_RenderHeight >> (mipIndex);
-			threadGroupSizeX = std::ceilf(threadGroupSizeX / 16.0f);
-			threadGroupSizeY = std::ceilf(threadGroupSizeY / 16.0f);
-
-			computeCmd.EnsureComputeShader(*manager->m_HZBShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_HZBTexSetLayouts[mipIndex - 1] });
-			computeCmd.DispatchCompute(*manager->m_HZBShader, threadGroupSizeX, threadGroupSizeY, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_HZBDescriptorSets[mipIndex - 1] });
-		}
-
-		// ── Barrier: HIZ compute write → subsequent compute read (e.g. vegetation cull) ──
-		// Required for the async path where RecordVegetationCompute follows UpdateHZB in the
-		// same command buffer; without this barrier the veg cull shader may read stale HZB data.
-		VkMemoryBarrier hizToComputeBarrier = {};
-		hizToComputeBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-		hizToComputeBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-		hizToComputeBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		// ── Barrier: mip 0 写入完毕 → mip 1 读取可见 ──
+		VkMemoryBarrier seedBarrier = {};
+		seedBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		seedBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		seedBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		computeCmd.PipelineBarrier(
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			{ hizToComputeBarrier });
+			{ seedBarrier });
+
+		// ── Pass 1+: HIZ.comp —— 逐 mip 下采样（min-depth 金字塔）──
+		for (int mipIndex = 1; mipIndex < manager->m_HIZMipCount; mipIndex++)
+		{
+			int threadGroupSizeX = (int)std::ceilf((m_RenderWidth  >> mipIndex) / 16.0f);
+			int threadGroupSizeY = (int)std::ceilf((m_RenderHeight >> mipIndex) / 16.0f);
+
+			computeCmd.EnsureComputeShader(*manager->m_HZBShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_HZBTexSetLayouts[mipIndex - 1] });
+			computeCmd.DispatchCompute(*manager->m_HZBShader, threadGroupSizeX, threadGroupSizeY, 1,
+				{ m_Scene->m_GlobalDescriptorSet, manager->m_HZBDescriptorSets[mipIndex - 1] });
+
+			// ── Barrier: mip N 写入完毕 → mip N+1 读取可见 ──
+			VkMemoryBarrier mipBarrier = {};
+			mipBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+			mipBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			mipBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			computeCmd.PipelineBarrier(
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				{ mipBarrier });
+		}
 	}
 
 	void VansVKDevice::UpdateSSR(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
@@ -989,7 +1057,7 @@ namespace VansGraphics
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
 		computeCmd.EnsureComputeShader(*manager->m_SSRTraceShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRTraceSetLayout });
-		computeCmd.DispatchCompute(*manager->m_SSRTraceShader, m_RenderWidth, m_RenderHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRTraceDescriptorSets[0] });
+		computeCmd.DispatchCompute(*manager->m_SSRTraceShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRTraceDescriptorSets[0] });
 
 		computeCmd.EnsureComputeShader(*manager->m_SSRResolveShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRResolveSetLayout });
 		computeCmd.DispatchCompute(*manager->m_SSRResolveShader, m_RenderWidth, m_RenderHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRResolveDescriptorSets[0] });

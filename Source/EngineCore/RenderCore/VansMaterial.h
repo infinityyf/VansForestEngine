@@ -211,6 +211,11 @@ namespace VansGraphics
 
 		VansComputeShader* m_HZBShader;
 
+		// HIZ Seed：将 GBuffer 线性深度写入 mip 0
+		VansComputeShader* m_HIZSeedShader;
+		VkDescriptorSetLayout m_HIZSeedSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_HIZSeedDescriptorSets;
+
 		VansComputeShader* m_SSRTraceShader;
 
 		VansComputeShader* m_SSRResolveShader;

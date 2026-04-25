@@ -10,17 +10,23 @@ layout( set = 1, binding = 1, r32f ) uniform image2D hizResult;
 void main() 
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dstSize = imageSize(hizResult);
+    ivec2 srcSize = imageSize(hizSource);
 
-    // 计算上一层LOD中对应的4个像素坐标
+    if (pixelCoord.x >= dstSize.x || pixelCoord.y >= dstSize.y)
+        return;
+
+    // 计算上一层 LOD 中对应的 4 个像素坐标。
+    // 非 2 的幂尺寸下，上一层可能有奇数边，边缘 texel 需要 clamp，不能越界读取。
     ivec2 srcCoord = pixelCoord * 2;
-    float d0 = imageLoad(hizSource, srcCoord).r;
-    float d1 = imageLoad(hizSource, srcCoord + ivec2(1, 0)).r;
-    float d2 = imageLoad(hizSource, srcCoord + ivec2(0, 1)).r;
-    float d3 = imageLoad(hizSource, srcCoord + ivec2(1, 1)).r;
+    float d0 = imageLoad(hizSource, clamp(srcCoord,                   ivec2(0), srcSize - 1)).r;
+    float d1 = imageLoad(hizSource, clamp(srcCoord + ivec2(1, 0),     ivec2(0), srcSize - 1)).r;
+    float d2 = imageLoad(hizSource, clamp(srcCoord + ivec2(0, 1),     ivec2(0), srcSize - 1)).r;
+    float d3 = imageLoad(hizSource, clamp(srcCoord + ivec2(1, 1),     ivec2(0), srcSize - 1)).r;
 
     // 生成 min-depth 金字塔：每个 cell 保存 2x2 源像素中的最近深度。
     // 这适合屏幕空间追踪，但若直接用于实例遮挡剪除会偏激进。
-    float maxDepth = min(min(d0, d1), min(d2, d3));
+    float minDepth = min(min(d0, d1), min(d2, d3));
 
-    imageStore(hizResult, pixelCoord, vec4(maxDepth));
+    imageStore(hizResult, pixelCoord, vec4(minDepth));
 }

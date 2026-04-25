@@ -1,0 +1,40 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../Common/Common.glsl"
+
+// ============================================================================
+// HIZ_SEED.comp — 将 GBuffer Position.w（正视空间线性深度）写入 HIZ mip 0
+//
+// 深度约定:
+//   - 输入: inputPosition.w = 正线性深度 (view-space, 单位米)
+//           值域 [NearPlane, FarPlane]；天空/无效像素 = 0
+//   - 输出: r32f 32 位浮点线性深度，天空像素写入大哨兵值 1e5
+//           min() 传播时，天空哨兵 1e5 会被相邻几何体深度覆盖，语义正确
+// ============================================================================
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// GBuffer2: xyz = 世界空间位置, w = 正线性视空间深度
+layout(set = 1, binding = 0) uniform sampler2D inputPosition;
+// HIZ mip 0 输出（32 位浮点线性深度）
+layout(set = 1, binding = 1, r32f) uniform image2D hizMip0;
+
+void main()
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 hizSize    = imageSize(hizMip0);
+
+    if (pixelCoord.x >= hizSize.x || pixelCoord.y >= hizSize.y)
+        return;
+
+    // 使用 UV 中心采样，避免与分辨率不一致时的边界问题
+    vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(hizSize);
+    float linearDepth = texture(inputPosition, uv).w;
+
+    // 天空/无效像素 position.w == 0 → 写入大哨兵值表示"无遮挡"
+    // TraceHiZ_UV 中 pos.z < 1e5 始终成立，哨兵格不会被误判为命中
+    if (linearDepth <= 0.0)
+        linearDepth = 1e5;
+
+    imageStore(hizMip0, pixelCoord, vec4(linearDepth, 0.0, 0.0, 0.0));
+}

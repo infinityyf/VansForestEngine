@@ -3,7 +3,7 @@
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout( set = 1, binding = 0 ) uniform sampler2D inputNormal;
 layout( set = 1, binding = 1 ) uniform sampler2D inputRoughness;
 layout( set = 1, binding = 2 ) uniform sampler2D inputPosition;
@@ -71,150 +71,36 @@ void main()
     // 将反射方向存入tracePDFInfo.xyz，供miss时resolve阶段采样天空球使用
     // on hit时会被命中点法线覆盖；on miss时xyz保留为反射方向、w=0.5
     tracePDFInfo.xyz = traceDirection;
-    
-        
-    // ─── DDA screen-space ray march ───
-    // Project two world points to derive the UV-space march direction.
-    // No SSR_MAX_DISTANCE — we march until we hit geometry or leave the screen.
 
-    vec3 rayOrigin = position + normal * SSR_START_BIAS + traceDirection * SSR_START_BIAS;
+    // ─── HiZ 加速屏幕空间追踪 ───
+    // 使用 TraceHiZ_UV，HIZ 存储线性深度（单位米），与射线线性深度直接比较
+    // thicknessThreshold 为线性深度厚度阈值（米），决定视为透明穿透还是实体命中
+    vec3 rayOrigin = position + normal * SSR_START_BIAS;
 
-    // ── Project rayOrigin and rayOrigin+dir into last frame's screen space ──
-    vec4 startVS = LastViewMatrix * vec4(rayOrigin, 1.0);
-    float startZ = -startVS.z;
+    // ⚠ 必须用 *当前帧* 矩阵：HIZ 由当前帧 GBuffer 生成，用 Last 矩阵会导致
+    // 整体偏移一帧的相机运动距离（反射位置看起来"跟手错位"）。
+    HiZTraceResult traceResult = TraceHiZ_UV(
+        inputHIZ,
+        ViewMatrix,
+        ProjectionMatrix,
+        rayOrigin,
+        traceDirection,
+        FarPlane, // maxDistWorld: 尽量追踪到远裁剪面 / 屏幕边缘，避免固定距离导致远景反射范围缩小
+        1.0,     // traceStride: 初始步长（像素）
+        1.0      // thicknessThreshold: 1.0m 厚度阈值（线性深度）
+    );
 
-    if (startZ <= NearPlane)
+    if (traceResult.hit)
     {
-        // 射线起点在近平面之后，但方向有效，标记为sky miss（w=0.5）
-        imageStore(traceHit, pixelCoord, vec4(0.0, 0.0, 0.0, 0.5));
-        imageStore(tracePDF, pixelCoord, tracePDFInfo);
-        return;
+        traceHitInfo     = vec4(traceResult.uv, traceResult.depth, 1.0);
+        // 命中点法线用于 resolve 阶段 BRDF 评估
+        tracePDFInfo.xyz = texelFetch(inputNormal, ivec2(traceResult.uv * ScreenParams.xy), 0).xyz;
     }
-
-    // Project a second point 1 unit along the ray to get the UV direction
-    vec4 dirVS = LastViewMatrix * vec4(rayOrigin + traceDirection, 1.0);
-    float dirZ = -dirVS.z;
-
-    vec4 startClip = LastProjectionMatrix * startVS;
-    vec4 dirClip   = LastProjectionMatrix * dirVS;
-
-    if (startClip.w <= 0.0 || dirClip.w <= 0.0)
+    else
     {
-        // 投影退化，方向仍有效，标记为sky miss（w=0.5）
-        imageStore(traceHit, pixelCoord, vec4(0.0, 0.0, 0.0, 0.5));
-        imageStore(tracePDF, pixelCoord, tracePDFInfo);
-        return;
-    }
-
-    vec2 startUV = startClip.xy / startClip.w * 0.5 + 0.5;
-    startUV.y = 1.0 - startUV.y;
-    vec2 dirUV = dirClip.xy / dirClip.w * 0.5 + 0.5;
-    dirUV.y = 1.0 - dirUV.y;
-
-    // UV-space ray direction (not normalized in UV — we'll normalize to 1 pixel steps)
-    vec2 rayDirUV = dirUV - startUV;
-
-    if (startUV.x < -0.05 || startUV.x > 1.05 || startUV.y < -0.05 || startUV.y > 1.05)
-    {
-        // 射线起点已在屏幕外，反射方向朝向天空，标记为sky miss（w=0.5）
-        imageStore(traceHit, pixelCoord, vec4(0.0, 0.0, 0.0, 0.5));
-        imageStore(tracePDF, pixelCoord, tracePDFInfo);
-        return;
-    }
-
-    // Source texel in last frame's screen space for self-intersection guard
-    ivec2 sourceTexel = ivec2(startUV * ScreenParams.xy);
-
-    // ── DDA setup: 1-pixel unit along the major screen axis ──
-    vec2 rayDirPixel = rayDirUV * ScreenParams.xy;
-    float majorLen = max(abs(rayDirPixel.x), abs(rayDirPixel.y));
-
-    if (majorLen < 1e-4)
-    {
-        // 屏幕空间步进方向退化（射线近似垂直屏幕），标记为sky miss（w=0.5）
-        imageStore(traceHit, pixelCoord, vec4(0.0, 0.0, 0.0, 0.5));
-        imageStore(tracePDF, pixelCoord, tracePDFInfo);
-        return;
-    }
-
-    // stepUV advances exactly 1 pixel along the major axis (at stride=1)
-    vec2 stepUV = rayDirUV / majorLen;
-    // 1/z step for perspective-correct depth interpolation
-    float invStartZ = 1.0 / startZ;
-    float invDirZ   = 1.0 / dirZ;
-    float invZStep  = (invDirZ - invStartZ) / majorLen;
-
-    // ── Hierarchical ray march: double stride on miss, halve on hit ──
-    // Covers the full screen fast by growing the stride exponentially in
-    // empty space, then binary-refines by halving back to sub-pixel once
-    // the ray crosses behind a surface.
-    const float MAX_STRIDE     = 64.0;    // maximum pixel stride
-    const float MIN_STRIDE     = 0.5;     // stop refining below this
-    const int   MAX_ITERATIONS = 256;     // total iteration budget
-
-    float stride = 2.0;                   // current stride in pixel units
-    float s      = 0.0;                   // parameter along the ray
-
-    for (int i = 0; i < MAX_ITERATIONS; i++)
-    {
-        s += stride;
-        vec2  uv       = startUV + stepUV * s;
-        float invZ     = invStartZ + invZStep * s;
-        float rayDepth = 1.0 / invZ;
-
-        // Off-screen → stop
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
-            break;
-
-        ivec2 texel = ivec2(uv * ScreenParams.xy);
-
-        // Self-intersection guard
-        if (texel == sourceTexel) continue;
-
-        float sceneDepth = texelFetch(inputPosition, texel, 0).w;
-
-        // Sky / empty GBuffer — accelerate through empty space
-        if (sceneDepth == 0.0)
-        {
-            stride = min(stride * 2.0, MAX_STRIDE);
-            continue;
-        }
-
-        float depthThreshold = max(sceneDepth * SSR_DEPTH_TOLERANCE, 0.1);
-
-        if (rayDepth > sceneDepth)
-        {
-            // Ray crossed behind the surface
-            if (rayDepth - sceneDepth < depthThreshold && stride <= 1.0)
-            {
-                // Precise hit — stride is fine enough, accept
-                traceHitInfo     = vec4(uv, rayDepth, 1.0);
-                tracePDFInfo.xyz = texelFetch(inputNormal, texel, 0).xyz;
-                break;
-            }
-
-            if (stride <= MIN_STRIDE)
-            {
-                // Stride exhausted without a clean hit — skip this crossing
-                // and resume coarse marching forward
-                stride = 2.0;
-                continue;
-            }
-
-            // Overshot: step back and halve stride for finer search
-            s -= stride;
-            stride *= 0.5;
-        }
-        else
-        {
-            // Ray still in front of scene — double stride to skip empty space
-            stride = min(stride * 2.0, MAX_STRIDE);
-        }
-    }
-
-    // march结束未命中几何体：反射方向已存入tracePDFInfo.xyz，标记为sky miss（w=0.5）
-    if (traceHitInfo.w < 0.5)
+        // 未命中：反射方向已存入 tracePDFInfo.xyz，标记为 sky miss（w=0.5）
         traceHitInfo.w = 0.5;
+    }
 
     imageStore(traceHit, pixelCoord, traceHitInfo);
     imageStore(tracePDF, pixelCoord, tracePDFInfo);

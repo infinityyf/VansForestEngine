@@ -1,0 +1,162 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// ============================================================================
+// BuildTileLightList.comp — 屏幕空间 Tile Light 索引表构建
+//
+// 功能：每帧一次，将所有点光源/聚光灯按屏幕 Tile 分格裁剪，
+//       输出 TileLightHeader 数组（Grid）和光源索引数组（Indices），
+//       供 Deferred.frag / FogLightInjection.comp 读取。
+//
+// 设计：固定步长分配（无 atomic），每个 invocation 处理一个 Tile
+//   - 点光源索引槽：tile T 占用 [T * TILE_LIGHT_MAX_PT_PER_TILE, ...)
+//   - 聚光灯索引槽：tile T 占用 [totalTiles*MAX_PT + T*MAX_SP, ...)
+//
+// Set 0: Camera UBO (binding=0) + Lights SSBO (binding=1) — 全局只读
+// Set 1: TileLightHeader SSBO (binding=0) + Indices SSBO (binding=1) + Params UBO (binding=2)
+// ============================================================================
+
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+#include "../Lights/LightsData.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// --- Set 1：Build pass 专用（可写）---
+struct TileLightHeaderOut
+{
+    uint pointOffset;
+    uint pointCount;
+    uint spotOffset;
+    uint spotCount;
+};
+
+layout(set = 1, binding = 0, std430) buffer OutTileLightGrid
+{
+    TileLightHeaderOut outTileLightHeaders[];
+};
+
+layout(set = 1, binding = 1, std430) buffer OutTileLightIndices
+{
+    uint outTileLightIndices[];
+};
+
+layout(set = 1, binding = 2) uniform TileLightBuildParams
+{
+    uint tileGridX;
+    uint tileGridY;
+    uint totalTiles;
+    uint pad0;
+} uBuildParams;
+
+// ---------------------------------------------------------------------------
+// 每个 tile 最大索引槽数（与 TileLightData.glsl 保持一致）
+// ---------------------------------------------------------------------------
+#define TILE_LIGHT_TILE_SIZE       8
+#define TILE_LIGHT_MAX_PT_PER_TILE 64
+#define TILE_LIGHT_MAX_SP_PER_TILE 64
+
+// ---------------------------------------------------------------------------
+// 球体与屏幕 Tile NDC AABB 相交测试（保守测试）
+//
+// 步骤：
+//   1. 将光源世界坐标变换到视图空间
+//   2. 检查 Z 深度范围是否与相机视锥重叠
+//   3. 将球心投影到 NDC，计算投影半径
+//   4. 检查 NDC AABB 是否与 tile 的 NDC 范围重叠
+// ---------------------------------------------------------------------------
+bool SphereTileIntersects(vec3 worldPos, float radius, uint tx, uint ty)
+{
+    // 变换至视图空间（相机看向 -Z 方向）
+    vec4 viewPos4 = ViewMatrix * vec4(worldPos, 1.0);
+    vec3 vp       = viewPos4.xyz;
+
+    // Z 深度检测：相机视锥 Z 范围为 [-farPlane, -nearPlane]
+    // 球 Z 范围：[vp.z - radius, vp.z + radius]
+    // 只要球前沿 > -farPlane 且球后沿 < -nearPlane 即有重叠
+    float nearZ = -NearPlane;
+    float farZ  = -FarPlane;
+    if ((vp.z + radius) < farZ)   return false;  // 完全在 far plane 之外
+    if ((vp.z - radius) > nearZ)  return false;  // 完全在相机后方
+
+    // 投影深度：避免除零
+    float projDepth = max(-vp.z, NearPlane * 0.5);
+
+    // 球心投影至 NDC（GL 约定：Y+ = 上，Vulkan 引擎在 FGScopeCommon.glsl 对 Y 翻转）
+    // ProjectionMatrix[0][0] = f/aspect, ProjectionMatrix[1][1] = f
+    float ndcX  = ProjectionMatrix[0][0] * vp.x / projDepth;
+    float ndcY  = ProjectionMatrix[1][1] * vp.y / projDepth;  // 未翻转，与 tile NDC 约定一致
+
+    // 球在 NDC 中的投影半径
+    float halfX = ProjectionMatrix[0][0] * radius / projDepth;
+    float halfY = ProjectionMatrix[1][1] * radius / projDepth;
+
+    // tile NDC 范围（NDC X：-1 ~ +1 对应 0 ~ screenWidth；NDC Y：-1 ~ +1 对应底部 ~ 顶部）
+    // 引擎中 gl_FragCoord.y 从顶部递增（0=top），对应 NDC Y+ = top（GL 约定）
+    // Tile Y 编号从 0（顶部）向下增大
+    float tileSzX  = 2.0 * float(TILE_LIGHT_TILE_SIZE) / ScreenParams.x;
+    float tileSzY  = 2.0 * float(TILE_LIGHT_TILE_SIZE) / ScreenParams.y;
+    float tileMinX = -1.0 + float(tx) * tileSzX;
+    float tileMaxX = tileMinX + tileSzX;
+    // NDC Y+1 = 顶部，tile ty=0 对应顶部
+    float tileMaxY = 1.0 - float(ty)       * tileSzY;
+    float tileMinY = 1.0 - float(ty + 1u)  * tileSzY;
+
+    return (ndcX + halfX >= tileMinX) && (ndcX - halfX <= tileMaxX) &&
+           (ndcY + halfY >= tileMinY) && (ndcY - halfY <= tileMaxY);
+}
+
+// ---------------------------------------------------------------------------
+void main()
+{
+    // 每个 invocation 处理一个 tile
+    uint tileX   = gl_GlobalInvocationID.x;
+    uint tileY   = gl_GlobalInvocationID.y;
+
+    if (tileX >= uBuildParams.tileGridX || tileY >= uBuildParams.tileGridY)
+        return;
+
+    uint tileIdx = tileY * uBuildParams.tileGridX + tileX;
+
+    // 计算固定步长偏移（无需 atomic）
+    uint ptOffset = tileIdx * TILE_LIGHT_MAX_PT_PER_TILE;
+    uint spOffset = uBuildParams.totalTiles * TILE_LIGHT_MAX_PT_PER_TILE
+                    + tileIdx * TILE_LIGHT_MAX_SP_PER_TILE;
+
+    uint ptCount = 0u;
+    uint spCount = 0u;
+
+    // --- 点光源 ---
+    for (uint i = 0u; i < uPointLightCount && i < uint(MAX_POINT_LIGHTS); ++i)
+    {
+        PointLightData pl = GetPointLight(int(i));
+        if (SphereTileIntersects(pl.position.xyz, pl.radius, tileX, tileY))
+        {
+            if (ptCount < uint(TILE_LIGHT_MAX_PT_PER_TILE))
+            {
+                outTileLightIndices[ptOffset + ptCount] = i;
+                ptCount++;
+            }
+        }
+    }
+
+    // --- 聚光灯（保守测试：用包围球近似锥体）---
+    for (uint i = 0u; i < uSpotLightCount && i < uint(MAX_SPOT_LIGHTS); ++i)
+    {
+        SpotLightData sl = GetSpotLight(int(i));
+        if (SphereTileIntersects(sl.position.xyz, sl.radius, tileX, tileY))
+        {
+            if (spCount < uint(TILE_LIGHT_MAX_SP_PER_TILE))
+            {
+                outTileLightIndices[spOffset + spCount] = i;
+                spCount++;
+            }
+        }
+    }
+
+    // --- 写入 Header ---
+    outTileLightHeaders[tileIdx].pointOffset = ptOffset;
+    outTileLightHeaders[tileIdx].pointCount  = ptCount;
+    outTileLightHeaders[tileIdx].spotOffset  = spOffset;
+    outTileLightHeaders[tileIdx].spotCount   = spCount;
+}

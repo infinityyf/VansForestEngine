@@ -101,14 +101,15 @@ void main()
     vec3 dir = CosineWeightedDirection(noise, TBN);
 
     // ---- HiZ-accelerated screen-space trace ----
-    const float maxTraceDist   = 20.0;
+    float maxTraceDist = FarPlane;
     const float basePixelStep  = 1.0;
     const float depthBias      = 0.02;
 
+    // 必须用 *当前帧* 矩阵投影到 *当前帧* HIZ
     HiZTraceResult traceResult = TraceHiZ_UV(
         hizDepth,
-        LastViewMatrix,
-        LastProjectionMatrix,
+        ViewMatrix,
+        ProjectionMatrix,
         startPosition,
         dir,
         maxTraceDist,

@@ -382,7 +382,7 @@ namespace VansGraphics
 		VkImageView m_HiZView        = VK_NULL_HANDLE;
 		VkSampler   m_HiZSampler     = VK_NULL_HANDLE;
 		uint32_t    m_HiZMipCount    = 0;
-		float       m_HiZSampleBias  = 0.005f;
+		float       m_HiZSampleBias  = 0.2f;   // 单位：米（HIZ 已改为线性深度，原 NDC 偏置 0.005 已不适用）
 		bool        m_HiZEnabled     = false;
 		VkDevice m_Device = VK_NULL_HANDLE;
 	};

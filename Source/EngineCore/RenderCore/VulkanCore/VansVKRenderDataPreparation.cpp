@@ -511,14 +511,23 @@ namespace VansGraphics
 	void VansVKDevice::PrepareHZBRenderData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		// HIZ 采用 32 位浮点，存储正线性视空间深度（单位米）
 		VansTexture* hzbResult = new VansTexture();
-		hzbResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 1, false, true, true, MID_PRES_16);
+		hzbResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 1, false, true, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT, hzbResult);
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
+
 		manager->m_HZBShader = new VansComputeShader();
 		manager->m_HZBShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/HIZ").c_str());
+
+		// HIZ_SEED shader：GBuffer position.w → HIZ mip 0
+		manager->m_HIZSeedShader = new VansComputeShader();
+		manager->m_HIZSeedShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/HIZ_SEED").c_str());
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZSeed(
+			manager->m_HIZSeedSetLayout, manager->m_HIZSeedDescriptorSets, 1);
 
 		manager->m_HIZMipCount = 1 + (int)std::floor(std::log2(std::min(m_RenderWidth, m_RenderHeight)));
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZ(manager->m_HZBTexSetLayouts, manager->m_HZBDescriptorSets, manager->m_HIZMipCount - 1);

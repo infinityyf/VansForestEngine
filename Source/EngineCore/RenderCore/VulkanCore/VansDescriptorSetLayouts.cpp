@@ -356,6 +356,18 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZ(
 	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(outLayouts, outSets);
 }
 
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZSeed(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	// binding 0: GBuffer position 输入（采样器）
+	// binding 1: HIZ mip 0 存储图输出（r32f 线性深度）
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{HIZ_SEED_BINDING_POSITION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{HIZ_SEED_BINDING_HIZ_MIP0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_Empty(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {

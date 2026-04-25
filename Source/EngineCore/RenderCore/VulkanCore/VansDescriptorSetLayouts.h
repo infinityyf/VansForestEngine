@@ -344,6 +344,13 @@ namespace VansGraphics
 		HIZ_BINDING_RESULT = 1,
 	};
 
+	// --- HIZ Seed Compute Pass (GBuffer linear depth → HIZ mip 0) ---
+	enum HIZSeedPassBinding : uint32_t
+	{
+		HIZ_SEED_BINDING_POSITION = 0,   // GBuffer position (COMBINED_IMAGE_SAMPLER)
+		HIZ_SEED_BINDING_HIZ_MIP0 = 1,   // HIZ mip 0 输出 (STORAGE_IMAGE, r32f)
+	};
+
 	// --- GI SH Update Compute Pass ---
 	enum GISHUpdatePassBinding : uint32_t
 	{
@@ -531,6 +538,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_FogRayMarch(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_BilateralFilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 3);
 		static void CreateAndAllocate_HIZ(std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount);
+		static void CreateAndAllocate_HIZSeed(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GISHUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GIPointLight(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_RayTracing(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
