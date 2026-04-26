@@ -236,28 +236,17 @@ namespace VansGraphics
 		/// LoadResources().
 		bool LoadSceneContent(const char* path);
 
-		void LoadLights(VkDevice& device, json& light_node);
-
 		void LoadRenderNodes(VkDevice& device, json& render_node);
-
-		void LoadPhysicsNodes(json& physics_node);
 
 		// ── ScriptableObject-based loading (new JSON "objects" format) ───────
 		// Parses the "objects" array from scene JSON: creates VansScriptObjects
 		// with render / physics / cloth / vehicle / animation components.
 		void LoadSceneObjects(VkDevice& device, json& objectsArray, const std::string& projectRoot);
 
-		// ── Animation node / controller loading ─────────────────────────────
-		// Legacy: 根据场景 JSON 顶层 animation_node 数组加载（向后兼容）
-		void LoadAnimationNodesFromJson(json& animNodeArray, const std::string& projectRoot);
-
 		// 单个 animation component 加载（供 LoadSceneObjects 第四阶段调用）
 		VansAnimationNode* LoadSingleAnimationComponent(const json& animJson,
 		                                                const std::string& objectName,
 		                                                const std::string& projectRoot);
-
-		// Auto-wrap legacy rendernode + physicsnode data into VansScriptObjects.
-		void AutoCreateObjectsFromLegacy();
 
 		// ── Single-node loading helpers (extracted from batch loaders) ────────
 		VansRenderNode* LoadSingleRenderNode(VkDevice& device, const json& renderNodeJson);

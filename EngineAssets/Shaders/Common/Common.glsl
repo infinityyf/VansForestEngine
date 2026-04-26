@@ -540,6 +540,9 @@ HiZTraceResult TraceHiZ_UV(
     ivec2 size0 = textureSize(hiz, 0);
     // 与 CPU 端 HIZMipCount = 1+floor(log2(min(w,h))) 对齐，最高 mip 索引
     int maxMip = int(floor(log2(float(min(size0.x, size0.y)))));
+    // SSR 在平面低角度反射时，过粗的 mip 会把一大片屏幕区域压成同一个 min-depth，
+    // 容易沿扫描方向形成稳定的横向断层。限制最高 mip，牺牲少量性能换取更连续的命中。
+    maxMip = min(maxMip, 5);
 
     float maxPixelExtent = max(abs(rayUV.x) * float(size0.x), abs(rayUV.y) * float(size0.y));
     if (maxPixelExtent < 1.0)
@@ -551,7 +554,8 @@ HiZTraceResult TraceHiZ_UV(
 
     // 起始 t：跳过 1~traceStride 个 mip0 像素以避免自相交。
     float t = max(traceStride, 1.0) / maxPixelExtent;
-    float tEpsilon = 0.25 / maxPixelExtent;
+    // 低角度射线对 t 偏移非常敏感，较大的 epsilon 会周期性跳过细小 cell，表现为横向条纹。
+    float tEpsilon = 0.05 / maxPixelExtent;
 
     int mipLevel = 0;
     const int kMaxIterations = 512;

@@ -1059,8 +1059,28 @@ namespace VansGraphics
 		computeCmd.EnsureComputeShader(*manager->m_SSRTraceShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRTraceSetLayout });
 		computeCmd.DispatchCompute(*manager->m_SSRTraceShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRTraceDescriptorSets[0] });
 
+		// Trace 写入 traceHit / tracePDF，Resolve 会立即读取；必须显式保证 storage image 可见。
+		VkMemoryBarrier traceBarrier = {};
+		traceBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		traceBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		traceBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		computeCmd.PipelineBarrier(
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			{ traceBarrier });
+
 		computeCmd.EnsureComputeShader(*manager->m_SSRResolveShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRResolveSetLayout });
 		computeCmd.DispatchCompute(*manager->m_SSRResolveShader, m_RenderWidth, m_RenderHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRResolveDescriptorSets[0] });
+
+		// Resolve 写入 ssrResult，TemporalAA 会立即读取；避免按 wave/tile 可见性造成条纹状断层。
+		VkMemoryBarrier resolveBarrier = {};
+		resolveBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		resolveBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		resolveBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		computeCmd.PipelineBarrier(
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			{ resolveBarrier });
 
 		computeCmd.EnsureComputeShader(*manager->m_SSRTemporalAAShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRAASetLayout });
 		computeCmd.DispatchCompute(*manager->m_SSRTemporalAAShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRAADescriptorSets[0] });

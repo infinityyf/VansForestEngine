@@ -21,6 +21,7 @@ void main()
 {
     //获取击中的uv
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 screenSize = ivec2(ScreenParams.xy);
 
     // Per-pixel, per-frame random rotation — dithers the Fibonacci disk
     // across neighbours and across time so TAA can accumulate them.
@@ -32,7 +33,10 @@ void main()
     vec3 position = texelFetch(inputPosition, pixelCoord, 0).xyz;
     vec2 hituv = hitInfo.xy;
 
-    vec3 viewDirection = normalize(cameraPosition.xyz - position);
+    // SSR Resolve 使用上一帧的 Position 数据，视线向量需用上一帧相机位置。
+    // 从 LastViewMatrix 提取：camPos = -R^T * t，其中 t = V[3].xyz（第四列）。
+    vec3 lastCameraPosition = -(transpose(mat3(LastViewMatrix)) * LastViewMatrix[3].xyz);
+    vec3 viewDirection = normalize(lastCameraPosition - position);
 
     vec3 resolvedReflectionColor = vec3(0.0);
     float resolvedWeight = 0.0;
@@ -54,6 +58,10 @@ void main()
         float r     = sqrt((float(i) + 0.5) / float(SSR_NUM_RESOLVER)) * gatherRadius;
         float theta = float(i) * GOLDEN_ANGLE + rotAngle;
         ivec2 neighborCoord = pixelCoord + ivec2(round(r * vec2(cos(theta), sin(theta))));
+
+        // 边缘邻域采样可能越界，越界 imageLoad / texelFetch 会产生未定义数据并形成条纹。
+        if (any(lessThan(neighborCoord, ivec2(0))) || any(greaterThanEqual(neighborCoord, screenSize)))
+            continue;
 
         vec4 neighborHitInfo = imageLoad(traceHit, neighborCoord);
 
@@ -82,10 +90,11 @@ void main()
         else
         {
             vec2 neighborHituv = neighborHitInfo.xy;
+            ivec2 hitPixel = clamp(ivec2(neighborHituv * ScreenParams.xy), ivec2(0), screenSize - 1);
 
             //采样color
-            color = texelFetch(inputColor, ivec2(neighborHituv * ScreenParams.xy), 0).xyz;
-            vec3 hitPosition = texelFetch(inputPosition, ivec2(neighborHituv * ScreenParams.xy), 0).xyz;
+            color = texelFetch(inputColor, hitPixel, 0).xyz;
+            vec3 hitPosition = texelFetch(inputPosition, hitPixel, 0).xyz;
             lightDirection = normalize(hitPosition - position);
 
             // Fade color near screen edges to avoid hard reflection cutoff

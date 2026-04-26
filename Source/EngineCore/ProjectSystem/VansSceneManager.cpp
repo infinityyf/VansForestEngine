@@ -98,12 +98,9 @@ std::string VansSceneManager::CreateEmptyScene(const std::string& sceneName,
 	json scene;
 	scene["scene"] = json::array();
 	json sceneEntry;
-	sceneEntry["rendernode"] = json::array();
-	sceneEntry["light"] = json::array();
 	sceneEntry["objects"] = json::array();
+	sceneEntry["rendernode"] = json::array();
 	scene["scene"].push_back(sceneEntry);
-	scene["mesh"] = json::array();
-	scene["texture"] = json::array();
 	scene["material"] = json::array();
 
 	std::ofstream ofs(absPath);

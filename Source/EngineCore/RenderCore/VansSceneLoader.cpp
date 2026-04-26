@@ -111,8 +111,6 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 // ---------------------------------------------------------------------------
 static VansMaterialType ParseMaterialType(const json& typeValue, const std::string& materialName)
 {
-    if (typeValue.is_number_integer())
-        return static_cast<VansMaterialType>(typeValue.get<int>());
     if (typeValue.is_string())
     {
         const std::string s = typeValue.get<std::string>();
@@ -135,8 +133,6 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
 
 static VansGraphics::RenderNodeType ParseRenderNodeType(const json& typeValue, const std::string& nodeName)
 {
-    if (typeValue.is_number_integer())
-        return static_cast<VansGraphics::RenderNodeType>(typeValue.get<int>());
     if (typeValue.is_string())
     {
         const std::string s = typeValue.get<std::string>();
@@ -217,55 +213,6 @@ static std::string MakeUniqueMeshName(const VansGraphics::VansScene& scene, cons
     }
     return candidate;
 }
-
-// ===========================================================================
-// Light loading
-// ===========================================================================
-
-void VansGraphics::VansScene::LoadLights(VkDevice& device, json& light_node)
-{
-    for (const auto& light : light_node)
-    {
-        VansLightType type = light["type"];
-        if (type == VansLightType::DIRECTIONAL)
-        {
-            VansDirectionalLight dirLight;
-            dirLight.m_Direction = glm::vec3(light["direction"][0], light ["direction"][1], light["direction"][2]);
-            dirLight.m_Direction = -glm::normalize(dirLight.m_Direction);
-			dirLight.m_Color = glm::vec3(light["color"][0], light["color"][1], light["color"][2]);
-            dirLight.m_Intensity = light["intensity"];
-            m_LightManager.AddDirectionalLight(dirLight);
-		}
-        else if (type == VansLightType::POINT)
-        {
-            VansPointLight pointLight;
-			pointLight.m_Position = glm::vec3(light["position"][0], light["position"][1], light["position"][2]);
-			pointLight.m_Color = glm::vec3(light["color"][0], light["color"][1], light["color"][2]);
-            pointLight.m_Intensity = light["intensity"];
-			pointLight.m_Radius = light["radius"];
-            m_LightManager.AddPointLight(pointLight);
-		}
-        else if (type == VansLightType::SPOT)
-        {
-            VansSpotLight spotLight;
-			spotLight.m_Position = glm::vec3(light["position"][0], light["position"][1], light["position"][2]);
-			spotLight.m_Direction = glm::vec3(light["direction"][0], light["direction"][1], light["direction"][2]);
-            spotLight.m_Direction = -glm::normalize(spotLight.m_Direction);
-            spotLight.m_Color = glm::vec3(light["color"][0], light["color"][1], light["color"][2]);
-            spotLight.m_Intensity = light["intensity"];
-            spotLight.m_InnerCutOff = glm::radians<float>(light["innercutoff"]);
-			spotLight.m_OuterCutOff = glm::radians<float>(light["outerCutoff"]);
-            spotLight.m_Radius = light["radius"];
-            m_LightManager.AddSpotLight(spotLight);
-		}
-    }
-
-    m_LightManager.CreateLightUniformData(device);
-}
-
-// ===========================================================================
-// Render node loading from JSON
-// ===========================================================================
 
 // ===========================================================================
 // Single render node loading (extracted from LoadRenderNodes loop body)
@@ -586,8 +533,7 @@ void VansGraphics::VansScene::LoadMeshesFromJson(
             bool needCpuData = sceneMesh.value("need_cpu_data", false);
             VansMesh* mesh   = new VansMesh(needCpuData, /*supportRayTracing=*/false);
 
-            // 动画相关字段 (root_bone, root_motion, extern_animation) 已迁移到
-            // Scene JSON 中的 animation_node 配置，由 LoadAnimationNodesFromJson 处理。
+            // 动画配置由 object.components.animation 统一处理。
 
             mesh->LoadMultiMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath, import_tangent, generate_as, needCpuData);
             mesh->SetName(sceneMesh["name"]);
@@ -1044,21 +990,19 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
     }
     json sceneData = json::parse(jsonFile);
 
-    // ── 相机初始化（旧格式降级备用）────────────────────────────────────────────────
-    // 新格式：相机参数在 LoadSceneObjects 中通过 camera component 处理（含 SetTransformID）。
-    // 旧格式降级：若 objects 中没有挂 camera component 的对象，才读取顶层 "camera" 字段。
-    // 注意：此检查必须在 LoadSceneObjects 之后，m_SceneObjects 已填充后才有效。
-    // 因此旧格式降级逻辑移至 LoadSceneObjects 调用之后（见下方 "相机降级处理" 注释）。
-    // 此处预先读取 JSON，不做相机初始化。
-
-    // Load materials (resources are already loaded from resource.json)
+    // 场景文件只负责材质和实例数据；mesh/texture/shader 已由 resource.json 加载。
     if (sceneData.contains("material") && sceneData["material"].is_array())
     {
         LoadMaterialsFromJson(sceneData["material"]);
     }
 
-    // Load scene nodes (lights, objects, rendernodes, physics)
-    json sceneNode = sceneData["scene"];
+    if (!sceneData.contains("scene") || !sceneData["scene"].is_array() || sceneData["scene"].empty())
+    {
+        VANS_LOG_ERROR("[VansScene] Scene file has no valid scene array: " << path);
+        return false;
+    }
+
+    json& sceneNode = sceneData["scene"][0];
 
     // 从 scene path 推导 project root（Scenes/ → 项目根目录）
     std::string scenePath(path);
@@ -1070,69 +1014,22 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
             projectRoot = projectRoot.substr(0, pos + 1);
     }
 
-    // 向后兼容：优先读取旧格式 "light" 数组；新场景应将灯光放入 objects[].components
-    if (sceneNode[0].contains("light") && sceneNode[0]["light"].is_array())
+    if (!sceneNode.contains("objects") || !sceneNode["objects"].is_array())
     {
-        LoadLights(nativeDevice, sceneNode[0]["light"]);
-    }
-    else
-    {
-        // 没有旧格式灯光数组，仍需创建 GPU 灯光 buffer（大小基于最大灯光数量而非实际数量）
-        m_LightManager.CreateLightUniformData(nativeDevice);
-    }
-    if (sceneNode[0].contains("objects") && sceneNode[0]["objects"].is_array()
-        && !sceneNode[0]["objects"].empty())
-    {
-        LoadSceneObjects(nativeDevice, sceneNode[0]["objects"], projectRoot);
-
-        if (sceneNode[0].contains("rendernode") && !sceneNode[0]["rendernode"].empty())
-        {
-            LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
-        }
-        if (sceneNode[0].contains("physicsnode") && !sceneNode[0]["physicsnode"].empty())
-        {
-            LoadPhysicsNodes(sceneNode[0]["physicsnode"]);
-        }
-    }
-    else
-    {
-        LoadRenderNodes(nativeDevice, sceneNode[0]["rendernode"]);
-
-        if (sceneNode[0].contains("physicsnode"))
-        {
-            LoadPhysicsNodes(sceneNode[0]["physicsnode"]);
-        }
-
-        AutoCreateObjectsFromLegacy();
+        VANS_LOG_ERROR("[VansScene] Scene file must contain scene[0].objects array: " << path);
+        return false;
     }
 
-    // ── 相机降级处理 ──────────────────────────────────────────────────────────────
-    // LoadSceneObjects 已执行，m_SceneObjects 已填充。
-    // 若没有任何 object 挂载 camera component（新格式），则降级读取顶层 "camera" 字段（旧格式）。
-    if (m_Camera != nullptr)
-    {
-        bool hasCameraComponent = false;
-        for (auto* obj : m_SceneObjects)
-        {
-            if (obj->GetComponent<VansScriptCameraComponent>() != nullptr)
-            {
-                hasCameraComponent = true;
-                break;
-            }
-        }
+    LoadSceneObjects(nativeDevice, sceneNode["objects"], projectRoot);
 
-        if (!hasCameraComponent)
-        {
-            if (sceneNode[0].contains("camera"))
-            {
-                auto& camJson = sceneNode[0]["camera"];
-                if (camJson.contains("fov"))        m_Camera->SetFov(camJson["fov"].get<float>());
-                if (camJson.contains("nearClip"))   m_Camera->SetNearClip(camJson["nearClip"].get<float>());
-                if (camJson.contains("farClip"))    m_Camera->SetFarClip(camJson["farClip"].get<float>());
-                VANS_LOG("[VansScene] 使用旧格式顶层 camera 字段初始化相机");
-            }
-        }
+    if (sceneNode.contains("rendernode") && sceneNode["rendernode"].is_array()
+        && !sceneNode["rendernode"].empty())
+    {
+        LoadRenderNodes(nativeDevice, sceneNode["rendernode"]);
     }
+
+    // 灯光统一由 object.components.*_light 创建；此处只创建 GPU 侧固定容量 buffer。
+    m_LightManager.CreateLightUniformData(nativeDevice);
 
     // Terrain
     if (sceneData.contains("terrain"))
@@ -1144,12 +1041,6 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
     if (sceneData.contains("vegetation"))
     {
         AddVegetationNode(nativeDevice, sceneData["vegetation"]);
-    }
-
-    // Legacy top-level animation_node（向后兼容，新代码应使用 object.components.animation）
-    if (sceneNode[0].contains("animation_node") && sceneNode[0]["animation_node"].is_array())
-    {
-        LoadAnimationNodesFromJson(sceneNode[0]["animation_node"], projectRoot);
     }
 
     AddDeferredNode(nativeDevice);
@@ -1408,221 +1299,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
                  << " (type=" << (nodeType == OPAQUE_NODE ? "OPAQUE" : "TRANSPARENT") << ")");
     }
 
-    // ── 动画节点不再在此创建 ──
-    // AnimationNode + Controller 由 LoadAnimationNodesFromJson 根据
-    // Scene JSON 中的 animation_node 配置独立创建。
-    // ExpandMultiMesh 仅负责几何体 → 渲染节点的展开。
-}
-
-// ===========================================================================
-// LoadAnimationNodesFromJson — 从场景 JSON 加载 controller-based animation nodes
-// ===========================================================================
-
-void VansGraphics::VansScene::LoadAnimationNodesFromJson(json& animNodeArray, const std::string& projectRoot)
-{
-    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VkDevice device = vkDevice->GetLogicDevice();
-
-    for (auto& entry : animNodeArray)
-    {
-        std::string nodeName      = entry.value("name", "");
-        std::string meshGroupName = entry.value("mesh_group", "");
-        std::string animatorPath  = entry.value("animator", "");
-        std::string externClips   = entry.value("extern_clips", "");
-        bool enableRootMotion     = entry.value("root_motion", false);
-        std::string rootBone      = entry.value("root_bone", "");
-
-        if (nodeName.empty() || meshGroupName.empty())
-        {
-            VANS_LOG_WARN("[LoadAnimNode] Skipping animation_node entry with empty name or mesh_group");
-            continue;
-        }
-
-        // 找到对应的 MultiMeshGroup
-        auto groupIt = m_MultiMeshGroups.find(meshGroupName);
-        if (groupIt == m_MultiMeshGroups.end())
-        {
-            VANS_LOG_WARN("[LoadAnimNode] mesh_group '" << meshGroupName << "' not found for animation_node '" << nodeName << "'");
-            continue;
-        }
-
-        MultiMeshGroup& group = groupIt->second;
-        if (group.childNodes.empty())
-            continue;
-
-        // 查找 mesh 资产（获取 skeleton 和内嵌 clip）
-        VansMesh* meshAsset = nullptr;
-        for (auto* asset : m_Meshes)
-        {
-            if (asset->m_AssetName == meshGroupName)
-            {
-                meshAsset = dynamic_cast<VansMesh*>(asset);
-                break;
-            }
-        }
-
-        if (!meshAsset || !meshAsset->m_HasAnimation)
-        {
-            VANS_LOG_WARN("[LoadAnimNode] mesh_group '" << meshGroupName
-                         << "' has no animation data. Skipping '" << nodeName << "'");
-            continue;
-        }
-
-        // ── 创建 Controller ──────────────────────────────────────────────
-        VansAnimationController* controller = nullptr;
-
-        if (!animatorPath.empty())
-        {
-            // 路径 A: 从 .vanimator 文件加载完整 controller 定义
-            std::string fullAnimatorPath = projectRoot + animatorPath;
-
-            AnimatorAssetData assetData;
-            if (!VansAnimatorIO::Load(fullAnimatorPath, assetData))
-            {
-                VANS_LOG_WARN("[LoadAnimNode] Failed to load .vanimator: " << fullAnimatorPath);
-                continue;
-            }
-
-            auto clipsMap = VansAnimationClipLoader::LoadClipsFromRefs(
-                assetData.clipRefs, projectRoot,
-                &meshAsset->m_AnimImportResult.skeleton);
-
-            controller = new VansAnimationController();
-            controller->SetName(assetData.name);
-
-            for (const auto& param : assetData.parameters)
-            {
-                controller->AddParameter(param.name, param.type);
-                switch (param.type)
-                {
-                case AnimatorParamType::Float:   controller->SetFloat(param.name, param.floatVal); break;
-                case AnimatorParamType::Bool:    controller->SetBool(param.name, param.boolVal);   break;
-                case AnimatorParamType::Int:     controller->SetInt(param.name, param.intVal);     break;
-                case AnimatorParamType::Trigger: break;
-                }
-            }
-
-            for (auto& [name, clip] : clipsMap)
-                controller->AddClip(name, std::move(clip));
-
-            for (const auto& state : assetData.states)
-                controller->AddState(state);
-
-            for (const auto& trans : assetData.transitions)
-                controller->AddTransition(trans);
-
-            controller->SetDefaultState(assetData.defaultStateName);
-            controller->BindStateClips();
-
-            // v2: 传递 AnimGraph
-            if (assetData.animGraph)
-                controller->SetGraph(std::move(assetData.animGraph));
-
-            VANS_LOG("[LoadAnimNode] Loaded controller from .vanimator: " << fullAnimatorPath);
-        }
-        else
-        {
-            // 路径 B: 自动生成默认 controller（从 FBX 内嵌 clip + 外部 clip）
-            controller = new VansAnimationController();
-            controller->SetName(meshGroupName + "_Controller");
-
-            // 收集 clip: 如果指定了外部 FBX，优先使用外部 clip（与旧方案一致，
-            // 外部 clip 完全替换内嵌 clip，避免默认播放内嵌 clip 导致骨骼矩阵不匹配）
-            bool usedExternClips = false;
-            if (!externClips.empty())
-            {
-                std::string fullExternPath = projectRoot + externClips;
-                std::vector<VansAnimationClip> extClips;
-                if (VansAnimationClipLoader::ExtractClipsFromFBX(
-                        fullExternPath, meshAsset->m_AnimImportResult.skeleton, extClips))
-                {
-                    for (auto& extClip : extClips)
-                        controller->AddClip(extClip.clipName, std::move(extClip));
-
-                    usedExternClips = true;
-                    VANS_LOG("[LoadAnimNode] Loaded " << extClips.size()
-                             << " extern clip(s) from: " << fullExternPath);
-                }
-                else
-                {
-                    VANS_LOG_WARN("[LoadAnimNode] Failed to extract clips from: " << fullExternPath);
-                }
-            }
-
-            // 仅当没有成功加载外部 clip 时，才使用 mesh 内嵌的 clip（fallback）
-            if (!usedExternClips)
-            {
-                for (auto& clip : meshAsset->m_AnimImportResult.clips)
-                    controller->AddClip(clip.clipName, clip);
-            }
-
-            // 为每个 clip 创建同名 state
-            auto clipNames = controller->GetClipNames();
-            for (const auto& clipName : clipNames)
-            {
-                AnimatorState state;
-                state.name        = clipName;
-                state.clipName    = clipName;
-                state.speed       = 1.0f;
-                state.loop        = true;
-                state.rootMotion  = enableRootMotion;
-                controller->AddState(state);
-            }
-
-            if (!clipNames.empty())
-                controller->SetDefaultState(clipNames.front());
-
-            controller->BindStateClips();
-
-            VANS_LOG("[LoadAnimNode] Auto-generated controller for '" << meshGroupName
-                     << "' with " << clipNames.size() << " clip(s)");
-        }
-
-        // Root motion 配置
-        if (enableRootMotion)
-            controller->EnableRootMotion(true);
-
-        // ── 创建 AnimationNode ───────────────────────────────────────────
-        VansAnimationNode* animNode = new VansAnimationNode(nodeName);
-        animNode->SetSkeleton(meshAsset->m_AnimImportResult.skeleton);
-        animNode->SetRenderNodes(group.childNodes);
-        animNode->InitGPUResources(device, 1);
-        animNode->UploadPerSubmeshBoneBuffers(meshAsset->m_SubMeshBoneData);
-        animNode->SetTransformID(group.sharedTransformID);
-
-        animNode->SetController(controller);
-
-        // 记录 .vanimator 文件路径供编辑器使用
-        if (!animatorPath.empty())
-            animNode->SetAnimatorFilePath(projectRoot + animatorPath);
-
-        if (!rootBone.empty())
-            animNode->SetRootBone(rootBone);
-
-        // Tag render nodes
-        for (size_t ci = 0; ci < group.childNodes.size(); ci++)
-        {
-            VansRenderNode* childNode = group.childNodes[ci];
-            childNode->m_HasSkeletonBone   = true;
-            childNode->m_AnimationEnabled  = true;
-            childNode->m_AnimOwner         = animNode;
-            childNode->m_AnimSubmeshIndex   = static_cast<uint32_t>(ci);
-            if (ci < animNode->GetSubmeshBufferCount())
-            {
-                childNode->m_AnimBoneIDBuffer     = &animNode->GetBoneIDBuffer(static_cast<uint32_t>(ci));
-                childNode->m_AnimBoneWeightBuffer  = &animNode->GetBoneWeightBuffer(static_cast<uint32_t>(ci));
-            }
-        }
-
-        m_AnimationNodes.push_back(animNode);
-        m_AnimationControllers.push_back(controller);
-        controller->Play();
-
-        VANS_LOG("[LoadAnimNode] Created animation_node '" << nodeName
-                 << "' with " << controller->GetClipNames().size() << " clip(s), "
-                 << meshAsset->m_AnimImportResult.skeleton.bones.size() << " bones, "
-                 << group.childNodes.size() << " render node(s)");
-    }
+    // ExpandMultiMesh 仅负责几何体 → 渲染节点的展开，动画由 animation component 创建。
 }
 
 // ===========================================================================
@@ -1994,10 +1671,8 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
 {
     using namespace VansEngine;
 
-    // ── First pass: create all Objects, render / physics / cloth components ──
-    // Defer cloth collision-sphere objectRef resolution to second pass.
-    // Also collect render-node parent links for a third pass.
-    // Defer animation component resolution to a fourth pass (所有 render 节点均已创建后).
+    // ── First pass: create all Objects and component instances ────────────
+    // animation component 需要等待所有 render 节点创建完毕后再解析。
     struct ParentLink { std::string childName; std::string parentName; };
     struct PendingAnimComp
     {
@@ -2011,9 +1686,6 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
     std::vector<PendingAnimComp> pendingAnimComps;
 
     // ── 对象级 Transform 解析 helper ─────────────────────────────────────
-    // 新格式：transform 是 object JSON 的顶层字段，与 components 并列。
-    // LoadSingleRenderNode 仍支持从 renderJson["transform"] 读取（旧格式 rendernode 数组兼容），
-    // 但在 LoadSceneObjects 路径中，创建 render node 后统一用对象级 transform 覆盖。
     auto parseObjTransform = [](const json& objJson,
                                 glm::vec3& outPos,
                                 glm::vec3& outRot,
@@ -2052,10 +1724,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         {
             const auto& renderJson = components["render"];
 
-            // 新格式：transform 在 objJson 顶层，LoadSingleRenderNode 的 renderJson 中没有 transform。
-            // 为兼容 multi-mesh 路径（ExpandMultiMeshToRenderNodes 内部读取 transform），
-            // 若存在对象级 transform 则注入到 renderJson 的副本中传入。
-            // 单节点路径：LoadSingleRenderNode 返回后再覆盖 transform，更简洁。
+            // multi-mesh 展开在 LoadSingleRenderNode 内完成，需要将对象级 transform 传入副本。
             VansRenderNode* rn = nullptr;
             if (hasObjTransform)
             {
@@ -2085,7 +1754,6 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
 
             if (rn)
             {
-                // 新格式：用对象级 transform 覆盖 render node transform（单节点路径）
                 if (hasObjTransform)
                     rn->SetTransformData(objPos, objRot, objScl);
 
@@ -2166,15 +1834,11 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         }
 
         // ── Non-render TransformID 分配（灯光 / 相机等无 render 组件的对象）──
-        // 无 render 组件时自动分配 TransformID 并从 JSON "transform" 初始化。
-        // SyncLightTransforms 每帧将 Transform 同步到灯光结构体。
-        bool lightTransformAllocated = false;
+        bool objectTransformAllocated = false;
 
-        // 通用 lambda：若对象当前无 render 组件，为其分配独立的 TransformID。
-        // 灯光和相机组件均可调用，确保不与其他对象共享 slot 0。
-        auto ensureLightTransform = [&]()
+        auto ensureObjectTransform = [&]()
         {
-            if (!lightTransformAllocated &&
+            if (!objectTransformAllocated &&
                 obj->GetComponent<VansScriptRenderComponent>() == nullptr)
             {
                 obj->m_TransformID = VansTransformStore::AllocateTransform();
@@ -2196,7 +1860,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                     }
                     t.m_Scale = glm::vec3(1.0f);
                 }
-                lightTransformAllocated = true;
+                objectTransformAllocated = true;
             }
         };
 
@@ -2206,7 +1870,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             // ── 方向光 ────────────────────────────────────────────────────
             if (components.contains("directional_light"))
             {
-                ensureLightTransform();
+                ensureObjectTransform();
                 const auto& dlJson = components["directional_light"];
                 VansDirectionalLight dirLight;
                 if (dlJson.contains("color") && dlJson["color"].is_array())
@@ -2236,7 +1900,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             // ── 点光源 ────────────────────────────────────────────────────
             if (components.contains("point_light"))
             {
-                ensureLightTransform();
+                ensureObjectTransform();
                 const auto& plJson = components["point_light"];
                 VansPointLight pointLight;
                 if (plJson.contains("color") && plJson["color"].is_array())
@@ -2267,7 +1931,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             // ── 聚光灯 ────────────────────────────────────────────────────
             if (components.contains("spot_light"))
             {
-                ensureLightTransform();
+                ensureObjectTransform();
                 const auto& slJson = components["spot_light"];
                 VansSpotLight spotLight;
                 if (slJson.contains("color") && slJson["color"].is_array())
@@ -2302,9 +1966,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         // ── Camera component ──────────────────────────────────────────────
         if (components.contains("camera"))
         {
-            // 若对象没有 render 组件（纯相机对象），需为其分配独立的 TransformID，
-            // 否则 obj->m_TransformID 保持默认值 0，会与第一个 render 对象共享 slot。
-            ensureLightTransform();
+            ensureObjectTransform();
 
             if (m_Camera == nullptr)
             {
@@ -2393,9 +2055,6 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                         bodyNodeName = rc->m_RenderNode->m_NodeName;
                 }
             }
-            // fallback: legacy bodyRenderNode
-            if (bodyNodeName.empty() && vehJson.contains("bodyRenderNode"))
-                bodyNodeName = vehJson["bodyRenderNode"].get<std::string>();
 
             // Resolve tire objects → render node names
             std::vector<std::string> tireNodeNames;
@@ -2414,14 +2073,8 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                             continue;
                         }
                     }
-                    tireNodeNames.push_back(tireObjName); // fallback: treat as node name
+                    VANS_LOG_WARN("[LoadSceneObjects] Vehicle tire object not found: " << tireObjName);
                 }
-            }
-            // fallback: legacy tireRenderNodes
-            if (tireNodeNames.empty() && vehJson.contains("tireRenderNodes"))
-            {
-                for (const auto& t : vehJson["tireRenderNodes"])
-                    tireNodeNames.push_back(t.get<std::string>());
             }
 
             glm::vec3 spawnPos(0.0f, 5.0f, 0.0f);
@@ -2467,102 +2120,3 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
     }
 }
 
-// ===========================================================================
-// AutoCreateObjectsFromLegacy — wrap old-style nodes into VansScriptObjects
-// ===========================================================================
-
-void VansGraphics::VansScene::AutoCreateObjectsFromLegacy()
-{
-    // Wrap each opaque render node into an implicit object
-    for (auto* rn : m_OpaqueRenderNodes)
-    {
-        if (!rn) continue;
-        VansScriptObject* obj = new VansScriptObject();
-        obj->m_ObjectName  = rn->m_NodeName;
-        obj->m_TransformID = rn->m_TransformID;
-
-        auto* rc = new VansScriptRenderComponent();
-        rc->m_ComponentName = "render";
-        rc->m_RenderNode = rn;
-        obj->AddComponent(rc);
-
-        m_SceneObjects.push_back(obj);
-    }
-
-    // Wrap each transparent render node
-    for (auto* rn : m_TransParentRenderNodes)
-    {
-        if (!rn) continue;
-        VansScriptObject* obj = new VansScriptObject();
-        obj->m_ObjectName  = rn->m_NodeName;
-        obj->m_TransformID = rn->m_TransformID;
-
-        auto* rc = new VansScriptRenderComponent();
-        rc->m_ComponentName = "render";
-        rc->m_RenderNode = rn;
-        obj->AddComponent(rc);
-
-        m_SceneObjects.push_back(obj);
-    }
-
-    // Attach physics nodes to matching objects (by transform ID)
-    for (auto* pn : m_PhysicsNodes)
-    {
-        if (!pn) continue;
-        for (auto* obj : m_SceneObjects)
-        {
-            if (obj->m_TransformID == pn->GetTransformID())
-            {
-                auto* pc = new VansScriptPhysicsComponent();
-                pc->m_ComponentName = "physics";
-                pc->m_PhysicsNode = pn;
-                obj->AddComponent(pc);
-                break;
-            }
-        }
-    }
-
-    // Attach cloth nodes to matching objects (via target render node)
-    for (auto* cn : m_ClothNodes)
-    {
-        if (!cn) continue;
-        VansRenderNode* targetRN = cn->GetTargetRenderNode();
-        if (!targetRN) continue;
-        for (auto* obj : m_SceneObjects)
-        {
-            auto* rc = obj->GetComponent<VansScriptRenderComponent>();
-            if (rc && rc->m_RenderNode == targetRN)
-            {
-                auto* cc = new VansScriptClothComponent();
-                cc->m_ComponentName = "cloth";
-                cc->m_ClothNode = cn;
-                obj->AddComponent(cc);
-                break;
-            }
-        }
-    }
-
-    // Attach vehicle to a matching object (by body render node)
-    if (m_Vehicle)
-    {
-        const std::string& bodyName = m_Vehicle->GetBodyRenderNodeName();
-        VansRenderNode* bodyRN = FindRenderNodeByName(bodyName);
-        if (bodyRN)
-        {
-            for (auto* obj : m_SceneObjects)
-            {
-                auto* rc = obj->GetComponent<VansScriptRenderComponent>();
-                if (rc && rc->m_RenderNode == bodyRN)
-                {
-                    auto* vc = new VansScriptVehicleComponent();
-                    vc->m_ComponentName = "vehicle";
-                    vc->m_Vehicle = m_Vehicle;
-                    obj->AddComponent(vc);
-                    break;
-                }
-            }
-        }
-    }
-
-    VANS_LOG("[AutoCreateObjectsFromLegacy] Created " << m_SceneObjects.size() << " implicit objects from legacy data.");
-}

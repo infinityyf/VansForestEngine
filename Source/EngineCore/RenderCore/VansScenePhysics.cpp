@@ -42,7 +42,7 @@ void VansGraphics::VansScene::InitVehicle(VansEngine::VansPhysicsSystem* physics
 // ===========================================================================
 
 // ===========================================================================
-// Single cloth node loading (extracted from LoadPhysicsNodes)
+// Single cloth node loading
 // ===========================================================================
 
 VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const json& clothNodeJson, VansRenderNode* associatedRenderNode)
@@ -50,13 +50,6 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
     using namespace VansEngine;
 
     VansRenderNode* renderNode = associatedRenderNode;
-
-    // If no associated render node was passed, try to find one by name (legacy path)
-    if (!renderNode && clothNodeJson.contains("renderNode"))
-    {
-        std::string renderNodeName = clothNodeJson["renderNode"].get<std::string>();
-        renderNode = FindRenderNodeByName(renderNodeName);
-    }
 
     if (!renderNode)
     {
@@ -80,17 +73,14 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
             clothProps.pinnedParticleIndices.push_back(idx.get<uint32_t>());
     }
 
-    // Parse collision sphere references — supports both old ("renderNode") and new ("objectRef") keys
+    // 通过 objectRef 解析碰撞球引用。
     if (clothNodeJson.contains("collisionSpheres"))
     {
         for (const auto& csJson : clothNodeJson["collisionSpheres"])
         {
             ClothNodeProperties::CollisionSphereRef ref;
-            if (csJson.contains("renderNode"))
-                ref.renderNodeName = csJson["renderNode"].get<std::string>();
-            else if (csJson.contains("objectRef"))
+            if (csJson.contains("objectRef"))
             {
-                // New path: resolve objectRef → render node name
                 std::string objectName = csJson["objectRef"].get<std::string>();
                 VansScriptObject* refObj = FindObjectByName(objectName);
                 if (refObj)
@@ -136,7 +126,7 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
 }
 
 // ===========================================================================
-// Single physics node loading (extracted from LoadPhysicsNodes)
+// Single physics node loading
 // ===========================================================================
 
 VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(const json& physicsNodeJson, VansRenderNode* associatedRenderNode)
@@ -219,40 +209,13 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(cons
     if (physicsNodeJson.contains("isTrigger"))
         properties.isTrigger = physicsNodeJson["isTrigger"].get<bool>();
 
-    // Resolve transform ID
-    uint32_t transformID = 0;
-    if (associatedRenderNode)
+    if (associatedRenderNode == nullptr)
     {
-        // New path: use the associated render node from the same ScriptObject
-        transformID = associatedRenderNode->m_TransformID;
+        VANS_LOG_WARN("[VansScene] Physics component has no associated render node, skipping.");
+        return nullptr;
     }
-    else if (physicsNodeJson.contains("transformID"))
-    {
-        transformID = physicsNodeJson["transformID"];
-    }
-    else if (physicsNodeJson.contains("renderNode"))
-    {
-        std::string renderNodeName = physicsNodeJson["renderNode"].get<std::string>();
-        VansRenderNode* rn = FindRenderNodeByName(renderNodeName);
-        if (rn)
-            transformID = rn->m_TransformID;
-        else
-            VANS_LOG_WARN("[VansScene] Physics node: renderNode '" << renderNodeName << "' not found.");
-    }
-    else if (physicsNodeJson.contains("name"))
-    {
-        std::string nodeName = physicsNodeJson["name"];
-        for (auto* renderNode : m_OpaqueRenderNodes)
-        {
-            if (renderNode->m_NodeName == nodeName)
-            { transformID = renderNode->m_TransformID; break; }
-        }
-        for (auto* renderNode : m_TransParentRenderNodes)
-        {
-            if (renderNode->m_NodeName == nodeName)
-            { transformID = renderNode->m_TransformID; break; }
-        }
-    }
+
+    uint32_t transformID = associatedRenderNode->m_TransformID;
 
     // Get mesh reference if needed
     VansMesh* mesh = nullptr;
@@ -270,64 +233,6 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(cons
 
     m_PhysicsNodes.push_back(physicsNode);
     return physicsNode;
-}
-
-// ===========================================================================
-// Physics node loading from JSON (delegates to single-node helpers)
-// ===========================================================================
-
-void VansGraphics::VansScene::LoadPhysicsNodes(json& physics_node)
-{
-    using namespace VansEngine;
-
-    for (const auto& physicsNodeJson : physics_node)
-    {
-        // ── Vehicle physics node ─────────────────────────────────────────────
-        if (physicsNodeJson.contains("nodeType") && physicsNodeJson["nodeType"].get<std::string>() == "vehicle")
-        {
-            if (m_Vehicle)
-            {
-                VANS_LOG_WARN("[VansScene] LoadPhysicsNodes: vehicle node already initialized, skipping.");
-                continue;
-            }
-
-            glm::vec3 spawnPos(0.0f, 5.0f, 0.0f);
-            if (physicsNodeJson.contains("position"))
-            {
-                auto& p = physicsNodeJson["position"];
-                spawnPos = glm::vec3(p[0].get<float>(), p[1].get<float>(), p[2].get<float>());
-            }
-
-            std::string bodyNodeName;
-            if (physicsNodeJson.contains("bodyRenderNode"))
-                bodyNodeName = physicsNodeJson["bodyRenderNode"].get<std::string>();
-
-            std::vector<std::string> tireNodeNames;
-            if (physicsNodeJson.contains("tireRenderNodes"))
-            {
-                for (const auto& t : physicsNodeJson["tireRenderNodes"])
-                    tireNodeNames.push_back(t.get<std::string>());
-            }
-
-            InitVehicle(&VansPhysicsSystem::GetInstance(), spawnPos, bodyNodeName, tireNodeNames);
-            continue;
-        }
-        // ── Cloth simulation node ────────────────────────────────────────────
-        if (physicsNodeJson.contains("nodeType") && physicsNodeJson["nodeType"].get<std::string>() == "cloth")
-        {
-            if (!physicsNodeJson.contains("renderNode"))
-            {
-                VANS_LOG_WARN("[VansScene] Cloth node missing 'renderNode' field, skipping.");
-                continue;
-            }
-            LoadSingleClothNode(physicsNodeJson, nullptr);
-            continue;
-        }
-        // ── Regular physics node ─────────────────────────────────────────────
-        if (!physicsNodeJson.contains("enabled"))
-            continue;
-        LoadSinglePhysicsNode(physicsNodeJson, nullptr);
-    }
 }
 
 // ===========================================================================
