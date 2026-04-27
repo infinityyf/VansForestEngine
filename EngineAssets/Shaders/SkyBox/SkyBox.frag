@@ -275,7 +275,21 @@ vec3 calculateVolumetricClouds(vec3 viewPosition, vec3 viewDirection, vec3 atoms
     vec3 color = calculateVolumetricClouds(viewPosition,viewDirection, skyColor, dither, lightAbsorb);
 
     vec2 uv = gl_FragCoord.xy / ScreenParams.xy;
-    vec4 fogData = texture(fogResult, uv);
+
+    // Fog reprojection — fogResult 由上一帧 GBuffer 计算，相机移动/旋转时
+    // 直接按当前 UV 采样会与几何（含天空）错位。
+    // 天空在无穷远，可只考虑相机旋转：把视线方向沿当前相机推到很远处合成
+    // 一个虚拟世界点，再用上一帧矩阵投回 UV。viewDirection 已经是世界空间。
+    vec3 reprojWS = cameraPosition.xyz + viewDirection * 100000.0;
+    vec4 lastClip = LastProjectionMatrix * LastViewMatrix * vec4(reprojWS, 1.0);
+    lastClip /= lastClip.w;
+    lastClip.y = -lastClip.y;
+    vec2 fogUV = lastClip.xy * 0.5 + 0.5;
+    bool fogReprojValid = all(greaterThanEqual(fogUV, vec2(0.0))) &&
+                          all(lessThanEqual   (fogUV, vec2(1.0)));
+    if (!fogReprojValid) fogUV = uv;
+
+    vec4 fogData = texture(fogResult, fogUV);
     float fogOpacity = fogData.a;
     color = color * (1.0 - fogOpacity) + fogData.rgb;
 

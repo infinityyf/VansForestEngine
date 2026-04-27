@@ -136,12 +136,12 @@ vec4 WorldToLastFrameUVW(vec3 worldPos, float near, float far, vec2 screenSize,
     vec2 uv = lastNDC.xy * 0.5 + 0.5;
     uv.y    = 1.0 - uv.y;
 
-    // Linearise clip depth → view-space distance for slice lookup.
-    // Vulkan NDC z ∈ [0,1]: viewZ = near * far / (far - ndcZ * (far - near))
-    // Guard against near == far and degenerate NDC values to prevent NaN/Inf.
-    float ndcZ        = clamp(lastNDC.z, 0.0, 1.0);
-    float denom       = max(far - ndcZ * (far - near), 1e-6);
-    float linearDepth = (near * far) / denom;
+    // 直接从 LastViewMatrix 提取 view-space Z，避免用雾体积 near/far 反算相机 NDC z。
+    // 两者数值范围不同（相机 near/far: 0.1/2000，雾 near/far: 1/300），
+    // 用错后深度误差可达数倍至数十倍，导致时间重投影读取错误深度切片。
+    // 右手坐标系下相机前方为 -Z，取反即线性 view-space 深度。
+    vec4  lastViewPos  = LastViewMatrix * vec4(worldPos, 1.0);
+    float linearDepth  = -lastViewPos.z;
 
     // Continuous W — same power-curve inverse as ScreenToFrustumUVW so that
     // both lookups use identical non-discretised coordinates and trilinear

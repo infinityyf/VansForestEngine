@@ -26,6 +26,9 @@ namespace VansGraphics
         glm::mat4x4 LastPrevVPMatrix;
         glm::mat4x4 InverseViewMatrix;
         glm::mat4x4 InverseProjectionMatrix;
+        // 未经 jitter 偏移的 VP 矩阵，用于 MotionVector pass，保证静止时速度场精确为零
+        glm::mat4x4 UnjitteredVPMatrix;
+        glm::mat4x4 LastUnjitteredVPMatrix;
         //resolution, 1/resolution
         glm::vec4 ScreenParams;
         //frame index, time

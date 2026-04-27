@@ -98,8 +98,13 @@ void main()
 	ResolverAABB(inputColor, 0, 10, 2.5, uv, ScreenParams.xy, SSR_Variance, SSR_MinColor, SSR_MaxColor, SSR_CurrColor);
 
 	/////Clamp TemporalColor
-    vec2 prevUV = clamp(uv - Ray_Velocity, vec2(0.0), vec2(1.0));
-    ivec2 prevPixel = ivec2((prevUV * ScreenParams.xy));
+    // 先判断未 clamp 的 reprojection 是否有效。之前先 clamp 再计算 edgeFade，
+    // 会把屏幕外历史强行拉到边缘像素继续混合，导致相机移动/遮挡边缘残留拖影。
+    vec2 rawPrevUV = uv - Ray_Velocity;
+    bool historyValid = all(greaterThanEqual(rawPrevUV, vec2(0.0))) &&
+                        all(lessThan(rawPrevUV, vec2(1.0)));
+    vec2 prevUV = clamp(rawPrevUV, vec2(0.0), vec2(1.0));
+    ivec2 prevPixel = clamp(ivec2(prevUV * ScreenParams.xy), ivec2(0), screenSize - 1);
 
     int frameIndex = int(FrameIndex) % 2;
 	vec4 SSR_PrevColor = frameIndex == 0 ? imageLoad(aaResultA, prevPixel) : imageLoad(aaResultB, prevPixel);
@@ -111,26 +116,29 @@ void main()
 	SSR_PrevColor = clamp(SSR_PrevColor, SSR_MinColor, SSR_MaxColor);
 
 	/////Disocclusion detection
-	// Velocity-based: large motion → less temporal reuse (gentle falloff at 40 pixels)
+    // Velocity-based: large motion → less temporal reuse
 	float velocityLen = length(Ray_Velocity * ScreenParams.xy);
-	float velocityWeight = clamp(1.0 - velocityLen / 40.0, 0.0, 1.0);
+    float velocityWeight = clamp(1.0 - velocityLen / 16.0, 0.0, 1.0);
 
-	// Screen-edge rejection: fade out near borders to avoid pulling in invalid reprojection
-	float edgeFade = 1.0;
-	edgeFade *= smoothstep(0.0, 0.02, prevUV.x) * smoothstep(1.0, 0.98, prevUV.x);
-	edgeFade *= smoothstep(0.0, 0.02, prevUV.y) * smoothstep(1.0, 0.98, prevUV.y);
+    // Screen-edge rejection: 使用 rawPrevUV，越界历史直接无效，不允许 clamp 到边缘复用。
+    float edgeFade = historyValid ? 1.0 : 0.0;
+    edgeFade *= smoothstep(0.0, 0.02, rawPrevUV.x) * smoothstep(1.0, 0.98, rawPrevUV.x);
+    edgeFade *= smoothstep(0.0, 0.02, rawPrevUV.y) * smoothstep(1.0, 0.98, rawPrevUV.y);
 
-	// Invalid geometry (sky / missing depth): no temporal reuse
-	float depthWeight = (depth > 0.0) ? 1.0 : 0.0;
+    // Invalid geometry / invalid current SSR sample: no temporal reuse.
+    float depthWeight = (depth > 0.0) ? 1.0 : 0.0;
+    float currentValidWeight = (SSR_CurrColor.a > 0.001) ? 1.0 : 0.0;
 
 	// High variance → favor more temporal accumulation to reduce noise
 	// Low variance  → can afford a lower blend to stay responsive
-	float varianceBlend = mix(0.90, 0.97, SSR_Variance);
+    float varianceBlend = mix(0.80, 0.92, SSR_Variance);
 
 	// Adaptive temporal blend: base weight scaled by confidence
-	float temporalWeight = varianceBlend * velocityWeight * edgeFade * depthWeight;
-	// Guarantee a minimum blend so SSR noise always gets smoothed
-	temporalWeight = max(temporalWeight, 0.75 * depthWeight);
+    float temporalWeight = varianceBlend * velocityWeight * edgeFade * depthWeight * currentValidWeight;
+    if (FrameIndex < 1.5)
+    {
+        temporalWeight = 0.0;
+    }
 
 	/////Combine TemporalColor
 	vec4 ReflectionColor = mix(SSR_CurrColor, SSR_PrevColor, temporalWeight);

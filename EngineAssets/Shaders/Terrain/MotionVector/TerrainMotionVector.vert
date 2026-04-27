@@ -79,13 +79,14 @@ void main() {
     // 4. 组合最终世界坐标
     vec3 worldPos = vec3(worldPosXZ.x, height - 23, worldPosXZ.y);
 
-    // Current-frame clip position
-    vec4 currentClip = VPMatrix * vec4(worldPos, 1.0);
+    // MotionVector 必须使用未 jitter 的 VP；否则静止镜头下 terrain 仍会写入亚像素速度。
+    vec4 currentClip = UnjitteredVPMatrix * vec4(worldPos, 1.0);
 
     // Previous-frame clip position (camera motion only — terrain is static)
-    vec4 previousClip = LastVPMatrix * vec4(worldPos, 1.0);
+    vec4 previousClip = LastUnjitteredVPMatrix * vec4(worldPos, 1.0);
 
-    gl_Position      = currentClip;
+    // 光栅化位置仍使用 jittered VP，保持 TAA / GBuffer 抖动一致。
+    gl_Position      = VPMatrix * vec4(worldPos, 1.0);
     vCurrentClipPos  = currentClip;
     vPreviousClipPos = previousClip;
 }

@@ -677,11 +677,14 @@ namespace VansGraphics
 
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_BilateralFilter(manager->m_BilateralFilterSetLayout, manager->m_BilateralFilterDescriptorSets, 3);
 
+		// Wider spatial filter to smooth residual noise after temporal accumulation.
+		// radius=5 (11×11 kernel) with sigmaSpace=4.0 provides better coverage for
+		// 1-SPP GI; depth parameters unchanged to preserve geometric edges.
 		manager->m_BilateralFilterPushConstant =
 		{
-			2.0f,
+			4.0f,
 			0.02f,
-			3,
+			5,
 			0.01f
 		};
 

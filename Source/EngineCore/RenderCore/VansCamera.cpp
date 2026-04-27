@@ -232,6 +232,11 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     m_CameraData.ProjectionMatrix = jitteredProj;
     m_CameraData.VPMatrix = jitteredProj * view_matrix;
 
+    // 保存未经 jitter 的 VP，用于 MotionVector pass，保证静止时速度场精确为零
+    glm::mat4 unjitteredVP = projective_matrix * view_matrix;
+    m_CameraData.LastUnjitteredVPMatrix = (m_RenderFrameIndex == 0) ? unjitteredVP : m_CameraData.UnjitteredVPMatrix;
+    m_CameraData.UnjitteredVPMatrix     = unjitteredVP;
+
     m_CameraData.InverseViewMatrix       = glm::inverse(view_matrix);
     m_CameraData.InverseProjectionMatrix = glm::inverse(jitteredProj);
     m_CameraData.ScreenParams     = glm::vec4(width, height, 1.0f / width, 1.0f / height);

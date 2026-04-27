@@ -96,7 +96,10 @@ void main()
     mat3 TBN = mat3(t, b, normal);
 
     // ---- 1 SPP: one ray per pixel, temporally jittered ----
-    vec2 noise = HashRandom(uv, float(int(FrameIndex) % 64));
+    // PixelSeedHash 在空间上去相关（相邻像素采样不同方向），R2Sequence 提供
+    // 低差异准随机覆盖，512帧循环比 HashRandom 的 64帧 sin-hash 减少时域重复。
+    uint rseed = PixelSeedHash(pixelCoord);
+    vec2 noise = R2Sequence(int((rseed + uint(FrameIndex)) % 512u));
 
     vec3 dir = CosineWeightedDirection(noise, TBN);
 

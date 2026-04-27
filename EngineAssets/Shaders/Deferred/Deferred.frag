@@ -131,7 +131,10 @@ void main()
     brdfData.viewDirection = viewDirection;
     brdfData.positionWS = position_world;
     
-    //remap to last frame screen space (used for SSR reprojection)
+    //remap to last frame screen space (used for SSR / fog reprojection)
+    // 注意：天空像素（linearDepth == 0）这里不必特殊处理 —— Deferred subpass
+    // 之后 SkyBox 会把所有天空像素重写覆盖，并在 SkyBox.frag 内部完成自己的
+    // 雾 reprojection。这里只需保证非天空几何的 reprojection 正确。
     vec4 lastFrameClip = LastProjectionMatrix * LastViewMatrix * vec4(position_world, 1.0);
     lastFrameClip /= lastFrameClip.w;
     lastFrameClip.y = -lastFrameClip.y; // flip y for screen space
@@ -250,10 +253,16 @@ void main()
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
     //outColor.rgb = lightResult.ambientSpecular;
     //混合雾效  fogResult: rgb = in-scatter, a = opacity (1 - transmittance)
-    vec4 fogData = texture(fogResult, fragTexCoord);
+    // fogResult 由上一帧 GBuffer 计算得到，按 motion-vector reprojection 采样
+    // 才能与当前帧几何对齐；越界（disocclusion / 视锥外）回退到当前 UV。
+    vec2 fogUV = lastFrameUV;
+    bool fogReprojValid = all(greaterThanEqual(fogUV, vec2(0.0))) &&
+                          all(lessThanEqual   (fogUV, vec2(1.0)));
+    if (!fogReprojValid) fogUV = fragTexCoord;
+    vec4 fogData = texture(fogResult, fogUV);
     float fogOpacity = fogData.a;
     outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
-    //outColor.rgb = fogData.rgb * fogOpacity;
+    //outColor.rgb = vec3(brdfData.ao,brdfData.ao,brdfData.ao);
     //outColor.rgb = lightResult.ambientSpecular;
     //outColor.rgb = CalculateSHDiffuse(position_world, normal);
     outColor.a = 1;

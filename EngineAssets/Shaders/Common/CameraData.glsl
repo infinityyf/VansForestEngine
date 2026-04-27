@@ -21,6 +21,9 @@ layout(set=CameraCBBind, binding=0) uniform    CameraUniformBuffer
     mat4 LastPrevVPMatrix;
     mat4 InverseViewMatrix;
     mat4 InverseProjectionMatrix;
+    // 未经 jitter 偏移的 VP 矩阵，供 MotionVector pass 使用，保证静止时速度场精确为零
+    mat4 UnjitteredVPMatrix;
+    mat4 LastUnjitteredVPMatrix;
     vec4 ScreenParams;
     vec4 FrameParams;
     vec4 CameraParams; // x: near, y: far, z: fov, w: aspect

@@ -46,16 +46,17 @@ void main()
     // Current-frame world position
     vec4 worldPos = currentModel * position;
 
-    // Current-frame clip position (current camera VP)
-    vec4 currentClip = VPMatrix * worldPos;
+    // Current-frame clip position (unjittered，保证静止时 motionVec 精确为零)
+    vec4 currentClip = UnjitteredVPMatrix * worldPos;
 
     // Previous-frame world position (using last frame's model matrix)
     vec4 prevWorldPos = prevModel * position;
 
-    // Previous-frame clip position (last frame camera VP + last frame model)
-    vec4 previousClip = LastVPMatrix * prevWorldPos;
+    // Previous-frame clip position (unjittered last frame VP + last frame model)
+    vec4 previousClip = LastUnjitteredVPMatrix * prevWorldPos;
 
-    gl_Position      = currentClip;
+    // gl_Position 仍用 jittered VPMatrix 保持 TAA 抖动对 GBuffer 的作用
+    gl_Position      = VPMatrix * worldPos;
     vCurrentClipPos  = currentClip;
     vPreviousClipPos = previousClip;
 }

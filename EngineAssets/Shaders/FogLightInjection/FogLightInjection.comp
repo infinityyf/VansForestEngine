@@ -258,6 +258,19 @@ void main()
         float maxDiff = max(max(diff.r, diff.g), max(diff.b, diff.a));
         // Smoothly increase blend from 5% toward 80% as diff climbs from 1.0 to 3.0.
         blendFactor = mix(0.05, 0.8, smoothstep(1.0, 3.0, maxDiff));
+
+        // P1 修复：相机移动感知 —— 视锥对齐体素网格每帧跟随相机重建，
+        // 快速移动时历史体素来自不同世界位置，继续用 95% 历史权重会导致约 20 帧滞后。
+        // 从 LastViewMatrix 反算上一帧相机世界位置：
+        //   ViewMatrix = [R^T | -R^T*p]，所以 p_last = (R^T)^{-1} * (-tx,-ty,-tz)
+        //                               = R * (-LastViewMatrix[3].xyz)
+        //                               = transpose(mat3(LastViewMatrix)) * (-LastViewMatrix[3].xyz)
+        vec3 lastCamPos  = transpose(mat3(LastViewMatrix)) * (-LastViewMatrix[3].xyz);
+        float motionDist = length(cameraPosition.xyz - lastCamPos);
+        // 静止时 motionBlend=0（保持 blendFactor=0.05），
+        // 移动速度 ≥0.5m/frame 时 motionBlend→1（blendFactor 被拉至 0.8，快速响应）。
+        float motionBlend = smoothstep(0.0, 0.5, motionDist);
+        blendFactor = max(blendFactor, motionBlend * 0.8);
     }
     else
     {

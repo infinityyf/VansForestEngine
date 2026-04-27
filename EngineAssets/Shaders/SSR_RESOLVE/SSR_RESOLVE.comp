@@ -33,10 +33,8 @@ void main()
     vec3 position = texelFetch(inputPosition, pixelCoord, 0).xyz;
     vec2 hituv = hitInfo.xy;
 
-    // SSR Resolve 使用上一帧的 Position 数据，视线向量需用上一帧相机位置。
-    // 从 LastViewMatrix 提取：camPos = -R^T * t，其中 t = V[3].xyz（第四列）。
-    vec3 lastCameraPosition = -(transpose(mat3(LastViewMatrix)) * LastViewMatrix[3].xyz);
-    vec3 viewDirection = normalize(lastCameraPosition - position);
+    // 视线向量使用当帧相机位置（position 来自当帧 GBuffer），保证 BRDF 权重正确。
+    vec3 viewDirection = normalize(cameraPosition.xyz - position);
 
     vec3 resolvedReflectionColor = vec3(0.0);
     float resolvedWeight = 0.0;
@@ -116,8 +114,18 @@ void main()
         float normalWeight = pow(max(0.0, dot(normal, neighborNormal)), normalPower);
 
         // Bilateral weight: depth similarity
+        // Hard reject first: skip samples from different surfaces entirely before
+        // computing any further weights. Without this, a neighbor at a very
+        // different depth can still contribute a small non-zero weight after
+        // BRDF normalization, leaking background colors into foreground reflections.
+        // Threshold: 20% relative depth difference (generous enough to handle
+        // sloped surfaces and non-planar geometry, strict enough to reject
+        // foreground/background bleed).
         float neighborDepth = texelFetch(inputPosition, neighborCoord, 0).w;
-        float depthWeight = exp(-abs(centerDepth - neighborDepth) / max(centerDepth * 0.05, 0.01));
+        float depthDiff = abs(centerDepth - neighborDepth);
+        if (depthDiff > centerDepth * 0.2)
+            continue;
+        float depthWeight = exp(-depthDiff / max(centerDepth * 0.05, 0.01));
 
         // Inverse-luminance weighting (Karis): prevents bright outliers
         // from dominating the weighted average, reducing firefly noise.
