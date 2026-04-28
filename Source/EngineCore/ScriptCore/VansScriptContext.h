@@ -253,7 +253,20 @@ public:
 	// 该灯光在 m_LightManager::m_SpotLights 中的索引
 	int m_LightIndex = -1;
 };
-// ── Camera Component ────────────────────────────────────────────────────────────────────
+// ── Rect Light Component (area light, evaluated via LTC) ─────────────────────
+// 持有对 VansLightManager 中面光源的非拥有索引引用。
+// 每帧由 VansScene::SyncLightTransforms 将对象 Position/Right/Up/Normal 写入对应字段。
+class VansScriptRectLightComponent : public VansScriptComponent
+{
+public:
+	VansScriptRectLightComponent() { m_ComponentName = "RectLight"; }
+
+	// 非拥有指针，生命周期由 VansScene::m_LightManager 管理
+	VansGraphics::VansLightManager* m_LightManager = nullptr;
+
+	// 该灯光在 m_LightManager::m_RectLights 中的索引
+	int m_LightIndex = -1;
+};// ── Camera Component ────────────────────────────────────────────────────────────────────
 // 持有对 VansCamera 的非拥有指针；VansCamera 由 VansScene 生命周期管理。
 // Transform 的 position/rotation(pitch/yaw) 每帧由 VansCamera::SyncFromTransform 同步。
 class VansScriptCameraComponent : public VansScriptComponent

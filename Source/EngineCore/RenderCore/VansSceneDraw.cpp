@@ -150,6 +150,55 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
     }
 }
 
+void VansGraphics::VansScene::DrawRectShadow(int pointCount, int spotCount, int lightIndex)
+{
+    auto vansConfigration = VansConfigration::GetInstance();
+    float punctualShadowSize = vansConfigration->GetPunctualShadowMapWidth();
+    float patchShadowSize = punctualShadowSize / 8;
+
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+
+    // Atlas slot index = pointCount*6 (point uses 6 faces) + spotCount + lightIndex
+    int slotIndex = pointCount * 6 + spotCount + lightIndex;
+    float regionOffsetX = (slotIndex % 8) * patchShadowSize;
+    float regionOffsetY = (slotIndex / 8) * patchShadowSize;
+
+    VkViewport viewPort = {};
+    viewPort.x = regionOffsetX;
+    viewPort.y = regionOffsetY;
+    viewPort.width = patchShadowSize;
+    viewPort.height = patchShadowSize;
+    viewPort.minDepth = 0.0f;
+    viewPort.maxDepth = 1.0f;
+
+    VkRect2D scissor = {};
+    scissor.offset = { (int)(regionOffsetX), (int)(regionOffsetY) };
+    scissor.extent = { (uint32_t)(patchShadowSize), (uint32_t)(patchShadowSize) };
+
+    cmd.SetViewport(0, { viewPort });
+    cmd.SetScissor(0, { scissor });
+
+    // Encode logical lightIndex passed to shader as (pointCount + spotCount + lightIndex)
+    // so PunctualShadow.vert can pick the rect branch via uPointLightCount + uSpotLightCount.
+    int shaderLightIndex = pointCount + spotCount + lightIndex;
+    for (auto& node : m_OpaqueRenderNodes)
+    {
+        if (node == nullptr) continue;
+
+        auto* opaque = static_cast<VansCommonRenderNode*>(node);
+        if (!opaque->m_SupportShadow) continue;
+
+        VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
+        if (!shader) continue;
+
+        node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
+                                                opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
+                                                shaderLightIndex, 0);
+    }
+}
+
 void VansGraphics::VansScene::DrawSkyBoxNode()
 {
     if (m_SkyBoxNode == nullptr)

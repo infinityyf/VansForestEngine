@@ -29,6 +29,10 @@ struct TileLightHeaderOut
     uint pointCount;
     uint spotOffset;
     uint spotCount;
+    uint rectOffset;
+    uint rectCount;
+    uint pad0;
+    uint pad1;
 };
 
 layout(set = 1, binding = 0, std430) buffer OutTileLightGrid
@@ -55,6 +59,7 @@ layout(set = 1, binding = 2) uniform TileLightBuildParams
 #define TILE_LIGHT_TILE_SIZE       8
 #define TILE_LIGHT_MAX_PT_PER_TILE 64
 #define TILE_LIGHT_MAX_SP_PER_TILE 64
+#define TILE_LIGHT_MAX_RECT_PER_TILE 16
 
 // ---------------------------------------------------------------------------
 // 球体与屏幕 Tile NDC AABB 相交测试（保守测试）
@@ -122,9 +127,13 @@ void main()
     uint ptOffset = tileIdx * TILE_LIGHT_MAX_PT_PER_TILE;
     uint spOffset = uBuildParams.totalTiles * TILE_LIGHT_MAX_PT_PER_TILE
                     + tileIdx * TILE_LIGHT_MAX_SP_PER_TILE;
+    uint rcOffset = uBuildParams.totalTiles * TILE_LIGHT_MAX_PT_PER_TILE
+                    + uBuildParams.totalTiles * TILE_LIGHT_MAX_SP_PER_TILE
+                    + tileIdx * TILE_LIGHT_MAX_RECT_PER_TILE;
 
     uint ptCount = 0u;
     uint spCount = 0u;
+    uint rcCount = 0u;
 
     // --- 点光源 ---
     for (uint i = 0u; i < uPointLightCount && i < uint(MAX_POINT_LIGHTS); ++i)
@@ -154,9 +163,30 @@ void main()
         }
     }
 
+    // --- 面光源（RectLight）使用与 LightsData.glsl::GetRectSphereCenter/Radius 一致的包围球 ---
+    uint rectLightCount = GetRectLightCount();
+    for (uint i = 0u; i < rectLightCount && i < uint(MAX_RECT_LIGHTS); ++i)
+    {
+        RectLightData rl = GetRectLight(int(i));
+        vec3  sc = GetRectSphereCenter(rl);
+        float sr = GetRectSphereRadius(rl);
+        if (SphereTileIntersects(sc, sr, tileX, tileY))
+        {
+            if (rcCount < uint(TILE_LIGHT_MAX_RECT_PER_TILE))
+            {
+                outTileLightIndices[rcOffset + rcCount] = i;
+                rcCount++;
+            }
+        }
+    }
+
     // --- 写入 Header ---
     outTileLightHeaders[tileIdx].pointOffset = ptOffset;
     outTileLightHeaders[tileIdx].pointCount  = ptCount;
     outTileLightHeaders[tileIdx].spotOffset  = spOffset;
     outTileLightHeaders[tileIdx].spotCount   = spCount;
+    outTileLightHeaders[tileIdx].rectOffset  = rcOffset;
+    outTileLightHeaders[tileIdx].rectCount   = rcCount;
+    outTileLightHeaders[tileIdx].pad0        = 0u;
+    outTileLightHeaders[tileIdx].pad1        = 0u;
 }

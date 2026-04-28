@@ -358,6 +358,13 @@ namespace VansGraphics
 		{
 			m_Scene->DrawSpotShadow(pointLightCount, lightIndex);
 		}
+
+		auto& rectLights = lightManager->GetRectLights();
+		int rectLightCount = static_cast<int>(std::min<size_t>(rectLights.size(), lightManager->GetMaxRectLightCount()));
+		for (int lightIndex = 0; lightIndex < rectLightCount; lightIndex++)
+		{
+			m_Scene->DrawRectShadow(pointLightCount, spotLightCount, lightIndex);
+		}
 	}
 
 	void VansVKDevice::DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)

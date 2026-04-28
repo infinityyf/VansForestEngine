@@ -429,6 +429,18 @@ namespace VansGraphics
 		SubmitAndWait(command_buffer, queue, device);
 	}
 
+	void VansTexture::LoadFromMemory(VansVKCommandBuffer& command_buffer,
+		const void* data, size_t dataSize,
+		int width, int height, VkFormat format,
+		VkSamplerAddressMode addressMode)
+	{
+		m_TextureWidth = width;
+		m_TextureHeight = height;
+		m_TextureSlice = 1;
+		UploadUncompressedTexture(command_buffer, data, dataSize, width, height, format,
+			/*needMip*/ false, addressMode);
+	}
+
 	void VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision, VkSamplerAddressMode addressMode)
 	{
 		m_TextureWidth = width;

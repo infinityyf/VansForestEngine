@@ -234,6 +234,47 @@ void main()
             totalInscatter += sl.color.rgb * sl.intensity * attenuation * phase * uVolume.scatterScale;
         }
 
+        // 面光源（RectLight）— Phase 4：体积雾注入。
+        // 使用近似“立体角 × 相位函数”，避免在体素内跳进多采样 LTC。
+        for (uint _rck = 0u; _rck < _th.rectCount; ++_rck)
+        {
+            uint rcIdx = tileLightIndices[_th.rectOffset + _rck];
+            RectLightData rl = GetRectLight(int(rcIdx));
+            vec3 toLight = rl.position_halfW.xyz - worldPos;
+            float dist   = length(toLight);
+            float range  = rl.right_range.w;
+            if (dist > range || dist < 1e-4) continue;
+
+            vec3 lightDir = toLight / dist;
+
+            // 单面发光：背面贡献为 0
+            bool twoSided = rl.color_twoSided.w > 0.5;
+            float facing  = dot(rl.normal_halfH.xyz, -lightDir);
+            if (!twoSided && facing <= 0.0) continue;
+            float facingTerm = twoSided ? abs(facing) : max(facing, 0.0);
+
+            // Solid-angle approximation: A * cosθ / d²（带距离衰减 window）
+            float halfW = rl.position_halfW.w;
+            float halfH = rl.normal_halfH.w;
+            float area  = 4.0 * halfW * halfH;
+            float invR2 = 1.0 / max(range * range, 1e-6);
+            float window = clamp(1.0 - (dist * dist * invR2) * (dist * dist * invR2), 0.0, 1.0);
+            window *= window;
+            float solidAngleScale = area * facingTerm / max(dist * dist, 1e-4) * window;
+
+            float shadow = 1.0;
+            int shadowIdx = int(rl.shadowParams.x);
+            if (shadowIdx >= 0)
+                shadow = SampleRectShadowMap(worldPos, punctualShadowMap, shadowIdx);
+
+            float cosTheta = dot(normalize(cameraPosition.xyz - worldPos), -lightDir);
+            float phaseR   = FogInjectionPhase(cosTheta, uVolume.anisotropy);
+
+            // 1/(4π) 已隐含在 phase 中，这里不重复除。
+            totalInscatter += rl.color_twoSided.rgb * rl.up_intensity.w
+                           * solidAngleScale * shadow * phaseR * uVolume.scatterScale;
+        }
+
         current = vec4(totalInscatter * d, d);
     }
 

@@ -8,6 +8,11 @@
 
 #include "../VansGraphicsBuffer.h"
 #include <vector>
+
+// Forward declare VMA opaque allocation handle to keep this header light.
+struct VmaAllocation_T;
+typedef struct VmaAllocation_T* VmaAllocation;
+
 using namespace VansGraphics;
 namespace VansGraphics
 {
@@ -31,7 +36,8 @@ namespace VansGraphics
 	private:
 		VkBuffer m_VansVKBuffer = VK_NULL_HANDLE;
 
-		VkDeviceMemory m_VansVKBufferMemory = VK_NULL_HANDLE;
+		// VMA-managed allocation backing the buffer (replaces raw VkDeviceMemory).
+		VmaAllocation m_VansVKBufferAllocation = nullptr;
 
 		VkDeviceSize m_BufferSize = 0;
 
@@ -77,7 +83,7 @@ namespace VansGraphics
 
 		VkBuffer GetNativeBuffer() const { return m_VansVKBuffer; }
 
-		VkDeviceMemory GetNativeMemory() const { return m_VansVKBufferMemory; }
+		VmaAllocation GetNativeAllocation() const { return m_VansVKBufferAllocation; }
 
 		VkDeviceSize GetBufferSize() const { return m_BufferSize; }
 	private:

@@ -10,7 +10,8 @@ namespace VansGraphics
 	{
 		DIRECTIONAL = 0,
 		POINT = 1,
-		SPOT = 2
+		SPOT = 2,
+		RECT = 3
 	};
 
 	//保证16字节对齐
@@ -49,6 +50,29 @@ namespace VansGraphics
 		float					m_ShadowIndex;
 	};
 
+	// ── RectLight (area light, evaluated via LTC) ────────────────────────────
+	// 矩形面光源。Position 为矩形中心，(Right,Up) 在矩形所在平面，Normal 为光线传播方向。
+	// 与 Spot 一致：m_ShadowIndex < 0 表示无阴影；阴影矩阵布局与 Spot 兼容（单 VP），
+	// 写入 punctual atlas 的 RectLight 段（base slot = 128，详见 plan §3A.4）。
+	struct alignas(16) VansRectLight
+	{
+		glm::vec3				m_Position;       // 矩形中心世界坐标
+		float					m_HalfWidth;      // 沿 Right 方向半边长
+		glm::vec3				m_Normal;         // 光线传播方向（与 SpotLight 的 -m_Direction 同义）
+		float					m_HalfHeight;     // 沿 Up 方向半边长
+		glm::vec3				m_Right;          // 世界空间 Right (rotation * +X)
+		float					m_Range;          // 影响半径
+		glm::vec3				m_Up;             // 世界空间 Up    (rotation * +Y)
+		float					m_Intensity;
+		glm::vec3				m_Color;
+		float					m_TwoSided;       // 0/1
+		glm::mat4				m_ShadowMatrix;   // VP，阴影 atlas 采样使用
+		float					m_ShadowIndex;    // -1 = 无阴影，否则为 RectLight 段内索引
+		float					m_AttenuationExp; // 距离衰减指数（默认 2.0）
+		float					m_Pad0;
+		float					m_Pad1;
+	};
+
 	class VansLightManager
 	{
 		friend class VansRenderNode;
@@ -56,6 +80,7 @@ namespace VansGraphics
 		std::vector<VansDirectionalLight> m_DirectionalLights;
 		std::vector<VansPointLight> m_PointLights;
 		std::vector<VansSpotLight> m_SpotLights;
+		std::vector<VansRectLight> m_RectLights;
 
 		uint32_t m_LightCounts[4];
 		float m_SoftShadowParams[4];
@@ -65,6 +90,7 @@ namespace VansGraphics
 		const uint32_t m_MaxDirectionLightCount = 1;
 		const uint32_t m_MaxPointLightCount = 64;
 		const uint32_t m_MaxSpotLightCount = 64;
+		const uint32_t m_MaxRectLightCount = 32;
 
 	public:
 
@@ -81,6 +107,8 @@ namespace VansGraphics
 
 		void AddSpotLight(const VansSpotLight& light);
 
+		void AddRectLight(const VansRectLight& light);
+
 		void UpdateLightShadowMatrixData(const glm::vec3& cameraPosition);
 
 		void UpdateLightCPUData();
@@ -96,9 +124,13 @@ namespace VansGraphics
 
 		std::vector<VansSpotLight>& GetSpotLight() { return m_SpotLights; }
 
+		std::vector<VansRectLight>& GetRectLights() { return m_RectLights; }
+
 		uint32_t GetMaxPointLightCount() const { return m_MaxPointLightCount; }
 
 		uint32_t GetMaxSpotLightCount() const { return m_MaxSpotLightCount; }
+
+		uint32_t GetMaxRectLightCount() const { return m_MaxRectLightCount; }
 
 		// ── 场景切换时清空灯光数据 ────────────────────────────────────
 		// 仅清空 CPU 侧灯光列表和计数器，保留 GPU buffer 和 descriptor

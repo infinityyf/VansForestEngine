@@ -42,10 +42,6 @@ namespace VansGraphics
 			return (value + alignment - 1) & ~(alignment - 1);
 		}
 
-		bool AllocateMemory(VkMemoryRequirements& requires, VkDeviceMemory& memory, VkMemoryPropertyFlags memory_properties, bool needAddressable = false);
-		
-		void FreeMemory(VkDeviceMemory& memory);
-
 		void SetBufferMemoryBarrier(std::vector<VkBufferMemoryBarrier>& bufferMemoryBarriers,
 			VkPipelineStageFlags generating_stages,
 			VkPipelineStageFlags consuming_stages);
@@ -53,9 +49,6 @@ namespace VansGraphics
 		void SetImageMemoryBarrier(std::vector<VkImageMemoryBarrier>& imageMemoryBarriers,
 			VkPipelineStageFlags generating_stages,
 			VkPipelineStageFlags consuming_stages);
-
-		//map memory from host to device
-		bool MapMemoryFromHost(VkDeviceMemory& memory, VkDeviceSize offset, VkDeviceSize size, void* host_data, bool upmap_immediate = true);
 
 	public:
 		//copy date between buffers

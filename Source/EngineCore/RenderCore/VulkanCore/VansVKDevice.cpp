@@ -1,6 +1,7 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKDevice.h"
 #include "VansVKMemoryManager.h"
+#include "VansVKMemoryAllocator.h"
 #include "VansVKDescriptorManager.h"
 #include "VansRenderPass.h"
 #include "VansMesh.h"
@@ -616,6 +617,12 @@ namespace VansGraphics
 
 
 		VansVKMemoryManager::GetInstance()->BindDevice(m_VansVKCommandBuffer.GetVKCommandBuffer(), *this);
+		// Bring up the VMA allocator before any buffer/image is created.
+		if (!VansVKMemoryAllocator::Get().Initialize(*this, VK_API_VERSION_1_2))
+		{
+			VANS_LOG_ERROR("Failed to initialize VMA allocator.");
+			return false;
+		}
 		VansVKDescriptorManager::GetInstance()->BindDevice(m_VansVKPhysicalDevice, m_VansVKLogicDevice, m_VansVKCommandBuffer.GetVKCommandBuffer());
 		VansVKDescriptorManager::GetInstance()->CreateDescriptorPool(true);
 
@@ -638,6 +645,10 @@ namespace VansGraphics
 		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKComputeCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansEditorCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+
+		// Tear down VMA before destroying the logical device. All buffer/image
+		// owners must have released their allocations by this point.
+		VansVKMemoryAllocator::Get().Shutdown();
 
 		if (m_VansVKLogicDevice)
 		{

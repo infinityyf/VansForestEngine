@@ -187,6 +187,12 @@ namespace VansGraphics
 
 		VansTexture* m_ClothBRDFLUT = nullptr;
 
+		// LTC LUTs (Linearly Transformed Cosines, area-light BRDF)
+		// 64x64, RGBA16F, runtime-uploaded from embedded float arrays (LTCData.h).
+		VansTexture* m_LTC1 = nullptr;
+
+		VansTexture* m_LTC2 = nullptr;
+
 		uint32_t     m_SSGITemporalFrame = 0;
 
 		VansMaterialManager();

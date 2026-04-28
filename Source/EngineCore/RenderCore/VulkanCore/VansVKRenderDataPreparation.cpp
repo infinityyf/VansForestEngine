@@ -8,7 +8,10 @@
 #include "../VansScene.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
+#include "../LTC/LTCData.h"
 #include <cmath>
+#include <vector>
+#include <cstdint>
 
 namespace VansGraphics
 {
@@ -199,6 +202,65 @@ namespace VansGraphics
 
 		manager->m_ClothBRDFLUT = new VansTexture();
 		manager->m_ClothBRDFLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/ClothBRDFLUT.png").c_str(), false, false, false, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+		// ------------------------------------------------------------
+		// LTC LUTs (area-light BRDF). 64x64 RGBA16F, uploaded from the
+		// embedded float arrays in LTCData.h.  See AreaLightLTC plan §2.1.
+		// ------------------------------------------------------------
+		{
+			auto FloatToHalf = [](float f) -> uint16_t
+			{
+				// IEEE 754 binary32 -> binary16 (round-to-nearest-even, no NaN handling needed for LUT data).
+				union { float f; uint32_t u; } v{ f };
+				uint32_t x = v.u;
+				uint32_t sign = (x >> 16) & 0x8000u;
+				int32_t  exp  = ((x >> 23) & 0xFFu) - 127 + 15;
+				uint32_t mant = x & 0x7FFFFFu;
+				uint16_t h;
+				if (exp <= 0)
+				{
+					if (exp < -10) { h = (uint16_t)sign; }
+					else
+					{
+						mant |= 0x800000u;
+						uint32_t shift = 14u - (uint32_t)exp;
+						uint32_t m = mant >> shift;
+						if ((mant >> (shift - 1u)) & 1u) m += 1u; // round
+						h = (uint16_t)(sign | m);
+					}
+				}
+				else if (exp >= 31) { h = (uint16_t)(sign | 0x7C00u); } // inf / overflow
+				else
+				{
+					uint32_t m = mant >> 13;
+					if (mant & 0x1000u) m += 1u; // round
+					if (m & 0x400u) { m = 0; ++exp; if (exp >= 31) { h = (uint16_t)(sign | 0x7C00u); m = 0; } }
+					if (exp < 31) h = (uint16_t)(sign | ((uint32_t)exp << 10) | m);
+				}
+				return h;
+			};
+
+			constexpr int kSize = LTC::kLUTSize;
+			constexpr size_t kCount = LTC::kLUTFloats;
+			std::vector<uint16_t> half1(kCount), half2(kCount);
+			for (size_t i = 0; i < kCount; ++i)
+			{
+				half1[i] = FloatToHalf(LTC::kLTC1[i]);
+				half2[i] = FloatToHalf(LTC::kLTC2[i]);
+			}
+
+			manager->m_LTC1 = new VansTexture();
+			manager->m_LTC1->LoadFromMemory(m_VansVKCommandBuffer,
+				half1.data(), half1.size() * sizeof(uint16_t),
+				kSize, kSize, VK_FORMAT_R16G16B16A16_SFLOAT,
+				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+			manager->m_LTC2 = new VansTexture();
+			manager->m_LTC2->LoadFromMemory(m_VansVKCommandBuffer,
+				half2.data(), half2.size() * sizeof(uint16_t),
+				kSize, kSize, VK_FORMAT_R16G16B16A16_SFLOAT,
+				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		}
 
 		VansVKBuffer prefilterCBBuffer;
 		uint32_t mipCount = log2(512);
@@ -795,8 +857,8 @@ namespace VansGraphics
 		manager->m_TileLightGridX = gridX;
 		manager->m_TileLightGridY = gridY;
 
-		// --- TileLight Header SSBO: 1 × TileLightHeader per tile (4 × uint32 = 16 bytes) ---
-		const uint32_t kHeaderStride = 4 * sizeof(uint32_t); // { pointCount, pointOffset, spotCount, spotOffset }
+		// --- TileLight Header SSBO: 1 × TileLightHeader per tile (8 × uint32 = 32 bytes) ---
+		const uint32_t kHeaderStride = 8 * sizeof(uint32_t); // { pointOffset, pointCount, spotOffset, spotCount, rectOffset, rectCount, pad0, pad1 }
 		manager->m_TileLightHeaderBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
 			static_cast<uint32_t>(totalTiles * kHeaderStride),
@@ -805,10 +867,13 @@ namespace VansGraphics
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
 		);
 
-		// --- TileLight Index SSBO: fixed-stride point + spot index slots ---
-		// Point slot for tile T = T * 64; Spot slot = totalTiles*64 + T*64
-		const uint32_t MAX_PER_TILE   = 64; // matches TILE_LIGHT_MAX_PT_PER_TILE / _SP_ in shader
-		const uint32_t indexBufSize   = totalTiles * MAX_PER_TILE * 2 * sizeof(uint32_t);
+		// --- TileLight Index SSBO: fixed-stride point + spot + rect index slots ---
+		// Point slot for tile T = T * 64; Spot slot = totalTiles*64 + T*64;
+		// Rect  slot           = totalTiles*64 + totalTiles*64 + T*16
+		const uint32_t MAX_PT_PER_TILE   = 64; // matches TILE_LIGHT_MAX_PT_PER_TILE in shader
+		const uint32_t MAX_SP_PER_TILE   = 64; // matches TILE_LIGHT_MAX_SP_PER_TILE in shader
+		const uint32_t MAX_RECT_PER_TILE = 16; // matches TILE_LIGHT_MAX_RECT_PER_TILE in shader
+		const uint32_t indexBufSize      = totalTiles * (MAX_PT_PER_TILE + MAX_SP_PER_TILE + MAX_RECT_PER_TILE) * sizeof(uint32_t);
 		manager->m_TileLightIndexBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
 			indexBufSize,

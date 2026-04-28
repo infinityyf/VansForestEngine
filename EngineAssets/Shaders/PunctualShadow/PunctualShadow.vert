@@ -21,18 +21,29 @@ void main()
     mat4 ModelMatrix = ModelBuffer.transforms[objectIndex].ModelMatrix;
 
     int pointLightCount = int(uPointLightCount);
-    int spotLightCount = int(uSpotLightCount);
-    if(lightIndex < pointLightCount)
+    int spotLightCount  = int(uSpotLightCount);
+    int rectLightStart  = pointLightCount + spotLightCount;
+
+    if (lightIndex < pointLightCount)
     {
+        // Point light: lightIndex = point index, shadowIndex = cubemap face
         mat4x4 shadowMatrix = uPointLights[lightIndex].shadowMatrix[shadowIndex];
         vec4 clipCoord = shadowMatrix * ModelMatrix * position;
         gl_Position = clipCoord;
     }
-    
-    if(lightIndex >= pointLightCount)
+    else if (lightIndex < rectLightStart)
     {
+        // Spot light
         int spotLightIndex = lightIndex - pointLightCount;
         mat4x4 shadowMatrix = uSpotLights[spotLightIndex].shadowMatrix;
+        vec4 clipCoord = shadowMatrix * ModelMatrix * position;
+        gl_Position = clipCoord;
+    }
+    else
+    {
+        // Rect light (Phase 3): packed after spot lights in atlas order
+        int rectLightIndex = lightIndex - rectLightStart;
+        mat4x4 shadowMatrix = uRectLights[rectLightIndex].shadowMatrix;
         vec4 clipCoord = shadowMatrix * ModelMatrix * position;
         gl_Position = clipCoord;
     }

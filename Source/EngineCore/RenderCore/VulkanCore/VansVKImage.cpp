@@ -1,6 +1,7 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKImage.h"
 #include "VansVKMemoryManager.h"
+#include "VansVKMemoryAllocator.h"
 #include "VansVKSampler.h"
 #include "../../Util/VansLog.h"
 #include <iostream>
@@ -99,13 +100,22 @@ namespace VansGraphics
         operations are supported.
         */
 
-        VkResult result = vkCreateImage(logical_device, &m_ImageCreateInfo, nullptr, &m_VansVKImage);
-        if (VK_SUCCESS != result)
+        VkResult result = VK_SUCCESS;
+
+        // Render targets / depth attachments are large, single-purpose, and
+        // benefit from a dedicated allocation.
+        const bool preferDedicated =
+            (usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                    | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                    | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT)) != 0;
+
+        if (!VansVKMemoryAllocator::Get().CreateImage(
+                m_ImageCreateInfo, VansMemoryUsage::GpuOnly,
+                preferDedicated, m_VansVKImage, m_VansVKImageAllocation))
         {
-            VANS_LOG_ERROR("Could not create an image.");
+            VANS_LOG_ERROR("Could not create image / allocate memory (VMA).");
             return false;
         }
-
 
         //create image view
         VkImageViewType view_type = ConvertImageViewType(type, isCube, layer_num);
@@ -132,30 +142,6 @@ namespace VansGraphics
                  isCube ? 6 : VK_REMAINING_ARRAY_LAYERS
              }
         };
-
-        //给image开辟内存
-        VkMemoryRequirements memory_requirements;
-        vkGetImageMemoryRequirements(logical_device, m_VansVKImage, &memory_requirements);
-
-        m_VansVKImageMemory = VK_NULL_HANDLE;
-        VkMemoryPropertyFlags memory_properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        //if (need_raw_Data)
-        //{
-        //    memory_properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        //}
-        bool allocateResult = VansVKMemoryManager::GetInstance()->AllocateMemory(memory_requirements, m_VansVKImageMemory, memory_properties);
-        if (!allocateResult || VK_NULL_HANDLE == m_VansVKImageMemory)
-        {
-            VANS_LOG_ERROR("Could not allocate memory for an image.");
-            return false;
-        }
-
-        result = vkBindImageMemory(logical_device, m_VansVKImage, m_VansVKImageMemory, 0);
-        if (VK_SUCCESS != result)
-        {
-            VANS_LOG_ERROR("Could not bind memory object to an image.");
-            return false;
-        }
 
 #ifdef _DEBUG
         VkDebugUtilsObjectNameInfoEXT nameInfo = {};
@@ -248,13 +234,18 @@ namespace VansGraphics
             m_VansVKImageView = VK_NULL_HANDLE;
         }
 
-        if (VK_NULL_HANDLE != m_VansVKImage)
+        for (auto& view : m_VansVKImageMipViews)
         {
-            vkDestroyImage(logical_device, m_VansVKImage, nullptr);
-            m_VansVKImage = VK_NULL_HANDLE;
+            if (VK_NULL_HANDLE != view)
+            {
+                vkDestroyImageView(logical_device, view, nullptr);
+                view = VK_NULL_HANDLE;
+            }
         }
+        m_VansVKImageMipViews.clear();
 
-        VansVKMemoryManager::GetInstance()->FreeMemory(m_VansVKImageMemory);
+        // VMA owns both the VkImage and the VkDeviceMemory.
+        VansVKMemoryAllocator::Get().DestroyImage(m_VansVKImage, m_VansVKImageAllocation);
 
         if (VK_NULL_HANDLE != m_Sampler)
         {
@@ -265,7 +256,7 @@ namespace VansGraphics
 
     void VansVKImage::SetRawImageData(VkDevice& logical_device, void* data, int size)
     {
-        VansVKMemoryManager::GetInstance()->MapMemoryFromHost(m_VansVKImageMemory, 0, size, data, true);
+        VansVKMemoryAllocator::Get().WriteToAllocation(m_VansVKImageAllocation, 0, size, data);
     }
 
     void VansVKImage::AddTransitionImageAccess(ImageTransition& transition)

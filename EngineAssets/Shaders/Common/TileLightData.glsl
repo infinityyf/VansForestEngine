@@ -14,16 +14,21 @@
 #define TILE_LIGHT_TILE_SIZE 8
 
 // --- 每 tile 最大索引槽数（固定步长分配，无需 atomic）---
-#define TILE_LIGHT_MAX_PT_PER_TILE 64  // 与 MAX_POINT_LIGHTS 对齐
-#define TILE_LIGHT_MAX_SP_PER_TILE 64  // 与 MAX_SPOT_LIGHTS 对齐
+#define TILE_LIGHT_MAX_PT_PER_TILE   64  // 与 MAX_POINT_LIGHTS 对齐
+#define TILE_LIGHT_MAX_SP_PER_TILE   64  // 与 MAX_SPOT_LIGHTS  对齐
+#define TILE_LIGHT_MAX_RECT_PER_TILE 16  // 与 MAX_RECT_LIGHTS=32 对齐，单 tile 罕见超过 16
 
-// --- TileLight Header：记录某 tile 内点光/聚光的索引范围 ---
+// --- TileLight Header：记录某 tile 内点光/聚光/面光的索引范围 ---
 struct TileLightHeader
 {
     uint pointOffset;  // 在 tileLightIndices 中点光源索引起始位置（固定步长）
     uint pointCount;   // 该 tile 覆盖的点光源实际数量
     uint spotOffset;   // 聚光灯索引起始位置
     uint spotCount;    // 该 tile 覆盖的聚光灯实际数量
+    uint rectOffset;   // 面光源（RectLight）索引起始位置
+    uint rectCount;    // 该 tile 覆盖的面光源实际数量
+    uint pad0;
+    uint pad1;
 };
 
 // --- Set 0 只读绑定（BuildTileLightList.comp 写，其余 pass 读）---

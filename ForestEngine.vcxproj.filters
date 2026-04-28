@@ -142,6 +142,9 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryManager.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryAllocator.h">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKImage.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
@@ -525,6 +528,9 @@
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryManager.cpp">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryAllocator.cpp">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.cpp">

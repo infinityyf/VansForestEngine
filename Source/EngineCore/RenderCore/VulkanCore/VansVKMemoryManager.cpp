@@ -10,40 +10,6 @@
 
 VansGraphics::VansVKMemoryManager* VansGraphics::VansVKMemoryManager::instance = nullptr;
 
-bool VansGraphics::VansVKMemoryManager::AllocateMemory(VkMemoryRequirements& requires, VkDeviceMemory& memory, VkMemoryPropertyFlags memory_properties, bool needAddressable)
-{
-	for (uint32_t type = 0; type < m_MemoryProperties.memoryTypeCount; ++type) 
-	{
-		if ((requires.memoryTypeBits & (1 << type)) &&
-			((m_MemoryProperties.memoryTypes[type].propertyFlags & memory_properties) == memory_properties)) 
-		{
-			VkMemoryAllocateInfo memory_allocate_info = 
-			{
-				VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-				nullptr,
-				requires.size,
-				type
-			};
-
-			VkMemoryAllocateFlagsInfo allocateFlagsInfo{};
-			if (needAddressable)
-			{
-				allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-				allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-				memory_allocate_info.pNext = &allocateFlagsInfo;
-
-			}
-			
-			VkResult result = vkAllocateMemory(m_LogicalDevice, &memory_allocate_info, nullptr, &memory);
-			if (VK_SUCCESS == result) 
-			{
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
 void VansGraphics::VansVKMemoryManager::BindDevice(VkCommandBuffer& commandBuffer, VansVKDevice& device)
 {
 	m_PhysicalDevice = device.GetPhysicalDevice();
@@ -57,15 +23,6 @@ void VansGraphics::VansVKMemoryManager::BindDevice(VkCommandBuffer& commandBuffe
 const std::vector<uint32_t>& VansGraphics::VansVKMemoryManager::GetSharingQueueFamilyIndices() const
 {
 	return m_Device->GetSharingQueueFamilyIndices();
-}
-
-void VansGraphics::VansVKMemoryManager::FreeMemory(VkDeviceMemory& memory)
-{
-	if (VK_NULL_HANDLE != memory)
-	{
-		vkFreeMemory(m_LogicalDevice, memory, nullptr);
-		memory = VK_NULL_HANDLE;
-	}
 }
 
 //内存barrier详解 https://zhuanlan.zhihu.com/p/161619652
@@ -99,48 +56,6 @@ void VansGraphics::VansVKMemoryManager::SetImageMemoryBarrier(
 			static_cast<uint32_t>(imageMemoryBarriers.size()),
 			&imageMemoryBarriers[0]);
 	}
-}
-
-bool VansGraphics::VansVKMemoryManager::MapMemoryFromHost(VkDeviceMemory& memory, VkDeviceSize offset, VkDeviceSize size, void* host_data, bool upmap_immediate)
-{
-	VkResult result;
-	void* local_pointer;
-	result = vkMapMemory(m_LogicalDevice, memory, offset, size, 0, &local_pointer);
-	if (VK_SUCCESS != result) 
-	{
-		VANS_LOG_ERROR("Could not map memory object.");
-		return false;
-	}
-
-	std::memcpy(local_pointer, host_data, size);
-
-	//inform driver that memory has been modified
-	//注意，如果是usageVK_MEMORY_PROPERTY_HOST_COHERENT_BIT,就可以不用flush
-	//VkDeviceSize nonCoherentAtomSize = m_DeviceProperties.limits.nonCoherentAtomSize;
-	//VkDeviceSize alignedSize = AlignMemorySizeTo(size, nonCoherentAtomSize);
-	//std::vector<VkMappedMemoryRange> memory_ranges = 
-	//{
-	//	 {
-	//		 VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-	//		 nullptr,
-	//		 memory,
-	//		 offset,
-	//		 size
-	//	 }
-	//};
-	//vkFlushMappedMemoryRanges(m_LogicalDevice, static_cast<uint32_t>(memory_ranges.size()), &memory_ranges[0]);
-	if (VK_SUCCESS != result) 
-	{
-		VANS_LOG_ERROR("Could not flush mapped memory.");
-		return false;
-	}
-
-	if (upmap_immediate)
-	{
-		vkUnmapMemory(m_LogicalDevice, memory);
-	}
-
-	return true;
 }
 
 VansGraphics::VansVKMemoryManager::VansVKMemoryManager()

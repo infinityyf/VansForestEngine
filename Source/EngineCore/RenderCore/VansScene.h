@@ -362,6 +362,8 @@ namespace VansGraphics
 
 		void DrawSpotShadow(int pointCount, int lightIndex);
 
+		void DrawRectShadow(int pointCount, int spotCount, int lightIndex);
+
 		void DrawSkyBoxNode();
 
 		void DrawOpaqueNodes();

@@ -1961,6 +1961,46 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 obj->AddComponent(slComp);
                 VANS_LOG("[LoadSceneObjects] 创建聚光灯组件 '" << obj->m_ObjectName << "' idx=" << idx);
             }
+
+            // ── 面光源 RectLight (LTC) ────────────────────────────────
+            if (components.contains("rect_light"))
+            {
+                ensureObjectTransform();
+                const auto& rlJson = components["rect_light"];
+                VansRectLight rectLight{};
+                if (rlJson.contains("color") && rlJson["color"].is_array())
+                {
+                    rectLight.m_Color = glm::vec3(rlJson["color"][0].get<float>(),
+                                                  rlJson["color"][1].get<float>(),
+                                                  rlJson["color"][2].get<float>());
+                }
+                else
+                {
+                    rectLight.m_Color = glm::vec3(1.0f);
+                }
+                rectLight.m_Intensity     = rlJson.value("intensity", 50.0f);
+                rectLight.m_HalfWidth     = rlJson.value("width",  1.0f) * 0.5f;
+                rectLight.m_HalfHeight    = rlJson.value("height", 1.0f) * 0.5f;
+                rectLight.m_Range         = rlJson.value("range",  10.0f);
+                rectLight.m_TwoSided      = rlJson.value("two_sided", false) ? 1.0f : 0.0f;
+                rectLight.m_AttenuationExp= rlJson.value("attenuation_exp", 2.0f);
+                // shadow 占位：-1 = 无阴影；真正槽位在 UpdateLightShadowMatrixData 阶段写入
+                rectLight.m_ShadowIndex   = rlJson.value("shadow", false) ? 0.0f : -1.0f;
+                // 位置与基底向量由 SyncLightTransforms 每帧覆盖
+                rectLight.m_Position      = glm::vec3(0.0f);
+                rectLight.m_Normal        = glm::vec3(0.0f, 0.0f, 1.0f);
+                rectLight.m_Right         = glm::vec3(1.0f, 0.0f, 0.0f);
+                rectLight.m_Up            = glm::vec3(0.0f, 1.0f, 0.0f);
+
+                int idx = (int)m_LightManager.GetRectLights().size();
+                m_LightManager.AddRectLight(rectLight);
+
+                auto* rlComp = new VansScriptRectLightComponent();
+                rlComp->m_LightManager = &m_LightManager;
+                rlComp->m_LightIndex   = idx;
+                obj->AddComponent(rlComp);
+                VANS_LOG("[LoadSceneObjects] 创建面光源组件 '" << obj->m_ObjectName << "' idx=" << idx);
+            }
         }
 
         // ── Camera component ──────────────────────────────────────────────

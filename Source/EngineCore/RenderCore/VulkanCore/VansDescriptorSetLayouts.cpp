@@ -58,6 +58,12 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		// binding 10: TileLight Index SSBO (readonly in shaders)
 		{GLOBAL_BINDING_TILE_LIGHT_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 GLOBAL_STAGES, nullptr},
+		// binding 11: Area-light LTC matrix LUT (RGBA16F 64x64)
+		{GLOBAL_BINDING_LTC1_LUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 IBL_STAGES, nullptr},
+		// binding 12: Area-light LTC amplitude/Fresnel LUT (RGBA16F 64x64)
+		{GLOBAL_BINDING_LTC2_LUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 IBL_STAGES, nullptr},
 		// binding 50: Bindless PBR textures (fixed max count, no variable descriptor)
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},

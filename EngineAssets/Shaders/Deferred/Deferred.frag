@@ -8,6 +8,7 @@
 
 #include "../Lights/LightsData.glsl"
 #include "../BRDF/BRDFData.glsl"
+#include "../Lighting/RectLightLTC.glsl"
 #include "../BRDF/BRDFSkin.glsl"
 #include "../BRDF/BRDFCloth.glsl"
 #include "../BRDF/BRDFHair.glsl"
@@ -150,7 +151,7 @@ void main()
     //c : 计算动态GI，探针球谐
     //brdfData.indirectDiffuse = CalculateSHDiffuse(position_world, normal);
 
-    brdfData.indirectSpecular = imageLoad(ssr,ivec2(fragTexCoord * ScreenParams.xy)).rgba;
+    brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy)).rgba;
     
     //计算光照
     LightResult lightResult;

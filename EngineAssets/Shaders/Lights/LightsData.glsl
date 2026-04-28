@@ -33,6 +33,26 @@ struct SpotLightData
     float shadowIndex;
 };
 
+// ── RectLight (area light, evaluated via LTC) ─────────────────────────────
+// Layout strictly mirrors VansRectLight (160 bytes, std430-compatible).
+//   position_halfW  : xyz = world-space center,         w = half width  (along Right)
+//   normal_halfH    : xyz = light forward (radiates +Z),w = half height (along Up)
+//   right_range     : xyz = world Right basis,          w = influence range
+//   up_intensity    : xyz = world Up basis,             w = intensity
+//   color_twoSided  : rgb = colour,                     w = 0 or 1 (two-sided)
+//   shadowMatrix    : VP matrix shared with PunctualShadow atlas (Phase 3)
+//   shadowParams    : x = shadowIndex (-1 => no shadow), y = attenuation exponent
+struct RectLightData
+{
+    vec4 position_halfW;
+    vec4 normal_halfH;
+    vec4 right_range;
+    vec4 up_intensity;
+    vec4 color_twoSided;
+    mat4 shadowMatrix;
+    vec4 shadowParams;
+};
+
 struct LightResult
 {
     vec3 directDiffuse;
@@ -44,6 +64,7 @@ struct LightResult
 #define MAX_DIRECTION_LIGHTS 1
 #define MAX_POINT_LIGHTS 64
 #define MAX_SPOT_LIGHTS  64
+#define MAX_RECT_LIGHTS  32
 
 #if !defined(LightCBBind)
     #define LightCBBind 0
@@ -61,6 +82,7 @@ layout(set=LightCBBind, binding=LightBinding, std430) readonly buffer LightsData
     DirectionLightData uDirectionLight;
     PointLightData uPointLights[MAX_POINT_LIGHTS];
     SpotLightData uSpotLights[MAX_SPOT_LIGHTS];
+    RectLightData uRectLights[MAX_RECT_LIGHTS];
 };
 
 PointLightData GetPointLight(int index)
@@ -71,6 +93,37 @@ PointLightData GetPointLight(int index)
 SpotLightData GetSpotLight(int index)
 {
     return uSpotLights[index];
+}
+
+// RectLight 计数从 softShadowParams.z 读取（CPU 端在 UpdateLightCPUData 中写入）。
+// 之所以不复用 m_LightCounts[3]：该槽位为 punctual shadow atlas tilesPerRow，shader 已大量依赖。
+uint GetRectLightCount()
+{
+    return uint(softShadowParams.z);
+}
+
+RectLightData GetRectLight(int index)
+{
+    return uRectLights[index];
+}
+
+// 用于 Tile 粗筛：以"前向半深"为球心，半径同时罩住矩形 4 个角与 m_Range 处的远端圆。
+// 双面发光时退化为以 Position 为球心的更大球。
+vec3 GetRectSphereCenter(RectLightData rl)
+{
+    if (rl.color_twoSided.w > 0.5)
+        return rl.position_halfW.xyz;
+    return rl.position_halfW.xyz + rl.normal_halfH.xyz * (rl.right_range.w * 0.5);
+}
+
+float GetRectSphereRadius(RectLightData rl)
+{
+    float halfW = rl.position_halfW.w;
+    float halfH = rl.normal_halfH.w;
+    float range = rl.right_range.w;
+    if (rl.color_twoSided.w > 0.5)
+        return sqrt(range * range + halfW * halfW + halfH * halfH);
+    return sqrt(0.25 * range * range + halfW * halfW + halfH * halfH);
 }
 
 int GetCubemapFaceIndex(vec3 dir)
@@ -126,6 +179,29 @@ float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIn
 
     float shadowMapDepth = texelFetch(shadowMap, shadowUV + shadowOffset,0).r;
 
+    return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
+}
+
+// Hard rect-shadow sampling for volumetric fog (Phase 4).
+float SampleRectShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIndex)
+{
+    int pointLightCount = int(uPointLightCount);
+    int spotLightCount  = int(uSpotLightCount);
+    int slotIndex = pointLightCount * 6 + spotLightCount + shadowIndex;
+    ivec2 shadowOffset = ivec2(slotIndex % uShadowAtlasCount, slotIndex / uShadowAtlasCount);
+    shadowOffset *= int(uShadowAtlasSize);
+
+    mat4x4 shadowMatrix = uRectLights[shadowIndex].shadowMatrix;
+    vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
+    clipCoord /= clipCoord.w;
+    clipCoord.xy = clipCoord.xy * 0.5 + 0.5;
+
+    if (clipCoord.x <= 0.0 || clipCoord.x >= 1.0 ||
+        clipCoord.y <= 0.0 || clipCoord.y >= 1.0 || clipCoord.z <= 0.0)
+        return 1.0;
+
+    ivec2 shadowUV = ivec2(clipCoord.xy * uShadowAtlasSize);
+    float shadowMapDepth = texelFetch(shadowMap, shadowUV + shadowOffset, 0).r;
     return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
 }
 
@@ -237,6 +313,32 @@ float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDire
 
     float distanceToLight = length(uSpotLights[shadowIndex].position.xyz - position_world);
     float filterRadiusTexels = ComputePunctualSoftShadowRadius(distanceToLight, uSpotLights[shadowIndex].radius);
+    return SamplePunctualShadowAtlasSoft(shadowMap, shadowOffset, localShadowUV, receiverDepth, filterRadiusTexels);
+}
+
+// RectLight shadow sampling — Phase 3.
+// Atlas slot:  pointCount*6 + spotCount + shadowIndex   (mirrors VansScene::DrawRectShadow).
+float SampleRectShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int shadowIndex)
+{
+    int pointLightCount = int(uPointLightCount);
+    int spotLightCount  = int(uSpotLightCount);
+    int slotIndex = pointLightCount * 6 + spotLightCount + shadowIndex;
+    ivec2 shadowOffset = ivec2(slotIndex % uShadowAtlasCount,
+                               slotIndex / uShadowAtlasCount);
+    shadowOffset *= int(uShadowAtlasSize);
+
+    float normalOffset = ComputePunctualNormalOffset(normalWS, lightDirectionWS);
+    vec3 biasedPos = position_world + normalWS * normalOffset;
+
+    mat4x4 shadowMatrix = uRectLights[shadowIndex].shadowMatrix;
+    vec4 clipCoord = shadowMatrix * vec4(biasedPos, 1.0);
+    clipCoord /= clipCoord.w;
+
+    float receiverDepth = clipCoord.z;
+    vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
+
+    float distanceToLight = length(uRectLights[shadowIndex].position_halfW.xyz - position_world);
+    float filterRadiusTexels = ComputePunctualSoftShadowRadius(distanceToLight, uRectLights[shadowIndex].right_range.w);
     return SamplePunctualShadowAtlasSoft(shadowMap, shadowOffset, localShadowUV, receiverDepth, filterRadiusTexels);
 }
 
@@ -442,6 +544,16 @@ void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap,
 
 
 // Cascade shadow map version of CalculateDirectLight
+// Forward declaration: EvaluateRectLightLTC is defined in Lighting/RectLightLTC.glsl,
+// which downstream shaders include AFTER this file (RectLightLTC depends on
+// RectLightData/GetRectLight declared above).  GLSL needs the prototype here so
+// CalculateDirectLight can reference the function before its definition.
+void EvaluateRectLightLTC(
+    RectLightData rl,
+    vec3 N, vec3 V, vec3 P,
+    float roughness, vec3 diffuseColor, vec3 F0,
+    out vec3 outDiffuse, out vec3 outSpecular);
+
 void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, float viewDepth, sampler2D punctualShadowMap, inout LightResult lightResult)
 {
     lightResult.directDiffuse = vec3(0);
@@ -521,6 +633,35 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         lightResult.directDiffuse  += diffuseResult;
         lightResult.directSpecular += specularResult;
     }
+
+    // RectLight (LTC) — TileLight 路径：仅遍历当前 tile 内的面光源
+    if (_tileLightHdr.rectCount > 0u)
+    {
+        vec3 ltcF0_t = mix(brdfData.fresnel0, brdfData.albedo, brdfData.metallic);
+        vec3 ltcDiffColor_t = brdfData.albedo * (1.0 - brdfData.metallic);
+        for (uint _rck = 0u; _rck < _tileLightHdr.rectCount; ++_rck)
+        {
+            uint i = tileLightIndices[_tileLightHdr.rectOffset + _rck];
+            RectLightData rl = GetRectLight(int(i));
+            vec3 rectD = vec3(0.0);
+            vec3 rectS = vec3(0.0);
+            EvaluateRectLightLTC(
+                rl,
+                brdfData.normal, brdfData.viewDirection, brdfData.positionWS,
+                brdfData.roughness, ltcDiffColor_t, ltcF0_t,
+                rectD, rectS);
+            int shadowIdx = int(rl.shadowParams.x);
+            if (shadowIdx >= 0)
+            {
+                vec3 lightDirRect = normalize(rl.position_halfW.xyz - brdfData.positionWS);
+                float shadowVal = SampleRectShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirRect, punctualShadowMap, shadowIdx);
+                rectD *= shadowVal;
+                rectS *= shadowVal;
+            }
+            lightResult.directDiffuse  += rectD;
+            lightResult.directSpecular += rectS;
+        }
+    }
 #else
     // --- 原始 O(N) 全局循环路径（非 TILE_LIGHT 路径）---
     // Point lights
@@ -580,4 +721,38 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         lightResult.directSpecular += specularResult;
     }
 #endif // TILE_LIGHT
+
+    // ── RectLight (LTC) ──────────────────────────────────────────────────
+    // 非 TILE_LIGHT 路径：全量遍历。TILE_LIGHT 路径已在上面分格内联处理。
+#ifndef TILE_LIGHT
+    {
+        uint rectCount = GetRectLightCount();
+        if (rectCount > 0u)
+        {
+            vec3 ltcF0 = mix(brdfData.fresnel0, brdfData.albedo, brdfData.metallic);
+            vec3 ltcDiffColor = brdfData.albedo * (1.0 - brdfData.metallic);
+            for (uint i = 0u; i < rectCount && i < uint(MAX_RECT_LIGHTS); ++i)
+            {
+                RectLightData rl = GetRectLight(int(i));
+                vec3 rectD = vec3(0.0);
+                vec3 rectS = vec3(0.0);
+                EvaluateRectLightLTC(
+                    rl,
+                    brdfData.normal, brdfData.viewDirection, brdfData.positionWS,
+                    brdfData.roughness, ltcDiffColor, ltcF0,
+                    rectD, rectS);
+                int shadowIdx = int(rl.shadowParams.x);
+                if (shadowIdx >= 0)
+                {
+                    vec3 lightDirRect = normalize(rl.position_halfW.xyz - brdfData.positionWS);
+                    float shadowVal = SampleRectShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirRect, punctualShadowMap, shadowIdx);
+                    rectD *= shadowVal;
+                    rectS *= shadowVal;
+                }
+                lightResult.directDiffuse  += rectD;
+                lightResult.directSpecular += rectS;
+            }
+        }
+    }
+#endif // !TILE_LIGHT
 }

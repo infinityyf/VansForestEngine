@@ -9,6 +9,10 @@
 #include "vulkan/vulkan.h"
 #include <vector>
 
+// Forward declare VMA opaque allocation handle.
+struct VmaAllocation_T;
+typedef struct VmaAllocation_T* VmaAllocation;
+
 namespace VansGraphics
 {
 	struct ImageTransition 
@@ -32,7 +36,8 @@ namespace VansGraphics
 	private:
 		VkImage m_VansVKImage;
 
-		VkDeviceMemory m_VansVKImageMemory;
+		// VMA-managed allocation backing the image (replaces raw VkDeviceMemory).
+		VmaAllocation m_VansVKImageAllocation = nullptr;
 
 		//defines additional metadata used for accessing the image. Through it, we can
 		//specify the parts of an image that should be accessed by the commands

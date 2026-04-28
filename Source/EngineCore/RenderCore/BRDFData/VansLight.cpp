@@ -108,6 +108,11 @@ void VansGraphics::VansLightManager::AddSpotLight(const VansSpotLight& light)
 	m_SpotLights.push_back(light);
 }
 
+void VansGraphics::VansLightManager::AddRectLight(const VansRectLight& light)
+{
+	m_RectLights.push_back(light);
+}
+
 void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3& cameraPosition)
 {
 	auto vansConfig = VansConfigration::GetInstance();
@@ -203,6 +208,27 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3
 		m_SpotLights[spotLightIndex].m_SpotShadowMatrix = shadowProj * shadowView;
 		m_SpotLights[spotLightIndex].m_ShadowIndex = spotLightIndex;
 	}
+
+	// ── RectLight VP 矩阵生成（Phase 3 shadow 使用，与 shadow 开关无关，预先计算）──────────
+	int rectLightCount = (int)std::min<size_t>(m_RectLights.size(), m_MaxRectLightCount);
+	for (int rectLightIndex = 0; rectLightIndex < rectLightCount; rectLightIndex++)
+	{
+		auto& rl = m_RectLights[rectLightIndex];
+		if (rl.m_ShadowIndex < 0.0f) continue;
+
+		float halfDiag = std::sqrt(rl.m_HalfWidth * rl.m_HalfWidth + rl.m_HalfHeight * rl.m_HalfHeight);
+		float fovY = 2.0f * std::atan2(halfDiag + rl.m_Range * 0.05f, 0.001f);
+		fovY = (std::min)(fovY, glm::radians(160.0f));
+		glm::mat4 shadowProj = glm::perspective(fovY, 1.0f, 0.001f, (std::max)(rl.m_Range, 0.01f));
+
+		glm::vec3 lightPos = rl.m_Position;
+		glm::vec3 lightDir = NormalizeLightDirectionSafe(rl.m_Normal, glm::vec3(0.0f, 0.0f, 1.0f));
+		rl.m_Normal = lightDir;
+		glm::vec3 upVector = ChooseStableUpVector(lightDir);
+		glm::mat4 shadowView = glm::lookAt(lightPos, lightPos + lightDir, upVector);
+		rl.m_ShadowMatrix = shadowProj * shadowView;
+		rl.m_ShadowIndex = (float)rectLightIndex;
+	}
 }
 
 void VansGraphics::VansLightManager::UpdateLightCPUData()
@@ -222,13 +248,14 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 	m_LightCounts[0] = static_cast<uint32_t>(std::min<size_t>(m_PointLights.size(), m_MaxPointLightCount));
 	m_LightCounts[1] = static_cast<uint32_t>(std::min<size_t>(m_SpotLights.size(), m_MaxSpotLightCount));
 	m_LightCounts[2] = patchShadowSize;
-	m_LightCounts[3] = 8;
+	m_LightCounts[3] = 8;   // tilesPerRow，阴影 atlas 采样依赖该值，不可复用
 	m_LightBuffer.SetBufferData(m_LightCounts, offset, size);
 	offset += size;
 	size = sizeof(float) * 4;
 	m_SoftShadowParams[0] = m_SoftShadowParams[0] + 1;
 	m_SoftShadowParams[1] = 0.3; // 软阴影半径控制
-	m_SoftShadowParams[2] = 0;
+	// softShadowParams.z = RectLight 计数（shader 以 uint(softShadowParams.z) 读取）
+	m_SoftShadowParams[2] = static_cast<float>(std::min<size_t>(m_RectLights.size(), m_MaxRectLightCount));
 	m_SoftShadowParams[3] = 0;
 	m_LightBuffer.SetBufferData(m_SoftShadowParams, offset, size);
 	offset += size;
@@ -240,6 +267,9 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 	offset += size;
 	size = sizeof(VansSpotLight) * m_MaxSpotLightCount;
 	UploadPaddedLightData(m_LightBuffer, offset, m_MaxSpotLightCount, m_SpotLights);
+	offset += size;
+	size = sizeof(VansRectLight) * m_MaxRectLightCount;
+	UploadPaddedLightData(m_LightBuffer, offset, m_MaxRectLightCount, m_RectLights);
 
 }
 
@@ -253,7 +283,8 @@ void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_devi
 {
 	uint32_t bufferSize = sizeof(uint32_t) * 4 + sizeof(VansDirectionalLight) * m_MaxDirectionLightCount +
 		sizeof(VansPointLight) * m_MaxPointLightCount +
-		sizeof(VansSpotLight) * m_MaxSpotLightCount + sizeof(float) * 4;
+		sizeof(VansSpotLight) * m_MaxSpotLightCount +
+		sizeof(VansRectLight) * m_MaxRectLightCount + sizeof(float) * 4;
 	m_LightBuffer.CreatVulkanBuffer(
 		logic_device, bufferSize, VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
@@ -303,6 +334,7 @@ void VansGraphics::VansLightManager::ClearLights()
 	m_DirectionalLights.clear();
 	m_PointLights.clear();
 	m_SpotLights.clear();
+	m_RectLights.clear();
 	memset(m_LightCounts, 0, sizeof(m_LightCounts));
 	memset(m_SoftShadowParams, 0, sizeof(m_SoftShadowParams));
 }

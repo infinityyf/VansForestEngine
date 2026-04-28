@@ -33,6 +33,8 @@ namespace VansGraphics
 		GLOBAL_BINDING_CLOTH_BRDF_LUT           = 8,
 		GLOBAL_BINDING_TILE_LIGHT_GRID          = 9,   // TileLight Header SSBO (readonly)
 		GLOBAL_BINDING_TILE_LIGHT_INDICES       = 10,  // TileLight Index SSBO  (readonly)
+		GLOBAL_BINDING_LTC1_LUT                 = 11,  // Area-light LTC matrix LUT (RGBA16F 64x64)
+		GLOBAL_BINDING_LTC2_LUT                 = 12,  // Area-light LTC amplitude/Fresnel LUT (RGBA16F 64x64)
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 

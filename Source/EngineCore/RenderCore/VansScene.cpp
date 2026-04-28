@@ -386,6 +386,41 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
         }
     );
 
+    // Binding 11/12: LTC LUTs (area-light BRDF, runtime-uploaded RGBA16F 64x64)
+    if (m_MaterialManager.m_LTC1 && m_MaterialManager.m_LTC2)
+    {
+        descManager->m_ImageDescInfos.push_back(
+            {
+                m_GlobalDescriptorSet,
+                GLOBAL_BINDING_LTC1_LUT,
+                0,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {
+                    {
+                        m_MaterialManager.m_LTC1->GetImage().GetSampler(),
+                        m_MaterialManager.m_LTC1->GetImage().GetImageView(),
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                    }
+                }
+            }
+        );
+        descManager->m_ImageDescInfos.push_back(
+            {
+                m_GlobalDescriptorSet,
+                GLOBAL_BINDING_LTC2_LUT,
+                0,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {
+                    {
+                        m_MaterialManager.m_LTC2->GetImage().GetSampler(),
+                        m_MaterialManager.m_LTC2->GetImage().GetImageView(),
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                    }
+                }
+            }
+        );
+    }
+
     // Binding 50: Bindless PBR textures
     auto& textures = m_MaterialManager.m_GlobalPBRTextures;
     if (!textures.empty())
@@ -867,6 +902,29 @@ void VansGraphics::VansScene::SyncLightTransforms()
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
                 glm::vec3 forward = glm::normalize(glm::vec3(rotMat[2]));
                 lights[spotComp->m_LightIndex].m_Direction = -forward;
+            }
+        }
+
+        // ── 面光源：同步位置与三个基底向量（Right/Up/Normal）────────────────
+        // 与 Spot 一致：Normal 指向光源"照射方向"（与 SpotLight.m_Direction 取反同义）
+        auto* rectComp = obj->GetComponent<VansScriptRectLightComponent>();
+        if (rectComp && rectComp->m_LightManager && rectComp->m_LightIndex >= 0)
+        {
+            auto& lights = rectComp->m_LightManager->GetRectLights();
+            if (rectComp->m_LightIndex < (int)lights.size())
+            {
+                const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                glm::mat4 rotMat = glm::mat4(1.0f);
+                rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+                rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+                rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+                glm::vec3 right   = glm::normalize(glm::vec3(rotMat[0]));   // local +X
+                glm::vec3 up      = glm::normalize(glm::vec3(rotMat[1]));   // local +Y
+                glm::vec3 forward = glm::normalize(glm::vec3(rotMat[2]));   // local +Z
+                lights[rectComp->m_LightIndex].m_Position = t.m_Position;
+                lights[rectComp->m_LightIndex].m_Right    = right;
+                lights[rectComp->m_LightIndex].m_Up       = up;
+                lights[rectComp->m_LightIndex].m_Normal   = forward;
             }
         }
     }
