@@ -11,6 +11,7 @@
 class VansScriptDirectionalLightComponent;
 class VansScriptPointLightComponent;
 class VansScriptSpotLightComponent;
+class VansScriptRectLightComponent;
 namespace VansGraphics
 {
 	class VansAnimGraphEditorWindow;
@@ -42,6 +43,7 @@ namespace VansGraphics
 		void DrawDirectionalLightComponent(VansScriptDirectionalLightComponent* comp);
 		void DrawPointLightComponent(VansScriptPointLightComponent* comp);
 		void DrawSpotLightComponent(VansScriptSpotLightComponent* comp);
+		void DrawRectLightComponent(VansScriptRectLightComponent* comp);
 
 		// ── Animation tab ──
 		void DrawAnimationList();

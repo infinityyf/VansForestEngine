@@ -37,11 +37,25 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_RoughnessTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_AoTexture->GetImage()));
 			}
+			else if (material->m_MaterialType == VansMaterialType::VAN_EMISSIVE)
+			{
+				VansEmissiveMaterial* emissive = static_cast<VansEmissiveMaterial*>(material);
+				emissive->m_MaterialIndex = pbrMaterialIndex++;
+				materialManager->m_GlobalPBRParamData.push_back(emissive->m_BasePBRParam);
+
+				// Slot 0: emissive color texture (guaranteed non-null — loader sets defaultAlbedo fallback)
+				// Slots 1-4: not used by Emissive.frag but must be present to keep the 5-slot stride intact
+				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
+			}
 		}
 
 		materialManager->m_GlobalPBRDataBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
-			sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRMaterial.size(),
+			sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRParamData.size(),
 			VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
@@ -49,7 +63,7 @@ namespace VansGraphics
 		materialManager->m_GlobalPBRDataBuffer.SetBufferData(
 			materialManager->m_GlobalPBRParamData.data(),
 			0,
-			sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRMaterial.size());
+			sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRParamData.size());
 
 		// Keep the PBR material buffer persistently mapped for fast per-frame CPU writes
 		materialManager->m_GlobalPBRDataBuffer.PersistentMap();

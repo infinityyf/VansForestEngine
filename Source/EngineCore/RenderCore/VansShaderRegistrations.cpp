@@ -124,6 +124,13 @@ void RegisterEngineShaders()
         8, false
     });
 
+    reg.RegisterShader("Emissive", {
+        "Emissive",
+        "EngineAssets/Shaders/Emissive",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        12, false
+    });
+
     // ══════════════════════════════════════════════════════════════════════════
     // Step 2: Register material type → { pass name → shader name } mappings
     // ══════════════════════════════════════════════════════════════════════════
@@ -190,5 +197,10 @@ void RegisterEngineShaders()
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_SCREEN_SPACE_AO, {
         { VansGraphics::VansPass::SCREEN_SPACE,     "SSAO"           },
+    });
+
+    // 自发光：仅参与 GBuffer pass，不投射阴影，不参与 Velocity pass
+    reg.RegisterMaterialPasses(VansGraphics::VAN_EMISSIVE, {
+        { VansGraphics::VansPass::GBUFFER,          "Emissive"       },
     });
 }

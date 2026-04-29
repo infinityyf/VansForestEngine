@@ -6,8 +6,8 @@
 // License: MIT  (see selfshadow/ltc_code/LICENSE)
 //
 // Layout : 64 x 64, 4 floats per texel, row-major
-//          uv.x = sqrt(1 - NoV)        (per Heitz's parametrisation)
-//          uv.y = roughness  in [0, 1]
+//          uv.x = roughness            in [0, 1]  (matches selfshadow/ltc_code column axis)
+//          uv.y = sqrt(1 - NoV)        in [0, 1]  (row axis, grazing = 1)
 //          uploaded to GPU as VK_FORMAT_R16G16B16A16_SFLOAT
 //
 // LTC1   : the inverse LTC matrix coefficients   (m11, m13, m22, m31)

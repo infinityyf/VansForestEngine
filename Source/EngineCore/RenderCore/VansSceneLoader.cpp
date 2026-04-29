@@ -126,6 +126,7 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "hair")         return VansMaterialType::VAN_HAIR;
         if (s == "subsurface")   return VansMaterialType::VAN_SUBSURFACE;
         if (s == "grass")        return VansMaterialType::VAN_GRASS;
+        if (s == "emissive")     return VansMaterialType::VAN_EMISSIVE;
         VANS_LOG_WARN("[ParseMaterialType] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
     }
     return VansMaterialType::VAN_PBR;
@@ -671,6 +672,7 @@ void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
         case VansMaterialType::VAN_HAIR:            material = new VansHairMaterial();         break;
         case VansMaterialType::VAN_SUBSURFACE:      material = new VansSubsurfaceMaterial();   break;
         case VansMaterialType::VAN_GRASS:           material = new VansGrassMaterial();        break;
+        case VansMaterialType::VAN_EMISSIVE:        material = new VansEmissiveMaterial();     break;
         default:                                    material = new VansMaterial();             break;
         }
         material->m_MaterialType = matType;
@@ -950,6 +952,42 @@ void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
                 if (texture == nullptr)
                     texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
                 grass->m_AOTexture = texture;
+            }
+        }
+
+        if (matType == VansMaterialType::VAN_EMISSIVE)
+        {
+            VansEmissiveMaterial* emissive = static_cast<VansEmissiveMaterial*>(material);
+
+            // 发光颜色，默认纯白
+            if (sceneMaterial.contains("emissive_color") && sceneMaterial["emissive_color"].is_array())
+            {
+                emissive->m_BasePBRParam.m_albedo = glm::vec3(
+                    sceneMaterial["emissive_color"][0],
+                    sceneMaterial["emissive_color"][1],
+                    sceneMaterial["emissive_color"][2]);
+            }
+            else
+            {
+                emissive->m_BasePBRParam.m_albedo = glm::vec3(1.0f);
+            }
+
+            // 发光强度，写入 roughness 插槽，默认 1.0（支持 HDR，>1.0 有效）
+            emissive->m_BasePBRParam.m_roughness = sceneMaterial.value("emissive_intensity", 1.0f);
+            emissive->m_BasePBRParam.m_metallic  = 0.0f;
+            emissive->m_BasePBRParam.m_ao        = 1.0f;
+
+            // Slot 0: 自发光纹理（可选，未指定时使用 defaultAlbedo 纯白占位）
+            {
+                VansTexture* tex = nullptr;
+                if (sceneMaterial.contains("emissive_texture"))
+                {
+                    auto textureName = sceneMaterial["emissive_texture"].get<std::string>();
+                    tex = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                }
+                if (tex == nullptr)
+                    tex = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
+                emissive->m_EmissiveTexture = tex;
             }
         }
 

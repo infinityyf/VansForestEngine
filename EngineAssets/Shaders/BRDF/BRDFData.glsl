@@ -63,9 +63,9 @@ layout(set = PBRLutSetBind, binding = 8) uniform sampler2D ClothBRDFLUT;
 // LTC (Linearly Transformed Cosines) LUTs for area-light BRDF.
 //   Source data : selfshadow/ltc_code (MIT)
 //   Format      : RGBA16F, 64x64, runtime-uploaded from embedded float arrays.
-//   Parametrisation:
-//      uv.x = sqrt(1.0 - NoV)        (per Heitz)
-//      uv.y = perceptual roughness   in [0, 1]
+//   Parametrisation (matches selfshadow/ltc_code ltc.js row-major layout):
+//      uv.x = roughness              in [0, 1]  (column axis)
+//      uv.y = sqrt(1 - NoV)          in [0, 1]  (row axis)
 //   LTC1: inverse LTC matrix coefficients (m11, m13, m22, m31)
 //   LTC2: amplitude (R), GGX Fresnel/horizon term (G), sphere-clip threshold (B)
 // =============================================================================
@@ -73,11 +73,13 @@ layout(set = PBRLutSetBind, binding = 11) uniform sampler2D LTC1;
 layout(set = PBRLutSetBind, binding = 12) uniform sampler2D LTC2;
 
 // Map (NoV, roughness) to the LTC LUT's UV space.
+// Convention matches selfshadow/ltc_code and the generated LTCData:
+//   uv.x = roughness           (column direction in ltc.js row-major data)
+//   uv.y = sqrt(1 - NoV)       (row direction, puts samples near grazing angles)
 vec2 LTC_Coords(float NoV, float roughness)
 {
-    // sqrt(1 - NoV) puts more samples near grazing angles, matching the fit.
-    float u = sqrt(clamp(1.0 - NoV, 0.0, 1.0));
-    float v = clamp(roughness, 0.0, 1.0);
+    float u = clamp(roughness, 0.0, 1.0);
+    float v = sqrt(clamp(1.0 - NoV, 0.0, 1.0));
     // Half-texel offset for stable LINEAR sampling at edges (kLUTSize = 64).
     const float kLUTSize = 64.0;
     return vec2(u, v) * ((kLUTSize - 1.0) / kLUTSize) + (0.5 / kLUTSize);

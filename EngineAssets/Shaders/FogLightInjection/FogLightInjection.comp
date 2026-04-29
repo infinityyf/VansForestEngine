@@ -234,45 +234,75 @@ void main()
             totalInscatter += sl.color.rgb * sl.intensity * attenuation * phase * uVolume.scatterScale;
         }
 
-        // 面光源（RectLight）— Phase 4：体积雾注入。
-        // 使用近似“立体角 × 相位函数”，避免在体素内跳进多采样 LTC。
+        // 面光源（RectLight）— 体积雾注入：3×3 多点采样面光源
+        // 旧方案只取矩形中心做"A·cosθ/d²"远场近似，d 与光源尺寸相当时退化为点光源圆斑。
+        // 新方案对矩形面均匀取 3×3=9 个采样点，每点作为点光源计算散射后做面积加权求和，
+        // 使体积雾中呈现与矩形匹配的分布形状而非圆形热点。
         for (uint _rck = 0u; _rck < _th.rectCount; ++_rck)
         {
             uint rcIdx = tileLightIndices[_th.rectOffset + _rck];
-            RectLightData rl = GetRectLight(int(rcIdx));
-            vec3 toLight = rl.position_halfW.xyz - worldPos;
-            float dist   = length(toLight);
-            float range  = rl.right_range.w;
-            if (dist > range || dist < 1e-4) continue;
+            RectLightData rl  = GetRectLight(int(rcIdx));
+            float range       = rl.right_range.w;
+            float halfW       = rl.position_halfW.w;
+            float halfH       = rl.normal_halfH.w;
+            vec3  center      = rl.position_halfW.xyz;
+            vec3  R           = rl.right_range.xyz;
+            vec3  U           = rl.up_intensity.xyz;
+            bool  twoSided    = rl.color_twoSided.w > 0.5;
+            float invR2       = 1.0 / max(range * range, 1e-6);
+            vec3  Wo          = normalize(cameraPosition.xyz - worldPos);
+            vec3  lightColor  = rl.color_twoSided.rgb * rl.up_intensity.w;
+            int   shadowIdx   = int(rl.shadowParams.x);
 
-            vec3 lightDir = toLight / dist;
+            // 粗筛：体素超出矩形包围球时直接跳过
+            float centerDist = length(center - worldPos);
+            if (centerDist > range + halfW + halfH) continue;
 
-            // 单面发光：背面贡献为 0
-            bool twoSided = rl.color_twoSided.w > 0.5;
-            float facing  = dot(rl.normal_halfH.xyz, -lightDir);
-            if (!twoSided && facing <= 0.0) continue;
-            float facingTerm = twoSided ? abs(facing) : max(facing, 0.0);
+            // 3x3 均匀采样；采样坐标沿 R/U 轴均匀分布在 [-halfW,+halfW] x [-halfH,+halfH]
+            // 每个采样元的面积 = 总面积 / 9
+            const int   NSAMP    = 3;
+            const float NRECIP   = 1.0 / float(NSAMP);
+            float sampleArea = 4.0 * halfW * halfH * NRECIP * NRECIP;
 
-            // Solid-angle approximation: A * cosθ / d²（带距离衰减 window）
-            float halfW = rl.position_halfW.w;
-            float halfH = rl.normal_halfH.w;
-            float area  = 4.0 * halfW * halfH;
-            float invR2 = 1.0 / max(range * range, 1e-6);
-            float window = clamp(1.0 - (dist * dist * invR2) * (dist * dist * invR2), 0.0, 1.0);
-            window *= window;
-            float solidAngleScale = area * facingTerm / max(dist * dist, 1e-4) * window;
+            vec3 accum = vec3(0.0);
+            for (int si = 0; si < NSAMP; ++si)
+            {
+                float wu = ((float(si) + 0.5) * 2.0 * NRECIP - 1.0) * halfW;
+                for (int sj = 0; sj < NSAMP; ++sj)
+                {
+                    float wv        = ((float(sj) + 0.5) * 2.0 * NRECIP - 1.0) * halfH;
+                    vec3  samplePos = center + R * wu + U * wv;
 
-            float shadow = 1.0;
-            int shadowIdx = int(rl.shadowParams.x);
-            if (shadowIdx >= 0)
-                shadow = SampleRectShadowMap(worldPos, punctualShadowMap, shadowIdx);
+                    vec3  toSample  = samplePos - worldPos;
+                    float dist      = length(toSample);
+                    if (dist < 1e-4 || dist > range) continue;
 
-            float cosTheta = dot(normalize(cameraPosition.xyz - worldPos), -lightDir);
-            float phaseR   = FogInjectionPhase(cosTheta, uVolume.anisotropy);
+                    vec3  sampleDir = toSample / dist;
 
-            // 1/(4π) 已隐含在 phase 中，这里不重复除。
-            totalInscatter += rl.color_twoSided.rgb * rl.up_intensity.w
-                           * solidAngleScale * shadow * phaseR * uVolume.scatterScale;
+                    // 单面发光：光源背面贡献为 0
+                    float facing = dot(rl.normal_halfH.xyz, -sampleDir);
+                    if (!twoSided && facing <= 0.0) continue;
+                    float facingTerm = twoSided ? abs(facing) : max(facing, 0.0);
+
+                    // 距离衰减：smooth window x inverse-square x Lambert 放射余弦
+                    float distSqN = dist * dist * invR2;
+                    float window  = clamp(1.0 - distSqN * distSqN, 0.0, 1.0);
+                    window       *= window;
+                    float atten   = facingTerm * window / max(dist * dist, 1e-4);
+
+                    float shadow = 1.0;
+                    if (shadowIdx >= 0)
+                        shadow = SampleRectShadowMap(worldPos, punctualShadowMap, shadowIdx);
+
+                    float cosTheta = dot(Wo, -sampleDir);
+                    float phaseR   = FogInjectionPhase(cosTheta, uVolume.anisotropy);
+
+                    accum += atten * shadow * phaseR * sampleArea;
+                }
+            }
+
+            // 1/(4pi) 已隐含在 phase 中，这里不重复除。
+            totalInscatter += lightColor * accum * uVolume.scatterScale;
         }
 
         current = vec4(totalInscatter * d, d);

@@ -44,6 +44,7 @@ namespace VansGraphics
 	class VansPostProcessMaterial;
 	class VansDeferredMaterial;
 	class VansSSAOMaterial;
+	class VansEmissiveMaterial;
 
 	enum VansMaterialType
 	{
@@ -58,7 +59,8 @@ namespace VansGraphics
 		VAN_CLOTH = 10,
 		VAN_HAIR = 11,
 		VAN_SUBSURFACE = 12,
-		VAN_GRASS = 13,
+		VAN_GRASS    = 13,
+		VAN_EMISSIVE = 14,   // 自发光材质：albedo × intensity 直通，无 BRDF
 	};
 
 	// Lightweight push-constant payload built at draw time.
@@ -309,6 +311,27 @@ namespace VansGraphics
 
 		// Index into the global PBR param SSBO / bindless texture array.
 		// Assigned during PreparePBRMaterialData; used by draw push-constant.
+		int m_MaterialIndex = -1;
+	};
+
+	// ============================================================
+	// VansEmissiveMaterial — 自发光表面 (type 14)
+	// 复用 VansBasePBRParam 的 GPU SSBO 槽位布局：
+	//   m_BasePBRParam.m_albedo    → 发光颜色 (RGB)
+	//   m_BasePBRParam.m_roughness → 发光强度 (scalar, 支持 HDR >1.0)
+	// Deferred.frag 读取 color.rgb * roughness 直接输出，跳过全部 BRDF/光照/阴影
+	// ============================================================
+	class VansEmissiveMaterial : public VansMaterial
+	{
+	public:
+		// 发光颜色和强度，映射到全局 PBR SSBO 的 albedo/roughness 槽
+		VansBasePBRParam m_BasePBRParam;
+
+		// 可选自发光纹理（使用 Bindless slot 0，与 PBR albedo 规则一致）
+		// 未设置时绑定 defaultAlbedo（纯白 1×1），乘法中性
+		VansTexture* m_EmissiveTexture = nullptr;
+
+		// 全局 PBR SSBO 中的材质索引，由 PreparePBRMaterialData 赋值
 		int m_MaterialIndex = -1;
 	};
 

@@ -27,6 +27,7 @@
 #define MATERIAL_ID_HAIR        6
 #define MATERIAL_ID_SUBSURFACE  7
 #define MATERIAL_ID_GRASS       8
+#define MATERIAL_ID_EMISSIVE    9   // 自发光：albedo × intensity 直通，无 BRDF
 
 #define DEPTH_BIAS 0.001
 // 旧的 NDC 空间固定偏置已废弃，保留用于方向光（正交投影不存在透视放大问题）

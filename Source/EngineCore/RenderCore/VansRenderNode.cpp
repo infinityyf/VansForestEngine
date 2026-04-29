@@ -140,8 +140,18 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 	if (shader->GetPushConstantSize() > 0)
 	{
 		VansDrawPushConstant pc{};
-		pc.materialIndex    = (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
-			? static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex : -1;
+		switch (m_Material->m_MaterialType)
+		{
+		case VansMaterialType::VAN_PBR:
+			pc.materialIndex = static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex;
+			break;
+		case VansMaterialType::VAN_EMISSIVE:
+			pc.materialIndex = static_cast<VansEmissiveMaterial*>(m_Material)->m_MaterialIndex;
+			break;
+		default:
+			pc.materialIndex = -1;
+			break;
+		}
 		pc.transformIndex   = m_TransfromIndex;
 		pc.animationEnabled = m_AnimationEnabled ? 1 : 0;
 		cmd.UpdatePushConstants(*shader->GetGraphicsPipeline(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -172,8 +182,11 @@ void VansGraphics::VansRenderNode::DrawCascadeShadowWithPassShader(VansVKCommand
 	if (passShader->GetPushConstantSize() > 0)
 	{
 		// Shadow shader expects: { materialIndex, objectIndex, cascadeIndex }
-		int matIdx = (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
-			? static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex : -1;
+		int matIdx = -1;
+		if (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
+			matIdx = static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex;
+		else if (m_Material->m_MaterialType == VansMaterialType::VAN_EMISSIVE)
+			matIdx = static_cast<VansEmissiveMaterial*>(m_Material)->m_MaterialIndex;
 		int pushData[3] = { matIdx, m_TransfromIndex, global_state.cascadeIndex };
 		cmd.UpdatePushConstants(*passShader->GetGraphicsPipeline(),
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -332,12 +345,22 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 
 void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager)
 {
-	if (mat && mat->m_MaterialType == VansMaterialType::VAN_PBR)
+	if (!mat) return;
+	if (mat->m_MaterialType == VansMaterialType::VAN_PBR)
 	{
 		VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(mat);
 		int idx = pbr->m_MaterialIndex;
 		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
 			&pbr->m_BasePBRParam,
+			sizeof(VansBasePBRParam) * idx,
+			sizeof(VansBasePBRParam));
+	}
+	else if (mat->m_MaterialType == VansMaterialType::VAN_EMISSIVE)
+	{
+		VansEmissiveMaterial* emissive = static_cast<VansEmissiveMaterial*>(mat);
+		int idx = emissive->m_MaterialIndex;
+		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
+			&emissive->m_BasePBRParam,
 			sizeof(VansBasePBRParam) * idx,
 			sizeof(VansBasePBRParam));
 	}

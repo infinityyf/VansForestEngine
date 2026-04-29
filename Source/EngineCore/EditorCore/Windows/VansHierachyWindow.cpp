@@ -728,6 +728,47 @@ void VansGraphics::VansHierachuWindow::DrawSpotLightComponent(VansScriptSpotLigh
     ImGui::PopID();
 }
 
+void VansGraphics::VansHierachuWindow::DrawRectLightComponent(VansScriptRectLightComponent* comp)
+{
+    if (!comp || !comp->m_LightManager || comp->m_LightIndex < 0) return;
+    auto& lights = comp->m_LightManager->GetRectLights();
+    if (comp->m_LightIndex >= (int)lights.size()) return;
+
+    VansRectLight& light = lights[comp->m_LightIndex];
+    ImGui::PushID("RectLight");
+
+    ImGui::ColorEdit3("Color",       &light.m_Color.x);
+    ImGui::DragFloat ("Intensity",   &light.m_Intensity,    0.1f, 0.0f, 500.0f);
+
+    // 宽/高在 GPU 以 half-extent 存储，Inspector 中以全宽/全高展示以便理解
+    float fullW = light.m_HalfWidth  * 2.0f;
+    float fullH = light.m_HalfHeight * 2.0f;
+    if (ImGui::DragFloat("Width",  &fullW, 0.05f, 0.001f, 500.0f)) light.m_HalfWidth  = fullW * 0.5f;
+    if (ImGui::DragFloat("Height", &fullH, 0.05f, 0.001f, 500.0f)) light.m_HalfHeight = fullH * 0.5f;
+
+    ImGui::DragFloat ("Range",          &light.m_Range,         0.1f, 0.01f, 500.0f);
+    ImGui::DragFloat ("Attenuation Exp",&light.m_AttenuationExp,0.01f, 0.5f, 4.0f);
+
+    bool twoSided = light.m_TwoSided > 0.5f;
+    if (ImGui::Checkbox("Two Sided", &twoSided)) light.m_TwoSided = twoSided ? 1.0f : 0.0f;
+
+    bool castShadow = light.m_ShadowIndex >= 0.0f;
+    if (ImGui::Checkbox("Cast Shadow", &castShadow))
+        light.m_ShadowIndex = castShadow ? 0.0f : -1.0f; // 真正的 shadow slot 索引下一帧重新分配
+
+    // 位置/基底向量由 Transform 驱动，只读显示
+    ImGui::TextDisabled("Position (from transform):");
+    ImGui::Text("  (%.3f, %.3f, %.3f)", light.m_Position.x, light.m_Position.y, light.m_Position.z);
+    ImGui::TextDisabled("Normal   (from transform):");
+    ImGui::Text("  (%.3f, %.3f, %.3f)", light.m_Normal.x,   light.m_Normal.y,   light.m_Normal.z);
+    ImGui::TextDisabled("Right    (from transform):");
+    ImGui::Text("  (%.3f, %.3f, %.3f)", light.m_Right.x,    light.m_Right.y,    light.m_Right.z);
+    ImGui::TextDisabled("Up       (from transform):");
+    ImGui::Text("  (%.3f, %.3f, %.3f)", light.m_Up.x,       light.m_Up.y,       light.m_Up.z);
+
+    ImGui::PopID();
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Objects tab — list VansScriptObjects
 // ════════════════════════════════════════════════════════════════════════════
@@ -755,6 +796,7 @@ void VansGraphics::VansHierachuWindow::DrawObjectList()
         if (obj->GetComponent<VansScriptDirectionalLightComponent>()) typeHint += "DirLight ";
         if (obj->GetComponent<VansScriptPointLightComponent>())       typeHint += "PointLight ";
         if (obj->GetComponent<VansScriptSpotLightComponent>())        typeHint += "SpotLight ";
+        if (obj->GetComponent<VansScriptRectLightComponent>())        typeHint += "RectLight ";
 
         char label[256];
         snprintf(label, sizeof(label), "%s  [%s]", obj->m_ObjectName.c_str(), typeHint.c_str());
@@ -996,6 +1038,18 @@ void VansGraphics::VansHierachuWindow::DrawObjectDetail()
         {
             if (ImGui::CollapsingHeader("Spot Light", ImGuiTreeNodeFlags_DefaultOpen))
                 DrawSpotLightComponent(spotLightComp);
+        }
+    }
+
+    // ── Rect Light Component (LTC area light) ────────────────────────
+    auto* rectLightComp = obj->GetComponent<VansScriptRectLightComponent>();
+    if (rectLightComp && rectLightComp->m_LightManager && rectLightComp->m_LightIndex >= 0)
+    {
+        auto& rectLights = rectLightComp->m_LightManager->GetRectLights();
+        if (rectLightComp->m_LightIndex < (int)rectLights.size())
+        {
+            if (ImGui::CollapsingHeader("Rect Light", ImGuiTreeNodeFlags_DefaultOpen))
+                DrawRectLightComponent(rectLightComp);
         }
     }
 

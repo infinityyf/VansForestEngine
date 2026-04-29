@@ -126,11 +126,16 @@ void EvaluateRectLightLTC(
     float NoV = clamp(dot(N, V), 0.0, 1.0);
 
     // ── 高光：使用 LTC1 矩阵 ─────────────────────────────────────────────
-    vec4 t1 = LTC_SampleMatrix(NoV, roughness);   // m11, m13, m22, m31
+    // LTC1 纹理通道：(r,g,b,a) = (m11, m31, m13, m33)，m22 恒为 1（已除以 m22 归一）
+    // M^-1 布局：| m11   0   m13 |     selfshadow/ltc_code 参考实现一致
+    //            |  0    1    0  |
+    //            | m31   0   m33 |
+    // GLSL mat3(col0, col1, col2) 列主序：
+    vec4 t1 = LTC_SampleMatrix(NoV, roughness);
     mat3 Minv = mat3(
-        vec3(t1.x, 0.0, t1.y),
-        vec3(0.0,  1.0, 0.0),
-        vec3(t1.z, 0.0, t1.w)
+        vec3(t1.x, 0.0, t1.y),   // col 0 = (m11,  0,  m31)
+        vec3(0.0,  1.0, 0.0),    // col 1 = (0,    1,   0 )  [m22 恒为 1]
+        vec3(t1.z, 0.0, t1.w)    // col 2 = (m13,  0,  m33)
     );
     float specPolygon = LTC_EvaluateRect(Minv, N, V, P, p0, p1, p2, p3, twoSided);
 

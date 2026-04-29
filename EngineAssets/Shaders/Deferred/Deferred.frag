@@ -243,6 +243,15 @@ void main()
                                lightResult.ambientDiffuse, lightResult.ambientSpecular);
         lightResult.ambientSpecular = vec3(0.0); // grass blades: no ambient specular
     }
+    else if (matID == MATERIAL_ID_EMISSIVE)
+    {
+        // --- Emissive 直通路径 ---
+        // GBuffer0.w (roughness 插槽) 存储了发光强度，直接输出 albedo × intensity
+        // 跳过全部 BRDF / 直接光照 / 阴影 / 环境光计算
+        float emissiveIntensity   = roughness;             // GBuffer0.w = intensity
+        lightResult.directDiffuse = color.rgb * emissiveIntensity;
+        // directSpecular / ambientDiffuse / ambientSpecular 保持 vec3(0)
+    }
     else
     {
         // --- Default PBR path ---
