@@ -78,12 +78,12 @@ namespace VansGraphics
         int GetWidth()  const { return m_Width;  }
         int GetHeight() const { return m_Height; }
 
-        // ── 最后一帧 CPU 像素缓存（供面光源 emissive 数组层每帧更新使用）────
-        // Tick() 上传新帧后将像素留在此处；消费方调用 ConsumeNewFrame() 清除标志。
-        // 仅主线程读写，无需 mutex。
-        const std::vector<uint8_t>& GetLastFramePixels() const { return m_LastFramePixels; }
-        bool HasNewFrame() const { return m_HasNewFrame; }
-        void ConsumeNewFrame()   { m_HasNewFrame = false; }
+        // ── 统一 GPU 数据接口（供面光源等消费方使用）────────────────────────────
+        // 若本帧有新像素，将其写入目标贴图数组的指定层并消费新帧标志。
+        // 返回 true 表示本次执行了写入；消费方无需直接访问内部 CPU 像素缓存。
+        bool CopyNewFrameToArrayLayer(VansTexture* targetArray,
+                                      VansVKCommandBuffer& cmd,
+                                      int layerIndex);
 
     private:
         // ── 后台解码线程函数 ─────────────────────────────────────────────────
@@ -91,6 +91,10 @@ namespace VansGraphics
 
         // ── 将像素数据上传到 GPU（仅主线程调用）────────────────────────────
         void UploadFrameToGPU(const uint8_t* pixels, int dataSize);
+
+        // ── 最后一帧 CPU 像素缓存内部访问器（仅供 CopyNewFrameToArrayLayer 使用）──
+        bool HasNewFrame() const { return m_HasNewFrame; }
+        void ConsumeNewFrame()   { m_HasNewFrame = false; }
 
     private:
         // ── FFmpeg 解码上下文 ──────────────────────────────────────────────

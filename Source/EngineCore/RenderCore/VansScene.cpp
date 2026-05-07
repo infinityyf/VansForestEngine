@@ -854,15 +854,11 @@ void VansGraphics::VansScene::UpdateSceneData()
                 if (!rectComp || !rectComp->m_EmissiveVideo) continue;
 
                 VansVideoTexture* vid = rectComp->m_EmissiveVideo;
-                if (!vid->IsReady() || !vid->HasNewFrame()) continue;
+                if (!vid->IsReady()) continue;
 
-                const int layerIdx = rectComp->m_LightIndex;
-                emissiveArray->UpdateArrayLayerFromPixels(
-                    vkDevice->GetCommandBuffer(),
-                    vid->GetLastFramePixels().data(),
-                    vid->GetWidth(), vid->GetHeight(),
-                    layerIdx);
-                vid->ConsumeNewFrame();
+                // 通过统一接口写入数组层，无需在外部访问 CPU 像素缓存
+                vid->CopyNewFrameToArrayLayer(
+                    emissiveArray, vkDevice->GetCommandBuffer(), rectComp->m_LightIndex);
             }
         }
     }

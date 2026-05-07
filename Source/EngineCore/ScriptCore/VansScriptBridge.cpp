@@ -7,6 +7,7 @@
 #include "../AnimationCore/VansAnimationController.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../Util/VansInputManager.h"
+#include "../RenderCore/VulkanCore/VansVideoTexture.h"
 #include "../../../../ForestExporter/VansEngineBridge.h"
 #include "../../../../ForestExporter/VansInputBridge.h"
 
@@ -67,6 +68,12 @@ static inline VansScriptSpotLightComponent* AsSpotLightComp(void* p)
 static inline VansScriptCameraComponent* AsCameraComp(void* p)
 {
 	return dynamic_cast<VansScriptCameraComponent*>(
+		static_cast<VansScriptComponent*>(p));
+}
+
+static inline VansScriptRectLightComponent* AsRectLightComp(void* p)
+{
+	return dynamic_cast<VansScriptRectLightComponent*>(
 		static_cast<VansScriptComponent*>(p));
 }
 
@@ -708,6 +715,143 @@ void VansInitEngineBridge()
 	{
 		auto* c = AsCameraComp(comp);
 		if (c && c->m_Camera) c->m_Camera->SetFarClip(v);
+	};
+
+	// ── Rect Light Component ─────────────────────────────────────────
+	s_EngineBridge.objectGetRectLightComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptRectLightComponent>();
+	};
+
+	s_EngineBridge.rectLightGetColor = [](void* comp, float& r, float& g, float& b)
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		r = lights[c->m_LightIndex].m_Color.r;
+		g = lights[c->m_LightIndex].m_Color.g;
+		b = lights[c->m_LightIndex].m_Color.b;
+	};
+
+	s_EngineBridge.rectLightSetColor = [](void* comp, float r, float g, float b)
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Color = glm::vec3(r, g, b);
+	};
+
+	s_EngineBridge.rectLightGetIntensity = [](void* comp) -> float
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return lights[c->m_LightIndex].m_Intensity;
+	};
+
+	s_EngineBridge.rectLightSetIntensity = [](void* comp, float v)
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Intensity = v;
+	};
+
+	// 宽度 / 高度以完整边长暴露给 Python，内部存储剧半边长
+	s_EngineBridge.rectLightGetWidth = [](void* comp) -> float
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return lights[c->m_LightIndex].m_HalfWidth * 2.0f;
+	};
+
+	s_EngineBridge.rectLightSetWidth = [](void* comp, float w)
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_HalfWidth = w * 0.5f;
+	};
+
+	s_EngineBridge.rectLightGetHeight = [](void* comp) -> float
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return lights[c->m_LightIndex].m_HalfHeight * 2.0f;
+	};
+
+	s_EngineBridge.rectLightSetHeight = [](void* comp, float h)
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_HalfHeight = h * 0.5f;
+	};
+
+	s_EngineBridge.rectLightGetRange = [](void* comp) -> float
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return 0.0f;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return 0.0f;
+		return lights[c->m_LightIndex].m_Range;
+	};
+
+	s_EngineBridge.rectLightSetRange = [](void* comp, float r)
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_Range = r;
+	};
+
+	s_EngineBridge.rectLightGetTwoSided = [](void* comp) -> bool
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return false;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return false;
+		return lights[c->m_LightIndex].m_TwoSided != 0.0f;
+	};
+
+	s_EngineBridge.rectLightSetTwoSided = [](void* comp, bool v)
+	{
+		auto* c = AsRectLightComp(comp);
+		if (!c || !c->m_LightManager || c->m_LightIndex < 0) return;
+		auto& lights = c->m_LightManager->GetRectLights();
+		if (c->m_LightIndex >= (int)lights.size()) return;
+		lights[c->m_LightIndex].m_TwoSided = v ? 1.0f : 0.0f;
+	};
+
+	s_EngineBridge.rectLightVideoPlay = [](void* comp)
+	{
+		auto* c = AsRectLightComp(comp);
+		if (c && c->m_EmissiveVideo) c->m_EmissiveVideo->Play();
+	};
+
+	s_EngineBridge.rectLightVideoPause = [](void* comp)
+	{
+		auto* c = AsRectLightComp(comp);
+		if (c && c->m_EmissiveVideo) c->m_EmissiveVideo->Pause();
+	};
+
+	s_EngineBridge.rectLightVideoIsPlaying = [](void* comp) -> bool
+	{
+		auto* c = AsRectLightComp(comp);
+		return (c && c->m_EmissiveVideo) ? c->m_EmissiveVideo->IsPlaying() : false;
 	};
 }
 

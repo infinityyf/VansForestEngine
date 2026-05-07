@@ -297,6 +297,24 @@ void VansVideoTexture::UploadFrameToGPU(const uint8_t* pixels, int dataSize)
 }
 
 // ===========================================================================
+// CopyNewFrameToArrayLayer — 将本帧新像素写入目标贴图数组的指定层（主线程）
+// 统一接口：消费方（面光源等）无需直接访问内部 CPU 像素缓存。
+// 若无新帧则立即返回 false，不产生任何 GPU 操作。
+// ===========================================================================
+bool VansVideoTexture::CopyNewFrameToArrayLayer(VansTexture* targetArray,
+                                                 VansVKCommandBuffer& cmd,
+                                                 int layerIndex)
+{
+    if (!targetArray || !m_HasNewFrame || m_LastFramePixels.empty())
+        return false;
+
+    bool ok = targetArray->UpdateArrayLayerFromPixels(
+        cmd, m_LastFramePixels.data(), m_Width, m_Height, layerIndex);
+    ConsumeNewFrame();
+    return ok;
+}
+
+// ===========================================================================
 // GetImageView / GetSampler — 转发到底层 VansVKImage
 // ===========================================================================
 VkImageView VansVideoTexture::GetImageView()
