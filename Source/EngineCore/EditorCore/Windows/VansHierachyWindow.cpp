@@ -158,9 +158,9 @@ void VansGraphics::VansHierachuWindow::DrawTransformDetail(VansRenderNode& node)
 void VansGraphics::VansHierachuWindow::DrawMaterialDetail(VansMaterial& material, int index)
 {
     // Show material type label
-    const char* typeNames[] = { "PBR", "Coat", "Transparent", "PostProcess", "SkyBox", "Deferred", "SSAO", "SSR", "Shadow", "Skin", "Cloth" };
+    const char* typeNames[] = { "PBR", "Coat", "Transparent", "PostProcess", "SkyBox", "Deferred", "SSAO", "SSR", "Shadow", "Skin", "Cloth", "Hair", "Subsurface", "Grass", "Emissive" };
     int typeIdx = (int)material.m_MaterialType;
-    if (typeIdx >= 0 && typeIdx < 11)
+    if (typeIdx >= 0 && typeIdx < (int)(sizeof(typeNames) / sizeof(typeNames[0])))
         ImGui::Text("Type: %s", typeNames[typeIdx]);
 
     // Show texture info
@@ -222,6 +222,15 @@ void VansGraphics::VansHierachuWindow::DrawMaterialDetail(VansMaterial& material
             ImGui::TreePop();
         }
     }
+    else if (material.m_MaterialType == VansMaterialType::VAN_EMISSIVE)
+    {
+        VansEmissiveMaterial& emissive = static_cast<VansEmissiveMaterial&>(material);
+        if (ImGui::TreeNode("Textures"))
+        {
+            showTex("Emissive", emissive.m_EmissiveTexture);
+            ImGui::TreePop();
+        }
+    }
 
     ImGui::Separator();
 
@@ -233,6 +242,15 @@ void VansGraphics::VansHierachuWindow::DrawMaterialDetail(VansMaterial& material
 	case VansMaterialType::VAN_SKY_BOX:
         DrawAtmosphereParameters(static_cast<VansSkyBoxMaterial&>(material).m_AtmospherePBRParam);
 		break;
+	case VansMaterialType::VAN_EMISSIVE:
+	{
+		VansEmissiveMaterial& emissive = static_cast<VansEmissiveMaterial&>(material);
+		ImGui::PushID(index);
+		ImGui::ColorEdit3("Emissive Color", &emissive.m_BasePBRParam.m_albedo.x);
+		ImGui::DragFloat("Emissive Intensity", &emissive.m_BasePBRParam.m_roughness, 0.1f, 0.0f, 1000.0f);
+		ImGui::PopID();
+		break;
+	}
 	default:
 		break;
 	}

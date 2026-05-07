@@ -168,10 +168,10 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			VK_IMAGE_LAYOUT_GENERAL,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		},
-		//gbuffer0
+		//gbuffer0  SFLOAT：rgb=albedo/emissiveColor, w=roughness/emissiveIntensity (HDR>1 需要 SFLOAT)
 		{
 			0,
-			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_FORMAT_R16G16B16A16_SFLOAT,
 			VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,
 			VK_ATTACHMENT_STORE_OP_STORE,
@@ -181,10 +181,10 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		},
 
-		//gbuffer1
+		//gbuffer1  SFLOAT：与 VkImage 格式保持一致，避免 Vulkan validation 报格式不匹配
 		{
 			0,
-			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_FORMAT_R16G16B16A16_SFLOAT,
 			VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,
 			VK_ATTACHMENT_STORE_OP_STORE,
@@ -438,7 +438,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	m_GBufferImage0.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_R16G16B16A16_UNORM,
+		VK_FORMAT_R16G16B16A16_SFLOAT,  // SFLOAT：emissive intensity 可超过 1.0
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,

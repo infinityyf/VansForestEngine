@@ -8,6 +8,9 @@
 
 #include "../Lights/LightsData.glsl"
 #include "../BRDF/BRDFData.glsl"
+// 面光源发光贴图数组：最多 32 层，每层 256×256，完整 mip（在 RectLightLTC.glsl 引入前声明）。
+#define RECT_LIGHT_EMISSIVE_ENABLED
+layout( set = 1, binding = 15 ) uniform sampler2DArray rectLightEmissive;
 #include "../Lighting/RectLightLTC.glsl"
 #include "../BRDF/BRDFSkin.glsl"
 #include "../BRDF/BRDFCloth.glsl"

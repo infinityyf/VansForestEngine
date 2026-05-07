@@ -47,7 +47,8 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& mesh
 		for (uint32_t i = 0; i < mesh->mNumVertices; i++)
 		{
 			aiVector3D vertex = mesh->mVertices[i];
-			aiVector3D normal = mesh->mNormals[i];
+			aiVector3D normal = (mesh->mNormals && mesh->mNormals[i].SquareLength() > 1e-6f)
+				? mesh->mNormals[i] : aiVector3D(0, 1, 0);
 			aiVector3D tangent(0, 0, 0);
 			aiVector3D bitangent(0, 0, 0);
 			aiVector3D texCoord(0,0,0);

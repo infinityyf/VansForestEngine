@@ -816,6 +816,9 @@ void VansGraphics::VansScene::UnLoadScene()
 	m_DummyBoneBuffer.DestroyVulkanBuffer(nativeDevice);
 	m_DummyWeightBuffer.DestroyVulkanBuffer(nativeDevice);
 
+	// ── 18. 暂停视频播放（视频为项目级资源，GPU 纹理保留，切换场景/Play 时复用）────────
+	m_VideoManager.PauseAll();
+
 	VANS_LOG("[VansScene] 场景卸载完成");
 }
 
@@ -833,6 +836,36 @@ void VansGraphics::VansScene::UpdateSceneData()
     // Advance cloth simulation and write results to staging buffers
     UpdateClothSimulation(0.03f);
     WriteClothResultsToStagingBuffers();
+
+    // 推进所有视频纹理的播放，上传就绪帧到 GPU（在 Vulkan 命令录制之前执行）
+    m_VideoManager.TickAll(VansTimer::GetLastFrameDelta());
+
+    // 面光源视频发光：将有新帧的视频像素更新到 emissive 贴图数组层
+    {
+        VansTexture* emissiveArray = m_MaterialManager.GetRuntimeRenderTexture(
+            VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
+        VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+        if (emissiveArray && vkDevice)
+        {
+            for (auto* obj : m_SceneObjects)
+            {
+                if (!obj) continue;
+                auto* rectComp = obj->GetComponent<VansScriptRectLightComponent>();
+                if (!rectComp || !rectComp->m_EmissiveVideo) continue;
+
+                VansVideoTexture* vid = rectComp->m_EmissiveVideo;
+                if (!vid->IsReady() || !vid->HasNewFrame()) continue;
+
+                const int layerIdx = rectComp->m_LightIndex;
+                emissiveArray->UpdateArrayLayerFromPixels(
+                    vkDevice->GetCommandBuffer(),
+                    vid->GetLastFramePixels().data(),
+                    vid->GetWidth(), vid->GetHeight(),
+                    layerIdx);
+                vid->ConsumeNewFrame();
+            }
+        }
+    }
 
     // Resolve parent-child transform relationships before GPU upload
     m_TransformParentSystem.ResolveParentChildTransforms();

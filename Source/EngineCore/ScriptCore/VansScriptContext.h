@@ -21,7 +21,7 @@
 namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
-namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; }
+namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; class VansVideoTexture; }
 namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; }
 
 class VansScriptContext
@@ -266,6 +266,13 @@ public:
 
 	// 该灯光在 m_LightManager::m_RectLights 中的索引
 	int m_LightIndex = -1;
+
+	// 发光贴图路径（仅 CPU 端，不上传 GPU）。空字符串表示无贴图。
+	std::string m_EmissiveTexturePath;
+
+	// 视频纹理发光（非拥有指针，生命周期由 VansScene::m_VideoManager 管理）。
+	// 与 m_EmissiveTexturePath 互斥；非空时每帧自动更新 emissive 数组层。
+	VansGraphics::VansVideoTexture* m_EmissiveVideo = nullptr;
 };// ── Camera Component ────────────────────────────────────────────────────────────────────
 // 持有对 VansCamera 的非拥有指针；VansCamera 由 VansScene 生命周期管理。
 // Transform 的 position/rotation(pitch/yaw) 每帧由 VansCamera::SyncFromTransform 同步。

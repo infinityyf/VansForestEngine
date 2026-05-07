@@ -52,12 +52,19 @@ namespace VansGraphics
 			return false;
 		}
 
+		// 必须在第一个 barrier 调用之前保存原始 layout。
+		// SetImageMemoryBarrier 会立即更新 m_ImageLayout = NewLayout，
+		// 若此处不缓存，第二个 barrier 将错误地使用已更新后的 TRANSFER_DST_OPTIMAL
+		// 作为目标 layout，导致图像永久停留在 TRANSFER_DST_OPTIMAL，
+		// GPU 采样时触发未定义行为并最终崩溃（VK_ERROR_DEVICE_LOST）。
+		const VkImageLayout originalLayout = dest_image.m_ImageLayout;
+
 		dest_image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				dest_image.m_VansVKImage,
-				VK_ACCESS_TRANSFER_READ_BIT,
+				VK_ACCESS_SHADER_READ_BIT,
 				VK_ACCESS_TRANSFER_WRITE_BIT,
-				dest_image.m_ImageLayout,
+				originalLayout,
 				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_QUEUE_FAMILY_IGNORED,
@@ -85,13 +92,13 @@ namespace VansGraphics
 				}
 			});
 
-		dest_image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		dest_image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 			{
 				dest_image.m_VansVKImage,
 				VK_ACCESS_TRANSFER_WRITE_BIT,
-				VK_ACCESS_TRANSFER_READ_BIT,
+				VK_ACCESS_SHADER_READ_BIT,
 				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				dest_image.m_ImageLayout,
+				originalLayout,
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_QUEUE_FAMILY_IGNORED,
 				dest_image.m_ImageAspect

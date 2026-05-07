@@ -69,8 +69,8 @@ namespace VansGraphics
 		glm::mat4				m_ShadowMatrix;   // VP，阴影 atlas 采样使用
 		float					m_ShadowIndex;    // -1 = 无阴影，否则为 RectLight 段内索引
 		float					m_AttenuationExp; // 距离衰减指数（默认 2.0）
-		float					m_Pad0;
-		float					m_Pad1;
+		float					m_TextureSlot;    // -1 = 无发光贴图；>=0 = rectLightEmissive 层索引
+		float					m_TexLodBias;     // 发光贴图 LOD 偏移量（默认 0.0）
 	};
 
 	class VansLightManager

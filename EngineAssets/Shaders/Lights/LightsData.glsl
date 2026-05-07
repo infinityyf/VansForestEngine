@@ -42,6 +42,8 @@ struct SpotLightData
 //   color_twoSided  : rgb = colour,                     w = 0 or 1 (two-sided)
 //   shadowMatrix    : VP matrix shared with PunctualShadow atlas (Phase 3)
 //   shadowParams    : x = shadowIndex (-1 => no shadow), y = attenuation exponent
+//                     z = emissiveTextureSlot (-1 => no texture, >=0 => rectLightEmissive 层索引)
+//                     w = texLodBias (发光贴图 LOD 偏移，默认 0.0)
 struct RectLightData
 {
     vec4 position_halfW;

@@ -12,6 +12,7 @@
 #include "../AnimationCore/VansAnimationController.h"
 #include "VegetationCore/VansVegetationSystem.h"
 #include "../ScriptCore/VansScriptContext.h"
+#include "VansVideoManager.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -442,6 +443,12 @@ namespace VansGraphics
 		VansSceneState   m_SceneState    = VansSceneState::Empty;
 		VansSceneLoadMode m_LoadMode     = VansSceneLoadMode::Editor;
 		bool m_ResourcesLoaded = false;
+
+		// ── 视频纹理管理器 ────────────────────────────────────────────────────
+		// 管理当前场景内所有视频纹理的生命周期与每帧更新。
+		// LoadSceneContent() 中从 JSON 加载，UnLoadScene() 中清理。
+	public:
+		VansVideoManager m_VideoManager;
 	};
 }
 

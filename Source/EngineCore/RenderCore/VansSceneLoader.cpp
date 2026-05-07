@@ -7,6 +7,7 @@
 #include "../ScriptCore/VansScriptContext.h"
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
+#include "VansVideoManager.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -47,6 +48,9 @@ void VansScene::LoadProjectResources(const char* resourceJsonPath, VansVKDevice*
 	}
 
 	json resourceData = json::parse(resFile);
+
+	// 切换项目时清空旧项目的视频纹理（项目级资源随项目生命周期管理）
+	m_VideoManager.Clear();
 
 	RegisterEngineShaders();
 	LoadResources(resourceData);
@@ -99,6 +103,9 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 
 	// 记录本次加载模式
 	m_LoadMode = mode;
+
+	// 场景就绪后恢复视频播放（GPU 资源已全部重建，此时启动播放安全）
+	m_VideoManager.PlayAll();
 
 	m_SceneState = VansSceneState::Ready;
 	VANS_LOG("[VansScene] 场景就绪，可以开始渲染");
@@ -639,10 +646,16 @@ void VansGraphics::VansScene::LoadResources(json& resourceData)
         LoadTexturesFromJson(resourceData["texture"], assetPrefix, enginePrefix, vkDevice);
     }
 
+    if (resourceData.contains("video") && resourceData["video"].is_array())
+    {
+        m_VideoManager.LoadFromJson(resourceData["video"], assetPrefix, vkDevice);
+    }
+
     VANS_LOG("[VansScene] Resources loaded: "
              << m_Meshes.size() << " meshes, "
              << m_Textures.size() << " textures, "
-             << m_Shaders.size() << " shaders");
+             << m_Shaders.size() << " shaders, "
+             << m_VideoManager.Count() << " videos");
 }
 
 // ===========================================================================
@@ -989,6 +1002,22 @@ void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
                     tex = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
                 emissive->m_EmissiveTexture = tex;
             }
+
+            // 视频纹理：若指定了 emissive_video，用视频纹理替换发光纹理槽
+            if (sceneMaterial.contains("emissive_video"))
+            {
+                const std::string videoName = sceneMaterial["emissive_video"];
+                VansVideoTexture* videoTex  = m_VideoManager.Get(videoName);
+                if (videoTex && videoTex->IsReady())
+                {
+                    emissive->m_EmissiveTexture = videoTex->GetTexture();
+                    VANS_LOG("[VansScene] Emissive 材质绑定视频纹理: " << videoName);
+                }
+                else
+                {
+                    VANS_LOG_WARN("[VansScene] emissive_video 未找到或未就绪: " << videoName);
+                }
+            }
         }
 
         if (matType == VansMaterialType::VAN_SKY_BOX)
@@ -1028,7 +1057,18 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
     }
     json sceneData = json::parse(jsonFile);
 
-    // 场景文件只负责材质和实例数据；mesh/texture/shader 已由 resource.json 加载。
+    // 从 scene path 推导 project root（Scenes/ → 项目根目录）
+    // 供 LoadSceneObjects 解析相对路径共用
+    std::string scenePath(path);
+    std::string projectRoot = scenePath.substr(0, scenePath.find_last_of("/\\") + 1);
+    if (!projectRoot.empty())
+    {
+        size_t pos = projectRoot.substr(0, projectRoot.size() - 1).find_last_of("/\\");
+        if (pos != std::string::npos)
+            projectRoot = projectRoot.substr(0, pos + 1);
+    }
+
+    // 场景文件只负责材质和实例数据；mesh/texture/shader/video 已由 resource.json 加载。
     if (sceneData.contains("material") && sceneData["material"].is_array())
     {
         LoadMaterialsFromJson(sceneData["material"]);
@@ -1041,16 +1081,6 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
     }
 
     json& sceneNode = sceneData["scene"][0];
-
-    // 从 scene path 推导 project root（Scenes/ → 项目根目录）
-    std::string scenePath(path);
-    std::string projectRoot = scenePath.substr(0, scenePath.find_last_of("/\\") + 1);
-    if (!projectRoot.empty())
-    {
-        size_t pos = projectRoot.substr(0, projectRoot.size() - 1).find_last_of("/\\");
-        if (pos != std::string::npos)
-            projectRoot = projectRoot.substr(0, pos + 1);
-    }
 
     if (!sceneNode.contains("objects") || !sceneNode["objects"].is_array())
     {
@@ -2029,6 +2059,19 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 rectLight.m_Normal        = glm::vec3(0.0f, 0.0f, 1.0f);
                 rectLight.m_Right         = glm::vec3(1.0f, 0.0f, 0.0f);
                 rectLight.m_Up            = glm::vec3(0.0f, 1.0f, 0.0f);
+                // 面光源发光贴图：解析 emissive_texture / emissive_video / texture_lod_bias
+                rectLight.m_TextureSlot = -1.0f;
+                rectLight.m_TexLodBias  = rlJson.value("texture_lod_bias", 0.0f);
+                std::string emissiveTexPath;
+                std::string emissiveVideoName;
+                if (rlJson.contains("emissive_texture") && rlJson["emissive_texture"].is_string())
+                {
+                    emissiveTexPath = rlJson["emissive_texture"].get<std::string>();
+                }
+                if (rlJson.contains("emissive_video") && rlJson["emissive_video"].is_string())
+                {
+                    emissiveVideoName = rlJson["emissive_video"].get<std::string>();
+                }
 
                 int idx = (int)m_LightManager.GetRectLights().size();
                 m_LightManager.AddRectLight(rectLight);
@@ -2036,6 +2079,84 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 auto* rlComp = new VansScriptRectLightComponent();
                 rlComp->m_LightManager = &m_LightManager;
                 rlComp->m_LightIndex   = idx;
+                rlComp->m_EmissiveTexturePath = emissiveTexPath;
+
+                // ── 视频发光贴图（优先级高于静态贴图；两者同时指定时 video 生效）──
+                if (!emissiveVideoName.empty() && idx < 32)
+                {
+                    VansVideoTexture* videoTex = m_VideoManager.Get(emissiveVideoName);
+                    if (videoTex != nullptr)
+                    {
+                        rlComp->m_EmissiveVideo = videoTex;
+                        // 激活 TextureSlot：使着色器进入 RECT_LIGHT_EMISSIVE_ENABLED 分支
+                        m_LightManager.GetRectLights()[idx].m_TextureSlot = static_cast<float>(idx);
+
+                        // 向 emissive 数组层写入白色占位帧：
+                        // 视频第一帧到达前，着色器已进入纹理采样分支（texSlot >= 0），
+                        // 若该层为黑色则 diffLightTerm = 0，面光源完全不发光。
+                        // 写入一个 1×1 白色像素（UpdateArrayLayerFromPixels 会 resize 到 256×256），
+                        // 使面光源在视频播放前以 baseTint 颜色正常发光，视频帧到来后逐帧覆盖。
+                        VansTexture* emissiveArray = m_MaterialManager.GetRuntimeRenderTexture(
+                            VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
+                        if (emissiveArray != nullptr)
+                        {
+                            static const uint8_t kWhitePixel[4] = { 255, 255, 255, 255 };
+                            VansVKDevice* texVkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+                            emissiveArray->UpdateArrayLayerFromPixels(
+                                texVkDevice->GetCommandBuffer(), kWhitePixel, 1, 1, idx);
+                        }
+
+                        VANS_LOG("[LoadSceneObjects] 面光源 '" << obj->m_ObjectName << "' 绑定视频发光 '"
+                            << emissiveVideoName << "' slot=" << idx);
+                    }
+                    else
+                    {
+                        VANS_LOG_WARN("[LoadSceneObjects] 面光源 '" << obj->m_ObjectName
+                            << "' emissive_video '" << emissiveVideoName << "' 未找到，回退到静态贴图");
+                        // video 未找到时降级到静态贴图（若有）
+                        if (!emissiveTexPath.empty())
+                        {
+                            VansTexture* emissiveArray = m_MaterialManager.GetRuntimeRenderTexture(
+                                VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
+                            if (emissiveArray != nullptr)
+                            {
+                                VansVKDevice* texVkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+                                std::string absTexPath = projectRoot + emissiveTexPath;
+                                if (emissiveArray->LoadTextureLayer(texVkDevice->GetCommandBuffer(), absTexPath, idx))
+                                {
+                                    m_LightManager.GetRectLights()[idx].m_TextureSlot = static_cast<float>(idx);
+                                    VANS_LOG("[LoadSceneObjects] 面光源 '" << obj->m_ObjectName << "' 降级加载静态发光贴图 slot=" << idx);
+                                }
+                            }
+                        }
+                    }
+                }
+                // ── 静态发光贴图（仅在未指定 video 时生效）──────────────────
+                else if (!emissiveTexPath.empty() && idx < 32)
+                {
+                    VansTexture* emissiveArray = m_MaterialManager.GetRuntimeRenderTexture(
+                        VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
+                    if (emissiveArray != nullptr)
+                    {
+                        VansVKDevice* texVkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+                        std::string absTexPath = projectRoot + emissiveTexPath;
+                        bool loaded = emissiveArray->LoadTextureLayer(texVkDevice->GetCommandBuffer(), absTexPath, idx);
+                        if (loaded)
+                        {
+                            m_LightManager.GetRectLights()[idx].m_TextureSlot = static_cast<float>(idx);
+                            VANS_LOG("[LoadSceneObjects] 面光源 '" << obj->m_ObjectName << "' 加载发光贴图 slot=" << idx);
+                        }
+                        else
+                        {
+                            VANS_LOG_WARN("[LoadSceneObjects] 面光源 '" << obj->m_ObjectName << "' 发光贴图加载失败，回退到单色: " << absTexPath);
+                        }
+                    }
+                    else
+                    {
+                        VANS_LOG_WARN("[LoadSceneObjects] RT_RECT_LIGHT_EMISSIVE 未就绪，跳过发光贴图加载");
+                    }
+                }
+
                 obj->AddComponent(rlComp);
                 VANS_LOG("[LoadSceneObjects] 创建面光源组件 '" << obj->m_ObjectName << "' idx=" << idx);
             }

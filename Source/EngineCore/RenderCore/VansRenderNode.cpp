@@ -638,10 +638,11 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 	VansTexture* shBResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
 	VansTexture* volumetricFogResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
 	VansTexture* giVisibility = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY);
+	VansTexture* rectLightEmissive = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
 
 	if (ssaoFilterResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
 		shRResult == nullptr || shGResult == nullptr || shBResult == nullptr || volumetricFogResult == nullptr ||
-		giVisibility == nullptr)
+		giVisibility == nullptr || rectLightEmissive == nullptr)
 	{
 		// 不清除 dirty 标记，下帧重试（运行时纹理尚未就绪）
 		m_DescriptorsetsDirty = true;
@@ -801,6 +802,23 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 					giVisibility->GetImage().GetSampler(),
 					giVisibility->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_GENERAL
+				}
+			}
+		}
+	);
+
+	// 面光源发光贴图数组 (sampler2DArray, binding 15)
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			frameBufferInputDescriptorSets[0],
+			DEFERRED_BINDING_RECT_LIGHT_EMISSIVE, // 15
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					rectLightEmissive->GetImage().GetSampler(),
+					rectLightEmissive->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
 			}
 		}

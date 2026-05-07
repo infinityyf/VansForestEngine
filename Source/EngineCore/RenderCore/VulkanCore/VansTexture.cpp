@@ -223,6 +223,79 @@ namespace VansGraphics
 
 	// ----- 压缩贴图上传 -----
 
+	void VansTexture::GenerateMipmapsForLayer(VkCommandBuffer cmd, int width, int height, int mipLevels, int layerIndex)
+	{
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.image = m_Image.GetImage();
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.subresourceRange.aspectMask = m_Image.GetImageAspect();
+		barrier.subresourceRange.baseArrayLayer = (uint32_t)layerIndex;
+		barrier.subresourceRange.layerCount = 1;
+		barrier.subresourceRange.levelCount = 1;
+
+		int32_t mipW = width, mipH = height;
+
+		for (int i = 1; i < mipLevels; ++i)
+		{
+			// mip i-1：TRANSFER_DST → TRANSFER_SRC（为本次 blit 提供源数据）
+			barrier.subresourceRange.baseMipLevel = i - 1;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+			// mip i：SHADER_READ_ONLY → TRANSFER_DST（InitTextureArray 初始化为 SHADER_READ_ONLY）
+			barrier.subresourceRange.baseMipLevel = i;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+			int32_t dstW = std::max(1, mipW / 2);
+			int32_t dstH = std::max(1, mipH / 2);
+
+			VkImageBlit blit{};
+			blit.srcSubresource = { m_Image.GetImageAspect(), (uint32_t)(i - 1), (uint32_t)layerIndex, 1 };
+			blit.srcOffsets[0] = { 0, 0, 0 };
+			blit.srcOffsets[1] = { mipW, mipH, 1 };
+			blit.dstSubresource = { m_Image.GetImageAspect(), (uint32_t)i, (uint32_t)layerIndex, 1 };
+			blit.dstOffsets[0] = { 0, 0, 0 };
+			blit.dstOffsets[1] = { dstW, dstH, 1 };
+
+			vkCmdBlitImage(cmd,
+				m_Image.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				m_Image.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				1, &blit, VK_FILTER_LINEAR);
+
+			// mip i-1：blit 完成后转回 SHADER_READ_ONLY，可被后续帧采样
+			barrier.subresourceRange.baseMipLevel = i - 1;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+			mipW = dstW;
+			mipH = dstH;
+		}
+
+		// 最后一级 mip 作为 blit 目标，从 TRANSFER_DST → SHADER_READ_ONLY
+		barrier.subresourceRange.baseMipLevel = mipLevels - 1;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &barrier);
+	}
+
 	void VansTexture::UploadCompressedTexture(VansVKCommandBuffer& command_buffer, const uint8_t* srcData, int width, int height, bool isSRGB, VkSamplerAddressMode addressMode)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
@@ -439,6 +512,213 @@ namespace VansGraphics
 		m_TextureSlice = 1;
 		UploadUncompressedTexture(command_buffer, data, dataSize, width, height, format,
 			/*needMip*/ false, addressMode);
+	}
+
+	void VansTexture::InitTextureArray(VansVKCommandBuffer& command_buffer,
+		int width, int height, int layerCount, int numComponents,
+		bool generateMip, TexturePrecision texture_precision, VkSamplerAddressMode addressMode)
+	{
+		m_TextureWidth = width;
+		m_TextureHeight = height;
+		m_TextureSlice = layerCount;
+
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+		VkDevice device = vkDevice->GetLogicDevice();
+		VkQueue queue = vkDevice->GetGraphicsQueue();
+
+		VkFormat format = ChooseFormat(numComponents, texture_precision);
+		int mipLevels = generateMip ? 1 + (int)std::floor(std::log2((float)std::max(width, height))) : 1;
+
+		// 创建 2D 贴图数组：VK_IMAGE_TYPE_2D + layer_num > 1 → VK_IMAGE_VIEW_TYPE_2D_ARRAY
+		// TRANSFER_SRC_BIT：vkCmdBlitImage 将已上传的 mip 0 逐级下采样时需要读源
+		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
+		m_Image.CreateVulkanImage(device, extent, format, mipLevels, (uint32_t)layerCount,
+			VK_IMAGE_TYPE_2D,
+			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+			VK_SAMPLE_COUNT_1_BIT, false, true, true, addressMode);
+
+		// 将所有层从 UNDEFINED → SHADER_READ_ONLY_OPTIMAL
+		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{
+				m_Image.GetImage(),
+				VK_ACCESS_NONE,
+				VK_ACCESS_SHADER_READ_BIT,
+				m_Image.GetImageLayout(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_QUEUE_FAMILY_IGNORED,
+				m_Image.GetImageAspect()
+			});
+		SubmitAndWait(command_buffer, queue, device);
+	}
+
+	bool VansTexture::LoadTextureLayer(VansVKCommandBuffer& command_buffer,
+		const std::string& texturePath, int layerIndex, bool isSRGB, VkSamplerAddressMode addressMode)
+	{
+		VANS_LOG("LoadTextureLayer [" << layerIndex << "]: " << texturePath);
+
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+
+		// 读取文件，强制 4 通道 RGBA8
+		int fileW = 0, fileH = 0, numComponents = 0, bytesPerChannel = 0;
+		void* pixelData = ReadTextureFile(texturePath, LOW_PRES_8, bytesPerChannel, fileW, fileH, numComponents, 4);
+		if (!pixelData || fileW <= 0 || fileH <= 0)
+		{
+			VANS_LOG_ERROR("LoadTextureLayer: 无法读取图片: " << texturePath);
+			return false;
+		}
+
+		// 若分辨率与数组贴图不一致，进行最近邻缩放
+		std::vector<uint8_t> resized;
+		const uint8_t* uploadData = static_cast<const uint8_t*>(pixelData);
+		int uploadW = fileW, uploadH = fileH;
+
+		if (fileW != m_TextureWidth || fileH != m_TextureHeight)
+		{
+			resized.resize(size_t(m_TextureWidth) * m_TextureHeight * 4);
+			float scaleX = float(fileW) / float(m_TextureWidth);
+			float scaleY = float(fileH) / float(m_TextureHeight);
+			for (int y = 0; y < m_TextureHeight; ++y)
+			{
+				for (int x = 0; x < m_TextureWidth; ++x)
+				{
+					int srcX = std::min((int)(x * scaleX), fileW - 1);
+					int srcY = std::min((int)(y * scaleY), fileH - 1);
+					const uint8_t* src = static_cast<const uint8_t*>(pixelData) + (srcY * fileW + srcX) * 4;
+					uint8_t* dst = resized.data() + (size_t(y) * m_TextureWidth + x) * 4;
+					dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+				}
+			}
+			uploadData = resized.data();
+			uploadW = m_TextureWidth;
+			uploadH = m_TextureHeight;
+		}
+
+		size_t dataSize = size_t(uploadW) * uploadH * 4;
+		VkExtent3D extent = { (uint32_t)uploadW, (uint32_t)uploadH, 1 };
+		VkOffset3D zeroOffset = { 0, 0, 0 };
+		vkDevice->SetDeviceImageData(m_Image, command_buffer,
+			const_cast<uint8_t*>(uploadData), 0, (int)dataSize, zeroOffset, extent, 0, layerIndex);
+
+		// SetDeviceImageData 将 mip 0 of layerIndex 置于 TRANSFER_DST_OPTIMAL。
+		// 若分配了多级 mip（generateMip=true），则用 vkCmdBlitImage 逐级下采样生成完整 mip 链；
+		// 单 mip 时直接转换回 SHADER_READ_ONLY_OPTIMAL 即可。
+		{
+			VkQueue queue = vkDevice->GetGraphicsQueue();
+			VkDevice device = vkDevice->GetLogicDevice();
+			int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
+
+			command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			if (mipLevels > 1)
+			{
+				GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(),
+					uploadW, uploadH, mipLevels, layerIndex);
+			}
+			else
+			{
+				m_Image.SetImageMemoryBarrier(
+					VK_PIPELINE_STAGE_TRANSFER_BIT,
+					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+					{
+						m_Image.GetImage(),
+						VK_ACCESS_TRANSFER_WRITE_BIT,
+						VK_ACCESS_SHADER_READ_BIT,
+						VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+						VK_QUEUE_FAMILY_IGNORED,
+						VK_QUEUE_FAMILY_IGNORED,
+						m_Image.GetImageAspect()
+					});
+			}
+			SubmitAndWait(command_buffer, queue, device);
+		}
+
+		stbi_image_free(pixelData);
+		return true;
+	}
+
+	// ===========================================================================
+	// UpdateArrayLayerFromPixels — 每帧将视频帧 CPU 像素写入贴图数组指定层
+	// 与 LoadTextureLayer 相同流程，但直接接收像素指针而无需读取文件。
+	// ===========================================================================
+	bool VansTexture::UpdateArrayLayerFromPixels(VansVKCommandBuffer& command_buffer,
+		const uint8_t* pixels, int srcW, int srcH, int layerIndex)
+	{
+		if (!pixels || srcW <= 0 || srcH <= 0 || layerIndex < 0 || layerIndex >= m_TextureSlice)
+		{
+			VANS_LOG_ERROR("[VansTexture] UpdateArrayLayerFromPixels: 参数无效 layer=" << layerIndex);
+			return false;
+		}
+
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+		if (!vkDevice) return false;
+
+		// 若分辨率与数组贴图不一致，进行最近邻缩放
+		std::vector<uint8_t> resized;
+		const uint8_t* uploadData = pixels;
+		int uploadW = srcW, uploadH = srcH;
+
+		if (srcW != m_TextureWidth || srcH != m_TextureHeight)
+		{
+			resized.resize(size_t(m_TextureWidth) * m_TextureHeight * 4);
+			float scaleX = float(srcW) / float(m_TextureWidth);
+			float scaleY = float(srcH) / float(m_TextureHeight);
+			for (int y = 0; y < m_TextureHeight; ++y)
+			{
+				for (int x = 0; x < m_TextureWidth; ++x)
+				{
+					int srcX = std::min((int)(x * scaleX), srcW - 1);
+					int srcY = std::min((int)(y * scaleY), srcH - 1);
+					const uint8_t* src = pixels + (size_t(srcY) * srcW + srcX) * 4;
+					uint8_t* dst = resized.data() + (size_t(y) * m_TextureWidth + x) * 4;
+					dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+				}
+			}
+			uploadData = resized.data();
+			uploadW = m_TextureWidth;
+			uploadH = m_TextureHeight;
+		}
+
+		size_t dataSize = size_t(uploadW) * uploadH * 4;
+		VkExtent3D extent = { (uint32_t)uploadW, (uint32_t)uploadH, 1 };
+		VkOffset3D zeroOffset = { 0, 0, 0 };
+		// SetDeviceImageData 上传 mip 0，并通过 fence 同步等待
+		vkDevice->SetDeviceImageData(m_Image, command_buffer,
+			const_cast<uint8_t*>(uploadData), 0, (int)dataSize, zeroOffset, extent, 0, layerIndex);
+
+		// 重新生成该层的完整 mip 链（与 LoadTextureLayer 逻辑完全一致）
+		{
+			VkQueue queue = vkDevice->GetGraphicsQueue();
+			VkDevice device = vkDevice->GetLogicDevice();
+			int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
+
+			command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			if (mipLevels > 1)
+			{
+				GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(),
+					uploadW, uploadH, mipLevels, layerIndex);
+			}
+			else
+			{
+				m_Image.SetImageMemoryBarrier(
+					VK_PIPELINE_STAGE_TRANSFER_BIT,
+					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+					{
+						m_Image.GetImage(),
+						VK_ACCESS_TRANSFER_WRITE_BIT,
+						VK_ACCESS_SHADER_READ_BIT,
+						VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+						VK_QUEUE_FAMILY_IGNORED,
+						VK_QUEUE_FAMILY_IGNORED,
+						m_Image.GetImageAspect()
+					});
+			}
+			SubmitAndWait(command_buffer, queue, device);
+		}
+
+		return true;
 	}
 
 	void VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision, VkSamplerAddressMode addressMode)

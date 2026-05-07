@@ -194,6 +194,8 @@ namespace VansGraphics
 		DEFERRED_BINDING_SH_G             = 11,
 		DEFERRED_BINDING_SH_B             = 12,
 		DEFERRED_BINDING_FOG              = 13,
+		DEFERRED_BINDING_GI_VISIBILITY    = 14,  // GI 探针可见度体 (sampler3D)
+		DEFERRED_BINDING_RECT_LIGHT_EMISSIVE = 15, // 面光源发光贴图数组 (sampler2DArray)
 	};
 
 	// --- SkyBox Pass ---

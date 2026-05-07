@@ -274,6 +274,16 @@ namespace VansGraphics
 				half2.data(), half2.size() * sizeof(uint16_t),
 				kSize, kSize, VK_FORMAT_R16G16B16A16_SFLOAT,
 				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+			// 面光源发光贴图数组：256×256×32，RGBA8，完整 mip 链（9 级）。
+			// LoadTextureLayer 上传 mip 0 后调用 GenerateMipmapsForLayer 逐级 blit 生成其余 mip，
+			// 粗糙度通过 specLod 采样对应 mip 级别，实现模糊效果。
+			manager->m_RectLightEmissiveArray = new VansTexture();
+			manager->m_RectLightEmissiveArray->InitTextureArray(m_VansVKCommandBuffer,
+				256, 256, 32, 4, /*generateMip=*/true,
+				VansGraphics::LOW_PRES_8, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+			manager->RegisterRuntimeRenderTexture(
+				VansMaterialManager::RT_RECT_LIGHT_EMISSIVE, manager->m_RectLightEmissiveArray);
 		}
 
 		VansVKBuffer prefilterCBBuffer;

@@ -101,6 +101,7 @@ namespace VansGraphics
 		static constexpr const char* RT_SH_B_RESULT = "Runtime.RayTracing.SH.B";
 		static constexpr const char* RT_GI_VISIBILITY = "Runtime.RayTracing.GI.Visibility";
 		static constexpr const char* RT_VOLUMETRIC_FOG_RESULT = "Runtime.VolumetricFog.Result";
+		static constexpr const char* RT_RECT_LIGHT_EMISSIVE = "Runtime.RectLight.EmissiveArray";
 		static constexpr const char* RT_FOG_VOXEL_INJECTION = "Runtime.Fog.VoxelInjection";
 		static constexpr const char* RT_FOG_VOXEL_INJECTION_HISTORY = "Runtime.Fog.VoxelInjectionHistory";
 		static constexpr const char* RT_FOG_VOXEL_RAYMARCH  = "Runtime.Fog.VoxelRayMarch";
@@ -194,6 +195,10 @@ namespace VansGraphics
 		VansTexture* m_LTC1 = nullptr;
 
 		VansTexture* m_LTC2 = nullptr;
+
+		// 面光源发光贴图数组：256×256×32，VK_IMAGE_TYPE_2D + layerCount=32，sampler2DArray。
+		// 由 VansVKRenderDataPreparation 创建，由 VansSceneLoader 按需填充各层。
+		VansTexture* m_RectLightEmissiveArray = nullptr;
 
 		uint32_t     m_SSGITemporalFrame = 0;
 

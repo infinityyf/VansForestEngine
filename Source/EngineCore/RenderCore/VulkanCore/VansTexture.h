@@ -51,6 +51,26 @@ namespace VansGraphics
 			int width, int height, VkFormat format,
 			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
+		// 创建 VK_IMAGE_TYPE_2D 的二维贴图数组（sampler2DArray），带完整 mip 链。
+		// 所有层均初始化为 SHADER_READ_ONLY 布局；数据未填充，可按需调用 LoadTextureLayer 上传。
+		void InitTextureArray(VansVKCommandBuffer& command_buffer,
+			int width, int height, int layerCount, int numComponents,
+			bool generateMip, TexturePrecision texture_precision = LOW_PRES_8,
+			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+		// 将单张图片文件上传到贴图数组的指定层（mip 0）。
+		// 若图片分辨率与数组不一致则进行最近邻缩放。layerIndex 必须 < layerCount。
+		// 返回 true 表示加载成功；false 表示文件不存在或读取失败（不会修改贴图数据）。
+		bool LoadTextureLayer(VansVKCommandBuffer& command_buffer,
+			const std::string& texturePath, int layerIndex, bool isSRGB = true,
+			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+		// 将已在 CPU 内存中的 RGBA8 像素上传到贴图数组的指定层（mip 0）并重新生成 mip 链。
+		// 像素格式必须为 RGBA8（与数组一致）。srcW/srcH 可与数组不一致，内部做最近邻缩放。
+		// 专为每帧视频帧更新面光源 emissive 数组层设计；返回 false 表示参数无效。
+		bool UpdateArrayLayerFromPixels(VansVKCommandBuffer& command_buffer,
+			const uint8_t* pixels, int srcW, int srcH, int layerIndex);
+
 		VansVKImage& GetImage() { return m_Image; }
 
 		TextureType m_TextureType;
@@ -73,6 +93,11 @@ namespace VansGraphics
 		// 通用辅助
 		void SubmitAndWait(VansVKCommandBuffer& command_buffer, VkQueue queue, VkDevice device);
 		void GenerateMipmaps(VkCommandBuffer cmd, int width, int height, int mipLevels);
+
+		// GenerateMipmaps 的贴图数组变体：只为指定层生成 mip 链。
+		// 调用前 mip 0 必须处于 TRANSFER_DST_OPTIMAL；高层级 mip 必须处于 SHADER_READ_ONLY_OPTIMAL。
+		// 调用后所有 mip 均转换为 SHADER_READ_ONLY_OPTIMAL。
+		void GenerateMipmapsForLayer(VkCommandBuffer cmd, int width, int height, int mipLevels, int layerIndex);
 
 		// 上传路径
 		void UploadCompressedTexture(VansVKCommandBuffer& command_buffer, const uint8_t* srcData, int width, int height, bool isSRGB, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
