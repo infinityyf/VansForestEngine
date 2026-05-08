@@ -819,6 +819,9 @@ void VansGraphics::VansScene::UnLoadScene()
 	// ── 18. 暂停视频播放（视频为项目级资源，GPU 纹理保留，切换场景/Play 时复用）────────
 	m_VideoManager.PauseAll();
 
+	// ── 19. 停止所有音频播放（音频为项目级资源，不释放已解码数据）────────
+	m_AudioManager.StopAll();
+
 	VANS_LOG("[VansScene] 场景卸载完成");
 }
 
@@ -839,6 +842,18 @@ void VansGraphics::VansScene::UpdateSceneData()
 
     // 推进所有视频纹理的播放，上传就绪帧到 GPU（在 Vulkan 命令录制之前执行）
     m_VideoManager.TickAll(VansTimer::GetLastFrameDelta());
+
+    // 推进所有音频节点（Streaming 模式下补充 Buffer）
+    {
+        glm::vec4 camPos = m_Camera->GetPosition();
+        glm::vec4 camFwd = m_Camera->GetForward();
+        glm::vec4 camUp  = m_Camera->GetUp();
+        m_AudioManager.TickAll(
+            VansTimer::GetLastFrameDelta(),
+            camPos.x, camPos.y, camPos.z,
+            camFwd.x, camFwd.y, camFwd.z,
+            camUp.x,  camUp.y,  camUp.z);
+    }
 
     // 面光源视频发光：将有新帧的视频像素更新到 emissive 贴图数组层
     {

@@ -5,6 +5,7 @@
 #include "../../PhysicsCore/VansPhysicsNode.h"
 #include "../../PhysicsCore/VansClothNode.h"
 #include "../../PhysicsCore/VansPhysicsVehicle.h"
+#include "../../AudioCore/VansAudioNode.h"
 
 #include "imgui.h"
 #include <algorithm>
@@ -815,6 +816,7 @@ void VansGraphics::VansHierachuWindow::DrawObjectList()
         if (obj->GetComponent<VansScriptPointLightComponent>())       typeHint += "PointLight ";
         if (obj->GetComponent<VansScriptSpotLightComponent>())        typeHint += "SpotLight ";
         if (obj->GetComponent<VansScriptRectLightComponent>())        typeHint += "RectLight ";
+        if (obj->GetComponent<VansScriptAudioComponent>())            typeHint += "Audio ";
 
         char label[256];
         snprintf(label, sizeof(label), "%s  [%s]", obj->m_ObjectName.c_str(), typeHint.c_str());
@@ -1102,6 +1104,58 @@ void VansGraphics::VansHierachuWindow::DrawObjectDetail()
                 ImGui::Text("Pitch/Yaw  %.1f deg  /  %.1f deg",
                     t.m_Rotation.x, t.m_Rotation.y);
             }
+        }
+    }
+
+    // ── Audio Component ───────────────────────────────────────────────
+    auto* audioComp = obj->GetComponent<VansScriptAudioComponent>();
+    if (audioComp && audioComp->m_AudioNode)
+    {
+        VansEngine::VansAudioNode* node = audioComp->m_AudioNode;
+        if (ImGui::CollapsingHeader("Audio Component", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            // 文件路径（只读）
+            ImGui::TextDisabled("%s", node->GetFilePath().c_str());
+
+            // 播放状态
+            const char* stateStr = node->IsPlaying() ? "Playing"
+                                 : node->IsPaused()  ? "Paused"
+                                                     : "Stopped";
+            ImGui::Text("State: %s", stateStr);
+
+            ImGui::Separator();
+
+            // 播放控制按钮
+            if (ImGui::Button("Play"))   node->Play();
+            ImGui::SameLine();
+            if (ImGui::Button("Pause"))  node->Pause();
+            ImGui::SameLine();
+            if (ImGui::Button("Stop"))   node->Stop();
+            ImGui::SameLine();
+            if (ImGui::Button("Resume")) node->Resume();
+
+            ImGui::Separator();
+
+            // 音量滑道
+            float vol = node->GetVolume();
+            if (ImGui::SliderFloat("Volume##audio", &vol, 0.0f, 1.0f, "%.2f"))
+                node->SetVolume(vol);
+
+            // 音调滑道
+            float pitch = node->GetPitch();
+            if (ImGui::SliderFloat("Pitch##audio", &pitch, 0.1f, 4.0f, "%.2f"))
+                node->SetPitch(pitch);
+
+            // Loop 开关
+            bool loop = node->GetLoop();
+            if (ImGui::Checkbox("Loop##audio", &loop))
+                node->SetLoop(loop);
+
+            // 空间化开关
+            bool spatial = node->GetSpatial();
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Spatial##audio", &spatial))
+                node->SetSpatial(spatial);
         }
     }
 

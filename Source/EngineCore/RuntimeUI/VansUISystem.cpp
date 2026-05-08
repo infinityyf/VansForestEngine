@@ -138,6 +138,13 @@ void VansUISystem::SetScreenSize(uint32_t width, uint32_t height)
     m_Impl->m_NoesisSystem->SetScreenSize(width, height);
 }
 
+void VansUISystem::SetSceneViewport(float screenX, float screenY,
+                                     float screenW, float screenH)
+{
+    if (!m_Impl || !m_Impl->m_NoesisSystem) return;
+    m_Impl->m_NoesisSystem->SetSceneViewport(screenX, screenY, screenW, screenH);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ScreenManager
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,6 +179,24 @@ bool VansUISystem::WantsKeyboard() const
 bool VansUISystem::IsInitialized() const
 {
     return m_Impl && m_Impl->m_NoesisSystem && m_Impl->m_NoesisSystem->IsInitialized();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 渲染接口（转发到 VansNoesisUISystem）
+// ─────────────────────────────────────────────────────────────────────────────
+
+void VansUISystem::RenderOffscreen(void* nativeCmdBuffer)
+{
+    if (!m_Impl || !m_Impl->m_NoesisSystem) return;
+    m_Impl->m_NoesisSystem->RenderOffscreenPass(
+        static_cast<VkCommandBuffer>(nativeCmdBuffer));
+}
+
+void VansUISystem::RenderDocuments(void* nativeRenderPass, uint32_t sampleCount)
+{
+    if (!m_Impl || !m_Impl->m_NoesisSystem) return;
+    m_Impl->m_NoesisSystem->RenderDocumentsPass(
+        static_cast<VkRenderPass>(nativeRenderPass), sampleCount);
 }
 
 } // namespace VansRuntime

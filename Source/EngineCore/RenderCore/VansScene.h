@@ -13,6 +13,7 @@
 #include "VegetationCore/VansVegetationSystem.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "VansVideoManager.h"
+#include "../AudioCore/VansAudioManager.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -449,6 +450,11 @@ namespace VansGraphics
 		// LoadSceneContent() 中从 JSON 加载，UnLoadScene() 中清理。
 	public:
 		VansVideoManager m_VideoManager;
+
+		// ── 音频管理器 ────────────────────────────────────────────────────
+		// 管理当前场景内所有音频节点的生命周期与每帧播放驱动。
+		// LoadResources() 中从 resource.json 加载，UnLoadProject() 中清理。
+		VansEngine::VansAudioManager m_AudioManager;
 	};
 }
 

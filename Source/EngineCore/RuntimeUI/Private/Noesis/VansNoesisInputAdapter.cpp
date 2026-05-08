@@ -1,6 +1,7 @@
 #include "VansNoesisInputAdapter.h"
 
 #include "../../../Util/VansInputManager.h"
+#include "../../../Util/VansLog.h"
 
 #include <NsGui/IView.h>
 #include <NsGui/InputEnums.h>
@@ -90,8 +91,8 @@ void VansNoesisInputAdapter::Update()
     {
         double mx = 0.0, my = 0.0;
         Vans::VansInputManager::Get().GetMousePosition(mx, my);
-        const int ix = static_cast<int>(mx);
-        const int iy = static_cast<int>(my);
+        int ix = 0, iy = 0;
+        TransformMouse(mx, my, ix, iy);
 
         // Noesis uses 120 units per scroll notch (same as Windows WHEEL_DELTA)
         const int rotationY = static_cast<int>(m_ScrollAccumY * 120.0);
@@ -133,6 +134,37 @@ void VansNoesisInputAdapter::RemoveView(Noesis::IView* view)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Viewport transform
+// ─────────────────────────────────────────────────────────────────────────────
+
+void VansNoesisInputAdapter::SetSceneViewport(float screenX, float screenY,
+                                               float screenW, float screenH,
+                                               float noesisW, float noesisH)
+{
+    m_ViewportX = screenX;
+    m_ViewportY = screenY;
+    m_ViewportW = screenW  > 0.0f ? screenW  : 1.0f;
+    m_ViewportH = screenH  > 0.0f ? screenH  : 1.0f;
+    m_NoesisW   = noesisW  > 0.0f ? noesisW  : 1.0f;
+    m_NoesisH   = noesisH  > 0.0f ? noesisH  : 1.0f;
+}
+
+void VansNoesisInputAdapter::TransformMouse(double rawX, double rawY,
+                                             int& outX, int& outY) const
+{
+    // X: straight mapping from screen space to Noesis view space
+    const float nx = (static_cast<float>(rawX) - m_ViewportX) * (m_NoesisW / m_ViewportW);
+
+    // Y: inverted — the Noesis Vulkan backend renders with Y flipped so that
+    //   Noesis WPF Y=0 (top) maps to the bottom of the rendered image.
+    //   Clicking at the visual bottom must produce Noesis Y≈0, hence the inversion.
+    const float ny = m_NoesisH - (static_cast<float>(rawY) - m_ViewportY) * (m_NoesisH / m_ViewportH);
+
+    outX = static_cast<int>(nx);
+    outY = static_cast<int>(ny);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Event handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -156,8 +188,8 @@ void VansNoesisInputAdapter::OnMouseMove(double x, double y)
     m_LastMouseX = x;
     m_LastMouseY = y;
 
-    const int ix = static_cast<int>(x);
-    const int iy = static_cast<int>(y);
+    int ix = 0, iy = 0;
+    TransformMouse(x, y, ix, iy);
 
     for (auto* view : m_Views)
     {
@@ -172,8 +204,15 @@ void VansNoesisInputAdapter::OnMouseClick(int glfwButton, int action, int /*mods
 
     double mx = 0.0, my = 0.0;
     Vans::VansInputManager::Get().GetMousePosition(mx, my);
-    const int ix = static_cast<int>(mx);
-    const int iy = static_cast<int>(my);
+    int ix = 0, iy = 0;
+    TransformMouse(mx, my, ix, iy);
+
+    VANS_LOG("[NoesisInput] Click btn=" << glfwButton
+        << " action=" << action
+        << " raw=(" << (int)mx << "," << (int)my << ")"
+        << " noesis=(" << ix << "," << iy << ")"
+        << " viewport=(" << (int)m_ViewportX << "," << (int)m_ViewportY
+        << " " << (int)m_ViewportW << "x" << (int)m_ViewportH << ")");
 
     for (auto* view : m_Views)
     {

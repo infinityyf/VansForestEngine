@@ -3,6 +3,7 @@
 
 #include "../../../ProjectSystem/VansProjectManager.h"
 #include "../../../ProjectSystem/VansPathResolver.h"
+#include "../../../Util/VansLog.h"
 
 #include <NsGui/Uri.h>
 #include <NsGui/MemoryStream.h>
@@ -76,6 +77,7 @@ Noesis::Ptr<Noesis::Stream> VansNoesisXamlProvider::LoadXaml(const Noesis::Uri& 
     auto buffer = ReadFileToBuffer(fullPath);
     if (buffer.empty())
     {
+        VANS_LOG_ERROR("[NoesisXamlProvider] XAML not found: uri='" << uriStr << "' resolved='" << fullPath << "'");
         return nullptr;
     }
 

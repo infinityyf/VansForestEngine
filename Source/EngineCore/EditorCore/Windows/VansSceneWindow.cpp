@@ -12,6 +12,7 @@
 #include "../../RenderCore/VulkanCore/VansVKCommandBuffer.h"
 #include "../../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../../VansTimer.h"
+#include "../../RuntimeUI/Public/VansUISystem.h"
 
 void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
 {
@@ -142,6 +143,12 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
             // Use the exact screen-space rect of the rendered texture, not the
             // whole panel window, so gizmo clipping and NDC unprojection are accurate.
             ImVec2 imageScreenPos = ImGui::GetItemRectMin();
+
+            // Inform the Noesis input adapter of the scene image's screen rect so
+            // that raw GLFW cursor coordinates are mapped to Noesis view space.
+            VansRuntime::VansUISystem::Get().SetSceneViewport(
+                imageScreenPos.x, imageScreenPos.y, drawSize.x, drawSize.y);
+
             m_Gizmos.HandleHotkeys(m_Scene);
             m_Gizmos.Draw(m_Scene, m_Camera, imageScreenPos, drawSize);
 

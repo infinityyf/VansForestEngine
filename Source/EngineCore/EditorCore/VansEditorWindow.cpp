@@ -665,6 +665,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
 
     ImDrawData* draw_data = ImGui::GetDrawData();
 
+    // ImGui 编辑器覆盖层渲染到 swapchain
     device->BeginUIRenderPass();
     ImGui_ImplVulkan_RenderDrawData(draw_data, *static_cast<VkCommandBuffer*>(device->GetNativeCommandBuffer()));
     device->EndUIRenderPass();

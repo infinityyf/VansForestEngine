@@ -1181,6 +1181,55 @@ void VansGraphics::VansRenderPassManager::SetupVansUIRenderPass(VkDevice& logic_
 	m_LogicDevice = logic_device;
 }
 
+void VansGraphics::VansRenderPassManager::SetupVansSceneUIRenderPass(
+	VkDevice& logic_device, VkImageView fsrImageView, const VkExtent2D& displayExtent)
+{
+	// 颜色附件：FSR 输出图像（R16G16B16A16_SFLOAT）
+	// - LOAD_OP_LOAD：保留场景内容，Noesis 叠加渲染
+	// - initialLayout = COLOR_ATTACHMENT_OPTIMAL（调用前已由 barrier 转换）
+	// - finalLayout   = SHADER_READ_ONLY_OPTIMAL（供 ImGui 场景窗口采样）
+	std::vector<VkAttachmentDescription> attachments_descriptions =
+	{
+		{
+			0,
+			VK_FORMAT_R16G16B16A16_SFLOAT,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_LOAD,
+			VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		},
+	};
+	std::vector<SubpassParameters> subpass_parameters =
+	{
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{
+				{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
+			},
+			{},
+			nullptr,
+			{}
+		},
+	};
+	// 无 clear，LOAD_OP_LOAD 时 clearValue 无效
+	m_VansSceneUIPass.m_ClearValues = {};
+
+	std::vector<VkSubpassDependency> subpass_dependencies;
+	m_VansSceneUIPass.CreateRenderPass(
+		logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, displayExtent);
+
+	// 单个 framebuffer（FSR 图像只有一张，无 swapchain 多帧）
+	m_VansSceneUIPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> image_views = { fsrImageView };
+	m_VansSceneUIPass.m_FrameBuffers[0].CreateFrameBuffer(
+		logic_device, m_VansSceneUIPass.m_RenderPass, image_views,
+		{ displayExtent.width, displayExtent.height, 1 });
+}
+
 void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index)
 {
 	//将当前render pass 记录到globaldata中

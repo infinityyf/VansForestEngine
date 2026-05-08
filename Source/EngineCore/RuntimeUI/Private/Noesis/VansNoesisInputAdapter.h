@@ -49,7 +49,17 @@ public:
     /// Returns true if Noesis consumed keyboard input this frame (any view handled it)
     bool WantsKeyboard() const { return m_WantsKeyboard; }
 
+    /// Set the screen-space rect occupied by the scene image (ImGui viewport coordinates)
+    /// and the Noesis view dimensions, so that raw GLFW cursor coords are transformed
+    /// into Noesis view-local coordinates before being sent to IView::MouseMove / MouseButtonDown.
+    /// Call every frame from VansSceneWindow after ImGui::Image().
+    void SetSceneViewport(float screenX, float screenY,
+                          float screenW, float screenH,
+                          float noesisW, float noesisH);
+
 private:
+    // Transform a raw GLFW cursor position to Noesis view-local integer coords
+    void TransformMouse(double rawX, double rawY, int& outX, int& outY) const;
     // Internal event handlers registered with VansInputManager
     void OnKeyEvent(int key, int scancode, int action, int mods);
     void OnMouseMove(double x, double y);
@@ -70,6 +80,15 @@ private:
 
     double m_LastMouseX = 0.0;
     double m_LastMouseY = 0.0;
+
+    // Scene-image viewport in screen (GLFW window) coords
+    float m_ViewportX  = 0.0f;
+    float m_ViewportY  = 0.0f;
+    float m_ViewportW  = 1.0f;
+    float m_ViewportH  = 1.0f;
+    // Noesis IView dimensions (set once at init via SetSceneViewport)
+    float m_NoesisW    = 1920.0f;
+    float m_NoesisH    = 1080.0f;
 
     // Scroll accumulator — cleared each Update()
     double m_ScrollAccumX = 0.0;

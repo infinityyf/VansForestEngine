@@ -7,6 +7,8 @@
 #include <memory>
 #include <string>
 
+#include "vulkan/vulkan.h"
+
 namespace VansGraphics
 {
     class VansVKDevice;
@@ -51,8 +53,22 @@ namespace VansRuntime
 
         bool IsInitialized() const { return m_Initialized; }
 
+        // 每帧由 VansSceneWindow 更新场景图像的屏幕位置与尺寸，
+        // 以便 InputAdapter 将原始 GLFW 坐标变换为 Noesis View 局部坐标
+        void SetSceneViewport(float screenX, float screenY, float screenW, float screenH);
+
         // 获取 RenderDevice（供 VansUIRenderPass 使用）
         VansNoesisRenderDevice* GetRenderDevice() const { return m_RenderDevice.get(); }
+
+        // ── 每帧渲染接口 ─────────────────────────────────────────────────
+        // 第一步：在 BeginUIRenderPass 之前调用，执行 Noesis 离屏渲染
+        // cmd：当前帧正在录制中的 Vulkan 命令缓冲区句柄
+        void RenderOffscreenPass(VkCommandBuffer cmd);
+
+        // 第二步：在 BeginUIRenderPass / EndUIRenderPass 之间调用
+        // renderPass：激活的 VkRenderPass 句柄（供 Noesis 懒编译 PSO 用）
+        // sampleCount：MSAA 采样数，无 MSAA 时传 1
+        void RenderDocumentsPass(VkRenderPass renderPass, uint32_t sampleCount);
 
     private:
         void SetupLogHandler();
@@ -83,6 +99,12 @@ namespace VansRuntime
 
         // 累计时间（秒），用于 Noesis IView::Update(totalSeconds)
         double m_TotalTimeSeconds = 0.0;
+
+        // 帧计数器（单调递增），用于 VKFactory::SetCommandBuffer 的资源生命周期管理
+        uint64_t m_FrameNumber = 0;
+
+        // 认为安全可回收的帧偏移（最保守：与 MAX_FRAMES_IN_FLIGHT 对齐即可）
+        static constexpr uint64_t k_MaxFramesInFlight = 2;
     };
 
 } // namespace VansRuntime

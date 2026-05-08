@@ -56,6 +56,13 @@ namespace VansGraphics
 
 		void EndUIRenderPass();
 
+		/// 运行时 UI pass（Noesis → FSR 输出图像）
+		void BeginSceneUIRenderPass();
+		void EndSceneUIRenderPass();
+
+		/// 返回 Scene UI pass 的 VkRenderPass 句柄，供 Noesis RenderDevice 懒编译 PSO 使用
+		VkRenderPass GetSceneUIRenderPassHandle();
+
 		/// Return the FSR-upscaled output image (display resolution) for editor sampling.
 		VansVKImage& GetFSROutputImage() { return m_FSRController.GetTempFSRImage(); }
 

@@ -135,6 +135,10 @@ namespace VansGraphics
 
 		VansVKRenderPass m_VansUIPass;
 
+		// 场景 UI pass：Noesis 运行时 UI 合成到 FSR 输出图像上
+		// 最终布局为 SHADER_READ_ONLY_OPTIMAL，供 ImGui 场景窗口采样
+		VansVKRenderPass m_VansSceneUIPass;
+
 		VkDevice m_LogicDevice;
 
 	public:
@@ -157,8 +161,12 @@ namespace VansGraphics
 		// m_DepthImage is preserved for HZB / GI / SSR compute passes.
 		void SetupVansMotionVectorRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, const VkExtent2D& renderResolution);
 
-		//uipass
+		//uipass（ImGui 编辑器面板 → swapchain）
 		void SetupVansUIRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);
+
+		// scene ui pass（Noesis 运行时 UI → FSR 输出图像，格式 R16G16B16A16_SFLOAT）
+		// fsrImageView：FSR 输出图像的 ImageView；displayExtent：显示分辨率
+		void SetupVansSceneUIRenderPass(VkDevice& logic_device, VkImageView fsrImageView, const VkExtent2D& displayExtent);
 
 		// 销毁UI pass（用于窗口resize）
 		void DestroyUIRenderPass();

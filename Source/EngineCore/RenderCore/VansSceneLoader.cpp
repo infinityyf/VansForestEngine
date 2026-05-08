@@ -8,6 +8,8 @@
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "VansVideoManager.h"
+#include "../AudioCore/VansAudioManager.h"
+#include "../AudioCore/VansAudioSystem.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -51,6 +53,9 @@ void VansScene::LoadProjectResources(const char* resourceJsonPath, VansVKDevice*
 
 	// 切换项目时清空旧项目的视频纹理（项目级资源随项目生命周期管理）
 	m_VideoManager.Clear();
+
+	// 切换项目时清空旧项目的音频资源（项目级资源随项目生命周期管理）
+	m_AudioManager.Clear();
 
 	RegisterEngineShaders();
 	LoadResources(resourceData);
@@ -651,11 +656,17 @@ void VansGraphics::VansScene::LoadResources(json& resourceData)
         m_VideoManager.LoadFromJson(resourceData["video"], assetPrefix, vkDevice);
     }
 
+    if (resourceData.contains("audio") && resourceData["audio"].is_array())
+    {
+        m_AudioManager.LoadFromJson(resourceData["audio"], assetPrefix);
+    }
+
     VANS_LOG("[VansScene] Resources loaded: "
              << m_Meshes.size() << " meshes, "
              << m_Textures.size() << " textures, "
              << m_Shaders.size() << " shaders, "
-             << m_VideoManager.Count() << " videos");
+             << m_VideoManager.Count() << " videos, "
+             << m_AudioManager.Count() << " audios");
 }
 
 // ===========================================================================
@@ -2210,6 +2221,26 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             pending.animJson   = components["animation"];
             pending.objectName = obj->m_ObjectName;
             pendingAnimComps.push_back(std::move(pending));
+        }
+
+        // ── Audio component ───────────────────────────────────────────────
+        if (components.contains("audio"))
+        {
+            std::string audioName = components["audio"]["source"].get<std::string>();
+            VansEngine::VansAudioNode* audioNode = m_AudioManager.Get(audioName);
+            if (audioNode)
+            {
+                auto* audioComp = new VansScriptAudioComponent();
+                audioComp->m_AudioNode = audioNode;
+                obj->AddComponent(audioComp);
+                VANS_LOG("[LoadSceneObjects] Audio component '" << audioName
+                    << "' 已挂载到 object: " << obj->m_ObjectName);
+            }
+            else
+            {
+                VANS_LOG_WARN("[LoadSceneObjects] 找不到音频节点 '" << audioName
+                    << "'，对象: " << obj->m_ObjectName);
+            }
         }
 
         // ── Python script components ──────────────────────────────────────

@@ -5,6 +5,7 @@
 #include "VansNoesisInputAdapter.h"
 
 #include "../../../ProjectSystem/VansProjectManager.h"
+#include "../../../Util/VansLog.h"
 
 #include <NsCore/Log.h>
 #include <NsCore/Error.h>
@@ -82,7 +83,19 @@ bool VansNoesisUISystem::Initialize(const VansUIInitDesc& desc)
     LoadGlobalTheme();
 
     m_Initialized = true;
+    VANS_LOG("[NoesisUI] Initialized OK  screen=" << m_ScreenWidth << "x" << m_ScreenHeight);
     return true;
+}
+
+void VansNoesisUISystem::SetSceneViewport(float screenX, float screenY,
+                                            float screenW, float screenH)
+{
+    if (m_InputAdapter)
+    {
+        m_InputAdapter->SetSceneViewport(screenX, screenY, screenW, screenH,
+                                          static_cast<float>(m_ScreenWidth),
+                                          static_cast<float>(m_ScreenHeight));
+    }
 }
 
 void VansNoesisUISystem::Shutdown()
@@ -140,6 +153,50 @@ void VansNoesisUISystem::Update(float deltaTime)
     }
 }
 
+void VansNoesisUISystem::RenderOffscreenPass(VkCommandBuffer cmd)
+{
+    if (!m_Initialized || m_Documents.empty())
+    {
+        return;
+    }
+
+    // 每帧递增帧号，通知 Noesis 可回收 safeFrame 之前的 GPU 资源
+    ++m_FrameNumber;
+    const uint64_t safeFrame = (m_FrameNumber > k_MaxFramesInFlight)
+                                   ? (m_FrameNumber - k_MaxFramesInFlight)
+                                   : 0;
+    m_RenderDevice->SetActiveCommandBuffer(cmd, m_FrameNumber, safeFrame);
+
+    // 离屏渲染（渐变、效果等）必须在 BeginRenderPass 之前完成
+    for (auto& doc : m_Documents)
+    {
+        if (doc && doc->IsVisible())
+        {
+            doc->RenderOffscreen();
+        }
+    }
+}
+
+void VansNoesisUISystem::RenderDocumentsPass(VkRenderPass renderPass, uint32_t sampleCount)
+{
+    if (!m_Initialized || m_Documents.empty())
+    {
+        return;
+    }
+
+    // 通知 Noesis 当前激活的 RenderPass（用于懒编译 PSO）
+    m_RenderDevice->SetActiveRenderPass(renderPass, sampleCount);
+
+    // 正式上屏渲染，必须在 vkCmdBeginRenderPass 之后调用
+    for (auto& doc : m_Documents)
+    {
+        if (doc && doc->IsVisible())
+        {
+            doc->Render();
+        }
+    }
+}
+
 void VansNoesisUISystem::SetScreenSize(uint32_t width, uint32_t height)
 {
     m_ScreenWidth  = width;
@@ -164,6 +221,7 @@ std::shared_ptr<VansNoesisDocument> VansNoesisUISystem::LoadDocument(const std::
 
     if (!content)
     {
+        VANS_LOG_ERROR("[NoesisUI] LoadXaml returned null for: " << xamlPath);
         return nullptr;
     }
 

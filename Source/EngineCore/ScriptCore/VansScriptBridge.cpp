@@ -1,4 +1,5 @@
 #include "VansScriptContext.h"
+#include "../AudioCore/VansAudioNode.h"
 #include "VansTransform.h"
 #include "../RenderCore/VansCamera.h"
 #include "../RenderCore/VansRenderNode.h"
@@ -8,8 +9,14 @@
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../Util/VansInputManager.h"
 #include "../RenderCore/VulkanCore/VansVideoTexture.h"
+#include "../RuntimeUI/Public/VansUISystem.h"
+#include "../RuntimeUI/Public/VansUIDocument.h"
+#include "../RuntimeUI/Public/VansUIElementHandle.h"
+#include "../RuntimeUI/Public/VansUIScreenManager.h"
 #include "../../../../ForestExporter/VansEngineBridge.h"
 #include "../../../../ForestExporter/VansInputBridge.h"
+#include <unordered_map>
+#include <memory>
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  VansScriptBridge.cpp — Fills the VansEngineBridge function-pointer table
@@ -17,6 +24,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 static VansEngineBridge s_EngineBridge;
+
+// Keeps loaded UI document shared_ptrs alive; keyed by raw pointer (used as opaque handle).
+static std::unordered_map<void*, std::shared_ptr<VansRuntime::VansUIDocument>> s_UIDocRegistry;
 
 // ---------------------------------------------------------------------------
 //  Helper: cast opaque void* back to engine types
@@ -74,6 +84,12 @@ static inline VansScriptCameraComponent* AsCameraComp(void* p)
 static inline VansScriptRectLightComponent* AsRectLightComp(void* p)
 {
 	return dynamic_cast<VansScriptRectLightComponent*>(
+		static_cast<VansScriptComponent*>(p));
+}
+
+static inline VansScriptAudioComponent* AsAudioComp(void* p)
+{
+	return dynamic_cast<VansScriptAudioComponent*>(
 		static_cast<VansScriptComponent*>(p));
 }
 
@@ -852,6 +868,224 @@ void VansInitEngineBridge()
 	{
 		auto* c = AsRectLightComp(comp);
 		return (c && c->m_EmissiveVideo) ? c->m_EmissiveVideo->IsPlaying() : false;
+	};
+
+	// ── Runtime UI System ─────────────────────────────────────────────────
+
+	s_EngineBridge.uiLoadDocument = [](const char* xamlPath) -> void*
+	{
+		auto doc = VansRuntime::VansUISystem::Get().LoadDocument(xamlPath);
+		if (!doc) return nullptr;
+		void* rawPtr = doc.get();
+		s_UIDocRegistry[rawPtr] = std::move(doc);
+		return rawPtr;
+	};
+
+	s_EngineBridge.uiUnloadDocument = [](void* doc)
+	{
+		auto it = s_UIDocRegistry.find(doc);
+		if (it != s_UIDocRegistry.end())
+		{
+			VansRuntime::VansUISystem::Get().UnloadDocument(it->second);
+			s_UIDocRegistry.erase(it);
+		}
+	};
+
+	s_EngineBridge.uiDocumentShow = [](void* doc)
+	{
+		auto it = s_UIDocRegistry.find(doc);
+		if (it != s_UIDocRegistry.end()) it->second->Show();
+	};
+
+	s_EngineBridge.uiDocumentHide = [](void* doc)
+	{
+		auto it = s_UIDocRegistry.find(doc);
+		if (it != s_UIDocRegistry.end()) it->second->Hide();
+	};
+
+	s_EngineBridge.uiDocumentIsVisible = [](void* doc) -> bool
+	{
+		auto it = s_UIDocRegistry.find(doc);
+		if (it != s_UIDocRegistry.end()) return it->second->IsVisible();
+		return false;
+	};
+
+	s_EngineBridge.uiDocumentGetPath = [](void* doc, char* buf, int bufSize)
+	{
+		auto it = s_UIDocRegistry.find(doc);
+		if (it != s_UIDocRegistry.end() && bufSize > 0)
+			strncpy_s(buf, bufSize, it->second->GetSourcePath().c_str(), _TRUNCATE);
+	};
+
+	s_EngineBridge.uiSetElementText = [](void* doc, const char* elemName, const char* text)
+	{
+		auto it = s_UIDocRegistry.find(doc);
+		if (it == s_UIDocRegistry.end()) return;
+		auto elem = it->second->FindElement(elemName);
+		if (elem.IsValid()) elem.SetText(text);
+	};
+
+	s_EngineBridge.uiGetElementText = [](void* doc, const char* elemName, char* buf, int bufSize)
+	{
+		auto it = s_UIDocRegistry.find(doc);
+		if (it == s_UIDocRegistry.end()) return;
+		auto elem = it->second->FindElement(elemName);
+		if (elem.IsValid() && bufSize > 0)
+			strncpy_s(buf, bufSize, elem.GetText().c_str(), _TRUNCATE);
+	};
+
+	s_EngineBridge.uiSetElementVisible = [](void* doc, const char* elemName, bool visible)
+	{
+		auto it = s_UIDocRegistry.find(doc);
+		if (it == s_UIDocRegistry.end()) return;
+		auto elem = it->second->FindElement(elemName);
+		if (elem.IsValid()) elem.SetVisible(visible);
+	};
+
+	s_EngineBridge.uiGetElementVisible = [](void* doc, const char* elemName) -> bool
+	{
+		auto it = s_UIDocRegistry.find(doc);
+		if (it == s_UIDocRegistry.end()) return false;
+		auto elem = it->second->FindElement(elemName);
+		return elem.IsValid() ? elem.IsVisible() : false;
+	};
+
+	s_EngineBridge.uiBindElementClick = [](void* doc,
+	                                       const char* elemName,
+	                                       void (*cb)(void*),
+	                                       void* userData)
+	{
+		auto it = s_UIDocRegistry.find(doc);
+		if (it == s_UIDocRegistry.end()) return;
+		auto elem = it->second->FindElement(elemName);
+		if (elem.IsValid())
+			elem.BindClick([cb, userData]() { if (cb) cb(userData); });
+	};
+
+	// ── ScreenManager shortcuts ───────────────────────────────────────────
+
+	s_EngineBridge.uiScreenPushScreen = [](const char* xamlPath)
+	{
+		VansRuntime::VansUISystem::Get().GetScreenManager().PushScreen(xamlPath);
+	};
+
+	s_EngineBridge.uiScreenPopScreen = []()
+	{
+		VansRuntime::VansUISystem::Get().GetScreenManager().PopScreen();
+	};
+
+	s_EngineBridge.uiScreenSetHUD = [](const char* xamlPath)
+	{
+		VansRuntime::VansUISystem::Get().GetScreenManager().SetHUD(xamlPath);
+	};
+
+	s_EngineBridge.uiScreenShowHUD = []()
+	{
+		VansRuntime::VansUISystem::Get().GetScreenManager().ShowHUD();
+	};
+
+	s_EngineBridge.uiScreenHideHUD = []()
+	{
+		VansRuntime::VansUISystem::Get().GetScreenManager().HideHUD();
+	};
+
+	// ── Audio Component ───────────────────────────────────────────────────
+	s_EngineBridge.objectGetAudioComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptAudioComponent>();
+	};
+
+	s_EngineBridge.audioPlay = [](void* comp)
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) c->m_AudioNode->Play();
+	};
+
+	s_EngineBridge.audioPause = [](void* comp)
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) c->m_AudioNode->Pause();
+	};
+
+	s_EngineBridge.audioStop = [](void* comp)
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) c->m_AudioNode->Stop();
+	};
+
+	s_EngineBridge.audioResume = [](void* comp)
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) c->m_AudioNode->Resume();
+	};
+
+	s_EngineBridge.audioGetVolume = [](void* comp) -> float
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) return c->m_AudioNode->GetVolume();
+		return 1.0f;
+	};
+
+	s_EngineBridge.audioSetVolume = [](void* comp, float v)
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) c->m_AudioNode->SetVolume(v);
+	};
+
+	s_EngineBridge.audioGetPitch = [](void* comp) -> float
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) return c->m_AudioNode->GetPitch();
+		return 1.0f;
+	};
+
+	s_EngineBridge.audioSetPitch = [](void* comp, float p)
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) c->m_AudioNode->SetPitch(p);
+	};
+
+	s_EngineBridge.audioGetLoop = [](void* comp) -> bool
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) return c->m_AudioNode->GetLoop();
+		return false;
+	};
+
+	s_EngineBridge.audioSetLoop = [](void* comp, bool loop)
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) c->m_AudioNode->SetLoop(loop);
+	};
+
+	s_EngineBridge.audioIsPlaying = [](void* comp) -> bool
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) return c->m_AudioNode->IsPlaying();
+		return false;
+	};
+
+	s_EngineBridge.audioIsPaused = [](void* comp) -> bool
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) return c->m_AudioNode->IsPaused();
+		return false;
+	};
+
+	s_EngineBridge.audioSetPosition = [](void* comp, float x, float y, float z)
+	{
+		auto* c = AsAudioComp(comp);
+		if (c && c->m_AudioNode) c->m_AudioNode->SetPosition(x, y, z);
+	};
+
+	s_EngineBridge.audioGetFilePath = [](void* comp, char* buf, int bufSize)
+	{
+		auto* c = AsAudioComp(comp);
+		if (!c || !c->m_AudioNode || !buf || bufSize <= 0) return;
+		const std::string& path = c->m_AudioNode->GetFilePath();
+		strncpy_s(buf, bufSize, path.c_str(), static_cast<size_t>(bufSize - 1));
 	};
 }
 

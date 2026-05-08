@@ -22,7 +22,7 @@ namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
 namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; class VansVideoTexture; }
-namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; }
+namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; class VansAudioNode; }
 
 class VansScriptContext
 {
@@ -284,6 +284,18 @@ public:
 	// 非拥有指针，生命周期由 VansScene::m_Camera 管理
 	VansGraphics::VansCamera* m_Camera = nullptr;
 };
+// ── Audio Component ─────────────────────────────────────────────────────────
+// 持有对 VansAudioManager 中音频节点的非拥有指针。
+// 通过此组件可以在 Python/C++ 中控制音频的播放、暂停、停止及参数调整。
+class VansScriptAudioComponent : public VansScriptComponent
+{
+public:
+	VansScriptAudioComponent() { m_ComponentName = "Audio"; }
+
+	// 非拥有指针，生命周期由 VansScene::m_AudioManager 管理
+	VansEngine::VansAudioNode* m_AudioNode = nullptr;
+};
+
 // ── Python Script Component ─────────────────────────────────────────────────
 // Holds a reference to a Python script instance bound to this object.
 class VanPyScriptComponent : public VansScriptComponent

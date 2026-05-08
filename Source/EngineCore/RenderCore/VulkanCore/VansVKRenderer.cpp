@@ -5,7 +5,9 @@
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
+#include "../../VansTimer.h"
 #include "../../ProjectSystem/VansProjectManager.h"
+#include "../../RuntimeUI/Public/VansUISystem.h"
 #include <algorithm>
 #include <iostream>
 #include <fstream>
@@ -20,6 +22,27 @@ namespace VansGraphics
 	}
 
 	void VansVKDevice::EndUIRenderPass()
+	{
+		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+		auto renderPassManager = VansRenderPassManager::GetInstance();
+		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+	}
+
+	VkRenderPass VansVKDevice::GetSceneUIRenderPassHandle()
+	{
+		auto renderPassManager = VansRenderPassManager::GetInstance();
+		return renderPassManager->m_VansSceneUIPass.GetRenderPass();
+	}
+
+	void VansVKDevice::BeginSceneUIRenderPass()
+	{
+		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+		auto renderPassManager = VansRenderPassManager::GetInstance();
+		// Scene UI pass 只有一个 framebuffer（索引 0）
+		renderPassManager->BeginRenderPass(renderPassManager->m_VansSceneUIPass, cmd, m_globalRenderStateData, 0);
+	}
+
+	void VansVKDevice::EndSceneUIRenderPass()
 	{
 		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 		auto renderPassManager = VansRenderPassManager::GetInstance();
@@ -86,6 +109,20 @@ namespace VansGraphics
 		// image object (even if its contents are black).
 		InitializeFSR();
 		PrepareFSRDispatchInputData(3.14f / 2, 0.01f, 100.0f);
+
+		// Scene UI pass 必须在 FSR 初始化之后创建，此时 FSR 输出图像已存在
+		renderPassManager->SetupVansSceneUIRenderPass(
+			m_VansVKLogicDevice,
+			m_FSRController.GetTempFSRImage().GetImageView(),
+			m_FSRController.GetDisplayExtent());
+
+		// 初始化运行时 UI 子系统（Noesis），在 Vulkan 设备和渲染通道全部就绪后调用
+		{
+			VansRuntime::VansUIInitDesc uiDesc{};
+			uiDesc.m_Width  = m_FSRController.GetDisplayExtent().width;
+			uiDesc.m_Height = m_FSRController.GetDisplayExtent().height;
+			VansRuntime::VansUISystem::Get().InitializeWithDevice(uiDesc, this);
+		}
 	}
 
 	void VansVKDevice::Rendering()
@@ -260,22 +297,38 @@ namespace VansGraphics
 
 			m_FSRController.DispatchUpscale(cmd, m_FSRInput);
 
-			// Transition the FSR output image to SHADER_READ_ONLY_OPTIMAL so
-			// ImGui can sample it via the Scene-view descriptor set.
+			// 将 FSR 输出图像从 compute write 转为 color attachment，
+			// 供 Noesis 场景 UI 渲染通道（m_VansSceneUIPass）写入
 			VansVKImage& fsrOut = m_FSRController.GetTempFSRImage();
 			fsrOut.SetImageMemoryBarrier(
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 				{
 					fsrOut.GetImage(),
 					VK_ACCESS_SHADER_WRITE_BIT,
-					VK_ACCESS_SHADER_READ_BIT,
+					VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 					fsrOut.GetImageLayout(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 					VK_QUEUE_FAMILY_IGNORED,
 					VK_QUEUE_FAMILY_IGNORED,
 					VK_IMAGE_ASPECT_COLOR_BIT
 				});
+
+			// ── Noesis 运行时 UI 合成到场景色图 ──────────────────────────
+			// 1. 每帧逻辑更新（输入分发、动画推进、绑定刷新）
+			VansRuntime::VansUISystem::Get().Update(
+				static_cast<float>(VansGraphics::VansTimer::GetDeltaTime()));
+
+			// 2. 离屏渲染（渐变、效果等），必须在 BeginRenderPass 之前完成
+			VansRuntime::VansUISystem::Get().RenderOffscreen(static_cast<void*>(cmd));
+
+			// 2. 进入场景 UI pass — 在 FSR 图像上叠加 Noesis UI
+			//    render pass finalLayout = SHADER_READ_ONLY_OPTIMAL，结束时自动转换
+			BeginSceneUIRenderPass();
+			VansRuntime::VansUISystem::Get().RenderDocuments(
+				static_cast<void*>(GetSceneUIRenderPassHandle()), 1);
+			EndSceneUIRenderPass();
+			// 此时 FSR 图像已处于 SHADER_READ_ONLY_OPTIMAL，ImGui 场景窗口可直接采样
 		}
 	}
 

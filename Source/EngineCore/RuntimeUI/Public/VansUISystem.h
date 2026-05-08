@@ -65,6 +65,10 @@ namespace VansRuntime
         // 窗口 Resize 时调用，通知所有 Document 更新 View 尺寸
         void SetScreenSize(uint32_t width, uint32_t height);
 
+        // 每帧由 SceneWindow 调用，告知场景图像在屏幕空间的位置和尺寸，
+        // 供 InputAdapter 将原始 GLFW 坐标映射到 Noesis View 局部坐标
+        void SetSceneViewport(float screenX, float screenY, float screenW, float screenH);
+
         // ── ScreenManager ─────────────────────────────────────────
 
         VansUIScreenManager& GetScreenManager();
@@ -77,6 +81,17 @@ namespace VansRuntime
         // ── 调试 ──────────────────────────────────────────────────
 
         bool IsInitialized() const;
+
+        // ── 每帧渲染接口（由渲染器在对应阶段调用） ────────────────
+
+        // 第一步：在 BeginUIRenderPass 之前调用，执行 Noesis 离屏渲染
+        // nativeCmdBuffer：VkCommandBuffer 句柄（以 void* 传递，避免引入 Vulkan 头）
+        void RenderOffscreen(void* nativeCmdBuffer);
+
+        // 第二步：在 BeginUIRenderPass 与 EndUIRenderPass 之间调用
+        // nativeRenderPass：VkRenderPass 句柄（供 Noesis 懒编译 PSO 使用）
+        // sampleCount：MSAA 采样数，无 MSAA 传 1
+        void RenderDocuments(void* nativeRenderPass, uint32_t sampleCount);
 
     private:
         VansUISystem() = default;

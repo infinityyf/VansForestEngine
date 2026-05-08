@@ -11,6 +11,7 @@
 #include "EngineCore/Util/VansJobSystem.h"
 #include "EngineCore/PhysicsCore/VansPhysics.h"
 #include "EngineCore/Util/VansLog.h"
+#include "EngineCore/AudioCore/VansAudioSystem.h"
 
 // Project System
 #include "EngineCore/ProjectSystem/VansProjectManager.h"
@@ -38,6 +39,13 @@ bool InitializeEngineCore()
 	{
 		VANS_LOG_ERROR("[ForestEngine] Failed to initialize physics system!");
 		return false;
+	}
+
+	// Initialize Audio System
+	if (!VansEngine::VansAudioSystem::GetInstance().Initialize())
+	{
+		VANS_LOG_ERROR("[ForestEngine] Failed to initialize audio system (OpenAL)! 空间音效将无法播放");
+		// 音频失敗不是致命错误，继续启动
 	}
 
 	return true;
@@ -117,6 +125,10 @@ void ShutdownEngine()
 	physics.StopSimulation();
 	physics.Shutdown();
 	VANS_LOG("[ForestEngine] Physics system shutdown complete");
+
+	// Shutdown audio system
+	VansEngine::VansAudioSystem::GetInstance().Shutdown();
+	VANS_LOG("[ForestEngine] Audio system shutdown complete");
 
 	// Unload scene
 	if (m_Scene)
