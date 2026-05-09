@@ -95,6 +95,18 @@
     <Filter Include="EngineCore\RuntimeUI\Private\Noesis">
       <UniqueIdentifier>{d5e6f7a8-b9c0-1234-efab-cd5678901234}</UniqueIdentifier>
     </Filter>
+    <Filter Include="External\Noesis">
+      <UniqueIdentifier>{2f35fcab-dc56-4ad9-b95e-18b9d5da32ba}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineCore\VideoCore">
+      <UniqueIdentifier>{d2e245ea-8fd7-4472-a70a-6b462938560c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineCore\AudioCore">
+      <UniqueIdentifier>{bb551c46-ada5-42cd-b7bc-993a311d5168}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineCore\RenderCore\LTC">
+      <UniqueIdentifier>{3f128b9e-6e3b-4bd9-9c1a-873508660429}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -469,6 +481,27 @@
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothSystem.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\LTC\LTCData.h">
+      <Filter>EngineCore\RenderCore\LTC</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AudioCore\VansAudioDecoder.h">
+      <Filter>EngineCore\AudioCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AudioCore\VansAudioManager.h">
+      <Filter>EngineCore\AudioCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AudioCore\VansAudioNode.h">
+      <Filter>EngineCore\AudioCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AudioCore\VansAudioSystem.h">
+      <Filter>EngineCore\AudioCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VansVideoManager.h">
+      <Filter>EngineCore\VideoCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVideoTexture.h">
+      <Filter>EngineCore\VideoCore</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl">
@@ -832,6 +865,36 @@
     </ClCompile>
     <ClCompile Include="External\GUI\ImGuiNode\imgui_node_editor_api.cpp">
       <Filter>External\imguiNode</Filter>
+    </ClCompile>
+    <ClCompile Include="External\NoesisGUI\Src\Packages\App\Providers\Src\FastLZ.cpp">
+      <Filter>External\Noesis</Filter>
+    </ClCompile>
+    <ClCompile Include="External\NoesisGUI\Src\Packages\Render\VKRenderDevice\Src\Render.VKRenderDevice.cpp">
+      <Filter>External\Noesis</Filter>
+    </ClCompile>
+    <ClCompile Include="External\NoesisGUI\Src\Packages\Render\VKRenderDevice\Src\VKRenderDevice.cpp">
+      <Filter>External\Noesis</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\LTC\LTCData.cpp">
+      <Filter>EngineCore\RenderCore\LTC</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AudioCore\VansAudioDecoder.cpp">
+      <Filter>EngineCore\AudioCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AudioCore\VansAudioManager.cpp">
+      <Filter>EngineCore\AudioCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AudioCore\VansAudioNode.cpp">
+      <Filter>EngineCore\AudioCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AudioCore\VansAudioSystem.cpp">
+      <Filter>EngineCore\AudioCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VansVideoManager.cpp">
+      <Filter>EngineCore\VideoCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVideoTexture.cpp">
+      <Filter>EngineCore\VideoCore</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

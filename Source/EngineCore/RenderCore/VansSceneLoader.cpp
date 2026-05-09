@@ -1015,6 +1015,7 @@ void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
             }
 
             // 视频纹理：若指定了 emissive_video，用视频纹理替换发光纹理槽
+            // GPU 纹理数据由 VansScriptVideoComponent 统一管理；此处仅绑定 GPU 句柄和记录名称
             if (sceneMaterial.contains("emissive_video"))
             {
                 const std::string videoName = sceneMaterial["emissive_video"];
@@ -1022,6 +1023,7 @@ void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
                 if (videoTex && videoTex->IsReady())
                 {
                     emissive->m_EmissiveTexture = videoTex->GetTexture();
+                    emissive->m_VideoName       = videoName;
                     VANS_LOG("[VansScene] Emissive 材质绑定视频纹理: " << videoName);
                 }
                 else
@@ -1842,6 +1844,28 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 obj->AddComponent(rc);
                 obj->m_TransformID = rn->m_TransformID;
 
+                // ── 自发光材质携带视频时，自动创建 VideoComponent ──────────────────────
+                // 若渲染节点的材质是 VansEmissiveMaterial 且绑定了视频，
+                // 在该对象上创建 Video 组件，使播放控制统一通过组件接口暴露。
+                if (rn->m_Material && obj->GetComponent<VansScriptVideoComponent>() == nullptr)
+                {
+                    auto* emissiveMat = dynamic_cast<VansEmissiveMaterial*>(rn->m_Material);
+                    if (emissiveMat && !emissiveMat->m_VideoName.empty())
+                    {
+                        VansVideoTexture* videoTex = m_VideoManager.Get(emissiveMat->m_VideoName);
+                        if (videoTex)
+                        {
+                            auto* videoComp = new VansScriptVideoComponent();
+                            videoComp->m_VideoName    = emissiveMat->m_VideoName;
+                            videoComp->m_VideoTex     = videoTex;
+                            videoComp->m_VideoManager = &m_VideoManager;
+                            obj->AddComponent(videoComp);
+                            VANS_LOG("[LoadSceneObjects] 自发光对象 '" << obj->m_ObjectName
+                                << "' 自动创建 VideoComponent '" << emissiveMat->m_VideoName << "'");
+                        }
+                    }
+                }
+
                 // Collect parent link if present
                 if (renderJson.contains("parent"))
                 {
@@ -2093,12 +2117,31 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 rlComp->m_EmissiveTexturePath = emissiveTexPath;
 
                 // ── 视频发光贴图（优先级高于静态贴图；两者同时指定时 video 生效）──
+                // 创建 VansScriptVideoComponent 统一管理视频播放控制；
+                // 面光源只持有指向该组件的非拥有指针，不再直接访问播放参数。
                 if (!emissiveVideoName.empty() && idx < 32)
                 {
                     VansVideoTexture* videoTex = m_VideoManager.Get(emissiveVideoName);
                     if (videoTex != nullptr)
                     {
-                        rlComp->m_EmissiveVideo = videoTex;
+                        // 创建或重用视频组件
+                        VansScriptVideoComponent* videoComp = obj->GetComponent<VansScriptVideoComponent>();
+                        if (videoComp == nullptr)
+                        {
+                            videoComp = new VansScriptVideoComponent();
+                            videoComp->m_VideoName    = emissiveVideoName;
+                            videoComp->m_VideoTex     = videoTex;
+                            videoComp->m_VideoManager = &m_VideoManager;
+                            obj->AddComponent(videoComp);
+                        }
+                        else if (videoComp->m_VideoManager == nullptr)
+                        {
+                            videoComp->m_VideoManager = &m_VideoManager;
+                        }
+
+                        // 面光源仅持有视频组件引用，不关心播放参数
+                        rlComp->m_VideoComponent = videoComp;
+
                         // 激活 TextureSlot：使着色器进入 RECT_LIGHT_EMISSIVE_ENABLED 分支
                         m_LightManager.GetRectLights()[idx].m_TextureSlot = static_cast<float>(idx);
 
@@ -2230,16 +2273,44 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             VansEngine::VansAudioNode* audioNode = m_AudioManager.Get(audioName);
             if (audioNode)
             {
+                ensureObjectTransform();   // 确保 spatial 音频能读到世界坐标
                 auto* audioComp = new VansScriptAudioComponent();
-                audioComp->m_AudioNode = audioNode;
+                audioComp->m_AudioNode    = audioNode;
+                audioComp->m_AudioManager = &m_AudioManager;
                 obj->AddComponent(audioComp);
-                VANS_LOG("[LoadSceneObjects] Audio component '" << audioName
-                    << "' 已挂载到 object: " << obj->m_ObjectName);
             }
             else
             {
                 VANS_LOG_WARN("[LoadSceneObjects] 找不到音频节点 '" << audioName
                     << "'，对象: " << obj->m_ObjectName);
+            }
+        }
+
+        // ── Video component（显式挂载）────────────────────────────────────
+        // JSON 格式：{ "video": { "source": "<resource.json 中注册的名称>" } }
+        // 亦可由 emissive 材质和面光源在加载时自动创建；此处处理显式声明的情况。
+        if (components.contains("video"))
+        {
+            std::string videoName = components["video"]["source"].get<std::string>();
+            // 若同名 VideoComponent 已由 emissive 或 rect_light 自动创建，跳过以免重复
+            if (obj->GetComponent<VansScriptVideoComponent>() == nullptr)
+            {
+                VansVideoTexture* videoTex = m_VideoManager.Get(videoName);
+                if (videoTex)
+                {
+                    auto* videoComp = new VansScriptVideoComponent();
+                    videoComp->m_VideoName    = videoName;
+                    videoComp->m_VideoTex     = videoTex;
+                    videoComp->m_VideoManager = &m_VideoManager;
+                    obj->AddComponent(videoComp);
+                    VANS_LOG("[LoadSceneObjects] Video component '" << videoName
+                        << "' 已挂载到 object: " << obj->m_ObjectName);
+                }
+                else
+                {
+                    VANS_LOG_WARN("[LoadSceneObjects] 找不到视频资源 '" << videoName
+                        << "'，对象: " << obj->m_ObjectName);
+                }
             }
         }
 
@@ -2254,6 +2325,39 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 pyComp->m_ScriptClassName = scriptEntry["class"].get<std::string>();
                 pyComp->m_OwnerObject    = obj;
                 obj->AddComponent(pyComp);
+            }
+        }
+
+        // ── 后处理：自动将 VideoComponent 挂接到同对象的面光源 ──────────────
+        // 当面光源 JSON 无 emissive_video 字段（使用显式 "video" 组件时），
+        // 此处补充完成 m_VideoComponent 指针和 TextureSlot 的绑定。
+        {
+            auto* rlComp    = obj->GetComponent<VansScriptRectLightComponent>();
+            auto* videoComp = obj->GetComponent<VansScriptVideoComponent>();
+            if (rlComp && videoComp &&
+                rlComp->m_VideoComponent == nullptr &&
+                videoComp->m_VideoTex    != nullptr)
+            {
+                int idx = rlComp->m_LightIndex;
+                if (idx >= 0 && idx < 32)
+                {
+                    rlComp->m_VideoComponent = videoComp;
+                    m_LightManager.GetRectLights()[idx].m_TextureSlot = static_cast<float>(idx);
+
+                    VansTexture* emissiveArray = m_MaterialManager.GetRuntimeRenderTexture(
+                        VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
+                    if (emissiveArray != nullptr)
+                    {
+                        static const uint8_t kWhitePixel[4] = { 255, 255, 255, 255 };
+                        VansVKDevice* texVkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+                        emissiveArray->UpdateArrayLayerFromPixels(
+                            texVkDevice->GetCommandBuffer(), kWhitePixel, 1, 1, idx);
+                    }
+
+                    VANS_LOG("[LoadSceneObjects] 面光源 '" << obj->m_ObjectName
+                        << "' 自动绑定 VideoComponent '" << videoComp->m_VideoName
+                        << "' slot=" << idx);
+                }
             }
         }
 
@@ -2348,5 +2452,10 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                          << pending.objectName << "' could not be created");
         }
     }
+
+    // ── 场景加载完成后，重新触发 auto_play 音频 ──────────────────────────
+    // 原因：场景切换时 StopAll() 会停止所有播放；资源级 auto_play 只在
+    // LoadFromJson 中触发一次，Runtime 重载后需在此补充调用。
+    m_AudioManager.PlayAutoPlay();
 }
 

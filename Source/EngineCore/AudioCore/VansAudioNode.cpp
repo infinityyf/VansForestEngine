@@ -78,7 +78,6 @@ bool VansAudioNode::Open(const AudioNodeProperties& props)
         return false;
     }
 
-    // AutoPlay
     if (m_Properties.m_AutoPlay)
         Play();
 
@@ -255,6 +254,9 @@ void VansAudioNode::Play()
 
     // Streaming 模式下 Loop 需要在解码线程侧处理（Source 不使用 AL_LOOPING=TRUE）
     alSourcePlay(m_SourceId);
+    ALenum err = alGetError();
+    if (err != AL_NO_ERROR)
+        VANS_LOG_WARN("[VansAudioNode::Play] '" << m_Properties.m_Name << "' alSourcePlay error=" << err);
 }
 
 void VansAudioNode::Pause()
@@ -344,6 +346,20 @@ void VansAudioNode::SetLoop(bool loop)
 void VansAudioNode::SetPosition(float x, float y, float z)
 {
     if (m_SourceId) alSource3f(m_SourceId, AL_POSITION, x, y, z);
+}
+
+void VansAudioNode::SetSpatialGain(float distanceGain)
+{
+    if (m_SourceId)
+        alSourcef(m_SourceId, AL_GAIN, m_Properties.m_Volume * distanceGain);
+}
+
+int VansAudioNode::GetALSourceRelative() const
+{
+    if (!m_SourceId) return -1;
+    ALint val = 0;
+    alGetSourcei(m_SourceId, AL_SOURCE_RELATIVE, &val);
+    return static_cast<int>(val);
 }
 
 void VansAudioNode::SetSpatial(bool enabled)

@@ -159,6 +159,20 @@ void VansAudioManager::TickAll(double /*deltaTime*/,
 }
 
 // ===========================================================================
+// PlayAutoPlay — 场景加载完成后重新触发 auto_play 节点
+void VansAudioManager::PlayAutoPlay()
+{
+    for (auto& [name, node] : m_Nodes)
+    {
+        if (!node) continue;
+        if (node->IsAutoPlay())
+        {
+            node->Play();
+            VANS_LOG("[VansAudioManager] AutoPlay: " << name);
+        }
+    }
+}
+
 // StopAll — 场景卸载时停止所有节点播放（不释放资源）
 // ===========================================================================
 void VansAudioManager::StopAll()

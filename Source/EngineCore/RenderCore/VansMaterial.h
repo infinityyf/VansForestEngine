@@ -338,6 +338,11 @@ namespace VansGraphics
 
 		// 全局 PBR SSBO 中的材质索引，由 PreparePBRMaterialData 赋值
 		int m_MaterialIndex = -1;
+
+		// 视频资源名称（来自 resource.json 注册的名称）。
+		// LoadSceneObjects 中用于在对象上自动创建 VansScriptVideoComponent。
+		// 空字符串表示该材质不使用视频纹理。
+		std::string m_VideoName;
 	};
 
 	// ============================================================

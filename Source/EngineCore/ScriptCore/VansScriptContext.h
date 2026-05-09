@@ -21,8 +21,8 @@
 namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
-namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; class VansVideoTexture; }
-namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; class VansAudioNode; }
+namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; class VansVideoTexture; class VansVideoManager; }
+namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; class VansAudioNode; class VansAudioManager; }
 
 class VansScriptContext
 {
@@ -75,6 +75,9 @@ public:
 
 	// Set the active scene so the update loop can iterate objects
 	void SetScene(VansGraphics::VansScene* scene) { m_Scene = scene; }
+
+	// Read the active scene pointer (used by bridge lambdas)
+	VansGraphics::VansScene* GetScene() const { return m_Scene; }
 
 	// ── 场景切换时清空已跟踪的 Python 模块 ─────────────────────────
 	// 释放 py::module 引用，清空 m_TrackedPyModules，防止跨场景累积。
@@ -253,6 +256,30 @@ public:
 	// 该灯光在 m_LightManager::m_SpotLights 中的索引
 	int m_LightIndex = -1;
 };
+// ── Video Component ─────────────────────────────────────────────────────────
+// 持有对 VansVideoManager 中视频纹理的非拥有指针。
+// 通过此组件可以统一控制视频的播放、暂停。
+// Emission 材质和面光源均通过此组件获取 GPU 纹理数据，不直接持有视频路径参数。
+class VansScriptVideoComponent : public VansScriptComponent
+{
+public:
+	VansScriptVideoComponent() { m_ComponentName = "Video"; }
+
+	// 视频资源名称（来自 resource.json 注册的名称）
+	std::string m_VideoName;
+
+	// 非拥有指针，生命周期由 VansScene::m_VideoManager 管理
+	VansGraphics::VansVideoTexture* m_VideoTex = nullptr;
+
+	// 反向引用，场景加载时由 VansSceneLoader 写入，不拥有生命周期
+	VansGraphics::VansVideoManager* m_VideoManager = nullptr;
+
+	// 运行时切换视频资源（仅限已加载资源）。
+	// 切换后，EmissiveMaterial / RectLight 下一帧自动使用新纹理。
+	// 返回 true 表示切换成功，false 表示资源名未找到（保持原状）。
+	bool SwitchSource(const std::string& name);
+};
+
 // ── Rect Light Component (area light, evaluated via LTC) ─────────────────────
 // 持有对 VansLightManager 中面光源的非拥有索引引用。
 // 每帧由 VansScene::SyncLightTransforms 将对象 Position/Right/Up/Normal 写入对应字段。
@@ -270,9 +297,9 @@ public:
 	// 发光贴图路径（仅 CPU 端，不上传 GPU）。空字符串表示无贴图。
 	std::string m_EmissiveTexturePath;
 
-	// 视频纹理发光（非拥有指针，生命周期由 VansScene::m_VideoManager 管理）。
-	// 与 m_EmissiveTexturePath 互斥；非空时每帧自动更新 emissive 数组层。
-	VansGraphics::VansVideoTexture* m_EmissiveVideo = nullptr;
+	// 视频组件引用（非拥有指针）。非空时每帧从此组件获取视频帧写入发光数组层。
+	// 播放参数控制统一由 VansScriptVideoComponent 负责，面光源只读取 GPU 数据。
+	VansScriptVideoComponent* m_VideoComponent = nullptr;
 };// ── Camera Component ────────────────────────────────────────────────────────────────────
 // 持有对 VansCamera 的非拥有指针；VansCamera 由 VansScene 生命周期管理。
 // Transform 的 position/rotation(pitch/yaw) 每帧由 VansCamera::SyncFromTransform 同步。
@@ -294,6 +321,14 @@ public:
 
 	// 非拥有指针，生命周期由 VansScene::m_AudioManager 管理
 	VansEngine::VansAudioNode* m_AudioNode = nullptr;
+
+	// 反向引用，场景加载时由 VansSceneLoader 写入，不拥有生命周期
+	VansEngine::VansAudioManager* m_AudioManager = nullptr;
+
+	// 运行时切换音频资源（仅限已加载资源）。
+	// 不自动播放，由调用方决定是否立即调用 Play()。
+	// 返回 true 表示切换成功，false 表示资源名未找到（保持原状）。
+	bool SwitchSource(const std::string& name);
 };
 
 // ── Python Script Component ─────────────────────────────────────────────────

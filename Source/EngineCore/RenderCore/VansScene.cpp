@@ -843,7 +843,7 @@ void VansGraphics::VansScene::UpdateSceneData()
     // 推进所有视频纹理的播放，上传就绪帧到 GPU（在 Vulkan 命令录制之前执行）
     m_VideoManager.TickAll(VansTimer::GetLastFrameDelta());
 
-    // 推进所有音频节点（Streaming 模式下补充 Buffer）
+    // 推进所有音频节点：更新 Listener 位置、驱动 Streaming 节点补充 Buffer
     {
         glm::vec4 camPos = m_Camera->GetPosition();
         glm::vec4 camFwd = m_Camera->GetForward();
@@ -866,10 +866,10 @@ void VansGraphics::VansScene::UpdateSceneData()
             {
                 if (!obj) continue;
                 auto* rectComp = obj->GetComponent<VansScriptRectLightComponent>();
-                if (!rectComp || !rectComp->m_EmissiveVideo) continue;
+                if (!rectComp || !rectComp->m_VideoComponent) continue;
 
-                VansVideoTexture* vid = rectComp->m_EmissiveVideo;
-                if (!vid->IsReady()) continue;
+                VansVideoTexture* vid = rectComp->m_VideoComponent->m_VideoTex;
+                if (!vid || !vid->IsReady()) continue;
 
                 // 通过统一接口写入数组层，无需在外部访问 CPU 像素缓存
                 vid->CopyNewFrameToArrayLayer(
@@ -880,6 +880,9 @@ void VansGraphics::VansScene::UpdateSceneData()
 
     // Resolve parent-child transform relationships before GPU upload
     m_TransformParentSystem.ResolveParentChildTransforms();
+
+    // 同步空间音频 source 位置（在 ResolveParentChildTransforms 之后，确保世界坐标已最终确定）
+    SyncAudioSourcePositions();
 
     // Update dirty physics transforms to GPU
     UpdateTransformRenderData();
@@ -971,6 +974,49 @@ void VansGraphics::VansScene::SyncLightTransforms()
                 lights[rectComp->m_LightIndex].m_Normal   = forward;
             }
         }
+
+    }
+}
+
+// ============================================================
+// SyncAudioSourcePositions — 每帧将 spatial 音频节点的 OpenAL source
+// 位置同步到对应 ScriptObject 的世界坐标。需在 ResolveParentChildTransforms
+// 之后、TickAll 之前调用，确保使用最新的世界坐标。
+// ============================================================
+void VansGraphics::VansScene::SyncAudioSourcePositions()
+{
+    glm::vec4 camPos = m_Camera->GetPosition();
+
+    for (auto* obj : m_SceneObjects)
+    {
+        if (!obj) continue;
+        auto* audioComp = obj->GetComponent<VansScriptAudioComponent>();
+        if (!audioComp || !audioComp->m_AudioNode) continue;
+        if (!audioComp->m_AudioNode->GetSpatial()) continue;
+        if (obj->m_TransformID == 0) continue;
+
+        const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+        audioComp->m_AudioNode->SetPosition(t.m_Position.x, t.m_Position.y, t.m_Position.z);
+
+        float dx   = t.m_Position.x - camPos.x;
+        float dy   = t.m_Position.y - camPos.y;
+        float dz   = t.m_Position.z - camPos.z;
+        float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+
+        // 手动线性衰减，完全绕过 OpenAL 距离模型
+        // gain = clamp(1 - (dist - ref) / (max - ref), 0, 1)
+        float ref  = audioComp->m_AudioNode->GetRefDist();
+        float maxD = audioComp->m_AudioNode->GetMaxDist();
+        float gain = 1.0f;
+        if (dist >= maxD)
+        {
+            gain = 0.0f;
+        }
+        else if (dist > ref)
+        {
+            gain = 1.0f - (dist - ref) / (maxD - ref);
+        }
+        audioComp->m_AudioNode->SetSpatialGain(gain);
     }
 }
 

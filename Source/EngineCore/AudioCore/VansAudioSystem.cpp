@@ -62,7 +62,11 @@ bool VansAudioSystem::Initialize()
     alListenerfv(AL_ORIENTATION, orientation);
     alListenerf (AL_GAIN, m_MasterVolume);
 
-    VANS_LOG("[VansAudioSystem] 初始化成功");
+    const ALCchar* devName = alcGetString(device, ALC_DEVICE_SPECIFIER);
+    VANS_LOG("[VansAudioSystem] 初始化成功，设备名: " << (devName ? devName : "(null)"));
+
+    // 线性衰减模型（由 SyncAudioSourcePositions 手动驱动 gain，此项无副作用保留）
+    alDistanceModel(AL_LINEAR_DISTANCE_CLAMPED);
     return true;
 }
 

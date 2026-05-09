@@ -6,6 +6,8 @@
 #include "../VansTimer.h"
 #include "../RenderCore/VansScene.h"
 #include "../PhysicsCore/VansPhysics.h"
+#include "../AudioCore/VansAudioManager.h"
+#include "../RenderCore/VansVideoManager.h"
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -23,6 +25,63 @@ namespace py = pybind11;
 
 // Singleton instance
 VansScriptContext* VansScriptContext::s_Instance = nullptr;
+
+// ---------------------------------------------------------------------------
+// VansScriptAudioComponent — SwitchSource
+// ---------------------------------------------------------------------------
+bool VansScriptAudioComponent::SwitchSource(const std::string& name)
+{
+	if (!m_AudioManager)
+	{
+		VANS_LOG_WARN("[AudioComp] SwitchSource 失败：m_AudioManager 未绑定");
+		return false;
+	}
+
+	VansEngine::VansAudioNode* newNode = m_AudioManager->Get(name);
+	if (!newNode)
+	{
+		VANS_LOG_WARN("[AudioComp] SwitchSource 失败：资源 '" << name << "' 未在 AudioManager 中找到");
+		return false;
+	}
+
+	// 安全停止当前播放（Manager 拥有生命周期，不销毁旧节点）
+	if (m_AudioNode && m_AudioNode->IsPlaying())
+		m_AudioNode->Stop();
+
+	m_AudioNode = newNode;
+	VANS_LOG("[AudioComp] SwitchSource → '" << name << "'");
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// VansScriptVideoComponent — SwitchSource
+// ---------------------------------------------------------------------------
+bool VansScriptVideoComponent::SwitchSource(const std::string& name)
+{
+	if (!m_VideoManager)
+	{
+		VANS_LOG_WARN("[VideoComp] SwitchSource 失败：m_VideoManager 未绑定");
+		return false;
+	}
+
+	VansGraphics::VansVideoTexture* newTex = m_VideoManager->Get(name);
+	if (!newTex)
+	{
+		VANS_LOG_WARN("[VideoComp] SwitchSource 失败：资源 '" << name << "' 未在 VideoManager 中找到");
+		return false;
+	}
+
+	// Pause 旧视频（而非 Stop），保留 FFmpeg 流状态，便于切回时快速恢复
+	if (m_VideoTex && m_VideoTex->IsPlaying())
+		m_VideoTex->Pause();
+
+	// 替换指针：EmissiveMaterial / RectLight 下一帧读取 m_VideoTex 时自动使用新纹理
+	m_VideoTex  = newTex;
+	m_VideoName = name;
+
+	VANS_LOG("[VideoComp] SwitchSource → '" << name << "'");
+	return true;
+}
 
 // ---------------------------------------------------------------------------
 // Runs EngineExported/_engine_redirect.py which replaces sys.stdout/stderr

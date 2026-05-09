@@ -817,6 +817,7 @@ void VansGraphics::VansHierachuWindow::DrawObjectList()
         if (obj->GetComponent<VansScriptSpotLightComponent>())        typeHint += "SpotLight ";
         if (obj->GetComponent<VansScriptRectLightComponent>())        typeHint += "RectLight ";
         if (obj->GetComponent<VansScriptAudioComponent>())            typeHint += "Audio ";
+        if (obj->GetComponent<VansScriptVideoComponent>())            typeHint += "Video ";
 
         char label[256];
         snprintf(label, sizeof(label), "%s  [%s]", obj->m_ObjectName.c_str(), typeHint.c_str());
@@ -1156,6 +1157,28 @@ void VansGraphics::VansHierachuWindow::DrawObjectDetail()
             ImGui::SameLine();
             if (ImGui::Checkbox("Spatial##audio", &spatial))
                 node->SetSpatial(spatial);
+        }
+    }
+
+    // ── Video Component ─────────────────────────────────────────────
+    auto* videoComp = obj->GetComponent<VansScriptVideoComponent>();
+    if (videoComp && videoComp->m_VideoTex)
+    {
+        if (ImGui::CollapsingHeader("Video Component", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            // 资源名（只读）
+            ImGui::TextDisabled("%s", videoComp->m_VideoName.c_str());
+
+            // 播放状态
+            const char* stateStr = videoComp->m_VideoTex->IsPlaying() ? "Playing" : "Paused";
+            ImGui::Text("State: %s", stateStr);
+
+            ImGui::Separator();
+
+            // 播放控制按鈕
+            if (ImGui::Button("Play##video"))  videoComp->m_VideoTex->Play();
+            ImGui::SameLine();
+            if (ImGui::Button("Pause##video")) videoComp->m_VideoTex->Pause();
         }
     }
 

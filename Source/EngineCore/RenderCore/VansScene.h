@@ -274,6 +274,9 @@ namespace VansGraphics
 		// 方向光/聚光灯同步旋转 Z 轴为 m_Direction；点光源/聚光灯同步 m_Position。
 		void SyncLightTransforms();
 
+		// 每帧将拥有 spatial=true 的 AudioComponent 的世界坐标同步到 OpenAL source。
+		void SyncAudioSourcePositions();
+
 		// Per-frame skeletal animation CPU update + GPU bone matrix upload.
 		void UpdateAnimations(float deltaTime);
 

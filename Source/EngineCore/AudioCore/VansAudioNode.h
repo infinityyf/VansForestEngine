@@ -91,6 +91,12 @@ namespace VansEngine
 
         void  SetRefDistance(float d);
         void  SetMaxDistance(float d);
+        float GetRefDist()  const { return m_Properties.m_RefDist; }
+        float GetMaxDist()  const { return m_Properties.m_MaxDist; }
+        // 按线性模型手动设置距离衰减 gain（绕过 OpenAL 距离模型）
+        void  SetSpatialGain(float distanceGain);
+        // 查询 OpenAL source 的实际 AL_SOURCE_RELATIVE 状态（用于诊断）
+        int   GetALSourceRelative() const;
 
         // ── 状态查询 ────────────────────────────────────────────────────────
         bool IsPlaying() const;
@@ -99,6 +105,7 @@ namespace VansEngine
 
         const std::string& GetName()     const { return m_Properties.m_Name;     }
         const std::string& GetFilePath() const { return m_Properties.m_FilePath; }
+        bool               IsAutoPlay()  const { return m_Properties.m_AutoPlay; }
 
         // ── 每帧驱动（Streaming 模式需要主线程调用） ─────────────────────────
         // 检查 OpenAL Source 状态，向 Source 补充已处理完的 Buffer

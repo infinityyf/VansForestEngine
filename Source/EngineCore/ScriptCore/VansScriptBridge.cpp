@@ -1,4 +1,5 @@
 #include "VansScriptContext.h"
+#include "../RenderCore/VansScene.h"
 #include "../AudioCore/VansAudioNode.h"
 #include "VansTransform.h"
 #include "../RenderCore/VansCamera.h"
@@ -90,6 +91,12 @@ static inline VansScriptRectLightComponent* AsRectLightComp(void* p)
 static inline VansScriptAudioComponent* AsAudioComp(void* p)
 {
 	return dynamic_cast<VansScriptAudioComponent*>(
+		static_cast<VansScriptComponent*>(p));
+}
+
+static inline VansScriptVideoComponent* AsVideoComp(void* p)
+{
+	return dynamic_cast<VansScriptVideoComponent*>(
 		static_cast<VansScriptComponent*>(p));
 }
 
@@ -238,6 +245,14 @@ void VansInitEngineBridge()
 	{
 		auto* o = AsScriptObject(obj);
 		return o ? o->m_TransformID : 0;
+	};
+
+	s_EngineBridge.sceneFindObject = [](const char* name) -> void*
+	{
+		if (!name) return nullptr;
+		auto* ctx = VansScriptContext::GetInstance();
+		if (!ctx || !ctx->GetScene()) return nullptr;
+		return ctx->GetScene()->FindObjectByName(std::string(name));
 	};
 
 	s_EngineBridge.componentGetName = [](void* comp, char* buf, int bufSize)
@@ -852,24 +867,6 @@ void VansInitEngineBridge()
 		lights[c->m_LightIndex].m_TwoSided = v ? 1.0f : 0.0f;
 	};
 
-	s_EngineBridge.rectLightVideoPlay = [](void* comp)
-	{
-		auto* c = AsRectLightComp(comp);
-		if (c && c->m_EmissiveVideo) c->m_EmissiveVideo->Play();
-	};
-
-	s_EngineBridge.rectLightVideoPause = [](void* comp)
-	{
-		auto* c = AsRectLightComp(comp);
-		if (c && c->m_EmissiveVideo) c->m_EmissiveVideo->Pause();
-	};
-
-	s_EngineBridge.rectLightVideoIsPlaying = [](void* comp) -> bool
-	{
-		auto* c = AsRectLightComp(comp);
-		return (c && c->m_EmissiveVideo) ? c->m_EmissiveVideo->IsPlaying() : false;
-	};
-
 	// ── Runtime UI System ─────────────────────────────────────────────────
 
 	s_EngineBridge.uiLoadDocument = [](const char* xamlPath) -> void*
@@ -1086,6 +1083,61 @@ void VansInitEngineBridge()
 		if (!c || !c->m_AudioNode || !buf || bufSize <= 0) return;
 		const std::string& path = c->m_AudioNode->GetFilePath();
 		strncpy_s(buf, bufSize, path.c_str(), static_cast<size_t>(bufSize - 1));
+	};
+
+	// ── Video Component ───────────────────────────────────────────
+	s_EngineBridge.objectGetVideoComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptVideoComponent>();
+	};
+
+	s_EngineBridge.videoPlay = [](void* comp)
+	{
+		auto* c = AsVideoComp(comp);
+		if (c && c->m_VideoTex) c->m_VideoTex->Play();
+	};
+
+	s_EngineBridge.videoPause = [](void* comp)
+	{
+		auto* c = AsVideoComp(comp);
+		if (c && c->m_VideoTex) c->m_VideoTex->Pause();
+	};
+
+	s_EngineBridge.videoIsPlaying = [](void* comp) -> bool
+	{
+		auto* c = AsVideoComp(comp);
+		return (c && c->m_VideoTex) ? c->m_VideoTex->IsPlaying() : false;
+	};
+
+	s_EngineBridge.videoIsReady = [](void* comp) -> bool
+	{
+		auto* c = AsVideoComp(comp);
+		return (c && c->m_VideoTex) ? c->m_VideoTex->IsReady() : false;
+	};
+
+	s_EngineBridge.videoGetName = [](void* comp, char* buf, int bufSize)
+	{
+		auto* c = AsVideoComp(comp);
+		if (!c || !buf || bufSize <= 0) return;
+		strncpy_s(buf, bufSize, c->m_VideoName.c_str(), static_cast<size_t>(bufSize - 1));
+	};
+
+	// ── Audio SwitchSource ───────────────────────────────────────────
+	s_EngineBridge.audioSwitchSource = [](void* comp, const char* name) -> bool
+	{
+		auto* c = AsAudioComp(comp);
+		if (!c || !name) return false;
+		return c->SwitchSource(std::string(name));
+	};
+
+	// ── Video SwitchSource ───────────────────────────────────────────
+	s_EngineBridge.videoSwitchSource = [](void* comp, const char* name) -> bool
+	{
+		auto* c = AsVideoComp(comp);
+		if (!c || !name) return false;
+		return c->SwitchSource(std::string(name));
 	};
 }
 
