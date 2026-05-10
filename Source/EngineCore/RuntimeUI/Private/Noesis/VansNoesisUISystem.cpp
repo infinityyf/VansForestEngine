@@ -12,6 +12,7 @@
 #include <NsGui/IntegrationAPI.h>
 #include <NsGui/FrameworkElement.h>
 #include <NsGui/ResourceDictionary.h>
+#include <NsGui/FontProperties.h>
 
 #include <cassert>
 
@@ -276,18 +277,13 @@ void VansNoesisUISystem::SetupLogHandler()
     {
         switch (level)
         {
-            case 0: /* Trace  — 通常忽略 */ break;
-            case 1: /* Debug  */ break;
-            case 2: /* Info   */ break;
-            case 3: /* Warning*/
-                // TODO: 接入引擎日志系统后替换为 VANS_LOG_WARN
-                break;
-            case 4: /* Error  */
-                // TODO: 接入引擎日志系统后替换为 VANS_LOG_ERROR
-                break;
+            case 0: break; // Trace — 忽略
+            case 1: VANS_LOG("[Noesis DEBUG] " << message); break;
+            case 2: VANS_LOG("[Noesis INFO]  " << message); break;
+            case 3: VANS_LOG_WARN("[Noesis WARN]  " << message); break;
+            case 4: VANS_LOG_ERROR("[Noesis ERROR] " << message); break;
             default: break;
         }
-        (void)message;
     });
 }
 
@@ -296,8 +292,8 @@ void VansNoesisUISystem::SetupErrorHandler()
     Noesis::SetErrorHandler([](const char* filename, uint32_t line,
                                 const char* desc, bool fatal)
     {
-        (void)filename; (void)line; (void)desc; (void)fatal;
-        // TODO: 接入引擎断言系统
+        VANS_LOG_ERROR("[Noesis ASSERT] " << (filename ? filename : "?") << ":" << line
+                       << "  " << (desc ? desc : "") << (fatal ? "  [FATAL]" : ""));
     });
 }
 
@@ -329,6 +325,18 @@ void VansNoesisUISystem::InstallProviders()
     auto* fontProvider    = new VansNoesisFontProvider(projectManager, pathResolver);
     m_FontProvider        = Noesis::Ptr<VansNoesisFontProvider>(*fontProvider);
     Noesis::GUI::SetFontProvider(m_FontProvider);
+
+    // 字体回退链：Noesis 在 FontFamily 缺少字形时按此顺序查找
+    // 顺序：Arial（各平台最广泛）→ Segoe UI（Windows 默认）
+    const char* fontFallbacks[] = { "Arial", "Segoe UI" };
+    Noesis::GUI::SetFontFallbacks(fontFallbacks, 2);
+
+    // 默认字体属性：大小 15pt，Normal weight/stretch/style
+    Noesis::GUI::SetFontDefaultProperties(
+        15.0f,
+        Noesis::FontWeight_Normal,
+        Noesis::FontStretch_Normal,
+        Noesis::FontStyle_Normal);
 }
 
 void VansNoesisUISystem::RegisterTypes()

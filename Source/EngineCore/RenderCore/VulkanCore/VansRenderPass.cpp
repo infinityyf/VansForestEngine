@@ -1222,6 +1222,19 @@ void VansGraphics::VansRenderPassManager::SetupVansSceneUIRenderPass(
 	m_VansSceneUIPass.CreateRenderPass(
 		logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, displayExtent);
 
+	// Noesis VK render device 使用 clipSpaceYInverted=true（Vulkan 原生 Y-down NDC），
+	// 不需要负高度 viewport 翻转，覆盖 CreateRenderPass 写入的负高度 viewport，
+	// 改为标准正向 viewport，确保 Noesis 上屏渲染方向正确。
+	// 注意：只影响 SceneUI pass，不影响其他使用负高度 viewport 的场景渲染通道。
+	m_VansSceneUIPass.m_RenderPassViewport = {
+		0.0f,
+		0.0f,
+		static_cast<float>(displayExtent.width),
+		static_cast<float>(displayExtent.height),
+		0.0f,
+		1.0f
+	};
+
 	// 单个 framebuffer（FSR 图像只有一张，无 swapchain 多帧）
 	m_VansSceneUIPass.m_FrameBuffers.resize(1);
 	std::vector<VkImageView> image_views = { fsrImageView };

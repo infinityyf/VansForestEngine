@@ -231,6 +231,8 @@ namespace VansGraphics
 		m_DescriptorIndexingFeature.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 		m_DescriptorIndexingFeature.descriptorBindingPartiallyBound = VK_TRUE;
 		m_DescriptorIndexingFeature.descriptorBindingVariableDescriptorCount = VK_TRUE;
+		// 允许在 GPU 执行期间更新 bindless 采样器纹理数组（视频切换时需要）
+		m_DescriptorIndexingFeature.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
 
 
 		m_DeviceFeatures2.pNext = &m_DescriptorIndexingFeature;

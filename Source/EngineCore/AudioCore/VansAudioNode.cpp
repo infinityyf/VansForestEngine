@@ -270,7 +270,11 @@ void VansAudioNode::Stop()
 {
     std::lock_guard<std::mutex> lk(m_SourceMutex);
     if (m_SourceId == 0) return;
+    alGetError();               // 清空挂起的 OpenAL 错误，避免污染后续调用
     alSourceStop(m_SourceId);
+    ALenum stopErr = alGetError();
+    if (stopErr != AL_NO_ERROR)
+        VANS_LOG_WARN("[VansAudioNode::Stop] '" << m_Properties.m_Name << "' alSourceStop error=" << stopErr);
 
     if (m_Properties.m_PlayMode == AudioPlayMode::Streaming && m_Decoder && m_Decoder->IsOpen())
     {

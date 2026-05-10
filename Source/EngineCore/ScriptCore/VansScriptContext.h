@@ -21,7 +21,7 @@
 namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
-namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; class VansVideoTexture; class VansVideoManager; }
+namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; class VansVideoTexture; class VansVideoManager; class VansMaterialManager; }
 namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; class VansAudioNode; class VansAudioManager; }
 
 class VansScriptContext
@@ -273,6 +273,16 @@ public:
 
 	// 反向引用，场景加载时由 VansSceneLoader 写入，不拥有生命周期
 	VansGraphics::VansVideoManager* m_VideoManager = nullptr;
+
+	// Bindless GPU 纹理槽偏移：该组件对应的材质在全局 Bindless 纹理数组中的起始索引。
+	// 值为 materialIndex * kSlotsPerMat（对 EmissiveMaterial 为 5 槽）。
+	// -1 表示该组件不绑定 Bindless 槽位（如 RectLight 单独使用 emissive 数组层）。
+	// 由 LoadSceneForRendering 在 PreparePBRMaterialData 之后写入。
+	int m_BindlessFirstSlot = -1;
+
+	// 材质管理器引用（非拥有指针）：用于在切换视频源时更新 Bindless 描述符集。
+	// 由 LoadSceneForRendering 在 PreparePBRMaterialData 之后写入。
+	VansGraphics::VansMaterialManager* m_MaterialManagerRef = nullptr;
 
 	// 运行时切换视频资源（仅限已加载资源）。
 	// 切换后，EmissiveMaterial / RectLight 下一帧自动使用新纹理。

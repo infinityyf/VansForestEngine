@@ -5,6 +5,8 @@
 #include <NsRender/Texture.h>
 #include <NsCore/Ptr.h>
 #include <string>
+#include <vector>
+#include <unordered_map>
 
 namespace Vans
 {
@@ -65,7 +67,9 @@ namespace VansRuntime
     };
 
     // ── VansNoesisFontProvider ─────────────────────────────────────
-    // 优先在项目 UI/Fonts/ 中查找，其次在 engine://UI/Fonts/ 中查找
+    // 搜索顺序：项目 UI/Fonts/ → 引擎 EngineAssets/UI/Fonts/ → Windows 系统字体目录
+    // 每个目录仅扫描一次（scan-once cache），后续调用为纯内存查找，无文件 I/O。
+    // 字体名称匹配同时尝试原始形式和去空格形式（"Segoe UI" → "segoeui"）。
     class VansNoesisFontProvider : public Noesis::FontProvider
     {
     public:
@@ -84,10 +88,42 @@ namespace VansRuntime
         const Vans::VansProjectManager* m_ProjectManager;
         const Vans::VansPathResolver*   m_PathResolver;
 
-        // 尝试从给定路径目录中加载匹配的字体，返回是否成功
-        bool TryLoadFontFromDir(const std::string&   fontDir,
-                                const char*          familyName,
-                                Noesis::FontSource&  outSource);
+        // ── 目录扫描缓存 ──────────────────────────────────────────────
+        // 每个目录只扫描一次；key = 目录绝对路径，value = { compact_stem → full_path }
+        // compact_stem：文件名去扩展名、转小写、去空格（"Segoe UI" → "segoeui"）
+        struct DirCache
+        {
+            bool                                          scanned = false;
+            std::unordered_map<std::string, std::string> stemToPath; // stem → full path
+        };
+        mutable std::unordered_map<std::string, DirCache> m_DirCache;
+
+        // ── 字体族解析缓存 ────────────────────────────────────────────
+        // key = lowercase family name，value = 完整文件路径（空字符串 = 未找到）
+        mutable std::unordered_map<std::string, std::string> m_FamilyPathCache;
+
+        // ── 字体数据缓存 ──────────────────────────────────────────────
+        // key = 完整文件路径，value = 原始字节（避免每帧重新读取磁盘）
+        mutable std::unordered_map<std::string, std::vector<uint8_t>> m_FontDataCache;
+
+        // ── 文件名缓存 ────────────────────────────────────────────────
+        // 保证 FontSource::filename 指针在系统生命周期内始终有效
+        mutable std::vector<std::string> m_FilenameCache;
+
+        // 扫描目录，若尚未扫描则填充 DirCache（幂等）
+        void ScanDirIfNeeded(const std::string& dir) const;
+
+        // 在已扫描的目录集合中查找 family，填充 m_FamilyPathCache，返回路径（空 = 未找到）
+        const std::string& ResolveFamilyPath(const char* familyName) const;
+
+        // 构建目录扫描列表（项目 → 引擎 → 系统）
+        std::vector<std::string> BuildSearchDirs() const;
+
+        // 工具：生成紧凑 stem = lowercase 文件名去扩展名去空格
+        static std::string MakeCompactStem(const std::string& filename);
+
+        // 工具：生成 family 的多种查找键
+        static std::vector<std::string> MakeFamilyKeys(const char* familyName);
     };
 
 } // namespace VansRuntime

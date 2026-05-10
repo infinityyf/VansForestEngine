@@ -68,7 +68,19 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},
 	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+
+	// 为每个 binding 设置标志位：仅 bindless 纹理数组（最后一项）需要 UPDATE_AFTER_BIND，
+	// 以允许在 GPU 执行期间（如视频源切换时）通过 vkUpdateDescriptorSets 更新该槽位。
+	std::vector<VkDescriptorBindingFlags> bindingFlags(bindings.size(), 0);
+	bindingFlags.back() = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+
+	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayoutWithFlags(
+		bindings, bindingFlags,
+		VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+		outLayout);
+
+	std::vector<VkDescriptorSetLayout> layouts(setCount, outLayout);
+	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(layouts, outSets);
 }
 
 // ============================================================

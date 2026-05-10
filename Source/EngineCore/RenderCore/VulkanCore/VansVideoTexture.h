@@ -65,6 +65,9 @@ namespace VansGraphics
         // ── 播放控制 ─────────────────────────────────────────────────────────
         void Play()  { m_Playing.store(true);  m_ProducerCv.notify_all(); }
         void Pause() { m_Playing.store(false); m_ProducerCv.notify_all(); }
+        // Stop — 停止播放并将解码位置重置到视频起点
+        // 下次调用 Play() 时将从第 0 帧开始播放
+        void Stop();
         bool IsPlaying() const { return m_Playing.load(); }
         bool IsReady()   const { return m_IsReady.load();  }
 
@@ -134,7 +137,9 @@ namespace VansGraphics
 
         // ── 后台线程 ─────────────────────────────────────────────────────────
         std::thread       m_DecodeThread;
-        std::atomic<bool> m_ShouldStop = { false };
+        std::atomic<bool> m_ShouldStop   = { false };
+        // 由 Stop() 设置，通知解码线程执行 seek 回起点并重置 ptsOffset
+        std::atomic<bool> m_NeedRestart  = { false };
     };
 
 } // namespace VansGraphics

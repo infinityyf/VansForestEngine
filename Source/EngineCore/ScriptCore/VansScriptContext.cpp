@@ -8,6 +8,7 @@
 #include "../PhysicsCore/VansPhysics.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../RenderCore/VansVideoManager.h"
+#include "../RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -31,6 +32,8 @@ VansScriptContext* VansScriptContext::s_Instance = nullptr;
 // ---------------------------------------------------------------------------
 bool VansScriptAudioComponent::SwitchSource(const std::string& name)
 {
+	VANS_LOG("[AudioComp] SwitchSource 进入，目标='" << name << "' 当前节点=" << (m_AudioNode ? m_AudioNode->GetName() : "null"));
+
 	if (!m_AudioManager)
 	{
 		VANS_LOG_WARN("[AudioComp] SwitchSource 失败：m_AudioManager 未绑定");
@@ -44,9 +47,17 @@ bool VansScriptAudioComponent::SwitchSource(const std::string& name)
 		return false;
 	}
 
+	VANS_LOG("[AudioComp] SwitchSource newNode 已找到='" << name << "' IsBound=" << newNode->IsBound());
+
 	// 安全停止当前播放（Manager 拥有生命周期，不销毁旧节点）
-	if (m_AudioNode && m_AudioNode->IsPlaying())
-		m_AudioNode->Stop();
+	if (m_AudioNode && m_AudioNode->IsBound())
+	{
+		VANS_LOG("[AudioComp] SwitchSource 停止旧节点='" << m_AudioNode->GetName()
+			<< "' IsPlaying=" << m_AudioNode->IsPlaying());
+		if (m_AudioNode->IsPlaying() || m_AudioNode->IsPaused())
+			m_AudioNode->Stop();
+		VANS_LOG("[AudioComp] SwitchSource 旧节点已停止");
+	}
 
 	m_AudioNode = newNode;
 	VANS_LOG("[AudioComp] SwitchSource → '" << name << "'");
@@ -75,9 +86,46 @@ bool VansScriptVideoComponent::SwitchSource(const std::string& name)
 	if (m_VideoTex && m_VideoTex->IsPlaying())
 		m_VideoTex->Pause();
 
-	// 替换指针：EmissiveMaterial / RectLight 下一帧读取 m_VideoTex 时自动使用新纹理
+	// 替换当前视频指针
 	m_VideoTex  = newTex;
 	m_VideoName = name;
+
+	// ── 同步 Bindless GPU 描述符槽位 ──────────────────────────────────────
+	// m_BindlessFirstSlot 由 LoadSceneForRendering 在 PreparePBRMaterialData 之后写入。
+	// 切换时将该槽位对应的所有 5 个 bindless 槽更新为新视频的 GPU 贴图句柄。
+	// 全局描述符集（Set 0）的 bindless 绑定已启用 VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT，
+	// 允许在 GPU 执行期间安全地调用 vkUpdateDescriptorSets 更新该槽位。
+	if (m_BindlessFirstSlot >= 0 && m_MaterialManagerRef && newTex->GetTexture())
+	{
+		VansGraphics::VansTexture* newGpuTex = newTex->GetTexture();
+
+		const int kSlotsPerMat = 5;
+		int totalSlots = static_cast<int>(m_MaterialManagerRef->m_GlobalPBRTextures.size());
+
+		// 更新 CPU 端指针数组，保持与 GPU 侧一致
+		for (int s = 0; s < kSlotsPerMat && (m_BindlessFirstSlot + s) < totalSlots; ++s)
+			m_MaterialManagerRef->m_GlobalPBRTextures[m_BindlessFirstSlot + s] = &newGpuTex->GetImage();
+
+		// 直接调用 vkUpdateDescriptorSets 更新对应 bindless 槽
+		VkDescriptorImageInfo imgInfo{};
+		imgInfo.sampler     = newGpuTex->GetImage().GetSampler();
+		imgInfo.imageView   = newGpuTex->GetImage().GetImageView();
+		imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		std::vector<VkDescriptorImageInfo> imgInfos(kSlotsPerMat, imgInfo);
+
+		if (m_MaterialManagerRef->m_VideoBindlessDescriptorSet != VK_NULL_HANDLE)
+		{
+			VansGraphics::VansVKDescriptorManager::GetInstance()->DirectUpdateImageDescriptors(
+				m_MaterialManagerRef->m_VideoBindlessDescriptorSet,
+				VansGraphics::GLOBAL_BINDING_BINDLESS_TEXTURES,
+				static_cast<uint32_t>(m_BindlessFirstSlot),
+				imgInfos,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+
+			VANS_LOG("[VideoComp] Bindless 槽 " << m_BindlessFirstSlot << "~"
+				<< m_BindlessFirstSlot + kSlotsPerMat - 1 << " 已更新 → '" << name << "'");
+		}
+	}
 
 	VANS_LOG("[VideoComp] SwitchSource → '" << name << "'");
 	return true;

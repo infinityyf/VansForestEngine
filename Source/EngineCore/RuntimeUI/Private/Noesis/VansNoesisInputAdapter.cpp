@@ -6,6 +6,7 @@
 #include <NsGui/IView.h>
 #include <NsGui/InputEnums.h>
 #include <GLFW/glfw3.h>
+#include "imgui.h"
 
 namespace VansRuntime
 {
@@ -89,8 +90,9 @@ void VansNoesisInputAdapter::Update()
 
     if (m_ScrollAccumY != 0.0 || m_ScrollAccumX != 0.0)
     {
-        double mx = 0.0, my = 0.0;
-        Vans::VansInputManager::Get().GetMousePosition(mx, my);
+        // 使用 ImGui 鼠标坐标，与 SetSceneViewport 的坐标系一致
+        ImVec2 imPos = ImGui::GetMousePos();
+        double mx = imPos.x, my = imPos.y;
         int ix = 0, iy = 0;
         TransformMouse(mx, my, ix, iy);
 
@@ -152,13 +154,12 @@ void VansNoesisInputAdapter::SetSceneViewport(float screenX, float screenY,
 void VansNoesisInputAdapter::TransformMouse(double rawX, double rawY,
                                              int& outX, int& outY) const
 {
-    // X: straight mapping from screen space to Noesis view space
+    // X: 屏幕像素坐标线性映射到 Noesis 视图像素坐标（无翻转）
     const float nx = (static_cast<float>(rawX) - m_ViewportX) * (m_NoesisW / m_ViewportW);
 
-    // Y: inverted — the Noesis Vulkan backend renders with Y flipped so that
-    //   Noesis WPF Y=0 (top) maps to the bottom of the rendered image.
-    //   Clicking at the visual bottom must produce Noesis Y≈0, hence the inversion.
-    const float ny = m_NoesisH - (static_cast<float>(rawY) - m_ViewportY) * (m_NoesisH / m_ViewportH);
+    // Y: 同向映射。Noesis 使用 clipSpaceYInverted=true（Vulkan 原生 Y-down）
+    // 配合 SceneUI pass 的标准正向 viewport，UI 方向正确；鼠标 Y 无需额外翻转。
+    const float ny = (static_cast<float>(rawY) - m_ViewportY) * (m_NoesisH / m_ViewportH);
 
     outX = static_cast<int>(nx);
     outY = static_cast<int>(ny);
@@ -183,13 +184,15 @@ void VansNoesisInputAdapter::OnKeyEvent(int glfwKey, int /*scancode*/, int actio
     }
 }
 
-void VansNoesisInputAdapter::OnMouseMove(double x, double y)
+void VansNoesisInputAdapter::OnMouseMove(double /*x*/, double /*y*/)
 {
-    m_LastMouseX = x;
-    m_LastMouseY = y;
+    // 使用 ImGui 鼠标坐标，与 SetSceneViewport 传入的 GetItemRectMin() 坐标系一致
+    ImVec2 imPos = ImGui::GetMousePos();
+    m_LastMouseX = imPos.x;
+    m_LastMouseY = imPos.y;
 
     int ix = 0, iy = 0;
-    TransformMouse(x, y, ix, iy);
+    TransformMouse(imPos.x, imPos.y, ix, iy);
 
     for (auto* view : m_Views)
     {
@@ -202,8 +205,10 @@ void VansNoesisInputAdapter::OnMouseClick(int glfwButton, int action, int /*mods
 {
     const Noesis::MouseButton noesisButton = ConvertGLFWMouseButton(glfwButton);
 
-    double mx = 0.0, my = 0.0;
-    Vans::VansInputManager::Get().GetMousePosition(mx, my);
+    // 使用 ImGui 鼠标坐标，与 SetSceneViewport 传入的 GetItemRectMin() 坐标系一致
+    ImVec2 imPos = ImGui::GetMousePos();
+    double mx = imPos.x;
+    double my = imPos.y;
     int ix = 0, iy = 0;
     TransformMouse(mx, my, ix, iy);
 
@@ -212,7 +217,10 @@ void VansNoesisInputAdapter::OnMouseClick(int glfwButton, int action, int /*mods
         << " raw=(" << (int)mx << "," << (int)my << ")"
         << " noesis=(" << ix << "," << iy << ")"
         << " viewport=(" << (int)m_ViewportX << "," << (int)m_ViewportY
-        << " " << (int)m_ViewportW << "x" << (int)m_ViewportH << ")");
+        << " " << (int)m_ViewportW << "x" << (int)m_ViewportH << ")"
+        << " noesisSize=(" << (int)m_NoesisW << "x" << (int)m_NoesisH << ")"
+        << " inViewport=" << (mx >= m_ViewportX && mx <= m_ViewportX + m_ViewportW
+                           && my >= m_ViewportY && my <= m_ViewportY + m_ViewportH ? "YES" : "NO"));
 
     for (auto* view : m_Views)
     {

@@ -234,6 +234,36 @@ void VansVideoTexture::Close()
 }
 
 // ===========================================================================
+// Stop — 停止播放并将解码位置重置到视频起点
+//
+// 与 Pause() 的区别：Pause 仅暂停，保留当前播放进度；
+// Stop 额外通知解码线程 seek 回第 0 帧，下次 Play() 从头开始。
+// 主线程调用安全（m_PlayTime 仅主线程写）。
+// ===========================================================================
+void VansVideoTexture::Stop()
+{
+    if (!m_IsReady.load())
+        return;
+
+    // 1. 停止播放
+    m_Playing.store(false);
+
+    // 2. 通知解码线程执行 seek 回起点并重置 ptsOffset
+    m_NeedRestart.store(true);
+    m_ProducerCv.notify_all();
+
+    // 3. 清空主线程侧的待显示帧队列（旧帧已不需要）
+    {
+        std::lock_guard<std::mutex> lock(m_QueueMutex);
+        while (!m_FrameQueue.empty())
+            m_FrameQueue.pop();
+    }
+
+    // 4. 重置播放时间（仅主线程写）
+    m_PlayTime = 0.0;
+}
+
+// ===========================================================================
 // Tick — 推进播放时间，将队列中 pts <= m_PlayTime 的帧上传到 GPU
 // ===========================================================================
 bool VansVideoTexture::Tick(double deltaTime)
@@ -266,7 +296,8 @@ bool VansVideoTexture::Tick(double deltaTime)
         UploadFrameToGPU(frameToUpload.pixels.data(), dataSize);
 
         // 缓存本帧像素：供面光源 emissive 数组层每帧 CPU 侧拷贝（主线程独占写，无需 mutex）
-        m_LastFramePixels = frameToUpload.pixels; // vector copy（大小 width*height*4）
+        // 使用 std::move 避免逐字节拷贝整个帧缓冲（1080p ≈ 8 MB）
+        m_LastFramePixels = std::move(frameToUpload.pixels);
         m_HasNewFrame = true;
 
         return true;
@@ -356,6 +387,19 @@ void VansVideoTexture::DecodeThreadFunc()
 
     while (!m_ShouldStop.load())
     {
+        // Stop() 请求：清空队列、seek 回起点、重置 ptsOffset
+        if (m_NeedRestart.exchange(false))
+        {
+            {
+                std::lock_guard<std::mutex> lock(m_QueueMutex);
+                while (!m_FrameQueue.empty())
+                    m_FrameQueue.pop();
+            }
+            ptsOffset = 0.0;
+            av_seek_frame(m_FmtCtx, m_VideoStream, 0, AVSEEK_FLAG_BACKWARD);
+            avcodec_flush_buffers(m_CodecCtx);
+        }
+
         const int readRet = av_read_frame(m_FmtCtx, packet);
 
         if (readRet < 0)
@@ -401,17 +445,25 @@ void VansVideoTexture::DecodeThreadFunc()
                 pts += static_cast<double>(frame->best_effort_timestamp) * m_TimeBase;
 
             // 等待队列有空位 且 处于播放状态（暂停时不预解码，避免占用帧队列）
+            // m_NeedRestart 也会唤醒，以便尽快丢弃当前帧并返回外层循环执行 seek
             {
                 std::unique_lock<std::mutex> lock(m_QueueMutex);
                 m_ProducerCv.wait(lock, [this] {
                     return (static_cast<int>(m_FrameQueue.size()) < MAX_QUEUE_SIZE
                             && m_Playing.load())
-                        || m_ShouldStop.load();
+                        || m_ShouldStop.load()
+                        || m_NeedRestart.load();
                 });
                 if (m_ShouldStop.load())
                 {
                     av_frame_unref(frame);
                     goto done;
+                }
+                // Stop() 请求：丢弃当前帧，返回外层循环执行 seek
+                if (m_NeedRestart.load())
+                {
+                    av_frame_unref(frame);
+                    break;
                 }
             }
 

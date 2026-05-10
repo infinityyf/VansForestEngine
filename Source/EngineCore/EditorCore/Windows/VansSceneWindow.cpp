@@ -7,12 +7,14 @@
 #include "ImGuizmo.h"
 #include <filesystem>
 #include <fstream>
+#include <GLFW/glfw3.h>
 #include "../../RenderCore/VulkanCore/VansTexture.h"
 #include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../RenderCore/VulkanCore/VansVKCommandBuffer.h"
 #include "../../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../../VansTimer.h"
 #include "../../RuntimeUI/Public/VansUISystem.h"
+#include "../../Util/VansLog.h"
 
 void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
 {
@@ -148,6 +150,24 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
             // that raw GLFW cursor coordinates are mapped to Noesis view space.
             VansRuntime::VansUISystem::Get().SetSceneViewport(
                 imageScreenPos.x, imageScreenPos.y, drawSize.x, drawSize.y);
+
+            // ── Coordinate diagnostic (one-time log per session) ──────────────
+            {
+                static bool s_LoggedOnce = false;
+                if (!s_LoggedOnce)
+                {
+                    s_LoggedOnce = true;
+                    // ImGui mouse position (same coordinate system as GetItemRectMin)
+                    ImVec2 imguiMouse = ImGui::GetMousePos();
+                    // GLFW cursor via ImGui's GLFW backend
+                    ImGuiIO& io = ImGui::GetIO();
+                    VANS_LOG("[SceneWindow] imageScreenPos=(" << (int)imageScreenPos.x << "," << (int)imageScreenPos.y
+                        << ") drawSize=(" << (int)drawSize.x << "x" << (int)drawSize.y << ")"
+                        << " imguiMouse=(" << (int)imguiMouse.x << "," << (int)imguiMouse.y << ")"
+                        << " DisplaySize=(" << (int)io.DisplaySize.x << "x" << (int)io.DisplaySize.y << ")"
+                        << " DisplayFramebufferScale=(" << io.DisplayFramebufferScale.x << "x" << io.DisplayFramebufferScale.y << ")");
+                }
+            }
 
             m_Gizmos.HandleHotkeys(m_Scene);
             m_Gizmos.Draw(m_Scene, m_Camera, imageScreenPos, drawSize);

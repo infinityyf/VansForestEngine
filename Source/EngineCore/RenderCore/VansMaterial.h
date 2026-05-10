@@ -179,6 +179,10 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_GlobalPBRTexSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_GlobalPBRTexDescriptorSets;
 
+		// 场景 Global Descriptor Set（Set 0）的快捷引用，用于视频切换时直接更新 Bindless 槽。
+		// 由 LoadSceneForRendering 在 CreateGlobalDescriptorSet 之后写入。
+		VkDescriptorSet m_VideoBindlessDescriptorSet = VK_NULL_HANDLE;
+
 		//保存全局的一些texture数据
 		VansTexture* m_PreConvDiffuse = nullptr;
 

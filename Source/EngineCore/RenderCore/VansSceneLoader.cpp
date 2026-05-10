@@ -99,8 +99,31 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 
 	// 准备 GPU 端资源
 	device->PreparePBRMaterialData();
+
+	// ── VideoComponent Bindless 槽绑定（必须在 PreparePBRMaterialData 之后执行）──
+	// PreparePBRMaterialData 会为每个 EmissiveMaterial 分配 m_MaterialIndex。
+	// 此处遍历场景对象，将拥有 EmissiveMaterial 视频的对象上的 VideoComponent
+	// 绑定到对应的 Bindless 槽位，以便运行时 SwitchSource 可直接更新 GPU 描述符。
+	for (auto* obj : m_SceneObjects)
+	{
+		auto* videoComp  = obj->GetComponent<VansScriptVideoComponent>();
+		auto* renderComp = obj->GetComponent<VansScriptRenderComponent>();
+		if (!videoComp || !renderComp || !renderComp->m_RenderNode || !renderComp->m_RenderNode->m_Material)
+			continue;
+		auto* emissiveMat = dynamic_cast<VansEmissiveMaterial*>(renderComp->m_RenderNode->m_Material);
+		if (!emissiveMat || emissiveMat->m_VideoName.empty() || emissiveMat->m_MaterialIndex < 0)
+			continue;
+		const int kSlotsPerMat = 5;
+		videoComp->m_BindlessFirstSlot  = emissiveMat->m_MaterialIndex * kSlotsPerMat;
+		videoComp->m_MaterialManagerRef = &m_MaterialManager;
+		VANS_LOG("[LoadSceneForRendering] VideoComponent '" << obj->m_ObjectName
+			<< "' Bindless 槽 " << videoComp->m_BindlessFirstSlot
+			<< "~" << videoComp->m_BindlessFirstSlot + kSlotsPerMat - 1 << " 已绑定");
+	}
 	device->PrepareInstanceTransformData();
 	CreateGlobalDescriptorSet(device->GetLogicDevice());
+	// 将 Global Descriptor Set（Set 0）同步到 MaterialManager，供视频切换时直接更新 Bindless 槽
+	m_MaterialManager.m_VideoBindlessDescriptorSet = m_GlobalDescriptorSet;
 	// Write TileLight SSBOs (created during BeforeRendering) into global Set 0 bindings 9/10.
 	UpdateGlobalTileLightDescriptors();
 	CreateNodeDescriptorSets();
@@ -1844,28 +1867,6 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 obj->AddComponent(rc);
                 obj->m_TransformID = rn->m_TransformID;
 
-                // ── 自发光材质携带视频时，自动创建 VideoComponent ──────────────────────
-                // 若渲染节点的材质是 VansEmissiveMaterial 且绑定了视频，
-                // 在该对象上创建 Video 组件，使播放控制统一通过组件接口暴露。
-                if (rn->m_Material && obj->GetComponent<VansScriptVideoComponent>() == nullptr)
-                {
-                    auto* emissiveMat = dynamic_cast<VansEmissiveMaterial*>(rn->m_Material);
-                    if (emissiveMat && !emissiveMat->m_VideoName.empty())
-                    {
-                        VansVideoTexture* videoTex = m_VideoManager.Get(emissiveMat->m_VideoName);
-                        if (videoTex)
-                        {
-                            auto* videoComp = new VansScriptVideoComponent();
-                            videoComp->m_VideoName    = emissiveMat->m_VideoName;
-                            videoComp->m_VideoTex     = videoTex;
-                            videoComp->m_VideoManager = &m_VideoManager;
-                            obj->AddComponent(videoComp);
-                            VANS_LOG("[LoadSceneObjects] 自发光对象 '" << obj->m_ObjectName
-                                << "' 自动创建 VideoComponent '" << emissiveMat->m_VideoName << "'");
-                        }
-                    }
-                }
-
                 // Collect parent link if present
                 if (renderJson.contains("parent"))
                 {
@@ -2124,23 +2125,8 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                     VansVideoTexture* videoTex = m_VideoManager.Get(emissiveVideoName);
                     if (videoTex != nullptr)
                     {
-                        // 创建或重用视频组件
-                        VansScriptVideoComponent* videoComp = obj->GetComponent<VansScriptVideoComponent>();
-                        if (videoComp == nullptr)
-                        {
-                            videoComp = new VansScriptVideoComponent();
-                            videoComp->m_VideoName    = emissiveVideoName;
-                            videoComp->m_VideoTex     = videoTex;
-                            videoComp->m_VideoManager = &m_VideoManager;
-                            obj->AddComponent(videoComp);
-                        }
-                        else if (videoComp->m_VideoManager == nullptr)
-                        {
-                            videoComp->m_VideoManager = &m_VideoManager;
-                        }
-
-                        // 面光源仅持有视频组件引用，不关心播放参数
-                        rlComp->m_VideoComponent = videoComp;
+                        // VideoComponent 只由显式 "video" JSON 组件创建；
+                        // rlComp->m_VideoComponent 由每对象处理末尾的后处理块统一绑定。
 
                         // 激活 TextureSlot：使着色器进入 RECT_LIGHT_EMISSIVE_ENABLED 分支
                         m_LightManager.GetRectLights()[idx].m_TextureSlot = static_cast<float>(idx);
@@ -2288,11 +2274,10 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
 
         // ── Video component（显式挂载）────────────────────────────────────
         // JSON 格式：{ "video": { "source": "<resource.json 中注册的名称>" } }
-        // 亦可由 emissive 材质和面光源在加载时自动创建；此处处理显式声明的情况。
+        // VideoComponent 只由此处显式创建；emissive 材质和面光源不再自动创建。
         if (components.contains("video"))
         {
             std::string videoName = components["video"]["source"].get<std::string>();
-            // 若同名 VideoComponent 已由 emissive 或 rect_light 自动创建，跳过以免重复
             if (obj->GetComponent<VansScriptVideoComponent>() == nullptr)
             {
                 VansVideoTexture* videoTex = m_VideoManager.Get(videoName);

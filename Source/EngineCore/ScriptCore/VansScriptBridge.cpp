@@ -1105,6 +1105,12 @@ void VansInitEngineBridge()
 		if (c && c->m_VideoTex) c->m_VideoTex->Pause();
 	};
 
+	s_EngineBridge.videoStop = [](void* comp)
+	{
+		auto* c = AsVideoComp(comp);
+		if (c && c->m_VideoTex) c->m_VideoTex->Stop();
+	};
+
 	s_EngineBridge.videoIsPlaying = [](void* comp) -> bool
 	{
 		auto* c = AsVideoComp(comp);

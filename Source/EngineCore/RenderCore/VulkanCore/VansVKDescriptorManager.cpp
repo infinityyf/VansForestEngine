@@ -18,7 +18,9 @@ void VansGraphics::VansVKDescriptorManager::CreateDescriptorPool(bool free_indiv
 	{
 		 VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 		 nullptr,
-		 free_individual_sets ? VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT : 0,
+		 // 注意：必须包含 UPDATE_AFTER_BIND_BIT，以支持全局 bindless 纹理数组在 GPU 执行期间更新
+		 (free_individual_sets ? VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT : 0u)
+		     | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
 		 m_MaxSetsCount,
 		 static_cast<uint32_t>(m_DescriptorPoolSizes.size()),
 		 m_DescriptorPoolSizes.data()
@@ -76,6 +78,34 @@ bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayout(const std::
 	if (VK_SUCCESS != result) 
 	{
 		VANS_LOG_ERROR("Could not create a layout for descriptor sets.");
+		return false;
+	}
+	return true;
+}
+
+bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayoutWithFlags(
+	const std::vector<VkDescriptorSetLayoutBinding>& bindings,
+	const std::vector<VkDescriptorBindingFlags>&     bindingFlags,
+	VkDescriptorSetLayoutCreateFlags                 layoutFlags,
+	VkDescriptorSetLayout&                           descriptor_set_layout)
+{
+	// bindingFlags 长度须与 bindings 一致
+	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{};
+	flagsInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+	flagsInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
+	flagsInfo.pBindingFlags = bindingFlags.data();
+
+	VkDescriptorSetLayoutCreateInfo layoutCI{};
+	layoutCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutCI.pNext        = &flagsInfo;
+	layoutCI.flags        = layoutFlags;
+	layoutCI.bindingCount = static_cast<uint32_t>(bindings.size());
+	layoutCI.pBindings    = bindings.data();
+
+	VkResult result = vkCreateDescriptorSetLayout(m_LogicalDevice, &layoutCI, nullptr, &descriptor_set_layout);
+	if (VK_SUCCESS != result)
+	{
+		VANS_LOG_ERROR("Could not create descriptor set layout with binding flags.");
 		return false;
 	}
 	return true;
@@ -220,5 +250,26 @@ void VansGraphics::VansVKDescriptorManager::UpdateDescriptorSets()
 	}
 
 	vkUpdateDescriptorSets(m_LogicalDevice, static_cast<uint32_t>(write_descriptors.size()), write_descriptors.data(), static_cast<uint32_t>(copy_descriptors.size()), copy_descriptors.data());
+}
+
+void VansGraphics::VansVKDescriptorManager::DirectUpdateImageDescriptors(
+	VkDescriptorSet dstSet,
+	uint32_t        binding,
+	uint32_t        firstElement,
+	const std::vector<VkDescriptorImageInfo>& imageInfos,
+	VkDescriptorType type)
+{
+	if (dstSet == VK_NULL_HANDLE || imageInfos.empty())
+		return;
+
+	VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+	write.dstSet          = dstSet;
+	write.dstBinding      = binding;
+	write.dstArrayElement = firstElement;
+	write.descriptorCount = static_cast<uint32_t>(imageInfos.size());
+	write.descriptorType  = type;
+	write.pImageInfo      = imageInfos.data();
+
+	vkUpdateDescriptorSets(m_LogicalDevice, 1, &write, 0, nullptr);
 }
 

@@ -190,6 +190,15 @@ namespace VansGraphics
 		//inputattachemnt则是之前的attachemtn作为输入，通过subpass input在shader中使用
 
 		bool CreateDesciptorSetLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings, VkDescriptorSetLayout& descriptor_set_layout);
+
+		// 支持 per-binding 标志位的布局创建接口，用于需要 UPDATE_AFTER_BIND 的 bindless 数组。
+		// bindingFlags 长度须与 bindings 相同，不需要特殊标志的 binding 填 0。
+		// layoutFlags 通常为 VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT。
+		bool CreateDesciptorSetLayoutWithFlags(
+			const std::vector<VkDescriptorSetLayoutBinding>& bindings,
+			const std::vector<VkDescriptorBindingFlags>&     bindingFlags,
+			VkDescriptorSetLayoutCreateFlags                 layoutFlags,
+			VkDescriptorSetLayout&                           descriptor_set_layout);
 	
 		void DestroyDescriptorSetLayout(VkDescriptorSetLayout& descriptor_set_layout);
 
@@ -198,5 +207,15 @@ namespace VansGraphics
 		bool DestroyDescriptorSet(std::vector<VkDescriptorSet>& descriptor_sets);
 
 		void UpdateDescriptorSets();
+
+		// 立即更新已存在的描述符集中的指定 Image 槽位，无需通过批处理队列。
+		// 用于运行时切换（如视频源切换）。
+		// 目标描述符集须使用 VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT 创建，
+		// 以确保在 GPU 执行期间更新是合法的 Vulkan 操作。
+		void DirectUpdateImageDescriptors(VkDescriptorSet dstSet,
+		                                  uint32_t        binding,
+		                                  uint32_t        firstElement,
+		                                  const std::vector<VkDescriptorImageInfo>& imageInfos,
+		                                  VkDescriptorType type);
 	};
 }

@@ -12,6 +12,14 @@
 #include <fstream>
 #include <filesystem>
 #include <vector>
+#include <algorithm>
+#include <unordered_map>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 namespace VansRuntime
 {
@@ -148,89 +156,162 @@ VansNoesisFontProvider::VansNoesisFontProvider(
     , m_PathResolver(pathResolver)
 {}
 
-Noesis::FontSource VansNoesisFontProvider::MatchFont(
-    const Noesis::Uri&   baseUri,
-    const char*          familyName,
-    Noesis::FontWeight&  weight,
-    Noesis::FontStretch& stretch,
-    Noesis::FontStyle&   style)
+// ── static 工具 ───────────────────────────────────────────────────────
+
+// compact stem: 去扩展名 → 小写 → 去空格
+// "Segoe UI Bold.ttf" → "segoeuibold"
+std::string VansNoesisFontProvider::MakeCompactStem(const std::string& filename)
 {
-    Noesis::FontSource result {};
-
-    // 1. 先查项目 UI/Fonts/ 目录
-    const auto& dirs = m_ProjectManager->GetConfig().assetDirectories;
-    auto it = dirs.find("ui");
-    if (it != dirs.end())
-    {
-        const std::string projectFontDir =
-            m_PathResolver->Resolve(it->second + "/Fonts");
-        if (TryLoadFontFromDir(projectFontDir, familyName, result))
-        {
-            return result;
-        }
-    }
-
-    // 2. 再查引擎 EngineAssets/UI/Fonts/ 目录
-    const std::string engineFontDir =
-        m_PathResolver->GetEngineRoot() + "EngineAssets/UI/Fonts";
-    TryLoadFontFromDir(engineFontDir, familyName, result);
-
-    (void)weight; (void)stretch; (void)style; (void)baseUri;
-    return result;
+    auto dotPos  = filename.rfind('.');
+    std::string stem = (dotPos != std::string::npos) ? filename.substr(0, dotPos) : filename;
+    std::string out;
+    out.reserve(stem.size());
+    for (char c : stem) if (c != ' ') out += (char)tolower(c);
+    return out;
 }
 
-bool VansNoesisFontProvider::FamilyExists(const Noesis::Uri& /*baseUri*/,
-                                           const char* /*familyName*/)
+// 生成 family 查找键列表（原小写 + 紧凑形式）
+std::vector<std::string> VansNoesisFontProvider::MakeFamilyKeys(const char* familyName)
 {
-    // TODO: 实现字体族存在性检查
-    return false;
+    std::string lower = familyName;
+    for (auto& c : lower) c = (char)tolower(c);
+
+    std::string compact;
+    compact.reserve(lower.size());
+    for (char c : lower) if (c != ' ') compact += c;
+
+    std::vector<std::string> keys;
+    keys.push_back(lower);
+    if (compact != lower) keys.push_back(compact);
+    return keys;
 }
 
-bool VansNoesisFontProvider::TryLoadFontFromDir(
-    const std::string&  fontDir,
-    const char*         familyName,
-    Noesis::FontSource& outSource)
-{
-    if (!std::filesystem::is_directory(fontDir))
-    {
-        return false;
-    }
+// ── 目录扫描（懒加载，每目录扫描一次）────────────────────────────────
 
-    // 按字体族名（familyName）在目录中查找 .ttf / .otf 文件
-    for (const auto& entry : std::filesystem::directory_iterator(fontDir))
+void VansNoesisFontProvider::ScanDirIfNeeded(const std::string& dir) const
+{
+    auto& cache = m_DirCache[dir];
+    if (cache.scanned) return;
+    cache.scanned = true;
+
+    if (!std::filesystem::is_directory(dir)) return;
+
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
     {
         const auto ext = entry.path().extension().string();
-        if (ext != ".ttf" && ext != ".otf" && ext != ".ttc")
-        {
-            continue;
-        }
+        if (ext != ".ttf" && ext != ".otf" && ext != ".ttc") continue;
 
         const std::string filename = entry.path().filename().string();
-        // 简单启发式：文件名中包含 familyName（不区分大小写）
-        std::string lowerFilename = filename;
-        std::string lowerFamily   = familyName;
-        for (auto& c : lowerFilename) c = (char)tolower(c);
-        for (auto& c : lowerFamily)   c = (char)tolower(c);
+        const std::string stem     = MakeCompactStem(filename);
+        cache.stemToPath[stem]     = entry.path().string();
+    }
+}
 
-        if (lowerFilename.find(lowerFamily) != std::string::npos)
+std::vector<std::string> VansNoesisFontProvider::BuildSearchDirs() const
+{
+    std::vector<std::string> dirs;
+
+    const auto& assetDirs = m_ProjectManager->GetConfig().assetDirectories;
+    auto it = assetDirs.find("ui");
+    if (it != assetDirs.end())
+        dirs.push_back(m_PathResolver->Resolve(it->second + "/Fonts"));
+
+    dirs.push_back(m_PathResolver->GetEngineRoot() + "EngineAssets/UI/Fonts");
+
+#if defined(_WIN32)
+    wchar_t winDir[MAX_PATH] = {};
+    if (GetWindowsDirectoryW(winDir, MAX_PATH) > 0)
+    {
+        const std::filesystem::path sysFontDir =
+            std::filesystem::path(winDir) / L"Fonts";
+        dirs.push_back(sysFontDir.string());
+    }
+#endif
+
+    return dirs;
+}
+
+const std::string& VansNoesisFontProvider::ResolveFamilyPath(const char* familyName) const
+{
+    std::string lowerFamily = familyName;
+    for (auto& c : lowerFamily) c = (char)tolower(c);
+
+    auto cached = m_FamilyPathCache.find(lowerFamily);
+    if (cached != m_FamilyPathCache.end()) return cached->second;
+
+    const auto keys = MakeFamilyKeys(familyName);
+    const auto dirs = BuildSearchDirs();
+
+    for (const auto& dir : dirs)
+    {
+        ScanDirIfNeeded(dir);
+
+        const auto& dirCache = m_DirCache[dir];
+
+        for (const auto& key : keys)
         {
-            auto buffer = ReadFileToBuffer(entry.path().string());
-            if (!buffer.empty())
-            {
-                uint8_t* data  = new uint8_t[buffer.size()];
-                const uint32_t sz = static_cast<uint32_t>(buffer.size());
-                memcpy(data, buffer.data(), sz);
+            // 精确 compact-stem 命中
+            auto exactIt = dirCache.stemToPath.find(key);
+            if (exactIt != dirCache.stemToPath.end())
+                return m_FamilyPathCache[lowerFamily] = exactIt->second;
 
-                outSource.filename  = filename.c_str();
-                outSource.file      = Noesis::Ptr<Noesis::Stream>(
-                    *new Noesis::MemoryStream(data, sz));
-                outSource.faceIndex = 0;
-                return true;
+            // 前缀命中（处理 Bold/Italic 变体，如 "segoeui" 匹配 "segoeuibold"）
+            for (const auto& [stem, path] : dirCache.stemToPath)
+            {
+                if (stem.size() >= key.size() &&
+                    stem.compare(0, key.size(), key) == 0)
+                {
+                    return m_FamilyPathCache[lowerFamily] = path;
+                }
             }
         }
     }
 
-    return false;
+    return m_FamilyPathCache[lowerFamily] = std::string{};
+}
+
+// ── Noesis FontProvider 接口 ──────────────────────────────────────────
+
+Noesis::FontSource VansNoesisFontProvider::MatchFont(
+    const Noesis::Uri&   /*baseUri*/,
+    const char*          familyName,
+    Noesis::FontWeight&  /*weight*/,
+    Noesis::FontStretch& /*stretch*/,
+    Noesis::FontStyle&   /*style*/)
+{
+    Noesis::FontSource result{};
+
+    const std::string& path = ResolveFamilyPath(familyName);
+    if (path.empty()) return result;
+
+    // 字体数据缓存：避免每次 MatchFont 重新读磁盘
+    auto& data = m_FontDataCache[path];
+    if (data.empty())
+    {
+        data = ReadFileToBuffer(path);
+        if (data.empty())
+        {
+            m_FontDataCache.erase(path);
+            return result;
+        }
+    }
+
+    result.file = Noesis::Ptr<Noesis::Stream>(
+        *new Noesis::MemoryStream(data.data(), static_cast<uint32_t>(data.size())));
+
+    const std::string filename = std::filesystem::path(path).filename().string();
+    m_FilenameCache.push_back(filename);
+    result.filename  = m_FilenameCache.back().c_str();
+    result.faceIndex = 0;
+
+    VANS_LOG("[NoesisFont] MatchFont '" << familyName << "' -> '" << path << "'");
+    return result;
+}
+
+bool VansNoesisFontProvider::FamilyExists(const Noesis::Uri& /*baseUri*/,
+                                           const char* familyName)
+{
+    return !ResolveFamilyPath(familyName).empty();
 }
 
 } // namespace VansRuntime
