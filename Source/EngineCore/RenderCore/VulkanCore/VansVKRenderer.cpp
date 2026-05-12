@@ -191,7 +191,14 @@ namespace VansGraphics
 			}
 
 			{
-				VANS_GPU_SCOPE(cmd, "Post Processing");
+				VANS_GPU_SCOPE(cmd, "GBuffer Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansGBufferPass, cmd, m_globalRenderStateData);
+				DrawSceneGBuffer(renderPassManager, m_VansVKCommandBuffer);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+
+			{
+				VANS_GPU_SCOPE(cmd, "Compute Between GBuffer And Deferred");
 				// ★ TileLight Build（依赖相机矩阵 + 光源 SSBO，在 UpdateHZB 前完成）
 				BuildTileLightLists(m_VansVKCommandBuffer);
 				UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
@@ -215,23 +222,21 @@ namespace VansGraphics
 			{
 				VANS_GPU_SCOPE(cmd, "Deferred Pass");
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-				DrawSceneDeferred(renderPassManager, m_VansVKCommandBuffer);
+				DrawSceneDeferredPost(renderPassManager, m_VansVKCommandBuffer);
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 		}
 		else
 		{
-			// ── Async compute: SSR + VolumetricFog on compute queue ──────────
-			// Record and submit COMPUTE FIRST so the GPU starts it before shadow
-			// even reaches the graphics queue, guaranteeing true overlap.
+			// ── Async compute 兼容路径 ────────────────────────────────────────
+			// GBuffer 拆分后，SSR / Fog 等依赖本帧 GBuffer，不能再提前到
+			// GBuffer 之前的 compute queue 执行。这里仅提交一个事件保持旧
+			// present / wait 路径可用，真正的 frame-dependent compute 在
+			// GBuffer pass 之后的 graphics command buffer 中执行。
 			m_VansVKCommandBuffer.ResetEvent(m_AsyncComputeCompletedEvent);
 
-			// Submit 1: SSR + VolumetricFog — queued to compute queue before shadow is even submitted
 			m_VansVKComputeCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-
-			UpdateSSR(renderPassManager, m_VansVKComputeCommandBuffer);
 			m_VansVKComputeCommandBuffer.SetEvent(m_AsyncComputeCompletedEvent, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-
 			m_VansVKComputeCommandBuffer.EndCommandBufferRecord();
 
 			VansVKCommandBuffer::SubmitCommands(
@@ -268,11 +273,6 @@ namespace VansGraphics
 				DrawMotionVectorPass(renderPassManager, cmd);
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
-			// ★ TileLight Build（依赖相机矩阵 + 光源 SSBO，在 UpdateHZB 前完成）
-			BuildTileLightLists(m_VansVKCommandBuffer);			UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
-			UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
-			UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
-			UpdateRayTracing(m_VansVKCommandBuffer);
 
 			// Upload cloth simulation results from staging buffers to device-local vertex buffers
 			m_Scene->RecordClothVertexUploads(cmd);
@@ -280,8 +280,31 @@ namespace VansGraphics
 			// Dispatch vegetation bone-sim + skinning compute passes
 			m_Scene->RecordVegetationCompute(m_VansVKCommandBuffer);
 
+			{
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansGBufferPass, cmd, m_globalRenderStateData);
+				DrawSceneGBuffer(renderPassManager, m_VansVKCommandBuffer);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+
+			// ★ TileLight Build（依赖相机矩阵 + 光源 SSBO，在 UpdateHZB 前完成）
+			BuildTileLightLists(m_VansVKCommandBuffer);
+			UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
+			UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
+			UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
+			UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
+			UpdateRayTracing(m_VansVKCommandBuffer);
+
+			VkMemoryBarrier computeToFragmentBarrier = {};
+			computeToFragmentBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+			computeToFragmentBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			computeToFragmentBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			m_VansVKCommandBuffer.PipelineBarrier(
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				{ computeToFragmentBarrier });
+
 			renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-			DrawSceneDeferred(renderPassManager, m_VansVKCommandBuffer);
+			DrawSceneDeferredPost(renderPassManager, m_VansVKCommandBuffer);
 			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 		}
 
@@ -428,14 +451,17 @@ namespace VansGraphics
 		m_Scene->DrawPostProcessNodes();
 	}
 
-	void VansVKDevice::DrawSceneDeferred(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+	void VansVKDevice::DrawSceneGBuffer(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
-		VkCommandBuffer& cmd = commandBuffer.GetVKCommandBuffer();
-
 		m_Scene->DrawOpaqueNodes();
 		m_Scene->DrawTerrainNode();
 		m_Scene->DrawVegetationNode();
-		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
+	}
+
+	void VansVKDevice::DrawSceneDeferredPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+	{
+		VkCommandBuffer& cmd = commandBuffer.GetVKCommandBuffer();
+
 		m_Scene->DrawScreenSpaceFeatureNode();
 
 		if (m_UseAsyncCompute)

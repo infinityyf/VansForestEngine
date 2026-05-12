@@ -2,7 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 // ============================================================================
-// Fog Light Injection — Compute Shader  (frustum-aligned, temporal AA)
+// Fog Light Injection — Compute Shader  (frustum-aligned)
 //
 // For each voxel in the frustum-aligned 3D grid:
 //   1. Apply sub-voxel Z-jitter (Halton sequence) for temporal super-sampling
@@ -10,9 +10,7 @@
 //   3. Query static fog density from the scene's fog box
 //   4. Evaluate shadow-map visibility from the directional light
 //   5. Compute Henyey-Greenstein phase term
-//   6. Reproject world position to previous frame's frustum UVW
-//   7. Blend current result with history (exponential moving average ~5%)
-//   8. Write (inscatter × density, density) into the 3D voxel texture
+//   6. Write current-frame (inscatter × density, density) into the 3D voxel texture
 // ============================================================================
 
 #include "../Common/Common.glsl"
@@ -308,51 +306,34 @@ void main()
         current = vec4(totalInscatter * d, d);
     }
 
-    // ---------------------------------------------------------------------------
-    // Temporal reprojection: blend with previous frame's data
-    // ---------------------------------------------------------------------------
-    vec4 lastUVW = WorldToLastFrameUVW(worldPos, uVolume.volumeNear, uVolume.volumeFar,
-                                        vec2(gridSize.xy) * float(TILE_SIZE),
-                                        uVolume.slicePower);
-    vec4 history = vec4(0.0);
-    float blendFactor = 0.05;  // 5% current, 95% history
+    // ── Temporal accumulation ────────────────────────────────────────────────
+    // Reproject the current voxel's world position into the previous frame's
+    // frustum-aligned UV and blend with the stored history.  This converts the
+    // per-frame Halton sub-voxel jitter into effective temporal super-sampling:
+    // each new frame contributes one new jittered sample while the exponential
+    // moving average suppresses noise over time.
+    //
+    // WorldToLastFrameUVW uses LastViewMatrix (not the fog near/far) for the
+    // view-space Z, so the depth-slice mapping is physically correct regardless
+    // of camera near/far settings.
+    ivec3 gs          = gridSize;
+    vec2  tileAligned = vec2(gs.xy) * float(TILE_SIZE);
+    vec4  lastUVW     = WorldToLastFrameUVW(worldPos,
+                                             uVolume.volumeNear, uVolume.volumeFar,
+                                             tileAligned,
+                                             uVolume.slicePower);
 
-    if (lastUVW.w > 0.5)
+    bool historyValid = (lastUVW.w > 0.5);
+    if (historyValid)
     {
-        history = texture(s_History, lastUVW.xyz);
+        vec4 history = texture(s_History, lastUVW.xyz);
 
-        // Neighbourhood clamp: instead of a hard binary jump (0.05 → 0.5)
-        // that produces visible flickering when the difference oscillates
-        // around the threshold, use a smooth ramp so the blend factor
-        // transitions continuously with the magnitude of the difference.
-        vec4 diff    = abs(history - current);
-        float maxDiff = max(max(diff.r, diff.g), max(diff.b, diff.a));
-        // Smoothly increase blend from 5% toward 80% as diff climbs from 1.0 to 3.0.
-        blendFactor = mix(0.05, 0.8, smoothstep(1.0, 3.0, maxDiff));
-
-        // P1 修复：相机移动感知 —— 视锥对齐体素网格每帧跟随相机重建，
-        // 快速移动时历史体素来自不同世界位置，继续用 95% 历史权重会导致约 20 帧滞后。
-        // 从 LastViewMatrix 反算上一帧相机世界位置：
-        //   ViewMatrix = [R^T | -R^T*p]，所以 p_last = (R^T)^{-1} * (-tx,-ty,-tz)
-        //                               = R * (-LastViewMatrix[3].xyz)
-        //                               = transpose(mat3(LastViewMatrix)) * (-LastViewMatrix[3].xyz)
-        vec3 lastCamPos  = transpose(mat3(LastViewMatrix)) * (-LastViewMatrix[3].xyz);
-        float motionDist = length(cameraPosition.xyz - lastCamPos);
-        // 静止时 motionBlend=0（保持 blendFactor=0.05），
-        // 移动速度 ≥0.5m/frame 时 motionBlend→1（blendFactor 被拉至 0.8，快速响应）。
-        float motionBlend = smoothstep(0.0, 0.5, motionDist);
-        blendFactor = max(blendFactor, motionBlend * 0.8);
-    }
-    else
-    {
-        // Reprojection failed (camera turned too much, disocclusion, etc.)
-        blendFactor = 1.0;
+        // Blend weight: 0.9 gives ~10-frame effective averaging.
+        // For the first frame (FrameIndex < 1.5) or invalid history we use
+        // the current sample directly so there is no ghost on scene load.
+        float blend = (FrameIndex < 1.5) ? 0.0 : 0.9;
+        current = mix(current, history, blend);
     }
 
-    // First few frames: bias toward current to fill the volume quickly
-    if (frameIdx < 8)
-        blendFactor = max(blendFactor, 1.0 / float(frameIdx + 1));
-
-    vec4 result = mix(history, current, blendFactor);
-    imageStore(i_VoxelGrid, coord, result);
+    imageStore(i_VoxelGrid, coord, current);
 }

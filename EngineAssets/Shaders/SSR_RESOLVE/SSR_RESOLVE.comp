@@ -90,9 +90,19 @@ void main()
             vec2 neighborHituv = neighborHitInfo.xy;
             ivec2 hitPixel = clamp(ivec2(neighborHituv * ScreenParams.xy), ivec2(0), screenSize - 1);
 
-            //采样color
-            color = texelFetch(inputColor, hitPixel, 0).xyz;
+            // inputColor 是上一帧 scene color；只有采样 color 时使用上一帧 UV。
             vec3 hitPosition = texelFetch(inputPosition, hitPixel, 0).xyz;
+            vec4 lastClip = LastProjectionMatrix * LastViewMatrix * vec4(hitPosition, 1.0);
+            lastClip /= lastClip.w;
+            lastClip.y = -lastClip.y;
+            vec2 lastColorUV = lastClip.xy * 0.5 + 0.5;
+            bool colorHistoryValid = all(greaterThanEqual(lastColorUV, vec2(0.0))) &&
+                                     all(lessThanEqual(lastColorUV, vec2(1.0)));
+            if (!colorHistoryValid)
+                continue;
+
+            ivec2 colorPixel = clamp(ivec2(lastColorUV * ScreenParams.xy), ivec2(0), screenSize - 1);
+            color = texelFetch(inputColor, colorPixel, 0).xyz;
             lightDirection = normalize(hitPosition - position);
 
             // Fade color near screen edges to avoid hard reflection cutoff

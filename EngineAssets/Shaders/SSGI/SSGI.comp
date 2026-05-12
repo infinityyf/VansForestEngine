@@ -132,7 +132,22 @@ void main()
 
         if (facingRay)
         {
-            irradiance = texture(inputColor, hitUV).rgb;
+            // inputColor 是上一帧 scene color（m_ColorImage 在 SSGI 运行时尚未被本帧
+            // deferred pass 写入）。hitUV 是当帧 HiZ 追踪得到的屏幕 UV，相机/物体
+            // 运动时相同世界坐标在上一帧可能对应不同屏幕位置，直接用 hitUV 采样会错。
+            // 正确做法：取命中点的当帧世界坐标，通过上一帧矩阵重投影到上一帧 UV，
+            // 再采样 inputColor（与 SSR_RESOLVE 的处理完全对称）。
+            vec3 hitWorldPos = texture(inputPosition, hitUV).xyz;
+            vec4 lastClip    = LastProjectionMatrix * LastViewMatrix * vec4(hitWorldPos, 1.0);
+            lastClip        /= lastClip.w;
+            lastClip.y       = -lastClip.y;
+            vec2 lastColorUV = lastClip.xy * 0.5 + 0.5;
+            bool colorValid  = all(greaterThanEqual(lastColorUV, vec2(0.0))) &&
+                               all(lessThanEqual(lastColorUV, vec2(1.0)));
+            if (colorValid)
+                irradiance = texture(inputColor, lastColorUV).rgb;
+            else
+                irradiance = EvaluateSHFallback(startPosition, normal, dir);
         }
         else
         {

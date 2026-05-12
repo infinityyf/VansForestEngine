@@ -23,13 +23,8 @@ void main()
     vec3 position = texelFetch(inputPosition, pixelCoord, 0).xyz;
     float roughness = texelFetch(inputRoughness, pixelCoord, 0).a;
 
-    // SSR 使用上一帧 GBuffer / HIZ，视线向量也需要用上一帧相机位置。
-    // 从 LastViewMatrix 提取：对于标准 View 矩阵 V = [R | -R*camPos]，
-    // camPos = -R^T * t，其中 t = V[3].xyz（第四列）。
-    vec3 lastCameraPosition = -(transpose(mat3(LastViewMatrix)) * LastViewMatrix[3].xyz);
-
-    //计算视线向量（基于上一帧相机位置与上一帧世界空间位置）
-    vec3 viewDirection = normalize(lastCameraPosition - position);
+    // GBuffer / HIZ 已在当前帧 GBuffer pass 后生成，SSR trace 必须使用当前帧相机空间。
+    vec3 viewDirection = normalize(cameraPosition.xyz - position);
     vec3 tracePosition = position;
     vec4 traceHitInfo = vec4(0.0);
     vec4 tracePDFInfo = vec4(0.0);
@@ -88,12 +83,12 @@ void main()
     // thicknessThreshold 为线性深度厚度阈值（米），决定视为透明穿透还是实体命中
     vec3 rayOrigin = position + normal * SSR_START_BIAS;
 
-    // SSR HIZ 和 GBuffer 均来自上一帧，追踪时必须使用上一帧矩阵投影到上一帧屏幕空间，
-    // 否则射线原点与 HIZ 所在的空间不匹配，导致整体偏移一帧相机运动距离（错位闪烁）。
+    // SSR HIZ 和 GBuffer 均来自当前帧，追踪投影也必须使用当前帧矩阵。
+    // 只有 resolve 阶段采样上一帧 scene color 时才做 hit position → last-frame UV 重投影。
     HiZTraceResult traceResult = TraceHiZ_UV(
         inputHIZ,
-        LastViewMatrix,
-        LastProjectionMatrix,
+        ViewMatrix,
+        ProjectionMatrix,
         rayOrigin,
         traceDirection,
         FarPlane, // maxDistWorld: 尽量追踪到远裁剪面 / 屏幕边缘，避免固定距离导致远景反射范围缩小

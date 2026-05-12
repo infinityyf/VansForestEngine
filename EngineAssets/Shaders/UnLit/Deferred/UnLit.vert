@@ -65,11 +65,18 @@ void applySkinning(inout vec4 pos, inout vec3 norm, inout vec3 tan, inout vec3 b
     if (totalWeight < 0.0001)
         return;
 
-    pos    = skinMatrix * pos;
+    pos = skinMatrix * pos;
     mat3 skinMat3 = mat3(skinMatrix);
-    norm   = normalize(skinMat3 * norm);
-    tan    = normalize(skinMat3 * tan);
-    bitan  = normalize(skinMat3 * bitan);
+    // 使用长度检测代替直接 normalize，防止零向量（UV退化切线等情况）产生 NaN
+    vec3 sn = skinMat3 * norm;
+    vec3 st = skinMat3 * tan;
+    vec3 sb = skinMat3 * bitan;
+    float snLen = dot(sn, sn);
+    float stLen = dot(st, st);
+    float sbLen = dot(sb, sb);
+    norm  = snLen > 1e-8 ? sn * inversesqrt(snLen) : norm;
+    tan   = stLen > 1e-8 ? st * inversesqrt(stLen) : tan;
+    bitan = sbLen > 1e-8 ? sb * inversesqrt(sbLen) : bitan;
 }
 
 void main() 
@@ -91,9 +98,16 @@ void main()
 
     gl_Position  = VPMatrix * ModelMatrix * pos;
     mat3 normalMatrix = mat3(NormalMatrix);
-    normal_ws    = normalize(normalMatrix * n);
-    tangent_ws   = normalize(normalMatrix * t);
-    bitangent_ws = normalize(normalMatrix * bt);
+    // 防御性 normalize：当输入为零向量时提供合理的回退值，避免 NaN 写入 GBuffer
+    vec3 n_ws  = normalMatrix * n;
+    vec3 t_ws  = normalMatrix * t;
+    vec3 bt_ws = normalMatrix * bt;
+    float nl = dot(n_ws,  n_ws);
+    float tl = dot(t_ws,  t_ws);
+    float bl = dot(bt_ws, bt_ws);
+    normal_ws    = nl > 1e-8 ? n_ws  * inversesqrt(nl) : vec3(0.0, 0.0, 1.0);
+    tangent_ws   = tl > 1e-8 ? t_ws  * inversesqrt(tl) : vec3(1.0, 0.0, 0.0);
+    bitangent_ws = bl > 1e-8 ? bt_ws * inversesqrt(bl) : cross(normal_ws, tangent_ws);
 
     frag_uv        = uv;
     position_world = (ModelMatrix * pos).xyz;

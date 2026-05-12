@@ -553,16 +553,16 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 
 	VansVKDescriptorManager::GetInstance()->ResetState();
 
-	// Bindings 0-4: GBuffer subpass inputs
+	// Bindings 0-4: 独立 GBuffer pass 输出，Deferred 使用采样器读取。
 	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 		{
 			frameBufferInputDescriptorSets[0],
 			0, // Normal
 			0,
-			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					VK_NULL_HANDLE,
+					VansRenderPassManager::GetInstance()->GetNormal().GetSampler(),
 					VansRenderPassManager::GetInstance()->GetNormal().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
@@ -574,10 +574,10 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			frameBufferInputDescriptorSets[0],
 			1, // Gbuffer0
 			0,
-			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					VK_NULL_HANDLE,
+					VansRenderPassManager::GetInstance()->GetGbuffer0().GetSampler(),
 					VansRenderPassManager::GetInstance()->GetGbuffer0().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
@@ -589,10 +589,10 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			frameBufferInputDescriptorSets[0],
 			2, // Gbuffer1
 			0,
-			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					VK_NULL_HANDLE,
+					VansRenderPassManager::GetInstance()->GetGbuffer1().GetSampler(),
 					VansRenderPassManager::GetInstance()->GetGbuffer1().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
@@ -604,10 +604,10 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			frameBufferInputDescriptorSets[0],
 			3, // Gbuffer2
 			0,
-			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					VK_NULL_HANDLE,
+					VansRenderPassManager::GetInstance()->GetGbuffer2().GetSampler(),
 					VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}
@@ -619,10 +619,10 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 			frameBufferInputDescriptorSets[0],
 			4, // Depth
 			0,
-			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{
 				{
-					VK_NULL_HANDLE,
+					VansRenderPassManager::GetInstance()->GetDepth().GetSampler(),
 					VansRenderPassManager::GetInstance()->GetDepth().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				}

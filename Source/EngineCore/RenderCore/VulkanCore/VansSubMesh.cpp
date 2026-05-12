@@ -404,6 +404,27 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 			aiVector3D tangent(0, 0, 0), bitangent(0, 0, 0);
 			if (mesh->mTangents)   tangent   = mesh->mTangents[i];
 			if (mesh->mBitangents) bitangent = mesh->mBitangents[i];
+
+			// 当切线长度为零（UV退化或无切线数据）时，从法线重建正交切线参考系，
+			// 避免零向量传入 GPU 后在 normalize(skinMat3 * vec3(0)) 处产生 NaN。
+			if (tangent.SquareLength() < 1e-8f)
+			{
+				aiVector3D n = mesh->mNormals ? mesh->mNormals[i] : aiVector3D(0.f, 1.f, 0.f);
+				// 选取与 n 不平行的参考轴
+				aiVector3D up = (std::abs(n.y) < 0.999f) ? aiVector3D(0.f, 1.f, 0.f) : aiVector3D(1.f, 0.f, 0.f);
+				// tangent = cross(up, n)
+				tangent = aiVector3D(
+					up.y * n.z - up.z * n.y,
+					up.z * n.x - up.x * n.z,
+					up.x * n.y - up.y * n.x);
+				tangent.NormalizeSafe();
+				// bitangent = cross(n, tangent)
+				bitangent = aiVector3D(
+					n.y * tangent.z - n.z * tangent.y,
+					n.z * tangent.x - n.x * tangent.z,
+					n.x * tangent.y - n.y * tangent.x);
+			}
+
 			tangent = TransformDirection(transform, tangent);
 			bitangent = TransformDirection(transform, bitangent);
 			m_MeshRawData.emplace_back(FloatToHalf(tangent.x));

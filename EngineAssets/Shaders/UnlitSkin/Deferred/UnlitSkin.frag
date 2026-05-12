@@ -38,7 +38,7 @@ void main()
     vec3 albedo        = texture(skinAlbedoTexture, frag_uv).rgb;
     vec3 normal_sample = textureLod(skinNormalTexture, frag_uv, 0.0).rgb;
 
-    normal_sample.rg = normal_sample.rg * 2.0 - 1.0;
+    normal_sample = normal_sample * 2.0 - 1.0;
     normal_sample.rg *= 0.2;  // Scale normal strength down
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);

@@ -140,232 +140,9 @@ VansGraphics::VansRenderPassManager* VansGraphics::VansRenderPassManager::GetIns
 
 void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, const VkExtent2D& renderResolution)
 {
-	//设置Gbuffer的attachment描述符
-	std::vector<VkAttachmentDescription> attachments_descriptions =
-	{
-		//color， 用于defer shading的结果
-		{
-			0,
-			VK_FORMAT_R16G16B16A16_SFLOAT,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		},
-
-		//normal
-		{
-			0,
-			VK_FORMAT_R16G16B16A16_SFLOAT,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		},
-		//gbuffer0  SFLOAT：rgb=albedo/emissiveColor, w=roughness/emissiveIntensity (HDR>1 需要 SFLOAT)
-		{
-			0,
-			VK_FORMAT_R16G16B16A16_SFLOAT,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		},
-
-		//gbuffer1  SFLOAT：与 VkImage 格式保持一致，避免 Vulkan validation 报格式不匹配
-		{
-			0,
-			VK_FORMAT_R16G16B16A16_SFLOAT,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		},
-
-		//gbuffer2
-		{
-			0,
-			VK_FORMAT_R16G16B16A16_SFLOAT,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		},
-
-		//depth
-		{
-			0,
-			VK_FORMAT_D16_UNORM,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-		},
-
-		//color after post process
-		{
-			0,
-			VK_FORMAT_R8G8B8A8_SRGB,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,//第二个subpass输出，这里不直接present，后续还要后处理
-		},
-	};
-
-	VkAttachmentReference depth_stencil_attachment =
-	{
-		 5,
-		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-	};
-
-	std::vector<SubpassParameters> subpass_parameters =
-	{
-		// #0 subpass
-		// gbuffer
-		{
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			{},
-			{
-				{
-					1,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				},
-				{
-					2,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				},
-				{
-					3,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				},
-				{
-					4,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				}
-			},
-			{},
-			&depth_stencil_attachment,
-			{}
-		},
-		// #1 subpass
-		// shading
-		{
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			{
-				{
-					1,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				},
-				{
-					2,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				},
-				{
-					3,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				},
-				{
-					4,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				},
-				{
-					5,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			},
-			{
-				{
-					0,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				}
-			},
-			{},
-			& depth_stencil_attachment,
-			{}
-		},
-		// #2 subpass 
-		// post process
-		{
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			{
-				{
-					0,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			},
-			{
-				{
-					6,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				}
-			},
-			{},
-			nullptr,
-			{}
-		}
-	};
-
-	std::vector<VkSubpassDependency> subpass_dependencies =
-	{
-		 {
-			 0,
-			 1,
-			 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-			 VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
-			 VK_DEPENDENCY_BY_REGION_BIT
-		 },
-		 {
-			 1,
-			 2,
-			 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-			 VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
-			 VK_DEPENDENCY_BY_REGION_BIT
-		 }
-	};
-
-	m_VansRenderPass.m_ClearValues =
-	{
-		{ 0.0f, 0.0f, 0.0f, 1.0f },
-		{ 0.0f, 0.0f, 0.0f, 1.0f },
-		{ 0.0f, 0.0f, 0.0f, 0.0f },
-		{ 0.0f, 0.0f, 0.0f, 0.0f },
-		{ 0.0f, 0.0f, 0.0f, 0.0f },
-		{ 1.0f, 0 },
-		{ 0.0f, 0.0f, 0.0f, 1.0f },
-	};
-
 	VkExtent2D resolution = renderResolution;
-	m_VansRenderPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
 
-	//创建color,depth,GBuffers
-	//这里先创建renderpass,只是指定了各个attachment的状态，实际数据通过framebuffer来创建
-	
+	// 创建主渲染目标。RenderPass 已拆分，但 RT 仍集中在这里创建，避免其它 pass 依赖顺序变化。
 	m_ColorImage.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
@@ -400,7 +177,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
 		false,
 		false,
@@ -414,7 +191,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
 		false,
 		false,
@@ -506,19 +283,146 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 #endif
 
-	//framebuffer的image view数量和attachment 的数量需要一致
-	m_VansRenderPass.m_FrameBuffers.resize(1);
-	std::vector<VkImageView> image_views =
+	// GBuffer pass：只写本帧 GBuffer / Depth，结束后立刻允许 compute 读取。
+	std::vector<VkAttachmentDescription> gbufferAttachmentDescs =
 	{
-		m_ColorImage.GetImageView(),
-		m_NormalImage.GetImageView() ,
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_D16_UNORM, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+
+	VkAttachmentReference gbufferDepthAttachment = { 4, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+	std::vector<SubpassParameters> gbufferSubpassParams =
+	{
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{
+				{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+				{ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+				{ 2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+				{ 3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
+			},
+			{},
+			&gbufferDepthAttachment,
+			{}
+		}
+	};
+	std::vector<VkSubpassDependency> gbufferDependencies =
+	{
+		{
+			VK_SUBPASS_EXTERNAL,
+			0,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		},
+		{
+			0,
+			VK_SUBPASS_EXTERNAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		}
+	};
+	m_VansGBufferPass.m_ClearValues =
+	{
+		{ 0.0f, 0.0f, 0.0f, 1.0f },
+		{ 0.0f, 0.0f, 0.0f, 0.0f },
+		{ 0.0f, 0.0f, 0.0f, 0.0f },
+		{ 0.0f, 0.0f, 0.0f, 0.0f },
+		{ 1.0f, 0 },
+	};
+	m_VansGBufferPass.CreateRenderPass(logic_device, gbufferAttachmentDescs, gbufferSubpassParams, gbufferDependencies, resolution);
+	m_VansGBufferPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> gbufferViews =
+	{
+		m_NormalImage.GetImageView(),
 		m_GBufferImage0.GetImageView(),
 		m_GBufferImage1.GetImageView(),
 		m_GBufferImage2.GetImageView(),
-		m_DepthImage.GetImageView() ,
-		m_ColorAfterPostProcessImage.GetImageView()//surface.GetSwapChainImageView(swapChainIndex)
+		m_DepthImage.GetImageView()
 	};
-	m_VansRenderPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
+	m_VansGBufferPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansGBufferPass.m_RenderPass, gbufferViews, { resolution.width, resolution.height, 1 });
+
+	// Deferred/PostProcess pass：Subpass 0 写 lighting color，Subpass 1 做后处理。
+	std::vector<VkAttachmentDescription> deferredPostAttachmentDescs =
+	{
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_D16_UNORM, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+	VkAttachmentReference deferredDepthAttachment = { 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+	std::vector<SubpassParameters> deferredPostSubpassParams =
+	{
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{ { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } },
+			{},
+			&deferredDepthAttachment,
+			{}
+		},
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{ { 0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } },
+			{ { 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } },
+			{},
+			nullptr,
+			{}
+		}
+	};
+	std::vector<VkSubpassDependency> deferredPostDependencies =
+	{
+		{
+			VK_SUBPASS_EXTERNAL,
+			0,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_ACCESS_SHADER_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		},
+		{
+			0,
+			1,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		},
+		{
+			1,
+			VK_SUBPASS_EXTERNAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		}
+	};
+	m_VansRenderPass.m_ClearValues =
+	{
+		{ 0.0f, 0.0f, 0.0f, 1.0f },
+		{ 0.0f, 0.0f, 0.0f, 1.0f },
+		{ 1.0f, 0 },
+	};
+	m_VansRenderPass.CreateRenderPass(logic_device, deferredPostAttachmentDescs, deferredPostSubpassParams, deferredPostDependencies, resolution);
+	m_VansRenderPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> deferredPostViews =
+	{
+		m_ColorImage.GetImageView(),
+		m_ColorAfterPostProcessImage.GetImageView(),
+		m_DepthImage.GetImageView()
+	};
+	m_VansRenderPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, deferredPostViews, { resolution.width, resolution.height, 1 });
 
 	m_LogicDevice = logic_device;
 
@@ -1393,6 +1297,7 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_GBufferImage1.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage2.DestroyVulkanImage(m_LogicDevice);
 
+	m_VansGBufferPass.DestroyRenderPass(m_LogicDevice);
 	m_VansRenderPass.DestroyRenderPass(m_LogicDevice);
 	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
 	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);

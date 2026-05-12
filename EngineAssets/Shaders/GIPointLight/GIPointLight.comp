@@ -76,62 +76,50 @@ uint tea(uint val0, uint val1)
 
 vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal, vec3 origin, vec3 size)
 {
-    const float ACoeff[4] = {3.1415, 2.0943, 2.0943, 2.0943}; 
-    vec3 inDirectDiffuse = vec3(0);
-    vec3 uvw = (position_world - origin) / size;
+    ivec3 texSize = textureSize(SHRCoeff, 0);
+    vec3  texPos  = (position_world - origin) / size * vec3(texSize) - 0.5;
+    ivec3 base    = ivec3(floor(texPos));
+    vec3  frac    = texPos - floor(texPos);
 
-    // ivec3 texSize = textureSize(SHRCoeff, 0);
-    // vec3 texPos = uvw * vec3(texSize) - 0.5;
-    // ivec3 base = ivec3(floor(texPos));
-    // vec3 frac = texPos - floor(texPos);
+    vec3  colorSum  = vec3(0.0);
+    float weightSum = 0.0;
 
-    // float totalWeight = 0.0;
-    // for(int dz = 0; dz <= 1; dz++)
-    // for(int dy = 0; dy <= 1; dy++)
-    // for(int dx = 0; dx <= 1; dx++)
-    // {
-    //     ivec3 offset = ivec3(dx, dy, dz);
-    //     ivec3 samplePos = base + offset;
-    //     // Clamp to texture bounds
-    //     samplePos = clamp(samplePos, ivec3(0), texSize - 1);
-
-    //     vec3 sampleUVW = (vec3(samplePos) + 0.5) / vec3(texSize);
-    //     vec3 texelWorld = sampleUVW * size + origin;
-
-    //     float w = 1;//max(dot(normalize(texelWorld - position_world), normal), 0.0);
-
-    //     float distanceWeight = length(texelWorld - position_world) / size.x;
-
-    //     vec4 rCoeff = texelFetch(SHRCoeff, samplePos, 0);
-    //     vec4 gCoeff = texelFetch(SHGCoeff, samplePos, 0);
-    //     vec4 bCoeff = texelFetch(SHBCoeff, samplePos, 0);
-
-    //     vec3 tempDiffuse = vec3(0);
-    //     for(int i = 0; i < 4; i++)
-    //     {
-    //         float basis = SHBasis(i, normal);
-    //         tempDiffuse.r += rCoeff[i] * basis / PI;
-    //         tempDiffuse.g += gCoeff[i] * basis / PI;
-    //         tempDiffuse.b += bCoeff[i] * basis / PI;
-    //     }
-    //     inDirectDiffuse += tempDiffuse * w ;
-    //     totalWeight += w;
-    // }
-    // if(totalWeight > 0.0)
-    //     inDirectDiffuse /= totalWeight;
-    vec4 rCoeff = texture(SHRCoeff, uvw);
-    vec4 gCoeff = texture(SHGCoeff, uvw);
-    vec4 bCoeff = texture(SHBCoeff, uvw);
-    vec3 tempDiffuse = vec3(0);
-    for(int i = 0; i < 4; i++)
+    for (int dz = 0; dz <= 1; dz++)
+    for (int dy = 0; dy <= 1; dy++)
+    for (int dx = 0; dx <= 1; dx++)
     {
-        float basis = SHBasis(i, normal);
-        tempDiffuse.r += rCoeff[i] * basis / PI;
-        tempDiffuse.g += gCoeff[i] * basis / PI;
-        tempDiffuse.b += bCoeff[i] * basis / PI;
+        ivec3 tap = clamp(base + ivec3(dx, dy, dz), ivec3(0), texSize - 1);
+
+        // trilinear distance weight
+        vec3  blend = mix(1.0 - frac, frac, vec3(dx, dy, dz));
+        float triW  = blend.x * blend.y * blend.z;
+
+        // normal weight: probe must be on the same side as the surface normal
+        vec3  probeWorld = (vec3(tap) + 0.5) / vec3(texSize) * size + origin;
+        vec3  toProbe    = normalize(probeWorld - position_world);
+        float normalW    = max(dot(toProbe, normal), 0.0) + 0.001;
+
+        float w = triW * normalW;
+
+        // evaluate SH for this probe, clamp before weighting
+        vec4 rC = texelFetch(SHRCoeff, tap, 0);
+        vec4 gC = texelFetch(SHGCoeff, tap, 0);
+        vec4 bC = texelFetch(SHBCoeff, tap, 0);
+        vec3 irr = vec3(0.0);
+        for (int i = 0; i < 4; i++)
+        {
+            float basis = SHBasis(i, normal);
+            irr.r += rC[i] * basis / PI;
+            irr.g += gC[i] * basis / PI;
+            irr.b += bC[i] * basis / PI;
+        }
+        irr = max(irr, vec3(0.0));
+
+        colorSum  += irr * w;
+        weightSum += w;
     }
-    inDirectDiffuse = max(vec3(0, 0, 0), tempDiffuse);
-    return inDirectDiffuse;
+
+    return (weightSum > 1e-5) ? colorSum / weightSum : vec3(0.0);
 }
 
 void main() 

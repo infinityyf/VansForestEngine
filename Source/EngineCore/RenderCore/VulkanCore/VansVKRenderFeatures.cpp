@@ -107,7 +107,7 @@ namespace VansGraphics
 					{
 						normal.GetSampler(),
 						normal.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -122,7 +122,7 @@ namespace VansGraphics
 					{
 						depth.GetSampler(),
 						depth.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -152,7 +152,7 @@ namespace VansGraphics
 					{
 						positionGbuffer.GetSampler(),
 						positionGbuffer.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -255,10 +255,10 @@ namespace VansGraphics
 		VansVKDescriptorManager::GetInstance()->ResetState();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[0], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_DEPTH, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			  { { depth.GetSampler(), depth.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
+			  { { depth.GetSampler(), depth.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } } });
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[0], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_MOTION_VECTOR, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			  { { motionVector.GetSampler(), motionVector.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
+			  { { motionVector.GetSampler(), motionVector.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } } });
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[0], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_HISTORY_GI, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			  { { ssgiTemporalB->GetImage().GetSampler(), ssgiTemporalB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
@@ -276,10 +276,10 @@ namespace VansGraphics
 		VansVKDescriptorManager::GetInstance()->ResetState();
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[1], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_DEPTH, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			  { { depth.GetSampler(), depth.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
+			  { { depth.GetSampler(), depth.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } } });
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[1], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_MOTION_VECTOR, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			  { { motionVector.GetSampler(), motionVector.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
+			  { { motionVector.GetSampler(), motionVector.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } } });
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{ manager->m_SSGITemporalDescriptorSets[1], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_HISTORY_GI, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			  { { ssgiTemporalA->GetImage().GetSampler(), ssgiTemporalA->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } } });
@@ -320,7 +320,7 @@ namespace VansGraphics
 					{
 						depth.GetSampler(),
 						depth.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -366,7 +366,7 @@ namespace VansGraphics
 					{
 						depth.GetSampler(),
 						depth.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -412,7 +412,7 @@ namespace VansGraphics
 					{
 						depth.GetSampler(),
 						depth.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -463,7 +463,7 @@ namespace VansGraphics
 					{
 						position.GetSampler(),
 						position.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -592,7 +592,7 @@ namespace VansGraphics
 					{
 						normal.GetSampler(),
 						normal.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -607,7 +607,7 @@ namespace VansGraphics
 					{
 						roughness.GetSampler(),
 						roughness.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -622,7 +622,7 @@ namespace VansGraphics
 					{
 						position.GetSampler(),
 						position.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -704,7 +704,7 @@ namespace VansGraphics
 					{
 						roughness.GetSampler(),
 						roughness.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -719,7 +719,7 @@ namespace VansGraphics
 					{
 						normal.GetSampler(),
 						normal.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -734,7 +734,7 @@ namespace VansGraphics
 					{
 						position.GetSampler(),
 						position.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -814,7 +814,7 @@ namespace VansGraphics
 					{
 						position.GetSampler(),
 						position.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}
@@ -917,7 +917,7 @@ namespace VansGraphics
 					{
 						position.GetSampler(),
 						position.GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}
 			}

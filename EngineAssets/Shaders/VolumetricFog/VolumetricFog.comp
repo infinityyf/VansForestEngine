@@ -9,10 +9,10 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout( set = 1, binding = 0 ) uniform sampler2D inputPosition;
 layout( set = 1, binding = 1, rgba32f ) uniform image2D fogResult;
 
-// Accumulated voxel fog from FogRayMarch pass (rgb = inscatter, a = transmittance)
+// FogRayMarch pass 输出的累积体积雾（rgb = 内散射，a = 透射率）
 layout( set = 1, binding = 3 ) uniform sampler3D voxelFogVolume;
 
-// Volume parameters (need volumeNear/Far for depth-to-slice conversion)
+// 体积参数（深度切片转换需要 volumeNear/Far）
 layout( set = 1, binding = 4 ) uniform FogVolumeParams
 {
     float vol_density;
@@ -30,22 +30,22 @@ layout( set = 1, binding = 4 ) uniform FogVolumeParams
 #define SCREEN_SCALE 2
 
 // ============================================================
-// Exposed fog parameters (set = 0, binding = X  or push constant)
+// 雾效参数（set = 1, binding = 2）
 // ============================================================
 layout( set = 1, binding = 2 ) uniform FogParams
 {
-    float fogDensity;       // base density at y = 0            (e.g. 0.002)
-    float heightFalloff;    // exponential height decay rate     (e.g. 0.08)
-    float sunScatterScale;  // multiplier for sun in-scatter     (e.g. 0.3)
-    float ambientScale;     // multiplier for ambient in-scatter (e.g. 0.5)
-    float fogMinHeight;     // lower bound for height clamping   (e.g. -100.0)
-    float skyFogDistance;   // virtual ray length for sky pixels (e.g. 8000.0)
-                            // controls sky haze density; independent of camera pitch
+    float fogDensity;       // y=0 处的基础密度（如 0.002）
+    float heightFalloff;    // 高度指数衰减速率（如 0.08）
+    float sunScatterScale;  // 太阳内散射倍率（如 0.3）
+    float ambientScale;     // 环境内散射倍率（如 0.5）
+    float fogMinHeight;     // 高度截断下限（如 -100.0）
+    float skyFogDistance;   // 天空像素的虚拟射线长度（如 8000.0）
+                            // 控制天空朦胧度，与相机俯仰角无关
 } uFog;
 
 // ============================================================
-// Atmospheric scattering helpers — coefficients match SkyBox.frag
-// so fog sun/ambient colors are physically consistent with the sky.
+// 大气散射辅助函数 — 系数与 SkyBox.frag 保持一致，
+// 确保雾效太阳色/环境色与天空物理一致。
 // ============================================================
 const vec3  c_rayleighCoeff = vec3(0.27, 0.5, 1.0) * 1e-5;
 const vec3  c_mieCoeff      = vec3(0.5e-6);
@@ -53,8 +53,8 @@ const vec3  c_atmTotalCoeff = c_rayleighCoeff + c_mieCoeff;
 const float c_rLOG2         = 1.0 / log(2.0);
 const float c_sunBrightness = 3.0;
 
-// Optical depth through the atmosphere at a given elevation sine
-// (same formula as SkyBox calcParticleThickness)
+// 给定仰角正弦值，计算大气光学深度
+// （与 SkyBox calcParticleThickness 公式相同）
 float AtmOpticalDepth(float sinElev)
 {
     float d = sinElev * 2.0;
@@ -62,9 +62,9 @@ float AtmOpticalDepth(float sinElev)
     return 100000.0 / d;
 }
 
-// Attenuated sun colour after passing through the atmosphere.
-// Matches SkyBox calcAtomsphereSunAbsorbLight:
-//   white at zenith, orange/red near horizon.
+// 经大气衰减后的太阳颜色。
+// 对应 SkyBox calcAtomsphereSunAbsorbLight：
+//   仰角高时偏白，接近地平线时偏橙/红。
 vec3 AtmSunColor(vec3 sunDir)
 {
     float sinElev = dot(sunDir, vec3(0.0, 1.0, 0.0));
@@ -72,8 +72,8 @@ vec3 AtmSunColor(vec3 sunDir)
     return exp2(-c_atmTotalCoeff * od);   // absorb(totalCoeff, od)
 }
 
-// Sky ambient tint derived from Rayleigh ratio (blue sky colour).
-// Normalised so the dominant (blue) channel = 1.
+// 由瑞利散射比值推导的天空环境色调（蓝天颜色）。
+// 归一化使主色道（蓝色）= 1。
 vec3 AtmSkyAmbient()
 {
     // c_rayleighCoeff / c_rayleighCoeff.b  =>  (0.27, 0.5, 1.0)
@@ -81,20 +81,19 @@ vec3 AtmSkyAmbient()
 }
 
 // ============================================================
-// Analytical height-exponential fog optical depth.
+// 解析式高度指数雾光学深度
 //
 //   OD = fogDensity × linearDistance × heightDensityFactor
 //
-//   - linearDistance     : length of the ray segment  → fog "thickness"
-//   - heightDensityFactor: analytical mean of exp(-h·y) along the segment
-//                          → height-exp controls how dense the fog is at
-//                            whatever altitude the ray passes through
+//   - linearDistance     : 射线段长度 → 雾的"厚度"
+//   - heightDensityFactor: exp(-h·y) 沿射线段的解析均值
+//                          → 控制射线所经高度的雾密度
 //
-// Closed-form of ∫₀ᵈ exp(-h · y(t)) dt  where y(t) = y0 + (dy/d)·t
+// 对 ∫₀ᵈ exp(-h · y(t)) dt 的封闭解，其中 y(t) = y0 + (dy/d)·t
 // ============================================================
 float AnalyticalHeightFogOD(vec3 rayOrigin, vec3 rayEnd)
 {
-    // --- Linear distance: fog thickness ---
+    // --- 线性距离：雾厚度 ---
     float linearDistance = length(rayEnd - rayOrigin);
     if (linearDistance < 0.001) return 0.0;
 
@@ -102,20 +101,19 @@ float AnalyticalHeightFogOD(vec3 rayOrigin, vec3 rayEnd)
     float y1 = rayEnd.y;
     float dy = y1 - y0;
 
-    // --- Height density factor: analytical mean of exp(-h·y) along segment ---
+    // --- 高度密度因子：exp(-h·y) 沿线段的解析均值 ---
     float heightDensityFactor;
     if (abs(dy) > 0.001)
     {
-        // Closed-form mean: integral of exp(-h·y) over the vertical span, normalised
-        // Denominator must use signed dy so the result is positive for both
-        // upward (dy>0) and downward (dy<0) rays.
+        // 封闭解均值：对竖直跨度上的 exp(-h·y) 积分后归一化。
+        // 分母使用有符号 dy，确保上行（dy>0）和下行（dy<0）均为正值。
         heightDensityFactor = (exp(-uFog.heightFalloff * max(y0, uFog.fogMinHeight))
                              - exp(-uFog.heightFalloff * max(y1, uFog.fogMinHeight)))
                             / (uFog.heightFalloff * dy);
     }
     else
     {
-        // Near-horizontal: density is constant along the segment
+        // 近水平射线：密度沿线段视为常数
         heightDensityFactor = exp(-uFog.heightFalloff * max(y0, uFog.fogMinHeight));
     }
 
@@ -123,63 +121,72 @@ float AnalyticalHeightFogOD(vec3 rayOrigin, vec3 rayEnd)
 }
 
 // ============================================================
-// Fog-specific dual-lobe phase function.
-// Uses a much softer forward lobe (g ≈ 0.35) than the sky/cloud
-// phase2Lobes (g ≈ 0.64) to avoid an overly bright, large sun disc
-// bleeding through the fog.  The peak is also soft-clamped.
+// 雾专用双波瓣相位函数。
+// 前向波瓣（g ≈ 0.35）比天空/云的 phase2Lobes（g ≈ 0.64）更柔和，
+// 避免粗体素网格上出现过亮的大面积太阳光晕。峰值同样做平滑限幅。
 // ============================================================
 float fogPhase(float cosTheta)
 {
-    float lobe1 = hgPhase(cosTheta, 0.35);   // soft forward scatter
-    float lobe2 = hgPhase(cosTheta, -0.3);   // mild back scatter
+    float lobe1 = hgPhase(cosTheta, 0.35);   // 柔和前向散射
+    float lobe2 = hgPhase(cosTheta, -0.3);   // 轻微后向散射
     float p     = mix(lobe2, lobe1, 0.65);
-    // Smooth saturation — avoids hard circle edge that min() creates.
+    // 平滑饱和限幅 — 避免 min() 造成的硬圆边瑕疵
     float maxPhase = 0.45;
     return maxPhase * (1.0 - exp(-p / maxPhase * 2.0));
 }
 
 // ============================================================
-// Depth-aware voxel fog sampling.
-// Bilinear XY + floor Z — prevents fog from slices deeper than the
-// pixel's surface from bleeding through via trilinear interpolation.
-// Critical for cumulative ray-march data where each successive Z
-// slice contains MORE fog than the previous one.
+// 深度感知体素雾采样 — 三线性插值（深度轴安全混合）
+//
+// Ray-march 3D 纹理存储的是累积雾：
+//   accum[k] = 相机到切片 k 末端的内散射 + 透射率。
+//
+// 偏移 -1.0（边界约定）：
+//   fz_cont 在 k-1..k 范围时，表面位于切片 k 内。
+//   alpha = fract(fz_cont) = 表面在当前切片内的分数位置。
+//
+// 为何 lerp(accum[k-1], accum[k], alpha) 物理正确且不泄漏后景雾：
+//   alpha = 0 → 表面在切片 k 起点 → 只取 accum[k-1]，切片 k 贡献为零  ✓
+//   alpha = 1 → 表面在切片 k 终点 → 完整取 accum[k]，正好穿越整个切片 ✓
+//   0 < alpha < 1 → 切片 k 贡献按表面在切片内比例线性混合             ✓
+//
+// 旧的 floor-only 方案在每个整数 fz_cont 处形成硬跳变，
+// 当相机俯视水平地面时（等深度线 = 水平屏幕线），映射为横向条纹。
+// lerp 消除了不连续性；最大"额外"雾量为 alpha × 单切片贡献，
+// 属于次体素级别，视觉上可忽略不计。
 // ============================================================
 vec4 SampleVoxelFogDepthAware(sampler3D vol, vec3 uvw)
 {
     ivec3 size = textureSize(vol, 0);
 
-    // XY: standard texel-center bilinear interpolation
+    // XY：标准纹素中心双线性插值
     vec2  tc_xy = uvw.xy * vec2(size.xy) - 0.5;
     vec2  fxy   = fract(tc_xy);
     ivec2 c0    = clamp(ivec2(floor(tc_xy)), ivec2(0), ivec2(size.xy) - 1);
     ivec2 c1    = clamp(c0 + 1,              ivec2(0), ivec2(size.xy) - 1);
 
-    // Z: floor-only lookup for CUMULATIVE ray-march data (no Z interpolation).
-    //
-    // The ray march stores accumulated fog at each slice:
-    //   texel z = fog from camera through the END of slice z.
-    // Each successive slice contains MORE fog than the previous one.
-    //
-    // Linear Z interpolation would blend the current slice with the next
-    // deeper slice, leaking fog that exists behind the pixel's actual depth.
-    // At large depths (far slices) the per-slice fog delta is bigger, making
-    // the leak visually obvious.  Using floor-only avoids this entirely:
-    // we read the last fully-accumulated slice that is <= pixel depth.
-    //
-    // Offset by -1.0 (boundary convention) so that
-    //   DepthToSlice = k   → texel k-1  (fog up to start of slice k)
-    //   DepthToSlice = k+1 → texel k    (fog through entire slice k)
-    float fz_cont = uvw.z * float(size.z) - 1.0;
-    int   zi = clamp(int(floor(fz_cont)), 0, size.z - 1);
+    // Z：floor 切片与 ceil 切片之间插值以消除横向条纹
+    float fz_safe  = max(uvw.z * float(size.z) - 1.0, 0.0);
+    float fz_alpha = fract(fz_safe);
+    int   zi0      = clamp(int(floor(fz_safe)), 0, size.z - 1);
+    int   zi1      = min(zi0 + 1,               size.z - 1);
 
-    // Fetch 4 neighbours for bilinear XY at the floor Z slice
-    vec4 s00 = texelFetch(vol, ivec3(c0.x, c0.y, zi), 0);
-    vec4 s10 = texelFetch(vol, ivec3(c1.x, c0.y, zi), 0);
-    vec4 s01 = texelFetch(vol, ivec3(c0.x, c1.y, zi), 0);
-    vec4 s11 = texelFetch(vol, ivec3(c1.x, c1.y, zi), 0);
+    // floor-Z 切片双线性插值
+    vec4 s00 = texelFetch(vol, ivec3(c0.x, c0.y, zi0), 0);
+    vec4 s10 = texelFetch(vol, ivec3(c1.x, c0.y, zi0), 0);
+    vec4 s01 = texelFetch(vol, ivec3(c0.x, c1.y, zi0), 0);
+    vec4 s11 = texelFetch(vol, ivec3(c1.x, c1.y, zi0), 0);
+    vec4 bilerp0 = mix(mix(s00, s10, fxy.x), mix(s01, s11, fxy.x), fxy.y);
 
-    return mix(mix(s00, s10, fxy.x), mix(s01, s11, fxy.x), fxy.y);
+    // ceil-Z 切片双线性插值
+    vec4 s00n = texelFetch(vol, ivec3(c0.x, c0.y, zi1), 0);
+    vec4 s10n = texelFetch(vol, ivec3(c1.x, c0.y, zi1), 0);
+    vec4 s01n = texelFetch(vol, ivec3(c0.x, c1.y, zi1), 0);
+    vec4 s11n = texelFetch(vol, ivec3(c1.x, c1.y, zi1), 0);
+    vec4 bilerp1 = mix(mix(s00n, s10n, fxy.x), mix(s01n, s11n, fxy.x), fxy.y);
+
+    // 深度安全三线性混合：alpha 为表面在当前切片内的分数位置
+    return mix(bilerp0, bilerp1, fz_alpha);
 }
 
 // ============================================================
@@ -190,7 +197,7 @@ void main()
     if (pixelCoord.x >= fogSize.x || pixelCoord.y >= fogSize.y)
         return;
 
-    // --- Reconstruct world position & view ray ---
+    // --- 重建世界坐标与视线方向 ---
     vec3 camPos  = cameraPosition.xyz;
     vec4 gbuffer = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0);
     float linearDepth = gbuffer.w;
@@ -201,10 +208,10 @@ void main()
 
     if (isSky)
     {
-        // Infinite far — posWS is undefined; reconstruct direction from NDC
+        // 天空像素：posWS 未定义，从 NDC 重建视线方向
         vec2 uv  = (vec2(pixelCoord) * float(SCREEN_SCALE) + 0.5) / ScreenParams.xy;
         vec2 ndc = uv * 2.0 - 1.0;
-        ndc.y *= -1.0; // Invert Y for NDC space
+        ndc.y *= -1.0; // Vulkan Y 轴翻转
         vec4 clip = vec4(ndc, 1.0, 1.0);
         vec3 dirVS = normalize((InverseProjectionMatrix * clip).xyz);
         viewDir = normalize((InverseViewMatrix * vec4(dirVS, 0.0)).xyz);
@@ -219,24 +226,22 @@ void main()
     float phase  = fogPhase(lDotV);
 
     // ============================================================
-    // Analytical height-exponential fog OD
-    //   - geometry pixels: finite integral from camera to surface
-    //   - sky pixels:      virtual endpoint at fixed HORIZONTAL distance,
-    //                      so the fog density is world-space stable and does
-    //                      not shift when the camera pitches up/down.
+    // 解析式高度指数雾光学深度
+    //   - 几何像素：相机到表面的有限积分
+    //   - 天空像素：使用固定水平距离的虚拟终点，
+    //              使雾密度在世界空间中保持稳定，不随相机俯仰角变化。
     //
-    //   We project skyFogDistance onto the XZ plane: t = skyFogDistance / |xz|
-    //   This keeps the horizontal distance constant for all sky rays.
-    //   viewDir.y is clamped to [0, 1] so below-horizon sky pixels saturate
-    //   at the horizon fog level and do not spike downward.
+    //   将 skyFogDistance 投影到 XZ 平面，确保所有天空射线水平距离相同。
+    //   viewDir.y 截断到 [0,1]，使地平线以下的天空像素饱和在地平线雾浓度，
+    //   不会向下突刺。
     // ============================================================
     float fogOD;
     if (isSky)
     {
-        // Clamp viewDir.y to [0, 1] so below-horizon sky rays saturate at the
-        // horizon fog level (no downward spike), then re-normalise.
-        // Ray length stays fixed at skyFogDistance — upward rays naturally reach
-        // thinner air and accumulate less OD; no artificial stretching needed.
+        // 将 viewDir.y 截断到 [0,1] 后重归一化，
+        // 地平线以下射线饱和在地平线雾浓度（不向下突刺）。
+        // 射线长度固定为 skyFogDistance — 上仰射线自然经过更稀薄的大气，
+        // 积累更少 OD，无需人工拉伸。
         vec3 skyDir = normalize(vec3(viewDir.x, max(viewDir.y, 0.0), viewDir.z));
         vec3 skyEnd = camPos + skyDir * uFog.skyFogDistance;
         fogOD = AnalyticalHeightFogOD(camPos, skyEnd);
@@ -246,13 +251,12 @@ void main()
         fogOD = AnalyticalHeightFogOD(camPos, posWS);
     }
 
-    // Attenuate the directional light by the same atmosphere model the skybox uses.
-    // This makes fog turn orange/red at sunset automatically.
+    // 用与天空盒相同的大气模型衰减定向光颜色，日落时自动变为橙/红色
     vec3 attenuatedSun = uDirectionLight.color.xyz
                        * AtmSunColor(sunDir)
                        * c_sunBrightness;
 
-    // In-scatter: sun (phase-weighted, atmosphere-attenuated) + Rayleigh sky ambient
+    // 内散射：太阳（相位加权 + 大气衰减）+ 瑞利天空环境光
     vec3 sunColor     = attenuatedSun   * phase            * uFog.sunScatterScale;
     vec3 ambientColor = AtmSkyAmbient() * uFog.ambientScale;
     vec3 inScatter    = (sunColor + ambientColor) * (1.0 - exp(-fogOD));
@@ -260,29 +264,26 @@ void main()
     float transmittance = exp(-fogOD);
 
     // ============================================================
-    // Compose voxel-based volumetric fog (from ray-march 3D texture)
-    // with the analytical height-exponential fog.
+    // 将体素体积雾（来自 ray-march 3D 纹理）与解析式高度指数雾合成。
     //
-    // The voxel fog stores (rgb=accumulated inscatter, a=transmittance).
-    // We sample it using the pixel's world position mapped to volume UVW.
-    // For sky pixels we use the camera's forward direction clamped to volume.
+    // 体素雾存储（rgb = 累积内散射，a = 透射率）。
+    // 使用像素世界坐标映射到体积 UVW 进行采样。
+    // 天空像素使用截断到体积范围内的相机前向方向。
     //
-    // Blend order:  scene × voxelTransmittance + voxelInscatter
-    //               then: result × heightTransmittance + heightInscatter
-    // Combined:     scene × (voxT × heightT) + (voxInscatter × heightT + heightInscatter)
+    // 混合顺序：scene × 体素透射率 + 体素内散射
+    //           再：result × 高度透射率 + 高度内散射
+    // 合并：    scene × (voxT × heightT) + (voxInscatter × heightT + heightInscatter)
     // ============================================================
     vec3 voxelInscatter = vec3(0.0);
     float voxelTransmittance = 1.0;
 
-    // Sample frustum-aligned voxel fog using screen UV + view-space Z depth.
-    // Use linearDepth (view-space Z) not radial distance, to match the planar
-    // depth distribution in the injection/ray-march passes.
+    // 使用屏幕 UV + 视空间 Z 深度采样视锥对齐体素雾。
+    // 使用 linearDepth（视空间 Z），而非径向距离，以匹配注入/ray-march pass 的平面深度约定。
     //
-    // XY UV must use the tile-aligned extent (gridXY × TILE_SIZE), NOT the raw
-    // screen resolution.  When the screen is not evenly divisible by TILE_SIZE,
-    // the voxel grid covers slightly MORE virtual pixels than the screen
-    // (e.g. 1080p → 68 tiles × 16 = 1088 ≠ 1080).  Using ScreenParams here
-    // would mis-map pixels to the wrong tiles by up to 0.5 texels.
+    // XY UV 必须使用 tile 对齐范围（gridXY × TILE_SIZE），而非原始屏幕分辨率。
+    // 当屏幕分辨率不能被 TILE_SIZE 整除时，体素网格覆盖的虚拟像素略多于屏幕
+    // （如 1080p → 68 tiles × 16 = 1088 ≠ 1080）。
+    // 若使用 ScreenParams 会导致像素映射到错误 tile，偏差最大 0.5 纹素。
     float viewZ = isSky ? uVolume.volumeFar : linearDepth;
     ivec3 volSize = textureSize(voxelFogVolume, 0);
     vec2  tileAlignedExtent = vec2(volSize.xy) * float(TILE_SIZE);
@@ -300,15 +301,14 @@ void main()
         voxelTransmittance = voxelData.a;
     }
 
-    // Proper front-to-back compose:
-    //   scene -> apply voxel fog -> apply height fog
+    // 正确的前到后合成：
+    //   scene → 施加体素雾 → 施加高度雾
     //   final = scene * voxelT * heightT + voxelInscatter * heightT + heightInscatter
-    // Voxel inscatter is attenuated by atmospheric height fog (physically correct:
-    // light shafts are dimmed by haze between them and the camera).
+    // 体素内散射被大气高度雾衰减（物理正确：光轴被相机前方的薄雾削弱）
     float combinedTransmittance = voxelTransmittance * transmittance;
     vec3  combinedInscatter     = voxelInscatter * transmittance + inScatter;
     float combinedOpacity       = 1.0 - combinedTransmittance;
 
-    // .rgb = accumulated in-scatter,  .a = opacity (1 - transmittance)
+    // .rgb = 累积内散射，.a = 不透明度（1 - 透射率）
     imageStore(fogResult, pixelCoord, vec4(combinedInscatter, combinedOpacity));
 }

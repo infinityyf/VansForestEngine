@@ -44,7 +44,7 @@ void main()
 
     // ── 法线：与 PBR 路径保持一致，通过法线贴图做 TBN 变换（slot 1）──────────
     vec3 normal_sample = texture( globalPBRTextures[materialIndex * 5 + 1], frag_uv ).rgb;
-    normal_sample.rg   = normal_sample.rg * 2.0 - 1.0;
+    normal_sample = normal_sample * 2.0 - 1.0;
     mat3 TBN   = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);
 

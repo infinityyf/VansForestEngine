@@ -19,11 +19,11 @@ layout( set = 1, binding = 15 ) uniform sampler2DArray rectLightEmissive;
 #include "../BRDF/BRDFVegetation.glsl"
 #include "../Common/CameraData.glsl"
 
-layout(set = 1, binding = 0, input_attachment_index = 0) uniform subpassInput normalInput;
-layout(set = 1, binding = 1, input_attachment_index = 1) uniform subpassInput gbufferInput0;
-layout(set = 1, binding = 2, input_attachment_index = 2) uniform subpassInput gbufferInput1;
-layout(set = 1, binding = 3, input_attachment_index = 3) uniform subpassInput gbufferInput2;
-layout(set = 1, binding = 4, input_attachment_index = 4) uniform subpassInput depthInput;
+layout(set = 1, binding = 0) uniform sampler2D normalInput;
+layout(set = 1, binding = 1) uniform sampler2D gbufferInput0;
+layout(set = 1, binding = 2) uniform sampler2D gbufferInput1;
+layout(set = 1, binding = 3) uniform sampler2D gbufferInput2;
+layout(set = 1, binding = 4) uniform sampler2D depthInput;
 
 layout(set = 1, binding = 5, rgba32f ) uniform image2D ssao;
 layout(set = 1, binding = 6) uniform sampler2D ssgi;
@@ -107,15 +107,21 @@ vec4 SampleGIVisibilitySH(vec3 positionWS)
 
 void main() 
 {
-    vec3 normal = subpassLoad(normalInput).xyz;
-    vec3 color = subpassLoad(gbufferInput0).xyz;
-    float roughness = subpassLoad(gbufferInput0).w;
-    float metallic = subpassLoad(gbufferInput1).x;
-    float ao = subpassLoad(gbufferInput1).y;
-    float materialID = subpassLoad(gbufferInput1).z;
-    vec3 position_world = subpassLoad(gbufferInput2).xyz;
-    float depth = subpassLoad(depthInput).x;
-    float linearDepth = subpassLoad(gbufferInput2).w;
+    vec4 normalData = texture(normalInput, fragTexCoord);
+    vec4 gbufferData0 = texture(gbufferInput0, fragTexCoord);
+    vec4 gbufferData1 = texture(gbufferInput1, fragTexCoord);
+    vec4 gbufferData2 = texture(gbufferInput2, fragTexCoord);
+    vec4 depthData = texture(depthInput, fragTexCoord);
+
+    vec3 normal = normalData.xyz;
+    vec3 color = gbufferData0.xyz;
+    float roughness = gbufferData0.w;
+    float metallic = gbufferData1.x;
+    float ao = gbufferData1.y;
+    float materialID = gbufferData1.z;
+    vec3 position_world = gbufferData2.xyz;
+    float depth = depthData.x;
+    float linearDepth = gbufferData2.w;
 
 
     //获取ssao
@@ -135,18 +141,9 @@ void main()
     brdfData.viewDirection = viewDirection;
     brdfData.positionWS = position_world;
     
-    //remap to last frame screen space (used for SSR / fog reprojection)
-    // 注意：天空像素（linearDepth == 0）这里不必特殊处理 —— Deferred subpass
-    // 之后 SkyBox 会把所有天空像素重写覆盖，并在 SkyBox.frag 内部完成自己的
-    // 雾 reprojection。这里只需保证非天空几何的 reprojection 正确。
-    vec4 lastFrameClip = LastProjectionMatrix * LastViewMatrix * vec4(position_world, 1.0);
-    lastFrameClip /= lastFrameClip.w;
-    lastFrameClip.y = -lastFrameClip.y; // flip y for screen space
-    vec2 lastFrameUV = (lastFrameClip.xy + 1.0) * 0.5;
-
     // indirect diffuse — SSGI temporal pass already accumulates and aligns to
-    // current frame UV via motion vectors; sample at fragTexCoord, NOT lastFrameUV.
-    // Using lastFrameUV here would double-reproject, adding one extra frame of latency
+    // current frame UV via motion vectors; sample at fragTexCoord.
+    // GBuffer / SSR / Fog are produced from current-frame inputs after the RenderPass split.
     // and blurring edges that the temporal pass already correctly resolved.
     brdfData.indirectDiffuse = texture(ssgi, fragTexCoord).rgb;
     //b : 计算球谐
@@ -154,7 +151,7 @@ void main()
     //c : 计算动态GI，探针球谐
     //brdfData.indirectDiffuse = CalculateSHDiffuse(position_world, normal);
 
-    brdfData.indirectSpecular = imageLoad(ssr,ivec2(lastFrameUV * ScreenParams.xy)).rgba;
+    brdfData.indirectSpecular = imageLoad(ssr,ivec2(fragTexCoord * ScreenParams.xy)).rgba;
     
     //计算光照
     LightResult lightResult;
@@ -171,7 +168,7 @@ void main()
     {
         // --- Skin BRDF path ---
         // Curvature was stored in normalInput.w by UnlitSkin.frag
-        float curvature = subpassLoad(normalInput).w;
+        float curvature = normalData.w;
         CalculateDirectLight_Skin(brdfData, curvature, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
         AmbientBRDF_Skin(brdfData, viewDirection, giVisSH, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
@@ -196,11 +193,11 @@ void main()
         hair.roughness         = brdfData.roughness;
         hair.specularStrength  = 1.0;   // constant (not stored in GBuffer)
         hair.scatter           = 0.35;  // constant (not stored in GBuffer)
-        hair.shift             = subpassLoad(normalInput).w * 2.0 - 1.0;
+        hair.shift             = normalData.w * 2.0 - 1.0;
         hair.flowBend          = 0.0;   // flow already baked into GBuffer tangent; set >0 to amplify shift
 
         // Decode hair fiber tangent from octahedral encoding in GBuffer1.x / .w
-        vec2 octT = vec2(metallic, subpassLoad(gbufferInput1).w) * 2.0 - 1.0;
+        vec2 octT = vec2(metallic, gbufferData1.w) * 2.0 - 1.0;
         hair.tangentWS = OctDecodeHair(octT);
 
         CalculateDirectLight_Hair(brdfData, hair, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
@@ -211,7 +208,7 @@ void main()
     {
         // --- Subsurface Scattering BRDF path ---
         // Thickness was stored in normalInput.w by Subsurface.frag
-        float thickness = subpassLoad(normalInput).w;
+        float thickness = normalData.w;
         // SubsurfacePower was packed into GBuffer1.x as (power / 50.0)
         float subsurfacePowerPacked = metallic;  // reuses the metallic slot
         float subsurfacePower = subsurfacePowerPacked * 50.0;
@@ -229,7 +226,7 @@ void main()
     {
         // --- Vegetation / Grass BRDF path ---
         // Translucency was stored in normalInput.w by Grass.frag
-        float translucency = subpassLoad(normalInput).w;
+        float translucency = normalData.w;
 
         // Grass AO — match the default PBR path's aggressive power curve
         brdfData.ao = pow(min(ao, ssaoValue), 2.0);
@@ -266,13 +263,8 @@ void main()
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
     //outColor.rgb = lightResult.ambientSpecular;
     //混合雾效  fogResult: rgb = in-scatter, a = opacity (1 - transmittance)
-    // fogResult 由上一帧 GBuffer 计算得到，按 motion-vector reprojection 采样
-    // 才能与当前帧几何对齐；越界（disocclusion / 视锥外）回退到当前 UV。
-    vec2 fogUV = lastFrameUV;
-    bool fogReprojValid = all(greaterThanEqual(fogUV, vec2(0.0))) &&
-                          all(lessThanEqual   (fogUV, vec2(1.0)));
-    if (!fogReprojValid) fogUV = fragTexCoord;
-    vec4 fogData = texture(fogResult, fogUV);
+    // fogResult 由当前帧 GBuffer / 体积雾流程生成，Deferred 合成时直接按当前 UV 采样。
+    vec4 fogData = texture(fogResult, fragTexCoord);
     float fogOpacity = fogData.a;
     outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
     //outColor.rgb = vec3(brdfData.ao,brdfData.ao,brdfData.ao);

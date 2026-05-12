@@ -140,7 +140,9 @@ namespace VansGraphics
 
 		void DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
-		void DrawSceneDeferred(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void DrawSceneGBuffer(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+
+		void DrawSceneDeferredPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 
 		VkDeviceAddress GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo);
 

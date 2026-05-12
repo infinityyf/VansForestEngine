@@ -125,6 +125,8 @@ namespace VansGraphics
 
 		VansRenderPassManager();
 
+		VansVKRenderPass m_VansGBufferPass;
+
 		VansVKRenderPass m_VansRenderPass;
 
 		VansVKRenderPass m_VansShadowPass;
@@ -147,7 +149,7 @@ namespace VansGraphics
 		////framebuffer大小
 		//void SetupVansRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surrface);
 
-		//延迟渲染
+		//延迟渲染资源初始化：拆分为 GBuffer pass + Deferred/PostProcess pass
 		void SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, const VkExtent2D& renderResolution);
 
 		//阴影渲染
@@ -188,6 +190,8 @@ namespace VansGraphics
 		void ResetFrameBufferImageLayout(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex);
 
 		VansVKRenderPass& GetVansRenderPass() { return m_VansRenderPass; }
+
+		VansVKRenderPass& GetVansGBufferPass() { return m_VansGBufferPass; }
 
 		VansVKImage& GetShadowMap() { return m_CascadeShadowMapImage; }
 

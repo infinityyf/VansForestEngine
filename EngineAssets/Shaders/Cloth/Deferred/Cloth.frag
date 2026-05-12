@@ -40,7 +40,7 @@ void main()
 
     // Normal mapping
     vec3 normal_sample = textureLod(clothNormal, frag_uv, 0.0).rgb;
-    normal_sample.rg   = normal_sample.rg * 2.0 - 1.0;
+    normal_sample = normal_sample * 2.0 - 1.0;
     mat3 TBN           = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal        = normalize(TBN * normal_sample);
 

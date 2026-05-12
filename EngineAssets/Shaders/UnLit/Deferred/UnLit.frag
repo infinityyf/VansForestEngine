@@ -46,7 +46,7 @@ void main()
     float roughness = roughnessParam * texture( globalPBRTextures[materialIndex * 5 + 3], frag_uv ).r;
     float ao        = aoParam * texture( globalPBRTextures[materialIndex * 5 + 4], frag_uv ).r;
 
-    normal_sample.rg = normal_sample.rg * 2.0 - 1.0;
+    normal_sample = normal_sample * 2.0 - 1.0;
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);
 
