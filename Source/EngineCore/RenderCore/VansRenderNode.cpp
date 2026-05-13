@@ -181,13 +181,13 @@ void VansGraphics::VansRenderNode::DrawCascadeShadowWithPassShader(VansVKCommand
 
 	if (passShader->GetPushConstantSize() > 0)
 	{
-		// Shadow shader expects: { materialIndex, objectIndex, cascadeIndex }
+		// Shadow/MotionVector shader expects: { materialIndex, objectIndex, cascadeIndex, animationEnabled }
 		int matIdx = -1;
 		if (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
 			matIdx = static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex;
 		else if (m_Material->m_MaterialType == VansMaterialType::VAN_EMISSIVE)
 			matIdx = static_cast<VansEmissiveMaterial*>(m_Material)->m_MaterialIndex;
-		int pushData[3] = { matIdx, m_TransfromIndex, global_state.cascadeIndex };
+		int pushData[4] = { matIdx, m_TransfromIndex, global_state.cascadeIndex, m_AnimationEnabled ? 1 : 0 };
 		cmd.UpdatePushConstants(*passShader->GetGraphicsPipeline(),
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			0, passShader->GetPushConstantSize(), pushData);
@@ -208,7 +208,8 @@ void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKComman
 
 	cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
 
-	int data[4] = { lightIndex, shadowIndex, 0, m_TransfromIndex };
+	// PunctualShadow shader expects: { lightIndex, shadowIndex, materialIndex, objectIndex, animationEnabled }
+	int data[5] = { lightIndex, shadowIndex, 0, m_TransfromIndex, m_AnimationEnabled ? 1 : 0 };
 	cmd.UpdatePushConstants(*passShader->GetGraphicsPipeline(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		0, passShader->GetPushConstantSize(), data);
 
@@ -329,17 +330,23 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		}
 	}
 
-	// ── Shadow descriptor sets (first 3 sets only: Global + EmptyPass + Object) ──
-	// These are used when DrawWithPassShader is called for shadow/punctualShadow passes.
+	// ── Shadow descriptor sets (Global + EmptyPass + Object + Animation) ──
+	// 动画节点使用独立的每节点骨骼描述符集；静态节点使用场景共享的 dummy set。
+	VkDescriptorSet shadowAnimSet = (m_HasSkeletonBone && m_AnimOwner && m_AnimBoneIDBuffer && m_AnimBoneWeightBuffer)
+		? modelBufferDescriptorSets[0]
+		: m_Scene->m_AnimationDescriptorSet;
+
 	m_ShadowDescSetLayouts = {
-		m_Scene->m_GlobalDescriptorSetLayout,   // Set 0
-		m_Scene->m_EmptyPassLayout,             // Set 1
-		m_Scene->m_ObjectDescriptorSetLayout,   // Set 2
+		m_Scene->m_GlobalDescriptorSetLayout,        // Set 0
+		m_Scene->m_EmptyPassLayout,                  // Set 1
+		m_Scene->m_ObjectDescriptorSetLayout,        // Set 2
+		m_Scene->m_AnimationDescriptorSetLayout,     // Set 3
 	};
 	m_ShadowDescSets = {
-		m_Scene->m_GlobalDescriptorSet,         // Set 0
-		m_Scene->m_EmptyPassDescriptorSet,      // Set 1
-		m_Scene->m_ObjectDescriptorSet,         // Set 2
+		m_Scene->m_GlobalDescriptorSet,              // Set 0
+		m_Scene->m_EmptyPassDescriptorSet,           // Set 1
+		m_Scene->m_ObjectDescriptorSet,              // Set 2
+		shadowAnimSet,                               // Set 3
 	};
 }
 

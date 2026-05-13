@@ -272,6 +272,20 @@ namespace VansGraphics
 			VANS_LOG_ERROR("Waiting on a device failed.");
 			return false;
 		}
+
+		// vkDeviceWaitIdle 之后所有已提交的 CB fence 都处于 signaled 状态。
+		// 若不在此处 reset，下一帧 async 路径直接用 signaled fence 提交 vkQueueSubmit
+		// 会触发 Vulkan Validation Error（NSight 对此会直接 crash）。
+		auto resetIfValid = [&](VkFence f)
+		{
+			if (f != VK_NULL_HANDLE)
+				vkResetFences(m_VansVKLogicDevice, 1, &f);
+		};
+		resetIfValid(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+		resetIfValid(m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
+		resetIfValid(m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
+		resetIfValid(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
+
 		return true;
 	}
 
@@ -524,7 +538,24 @@ namespace VansGraphics
 
 			//recored all need queue family index
 			std::vector<QueueInfo> queue_infos;
-			queue_infos.push_back({ m_GraphicsQueueFamilyIndex, { 1.0f } });
+			// Request a second graphics queue for parallel shadow rendering when available.
+			{
+				uint32_t qfCount = 0;
+				vkGetPhysicalDeviceQueueFamilyProperties(device, &qfCount, nullptr);
+				std::vector<VkQueueFamilyProperties> qfProps(qfCount);
+				vkGetPhysicalDeviceQueueFamilyProperties(device, &qfCount, qfProps.data());
+				if (m_GraphicsQueueFamilyIndex < qfCount &&
+					qfProps[m_GraphicsQueueFamilyIndex].queueCount >= 2)
+				{
+					queue_infos.push_back({ m_GraphicsQueueFamilyIndex, { 1.0f, 1.0f } });
+					m_HasDedicatedShadowQueue = true;
+				}
+				else
+				{
+					queue_infos.push_back({ m_GraphicsQueueFamilyIndex, { 1.0f } });
+					m_HasDedicatedShadowQueue = false;
+				}
+			}
 			if (m_GraphicsQueueFamilyIndex != m_ComputeQueueFamilyIndex)
 			{
 				queue_infos.push_back({ m_ComputeQueueFamilyIndex, { 1.0f } });
@@ -578,6 +609,14 @@ namespace VansGraphics
 		//request queue
 		RequestDeviceQueue(m_GraphicsQueueFamilyIndex, 0, m_VansVKGraphicsQueue);
 		RequestDeviceQueue(m_ComputeQueueFamilyIndex, 0, m_VansVKComputeQueue);
+		if (m_HasDedicatedShadowQueue)
+		{
+			RequestDeviceQueue(m_GraphicsQueueFamilyIndex, 1, m_VansVKShadowQueue);
+		}
+		else
+		{
+			m_VansVKShadowQueue = m_VansVKGraphicsQueue;
+		}
 
 		CommandBufferCreateParams params =
 		{
@@ -601,13 +640,21 @@ namespace VansGraphics
 		}
 		CreateVKFence(false, m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
 
-		result = m_VansVKComputeCommandBuffer.CreateVulkanCommandBuffer(*this, m_ComputeQueueFamilyIndex, params);
+		result = m_VansVKShadowCommandBuffer.CreateVulkanCommandBuffer(*this, m_GraphicsQueueFamilyIndex, params);
 		if (!result)
 		{
-			VANS_LOG_ERROR("create m_VansVKComputeCommandBuffer failed");
+			VANS_LOG_ERROR("create m_VansVKShadowCommandBuffer failed");
 			return false;
 		}
-		CreateVKFence(false, m_VansVKComputeCommandBuffer.m_CommandBufferFinishSubmitFence);
+		CreateVKFence(false, m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
+
+		result = m_VansVKGBufferCommandBuffer.CreateVulkanCommandBuffer(*this, m_GraphicsQueueFamilyIndex, params);
+		if (!result)
+		{
+			VANS_LOG_ERROR("create m_VansVKGBufferCommandBuffer failed");
+			return false;
+		}
+		CreateVKFence(false, m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
 
 		result = m_VansEditorCommandBuffer.CreateVulkanCommandBuffer(*this, m_GraphicsQueueFamilyIndex, params);
 		if (!result)
@@ -641,11 +688,13 @@ namespace VansGraphics
 
 		DestroyVKFence(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKComputeCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansEditorCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKComputeCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_VansVKShadowCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_VansVKGBufferCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansEditorCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 
 		// Tear down VMA before destroying the logical device. All buffer/image

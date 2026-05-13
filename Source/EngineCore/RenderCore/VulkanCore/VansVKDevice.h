@@ -115,7 +115,7 @@ namespace VansGraphics
 		//获取surface
 		VansVKSurface& GetSurface() { return m_VansVKSurface; }
 
-		VansVKCommandBuffer& GetCommandBuffer() { return m_VansVKCommandBuffer; }
+		VansVKCommandBuffer& GetCommandBuffer() { return *m_pActiveCommandBuffer; }
 
 		VansVKCommandBuffer& GetEditorCommandBuffer() { return m_VansEditorCommandBuffer; }
 
@@ -268,11 +268,18 @@ namespace VansGraphics
 
 		VkSemaphore m_CommandBufferReadyToPresentSemaphore;
 
-		// Async compute event used for compute -> graphics synchronization.
-		VkEvent m_AsyncComputeCompletedEvent;
+		// Semaphores for shadow-parallel async path
+		VkSemaphore m_ShadowDoneSemaphore        = VK_NULL_HANDLE;
+		VkSemaphore m_GBufferDoneSemaphore       = VK_NULL_HANDLE;
+		// BuildTileLightLists runs on compute queue (different family) in parallel with
+		// Shadow + GBuffer. CB2 waits on this before starting the Deferred pass.
+		VkSemaphore m_AsyncComputeDoneSemaphore  = VK_NULL_HANDLE;
 
-		// Set to true to enable async compute.
+		// Set to true to enable shadow-parallel async path.
 		bool m_UseAsyncCompute = false;
+
+		// True when a second Graphics Queue was successfully acquired for shadow rendering.
+		bool m_HasDedicatedShadowQueue = false;
 
 		VkPhysicalDeviceProperties m_DeviceProperties;
 		
@@ -306,13 +313,23 @@ namespace VansGraphics
 		//queues
 		VkQueue m_VansVKGraphicsQueue;
 		VkQueue m_VansVKComputeQueue;
+		VkQueue m_VansVKShadowQueue = VK_NULL_HANDLE;
 
 		//command buffer
 		VansVKCommandBuffer m_VansVKCommandBuffer;
 
-		VansVKCommandBuffer m_VansVKComputeCommandBuffer;
+		VansVKCommandBuffer m_VansVKShadowCommandBuffer;
+
+		// CB1 异步路径专用：录制 MotionVector + GBuffer，与 Shadow CB 并行提交，
+		// 避免 CB1 结束后 CPU stall 等 fence 才能让 m_VansVKCommandBuffer 录制 CB2。
+		VansVKCommandBuffer m_VansVKGBufferCommandBuffer;
 
 		VansVKCommandBuffer m_VansVKRayTracingCommandBuffer;
+
+		// Points to the command buffer scene draw calls should record into.
+		// Defaults to m_VansVKCommandBuffer; switched temporarily to
+		// m_VansVKShadowCommandBuffer during shadow CB recording in async path.
+		VansVKCommandBuffer* m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
 		VansRayTracing rayTracingContext;
 		
 		VansVKCommandBuffer m_VansEditorCommandBuffer;

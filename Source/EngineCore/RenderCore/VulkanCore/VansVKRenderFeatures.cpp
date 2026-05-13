@@ -1070,7 +1070,8 @@ namespace VansGraphics
 			{ traceBarrier });
 
 		computeCmd.EnsureComputeShader(*manager->m_SSRResolveShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRResolveSetLayout });
-		computeCmd.DispatchCompute(*manager->m_SSRResolveShader, m_RenderWidth, m_RenderHeight, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRResolveDescriptorSets[0] });
+		// SSR_RESOLVE.comp 使用 8×8 local size，按 8 对齐取整覆盖全分辨率像素
+		computeCmd.DispatchCompute(*manager->m_SSRResolveShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRResolveDescriptorSets[0] });
 
 		// Resolve 写入 ssrResult，TemporalAA 会立即读取；避免按 wave/tile 可见性造成条纹状断层。
 		VkMemoryBarrier resolveBarrier = {};

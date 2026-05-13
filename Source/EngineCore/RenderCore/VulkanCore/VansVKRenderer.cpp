@@ -86,7 +86,9 @@ namespace VansGraphics
 	{
 		CreateVKSemaphore(m_SwapChainImageAcquiredSemaphore);
 		CreateVKSemaphore(m_CommandBufferReadyToPresentSemaphore);
-		CreateVKEvent(m_AsyncComputeCompletedEvent);
+		CreateVKSemaphore(m_ShadowDoneSemaphore);
+		CreateVKSemaphore(m_GBufferDoneSemaphore);
+		CreateVKSemaphore(m_AsyncComputeDoneSemaphore);
 		CreateVKFence(false, m_SwapChainImageAcquiredFence);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
@@ -158,7 +160,7 @@ namespace VansGraphics
 			// Dispatch vegetation bone-sim + skinning compute passes
 			m_Scene->RecordVegetationCompute(m_VansVKCommandBuffer);
 
-			// Reset GPU profiler query pool for this frame
+			// 重置本帧的 GPU Profiler 查询池
 #if VANS_PROFILER_ENABLED
 			Vans::VansGpuProfiler::Get().BeginFrame(cmd);
 #endif
@@ -228,84 +230,116 @@ namespace VansGraphics
 		}
 		else
 		{
-			// ── Async compute 兼容路径 ────────────────────────────────────────
-			// GBuffer 拆分后，SSR / Fog 等依赖本帧 GBuffer，不能再提前到
-			// GBuffer 之前的 compute queue 执行。这里仅提交一个事件保持旧
-			// present / wait 路径可用，真正的 frame-dependent compute 在
-			// GBuffer pass 之后的 graphics command buffer 中执行。
-			m_VansVKCommandBuffer.ResetEvent(m_AsyncComputeCompletedEvent);
-
-			m_VansVKComputeCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-			m_VansVKComputeCommandBuffer.SetEvent(m_AsyncComputeCompletedEvent, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-			m_VansVKComputeCommandBuffer.EndCommandBufferRecord();
-
+			// ── 0. Async Compute CB (BuildTileLightLists → Compute Queue) ────────────
+			// BuildTileLightLists 只依赖相机 + 光源 SSBO（帧开始前已上传），
+			// 与 Shadow / GBuffer 渲染无资源冲突，可完全并行到独立计算队列。
+			// m_VansVKRayTracingCommandBuffer 在 m_ComputeQueueFamilyIndex 上创建，
+			// 提交到 m_VansVKComputeQueue（不同 QueueFamily），NSight 将显示第三条队列。
+			m_pActiveCommandBuffer = &m_VansVKRayTracingCommandBuffer;
+			m_VansVKRayTracingCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			BuildTileLightLists(m_VansVKRayTracingCommandBuffer);
+			m_VansVKRayTracingCommandBuffer.EndCommandBufferRecord();
+			m_pActiveCommandBuffer = &m_VansVKCommandBuffer;  // restore
 			VansVKCommandBuffer::SubmitCommands(
 				m_VansVKComputeQueue, m_VansVKLogicDevice,
-				{ m_VansVKComputeCommandBuffer.GetVKCommandBuffer() },
-				{},
-				{},
-				m_VansVKComputeCommandBuffer.m_CommandBufferFinishSubmitFence, false);
+				{ m_VansVKRayTracingCommandBuffer.GetVKCommandBuffer() },
+				{}, { m_AsyncComputeDoneSemaphore },
+				m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence, false);
 
-			// Submit 2: Shadow — submitted AFTER compute is already queued on GPU
-			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
-
+			// ── 1. Shadow CB (m_VansVKShadowCommandBuffer → m_VansVKShadowQueue) ──────
+			// 注意：此 CB 不使用 VANS_GPU_SCOPE。async 路径下 query pool reset 在 CB2，
+			// 若 Shadow CB 先向 pool 写时间戳、CB2 再 reset 重写，NSight 会因
+			// query slot 被同一 queue 重复写入（reset 之前已写）而触发 crash。
+			// Shadow 不等待 AsyncCompute semaphore：shadow 使用上一帧的蒙皮顶点数据，
+			// 与 BuildTileLightLists 无资源依赖，可与 AsyncCompute CB 并行。
+			m_pActiveCommandBuffer = &m_VansVKShadowCommandBuffer;
+			VkCommandBuffer shadowCmd = m_VansVKShadowCommandBuffer.GetVKCommandBuffer();
+			m_VansVKShadowCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 			{
 				int cascadeCount = VansConfigration::GetInstance()->GetCascadeCount();
 				for (int cascade = 0; cascade < cascadeCount; ++cascade)
 				{
 					m_globalRenderStateData.cascadeIndex = cascade;
-					renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData, cascade);
-					DrawShadowMap(renderPassManager, cmd);
-					renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+					renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, shadowCmd, m_globalRenderStateData, cascade);
+					DrawShadowMap(renderPassManager, shadowCmd);
+					renderPassManager->EndRenderPass(shadowCmd, m_globalRenderStateData);
 				}
 				m_globalRenderStateData.cascadeIndex = -1;
 			}
-
 			{
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, cmd, m_globalRenderStateData);
-				DrawPunctualShadowMap(renderPassManager, cmd);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, shadowCmd, m_globalRenderStateData);
+				DrawPunctualShadowMap(renderPassManager, shadowCmd);
+				renderPassManager->EndRenderPass(shadowCmd, m_globalRenderStateData);
 			}
+			m_VansVKShadowCommandBuffer.EndCommandBufferRecord();
+			m_pActiveCommandBuffer = &m_VansVKCommandBuffer;  // restore active CB
+			VansVKCommandBuffer::SubmitCommands(
+				m_VansVKShadowQueue, m_VansVKLogicDevice,
+				{ m_VansVKShadowCommandBuffer.GetVKCommandBuffer() },
+				{}, { m_ShadowDoneSemaphore },
+				m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence, false);
 
+			// ── 2. Graphics CB1 (ClothUpload + VegCompute + MotionVec + GBuffer) ────
+			// 使用独立的 m_VansVKGBufferCommandBuffer，避免 CB1 提交后 CPU 等 fence
+			// 才能重用 m_VansVKCommandBuffer 录制 CB2（消除 CPU stall）。
+			m_pActiveCommandBuffer = &m_VansVKGBufferCommandBuffer;
+			VkCommandBuffer cmd = m_VansVKGBufferCommandBuffer.GetVKCommandBuffer();
+			m_VansVKGBufferCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			m_Scene->RecordClothVertexUploads(cmd);
+			m_Scene->RecordVegetationCompute(m_VansVKGBufferCommandBuffer);
+			// 注意：此 CB 同样不使用 VANS_GPU_SCOPE，原因同 Shadow CB。
 			{
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansMotionVectorPass, cmd, m_globalRenderStateData);
 				DrawMotionVectorPass(renderPassManager, cmd);
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
-
-			// Upload cloth simulation results from staging buffers to device-local vertex buffers
-			m_Scene->RecordClothVertexUploads(cmd);
-
-			// Dispatch vegetation bone-sim + skinning compute passes
-			m_Scene->RecordVegetationCompute(m_VansVKCommandBuffer);
-
 			{
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansGBufferPass, cmd, m_globalRenderStateData);
-				DrawSceneGBuffer(renderPassManager, m_VansVKCommandBuffer);
+				DrawSceneGBuffer(renderPassManager, m_VansVKGBufferCommandBuffer);
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
+			m_VansVKGBufferCommandBuffer.EndCommandBufferRecord();
+			VansVKCommandBuffer::SubmitCommands(
+				m_VansVKGraphicsQueue, m_VansVKLogicDevice,
+				{ m_VansVKGBufferCommandBuffer.GetVKCommandBuffer() },
+				{}, { m_GBufferDoneSemaphore },
+				m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence, false);
 
-			// ★ TileLight Build（依赖相机矩阵 + 光源 SSBO，在 UpdateHZB 前完成）
-			BuildTileLightLists(m_VansVKCommandBuffer);
-			UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
-			UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
-			UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
-			UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
-			UpdateRayTracing(m_VansVKCommandBuffer);
-
-			VkMemoryBarrier computeToFragmentBarrier = {};
-			computeToFragmentBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-			computeToFragmentBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-			computeToFragmentBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			m_VansVKCommandBuffer.PipelineBarrier(
-				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				{ computeToFragmentBarrier });
-
-			renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-			DrawSceneDeferredPost(renderPassManager, m_VansVKCommandBuffer);
-			renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			// m_VansVKCommandBuffer 尚未提交，无需 CPU fence 等待，直接录制 CB2。
+			m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+#if VANS_PROFILER_ENABLED
+			// BeginFrame 放在 CB2 起点：vkCmdResetQueryPool 与所有 vkCmdWriteTimestamp
+			// 均在同一 VkCommandBuffer 句柄（m_VansVKCommandBuffer）内，符合 NSight 要求。
+			Vans::VansGpuProfiler::Get().BeginFrame(cmd);
+#endif
+			{
+				VANS_GPU_SCOPE(cmd, "Compute Between GBuffer And Deferred");
+				// BuildTileLightLists 已移至 Async Compute CB（Step 0）单独提交。
+				// CB2 通过 m_AsyncComputeDoneSemaphore 等待其完成，
+				// Tile 光源缓冲区的写入可见性由信号量保证。
+				UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
+				UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
+				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
+				UpdateRayTracing(m_VansVKCommandBuffer);
+				UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
+				VkMemoryBarrier computeToFragmentBarrier = {};
+				computeToFragmentBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+				computeToFragmentBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+				computeToFragmentBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				m_VansVKCommandBuffer.PipelineBarrier(
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+					{ computeToFragmentBarrier });
+			}
+			{
+				VANS_GPU_SCOPE(cmd, "Deferred Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
+				DrawSceneDeferredPost(renderPassManager, m_VansVKCommandBuffer);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+			// CB2 remains open — FSR Upscale + SceneUI blocks appended by common code after if/else
 		}
 
 		// ── FSR Upscale ─────────────────────────────────────────────────────
@@ -374,16 +408,32 @@ namespace VansGraphics
 		}
 		else
 		{
-			// ── Async compute present ───────────────────────────────────────
+			// ── Shadow-Parallel + Async Compute present ──────────────────────────────
+			// CB2 waits for: swapchain image acquired + shadow pass done + GBuffer done +
+			//               async compute done (BuildTileLightLists on compute queue).
 			std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {
-				{ m_SwapChainImageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }
+				{ m_SwapChainImageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT },
+				{ m_ShadowDoneSemaphore,             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT         },
+				{ m_GBufferDoneSemaphore,            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT          },
+				{ m_AsyncComputeDoneSemaphore,       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT          },
 			};
 
 			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 			m_VansVKCommandBuffer.ResetCommandBuffer(false);
 
-			VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKComputeCommandBuffer.m_CommandBufferFinishSubmitFence);
-			m_VansVKComputeCommandBuffer.ResetCommandBuffer(false);
+			// 等待 Shadow CB fence，确保下一帧可安全复用该命令缓冲区。
+			VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
+			m_VansVKShadowCommandBuffer.ResetCommandBuffer(false);
+
+			// CB2 在 GPU 端通过 m_GBufferDoneSemaphore 等待 GBuffer CB，
+			// m_VansVKCommandBuffer fence 触发时 GBuffer CB 一定已完成，此处重置安全。
+			VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
+			m_VansVKGBufferCommandBuffer.ResetCommandBuffer(false);
+
+			// 同理 AsyncCompute CB（m_VansVKRayTracingCommandBuffer）：
+			// CB2 已等待 m_AsyncComputeDoneSemaphore，故其 fence 此时必然已触发。
+			VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
+			m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
 		}
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
@@ -401,7 +451,9 @@ namespace VansGraphics
 
 		DestroyVKSemaphore(m_SwapChainImageAcquiredSemaphore);
 		DestroyVKSemaphore(m_CommandBufferReadyToPresentSemaphore);
-		DestroyVKEvent(m_AsyncComputeCompletedEvent);
+		DestroyVKSemaphore(m_ShadowDoneSemaphore);
+		DestroyVKSemaphore(m_GBufferDoneSemaphore);
+		DestroyVKSemaphore(m_AsyncComputeDoneSemaphore);
 		DestroyVKFence(m_SwapChainImageAcquiredFence);
 	}
 
@@ -463,23 +515,6 @@ namespace VansGraphics
 		VkCommandBuffer& cmd = commandBuffer.GetVKCommandBuffer();
 
 		m_Scene->DrawScreenSpaceFeatureNode();
-
-		if (m_UseAsyncCompute)
-		{
-			VkMemoryBarrier asyncComputeBarrier =
-			{
-				VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-				nullptr,
-				VK_ACCESS_SHADER_WRITE_BIT,
-				VK_ACCESS_SHADER_READ_BIT
-			};
-
-			commandBuffer.WaitEvents(
-				{ m_AsyncComputeCompletedEvent },
-				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				{ asyncComputeBarrier });
-		}
 
 		m_Scene->DeferredShading();
 		m_Scene->DrawSkyBoxNode();
