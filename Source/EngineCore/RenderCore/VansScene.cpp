@@ -107,6 +107,13 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
     case VEGETATION_NODE:
         m_VegetationRenderNode = renderNode;
         break;
+    case DECAL_NODE:
+        m_DecalRenderNodes.push_back(renderNode);
+        break;
+    case PARTICLE_NODE:
+        m_ParticleRenderNodes.push_back(
+            static_cast<VansParticleRenderNode*>(renderNode));
+        break;
 	default:
 		break;
     }
@@ -144,6 +151,10 @@ void VansGraphics::VansScene::CreateNodeDescriptorSets()
         node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
     }
     for (auto node : m_ScreenSpaceRenderNodes)
+    {
+        node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+    }
+    for (auto node : m_DecalRenderNodes)
     {
         node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
     }
@@ -658,6 +669,16 @@ void VansGraphics::VansScene::UnLoadScene()
 		deleteRenderNode(node);
 	m_ScreenSpaceRenderNodes.clear();
 
+	// 贴花节点清理
+	for (auto* node : m_DecalRenderNodes)
+		deleteRenderNode(node);
+	m_DecalRenderNodes.clear();
+
+	// 粒子渲染节点清理
+	for (auto* node : m_ParticleRenderNodes)
+		deleteRenderNode(node);
+	m_ParticleRenderNodes.clear();
+
 	deleteRenderNode(m_SkyBoxNode);
 	m_SkyBoxNode = nullptr;
 
@@ -1061,6 +1082,9 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
         updateNode(node);
     for (auto* node : m_ScreenSpaceRenderNodes)
         updateNode(node);
+    // 贴花节点：更新 GBuffer2 descriptor 绑定
+    for (auto* node : m_DecalRenderNodes)
+        updateNode(node);
 }
 VkDeviceAddress VansVKDevice::GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo)
 {
@@ -1393,6 +1417,11 @@ void VansGraphics::VansScene::UpdateTransformRenderData()
         node->UpdateModelData();
 	}
     for (auto node : m_TransParentRenderNodes)
+    {
+        node->UpdateModelData();
+    }
+    // 贴花节点：每帧上传变换矩阵（OBB 越界测试依赖正确的 ModelMatrix）
+    for (auto node : m_DecalRenderNodes)
     {
         node->UpdateModelData();
     }

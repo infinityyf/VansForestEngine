@@ -96,6 +96,8 @@ namespace VansGraphics
 		renderPassManager->SetupVansShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
 		renderPassManager->SetupVansPunctualShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
 		renderPassManager->SetupVansMotionVectorRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, { m_RenderWidth, m_RenderHeight });
+		// 贴花 Pass：引用 GBuffer 图像（须在 SetupVansDeferredRenderPass 之后调用）
+		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
 		renderPassManager->SetupVansUIRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface,
 			{
 				m_VansVKSurface.m_VansVKSwapChainImageExtent.width,
@@ -199,6 +201,14 @@ namespace VansGraphics
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 
+			if (m_Scene->HasDecalNodes())
+			{
+				VANS_GPU_SCOPE(cmd, "Decal Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansDecalPass(), cmd, m_globalRenderStateData);
+				m_Scene->DrawDecalNodes();
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+
 			{
 				VANS_GPU_SCOPE(cmd, "Compute Between GBuffer And Deferred");
 				// ★ TileLight Build（依赖相机矩阵 + 光源 SSBO，在 UpdateHZB 前完成）
@@ -296,6 +306,12 @@ namespace VansGraphics
 			{
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansGBufferPass, cmd, m_globalRenderStateData);
 				DrawSceneGBuffer(renderPassManager, m_VansVKGBufferCommandBuffer);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+			if (m_Scene->HasDecalNodes())
+			{
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansDecalPass(), cmd, m_globalRenderStateData);
+				m_Scene->DrawDecalNodes();
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 			m_VansVKGBufferCommandBuffer.EndCommandBufferRecord();
@@ -519,6 +535,7 @@ namespace VansGraphics
 		m_Scene->DeferredShading();
 		m_Scene->DrawSkyBoxNode();
 		m_Scene->DrawTransParentNodes();
+		m_Scene->DrawParticleNodes();     // 粒子实例化绘制（透明 Pass 末尾）
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 		m_Scene->DrawPostProcessNodes();
 	}

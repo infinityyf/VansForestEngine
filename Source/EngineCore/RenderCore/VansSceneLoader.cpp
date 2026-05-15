@@ -10,6 +10,10 @@
 #include "VansVideoManager.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../AudioCore/VansAudioSystem.h"
+#include "VansParticleRenderNode.h"
+#include "../ParticleCore/VansParticleManager.h"
+#include "../ParticleCore/VansParticleAsset.h"
+#include "../ParticleCore/VansParticleRuntime.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -162,6 +166,7 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "subsurface")   return VansMaterialType::VAN_SUBSURFACE;
         if (s == "grass")        return VansMaterialType::VAN_GRASS;
         if (s == "emissive")     return VansMaterialType::VAN_EMISSIVE;
+        if (s == "decal")        return VansMaterialType::VAN_DECAL;
         VANS_LOG_WARN("[ParseMaterialType] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
     }
     return VansMaterialType::VAN_PBR;
@@ -180,6 +185,7 @@ static VansGraphics::RenderNodeType ParseRenderNodeType(const json& typeValue, c
         if (s == "screen_space") return VansGraphics::SCREEN_SPACE_NODE;
         if (s == "terrain")      return VansGraphics::TERRAIN_NODE;
         if (s == "vegetation")   return VansGraphics::VEGETATION_NODE;
+        if (s == "decal")        return VansGraphics::DECAL_NODE;
         if (s == "none")         return VansGraphics::NONE_NODE;
         VANS_LOG_WARN("[LoadRenderNodes] Node '" << nodeName << "': unknown type string '" << s << "', defaulting to none.");
     }
@@ -313,7 +319,10 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
     case VansGraphics::SKY_BOX_NODE:
         renderNode = new VansSkyBoxRenderNode(device, type);
         break;
-    default:
+    case VansGraphics::DECAL_NODE:
+        // 贴花节点：OBB 投影贴花，写入 GBuffer Normal/GBuffer0/GBuffer1
+        renderNode = new VansDecalRenderNode(device);
+        break;
         break;
     }
 
@@ -720,6 +729,7 @@ void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
         case VansMaterialType::VAN_SUBSURFACE:      material = new VansSubsurfaceMaterial();   break;
         case VansMaterialType::VAN_GRASS:           material = new VansGrassMaterial();        break;
         case VansMaterialType::VAN_EMISSIVE:        material = new VansEmissiveMaterial();     break;
+        case VansMaterialType::VAN_DECAL:           material = new VansDecalMaterial();        break;
         default:                                    material = new VansMaterial();             break;
         }
         material->m_MaterialType = matType;
@@ -1056,6 +1066,38 @@ void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
             }
         }
 
+        if (matType == VansMaterialType::VAN_DECAL)
+        {
+            VansDecalMaterial* decal = static_cast<VansDecalMaterial*>(material);
+
+            // albedo 颜色乘数
+            if (sceneMaterial.contains("albedo") && sceneMaterial["albedo"].is_array())
+                decal->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
+            else
+                decal->m_BasePBRParam.m_albedo = glm::vec3(1.0f);
+
+            decal->m_BasePBRParam.m_metallic  = sceneMaterial.value("metallic",  0.0f);
+            decal->m_BasePBRParam.m_roughness = sceneMaterial.value("roughness", 0.5f);
+            decal->m_BasePBRParam.m_ao        = sceneMaterial.value("ao",        1.0f);
+
+            // 贴图绑定（与 PBR 格式相同，未指定时使用 default 占位纹理）
+            {
+                auto loadTex = [&](const std::string& key, const std::string& fallback) -> VansTexture* {
+                    if (sceneMaterial.contains(key))
+                    {
+                        VansTexture* tex = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial[key].get<std::string>()));
+                        if (tex) return tex;
+                    }
+                    return static_cast<VansTexture*>(GetTextureAsset(fallback));
+                };
+                decal->m_BaseColorTexture  = loadTex("basecolor_texture", "defaultAlbedo");
+                decal->m_NormalTexture     = loadTex("normal_texture",    "defaultNormal");
+                decal->m_MetalTexture      = loadTex("metal_texture",     "defaultMetal");
+                decal->m_RoughnessTexture  = loadTex("roughness_texture", "defaultRoughness");
+                decal->m_AoTexture         = loadTex("ao_texture",        "defaultAo");
+            }
+        }
+
         if (matType == VansMaterialType::VAN_SKY_BOX)
         {
             VansSkyBoxMaterial* sky = static_cast<VansSkyBoxMaterial*>(material);
@@ -1205,6 +1247,7 @@ void VansGraphics::VansScene::LoadShaderFromEntry(
     shader->SetDrawStateData(entry.depthTest, entry.depthWrite, entry.depthCompareOp, entry.cullMode);
     if (entry.pushConstantSize > 0) shader->SetPushConstant(entry.pushConstantSize);
     if (entry.enableAlphaBlend)     shader->SetEnableAlphaBlend(VK_TRUE);
+    if (entry.enableDecalBlend)     shader->SetEnableDecalBlend(VK_TRUE);
     shader->SetName(entry.name);
     m_Shaders.push_back(shader);
 }
@@ -2296,6 +2339,60 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                     VANS_LOG_WARN("[LoadSceneObjects] 找不到视频资源 '" << videoName
                         << "'，对象: " << obj->m_ObjectName);
                 }
+            }
+        }
+
+        // ── Particle component ────────────────────────────────────────────
+        // JSON 格式：{ "particle": { "asset": "EngineAssets/Particles/fire.particle",
+        //                            "play_on_awake": true } }
+        if (components.contains("particle"))
+        {
+            const auto& particleJson = components["particle"];
+            std::string assetPath    = particleJson.value("asset", "");
+            bool        playOnAwake  = particleJson.value("play_on_awake", true);
+
+            if (!assetPath.empty())
+            {
+                // 构造绝对路径
+                std::string absPath = projectRoot + "/" + assetPath;
+
+                auto* particleComp              = new VansScriptParticleComponent();
+                particleComp->m_ParticleAssetPath = assetPath;
+                particleComp->m_PlayOnAwake       = playOnAwake;
+
+                // 加载 .particle 资产
+                if (particleComp->LoadAsset(absPath))
+                {
+                    // 创建渲染节点并初始化 Quad 缓冲
+                    auto* renderNode = new VansParticleRenderNode(device);
+                    if (renderNode->InitQuadBuffers(device))
+                    {
+                        particleComp->m_RenderNode = renderNode;
+
+                        // 注册运行时到后台更新线程
+                        VansParticleManager::Instance().RegisterRuntime(
+                            particleComp->m_Runtime.get());
+
+                        // 将渲染节点加入场景
+                        RegistRenderNode(renderNode, PARTICLE_NODE);
+
+                        VANS_LOG("[LoadSceneObjects] 粒子组件 '" << assetPath
+                            << "' 已挂载到 object: " << obj->m_ObjectName);
+                    }
+                    else
+                    {
+                        VANS_LOG_WARN("[LoadSceneObjects] 粒子 Quad 缓冲初始化失败: "
+                            << obj->m_ObjectName);
+                        delete renderNode;
+                    }
+                }
+                else
+                {
+                    VANS_LOG_WARN("[LoadSceneObjects] 粒子资产加载失败 '" << absPath
+                        << "'，对象: " << obj->m_ObjectName);
+                }
+
+                obj->AddComponent(particleComp);
             }
         }
 

@@ -147,6 +147,9 @@ namespace VansGraphics
 
 		void SetEnableAlphaBlend(VkBool32 enable) { m_DrawStateData.enableAlphaBlend = enable; }
 
+		// 贴花专用：MRT 3 附件 Alpha Blend，GBuffer1 colorMask 仅 R+G
+		void SetEnableDecalBlend(VkBool32 enable) { m_DrawStateData.enableDecalBlend = enable; }
+
 		void TriggerReCreateGraphicsPipeline();
 
 		VansGraphicsShader() : m_GraphicsPipeline(nullptr)

@@ -51,6 +51,18 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
 			}
+			else if (material->m_MaterialType == VansMaterialType::VAN_DECAL)
+			{
+				// 贴花材质复用全局 PBR SSBO / Bindless 纹理体系，5 槽布局与 PBR 相同
+				VansDecalMaterial* decal = static_cast<VansDecalMaterial*>(material);
+				decal->m_MaterialIndex = pbrMaterialIndex++;
+				materialManager->m_GlobalPBRParamData.push_back(decal->m_BasePBRParam);
+				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_NormalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_MetalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_RoughnessTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_AoTexture->GetImage()));
+			}
 		}
 
 		materialManager->m_GlobalPBRDataBuffer.CreatVulkanBuffer(
@@ -141,6 +153,9 @@ namespace VansGraphics
 		allRenderNodes.insert(allRenderNodes.end(), allCommonNodes.begin(), allCommonNodes.end());
 		auto& allTransparentNodes = m_Scene->m_TransParentRenderNodes;
 		allRenderNodes.insert(allRenderNodes.end(), allTransparentNodes.begin(), allTransparentNodes.end());
+		// 贴花节点需要一个独立的变换槽位：OBB 越界测试和 UV 推导均依赖 ModelBuffer.transforms[objectIndex]
+		auto& allDecalNodes = m_Scene->m_DecalRenderNodes;
+		allRenderNodes.insert(allRenderNodes.end(), allDecalNodes.begin(), allDecalNodes.end());
 
 		int nodeCount = allRenderNodes.size();
 		m_Scene->m_InstanceTransformDataBuffer.CreatVulkanBuffer(

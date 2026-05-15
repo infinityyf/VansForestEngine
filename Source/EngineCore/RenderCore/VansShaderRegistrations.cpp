@@ -131,6 +131,18 @@ void RegisterEngineShaders()
         12, false
     });
 
+    // 贴花着色器：正确的 screen-space decal 方案
+    // - CULL_FRONT：只光栅化背面（cube 远离相机的面）
+    // - GREATER_OR_EQUAL：场景深度 <= 背面深度 → 场景几何在 cube 内部 → 通过
+    //   （天空/cube后方几何的深度 > 背面深度 → 拒绝，正确）
+    // - depthWrite = FALSE：不写入深度
+    reg.RegisterShader("Decal", {
+        "Decal",
+        "EngineAssets/Shaders/Decal",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_CULL_MODE_FRONT_BIT,
+        12, false, true
+    });
+
     // ══════════════════════════════════════════════════════════════════════════
     // Step 2: Register material type → { pass name → shader name } mappings
     // ══════════════════════════════════════════════════════════════════════════
@@ -202,5 +214,10 @@ void RegisterEngineShaders()
     // 自发光：仅参与 GBuffer pass，不投射阴影，不参与 Velocity pass
     reg.RegisterMaterialPasses(VansGraphics::VAN_EMISSIVE, {
         { VansGraphics::VansPass::GBUFFER,          "Emissive"       },
+    });
+
+    // 贴花：仅参与 DecalGBuffer pass，不投射阴影，不写深度
+    reg.RegisterMaterialPasses(VansGraphics::VAN_DECAL, {
+        { VansGraphics::VansPass::DECAL_GBUFFER,    "Decal"          },
     });
 }

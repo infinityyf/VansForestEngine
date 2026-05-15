@@ -45,6 +45,10 @@ namespace VansGraphics
 		VkImageView m_VansVKImageView;
 		std::vector<VkImageView> m_VansVKImageMipViews;
 
+		// depth+stencil combined attachment view（仅对 D32S8/D24S8 等带 stencil 格式创建）
+		// framebuffer attachment 使用此 view 以支持 stencil 操作
+		VkImageView m_DepthStencilView = VK_NULL_HANDLE;
+
 		//如果是combined sample image这里持有sampler，可能是空
 		VkSampler m_Sampler;
 
@@ -53,7 +57,8 @@ namespace VansGraphics
 	private:
 		VkImageViewType ConvertImageViewType(VkImageType type, bool isCube = false, int layer_num = 1);
 
-		VkImageAspectFlags ConvertImageViewAspect(VkImageUsageFlags usage);
+		// format 参数用于识别带 stencil 的深度格式（D32S8、D24S8 等）
+		VkImageAspectFlags ConvertImageViewAspect(VkImageUsageFlags usage, VkFormat format);
 
 	private:
 		VkExtent3D m_ImageDimention;
@@ -81,6 +86,9 @@ namespace VansGraphics
 		void SetImageMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, ImageTransition bufferTransition);
 
 		VkImageView GetImageView();
+
+		// 获取 depth+stencil combined view；若格式无 stencil 则退回 GetImageView()
+		VkImageView GetDepthStencilView() const { return m_DepthStencilView != VK_NULL_HANDLE ? m_DepthStencilView : m_VansVKImageView; }
 
 		VkImageView GetImageMipView(int mip);
 

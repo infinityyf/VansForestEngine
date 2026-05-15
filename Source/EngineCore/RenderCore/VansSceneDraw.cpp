@@ -310,6 +310,21 @@ void VansGraphics::VansScene::DrawTransParentNodes()
     }
 }
 
+void VansGraphics::VansScene::DrawParticleNodes()
+{
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    for (auto* node : m_ParticleRenderNodes)
+    {
+        if (node == nullptr)
+        {
+            continue;
+        }
+        node->Draw(cmd, globalStateData);
+    }
+}
+
 void VansGraphics::VansScene::DrawPostProcessNodes()
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
@@ -333,6 +348,17 @@ void VansGraphics::VansScene::DrawScreenSpaceFeatureNode()
     for (auto& node : m_ScreenSpaceRenderNodes)
     {
         //apply mesh
+        node->Draw(cmd, globalStateData);
+    }
+}
+
+void VansGraphics::VansScene::DrawDecalNodes()
+{
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    for (auto& node : m_DecalRenderNodes)
+    {
         node->Draw(cmd, globalStateData);
     }
 }

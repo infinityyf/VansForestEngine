@@ -355,6 +355,13 @@ namespace VansGraphics
 		HIZ_SEED_BINDING_HIZ_MIP0 = 1,   // HIZ mip 0 输出 (STORAGE_IMAGE, r32f)
 	};
 
+	// --- Decal Pass (Set 1) ---
+	// 贴花节点 Pass-level 描述符集：GBuffer2（世界坐标重建）
+	enum DecalPassBinding : uint32_t
+	{
+		DECAL_PASS_BINDING_GBUFFER2 = 0,  // GBuffer2 采样器，用于重建世界坐标
+	};
+
 	// --- GI SH Update Compute Pass ---
 	enum GISHUpdatePassBinding : uint32_t
 	{
@@ -555,5 +562,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_VegetationDraw(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VegetationCull(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_TileLightBuild(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		// 贴花 Pass Set 1：仅绑定 GBuffer2 用于世界坐标重建
+		static void CreateAndAllocate_DecalPass(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

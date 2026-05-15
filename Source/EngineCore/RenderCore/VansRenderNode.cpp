@@ -119,6 +119,7 @@ static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type)
 	case POSTPROCESS_NODE:  return VansPass::POST_PROCESS;
 	case DEFERRED_NODE:     return VansPass::DEFERRED;
 	case SCREEN_SPACE_NODE: return VansPass::SCREEN_SPACE;
+	case DECAL_NODE:        return VansPass::DECAL_GBUFFER;
 	default:                return VansPass::GBUFFER;
 	}
 }
@@ -147,6 +148,9 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 			break;
 		case VansMaterialType::VAN_EMISSIVE:
 			pc.materialIndex = static_cast<VansEmissiveMaterial*>(m_Material)->m_MaterialIndex;
+			break;
+		case VansMaterialType::VAN_DECAL:
+			pc.materialIndex = static_cast<VansDecalMaterial*>(m_Material)->m_MaterialIndex;
 			break;
 		default:
 			pc.materialIndex = -1;
@@ -631,7 +635,9 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 				{
 					VansRenderPassManager::GetInstance()->GetDepth().GetSampler(),
 					VansRenderPassManager::GetInstance()->GetDepth().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					// DEPTH_STENCIL_READ_ONLY_OPTIMAL 与 deferred pass 附件引用布局匹配，
+					// 支持在同一 subpass 中同时 sampling 和 depth test
+					VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
 				}
 			}
 		}
@@ -1127,4 +1133,55 @@ void VansGraphics::VansVegetationRenderNode::Draw(VansVKCommandBuffer& cmd, Glob
 	m_VegetationSystem->Draw(cmd, *gbufferShader, global_state,
 		m_UsedDescSetLayouts, m_UsedDescSets,
 		m_TransfromIndex);
+}
+
+// ── VansDecalRenderNode ────────────────────────────────────────────────────
+void VansGraphics::VansDecalRenderNode::CreateDescriptorSets(
+	VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
+{
+	// Set 0: Global（Camera / Lights / PBR SSBO / Bindless 纹理）
+	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
+	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+
+	// Set 1: DecalPass（仅绑定 GBuffer2 用于世界坐标重建）
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_DecalPass(textureResourceLayout, textureResourceDescriptorSets);
+	m_UsedDescSetLayouts.push_back(textureResourceLayout);
+	m_UsedDescSets.push_back(textureResourceDescriptorSets[0]);
+
+	// Set 2: Object（变换 SSBO）
+	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
+	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
+}
+
+void VansGraphics::VansDecalRenderNode::UpdateRenderData(
+	VansVKDevice* device, VansMaterialManager& materialManager,
+	VansLightManager& lightManager, VansCamera* camera)
+{
+	UpdateDescripterSets(materialManager);
+}
+
+void VansGraphics::VansDecalRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+		return;
+	m_DescriptorsetsDirty = false;
+
+	VansVKDescriptorManager::GetInstance()->ResetState();
+	// binding 0: GBuffer2（世界坐标 / 深度重建）
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			textureResourceDescriptorSets[0],
+			DECAL_PASS_BINDING_GBUFFER2,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					VansRenderPassManager::GetInstance()->GetGbuffer2().GetSampler(),
+					VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }

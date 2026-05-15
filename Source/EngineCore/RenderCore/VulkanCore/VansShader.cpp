@@ -331,7 +331,7 @@ void VansGraphics::VansGraphicsShader::SetPolygonMode(VkPolygonMode mode)
 	m_DrawStateData.polygonMode = mode;
 }
 
-void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>& states ,bool enableDeferred, bool enableAlphaBlend = false)
+void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>& states, bool enableDeferred, bool enableAlphaBlend = false, bool enableDecalBlend = false)
 {
 	if (enableDeferred)
 	{
@@ -349,6 +349,28 @@ void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>&
 				 VK_COLOR_COMPONENT_B_BIT |
 				 VK_COLOR_COMPONENT_A_BIT
 			});
+	}
+	else if (enableDecalBlend)
+	{
+		// 贴花 MRT 混合：3 个 GBuffer 颜色附件（Normal / GBuffer0 / GBuffer1），全部开启 Alpha Blend
+		// GBuffer1 只写入 R（metallic）和 G（AO），跳过 B（materialID）和 A
+		VkPipelineColorBlendAttachmentState alphaBlendState =
+		{
+			VK_TRUE,
+			VK_BLEND_FACTOR_SRC_ALPHA,
+			VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+			VK_BLEND_OP_ADD,
+			VK_BLEND_FACTOR_ONE,
+			VK_BLEND_FACTOR_ZERO,
+			VK_BLEND_OP_ADD,
+			VK_COLOR_COMPONENT_R_BIT |
+			VK_COLOR_COMPONENT_G_BIT |
+			VK_COLOR_COMPONENT_B_BIT |
+			VK_COLOR_COMPONENT_A_BIT
+		};
+		states.resize(3, alphaBlendState);
+		// GBuffer1（索引2）：跳过 B（materialID）和 A，仅写 R+G
+		states[2].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
 	}
 	else if (enableAlphaBlend)
 	{
@@ -485,7 +507,7 @@ void VansGraphics::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& 
 
 	//需要根据deferred的模式，设置每个rt的blend state，不然shader写不到对应的rt上
 	
-	InitAttachmentBlendStates(m_GraphicsPipelineCreateInfo.attachment_blend_states, enableDeferred, m_DrawStateData.enableAlphaBlend);
+	InitAttachmentBlendStates(m_GraphicsPipelineCreateInfo.attachment_blend_states, enableDeferred, m_DrawStateData.enableAlphaBlend, m_DrawStateData.enableDecalBlend);
 }
 
 bool VansGraphics::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data)

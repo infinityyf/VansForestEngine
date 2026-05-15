@@ -43,12 +43,26 @@ namespace VansGraphics
         return view_type;
     }
 
-    VkImageAspectFlags VansVKImage::ConvertImageViewAspect(VkImageUsageFlags usage)
+    // 判断深度格式是否附带 stencil 平面
+    static bool HasStencilComponent(VkFormat format)
+    {
+        return format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+               format == VK_FORMAT_D24_UNORM_S8_UINT  ||
+               format == VK_FORMAT_D16_UNORM_S8_UINT;
+    }
+
+    VkImageAspectFlags VansVKImage::ConvertImageViewAspect(VkImageUsageFlags usage, VkFormat format)
     {
         VkImageAspectFlags aspect = 0;
         if (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
         {
             aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
+            // 带 stencil 格式需要在 barrier aspect 中包含 stencil，
+            // 确保两个平面都能被 pipeline barrier 正确转换
+            if (HasStencilComponent(format))
+            {
+                aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+            }
             return aspect;
         }
         if (usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
@@ -119,7 +133,15 @@ namespace VansGraphics
 
         //create image view
         VkImageViewType view_type = ConvertImageViewType(type, isCube, layer_num);
-        m_ImageAspect = ConvertImageViewAspect(usage);
+        // m_ImageAspect 包含所有平面（depth+stencil），用于 pipeline barrier 覆盖全部平面
+        m_ImageAspect = ConvertImageViewAspect(usage, format);
+        // 采样 view 只能有单一 aspect：depth-stencil 图像的采样 view 只用 DEPTH_BIT，
+        // 否则 Vulkan 验证层报错（combined aspect view 不可绑定为 sampler2D）
+        VkImageAspectFlags viewAspect = m_ImageAspect;
+        if ((m_ImageAspect & VK_IMAGE_ASPECT_DEPTH_BIT) && (m_ImageAspect & VK_IMAGE_ASPECT_STENCIL_BIT))
+        {
+            viewAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+        }
         VkImageViewCreateInfo image_view_create_info =
         {
              VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -135,7 +157,7 @@ namespace VansGraphics
                  VK_COMPONENT_SWIZZLE_IDENTITY
              },
              {
-                 m_ImageAspect,
+                 viewAspect,
                  0,
                  VK_REMAINING_MIP_LEVELS,
                  0,
@@ -158,6 +180,20 @@ namespace VansGraphics
         {
             VANS_LOG_ERROR("Could not create an image view.");
             return false;
+        }
+
+        // 对 depth+stencil 格式额外创建 combined attachment view（DEPTH|STENCIL），
+        // 用于 framebuffer attachment，以支持 stencil 写入/读取操作
+        if ((m_ImageAspect & VK_IMAGE_ASPECT_DEPTH_BIT) && (m_ImageAspect & VK_IMAGE_ASPECT_STENCIL_BIT))
+        {
+            VkImageViewCreateInfo dsViewInfo      = image_view_create_info;
+            dsViewInfo.subresourceRange.aspectMask = m_ImageAspect; // DEPTH|STENCIL
+            result = vkCreateImageView(logical_device, &dsViewInfo, nullptr, &m_DepthStencilView);
+            if (VK_SUCCESS != result)
+            {
+                VANS_LOG_ERROR("Could not create depth-stencil attachment image view.");
+                return false;
+            }
         }
 
         //创建多个mip的imageview
@@ -228,6 +264,11 @@ namespace VansGraphics
 
     void VansVKImage::DestroyVulkanImage(VkDevice& logical_device)
     {
+        if (VK_NULL_HANDLE != m_DepthStencilView)
+        {
+            vkDestroyImageView(logical_device, m_DepthStencilView, nullptr);
+            m_DepthStencilView = VK_NULL_HANDLE;
+        }
         if (VK_NULL_HANDLE != m_VansVKImageView)
         {
             vkDestroyImageView(logical_device, m_VansVKImageView, nullptr);

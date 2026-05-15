@@ -13,6 +13,7 @@
 #include <fstream>
 #include <string>
 #include <algorithm>
+#include <glm/glm.hpp>
 #include "../../../../ForestExporter/VansEngineBridge.h"
 #include "../../../../ForestExporter/VansInputBridge.h"
 #include "../../../../ForestExporter/VansPhysicsEventInfo.h"
@@ -132,9 +133,69 @@ bool VansScriptVideoComponent::SwitchSource(const std::string& name)
 }
 
 // ---------------------------------------------------------------------------
-// Runs EngineExported/_engine_redirect.py which replaces sys.stdout/stderr
-// with objects that route output into the engine's VansConsole.
+// VansScriptParticleComponent — 粒子组件接口实现
 // ---------------------------------------------------------------------------
+
+void VansScriptParticleComponent::Play()
+{
+	if (!m_Runtime) return;
+	m_IsPlaying          = true;
+	m_Runtime->m_IsPlaying = true;
+}
+
+void VansScriptParticleComponent::Stop()
+{
+	if (!m_Runtime) return;
+	m_IsPlaying            = false;
+	m_PlayTime             = 0.f;
+	m_Runtime->m_IsPlaying = false;
+	m_Runtime->m_PlayTime  = 0.f;
+	// 清空粒子池
+	if (m_ParticleAsset)
+	{
+		for (auto& emitter : m_ParticleAsset->m_Emitters)
+		{
+			if (emitter) emitter->m_ParticlePool.m_AliveCount = 0;
+		}
+	}
+}
+
+void VansScriptParticleComponent::Pause()
+{
+	if (!m_Runtime) return;
+	m_IsPlaying            = false;
+	m_Runtime->m_IsPlaying = false;
+}
+
+void VansScriptParticleComponent::Restart()
+{
+	Stop();
+	Play();
+}
+
+bool VansScriptParticleComponent::LoadAsset(const std::string& path)
+{
+	auto newAsset = std::make_unique<VansGraphics::VansParticleAsset>();
+	if (!newAsset->LoadFromFile(path))
+		return false;
+
+	m_ParticleAssetPath = path;
+	m_ParticleAsset     = std::move(newAsset);
+
+	// 重新创建 Runtime
+	m_Runtime           = std::make_unique<VansGraphics::VansParticleRuntime>();
+	m_Runtime->m_Asset  = m_ParticleAsset.get();
+	return true;
+}
+
+void VansScriptParticleComponent::OnUpdate(float deltaTime)
+{
+	if (!m_IsPlaying || !m_Runtime) return;
+	m_PlayTime += deltaTime;
+	m_Runtime->m_LocalToWorld = glm::mat4(1.f); // 由调用方写入实际变换
+}
+
+
 static void InstallPythonOutputRedirect()
 {
     // Register the tiny C++ helper module that Python redirect classes call into

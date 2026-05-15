@@ -20,6 +20,8 @@ namespace VansGraphics
 		SCREEN_SPACE_NODE = 1 << 5,
 		TERRAIN_NODE = 1 << 6,
 		VEGETATION_NODE = 1 << 7,
+		DECAL_NODE = 1 << 8,  // OBB 贴花节点，叠写 GBuffer
+		PARTICLE_NODE = 1 << 9,  // 粒子实例化 Billboard 节点
 	};
 
 	struct alignas(16) ModelDataStruct
@@ -335,6 +337,19 @@ namespace VansGraphics
 		void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
 		void DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
+	};
+
+	// ── Decal render node — OBB decal, overwrites GBuffer Normal/GBuffer0/GBuffer1 ──
+	class VansDecalRenderNode : public VansRenderNode
+	{
+	public:
+		VansDecalRenderNode(VkDevice& device) : VansRenderNode(device, DECAL_NODE) {}
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 	};
 
 }

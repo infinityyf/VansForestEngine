@@ -23,6 +23,8 @@ namespace VansGraphics
         VkCullModeFlags  cullMode       = VK_CULL_MODE_BACK_BIT;
         int              pushConstantSize = 0;
         bool             enableAlphaBlend = false;
+        // 贴花专用：3 附件 MRT Alpha Blend，GBuffer1 写入掩码仅 R+G
+        bool             enableDecalBlend = false;
     };
 
     // ---------------------------------------------------------------------------

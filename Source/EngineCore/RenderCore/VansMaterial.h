@@ -33,6 +33,8 @@ namespace VansGraphics
 		// future
 		static constexpr const char* VELOCITY         = "velocity";
 		static constexpr const char* PRE_DEPTH        = "preDepth";
+		// 贴花阶段：袖写 Normal / GBuffer0 / GBuffer1
+		static constexpr const char* DECAL_GBUFFER    = "decalGBuffer";
 	}
 	class VansPBRMaterial;
 	class VansTransparentMaterial;
@@ -45,6 +47,7 @@ namespace VansGraphics
 	class VansDeferredMaterial;
 	class VansSSAOMaterial;
 	class VansEmissiveMaterial;
+	class VansDecalMaterial;
 
 	enum VansMaterialType
 	{
@@ -61,6 +64,7 @@ namespace VansGraphics
 		VAN_SUBSURFACE = 12,
 		VAN_GRASS    = 13,
 		VAN_EMISSIVE = 14,   // 自发光材质：albedo × intensity 直通，无 BRDF
+		VAN_DECAL    = 15,   // 贴花材质：叠写到 GBuffer Normal/GBuffer0/GBuffer1
 	};
 
 	// Lightweight push-constant payload built at draw time.
@@ -350,7 +354,29 @@ namespace VansGraphics
 	};
 
 	// ============================================================
-	// VansTransparentMaterial 鈥?multi-texture transparent pass (type 2)
+	// VansDecalMaterial — 贴花材质 (type 15)
+	// 复用全局 PBR SSBO / Bindless 纹理体系，结构与 VansPBRMaterial 相同
+	// 贴花阶段说明：
+	//   采样 GBuffer2 重建世界坐标，判断是否在 OBB 内，将贴花 UV 映射到 PBR 纹理
+	//   MRT 输出：附件 0=Normal，附件 1=GBuffer0(albedo/alpha)，附件 2=GBuffer1(metallic+AO)
+	// ============================================================
+	class VansDecalMaterial : public VansMaterial
+	{
+	public:
+		VansTexture* m_BaseColorTexture  = nullptr;
+		VansTexture* m_NormalTexture     = nullptr;
+		VansTexture* m_MetalTexture      = nullptr;
+		VansTexture* m_RoughnessTexture  = nullptr;
+		VansTexture* m_AoTexture         = nullptr;
+
+		VansBasePBRParam m_BasePBRParam;
+
+		// 全局 PBR SSBO 中的材质索引，由 PreparePBRMaterialData 赋值
+		int m_MaterialIndex = -1;
+	};
+
+	// ============================================================
+	// VansTransparentMaterial — multi-texture transparent pass (type 2)
 	// ============================================================
 	class VansTransparentMaterial : public VansMaterial
 	{

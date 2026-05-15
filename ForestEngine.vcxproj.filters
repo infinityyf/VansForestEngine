@@ -104,6 +104,12 @@
     <Filter Include="EngineCore\AudioCore">
       <UniqueIdentifier>{bb551c46-ada5-42cd-b7bc-993a311d5168}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\ParticleCore">
+      <UniqueIdentifier>{a1f4c2e0-3b7d-4a91-8c56-de234f017abc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineCore\ParticleCore\Modules">
+      <UniqueIdentifier>{b2e5d3f1-4c8e-5ba2-9d67-ef345a128bcd}</UniqueIdentifier>
+    </Filter>
     <Filter Include="EngineCore\RenderCore\LTC">
       <UniqueIdentifier>{3f128b9e-6e3b-4bd9-9c1a-873508660429}</UniqueIdentifier>
     </Filter>
@@ -495,6 +501,36 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\AudioCore\VansAudioSystem.h">
       <Filter>EngineCore\AudioCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleData.h">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleInstanceData.h">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleEmitter.h">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleAsset.h">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleRuntime.h">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleManager.h">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\Modules\VansParticleModule.h">
+      <Filter>EngineCore\ParticleCore\Modules</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\Modules\VansInitModules.h">
+      <Filter>EngineCore\ParticleCore\Modules</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\Modules\VansUpdateModules.h">
+      <Filter>EngineCore\ParticleCore\Modules</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VansParticleRenderNode.h">
+      <Filter>EngineCore\RenderCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VansVideoManager.h">
       <Filter>EngineCore\VideoCore</Filter>
@@ -889,6 +925,33 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AudioCore\VansAudioSystem.cpp">
       <Filter>EngineCore\AudioCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\VansParticleData.cpp">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\VansParticleEmitter.cpp">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\VansParticleAsset.cpp">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\VansParticleRuntime.cpp">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\VansParticleManager.cpp">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\Modules\VansParticleModule.cpp">
+      <Filter>EngineCore\ParticleCore\Modules</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\Modules\VansInitModules.cpp">
+      <Filter>EngineCore\ParticleCore\Modules</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\Modules\VansUpdateModules.cpp">
+      <Filter>EngineCore\ParticleCore\Modules</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VansParticleRenderNode.cpp">
+      <Filter>EngineCore\RenderCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VansVideoManager.cpp">
       <Filter>EngineCore\VideoCore</Filter>

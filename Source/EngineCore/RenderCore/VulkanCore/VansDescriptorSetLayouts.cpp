@@ -675,4 +675,14 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_TileLightBuild(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_DecalPass(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	// 贴花 Pass Set 1：GBuffer2（COMBINED_IMAGE_SAMPLER），供 fragment shader 重建世界坐标
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{DECAL_PASS_BINDING_GBUFFER2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
 } // namespace VansGraphics

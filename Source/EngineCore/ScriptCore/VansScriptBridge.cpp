@@ -8,6 +8,8 @@
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
+#include "../PhysicsCore/VansPhysics.h"
+#include "../PhysicsCore/VansPhysicsNode.h"
 #include "../Util/VansInputManager.h"
 #include "../RenderCore/VulkanCore/VansVideoTexture.h"
 #include "../RuntimeUI/Public/VansUISystem.h"
@@ -1144,6 +1146,113 @@ void VansInitEngineBridge()
 		auto* c = AsVideoComp(comp);
 		if (!c || !name) return false;
 		return c->SwitchSource(std::string(name));
+	};
+
+	// ── Physics Scene Query ───────────────────────────────────────────────
+	s_EngineBridge.physicsRaycast = [](float ox, float oy, float oz,
+	                                    float dx, float dy, float dz,
+	                                    float maxDist) -> RaycastHitInfo
+	{
+		RaycastHitInfo result;
+		auto& phys = VansEngine::VansPhysicsSystem::GetInstance();
+		PxScene* scene = phys.GetScene();
+		if (!scene) return result;
+
+		std::lock_guard<std::mutex> lock(phys.GetSimulationMutex());
+
+		const PxVec3 origin(ox, oy, oz);
+		const PxVec3 unitDir = PxVec3(dx, dy, dz).getNormalized();
+		PxRaycastBuffer buf;
+		if (!scene->raycast(origin, unitDir, maxDist, buf) || !buf.hasBlock)
+			return result;
+
+		const PxRaycastHit& hit = buf.block;
+		result.hasHit    = true;
+		result.distance  = hit.distance;
+		result.position  = PyVec3(hit.position.x, hit.position.y, hit.position.z);
+		result.normal    = PyVec3(hit.normal.x,   hit.normal.y,   hit.normal.z);
+		if (hit.actor && hit.actor->userData)
+		{
+			auto* node = static_cast<VansEngine::VansPhysicsNode*>(hit.actor->userData);
+			strncpy_s(result.hitName, sizeof(result.hitName),
+			          node->GetName().c_str(), _TRUNCATE);
+			result.transformID = node->GetTransformID();
+		}
+		return result;
+	};
+
+	s_EngineBridge.physicsRaycastAll = [](float ox, float oy, float oz,
+	                                       float dx, float dy, float dz,
+	                                       float maxDist,
+	                                       RaycastHitInfo* outHits, int capacity) -> int
+	{
+		if (!outHits || capacity <= 0) return 0;
+		auto& phys = VansEngine::VansPhysicsSystem::GetInstance();
+		PxScene* scene = phys.GetScene();
+		if (!scene) return 0;
+
+		std::lock_guard<std::mutex> lock(phys.GetSimulationMutex());
+
+		const PxVec3 origin(ox, oy, oz);
+		const PxVec3 unitDir = PxVec3(dx, dy, dz).getNormalized();
+		std::vector<PxRaycastHit> hitBuffer(static_cast<size_t>(capacity));
+		PxRaycastBuffer buf(hitBuffer.data(), static_cast<PxU32>(capacity));
+		scene->raycast(origin, unitDir, maxDist, buf);
+
+		const PxU32 count = buf.nbTouches;
+		const PxU32 write = (count < static_cast<PxU32>(capacity))
+		                    ? count : static_cast<PxU32>(capacity);
+		for (PxU32 i = 0; i < write; ++i)
+		{
+			const PxRaycastHit& hit = buf.touches[i];
+			RaycastHitInfo& out = outHits[i];
+			out.hasHit   = true;
+			out.distance = hit.distance;
+			out.position = PyVec3(hit.position.x, hit.position.y, hit.position.z);
+			out.normal   = PyVec3(hit.normal.x,   hit.normal.y,   hit.normal.z);
+			if (hit.actor && hit.actor->userData)
+			{
+				auto* node = static_cast<VansEngine::VansPhysicsNode*>(hit.actor->userData);
+				strncpy_s(out.hitName, sizeof(out.hitName),
+				          node->GetName().c_str(), _TRUNCATE);
+				out.transformID = node->GetTransformID();
+			}
+		}
+		return static_cast<int>(write);
+	};
+
+	s_EngineBridge.physicsOverlapSphere = [](float cx, float cy, float cz, float radius,
+	                                          OverlapHitInfo* outHits, int capacity) -> int
+	{
+		if (!outHits || capacity <= 0) return 0;
+		auto& phys = VansEngine::VansPhysicsSystem::GetInstance();
+		PxScene* scene = phys.GetScene();
+		if (!scene) return 0;
+
+		std::lock_guard<std::mutex> lock(phys.GetSimulationMutex());
+
+		const PxSphereGeometry sphere(radius);
+		const PxTransform pose(PxVec3(cx, cy, cz));
+		std::vector<PxOverlapHit> hitBuffer(static_cast<size_t>(capacity));
+		PxOverlapBuffer buf(hitBuffer.data(), static_cast<PxU32>(capacity));
+		scene->overlap(sphere, pose, buf);
+
+		const PxU32 count = buf.nbTouches;
+		const PxU32 write = (count < static_cast<PxU32>(capacity))
+		                    ? count : static_cast<PxU32>(capacity);
+		for (PxU32 i = 0; i < write; ++i)
+		{
+			const PxOverlapHit& hit = buf.touches[i];
+			OverlapHitInfo& out = outHits[i];
+			if (hit.actor && hit.actor->userData)
+			{
+				auto* node = static_cast<VansEngine::VansPhysicsNode*>(hit.actor->userData);
+				strncpy_s(out.hitName, sizeof(out.hitName),
+				          node->GetName().c_str(), _TRUNCATE);
+				out.transformID = node->GetTransformID();
+			}
+		}
+		return static_cast<int>(write);
 	};
 }
 

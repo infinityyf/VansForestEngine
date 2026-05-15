@@ -14,6 +14,7 @@
 #include "../ScriptCore/VansScriptContext.h"
 #include "VansVideoManager.h"
 #include "../AudioCore/VansAudioManager.h"
+#include "VansParticleRenderNode.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -110,6 +111,12 @@ namespace VansGraphics
 		std::vector<VansRenderNode*> m_PostProcessRenderNodes;
 
 		std::vector<VansRenderNode*> m_ScreenSpaceRenderNodes;
+
+		// OBB 贴花节点，在 GBuffer pass 之后、Deferred pass 之前执行
+		std::vector<VansRenderNode*> m_DecalRenderNodes;
+
+		// 粒子渲染节点，在 Transparent Pass 末尾执行实例化 Billboard 绘制
+		std::vector<VansParticleRenderNode*> m_ParticleRenderNodes;
 
 		// Multi-mesh parent groups for hierarchical display in the editor.
 		// Key = parent group name, Value = group info with child node pointers.
@@ -379,9 +386,15 @@ namespace VansGraphics
 
 		void DrawTransParentNodes();
 
+		// 绘制所有粒子节点（在 Transparent Pass 末尾调用）
+		void DrawParticleNodes();
+
 		void DrawPostProcessNodes();
 
 		void DrawScreenSpaceFeatureNode();
+
+		// 绘制所有贴花节点（在 GBuffer pass 之后、Deferred pass 之前调用）
+		void DrawDecalNodes();
 
 		void DeferredShading();
 
@@ -409,6 +422,9 @@ namespace VansGraphics
 		std::vector<VansVKImage>& GetTLASInstanceTextures() { return m_TlasInstanceTextures; }
 
 		std::vector<uint32_t>& GetTLASInstanceTextureIndex() { return m_TlasInstanceTextureIndex; }
+
+		// 是否存在贴花节点（用于 renderer 决策是否插入 Decal Pass）
+		bool HasDecalNodes() const { return !m_DecalRenderNodes.empty(); }
 
 	private:
 

@@ -141,6 +141,9 @@ namespace VansGraphics
 		// 最终布局为 SHADER_READ_ONLY_OPTIMAL，供 ImGui 场景窗口采样
 		VansVKRenderPass m_VansSceneUIPass;
 
+		// 贴花 pass：只写 Normal / GBuffer0 / GBuffer1（LOAD 现有内容，alpha blend 叠写）
+		VansVKRenderPass m_VansDecalPass;
+
 		VkDevice m_LogicDevice;
 
 	public:
@@ -169,6 +172,9 @@ namespace VansGraphics
 		// scene ui pass（Noesis 运行时 UI → FSR 输出图像，格式 R16G16B16A16_SFLOAT）
 		// fsrImageView：FSR 输出图像的 ImageView；displayExtent：显示分辨率
 		void SetupVansSceneUIRenderPass(VkDevice& logic_device, VkImageView fsrImageView, const VkExtent2D& displayExtent);
+
+		// 贴花 pass：引用现有 GBuffer 图像（Normal/GBuffer0/GBuffer1），LOAD 内容并 alpha blend 叠写
+		void SetupVansDecalRenderPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
 
 		// 销毁UI pass（用于窗口resize）
 		void DestroyUIRenderPass();
@@ -218,6 +224,8 @@ namespace VansGraphics
 		VansVKImage& GetGbuffer1() { return m_GBufferImage1; }
 
 		VansVKImage& GetGbuffer2() { return m_GBufferImage2; }
+
+		VansVKRenderPass& GetVansDecalPass() { return m_VansDecalPass; }
 
 	};
 }

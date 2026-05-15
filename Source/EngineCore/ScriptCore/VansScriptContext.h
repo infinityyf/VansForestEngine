@@ -15,13 +15,16 @@
 #include <cstdint>
 #include <filesystem>
 #include <unordered_map>
+#include <memory>
 #include <pybind11/embed.h>
 #include "../PhysicsCore/VansPhysicsEvents.h"
 #include "../../../../ForestExporter/VansPhysicsEventInfo.h"
+#include "../ParticleCore/VansParticleAsset.h"
+#include "../ParticleCore/VansParticleRuntime.h"
 namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
-namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; class VansVideoTexture; class VansVideoManager; class VansMaterialManager; }
+namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; class VansVideoTexture; class VansVideoManager; class VansMaterialManager; class VansParticleRenderNode; }
 namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; class VansAudioNode; class VansAudioManager; }
 
 class VansScriptContext
@@ -339,6 +342,45 @@ public:
 	// 不自动播放，由调用方决定是否立即调用 Play()。
 	// 返回 true 表示切换成功，false 表示资源名未找到（保持原状）。
 	bool SwitchSource(const std::string& name);
+};
+
+// ── Particle Component ───────────────────────────────────────────────────────
+// 持有对 VansParticleRuntime 的所有权以及对 VansParticleRenderNode 的非拥有引用。
+// 通过此组件可以控制粒子系统的播放、暂停、停止，以及运行时切换粒子资产。
+class VansScriptParticleComponent : public VansScriptComponent
+{
+public:
+	VansScriptParticleComponent() { m_ComponentName = "Particle"; }
+
+	// ── 资产引用 ─────────────────────────────────────────────────────────
+	// .particle 文件相对路径（供序列化 / Inspector 显示）
+	std::string m_ParticleAssetPath;
+
+	// 运行时加载后的资产（拥有所有权）
+	std::unique_ptr<VansGraphics::VansParticleAsset> m_ParticleAsset;
+
+	// 运行时实例（双缓冲粒子状态，拥有所有权）
+	std::unique_ptr<VansGraphics::VansParticleRuntime> m_Runtime;
+
+	// 对应的渲染节点（非拥有指针，生命周期由 VansScene 管理）
+	VansGraphics::VansParticleRenderNode* m_RenderNode = nullptr;
+
+	// ── 运行时状态 ───────────────────────────────────────────────────────
+	bool  m_PlayOnAwake = true;
+	bool  m_IsPlaying   = false;
+	float m_PlayTime    = 0.f;
+
+	// ── 播放控制接口 ─────────────────────────────────────────────────────
+	void Play();
+	void Stop();
+	void Pause();
+	void Restart();
+
+	// 加载并切换粒子资产（仅限 .particle 文件路径），返回 true 表示成功
+	bool LoadAsset(const std::string& path);
+
+	// 每帧由 VansScriptContext 调用（主线程）
+	void OnUpdate(float deltaTime);
 };
 
 // ── Python Script Component ─────────────────────────────────────────────────
