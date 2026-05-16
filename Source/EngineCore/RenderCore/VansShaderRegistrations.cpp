@@ -131,6 +131,18 @@ void RegisterEngineShaders()
         12, false
     });
 
+    // 粒子 Billboard 着色器：
+    // - 深度测试开启、深度写入关闭（透明 Pass）
+    // - CULL_NONE：Billboard 双面可见
+    // - Alpha Blend 开启（支持加法/叠加混合）
+    // - Push Constant 16 字节（vec4 spriteSheetParams：精灵动画列/行数）
+    reg.RegisterShader("Particle", {
+        "Particle",
+        "EngineAssets/Shaders/Particle",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        16, true
+    });
+
     // 贴花着色器：正确的 screen-space decal 方案
     // - CULL_FRONT：只光栅化背面（cube 远离相机的面）
     // - GREATER_OR_EQUAL：场景深度 <= 背面深度 → 场景几何在 cube 内部 → 通过

@@ -2367,11 +2367,36 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                     auto* renderNode = new VansParticleRenderNode(device);
                     if (renderNode->InitQuadBuffers(device))
                     {
+                        renderNode->SetName(obj->m_ObjectName);
+                        if (obj->m_TransformID != 0)
+                        {
+                            // 复合对象：粒子节点共享对象已有 Transform，避免 Inspector 出现两套位置。
+                            renderNode->ShareTransform(obj->m_TransformID);
+                        }
+                        else
+                        {
+                            // 纯粒子对象：使用粒子渲染节点自带 Transform 作为对象 Transform。
+                            obj->m_TransformID = renderNode->m_TransformID;
+                            if (hasObjTransform)
+                                renderNode->SetTransformData(objPos, objRot, objScl);
+                        }
+
+                        // 绑定粒子 Billboard Shader
+                        renderNode->m_Shader = static_cast<VansGraphicsShader*>(GetShaderAsset("Particle"));
+                        if (!renderNode->m_Shader)
+                        {
+                            VANS_LOG_WARN("[LoadSceneObjects] 粒子 Shader 'Particle' 未找到，粒子将无法渲染");
+                        }
+
                         particleComp->m_RenderNode = renderNode;
 
                         // 注册运行时到后台更新线程
+                        VansParticleManager::Instance().Initialize();
                         VansParticleManager::Instance().RegisterRuntime(
                             particleComp->m_Runtime.get());
+
+                        if (particleComp->m_PlayOnAwake)
+                            particleComp->Play();
 
                         // 将渲染节点加入场景
                         RegistRenderNode(renderNode, PARTICLE_NODE);

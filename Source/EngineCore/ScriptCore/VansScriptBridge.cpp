@@ -102,6 +102,12 @@ static inline VansScriptVideoComponent* AsVideoComp(void* p)
 		static_cast<VansScriptComponent*>(p));
 }
 
+static inline VansScriptParticleComponent* AsParticleComp(void* p)
+{
+	return dynamic_cast<VansScriptParticleComponent*>(
+		static_cast<VansScriptComponent*>(p));
+}
+
 // ---------------------------------------------------------------------------
 //  Populate the bridge
 // ---------------------------------------------------------------------------
@@ -1085,6 +1091,69 @@ void VansInitEngineBridge()
 		if (!c || !c->m_AudioNode || !buf || bufSize <= 0) return;
 		const std::string& path = c->m_AudioNode->GetFilePath();
 		strncpy_s(buf, bufSize, path.c_str(), static_cast<size_t>(bufSize - 1));
+	};
+
+	// ── Particle Component ─────────────────────────────────────────
+	s_EngineBridge.objectGetParticleComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptParticleComponent>();
+	};
+
+	s_EngineBridge.particlePlay = [](void* comp)
+	{
+		auto* c = AsParticleComp(comp);
+		if (c) c->Play();
+	};
+
+	s_EngineBridge.particleStop = [](void* comp)
+	{
+		auto* c = AsParticleComp(comp);
+		if (c) c->Stop();
+	};
+
+	s_EngineBridge.particlePause = [](void* comp)
+	{
+		auto* c = AsParticleComp(comp);
+		if (c) c->Pause();
+	};
+
+	s_EngineBridge.particleRestart = [](void* comp)
+	{
+		auto* c = AsParticleComp(comp);
+		if (c) c->Restart();
+	};
+
+	s_EngineBridge.particleSetWorldPosition = [](void* comp, float x, float y, float z)
+	{
+		auto* c = AsParticleComp(comp);
+		if (c) c->SetWorldPosition(x, y, z);
+	};
+
+	s_EngineBridge.particleClearWorldPositionOverride = [](void* comp)
+	{
+		auto* c = AsParticleComp(comp);
+		if (c) c->ClearWorldPositionOverride();
+	};
+
+	s_EngineBridge.particleIsPlaying = [](void* comp) -> bool
+	{
+		auto* c = AsParticleComp(comp);
+		return c ? c->m_IsPlaying : false;
+	};
+
+	s_EngineBridge.particleGetPlayTime = [](void* comp) -> float
+	{
+		auto* c = AsParticleComp(comp);
+		return c ? c->m_PlayTime : 0.0f;
+	};
+
+	s_EngineBridge.particleGetAssetPath = [](void* comp, char* buf, int bufSize)
+	{
+		auto* c = AsParticleComp(comp);
+		if (!c || !buf || bufSize <= 0) return;
+		strncpy_s(buf, bufSize, c->m_ParticleAssetPath.c_str(), static_cast<size_t>(bufSize - 1));
 	};
 
 	// ── Video Component ───────────────────────────────────────────

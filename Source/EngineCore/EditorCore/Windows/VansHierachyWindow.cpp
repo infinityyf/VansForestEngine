@@ -1182,6 +1182,112 @@ void VansGraphics::VansHierachuWindow::DrawObjectDetail()
         }
     }
 
+    // ── Particle Component ───────────────────────────────────────────
+    auto* particleComp = obj->GetComponent<VansScriptParticleComponent>();
+    if (particleComp)
+    {
+        if (ImGui::CollapsingHeader("Particle Component", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            // 资产路径（只读）
+            ImGui::TextDisabled("Asset: %s",
+                particleComp->m_ParticleAssetPath.empty()
+                    ? "(none)"
+                    : particleComp->m_ParticleAssetPath.c_str());
+
+            // ── 资产参数 ─────────────────────────────────────────
+            VansGraphics::VansParticleAsset* asset = particleComp->m_ParticleAsset.get();
+            if (asset)
+            {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.7f, 1.0f, 0.7f, 1.0f), "Asset: %s", asset->m_Name.c_str());
+                ImGui::Text("Duration:  %.2f s", asset->m_Duration);
+                ImGui::Text("Loop:      %s",     asset->m_Loop    ? "Yes" : "No");
+                ImGui::Text("Prewarm:   %s",     asset->m_Prewarm ? "Yes" : "No");
+                ImGui::Text("Sim Space: %s",     asset->m_SimSpace.c_str());
+                ImGui::Text("Emitters:  %d",     (int)asset->m_Emitters.size());
+            }
+
+            // ── 运行时状态 ───────────────────────────────────────
+            ImGui::Separator();
+            VansGraphics::VansParticleRuntime* rt = particleComp->m_Runtime.get();
+            if (rt)
+            {
+                const char* playStateStr = rt->m_IsPlaying ? "Playing" : "Stopped";
+                ImGui::Text("State:      %s",  playStateStr);
+                ImGui::Text("Play Time:  %.2f s", rt->m_PlayTime);
+                ImGui::Text("Alive:      %u",  rt->m_AliveInstanceCount.load());
+            }
+            else
+            {
+                ImGui::TextDisabled("Runtime not initialized");
+            }
+
+            ImGui::Text("Play On Awake: %s", particleComp->m_PlayOnAwake ? "Yes" : "No");
+
+            // ── 播放控制按钮 ─────────────────────────────────────
+            ImGui::Separator();
+            if (ImGui::Button("Play##particle"))    particleComp->Play();
+            ImGui::SameLine();
+            if (ImGui::Button("Stop##particle"))    particleComp->Stop();
+            ImGui::SameLine();
+            if (ImGui::Button("Pause##particle"))   particleComp->Pause();
+            ImGui::SameLine();
+            if (ImGui::Button("Restart##particle")) particleComp->Restart();
+
+            // ── 发射器列表 ───────────────────────────────────────
+            if (asset && !asset->m_Emitters.empty())
+            {
+                ImGui::Spacing();
+                if (ImGui::TreeNode("Emitters"))
+                {
+                    static const char* s_SpawnTypeNames[]  = { "RateOverTime", "Burst", "RateOverDistance" };
+                    static const char* s_BlendModeNames[]  = { "Alpha", "Additive", "Multiply" };
+                    static const char* s_RendererTypeNames[] = { "Billboard", "StretchedBillboard", "Mesh" };
+
+                    for (size_t i = 0; i < asset->m_Emitters.size(); ++i)
+                    {
+                        const VansGraphics::VansParticleEmitter& em = *asset->m_Emitters[i];
+                        char label[128];
+                        std::snprintf(label, sizeof(label), "[%d] %s##em%d",
+                            (int)i, em.m_Name.empty() ? "Emitter" : em.m_Name.c_str(), (int)i);
+
+                        if (ImGui::TreeNode(label))
+                        {
+                            ImGui::Text("Enabled:      %s", em.m_Enabled ? "Yes" : "No");
+                            ImGui::Text("Max Particles: %u", em.m_MaxParticles);
+
+                            // 发射模式
+                            int spawnIdx = (int)em.m_SpawnConfig.m_Type;
+                            if (spawnIdx >= 0 && spawnIdx < 3)
+                                ImGui::Text("Spawn Type:   %s", s_SpawnTypeNames[spawnIdx]);
+                            if (em.m_SpawnConfig.m_Type == VansGraphics::VansSpawnType::RateOverTime)
+                                ImGui::Text("Rate:         %.1f /s", em.m_SpawnConfig.m_Rate);
+                            if (!em.m_SpawnConfig.m_Bursts.empty())
+                                ImGui::Text("Bursts:       %d", (int)em.m_SpawnConfig.m_Bursts.size());
+
+                            // 渲染配置
+                            const VansGraphics::VansParticleRendererConfig& rc = em.m_RendererConfig;
+                            int rendIdx  = (int)rc.m_Type;
+                            int blendIdx = (int)rc.m_BlendMode;
+                            if (rendIdx  >= 0 && rendIdx  < 3)
+                                ImGui::Text("Renderer:     %s", s_RendererTypeNames[rendIdx]);
+                            if (blendIdx >= 0 && blendIdx < 3)
+                                ImGui::Text("Blend Mode:   %s", s_BlendModeNames[blendIdx]);
+                            if (!rc.m_Texture.empty())
+                                ImGui::Text("Texture:      %s", rc.m_Texture.c_str());
+                            if (rc.m_SpriteSheetEnabled)
+                                ImGui::Text("Sprite Sheet: %d x %d",
+                                    rc.m_SpriteColumns, rc.m_SpriteRows);
+
+                            ImGui::TreePop();
+                        }
+                    }
+                    ImGui::TreePop();
+                }
+            }
+        }
+    }
+
     ImGui::End();
 }
 

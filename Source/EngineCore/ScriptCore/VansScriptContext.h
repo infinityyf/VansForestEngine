@@ -369,12 +369,16 @@ public:
 	bool  m_PlayOnAwake = true;
 	bool  m_IsPlaying   = false;
 	float m_PlayTime    = 0.f;
+	bool      m_HasWorldPositionOverride = false;
+	glm::vec3 m_WorldPositionOverride    = glm::vec3(0.f);
 
 	// ── 播放控制接口 ─────────────────────────────────────────────────────
 	void Play();
 	void Stop();
 	void Pause();
 	void Restart();
+	void SetWorldPosition(float x, float y, float z);
+	void ClearWorldPositionOverride();
 
 	// 加载并切换粒子资产（仅限 .particle 文件路径），返回 true 表示成功
 	bool LoadAsset(const std::string& path);

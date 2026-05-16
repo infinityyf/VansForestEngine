@@ -4,6 +4,7 @@
 #include "VulkanCore/VansVKBuffer.h"
 #include "VulkanCore/VansShader.h"
 #include "VulkanCore/VansTexture.h"
+#include <array>
 #include <vector>
 #include <string>
 
@@ -49,6 +50,13 @@ namespace VansGraphics
 
         // 初始化静态 Quad 顶点/索引缓冲（场景加载时调用一次）
         bool InitQuadBuffers(VkDevice& device);
+
+        // 设置 GPU 端描述符资源（在 CreateGlobalDescriptorSet 之后调用）
+        // - globalLayout / globalSet：引擎全局描述符集（Set 0，包含 Camera UBO）
+        // - defaultTex：粒子纹理（Set 1，binding 0），传 nullptr 使用白色默认纹理占位
+        void SetupDescriptors(VkDescriptorSetLayout globalLayout,
+                              VkDescriptorSet       globalSet,
+                              VansTexture*          defaultTex);
 
         // 将 CPU 侧实例数据上传到 GPU 实例缓冲（主线程调用）
         void UpdateInstanceBuffer(VkDevice& device,

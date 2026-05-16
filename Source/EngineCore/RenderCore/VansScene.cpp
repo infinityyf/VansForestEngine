@@ -12,6 +12,8 @@
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "TerrainCore/VansTerrain.h"
+#include "VansParticleRenderNode.h"
+#include "../ParticleCore/VansParticleManager.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
 #include "../VansTimer.h"
@@ -157,6 +159,18 @@ void VansGraphics::VansScene::CreateNodeDescriptorSets()
     for (auto node : m_DecalRenderNodes)
     {
         node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+    }
+
+    // 粒子渲染节点：不依赖 VansMaterial，独立设置描述符
+    // 使用全局集（Set 0）访问 Camera UBO，Set 1 绑定粒子纹理（此处使用 defaultAlbedo 占位）
+    VansTexture* defaultParticleTex =
+        static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
+    for (auto* node : m_ParticleRenderNodes)
+    {
+        if (node == nullptr) continue;
+        node->SetupDescriptors(m_GlobalDescriptorSetLayout,
+                               m_GlobalDescriptorSet,
+                               defaultParticleTex);
     }
 }
 
@@ -559,9 +573,16 @@ void VansGraphics::VansScene::UnLoadScene()
 		{
 			auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
 			if (pyComp) pyComp->Teardown();
+
+            auto* particleComp = dynamic_cast<VansScriptParticleComponent*>(comp);
+            if (particleComp && particleComp->m_Runtime)
+            {
+                VansParticleManager::Instance().UnregisterRuntime(particleComp->m_Runtime.get());
+            }
 		}
 	}
 	VANS_LOG("[VansScene] Step 2a: 脚本组件已 Teardown");
+    VansParticleManager::Instance().Shutdown();
 
 	// ScriptContext 中的 tracked modules 也一并清理
 	if (VansScriptContext::GetInstance())
@@ -848,6 +869,9 @@ void VansGraphics::VansScene::UnLoadScene()
 
 void VansGraphics::VansScene::UpdateSceneData()
 {
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
+
     // 先将灯光组件 transform 数据同步到灯光结构体，再计算阴影矩阵
     SyncLightTransforms();
     m_LightManager.UpdateLightShadowMatrixData(glm::vec3(m_Camera->GetPosition()));
@@ -901,6 +925,52 @@ void VansGraphics::VansScene::UpdateSceneData()
 
     // Resolve parent-child transform relationships before GPU upload
     m_TransformParentSystem.ResolveParentChildTransforms();
+
+    // 粒子系统：同步对象 Transform，推进后台运行时，并上传本帧实例数据。
+    if (!m_ParticleRenderNodes.empty())
+    {
+        const float deltaTime = static_cast<float>(VansTimer::GetLastFrameDelta());
+        for (auto* obj : m_SceneObjects)
+        {
+            if (!obj || obj->m_TransformID == 0) continue;
+
+            auto* particleComp = obj->GetComponent<VansScriptParticleComponent>();
+            if (!particleComp || !particleComp->m_Runtime) continue;
+
+            if (particleComp->m_HasWorldPositionOverride)
+            {
+                glm::mat4x4 overrideMatrix(1.f);
+                overrideMatrix[3] = glm::vec4(particleComp->m_WorldPositionOverride, 1.f);
+                particleComp->m_Runtime->m_LocalToWorld = overrideMatrix;
+            }
+            else
+            {
+                auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                particleComp->m_Runtime->m_LocalToWorld = t.GetModelMatrix();
+            }
+        }
+
+        VansParticleManager::Instance().TickMainThread(deltaTime);
+        VansParticleManager::Instance().WaitForUpdateAndSwap();
+
+        if (nativeDevice != VK_NULL_HANDLE)
+        {
+            for (auto* obj : m_SceneObjects)
+            {
+                if (!obj) continue;
+
+                auto* particleComp = obj->GetComponent<VansScriptParticleComponent>();
+                if (!particleComp || !particleComp->m_Runtime || !particleComp->m_RenderNode) continue;
+
+                particleComp->m_PlayTime  = particleComp->m_Runtime->m_PlayTime;
+                particleComp->m_IsPlaying = particleComp->m_Runtime->m_IsPlaying;
+
+                particleComp->m_RenderNode->UpdateInstanceBuffer(
+                    nativeDevice,
+                    particleComp->m_Runtime->GetRenderBuffer());
+            }
+        }
+    }
 
     // 同步空间音频 source 位置（在 ResolveParentChildTransforms 之后，确保世界坐标已最终确定）
     SyncAudioSourcePositions();

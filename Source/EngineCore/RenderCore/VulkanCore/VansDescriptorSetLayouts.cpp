@@ -92,8 +92,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
 		// binding 0: Instance Transform SSBO (all nodes index into this)
+		// Fragment stage 也需要访问（贴花 pass 在 fragment shader 中读取 ModelMatrix 做 OBB 测试）
 		{OBJECT_BINDING_TRANSFORM_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }

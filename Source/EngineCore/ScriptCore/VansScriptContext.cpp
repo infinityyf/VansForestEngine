@@ -150,12 +150,26 @@ void VansScriptParticleComponent::Stop()
 	m_PlayTime             = 0.f;
 	m_Runtime->m_IsPlaying = false;
 	m_Runtime->m_PlayTime  = 0.f;
-	// 清空粒子池
+    m_Runtime->m_AliveInstanceCount.store(0, std::memory_order_release);
+    for (auto& buffer : m_Runtime->m_InstanceBuffers)
+    {
+        buffer.clear();
+    }
+
+    // 清空粒子池并重置发射器运行时状态，确保一次性 Burst 可被 Restart 重新触发
 	if (m_ParticleAsset)
 	{
 		for (auto& emitter : m_ParticleAsset->m_Emitters)
 		{
-			if (emitter) emitter->m_ParticlePool.m_AliveCount = 0;
+            if (!emitter) continue;
+
+            emitter->m_ParticlePool.m_AliveCount = 0;
+            emitter->m_SpawnAccum = 0.f;
+            for (auto& burst : emitter->m_SpawnConfig.m_Bursts)
+            {
+                burst.cyclesDone = 0;
+                burst.nextTime   = -1.f;
+            }
 		}
 	}
 }
@@ -171,6 +185,17 @@ void VansScriptParticleComponent::Restart()
 {
 	Stop();
 	Play();
+}
+
+void VansScriptParticleComponent::SetWorldPosition(float x, float y, float z)
+{
+    m_HasWorldPositionOverride = true;
+    m_WorldPositionOverride    = glm::vec3(x, y, z);
+}
+
+void VansScriptParticleComponent::ClearWorldPositionOverride()
+{
+    m_HasWorldPositionOverride = false;
 }
 
 bool VansScriptParticleComponent::LoadAsset(const std::string& path)
