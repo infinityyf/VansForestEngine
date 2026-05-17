@@ -290,6 +290,9 @@ namespace VansGraphics
 		// Update per-node GPU data once per frame before command buffer recording.
 		void UpdateRenderNodesDataBeforeRecord();
 
+		// 将本帧视频新帧上传命令合并进当前图形 command buffer，避免 Tick 阶段同步等待。
+		void RecordVideoUploads(VansVKCommandBuffer& cmd);
+
 		void UpdatePhysicsTransforms();
 
 		// 每帧：提交所有 CCT 的待执行位移，并将物理位置同步回 Transform

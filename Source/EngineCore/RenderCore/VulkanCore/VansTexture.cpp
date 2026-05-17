@@ -721,6 +721,86 @@ namespace VansGraphics
 		return true;
 	}
 
+	// ===========================================================================
+	// RecordArrayLayerUploadFromPixels — 录制贴图数组层更新，合并进当前帧提交
+	// 与 UpdateArrayLayerFromPixels 保持相同的最近邻缩放与 mip 链生成效果。
+	// ===========================================================================
+	bool VansTexture::RecordArrayLayerUploadFromPixels(VansVKCommandBuffer& command_buffer,
+		const uint8_t* pixels, int srcW, int srcH, int layerIndex)
+	{
+		if (!pixels || srcW <= 0 || srcH <= 0 || layerIndex < 0 || layerIndex >= m_TextureSlice)
+		{
+			VANS_LOG_ERROR("[VansTexture] RecordArrayLayerUploadFromPixels: 参数无效 layer=" << layerIndex);
+			return false;
+		}
+
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+		if (!vkDevice) return false;
+
+		// 若分辨率与数组贴图不一致，保持旧路径的最近邻缩放效果。
+		std::vector<uint8_t> resized;
+		const uint8_t* uploadData = pixels;
+		int uploadW = srcW, uploadH = srcH;
+
+		if (srcW != m_TextureWidth || srcH != m_TextureHeight)
+		{
+			resized.resize(size_t(m_TextureWidth) * m_TextureHeight * 4);
+			float scaleX = float(srcW) / float(m_TextureWidth);
+			float scaleY = float(srcH) / float(m_TextureHeight);
+			for (int y = 0; y < m_TextureHeight; ++y)
+			{
+				for (int x = 0; x < m_TextureWidth; ++x)
+				{
+					int srcX = std::min((int)(x * scaleX), srcW - 1);
+					int srcY = std::min((int)(y * scaleY), srcH - 1);
+					const uint8_t* src = pixels + (size_t(srcY) * srcW + srcX) * 4;
+					uint8_t* dst = resized.data() + (size_t(y) * m_TextureWidth + x) * 4;
+					dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+				}
+			}
+			uploadData = resized.data();
+			uploadW = m_TextureWidth;
+			uploadH = m_TextureHeight;
+		}
+
+		size_t dataSize = size_t(uploadW) * uploadH * 4;
+		VkExtent3D extent = { (uint32_t)uploadW, (uint32_t)uploadH, 1 };
+		VkOffset3D zeroOffset = { 0, 0, 0 };
+		if (!vkDevice->RecordDeviceImageData(m_Image, command_buffer,
+			uploadData, static_cast<int>(dataSize), zeroOffset, extent,
+			0, layerIndex, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
+		{
+			return false;
+		}
+
+		int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
+		if (mipLevels > 1)
+		{
+			GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(),
+				uploadW, uploadH, mipLevels, layerIndex);
+		}
+		else
+		{
+			VkImageMemoryBarrier toShaderRead{};
+			toShaderRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			toShaderRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			toShaderRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			toShaderRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			toShaderRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			toShaderRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			toShaderRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			toShaderRead.image = m_Image.GetImage();
+			toShaderRead.subresourceRange = { m_Image.GetImageAspect(), 0, 1u, (uint32_t)layerIndex, 1u };
+			command_buffer.PipelineBarrier(
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				{}, {}, { toShaderRead });
+		}
+
+		m_Image.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		return true;
+	}
+
 	void VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision, VkSamplerAddressMode addressMode)
 	{
 		m_TextureWidth = width;

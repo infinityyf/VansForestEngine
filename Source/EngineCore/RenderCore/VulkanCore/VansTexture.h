@@ -71,6 +71,11 @@ namespace VansGraphics
 		bool UpdateArrayLayerFromPixels(VansVKCommandBuffer& command_buffer,
 			const uint8_t* pixels, int srcW, int srcH, int layerIndex);
 
+		// 在已 Begin 的图形 command buffer 中记录贴图数组层更新，不独立提交或等待 fence。
+		// 供视频面光源逐帧更新使用，效果与 UpdateArrayLayerFromPixels 保持一致。
+		bool RecordArrayLayerUploadFromPixels(VansVKCommandBuffer& command_buffer,
+			const uint8_t* pixels, int srcW, int srcH, int layerIndex);
+
 		VansVKImage& GetImage() { return m_Image; }
 
 		TextureType m_TextureType;

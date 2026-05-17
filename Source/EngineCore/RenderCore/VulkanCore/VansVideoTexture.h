@@ -28,15 +28,16 @@ namespace VansGraphics
     //
     // 使用方式：
     //   1. Open()        — 打开文件，解码首帧初始化 GPU 纹理，启动后台解码线程
-    //   2. Tick(dt)      — 每帧调用：推进播放时间，将就绪帧上传到 GPU
-    //   3. GetTexture()  — 获取底层 VansTexture*（可用于绑定到 PBR 材质）
-    //   4. Close()       — 停止后台线程，释放所有 FFmpeg 资源
+    //   2. Tick(dt)      — 每帧调用：推进播放时间，挑选本帧应显示的新帧
+    //   3. RecordPendingUpload(cmd) — 在渲染命令录制阶段将新帧上传到 GPU
+    //   4. GetTexture()  — 获取底层 VansTexture*（可用于绑定到 PBR 材质）
+    //   5. Close()       — 停止后台线程，释放所有 FFmpeg 资源
     //
     // 线程模型：
     //   - 后台解码线程负责 av_read_frame → avcodec_receive_frame → sws_scale，
     //     结果写入 m_FrameQueue（mutex 保护）。
-    //   - 主线程 Tick() 从 m_FrameQueue 取帧并调用 SetDeviceImageData 上传，
-    //     GPU 操作仅在主线程执行，无需额外同步。
+    //   - 主线程 Tick() 从 m_FrameQueue 取帧并缓存像素，GPU 上传延迟到
+    //     RecordPendingUpload()，合并进当前帧图形命令缓冲，避免同步 submit/wait。
     // ===========================================================================
     class VansVideoTexture
     {
@@ -59,7 +60,7 @@ namespace VansGraphics
 
         // ── 每帧驱动 ─────────────────────────────────────────────────────────
         // deltaTime : 本帧耗时（秒），与 VansTimer::GetLastFrameDelta() 一致
-        // 返回 true 表示本帧有新像素已上传到 GPU
+        // 返回 true 表示本帧选中了新像素，等待后续 RecordPendingUpload() 上传到 GPU
         bool Tick(double deltaTime);
 
         // ── 播放控制 ─────────────────────────────────────────────────────────
@@ -81,6 +82,10 @@ namespace VansGraphics
         int GetWidth()  const { return m_Width;  }
         int GetHeight() const { return m_Height; }
 
+        // 在已 Begin 的图形 command buffer 中记录待上传视频帧。
+        // 返回 true 表示本次记录了 GPU 上传命令。
+        bool RecordPendingUpload(VansVKCommandBuffer& cmd);
+
         // ── 统一 GPU 数据接口（供面光源等消费方使用）────────────────────────────
         // 若本帧有新像素，将其写入目标贴图数组的指定层并消费新帧标志。
         // 返回 true 表示本次执行了写入；消费方无需直接访问内部 CPU 像素缓存。
@@ -88,12 +93,17 @@ namespace VansGraphics
                                       VansVKCommandBuffer& cmd,
                                       int layerIndex);
 
+		// 在当前帧图形命令缓冲中记录新帧写入数组层，不独立提交或等待 fence。
+		bool RecordNewFrameToArrayLayer(VansTexture* targetArray,
+			VansVKCommandBuffer& cmd,
+			int layerIndex);
+
     private:
         // ── 后台解码线程函数 ─────────────────────────────────────────────────
         void DecodeThreadFunc();
 
-        // ── 将像素数据上传到 GPU（仅主线程调用）────────────────────────────
-        void UploadFrameToGPU(const uint8_t* pixels, int dataSize);
+        // ── 将像素数据上传到 GPU（仅主线程录制阶段调用）────────────────────
+        bool RecordFrameUpload(VansVKCommandBuffer& cmd, const uint8_t* pixels, int dataSize);
 
         // ── 最后一帧 CPU 像素缓存内部访问器（仅供 CopyNewFrameToArrayLayer 使用）──
         bool HasNewFrame() const { return m_HasNewFrame; }
@@ -134,6 +144,7 @@ namespace VansGraphics
         // ── 最后一帧像素缓存（主线程专用）────────────────────────────────────
         std::vector<uint8_t> m_LastFramePixels;
         bool                 m_HasNewFrame = false;
+        bool                 m_HasPendingUpload = false;
 
         // ── 后台线程 ─────────────────────────────────────────────────────────
         std::thread       m_DecodeThread;

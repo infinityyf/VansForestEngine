@@ -50,9 +50,12 @@ namespace VansGraphics
         VansVideoTexture* Get(const std::string& name) const;
 
         // ── 每帧驱动 ─────────────────────────────────────────────────────────
-        // 推进所有处于播放状态的视频，将就绪帧上传到 GPU。
+        // 推进所有处于播放状态的视频，挑选本帧应显示的新帧。
         // deltaTime : 本帧耗时（秒）
         void TickAll(double deltaTime);
+
+        // 在渲染命令录制阶段，将 TickAll() 选中的视频帧批量记录到当前 command buffer。
+        void RecordPendingUploads(VansVKCommandBuffer& cmd);
 
         // ── 场景切换时暂停 ────────────────────────────────────────────────
         // 暂停所有视频播放，但保留 GPU 纹理资源（VkImage/VkImageView 仍然有效）。

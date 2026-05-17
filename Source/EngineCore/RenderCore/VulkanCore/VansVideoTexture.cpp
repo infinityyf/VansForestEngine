@@ -231,6 +231,9 @@ void VansVideoTexture::Close()
     m_Width        = 0;
     m_Height       = 0;
     m_PlayTime     = 0.0;
+    m_HasNewFrame = false;
+    m_HasPendingUpload = false;
+    m_LastFramePixels.clear();
 }
 
 // ===========================================================================
@@ -261,10 +264,12 @@ void VansVideoTexture::Stop()
 
     // 4. 重置播放时间（仅主线程写）
     m_PlayTime = 0.0;
+    m_HasNewFrame = false;
+    m_HasPendingUpload = false;
 }
 
 // ===========================================================================
-// Tick — 推进播放时间，将队列中 pts <= m_PlayTime 的帧上传到 GPU
+// Tick — 推进播放时间，挑选队列中 pts <= m_PlayTime 的最新帧
 // ===========================================================================
 bool VansVideoTexture::Tick(double deltaTime)
 {
@@ -292,13 +297,11 @@ bool VansVideoTexture::Tick(double deltaTime)
         // 通知后台线程队列有空位
         m_ProducerCv.notify_one();
 
-        const int dataSize = m_Width * m_Height * 4;
-        UploadFrameToGPU(frameToUpload.pixels.data(), dataSize);
-
-        // 缓存本帧像素：供面光源 emissive 数组层每帧 CPU 侧拷贝（主线程独占写，无需 mutex）
+        // 缓存本帧像素：供后续图形命令录制阶段上传，也供面光源 emissive 数组层复用。
         // 使用 std::move 避免逐字节拷贝整个帧缓冲（1080p ≈ 8 MB）
         m_LastFramePixels = std::move(frameToUpload.pixels);
         m_HasNewFrame = true;
+        m_HasPendingUpload = true;
 
         return true;
     }
@@ -307,9 +310,25 @@ bool VansVideoTexture::Tick(double deltaTime)
 }
 
 // ===========================================================================
-// UploadFrameToGPU — 将 RGBA8 像素同步上传到 GPU（主线程）
+// RecordPendingUpload — 将待显示视频帧记录到当前帧图形命令缓冲
 // ===========================================================================
-void VansVideoTexture::UploadFrameToGPU(const uint8_t* pixels, int dataSize)
+bool VansVideoTexture::RecordPendingUpload(VansVKCommandBuffer& cmd)
+{
+    if (!m_IsReady.load() || !m_HasPendingUpload || m_LastFramePixels.empty())
+        return false;
+
+    const int dataSize = m_Width * m_Height * 4;
+    if (!RecordFrameUpload(cmd, m_LastFramePixels.data(), dataSize))
+        return false;
+
+    m_HasPendingUpload = false;
+    return true;
+}
+
+// ===========================================================================
+// RecordFrameUpload — 将 RGBA8 像素写入本帧 staging，并记录 GPU copy 命令
+// ===========================================================================
+bool VansVideoTexture::RecordFrameUpload(VansVKCommandBuffer& cmd, const uint8_t* pixels, int dataSize)
 {
     VkOffset3D offset = { 0, 0, 0 };
     VkExtent3D extent = {
@@ -318,11 +337,11 @@ void VansVideoTexture::UploadFrameToGPU(const uint8_t* pixels, int dataSize)
         1u
     };
 
-    m_VkDevice->SetDeviceImageData(
+    return m_VkDevice->RecordDeviceImageData(
         m_GpuTexture.GetImage(),
-        m_VkDevice->GetCommandBuffer(),
-        const_cast<uint8_t*>(pixels),
-        0, dataSize,
+        cmd,
+        pixels,
+        dataSize,
         offset, extent,
         0, 0);
 }
@@ -340,6 +359,22 @@ bool VansVideoTexture::CopyNewFrameToArrayLayer(VansTexture* targetArray,
         return false;
 
     bool ok = targetArray->UpdateArrayLayerFromPixels(
+        cmd, m_LastFramePixels.data(), m_Width, m_Height, layerIndex);
+    ConsumeNewFrame();
+    return ok;
+}
+
+// ===========================================================================
+// RecordNewFrameToArrayLayer — 将本帧新像素记录写入目标贴图数组层
+// ===========================================================================
+bool VansVideoTexture::RecordNewFrameToArrayLayer(VansTexture* targetArray,
+                                                   VansVKCommandBuffer& cmd,
+                                                   int layerIndex)
+{
+    if (!targetArray || !m_HasNewFrame || m_LastFramePixels.empty())
+        return false;
+
+    bool ok = targetArray->RecordArrayLayerUploadFromPixels(
         cmd, m_LastFramePixels.data(), m_Width, m_Height, layerIndex);
     ConsumeNewFrame();
     return ok;

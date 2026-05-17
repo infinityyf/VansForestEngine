@@ -90,6 +90,18 @@ void VansVideoManager::TickAll(double deltaTime)
 }
 
 // ===========================================================================
+// RecordPendingUploads — 录制所有视频的待上传帧，不做独立提交或 fence 等待
+// ===========================================================================
+void VansVideoManager::RecordPendingUploads(VansVKCommandBuffer& cmd)
+{
+    for (auto& [name, videoTex] : m_Videos)
+    {
+        if (videoTex && videoTex->IsReady())
+            videoTex->RecordPendingUpload(cmd);
+    }
+}
+
+// ===========================================================================
 // PauseAll — 暂停所有视频播放（场景切换时调用，保留 GPU 纹理资源）
 // 视频 GPU 纹理仍然有效，下次场景加载时可直接重新绑定到材质。
 // ===========================================================================

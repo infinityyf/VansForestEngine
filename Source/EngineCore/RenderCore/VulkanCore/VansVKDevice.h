@@ -27,6 +27,7 @@ namespace VansGraphics
 	private :
 		//memory update
 		VansVKBuffer m_StageBuffer;
+		VkDeviceSize m_FrameStageBufferOffset = 0;
 
 		//梭有cmd都写在这
 	public :
@@ -34,6 +35,21 @@ namespace VansGraphics
 		bool SetDeviceBufferData(VansVKBuffer& dest_buffer, void* data, int data_offset, int data_size, VkDeviceSize buffer_offset, VkDeviceSize buffer_size);
 
 		bool SetDeviceImageData(VansVKImage& dest_image, VansVKCommandBuffer& cmd, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level);
+
+		// 每帧开始时重置临时上传分配器。该接口只重置 CPU 侧 offset，调用前必须确保上一帧图形提交已完成。
+		void ResetFrameStageUploadAllocator();
+
+		// 将图片数据写入本帧 staging ring，并把 copy/barrier 记录到已 Begin 的 command buffer。
+		// 不执行 vkQueueSubmit / fence wait，专用于视频等高频逐帧上传。
+		bool RecordDeviceImageData(VansVKImage& destImage,
+			VansVKCommandBuffer& cmd,
+			const void* data,
+			int dataSize,
+			VkOffset3D imageOffset,
+			VkExtent3D imageSize,
+			int mipLevel,
+			int layerLevel,
+			VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	private:
 

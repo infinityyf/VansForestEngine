@@ -142,6 +142,7 @@ namespace VansGraphics
 		{
 			VANS_LOG_ERROR("AcquireVulkanSwapChainImages failed");
 		}
+		ResetFrameStageUploadAllocator();
 
 		if (!m_Scene->IsSceneReady())
 		{
@@ -164,6 +165,9 @@ namespace VansGraphics
 				m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 			}
 			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
+
+			// 录制本帧视频纹理上传，合并到主图形提交，避免 Video::TickAll 同步等待。
+			m_Scene->RecordVideoUploads(m_VansVKCommandBuffer);
 
 			// Upload cloth simulation results from staging buffers to device-local vertex buffers
 			{
@@ -324,6 +328,8 @@ namespace VansGraphics
 			{
 				VANS_PROFILE_SCOPE("Vulkan::RecordGBufferCB", Vans::ProfileCategory::CommandRecord);
 				m_VansVKGBufferCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+				// 视频在 GBuffer 之前上传，确保材质采样到本帧新帧。
+				m_Scene->RecordVideoUploads(m_VansVKGBufferCommandBuffer);
 				m_Scene->RecordClothVertexUploads(cmd);
 				m_Scene->RecordVegetationCompute(m_VansVKGBufferCommandBuffer);
 			// 注意：此 CB 同样不使用 VANS_GPU_SCOPE，原因同 Shadow CB。

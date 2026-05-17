@@ -384,7 +384,8 @@ float SampleCascadeShadowMap_PCF(vec3 position_world, sampler2DArray cascadeShad
         return 1.0;
 
     ivec3 sz = textureSize(cascadeShadowMap, 0);
-    vec2 texelSize = 1.0 / vec2(sz.xy);
+    ivec2 shadowMapSize = sz.xy;
+    vec2 texelSize = 1.0 / vec2(shadowMapSize);
 
     float sampleCountInverse = 1.0 / float(DISK_SAMPLE_COUNT);
     float blockSearchRadius = 5.0;
@@ -393,8 +394,10 @@ float SampleCascadeShadowMap_PCF(vec3 position_world, sampler2DArray cascadeShad
     float avgBlockerDepth = 0.0;
     int blockerCount = 0;
 
-    float frameIndex = softShadowParams.x;
-    float sampleJitterAngle = RandomInterLeavedWithScale(shadowUV * vec2(sz.xy), mod(frameIndex,64.0)) * 2.0 * PI;
+    // 采样核不能随 frameIndex 变化，否则会产生时间闪烁。
+    // 也不要把旋转角量化到 receiver texel，否则大半径 PCSS 会形成可见块状/条纹噪声。
+    // 这里使用 shadow-space 连续坐标生成稳定角度，避免时间闪烁并减少空间条纹。
+    float sampleJitterAngle = RandomInterLeavedWithScale(shadowUV * vec2(shadowMapSize), float(cascadeIdx) * 13.0) * TWO_PI;
     vec2 jitter = vec2(sin(sampleJitterAngle), cos(sampleJitterAngle));
 
     for(int i = 0; i < DISK_SAMPLE_COUNT; ++i)
@@ -403,7 +406,8 @@ float SampleCascadeShadowMap_PCF(vec3 position_world, sampler2DArray cascadeShad
         vec2 offset = ComputeFibonacciSpiralDiskSampleClumped(i, sampleCountInverse, sampleDistNorm);
         offset = vec2(offset.x * jitter.y + offset.y * jitter.x, offset.x * -jitter.x + offset.y * jitter.y);
         vec2 sampleCoord = clamp(shadowUV + offset * texelSize * blockSearchRadius, vec2(0.0), vec2(1.0));
-        float texDepth = texture(cascadeShadowMap, vec3(sampleCoord, float(cascadeIdx))).r;
+        ivec2 sampleTexel = clamp(ivec2(round(sampleCoord * vec2(shadowMapSize - ivec2(1)))), ivec2(0), shadowMapSize - ivec2(1));
+        float texDepth = texelFetch(cascadeShadowMap, ivec3(sampleTexel, cascadeIdx), 0).r;
         if(texDepth < receiverDepth)
         {
             avgBlockerDepth += texDepth;
@@ -416,7 +420,8 @@ float SampleCascadeShadowMap_PCF(vec3 position_world, sampler2DArray cascadeShad
 
     avgBlockerDepth /= float(blockerCount);
     float lightSizeScale = softShadowParams.y;
-    float radius = clamp((receiverDepth - avgBlockerDepth) / texelSize.x * lightSizeScale, 1.0, 50.0);
+    float maxFilterRadius = mix(6.0, 14.0, float(cascadeIdx) / float(CASCADE_COUNT - 1));
+    float radius = clamp((receiverDepth - avgBlockerDepth) / texelSize.x * lightSizeScale, 0.75, maxFilterRadius);
 
     float visibility = 0.0;
     for(int i = 0; i < DISK_SAMPLE_COUNT; ++i)

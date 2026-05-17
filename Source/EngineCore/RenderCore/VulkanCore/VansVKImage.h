@@ -94,6 +94,9 @@ namespace VansGraphics
 
 		VkImageLayout GetImageLayout();
 
+		// 仅更新引擎侧记录的布局状态；调用方必须已向目标 command buffer 记录等价 barrier。
+		void SetTrackedImageLayout(VkImageLayout layout) { m_ImageLayout = layout; }
+
 		VkSampler GetSampler();
 
 		VkImage GetImage();

@@ -925,30 +925,6 @@ void VansGraphics::VansScene::UpdateSceneData()
             camUp.x,  camUp.y,  camUp.z);
     }
 
-    // 面光源视频发光：将有新帧的视频像素更新到 emissive 贴图数组层
-    {
-        VANS_PROFILE_SCOPE("RectLightVideo::CopyFrames", Vans::ProfileCategory::Video);
-        VansTexture* emissiveArray = m_MaterialManager.GetRuntimeRenderTexture(
-            VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
-        VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-        if (emissiveArray && vkDevice)
-        {
-            for (auto* obj : m_SceneObjects)
-            {
-                if (!obj) continue;
-                auto* rectComp = obj->GetComponent<VansScriptRectLightComponent>();
-                if (!rectComp || !rectComp->m_VideoComponent) continue;
-
-                VansVideoTexture* vid = rectComp->m_VideoComponent->m_VideoTex;
-                if (!vid || !vid->IsReady()) continue;
-
-                // 通过统一接口写入数组层，无需在外部访问 CPU 像素缓存
-                vid->CopyNewFrameToArrayLayer(
-                    emissiveArray, vkDevice->GetCommandBuffer(), rectComp->m_LightIndex);
-            }
-        }
-    }
-
     // Resolve parent-child transform relationships before GPU upload
     {
         VANS_PROFILE_SCOPE("Transform::ResolveParentChild", Vans::ProfileCategory::RenderPrepare);
@@ -1027,6 +1003,34 @@ void VansGraphics::VansScene::UpdateSceneData()
     {
         VANS_PROFILE_SCOPE("RenderData::UpdateNodesBeforeRecord", Vans::ProfileCategory::RenderPrepare);
         UpdateRenderNodesDataBeforeRecord();
+    }
+}
+
+void VansGraphics::VansScene::RecordVideoUploads(VansVKCommandBuffer& cmd)
+{
+    VANS_PROFILE_SCOPE("Video::Upload.RecordCommands", Vans::ProfileCategory::Video);
+    m_VideoManager.RecordPendingUploads(cmd);
+
+    // 面光源视频发光：写入 emissive 贴图数组层，合并进当前帧命令缓冲。
+    {
+        VANS_PROFILE_SCOPE("RectLightVideo::RecordCopyFrames", Vans::ProfileCategory::Video);
+        VansTexture* emissiveArray = m_MaterialManager.GetRuntimeRenderTexture(
+            VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
+        if (!emissiveArray)
+            return;
+
+        for (auto* obj : m_SceneObjects)
+        {
+            if (!obj) continue;
+            auto* rectComp = obj->GetComponent<VansScriptRectLightComponent>();
+            if (!rectComp || !rectComp->m_VideoComponent) continue;
+
+            VansVideoTexture* vid = rectComp->m_VideoComponent->m_VideoTex;
+            if (!vid || !vid->IsReady()) continue;
+
+            vid->RecordNewFrameToArrayLayer(
+                emissiveArray, cmd, rectComp->m_LightIndex);
+        }
     }
 }
 
