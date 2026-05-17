@@ -2,6 +2,7 @@
 #include "VansPhysicsEventCallback.h"
 #include "VansClothSystem.h"
 #include "../Util/VansLog.h"
+#include "../Util/VansProfiler.h"
 #include <iostream>
 #include <chrono>
 #include <vehicle2/PxVehicleAPI.h>
@@ -318,6 +319,8 @@ namespace VansEngine
 
 	void VansPhysicsSystem::SimulationThread()
 	{
+		VANS_PROFILE_THREAD("Physics Thread");
+
 		using Clock = std::chrono::high_resolution_clock;
 		auto lastTime = Clock::now();
 
@@ -329,9 +332,12 @@ namespace VansEngine
 
 		while (!m_ShouldExit)
 		{
+			VANS_PROFILE_SCOPE("PhysicsThread::Loop", Vans::ProfileCategory::Physics);
+
 			// 物理模拟被暂停时，不步进仅等待
 			if (m_IsPaused.load())
 			{
+				VANS_PROFILE_SCOPE("PhysicsThread::SleepPaused", Vans::ProfileCategory::Wait);
 				lastTime = Clock::now(); // 防止恢复后积累大量未执行的步进
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 				continue;
@@ -347,18 +353,26 @@ namespace VansEngine
 
 			while (m_Accumulator >= fixedTimeStep)
 			{
+				VANS_PROFILE_SCOPE("PhysicsThread::FixedStep", Vans::ProfileCategory::Physics);
 				{
 					std::lock_guard<std::mutex> lock(m_SimulationMutex);
 					
                     // Execute Pre-Simulate Callback (e.g. Vehicle Updates)
                     if (m_PreSimulateCallback)
                     {
+						VANS_PROFILE_SCOPE("Physics::PreSimulateCallback", Vans::ProfileCategory::Physics);
 						m_PreSimulateCallback(fixedTimeStep);
                     }
 
 					// Step the simulation
-					m_Scene->simulate(fixedTimeStep);
-					m_Scene->fetchResults(true); // Block until simulation is done
+					{
+						VANS_PROFILE_SCOPE("PhysX::simulate", Vans::ProfileCategory::Physics);
+						m_Scene->simulate(fixedTimeStep);
+					}
+					{
+						VANS_PROFILE_SCOPE("PhysX::fetchResults", Vans::ProfileCategory::Physics);
+						m_Scene->fetchResults(true); // Block until simulation is done
+					}
 					
 					// PVD data is automatically streamed when connected
 					// The PVD client handles real-time data transmission
@@ -368,7 +382,10 @@ namespace VansEngine
 			}
 
 			// Sleep to avoid spinning
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			{
+				VANS_PROFILE_SCOPE("PhysicsThread::IdleSleep", Vans::ProfileCategory::Wait);
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
 		}
 		
 		VANS_LOG("[PhysX] Simulation thread stopped");

@@ -1,4 +1,5 @@
 #include "VansParticleManager.h"
+#include "../Util/VansProfiler.h"
 
 namespace VansGraphics
 {
@@ -58,6 +59,7 @@ namespace VansGraphics
 
     void VansParticleManager::TickMainThread(float deltaTime)
     {
+        VANS_PROFILE_SCOPE("Particle::TickMainThread", Vans::ProfileCategory::Particles);
         std::unique_lock<std::mutex> lock(m_TickMutex);
         m_PendingDeltaTime = deltaTime;
         m_TickPending      = true;
@@ -68,12 +70,14 @@ namespace VansGraphics
     {
         // 等待更新线程完成本帧计算
         {
+            VANS_PROFILE_WAIT("Particle::WaitThreadDone");
             std::unique_lock<std::mutex> lock(m_DoneMutex);
             m_DoneCV.wait(lock, [this] { return m_UpdateDone; });
             m_UpdateDone = false;
         }
 
         // 主线程交换所有 Runtime 双缓冲
+        VANS_PROFILE_SCOPE("Particle::SwapBuffers", Vans::ProfileCategory::Particles);
         std::lock_guard<std::mutex> rLock(m_RuntimeListMutex);
         for (auto* rt : m_Runtimes)
         {
@@ -85,12 +89,15 @@ namespace VansGraphics
 
     void VansParticleManager::UpdateThreadLoop()
     {
+        VANS_PROFILE_THREAD("Particle Thread");
+
         while (true)
         {
             float deltaTime = 0.f;
 
             // 等待主线程触发一帧更新
             {
+                VANS_PROFILE_SCOPE("ParticleThread::WaitTick", Vans::ProfileCategory::Wait);
                 std::unique_lock<std::mutex> lock(m_TickMutex);
                 m_TickCV.wait(lock, [this] { return m_TickPending; });
                 m_TickPending = false;
@@ -103,15 +110,21 @@ namespace VansGraphics
 
             // 遍历所有 Runtime 执行更新（无需锁，主线程在此期间不修改列表）
             {
+                VANS_PROFILE_SCOPE("ParticleThread::UpdateAll", Vans::ProfileCategory::Particles);
                 std::lock_guard<std::mutex> lock(m_RuntimeListMutex);
                 for (auto* rt : m_Runtimes)
                 {
-                    if (rt) rt->Update(deltaTime);
+                    if (rt)
+                    {
+                        VANS_PROFILE_SCOPE("ParticleRuntime::Update", Vans::ProfileCategory::Particles);
+                        rt->Update(deltaTime);
+                    }
                 }
             }
 
             // 通知主线程更新完成
             {
+                VANS_PROFILE_SCOPE("ParticleThread::NotifyDone", Vans::ProfileCategory::Particles);
                 std::lock_guard<std::mutex> lock(m_DoneMutex);
                 m_UpdateDone = true;
                 m_DoneCV.notify_one();

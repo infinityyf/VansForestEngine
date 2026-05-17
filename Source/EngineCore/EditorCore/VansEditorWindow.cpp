@@ -867,12 +867,23 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
     // Main loop
     while (!glfwWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle))
     { 
+        // 项目选择界面阶段没有完整场景帧，Profiler 从项目加载后的下一帧开始记录。
+        const bool profilerFrameActive = m_ProjectLoaded;
+        if (profilerFrameActive)
+            VANS_PROFILER_BEGIN_FRAME();
+
         // 必须先更新输入帧状态（将 isDown 存入 wasDown），再 PollEvents 接收新事件。
         // 若顺序反转，glfwPollEvents 写入 isDown 后 Update 立即覆盖 wasDown，
         // 导致 IsKeyPressed / IsKeyReleased 永远返回 false。
-        Vans::VansInputManager::Get().Update();
+        {
+            VANS_PROFILE_SCOPE("Frame::InputUpdate", Vans::ProfileCategory::Frame);
+            Vans::VansInputManager::Get().Update();
+        }
 
-        glfwPollEvents();
+        {
+            VANS_PROFILE_SCOPE("Frame::PollEvents", Vans::ProfileCategory::Frame);
+            glfwPollEvents();
+        }
 
         // Resize swap chain?
         if (m_VansEditorWindow.m_WindowStatus.swapChainRebuild)
@@ -892,20 +903,30 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             else
             {
                 // Window minimized — skip rendering this frame
+                auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
+                if (profilerFrameActive)
+                    VANS_PROFILER_END_FRAME(vkDev->GetLogicDevice());
                 continue;
             }
         }
 
-        Vans::VansJobSystem::Get().ProcessMainThreadJobs();
+        {
+            VANS_PROFILE_SCOPE("JobSystem::ProcessMainThreadJobs", Vans::ProfileCategory::JobSystem);
+            Vans::VansJobSystem::Get().ProcessMainThreadJobs();
+        }
 
         //更新时间
-        VansGraphics::VansTimer::Update();
+        {
+            VANS_PROFILE_SCOPE("Frame::TimerUpdate", Vans::ProfileCategory::Frame);
+            VansGraphics::VansTimer::Update();
+        }
 
         Vans::VansInputManager& input = Vans::VansInputManager::Get();
 
         // Step Vehicle Physics - MOVED TO PHYSICS THREAD via Callback
         if (m_Scene && m_Scene->IsSceneReady() && m_Scene->m_Vehicle)
         {
+            VANS_PROFILE_SCOPE("Frame::VehicleInput", Vans::ProfileCategory::Physics);
             // Vehicle control inputs via InputManager
             if (input.IsKeyDown(GLFW_KEY_W))
                 m_Scene->m_Vehicle->SetInputs(20.0f, 0.0f, 0.0f, 0.0f);
@@ -925,6 +946,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         VansEngine::VansPhysicsSystem& physics = VansEngine::VansPhysicsSystem::GetInstance();
         if (physics.IsSimulationRunning() && m_Scene && m_Scene->IsSceneReady())
         {
+            VANS_PROFILE_SCOPE("Physics::SyncRigidBodies", Vans::ProfileCategory::Physics);
             m_Scene->UpdatePhysicsTransforms();
         }
 
@@ -941,12 +963,14 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         m_ScriptContext.SetScene(m_Scene);
         if (m_Scene && m_Scene->IsSceneReady() && m_PlayState == VansEditorPlayState::Playing)
         {
+            VANS_PROFILE_SCOPE("Script::Update", Vans::ProfileCategory::Script);
             m_ScriptContext.VansScriptUpdate();
         }
 
         // Flush CCT displacements queued by scripts this frame.
         if (physics.IsSimulationRunning() && m_Scene && m_Scene->IsSceneReady())
         {
+            VANS_PROFILE_SCOPE("Physics::FlushCharacterController", Vans::ProfileCategory::Physics);
             m_Scene->UpdateCharControllerTransforms();
         }
 
@@ -956,6 +980,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // 1) Load project resources (mesh/texture/shader) from resource.json
         if (!m_PendingResourcePath.empty())
         {
+            VANS_PROFILE_SCOPE("Resource::LoadProjectResources", Vans::ProfileCategory::IO);
             auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
             VANS_LOG("[Editor] Loading deferred resources: " << m_PendingResourcePath);
             m_Scene->LoadProjectResources(m_PendingResourcePath.c_str(), vkDev);
@@ -963,26 +988,29 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         }
 
         // 2) Load scene content (materials + nodes)
-        ProcessPendingSceneLoad();
-
-        // --- Profiler: begin frame ---
-        VANS_PROFILER_BEGIN_FRAME();
+        {
+            VANS_PROFILE_SCOPE("Resource::ProcessPendingSceneLoad", Vans::ProfileCategory::IO);
+            ProcessPendingSceneLoad();
+        }
 
         // Rendering, 这里会结束renderpass
-        camera.Rendering();
+        {
+            VANS_PROFILE_SCOPE("Render::CameraRendering", Vans::ProfileCategory::CommandRecord);
+            camera.Rendering();
+        }
         //UI Pass
         m_SceneWindow->RegistCamera(&camera);
         m_SceneWindow->RegistScene(m_Scene);
-        DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));
-
-        // --- Profiler: end frame (resolve GPU, merge, compute FPS) ---
         {
-            auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
-            VANS_PROFILER_END_FRAME(vkDev->GetLogicDevice());
+            VANS_PROFILE_SCOPE("Editor::DrawWindows", Vans::ProfileCategory::Editor);
+            DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));
         }
 
         //结束录制
-        camera.Present();
+        {
+            VANS_PROFILE_SCOPE("Vulkan::Present", Vans::ProfileCategory::VulkanSubmit);
+            camera.Present();
+        }
 
         ImDrawData* draw_data = ImGui::GetDrawData();
         const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
@@ -995,8 +1023,16 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // Update and Render additional Platform Windows
         if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
+            VANS_PROFILE_SCOPE("ImGui::PlatformWindows", Vans::ProfileCategory::Editor);
             ImGui::UpdatePlatformWindows();
             ImGui::RenderPlatformWindowsDefault();
+        }
+
+        // Profiler 在 Present 之后结束，确保 Submit / Present CPU 耗时被纳入同一帧。
+        {
+            auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
+            if (profilerFrameActive)
+                VANS_PROFILER_END_FRAME(vkDev->GetLogicDevice());
         }
     }
 

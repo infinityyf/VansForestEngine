@@ -1,203 +1,237 @@
 #pragma once
-// -----------------------------------------------------------------------
-// VansProfiler  —  Lightweight CPU + GPU profiling system.
-//
-// Platform-independent header — no Vulkan/graphics API includes.
-// The GPU profiler accepts opaque void* handles; the renderer passes
-// its native handles (VkDevice, VkCommandBuffer, etc.) and the .cpp
-// casts them internally.
-//
-// Toggle:  VANS_PROFILER_ENABLED  (1 = on, 0 = compiled away)
-//
-// Usage:
-//   VANS_CPU_SCOPE("Physics::Update");
-//   VANS_GPU_SCOPE(cmd, "Shadow Pass");        // cmd = void* (VkCommandBuffer)
-//   VANS_PROFILER_BEGIN_FRAME();
-//   VANS_PROFILER_END_FRAME(device);            // device = void* (VkDevice)
-//   VANS_PROFILER_PRINT();
-//
-// All storage is fixed-size — zero heap allocations per frame.
-// -----------------------------------------------------------------------
 
 #ifndef VANS_PROFILER_ENABLED
-  #define VANS_PROFILER_ENABLED 1   // default ON — set 0 for release builds
+  #define VANS_PROFILER_ENABLED 1
 #endif
 
 #include <cstdint>
-#include <cstring>
 
-// -----------------------------------------------------------------------
-// Forward declarations
-// -----------------------------------------------------------------------
 namespace Vans
 {
-
-// ─── Shared record for both CPU and GPU ─────────────────────────────
-struct ProfileRecord
-{
-    const char* name       = nullptr;
-    double      startMs    = 0.0;
-    double      durationMs = 0.0;
-    uint8_t     depth      = 0;
-    bool        isGpu      = false;
-};
-
-// ─── One assembled frame ────────────────────────────────────────────
-struct ProfileFrame
-{
-    uint32_t      frameIndex      = 0;
-    double        frameDurationMs = 0.0;
-    double        fps             = 0.0;
-
-    static constexpr uint32_t MAX_RECORDS = 256;
-    ProfileRecord records[MAX_RECORDS];
-    uint32_t      recordCount = 0;
-};
-
-// =====================================================================
-//  CpuProfiler
-// =====================================================================
-class VansCpuProfiler
-{
-public:
-    static VansCpuProfiler& Get();
-
-    void BeginFrame();
-    void Push(const char* name);
-    void Pop();
-    void CollectInto(ProfileFrame& frame) const;
-
-private:
-    struct Entry
+    enum class ProfileTrackType : uint8_t
     {
-        const char* name    = nullptr;
-        int64_t     startNs = 0;
-        uint8_t     depth   = 0;
+        CpuThread,
+        GpuQueue,
+        Marker
     };
 
-    static constexpr int MAX_DEPTH   = 32;
-    static constexpr int MAX_RECORDS = 128;
-
-    Entry         m_Stack[MAX_DEPTH]     = {};
-    int           m_StackTop             = 0;
-    ProfileRecord m_Records[MAX_RECORDS] = {};
-    int           m_RecordCount          = 0;
-    int64_t       m_FrameStartNs         = 0;
-};
-
-// ─── RAII CPU scope ─────────────────────────────────────────────────
-struct VansCpuScopeTimer
-{
-    explicit VansCpuScopeTimer(const char* name) { VansCpuProfiler::Get().Push(name); }
-    ~VansCpuScopeTimer()                         { VansCpuProfiler::Get().Pop(); }
-};
-
-// =====================================================================
-//  GpuProfiler  (platform-agnostic interface — void* handles)
-//
-//  The renderer passes native GPU handles as void*:
-//    Init(VkDevice, VkPhysicalDevice, queueFamily)
-//    BeginFrame / Push / Pop  take VkCommandBuffer as void*
-//    Resolve takes VkDevice as void*
-// =====================================================================
-class VansGpuProfiler
-{
-public:
-    static VansGpuProfiler& Get();
-
-    /// Initialize with native GPU handles (e.g. VkDevice, VkPhysicalDevice).
-    void Init(void* device, void* physDevice, uint32_t queueFamily);
-    void Destroy();
-
-    /// Call at start of command buffer recording.
-    void BeginFrame(void* cmd);
-    void Push(void* cmd, const char* name);
-    void Pop(void* cmd);
-    void EndFrame();                              // no-op placeholder
-    /// Read back GPU timestamps (call after submit/wait).
-    void Resolve(void* device);
-    void CollectInto(ProfileFrame& frame) const;
-
-    bool IsInitialized() const { return m_Pools[0] != nullptr; }
-
-private:
-    static constexpr int MAX_GPU_QUERIES = 64;
-    static constexpr int POOL_COUNT      = 2;   // double-buffered
-
-    void*         m_Pools[POOL_COUNT]    = {};   // native query pool handles
-    void*         m_Device               = nullptr;
-    double        m_TimestampPeriodMs    = 0.0;
-    uint32_t      m_WriteIdx             = 0;    // toggles 0/1 each frame
-    bool          m_HasPreviousFrame     = false; // skip first-frame readback
-
-    struct Slot
+    enum class ProfileCategory : uint8_t
     {
-        const char* name      = nullptr;
-        uint32_t    beginSlot = 0;
-        uint32_t    endSlot   = 0;
-        uint8_t     depth     = 0;
+        Frame,
+        Editor,
+        Script,
+        Physics,
+        Animation,
+        Particles,
+        Audio,
+        Video,
+        RuntimeUI,
+        RenderPrepare,
+        CommandRecord,
+        VulkanSubmit,
+        GPU,
+        JobSystem,
+        Wait,
+        IO,
+        Other
     };
 
-    // Per-pool recording state
-    Slot          m_Slots[POOL_COUNT][MAX_GPU_QUERIES] = {};
-    int           m_SlotCount[POOL_COUNT]              = {};
-    uint32_t      m_NextQuery[POOL_COUNT]              = {};
-    int           m_StackDepth                         = 0;
+    enum ProfileEventFlags : uint16_t
+    {
+        ProfileEventFlagNone     = 0,
+        ProfileEventFlagWait     = 1 << 0,
+        ProfileEventFlagGpu      = 1 << 1,
+        ProfileEventFlagOverflow = 1 << 2
+    };
 
-    // Readback (from previous frame's pool)
-    uint64_t      m_RawResults[MAX_GPU_QUERIES * 2]    = {};
-    ProfileRecord m_Records[MAX_GPU_QUERIES]            = {};
-    int           m_RecordCount                        = 0;
-};
+    struct ProfileTrack
+    {
+        uint32_t         trackId  = 0;
+        ProfileTrackType type     = ProfileTrackType::CpuThread;
+        uint64_t         threadId = 0;
+        char             name[48] = {};
+        uint32_t         color    = 0xffffffffu;
+    };
 
-// ─── RAII GPU scope ─────────────────────────────────────────────────
-struct VansGpuScopeQuery
-{
-    void* m_Cmd;
-    explicit VansGpuScopeQuery(void* cmd, const char* name)
-        : m_Cmd(cmd) { VansGpuProfiler::Get().Push(cmd, name); }
-    ~VansGpuScopeQuery() { VansGpuProfiler::Get().Pop(m_Cmd); }
-};
+    struct ProfileEvent
+    {
+        uint32_t        eventId       = 0;
+        uint32_t        parentEventId = 0;
+        uint32_t        trackId       = 0;
+        ProfileCategory category      = ProfileCategory::Other;
+        char            name[96]      = {};
+        double          startUs       = 0.0;
+        double          endUs         = 0.0;
+        uint16_t        depth         = 0;
+        uint16_t        flags         = ProfileEventFlagNone;
+    };
 
-// =====================================================================
-//  Profiler Facade
-// =====================================================================
-class VansProfiler
-{
-public:
-    static VansProfiler& Get();
+    struct ProfileFrame
+    {
+        static constexpr uint32_t MAX_TRACKS = 64;
+        static constexpr uint32_t MAX_EVENTS = 8192;
 
-    void BeginFrame();
-    /// End frame — pass native device handle (e.g. VkDevice) as void*.
-    void EndFrame(void* device);
+        uint64_t     frameIndex      = 0;
+        double       frameDurationUs = 0.0;
+        double       fps             = 0.0;
+        uint32_t     trackCount      = 0;
+        uint32_t     eventCount      = 0;
+        bool         overflow        = false;
+        ProfileTrack tracks[MAX_TRACKS] = {};
+        ProfileEvent events[MAX_EVENTS] = {};
+    };
 
-    const ProfileFrame& GetTimeline() const { return m_Frame; }
+    class VansCpuProfiler
+    {
+    public:
+        static VansCpuProfiler& Get();
 
-    /// Print indented timeline to log
-    void PrintTimeline() const;
+        void BeginFrame(uint64_t frameIndex, int64_t frameStartNs);
+        void EndFrame(ProfileFrame& frame, double frameDurationUs);
+        uint32_t RegisterCurrentThread(const char* name, uint32_t color = 0xff62c96bu);
+        bool Push(const char* name, ProfileCategory category, uint16_t flags = ProfileEventFlagNone);
+        void Pop();
 
-    /// Dump frame data to JSON file (LOG/profiler_frame_XXXX.json)
-    void DumpFrameJson(const char* outputDir = "LOG") const;
+    private:
+        static constexpr uint32_t MAX_DEPTH = 64;
 
-private:
-    ProfileFrame m_Frame      = {};
-    uint32_t     m_FrameIndex = 0;
-    int64_t      m_FrameStartNs = 0;
-};
+        struct StackEntry
+        {
+            char            name[96]      = {};
+            ProfileCategory category      = ProfileCategory::Other;
+            uint16_t        flags         = ProfileEventFlagNone;
+            uint16_t        depth         = 0;
+            uint32_t        eventId       = 0;
+            uint32_t        parentEventId = 0;
+            uint32_t        trackId       = 0;
+            uint64_t        frameIndex    = 0;
+            int64_t         startNs       = 0;
+        };
 
-} // namespace Vans
+        struct ThreadContext
+        {
+            uint32_t   trackId = 0;
+            uint32_t   depth   = 0;
+            StackEntry stack[MAX_DEPTH] = {};
+        };
 
-// -----------------------------------------------------------------------
-// Convenience macros
-// -----------------------------------------------------------------------
+        static ThreadContext& GetThreadContext();
+        static uint64_t GetCurrentThreadIdValue();
+
+        uint32_t RegisterTrack(uint64_t threadId, const char* name, ProfileTrackType type, uint32_t color);
+        uint32_t AllocateEventId();
+        void AddEvent(const ProfileEvent& event);
+        void CopyText(char* dst, uint32_t dstSize, const char* src) const;
+
+    private:
+        ProfileTrack m_Tracks[ProfileFrame::MAX_TRACKS] = {};
+        uint32_t     m_TrackCount = 0;
+        ProfileEvent m_Events[ProfileFrame::MAX_EVENTS] = {};
+        uint32_t     m_EventCount = 0;
+        uint32_t     m_NextEventId = 1;
+        uint64_t     m_FrameIndex = 0;
+        int64_t      m_FrameStartNs = 0;
+        bool         m_FrameActive = false;
+        bool         m_Overflow = false;
+    };
+
+    struct VansCpuScopeTimer
+    {
+        explicit VansCpuScopeTimer(const char* name, ProfileCategory category = ProfileCategory::Other, uint16_t flags = ProfileEventFlagNone);
+        ~VansCpuScopeTimer();
+
+    private:
+        bool m_Active = false;
+    };
+
+    class VansGpuProfiler
+    {
+    public:
+        static VansGpuProfiler& Get();
+
+        void Init(void* device, void* physDevice, uint32_t queueFamily);
+        void Destroy();
+        void BeginFrame(void* cmd);
+        void Push(void* cmd, const char* name);
+        void Pop(void* cmd);
+        void EndFrame();
+        void Resolve(void* device);
+        void CollectInto(ProfileFrame& frame) const;
+
+        bool IsInitialized() const { return m_Pools[0] != nullptr; }
+
+    private:
+        static constexpr int MAX_GPU_QUERIES = 64;
+        static constexpr int POOL_COUNT      = 2;
+
+        struct Slot
+        {
+            char     name[96]  = {};
+            uint32_t beginSlot = 0;
+            uint32_t endSlot   = 0;
+            uint16_t depth     = 0;
+        };
+
+        void CopyText(char* dst, uint32_t dstSize, const char* src) const;
+
+    private:
+        void*        m_Pools[POOL_COUNT] = {};
+        void*        m_Device = nullptr;
+        double       m_TimestampPeriodMs = 0.0;
+        uint32_t     m_WriteIdx = 0;
+        bool         m_HasPreviousFrame = false;
+        Slot         m_Slots[POOL_COUNT][MAX_GPU_QUERIES] = {};
+        int          m_SlotCount[POOL_COUNT] = {};
+        uint32_t     m_NextQuery[POOL_COUNT] = {};
+        int          m_StackDepth = 0;
+        uint64_t     m_RawResults[MAX_GPU_QUERIES * 2] = {};
+        ProfileEvent m_Events[MAX_GPU_QUERIES] = {};
+        int          m_EventCount = 0;
+    };
+
+    struct VansGpuScopeQuery
+    {
+        void* m_Cmd = nullptr;
+        bool  m_Active = false;
+        explicit VansGpuScopeQuery(void* cmd, const char* name);
+        ~VansGpuScopeQuery();
+    };
+
+    class VansProfiler
+    {
+    public:
+        static VansProfiler& Get();
+
+        void BeginFrame();
+        void EndFrame(void* device);
+        void RegisterCurrentThread(const char* name, uint32_t color = 0xff62c96bu);
+        const ProfileFrame& GetTimeline() const { return m_Frame; }
+        void PrintTimeline() const;
+        void DumpFrameJson(const char* outputDir = "LOG") const;
+
+    private:
+        ProfileFrame m_Frame = {};
+        uint64_t     m_FrameIndex = 0;
+        int64_t      m_FrameStartNs = 0;
+    };
+}
+
 #if VANS_PROFILER_ENABLED
-  #define VANS_CPU_SCOPE(name)            Vans::VansCpuScopeTimer _vans_cpu_scope_##__LINE__(name)
-  #define VANS_GPU_SCOPE(cmd, name)       Vans::VansGpuScopeQuery _vans_gpu_scope_##__LINE__((void*)(cmd), name)
+  #define VANS_PROFILE_CONCAT_IMPL(a, b) a##b
+  #define VANS_PROFILE_CONCAT(a, b) VANS_PROFILE_CONCAT_IMPL(a, b)
+  #define VANS_PROFILE_THREAD(name)       Vans::VansProfiler::Get().RegisterCurrentThread(name)
+  #define VANS_PROFILE_SCOPE(name, cat)   Vans::VansCpuScopeTimer VANS_PROFILE_CONCAT(_vans_cpu_scope_, __LINE__)(name, cat)
+  #define VANS_PROFILE_WAIT(name)         Vans::VansCpuScopeTimer VANS_PROFILE_CONCAT(_vans_cpu_wait_, __LINE__)(name, Vans::ProfileCategory::Wait, Vans::ProfileEventFlagWait)
+  #define VANS_CPU_SCOPE(name)            Vans::VansCpuScopeTimer VANS_PROFILE_CONCAT(_vans_cpu_scope_, __LINE__)(name, Vans::ProfileCategory::Other)
+  #define VANS_GPU_SCOPE(cmd, name)       Vans::VansGpuScopeQuery VANS_PROFILE_CONCAT(_vans_gpu_scope_, __LINE__)((void*)(cmd), name)
   #define VANS_PROFILER_BEGIN_FRAME()     Vans::VansProfiler::Get().BeginFrame()
   #define VANS_PROFILER_END_FRAME(dev)    Vans::VansProfiler::Get().EndFrame((void*)(dev))
   #define VANS_PROFILER_PRINT()           Vans::VansProfiler::Get().PrintTimeline()
   #define VANS_PROFILER_DUMP_JSON()       Vans::VansProfiler::Get().DumpFrameJson()
 #else
+  #define VANS_PROFILE_THREAD(name)       /* no-op */
+  #define VANS_PROFILE_SCOPE(name, cat)   /* no-op */
+  #define VANS_PROFILE_WAIT(name)         /* no-op */
   #define VANS_CPU_SCOPE(name)            /* no-op */
   #define VANS_GPU_SCOPE(cmd, name)       /* no-op */
   #define VANS_PROFILER_BEGIN_FRAME()     /* no-op */

@@ -185,7 +185,7 @@ namespace VansGraphics
 			PassBinding::BUFFER_0,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			1,
-			VK_SHADER_STAGE_VERTEX_BIT,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			nullptr
 		};
 		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ instanceTransformBufferBinding }, m_Scene->m_GlobalTransformDataSetLayout);

@@ -8,6 +8,7 @@
 #include "../PhysicsCore/VansPhysics.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../RenderCore/VansVideoManager.h"
+#include "../Util/VansProfiler.h"
 #include "../RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include <cstdlib>
 #include <fstream>
@@ -686,10 +687,13 @@ void VansScriptContext::VansScriptSetup()
 
 void VansScriptContext::VansScriptUpdate()
 {
+    VANS_PROFILE_SCOPE("Script::VansScriptUpdate", Vans::ProfileCategory::Script);
+
     // Periodically check for .py file changes
     m_FileCheckAccumulator += VansGraphics::VansTimer::GetLastFrameDelta();
     if (m_FileCheckAccumulator >= FILE_CHECK_INTERVAL)
     {
+        VANS_PROFILE_SCOPE("Script::CheckHotReload", Vans::ProfileCategory::Script);
         m_FileCheckAccumulator = 0.0f;
         CheckAndReloadPyScripts();
     }
@@ -698,7 +702,10 @@ void VansScriptContext::VansScriptUpdate()
     if (!m_Scene) return;
 
     // ── 调度物理事件（在 CallUpdate 之前） ───────────────────────────
-    DispatchPhysicsEvents();
+    {
+        VANS_PROFILE_SCOPE("Script::DispatchPhysicsEvents", Vans::ProfileCategory::Script);
+        DispatchPhysicsEvents();
+    }
 
     for (auto* obj : m_Scene->m_SceneObjects)
     {
@@ -883,6 +890,8 @@ void VanPyScriptComponent::Enable()
 
 void VanPyScriptComponent::CallUpdate()
 {
+    VANS_PROFILE_SCOPE("Script::CallUpdate", Vans::ProfileCategory::Script);
+
     if (!m_IsValid || !m_IsEnabled) return;
     try
     {

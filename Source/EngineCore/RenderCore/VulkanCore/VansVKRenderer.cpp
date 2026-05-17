@@ -131,7 +131,13 @@ namespace VansGraphics
 
 	void VansVKDevice::Rendering()
 	{
-		bool requireImage = m_VansVKSurface.AcquireVulkanSwapChainImages(m_VansVKLogicDevice, m_SwapChainImageIndex, m_SwapChainImageAcquiredSemaphore, m_SwapChainImageAcquiredFence);
+		VANS_PROFILE_SCOPE("Vulkan::Rendering", Vans::ProfileCategory::CommandRecord);
+
+		bool requireImage = false;
+		{
+			VANS_PROFILE_SCOPE("Vulkan::AcquireSwapchainImage", Vans::ProfileCategory::CommandRecord);
+			requireImage = m_VansVKSurface.AcquireVulkanSwapChainImages(m_VansVKLogicDevice, m_SwapChainImageIndex, m_SwapChainImageAcquiredSemaphore, m_SwapChainImageAcquiredFence);
+		}
 		if (!requireImage)
 		{
 			VANS_LOG_ERROR("AcquireVulkanSwapChainImages failed");
@@ -153,14 +159,23 @@ namespace VansGraphics
 		if (!m_UseAsyncCompute)
 		{
 			// ── Original single-submit path ─────────────────────────────────
-			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			{
+				VANS_PROFILE_SCOPE("Vulkan::BeginCommandBuffer", Vans::ProfileCategory::CommandRecord);
+				m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			}
 			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 
 			// Upload cloth simulation results from staging buffers to device-local vertex buffers
-			m_Scene->RecordClothVertexUploads(cmd);
+			{
+				VANS_PROFILE_SCOPE("Vulkan::RecordClothVertexUploads", Vans::ProfileCategory::CommandRecord);
+				m_Scene->RecordClothVertexUploads(cmd);
+			}
 
 			// Dispatch vegetation bone-sim + skinning compute passes
-			m_Scene->RecordVegetationCompute(m_VansVKCommandBuffer);
+			{
+				VANS_PROFILE_SCOPE("Vulkan::RecordVegetationCompute", Vans::ProfileCategory::CommandRecord);
+				m_Scene->RecordVegetationCompute(m_VansVKCommandBuffer);
+			}
 
 			// 重置本帧的 GPU Profiler 查询池
 #if VANS_PROFILER_ENABLED
@@ -246,15 +261,21 @@ namespace VansGraphics
 			// m_VansVKRayTracingCommandBuffer 在 m_ComputeQueueFamilyIndex 上创建，
 			// 提交到 m_VansVKComputeQueue（不同 QueueFamily），NSight 将显示第三条队列。
 			m_pActiveCommandBuffer = &m_VansVKRayTracingCommandBuffer;
-			m_VansVKRayTracingCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-			BuildTileLightLists(m_VansVKRayTracingCommandBuffer);
-			m_VansVKRayTracingCommandBuffer.EndCommandBufferRecord();
+			{
+				VANS_PROFILE_SCOPE("Vulkan::RecordAsyncComputeCB", Vans::ProfileCategory::CommandRecord);
+				m_VansVKRayTracingCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+				BuildTileLightLists(m_VansVKRayTracingCommandBuffer);
+				m_VansVKRayTracingCommandBuffer.EndCommandBufferRecord();
+			}
 			m_pActiveCommandBuffer = &m_VansVKCommandBuffer;  // restore
-			VansVKCommandBuffer::SubmitCommands(
-				m_VansVKComputeQueue, m_VansVKLogicDevice,
-				{ m_VansVKRayTracingCommandBuffer.GetVKCommandBuffer() },
-				{}, { m_AsyncComputeDoneSemaphore },
-				m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence, false);
+			{
+				VANS_PROFILE_SCOPE("Vulkan::QueueSubmit.Compute", Vans::ProfileCategory::VulkanSubmit);
+				VansVKCommandBuffer::SubmitCommands(
+					m_VansVKComputeQueue, m_VansVKLogicDevice,
+					{ m_VansVKRayTracingCommandBuffer.GetVKCommandBuffer() },
+					{}, { m_AsyncComputeDoneSemaphore },
+					m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence, false);
+			}
 
 			// ── 1. Shadow CB (m_VansVKShadowCommandBuffer → m_VansVKShadowQueue) ──────
 			// 注意：此 CB 不使用 VANS_GPU_SCOPE。async 路径下 query pool reset 在 CB2，
@@ -264,8 +285,10 @@ namespace VansGraphics
 			// 与 BuildTileLightLists 无资源依赖，可与 AsyncCompute CB 并行。
 			m_pActiveCommandBuffer = &m_VansVKShadowCommandBuffer;
 			VkCommandBuffer shadowCmd = m_VansVKShadowCommandBuffer.GetVKCommandBuffer();
-			m_VansVKShadowCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 			{
+				VANS_PROFILE_SCOPE("Vulkan::RecordShadowCB", Vans::ProfileCategory::CommandRecord);
+				m_VansVKShadowCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+				{
 				int cascadeCount = VansConfigration::GetInstance()->GetCascadeCount();
 				for (int cascade = 0; cascade < cascadeCount; ++cascade)
 				{
@@ -275,28 +298,34 @@ namespace VansGraphics
 					renderPassManager->EndRenderPass(shadowCmd, m_globalRenderStateData);
 				}
 				m_globalRenderStateData.cascadeIndex = -1;
-			}
-			{
+				}
+				{
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, shadowCmd, m_globalRenderStateData);
 				DrawPunctualShadowMap(renderPassManager, shadowCmd);
 				renderPassManager->EndRenderPass(shadowCmd, m_globalRenderStateData);
+				}
+				m_VansVKShadowCommandBuffer.EndCommandBufferRecord();
 			}
-			m_VansVKShadowCommandBuffer.EndCommandBufferRecord();
 			m_pActiveCommandBuffer = &m_VansVKCommandBuffer;  // restore active CB
-			VansVKCommandBuffer::SubmitCommands(
-				m_VansVKShadowQueue, m_VansVKLogicDevice,
-				{ m_VansVKShadowCommandBuffer.GetVKCommandBuffer() },
-				{}, { m_ShadowDoneSemaphore },
-				m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence, false);
+			{
+				VANS_PROFILE_SCOPE("Vulkan::QueueSubmit.Shadow", Vans::ProfileCategory::VulkanSubmit);
+				VansVKCommandBuffer::SubmitCommands(
+					m_VansVKShadowQueue, m_VansVKLogicDevice,
+					{ m_VansVKShadowCommandBuffer.GetVKCommandBuffer() },
+					{}, { m_ShadowDoneSemaphore },
+					m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence, false);
+			}
 
 			// ── 2. Graphics CB1 (ClothUpload + VegCompute + MotionVec + GBuffer) ────
 			// 使用独立的 m_VansVKGBufferCommandBuffer，避免 CB1 提交后 CPU 等 fence
 			// 才能重用 m_VansVKCommandBuffer 录制 CB2（消除 CPU stall）。
 			m_pActiveCommandBuffer = &m_VansVKGBufferCommandBuffer;
 			VkCommandBuffer cmd = m_VansVKGBufferCommandBuffer.GetVKCommandBuffer();
-			m_VansVKGBufferCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-			m_Scene->RecordClothVertexUploads(cmd);
-			m_Scene->RecordVegetationCompute(m_VansVKGBufferCommandBuffer);
+			{
+				VANS_PROFILE_SCOPE("Vulkan::RecordGBufferCB", Vans::ProfileCategory::CommandRecord);
+				m_VansVKGBufferCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+				m_Scene->RecordClothVertexUploads(cmd);
+				m_Scene->RecordVegetationCompute(m_VansVKGBufferCommandBuffer);
 			// 注意：此 CB 同样不使用 VANS_GPU_SCOPE，原因同 Shadow CB。
 			{
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansMotionVectorPass, cmd, m_globalRenderStateData);
@@ -314,16 +343,23 @@ namespace VansGraphics
 				m_Scene->DrawDecalNodes();
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
-			m_VansVKGBufferCommandBuffer.EndCommandBufferRecord();
-			VansVKCommandBuffer::SubmitCommands(
-				m_VansVKGraphicsQueue, m_VansVKLogicDevice,
-				{ m_VansVKGBufferCommandBuffer.GetVKCommandBuffer() },
-				{}, { m_GBufferDoneSemaphore },
-				m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence, false);
+				m_VansVKGBufferCommandBuffer.EndCommandBufferRecord();
+			}
+			{
+				VANS_PROFILE_SCOPE("Vulkan::QueueSubmit.GBuffer", Vans::ProfileCategory::VulkanSubmit);
+				VansVKCommandBuffer::SubmitCommands(
+					m_VansVKGraphicsQueue, m_VansVKLogicDevice,
+					{ m_VansVKGBufferCommandBuffer.GetVKCommandBuffer() },
+					{}, { m_GBufferDoneSemaphore },
+					m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence, false);
+			}
 
 			// m_VansVKCommandBuffer 尚未提交，无需 CPU fence 等待，直接录制 CB2。
 			m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
-			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			{
+				VANS_PROFILE_SCOPE("Vulkan::BeginCommandBuffer.CB2", Vans::ProfileCategory::CommandRecord);
+				m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			}
 			cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 #if VANS_PROFILER_ENABLED
 			// BeginFrame 放在 CB2 起点：vkCmdResetQueryPool 与所有 vkCmdWriteTimestamp
@@ -363,6 +399,7 @@ namespace VansGraphics
 		// image is ready before the UI render pass samples it in the editor
 		// Scene window.
 		{
+			VANS_PROFILE_SCOPE("Vulkan::RecordFSRAndRuntimeUI", Vans::ProfileCategory::CommandRecord);
 			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 			auto camera = m_Scene->GetCamera();
 			m_FSRInput.jitterX = camera->m_JitterX;
@@ -407,7 +444,10 @@ namespace VansGraphics
 
 	void VansVKDevice::Present()
 	{
-		m_VansVKCommandBuffer.EndCommandBufferRecord();
+		{
+			VANS_PROFILE_SCOPE("Vulkan::EndCommandBuffer", Vans::ProfileCategory::VulkanSubmit);
+			m_VansVKCommandBuffer.EndCommandBufferRecord();
+		}
 
 		// When no scene is loaded, always use the single-submit path because
 		// the async-compute command buffer was never recorded/submitted.
@@ -418,8 +458,14 @@ namespace VansGraphics
 				{ m_SwapChainImageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }
 			};
 
-			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-			m_VansVKCommandBuffer.ResetCommandBuffer(false);
+			{
+				VANS_PROFILE_SCOPE("Vulkan::QueueSubmit.Graphics", Vans::ProfileCategory::VulkanSubmit);
+				VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+			}
+			{
+				VANS_PROFILE_SCOPE("Vulkan::ResetCommandBuffer", Vans::ProfileCategory::VulkanSubmit);
+				m_VansVKCommandBuffer.ResetCommandBuffer(false);
+			}
 
 		}
 		else
@@ -434,30 +480,51 @@ namespace VansGraphics
 				{ m_AsyncComputeDoneSemaphore,       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT          },
 			};
 
-			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-			m_VansVKCommandBuffer.ResetCommandBuffer(false);
+			{
+				VANS_PROFILE_SCOPE("Vulkan::QueueSubmit.Graphics.CB2", Vans::ProfileCategory::VulkanSubmit);
+				VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+			}
+			{
+				VANS_PROFILE_SCOPE("Vulkan::ResetCommandBuffer.CB2", Vans::ProfileCategory::VulkanSubmit);
+				m_VansVKCommandBuffer.ResetCommandBuffer(false);
+			}
 
 			// 等待 Shadow CB fence，确保下一帧可安全复用该命令缓冲区。
-			VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
-			m_VansVKShadowCommandBuffer.ResetCommandBuffer(false);
+			{
+				VANS_PROFILE_WAIT("Vulkan::WaitFence.Shadow");
+				VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
+				m_VansVKShadowCommandBuffer.ResetCommandBuffer(false);
+			}
 
 			// CB2 在 GPU 端通过 m_GBufferDoneSemaphore 等待 GBuffer CB，
 			// m_VansVKCommandBuffer fence 触发时 GBuffer CB 一定已完成，此处重置安全。
-			VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
-			m_VansVKGBufferCommandBuffer.ResetCommandBuffer(false);
+			{
+				VANS_PROFILE_WAIT("Vulkan::WaitFence.GBuffer");
+				VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
+				m_VansVKGBufferCommandBuffer.ResetCommandBuffer(false);
+			}
 
 			// 同理 AsyncCompute CB（m_VansVKRayTracingCommandBuffer）：
 			// CB2 已等待 m_AsyncComputeDoneSemaphore，故其 fence 此时必然已触发。
-			VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
-			m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+			{
+				VANS_PROFILE_WAIT("Vulkan::WaitFence.AsyncCompute");
+				VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
+				m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+			}
 		}
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
-		m_VansVKSurface.PresentImage(m_VansVKLogicDevice, m_VansVKGraphicsQueue, { m_CommandBufferReadyToPresentSemaphore }, m_SwapChainImageIndex);
+		{
+			VANS_PROFILE_SCOPE("Vulkan::PresentImage", Vans::ProfileCategory::VulkanSubmit);
+			m_VansVKSurface.PresentImage(m_VansVKLogicDevice, m_VansVKGraphicsQueue, { m_CommandBufferReadyToPresentSemaphore }, m_SwapChainImageIndex);
+		}
 
 		renderPassManager->ResetFrameBufferImageLayout(m_VansVKCommandBuffer, m_VansVKSurface, m_SwapChainImageIndex);
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		{
+			VANS_PROFILE_SCOPE("Vulkan::ResetFrameBufferImageLayoutSubmit", Vans::ProfileCategory::VulkanSubmit);
+			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+			m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		}
 	}
 
 	void VansVKDevice::AfterRendering()

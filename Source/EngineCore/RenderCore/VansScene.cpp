@@ -20,6 +20,7 @@
 
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
 #include "../Util/VansLog.h"
+#include "../Util/VansProfiler.h"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
@@ -869,27 +870,51 @@ void VansGraphics::VansScene::UnLoadScene()
 
 void VansGraphics::VansScene::UpdateSceneData()
 {
+    VANS_PROFILE_SCOPE("Scene::UpdateSceneData", Vans::ProfileCategory::RenderPrepare);
+
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
 
     // 先将灯光组件 transform 数据同步到灯光结构体，再计算阴影矩阵
-    SyncLightTransforms();
-    m_LightManager.UpdateLightShadowMatrixData(glm::vec3(m_Camera->GetPosition()));
-    m_LightManager.UpdateLightCPUData();
+    {
+        VANS_PROFILE_SCOPE("Light::SyncTransforms", Vans::ProfileCategory::RenderPrepare);
+        SyncLightTransforms();
+    }
+    {
+        VANS_PROFILE_SCOPE("Light::UpdateShadowMatrices", Vans::ProfileCategory::RenderPrepare);
+        m_LightManager.UpdateLightShadowMatrixData(glm::vec3(m_Camera->GetPosition()));
+    }
+    {
+        VANS_PROFILE_SCOPE("Light::UpdateCPUData", Vans::ProfileCategory::RenderPrepare);
+        m_LightManager.UpdateLightCPUData();
+    }
 
     // Per-frame skeletal animation update + GPU bone matrix upload
     // Use the cached frame delta so all per-frame systems observe the same timestep.
-    UpdateAnimations(static_cast<float>(VansTimer::GetLastFrameDelta()));
+    {
+        VANS_PROFILE_SCOPE("Animation::UpdateAll", Vans::ProfileCategory::Animation);
+        UpdateAnimations(static_cast<float>(VansTimer::GetLastFrameDelta()));
+    }
 
     // Advance cloth simulation and write results to staging buffers
-    UpdateClothSimulation(0.03f);
-    WriteClothResultsToStagingBuffers();
+    {
+        VANS_PROFILE_SCOPE("Cloth::Simulate", Vans::ProfileCategory::Physics);
+        UpdateClothSimulation(0.03f);
+    }
+    {
+        VANS_PROFILE_SCOPE("Cloth::WriteResultsToStaging", Vans::ProfileCategory::Physics);
+        WriteClothResultsToStagingBuffers();
+    }
 
     // 推进所有视频纹理的播放，上传就绪帧到 GPU（在 Vulkan 命令录制之前执行）
-    m_VideoManager.TickAll(VansTimer::GetLastFrameDelta());
+    {
+        VANS_PROFILE_SCOPE("Video::TickAll", Vans::ProfileCategory::Video);
+        m_VideoManager.TickAll(VansTimer::GetLastFrameDelta());
+    }
 
     // 推进所有音频节点：更新 Listener 位置、驱动 Streaming 节点补充 Buffer
     {
+        VANS_PROFILE_SCOPE("Audio::TickAll", Vans::ProfileCategory::Audio);
         glm::vec4 camPos = m_Camera->GetPosition();
         glm::vec4 camFwd = m_Camera->GetForward();
         glm::vec4 camUp  = m_Camera->GetUp();
@@ -902,6 +927,7 @@ void VansGraphics::VansScene::UpdateSceneData()
 
     // 面光源视频发光：将有新帧的视频像素更新到 emissive 贴图数组层
     {
+        VANS_PROFILE_SCOPE("RectLightVideo::CopyFrames", Vans::ProfileCategory::Video);
         VansTexture* emissiveArray = m_MaterialManager.GetRuntimeRenderTexture(
             VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
         VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
@@ -924,37 +950,50 @@ void VansGraphics::VansScene::UpdateSceneData()
     }
 
     // Resolve parent-child transform relationships before GPU upload
-    m_TransformParentSystem.ResolveParentChildTransforms();
+    {
+        VANS_PROFILE_SCOPE("Transform::ResolveParentChild", Vans::ProfileCategory::RenderPrepare);
+        m_TransformParentSystem.ResolveParentChildTransforms();
+    }
 
     // 粒子系统：同步对象 Transform，推进后台运行时，并上传本帧实例数据。
     if (!m_ParticleRenderNodes.empty())
     {
         const float deltaTime = static_cast<float>(VansTimer::GetLastFrameDelta());
-        for (auto* obj : m_SceneObjects)
         {
-            if (!obj || obj->m_TransformID == 0) continue;
-
-            auto* particleComp = obj->GetComponent<VansScriptParticleComponent>();
-            if (!particleComp || !particleComp->m_Runtime) continue;
-
-            if (particleComp->m_HasWorldPositionOverride)
+            VANS_PROFILE_SCOPE("Particle::PrepareLocalToWorld", Vans::ProfileCategory::Particles);
+            for (auto* obj : m_SceneObjects)
             {
-                glm::mat4x4 overrideMatrix(1.f);
-                overrideMatrix[3] = glm::vec4(particleComp->m_WorldPositionOverride, 1.f);
-                particleComp->m_Runtime->m_LocalToWorld = overrideMatrix;
-            }
-            else
-            {
-                auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
-                particleComp->m_Runtime->m_LocalToWorld = t.GetModelMatrix();
+                if (!obj || obj->m_TransformID == 0) continue;
+
+                auto* particleComp = obj->GetComponent<VansScriptParticleComponent>();
+                if (!particleComp || !particleComp->m_Runtime) continue;
+
+                if (particleComp->m_HasWorldPositionOverride)
+                {
+                    glm::mat4x4 overrideMatrix(1.f);
+                    overrideMatrix[3] = glm::vec4(particleComp->m_WorldPositionOverride, 1.f);
+                    particleComp->m_Runtime->m_LocalToWorld = overrideMatrix;
+                }
+                else
+                {
+                    auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                    particleComp->m_Runtime->m_LocalToWorld = t.GetModelMatrix();
+                }
             }
         }
 
-        VansParticleManager::Instance().TickMainThread(deltaTime);
-        VansParticleManager::Instance().WaitForUpdateAndSwap();
+        {
+            VANS_PROFILE_SCOPE("Particle::SignalUpdate", Vans::ProfileCategory::Particles);
+            VansParticleManager::Instance().TickMainThread(deltaTime);
+        }
+        {
+            VANS_PROFILE_WAIT("Particle::WaitForUpdate");
+            VansParticleManager::Instance().WaitForUpdateAndSwap();
+        }
 
         if (nativeDevice != VK_NULL_HANDLE)
         {
+            VANS_PROFILE_SCOPE("Particle::UploadInstanceBuffers", Vans::ProfileCategory::Particles);
             for (auto* obj : m_SceneObjects)
             {
                 if (!obj) continue;
@@ -973,13 +1012,22 @@ void VansGraphics::VansScene::UpdateSceneData()
     }
 
     // 同步空间音频 source 位置（在 ResolveParentChildTransforms 之后，确保世界坐标已最终确定）
-    SyncAudioSourcePositions();
+    {
+        VANS_PROFILE_SCOPE("Audio::SyncSourcePositions", Vans::ProfileCategory::Audio);
+        SyncAudioSourcePositions();
+    }
 
     // Update dirty physics transforms to GPU
-    UpdateTransformRenderData();
+    {
+        VANS_PROFILE_SCOPE("RenderData::UpdateTransforms", Vans::ProfileCategory::RenderPrepare);
+        UpdateTransformRenderData();
+    }
 
     //update material data
-    UpdateRenderNodesDataBeforeRecord();
+    {
+        VANS_PROFILE_SCOPE("RenderData::UpdateNodesBeforeRecord", Vans::ProfileCategory::RenderPrepare);
+        UpdateRenderNodesDataBeforeRecord();
+    }
 }
 
 // ============================================================

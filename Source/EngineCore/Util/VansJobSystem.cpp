@@ -1,4 +1,5 @@
 #include "VansJobSystem.h"
+#include "VansProfiler.h"
 
 namespace Vans
 {
@@ -76,6 +77,8 @@ namespace Vans
 
     void VansJobSystem::ProcessMainThreadJobs()
     {
+        VANS_PROFILE_SCOPE("JobSystem::ProcessMainThreadJobsInternal", Vans::ProfileCategory::JobSystem);
+
         // Copy the queue to avoid blocking for too long
         std::queue<Job> jobsToRun;
         {
@@ -90,6 +93,7 @@ namespace Vans
             jobsToRun.pop();
             if (job)
             {
+                VANS_PROFILE_SCOPE("JobSystem::RunMainThreadJob", Vans::ProfileCategory::JobSystem);
                 job();
             }
         }
@@ -97,10 +101,13 @@ namespace Vans
 
     void VansJobSystem::WorkerLoop()
     {
+        VANS_PROFILE_THREAD("Worker Thread");
+
         while (m_Running)
         {
             Job job;
             {
+                VANS_PROFILE_SCOPE("JobSystem::WaitJob", Vans::ProfileCategory::Wait);
                 std::unique_lock<std::mutex> lock(m_WorkerQueueMutex);
                 m_WorkerCondition.wait(lock, [this] {
                     return !m_WorkerQueue.empty() || !m_Running;
@@ -120,6 +127,7 @@ namespace Vans
 
             if (job)
             {
+                VANS_PROFILE_SCOPE("JobSystem::RunJob", Vans::ProfileCategory::JobSystem);
                 job();
             }
         }

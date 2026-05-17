@@ -70,29 +70,29 @@ void main()
     vec4 albedoSample    = texture(globalPBRTextures[mi * 5 + 0], decal_uv);
     vec3 normalSample    = texture(globalPBRTextures[mi * 5 + 1], decal_uv).rgb;
     float metallicSample = texture(globalPBRTextures[mi * 5 + 2], decal_uv).r;
-    float roughSample    = texture(globalPBRTextures[mi * 5 + 3], decal_uv).r;
     float aoSample       = texture(globalPBRTextures[mi * 5 + 4], decal_uv).r;
 
-    // 贴花 alpha：由 albedo 纹理的 alpha 通道控制覆盖强度
-    float alpha = albedoSample.a * matData.albedo.a;
-    //if (alpha < 0.01)
-        //discard;
+    // 临时规则：贴花 albedo 贴图暂时只作为遮罩使用，R 通道控制覆盖强度。
+    // alpha 为 0 的区域直接丢弃，避免贴花 OBB 边界参与 GBuffer 写入。
+    float alpha = albedoSample.r;
+    if (alpha <= 0.0)
+        discard;
 
-    vec3 albedo    = matData.albedo.rgb * albedoSample.rgb;
     float metallic = matData.metallic   * metallicSample;
-    float roughness= matData.roughness  * roughSample;
     float ao       = matData.ao         * aoSample;
 
-    // 法线贴图：使用 GBuffer 中的世界空间法线作为基准 + 贴花切线空间法线
-    // 贴花在 XZ 投影，因此固定使用 Y 轴朝上的 TBN
-    vec3 T = normalize(vec3(ModelMatrix[0].xyz));  // OBB +X 轴
-    vec3 B = normalize(vec3(ModelMatrix[2].xyz));  // OBB +Z 轴
-    vec3 N = normalize(vec3(ModelMatrix[1].xyz));  // OBB +Y 轴（朝上）
+    // 法线贴图：贴花使用 XZ 投影，局部 +Y 是投影法线。
+    // 由于 T=+X、N=+Y 时，右手系副切线应为 B=N×T=-Z，不能直接使用模型 +Z 轴。
+    vec3 N = normalize(vec3(ModelMatrix[1].xyz));  // OBB +Y 轴（投影法线）
+    vec3 T = normalize(vec3(ModelMatrix[0].xyz));  // OBB +X 轴（U 方向）
+    T = normalize(T - N * dot(T, N));
+    vec3 B = normalize(cross(N, T));                // V 方向，保持 T×B=N
     mat3 TBN       = mat3(T, B, N);
     normalSample   = normalSample * 2.0 - 1.0;
     vec3 normal    = normalize(TBN * normalSample);
 
-    outNormal   = vec4(normal,   alpha);
-    outGBuffer0 = vec4(albedo,   roughness);
+    outNormal   = vec4(normal, alpha);
+    // 暂不写入 albedo/roughness：GBuffer0 使用 alpha=0，保持原有表面颜色不变。
+    outGBuffer0 = vec4(0.0);
     outGBuffer1 = vec4(metallic, ao, 0.0, alpha);
 }
