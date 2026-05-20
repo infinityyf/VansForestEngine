@@ -1,5 +1,6 @@
 #include "VansVideoTexture.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansProfiler.h"
 
 // FFmpeg C 头文件必须在 extern "C" 块内引入，避免 C++ 名称修饰
 extern "C"
@@ -144,6 +145,7 @@ bool VansVideoTexture::Open(VansVKDevice* device,
     bool gotFirstFrame = false;
 
     {
+        VANS_PROFILE_SCOPE("Video::Open.FirstFrameDecode", Vans::ProfileCategory::Video);
         AVFrame*  frame  = av_frame_alloc();
         AVPacket* packet = av_packet_alloc();
 
@@ -180,11 +182,14 @@ bool VansVideoTexture::Open(VansVKDevice* device,
 
     // ── 6. 在 GPU 上创建纹理 ───────────────────────────────────────────────────
     VkFormat gpuFormat = m_IsSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-    m_GpuTexture.LoadFromMemory(
-        m_VkDevice->GetCommandBuffer(),
-        firstPixels.data(), static_cast<size_t>(firstFrameSize),
-        m_Width, m_Height, gpuFormat,
-        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    {
+        VANS_PROFILE_SCOPE("Video::Open.InitialTextureUpload", Vans::ProfileCategory::Video);
+        m_GpuTexture.LoadFromMemory(
+            m_VkDevice->GetCommandBuffer(),
+            firstPixels.data(), static_cast<size_t>(firstFrameSize),
+            m_Width, m_Height, gpuFormat,
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    }
 
     m_IsReady.store(true);
 
@@ -219,6 +224,7 @@ void VansVideoTexture::Close()
         std::lock_guard<std::mutex> lock(m_QueueMutex);
         while (!m_FrameQueue.empty())
             m_FrameQueue.pop();
+        ClearFramePixelPoolLocked();
     }
 
     // 释放 FFmpeg 资源
@@ -233,7 +239,7 @@ void VansVideoTexture::Close()
     m_PlayTime     = 0.0;
     m_HasNewFrame = false;
     m_HasPendingUpload = false;
-    m_LastFramePixels.clear();
+    std::vector<uint8_t>().swap(m_LastFramePixels);
 }
 
 // ===========================================================================
@@ -259,7 +265,12 @@ void VansVideoTexture::Stop()
     {
         std::lock_guard<std::mutex> lock(m_QueueMutex);
         while (!m_FrameQueue.empty())
+        {
+            VideoFrameData frame = std::move(m_FrameQueue.front());
             m_FrameQueue.pop();
+            RecycleFramePixelsLocked(frame.pixels);
+        }
+        RecycleFramePixelsLocked(m_LastFramePixels);
     }
 
     // 4. 重置播放时间（仅主线程写）
@@ -283,9 +294,12 @@ bool VansVideoTexture::Tick(double deltaTime)
     bool           hasFrame = false;
 
     {
+        VANS_PROFILE_SCOPE("Video::Tick.SelectFrameLock", Vans::ProfileCategory::Video);
         std::lock_guard<std::mutex> lock(m_QueueMutex);
         while (!m_FrameQueue.empty() && m_FrameQueue.front().pts <= m_PlayTime)
         {
+            if (hasFrame)
+                RecycleFramePixelsLocked(frameToUpload.pixels);
             frameToUpload = std::move(m_FrameQueue.front());
             m_FrameQueue.pop();
             hasFrame = true;
@@ -294,8 +308,14 @@ bool VansVideoTexture::Tick(double deltaTime)
 
     if (hasFrame)
     {
+        VANS_PROFILE_SCOPE("Video::Tick.PublishPendingFrame", Vans::ProfileCategory::Video);
         // 通知后台线程队列有空位
         m_ProducerCv.notify_one();
+
+        {
+            std::lock_guard<std::mutex> lock(m_QueueMutex);
+            RecycleFramePixelsLocked(m_LastFramePixels);
+        }
 
         // 缓存本帧像素：供后续图形命令录制阶段上传，也供面光源 emissive 数组层复用。
         // 使用 std::move 避免逐字节拷贝整个帧缓冲（1080p ≈ 8 MB）
@@ -317,6 +337,7 @@ bool VansVideoTexture::RecordPendingUpload(VansVKCommandBuffer& cmd)
     if (!m_IsReady.load() || !m_HasPendingUpload || m_LastFramePixels.empty())
         return false;
 
+    VANS_PROFILE_SCOPE("Video::Upload.RecordMainTexture", Vans::ProfileCategory::Video);
     const int dataSize = m_Width * m_Height * 4;
     if (!RecordFrameUpload(cmd, m_LastFramePixels.data(), dataSize))
         return false;
@@ -330,6 +351,7 @@ bool VansVideoTexture::RecordPendingUpload(VansVKCommandBuffer& cmd)
 // ===========================================================================
 bool VansVideoTexture::RecordFrameUpload(VansVKCommandBuffer& cmd, const uint8_t* pixels, int dataSize)
 {
+    VANS_PROFILE_SCOPE("Video::Upload.RecordFrameUpload", Vans::ProfileCategory::Video);
     VkOffset3D offset = { 0, 0, 0 };
     VkExtent3D extent = {
         static_cast<uint32_t>(m_Width),
@@ -344,6 +366,51 @@ bool VansVideoTexture::RecordFrameUpload(VansVKCommandBuffer& cmd, const uint8_t
         dataSize,
         offset, extent,
         0, 0);
+}
+
+// ===========================================================================
+// AcquireFramePixelsLocked — 从 CPU 像素缓存池获取 RGBA 缓冲
+// ===========================================================================
+std::vector<uint8_t> VansVideoTexture::AcquireFramePixelsLocked(int dataSize)
+{
+    if (!m_FreeFrameBuffers.empty())
+    {
+        std::vector<uint8_t> pixels = std::move(m_FreeFrameBuffers.back());
+        m_FreeFrameBuffers.pop_back();
+        pixels.resize(static_cast<size_t>(dataSize));
+        return pixels;
+    }
+
+    return std::vector<uint8_t>(static_cast<size_t>(dataSize));
+}
+
+// ===========================================================================
+// RecycleFramePixelsLocked — 回收 RGBA 缓冲，减少逐帧堆分配和释放尖峰
+// ===========================================================================
+void VansVideoTexture::RecycleFramePixelsLocked(std::vector<uint8_t>& pixels)
+{
+    if (pixels.empty())
+        return;
+
+    const size_t expectedSize = static_cast<size_t>(m_Width) * static_cast<size_t>(m_Height) * 4u;
+    if (expectedSize > 0 && pixels.capacity() >= expectedSize &&
+        static_cast<int>(m_FreeFrameBuffers.size()) < MAX_FREE_FRAME_BUFFERS)
+    {
+        pixels.clear();
+        m_FreeFrameBuffers.push_back(std::move(pixels));
+        return;
+    }
+
+    std::vector<uint8_t>().swap(pixels);
+}
+
+// ===========================================================================
+// ClearFramePixelPoolLocked — 释放队列和缓存池持有的 CPU 帧内存
+// ===========================================================================
+void VansVideoTexture::ClearFramePixelPoolLocked()
+{
+    m_FreeFrameBuffers.clear();
+    m_FreeFrameBuffers.shrink_to_fit();
 }
 
 // ===========================================================================
@@ -374,8 +441,23 @@ bool VansVideoTexture::RecordNewFrameToArrayLayer(VansTexture* targetArray,
     if (!targetArray || !m_HasNewFrame || m_LastFramePixels.empty())
         return false;
 
-    bool ok = targetArray->RecordArrayLayerUploadFromPixels(
-        cmd, m_LastFramePixels.data(), m_Width, m_Height, layerIndex);
+    // 面光源视频优先复用已经上传到 GPU 的主视频纹理，避免同一帧再次走 CPU staging。
+    // 若外部调用顺序未提前上传主视频纹理，这里补录一次主纹理上传。
+    if (m_HasPendingUpload && !RecordPendingUpload(cmd))
+        return false;
+
+    bool ok = false;
+    {
+        VANS_PROFILE_SCOPE("RectLightVideo::RecordGpuFrameCopy", Vans::ProfileCategory::Video);
+        ok = targetArray->RecordArrayLayerCopyFromTexture(cmd, &m_GpuTexture, layerIndex);
+    }
+
+    if (!ok)
+    {
+        ok = targetArray->RecordArrayLayerUploadFromPixels(
+            cmd, m_LastFramePixels.data(), m_Width, m_Height, layerIndex);
+    }
+
     ConsumeNewFrame();
     return ok;
 }
@@ -428,7 +510,11 @@ void VansVideoTexture::DecodeThreadFunc()
             {
                 std::lock_guard<std::mutex> lock(m_QueueMutex);
                 while (!m_FrameQueue.empty())
+                {
+                    VideoFrameData oldFrame = std::move(m_FrameQueue.front());
                     m_FrameQueue.pop();
+                    RecycleFramePixelsLocked(oldFrame.pixels);
+                }
             }
             ptsOffset = 0.0;
             av_seek_frame(m_FmtCtx, m_VideoStream, 0, AVSEEK_FLAG_BACKWARD);
@@ -506,17 +592,27 @@ void VansVideoTexture::DecodeThreadFunc()
             {
                 VideoFrameData vfd;
                 vfd.pts = pts;
-                vfd.pixels.resize(static_cast<size_t>(rgbaBufSize));
+
+                {
+                    std::lock_guard<std::mutex> lock(m_QueueMutex);
+                    vfd.pixels = AcquireFramePixelsLocked(rgbaBufSize);
+                }
 
                 uint8_t* dstData[4]   = { vfd.pixels.data(), nullptr, nullptr, nullptr };
                 int      dstStride[4] = { m_Width * 4, 0, 0, 0 };
-                sws_scale(m_SwsCtx,
-                    frame->data, frame->linesize, 0, m_Height,
-                    dstData, dstStride);
+                {
+                    VANS_PROFILE_SCOPE("Video::Decode.sws_scale", Vans::ProfileCategory::Video);
+                    sws_scale(m_SwsCtx,
+                        frame->data, frame->linesize, 0, m_Height,
+                        dstData, dstStride);
+                }
 
-                std::lock_guard<std::mutex> lock(m_QueueMutex);
-                m_FrameQueue.push(std::move(vfd));
-                m_ConsumerCv.notify_one();
+                {
+                    VANS_PROFILE_SCOPE("Video::Decode.QueuePush", Vans::ProfileCategory::Video);
+                    std::lock_guard<std::mutex> lock(m_QueueMutex);
+                    m_FrameQueue.push(std::move(vfd));
+                    m_ConsumerCv.notify_one();
+                }
             }
 
             av_frame_unref(frame);

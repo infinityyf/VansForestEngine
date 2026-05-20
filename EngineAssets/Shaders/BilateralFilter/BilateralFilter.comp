@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
 
 #define GROUP_SIZE 8
 #define MAX_RADIUS 8
@@ -18,11 +19,34 @@ layout(push_constant) uniform FilterParams
     float sigmaDepth;       // Depth sigma (controls depth difference falloff)
     int radius;             // Filter radius
     float depthThreshold;   // Maximum depth difference to consider
+    int depthMode;          // 0: depth texture .r, 1: GBuffer2 linear depth .w, 2: full-res GBuffer2 .w for half-res color
 };
 
 // Shared memory tile — cache color + depth to avoid redundant global reads
 shared vec4  tileColor[TILE_SIZE][TILE_SIZE];
 shared float tileDepth[TILE_SIZE][TILE_SIZE];
+
+float DecodeFilterDepth(vec4 depthData)
+{
+    if (depthMode == 1)
+        return depthData.w;
+
+    float rawDepth = depthData.r;
+    return (rawDepth >= 0.9999) ? FarPlane : LinearizeDepth(rawDepth, NearPlane, FarPlane);
+}
+
+float FetchFilterDepth(ivec2 colorCoord, ivec2 colorSize)
+{
+    if (depthMode == 2)
+    {
+        ivec2 depthSize = textureSize(inputDepth, 0);
+        ivec2 scale = max(depthSize / colorSize, ivec2(1));
+        ivec2 depthCoord = clamp(colorCoord * scale + scale / 2, ivec2(0), depthSize - 1);
+        return texelFetch(inputDepth, depthCoord, 0).w;
+    }
+
+    return DecodeFilterDepth(texelFetch(inputDepth, colorCoord, 0));
+}
 
 void main() 
 {
@@ -44,7 +68,7 @@ void main()
         ivec2 sampleCoord = clamp(tileOrigin + ivec2(tx, ty), ivec2(0), imgSize - 1);
 
         tileColor[ty][tx] = texelFetch(inputColor, sampleCoord, 0);
-        tileDepth[ty][tx] = texelFetch(inputDepth, sampleCoord, 0).r;
+        tileDepth[ty][tx] = FetchFilterDepth(sampleCoord, imgSize);
     }
 
     barrier();
@@ -60,7 +84,9 @@ void main()
 
     // Precompute inverse sigma² terms
     float invSigmaSpace2 = -0.5 / (sigmaSpace * sigmaSpace);
-    float invSigmaDepth2 = -0.5 / (sigmaDepth * sigmaDepth);
+    float effectiveSigmaDepth = (depthMode >= 1) ? max(sigmaDepth, centerDepth * 0.015) : max(sigmaDepth, centerDepth * 0.008);
+    float effectiveDepthThreshold = (depthMode >= 1) ? max(depthThreshold, centerDepth * 0.03) : max(depthThreshold, centerDepth * 0.015);
+    float invSigmaDepth2 = -0.5 / (effectiveSigmaDepth * effectiveSigmaDepth);
 
     vec4  filteredColor = vec4(0.0);
     float totalWeight   = 0.0;
@@ -76,7 +102,7 @@ void main()
             float sampleDepth = tileDepth[tap.y][tap.x];
 
             float depthDiff = abs(sampleDepth - centerDepth);
-            if (depthDiff > depthThreshold)
+            if (depthDiff > effectiveDepthThreshold)
                 continue;
 
             float spatialDist2 = float(dx * dx + dy * dy);

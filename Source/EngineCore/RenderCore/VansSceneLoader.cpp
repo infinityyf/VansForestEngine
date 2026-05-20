@@ -7,6 +7,7 @@
 #include "../ScriptCore/VansScriptContext.h"
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
+#include "../PhysicsCore/VansTerrainPhysicsNode.h"
 #include "VansVideoManager.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../AudioCore/VansAudioSystem.h"
@@ -35,6 +36,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <filesystem>
+#include <mutex>
 
 namespace VansGraphics
 {
@@ -402,6 +404,13 @@ void VansGraphics::VansScene::AddTerrainNode(VansVKDevice* device, json& terrain
 
     // Heightmap (required)
     config.heightmapPath = projectRoot + terrainData["heightmap"].get<std::string>();
+    config.terrainSize = terrainData.value("terrainSize", config.terrainSize);
+    config.maxHeight = terrainData.value("maxHeight", config.maxHeight);
+    config.heightOffset = terrainData.value("heightOffset", config.heightOffset);
+    config.splitDistMult = terrainData.value("splitDistMult", config.splitDistMult);
+    config.lodDistanceRatio = terrainData.value("lodDistanceRatio", config.lodDistanceRatio);
+    config.morphStartRatio = terrainData.value("morphStartRatio", config.morphStartRatio);
+    config.maxPatchInstances = terrainData.value("maxPatchInstances", config.maxPatchInstances);
 
     // Splatmaps (required, array of 2)
     if (terrainData.contains("splatmaps") && terrainData["splatmaps"].is_array())
@@ -462,6 +471,62 @@ void VansGraphics::VansScene::AddTerrainNode(VansVKDevice* device, json& terrain
     }
     renderNode->SetName(name);
     RegistRenderNode(renderNode, type);
+
+    // Terrain 物理碰撞是可选项，只由 terrain.collision.enabled 控制。
+    if (terrainData.contains("collision") && terrainData["collision"].is_object())
+    {
+        auto& collisionJson = terrainData["collision"];
+        VansEngine::TerrainPhysicsProperties terrainPhysicsProps;
+        terrainPhysicsProps.enabled = collisionJson.value("enabled", false);
+        terrainPhysicsProps.heightmapPath = config.heightmapPath;
+        terrainPhysicsProps.terrainSize = config.terrainSize;
+        terrainPhysicsProps.maxHeight = config.maxHeight;
+        terrainPhysicsProps.heightOffset = config.heightOffset;
+
+        if (collisionJson.contains("terrainSize"))
+            terrainPhysicsProps.terrainSize = collisionJson["terrainSize"].get<float>();
+        if (collisionJson.contains("maxHeight"))
+            terrainPhysicsProps.maxHeight = collisionJson["maxHeight"].get<float>();
+        if (collisionJson.contains("heightOffset"))
+            terrainPhysicsProps.heightOffset = collisionJson["heightOffset"].get<float>();
+        if (collisionJson.contains("layer"))
+            terrainPhysicsProps.layerName = collisionJson["layer"].get<std::string>();
+        if (collisionJson.contains("flipX"))
+            terrainPhysicsProps.flipX = collisionJson["flipX"].get<bool>();
+        if (collisionJson.contains("flipZ"))
+            terrainPhysicsProps.flipZ = collisionJson["flipZ"].get<bool>();
+
+        if (collisionJson.contains("material") && collisionJson["material"].is_object())
+        {
+            auto& materialJson = collisionJson["material"];
+            if (materialJson.contains("staticFriction"))
+                terrainPhysicsProps.material.staticFriction = materialJson["staticFriction"].get<float>();
+            if (materialJson.contains("dynamicFriction"))
+                terrainPhysicsProps.material.dynamicFriction = materialJson["dynamicFriction"].get<float>();
+            if (materialJson.contains("restitution"))
+                terrainPhysicsProps.material.restitution = materialJson["restitution"].get<float>();
+        }
+
+        if (terrainPhysicsProps.enabled)
+        {
+            auto& physicsSystem = VansEngine::VansPhysicsSystem::GetInstance();
+            std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
+
+            if (m_TerrainPhysicsNode)
+            {
+                delete m_TerrainPhysicsNode;
+                m_TerrainPhysicsNode = nullptr;
+            }
+
+            m_TerrainPhysicsNode = new VansEngine::VansTerrainPhysicsNode();
+            if (!m_TerrainPhysicsNode->Initialize(terrainPhysicsProps))
+            {
+                delete m_TerrainPhysicsNode;
+                m_TerrainPhysicsNode = nullptr;
+                VANS_LOG_WARN("[VansScene] Terrain collision initialization failed.");
+            }
+        }
+    }
 }
 
 // ===========================================================================
@@ -1739,9 +1804,9 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
             VansTexture* heightMap = terrain->GetHeightMap();
             if (heightMap)
             {
-                // Read terrain height params from JSON or use terrain defaults
-                float terrainMaxHeight   = vegetationData.value("terrainMaxHeight", 500.0f);
-                float terrainHeightOffset = vegetationData.value("terrainHeightOffset", -23.0f);
+                // 读取植被覆盖参数；未配置时复用 terrain 运行时参数，避免高度不一致
+                float terrainMaxHeight = vegetationData.value("terrainMaxHeight", terrain->GetMaxHeight());
+                float terrainHeightOffset = vegetationData.value("terrainHeightOffset", terrain->GetHeightOffset());
 
                 m_VegetationSystem->SetTerrainHeightmap(
                     heightMap->GetImage().GetImageView(),

@@ -347,6 +347,35 @@ void VansGraphics::VansVKCommandBuffer::BlitImage(VansVKImage& source, int sourc
 		});
 }
 
+void VansGraphics::VansVKCommandBuffer::CopyImageRegions(VansVKImage& source, VkImageLayout sourceLayout,
+	VansVKImage& target, VkImageLayout targetLayout,
+	const std::vector<VkImageCopy>& copyRegions)
+{
+	if (copyRegions.empty())
+		return;
+
+	vkCmdCopyImage(
+		m_VansVKCommandBuffer,
+		source.GetImage(), sourceLayout,
+		target.GetImage(), targetLayout,
+		static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
+}
+
+void VansGraphics::VansVKCommandBuffer::BlitImageRegions(VansVKImage& source, VkImageLayout sourceLayout,
+	VansVKImage& target, VkImageLayout targetLayout,
+	const std::vector<VkImageBlit>& blitRegions,
+	VkFilter filter)
+{
+	if (blitRegions.empty())
+		return;
+
+	vkCmdBlitImage(
+		m_VansVKCommandBuffer,
+		source.GetImage(), sourceLayout,
+		target.GetImage(), targetLayout,
+		static_cast<uint32_t>(blitRegions.size()), blitRegions.data(), filter);
+}
+
 void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
 	VkPipelineBindPoint pipeline_type, 
 	VansGraphicsShader& shader,

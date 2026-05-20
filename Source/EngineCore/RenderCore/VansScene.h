@@ -22,6 +22,12 @@
 
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
+
+namespace VansEngine
+{
+	class VansTerrainPhysicsNode;
+}
+
 namespace VansGraphics
 {
 	// ── 场景加载状态枚举 ──────────────────────────────────────────────────
@@ -137,6 +143,9 @@ namespace VansGraphics
 
 		// Physics nodes
 		std::vector<VansEngine::VansPhysicsNode*> m_PhysicsNodes;
+
+		// 地形高度场碰撞节点，由 terrain.collision 配置创建
+		VansEngine::VansTerrainPhysicsNode* m_TerrainPhysicsNode = nullptr;
 
 		// Cloth simulation nodes
 		std::vector<VansEngine::VansClothNode*> m_ClothNodes;

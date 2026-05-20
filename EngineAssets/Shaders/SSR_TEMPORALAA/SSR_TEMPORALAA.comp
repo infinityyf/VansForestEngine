@@ -19,7 +19,7 @@ vec2 GetVelocity(vec2 uv)
     return texture(inputMotionVector, uv).xy;
 }
 
-void ResolverAABB(sampler2D currColor, float Sharpness, float ExposureScale, float AABBScale, vec2 uv, vec2 TexelSize, inout float Variance, inout vec4 MinColor, inout vec4 MaxColor, inout vec4 FilterColor)
+void ResolverAABB(sampler2D currColor, sampler2D positionTexture, float AABBScale, ivec2 pixelCoord, ivec2 screenSize, inout float Variance, inout vec4 MinColor, inout vec4 MaxColor, inout vec4 FilterColor)
 {
     const ivec2 SampleOffset[9] = ivec2[](
         ivec2(-1, -1),
@@ -33,14 +33,43 @@ void ResolverAABB(sampler2D currColor, float Sharpness, float ExposureScale, flo
         ivec2( 1,  1)
     );
     vec4 SampleColors[9];
+    float centerDepth = texelFetch(positionTexture, pixelCoord, 0).w;
+    int validSampleCount = 0;
 
     for(uint i = 0; i < 9; i++)
     {
-        // use GLSL texture() and proper texel offset math (offset * TexelSize)
-        SampleColors[i] = texture(currColor, uv + vec2(SampleOffset[i]) / TexelSize);
+        ivec2 sampleCoord = pixelCoord + SampleOffset[i];
+        bool validCoord = all(greaterThanEqual(sampleCoord, ivec2(0))) && all(lessThan(sampleCoord, screenSize));
+        SampleColors[i] = vec4(0.0);
+        if (!validCoord)
+            continue;
+
+        float sampleDepth = texelFetch(positionTexture, sampleCoord, 0).w;
+        float depthDiff = abs(centerDepth - sampleDepth);
+        float depthThreshold = max(centerDepth * 0.03, 0.08);
+        if (centerDepth <= 0.0 || sampleDepth <= 0.0 || depthDiff > depthThreshold)
+            continue;
+
+        // 使用 texelFetch，避免 texture() 双线性采样在墙/地交界处直接混入相邻表面 SSR。
+        SampleColors[i] = texelFetch(currColor, sampleCoord, 0);
+        if (SampleColors[i].a <= 0.001)
+            continue;
+
         // Tonemap before computing neighborhood statistics — suppresses HDR
         // fireflies that would otherwise widen the AABB and leak ghost-noise.
         SampleColors[i].rgb = KarisTonemap(SampleColors[i].rgb);
+        validSampleCount++;
+    }
+
+    vec4 centerColor = texelFetch(currColor, pixelCoord, 0);
+    centerColor.rgb = KarisTonemap(centerColor.rgb);
+    if (validSampleCount == 0)
+    {
+        MinColor = centerColor;
+        MaxColor = centerColor;
+        FilterColor = centerColor;
+        Variance = 1.0 - centerColor.a;
+        return;
     }
 
     vec4 m1 = vec4(0.0);
@@ -51,23 +80,24 @@ void ResolverAABB(sampler2D currColor, float Sharpness, float ExposureScale, flo
         m2 += SampleColors[x] * SampleColors[x];
     }
 
-    vec4 mean = m1 / 9.0;
-    vec4 stddev = sqrt((m2 / 9.0) - pow2(mean));
+    vec4 mean = m1 / float(validSampleCount);
+    vec4 stddev = sqrt(max((m2 / float(validSampleCount)) - pow2(mean), vec4(0.0)));
 
     MinColor = mean - AABBScale * stddev;
     MaxColor = mean + AABBScale * stddev;
 
-    FilterColor = SampleColors[4];
+    FilterColor = centerColor;
     MinColor = min(MinColor, FilterColor);
     MaxColor = max(MaxColor, FilterColor);
 
     float TotalVariance = 0.0;
     for(uint z = 0; z < 9; z++)
     {
-        TotalVariance += pow2(Luminance(SampleColors[z].xyz) - Luminance(mean.xyz));
+        if (SampleColors[z].a > 0.001)
+            TotalVariance += pow2(Luminance(SampleColors[z].xyz) - Luminance(mean.xyz));
     }
     // saturate -> clamp in GLSL
-    Variance = clamp((TotalVariance / 9.0) * 256.0, 0.0, 1.0);
+    Variance = clamp((TotalVariance / float(validSampleCount)) * 256.0, 0.0, 1.0);
     Variance *= FilterColor.a;
 }
 
@@ -94,8 +124,8 @@ void main()
 	vec4 SSR_CurrColor = vec4(0);
 	vec4 SSR_MinColor = vec4(0);
     vec4 SSR_MaxColor = vec4(0);
-	// Use a wider AABB (2.5 σ) so noisy SSR can still accumulate temporal history
-	ResolverAABB(inputColor, 0, 10, 2.5, uv, ScreenParams.xy, SSR_Variance, SSR_MinColor, SSR_MaxColor, SSR_CurrColor);
+    // 使用深度约束的 AABB，防止墙面/地面等深度断层互相扩张 clamp 区间。
+    ResolverAABB(inputColor, inputPosition, 1.5, pixelCoord, screenSize, SSR_Variance, SSR_MinColor, SSR_MaxColor, SSR_CurrColor);
 
 	/////Clamp TemporalColor
     // 先判断未 clamp 的 reprojection 是否有效。之前先 clamp 再计算 edgeFade，
@@ -105,6 +135,9 @@ void main()
                         all(lessThan(rawPrevUV, vec2(1.0)));
     vec2 prevUV = clamp(rawPrevUV, vec2(0.0), vec2(1.0));
     ivec2 prevPixel = clamp(ivec2(prevUV * ScreenParams.xy), ivec2(0), screenSize - 1);
+    float prevDepth = texelFetch(inputPosition, prevPixel, 0).w;
+    float prevDepthDiff = abs(depth - prevDepth);
+    bool historyDepthValid = depth > 0.0 && prevDepth > 0.0 && prevDepthDiff < max(depth * 0.03, 0.10);
 
     int frameIndex = int(FrameIndex) % 2;
 	vec4 SSR_PrevColor = frameIndex == 0 ? imageLoad(aaResultA, prevPixel) : imageLoad(aaResultB, prevPixel);
@@ -134,7 +167,7 @@ void main()
     float varianceBlend = mix(0.80, 0.92, SSR_Variance);
 
 	// Adaptive temporal blend: base weight scaled by confidence
-    float temporalWeight = varianceBlend * velocityWeight * edgeFade * depthWeight * currentValidWeight;
+    float temporalWeight = varianceBlend * velocityWeight * edgeFade * depthWeight * currentValidWeight * (historyDepthValid ? 1.0 : 0.0);
     if (FrameIndex < 1.5)
     {
         temporalWeight = 0.0;

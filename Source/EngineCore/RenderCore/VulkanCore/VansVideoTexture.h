@@ -105,6 +105,11 @@ namespace VansGraphics
         // ── 将像素数据上传到 GPU（仅主线程录制阶段调用）────────────────────
         bool RecordFrameUpload(VansVKCommandBuffer& cmd, const uint8_t* pixels, int dataSize);
 
+        // ── CPU 像素缓存池（必须在 m_QueueMutex 保护下调用）───────────────
+        std::vector<uint8_t> AcquireFramePixelsLocked(int dataSize);
+        void RecycleFramePixelsLocked(std::vector<uint8_t>& pixels);
+        void ClearFramePixelPoolLocked();
+
         // ── 最后一帧 CPU 像素缓存内部访问器（仅供 CopyNewFrameToArrayLayer 使用）──
         bool HasNewFrame() const { return m_HasNewFrame; }
         void ConsumeNewFrame()   { m_HasNewFrame = false; }
@@ -136,7 +141,9 @@ namespace VansGraphics
 
         // ── 帧队列（生产者：解码线程 → 消费者：主线程）──────────────────────
         static constexpr int     MAX_QUEUE_SIZE = 4;
+        static constexpr int     MAX_FREE_FRAME_BUFFERS = MAX_QUEUE_SIZE + 2;
         std::queue<VideoFrameData> m_FrameQueue;
+        std::vector<std::vector<uint8_t>> m_FreeFrameBuffers;
         std::mutex                 m_QueueMutex;
         std::condition_variable    m_ProducerCv; // 生产者等待队列有空位
         std::condition_variable    m_ConsumerCv; // 消费者等待队列有帧（预留）

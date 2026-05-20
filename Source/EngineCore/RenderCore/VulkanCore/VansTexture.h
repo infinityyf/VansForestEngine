@@ -76,6 +76,10 @@ namespace VansGraphics
 		bool RecordArrayLayerUploadFromPixels(VansVKCommandBuffer& command_buffer,
 			const uint8_t* pixels, int srcW, int srcH, int layerIndex);
 
+		// 从已有 GPU 2D 纹理直接拷贝/缩放到数组层，避免视频面光源二次 CPU staging 上传。
+		bool RecordArrayLayerCopyFromTexture(VansVKCommandBuffer& command_buffer,
+			VansTexture* sourceTexture, int layerIndex);
+
 		VansVKImage& GetImage() { return m_Image; }
 
 		TextureType m_TextureType;

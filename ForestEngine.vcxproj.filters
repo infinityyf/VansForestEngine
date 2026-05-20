@@ -457,6 +457,9 @@
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsEventCallback.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansTerrainPhysicsNode.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\Util\VansFileUtil.h">
       <Filter>EngineCore\Utils</Filter>
     </ClInclude>
@@ -852,6 +855,9 @@
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsEventCallback.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansTerrainPhysicsNode.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\Util\VansInputManager.cpp">

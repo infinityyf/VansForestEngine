@@ -23,6 +23,10 @@ void main()
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 screenSize = ivec2(ScreenParams.xy);
 
+    // Dispatch 按 8x8 向上取整，越界线程必须跳过，避免边缘 imageLoad / imageStore 未定义。
+    if (any(greaterThanEqual(pixelCoord, screenSize)))
+        return;
+
     // Per-pixel, per-frame random rotation — dithers the Fibonacci disk
     // across neighbours and across time so TAA can accumulate them.
     uint rseed = PixelSeedHash(pixelCoord);
@@ -30,19 +34,27 @@ void main()
     vec4 hitInfo = imageLoad(traceHit, pixelCoord);
     vec3 normal = texelFetch(inputNormal, pixelCoord, 0).xyz;
     float roughness = texelFetch(inputRoughness, pixelCoord, 0).a;
-    vec3 position = texelFetch(inputPosition, pixelCoord, 0).xyz;
+    vec4 positionData = texelFetch(inputPosition, pixelCoord, 0);
+    vec3 position = positionData.xyz;
+    float centerDepth = positionData.w;
     vec2 hituv = hitInfo.xy;
+    bool centerHasGeometryHit = (hitInfo.w >= 0.75);
+
+    if (length(normal) < 0.5 || centerDepth <= 0.0 || !centerHasGeometryHit)
+    {
+        imageStore(resolveResult, pixelCoord, vec4(0.0));
+        return;
+    }
 
     // 视线向量使用当帧相机位置（position 来自当帧 GBuffer），保证 BRDF 权重正确。
     vec3 viewDirection = normalize(cameraPosition.xyz - position);
 
     vec3 resolvedReflectionColor = vec3(0.0);
     float resolvedWeight = 0.0;
-    float centerDepth = texelFetch(inputPosition, pixelCoord, 0).w;
 
     // Adaptive bilateral: relax normal similarity for rough surfaces so
     // the spatial filter can average more neighbor samples effectively.
-    float normalPower = mix(32.0, 4.0, roughness);
+    float normalPower = mix(64.0, 12.0, roughness);
 
     // Gather radius scales with roughness: mirror surfaces use a tight radius,
     // rough surfaces spread wider to pick up more angular variation.
@@ -63,54 +75,46 @@ void main()
 
         vec4 neighborHitInfo = imageLoad(traceHit, neighborCoord);
 
-        // 完全无效像素（空GBuffer / 背面反射 w==0）— 跳过
-        if (neighborHitInfo.w < 0.45)
+        // 只把屏幕空间几何命中写入 SSR。trace miss / sky fallback 应交给 deferred IBL，
+        // 否则粗糙表面会把天空或远处颜色当成 SSR 继续 temporal 累积，形成蓝色漏色。
+        if (neighborHitInfo.w < 0.75)
             continue;
 
-        // w≈0.5: trace miss，反射方向存于tracePDF.xyz → 采样天空球
-        // w≈1.0: 几何体命中 → 采样屏幕颜色
-        bool isSkyHit = (neighborHitInfo.w < 0.75);
-
-        // PDF在trace阶段已计算（sky/几何体均有效）；sky hit时xyz存储反射方向
+        // PDF在trace阶段已计算；几何体命中时 xyz 存储命中点法线。
         vec4 pdfInfo = imageLoad(tracePDF, neighborCoord);
 
         vec3 color;
         vec3 lightDirection;
+        vec2 neighborHituv = neighborHitInfo.xy;
+        ivec2 hitPixel = clamp(ivec2(neighborHituv * ScreenParams.xy), ivec2(0), screenSize - 1);
 
-        if (isSkyHit)
-        {
-            // trace miss：用存储的反射方向采样预过滤天空球作为fallback
-            vec3 skyDir = normalize(pdfInfo.xyz);
-            float skyLod = GetMipLevelFromRoughness(roughness);
-            color = textureLod(PreConvSpecularEnvironment, skyDir, skyLod).rgb;
-            lightDirection = skyDir;
-        }
-        else
-        {
-            vec2 neighborHituv = neighborHitInfo.xy;
-            ivec2 hitPixel = clamp(ivec2(neighborHituv * ScreenParams.xy), ivec2(0), screenSize - 1);
+        vec4 hitPositionData = texelFetch(inputPosition, hitPixel, 0);
+        vec3 hitPosition = hitPositionData.xyz;
+        vec3 hitNormal = texelFetch(inputNormal, hitPixel, 0).xyz;
+        if (hitPositionData.w <= 0.0 || length(hitNormal) < 0.5)
+            continue;
 
-            // inputColor 是上一帧 scene color；只有采样 color 时使用上一帧 UV。
-            vec3 hitPosition = texelFetch(inputPosition, hitPixel, 0).xyz;
-            vec4 lastClip = LastProjectionMatrix * LastViewMatrix * vec4(hitPosition, 1.0);
-            lastClip /= lastClip.w;
-            lastClip.y = -lastClip.y;
-            vec2 lastColorUV = lastClip.xy * 0.5 + 0.5;
-            bool colorHistoryValid = all(greaterThanEqual(lastColorUV, vec2(0.0))) &&
-                                     all(lessThanEqual(lastColorUV, vec2(1.0)));
-            if (!colorHistoryValid)
-                continue;
+        // inputColor 是上一帧 scene color；只有采样 color 时使用上一帧 UV。
+        vec4 lastClip = LastProjectionMatrix * LastViewMatrix * vec4(hitPosition, 1.0);
+        lastClip /= lastClip.w;
+        lastClip.y = -lastClip.y;
+        vec2 lastColorUV = lastClip.xy * 0.5 + 0.5;
+        bool colorHistoryValid = all(greaterThanEqual(lastColorUV, vec2(0.0))) &&
+                                 all(lessThanEqual(lastColorUV, vec2(1.0)));
+        if (!colorHistoryValid)
+            continue;
 
-            ivec2 colorPixel = clamp(ivec2(lastColorUV * ScreenParams.xy), ivec2(0), screenSize - 1);
-            color = texelFetch(inputColor, colorPixel, 0).xyz;
-            lightDirection = normalize(hitPosition - position);
+        ivec2 colorPixel = clamp(ivec2(lastColorUV * ScreenParams.xy), ivec2(0), screenSize - 1);
+        color = texelFetch(inputColor, colorPixel, 0).xyz;
+        lightDirection = normalize(hitPosition - position);
+        if (dot(lightDirection, normal) <= 0.0)
+            continue;
 
-            // Fade color near screen edges to avoid hard reflection cutoff
-            float edgeFade = 1.0;
-            edgeFade *= smoothstep(0.0, 0.05, neighborHituv.x) * smoothstep(1.0, 0.95, neighborHituv.x);
-            edgeFade *= smoothstep(0.0, 0.05, neighborHituv.y) * smoothstep(1.0, 0.95, neighborHituv.y);
-            color *= edgeFade;
-        }
+        // Fade color near screen edges to avoid hard reflection cutoff
+        float edgeFade = 1.0;
+        edgeFade *= smoothstep(0.0, 0.05, neighborHituv.x) * smoothstep(1.0, 0.95, neighborHituv.x);
+        edgeFade *= smoothstep(0.0, 0.05, neighborHituv.y) * smoothstep(1.0, 0.95, neighborHituv.y);
+        color *= edgeFade;
 
         // Firefly suppression: clamp excessively bright samples that cause
         // single-pixel spikes in the resolve (common on rough surfaces).
@@ -121,6 +125,12 @@ void main()
         // Bilateral weight: normal similarity (roughness-adaptive power —
         // strict for mirrors, relaxed for rough surfaces to gather more)
         vec3 neighborNormal = texelFetch(inputNormal, neighborCoord, 0).xyz;
+        if (length(neighborNormal) < 0.5)
+            continue;
+        float normalDot = dot(normal, neighborNormal);
+        float hardNormalThreshold = mix(0.985, 0.94, roughness);
+        if (normalDot < hardNormalThreshold)
+            continue;
         float normalWeight = pow(max(0.0, dot(normal, neighborNormal)), normalPower);
 
         // Bilateral weight: depth similarity
@@ -133,9 +143,10 @@ void main()
         // foreground/background bleed).
         float neighborDepth = texelFetch(inputPosition, neighborCoord, 0).w;
         float depthDiff = abs(centerDepth - neighborDepth);
-        if (depthDiff > centerDepth * 0.2)
+        float depthThreshold = max(centerDepth * mix(0.02, 0.04, roughness), 0.08);
+        if (depthDiff > depthThreshold)
             continue;
-        float depthWeight = exp(-depthDiff / max(centerDepth * 0.05, 0.01));
+        float depthWeight = exp(-depthDiff / max(centerDepth * 0.015, 0.03));
 
         // Inverse-luminance weighting (Karis): prevents bright outliers
         // from dominating the weighted average, reducing firefly noise.

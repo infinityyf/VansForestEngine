@@ -786,7 +786,8 @@ namespace VansGraphics
 			4.0f,
 			0.02f,
 			5,
-			0.01f
+			0.01f,
+			0
 		};
 
 		auto vansConfigration = VansConfigration::GetInstance();

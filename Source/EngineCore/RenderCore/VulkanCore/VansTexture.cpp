@@ -4,6 +4,7 @@
 #include "VansVKCommandBuffer.h"
 #include "../../Util/VansJobSystem.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansProfiler.h"
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -313,7 +314,7 @@ namespace VansGraphics
 		//创建GPU Image
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
 		m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,
-			VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 			VK_SAMPLE_COUNT_1_BIT, false, true, true, addressMode);
 
 		//CPU端逐级降采样 + 压缩 + 上传
@@ -661,6 +662,7 @@ namespace VansGraphics
 
 		if (srcW != m_TextureWidth || srcH != m_TextureHeight)
 		{
+			VANS_PROFILE_SCOPE("RectLightVideo::ResizeCPU", Vans::ProfileCategory::Video);
 			resized.resize(size_t(m_TextureWidth) * m_TextureHeight * 4);
 			float scaleX = float(srcW) / float(m_TextureWidth);
 			float scaleY = float(srcH) / float(m_TextureHeight);
@@ -766,16 +768,20 @@ namespace VansGraphics
 		size_t dataSize = size_t(uploadW) * uploadH * 4;
 		VkExtent3D extent = { (uint32_t)uploadW, (uint32_t)uploadH, 1 };
 		VkOffset3D zeroOffset = { 0, 0, 0 };
-		if (!vkDevice->RecordDeviceImageData(m_Image, command_buffer,
-			uploadData, static_cast<int>(dataSize), zeroOffset, extent,
-			0, layerIndex, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
 		{
-			return false;
+			VANS_PROFILE_SCOPE("RectLightVideo::UploadArrayLayer", Vans::ProfileCategory::Video);
+			if (!vkDevice->RecordDeviceImageData(m_Image, command_buffer,
+				uploadData, static_cast<int>(dataSize), zeroOffset, extent,
+				0, layerIndex, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
+			{
+				return false;
+			}
 		}
 
 		int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
 		if (mipLevels > 1)
 		{
+			VANS_PROFILE_SCOPE("RectLightVideo::GenerateMipmaps", Vans::ProfileCategory::Video);
 			GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(),
 				uploadW, uploadH, mipLevels, layerIndex);
 		}
@@ -801,6 +807,131 @@ namespace VansGraphics
 		return true;
 	}
 
+	// ===========================================================================
+	// RecordArrayLayerCopyFromTexture — 从 GPU 视频纹理直接写入贴图数组层
+	// 避免 RectLight 视频路径对同一帧像素进行第二次 CPU staging 上传。
+	// ===========================================================================
+	bool VansTexture::RecordArrayLayerCopyFromTexture(VansVKCommandBuffer& command_buffer,
+		VansTexture* sourceTexture, int layerIndex)
+	{
+		if (!sourceTexture || layerIndex < 0 || layerIndex >= m_TextureSlice ||
+			sourceTexture->GetWidth() <= 0 || sourceTexture->GetHeight() <= 0)
+		{
+			VANS_LOG_ERROR("[VansTexture] RecordArrayLayerCopyFromTexture: 参数无效 layer=" << layerIndex);
+			return false;
+		}
+
+		VansVKImage& sourceImage = sourceTexture->GetImage();
+		const int sourceW = sourceTexture->GetWidth();
+		const int sourceH = sourceTexture->GetHeight();
+		const VkImageLayout sourceOriginalLayout = sourceImage.GetImageLayout();
+		const VkImageLayout targetOriginalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		{
+			VANS_PROFILE_SCOPE("RectLightVideo::GpuCopy.SetupBarriers", Vans::ProfileCategory::Video);
+			VkImageMemoryBarrier sourceToTransfer{};
+			sourceToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			sourceToTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			sourceToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			sourceToTransfer.oldLayout = sourceOriginalLayout;
+			sourceToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			sourceToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			sourceToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			sourceToTransfer.image = sourceImage.GetImage();
+			sourceToTransfer.subresourceRange = { sourceImage.GetImageAspect(), 0, 1u, 0, 1u };
+
+			VkImageMemoryBarrier targetToTransfer{};
+			targetToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			targetToTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			targetToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			targetToTransfer.oldLayout = targetOriginalLayout;
+			targetToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			targetToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			targetToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			targetToTransfer.image = m_Image.GetImage();
+			targetToTransfer.subresourceRange = { m_Image.GetImageAspect(), 0, 1u, static_cast<uint32_t>(layerIndex), 1u };
+
+			command_buffer.PipelineBarrier(
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				{}, {}, { sourceToTransfer, targetToTransfer });
+		}
+
+		if (sourceW == m_TextureWidth && sourceH == m_TextureHeight)
+		{
+			VANS_PROFILE_SCOPE("RectLightVideo::GpuCopy.CopyImage", Vans::ProfileCategory::Video);
+			VkImageCopy copyRegion{};
+			copyRegion.srcSubresource = { sourceImage.GetImageAspect(), 0, 0, 1 };
+			copyRegion.srcOffset = { 0, 0, 0 };
+			copyRegion.dstSubresource = { m_Image.GetImageAspect(), 0, static_cast<uint32_t>(layerIndex), 1 };
+			copyRegion.dstOffset = { 0, 0, 0 };
+			copyRegion.extent = { static_cast<uint32_t>(m_TextureWidth), static_cast<uint32_t>(m_TextureHeight), 1u };
+			command_buffer.CopyImageRegions(sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				m_Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, { copyRegion });
+		}
+		else
+		{
+			VANS_PROFILE_SCOPE("RectLightVideo::GpuCopy.BlitScale", Vans::ProfileCategory::Video);
+			VkImageBlit blitRegion{};
+			blitRegion.srcSubresource = { sourceImage.GetImageAspect(), 0, 0, 1 };
+			blitRegion.srcOffsets[0] = { 0, 0, 0 };
+			blitRegion.srcOffsets[1] = { sourceW, sourceH, 1 };
+			blitRegion.dstSubresource = { m_Image.GetImageAspect(), 0, static_cast<uint32_t>(layerIndex), 1 };
+			blitRegion.dstOffsets[0] = { 0, 0, 0 };
+			blitRegion.dstOffsets[1] = { m_TextureWidth, m_TextureHeight, 1 };
+			command_buffer.BlitImageRegions(sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				m_Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, { blitRegion }, VK_FILTER_LINEAR);
+		}
+
+		{
+			VANS_PROFILE_SCOPE("RectLightVideo::GpuCopy.RestoreSource", Vans::ProfileCategory::Video);
+			VkImageMemoryBarrier sourceToOriginal{};
+			sourceToOriginal.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			sourceToOriginal.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			sourceToOriginal.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			sourceToOriginal.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			sourceToOriginal.newLayout = sourceOriginalLayout;
+			sourceToOriginal.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			sourceToOriginal.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			sourceToOriginal.image = sourceImage.GetImage();
+			sourceToOriginal.subresourceRange = { sourceImage.GetImageAspect(), 0, 1u, 0, 1u };
+
+			command_buffer.PipelineBarrier(
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				{}, {}, { sourceToOriginal });
+			sourceImage.SetTrackedImageLayout(sourceOriginalLayout);
+		}
+
+		int mipLevels = static_cast<int>(m_Image.GetImageCreateInfo().mipLevels);
+		if (mipLevels > 1)
+		{
+			VANS_PROFILE_SCOPE("RectLightVideo::GpuCopy.GenerateMipmaps", Vans::ProfileCategory::Video);
+			GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(),
+				m_TextureWidth, m_TextureHeight, mipLevels, layerIndex);
+		}
+		else
+		{
+			VkImageMemoryBarrier targetToShaderRead{};
+			targetToShaderRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			targetToShaderRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			targetToShaderRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			targetToShaderRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			targetToShaderRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			targetToShaderRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			targetToShaderRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			targetToShaderRead.image = m_Image.GetImage();
+			targetToShaderRead.subresourceRange = { m_Image.GetImageAspect(), 0, 1u, static_cast<uint32_t>(layerIndex), 1u };
+			command_buffer.PipelineBarrier(
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				{}, {}, { targetToShaderRead });
+		}
+
+		m_Image.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		return true;
+	}
+
 	void VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision, VkSamplerAddressMode addressMode)
 	{
 		m_TextureWidth = width;
@@ -818,7 +949,7 @@ namespace VansGraphics
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, (uint32_t)slice };
 		m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,
 			is3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
-			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 			VK_SAMPLE_COUNT_1_BIT, isCube, true, true, addressMode);
 
 		VkImageLayout targetLayout = enabeRandonWrite ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

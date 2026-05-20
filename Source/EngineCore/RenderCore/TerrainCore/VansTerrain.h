@@ -7,9 +7,11 @@
 #include "../VulkanCore/VansVKCommandBuffer.h"
 #include "../VulkanCore/VansDescriptorSetLayouts.h"
 #include "../VansCamera.h"
+#include <glm/glm.hpp>
 #include <vector>
 #include <memory>
 #include <string>
+#include <cstdint>
 
 namespace VansGraphics
 {
@@ -36,17 +38,26 @@ namespace VansGraphics
         std::string splatmap0Path;
         std::string splatmap1Path;
         std::vector<TerrainLayerConfig> layers;  // up to TERRAIN_MAX_LAYERS
+
+        float terrainSize = 1024.0f;
+        float maxHeight = 500.0f;
+        float heightOffset = -23.0f;
+        float splitDistMult = 2.0f;
+        float lodDistanceRatio = 2.0f;
+        float morphStartRatio = 0.70f;
+        uint32_t maxPatchInstances = 20000;
     };
 
     // ----------------------------------------------------------
     // GPU-side UBO matching the shader TerrainParams block
     // ----------------------------------------------------------
-    struct TerrainParamsGPU
+    struct alignas(16) TerrainParamsGPU
     {
         glm::ivec4 layerCountPacked;             // .x = layerCount, .yzw = unused (16 bytes, matches std140 ivec4)
         // std140: array elements have vec4 (16-byte) stride
         // Each tilingFactor is stored as .x of a vec4
         float tilingFactors[TERRAIN_MAX_LAYERS * 4];  // [i*4+0] = tiling, [i*4+1..3] = padding
+        glm::vec4 heightfieldParams;             // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridSize
     };
 
     // 发送给 Shader 的每个 Instance 的数据
@@ -94,6 +105,7 @@ namespace VansGraphics
         VansTexture* GetHeightMap() const { return m_HeightMap; }
         float GetTerrainSize() const { return m_TerrainSize; }
         float GetMaxHeight() const { return m_MaxHeight; }
+        float GetHeightOffset() const { return m_HeightOffset; }
 
     public:
 
@@ -103,8 +115,17 @@ namespace VansGraphics
 
     private:
 
-        // 递归更新四叉树
-        void UpdateNode(const TerrainNode& node, const glm::vec3& camPos);
+        // 递归收集初始四叉树叶子节点
+        void CollectLeafNodes(const TerrainNode& node, const glm::vec3& camPos, std::vector<TerrainNode>& outNodes);
+
+        // 执行 2:1 balance，保证 shader snapping 的前提成立
+        void BalanceLeafNodes(std::vector<TerrainNode>& nodes);
+
+        // 根据最终叶子集合计算边缘缝合标记
+        int ComputeStitchFlags(const TerrainNode& node, const std::vector<TerrainNode>& nodes) const;
+
+        // 将叶子节点转换为 GPU instance data
+        void AppendInstanceData(const std::vector<TerrainNode>& nodes);
 
         // 检查节点是否需要细分
         bool ShouldSplit(const TerrainNode& node, const glm::vec3& camPos);
@@ -145,8 +166,13 @@ namespace VansGraphics
         std::vector<TerrainInstanceData> m_InstanceDataCPU;
 
         // 地形参数
-        const float m_TerrainSize = 1024.0f;
-        const float m_MaxHeight = 200.0f; // 地形最大高度
+        float m_TerrainSize = 1024.0f;
+        float m_MaxHeight = 500.0f; // 地形最大高度
+        float m_HeightOffset = -23.0f;
+        float m_SplitDistMult = 2.0f;
+        float m_LodDistanceRatio = 2.0f;
+        float m_MorphStartRatio = 0.70f;
+        uint32_t m_MaxPatchInstances = 20000;
         const int m_PatchGridSize = 16;   // 基础网格分辨率
     };
 }

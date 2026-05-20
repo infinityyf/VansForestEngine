@@ -223,6 +223,7 @@
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsEvents.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsEventCallback.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansRigidBody.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansTerrainPhysicsNode.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansLight.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansPBR.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.h" />
@@ -365,6 +366,7 @@
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollisionLayerManager.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsEventCallback.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansRigidBody.cpp" />
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansTerrainPhysicsNode.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothSystem.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothNode.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansLight.cpp" />

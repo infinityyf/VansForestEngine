@@ -77,7 +77,13 @@ vec3 CosineWeightedDirection(vec2 u, mat3 TBN)
 void main()
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
-    vec2  uv         = (vec2(pixelCoord) + 0.5) * screenSize.zw;
+    ivec2 imgSize = imageSize(resultR);
+
+    // 使用实际输出纹理尺寸计算 UV，避免 screenSize UBO 与运行时目标尺寸不一致。
+    if (pixelCoord.x >= imgSize.x || pixelCoord.y >= imgSize.y)
+        return;
+
+    vec2  uv = (vec2(pixelCoord) + 0.5) / vec2(imgSize);
 
     // Early out for sky pixels
     float rawDepth = texture(inputDepth, uv).r;

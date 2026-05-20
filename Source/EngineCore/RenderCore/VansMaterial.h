@@ -249,6 +249,7 @@ namespace VansGraphics
 			float sigmaDepth;
 			int radius;
 			float depthThreshold;
+			int depthMode;
 		};
 
 		BilateralFilterPushConst m_BilateralFilterPushConstant;

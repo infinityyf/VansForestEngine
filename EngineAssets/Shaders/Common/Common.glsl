@@ -9,10 +9,10 @@
 #define FOUR_PI 12.566370614359172
 #define HALF_PI 1.57079632679
 #define SH_SAMPLE_COUNT 1024
-#define SSAO_SAMPLE_COUNT 16
-#define SSAO_RADIUS 4.0
-#define SSAO_DEPTH_THRESHOLD 4.0
-#define SSAO_DEPHT_BIAS 0.02
+#define SSAO_SAMPLE_COUNT 32
+#define SSAO_RADIUS 2.0
+#define SSAO_DEPTH_THRESHOLD 1.2
+#define SSAO_DEPHT_BIAS 0.04
 
 // ---------------------------------------------------------------------------
 // Material IDs for deferred shading (stored in G-Buffer)

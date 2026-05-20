@@ -124,8 +124,10 @@ void main()
     float linearDepth = gbufferData2.w;
 
 
-    //获取ssao
-    float ssaoValue = imageLoad(ssao,ivec2(fragTexCoord * ScreenParams.xy / 2)).r;//texture(ssao, fragTexCoord).r;
+    //获取ssao：这里先使用原始半分辨率结果的安全采样，避免深度加权上采样把 AO 错误压黑。
+    ivec2 ssaoSize = imageSize(ssao);
+    ivec2 ssaoCoord = clamp(ivec2(fragTexCoord * vec2(ssaoSize)), ivec2(0), ssaoSize - 1);
+    float ssaoValue = imageLoad(ssao, ssaoCoord).r;
 
     vec3 viewDirection = normalize(cameraPosition.xyz - position_world);
 

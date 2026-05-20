@@ -27,6 +27,12 @@ namespace VansGraphics
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		uint32_t writeIdx = manager->m_SSGITemporalFrame % 2;
 		uint32_t bilateralSetIdx = (writeIdx == 0) ? 1 : 2;
+		manager->m_BilateralFilterPushConstant.sigmaSpace = 2.0f;
+		manager->m_BilateralFilterPushConstant.sigmaDepth = 0.12f;
+		manager->m_BilateralFilterPushConstant.radius = 3;
+		manager->m_BilateralFilterPushConstant.depthThreshold = 0.20f;
+		manager->m_BilateralFilterPushConstant.depthMode = 0;
+		manager->m_BilateralFilterShader->SetPushConstantData(&(manager->m_BilateralFilterPushConstant));
 		computeCmd.EnsureComputeShader(*manager->m_BilateralFilterShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_BilateralFilterSetLayout });
 		computeCmd.DispatchCompute(*manager->m_BilateralFilterShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_BilateralFilterDescriptorSets[bilateralSetIdx] });
 	}
@@ -37,6 +43,12 @@ namespace VansGraphics
 		uint32_t halfResHeight = std::floor(m_RenderHeight / 2);
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		manager->m_BilateralFilterPushConstant.sigmaSpace = 3.0f;
+		manager->m_BilateralFilterPushConstant.sigmaDepth = 0.08f;
+		manager->m_BilateralFilterPushConstant.radius = 4;
+		manager->m_BilateralFilterPushConstant.depthThreshold = 0.18f;
+		manager->m_BilateralFilterPushConstant.depthMode = 2;
+		manager->m_BilateralFilterShader->SetPushConstantData(&(manager->m_BilateralFilterPushConstant));
 		computeCmd.EnsureComputeShader(*manager->m_BilateralFilterShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_BilateralFilterSetLayout });
 		computeCmd.DispatchCompute(*manager->m_BilateralFilterShader, (halfResWidth + 7) / 8, (halfResHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_BilateralFilterDescriptorSets[0] });
 	}
@@ -318,8 +330,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				{
 					{
-						depth.GetSampler(),
-						depth.GetImageView(),
+						positionGbuffer.GetSampler(),
+						positionGbuffer.GetImageView(),
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					}
 				}

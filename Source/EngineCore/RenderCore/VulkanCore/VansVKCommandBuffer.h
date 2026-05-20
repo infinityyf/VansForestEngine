@@ -126,6 +126,16 @@ namespace VansGraphics
 		//blit
 		void BlitImage(VansVKImage& source, int source_mip, VansVKImage& target, int target_mip);
 
+		// GPU 图像区域拷贝/缩放，供数组层或指定 mip 更新使用。
+		void CopyImageRegions(VansVKImage& source, VkImageLayout sourceLayout,
+			VansVKImage& target, VkImageLayout targetLayout,
+			const std::vector<VkImageCopy>& copyRegions);
+
+		void BlitImageRegions(VansVKImage& source, VkImageLayout sourceLayout,
+			VansVKImage& target, VkImageLayout targetLayout,
+			const std::vector<VkImageBlit>& blitRegions,
+			VkFilter filter = VK_FILTER_LINEAR);
+
 		void ExecuteSecondaryCommandBuffer(std::vector<VkCommandBuffer>& secondary_command_buffers);
 
 		void BuildAccelerationStructures(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, const VkAccelerationStructureBuildRangeInfoKHR* rangeInfo);

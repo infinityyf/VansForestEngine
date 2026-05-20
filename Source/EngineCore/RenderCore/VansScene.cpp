@@ -6,6 +6,7 @@
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
+#include "../PhysicsCore/VansTerrainPhysicsNode.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -613,6 +614,14 @@ void VansGraphics::VansScene::UnLoadScene()
 		}
 		m_PhysicsNodes.clear();
 		VANS_LOG("[VansScene] Step 3: 物理节点已清理 (持锁)");
+
+        // ── 3b. 清理地形高度场碰撞 ─────────────────────────────────────
+        if (m_TerrainPhysicsNode)
+        {
+            delete m_TerrainPhysicsNode;
+            m_TerrainPhysicsNode = nullptr;
+        }
+        VANS_LOG("[VansScene] Step 3b: 地形物理节点已清理 (持锁)");
 
 		// ── 4. 清理载具 ──────────────────────────────────────────────────
 		if (m_Vehicle)

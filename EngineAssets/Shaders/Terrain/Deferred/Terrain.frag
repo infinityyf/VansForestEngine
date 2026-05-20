@@ -17,6 +17,7 @@ layout(set = 1, binding = 5) uniform sampler2D terrainRoughness[8];
 layout(set = 1, binding = 6) uniform TerrainParams {
     ivec4 layerCountPacked;   // .x = layerCount
     float tilingFactors[8];   // std140: each element has vec4 (16-byte) stride
+    vec4 heightfieldParams;   // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridSize
 } terrainParams;
 
 // --- GBuffer outputs ---
@@ -25,20 +26,19 @@ layout(location = 1) out vec4 outGbuffer0;
 layout(location = 2) out vec4 outGbuffer1;
 layout(location = 3) out vec4 outGbuffer2;
 
-const float TERRAIN_SIZE = 1024.0;
-const float MAX_HEIGHT = 500.0;
-
 // Compute terrain normal from heightmap via central differences
 vec3 CalculateTerrainNormal(vec2 uv) {
     ivec2 texSize = textureSize(heightMap, 0);
     vec2 texelSize = 1.0 / vec2(texSize);
+    float terrainSize = terrainParams.heightfieldParams.x;
+    float maxHeight = terrainParams.heightfieldParams.y;
 
-    float hL = texture(heightMap, uv - vec2(texelSize.x, 0.0)).r * MAX_HEIGHT;
-    float hR = texture(heightMap, uv + vec2(texelSize.x, 0.0)).r * MAX_HEIGHT;
-    float hD = texture(heightMap, uv - vec2(0.0, texelSize.y)).r * MAX_HEIGHT;
-    float hU = texture(heightMap, uv + vec2(0.0, texelSize.y)).r * MAX_HEIGHT;
+    float hL = texture(heightMap, uv - vec2(texelSize.x, 0.0)).r * maxHeight;
+    float hR = texture(heightMap, uv + vec2(texelSize.x, 0.0)).r * maxHeight;
+    float hD = texture(heightMap, uv - vec2(0.0, texelSize.y)).r * maxHeight;
+    float hU = texture(heightMap, uv + vec2(0.0, texelSize.y)).r * maxHeight;
 
-    vec2 worldStep = (vec2(TERRAIN_SIZE) / vec2(texSize)) * 2.0;
+    vec2 worldStep = (vec2(terrainSize) / vec2(texSize)) * 2.0;
     vec3 tangent   = vec3(worldStep.x, hR - hL, 0.0);
     vec3 bitangent = vec3(0.0, hU - hD, worldStep.y);
     return normalize(cross(bitangent, tangent));

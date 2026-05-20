@@ -1,6 +1,7 @@
 #include "VansVKDevice.h"
 #include "VansVKMemoryManager.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansProfiler.h"
 
 namespace VansGraphics
 {
@@ -22,6 +23,8 @@ namespace VansGraphics
 		if (!data || dataSize <= 0)
 			return false;
 
+		VANS_PROFILE_SCOPE("Video::Upload.RecordDeviceImageData", Vans::ProfileCategory::Video);
+
 		constexpr VkDeviceSize UPLOAD_ALIGNMENT = 256;
 		VkDeviceSize uploadOffset = (m_FrameStageBufferOffset + UPLOAD_ALIGNMENT - 1) & ~(UPLOAD_ALIGNMENT - 1);
 		VkDeviceSize uploadEnd = uploadOffset + static_cast<VkDeviceSize>(dataSize);
@@ -31,63 +34,69 @@ namespace VansGraphics
 			return false;
 		}
 
-		if (!m_StageBuffer.SetBufferData(data, static_cast<int>(uploadOffset), dataSize))
-			return false;
-
-		const VkImageLayout originalLayout = destImage.m_ImageLayout;
-		VkImageMemoryBarrier toTransferBarrier{};
-		toTransferBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		toTransferBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		toTransferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		toTransferBarrier.oldLayout = originalLayout;
-		toTransferBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		toTransferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		toTransferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		toTransferBarrier.image = destImage.m_VansVKImage;
-		toTransferBarrier.subresourceRange.aspectMask = destImage.m_ImageAspect;
-		toTransferBarrier.subresourceRange.baseMipLevel = static_cast<uint32_t>(mipLevel);
-		toTransferBarrier.subresourceRange.levelCount = 1;
-		toTransferBarrier.subresourceRange.baseArrayLayer = static_cast<uint32_t>(layerLevel);
-		toTransferBarrier.subresourceRange.layerCount = 1;
-		cmd.PipelineBarrier(
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			{}, {}, { toTransferBarrier });
-
-		VkImageSubresourceLayers destinationImageSubresource{};
-		destinationImageSubresource.aspectMask = destImage.m_ImageAspect;
-		destinationImageSubresource.mipLevel = static_cast<uint32_t>(mipLevel);
-		destinationImageSubresource.baseArrayLayer = static_cast<uint32_t>(layerLevel);
-		destinationImageSubresource.layerCount = 1;
-
-		VansVKMemoryManager::CopyBufferToImage(cmd, m_StageBuffer, destImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			{
-				{
-					uploadOffset,
-					0,
-					0,
-					destinationImageSubresource,
-					imageOffset,
-					imageSize,
-				}
-			});
-
-		if (finalLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
 		{
-			VkImageMemoryBarrier toFinalBarrier{};
-			toFinalBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			toFinalBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			toFinalBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			toFinalBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			toFinalBarrier.newLayout = finalLayout;
-			toFinalBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			toFinalBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			toFinalBarrier.image = destImage.m_VansVKImage;
-			toFinalBarrier.subresourceRange = toTransferBarrier.subresourceRange;
+			VANS_PROFILE_SCOPE("Video::Upload.StageMemcpy", Vans::ProfileCategory::Video);
+			if (!m_StageBuffer.SetBufferData(data, static_cast<int>(uploadOffset), dataSize))
+				return false;
+		}
+
+		{
+			VANS_PROFILE_SCOPE("Video::Upload.RecordCopyAndBarriers", Vans::ProfileCategory::Video);
+			const VkImageLayout originalLayout = destImage.m_ImageLayout;
+			VkImageMemoryBarrier toTransferBarrier{};
+			toTransferBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			toTransferBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			toTransferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			toTransferBarrier.oldLayout = originalLayout;
+			toTransferBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			toTransferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			toTransferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			toTransferBarrier.image = destImage.m_VansVKImage;
+			toTransferBarrier.subresourceRange.aspectMask = destImage.m_ImageAspect;
+			toTransferBarrier.subresourceRange.baseMipLevel = static_cast<uint32_t>(mipLevel);
+			toTransferBarrier.subresourceRange.levelCount = 1;
+			toTransferBarrier.subresourceRange.baseArrayLayer = static_cast<uint32_t>(layerLevel);
+			toTransferBarrier.subresourceRange.layerCount = 1;
 			cmd.PipelineBarrier(
-				VK_PIPELINE_STAGE_TRANSFER_BIT,
 				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				{}, {}, { toFinalBarrier });
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				{}, {}, { toTransferBarrier });
+
+			VkImageSubresourceLayers destinationImageSubresource{};
+			destinationImageSubresource.aspectMask = destImage.m_ImageAspect;
+			destinationImageSubresource.mipLevel = static_cast<uint32_t>(mipLevel);
+			destinationImageSubresource.baseArrayLayer = static_cast<uint32_t>(layerLevel);
+			destinationImageSubresource.layerCount = 1;
+
+			VansVKMemoryManager::CopyBufferToImage(cmd, m_StageBuffer, destImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				{
+					{
+						uploadOffset,
+						0,
+						0,
+						destinationImageSubresource,
+						imageOffset,
+						imageSize,
+					}
+				});
+
+			if (finalLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+			{
+				VkImageMemoryBarrier toFinalBarrier{};
+				toFinalBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				toFinalBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				toFinalBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				toFinalBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				toFinalBarrier.newLayout = finalLayout;
+				toFinalBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				toFinalBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				toFinalBarrier.image = destImage.m_VansVKImage;
+				toFinalBarrier.subresourceRange = toTransferBarrier.subresourceRange;
+				cmd.PipelineBarrier(
+					VK_PIPELINE_STAGE_TRANSFER_BIT,
+					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+					{}, {}, { toFinalBarrier });
+			}
 		}
 
 		destImage.m_ImageLayout = finalLayout;
