@@ -207,6 +207,8 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClip.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationNode.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationController.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansBoneAttachmentSystem.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansBoneColliderBindingTypes.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimatorIO.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.h" />
@@ -354,6 +356,7 @@
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClip.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationNode.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationController.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansBoneAttachmentSystem.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimatorIO.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.cpp" />

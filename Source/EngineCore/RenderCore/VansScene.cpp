@@ -16,6 +16,7 @@
 #include "VansParticleRenderNode.h"
 #include "../ParticleCore/VansParticleManager.h"
 #include "../AnimationCore/VansAnimationNode.h"
+#include "../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
 #include "../VansTimer.h"
 
@@ -743,6 +744,10 @@ void VansGraphics::VansScene::UnLoadScene()
 	m_AnimationControllers.clear();
 	VANS_LOG("[VansScene] Step 9b: 动画控制器已清理");
 
+    // ── 9c. 清理骨骼碰撞体附着点系统 ────────────────────────────────
+    VansEngine::VansBoneAttachmentSystem::GetInstance().Shutdown();
+    VANS_LOG("[VansScene] Step 9c: 骨骼碰撞体附着点系统已清理");
+
 	// ── 10. 清理 Multi-mesh 分组 ────────────────────────────────────────
 	VANS_LOG("[VansScene] Step 10: 开始清理 Multi-mesh 分组 (数量=" << m_MultiMeshGroups.size() << ")");
 	m_MultiMeshGroups.clear();
@@ -903,6 +908,12 @@ void VansGraphics::VansScene::UpdateSceneData()
     {
         VANS_PROFILE_SCOPE("Animation::UpdateAll", Vans::ProfileCategory::Animation);
         UpdateAnimations(static_cast<float>(VansTimer::GetLastFrameDelta()));
+    }
+
+    // 骨骼碰撞体附着点必须紧跟动画更新，确保 TransformStore 读取当前帧骨骼姿态。
+    {
+        VANS_PROFILE_SCOPE("BoneAttachment::SyncAll", Vans::ProfileCategory::Physics);
+        VansEngine::VansBoneAttachmentSystem::GetInstance().Update();
     }
 
     // Advance cloth simulation and write results to staging buffers

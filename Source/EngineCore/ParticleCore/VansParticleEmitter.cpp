@@ -72,6 +72,44 @@ namespace VansGraphics
     // VansParticleRendererConfig 序列化
     // ──────────────────────────────────────────────────────────────────────
 
+    nlohmann::json VansParticleSixWayLightingConfig::Serialize() const
+    {
+        nlohmann::json j;
+        j["enabled"]               = m_Enabled;
+        j["positiveAxesTexture"]   = m_PositiveAxesTexture;
+        j["negativeAxesTexture"]   = m_NegativeAxesTexture;
+        j["columns"]               = m_Columns;
+        j["rows"]                  = m_Rows;
+        j["fps"]                   = m_FPS;
+        j["alphaFromPositiveA"]    = m_AlphaFromPositiveA;
+        j["emissiveFromNegativeA"] = m_EmissiveFromNegativeA;
+        j["lightIntensity"]        = m_LightIntensity;
+        j["ambientIntensity"]      = m_AmbientIntensity;
+        j["emissiveIntensity"]     = m_EmissiveIntensity;
+        j["absorptionStrength"]    = m_AbsorptionStrength;
+        j["lightmapRemapMin"]      = m_LightmapRemapMin;
+        j["lightmapRemapMax"]      = m_LightmapRemapMax;
+        return j;
+    }
+
+    void VansParticleSixWayLightingConfig::Deserialize(const nlohmann::json& j)
+    {
+        m_Enabled               = j.value("enabled", false);
+        m_PositiveAxesTexture   = j.value("positiveAxesTexture", "");
+        m_NegativeAxesTexture   = j.value("negativeAxesTexture", "");
+        m_Columns               = j.value("columns", 1);
+        m_Rows                  = j.value("rows", 1);
+        m_FPS                   = j.value("fps", 0.f);
+        m_AlphaFromPositiveA    = j.value("alphaFromPositiveA", true);
+        m_EmissiveFromNegativeA = j.value("emissiveFromNegativeA", true);
+        m_LightIntensity        = j.value("lightIntensity", 1.f);
+        m_AmbientIntensity      = j.value("ambientIntensity", 0.25f);
+        m_EmissiveIntensity     = j.value("emissiveIntensity", 1.f);
+        m_AbsorptionStrength    = j.value("absorptionStrength", 0.f);
+        m_LightmapRemapMin      = j.value("lightmapRemapMin", 0.f);
+        m_LightmapRemapMax      = j.value("lightmapRemapMax", 1.f);
+    }
+
     nlohmann::json VansParticleRendererConfig::Serialize() const
     {
         auto typeToStr = [](VansParticleRendererType t) -> std::string {
@@ -99,6 +137,13 @@ namespace VansGraphics
             default:                                  return "None";
             }
         };
+        auto lightingToStr = [](VansParticleLightingMode mode) -> std::string {
+            switch (mode)
+            {
+            case VansParticleLightingMode::SixWayLit: return "SixWayLit";
+            default:                                  return "UnlitFlipbook";
+            }
+        };
 
         nlohmann::json j;
         j["type"]      = typeToStr(m_Type);
@@ -110,6 +155,8 @@ namespace VansGraphics
             {"rows",    m_SpriteRows}
         };
         j["sortMode"]      = sortToStr(m_SortMode);
+        j["lightingMode"]  = lightingToStr(m_LightingMode);
+        j["sixWayLighting"] = m_SixWayLighting.Serialize();
         j["castShadows"]   = m_CastShadows;
         j["receiveShadows"] = m_ReceiveShadows;
         return j;
@@ -142,6 +189,22 @@ namespace VansGraphics
         else if (sort == "OldestFirst") m_SortMode = VansParticleSortMode::OldestFirst;
         else if (sort == "NewestFirst") m_SortMode = VansParticleSortMode::NewestFirst;
         else                            m_SortMode = VansParticleSortMode::None;
+
+        std::string lightingMode = j.value("lightingMode", "UnlitFlipbook");
+        if (lightingMode == "SixWayLit") m_LightingMode = VansParticleLightingMode::SixWayLit;
+        else                             m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
+
+        if (j.contains("sixWayLighting"))
+        {
+            m_SixWayLighting.Deserialize(j["sixWayLighting"]);
+            if (m_SixWayLighting.m_Enabled)
+                m_LightingMode = VansParticleLightingMode::SixWayLit;
+        }
+
+        if (m_SixWayLighting.m_Columns <= 1)
+            m_SixWayLighting.m_Columns = m_SpriteSheetEnabled ? m_SpriteColumns : 1;
+        if (m_SixWayLighting.m_Rows <= 1)
+            m_SixWayLighting.m_Rows = m_SpriteSheetEnabled ? m_SpriteRows : 1;
 
         m_CastShadows    = j.value("castShadows",    false);
         m_ReceiveShadows = j.value("receiveShadows", false);

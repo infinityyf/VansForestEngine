@@ -51,6 +51,28 @@ namespace VansGraphics
     enum class VansParticleRendererType  { Billboard, StretchedBillboard, Mesh };
     enum class VansParticleBlendMode     { Alpha, Additive, Multiply };
     enum class VansParticleSortMode      { None, ByDistance, OldestFirst, NewestFirst };
+    enum class VansParticleLightingMode  { UnlitFlipbook, SixWayLit };
+
+    struct VansParticleSixWayLightingConfig
+    {
+        bool        m_Enabled               = false;
+        std::string m_PositiveAxesTexture;
+        std::string m_NegativeAxesTexture;
+        int         m_Columns               = 1;
+        int         m_Rows                  = 1;
+        float       m_FPS                   = 0.f;
+        bool        m_AlphaFromPositiveA    = true;
+        bool        m_EmissiveFromNegativeA = true;
+        float       m_LightIntensity        = 1.f;
+        float       m_AmbientIntensity      = 0.25f;
+        float       m_EmissiveIntensity     = 1.f;
+        float       m_AbsorptionStrength    = 0.f;
+        float       m_LightmapRemapMin      = 0.f;
+        float       m_LightmapRemapMax      = 1.f;
+
+        nlohmann::json Serialize() const;
+        void Deserialize(const nlohmann::json& j);
+    };
 
     struct VansParticleRendererConfig
     {
@@ -64,6 +86,8 @@ namespace VansGraphics
         int      m_SpriteRows         = 4;
 
         VansParticleSortMode      m_SortMode  = VansParticleSortMode::None;
+        VansParticleLightingMode   m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
+        VansParticleSixWayLightingConfig m_SixWayLighting;
         bool m_CastShadows    = false;
         bool m_ReceiveShadows = false;
 

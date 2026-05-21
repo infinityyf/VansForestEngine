@@ -1,5 +1,6 @@
 #pragma once
 #include "VansRenderNode.h"
+#include "../ParticleCore/VansParticleEmitter.h"
 #include "../ParticleCore/VansParticleInstanceData.h"
 #include "VulkanCore/VansVKBuffer.h"
 #include "VulkanCore/VansShader.h"
@@ -39,8 +40,28 @@ namespace VansGraphics
         // 粒子纹理（非拥有指针）
         VansTexture* m_ParticleTexture  = nullptr;
 
+        // Six-Way Lighting 贴图（非拥有指针）
+        VansTexture* m_PositiveAxesTexture = nullptr;
+        VansTexture* m_NegativeAxesTexture = nullptr;
+
         // 渲染所用的 Shader（粒子 Billboard vert/frag）
         VansGraphicsShader* m_Shader    = nullptr;
+
+        // Six-Way Lighting 专用 Shader
+        VansGraphicsShader* m_SixWayShader = nullptr;
+
+        // 粒子渲染模式和 Flipbook 参数
+        VansParticleLightingMode m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
+        int   m_SpriteColumns = 1;
+        int   m_SpriteRows    = 1;
+
+        // Six-Way Lighting 外观控制
+        float m_SixWayLightIntensity     = 1.f;
+        float m_SixWayAmbientIntensity   = 0.25f;
+        float m_SixWayEmissiveIntensity  = 1.f;
+        float m_SixWayAbsorptionStrength = 0.f;
+        float m_SixWayLightmapRemapMin   = 0.f;
+        float m_SixWayLightmapRemapMax   = 1.f;
 
         // Descriptor Set（持有 Camera UBO + 粒子纹理绑定）
         VkDescriptorSet            m_DescriptorSet       = VK_NULL_HANDLE;
@@ -50,6 +71,9 @@ namespace VansGraphics
 
         // 初始化静态 Quad 顶点/索引缓冲（场景加载时调用一次）
         bool InitQuadBuffers(VkDevice& device);
+
+        // 应用 .particle renderer 配置，贴图加载由 SceneLoader 负责
+        void ApplyRendererConfig(const VansParticleRendererConfig& config);
 
         // 设置 GPU 端描述符资源（在 CreateGlobalDescriptorSet 之后调用）
         // - globalLayout / globalSet：引擎全局描述符集（Set 0，包含 Camera UBO）

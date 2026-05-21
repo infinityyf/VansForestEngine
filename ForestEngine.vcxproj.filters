@@ -415,6 +415,12 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationController.h">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansBoneAttachmentSystem.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansBoneColliderBindingTypes.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimatorIO.h">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
@@ -819,6 +825,9 @@
       <Filter>EngineCore\AnimationCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationController.cpp">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\VansBoneAttachmentSystem.cpp">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimatorIO.cpp">

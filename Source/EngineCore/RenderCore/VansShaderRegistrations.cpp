@@ -143,6 +143,17 @@ void RegisterEngineShaders()
         16, true
     });
 
+    // Six-Way Smoke Lighting 粒子 Shader：
+    // - 保持普通粒子透明渲染状态
+    // - Set 1 绑定 Positive/Negative Axes 两张 Lightmap
+    // - Push Constant 80 字节：Flipbook + 六向光照参数 + 预留主光参数
+    reg.RegisterShader("ParticleSixWay", {
+        "ParticleSixWay",
+        "EngineAssets/Shaders/ParticleSixWay",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        80, true
+    });
+
     // 贴花着色器：正确的 screen-space decal 方案
     // - CULL_FRONT：只光栅化背面（cube 远离相机的面）
     // - GREATER_OR_EQUAL：场景深度 <= 背面深度 → 场景几何在 cube 内部 → 通过

@@ -129,6 +129,14 @@ const std::unordered_map<std::string, AnimatorParameter>& VansAnimationControlle
 	return m_Parameters;
 }
 
+const glm::mat4& VansAnimationController::GetCachedGlobalTransform(int boneIndex) const
+{
+	static const glm::mat4 identity(1.0f);
+	if (boneIndex < 0 || boneIndex >= static_cast<int>(m_CachedGlobalTransforms.size()))
+		return identity;
+	return m_CachedGlobalTransforms[boneIndex];
+}
+
 // ════════════════════════════════════════════════════════════════
 //  State 管理
 // ════════════════════════════════════════════════════════════════
@@ -944,6 +952,9 @@ void VansAnimationController::UpdateHierarchy(std::vector<glm::mat4>& localTrans
 void VansAnimationController::BuildFinalMatrices(const std::vector<glm::mat4>& globalTransforms,
                                                    const Skeleton& skeleton)
 {
+	// 缓存模型空间全局骨骼矩阵，供骨骼附着点系统读取。
+	m_CachedGlobalTransforms = globalTransforms;
+
 	uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
 	uint32_t limit = (std::min)(boneCount, MAX_BONES);
 

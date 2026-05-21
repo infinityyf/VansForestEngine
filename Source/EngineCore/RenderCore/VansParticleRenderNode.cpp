@@ -5,6 +5,7 @@
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "../Util/VansLog.h"
 #include <array>
+#include <algorithm>
 
 namespace VansGraphics
 {
@@ -89,6 +90,28 @@ namespace VansGraphics
         return true;
     }
 
+    void VansParticleRenderNode::ApplyRendererConfig(
+        const VansParticleRendererConfig& config)
+    {
+        m_LightingMode = config.m_LightingMode;
+
+        m_SpriteColumns = config.m_SpriteSheetEnabled ? std::max(1, config.m_SpriteColumns) : 1;
+        m_SpriteRows    = config.m_SpriteSheetEnabled ? std::max(1, config.m_SpriteRows) : 1;
+
+        if (config.m_LightingMode == VansParticleLightingMode::SixWayLit)
+        {
+            const VansParticleSixWayLightingConfig& sixWay = config.m_SixWayLighting;
+            m_SpriteColumns = std::max(1, sixWay.m_Columns);
+            m_SpriteRows    = std::max(1, sixWay.m_Rows);
+            m_SixWayLightIntensity     = sixWay.m_LightIntensity;
+            m_SixWayAmbientIntensity   = sixWay.m_AmbientIntensity;
+            m_SixWayEmissiveIntensity  = sixWay.m_EmissiveIntensity;
+            m_SixWayAbsorptionStrength = sixWay.m_AbsorptionStrength;
+            m_SixWayLightmapRemapMin   = sixWay.m_LightmapRemapMin;
+            m_SixWayLightmapRemapMax   = sixWay.m_LightmapRemapMax;
+        }
+    }
+
     // ── UpdateInstanceBuffer ───────────────────────────────────────────────
 
     void VansParticleRenderNode::UpdateInstanceBuffer(
@@ -139,11 +162,21 @@ namespace VansGraphics
                                                    VkDescriptorSet       globalSet,
                                                    VansTexture*          defaultTex)
     {
+        m_UsedDescSetLayouts.clear();
+        m_UsedDescSets.clear();
+
         // Set 0：全局集（Camera、Lights、Bindless textures…）
         m_UsedDescSetLayouts.push_back(globalLayout);
         m_UsedDescSets.push_back(globalSet);
 
-        if (defaultTex == nullptr)
+        VansTexture* primaryTex = m_ParticleTexture ? m_ParticleTexture : defaultTex;
+        VansTexture* positiveTex = m_PositiveAxesTexture ? m_PositiveAxesTexture : defaultTex;
+        VansTexture* negativeTex = m_NegativeAxesTexture ? m_NegativeAxesTexture : positiveTex;
+
+        bool useSixWay = (m_LightingMode == VansParticleLightingMode::SixWayLit &&
+                          positiveTex != nullptr && negativeTex != nullptr);
+
+        if (!useSixWay && primaryTex == nullptr)
         {
             VANS_LOG_WARN("[ParticleRenderNode] SetupDescriptors：未提供粒子纹理，Set 1 将跳过绑定");
             // 仍需为 Set 1 提供占位 layout，使 pipeline layout 与 shader 一致
@@ -154,11 +187,17 @@ namespace VansGraphics
         }
         else
         {
-            // 为 Set 1 创建：binding 0 = sampler2D particleTex
-            const std::vector<VkDescriptorSetLayoutBinding> texBindings = {
+            // 普通粒子使用 1 张贴图；Six-Way 使用正/负轴两张贴图。
+            std::vector<VkDescriptorSetLayoutBinding> texBindings = {
                 { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
             };
+            if (useSixWay)
+            {
+                texBindings.push_back(
+                    { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                      VK_SHADER_STAGE_FRAGMENT_BIT, nullptr });
+            }
             std::vector<VkDescriptorSet> texSets;
             VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
                 texBindings, m_DescriptorSetLayout);
@@ -176,15 +215,32 @@ namespace VansGraphics
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                     {
                         {
-                            defaultTex->GetImage().GetSampler(),
-                            defaultTex->GetImage().GetImageView(),
+                            (useSixWay ? positiveTex : primaryTex)->GetImage().GetSampler(),
+                            (useSixWay ? positiveTex : primaryTex)->GetImage().GetImageView(),
                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                         }
                     }
                 }
             );
+            if (useSixWay)
+            {
+                VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+                    {
+                        m_DescriptorSet,
+                        1,   // binding 1
+                        0,
+                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        {
+                            {
+                                negativeTex->GetImage().GetSampler(),
+                                negativeTex->GetImage().GetImageView(),
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            }
+                        }
+                    }
+                );
+            }
             VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
-            m_ParticleTexture = defaultTex;
         }
 
         // Set 1 layout/set 追加到公共数组，用于 EnsureGraphicsShader 管线布局创建
@@ -216,13 +272,26 @@ namespace VansGraphics
         { 7, 1, VK_FORMAT_R32G32_SFLOAT,    offsetof(VansGraphics::VansParticleInstanceData, m_Padding)       },  // location 7 instPadding
     } };
 
+    struct alignas(16) ParticleSixWayPushConstants
+    {
+        glm::vec4 m_SpriteSheetParams;
+        glm::vec4 m_SixWayParams0;
+        glm::vec4 m_SixWayParams1;
+        glm::vec4 m_MainLightDirAndPad;
+        glm::vec4 m_MainLightColor;
+    };
+
     void VansParticleRenderNode::Draw(VansVKCommandBuffer& cmd,
                                        GlobalStateData& globalStateData)
     {
         if (m_InstanceCount == 0) return;
-        if (!m_Shader)
+        VansGraphicsShader* activeShader = m_Shader;
+        if (m_LightingMode == VansParticleLightingMode::SixWayLit && m_SixWayShader)
+            activeShader = m_SixWayShader;
+
+        if (!activeShader)
         {
-            VANS_LOG_WARN("[ParticleRenderNode] m_Shader 未设置，跳过绘制");
+            VANS_LOG_WARN("[ParticleRenderNode] Shader 未设置，跳过绘制");
             return;
         }
         if (m_QuadVertexBuffer.GetNativeBuffer() == VK_NULL_HANDLE ||
@@ -245,14 +314,14 @@ namespace VansGraphics
         globalStateData.vertexInputAttributeDescriptions = &s_Attributes;
 
         // ── 2. 确保 Pipeline 已构建（延迟创建，首帧触发） ─────────────────────
-        cmd.EnsureGraphicsShader(*m_Shader, globalStateData, m_UsedDescSetLayouts);
+        cmd.EnsureGraphicsShader(*activeShader, globalStateData, m_UsedDescSetLayouts);
 
         // 恢复全局顶点输入状态，避免污染后续其他节点的绘制
         globalStateData.vertexInputBindingDescriptions   = savedBindings;
         globalStateData.vertexInputAttributeDescriptions = savedAttributes;
 
         // ── 3. 绑定 Pipeline ──────────────────────────────────────────────
-        VansVKGraphicsPipeline* pipeline = m_Shader->GetGraphicsPipeline();
+        VansVKGraphicsPipeline* pipeline = activeShader->GetGraphicsPipeline();
         if (!pipeline) return;
         cmd.BindGraphicsPipeline(*pipeline);
 
@@ -260,19 +329,54 @@ namespace VansGraphics
         if (!m_UsedDescSets.empty())
         {
             cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                   *m_Shader, 0, m_UsedDescSets, {});
+                                   *activeShader, 0, m_UsedDescSets, {});
         }
 
         // ── 5. 推送 Push Constants（精灵动画参数：单帧时传 (1,1,0,0)） ──────
-        if (m_Shader->GetPushConstantSize() > 0)
+        if (activeShader->GetPushConstantSize() > 0)
         {
-            // spriteSheetParams: (cols, rows, unused, unused)
-            // 默认单帧：cols=1, rows=1
-            float spriteParams[4] = { 1.0f, 1.0f, 0.0f, 0.0f };
-            cmd.UpdatePushConstants(*pipeline,
-                                    VK_SHADER_STAGE_VERTEX_BIT,
-                                    0, m_Shader->GetPushConstantSize(),
-                                    spriteParams);
+            if (m_LightingMode == VansParticleLightingMode::SixWayLit &&
+                activeShader->GetPushConstantSize() >= static_cast<int>(sizeof(ParticleSixWayPushConstants)))
+            {
+                ParticleSixWayPushConstants pushConstants = {};
+                pushConstants.m_SpriteSheetParams = glm::vec4(
+                    static_cast<float>(m_SpriteColumns),
+                    static_cast<float>(m_SpriteRows),
+                    0.f,
+                    0.f);
+                pushConstants.m_SixWayParams0 = glm::vec4(
+                    m_SixWayLightIntensity,
+                    m_SixWayAmbientIntensity,
+                    m_SixWayEmissiveIntensity,
+                    m_SixWayAbsorptionStrength);
+                pushConstants.m_SixWayParams1 = glm::vec4(
+                    m_SixWayLightmapRemapMin,
+                    m_SixWayLightmapRemapMax,
+                    0.004f,
+                    0.f);
+                // 第一版使用 Shader 内全局主光数据，此处保留扩展槽位。
+                pushConstants.m_MainLightDirAndPad = glm::vec4(0.f, -1.f, 0.f, 0.f);
+                pushConstants.m_MainLightColor     = glm::vec4(1.f);
+
+                cmd.UpdatePushConstants(*pipeline,
+                                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                        0,
+                                        sizeof(ParticleSixWayPushConstants),
+                                        &pushConstants);
+            }
+            else
+            {
+                glm::vec4 spriteParams(
+                    static_cast<float>(m_SpriteColumns),
+                    static_cast<float>(m_SpriteRows),
+                    0.f,
+                    0.f);
+                cmd.UpdatePushConstants(*pipeline,
+                                        VK_SHADER_STAGE_VERTEX_BIT,
+                                        0,
+                                        activeShader->GetPushConstantSize(),
+                                        &spriteParams);
+            }
         }
 
         // ── 6. 绑定顶点缓冲（Quad binding 0 + 实例 binding 1） ─────────────

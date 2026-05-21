@@ -27,6 +27,7 @@
 #include "../AnimationCore/VansAnimatorIO.h"
 #include "../AnimationCore/VansAnimGraph.h"
 #include "../AnimationCore/VansAnimationClipLoader.h"
+#include "../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
 
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
@@ -1717,6 +1718,109 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
     m_AnimationControllers.push_back(controller);
     controller->Play();
 
+    if (animJson.contains("bone_bindings") && animJson["bone_bindings"].is_array())
+    {
+        using namespace VansEngine;
+
+        auto readVec3 = [](const json& source, const char* key, const glm::vec3& defaultValue) -> glm::vec3
+        {
+            if (!source.contains(key) || !source[key].is_array() || source[key].size() < 3)
+                return defaultValue;
+
+            return glm::vec3(
+                source[key][0].get<float>(),
+                source[key][1].get<float>(),
+                source[key][2].get<float>());
+        };
+
+        auto parseShapeType = [](const std::string& value) -> PhysicsColliderType
+        {
+            if (value == "box") return PhysicsColliderType::Box;
+            if (value == "sphere") return PhysicsColliderType::Sphere;
+            if (value == "capsule") return PhysicsColliderType::Capsule;
+            if (value == "mesh") return PhysicsColliderType::Mesh;
+            if (value == "convex") return PhysicsColliderType::ConvexMesh;
+            return PhysicsColliderType::Capsule;
+        };
+
+        BoneColliderBindingSet bindingSet;
+        bindingSet.animNode = animNode;
+
+        const Skeleton& skeleton = meshAsset->m_AnimImportResult.skeleton;
+        for (const auto& bindJson : animJson["bone_bindings"])
+        {
+            BoneColliderBinding binding;
+            binding.boneName          = bindJson.value("bone_name", "");
+            binding.physicsObjectName = bindJson.value("physics_object", "");
+            binding.offsetPosition    = readVec3(bindJson, "offset_position", glm::vec3(0.0f));
+            binding.offsetRotation    = readVec3(bindJson, "offset_rotation", glm::vec3(0.0f));
+            binding.offsetScale       = readVec3(bindJson, "offset_scale", glm::vec3(1.0f));
+            binding.syncRotation      = bindJson.value("sync_rotation", true);
+            binding.syncScale         = bindJson.value("sync_scale", false);
+            binding.layerName         = bindJson.value("layer", "Default");
+            binding.isTrigger         = bindJson.value("is_trigger", false);
+            binding.enabled           = bindJson.value("enabled", true);
+            binding.autoCreateNode    = bindJson.value("auto_create_node", false);
+            binding.shapeExtents      = readVec3(bindJson, "shape_extents", glm::vec3(0.1f, 0.25f, 0.1f));
+            binding.shapeType         = parseShapeType(bindJson.value("shape_type", "capsule"));
+
+            auto boneIt = skeleton.boneNameToIndex.find(binding.boneName);
+            if (boneIt != skeleton.boneNameToIndex.end())
+                binding.boneIndex = boneIt->second;
+            else
+                VANS_LOG_WARN("[LoadAnimComp] bone binding references missing bone '" << binding.boneName << "'");
+
+            if (!binding.physicsObjectName.empty())
+            {
+                for (auto* physicsNode : m_PhysicsNodes)
+                {
+                    if (physicsNode && physicsNode->GetName() == binding.physicsObjectName)
+                    {
+                        binding.physicsNode = physicsNode;
+                        binding.attachmentTransformID = physicsNode->GetTransformID();
+                        binding.ownsAttachmentTransform = false;
+                        break;
+                    }
+                }
+
+                if (binding.physicsNode == nullptr)
+                {
+                    VansScriptObject* physicsObject = FindObjectByName(binding.physicsObjectName);
+                    auto* physicsComp = physicsObject ? physicsObject->GetComponent<VansScriptPhysicsComponent>() : nullptr;
+                    if (physicsComp && physicsComp->m_PhysicsNode)
+                    {
+                        binding.physicsNode = physicsComp->m_PhysicsNode;
+                        binding.attachmentTransformID = binding.physicsNode->GetTransformID();
+                        binding.ownsAttachmentTransform = false;
+                    }
+                }
+
+                if (binding.physicsNode == nullptr)
+                {
+                    VANS_LOG_WARN("[LoadAnimComp] bone binding physics object not found: " << binding.physicsObjectName);
+                }
+                else if (binding.physicsNode->GetProperties().bodyType != PhysicsBodyType::Kinematic &&
+                         !binding.physicsNode->GetProperties().isTrigger)
+                {
+                    VANS_LOG_WARN("[LoadAnimComp] bone binding physics object '" << binding.physicsObjectName
+                                  << "' is not kinematic/trigger; PhysX may override its transform");
+                }
+            }
+
+            if (binding.attachmentTransformID == UINT32_MAX)
+            {
+                binding.attachmentTransformID = VansTransformStore::AllocateTransform();
+                binding.ownsAttachmentTransform = true;
+            }
+
+            bindingSet.bindings.push_back(std::move(binding));
+        }
+
+        VansBoneAttachmentSystem::GetInstance().RegisterBindingSet(std::move(bindingSet));
+        VANS_LOG("[LoadAnimComp] Registered " << animJson["bone_bindings"].size()
+                 << " bone collider binding(s) for '" << nodeName << "'");
+    }
+
     VANS_LOG("[LoadAnimComp] Created animation component '" << nodeName
              << "' with " << controller->GetClipNames().size() << " clip(s), "
              << meshAsset->m_AnimImportResult.skeleton.bones.size() << " bones, "
@@ -2451,6 +2555,52 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                         if (!renderNode->m_Shader)
                         {
                             VANS_LOG_WARN("[LoadSceneObjects] 粒子 Shader 'Particle' 未找到，粒子将无法渲染");
+                        }
+
+                        if (particleComp->m_ParticleAsset && !particleComp->m_ParticleAsset->m_Emitters.empty())
+                        {
+                            auto* emitter = particleComp->m_ParticleAsset->m_Emitters.front().get();
+                            if (emitter)
+                            {
+                                const VansParticleRendererConfig& rendererConfig = emitter->m_RendererConfig;
+                                renderNode->ApplyRendererConfig(rendererConfig);
+
+                                auto resolveParticleTexturePath = [&](const std::string& texPath) -> std::string
+                                {
+                                    if (texPath.empty()) return "";
+                                    std::filesystem::path path(texPath);
+                                    if (path.is_absolute()) return texPath;
+                                    return projectRoot + "/" + texPath;
+                                };
+
+                                if (rendererConfig.m_LightingMode == VansParticleLightingMode::SixWayLit)
+                                {
+                                    renderNode->m_SixWayShader = static_cast<VansGraphicsShader*>(GetShaderAsset("ParticleSixWay"));
+                                    if (!renderNode->m_SixWayShader)
+                                    {
+                                        VANS_LOG_WARN("[LoadSceneObjects] 粒子 Shader 'ParticleSixWay' 未找到，将回退普通粒子 Shader");
+                                        renderNode->m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
+                                    }
+
+                                    const auto& sixWay = rendererConfig.m_SixWayLighting;
+                                    renderNode->m_PositiveAxesTexture = LoadOrGetTexture(
+                                        resolveParticleTexturePath(sixWay.m_PositiveAxesTexture), false);
+                                    renderNode->m_NegativeAxesTexture = LoadOrGetTexture(
+                                        resolveParticleTexturePath(sixWay.m_NegativeAxesTexture), false);
+
+                                    if (!renderNode->m_PositiveAxesTexture || !renderNode->m_NegativeAxesTexture)
+                                    {
+                                        VANS_LOG_WARN("[LoadSceneObjects] Six-Way 粒子贴图缺失，将回退普通粒子 Shader: "
+                                            << obj->m_ObjectName);
+                                        renderNode->m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
+                                    }
+                                }
+                                else if (!rendererConfig.m_Texture.empty())
+                                {
+                                    renderNode->m_ParticleTexture = LoadOrGetTexture(
+                                        resolveParticleTexturePath(rendererConfig.m_Texture), true);
+                                }
+                            }
                         }
 
                         particleComp->m_RenderNode = renderNode;
