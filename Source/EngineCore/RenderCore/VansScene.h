@@ -7,7 +7,6 @@
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
-#include "../PhysicsCore/VansRagdollSystem.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansAnimationController.h"
@@ -266,13 +265,6 @@ namespace VansGraphics
 		VansAnimationNode* LoadSingleAnimationComponent(const json& animJson,
 		                                                const std::string& objectName,
 		                                                const std::string& projectRoot);
-
-		// 单个 ragdoll component 加载（在 animation component 加载完成后调用）
-		// animNode: 同一 object 上已创建的 VansAnimationNode；ragdollJson: animation 节点下的 "ragdoll" 子对象。
-		void LoadSingleRagdollComponent(VansScriptObject* obj,
-		                                VansAnimationNode* animNode,
-		                                const json& ragdollJson,
-		                                const std::string& projectRoot);
 
 		// ── Single-node loading helpers (extracted from batch loaders) ────────
 		VansRenderNode* LoadSingleRenderNode(VkDevice& device, const json& renderNodeJson);

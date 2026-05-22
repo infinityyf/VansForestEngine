@@ -25,7 +25,7 @@ namespace py = pybind11;
 
 // Forward declarations for Component sub-classes
 namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; class VansVideoTexture; class VansVideoManager; class VansMaterialManager; class VansParticleRenderNode; }
-namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; class VansAudioNode; class VansAudioManager; enum class RagdollDriveMode; }
+namespace VansEngine  { class VansPhysicsNode; class VansClothNode; class VansPhysicsVehicle; class VansCharacterControllerNode; class VansAudioNode; class VansAudioManager; }
 
 class VansScriptContext
 {
@@ -385,29 +385,6 @@ public:
 
 	// 每帧由 VansScriptContext 调用（主线程）
 	void OnUpdate(float deltaTime);
-};
-
-// ── Ragdoll Component ───────────────────────────────────────────────────────
-// 关联一个已存在的 VansScriptAnimationComponent，允许 Python/C++ 控制
-// VansRagdollSystem 中对应 AnimationNode 的布娃娃驱动模式、权重和脉冲。
-class VansScriptRagdollComponent : public VansScriptComponent
-{
-public:
-	VansScriptRagdollComponent() { m_ComponentName = "Ragdoll"; }
-
-	// 非拥有指针，指向同一 VansScriptObject 上的 AnimationNode
-	VansGraphics::VansAnimationNode* m_AnimNode = nullptr;
-
-	// 初始驱动模式（从 JSON 加载时设置）
-	VansEngine::RagdollDriveMode m_InitialDriveMode;
-
-	// ── 运行时控制接口（委托给 VansRagdollSystem）───────────────────
-	// 切换驱动模式：0=Animation, 1=Physics, 2=Blend
-	void SetDriveMode(int mode);
-	// 设置混合权重（0=全动画, 1=全物理，仅 Blend 模式有效）
-	void SetBlendWeight(float weight);
-	// 对指定骨骼施加世界空间线性冲量
-	void ApplyImpulse(const std::string& boneName, float ix, float iy, float iz);
 };
 
 // ── Python Script Component ─────────────────────────────────────────────────

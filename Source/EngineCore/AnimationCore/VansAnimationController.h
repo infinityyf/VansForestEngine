@@ -193,14 +193,6 @@ namespace VansGraphics
 		const glm::mat4& GetCachedGlobalTransform(int boneIndex) const;
 		const std::vector<glm::mat4>& GetCachedGlobalTransforms() const { return m_CachedGlobalTransforms; }
 
-		// ─── 外部驱动（Ragdoll / IK）──────────────────────────────────
-		// 直接用外部提供的模型空间全局骨骼矩阵覆盖当前帧输出。
-		// modelSpaceTransforms: 与 skeleton.bones 等长，每个元素为骨骼的模型空间变换。
-		// 调用后 GetBoneMatricesSSBO() 即返回由这组矩阵生成的 final skinning matrices。
-		// 不影响状态机 / clip 播放时间，下一帧 Update() 会再次正常输出动画姿态。
-		void FeedExternalBoneWorldTransforms(const std::vector<glm::mat4>& modelSpaceTransforms,
-		                                     const Skeleton& skeleton);
-
 		// ─── 序列化 ──────────────────────────────────────────────────
 		std::string GetName() const { return m_Name; }
 		void SetName(const std::string& name) { m_Name = name; }
