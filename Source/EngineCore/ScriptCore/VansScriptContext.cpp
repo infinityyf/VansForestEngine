@@ -75,8 +75,12 @@ bool VansScriptAudioComponent::SwitchSource(const std::string& name)
 void VansScriptRagdollComponent::SetDriveMode(int mode)
 {
 	if (!m_AnimNode) return;
-	VansEngine::RagdollDriveMode dm = static_cast<VansEngine::RagdollDriveMode>(
-		(mode >= 0 && mode <= 2) ? mode : 0);
+	// Clamp to valid enum range [Animation=0, Blend=2]
+	constexpr int kMinMode = static_cast<int>(VansEngine::RagdollDriveMode::Animation);
+	constexpr int kMaxMode = static_cast<int>(VansEngine::RagdollDriveMode::Blend);
+	if (mode < kMinMode || mode > kMaxMode)
+		mode = kMinMode;
+	VansEngine::RagdollDriveMode dm = static_cast<VansEngine::RagdollDriveMode>(mode);
 	VansEngine::VansRagdollSystem::GetInstance().SetDriveMode(m_AnimNode, dm);
 }
 

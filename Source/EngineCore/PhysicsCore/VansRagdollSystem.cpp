@@ -63,6 +63,9 @@ bool RagdollProfile::LoadFromJson(const nlohmann::json& j, RagdollProfile& out)
 			cfg.capsuleHalfHeight = bj.value("capsule_half_height", 0.15f);
 			cfg.sphereRadius      = bj.value("sphere_radius", 0.1f);
 			cfg.mass              = bj.value("mass", 5.0f);
+			cfg.staticFriction    = bj.value("static_friction",  0.5f);
+			cfg.dynamicFriction   = bj.value("dynamic_friction", 0.4f);
+			cfg.restitution       = bj.value("restitution",      0.1f);
 			cfg.layerName         = bj.value("layer", "Default");
 
 			if (bj.contains("box_extents") && bj["box_extents"].is_array() && bj["box_extents"].size() >= 3)
@@ -90,6 +93,9 @@ bool RagdollProfile::LoadFromJson(const nlohmann::json& j, RagdollProfile& out)
 			cfg.swingZLimit      = jj.value("swing_z_limit", 45.0f);
 			cfg.twistLowLimit    = jj.value("twist_low_limit", -30.0f);
 			cfg.twistHighLimit   = jj.value("twist_high_limit", 30.0f);
+			cfg.limitStiffness   = jj.value("limit_stiffness", 20.0f);
+			cfg.limitDamping     = jj.value("limit_damping",    2.0f);
+			cfg.projectionTolerance = jj.value("projection_tolerance", 0.1f);
 			cfg.enableDrive      = jj.value("enable_drive", false);
 			cfg.driveStiffness   = jj.value("drive_stiffness", 0.0f);
 			cfg.driveDamping     = jj.value("drive_damping", 20.0f);
@@ -228,7 +234,8 @@ bool VansRagdollSystem::CreateRagdoll(VansGraphics::VansAnimationNode* animNode,
 		}
 
 		// Default material
-		PxMaterial* mat = physics->createMaterial(0.5f, 0.4f, 0.1f);
+		PxMaterial* mat = physics->createMaterial(
+		    bodyCfg.staticFriction, bodyCfg.dynamicFriction, bodyCfg.restitution);
 
 		// Create collision shape
 		PxShape* shape = nullptr;
@@ -265,7 +272,9 @@ bool VansRagdollSystem::CreateRagdoll(VansGraphics::VansAnimationNode* animNode,
 		// Set mass
 		PxRigidBodyExt::setMassAndUpdateInertia(*body, bodyCfg.mass);
 
-		// Start as kinematic — animation drives the pose
+		// Start as kinematic — animation drives the pose.
+		// Collision filter data is set even for kinematic bodies so it takes
+		// effect immediately when SetDriveMode switches them to dynamic.
 		body->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, true);
 
 		// Add to scene
@@ -367,16 +376,16 @@ bool VansRagdollSystem::CreateRagdoll(VansGraphics::VansAnimationNode* animNode,
 		PxJointLimitCone swingLimit(
 		    PxMath::degToRad(jntCfg.swingYLimit),
 		    PxMath::degToRad(jntCfg.swingZLimit));
-		swingLimit.stiffness = 20.0f;
-		swingLimit.damping   = 2.0f;
+		swingLimit.stiffness = jntCfg.limitStiffness;
+		swingLimit.damping   = jntCfg.limitDamping;
 		joint->setSwingLimit(swingLimit);
 
 		// Twist limit
 		PxJointAngularLimitPair twistLimit(
 		    PxMath::degToRad(jntCfg.twistLowLimit),
 		    PxMath::degToRad(jntCfg.twistHighLimit));
-		twistLimit.stiffness = 20.0f;
-		twistLimit.damping   = 2.0f;
+		twistLimit.stiffness = jntCfg.limitStiffness;
+		twistLimit.damping   = jntCfg.limitDamping;
 		joint->setTwistLimit(twistLimit);
 
 		// Optional drive (used in Blend mode to attract physics pose toward animation pose)
@@ -389,7 +398,7 @@ bool VansRagdollSystem::CreateRagdoll(VansGraphics::VansAnimationNode* animNode,
 			joint->setDrive(PxD6Drive::eSLERP, drive);
 		}
 
-		joint->setProjectionLinearTolerance(0.1f);
+		joint->setProjectionLinearTolerance(jntCfg.projectionTolerance);
 		joint->setConstraintFlag(PxConstraintFlag::ePROJECTION, true);
 
 		childEntry.joint = joint;

@@ -58,6 +58,11 @@ namespace VansEngine
 		// Physical properties
 		float mass = 5.0f;
 
+		// Collision material properties
+		float staticFriction  = 0.5f;
+		float dynamicFriction = 0.4f;
+		float restitution     = 0.1f;
+
 		// Local offset of the shape center relative to the bone origin (bone local space)
 		glm::vec3 offsetPosition = glm::vec3(0.0f);
 		glm::vec3 offsetRotation = glm::vec3(0.0f);   // Euler degrees, applied ZYX
@@ -83,6 +88,13 @@ namespace VansEngine
 		// Twist limits around the X axis (degrees)
 		float twistLowLimit  = -30.0f;
 		float twistHighLimit =  30.0f;
+
+		// Spring properties applied to the angular limit surfaces
+		float limitStiffness = 20.0f;
+		float limitDamping   =  2.0f;
+
+		// Joint projection tolerance (meters): bodies further apart than this will be projected
+		float projectionTolerance = 0.1f;
 
 		// Optional position-target drive (used in Blend mode to pull bodies toward animation pose)
 		bool  enableDrive       = false;

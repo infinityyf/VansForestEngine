@@ -1879,10 +1879,10 @@ void VansGraphics::VansScene::LoadSingleRagdollComponent(
     // ── 3. Ensure the animation controller has a valid bind pose ─────────
     // The ragdoll system needs GetCachedGlobalTransforms() to be non-empty.
     // Run one animation tick at dt=0 if needed.
-    VansAnimationController* ctrl = animNode->GetController();
-    if (ctrl && ctrl->GetCachedGlobalTransforms().empty())
+    VansAnimationController* controller = animNode->GetController();
+    if (controller && controller->GetCachedGlobalTransforms().empty())
     {
-        ctrl->Update(0.0f, animNode->GetSkeleton());
+        controller->Update(0.0f, animNode->GetSkeleton());
         VANS_LOG("[LoadRagdollComp] Ran one zero-dt animation tick to initialise bind pose for '"
                  << animNode->GetName() << "'");
     }
