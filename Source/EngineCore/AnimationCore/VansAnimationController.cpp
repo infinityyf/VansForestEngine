@@ -970,7 +970,24 @@ void VansAnimationController::BuildFinalMatrices(const std::vector<glm::mat4>& g
 }
 
 // ════════════════════════════════════════════════════════════════
-//  内部方法: InterpolateKeyframes
+//  外部驱动接口: FeedExternalBoneWorldTransforms
+//  供 Ragdoll / IK 等系统在 animNode->Update() 之后调用，
+//  直接覆盖本帧的 SSBO 输出，无需经过状态机。
+// ════════════════════════════════════════════════════════════════
+
+void VansAnimationController::FeedExternalBoneWorldTransforms(
+    const std::vector<glm::mat4>& modelSpaceTransforms,
+    const Skeleton& skeleton)
+{
+	if (modelSpaceTransforms.size() != skeleton.bones.size())
+		return;
+
+	// Update cached global transforms (used by BoneAttachment etc.)
+	m_CachedGlobalTransforms = modelSpaceTransforms;
+
+	// Rebuild final skinning matrices
+	BuildFinalMatrices(modelSpaceTransforms, skeleton);
+}
 // ════════════════════════════════════════════════════════════════
 
 void VansAnimationController::InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,

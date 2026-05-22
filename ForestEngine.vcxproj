@@ -226,6 +226,8 @@
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsEventCallback.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansRigidBody.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansTerrainPhysicsNode.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansRagdollTypes.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansRagdollSystem.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansLight.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansPBR.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.h" />
@@ -372,6 +374,7 @@
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansTerrainPhysicsNode.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothSystem.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothNode.cpp" />
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansRagdollSystem.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansLight.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp" />

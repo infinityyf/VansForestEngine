@@ -67,6 +67,34 @@ bool VansScriptAudioComponent::SwitchSource(const std::string& name)
 }
 
 // ---------------------------------------------------------------------------
+// VansScriptRagdollComponent — runtime control delegates
+// ---------------------------------------------------------------------------
+#include "../PhysicsCore/VansRagdollSystem.h"
+#include "../PhysicsCore/VansRagdollTypes.h"
+
+void VansScriptRagdollComponent::SetDriveMode(int mode)
+{
+	if (!m_AnimNode) return;
+	VansEngine::RagdollDriveMode dm = static_cast<VansEngine::RagdollDriveMode>(
+		(mode >= 0 && mode <= 2) ? mode : 0);
+	VansEngine::VansRagdollSystem::GetInstance().SetDriveMode(m_AnimNode, dm);
+}
+
+void VansScriptRagdollComponent::SetBlendWeight(float weight)
+{
+	if (!m_AnimNode) return;
+	VansEngine::VansRagdollSystem::GetInstance().SetBlendWeight(m_AnimNode, weight);
+}
+
+void VansScriptRagdollComponent::ApplyImpulse(const std::string& boneName,
+                                               float ix, float iy, float iz)
+{
+	if (!m_AnimNode) return;
+	VansEngine::VansRagdollSystem::GetInstance().ApplyImpulse(
+		m_AnimNode, boneName, glm::vec3(ix, iy, iz));
+}
+
+// ---------------------------------------------------------------------------
 // VansScriptVideoComponent — SwitchSource
 // ---------------------------------------------------------------------------
 bool VansScriptVideoComponent::SwitchSource(const std::string& name)

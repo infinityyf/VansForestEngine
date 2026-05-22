@@ -8,6 +8,7 @@
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansTerrainPhysicsNode.h"
+#include "../PhysicsCore/VansRagdollSystem.h"
 #include "VansVideoManager.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../AudioCore/VansAudioSystem.h"
@@ -1830,6 +1831,92 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
 }
 
 // ===========================================================================
+// LoadSingleRagdollComponent
+// ===========================================================================
+
+void VansGraphics::VansScene::LoadSingleRagdollComponent(
+    VansScriptObject*         obj,
+    VansAnimationNode*        animNode,
+    const json&               ragdollJson,
+    const std::string&        projectRoot)
+{
+    if (!animNode)
+    {
+        VANS_LOG_WARN("[LoadRagdollComp] Null animNode — skipping ragdoll component");
+        return;
+    }
+
+    using namespace VansEngine;
+
+    // ── 1. Read profile path ─────────────────────────────────────────────
+    std::string profilePath = ragdollJson.value("profile", "");
+    if (profilePath.empty())
+    {
+        VANS_LOG_WARN("[LoadRagdollComp] No 'profile' field in ragdoll JSON for '"
+                      << animNode->GetName() << "', skipping");
+        return;
+    }
+
+    std::string fullPath = projectRoot + profilePath;
+
+    RagdollProfile profile;
+    if (!RagdollProfile::LoadFromFile(fullPath, profile))
+    {
+        VANS_LOG_WARN("[LoadRagdollComp] Failed to load ragdoll profile: " << fullPath);
+        return;
+    }
+
+    // ── 2. Resolve initial drive mode ────────────────────────────────────
+    std::string driveModeStr = ragdollJson.value("drive_mode", "animation");
+    RagdollDriveMode initialMode = RagdollDriveMode::Animation;
+    if (driveModeStr == "physics")
+        initialMode = RagdollDriveMode::Physics;
+    else if (driveModeStr == "blend")
+        initialMode = RagdollDriveMode::Blend;
+
+    float blendWeight = ragdollJson.value("blend_weight", 0.0f);
+
+    // ── 3. Ensure the animation controller has a valid bind pose ─────────
+    // The ragdoll system needs GetCachedGlobalTransforms() to be non-empty.
+    // Run one animation tick at dt=0 if needed.
+    VansAnimationController* ctrl = animNode->GetController();
+    if (ctrl && ctrl->GetCachedGlobalTransforms().empty())
+    {
+        ctrl->Update(0.0f, animNode->GetSkeleton());
+        VANS_LOG("[LoadRagdollComp] Ran one zero-dt animation tick to initialise bind pose for '"
+                 << animNode->GetName() << "'");
+    }
+
+    // ── 4. Create ragdoll bodies + joints ─────────────────────────────────
+    if (!VansRagdollSystem::GetInstance().CreateRagdoll(animNode, profile))
+    {
+        VANS_LOG_WARN("[LoadRagdollComp] CreateRagdoll failed for '" << animNode->GetName() << "'");
+        return;
+    }
+
+    // ── 5. Set initial drive mode / blend weight ─────────────────────────
+    if (initialMode != RagdollDriveMode::Animation)
+        VansRagdollSystem::GetInstance().SetDriveMode(animNode, initialMode);
+    if (blendWeight > 0.0f)
+        VansRagdollSystem::GetInstance().SetBlendWeight(animNode, blendWeight);
+
+    // ── 6. Create component wrapper on the ScriptObject ─────────────────
+    if (obj)
+    {
+        VansScriptRagdollComponent* ragdollComp = new VansScriptRagdollComponent();
+        ragdollComp->m_AnimNode        = animNode;
+        ragdollComp->m_InitialDriveMode = initialMode;
+        obj->AddComponent(ragdollComp);
+
+        VANS_LOG("[LoadRagdollComp] Created VansScriptRagdollComponent on object '"
+                 << obj->m_ObjectName << "' (mode=" << driveModeStr << ")");
+    }
+
+    VANS_LOG("[LoadRagdollComp] Ragdoll component loaded for '" << animNode->GetName()
+             << "' from: " << fullPath);
+}
+
+// ===========================================================================
 // Vegetation node
 // ===========================================================================
 
@@ -2772,6 +2859,12 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         {
             VANS_LOG_WARN("[LoadSceneObjects] Animation component for '"
                          << pending.objectName << "' could not be created");
+        }
+        else if (pending.animJson.contains("ragdoll") && pending.animJson["ragdoll"].is_object())
+        {
+            // ── Ragdoll sub-component (optional) ─────────────────────────
+            LoadSingleRagdollComponent(pending.obj, animNode,
+                                       pending.animJson["ragdoll"], projectRoot);
         }
     }
 

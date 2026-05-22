@@ -603,6 +603,11 @@ void VansGraphics::VansScene::UnLoadScene()
 	// 物理模拟在独立线程运行，必须先获取 SimulationMutex 再操作 PxScene。
 	{
 		auto& physicsSystem = VansEngine::VansPhysicsSystem::GetInstance();
+
+		// ── 3-ragdoll. 先销毁 Ragdoll 系统（释放 D6 joints 和 bodies，内部也持锁）
+		VansEngine::VansRagdollSystem::GetInstance().Shutdown();
+		VANS_LOG("[VansScene] Step 3-ragdoll: Ragdoll 实例已全部销毁");
+
 		std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
 
 		// ── 3. 清理物理节点（析构函数会从 PxScene 移除 actor） ─────────
@@ -1189,6 +1194,14 @@ void VansGraphics::VansScene::UpdateAnimations(float deltaTime){
         if (animNode)
         {
             animNode->Update(deltaTime);
+
+            // Ragdoll post-animation update:
+            // • Animation mode: kinematically drives bodies to animation pose.
+            // • Physics mode:   reads body poses and overwrites bone matrices.
+            // • Blend mode:     blends animation and physics poses.
+            // No-op if no ragdoll instance exists for this node.
+            VansEngine::VansRagdollSystem::GetInstance().PostAnimationUpdate(animNode);
+
             animNode->UploadBoneMatrices(0); // single frame buffer, always index 0
         }
     }
