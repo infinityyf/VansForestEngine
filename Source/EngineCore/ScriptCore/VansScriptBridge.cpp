@@ -1323,6 +1323,41 @@ void VansInitEngineBridge()
 		}
 		return static_cast<int>(write);
 	};
+
+	s_EngineBridge.physicsAddForce = [](uint32_t transformID,
+	                                    float fx, float fy, float fz,
+	                                    bool impulse) -> bool
+	{
+		auto* ctx = VansScriptContext::GetInstance();
+		if (!ctx || !ctx->GetScene() || transformID == 0) return false;
+
+		VansEngine::VansPhysicsNode* targetNode = nullptr;
+		for (auto* physicsNode : ctx->GetScene()->m_PhysicsNodes)
+		{
+			if (!physicsNode || physicsNode->GetTransformID() != transformID) continue;
+			targetNode = physicsNode;
+			break;
+		}
+
+		if (!targetNode || !targetNode->IsEnabled()) return false;
+
+		auto& phys = VansEngine::VansPhysicsSystem::GetInstance();
+		PxScene* scene = phys.GetScene();
+		std::lock_guard<std::mutex> lock(phys.GetSimulationMutex());
+		if (scene)
+		{
+			PxSceneWriteLock scopedWriteLock(*scene);
+			targetNode->AddForce(glm::vec3(fx, fy, fz),
+			                     impulse ? PxForceMode::eIMPULSE : PxForceMode::eFORCE);
+		}
+		else
+		{
+			targetNode->AddForce(glm::vec3(fx, fy, fz),
+			                     impulse ? PxForceMode::eIMPULSE : PxForceMode::eFORCE);
+		}
+
+		return true;
+	};
 }
 
 // ---------------------------------------------------------------------------

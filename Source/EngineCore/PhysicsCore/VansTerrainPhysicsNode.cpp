@@ -222,7 +222,9 @@ namespace VansEngine
         }
 
         m_Actor->setName("TerrainHeightField");
-        m_Actor->userData = this;
+        // 地形 actor 不继承 VansPhysicsNode，不参与脚本物理查询（raycast / overlapSphere）。
+        // 置 nullptr 防止 ScriptBridge 将其错误地 static_cast 为 VansPhysicsNode* 后触发 UB 崩溃。
+        m_Actor->userData = nullptr;
         m_Actor->attachShape(*m_Shape);
         m_Shape->release();
 
