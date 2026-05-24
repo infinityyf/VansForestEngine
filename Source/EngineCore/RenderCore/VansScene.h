@@ -7,6 +7,7 @@
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
+#include "../PhysicsCore/VansRagdollSystem.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansAnimationController.h"
@@ -265,6 +266,10 @@ namespace VansGraphics
 		VansAnimationNode* LoadSingleAnimationComponent(const json& animJson,
 		                                                const std::string& objectName,
 		                                                const std::string& projectRoot);
+		bool LoadSingleRagdollComponent(VansScriptObject* obj,
+		                                VansAnimationNode* animNode,
+		                                const json& ragdollJson,
+		                                const std::string& projectRoot);
 
 		// ── Single-node loading helpers (extracted from batch loaders) ────────
 		VansRenderNode* LoadSingleRenderNode(VkDevice& device, const json& renderNodeJson);

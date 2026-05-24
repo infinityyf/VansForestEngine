@@ -54,6 +54,11 @@ static inline VansScriptAnimationComponent* AsAnimComp(void* p)
 	return dynamic_cast<VansScriptAnimationComponent*>(static_cast<VansScriptComponent*>(p));
 }
 
+static inline VansScriptRagdollComponent* AsRagdollComp(void* p)
+{
+	return dynamic_cast<VansScriptRagdollComponent*>(static_cast<VansScriptComponent*>(p));
+}
+
 static inline VansScriptCharacterControllerComponent* AsCCTComp(void* p)
 {
 	return dynamic_cast<VansScriptCharacterControllerComponent*>(
@@ -318,6 +323,13 @@ void VansInitEngineBridge()
 		return o->GetComponent<VansScriptAnimationComponent>();
 	};
 
+	s_EngineBridge.objectGetRagdollComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		if (!o) return nullptr;
+		return o->GetComponent<VansScriptRagdollComponent>();
+	};
+
 	// ── AnimationComponent ───────────────────────────────────────────────
 	s_EngineBridge.animPlay = [](void* comp)
 	{
@@ -430,6 +442,87 @@ void VansInitEngineBridge()
 		auto* ac = AsAnimComp(comp);
 		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
 			ac->m_AnimNode->GetController()->SetSpeed(speed);
+	};
+
+	// ── RagdollComponent ────────────────────────────────────────────────
+	s_EngineBridge.ragdollSetDriveMode = [](void* comp, int mode)
+	{
+		auto* rc = AsRagdollComp(comp);
+		if (rc) rc->SetDriveMode(mode);
+	};
+
+	s_EngineBridge.ragdollSetDriveModeVelocity = [](void* comp, int mode, float vx, float vy, float vz)
+	{
+		auto* rc = AsRagdollComp(comp);
+		if (rc) rc->SetDriveModeWithVelocity(mode, vx, vy, vz);
+	};
+
+	s_EngineBridge.ragdollGetDriveMode = [](void* comp) -> int
+	{
+		auto* rc = AsRagdollComp(comp);
+		return rc ? rc->GetDriveMode() : 0;
+	};
+
+	s_EngineBridge.ragdollSetBlendWeight = [](void* comp, float weight)
+	{
+		auto* rc = AsRagdollComp(comp);
+		if (rc) rc->SetBlendWeight(weight);
+	};
+
+	s_EngineBridge.ragdollGetBlendWeight = [](void* comp) -> float
+	{
+		auto* rc = AsRagdollComp(comp);
+		return rc ? rc->GetBlendWeight() : 0.0f;
+	};
+
+	s_EngineBridge.ragdollHasRuntime = [](void* comp) -> bool
+	{
+		auto* rc = AsRagdollComp(comp);
+		return rc ? rc->HasRuntimeRagdoll() : false;
+	};
+
+	s_EngineBridge.ragdollGetRuntimeBodyCount = [](void* comp) -> int
+	{
+		auto* rc = AsRagdollComp(comp);
+		return rc ? rc->GetRuntimeBodyCount() : 0;
+	};
+
+	s_EngineBridge.ragdollGetRuntimeJointCount = [](void* comp) -> int
+	{
+		auto* rc = AsRagdollComp(comp);
+		return rc ? rc->GetRuntimeJointCount() : 0;
+	};
+
+	s_EngineBridge.ragdollGetConfiguredBodyCount = [](void* comp) -> int
+	{
+		auto* rc = AsRagdollComp(comp);
+		return rc ? rc->m_ConfiguredBodyCount : 0;
+	};
+
+	s_EngineBridge.ragdollGetConfiguredJointCount = [](void* comp) -> int
+	{
+		auto* rc = AsRagdollComp(comp);
+		return rc ? rc->m_ConfiguredJointCount : 0;
+	};
+
+	s_EngineBridge.ragdollGetProfileName = [](void* comp, char* buf, int bufSize)
+	{
+		auto* rc = AsRagdollComp(comp);
+		if (rc && bufSize > 0)
+			strncpy_s(buf, bufSize, rc->m_ProfileName.c_str(), _TRUNCATE);
+	};
+
+	s_EngineBridge.ragdollGetProfilePath = [](void* comp, char* buf, int bufSize)
+	{
+		auto* rc = AsRagdollComp(comp);
+		if (rc && bufSize > 0)
+			strncpy_s(buf, bufSize, rc->m_ProfilePath.c_str(), _TRUNCATE);
+	};
+
+	s_EngineBridge.ragdollApplyImpulse = [](void* comp, const char* boneName, float ix, float iy, float iz)
+	{
+		auto* rc = AsRagdollComp(comp);
+		if (rc && boneName) rc->ApplyImpulse(boneName, ix, iy, iz);
 	};
 
 	// ── CharacterController Component ────────────────────────────────────

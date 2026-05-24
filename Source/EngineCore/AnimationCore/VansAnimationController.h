@@ -192,6 +192,8 @@ namespace VansGraphics
 		const BoneMatricesSSBO& GetBoneMatricesSSBO() const { return m_BoneMatricesSSBO; }
 		const glm::mat4& GetCachedGlobalTransform(int boneIndex) const;
 		const std::vector<glm::mat4>& GetCachedGlobalTransforms() const { return m_CachedGlobalTransforms; }
+		void FeedExternalBoneWorldTransforms(const std::vector<glm::mat4>& modelSpaceTransforms,
+		                                    const Skeleton& skeleton);
 
 		// ─── 序列化 ──────────────────────────────────────────────────
 		std::string GetName() const { return m_Name; }

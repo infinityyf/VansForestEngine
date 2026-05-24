@@ -18,6 +18,7 @@
 #include <memory>
 #include <pybind11/embed.h>
 #include "../PhysicsCore/VansPhysicsEvents.h"
+#include "../PhysicsCore/VansRagdollSystem.h"
 #include "../../../../ForestExporter/VansPhysicsEventInfo.h"
 #include "../ParticleCore/VansParticleAsset.h"
 #include "../ParticleCore/VansParticleRuntime.h"
@@ -51,6 +52,8 @@ private:
 
 	// Internal helpers
 	void CheckAndReloadPyScripts();
+	void VansScriptPreUpdate();
+	void UpdateScriptComponents(bool cameraScriptsOnly, bool skipCameraScripts);
 
 	// Called after a .py module is hot-reloaded to re-instantiate script components
 	void OnPyModuleReloaded(const std::string& scriptPath);
@@ -75,6 +78,8 @@ public:
 	void VansScriptSetup();
 
 	void VansScriptUpdate();
+	void VansScriptUpdateNonCameraScripts();
+	void VansScriptUpdateCameraScripts();
 
 	// Set the active scene so the update loop can iterate objects
 	void SetScene(VansGraphics::VansScene* scene) { m_Scene = scene; }
@@ -198,6 +203,35 @@ class VansScriptAnimationComponent : public VansScriptComponent
 public:
 	// 非拥有指针，生命周期由 VansScene 管理
 	VansGraphics::VansAnimationNode* m_AnimNode = nullptr;
+};
+
+// ── Ragdoll Component ───────────────────────────────────────────────────────
+// 持有对 VansScene 管理的 VansAnimationNode 的非拥有指针。
+// 通过此组件可以在 Python/C++ 中切换动画驱动、物理驱动和混合驱动。
+class VansScriptRagdollComponent : public VansScriptComponent
+{
+public:
+	VansScriptRagdollComponent()
+	{
+		m_ComponentName = "Ragdoll";
+	}
+
+	VansGraphics::VansAnimationNode* m_AnimNode = nullptr;
+	VansEngine::RagdollDriveMode m_InitialDriveMode = VansEngine::RagdollDriveMode::Animation;
+	std::string m_ProfilePath;
+	std::string m_ProfileName;
+	int m_ConfiguredBodyCount = 0;
+	int m_ConfiguredJointCount = 0;
+
+	void SetDriveMode(int mode);
+	void SetDriveModeWithVelocity(int mode, float vx, float vy, float vz);
+	int GetDriveMode() const;
+	void SetBlendWeight(float weight);
+	float GetBlendWeight() const;
+	bool HasRuntimeRagdoll() const;
+	int GetRuntimeBodyCount() const;
+	int GetRuntimeJointCount() const;
+	void ApplyImpulse(const std::string& boneName, float ix, float iy, float iz);
 };
 
 // ── Character Controller Component ─────────────────────────────────────────

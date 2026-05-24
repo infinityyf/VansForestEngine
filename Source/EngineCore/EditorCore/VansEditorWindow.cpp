@@ -953,18 +953,19 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // ── Script update BEFORE CCT flush and BEFORE rendering ──────────
         // Correct game-loop order:
         //   ① UpdatePhysicsTransforms  — read async rigid-body results
-        //   ② VansScriptUpdate         — scripts read input, call queue_move(D)
+        //   ② VansScriptUpdateNonCameraScripts — scripts read input, call queue_move(D)
         //   ③ UpdateCharControllerTransforms — flush D into PhysX (synchronous),
         //                                      write new physics position back to
         //                                      TransformStore so the render below
         //                                      sees the result of THIS frame's input
         //                                      (zero-frame lag)
-        //   ④ camera.Rendering         — render with up-to-date positions
+        //   ④ VansScriptUpdateCameraScripts — camera follows refreshed CCT transform
+        //   ⑤ camera.Rendering         — render with up-to-date positions
         m_ScriptContext.SetScene(m_Scene);
         if (m_Scene && m_Scene->IsSceneReady() && m_PlayState == VansEditorPlayState::Playing)
         {
             VANS_PROFILE_SCOPE("Script::Update", Vans::ProfileCategory::Script);
-            m_ScriptContext.VansScriptUpdate();
+            m_ScriptContext.VansScriptUpdateNonCameraScripts();
         }
 
         // Flush CCT displacements queued by scripts this frame.
@@ -972,6 +973,14 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         {
             VANS_PROFILE_SCOPE("Physics::FlushCharacterController", Vans::ProfileCategory::Physics);
             m_Scene->UpdateCharControllerTransforms();
+        }
+
+        // 相机脚本必须在 CCT 刷新后执行，否则 MainCamera 在场景对象列表中排在角色前面时，
+        // 会读取上一帧的角色位置，表现为跟随失效或明显滞后。
+        if (m_Scene && m_Scene->IsSceneReady() && m_PlayState == VansEditorPlayState::Playing)
+        {
+            VANS_PROFILE_SCOPE("Script::UpdateCameraScripts", Vans::ProfileCategory::Script);
+            m_ScriptContext.VansScriptUpdateCameraScripts();
         }
 
         // ── Deferred resource & scene loading ───────────────────────────

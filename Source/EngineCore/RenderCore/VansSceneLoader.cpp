@@ -8,6 +8,7 @@
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansTerrainPhysicsNode.h"
+#include "../PhysicsCore/VansRagdollSystem.h"
 #include "VansVideoManager.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../AudioCore/VansAudioSystem.h"
@@ -1829,6 +1830,79 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
     return animNode;
 }
 
+bool VansGraphics::VansScene::LoadSingleRagdollComponent(
+    VansScriptObject* obj,
+    VansAnimationNode* animNode,
+    const json& ragdollJson,
+    const std::string& projectRoot)
+{
+    if (obj == nullptr || animNode == nullptr || !ragdollJson.is_object())
+        return false;
+
+    std::string profilePath = ragdollJson.value("profile", "");
+    if (profilePath.empty())
+    {
+        VANS_LOG_WARN("[LoadRagdollComp] object '" << obj->m_ObjectName << "' ragdoll missing profile");
+        return false;
+    }
+
+    std::string fullProfilePath = projectRoot + profilePath;
+    VansEngine::RagdollProfile profile;
+    if (!VansEngine::RagdollProfile::LoadFromFile(fullProfilePath, profile))
+    {
+        VANS_LOG_WARN("[LoadRagdollComp] failed to load profile: " << fullProfilePath);
+        return false;
+    }
+
+    VansAnimationController* controller = animNode->GetController();
+    if (controller == nullptr)
+        return false;
+
+    if (controller->GetCachedGlobalTransforms().empty())
+        controller->Update(0.0f, animNode->GetSkeleton());
+
+    if (controller->GetCachedGlobalTransforms().empty())
+    {
+        VANS_LOG_WARN("[LoadRagdollComp] controller did not produce bind pose for '" << obj->m_ObjectName << "'");
+        return false;
+    }
+
+    if (VansEngine::VansBoneAttachmentSystem::GetInstance().FindBindingSet(animNode) != nullptr)
+    {
+        VANS_LOG_WARN("[LoadRagdollComp] object '" << obj->m_ObjectName
+            << "' 同时配置了 bone_bindings 与 ragdoll；Physics/Blend 模式下请避免绑定同一骨骼");
+    }
+
+    if (!VansEngine::VansRagdollSystem::GetInstance().CreateRagdoll(animNode, profile))
+        return false;
+
+    auto parseMode = [](const std::string& value) -> VansEngine::RagdollDriveMode
+    {
+        if (value == "physics") return VansEngine::RagdollDriveMode::Physics;
+        if (value == "blend") return VansEngine::RagdollDriveMode::Blend;
+        return VansEngine::RagdollDriveMode::Animation;
+    };
+
+    VansEngine::RagdollDriveMode mode = parseMode(ragdollJson.value("drive_mode", "animation"));
+    float blendWeight = ragdollJson.value("blend_weight", 0.0f);
+
+    VansEngine::VansRagdollSystem::GetInstance().SetBlendWeight(animNode, blendWeight);
+    VansEngine::VansRagdollSystem::GetInstance().SetDriveMode(animNode, mode);
+
+    auto* ragdollComp = new VansScriptRagdollComponent();
+    ragdollComp->m_AnimNode = animNode;
+    ragdollComp->m_InitialDriveMode = mode;
+	ragdollComp->m_ProfilePath = profilePath;
+	ragdollComp->m_ProfileName = profile.name;
+	ragdollComp->m_ConfiguredBodyCount = static_cast<int>(profile.bodies.size());
+	ragdollComp->m_ConfiguredJointCount = static_cast<int>(profile.joints.size());
+    obj->AddComponent(ragdollComp);
+
+    VANS_LOG("[LoadRagdollComp] Created ragdoll component for '" << obj->m_ObjectName
+        << "' profile='" << profile.name << "' bodies=" << profile.bodies.size());
+    return true;
+}
+
 // ===========================================================================
 // Vegetation node
 // ===========================================================================
@@ -2772,6 +2846,13 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         {
             VANS_LOG_WARN("[LoadSceneObjects] Animation component for '"
                          << pending.objectName << "' could not be created");
+        }
+        else if (pending.animJson.contains("ragdoll"))
+        {
+            LoadSingleRagdollComponent(pending.obj,
+                                       animNode,
+                                       pending.animJson["ragdoll"],
+                                       projectRoot);
         }
     }
 

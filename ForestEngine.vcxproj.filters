@@ -454,6 +454,12 @@
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansRagdollTypes.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansRagdollSystem.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollisionLayerManager.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
@@ -858,6 +864,9 @@
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsVehicle.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansRagdollSystem.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollisionLayerManager.cpp">

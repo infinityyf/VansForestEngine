@@ -17,22 +17,12 @@ namespace VansEngine
 		PxFilterObjectAttributes attributes1, PxFilterData filterData1,
 		PxPairFlags& pairFlags, const void* constantBlock, PxU32 constantBlockSize)
 	{
-		VANS_LOG("[PhysX FilterShader] Called: layer0=" << filterData0.word0
-		         << " mask0=0x" << std::hex << filterData0.word1 << std::dec
-		         << " trigger0=" << (filterData0.word2 & 0x1)
-		         << " | layer1=" << filterData1.word0
-		         << " mask1=0x" << std::hex << filterData1.word1 << std::dec
-		         << " trigger1=" << (filterData1.word2 & 0x1)
-		         << " | isTriggerObj0=" << PxFilterObjectIsTrigger(attributes0)
-		         << " isTriggerObj1=" << PxFilterObjectIsTrigger(attributes1));
-
 		// PhysX 内建 Trigger 检测（PxShapeFlag::eTRIGGER_SHAPE）
 		if (PxFilterObjectIsTrigger(attributes0) || PxFilterObjectIsTrigger(attributes1))
 		{
 			pairFlags = PxPairFlag::eTRIGGER_DEFAULT
 			          | PxPairFlag::eNOTIFY_TOUCH_FOUND
 			          | PxPairFlag::eNOTIFY_TOUCH_LOST;
-			VANS_LOG("[PhysX FilterShader] -> TRIGGER path (PxShapeFlag), pairFlags=eTRIGGER_DEFAULT");
 			return PxFilterFlag::eDEFAULT;
 		}
 
@@ -41,10 +31,17 @@ namespace VansEngine
 		uint32_t layerB = filterData1.word0;
 		uint32_t maskA  = filterData0.word1;
 		uint32_t maskB  = filterData1.word1;
+		uint32_t groupA = filterData0.word3;
+		uint32_t groupB = filterData1.word3;
+
+		// Ragdoll 同一实例内部默认不做接触求解，避免身体部件互相卡住导致无法自然下落。
+		if (groupA != 0 && groupA == groupB)
+		{
+			return PxFilterFlag::eSUPPRESS;
+		}
 
 		if (!((maskA & (1u << layerB)) && (maskB & (1u << layerA))))
 		{
-			VANS_LOG("[PhysX FilterShader] -> SUPPRESS (layer matrix mismatch)");
 			return PxFilterFlag::eSUPPRESS;
 		}
 
@@ -57,7 +54,6 @@ namespace VansEngine
 			pairFlags = PxPairFlag::eTRIGGER_DEFAULT
 			          | PxPairFlag::eNOTIFY_TOUCH_FOUND
 			          | PxPairFlag::eNOTIFY_TOUCH_LOST;
-			VANS_LOG("[PhysX FilterShader] -> TRIGGER path (word2 flag), pairFlags=eTRIGGER_DEFAULT");
 			return PxFilterFlag::eDEFAULT;
 		}
 
@@ -67,7 +63,6 @@ namespace VansEngine
 		          | PxPairFlag::eNOTIFY_TOUCH_LOST
 		          | PxPairFlag::eNOTIFY_CONTACT_POINTS;
 
-		VANS_LOG("[PhysX FilterShader] -> CONTACT path, pairFlags=eCONTACT_DEFAULT + NOTIFY");
 		return PxFilterFlag::eDEFAULT;
 	}
 
@@ -98,7 +93,10 @@ namespace VansEngine
 	// ============================================================================
 	void* VansPhysicsAllocator::allocate(size_t size, const char* typeName, const char* filename, int line)
 	{
-		return _aligned_malloc(size, 16);
+		// PhysX 内部部分路径可能请求 0 字节临时缓冲，Windows _aligned_malloc(0, 16) 会返回 nullptr。
+		// PhysX 要求 allocator 不能返回 nullptr，否则会触发 eABORT。
+		size_t allocSize = (std::max)(size, static_cast<size_t>(16));
+		return _aligned_malloc(allocSize, 16);
 	}
 
 	void VansPhysicsAllocator::deallocate(void* ptr)

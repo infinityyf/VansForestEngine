@@ -137,6 +137,20 @@ const glm::mat4& VansAnimationController::GetCachedGlobalTransform(int boneIndex
 	return m_CachedGlobalTransforms[boneIndex];
 }
 
+void VansAnimationController::FeedExternalBoneWorldTransforms(
+	const std::vector<glm::mat4>& modelSpaceTransforms,
+	const Skeleton& skeleton)
+{
+	if (modelSpaceTransforms.size() != skeleton.bones.size())
+	{
+		VANS_LOG_WARN("[AnimController] FeedExternalBoneWorldTransforms bone count mismatch: input="
+			<< modelSpaceTransforms.size() << " skeleton=" << skeleton.bones.size());
+		return;
+	}
+
+	BuildFinalMatrices(modelSpaceTransforms, skeleton);
+}
+
 // ════════════════════════════════════════════════════════════════
 //  State 管理
 // ════════════════════════════════════════════════════════════════

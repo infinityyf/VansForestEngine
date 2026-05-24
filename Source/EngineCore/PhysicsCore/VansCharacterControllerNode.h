@@ -102,6 +102,7 @@ namespace VansEngine
     private:
         CharControllerProperties          m_Properties;
         PxCapsuleController*              m_Controller        = nullptr;
+        PxFilterData                      m_FilterData;
         uint32_t                          m_TransformID       = UINT32_MAX;  // UINT32_MAX 表示「尚未绑定」
         bool                              m_Enabled           = false;
         PxControllerCollisionFlags        m_LastCollisionFlags;

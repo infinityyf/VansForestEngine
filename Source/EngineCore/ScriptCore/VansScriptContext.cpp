@@ -30,6 +30,86 @@ namespace py = pybind11;
 VansScriptContext* VansScriptContext::s_Instance = nullptr;
 
 // ---------------------------------------------------------------------------
+// VansScriptRagdollComponent — 运行时布娃娃控制接口
+// ---------------------------------------------------------------------------
+void VansScriptRagdollComponent::SetDriveMode(int mode)
+{
+    SetDriveModeWithVelocity(mode, 0.0f, 0.0f, 0.0f);
+}
+
+void VansScriptRagdollComponent::SetDriveModeWithVelocity(int mode, float vx, float vy, float vz)
+{
+    if (m_AnimNode == nullptr)
+    {
+        VANS_LOG_WARN("[RagdollComp] SetDriveMode 失败：m_AnimNode 为空");
+        return;
+    }
+
+    VansEngine::RagdollDriveMode driveMode = VansEngine::RagdollDriveMode::Animation;
+    if (mode == 1)
+        driveMode = VansEngine::RagdollDriveMode::Physics;
+    else if (mode == 2)
+        driveMode = VansEngine::RagdollDriveMode::Blend;
+
+    VansEngine::VansRagdollSystem::GetInstance().SetDriveMode(
+        m_AnimNode, driveMode, glm::vec3(vx, vy, vz));
+}
+
+int VansScriptRagdollComponent::GetDriveMode() const
+{
+    if (m_AnimNode == nullptr)
+        return 0;
+
+    VansEngine::RagdollDriveMode mode =
+        VansEngine::VansRagdollSystem::GetInstance().GetDriveMode(m_AnimNode);
+    return static_cast<int>(mode);
+}
+
+void VansScriptRagdollComponent::SetBlendWeight(float weight)
+{
+    if (m_AnimNode == nullptr)
+        return;
+    VansEngine::VansRagdollSystem::GetInstance().SetBlendWeight(m_AnimNode, weight);
+}
+
+float VansScriptRagdollComponent::GetBlendWeight() const
+{
+    if (m_AnimNode == nullptr)
+        return 0.0f;
+    return VansEngine::VansRagdollSystem::GetInstance().GetBlendWeight(m_AnimNode);
+}
+
+bool VansScriptRagdollComponent::HasRuntimeRagdoll() const
+{
+    if (m_AnimNode == nullptr)
+        return false;
+    return VansEngine::VansRagdollSystem::GetInstance().HasRagdoll(m_AnimNode);
+}
+
+int VansScriptRagdollComponent::GetRuntimeBodyCount() const
+{
+    if (m_AnimNode == nullptr)
+        return 0;
+    return VansEngine::VansRagdollSystem::GetInstance().GetBodyCount(m_AnimNode);
+}
+
+int VansScriptRagdollComponent::GetRuntimeJointCount() const
+{
+    if (m_AnimNode == nullptr)
+        return 0;
+    return VansEngine::VansRagdollSystem::GetInstance().GetJointCount(m_AnimNode);
+}
+
+void VansScriptRagdollComponent::ApplyImpulse(const std::string& boneName, float ix, float iy, float iz)
+{
+    if (m_AnimNode == nullptr)
+        return;
+
+    VansEngine::VansRagdollSystem::GetInstance().ApplyImpulse(
+        m_AnimNode, boneName, glm::vec3(ix, iy, iz));
+}
+
+// ---------------------------------------------------------------------------
 // VansScriptAudioComponent — SwitchSource
 // ---------------------------------------------------------------------------
 bool VansScriptAudioComponent::SwitchSource(const std::string& name)
@@ -689,8 +769,37 @@ void VansScriptContext::VansScriptUpdate()
 {
     VANS_PROFILE_SCOPE("Script::VansScriptUpdate", Vans::ProfileCategory::Script);
 
+    VansScriptPreUpdate();
+    UpdateScriptComponents(false, false);
+
+    return;
+}
+
+void VansScriptContext::VansScriptUpdateNonCameraScripts()
+{
+    VANS_PROFILE_SCOPE("Script::VansScriptUpdateNonCameraScripts", Vans::ProfileCategory::Script);
+
+    VansScriptPreUpdate();
+    UpdateScriptComponents(false, true);
+
+    return;
+}
+
+void VansScriptContext::VansScriptUpdateCameraScripts()
+{
+    VANS_PROFILE_SCOPE("Script::VansScriptUpdateCameraScripts", Vans::ProfileCategory::Script);
+
+    UpdateScriptComponents(true, false);
+
+    return;
+}
+
+void VansScriptContext::VansScriptPreUpdate()
+{
+    if (!m_Scene) return;
+
     // Periodically check for .py file changes
-    m_FileCheckAccumulator += VansGraphics::VansTimer::GetLastFrameDelta();
+    m_FileCheckAccumulator += static_cast<float>(VansGraphics::VansTimer::GetLastFrameDelta());
     if (m_FileCheckAccumulator >= FILE_CHECK_INTERVAL)
     {
         VANS_PROFILE_SCOPE("Script::CheckHotReload", Vans::ProfileCategory::Script);
@@ -698,17 +807,26 @@ void VansScriptContext::VansScriptUpdate()
         CheckAndReloadPyScripts();
     }
 
-    // ── Per-object VanPyScriptComponent update ───────────────────────
-    if (!m_Scene) return;
-
     // ── 调度物理事件（在 CallUpdate 之前） ───────────────────────────
     {
         VANS_PROFILE_SCOPE("Script::DispatchPhysicsEvents", Vans::ProfileCategory::Script);
         DispatchPhysicsEvents();
     }
+}
+
+void VansScriptContext::UpdateScriptComponents(bool cameraScriptsOnly, bool skipCameraScripts)
+{
+    // ── Per-object VanPyScriptComponent update ───────────────────────
+    if (!m_Scene) return;
 
     for (auto* obj : m_Scene->m_SceneObjects)
     {
+        const bool hasCameraComponent = (obj->GetComponent<VansScriptCameraComponent>() != nullptr);
+        if (cameraScriptsOnly && !hasCameraComponent)
+            continue;
+        if (skipCameraScripts && hasCameraComponent)
+            continue;
+
         for (auto* comp : obj->m_Components)
         {
             auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
@@ -725,8 +843,6 @@ void VansScriptContext::VansScriptUpdate()
             pyComp->CallUpdate();
         }
     }
-
-    return;
 }
 // ===========================================================================
 //  OnPyModuleReloaded — re-instantiate script components after hot reload

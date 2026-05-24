@@ -6,6 +6,58 @@
 
 namespace VansEngine
 {
+    namespace
+    {
+        class VansCCTQueryFilterCallback final : public PxQueryFilterCallback
+        {
+        public:
+            PxQueryHitType::Enum preFilter(const PxFilterData& filterData,
+                                           const PxShape* shape,
+                                           const PxRigidActor* actor,
+                                           PxHitFlags& queryFlags) override
+            {
+                (void)queryFlags;
+                return FilterShape(filterData, shape, actor);
+            }
+
+            PxQueryHitType::Enum postFilter(const PxFilterData& filterData,
+                                            const PxQueryHit& hit,
+                                            const PxShape* shape,
+                                            const PxRigidActor* actor) override
+            {
+                (void)hit;
+                return FilterShape(filterData, shape, actor);
+            }
+
+        private:
+            PxQueryHitType::Enum FilterShape(const PxFilterData& filterData,
+                                             const PxShape* shape,
+                                             const PxRigidActor* actor) const
+            {
+                (void)actor;
+                if (!shape)
+                    return PxQueryHitType::eNONE;
+
+                const PxFilterData targetData = shape->getQueryFilterData();
+                const bool targetIsTrigger = (targetData.word2 & 0x1u) != 0u;
+                if (targetIsTrigger)
+                    return PxQueryHitType::eNONE;
+
+                const uint32_t layerA = filterData.word0;
+                const uint32_t layerB = targetData.word0;
+                if (layerA >= 32u || layerB >= 32u)
+                    return PxQueryHitType::eNONE;
+
+                const uint32_t maskA  = filterData.word1;
+                const uint32_t maskB  = targetData.word1;
+                if (!((maskA & (1u << layerB)) && (maskB & (1u << layerA))))
+                    return PxQueryHitType::eNONE;
+
+                return PxQueryHitType::eBLOCK;
+            }
+        };
+    }
+
     VansCharacterControllerNode::VansCharacterControllerNode()
         : m_LastCollisionFlags(0)
     {
@@ -55,10 +107,11 @@ namespace VansEngine
         // 创建成功后将碰撞层 FilterData 设置到底层 Shape
         // （PxCapsuleControllerDesc 不支持直接在 desc 上设置 queryFilterData）
         {
-            PxFilterData filterData;
-            filterData.word0 = (props.m_LayerIndex >= 0)
-                               ? (1u << static_cast<uint32_t>(props.m_LayerIndex)) : 0x01u;
-            filterData.word1 = VansCollisionLayerManager::Get().GetCollisionMask(props.m_LayerIndex);
+            m_FilterData.word0 = (props.m_LayerIndex >= 0)
+                                ? static_cast<uint32_t>(props.m_LayerIndex) : 0u;
+            m_FilterData.word1 = VansCollisionLayerManager::Get().GetCollisionMask(props.m_LayerIndex);
+            m_FilterData.word2 = 0;
+            m_FilterData.word3 = 0;
 
             PxRigidDynamic* actor = m_Controller->getActor();
             if (actor)
@@ -70,8 +123,8 @@ namespace VansEngine
                 {
                     if (shape)
                     {
-                        shape->setSimulationFilterData(filterData);
-                        shape->setQueryFilterData(filterData);
+                        shape->setSimulationFilterData(m_FilterData);
+                        shape->setQueryFilterData(m_FilterData);
                     }
                 }
             }
@@ -110,7 +163,8 @@ namespace VansEngine
             PxVec3 disp(m_PendingDisplacement.x,
                         m_PendingDisplacement.y,
                         m_PendingDisplacement.z);
-            PxControllerFilters filters;
+            VansCCTQueryFilterCallback queryFilterCallback;
+            PxControllerFilters filters(&m_FilterData, &queryFilterCallback, nullptr);
             m_LastCollisionFlags = m_Controller->move(disp, 0.001f, m_PendingDt, filters);
 
             // 重置缓冲区

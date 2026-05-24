@@ -7,6 +7,7 @@
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../PhysicsCore/VansTerrainPhysicsNode.h"
+#include "../PhysicsCore/VansRagdollSystem.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -605,6 +606,10 @@ void VansGraphics::VansScene::UnLoadScene()
 		auto& physicsSystem = VansEngine::VansPhysicsSystem::GetInstance();
 		std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
 
+        // ── 2c. 清理布娃娃系统（直接持有 PxD6Joint / PxRigidDynamic）──────
+        VansEngine::VansRagdollSystem::GetInstance().Shutdown();
+        VANS_LOG("[VansScene] Step 2c: Ragdoll 系统已清理 (持锁)");
+
 		// ── 3. 清理物理节点（析构函数会从 PxScene 移除 actor） ─────────
 		for (auto* physicsNode : m_PhysicsNodes)
 		{
@@ -1189,6 +1194,7 @@ void VansGraphics::VansScene::UpdateAnimations(float deltaTime){
         if (animNode)
         {
             animNode->Update(deltaTime);
+            VansEngine::VansRagdollSystem::GetInstance().PostAnimationUpdate(animNode);
             animNode->UploadBoneMatrices(0); // single frame buffer, always index 0
         }
     }

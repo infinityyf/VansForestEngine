@@ -812,6 +812,7 @@ void VansGraphics::VansHierachuWindow::DrawObjectList()
         if (obj->GetComponent<VansScriptPhysicsComponent>())         typeHint += "Physics ";
         if (obj->GetComponent<VansScriptClothComponent>())           typeHint += "Cloth ";
         if (obj->GetComponent<VansScriptVehicleComponent>())         typeHint += "Vehicle ";
+        if (obj->GetComponent<VansScriptRagdollComponent>())         typeHint += "Ragdoll ";
         if (obj->GetComponent<VansScriptDirectionalLightComponent>()) typeHint += "DirLight ";
         if (obj->GetComponent<VansScriptPointLightComponent>())       typeHint += "PointLight ";
         if (obj->GetComponent<VansScriptSpotLightComponent>())        typeHint += "SpotLight ";
@@ -1023,6 +1024,51 @@ void VansGraphics::VansHierachuWindow::DrawObjectDetail()
                     ImGui::BulletText("[%d] %s", (int)i, tireNames[i].c_str());
                 ImGui::TreePop();
             }
+        }
+    }
+
+    // ── Ragdoll Component ─────────────────────────────────────────────
+    auto* ragdollComp = obj->GetComponent<VansScriptRagdollComponent>();
+    if (ragdollComp)
+    {
+        if (ImGui::CollapsingHeader("Ragdoll Component", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Text("Profile: %s", ragdollComp->m_ProfileName.empty() ? "(none)" : ragdollComp->m_ProfileName.c_str());
+            ImGui::TextDisabled("Path: %s", ragdollComp->m_ProfilePath.empty() ? "(none)" : ragdollComp->m_ProfilePath.c_str());
+            ImGui::Text("Configured Bodies: %d", ragdollComp->m_ConfiguredBodyCount);
+            ImGui::Text("Configured Joints: %d", ragdollComp->m_ConfiguredJointCount);
+            ImGui::Separator();
+
+            ImGui::Text("Runtime Bound: %s", ragdollComp->HasRuntimeRagdoll() ? "Yes" : "No");
+            ImGui::Text("Runtime Bodies: %d", ragdollComp->GetRuntimeBodyCount());
+            ImGui::Text("Runtime Joints: %d", ragdollComp->GetRuntimeJointCount());
+
+            static const char* s_DriveModeNames[] = { "Animation", "Physics", "Blend" };
+            int driveMode = ragdollComp->GetDriveMode();
+            if (driveMode < 0 || driveMode > 2)
+                driveMode = 0;
+            if (ImGui::Combo("Drive Mode", &driveMode, s_DriveModeNames, IM_ARRAYSIZE(s_DriveModeNames)))
+                ragdollComp->SetDriveMode(driveMode);
+
+            float blendWeight = ragdollComp->GetBlendWeight();
+            if (ImGui::SliderFloat("Blend Weight", &blendWeight, 0.0f, 1.0f, "%.2f"))
+                ragdollComp->SetBlendWeight(blendWeight);
+
+            if (ImGui::Button("Animation Mode##ragdoll"))
+                ragdollComp->SetDriveMode(0);
+            ImGui::SameLine();
+            if (ImGui::Button("Physics Mode##ragdoll"))
+                ragdollComp->SetDriveMode(1);
+            ImGui::SameLine();
+            if (ImGui::Button("Blend Mode##ragdoll"))
+                ragdollComp->SetDriveMode(2);
+
+            ImGui::Separator();
+            if (ImGui::Button("Impulse Pelvis Up##ragdoll"))
+                ragdollComp->ApplyImpulse("pelvis", 0.0f, 35.0f, 0.0f);
+            ImGui::SameLine();
+            if (ImGui::Button("Impulse Spine Forward##ragdoll"))
+                ragdollComp->ApplyImpulse("spine_03", 0.0f, 0.0f, -25.0f);
         }
     }
 
