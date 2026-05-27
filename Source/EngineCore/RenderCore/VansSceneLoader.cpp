@@ -1898,6 +1898,18 @@ bool VansGraphics::VansScene::LoadSingleRagdollComponent(
 	ragdollComp->m_ConfiguredJointCount = static_cast<int>(profile.joints.size());
     obj->AddComponent(ragdollComp);
 
+    // ── 延迟绑定消费：若同对象 CCT 配置了 followRagdoll，绑定刚创建的 animNode ──
+    auto* cctComp = obj->GetComponent<VansScriptCharacterControllerComponent>();
+    if (cctComp && cctComp->m_ControllerNode &&
+        cctComp->m_ControllerNode->HasPendingFollowRagdoll())
+    {
+        cctComp->m_ControllerNode->SetFollowRagdoll(
+            animNode, cctComp->m_ControllerNode->GetPendingFollowRagdollBone());
+        cctComp->m_ControllerNode->ConsumePendingFollowRagdoll();
+        VANS_LOG("[LoadRagdollComp] CCT followRagdoll \u7ed1\u5b9a\u5b8c\u6210\uff0cobjName='" << obj->m_ObjectName
+            << "' bone='" << cctComp->m_ControllerNode->GetFollowRagdollBone() << "'");
+    }
+
     VANS_LOG("[LoadRagdollComp] Created ragdoll component for '" << obj->m_ObjectName
         << "' profile='" << profile.name << "' bodies=" << profile.bodies.size());
     return true;

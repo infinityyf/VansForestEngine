@@ -216,10 +216,52 @@ namespace VansGraphics
 		SCREEN_BINDING_SSAO_OUTPUT   = 5,
 	};
 
-	// --- Post-Process Pass ---
+	// --- Post-Process Pass（Final Composite，Subpass 1）---
 	enum PostProcessPassBinding : uint32_t
 	{
-		POSTPROCESS_BINDING_COLOR_INPUT = 0,
+		POSTPROCESS_BINDING_COLOR_INPUT  = 0,   // INPUT_ATTACHMENT：SceneColorHDR（subpassLoad）
+		POSTPROCESS_BINDING_BLOOM_RESULT = 1,   // COMBINED_IMAGE_SAMPLER：Bloom 合成结果
+		POSTPROCESS_BINDING_EXPOSURE_VAL = 2,   // COMBINED_IMAGE_SAMPLER：1x1 当前曝光值（R16F）
+		POSTPROCESS_BINDING_PP_PARAMS    = 3,   // UNIFORM_BUFFER：VansPostProcessParamsGPU UBO
+	};
+
+	// --- Exposure Luminance Compute Pass ---
+	enum ExposureLuminancePassBinding : uint32_t
+	{
+		EXPOSURE_LUM_BINDING_SRC_COLOR  = 0,   // COMBINED_IMAGE_SAMPLER：SceneColorHDR 输入
+		EXPOSURE_LUM_BINDING_LUM_OUT    = 1,   // STORAGE_IMAGE：64x64 亮度输出（R16F）
+	};
+
+	// --- Exposure Adapt Compute Pass ---
+	enum ExposureAdaptPassBinding : uint32_t
+	{
+		EXPOSURE_ADAPT_BINDING_LUM_IN   = 0,   // COMBINED_IMAGE_SAMPLER：64x64 亮度输入
+		EXPOSURE_ADAPT_BINDING_EXP_OUT  = 1,   // STORAGE_IMAGE：1x1 当前曝光输出（R16F）
+		EXPOSURE_ADAPT_BINDING_PARAMS   = 2,   // UNIFORM_BUFFER：自适应曝光参数 UBO
+	};
+
+	// --- Bloom Prefilter Compute Pass ---
+	enum BloomPrefilterPassBinding : uint32_t
+	{
+		BLOOM_PREFILTER_BINDING_SRC     = 0,   // COMBINED_IMAGE_SAMPLER：SceneColorHDR 输入
+		BLOOM_PREFILTER_BINDING_DST     = 1,   // STORAGE_IMAGE：半分辨率预滤输出（RGBA16F）
+		BLOOM_PREFILTER_BINDING_PARAMS  = 2,   // UNIFORM_BUFFER：Bloom 参数（threshold/knee）UBO
+	};
+
+	// --- Bloom Downsample Compute Pass（每级共用同一 Layout）---
+	enum BloomDownsamplePassBinding : uint32_t
+	{
+		BLOOM_DOWNSAMPLE_BINDING_SRC    = 0,   // COMBINED_IMAGE_SAMPLER：上一级输入
+		BLOOM_DOWNSAMPLE_BINDING_DST    = 1,   // STORAGE_IMAGE：下一级输出（RGBA16F）
+	};
+
+	// --- Bloom Upsample Compute Pass（每级共用同一 Layout）---
+	enum BloomUpsamplePassBinding : uint32_t
+	{
+		BLOOM_UPSAMPLE_BINDING_SRC_LO   = 0,   // COMBINED_IMAGE_SAMPLER：较低分辨率输入
+		BLOOM_UPSAMPLE_BINDING_SRC_HI   = 1,   // COMBINED_IMAGE_SAMPLER：较高分辨率输入（加法混合）
+		BLOOM_UPSAMPLE_BINDING_DST      = 2,   // STORAGE_IMAGE：输出（RGBA16F）
+		BLOOM_UPSAMPLE_BINDING_PARAMS   = 3,   // UNIFORM_BUFFER：Bloom scatter 权重 UBO
 	};
 
 	// --- Terrain Pass ---
@@ -564,5 +606,12 @@ namespace VansGraphics
 		static void CreateAndAllocate_TileLightBuild(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// 贴花 Pass Set 1：仅绑定 GBuffer2 用于世界坐标重建
 		static void CreateAndAllocate_DecalPass(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+
+		// --- 后处理 Compute Pass Layouts ---
+		static void CreateAndAllocate_ExposureLuminance(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_ExposureAdapt(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_BloomPrefilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_BloomDownsample(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_BloomUpsample(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

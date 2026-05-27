@@ -1,0 +1,50 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../Common/Common.glsl"
+
+// Bloom Prefilter：对 SceneColorHDR 应用阈值/膝部软裁剪，输出半分辨率 bloom 源
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// set = 1: 本 pass 专属绑定（与 BloomPrefilterPassBinding 一致）
+layout(set = 1, binding = 0) uniform sampler2D srcColor;        // SceneColorHDR（全分辨率）
+layout(set = 1, binding = 1, rgba16f) uniform image2D dstColor; // 半分辨率 bloom prefilter 输出
+layout(set = 1, binding = 2) uniform BloomParams
+{
+    float threshold;    // bloom 阈值（如 1.0 EV）
+    float knee;         // 软裁剪 knee 宽度（如 0.5）
+    float scatter;      // upsample 时的散射混合权重（prefilter 不使用）
+    float intensity;    // bloom 最终强度（prefilter 不使用）
+} uBloom;
+
+// Quadratic 软阈值（UE5 bloom 曲线）
+// x = 高于阈值的超出量，rcp = 1 / (2 * knee)
+vec3 QuadraticThreshold(vec3 color, float threshold, float knee)
+{
+    float lum = Luminance(color);
+    float rcp2k = 1.0 / (2.0 * max(knee, 1e-4));
+
+    // 膝部区域使用平滑曲线，阈值以上线性保留
+    float rq   = clamp(lum - threshold + knee, 0.0, 2.0 * knee);
+    rq         = (rq * rq) * rcp2k;
+    float w    = max(rq, lum - threshold) / max(lum, 1e-6);
+    return color * w;
+}
+
+void main()
+{
+    ivec2 coord   = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outSize = imageSize(dstColor);
+
+    if (coord.x >= outSize.x || coord.y >= outSize.y)
+        return;
+
+    // 半分辨率输出 → 全分辨率 UV（双线性采样自动降采样）
+    vec2 uv = (vec2(coord) + 0.5) / vec2(outSize);
+
+    vec3 hdr = texture(srcColor, uv).rgb;
+
+    // 软阈值裁剪
+    vec3 bloom = QuadraticThreshold(hdr, uBloom.threshold, uBloom.knee);
+
+    imageStore(dstColor, coord, vec4(bloom, 1.0));
+}

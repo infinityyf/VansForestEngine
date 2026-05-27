@@ -6,6 +6,7 @@
 #include "../../PhysicsCore/VansClothNode.h"
 #include "../../PhysicsCore/VansPhysicsVehicle.h"
 #include "../../AudioCore/VansAudioNode.h"
+#include "../../Util/VansLog.h"
 
 #include "imgui.h"
 #include <algorithm>
@@ -128,6 +129,19 @@ void VansGraphics::VansHierachuWindow::DrawRenderNodeDetail()
             if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen))
             {
                 DrawMaterialDetail(*node->m_Material);
+            }
+        }
+
+        // --- Post Process Profile ---
+        if (node->GetNodeType() & POSTPROCESS_NODE)
+        {
+            VansMaterialManager* ppManager = m_Scene->GetMaterialManager();
+            if (ppManager)
+            {
+                if (ImGui::CollapsingHeader("Post Process", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    DrawPostProcessProfile(ppManager->m_PostProcessProfile);
+                }
             }
         }
 
@@ -280,6 +294,179 @@ void VansGraphics::VansHierachuWindow::DrawAtmosphereParameters(VansAtmospherePB
     ImGui::InputFloat("ozone center height", &param.m_OzoneLevelCenterHeight);
     ImGui::InputFloat("ozone width", &param.m_OzoneLevelWidth);
 }
+
+// 宏定义：ImGui 控件值改变时标记 Profile 为脏（每帧实时触发，确保拖拽中也能立刻生效）
+#define PP_DIRTY_IF_CHANGED if (ImGui::IsItemEdited()) profile.m_IsDirty = true;
+
+void VansGraphics::VansHierachuWindow::DrawPostProcessProfile(VansPostProcessProfile& profile)
+{
+    // ---------- General ----------
+    if (ImGui::CollapsingHeader("General", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        // 全局开关暂未连接到 GPU Shader，显示为灰色提示
+        ImGui::BeginDisabled(true);
+        if (ImGui::Checkbox("Enable Post Process", &profile.m_EnablePostProcess)) profile.m_IsDirty = true;
+        if (ImGui::Checkbox("Enable HDR",          &profile.m_EnableHDR))         profile.m_IsDirty = true;
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("  (global switches not yet wired to GPU)");
+    }
+
+    // ---------- Exposure ----------
+    if (ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        if (ImGui::Checkbox("Auto Exposure", &profile.m_EnableAutoExposure)) profile.m_IsDirty = true;
+        ImGui::DragFloat("Exposure Compensation", &profile.m_ExposureCompensation, 0.1f, -10.0f, 10.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Min EV100", &profile.m_MinEV100, 0.1f, -20.0f, 20.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Max EV100", &profile.m_MaxEV100, 0.1f, -20.0f, 20.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Adapt Speed Up",   &profile.m_AdaptationSpeedUp,   0.05f, 0.01f, 20.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Adapt Speed Down", &profile.m_AdaptationSpeedDown, 0.05f, 0.01f, 20.0f);
+        PP_DIRTY_IF_CHANGED
+    }
+
+    // ---------- Bloom ----------
+    if (ImGui::CollapsingHeader("Bloom"))
+    {
+        if (ImGui::Checkbox("Enable Bloom", &profile.m_EnableBloom)) profile.m_IsDirty = true;
+        ImGui::DragFloat("Threshold",  &profile.m_BloomThreshold, 0.05f, 0.0f, 20.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Knee",       &profile.m_BloomKnee,      0.01f, 0.0f, 1.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Intensity",  &profile.m_BloomIntensity, 0.01f, 0.0f, 4.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Scatter",    &profile.m_BloomScatter,   0.01f, 0.0f, 1.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Clamp",      &profile.m_BloomClamp,     1.0f,  0.0f, 256.0f);
+        PP_DIRTY_IF_CHANGED
+    }
+
+    // ---------- Tone Mapping ----------
+    if (ImGui::CollapsingHeader("Tone Mapping"))
+    {
+        const char* toneMappers[] = { "Linear", "ACES", "Reinhard" };
+        if (ImGui::Combo("Tone Mapper", &profile.m_ToneMapperType, toneMappers, 3))
+            profile.m_IsDirty = true;
+        ImGui::DragFloat("White Point", &profile.m_WhitePoint, 0.1f, 0.1f, 50.0f);
+        PP_DIRTY_IF_CHANGED
+    }
+
+    // ---------- Color Grading ----------
+    if (ImGui::CollapsingHeader("Color Grading"))
+    {
+        if (ImGui::Checkbox("Enable Color Grading", &profile.m_EnableColorGrading)) profile.m_IsDirty = true;
+        ImGui::DragFloat("Contrast",    &profile.m_Contrast,    0.01f, 0.0f, 4.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Saturation",  &profile.m_Saturation,  0.01f, 0.0f, 4.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Hue Shift",   &profile.m_HueShift,    0.5f, -180.0f, 180.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Temperature", &profile.m_Temperature, 0.01f, -1.0f, 1.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Tint",        &profile.m_Tint,        0.01f, -1.0f, 1.0f);
+        PP_DIRTY_IF_CHANGED
+    }
+
+    // ---------- Vignette ----------
+    if (ImGui::CollapsingHeader("Vignette"))
+    {
+        if (ImGui::Checkbox("Enable Vignette", &profile.m_EnableVignette)) profile.m_IsDirty = true;
+        ImGui::SliderFloat("Intensity##Vign",   &profile.m_VignetteIntensity,  0.0f, 1.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::SliderFloat("Smoothness##Vign",  &profile.m_VignetteSmoothness, 0.0f, 1.0f);
+        PP_DIRTY_IF_CHANGED
+    }
+
+    // ---------- Film Grain ----------
+    if (ImGui::CollapsingHeader("Film Grain"))
+    {
+        if (ImGui::Checkbox("Enable Film Grain", &profile.m_EnableFilmGrain)) profile.m_IsDirty = true;
+        ImGui::SliderFloat("Intensity##FG", &profile.m_FilmGrainIntensity, 0.0f, 1.0f);
+        PP_DIRTY_IF_CHANGED
+    }
+
+    // ---------- Chromatic Aberration ----------
+    if (ImGui::CollapsingHeader("Chromatic Aberration"))
+    {
+        ImGui::BeginDisabled(true);
+        if (ImGui::Checkbox("Enable CA", &profile.m_EnableChromaticAberration)) profile.m_IsDirty = true;
+        ImGui::SliderFloat("Intensity##CA", &profile.m_ChromaticAberrationIntensity, 0.0f, 0.1f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("  (not yet implemented)");
+    }
+
+    // ---------- Depth of Field ----------
+    if (ImGui::CollapsingHeader("Depth of Field"))
+    {
+        ImGui::BeginDisabled(true);
+        if (ImGui::Checkbox("Enable DOF", &profile.m_EnableDOF)) profile.m_IsDirty = true;
+        ImGui::DragFloat("Focus Distance", &profile.m_FocusDistance, 0.1f, 0.1f, 500.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Focus Range",    &profile.m_FocusRange,    0.1f, 0.1f, 100.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Aperture",       &profile.m_Aperture,      0.1f, 0.1f, 64.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::DragFloat("Max CoC",        &profile.m_MaxCoC,        0.5f, 1.0f, 50.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("  (not yet implemented)");
+    }
+
+    // ---------- Motion Blur ----------
+    if (ImGui::CollapsingHeader("Motion Blur"))
+    {
+        ImGui::BeginDisabled(true);
+        if (ImGui::Checkbox("Enable Motion Blur", &profile.m_EnableMotionBlur)) profile.m_IsDirty = true;
+        ImGui::SliderFloat("Shutter Scale", &profile.m_ShutterScale, 0.0f, 1.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::SliderInt("Samples##MB", &profile.m_MotionBlurSamples, 4, 32);
+        PP_DIRTY_IF_CHANGED
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("  (not yet implemented)");
+    }
+
+    // ---------- Lens Dirt ----------
+    if (ImGui::CollapsingHeader("Lens Dirt"))
+    {
+        ImGui::BeginDisabled(true);
+        if (ImGui::Checkbox("Enable Lens Dirt", &profile.m_EnableLensDirt)) profile.m_IsDirty = true;
+        ImGui::SliderFloat("Intensity##LD", &profile.m_LensDirtIntensity, 0.0f, 2.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("  (not yet implemented)");
+    }
+
+    // ---------- AA / Sharpen ----------
+    if (ImGui::CollapsingHeader("AA / Sharpen"))
+    {
+        ImGui::BeginDisabled(true);
+        if (ImGui::Checkbox("Enable FXAA",    &profile.m_EnableFXAA))    profile.m_IsDirty = true;
+        if (ImGui::Checkbox("Enable Sharpen", &profile.m_EnableSharpen)) profile.m_IsDirty = true;
+        ImGui::SliderFloat("Sharpen Intensity", &profile.m_SharpenIntensity, 0.0f, 1.0f);
+        PP_DIRTY_IF_CHANGED
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("  (not yet implemented)");
+    }
+
+    // ---------- Dithering ----------
+    if (ImGui::CollapsingHeader("Dithering"))
+    {
+        if (ImGui::Checkbox("Enable Dithering", &profile.m_EnableDithering)) profile.m_IsDirty = true;
+    }
+
+    // 重置按钮
+    ImGui::Separator();
+    if (ImGui::Button("Reset to Defaults"))
+    {
+        profile.ResetToDefaults();
+        profile.m_IsDirty = true;
+    }
+}
+
+#undef PP_DIRTY_IF_CHANGED
 
 void VansGraphics::VansHierachuWindow::DrawAnimationList()
 {
@@ -1069,6 +1256,57 @@ void VansGraphics::VansHierachuWindow::DrawObjectDetail()
             ImGui::SameLine();
             if (ImGui::Button("Impulse Spine Forward##ragdoll"))
                 ragdollComp->ApplyImpulse("spine_03", 0.0f, 0.0f, -25.0f);
+        }
+    }
+
+    // ── Character Controller Component ───────────────────────────────────
+    auto* cctComp = obj->GetComponent<VansScriptCharacterControllerComponent>();
+    if (cctComp && cctComp->m_ControllerNode)
+    {
+        auto* cctNode = cctComp->m_ControllerNode;
+        if (ImGui::CollapsingHeader("Character Controller", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            // 基础信息展示
+            const auto& props = cctNode->GetProperties();
+            ImGui::Text("Radius: %.3f  Height: %.3f", props.m_Radius, props.m_Height);
+            glm::vec3 pos = cctNode->GetPosition();
+            ImGui::Text("Position: (%.2f, %.2f, %.2f)", pos.x, pos.y, pos.z);
+            ImGui::Text("Grounded: %s", cctNode->IsGrounded() ? "Yes" : "No");
+            ImGui::Separator();
+
+            // Follow Ragdoll 开关
+            bool followEnabled = cctNode->IsFollowRagdollEnabled();
+            if (ImGui::Checkbox("Follow Ragdoll##cct", &followEnabled))
+            {
+                if (followEnabled)
+                {
+                    auto* rdComp = obj->GetComponent<VansScriptRagdollComponent>();
+                    if (rdComp)
+                        cctComp->BindFollowRagdoll(rdComp, cctNode->GetFollowRagdollBone());
+                    else
+                        VANS_LOG_WARN("[Editor] CharController FollowRagdoll: 该对象无 Ragdoll 组件");
+                }
+                else
+                {
+                    cctComp->ClearFollowRagdoll();
+                }
+            }
+
+            // 当 Follow Ragdoll 开启时显示/编辑根骨骼名称
+            if (followEnabled)
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(ragdoll drives CCT)");
+                // 用局部 buffer 避免多对象共享静态变量
+                char boneBuf[64] = {};
+                snprintf(boneBuf, sizeof(boneBuf), "%s", cctNode->GetFollowRagdollBone().c_str());
+                if (ImGui::InputText("Root Bone##cct", boneBuf, sizeof(boneBuf),
+                                     ImGuiInputTextFlags_EnterReturnsTrue))
+                {
+                    auto* rdComp = obj->GetComponent<VansScriptRagdollComponent>();
+                    if (rdComp) cctComp->BindFollowRagdoll(rdComp, std::string(boneBuf));
+                }
+            }
         }
     }
 

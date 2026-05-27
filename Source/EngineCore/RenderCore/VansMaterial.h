@@ -9,6 +9,7 @@
 #include "BRDFData/VansPBR.h"
 #include "BRDFData/VansLight.h"
 #include "VansAsset.h"
+#include "VansPostProcessProfile.h"
 #include <vector>
 #include <unordered_map>
 #include <string>
@@ -109,6 +110,16 @@ namespace VansGraphics
 		static constexpr const char* RT_FOG_VOXEL_INJECTION = "Runtime.Fog.VoxelInjection";
 		static constexpr const char* RT_FOG_VOXEL_INJECTION_HISTORY = "Runtime.Fog.VoxelInjectionHistory";
 		static constexpr const char* RT_FOG_VOXEL_RAYMARCH  = "Runtime.Fog.VoxelRayMarch";
+
+		// --- 后处理 RuntimeRT ---
+		static constexpr const char* RT_EXPOSURE_LUMINANCE  = "Runtime.PostProcess.Exposure.Luminance"; // 64x64 亮度缩图（R16F）
+		static constexpr const char* RT_EXPOSURE_CURRENT    = "Runtime.PostProcess.Exposure.Current";   // 1x1 当前曝光值（R16F）
+		static constexpr const char* RT_BLOOM_PREFILTER     = "Runtime.PostProcess.Bloom.Prefilter";    // 半分辨率预滤输出（RGBA16F）
+		static constexpr const char* RT_BLOOM_MIP0          = "Runtime.PostProcess.Bloom.Mip0";         // 1/2 分辨率
+		static constexpr const char* RT_BLOOM_MIP1          = "Runtime.PostProcess.Bloom.Mip1";         // 1/4 分辨率
+		static constexpr const char* RT_BLOOM_MIP2          = "Runtime.PostProcess.Bloom.Mip2";         // 1/8 分辨率
+		static constexpr const char* RT_BLOOM_MIP3          = "Runtime.PostProcess.Bloom.Mip3";         // 1/16 分辨率
+		static constexpr const char* RT_BLOOM_RESULT        = "Runtime.PostProcess.Bloom.Result";       // Upsample 最终合成（RGBA16F）
 
 		bool RegisterRuntimeRenderTexture(const std::string& name, VansTexture* texture, bool replaceExisting = true);
 
@@ -270,6 +281,38 @@ namespace VansGraphics
 		VansComputeShader* m_TileLightBuildShader = nullptr;
 		uint32_t m_TileLightGridX = 0;
 		uint32_t m_TileLightGridY = 0;
+
+		// --- 后处理 Compute Shaders & Descriptors ---
+		// Exposure：两步（亮度直方图缩图 + 自适应曝光收敛）
+		VansComputeShader* m_ExposureLuminanceShader = nullptr;
+		VkDescriptorSetLayout          m_ExposureLuminanceSetLayout      = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_ExposureLuminanceDescriptorSets;
+
+		VansComputeShader* m_ExposureAdaptShader    = nullptr;
+		VkDescriptorSetLayout          m_ExposureAdaptSetLayout          = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_ExposureAdaptDescriptorSets;
+
+		// Bloom：预滤 + 4 级 Downsample + 4 级 Upsample
+		VansComputeShader* m_BloomPrefilterShader   = nullptr;
+		VkDescriptorSetLayout          m_BloomPrefilterSetLayout         = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_BloomPrefilterDescriptorSets;
+
+		VansComputeShader* m_BloomDownsampleShader  = nullptr;
+		// Downsample 每个 mip 级独立 descriptor set：[mip0→mip1, mip1→mip2, mip2→mip3, mip3→mip4]
+		VkDescriptorSetLayout          m_BloomDownsampleSetLayout        = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_BloomDownsampleDescriptorSets;  // 4 个 set (4 级)
+
+		VansComputeShader* m_BloomUpsampleShader    = nullptr;
+		// Upsample 每个 mip 级独立 descriptor set：[mip3+mip4→mip3, mip2+mip3→mip2, mip1+mip2→mip1, mip0+mip1→result]
+		VkDescriptorSetLayout          m_BloomUpsampleSetLayout          = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_BloomUpsampleDescriptorSets;    // 4 个 set (4 级)
+
+		VansVKBuffer m_PostProcessParamsCBBuffer;       // VansPostProcessParamsGPU UBO（Final Composite frag）
+		VansVKBuffer m_ExposureAdaptParamsCBBuffer;     // VansExposureAdaptParamsGPU UBO（Exposure Adapt compute）
+		VansVKBuffer m_BloomParamsCBBuffer;             // VansBloomParamsGPU UBO（Bloom Prefilter + Upsample compute）
+
+		// CPU 侧后处理参数权威来源，Inspector 直接读写此对象
+		VansPostProcessProfile m_PostProcessProfile;
 
 	public:
 

@@ -9,6 +9,9 @@
 #include <glm/glm.hpp>
 #include <string>
 
+// 前向声明 VansAnimationNode，避免包含整个动画系统头文件
+namespace VansGraphics { class VansAnimationNode; }
+
 using namespace physx;
 
 namespace VansEngine
@@ -94,6 +97,24 @@ namespace VansEngine
         // 将 VansTransformStore 当前位置推送到 PhysX
         void SyncControllerFromTransform();
 
+        // ── Ragdoll 接管接口 ────────────────────────────────────────
+        // 绑定指定 AnimNode，当其 ragdoll 处于 Physics/Blend 模式时接管 CCT 位置
+        // animNode : 非拥有指针，生命周期由场景保证
+        void SetFollowRagdoll(VansGraphics::VansAnimationNode* animNode,
+                              const std::string& rootBoneName = "pelvis");
+        void ClearFollowRagdoll();
+
+        bool IsFollowRagdollEnabled() const { return m_FollowRagdollAnimNode != nullptr; }
+        VansGraphics::VansAnimationNode* GetFollowRagdollAnimNode() const { return m_FollowRagdollAnimNode; }
+        const std::string& GetFollowRagdollBone() const { return m_FollowRagdollBone; }
+
+        // ── 场景加载器延迟绑定辅助接口 ──────────────────────────
+        // charController 先于 animation/ragdoll 创建，第一阶段只记录意图
+        void SetPendingFollowRagdoll(bool enable, const std::string& bone = "pelvis");
+        bool HasPendingFollowRagdoll() const { return m_PendingFollowRagdoll; }
+        const std::string& GetPendingFollowRagdollBone() const { return m_PendingFollowRagdollBone; }
+        void ConsumePendingFollowRagdoll() { m_PendingFollowRagdoll = false; }
+
     private:
         // ── 将 PhysX 当前胶囊位置写回 VansTransformStore ─────────────────
         // （胶囊中心 - positionOffset = Transform 原点）
@@ -111,6 +132,12 @@ namespace VansEngine
         glm::vec3                         m_PendingDisplacement = { 0.0f, 0.0f, 0.0f };
         float                             m_PendingDt           = 0.0f;
         bool                              m_HasPendingMove      = false;
-    };
+        // ── Ragdoll 接管（非拥有指针，生命周期由场景保证）────────────────
+        VansGraphics::VansAnimationNode*  m_FollowRagdollAnimNode    = nullptr;
+        std::string                       m_FollowRagdollBone        = "pelvis";
+
+        // ── 场景加载器延迟绑定标志 ─────────────────────────────────
+        bool                              m_PendingFollowRagdoll     = false;
+        std::string                       m_PendingFollowRagdollBone = "pelvis";    };
 
 } // namespace VansEngine

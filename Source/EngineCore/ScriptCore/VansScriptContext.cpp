@@ -110,6 +110,26 @@ void VansScriptRagdollComponent::ApplyImpulse(const std::string& boneName, float
 }
 
 // ---------------------------------------------------------------------------
+// VansScriptCharacterControllerComponent — Ragdoll 接管接口
+// ---------------------------------------------------------------------------
+void VansScriptCharacterControllerComponent::BindFollowRagdoll(
+    VansScriptRagdollComponent* ragdollComp, const std::string& rootBone)
+{
+    if (!m_ControllerNode || !ragdollComp || !ragdollComp->m_AnimNode) return;
+    m_ControllerNode->SetFollowRagdoll(ragdollComp->m_AnimNode, rootBone);
+}
+
+void VansScriptCharacterControllerComponent::ClearFollowRagdoll()
+{
+    if (m_ControllerNode) m_ControllerNode->ClearFollowRagdoll();
+}
+
+bool VansScriptCharacterControllerComponent::IsFollowRagdollEnabled() const
+{
+    return m_ControllerNode && m_ControllerNode->IsFollowRagdollEnabled();
+}
+
+// ---------------------------------------------------------------------------
 // VansScriptAudioComponent — SwitchSource
 // ---------------------------------------------------------------------------
 bool VansScriptAudioComponent::SwitchSource(const std::string& name)

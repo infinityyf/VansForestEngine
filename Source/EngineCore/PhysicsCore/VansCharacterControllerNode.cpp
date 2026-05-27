@@ -1,5 +1,6 @@
 #include "VansCharacterControllerNode.h"
 #include "VansCollisionLayerManager.h"
+#include "VansRagdollSystem.h"
 #include "../ScriptCore/VansTransform.h"
 #include "../Util/VansLog.h"
 #include <vector>
@@ -158,6 +159,33 @@ namespace VansEngine
         if (!m_Controller || !m_Enabled)
             return;
 
+        // ── Ragdoll 接管路径 ───────────────────────────────────────────
+        // 若已绑定 AnimNode 且处于 Physics/Blend 模式，跳过 move()，改用 setPosition 瞬移
+        if (m_FollowRagdollAnimNode)
+        {
+            VansEngine::RagdollDriveMode mode =
+                VansEngine::VansRagdollSystem::GetInstance().GetDriveMode(m_FollowRagdollAnimNode);
+            if (mode == VansEngine::RagdollDriveMode::Physics ||
+                mode == VansEngine::RagdollDriveMode::Blend)
+            {
+                glm::vec3 boneWorldPos;
+                if (VansEngine::VansRagdollSystem::GetInstance().GetBoneWorldPosition(
+                        m_FollowRagdollAnimNode, m_FollowRagdollBone, boneWorldPos))
+                {
+                    // boneWorldPos 为根骨骼刚体质心。
+                    // m_Properties.m_PositionOffset 将胶囊中心对齐到骨骼附近，可在 JSON 中微调。
+                    SetPosition(boneWorldPos + m_Properties.m_PositionOffset);
+                    // 丢弃本帧脚本排队的位移（脚本仍可调用 QueueMove，但本帧被忽略）
+                    m_PendingDisplacement = { 0.0f, 0.0f, 0.0f };
+                    m_PendingDt           = 0.0f;
+                    m_HasPendingMove      = false;
+                    SyncTransformFromController();
+                    return;
+                }
+            }
+        }
+
+        // ── 正常脚本驱动路径 ───────────────────────────────────────────
         if (m_HasPendingMove)
         {
             PxVec3 disp(m_PendingDisplacement.x,
@@ -230,6 +258,25 @@ namespace VansEngine
 
         // 标记 Dirty，通知渲染层更新 GPU 数据
         VansGraphics::VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
+    }
+
+    void VansCharacterControllerNode::SetFollowRagdoll(
+        VansGraphics::VansAnimationNode* animNode, const std::string& rootBoneName)
+    {
+        m_FollowRagdollAnimNode = animNode;
+        m_FollowRagdollBone     = rootBoneName;
+    }
+
+    void VansCharacterControllerNode::ClearFollowRagdoll()
+    {
+        m_FollowRagdollAnimNode = nullptr;
+        m_FollowRagdollBone     = "pelvis";
+    }
+
+    void VansCharacterControllerNode::SetPendingFollowRagdoll(bool enable, const std::string& bone)
+    {
+        m_PendingFollowRagdoll     = enable;
+        m_PendingFollowRagdollBone = bone;
     }
 
 } // namespace VansEngine

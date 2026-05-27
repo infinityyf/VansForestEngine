@@ -1,0 +1,61 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../Common/Common.glsl"
+
+// 单线程 pass：读取 64x64 log-亮度图，计算场景几何平均亮度，
+// 执行速度自适应（lerp），将当前曝光值写入 1x1 贴图
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+// set = 1: 本 pass 专属绑定（与 ExposureAdaptPassBinding 一致）
+layout(set = 1, binding = 0) uniform sampler2D lumIn;           // 64x64 log-亮度（来自 ExposureLuminance pass）
+layout(set = 1, binding = 1, r16f) uniform image2D expOut;      // 1x1 当前曝光值输出
+layout(set = 1, binding = 2) uniform ExposureAdaptParams
+{
+    float minEV;            // 最小 EV（如 -4.0）
+    float maxEV;            // 最大 EV（如 +4.0）
+    float adaptSpeedUp;     // 曝光增加速率（如 2.0 秒⁻¹）
+    float adaptSpeedDown;   // 曝光降低速率（如 1.0 秒⁻¹）
+    float deltaTime;        // 帧间隔时间（秒）
+    float _pad0;            // reserved（CPU 端存储 ExposureCompensation，此 pass 不读取）
+    int   enableAutoExposure; // 0=手动曝光（输出 0.0 EV），1=自动适应
+    float _pad2;
+} uAdapt;
+
+void main()
+{
+    // 手动曝光模式：直接将 EV 输出置 0，由 PostProcess.frag 通过 ExposureCompensation 控制亮度
+    if (uAdapt.enableAutoExposure == 0)
+    {
+        imageStore(expOut, ivec2(0, 0), vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    ivec2 lumSize = textureSize(lumIn, 0);
+    float invPixelCount = 1.0 / float(lumSize.x * lumSize.y);
+
+    // 计算 64x64 log-亮度之和（几何平均需对对数求均值）
+    float logLumSum = 0.0;
+    for (int y = 0; y < lumSize.y; ++y)
+    {
+        for (int x = 0; x < lumSize.x; ++x)
+        {
+            logLumSum += texelFetch(lumIn, ivec2(x, y), 0).r;
+        }
+    }
+    float avgLogLum = logLumSum * invPixelCount;
+
+    // 几何平均亮度 → EV（EV = log2(L / 0.18) ≈ log2(exp(avgLogLum)) / log2(e)）
+    float avgLum  = exp(avgLogLum);
+    float targetEV = log2(max(avgLum, 1e-6) / 0.18);
+    targetEV = clamp(targetEV, uAdapt.minEV, uAdapt.maxEV);
+
+    // 读取当前曝光（1x1 贴图存储 EV）
+    float currentEV = imageLoad(expOut, ivec2(0, 0)).r;
+
+    // 自适应插值（曝光提升 / 降低使用不同速率）
+    float speed = (targetEV > currentEV) ? uAdapt.adaptSpeedUp : uAdapt.adaptSpeedDown;
+    float t = 1.0 - exp(-speed * uAdapt.deltaTime);
+    float newEV = mix(currentEV, targetEV, t);
+
+    imageStore(expOut, ivec2(0, 0), vec4(newEV, 0.0, 0.0, 1.0));
+}

@@ -247,6 +247,13 @@ public:
 
 	// 非拥有指针，实际 Node 由 VansScene::m_CharControllerNodes 管理
 	VansEngine::VansCharacterControllerNode* m_ControllerNode = nullptr;
+
+	// ── Ragdoll 接管接口 ───────────────────────────────────
+	// 将 ragdollComp 的 AnimNode 绑定到 ControllerNode，开启接管模式
+	void BindFollowRagdoll(VansScriptRagdollComponent* ragdollComp,
+	                       const std::string& rootBone = "pelvis");
+	void ClearFollowRagdoll();
+	bool IsFollowRagdollEnabled() const;
 };
 
 // ── Directional Light Component ─────────────────────────────────────────────

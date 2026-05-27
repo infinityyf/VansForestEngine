@@ -1,4 +1,5 @@
 #include "VansRenderNode.h"
+#include "VansPostProcessProfile.h"
 #include "VansCamera.h"
 #include "VansScene.h"
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
@@ -532,6 +533,62 @@ void VansGraphics::VansPostProcessRenderNode::UpdateDescripterSets(VansMaterialM
 			}
 		}
 	);
+
+	// 绑定 Bloom 结果贴图
+	VansTexture* bloomResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_RESULT);
+	if (bloomResult)
+	{
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				frameBufferInputDescriptorSets[0],
+				POSTPROCESS_BINDING_BLOOM_RESULT,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						bloomResult->GetImage().GetSampler(),
+						bloomResult->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+	}
+
+	// 绑定曝光当前值贴图
+	VansTexture* exposureCurrent = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT);
+	if (exposureCurrent)
+	{
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				frameBufferInputDescriptorSets[0],
+				POSTPROCESS_BINDING_EXPOSURE_VAL,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						exposureCurrent->GetImage().GetSampler(),
+						exposureCurrent->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+	}
+
+	// 绑定后处理参数 UBO
+	if (materialManager.m_PostProcessParamsCBBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
+	{
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				frameBufferInputDescriptorSets[0],
+				POSTPROCESS_BINDING_PP_PARAMS,
+				0,
+				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				{{ materialManager.m_PostProcessParamsCBBuffer.GetNativeBuffer(), 0, materialManager.m_PostProcessParamsCBBuffer.GetBufferSize() }}
+			}
+		);
+	}
 
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }

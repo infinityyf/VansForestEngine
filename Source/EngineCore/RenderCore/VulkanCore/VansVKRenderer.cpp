@@ -237,6 +237,9 @@ namespace VansGraphics
 				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
 				UpdateRayTracing(m_VansVKCommandBuffer);
 				UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
+				UploadPostProcessProfileIfDirty();
+				UpdateExposure(renderPassManager, m_VansVKCommandBuffer);
+				UpdateBloom(renderPassManager, m_VansVKCommandBuffer);
 
 				// 单队列路径中，SSR / SSGI / Fog 等 compute 结果随后会被 Deferred fragment 读取。
 				// 这里补充 compute shader 写入到 fragment shader 读取的显式可见性依赖。
@@ -382,6 +385,9 @@ namespace VansGraphics
 				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
 				UpdateRayTracing(m_VansVKCommandBuffer);
 				UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
+				UploadPostProcessProfileIfDirty();
+				UpdateExposure(renderPassManager, m_VansVKCommandBuffer);
+				UpdateBloom(renderPassManager, m_VansVKCommandBuffer);
 				VkMemoryBarrier computeToFragmentBarrier = {};
 				computeToFragmentBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 				computeToFragmentBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;

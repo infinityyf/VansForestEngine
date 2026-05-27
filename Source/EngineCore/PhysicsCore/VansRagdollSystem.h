@@ -46,6 +46,13 @@ namespace VansEngine
 
 		void PostAnimationUpdate(VansGraphics::VansAnimationNode* animNode);
 
+		// ── Ragdoll 接管辅助 ─────────────────────────────────────────────
+		// 获取指定骨骼刚体的世界质心坐标。
+		// 调用方需已持有 SimulationMutex。
+		bool GetBoneWorldPosition(VansGraphics::VansAnimationNode* animNode,
+		                          const std::string& boneName,
+		                          glm::vec3& outPos) const;
+
 	private:
 		VansRagdollSystem() = default;
 		~VansRagdollSystem() = default;

@@ -9,6 +9,7 @@
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
 #include "../LTC/LTCData.h"
+#include "../VansPostProcessProfile.h"
 #include <cmath>
 #include <vector>
 #include <cstdint>
@@ -811,6 +812,7 @@ namespace VansGraphics
 		PrepareSSRRenderData();
 		PrepareVolumetricData();
 		PrepareTileLightData();
+		PreparePostProcessRenderData();
 #ifdef _DEBUG
 		VkDebugUtilsObjectNameInfoEXT nameInfo = {};
 		nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
@@ -865,6 +867,109 @@ namespace VansGraphics
 			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 		}
 #endif
+	}
+
+	// ============================================================
+	// 后处理 Compute Pass：注册 RT、创建 Shader、分配 Descriptor Sets
+	// Bloom（Prefilter + 4 级 Downsample + 4 级 Upsample）
+	// Exposure（Luminance 缩图 + Adapt 收敛）
+	// ============================================================
+	void VansVKDevice::PreparePostProcessRenderData()
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		auto* config = VansConfigration::GetInstance();
+		const std::string projectRoot = config->GetProjectRootPath();
+
+		// ---- Exposure：亮度缩图（64x64，R16F）----
+		VansTexture* exposureLum = new VansTexture();
+		exposureLum->InitTextureWithoutData(m_VansVKCommandBuffer, 64, 64, 1, 1, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_LUMINANCE, exposureLum);
+
+		// ---- Exposure：当前曝光值（1x1，R16F）----
+		VansTexture* exposureCurrent = new VansTexture();
+		exposureCurrent->InitTextureWithoutData(m_VansVKCommandBuffer, 1, 1, 1, 1, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT, exposureCurrent);
+
+		// ---- Bloom Prefilter（半分辨率，RGBA16F）----
+		VansTexture* bloomPrefilter = new VansTexture();
+		bloomPrefilter->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_PREFILTER, bloomPrefilter);
+
+		// ---- Bloom Mip0 (1/2 分辨率)  ~ Mip3 (1/16 分辨率) ----
+		VansTexture* bloomMip0 = new VansTexture();
+		bloomMip0->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP0, bloomMip0);
+
+		VansTexture* bloomMip1 = new VansTexture();
+		bloomMip1->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 4, m_RenderHeight / 4, 1, 4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP1, bloomMip1);
+
+		VansTexture* bloomMip2 = new VansTexture();
+		bloomMip2->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 8, m_RenderHeight / 8, 1, 4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP2, bloomMip2);
+
+		VansTexture* bloomMip3 = new VansTexture();
+		bloomMip3->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 16, m_RenderHeight / 16, 1, 4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP3, bloomMip3);
+
+		// ---- Bloom Result（1/2 分辨率，Upsample 最终输出）----
+		VansTexture* bloomResult = new VansTexture();
+		bloomResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_RESULT, bloomResult);
+
+		// ---- Shader 创建 ----
+		manager->m_ExposureLuminanceShader = new VansComputeShader();
+		manager->m_ExposureLuminanceShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PostProcess/ExposureLuminance").c_str());
+
+		manager->m_ExposureAdaptShader = new VansComputeShader();
+		manager->m_ExposureAdaptShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PostProcess/ExposureAdapt").c_str());
+
+		manager->m_BloomPrefilterShader = new VansComputeShader();
+		manager->m_BloomPrefilterShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PostProcess/BloomPrefilter").c_str());
+
+		manager->m_BloomDownsampleShader = new VansComputeShader();
+		manager->m_BloomDownsampleShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PostProcess/BloomDownsample").c_str());
+
+		manager->m_BloomUpsampleShader = new VansComputeShader();
+		manager->m_BloomUpsampleShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PostProcess/BloomUpsample").c_str());
+
+		// ---- Descriptor Set Layouts + Allocation ----
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureLuminance(
+			manager->m_ExposureLuminanceSetLayout, manager->m_ExposureLuminanceDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureAdapt(
+			manager->m_ExposureAdaptSetLayout, manager->m_ExposureAdaptDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomPrefilter(
+			manager->m_BloomPrefilterSetLayout, manager->m_BloomPrefilterDescriptorSets);
+		// 4 个 Downsample set（每级独立）
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomDownsample(
+			manager->m_BloomDownsampleSetLayout, manager->m_BloomDownsampleDescriptorSets, 4);
+		// 4 个 Upsample set（每级独立）
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomUpsample(
+			manager->m_BloomUpsampleSetLayout, manager->m_BloomUpsampleDescriptorSets, 4);
+
+		// ---- UBO 创建与初始化 ----
+		VansPostProcessProfile& defaultProfile = manager->m_PostProcessProfile;
+		VansPostProcessParamsGPU ppParams  = defaultProfile.ToGPUParams(0.0f);
+		VansExposureAdaptParamsGPU expParams = defaultProfile.ToExposureAdaptParams(0.016f);
+		VansBloomParamsGPU bloomParams     = defaultProfile.ToBloomParams();
+
+		manager->m_PostProcessParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(VansPostProcessParamsGPU), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_PostProcessParamsCBBuffer.SetBufferData(&ppParams, 0, sizeof(VansPostProcessParamsGPU));
+
+		manager->m_ExposureAdaptParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(VansExposureAdaptParamsGPU), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_ExposureAdaptParamsCBBuffer.SetBufferData(&expParams, 0, sizeof(VansExposureAdaptParamsGPU));
+
+		manager->m_BloomParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(VansBloomParamsGPU), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_BloomParamsCBBuffer.SetBufferData(&bloomParams, 0, sizeof(VansBloomParamsGPU));
 	}
 
 	void VansVKDevice::PrepareRayTracingData()

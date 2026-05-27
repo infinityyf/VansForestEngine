@@ -244,6 +244,7 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VansGraphicsBuffer.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansGraphicsDevice.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansMaterial.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansPostProcessProfile.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\LTC\LTCData.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansRenderNode.h" />
@@ -295,6 +296,13 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl" />
+    <None Include="EngineAssets\Shaders\PostProcess\PostProcess.vert" />
+    <None Include="EngineAssets\Shaders\PostProcess\PostProcess.frag" />
+    <None Include="EngineAssets\Shaders\PostProcess\ExposureLuminance\ExposureLuminance.comp" />
+    <None Include="EngineAssets\Shaders\PostProcess\ExposureAdapt\ExposureAdapt.comp" />
+    <None Include="EngineAssets\Shaders\PostProcess\BloomPrefilter\BloomPrefilter.comp" />
+    <None Include="EngineAssets\Shaders\PostProcess\BloomDownsample\BloomDownsample.comp" />
+    <None Include="EngineAssets\Shaders\PostProcess\BloomUpsample\BloomUpsample.comp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="External\NoesisGUI\Src\Packages\Render\VKRenderDevice\Src\Render.VKRenderDevice.cpp">
@@ -387,6 +395,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VansCamera.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansGraphicsDevice.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansMaterial.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansPostProcessProfile.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\LTC\LTCData.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansRenderNode.cpp" />

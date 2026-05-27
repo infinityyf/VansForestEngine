@@ -643,6 +643,28 @@ std::vector<std::string> VansRagdollSystem::GetBodyBoneNames(VansAnimationNode* 
 	return names;
 }
 
+bool VansRagdollSystem::GetBoneWorldPosition(VansAnimationNode* animNode,
+                                              const std::string& boneName,
+                                              glm::vec3& outPos) const
+{
+	const RagdollInstance* inst = FindInstance(animNode);
+	if (inst == nullptr)
+		return false;
+
+	auto it = inst->boneNameToEntryIndex.find(boneName);
+	if (it == inst->boneNameToEntryIndex.end())
+		return false;
+
+	const RagdollBoneEntry& entry = inst->boneEntries[it->second];
+	if (entry.body == nullptr)
+		return false;
+
+	// 直接读取 PhysX 刚体世界位置（质心）
+	const PxTransform pose = entry.body->getGlobalPose();
+	outPos = glm::vec3(pose.p.x, pose.p.y, pose.p.z);
+	return true;
+}
+
 void VansRagdollSystem::ApplyImpulse(VansAnimationNode* animNode,
                                       const std::string& boneName,
                                       const glm::vec3& worldImpulse)

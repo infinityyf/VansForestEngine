@@ -1,0 +1,31 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../Common/Common.glsl"
+#include "../../Common/CameraData.glsl"
+
+// 采样 SceneColorHDR，输出 64x64 亮度图（用于自动曝光）
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// set = 1: 本 pass 专属绑定（与 ExposureLuminancePassBinding 一致）
+layout(set = 1, binding = 0) uniform sampler2D srcColor;        // SceneColorHDR
+layout(set = 1, binding = 1, r16f) uniform image2D lumOut;      // 64x64 亮度输出
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outSize = imageSize(lumOut);
+
+    if (coord.x >= outSize.x || coord.y >= outSize.y)
+        return;
+
+    // 将输出坐标映射回归一化 UV，加 0.5 采样像素中心
+    vec2 uv = (vec2(coord) + 0.5) / vec2(outSize);
+
+    vec3 hdr = texture(srcColor, uv).rgb;
+
+    // 防止 NaN / INF 影响对数平均
+    float lum = max(Luminance(hdr), 1e-6);
+
+    // 存储对数亮度，便于下一 pass 计算几何平均
+    imageStore(lumOut, coord, vec4(log(lum), 0.0, 0.0, 1.0));
+}

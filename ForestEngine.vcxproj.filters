@@ -113,6 +113,15 @@
     <Filter Include="EngineCore\RenderCore\LTC">
       <UniqueIdentifier>{3f128b9e-6e3b-4bd9-9c1a-873508660429}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineAssets">
+      <UniqueIdentifier>{a7c3e1f2-b4d5-6789-01ef-cd2345678901}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineAssets\Shaders">
+      <UniqueIdentifier>{b8d4f2a3-c5e6-789a-12fa-de3456789012}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineAssets\Shaders\PostProcess">
+      <UniqueIdentifier>{c9e5a3b4-d6f7-89ab-230b-ef4567890123}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Graphics\Vulkan\VansVKFunctions.h">
@@ -221,6 +230,9 @@
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VansMaterial.h">
+      <Filter>EngineCore\RenderCore\RenderComponent</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VansPostProcessProfile.h">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VansRenderNode.h">
@@ -558,6 +570,27 @@
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl">
       <Filter>Graphics\Vulkan</Filter>
     </None>
+    <None Include="EngineAssets\Shaders\PostProcess\PostProcess.vert">
+      <Filter>EngineAssets\Shaders\PostProcess</Filter>
+    </None>
+    <None Include="EngineAssets\Shaders\PostProcess\PostProcess.frag">
+      <Filter>EngineAssets\Shaders\PostProcess</Filter>
+    </None>
+    <None Include="EngineAssets\Shaders\PostProcess\ExposureLuminance\ExposureLuminance.comp">
+      <Filter>EngineAssets\Shaders\PostProcess</Filter>
+    </None>
+    <None Include="EngineAssets\Shaders\PostProcess\ExposureAdapt\ExposureAdapt.comp">
+      <Filter>EngineAssets\Shaders\PostProcess</Filter>
+    </None>
+    <None Include="EngineAssets\Shaders\PostProcess\BloomPrefilter\BloomPrefilter.comp">
+      <Filter>EngineAssets\Shaders\PostProcess</Filter>
+    </None>
+    <None Include="EngineAssets\Shaders\PostProcess\BloomDownsample\BloomDownsample.comp">
+      <Filter>EngineAssets\Shaders\PostProcess</Filter>
+    </None>
+    <None Include="EngineAssets\Shaders\PostProcess\BloomUpsample\BloomUpsample.comp">
+      <Filter>EngineAssets\Shaders\PostProcess</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKDevice.cpp">
@@ -690,6 +723,9 @@
       <Filter>EngineCore\RenderCore\BRDFData</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VansMaterial.cpp">
+      <Filter>EngineCore\RenderCore\RenderComponent</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VansPostProcessProfile.cpp">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansLightWindow.cpp">

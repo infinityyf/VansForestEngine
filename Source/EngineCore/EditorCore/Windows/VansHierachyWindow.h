@@ -2,6 +2,7 @@
 
 #include "VansBaseWindowComponent.h"
 #include "../../RenderCore/VansMaterial.h"
+#include "../../RenderCore/VansPostProcessProfile.h"
 #include "../../AnimationCore/VansAnimationNode.h"
 #include <string>
 #include <vector>
@@ -36,6 +37,8 @@ namespace VansGraphics
 		void DrawMaterialDetail(VansMaterial& material, int index = -1);
 		void DrawPBRMaterialParameters(VansBasePBRParam& param, int id = 0);
 		void DrawAtmosphereParameters(VansAtmospherePBRParam& param);
+		// 绘制后处理 Profile 的所有 Inspector 参数控件
+		void DrawPostProcessProfile(VansPostProcessProfile& profile);
 
 		// ── Objects tab ──
 		void DrawObjectList();

@@ -440,6 +440,15 @@ VansGraphics::VansScene::LoadSingleCharControllerNode(
         return nullptr;
     }
 
+    // ── 延迟绑定标志：ragdoll 在第二阶段加载，先记录意图 ──────────────
+    if (charCtrlJson.contains("followRagdoll") && charCtrlJson["followRagdoll"].get<bool>())
+    {
+        std::string bone = "pelvis";
+        if (charCtrlJson.contains("followRagdollBone"))
+            bone = charCtrlJson["followRagdollBone"].get<std::string>();
+        node->SetPendingFollowRagdoll(true, bone);
+    }
+
     m_CharControllerNodes.push_back(node);
     VANS_LOG("[VansScene] CharController 节点已创建，transformID=" << transformID);
     return node;

@@ -1,0 +1,49 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../Common/Common.glsl"
+
+// Bloom Downsample：13-tap 双线性+tent 降采样（UE5/COD 风格）
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// set = 1: 本 pass 专属绑定（与 BloomDownsamplePassBinding 一致）
+layout(set = 1, binding = 0) uniform sampler2D srcColor;        // 上一级 bloom 图
+layout(set = 1, binding = 1, rgba16f) uniform image2D dstColor; // 降两倍分辨率输出
+
+void main()
+{
+    ivec2 coord   = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outSize = imageSize(dstColor);
+
+    if (coord.x >= outSize.x || coord.y >= outSize.y)
+        return;
+
+    // 当前输出像素中心 UV
+    vec2 uv     = (vec2(coord) + 0.5) / vec2(outSize);
+    vec2 texel  = 1.0 / vec2(textureSize(srcColor, 0));
+
+    // 13-tap 降采样（按 UE4/5 Bloom Downsample 方案）
+    // 中心 4 个样本（偏移 ±0.5 texel）权重较高
+    vec3 a = texture(srcColor, uv + texel * vec2(-1.0, -1.0)).rgb;
+    vec3 b = texture(srcColor, uv + texel * vec2( 0.0, -1.0)).rgb;
+    vec3 c = texture(srcColor, uv + texel * vec2( 1.0, -1.0)).rgb;
+    vec3 d = texture(srcColor, uv + texel * vec2(-0.5, -0.5)).rgb;
+    vec3 e = texture(srcColor, uv + texel * vec2( 0.5, -0.5)).rgb;
+    vec3 f = texture(srcColor, uv + texel * vec2(-1.0,  0.0)).rgb;
+    vec3 g = texture(srcColor, uv).rgb;
+    vec3 h = texture(srcColor, uv + texel * vec2( 1.0,  0.0)).rgb;
+    vec3 i = texture(srcColor, uv + texel * vec2(-0.5,  0.5)).rgb;
+    vec3 j = texture(srcColor, uv + texel * vec2( 0.5,  0.5)).rgb;
+    vec3 k = texture(srcColor, uv + texel * vec2(-1.0,  1.0)).rgb;
+    vec3 l = texture(srcColor, uv + texel * vec2( 0.0,  1.0)).rgb;
+    vec3 m = texture(srcColor, uv + texel * vec2( 1.0,  1.0)).rgb;
+
+    // 中心 2x2 box 权重 0.5，外围 9 个角/边权重 0.125
+    vec3 result = (d + e + i + j) * 0.5
+                + (a + b + g + f) * 0.125
+                + (b + c + g + h) * 0.125
+                + (f + g + k + l) * 0.125
+                + (g + h + l + m) * 0.125;
+    result *= 0.25; // 4 组各占 1/4
+
+    imageStore(dstColor, coord, vec4(result, 1.0));
+}

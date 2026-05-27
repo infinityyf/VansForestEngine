@@ -183,6 +183,8 @@ namespace VansGraphics
 			m_VolumetricFogDescSetsUpdated = false;
 			m_FogLightInjectionDescSetsUpdated = false;
 			m_TileLightBuildDescSetsUpdated = false;
+			m_PPExposureDescSetsUpdated = false;
+			m_PPBloomDescSetsUpdated = false;
 		}
 
 		void UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
@@ -200,6 +202,12 @@ namespace VansGraphics
 		// TileLight Build pass: culls lights per tile each frame
 		void BuildTileLightLists(VansVKCommandBuffer& cmd);
 
+		// 后处理 Compute Pass：Exposure + Bloom
+		void UpdateExposure(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+		void UpdateBloom(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+		// 检测后处理 Profile 脏标记，将 CPU 参数上传到三个 UBO（每帧调用，开销极低）
+		void UploadPostProcessProfileIfDirty();
+
 	private:
 
 		bool m_GIDataDescSetsUpdated = false;
@@ -209,6 +217,8 @@ namespace VansGraphics
 		bool m_VolumetricFogDescSetsUpdated = false;
 		bool m_FogLightInjectionDescSetsUpdated = false;
 		bool m_TileLightBuildDescSetsUpdated = false;
+		bool m_PPExposureDescSetsUpdated = false;
+		bool m_PPBloomDescSetsUpdated = false;
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
@@ -235,6 +245,10 @@ namespace VansGraphics
 		void UpdateFogRayMarchSets();
 
 		void UpdateTileLightBuildSets();
+
+		// 后处理 Compute Pass descriptor set 写入（一次性）
+		void UpdateExposureDescriptorSets(VansRenderPassManager* renderPassManager);
+		void UpdateBloomDescriptorSets(VansRenderPassManager* renderPassManager);
 
 	private:
 
@@ -272,6 +286,9 @@ namespace VansGraphics
 		void PrepareBilaterFilterData();
 
 		void PrepareGlobalIllumiationData();
+
+		// 后处理 Compute Pass RT 与 Shader 准备
+		void PreparePostProcessRenderData();
 
 	private:
 

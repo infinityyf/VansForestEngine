@@ -1,0 +1,50 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../Common/Common.glsl"
+
+// Bloom Upsample：双线性上采样 + 加权混合（低分辨率 MIP 与高分辨率 MIP 叠加）
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// set = 1: 本 pass 专属绑定（与 BloomUpsamplePassBinding 一致）
+layout(set = 1, binding = 0) uniform sampler2D srcLo;           // 低分辨率 MIP（当前待上采样）
+layout(set = 1, binding = 1) uniform sampler2D srcHi;           // 高分辨率 MIP（目标分辨率的输入）
+layout(set = 1, binding = 2, rgba16f) uniform image2D dstColor; // 混合结果输出（高分辨率）
+layout(set = 1, binding = 3) uniform BloomParams
+{
+    float threshold;    // 不使用（prefilter 专用）
+    float knee;         // 不使用（prefilter 专用）
+    float scatter;      // 低频散射混合权重（如 0.65）
+    float intensity;    // bloom 最终强度（最后一级 upsample 归一化到 1x1，此处不用）
+} uBloom;
+
+void main()
+{
+    ivec2 coord   = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outSize = imageSize(dstColor);
+
+    if (coord.x >= outSize.x || coord.y >= outSize.y)
+        return;
+
+    vec2 uv = (vec2(coord) + 0.5) / vec2(outSize);
+
+    // 3x3 tent 滤波上采样（srcLo 分辨率为 outSize 的一半）
+    vec2 loTexel = 1.0 / vec2(textureSize(srcLo, 0));
+    vec3 lo  = vec3(0.0);
+    lo += texture(srcLo, uv + loTexel * vec2(-1.0, -1.0)).rgb * (1.0 / 16.0);
+    lo += texture(srcLo, uv + loTexel * vec2( 0.0, -1.0)).rgb * (2.0 / 16.0);
+    lo += texture(srcLo, uv + loTexel * vec2( 1.0, -1.0)).rgb * (1.0 / 16.0);
+    lo += texture(srcLo, uv + loTexel * vec2(-1.0,  0.0)).rgb * (2.0 / 16.0);
+    lo += texture(srcLo, uv).rgb                               * (4.0 / 16.0);
+    lo += texture(srcLo, uv + loTexel * vec2( 1.0,  0.0)).rgb * (2.0 / 16.0);
+    lo += texture(srcLo, uv + loTexel * vec2(-1.0,  1.0)).rgb * (1.0 / 16.0);
+    lo += texture(srcLo, uv + loTexel * vec2( 0.0,  1.0)).rgb * (2.0 / 16.0);
+    lo += texture(srcLo, uv + loTexel * vec2( 1.0,  1.0)).rgb * (1.0 / 16.0);
+
+    // 高分辨率直接双线性采样
+    vec3 hi = texture(srcHi, uv).rgb;
+
+    // 低频散射 + 高频细节混合
+    vec3 result = mix(hi, hi + lo, uBloom.scatter);
+
+    imageStore(dstColor, coord, vec4(result, 1.0));
+}
