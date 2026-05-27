@@ -1,5 +1,6 @@
 #include "VansScriptContext.h"
 #include "../RenderCore/VansScene.h"
+#include "../RenderCore/VansMaterial.h"
 #include "../AudioCore/VansAudioNode.h"
 #include "VansTransform.h"
 #include "../RenderCore/VansCamera.h"
@@ -21,10 +22,10 @@
 #include <unordered_map>
 #include <memory>
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  VansScriptBridge.cpp — Fills the VansEngineBridge function-pointer table
+// ══════════════════════════════════════════════════════════════════════════�?
+//  VansScriptBridge.cpp �?Fills the VansEngineBridge function-pointer table
 //  so the .pyd module can call engine code without any engine headers.
-// ═══════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════�?
 
 static VansEngineBridge s_EngineBridge;
 
@@ -111,6 +112,17 @@ static inline VansScriptParticleComponent* AsParticleComp(void* p)
 {
 	return dynamic_cast<VansScriptParticleComponent*>(
 		static_cast<VansScriptComponent*>(p));
+}
+
+// ---------------------------------------------------------------------------
+//  后处理参数访问辅助（文件作用域静态函数，可被无捕�?lambda 直接调用�?
+// ---------------------------------------------------------------------------
+static VansGraphics::VansPostProcessProfile* GetPPProfile()
+{
+	auto* ctx = VansScriptContext::GetInstance();
+	if (!ctx || !ctx->GetScene()) return nullptr;
+	auto* mgr = ctx->GetScene()->GetMaterialManager();
+	return mgr ? &mgr->m_PostProcessProfile : nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -895,7 +907,7 @@ void VansInitEngineBridge()
 		lights[c->m_LightIndex].m_Intensity = v;
 	};
 
-	// 宽度 / 高度以完整边长暴露给 Python，内部存储剧半边长
+	// 宽度 / 高度以完整边长暴露给 Python，内部存储剧半边�?
 	s_EngineBridge.rectLightGetWidth = [](void* comp) -> float
 	{
 		auto* c = AsRectLightComp(comp);
@@ -1451,6 +1463,369 @@ void VansInitEngineBridge()
 
 		return true;
 	};
+
+	// ── Post-Process Profile ─────────────────────────────────────────────
+
+	// General
+	s_EngineBridge.ppGetEnable = []() -> bool
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_EnablePostProcess : false;
+	};
+	s_EngineBridge.ppSetEnable = [](bool v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_EnablePostProcess = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetEnableHDR = []() -> bool
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_EnableHDR : false;
+	};
+	s_EngineBridge.ppSetEnableHDR = [](bool v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_EnableHDR = v; pp->m_IsDirty = true; }
+	};
+
+	// Exposure
+	s_EngineBridge.ppGetAutoExposure = []() -> bool
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_EnableAutoExposure : false;
+	};
+	s_EngineBridge.ppSetAutoExposure = [](bool v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_EnableAutoExposure = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetExposureCompensation = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_ExposureCompensation : 0.0f;
+	};
+	s_EngineBridge.ppSetExposureCompensation = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_ExposureCompensation = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetMinEV100 = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_MinEV100 : -6.0f;
+	};
+	s_EngineBridge.ppSetMinEV100 = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_MinEV100 = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetMaxEV100 = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_MaxEV100 : 16.0f;
+	};
+	s_EngineBridge.ppSetMaxEV100 = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_MaxEV100 = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetAdaptSpeedUp = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_AdaptationSpeedUp : 3.0f;
+	};
+	s_EngineBridge.ppSetAdaptSpeedUp = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_AdaptationSpeedUp = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetAdaptSpeedDown = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_AdaptationSpeedDown : 1.0f;
+	};
+	s_EngineBridge.ppSetAdaptSpeedDown = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_AdaptationSpeedDown = v; pp->m_IsDirty = true; }
+	};
+
+	// Bloom
+	s_EngineBridge.ppGetEnableBloom = []() -> bool
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_EnableBloom : false;
+	};
+	s_EngineBridge.ppSetEnableBloom = [](bool v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_EnableBloom = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetBloomThreshold = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_BloomThreshold : 1.0f;
+	};
+	s_EngineBridge.ppSetBloomThreshold = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_BloomThreshold = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetBloomKnee = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_BloomKnee : 0.5f;
+	};
+	s_EngineBridge.ppSetBloomKnee = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_BloomKnee = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetBloomIntensity = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_BloomIntensity : 0.12f;
+	};
+	s_EngineBridge.ppSetBloomIntensity = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_BloomIntensity = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetBloomScatter = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_BloomScatter : 0.7f;
+	};
+	s_EngineBridge.ppSetBloomScatter = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_BloomScatter = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetBloomClamp = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_BloomClamp : 64.0f;
+	};
+	s_EngineBridge.ppSetBloomClamp = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_BloomClamp = v; pp->m_IsDirty = true; }
+	};
+
+	// Tone Mapping
+	s_EngineBridge.ppGetToneMapperType = []() -> int
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_ToneMapperType : 1;
+	};
+	s_EngineBridge.ppSetToneMapperType = [](int v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_ToneMapperType = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetWhitePoint = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_WhitePoint : 11.2f;
+	};
+	s_EngineBridge.ppSetWhitePoint = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_WhitePoint = v; pp->m_IsDirty = true; }
+	};
+
+	// Color Grading
+	s_EngineBridge.ppGetEnableColorGrading = []() -> bool
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_EnableColorGrading : false;
+	};
+	s_EngineBridge.ppSetEnableColorGrading = [](bool v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_EnableColorGrading = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetContrast = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_Contrast : 1.0f;
+	};
+	s_EngineBridge.ppSetContrast = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_Contrast = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetSaturation = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_Saturation : 1.0f;
+	};
+	s_EngineBridge.ppSetSaturation = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_Saturation = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetHueShift = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_HueShift : 0.0f;
+	};
+	s_EngineBridge.ppSetHueShift = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_HueShift = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetTemperature = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_Temperature : 0.0f;
+	};
+	s_EngineBridge.ppSetTemperature = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_Temperature = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetTint = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_Tint : 0.0f;
+	};
+	s_EngineBridge.ppSetTint = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_Tint = v; pp->m_IsDirty = true; }
+	};
+
+	// Vignette
+	s_EngineBridge.ppGetEnableVignette = []() -> bool
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_EnableVignette : false;
+	};
+	s_EngineBridge.ppSetEnableVignette = [](bool v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_EnableVignette = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetVignetteIntensity = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_VignetteIntensity : 0.2f;
+	};
+	s_EngineBridge.ppSetVignetteIntensity = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_VignetteIntensity = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetVignetteSmoothness = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_VignetteSmoothness : 0.5f;
+	};
+	s_EngineBridge.ppSetVignetteSmoothness = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_VignetteSmoothness = v; pp->m_IsDirty = true; }
+	};
+
+	// Film Grain
+	s_EngineBridge.ppGetEnableFilmGrain = []() -> bool
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_EnableFilmGrain : false;
+	};
+	s_EngineBridge.ppSetEnableFilmGrain = [](bool v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_EnableFilmGrain = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetFilmGrainIntensity = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_FilmGrainIntensity : 0.04f;
+	};
+	s_EngineBridge.ppSetFilmGrainIntensity = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_FilmGrainIntensity = v; pp->m_IsDirty = true; }
+	};
+
+	// Sharpen
+	s_EngineBridge.ppGetEnableSharpen = []() -> bool
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_EnableSharpen : false;
+	};
+	s_EngineBridge.ppSetEnableSharpen = [](bool v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_EnableSharpen = v; pp->m_IsDirty = true; }
+	};
+
+	s_EngineBridge.ppGetSharpenIntensity = []() -> float
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_SharpenIntensity : 0.15f;
+	};
+	s_EngineBridge.ppSetSharpenIntensity = [](float v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_SharpenIntensity = v; pp->m_IsDirty = true; }
+	};
+
+	// Dithering
+	s_EngineBridge.ppGetEnableDithering = []() -> bool
+	{
+		auto* pp = GetPPProfile();
+		return pp ? pp->m_EnableDithering : false;
+	};
+	s_EngineBridge.ppSetEnableDithering = [](bool v)
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->m_EnableDithering = v; pp->m_IsDirty = true; }
+	};
+
+	// 序列�?
+	s_EngineBridge.ppSaveToFile = [](const char* path) -> bool
+	{
+		auto* pp = GetPPProfile();
+		return (pp && path) ? pp->SaveToFile(std::string(path)) : false;
+	};
+
+	s_EngineBridge.ppLoadFromFile = [](const char* path) -> bool
+	{
+		auto* pp = GetPPProfile();
+		if (!pp || !path) return false;
+		bool ok = pp->LoadFromFile(std::string(path));
+		if (ok) pp->m_IsDirty = true;
+		return ok;
+	};
+
+	s_EngineBridge.ppResetToDefaults = []()
+	{
+		auto* pp = GetPPProfile();
+		if (pp) { pp->ResetToDefaults(); pp->m_IsDirty = true; }
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1462,7 +1837,7 @@ VansEngineBridge* VansGetEngineBridgePtr()
 }
 
 // ===========================================================================
-//  VansInputBridge — 将 VansInputManager 的接口暴露给 vaninput .pyd
+//  VansInputBridge �?�?VansInputManager 的接口暴露给 vaninput .pyd
 // ===========================================================================
 
 static VansInputBridge s_InputBridge;
