@@ -921,6 +921,14 @@ void VansGraphics::VansScene::UpdateSceneData()
         VansEngine::VansBoneAttachmentSystem::GetInstance().Update();
     }
 
+    // Cloth 依赖 render node 的当前世界变换来同步固定点。
+    // 必须在布料模拟之前解析父子关系，否则挂在角色骨骼/父节点下的布料会用上一帧或未解析的变换模拟，
+    // 随后又以新变换渲染，导致位置明显错位。
+    {
+        VANS_PROFILE_SCOPE("Transform::ResolveParentChild", Vans::ProfileCategory::RenderPrepare);
+        m_TransformParentSystem.ResolveParentChildTransforms();
+    }
+
     // Advance cloth simulation and write results to staging buffers
     {
         VANS_PROFILE_SCOPE("Cloth::Simulate", Vans::ProfileCategory::Physics);
@@ -948,12 +956,6 @@ void VansGraphics::VansScene::UpdateSceneData()
             camPos.x, camPos.y, camPos.z,
             camFwd.x, camFwd.y, camFwd.z,
             camUp.x,  camUp.y,  camUp.z);
-    }
-
-    // Resolve parent-child transform relationships before GPU upload
-    {
-        VANS_PROFILE_SCOPE("Transform::ResolveParentChild", Vans::ProfileCategory::RenderPrepare);
-        m_TransformParentSystem.ResolveParentChildTransforms();
     }
 
     // 粒子系统：同步对象 Transform，推进后台运行时，并上传本帧实例数据。

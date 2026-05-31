@@ -237,6 +237,8 @@ namespace VansGraphics
 				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
 				UpdateRayTracing(m_VansVKCommandBuffer);
 				UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
+				// 体积云 1/4 分辨率光线步进（Deferred pass 前完成，结果由 SkyBox.frag 合成）
+				UpdateCloudRayMarch(renderPassManager, m_VansVKCommandBuffer);
 				UploadPostProcessProfileIfDirty();
 				UpdateExposure(renderPassManager, m_VansVKCommandBuffer);
 				UpdateBloom(renderPassManager, m_VansVKCommandBuffer);
@@ -385,6 +387,8 @@ namespace VansGraphics
 				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
 				UpdateRayTracing(m_VansVKCommandBuffer);
 				UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
+				// 体积云 1/4 分辨率光线步进（Deferred pass 前完成，结果由 SkyBox.frag 合成）
+				UpdateCloudRayMarch(renderPassManager, m_VansVKCommandBuffer);
 				UploadPostProcessProfileIfDirty();
 				UpdateExposure(renderPassManager, m_VansVKCommandBuffer);
 				UpdateBloom(renderPassManager, m_VansVKCommandBuffer);
@@ -414,8 +418,8 @@ namespace VansGraphics
 			VANS_PROFILE_SCOPE("Vulkan::RecordFSRAndRuntimeUI", Vans::ProfileCategory::CommandRecord);
 			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 			auto camera = m_Scene->GetCamera();
-			m_FSRInput.jitterX = camera->m_JitterX;
-			m_FSRInput.jitterY = camera->m_JitterY;
+			m_FSRInput.jitterPixelX = camera->m_JitterPixelX;
+			m_FSRInput.jitterPixelY = camera->m_JitterPixelY;
 
 			m_FSRController.DispatchUpscale(cmd, m_FSRInput);
 

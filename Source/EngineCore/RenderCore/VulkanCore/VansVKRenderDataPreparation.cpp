@@ -770,6 +770,69 @@ namespace VansGraphics
 		manager->UpdateAtmosphereDescriptorSets();
 	}
 
+	void VansVKDevice::PrepareCloudRenderData()
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		auto vansConfigration = VansConfigration::GetInstance();
+		std::string projectRoot = vansConfigration->GetProjectRootPath();
+
+		// 1/4 分辨率云层结果纹理（RGB=内散射，A=透射率），RGBA16F
+		VansTexture* cloudBuffer = new VansTexture();
+		cloudBuffer->InitTextureWithoutData(
+			m_VansVKCommandBuffer,
+			m_RenderWidth / 4, m_RenderHeight / 4, 1,
+			4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_BUFFER, cloudBuffer);
+
+		// CloudParams UBO — 与 CloudRayMarch.comp 中的 CloudParamsUBO 结构体完全对应（std140）
+		manager->m_CloudParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(VansCloudParamsGPU), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->UploadCloudParamsToGPU();
+
+		// 预计算 Perlin-Worley 3D 噪声：主纹理 128^3 RGBA，细节纹理 32^3（以 RGBA8 上传，shader 只读取 RGB）
+		VansTexture* cloudMainNoise = new VansTexture();
+		if (cloudMainNoise->LoadTexture3DFromSlices(
+			m_VansVKCommandBuffer,
+			projectRoot + "EngineAssets/Textures/VolumeCloud/Slice_Z_%03d.png",
+			128, 4, VK_SAMPLER_ADDRESS_MODE_REPEAT))
+		{
+			manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_MAIN_NOISE, cloudMainNoise);
+		}
+		else
+		{
+			delete cloudMainNoise;
+			cloudMainNoise = nullptr;
+		}
+
+		VansTexture* cloudDetailNoise = new VansTexture();
+		if (cloudDetailNoise->LoadTexture3DFromSlices(
+			m_VansVKCommandBuffer,
+			projectRoot + "EngineAssets/Textures/VolumeCloud/Detail/Detail_Z_%03d.png",
+			32, 4, VK_SAMPLER_ADDRESS_MODE_REPEAT))
+		{
+			manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_DETAIL_NOISE, cloudDetailNoise);
+		}
+		else
+		{
+			delete cloudDetailNoise;
+			cloudDetailNoise = nullptr;
+		}
+
+		// Cloud Ray March compute shader
+		manager->m_CloudRayMarchShader = new VansComputeShader();
+		manager->m_CloudRayMarchShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/Cloud").c_str());
+
+		// Descriptor set layout + allocation for cloud ray march pass
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_CloudRayMarch(
+			manager->m_CloudRayMarchSetLayout,
+			manager->m_CloudRayMarchDescriptorSets);
+
+		// 重新绑定 SkyBox 描述符集（现在 RT_CLOUD_BUFFER 已注册，binding=2 写入有效）
+		manager->UpdateAtmosphereDescriptorSets();
+	}
+
 	void VansVKDevice::PrepareBilaterFilterData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
@@ -811,6 +874,7 @@ namespace VansGraphics
 		PrepareHZBRenderData();
 		PrepareSSRRenderData();
 		PrepareVolumetricData();
+		PrepareCloudRenderData();
 		PrepareTileLightData();
 		PreparePostProcessRenderData();
 #ifdef _DEBUG

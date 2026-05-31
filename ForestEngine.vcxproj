@@ -189,6 +189,7 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAnimGraphEditorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansUIEditorWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansClothProfileEditorWindow.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUISystem.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIDocument.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIElementHandle.h" />
@@ -219,6 +220,7 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimGraph.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothNode.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothSystem.h" />
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothProfile.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollider.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysics.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansPhysicsCore.h" />
@@ -354,6 +356,7 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansProfilerWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansAnimGraphEditorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansUIEditorWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansClothProfileEditorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUISystem.cpp" />
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUIScreenManager.cpp" />
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUIElementHandle.cpp" />
@@ -387,6 +390,7 @@
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansTerrainPhysicsNode.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothSystem.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothNode.cpp" />
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothProfile.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansLight.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp" />

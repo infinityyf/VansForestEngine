@@ -8,6 +8,7 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
+#include <cstdio>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <../../STBImge/stb_image.h>
@@ -967,5 +968,92 @@ namespace VansGraphics
 				m_Image.GetImageAspect()
 			});
 		SubmitAndWait(command_buffer, queue, device);
+	}
+
+	bool VansTexture::LoadTexture3DFromSlices(VansVKCommandBuffer& command_buffer,
+		const std::string& slicePathFormat, int sliceCount,
+		int importChannel, VkSamplerAddressMode addressMode)
+	{
+		if (sliceCount <= 0 || importChannel < 1 || importChannel > 4)
+		{
+			VANS_LOG_ERROR("LoadTexture3DFromSlices: 参数无效, sliceCount=" << sliceCount << ", importChannel=" << importChannel);
+			return false;
+		}
+
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+		if (vkDevice == nullptr)
+		{
+			VANS_LOG_ERROR("LoadTexture3DFromSlices: Vulkan 设备无效");
+			return false;
+		}
+
+		auto makeSlicePath = [&slicePathFormat](int sliceIndex) -> std::string
+		{
+			char pathBuffer[1024] = {};
+			std::snprintf(pathBuffer, sizeof(pathBuffer), slicePathFormat.c_str(), sliceIndex);
+			return std::string(pathBuffer);
+		};
+
+		int width = 0;
+		int height = 0;
+		int numComponents = 0;
+		std::string firstPath = makeSlicePath(0);
+		stbi_uc* firstPixels = stbi_load(firstPath.c_str(), &width, &height, &numComponents, importChannel);
+		if (firstPixels == nullptr || width <= 0 || height <= 0)
+		{
+			VANS_LOG_ERROR("LoadTexture3DFromSlices: 无法读取首张切片: " << firstPath);
+			if (firstPixels != nullptr) stbi_image_free(firstPixels);
+			return false;
+		}
+
+		VANS_LOG("Load 3D Texture Slices: " << slicePathFormat << ", size=" << width << "x" << height << "x" << sliceCount);
+		InitTextureWithoutData(command_buffer, width, height, sliceCount,
+			importChannel, false, false, false, LOW_PRES_8, addressMode);
+
+		auto uploadSlice = [&](const stbi_uc* pixels, int sliceIndex) -> bool
+		{
+			VkOffset3D imageOffset = { 0, 0, sliceIndex };
+			VkExtent3D imageExtent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1u };
+			const int dataSize = width * height * importChannel;
+			return vkDevice->SetDeviceImageData(m_Image, command_buffer,
+				(void*)pixels, 0, dataSize, imageOffset, imageExtent, 0, 0);
+		};
+
+		bool success = uploadSlice(firstPixels, 0);
+		stbi_image_free(firstPixels);
+
+		for (int sliceIndex = 1; success && sliceIndex < sliceCount; ++sliceIndex)
+		{
+			int sliceWidth = 0;
+			int sliceHeight = 0;
+			int sliceComponents = 0;
+			std::string slicePath = makeSlicePath(sliceIndex);
+			stbi_uc* pixels = stbi_load(slicePath.c_str(), &sliceWidth, &sliceHeight, &sliceComponents, importChannel);
+			if (pixels == nullptr)
+			{
+				VANS_LOG_ERROR("LoadTexture3DFromSlices: 无法读取切片: " << slicePath);
+				success = false;
+				break;
+			}
+
+			if (sliceWidth != width || sliceHeight != height)
+			{
+				VANS_LOG_ERROR("LoadTexture3DFromSlices: 切片尺寸不一致: " << slicePath
+					<< ", expected=" << width << "x" << height
+					<< ", actual=" << sliceWidth << "x" << sliceHeight);
+				stbi_image_free(pixels);
+				success = false;
+				break;
+			}
+
+			success = uploadSlice(pixels, sliceIndex);
+			stbi_image_free(pixels);
+		}
+
+		if (!success)
+		{
+			VANS_LOG_ERROR("LoadTexture3DFromSlices: 3D 纹理切片上传失败: " << slicePathFormat);
+		}
+		return success;
 	}
 }

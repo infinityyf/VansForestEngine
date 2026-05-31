@@ -1,0 +1,216 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// ==========================================================================
+// CloudRayMarch.comp — 1/4 分辨率体积云光线步进
+//
+// 输出:
+//   cloudResult (RGBA16F)  RGB = 内散射颜色，A = 透射率
+//
+// 渲染规格:
+//   - 分辨率: ScreenWidth/4 × ScreenHeight/4（由 CPU dispatch 计算，向上取整）
+//   - WorkGroup: 8×8×1
+//   - 光照: 读取全局 LightsData（太阳方向/颜色）+ CloudParams UBO（云层参数）
+//
+// 噪声说明:
+//   使用 EngineAssets/Textures/VolumeCloud 中的预计算 Perlin-Worley 3D 噪声切片。
+// ==========================================================================
+
+#include "../Common/CameraData.glsl"
+#include "../Lights/LightsData.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// --------------------------------------------------------------------------
+// Set 1, binding 0: 云层结果输出（1/4 分辨率，RGBA16F）
+// --------------------------------------------------------------------------
+layout(set = 1, binding = 0, rgba16f) uniform writeonly image2D cloudResult;
+
+// --------------------------------------------------------------------------
+// Set 1, binding 1: 云层参数 UBO
+// --------------------------------------------------------------------------
+layout(set = 1, binding = 1) uniform CloudParamsUBO
+{
+    float planetRadius;   // 大气层球半径（米），与 Atmosphere.glsl 中 earthRadius 一致
+    float seaLevel;       // 海拔基准（米），对应 Atmosphere.glsl 中 initSeaLevel
+    float cloudMinHeight; // 云底高度，相对海平面（米）
+    float cloudMaxHeight; // 云顶高度，相对海平面（米）
+    float density;        // 云基础密度系数
+    float coverage;       // 云覆盖度 [0, 1]
+    float sunBrightness;  // 太阳光强度倍率
+    float phaseG;         // Henyey-Greenstein 相位 g
+    float mainTileMeters;
+    float detailTileMeters;
+    float mainHeightScale;
+    float detailHeightScale;
+    float thresholdLowCoverage;
+    float thresholdHighCoverage;
+    float densityRemapLow;
+    float densityRemapHigh;
+    float mainErosionStrength;
+    float detailErosionStrength;
+    float edgeErosionStrength;
+    float verticalShapePower;
+    float detailErosionLow;
+    float detailErosionHigh;
+    float detailEdgeStrength;
+    float shadowDensityScale;
+} uCloud;
+
+// --------------------------------------------------------------------------
+// Set 1, binding 2/3: 预计算 3D 噪声纹理
+// --------------------------------------------------------------------------
+layout(set = 1, binding = 2) uniform sampler3D cloudMainNoise;
+layout(set = 1, binding = 3) uniform sampler3D cloudDetailNoise;
+
+#include "../Common/CloudCommon.glsl"
+
+// --------------------------------------------------------------------------
+// 光线步进参数常量
+// --------------------------------------------------------------------------
+const int   MARCH_STEPS      = 64;   // 主光线采样步数（Phase 2 可改为距离自适应）
+const float TRANSMIT_CUTOFF  = 0.01; // 透射率低于此值时提前终止
+
+// --------------------------------------------------------------------------
+// 从屏幕 UV 重建世界空间视线方向（与 VolumetricFog.comp 一致）
+// --------------------------------------------------------------------------
+vec3 ReconstructWorldRayDir(vec2 uv)
+{
+    // NDC [-1, 1]
+    vec2 ndc = uv * 2.0 - 1.0;
+    // Vulkan NDC Y 轴向下（Y=-1 在屏幕顶部），与 OpenGL 约定相反。
+    // 逆投影矩阵按 OpenGL 约定构建，因此需翻转 Y 使方向正确
+    // （与 FogLightInjection.comp 中的 ndc.y *= -1.0 完全一致）
+    ndc.y *= -1.0;
+
+    // 逆投影到视空间（z = 1 代表远平面方向）
+    vec4 clipPos = vec4(ndc, 1.0, 1.0);
+    vec3 viewDir = normalize((InverseProjectionMatrix * clipPos).xyz);
+
+    // 逆视图矩阵旋转到世界空间（忽略平移）
+    vec3 worldDir = normalize(mat3(InverseViewMatrix) * viewDir);
+    return worldDir;
+}
+
+// --------------------------------------------------------------------------
+// Henyey-Greenstein 相位函数
+// --------------------------------------------------------------------------
+float CloudPhase(float cosTheta, float g)
+{
+    float g2  = g * g;
+    float denom = 1.0 + g2 - 2.0 * g * cosTheta;
+    return (1.0 - g2) / (4.0 * 3.14159265 * pow(max(denom, 1e-6), 1.5));
+}
+
+// --------------------------------------------------------------------------
+// 主函数
+// --------------------------------------------------------------------------
+void main()
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outputSize = imageSize(cloudResult);
+
+    // 越界保护
+    if (pixelCoord.x >= outputSize.x || pixelCoord.y >= outputSize.y)
+        return;
+
+    // 计算屏幕 UV（像素中心）
+    vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(outputSize);
+
+    // 重建世界空间视线方向
+    vec3 rayDir = ReconstructWorldRayDir(uv);
+
+    // 大气空间相机位置（加入地球半径 + 海拔偏移）
+    vec3 rayOrigin = cameraPosition.xyz + vec3(0.0, uCloud.planetRadius + uCloud.seaLevel, 0.0);
+
+    // 球壳相交：找云层 [tStart, tEnd]
+    CloudShellResult shell = IntersectCloudShell(
+        rayOrigin, rayDir,
+        uCloud.planetRadius,
+        uCloud.cloudMinHeight,
+        uCloud.cloudMaxHeight
+    );
+
+    if (!shell.hit)
+    {
+        // 无交叉：透射率 = 1（无云遮挡），内散射 = 0
+        imageStore(cloudResult, pixelCoord, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    // 太阳方向（来自全局灯光数据，与 FogLightInjection.comp 保持一致）
+    vec3 sunDir   = normalize(uDirectionLight.direction.xyz);
+    vec3 sunColor = uDirectionLight.color.rgb * uDirectionLight.intensity * uCloud.sunBrightness;
+
+    // 简化大气太阳色衰减
+    vec3 sunColorAtmosphered = sunColor * CalcCloudSunAbsorbLight(sunDir);
+
+    // 相位函数：太阳入射方向与视线方向的夹角余弦
+    float cosTheta = dot(rayDir, sunDir);
+    float phase    = CloudPhase(cosTheta, uCloud.phaseG);  // 可调前向散射
+
+    // 等步长光线步进
+    float tRange  = shell.tEnd - shell.tStart;
+    float stepSize = tRange / float(MARCH_STEPS);
+
+    vec3  inscatter      = vec3(0.0);
+    float transmittance  = 1.0;
+
+    for (int i = 0; i < MARCH_STEPS; i++)
+    {
+        // 采样点（步进中点偏移，减少采样位置偏差）
+        float t   = shell.tStart + (float(i) + 0.5) * stepSize;
+        vec3  pos = rayOrigin + rayDir * t;
+
+        float d = SampleCloudDensity(pos);
+
+        if (d <= 0.0) continue;
+
+        // 太阳方向光程积分（简化阴影）
+        float sunVisibility = GetCloudSunVisibility(pos, sunDir);
+
+        // 粉末效应（powder sugar）增强云体光照立体感
+        float opticalDepth  = d * stepSize;
+        float stepT          = exp(-opticalDepth);
+        float powderTerm     = 1.0 - exp(-opticalDepth * 2.0); // 粉末增强
+
+        // 多重散射近似：天空环境光避免背光面完全黑
+        // 高度梯度：云顶（heightFrac=1）受更多天光，云底（heightFrac=0）受少量散射
+        float heightFrac = GetCloudHeightFraction(
+            pos.y - uCloud.planetRadius,
+            uCloud.cloudMinHeight,
+            uCloud.cloudMaxHeight
+        );
+        // 环境光颜色色调：正午偏蓝（天顶散射），黄昏随大气衰减变暖
+        float sunElevation = clamp(dot(sunDir, vec3(0.0, 1.0, 0.0)), 0.0, 1.0);
+        float duskFactor   = 1.0 - smoothstep(0.0, 0.25, sunElevation); // 0=正午，1=黄昏
+        vec3 skyBlue       = vec3(0.65, 0.80, 1.0);
+        vec3 ambientColor  = mix(skyBlue, normalize(sunColorAtmosphered + vec3(1e-4)) * 0.9,
+                                 duskFactor * 0.5);
+        // 【关键修复】环境光基数改为大气衰减后的太阳色 sunColorAtmosphered：
+        //   - 低仰角时 sunColorAtmosphered 已极暗，环境光随之减暗，不再过亮
+        //   - 正午时 CalcCloudSunAbsorbLight ≈ 0.85，基本无损
+        //   - 比例系数 0.06~0.18 补偿大气衰减（原 0.05~0.15 以 sunColor 为基数）
+        //   - 极小底色防止夜间/完全背光面全黑
+        const vec3 ambientFloor = vec3(0.002, 0.003, 0.006);
+        vec3 ambientSky = sunColorAtmosphered * mix(0.06, 0.18, heightFrac) * ambientColor
+                        + ambientFloor;
+
+        vec3  scatterLit    = sunColorAtmosphered * sunVisibility * phase * powderTerm
+                            + ambientSky;
+
+        // 有界散射积分：scatterIntegral = scatterLit * (1 - T_step)
+        // 等价于 FogRayMarch 中 sliceScattering*(1-T)/density，
+        // 此处 density 已被 scatterLit 中的相位/阴影因子吸收。
+        // 最大单步贡献 = scatterLit，总积分 ≤ scatterLit（有界，不会爆白）
+        vec3 scatterIntegral = scatterLit * (1.0 - stepT);
+        inscatter           += scatterIntegral * transmittance;
+        transmittance       *= stepT;
+
+        // 提前终止
+        if (transmittance < TRANSMIT_CUTOFF) break;
+    }
+
+    // 输出：RGB = 内散射，A = 透射率
+    imageStore(cloudResult, pixelCoord, vec4(inscatter, transmittance));
+}

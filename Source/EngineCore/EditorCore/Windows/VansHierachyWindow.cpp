@@ -1,5 +1,6 @@
 #include "VansHierachyWindow.h"
 #include "VansAnimGraphEditorWindow.h"
+#include "VansClothProfileEditorWindow.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../PhysicsCore/VansPhysicsNode.h"
@@ -1177,6 +1178,18 @@ void VansGraphics::VansHierachuWindow::DrawObjectDetail()
         {
             ImGui::Text("Name: %s", cNode->GetName().c_str());
             ImGui::Text("Enabled: %s", cNode->IsEnabled() ? "Yes" : "No");
+
+            // 显示当前关联的 Profile 路径（只读展示）
+            const std::string& profilePath = clothComp->m_ProfilePath;
+            ImGui::Text("Profile: %s",
+                profilePath.empty() ? "（内联配置，无 Profile 文件）" : profilePath.c_str());
+
+            // 打开 Profile 编辑器 —— 只需要传路径，编辑器自己加载一切
+            if (ImGui::Button("打开 Cloth Profile 编辑器"))
+            {
+                if (m_ClothProfileEditorRef)
+                    m_ClothProfileEditorRef->OpenProfile(profilePath);
+            }
 
             const auto& sphereRefs = cNode->GetCollisionSphereRefs();
             ImGui::Text("Collision Spheres: %d", (int)sphereRefs.size());

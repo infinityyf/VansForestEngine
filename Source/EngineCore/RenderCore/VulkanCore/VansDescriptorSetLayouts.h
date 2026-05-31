@@ -203,6 +203,7 @@ namespace VansGraphics
 	{
 		SKYBOX_BINDING_ATMOSPHERE_UBO = 0,
 		SKYBOX_BINDING_FOG            = 1,
+		SKYBOX_BINDING_CLOUD          = 2,   // 1/4 分辨率体积云结果（COMBINED_IMAGE_SAMPLER）
 	};
 
 	// --- Screen-Space Pass (SSAO etc.) ---
@@ -365,6 +366,15 @@ namespace VansGraphics
 		TILE_BUILD_BINDING_GRID    = 0,  // TileLightHeader SSBO (write)
 		TILE_BUILD_BINDING_INDICES = 1,  // TileLight Index SSBO  (write)
 		TILE_BUILD_BINDING_PARAMS  = 2,  // TileLightBuildParams UBO (read)
+	};
+
+	// --- Cloud Ray March Compute Pass ---
+	enum CloudRayMarchPassBinding : uint32_t
+	{
+		CLOUD_MARCH_BINDING_RESULT = 0,   // cloudResult (STORAGE_IMAGE, rgba16f, 1/4 分辨率)
+		CLOUD_MARCH_BINDING_PARAMS = 1,   // CloudParams UBO (UNIFORM_BUFFER)
+		CLOUD_MARCH_BINDING_MAIN_NOISE = 2,   // cloudMainNoise  (sampler3D, 128^3 RGBA Perlin-Worley)
+		CLOUD_MARCH_BINDING_DETAIL_NOISE = 3, // cloudDetailNoise(sampler3D, 32^3 RGBA detail)
 	};
 
 	// --- Fog Ray March Accumulate Compute Pass ---
@@ -589,6 +599,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_VolumetricFog(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_FogLightInjection(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_FogRayMarch(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_CloudRayMarch(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_BilateralFilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 3);
 		static void CreateAndAllocate_HIZ(std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount);
 		static void CreateAndAllocate_HIZSeed(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

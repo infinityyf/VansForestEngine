@@ -208,7 +208,19 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     float jitterPixelX = (h2 - 0.5f);
     float jitterPixelY = (h3 - 0.5f);
 
-    // Convert to clip space offsets (NDC) 鈥?multiply by 2 because clip x,y span [-1,1]
+    // 优先使用 FSR 内置抖动序列（针对当前缩放比例优化），否则回退到 Halton(2,3)
+    float fsrJx = 0.0f, fsrJy = 0.0f;
+    if (m_RenderDevice->GetFSRJitterOffset(seqIndex, fsrJx, fsrJy))
+    {
+        jitterPixelX = fsrJx;
+        jitterPixelY = fsrJy;
+    }
+
+    // 保存像素空间抖动值，供 FSR DispatchUpscale 直接使用（无需再除以分辨率）
+    m_JitterPixelX = jitterPixelX;
+    m_JitterPixelY = jitterPixelY;
+
+    // Convert to clip space offsets (NDC) — multiply by 2 because clip x,y span [-1,1]
     m_JitterX =  (jitterPixelX / width) * 2.0f;
     m_JitterY =  (jitterPixelY / height) * 2.0f;
 

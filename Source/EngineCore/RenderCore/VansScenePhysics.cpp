@@ -5,10 +5,12 @@
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansClothSystem.h"
+#include "../PhysicsCore/VansClothProfile.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../Configration/VansConfigration.h"
 #include "../ScriptCore/VansScriptContext.h"
+#include "../AnimationCore/VansBoneAttachmentSystem.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -45,7 +47,7 @@ void VansGraphics::VansScene::InitVehicle(VansEngine::VansPhysicsSystem* physics
 // Single cloth node loading
 // ===========================================================================
 
-VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const json& clothNodeJson, VansRenderNode* associatedRenderNode)
+VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const json& clothNodeJson, VansRenderNode* associatedRenderNode, std::string* outProfilePath)
 {
     using namespace VansEngine;
 
@@ -58,22 +60,75 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
     }
 
     ClothNodeProperties clothProps;
-    if (clothNodeJson.contains("stiffness"))     clothProps.stiffness     = clothNodeJson["stiffness"].get<float>();
-    if (clothNodeJson.contains("damping"))       clothProps.damping       = clothNodeJson["damping"].get<float>();
-    if (clothNodeJson.contains("friction"))      clothProps.friction      = clothNodeJson["friction"].get<float>();
-    if (clothNodeJson.contains("selfCollision")) clothProps.selfCollision = clothNodeJson["selfCollision"].get<bool>();
-    if (clothNodeJson.contains("gravity"))
+
+    // ── 新格式：通过 profilePath 从 .clothprofile 文件加载配置 ──────────────
+    if (clothNodeJson.contains("profilePath"))
     {
-        auto& g = clothNodeJson["gravity"];
-        clothProps.gravity = g[1].get<float>();
+        std::string profilePath = clothNodeJson["profilePath"].get<std::string>();
+
+        VansClothProfile profile;
+        if (!profile.LoadFromFile(profilePath))
+        {
+            VANS_LOG_ERROR("[VansScene] LoadSingleClothNode: 加载 Profile 失败: " << profilePath
+                           << "，回退为默认参数。");
+        }
+        else
+        {
+            // 通过 profile 局部坐标近邻匹配填充 props
+            VansMesh* mesh = renderNode->m_Mesh;
+            if (mesh)
+            {
+                clothProps = ClothNodeProperties::FromProfile(
+                    profile,
+                    mesh->GetMeshRawPositionData(),
+                    mesh->GetMeshVertexCount());
+            }
+            else
+            {
+                VANS_LOG_WARN("[VansScene] LoadSingleClothNode: RenderNode 无 Mesh，无法解析固定点索引。");
+                clothProps.stiffness     = profile.m_Stiffness;
+                clothProps.damping       = profile.m_Damping;
+                clothProps.friction      = profile.m_Friction;
+                clothProps.gravity       = profile.m_Gravity;
+                clothProps.selfCollision = profile.m_SelfCollision;
+                clothProps.enabled       = true;
+            }
+        }
+
+        // 输出 profilePath 供调用方存入 VansScriptClothComponent
+        if (outProfilePath)
+            *outProfilePath = profilePath;
     }
-    if (clothNodeJson.contains("pinnedParticles"))
+    else
     {
-        for (const auto& idx : clothNodeJson["pinnedParticles"])
-            clothProps.pinnedParticleIndices.push_back(idx.get<uint32_t>());
+        // ── 旧格式（向后兼容）：直接从 JSON 内联解析 ───────────────────────
+        clothProps.enabled = true;
+        if (clothNodeJson.contains("stiffness"))     clothProps.stiffness     = clothNodeJson["stiffness"].get<float>();
+        if (clothNodeJson.contains("damping"))       clothProps.damping       = clothNodeJson["damping"].get<float>();
+        if (clothNodeJson.contains("friction"))      clothProps.friction      = clothNodeJson["friction"].get<float>();
+        if (clothNodeJson.contains("selfCollision")) clothProps.selfCollision = clothNodeJson["selfCollision"].get<bool>();
+        if (clothNodeJson.contains("gravity"))
+        {
+            auto& g = clothNodeJson["gravity"];
+            clothProps.gravity = g[1].get<float>();
+        }
+        if (clothNodeJson.contains("pinnedParticles"))
+        {
+            for (const auto& idx : clothNodeJson["pinnedParticles"])
+                clothProps.pinnedParticleIndices.push_back(idx.get<uint32_t>());
+        }
     }
 
+    // 解析 physicsAttachOffsetY — 无论使用 profilePath 还是旧格式均适用
+    // 用于将布料固定点从颈部/领口向下对准角色肩膀位置（单位：米）
+    if (clothNodeJson.contains("physicsAttachOffsetY"))
+        clothProps.attachOffsetY = clothNodeJson["physicsAttachOffsetY"].get<float>();
+
     // 通过 objectRef 解析碰撞球引用。
+    // 三种解析路径（优先级递减）：
+    // 1. 对象有 render 组件 → 存 renderNodeName，运行时 FindRenderNodeByName 查找
+    // 2. 对象无 render 但有有效 m_TransformID → 存 transformID
+    // 3. 对象为纯物理骨骼绑定体（骨骼绑定在第四 pass 才加载）→ 存 sceneObjectName，运行时通过 BoneAttachmentSystem 延迟解析
     if (clothNodeJson.contains("collisionSpheres"))
     {
         for (const auto& csJson : clothNodeJson["collisionSpheres"])
@@ -82,17 +137,28 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
             if (csJson.contains("objectRef"))
             {
                 std::string objectName = csJson["objectRef"].get<std::string>();
+                ref.sceneObjectName = objectName;  // 始终保存原始名称，供延迟解析使用
+
                 VansScriptObject* refObj = FindObjectByName(objectName);
                 if (refObj)
                 {
                     auto* rc = refObj->GetComponent<VansScriptRenderComponent>();
                     if (rc && rc->m_RenderNode)
+                    {
                         ref.renderNodeName = rc->m_RenderNode->m_NodeName;
+                    }
+                    else if (refObj->m_TransformID != 0)
+                    {
+                        // 无 render 组件但 ScriptObject 有自己的 transformID
+                        ref.transformID = refObj->m_TransformID;
+                    }
+                    // 否则保持未解析状态，第一帧通过 BoneAttachmentSystem 延迟查找
                 }
             }
             if (csJson.contains("radius"))
                 ref.radius = csJson["radius"].get<float>();
-            if (!ref.renderNodeName.empty())
+            // 三种解析路径任意满足其一即加入列表
+            if (!ref.renderNodeName.empty() || ref.transformID != UINT32_MAX || !ref.sceneObjectName.empty())
                 clothProps.collisionSphereRefs.push_back(ref);
         }
     }
@@ -476,24 +542,52 @@ void VansGraphics::VansScene::UpdateClothSimulation(float dt)
     for (auto* clothNode : m_ClothNodes)
     {
         if (!clothNode) continue;
-        const auto& sphereRefs = clothNode->GetCollisionSphereRefs();
+        auto& sphereRefs = clothNode->GetCollisionSphereRefs();
         if (sphereRefs.empty()) continue;
 
         std::vector<physx::PxVec4> spheres;
         spheres.reserve(sphereRefs.size());
-        for (const auto& ref : sphereRefs)
+        for (auto& ref : sphereRefs)
         {
-            VansRenderNode* rn = FindRenderNodeByName(ref.renderNodeName);
-            if (!rn) continue;
-            const VansTransform& t = VansTransformStore::GetTransform(rn->m_TransformID);
-            // World-space sphere: centre = render node position, radius from JSON
-            // (passed directly in world space — cloth particles are also in world space)
-            spheres.push_back(physx::PxVec4(t.m_Position.x, t.m_Position.y, t.m_Position.z,
-                                            ref.radius));
+            // 延迟解析：若前两种路径都未解析，则尝试通过 BoneAttachmentSystem 查找
+            if (ref.renderNodeName.empty() && ref.transformID == UINT32_MAX
+                && !ref.sceneObjectName.empty())
+            {
+                ref.transformID = VansEngine::VansBoneAttachmentSystem::GetInstance()
+                                      .FindTransformIDByPhysicsObjectName(ref.sceneObjectName);
+            }
+
+            glm::vec3 pos(0.0f);
+            bool valid = false;
+
+            if (!ref.renderNodeName.empty())
+            {
+                // 优先路径：通过 render 节点名查找位置
+                VansRenderNode* rn = FindRenderNodeByName(ref.renderNodeName);
+                if (rn)
+                {
+                    pos   = VansTransformStore::GetTransform(rn->m_TransformID).m_Position;
+                    valid = true;
+                }
+            }
+            else if (ref.transformID != UINT32_MAX
+                     && ref.transformID < static_cast<uint32_t>(VansTransformStore::GlobalTransforms.size()))
+            {
+                // 回退路径：直接读取 TransformStore（骨骼绑定的纯物理碰撞体）
+                pos   = VansTransformStore::GetTransform(ref.transformID).m_Position;
+                valid = true;
+            }
+
+            if (!valid) continue;
+
+            spheres.push_back(physx::PxVec4(pos.x, pos.y, pos.z, ref.radius));
             if (!loggedOnce)
             {
-                VANS_LOG("[VansScene] Cloth collision sphere (world): node='" << ref.renderNodeName
-                          << "' pos=(" << t.m_Position.x << "," << t.m_Position.y << "," << t.m_Position.z
+                VANS_LOG("[VansScene] Cloth collision sphere (world): node='"
+                          << (ref.renderNodeName.empty()
+                                  ? (ref.sceneObjectName + " tid=" + std::to_string(ref.transformID))
+                                  : ref.renderNodeName)
+                          << "' pos=(" << pos.x << "," << pos.y << "," << pos.z
                           << ") radius=" << ref.radius);
             }
         }

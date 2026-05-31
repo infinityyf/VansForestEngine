@@ -3,6 +3,7 @@
 // ─── Engine core ─────────────────────────────────────────────────────────────
 #include "../ScriptCore/VansTransform.h"
 #include "../RenderCore/VansRenderNode.h"
+#include "VansClothProfile.h"
 
 // ─── NvCloth core ─────────────────────────────────────────────────────────────
 #include <NvCloth/Cloth.h>
@@ -36,15 +37,29 @@ namespace VansEngine
         // by the bound render node's VansTransform every frame.
         std::vector<uint32_t> pinnedParticleIndices;
 
+        // 世界空间 Y 轴附着偏移（单位：米）。
+        // 正值向上、负值向下，用于微调固定点在世界空间中的高度而无需修改模型。
+        // 在 Initialize 和 SyncPinnedParticlesToRenderNode 中均会应用。
+        float attachOffsetY = 0.0f;
+
         // Collision spheres that the cloth should collide against.
-        // Each entry is a render node name + sphere radius.
-        // Positions are synced from the referenced render node's transform each frame.
+        // 位置来源按优先级：renderNodeName → transformID → sceneObjectName（延迟解析）
         struct CollisionSphereRef
         {
-            std::string renderNodeName;  // render node whose transform defines the sphere centre
-            float       radius = 1.0f;   // world-space radius of the collision sphere
+            std::string sceneObjectName;             // 原始 objectRef 名称，用于运行时延迟解析
+            std::string renderNodeName;              // 已解析：render node 名（优先路径）
+            uint32_t    transformID = UINT32_MAX;    // 已解析：直接 TransformStore ID（骨骼绑定体）
+            float       radius = 1.0f;               // world-space radius of the collision sphere
         };
         std::vector<CollisionSphereRef> collisionSphereRefs;
+
+        // 从 VansClothProfile 填充属性。
+        // pinnedParticleIndices 由 profile.ResolveIndices() 在局部空间近邻匹配填充。
+        // rawPosFloat4 来自已挂载 RenderNode 的 VansMesh::GetMeshRawPositionData()（float4 布局）。
+        static ClothNodeProperties FromProfile(
+            const VansClothProfile& profile,
+            const std::vector<float>& rawPosFloat4,
+            int vertexCount);
     };
 
     // =========================================================================
@@ -99,7 +114,10 @@ namespace VansEngine
 
         // Returns the collision sphere references parsed from JSON,
         // so the scene can resolve render node positions each frame.
+        // 非 const 版本供运行时延迟缓存 transformID 使用。
         const std::vector<ClothNodeProperties::CollisionSphereRef>& GetCollisionSphereRefs() const
+        { return m_CollisionSphereRefs; }
+        std::vector<ClothNodeProperties::CollisionSphereRef>& GetCollisionSphereRefs()
         { return m_CollisionSphereRefs; }
 
         // ── Accessors ─────────────────────────────────────────────────────────
@@ -145,6 +163,11 @@ namespace VansEngine
         std::vector<uint32_t>   m_PinnedIndices;
         std::vector<glm::vec3>  m_PinnedLocalPositions;
         glm::mat4               m_RestNodeTransformInv = glm::mat4(1.0f);
+
+        // ── 世界空间固定点 Y 偏移 ─────────────────────────────────────────────
+        // 由 ClothNodeProperties::attachOffsetY 初始化，运行时在 SyncPinnedParticlesToRenderNode
+        // 和 Initialize 阶段均会将所有粒子向 Y 方向偏移，将披风附着点对准肩膀位置。
+        float m_WorldAttachOffsetY = 0.0f;
 
         // ── Collision sphere references (populated by scene loader) ───────────
         // Stored so the scene can look up render nodes and build PxVec4 arrays

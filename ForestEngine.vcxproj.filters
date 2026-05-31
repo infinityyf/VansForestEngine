@@ -250,6 +250,9 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansUIEditorWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansClothProfileEditorWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUISystem.h">
       <Filter>EngineCore\RuntimeUI\Public</Filter>
     </ClInclude>
@@ -512,6 +515,9 @@
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothSystem.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothProfile.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\LTC\LTCData.h">
@@ -827,6 +833,9 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansUIEditorWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansClothProfileEditorWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUISystem.cpp">
       <Filter>EngineCore\RuntimeUI</Filter>
     </ClCompile>
@@ -948,6 +957,9 @@
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothSystem.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothProfile.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
     <ClCompile Include="External\GUI\ImGuiNode\crude_json.cpp">

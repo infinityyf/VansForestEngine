@@ -2196,12 +2196,21 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         {
             auto* renderComp = obj->GetComponent<VansScriptRenderComponent>();
             VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
-            VansClothNode* cn = LoadSingleClothNode(components["cloth"], associatedNode);
+            std::string profilePath;
+            // 将 profilePath 扩展为绝对路径（相对于 projectRoot）
+            json clothJson = components["cloth"];
+            if (clothJson.contains("profilePath") && !projectRoot.empty())
+            {
+                std::string relPath = clothJson["profilePath"].get<std::string>();
+                clothJson["profilePath"] = projectRoot + relPath;
+            }
+            VansClothNode* cn = LoadSingleClothNode(clothJson, associatedNode, &profilePath);
             if (cn)
             {
                 auto* cc = new VansScriptClothComponent();
                 cc->m_ComponentName = "cloth";
-                cc->m_ClothNode = cn;
+                cc->m_ClothNode     = cn;
+                cc->m_ProfilePath   = profilePath;
                 obj->AddComponent(cc);
             }
         }

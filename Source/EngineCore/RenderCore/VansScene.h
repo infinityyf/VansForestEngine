@@ -274,7 +274,8 @@ namespace VansGraphics
 		// ── Single-node loading helpers (extracted from batch loaders) ────────
 		VansRenderNode* LoadSingleRenderNode(VkDevice& device, const json& renderNodeJson);
 		VansEngine::VansPhysicsNode* LoadSinglePhysicsNode(const json& physicsNodeJson, VansRenderNode* associatedRenderNode);
-		VansEngine::VansClothNode*   LoadSingleClothNode(const json& clothNodeJson, VansRenderNode* associatedRenderNode);
+		// outProfilePath：若 JSON 中存在 profilePath 字段则输出该路径，否则保持为空
+		VansEngine::VansClothNode*   LoadSingleClothNode(const json& clothNodeJson, VansRenderNode* associatedRenderNode, std::string* outProfilePath = nullptr);
 
 		// Find a render node by name across all render node lists
 		VansRenderNode* FindRenderNodeByName(const std::string& name) const;

@@ -21,6 +21,10 @@ namespace VansEngine
 		void UnregisterBindingSet(VansGraphics::VansAnimationNode* animNode);
 		BoneColliderBindingSet* FindBindingSet(VansGraphics::VansAnimationNode* animNode);
 
+		// 通过 physicsObjectName 查找对应骨骼附着点的 TransformStore ID。
+		// 供布料碰撞球系统在运行时延迟绑定无 render 组件的纯物理骨骼碰撞体。
+		uint32_t FindTransformIDByPhysicsObjectName(const std::string& objectName) const;
+
 		// ── 每帧同步：动画骨骼 → TransformStore → PhysX dirty ─────────
 		void Update();
 

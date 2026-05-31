@@ -45,6 +45,7 @@ namespace VansGraphics
 
 		void DrawFogParameters(VansVKDevice& device);
 		void DrawFogVolumeParameters(VansVKDevice& device);
+		void DrawCloudParameters(VansVKDevice& device);
 		void ShowWindow(VansVKDevice& device) override;
 	};
 }

@@ -43,6 +43,13 @@ namespace VansGraphics
 		//直接创建一个GPU上的texture
 		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision = LOW_PRES_8, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
+		// 从按 Z 轴编号导出的 PNG 切片组装 3D 纹理。
+		// slicePathFormat 需要包含一个整数格式占位符，例如 "Slice_Z_%03d.png"。
+		bool LoadTexture3DFromSlices(VansVKCommandBuffer& command_buffer,
+			const std::string& slicePathFormat, int sliceCount,
+			int importChannel = 4,
+			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
+
 		// 从内存原始像素数据创建一个 2D 贴图（无 mipmap，无文件 IO）。
 		// 调用方负责保证 dataSize == width * height * bytes_per_texel(format)。
 		// 用于内嵌型 LUT（例如 LTC）以及任何 stb_image 不支持的格式。

@@ -18,6 +18,7 @@
 #include "Windows/VansConsoleWindow.h"
 #include "Windows/VansProfilerWindow.h"
 #include "Windows/VansAnimGraphEditorWindow.h"
+#include "Windows/VansClothProfileEditorWindow.h"
 #include "Windows/VansUIEditorWindow.h"
 
 #include "../Util/VansProfiler.h"
@@ -113,6 +114,8 @@ VansGraphics::VansProfilerWindow* VansGraphics::VansEditorWindow::m_ProfilerWind
 VansGraphics::VansAnimGraphEditorWindow* VansGraphics::VansEditorWindow::m_AnimGraphEditorWindow;
 
 VansGraphics::VansUIEditorWindow* VansGraphics::VansEditorWindow::m_UIEditorWindow;
+
+VansGraphics::VansClothProfileEditorWindow* VansGraphics::VansEditorWindow::m_ClothProfileEditorWindow;
 
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
@@ -362,8 +365,13 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
     m_UIEditorWindow = new VansUIEditorWindow();
     m_Windows.push_back(m_UIEditorWindow);
 
+    m_ClothProfileEditorWindow = new VansClothProfileEditorWindow();
+    m_Windows.push_back(m_ClothProfileEditorWindow);
+
     // 将 AnimGraphEditor 引用传给 HierachyWindow
     m_HierachyWindow->m_AnimGraphEditorRef = m_AnimGraphEditorWindow;
+    // 将 ClothProfileEditor 引用传给 HierachyWindow
+    m_HierachyWindow->m_ClothProfileEditorRef = m_ClothProfileEditorWindow;
 }
 
 void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()

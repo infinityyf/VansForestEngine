@@ -1352,6 +1352,117 @@ namespace VansGraphics
 	}
 
 	// ================================================================
+	// Cloud Ray March — 描述符集写入（一次性，场景加载后首帧调用）
+	// ================================================================
+	void VansVKDevice::UpdateCloudRayMarchSets(VansRenderPassManager* renderPassManager)
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (m_CloudRayMarchDescSetsUpdated) return;
+
+		VansTexture* cloudBuffer = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_BUFFER);
+		VansTexture* cloudMainNoise = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_MAIN_NOISE);
+		VansTexture* cloudDetailNoise = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_DETAIL_NOISE);
+		if (cloudBuffer == nullptr || cloudMainNoise == nullptr || cloudDetailNoise == nullptr) return;
+
+		VansVKDescriptorManager::GetInstance()->ResetState();
+
+		// binding 0: cloudResult（STORAGE_IMAGE，1/4 分辨率 RGBA16F，输出）
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_CloudRayMarchDescriptorSets[0],
+				CLOUD_MARCH_BINDING_RESULT,
+				0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{
+					{
+						cloudBuffer->GetImage().GetSampler(),
+						cloudBuffer->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL
+					}
+				}
+			}
+		);
+
+		// binding 1: CloudParams UBO（行星半径、云底/顶高度、密度等）
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{
+				manager->m_CloudRayMarchDescriptorSets[0],
+				CLOUD_MARCH_BINDING_PARAMS,
+				0,
+				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				{
+					{
+						manager->m_CloudParamsCBBuffer.GetNativeBuffer(),
+						0,
+						manager->m_CloudParamsCBBuffer.GetBufferSize()
+					}
+				}
+			}
+		);
+
+		// binding 2: 主 3D 噪声（R=Perlin-Worley, GBA=Worley 侵蚀）
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_CloudRayMarchDescriptorSets[0],
+				CLOUD_MARCH_BINDING_MAIN_NOISE,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						cloudMainNoise->GetImage().GetSampler(),
+						cloudMainNoise->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+
+		// binding 3: 细节 3D 噪声（RGB=低/中/高频细节）
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				manager->m_CloudRayMarchDescriptorSets[0],
+				CLOUD_MARCH_BINDING_DETAIL_NOISE,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						cloudDetailNoise->GetImage().GetSampler(),
+						cloudDetailNoise->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+		m_CloudRayMarchDescSetsUpdated = true;
+	}
+
+	// ================================================================
+	// Cloud Ray March — dispatch（每帧调用，在 Deferred pass 之前）
+	// ================================================================
+	void VansVKDevice::UpdateCloudRayMarch(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
+	{
+		UpdateCloudRayMarchSets(renderPassManager);
+
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager->m_CloudRayMarchShader == nullptr) return;
+		if (manager->m_CloudRayMarchDescriptorSets.empty()) return;
+
+		// 1/4 分辨率 dispatch，workgroup 8×8×1
+		uint32_t quarterW  = (m_RenderWidth  + 3) / 4;
+		uint32_t quarterH  = (m_RenderHeight + 3) / 4;
+		uint32_t groupsX   = (quarterW + 7) / 8;
+		uint32_t groupsY   = (quarterH + 7) / 8;
+
+		computeCmd.EnsureComputeShader(*manager->m_CloudRayMarchShader,
+			{ m_Scene->m_GlobalDescriptorSetLayout, manager->m_CloudRayMarchSetLayout });
+		computeCmd.DispatchCompute(*manager->m_CloudRayMarchShader,
+			groupsX, groupsY, 1,
+			{ m_Scene->m_GlobalDescriptorSet, manager->m_CloudRayMarchDescriptorSets[0] });
+	}
+
+	// ================================================================
 	// Volumetric Fog compose �?dispatch (injection �?ray-march �?compose)
 	// ================================================================
 	void VansVKDevice::UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)

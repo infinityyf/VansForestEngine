@@ -185,6 +185,8 @@ class VansScriptClothComponent : public VansScriptComponent
 {
 public:
 	VansEngine::VansClothNode* m_ClothNode = nullptr;
+	// 关联的 .clothprofile 文件路径（相对路径）；内联配置时为空
+	std::string m_ProfilePath;
 };
 
 // ── Vehicle Component ───────────────────────────────────────────────────────

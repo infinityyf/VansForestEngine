@@ -88,6 +88,24 @@ BoneColliderBindingSet* VansBoneAttachmentSystem::FindBindingSet(VansAnimationNo
 	return nullptr;
 }
 
+uint32_t VansBoneAttachmentSystem::FindTransformIDByPhysicsObjectName(const std::string& objectName) const
+{
+	// 遍历所有绑定集，找到 physicsObjectName 匹配的 binding，返回其 attachmentTransformID。
+	// 用于布料碰撞球系统在无 render 组件时定位骨骼绑定体的世界坐标。
+	for (const auto& set : m_BindingSets)
+	{
+		for (const auto& binding : set.bindings)
+		{
+			if (binding.physicsObjectName == objectName
+			    && binding.attachmentTransformID != UINT32_MAX)
+			{
+				return binding.attachmentTransformID;
+			}
+		}
+	}
+	return UINT32_MAX;
+}
+
 void VansBoneAttachmentSystem::Update()
 {
 	for (auto& set : m_BindingSets)

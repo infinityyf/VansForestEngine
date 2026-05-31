@@ -18,6 +18,19 @@ namespace VansGraphics
 		m_FSRInput.motionVectors = motionVector.GetImage();
 		m_FSRInput.motionVectorsCreateInfo = motionVector.GetImageCreateInfo();
 
+		// 绑定引擎的 1x1 曝光纹理到 FSRInput
+		if (m_Scene != nullptr) {
+			auto* materialManager = m_Scene->GetMaterialManager();
+			if (materialManager != nullptr) {
+				VansTexture* exposureTex = materialManager->GetRuntimeRenderTexture(
+					VansMaterialManager::RT_EXPOSURE_CURRENT);
+				if (exposureTex != nullptr) {
+					m_FSRInput.exposure = exposureTex->GetImage().GetImage();
+					m_FSRInput.exposureCreateInfo = exposureTex->GetImage().GetImageCreateInfo();
+				}
+			}
+		}
+
 		m_FSRInput.fovy = fovy;
 		m_FSRInput.nearPlane = nearPlane;
 		m_FSRInput.farPlane = farPlane;
@@ -26,8 +39,8 @@ namespace VansGraphics
 	void VansVKDevice::DispatchFSRUpscale()
 	{
 		auto camera = m_Scene->GetCamera();
-		m_FSRInput.jitterX = camera->m_JitterX;
-		m_FSRInput.jitterY = camera->m_JitterY;
+		m_FSRInput.jitterPixelX = camera->m_JitterPixelX;
+		m_FSRInput.jitterPixelY = camera->m_JitterPixelY;
 
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 		m_FSRController.DispatchUpscale(m_VansVKCommandBuffer.GetVKCommandBuffer(), m_FSRInput);
@@ -104,5 +117,15 @@ namespace VansGraphics
 	void VansVKDevice::CleanupFSR()
 	{
 		m_FSRController.Cleanup();
+	}
+
+	bool VansVKDevice::GetFSRJitterOffset(uint32_t frameIndex, float& outPixelX, float& outPixelY)
+	{
+		int32_t phaseCount = m_FSRController.GetJitterPhaseCount();
+		if (phaseCount <= 0) return false;
+		m_FSRController.GetJitterOffset(
+			static_cast<int32_t>(frameIndex % static_cast<uint32_t>(phaseCount)),
+			outPixelX, outPixelY);
+		return true;
 	}
 }

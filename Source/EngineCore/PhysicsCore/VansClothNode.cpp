@@ -125,6 +125,9 @@ namespace VansEngine
         glm::mat4 restMat    = restT.GetModelMatrix();
         m_RestNodeTransformInv = glm::inverse(restMat);
 
+        // 存储世界空间 Y 轴附着偏移（由 JSON physicsAttachOffsetY 配置）
+        m_WorldAttachOffsetY = props.attachOffsetY;
+
         // Build welded NvCloth particle array (PxVec4: x,y,z, invMass).
         // Positions are transformed to WORLD SPACE via the rest-pose model matrix.
         // Default invMass = 1.0 (free particle).
@@ -137,6 +140,13 @@ namespace VansEngine
             float z = rawPos[v * 8 + 2];
             glm::vec4 worldPos = restMat * glm::vec4(x, y, z, 1.0f);
             particles[wIdx] = physx::PxVec4(worldPos.x, worldPos.y, worldPos.z, 1.0f);
+        }
+
+        // 将整体粒子沿世界 Y 轴偏移，使固定点对准肩膀位置
+        if (m_WorldAttachOffsetY != 0.0f)
+        {
+            for (auto& p : particles)
+                p.y += m_WorldAttachOffsetY;
         }
 
         // Build welded triangle indices and discard degenerate triangles.
@@ -319,6 +329,8 @@ namespace VansEngine
         {
             uint32_t vi = m_PinnedIndices[i];
             glm::vec4 worldPos = M * glm::vec4(m_PinnedLocalPositions[i], 1.0f);
+            // 应用世界空间 Y 轴附着偏移，将固定点对准角色肩膀位置
+            worldPos.y += m_WorldAttachOffsetY;
             particles[vi].x = worldPos.x;
             particles[vi].y = worldPos.y;
             particles[vi].z = worldPos.z;
@@ -461,5 +473,30 @@ namespace VansEngine
             }
         }
         // MappedRange destructor unlocks particles automatically.
+    }
+
+    // =========================================================================
+    // ClothNodeProperties::FromProfile — 从 VansClothProfile 填充属性
+    // 使用 profile.ResolveIndices() 在局部空间做近邻匹配，填充 pinnedParticleIndices。
+    // =========================================================================
+    ClothNodeProperties ClothNodeProperties::FromProfile(
+        const VansClothProfile& profile,
+        const std::vector<float>& rawPosFloat4,
+        int vertexCount)
+    {
+        ClothNodeProperties props;
+        props.enabled       = true;
+        props.stiffness     = profile.m_Stiffness;
+        props.damping       = profile.m_Damping;
+        props.friction      = profile.m_Friction;
+        props.gravity       = profile.m_Gravity;
+        props.selfCollision = profile.m_SelfCollision;
+
+        // 通过局部坐标近邻匹配解析固定点索引
+        props.pinnedParticleIndices = profile.ResolveIndices(rawPosFloat4, vertexCount);
+
+        VANS_LOG("[ClothNodeProperties] FromProfile '" << profile.m_Name
+                 << "': 固定点=" << props.pinnedParticleIndices.size());
+        return props;
     }
 }

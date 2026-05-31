@@ -29,10 +29,20 @@ void VansGraphics::VansFSR::InitializeContext(VkDevice device, VkPhysicalDevice 
 	createUpscaling.header.pNext = nullptr;
 	createUpscaling.maxUpscaleSize = { displayWidth, displayHeight };
 	createUpscaling.maxRenderSize = { renderWidth, renderHeight };
-	createUpscaling.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE;
+	createUpscaling.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE
+		| FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE
+		| FFX_UPSCALE_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION; // MV 已使用 UnjitteredVPMatrix，无需 FSR 内部再次去抖动
 	createUpscaling.fpMessage = nullptr;
 
 	ffx::ReturnCode retCode = ffx::CreateContext(m_UpscalingContext, nullptr, createUpscaling,backendDesc);
+
+	// 查询 FSR 内置抖动序列相位数量，与缩放比例相关
+	ffxQueryDescUpscaleGetJitterPhaseCount jpc{};
+	jpc.header.type      = FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTERPHASECOUNT;
+	jpc.renderWidth      = renderWidth;
+	jpc.displayWidth     = displayWidth;
+	jpc.pOutPhaseCount   = &m_JitterPhaseCount;
+	ffx::Query(m_UpscalingContext, jpc);
 
 	//std::cout << "FSR Upscaling context creation return code: " << static_cast<uint32_t>(retCode) << std::endl;
 
@@ -80,16 +90,26 @@ void VansGraphics::VansFSR::DispatchUpscale(VkCommandBuffer& commandBuffer, FSRI
 
 	dispatchUpscale.reactive = ffxApiGetResourceVK(nullptr, FfxApiResourceDescription(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 	dispatchUpscale.transparencyAndComposition = ffxApiGetResourceVK(nullptr, FfxApiResourceDescription(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
-	dispatchUpscale.exposure = ffxApiGetResourceVK(nullptr, FfxApiResourceDescription(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+
+	// 曝光纹理绑定：使用引擎的 1x1 曝光输出纹理
+	if (input.exposure != VK_NULL_HANDLE) {
+		dispatchUpscale.exposure = ffxApiGetResourceVK(
+			(void*)input.exposure,
+			ffxApiGetImageResourceDescriptionVK(input.exposure, input.exposureCreateInfo, 0),
+			FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+	} else {
+		dispatchUpscale.exposure = ffxApiGetResourceVK(nullptr, FfxApiResourceDescription(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+	}
 	
-	// Jitter is calculated earlier in the frame using a callback from the camera update
-	dispatchUpscale.jitterOffset.x = -input.jitterX;
-	dispatchUpscale.jitterOffset.y = -input.jitterY;
-	dispatchUpscale.motionVectorScale.x = 1.0f;
-	dispatchUpscale.motionVectorScale.y = 1.0f;
+	// 抖动偏移：像素空间单位（Camera 已优先从 FSR 内置序列取得）
+	dispatchUpscale.jitterOffset.x = -input.jitterPixelX;
+	dispatchUpscale.jitterOffset.y = -input.jitterPixelY;
+	// MV 缩放：MotionVector 输出为 UV 空间增量，FSR 期望像素单位
+	dispatchUpscale.motionVectorScale.x = static_cast<float>(m_RenderWidth);
+	dispatchUpscale.motionVectorScale.y = static_cast<float>(m_RenderHeight);
 	dispatchUpscale.reset = false;
 	dispatchUpscale.enableSharpening = true;
-	dispatchUpscale.sharpness = 0.5;
+	dispatchUpscale.sharpness = m_Sharpness;
 
 	// Cauldron keeps time in seconds, but FSR expects milliseconds.
 	dispatchUpscale.frameTimeDelta = static_cast<float>(VansTimer::GetDeltaTime() * 1000.0);
@@ -117,4 +137,15 @@ void VansGraphics::VansFSR::Cleanup()
 {
 	m_TempFSRImage->DestroyVulkanImage(m_Device);
 	ffx::DestroyContext(m_UpscalingContext);
+}
+
+void VansGraphics::VansFSR::GetJitterOffset(int32_t index, float& outX, float& outY)
+{
+	ffxQueryDescUpscaleGetJitterOffset jq{};
+	jq.header.type   = FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTEROFFSET;
+	jq.index         = index;
+	jq.phaseCount    = m_JitterPhaseCount;
+	jq.pOutX         = &outX;
+	jq.pOutY         = &outY;
+	ffx::Query(m_UpscalingContext, jq);
 }

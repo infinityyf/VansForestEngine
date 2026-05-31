@@ -82,6 +82,9 @@ namespace VansGraphics
 		/// Return the FSR-upscaled output image (display resolution) for editor sampling.
 		VansVKImage& GetFSROutputImage() { return m_FSRController.GetTempFSRImage(); }
 
+		// 查询 FSR 内置抖动偏移（像素空间 [-0.5, 0.5]），供 VansCamera 替代 Halton 序列
+		bool GetFSRJitterOffset(uint32_t frameIndex, float& outPixelX, float& outPixelY) override;
+
 		// 窗口大小改变时重建交换链和UI渲染pass
 		void OnWindowResize(uint32_t width, uint32_t height);
 
@@ -185,6 +188,7 @@ namespace VansGraphics
 			m_TileLightBuildDescSetsUpdated = false;
 			m_PPExposureDescSetsUpdated = false;
 			m_PPBloomDescSetsUpdated = false;
+			m_CloudRayMarchDescSetsUpdated = false;
 		}
 
 		void UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
@@ -198,6 +202,9 @@ namespace VansGraphics
 		void UpdateFogLightInjection(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		void UpdateFogRayMarch(VansVKCommandBuffer& computeCmd);
+
+		// 体积云 1/4 分辨率光线步进（Compute Pass，在 Deferred 之前执行）
+		void UpdateCloudRayMarch(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		// TileLight Build pass: culls lights per tile each frame
 		void BuildTileLightLists(VansVKCommandBuffer& cmd);
@@ -219,6 +226,7 @@ namespace VansGraphics
 		bool m_TileLightBuildDescSetsUpdated = false;
 		bool m_PPExposureDescSetsUpdated = false;
 		bool m_PPBloomDescSetsUpdated = false;
+		bool m_CloudRayMarchDescSetsUpdated = false;   // 体积云描述符集首次写入标记
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
@@ -243,6 +251,9 @@ namespace VansGraphics
 		void UpdateFogLightInjectionSets(VansRenderPassManager* renderPassManager);
 
 		void UpdateFogRayMarchSets();
+
+		// 体积云描述符集写入（一次性，场景加载后首帧调用）
+		void UpdateCloudRayMarchSets(VansRenderPassManager* renderPassManager);
 
 		void UpdateTileLightBuildSets();
 
@@ -280,6 +291,9 @@ namespace VansGraphics
 		void PrepareSSRRenderData();
 
 		void PrepareVolumetricData();
+
+		// 体积云 RT 纹理、Shader、描述符集初始化（场景加载时调用）
+		void PrepareCloudRenderData();
 
 		void PrepareTileLightData();
 

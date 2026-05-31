@@ -65,6 +65,16 @@ VansGraphics::VansMaterialManager::VansMaterialManager()
 {
 }
 
+void VansGraphics::VansMaterialManager::UploadCloudParamsToGPU()
+{
+	if (m_CloudParamsCBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+	{
+		return;
+	}
+
+	m_CloudParamsCBBuffer.SetBufferData(&m_CloudParams, 0, sizeof(VansCloudParamsGPU));
+}
+
 VansGraphics::VansMaterialManager::~VansMaterialManager()
 {
 	ClearRuntimeRenderTextures();
@@ -324,6 +334,27 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 						volumetricFogResult->GetImage().GetSampler(),
 						volumetricFogResult->GetImage().GetImageView(),
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+	}
+
+	// 绑定 1/4 分辨率体积云结果到 SkyBox set 的 binding=2（SKYBOX_BINDING_CLOUD）
+	VansTexture* cloudBuffer = GetRuntimeRenderTexture(RT_CLOUD_BUFFER);
+	if (cloudBuffer != nullptr)
+	{
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				m_MaterialAtmosphereDataDescriptorSets[0],
+				SKYBOX_BINDING_CLOUD,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						cloudBuffer->GetImage().GetSampler(),
+						cloudBuffer->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_GENERAL  // cloud buffer 由 compute shader 以 GENERAL 布局写入，采样时保持一致
 					}
 				}
 			}

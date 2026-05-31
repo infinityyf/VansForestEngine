@@ -141,5 +141,8 @@ namespace VansGraphics
 
         float m_JitterX;
         float m_JitterY;
+        // 像素空间抖动偏移（[-0.5, 0.5]），直接传给 FSR DispatchUpscale
+        float m_JitterPixelX = 0.0f;
+        float m_JitterPixelY = 0.0f;
 	};
 }

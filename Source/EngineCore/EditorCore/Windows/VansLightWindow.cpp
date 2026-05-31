@@ -79,6 +79,7 @@ void VansGraphics::VansLightWindow::ShowWindow(VansVKDevice& device)
     ImGui::Separator();
     DrawFogParameters(device);
     DrawFogVolumeParameters(device);
+    DrawCloudParameters(device);
 
     ImGui::End();
 }
@@ -236,5 +237,79 @@ void VansGraphics::VansLightWindow::DrawFogVolumeParameters(VansVKDevice& device
     {
         m_Scene->GetMaterialManager()->m_FogVolumeParamsCBBuffer.SetBufferData(
             &m_FogVolumeParams, 0, sizeof(FogVolumeParamsData));
+    }
+}
+
+void VansGraphics::VansLightWindow::DrawCloudParameters(VansVKDevice& device)
+{
+    if (!ImGui::CollapsingHeader("Volumetric Clouds", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        return;
+    }
+
+    VansMaterialManager* materialManager = m_Scene->GetMaterialManager();
+    if (materialManager == nullptr)
+    {
+        return;
+    }
+
+    VansCloudParamsGPU& cloudParams = materialManager->m_CloudParams;
+    bool changed = false;
+
+    float cloudBaseHeight = cloudParams.cloudMinHeight;
+    float cloudThickness = std::max(cloudParams.cloudMaxHeight - cloudParams.cloudMinHeight, 100.0f);
+    bool heightChanged = false;
+    heightChanged |= ImGui::DragFloat("Cloud Base Height", &cloudBaseHeight, 10.0f, 0.0f, 20000.0f, "%.0f m");
+    heightChanged |= ImGui::DragFloat("Cloud Thickness", &cloudThickness, 10.0f, 100.0f, 15000.0f, "%.0f m");
+    if (heightChanged)
+    {
+        cloudBaseHeight = std::clamp(cloudBaseHeight, 0.0f, 20000.0f);
+        cloudThickness = std::clamp(cloudThickness, 100.0f, 15000.0f);
+        cloudParams.cloudMinHeight = cloudBaseHeight;
+        cloudParams.cloudMaxHeight = cloudBaseHeight + cloudThickness;
+        changed = true;
+    }
+
+    changed |= ImGui::DragFloat("Density", &cloudParams.density, 0.001f, 0.0f, 0.5f, "%.4f");
+    changed |= ImGui::DragFloat("Coverage", &cloudParams.coverage, 0.005f, 0.0f, 1.0f, "%.3f");
+    changed |= ImGui::DragFloat("Sun Brightness", &cloudParams.sunBrightness, 0.01f, 0.0f, 10.0f, "%.3f");
+    changed |= ImGui::DragFloat("Phase G", &cloudParams.phaseG, 0.005f, -0.5f, 0.95f, "%.3f");
+
+    ImGui::Separator();
+    changed |= ImGui::DragFloat("Main Tile", &cloudParams.mainTileMeters, 100.0f, 5000.0f, 200000.0f, "%.0f m");
+    changed |= ImGui::DragFloat("Detail Tile", &cloudParams.detailTileMeters, 50.0f, 1000.0f, 50000.0f, "%.0f m");
+    changed |= ImGui::DragFloat("Main Height Scale", &cloudParams.mainHeightScale, 0.01f, 0.0f, 8.0f, "%.2f");
+    changed |= ImGui::DragFloat("Detail Height Scale", &cloudParams.detailHeightScale, 0.01f, 0.0f, 16.0f, "%.2f");
+
+    ImGui::Separator();
+    changed |= ImGui::DragFloat("Clear Threshold", &cloudParams.thresholdLowCoverage, 0.005f, 0.0f, 1.0f, "%.3f");
+    changed |= ImGui::DragFloat("Overcast Threshold", &cloudParams.thresholdHighCoverage, 0.005f, 0.0f, 1.0f, "%.3f");
+    changed |= ImGui::DragFloat("Density Smooth Low", &cloudParams.densityRemapLow, 0.005f, 0.0f, 1.0f, "%.3f");
+    changed |= ImGui::DragFloat("Density Smooth High", &cloudParams.densityRemapHigh, 0.005f, 0.01f, 1.0f, "%.3f");
+
+    ImGui::Separator();
+    changed |= ImGui::DragFloat("Main Erosion", &cloudParams.mainErosionStrength, 0.01f, 0.0f, 5.0f, "%.3f");
+    changed |= ImGui::DragFloat("Detail Erosion", &cloudParams.detailErosionStrength, 0.01f, 0.0f, 3.0f, "%.3f");
+    changed |= ImGui::DragFloat("Edge Erosion", &cloudParams.edgeErosionStrength, 0.01f, 0.0f, 5.0f, "%.3f");
+    changed |= ImGui::DragFloat("Vertical Shape Power", &cloudParams.verticalShapePower, 0.01f, 0.1f, 4.0f, "%.3f");
+    changed |= ImGui::DragFloat("Detail Erosion Low", &cloudParams.detailErosionLow, 0.005f, 0.0f, 1.0f, "%.3f");
+    changed |= ImGui::DragFloat("Detail Erosion High", &cloudParams.detailErosionHigh, 0.005f, 0.01f, 1.0f, "%.3f");
+    changed |= ImGui::DragFloat("Detail Edge Strength", &cloudParams.detailEdgeStrength, 0.01f, 0.0f, 3.0f, "%.3f");
+    changed |= ImGui::DragFloat("Shadow Density", &cloudParams.shadowDensityScale, 0.01f, 0.0f, 5.0f, "%.3f");
+
+    if (ImGui::Button("Reset Cloud Defaults"))
+    {
+        cloudParams = VansCloudParamsGPU();
+        changed = true;
+    }
+
+    cloudParams.mainTileMeters = std::max(cloudParams.mainTileMeters, 1000.0f);
+    cloudParams.detailTileMeters = std::max(cloudParams.detailTileMeters, 500.0f);
+    cloudParams.densityRemapHigh = std::max(cloudParams.densityRemapHigh, cloudParams.densityRemapLow + 0.01f);
+    cloudParams.detailErosionHigh = std::max(cloudParams.detailErosionHigh, cloudParams.detailErosionLow + 0.01f);
+
+    if (changed)
+    {
+        materialManager->UploadCloudParamsToGPU();
     }
 }

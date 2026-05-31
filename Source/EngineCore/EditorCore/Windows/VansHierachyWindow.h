@@ -16,6 +16,7 @@ class VansScriptRectLightComponent;
 namespace VansGraphics
 {
 	class VansAnimGraphEditorWindow;
+	class VansClothProfileEditorWindow;
 
 	class VansHierachuWindow : public VansBaseWindowComponent
 	{
@@ -27,6 +28,8 @@ namespace VansGraphics
 	public:
 		// 指向 EditorWindow 持有的 AnimGraphEditor 实例
 		VansAnimGraphEditorWindow* m_AnimGraphEditorRef = nullptr;
+		// 指向 EditorWindow 持有的 ClothProfileEditor 实例
+		VansClothProfileEditorWindow* m_ClothProfileEditorRef = nullptr;
 
 	private:
 		// ── Render Node tab ──

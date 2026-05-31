@@ -77,6 +77,40 @@ namespace VansGraphics
 		int animationEnabled; // 1 = skinned, 0 = static
 	};
 
+	// 体积云 GPU 参数，与 CloudRayMarch.comp 的 CloudParamsUBO 保持二进制一致。
+	struct alignas(16) VansCloudParamsGPU
+	{
+		float planetRadius         = 6340000.0f;
+		float seaLevel             = 200.0f;
+		float cloudMinHeight       = 1200.0f;
+		float cloudMaxHeight       = 7000.0f;
+
+		float density              = 0.06f;
+		float coverage             = 0.32f;
+		float sunBrightness        = 1.5f;
+		float phaseG               = 0.35f;
+
+		float mainTileMeters       = 48000.0f;
+		float detailTileMeters     = 5000.0f;
+		float mainHeightScale      = 1.35f;
+		float detailHeightScale    = 4.20f;
+
+		float thresholdLowCoverage = 0.86f;
+		float thresholdHighCoverage = 0.50f;
+		float densityRemapLow      = 0.08f;
+		float densityRemapHigh     = 0.62f;
+
+		float mainErosionStrength  = 1.15f;
+		float detailErosionStrength = 0.42f;
+		float edgeErosionStrength  = 1.20f;
+		float verticalShapePower   = 0.55f;
+
+		float detailErosionLow     = 0.15f;
+		float detailErosionHigh    = 0.76f;
+		float detailEdgeStrength   = 1.00f;
+		float shadowDensityScale   = 1.00f;
+	};
+
 	class VansMaterialManager
 	{
 		friend class VansMaterial;
@@ -110,6 +144,10 @@ namespace VansGraphics
 		static constexpr const char* RT_FOG_VOXEL_INJECTION = "Runtime.Fog.VoxelInjection";
 		static constexpr const char* RT_FOG_VOXEL_INJECTION_HISTORY = "Runtime.Fog.VoxelInjectionHistory";
 		static constexpr const char* RT_FOG_VOXEL_RAYMARCH  = "Runtime.Fog.VoxelRayMarch";
+		// 1/4 分辨率体积云结果（RGB=内散射，A=透射率）
+		static constexpr const char* RT_CLOUD_BUFFER         = "Runtime.Cloud.Buffer";
+		static constexpr const char* RT_CLOUD_MAIN_NOISE     = "Runtime.Cloud.MainNoise3D";
+		static constexpr const char* RT_CLOUD_DETAIL_NOISE   = "Runtime.Cloud.DetailNoise3D";
 
 		// --- 后处理 RuntimeRT ---
 		static constexpr const char* RT_EXPOSURE_LUMINANCE  = "Runtime.PostProcess.Exposure.Luminance"; // 64x64 亮度缩图（R16F）
@@ -272,6 +310,13 @@ namespace VansGraphics
 		VansComputeShader* m_FogLightInjectionShader;
 		VansComputeShader* m_FogRayMarchShader;
 
+		// --- 体积云 Cloud Ray March Pass ---
+		VansComputeShader*             m_CloudRayMarchShader         = nullptr;
+		VkDescriptorSetLayout          m_CloudRayMarchSetLayout       = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet>   m_CloudRayMarchDescriptorSets;
+		VansVKBuffer                   m_CloudParamsCBBuffer;   // CloudParams UBO
+		VansCloudParamsGPU            m_CloudParams;           // CPU 侧体积云参数权威来源
+
 		// ---- TileLight Build Pass ----
 		VansVKBuffer m_TileLightHeaderBuffer;
 		VansVKBuffer m_TileLightIndexBuffer;
@@ -325,6 +370,8 @@ namespace VansGraphics
 		void UpdatePBRLutDescriptorSets();
 
 		void UpdateAtmosphereDescriptorSets();
+
+		void UploadCloudParamsToGPU();
 
 		VansRuntimeRenderTextureManager m_RuntimeRenderTextureManager;
 
