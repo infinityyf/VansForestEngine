@@ -36,7 +36,7 @@ namespace VansGraphics
 	{
 	private:
 
-		ffx::Context m_UpscalingContext;
+		ffx::Context m_UpscalingContext = nullptr;
 
 		uint32_t m_RenderWidth;
 		uint32_t m_RenderHeight;
@@ -50,7 +50,7 @@ namespace VansGraphics
 		int32_t m_JitterPhaseCount = 0;
 
 		//用于保存中间结果
-		VansVKImage* m_TempFSRImage;
+		VansVKImage* m_TempFSRImage = nullptr;
 
 	public:
 		// 锐化强度（0~1），可由外部配置

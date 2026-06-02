@@ -70,6 +70,10 @@ public:
     void AddWatch(const std::string& folder) 
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
+        if (std::find(m_Folders.begin(), m_Folders.end(), folder) != m_Folders.end())
+        {
+            return;
+        }
         m_Folders.push_back(folder);
         m_Snapshots[folder] = SnapshotFolder(folder);
         // 初始化该文件夹的 updated 标志为 false
@@ -86,7 +90,11 @@ public:
 
     void Start(Callback callback, int pollIntervalMs = 1000) 
     {
-        m_Watching = true;
+        if (m_Watching.exchange(true))
+        {
+            return;
+        }
+
         m_WatchThread = std::thread([this, callback, pollIntervalMs] {
             while (m_Watching)
             {

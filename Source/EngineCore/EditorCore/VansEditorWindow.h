@@ -79,6 +79,9 @@ namespace VansGraphics
 		/// 处理延迟场景加载（从主循环中提取）
 		static void ProcessPendingSceneLoad();
 
+		/// 处理延迟项目加载，确保项目切换只发生在主循环安全点
+		static void ProcessPendingProjectLoad();
+
 		/// 绘制顶部运行控制工具栏（Play / Pause / Resume / Stop）
 		static void DrawPlayControlToolbar();
 
@@ -141,6 +144,16 @@ namespace VansGraphics
 
 		/// 下一次延迟场景加载所使用的模式（Editor / Runtime）
 		static VansGraphics::VansSceneLoadMode m_PendingSceneLoadMode;
+
+		struct VansPendingProjectLoad
+		{
+			bool m_Requested = false;
+			bool m_CreateNew = false;
+			std::string m_ProjectPath;
+			std::string m_ProjectName;
+		};
+
+		static VansPendingProjectLoad m_PendingProjectLoad;
 
 	public:
 		/// Deferred scene load: set during ImGui frame, processed before next Rendering()

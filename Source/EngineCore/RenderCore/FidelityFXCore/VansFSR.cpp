@@ -6,7 +6,7 @@
 
 void VansGraphics::VansFSR::InitializeContext(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t renderWidth, uint32_t renderHeight, uint32_t displayWidth, uint32_t displayHeight)
 {
-	m_UpscalingContext = nullptr;
+	Cleanup();
 
 	m_RenderWidth = renderWidth;
 	m_RenderHeight = renderHeight;
@@ -135,8 +135,18 @@ void VansGraphics::VansFSR::DispatchUpscale(VkCommandBuffer& commandBuffer, FSRI
 
 void VansGraphics::VansFSR::Cleanup()
 {
-	m_TempFSRImage->DestroyVulkanImage(m_Device);
-	ffx::DestroyContext(m_UpscalingContext);
+	if (m_TempFSRImage)
+	{
+		m_TempFSRImage->DestroyVulkanImage(m_Device);
+		delete m_TempFSRImage;
+		m_TempFSRImage = nullptr;
+	}
+
+	if (m_UpscalingContext)
+	{
+		ffx::DestroyContext(m_UpscalingContext);
+		m_UpscalingContext = nullptr;
+	}
 }
 
 void VansGraphics::VansFSR::GetJitterOffset(int32_t index, float& outX, float& outY)

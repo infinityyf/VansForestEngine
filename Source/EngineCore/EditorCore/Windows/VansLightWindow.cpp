@@ -273,7 +273,7 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(VansVKDevice& device)
     changed |= ImGui::DragFloat("Density", &cloudParams.density, 0.001f, 0.0f, 0.5f, "%.4f");
     changed |= ImGui::DragFloat("Coverage", &cloudParams.coverage, 0.005f, 0.0f, 1.0f, "%.3f");
     changed |= ImGui::DragFloat("Sun Brightness", &cloudParams.sunBrightness, 0.01f, 0.0f, 10.0f, "%.3f");
-    changed |= ImGui::DragFloat("Phase G", &cloudParams.phaseG, 0.005f, -0.5f, 0.95f, "%.3f");
+    changed |= ImGui::DragFloat("Phase G", &cloudParams.phaseG, 0.005f, -0.5f, 1.0f, "%.3f");
 
     ImGui::Separator();
     changed |= ImGui::DragFloat("Main Tile", &cloudParams.mainTileMeters, 100.0f, 5000.0f, 200000.0f, "%.0f m");

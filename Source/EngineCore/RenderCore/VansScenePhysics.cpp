@@ -11,6 +11,8 @@
 #include "../Configration/VansConfigration.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "../AnimationCore/VansBoneAttachmentSystem.h"
+#include "../AnimationCore/VansAnimationNode.h"
+#include "../VansFramePhase.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -78,10 +80,13 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
             VansMesh* mesh = renderNode->m_Mesh;
             if (mesh)
             {
+                // 骨骼蒙皮数据将在 Pass5（所有 AnimationNode 加载完毕后）通过
+                // LateBindBonesFromProfile() 延迟解析，此处传入 nullptr 即可。
                 clothProps = ClothNodeProperties::FromProfile(
                     profile,
                     mesh->GetMeshRawPositionData(),
-                    mesh->GetMeshVertexCount());
+                    mesh->GetMeshVertexCount(),
+                    nullptr);
             }
             else
             {
@@ -165,6 +170,9 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
 
     VansClothNode* clothNode = new VansClothNode();
     clothNode->Initialize(clothProps, renderNode);
+    // AnimationNode 绑定延迟至 Pass5（VansSceneLoader::LoadSceneObjects 末尾）完成，
+    // 届时 m_AnimationNodes 已由 Pass4 完全填充。
+
     m_ClothNodes.push_back(clothNode);
 
     // Allocate a scene-owned HOST_VISIBLE staging buffer for this cloth node.
@@ -307,6 +315,8 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(cons
 
 void VansGraphics::VansScene::UpdatePhysicsTransforms()
 {
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
+
     using namespace VansEngine;
     
     // Get physics system
@@ -422,6 +432,8 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
 
 void VansGraphics::VansScene::UpdateCharControllerTransforms()
 {
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
+
     using namespace VansEngine;
 
     if (m_CharControllerNodes.empty()) return;
@@ -528,16 +540,20 @@ void VansGraphics::VansScene::UpdateClothSimulation(float dt)
 {
     if (m_ClothNodes.empty()) return;
 
-    // Sync all pinned particles to their render node transforms first
-    for (auto* clothNode : m_ClothNodes)
-    {
-        if (clothNode) clothNode->SyncPinnedParticlesToRenderNode();
-    }
+    // ── 子步参数 ──────────────────────────────────────────────────────────────
+    // 将每帧仿真拆分为 kSubSteps 个子步：
+    //   1. 每子步时间步长缩小为 dt/kSubSteps，约束冲量成比例缩小，避免数值爆炸。
+    //   2. 固定点位置在上一帧目标与本帧目标之间线性插值，消除瞬间大位移引发的
+    //      约束违反（骨骼动画过渡时尤为重要）。
+    // 角色快速移动时 8 步提供足够稳定性；静态场景可降至 4 步节省 CPU。
+    static constexpr int kSubSteps = 8;
+    const float subDt = dt / static_cast<float>(kSubSteps);
 
-    // Sync collision spheres from render node world positions for each cloth node.
-    // NOTE: sphere positions are passed in WORLD SPACE, matching the cloth's
-    // world-space particle positions (NvCloth particles are initialized in
-    // world space via the render node's rest-pose transform).
+    // 第一步：计算本帧所有固定点的目标世界坐标（不写入粒子缓冲区）
+    for (auto* clothNode : m_ClothNodes)
+        if (clothNode) clothNode->ComputePinnedTargets();
+
+    // 第二步：更新碰撞球（每帧一次，不需要随子步变化）
     static bool loggedOnce = false;
     for (auto* clothNode : m_ClothNodes)
     {
@@ -594,10 +610,21 @@ void VansGraphics::VansScene::UpdateClothSimulation(float dt)
         clothNode->SetCollisionSpheres(spheres);
     }
     loggedOnce = true;
-    
 
-    // Advance NvCloth simulation by dt
-    VansEngine::VansClothSystem::GetInstance().SimulateStep(dt);
+    // 第三步：子步循环——每步写入插值固定点位置，然后推进仿真
+    for (int s = 0; s < kSubSteps; ++s)
+    {
+        // alpha: 第 1 步=1/N, 第 2 步=2/N, ..., 最后一步=1.0
+        const float alpha = static_cast<float>(s + 1) / static_cast<float>(kSubSteps);
+        for (auto* clothNode : m_ClothNodes)
+            if (clothNode) clothNode->WritePinnedParticlesLerped(alpha);
+
+        VansEngine::VansClothSystem::GetInstance().SimulateStep(subDt);
+    }
+
+    // 第四步：提交本帧目标为"上一帧"，供下帧插值使用
+    for (auto* clothNode : m_ClothNodes)
+        if (clothNode) clothNode->CommitPinnedTargets();
 }
 
 void VansGraphics::VansScene::WriteClothResultsToStagingBuffers()

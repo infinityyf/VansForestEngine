@@ -2,6 +2,8 @@
 #include "VansClothSystem.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../ScriptCore/VansTransform.h"
+#include "../AnimationCore/VansAnimationNode.h"
+#include "../AnimationCore/VansAnimationController.h"
 #include "../Util/VansLog.h"
 
 // NvCloth extensions cooker
@@ -237,9 +239,22 @@ namespace VansEngine
         }
 
         // ── 7. Configure simulation parameters ───────────────────────────────
+        // stiffnessFrequency 决定 damping/stiffness 按每秒多少次归一化。
+        // NvCloth 默认值约 10 Hz，在 60fps 子步仿真下会导致阻尼几乎为零：
+        //   damp_per_step = (1-damping)^(subDt * stiffnessFrequency)
+        //   default: (1-0.08)^(1/240*10) ≈ 0.997 → 每帧仅 1.2% 速度衰减
+        // 设为 60 Hz 后：每帧衰减 = (1-damping)^1 = 1-damping（与 profile 数值直觉一致）
+        m_Cloth->setStiffnessFrequency(60.0f);
+
         m_Cloth->setGravity(physx::PxVec3(0.0f, props.gravity, 0.0f));
         m_Cloth->setDamping(physx::PxVec3(props.damping));
         m_Cloth->setFriction(props.friction);
+
+        // 本引擎 Cloth 粒子全部处于世界空间，Cloth frame 永不移动（不调用 setTranslation/setRotation）。
+        // 将 linearInertia/angularInertia/centrifugalInertia 置零，防止 frame 意外移动时产生额外冲量。
+        m_Cloth->setLinearInertia(physx::PxVec3(0.0f));
+        m_Cloth->setAngularInertia(physx::PxVec3(0.0f));
+        m_Cloth->setCentrifugalInertia(physx::PxVec3(0.0f));
 
         // Enable continuous collision detection so particles don't tunnel through
         // collision spheres/capsules between simulation steps.
@@ -275,6 +290,19 @@ namespace VansEngine
         // ── 10. Store collision sphere references for per-frame syncing ───────────
         m_CollisionSphereRefs = props.collisionSphereRefs;
 
+        // ── 11. 存储骨骼跟随数据（V2）────────────────────────────────────────
+        m_FollowBones = props.followBones;
+        if (m_FollowBones && !props.pinnedSkinData.empty())
+        {
+            // 仅保留与 m_PinnedIndices 对应的蒙皮数据
+            // props.pinnedSkinData 按 profile.m_PinnedLocalPositions 索引排列，
+            // 而 m_PinnedIndices 是从中去重后的子集；这里按固定点顺序存入。
+            m_PinnedBoneSkinData = props.pinnedSkinData;
+            // 若数量不匹配则截断至 m_PinnedIndices.size()，保证安全访问
+            if (m_PinnedBoneSkinData.size() > m_PinnedIndices.size())
+                m_PinnedBoneSkinData.resize(m_PinnedIndices.size());
+        }
+
         VANS_LOG("[VansClothNode] Initialized cloth '" << renderNode->m_NodeName
                   << "', origVerts=" << m_VertexCount
                   << ", weldedParticles=" << m_WeldedVertexCount
@@ -303,40 +331,251 @@ namespace VansEngine
 
         m_PinnedIndices.clear();
         m_PinnedLocalPositions.clear();
+        m_PinnedBoneSkinData.clear();
         m_OrigToWelded.clear();
         m_WeldedIndices.clear();
         m_WeldedVertexCount = 0;
         m_TargetRenderNode = nullptr;
+        m_AnimNode         = nullptr;
+        m_FollowBones      = false;
         m_VertexCount      = 0;
         m_Enabled          = false;
     }
 
     // =========================================================================
-    void VansClothNode::SyncPinnedParticlesToRenderNode()
+    // V2 延迟骨骼绑定：Pass5（所有 AnimationNode 加载完毕后）由场景调用。
+    // 解析骨骼名称→索引映射，填充 m_PinnedBoneSkinData，并注入 AnimNode。
+    // =========================================================================
+    void VansClothNode::LateBindBonesFromProfile(
+        const VansEngine::VansClothProfile&     profile,
+        VansGraphics::VansAnimationNode*        animNode)
+    {
+        if (!animNode)
+        {
+            VANS_LOG_WARN("[VansClothNode] LateBindBonesFromProfile: animNode 为空，跳过。");
+            return;
+        }
+        if (!m_FollowBones)
+        {
+            VANS_LOG_WARN("[VansClothNode] LateBindBonesFromProfile: m_FollowBones=false，跳过。");
+            return;
+        }
+
+        m_AnimNode = animNode;
+
+        const VansGraphics::Skeleton& skel = animNode->GetSkeleton();
+        VANS_LOG("[VansClothNode] LateBindBonesFromProfile: AnimNode='" << animNode->GetName()
+                 << "'，骨骼数=" << skel.bones.size()
+                 << "，骨骼名索引表条目数=" << skel.boneNameToIndex.size()
+                 << "，固定点数=" << m_PinnedIndices.size());
+
+        if (skel.bones.empty())
+        {
+            VANS_LOG_ERROR("[VansClothNode] LateBindBonesFromProfile: Skeleton 为空！"
+                           " AnimNode 可能未完成加载或 .vanim 文件不含骨骼。");
+        }
+
+        m_PinnedBoneSkinData = profile.ResolveBoneBindings(skel);
+
+        // ── 预计算骨骼局部偏移 ────────────────────────────────────────────────
+        // m_PinnedLocalPositions 是 Cape.obj 局部空间坐标，需转换到每根骨骼的局部空间。
+        // 使用 GetCachedGlobalTransforms()（模型空间骨骼矩阵，不含 offsetMatrix）+ rootWorld
+        // 得到骨骼世界矩阵，再取逆即可将 Cape 顶点世界坐标映射到骨骼局部空间。
+        VansAnimationController* ctrl = animNode->GetController();
+        if (ctrl && !m_PinnedLocalPositions.empty())
+        {
+            const std::vector<glm::mat4>& cachedGlobals = ctrl->GetCachedGlobalTransforms();
+
+            // Cape Transform 世界矩阵（用于将 Cape 局部坐标转换为世界坐标）
+            glm::mat4 capeWorld = glm::mat4(1.0f);
+            if (m_TargetRenderNode)
+            {
+                capeWorld = VansGraphics::VansTransformStore::GetTransform(
+                    m_TargetRenderNode->m_TransformID).GetModelMatrix();
+            }
+
+            // 角色根节点世界矩阵
+            uint32_t rootID = animNode->GetTransformID();
+            glm::mat4 rootWorld = VansGraphics::VansTransformStore::GetTransform(rootID).GetModelMatrix();
+
+            for (size_t i = 0; i < m_PinnedBoneSkinData.size() && i < m_PinnedLocalPositions.size(); ++i)
+            {
+                auto& skin = m_PinnedBoneSkinData[i];
+                // Cape 顶点世界坐标
+                glm::vec4 vertexWorld = capeWorld * glm::vec4(m_PinnedLocalPositions[i], 1.0f);
+
+                for (uint32_t b = 0; b < skin.m_BoneCount; ++b)
+                {
+                    int bIdx = skin.m_BoneWeights[b].m_BoneIndex;
+                    if (bIdx < 0 || bIdx >= static_cast<int>(cachedGlobals.size()))
+                    {
+                        skin.m_BoneWeights[b].m_BoneLocalOffset = glm::vec3(0.0f);
+                        continue;
+                    }
+                    // 骨骼世界矩阵 = rootWorld × cachedGlobals[bIdx]
+                    glm::mat4 boneWorld = rootWorld * cachedGlobals[bIdx];
+                    // 顶点在骨骼局部空间中的偏移 = inverse(boneWorld) × vertexWorld
+                    glm::vec4 localOffset = glm::inverse(boneWorld) * vertexWorld;
+                    skin.m_BoneWeights[b].m_BoneLocalOffset = glm::vec3(localOffset);
+                }
+            }
+            VANS_LOG("[VansClothNode] LateBindBonesFromProfile: 骨骼局部偏移已预计算，"
+                     << "capeWorld[3]=(" << capeWorld[3].x << "," << capeWorld[3].y << "," << capeWorld[3].z << ")"
+                     << " rootWorld[3]=(" << rootWorld[3].x << "," << rootWorld[3].y << "," << rootWorld[3].z << ")");
+            if (!m_PinnedBoneSkinData.empty() && m_PinnedBoneSkinData[0].m_BoneCount > 0)
+            {
+                const auto& s0 = m_PinnedBoneSkinData[0];
+                VANS_LOG("[VansClothNode] 固定点[0] 骨骼局部偏移[0]=("
+                         << s0.m_BoneWeights[0].m_BoneLocalOffset.x << ","
+                         << s0.m_BoneWeights[0].m_BoneLocalOffset.y << ","
+                         << s0.m_BoneWeights[0].m_BoneLocalOffset.z << ")");
+            }
+        }
+        else if (!ctrl)
+        {
+            VANS_LOG_WARN("[VansClothNode] LateBindBonesFromProfile: AnimController 为空，"
+                          "无法预计算骨骼局部偏移，固定点将使用 Cape-space 坐标（位置可能不正确）。");
+        }
+
+        // 打印每个固定点的骨骼解析结果
+        for (size_t i = 0; i < m_PinnedBoneSkinData.size(); ++i)
+        {
+            const auto& skin = m_PinnedBoneSkinData[i];
+            if (skin.m_BoneCount == 0)
+            {
+                VANS_LOG_WARN("[VansClothNode] 固定点[" << i << "] 无骨骼影响（boneCount=0），将退化为 Transform 模式");
+            }
+            else
+            {
+                std::ostringstream oss;
+                oss << "[VansClothNode] 固定点[" << i << "] boneCount=" << skin.m_BoneCount << " :";
+                for (uint32_t b = 0; b < skin.m_BoneCount; ++b)
+                    oss << " [idx=" << skin.m_BoneWeights[b].m_BoneIndex
+                        << " w=" << skin.m_BoneWeights[b].m_Weight << "]";
+                VANS_LOG(oss.str());
+            }
+        }
+
+        // 确保蒙皮数据长度与固定点数量一致
+        if (m_PinnedBoneSkinData.size() > m_PinnedIndices.size())
+            m_PinnedBoneSkinData.resize(m_PinnedIndices.size());
+
+        VANS_LOG("[VansClothNode] LateBindBonesFromProfile 完成：'" << m_Name
+                 << "' 有效蒙皮数=" << m_PinnedBoneSkinData.size()
+                 << "，固定点数=" << m_PinnedIndices.size());
+    }
+
+    // =========================================================================
+    // 内部辅助：计算固定点 i 的目标世界坐标（不写入 NvCloth 缓冲区）
+    // =========================================================================
+    static glm::vec3 ComputePinWorldPos(
+        size_t                              i,
+        const std::vector<ClothNodePinSkinData>& skinData,
+        const std::vector<glm::vec3>&       localPositions,
+        float                               attachOffsetY,
+        VansGraphics::VansRenderNode*       targetRenderNode,
+        VansGraphics::VansAnimationNode*    animNode,
+        bool                                followBones)
+    {
+        // ── 骨骼跟随模式 ──────────────────────────────────────────────────────
+        if (followBones && animNode && i < skinData.size() && skinData[i].m_BoneCount > 0)
+        {
+            VansAnimationController* ctrl = animNode->GetController();
+            if (ctrl)
+            {
+                const std::vector<glm::mat4>& cachedGlobals = ctrl->GetCachedGlobalTransforms();
+                uint32_t rootID = animNode->GetTransformID();
+                glm::mat4 rootWorld = VansGraphics::VansTransformStore::GetTransform(rootID).GetModelMatrix();
+
+                const ClothNodePinSkinData& skin = skinData[i];
+                glm::vec4 worldPos(0.0f);
+                for (uint32_t b = 0; b < skin.m_BoneCount; ++b)
+                {
+                    int   boneIdx = skin.m_BoneWeights[b].m_BoneIndex;
+                    float weight  = skin.m_BoneWeights[b].m_Weight;
+                    if (boneIdx < 0 || boneIdx >= static_cast<int>(cachedGlobals.size()))
+                        continue;
+                    glm::mat4 boneWorld = rootWorld * cachedGlobals[boneIdx];
+                    worldPos += weight * (boneWorld * glm::vec4(skin.m_BoneWeights[b].m_BoneLocalOffset, 1.0f));
+                }
+                worldPos.y += attachOffsetY;
+                return glm::vec3(worldPos);
+            }
+        }
+
+        // ── 传统模式：退化为 RenderNode Transform ────────────────────────────
+        if (!targetRenderNode) return glm::vec3(0.0f);
+        VansGraphics::VansTransform& t =
+            VansGraphics::VansTransformStore::GetTransform(targetRenderNode->m_TransformID);
+        glm::vec4 wp = t.GetModelMatrix() * glm::vec4(localPositions[i], 1.0f);
+        wp.y += attachOffsetY;
+        return glm::vec3(wp);
+    }
+
+    // =========================================================================
+    void VansClothNode::ComputePinnedTargets()
     {
         if (!m_Cloth || m_PinnedIndices.empty() || !m_TargetRenderNode) return;
 
-        // Rebuild current world matrix from the render node's live VansTransform.
-        VansGraphics::VansTransform& t =
-            VansGraphics::VansTransformStore::GetTransform(m_TargetRenderNode->m_TransformID);
-        glm::mat4 M = t.GetModelMatrix();
+        const size_t count = m_PinnedIndices.size();
+        m_TargetPinnedWorldPos.resize(count);
 
-        // NvCloth's getCurrentParticles() returns a MappedRange that locks/unlocks on construction/destruction.
-        // Writing to pinned particles (invMass==0) before beginSimulation is the supported pattern.
-        nv::cloth::MappedRange<physx::PxVec4> particles = m_Cloth->getCurrentParticles();
+        for (size_t i = 0; i < count; ++i)
+        {
+            m_TargetPinnedWorldPos[i] = ComputePinWorldPos(
+                i, m_PinnedBoneSkinData, m_PinnedLocalPositions,
+                m_WorldAttachOffsetY, m_TargetRenderNode, m_AnimNode, m_FollowBones);
+        }
 
-        for (size_t i = 0; i < m_PinnedIndices.size(); ++i)
+        // 首帧：prev = target（无插值，直接到位）
+        if (!m_PinnedPrevInitialized)
+        {
+            m_PrevPinnedWorldPos = m_TargetPinnedWorldPos;
+            m_PinnedPrevInitialized = true;
+        }
+    }
+
+    // =========================================================================
+    void VansClothNode::WritePinnedParticlesLerped(float alpha)
+    {
+        if (!m_Cloth || m_PinnedIndices.empty()) return;
+        if (m_TargetPinnedWorldPos.empty()) return;
+
+        nv::cloth::MappedRange<physx::PxVec4> particles     = m_Cloth->getCurrentParticles();
+        nv::cloth::MappedRange<physx::PxVec4> prevParticles = m_Cloth->getPreviousParticles();
+
+        const size_t count = m_PinnedIndices.size();
+        for (size_t i = 0; i < count; ++i)
         {
             uint32_t vi = m_PinnedIndices[i];
-            glm::vec4 worldPos = M * glm::vec4(m_PinnedLocalPositions[i], 1.0f);
-            // 应用世界空间 Y 轴附着偏移，将固定点对准角色肩膀位置
-            worldPos.y += m_WorldAttachOffsetY;
-            particles[vi].x = worldPos.x;
-            particles[vi].y = worldPos.y;
-            particles[vi].z = worldPos.z;
-            // invMass stays 0 — NvCloth will not integrate this particle position.
+
+            // 在上一帧目标与本帧目标之间插值
+            const glm::vec3& prev   = m_PrevPinnedWorldPos[i];
+            const glm::vec3& target = m_TargetPinnedWorldPos[i];
+            glm::vec3 pos = prev + alpha * (target - prev);
+
+            // 同时写 current 和 previous，将隐式速度归零，消除 Verlet 冲量
+            particles[vi].x     = pos.x; particles[vi].y     = pos.y; particles[vi].z     = pos.z;
+            prevParticles[vi].x = pos.x; prevParticles[vi].y = pos.y; prevParticles[vi].z = pos.z;
         }
-        // MappedRange destructor calls unlockParticles() automatically.
+    }
+
+    // =========================================================================
+    void VansClothNode::CommitPinnedTargets()
+    {
+        // 将本帧目标存为"上一帧"，供下帧子步插值使用
+        if (!m_TargetPinnedWorldPos.empty())
+            m_PrevPinnedWorldPos = m_TargetPinnedWorldPos;
+    }
+
+    // =========================================================================
+    // SyncPinnedParticlesToRenderNode：单步兼容路径（场景已改用子步接口，此函数备用）
+    // =========================================================================
+    void VansClothNode::SyncPinnedParticlesToRenderNode()
+    {
+        ComputePinnedTargets();
+        WritePinnedParticlesLerped(1.0f);  // alpha=1 = 直接跳到目标，无插值
+        CommitPinnedTargets();
     }
 
     // =========================================================================
@@ -478,11 +717,13 @@ namespace VansEngine
     // =========================================================================
     // ClothNodeProperties::FromProfile — 从 VansClothProfile 填充属性
     // 使用 profile.ResolveIndices() 在局部空间做近邻匹配，填充 pinnedParticleIndices。
+    // skeleton 非空且 profile.m_FollowBones==true 时，同时填充骨骼蒙皮数据。
     // =========================================================================
     ClothNodeProperties ClothNodeProperties::FromProfile(
         const VansClothProfile& profile,
         const std::vector<float>& rawPosFloat4,
-        int vertexCount)
+        int vertexCount,
+        const VansGraphics::Skeleton* skeleton)
     {
         ClothNodeProperties props;
         props.enabled       = true;
@@ -491,12 +732,20 @@ namespace VansEngine
         props.friction      = profile.m_Friction;
         props.gravity       = profile.m_Gravity;
         props.selfCollision = profile.m_SelfCollision;
+        props.followBones   = profile.m_FollowBones;
 
         // 通过局部坐标近邻匹配解析固定点索引
         props.pinnedParticleIndices = profile.ResolveIndices(rawPosFloat4, vertexCount);
 
+        // V2：若启用骨骼跟随且提供了 Skeleton，解析骨骼绑定数据
+        if (profile.m_FollowBones && skeleton != nullptr)
+        {
+            props.pinnedSkinData = profile.ResolveBoneBindings(*skeleton);
+        }
+
         VANS_LOG("[ClothNodeProperties] FromProfile '" << profile.m_Name
-                 << "': 固定点=" << props.pinnedParticleIndices.size());
+                 << "': 固定点=" << props.pinnedParticleIndices.size()
+                 << "，骨骼跟随=" << (props.followBones ? "开启" : "关闭"));
         return props;
     }
 }

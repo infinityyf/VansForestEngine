@@ -6,6 +6,7 @@
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
 #include "../../VansTimer.h"
+#include "../../VansFramePhase.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RuntimeUI/Public/VansUISystem.h"
 #include <algorithm>
@@ -146,6 +147,8 @@ namespace VansGraphics
 
 		if (!m_Scene->IsSceneReady())
 		{
+			VANS_SET_FRAME_PHASE(VansFramePhase::GPURecord);
+
 			// No scene loaded yet — begin the command buffer so the UI render
 			// pass (recorded by DrawEditorWindows) can still be appended.
 			// Present() will end the recording and submit.
@@ -153,7 +156,9 @@ namespace VansGraphics
 			return;
 		}
 
+		VANS_SET_FRAME_PHASE(VansFramePhase::RenderPrep);
 		m_Scene->UpdateSceneData();
+		VANS_SET_FRAME_PHASE(VansFramePhase::GPURecord);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 

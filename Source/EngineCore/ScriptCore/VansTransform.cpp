@@ -5,6 +5,9 @@
 std::vector<VansGraphics::VansTransform> VansGraphics::VansTransformStore::GlobalTransforms;
 std::queue<uint32_t> VansGraphics::VansTransformStore::FreeTransformIndices;
 std::map<uint32_t, bool> VansGraphics::VansTransformStore::TransformIDToTransformDirty;
+#ifdef _DEBUG
+std::unordered_set<uint32_t> VansGraphics::VansTransformStore::AllocatedTransformIDs;
+#endif
 
 glm::mat4x4 VansGraphics::VansTransform::GetModelMatrix()
 {

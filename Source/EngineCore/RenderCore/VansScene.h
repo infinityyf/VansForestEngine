@@ -68,6 +68,8 @@ namespace VansGraphics
 	class VansScene
 	{
 	public:
+		~VansScene();
+
 		void CreateNodeDescriptorSets();
 	private:
 
@@ -92,6 +94,10 @@ namespace VansGraphics
 
 		//记录所有资产
 		std::vector<VansAsset*> m_Meshes;
+
+		// ExpandMultiMeshToRenderNodes 生成的场景级子网格查找表。
+		// 子网格对象仍由父级 multi-mesh 持有，此处只保存非拥有引用，UnLoadScene 只清空列表。
+		std::vector<VansAsset*> m_SceneSubMeshes;
 
 		std::vector<VansAsset*> m_Textures;
 
@@ -289,6 +295,9 @@ namespace VansGraphics
 		void AddScreenSpaceFeatureNode(VkDevice& device);
 
 		void UnLoadScene();
+
+		// 项目级资源卸载入口。重构-08 会在此处集中释放 mesh/texture/shader/audio/video 等项目资源。
+		void UnloadProjectResources(VansVKDevice* device);
 
 		void UpdateSceneData();
 

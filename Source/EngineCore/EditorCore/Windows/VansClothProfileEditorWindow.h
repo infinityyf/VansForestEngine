@@ -16,6 +16,7 @@ namespace VansGraphics
     // 通过 OpenProfile(profilePath) 或 NewProfile() 打开，编辑器自行根据
     // Profile 内的 m_ModelPath 通过 Assimp CPU-only 加载网格，
     // 完全不依赖场景中的 RenderNode。
+    // V2 新增骨骼 FBX 加载、骨架显示、自动绑定功能。
     // =========================================================================
     class VansClothProfileEditorWindow : public VansBaseWindowComponent
     {
@@ -60,6 +61,28 @@ namespace VansGraphics
         bool m_ShowNewProfileDialog = false;
         char m_NewProfilePathBuf[512] = {};
 
+        // ── V2：骨骼 FBX 编辑器数据 ────────────────────────────────────────
+        // 编辑器中加载的参考骨架（CPU-only，与场景 Skeleton 独立）
+        struct EditorBone
+        {
+            std::string m_Name;
+            int         m_ParentIndex   = -1;     // 父骨骼在 m_EditorBones 中的索引，-1 = 根
+            glm::mat4   m_GlobalTransform;        // 骨骼在骨骼 FBX 局部空间中的全局变换
+            glm::vec3   m_HeadPos;               // 应用 offsetMatrix 后在布料模型局部空间的头位置
+            glm::vec3   m_TailPos;               // 应用 offsetMatrix 后在布料模型局部空间的尾位置
+        };
+        std::vector<EditorBone> m_EditorBones;
+        bool                    m_SkeletonLoaded = false;
+        std::string             m_SkeletonLoadError;
+
+        // 自动绑定模式
+        enum class BindMode { SingleBone, MultiBone };
+        BindMode    m_BindMode = BindMode::SingleBone;
+
+        // 自动绑定结果反馈（消息 + 显示倒计时）
+        std::string m_BindResultMessage;
+        float       m_BindResultTimer = 0.0f;
+
         // ── 内部函数 ───────────────────────────────────────────────────────
 
         // 根据 m_Profile.m_ModelPath 通过 Assimp CPU-only 读取顶点数据
@@ -76,12 +99,24 @@ namespace VansGraphics
         void DrawProfileInfoPanel();    // 顶部 Profile 元信息与操作按钮
         void DrawMeshViewport();        // ImGui DrawList 3D 投影渲染（左侧）
         void DrawParametersPanel();     // 右侧物理参数 Inspector
+        void DrawBoneConfigPanel();     // 右侧骨骼跟随配置面板（V2）
         void DrawPinnedParticleList();  // 右侧已固定粒子列表
 
         void HandleOrbitalCamera(bool isViewportHovered);
         void HandleVertexPicking(ImVec2 viewportMin, ImVec2 viewportSize,
                      const glm::mat4& mvp,
                      const glm::mat4& view);
+
+        // V2：骨骼相关
+        void LoadReferenceSkeleton();                          // 通过 Assimp 加载骨架 FBX
+        void RebuildEditorBonePositions();                     // 应用 offsetMatrix 重算骨骼头尾位置
+        void DrawSkeletonOverlay(ImDrawList* dl,               // 视口中渲染骨架线框
+                                  const glm::mat4& mvp,
+                                  ImVec2 viewportMin,
+                                  ImVec2 viewportSize);
+        void AutoBindPinnedVertices();                         // 执行自动绑定算法
+        float DistanceToBoneSegment(const glm::vec3& p,       // 点到骨骼线段的距离
+                                     const EditorBone& bone) const;
 
         void SaveProfile();
         void RevertProfile(); // 重新从文件加载，丢弃当前改动

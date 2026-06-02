@@ -11,13 +11,19 @@
 #include "EngineCore/Util/VansJobSystem.h"
 #include "EngineCore/PhysicsCore/VansPhysics.h"
 #include "EngineCore/Util/VansLog.h"
+#include "EngineCore/VansThreadContract.h"
 #include "EngineCore/AudioCore/VansAudioSystem.h"
+#include "EngineCore/RuntimeUI/Public/VansUISystem.h"
 
 // Project System
 #include "EngineCore/ProjectSystem/VansProjectManager.h"
 
 using namespace VansGraphics;
 using namespace VansEngine;
+
+#ifdef _DEBUG
+std::thread::id g_MainThreadId;
+#endif
 
 // Forward declarations
 bool InitializeEngineCore();
@@ -120,24 +126,49 @@ void ShutdownEngine()
 {
 	VANS_LOG("[ForestEngine] Shutting down engine systems...");
 
-	// Shutdown physics simulation
-	VansPhysicsSystem& physics = VansPhysicsSystem::GetInstance();
-	physics.StopSimulation();
-	physics.Shutdown();
-	VANS_LOG("[ForestEngine] Physics system shutdown complete");
+	// ============================================================
+	// 关闭顺序契约（见 重构-02）：
+	// 1. 暂停物理，防止关闭期间继续模拟
+	// 2. Vulkan device idle，确保 GPU 不再访问场景资源
+	// 3. scene->UnLoadScene()，此时 PhysX/OpenAL/Vulkan 必须仍然存活
+	// 4. scene->UnloadProjectResources()，完整实现见 重构-08
+	// 5. RuntimeUI shutdown，Noesis RenderDevice 仍需要 Vulkan
+	// 6. physics Stop/Shutdown，释放 PhysX
+	// 7. AudioSystem shutdown，释放 OpenAL
+	// 8. graphicsDevice 最后销毁
+	// 重构-02 已按上述顺序执行，后续阶段只补完整项目资源释放实现。
+	// ============================================================
 
-	// Shutdown audio system
-	VansEngine::VansAudioSystem::GetInstance().Shutdown();
-	VANS_LOG("[ForestEngine] Audio system shutdown complete");
+	VansPhysicsSystem& physics = VansPhysicsSystem::GetInstance();
+	physics.PauseSimulation();
+	VANS_LOG("[ForestEngine] Physics simulation paused for shutdown");
+
+	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+	if (vkDevice)
+	{
+		vkDevice->WaitForDevice();
+		VANS_LOG("[ForestEngine] Vulkan device idle before scene teardown");
+	}
 
 	// Unload scene
 	if (m_Scene)
 	{
 		m_Scene->UnLoadScene();
+		m_Scene->UnloadProjectResources(vkDevice);
 		delete m_Scene;
 		m_Scene = nullptr;
 		VANS_LOG("[ForestEngine] Scene unloaded");
 	}
+
+	VansRuntime::VansUISystem::Get().Shutdown();
+	VANS_LOG("[ForestEngine] Runtime UI system shutdown complete");
+
+	physics.StopSimulation();
+	physics.Shutdown();
+	VANS_LOG("[ForestEngine] Physics system shutdown complete");
+
+	VansEngine::VansAudioSystem::GetInstance().Shutdown();
+	VANS_LOG("[ForestEngine] Audio system shutdown complete");
 
 	// Cleanup components
 	if (m_SceneFileWatcher)
@@ -170,6 +201,8 @@ void ShutdownEngine()
 
 int main()
 {
+	VANS_INIT_MAIN_THREAD();
+
 	VANS_LOG("=== ForestEngine Starting ===");
 
 	// Initialize core engine systems

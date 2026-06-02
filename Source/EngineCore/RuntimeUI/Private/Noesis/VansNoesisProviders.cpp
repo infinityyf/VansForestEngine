@@ -94,6 +94,7 @@ Noesis::Ptr<Noesis::Stream> VansNoesisXamlProvider::LoadXaml(const Noesis::Uri& 
     // 此处用 new 分配持久化内存，Stream 关闭时由 Noesis 侧触发 Close()，
     // 但 MemoryStream 不负责释放 buffer，所以用 shared ownership 的方式：
     // 将 buffer 数据拷贝到 Noesis 管理的内存区块
+    // FIXME-LEAK[重构-04]: XAML buffer 当前由 new[] 保活，后续实现 OwnedMemoryStream 释放所有权。
     uint8_t* data     = new uint8_t[buffer.size()];
     const uint32_t sz = static_cast<uint32_t>(buffer.size());
     memcpy(data, buffer.data(), sz);

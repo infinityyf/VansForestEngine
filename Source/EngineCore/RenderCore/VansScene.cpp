@@ -1,5 +1,7 @@
 #include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
+#include "../VansFramePhase.h"
+#include "../VansThreadContract.h"
 #include "VansShaderRegistry.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
@@ -30,6 +32,20 @@
 #include <unordered_map>
 #include <filesystem>
 
+#ifdef _DEBUG
+#define VANS_UNLOAD_STEP(index, reason) VANS_LOG("[VansScene][UnLoadScene Step " << index << "] " << reason)
+#else
+#define VANS_UNLOAD_STEP(index, reason) do { (void)sizeof(index); } while (0)
+#endif
+
+
+VansGraphics::VansScene::~VansScene()
+{
+    if (m_SceneState != VansSceneState::Empty || !m_SceneObjects.empty())
+    {
+        VANS_LOG_WARN("[VansScene] 析构时场景仍非空，请在 delete 前显式调用 UnLoadScene()");
+    }
+}
 
 VansAsset* VansGraphics::VansScene::GetMeshAsset(const std::string& name)
 {
@@ -41,6 +57,13 @@ VansAsset* VansGraphics::VansScene::GetMeshAsset(const std::string& name)
 			return mesh;
 		}
 	}
+    for (auto mesh : m_SceneSubMeshes)
+    {
+        if (mesh->m_AssetName == name)
+        {
+            return mesh;
+        }
+    }
     return nullptr;
 }
 
@@ -538,12 +561,15 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::FindRenderNodeByName(cons
 
 void VansGraphics::VansScene::UnLoadScene()
 {
+    VANS_ASSERT_MAIN_THREAD();
+
 	VANS_LOG("[VansScene] UnLoadScene 开始卸载当前场景...");
 
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
 
 	// ── 0. 清除编辑器选中状态 ─────────────────────────────────────────────
+    VANS_UNLOAD_STEP(0, "清除编辑器选中状态");
 	m_SelectedNode = nullptr;
 	m_SelectedObject = nullptr;
 	VANS_LOG("[VansScene] Step 0: 编辑器选中状态已清除");
@@ -554,6 +580,7 @@ void VansGraphics::VansScene::UnLoadScene()
 	//  SH 纹理由 RuntimeRenderTextureManager 拥有，使用 Remove（会 delete）。
 	//  RT_GI_VISIBILITY 的实际对象由 VansRayTracing::CleanupSceneResources 销毁，
 	//  此处仅从注册表移除引用（Unregister），防止悬空指针，同时避免 double-free。
+    VANS_UNLOAD_STEP(1, "清理场景级运行时纹理");
 	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
 	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
 	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
@@ -570,6 +597,7 @@ void VansGraphics::VansScene::UnLoadScene()
 	// ── 2. 清理脚本对象（仅释放 wrapper，不释放底层 Node） ─────────────────
 	// 先 Teardown 所有 VanPyScriptComponent，安全释放 py::object，
 	// 再删除 VansScriptObject（此时 m_PyInstance 已为 py::none()）。
+    VANS_UNLOAD_STEP(2, "清理脚本对象与脚本模块跟踪");
 	for (auto* obj : m_SceneObjects)
 	{
 		if (!obj) continue;
@@ -602,6 +630,7 @@ void VansGraphics::VansScene::UnLoadScene()
 
 	// ── 3-5. 清理物理节点 / 载具 / 布料（需要持有物理线程锁） ─────────────
 	// 物理模拟在独立线程运行，必须先获取 SimulationMutex 再操作 PxScene。
+    VANS_UNLOAD_STEP("3-5", "持有物理锁清理物理节点、载具、布料和角色控制器");
 	{
 		auto& physicsSystem = VansEngine::VansPhysicsSystem::GetInstance();
 		std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
@@ -662,6 +691,7 @@ void VansGraphics::VansScene::UnLoadScene()
 		VANS_LOG("[VansScene] Step 5b: 角色控制器节点已清理");
 	} // 释放 SimulationMutex
 
+    VANS_UNLOAD_STEP("5b", "清理布料 staging buffer");
 	for (auto& stagingBuf : m_ClothStagingBuffers)
 	{
 		if (stagingBuf.IsMapped())
@@ -672,10 +702,12 @@ void VansGraphics::VansScene::UnLoadScene()
 	VANS_LOG("[VansScene] Step 5b: 布料 staging buffer 已清理");
 
 	// ── 6. 清理 transform 父子系统 ───────────────────────────────────────
+    VANS_UNLOAD_STEP(6, "清理 transform 父子系统");
 	m_TransformParentSystem.Clear();
 	VANS_LOG("[VansScene] Step 6: Transform 父子系统已清理");
 
 	// ── 7. 清理植被系统 ─────────────────────────────────────────────────
+    VANS_UNLOAD_STEP(7, "清理植被系统");
 	if (m_VegetationSystem)
 	{
 		m_VegetationSystem->Cleanup(nativeDevice);
@@ -686,6 +718,7 @@ void VansGraphics::VansScene::UnLoadScene()
 
 	// ── 8. 清理所有渲染节点（必须在动画节点之前，因为渲染节点的 descriptor
 	//       set 引用了动画节点的 bone buffer，需在 buffer 销毁前释放 set）
+    VANS_UNLOAD_STEP(8, "清理所有渲染节点");
 	auto deleteRenderNode = [](VansRenderNode* node) {
 		if (node) delete node;
 	};
@@ -731,6 +764,7 @@ void VansGraphics::VansScene::UnLoadScene()
 	VANS_LOG("[VansScene] Step 8: 渲染节点已全部清理");
 
 	// ── 9. 清理动画节点（析构函数会销毁 GPU bone buffer） ─────────────────
+    VANS_UNLOAD_STEP(9, "清理动画节点");
 	for (auto* animNode : m_AnimationNodes)
 	{
 		if (animNode)
@@ -742,6 +776,7 @@ void VansGraphics::VansScene::UnLoadScene()
 	VANS_LOG("[VansScene] Step 9: 动画节点已清理");
 
 	// ── 9b. 清理动画控制器（Controller 由 Scene 持有，Node 只存裸指针） ───
+    VANS_UNLOAD_STEP("9b", "清理动画控制器");
 	for (auto* ctrl : m_AnimationControllers)
 	{
 		delete ctrl;
@@ -754,22 +789,18 @@ void VansGraphics::VansScene::UnLoadScene()
     VANS_LOG("[VansScene] Step 9c: 骨骼碰撞体附着点系统已清理");
 
 	// ── 10. 清理 Multi-mesh 分组 ────────────────────────────────────────
+    VANS_UNLOAD_STEP(10, "清理 Multi-mesh 分组和子网格查找条目");
 	VANS_LOG("[VansScene] Step 10: 开始清理 Multi-mesh 分组 (数量=" << m_MultiMeshGroups.size() << ")");
 	m_MultiMeshGroups.clear();
 
-	// 移除 ExpandMultiMeshToRenderNodes 添加到 m_Meshes 中的子网格条目。
-	// 子网格对象本身由父级 multi-mesh 的 m_SubMeshes 拥有，此处仅清除查找列表中的条目，
-	// 防止下次 ExpandMultiMeshToRenderNodes 时产生重复。
-	m_Meshes.erase(
-		std::remove_if(m_Meshes.begin(), m_Meshes.end(),
-			[](VansAsset* asset) {
-				return static_cast<VansMesh*>(asset)->m_IsSubmesh;
-			}),
-		m_Meshes.end());
+    // 子网格对象本身由父级 multi-mesh 的 m_SubMeshes 拥有，此处仅清除非拥有查找列表，
+    // 防止下次 ExpandMultiMeshToRenderNodes 时产生重复。
+    m_SceneSubMeshes.clear();
 
 	VANS_LOG("[VansScene] Step 10: Multi-mesh 分组已清理");
 
 	// ── 11. 清理材质（场景级，指针由 Scene 拥有） ───────────────────────
+    VANS_UNLOAD_STEP(11, "清理场景级材质");
 	VANS_LOG("[VansScene] Step 11: 开始清理材质 (数量=" << m_Materials.size() << ")");
 	for (size_t i = 0; i < m_Materials.size(); ++i)
 	{
@@ -785,14 +816,17 @@ void VansGraphics::VansScene::UnLoadScene()
 	VANS_LOG("[VansScene] Step 10-11: Multi-mesh 和材质已清理");
 
 	// ── 12. 清理全局 PBR 数据和 descriptor ──────────────────────────────
+    VANS_UNLOAD_STEP(12, "清理全局 PBR 数据和 descriptor");
 	m_MaterialManager.ClearScenePBRData(nativeDevice);
 
 	// ── 13. 清理灯光 CPU 数据和 GPU 资源 ────────────────────────────────
+    VANS_UNLOAD_STEP(13, "清理灯光 CPU 数据和 GPU 资源");
 	m_LightManager.ClearLights();
 	m_LightManager.DestroyGPUResources(nativeDevice);
 	VANS_LOG("[VansScene] Step 12-13: PBR 和灯光 GPU 资源已清理");
 
 	// ── 14. 清理 Ray Tracing TLAS 资源 ─────────────────────────────────
+    VANS_UNLOAD_STEP(14, "清理 Ray Tracing TLAS/BLAS 场景资源");
 	if (vkDevice)
 	{
 		vkDevice->GetRayTracingContext().CleanupSceneResources(nativeDevice);
@@ -832,6 +866,7 @@ void VansGraphics::VansScene::UnLoadScene()
 	VANS_LOG("[VansScene] Step 14: RT/TLAS 资源已清理");
 
 	// ── 15. 清理 Instance Transform Buffer ──────────────────────────────
+    VANS_UNLOAD_STEP(15, "清理 Instance Transform Buffer 与 descriptor");
 	m_InstanceTransformDataBuffer.DestroyVulkanBuffer(nativeDevice);
 	m_InstanceTransformData.clear();
 
@@ -841,6 +876,7 @@ void VansGraphics::VansScene::UnLoadScene()
 	descMgr->DestroyDescriptorSetLayout(m_GlobalTransformDataSetLayout);
 
 	// ── 16. 清理 Global / Object / Animation / Empty Descriptor Sets ─────
+    VANS_UNLOAD_STEP(16, "清理 Global/Object/Animation/Empty descriptor sets");
 	if (m_GlobalDescriptorSet != VK_NULL_HANDLE)
 	{
 		std::vector<VkDescriptorSet> tmp = { m_GlobalDescriptorSet };
@@ -874,21 +910,36 @@ void VansGraphics::VansScene::UnLoadScene()
 	descMgr->DestroyDescriptorSetLayout(m_EmptyPassLayout);
 
 	// ── 17. 清理 Dummy Bone Buffer ──────────────────────────────────────
+    VANS_UNLOAD_STEP(17, "清理 Dummy Bone Buffer");
 	m_DummyBoneIDBuffer.DestroyVulkanBuffer(nativeDevice);
 	m_DummyBoneBuffer.DestroyVulkanBuffer(nativeDevice);
 	m_DummyWeightBuffer.DestroyVulkanBuffer(nativeDevice);
 
 	// ── 18. 暂停视频播放（视频为项目级资源，GPU 纹理保留，切换场景/Play 时复用）────────
+    VANS_UNLOAD_STEP(18, "暂停项目级视频播放");
 	m_VideoManager.PauseAll();
 
 	// ── 19. 停止所有音频播放（音频为项目级资源，不释放已解码数据）────────
+    VANS_UNLOAD_STEP(19, "停止项目级音频播放");
 	m_AudioManager.StopAll();
+    m_SceneState = VansSceneState::Empty;
 
 	VANS_LOG("[VansScene] 场景卸载完成");
 }
 
+void VansGraphics::VansScene::UnloadProjectResources(VansVKDevice* device)
+{
+    VANS_ASSERT_MAIN_THREAD();
+
+    // 重构-08 会在这里完整释放项目级资源。当前阶段只提供统一入口，避免改变既有资源生命周期。
+    (void)device;
+    VANS_LOG("[VansScene] UnloadProjectResources 空桩已调用，完整项目资源释放将在重构-08 实现");
+}
+
 void VansGraphics::VansScene::UpdateSceneData()
 {
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::RenderPrep);
+
     VANS_PROFILE_SCOPE("Scene::UpdateSceneData", Vans::ProfileCategory::RenderPrepare);
 
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);

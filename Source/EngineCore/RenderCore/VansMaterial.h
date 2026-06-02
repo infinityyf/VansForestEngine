@@ -82,33 +82,33 @@ namespace VansGraphics
 	{
 		float planetRadius         = 6340000.0f;
 		float seaLevel             = 200.0f;
-		float cloudMinHeight       = 1200.0f;
-		float cloudMaxHeight       = 7000.0f;
+		float cloudMinHeight       = 330.0f;      // 云层底部高度 (m)
+		float cloudMaxHeight       = 11460.0f;    // 云层顶部高度 = Base(330) + Thickness(11130) (m)
 
-		float density              = 0.06f;
-		float coverage             = 0.32f;
-		float sunBrightness        = 1.5f;
-		float phaseG               = 0.35f;
+		float density              = 0.003f;      // 密度
+		float coverage             = 0.160f;      // 覆盖率
+		float sunBrightness        = 1.500f;      // 太阳亮度
+		float phaseG               = 0.950f;      // 相位函数 G
 
-		float mainTileMeters       = 48000.0f;
-		float detailTileMeters     = 5000.0f;
-		float mainHeightScale      = 1.35f;
-		float detailHeightScale    = 4.20f;
+		float mainTileMeters       = 46700.0f;    // 主噪声平铺尺度 (m)
+		float detailTileMeters     = 1950.0f;     // 细节噪声平铺尺度 (m)
+		float mainHeightScale      = 1.48f;       // 主高度缩放
+		float detailHeightScale    = 4.04f;       // 细节高度缩放
 
-		float thresholdLowCoverage = 0.86f;
-		float thresholdHighCoverage = 0.50f;
-		float densityRemapLow      = 0.08f;
-		float densityRemapHigh     = 0.62f;
+		float thresholdLowCoverage = 0.795f;      // 晴天阈值 (Clear Threshold)
+		float thresholdHighCoverage = 0.700f;     // 阴天阈值 (Overcast Threshold)
+		float densityRemapLow      = 0.120f;      // 密度重映射低值
+		float densityRemapHigh     = 1.000f;      // 密度重映射高值
 
-		float mainErosionStrength  = 1.15f;
-		float detailErosionStrength = 0.42f;
-		float edgeErosionStrength  = 1.20f;
-		float verticalShapePower   = 0.55f;
+		float mainErosionStrength  = 0.400f;      // 主侵蚀强度
+		float detailErosionStrength = 0.850f;     // 细节侵蚀强度
+		float edgeErosionStrength  = 3.330f;      // 边缘侵蚀强度
+		float verticalShapePower   = 0.100f;      // 垂直形状幂次
 
-		float detailErosionLow     = 0.15f;
-		float detailErosionHigh    = 0.76f;
-		float detailEdgeStrength   = 1.00f;
-		float shadowDensityScale   = 1.00f;
+		float detailErosionLow     = 0.335f;      // 细节侵蚀低值
+		float detailErosionHigh    = 0.760f;      // 细节侵蚀高值
+		float detailEdgeStrength   = 1.000f;      // 细节边缘强度
+		float shadowDensityScale   = 1.000f;      // 阴影密度缩放
 	};
 
 	class VansMaterialManager

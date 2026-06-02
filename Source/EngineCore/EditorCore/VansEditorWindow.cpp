@@ -25,6 +25,7 @@
 #include "../Util/VansJobSystem.h"
 #include "../Util/VansInputManager.h"
 #include "../Util/VansLog.h"
+#include "../VansFramePhase.h"
 
 #include "../ProjectSystem/VansProjectManager.h"
 
@@ -35,6 +36,11 @@
 #include <iostream>
 #include <string>
 #include <filesystem>
+#include <mutex>
+
+#ifdef _DEBUG
+VansFramePhase g_CurrentFramePhase = VansFramePhase::GameLogic;
+#endif
 
 namespace
 {
@@ -131,6 +137,7 @@ VansGraphics::VansEditorPlayState VansGraphics::VansEditorWindow::m_PlayState = 
 std::string VansGraphics::VansEditorWindow::m_CurrentLoadedScenePath;
 // 延迟加载模式：默认 Editor
 VansGraphics::VansSceneLoadMode VansGraphics::VansEditorWindow::m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Editor;
+VansGraphics::VansEditorWindow::VansPendingProjectLoad VansGraphics::VansEditorWindow::m_PendingProjectLoad;
 
 bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height, GRAPHICS_API api)
 {
@@ -472,6 +479,107 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
     m_PendingScenePath.clear();
 }
 
+void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
+{
+    if (!m_PendingProjectLoad.m_Requested)
+        return;
+
+    VansPendingProjectLoad pending = m_PendingProjectLoad;
+    m_PendingProjectLoad = {};
+
+    auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
+    auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+    auto& projectMgr = Vans::VansProjectManager::Get();
+
+    VANS_LOG("[Editor] Processing pending project load: " << pending.m_ProjectPath);
+
+    VansTimer::SetTimePaused(true);
+    physics.PauseSimulation();
+    UnregisterCameraInputListeners();
+
+    if (vkDev)
+    {
+        vkDev->WaitForDevice();
+    }
+
+    if (m_Scene)
+    {
+        if (m_Scene->IsSceneReady() || m_Scene->IsSceneSwitching())
+        {
+            m_Scene->UnLoadScene();
+        }
+        if (m_Scene->AreResourcesLoaded())
+        {
+            m_Scene->UnloadProjectResources(vkDev);
+        }
+    }
+
+    if (projectMgr.IsProjectLoaded())
+    {
+        projectMgr.CloseProject();
+    }
+
+    m_ProjectLoaded = false;
+    m_CurrentLoadedScenePath.clear();
+    m_PendingScenePath.clear();
+    m_PendingResourcePath.clear();
+    m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Editor;
+
+    bool loaded = false;
+    if (pending.m_CreateNew)
+    {
+        VANS_LOG("[Editor] Creating project '" << pending.m_ProjectName << "' at " << pending.m_ProjectPath);
+        loaded = projectMgr.CreateProject(pending.m_ProjectPath, pending.m_ProjectName);
+    }
+    else
+    {
+        VANS_LOG("[Editor] Opening project: " << pending.m_ProjectPath);
+        loaded = projectMgr.OpenProject(pending.m_ProjectPath);
+    }
+
+    if (!loaded)
+    {
+        VANS_LOG_ERROR("[Editor] Pending project load failed: " << pending.m_ProjectPath);
+        return;
+    }
+
+    ApplyProjectTimeSettings();
+    m_ProjectLoaded = true;
+    VANS_LOG("[Editor] Project load completed");
+
+    m_ScriptContext.SetupProjectVenv(projectMgr.GetProjectRootPath());
+
+    const std::string& resourceFile = projectMgr.GetConfig().resourceFile;
+    if (!resourceFile.empty())
+    {
+        std::string absResourcePath = projectMgr.GetProjectRootPath() + resourceFile;
+        if (std::filesystem::exists(absResourcePath))
+        {
+            VANS_LOG("[Editor] Deferring resource load: " << absResourcePath);
+            m_PendingResourcePath = absResourcePath;
+        }
+        else
+        {
+            VANS_LOG_WARN("[Editor] Resource file not found: " << absResourcePath);
+        }
+    }
+
+    const std::string& defaultScene = projectMgr.GetConfig().defaultScene;
+    if (!defaultScene.empty())
+    {
+        std::string absScenePath = projectMgr.GetProjectRootPath() + defaultScene;
+        if (std::filesystem::exists(absScenePath))
+        {
+            VANS_LOG("[Editor] Deferring default scene load: " << absScenePath);
+            m_PendingScenePath = absScenePath;
+        }
+        else
+        {
+            VANS_LOG_WARN("[Editor] Default scene not found on disk: " << absScenePath);
+        }
+    }
+}
+
 void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
 {
     // Start the Dear ImGui frame
@@ -486,86 +594,26 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
     {
         auto result = m_ProjectSelector->Render();
 
-        // Helper: after a project is successfully loaded, check for a default
-        // scene in ForestProject.json and auto-load it for rendering.
-        auto tryLoadDefaultScene = [&device]()
-        {
-            auto& mgr = Vans::VansProjectManager::Get();
-
-            // Queue resource loading if resource.json is configured
-            const std::string& resourceFile = mgr.GetConfig().resourceFile;
-            if (!resourceFile.empty())
-            {
-                std::string absResourcePath = mgr.GetProjectRootPath() + resourceFile;
-                if (std::filesystem::exists(absResourcePath))
-                {
-                    VANS_LOG("[Editor] Deferring resource load: " << absResourcePath);
-                    m_PendingResourcePath = absResourcePath;
-                }
-                else
-                {
-                    VANS_LOG_WARN("[Editor] Resource file not found: " << absResourcePath);
-                }
-            }
-
-            // Queue default scene loading
-            const std::string& defaultScene = mgr.GetConfig().defaultScene;
-            if (defaultScene.empty())
-                return;
-
-            // Resolve to absolute path:  projectRoot + defaultScene
-            std::string absScenePath = mgr.GetProjectRootPath() + defaultScene;
-
-            if (!std::filesystem::exists(absScenePath))
-            {
-                VANS_LOG_WARN("[Editor] Default scene not found on disk: " << absScenePath);
-                return;
-            }
-
-            VANS_LOG("[Editor] Deferring default scene load: " << absScenePath);
-            m_PendingScenePath = absScenePath;
-        };
-
         switch (result)
         {
         case Vans::ProjectSelectorResult::OpenExisting:
         {
             const std::string& path = m_ProjectSelector->GetSelectedProjectPath();
-            VANS_LOG("[Editor] Opening project: " << path);
-            if (Vans::VansProjectManager::Get().OpenProject(path))
-            {
-                ApplyProjectTimeSettings();
-                m_ProjectLoaded = true;
-                VANS_LOG("[Editor] Project opened successfully");
-                // ── 确保项目 venv 已建立并将 site-packages 加入 sys.path ──
-                m_ScriptContext.SetupProjectVenv(path);
-                tryLoadDefaultScene();
-            }
-            else
-            {
-                VANS_LOG_ERROR("[Editor] Failed to open project at " << path);
-            }
+            VANS_LOG("[Editor] Queue project open: " << path);
+            m_PendingProjectLoad.m_Requested = true;
+            m_PendingProjectLoad.m_CreateNew = false;
+            m_PendingProjectLoad.m_ProjectPath = path;
             break;
         }
         case Vans::ProjectSelectorResult::CreateNew:
         {
             const std::string& path = m_ProjectSelector->GetSelectedProjectPath();
             const std::string& name = m_ProjectSelector->GetNewProjectName();
-            VANS_LOG("[Editor] Creating project '" << name << "' at " << path);
-            if (Vans::VansProjectManager::Get().CreateProject(path, name))
-            {
-                ApplyProjectTimeSettings();
-                m_ProjectLoaded = true;
-                VANS_LOG("[Editor] Project created successfully");
-                // ── 确保项目 venv 已建立并将 site-packages 加入 sys.path ──
-                m_ScriptContext.SetupProjectVenv(
-                    Vans::VansProjectManager::Get().GetProjectRootPath());
-                tryLoadDefaultScene();
-            }
-            else
-            {
-                VANS_LOG_ERROR("[Editor] Failed to create project!");
-            }
+            VANS_LOG("[Editor] Queue project creation: " << name << " at " << path);
+            m_PendingProjectLoad.m_Requested = true;
+            m_PendingProjectLoad.m_CreateNew = true;
+            m_PendingProjectLoad.m_ProjectPath = path;
+            m_PendingProjectLoad.m_ProjectName = name;
             break;
         }
         case Vans::ProjectSelectorResult::Cancelled:
@@ -875,6 +923,8 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
     // Main loop
     while (!glfwWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle))
     { 
+        VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
+
         // 项目选择界面阶段没有完整场景帧，Profiler 从项目加载后的下一帧开始记录。
         const bool profilerFrameActive = m_ProjectLoaded;
         if (profilerFrameActive)
@@ -930,11 +980,14 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         }
 
         Vans::VansInputManager& input = Vans::VansInputManager::Get();
+    VansEngine::VansPhysicsSystem& physics = VansEngine::VansPhysicsSystem::GetInstance();
 
         // Step Vehicle Physics - MOVED TO PHYSICS THREAD via Callback
         if (m_Scene && m_Scene->IsSceneReady() && m_Scene->m_Vehicle)
         {
             VANS_PROFILE_SCOPE("Frame::VehicleInput", Vans::ProfileCategory::Physics);
+            std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
+
             // Vehicle control inputs via InputManager
             if (input.IsKeyDown(GLFW_KEY_W))
                 m_Scene->m_Vehicle->SetInputs(20.0f, 0.0f, 0.0f, 0.0f);
@@ -951,7 +1004,6 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // Synchronize rigid-body physics transforms to render transforms.
         // IMPORTANT: This uses PxSceneReadLock internally to prevent race conditions
         // with the background physics simulation thread.
-        VansEngine::VansPhysicsSystem& physics = VansEngine::VansPhysicsSystem::GetInstance();
         if (physics.IsSimulationRunning() && m_Scene && m_Scene->IsSceneReady())
         {
             VANS_PROFILE_SCOPE("Physics::SyncRigidBodies", Vans::ProfileCategory::Physics);
@@ -993,6 +1045,12 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
         // ── Deferred resource & scene loading ───────────────────────────
         // Process pending loads BEFORE command buffer recording.
+
+        // 0) Project load/reload orchestration.  This must run before resource/scene load.
+        {
+            VANS_PROFILE_SCOPE("Project::ProcessPendingProjectLoad", Vans::ProfileCategory::IO);
+            ProcessPendingProjectLoad();
+        }
 
         // 1) Load project resources (mesh/texture/shader) from resource.json
         if (!m_PendingResourcePath.empty())
@@ -1069,7 +1127,6 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
 
     // Unregister Physics Callback on shutdown to avoid calling into destroyed objects
     VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback(nullptr);
-    VansEngine::VansPhysicsSystem::GetInstance().StopSimulation(); // Ensure thread stops
 
     // Shutdown input manager
     Vans::VansInputManager::Get().Shutdown();

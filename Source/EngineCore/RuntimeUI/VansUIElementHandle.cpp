@@ -7,6 +7,8 @@
 #include <NsGui/BaseButton.h>
 #include <NsGui/RoutedEvent.h>
 
+#include <memory>
+
 namespace VansRuntime
 {
 
@@ -95,17 +97,14 @@ void VansUIElementHandle::BindClick(std::function<void()> callback)
     auto* element = GetElement(m_NativeElement);
     if (auto* btn = Noesis::DynamicCast<Noesis::BaseButton*>(element))
     {
-        // Use a heap-allocated copy of the callback that survives the lambda capture
-        auto* cb = new std::function<void()>(std::move(callback));
+        // 使用 shared_ptr 让回调生命周期绑定到 Noesis 事件委托，避免裸 new 泄漏。
+        auto cb = std::make_shared<std::function<void()>>(std::move(callback));
 
         btn->Click() += [cb](Noesis::BaseComponent* /*sender*/,
                              const Noesis::RoutedEventArgs& /*args*/)
         {
             if (*cb) (*cb)();
         };
-
-        // NOTE: The callback is intentionally leaked here for simplicity.
-        //       A production implementation would attach its lifetime to the element.
     }
 }
 

@@ -1,4 +1,5 @@
 #include "VansScriptContext.h"
+#include "../VansFramePhase.h"
 #include "../Configration/VansConfigration.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../EditorCore/Windows/VansConsole.h"
@@ -488,6 +489,7 @@ void VansScriptContext::ReloadPydModule(const std::string& moduleName)
         std::string tempName = moduleName + "_hot" + std::to_string(m_PydReloadCounter) + ".pyd";
         std::filesystem::path tempPath = std::filesystem::path(m_ScriptDir) / tempName;
 
+        // FIXME-LEAK[重构-04]: _hot*.pyd 与 sys.modules 引用跨场景残留，后续集中记录并在 Teardown 清理。
         // Clean up previous temp copy (best-effort, ignore errors)
         if (m_PydReloadCounter > 1)
         {
@@ -797,6 +799,7 @@ void VansScriptContext::VansScriptUpdate()
 
 void VansScriptContext::VansScriptUpdateNonCameraScripts()
 {
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
     VANS_PROFILE_SCOPE("Script::VansScriptUpdateNonCameraScripts", Vans::ProfileCategory::Script);
 
     VansScriptPreUpdate();
@@ -807,6 +810,7 @@ void VansScriptContext::VansScriptUpdateNonCameraScripts()
 
 void VansScriptContext::VansScriptUpdateCameraScripts()
 {
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
     VANS_PROFILE_SCOPE("Script::VansScriptUpdateCameraScripts", Vans::ProfileCategory::Script);
 
     UpdateScriptComponents(true, false);

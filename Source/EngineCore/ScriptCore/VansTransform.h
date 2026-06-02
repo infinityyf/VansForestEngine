@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <algorithm>
 #include <cstdint>
+#include <cassert>
 
 namespace VansGraphics
 {
@@ -31,27 +32,40 @@ namespace VansGraphics
 
 		static std::map<uint32_t, bool> TransformIDToTransformDirty;
 
+#ifdef _DEBUG
+		static std::unordered_set<uint32_t> AllocatedTransformIDs;
+#endif
+
 		static uint32_t AllocateTransform()
 		{
+			uint32_t id = 0;
 			if (!FreeTransformIndices.empty())
 			{
-				uint32_t id = FreeTransformIndices.front();
+				id = FreeTransformIndices.front();
 				FreeTransformIndices.pop();
 				// Reset data
 				GlobalTransforms[id] = VansTransform();
-				return id;
 			}
 			else
 			{
 				GlobalTransforms.emplace_back();
-				return static_cast<uint32_t>(GlobalTransforms.size() - 1);
+				id = static_cast<uint32_t>(GlobalTransforms.size() - 1);
 			}
+
+#ifdef _DEBUG
+			AllocatedTransformIDs.insert(id);
+#endif
+			return id;
 		}
 
 		static void FreeTransform(uint32_t id)
 		{
 			if (id < GlobalTransforms.size())
 			{
+#ifdef _DEBUG
+				auto erasedCount = AllocatedTransformIDs.erase(id);
+				assert(erasedCount == 1 && "VansTransformStore::FreeTransform double free or invalid id");
+#endif
 				// Ideally we swap and pop if order doesn't matter, but IDs need to be stable for the Node that holds it.
 				// So we use a free list.
 				FreeTransformIndices.push(id);

@@ -18,8 +18,31 @@
 #include <string>
 #include <cstdint>
 
+// 前向声明，避免循环包含
+namespace VansGraphics { class VansAnimationNode; struct Skeleton; }
+
 namespace VansEngine
 {
+    // =========================================================================
+    // ClothNodePinSkinData  — 单个固定点的骨骼蒙皮数据
+    // 由 VansClothProfile::ResolveBoneBindings() 生成，运行时存入 VansClothNode
+    // =========================================================================
+    static constexpr uint32_t MAX_CLOTH_PIN_BONE_INFLUENCE = 4;
+
+    struct ClothNodePinSkinData
+    {
+        struct BoneWeight
+        {
+            int       m_BoneIndex   = -1;
+            float     m_Weight      = 1.0f;
+            // 固定点在该骨骼局部空间中的偏移（bind-pose 时预计算）
+            // 运行时：worldPos += weight × boneWorldMatrix × vec4(boneLocalOffset, 1)
+            glm::vec3 m_BoneLocalOffset{ 0.0f };
+        };
+        BoneWeight m_BoneWeights[MAX_CLOTH_PIN_BONE_INFLUENCE];
+        uint32_t   m_BoneCount = 0;  // 0 = 回退到 RenderNode Transform 模式
+    };
+
     // =========================================================================
     // ClothNodeProperties  — data parsed from the scene JSON
     // =========================================================================
@@ -53,13 +76,23 @@ namespace VansEngine
         };
         std::vector<CollisionSphereRef> collisionSphereRefs;
 
+        // ── V2：骨骼跟随 ────────────────────────────────────────────────────
+        // 启用后固定点通过骨骼蒙皮计算世界坐标，而非整体 RenderNode Transform
+        bool followBones = false;
+
+        // 每个固定点的蒙皮数据，与 pinnedParticleIndices 平行索引。
+        // 由 FromProfile() 调用 profile.ResolveBoneBindings() 填充。
+        std::vector<ClothNodePinSkinData> pinnedSkinData;
+
         // 从 VansClothProfile 填充属性。
         // pinnedParticleIndices 由 profile.ResolveIndices() 在局部空间近邻匹配填充。
         // rawPosFloat4 来自已挂载 RenderNode 的 VansMesh::GetMeshRawPositionData()（float4 布局）。
+        // skeleton 为可选参数；非空且 profile.m_FollowBones==true 时自动解析骨骼绑定数据。
         static ClothNodeProperties FromProfile(
             const VansClothProfile& profile,
             const std::vector<float>& rawPosFloat4,
-            int vertexCount);
+            int vertexCount,
+            const VansGraphics::Skeleton* skeleton = nullptr);
     };
 
     // =========================================================================
@@ -120,6 +153,36 @@ namespace VansEngine
         std::vector<ClothNodeProperties::CollisionSphereRef>& GetCollisionSphereRefs()
         { return m_CollisionSphereRefs; }
 
+        // ── V2：骨骼跟随接口 ─────────────────────────────────────────────────
+        // 由 VansScene::LoadSingleClothNode() 在创建后立即注入。
+        // 必须在调用 SyncPinnedParticlesToRenderNode() 之前设置。
+        void SetAnimationNode(VansGraphics::VansAnimationNode* animNode)
+        {
+            m_AnimNode = animNode;
+        }
+
+        VansGraphics::VansAnimationNode* GetAnimationNode() const { return m_AnimNode; }
+
+        // V2 延迟骨骼绑定：Pass5（所有 AnimationNode 加载完毕后）由场景调用。
+        // 解析骨骼名称→索引映射，填充 m_PinnedBoneSkinData，并注入 AnimNode。
+        // 必须在首帧 SyncPinnedParticlesToRenderNode() 之前调用。
+        void LateBindBonesFromProfile(const VansClothProfile& profile,
+                                      VansGraphics::VansAnimationNode* animNode);
+
+        bool IsFollowBones() const { return m_FollowBones; }
+
+        // ── 子步仿真接口（供 VansScene::UpdateClothSimulation 使用）────────────
+        // 第一步：计算本帧所有固定点的目标世界坐标，存入 m_TargetPinnedWorldPos。
+        // 不写入 NvCloth 粒子缓冲区。
+        void ComputePinnedTargets();
+
+        // 第二步：按子步进度 alpha（0→1）在上一帧目标与本帧目标之间线性插值，
+        // 同时写入 getCurrentParticles 和 getPreviousParticles，消除隐式速度。
+        void WritePinnedParticlesLerped(float alpha);
+
+        // 第三步：仿真完成后提交本帧目标为"上一帧"，供下帧插值使用。
+        void CommitPinnedTargets();
+
         // ── Accessors ─────────────────────────────────────────────────────────
         bool               IsEnabled()  const { return m_Enabled; }
         void               SetEnabled(bool v) { m_Enabled = v; }
@@ -173,6 +236,25 @@ namespace VansEngine
         // Stored so the scene can look up render nodes and build PxVec4 arrays
         // each frame before calling SetCollisionSpheres().
         std::vector<ClothNodeProperties::CollisionSphereRef> m_CollisionSphereRefs;
+
+        // ── V2：骨骼跟随数据 ──────────────────────────────────────────────────
+        // 是否启用骨骼跟随模式（由 ClothNodeProperties::followBones 初始化）
+        bool m_FollowBones = false;
+
+        // 每个固定点的骨骼蒙皮数据（与 m_PinnedIndices 平行索引）。
+        // m_BoneCount == 0 的条目退化为 Transform 模式。
+        std::vector<ClothNodePinSkinData> m_PinnedBoneSkinData;
+
+        // 关联的 AnimationNode（外部注入，不拥有生命周期）。
+        // 骨骼跟随模式下，每帧从其 Controller::GetCachedGlobalTransforms() 读取骨骼矩阵。
+        VansGraphics::VansAnimationNode* m_AnimNode = nullptr;
+
+        // ── 子步插值缓冲 ──────────────────────────────────────────────────────
+        // m_TargetPinnedWorldPos：本帧骨骼/Transform 计算出的目标世界坐标
+        // m_PrevPinnedWorldPos ：上一帧提交后的目标世界坐标（首帧与 Target 相同）
+        std::vector<glm::vec3> m_TargetPinnedWorldPos;
+        std::vector<glm::vec3> m_PrevPinnedWorldPos;
+        bool m_PinnedPrevInitialized = false; // false = 首帧，直接跳到目标位置
 
         int  m_VertexCount = 0;
         bool m_Enabled     = false;

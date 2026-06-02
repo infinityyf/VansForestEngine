@@ -8,6 +8,7 @@
 #include "../Util/VansLog.h"
 #include "VulkanCore/VansRenderPass.h"
 #include "../VansTimer.h"
+#include "../VansFramePhase.h"
 
 // ===========================================================================
 // Draw commands — one per render pass type
@@ -15,6 +16,8 @@
 
 void VansGraphics::VansScene::DrawShadowNodes()
 {
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
+
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
@@ -213,6 +216,8 @@ void VansGraphics::VansScene::DrawSkyBoxNode()
 
 void VansGraphics::VansScene::DrawOpaqueNodes()
 {
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
+
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();

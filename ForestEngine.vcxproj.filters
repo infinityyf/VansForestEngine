@@ -220,6 +220,15 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VansScene.h">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VansSceneLoadPass.h">
+      <Filter>EngineCore\RenderCore\RenderComponent</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\VansFramePhase.h">
+      <Filter>EngineCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\VansThreadContract.h">
+      <Filter>EngineCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.h">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClInclude>

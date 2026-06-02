@@ -1,5 +1,6 @@
 #include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
+#include "VansSceneLoadPass.h"
 #include "VansShaderRegistry.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
@@ -33,6 +34,7 @@
 
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
 #include "../Util/VansLog.h"
+#include "../VansThreadContract.h"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
@@ -48,6 +50,8 @@ namespace VansGraphics
 // ===========================================================================
 void VansScene::LoadProjectResources(const char* resourceJsonPath, VansVKDevice* device)
 {
+    VANS_ASSERT_MAIN_THREAD();
+
 	VANS_LOG("[VansScene] LoadProjectResources: " << resourceJsonPath);
 
 	std::ifstream resFile(resourceJsonPath);
@@ -77,6 +81,8 @@ void VansScene::LoadProjectResources(const char* resourceJsonPath, VansVKDevice*
 // ===========================================================================
 void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* device, VansSceneLoadMode mode)
 {
+    VANS_ASSERT_MAIN_THREAD();
+
 	VANS_LOG("[VansScene] LoadSceneForRendering: " << scenePath);
 
 	// ── 卸载旧场景 ──────────────────────────────────────────────────────
@@ -1499,9 +1505,10 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
         }
         renderNode->SetName(renderNodeName);
 
-        // Register the sub-mesh in the scene asset list so it can be found by name
+        // Register the sub-mesh in the scene-level lookup list so it can be found by name.
+        // 子网格对象由父级 multi-mesh 持有，不能混入项目级 m_Meshes 所有权列表。
         subMesh->SetName(meshName);
-        m_Meshes.push_back(subMesh);
+        m_SceneSubMeshes.push_back(subMesh);
 
         RegistRenderNode(renderNode, nodeType);
         group.childNodes.push_back(renderNode);
@@ -2073,6 +2080,8 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
 {
     using namespace VansEngine;
 
+    // === [VansSceneLoadPass::Pass1_ComponentInstantiation] ===
+    // 依赖：项目资源与场景材质已加载；输出：对象、组件、渲染/物理等场景列表。
     // ── First pass: create all Objects and component instances ────────────
     // animation component 需要等待所有 render 节点创建完毕后再解析。
     struct ParentLink { std::string childName; std::string parentName; };
@@ -2782,6 +2791,8 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         VANS_LOG("[LoadSceneObjects] Created object '" << obj->m_ObjectName << "'");
     }
 
+    // === [VansSceneLoadPass::Pass2_VehicleReference] ===
+    // 依赖：Pass1 已创建对象与 render 组件；输出：Vehicle body/tire 引用完成绑定。
     // ── Second pass: resolve Vehicle component references ─────────────────
     int objIndex = 0;
     for (const auto& objJson : objectsArray)
@@ -2842,6 +2853,8 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         ++objIndex;
     }
 
+    // === [VansSceneLoadPass::Pass3_TransformParent] ===
+    // 依赖：Pass1 已分配 TransformID；输出：TransformParentSystem 父子关系。
     // ── Third pass: resolve transform parent links ────────────────────────
     for (const auto& link : parentLinks)
     {
@@ -2855,6 +2868,8 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         }
     }
 
+    // === [VansSceneLoadPass::Pass4_AnimationRagdoll] ===
+    // 依赖：Pass1/Pass3 已创建 render 与 transform；输出：动画节点与 ragdoll 绑定。
     // ── Fourth pass: resolve animation components ─────────────────────────
     // 此时所有 render 组件（及对应 MultiMeshGroup）均已创建完毕
     for (auto& pending : pendingAnimComps)
@@ -2874,6 +2889,120 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                                        animNode,
                                        pending.animJson["ragdoll"],
                                        projectRoot);
+        }
+    }
+
+    // === [VansSceneLoadPass::Pass5_ClothAnimationBinding] ===
+    // 依赖：Pass4 已完全填充 m_AnimationNodes。
+    // 为启用骨骼跟随（followBones）的布料节点绑定 AnimationNode，
+    // 并通过 LateBindBonesFromProfile() 解析骨骼名称→索引映射。
+    VANS_LOG("[Pass5] 开始布料骨骼绑定，场景对象数=" << m_SceneObjects.size()
+             << "，AnimationNode 数=" << m_AnimationNodes.size());
+
+    for (auto* obj : m_SceneObjects)
+    {
+        auto* clothComp = obj->GetComponent<VansScriptClothComponent>();
+        if (!clothComp || !clothComp->m_ClothNode)
+            continue;
+
+        VANS_LOG("[Pass5] 找到布料对象: '" << obj->m_ObjectName
+                 << "'，profilePath='" << clothComp->m_ProfilePath << "'");
+
+        if (clothComp->m_ProfilePath.empty())
+        {
+            VANS_LOG_WARN("[Pass5] profilePath 为空，跳过对象 '" << obj->m_ObjectName << "'");
+            continue;
+        }
+
+        VansEngine::VansClothNode* clothNode = clothComp->m_ClothNode;
+        VANS_LOG("[Pass5] ClothNode FollowBones=" << clothNode->IsFollowBones()
+                 << "，已有 AnimNode=" << (clothNode->GetAnimationNode() != nullptr ? "是" : "否"));
+
+        if (!clothNode->IsFollowBones())
+        {
+            VANS_LOG_WARN("[Pass5] followBones=false，跳过。检查 clothprofile 中 followBones 字段。");
+            continue;
+        }
+        if (clothNode->GetAnimationNode())
+        {
+            VANS_LOG("[Pass5] AnimNode 已绑定，跳过。");
+            continue;
+        }
+
+        auto* renderComp = obj->GetComponent<VansScriptRenderComponent>();
+        if (!renderComp || !renderComp->m_RenderNode)
+        {
+            VANS_LOG_WARN("[Pass5] 对象 '" << obj->m_ObjectName << "' 无 RenderComponent，跳过。");
+            continue;
+        }
+
+        const std::string& nodeName   = renderComp->m_RenderNode->m_NodeName;
+        const std::string& parentName = renderComp->m_RenderNode->m_ParentGroupName;
+
+        // m_ParentGroupName 仅 multi-mesh 子网格才有值；对于独立布料对象，
+        // 父节点关系存在于 VansTransformParentSystem 中，通过 TransformID 查找。
+        uint32_t clothTransformID  = renderComp->m_RenderNode->m_TransformID;
+        uint32_t parentTransformID = m_TransformParentSystem.GetParent(clothTransformID);
+
+        VANS_LOG("[Pass5] RenderNode.m_NodeName='" << nodeName
+                 << "'，m_ParentGroupName='" << parentName
+                 << "'，clothTransformID=" << clothTransformID
+                 << "，parentTransformID=" << parentTransformID);
+
+        // 策略1：m_ParentGroupName 非空时按名称匹配（multi-mesh 子节点路径）
+        // 策略2：parentTransformID 有效时按 TransformID 匹配（独立对象 render.parent 路径）
+        auto FindAnimNodeForCloth = [&]() -> VansAnimationNode*
+        {
+            for (auto* animNode : m_AnimationNodes)
+            {
+                for (auto* ownedRN : animNode->GetRenderNodes())
+                {
+                    // 策略1：名称匹配
+                    if (!parentName.empty() && ownedRN->m_NodeName == parentName)
+                        return animNode;
+                    // 策略2：TransformID 匹配
+                    if (parentTransformID != UINT32_MAX
+                        && ownedRN->m_TransformID == parentTransformID)
+                        return animNode;
+                }
+            }
+            return nullptr;
+        };
+
+        // 打印所有 AnimNode 的 RenderNode 信息，便于调试
+        VANS_LOG("[Pass5] 共有 " << m_AnimationNodes.size() << " 个 AnimationNode：");
+        for (auto* animNode : m_AnimationNodes)
+        {
+            VANS_LOG("[Pass5]   AnimNode='" << animNode->GetName()
+                     << "'，RenderNode 数=" << animNode->GetRenderNodes().size()
+                     << "，TransformID=" << animNode->GetTransformID());
+            for (auto* ownedRN : animNode->GetRenderNodes())
+                VANS_LOG("[Pass5]     RenderNode='" << ownedRN->m_NodeName
+                         << "' tid=" << ownedRN->m_TransformID);
+        }
+
+        VansAnimationNode* foundAnimNode = FindAnimNodeForCloth();
+        if (!foundAnimNode)
+        {
+            VANS_LOG_WARN("[Pass5] 未找到匹配的 AnimNode（parentName='" << parentName
+                          << "' parentTransformID=" << parentTransformID << "）");
+        }
+        else
+        {
+            VANS_LOG("[Pass5] 匹配成功：AnimNode='" << foundAnimNode->GetName() << "'");
+
+            // profilePath 已在 Pass1 中扩展为绝对路径
+            VansEngine::VansClothProfile profile;
+            if (profile.LoadFromFile(clothComp->m_ProfilePath))
+            {
+                clothNode->LateBindBonesFromProfile(profile, foundAnimNode);
+                VANS_LOG("[Pass5] 骨骼绑定完成：Cloth '" << clothNode->GetName()
+                         << "' → AnimNode '" << foundAnimNode->GetName() << "'");
+            }
+            else
+            {
+                VANS_LOG_ERROR("[Pass5] 无法加载 profile '" << clothComp->m_ProfilePath << "'");
+            }
         }
     }
 

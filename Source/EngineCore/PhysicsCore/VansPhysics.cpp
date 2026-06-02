@@ -3,6 +3,7 @@
 #include "VansClothSystem.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
+#include "../VansThreadContract.h"
 #include <iostream>
 #include <chrono>
 #include <vehicle2/PxVehicleAPI.h>
@@ -265,6 +266,8 @@ namespace VansEngine
 
 	void VansPhysicsSystem::StartSimulation()
 	{
+		VANS_ASSERT_MAIN_THREAD();
+
 		if (m_IsRunning) return;
 
 		m_IsRunning = true;

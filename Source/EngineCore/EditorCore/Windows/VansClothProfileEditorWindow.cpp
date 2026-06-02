@@ -10,8 +10,10 @@
 #include <assimp/matrix4x4.h>
 #include <GLM/glm.hpp>
 #include <GLM/gtc/matrix_transform.hpp>
+#include <GLM/gtc/type_ptr.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <tuple>
 #include <cmath>
@@ -157,10 +159,12 @@ namespace VansGraphics
 
         ImGui::SameLine();
 
-        // 右侧：参数面板 + 固定点列表
+        // 右侧：参数面板 + 骨骼配置面板 + 固定点列表
         if (ImGui::BeginChild("##clothRight", ImVec2(rightWidth, panelHeight), false))
         {
             DrawParametersPanel();
+            ImGui::Spacing();
+            DrawBoneConfigPanel();
             ImGui::Spacing();
             DrawPinnedParticleList();
         }
@@ -183,6 +187,9 @@ namespace VansGraphics
             m_MeshLoaded         = false;
             m_WeldedParticles.clear();
             m_WeldedTriangles.clear();
+            m_EditorBones.clear();
+            m_SkeletonLoaded  = false;
+            m_SkeletonLoadError.clear();
             m_IsDirty = false;
             m_IsOpen  = true;
             return;
@@ -193,12 +200,18 @@ namespace VansGraphics
         m_MeshLoaded         = false;
         m_WeldedParticles.clear();
         m_WeldedTriangles.clear();
+        m_EditorBones.clear();
+        m_SkeletonLoaded  = false;
+        m_SkeletonLoadError.clear();
         m_IsDirty = false;
 
         if (m_Profile.LoadFromFile(profilePath))
         {
             if (!m_Profile.m_ModelPath.empty())
                 LoadModelFromProfile();
+            // V2：若配置了参考骨架路径则自动加载骨骼
+            if (m_Profile.m_FollowBones && !m_Profile.m_ReferenceSkeletonPath.empty())
+                LoadReferenceSkeleton();
         }
         else
         {
@@ -351,10 +364,22 @@ namespace VansGraphics
             dl->AddCircle(sp, 5.8f, IM_COL32(255, 255, 255, 100), 0, 1.0f);
         }
 
+        // ③ 若已加载骨架，叠加骨骼线框
+        if (m_SkeletonLoaded && m_Profile.m_FollowBones)
+            DrawSkeletonOverlay(dl, mvp, viewportMin, viewportSize);
+
         ImGui::Dummy(viewportSize);
         bool isViewportHovered = ImGui::IsItemHovered();
         HandleOrbitalCamera(isViewportHovered);
         HandleVertexPicking(viewportMin, viewportSize, mvp, view);
+
+        // 更新绑定结果倒计时
+        if (m_BindResultTimer > 0.0f)
+        {
+            m_BindResultTimer -= ImGui::GetIO().DeltaTime;
+            if (m_BindResultTimer < 0.0f)
+                m_BindResultTimer = 0.0f;
+        }
     }
 
     // =========================================================================
@@ -413,12 +438,34 @@ namespace VansGraphics
         {
             const glm::vec3& pos = m_Profile.m_PinnedLocalPositions[i];
             ImGui::Text("[%d] (%.3f, %.3f, %.3f)", i, pos.x, pos.y, pos.z);
+
+            // V2：若启用骨骼跟随则显示绑定信息
+            if (m_Profile.m_FollowBones
+                && i < static_cast<int>(m_Profile.m_PinnedBoneBindings.size()))
+            {
+                const auto& bd = m_Profile.m_PinnedBoneBindings[i];
+                ImGui::Indent(16.0f);
+                if (!bd.m_BoneNames.empty())
+                {
+                    for (size_t b = 0; b < bd.m_BoneNames.size(); ++b)
+                    {
+                        float w = (b < bd.m_Weights.size()) ? bd.m_Weights[b] : 0.0f;
+                        ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f),
+                            "-> %s (%.2f)", bd.m_BoneNames[b].c_str(), w);
+                    }
+                }
+                ImGui::Unindent(16.0f);
+            }
+
             ImGui::SameLine();
             std::string btnId = "[X]##pin" + std::to_string(i);
             if (ImGui::SmallButton(btnId.c_str()))
             {
                 m_Profile.m_PinnedLocalPositions.erase(
                     m_Profile.m_PinnedLocalPositions.begin() + i);
+                if (i < static_cast<int>(m_Profile.m_PinnedBoneBindings.size()))
+                    m_Profile.m_PinnedBoneBindings.erase(
+                        m_Profile.m_PinnedBoneBindings.begin() + i);
 
                 // 同步 EditorParticle 的 m_IsPinned 状态
                 for (auto& ep : m_WeldedParticles)
@@ -582,6 +629,468 @@ namespace VansGraphics
         if (m_CurrentProfilePath.empty()) return;
         OpenProfile(m_CurrentProfilePath);
         m_IsDirty = false;
+    }
+
+    // =========================================================================
+    // DrawBoneConfigPanel — 骨骼跟随配置面板
+    // =========================================================================
+
+    void VansClothProfileEditorWindow::DrawBoneConfigPanel()
+    {
+        if (!ImGui::CollapsingHeader("骨骼跟随"))
+            return;
+
+        // Follow Bones 总开关
+        bool prevFollow = m_Profile.m_FollowBones;
+        if (ImGui::Checkbox("启用骨骼跟随", &m_Profile.m_FollowBones))
+        {
+            m_IsDirty = true;
+            if (!prevFollow && m_Profile.m_FollowBones)
+            {
+                // 刚启用时清空旧绑定数据
+                m_Profile.m_PinnedBoneBindings.clear();
+            }
+        }
+
+        if (!m_Profile.m_FollowBones)
+            return;
+
+        ImGui::Separator();
+
+        // 参考骨架路径输入
+        char skelBuf[512]{};
+        strncpy_s(skelBuf, sizeof(skelBuf), m_Profile.m_ReferenceSkeletonPath.c_str(), _TRUNCATE);
+        if (ImGui::InputText("骨架路径", skelBuf, sizeof(skelBuf)))
+        {
+            m_Profile.m_ReferenceSkeletonPath = skelBuf;
+            m_IsDirty = true;
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("加载骨架"))
+        {
+            LoadReferenceSkeleton();
+        }
+
+        // 加载状态提示
+        if (m_SkeletonLoaded)
+        {
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f),
+                "已加载 %d 根骨骼", static_cast<int>(m_EditorBones.size()));
+        }
+        else if (!m_SkeletonLoadError.empty())
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                "错误: %s", m_SkeletonLoadError.c_str());
+        }
+
+        ImGui::Separator();
+        ImGui::Text("骨架偏移（相对模型坐标系）");
+
+        // 位置偏移
+        float pos[3] = { m_Profile.m_SkeletonOffset.m_Position.x,
+                         m_Profile.m_SkeletonOffset.m_Position.y,
+                         m_Profile.m_SkeletonOffset.m_Position.z };
+        if (ImGui::DragFloat3("偏移位置", pos, 0.01f))
+        {
+            m_Profile.m_SkeletonOffset.m_Position = glm::vec3(pos[0], pos[1], pos[2]);
+            m_IsDirty = true;
+            if (m_SkeletonLoaded)
+                RebuildEditorBonePositions();
+        }
+
+        // 旋转偏移（Euler 角，度）
+        float rot[3] = { m_Profile.m_SkeletonOffset.m_Rotation.x,
+                         m_Profile.m_SkeletonOffset.m_Rotation.y,
+                         m_Profile.m_SkeletonOffset.m_Rotation.z };
+        if (ImGui::DragFloat3("偏移旋转", rot, 0.5f))
+        {
+            m_Profile.m_SkeletonOffset.m_Rotation = glm::vec3(rot[0], rot[1], rot[2]);
+            m_IsDirty = true;
+            if (m_SkeletonLoaded)
+                RebuildEditorBonePositions();
+        }
+
+        // 缩放偏移
+        float scl[3] = { m_Profile.m_SkeletonOffset.m_Scale.x,
+                         m_Profile.m_SkeletonOffset.m_Scale.y,
+                         m_Profile.m_SkeletonOffset.m_Scale.z };
+        if (ImGui::DragFloat3("偏移缩放", scl, 0.01f))
+        {
+            m_Profile.m_SkeletonOffset.m_Scale = glm::vec3(scl[0], scl[1], scl[2]);
+            m_IsDirty = true;
+            if (m_SkeletonLoaded)
+                RebuildEditorBonePositions();
+        }
+
+        ImGui::Separator();
+
+        // 绑定模式选择
+        const char* bindModeItems[] = { "单骨骼（最近骨骼）", "多骨骼（混合权重）" };
+        int currentMode = static_cast<int>(m_BindMode);
+        if (ImGui::Combo("绑定模式", &currentMode, bindModeItems, 2))
+            m_BindMode = static_cast<BindMode>(currentMode);
+
+        // 自动计算绑定按钮
+        if (ImGui::Button("自动计算绑定"))
+            AutoBindPinnedVertices();
+
+        // 绑定结果提示（计时器控制显示时长）
+        if (m_BindResultTimer > 0.0f && !m_BindResultMessage.empty())
+        {
+            ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.2f, 1.0f),
+                "%s", m_BindResultMessage.c_str());
+        }
+    }
+
+    // =========================================================================
+    // LoadReferenceSkeleton — 用 Assimp 解析骨架，构建 EditorBone 列表
+    // =========================================================================
+
+    void VansClothProfileEditorWindow::LoadReferenceSkeleton()
+    {
+        m_SkeletonLoaded = false;
+        m_SkeletonLoadError.clear();
+        m_EditorBones.clear();
+
+        if (m_Profile.m_ReferenceSkeletonPath.empty())
+        {
+            m_SkeletonLoadError = "骨架路径为空";
+            return;
+        }
+
+        // 将相对路径拼接为绝对路径（与 LoadModelFromProfile 保持一致）
+        std::string absSkeletonPath = m_Profile.m_ReferenceSkeletonPath;
+        const std::string& projectRoot = Vans::VansProjectManager::Get().GetProjectRootPath();
+        if (!projectRoot.empty() && !fs::path(absSkeletonPath).is_absolute())
+            absSkeletonPath = projectRoot + absSkeletonPath;
+
+        Assimp::Importer importer;
+        const aiScene* scene = importer.ReadFile(
+            absSkeletonPath,
+            aiProcess_GlobalScale | aiProcess_FlipUVs);
+
+        if (!scene || !scene->mRootNode)
+        {
+            m_SkeletonLoadError = importer.GetErrorString();
+            return;
+        }
+
+        // 递归遍历骨骼节点，构建 EditorBone 列表
+        std::function<void(const aiNode*, int, const glm::mat4&)> traverseNode =
+            [&](const aiNode* node, int parentIdx, const glm::mat4& parentGlobal)
+        {
+            // 将 aiMatrix4x4 转为 glm::mat4（行主序 → 列主序）
+            const aiMatrix4x4& aiLocal = node->mTransformation;
+            glm::mat4 localMat = glm::mat4(
+                aiLocal.a1, aiLocal.b1, aiLocal.c1, aiLocal.d1,
+                aiLocal.a2, aiLocal.b2, aiLocal.c2, aiLocal.d2,
+                aiLocal.a3, aiLocal.b3, aiLocal.c3, aiLocal.d3,
+                aiLocal.a4, aiLocal.b4, aiLocal.c4, aiLocal.d4);
+
+            glm::mat4 globalMat = parentGlobal * localMat;
+
+            EditorBone bone;
+            bone.m_Name         = node->mName.C_Str();
+            bone.m_ParentIndex  = parentIdx;
+            bone.m_GlobalTransform = globalMat;
+            // 头部位置暂存为全局平移分量，后续由 RebuildEditorBonePositions 调整
+            bone.m_HeadPos = glm::vec3(globalMat[3]);
+            bone.m_TailPos = bone.m_HeadPos; // 先填相同值，后续更新
+
+            int myIdx = static_cast<int>(m_EditorBones.size());
+            m_EditorBones.push_back(bone);
+
+            for (unsigned int c = 0; c < node->mNumChildren; ++c)
+                traverseNode(node->mChildren[c], myIdx, globalMat);
+        };
+
+        traverseNode(scene->mRootNode, -1, glm::mat4(1.0f));
+
+        // 计算尾部位置：子骨骼头部 = 父骨骼尾部；叶节点外推
+        for (int i = 0; i < static_cast<int>(m_EditorBones.size()); ++i)
+        {
+            // 找第一个子节点
+            int firstChild = -1;
+            for (int j = i + 1; j < static_cast<int>(m_EditorBones.size()); ++j)
+            {
+                if (m_EditorBones[j].m_ParentIndex == i)
+                {
+                    firstChild = j;
+                    break;
+                }
+            }
+
+            if (firstChild >= 0)
+            {
+                m_EditorBones[i].m_TailPos = m_EditorBones[firstChild].m_HeadPos;
+            }
+            else
+            {
+                // 叶节点：沿父骨骼方向外推 0.1 个单位
+                if (m_EditorBones[i].m_ParentIndex >= 0)
+                {
+                    glm::vec3 parentHead =
+                        m_EditorBones[m_EditorBones[i].m_ParentIndex].m_HeadPos;
+                    glm::vec3 dir = m_EditorBones[i].m_HeadPos - parentHead;
+                    float len = glm::length(dir);
+                    if (len > 1e-5f)
+                        m_EditorBones[i].m_TailPos =
+                            m_EditorBones[i].m_HeadPos + (dir / len) * 0.1f;
+                    else
+                        m_EditorBones[i].m_TailPos =
+                            m_EditorBones[i].m_HeadPos + glm::vec3(0.0f, 0.1f, 0.0f);
+                }
+                else
+                {
+                    m_EditorBones[i].m_TailPos =
+                        m_EditorBones[i].m_HeadPos + glm::vec3(0.0f, 0.1f, 0.0f);
+                }
+            }
+        }
+
+        m_SkeletonLoaded = true;
+        RebuildEditorBonePositions();
+    }
+
+    // =========================================================================
+    // RebuildEditorBonePositions — 将骨骼全局变换乘以 skeletonOffset 矩阵，
+    //                              重新计算编辑器中每根骨骼的头/尾世界坐标
+    // =========================================================================
+
+    void VansClothProfileEditorWindow::RebuildEditorBonePositions()
+    {
+        if (m_EditorBones.empty())
+            return;
+
+        glm::mat4 offsetMat = m_Profile.GetSkeletonOffsetMatrix();
+
+        // 第一遍：更新所有骨骼头部位置
+        for (auto& bone : m_EditorBones)
+        {
+            glm::vec4 h = offsetMat * glm::vec4(glm::vec3(bone.m_GlobalTransform[3]), 1.0f);
+            bone.m_HeadPos = glm::vec3(h);
+        }
+
+        // 第二遍：更新尾部位置（与 LoadReferenceSkeleton 中逻辑一致）
+        for (int i = 0; i < static_cast<int>(m_EditorBones.size()); ++i)
+        {
+            int firstChild = -1;
+            for (int j = i + 1; j < static_cast<int>(m_EditorBones.size()); ++j)
+            {
+                if (m_EditorBones[j].m_ParentIndex == i)
+                {
+                    firstChild = j;
+                    break;
+                }
+            }
+
+            if (firstChild >= 0)
+            {
+                m_EditorBones[i].m_TailPos = m_EditorBones[firstChild].m_HeadPos;
+            }
+            else
+            {
+                if (m_EditorBones[i].m_ParentIndex >= 0)
+                {
+                    glm::vec3 parentHead =
+                        m_EditorBones[m_EditorBones[i].m_ParentIndex].m_HeadPos;
+                    glm::vec3 dir = m_EditorBones[i].m_HeadPos - parentHead;
+                    float len = glm::length(dir);
+                    if (len > 1e-5f)
+                        m_EditorBones[i].m_TailPos =
+                            m_EditorBones[i].m_HeadPos + (dir / len) * 0.1f;
+                    else
+                        m_EditorBones[i].m_TailPos =
+                            m_EditorBones[i].m_HeadPos + glm::vec3(0.0f, 0.1f, 0.0f);
+                }
+                else
+                {
+                    m_EditorBones[i].m_TailPos =
+                        m_EditorBones[i].m_HeadPos + glm::vec3(0.0f, 0.1f, 0.0f);
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // DrawSkeletonOverlay — 在网格视口上叠加绘制骨架（蓝色线段 + 圆点）
+    // =========================================================================
+
+    void VansClothProfileEditorWindow::DrawSkeletonOverlay(
+        ImDrawList* drawList,
+        const glm::mat4& mvp,
+        ImVec2 viewportMin,
+        ImVec2 viewportSize)
+    {
+        // 辅助 lambda：局部空间坐标 → 屏幕像素坐标
+        auto Project = [&](const glm::vec3& p) -> ImVec2
+        {
+            glm::vec4 clip = mvp * glm::vec4(p, 1.0f);
+            if (clip.w <= 0.001f) return { -9999.0f, -9999.0f };
+            glm::vec2 ndc = glm::vec2(clip.x, clip.y) / clip.w;
+            return {
+                viewportMin.x + (ndc.x * 0.5f + 0.5f) * viewportSize.x,
+                viewportMin.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * viewportSize.y
+            };
+        };
+
+        constexpr ImU32 kBoneLineColor   = IM_COL32(80,  140, 255, 180);
+        constexpr ImU32 kBoneHeadColor   = IM_COL32(120, 180, 255, 220);
+        constexpr float kBoneHeadRadius  = 4.0f;
+
+        for (const auto& bone : m_EditorBones)
+        {
+            // 绘制骨骼连线（从父骨骼头部到本骨骼头部）
+            if (bone.m_ParentIndex >= 0
+                && bone.m_ParentIndex < static_cast<int>(m_EditorBones.size()))
+            {
+                ImVec2 p0 = Project(m_EditorBones[bone.m_ParentIndex].m_HeadPos);
+                ImVec2 p1 = Project(bone.m_HeadPos);
+                drawList->AddLine(p0, p1, kBoneLineColor, 1.5f);
+            }
+
+            // 绘制骨骼头部圆点
+            ImVec2 h = Project(bone.m_HeadPos);
+            drawList->AddCircleFilled(h, kBoneHeadRadius, kBoneHeadColor);
+        }
+    }
+
+    // =========================================================================
+    // DistanceToBoneSegment — 点到骨骼线段（头→尾）的最短距离
+    // =========================================================================
+
+    float VansClothProfileEditorWindow::DistanceToBoneSegment(
+        const glm::vec3& point,
+        const EditorBone& bone) const
+    {
+        glm::vec3 ab = bone.m_TailPos - bone.m_HeadPos;
+        float abLen2 = glm::dot(ab, ab);
+
+        if (abLen2 < 1e-10f)
+            return glm::length(point - bone.m_HeadPos);
+
+        float t = glm::clamp(glm::dot(point - bone.m_HeadPos, ab) / abLen2, 0.0f, 1.0f);
+        glm::vec3 closest = bone.m_HeadPos + t * ab;
+        return glm::length(point - closest);
+    }
+
+    // =========================================================================
+    // AutoBindPinnedVertices — 自动计算固定点骨骼绑定关系
+    // =========================================================================
+
+    void VansClothProfileEditorWindow::AutoBindPinnedVertices()
+    {
+        if (m_Profile.m_PinnedLocalPositions.empty())
+        {
+            m_BindResultMessage = "没有固定点，请先在网格上拾取";
+            m_BindResultTimer   = 3.0f;
+            return;
+        }
+        if (!m_SkeletonLoaded || m_EditorBones.empty())
+        {
+            m_BindResultMessage = "骨架未加载，请先指定骨架路径并加载";
+            m_BindResultTimer   = 3.0f;
+            return;
+        }
+
+        m_Profile.m_PinnedBoneBindings.clear();
+        m_Profile.m_PinnedBoneBindings.reserve(
+            m_Profile.m_PinnedLocalPositions.size());
+
+        constexpr int   kMaxBones      = 4;
+        constexpr float kMinWeightTh   = 0.05f;    // 低于此权重的骨骼影响将被丢弃
+
+        for (const glm::vec3& pinPos : m_Profile.m_PinnedLocalPositions)
+        {
+            VansEngine::VansClothProfile::PinBoneBinding binding;
+
+            if (m_BindMode == BindMode::SingleBone)
+            {
+                // 单骨骼：找距离最近的骨骼
+                float    minDist  = std::numeric_limits<float>::max();
+                int      bestBone = -1;
+
+                for (int b = 0; b < static_cast<int>(m_EditorBones.size()); ++b)
+                {
+                    float d = DistanceToBoneSegment(pinPos, m_EditorBones[b]);
+                    if (d < minDist)
+                    {
+                        minDist  = d;
+                        bestBone = b;
+                    }
+                }
+
+                if (bestBone >= 0)
+                {
+                    binding.m_BoneNames.push_back(m_EditorBones[bestBone].m_Name);
+                    binding.m_Weights.push_back(1.0f);
+                }
+            }
+            else
+            {
+                // 多骨骼：取最近 K 根，按距离倒数平方计算权重
+                struct BoneDistPair { int idx; float dist; };
+                std::vector<BoneDistPair> pairs;
+                pairs.reserve(m_EditorBones.size());
+
+                for (int b = 0; b < static_cast<int>(m_EditorBones.size()); ++b)
+                {
+                    float d = DistanceToBoneSegment(pinPos, m_EditorBones[b]);
+                    pairs.push_back({ b, d });
+                }
+
+                // 升序排序，取前 kMaxBones 根
+                std::sort(pairs.begin(), pairs.end(),
+                    [](const BoneDistPair& a, const BoneDistPair& b)
+                    { return a.dist < b.dist; });
+
+                int count = std::min(static_cast<int>(pairs.size()), kMaxBones);
+                float weightSum = 0.0f;
+                std::vector<float> rawWeights(count);
+
+                for (int k = 0; k < count; ++k)
+                {
+                    float d   = pairs[k].dist;
+                    float inv = (d > 1e-5f) ? (1.0f / (d * d)) : 1e10f;
+                    rawWeights[k] = inv;
+                    weightSum    += inv;
+                }
+
+                // 归一化 + 过滤低权重骨骼
+                for (int k = 0; k < count; ++k)
+                {
+                    float w = (weightSum > 1e-10f) ? rawWeights[k] / weightSum : 0.0f;
+                    if (w < kMinWeightTh)
+                        continue;
+                    binding.m_BoneNames.push_back(m_EditorBones[pairs[k].idx].m_Name);
+                    binding.m_Weights.push_back(w);
+                }
+
+                // 若过滤后为空则回退到最近骨骼
+                if (binding.m_BoneNames.empty() && !pairs.empty())
+                {
+                    binding.m_BoneNames.push_back(m_EditorBones[pairs[0].idx].m_Name);
+                    binding.m_Weights.push_back(1.0f);
+                }
+                else
+                {
+                    // 再次归一化（过滤后权重之和不为 1）
+                    float sum2 = 0.0f;
+                    for (float w : binding.m_Weights) sum2 += w;
+                    if (sum2 > 1e-10f)
+                        for (float& w : binding.m_Weights) w /= sum2;
+                }
+            }
+
+            m_Profile.m_PinnedBoneBindings.push_back(std::move(binding));
+        }
+
+        m_IsDirty = true;
+        m_BindResultMessage = "绑定完成，共处理 "
+            + std::to_string(m_Profile.m_PinnedBoneBindings.size())
+            + " 个固定点";
+        m_BindResultTimer = 3.0f;
     }
 
     // =========================================================================
