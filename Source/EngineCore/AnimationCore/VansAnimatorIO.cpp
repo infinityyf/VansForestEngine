@@ -16,20 +16,24 @@ static std::string ParamTypeToString(AnimatorParamType type)
 {
 	switch (type)
 	{
-	case AnimatorParamType::Float:   return "float";
-	case AnimatorParamType::Bool:    return "bool";
-	case AnimatorParamType::Int:     return "int";
-	case AnimatorParamType::Trigger: return "trigger";
+	case AnimatorParamType::Float:      return "float";
+	case AnimatorParamType::Bool:       return "bool";
+	case AnimatorParamType::Int:        return "int";
+	case AnimatorParamType::Trigger:    return "trigger";
+	case AnimatorParamType::Vector3:    return "vector3";
+	case AnimatorParamType::Quaternion: return "quaternion";
 	}
 	return "float";
 }
 
 static AnimatorParamType StringToParamType(const std::string& str)
 {
-	if (str == "float")   return AnimatorParamType::Float;
-	if (str == "bool")    return AnimatorParamType::Bool;
-	if (str == "int")     return AnimatorParamType::Int;
-	if (str == "trigger") return AnimatorParamType::Trigger;
+	if (str == "float")      return AnimatorParamType::Float;
+	if (str == "bool")       return AnimatorParamType::Bool;
+	if (str == "int")        return AnimatorParamType::Int;
+	if (str == "trigger")    return AnimatorParamType::Trigger;
+	if (str == "vector3")    return AnimatorParamType::Vector3;
+	if (str == "quaternion") return AnimatorParamType::Quaternion;
 	return AnimatorParamType::Float;
 }
 
@@ -89,6 +93,12 @@ bool VansAnimatorIO::Save(const std::string& filePath,
 		case AnimatorParamType::Bool:    p["default"] = param.boolVal;  break;
 		case AnimatorParamType::Int:     p["default"] = param.intVal;   break;
 		case AnimatorParamType::Trigger: break;
+		case AnimatorParamType::Vector3:
+			p["default"] = { param.vec3Val.x, param.vec3Val.y, param.vec3Val.z };
+			break;
+		case AnimatorParamType::Quaternion:
+			p["default"] = { param.quatVal.x, param.quatVal.y, param.quatVal.z, param.quatVal.w };
+			break;
 		}
 		paramArray.push_back(p);
 	}
@@ -234,7 +244,6 @@ bool VansAnimatorIO::Load(const std::string& filePath, AnimatorAssetData& outDat
 
 	outData.name = root.value("name", "Unnamed");
 	outData.version = root.value("version", 1u);
-	outData.defaultStateName = root.value("defaultState", "");
 
 	// ── 参数 ──
 	if (root.contains("parameters") && root["parameters"].is_array())
@@ -253,6 +262,23 @@ bool VansAnimatorIO::Load(const std::string& filePath, AnimatorAssetData& outDat
 				case AnimatorParamType::Bool:    param.boolVal  = p["default"].get<bool>();  break;
 				case AnimatorParamType::Int:     param.intVal   = p["default"].get<int>();   break;
 				case AnimatorParamType::Trigger: break;
+				case AnimatorParamType::Vector3:
+					if (p["default"].is_array() && p["default"].size() >= 3)
+					{
+						param.vec3Val.x = p["default"][0].get<float>();
+						param.vec3Val.y = p["default"][1].get<float>();
+						param.vec3Val.z = p["default"][2].get<float>();
+					}
+					break;
+				case AnimatorParamType::Quaternion:
+					if (p["default"].is_array() && p["default"].size() >= 4)
+					{
+						param.quatVal.x = p["default"][0].get<float>();
+						param.quatVal.y = p["default"][1].get<float>();
+						param.quatVal.z = p["default"][2].get<float>();
+						param.quatVal.w = p["default"][3].get<float>();
+					}
+					break;
 				}
 			}
 			outData.parameters.push_back(param);
@@ -281,62 +307,8 @@ bool VansAnimatorIO::Load(const std::string& filePath, AnimatorAssetData& outDat
 		}
 	}
 
-	// ── States (v1) ──
-	if (root.contains("states") && root["states"].is_array())
-	{
-		for (const auto& s : root["states"])
-		{
-			AnimatorState state;
-			state.name       = s.value("name", "");
-			state.clipName   = s.value("clip", "");
-			state.speed      = s.value("speed", 1.0f);
-			state.loop       = s.value("loop", true);
-			state.rootMotion = s.value("rootMotion", false);
-			state.startTime  = s.value("startTime", 0.0f);
-			state.endTime    = s.value("endTime", -1.0f);
-			outData.states.push_back(state);
-		}
-	}
-
-	// ── Transitions ──
-	if (root.contains("transitions") && root["transitions"].is_array())
-	{
-		for (const auto& t : root["transitions"])
-		{
-			AnimatorTransition trans;
-			trans.fromState     = t.value("from", "");
-			trans.toState       = t.value("to", "");
-			trans.blendDuration = t.value("blendDuration", 0.2f);
-			trans.hasExitTime   = t.value("hasExitTime", false);
-			trans.exitTime      = t.value("exitTime", 1.0f);
-
-			if (t.contains("conditions") && t["conditions"].is_array())
-			{
-				for (const auto& c : t["conditions"])
-				{
-					TransitionCondition cond;
-					cond.paramName = c.value("param", "");
-					cond.op        = StringToCompareOp(c.value("op", "=="));
-
-					if (c.contains("value"))
-					{
-						if (c["value"].is_boolean())
-							cond.boolVal = c["value"].get<bool>();
-						else if (c["value"].is_number_float())
-							cond.floatVal = c["value"].get<float>();
-						else if (c["value"].is_number_integer())
-							cond.intVal = c["value"].get<int>();
-					}
-					trans.conditions.push_back(cond);
-				}
-			}
-			outData.transitions.push_back(trans);
-		}
-	}
-
 	VANS_LOG("[VansAnimatorIO] Loaded .vanimator v" << outData.version << ": " << filePath
-	         << " (" << outData.states.size() << " states, "
-	         << outData.parameters.size() << " params"
+	         << " (" << outData.parameters.size() << " params"
 	         << (outData.animGraph ? ", has graph" : "") << ")");
 	return true;
 }

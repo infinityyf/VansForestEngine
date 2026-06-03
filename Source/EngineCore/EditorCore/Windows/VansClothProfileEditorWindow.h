@@ -16,7 +16,6 @@ namespace VansGraphics
     // 通过 OpenProfile(profilePath) 或 NewProfile() 打开，编辑器自行根据
     // Profile 内的 m_ModelPath 通过 Assimp CPU-only 加载网格，
     // 完全不依赖场景中的 RenderNode。
-    // V2 新增骨骼 FBX 加载、骨架显示、自动绑定功能。
     // =========================================================================
     class VansClothProfileEditorWindow : public VansBaseWindowComponent
     {
@@ -61,7 +60,7 @@ namespace VansGraphics
         bool m_ShowNewProfileDialog = false;
         char m_NewProfilePathBuf[512] = {};
 
-        // ── V2：骨骼 FBX 编辑器数据 ────────────────────────────────────────
+        // ── 骨骼 FBX 编辑器数据 ─────────────────────────────────────────────
         // 编辑器中加载的参考骨架（CPU-only，与场景 Skeleton 独立）
         struct EditorBone
         {
@@ -99,7 +98,7 @@ namespace VansGraphics
         void DrawProfileInfoPanel();    // 顶部 Profile 元信息与操作按钮
         void DrawMeshViewport();        // ImGui DrawList 3D 投影渲染（左侧）
         void DrawParametersPanel();     // 右侧物理参数 Inspector
-        void DrawBoneConfigPanel();     // 右侧骨骼跟随配置面板（V2）
+        void DrawBoneConfigPanel();     // 右侧骨骼跟随配置面板
         void DrawPinnedParticleList();  // 右侧已固定粒子列表
 
         void HandleOrbitalCamera(bool isViewportHovered);
@@ -107,7 +106,7 @@ namespace VansGraphics
                      const glm::mat4& mvp,
                      const glm::mat4& view);
 
-        // V2：骨骼相关
+        // 骨骼相关
         void LoadReferenceSkeleton();                          // 通过 Assimp 加载骨架 FBX
         void RebuildEditorBonePositions();                     // 应用 offsetMatrix 重算骨骼头尾位置
         void DrawSkeletonOverlay(ImDrawList* dl,               // 视口中渲染骨架线框

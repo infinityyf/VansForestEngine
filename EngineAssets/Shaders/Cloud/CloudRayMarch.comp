@@ -140,10 +140,8 @@ void main()
 
     // 太阳方向（来自全局灯光数据，与 FogLightInjection.comp 保持一致）
     vec3 sunDir   = normalize(uDirectionLight.direction.xyz);
-    vec3 sunColor = uDirectionLight.color.rgb * uDirectionLight.intensity * uCloud.sunBrightness;
-
-    // 简化大气太阳色衰减
-    vec3 sunColorAtmosphered = sunColor * CalcCloudSunAbsorbLight(sunDir);
+    // uDirectionLight.color 已由 CPU 预计算为大气衰减后的有效颜色，直接用于散射计算
+    vec3 sunColorAtmosphered = uDirectionLight.color.rgb * uDirectionLight.intensity * uCloud.sunBrightness;
 
     // 相位函数：太阳入射方向与视线方向的夹角余弦
     float cosTheta = dot(rayDir, sunDir);

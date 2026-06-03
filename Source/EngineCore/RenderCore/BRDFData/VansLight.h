@@ -115,6 +115,11 @@ namespace VansGraphics
 
 		void SyncLightGPUData(const glm::vec3& cameraPosition);
 
+		// CPU 预计算大气仰角衰减后的太阳颜色
+		// 公式与 VolumetricFog.comp AtmSunColor / CloudCommon CalcCloudSunAbsorbLight 保持一致
+		// sunDir 可以未归一化；baseColor 为美术设置的原始颜色
+		static glm::vec3 ComputeAtmosphereSunColor(const glm::vec3& sunDir, const glm::vec3& baseColor);
+
 		//Create light gpu data
 		void CreateLightUniformData(VkDevice& logic_device);
 

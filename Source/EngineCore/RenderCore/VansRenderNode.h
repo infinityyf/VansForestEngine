@@ -140,7 +140,7 @@ namespace VansGraphics
 
 		virtual void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
-		void DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex);
+
 
 		// Draw with cascade shadow push constants: { materialIndex, transformIndex, cascadeIndex }
 		void DrawCascadeShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,

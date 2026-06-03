@@ -13,6 +13,7 @@
 
 #include "VansAnimationTypes.h"
 #include "VansAnimationController.h"
+#include "IK/VansIKTypes.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -25,6 +26,7 @@ namespace VansGraphics
 	// 前向声明
 	struct AnimatorParameter;
 	class VansAnimGraph;
+	class VansIKSolver;
 
 	// ─────────────────────────────────────────────────────────────
 	//  节点类型枚举
@@ -41,7 +43,10 @@ namespace VansGraphics
 		Switch,          // 多路选择：根据 int 参数选择 N 路 Pose 之一
 		AdditiveBlend,   // 叠加混合：base + additive * weight
 		SpeedScale,      // 播放速度缩放（套在 Clip 输入上）
-		StateMachine     // 嵌入式状态机节点（适配旧有 FSM 逻辑）
+		StateMachine,    // 嵌入式状态机节点（适配旧有 FSM 逻辑）
+		IK,              // 通用 IK 节点（CCD/FABRIK 求解人体或非关节链）
+		TwoBoneIK,       // 双骨骼 IK 节点（人体四肢快捷配置）
+		LookAt           // 朝向/瞄准节点
 	};
 
 	// ─────────────────────────────────────────────────────────────
@@ -370,6 +375,113 @@ namespace VansGraphics
 		void InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,
 		                          float time,
 		                          glm::vec3& outPos, glm::quat& outRot, glm::vec3& outScale);
+	};
+
+	// ─── IKNode ─────────────────────────────────────────────────
+	//  通用 IK 节点：使用配置好的 IKChainDefinition + 求解器
+	//  Input 0: Pose (上游动画)
+	//  Output 0: Pose (IK 修正后)
+	//  目标位置/旋转通过 Vector3/Quaternion 参数驱动。
+
+	class AnimGraphIKNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphIKNode();
+		~AnimGraphIKNode() override;
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraph& graph) override;
+
+		// IK 链配置
+		IKChainDefinition m_Chain;
+
+		// 目标驱动参数名（必须为 Vector3/Quaternion 类型）
+		std::string m_TargetPosParamName;
+		std::string m_TargetRotParamName;
+		std::string m_WeightParamName;       // Float 类型，0~1
+
+		// 当未指定参数时使用的固定目标
+		bool        m_UseFixedTarget = false;
+		glm::vec3   m_FixedTargetPos = glm::vec3(0.0f);
+		glm::quat   m_FixedTargetRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		float       m_FixedWeight    = 1.0f;
+
+	private:
+		std::unique_ptr<VansIKSolver> m_Solver;
+		IKSolverType                  m_SolverKind = IKSolverType::CCD;
+
+		void EnsureSolver();
+	};
+
+	// ─── TwoBoneIKNode ──────────────────────────────────────────
+	//  人体四肢专用快捷节点：root + mid + tip 三骨骼
+	//  内部构建 IKChainDefinition + CCDSolver
+
+	class AnimGraphTwoBoneIKNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphTwoBoneIKNode();
+		~AnimGraphTwoBoneIKNode() override;
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraph& graph) override;
+
+		// 配置
+		std::string m_RootBoneName;     // 肩 / 髋
+		std::string m_MidBoneName;      // 肘 / 膝
+		std::string m_TipBoneName;      // 手 / 脚
+		float       m_HingeMinAngle  = 0.0f;
+		float       m_HingeMaxAngle  = 150.0f;
+		float       m_ConeAngle      = 60.0f;
+
+		bool        m_UsePoleVector  = false;
+		glm::vec3   m_PoleVector     = glm::vec3(0.0f, 0.0f, -1.0f);
+		float       m_PoleWeight     = 1.0f;
+
+		std::string m_TargetPosParamName;
+		std::string m_WeightParamName;
+		bool        m_UseFixedTarget = false;
+		glm::vec3   m_FixedTargetPos = glm::vec3(0.0f);
+		float       m_FixedWeight    = 1.0f;
+
+	private:
+		std::unique_ptr<VansIKSolver> m_Solver;
+		IKChainDefinition             m_CachedChain;
+		bool                          m_ChainBuilt = false;
+
+		void BuildChain(const Skeleton& skeleton);
+	};
+
+	// ─── LookAtNode ─────────────────────────────────────────────
+	//  让一根或多根骨骼朝向目标点。
+
+	class AnimGraphLookAtNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphLookAtNode();
+		~AnimGraphLookAtNode() override;
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraph& graph) override;
+
+		// 配置
+		std::vector<std::string> m_BoneNames;     // 从根到末端
+		std::vector<float>       m_BoneWeights;
+		float                    m_MaxAnglePerBoneDeg = 80.0f;
+		glm::vec3                m_ForwardAxis = glm::vec3(0.0f, 0.0f, -1.0f);
+
+		std::string m_TargetPosParamName;
+		std::string m_WeightParamName;
+		bool        m_UseFixedTarget = false;
+		glm::vec3   m_FixedTargetPos = glm::vec3(0.0f);
+		float       m_FixedWeight    = 1.0f;
+
+	private:
+		std::unique_ptr<VansIKSolver> m_Solver;
+		IKChainDefinition             m_CachedChain;
+		bool                          m_ChainBuilt = false;
+
+		void BuildChain(const Skeleton& skeleton);
 	};
 
 	// ═════════════════════════════════════════════════════════════

@@ -68,6 +68,9 @@
     <Filter Include="EngineCore\AnimationCore">
       <UniqueIdentifier>{a1b2c3d4-e5f6-7890-abcd-ef1234567890}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\AnimationCore\IK">
+      <UniqueIdentifier>{c4f1ae90-1234-5678-9abc-def012345678}</UniqueIdentifier>
+    </Filter>
     <Filter Include="EngineCore\PhysicsCore">
       <UniqueIdentifier>{eaf1286b-794d-4d1d-b61b-7cf7da65388c}</UniqueIdentifier>
     </Filter>
@@ -450,6 +453,27 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimGraph.h">
       <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKTypes.h">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKSolver.h">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKConstraint.h">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansCCDSolver.h">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansFABRIKSolver.h">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansLookAtSolver.h">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKChainBuilder.h">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.h">
       <Filter>EngineCore\AnimationCore</Filter>
@@ -895,6 +919,24 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimGraph.cpp">
       <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansIKSolver.cpp">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansIKConstraint.cpp">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansCCDSolver.cpp">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansFABRIKSolver.cpp">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansLookAtSolver.cpp">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansIKChainBuilder.cpp">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.cpp">
       <Filter>EngineCore\AnimationCore</Filter>

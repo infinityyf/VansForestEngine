@@ -359,7 +359,8 @@ void main()
     // Temporal IGN dither — varies per frame, much less visible pattern than static Bayer
     float dither = interleavedGradientNoise(gl_FragCoord.xy, FrameIndex);
 
-    vec3 lightAbsorb = calcAtomsphereSunAbsorbLight(sunDirection.xyz);
+    // effectiveSunColor 由 CPU 写入 AtmosphereUBO，与 LightsData 的 uDirectionLight.color 一致
+    vec3 lightAbsorb = effectiveSunColor.rgb;
     
     vec3 color = calculateVolumetricClouds(viewPosition,viewDirection, vec3(0.0f), dither, lightAbsorb);
 

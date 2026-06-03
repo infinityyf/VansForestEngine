@@ -7,9 +7,6 @@
 // Two-step registration:
 //   Step 1: RegisterShader — one entry per unique shader (keyed by name).
 //   Step 2: RegisterMaterialPasses — maps each material type to { pass → shader }.
-//
-// Legacy RegisterForType/RegisterNamed calls are kept temporarily until all
-// callers have been migrated to the new pass-based API.
 // ---------------------------------------------------------------------------
 void RegisterEngineShaders()
 {

@@ -91,7 +91,14 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 
 void VansGraphics::VansVKBuffer::DestroyVulkanBuffer(VkDevice& logical_device)
 {
-	// Persistent mapping (if any) is released automatically by vmaDestroyBuffer.
+	// 若调用过 PersistentMap()（vmaMapMemory），VMA 内部映射引用计数 >0，
+	// 必须先 vmaUnmapMemory，否则 vmaDestroyBuffer 会触发断言/崩溃。
+	// 持久映射 (VMA_ALLOCATION_CREATE_MAPPED_BIT) 由 vmaDestroyBuffer 自动释放。
+	if (m_ExplicitlyMapped && m_VansVKBufferAllocation != nullptr)
+	{
+		VansVKMemoryAllocator::Get().UnmapAllocation(m_VansVKBufferAllocation);
+		m_ExplicitlyMapped = false;
+	}
 	m_MappedPtr = nullptr;
 
 	if (VK_NULL_HANDLE != m_VansVKBufferView)
@@ -152,6 +159,8 @@ bool VansGraphics::VansVKBuffer::PersistentMap()
 		VANS_LOG_ERROR("PersistentMap: vmaMapMemory failed.");
 		return false;
 	}
+	// 显式 vmaMapMemory 路径，销毁时需 vmaUnmapMemory。
+	m_ExplicitlyMapped = true;
 	return true;
 }
 
@@ -160,11 +169,13 @@ void VansGraphics::VansVKBuffer::Unmap()
 	if (!m_MappedPtr)
 		return;
 
-	// If this allocation is persistently mapped (PersistentUpload), the pointer
-	// remains valid for the allocation's lifetime; vmaUnmapMemory is a no-op
-	// in that case but we still clear the cache so SetBufferData falls back
-	// to the copy path consistently.
-	VansVKMemoryAllocator::Get().UnmapAllocation(m_VansVKBufferAllocation);
+	// 仅在显式 vmaMapMemory 路径下需要 vmaUnmapMemory；
+	// 持久映射 (VMA_ALLOCATION_CREATE_MAPPED_BIT) 不能被 unmap。
+	if (m_ExplicitlyMapped)
+	{
+		VansVKMemoryAllocator::Get().UnmapAllocation(m_VansVKBufferAllocation);
+		m_ExplicitlyMapped = false;
+	}
 	m_MappedPtr = nullptr;
 }
 

@@ -75,7 +75,7 @@ namespace VansEngine
         struct PinBoneBinding
         {
             // 多骨骼绑定列表（按权重降序排列，权重和为 1.0）
-            // 若 boneNames 为空则退化为单骨骼（兼容 V1 扩展）
+            // 若 boneNames 为空则退化为单骨骼
             std::vector<std::string> m_BoneNames;
             std::vector<float>       m_Weights;
         };

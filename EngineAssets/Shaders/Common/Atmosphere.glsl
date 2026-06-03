@@ -21,6 +21,10 @@ layout(set=AtmosphereCBBind, binding=0) uniform  AtmosphereUniformBuffer
     float mieAnisotropy;
     float ozoneLevelCenterHeight;
     float ozoneLevelWidth;
+    // std140 在上方 9 个 float（offset 16..48）后自动补齐到 offset 64
+    // 内容：CPU 预计算的大气衰减后太阳色（baseColor × 仰角衰减）
+    // 供无法直接读 LightsData 的 shader（如 VolumeCloud.frag）使用
+    vec4 effectiveSunColor;
 };
 
 struct AtmosphereParam

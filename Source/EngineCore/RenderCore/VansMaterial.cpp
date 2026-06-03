@@ -388,8 +388,12 @@ void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterial
 
 	uint32_t offset = 0;
 	uint32_t size = sizeof(VansAtmospherePBRParam);
-	m_AtmospherePBRParam.m_SunDirection = lightManager.GetDirectionLights()[0].m_Direction;
-	m_AtmospherePBRParam.m_SunDirection = glm::normalize(m_AtmospherePBRParam.m_SunDirection);
+	const auto& dirLight = lightManager.GetDirectionLights()[0];
+	m_AtmospherePBRParam.m_SunDirection = glm::normalize(dirLight.m_Direction);
+	// CPU 预计算大气衰减后的太阳颜色，写入 AtmosphereUBO
+	// 供无法直接读 LightsData.glsl 的 shader（如 VolumeCloud.frag）使用
+	m_AtmospherePBRParam.m_EffectiveSunColor = VansLightManager::ComputeAtmosphereSunColor(
+		dirLight.m_Direction, dirLight.m_Color);
 	materialManager.m_AtmospherePBRDataBuffer.SetBufferData(&m_AtmospherePBRParam, offset, size);
 }
 

@@ -1619,18 +1619,11 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
         for (auto& [name, clip] : clipsMap)
             controller->AddClip(name, std::move(clip));
 
-        for (const auto& state : assetData.states)
-            controller->AddState(state);
-
-        for (const auto& trans : assetData.transitions)
-            controller->AddTransition(trans);
-
-        controller->SetDefaultState(assetData.defaultStateName);
-        controller->BindStateClips();
-
-        // v2: 传递 AnimGraph
+        // 传递 AnimGraph（.vanimator 文件必须包含 graph 节点）
         if (assetData.animGraph)
             controller->SetGraph(std::move(assetData.animGraph));
+        else
+            VANS_LOG_WARN("[LoadAnimComp] .vanimator 文件不含 graph 节点: " << fullAnimatorPath);
 
         VANS_LOG("[LoadAnimComp] Loaded controller from .vanimator: " << fullAnimatorPath);
     }
@@ -1667,7 +1660,12 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
                 controller->AddClip(clip.clipName, clip);
         }
 
+        // 将所有 clip 封装为 AnimGraphStateMachineNode，驱动 v2 AnimGraph
         auto clipNames = controller->GetClipNames();
+
+        auto smNode = std::make_unique<AnimGraphStateMachineNode>();
+        smNode->m_DefaultStateName  = clipNames.empty() ? "" : clipNames.front();
+        smNode->m_CurrentStateName  = smNode->m_DefaultStateName;
         for (const auto& clipName : clipNames)
         {
             AnimatorState state;
@@ -1676,15 +1674,16 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
             state.speed      = 1.0f;
             state.loop       = true;
             state.rootMotion = enableRootMotion;
-            controller->AddState(state);
+            smNode->m_States.push_back(state);
         }
 
-        if (!clipNames.empty())
-            controller->SetDefaultState(clipNames.front());
+        auto graph   = std::make_unique<VansAnimGraph>();
+        int  smId    = graph->AddNode(std::move(smNode));
+        int  outId   = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        graph->AddLink(smId, 0, outId, 0);
+        controller->SetGraph(std::move(graph));
 
-        controller->BindStateClips();
-
-        VANS_LOG("[LoadAnimComp] Auto-generated controller for '" << meshGroupName
+        VANS_LOG("[LoadAnimComp] Auto-generated v2 graph controller for '" << meshGroupName
                  << "' with " << clipNames.size() << " clip(s)");
     }
 

@@ -251,10 +251,9 @@ void main()
         fogOD = AnalyticalHeightFogOD(camPos, posWS);
     }
 
-    // 用与天空盒相同的大气模型衰减定向光颜色，日落时自动变为橙/红色
-    vec3 attenuatedSun = uDirectionLight.color.xyz
-                       * AtmSunColor(sunDir)
-                       * c_sunBrightness;
+    // uDirectionLight.color 已由 CPU UpdateLightCPUData 预计算为大气衰减后的有效颜色
+    // 不再需要在 shader 内再次乘以 AtmSunColor()
+    vec3 attenuatedSun = uDirectionLight.color.xyz * c_sunBrightness;
 
     // 内散射：太阳（相位加权 + 大气衰减）+ 瑞利天空环境光
     vec3 sunColor     = attenuatedSun   * phase            * uFog.sunScatterScale;

@@ -50,6 +50,11 @@ namespace VansGraphics
 		// Persistent mapping: cached host pointer (nullptr when not mapped)
 		void* m_MappedPtr = nullptr;
 
+		// 是否通过显式 vmaMapMemory 映射；为 true 时销毁前必须 vmaUnmapMemory，
+		// 否则 VMA 断言：Unmapping allocation not previously mapped。
+		// 若 m_MappedPtr 来自 VMA_ALLOCATION_CREATE_MAPPED_BIT 持久映射，则保持 false。
+		bool m_ExplicitlyMapped = false;
+
 	private:
 		VkBufferView m_VansVKBufferView = VK_NULL_HANDLE;
 

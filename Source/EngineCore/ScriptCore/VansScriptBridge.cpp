@@ -456,6 +456,51 @@ void VansInitEngineBridge()
 			ac->m_AnimNode->GetController()->SetSpeed(speed);
 	};
 
+	// ── Vector3 / Quaternion / 参数添加 (IK 目标驱动用) ─────────────────
+	s_EngineBridge.animSetVector3 = [](void* comp, const char* name, float x, float y, float z)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			ac->m_AnimNode->GetController()->SetVector3(name, glm::vec3(x, y, z));
+	};
+
+	s_EngineBridge.animGetVector3 = [](void* comp, const char* name, float& x, float& y, float& z)
+	{
+		x = 0.0f; y = 0.0f; z = 0.0f;
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+		{
+			glm::vec3 v = ac->m_AnimNode->GetController()->GetVector3(name);
+			x = v.x; y = v.y; z = v.z;
+		}
+	};
+
+	s_EngineBridge.animSetQuaternion = [](void* comp, const char* name, float x, float y, float z, float w)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			ac->m_AnimNode->GetController()->SetQuaternion(name, glm::quat(w, x, y, z));
+	};
+
+	s_EngineBridge.animGetQuaternion = [](void* comp, const char* name, float& x, float& y, float& z, float& w)
+	{
+		x = 0.0f; y = 0.0f; z = 0.0f; w = 1.0f;
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+		{
+			glm::quat q = ac->m_AnimNode->GetController()->GetQuaternion(name);
+			x = q.x; y = q.y; z = q.z; w = q.w;
+		}
+	};
+
+	s_EngineBridge.animAddParameter = [](void* comp, const char* name, int paramType)
+	{
+		auto* ac = AsAnimComp(comp);
+		if (ac && ac->m_AnimNode && ac->m_AnimNode->GetController())
+			ac->m_AnimNode->GetController()->AddParameter(name,
+				static_cast<VansGraphics::AnimatorParamType>(paramType));
+	};
+
 	// ── RagdollComponent ────────────────────────────────────────────────
 	s_EngineBridge.ragdollSetDriveMode = [](void* comp, int mode)
 	{

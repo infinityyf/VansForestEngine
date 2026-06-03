@@ -113,6 +113,27 @@ void VansGraphics::VansLightManager::AddRectLight(const VansRectLight& light)
 	m_RectLights.push_back(light);
 }
 
+// 将 baseColor 乘以大气仰角衰减，得到 GPU 上传用的有效太阳颜色。
+// 系数与 VolumetricFog.comp AtmSunColor / CloudCommon CalcCloudSunAbsorbLight 完全一致。
+glm::vec3 VansGraphics::VansLightManager::ComputeAtmosphereSunColor(
+	const glm::vec3& sunDir, const glm::vec3& baseColor)
+{
+	// 硬编码简化大气系数（Rayleigh + Mie），与 shader 端保持一致
+	static const glm::vec3 kAtmRayleigh = glm::vec3(0.27e-5f, 0.5e-5f, 1.0e-5f);
+	static const glm::vec3 kAtmMie      = glm::vec3(0.5e-6f, 0.5e-6f, 0.5e-6f);
+	static const glm::vec3 kAtmTotal    = kAtmRayleigh + kAtmMie;
+
+	const float sinElev = glm::dot(glm::normalize(sunDir), glm::vec3(0.0f, 1.0f, 0.0f));
+	const float d       = (std::max)(sinElev * 2.0f + 0.01f, 0.01f);
+	const float od      = 100000.0f / d;
+	// exp2(-coeff * od) = pow(2, -coeff * od)，逐分量计算
+	const glm::vec3 exponent    = -kAtmTotal * od;
+	const glm::vec3 attenuation = glm::vec3(std::pow(2.0f, exponent.x),
+	                                         std::pow(2.0f, exponent.y),
+	                                         std::pow(2.0f, exponent.z));
+	return baseColor * attenuation;
+}
+
 void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3& cameraPosition)
 {
 	auto vansConfig = VansConfigration::GetInstance();
@@ -260,7 +281,18 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 	m_LightBuffer.SetBufferData(m_SoftShadowParams, offset, size);
 	offset += size;
 	size = sizeof(VansDirectionalLight) * m_MaxDirectionLightCount;
-	UploadPaddedLightData(m_LightBuffer, offset, m_MaxDirectionLightCount, m_DirectionalLights);
+	{
+		// 上传前将颜色替换为大气衰减后的有效颜色
+		// m_Color 保持为美术原始值；GPU buffer 中的 color 是最终有效光照颜色
+		// 所有 include LightsData.glsl 的 shader 均通过 uDirectionLight.color 取到统一来源
+		auto dirLightsForUpload = m_DirectionalLights;
+		for (auto& dl : dirLightsForUpload)
+		{
+			if (glm::dot(dl.m_Direction, dl.m_Direction) > 1e-6f)
+				dl.m_Color = ComputeAtmosphereSunColor(dl.m_Direction, dl.m_Color);
+		}
+		UploadPaddedLightData(m_LightBuffer, offset, m_MaxDirectionLightCount, dirLightsForUpload);
+	}
 	offset += size;
 	size = sizeof(VansPointLight) * m_MaxPointLightCount;
 	UploadPaddedLightData(m_LightBuffer, offset, m_MaxPointLightCount, m_PointLights);

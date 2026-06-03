@@ -18,7 +18,9 @@ namespace VansGraphics
 		Float,
 		Bool,
 		Int,
-		Trigger    // 一次性触发器，触发后自动重置为 false
+		Trigger,    // 一次性触发器，触发后自动重置为 false
+		Vector3,    // 用于 IK 目标位置等
+		Quaternion  // 用于 IK 目标旋转等
 	};
 
 	// ─── 参数 ───
@@ -30,6 +32,8 @@ namespace VansGraphics
 		float             floatVal = 0.0f;
 		bool              boolVal  = false;
 		int               intVal   = 0;
+		glm::vec3         vec3Val  = glm::vec3(0.0f);
+		glm::quat         quatVal  = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 		// Trigger 内部用 boolVal 表示是否已触发
 	};
 
@@ -121,11 +125,15 @@ namespace VansGraphics
 		void SetInt(const std::string& name, int value);
 		void SetTrigger(const std::string& name);
 		void ResetTrigger(const std::string& name);
+		void SetVector3(const std::string& name, const glm::vec3& value);
+		void SetQuaternion(const std::string& name, const glm::quat& value);
 
 		float GetFloat(const std::string& name) const;
 		bool  GetBool(const std::string& name) const;
 		int   GetInt(const std::string& name) const;
 		bool  IsTriggerSet(const std::string& name) const;
+		glm::vec3 GetVector3(const std::string& name) const;
+		glm::quat GetQuaternion(const std::string& name) const;
 
 		const std::unordered_map<std::string, AnimatorParameter>& GetParameters() const;
 

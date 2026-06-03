@@ -21,17 +21,12 @@ namespace VansGraphics
 	// 从 .vanimator 文件加载得到的完整定义
 	struct AnimatorAssetData
 	{
-		uint32_t                       version = 1;
+		uint32_t                       version = VANIMATOR_VERSION;
 		std::string                    name;
 		std::vector<AnimatorParameter> parameters;
 		std::vector<AnimatorClipRef>   clipRefs;
 
-		// v1: 状态机数据
-		std::vector<AnimatorState>     states;
-		std::vector<AnimatorTransition> transitions;
-		std::string                    defaultStateName;
-
-		// v2: 逻辑图数据
+		// 逻辑图数据
 		std::unique_ptr<VansAnimGraph> animGraph;
 	};
 

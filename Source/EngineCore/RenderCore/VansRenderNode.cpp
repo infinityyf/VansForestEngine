@@ -166,11 +166,6 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 	cmd.DrawMesh(*m_Mesh, *shader, 1);
 }
 
-void VansGraphics::VansRenderNode::DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex)
-{
-	// Legacy fallback — punctual shadow draws now use DrawPunctualShadowWithPassShader().
-}
-
 void VansGraphics::VansRenderNode::DrawCascadeShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
                                                                      VansGraphicsShader* passShader,
                                                                      const std::vector<VkDescriptorSet>& descSets,

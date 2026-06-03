@@ -27,7 +27,11 @@ namespace VansGraphics
 		float				m_MieScalarHeight;
 		float				m_MieAnisotropy;
 		float				m_OzoneLevelCenterHeight;
-		float				m_OzoneLevelWidth;
+		float				m_OzoneLevelWidth;		// 补齐 3 个 float（offset 52/56/60），使下面字段落在 offset 64（与 GLSL std140 对齐）
+		float				_pad0 = 0, _pad1 = 0, _pad2 = 0;
+		// CPU 预计算：baseColor × 大气仰角衰减，供无 LightsData 的 shader（如 VolumeCloud.frag）通过 AtmosphereUBO 读取
+		glm::vec3			m_EffectiveSunColor = glm::vec3(1.0f);
+		float				_pad3 = 0;
 	};
 
 }

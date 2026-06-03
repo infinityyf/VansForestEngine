@@ -124,6 +124,36 @@ bool VansAnimationController::IsTriggerSet(const std::string& name) const
 	return false;
 }
 
+void VansAnimationController::SetVector3(const std::string& name, const glm::vec3& value)
+{
+	auto it = m_Parameters.find(name);
+	if (it != m_Parameters.end() && it->second.type == AnimatorParamType::Vector3)
+		it->second.vec3Val = value;
+}
+
+void VansAnimationController::SetQuaternion(const std::string& name, const glm::quat& value)
+{
+	auto it = m_Parameters.find(name);
+	if (it != m_Parameters.end() && it->second.type == AnimatorParamType::Quaternion)
+		it->second.quatVal = value;
+}
+
+glm::vec3 VansAnimationController::GetVector3(const std::string& name) const
+{
+	auto it = m_Parameters.find(name);
+	if (it != m_Parameters.end() && it->second.type == AnimatorParamType::Vector3)
+		return it->second.vec3Val;
+	return glm::vec3(0.0f);
+}
+
+glm::quat VansAnimationController::GetQuaternion(const std::string& name) const
+{
+	auto it = m_Parameters.find(name);
+	if (it != m_Parameters.end() && it->second.type == AnimatorParamType::Quaternion)
+		return it->second.quatVal;
+	return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+}
+
 const std::unordered_map<std::string, AnimatorParameter>& VansAnimationController::GetParameters() const
 {
 	return m_Parameters;
@@ -279,24 +309,9 @@ void VansAnimationController::BindStateClips()
 
 void VansAnimationController::Play()
 {
-	// v2: 有 graph 时直接启动播放，无需状态机
-	if (m_Graph)
-	{
-		m_PlaybackState = AnimationState::Playing;
-		m_Graph->ResetAll();
-		return;
-	}
-
-	if (m_DefaultStateName.empty() || m_States.find(m_DefaultStateName) == m_States.end())
-	{
-		// 没有默认状态，尝试用第一个 state
-		if (!m_States.empty())
-			m_DefaultStateName = m_States.begin()->first;
-		else
-			return;
-	}
-
-	Play(m_DefaultStateName);
+	if (!m_Graph) return;
+	m_PlaybackState = AnimationState::Playing;
+	m_Graph->ResetAll();
 }
 
 void VansAnimationController::Play(const std::string& stateName)
@@ -379,50 +394,31 @@ AnimationState VansAnimationController::GetPlaybackState() const
 
 float VansAnimationController::GetCurrentPlayTime() const
 {
-	// v2: 从 AnimGraph 第一个 ClipNode 读取当前时间
-	if (m_Graph)
+	if (!m_Graph) return 0.0f;
+	for (const auto& [id, node] : m_Graph->GetNodes())
 	{
-		for (const auto& [id, node] : m_Graph->GetNodes())
+		if (node->GetType() == AnimGraphNodeType::Clip)
 		{
-			if (node->GetType() == AnimGraphNodeType::Clip)
-			{
-				return static_cast<const AnimGraphClipNode*>(node.get())->m_CurrentTime;
-			}
+			return static_cast<const AnimGraphClipNode*>(node.get())->m_CurrentTime;
 		}
-		return 0.0f;
 	}
-
-	auto it = m_States.find(m_CurrentStateName);
-	if (it == m_States.end()) return 0.0f;
-	return it->second.currentTime;
+	return 0.0f;
 }
 
 float VansAnimationController::GetCurrentDuration() const
 {
-	// v2: 从 AnimGraph 第一个 ClipNode 的 Clip 读取时长
-	if (m_Graph)
+	if (!m_Graph) return 0.0f;
+	for (const auto& [id, node] : m_Graph->GetNodes())
 	{
-		for (const auto& [id, node] : m_Graph->GetNodes())
+		if (node->GetType() == AnimGraphNodeType::Clip)
 		{
-			if (node->GetType() == AnimGraphNodeType::Clip)
-			{
-				const std::string& clipName =
-					static_cast<const AnimGraphClipNode*>(node.get())->m_ClipName;
-				auto it = m_Clips.find(clipName);
-				if (it != m_Clips.end()) return it->second.duration;
-			}
+			const std::string& clipName =
+				static_cast<const AnimGraphClipNode*>(node.get())->m_ClipName;
+			auto it = m_Clips.find(clipName);
+			if (it != m_Clips.end()) return it->second.duration;
 		}
-		return 0.0f;
 	}
-
-	auto it = m_States.find(m_CurrentStateName);
-	if (it == m_States.end()) return 0.0f;
-
-	const AnimatorState& state = it->second;
-	if (!state.clip) return 0.0f;
-
-	float end = (state.endTime < 0.0f) ? state.clip->duration : state.endTime;
-	return end - state.startTime;
+	return 0.0f;
 }
 
 float VansAnimationController::GetNormalizedTime() const
@@ -515,72 +511,6 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 		BuildFinalMatrices(localTransforms, skeleton);
 		return;
 	}
-
-	// ════════════════════════════════════════════════════════════
-	//  v1 路径: 状态机求值（原有逻辑）
-	// ════════════════════════════════════════════════════════════
-
-	// 1. 求值过渡条件
-	EvaluateTransitions();
-
-	// 2. 推进当前状态时间
-	AnimatorState* currentState = GetState(m_CurrentStateName);
-	if (!currentState || !currentState->clip)
-		return;
-
-	// 自动检测 root bone（需要在 clip 确认有效后调用，以便通过关键帧判断运动骨骼）
-	if (m_RootBoneIndex < 0)
-		m_RootBoneIndex = DetectRootBoneIndex(skeleton);
-
-	AdvanceStateTime(*currentState, deltaTime * m_GlobalSpeed);
-
-	// 如果正在混合，也推进上一个状态的时间
-	AnimatorState* prevState = nullptr;
-	if (m_BlendState == ControllerBlendState::Blending)
-	{
-		prevState = GetState(m_PrevStateName);
-		if (prevState && prevState->clip)
-			AdvanceStateTime(*prevState, deltaTime * m_GlobalSpeed);
-	}
-
-	// 3. 计算当前状态的骨骼变换
-	std::vector<glm::mat4> localTransforms(boneCount, glm::mat4(1.0f));
-	ComputeBoneTransforms(*currentState, skeleton, localTransforms);
-
-	// 4. 如果正在混合
-	if (m_BlendState == ControllerBlendState::Blending)
-	{
-		m_BlendAlpha += deltaTime / m_BlendDuration;
-
-		if (m_BlendAlpha >= 1.0f)
-		{
-			m_BlendAlpha = 1.0f;
-			m_BlendState = ControllerBlendState::Idle;
-			m_PlaybackState = AnimationState::Playing;
-			m_PrevStateName.clear();
-		}
-		else if (prevState && prevState->clip)
-		{
-			std::vector<glm::mat4> prevLocalTransforms(boneCount, glm::mat4(1.0f));
-			ComputeBoneTransforms(*prevState, skeleton, prevLocalTransforms);
-			BlendTransforms(prevLocalTransforms, localTransforms, m_BlendAlpha, localTransforms);
-		}
-	}
-
-	// 5. 应用骨骼覆盖 (IK / 程序化动画)
-	ApplyBoneOverrides(localTransforms, skeleton);
-
-	// 6. 提取 root motion（或在关闭时清除残留标记）
-	if (m_RootMotionEnabled)
-		ExtractRootMotion(localTransforms, skeleton);
-	else
-		m_LoopJustWrapped = false;  // root motion 关闭时也要清除，防止累积
-
-	// 7. 更新骨骼层级（local → global）
-	UpdateHierarchy(localTransforms, skeleton);
-
-	// 8. 构建最终矩阵（localTransforms 此时已经是 globalTransforms）
-	BuildFinalMatrices(localTransforms, skeleton);
 }
 
 // ════════════════════════════════════════════════════════════════
