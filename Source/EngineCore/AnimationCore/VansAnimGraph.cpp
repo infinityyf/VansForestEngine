@@ -1233,6 +1233,7 @@ namespace VansGraphics
 			props["weights"]        = n->m_BoneWeights;
 			props["maxAngleDeg"]    = n->m_MaxAnglePerBoneDeg;
 			props["forward"]        = { n->m_ForwardAxis.x, n->m_ForwardAxis.y, n->m_ForwardAxis.z };
+			props["worldForward"]   = { n->m_WorldForward.x, n->m_WorldForward.y, n->m_WorldForward.z };
 			props["targetPosParam"] = n->m_TargetPosParamName;
 			props["weightParam"]    = n->m_WeightParamName;
 			props["useFixed"]       = n->m_UseFixedTarget;
@@ -1445,6 +1446,12 @@ namespace VansGraphics
 				n->m_ForwardAxis.x = props["forward"][0].get<float>();
 				n->m_ForwardAxis.y = props["forward"][1].get<float>();
 				n->m_ForwardAxis.z = props["forward"][2].get<float>();
+			}
+			if (props.contains("worldForward") && props["worldForward"].is_array() && props["worldForward"].size() >= 3)
+			{
+				n->m_WorldForward.x = props["worldForward"][0].get<float>();
+				n->m_WorldForward.y = props["worldForward"][1].get<float>();
+				n->m_WorldForward.z = props["worldForward"][2].get<float>();
 			}
 			if (props.contains("targetPosParam")) n->m_TargetPosParamName = props["targetPosParam"].get<std::string>();
 			if (props.contains("weightParam"))    n->m_WeightParamName    = props["weightParam"].get<std::string>();
@@ -1822,6 +1829,7 @@ namespace VansGraphics
 		{
 			auto la = std::make_unique<VansLookAtSolver>();
 			la->m_ForwardAxis        = m_ForwardAxis;
+			la->m_WorldForward       = m_WorldForward;
 			la->m_MaxAnglePerBoneDeg = m_MaxAnglePerBoneDeg;
 			m_Solver = std::move(la);
 		}

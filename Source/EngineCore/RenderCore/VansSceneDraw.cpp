@@ -5,6 +5,7 @@
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "TerrainCore/VansTerrain.h"
+#include "WaterCore/VansWaterSystem.h"
 #include "../Util/VansLog.h"
 #include "VulkanCore/VansRenderPass.h"
 #include "../VansTimer.h"
@@ -265,6 +266,50 @@ void VansGraphics::VansScene::DrawVegetationNode()
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     m_VegetationRenderNode->Draw(cmd, globalStateData);
+}
+
+void VansGraphics::VansScene::DrawWaterNode()
+{
+    if (m_WaterRenderNode == nullptr)
+    {
+        return;
+    }
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    m_WaterRenderNode->Draw(cmd, globalStateData);
+}
+
+// ============================================================
+// DrawWaterGBufferNode — 设计文档 Pass 7
+// 在 m_VansWaterGBufferPass 内调用，委托给 VansWaterSystem::RenderWaterGBuffer。
+// Phase 1 为 Stub；Phase 2 实现 CDLOD 网格 + water_prepass Shader。
+// ============================================================
+void VansGraphics::VansScene::DrawWaterGBufferNode()
+{
+    if (!HasWaterNodes())
+    {
+        return;
+    }
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    m_WaterSystem->RenderWaterGBuffer(cmd, globalStateData);
+}
+
+// ============================================================
+// DrawWaterCompositeNode — 设计文档 Pass 9
+// 在 DeferredSkybox Pass 内调用（Deferred + SkyBox 之后，EndRenderPass 之前）。
+// 读 WaterGBuf → 全屏 Fresnel 合成 → 写 SceneColor。
+// ============================================================
+void VansGraphics::VansScene::DrawWaterCompositeNode()
+{
+    if (!HasWaterNodes())
+        return;
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    m_WaterSystem->RenderWaterComposite(cmd, globalStateData);
 }
 
 // ===========================================================================

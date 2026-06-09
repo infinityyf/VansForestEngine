@@ -141,12 +141,41 @@ float SampleCloudDensity(vec3 worldPos)
 // --------------------------------------------------------------------------
 // 太阳可见性：沿太阳方向对云密度做简化光线积分
 // 返回 [0, 1]，0=完全遮挡，1=完全照亮
+//
+// 修复：步长基于从当前点到云层出口的实际路径长度（平面近似，与 SampleCloudDensity 保持一致）。
+// 原始实现使用固定的 cloudThickness/SHADOW_STEPS 作为步长，当太阳仰角较低时，
+// 每步在 Y 方向覆盖量 = stepSize × sunDir.y 远小于云层厚度，导致阴影严重低估，
+// 云体明暗变化消失（背光面不够暗）。
 // --------------------------------------------------------------------------
 float GetCloudSunVisibility(vec3 worldPos, vec3 sunDir)
 {
-    const int   SHADOW_STEPS = 6;
-    float stepSize = (uCloud.cloudMaxHeight - uCloud.cloudMinHeight) / float(SHADOW_STEPS);
+    const int SHADOW_STEPS = 8;  // 增至 8 步，提升阴影精度
 
+    // 使用平面近似高度（与 SampleCloudDensity 中的 heightAbove 计算一致）
+    float heightAbove = worldPos.y - uCloud.planetRadius;
+
+    // 计算从当前点沿太阳方向到云层出口的实际距离
+    float tSunExit;
+    if (sunDir.y > 0.001)
+    {
+        // 太阳在地平线以上：出口为云顶平面
+        tSunExit = (uCloud.cloudMaxHeight - heightAbove) / sunDir.y;
+    }
+    else if (sunDir.y < -0.001)
+    {
+        // 太阳在地平线以下（黄昏边缘）：出口为云底平面
+        tSunExit = (uCloud.cloudMinHeight - heightAbove) / sunDir.y;
+    }
+    else
+    {
+        // 太阳近乎水平：限制最大光路为云层厚度的 3 倍，防止步长爆炸
+        tSunExit = (uCloud.cloudMaxHeight - uCloud.cloudMinHeight) * 3.0;
+    }
+    tSunExit = max(tSunExit, 0.0);
+
+    if (tSunExit <= 0.0) return 1.0;
+
+    float stepSize = tSunExit / float(SHADOW_STEPS);
     vec3  increment = sunDir * stepSize;
     vec3  pos       = worldPos + increment * 0.5;
     float od        = 0.0;

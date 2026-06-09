@@ -67,9 +67,15 @@ layout(set = 1, binding = 3) uniform sampler3D cloudDetailNoise;
 
 // --------------------------------------------------------------------------
 // 光线步进参数常量
+//
+// 改为自适应步数：最大步长 80m，保证垂直方向采样分辨率不随厚度下降。
+// 原始固定 64 步导致：增大云层厚度时 stepSize 等比增大，采样稀疏，
+// 视觉上云厚度不随参数增大而变厚（tRange 增加但密度积分被稀释）。
 // --------------------------------------------------------------------------
-const int   MARCH_STEPS      = 64;   // 主光线采样步数（Phase 2 可改为距离自适应）
-const float TRANSMIT_CUTOFF  = 0.01; // 透射率低于此值时提前终止
+const float MARCH_MAX_STEP_M = 80.0;   // 单步最大路径长度（米），控制采样分辨率
+const int   MARCH_STEPS_MIN  = 32;     // 最少步数（防止极薄云欠采样）
+const int   MARCH_STEPS_MAX  = 128;    // 最多步数（性能上限，对应 128 × 80m = 10240m）
+const float TRANSMIT_CUTOFF  = 0.01;   // 透射率低于此值时提前终止
 
 // --------------------------------------------------------------------------
 // 从屏幕 UV 重建世界空间视线方向（与 VolumetricFog.comp 一致）
@@ -147,14 +153,15 @@ void main()
     float cosTheta = dot(rayDir, sunDir);
     float phase    = CloudPhase(cosTheta, uCloud.phaseG);  // 可调前向散射
 
-    // 等步长光线步进
-    float tRange  = shell.tEnd - shell.tStart;
-    float stepSize = tRange / float(MARCH_STEPS);
+    // 自适应步数：基于最大步长计算，使增大厚度时采样数同步增加，避免云体被稀释
+    float tRange   = shell.tEnd - shell.tStart;
+    int   marchSteps = clamp(int(ceil(tRange / MARCH_MAX_STEP_M)), MARCH_STEPS_MIN, MARCH_STEPS_MAX);
+    float stepSize   = tRange / float(marchSteps);
 
     vec3  inscatter      = vec3(0.0);
     float transmittance  = 1.0;
 
-    for (int i = 0; i < MARCH_STEPS; i++)
+    for (int i = 0; i < marchSteps; i++)
     {
         // 采样点（步进中点偏移，减少采样位置偏差）
         float t   = shell.tStart + (float(i) + 0.5) * stepSize;

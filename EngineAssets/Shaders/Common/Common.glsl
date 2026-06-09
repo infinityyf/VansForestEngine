@@ -8,6 +8,10 @@
 #define TWO_PI 6.28318530718
 #define FOUR_PI 12.566370614359172
 #define HALF_PI 1.57079632679
+#define INV_TWO_PI 0.15915494309  // 1 / (2π)，IES profile 采样时将水平角 θ 映射到 U 坐标
+
+// IES 光照衰减：启用后点光源和聚光灯从 iesProfileTexture 采样方向衰减系数
+#define IES_PROFILE_ENABLED
 #define SH_SAMPLE_COUNT 1024
 #define SSAO_SAMPLE_COUNT 32
 #define SSAO_RADIUS 2.0

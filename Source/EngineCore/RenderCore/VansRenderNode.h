@@ -20,8 +20,9 @@ namespace VansGraphics
 		SCREEN_SPACE_NODE = 1 << 5,
 		TERRAIN_NODE = 1 << 6,
 		VEGETATION_NODE = 1 << 7,
-		DECAL_NODE = 1 << 8,  // OBB 贴花节点，叠写 GBuffer
-		PARTICLE_NODE = 1 << 9,  // 粒子实例化 Billboard 节点
+		DECAL_NODE = 1 << 8,    // OBB 贴花节点，叠写 GBuffer
+		PARTICLE_NODE = 1 << 9, // 粒子实例化 Billboard 节点
+		WATER_NODE = 1 << 10,   // 水面节点，独立 Water GBuffer Pass
 	};
 
 	struct alignas(16) ModelDataStruct
@@ -76,7 +77,12 @@ namespace VansGraphics
 		//GPU 数据
 		ModelDataStruct m_ModelData;
 
-		int m_TransfromIndex;
+		// 共享 Transform SSBO 中的槽位索引。默认 -1 表示"未分配槽位"：
+		// PrepareInstanceTransformData 仅为 Opaque/Transparent/Decal 节点分配真实索引，
+		// 其余节点（SkyBox/Deferred/Terrain/Water/Vegetation 等）保持 -1，
+		// UpdateModelData 的 `m_TransfromIndex >= 0` 守卫会跳过 SSBO 写入，
+		// 避免未分配节点（如 Water）误写槽位 0 覆盖第一个不透明物体（如 Gun）的 Transform。
+		int m_TransfromIndex = -1;
 
 		// ID-based Data Access
 		uint32_t m_TransformID;
@@ -300,6 +306,24 @@ namespace VansGraphics
 
 		void SetVegetationSystem(VansVegetationSystem* system) { m_VegetationSystem = system; }
 		VansVegetationSystem* GetVegetationSystem() const { return m_VegetationSystem; }
+
+		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
+
+		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
+
+		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+
+		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
+	};
+
+	// ── Water render node — flat grid plane at waterLevel, driven by VansWaterConfig ──
+	class VansWaterSystem;
+	struct VansWaterConfig;
+	class VansWaterRenderNode : public VansRenderNode
+	{
+	public:
+		VansWaterRenderNode(VkDevice& device, RenderNodeType type)
+			: VansRenderNode(device, type) {}
 
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 

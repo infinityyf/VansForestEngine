@@ -1,0 +1,126 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// ============================================================
+// water_ssr.comp — HZB Ray March 水面屏幕空间反射（W-12）
+//
+// 参考 SSR_TRACE.comp 的标准 tracing 流程，适配水面 GBuffer 格式。
+//
+// 输入：
+//   WaterGBufPosDepth (RGBA16F): RGB=worldPos, A=linearDepth
+//   WaterGBufNormal   (RGBA16F): RGB=worldNormal
+//   Scene HZB / Scene GBuf2 / SceneColor（来自场景渲染）
+//
+// 输出：
+//   reflectionOut (RGBA16F): RGB=SSR颜色, A=命中标志(1=hit, 0=miss)
+// ============================================================
+
+#include "../../Common/Common.glsl"
+// NOTE: CameraData.glsl NOT included — set=0 binding=0 is used by waterGBufNormal
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// ── 输入 ────────────────────────────────────────────────────
+layout(set = 0, binding = 0) uniform sampler2D waterGBufNormal;     // RGB = worldNormal
+layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;   // RGB = worldPos, A = linearDepth
+layout(set = 0, binding = 2) uniform sampler2D sceneHZB;            // 场景 HZB depth mip chain
+layout(set = 0, binding = 3) uniform sampler2D sceneGBuf2;          // scene worldPos.xyz + linearDepth.w
+layout(set = 0, binding = 4) uniform sampler2D sceneColor;          // SceneColor
+
+layout(set = 0, binding = 5) uniform WaterSSRParams
+{
+    vec4  cameraPosition;      // xyz = worldPos
+    mat4  projMatrix;          // 投影矩阵
+    mat4  invProjMatrix;       // 逆投影矩阵
+    mat4  viewMatrix;          // 视图矩阵
+    float maxDistance;         // 最大追踪距离（m）
+    int   maxSteps;            // 最大步数
+    float thickness;           // HZB 深度容差
+    float pad0;
+} params;
+
+// ── 输出 ────────────────────────────────────────────────────
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D reflectionOut;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(reflectionOut);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+
+    // ── 读取 Water GBuffer（修复后的格式）──────────────────
+    vec4 posDepth    = texture(waterGBufPosDepth, uv);
+    float waterDepth = posDepth.a;
+    vec3  worldPos   = posDepth.rgb;
+
+    // 无水面的像素跳过
+    if (waterDepth >= 9999.0)
+    {
+        imageStore(reflectionOut, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    // 场景遮挡：场景在水面之前则无水面可见
+    float sceneDepth = texture(sceneGBuf2, uv).w;
+    if (sceneDepth > 0.1 && sceneDepth < waterDepth + 0.05)
+    {
+        imageStore(reflectionOut, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    // 世界空间法线（直接读取 RGB，非 oct 解码）
+    vec3 normal = normalize(texture(waterGBufNormal, uv).rgb);
+
+    // 视线方向
+    vec3 viewDir = normalize(params.cameraPosition.xyz - worldPos);
+
+    // 反射方向
+    vec3 reflectDir = reflect(-viewDir, normal);
+
+    // 反射方向朝向背面 → 无效
+    if (dot(reflectDir, normal) < 0.0)
+    {
+        imageStore(reflectionOut, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    // ── HZB ray march（使用标准 TraceHiZ_UV）─────────────────
+    vec3 rayOrigin = worldPos + normal * SSR_START_BIAS;
+
+    HiZTraceResult traceResult = TraceHiZ_UV(
+        sceneHZB,
+        params.viewMatrix,
+        params.projMatrix,
+        rayOrigin,
+        reflectDir,
+        params.maxDistance,
+        1.0,    // traceStride: 初始步长（像素）
+        1.0     // thicknessThreshold: 1.0m 厚度阈值
+    );
+
+    vec3 reflectionColor;
+    float hitFlag;
+
+    if (traceResult.hit)
+    {
+        // 命中 → 采样场景颜色
+        vec2 hitUV = traceResult.uv;
+        // 边缘淡出
+        float edgeFade = 1.0;
+        edgeFade *= smoothstep(0.0, 0.05, hitUV.x) * smoothstep(1.0, 0.95, hitUV.x);
+        edgeFade *= smoothstep(0.0, 0.05, hitUV.y) * smoothstep(1.0, 0.95, hitUV.y);
+        reflectionColor = textureLod(sceneColor, hitUV, 0.0).rgb * edgeFade;
+        hitFlag = edgeFade;
+    }
+    else
+    {
+        // 未命中 → 黑色（后续 Composite 用天空渐变回退）
+        reflectionColor = vec3(0.0);
+        hitFlag = 0.0;
+    }
+
+    imageStore(reflectionOut, pixel, vec4(reflectionColor, hitFlag));
+}

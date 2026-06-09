@@ -65,6 +65,9 @@
     <Filter Include="EngineCore\RenderCore\VegetationCore">
       <UniqueIdentifier>{b7c3d1e2-a4f5-6789-0bcd-ef2345678901}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\RenderCore\WaterCore">
+      <UniqueIdentifier>{c8d4e2f1-b3a5-4e67-9d0c-1f2a3b4c5d6e}</UniqueIdentifier>
+    </Filter>
     <Filter Include="EngineCore\AnimationCore">
       <UniqueIdentifier>{a1b2c3d4-e5f6-7890-abcd-ef1234567890}</UniqueIdentifier>
     </Filter>
@@ -265,6 +268,9 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansClothProfileEditorWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansWaterWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUISystem.h">
       <Filter>EngineCore\RuntimeUI\Public</Filter>
     </ClInclude>
@@ -302,6 +308,9 @@
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansLight.h">
+      <Filter>EngineCore\RenderCore\BRDFData</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansIESProfile.h">
       <Filter>EngineCore\RenderCore\BRDFData</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansPBR.h">
@@ -429,6 +438,24 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VegetationCore\VansVegetationSystem.h">
       <Filter>EngineCore\RenderCore\VegetationCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterConfig.h">
+      <Filter>EngineCore\RenderCore\WaterCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterFFT.h">
+      <Filter>EngineCore\RenderCore\WaterCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterLOD.h">
+      <Filter>EngineCore\RenderCore\WaterCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterMaterial.h">
+      <Filter>EngineCore\RenderCore\WaterCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterSystem.h">
+      <Filter>EngineCore\RenderCore\WaterCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterWaveSystem.h">
+      <Filter>EngineCore\RenderCore\WaterCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationTypes.h">
       <Filter>EngineCore\AnimationCore</Filter>
@@ -761,6 +788,9 @@
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansLight.cpp">
       <Filter>EngineCore\RenderCore\BRDFData</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansIESProfile.cpp">
+      <Filter>EngineCore\RenderCore\BRDFData</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VansMaterial.cpp">
       <Filter>EngineCore\RenderCore\RenderComponent</Filter>
     </ClCompile>
@@ -869,6 +899,9 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansClothProfileEditorWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansWaterWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUISystem.cpp">
       <Filter>EngineCore\RuntimeUI</Filter>
     </ClCompile>
@@ -898,6 +931,18 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VegetationCore\VansVegetationSystem.cpp">
       <Filter>EngineCore\RenderCore\VegetationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterFFT.cpp">
+      <Filter>EngineCore\RenderCore\WaterCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterLOD.cpp">
+      <Filter>EngineCore\RenderCore\WaterCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterSystem.cpp">
+      <Filter>EngineCore\RenderCore\WaterCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterWaveSystem.cpp">
+      <Filter>EngineCore\RenderCore\WaterCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationTypes.cpp">
       <Filter>EngineCore\AnimationCore</Filter>

@@ -331,8 +331,28 @@ void VansGraphics::VansGraphicsShader::SetPolygonMode(VkPolygonMode mode)
 	m_DrawStateData.polygonMode = mode;
 }
 
-void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>& states, bool enableDeferred, bool enableAlphaBlend = false, bool enableDecalBlend = false)
+void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>& states, bool enableDeferred, bool enableAlphaBlend = false, bool enableDecalBlend = false, int explicitCount = -1)
 {
+	// 显式指定颜色附件数量（如水面 GBuffer 的 2 个附件）：生成 count 个不混合、写入 RGBA 的 state
+	if (explicitCount > 0)
+	{
+		states.resize(static_cast<size_t>(explicitCount),
+			{
+				false,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_OP_ADD,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_OP_ADD,
+				 VK_COLOR_COMPONENT_R_BIT |
+				 VK_COLOR_COMPONENT_G_BIT |
+				 VK_COLOR_COMPONENT_B_BIT |
+				 VK_COLOR_COMPONENT_A_BIT
+			});
+		return;
+	}
+
 	if (enableDeferred)
 	{
 		states.resize(4,
@@ -507,7 +527,7 @@ void VansGraphics::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& 
 
 	//需要根据deferred的模式，设置每个rt的blend state，不然shader写不到对应的rt上
 	
-	InitAttachmentBlendStates(m_GraphicsPipelineCreateInfo.attachment_blend_states, enableDeferred, m_DrawStateData.enableAlphaBlend, m_DrawStateData.enableDecalBlend);
+	InitAttachmentBlendStates(m_GraphicsPipelineCreateInfo.attachment_blend_states, enableDeferred, m_DrawStateData.enableAlphaBlend, m_DrawStateData.enableDecalBlend, m_ColorAttachmentCount);
 }
 
 bool VansGraphics::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data)

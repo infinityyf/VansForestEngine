@@ -150,6 +150,9 @@ namespace VansGraphics
 
 		void PrepareRenderingData();
 
+		// IES profile 纹理数组：在场景加载完成后调用，创建 GPU 资源并上传所有已解析的 IES profile
+		void PrepareIESProfileData();
+
 		
 		void DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
@@ -161,6 +164,14 @@ namespace VansGraphics
 
 		void DrawSceneGBuffer(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 
+		// 拆分后的渲染 pass：
+		//   DrawSceneDeferredSkybox  — ScreenSpaceFeature + Deferred + SkyBox（写入 SceneColor）
+		//   DrawSceneTransparentPost — Transparent + Particles + PostProcess（读 SceneColor，写 PostProcess 输出）
+		// 设计文档 §6.1 Pass 6 = DrawSceneDeferredSkybox，Pass 10-12 = DrawSceneTransparentPost
+		void DrawSceneDeferredSkybox(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+
+		// 保留兼容接口（转发给 DrawSceneDeferredSkybox + DrawSceneTransparentPost）
 		void DrawSceneDeferredPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 
 		VkDeviceAddress GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo);
@@ -467,6 +478,10 @@ namespace VansGraphics
 		bool WaitForQueue(VkQueue queue);
 
 		bool WaitForDevice();
+
+		// 渲染分辨率访问器（供 VansWaterSystem 等子系统查询）
+		uint32_t GetRenderWidth()  const { return m_RenderWidth; }
+		uint32_t GetRenderHeight() const { return m_RenderHeight; }
 
 	};
 }

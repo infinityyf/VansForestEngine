@@ -16,6 +16,7 @@
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "TerrainCore/VansTerrain.h"
+#include "WaterCore/VansWaterSystem.h"
 #include "VansParticleRenderNode.h"
 #include "../ParticleCore/VansParticleManager.h"
 #include "../AnimationCore/VansAnimationNode.h"
@@ -124,6 +125,9 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
     case TERRAIN_NODE:
         m_TerrainRenderNode = renderNode;
 		break;
+    case WATER_NODE:
+        m_WaterRenderNode = renderNode;
+        break;
     case TRANSPARENT_NODE:
 		m_TransParentRenderNodes.push_back(renderNode);
 		break;
@@ -166,6 +170,10 @@ void VansGraphics::VansScene::CreateNodeDescriptorSets()
     if (m_TerrainRenderNode != nullptr)
     {
         m_TerrainRenderNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+    }
+    if (m_WaterRenderNode != nullptr)
+    {
+        m_WaterRenderNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
     }
     if (m_VegetationRenderNode != nullptr)
     {
@@ -758,6 +766,19 @@ void VansGraphics::VansScene::UnLoadScene()
 	deleteRenderNode(m_TerrainRenderNode);
 	m_TerrainRenderNode = nullptr;
 
+	deleteRenderNode(m_WaterRenderNode);
+	m_WaterRenderNode = nullptr;
+	m_WaterMaterial   = nullptr; // 材质已随 m_Materials 一起释放，清空指针即可
+
+	// 释放水面系统（VansWaterSystem 管理 Wave/GBuf/Compute/Composite GPU 资源）
+	if (m_WaterSystem)
+	{
+		m_WaterSystem->Shutdown();
+		delete m_WaterSystem;
+		m_WaterSystem = nullptr;
+	}
+	m_HasWater = false;
+
 	// VegetationRenderNode 未被列表持有，需单独 delete
 	deleteRenderNode(m_VegetationRenderNode);
 	m_VegetationRenderNode = nullptr;
@@ -823,6 +844,9 @@ void VansGraphics::VansScene::UnLoadScene()
     VANS_UNLOAD_STEP(13, "清理灯光 CPU 数据和 GPU 资源");
 	m_LightManager.ClearLights();
 	m_LightManager.DestroyGPUResources(nativeDevice);
+
+	// IES profile GPU 纹理数组（sampler2DArray，binding=16）
+	m_IESProfileManager.DestroyGPUResources(nativeDevice);
 	VANS_LOG("[VansScene] Step 12-13: PBR 和灯光 GPU 资源已清理");
 
 	// ── 14. 清理 Ray Tracing TLAS 资源 ─────────────────────────────────
@@ -1273,6 +1297,7 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
     updateNode(m_SkyBoxNode);
     updateNode(m_DeferredNode);
     updateNode(m_TerrainRenderNode);
+    updateNode(m_WaterRenderNode);
     updateNode(m_VegetationRenderNode);
 
     for (auto* node : m_OpaqueRenderNodes)

@@ -33,8 +33,10 @@ namespace VansGraphics
 		alignas(16) float		m_Intensity;
 		float					m_Radius;
 		float					m_ShadowIndex;
-		float					padding;
+		// 原 padding 字段改名：-1 = 无 IES，>=0 = IES Texture2DArray 层索引
+		float					m_IESProfileIndex;
 		glm::mat4				m_PointShadowMatrix[6];
+		// sizeof = 432，与修改前一致，GPU buffer 布局无需重建
 	};
 
 	struct alignas(16) VansSpotLight
@@ -47,7 +49,11 @@ namespace VansGraphics
 		float					m_InnerCutOff;
 		float					m_OuterCutOff;
 		glm::mat4				m_SpotShadowMatrix;
-		float					m_ShadowIndex;
+		float					m_ShadowIndex;       // offset=128
+		// 将末尾 12 字节隐式 padding 显式化为 IES 字段，结构体大小不变（144 字节）
+		float					m_IESProfileIndex;   // offset=132，-1=无IES，>=0=Atlas 层索引
+		float					m_IESIntensityScale; // offset=136，IES 强度缩放（默认 1.0）
+		float					m_pad0;              // offset=140，对齐保留
 	};
 
 	// ── RectLight (area light, evaluated via LTC) ────────────────────────────

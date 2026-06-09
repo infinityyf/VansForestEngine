@@ -1,0 +1,75 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// ============================================================
+// water_refraction.comp — 水面折射（独立 CS）
+//
+// 从 water_effects.comp 拆分，计算流程保持不变。
+// 折射 = Beer-Lambert 透射 + 散射
+// ============================================================
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D waterGBufNormal;
+layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;   // RGBA16F: RGB=worldPos, A=linearDepth
+layout(set = 0, binding = 2) uniform sampler2D sceneGBuf2;
+layout(set = 0, binding = 3) uniform sampler2D sceneColor;
+
+layout(set = 0, binding = 4) uniform WaterCompositeParams
+{
+    vec4  deepWaterColor;
+    vec4  shallowWaterColor;
+    float fresnelPower;
+    float waterLevel;
+    float specularIntensity;
+    float foamIntensity;
+    vec4  absorptionCoeff;
+    vec4  scatteringCoeff;
+    float sssAnisotropy;
+    vec4  cameraPosition;
+    mat4  invViewProjMatrix;
+    vec4  mainLightDir;
+} params;
+
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D refractionOut;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(refractionOut);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    float waterDepth = texture(waterGBufPosDepth, uv).a;  // linear depth in alpha
+    vec4 zero = vec4(0.0);
+
+    // 无水面像素 → 输出 0
+    if (waterDepth >= 9999.0)
+    {
+        imageStore(refractionOut, pixel, zero);
+        return;
+    }
+
+    // 场景遮挡：物体在水面之前
+    float sceneDepth = texture(sceneGBuf2, uv).w;
+    if (sceneDepth > 0.1 && sceneDepth < waterDepth + 0.05)
+    {
+        imageStore(refractionOut, pixel, zero);
+        return;
+    }
+
+    vec3 normal = normalize(texture(waterGBufNormal, uv).rgb);
+
+    // 厚度 (m)
+    float thickness = (sceneDepth > waterDepth) ? (sceneDepth - waterDepth) : 22.5;
+
+    // 折射 = 背景场景 × Beer-Lambert 透射 + 散射
+    vec2 distort = normal.xz * 0.03;
+    vec3 bgColor  = texture(sceneColor, clamp(uv + distort, 0.001, 0.999)).rgb;
+    vec3 extinct  = params.absorptionCoeff.rgb + params.scatteringCoeff.rgb;
+    vec3 transmit = exp(-extinct * thickness);
+    vec3 scatter  = params.scatteringCoeff.rgb * (vec3(1.0) - transmit) * params.shallowWaterColor.rgb * 0.6;
+    vec3 refraction = bgColor * transmit + scatter;
+
+    imageStore(refractionOut, pixel, vec4(refraction, 1.0));
+}

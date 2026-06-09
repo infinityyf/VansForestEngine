@@ -17,6 +17,7 @@ struct PointLightData
     float intensity;
     float radius;
     float shadowIndex;
+    float iesProfileIndex;  // IES profile 层索引（-1 = 无 IES），与 VansPointLight::m_IESProfileIndex 对应
     mat4x4 shadowMatrix[6];
 };
 
@@ -31,6 +32,9 @@ struct SpotLightData
     float outerConeAngle;
     mat4x4 shadowMatrix;
     float shadowIndex;
+    float iesProfileIndex;    // IES profile 层索引（-1 = 无 IES），与 VansSpotLight::m_IESProfileIndex 对应
+    float iesIntensityScale;  // IES profile 强度缩放（默认 1.0）
+    float pad0;               // 填充至 144 字节（与 VansSpotLight::m_pad0 对应）
 };
 
 // ── RectLight (area light, evaluated via LTC) ─────────────────────────────
@@ -561,6 +565,11 @@ void EvaluateRectLightLTC(
     float roughness, vec3 diffuseColor, vec3 F0,
     out vec3 outDiffuse, out vec3 outSpecular);
 
+// Forward declaration: SampleIESProfile is defined in Deferred.frag after the
+// iesProfileTexture sampler2DArray binding (set=1, binding=16).
+// profileIndex = -1 means "no IES", in which case callers should skip the call.
+float SampleIESProfile(int profileIndex, vec3 lightDir, vec3 nadirDir);
+
 void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, float viewDepth, sampler2D punctualShadowMap, inout LightResult lightResult)
 {
     lightResult.directDiffuse = vec3(0);
@@ -598,6 +607,15 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(pointLight.shadowIndex));
         attenuation = min(attenuation, shadowValue);
 
+#ifdef IES_PROFILE_ENABLED
+        int ptIESIdx = int(pointLight.iesProfileIndex);
+        if (ptIESIdx >= 0)
+        {
+            // 点光源 NADIR 轴使用世界空间向下方向（Type C IES 光源通常竖直安装）
+            attenuation *= SampleIESProfile(ptIESIdx, lightDirection, vec3(0.0, -1.0, 0.0));
+        }
+#endif
+
         vec3 diffuseResult  = vec3(0);
         vec3 specularResult = vec3(0);
         DirectBRDF(brdfData, lightDirection, diffuseResult, specularResult);
@@ -630,6 +648,16 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float innerConeAngle  = cos(spotLight.innerConeAngle);
         float outerConeAngle  = cos(spotLight.outerConeAngle);
         float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
+
+#ifdef IES_PROFILE_ENABLED
+        int spIESIdx = int(spotLight.iesProfileIndex);
+        if (spIESIdx >= 0)
+        {
+            // 聚光灯 NADIR 轴 = 聚光灯朝向（direction.xyz 已在 CPU 端归一化）
+            attenuation *= SampleIESProfile(spIESIdx, lightDirection, spotLight.direction.xyz)
+                         * spotLight.iesIntensityScale;
+        }
+#endif
 
         vec3 diffuseResult  = vec3(0);
         vec3 specularResult = vec3(0);
@@ -686,6 +714,14 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(pointLight.shadowIndex));
         attenuation = min(attenuation, shadowValue);
 
+#ifdef IES_PROFILE_ENABLED
+        int ptIESIdx = int(pointLight.iesProfileIndex);
+        if (ptIESIdx >= 0)
+        {
+            attenuation *= SampleIESProfile(ptIESIdx, lightDirection, vec3(0.0, -1.0, 0.0));
+        }
+#endif
+
         vec3 diffuseResult = vec3(0);
         vec3 specularResult = vec3(0);
         DirectBRDF(brdfData, lightDirection, diffuseResult, specularResult);
@@ -717,6 +753,15 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float innerConeAngle = cos(spotLight.innerConeAngle);
         float outerConeAngle = cos(spotLight.outerConeAngle);
         float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
+
+#ifdef IES_PROFILE_ENABLED
+        int spIESIdx = int(spotLight.iesProfileIndex);
+        if (spIESIdx >= 0)
+        {
+            attenuation *= SampleIESProfile(spIESIdx, lightDirection, spotLight.direction.xyz)
+                         * spotLight.iesIntensityScale;
+        }
+#endif
 
         vec3 diffuseResult = vec3(0);
         vec3 specularResult = vec3(0);

@@ -28,6 +28,7 @@ namespace VansGraphics
 	class VansConsoleWindow;
 	class VansProfilerWindow;
 	class VansClothProfileEditorWindow;
+	class VansWaterWindow;
 
 	// 前置声明（定义在 VansScene.h）
 	enum class VansSceneLoadMode;
@@ -125,6 +126,8 @@ namespace VansGraphics
 		static VansUIEditorWindow* m_UIEditorWindow;
 
 		static VansClothProfileEditorWindow* m_ClothProfileEditorWindow;
+
+		static VansWaterWindow* m_WaterWindow;
 
 	private:
 

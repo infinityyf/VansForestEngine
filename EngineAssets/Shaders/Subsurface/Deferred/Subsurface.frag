@@ -33,8 +33,9 @@ void main()
 {
     // Sample subsurface textures
     vec3  albedo    = texture(subsurfaceAlbedo, frag_uv).rgb;
-    float thickness = 0.2;//texture(subsurfaceThickness, frag_uv).r; // 0 = thin (max transmission), 1 = thick (no transmission)
-    float roughness = 0;//texture(subsurfaceRoughness, frag_uv).r;
+    float thickness = texture(subsurfaceThickness, frag_uv).r; // 0 = thin (max transmission), 1 = thick (no transmission)
+    // 修正: roughness=0 会导致 GGX 在 NdotH=1 时 0/0=NaN，最小值限制为 0.045
+    float roughness = max(texture(subsurfaceRoughness, frag_uv).r, 0.045);
     float ao        = 1.0;
 
     // Normal mapping

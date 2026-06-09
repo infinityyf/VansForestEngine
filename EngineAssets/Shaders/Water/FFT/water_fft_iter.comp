@@ -1,0 +1,129 @@
+#version 450
+
+// ============================================================
+// water_fft_iter.comp — Stockham 自排序 FFT 单次迭代（W-09）
+//
+// 设计文档：波形 Clipmap 方案 §3.3
+//
+// N=256, 水平8次 + 垂直8次 = 16次 Dispatch
+// Ping-Pong 双缓冲：输入 = srcSpectrum, 输出 = dstSpectrum
+// Push constant: iteration index, direction (0=horiz, 1=vert)
+// ============================================================
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform FFTIterPC
+{
+    int iteration;     // 当前蝶形迭代 (0..log2N-1)
+    int direction;     // 0 = 水平 (X方向FFT), 1 = 垂直 (Y方向FFT)
+    int N;             // FFT 分辨率 (256)
+    int pad0;
+} pc;
+
+// Ping-Pong 双缓冲：src 是上一步的结果，dst 是当前迭代的输出
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2DArray srcSpectrum;
+layout(set = 0, binding = 1, rgba32f) uniform writeonly image2DArray dstSpectrum;
+
+const float PI = 3.14159265358979323846;
+
+// 复数乘法: (a.re + i·a.im) * (b.re + i·b.im)
+vec2 ComplexMul(vec2 a, vec2 b)
+{
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= pc.N || pixel.y >= pc.N)
+        return;
+
+    int n = pc.iteration;
+    int Ns = 1 << n;           // 子变换大小
+    int halfSize = Ns >> 1;    // 半大小
+
+    if (halfSize == 0)
+    {
+        // 第 0 次迭代：直接复制
+        vec4 r0 = imageLoad(srcSpectrum, ivec3(pixel, 0));
+        vec4 i0 = imageLoad(srcSpectrum, ivec3(pixel, 1));
+        imageStore(dstSpectrum, ivec3(pixel, 0), r0);
+        imageStore(dstSpectrum, ivec3(pixel, 1), i0);
+        return;
+    }
+
+    int blockIdx;
+    int inBlockIdx;
+    ivec2 readIdx;
+
+    if (pc.direction == 0)
+    {
+        // 水平方向 FFT
+        blockIdx   = pixel.x / Ns;
+        inBlockIdx = pixel.x % Ns;
+        readIdx    = ivec2(blockIdx * Ns + inBlockIdx, pixel.y);
+    }
+    else
+    {
+        // 垂直方向 FFT
+        blockIdx   = pixel.y / Ns;
+        inBlockIdx = pixel.y % Ns;
+        readIdx    = ivec2(pixel.x, blockIdx * Ns + inBlockIdx);
+    }
+
+    int k = inBlockIdx % halfSize;
+
+    // 两个 butterfly 输入索引
+    ivec2 idx0, idx1;
+    if (pc.direction == 0)
+    {
+        idx0 = ivec2(blockIdx * Ns + k, pixel.y);
+        idx1 = ivec2(blockIdx * Ns + k + halfSize, pixel.y);
+    }
+    else
+    {
+        idx0 = ivec2(pixel.x, blockIdx * Ns + k);
+        idx1 = ivec2(pixel.x, blockIdx * Ns + k + halfSize);
+    }
+
+    // 读取复数数据
+    vec4 r0 = imageLoad(srcSpectrum, ivec3(idx0, 0));
+    vec4 i0 = imageLoad(srcSpectrum, ivec3(idx0, 1));
+    vec4 r1 = imageLoad(srcSpectrum, ivec3(idx1, 0));
+    vec4 i1 = imageLoad(srcSpectrum, ivec3(idx1, 1));
+
+    vec2 val0 = vec2(r0.r, i0.r);
+    vec2 val1 = vec2(r1.r, i1.r);
+
+    // 旋转因子: W_N^k = exp(-2πi·k/Ns)
+    float angle = -2.0 * PI * float(k) / float(Ns);
+    vec2 twiddle = vec2(cos(angle), sin(angle));
+    val1 = ComplexMul(val1, twiddle);
+
+    // Butterfly
+    vec2 out0 = val0 + val1;
+    vec2 out1 = val0 - val1;
+
+    // 写入到正确的 butterfly 位置
+    ivec2 writeIdx0, writeIdx1;
+    if (pc.direction == 0)
+    {
+        writeIdx0 = ivec2(blockIdx * Ns + (inBlockIdx < halfSize ? inBlockIdx : inBlockIdx - halfSize), pixel.y);
+        // out0 写入 k 位置, out1 写入 k+halfSize 位置
+        if (inBlockIdx < halfSize) {
+            imageStore(dstSpectrum, ivec3(idx0, 0), vec4(out0.x, 0.0, 0.0, 0.0));
+            imageStore(dstSpectrum, ivec3(idx0, 1), vec4(out0.y, 0.0, 0.0, 0.0));
+            imageStore(dstSpectrum, ivec3(idx1, 0), vec4(out1.x, 0.0, 0.0, 0.0));
+            imageStore(dstSpectrum, ivec3(idx1, 1), vec4(out1.y, 0.0, 0.0, 0.0));
+        }
+    }
+    else
+    {
+        if (inBlockIdx < halfSize) {
+            imageStore(dstSpectrum, ivec3(idx0, 0), vec4(out0.x, 0.0, 0.0, 0.0));
+            imageStore(dstSpectrum, ivec3(idx0, 1), vec4(out0.y, 0.0, 0.0, 0.0));
+            imageStore(dstSpectrum, ivec3(idx1, 0), vec4(out1.x, 0.0, 0.0, 0.0));
+            imageStore(dstSpectrum, ivec3(idx1, 1), vec4(out1.y, 0.0, 0.0, 0.0));
+        }
+    }
+}

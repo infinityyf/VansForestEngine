@@ -283,6 +283,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(
 		{14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// 面光源发光贴图数组 (binding 15, sampler2DArray)
 		{15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// IES profile 纹理数组 (binding 16, sampler2DArray, R16F)
+		{16, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -777,6 +779,168 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_DecalPass(
 	// 贴花 Pass Set 1：GBuffer2（COMBINED_IMAGE_SAMPLER），供 fragment shader 重建世界坐标
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
 		{DECAL_PASS_BINDING_GBUFFER2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Water GBuffer Pass Set 1
+// water_prepass.vert/.frag：CDLOD LOD 参数 UBO（lodRanges / meshDim / oceanBaseScale）
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterGBuffer(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		// binding 0: WaterGBufferParams UBO（vert + frag 均可读）
+		{WATER_GBUF_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 1: Wave displacement Texture2DArray（W-01）
+		{WATER_GBUF_BINDING_DISPLACEMENT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		// binding 2: GerstnerWaveGPU SSBO（W-04）
+		{WATER_GBUF_BINDING_WAVE_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		// binding 3: Water normal map（W-08）
+		{WATER_GBUF_BINDING_NORMAL_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Water Wave Compute Set 0
+// water_wave_spectrum.comp：读取 SSBO 波分量 + 参数 UBO，输出 displacement storage image array
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterWaveCompute(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{WATER_WAVE_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_WAVE_BINDING_DISPLACEMENT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		// binding 2: GerstnerWaveGPU SSBO 输入（W-04）
+		{WATER_WAVE_BINDING_WAVE_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Water Composite Pass Set 1
+// water_composite.frag：WaterGBuf_Normal + WaterGBuf_LinearDepth + Params UBO
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterComposite(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		// binding 0: WaterGBuf_Normal（COMBINED_IMAGE_SAMPLER，RG16F oct 法线）
+		{WATER_COMP_BINDING_GBUF_NORMAL,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 1: WaterGBuf_LinearDepth（COMBINED_IMAGE_SAMPLER，R32F 线性深度）
+		{WATER_COMP_BINDING_GBUF_DEPTH,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 2: WaterCompositeParams UBO（水色 / Fresnel 指数 / waterLevel）
+		{WATER_COMP_BINDING_PARAMS,        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 3: 主场景 GBuffer2（worldPos.xyz + linearDepth.w）用于场景遮挡测试
+		{WATER_COMP_BINDING_SCENE_GBUF2,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 4-6: Pre-Water Compute 输出的反射 / 折射 / 焦散结果
+		{WATER_COMP_BINDING_REFLECTION,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{WATER_COMP_BINDING_REFRACTION,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{WATER_COMP_BINDING_CAUSTICS,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 7: W-15 泡沫纹理
+		{WATER_COMP_BINDING_FOAM_TEXTURE,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 8: W-16 厚度图
+		{WATER_COMP_BINDING_THICKNESS,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Water Effects Compute Set 0
+// water_effects.comp：WaterGBuf + SceneColor → Reflection/Refraction/Caustics
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterEffectsCompute(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{WATER_EFFECT_BINDING_GBUF_NORMAL,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_EFFECT_BINDING_GBUF_DEPTH,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_EFFECT_BINDING_SCENE_GBUF2,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_EFFECT_BINDING_SCENE_COLOR,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_EFFECT_BINDING_PARAMS,         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_EFFECT_BINDING_REFLECTION_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_EFFECT_BINDING_REFRACTION_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_EFFECT_BINDING_CAUSTICS_OUT,   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Phase 2 独立 CS Layouts
+// ============================================================
+
+// W-12: Water SSR Compute (HZB Ray March)
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterSSRCompute(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{WATER_SSR_BINDING_GBUF_NORMAL,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_SSR_BINDING_GBUF_DEPTH,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_SSR_BINDING_SCENE_HZB,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_SSR_BINDING_SCENE_GBUF2,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_SSR_BINDING_SCENE_COLOR,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_SSR_BINDING_PARAMS,       VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_SSR_BINDING_REFLECTION_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,        1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// W-13: Water Refraction Compute (Snell + depth validation)
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterRefractionCompute(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{WATER_REFRACTION_BINDING_GBUF_NORMAL,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_REFRACTION_BINDING_GBUF_DEPTH,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_REFRACTION_BINDING_SCENE_GBUF2,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_REFRACTION_BINDING_SCENE_COLOR,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_REFRACTION_BINDING_PARAMS,       VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_REFRACTION_BINDING_REFRACTION_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,        1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// W-14: Water Caustics Compute (sun-direction driven)
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterCausticsCompute(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{WATER_CAUSTICS_BINDING_GBUF_NORMAL,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_GBUF_DEPTH,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_SCENE_GBUF2,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_PARAMS,       VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_CAUSTICS_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// W-16: Water Thickness Compute
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterThicknessCompute(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{WATER_THICKNESS_BINDING_GBUF_DEPTH,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_THICKNESS_BINDING_SCENE_GBUF2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_THICKNESS_BINDING_PARAMS,      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_THICKNESS_BINDING_THICKNESS_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,        1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }

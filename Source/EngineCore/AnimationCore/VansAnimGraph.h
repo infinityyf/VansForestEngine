@@ -469,6 +469,8 @@ namespace VansGraphics
 		std::vector<float>       m_BoneWeights;
 		float                    m_MaxAnglePerBoneDeg = 80.0f;
 		glm::vec3                m_ForwardAxis = glm::vec3(0.0f, 0.0f, -1.0f);
+		// 角色 root-local 参考前向；非零时优先于 m_ForwardAxis（按绑定姿态自动推导每骨 local 轴）
+		glm::vec3                m_WorldForward = glm::vec3(0.0f);
 
 		std::string m_TargetPosParamName;
 		std::string m_WeightParamName;

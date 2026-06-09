@@ -174,26 +174,27 @@ float D_GGX(float NoH, float Roughness)
 
 float Vis_SmithGGXCorrelated(float NoL, float NoV, float Roughness)
 {
-    // sanitize inputs to avoid NaNs and negative sqrt arguments
+    // 高度相关Smith GGX可见性项（Height-Correlated Smith GGX）
+    // 参考: Heitz 2014, "Understanding the Masking-Shadowing Function in Microfacet-Based BRDFs"
+    // Vis = 0.5 / (NoL*sqrt(a²+NoV²*(1-a²)) + NoV*sqrt(a²+NoL²*(1-a²)))
     NoL = clamp(NoL, 0.0, 1.0);
     NoV = clamp(NoV, 0.0, 1.0);
-    float r = max(Roughness, 0.0);
+    float a  = Roughness * Roughness;
+    float a2 = a * a;
 
-    float a = r * r;
-    // compute safe radicands
-    float radV = (-NoL * a + NoL) * NoV + a;
-    float radL = (-NoV * a + NoV) * NoL + a;
-    radV = max(radV, 0.0);
-    radL = max(radL, 0.0);
+    // 修正: 各自使用自己的 NoV²/NoL²，而非乘法交换律导致的相同值
+    float radV = a2 + NoV * NoV * (1.0 - a2);
+    float radL = a2 + NoL * NoL * (1.0 - a2);
 
-    float LambdaV = NoV * sqrt(radV);
-    float LambdaL = NoL * sqrt(radL);
+    float LambdaV = NoV * sqrt(max(radV, 0.0));
+    float LambdaL = NoL * sqrt(max(radL, 0.0));
 
     float denom = LambdaL + LambdaV;
     const float EPS = 1e-6;
     if (denom <= EPS) return 0.0;
 
-    return (0.5 / denom) / PI;
+    // 修正: 移除多余的 /PI — V-term 不含 1/PI，D_GGX 已经包含
+    return 0.5 / denom;
 }
 
 float SSR_BRDF(vec3 V, vec3 L, vec3 N, float Roughness)

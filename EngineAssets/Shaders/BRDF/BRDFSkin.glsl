@@ -67,7 +67,9 @@ float PHBeckmann(float NdotH, float m)
     float ta    = tan(alpha);
     float m2    = m * m;
     float NdotH4 = NdotH_safe * NdotH_safe * NdotH_safe * NdotH_safe;
-    float val   = (1.0 / (m2 * NdotH4)) * exp(-(ta * ta) / m2);
+    // 修正: 标准 Beckmann NDF 分母包含 PI（Walter 2007）
+    // D(m) = exp(-tan²θ/m²) / (PI * m² * cos⁴θ)
+    float val   = (1.0 / (PI * m2 * NdotH4)) * exp(-(ta * ta) / m2);
     return val;
 }
 
@@ -108,7 +110,9 @@ float KS_Skin_Specular(vec3 N, vec3 L, vec3 V, float m, float rho_s)
         // pow(2.0*texValue,10.0) — the encode/decode cancel to just PH.
         float PH    = PHBeckmann(NdotH, m);
         float F     = KS_Fresnel(H, V, 0.028);
-        float frSpec = max(PH * F / hLenSq, 0.0);
+        // 修正: KSK 论文标准化分母为 2*|L+V|，而非 |L+V|²
+        // fr_specular = D(θh) * F(cosθd) / (2 * |L+V|)
+        float frSpec = max(PH * F / (2.0 * sqrt(hLenSq)), 0.0);
         // Clamp to prevent specular fireflies in extreme configurations
         result = min(NdotL * rho_s * frSpec, 16.0);
     }
@@ -194,7 +198,9 @@ void DirectBRDF_Skin_DualLobe(BRDFData brdf, vec3 lightDirection, float curvatur
 
     // Cook-Torrance: contribution = (D*G*F / (4*NdotV)) * NdotL
     float NdotL_clamped = max(NdotL, 0.0);
-    float denom         = 4.0 * max(NdotV, 0.001);
+    // 修正: 分母加入 NdotL，与 DirectBRDF 保持一致，避免双重 NdotL 衰减
+    // Cook-Torrance: (D*G*F) / (4*NdotL*NdotV) * NdotL = (D*G*F) / (4*NdotV)
+    float denom         = 4.0 * max(NdotV, 0.001) * max(NdotL_clamped, 0.001);
     vec3  spec1         = (D1 * G1 * F) / denom * NdotL_clamped;
     vec3  spec2         = (D2 * G2 * F) / denom * NdotL_clamped * 0.3;
 

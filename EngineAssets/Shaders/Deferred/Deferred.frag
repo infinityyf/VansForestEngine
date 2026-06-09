@@ -19,6 +19,43 @@ layout( set = 1, binding = 15 ) uniform sampler2DArray rectLightEmissive;
 #include "../BRDF/BRDFVegetation.glsl"
 #include "../Common/CameraData.glsl"
 
+// IES profile 纹理数组：最多 32 层，每层 256×128，格式 R16F，用于方向性光照衰减（binding=16）
+layout( set = 1, binding = 16 ) uniform sampler2DArray iesProfileTexture;
+
+// =============================================================================
+// SampleIESProfile — 从 IES profile 纹理数组采样方向衰减系数 [0,1]
+// 参数：
+//   profileIndex  — 纹理数组层索引（来自 PointLightData/SpotLightData.iesProfileIndex）
+//   lightDir      — 世界空间中从光源指向被照点的方向向量（已归一化）
+//   nadirDir      — 光源的 NADIR 轴（IES type C 垂直 0° 方向），向下为正
+//                   点光源使用 vec3(0,-1,0)；聚光灯使用 spotLight.direction.xyz
+// 参数化：
+//   φ  = 垂直角（与 nadirDir 夹角，0° = nadir，90° = 水平，180° = zenith）
+//       → UV.y = (cos(φ) * 0.5) + 0.5
+//   θ  = 水平角，由沿 nadirDir 平面投影得到
+//       → UV.x = θ * INV_TWO_PI + 0.5（范围 [0,1]）
+// 返回：归一化到 [0,1] 的坎德拉系数（0 = 被遮挡方向，1 = 峰值方向）
+// =============================================================================
+float SampleIESProfile(int profileIndex, vec3 lightDir, vec3 nadirDir)
+{
+    // 垂直角 φ：lightDir 与 nadirDir 的夹角
+    // dot(lightDir, nadirDir) = cos(φ)，范围 [-1, 1]
+    float cosVert = clamp(dot(lightDir, nadirDir), -1.0, 1.0);
+    float uv_y    = cosVert * 0.5 + 0.5;  // [0,1]，0 = zenith，1 = nadir
+
+    // 水平角 θ：将 lightDir 投影到垂直于 nadirDir 的平面，再用 atan2 计算角度
+    vec3  projOnPlane = normalize(lightDir - cosVert * nadirDir + vec3(1e-8));
+
+    // 构建参考系（任意与 nadirDir 正交的向量作为 θ=0 参考方向）
+    vec3  refX = normalize(abs(nadirDir.z) < 0.99 ? cross(nadirDir, vec3(0.0, 0.0, 1.0))
+                                                   : cross(nadirDir, vec3(0.0, 1.0, 0.0)));
+    vec3  refY = cross(nadirDir, refX);
+    float theta = atan(dot(projOnPlane, refY), dot(projOnPlane, refX));  // [-π, π]
+    float uv_x  = theta * INV_TWO_PI + 0.5;  // [0, 1]
+
+    return texture(iesProfileTexture, vec3(uv_x, uv_y, float(profileIndex))).r;
+}
+
 layout(set = 1, binding = 0) uniform sampler2D normalInput;
 layout(set = 1, binding = 1) uniform sampler2D gbufferInput0;
 layout(set = 1, binding = 2) uniform sampler2D gbufferInput1;

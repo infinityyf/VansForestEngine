@@ -707,7 +707,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 
 	if (ssaoFilterResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
 		shRResult == nullptr || shGResult == nullptr || shBResult == nullptr || volumetricFogResult == nullptr ||
-		giVisibility == nullptr || rectLightEmissive == nullptr)
+		giVisibility == nullptr || rectLightEmissive == nullptr ||
+		!m_Scene->GetIESProfileManager()->IsGPUResourcesCreated())
 	{
 		// 不清除 dirty 标记，下帧重试（运行时纹理尚未就绪）
 		m_DescriptorsetsDirty = true;
@@ -889,6 +890,23 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 		}
 	);
 
+	// IES profile 纹理数组 (sampler2DArray, binding 16)
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			frameBufferInputDescriptorSets[0],
+			DEFERRED_BINDING_IES_PROFILES, // 16
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetSampler(),
+					m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 
@@ -1045,6 +1063,51 @@ void VansGraphics::VansSkyBoxRenderNode::UpdateDescripterSets(VansMaterialManage
 }
 
 // VansShadowRenderNode removed – shadow pass now uses DrawWithPassShader() on opaque nodes
+
+// ===========================================================================
+// VansWaterRenderNode — 水面渲染节点（复用 Common GBuffer 管线绘制水面平面）
+// ===========================================================================
+#include "WaterCore/VansWaterMaterial.h"
+
+void VansGraphics::VansWaterRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
+{
+	// Set 0: Global（Camera + Lights + Materials + IBL + Bindless）
+	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
+	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+
+	// Set 1: Per-Pass（empty，水面暂用空集占位）
+	m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
+	m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
+
+	// Set 2: Per-Object（Transform SSBO）
+	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
+	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
+
+	// Set 3: Animation（水面为静态，绑定共享 dummy set）
+	m_UsedDescSetLayouts.push_back(m_Scene->m_AnimationDescriptorSetLayout);
+	m_UsedDescSets.push_back(m_Scene->m_AnimationDescriptorSet);
+}
+
+void VansGraphics::VansWaterRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
+{
+	UpdateDescripterSets(materialManager);
+	UpdateModelData();
+}
+
+void VansGraphics::VansWaterRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+{
+	if (!m_DescriptorsetsDirty)
+		return;
+	m_DescriptorsetsDirty = false;
+}
+
+void VansGraphics::VansWaterRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
+{
+	// 复用基类 Common Draw（使用 m_Material 中记录的 PBR/Water shader）
+	VansRenderNode::Draw(cmd, global_state);
+}
+
+// ===========================================================================
 
 VansGraphics::VansTerrainRenderNode::VansTerrainRenderNode(VansVKDevice* device, const TerrainConfig& config, RenderNodeType type) : VansRenderNode(device->GetLogicDevice(), TERRAIN_NODE)
 {

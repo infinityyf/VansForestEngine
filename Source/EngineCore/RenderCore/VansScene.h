@@ -1,8 +1,15 @@
 ﻿#pragma once
 #include "VansRenderNode.h"
 #include "VansShaderRegistry.h"
+#include "WaterCore/VansWaterConfig.h"
+
+// VansWaterMaterial 前向声明，避免循环依赖（完整定义在 WaterCore/VansWaterMaterial.h）
+namespace VansGraphics { class VansWaterMaterial; }
+// VansWaterSystem 前向声明（完整定义在 WaterCore/VansWaterSystem.h）
+namespace VansGraphics { class VansWaterSystem; }
 #include "VansCamera.h"
 #include "BRDFData/VansLight.h"
+#include "BRDFData/VansIESProfile.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../PhysicsCore/VansClothNode.h"
@@ -79,6 +86,9 @@ namespace VansGraphics
 
 		VansMaterialManager m_MaterialManager;
 
+		// IES profile 管理器（解析 .ies 文件，烘焙 GPU 纹理数组，供 Deferred pass binding=16 使用）
+		VansIESProfileManager m_IESProfileManager;
+
 		VansAsset* GetMeshAsset(const std::string& name);
 
 		VansAsset* GetShaderAsset(const std::string& name);
@@ -118,6 +128,24 @@ namespace VansGraphics
 		VansRenderNode* m_VegetationRenderNode = nullptr;
 
 		VansVegetationSystem* m_VegetationSystem = nullptr;
+
+		// 水面渲染节点（由 AddWaterNode 创建，兼容现有节点调度系统）
+		VansRenderNode* m_WaterRenderNode = nullptr;
+
+		// 水面配置与材质（由 LoadSceneContent 从 JSON "water" 块创建）
+		VansWaterConfig   m_WaterConfig;
+		VansWaterMaterial* m_WaterMaterial = nullptr;
+		bool              m_HasWater       = false;
+
+		// 水面系统（设计文档 §12.1 VansWaterSystem）：管理 WaterGBuf + 波形仿真 + 合成
+		// 在 AddWaterNode 中与 m_WaterRenderNode 同时创建，提供完整的 Pass 管线接口
+		VansWaterSystem*  m_WaterSystem    = nullptr;
+
+		// 是否存在水面（供渲染器决定是否执行 Water GBuffer / Pre-Compute / Composite）
+		bool HasWaterNodes() const  { return m_HasWater && m_WaterSystem != nullptr; }
+
+		// 水面系统访问器（供 VansVKRenderer 调度 Water passes）
+		VansWaterSystem* GetWaterSystem() const { return m_WaterSystem; }
 
 		std::vector<VansRenderNode*> m_TransParentRenderNodes;
 
@@ -290,6 +318,12 @@ namespace VansGraphics
 
 		void AddVegetationNode(VkDevice& device, json& vegetationData);
 
+		// 从 Scene JSON "water" 块解析配置、创建 VansWaterMaterial 并注册到 m_Materials
+		void AddWaterNode(VkDevice& device, json& waterData);
+
+		// 获取水面配置（仅在 HasWaterNodes() 为 true 时有效）
+		const VansWaterConfig& GetWaterConfig() const { return m_WaterConfig; }
+
 		void AddDeferredNode(VkDevice& device);
 
 		void AddScreenSpaceFeatureNode(VkDevice& device);
@@ -409,6 +443,14 @@ namespace VansGraphics
 
 		void DrawTerrainNode(bool shadowPass = false, bool motionVectorPass = false);
 
+		// 设计文档 Pass 7：Water GBuffer Pass（在 m_VansWaterGBufferPass 内调用）
+		void DrawWaterGBufferNode();
+
+		// 设计文档 Pass 9：Water Composite（在 DeferredSkybox Pass 内调用）
+		void DrawWaterCompositeNode();
+
+		void DrawWaterNode();
+
 		void DrawVegetationNode();
 
 		void DrawTransParentNodes();
@@ -432,6 +474,8 @@ namespace VansGraphics
 		VansMaterialManager* GetMaterialManager() { return &m_MaterialManager; }
 
 		VansLightManager* GetLightManager() { return &m_LightManager; }
+
+		VansIESProfileManager* GetIESProfileManager() { return &m_IESProfileManager; }
 
 		VansCamera* GetCamera() { return m_Camera; }
 

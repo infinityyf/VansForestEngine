@@ -1,0 +1,73 @@
+#version 450
+
+// ============================================================
+// water_time_evolve.comp — FFT 时间演化（W-10）
+//
+// 设计文档：波形 Clipmap 方案 §3.4
+//
+// 输入 H0(k, t₀) → 输出 H(k, t) = H0 · exp(i·ω(k)·Δt)
+//
+// ω(k) = sqrt(g·|k|·tanh(|k|·d)), deep water: d→∞, tanh→1
+// ============================================================
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform FFTEvolveParams
+{
+    float time;         // 当前时间 t
+    float oceanBaseScale;
+    float pad0;
+    float pad1;
+} params;
+
+layout(set = 0, binding = 1, rgba32f) uniform readonly image2DArray h0Spectrum;   // H0: layer 0=real, 1=imag
+layout(set = 0, binding = 2, rgba32f) uniform writeonly image2DArray htSpectrum;  // H(t): evolved
+
+const float PI = 3.14159265358979323846;
+const float G  = 9.81;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    int N = 256;
+    if (pixel.x >= N || pixel.y >= N)
+        return;
+
+    // 读取 H0: real + i·imag
+    vec4 h0r = imageLoad(h0Spectrum, ivec3(pixel, 0));
+    vec4 h0i = imageLoad(h0Spectrum, ivec3(pixel, 1));
+    vec2 h0 = vec2(h0r.r, h0i.r);
+
+    // 波矢量
+    int n = (pixel.x < N/2) ? pixel.x : pixel.x - N;
+    int m = (pixel.y < N/2) ? pixel.y : pixel.y - N;
+    vec2 k = vec2(float(n), float(m)) * (2.0 * PI / params.oceanBaseScale);
+    float kLen = length(k);
+
+    // 色散关系：ω = √(g·k)（深水近似）
+    float omega = sqrt(G * kLen);
+
+    // 时间演化：H(t) = H0 · exp(i·ω·t)
+    float phase = omega * params.time;
+    vec2 exp_iwt = vec2(cos(phase), sin(phase));
+
+    // 共轭项：H(-k, t) = conj(H0(k)) · exp(i·ω·t)
+    // h0_at_neg_k: 从对称位置读取
+    ivec2 negPixel = ivec2((N - pixel.x) % N, (N - pixel.y) % N);
+    vec4 h0r_neg = imageLoad(h0Spectrum, ivec3(negPixel, 0));
+    vec4 h0i_neg = imageLoad(h0Spectrum, ivec3(negPixel, 1));
+    vec2 h0_neg = vec2(h0r_neg.r, -h0i_neg.r);  // conj
+
+    // H(k, t) = H0(k) · exp(iωt) + conj(H0(-k)) · exp(-iωt)
+    vec2 exp_neg_iwt = vec2(cos(-phase), sin(-phase));
+
+    vec2 h0Term = vec2(h0.x * exp_iwt.x - h0.y * exp_iwt.y,
+                        h0.x * exp_iwt.y + h0.y * exp_iwt.x);
+    vec2 conjTerm = vec2(h0_neg.x * exp_neg_iwt.x - h0_neg.y * exp_neg_iwt.y,
+                          h0_neg.x * exp_neg_iwt.y + h0_neg.y * exp_neg_iwt.x);
+
+    vec2 ht = h0Term + conjTerm;
+
+    imageStore(htSpectrum, ivec3(pixel, 0), vec4(ht.x, 0.0, 0.0, 0.0));
+    imageStore(htSpectrum, ivec3(pixel, 1), vec4(ht.y, 0.0, 0.0, 0.0));
+}

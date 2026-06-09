@@ -933,6 +933,18 @@ namespace VansGraphics
 #endif
 	}
 
+	// =============================================================================
+	// IES profile GPU 资源初始化
+	// 在场景加载完成、所有 IES profile 已通过 m_IESProfileManager.LoadIESFile 解析后调用。
+	// 步骤：CreateGPUResources（分配纹理数组）→ UploadAllProfiles（staging 上传）。
+	// =============================================================================
+	void VansVKDevice::PrepareIESProfileData()
+	{
+		VansIESProfileManager& iesMgr = *m_Scene->GetIESProfileManager();
+		iesMgr.CreateGPUResources(m_VansVKLogicDevice);
+		iesMgr.UploadAllProfiles(this, m_VansVKCommandBuffer);
+	}
+
 	// ============================================================
 	// 后处理 Compute Pass：注册 RT、创建 Shader、分配 Descriptor Sets
 	// Bloom（Prefilter + 4 级 Downsample + 4 级 Upsample）

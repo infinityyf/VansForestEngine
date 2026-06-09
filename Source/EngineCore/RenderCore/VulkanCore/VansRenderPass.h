@@ -144,6 +144,19 @@ namespace VansGraphics
 		// 贴花 pass：只写 Normal / GBuffer0 / GBuffer1（LOAD 现有内容，alpha blend 叠写）
 		VansVKRenderPass m_VansDecalPass;
 
+		// ── 水面 GBuffer pass ─────────────────────────────────────────────
+		// 设计文档 Pass 7：在 Deferred 之后、Transparent 之前执行
+		// 输出：WaterGBuf_Normal（RGBA16F）+ WaterGBuf_WorldPosDepth（RGBA16F）
+		// RGB=世界空间法线/位置, A=预留/线性深度；深度仅测试场景深度，不写回
+		VansVKRenderPass m_VansWaterGBufferPass;
+		VansVKImage m_WaterGBufNormalImage;       // 世界空间法线 XYZ + 预留 A（RGBA16F）
+		VansVKImage m_WaterGBufLinearDepthImage;  // 世界空间位置 RGB + 线性深度 A（RGBA16F）
+
+		// ── Deferred + SkyBox 专用 pass（从 m_VansRenderPass 中拆出）──────
+		// m_VansRenderPass 拆分后仅保留 Transparent + PostProcess；
+		// 此 pass 执行 ScreenSpaceFeature + DeferredLighting + SkyBox
+		VansVKRenderPass m_VansDeferredSkyboxPass;
+
 		VkDevice m_LogicDevice;
 
 	public:
@@ -175,6 +188,20 @@ namespace VansGraphics
 
 		// 贴花 pass：引用现有 GBuffer 图像（Normal/GBuffer0/GBuffer1），LOAD 内容并 alpha blend 叠写
 		void SetupVansDecalRenderPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
+
+		// ── 水面 GBuffer pass ──────────────────────────────────────────────
+		// 须在 SetupVansDeferredRenderPass 之后调用（依赖已创建的 m_DepthImage）
+		void SetupVansWaterGBufferPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
+
+		// 水面 GBuffer 纹理访问器（供 VansWaterSystem / 描述符写入使用）
+		VansVKImage& GetWaterGBufNormal()      { return m_WaterGBufNormalImage; }
+		VansVKImage& GetWaterGBufLinearDepth() { return m_WaterGBufLinearDepthImage; }
+
+		// Deferred + SkyBox pass 访问器
+		VansVKRenderPass& GetVansDeferredSkyboxPass() { return m_VansDeferredSkyboxPass; }
+
+		// Water GBuffer pass 访问器
+		VansVKRenderPass& GetVansWaterGBufferPass() { return m_VansWaterGBufferPass; }
 
 		// 销毁UI pass（用于窗口resize）
 		void DestroyUIRenderPass();

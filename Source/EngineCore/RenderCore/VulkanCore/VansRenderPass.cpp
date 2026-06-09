@@ -38,18 +38,30 @@ void VansGraphics::VansVKRenderPass::CreateRenderPass(VkDevice& logic_device, st
 	m_SubpassDescs.clear();
 	for (auto& subpass_description : subpass_params)
 	{
+		// Vulkan 要求 count 为 0 时对应指针为 nullptr。
+		// 尤其 pResolveAttachments：若没有 MSAA resolve，却传入空 vector 的 data()，
+		// 驱动可能仍按 colorAttachmentCount 读取无效 resolve attachment，导致 subpass RT 行为未定义。
+		const VkAttachmentReference* inputAttachments = subpass_description.InputAttachments.empty()
+			? nullptr : subpass_description.InputAttachments.data();
+		const VkAttachmentReference* colorAttachments = subpass_description.ColorAttachments.empty()
+			? nullptr : subpass_description.ColorAttachments.data();
+		const VkAttachmentReference* resolveAttachments = subpass_description.ResolveAttachments.empty()
+			? nullptr : subpass_description.ResolveAttachments.data();
+		const uint32_t* preserveAttachments = subpass_description.PreserveAttachments.empty()
+			? nullptr : subpass_description.PreserveAttachments.data();
+
 		m_SubpassDescs.push_back(
 			{
 				0,
 				subpass_description.PipelineType,
 				static_cast<uint32_t>(subpass_description.InputAttachments.size()),
-				subpass_description.InputAttachments.data(),
+				inputAttachments,
 				static_cast<uint32_t>(subpass_description.ColorAttachments.size()),
-				subpass_description.ColorAttachments.data(),
-				subpass_description.ResolveAttachments.data(),
+				colorAttachments,
+				resolveAttachments,
 				subpass_description.DepthStencilAttachment,
 				static_cast<uint32_t>(subpass_description.PreserveAttachments.size()),
-				subpass_description.PreserveAttachments.data()
+				preserveAttachments
 			}
 		);
 	}
@@ -353,11 +365,83 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	};
 	m_VansGBufferPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansGBufferPass.m_RenderPass, gbufferViews, { resolution.width, resolution.height, 1 });
 
+	// ── m_VansDeferredSkyboxPass：仅 Deferred + SkyBox ─────────────────────────
+	// 从原 m_VansRenderPass 的 Subpass 0 中拆出；SceneColor CLEAR，单子通道。
+	// 原始 m_VansRenderPass 继续存在，但改为 Transparent + PostProcess（LOAD SceneColor）。
+	std::vector<VkAttachmentDescription> deferredSkyboxAttachmentDescs =
+	{
+		// 附件 0：SceneColor（CLEAR，UNDEFINED initialLayout — Deferred 从黑色开始写入）
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		// 附件 1：Depth（LOAD，场景深度由 GBuffer pass 写入，供深度测试读取）
+		{ 0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+	VkAttachmentReference deferredSkyboxDepthRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+	std::vector<SubpassParameters> deferredSkyboxSubpassParams =
+	{
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{ { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } },
+			{},
+			&deferredSkyboxDepthRef,
+			{}
+		}
+	};
+	std::vector<VkSubpassDependency> deferredSkyboxDependencies =
+	{
+		// GBuffer / Compute → Deferred Skybox：计算写入 + GBuffer 深度写入完成后再开始
+		{
+			VK_SUBPASS_EXTERNAL, 0,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		},
+		// Deferred Skybox → 外部（Water Compute / Water GBuffer）：颜色写入完成后可被 Compute 读取
+		{
+			0, VK_SUBPASS_EXTERNAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		}
+	};
+	m_VansDeferredSkyboxPass.m_ClearValues =
+	{
+		{ 0.0f, 0.0f, 0.0f, 1.0f },
+		{ 1.0f, 0 },
+	};
+	m_VansDeferredSkyboxPass.CreateRenderPass(logic_device, deferredSkyboxAttachmentDescs, deferredSkyboxSubpassParams, deferredSkyboxDependencies, resolution);
+	m_VansDeferredSkyboxPass.m_FrameBuffers.resize(1);
+	{
+		std::vector<VkImageView> deferredSkyboxViews =
+		{
+			m_ColorImage.GetImageView(),
+			m_DepthImage.GetDepthStencilView()
+		};
+		m_VansDeferredSkyboxPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansDeferredSkyboxPass.m_RenderPass, deferredSkyboxViews, { resolution.width, resolution.height, 1 });
+	}
+
+	// ── m_VansRenderPass（修改后）：Transparent + PostProcess ────────────────
+	// 原 Subpass 0（Deferred+SkyBox）已移至 m_VansDeferredSkyboxPass。
+	// 此 pass 仅保留透明物体绘制（Subpass 0）和后处理（Subpass 1）。
+	// SceneColor 使用 LOAD：加载水面合成后的结果继续绘制透明物体。
 	// Deferred/PostProcess pass：Subpass 0 写 lighting color，Subpass 1 做后处理。
 	std::vector<VkAttachmentDescription> deferredPostAttachmentDescs =
 	{
-		// loadOp=CLEAR 的颜色 attachment 使用 UNDEFINED 作为 initialLayout
-		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		// SceneColor：LOAD 已有内容（来自水面合成或 Deferred pass 输出），透明物体叠加绘制
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		// loadOp=LOAD: depth 从 GBuffer pass finalLayout (SHADER_READ_ONLY_OPTIMAL) 加载
 		{ 0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
@@ -367,6 +451,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	VkAttachmentReference deferredDepthAttachment = { 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
 	std::vector<SubpassParameters> deferredPostSubpassParams =
 	{
+		// Subpass 0：Transparent + Particles（SceneColor LOAD，继承水面合成结果）
 		{
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			{},
@@ -375,6 +460,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			&deferredDepthAttachment,
 			{}
 		},
+		// Subpass 1：PostProcess（读 SceneColor 为 input attachment，写 ColorAfterPostProcess）
 		{
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			{ { 0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } },
@@ -386,16 +472,16 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	};
 	std::vector<VkSubpassDependency> deferredPostDependencies =
 	{
+		// 外部 → Subpass 0（Transparent）：
+		// 等待 Water Composite render pass 对 SceneColor 的颜色写入完成（或 Deferred Skybox 如无水面）
 		{
 			VK_SUBPASS_EXTERNAL,
 			0,
-			// srcStage: compute 写入 + GBuffer pass 的深度写入 (LATE_FRAGMENT_TESTS)
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-			// dstStage: fragment 读取计算结果 + EARLY_FRAGMENT_TESTS 使用 depth buffer
+			// 来源：Deferred Skybox / Water Composite 的颜色写入 + Compute 写入 + GBuffer 深度写入
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			// 目标：Transparent fragment 读取 SceneColor + 深度测试
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-			// srcAccess: compute 可能写过 + GBuffer 写入 depth
-			VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-			// dstAccess: fragment 读取计算结果 + depth 测试读取
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
 			VK_DEPENDENCY_BY_REGION_BIT
 		},
@@ -420,7 +506,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	};
 	m_VansRenderPass.m_ClearValues =
 	{
-		{ 0.0f, 0.0f, 0.0f, 1.0f },
+		{ 0.0f, 0.0f, 0.0f, 1.0f },  // SceneColor：LOAD 时忽略此值，但数组索引须保留
 		{ 0.0f, 0.0f, 0.0f, 1.0f },
 		{ 1.0f, 0 },
 	};
@@ -1264,6 +1350,126 @@ void VansGraphics::VansRenderPassManager::SetupVansDecalRenderPass(
 		{ renderResolution.width, renderResolution.height, 1 });
 }
 
+// ============================================================
+// SetupVansWaterGBufferPass — 水面 GBuffer render pass 初始化
+//
+// 设计文档 §6.2 "Water GBuffer Pass"：
+//   输出 Attachment 0：WaterGBuf_Normal（RG16_SFLOAT）
+//   输出 Attachment 1：WaterGBuf_LinearDepth（R32F）
+//   深度 Attachment：复用场景深度（TEST 只读，depthWriteEnable=VK_FALSE）
+//
+// 调用时机：在 SetupVansDeferredRenderPass 之后（须先创建 m_DepthImage）。
+// ============================================================
+void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
+	VkDevice& logic_device, const VkExtent2D& renderResolution)
+{
+	// 创建 Water GBuffer 纹理
+	m_WaterGBufNormalImage.CreateVulkanImage(
+		logic_device,
+		{ renderResolution.width, renderResolution.height, 1 },
+		VK_FORMAT_R16G16B16A16_SFLOAT,   // RG16F 存储 oct-encoded 水面法线（BA 通道留用）
+		1, 1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false, false, true);
+
+	m_WaterGBufLinearDepthImage.CreateVulkanImage(
+		logic_device,
+		{ renderResolution.width, renderResolution.height, 1 },
+		VK_FORMAT_R16G16B16A16_SFLOAT,   // RGBA16F: RGB=世界位置, A=视空间线性深度
+		1, 1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false, false, true);
+
+	// render pass attachments
+	std::vector<VkAttachmentDescription> attachments =
+	{
+		// Attachment 0：WaterGBuf_Normal（RG16F，每帧 CLEAR）
+		{
+			0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,  VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		},
+		// Attachment 1：WaterGBuf_WorldPosDepth（RGBA16F，每帧 CLEAR）
+		{
+			0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,  VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		},
+		// Attachment 2：场景深度（LOAD — 测试遮挡，不写回）
+		{
+			0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_LOAD,   VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		},
+	};
+
+	// 深度 subpass ref：DEPTH_STENCIL_READ_ONLY_OPTIMAL 允许深度测试 + Shader 采样同时进行
+	VkAttachmentReference depthRef = { 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+	std::vector<SubpassParameters> subpassParams =
+	{
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{
+				{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+				{ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
+			},
+			{},
+			&depthRef,
+			{}
+		}
+	};
+
+	std::vector<VkSubpassDependency> dependencies =
+	{
+		// GBuffer pass → Water GBuffer：场景深度写入完成后可读
+		{
+			VK_SUBPASS_EXTERNAL, 0,
+			VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		},
+		// Water GBuffer → 外部（Pre-Water Compute / Deferred）：WaterGBuf 写入完成后可被 Compute 读取
+		{
+			0, VK_SUBPASS_EXTERNAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		}
+	};
+
+	m_VansWaterGBufferPass.m_ClearValues =
+	{
+		{ 0.0f, 0.0f, 0.0f, 0.0f },   // WaterGBuf_Normal：清空为零（法线不存在时为 0）
+		{ 1e4f, 1e4f, 1e4f, 1e4f },   // WaterGBuf_WorldPosDepth：全部 1e4 = 无水面（大于任何实际 viewZ，且适配 FP16）
+		{ 1.0f, 0 },                   // 深度（LOAD，clear value 被忽略但须占位）
+	};
+
+	m_VansWaterGBufferPass.CreateRenderPass(logic_device, attachments, subpassParams, dependencies, renderResolution);
+	m_VansWaterGBufferPass.m_FrameBuffers.resize(1);
+
+	std::vector<VkImageView> fbViews =
+	{
+		m_WaterGBufNormalImage.GetImageView(),
+		m_WaterGBufLinearDepthImage.GetImageView(),
+		m_DepthImage.GetDepthStencilView(),   // 场景深度（只读）
+	};
+	m_VansWaterGBufferPass.m_FrameBuffers[0].CreateFrameBuffer(
+		logic_device, m_VansWaterGBufferPass.m_RenderPass, fbViews,
+		{ renderResolution.width, renderResolution.height, 1 });
+}
+
 void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index)
 {
 	//将当前render pass 记录到globaldata中
@@ -1414,8 +1620,14 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_GBufferImage1.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage2.DestroyVulkanImage(m_LogicDevice);
 
+	// 销毁水面 GBuffer 纹理
+	m_WaterGBufNormalImage.DestroyVulkanImage(m_LogicDevice);
+	m_WaterGBufLinearDepthImage.DestroyVulkanImage(m_LogicDevice);
+
 	m_VansGBufferPass.DestroyRenderPass(m_LogicDevice);
 	m_VansRenderPass.DestroyRenderPass(m_LogicDevice);
+	m_VansDeferredSkyboxPass.DestroyRenderPass(m_LogicDevice);
+	m_VansWaterGBufferPass.DestroyRenderPass(m_LogicDevice);
 	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
 	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);
 	m_VansMotionVectorPass.DestroyRenderPass(m_LogicDevice);

@@ -61,7 +61,8 @@ void DirectBRDF_Subsurface(BRDFData brdf, vec3 lightDirection, SubsurfaceParams 
         vec3 F0 = mix(brdf.fresnel0, brdf.albedo, brdf.metallic);
         float D = DistributionTrowbridgeReitzGGX(N, H, brdf.roughness);
         float G = GeometrySmith(N, V, L, brdf.roughness);
-        vec3  F = FresnelSchlick(NoH, F0);
+        // 修正: 微面元 Cook-Torrance 菲涅尔应使用 LoH（或等价的 VoH），而非 NoH
+        vec3  F = FresnelSchlick(LoH, F0);
 
         vec3  kS = F;
         float denom = 4.0 * max(NoL, 0.001) * NoV;
@@ -104,9 +105,8 @@ void DirectBRDF_Subsurface(BRDFData brdf, vec3 lightDirection, SubsurfaceParams 
     //          scaled by (1 - thickness) — thicker objects transmit less.
     float subsurface = mix(backScatter, 1.0, forwardScatter) * (1.0 - t);
 
-    // Step 5 — Output transmitted light separately (tinted by subsurfaceColor)
-    //          so the lighting loop can apply shadow independently.
-    subsurfaceTransmission = sss.subsurfaceColor * subsurface / PI;
+    // 修正: 能量守恒 — 传输分量也需考虑菲涅尔反射的 kD 因子
+    subsurfaceTransmission = sss.subsurfaceColor * subsurface / PI * kD;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +130,10 @@ void AmbientBRDF_Subsurface(BRDFData brdf, SubsurfaceParams sss, vec3 viewDirect
 
     // View-dependent: sample specular environment in reverse view direction at high mip
     vec3 reverseViewDir = -viewDirection;
-    float subsurfaceLod = GetMipLevelFromRoughness(brdf.roughness) + 1.0 + sss.thickness;
+    // 修正: IBL 传输 LOD 应先在糟糙度域加和再转换，而非直接加在 LOD 域
+    // 原: roughness*9 + 1 + thickness（单位不一致）
+    // 修: min(roughness + 1 + thickness, 1.0) * 9 — 始终使用高 mip（最模糊）模拟散射传输
+    float subsurfaceLod = GetMipLevelFromRoughness(min(brdf.roughness + 1.0 + sss.thickness, 1.0));
     vec3 viewDependent = textureLod(PreConvSpecularEnvironment, reverseViewDir, subsurfaceLod).rgb;
     // Attenuate cubemap by directional GI probe visibility (indoor occlusion)
     float giVis = EvalGIVisibility(giVisSH, reverseViewDir);
@@ -177,7 +180,8 @@ void CalculateDirectLight_Subsurface(BRDFData brdfData, SubsurfaceParams sss,
         // geometry via the forward/back scatter terms in DirectBRDF_Subsurface.
         reflectedDiffuse *= shadowValue;
         specularResult   *= shadowValue;
-        transmission     *= shadowValue;
+        // 修正: 背面透射代表从背面穿入的光，不完全受正面阴影影响，使用 30% 阴影混合
+        transmission     *= mix(1.0, shadowValue, 0.3);
 
         lightResult.directDiffuse  += reflectedDiffuse + transmission;
         lightResult.directSpecular += specularResult;

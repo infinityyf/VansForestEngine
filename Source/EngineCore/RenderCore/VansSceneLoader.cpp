@@ -20,10 +20,13 @@
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
+#include "VulkanCore/VansRenderPass.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "TerrainCore/VansTerrain.h"
 #include "VegetationCore/VansVegetationSystem.h"
+#include "WaterCore/VansWaterMaterial.h"
+#include "WaterCore/VansWaterSystem.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../AnimationCore/VansAnimatorIO.h"
@@ -136,10 +139,22 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 	}
 	device->PrepareInstanceTransformData();
 	CreateGlobalDescriptorSet(device->GetLogicDevice());
+	// ── 修复：WaterSystem 在 AddWaterNode 中已创建，但 CreateGlobalDescriptorSet 后才
+	//    有有效的 m_GlobalDescriptorSet。此处同步正确的全局 descriptor set 到 WaterSystem。
+	if (m_WaterSystem)
+	{
+		m_WaterSystem->SetGlobalDescriptorSet(
+			m_GlobalDescriptorSetLayout,
+			m_GlobalDescriptorSet);
+	}
 	// 将 Global Descriptor Set（Set 0）同步到 MaterialManager，供视频切换时直接更新 Bindless 槽
 	m_MaterialManager.m_VideoBindlessDescriptorSet = m_GlobalDescriptorSet;
 	// Write TileLight SSBOs (created during BeforeRendering) into global Set 0 bindings 9/10.
 	UpdateGlobalTileLightDescriptors();
+
+	// IES profile GPU 资源：在所有场景内容（含光源 JSON）加载完毕后，一次性创建纹理数组并上传
+	device->PrepareIESProfileData();
+
 	CreateNodeDescriptorSets();
 	device->PrepareRayTracingData();
 
@@ -533,6 +548,325 @@ void VansGraphics::VansScene::AddTerrainNode(VansVKDevice* device, json& terrain
                 m_TerrainPhysicsNode = nullptr;
                 VANS_LOG_WARN("[VansScene] Terrain collision initialization failed.");
             }
+        }
+    }
+}
+
+// ===========================================================================
+// Water node
+// ===========================================================================
+
+void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
+{
+    // ── 类型解析 ───────────────────────────────────────────────────────────
+    VansWaterConfig config;
+
+    const std::string typeStr = waterData.value("type", "ocean");
+    if      (typeStr == "ocean")  config.m_Type = VansWaterType::Ocean;
+    else if (typeStr == "lake")   config.m_Type = VansWaterType::Lake;
+    else if (typeStr == "river")  config.m_Type = VansWaterType::River;
+    else if (typeStr == "pool")   config.m_Type = VansWaterType::Pool;
+    else
+        VANS_LOG_WARN("[AddWaterNode] Unknown water type '" << typeStr << "', defaulting to ocean.");
+
+    config.m_WaterLevel        = waterData.value("level", 3.4f);
+    config.m_SpecularIntensity = waterData.value("specularIntensity", 1.0f);
+
+    // ── medium 块 ──────────────────────────────────────────────────────────
+    if (waterData.contains("medium") && waterData["medium"].is_object())
+    {
+        auto& m = waterData["medium"];
+
+        // absorption — 支持数组 [r,g,b] 或对象 {r,g,b}
+        if (m.contains("absorption"))
+        {
+            auto& a = m["absorption"];
+            if (a.is_array() && a.size() >= 3)
+                config.m_Medium.m_AbsorptionCoeff = {a[0], a[1], a[2]};
+            else if (a.is_object())
+                config.m_Medium.m_AbsorptionCoeff = {
+                    a.value("r", 0.05f), a.value("g", 0.08f), a.value("b", 0.20f)};
+        }
+
+        if (m.contains("scattering"))
+        {
+            auto& s = m["scattering"];
+            if (s.is_array() && s.size() >= 3)
+                config.m_Medium.m_ScatteringCoeff = {s[0], s[1], s[2]};
+            else if (s.is_object())
+                config.m_Medium.m_ScatteringCoeff = {
+                    s.value("r", 0.03f), s.value("g", 0.05f), s.value("b", 0.08f)};
+        }
+
+        config.m_Medium.m_IOR          = m.value("ior",          config.m_Medium.m_IOR);
+        config.m_Medium.m_FresnelPower = m.value("fresnelPower",  config.m_Medium.m_FresnelPower);
+        config.m_Medium.m_Anisotropy   = m.value("anisotropy",   config.m_Medium.m_Anisotropy);
+
+        if (m.contains("deepColor"))
+        {
+            auto& d = m["deepColor"];
+            if (d.is_array() && d.size() >= 3)
+                config.m_Medium.m_DeepColor = {d[0], d[1], d[2], 1.0f};
+            else if (d.is_object())
+                config.m_Medium.m_DeepColor = {
+                    d.value("r", 0.0f), d.value("g", 0.05f), d.value("b", 0.2f), 1.0f};
+        }
+
+        if (m.contains("shallowColor"))
+        {
+            auto& s = m["shallowColor"];
+            if (s.is_array() && s.size() >= 3)
+                config.m_Medium.m_ShallowColor = {s[0], s[1], s[2], 1.0f};
+            else if (s.is_object())
+                config.m_Medium.m_ShallowColor = {
+                    s.value("r", 0.1f), s.value("g", 0.3f), s.value("b", 0.4f), 1.0f};
+        }
+    }
+
+    // ── waves 块 ───────────────────────────────────────────────────────────
+    if (waterData.contains("waves") && waterData["waves"].is_object())
+    {
+        auto& w = waterData["waves"];
+
+        const std::string modeStr = w.value("mode", "gerstner");
+        if      (modeStr == "fft")     config.m_Waves.m_Mode = VansWaveMode::FFT;
+        else if (modeStr == "hybrid")  config.m_Waves.m_Mode = VansWaveMode::Hybrid;
+        else                           config.m_Waves.m_Mode = VansWaveMode::Gerstner;
+
+        config.m_Waves.m_BaseScale        = w.value("baseScale",         config.m_Waves.m_BaseScale);
+        config.m_Waves.m_MaxLOD           = w.value("maxLOD",            config.m_Waves.m_MaxLOD);
+        config.m_Waves.m_WindSpeed        = w.value("windSpeed",         config.m_Waves.m_WindSpeed);
+        config.m_Waves.m_SwellAmplitude   = w.value("swellAmplitude",    config.m_Waves.m_SwellAmplitude);
+        config.m_Waves.m_ChopScale        = w.value("chopScale",         config.m_Waves.m_ChopScale);
+        config.m_Waves.m_GerstnerWaveCount = w.value("gerstnerWaveCount", config.m_Waves.m_GerstnerWaveCount);
+        config.m_Waves.m_FftLODCount      = w.value("fftLODCount",       config.m_Waves.m_FftLODCount);
+        config.m_Waves.m_FftResolution    = w.value("fftResolution",     config.m_Waves.m_FftResolution);
+
+        if (w.contains("windDirection"))
+        {
+            auto& d = w["windDirection"];
+            if (d.is_array() && d.size() >= 2)
+                config.m_Waves.m_WindDirection = {d[0], d[1]};
+            else if (d.is_object())
+                config.m_Waves.m_WindDirection = {
+                    d.value("x", 0.7071f), d.value("y", 0.7071f)};
+        }
+
+        // maxLOD 范围校验
+        if (config.m_Waves.m_MaxLOD < 1 || config.m_Waves.m_MaxLOD > 10)
+        {
+            VANS_LOG_WARN("[AddWaterNode] waves.maxLOD = " << config.m_Waves.m_MaxLOD
+                << " 越界（合法范围 1-10），截断至合法值。");
+            config.m_Waves.m_MaxLOD = glm::clamp(config.m_Waves.m_MaxLOD, 1, 10);
+        }
+    }
+
+    // ── foam 块 ────────────────────────────────────────────────────────────
+    if (waterData.contains("foam") && waterData["foam"].is_object())
+    {
+        auto& f = waterData["foam"];
+        config.m_Foam.m_Enabled     = f.value("enabled",   true);
+        config.m_Foam.m_TextureName = f.value("texture",   std::string{});
+        config.m_Foam.m_Intensity   = f.value("intensity", 1.0f);
+    }
+
+    // ── normalMap 块 ───────────────────────────────────────────────────────
+    if (waterData.contains("normalMap") && waterData["normalMap"].is_object())
+    {
+        auto& n = waterData["normalMap"];
+        config.m_NormalMap.m_TextureName = n.value("texture", std::string{});
+        if (n.contains("tiling"))
+        {
+            auto& t = n["tiling"];
+            if (t.is_array() && t.size() >= 2)
+                config.m_NormalMap.m_Tiling = {t[0], t[1]};
+        }
+    }
+
+    // ── caustics 块 ────────────────────────────────────────────────────────
+    if (waterData.contains("caustics") && waterData["caustics"].is_object())
+    {
+        auto& c = waterData["caustics"];
+        config.m_Caustics.m_Enabled   = c.value("enabled",   true);
+        config.m_Caustics.m_Intensity = c.value("intensity", 1.0f);
+        config.m_Caustics.m_Scale     = c.value("scale",     0.5f);
+    }
+
+    // ── refraction 块 ─────────────────────────────────────────────────────
+    if (waterData.contains("refraction") && waterData["refraction"].is_object())
+    {
+        auto& r = waterData["refraction"];
+        config.m_Refraction.m_Enabled     = r.value("enabled",     true);
+        config.m_Refraction.m_MaxDistance = r.value("maxDistance", 50.0f);
+        config.m_Refraction.m_Scale       = r.value("scale",       0.5f);
+    }
+
+    // ── ssr 块 ────────────────────────────────────────────────────────────
+    if (waterData.contains("ssr") && waterData["ssr"].is_object())
+    {
+        auto& s = waterData["ssr"];
+        config.m_SSR.m_Enabled      = s.value("enabled",      true);
+        config.m_SSR.m_MaxRoughness = s.value("maxRoughness", 0.3f);
+    }
+
+    // ── lod 块（W-07）─────────────────────────────────────────────────────
+    if (waterData.contains("lod") && waterData["lod"].is_object())
+    {
+        auto& l = waterData["lod"];
+        config.m_Waves.m_MaxLOD     = l.value("levels",          config.m_Waves.m_MaxLOD);
+        config.m_Waves.m_BaseScale  = l.value("minDistance",     config.m_Waves.m_BaseScale);
+        // meshDim 和 detailBalance 暂存于 baseScale 相关参数中（后续可扩展 VansWaterConfig）
+        VANS_LOG("[AddWaterNode] lod block: levels=" << config.m_Waves.m_MaxLOD
+            << " minDistance=" << config.m_Waves.m_BaseScale);
+    }
+
+    // ── debug 块（W-07）───────────────────────────────────────────────────
+    if (waterData.contains("debug") && waterData["debug"].is_object())
+    {
+        auto& d = waterData["debug"];
+        bool showWire   = d.value("showLODWireframe", false);
+        bool freezeLOD  = d.value("freezeLOD",        false);
+        bool visMorph   = d.value("visualizeMorph",   false);
+        VANS_LOG("[AddWaterNode] debug: wireframe=" << showWire
+            << " freezeLOD=" << freezeLOD << " visualizeMorph=" << visMorph);
+        // Debug 标志存储在 VansWaterConfig 中（可后续添加 m_Debug 子结构）
+    }
+
+    // ── 创建 VansWaterMaterial 并展开所有字段 ──────────────────────────────
+    VansWaterMaterial* mat = new VansWaterMaterial();
+    mat->m_MaterialType = VansMaterialType::VAN_WATER;
+    mat->m_Config       = config;
+
+    // 参与介质参数
+    mat->m_AbsorptionCoeffs  = config.m_Medium.m_AbsorptionCoeff;
+    mat->m_ScatteringCoeffs  = config.m_Medium.m_ScatteringCoeff;
+    mat->m_WaterIOR          = config.m_Medium.m_IOR;
+    mat->m_FresnelPower      = config.m_Medium.m_FresnelPower;
+    mat->m_Anisotropy        = config.m_Medium.m_Anisotropy;
+    mat->m_SpecularIntensity = config.m_SpecularIntensity;
+    mat->m_DeepWaterColor    = config.m_Medium.m_DeepColor;
+    mat->m_ShallowWaterColor = config.m_Medium.m_ShallowColor;
+
+    // 波形参数
+    mat->m_OceanBaseScale      = config.m_Waves.m_BaseScale;
+    mat->m_MaxLODCount         = config.m_Waves.m_MaxLOD;
+    mat->m_GerstnerWaveCount   = config.m_Waves.m_GerstnerWaveCount;
+    mat->m_FftLODCount         = config.m_Waves.m_FftLODCount;
+    mat->m_FftResolution       = config.m_Waves.m_FftResolution;
+    mat->m_WindSpeed           = config.m_Waves.m_WindSpeed;
+    mat->m_SwellAmplitude      = config.m_Waves.m_SwellAmplitude;
+    mat->m_ChopScale           = config.m_Waves.m_ChopScale;
+    mat->m_WindDirection       = config.m_Waves.m_WindDirection;
+
+    // 泡沫
+    mat->m_EnableFoam    = config.m_Foam.m_Enabled;
+    mat->m_FoamIntensity = config.m_Foam.m_Intensity;
+
+    // 法线贴图平铺
+    mat->m_NormalMapTiling = config.m_NormalMap.m_Tiling;
+
+    // 焦散
+    mat->m_EnableCaustics    = config.m_Caustics.m_Enabled;
+    mat->m_CausticsIntensity = config.m_Caustics.m_Intensity;
+    mat->m_CausticsScale     = config.m_Caustics.m_Scale;
+
+    // 折射
+    mat->m_EnableRefraction  = config.m_Refraction.m_Enabled;
+    mat->m_RefractionMaxDist = config.m_Refraction.m_MaxDistance;
+    mat->m_RefractionScale   = config.m_Refraction.m_Scale;
+
+    // SSR
+    mat->m_EnableSSR       = config.m_SSR.m_Enabled;
+    mat->m_SSRMaxRoughness = config.m_SSR.m_MaxRoughness;
+
+    // ── 纹理绑定（通过名称查找已加载资产）─────────────────────────────────
+    if (!config.m_Foam.m_TextureName.empty())
+    {
+        mat->m_FoamTexture = static_cast<VansTexture*>(
+            GetTextureAsset(config.m_Foam.m_TextureName));
+        if (!mat->m_FoamTexture)
+            VANS_LOG_WARN("[AddWaterNode] foam texture '" << config.m_Foam.m_TextureName
+                << "' not found in loaded assets. Register it in resource.json.");
+    }
+
+    if (!config.m_NormalMap.m_TextureName.empty())
+    {
+        mat->m_WaterNormalTexture = static_cast<VansTexture*>(
+            GetTextureAsset(config.m_NormalMap.m_TextureName));
+        if (!mat->m_WaterNormalTexture)
+            VANS_LOG_WARN("[AddWaterNode] normalMap texture '" << config.m_NormalMap.m_TextureName
+                << "' not found in loaded assets. Register it in resource.json.");
+    }
+
+    // ── 注册到场景 ─────────────────────────────────────────────────────────
+    mat->SetName(waterData.value("name", "WaterMaterial"));
+    m_Materials.push_back(mat);
+
+    // 记录完整配置供 VansWaterSystem 初始化时读取
+    m_WaterConfig  = config;
+    m_WaterMaterial = mat;
+    m_HasWater      = true;
+
+    // ── 创建 VansWaterRenderNode，使用引擎内置 "plane" 网格作为水面几何体 ──
+    {
+        // "plane" 是 resource.json 中预注册的单位平面网格
+        VansMesh* planeMesh = static_cast<VansMesh*>(GetMeshAsset("plane"));
+        if (planeMesh == nullptr)
+        {
+            VANS_LOG_WARN("[AddWaterNode] 网格 'plane' 未找到，水面渲染节点将不可见。");
+        }
+        else
+        {
+            VansWaterRenderNode* waterNode = new VansWaterRenderNode(device, WATER_NODE);
+            waterNode->m_Mesh     = planeMesh;
+            waterNode->m_Material = mat;
+
+            // 水面铺满整个地形范围（与 terrain.terrainSize 一致，使用 config.m_WaterLevel 为 Y 高度）
+            const float terrainHalfSize = 512.0f; // 默认 1024×1024 地形的半径
+            waterNode->SetTransformData(
+                glm::vec3(0.0f, config.m_WaterLevel, 0.0f),  // 位置（Y = water level）
+                glm::vec3(-90.0f, 0.0f, 0.0f),               // 旋转（plane 默认朝 Z，绕 X 旋转 -90° 使其水平）
+                glm::vec3(terrainHalfSize, terrainHalfSize, 1.0f) // 缩放铺满地形
+            );
+
+            const std::string nodeName = waterData.value("name", "WaterNode");
+            waterNode->SetName(nodeName);
+            RegistRenderNode(waterNode, WATER_NODE);
+        }
+    }
+
+    VANS_LOG("[AddWaterNode] 水面配置加载完成: type=" << typeStr
+        << " level=" << config.m_WaterLevel
+        << " maxLOD=" << config.m_Waves.m_MaxLOD
+        << " foam=" << (config.m_Foam.m_Enabled ? "on" : "off")
+        << " ssr=" << (config.m_SSR.m_Enabled ? "on" : "off"));
+
+    // ── 创建 VansWaterSystem（设计文档 §12.1）────────────────────────────────
+    // VansWaterSystem 管理 Water GBuffer 纹理、波形仿真、Pre-Water Compute 和 Composite pass。
+    // 通过 m_Scene->GetWaterSystem() 供 VansVKRenderer 在渲染循环中调度。
+    {
+        VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+        if (vkDevice)
+        {
+            VansWaterSystem* waterSystem = new VansWaterSystem();
+            waterSystem->SetWaterLevel(config.m_WaterLevel);
+            waterSystem->SetWaterMaterial(mat);
+            waterSystem->Initialize(vkDevice,
+                static_cast<uint32_t>(vkDevice->GetRenderWidth()),
+                static_cast<uint32_t>(vkDevice->GetRenderHeight()));
+
+            // SetupDescriptors：绑定 WaterGBuf 纹理到合成集（在 SetupVansWaterGBufferPass 之后调用）
+            auto* rp = VansRenderPassManager::GetInstance();
+            waterSystem->SetupDescriptors(
+                rp,
+                m_GlobalDescriptorSetLayout,
+                m_GlobalDescriptorSet);
+
+            m_WaterSystem = waterSystem;
+        }
+        else
+        {
+            VANS_LOG_WARN("[AddWaterNode] 无法获取 VansVKDevice，VansWaterSystem 未初始化。");
         }
     }
 }
@@ -1260,6 +1594,12 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
     if (sceneData.contains("vegetation"))
     {
         AddVegetationNode(nativeDevice, sceneData["vegetation"]);
+    }
+
+    // Water
+    if (sceneData.contains("water"))
+    {
+        AddWaterNode(nativeDevice, sceneData["water"]);
     }
 
     AddDeferredNode(nativeDevice);
@@ -2332,10 +2672,22 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 {
                     pointLight.m_Color = glm::vec3(1.0f);
                 }
-                pointLight.m_Intensity = plJson.value("intensity", 1.0f);
-                pointLight.m_Radius    = plJson.value("radius", 10.0f);
+                pointLight.m_Intensity        = plJson.value("intensity", 1.0f);
+                pointLight.m_Radius           = plJson.value("radius", 10.0f);
+                pointLight.m_IESProfileIndex  = -1.0f;
                 // 位置由 SyncLightTransforms 每帧覆盖
                 pointLight.m_Position  = glm::vec3(0.0f);
+
+                // IES profile（可选）：加载 .ies 文件，获取纹理层索引
+                if (plJson.contains("ies_profile") && plJson["ies_profile"].is_string())
+                {
+                    std::string iesPath = projectRoot + plJson["ies_profile"].get<std::string>();
+                    int iesIdx = -1;
+                    if (m_IESProfileManager.LoadIESFile(iesPath, iesIdx))
+                        pointLight.m_IESProfileIndex = static_cast<float>(iesIdx);
+                    else
+                        VANS_LOG_WARN("[LoadSceneObjects] 点光源 '" << obj->m_ObjectName << "' IES 加载失败: " << iesPath);
+                }
 
                 int idx = (int)m_LightManager.GetPointLights().size();
                 m_LightManager.AddPointLight(pointLight);
@@ -2363,13 +2715,27 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 {
                     spotLight.m_Color = glm::vec3(1.0f);
                 }
-                spotLight.m_Intensity    = slJson.value("intensity", 1.0f);
-                spotLight.m_Radius       = slJson.value("radius", 10.0f);
-                spotLight.m_InnerCutOff  = glm::radians(slJson.value("innercutoff", 30.0f));
-                spotLight.m_OuterCutOff  = glm::radians(slJson.value("outerCutoff", 45.0f));
+                spotLight.m_Intensity         = slJson.value("intensity", 1.0f);
+                spotLight.m_Radius            = slJson.value("radius", 10.0f);
+                spotLight.m_InnerCutOff       = glm::radians(slJson.value("innercutoff", 30.0f));
+                spotLight.m_OuterCutOff       = glm::radians(slJson.value("outerCutoff", 45.0f));
+                spotLight.m_IESProfileIndex   = -1.0f;
+                spotLight.m_IESIntensityScale = slJson.value("ies_intensity_scale", 1.0f);
+                spotLight.m_pad0              = 0.0f;
                 // 位置和方向由 SyncLightTransforms 每帧覆盖
                 spotLight.m_Position     = glm::vec3(0.0f);
                 spotLight.m_Direction    = glm::vec3(0.0f, 1.0f, 0.0f);
+
+                // IES profile（可选）：加载 .ies 文件，获取纹理层索引
+                if (slJson.contains("ies_profile") && slJson["ies_profile"].is_string())
+                {
+                    std::string iesPath = projectRoot + slJson["ies_profile"].get<std::string>();
+                    int iesIdx = -1;
+                    if (m_IESProfileManager.LoadIESFile(iesPath, iesIdx))
+                        spotLight.m_IESProfileIndex = static_cast<float>(iesIdx);
+                    else
+                        VANS_LOG_WARN("[LoadSceneObjects] 聚光灯 '" << obj->m_ObjectName << "' IES 加载失败: " << iesPath);
+                }
 
                 int idx = (int)m_LightManager.GetSpotLight().size();
                 m_LightManager.AddSpotLight(spotLight);

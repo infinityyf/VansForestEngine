@@ -75,4 +75,63 @@ void VansGraphics::VansGBufferWindow::ShowWindow(VansVKDevice& device)
     }
 
     ImGui::End();
+
+    // ── 独立的 Water GBuffer 调试窗口 ─────────────────────────────
+    // 可视化水面专属 GBuffer（WaterGBuf_Normal + WaterGBuf_WorldPosDepth），
+    // 用于确认水面是否正确写入独立 GBuffer，且不污染场景 GBuffer。
+    ImGui::Begin("Water GBuffer Visualization");
+    if (renderPassManager)
+    {
+        VansVKImage& waterNormal = renderPassManager->GetWaterGBufNormal();      // 世界空间法线 XYZ（RGBA16F）
+        VansVKImage& waterDepth  = renderPassManager->GetWaterGBufLinearDepth(); // 世界位置 RGB + 线性深度 A（RGBA16F）
+
+        auto DisplayWaterImage = [](const char* label, VansVKImage& image,
+                                    VkDescriptorSet& cachedDS, VkImageView& cachedImageView)
+        {
+            ImGui::Text("%s", label);
+
+            VkImageView currentImageView = image.GetImageView();
+            if (currentImageView == VK_NULL_HANDLE)
+            {
+                ImGui::TextDisabled("(image not created)");
+                return;
+            }
+            if (cachedDS == VK_NULL_HANDLE || cachedImageView != currentImageView)
+            {
+                if (cachedDS != VK_NULL_HANDLE)
+                {
+                    ImGui_ImplVulkan_RemoveTexture(cachedDS);
+                }
+                cachedDS = ImGui_ImplVulkan_AddTexture(image.GetSampler(), currentImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                cachedImageView = currentImageView;
+            }
+
+            if (cachedDS != VK_NULL_HANDLE)
+            {
+                float width = ImGui::GetContentRegionAvail().x;
+                float aspect = (float)image.GetImageDimension().width / (float)image.GetImageDimension().height;
+                ImGui::Image((ImTextureID)cachedDS, ImVec2(width, width / aspect));
+            }
+        };
+
+        static VkDescriptorSet dsWN = VK_NULL_HANDLE; static VkImageView ivWN = VK_NULL_HANDLE;
+        static VkDescriptorSet dsWD = VK_NULL_HANDLE; static VkImageView ivWD = VK_NULL_HANDLE;
+
+        ImGui::TextWrapped("水面专属 GBuffer。法线非零 / 深度小于 1e9 的区域即为已渲染的水面像素。");
+        if (ImGui::BeginTable("WaterGBufferTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
+        {
+            ImGui::TableNextColumn();
+            DisplayWaterImage("WaterGBuf Normal", waterNormal, dsWN, ivWN);
+
+            ImGui::TableNextColumn();
+            DisplayWaterImage("WaterGBuf WorldPos+Depth (RGBA16F)", waterDepth, dsWD, ivWD);
+
+            ImGui::EndTable();
+        }
+    }
+    else
+    {
+        ImGui::Text("RenderPassManager not initialized.");
+    }
+    ImGui::End();
 }

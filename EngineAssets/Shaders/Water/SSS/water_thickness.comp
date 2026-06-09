@@ -1,0 +1,56 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// ============================================================
+// water_thickness.comp — 水体厚度图（W-16）
+//
+// 设计文档：水面渲染模块落地方案 §9.1
+//
+// 输出 R16F 厚度图：
+//   thickness = sceneDepth - waterDepth（clamped）
+//
+// 用于 Composite Pass 中的 SSS + Beer-Lambert 计算
+// ============================================================
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D waterGBufPosDepth;   // 水面线性深度
+layout(set = 0, binding = 1) uniform sampler2D sceneGBuf2;       // 场景线性深度 (.w)
+
+layout(set = 0, binding = 2) uniform WaterThicknessParams
+{
+    float maxThicknessDistance;  // 最大厚度值（m），超过此值 clamp
+    float pad0;
+    float pad1;
+    float pad2;
+} params;
+
+layout(set = 0, binding = 3, r16f) uniform writeonly image2D thicknessOut;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(thicknessOut);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+
+    float waterDepth = texture(waterGBufPosDepth, uv).a;
+    float sceneDepth = texture(sceneGBuf2, uv).w;
+
+    float thickness = 0.0;
+    if (waterDepth < 9999.0 && sceneDepth > 0.1)
+    {
+        // 场景存在 → 计算水体厚度
+        thickness = max(sceneDepth - waterDepth, 0.0) / max(params.maxThicknessDistance, 1.0);
+        thickness = clamp(thickness, 0.0, 1.0);
+    }
+    else if (waterDepth < 9999.0)
+    {
+        // 水面存在但没有场景几何 → 深水（设为最大厚度的 80%）
+        thickness = 0.8;
+    }
+
+    imageStore(thicknessOut, pixel, vec4(thickness, 0.0, 0.0, 0.0));
+}

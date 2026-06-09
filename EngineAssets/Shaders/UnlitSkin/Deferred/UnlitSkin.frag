@@ -53,9 +53,11 @@ void main()
     vec3 dPdx = dFdx(position_world);
     vec3 dPdy = dFdy(position_world);
 
-    // Curvature κ ≈ |dN/ds| in 1/meter.  Typical face values: 5–300.
-    float pixelSize = max(length(dPdx), length(dPdy));
-    float kappa     = (length(dNdx) + length(dNdy)) / max(pixelSize * 2.0, 1e-5);
+    // 修正: 分别计算 X/Y 方向曲率再取平均，避免因 max 取大值导致小方向曲率被严重低估
+    // 正确: κ_x = |dN/dx| / |dP/dx|，κ_y = |dN/dy| / |dP/dy|，平均后 tone-map
+    float kappaX = length(dNdx) / max(length(dPdx), 1e-5);
+    float kappaY = length(dNdy) / max(length(dPdy), 1e-5);
+    float kappa  = (kappaX + kappaY) * 0.5;
 
     // Soft tone-map κ into [0,1] via κ/(κ+K).
     // K ≈ 20 maps: flat(κ~5)→0.2, medium(κ~20)→0.5, sharp(κ~100)→0.83

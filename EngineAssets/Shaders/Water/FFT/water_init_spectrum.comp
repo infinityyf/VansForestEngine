@@ -1,0 +1,102 @@
+#version 450
+
+// ============================================================
+// water_init_spectrum.comp — Phillips 频谱初始化（W-09）
+//
+// 设计文档：波形 Clipmap 方案 §3.2
+//
+// 输出 H0(k) 频谱（RGBA32F × 2: real + imag）
+// N = 256, GaussianRandom via PCG Hash
+// ============================================================
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform FFTSpectrumParams
+{
+    float oceanBaseScale;   // 海洋基础尺度（m）
+    vec2  windDirection;    // 归一化风向（XZ）
+    float windSpeed;        // 风速 (m/s)
+    float amplitude;        // 全局振幅缩放
+    float pad0;
+    float pad1;
+    float pad2;
+} params;
+
+// H0 频谱输出：Z 分量=0 为 real，Z 分量=1 为 imag
+layout(set = 0, binding = 1, rgba32f) uniform writeonly image2DArray h0Spectrum;  // layer 0=real, 1=imag
+
+const float PI  = 3.14159265358979323846;
+const float G   = 9.81;
+
+// PCG Hash for Gaussian random number generation
+uint PCGHash(uint seed)
+{
+    uint state = seed * 747796405u + 2891336453u;
+    uint word  = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// Box-Muller 变换生成高斯随机数
+vec2 GaussianRandom(uint seed)
+{
+    uint s0 = PCGHash(seed);
+    uint s1 = PCGHash(s0);
+
+    float u0 = float(s0) / 4294967295.0;
+    float u1 = float(s1) / 4294967295.0;
+
+    float r = sqrt(-2.0 * log(max(u0, 0.000001)));
+    float theta = 2.0 * PI * u1;
+
+    return vec2(r * cos(theta), r * sin(theta));
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    int N = 256;  // FFT resolution
+    if (pixel.x >= N || pixel.y >= N)
+        return;
+
+    // 波矢量 k：中心化（FFT 频率域）
+    // n = (-N/2, N/2-1), m = (-N/2, N/2-1)
+    int n = (pixel.x < N/2) ? pixel.x : pixel.x - N;
+    int m = (pixel.y < N/2) ? pixel.y : pixel.y - N;
+
+    vec2 k = vec2(float(n), float(m)) * (2.0 * PI / params.oceanBaseScale);
+    float kLen = length(k);
+
+    // 跳过 DC 分量（k = 0）
+    if (kLen < 0.0001)
+    {
+        imageStore(h0Spectrum, ivec3(pixel, 0), vec4(0.0));
+        imageStore(h0Spectrum, ivec3(pixel, 1), vec4(0.0));
+        return;
+    }
+
+    vec2 windDir = normalize(params.windDirection);
+    float kDotWind = dot(normalize(k), windDir);
+
+    // Phillips 频谱
+    float L = params.windSpeed * params.windSpeed / G;
+    float phillips = params.amplitude
+        * exp(-1.0 / max(kLen * kLen * L * L, 0.0001))
+        / max(kLen * kLen * kLen * kLen, 0.0001)
+        * max(kDotWind * kDotWind, 0.0)
+        * exp(-kLen * kLen * L * L * 0.0001);  // 高频阻尼
+
+    // 抑制与风向相反的分量
+    if (kDotWind < 0.0)
+        phillips *= 0.07;
+
+    // 高斯随机数
+    uint seed = uint(pixel.x * 1337u + pixel.y * 7919u);
+    vec2 gauss = GaussianRandom(seed);
+
+    // H0 = 1/√2 * ξr * √(Ph/2)
+    float scale = inversesqrt(2.0) * sqrt(phillips * 0.5);
+    vec2 h0 = gauss * scale;
+
+    imageStore(h0Spectrum, ivec3(pixel, 0), vec4(h0.x, 0.0, 0.0, 0.0));  // real
+    imageStore(h0Spectrum, ivec3(pixel, 1), vec4(h0.y, 0.0, 0.0, 0.0));  // imag
+}

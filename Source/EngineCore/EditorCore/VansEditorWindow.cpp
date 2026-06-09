@@ -19,6 +19,7 @@
 #include "Windows/VansProfilerWindow.h"
 #include "Windows/VansAnimGraphEditorWindow.h"
 #include "Windows/VansClothProfileEditorWindow.h"
+#include "Windows/VansWaterWindow.h"
 #include "Windows/VansUIEditorWindow.h"
 
 #include "../Util/VansProfiler.h"
@@ -122,6 +123,7 @@ VansGraphics::VansAnimGraphEditorWindow* VansGraphics::VansEditorWindow::m_AnimG
 VansGraphics::VansUIEditorWindow* VansGraphics::VansEditorWindow::m_UIEditorWindow;
 
 VansGraphics::VansClothProfileEditorWindow* VansGraphics::VansEditorWindow::m_ClothProfileEditorWindow;
+VansGraphics::VansWaterWindow* VansGraphics::VansEditorWindow::m_WaterWindow;
 
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
@@ -374,6 +376,9 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_ClothProfileEditorWindow = new VansClothProfileEditorWindow();
     m_Windows.push_back(m_ClothProfileEditorWindow);
+
+    m_WaterWindow = new VansWaterWindow();
+    m_Windows.push_back(m_WaterWindow);
 
     // 将 AnimGraphEditor 引用传给 HierachyWindow
     m_HierachyWindow->m_AnimGraphEditorRef = m_AnimGraphEditorWindow;
@@ -689,6 +694,8 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
                 {
                     m_RenderDebugWindowOpen = !m_RenderDebugWindowOpen;
                 }
+                // Water 面板常驻显示（内部判断场景是否含 water）
+                ImGui::MenuItem("WaterWindow (always on)", nullptr, nullptr, false);
                 ImGui::EndMenu();
             }
             // 新增 View 菜单用于控制线框模式

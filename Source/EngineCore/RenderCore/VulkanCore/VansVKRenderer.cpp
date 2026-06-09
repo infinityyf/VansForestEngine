@@ -2,6 +2,7 @@
 #include "VansRenderPass.h"
 #include "VansVKDescriptorManager.h"
 #include "../VansScene.h"
+#include "../WaterCore/VansWaterSystem.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
@@ -99,6 +100,9 @@ namespace VansGraphics
 		renderPassManager->SetupVansMotionVectorRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, { m_RenderWidth, m_RenderHeight });
 		// 贴花 Pass：引用 GBuffer 图像（须在 SetupVansDeferredRenderPass 之后调用）
 		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
+		// 水面 GBuffer Pass：须在 SetupVansDeferredRenderPass 之后调用（依赖已创建的 m_DepthImage）
+		renderPassManager->SetupVansWaterGBufferPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
+		// 注：水面 descriptor sets 在场景加载时（VansSceneLoader::AddWaterNode）调用 SetupDescriptors 完成。
 		renderPassManager->SetupVansUIRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface,
 			{
 				m_VansVKSurface.m_VansVKSwapChainImageExtent.width,
@@ -225,6 +229,37 @@ namespace VansGraphics
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 
+			// ── 设计文档 Pass 7：Water GBuffer（在场景 GBuffer 之后、Deferred 之前执行）──
+			// 仅需场景深度作遮挡测试，SceneColor 尚不需要；可与 Deferred 前的 Compute 并排。
+			if (m_Scene->HasWaterNodes())
+			{
+				// 每帧更新 CDLOD Patch 列表（play 和非 play 模式均需要），依赖当前帧相机位置
+				auto* waterSys = m_Scene->GetWaterSystem();
+				{
+					auto* camera = m_Scene->GetCamera();
+					glm::vec3 camPos = glm::vec3(camera->GetPosition());
+					glm::mat4 viewMatrix = camera->GetViewMatrix();
+					glm::mat4 vpMatrix = camera->GetProjectiveMatrix() * viewMatrix;
+					glm::vec3 mainLightDir = glm::vec3(0.35f, 1.0f, 0.25f);
+					glm::vec3 mainLightColor = glm::vec3(1.0f);
+						auto& dirLights = m_Scene->GetLightManager()->GetDirectionLights();
+						if (!dirLights.empty())
+						{
+							mainLightDir = glm::normalize(dirLights[0].m_Direction);
+							mainLightColor = dirLights[0].m_Color * dirLights[0].m_Intensity;
+						}
+						waterSys->Update(static_cast<float>(VansTimer::GetDeltaTime()), camPos, viewMatrix, vpMatrix, mainLightDir, mainLightColor);
+				}
+				{
+					VANS_GPU_SCOPE(cmd, "Water Wave Compute");
+					waterSys->UpdateWaveSimulation(m_VansVKCommandBuffer, static_cast<float>(VansTimer::GetDeltaTime()));
+				}
+				VANS_GPU_SCOPE(cmd, "Water GBuffer Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansWaterGBufferPass(), cmd, m_globalRenderStateData);
+				m_Scene->DrawWaterGBufferNode();
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+
 			if (m_Scene->HasDecalNodes())
 			{
 				VANS_GPU_SCOPE(cmd, "Decal Pass");
@@ -260,10 +295,39 @@ namespace VansGraphics
 					{ computeToFragmentBarrier });
 			}
 
+			// ── 设计文档 Pass 6：Deferred + SkyBox（写 SceneColor）────────────────────
 			{
-				VANS_GPU_SCOPE(cmd, "Deferred Pass");
+				VANS_GPU_SCOPE(cmd, "Deferred Skybox Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansDeferredSkyboxPass(), cmd, m_globalRenderStateData);
+				DrawSceneDeferredSkybox(renderPassManager, m_VansVKCommandBuffer);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+
+			// ── 设计文档 Pass 8：Pre-Water Compute ──────────────
+			if (m_Scene->HasWaterNodes())
+			{
+				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
+				auto* waterSys = m_Scene->GetWaterSystem();
+				// 延迟绑定 SSR HZB（首次可用时创建 descriptor set）
+				auto* matMgr = m_Scene->GetMaterialManager();
+				auto* hzbTex = matMgr ? matMgr->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT) : nullptr;
+				if (hzbTex)
+					waterSys->EnsureSSRDescriptorSet(&hzbTex->GetImage());
+				waterSys->DispatchWaterSSR(m_VansVKCommandBuffer);
+				waterSys->DispatchRefractionCS(m_VansVKCommandBuffer);
+				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
+			}
+
+			// ── 设计文档 Pass 10-12：Transparent + PostProcess（LOAD SceneColor）────────
+			{
+				VANS_GPU_SCOPE(cmd, "Transparent PostProcess Pass");
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-				DrawSceneDeferredPost(renderPassManager, m_VansVKCommandBuffer);
+				if (m_Scene->HasWaterNodes())
+				{
+					VANS_GPU_SCOPE(cmd, "Water Composite");
+					m_Scene->DrawWaterCompositeNode();
+				}
+				DrawSceneTransparentPost(renderPassManager, m_VansVKCommandBuffer);
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 		}
@@ -353,6 +417,34 @@ namespace VansGraphics
 				DrawSceneGBuffer(renderPassManager, m_VansVKGBufferCommandBuffer);
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
+			// 水面 GBuffer Pass（设计文档 Pass 7）：在 GBuffer 之后、Decal 之前执行
+			if (m_Scene->HasWaterNodes())
+			{
+				// 每帧更新 CDLOD Patch 列表（异步路径同样需要）
+				auto* waterSys = m_Scene->GetWaterSystem();
+				{
+					auto* camera = m_Scene->GetCamera();
+					glm::vec3 camPos = glm::vec3(camera->GetPosition());
+					glm::mat4 viewMatrix = camera->GetViewMatrix();
+					glm::mat4 vpMatrix = camera->GetProjectiveMatrix() * viewMatrix;
+					glm::vec3 mainLightDir = glm::vec3(0.35f, 1.0f, 0.25f);
+					glm::vec3 mainLightColor = glm::vec3(1.0f);
+						auto& dirLights = m_Scene->GetLightManager()->GetDirectionLights();
+						if (!dirLights.empty())
+						{
+							mainLightDir = glm::normalize(dirLights[0].m_Direction);
+							mainLightColor = dirLights[0].m_Color * dirLights[0].m_Intensity;
+						}
+						waterSys->Update(static_cast<float>(VansTimer::GetDeltaTime()), camPos, viewMatrix, vpMatrix, mainLightDir, mainLightColor);
+				}
+				{
+					VANS_GPU_SCOPE(cmd, "Water Wave Compute");
+					waterSys->UpdateWaveSimulation(m_VansVKGBufferCommandBuffer, static_cast<float>(VansTimer::GetDeltaTime()));
+				}
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansWaterGBufferPass(), cmd, m_globalRenderStateData);
+				m_Scene->DrawWaterGBufferNode();
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
 			if (m_Scene->HasDecalNodes())
 			{
 				renderPassManager->BeginRenderPass(renderPassManager->GetVansDecalPass(), cmd, m_globalRenderStateData);
@@ -407,12 +499,31 @@ namespace VansGraphics
 					{ computeToFragmentBarrier });
 			}
 			{
-				VANS_GPU_SCOPE(cmd, "Deferred Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-				DrawSceneDeferredPost(renderPassManager, m_VansVKCommandBuffer);
+				VANS_GPU_SCOPE(cmd, "Deferred Skybox Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansDeferredSkyboxPass(), cmd, m_globalRenderStateData);
+				DrawSceneDeferredSkybox(renderPassManager, m_VansVKCommandBuffer);
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
-			// CB2 remains open — FSR Upscale + SceneUI blocks appended by common code after if/else
+			// Pre-Water Compute（Stub，Phase 2 实现）
+			if (m_Scene->HasWaterNodes())
+			{
+				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
+				auto* waterSys = m_Scene->GetWaterSystem();
+				waterSys->DispatchWaterSSR(m_VansVKCommandBuffer);
+				waterSys->DispatchRefractionCS(m_VansVKCommandBuffer);
+				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
+			}
+			{
+				VANS_GPU_SCOPE(cmd, "Transparent PostProcess Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
+				if (m_Scene->HasWaterNodes())
+				{
+					VANS_GPU_SCOPE(cmd, "Water Composite");
+					m_Scene->DrawWaterCompositeNode();
+				}
+				DrawSceneTransparentPost(renderPassManager, m_VansVKCommandBuffer);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
 		}
 
 		// ── FSR Upscale ─────────────────────────────────────────────────────
@@ -614,16 +725,41 @@ namespace VansGraphics
 		m_Scene->DrawVegetationNode();
 	}
 
+	// ============================================================
+	// DrawSceneDeferredSkybox — 设计文档 Pass 6
+	// ScreenSpaceFeature（SSAO 等） + Deferred Lighting + SkyBox → SceneColor
+	// 在 m_VansDeferredSkyboxPass 内执行（SceneColor CLEAR）
+	// ============================================================
+	void VansVKDevice::DrawSceneDeferredSkybox(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+	{
+		m_Scene->DrawScreenSpaceFeatureNode();
+		m_Scene->DeferredShading();
+		m_Scene->DrawSkyBoxNode();
+	}
+
+	// ============================================================
+	// DrawSceneTransparentPost — 设计文档 Pass 10-12
+	// Transparent + Particles + PostProcess（LOAD SceneColor，继承水面合成结果）
+	// 在 m_VansRenderPass（修改后）内执行
+	// ============================================================
+	void VansVKDevice::DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+	{
+		VkCommandBuffer& cmd = commandBuffer.GetVKCommandBuffer();
+		m_Scene->DrawTransParentNodes();
+		m_Scene->DrawParticleNodes();
+		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
+		m_Scene->DrawPostProcessNodes();
+	}
+
+	// 保留兼容接口（无水面时可作为回退路径）
 	void VansVKDevice::DrawSceneDeferredPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
 		VkCommandBuffer& cmd = commandBuffer.GetVKCommandBuffer();
-
 		m_Scene->DrawScreenSpaceFeatureNode();
-
 		m_Scene->DeferredShading();
 		m_Scene->DrawSkyBoxNode();
 		m_Scene->DrawTransParentNodes();
-		m_Scene->DrawParticleNodes();     // 粒子实例化绘制（透明 Pass 末尾）
+		m_Scene->DrawParticleNodes();
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 		m_Scene->DrawPostProcessNodes();
 	}

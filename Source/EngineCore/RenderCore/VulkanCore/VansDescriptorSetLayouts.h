@@ -196,6 +196,7 @@ namespace VansGraphics
 		DEFERRED_BINDING_FOG              = 13,
 		DEFERRED_BINDING_GI_VISIBILITY    = 14,  // GI 探针可见度体 (sampler3D)
 		DEFERRED_BINDING_RECT_LIGHT_EMISSIVE = 15, // 面光源发光贴图数组 (sampler2DArray)
+		DEFERRED_BINDING_IES_PROFILES        = 16, // IES profile 纹理数组 (sampler2DArray, R16F)
 	};
 
 	// --- SkyBox Pass ---
@@ -438,6 +439,96 @@ namespace VansGraphics
 		GIPL_BINDING_PBR_DATA         = 10,
 	};
 
+	// --- Water GBuffer Pass（Set 1）---
+	// 对应 water_prepass.vert/.frag 的 set=1 绑定
+	enum WaterGBufferPassBinding : uint32_t
+	{
+		WATER_GBUF_BINDING_PARAMS        = 0,   // WaterGBufferParams UBO（lodRanges / meshDim 等）
+		WATER_GBUF_BINDING_DISPLACEMENT  = 1,   // Compute 输出的水面位移贴图 Texture2DArray（Vertex 采样）
+		WATER_GBUF_BINDING_WAVE_SSBO     = 2,   // GerstnerWaveGPU SSBO（W-04）
+		WATER_GBUF_BINDING_NORMAL_MAP    = 3,   // 水面法线贴图（W-08）
+	};
+
+	// --- Water Wave Compute Pass（Set 0）---
+	// 对应 water_wave_spectrum.comp 的 set=0 绑定
+	enum WaterWaveComputeBinding : uint32_t
+	{
+		WATER_WAVE_BINDING_PARAMS        = 0,   // WaterGBufferParams UBO（时间 / 波参数）
+		WATER_WAVE_BINDING_DISPLACEMENT  = 1,   // RGBA16F Storage ImageArray，输出 xyz 位移 + w 坡度（W-01）
+		WATER_WAVE_BINDING_WAVE_SSBO     = 2,   // GerstnerWaveGPU SSBO 输入（W-04）
+	};
+
+	// --- Water Composite Pass（Set 1）---
+	// 对应 water_composite.frag 的 set=1 绑定
+	enum WaterCompositePassBinding : uint32_t
+	{
+		WATER_COMP_BINDING_GBUF_NORMAL   = 0,   // WaterGBuf_Normal  (sampler2D)
+		WATER_COMP_BINDING_GBUF_DEPTH    = 1,   // WaterGBuf_LinearDepth (sampler2D)
+		WATER_COMP_BINDING_PARAMS        = 2,   // WaterCompositeParams UBO
+		WATER_COMP_BINDING_SCENE_GBUF2   = 3,   // 主场景 GBuffer2（worldPos.xyz + linearDepth.w）
+		WATER_COMP_BINDING_REFLECTION    = 4,   // WaterSSR/反射结果
+		WATER_COMP_BINDING_REFRACTION    = 5,   // 折射颜色结果
+		WATER_COMP_BINDING_CAUSTICS      = 6,   // 焦散结果
+		WATER_COMP_BINDING_FOAM_TEXTURE  = 7,   // W-15: 泡沫纹理
+		WATER_COMP_BINDING_THICKNESS     = 8,   // W-16: 厚度图
+	};
+
+	// --- Water Effects Compute Pass（Set 0）---
+	// 对应 water_effects.comp 的 set=0 绑定
+	enum WaterEffectsComputeBinding : uint32_t
+	{
+		WATER_EFFECT_BINDING_GBUF_NORMAL    = 0,
+		WATER_EFFECT_BINDING_GBUF_DEPTH     = 1,
+		WATER_EFFECT_BINDING_SCENE_GBUF2    = 2,
+		WATER_EFFECT_BINDING_SCENE_COLOR    = 3,
+		WATER_EFFECT_BINDING_PARAMS         = 4,
+		WATER_EFFECT_BINDING_REFLECTION_OUT = 5,
+		WATER_EFFECT_BINDING_REFRACTION_OUT = 6,
+		WATER_EFFECT_BINDING_CAUSTICS_OUT   = 7,
+	};
+
+	// --- Water SSR Compute（Set 0）- W-12 ---
+	enum WaterSSRComputeBinding : uint32_t
+	{
+		WATER_SSR_BINDING_GBUF_NORMAL  = 0,   // WaterGBuf Normal (sampler2D)
+		WATER_SSR_BINDING_GBUF_DEPTH   = 1,   // WaterGBuf LinearDepth (sampler2D)
+		WATER_SSR_BINDING_SCENE_HZB    = 2,   // 场景 HZB mip chain (sampler2D)
+		WATER_SSR_BINDING_SCENE_GBUF2  = 3,   // 场景 GBuffer2 (sampler2D)
+		WATER_SSR_BINDING_SCENE_COLOR  = 4,   // 场景 SceneColor (sampler2D)
+		WATER_SSR_BINDING_PARAMS       = 5,   // WaterSSRParams UBO
+		WATER_SSR_BINDING_REFLECTION_OUT = 6, // Reflection RGBA16F (storage image)
+	};
+
+	// --- Water Refraction Compute（Set 0）- W-13 ---
+	enum WaterRefractionComputeBinding : uint32_t
+	{
+		WATER_REFRACTION_BINDING_GBUF_NORMAL  = 0,
+		WATER_REFRACTION_BINDING_GBUF_DEPTH   = 1,
+		WATER_REFRACTION_BINDING_SCENE_GBUF2  = 2,
+		WATER_REFRACTION_BINDING_SCENE_COLOR  = 3,
+		WATER_REFRACTION_BINDING_PARAMS       = 4,
+		WATER_REFRACTION_BINDING_REFRACTION_OUT = 5,
+	};
+
+	// --- Water Caustics Compute（Set 0）- W-14 ---
+	enum WaterCausticsComputeBinding : uint32_t
+	{
+		WATER_CAUSTICS_BINDING_GBUF_NORMAL  = 0,
+		WATER_CAUSTICS_BINDING_GBUF_DEPTH   = 1,
+		WATER_CAUSTICS_BINDING_SCENE_GBUF2  = 2,
+		WATER_CAUSTICS_BINDING_PARAMS       = 3,
+		WATER_CAUSTICS_BINDING_CAUSTICS_OUT = 4,
+	};
+
+	// --- Water Thickness Compute（Set 0）- W-16 ---
+	enum WaterThicknessComputeBinding : uint32_t
+	{
+		WATER_THICKNESS_BINDING_GBUF_DEPTH  = 0,
+		WATER_THICKNESS_BINDING_SCENE_GBUF2 = 1,
+		WATER_THICKNESS_BINDING_PARAMS      = 2,
+		WATER_THICKNESS_BINDING_THICKNESS_OUT = 3,
+	};
+
 	// --- Ray Tracing Pass ---
 	enum RayTracingPassBinding : uint32_t
 	{
@@ -617,6 +708,21 @@ namespace VansGraphics
 		static void CreateAndAllocate_TileLightBuild(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// 贴花 Pass Set 1：仅绑定 GBuffer2 用于世界坐标重建
 		static void CreateAndAllocate_DecalPass(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+
+		// --- 水面 Pass Layouts ---
+		// Water GBuffer Pass Set 1：WaterGBufferParams UBO（CDLOD LOD 参数）
+		static void CreateAndAllocate_WaterGBuffer(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		// Water Wave Compute Set 0：WaterGBufferParams UBO + 位移 Storage Image
+		static void CreateAndAllocate_WaterWaveCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		// Water Composite Pass Set 1：WaterGBuf_Normal + WaterGBuf_LinearDepth + Params UBO
+		static void CreateAndAllocate_WaterComposite(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		// Water Effects Compute Set 0：WaterGBuf / SceneColor 输入 + 反射折射焦散输出
+		static void CreateAndAllocate_WaterEffectsCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		// Phase 2 独立 CS Layouts
+		static void CreateAndAllocate_WaterSSRCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_WaterRefractionCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_WaterCausticsCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_WaterThicknessCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 
 		// --- 后处理 Compute Pass Layouts ---
 		static void CreateAndAllocate_ExposureLuminance(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

@@ -1,0 +1,60 @@
+#version 450
+
+// ============================================================
+// water_displacement_extract.comp — 逐 LOD 位移提取（W-10）
+//
+// 设计文档：波形 Clipmap 方案 §3.5
+//
+// 从 IFFT 结果中提取位移：H_x, H_y, H_z → Disp.x, Disp.y, Disp.z
+// 写入 Clipmap Texture2DArray 对应 LOD layer
+//
+// Displacement_xz(k) = -i·(k/|k|)·H(k)
+// Displacement_y(k)  = H(k)
+// ============================================================
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform FFTExtractParams
+{
+    float oceanBaseScale;   // 基础尺度
+    float amplitude;        // 振幅缩放
+    float lodScale;         // 当前 LOD 的缩放因子
+    int   lodIndex;         // 写入的 Clipmap layer
+    float maxWaveAmp;       // 最大波高（clamp）
+    float pad0;
+    float pad1;
+    float pad2;
+} params;
+
+// IFFT 结果：H(k) 在空间域（位移频谱）
+layout(set = 0, binding = 1, rgba32f) uniform readonly image2DArray htSpectrum;  // H(t) after IFFT
+
+// 输出：Clipmap Texture2DArray 的指定 layer
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2DArray outDisplacement;
+
+const float PI = 3.14159265358979323846;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    int N = 256;
+    if (pixel.x >= N || pixel.y >= N)
+        return;
+
+    // 从频谱读取位移（空间域）
+    vec4 hx = imageLoad(htSpectrum, ivec3(pixel, 0));
+    vec4 hy = imageLoad(htSpectrum, ivec3(pixel, 1));
+    vec4 hz = imageLoad(htSpectrum, ivec3(pixel, 2));
+
+    // 位移 = IFFT 结果 × 振幅缩放
+    vec3 disp = vec3(hx.r, hy.r, hz.r) * params.amplitude;
+
+    float maxAmp = max(params.maxWaveAmp, 0.1);
+    disp.y  = clamp(disp.y,  -maxAmp, maxAmp);
+    disp.xz = clamp(disp.xz, -vec2(maxAmp), vec2(maxAmp));
+
+    // 泡沫提示：基于 slope 大小
+    float foamHint = clamp(length(disp.xz) * 0.15, 0.0, 1.0);
+
+    imageStore(outDisplacement, ivec3(pixel, params.lodIndex), vec4(disp, foamHint));
+}

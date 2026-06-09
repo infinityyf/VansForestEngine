@@ -150,6 +150,10 @@ namespace VansGraphics
 		// 贴花专用：MRT 3 附件 Alpha Blend，GBuffer1 colorMask 仅 R+G
 		void SetEnableDecalBlend(VkBool32 enable) { m_DrawStateData.enableDecalBlend = enable; }
 
+		// 显式指定颜色附件数量（用于非主 GBuffer 的 MRT pass，如水面 GBuffer 的 2 个附件）。
+		// count > 0 时生成 count 个不混合、写入 RGBA 的 blend state，覆盖自动推断。
+		void SetColorAttachmentCount(int count) { m_ColorAttachmentCount = count; }
+
 		void TriggerReCreateGraphicsPipeline();
 
 		VansGraphicsShader() : m_GraphicsPipeline(nullptr)
@@ -167,6 +171,9 @@ namespace VansGraphics
 	private:
 		//记录当前pipeline的渲染状态,initshader时就可以被设置
 		DrawStateData m_DrawStateData;
+
+		// 显式颜色附件数量（-1 = 自动推断），用于非主 GBuffer 的 MRT pass
+		int m_ColorAttachmentCount = -1;
 
 	private:
 		//之后graphics shader才有效
