@@ -35,10 +35,10 @@ layout(set = 1, binding = 0) uniform WaterGBufferParams
     float minLodDist;
     int   lodLevels;
     int   meshDim;
-    float oceanBaseScale;
+    float clipmapBaseScale; // LOD 0 Clipmap 世界覆盖边长（m），默认 128
     float maxWaveAmp;
-    float detailBalance;   // LOD 缩放因子（默认 2.0）
-    float pad0;
+    float detailBalance;     // LOD 缩放因子（默认 2.0）
+    float morphStartRatio;  // morph zone 起点比例 [0, 1)，默认 0.6
     float pad1;
     vec4  waveTimeAndScale;    // x=time, y=ampScale, z=chopScale, w=normalIntensity
     vec4  pad3[8];             // W-04: 预留填充
@@ -61,16 +61,11 @@ float LodRange(int level)
 }
 
 // ── W-01: WorldToClipmapUV — 将世界 XZ 映射到指定 LOD 的 Clipmap UV ──
-// 设计文档：波形 Clipmap 方案 §1.4（相机对齐 Snap）
+// Clipmap 以相机位置为中心（无 Snap），与 compute shader 生成坐标系一致。
 vec2 WorldToClipmapUV(vec2 worldXZ, float lodScale)
 {
-    // Snap 到 LOD 网格：对齐相机使 Clipmap 随相机移动
-    vec3 cam = waterParams.waterCameraPosition.xyz;
-    vec2 snappedOrigin = vec2(
-        floor(cam.x / lodScale) * lodScale,
-        floor(cam.z / lodScale) * lodScale
-    );
-    vec2 relative = worldXZ - snappedOrigin;
+    vec2 camXZ = waterParams.waterCameraPosition.xz;
+    vec2 relative = worldXZ - camXZ;
     return (relative / lodScale) + 0.5;
 }
 
@@ -113,16 +108,18 @@ void main()
     // ── 2. 计算到相机的 XZ 平面距离 ───────────────────────────
     float distToCamera = length(worldXZ - waterParams.waterCameraPosition.xz);
 
-    // ── 3. 计算 Morph 因子（设计文档 §3.5.2）─────────────────
-    // LOD 0: 从相机中心(morph=0)过渡到外边界16m(morph=1)，与 LOD 1 内边缘对齐
-    // LOD i>0: 从内边界 LodRange(i-1) 过渡到外边界 LodRange(i)
+    // ── 3. 计算 Morph 因子（CDLOD 标准，含 morphStartRatio）──
+    // morphStart = innerRange + (outerRange - innerRange) × morphStartRatio
+    // [innerRange, morphStart]:  morph=0（全精度，无跨 LOD 混合）
+    // [morphStart, outerRange]:  morph=0→1（过渡区，混合相邻两层位移）
+    // 默认 morphStartRatio=0.6：外侧 40% 才开始 morph
     float morphValue = 0.0;
     {
-        float low   = (pc.lodLevel > 0) ? LodRange(pc.lodLevel - 1) : 0.0;
-        float high  = LodRange(pc.lodLevel);
-        float delta = max(high - low, 0.001);
-        float t     = (distToCamera - low) / delta;
-        morphValue  = clamp(t, 0.0, 1.0);
+        float low        = (pc.lodLevel > 0) ? LodRange(pc.lodLevel - 1) : 0.0;
+        float high       = LodRange(pc.lodLevel);
+        float morphStart = low + (high - low) * waterParams.morphStartRatio;
+        float t          = (distToCamera - morphStart) / max(high - morphStart, 0.001);
+        morphValue       = clamp(t, 0.0, 1.0);
     }
 
     // ── 4. CDLOD 顶点 Morph ──────────────────────────────────
@@ -138,7 +135,8 @@ void main()
     vec2 morphedWorldXZ = pc.patchWorldOrigin + morphedMeshPos * pc.patchWorldSize;
 
     // ── 6. W-01: 计算逐 LOD Clipmap 参数并采样位移 ──────────
-    float lodScale = waterParams.oceanBaseScale * pow(max(waterParams.detailBalance, 1.0), float(pc.lodLevel));
+    // LOD i Clipmap 覆盖 = clipmapBaseScale × detailBalance^i
+    float lodScale = waterParams.clipmapBaseScale * pow(max(waterParams.detailBalance, 1.0), float(pc.lodLevel));
     vec4 waveDisp = SampleDisplacement(morphedWorldXZ, lodScale, pc.lodLevel);
 
     // P0: 跨 LOD 位移混合 — 在 Morph 过渡区同时采样相邻两层 Clipmap 并插值

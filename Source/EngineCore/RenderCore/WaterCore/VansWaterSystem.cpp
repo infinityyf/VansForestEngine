@@ -32,9 +32,9 @@ namespace
         if (glm::length(dir) < 0.001f)
             dir = glm::vec2(0.7071f, 0.7071f);
 
-        // 波长从 32m 到 0.5m 对数分布
+        // 波长从 256m 到 0.5m 对数分布（扩展上限以覆盖粗 LOD Nyquist 过滤）
         const float minWL = 0.5f;
-        const float maxWL = 32.0f;
+        const float maxWL = 256.0f;
         const float PI = 3.14159265358979323846f;
         const float GRAVITY = 9.81f;
 
@@ -157,8 +157,8 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     m_WaterGBufferShader->SetPushConstant(sizeof(WaterPatchPushConstant));
     m_WaterGBufferShader->SetDrawStateData(
         VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS, VK_CULL_MODE_NONE);
-    // DEBUG: CDLOD 线框模式（验证顶点 Morph 正确性，完成后恢复）
-    m_WaterGBufferShader->SetPolygonMode(VK_POLYGON_MODE_LINE);
+    // CDLOD 填充模式（生产环境）
+    m_WaterGBufferShader->SetPolygonMode(VK_POLYGON_MODE_FILL);
     m_WaterGBufferShader->SetColorAttachmentCount(2);
 
     // Wave compute shader（W-01: Texture2DArray + SSBO + Nyquist）
@@ -202,10 +202,11 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     gbufParams.minLodDist     = VansWaterLOD::MIN_LOD_DIST;
     gbufParams.lodLevels      = VansWaterLOD::MAX_LOD_COUNT;
     gbufParams.meshDim        = VansWaterLOD::WATER_MESH_DIM;
-    gbufParams.oceanBaseScale = 256.0f;
-    gbufParams.maxWaveAmp     = 0.6f;  // swellAmplitude(0.2) * 3
-    gbufParams.detailBalance  = 2.0f;
-    gbufParams.waveTimeAndScale = glm::vec4(0.0f, 0.2f, 1.5f, 1.0f);
+    gbufParams.clipmapBaseScale = 128.0f;
+    gbufParams.maxWaveAmp      = 0.6f;  // swellAmplitude(0.2) * 3
+    gbufParams.detailBalance   = m_WaterLOD ? m_WaterLOD->GetDetailBalance() : 2.0f;
+    gbufParams.morphStartRatio = 0.6f;
+    gbufParams.waveTimeAndScale = glm::vec4(0.0f, 0.2f, 1.5f, 1.0f);  // Initialize() initial UBO
     {
         void* data = nullptr;
         vkMapMemory(logicDev, m_GBufParamsMemory, 0, sizeof(WaterGBufferParamsGPU), 0, &data);
@@ -214,6 +215,8 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     }
 
     // ── 4. 创建波形位移贴图（W-01: Texture2DArray, 256² × MAX_LOD_COUNT）──
+    // CLAMP_TO_EDGE：贴图覆盖 snappedOrigin ± lodScale/2 的世界范围，
+    // 边界外的 Patch 由 CDLOD 距离环约束保证不会采样到，CLAMP 作为安全网
     m_WaveDisplacementImage.CreateVulkanImage(
         logicDev,
         { WAVE_TEXTURE_SIZE, WAVE_TEXTURE_SIZE, 1 },
@@ -222,7 +225,8 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         VK_IMAGE_TYPE_2D,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_SAMPLE_COUNT_1_BIT,
-        false, false, true);
+        false, false, true,
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
     // ── 5. 创建水体效果贴图（CLAMP_TO_EDGE 防止边缘平铺伪影）──
     auto createEffectImage = [&](VansVKImage& image)
@@ -293,7 +297,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
 
         // 自动生成默认波分量
         std::vector<GerstnerWaveGPU> waves;
-        AutoGenerateGerstnerWaves(waves, 64, glm::vec2(0.7071f, 0.7071f), 0.2f, 12.0f);
+        AutoGenerateGerstnerWaves(waves, 128, glm::vec2(0.7071f, 0.7071f), 0.2f, 12.0f);
         void* data = nullptr;
         vkMapMemory(logicDev, m_WaveSSBOMemory, 0, ssboSize, 0, &data);
         std::memcpy(data, waves.data(), waves.size() * sizeof(GerstnerWaveGPU));
@@ -714,14 +718,10 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
 {
     m_Time += deltaTime;
 
-    // W-02: 委托 VansWaterLOD 生成 Patch
-    if (m_WaterLOD)
-        m_WaterLOD->GeneratePatches(cameraPos);
-
     // 从 WaterMaterial 读取运行时参数（支持编辑器实时调整）
     float ampScale   = 0.2f;
     float chopScale  = 1.5f;
-    float baseScale  = 256.0f;
+    float baseScale  = 128.0f;
     float maxAmp     = 0.6f;  // swellAmplitude(0.2) * 3
     if (m_WaterMaterial)
     {
@@ -731,6 +731,10 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         maxAmp    = m_WaterMaterial->m_SwellAmplitude * 3.0f;
     }
 
+    // W-02: 委托 VansWaterLOD 生成 Patch
+    if (m_WaterLOD)
+        m_WaterLOD->GeneratePatches(cameraPos);
+
     // 每帧写入水面 pass 自有相机数据
     WaterGBufferParamsGPU gbufParams = {};
     gbufParams.VPMatrix       = vpMatrix;
@@ -739,9 +743,10 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     gbufParams.minLodDist     = VansWaterLOD::MIN_LOD_DIST;
     gbufParams.lodLevels      = VansWaterLOD::MAX_LOD_COUNT;
     gbufParams.meshDim        = m_WaterLOD ? m_WaterLOD->GetMeshDim() : VansWaterLOD::WATER_MESH_DIM;
-    gbufParams.oceanBaseScale = baseScale;
+    gbufParams.clipmapBaseScale = baseScale;
     gbufParams.maxWaveAmp     = maxAmp;
-    gbufParams.detailBalance  = 2.0f;  // CPU/GPU 同步：与 VansWaterLOD::m_DetailBalance 保持一致
+    gbufParams.detailBalance   = m_WaterLOD ? m_WaterLOD->GetDetailBalance() : 2.0f;  // CPU/GPU 同步：从 VansWaterLOD 运行时读取
+    gbufParams.morphStartRatio = 0.6f;  // morph zone 起点比例：外侧 40% 才开始 morph
     gbufParams.waveTimeAndScale = glm::vec4(m_Time, ampScale, chopScale, 1.0f);
 
     if (m_Device != nullptr && m_GBufParamsMemory != VK_NULL_HANDLE)

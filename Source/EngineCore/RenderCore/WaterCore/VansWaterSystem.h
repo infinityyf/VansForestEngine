@@ -43,11 +43,11 @@ namespace VansGraphics
         float minLodDist;      // LOD 0 环最小距离（m）
         int   lodLevels;       // 有效 LOD 数量
         int   meshDim;         // 网格每边顶点数 M
-        float oceanBaseScale;  // 基础海洋尺度（m）
-        float maxWaveAmp;      // 最大波高（m）
-        float detailBalance;   // LOD 缩放因子（CPU/GPU 同步，默认 2.0）
-        float pad0;
-        float pad1;
+        float clipmapBaseScale; // LOD 0 Clipmap 世界覆盖边长（m），默认 128
+        float maxWaveAmp;       // 最大波高（m）
+        float detailBalance;    // LOD 缩放因子（CPU/GPU 同步，默认 2.0）
+        float morphStartRatio;  // morph zone 起点比例 [0, 1)，默认 0.6
+        float pad1;             // 填充对齐
         glm::vec4 waveTimeAndScale;      // x=time, y=垂直振幅缩放, z=水平偏移缩放, w=法线强度
         // W-04: wave0-3, waveSpeedSteepness01/23 移除，改用 GerstnerWaveGPU SSBO
         glm::vec4 waveParamsPad[8];      // 预留填充，保持 UBO 大小兼容
@@ -241,7 +241,7 @@ namespace VansGraphics
         // ── SSBO：Gerstner 波分量（W-04）───────────────────────────
         VkBuffer       m_WaveSSBO      = VK_NULL_HANDLE;
         VkDeviceMemory m_WaveSSBOMemory = VK_NULL_HANDLE;
-        static constexpr uint32_t MAX_WAVE_COUNT = 64;
+        static constexpr uint32_t MAX_WAVE_COUNT = 128;  // 提升到 128 以覆盖粗 LOD（LOD4+ Nyquist 需要长波）
 
         // 全局 descriptor set（从 VansScene 传入，不拥有）
         VkDescriptorSetLayout m_GlobalLayout = VK_NULL_HANDLE;

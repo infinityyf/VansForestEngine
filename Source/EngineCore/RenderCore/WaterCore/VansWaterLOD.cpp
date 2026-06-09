@@ -231,7 +231,9 @@ int VansWaterLOD::GetLodLevelAtDistance(float distance) const
 //   LOD i 覆盖 [LodRange(i-1), LodRange(i)] — 第 i 圈
 //
 // 每个 LOD 的 Patch 按相机吸附对齐后，只保留与目标距离环相交的 Patch。
-// 内圈使用 minDist（最近顶点距离）精准剔除，确保粗 LOD 不侵入细 LOD 腹地。
+// 内圈使用 maxDist（最远顶点距离）剔除——仅当整个 patch 完全在 fine LOD
+//   覆盖区域内时才剔除，避免 patch 一侧靠近相机而另一侧无法被 fine LOD 覆盖
+//   时形成大面积空洞。
 // 外圈使用 minDist > outerRange 剔除完全超出 Morph Zone 的 Patch。
 // 相邻 LOD 仅在 Morph Zone 外边界有少量重叠（用于顶点 morph 过渡），
 // 不再出现所有 LOD 在相机中心堆叠的问题。
@@ -282,10 +284,11 @@ void VansWaterLOD::GeneratePatches(const glm::vec3& cameraPos)
                 float dzf = farthestZ - cameraPos.z;
                 float maxDist = std::sqrtf(dxf * dxf + dzf * dzf);
 
-                // ── 内圈剔除（P1 修正）──────────────────────
-                // 如果最近顶点已在细 LOD 的覆盖腹地，剔除。
-                // 阈值 = innerRange × 0.5：保留 Morph Zone 外半段的过渡重叠。
-                if (lod > 0 && minDist < innerRange * 0.5f)
+                // ── 内圈剔除（CDLOD 标准）──────────────────
+                // 仅当整个 patch 完全在 fine LOD 覆盖区域内时才剔除。
+                // 使用 maxDist（最远顶点距离）而非 minDist（最近顶点距离），
+                // 避免一侧靠近相机而另一侧在 fine LOD 覆盖之外的 patch 被错误剔除。
+                if (lod > 0 && maxDist < innerRange)
                     continue;
 
                 // ── 外圈剔除 ───────────────────────────────

@@ -29,12 +29,12 @@ layout(set = 1, binding = 0) uniform WaterGBufferParams
     float minLodDist;
     int   lodLevels;
     int   meshDim;
-    float oceanBaseScale;
+    float clipmapBaseScale; // LOD 0 Clipmap 世界覆盖边长（m），默认 128
     float maxWaveAmp;
-    float pad0;
+    float detailBalance;     // LOD 缩放因子（默认 2.0）
+    float morphStartRatio;  // morph zone 起点比例 [0, 1)，默认 0.6
     float pad1;
-    float pad2;
-    vec4  waveTimeAndScale;
+    vec4  waveTimeAndScale;    // x=time, y=ampScale, z=chopScale, w=normalIntensity
     vec4  pad3[8];
 } waterParams;
 
@@ -61,7 +61,7 @@ vec3 SampleDetailNormal(vec2 worldXZ)
 
 void main()
 {
-    const bool DEBUG_VISUALIZE_LOD = true;
+    const bool DEBUG_VISUALIZE_LOD = false;
 
     if (DEBUG_VISUALIZE_LOD)
     {

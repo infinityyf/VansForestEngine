@@ -23,10 +23,10 @@ layout(set = 0, binding = 0) uniform WaterGBufferParams
     float minLodDist;
     int   lodLevels;
     int   meshDim;
-    float oceanBaseScale;
+    float clipmapBaseScale;  // LOD 0 Clipmap 世界覆盖边长（m），默认 128
     float maxWaveAmp;
-    float detailBalance;    // LOD 缩放因子（CPU/GPU 同步，默认 2.0）
-    float pad0;
+    float detailBalance;      // LOD 缩放因子（CPU/GPU 同步，默认 2.0）
+    float morphStartRatio;   // morph zone 起点比例 [0, 1)（compute 未使用）
     float pad1;
     vec4 waveTimeAndScale;   // x=time, y=ampScale, z=chopScale, w=normalIntensity
     vec4 waveParamsPad[8];   // W-04: 预留填充
@@ -126,21 +126,25 @@ void main()
         return;
 
     // ── W-06: 逐 LOD Nyquist 过滤 ──────────────────────────
-    // lodScale = baseScale * 2^lod — Patch 边长随 LOD 翻倍
-    float lodScale = params.oceanBaseScale * pow(max(params.detailBalance, 1.0), float(lodIdx));
+    // LOD i Clipmap 覆盖 = clipmapBaseScale × detailBalance^i
+    float lodScale = params.clipmapBaseScale * pow(max(params.detailBalance, 1.0), float(lodIdx));
     float texelSize = lodScale / float(imgSize.x);
     float minWavelength = 2.0 * texelSize;  // Nyquist 限制
 
-    // 世界空间 XZ：Clipmap 周期平铺
+    // ── 相机中心对齐（无 Snap）─────────────────────────────
+    // Clipmap 始终以相机位置为中心，与 CDLOD 网格移动同步
+    vec2 camXZ = params.cameraPosition.xz;
+
+    // 世界空间 XZ：以相机为中心，覆盖 ±lodScale/2
     vec2 uv = (vec2(pixel) + 0.5) / vec2(imgSize.xy);
-    vec2 worldXZ = (uv - 0.5) * lodScale;
+    vec2 worldXZ = camXZ + (uv - 0.5) * lodScale;
 
     vec3 disp = vec3(0.0);
     vec2 slope = vec2(0.0);
     float foam = 0.0;
 
     // ── W-04: 遍历 SSBO 波分量，跳过不合格的波 ────────────
-    int waveCount = min(waveSSBO.waves.length(), 64);
+    int waveCount = waveSSBO.waves.length();
     for (int i = 0; i < waveCount; ++i)
     {
         GerstnerWave w = waveSSBO.waves[i];

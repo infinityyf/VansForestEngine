@@ -84,6 +84,7 @@ namespace VansGraphics
         uint32_t       GetIndexCount()    const { return m_IndexCount; }
         int            GetMeshDim()       const { return m_MeshDim; }
         float          GetBasePatchSize() const { return m_BasePatchSize; }
+        float          GetDetailBalance() const { return m_DetailBalance; }
 
         // 顶点输入布局
         std::vector<VkVertexInputBindingDescription>&   GetVertexBindings()    { return m_VertexBindings; }
