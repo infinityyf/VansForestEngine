@@ -253,6 +253,8 @@ namespace VansGraphics
 				{
 					VANS_GPU_SCOPE(cmd, "Water Wave Compute");
 					waterSys->UpdateWaveSimulation(m_VansVKCommandBuffer, static_cast<float>(VansTimer::GetDeltaTime()));
+					// N-01: Detail Normal compute（在 wave simulation 之后、GBuffer pass 之前）
+					waterSys->UpdateDetailNormalCompute(m_VansVKCommandBuffer);
 				}
 				VANS_GPU_SCOPE(cmd, "Water GBuffer Pass");
 				renderPassManager->BeginRenderPass(renderPassManager->GetVansWaterGBufferPass(), cmd, m_globalRenderStateData);
@@ -440,6 +442,8 @@ namespace VansGraphics
 				{
 					VANS_GPU_SCOPE(cmd, "Water Wave Compute");
 					waterSys->UpdateWaveSimulation(m_VansVKGBufferCommandBuffer, static_cast<float>(VansTimer::GetDeltaTime()));
+					// N-01: Detail Normal compute（在 wave simulation 之后、GBuffer pass 之前）
+					waterSys->UpdateDetailNormalCompute(m_VansVKGBufferCommandBuffer);
 				}
 				renderPassManager->BeginRenderPass(renderPassManager->GetVansWaterGBufferPass(), cmd, m_globalRenderStateData);
 				m_Scene->DrawWaterGBufferNode();

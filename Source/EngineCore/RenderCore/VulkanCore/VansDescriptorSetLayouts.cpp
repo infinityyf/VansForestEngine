@@ -945,4 +945,17 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterThicknessCompute(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
+// N-01: Water Detail Normal Compute (water_detail_normal.comp)
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterDetailNormalCompute(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{WATER_DETAIL_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_DETAIL_BINDING_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
 } // namespace VansGraphics

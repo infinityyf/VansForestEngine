@@ -45,7 +45,7 @@ layout(set = 1, binding = 2) uniform WaterCompositeParams
     vec4  scatteringCoeff;      // offset 64
     float sssAnisotropy;        // offset 80
     float waterRoughness;       // offset 84
-    float padComp0;             // offset 88
+    float waterIOR;             // offset 88 — Inspector optimization: IOR → dynamic F0
     float padComp1;             // offset 92
     vec4  cameraPosition;       // offset 96
     mat4  invViewProjMatrix;    // offset 112
@@ -185,8 +185,11 @@ void main()
     vec3 caustics = texture(waterCaustics, suv).rgb;
     // float foam    = texture(waterFoamTexture, suv).r;
 
-    // ── 水面材质固定参数 ───────────────────────────────────
-    const vec3 WATER_F0 = vec3(0.02);  // 水面 F0（电介质）
+    // ── 水面材质参数 ───────────────────────────────────────
+    // Inspector optimization: F0 = ((IOR-1)/(IOR+1))^2 动态计算
+    float iorF0 = ((p.waterIOR - 1.0) / (p.waterIOR + 1.0));
+    iorF0 = iorF0 * iorF0;
+    vec3 WATER_F0 = vec3(iorF0);
 
     // ── 光照向量 ──────────────────────────────────────────
     vec3 V = normalize(p.cameraPosition.xyz - W);

@@ -529,6 +529,13 @@ namespace VansGraphics
 		WATER_THICKNESS_BINDING_THICKNESS_OUT = 3,
 	};
 
+	// --- Water Detail Normal Compute（Set 0）- N-01 ---
+	enum WaterDetailNormalBinding : uint32_t
+	{
+		WATER_DETAIL_BINDING_PARAMS       = 0,   // WaterGBufferParams UBO
+		WATER_DETAIL_BINDING_OUTPUT       = 1,   // Detail normal storage image array
+	};
+
 	// --- Ray Tracing Pass ---
 	enum RayTracingPassBinding : uint32_t
 	{
@@ -723,6 +730,8 @@ namespace VansGraphics
 		static void CreateAndAllocate_WaterRefractionCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterCausticsCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterThicknessCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		// N-01: Water Detail Normal Compute (water_detail_normal.comp)
+		static void CreateAndAllocate_WaterDetailNormalCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 
 		// --- 后处理 Compute Pass Layouts ---
 		static void CreateAndAllocate_ExposureLuminance(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

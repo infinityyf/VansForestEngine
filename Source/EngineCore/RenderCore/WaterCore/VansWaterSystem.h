@@ -66,7 +66,7 @@ namespace VansGraphics
         glm::vec4 scatteringCoeff;     // W-16: 散射系数 (RGB)
         float     sssAnisotropy;       // W-16: 各向异性 g
         float     waterRoughness;      // 水面微面元粗糙度（0=镜面, 1=漫反射）
-        float     padComp0;            // 填充对齐（保证 cameraPosition 在 offset 96）
+        float     waterIOR;            // Inspector optimization: IOR → GPU，动态计算 F0
         float     padComp1;            // 填充对齐
         glm::vec4 cameraPosition;       // offset  96: 相机世界位置
         glm::mat4 invViewProjMatrix;    // offset 112: 逆 VP 矩阵
@@ -92,6 +92,8 @@ namespace VansGraphics
     public:
         // Compute 生成的周期位移贴图分辨率（W-01: 改为 256² per LOD layer）
         static constexpr uint32_t WAVE_TEXTURE_SIZE = 256;
+        // N-01: Detail normal 贴图分辨率（1024²，单层世界空间平铺）
+        static constexpr uint32_t DETAIL_TEXTURE_SIZE = 1024;
 
         VansWaterSystem()  = default;
         ~VansWaterSystem() = default;
@@ -133,6 +135,9 @@ namespace VansGraphics
         void DispatchRefractionCS(VansVKCommandBuffer& cmd);
         void DispatchCausticsCS(VansVKCommandBuffer& cmd);
 
+        // ── N-01: Detail Normal compute ───────────────────────────
+        void UpdateDetailNormalCompute(VansVKCommandBuffer& cmd);
+
         // W-12: SSR HZB 延迟绑定（在 HZB 创建后调用）
         void EnsureSSRDescriptorSet(VansVKImage* hzbImage);
 
@@ -157,6 +162,7 @@ namespace VansGraphics
         VansVKImage& GetRefractionImage()        { return m_WaterRefractionImage; }
         VansVKImage& GetCausticsImage()          { return m_WaterCausticsImage; }
         VansVKImage& GetThicknessImage()         { return m_WaterThicknessImage; }
+        VansVKImage& GetDetailNormalImage()      { return m_DetailNormalImage; }
 
     private:
         // ── 原始 Vulkan 缓冲分配 ────────────────────────────────
@@ -188,6 +194,7 @@ namespace VansGraphics
         VansComputeShader*  m_WaveSimShader        = nullptr;  // water_wave_spectrum.comp (→ W-03)
         VansComputeShader*  m_WaterRefractionShader = nullptr;  // water_refraction.comp
         VansComputeShader*  m_WaterCausticsShader   = nullptr;  // water_caustics.comp (W-14)
+        VansComputeShader*  m_DetailNormalShader    = nullptr;  // water_detail_normal.comp (N-01)
 
         // ── Descriptor Sets：Water GBuffer Pass（Set 1）──────────
         VkDescriptorSetLayout m_GBufPassLayout = VK_NULL_HANDLE;
@@ -211,6 +218,10 @@ namespace VansGraphics
         // ── Descriptor Sets：Water Caustics Compute（Set 0, W-14）───
         VkDescriptorSetLayout m_CausticsLayout = VK_NULL_HANDLE;
         VkDescriptorSet       m_CausticsSet    = VK_NULL_HANDLE;
+
+        // ── N-01: Detail Normal compute ───────────────────────────
+        VkDescriptorSetLayout m_DetailNormalLayout = VK_NULL_HANDLE;
+        VkDescriptorSet       m_DetailNormalSet    = VK_NULL_HANDLE;
 
         // ── Descriptor Sets：Water Composite Pass（Set 1）────────
         VkDescriptorSetLayout m_CompPassLayout = VK_NULL_HANDLE;
@@ -237,6 +248,10 @@ namespace VansGraphics
         VansVKImage m_WaterCausticsImage;
         VansVKImage m_WaterThicknessImage;    // W-16: SSS 厚度图
         bool        m_WaterEffectsReady = false;
+
+        // ── N-01: Detail Normal ──────────────────────────────────
+        VansVKImage m_DetailNormalImage;               // Texture2DArray 256²×10 RGBA16F
+        bool        m_DetailNormalReady   = false;
 
         // ── SSBO：Gerstner 波分量（W-04）───────────────────────────
         VkBuffer       m_WaveSSBO      = VK_NULL_HANDLE;

@@ -62,8 +62,17 @@ namespace VansGraphics
 		float m_RefractionScale   = 0.5f;
 
 		// ── SSR ────────────────────────────────────────────────
-		bool  m_EnableSSR       = true;
-		float m_SSRMaxRoughness = 0.3f;
+		bool  m_EnableSSR        = true;
+		float m_SSRMaxDistance   = 500.0f;  // SSR 最大追踪距离（m）
+		float m_SSRMaxRoughness  = 0.3f;
+
+		// ── N-01: Detail Normal ───────────────────────────────
+		bool  m_DetailNormalEnabled     = true;
+		float m_DetailNormalIntensity   = 1.0f;
+		float m_DetailNormalScale       = 1.0f;
+		int   m_DetailNormalOctaves     = 4;
+		float m_DetailNormalTimeOffset  = 0.0f;
+		float m_DetailNormalBaseScale   = 32.0f;   // 世界空间平铺覆盖范围（m），越小细节越密
 
 		// ── 完整配置备份（供运行时 VansWaterSystem 读取）──────
 		VansWaterConfig m_Config;

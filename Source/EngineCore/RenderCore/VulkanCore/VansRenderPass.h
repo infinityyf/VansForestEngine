@@ -147,10 +147,12 @@ namespace VansGraphics
 		// ── 水面 GBuffer pass ─────────────────────────────────────────────
 		// 设计文档 Pass 7：在 Deferred 之后、Transparent 之前执行
 		// 输出：WaterGBuf_Normal（RGBA16F）+ WaterGBuf_WorldPosDepth（RGBA16F）
-		// RGB=世界空间法线/位置, A=预留/线性深度；深度仅测试场景深度，不写回
+		// RGB=世界空间法线/位置, A=预留/线性深度
+		// 独立深度缓冲：启动深度写入+深度测试，保证多层 CDLOD patch 遮挡顺序
 		VansVKRenderPass m_VansWaterGBufferPass;
 		VansVKImage m_WaterGBufNormalImage;       // 世界空间法线 XYZ + 预留 A（RGBA16F）
 		VansVKImage m_WaterGBufLinearDepthImage;  // 世界空间位置 RGB + 线性深度 A（RGBA16F）
+		VansVKImage m_WaterDepthImage;            // 水面专用深度缓冲（D32_SFLOAT_S8_UINT）
 
 		// ── Deferred + SkyBox 专用 pass（从 m_VansRenderPass 中拆出）──────
 		// m_VansRenderPass 拆分后仅保留 Transparent + PostProcess；
@@ -196,6 +198,7 @@ namespace VansGraphics
 		// 水面 GBuffer 纹理访问器（供 VansWaterSystem / 描述符写入使用）
 		VansVKImage& GetWaterGBufNormal()      { return m_WaterGBufNormalImage; }
 		VansVKImage& GetWaterGBufLinearDepth() { return m_WaterGBufLinearDepthImage; }
+		VansVKImage& GetWaterDepthImage()      { return m_WaterDepthImage; }
 
 		// Deferred + SkyBox pass 访问器
 		VansVKRenderPass& GetVansDeferredSkyboxPass() { return m_VansDeferredSkyboxPass; }

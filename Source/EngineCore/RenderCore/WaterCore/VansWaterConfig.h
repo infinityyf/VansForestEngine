@@ -55,6 +55,21 @@ namespace VansGraphics
 	};
 
 	// ============================================================
+	// Detail Normal（细节法线）参数 — N-01
+	// ============================================================
+	struct VansWaterDetailNormalConfig
+	{
+		bool  m_Enabled       = true;
+		float m_Intensity     = 1.0f;   // 细节法线混合强度 [0, 3]
+		float m_Scale         = 1.0f;   // 法线缩放因子 [0.1, 5]
+		int   m_OctaveCount   = 4;      // 八度数 [1, 4]
+		float m_TimeOffset    = 0.0f;   // 时间相位偏移（避免与宏波同步）
+		float m_DetailBaseScale  = 16.0f;  // 细节法线 LOD 0 世界覆盖范围（m），远小于 clipmapBaseScale 以获得厘米级细节
+		float m_LodFadeStart  = 2.5f;   // LOD 衰减起始
+		float m_LodFadeEnd    = 5.5f;   // LOD 衰减结束
+	};
+
+	// ============================================================
 	// 波形仿真参数
 	// ============================================================
 	struct VansWaterWaveConfig
@@ -79,6 +94,8 @@ namespace VansGraphics
 		int          m_FftLODCount      = 4;
 		// FFT 分辨率（128 或 256）
 		int          m_FftResolution    = 256;
+		// N-01: 细节法线参数
+		VansWaterDetailNormalConfig m_DetailNormal;
 	};
 
 	// ============================================================
@@ -132,9 +149,9 @@ namespace VansGraphics
 	// ============================================================
 	struct VansWaterSSRConfig
 	{
-		bool  m_Enabled      = true;
-		// 超过该粗糙度退化为 IBL（[0, 1]）
-		float m_MaxRoughness = 0.3f;
+		bool  m_Enabled       = true;
+		float m_MaxDistance   = 500.0f;  // SSR 最大追踪距离（m），独立于折射距离
+		float m_MaxRoughness  = 0.3f;    // 超过该粗糙度退化为 IBL（[0, 1]）
 	};
 
 	// ============================================================

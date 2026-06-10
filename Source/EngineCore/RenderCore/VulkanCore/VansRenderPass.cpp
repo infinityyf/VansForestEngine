@@ -1384,6 +1384,17 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 		VK_SAMPLE_COUNT_1_BIT,
 		false, false, true);
 
+	// 水面专用深度缓冲（独立于场景深度，保证 CDLOD 多层遮挡顺序）
+	m_WaterDepthImage.CreateVulkanImage(
+		logic_device,
+		{ renderResolution.width, renderResolution.height, 1 },
+		VK_FORMAT_D32_SFLOAT_S8_UINT,
+		1, 1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false, false, false);  // 无需默认 sampler（仅作为深度附件）
+
 	// render pass attachments
 	std::vector<VkAttachmentDescription> attachments =
 	{
@@ -1401,17 +1412,17 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
 			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		},
-		// Attachment 2：场景深度（LOAD — 测试遮挡，不写回）
+		// Attachment 2：水面专用深度（CLEAR 每帧，写入水面 patch 深度）
 		{
 			0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_LOAD,   VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,   VK_ATTACHMENT_STORE_OP_STORE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
 		},
 	};
 
-	// 深度 subpass ref：DEPTH_STENCIL_READ_ONLY_OPTIMAL 允许深度测试 + Shader 采样同时进行
-	VkAttachmentReference depthRef = { 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+	// 深度 subpass ref：DEPTH_STENCIL_ATTACHMENT_OPTIMAL 允许读写深度
+	VkAttachmentReference depthRef = { 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 	std::vector<SubpassParameters> subpassParams =
 	{
 		{
@@ -1429,21 +1440,21 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 
 	std::vector<VkSubpassDependency> dependencies =
 	{
-		// GBuffer pass → Water GBuffer：场景深度写入完成后可读
+		// 前序 Pass → Water GBuffer：前序 color/depth 写入完成后 Water GBuffer 可写
 		{
 			VK_SUBPASS_EXTERNAL, 0,
-			VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 			VK_DEPENDENCY_BY_REGION_BIT
 		},
 		// Water GBuffer → 外部（Pre-Water Compute / Deferred）：WaterGBuf 写入完成后可被 Compute 读取
 		{
 			0, VK_SUBPASS_EXTERNAL,
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 			VK_ACCESS_SHADER_READ_BIT,
 			VK_DEPENDENCY_BY_REGION_BIT
 		}
@@ -1451,9 +1462,9 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 
 	m_VansWaterGBufferPass.m_ClearValues =
 	{
-		{ 0.0f, 0.0f, 0.0f, 0.0f },   // WaterGBuf_Normal：清空为零（法线不存在时为 0）
-		{ 1e4f, 1e4f, 1e4f, 1e4f },   // WaterGBuf_WorldPosDepth：全部 1e4 = 无水面（大于任何实际 viewZ，且适配 FP16）
-		{ 1.0f, 0 },                   // 深度（LOAD，clear value 被忽略但须占位）
+		{ 0.0f, 0.0f, 0.0f, 0.0f },   // WaterGBuf_Normal：清空为零
+		{ 1e4f, 1e4f, 1e4f, 1e4f },   // WaterGBuf_WorldPosDepth：全部 1e4 = 无水面
+		{ 1.0f, 0 },                   // 水面深度：清除为 1.0（远平面），patch 写入更近的深度值
 	};
 
 	m_VansWaterGBufferPass.CreateRenderPass(logic_device, attachments, subpassParams, dependencies, renderResolution);
@@ -1463,7 +1474,7 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 	{
 		m_WaterGBufNormalImage.GetImageView(),
 		m_WaterGBufLinearDepthImage.GetImageView(),
-		m_DepthImage.GetDepthStencilView(),   // 场景深度（只读）
+		m_WaterDepthImage.GetDepthStencilView(),   // 水面专用深度缓冲
 	};
 	m_VansWaterGBufferPass.m_FrameBuffers[0].CreateFrameBuffer(
 		logic_device, m_VansWaterGBufferPass.m_RenderPass, fbViews,
@@ -1623,6 +1634,7 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	// 销毁水面 GBuffer 纹理
 	m_WaterGBufNormalImage.DestroyVulkanImage(m_LogicDevice);
 	m_WaterGBufLinearDepthImage.DestroyVulkanImage(m_LogicDevice);
+	m_WaterDepthImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_VansGBufferPass.DestroyRenderPass(m_LogicDevice);
 	m_VansRenderPass.DestroyRenderPass(m_LogicDevice);

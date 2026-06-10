@@ -38,25 +38,53 @@ layout(set = 1, binding = 0) uniform WaterGBufferParams
     vec4  pad3[8];
 } waterParams;
 
-// W-08: 法线贴图（可选，由 CPU 端绑定）
-layout(set = 1, binding = 3) uniform sampler2D waterNormalMap;
+// N-01: Detail Normal Texture2DArray（compute 生成，替代旧 sampler2D）
+layout(set = 1, binding = 3) uniform sampler2DArray waterDetailNormalArray;
 
 // Attachment 0: WaterGBuf_Normal（RGBA16F, 世界空间法线 XYZ, A 留用）
 layout(location = 0) out vec4 outWaterNormal;
 // Attachment 1: WaterGBuf_WorldPosDepth（RGBA16F, RGB=世界空间位置, A=视空间线性深度）
 layout(location = 1) out vec4 outWaterPosDepth;
 
-// ── 工具：从世界 XZ 采样法线贴图 ────────────────────────────
-vec3 SampleDetailNormal(vec2 worldXZ)
+// ── N-01: 世界空间直接平铺采样切线空间 detail normal ──
+vec3 SampleDetailNormalTS(vec2 worldXZ)
 {
-    // 法线贴图 UV：基于世界坐标平铺
-    float waveSpeed = 0.03;  // W-08: UV 流动速率（可改为 UBO 参数）
-    vec2 uv = worldXZ * vec2(0.1)  // 平铺缩放
-            + vec2(0.0, waterParams.waveTimeAndScale.x * waveSpeed);  // 时间流动
+    // 世界空间直接平铺：每 detailWorldCoverage 米重复一次
+    float detailWorldCoverage = waterParams.pad3[1].z;
+    if (detailWorldCoverage <= 0.0) detailWorldCoverage = 32.0;
+    vec2 uv = worldXZ / detailWorldCoverage;  // fract 由 CLAMP_TO_EDGE 替代…
+    // 实际上用 fract 实现重复平铺
+    uv = fract(uv);
 
-    vec3 texNormal = texture(waterNormalMap, uv).xyz * 2.0 - 1.0;
-    // 切线空间法线 → 世界空间（假设世界 XZ 平面切线）
-    return normalize(vec3(texNormal.x * 0.5, texNormal.z, texNormal.y * 0.5));
+    // 始终采样 layer 0（单层纹理）
+    vec3 packed = textureLod(waterDetailNormalArray, vec3(uv, 0.0), 0.0).xyz;
+    return packed * 2.0 - 1.0;  // [0,1] → [-1,1] 切线空间
+}
+
+// ── 从宏法线构建 TBN，将切线空间 detail normal 变换到世界空间 ──
+vec3 TransformDetailToWorld(vec3 detailTS, vec3 macroNormalWS)
+{
+    // 切线空间：Y 轴 = 水面法线方向（水平面时为世界 Y-up）
+    // T = 垂直于宏法线且在 XZ 平面附近，B = cross(N, T)
+    vec3 N = normalize(macroNormalWS);
+    vec3 up = vec3(0.0, 1.0, 0.0);
+    vec3 T = cross(up, N);
+    float Tlen = length(T);
+    if (Tlen < 0.0001)
+        T = vec3(1.0, 0.0, 0.0);   // 宏法线接近垂直，任意水平方向均可
+    else
+        T /= Tlen;
+    vec3 B = cross(N, T);           // 右手系：N × B → T, B × T → N
+
+    // detailTS: x=T方向, y=N方向(surface normal), z=B方向
+    return normalize(T * detailTS.x + N * detailTS.y + B * detailTS.z);
+}
+
+// ── N-01: LOD 衰减 ────────────────────────────────────────
+float GetDetailNormalLodFade(int lodLevel)
+{
+    // LOD 0-2: 全强度, LOD 3-5: 渐变衰减, LOD 6+: 零
+    return 1.0 - smoothstep(2.5, 5.5, float(lodLevel));
 }
 
 void main()
@@ -85,7 +113,17 @@ void main()
 
     vec3 worldNormal = normalize(inWorldNormal);
 
-    // 直接写入世界空间法线（RGB = XYZ, Y 朝上）
+    // ── N-01: 细节法线混合 ──────────────────────────────────
+    // detailIntensity 控制切线空间 detail normal 的 XZ 扰动强度
+    // intensity=0 → detailTS.xz=0 → normalize → (0,1,0) → 宏法线不变
+    float detailIntensity = waterParams.pad3[0].x;
+    vec3 detailTS = SampleDetailNormalTS(inWorldPos.xz);
+    detailTS.xz *= detailIntensity;
+    detailTS = normalize(detailTS);
+    vec3 detailWS = TransformDetailToWorld(detailTS, worldNormal);
+    worldNormal = normalize(worldNormal + detailWS);
+
+    // 写入世界空间法线（RGB = XYZ, Y 朝上）
     outWaterNormal   = vec4(worldNormal, 0.0);
 
     // 世界空间位置 + 视空间线性深度
