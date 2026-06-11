@@ -435,6 +435,18 @@ void VansGraphics::VansScene::AddTerrainNode(VansVKDevice* device, json& terrain
     config.morphStartRatio = terrainData.value("morphStartRatio", config.morphStartRatio);
     config.maxPatchInstances = terrainData.value("maxPatchInstances", config.maxPatchInstances);
 
+    // Tessellation (optional, defaults from TerrainConfig)
+    if (terrainData.contains("tessellation") && terrainData["tessellation"].is_object())
+    {
+        auto& tessJson = terrainData["tessellation"];
+        config.enableTessellation   = tessJson.value("enabled",  config.enableTessellation);
+        config.tessellationDistance = tessJson.value("distance", config.tessellationDistance);
+        config.maxTessellationLevel = tessJson.value("maxLevel", config.maxTessellationLevel);
+        config.tessellationPower        = tessJson.value("power",               config.tessellationPower);
+        config.tessLodBias              = tessJson.value("lodBias",             config.tessLodBias);
+        config.tessDisplacementStrength = tessJson.value("displacementStrength", config.tessDisplacementStrength);
+    }
+
     // Splatmaps (required, array of 2)
     if (terrainData.contains("splatmaps") && terrainData["splatmaps"].is_array())
     {
@@ -601,6 +613,7 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
         config.m_Medium.m_IOR          = m.value("ior",          config.m_Medium.m_IOR);
         config.m_Medium.m_FresnelPower = m.value("fresnelPower",  config.m_Medium.m_FresnelPower);
         config.m_Medium.m_Anisotropy   = m.value("anisotropy",   config.m_Medium.m_Anisotropy);
+        config.m_Medium.m_WaterRoughness = m.value("roughness",  config.m_Medium.m_WaterRoughness);
 
         if (m.contains("deepColor"))
         {
@@ -650,6 +663,18 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
             else if (d.is_object())
                 config.m_Waves.m_WindDirection = {
                     d.value("x", 0.7071f), d.value("y", 0.7071f)};
+        }
+
+        // N-01: detailNormal 子块
+        if (w.contains("detailNormal") && w["detailNormal"].is_object())
+        {
+            auto& dn = w["detailNormal"];
+            config.m_Waves.m_DetailNormal.m_Enabled         = dn.value("enabled",    true);
+            config.m_Waves.m_DetailNormal.m_Intensity       = dn.value("intensity",  1.0f);
+            config.m_Waves.m_DetailNormal.m_Scale           = dn.value("scale",      1.0f);
+            config.m_Waves.m_DetailNormal.m_OctaveCount     = dn.value("octaves",    4);
+            config.m_Waves.m_DetailNormal.m_TimeOffset      = dn.value("timeOffset", 0.0f);
+            config.m_Waves.m_DetailNormal.m_DetailBaseScale = dn.value("baseScale",  32.0f);
         }
 
         // maxLOD 范围校验
@@ -706,7 +731,17 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
     {
         auto& s = waterData["ssr"];
         config.m_SSR.m_Enabled      = s.value("enabled",      true);
-        config.m_SSR.m_MaxRoughness = s.value("maxRoughness", 0.3f);
+        config.m_SSR.m_MaxDistance   = s.value("maxDistance",  500.0f);
+        config.m_SSR.m_MaxRoughness  = s.value("maxRoughness", 0.3f);
+    }
+
+    // ── sss 块（W-16: 次表面散射）─────────────────────────────────────────
+    if (waterData.contains("sss") && waterData["sss"].is_object())
+    {
+        auto& s = waterData["sss"];
+        config.m_SSS.m_Enabled                   = s.value("enabled",        true);
+        config.m_SSS.m_MaxThicknessDistance       = s.value("maxThickness",  15.0f);
+        config.m_SSS.m_DeepWaterThicknessFallback = s.value("deepFallback",  0.8f);
     }
 
     // ── lod 块（W-07）─────────────────────────────────────────────────────
@@ -743,6 +778,7 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
     mat->m_WaterIOR          = config.m_Medium.m_IOR;
     mat->m_FresnelPower      = config.m_Medium.m_FresnelPower;
     mat->m_Anisotropy        = config.m_Medium.m_Anisotropy;
+    mat->m_WaterRoughness    = config.m_Medium.m_WaterRoughness;
     mat->m_SpecularIntensity = config.m_SpecularIntensity;
     mat->m_DeepWaterColor    = config.m_Medium.m_DeepColor;
     mat->m_ShallowWaterColor = config.m_Medium.m_ShallowColor;
@@ -777,7 +813,21 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
 
     // SSR
     mat->m_EnableSSR       = config.m_SSR.m_Enabled;
-    mat->m_SSRMaxRoughness = config.m_SSR.m_MaxRoughness;
+    mat->m_SSRMaxDistance   = config.m_SSR.m_MaxDistance;
+    mat->m_SSRMaxRoughness  = config.m_SSR.m_MaxRoughness;
+
+    // SSS（W-16: 次表面散射）
+    mat->m_SSSEnabled                = config.m_SSS.m_Enabled;
+    mat->m_MaxThicknessDistance      = config.m_SSS.m_MaxThicknessDistance;
+    mat->m_DeepWaterThicknessFallback = config.m_SSS.m_DeepWaterThicknessFallback;
+
+    // N-01: 细节法线
+    mat->m_DetailNormalEnabled     = config.m_Waves.m_DetailNormal.m_Enabled;
+    mat->m_DetailNormalIntensity   = config.m_Waves.m_DetailNormal.m_Intensity;
+    mat->m_DetailNormalScale       = config.m_Waves.m_DetailNormal.m_Scale;
+    mat->m_DetailNormalOctaves     = config.m_Waves.m_DetailNormal.m_OctaveCount;
+    mat->m_DetailNormalTimeOffset  = config.m_Waves.m_DetailNormal.m_TimeOffset;
+    mat->m_DetailNormalBaseScale   = config.m_Waves.m_DetailNormal.m_DetailBaseScale;
 
     // ── 纹理绑定（通过名称查找已加载资产）─────────────────────────────────
     if (!config.m_Foam.m_TextureName.empty())

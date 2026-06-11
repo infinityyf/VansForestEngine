@@ -28,8 +28,12 @@ namespace VansGraphics
         if(m_TerrainShader) delete m_TerrainShader;
         if(m_TerrainShadowShader) delete m_TerrainShadowShader;
         if(m_TerrainMotionVectorShader) delete m_TerrainMotionVectorShader;
+        if(m_TerrainTessShader) delete m_TerrainTessShader;
         m_ParamsUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_InstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
+        m_NearInstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
+        m_FarInstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
+        m_TessParamsUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
 
         // 释放地形专属 descriptor set 和 layout
         auto descMgr = VansVKDescriptorManager::GetInstance();
@@ -47,6 +51,14 @@ namespace VansGraphics
         m_LodDistanceRatio = std::max(config.lodDistanceRatio, 1.0f);
         m_MorphStartRatio = std::clamp(config.morphStartRatio, 0.0f, 1.0f);
         m_MaxPatchInstances = std::max(config.maxPatchInstances, 1u);
+
+        // Tessellation config
+        m_EnableTessellation   = config.enableTessellation;
+        m_TessellationDistance = config.tessellationDistance;
+        m_MaxTessellationLevel = config.maxTessellationLevel;
+        m_TessellationPower    = config.tessellationPower;
+        m_TessLodBias              = config.tessLodBias;
+        m_TessDisplacementStrength = config.tessDisplacementStrength;
 
         // -------------------------------------------------------
         // 1. Load heightmap
@@ -129,10 +141,18 @@ namespace VansGraphics
             m_TerrainInstanceInputBindingDescriptions.end());
 
         // -------------------------------------------------------
-        // 5. Create instance buffer
+        // 5. Create instance buffers (split near/far for tessellation)
         // -------------------------------------------------------
-        VkDeviceSize bufferSize = sizeof(TerrainInstanceData) * m_MaxPatchInstances; 
+        VkDeviceSize bufferSize = sizeof(TerrainInstanceData) * m_MaxPatchInstances;
         m_InstanceBuffer.CreatVulkanBuffer(
+            device->GetLogicDevice(), bufferSize, VK_FORMAT_R32_SFLOAT,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_NearInstanceBuffer.CreatVulkanBuffer(
+            device->GetLogicDevice(), bufferSize, VK_FORMAT_R32_SFLOAT,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_FarInstanceBuffer.CreatVulkanBuffer(
             device->GetLogicDevice(), bufferSize, VK_FORMAT_R32_SFLOAT,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -166,6 +186,35 @@ namespace VansGraphics
 
         m_TerrainMotionVectorShader = new VansGraphicsShader();
         m_TerrainMotionVectorShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/Terrain/MotionVector").c_str());
+
+        // -------------------------------------------------------
+        // 7b. Create Tessellation Shader (DeferredTess folder)
+        // -------------------------------------------------------
+        m_TerrainTessShader = new VansGraphicsShader();
+        m_TerrainTessShader->InitShader(device->GetLogicDevice(),
+            (projectRoot + "EngineAssets/Shaders/Terrain/DeferredTess").c_str());
+        m_TerrainTessShader->SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_PATCH_LIST);
+        m_TerrainTessShader->SetPatchControlPoints(3);
+        m_TerrainTessShader->SetDrawStateData(VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_BACK_BIT);
+        m_TerrainTessShader->SetColorAttachmentCount(4); // 4 MRT outputs for GBuffer (DeferredTess has no /Deferred subdir)
+
+        // -------------------------------------------------------
+        // 7c. Create Tessellation Params UBO (binding 7)
+        // -------------------------------------------------------
+        {
+            TerrainTessellationParamsGPU tessParams{};
+            tessParams.maxTessLevel = config.maxTessellationLevel;
+            tessParams.tessDistance = config.tessellationDistance;
+            tessParams.tessPower            = config.tessellationPower;
+            tessParams.displacementStrength = config.tessDisplacementStrength;
+
+            m_TessParamsUBO.CreatVulkanBuffer(
+                device->GetLogicDevice(), sizeof(TerrainTessellationParamsGPU),
+                VK_FORMAT_R32_SFLOAT,
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            m_TessParamsUBO.SetBufferData(&tessParams, 0, sizeof(tessParams));
+        }
 
         // -------------------------------------------------------
         // 8. Create descriptor set
@@ -244,6 +293,13 @@ namespace VansGraphics
             { { m_ParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainParamsGPU) } }
         });
 
+        // Binding 7: TessellationParams UBO (read by TCS)
+        descMgr->m_BufferDescInfos.push_back({
+            m_DescriptorSets[0], TERRAIN_BINDING_TESSELLATION_PARAMS, 0,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            { { m_TessParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainTessellationParamsGPU) } }
+        });
+
         descMgr->UpdateDescriptorSets();
     }
 
@@ -267,27 +323,25 @@ namespace VansGraphics
 
     bool VansTerrain::ShouldSplit(const TerrainNode& node, const glm::vec3& camPos)
     {
-        // 1. 吸附相机位置到当前节点大小的倍数
-        // 这样可以保证在同一个node.size 的网格内，LOD 判定结果是一致的
-        // 避免相机微小移动导致的LOD 闪烁
         float snappedCamX = SnapToGrid(camPos.x, node.size);
         float snappedCamZ = SnapToGrid(camPos.z, node.size);
-        
-        // 2. 距离判断 (使用切比雪夫距离)
+
         float centerX = node.x + node.size * 0.5f;
         float centerZ = node.z + node.size * 0.5f;
-        
-        // 使用吸附后的相机位置计算距离
+
         float dx = std::abs(centerX - snappedCamX);
         float dz = std::abs(centerZ - snappedCamZ);
         float dist = std::max(dx, dz);
 
-        // 阈值判断
-        if (dist < node.size * m_SplitDistMult) { 
-            return true;
+        float effectiveSplitMult = m_SplitDistMult;
+
+        // In tessellation range, relax split condition → coarser patches → fewer instances.
+        // Tessellation compensates geometric detail on these larger patches.
+        if (m_EnableTessellation && dist < m_TessellationDistance) {
+            effectiveSplitMult *= m_TessLodBias;
         }
 
-        return false;
+        return dist < node.size * effectiveSplitMult;
     }
 
     namespace
@@ -420,6 +474,8 @@ namespace VansGraphics
 
     void VansTerrain::AppendInstanceData(const std::vector<TerrainNode>& nodes)
     {
+        // Legacy: builds full instance list for backward compat.
+        // Near/far split is done in Update() directly.
         bool overflowWarned = false;
         for (const TerrainNode& node : nodes)
         {
@@ -445,55 +501,100 @@ namespace VansGraphics
     void VansTerrain::Update(VansCamera* camera)
     {
         m_InstanceDataCPU.clear();
+        m_NearInstanceDataCPU.clear();
+        m_FarInstanceDataCPU.clear();
 
-        // 从根节点开始遍历(0,0, 2048)
         TerrainNode root = { -m_TerrainSize*0.5f, -m_TerrainSize * 0.5f, m_TerrainSize, 0 };
         std::vector<TerrainNode> leafNodes;
         CollectLeafNodes(root, camera->GetPosition(), leafNodes);
         BalanceLeafNodes(leafNodes);
-        AppendInstanceData(leafNodes);
 
-        // 更新 Instance Buffer
-        if (!m_InstanceDataCPU.empty())
+        const glm::vec3& camPos = camera->GetPosition();
+        for (const TerrainNode& node : leafNodes)
         {
-			m_InstanceBuffer.SetBufferData(m_InstanceDataCPU.data(), 0, sizeof(TerrainInstanceData) * m_InstanceDataCPU.size());
+            float centerX = node.x + node.size * 0.5f;
+            float centerZ = node.z + node.size * 0.5f;
+            float dist = std::max(std::abs(centerX - camPos.x), std::abs(centerZ - camPos.z));
+
+            TerrainInstanceData data;
+            data.Offset      = glm::vec2(node.x, node.z);
+            data.Scale       = node.size / static_cast<float>(m_PatchGridSize);
+            data.Lod         = static_cast<float>(node.lodLevel);
+            data.StitchFlags = static_cast<float>(ComputeStitchFlags(node, leafNodes));
+            data.padding0    = glm::vec3(0.0);
+
+            if (m_EnableTessellation && dist < m_TessellationDistance)
+            {
+                if (m_NearInstanceDataCPU.size() < m_MaxPatchInstances)
+                    m_NearInstanceDataCPU.push_back(data);
+            }
+            else
+            {
+                if (m_FarInstanceDataCPU.size() < m_MaxPatchInstances)
+                    m_FarInstanceDataCPU.push_back(data);
+            }
         }
+
+        // Upload to respective buffers
+        if (!m_NearInstanceDataCPU.empty())
+            m_NearInstanceBuffer.SetBufferData(m_NearInstanceDataCPU.data(), 0,
+                sizeof(TerrainInstanceData) * m_NearInstanceDataCPU.size());
+        if (!m_FarInstanceDataCPU.empty())
+            m_FarInstanceBuffer.SetBufferData(m_FarInstanceDataCPU.data(), 0,
+                sizeof(TerrainInstanceData) * m_FarInstanceDataCPU.size());
+
+        // Legacy: full set (used by DrawShadow, DrawMotionVector which don't split)
+        m_InstanceDataCPU = m_FarInstanceDataCPU;
+        if (!m_InstanceDataCPU.empty())
+            m_InstanceBuffer.SetBufferData(m_InstanceDataCPU.data(), 0,
+                sizeof(TerrainInstanceData) * m_InstanceDataCPU.size());
     }
 
     void VansTerrain::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets)
     {
-        if (m_InstanceDataCPU.empty()) return;
+        // Helper: bind mesh-level buffers (vertex, index, descriptions)
+        auto bindMeshBuffers = [&]() {
+            VkBuffer vertexBuffers[] = { m_BasePatchMesh->GetVertexBufferParameter().Buffer };
+            VkDeviceSize offsets[] = { 0 };
+            cmd.BindVertexBuffers(0, 1, vertexBuffers, offsets);
+            cmd.BindIndexBuffer(m_BasePatchMesh->GetIndexBufferParameter().Buffer, 0, VK_INDEX_TYPE_UINT32);
+            globalState.vertexInputAttributeDescriptions = &m_BasePatchMesh->m_VertexInputAttributeDescriptions;
+            globalState.vertexInputBindingDescriptions = &m_BasePatchMesh->m_VertexInputBindingDescriptions;
+        };
 
-        // 4. 绑定 Vertex Buffer (Mesh) - Binding 0
-        VkBuffer vertexBuffers[] = { m_BasePatchMesh->GetVertexBufferParameter().Buffer };
-        VkDeviceSize offsets[] = { 0 };
-        cmd.BindVertexBuffers(0, 1, vertexBuffers, offsets);
+        // ---- 1. Far-field patches: existing VS pipeline (TRIANGLE_LIST) ----
+        if (!m_FarInstanceDataCPU.empty())
+        {
+            bindMeshBuffers();
 
-        // 5. 绑定 Instance Buffer - Binding 3 (对应 Shader 中的 layout location 3, 4)
-        // 注意：这里需要你的Pipeline VertexInputState 定义了Binding 1 为Per-Instance Rate
-        // 假设我们在Pipeline 创建时将 Binding 1 设为 Instance Input
-        VkBuffer instanceBuffers[] = { m_InstanceBuffer.GetNativeBuffer() };
-        VkDeviceSize instanceOffsets[] = { 0 };
-        // 这里的binding index 取决于你的Pipeline 定义，通常 Mesh 是0，Instance 是1
-        cmd.BindVertexBuffers(1, 1, instanceBuffers, instanceOffsets);
+            VkBuffer instanceBuffers[] = { m_FarInstanceBuffer.GetNativeBuffer() };
+            VkDeviceSize instanceOffsets[] = { 0 };
+            cmd.BindVertexBuffers(1, 1, instanceBuffers, instanceOffsets);
 
-        // 6. 绑定 Index Buffer
-        cmd.BindIndexBuffer(m_BasePatchMesh->GetIndexBufferParameter().Buffer, 0, VK_INDEX_TYPE_UINT32);
+            cmd.EnsureGraphicsShader(*m_TerrainShader, globalState, layouts);
+            cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_TerrainShader, 0, sets, {});
+            cmd.BindGraphicsPipeline(*m_TerrainShader->GetGraphicsPipeline());
 
-        //记录mesh 的bind data，这里需要手动设置index 的input 描述
-        globalState.vertexInputAttributeDescriptions = &m_BasePatchMesh->m_VertexInputAttributeDescriptions;
-        globalState.vertexInputBindingDescriptions = &m_BasePatchMesh->m_VertexInputBindingDescriptions;
+            cmd.DrawIndexed(m_BasePatchMesh->GetIndexCount(),
+                static_cast<uint32_t>(m_FarInstanceDataCPU.size()), 0, 0, 0);
+        }
 
-        //apply shader，确认pipeline以及创建完毕
-        cmd.EnsureGraphicsShader(*m_TerrainShader, globalState, layouts);
+        // ---- 2. Near-field patches: tessellation pipeline (PATCH_LIST) ----
+        if (m_EnableTessellation && !m_NearInstanceDataCPU.empty())
+        {
+            bindMeshBuffers();
 
-        cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_TerrainShader, 0, sets, {});
+            VkBuffer instanceBuffers[] = { m_NearInstanceBuffer.GetNativeBuffer() };
+            VkDeviceSize instanceOffsets[] = { 0 };
+            cmd.BindVertexBuffers(1, 1, instanceBuffers, instanceOffsets);
 
+            cmd.EnsureGraphicsShader(*m_TerrainTessShader, globalState, layouts);
+            cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_TerrainTessShader, 0, sets, {});
+            cmd.BindGraphicsPipeline(*m_TerrainTessShader->GetGraphicsPipeline());
 
-        cmd.BindGraphicsPipeline(*m_TerrainShader->GetGraphicsPipeline());
-        
-        // 7. Draw Indexed Indirect or Instanced
-        cmd.DrawIndexed(m_BasePatchMesh->GetIndexCount(), static_cast<uint32_t>(m_InstanceDataCPU.size()), 0, 0, 0);
+            cmd.DrawIndexed(m_BasePatchMesh->GetIndexCount(),
+                static_cast<uint32_t>(m_NearInstanceDataCPU.size()), 0, 0, 0);
+        }
     }
     void VansTerrain::DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets)
     {
@@ -567,5 +668,63 @@ namespace VansGraphics
 
         // Draw instanced
         cmd.DrawIndexed(m_BasePatchMesh->GetIndexCount(), static_cast<uint32_t>(m_InstanceDataCPU.size()), 0, 0, 0);
+    }
+
+    // ── Editor Inspector Setters ──────────────────────────────────────────
+    // Each writes the member and immediately uploads the changed param to the UBO
+    // so the GPU sees the updated value on the next frame.
+
+    void VansTerrain::SetTessellationEnabled(bool v)
+    {
+        m_EnableTessellation = v;
+    }
+
+    void VansTerrain::SetTessellationDistance(float v)
+    {
+        m_TessellationDistance = std::max(v, 1.0f);
+        TerrainTessellationParamsGPU p{};
+        p.maxTessLevel = m_MaxTessellationLevel;
+        p.tessDistance = m_TessellationDistance;
+        p.tessPower    = m_TessellationPower;
+        p.displacementStrength = m_TessDisplacementStrength;
+        m_TessParamsUBO.SetBufferData(&p, 0, sizeof(p));
+    }
+
+    void VansTerrain::SetMaxTessellationLevel(float v)
+    {
+        m_MaxTessellationLevel = std::clamp(v, 1.0f, 64.0f);
+        TerrainTessellationParamsGPU p{};
+        p.maxTessLevel = m_MaxTessellationLevel;
+        p.tessDistance = m_TessellationDistance;
+        p.tessPower    = m_TessellationPower;
+        p.displacementStrength = m_TessDisplacementStrength;
+        m_TessParamsUBO.SetBufferData(&p, 0, sizeof(p));
+    }
+
+    void VansTerrain::SetTessellationPower(float v)
+    {
+        m_TessellationPower = std::max(v, 0.1f);
+        TerrainTessellationParamsGPU p{};
+        p.maxTessLevel = m_MaxTessellationLevel;
+        p.tessDistance = m_TessellationDistance;
+        p.tessPower    = m_TessellationPower;
+        p.displacementStrength = m_TessDisplacementStrength;
+        m_TessParamsUBO.SetBufferData(&p, 0, sizeof(p));
+    }
+
+    void VansTerrain::SetTessLodBias(float v)
+    {
+        m_TessLodBias = std::clamp(v, 0.1f, 5.0f);
+    }
+
+    void VansTerrain::SetTessDisplacementStrength(float v)
+    {
+        m_TessDisplacementStrength = std::max(v, 0.0f);
+        TerrainTessellationParamsGPU p{};
+        p.maxTessLevel = m_MaxTessellationLevel;
+        p.tessDistance = m_TessellationDistance;
+        p.tessPower    = m_TessellationPower;
+        p.displacementStrength = m_TessDisplacementStrength;
+        m_TessParamsUBO.SetBufferData(&p, 0, sizeof(p));
     }
 }

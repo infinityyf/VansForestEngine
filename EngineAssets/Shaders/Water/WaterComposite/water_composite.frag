@@ -32,6 +32,7 @@ layout(set = 1, binding = 4) uniform sampler2D waterReflection;
 layout(set = 1, binding = 5) uniform sampler2D waterRefraction;
 layout(set = 1, binding = 6) uniform sampler2D waterCaustics;
 layout(set = 1, binding = 7) uniform sampler2D waterFoamTexture;
+layout(set = 1, binding = 9) uniform sampler2D waterSSSScatter;  // W-16 Phase 2: SSS 散射输出
 
 layout(set = 1, binding = 2) uniform WaterCompositeParams
 {
@@ -161,6 +162,20 @@ void EvaluateEnvironmentBRDF(vec3 N, vec3 V, vec3 F0,
 }
 
 // ============================================================
+// Schlick Phase Function — W-16 Phase 2
+//
+// p(cosθ, g) = (1-g²) / [4π · (1+g²-2g·cosθ)^1.5]
+//
+// 比 Henyey-Greenstein 更高效：无 acos，仅 1 次 sqrt
+// ============================================================
+float SchlickPhase(float cosTheta, float g)
+{
+    float g2 = g * g;
+    float denom = 1.0 + g2 - 2.0 * g * cosTheta;
+    return (1.0 - g2) / max(4.0 * PI * denom * sqrt(denom), 1e-6);
+}
+
+// ============================================================
 void main()
 {
     vec2 suv = clamp(vec2(inUV.x, 1.0 - inUV.y), 0.001, 0.999);
@@ -209,6 +224,15 @@ void main()
     vec3 color  = envReflContrib + envRefrContrib;
     color      += directSpecular;
     color += caustics;
+
+    // ── 4. SSS 次表面散射（W-16 Phase 2）────────────────────
+    vec3 sssTexture = texture(waterSSSScatter, suv).rgb;
+    float VdotL_sss = dot(V, L);
+    float g_sss     = p.sssAnisotropy;
+    float phase     = SchlickPhase(VdotL_sss, g_sss);
+    float NdotL_sss = max(dot(N, L), 0.0);
+    vec3  sssContrib = sssTexture * phase * NdotL_sss;
+    color += sssContrib;
     // color = mix(color, vec3(1.0), foam * p.foamIntensity * 0.5);
 
     outColor = vec4(color, 1.0);

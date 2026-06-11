@@ -1,0 +1,178 @@
+#version 450
+
+// ============================================================
+// water_detail_normal.comp — 细节法线贴图生成（N-01）
+//
+// 算法：多 octave 周期 hash 噪声 + 解析梯度
+//   - mod(i, period) 保证四方连续（seamless tiling）
+//   - 多层叠加消除规律感（period 逐层减半）
+//   - detailScale 控制锐度：>1 = 更锋利，<1 = 更柔和
+//   - 法线 = normalize(-grad, 1.0)，切线空间
+//   - [0,1] 编码存储（RGBA16F）
+//
+// Dispatch: (groupsX, groupsY, 1) — 单层 1024²
+// ============================================================
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform WaterGBufferParams
+{
+    mat4 VPMatrix;
+    mat4 ViewMatrix;
+    vec4 cameraPosition;
+    float minLodDist;
+    int   lodLevels;
+    int   meshDim;
+    float clipmapBaseScale;
+    float maxWaveAmp;
+    float detailBalance;
+    float morphStartRatio;
+    float pad1;
+    vec4 waveTimeAndScale;
+    vec4 waveParamsPad[8];      // pad[0]: (intensity, scale, windDirX, windDirY)
+                                // pad[1]: (timeOffset, octaveCount, worldCoverage, 0)
+} params;
+
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray outDetailNormal;
+
+// ── 高质量 hash（避免 sincos 导致的规律图案）───────────────
+float hash21(vec2 p)
+{
+    float h = dot(p, vec2(127.1, 311.7));
+    return fract(sin(h) * 43758.5453123);
+}
+
+// 2D hash 返回 vec2，用于方向扰动
+vec2 hash22(vec2 p)
+{
+    float h1 = dot(p, vec2(127.1, 311.7));
+    float h2 = dot(p, vec2(269.5, 183.3));
+    return vec2(fract(sin(h1) * 43758.5453), fract(sin(h2) * 43758.5453));
+}
+
+// ── 周期 2D value noise（tileable: 在 period 处无缝）──────
+float pnoise(vec2 p, float period)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    // Hermite smoothstep
+    vec2 u = f * f * (3.0 - 2.0 * f);
+
+    // 周期边界
+    vec2 pi0 = mod(i,               vec2(period));
+    vec2 pi1 = mod(i + vec2(1, 0),  vec2(period));
+    vec2 pi2 = mod(i + vec2(0, 1),  vec2(period));
+    vec2 pi3 = mod(i + vec2(1, 1),  vec2(period));
+
+    return mix(
+        mix(hash21(pi0), hash21(pi1), u.x),
+        mix(hash21(pi2), hash21(pi3), u.x),
+        u.y
+    );
+}
+
+// ── 周期 Worley-like 噪声（产生尖锐的 cellular 特征）─────
+// 返回距最近特征点的距离，在 period 处无缝
+float pworley(vec2 p, float period)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+
+    float minDist = 1.0;
+
+    for (int y = -1; y <= 1; y++)
+    {
+        for (int x = -1; x <= 1; x++)
+        {
+            vec2 neighbor = vec2(float(x), float(y));
+            vec2 cell = i + neighbor;
+            // 周期边界
+            cell = mod(cell, vec2(period));
+            // 特征点在 cell 内的位置（确定性随机）
+            vec2 point = hash22(cell);
+            vec2 diff = neighbor + point - f;
+            float d = dot(diff, diff);
+            minDist = min(minDist, d);
+        }
+    }
+    return sqrt(minDist);
+}
+
+// ── 梯度：中心差分 ──────────────────────────────────────────
+vec2 noiseGradient(vec2 p, float period)
+{
+    float eps = 0.5; // 半纹素偏移
+    float hL = pnoise(p - vec2(eps, 0.0), period);
+    float hR = pnoise(p + vec2(eps, 0.0), period);
+    float hD = pnoise(p - vec2(0.0, eps), period);
+    float hU = pnoise(p + vec2(0.0, eps), period);
+    return vec2(hR - hL, hU - hD) / (2.0 * eps);
+}
+
+// ============================================================
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec3 imgSize = imageSize(outDetailNormal);
+    if (pixel.x >= imgSize.x || pixel.y >= imgSize.y) return;
+
+    // ── 参数 ────────────────────────────────────
+    float detailScale          = params.waveParamsPad[0].y;
+    vec2  windDir              = normalize(params.waveParamsPad[0].zw);
+    float timeOffset           = params.waveParamsPad[1].x;
+    int   octaveCount          = clamp(int(params.waveParamsPad[1].y), 1, 6);
+    float detailWorldCoverage  = params.waveParamsPad[1].z;
+    if (detailWorldCoverage <= 0.0) detailWorldCoverage = 32.0;
+    float time                 = params.waveTimeAndScale.x + timeOffset;
+
+    // ── 世界空间坐标 ───────────────────────────
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(imgSize.xy);
+    vec2 worldXZ = uv * detailWorldCoverage;
+
+    // ── 多 octave 叠加 ─────────────────────────
+    // period = 噪声平铺周期（m），逐层减半 → 频率翻倍
+    // 风驱动时间动画：采样坐标沿风向漂移
+    float gradX = 0.0;
+    float gradZ = 0.0;
+
+    float period   = detailWorldCoverage;
+    float amp      = 1.0;
+    const float persistence = 0.55;
+    const float lacunarity  = 2.3;
+
+    for (int oct = 0; oct < octaveCount; oct++)
+    {
+        float noisePeriod = max(floor(period), 4.0);
+
+        // 风方向时间动画 + 每层不同速度避免同步
+        float speed = 0.15 + 0.05 * float(oct);
+        vec2 samplePos = worldXZ + windDir * time * speed;
+
+        // 每层加确定性随机偏移，打破 octave 间对齐
+        vec2 jitter = hash22(vec2(float(oct) * 13.37, 0.0)) * noisePeriod * 0.3;
+        samplePos += jitter;
+
+        // 前三层用 value noise，后三层混入 worley 锐化
+        vec2 grad = noiseGradient(samplePos, noisePeriod);
+
+        if (oct >= 3)
+        {
+            // Worley-like 噪声产生更尖锐的微细节
+            vec2 wGrad = noiseGradient(samplePos + vec2(noisePeriod * 0.3), noisePeriod * 0.5);
+            grad = mix(grad, wGrad * 2.5, 0.4);
+        }
+
+        gradX += grad.x * amp;
+        gradZ += grad.y * amp;
+
+        period /= lacunarity;
+        amp    *= persistence;
+    }
+
+    // ── 切线空间法线 ───────────────────────────
+    float s = max(detailScale, 0.001);
+    vec3 n = normalize(vec3(-gradX * s, 1.0, -gradZ * s));
+    vec3 packed = n * 0.5 + 0.5;
+
+    imageStore(outDetailNormal, ivec3(pixel, 0), vec4(packed, 0.0));
+}

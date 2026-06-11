@@ -78,3 +78,11 @@ vec3 TerrainBuildWorldPosition(vec2 localPos, vec2 instanceOffset, float instanc
     rawHeight = TerrainSampleRawHeight(heightUV);
     return vec3(worldPosXZ.x, TerrainRawHeightToWorldY(rawHeight), worldPosXZ.y);
 }
+
+// ── Tessellation parameters (binding 7, read by TCS and TES) ──────────────────
+layout(set = 1, binding = 7) uniform TessellationParams {
+    float maxTessLevel;
+    float tessDistance;
+    float tessPower;
+    float displacementStrength;  // micro-displacement from normal map Y (world units)
+} tessParams;

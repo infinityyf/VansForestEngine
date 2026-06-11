@@ -48,6 +48,8 @@ namespace VansGraphics
 		float     m_FresnelPower     = 5.0f;
 		// Schlick 各向异性 g ∈ (-1, 1)，0 = 各向同性
 		float     m_Anisotropy       = 0.85f;
+		// 水面微面元粗糙度（0=镜面反射, 1=漫反射）
+		float     m_WaterRoughness   = 0.02f;
 		// 深水颜色
 		glm::vec4 m_DeepColor        = {0.01f, 0.04f, 0.18f, 1.0f};   // 深水暗蓝
 		// 浅水颜色
@@ -155,6 +157,16 @@ namespace VansGraphics
 	};
 
 	// ============================================================
+	// SSS 次表面散射参数 — W-16
+	// ============================================================
+	struct VansWaterSSSConfig
+	{
+		bool  m_Enabled                 = true;
+		float m_MaxThicknessDistance    = 15.0f;   // 最大厚度 (m)，超过此值 clamp
+		float m_DeepWaterThicknessFallback = 0.8f;  // 深水 fallback 归一化厚度 [0,1]
+	};
+
+	// ============================================================
 	// VansWaterConfig — 完整水面配置
 	//
 	// JSON 对应关系：
@@ -186,6 +198,7 @@ namespace VansGraphics
 		VansWaterCausticsConfig  m_Caustics;
 		VansWaterRefractionConfig m_Refraction;
 		VansWaterSSRConfig       m_SSR;
+		VansWaterSSSConfig       m_SSS;       // W-16: 次表面散射
 	};
 
 } // namespace VansGraphics

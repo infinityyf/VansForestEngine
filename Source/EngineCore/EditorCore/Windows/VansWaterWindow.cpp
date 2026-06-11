@@ -107,9 +107,13 @@ void VansGraphics::VansWaterWindow::ShowWindow(VansVKDevice& device)
 
             if (mat)
             {
-ImGui::DragFloat("Specular Intensity", &mat->m_SpecularIntensity, 0.01f, 0.0f, 10.0f, "%.3f");
-				ImGui::DragFloat("Water Roughness", &mat->m_WaterRoughness, 0.001f, 0.001f, 1.0f, "%.4f");
-				if (ImGui::IsItemHovered()) ImGui::SetTooltip("水面微面元粗糙度: 0=镜面反射, 1=漫反射");
+                float spec = cfg.m_SpecularIntensity;
+                if (ImGui::DragFloat("Specular Intensity", &spec, 0.01f, 0.0f, 10.0f, "%.3f"))
+                { cfg.m_SpecularIntensity = spec; mat->m_SpecularIntensity = spec; }
+                float rough = cfg.m_Medium.m_WaterRoughness;
+                if (ImGui::DragFloat("Water Roughness", &rough, 0.001f, 0.001f, 1.0f, "%.4f"))
+                { cfg.m_Medium.m_WaterRoughness = rough; mat->m_WaterRoughness = rough; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("水面微面元粗糙度: 0=镜面反射, 1=漫反射");
             }
 
             // ── 基础 ─────────────────────────────────────────────────
@@ -209,6 +213,32 @@ ImGui::DragFloat("Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 4096.0f, "%
                     if (ImGui::DragFloat("Time Offset", &mat->m_DetailNormalTimeOffset, 0.01f, 0.0f, 10.0f, "%.2f"))
                         cfg.m_Waves.m_DetailNormal.m_TimeOffset = mat->m_DetailNormalTimeOffset;
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Time phase offset to desync from macro waves");
+                }
+            }
+
+            // ── W-16: SSS 次表面散射 ──────────────────────────────────
+            if (ImGui::CollapsingHeader("SSS (Subsurface Scattering)"))
+            {
+                if (mat)
+                {
+                    bool sssEnable = mat->m_SSSEnabled;
+                    if (ImGui::Checkbox("Enable##SSS", &sssEnable))
+                    { mat->m_SSSEnabled = sssEnable; cfg.m_SSS.m_Enabled = sssEnable; }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable/disable subsurface scattering (thickness + SSS compute passes)");
+
+                    if (ImGui::DragFloat("Max Thickness (m)", &mat->m_MaxThicknessDistance, 0.1f, 1.0f, 50.0f, "%.1f"))
+                        cfg.m_SSS.m_MaxThicknessDistance = mat->m_MaxThicknessDistance;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum water thickness in meters. Thickness beyond this value is clamped. 15m default");
+
+                    if (ImGui::DragFloat("Deep Water Fallback", &mat->m_DeepWaterThicknessFallback, 0.01f, 0.0f, 1.0f, "%.2f"))
+                        cfg.m_SSS.m_DeepWaterThicknessFallback = mat->m_DeepWaterThicknessFallback;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Normalized thickness [0-1] for deep water areas with no scene geometry. 0.8 default (80% of max thickness)");
+
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Scattering params (shared with Medium section):");
+                    ImGui::Text("Anisotropy: %.3f", mat->m_Anisotropy);
+                    ImGui::Text("Absorption: R=%.3f G=%.3f B=%.3f", mat->m_AbsorptionCoeffs.x, mat->m_AbsorptionCoeffs.y, mat->m_AbsorptionCoeffs.z);
+                    ImGui::Text("Scattering: R=%.3f G=%.3f B=%.3f", mat->m_ScatteringCoeffs.x, mat->m_ScatteringCoeffs.y, mat->m_ScatteringCoeffs.z);
                 }
             }
 

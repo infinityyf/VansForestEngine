@@ -46,6 +46,14 @@ namespace VansGraphics
         float lodDistanceRatio = 2.0f;
         float morphStartRatio = 0.70f;
         uint32_t maxPatchInstances = 20000;
+
+        // Tessellation parameters (configurable from JSON)
+        bool  enableTessellation   = true;
+        float tessellationDistance  = 300.0f;
+        float maxTessellationLevel  = 64.0f;
+        float tessellationPower        = 2.0f;
+        float tessLodBias              = 0.5f;
+        float tessDisplacementStrength = 0.05f;  // micro-displacement strength (world units)
     };
 
     // ----------------------------------------------------------
@@ -58,6 +66,15 @@ namespace VansGraphics
         // Each tilingFactor is stored as .x of a vec4
         float tilingFactors[TERRAIN_MAX_LAYERS * 4];  // [i*4+0] = tiling, [i*4+1..3] = padding
         glm::vec4 heightfieldParams;             // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridSize
+    };
+
+    // GPU-side UBO matching the shader TessellationParams block (binding 7)
+    struct alignas(16) TerrainTessellationParamsGPU
+    {
+        float maxTessLevel;     // maxTessellationLevel
+        float tessDistance;     // tessellationDistance
+        float tessPower;             // tessellationPower
+        float displacementStrength;  // micro-displacement from normal map (world units)
     };
 
     // 发送给 Shader 的每个 Instance 的数据
@@ -106,6 +123,26 @@ namespace VansGraphics
         float GetTerrainSize() const { return m_TerrainSize; }
         float GetMaxHeight() const { return m_MaxHeight; }
         float GetHeightOffset() const { return m_HeightOffset; }
+
+        // ── Accessors for editor terrain inspector ────────────────────────
+        bool  IsTessellationEnabled()     const { return m_EnableTessellation; }
+        float GetTessellationDistance()   const { return m_TessellationDistance; }
+        float GetMaxTessellationLevel()   const { return m_MaxTessellationLevel; }
+        float GetTessellationPower()      const { return m_TessellationPower; }
+        float GetTessLodBias()            const { return m_TessLodBias; }
+        float GetTessDisplacementStrength() const { return m_TessDisplacementStrength; }
+
+        void SetTessellationEnabled(bool v);
+        void SetTessellationDistance(float v);
+        void SetMaxTessellationLevel(float v);
+        void SetTessellationPower(float v);
+        void SetTessLodBias(float v);
+        void SetTessDisplacementStrength(float v);
+
+        float GetSplitDistMult()    const { return m_SplitDistMult; }
+        void  SetSplitDistMult(float v)  { m_SplitDistMult = std::max(v, 0.1f); }
+        float GetLodDistanceRatio() const { return m_LodDistanceRatio; }
+        void  SetLodDistanceRatio(float v) { m_LodDistanceRatio = std::max(v, 1.0f); }
 
     public:
 
@@ -157,6 +194,7 @@ namespace VansGraphics
         VansGraphicsShader* m_TerrainShader = nullptr;
         VansGraphicsShader* m_TerrainShadowShader = nullptr;
         VansGraphicsShader* m_TerrainMotionVectorShader = nullptr;
+        VansGraphicsShader* m_TerrainTessShader = nullptr;       // DeferredTess pipeline
 
         VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
         VkPipeline m_Pipeline = VK_NULL_HANDLE;
@@ -164,6 +202,15 @@ namespace VansGraphics
         // Instance Buffer (每帧更新)
         VansVKBuffer m_InstanceBuffer;
         std::vector<TerrainInstanceData> m_InstanceDataCPU;
+
+        // Split instance buffers for near (tessellation) / far (VS-only)
+        VansVKBuffer m_NearInstanceBuffer;
+        VansVKBuffer m_FarInstanceBuffer;
+        std::vector<TerrainInstanceData> m_NearInstanceDataCPU;
+        std::vector<TerrainInstanceData> m_FarInstanceDataCPU;
+
+        // Tessellation Params UBO (binding 7)
+        VansVKBuffer m_TessParamsUBO;
 
         // 地形参数
         float m_TerrainSize = 1024.0f;
@@ -173,6 +220,15 @@ namespace VansGraphics
         float m_LodDistanceRatio = 2.0f;
         float m_MorphStartRatio = 0.70f;
         uint32_t m_MaxPatchInstances = 20000;
+
+        // Tessellation config
+        bool  m_EnableTessellation = true;
+        float m_TessellationDistance = 300.0f;
+        float m_MaxTessellationLevel = 64.0f;
+        float m_TessellationPower = 2.0f;
+        float m_TessLodBias = 0.5f;
+        float m_TessDisplacementStrength = 0.05f;
+
         const int m_PatchGridSize = 16;   // 基础网格分辨率
     };
 }

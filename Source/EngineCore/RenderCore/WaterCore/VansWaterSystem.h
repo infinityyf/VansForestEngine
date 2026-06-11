@@ -131,6 +131,8 @@ namespace VansGraphics
         void RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateData& globalState);
 
         // ── Pre-Water Compute（Pass 8）───────────────────────────
+        void DispatchWaterThicknessCS(VansVKCommandBuffer& cmd);   // W-16: 阶段1 厚度图
+        void DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd);  // W-16: 阶段2 SSS 散射
         void DispatchWaterSSR(VansVKCommandBuffer& cmd);
         void DispatchRefractionCS(VansVKCommandBuffer& cmd);
         void DispatchCausticsCS(VansVKCommandBuffer& cmd);
@@ -163,6 +165,7 @@ namespace VansGraphics
         VansVKImage& GetCausticsImage()          { return m_WaterCausticsImage; }
         VansVKImage& GetThicknessImage()         { return m_WaterThicknessImage; }
         VansVKImage& GetDetailNormalImage()      { return m_DetailNormalImage; }
+        VansVKImage& GetSSSScatterImage()         { return m_WaterSSSScatterImage; }  // W-16
 
     private:
         // ── 原始 Vulkan 缓冲分配 ────────────────────────────────
@@ -195,6 +198,8 @@ namespace VansGraphics
         VansComputeShader*  m_WaterRefractionShader = nullptr;  // water_refraction.comp
         VansComputeShader*  m_WaterCausticsShader   = nullptr;  // water_caustics.comp (W-14)
         VansComputeShader*  m_DetailNormalShader    = nullptr;  // water_detail_normal.comp (N-01)
+        VansComputeShader*  m_WaterThicknessShader  = nullptr;  // water_thickness.comp (W-16)
+        VansComputeShader*  m_WaterSSSScatterShader = nullptr;  // water_sss_scatter.comp (W-16)
 
         // ── Descriptor Sets：Water GBuffer Pass（Set 1）──────────
         VkDescriptorSetLayout m_GBufPassLayout = VK_NULL_HANDLE;
@@ -219,6 +224,14 @@ namespace VansGraphics
         VkDescriptorSetLayout m_CausticsLayout = VK_NULL_HANDLE;
         VkDescriptorSet       m_CausticsSet    = VK_NULL_HANDLE;
 
+        // ── W-16: Thickness Compute ───────────────────────────────
+        VkDescriptorSetLayout m_ThicknessLayout = VK_NULL_HANDLE;
+        VkDescriptorSet       m_ThicknessSet    = VK_NULL_HANDLE;
+
+        // ── W-16: SSS Scatter Compute ──────────────────────────────
+        VkDescriptorSetLayout m_SSSScatterLayout = VK_NULL_HANDLE;
+        VkDescriptorSet       m_SSSScatterSet    = VK_NULL_HANDLE;
+
         // ── N-01: Detail Normal compute ───────────────────────────
         VkDescriptorSetLayout m_DetailNormalLayout = VK_NULL_HANDLE;
         VkDescriptorSet       m_DetailNormalSet    = VK_NULL_HANDLE;
@@ -236,6 +249,10 @@ namespace VansGraphics
         VkDeviceMemory m_SSRParamsMemory  = VK_NULL_HANDLE;
         VkBuffer       m_CausticsParamsBuffer = VK_NULL_HANDLE;
         VkDeviceMemory m_CausticsParamsMemory = VK_NULL_HANDLE;
+        VkBuffer       m_ThicknessParamsBuffer = VK_NULL_HANDLE;   // W-16: 厚度图参数 UBO
+        VkDeviceMemory m_ThicknessParamsMemory = VK_NULL_HANDLE;
+        VkBuffer       m_SSSParamsBuffer = VK_NULL_HANDLE;         // W-16: SSS 散射参数 UBO
+        VkDeviceMemory m_SSSParamsMemory = VK_NULL_HANDLE;
 
         // ── 波形贴图：Compute 写入，WaterGBuffer 顶点采样 ─────────
         // W-01: 改为 Texture2DArray（256² × MAX_LOD_COUNT RGBA16F）
@@ -247,6 +264,7 @@ namespace VansGraphics
         VansVKImage m_WaterRefractionImage;
         VansVKImage m_WaterCausticsImage;
         VansVKImage m_WaterThicknessImage;    // W-16: SSS 厚度图
+        VansVKImage m_WaterSSSScatterImage;   // W-16: SSS 散射输出
         bool        m_WaterEffectsReady = false;
 
         // ── N-01: Detail Normal ──────────────────────────────────

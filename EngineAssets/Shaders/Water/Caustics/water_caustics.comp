@@ -51,11 +51,12 @@ float ComputeCurvature(vec2 uv, vec2 texelSize)
     vec3 nU = normalize(texture(waterGBufNormal, uv - vec2(0.0, texelSize.y)).rgb);
     vec3 nD = normalize(texture(waterGBufNormal, uv + vec2(0.0, texelSize.y)).rgb);
 
-    // 散度: ∇·N ≈ ∂Nx/∂x + ∂Nz/∂z
+    // 散度: ∇·N ≈ ∂Nx/∂x + ∂Nz/∂z = -∇²h
+    // 散度 > 0（波峰）→ 光线发散 → 暗
+    // 散度 < 0（波谷）→ 光线汇聚 → 亮，只保留汇聚信号
     float divergence = (nR.x - nL.x + nD.z - nU.z) * 0.5;
-    return abs(divergence);
+    return max(-divergence, 0.0);
 }
-
 // ============================================================
 void main()
 {
@@ -105,7 +106,7 @@ void main()
     // 入射点法线与当前像素法线的差异 → 附加纹理图案
     vec3 N_entry = normalize(texture(waterGBufNormal, entryUV).rgb);
     float normalDiff = length(N_entry.xz - N.xz);
-    float causticPattern = curvature * 3.0 + normalDiff * 5.0;
+    float causticPattern = curvature * 3.0;
 
     // ── 8. 太阳高度角调制 ────────────────────────────────
     float sunElevation = clamp(sunDir.y, 0.05, 1.0);

@@ -189,6 +189,16 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     m_DetailNormalShader->InitShader(logicDev,
         (projectRoot + "EngineAssets/Shaders/Water/WaterDetailNormal").c_str());
 
+    // W-16: Water Thickness compute shader
+    m_WaterThicknessShader = new VansComputeShader();
+    m_WaterThicknessShader->InitShader(logicDev,
+        (projectRoot + "EngineAssets/Shaders/Water/SSS").c_str());
+
+    // W-16 Phase 2: Water SSS Scatter compute shader
+    m_WaterSSSScatterShader = new VansComputeShader();
+    m_WaterSSSScatterShader->InitShader(logicDev,
+        (projectRoot + "EngineAssets/Shaders/Water/SSSScatter").c_str());
+
     m_WaterCompositeShader = new VansGraphicsShader();
     m_WaterCompositeShader->InitShader(logicDev,
         (projectRoot + "EngineAssets/Shaders/Water/WaterComposite").c_str());
@@ -265,6 +275,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     createEffectImage(m_WaterRefractionImage);
     createEffectImage(m_WaterCausticsImage);
     createEffectImage(m_WaterThicknessImage);  // W-16: CLAMP_TO_EDGE 同上
+    createEffectImage(m_WaterSSSScatterImage); // W-16 Phase 2: SSS 散射输出
 
     // ── 6. 创建 WaterCompositeParams UBO ──────────────────────
     AllocateBuffer(sizeof(WaterCompositeParamsGPU),
@@ -306,6 +317,38 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
         m_CausticsParamsBuffer, m_CausticsParamsMemory);
+
+    // ── W-16: Thickness Params UBO ────────────────────────────
+    {
+        struct ThicknessParams { float maxThickness; float deepFallback; float pad0; float pad1; };
+        AllocateBuffer(sizeof(ThicknessParams),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            m_ThicknessParamsBuffer, m_ThicknessParamsMemory);
+        ThicknessParams tp = { 15.0f, 0.8f, 0.0f, 0.0f };
+        void* data = nullptr;
+        vkMapMemory(logicDev, m_ThicknessParamsMemory, 0, sizeof(ThicknessParams), 0, &data);
+        std::memcpy(data, &tp, sizeof(ThicknessParams));
+        vkUnmapMemory(logicDev, m_ThicknessParamsMemory);
+    }
+
+    // ── W-16 Phase 2: SSS Params UBO ──────────────────────────
+    {
+        struct SSSParams { glm::vec4 absorptionCoeff; glm::vec4 scatteringCoeff; float maxThickness; float anisotropy; float pad0; float pad1; };
+        AllocateBuffer(sizeof(SSSParams),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            m_SSSParamsBuffer, m_SSSParamsMemory);
+        SSSParams sp = {
+            glm::vec4(0.25f, 0.08f, 0.02f, 1.0f),
+            glm::vec4(0.02f, 0.04f, 0.06f, 1.0f),
+            15.0f, 0.85f, 0.0f, 0.0f
+        };
+        void* data = nullptr;
+        vkMapMemory(logicDev, m_SSSParamsMemory, 0, sizeof(SSSParams), 0, &data);
+        std::memcpy(data, &sp, sizeof(SSSParams));
+        vkUnmapMemory(logicDev, m_SSSParamsMemory);
+    }
 
     // ── 7. 创建 Gerstner 波 SSBO（W-04）────────────────────────
     {
@@ -499,6 +542,12 @@ void VansWaterSystem::SetupDescriptors(
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterThicknessImage.GetSampler(), m_WaterThicknessImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
         });
+        // W-16 Phase 2: SSS 散射输出
+        descMgr->m_ImageDescInfos.push_back({
+            m_CompPassSet, WATER_COMP_BINDING_SSS_SCATTER, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { m_WaterSSSScatterImage.GetSampler(), m_WaterSSSScatterImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
+        });
         descMgr->UpdateDescriptorSets();
     }
 
@@ -632,6 +681,94 @@ void VansWaterSystem::SetupDescriptors(
         descMgr->UpdateDescriptorSets();
     }
 
+    // ── W-16: Water Thickness Compute descriptor set ───────────
+    {
+        std::vector<VkDescriptorSet> sets;
+        VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterThicknessCompute(
+            m_ThicknessLayout, sets, 1);
+        m_ThicknessSet = sets[0];
+
+        descMgr->m_ImageDescInfos.push_back({
+            m_ThicknessSet, WATER_THICKNESS_BINDING_GBUF_DEPTH, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(),
+                renderPassManager->GetWaterGBufLinearDepth().GetImageView(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
+        });
+        descMgr->m_ImageDescInfos.push_back({
+            m_ThicknessSet, WATER_THICKNESS_BINDING_SCENE_GBUF2, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { renderPassManager->GetGbuffer2().GetSampler(),
+                renderPassManager->GetGbuffer2().GetImageView(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
+        });
+        descMgr->m_BufferDescInfos.push_back({
+            m_ThicknessSet, WATER_THICKNESS_BINDING_PARAMS, 0,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            { { m_ThicknessParamsBuffer, 0, sizeof(float) * 4 } }
+        });
+        descMgr->m_ImageDescInfos.push_back({
+            m_ThicknessSet, WATER_THICKNESS_BINDING_THICKNESS_OUT, 0,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            { { m_WaterThicknessImage.GetSampler(),
+                m_WaterThicknessImage.GetImageView(),
+                VK_IMAGE_LAYOUT_GENERAL } }
+        });
+
+        descMgr->UpdateDescriptorSets();
+    }
+
+    // ── W-16 Phase 2: Water SSS Scatter Compute descriptor set ──
+    {
+        std::vector<VkDescriptorSet> sets;
+        VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterSSSScatterCompute(
+            m_SSSScatterLayout, sets, 1);
+        m_SSSScatterSet = sets[0];
+
+        descMgr->m_ImageDescInfos.push_back({
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_GBUF_NORMAL, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { renderPassManager->GetWaterGBufNormal().GetSampler(),
+                renderPassManager->GetWaterGBufNormal().GetImageView(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
+        });
+        descMgr->m_ImageDescInfos.push_back({
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_GBUF_DEPTH, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(),
+                renderPassManager->GetWaterGBufLinearDepth().GetImageView(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
+        });
+        descMgr->m_ImageDescInfos.push_back({
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_THICKNESS_MAP, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { m_WaterThicknessImage.GetSampler(),
+                m_WaterThicknessImage.GetImageView(),
+                VK_IMAGE_LAYOUT_GENERAL } }
+        });
+        descMgr->m_ImageDescInfos.push_back({
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_SCENE_GBUF2, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { renderPassManager->GetGbuffer2().GetSampler(),
+                renderPassManager->GetGbuffer2().GetImageView(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
+        });
+        descMgr->m_BufferDescInfos.push_back({
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_PARAMS, 0,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            { { m_SSSParamsBuffer, 0, sizeof(float) * 16 } }
+        });
+        descMgr->m_ImageDescInfos.push_back({
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_SCATTER_OUT, 0,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            { { m_WaterSSSScatterImage.GetSampler(),
+                m_WaterSSSScatterImage.GetImageView(),
+                VK_IMAGE_LAYOUT_GENERAL } }
+        });
+
+        descMgr->UpdateDescriptorSets();
+    }
+
     // ── N-01: Detail Normal Compute descriptor set ──────────────
     {
         std::vector<VkDescriptorSet> sets;
@@ -685,6 +822,8 @@ void VansWaterSystem::Shutdown()
     if (m_EffectsLayout != VK_NULL_HANDLE)    { descMgr->DestroyDescriptorSetLayout(m_EffectsLayout);  m_EffectsLayout  = VK_NULL_HANDLE; }
     if (m_SSRLayout != VK_NULL_HANDLE)        { descMgr->DestroyDescriptorSetLayout(m_SSRLayout);      m_SSRLayout      = VK_NULL_HANDLE; }
     if (m_RefractionLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_RefractionLayout); m_RefractionLayout = VK_NULL_HANDLE; }
+    if (m_ThicknessLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_ThicknessLayout); m_ThicknessLayout = VK_NULL_HANDLE; }
+    if (m_SSSScatterLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_SSSScatterLayout); m_SSSScatterLayout = VK_NULL_HANDLE; }
     if (m_CausticsLayout != VK_NULL_HANDLE)  { descMgr->DestroyDescriptorSetLayout(m_CausticsLayout);  m_CausticsLayout  = VK_NULL_HANDLE; }
     if (m_DetailNormalLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_DetailNormalLayout); m_DetailNormalLayout = VK_NULL_HANDLE; }
 
@@ -697,6 +836,8 @@ void VansWaterSystem::Shutdown()
     destroyBuf(m_CompParamsBuffer, m_CompParamsMemory);
     destroyBuf(m_SSRParamsBuffer,  m_SSRParamsMemory);
     destroyBuf(m_CausticsParamsBuffer, m_CausticsParamsMemory);
+    destroyBuf(m_ThicknessParamsBuffer, m_ThicknessParamsMemory);
+    destroyBuf(m_SSSParamsBuffer, m_SSSParamsMemory);
     destroyBuf(m_WaveSSBO,         m_WaveSSBOMemory);
 
     m_WaveDisplacementImage.DestroyVulkanImage(dev);
@@ -705,6 +846,7 @@ void VansWaterSystem::Shutdown()
     m_WaterRefractionImage.DestroyVulkanImage(dev);
     m_WaterCausticsImage.DestroyVulkanImage(dev);
     m_WaterThicknessImage.DestroyVulkanImage(dev);
+    m_WaterSSSScatterImage.DestroyVulkanImage(dev);
     m_DetailNormalImage.DestroyVulkanImage(dev);
     m_DetailNormalReady = false;
     m_WaterEffectsReady = false;
@@ -717,6 +859,8 @@ void VansWaterSystem::Shutdown()
     delete m_WaterRefractionShader; m_WaterRefractionShader = nullptr;
     delete m_WaterCausticsShader;   m_WaterCausticsShader   = nullptr;
     delete m_DetailNormalShader;    m_DetailNormalShader    = nullptr;
+    delete m_WaterThicknessShader;  m_WaterThicknessShader  = nullptr;
+    delete m_WaterSSSScatterShader; m_WaterSSSScatterShader = nullptr;
     delete m_WaveSystem;    m_WaveSystem    = nullptr;
 
     m_Initialized      = false;
@@ -934,6 +1078,46 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         vkMapMemory(m_Device->GetLogicDevice(), m_CausticsParamsMemory, 0, sizeof(WaterCausticsParamsGPU), 0, &data);
         std::memcpy(data, &causticParams, sizeof(WaterCausticsParamsGPU));
         vkUnmapMemory(m_Device->GetLogicDevice(), m_CausticsParamsMemory);
+    }
+
+    // ── W-16: 更新 Thickness Params UBO ───────────────────────
+    if (m_Device != nullptr && m_ThicknessParamsMemory != VK_NULL_HANDLE)
+    {
+        struct ThicknessParams { float maxThickness; float deepFallback; float pad0; float pad1; };
+        ThicknessParams tp;
+        tp.maxThickness = 15.0f;
+        tp.deepFallback = 0.8f;
+        if (m_WaterMaterial)
+        {
+            tp.maxThickness = m_WaterMaterial->m_MaxThicknessDistance;
+            tp.deepFallback = m_WaterMaterial->m_DeepWaterThicknessFallback;
+        }
+        void* data = nullptr;
+        vkMapMemory(m_Device->GetLogicDevice(), m_ThicknessParamsMemory, 0, sizeof(ThicknessParams), 0, &data);
+        std::memcpy(data, &tp, sizeof(ThicknessParams));
+        vkUnmapMemory(m_Device->GetLogicDevice(), m_ThicknessParamsMemory);
+    }
+
+    // ── W-16 Phase 2: 更新 SSS Params UBO ─────────────────────
+    if (m_Device != nullptr && m_SSSParamsMemory != VK_NULL_HANDLE)
+    {
+        struct SSSParams { glm::vec4 absorptionCoeff; glm::vec4 scatteringCoeff; float maxThickness; float anisotropy; float pad0; float pad1; };
+        SSSParams sp;
+        sp.absorptionCoeff = glm::vec4(0.25f, 0.08f, 0.02f, 1.0f);
+        sp.scatteringCoeff = glm::vec4(0.02f, 0.04f, 0.06f, 1.0f);
+        sp.maxThickness = 15.0f;
+        sp.anisotropy = 0.85f;
+        if (m_WaterMaterial)
+        {
+            sp.absorptionCoeff = glm::vec4(m_WaterMaterial->m_AbsorptionCoeffs, 1.0f);
+            sp.scatteringCoeff = glm::vec4(m_WaterMaterial->m_ScatteringCoeffs, 1.0f);
+            sp.maxThickness    = m_WaterMaterial->m_MaxThicknessDistance;
+            sp.anisotropy      = m_WaterMaterial->m_Anisotropy;
+        }
+        void* data = nullptr;
+        vkMapMemory(m_Device->GetLogicDevice(), m_SSSParamsMemory, 0, sizeof(SSSParams), 0, &data);
+        std::memcpy(data, &sp, sizeof(SSSParams));
+        vkUnmapMemory(m_Device->GetLogicDevice(), m_SSSParamsMemory);
     }
 }
 
@@ -1336,6 +1520,124 @@ void VansWaterSystem::DispatchCausticsCS(VansVKCommandBuffer& cmd)
         barrier.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
         barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
         barrier.image               = m_WaterCausticsImage.GetImage();
+        barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        cmd.PipelineBarrier(
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            {}, {}, { barrier });
+    }
+}
+
+// ============================================================
+// DispatchWaterThicknessCS — W-16 阶段1: 厚度图（设计文档 §3.2）
+// ============================================================
+void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
+{
+    if (!m_Initialized || !m_DescriptorsReady)
+        return;
+
+    // Inspector optimization: SSS enable guard
+    if (m_WaterMaterial && !m_WaterMaterial->m_SSSEnabled)
+        return;
+
+    if (m_WaterThicknessShader == nullptr || m_ThicknessSet == VK_NULL_HANDLE)
+        return;
+
+    // Barrier: thickness image → compute write
+    {
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask       = m_WaterEffectsReady ? VK_ACCESS_SHADER_READ_BIT : 0;
+        barrier.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.oldLayout           = m_WaterEffectsReady ? VK_IMAGE_LAYOUT_GENERAL : m_WaterThicknessImage.GetImageLayout();
+        barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image               = m_WaterThicknessImage.GetImage();
+        barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        m_WaterThicknessImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+        cmd.PipelineBarrier(
+            m_WaterEffectsReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            {}, {}, { barrier });
+    }
+
+    cmd.EnsureComputeShader(*m_WaterThicknessShader, { m_ThicknessLayout });
+    cmd.DispatchCompute(*m_WaterThicknessShader,
+        (m_RenderWidth  + 7u) / 8u,
+        (m_RenderHeight + 7u) / 8u,
+        1, { m_ThicknessSet });
+
+    // Barrier: thickness image → fragment/compute read (for SSS scatter + composite)
+    {
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        barrier.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image               = m_WaterThicknessImage.GetImage();
+        barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        cmd.PipelineBarrier(
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            {}, {}, { barrier });
+    }
+}
+
+// ============================================================
+// DispatchWaterSSSScatterCS — W-16 阶段2: SSS 单次散射（设计文档 §3.3）
+// ============================================================
+void VansWaterSystem::DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd)
+{
+    if (!m_Initialized || !m_DescriptorsReady)
+        return;
+
+    // Inspector optimization: SSS enable guard
+    if (m_WaterMaterial && !m_WaterMaterial->m_SSSEnabled)
+        return;
+
+    if (m_WaterSSSScatterShader == nullptr || m_SSSScatterSet == VK_NULL_HANDLE)
+        return;
+
+    // Barrier: SSS scatter image → compute write
+    {
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask       = m_WaterEffectsReady ? VK_ACCESS_SHADER_READ_BIT : 0;
+        barrier.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.oldLayout           = m_WaterEffectsReady ? VK_IMAGE_LAYOUT_GENERAL : m_WaterSSSScatterImage.GetImageLayout();
+        barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image               = m_WaterSSSScatterImage.GetImage();
+        barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        m_WaterSSSScatterImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+        cmd.PipelineBarrier(
+            m_WaterEffectsReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            {}, {}, { barrier });
+    }
+
+    cmd.EnsureComputeShader(*m_WaterSSSScatterShader, { m_SSSScatterLayout });
+    cmd.DispatchCompute(*m_WaterSSSScatterShader,
+        (m_RenderWidth  + 7u) / 8u,
+        (m_RenderHeight + 7u) / 8u,
+        1, { m_SSSScatterSet });
+
+    // Barrier: SSS scatter image → fragment read (for composite pass)
+    {
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        barrier.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image               = m_WaterSSSScatterImage.GetImage();
         barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         cmd.PipelineBarrier(
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,

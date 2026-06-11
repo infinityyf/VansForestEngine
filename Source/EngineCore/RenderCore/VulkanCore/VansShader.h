@@ -150,6 +150,10 @@ namespace VansGraphics
 		// 贴花专用：MRT 3 附件 Alpha Blend，GBuffer1 colorMask 仅 R+G
 		void SetEnableDecalBlend(VkBool32 enable) { m_DrawStateData.enableDecalBlend = enable; }
 
+		// Tessellation support: set primitive topology and patch control points
+		void SetPrimitiveTopology(VkPrimitiveTopology topology) { m_DrawStateData.primitiveTopology = topology; TriggerReCreateGraphicsPipeline(); }
+		void SetPatchControlPoints(uint32_t points) { m_DrawStateData.patchControlPoints = points; TriggerReCreateGraphicsPipeline(); }
+
 		// 显式指定颜色附件数量（用于非主 GBuffer 的 MRT pass，如水面 GBuffer 的 2 个附件）。
 		// count > 0 时生成 count 个不混合、写入 RGBA 的 blend state，覆盖自动推断。
 		void SetColorAttachmentCount(int count) { m_ColorAttachmentCount = count; }

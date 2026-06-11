@@ -51,6 +51,11 @@ namespace VansGraphics
 		// ── 法线贴图平铺 ───────────────────────────────────────
 		glm::vec2 m_NormalMapTiling = {0.1f, 0.03f};
 
+		// ── SSS 次表面散射 ─────────────────────────────────────
+		bool  m_SSSEnabled                = true;
+		float m_MaxThicknessDistance      = 15.0f;    // 最大厚度 (m)，超过此值 clamp
+		float m_DeepWaterThicknessFallback = 0.8f;     // 深水 fallback 归一化厚度 [0,1]
+
 		// ── 焦散 ───────────────────────────────────────────────
 		bool  m_EnableCaustics   = true;
 		float m_CausticsIntensity = 1.0f;

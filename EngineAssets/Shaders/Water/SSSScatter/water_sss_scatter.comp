@@ -1,0 +1,103 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// ============================================================
+// water_sss_scatter.comp — 水面 SSS 单次散射（W-16 Phase 2）
+//
+// 设计文档：水面 SSS 次表面散射方案 §3.3
+//
+// 基于参与介质单次散射近似：
+//   L_sss = L_sun · (N·L) · albedo · SchlickPhase(V·L, g) · (1 - T)
+//
+// 物理参考：
+//   [1] Frostbite 2 SSS (GDC 2011 / GPU Pro 2)
+//   [2] Schlick Phase Function (Blasi et al. 1993)
+// ============================================================
+
+#include "../water_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// ── 输入 ────────────────────────────────────────────────────
+layout(set = 0, binding = 0) uniform sampler2D waterGBufNormal;
+layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;   // RGBA16F: RGB=worldPos, A=linearDepth
+layout(set = 0, binding = 2) uniform sampler2D waterThicknessMap;   // 阶段1 厚度图 (R16F)
+layout(set = 0, binding = 3) uniform sampler2D sceneGBuf2;          // 场景深度 (.w)
+
+layout(set = 0, binding = 4) uniform WaterSSSParams
+{
+    vec4  absorptionCoeff;     // σ_a (RGB, m⁻¹), w=unused
+    vec4  scatteringCoeff;     // σ_s (RGB, m⁻¹), w=unused
+    float maxThickness;         // 最大厚度 (m)，用于还原厚度
+    float anisotropy;           // Schlick g ∈ (-1, 1)
+    float pad0;
+    float pad1;
+} params;
+
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D sssScatterOut;
+
+// ============================================================
+// Schlick Phase Function
+//
+// 参考: Blasi, Le Saëc, Schlick (1993)
+//   "An Efficient Multidimensional Phase Function"
+//
+// p(cosθ, g) = (1-g²) / [4π · (1+g²-2g·cosθ)^1.5]
+//
+// 比 Henyey-Greenstein 更高效：
+//   - 无 acos 或 sqrt
+//   - 仅 1 次 pow(x, 1.5) 或等效 sqrt/cube
+//   - g² 预计算
+// ============================================================
+float SchlickPhase(float cosTheta, float g)
+{
+    float g2 = g * g;
+    float denom = 1.0 + g2 - 2.0 * g * cosTheta;
+    // pow(denom, 1.5) = denom * sqrt(denom)
+    return (1.0 - g2) / (4.0 * PI * denom * sqrt(denom));
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(sssScatterOut);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+
+    // ── 水面存在性检查 ──────────────────────────────────────
+    vec4 posDepth    = texture(waterGBufPosDepth, uv);
+    float waterDepth = posDepth.a;
+    if (waterDepth >= 9999.0)
+    {
+        imageStore(sssScatterOut, pixel, vec4(0.0));
+        return;
+    }
+
+    // 场景遮挡：物体在水面之前 → 无水面可见
+    float sceneDepth = texture(sceneGBuf2, uv).w;
+    if (sceneDepth > 0.1 && sceneDepth < waterDepth + 0.05)
+    {
+        imageStore(sssScatterOut, pixel, vec4(0.0));
+        return;
+    }
+
+    // ── 读取厚度图 ─────────────────────────────────────────
+    float thicknessNorm = texture(waterThicknessMap, uv).r;
+    float thicknessM = thicknessNorm * params.maxThickness;
+
+    // ── 参与介质参数 ───────────────────────────────────────
+    vec3 sigma_a = params.absorptionCoeff.rgb;
+    vec3 sigma_s = params.scatteringCoeff.rgb;
+    vec3 sigma_t = sigma_a + sigma_s;
+    vec3 albedo  = sigma_s / max(sigma_t, vec3(1e-6));
+
+    // ── 单次散射累积量 ─────────────────────────────────────
+    // 输出: albedo * (1 - transmittance) = albedo * scatterAmount
+    // 相位函数和光源在 composite 中处理，保持灵活性
+    vec3 extinction = exp(-sigma_t * thicknessM);
+    vec3 scatterAmount = vec3(1.0) - extinction;
+
+    imageStore(sssScatterOut, pixel, vec4(albedo * scatterAmount, 1.0));
+}

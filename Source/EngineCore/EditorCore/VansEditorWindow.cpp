@@ -20,6 +20,7 @@
 #include "Windows/VansAnimGraphEditorWindow.h"
 #include "Windows/VansClothProfileEditorWindow.h"
 #include "Windows/VansWaterWindow.h"
+#include "Windows/VansTerrainWindow.h"
 #include "Windows/VansUIEditorWindow.h"
 
 #include "../Util/VansProfiler.h"
@@ -124,6 +125,8 @@ VansGraphics::VansUIEditorWindow* VansGraphics::VansEditorWindow::m_UIEditorWind
 
 VansGraphics::VansClothProfileEditorWindow* VansGraphics::VansEditorWindow::m_ClothProfileEditorWindow;
 VansGraphics::VansWaterWindow* VansGraphics::VansEditorWindow::m_WaterWindow;
+
+VansGraphics::VansTerrainWindow* VansGraphics::VansEditorWindow::m_TerrainWindow;
 
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
@@ -379,6 +382,9 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_WaterWindow = new VansWaterWindow();
     m_Windows.push_back(m_WaterWindow);
+
+    m_TerrainWindow = new VansTerrainWindow();
+    m_Windows.push_back(m_TerrainWindow);
 
     // 将 AnimGraphEditor 引用传给 HierachyWindow
     m_HierachyWindow->m_AnimGraphEditorRef = m_AnimGraphEditorWindow;

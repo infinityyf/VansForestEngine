@@ -269,13 +269,14 @@ namespace VansGraphics
 	// --- Terrain Pass ---
 	enum TerrainPassBinding : uint32_t
 	{
-		TERRAIN_BINDING_HEIGHT_MAP       = 0,
-		TERRAIN_BINDING_SPLATMAP_0       = 1,
-		TERRAIN_BINDING_SPLATMAP_1       = 2,
-		TERRAIN_BINDING_ALBEDO_ARRAY     = 3,  // descriptorCount = 8
-		TERRAIN_BINDING_NORMAL_ARRAY     = 4,  // descriptorCount = 8
-		TERRAIN_BINDING_ROUGHNESS_ARRAY  = 5,  // descriptorCount = 8
-		TERRAIN_BINDING_PARAMS_UBO       = 6,
+		TERRAIN_BINDING_HEIGHT_MAP          = 0,
+		TERRAIN_BINDING_SPLATMAP_0          = 1,
+		TERRAIN_BINDING_SPLATMAP_1          = 2,
+		TERRAIN_BINDING_ALBEDO_ARRAY        = 3,  // descriptorCount = 8
+		TERRAIN_BINDING_NORMAL_ARRAY        = 4,  // descriptorCount = 8
+		TERRAIN_BINDING_ROUGHNESS_ARRAY     = 5,  // descriptorCount = 8
+		TERRAIN_BINDING_PARAMS_UBO          = 6,
+		TERRAIN_BINDING_TESSELLATION_PARAMS = 7,  // TessellationParams UBO (read by TCS)
 	};
 
 	static constexpr uint32_t TERRAIN_MAX_LAYERS = 8;
@@ -471,6 +472,7 @@ namespace VansGraphics
 		WATER_COMP_BINDING_CAUSTICS      = 6,   // 焦散结果
 		WATER_COMP_BINDING_FOAM_TEXTURE  = 7,   // W-15: 泡沫纹理
 		WATER_COMP_BINDING_THICKNESS     = 8,   // W-16: 厚度图
+		WATER_COMP_BINDING_SSS_SCATTER  = 9,   // W-16: SSS 散射输出
 	};
 
 	// --- Water Effects Compute Pass（Set 0）---
@@ -527,6 +529,17 @@ namespace VansGraphics
 		WATER_THICKNESS_BINDING_SCENE_GBUF2 = 1,
 		WATER_THICKNESS_BINDING_PARAMS      = 2,
 		WATER_THICKNESS_BINDING_THICKNESS_OUT = 3,
+	};
+
+	// --- Water SSS Scatter Compute（Set 0）- W-16 Phase 2 ---
+	enum WaterSSSScatterComputeBinding : uint32_t
+	{
+		WATER_SSS_SCATTER_BINDING_GBUF_NORMAL   = 0,
+		WATER_SSS_SCATTER_BINDING_GBUF_DEPTH    = 1,
+		WATER_SSS_SCATTER_BINDING_THICKNESS_MAP = 2,
+		WATER_SSS_SCATTER_BINDING_SCENE_GBUF2   = 3,
+		WATER_SSS_SCATTER_BINDING_PARAMS        = 4,
+		WATER_SSS_SCATTER_BINDING_SCATTER_OUT   = 5,
 	};
 
 	// --- Water Detail Normal Compute（Set 0）- N-01 ---
@@ -620,8 +633,10 @@ namespace VansGraphics
 	// issues when a new shader stage decides to access a global UBO/SSBO.
 	static constexpr VkShaderStageFlags GLOBAL_STAGES =
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
-		VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | 
-		VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+		VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+		VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+		VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+		VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
 	static constexpr VkShaderStageFlags CAMERA_STAGES = GLOBAL_STAGES;
 	static constexpr VkShaderStageFlags LIGHTS_STAGES = GLOBAL_STAGES;
@@ -730,6 +745,8 @@ namespace VansGraphics
 		static void CreateAndAllocate_WaterRefractionCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterCausticsCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterThicknessCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		// W-16 Phase 2: Water SSS Scatter Compute (water_sss_scatter.comp)
+		static void CreateAndAllocate_WaterSSSScatterCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// N-01: Water Detail Normal Compute (water_detail_normal.comp)
 		static void CreateAndAllocate_WaterDetailNormalCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 

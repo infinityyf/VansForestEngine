@@ -315,6 +315,8 @@ namespace VansGraphics
 				auto* hzbTex = matMgr ? matMgr->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT) : nullptr;
 				if (hzbTex)
 					waterSys->EnsureSSRDescriptorSet(&hzbTex->GetImage());
+				waterSys->DispatchWaterThicknessCS(m_VansVKCommandBuffer);
+				waterSys->DispatchWaterSSSScatterCS(m_VansVKCommandBuffer);
 				waterSys->DispatchWaterSSR(m_VansVKCommandBuffer);
 				waterSys->DispatchRefractionCS(m_VansVKCommandBuffer);
 				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
@@ -513,6 +515,8 @@ namespace VansGraphics
 			{
 				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
 				auto* waterSys = m_Scene->GetWaterSystem();
+				waterSys->DispatchWaterThicknessCS(m_VansVKCommandBuffer);
+				waterSys->DispatchWaterSSSScatterCS(m_VansVKCommandBuffer);
 				waterSys->DispatchWaterSSR(m_VansVKCommandBuffer);
 				waterSys->DispatchRefractionCS(m_VansVKCommandBuffer);
 				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
