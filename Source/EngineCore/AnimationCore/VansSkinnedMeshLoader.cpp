@@ -11,7 +11,9 @@
 #include <../../GLM/gtc/quaternion.hpp>
 #include <../../GLM/gtc/type_ptr.hpp>
 
+#include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <set>
 #include <unordered_set>
 
@@ -38,6 +40,7 @@ static glm::quat ConvertQuat(const aiQuaternion& q)
 {
 	return glm::quat(q.w, q.x, q.y, q.z);
 }
+
 
 // ════════════════════════════════════════════════════════════════
 //  ProcessAnimatedMesh — main entry point
@@ -294,6 +297,9 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 				info.offsetMatrix = glm::mat4(1.0f);
 		}
 
+		const aiNode* node = FindAiNodeByName(scene->mRootNode, name);
+		info.localTransform = node ? ConvertMat4(node->mTransformation) : glm::mat4(1.0f);
+
 		outSkeleton.bones.push_back(info);
 		outSkeleton.boneNameToIndex[name] = boneIndex;
 		boneIndex++;
@@ -334,25 +340,61 @@ void VansGraphics::VansSkinnedMeshLoader::BuildHierarchyFromNodeTree(
 {
 	if (!node) return;
 
-	std::string nodeName = node->mName.C_Str();
-	int currentIndex = -1;
+	std::vector<bool> resolved(skeleton.bones.size(), false);
 
-	auto it = skeleton.boneNameToIndex.find(nodeName);
-	if (it != skeleton.boneNameToIndex.end())
+	for (auto& bone : skeleton.bones)
 	{
-		currentIndex = it->second;
-		skeleton.bones[currentIndex].parentIndex = parentIndex;
-
-		// Add as child of parent
-		if (parentIndex >= 0)
-			skeleton.bones[parentIndex].children.push_back(currentIndex);
+		bone.parentIndex = -1;
+		bone.children.clear();
 	}
 
-	// If this node is not a bone but has bone children, pass parentIndex through
-	int nextParent = (currentIndex >= 0) ? currentIndex : parentIndex;
+	std::function<void(const aiNode*, int)> visit = [&](const aiNode* currentNode, int currentParentIndex)
+	{
+		if (!currentNode) return;
 
-	for (uint32_t i = 0; i < node->mNumChildren; i++)
-		BuildHierarchyFromNodeTree(node->mChildren[i], skeleton, nextParent);
+		std::string nodeName = currentNode->mName.C_Str();
+		int currentIndex = -1;
+
+		auto it = skeleton.boneNameToIndex.find(nodeName);
+		if (it != skeleton.boneNameToIndex.end())
+		{
+			currentIndex = it->second;
+
+			if (!resolved[currentIndex])
+			{
+				if (currentParentIndex == currentIndex)
+				{
+					VANS_LOG_WARN("[VansSkinnedMeshLoader] Ignoring self-parent bone link: \""
+					              << nodeName << "\" (id=" << currentIndex << ")");
+					currentParentIndex = -1;
+				}
+
+				skeleton.bones[currentIndex].parentIndex = currentParentIndex;
+				resolved[currentIndex] = true;
+
+				if (currentParentIndex >= 0 &&
+				    currentParentIndex < static_cast<int>(skeleton.bones.size()))
+				{
+					auto& children = skeleton.bones[currentParentIndex].children;
+					if (std::find(children.begin(), children.end(), currentIndex) == children.end())
+						children.push_back(currentIndex);
+				}
+			}
+			else
+			{
+				// Some FBX files contain nested nodes with the same name as the mesh/root.
+				// Keep the first hierarchy match so a duplicate cannot overwrite a valid root
+				// into a self-parent cycle.
+				currentIndex = -1;
+			}
+		}
+
+		int nextParent = (currentIndex >= 0) ? currentIndex : currentParentIndex;
+		for (uint32_t i = 0; i < currentNode->mNumChildren; i++)
+			visit(currentNode->mChildren[i], nextParent);
+	};
+
+	visit(node, parentIndex);
 }
 
 // ════════════════════════════════════════════════════════════════

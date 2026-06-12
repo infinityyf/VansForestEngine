@@ -76,29 +76,43 @@ namespace VansGraphics
 			std::queue<int> q;
 			for (size_t i = 0; i < N; i++)
 			{
+				if (bones[i].parentIndex == static_cast<int>(i) ||
+				    bones[i].parentIndex >= static_cast<int>(N))
+				{
+					bones[i].parentIndex = -1;
+				}
+
 				if (bones[i].parentIndex < 0)
 					q.push(static_cast<int>(i));
 			}
 
+			std::vector<bool> visited(N, false);
 			while (!q.empty())
 			{
 				int idx = q.front();
 				q.pop();
+				if (idx < 0 || idx >= static_cast<int>(N) || visited[idx])
+					continue;
+
+				visited[idx] = true;
 				topologicalOrder.push_back(idx);
 				for (int child : bones[idx].children)
-					q.push(child);
+				{
+					if (child >= 0 && child < static_cast<int>(N) && child != idx)
+						q.push(child);
+				}
 			}
 
 			// 安全检查：如果有骨骼未被遍历到（孤立骨骼），追加到末尾
 			if (topologicalOrder.size() < N)
 			{
-				std::vector<bool> visited(N, false);
-				for (int idx : topologicalOrder)
-					visited[idx] = true;
 				for (size_t i = 0; i < N; i++)
 				{
 					if (!visited[i])
+					{
+						bones[i].parentIndex = -1;
 						topologicalOrder.push_back(static_cast<int>(i));
+					}
 				}
 			}
 		}

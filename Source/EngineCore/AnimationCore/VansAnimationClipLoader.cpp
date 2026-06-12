@@ -10,8 +10,97 @@
 
 #include <filesystem>
 #include <algorithm>
+#include <cmath>
 
 using namespace VansGraphics;
+
+static bool IsSkeletonHierarchyValid(const Skeleton& skeleton, std::string* reason = nullptr)
+{
+	if (skeleton.bones.empty())
+	{
+		if (reason) *reason = "empty skeleton";
+		return false;
+	}
+
+	int rootCount = 0;
+	for (size_t i = 0; i < skeleton.bones.size(); ++i)
+	{
+		const BoneInfo& bone = skeleton.bones[i];
+		if (bone.parentIndex < 0)
+		{
+			rootCount++;
+		}
+		else if (bone.parentIndex == static_cast<int>(i))
+		{
+			if (reason) *reason = "self-parent bone: " + bone.name;
+			return false;
+		}
+		else if (bone.parentIndex >= static_cast<int>(skeleton.bones.size()))
+		{
+			if (reason) *reason = "out-of-range parent for bone: " + bone.name;
+			return false;
+		}
+
+		for (int child : bone.children)
+		{
+			if (child == static_cast<int>(i))
+			{
+				if (reason) *reason = "self-child bone: " + bone.name;
+				return false;
+			}
+			if (child < 0 || child >= static_cast<int>(skeleton.bones.size()))
+			{
+				if (reason) *reason = "out-of-range child for bone: " + bone.name;
+				return false;
+			}
+		}
+	}
+
+	if (rootCount == 0)
+	{
+		if (reason) *reason = "no root bone";
+		return false;
+	}
+
+	return true;
+}
+
+static bool MatchesOriginSkeleton(const Skeleton& cached, const Skeleton& origin, std::string* reason = nullptr)
+{
+	if (cached.bones.size() != origin.bones.size())
+	{
+		if (reason) *reason = "bone count mismatch";
+		return false;
+	}
+
+	for (size_t i = 0; i < origin.bones.size(); ++i)
+	{
+		if (cached.bones[i].name != origin.bones[i].name)
+		{
+			if (reason) *reason = "bone name mismatch at index " + std::to_string(i);
+			return false;
+		}
+
+		if (cached.bones[i].parentIndex != origin.bones[i].parentIndex)
+		{
+			if (reason) *reason = "parent mismatch for bone: " + origin.bones[i].name;
+			return false;
+		}
+
+		const float* cachedLocal = &cached.bones[i].localTransform[0][0];
+		const float* originLocal = &origin.bones[i].localTransform[0][0];
+		for (int e = 0; e < 16; ++e)
+		{
+			if (std::abs(cachedLocal[e] - originLocal[e]) > 0.0001f)
+			{
+				if (reason) *reason = "bind-pose local transform mismatch for bone: " + origin.bones[i].name;
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
 
 // ════════════════════════════════════════════════════════════════
 //  LoadClip (不含骨骼)
@@ -23,6 +112,22 @@ bool VansAnimationClipLoader::LoadClip(const std::string& filePath,
 {
 	Skeleton tempSkeleton;
 	bool ok = VansAnimationClipIO::Load(filePath, outClip, tempSkeleton);
+	if (ok)
+	{
+		std::string reason;
+		bool cacheValid = IsSkeletonHierarchyValid(tempSkeleton, &reason);
+		if (cacheValid && originSkeleton)
+			cacheValid = MatchesOriginSkeleton(tempSkeleton, *originSkeleton, &reason);
+
+		if (!cacheValid)
+		{
+			VANS_LOG_WARN("[ClipLoader] Cached .vclip skeleton is stale or invalid ("
+			              << reason << "), recreating from FBX: " << filePath);
+			ok = TryCreateFromFBX(filePath, outClip, originSkeleton);
+			if (!ok)
+				VANS_LOG_WARN("[ClipLoader] Failed to recreate invalid cached clip: " << filePath);
+		}
+	}
 	if (!ok)
 	{
 		// .vclip 文件不存在或损坏，尝试从 FBX 提取并创建
@@ -43,6 +148,18 @@ bool VansAnimationClipLoader::LoadClipWithSkeleton(const std::string& filePath,
                                                     Skeleton& outSkeleton)
 {
 	bool ok = VansAnimationClipIO::Load(filePath, outClip, outSkeleton);
+	if (ok)
+	{
+		std::string reason;
+		if (!IsSkeletonHierarchyValid(outSkeleton, &reason))
+		{
+			VANS_LOG_WARN("[ClipLoader] Cached .vclip skeleton is invalid ("
+			              << reason << "), recreating from FBX: " << filePath);
+			ok = TryCreateFromFBX(filePath, outClip);
+			if (ok)
+				ok = VansAnimationClipIO::Load(filePath, outClip, outSkeleton);
+		}
+	}
 	if (!ok)
 	{
 		// .vclip 文件不存在或损坏，尝试从 FBX 提取并创建

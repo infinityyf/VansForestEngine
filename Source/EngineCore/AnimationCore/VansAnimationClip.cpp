@@ -92,6 +92,7 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 		boneJson["id"]           = bone.id;
 		boneJson["parentIndex"]  = bone.parentIndex;
 		boneJson["offsetMatrix"] = Mat4ToJson(bone.offsetMatrix);
+		boneJson["localTransform"] = Mat4ToJson(bone.localTransform);
 		boneJson["children"]     = bone.children;
 
 		uint32_t kfCount = (b < clip.boneKeyframes.size()) ? (uint32_t)clip.boneKeyframes[b].size() : 0;
@@ -220,6 +221,7 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 		bone.id            = bj.value("id", (int)b);
 		bone.parentIndex   = bj.value("parentIndex", -1);
 		bone.offsetMatrix  = bj.contains("offsetMatrix") ? JsonToMat4(bj["offsetMatrix"]) : glm::mat4(1.0f);
+		bone.localTransform = bj.contains("localTransform") ? JsonToMat4(bj["localTransform"]) : glm::mat4(1.0f);
 
 		if (bj.contains("children"))
 		{

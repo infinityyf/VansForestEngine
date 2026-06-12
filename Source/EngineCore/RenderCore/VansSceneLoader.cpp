@@ -748,11 +748,23 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
     if (waterData.contains("lod") && waterData["lod"].is_object())
     {
         auto& l = waterData["lod"];
-        config.m_Waves.m_MaxLOD     = l.value("levels",          config.m_Waves.m_MaxLOD);
-        config.m_Waves.m_BaseScale  = l.value("minDistance",     config.m_Waves.m_BaseScale);
-        // meshDim 和 detailBalance 暂存于 baseScale 相关参数中（后续可扩展 VansWaterConfig）
-        VANS_LOG("[AddWaterNode] lod block: levels=" << config.m_Waves.m_MaxLOD
-            << " minDistance=" << config.m_Waves.m_BaseScale);
+        config.m_LOD.m_MaxLOD          = l.value("levels",          config.m_LOD.m_MaxLOD);
+        config.m_LOD.m_BasePatchSize   = l.value("basePatchSize",   config.m_LOD.m_BasePatchSize);
+        config.m_LOD.m_MeshDim         = l.value("meshDim",         config.m_LOD.m_MeshDim);
+        config.m_LOD.m_DetailBalance   = l.value("detailBalance",   config.m_LOD.m_DetailBalance);
+        config.m_LOD.m_MorphWidthRatio = l.value("morphWidthRatio", config.m_LOD.m_MorphWidthRatio);
+        if (!waterData.contains("waves") || !waterData["waves"].contains("baseScale"))
+            config.m_Waves.m_BaseScale = l.value("minDistance", config.m_Waves.m_BaseScale);
+
+        config.m_LOD.m_MaxLOD = glm::clamp(config.m_LOD.m_MaxLOD, 1, 10);
+        if (config.m_LOD.m_MeshDim < 3)
+            config.m_LOD.m_MeshDim = 65;
+        if (((config.m_LOD.m_MeshDim - 1) % 2) != 0)
+            ++config.m_LOD.m_MeshDim;
+
+        VANS_LOG("[AddWaterNode] lod block: levels=" << config.m_LOD.m_MaxLOD
+            << " basePatchSize=" << config.m_LOD.m_BasePatchSize
+            << " meshDim=" << config.m_LOD.m_MeshDim);
     }
 
     // ── debug 块（W-07）───────────────────────────────────────────────────
@@ -785,7 +797,11 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
 
     // 波形参数
     mat->m_OceanBaseScale      = config.m_Waves.m_BaseScale;
-    mat->m_MaxLODCount         = config.m_Waves.m_MaxLOD;
+    mat->m_MaxLODCount         = config.m_LOD.m_MaxLOD;
+    mat->m_LODBasePatchSize    = config.m_LOD.m_BasePatchSize;
+    mat->m_LODMeshDim          = config.m_LOD.m_MeshDim;
+    mat->m_LODDetailBalance    = config.m_LOD.m_DetailBalance;
+    mat->m_LODMorphWidthRatio  = config.m_LOD.m_MorphWidthRatio;
     mat->m_GerstnerWaveCount   = config.m_Waves.m_GerstnerWaveCount;
     mat->m_FftLODCount         = config.m_Waves.m_FftLODCount;
     mat->m_FftResolution       = config.m_Waves.m_FftResolution;
@@ -887,7 +903,8 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
 
     VANS_LOG("[AddWaterNode] 水面配置加载完成: type=" << typeStr
         << " level=" << config.m_WaterLevel
-        << " maxLOD=" << config.m_Waves.m_MaxLOD
+        << " lod=" << config.m_LOD.m_MaxLOD
+        << " waveLOD=" << config.m_Waves.m_MaxLOD
         << " foam=" << (config.m_Foam.m_Enabled ? "on" : "off")
         << " ssr=" << (config.m_SSR.m_Enabled ? "on" : "off"));
 

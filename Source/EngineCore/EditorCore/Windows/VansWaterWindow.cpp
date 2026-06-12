@@ -168,9 +168,9 @@ ImGui::DragFloat("Anisotropy", &cfg.m_Medium.m_Anisotropy, 0.01f, 0.0f, 1.0f, "%
                 int modeIdx = static_cast<int>(cfg.m_Waves.m_Mode);
                 if (ImGui::Combo("Wave Mode", &modeIdx, modeNames, 3)) { cfg.m_Waves.m_Mode = static_cast<VansWaveMode>(modeIdx); }
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Gerstner: ready. FFT/Hybrid: not implemented yet");
-ImGui::DragFloat("Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 4096.0f, "%.1f"); if (mat) mat->m_OceanBaseScale = cfg.m_Waves.m_BaseScale;
+ImGui::DragFloat("Clipmap Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 4096.0f, "%.1f"); if (mat) mat->m_OceanBaseScale = cfg.m_Waves.m_BaseScale;
                 int maxLod = cfg.m_Waves.m_MaxLOD;
-                if (ImGui::SliderInt("Max LOD", &maxLod, 1, 10)) { cfg.m_Waves.m_MaxLOD = maxLod; if (mat) mat->m_MaxLODCount = maxLod; }
+                if (ImGui::SliderInt("Wave Clipmap LOD", &maxLod, 1, 10)) { cfg.m_Waves.m_MaxLOD = maxLod; }
                 float wd[2] = { cfg.m_Waves.m_WindDirection.x, cfg.m_Waves.m_WindDirection.y };
                 if (ImGui::DragFloat2("Wind Dir (XZ)", wd, 0.01f, -1.0f, 1.0f, "%.3f")) { cfg.m_Waves.m_WindDirection = {wd[0], wd[1]}; if (mat) mat->m_WindDirection = cfg.m_Waves.m_WindDirection; if (waterSys) waterSys->UpdateWaveSSBO(); }
 	                if (ImGui::DragFloat("Wind Speed", &cfg.m_Waves.m_WindSpeed, 0.1f, 0.0f, 100.0f, "%.2f")) { if (mat) mat->m_WindSpeed = cfg.m_Waves.m_WindSpeed; if (waterSys) waterSys->UpdateWaveSSBO(); }
@@ -178,6 +178,32 @@ ImGui::DragFloat("Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 4096.0f, "%
 	                if (ImGui::DragFloat("Chop Scale", &cfg.m_Waves.m_ChopScale, 0.01f, 0.0f, 2.0f, "%.3f")) { if (mat) mat->m_ChopScale = cfg.m_Waves.m_ChopScale; }
                 int gc = cfg.m_Waves.m_GerstnerWaveCount;
                 if (ImGui::SliderInt("Gerstner Waves", &gc, 1, 64)) { cfg.m_Waves.m_GerstnerWaveCount = gc; if (mat) mat->m_GerstnerWaveCount = gc; if (waterSys) waterSys->UpdateWaveSSBO(); }
+            }
+
+            if (ImGui::CollapsingHeader("Geometry LOD"))
+            {
+                int maxLod = cfg.m_LOD.m_MaxLOD;
+                if (ImGui::SliderInt("Max LOD##WaterGeometry", &maxLod, 1, 10))
+                {
+                    cfg.m_LOD.m_MaxLOD = maxLod;
+                    if (mat) mat->m_MaxLODCount = maxLod;
+                }
+                if (ImGui::DragFloat("Base Patch Size", &cfg.m_LOD.m_BasePatchSize, 0.5f, 1.0f, 512.0f, "%.1f"))
+                {
+                    if (mat) mat->m_LODBasePatchSize = cfg.m_LOD.m_BasePatchSize;
+                }
+                int meshDim = cfg.m_LOD.m_MeshDim;
+                if (ImGui::SliderInt("Mesh Dim", &meshDim, 3, 257))
+                {
+                    if (((meshDim - 1) % 2) != 0)
+                        ++meshDim;
+                    cfg.m_LOD.m_MeshDim = meshDim;
+                    if (mat) mat->m_LODMeshDim = meshDim;
+                }
+                if (ImGui::DragFloat("Morph Width", &cfg.m_LOD.m_MorphWidthRatio, 0.01f, 0.05f, 1.0f, "%.2f"))
+                {
+                    if (mat) mat->m_LODMorphWidthRatio = cfg.m_LOD.m_MorphWidthRatio;
+                }
             }
 
             // ── N-01: Detail Normal ──────────────────────────────────
@@ -331,13 +357,13 @@ ImGui::DragFloat("Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 4096.0f, "%
                 ImGui::Text("Base Patch Size: %.1f m", lod->GetBasePatchSize());
                 ImGui::Text("Index Count: %u", lod->GetIndexCount());
 
-                // LOD ranges table
-                if (ImGui::TreeNode("LOD Distance Ranges"))
+                if (ImGui::TreeNode("Ring Patch Sizes"))
                 {
-                    for (int i = 0; i < 10; ++i)
+                    float patchSize = lod->GetBasePatchSize();
+                    for (int i = 0; i < lod->GetLodLevels(); ++i)
                     {
-                        float range = lod->GetLodRange(i);
-                        ImGui::Text("LOD %d: %.1f m", i, range);
+                        ImGui::Text("LOD %d: %.1f m", i, patchSize);
+                        patchSize *= lod->GetDetailBalance();
                     }
                     ImGui::TreePop();
                 }

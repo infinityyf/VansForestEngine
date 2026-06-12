@@ -504,6 +504,8 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 		}
 		else
 		{
+			if (m_RootBoneIndex < 0)
+				m_RootBoneIndex = DetectRootBoneIndex(skeleton);
 			m_LoopJustWrapped = false;
 		}
 
@@ -702,7 +704,7 @@ void VansAnimationController::ComputeBoneTransforms(const AnimatorState& state,
 	{
 		if (b >= clip->boneKeyframes.size() || clip->boneKeyframes[b].empty())
 		{
-			outLocalTransforms[b] = glm::mat4(1.0f);
+			outLocalTransforms[b] = skeleton.bones[b].localTransform;
 			continue;
 		}
 
@@ -859,8 +861,13 @@ void VansAnimationController::UpdateHierarchy(std::vector<glm::mat4>& localTrans
 		glm::vec4 perspective;
 		glm::decompose(localTransforms[m_RootBoneIndex], scale, rot, pos, skew, perspective);
 
-		glm::vec3 clampedPos = glm::vec3(0.0f, pos.y, 0.0f);
-		glm::mat4 T = glm::translate(glm::mat4(1.0f), clampedPos);
+		glm::vec3 bindPos, bindScale, bindSkew;
+		glm::quat bindRot;
+		glm::vec4 bindPerspective;
+		glm::decompose(skeleton.bones[m_RootBoneIndex].localTransform,
+		               bindScale, bindRot, bindPos, bindSkew, bindPerspective);
+
+		glm::mat4 T = glm::translate(glm::mat4(1.0f), bindPos);
 		glm::mat4 R = glm::toMat4(rot);
 		glm::mat4 S = glm::scale(glm::mat4(1.0f), scale);
 		localTransforms[m_RootBoneIndex] = T * R * S;
@@ -905,8 +912,10 @@ void VansAnimationController::BuildFinalMatrices(const std::vector<glm::mat4>& g
 	for (uint32_t i = 0; i < limit; i++)
 	{
 		const BoneInfo& bone = skeleton.bones[i];
-		m_BoneMatricesSSBO.boneMatrices[i] =
-			skeleton.globalInverseTransform * globalTransforms[i] * bone.offsetMatrix;
+		// Skeleton globals start at the first imported bone, while skinned mesh
+		// vertices are kept in Assimp mesh/model space. Applying the Assimp scene
+		// root inverse here would rotate the final skinned result a second time.
+		m_BoneMatricesSSBO.boneMatrices[i] = globalTransforms[i] * bone.offsetMatrix;
 	}
 
 	for (uint32_t i = limit; i < MAX_BONES; i++)
@@ -978,6 +987,9 @@ void VansAnimationController::InterpolateKeyframes(const std::vector<BoneKeyfram
 
 int VansAnimationController::DetectRootBoneIndex(const Skeleton& skeleton) const
 {
+	auto rootIt = skeleton.boneNameToIndex.find("root");
+	if (rootIt != skeleton.boneNameToIndex.end())
+		return rootIt->second;
 	// 找到骨架根节点（parentIndex == -1）
 	int skeletonRoot = -1;
 	for (uint32_t i = 0; i < static_cast<uint32_t>(skeleton.bones.size()); i++)

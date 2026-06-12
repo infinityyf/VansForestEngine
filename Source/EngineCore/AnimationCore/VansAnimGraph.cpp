@@ -217,13 +217,14 @@ namespace VansGraphics
 		// 采样每根骨骼的关键帧
 		size_t boneCount = skel.bones.size();
 		pose.localTransforms.resize(boneCount, glm::mat4(1.0f));
+		for (size_t bi = 0; bi < boneCount; ++bi)
+			pose.localTransforms[bi] = skel.bones[bi].localTransform;
 
 		for (size_t bi = 0; bi < boneCount && bi < clip.boneKeyframes.size(); ++bi)
 		{
 			const auto& keyframes = clip.boneKeyframes[bi];
 			if (keyframes.empty())
 			{
-				pose.localTransforms[bi] = glm::mat4(1.0f);
 				continue;
 			}
 
@@ -837,6 +838,8 @@ namespace VansGraphics
 
 		size_t boneCount = skel.bones.size();
 		pose.localTransforms.resize(boneCount, glm::mat4(1.0f));
+		for (size_t bi = 0; bi < boneCount; ++bi)
+			pose.localTransforms[bi] = skel.bones[bi].localTransform;
 
 		for (size_t bi = 0; bi < boneCount && bi < clip.boneKeyframes.size(); ++bi)
 		{

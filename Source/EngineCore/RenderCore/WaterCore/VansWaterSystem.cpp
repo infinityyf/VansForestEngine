@@ -216,13 +216,13 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     gbufParams.VPMatrix       = glm::mat4(1.0f);
     gbufParams.ViewMatrix     = glm::mat4(1.0f);
     gbufParams.cameraPosition = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-    gbufParams.minLodDist     = VansWaterLOD::MIN_LOD_DIST;
-    gbufParams.lodLevels      = VansWaterLOD::MAX_LOD_COUNT;
-    gbufParams.meshDim        = VansWaterLOD::WATER_MESH_DIM;
-    gbufParams.clipmapBaseScale = 128.0f;
+    gbufParams.minLodDist     = VansWaterLOD::BASE_PATCH_SIZE;
+    gbufParams.lodLevels      = m_WaterLOD ? m_WaterLOD->GetLodLevels() : VansWaterLOD::MAX_LOD_COUNT;
+    gbufParams.meshDim        = m_WaterLOD ? m_WaterLOD->GetMeshDim() : VansWaterLOD::WATER_MESH_DIM;
+    gbufParams.clipmapBaseScale = 4.0f * VansWaterLOD::BASE_PATCH_SIZE;
     gbufParams.maxWaveAmp      = 0.6f;  // swellAmplitude(0.2) * 3
     gbufParams.detailBalance   = m_WaterLOD ? m_WaterLOD->GetDetailBalance() : 2.0f;
-    gbufParams.morphStartRatio = 0.6f;
+    gbufParams.morphStartRatio = 0.5f;
     gbufParams.waveTimeAndScale = glm::vec4(0.0f, 0.2f, 1.5f, 1.0f);  // Initialize() initial UBO
     {
         void* data = nullptr;
@@ -913,32 +913,46 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     // 从 WaterMaterial 读取运行时参数（支持编辑器实时调整）
     float ampScale   = 0.2f;
     float chopScale  = 1.5f;
-    float baseScale  = 128.0f;
+    float baseScale  = 4.0f * VansWaterLOD::BASE_PATCH_SIZE;
     float maxAmp     = 0.6f;  // swellAmplitude(0.2) * 3
     if (m_WaterMaterial)
     {
         ampScale  = m_WaterMaterial->m_SwellAmplitude;
         chopScale = m_WaterMaterial->m_ChopScale;
-        baseScale = m_WaterMaterial->m_OceanBaseScale;
+        baseScale = (m_WaterMaterial->m_OceanBaseScale > 0.0f)
+            ? m_WaterMaterial->m_OceanBaseScale
+            : 4.0f * m_WaterMaterial->m_LODBasePatchSize;
         maxAmp    = m_WaterMaterial->m_SwellAmplitude * 3.0f;
     }
 
     // W-02: 委托 VansWaterLOD 生成 Patch
     if (m_WaterLOD)
+    {
+        VansWaterLODConfig lodConfig;
+        if (m_WaterMaterial)
+        {
+            lodConfig.m_MaxLOD = m_WaterMaterial->m_MaxLODCount;
+            lodConfig.m_BasePatchSize = m_WaterMaterial->m_LODBasePatchSize;
+            lodConfig.m_MeshDim = m_WaterMaterial->m_LODMeshDim;
+            lodConfig.m_DetailBalance = m_WaterMaterial->m_LODDetailBalance;
+            lodConfig.m_MorphWidthRatio = m_WaterMaterial->m_LODMorphWidthRatio;
+        }
+        m_WaterLOD->SetLodConfig(lodConfig);
         m_WaterLOD->GeneratePatches(cameraPos);
+    }
 
     // 每帧写入水面 pass 自有相机数据
     WaterGBufferParamsGPU gbufParams = {};
     gbufParams.VPMatrix       = vpMatrix;
     gbufParams.ViewMatrix     = viewMatrix;
     gbufParams.cameraPosition = glm::vec4(cameraPos, 1.0f);
-    gbufParams.minLodDist     = VansWaterLOD::MIN_LOD_DIST;
-    gbufParams.lodLevels      = VansWaterLOD::MAX_LOD_COUNT;
+    gbufParams.minLodDist     = m_WaterLOD ? m_WaterLOD->GetBasePatchSize() : VansWaterLOD::BASE_PATCH_SIZE;
+    gbufParams.lodLevels      = m_WaterLOD ? m_WaterLOD->GetLodLevels() : VansWaterLOD::MAX_LOD_COUNT;
     gbufParams.meshDim        = m_WaterLOD ? m_WaterLOD->GetMeshDim() : VansWaterLOD::WATER_MESH_DIM;
     gbufParams.clipmapBaseScale = baseScale;
     gbufParams.maxWaveAmp     = maxAmp;
     gbufParams.detailBalance   = m_WaterLOD ? m_WaterLOD->GetDetailBalance() : 2.0f;  // CPU/GPU 同步：从 VansWaterLOD 运行时读取
-    gbufParams.morphStartRatio = 0.6f;  // morph zone 起点比例：外侧 40% 才开始 morph
+    gbufParams.morphStartRatio = m_WaterLOD ? m_WaterLOD->GetMorphWidthRatio() : 0.5f;
     gbufParams.waveTimeAndScale = glm::vec4(m_Time, ampScale, chopScale, 1.0f);
 
     // N-01: Detail normal 参数写入 UBO padding
@@ -1299,10 +1313,12 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
     {
         const CDLODPatch& patch = *patchIter;
         WaterPatchPushConstant pc = {};
-        pc.patchWorldOrigin = patch.worldCenter - glm::vec2(patch.worldHalfSize);
-        pc.patchWorldSize   = patch.worldHalfSize * 2.0f;
+        pc.patchWorldOrigin = patch.worldOrigin;
+        pc.patchWorldSize   = patch.worldSize;
         pc.lodLevel         = patch.lodLevel;
         pc.waterLevel       = m_WaterLevel;
+        pc.outerEdgeMask    = patch.outerEdgeMask;
+        pc.innerEdgeMask    = patch.innerEdgeMask;
 
         cmd.UpdatePushConstants(
             *m_WaterGBufferShader->GetGraphicsPipeline(),

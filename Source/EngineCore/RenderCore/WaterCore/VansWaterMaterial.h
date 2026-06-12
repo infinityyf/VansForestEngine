@@ -34,8 +34,7 @@ namespace VansGraphics
 		VansTexture* m_WaterNormalTexture = nullptr;
 
 		// ── 波形配置 ───────────────────────────────────────────
-		float m_OceanBaseScale      = 256.0f;
-		int   m_MaxLODCount         = 10;
+		float m_OceanBaseScale      = 64.0f;
 		int   m_GerstnerWaveCount   = 64;
 		int   m_FftLODCount         = 4;
 		int   m_FftResolution       = 256;
@@ -43,6 +42,12 @@ namespace VansGraphics
 		float m_SwellAmplitude      = 0.2f;
 		float m_ChopScale           = 1.5f;
 		glm::vec2 m_WindDirection   = {0.7071f, 0.7071f};
+
+		int   m_MaxLODCount         = 10;
+		float m_LODBasePatchSize    = 16.0f;
+		int   m_LODMeshDim          = 65;
+		float m_LODDetailBalance    = 2.0f;
+		float m_LODMorphWidthRatio  = 0.5f;
 
 		// ── 泡沫 ───────────────────────────────────────────────
 		bool  m_EnableFoam    = true;

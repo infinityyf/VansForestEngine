@@ -79,7 +79,7 @@ namespace VansGraphics
 		// 波形生成模式
 		VansWaveMode m_Mode             = VansWaveMode::Gerstner;
 		// Clipmap 基础缩放（oceanBaseScale，影响 LOD 覆盖范围）
-		float        m_BaseScale        = 256.0f;
+		float        m_BaseScale        = 64.0f;
 		// 最大 LOD 数量 [1, 10]
 		int          m_MaxLOD           = 10;
 		// 风向（单位向量，XZ 平面）
@@ -98,6 +98,15 @@ namespace VansGraphics
 		int          m_FftResolution    = 256;
 		// N-01: 细节法线参数
 		VansWaterDetailNormalConfig m_DetailNormal;
+	};
+
+	struct VansWaterLODConfig
+	{
+		int   m_MaxLOD          = 10;
+		float m_BasePatchSize   = 16.0f;
+		int   m_MeshDim         = 65;
+		float m_DetailBalance   = 2.0f;
+		float m_MorphWidthRatio = 0.5f;
 	};
 
 	// ============================================================
@@ -192,6 +201,7 @@ namespace VansGraphics
 		float                    m_SpecularIntensity = 1.0f;
 
 		VansWaterMediumConfig    m_Medium;
+		VansWaterLODConfig       m_LOD;
 		VansWaterWaveConfig      m_Waves;
 		VansWaterFoamConfig      m_Foam;
 		VansWaterNormalMapConfig m_NormalMap;
