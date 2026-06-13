@@ -29,6 +29,7 @@
 #include "WaterCore/VansWaterSystem.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansAnimationController.h"
+#include "../AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../AnimationCore/VansAnimatorIO.h"
 #include "../AnimationCore/VansAnimGraph.h"
 #include "../AnimationCore/VansAnimationClipLoader.h"
@@ -2020,6 +2021,8 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
             case AnimatorParamType::Bool:    controller->SetBool(param.name, param.boolVal);   break;
             case AnimatorParamType::Int:     controller->SetInt(param.name, param.intVal);     break;
             case AnimatorParamType::Trigger: break;
+            case AnimatorParamType::Vector3: controller->SetVector3(param.name, param.vec3Val); break;
+            case AnimatorParamType::Quaternion: controller->SetQuaternion(param.name, param.quatVal); break;
             }
         }
 
@@ -2098,6 +2101,39 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
         controller->EnableRootMotion(true);
 
     // ── 创建 AnimationNode ───────────────────────────────────────────────
+    if (animJson.contains("motion_matching") && animJson["motion_matching"].is_object())
+    {
+        const auto& mmJson = animJson["motion_matching"];
+        MotionMatchingSettings mmSettings;
+        mmSettings.enabled = mmJson.value("enabled", false);
+        mmSettings.autoBuild = mmJson.value("auto_build", true);
+        mmSettings.sampleRate = mmJson.value("sample_rate", 30.0f);
+        mmSettings.searchThrottle = mmJson.value("search_throttle", 0.15f);
+        mmSettings.blendDuration = mmJson.value("blend_duration", 0.18f);
+        mmSettings.minSwitchCostImprovement = mmJson.value("min_switch_cost_improvement", 0.02f);
+        mmSettings.continuationBias = mmJson.value("continuation_bias", 0.10f);
+        mmSettings.loopBias = mmJson.value("loop_bias", 0.04f);
+        mmSettings.desiredSpeedScale = mmJson.value("desired_speed_scale", 650.0f);
+        mmSettings.topCandidateCount = mmJson.value("top_candidates", 8);
+
+        if (mmJson.contains("include_clip_tokens") && mmJson["include_clip_tokens"].is_array())
+        {
+            for (const auto& token : mmJson["include_clip_tokens"])
+                if (token.is_string()) mmSettings.includeClipNameTokens.push_back(token.get<std::string>());
+        }
+        if (mmJson.contains("exclude_clip_tokens") && mmJson["exclude_clip_tokens"].is_array())
+        {
+            for (const auto& token : mmJson["exclude_clip_tokens"])
+                if (token.is_string()) mmSettings.excludeClipNameTokens.push_back(token.get<std::string>());
+        }
+
+        controller->ConfigureMotionMatching(mmSettings);
+        VANS_LOG("[LoadAnimComp] Motion Matching configured for '" << objectName
+                 << "' enabled=" << mmSettings.enabled
+                 << " sampleRate=" << mmSettings.sampleRate
+                 << " searchThrottle=" << mmSettings.searchThrottle);
+    }
+
     VansAnimationNode* animNode = new VansAnimationNode(nodeName);
     animNode->SetSkeleton(meshAsset->m_AnimImportResult.skeleton);
     animNode->SetRenderNodes(group.childNodes);

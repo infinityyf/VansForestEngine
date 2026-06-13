@@ -264,9 +264,10 @@ bool VansAnimationClipLoader::PeekClipInfo(const std::string& filePath,
 // ════════════════════════════════════════════════════════════════
 //  TryCreateFromFBX — 从同目录 FBX 提取 clip 并保存为 .vclip
 //
-//  命名约定: {fbxBaseName}_{clipName}.vclip
-//  例: Models/character_Idle.vclip → 查找 Models/character.fbx
-//  从 FBX 中提取名为 "Idle" 的动画 clip，保存为 .vclip 文件
+//  命名约定 (两种):
+//    1. {fbxBaseName}_{clipName}.vclip   (例: character_Idle.vclip)
+//    2. {fbxBaseName}.vclip              (例: M_Neutral_Walk_Loop_F.vclip)
+//  从 FBX 中提取动画 clip，保存为 .vclip 文件
 // ════════════════════════════════════════════════════════════════
 
 bool VansAnimationClipLoader::TryCreateFromFBX(const std::string& vclipPath,
@@ -283,9 +284,12 @@ bool VansAnimationClipLoader::TryCreateFromFBX(const std::string& vclipPath,
 		return false;
 
 	// 扫描同目录下的 .fbx 文件，找到匹配的 FBX 源文件
-	// 匹配条件: vclip 文件名以 "{fbxBaseName}_" 开头
+	// 匹配条件:
+	//   1. vclip 文件名以 "{fbxBaseName}_" 开头 (子剪辑)
+	//   2. vclip 文件名完全等于 fbxBaseName (完整动画 FBX 的单剪辑)
 	std::string matchedFbxPath;
 	std::string matchedClipName;
+	bool        exactMatch = false;
 
 	if (!fs::exists(clipDir) || !fs::is_directory(clipDir))
 		return false;
@@ -296,19 +300,28 @@ bool VansAnimationClipLoader::TryCreateFromFBX(const std::string& vclipPath,
 			continue;
 
 		std::string ext = entry.path().extension().string();
-		// 不区分大小写比较扩展名
 		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 		if (ext != ".fbx")
 			continue;
 
 		std::string fbxBaseName = entry.path().stem().string();
-		std::string prefix = fbxBaseName + "_";
 
-		// 检查 vclip 文件名是否以 "{fbxBaseName}_" 开头
+		// 优先: 前缀匹配 {fbxBaseName}_{clipName}.vclip
+		std::string prefix = fbxBaseName + "_";
 		if (fileName.size() > prefix.size() && fileName.substr(0, prefix.size()) == prefix)
 		{
 			matchedFbxPath = entry.path().string();
 			matchedClipName = fileName.substr(prefix.size());
+			exactMatch = false;
+			break;
+		}
+
+		// 其次: 完全匹配 {fbxBaseName}.vclip (整个 FBX 作为一个 clip)
+		if (fileName == fbxBaseName)
+		{
+			matchedFbxPath = entry.path().string();
+			matchedClipName = fbxBaseName;
+			exactMatch = true;
 			break;
 		}
 	}
@@ -322,7 +335,6 @@ bool VansAnimationClipLoader::TryCreateFromFBX(const std::string& vclipPath,
 	VANS_LOG("[ClipLoader] Found source FBX: " << matchedFbxPath
 	         << ", extracting clip '" << matchedClipName << "'");
 
-	// 直接从 FBX 文件提取骨骼和动画 clip
 	Assimp::Importer importer;
 	const aiScene* scene = importer.ReadFile(matchedFbxPath,
 		aiProcess_Triangulate | aiProcess_FlipUVs);
@@ -333,13 +345,11 @@ bool VansAnimationClipLoader::TryCreateFromFBX(const std::string& vclipPath,
 		return false;
 	}
 
-	// 优先使用 mesh 原始骨骼（保证骨骼索引与 mesh 完全一致）
-	// 若未提供，则从 FBX 自行提取（骨骼顺序可能不同，导致 clip 骨骼索引错位）
 	Skeleton extractedSkeleton;
 	const Skeleton* skeletonToUse = originSkeleton;
 	if (skeletonToUse == nullptr)
 	{
-		VANS_LOG_WARN("[ClipLoader] No originSkeleton provided for FBX fallback, extracting from FBX (bone indices may mismatch): " << matchedFbxPath);
+		VANS_LOG_WARN("[ClipLoader] No originSkeleton provided, extracting from FBX (bone indices may mismatch): " << matchedFbxPath);
 		VansSkinnedMeshLoader::ExtractSkeleton(scene, extractedSkeleton);
 		if (extractedSkeleton.bones.empty())
 		{
@@ -359,7 +369,6 @@ bool VansAnimationClipLoader::TryCreateFromFBX(const std::string& vclipPath,
 		if (clipName.empty())
 			clipName = fbxBaseName + "_clip" + std::to_string(i);
 
-		// 与 ProcessAnimatedMesh 保持一致的清理逻辑
 		for (char& c : clipName)
 		{
 			if (c == ' ' || c == '/' || c == '\\' || c == ':')
@@ -370,12 +379,18 @@ bool VansAnimationClipLoader::TryCreateFromFBX(const std::string& vclipPath,
 		VansSkinnedMeshLoader::ExtractClipFromAssimp(anim, *skeletonToUse, clip);
 		clip.clipName = clipName;
 
-		// 保存所有提取的 clip 到 .vclip（顺便缓存同 FBX 中的其他 clip）
-		std::string currentVclipPath = clipDir + "/" + fbxBaseName + "_" + clipName + ".vclip";
-		// 若已有缓存文件则覆盖，确保骨骼索引使用的是 mesh 原始骨骼
+		// 总是保存前缀格式: {fbxBaseName}_{clipName}.vclip
+		std::string prefixVclipPath = clipDir + "/" + fbxBaseName + "_" + clipName + ".vclip";
 		{
-			VansAnimationClipIO::Save(currentVclipPath, clip, *skeletonToUse);
-			VANS_LOG("[ClipLoader] Auto-created/updated .vclip: " << currentVclipPath);
+			VansAnimationClipIO::Save(prefixVclipPath, clip, *skeletonToUse);
+			VANS_LOG("[ClipLoader] Auto-created .vclip: " << prefixVclipPath);
+		}
+
+		// 如果是完全匹配模式，也保存为 {fbxBaseName}.vclip (兼容现有命名)
+		if (exactMatch && clipName == matchedClipName)
+		{
+			VansAnimationClipIO::Save(vclipPath, clip, *skeletonToUse);
+			VANS_LOG("[ClipLoader] Also saved as exact-match: " << vclipPath);
 		}
 
 		if (clipName == matchedClipName)

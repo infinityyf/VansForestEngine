@@ -58,8 +58,9 @@ namespace VansGraphics
 	{
 		IKSolveResult result;
 		const int N = static_cast<int>(chain.bones.size());
-		if (N < 2 || target.positionWeight < 1e-4f) return result;
+		if (N < 2) return result;
 		if (globalTransformsIn.size() != skeleton.bones.size()) return result;
+		std::vector<glm::mat4> globals = globalTransformsIn;
 
 		// 初始位置（求解前的全局位置）
 		std::vector<glm::vec3> origPos(N);
@@ -80,7 +81,8 @@ namespace VansGraphics
 		}
 
 		glm::vec3 rootPos = pos[0];
-		glm::vec3 targetPos = target.position;
+		const float positionWeight = glm::clamp(target.positionWeight, 0.0f, 1.0f);
+		glm::vec3 targetPos = glm::mix(origPos[N - 1], target.position, positionWeight);
 		float distRootTarget = glm::distance(rootPos, targetPos);
 
 		// 不可达：直接拉直指向目标
@@ -165,7 +167,11 @@ namespace VansGraphics
 
 			IK_SetRotation(localTransforms[bi], newLocalRot);
 			newGlobalRot[i] = glm::normalize(parentRot * newLocalRot);
+			IK_UpdateGlobalsForSubtree(bi, localTransforms, globals, skeleton);
 		}
+
+		IK_ApplyEffectorRotationTarget(
+			localTransforms, globals, skeleton, chain.bones[N - 1].boneIndex, target);
 
 		return result;
 	}

@@ -719,8 +719,8 @@ namespace VansGraphics
 			{
 				if (CheckConditions(trans, ctx))
 				{
-					StartTransition(trans);
-					return;
+				StartTransition(trans);
+				return;
 				}
 			}
 		}
@@ -810,7 +810,7 @@ namespace VansGraphics
 		m_BlendState       = ControllerBlendState::Blending;
 
 		AnimatorState* newState = GetState(m_CurrentStateName);
-		if (newState) newState->currentTime = 0.0f;
+			if (newState) newState->currentTime = 0.0f;
 	}
 
 	AnimGraphPose AnimGraphStateMachineNode::ComputeStatePose(const AnimatorState& state,
@@ -1185,6 +1185,8 @@ namespace VansGraphics
 			props["chainName"]      = n->m_Chain.chainName;
 			props["maxIterations"]  = n->m_Chain.maxIterations;
 			props["positionTol"]    = n->m_Chain.positionTolerance;
+			props["enableRotationTarget"] = n->m_Chain.enableRotationTarget;
+			props["rotationWeight"] = n->m_Chain.rotationWeight;
 			props["poleVector"]     = { n->m_Chain.poleVector.x, n->m_Chain.poleVector.y, n->m_Chain.poleVector.z };
 			props["poleWeight"]     = n->m_Chain.poleWeight;
 			nlohmann::json bonesJson = nlohmann::json::array();
@@ -1207,6 +1209,7 @@ namespace VansGraphics
 			props["weightParam"]    = n->m_WeightParamName;
 			props["useFixed"]       = n->m_UseFixedTarget;
 			props["fixedPos"]       = { n->m_FixedTargetPos.x, n->m_FixedTargetPos.y, n->m_FixedTargetPos.z };
+			props["fixedRot"]       = { n->m_FixedTargetRot.x, n->m_FixedTargetRot.y, n->m_FixedTargetRot.z, n->m_FixedTargetRot.w };
 			props["fixedWeight"]    = n->m_FixedWeight;
 			break;
 		}
@@ -1216,6 +1219,8 @@ namespace VansGraphics
 			props["root"]           = n->m_RootBoneName;
 			props["mid"]            = n->m_MidBoneName;
 			props["tip"]            = n->m_TipBoneName;
+			props["profile"]        = n->m_UseLegProfile ? "Leg" : "Arm";
+			props["isRightSide"]    = n->m_IsRightSide;
 			props["hingeMin"]       = n->m_HingeMinAngle;
 			props["hingeMax"]       = n->m_HingeMaxAngle;
 			props["coneAngle"]      = n->m_ConeAngle;
@@ -1223,10 +1228,14 @@ namespace VansGraphics
 			props["poleVector"]     = { n->m_PoleVector.x, n->m_PoleVector.y, n->m_PoleVector.z };
 			props["poleWeight"]     = n->m_PoleWeight;
 			props["targetPosParam"] = n->m_TargetPosParamName;
+			props["targetRotParam"] = n->m_TargetRotParamName;
 			props["weightParam"]    = n->m_WeightParamName;
 			props["useFixed"]       = n->m_UseFixedTarget;
 			props["fixedPos"]       = { n->m_FixedTargetPos.x, n->m_FixedTargetPos.y, n->m_FixedTargetPos.z };
+			props["fixedRot"]       = { n->m_FixedTargetRot.x, n->m_FixedTargetRot.y, n->m_FixedTargetRot.z, n->m_FixedTargetRot.w };
 			props["fixedWeight"]    = n->m_FixedWeight;
+			props["enableRotationTarget"] = n->m_EnableRotationTarget;
+			props["rotationWeight"] = n->m_RotationWeight;
 			break;
 		}
 		case AnimGraphNodeType::LookAt:
@@ -1373,6 +1382,8 @@ namespace VansGraphics
 			if (props.contains("chainName"))     n->m_Chain.chainName        = props["chainName"].get<std::string>();
 			if (props.contains("maxIterations")) n->m_Chain.maxIterations    = props["maxIterations"].get<int>();
 			if (props.contains("positionTol"))   n->m_Chain.positionTolerance= props["positionTol"].get<float>();
+			if (props.contains("enableRotationTarget")) n->m_Chain.enableRotationTarget = props["enableRotationTarget"].get<bool>();
+			if (props.contains("rotationWeight")) n->m_Chain.rotationWeight = props["rotationWeight"].get<float>();
 			if (props.contains("poleVector") && props["poleVector"].is_array() && props["poleVector"].size() >= 3)
 			{
 				n->m_Chain.poleVector.x = props["poleVector"][0].get<float>();
@@ -1406,6 +1417,13 @@ namespace VansGraphics
 				n->m_FixedTargetPos.y = props["fixedPos"][1].get<float>();
 				n->m_FixedTargetPos.z = props["fixedPos"][2].get<float>();
 			}
+			if (props.contains("fixedRot") && props["fixedRot"].is_array() && props["fixedRot"].size() >= 4)
+			{
+				n->m_FixedTargetRot.x = props["fixedRot"][0].get<float>();
+				n->m_FixedTargetRot.y = props["fixedRot"][1].get<float>();
+				n->m_FixedTargetRot.z = props["fixedRot"][2].get<float>();
+				n->m_FixedTargetRot.w = props["fixedRot"][3].get<float>();
+			}
 			if (props.contains("fixedWeight"))    n->m_FixedWeight        = props["fixedWeight"].get<float>();
 			break;
 		}
@@ -1415,6 +1433,8 @@ namespace VansGraphics
 			if (props.contains("root"))     n->m_RootBoneName  = props["root"].get<std::string>();
 			if (props.contains("mid"))      n->m_MidBoneName   = props["mid"].get<std::string>();
 			if (props.contains("tip"))      n->m_TipBoneName   = props["tip"].get<std::string>();
+			if (props.contains("profile"))  n->m_UseLegProfile = props["profile"].get<std::string>() == "Leg";
+			if (props.contains("isRightSide")) n->m_IsRightSide = props["isRightSide"].get<bool>();
 			if (props.contains("hingeMin")) n->m_HingeMinAngle = props["hingeMin"].get<float>();
 			if (props.contains("hingeMax")) n->m_HingeMaxAngle = props["hingeMax"].get<float>();
 			if (props.contains("coneAngle"))n->m_ConeAngle     = props["coneAngle"].get<float>();
@@ -1427,6 +1447,7 @@ namespace VansGraphics
 			}
 			if (props.contains("poleWeight"))   n->m_PoleWeight  = props["poleWeight"].get<float>();
 			if (props.contains("targetPosParam")) n->m_TargetPosParamName = props["targetPosParam"].get<std::string>();
+			if (props.contains("targetRotParam")) n->m_TargetRotParamName = props["targetRotParam"].get<std::string>();
 			if (props.contains("weightParam"))    n->m_WeightParamName    = props["weightParam"].get<std::string>();
 			if (props.contains("useFixed"))       n->m_UseFixedTarget     = props["useFixed"].get<bool>();
 			if (props.contains("fixedPos") && props["fixedPos"].is_array() && props["fixedPos"].size() >= 3)
@@ -1435,7 +1456,16 @@ namespace VansGraphics
 				n->m_FixedTargetPos.y = props["fixedPos"][1].get<float>();
 				n->m_FixedTargetPos.z = props["fixedPos"][2].get<float>();
 			}
+			if (props.contains("fixedRot") && props["fixedRot"].is_array() && props["fixedRot"].size() >= 4)
+			{
+				n->m_FixedTargetRot.x = props["fixedRot"][0].get<float>();
+				n->m_FixedTargetRot.y = props["fixedRot"][1].get<float>();
+				n->m_FixedTargetRot.z = props["fixedRot"][2].get<float>();
+				n->m_FixedTargetRot.w = props["fixedRot"][3].get<float>();
+			}
 			if (props.contains("fixedWeight"))    n->m_FixedWeight        = props["fixedWeight"].get<float>();
+			if (props.contains("enableRotationTarget")) n->m_EnableRotationTarget = props["enableRotationTarget"].get<bool>();
+			if (props.contains("rotationWeight")) n->m_RotationWeight = props["rotationWeight"].get<float>();
 			break;
 		}
 		case AnimGraphNodeType::LookAt:
@@ -1605,6 +1635,19 @@ namespace VansGraphics
 	}
 
 	// 从 ctx.parameters 读取 Vector3 参数
+	static void ResolveIKChainBoneIndices(IKChainDefinition& chain, const Skeleton& skeleton)
+	{
+		for (IKBoneLink& link : chain.bones)
+		{
+			if (link.boneIndex >= 0 || link.boneName.empty())
+				continue;
+
+			auto it = skeleton.boneNameToIndex.find(link.boneName);
+			if (it != skeleton.boneNameToIndex.end())
+				link.boneIndex = it->second;
+		}
+	}
+
 	static glm::vec3 ReadVec3Param(const AnimGraphContext& ctx,
 	                               const std::string& name,
 	                               const glm::vec3& def)
@@ -1676,6 +1719,7 @@ namespace VansGraphics
 		AnimGraphPose pose = in ? in->Evaluate(ctx, graph) : AnimGraphPose{};
 		if (!pose.valid || !ctx.skeleton) return pose;
 		if (m_Chain.bones.size() < 2) return pose;
+		ResolveIKChainBoneIndices(m_Chain, *ctx.skeleton);
 
 		// 2. 读取目标
 		float weight = m_UseFixedTarget
@@ -1728,8 +1772,11 @@ namespace VansGraphics
 
 	void AnimGraphTwoBoneIKNode::BuildChain(const Skeleton& skeleton)
 	{
-		m_CachedChain = VansIKChainBuilder::BuildHumanoidArm(
-			skeleton, m_RootBoneName, m_MidBoneName, m_TipBoneName, true);
+		m_CachedChain = m_UseLegProfile
+			? VansIKChainBuilder::BuildHumanoidLeg(
+				skeleton, m_RootBoneName, m_MidBoneName, m_TipBoneName, m_IsRightSide)
+			: VansIKChainBuilder::BuildHumanoidArm(
+				skeleton, m_RootBoneName, m_MidBoneName, m_TipBoneName, m_IsRightSide);
 		// 用用户配置覆盖默认约束
 		if (m_CachedChain.bones.size() == 3)
 		{
@@ -1742,6 +1789,8 @@ namespace VansGraphics
 			m_CachedChain.poleVector = m_PoleVector;
 			m_CachedChain.poleWeight = m_PoleWeight;
 		}
+		m_CachedChain.enableRotationTarget = m_EnableRotationTarget;
+		m_CachedChain.rotationWeight = m_RotationWeight;
 		m_ChainBuilt = true;
 	}
 
@@ -1767,7 +1816,11 @@ namespace VansGraphics
 		target.position = m_UseFixedTarget
 			? m_FixedTargetPos
 			: ReadVec3Param(ctx, m_TargetPosParamName, m_FixedTargetPos);
+		target.rotation = m_UseFixedTarget
+			? m_FixedTargetRot
+			: ReadQuatParam(ctx, m_TargetRotParamName, m_FixedTargetRot);
 		target.positionWeight = weight;
+		target.rotationWeight = m_EnableRotationTarget ? weight * m_RotationWeight : 0.0f;
 
 		std::vector<glm::mat4> tempGlobals;
 		BuildTempGlobals(pose, *ctx.skeleton, tempGlobals);

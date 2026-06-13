@@ -52,6 +52,13 @@ namespace VansGraphics
 	// 仅替换矩阵的旋转部分（保留 scale 和 translation）
 	void IK_SetRotation(glm::mat4& m, const glm::quat& r);
 
+	void IK_ApplyEffectorRotationTarget(
+		std::vector<glm::mat4>& localTransforms,
+		std::vector<glm::mat4>& globalTransforms,
+		const Skeleton&         skeleton,
+		int                     effectorBoneIdx,
+		const IKTarget&         target);
+
 	// 按拓扑顺序更新指定起始骨骼的所有后代全局变换
 	void IK_UpdateGlobalsForSubtree(
 		int                           rootBoneIdx,

@@ -430,6 +430,8 @@ namespace VansGraphics
 		std::string m_RootBoneName;     // 肩 / 髋
 		std::string m_MidBoneName;      // 肘 / 膝
 		std::string m_TipBoneName;      // 手 / 脚
+		bool        m_UseLegProfile  = false;
+		bool        m_IsRightSide    = true;
 		float       m_HingeMinAngle  = 0.0f;
 		float       m_HingeMaxAngle  = 150.0f;
 		float       m_ConeAngle      = 60.0f;
@@ -439,10 +441,14 @@ namespace VansGraphics
 		float       m_PoleWeight     = 1.0f;
 
 		std::string m_TargetPosParamName;
+		std::string m_TargetRotParamName;
 		std::string m_WeightParamName;
 		bool        m_UseFixedTarget = false;
 		glm::vec3   m_FixedTargetPos = glm::vec3(0.0f);
+		glm::quat   m_FixedTargetRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 		float       m_FixedWeight    = 1.0f;
+		bool        m_EnableRotationTarget = false;
+		float       m_RotationWeight = 1.0f;
 
 	private:
 		std::unique_ptr<VansIKSolver> m_Solver;

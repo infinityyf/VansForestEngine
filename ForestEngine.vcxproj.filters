@@ -481,6 +481,9 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimGraph.h">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\MotionMatching\VansMotionMatching.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKTypes.h">
       <Filter>EngineCore\AnimationCore\IK</Filter>
     </ClInclude>
@@ -963,6 +966,9 @@
       <Filter>EngineCore\AnimationCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimGraph.cpp">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\MotionMatching\VansMotionMatching.cpp">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansIKSolver.cpp">

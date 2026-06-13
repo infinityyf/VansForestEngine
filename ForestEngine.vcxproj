@@ -220,6 +220,7 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimGraph.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\MotionMatching\VansMotionMatching.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKTypes.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKSolver.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKConstraint.h" />
@@ -399,6 +400,7 @@
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansSkinnedMeshLoader.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimGraph.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\MotionMatching\VansMotionMatching.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansIKSolver.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansIKConstraint.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansCCDSolver.cpp" />

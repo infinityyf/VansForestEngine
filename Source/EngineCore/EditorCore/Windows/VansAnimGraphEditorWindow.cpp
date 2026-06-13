@@ -3,6 +3,7 @@
 #include "../../Util/VansLog.h"
 
 #include <imgui.h>
+#include <../../GLM/gtc/quaternion.hpp>
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <algorithm>
@@ -243,6 +244,22 @@ void VansAnimGraphEditorWindow::DrawParametersPanel()
 		case AnimatorParamType::Trigger:
 			ImGui::TextDisabled("(auto-reset)");
 			break;
+		case AnimatorParamType::Vector3:
+			ImGui::SetNextItemWidth(150.0f);
+			if (ImGui::DragFloat3("##val", &param.vec3Val.x, 0.01f))
+				m_EditState.isDirty = true;
+			break;
+		case AnimatorParamType::Quaternion:
+		{
+			float q[4] = { param.quatVal.x, param.quatVal.y, param.quatVal.z, param.quatVal.w };
+			ImGui::SetNextItemWidth(190.0f);
+			if (ImGui::DragFloat4("##val", q, 0.01f))
+			{
+				param.quatVal = glm::normalize(glm::quat(q[3], q[0], q[1], q[2]));
+				m_EditState.isDirty = true;
+			}
+			break;
+		}
 		}
 
 		// 删除按钮
@@ -266,7 +283,7 @@ void VansAnimGraphEditorWindow::DrawParametersPanel()
 		static char newParamName[128] = "";
 		static int newParamType = 0;
 		ImGui::InputText("Name", newParamName, sizeof(newParamName));
-		ImGui::Combo("Type", &newParamType, "Float\0Bool\0Int\0Trigger\0");
+		ImGui::Combo("Type", &newParamType, "Float\0Bool\0Int\0Trigger\0Vector3\0Quaternion\0");
 		if (ImGui::Button("Add") && strlen(newParamName) > 0)
 		{
 			AnimatorParameter p;
@@ -619,6 +636,37 @@ void VansAnimGraphEditorWindow::DrawV2PropertiesPanel()
 		ImGui::Text("Param: %s", n->m_ParamName.c_str());
 		ImGui::Text("Speed: %.2f", n->m_FixedSpeed);
 		ImGui::Text("Use Param: %s", n->m_UseParam ? "true" : "false");
+		break;
+	}
+	case AnimGraphNodeType::IK:
+	{
+		auto* n = static_cast<AnimGraphIKNode*>(node);
+		ImGui::Text("Chain: %s", n->m_Chain.chainName.c_str());
+		ImGui::Text("Bones: %d", (int)n->m_Chain.bones.size());
+		ImGui::Text("Target Pos: %s", n->m_TargetPosParamName.c_str());
+		ImGui::Text("Target Rot: %s", n->m_TargetRotParamName.c_str());
+		ImGui::Text("Weight: %s", n->m_WeightParamName.c_str());
+		ImGui::Text("Rotation Target: %s %.2f",
+		            n->m_Chain.enableRotationTarget ? "true" : "false",
+		            n->m_Chain.rotationWeight);
+		break;
+	}
+	case AnimGraphNodeType::TwoBoneIK:
+	{
+		auto* n = static_cast<AnimGraphTwoBoneIKNode*>(node);
+		ImGui::Text("Profile: %s %s",
+		            n->m_UseLegProfile ? "Leg" : "Arm",
+		            n->m_IsRightSide ? "Right" : "Left");
+		ImGui::Text("Root/Mid/Tip: %s / %s / %s",
+		            n->m_RootBoneName.c_str(),
+		            n->m_MidBoneName.c_str(),
+		            n->m_TipBoneName.c_str());
+		ImGui::Text("Target Pos: %s", n->m_TargetPosParamName.c_str());
+		ImGui::Text("Target Rot: %s", n->m_TargetRotParamName.c_str());
+		ImGui::Text("Weight: %s", n->m_WeightParamName.c_str());
+		ImGui::Text("Rotation Target: %s %.2f",
+		            n->m_EnableRotationTarget ? "true" : "false",
+		            n->m_RotationWeight);
 		break;
 	}
 	default:

@@ -52,6 +52,37 @@ namespace VansGraphics
 		m = IK_ComposeMatrix(t, r, s);
 	}
 
+	void IK_ApplyEffectorRotationTarget(
+		std::vector<glm::mat4>& localTransforms,
+		std::vector<glm::mat4>& globalTransforms,
+		const Skeleton&         skeleton,
+		int                     effectorBoneIdx,
+		const IKTarget&         target)
+	{
+		if (target.rotationWeight < 1e-4f)
+			return;
+		if (effectorBoneIdx < 0 ||
+		    effectorBoneIdx >= static_cast<int>(skeleton.bones.size()) ||
+		    effectorBoneIdx >= static_cast<int>(localTransforms.size()) ||
+		    effectorBoneIdx >= static_cast<int>(globalTransforms.size()))
+			return;
+
+		const BoneInfo& bone = skeleton.bones[effectorBoneIdx];
+		glm::quat parentRot = (bone.parentIndex >= 0 &&
+		                       bone.parentIndex < static_cast<int>(globalTransforms.size()))
+			? IK_ExtractRotation(globalTransforms[bone.parentIndex])
+			: glm::quat(1, 0, 0, 0);
+
+		glm::quat desiredGlobal = glm::normalize(target.rotation);
+		glm::quat desiredLocal = glm::normalize(glm::conjugate(parentRot) * desiredGlobal);
+		glm::quat currentLocal = IK_ExtractRotation(localTransforms[effectorBoneIdx]);
+		float w = glm::clamp(target.rotationWeight, 0.0f, 1.0f);
+
+		IK_SetRotation(localTransforms[effectorBoneIdx],
+		               glm::normalize(glm::slerp(currentLocal, desiredLocal, w)));
+		IK_UpdateGlobalsForSubtree(effectorBoneIdx, localTransforms, globalTransforms, skeleton);
+	}
+
 	void IK_UpdateGlobalsForSubtree(
 		int                           rootBoneIdx,
 		const std::vector<glm::mat4>& localTransforms,

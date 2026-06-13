@@ -19,7 +19,7 @@ namespace VansGraphics
 		IKSolveResult result;
 
 		const int N = static_cast<int>(chain.bones.size());
-		if (N < 2 || target.positionWeight < 1e-4f)
+		if (N < 2)
 			return result;
 
 		// 全局变换的可写副本（求解过程中需要不断更新）
@@ -27,11 +27,21 @@ namespace VansGraphics
 		if (globals.size() != skeleton.bones.size())
 			return result;
 
+		const int effectorIdx = chain.bones[N - 1].boneIndex;
+		if (effectorIdx < 0 || effectorIdx >= static_cast<int>(skeleton.bones.size()))
+			return result;
+
+		IKTarget effectiveTarget = target;
+		const float positionWeight = glm::clamp(target.positionWeight, 0.0f, 1.0f);
+		glm::vec3 effectorPos = IK_ExtractTranslation(globals[effectorIdx]);
+		effectiveTarget.position = glm::mix(effectorPos, target.position, positionWeight);
+		effectiveTarget.positionWeight = positionWeight;
+
 		// 迭代直到收敛
 		float lastError = 1e9f;
 		for (int it = 0; it < chain.maxIterations; ++it)
 		{
-			float err = PerformIteration(chain, target, localTransforms, globals, skeleton);
+			float err = PerformIteration(chain, effectiveTarget, localTransforms, globals, skeleton);
 			result.iterationsUsed = it + 1;
 			result.finalPosError  = err;
 
@@ -47,10 +57,12 @@ namespace VansGraphics
 		}
 
 		// 极向量修正（仅在三关节链且权重 > 0 时有效）
-		if (chain.poleWeight > 1e-4f && N >= 3)
+		if (positionWeight > 1e-4f && chain.poleWeight > 1e-4f && N >= 3)
 		{
 			ApplyPoleVector(chain, localTransforms, globals, skeleton);
 		}
+
+		IK_ApplyEffectorRotationTarget(localTransforms, globals, skeleton, effectorIdx, target);
 
 		return result;
 	}

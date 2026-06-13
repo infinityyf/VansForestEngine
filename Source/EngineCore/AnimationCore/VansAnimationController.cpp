@@ -1,5 +1,6 @@
 #include "VansAnimationController.h"
 #include "VansAnimGraph.h"
+#include "MotionMatching/VansMotionMatching.h"
 #include "../Util/VansLog.h"
 
 #include <../../GLM/glm.hpp>
@@ -33,6 +34,18 @@ VansAnimationController::~VansAnimationController()
 void VansAnimationController::SetGraph(std::unique_ptr<VansAnimGraph> graph)
 {
 	m_Graph = std::move(graph);
+}
+
+void VansAnimationController::ConfigureMotionMatching(const MotionMatchingSettings& settings)
+{
+	if (!m_MotionMatching)
+		m_MotionMatching = std::make_unique<VansMotionMatchingRuntime>();
+	m_MotionMatching->Configure(settings);
+}
+
+const MotionMatchingDebugData* VansAnimationController::GetMotionMatchingDebugData() const
+{
+	return m_MotionMatching ? &m_MotionMatching->GetDebugData() : nullptr;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -474,6 +487,32 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 	// ════════════════════════════════════════════════════════════
 	//  v2 路径: AnimGraph 求值
 	// ════════════════════════════════════════════════════════════
+	if (m_MotionMatching)
+	{
+		std::vector<glm::mat4> localTransforms;
+		if (m_MotionMatching->Update(deltaTime, skeleton, m_Clips, m_Parameters, localTransforms))
+		{
+			ApplyBoneOverrides(localTransforms, skeleton);
+
+			if (m_RootMotionEnabled)
+			{
+				if (m_RootBoneIndex < 0)
+					m_RootBoneIndex = DetectRootBoneIndex(skeleton);
+				ExtractRootMotion(localTransforms, skeleton);
+			}
+			else
+			{
+				if (m_RootBoneIndex < 0)
+					m_RootBoneIndex = DetectRootBoneIndex(skeleton);
+				m_LoopJustWrapped = false;
+			}
+
+			UpdateHierarchy(localTransforms, skeleton);
+			BuildFinalMatrices(localTransforms, skeleton);
+			return;
+		}
+	}
+
 	if (m_Graph)
 	{
 		// 推进节点内部时间（乘以 GlobalSpeed，使速度滑条生效）

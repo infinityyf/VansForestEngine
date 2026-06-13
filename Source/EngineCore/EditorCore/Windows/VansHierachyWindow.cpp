@@ -8,6 +8,7 @@
 #include "../../PhysicsCore/VansPhysicsVehicle.h"
 #include "../../AudioCore/VansAudioNode.h"
 #include "../../Util/VansLog.h"
+#include "../../AnimationCore/MotionMatching/VansMotionMatching.h"
 
 #include "imgui.h"
 #include <algorithm>
@@ -15,6 +16,8 @@
 #include <../../GLM/glm.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
 #include <../../GLM/gtx/matrix_decompose.hpp>
+
+bool VansGraphics::VansHierachuWindow::m_ShowMMViz = false;
 
 // ── Helper: draw a node list, grouping multi-mesh children under a tree node ──
 void VansGraphics::VansHierachuWindow::DrawNodeListWithGroups(const std::vector<VansRenderNode*>& nodes)
@@ -633,6 +636,64 @@ void VansGraphics::VansHierachuWindow::DrawAnimationNodeDetail()
     }
     ImGui::Separator();
 
+    // ── Motion Matching 状态 ──────────────────────────────────────
+    if (ctrl->IsMotionMatchingConfigured())
+    {
+        const auto* mm = ctrl->GetMotionMatchingDebugData();
+        ImGui::Checkbox("Show MM 3D Viz", &m_ShowMMViz);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(Scene overlay)");
+
+        if (mm)
+        {
+            ImGui::Text("MM Enabled: %s", mm->enabled ? "Yes" : "No");
+            ImGui::Text("Database:  %s | Clips: %d | Samples: %d",
+                        mm->databaseReady ? "ready" : "not ready",
+                        mm->clipCount, mm->sampleCount);
+            ImGui::Text("Query Speed: %.1f cm/s | Direction: %.2f rad",
+                        mm->querySpeed, mm->queryDirection);
+
+            ImGui::SeparatorText("Active Match");
+            ImGui::Text("Active:   %s @ %.3fs",
+                        mm->activeClip.empty() ? "<none>" : mm->activeClip.c_str(),
+                        mm->activeTime);
+            ImGui::Text("Selected: %s @ %.3fs",
+                        mm->selectedClip.empty() ? "<none>" : mm->selectedClip.c_str(),
+                        mm->selectedTime);
+            ImGui::Text("Switches: %d", mm->switches);
+
+            ImGui::SeparatorText("Cost");
+            ImGui::Text("Total:      %.4f", mm->currentCost);
+            ImGui::Text("Trajectory: %.4f", mm->trajectoryCost);
+            ImGui::Text("Pose:       %.4f", mm->poseCost);
+            ImGui::Text("Bias:       %.4f", mm->biasCost);
+
+            if (!mm->topCandidates.empty())
+            {
+                ImGui::SeparatorText("Top Candidates");
+                if (ImGui::BeginTable("MMTopCandidates", 4,
+                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit))
+                {
+                    ImGui::TableSetupColumn("Clip");
+                    ImGui::TableSetupColumn("Time");
+                    ImGui::TableSetupColumn("Cost");
+                    ImGui::TableSetupColumn("Traj");
+                    ImGui::TableHeadersRow();
+                    for (const auto& c : mm->topCandidates)
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn(); ImGui::TextUnformatted(c.clipName.c_str());
+                        ImGui::TableNextColumn(); ImGui::Text("%.3f", c.time);
+                        ImGui::TableNextColumn(); ImGui::Text("%.3f", c.totalCost);
+                        ImGui::TableNextColumn(); ImGui::Text("%.3f", c.trajectoryCost);
+                    }
+                    ImGui::EndTable();
+                }
+            }
+        }
+        ImGui::Separator();
+    }
+
     // ── 当前状态 ─────────────────────────────────────────────────────
     std::string stateName = ctrl->GetCurrentStateName();
     ImGui::Text("State: %s", stateName.empty() ? "(none)" : stateName.c_str());
@@ -780,6 +841,21 @@ void VansGraphics::VansHierachuWindow::DrawAnimationNodeDetail()
                         ctrl->SetTrigger(pName);
                     ImGui::SameLine();
                     ImGui::TextDisabled("(trigger)");
+                    break;
+                }
+                case AnimatorParamType::Vector3:
+                {
+                    glm::vec3 val = ctrl->GetVector3(pName);
+                    if (ImGui::DragFloat3(pName.c_str(), &val.x, 0.01f))
+                        ctrl->SetVector3(pName, val);
+                    break;
+                }
+                case AnimatorParamType::Quaternion:
+                {
+                    glm::quat q = ctrl->GetQuaternion(pName);
+                    float val[4] = { q.x, q.y, q.z, q.w };
+                    if (ImGui::DragFloat4(pName.c_str(), val, 0.01f))
+                        ctrl->SetQuaternion(pName, glm::normalize(glm::quat(val[3], val[0], val[1], val[2])));
                     break;
                 }
                 }

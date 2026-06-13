@@ -81,27 +81,27 @@ void DirectBRDF_Vegetation(BRDFData brdf, vec3 lightDirection, VegetationParams 
 
     float NoL = dot(N, L);
     float NoH = clamp(dot(N, H), 0.0, 1.0);
-    float LoH = clamp(dot(L, H), 0.0, 1.0);
+    float VoH = clamp(dot(V, H), 0.0, 1.0);
     float NoV = max(dot(N, V), 0.001);
+    vec3  F0 = mix(vec3(0.20), brdf.albedo, brdf.metallic);
+    vec3  F  = FresnelSchlick(VoH, F0);
 
     // ── Wrap diffuse ────────────────────────────────────────────────────────
     float wrapNoL = WrapDiffuse(N, L, veg.scatterWidth);
-    vec3  kD = (1.0 - brdf.metallic) * brdf.albedo / PI;
-    diffuse = kD * wrapNoL;
+    vec3  kD = (vec3(1.0) - F) * (1.0 - brdf.metallic);
+    diffuse = brdf.albedo * kD * (wrapNoL / PI);
 
     // ── Specular GGX — enhanced for grass ───────────────────────────────────
     // Grass has a waxy cuticle layer: high F0 for strong specular.
     // Clamp roughness low to keep the highlight tight and prominent.
     if (NoL > 0.0)
     {
-        vec3  F0 = mix(vec3(0.20), brdf.albedo, brdf.metallic);
         float specRough = clamp(brdf.roughness, 0.15, 0.6);
         float D  = DistributionTrowbridgeReitzGGX(N, H, specRough);
         float G  = GeometrySmith(N, V, L, specRough);
-        vec3  F  = FresnelSchlick(NoH, F0);
 
         float denom = 4.0 * max(NoL, 0.001) * NoV;
-        specular = (D * G * F) / denom;
+        specular = (D * G * F / denom) * max(NoL, 0.0);
     }
 
     // ── Scatter disabled ────────────────────────────────────────────────────

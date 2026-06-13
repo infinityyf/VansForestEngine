@@ -10,6 +10,9 @@ namespace VansGraphics
 {
 	// 前向声明 (VansAnimGraph.h 包含本头文件，避免循环依赖)
 	class VansAnimGraph;
+	class VansMotionMatchingRuntime;
+	struct MotionMatchingSettings;
+	struct MotionMatchingDebugData;
 
 	// ─── 参数类型 ───
 
@@ -212,6 +215,10 @@ namespace VansGraphics
 		VansAnimGraph* GetGraph() const { return m_Graph.get(); }
 		bool HasGraph() const { return m_Graph != nullptr; }
 
+		void ConfigureMotionMatching(const MotionMatchingSettings& settings);
+		bool IsMotionMatchingConfigured() const { return m_MotionMatching != nullptr; }
+		const MotionMatchingDebugData* GetMotionMatchingDebugData() const;
+
 	private:
 		std::string m_Name;
 
@@ -256,6 +263,7 @@ namespace VansGraphics
 
 		// ─── AnimGraph (v2) ───
 		std::unique_ptr<VansAnimGraph> m_Graph;
+		std::unique_ptr<VansMotionMatchingRuntime> m_MotionMatching;
 
 		// ─── 内部方法 ───
 		void AdvanceStateTime(AnimatorState& state, float dt);

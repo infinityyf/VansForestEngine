@@ -6,6 +6,9 @@
 #include "../../RenderCore/VansMaterial.h"
 #include "../../RenderCore/VulkanCore/VansTexture.h"
 #include "../../RenderCore/VansScene.h"
+#include "../../AnimationCore/VansAnimationNode.h"
+#include "../../AnimationCore/VansAnimationController.h"
+#include "../../AnimationCore/MotionMatching/VansMotionMatching.h"
 
 void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
 {
@@ -119,6 +122,68 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
         }
 
         ImGui::EndTable();
+    }
+
+    if (ImGui::CollapsingHeader("Motion Matching", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        if (!m_Scene || m_Scene->m_AnimationNodes.empty())
+        {
+            ImGui::TextDisabled("No animation nodes in current scene.");
+        }
+        else
+        {
+            for (auto* animNode : m_Scene->m_AnimationNodes)
+            {
+                if (!animNode || !animNode->GetController())
+                    continue;
+
+                const auto* debug = animNode->GetController()->GetMotionMatchingDebugData();
+                if (!debug)
+                    continue;
+
+                ImGui::SeparatorText(animNode->GetName().c_str());
+                ImGui::Text("Enabled: %s", debug->enabled ? "true" : "false");
+                ImGui::Text("Database: %s | Clips: %d | Samples: %d",
+                            debug->databaseReady ? "ready" : "not ready",
+                            debug->clipCount,
+                            debug->sampleCount);
+                ImGui::Text("Active: %s @ %.3fs",
+                            debug->activeClip.empty() ? "<none>" : debug->activeClip.c_str(),
+                            debug->activeTime);
+                ImGui::Text("Selected: %s @ %.3fs",
+                            debug->selectedClip.empty() ? "<none>" : debug->selectedClip.c_str(),
+                            debug->selectedTime);
+                ImGui::Text("Cost: total %.3f | trajectory %.3f | pose %.3f | bias %.3f",
+                            debug->currentCost,
+                            debug->trajectoryCost,
+                            debug->poseCost,
+                            debug->biasCost);
+                ImGui::Text("Query: speed %.2f | direction %.2f rad | switches %d",
+                            debug->querySpeed,
+                            debug->queryDirection,
+                            debug->switches);
+
+                if (ImGui::BeginTable("MMTopCandidates", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+                {
+                    ImGui::TableSetupColumn("Clip");
+                    ImGui::TableSetupColumn("Time");
+                    ImGui::TableSetupColumn("Total");
+                    ImGui::TableSetupColumn("Trajectory");
+                    ImGui::TableSetupColumn("Pose");
+                    ImGui::TableHeadersRow();
+                    for (const auto& candidate : debug->topCandidates)
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn(); ImGui::TextUnformatted(candidate.clipName.c_str());
+                        ImGui::TableNextColumn(); ImGui::Text("%.3f", candidate.time);
+                        ImGui::TableNextColumn(); ImGui::Text("%.3f", candidate.totalCost);
+                        ImGui::TableNextColumn(); ImGui::Text("%.3f", candidate.trajectoryCost);
+                        ImGui::TableNextColumn(); ImGui::Text("%.3f", candidate.poseCost);
+                    }
+                    ImGui::EndTable();
+                }
+            }
+        }
     }
 
     ImGui::End();

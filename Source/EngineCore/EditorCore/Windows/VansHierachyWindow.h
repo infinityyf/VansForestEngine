@@ -20,6 +20,10 @@ namespace VansGraphics
 
 	class VansHierachuWindow : public VansBaseWindowComponent
 	{
+	public:
+		/// Motion Matching 3D 轨迹可视化开关
+		static bool m_ShowMMViz;
+
 	private:
 		bool m_TestButton = true;
 		VansAnimationNode* m_SelectedAnimationNode = nullptr;
