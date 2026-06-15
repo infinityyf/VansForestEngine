@@ -2114,7 +2114,37 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
         mmSettings.continuationBias = mmJson.value("continuation_bias", 0.10f);
         mmSettings.loopBias = mmJson.value("loop_bias", 0.04f);
         mmSettings.desiredSpeedScale = mmJson.value("desired_speed_scale", 650.0f);
+        mmSettings.trajectoryWeight = mmJson.value("trajectory_weight", 1.0f);
+        mmSettings.poseWeight = mmJson.value("pose_weight", 0.7f);
         mmSettings.topCandidateCount = mmJson.value("top_candidates", 8);
+        mmSettings.allowLegacyBoneDetection = mmJson.value("allow_legacy_bone_detection", true);
+
+        if (mmJson.contains("rig") && mmJson["rig"].is_object())
+        {
+            const auto& rigJson = mmJson["rig"];
+            mmSettings.rig.root = rigJson.value("root", "");
+            mmSettings.rig.trajectoryRoot = rigJson.value("trajectory_root", "");
+            mmSettings.rig.pelvis = rigJson.value("pelvis", "");
+            mmSettings.rig.leftFoot = rigJson.value("left_foot", "");
+            mmSettings.rig.rightFoot = rigJson.value("right_foot", "");
+            mmSettings.rig.head = rigJson.value("head", "");
+        }
+
+        if (mmJson.contains("schema") && mmJson["schema"].is_object())
+        {
+            const auto& schemaJson = mmJson["schema"];
+            mmSettings.trajectoryWeight = schemaJson.value("trajectory_weight", mmSettings.trajectoryWeight);
+            mmSettings.poseWeight = schemaJson.value("pose_weight", mmSettings.poseWeight);
+            if (schemaJson.contains("future_times") && schemaJson["future_times"].is_array())
+            {
+                const auto& timesJson = schemaJson["future_times"];
+                for (size_t i = 0; i < mmSettings.schema.futureTimes.size() && i < timesJson.size(); ++i)
+                {
+                    if (timesJson[i].is_number())
+                        mmSettings.schema.futureTimes[i] = timesJson[i].get<float>();
+                }
+            }
+        }
 
         if (mmJson.contains("include_clip_tokens") && mmJson["include_clip_tokens"].is_array())
         {

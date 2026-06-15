@@ -200,16 +200,31 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                     glm::mat4 worldMat = VansTransformStore::GetTransform(tid).GetModelMatrix();
                     const auto& globals = ctrl->GetCachedGlobalTransforms();
                     glm::vec3 rootWS = glm::vec3(worldMat[3]);
-                    if (!globals.empty())
+                    const Skeleton& skeleton = animNode->GetSkeleton();
+                    int rootBoneIndex = -1;
+                    auto rootIt = skeleton.boneNameToIndex.find("root");
+                    if (rootIt != skeleton.boneNameToIndex.end())
+                        rootBoneIndex = rootIt->second;
+                    else
                     {
-                        glm::mat4 boneWorld = worldMat * globals[0];
+                        rootIt = skeleton.boneNameToIndex.find("Root");
+                        if (rootIt != skeleton.boneNameToIndex.end())
+                            rootBoneIndex = rootIt->second;
+                    }
+                    if (rootBoneIndex >= 0 && rootBoneIndex < static_cast<int>(globals.size()))
+                    {
+                        glm::mat4 boneWorld = worldMat * globals[rootBoneIndex];
                         rootWS = glm::vec3(boneWorld[3]);
                     }
 
                     // 预测轨迹点 (0.25s 间隔, 共 1s, 4 个点)
                     float dir = mm->queryDirection;
                     float spd = mm->querySpeed * 0.01f; // cm/s → m/s
-                    glm::vec3 velWS(std::sin(dir) * spd, 0.0f, std::cos(dir) * spd);
+                    glm::vec3 velLocal(std::sin(dir) * spd, -std::cos(dir) * spd, 0.0f);
+                    glm::vec3 velWS = glm::vec3(worldMat * glm::vec4(velLocal, 0.0f));
+                    velWS.y = 0.0f;
+                    if (glm::length(velWS) > 0.0001f)
+                        velWS = glm::normalize(velWS) * spd;
                     const int numSteps = 4;
                     const float stepT = 0.25f;
 

@@ -266,16 +266,22 @@ const std::vector<AnimatorTransition>& VansAnimationController::GetTransitions()
 void VansAnimationController::AddClip(const std::string& name, VansAnimationClip&& clip)
 {
 	m_Clips[name] = std::move(clip);
+	if (m_MotionMatching)
+		m_MotionMatching->MarkDatabaseDirty();
 }
 
 void VansAnimationController::AddClip(const std::string& name, const VansAnimationClip& clip)
 {
 	m_Clips[name] = clip;
+	if (m_MotionMatching)
+		m_MotionMatching->MarkDatabaseDirty();
 }
 
 void VansAnimationController::RemoveClip(const std::string& name)
 {
 	m_Clips.erase(name);
+	if (m_MotionMatching)
+		m_MotionMatching->MarkDatabaseDirty();
 }
 
 VansAnimationClip* VansAnimationController::GetClip(const std::string& name)

@@ -650,6 +650,8 @@ void VansGraphics::VansHierachuWindow::DrawAnimationNodeDetail()
             ImGui::Text("Database:  %s | Clips: %d | Samples: %d",
                         mm->databaseReady ? "ready" : "not ready",
                         mm->clipCount, mm->sampleCount);
+            ImGui::Text("Rig:       %s",
+                        mm->rigStatus.empty() ? (mm->rigReady ? "ready" : "not ready") : mm->rigStatus.c_str());
             ImGui::Text("Query Speed: %.1f cm/s | Direction: %.2f rad",
                         mm->querySpeed, mm->queryDirection);
 

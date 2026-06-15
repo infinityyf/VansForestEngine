@@ -10,6 +10,47 @@
 
 namespace VansGraphics
 {
+	struct MotionMatchingRigMap
+	{
+		std::string root;
+		std::string trajectoryRoot;
+		std::string pelvis;
+		std::string leftFoot;
+		std::string rightFoot;
+		std::string head;
+
+		bool HasExplicitMapping() const
+		{
+			return !root.empty() || !trajectoryRoot.empty() || !pelvis.empty() ||
+			       !leftFoot.empty() || !rightFoot.empty() || !head.empty();
+		}
+	};
+
+	struct MotionMatchingResolvedRig
+	{
+		int root = -1;
+		int trajectoryRoot = -1;
+		int pelvis = -1;
+		int leftFoot = -1;
+		int rightFoot = -1;
+		int head = -1;
+
+		bool IsValid() const
+		{
+			return root >= 0 && trajectoryRoot >= 0 && pelvis >= 0 &&
+			       leftFoot >= 0 && rightFoot >= 0 && head >= 0;
+		}
+	};
+
+	static constexpr int MotionFeatureDim = 28;
+	using MotionFeatureVector = std::array<float, MotionFeatureDim>;
+
+	struct MotionFeatureSchema
+	{
+		static constexpr int FutureTimeCount = 3;
+		std::array<float, FutureTimeCount> futureTimes = { 0.25f, 0.50f, 1.00f };
+	};
+
 	struct MotionMatchingSettings
 	{
 		bool enabled = false;
@@ -21,7 +62,12 @@ namespace VansGraphics
 		float continuationBias = 0.10f;
 		float loopBias = 0.04f;
 		float desiredSpeedScale = 650.0f;
+		float trajectoryWeight = 1.0f;
+		float poseWeight = 0.7f;
 		int topCandidateCount = 8;
+		MotionMatchingRigMap rig;
+		bool allowLegacyBoneDetection = true;
+		MotionFeatureSchema schema;
 		std::vector<std::string> includeClipNameTokens;
 		std::vector<std::string> excludeClipNameTokens;
 	};
@@ -41,6 +87,8 @@ namespace VansGraphics
 		bool enabled = false;
 		bool databaseReady = false;
 		bool usedThisFrame = false;
+		bool rigReady = false;
+		std::string rigStatus;
 		std::string activeClip;
 		std::string selectedClip;
 		float activeTime = 0.0f;
@@ -77,25 +125,20 @@ namespace VansGraphics
 		const MotionMatchingDebugData& GetDebugData() const { return m_DebugData; }
 
 	private:
-		static constexpr int FeatureDim = 16;
-		using FeatureVector = std::array<float, FeatureDim>;
+		static constexpr int FeatureDim = MotionFeatureDim;
+		static constexpr int kTrajectoryBegin = 0;
+		static constexpr int kTrajectoryEnd = 12;
+		static constexpr int kPoseBegin = 12;
+		static constexpr int kPoseEnd = FeatureDim;
+		using FeatureVector = MotionFeatureVector;
 
 		struct Sample
 		{
 			std::string clipName;
-			const VansAnimationClip* clip = nullptr;
 			float time = 0.0f;
+			FeatureVector rawFeature{};
 			FeatureVector feature{};
 			bool loopLike = false;
-		};
-
-		struct BoneMap
-		{
-			int root = -1;
-			int pelvis = -1;
-			int leftFoot = -1;
-			int rightFoot = -1;
-			int head = -1;
 		};
 
 		struct MatchResult
@@ -112,7 +155,7 @@ namespace VansGraphics
 		std::vector<Sample> m_Samples;
 		FeatureVector m_Mean{};
 		FeatureVector m_Std{};
-		BoneMap m_Bones;
+		MotionMatchingResolvedRig m_Rig;
 		bool m_DatabaseReady = false;
 		bool m_DatabaseDirty = true;
 
@@ -121,24 +164,54 @@ namespace VansGraphics
 		float m_TimeSinceSearch = 999.0f;
 		float m_CurrentCost = 1.0e30f;
 		int m_SwitchCount = 0;
+		bool m_HasLastSearchContext = false;
+		int m_LastMoveState = -1;
+		int m_LastDirectionBucket = -1;
+		bool m_LastCrouching = false;
+		bool m_LastAirborne = false;
+		bool m_LastMoving = false;
 
 		bool m_Blending = false;
 		float m_BlendElapsed = 0.0f;
 		std::vector<glm::mat4> m_BlendSource;
+		std::vector<glm::mat4> m_PreviousQueryModelPose;
+		glm::vec3 m_CurrentLeftFootVelocity = glm::vec3(0.0f);
+		glm::vec3 m_CurrentRightFootVelocity = glm::vec3(0.0f);
 
-		BoneMap DetectBones(const Skeleton& skeleton) const;
 		bool ShouldIncludeClip(const std::string& clipName) const;
-		FeatureVector ExtractFeature(const VansAnimationClip& clip,
-		                             float time,
-		                             const Skeleton& skeleton,
-		                             const BoneMap& bones) const;
-		FeatureVector BuildQueryFeature(const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
+		int ResolveBoneIndex(const Skeleton& skeleton, const std::string& name) const;
+		MotionMatchingResolvedRig ResolveRig(const Skeleton& skeleton);
+		MotionMatchingResolvedRig DetectLegacyRig(const Skeleton& skeleton) const;
+		bool ValidateRig(const MotionMatchingResolvedRig& rig, std::string& outReason) const;
+		FeatureVector ExtractDatabaseFeature(const VansAnimationClip& clip,
+		                                     float time,
+		                                     const Skeleton& skeleton,
+		                                     const MotionMatchingResolvedRig& rig) const;
+		FeatureVector BuildQueryFeature(const std::unordered_map<std::string, AnimatorParameter>& parameters,
+		                                const std::vector<glm::mat4>& currentLocalPose,
+		                                const Skeleton& skeleton,
+		                                const MotionMatchingResolvedRig& rig) const;
 		void NormalizeFeature(FeatureVector& feature) const;
-		MatchResult FindBestMatch(const FeatureVector& query);
+		float ComputeCost(const FeatureVector& query,
+		                  const FeatureVector& candidate,
+		                  float& outTrajectory,
+		                  float& outPose) const;
+		MatchResult FindBestMatch(const FeatureVector& query,
+		                          const std::unordered_map<std::string, AnimatorParameter>& parameters);
+		bool ShouldConsiderSampleForParameters(const Sample& sample,
+		                                       const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
+		bool IsSamePlaybackNeighborhood(const Sample& sample) const;
 		void SamplePose(const VansAnimationClip& clip,
 		                float time,
 		                const Skeleton& skeleton,
 		                std::vector<glm::mat4>& outLocalTransforms) const;
+		void BuildModelSpacePose(const std::vector<glm::mat4>& localTransforms,
+		                         const Skeleton& skeleton,
+		                         std::vector<glm::mat4>& outModelTransforms) const;
+		glm::vec3 TransformPointToRootSpace(const glm::mat4& rootModel, const glm::vec3& point) const;
+		glm::vec3 TransformVectorToRootSpace(const glm::mat4& rootModel, const glm::vec3& vector) const;
+		float WrapClipTime(const VansAnimationClip& clip, float time) const;
+		void WriteVec3(FeatureVector& feature, int& offset, const glm::vec3& value) const;
 		void BlendPose(const std::vector<glm::mat4>& from,
 		               const std::vector<glm::mat4>& to,
 		               float alpha,
