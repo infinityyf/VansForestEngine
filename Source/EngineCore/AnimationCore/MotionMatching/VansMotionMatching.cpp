@@ -61,6 +61,70 @@ namespace
 		       lowered.find("loop") != std::string::npos;
 	}
 
+	bool IsTransitionSearchClipName(const std::string& clipName)
+	{
+		const std::string lowered = ToLower(clipName);
+		if (lowered.find("jump") != std::string::npos ||
+		    lowered.find("land") != std::string::npos ||
+		    lowered.find("fall") != std::string::npos ||
+		    lowered.find("break") != std::string::npos)
+			return false;
+		return lowered.find("start") != std::string::npos ||
+		       lowered.find("stop") != std::string::npos ||
+		       lowered.find("transition") != std::string::npos ||
+		       lowered.find("towalk") != std::string::npos ||
+		       lowered.find("torun") != std::string::npos ||
+		       lowered.find("tosprint") != std::string::npos ||
+		       lowered.find("tocrouch") != std::string::npos ||
+		       lowered.find("tostand") != std::string::npos ||
+		       lowered.find("turn") != std::string::npos;
+	}
+
+	bool IsMotionSearchClipName(const std::string& clipName)
+	{
+		return IsLoopSearchClipName(clipName) || IsTransitionSearchClipName(clipName);
+	}
+
+	int MoveStateFromFamilyName(const std::string& lowered)
+	{
+		if (lowered.find("crouch") != std::string::npos)
+			return 4;
+		if (lowered.find("sprint") != std::string::npos)
+			return 3;
+		if (lowered.find("run") != std::string::npos)
+			return 2;
+		if (lowered.find("walk") != std::string::npos)
+			return 1;
+		return 0;
+	}
+
+	int TransitionTargetMoveStateFromName(const std::string& lowered)
+	{
+		if (lowered.find("tocrouch") != std::string::npos)
+			return 4;
+		if (lowered.find("tostand") != std::string::npos)
+			return 0;
+		if (lowered.find("towalk") != std::string::npos)
+			return 1;
+		if (lowered.find("torun") != std::string::npos)
+			return 2;
+		if (lowered.find("tosprint") != std::string::npos)
+			return 3;
+		if (lowered.find("stop") != std::string::npos)
+			return lowered.find("crouch") != std::string::npos ? 4 : 0;
+		return MoveStateFromFamilyName(lowered);
+	}
+
+	int TransitionSourceMoveStateFromName(const std::string& lowered)
+	{
+		const size_t toPos = lowered.find("to");
+		if (toPos != std::string::npos)
+			return MoveStateFromFamilyName(lowered.substr(0, toPos));
+		if (lowered.find("start") != std::string::npos)
+			return 0;
+		return MoveStateFromFamilyName(lowered);
+	}
+
 	float ReadFloatParam(const std::unordered_map<std::string, AnimatorParameter>& parameters,
 	                     const char* name,
 	                     float fallback = 0.0f)
@@ -176,7 +240,9 @@ void VansMotionMatchingRuntime::MarkDatabaseDirty()
 	m_DatabaseReady = false;
 	m_DebugData.databaseReady = false;
 	m_PreviousQueryModelPose.clear();
+	m_LastOutputLocalPose.clear();
 	m_HasLastSearchContext = false;
+	m_DirectionChangedForSearch = false;
 }
 
 bool VansMotionMatchingRuntime::ShouldIncludeClip(const std::string& clipName) const
@@ -350,6 +416,13 @@ float VansMotionMatchingRuntime::WrapClipTime(const VansAnimationClip& clip, flo
 	return wrapped;
 }
 
+float VansMotionMatchingRuntime::ResolveClipTime(const VansAnimationClip& clip, float time, bool loopLike) const
+{
+	if (loopLike)
+		return WrapClipTime(clip, time);
+	return glm::clamp(time, 0.0f, (std::max)(0.0f, clip.duration));
+}
+
 void VansMotionMatchingRuntime::WriteVec3(FeatureVector& feature, int& offset, const glm::vec3& value) const
 {
 	feature[offset++] = value.x;
@@ -360,13 +433,14 @@ void VansMotionMatchingRuntime::WriteVec3(FeatureVector& feature, int& offset, c
 VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatabaseFeature(
 	const VansAnimationClip& clip,
 	float time,
+	bool loopLike,
 	const Skeleton& skeleton,
 	const MotionMatchingResolvedRig& rig) const
 {
 	FeatureVector f{};
 	std::vector<glm::mat4> local0;
 	std::vector<glm::mat4> model0;
-	SamplePose(clip, WrapClipTime(clip, time), skeleton, local0);
+	SamplePose(clip, ResolveClipTime(clip, time, loopLike), skeleton, local0);
 	BuildModelSpacePose(local0, skeleton, model0);
 
 	const glm::mat4 rootModel0 = model0[rig.root];
@@ -377,7 +451,7 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	{
 		std::vector<glm::mat4> localFuture;
 		std::vector<glm::mat4> modelFuture;
-		SamplePose(clip, WrapClipTime(clip, time + futureTime), skeleton, localFuture);
+		SamplePose(clip, ResolveClipTime(clip, time + futureTime, loopLike), skeleton, localFuture);
 		BuildModelSpacePose(localFuture, skeleton, modelFuture);
 
 		const glm::vec3 futureRoot = ExtractTranslation(modelFuture[rig.trajectoryRoot]);
@@ -390,7 +464,7 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	{
 		std::vector<glm::mat4> localFuture;
 		std::vector<glm::mat4> modelFuture;
-		SamplePose(clip, WrapClipTime(clip, time + futureTime), skeleton, localFuture);
+		SamplePose(clip, ResolveClipTime(clip, time + futureTime, loopLike), skeleton, localFuture);
 		BuildModelSpacePose(localFuture, skeleton, modelFuture);
 
 		const glm::vec3 futureRoot = ExtractTranslation(modelFuture[rig.trajectoryRoot]);
@@ -411,8 +485,8 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	const float velocityDt = 0.10f;
 	std::vector<glm::mat4> localPrev, modelPrev;
 	std::vector<glm::mat4> localNext, modelNext;
-	SamplePose(clip, WrapClipTime(clip, time - velocityDt), skeleton, localPrev);
-	SamplePose(clip, WrapClipTime(clip, time + velocityDt), skeleton, localNext);
+	SamplePose(clip, ResolveClipTime(clip, time - velocityDt, loopLike), skeleton, localPrev);
+	SamplePose(clip, ResolveClipTime(clip, time + velocityDt, loopLike), skeleton, localNext);
 	BuildModelSpacePose(localPrev, skeleton, modelPrev);
 	BuildModelSpacePose(localNext, skeleton, modelNext);
 
@@ -519,18 +593,37 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 	{
 		if (!ShouldIncludeClip(name) || clip.duration <= kEpsilon)
 			continue;
-		if (!IsLoopSearchClipName(name))
+		if (!IsMotionSearchClipName(name))
 			continue;
 
 		++includedClipCount;
+		const bool loopLike = IsLoopSearchClipName(name);
+		const std::string lowered = ToLower(name);
 		for (float t = 0.0f; t < clip.duration; t += sampleStep)
 		{
 			Sample sample;
 			sample.clipName = name;
 			sample.time = t;
-			sample.rawFeature = ExtractDatabaseFeature(clip, t, skeleton, m_Rig);
+			sample.rawFeature = ExtractDatabaseFeature(clip, t, loopLike, skeleton, m_Rig);
 			sample.feature = sample.rawFeature;
-			sample.loopLike = true;
+			sample.loopLike = loopLike;
+			sample.transitionLike = !loopLike;
+			sample.startLike = sample.transitionLike && lowered.find("start") != std::string::npos;
+			sample.stopLike = sample.transitionLike && lowered.find("stop") != std::string::npos;
+			sample.turnLike = sample.transitionLike && lowered.find("turn") != std::string::npos;
+			sample.paceTransitionLike = sample.transitionLike &&
+				(lowered.find("transition") != std::string::npos ||
+				 lowered.find("towalk") != std::string::npos ||
+				 lowered.find("torun") != std::string::npos ||
+				 lowered.find("tosprint") != std::string::npos ||
+				 lowered.find("tocrouch") != std::string::npos ||
+				 lowered.find("tostand") != std::string::npos);
+			sample.sourceMoveState = sample.transitionLike
+				? TransitionSourceMoveStateFromName(lowered)
+				: MoveStateFromFamilyName(lowered);
+			sample.targetMoveState = sample.transitionLike
+				? TransitionTargetMoveStateFromName(lowered)
+				: MoveStateFromFamilyName(lowered);
 			m_Samples.push_back(sample);
 		}
 	}
@@ -570,7 +663,9 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 	m_CurrentTime = m_Samples[0].time;
 	m_CurrentCost = std::numeric_limits<float>::max();
 	m_TimeSinceSearch = m_Settings.searchThrottle;
+	m_TimeSinceSwitch = m_Settings.minSwitchInterval;
 	m_PreviousQueryModelPose.clear();
+	m_LastOutputLocalPose.clear();
 	m_DebugData.sampleCount = static_cast<int>(m_Samples.size());
 	m_DebugData.clipCount = includedClipCount;
 	m_DebugData.databaseReady = true;
@@ -618,39 +713,55 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 	const Sample& sample,
 	const std::unordered_map<std::string, AnimatorParameter>& parameters) const
 {
-	if (!sample.loopLike)
-		return false;
-
-	const std::string lowered = ToLower(sample.clipName);
-	const bool isIdle = lowered.find("idle") != std::string::npos;
-	const bool isWalk = lowered.find("walk") != std::string::npos;
-	const bool isRun = lowered.find("run") != std::string::npos;
-	const bool isSprint = lowered.find("sprint") != std::string::npos;
-	const bool isCrouch = lowered.find("crouch") != std::string::npos;
 	const bool isCrouching = ReadFloatParam(parameters, "IsCrouching", 0.0f) > 0.5f ||
 	                         ReadBoolParam(parameters, "IsCrouching", false);
 	const int moveState = ReadIntParam(parameters, "MoveState", 0);
 	const float speed01 = ReadFloatParam(parameters, "Speed", 0.0f);
+	const bool wantsIdle = speed01 < 0.05f || moveState == 0;
+	const bool currentValid = m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size());
+	const int currentMoveState = currentValid ? m_Samples[m_CurrentSample].targetMoveState : 0;
+	const int desiredMoveState = (isCrouching || moveState == 4)
+		? 4
+		: (wantsIdle ? 0 : moveState);
+	const bool currentMoving = currentMoveState == 1 || currentMoveState == 2 || currentMoveState == 3 ||
+	                           (currentMoveState == 4 && !wantsIdle);
+	const bool desiredMoving = !wantsIdle;
+	const bool startingFromIdle = !currentMoving && desiredMoving;
+	const bool stoppingToIdle = currentMoving && !desiredMoving;
+	const bool changingPace =
+		currentMoveState >= 1 && currentMoveState <= 3 &&
+		desiredMoveState >= 1 && desiredMoveState <= 3 &&
+		currentMoveState != desiredMoveState;
+	const bool changingStance =
+		(currentMoveState == 0 || currentMoveState == 4) &&
+		(desiredMoveState == 0 || desiredMoveState == 4) &&
+		currentMoveState != desiredMoveState;
 
-	if (isCrouching || moveState == 4)
+	if (sample.transitionLike)
 	{
-		if (speed01 < 0.05f)
-			return isCrouch && isIdle;
-		return isCrouch && !isIdle;
+		if (sample.startLike)
+			return startingFromIdle && sample.targetMoveState == desiredMoveState;
+		if (sample.stopLike)
+			return stoppingToIdle && sample.sourceMoveState == currentMoveState && sample.targetMoveState == desiredMoveState;
+		if (sample.paceTransitionLike)
+			return (changingPace || changingStance) &&
+			       sample.sourceMoveState == currentMoveState &&
+			       sample.targetMoveState == desiredMoveState;
+		if (sample.turnLike)
+		{
+			if (!m_DirectionChangedForSearch)
+				return false;
+			return sample.targetMoveState == desiredMoveState;
+		}
+		return false;
 	}
-	if (isCrouch)
+
+	if (!sample.loopLike)
 		return false;
 
-	if (speed01 < 0.05f || moveState == 0)
-		return isIdle && !isCrouch;
-	if (moveState == 3)
-		return isSprint;
-	if (moveState == 2)
-		return isRun;
-	if (moveState == 1)
-		return isWalk;
-
-	return isWalk || isRun || isSprint;
+	if (startingFromIdle || stoppingToIdle || changingPace || changingStance)
+		return false;
+	return sample.targetMoveState == desiredMoveState;
 }
 
 VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
@@ -665,10 +776,6 @@ VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 	{
 		const Sample& sample = m_Samples[i];
 		if (!ShouldConsiderSampleForParameters(sample, parameters))
-			continue;
-		if (m_CurrentSample >= 0 &&
-		    m_CurrentSample < static_cast<int>(m_Samples.size()) &&
-		    sample.clipName == m_Samples[m_CurrentSample].clipName)
 			continue;
 		if (IsSamePlaybackNeighborhood(sample))
 			continue;
@@ -685,6 +792,8 @@ VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 				bias -= m_Settings.continuationBias;
 			if (sample.loopLike && current.loopLike)
 				bias -= m_Settings.loopBias;
+			if (sample.transitionLike && !current.transitionLike)
+				bias -= m_Settings.transitionBias;
 		}
 
 		MatchResult result;
@@ -760,8 +869,9 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	if (!m_Settings.enabled)
 		return false;
 
+	m_DebugData.querySpeed = ReadFloatParam(parameters, "Speed", 0.0f) * m_Settings.desiredSpeedScale;
+	m_DebugData.queryDirection = ReadFloatParam(parameters, "Direction", 0.0f);
 	const bool parameterWantsMotionMatching = ReadBoolParam(parameters, "UseMotionMatching", true);
-	m_DebugData.enabled = parameterWantsMotionMatching;
 	if (!parameterWantsMotionMatching)
 	{
 		m_HasLastSearchContext = false;
@@ -791,8 +901,10 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	std::vector<glm::mat4> currentLocal;
 	SamplePose(activeClipIt->second, m_CurrentTime, skeleton, currentLocal);
 
+	const std::vector<glm::mat4>& queryLocal =
+		(m_LastOutputLocalPose.size() == skeleton.bones.size()) ? m_LastOutputLocalPose : currentLocal;
 	std::vector<glm::mat4> currentModel;
-	BuildModelSpacePose(currentLocal, skeleton, currentModel);
+	BuildModelSpacePose(queryLocal, skeleton, currentModel);
 	if (!m_PreviousQueryModelPose.empty() && deltaTime > kEpsilon &&
 	    m_PreviousQueryModelPose.size() == currentModel.size())
 	{
@@ -804,7 +916,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	}
 	m_PreviousQueryModelPose = currentModel;
 
-	FeatureVector query = BuildQueryFeature(parameters, currentLocal, skeleton, m_Rig);
+	FeatureVector query = BuildQueryFeature(parameters, queryLocal, skeleton, m_Rig);
 	const float speed01 = ReadFloatParam(parameters, "Speed", 0.0f);
 	const float direction = ReadFloatParam(parameters, "Direction", 0.0f);
 	const int moveState = ReadIntParam(parameters, "MoveState", 0);
@@ -819,10 +931,13 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	if (wrappedDirection < 0.0f)
 		wrappedDirection += kTwoPi;
 	const int directionBucket = static_cast<int>((wrappedDirection + kPi * 0.125f) / (kPi * 0.25f)) & 7;
+	const bool directionChanged =
+		m_HasLastSearchContext &&
+		m_LastDirectionBucket != directionBucket;
 	const bool searchContextChanged =
 		!m_HasLastSearchContext ||
 		m_LastMoveState != moveState ||
-		m_LastDirectionBucket != directionBucket ||
+		directionChanged ||
 		m_LastCrouching != isCrouching ||
 		m_LastAirborne != isAirborne ||
 		m_LastMoving != isMoving;
@@ -834,20 +949,26 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_LastCrouching = isCrouching;
 	m_LastAirborne = isAirborne;
 	m_LastMoving = isMoving;
+	m_DirectionChangedForSearch = directionChanged;
 	m_DebugData.querySpeed = speed01 * m_Settings.desiredSpeedScale;
 	m_DebugData.queryDirection = direction;
 	NormalizeFeature(query);
 
 	m_TimeSinceSearch += deltaTime;
+	m_TimeSinceSwitch += deltaTime;
 	if (m_TimeSinceSearch >= m_Settings.searchThrottle)
 	{
 		m_TimeSinceSearch = 0.0f;
 
-		FeatureVector currentFeature = ExtractDatabaseFeature(activeClipIt->second, m_CurrentTime, skeleton, m_Rig);
+		FeatureVector currentFeature = ExtractDatabaseFeature(activeClipIt->second, m_CurrentTime, activeSample->loopLike, skeleton, m_Rig);
 		NormalizeFeature(currentFeature);
 		float currentTrajectory = 0.0f;
 		float currentPose = 0.0f;
 		const float currentCost = ComputeCost(query, currentFeature, currentTrajectory, currentPose);
+		const float transitionCompletionWindow = 0.5f / (std::max)(1.0f, m_Settings.sampleRate);
+		const bool activeTransitionComplete =
+			!activeSample->loopLike &&
+			m_CurrentTime >= (std::max)(0.0f, activeClipIt->second.duration - transitionCompletionWindow);
 
 		MatchResult best = FindBestMatch(query, parameters);
 		const bool bestIsCurrentClip =
@@ -855,16 +976,46 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			m_CurrentSample >= 0 &&
 			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
 			m_Samples[best.sampleIndex].clipName == m_Samples[m_CurrentSample].clipName;
+		const bool bestIsTargetLoop =
+			best.sampleIndex >= 0 &&
+			m_CurrentSample >= 0 &&
+			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
+			m_Samples[best.sampleIndex].loopLike &&
+			m_Samples[best.sampleIndex].targetMoveState == m_Samples[m_CurrentSample].targetMoveState;
+		const bool shouldExitFinishedTransition = activeTransitionComplete && bestIsTargetLoop;
+		float requiredImprovement = searchContextChanged
+			? m_Settings.minSwitchCostImprovement * 0.5f
+			: m_Settings.minSwitchCostImprovement;
+		if (bestIsCurrentClip)
+			requiredImprovement = (std::max)(requiredImprovement, m_Settings.minSwitchCostImprovement * 2.0f);
+		const bool improvesEnough =
+			best.sampleIndex >= 0 &&
+			(best.totalCost + requiredImprovement < currentCost ||
+			 shouldExitFinishedTransition ||
+			 m_CurrentSample < 0);
+		const bool canInterruptBlend =
+			!m_Blending ||
+			shouldExitFinishedTransition ||
+			m_BlendElapsed >= m_Settings.blendDuration * glm::clamp(m_Settings.blendInterruptFraction, 0.0f, 1.0f);
+		const bool switchIntervalReady =
+			searchContextChanged ||
+			shouldExitFinishedTransition ||
+			m_TimeSinceSwitch >= m_Settings.minSwitchInterval;
+		const bool canSwitchNow =
+			best.sampleIndex >= 0 &&
+			improvesEnough &&
+			canInterruptBlend &&
+			switchIntervalReady;
 		if (best.sampleIndex >= 0 &&
-		    !bestIsCurrentClip &&
-		    (searchContextChanged || best.totalCost + m_Settings.minSwitchCostImprovement < currentCost || m_CurrentSample < 0))
+		    canSwitchNow)
 		{
-			m_BlendSource = currentLocal;
+			m_BlendSource = (m_LastOutputLocalPose.size() == skeleton.bones.size()) ? m_LastOutputLocalPose : currentLocal;
 			m_CurrentSample = best.sampleIndex;
 			m_CurrentTime = m_Samples[m_CurrentSample].time;
 			m_CurrentCost = best.totalCost;
 			m_Blending = !m_BlendSource.empty() && m_Settings.blendDuration > kEpsilon;
 			m_BlendElapsed = 0.0f;
+			m_TimeSinceSwitch = 0.0f;
 			m_PreviousQueryModelPose.clear();
 			m_CurrentLeftFootVelocity = glm::vec3(0.0f);
 			m_CurrentRightFootVelocity = glm::vec3(0.0f);
@@ -926,6 +1077,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	{
 		outLocalTransforms = std::move(target);
 	}
+	m_LastOutputLocalPose = outLocalTransforms;
 
 	m_DebugData.usedThisFrame = true;
 	m_DebugData.databaseReady = true;

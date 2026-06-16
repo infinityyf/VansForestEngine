@@ -2111,8 +2111,11 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
         mmSettings.searchThrottle = mmJson.value("search_throttle", 0.15f);
         mmSettings.blendDuration = mmJson.value("blend_duration", 0.18f);
         mmSettings.minSwitchCostImprovement = mmJson.value("min_switch_cost_improvement", 0.02f);
+        mmSettings.minSwitchInterval = mmJson.value("min_switch_interval", 0.25f);
+        mmSettings.blendInterruptFraction = mmJson.value("blend_interrupt_fraction", 0.75f);
         mmSettings.continuationBias = mmJson.value("continuation_bias", 0.10f);
         mmSettings.loopBias = mmJson.value("loop_bias", 0.04f);
+        mmSettings.transitionBias = mmJson.value("transition_bias", 0.08f);
         mmSettings.desiredSpeedScale = mmJson.value("desired_speed_scale", 650.0f);
         mmSettings.trajectoryWeight = mmJson.value("trajectory_weight", 1.0f);
         mmSettings.poseWeight = mmJson.value("pose_weight", 0.7f);

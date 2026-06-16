@@ -59,8 +59,11 @@ namespace VansGraphics
 		float searchThrottle = 0.15f;
 		float blendDuration = 0.18f;
 		float minSwitchCostImprovement = 0.02f;
+		float minSwitchInterval = 0.25f;
+		float blendInterruptFraction = 0.75f;
 		float continuationBias = 0.10f;
 		float loopBias = 0.04f;
+		float transitionBias = 0.08f;
 		float desiredSpeedScale = 650.0f;
 		float trajectoryWeight = 1.0f;
 		float poseWeight = 0.7f;
@@ -139,6 +142,13 @@ namespace VansGraphics
 			FeatureVector rawFeature{};
 			FeatureVector feature{};
 			bool loopLike = false;
+			bool transitionLike = false;
+			bool startLike = false;
+			bool stopLike = false;
+			bool turnLike = false;
+			bool paceTransitionLike = false;
+			int sourceMoveState = -1;
+			int targetMoveState = 0;
 		};
 
 		struct MatchResult
@@ -162,11 +172,13 @@ namespace VansGraphics
 		int m_CurrentSample = -1;
 		float m_CurrentTime = 0.0f;
 		float m_TimeSinceSearch = 999.0f;
+		float m_TimeSinceSwitch = 999.0f;
 		float m_CurrentCost = 1.0e30f;
 		int m_SwitchCount = 0;
 		bool m_HasLastSearchContext = false;
 		int m_LastMoveState = -1;
 		int m_LastDirectionBucket = -1;
+		bool m_DirectionChangedForSearch = false;
 		bool m_LastCrouching = false;
 		bool m_LastAirborne = false;
 		bool m_LastMoving = false;
@@ -174,6 +186,7 @@ namespace VansGraphics
 		bool m_Blending = false;
 		float m_BlendElapsed = 0.0f;
 		std::vector<glm::mat4> m_BlendSource;
+		std::vector<glm::mat4> m_LastOutputLocalPose;
 		std::vector<glm::mat4> m_PreviousQueryModelPose;
 		glm::vec3 m_CurrentLeftFootVelocity = glm::vec3(0.0f);
 		glm::vec3 m_CurrentRightFootVelocity = glm::vec3(0.0f);
@@ -185,6 +198,7 @@ namespace VansGraphics
 		bool ValidateRig(const MotionMatchingResolvedRig& rig, std::string& outReason) const;
 		FeatureVector ExtractDatabaseFeature(const VansAnimationClip& clip,
 		                                     float time,
+		                                     bool loopLike,
 		                                     const Skeleton& skeleton,
 		                                     const MotionMatchingResolvedRig& rig) const;
 		FeatureVector BuildQueryFeature(const std::unordered_map<std::string, AnimatorParameter>& parameters,
@@ -211,6 +225,7 @@ namespace VansGraphics
 		glm::vec3 TransformPointToRootSpace(const glm::mat4& rootModel, const glm::vec3& point) const;
 		glm::vec3 TransformVectorToRootSpace(const glm::mat4& rootModel, const glm::vec3& vector) const;
 		float WrapClipTime(const VansAnimationClip& clip, float time) const;
+		float ResolveClipTime(const VansAnimationClip& clip, float time, bool loopLike) const;
 		void WriteVec3(FeatureVector& feature, int& offset, const glm::vec3& value) const;
 		void BlendPose(const std::vector<glm::mat4>& from,
 		               const std::vector<glm::mat4>& to,

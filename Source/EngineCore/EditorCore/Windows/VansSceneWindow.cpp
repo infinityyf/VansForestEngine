@@ -192,7 +192,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                     if (!ctrl || !ctrl->IsMotionMatchingConfigured())
                         continue;
                     const auto* mm = ctrl->GetMotionMatchingDebugData();
-                    if (!mm || !mm->enabled || !mm->usedThisFrame)
+                    if (!mm || !mm->enabled)
                         continue;
 
                     // 世界空间根位置
