@@ -35,6 +35,8 @@ namespace VansGraphics
 		GLOBAL_BINDING_TILE_LIGHT_INDICES       = 10,  // TileLight Index SSBO  (readonly)
 		GLOBAL_BINDING_LTC1_LUT                 = 11,  // Area-light LTC matrix LUT (RGBA16F 64x64)
 		GLOBAL_BINDING_LTC2_LUT                 = 12,  // Area-light LTC amplitude/Fresnel LUT (RGBA16F 64x64)
+		GLOBAL_BINDING_REFLECTION_PROBE_SPECULAR = 13, // Prefiltered samplerCubeArray
+		GLOBAL_BINDING_REFLECTION_PROBE_BUFFER   = 14, // Reflection probe metadata SSBO
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -194,7 +196,6 @@ namespace VansGraphics
 		DEFERRED_BINDING_SH_G             = 11,
 		DEFERRED_BINDING_SH_B             = 12,
 		DEFERRED_BINDING_FOG              = 13,
-		DEFERRED_BINDING_GI_VISIBILITY    = 14,  // GI 探针可见度体 (sampler3D)
 		DEFERRED_BINDING_RECT_LIGHT_EMISSIVE = 15, // 面光源发光贴图数组 (sampler2DArray)
 		DEFERRED_BINDING_IES_PROFILES        = 16, // IES profile 纹理数组 (sampler2DArray, R16F)
 	};

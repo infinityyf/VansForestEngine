@@ -481,6 +481,12 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimGraph.h">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\ReflectionProbeCore\VansReflectionProbe.h">
+      <Filter>EngineCore\RenderCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\ReflectionProbeCore\VansReflectionProbeSystem.h">
+      <Filter>EngineCore\RenderCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\MotionMatching\VansMotionMatching.h">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
@@ -967,6 +973,9 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimGraph.cpp">
       <Filter>EngineCore\AnimationCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\ReflectionProbeCore\VansReflectionProbeSystem.cpp">
+      <Filter>EngineCore\RenderCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\MotionMatching\VansMotionMatching.cpp">
       <Filter>EngineCore\AnimationCore</Filter>

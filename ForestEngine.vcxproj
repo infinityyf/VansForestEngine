@@ -251,6 +251,8 @@
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansPBR.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\ReflectionProbeCore\VansReflectionProbe.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\ReflectionProbeCore\VansReflectionProbeSystem.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VegetationCore\VansVegetationSystem.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterConfig.h" />
@@ -424,6 +426,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansIESProfile.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\ReflectionProbeCore\VansReflectionProbeSystem.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VegetationCore\VansVegetationSystem.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterFFT.cpp" />

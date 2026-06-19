@@ -140,6 +140,15 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 	}
 	device->PrepareInstanceTransformData();
 	CreateGlobalDescriptorSet(device->GetLogicDevice());
+	// Probe resources depend on both scene JSON and the global descriptor set.
+	// Build them after Set 0 exists and before render-node pipelines are created.
+	if (m_ReflectionProbeSystem.GetPlacementSettings().enabled &&
+		m_ReflectionProbeSystem.GetProbes().size() <= 1)
+	{
+		m_ReflectionProbeSystem.GenerateAutoProbes(*this, true);
+	}
+	m_ReflectionProbeSystem.CreateGPUResources(*device, device->GetEditorCommandBuffer());
+	m_ReflectionProbeSystem.UpdateGlobalDescriptors(m_GlobalDescriptorSet);
 	// ── 修复：WaterSystem 在 AddWaterNode 中已创建，但 CreateGlobalDescriptorSet 后才
 	//    有有效的 m_GlobalDescriptorSet。此处同步正确的全局 descriptor set 到 WaterSystem。
 	if (m_WaterSystem)
@@ -158,6 +167,10 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 
 	CreateNodeDescriptorSets();
 	device->PrepareRayTracingData();
+	// The local SH volume is updated in spatial phases during rendering. Keep
+	// initial probe requests queued until every GI cell has received one update.
+	m_ReflectionProbeSystem.DeferInitialBakeForGI(
+		m_GISettings.spatialUpdateDivisor, m_GISettings.directionUpdateSlices);
 
 	// 记录本次加载模式
 	m_LoadMode = mode;
@@ -1047,11 +1060,11 @@ void VansGraphics::VansScene::LoadMeshesFromJson(
         bool import_tangent     = sceneMesh.value("need_tangent", false);
         bool loadMultiMesh      = sceneMesh.value("load_multi_mesh", false);
 
-        if (loadMultiMesh)
-        {
-            bool generate_as = sceneMesh.value("support_raytracing", false);
-            bool needCpuData = sceneMesh.value("need_cpu_data", false);
-            VansMesh* mesh   = new VansMesh(needCpuData, /*supportRayTracing=*/false);
+		if (loadMultiMesh)
+		{
+			bool generate_as = sceneMesh.value("support_raytracing", false);
+			bool needCpuData = sceneMesh.value("need_cpu_data", false);
+			VansMesh* mesh   = new VansMesh(needCpuData, /*supportRayTracing=*/false);
 
             // 动画配置由 object.components.animation 统一处理。
 
@@ -1059,10 +1072,10 @@ void VansGraphics::VansScene::LoadMeshesFromJson(
             mesh->SetName(sceneMesh["name"]);
             m_Meshes.push_back(mesh);
         }
-        else
-        {
-            bool generate_as = sceneMesh.value("support_raytracing", false);
-            bool needCpuData = sceneMesh.value("need_cpu_data", false);
+		else
+		{
+			bool generate_as = sceneMesh.value("support_raytracing", false);
+			bool needCpuData = sceneMesh.value("need_cpu_data", false);
             VansMesh* mesh   = new VansMesh(needCpuData, generate_as);
             mesh->LoadMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath.c_str(), import_tangent);
             mesh->SetName(sceneMesh["name"]);
@@ -1608,7 +1621,51 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
         VANS_LOG_ERROR("[VansScene] Cannot open scene file: " << path);
         return false;
     }
-    json sceneData = json::parse(jsonFile);
+	json sceneData = json::parse(jsonFile);
+	m_ReflectionProbeSystem.LoadFromSceneJson(sceneData, path);
+
+	// GI settings are scene data because changing the volume dimensions requires
+	// recreating all probe textures and hit buffers for that scene.
+	m_GISettings = VansGISettings{};
+	if (sceneData.contains("globalIllumination") && sceneData["globalIllumination"].is_object())
+	{
+		const json& gi = sceneData["globalIllumination"];
+		m_GISettings.gridSize = std::clamp(gi.value("gridSize", m_GISettings.gridSize), 1u, 256u);
+		m_GISettings.probeSpacing = std::max(gi.value("probeSpacing", m_GISettings.probeSpacing), 0.001f);
+		m_GISettings.raysPerProbe = std::clamp(gi.value("raysPerProbe", m_GISettings.raysPerProbe), 1u, 4096u);
+		m_GISettings.spatialUpdateDivisor = std::clamp(
+			gi.value("spatialUpdateDivisor", m_GISettings.spatialUpdateDivisor), 1u, m_GISettings.gridSize);
+		m_GISettings.directionUpdateSlices = std::clamp(
+			gi.value("directionUpdateSlices", m_GISettings.directionUpdateSlices), 1u, m_GISettings.raysPerProbe);
+		m_GISettings.maxRayDistance = std::max(gi.value("maxRayDistance", m_GISettings.maxRayDistance), 0.001f);
+		m_GISettings.normalBias = std::max(gi.value("normalBias", m_GISettings.normalBias), 0.0f);
+		m_GISettings.environmentIntensity = std::max(gi.value("environmentIntensity", m_GISettings.environmentIntensity), 0.0f);
+		m_GISettings.maxIndirectRadiance = std::max(gi.value("maxIndirectRadiance", m_GISettings.maxIndirectRadiance), 0.0f);
+		m_GISettings.maxSHL0 = std::max(gi.value("maxSHL0", m_GISettings.maxSHL0), 0.0f);
+		m_GISettings.temporalBlend = std::clamp(gi.value("temporalBlend", m_GISettings.temporalBlend), 0.0f, 1.0f);
+
+		if (gi.contains("regionCenter") && gi["regionCenter"].is_array() && gi["regionCenter"].size() == 3)
+		{
+			m_GISettings.regionCenter = glm::vec3(
+				gi["regionCenter"][0].get<float>(),
+				gi["regionCenter"][1].get<float>(),
+				gi["regionCenter"][2].get<float>());
+		}
+	}
+
+	// SSGI is the final consumer of the spatial SH volume. Keep its existing UBO
+	// synchronized when a scene overrides the default GI bounds.
+	{
+		const float volumeSize = static_cast<float>(m_GISettings.gridSize) * m_GISettings.probeSpacing;
+		const glm::vec3 volumeMin = m_GISettings.regionCenter - glm::vec3(volumeSize * 0.5f);
+		SSGIParamsGPU volumeData{};
+		volumeData.giVolumeMin = glm::vec4(volumeMin, 0.0f);
+		volumeData.giVolumeSizeAndBias = glm::vec4(
+			volumeSize, volumeSize, volumeSize, m_GISettings.normalBias);
+		if (m_MaterialManager.m_SSGICBBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
+			m_MaterialManager.m_SSGICBBuffer.SetBufferData(
+				&volumeData.giVolumeMin, sizeof(glm::vec4), sizeof(glm::vec4) * 2);
+	}
 
     // 从 scene path 推导 project root（Scenes/ → 项目根目录）
     // 供 LoadSceneObjects 解析相对路径共用
@@ -2131,6 +2188,13 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
             mmSettings.rig.leftFoot = rigJson.value("left_foot", "");
             mmSettings.rig.rightFoot = rigJson.value("right_foot", "");
             mmSettings.rig.head = rigJson.value("head", "");
+            if (rigJson.contains("forward_axis") && rigJson["forward_axis"].is_array() && rigJson["forward_axis"].size() >= 3)
+            {
+                mmSettings.rig.forwardAxis = glm::vec3(
+                    rigJson["forward_axis"][0].get<float>(),
+                    rigJson["forward_axis"][1].get<float>(),
+                    rigJson["forward_axis"][2].get<float>());
+            }
         }
 
         if (mmJson.contains("schema") && mmJson["schema"].is_object())

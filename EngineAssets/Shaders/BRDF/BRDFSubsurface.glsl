@@ -119,31 +119,11 @@ void DirectBRDF_Subsurface(BRDFData brdf, vec3 lightDirection, SubsurfaceParams 
 //   Fd += subsurfaceColor * (viewIndependent + viewDependent) * attenuation
 // ---------------------------------------------------------------------------
 void AmbientBRDF_Subsurface(BRDFData brdf, SubsurfaceParams sss, vec3 viewDirection,
-                            vec4 giVisSH, inout vec3 diffuse, inout vec3 specular)
+                            inout vec3 diffuse, inout vec3 specular)
 {
     // Standard PBR ambient (reuse existing AmbientBRDF)
-    AmbientBRDF(brdf, viewDirection, giVisSH, diffuse, specular);
+    AmbientBRDF(brdf, viewDirection, diffuse, specular);
 
-    // §3.2 — Subsurface IBL transmission
-    // View-independent: diffuse irradiance (already computed in brdf.indirectDiffuse)
-    vec3 viewIndependent = brdf.indirectDiffuse;
-
-    // View-dependent: sample specular environment in reverse view direction at high mip
-    vec3 reverseViewDir = -viewDirection;
-    // 修正: IBL 传输 LOD 应先在糟糙度域加和再转换，而非直接加在 LOD 域
-    // 原: roughness*9 + 1 + thickness（单位不一致）
-    // 修: min(roughness + 1 + thickness, 1.0) * 9 — 始终使用高 mip（最模糊）模拟散射传输
-    float subsurfaceLod = GetMipLevelFromRoughness(min(brdf.roughness + 1.0 + sss.thickness, 1.0));
-    vec3 viewDependent = textureLod(PreConvSpecularEnvironment, reverseViewDir, subsurfaceLod).rgb;
-    // Attenuate cubemap by directional GI probe visibility (indoor occlusion)
-    float giVis = EvalGIVisibility(giVisSH, reverseViewDir);
-    viewDependent *= giVis;
-
-    // Attenuation: thin objects transmit more, thick objects transmit nothing
-    float attenuation = (1.0 - sss.thickness) / TWO_PI;
-
-    // Add subsurface transmission to diffuse (purely additive)
-    diffuse += sss.subsurfaceColor * (viewIndependent + viewDependent) * attenuation;
 }
 
 // ---------------------------------------------------------------------------

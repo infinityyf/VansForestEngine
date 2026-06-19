@@ -19,10 +19,10 @@ void DirectBRDF_Refraction(BRDFData brdf, vec3 lightDirection, inout vec3 diffus
     DirectBRDF(brdf, lightDirection, diffuse, specular);
 }
 
-void AmbientBRDF_Refraction(BRDFData brdf, vec3 viewDirection, vec4 giVisSH, inout vec3 diffuse, inout vec3 specular)
+void AmbientBRDF_Refraction(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
 {
     // Placeholder: fallback to standard PBR
-    AmbientBRDF(brdf, viewDirection, giVisSH, diffuse, specular);
+    AmbientBRDF(brdf, viewDirection, diffuse, specular);
 }
 
 #endif // BRDF_REFRACTION_INCLUDED

@@ -22,6 +22,8 @@ layout( set = 1, binding = 5, rgba32f ) uniform image2D resultR;
 layout( set = 1, binding = 6 ) uniform ssgiInfo
 {
     vec4 screenSize;   // xy = resolution, zw = 1/resolution
+    vec4 giVolumeMin;
+    vec4 giVolumeSizeAndBias; // xyz = volume size, w = normal bias
 };
 
 // SH probes for fallback lighting
@@ -32,14 +34,10 @@ layout( set = 1, binding = 9 ) uniform sampler3D SHBCoeff;
 // Hierarchical-Z depth pyramid for accelerated tracing
 layout( set = 1, binding = 10) uniform sampler2D hizDepth;
 
-// ---- GI volume bounds ----
-const vec3 kGIVolumeMin  = vec3(-20.0, -14.0, -20.0);
-const vec3 kGIVolumeSize = vec3( 40.0,  40.0,  40.0);
-
 bool IsInsideGIVolume(vec3 worldPos)
 {
-    vec3 maxBound = kGIVolumeMin + kGIVolumeSize;
-    return all(greaterThanEqual(worldPos, kGIVolumeMin))
+    vec3 maxBound = giVolumeMin.xyz + giVolumeSizeAndBias.xyz;
+    return all(greaterThanEqual(worldPos, giVolumeMin.xyz))
         && all(lessThanEqual(worldPos, maxBound));
 }
 
@@ -48,7 +46,7 @@ vec3 EvaluateSHFallback(vec3 worldPos, vec3 normal, vec3 dir)
 {
     // 法线偏移统一为 0.25m（与 GIPointLight.comp / Deferred.frag 保持一致）
     // 原值 0.5*1.732=0.866m 会跨越约 2 个探针格，导致室内地面采样到室外探针
-    vec3 uvw = (worldPos + normal * 0.25 - kGIVolumeMin) / kGIVolumeSize;
+    vec3 uvw = (worldPos + normal * giVolumeSizeAndBias.w - giVolumeMin.xyz) / giVolumeSizeAndBias.xyz;
     vec4 rC = texture(SHRCoeff, uvw);
     vec4 gC = texture(SHGCoeff, uvw);
     vec4 bC = texture(SHBCoeff, uvw);

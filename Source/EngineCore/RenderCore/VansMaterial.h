@@ -17,6 +17,14 @@
 using namespace VansGraphics;
 namespace VansGraphics
 {
+	struct alignas(16) SSGIParamsGPU
+	{
+		glm::vec4 screenSize;
+		glm::vec4 giVolumeMin;
+		glm::vec4 giVolumeSizeAndBias;
+	};
+	static_assert(sizeof(SSGIParamsGPU) == 48, "SSGI parameter layout must match GLSL");
+
 	// ============================================================
 	// Well-known render-pass name constants.
 	// Each engine render pass queries the material for its unique pass name.
@@ -139,7 +147,6 @@ namespace VansGraphics
 		static constexpr const char* RT_SH_R_RESULT = "Runtime.RayTracing.SH.R";
 		static constexpr const char* RT_SH_G_RESULT = "Runtime.RayTracing.SH.G";
 		static constexpr const char* RT_SH_B_RESULT = "Runtime.RayTracing.SH.B";
-		static constexpr const char* RT_GI_VISIBILITY = "Runtime.RayTracing.GI.Visibility";
 		static constexpr const char* RT_VOLUMETRIC_FOG_RESULT = "Runtime.VolumetricFog.Result";
 		static constexpr const char* RT_RECT_LIGHT_EMISSIVE = "Runtime.RectLight.EmissiveArray";
 		static constexpr const char* RT_FOG_VOXEL_INJECTION = "Runtime.Fog.VoxelInjection";

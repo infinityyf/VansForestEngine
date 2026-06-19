@@ -64,6 +64,11 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		// binding 12: Area-light LTC amplitude/Fresnel LUT (RGBA16F 64x64)
 		{GLOBAL_BINDING_LTC2_LUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 IBL_STAGES, nullptr},
+		// bindings 13/14: local reflection probes
+		{GLOBAL_BINDING_REFLECTION_PROBE_SPECULAR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 IBL_STAGES | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GLOBAL_BINDING_REFLECTION_PROBE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 IBL_STAGES | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		// binding 50: Bindless PBR textures (fixed max count, no variable descriptor)
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},
@@ -280,7 +285,6 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(
 		{12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// GI 探针可见度体 (binding 14)
-		{14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// 面光源发光贴图数组 (binding 15, sampler2DArray)
 		{15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// IES profile 纹理数组 (binding 16, sampler2DArray, R16F)

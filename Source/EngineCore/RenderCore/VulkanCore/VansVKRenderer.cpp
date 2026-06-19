@@ -653,6 +653,19 @@ namespace VansGraphics
 			}
 		}
 
+		// Probe capture samples the directional shadow map. Run it only after this
+		// frame's graphics work has completed, while the map and its matching light
+		// matrices are still in SHADER_READ_ONLY_OPTIMAL.
+		if (m_Scene->IsSceneReady())
+		{
+			static uint32_t reflectionProbeFrame = 0;
+			auto* reflectionProbes = m_Scene->GetReflectionProbeSystem();
+			const uint32_t probeFrame = reflectionProbeFrame++;
+			const uint32_t faceBudget = reflectionProbes->GetBakeFaceBudget();
+			for (uint32_t face = 0; face < faceBudget; ++face)
+				reflectionProbes->ProcessBakeQueue(*m_Scene, *this, m_VansEditorCommandBuffer, probeFrame);
+		}
+
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 		{
 			VANS_PROFILE_SCOPE("Vulkan::PresentImage", Vans::ProfileCategory::VulkanSubmit);

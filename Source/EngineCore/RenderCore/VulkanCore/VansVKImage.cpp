@@ -8,6 +8,35 @@
 
 namespace VansGraphics
 {
+	VkImageView VansVKImage::CreateLayerMipView(VkDevice device, uint32_t arrayLayer, uint32_t mipLevel)
+	{
+		if (arrayLayer >= m_ImageCreateInfo.arrayLayers || mipLevel >= m_ImageCreateInfo.mipLevels)
+			return VK_NULL_HANDLE;
+		VkImageViewCreateInfo info{};
+		info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		info.image = m_VansVKImage;
+		info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		info.format = m_ImageCreateInfo.format;
+		info.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+			VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+		info.subresourceRange = { m_ImageAspect, mipLevel, 1u, arrayLayer, 1u };
+		VkImageView result = VK_NULL_HANDLE;
+		if (vkCreateImageView(device, &info, nullptr, &result) != VK_SUCCESS) return VK_NULL_HANDLE;
+		m_OwnedAuxiliaryViews.push_back(result);
+		return result;
+	}
+
+	VkImageView VansVKImage::CreateMipArrayView(VkDevice device, uint32_t mipLevel) const
+	{
+		if (mipLevel >= m_ImageCreateInfo.mipLevels) return VK_NULL_HANDLE;
+		VkImageViewCreateInfo info{}; info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		info.image = m_VansVKImage; info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY; info.format = m_ImageCreateInfo.format;
+		info.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+		info.subresourceRange = { m_ImageAspect, mipLevel, 1u, 0u, m_ImageCreateInfo.arrayLayers };
+		VkImageView result = VK_NULL_HANDLE;
+		return vkCreateImageView(device, &info, nullptr, &result) == VK_SUCCESS ? result : VK_NULL_HANDLE;
+	}
+
     VkImageViewType VansVKImage::ConvertImageViewType(VkImageType type, bool isCube, int layer_num)
     {
         VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_MAX_ENUM;
@@ -161,7 +190,7 @@ namespace VansGraphics
                  0,
                  VK_REMAINING_MIP_LEVELS,
                  0,
-                 isCube ? 6 : VK_REMAINING_ARRAY_LAYERS
+                 VK_REMAINING_ARRAY_LAYERS
              }
         };
 
@@ -221,7 +250,7 @@ namespace VansGraphics
                          miplevel,
                          1,
                          0,
-                         isCube ? 6 : VK_REMAINING_ARRAY_LAYERS
+                         VK_REMAINING_ARRAY_LAYERS
                      }
                 };
                 vkCreateImageView(logical_device, &mip_view_create_info, nullptr, &m_VansVKImageMipViews[miplevel]);
@@ -264,6 +293,9 @@ namespace VansGraphics
 
     void VansVKImage::DestroyVulkanImage(VkDevice& logical_device)
     {
+		for (VkImageView view : m_OwnedAuxiliaryViews)
+			if (view != VK_NULL_HANDLE) vkDestroyImageView(logical_device, view, nullptr);
+		m_OwnedAuxiliaryViews.clear();
         if (VK_NULL_HANDLE != m_DepthStencilView)
         {
             vkDestroyImageView(logical_device, m_DepthStencilView, nullptr);

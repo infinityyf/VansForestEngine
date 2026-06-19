@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include <array>
 namespace VansGraphics
 {
 	enum InspectResourceType
@@ -18,6 +19,8 @@ namespace VansGraphics
 	};
 	class VansInspectorWindow : public VansBaseWindowComponent
 	{
+	public:
+		~VansInspectorWindow();
 	private:
 
 		void ShowWindow(VansVKDevice& device) override;
@@ -31,6 +34,8 @@ namespace VansGraphics
 		void ShowModelTextureAsset(VansVKDevice& device);
 
 		void ShowAnimationClipAsset();
+		void ShowReflectionProbeEditor(VansVKDevice& device);
+		void ResetProbePreview();
 
 		// ── Cached .vclip data for the inspector ──
 		struct CachedVClipData
@@ -43,5 +48,10 @@ namespace VansGraphics
 			int                   selectedBone = -1;
 		};
 		CachedVClipData m_VClipCache;
+		std::array<VkImageView, 6> m_ProbePreviewViews{};
+		std::array<VkDescriptorSet, 6> m_ProbePreviewSets{};
+		VkDevice m_ProbePreviewDevice = VK_NULL_HANDLE;
+		int m_ProbePreviewIndex = -1;
+		int m_ProbePreviewMip = -1;
 	};
 }

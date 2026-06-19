@@ -34,6 +34,21 @@ namespace
 		return false;
 	}
 
+	float NormalizeAngle(float angle)
+	{
+		constexpr float kPi = 3.14159265358979323846f;
+		constexpr float kTwoPi = kPi * 2.0f;
+		angle = std::fmod(angle + kPi, kTwoPi);
+		if (angle < 0.0f)
+			angle += kTwoPi;
+		return angle - kPi;
+	}
+
+	float LerpAngle(float from, float to, float t)
+	{
+		return from + NormalizeAngle(to - from) * glm::clamp(t, 0.0f, 1.0f);
+	}
+
 	bool IsLoopSearchClipName(const std::string& clipName)
 	{
 		const std::string lowered = ToLower(clipName);
@@ -123,6 +138,67 @@ namespace
 		if (lowered.find("start") != std::string::npos)
 			return 0;
 		return MoveStateFromFamilyName(lowered);
+	}
+
+	int TurnDirectionSignFromName(const std::string& lowered)
+	{
+		if (lowered.find("turn_l") != std::string::npos ||
+		    lowered.find("turnleft") != std::string::npos ||
+		    lowered.find("_l_") != std::string::npos)
+			return 1;
+		if (lowered.find("turn_r") != std::string::npos ||
+		    lowered.find("turnright") != std::string::npos ||
+		    lowered.find("_r_") != std::string::npos)
+			return -1;
+		return 0;
+	}
+
+	int TurnBucketDeltaFromName(const std::string& lowered)
+	{
+		if (lowered.find("045") != std::string::npos)
+			return 1;
+		if (lowered.find("090") != std::string::npos)
+			return 2;
+		if (lowered.find("135") != std::string::npos)
+			return 3;
+		if (lowered.find("180") != std::string::npos)
+			return 4;
+		return 0;
+	}
+
+	bool ContainsDirectionToken(const std::string& lowered, const char* token)
+	{
+		const std::string needle = std::string("_") + token;
+		size_t pos = lowered.find(needle);
+		while (pos != std::string::npos)
+		{
+			const size_t end = pos + needle.size();
+			if (end == lowered.size() || lowered[end] == '_' || std::isdigit(static_cast<unsigned char>(lowered[end])))
+				return true;
+			pos = lowered.find(needle, pos + 1);
+		}
+		return false;
+	}
+
+	int DirectionBucketFromName(const std::string& lowered)
+	{
+		if (ContainsDirectionToken(lowered, "fl")) return 1;
+		if (ContainsDirectionToken(lowered, "bl")) return 3;
+		if (ContainsDirectionToken(lowered, "br")) return 5;
+		if (ContainsDirectionToken(lowered, "fr")) return 7;
+		if (ContainsDirectionToken(lowered, "ll") || ContainsDirectionToken(lowered, "l")) return 2;
+		if (ContainsDirectionToken(lowered, "rr") || ContainsDirectionToken(lowered, "r")) return 6;
+		if (ContainsDirectionToken(lowered, "b")) return 4;
+		if (ContainsDirectionToken(lowered, "f")) return 0;
+		return -1;
+	}
+
+	int SignedBucketDelta(int fromBucket, int toBucket)
+	{
+		int delta = (toBucket - fromBucket) & 7;
+		if (delta > 4)
+			delta -= 8;
+		return delta;
 	}
 
 	float ReadFloatParam(const std::unordered_map<std::string, AnimatorParameter>& parameters,
@@ -241,6 +317,10 @@ void VansMotionMatchingRuntime::MarkDatabaseDirty()
 	m_DebugData.databaseReady = false;
 	m_PreviousQueryModelPose.clear();
 	m_LastOutputLocalPose.clear();
+	m_CurrentLeftFootVelocity = glm::vec3(0.0f);
+	m_CurrentRightFootVelocity = glm::vec3(0.0f);
+	m_CurrentPelvisVelocity = glm::vec3(0.0f);
+	m_HasQueryVelocity = false;
 	m_HasLastSearchContext = false;
 	m_DirectionChangedForSearch = false;
 }
@@ -279,6 +359,7 @@ MotionMatchingResolvedRig VansMotionMatchingRuntime::ResolveRig(const Skeleton& 
 		rig.leftFoot = ResolveBoneIndex(skeleton, m_Settings.rig.leftFoot);
 		rig.rightFoot = ResolveBoneIndex(skeleton, m_Settings.rig.rightFoot);
 		rig.head = ResolveBoneIndex(skeleton, m_Settings.rig.head);
+		rig.forwardAxis = m_Settings.rig.forwardAxis;
 		m_DebugData.rigStatus = "explicit";
 		return rig;
 	}
@@ -297,6 +378,7 @@ MotionMatchingResolvedRig VansMotionMatchingRuntime::ResolveRig(const Skeleton& 
 MotionMatchingResolvedRig VansMotionMatchingRuntime::DetectLegacyRig(const Skeleton& skeleton) const
 {
 	MotionMatchingResolvedRig rig;
+	rig.forwardAxis = m_Settings.rig.forwardAxis;
 	for (int i = 0; i < static_cast<int>(skeleton.bones.size()); ++i)
 	{
 		const std::string n = ToLower(skeleton.bones[i].name);
@@ -338,7 +420,6 @@ bool VansMotionMatchingRuntime::ValidateRig(const MotionMatchingResolvedRig& rig
 	if (rig.pelvis < 0) { outReason = "missing pelvis"; return false; }
 	if (rig.leftFoot < 0) { outReason = "missing left_foot"; return false; }
 	if (rig.rightFoot < 0) { outReason = "missing right_foot"; return false; }
-	if (rig.head < 0) { outReason = "missing head"; return false; }
 	return true;
 }
 
@@ -406,6 +487,32 @@ glm::vec3 VansMotionMatchingRuntime::TransformVectorToRootSpace(const glm::mat4&
 	return glm::vec3(glm::inverse(rootModel) * glm::vec4(vector, 0.0f));
 }
 
+glm::vec3 VansMotionMatchingRuntime::ExtractRootForward(const glm::mat4& rootModel, const MotionMatchingResolvedRig& rig) const
+{
+	glm::vec3 forward = glm::vec3(rootModel * glm::vec4(rig.forwardAxis, 0.0f));
+	forward.z = 0.0f;
+	if (glm::length(glm::vec2(forward.x, forward.y)) <= kEpsilon)
+		return glm::vec3(0.0f, 1.0f, 0.0f);
+	return glm::normalize(forward);
+}
+
+glm::vec3 VansMotionMatchingRuntime::BuildDesiredVelocityRoot(
+	const std::unordered_map<std::string, AnimatorParameter>& parameters,
+	const MotionMatchingResolvedRig& rig) const
+{
+	const float speed01 = ReadFloatParam(parameters, "Speed", 0.0f);
+	const float direction = ReadFloatParam(parameters, "Direction", 0.0f);
+	const float desiredSpeed = speed01 * m_Settings.desiredSpeedScale;
+	glm::vec3 forwardAxis = rig.forwardAxis;
+	forwardAxis.z = 0.0f;
+	if (glm::length(glm::vec2(forwardAxis.x, forwardAxis.y)) <= kEpsilon)
+		forwardAxis = glm::vec3(0.0f, -1.0f, 0.0f);
+	else
+		forwardAxis = glm::normalize(forwardAxis);
+	const glm::vec3 leftAxis(-forwardAxis.y, forwardAxis.x, 0.0f);
+	return (leftAxis * std::sin(direction) + forwardAxis * std::cos(direction)) * desiredSpeed;
+}
+
 float VansMotionMatchingRuntime::WrapClipTime(const VansAnimationClip& clip, float time) const
 {
 	if (clip.duration <= kEpsilon)
@@ -443,6 +550,49 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	SamplePose(clip, ResolveClipTime(clip, time, loopLike), skeleton, local0);
 	BuildModelSpacePose(local0, skeleton, model0);
 
+	glm::vec3 loopCycleDelta(0.0f);
+	if (loopLike && clip.duration > kEpsilon)
+	{
+		std::vector<glm::mat4> localStart, modelStart;
+		std::vector<glm::mat4> localEnd, modelEnd;
+		SamplePose(clip, 0.0f, skeleton, localStart);
+		SamplePose(clip, clip.duration, skeleton, localEnd);
+		BuildModelSpacePose(localStart, skeleton, modelStart);
+		BuildModelSpacePose(localEnd, skeleton, modelEnd);
+		loopCycleDelta = ExtractTranslation(modelEnd[rig.trajectoryRoot]) -
+		                 ExtractTranslation(modelStart[rig.trajectoryRoot]);
+	}
+
+	auto sampleUnwrappedModel = [&](float absoluteTime,
+	                                std::vector<glm::mat4>& outLocal,
+	                                std::vector<glm::mat4>& outModel)
+	{
+		float sampleTime = ResolveClipTime(clip, absoluteTime, loopLike);
+		int cycle = 0;
+		if (loopLike && clip.duration > kEpsilon)
+		{
+			const float cycleF = std::floor(absoluteTime / clip.duration);
+			cycle = static_cast<int>(cycleF);
+			sampleTime = absoluteTime - cycleF * clip.duration;
+			if (sampleTime < 0.0f)
+			{
+				sampleTime += clip.duration;
+				--cycle;
+			}
+			if (sampleTime >= clip.duration)
+				sampleTime = 0.0f;
+		}
+
+		SamplePose(clip, sampleTime, skeleton, outLocal);
+		BuildModelSpacePose(outLocal, skeleton, outModel);
+		if (cycle != 0)
+		{
+			const glm::vec3 offset = loopCycleDelta * static_cast<float>(cycle);
+			for (glm::mat4& model : outModel)
+				model[3] += glm::vec4(offset, 0.0f);
+		}
+	};
+
 	const glm::mat4 rootModel0 = model0[rig.root];
 	const glm::vec3 trajectoryRoot0 = ExtractTranslation(model0[rig.trajectoryRoot]);
 	int offset = 0;
@@ -451,8 +601,7 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	{
 		std::vector<glm::mat4> localFuture;
 		std::vector<glm::mat4> modelFuture;
-		SamplePose(clip, ResolveClipTime(clip, time + futureTime, loopLike), skeleton, localFuture);
-		BuildModelSpacePose(localFuture, skeleton, modelFuture);
+		sampleUnwrappedModel(time + futureTime, localFuture, modelFuture);
 
 		const glm::vec3 futureRoot = ExtractTranslation(modelFuture[rig.trajectoryRoot]);
 		const glm::vec3 deltaRoot = TransformVectorToRootSpace(rootModel0, futureRoot - trajectoryRoot0);
@@ -464,8 +613,7 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	{
 		std::vector<glm::mat4> localFuture;
 		std::vector<glm::mat4> modelFuture;
-		SamplePose(clip, ResolveClipTime(clip, time + futureTime, loopLike), skeleton, localFuture);
-		BuildModelSpacePose(localFuture, skeleton, modelFuture);
+		sampleUnwrappedModel(time + futureTime, localFuture, modelFuture);
 
 		const glm::vec3 futureRoot = ExtractTranslation(modelFuture[rig.trajectoryRoot]);
 		const glm::vec3 deltaRoot = TransformVectorToRootSpace(rootModel0, futureRoot - trajectoryRoot0);
@@ -475,7 +623,7 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 			facing = std::atan2(deltaRoot.x, deltaRoot.y);
 		else
 		{
-			const glm::vec3 forward = glm::normalize(glm::vec3(rootModel0[1]));
+			const glm::vec3 forward = ExtractRootForward(rootModel0, rig);
 			facing = std::atan2(forward.x, forward.y);
 		}
 		f[offset++] = std::sin(facing);
@@ -485,15 +633,13 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	const float velocityDt = 0.10f;
 	std::vector<glm::mat4> localPrev, modelPrev;
 	std::vector<glm::mat4> localNext, modelNext;
-	SamplePose(clip, ResolveClipTime(clip, time - velocityDt, loopLike), skeleton, localPrev);
-	SamplePose(clip, ResolveClipTime(clip, time + velocityDt, loopLike), skeleton, localNext);
-	BuildModelSpacePose(localPrev, skeleton, modelPrev);
-	BuildModelSpacePose(localNext, skeleton, modelNext);
+	sampleUnwrappedModel(time - velocityDt, localPrev, modelPrev);
+	sampleUnwrappedModel(time + velocityDt, localNext, modelNext);
 
 	const glm::vec3 pelvis0 = ExtractTranslation(model0[rig.pelvis]);
 	const glm::vec3 leftFoot0 = ExtractTranslation(model0[rig.leftFoot]);
 	const glm::vec3 rightFoot0 = ExtractTranslation(model0[rig.rightFoot]);
-	const glm::vec3 head0 = ExtractTranslation(model0[rig.head]);
+	const glm::vec3 head0 = rig.head >= 0 ? ExtractTranslation(model0[rig.head]) : pelvis0;
 
 	const glm::vec3 leftFootRel = TransformPointToRootSpace(rootModel0, leftFoot0);
 	const glm::vec3 rightFootRel = TransformPointToRootSpace(rootModel0, rightFoot0);
@@ -528,9 +674,14 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFe
 	const float direction = ReadFloatParam(parameters, "Direction", 0.0f);
 	const bool airborne = ReadFloatParam(parameters, "IsAirborne", 0.0f) > 0.5f || ReadBoolParam(parameters, "IsAirborne", false);
 	const int moveState = ReadIntParam(parameters, "MoveState", 0);
-	const float desiredSpeed = speed01 * m_Settings.desiredSpeedScale;
-	const float signedDir = direction;
-	const glm::vec3 desiredVelRoot(std::sin(signedDir) * desiredSpeed, -std::cos(signedDir) * desiredSpeed, 0.0f);
+	const glm::vec3 desiredVelRoot = BuildDesiredVelocityRoot(parameters, rig);
+	const glm::vec2 desiredVelXY(desiredVelRoot.x, desiredVelRoot.y);
+	const glm::vec3 currentForward = ExtractRootForward(rootModel, rig);
+	const float currentFacing = std::atan2(currentForward.x, currentForward.y);
+	const float desiredFacing = glm::length(desiredVelXY) > kEpsilon
+		? std::atan2(desiredVelRoot.x, desiredVelRoot.y)
+		: currentFacing;
+	const float blendHorizon = (std::max)(m_Settings.schema.futureTimes.back(), kEpsilon);
 
 	int offset = 0;
 	for (float futureTime : m_Settings.schema.futureTimes)
@@ -541,10 +692,10 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFe
 	}
 	for (float futureTime : m_Settings.schema.futureTimes)
 	{
-		(void)futureTime;
-		const float desiredFacing = std::atan2(desiredVelRoot.x, desiredVelRoot.y);
-		f[offset++] = std::sin(desiredFacing);
-		f[offset++] = std::cos(desiredFacing);
+		const float t = futureTime / blendHorizon;
+		const float facing = LerpAngle(currentFacing, desiredFacing, t);
+		f[offset++] = std::sin(facing);
+		f[offset++] = std::cos(facing);
 	}
 
 	WriteVec3(f, offset, TransformPointToRootSpace(rootModel, ExtractTranslation(currentModel[rig.leftFoot])));
@@ -559,10 +710,11 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFe
 	}
 	WriteVec3(f, offset, leftVelocity);
 	WriteVec3(f, offset, rightVelocity);
-	WriteVec3(f, offset, desiredVelRoot);
+	const glm::vec3 pelvisVelocity = m_HasQueryVelocity ? m_CurrentPelvisVelocity : desiredVelRoot;
+	WriteVec3(f, offset, pelvisVelocity);
 
-	const glm::vec3 head = ExtractTranslation(currentModel[rig.head]);
 	const glm::vec3 pelvis = ExtractTranslation(currentModel[rig.pelvis]);
+	const glm::vec3 head = rig.head >= 0 ? ExtractTranslation(currentModel[rig.head]) : pelvis;
 	f[offset++] = head.z - pelvis.z;
 	return f;
 }
@@ -585,6 +737,8 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 		VANS_LOG_WARN("[MotionMatching] Cannot build database: " << rigReason);
 		return false;
 	}
+	if (m_Rig.head < 0)
+		VANS_LOG_WARN("[MotionMatching] Head bone not found; height feature will be 0.");
 	m_DebugData.rigReady = true;
 
 	int includedClipCount = 0;
@@ -607,10 +761,13 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 			sample.rawFeature = ExtractDatabaseFeature(clip, t, loopLike, skeleton, m_Rig);
 			sample.feature = sample.rawFeature;
 			sample.loopLike = loopLike;
+			sample.idleLike = sample.loopLike && lowered.find("idle") != std::string::npos;
 			sample.transitionLike = !loopLike;
 			sample.startLike = sample.transitionLike && lowered.find("start") != std::string::npos;
 			sample.stopLike = sample.transitionLike && lowered.find("stop") != std::string::npos;
 			sample.turnLike = sample.transitionLike && lowered.find("turn") != std::string::npos;
+			sample.turnDirectionSign = sample.turnLike ? TurnDirectionSignFromName(lowered) : 0;
+			sample.turnBucketDelta = sample.turnLike ? TurnBucketDeltaFromName(lowered) : 0;
 			sample.paceTransitionLike = sample.transitionLike &&
 				(lowered.find("transition") != std::string::npos ||
 				 lowered.find("towalk") != std::string::npos ||
@@ -624,6 +781,7 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 			sample.targetMoveState = sample.transitionLike
 				? TransitionTargetMoveStateFromName(lowered)
 				: MoveStateFromFamilyName(lowered);
+			sample.directionBucketFromName = DirectionBucketFromName(lowered);
 			m_Samples.push_back(sample);
 		}
 	}
@@ -660,12 +818,24 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 	m_DatabaseReady = true;
 	m_DatabaseDirty = false;
 	m_CurrentSample = 0;
-	m_CurrentTime = m_Samples[0].time;
+	for (int i = 0; i < static_cast<int>(m_Samples.size()); ++i)
+	{
+		if (m_Samples[i].loopLike && m_Samples[i].targetMoveState == 0)
+		{
+			m_CurrentSample = i;
+			break;
+		}
+	}
+	m_CurrentTime = m_Samples[m_CurrentSample].time;
 	m_CurrentCost = std::numeric_limits<float>::max();
 	m_TimeSinceSearch = m_Settings.searchThrottle;
 	m_TimeSinceSwitch = m_Settings.minSwitchInterval;
 	m_PreviousQueryModelPose.clear();
 	m_LastOutputLocalPose.clear();
+	m_CurrentLeftFootVelocity = glm::vec3(0.0f);
+	m_CurrentRightFootVelocity = glm::vec3(0.0f);
+	m_CurrentPelvisVelocity = glm::vec3(0.0f);
+	m_HasQueryVelocity = false;
 	m_DebugData.sampleCount = static_cast<int>(m_Samples.size());
 	m_DebugData.clipCount = includedClipCount;
 	m_DebugData.databaseReady = true;
@@ -706,7 +876,10 @@ bool VansMotionMatchingRuntime::IsSamePlaybackNeighborhood(const Sample& sample)
 	if (m_CurrentSample < 0 || m_CurrentSample >= static_cast<int>(m_Samples.size()))
 		return false;
 	const Sample& current = m_Samples[m_CurrentSample];
-	return sample.clipName == current.clipName && std::abs(sample.time - m_CurrentTime) < 0.10f;
+	const float throttleWindow = m_Settings.searchThrottle * 1.5f;
+	const float frameWindow = 2.0f / (std::max)(1.0f, m_Settings.sampleRate);
+	const float neighborhoodWindow = (std::max)(0.10f, (std::max)(throttleWindow, frameWindow));
+	return sample.clipName == current.clipName && std::abs(sample.time - m_CurrentTime) < neighborhoodWindow;
 }
 
 bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
@@ -719,12 +892,16 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 	const float speed01 = ReadFloatParam(parameters, "Speed", 0.0f);
 	const bool wantsIdle = speed01 < 0.05f || moveState == 0;
 	const bool currentValid = m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size());
-	const int currentMoveState = currentValid ? m_Samples[m_CurrentSample].targetMoveState : 0;
+	const Sample* currentSample = currentValid ? &m_Samples[m_CurrentSample] : nullptr;
+	const int currentMoveState = currentSample ? currentSample->targetMoveState : 0;
 	const int desiredMoveState = (isCrouching || moveState == 4)
 		? 4
 		: (wantsIdle ? 0 : moveState);
-	const bool currentMoving = currentMoveState == 1 || currentMoveState == 2 || currentMoveState == 3 ||
-	                           (currentMoveState == 4 && !wantsIdle);
+	const bool currentMoving =
+		currentSample &&
+		!currentSample->idleLike &&
+		(currentSample->loopLike || currentSample->startLike || currentSample->turnLike) &&
+		(currentMoveState == 1 || currentMoveState == 2 || currentMoveState == 3 || currentMoveState == 4);
 	const bool desiredMoving = !wantsIdle;
 	const bool startingFromIdle = !currentMoving && desiredMoving;
 	const bool stoppingToIdle = currentMoving && !desiredMoving;
@@ -736,13 +913,64 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 		(currentMoveState == 0 || currentMoveState == 4) &&
 		(desiredMoveState == 0 || desiredMoveState == 4) &&
 		currentMoveState != desiredMoveState;
+	const glm::vec3 desiredVelRoot = BuildDesiredVelocityRoot(parameters, m_Rig);
+	const glm::vec2 desiredDir(desiredVelRoot.x, desiredVelRoot.y);
+	const float desiredDirLen = glm::length(desiredDir);
+	glm::vec3 forwardAxis = m_Rig.forwardAxis;
+	forwardAxis.z = 0.0f;
+	if (glm::length(glm::vec2(forwardAxis.x, forwardAxis.y)) <= kEpsilon)
+		forwardAxis = glm::vec3(0.0f, -1.0f, 0.0f);
+	else
+		forwardAxis = glm::normalize(forwardAxis);
+	const glm::vec3 leftAxis(-forwardAxis.y, forwardAxis.x, 0.0f);
+	auto directionBucket = [&](const glm::vec2& dir) -> int
+	{
+		const glm::vec3 dir3(dir.x, dir.y, 0.0f);
+		float angle = std::atan2(glm::dot(dir3, leftAxis), glm::dot(dir3, forwardAxis));
+		constexpr float kPi = 3.14159265358979323846f;
+		constexpr float kTwoPi = kPi * 2.0f;
+		angle = std::fmod(angle, kTwoPi);
+		if (angle < 0.0f)
+			angle += kTwoPi;
+		return static_cast<int>((angle + kPi * 0.125f) / (kPi * 0.25f)) & 7;
+	};
+	auto sampleMatchesDesiredDirection = [&]() -> bool
+	{
+		if (desiredDirLen <= kEpsilon)
+			return true;
+		const glm::vec2 sampleDir(sample.rawFeature[4], sample.rawFeature[5]);
+		const float sampleDirLen = glm::length(sampleDir);
+		if (sampleDirLen <= kEpsilon)
+			return true;
+		return directionBucket(desiredDir) == directionBucket(sampleDir);
+	};
+	auto sampleNameMatchesDesiredDirection = [&]() -> bool
+	{
+		if (sample.directionBucketFromName < 0 || desiredDirLen <= kEpsilon)
+			return sampleMatchesDesiredDirection();
+		return sample.directionBucketFromName == directionBucket(desiredDir);
+	};
+	auto sampleNameMatchesCurrentDirection = [&]() -> bool
+	{
+		if (sample.directionBucketFromName < 0 || !currentSample)
+			return true;
+		if (currentSample->directionBucketFromName >= 0)
+			return sample.directionBucketFromName == currentSample->directionBucketFromName;
+		const glm::vec2 currentDir(currentSample->rawFeature[4], currentSample->rawFeature[5]);
+		if (glm::length(currentDir) <= kEpsilon)
+			return true;
+		return sample.directionBucketFromName == directionBucket(currentDir);
+	};
 
 	if (sample.transitionLike)
 	{
 		if (sample.startLike)
-			return startingFromIdle && sample.targetMoveState == desiredMoveState;
+			return startingFromIdle && sample.targetMoveState == desiredMoveState && sampleNameMatchesDesiredDirection();
 		if (sample.stopLike)
-			return stoppingToIdle && sample.sourceMoveState == currentMoveState && sample.targetMoveState == desiredMoveState;
+			return stoppingToIdle &&
+			       sample.sourceMoveState == currentMoveState &&
+			       sample.targetMoveState == desiredMoveState &&
+			       sampleNameMatchesCurrentDirection();
 		if (sample.paceTransitionLike)
 			return (changingPace || changingStance) &&
 			       sample.sourceMoveState == currentMoveState &&
@@ -751,7 +979,20 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 		{
 			if (!m_DirectionChangedForSearch)
 				return false;
-			return sample.targetMoveState == desiredMoveState;
+			if (m_SourceDirectionBucketForSearch < 0)
+				return false;
+			if (sample.sourceMoveState != currentMoveState || sample.targetMoveState != desiredMoveState)
+				return false;
+			if (currentMoveState != desiredMoveState)
+				return false;
+			const int signedDelta = SignedBucketDelta(m_SourceDirectionBucketForSearch, m_LastDirectionBucket);
+			const int absDelta = std::abs(signedDelta);
+			if (absDelta == 0 || sample.turnBucketDelta != absDelta)
+				return false;
+			if (absDelta != 4 && sample.turnDirectionSign != 0 &&
+			    sample.turnDirectionSign != (signedDelta > 0 ? 1 : -1))
+				return false;
+			return true;
 		}
 		return false;
 	}
@@ -761,12 +1002,13 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 
 	if (startingFromIdle || stoppingToIdle || changingPace || changingStance)
 		return false;
-	return sample.targetMoveState == desiredMoveState;
+	return sample.targetMoveState == desiredMoveState && sampleMatchesDesiredDirection();
 }
 
 VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 	const FeatureVector& query,
-	const std::unordered_map<std::string, AnimatorParameter>& parameters)
+	const std::unordered_map<std::string, AnimatorParameter>& parameters,
+	const std::unordered_map<std::string, VansAnimationClip>& clips)
 {
 	MatchResult best;
 	best.totalCost = std::numeric_limits<float>::max();
@@ -788,7 +1030,18 @@ VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 		if (m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size()))
 		{
 			const Sample& current = m_Samples[m_CurrentSample];
-			if (sample.clipName == current.clipName && sample.time >= m_CurrentTime)
+			bool isContinuation = sample.clipName == current.clipName && sample.time >= m_CurrentTime;
+			if (!isContinuation && sample.clipName == current.clipName && sample.loopLike && current.loopLike)
+			{
+				auto clipIt = clips.find(current.clipName);
+				const float wrapWindow = (std::max)(m_Settings.searchThrottle, 2.0f / (std::max)(1.0f, m_Settings.sampleRate));
+				if (clipIt != clips.end() && clipIt->second.duration > wrapWindow)
+				{
+					isContinuation = sample.time < wrapWindow &&
+					                 m_CurrentTime > clipIt->second.duration - wrapWindow;
+				}
+			}
+			if (isContinuation)
 				bias -= m_Settings.continuationBias;
 			if (sample.loopLike && current.loopLike)
 				bias -= m_Settings.loopBias;
@@ -909,10 +1162,26 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	    m_PreviousQueryModelPose.size() == currentModel.size())
 	{
 		const glm::mat4 rootModel = currentModel[m_Rig.root];
-		m_CurrentLeftFootVelocity = TransformVectorToRootSpace(rootModel,
+		const glm::vec3 rawLeftFootVelocity = TransformVectorToRootSpace(rootModel,
 			(ExtractTranslation(currentModel[m_Rig.leftFoot]) - ExtractTranslation(m_PreviousQueryModelPose[m_Rig.leftFoot])) / deltaTime);
-		m_CurrentRightFootVelocity = TransformVectorToRootSpace(rootModel,
+		const glm::vec3 rawRightFootVelocity = TransformVectorToRootSpace(rootModel,
 			(ExtractTranslation(currentModel[m_Rig.rightFoot]) - ExtractTranslation(m_PreviousQueryModelPose[m_Rig.rightFoot])) / deltaTime);
+		const glm::vec3 rawPelvisVelocity = TransformVectorToRootSpace(rootModel,
+			(ExtractTranslation(currentModel[m_Rig.pelvis]) - ExtractTranslation(m_PreviousQueryModelPose[m_Rig.pelvis])) / deltaTime);
+		const float alpha = 1.0f - std::exp(-deltaTime / 0.10f);
+		if (m_HasQueryVelocity)
+		{
+			m_CurrentLeftFootVelocity = glm::mix(m_CurrentLeftFootVelocity, rawLeftFootVelocity, alpha);
+			m_CurrentRightFootVelocity = glm::mix(m_CurrentRightFootVelocity, rawRightFootVelocity, alpha);
+			m_CurrentPelvisVelocity = glm::mix(m_CurrentPelvisVelocity, rawPelvisVelocity, alpha);
+		}
+		else
+		{
+			m_CurrentLeftFootVelocity = rawLeftFootVelocity;
+			m_CurrentRightFootVelocity = rawRightFootVelocity;
+			m_CurrentPelvisVelocity = rawPelvisVelocity;
+			m_HasQueryVelocity = true;
+		}
 	}
 	m_PreviousQueryModelPose = currentModel;
 
@@ -934,6 +1203,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	const bool directionChanged =
 		m_HasLastSearchContext &&
 		m_LastDirectionBucket != directionBucket;
+	m_SourceDirectionBucketForSearch = directionChanged ? m_LastDirectionBucket : directionBucket;
 	const bool searchContextChanged =
 		!m_HasLastSearchContext ||
 		m_LastMoveState != moveState ||
@@ -965,12 +1235,12 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		float currentTrajectory = 0.0f;
 		float currentPose = 0.0f;
 		const float currentCost = ComputeCost(query, currentFeature, currentTrajectory, currentPose);
-		const float transitionCompletionWindow = 0.5f / (std::max)(1.0f, m_Settings.sampleRate);
+		const float transitionCompletionWindow = 2.0f / (std::max)(1.0f, m_Settings.sampleRate);
 		const bool activeTransitionComplete =
 			!activeSample->loopLike &&
 			m_CurrentTime >= (std::max)(0.0f, activeClipIt->second.duration - transitionCompletionWindow);
 
-		MatchResult best = FindBestMatch(query, parameters);
+		MatchResult best = FindBestMatch(query, parameters, clips);
 		const bool bestIsCurrentClip =
 			best.sampleIndex >= 0 &&
 			m_CurrentSample >= 0 &&
@@ -982,7 +1252,40 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
 			m_Samples[best.sampleIndex].loopLike &&
 			m_Samples[best.sampleIndex].targetMoveState == m_Samples[m_CurrentSample].targetMoveState;
+		const bool bestIsSameLoopClip =
+			bestIsCurrentClip &&
+			m_CurrentSample >= 0 &&
+			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
+			m_Samples[m_CurrentSample].loopLike &&
+			m_Samples[best.sampleIndex].loopLike;
 		const bool shouldExitFinishedTransition = activeTransitionComplete && bestIsTargetLoop;
+		const bool activeMovingSample =
+			activeSample &&
+			!activeSample->idleLike &&
+			(activeSample->loopLike || activeSample->startLike || activeSample->turnLike) &&
+			(activeSample->targetMoveState == 1 ||
+			 activeSample->targetMoveState == 2 ||
+			 activeSample->targetMoveState == 3 ||
+			 activeSample->targetMoveState == 4);
+		const bool shouldEnterStartTransition =
+			searchContextChanged &&
+			best.sampleIndex >= 0 &&
+			m_Samples[best.sampleIndex].startLike &&
+			isMoving &&
+			!activeMovingSample;
+		const bool shouldEnterContextTransition =
+			shouldEnterStartTransition ||
+			(searchContextChanged &&
+			 best.sampleIndex >= 0 &&
+			 m_CurrentSample >= 0 &&
+			 m_CurrentSample < static_cast<int>(m_Samples.size()) &&
+			 m_Samples[best.sampleIndex].transitionLike &&
+			 (m_Samples[best.sampleIndex].startLike ||
+			  m_Samples[best.sampleIndex].stopLike ||
+			  m_Samples[best.sampleIndex].paceTransitionLike) &&
+			 (m_Samples[best.sampleIndex].sourceMoveState == m_Samples[m_CurrentSample].targetMoveState ||
+			  m_Samples[m_CurrentSample].idleLike) &&
+			 m_Samples[best.sampleIndex].targetMoveState != m_Samples[m_CurrentSample].targetMoveState);
 		float requiredImprovement = searchContextChanged
 			? m_Settings.minSwitchCostImprovement * 0.5f
 			: m_Settings.minSwitchCostImprovement;
@@ -991,18 +1294,22 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		const bool improvesEnough =
 			best.sampleIndex >= 0 &&
 			(best.totalCost + requiredImprovement < currentCost ||
+			 shouldEnterContextTransition ||
 			 shouldExitFinishedTransition ||
 			 m_CurrentSample < 0);
 		const bool canInterruptBlend =
 			!m_Blending ||
+			shouldEnterContextTransition ||
 			shouldExitFinishedTransition ||
 			m_BlendElapsed >= m_Settings.blendDuration * glm::clamp(m_Settings.blendInterruptFraction, 0.0f, 1.0f);
 		const bool switchIntervalReady =
 			searchContextChanged ||
+			shouldEnterContextTransition ||
 			shouldExitFinishedTransition ||
 			m_TimeSinceSwitch >= m_Settings.minSwitchInterval;
 		const bool canSwitchNow =
 			best.sampleIndex >= 0 &&
+			!bestIsSameLoopClip &&
 			improvesEnough &&
 			canInterruptBlend &&
 			switchIntervalReady;
@@ -1019,6 +1326,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			m_PreviousQueryModelPose.clear();
 			m_CurrentLeftFootVelocity = glm::vec3(0.0f);
 			m_CurrentRightFootVelocity = glm::vec3(0.0f);
+			m_CurrentPelvisVelocity = glm::vec3(0.0f);
+			m_HasQueryVelocity = false;
 			++m_SwitchCount;
 
 			activeSample = &m_Samples[m_CurrentSample];

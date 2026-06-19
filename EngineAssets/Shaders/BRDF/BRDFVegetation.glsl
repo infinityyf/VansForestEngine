@@ -187,13 +187,13 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
 // ---------------------------------------------------------------------------
 // Ambient BRDF for vegetation (reuse standard PBR ambient with higher F0).
 // ---------------------------------------------------------------------------
-void AmbientBRDF_Vegetation(BRDFData brdf, vec3 viewDirection, vec4 giVisSH,
+void AmbientBRDF_Vegetation(BRDFData brdf, vec3 viewDirection,
                             inout vec3 diffuse, inout vec3 specular)
 {
     // Use the standard PBR ambient but with the elevated F0
     vec3 savedFresnel = brdf.fresnel0;
     brdf.fresnel0 = vec3(0.20);  // waxy cuticle — strong specular
-    AmbientBRDF(brdf, viewDirection, giVisSH, diffuse, specular);
+    AmbientBRDF(brdf, viewDirection, diffuse, specular);
     brdf.fresnel0 = savedFresnel;
 }
 

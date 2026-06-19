@@ -18,6 +18,7 @@ namespace VansGraphics
 		std::string leftFoot;
 		std::string rightFoot;
 		std::string head;
+		glm::vec3 forwardAxis = glm::vec3(0.0f, 1.0f, 0.0f);
 
 		bool HasExplicitMapping() const
 		{
@@ -34,11 +35,12 @@ namespace VansGraphics
 		int leftFoot = -1;
 		int rightFoot = -1;
 		int head = -1;
+		glm::vec3 forwardAxis = glm::vec3(0.0f, 1.0f, 0.0f);
 
 		bool IsValid() const
 		{
 			return root >= 0 && trajectoryRoot >= 0 && pelvis >= 0 &&
-			       leftFoot >= 0 && rightFoot >= 0 && head >= 0;
+			       leftFoot >= 0 && rightFoot >= 0;
 		}
 	};
 
@@ -142,6 +144,7 @@ namespace VansGraphics
 			FeatureVector rawFeature{};
 			FeatureVector feature{};
 			bool loopLike = false;
+			bool idleLike = false;
 			bool transitionLike = false;
 			bool startLike = false;
 			bool stopLike = false;
@@ -149,6 +152,9 @@ namespace VansGraphics
 			bool paceTransitionLike = false;
 			int sourceMoveState = -1;
 			int targetMoveState = 0;
+			int directionBucketFromName = -1;
+			int turnDirectionSign = 0;
+			int turnBucketDelta = 0;
 		};
 
 		struct MatchResult
@@ -178,6 +184,7 @@ namespace VansGraphics
 		bool m_HasLastSearchContext = false;
 		int m_LastMoveState = -1;
 		int m_LastDirectionBucket = -1;
+		int m_SourceDirectionBucketForSearch = -1;
 		bool m_DirectionChangedForSearch = false;
 		bool m_LastCrouching = false;
 		bool m_LastAirborne = false;
@@ -190,6 +197,8 @@ namespace VansGraphics
 		std::vector<glm::mat4> m_PreviousQueryModelPose;
 		glm::vec3 m_CurrentLeftFootVelocity = glm::vec3(0.0f);
 		glm::vec3 m_CurrentRightFootVelocity = glm::vec3(0.0f);
+		glm::vec3 m_CurrentPelvisVelocity = glm::vec3(0.0f);
+		bool m_HasQueryVelocity = false;
 
 		bool ShouldIncludeClip(const std::string& clipName) const;
 		int ResolveBoneIndex(const Skeleton& skeleton, const std::string& name) const;
@@ -211,7 +220,8 @@ namespace VansGraphics
 		                  float& outTrajectory,
 		                  float& outPose) const;
 		MatchResult FindBestMatch(const FeatureVector& query,
-		                          const std::unordered_map<std::string, AnimatorParameter>& parameters);
+		                          const std::unordered_map<std::string, AnimatorParameter>& parameters,
+		                          const std::unordered_map<std::string, VansAnimationClip>& clips);
 		bool ShouldConsiderSampleForParameters(const Sample& sample,
 		                                       const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
 		bool IsSamePlaybackNeighborhood(const Sample& sample) const;
@@ -224,6 +234,9 @@ namespace VansGraphics
 		                         std::vector<glm::mat4>& outModelTransforms) const;
 		glm::vec3 TransformPointToRootSpace(const glm::mat4& rootModel, const glm::vec3& point) const;
 		glm::vec3 TransformVectorToRootSpace(const glm::mat4& rootModel, const glm::vec3& vector) const;
+		glm::vec3 ExtractRootForward(const glm::mat4& rootModel, const MotionMatchingResolvedRig& rig) const;
+		glm::vec3 BuildDesiredVelocityRoot(const std::unordered_map<std::string, AnimatorParameter>& parameters,
+		                                   const MotionMatchingResolvedRig& rig) const;
 		float WrapClipTime(const VansAnimationClip& clip, float time) const;
 		float ResolveClipTime(const VansAnimationClip& clip, float time, bool loopLike) const;
 		void WriteVec3(FeatureVector& feature, int& offset, const glm::vec3& value) const;

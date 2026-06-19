@@ -575,6 +575,8 @@ void VansGraphics::VansScene::UnLoadScene()
 
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
+	if (nativeDevice != VK_NULL_HANDLE)
+		m_ReflectionProbeSystem.Clear(nativeDevice);
 
 	// ── 0. 清除编辑器选中状态 ─────────────────────────────────────────────
     VANS_UNLOAD_STEP(0, "清除编辑器选中状态");
@@ -586,13 +588,10 @@ void VansGraphics::VansScene::UnLoadScene()
 	//  SSGI / SSAO / HZB / SSR / Fog 等屏幕空间纹理在 PrepareRenderingData()
 	//  时创建，不依赖场景内容，无需在场景切换时销毁。
 	//  SH 纹理由 RuntimeRenderTextureManager 拥有，使用 Remove（会 delete）。
-	//  RT_GI_VISIBILITY 的实际对象由 VansRayTracing::CleanupSceneResources 销毁，
-	//  此处仅从注册表移除引用（Unregister），防止悬空指针，同时避免 double-free。
     VANS_UNLOAD_STEP(1, "清理场景级运行时纹理");
 	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
 	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
 	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
-	m_MaterialManager.UnregisterRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY);
 	m_MaterialManager.m_SSGITemporalFrame = 0;
 	m_MaterialManager.m_FogTemporalFrame  = 0;
 	// SH 纹理已移除，标记渲染 Feature 的 descriptor set 需要重新写入

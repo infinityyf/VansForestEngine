@@ -1,0 +1,88 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform samplerCubeArray sourceCubeArray;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray outputMip;
+
+layout(push_constant) uniform PrefilterParams
+{
+    float roughness;
+    uint outputSize;
+    uint cubeCount;
+    uint sampleCount;
+    uint baseCube;
+} p;
+
+vec2 Hammersley(uint i, uint count)
+{
+    uint bits = (i << 16u) | (i >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return vec2(float(i) / float(count), float(bits) * 2.3283064365386963e-10);
+}
+
+vec3 ImportanceSampleGGX(vec2 Xi, vec3 N, float roughness)
+{
+    float a = roughness * roughness;
+    float phi = 6.28318530718 * Xi.x;
+    float cosTheta = sqrt((1.0 - Xi.y) / (1.0 + (a * a - 1.0) * Xi.y));
+    float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+    vec3 H = vec3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+    vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, N));
+    vec3 bitangent = cross(N, tangent);
+    return normalize(tangent * H.x + bitangent * H.y + N * H.z);
+}
+
+vec3 ImportanceSampleCosine(vec2 Xi, vec3 N)
+{
+    float phi = 6.28318530718 * Xi.x;
+    float radius = sqrt(Xi.y);
+    vec3 local = vec3(radius * cos(phi), radius * sin(phi), sqrt(max(1.0 - Xi.y, 0.0)));
+    vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, N));
+    vec3 bitangent = cross(N, tangent);
+    return normalize(tangent * local.x + bitangent * local.y + N * local.z);
+}
+
+vec3 FaceDirection(uint face, vec2 uv)
+{
+    vec2 pxy = uv * 2.0 - 1.0;
+    if (face == 0u) return normalize(vec3( 1.0, -pxy.y, -pxy.x));
+    if (face == 1u) return normalize(vec3(-1.0, -pxy.y,  pxy.x));
+    if (face == 2u) return normalize(vec3( pxy.x,  1.0,  pxy.y));
+    if (face == 3u) return normalize(vec3( pxy.x, -1.0, -pxy.y));
+    if (face == 4u) return normalize(vec3( pxy.x, -pxy.y,  1.0));
+    return normalize(vec3(-pxy.x, -pxy.y, -1.0));
+}
+
+void main()
+{
+    uvec3 id = gl_GlobalInvocationID;
+    if (id.x >= p.outputSize || id.y >= p.outputSize || id.z >= p.cubeCount * 6u) return;
+    uint cube = p.baseCube + id.z / 6u;
+    uint face = id.z % 6u;
+    vec3 N = FaceDirection(face, (vec2(id.xy) + 0.5) / float(p.outputSize));
+    vec3 V = N;
+    vec3 color = vec3(0.0);
+    float totalWeight = 0.0;
+    for (uint i = 0u; i < p.sampleCount; ++i)
+    {
+        vec2 Xi = Hammersley(i, p.sampleCount);
+        vec3 H = ImportanceSampleGGX(Xi, N, max(p.roughness, 0.001));
+        bool diffuseConvolution = p.roughness > 0.999;
+        vec3 L = diffuseConvolution ? ImportanceSampleCosine(Xi, N) : normalize(2.0 * dot(V, H) * H - V);
+        float NoL = max(dot(N, L), 0.0);
+        if (NoL > 0.0)
+        {
+            float weight = diffuseConvolution ? 1.0 : NoL;
+            color += textureLod(sourceCubeArray, vec4(L, float(cube)), 0.0).rgb * weight;
+            totalWeight += weight;
+        }
+    }
+    uint outputLayer = cube * 6u + face;
+    imageStore(outputMip, ivec3(id.xy, outputLayer), vec4(color / max(totalWeight, 1e-5), 1.0));
+}

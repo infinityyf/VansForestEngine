@@ -1,6 +1,8 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
+#include "../../BRDF/ReflectionProbeData.glsl"
+
 #include "../../Common/CameraData.glsl"
 #include "../water_common.glsl"
 
@@ -126,7 +128,7 @@ vec3 EvaluateDirectLight(vec3 N, vec3 V, vec3 L, vec3 lightColor, vec3 F0)
 // ============================================================
 // 环境光 Split-Sum BRDF（参考 BRDFData.glsl:214 AmbientBRDF）
 // ============================================================
-void EvaluateEnvironmentBRDF(vec3 N, vec3 V, vec3 F0,
+void EvaluateEnvironmentBRDF(vec3 W, vec3 N, vec3 V, vec3 F0,
                              vec4 reflectionTex,      // RGBA: RGB=SSR颜色, A=命中标志
                              vec3 refractionColor,
                              out vec3 outReflectionContrib,
@@ -150,10 +152,13 @@ void EvaluateEnvironmentBRDF(vec3 N, vec3 V, vec3 F0,
     // ── 3. 预卷积环境反射 + SSR 混合（与 AmbientBRDF 一致）─────
     vec3 R = reflect(-V, N);
     float lod = GetMipLevelFromRoughness(p.waterRoughness);
-    vec3 prefilteredColor = textureLod(PreConvSpecularEnvironment, R, lod).rgb;
+    ReflectionProbeSample probeSample = SampleReflectionProbes(W, N, R, p.waterRoughness);
+    vec3 skyColor = textureLod(PreConvSpecularEnvironment, R, lod).rgb * reflectionProbeLightingParams.z;
+    vec3 prefilteredColor = mix(skyColor, probeSample.specular, probeSample.coverage);
 
     // SSR hit → mix(ibl, ssr, hitFlag): hit→SSR, miss→IBL
-    float ssrHit = reflectionTex.a;
+    float ssrFade = 1.0 - smoothstep(reflectionProbeLightingParams.x, reflectionProbeLightingParams.y, p.waterRoughness);
+    float ssrHit = clamp(reflectionTex.a * ssrFade, 0.0, 1.0);
     vec3 reflectionColor = reflectionTex.rgb;
     prefilteredColor = mix(prefilteredColor, reflectionColor, ssrHit);
 
@@ -215,7 +220,7 @@ void main()
 
     // ── 2. 环境光（Split-Sum BRDF LUT）────────────────────
     vec3 envReflContrib, envRefrContrib;
-    EvaluateEnvironmentBRDF(N, V, WATER_F0,
+    EvaluateEnvironmentBRDF(W, N, V, WATER_F0,
         reflection,       // vec4: RGB=SSR result, A=hit flag
         refraction,
         envReflContrib, envRefrContrib);
@@ -235,5 +240,24 @@ void main()
     color += sssContrib;
     // color = mix(color, vec3(1.0), foam * p.foamIntensity * 0.5);
 
+    if (reflectionProbeDebugView != 0u)
+    {
+        vec3 R = reflect(-V, N);
+        ReflectionProbeSample debugProbe = SampleReflectionProbes(W, N, R, p.waterRoughness);
+        if (reflectionProbeDebugView == 1u)
+        {
+            float id = float(max(debugProbe.topIndex, 0));
+            color = (0.5 + 0.5 * cos(vec3(0.0, 2.0, 4.0) + id * 2.3999632)) * clamp(debugProbe.topWeight, 0.0, 1.0);
+        }
+        else if (reflectionProbeDebugView == 2u || reflectionProbeDebugView == 6u) color = debugProbe.specular;
+        else if (reflectionProbeDebugView == 3u) color = vec3(reflection.a);
+        else if (reflectionProbeDebugView == 4u)
+        {
+            uint region = debugProbe.topIndex >= 0 ? reflectionProbes[debugProbe.topIndex].regionAndFlags.x : 0xffffffffu;
+            color = fract(vec3(0.1031, 0.11369, 0.13787) * float(region + 1u));
+        }
+        else if (reflectionProbeDebugView == 5u) color = abs(debugProbe.parallaxDelta);
+        else if (reflectionProbeDebugView == 7u) color = reflection.rgb;
+    }
     outColor = vec4(color, 1.0);
 }

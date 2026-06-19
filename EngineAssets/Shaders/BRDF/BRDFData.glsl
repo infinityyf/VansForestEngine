@@ -72,6 +72,8 @@ layout(set = PBRLutSetBind, binding = 8) uniform sampler2D ClothBRDFLUT;
 layout(set = PBRLutSetBind, binding = 11) uniform sampler2D LTC1;
 layout(set = PBRLutSetBind, binding = 12) uniform sampler2D LTC2;
 
+#include "ReflectionProbeData.glsl"
+
 // Map (NoV, roughness) to the LTC LUT's UV space.
 // Convention matches selfshadow/ltc_code and the generated LTCData:
 //   uv.x = roughness           (column direction in ltc.js row-major data)
@@ -211,7 +213,7 @@ float SSR_BRDF(vec3 V, vec3 L, vec3 N, float Roughness)
 	return max(0, D * G);
 }
 
-void AmbientBRDF(BRDFData brdf, vec3 viewDirection, vec4 giVisSH, inout vec3 diffuse, inout vec3 specular)
+void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
 {
     float NdotV = max(dot(brdf.normal, viewDirection), 0.0);
     vec3 F = fresnelSchlickRoughness(NdotV, brdf.fresnel0, brdf.roughness);
@@ -221,23 +223,23 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, vec4 giVisSH, inout vec3 dif
     vec3 kD = 1.0 - kS;
     kD *= 1.0 - brdf.metallic;
     
-    diffuse = brdf.indirectDiffuse * brdf.ao * kD * brdf.albedo;
-
     vec3 reflection = reflect(-viewDirection, brdf.normal); 
+	ReflectionProbeSample probeSample = SampleReflectionProbes(
+		brdf.positionWS, brdf.normal, reflection, brdf.roughness);
+	diffuse = brdf.indirectDiffuse * brdf.ao * kD * brdf.albedo;
+
     vec2 intergrationUV = vec2(NdotV, brdf.roughness);
     intergrationUV.y = 1 - intergrationUV.y;
     vec2 environmentBRDF = texture(BRDFLUT, intergrationUV).rg;
 
     //reflection specular lod level
     float lod = GetMipLevelFromRoughness(brdf.roughness);
-    vec3 prefilteredColor = textureLod(PreConvSpecularEnvironment,reflection,lod).rgb;
-    // Attenuate cubemap by directional GI probe visibility (indoor occlusion)
-    float giVis = EvalGIVisibility(giVisSH, reflection);
-    prefilteredColor *= giVis;
+    vec3 skySpecular = textureLod(PreConvSpecularEnvironment, reflection, lod).rgb * reflectionProbeLightingParams.z;
+    vec3 prefilteredColor = mix(skySpecular, probeSample.specular, probeSample.coverage);
     // Roughness fade: SSR quality degrades on rough surfaces — smoothly
     // fall back to the pre-filtered cubemap which is always correct.
-    float ssrFade = 1;//1.0 - smoothstep(SSR_ROUGHNESS_FADE_START, SSR_ROUGHNESS_FADE_END, brdf.roughness);
-    float ssrWeight = brdf.indirectSpecular.a * ssrFade;
+    float ssrFade = 1.0 - smoothstep(reflectionProbeLightingParams.x, reflectionProbeLightingParams.y, brdf.roughness);
+    float ssrWeight = clamp(brdf.indirectSpecular.a * ssrFade, 0.0, 1.0);
     prefilteredColor = mix(prefilteredColor, brdf.indirectSpecular.rgb, ssrWeight);
     // Split-sum: LUT already integrates Fresnel, so use F0 (not F) here
     specular = prefilteredColor * (F * environmentBRDF.x + environmentBRDF.y) * brdf.ao;

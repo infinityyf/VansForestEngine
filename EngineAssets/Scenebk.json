@@ -1,4 +1,18 @@
 ﻿{
+    "globalIllumination": {
+        "gridSize": 80,
+        "probeSpacing": 0.5,
+        "regionCenter": [0.0, 6.0, 0.0],
+        "raysPerProbe": 256,
+        "spatialUpdateDivisor": 2,
+        "directionUpdateSlices": 16,
+        "maxRayDistance": 100.0,
+        "normalBias": 0.25,
+        "environmentIntensity": 5.0,
+        "maxIndirectRadiance": 2.0,
+        "maxSHL0": 8.0,
+        "temporalBlend": 0.08
+    },
     "scene": [
         {
             "objects": [

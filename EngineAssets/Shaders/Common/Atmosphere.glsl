@@ -9,7 +9,10 @@
 #if !defined(AtmosphereCBBind)
     #define AtmosphereCBBind 1
 #endif
-layout(set=AtmosphereCBBind, binding=0) uniform  AtmosphereUniformBuffer
+#if !defined(AtmosphereBinding)
+    #define AtmosphereBinding 0
+#endif
+layout(set=AtmosphereCBBind, binding=AtmosphereBinding) uniform AtmosphereUniformBuffer
 {
     vec4 sunDirection;
     float sunLuminance;

@@ -593,18 +593,25 @@ namespace VansGraphics
 		manager->m_SSGITemporalShader = new VansComputeShader();
 		manager->m_SSGITemporalShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSGITemporal").c_str());
 
-		float data[4] = { (float)m_RenderWidth, (float)m_RenderHeight, 1.0f / m_RenderWidth, 1.0f / m_RenderHeight };
+		const VansGISettings& gi = m_Scene->GetGISettings();
+		const float volumeSize = static_cast<float>(gi.gridSize) * gi.probeSpacing;
+		const glm::vec3 volumeMin = gi.regionCenter - glm::vec3(volumeSize * 0.5f);
+		SSGIParamsGPU data{};
+		data.screenSize = glm::vec4(
+			(float)m_RenderWidth, (float)m_RenderHeight, 1.0f / m_RenderWidth, 1.0f / m_RenderHeight);
+		data.giVolumeMin = glm::vec4(volumeMin, 0.0f);
+		data.giVolumeSizeAndBias = glm::vec4(volumeSize, volumeSize, volumeSize, gi.normalBias);
 		manager->m_SSGICBBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice, sizeof(float) * 4, VK_FORMAT_R32_SFLOAT,
+			m_VansVKLogicDevice, sizeof(data), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_SSGICBBuffer.SetBufferData(data, 0, sizeof(float) * 4);
+		manager->m_SSGICBBuffer.SetBufferData(&data, 0, sizeof(data));
 
 		manager->m_SSGITemporalCBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(float) * 4, VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_SSGITemporalCBBuffer.SetBufferData(data, 0, sizeof(float) * 4);
+		manager->m_SSGITemporalCBBuffer.SetBufferData(&data.screenSize, 0, sizeof(data.screenSize));
 
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(manager->m_SSGITexSetLayout, manager->m_SSGIDescriptorSets);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGITemporal(manager->m_SSGITemporalSetLayout, manager->m_SSGITemporalDescriptorSets, 2);

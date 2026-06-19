@@ -33,6 +33,9 @@ layout(push_constant) uniform PushConstants
     vec4 cameraUp;
     vec4 cameraRight;
     vec4 originParams;
+    vec4 frameParams;
+    vec4 regionParams;
+    vec4 lightingParams;
 } pushConstants;
 
 
@@ -45,11 +48,10 @@ void main()
     int sampleCount = int(pushConstants.originParams.z);
 
     float originSize = float(originCount) * originStride;
-    vec3 groupOrigin = vec3(-originSize/2 + originStride/2 ,-originSize/2 + originStride/2,-originSize/2 + originStride/2);
-    groupOrigin.y += 6;
+    vec3 groupOrigin = pushConstants.regionParams.xyz - vec3(originSize * 0.5);
 
     ivec3 currentIndex = ivec3(gl_LaunchIDEXT);
-    vec3 currentOrigin = groupOrigin + vec3(currentIndex) * originStride;
+    vec3 currentOrigin = groupOrigin + (vec3(currentIndex) + 0.5) * originStride;
 
     ivec3 pixelCoord = currentIndex;
     // vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(gl_LaunchSizeEXT.xy);
@@ -68,7 +70,8 @@ void main()
     {
         vec3 rayDirection = SampleSphere(rayIndex,sampleCount);
 
-        traceRayEXT(tlas,gl_RayFlagsOpaqueEXT,0xFF, 0, 0, 0,currentOrigin, 0.001, rayDirection, 100.0, 0);
+        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
+            currentOrigin, 0.001, rayDirection, pushConstants.originParams.w, 0);
     
         hitCount += hitResult.positionHit.w;
 

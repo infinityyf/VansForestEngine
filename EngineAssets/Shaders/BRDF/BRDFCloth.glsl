@@ -93,7 +93,7 @@ void DirectBRDF_Cloth(BRDFData brdf, vec3 lightDirection,
 //   .rg = split-sum DFG (F-dependent / F-independent parts)
 //   .b  = sheen tint scale (pre-baked directional sheen colour)
 // ---------------------------------------------------------------------------
-void AmbientBRDF_Cloth(BRDFData brdf, vec3 viewDirection, vec4 giVisSH,
+void AmbientBRDF_Cloth(BRDFData brdf, vec3 viewDirection,
                        inout vec3 diffuse, inout vec3 specular)
 {
     float NoV = max(dot(brdf.normal, viewDirection), 0.0);
@@ -109,17 +109,16 @@ void AmbientBRDF_Cloth(BRDFData brdf, vec3 viewDirection, vec4 giVisSH,
     // Specular: blend IBL cubemap with SSR result, modulated by sheen tint
     vec3  R        = reflect(-viewDirection, brdf.normal);
     float lod      = GetMipLevelFromRoughness(brdf.roughness);
-    vec3  iblSpec  = textureLod(PreConvSpecularEnvironment, R, lod).rgb;
-    // Attenuate cubemap by directional GI probe visibility (indoor occlusion)
-    float giVis    = EvalGIVisibility(giVisSH, R);
-    iblSpec *= giVis;
+    ReflectionProbeSample probeSample = SampleReflectionProbes(brdf.positionWS, brdf.normal, R, brdf.roughness);
+    vec3  skySpec = textureLod(PreConvSpecularEnvironment, R, lod).rgb * reflectionProbeLightingParams.z;
+    vec3  iblSpec = mix(skySpec, probeSample.specular, probeSample.coverage);
     vec3  ssrColor = brdf.indirectSpecular.rgb;
     // Roughness fade: SSR quality degrades on rough surfaces
-    float ssrFade  = 1.0 - smoothstep(SSR_ROUGHNESS_FADE_START, SSR_ROUGHNESS_FADE_END, brdf.roughness);
+    float ssrFade  = 1.0 - smoothstep(reflectionProbeLightingParams.x, reflectionProbeLightingParams.y, brdf.roughness);
     float ssrMask  = brdf.indirectSpecular.a * ssrFade;
     specular       = E * sheenTint * mix(iblSpec, ssrColor, ssrMask) * brdf.ao;
 
-    // Diffuse: SSGI attenuated by sheen energy
+    // Diffuse: filtered SSGI attenuated by sheen energy.
     diffuse = brdf.albedo * brdf.indirectDiffuse * (1.0 - E) * brdf.ao;
 }
 

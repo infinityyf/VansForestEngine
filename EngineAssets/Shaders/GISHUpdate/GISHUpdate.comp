@@ -27,21 +27,26 @@ layout(push_constant) uniform PushConstants
     vec4 cameraRight;
     vec4 originParams;
     vec4 frameParams;
+    vec4 regionParams;
+    vec4 lightingParams;
 } pushConstants;
 
 void main() 
 {
-    ivec3 probeIndex = ivec3(gl_GlobalInvocationID);
-    probeIndex *= 2;
     int originCount = int(pushConstants.originParams.x);
     int sampleCount = int(pushConstants.originParams.z);
+    int updateDivisor = max(int(pushConstants.frameParams.y), 1);
+    int spatialPhaseCount = updateDivisor * updateDivisor * updateDivisor;
+    int spatialPhase = int(pushConstants.frameParams.x) % spatialPhaseCount;
+    ivec3 spatialOffset = ivec3(
+        spatialPhase % updateDivisor,
+        (spatialPhase / updateDivisor) % updateDivisor,
+        spatialPhase / (updateDivisor * updateDivisor));
+    ivec3 probeIndex = ivec3(gl_GlobalInvocationID) * updateDivisor + spatialOffset;
+    if (any(greaterThanEqual(probeIndex, ivec3(originCount))))
+        return;
 
     //分帧计算每次计算1/8的采样点
-    const int kNumFrames = 8;
-    int frameIndex = int(pushConstants.frameParams.x) % kNumFrames;
-    probeIndex += kFrameOffsets[frameIndex];
-
-
     int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;
 
@@ -229,7 +234,7 @@ void main()
     }
 
     // 防止探针坐入几何体时 SH L0 系数过大，通过三线性插值泄漏为圆形光晕亮斑
-    const float MAX_L0 = 8.0;
+    float MAX_L0 = pushConstants.lightingParams.z;
     rResult[0] = clamp(rResult[0], -MAX_L0, MAX_L0);
     gResult[0] = clamp(gResult[0], -MAX_L0, MAX_L0);
     bResult[0] = clamp(bResult[0], -MAX_L0, MAX_L0);
@@ -240,7 +245,7 @@ void main()
     vec4 gPrev = imageLoad(resultGImage, probeIndex);
     vec4 bPrev = imageLoad(resultBImage, probeIndex);
     bool isFirst = (dot(rPrev, rPrev) + dot(gPrev, gPrev) + dot(bPrev, bPrev)) < 1e-6;
-    float alpha  = isFirst ? 1.0 : 0.08;
+    float alpha  = isFirst ? 1.0 : pushConstants.lightingParams.w;
 
     imageStore(resultRImage, probeIndex, mix(rPrev, rResult, alpha));
     imageStore(resultGImage, probeIndex, mix(gPrev, gResult, alpha));

@@ -18,7 +18,8 @@ namespace VansGraphics
 	{
 		LOW_PRES_8 = 0,
 		MID_PRES_16 = 1,
-		HIGH_PRES_32 = 2
+		HIGH_PRES_32 = 2,
+		HDR_PRES_16 = 3
 	};
 
 
@@ -65,12 +66,26 @@ namespace VansGraphics
 			bool generateMip, TexturePrecision texture_precision = LOW_PRES_8,
 			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
+		// Creates a samplerCubeArray. cubeCount is the number of cubemaps, while
+		// uploads address physical faces as [cubeIndex * 6 + faceIndex].
+		void InitCubeTextureArray(VansVKCommandBuffer& command_buffer,
+			int width, int height, int cubeCount, int numComponents,
+			bool generateMip, TexturePrecision texturePrecision = MID_PRES_16,
+			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
 		// 将单张图片文件上传到贴图数组的指定层（mip 0）。
 		// 若图片分辨率与数组不一致则进行最近邻缩放。layerIndex 必须 < layerCount。
 		// 返回 true 表示加载成功；false 表示文件不存在或读取失败（不会修改贴图数据）。
 		bool LoadTextureLayer(VansVKCommandBuffer& command_buffer,
 			const std::string& texturePath, int layerIndex, bool isSRGB = true,
 			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+		// Uploads an HDR/PNG face into an RGBA16F array layer.
+		bool LoadHDRTextureLayer(VansVKCommandBuffer& command_buffer,
+			const std::string& texturePath, int layerIndex);
+
+		bool UpdateHDRArrayLayerFromPixels(VansVKCommandBuffer& command_buffer,
+			const float* rgbaPixels, int srcWidth, int srcHeight, int layerIndex);
 
 		// 将已在 CPU 内存中的 RGBA8 像素上传到贴图数组的指定层（mip 0）并重新生成 mip 链。
 		// 像素格式必须为 RGBA8（与数组一致）。srcW/srcH 可与数组不一致，内部做最近邻缩放。

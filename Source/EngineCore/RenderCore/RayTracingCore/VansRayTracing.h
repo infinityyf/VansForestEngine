@@ -27,7 +27,10 @@ namespace VansGraphics
 		glm::vec4 cameraRight;
 		glm::vec4 dispatchParams;
 		glm::vec4 frameParams;
+		glm::vec4 regionParams;
+		glm::vec4 lightingParams;
 	};
+	static_assert(sizeof(RayTracingPushConstant) == 128, "GI push constant layout must match GLSL");
 
 	struct alignas(16) ResTIRStruct
 	{
@@ -69,7 +72,6 @@ namespace VansGraphics
 
 		void CreateGISHUpdateDescriptorSets(VansVKDevice* device);
 
-		void CreateGIVisibilityDescriptorSets(VansVKDevice* device);
 
 		//绑定数据
 		void BindRayTracingData(VansVKDevice* device, VansScene* scene);
@@ -78,7 +80,6 @@ namespace VansGraphics
 
 		void BindGISHData(VansMaterialManager* materialManager);
 
-		void BindGIVisibilityData();
 
 		bool m_RayTracingDescriptorSetIsDirty;
 
@@ -86,7 +87,6 @@ namespace VansGraphics
 
 		bool m_GISHUpdateDesctiproeSetIsDirty;
 
-		bool m_GIVisibilityDescriptorSetIsDirty;
 
 	private:
 
@@ -137,15 +137,6 @@ namespace VansGraphics
 		VansComputeShader* m_GISHUpdateShader;
 
 		//GI 可见度计算
-		VansComputeShader* m_GIVisibilityShader;
-
-		VkDescriptorSetLayout m_GIVisibilitySetLayout;
-		std::vector<VkDescriptorSet> m_GIVisibilityDescriptorSets;
-
-		VansTexture* m_VisibilityTexture;
-
-		// 可见度只需计算一次（8帧覆盖所有探针后停止）
-		bool m_GIVisibilityCalculateDone;
 
 		//记录命中点的光照信息
 		VansVKBuffer m_HitPointLightBuffer;

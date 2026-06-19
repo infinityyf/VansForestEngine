@@ -23,6 +23,7 @@ namespace VansGraphics { class VansWaterSystem; }
 #include "VansVideoManager.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "VansParticleRenderNode.h"
+#include "ReflectionProbeCore/VansReflectionProbeSystem.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -56,6 +57,23 @@ namespace VansGraphics
 		Runtime   // 运行时模式
 	};
 
+	// Scene-owned settings for the ray-traced diffuse GI probe volume.
+	struct VansGISettings
+	{
+		uint32_t gridSize = 80;
+		float probeSpacing = 0.5f;
+		glm::vec3 regionCenter = glm::vec3(0.0f, 6.0f, 0.0f);
+		uint32_t raysPerProbe = 256;
+		uint32_t spatialUpdateDivisor = 2;
+		uint32_t directionUpdateSlices = 16;
+		float maxRayDistance = 100.0f;
+		float normalBias = 0.25f;
+		float environmentIntensity = 5.0f;
+		float maxIndirectRadiance = 2.0f;
+		float maxSHL0 = 8.0f;
+		float temporalBlend = 0.08f;
+	};
+
 	// A logical group representing a multi-mesh parent and all its auto-expanded child render nodes.
 	struct MultiMeshGroup
 	{
@@ -85,6 +103,8 @@ namespace VansGraphics
 		VansLightManager m_LightManager;
 
 		VansMaterialManager m_MaterialManager;
+
+		VansReflectionProbeSystem m_ReflectionProbeSystem;
 
 		// IES profile 管理器（解析 .ies 文件，烘焙 GPU 纹理数组，供 Deferred pass binding=16 使用）
 		VansIESProfileManager m_IESProfileManager;
@@ -473,6 +493,10 @@ namespace VansGraphics
 
 		VansMaterialManager* GetMaterialManager() { return &m_MaterialManager; }
 
+		VansReflectionProbeSystem* GetReflectionProbeSystem() { return &m_ReflectionProbeSystem; }
+		const VansReflectionProbeSystem* GetReflectionProbeSystem() const { return &m_ReflectionProbeSystem; }
+		const VansGISettings& GetGISettings() const { return m_GISettings; }
+
 		VansLightManager* GetLightManager() { return &m_LightManager; }
 
 		VansIESProfileManager* GetIESProfileManager() { return &m_IESProfileManager; }
@@ -545,6 +569,10 @@ namespace VansGraphics
 		// 管理当前场景内所有音频节点的生命周期与每帧播放驱动。
 		// LoadResources() 中从 resource.json 加载，UnLoadProject() 中清理。
 		VansEngine::VansAudioManager m_AudioManager;
+
+	private:
+		// Keep newly added scene data at the end to preserve existing member offsets.
+		VansGISettings m_GISettings;
 	};
 }
 

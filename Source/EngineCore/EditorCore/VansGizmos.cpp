@@ -4,6 +4,8 @@
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../Util/VansInputManager.h"
 #include <glm/gtc/type_ptr.hpp>
+#include <algorithm>
+#include <cmath>
 
 namespace VansGraphics
 {
@@ -32,8 +34,7 @@ void VansGizmos::UnprojectRay(VansCamera*  camera,
     glm::mat4 view = camera->GetViewMatrix();
     glm::mat4 proj = camera->GetProjectiveMatrix();
 
-    // Use the matrix as stored (Vulkan Y-flip included); the inverse already
-    // accounts for it when unprojecting back to world space.
+    // GetProjectiveMatrix returns GLM clip coordinates with +Y up.
     glm::mat4 invPV = glm::inverse(proj * view);
 
     // Vulkan depth range is [0, 1]
@@ -74,6 +75,108 @@ void VansGizmos::Draw(VansScene*  scene,
                       ImVec2      windowSize)
 {
     if (!scene || !camera) return;
+
+    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+    ImGuizmo::SetRect(windowPos.x, windowPos.y, windowSize.x, windowSize.y);
+
+    auto* probeSystem = scene->GetReflectionProbeSystem();
+    if (probeSystem && probeSystem->GetEditorState().showProbeGizmos)
+    {
+        const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        auto project = [&](const glm::vec3& world, ImVec2& screen) -> bool
+        {
+            glm::vec4 clip = viewProjection * glm::vec4(world, 1.0f);
+            if (clip.w <= 1e-4f) return false;
+            glm::vec3 ndc = glm::vec3(clip) / clip.w;
+            screen = ImVec2(windowPos.x + (ndc.x * 0.5f + 0.5f) * windowSize.x,
+                windowPos.y + (-ndc.y * 0.5f + 0.5f) * windowSize.y);
+            return ndc.z >= 0.0f && ndc.z <= 1.0f;
+        };
+        auto drawBox = [&](const glm::vec3& bmin, const glm::vec3& bmax, ImU32 color, float thickness)
+        {
+            glm::vec3 corners[8] = {
+                {bmin.x,bmin.y,bmin.z},{bmax.x,bmin.y,bmin.z},{bmax.x,bmax.y,bmin.z},{bmin.x,bmax.y,bmin.z},
+                {bmin.x,bmin.y,bmax.z},{bmax.x,bmin.y,bmax.z},{bmax.x,bmax.y,bmax.z},{bmin.x,bmax.y,bmax.z} };
+            const int edges[12][2] = { {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7} };
+            for (const auto& edge : edges)
+            {
+                ImVec2 a, b;
+                if (project(corners[edge[0]], a) && project(corners[edge[1]], b)) drawList->AddLine(a, b, color, thickness);
+            }
+        };
+        const auto& probes = probeSystem->GetProbes();
+        const auto& editor = probeSystem->GetEditorState();
+        const glm::vec3 cameraRight = glm::normalize(glm::vec3(glm::inverse(camera->GetViewMatrix())[0]));
+        for (int i = 0; i < (int)probes.size(); ++i)
+        {
+            const auto& probe = probes[i];
+            if (!probe.enabled || probe.type == ReflectionProbeType::Sky) continue;
+            ImU32 color = probe.portal ? IM_COL32(255,220,40,220) :
+                (probe.type == ReflectionProbeType::Realtime ? IM_COL32(255,40,220,220) :
+                (probe.shape == ReflectionProbeShape::Box ? IM_COL32(30,220,255,220) : IM_COL32(40,255,100,220)));
+            const bool selected = editor.selectedProbeIndex == i;
+            if (selected) color = IM_COL32(255,255,255,255);
+            const float thickness = selected ? 2.5f : 1.5f;
+            if (probe.shape == ReflectionProbeShape::Box)
+            {
+                if (editor.showInfluenceVolumes)
+                    drawBox(probe.boxMin, probe.boxMax, color, thickness);
+                if (editor.showBlendVolumes)
+                    drawBox(probe.boxMin + glm::vec3(probe.blendDistance), probe.boxMax - glm::vec3(probe.blendDistance), color, 1.0f);
+            }
+            else
+            {
+                ImVec2 center, edge;
+                if (project(probe.position, center) && project(probe.position + cameraRight * probe.radius, edge))
+                {
+                    const float dx = edge.x - center.x;
+                    const float dy = edge.y - center.y;
+                    const float radius = std::sqrt(dx * dx + dy * dy);
+                    if (editor.showInfluenceVolumes)
+                        drawList->AddCircle(center, radius, color, 48, thickness);
+                    if (editor.showBlendVolumes)
+                        drawList->AddCircle(center, radius * std::max(0.0f, 1.0f - probe.blendDistance / std::max(probe.radius, 0.001f)), color, 48, 1.0f);
+                }
+            }
+            ImVec2 capture;
+            if (project(probe.capturePosition, capture))
+            {
+                drawList->AddCircleFilled(capture, selected ? 5.0f : 3.5f, color);
+                drawList->AddLine(ImVec2(capture.x - 7, capture.y), ImVec2(capture.x + 7, capture.y), color, 1.0f);
+                drawList->AddLine(ImVec2(capture.x, capture.y - 7), ImVec2(capture.x, capture.y + 7), color, 1.0f);
+            }
+        }
+        if (editor.showRegions)
+        {
+            for (const auto& region : probeSystem->GetRegions())
+            {
+                const ImU32 color = region.type == ProbeRegionType::Exterior ? IM_COL32(40,180,80,100) :
+                    (region.type == ProbeRegionType::Corridor ? IM_COL32(255,170,30,150) : IM_COL32(40,170,255,150));
+                drawBox(region.boundsMin, region.boundsMax, color, 1.0f);
+                ImVec2 label;
+                if (project(region.centroid, label)) drawList->AddText(label, color, ("Region " + std::to_string(region.id)).c_str());
+            }
+        }
+        if (editor.showPlacementGrid)
+        {
+            const auto& grid = probeSystem->GetPlacementGrid();
+            const uint32_t stride = std::max(1u, (uint32_t)(grid.cells.size() / 2048u));
+            for (uint32_t i = 0; i < grid.cells.size(); i += stride)
+            {
+                const auto& cell = grid.cells[i];
+                if (cell.cellClass == ProbeCellClass::Empty || cell.cellClass == ProbeCellClass::Unknown) continue;
+                const uint32_t x = i % grid.dimensions.x;
+                const uint32_t yz = i / grid.dimensions.x;
+                const uint32_t y = yz % grid.dimensions.y;
+                const uint32_t z = yz / grid.dimensions.y;
+                const glm::vec3 bmin = grid.origin + glm::vec3(x,y,z) * grid.cellSize;
+                ImU32 color = cell.cellClass == ProbeCellClass::Solid ? IM_COL32(255,50,50,90) :
+                    (cell.cellClass == ProbeCellClass::Boundary ? IM_COL32(255,220,50,90) : IM_COL32(50,180,90,45));
+                drawBox(bmin, bmin + glm::vec3(grid.cellSize), color, 0.75f);
+            }
+        }
+    }
 
     VansRenderNode* node = scene->m_SelectedNode;
     if (!node)  return;
@@ -160,7 +263,7 @@ void VansGizmos::TryPickObject(VansScene*  scene,
 
     // Mouse → NDC in [-1, 1]
     float ndcX = 2.0f * (mousePos.x - windowPos.x) / windowSize.x - 1.0f;
-    float ndcY = 2.0f * (mousePos.y - windowPos.y) / windowSize.y - 1.0f;
+    float ndcY = 1.0f - 2.0f * (mousePos.y - windowPos.y) / windowSize.y;
 
     glm::vec3 rayOrigin, rayDir;
     UnprojectRay(camera, ndcX, ndcY, rayOrigin, rayDir);

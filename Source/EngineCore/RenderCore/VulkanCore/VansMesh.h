@@ -76,6 +76,10 @@ namespace VansGraphics
 		const std::vector<float>& GetMeshRawPositionData() const { return m_MeshRawPositionData; }
 		const std::vector<int>& GetMeshTriangleIndex() const { return m_MeshTriangleIndex; }
 		const std::vector<float>& GetMeshRawTexCoordData() const { return m_MeshRawTexCoordData; }
+		bool HasCPUPlacementData() const
+		{
+			return m_MeshRawPositionDataEnableCPURead && m_MeshRawPositionData.size() >= 24;
+		}
 
 		VansVKBuffer& GetBLASVertexBuffer() { return m_VertexBuffer; }
 

@@ -50,9 +50,9 @@ namespace VansGraphics
 			// The hierarchy window uses this to group children under a parent tree node.
 			std::string m_ParentGroupName;
 
-			VansMesh* m_Mesh;
+			VansMesh* m_Mesh = nullptr;
 
-			VansMaterial* m_Material;
+			VansMaterial* m_Material = nullptr;
 
 			// ── Animation support ───────────────────────────────────────────────
 			// True when this node's mesh has a skeleton (bones), regardless of whether

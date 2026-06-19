@@ -145,6 +145,8 @@ namespace VansGraphics
 
 		void SetPolygonMode(VkPolygonMode mode);
 
+		void SetFrontFace(VkFrontFace frontFace) { m_DrawStateData.frontFace = frontFace; TriggerReCreateGraphicsPipeline(); }
+
 		void SetEnableAlphaBlend(VkBool32 enable) { m_DrawStateData.enableAlphaBlend = enable; }
 
 		// 贴花专用：MRT 3 附件 Alpha Blend，GBuffer1 colorMask 仅 R+G

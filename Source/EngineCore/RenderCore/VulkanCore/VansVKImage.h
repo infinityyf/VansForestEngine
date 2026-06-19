@@ -44,6 +44,7 @@ namespace VansGraphics
 		//also defines how an image's memory should be interpreted.
 		VkImageView m_VansVKImageView;
 		std::vector<VkImageView> m_VansVKImageMipViews;
+		std::vector<VkImageView> m_OwnedAuxiliaryViews;
 
 		// depth+stencil combined attachment view（仅对 D32S8/D24S8 等带 stencil 格式创建）
 		// framebuffer attachment 使用此 view 以支持 stencil 操作
@@ -91,6 +92,11 @@ namespace VansGraphics
 		VkImageView GetDepthStencilView() const { return m_DepthStencilView != VK_NULL_HANDLE ? m_DepthStencilView : m_VansVKImageView; }
 
 		VkImageView GetImageMipView(int mip);
+
+		// Creates a caller-owned 2D view for one array layer and one mip. Used by
+		// editor previews of cubemap-array faces.
+		VkImageView CreateLayerMipView(VkDevice device, uint32_t arrayLayer, uint32_t mipLevel);
+		VkImageView CreateMipArrayView(VkDevice device, uint32_t mipLevel) const;
 
 		VkImageLayout GetImageLayout();
 

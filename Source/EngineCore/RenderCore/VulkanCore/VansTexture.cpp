@@ -116,6 +116,7 @@ namespace VansGraphics
 		static const VkFormat formats8_unorm[] = { VK_FORMAT_UNDEFINED, VK_FORMAT_R8_UNORM, VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8B8_UNORM, VK_FORMAT_R8G8B8A8_UNORM };
 		static const VkFormat formats8_srgb[]  = { VK_FORMAT_UNDEFINED, VK_FORMAT_R8_SRGB,  VK_FORMAT_R8G8_SRGB,  VK_FORMAT_R8G8B8_SRGB,  VK_FORMAT_R8G8B8A8_SRGB  };
 		static const VkFormat formats16[] = { VK_FORMAT_UNDEFINED, VK_FORMAT_R16_UNORM, VK_FORMAT_R16G16_UNORM, VK_FORMAT_R16G16B16_UNORM, VK_FORMAT_R16G16B16A16_UNORM };
+		static const VkFormat formats16f[] = { VK_FORMAT_UNDEFINED, VK_FORMAT_R16_SFLOAT, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16B16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT };
 		static const VkFormat formats32[] = { VK_FORMAT_UNDEFINED, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT };
 
 		if (channel < 1 || channel > 4) return VK_FORMAT_UNDEFINED;
@@ -123,6 +124,7 @@ namespace VansGraphics
 		switch (precision)
 		{
 		case HIGH_PRES_32: return formats32[channel];
+		case HDR_PRES_16:  return formats16f[channel];
 		case MID_PRES_16:  return formats16[channel];
 		case LOW_PRES_8:
 		default:           return isSRGB ? formats8_srgb[channel] : formats8_unorm[channel];
@@ -967,6 +969,121 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED,
 				m_Image.GetImageAspect()
 			});
+		SubmitAndWait(command_buffer, queue, device);
+	}
+
+	static uint16_t FloatToHalf(float value)
+	{
+		uint32_t bits = 0; std::memcpy(&bits, &value, sizeof(bits));
+		const uint32_t sign = (bits >> 16) & 0x8000u;
+		int32_t exponent = int32_t((bits >> 23) & 0xffu) - 127 + 15;
+		uint32_t mantissa = bits & 0x7fffffu;
+		if (exponent <= 0)
+		{
+			if (exponent < -10) return (uint16_t)sign;
+			mantissa = (mantissa | 0x800000u) >> (1 - exponent);
+			return (uint16_t)(sign | ((mantissa + 0x1000u) >> 13));
+		}
+		if (exponent >= 31) return (uint16_t)(sign | 0x7c00u);
+		return (uint16_t)(sign | (uint32_t(exponent) << 10) | ((mantissa + 0x1000u) >> 13));
+	}
+
+	bool VansTexture::LoadHDRTextureLayer(VansVKCommandBuffer& command_buffer,
+		const std::string& texturePath, int layerIndex)
+	{
+		if (layerIndex < 0 || layerIndex >= m_TextureSlice ||
+			m_Image.GetImageCreateInfo().format != VK_FORMAT_R16G16B16A16_SFLOAT) return false;
+		int fileW = 0, fileH = 0, components = 0, bytes = 0;
+		float* pixels = static_cast<float*>(ReadTextureFile(texturePath, HIGH_PRES_32, bytes, fileW, fileH, components, 4));
+		if (!pixels || fileW <= 0 || fileH <= 0) return false;
+		std::vector<uint16_t> upload(size_t(m_TextureWidth) * m_TextureHeight * 4u);
+		const float scaleX = float(fileW) / float(m_TextureWidth);
+		const float scaleY = float(fileH) / float(m_TextureHeight);
+		for (int y = 0; y < m_TextureHeight; ++y)
+		for (int x = 0; x < m_TextureWidth; ++x)
+		{
+			const int sx = std::min(int(x * scaleX), fileW - 1);
+			const int sy = std::min(int(y * scaleY), fileH - 1);
+			for (int c = 0; c < 4; ++c)
+				upload[(size_t(y) * m_TextureWidth + x) * 4u + c] = FloatToHalf(pixels[(size_t(sy) * fileW + sx) * 4u + c]);
+		}
+		stbi_image_free(pixels);
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+		const VkExtent3D extent = { (uint32_t)m_TextureWidth, (uint32_t)m_TextureHeight, 1u };
+		const VkOffset3D offset = { 0, 0, 0 };
+		vkDevice->SetDeviceImageData(m_Image, command_buffer, upload.data(), 0,
+			(int)(upload.size() * sizeof(uint16_t)), offset, extent, 0, layerIndex);
+		VkQueue queue = vkDevice->GetGraphicsQueue(); VkDevice device = vkDevice->GetLogicDevice();
+		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		const int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
+		if (mipLevels > 1) GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(), m_TextureWidth, m_TextureHeight, mipLevels, layerIndex);
+		else m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{ m_Image.GetImage(), VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+			  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_Image.GetImageAspect() });
+		SubmitAndWait(command_buffer, queue, device);
+		return true;
+	}
+
+	bool VansTexture::UpdateHDRArrayLayerFromPixels(VansVKCommandBuffer& command_buffer,
+		const float* rgbaPixels, int srcWidth, int srcHeight, int layerIndex)
+	{
+		if (!rgbaPixels || srcWidth <= 0 || srcHeight <= 0 || layerIndex < 0 || layerIndex >= m_TextureSlice ||
+			m_Image.GetImageCreateInfo().format != VK_FORMAT_R16G16B16A16_SFLOAT) return false;
+		std::vector<uint16_t> upload(size_t(m_TextureWidth) * m_TextureHeight * 4u);
+		const float scaleX = float(srcWidth) / float(m_TextureWidth);
+		const float scaleY = float(srcHeight) / float(m_TextureHeight);
+		for (int y = 0; y < m_TextureHeight; ++y) for (int x = 0; x < m_TextureWidth; ++x)
+		{
+			const int sx = std::min(int(x * scaleX), srcWidth - 1);
+			const int sy = std::min(int(y * scaleY), srcHeight - 1);
+			for (int c = 0; c < 4; ++c) upload[(size_t(y) * m_TextureWidth + x) * 4u + c] = FloatToHalf(rgbaPixels[(size_t(sy) * srcWidth + sx) * 4u + c]);
+		}
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+		const VkExtent3D extent = { (uint32_t)m_TextureWidth, (uint32_t)m_TextureHeight, 1u };
+		const VkOffset3D offset = { 0, 0, 0 };
+		vkDevice->SetDeviceImageData(m_Image, command_buffer, upload.data(), 0, (int)(upload.size() * sizeof(uint16_t)), offset, extent, 0, layerIndex);
+		VkQueue queue = vkDevice->GetGraphicsQueue(); VkDevice device = vkDevice->GetLogicDevice();
+		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		const int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
+		if (mipLevels > 1) GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(), m_TextureWidth, m_TextureHeight, mipLevels, layerIndex);
+		else m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{ m_Image.GetImage(), VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_Image.GetImageAspect() });
+		SubmitAndWait(command_buffer, queue, device);
+		return true;
+	}
+
+	void VansTexture::InitCubeTextureArray(VansVKCommandBuffer& command_buffer,
+		int width, int height, int cubeCount, int numComponents,
+		bool generateMip, TexturePrecision texturePrecision, VkSamplerAddressMode addressMode)
+	{
+		m_TextureType = TEXTURE_CUBE;
+		m_TextureWidth = width;
+		m_TextureHeight = height;
+		m_TextureSlice = std::max(cubeCount, 1) * 6;
+
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+		VkDevice device = vkDevice->GetLogicDevice();
+		VkQueue queue = vkDevice->GetGraphicsQueue();
+		const VkFormat format = ChooseFormat(numComponents, texturePrecision);
+		const int mipLevels = generateMip ? 1 + (int)std::floor(std::log2((float)width)) : 1;
+		const VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1u };
+
+		m_Image.CreateVulkanImage(device, extent, format, mipLevels,
+			(uint32_t)std::max(cubeCount, 1), VK_IMAGE_TYPE_2D,
+			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+			VK_SAMPLE_COUNT_1_BIT, true, true, true, addressMode);
+
+		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			{ m_Image.GetImage(), VK_ACCESS_NONE, VK_ACCESS_NONE,
+			  m_Image.GetImageLayout(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+			  m_Image.GetImageAspect() });
 		SubmitAndWait(command_buffer, queue, device);
 	}
 

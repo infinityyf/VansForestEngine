@@ -221,9 +221,7 @@ void DirectBRDF_Hair(
 // Ambient / environment BRDF for hair  (UE Karis 2016 approach)
 //
 // Diffuse:
-//   SSGI + cubemap diffuse fallback — ensures hair always receives some
-//   environment light even when SSGI coverage is weak (thin cards in shadow).
-//   Fake-scatter wrap term provides fill analogous to the direct path.
+//   Filtered SSGI. Fake-scatter wrap provides fill analogous to the direct path.
 //
 // Specular (two lobes sampled from the environment):
 //   R   — sharp cuticle reflection (narrow, Fresnel-only)
@@ -233,7 +231,6 @@ void AmbientBRDF_Hair(
     BRDFData brdfData,
     HairBRDFParams hair,
     vec3 viewDirection,
-    vec4 giVisSH,
     out vec3 ambientDiffuse,
     out vec3 ambientSpecular)
 {
@@ -247,19 +244,8 @@ void AmbientBRDF_Hair(
 
     float NoV = max(dot(N, V), 0.0);
 
-    // ── Diffuse: SSGI + cubemap fallback + fake scatter ─────────────────
-    // SSGI (brdfData.indirectDiffuse) can be very weak for thin hair cards
-    // in shadow because screen-space GI doesn't capture light wrapping
-    // around semi-transparent fibers.  Blend in the pre-convolved diffuse
-    // cubemap as a floor so hair always receives some environment light.
-    vec3 cubemapDiffuse = texture(PreConvDiffuseEnvironment, N).rgb;
-    // Attenuate cubemap diffuse by directional GI probe visibility (indoor occlusion)
-    float giVisDiffuse = EvalGIVisibility(giVisSH, N);
-    cubemapDiffuse *= giVisDiffuse;
-    float ssgiLum = dot(brdfData.indirectDiffuse, vec3(0.2126, 0.7152, 0.0722));
-    // Smoothly blend: when SSGI is strong, trust it; when weak, add cubemap
-    float cubemapWeight = clamp(1.0 - ssgiLum * 4.0, 0.0, 1.0);
-    vec3 effectiveDiffuse = brdfData.indirectDiffuse + cubemapDiffuse * cubemapWeight * 0.5;
+    // ── Diffuse: SSGI + fake scatter ─────────────────────────────────────
+    vec3 effectiveDiffuse = brdfData.indirectDiffuse;
 
     vec3 fakeScatter = effectiveDiffuse * brdfData.albedo
                      * hair.scatter * 0.15;
@@ -284,19 +270,15 @@ void AmbientBRDF_Hair(
     float lodR   = GetMipLevelFromRoughness(roughR);
     float lodTRT = GetMipLevelFromRoughness(min(roughTRT, 1.0));
 
-    vec3 envR   = textureLod(PreConvSpecularEnvironment, R_dirR,   lodR).rgb;
-    vec3 envTRT = textureLod(PreConvSpecularEnvironment, R_dirTRT, lodTRT).rgb;
-
-    // Attenuate cubemap specular lobes by directional GI probe visibility
-    float giVisR   = EvalGIVisibility(giVisSH, R_dirR);
-    float giVisTRT = EvalGIVisibility(giVisSH, R_dirTRT);
-    envR   *= giVisR;
-    envTRT *= giVisTRT;
+    ReflectionProbeSample probeR = SampleReflectionProbes(brdfData.positionWS, N, R_dirR, roughR);
+    ReflectionProbeSample probeTRT = SampleReflectionProbes(brdfData.positionWS, N, R_dirTRT, min(roughTRT, 1.0));
+    vec3 envR = mix(textureLod(PreConvSpecularEnvironment, R_dirR, lodR).rgb * reflectionProbeLightingParams.z, probeR.specular, probeR.coverage);
+    vec3 envTRT = mix(textureLod(PreConvSpecularEnvironment, R_dirTRT, lodTRT).rgb * reflectionProbeLightingParams.z, probeTRT.specular, probeTRT.coverage);
 
     // Blend with SSR when available — fade out SSR on rough hair to
     // avoid noisy screen-space artefacts on the wider TRT lobe.
-    float ssrFadeR   = 1.0 - smoothstep(SSR_ROUGHNESS_FADE_START, SSR_ROUGHNESS_FADE_END, roughR);
-    float ssrFadeTRT = 1.0 - smoothstep(SSR_ROUGHNESS_FADE_START, SSR_ROUGHNESS_FADE_END, min(roughTRT, 1.0));
+    float ssrFadeR   = 1.0 - smoothstep(reflectionProbeLightingParams.x, reflectionProbeLightingParams.y, roughR);
+    float ssrFadeTRT = 1.0 - smoothstep(reflectionProbeLightingParams.x, reflectionProbeLightingParams.y, min(roughTRT, 1.0));
     float ssrMaskR   = brdfData.indirectSpecular.a * ssrFadeR;
     float ssrMaskTRT = brdfData.indirectSpecular.a * ssrFadeTRT;
     envR   = mix(envR,   brdfData.indirectSpecular.rgb, ssrMaskR);
