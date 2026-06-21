@@ -44,7 +44,6 @@ namespace VansGraphics
 		//also defines how an image's memory should be interpreted.
 		VkImageView m_VansVKImageView;
 		std::vector<VkImageView> m_VansVKImageMipViews;
-		std::vector<VkImageView> m_OwnedAuxiliaryViews;
 
 		// depth+stencil combined attachment view（仅对 D32S8/D24S8 等带 stencil 格式创建）
 		// framebuffer attachment 使用此 view 以支持 stencil 操作

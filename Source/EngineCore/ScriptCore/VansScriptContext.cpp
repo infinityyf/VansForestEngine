@@ -6,6 +6,7 @@
 #include "../Util/VansLog.h"
 #include "../VansTimer.h"
 #include "../RenderCore/VansScene.h"
+#include "VansTransform.h"
 #include "../PhysicsCore/VansPhysics.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../RenderCore/VansVideoManager.h"
@@ -29,6 +30,16 @@ namespace py = pybind11;
 
 // Singleton instance
 VansScriptContext* VansScriptContext::s_Instance = nullptr;
+
+VansScriptObject::~VansScriptObject()
+{
+    for (auto* component : m_Components)
+        delete component;
+    m_Components.clear();
+
+    if (m_OwnsTransform)
+        VansGraphics::VansTransformStore::FreeTransform(m_TransformID);
+}
 
 // ---------------------------------------------------------------------------
 // VansScriptRagdollComponent — 运行时布娃娃控制接口

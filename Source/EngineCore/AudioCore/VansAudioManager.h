@@ -19,7 +19,7 @@ namespace VansEngine
     //   VansScene 内嵌一个 VansAudioManager 成员，无需 new/delete。
     //
     // 两阶段加载（对应 AudioSystem.md Section 10.2）：
-    //   1. LoadFromJson()    — 项目级调用（LoadResources 中）：按 resource.json["audio"]
+    //   1. LoadFromJson()    — consumes the generated AssetDatabase audio batch.
     //                          逐条创建 VansAudioNode，并调用 Open() 加载解码。
     //   2. ApplySceneConfig() — 场景级调用（LoadSceneObjects 中）：按 scene["audio_sources"]
     //                          调整单条节点的空间化、音量、自动播放等运行时参数，
@@ -41,13 +41,13 @@ namespace VansEngine
         VansAudioManager& operator=(VansAudioManager&&)      = default;
 
         // ── 项目级加载（LoadResources 中调用） ──────────────────────────────
-        // audioArray   : resource.json["audio"] 数组，每条包含 name/path/play_mode/loop/auto_play 等
+        // audioArray: generated descriptors containing name/path/play_mode/loop/auto_play.
         // assetPrefix  : VansProjectManager::GetProjectRootPath()，用于拼接完整路径
         void LoadFromJson(const json& audioArray, const std::string& assetPrefix);
 
         // ── 场景级配置（LoadSceneObjects / LoadSceneContent 中调用） ────────
         // audioSourcesArray : scene.json["audio_sources"] 数组
-        // 每条记录只包含 { "name": "...", 可选覆盖字段 }，name 是在 resource.json 中已注册的
+        // Each record contains a resolved asset runtime name and optional overrides.
         void ApplySceneConfig(const json& audioSourcesArray);
 
         // ── 按名称查找，未找到返回 nullptr ───────────────────────────────────

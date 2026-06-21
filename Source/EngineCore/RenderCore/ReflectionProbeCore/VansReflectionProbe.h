@@ -158,7 +158,7 @@ namespace VansGraphics
 	struct ReflectionProbeEditorState
 	{
 		int selectedProbeIndex = -1;
-		bool showProbeGizmos = true;
+		bool showProbeGizmos = false;
 		bool showInfluenceVolumes = true;
 		bool showBlendVolumes = true;
 		bool showPlacementGrid = false;

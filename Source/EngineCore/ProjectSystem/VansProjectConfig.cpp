@@ -47,7 +47,11 @@ void VansProjectConfig::SetDefaults(const std::string& name)
 	createdAt = NowISO8601();
 	lastOpenedAt = createdAt;
 	defaultScene = "Scenes/MainScene.json";
-	resourceFile = "resource.json";
+	sceneSchemaVersion = 2;
+	assetsRoot = "Assets";
+	importedArtifactRoot = "Library/Artifacts";
+	metaExtension = ".meta";
+	runtimeAssetBindings.clear();
 
 	assetDirectories = {
 		{ "models",    "Assets/Models" },
@@ -80,7 +84,28 @@ bool VansProjectConfig::LoadFromFile(const std::string& filePath)
 		createdAt      = j.value("createdAt", "");
 		lastOpenedAt   = j.value("lastOpenedAt", "");
 		defaultScene   = j.value("defaultScene", "Scenes/MainScene.json");
-		resourceFile   = j.value("resourceFile", "resource.json");
+		sceneSchemaVersion = j.value("sceneSchemaVersion", 2u);
+		if (sceneSchemaVersion != 2u)
+		{
+			VANS_LOG_ERROR("[ProjectConfig] Only Scene schema version 2 projects are supported");
+			return false;
+		}
+		assetsRoot = "Assets";
+		importedArtifactRoot = "Library/Artifacts";
+		metaExtension = ".meta";
+		runtimeAssetBindings.clear();
+		if (j.contains("assetDatabase") && j["assetDatabase"].is_object())
+		{
+			const json& database = j["assetDatabase"];
+			assetsRoot = database.value("assetsRoot", "Assets");
+			importedArtifactRoot = database.value("importedArtifactRoot", "Library/Artifacts");
+			metaExtension = database.value("metaExtension", ".meta");
+		}
+		if (j.contains("runtimeAssetBindings") && j["runtimeAssetBindings"].is_object())
+		{
+			for (const auto& [name, value] : j["runtimeAssetBindings"].items())
+				if (value.is_string()) runtimeAssetBindings[name] = value.get<std::string>();
+		}
 		renderSettings = j.value("renderSettings", "ProjectSettings/RenderSettings.json");
 		physicsSettings = j.value("physicsSettings", "ProjectSettings/PhysicsSettings.json");
 		collisionLayerSettings = j.value("collisionLayerSettings", "ProjectSettings/PhysicsLayers.json");
@@ -117,7 +142,13 @@ bool VansProjectConfig::SaveToFile(const std::string& filePath) const
 	j["createdAt"]      = createdAt;
 	j["lastOpenedAt"]   = lastOpenedAt;
 	j["defaultScene"]   = defaultScene;
-	j["resourceFile"]   = resourceFile;
+	j["sceneSchemaVersion"] = 2;
+	j["assetDatabase"] = {
+		{ "assetsRoot", assetsRoot },
+		{ "importedArtifactRoot", importedArtifactRoot },
+		{ "metaExtension", metaExtension }
+	};
+	j["runtimeAssetBindings"] = runtimeAssetBindings;
 	j["renderSettings"] = renderSettings;
 	j["physicsSettings"] = physicsSettings;
 	j["collisionLayerSettings"] = collisionLayerSettings;

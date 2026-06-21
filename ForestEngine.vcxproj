@@ -181,6 +181,19 @@
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectManager.h" />
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectSelector.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\VansAssetGuid.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\VansAssetMeta.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDatabase.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDocument.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\VansModelAsset.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.h" />
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDiagnostics.h" />
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDocument.h" />
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDocumentLoader.h" />
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneSaveService.h" />
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneSchemaV2.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\VansSceneEditService.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\VansEditorSelection.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAssetWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansBaseWindowComponent.h" />
@@ -319,6 +332,16 @@
     <ClInclude Include="Source\VansBasicWindow.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Source\EngineCore\AssetCore\VansAssetGuid.cpp" />
+    <ClCompile Include="Source\EngineCore\AssetCore\VansAssetMeta.cpp" />
+    <ClCompile Include="Source\EngineCore\AssetCore\VansAssetDatabase.cpp" />
+    <ClCompile Include="Source\EngineCore\AssetCore\VansAssetDocument.cpp" />
+    <ClCompile Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.cpp" />
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneSchemaV2.cpp" />
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneDocument.cpp" />
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneDocumentLoader.cpp" />
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneSaveService.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\VansSceneEditService.cpp" />
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl" />
     <None Include="EngineAssets\Shaders\PostProcess\PostProcess.vert" />
     <None Include="EngineAssets\Shaders\PostProcess\PostProcess.frag" />

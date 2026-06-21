@@ -11,6 +11,7 @@
 #include "../LTC/LTCData.h"
 #include "../VansPostProcessProfile.h"
 #include <cmath>
+#include <algorithm>
 #include <vector>
 #include <cstdint>
 
@@ -66,17 +67,19 @@ namespace VansGraphics
 			}
 		}
 
+		const VkDeviceSize materialDataSize = sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRParamData.size();
 		materialManager->m_GlobalPBRDataBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
-			sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRParamData.size(),
+			std::max<VkDeviceSize>(materialDataSize, sizeof(VansBasePBRParam)),
 			VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
-		materialManager->m_GlobalPBRDataBuffer.SetBufferData(
-			materialManager->m_GlobalPBRParamData.data(),
-			0,
-			sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRParamData.size());
+		if (materialDataSize > 0)
+		{
+			materialManager->m_GlobalPBRDataBuffer.SetBufferData(
+				materialManager->m_GlobalPBRParamData.data(), 0, static_cast<int>(materialDataSize));
+		}
 
 		// Keep the PBR material buffer persistently mapped for fast per-frame CPU writes
 		materialManager->m_GlobalPBRDataBuffer.PersistentMap();
@@ -159,9 +162,10 @@ namespace VansGraphics
 		allRenderNodes.insert(allRenderNodes.end(), allDecalNodes.begin(), allDecalNodes.end());
 
 		int nodeCount = allRenderNodes.size();
+		const VkDeviceSize transformDataSize = sizeof(ModelDataStruct) * static_cast<VkDeviceSize>(nodeCount);
 		m_Scene->m_InstanceTransformDataBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
-			sizeof(ModelDataStruct) * nodeCount,
+			std::max<VkDeviceSize>(transformDataSize, sizeof(ModelDataStruct)),
 			VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
@@ -173,10 +177,11 @@ namespace VansGraphics
 			m_Scene->m_InstanceTransformData.push_back(node->m_ModelData);
 			node->m_TransfromIndex = nodeIndex;
 		}
-		m_Scene->m_InstanceTransformDataBuffer.SetBufferData(
-			m_Scene->m_InstanceTransformData.data(),
-			0,
-			sizeof(ModelDataStruct) * nodeCount);
+		if (transformDataSize > 0)
+		{
+			m_Scene->m_InstanceTransformDataBuffer.SetBufferData(
+				m_Scene->m_InstanceTransformData.data(), 0, static_cast<int>(transformDataSize));
+		}
 
 		// Keep the transform buffer persistently mapped for fast per-frame CPU writes
 		m_Scene->m_InstanceTransformDataBuffer.PersistentMap();

@@ -203,7 +203,8 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
 // Single physics node loading
 // ===========================================================================
 
-VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(const json& physicsNodeJson, VansRenderNode* associatedRenderNode)
+VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(
+	const json& physicsNodeJson, VansRenderNode* associatedRenderNode, uint32_t standaloneTransformID)
 {
     using namespace VansEngine;
 
@@ -283,13 +284,13 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(cons
     if (physicsNodeJson.contains("isTrigger"))
         properties.isTrigger = physicsNodeJson["isTrigger"].get<bool>();
 
-    if (associatedRenderNode == nullptr)
+	if (associatedRenderNode == nullptr && standaloneTransformID == UINT32_MAX)
     {
-        VANS_LOG_WARN("[VansScene] Physics component has no associated render node, skipping.");
+		VANS_LOG_WARN("[VansScene] Physics component has no transform, skipping.");
         return nullptr;
     }
 
-    uint32_t transformID = associatedRenderNode->m_TransformID;
+	uint32_t transformID = associatedRenderNode ? associatedRenderNode->m_TransformID : standaloneTransformID;
 
     // Get mesh reference if needed
     VansMesh* mesh = nullptr;
@@ -300,12 +301,19 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(cons
     }
 
     VansPhysicsNode* physicsNode = new VansPhysicsNode();
+	if (physicsNodeJson.contains("name"))
+		physicsNode->SetName(physicsNodeJson["name"]);
     physicsNode->Initialize(properties, transformID, mesh);
-
-    if (physicsNodeJson.contains("name"))
-        physicsNode->SetName(physicsNodeJson["name"]);
-
+	if (!physicsNode->IsEnabled() || physicsNode->GetActor() == nullptr)
+	{
+		VANS_LOG_ERROR("[VansScene] Failed to initialize physics component '"
+			<< physicsNode->GetName() << "'");
+		delete physicsNode;
+		return nullptr;
+	}
     m_PhysicsNodes.push_back(physicsNode);
+	VANS_LOG("[VansScene] Created physics node '" << physicsNode->GetName()
+		<< "' transformID=" << transformID);
     return physicsNode;
 }
 
@@ -348,7 +356,9 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
                 continue;
 
             const auto& properties = physicsNode->GetProperties();
-            if (properties.bodyType != PhysicsBodyType::Kinematic && !properties.isTrigger)
+			// Dynamic bodies are simulation-driven. Static editor geometry and
+			// kinematic/trigger bodies receive authored transform changes.
+			if (properties.bodyType == PhysicsBodyType::Dynamic && !properties.isTrigger)
                 continue;
 
             // const VansTransform& transformData = VansTransformStore::GetTransform(transformID);

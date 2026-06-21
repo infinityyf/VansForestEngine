@@ -27,7 +27,7 @@ namespace VansEngine
     // ===========================================================================
     struct AudioNodeProperties
     {
-        std::string    m_Name;               // 引擎内唯一标识，来自 resource.json["audio"][i]["name"]
+        std::string    m_Name;               // Runtime name generated from the asset record.
         std::string    m_FilePath;           // 音频文件绝对路径（assetPrefix + "/" + relPath）
         AudioPlayMode  m_PlayMode   = AudioPlayMode::Static;
         bool           m_Loop       = false;
@@ -43,7 +43,7 @@ namespace VansEngine
     // ===========================================================================
     // VansAudioNode — 一个音频资源的完整播放单元
     //
-    // 每个 VansAudioNode 对应 resource.json["audio"] 数组中的一条记录。
+    // Each node corresponds to one generated audio asset descriptor.
     // 一个 OpenAL Source + 若干 OpenAL Buffer 被封装在此处。
     //
     // 线程安全说明：

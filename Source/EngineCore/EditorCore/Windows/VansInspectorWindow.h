@@ -1,57 +1,35 @@
 #pragma once
-#include "VansBaseWindowComponent.h"
-#include "../../AnimationCore/VansAnimationTypes.h"
-#include "../../AnimationCore/VansAnimationClip.h"
 
-#include <string>
-#include <vector>
+#include "VansBaseWindowComponent.h"
+#include "../../AssetCore/VansAssetDocument.h"
+
 #include <filesystem>
-#include <array>
+#include <nlohmann/json.hpp>
+#include <string>
+
 namespace VansGraphics
 {
-	enum InspectResourceType
-	{
-		None = 0,
-		TextAsset,
-		TextureAsset,
-		ModelAsset,
-		AnimationClipAsset,
-	};
-	class VansInspectorWindow : public VansBaseWindowComponent
-	{
-	public:
-		~VansInspectorWindow();
-	private:
+class VansInspectorWindow final : public VansBaseWindowComponent
+{
+private:
+    using Json = nlohmann::ordered_json;
 
-		void ShowWindow(VansVKDevice& device) override;
+    void ShowWindow(VansVKDevice& device) override;
+    void DrawSceneEntity();
+	void DrawSceneSettings();
+    void DrawAsset();
+    bool DrawJsonValue(const std::string& label, Json& value, const std::string& pointer,
+        bool readOnly = false, const std::string& componentType = {}, const std::string& parentKey = {});
+    bool DrawAssetReference(const std::string& label, Json& reference,
+        const std::string& pointer, int expectedAssetType);
+    bool DrawComponent(Json& component, const std::string& pointer, bool& removeRequested);
+    bool LoadAssetDocuments(const std::filesystem::path& sourcePath);
+    bool SaveAssetDocuments();
 
-	private:
-
-		void ShowTextAsset();
-
-		void ShowTextureAsset(VansVKDevice& device);
-
-		void ShowModelTextureAsset(VansVKDevice& device);
-
-		void ShowAnimationClipAsset();
-		void ShowReflectionProbeEditor(VansVKDevice& device);
-		void ResetProbePreview();
-
-		// ── Cached .vclip data for the inspector ──
-		struct CachedVClipData
-		{
-			std::filesystem::path loadedPath;
-			bool                  valid = false;
-			VansAnimationClip     clip;
-			Skeleton              skeleton;
-			float                 scrubTime   = 0.0f;
-			int                   selectedBone = -1;
-		};
-		CachedVClipData m_VClipCache;
-		std::array<VkImageView, 6> m_ProbePreviewViews{};
-		std::array<VkDescriptorSet, 6> m_ProbePreviewSets{};
-		VkDevice m_ProbePreviewDevice = VK_NULL_HANDLE;
-		int m_ProbePreviewIndex = -1;
-		int m_ProbePreviewMip = -1;
-	};
+    std::filesystem::path m_AssetPath;
+    std::filesystem::path m_MetaPath;
+    Vans::VansAssetDocument m_AssetDocument;
+    Vans::VansAssetDocument m_MetaDocument;
+    std::string m_Error;
+};
 }

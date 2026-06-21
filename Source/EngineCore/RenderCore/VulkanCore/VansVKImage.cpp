@@ -22,7 +22,6 @@ namespace VansGraphics
 		info.subresourceRange = { m_ImageAspect, mipLevel, 1u, arrayLayer, 1u };
 		VkImageView result = VK_NULL_HANDLE;
 		if (vkCreateImageView(device, &info, nullptr, &result) != VK_SUCCESS) return VK_NULL_HANDLE;
-		m_OwnedAuxiliaryViews.push_back(result);
 		return result;
 	}
 
@@ -293,9 +292,6 @@ namespace VansGraphics
 
     void VansVKImage::DestroyVulkanImage(VkDevice& logical_device)
     {
-		for (VkImageView view : m_OwnedAuxiliaryViews)
-			if (view != VK_NULL_HANDLE) vkDestroyImageView(logical_device, view, nullptr);
-		m_OwnedAuxiliaryViews.clear();
         if (VK_NULL_HANDLE != m_DepthStencilView)
         {
             vkDestroyImageView(logical_device, m_DepthStencilView, nullptr);

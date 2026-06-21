@@ -7,6 +7,7 @@
 namespace VansGraphics { class VansWaterMaterial; }
 // VansWaterSystem 前向声明（完整定义在 WaterCore/VansWaterSystem.h）
 namespace VansGraphics { class VansWaterSystem; }
+namespace VansGraphics { class VansMesh; }
 #include "VansCamera.h"
 #include "BRDFData/VansLight.h"
 #include "BRDFData/VansIESProfile.h"
@@ -35,6 +36,11 @@ using json = nlohmann::json;
 namespace VansEngine
 {
 	class VansTerrainPhysicsNode;
+}
+
+namespace Vans
+{
+	class VansAssetDatabase;
 }
 
 namespace VansGraphics
@@ -78,6 +84,7 @@ namespace VansGraphics
 	struct MultiMeshGroup
 	{
 		std::string parentName;
+		VansMesh* sourceMesh = nullptr;              // non-owning project asset reference
 		glm::vec3 position = glm::vec3(0);
 		glm::vec3 rotation = glm::vec3(0);
 		glm::vec3 scale    = glm::vec3(1);
@@ -124,6 +131,7 @@ namespace VansGraphics
 
 		//记录所有资产
 		std::vector<VansAsset*> m_Meshes;
+		std::unordered_map<std::string, VansAsset*> m_ProjectMeshAliases;
 
 		// ExpandMultiMeshToRenderNodes 生成的场景级子网格查找表。
 		// 子网格对象仍由父级 multi-mesh 持有，此处只保存非拥有引用，UnLoadScene 只清空列表。
@@ -291,9 +299,10 @@ namespace VansGraphics
 		// ── 项目资源 / 场景加载入口 ────────────────────────────────────────
 
 		/// Load project-wide resources (mesh, texture, shader) from a
-		/// resource.json file.  Called once after opening a project,
+		/// AssetDatabase dependency closure. Called once after opening a project,
 		/// before any scene is loaded.
-		void LoadProjectResources(const char* resourceJsonPath, VansVKDevice* device);
+		bool LoadProjectAssets(Vans::VansAssetDatabase& database,
+			const std::filesystem::path& scenePath, VansVKDevice* device);
 
 		/// Load a scene file and prepare all GPU resources (PBR, transform,
 		/// descriptor sets, ray tracing).  Safe to call multiple times;
@@ -327,7 +336,8 @@ namespace VansGraphics
 
 		// ── Single-node loading helpers (extracted from batch loaders) ────────
 		VansRenderNode* LoadSingleRenderNode(VkDevice& device, const json& renderNodeJson);
-		VansEngine::VansPhysicsNode* LoadSinglePhysicsNode(const json& physicsNodeJson, VansRenderNode* associatedRenderNode);
+		VansEngine::VansPhysicsNode* LoadSinglePhysicsNode(const json& physicsNodeJson,
+			VansRenderNode* associatedRenderNode, uint32_t standaloneTransformID = UINT32_MAX);
 		// outProfilePath：若 JSON 中存在 profilePath 字段则输出该路径，否则保持为空
 		VansEngine::VansClothNode*   LoadSingleClothNode(const json& clothNodeJson, VansRenderNode* associatedRenderNode, std::string* outProfilePath = nullptr);
 
@@ -415,7 +425,8 @@ namespace VansGraphics
 			const glm::vec3& position,
 			const glm::vec3& rotation,
 			const glm::vec3& scale,
-			bool supportShadow);
+			bool supportShadow,
+			VansMaterial* materialOverride = nullptr);
 
 		// Helper: loads or reuses a texture by its absolute file path.
 		// Returns the existing VansTexture* if one with the same name was already loaded.
@@ -567,7 +578,7 @@ namespace VansGraphics
 
 		// ── 音频管理器 ────────────────────────────────────────────────────
 		// 管理当前场景内所有音频节点的生命周期与每帧播放驱动。
-		// LoadResources() 中从 resource.json 加载，UnLoadProject() 中清理。
+		// AssetDatabase records are uploaded by LoadResources() and released with the project.
 		VansEngine::VansAudioManager m_AudioManager;
 
 	private:

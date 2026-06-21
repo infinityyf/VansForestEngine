@@ -68,7 +68,7 @@ namespace VansGraphics
 
         // ── 项目卸载时清理 ───────────────────────────────────────────────
         // 停止所有后台解码线程，释放全部 FFmpeg 和 GPU 资源。
-        // 仅在项目卸载（LoadProjectResources 重新调用）或引擎关闭时调用。
+        // Called when unloading a project or shutting down the engine.
         void Clear();
 
         bool IsEmpty() const { return m_Videos.empty(); }

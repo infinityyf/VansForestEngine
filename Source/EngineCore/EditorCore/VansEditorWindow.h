@@ -5,7 +5,15 @@
 #include "Windows/VansBaseWindowComponent.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "../ProjectSystem/VansProjectSelector.h"
+#include <memory>
 #include <vector>
+
+namespace Vans
+{
+    class VansSceneDocument;
+    class VansSceneEditService;
+    class VansSceneSaveService;
+}
 
 #if defined _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -64,6 +72,10 @@ namespace VansGraphics
 		static void DrawEditorWindows(VansVKDevice* device);
 
 		static void DestroyVansEditorWindow();
+
+		static Vans::VansSceneDocument* GetSceneDocument();
+		static Vans::VansSceneEditService* GetSceneEditService();
+		static void ReloadCurrentSceneForEditing();
 
 	private:
 
@@ -161,11 +173,13 @@ namespace VansGraphics
 
 		static VansPendingProjectLoad m_PendingProjectLoad;
 
+		static std::unique_ptr<Vans::VansSceneDocument> m_SceneDocument;
+		static std::unique_ptr<Vans::VansSceneEditService> m_SceneEditService;
+		static std::unique_ptr<Vans::VansSceneSaveService> m_SceneSaveService;
+
 	public:
 		/// Deferred scene load: set during ImGui frame, processed before next Rendering()
 		static std::string m_PendingScenePath;
 
-		/// Deferred resource load: set during ImGui frame, processed before scene load
-		static std::string m_PendingResourcePath;
 	};
 }

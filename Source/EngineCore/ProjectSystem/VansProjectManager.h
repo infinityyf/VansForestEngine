@@ -21,10 +21,13 @@
 
 namespace Vans {
 
+class VansAssetDatabase;
+
 class VansProjectManager
 {
 public:
 	static VansProjectManager& Get();
+	~VansProjectManager();
 
 	// ── Project lifecycle ─────────────────────────────────────────
 
@@ -57,6 +60,8 @@ public:
 	const VansProjectSettings& GetProjectSettings() const { return m_ProjectSettings; }
 	VansSceneManager&        GetSceneManager()           { return m_SceneManager; }
 	const VansPathResolver&  GetPathResolver()     const { return m_PathResolver; }
+	VansAssetDatabase*       GetAssetDatabase()          { return m_AssetDatabase.get(); }
+	const VansAssetDatabase* GetAssetDatabase() const    { return m_AssetDatabase.get(); }
 	bool SaveProjectSettings() const;
 
 	// ── Recent projects (delegates to RecentProjects namespace) ───
@@ -77,6 +82,7 @@ private:
 	VansProjectSettings m_ProjectSettings;
 	VansPathResolver  m_PathResolver;
 	VansSceneManager  m_SceneManager;
+	std::unique_ptr<VansAssetDatabase> m_AssetDatabase;
 };
 
 } // namespace Vans

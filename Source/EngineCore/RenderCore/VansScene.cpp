@@ -50,6 +50,8 @@ VansGraphics::VansScene::~VansScene()
 
 VansAsset* VansGraphics::VansScene::GetMeshAsset(const std::string& name)
 {
+	if (const auto alias = m_ProjectMeshAliases.find(name); alias != m_ProjectMeshAliases.end())
+		return alias->second;
     //搜索对应的mesh
     for (auto mesh : m_Meshes)
     {
@@ -956,6 +958,7 @@ void VansGraphics::VansScene::UnloadProjectResources(VansVKDevice* device)
 
     // 重构-08 会在这里完整释放项目级资源。当前阶段只提供统一入口，避免改变既有资源生命周期。
     (void)device;
+	m_ProjectMeshAliases.clear();
     VANS_LOG("[VansScene] UnloadProjectResources 空桩已调用，完整项目资源释放将在重构-08 实现");
 }
 

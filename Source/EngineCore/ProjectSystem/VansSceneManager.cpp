@@ -1,13 +1,12 @@
 #include "VansSceneManager.h"
 #include "../Util/VansLog.h"
+#include "../SceneCore/VansSceneSchemaV2.h"
 
-#include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
 
 namespace fs = std::filesystem;
-using json = nlohmann::json;
 
 namespace Vans {
 
@@ -94,14 +93,9 @@ std::string VansSceneManager::CreateEmptyScene(const std::string& sceneName,
 	fs::path p(absPath);
 	fs::create_directories(p.parent_path());
 
-	// Minimal scene skeleton
-	json scene;
-	scene["scene"] = json::array();
-	json sceneEntry;
-	sceneEntry["objects"] = json::array();
-	sceneEntry["rendernode"] = json::array();
-	scene["scene"].push_back(sceneEntry);
-	scene["material"] = json::array();
+	VansSceneData sceneData;
+	sceneData.sceneGuid = VansAssetGuid::New();
+	const auto scene = VansSceneSchemaV2::Serialize(sceneData);
 
 	std::ofstream ofs(absPath);
 	if (!ofs.is_open())

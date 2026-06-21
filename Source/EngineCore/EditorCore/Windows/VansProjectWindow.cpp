@@ -2,13 +2,18 @@
 #include "../VansEditorWindow.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../ProjectSystem/VansProjectManager.h"
+#include "../../AssetCore/VansAssetDatabase.h"
 #include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../Util/VansLog.h"
+#include "../VansEditorSelection.h"
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
-
-std::filesystem::path VansGraphics::VansProjectWindow::m_CurrentSelectedFile = "";
+#include <nlohmann/json.hpp>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <string>
 
 void VansGraphics::VansProjectWindow::ShowWindow(VansVKDevice& device)
 {
@@ -92,22 +97,47 @@ void VansGraphics::VansProjectWindow::ShowWindow(VansVKDevice& device)
             if (std::filesystem::exists(currentPath)) {
                 for (const auto& entry : std::filesystem::directory_iterator(currentPath)) {
                     if (!entry.is_directory()) {
+                        if (entry.path().extension() == ".meta")
+                            continue;
                         ImGui::TableNextColumn();
                         ImGui::PushID(entry.path().string().c_str());
 
                         std::string filename = entry.path().filename().string();
-                        bool isJson = entry.path().extension() == ".json";
+                        const bool isSceneCandidate = entry.path().extension() == ".json";
 
                         if (ImGui::Button(filename.c_str(), ImVec2(thumbnailSize, thumbnailSize))) {
-                            m_CurrentSelectedFile = entry.path();
+                            Vans::VansEditorSelection::SelectAsset(entry.path());
                         }
 
-                        // Double-click a .json file to defer-load it as a scene
-                        if (isJson && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        if (projectMgr.IsProjectLoaded() && ImGui::BeginDragDropSource())
                         {
-                            std::string scenePath = entry.path().string();
-                            VANS_LOG("[Project] Deferring scene load: " << scenePath);
-                            VansEditorWindow::m_PendingScenePath = scenePath;
+                            if (Vans::VansAssetDatabase* database = projectMgr.GetAssetDatabase())
+                            {
+                                std::string registrationError;
+                                if (!database->Find(entry.path()))
+                                    database->RegisterOrRefresh(entry.path(), true, registrationError);
+                                if (const auto record = database->Find(entry.path()))
+                                {
+                                    const std::string guid = record->guid.ToString();
+                                    ImGui::SetDragDropPayload("VANS_ASSET_GUID", guid.c_str(), guid.size() + 1);
+                                    ImGui::TextUnformatted(filename.c_str());
+                                }
+                                else if (!registrationError.empty())
+                                    ImGui::TextUnformatted(registrationError.c_str());
+                            }
+                            ImGui::EndDragDropSource();
+                        }
+
+                        if (isSceneCandidate && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        {
+							std::ifstream input(entry.path());
+							nlohmann::json document = nlohmann::json::parse(input, nullptr, false);
+							if (document.is_object() && document.value("schemaVersion", 0u) == 2u)
+							{
+								std::string scenePath = entry.path().string();
+								VANS_LOG("[Project] Deferring Scene v2 load: " << scenePath);
+								VansEditorWindow::m_PendingScenePath = scenePath;
+							}
                         }
 
                         ImGui::TextWrapped("%s", filename.c_str());

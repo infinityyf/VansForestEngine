@@ -180,6 +180,8 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
             m_Gizmos.Draw(m_Scene, m_Camera, imageScreenPos, drawSize);
 
             // ── Motion Matching 轨迹可视化 ────────────────────────────────
+			if (m_Scene && !m_Scene->m_AnimationNodes.empty())
+				ImGui::Checkbox("Motion Matching Debug", &VansHierachuWindow::m_ShowMMViz);
             if (VansHierachuWindow::m_ShowMMViz && m_Scene)
             {
                 const glm::mat4& view = m_Camera->GetViewMatrix();

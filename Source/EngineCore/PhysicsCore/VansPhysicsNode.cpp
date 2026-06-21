@@ -48,7 +48,12 @@ namespace VansEngine
         }
 
         CreatePhysicsActor();
-        m_Enabled = true;
+		m_Enabled = m_Actor != nullptr && m_Shape != nullptr;
+		if (!m_Enabled)
+		{
+			VANS_LOG_ERROR("[PhysX] Physics node initialization failed: actor or collision shape is missing");
+			Shutdown();
+		}
     }
 
     void VansPhysicsNode::Shutdown()
@@ -394,18 +399,24 @@ namespace VansEngine
             return;
 
         // Kinematic 和 Trigger 都需要从 Transform 同步到 PhysX
-        if (m_Properties.bodyType != PhysicsBodyType::Kinematic && !m_Properties.isTrigger)
-            return;
-
-        PxRigidDynamic* dynamicActor = m_Actor->is<PxRigidDynamic>();
-        if (!dynamicActor)
-            return;
-
         // Get transform from global storage
         const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
         PxVec3 position = ToPxVec3(transformData.m_Position);
         PxQuat rotation = ToPxQuat(glm::quat(glm::radians(transformData.m_Rotation)));
         PxTransform transform(position, rotation);
+
+		if (m_Properties.bodyType == PhysicsBodyType::Static && !m_Properties.isTrigger)
+		{
+			m_Actor->setGlobalPose(transform);
+			return;
+		}
+
+		if (m_Properties.bodyType != PhysicsBodyType::Kinematic && !m_Properties.isTrigger)
+			return;
+
+		PxRigidDynamic* dynamicActor = m_Actor->is<PxRigidDynamic>();
+		if (!dynamicActor)
+			return;
 
         // Set kinematic target
         dynamicActor->setKinematicTarget(transform);

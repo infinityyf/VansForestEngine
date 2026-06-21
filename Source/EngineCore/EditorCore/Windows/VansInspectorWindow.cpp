@@ -1,636 +1,634 @@
-#if defined _WIN32
-#define VK_USE_PLATFORM_WIN32_KHR
-#include <Windows.h>
-#elif defined __linux
+#include "VansInspectorWindow.h"
 
-#endif
-#include "vulkan/vulkan.h"
+#include "../VansEditorSelection.h"
+#include "../VansEditorWindow.h"
+#include "../VansSceneEditService.h"
+#include "../../AssetCore/VansAssetDatabase.h"
+#include "../../AssetCore/VansAssetGuid.h"
+#include "../../AssetCore/VansAssetMeta.h"
+#include "../../ProjectSystem/VansProjectManager.h"
+#include "../../PhysicsCore/VansCollisionLayerManager.h"
+#include "../../SceneCore/VansSceneDocument.h"
+#include "../../Util/VansLog.h"
 
-#include "VansInspectorWindow.h" 
-#include "VansProjectWindow.h"
 #include "imgui.h"
-#include "backends/imgui_impl_glfw.h"
-#include "backends/imgui_impl_vulkan.h"
-
-#include "../../RenderCore/VulkanCore/VansTexture.h"
-#include "../../RenderCore/VulkanCore/VansVKDevice.h"
-#include "../../RenderCore/VulkanCore/VansVKCommandBuffer.h"
-#include "../../RenderCore/VansScene.h"
-#include "../../RenderCore/ReflectionProbeCore/VansReflectionProbeSystem.h"
-
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
-
+#define GLM_ENABLE_EXPERIMENTAL
 #include <../../GLM/glm.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
-#define GLM_ENABLE_EXPERIMENTAL
 #include <../../GLM/gtx/quaternion.hpp>
+
 #include <algorithm>
-#include <cmath>
+#include <array>
+#include <cctype>
+#include <cstdint>
 #include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
 
-VansGraphics::VansInspectorWindow::~VansInspectorWindow()
+namespace VansGraphics
 {
-    ResetProbePreview();
+namespace
+{
+using Json = nlohmann::ordered_json;
+
+std::string EscapePointerToken(const std::string& token)
+{
+    std::string result;
+    for (const char c : token)
+    {
+        if (c == '~') result += "~0";
+        else if (c == '/') result += "~1";
+        else result += c;
+    }
+    return result;
 }
 
-void VansGraphics::VansInspectorWindow::ResetProbePreview()
+std::string Lower(std::string value)
 {
-    for (size_t i = 0; i < m_ProbePreviewSets.size(); ++i)
-    {
-        if (m_ProbePreviewSets[i] != VK_NULL_HANDLE)
-            ImGui_ImplVulkan_RemoveTexture(m_ProbePreviewSets[i]);
-        m_ProbePreviewSets[i] = VK_NULL_HANDLE;
-        m_ProbePreviewViews[i] = VK_NULL_HANDLE;
-    }
-    m_ProbePreviewIndex = -1;
-    m_ProbePreviewMip = -1;
+    std::transform(value.begin(), value.end(), value.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
 }
 
-void VansGraphics::VansInspectorWindow::ShowWindow(VansVKDevice& device)
+std::string FriendlyLabel(const std::string& key)
 {
-    auto currentFile = VansProjectWindow::m_CurrentSelectedFile;
-    ImGui::Begin("Inspector");
-
-    if (m_Scene && m_Scene->IsSceneReady())
+    if (key.empty()) return "Property";
+    std::string label;
+    label.reserve(key.size() + 8);
+    for (std::size_t i = 0; i < key.size(); ++i)
     {
-        ShowReflectionProbeEditor(device);
-        if (!currentFile.empty()) ImGui::Separator();
+        const char c = key[i];
+        if (c == '_' || c == '-') { label += ' '; continue; }
+        if (i > 0 && std::isupper(static_cast<unsigned char>(c)) &&
+            !std::isupper(static_cast<unsigned char>(key[i - 1]))) label += ' ';
+        label += c;
     }
-
-    // Inspector Window for Selected File
-    if (!currentFile.empty()) {
-        ImGui::Text("Selected File: %s", currentFile.filename().string().c_str());
-        ImGui::Separator();
-
-        std::string extension = currentFile.extension().string();
-        InspectResourceType type = InspectResourceType::None;
-
-        if (extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".bmp" || extension == ".tga")
-        {
-            type = InspectResourceType::TextureAsset;
-        }
-        else if (extension == ".txt" || extension == ".cpp" || extension == ".h" || extension == ".hpp" || extension == ".c" ||
-            extension == ".json" || extension == ".xml" || extension == ".lua" || extension == ".py" ||
-            extension == ".shader" || extension == ".vert" || extension == ".frag" || extension == ".comp" || extension == ".glsl" ||
-            extension == ".cmake" || extension == ".ini" || extension == ".log")
-        {
-            type = InspectResourceType::TextAsset;
-        }
-        else if (extension == ".fbx" || extension == ".obj" || extension == ".gltf" || extension == ".glb")
-        {
-            type = InspectResourceType::ModelAsset;
-        }
-        else if (extension == ".vclip")
-        {
-            type = InspectResourceType::AnimationClipAsset;
-        }
-
-        switch (type)
-        {
-        case InspectResourceType::TextAsset:
-            ShowTextAsset();
-            break;
-        case InspectResourceType::TextureAsset:
-            ShowTextureAsset(device);
-            break;
-        case InspectResourceType::ModelAsset:
-            ShowModelTextureAsset(device);
-            break;
-        case InspectResourceType::AnimationClipAsset:
-            ShowAnimationClipAsset();
-            break;
-        default:
-            ImGui::Text("File Name: %s", currentFile.filename().string().c_str());
-            break;
-        }
-
-    }
-    ImGui::End();
+    label.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(label.front())));
+    return label;
 }
 
-void VansGraphics::VansInspectorWindow::ShowReflectionProbeEditor(VansVKDevice& device)
+bool IsGuidText(const std::string& value)
 {
-    auto* system = m_Scene ? m_Scene->GetReflectionProbeSystem() : nullptr;
-    if (!system || !ImGui::CollapsingHeader("Reflection Probes", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    Vans::VansAssetGuid guid;
+    return Vans::VansAssetGuid::TryParse(value, guid);
+}
 
-    auto& probes = system->GetProbes();
-    auto& results = system->GetBakeResults();
-    auto& state = system->GetEditorState();
-    ImGui::Text("%d probes (%u active)", (int)probes.size(),
-        (unsigned)std::count_if(results.begin(), results.end(), [](const auto& r) { return r.valid; }));
+Vans::VansAssetType InferAssetType(const std::string& key,
+    const std::string& parentKey, const std::string& componentType)
+{
+    const std::string field = Lower(key);
+    const std::string parent = Lower(parentKey);
+    const std::string component = Lower(componentType);
+    if (field == "model" || field.find("mesh") != std::string::npos) return Vans::VansAssetType::Model;
+    if (field.find("material") != std::string::npos || parent.find("materialoverride") != std::string::npos)
+        return Vans::VansAssetType::Material;
+    if (field.find("texture") != std::string::npos || parent == "textures" ||
+        field == "basecolor" || field == "normal" || field == "metal" || field == "roughness" || field == "ao")
+        return Vans::VansAssetType::Texture;
+    if (field == "source" && component == "audio") return Vans::VansAssetType::Audio;
+    if (field == "source" && component == "video") return Vans::VansAssetType::Video;
+    return Vans::VansAssetType::Unknown;
+}
 
-    ImGui::BeginChild("##probeList", ImVec2(0.0f, 125.0f), true);
-    for (int i = 0; i < (int)probes.size(); ++i)
+const char* AssetTypeName(Vans::VansAssetType type)
+{
+    switch (type)
     {
-        const auto& p = probes[i];
-        const bool valid = i < (int)results.size() && results[i].valid;
-        ImGui::PushID(i);
-        if (!valid && p.type != ReflectionProbeType::Sky)
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.35f, 1.0f));
-        if (ImGui::Selectable(p.name.c_str(), state.selectedProbeIndex == i))
-            state.selectedProbeIndex = i;
-        if (!valid && p.type != ReflectionProbeType::Sky) ImGui::PopStyleColor();
-        ImGui::PopID();
+    case Vans::VansAssetType::Model: return "Model";
+    case Vans::VansAssetType::Texture: return "Texture";
+    case Vans::VansAssetType::Material: return "Material";
+    case Vans::VansAssetType::Audio: return "Audio";
+    case Vans::VansAssetType::Video: return "Video";
+    case Vans::VansAssetType::Scene: return "Scene";
+    default: return "Asset";
     }
-    ImGui::EndChild();
+}
 
-    if (ImGui::Button("Add Probe"))
-    {
-        VansReflectionProbeDesc p;
-        p.name = "Reflection Probe " + std::to_string(probes.size());
-        probes.insert(probes.end() - (probes.empty() ? 0 : 1), p);
-        results.insert(results.end() - (results.empty() ? 0 : 1), ReflectionProbeBakeResult{});
-        state.selectedProbeIndex = std::max(0, (int)probes.size() - 2);
-        ResetProbePreview(); device.WaitForDevice(); system->CreateGPUResources(device, device.GetEditorCommandBuffer());
-        system->BakeQueuedProbesNow(*m_Scene, device, device.GetEditorCommandBuffer());
-        system->UpdateGlobalDescriptors(m_Scene->m_GlobalDescriptorSet);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Rebake All"))
-    {
-        device.WaitForDevice();
-        system->RequestBakeAll();
-        system->BakeQueuedProbesNow(*m_Scene, device, device.GetEditorCommandBuffer());
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Save Config")) system->SaveConfiguration();
+const std::vector<const char*>* EnumOptions(const std::string& key)
+{
+    static const std::vector<const char*> bodyType{ "static", "dynamic", "kinematic" };
+    static const std::vector<const char*> colliderType{ "box", "sphere", "capsule", "mesh", "convex" };
+    static const std::vector<const char*> renderType{ "opaque", "transparent", "decal" };
+    static const std::vector<const char*> rayTracingMode{ "auto", "enabled", "disabled" };
+    static const std::vector<const char*> materialType{
+        "pbr", "coat", "transparent", "skin", "cloth", "hair", "subsurface", "grass", "emissive", "decal" };
+    static const std::vector<const char*> colorSpace{ "sRGB", "linear" };
+    static const std::vector<const char*> playMode{ "static", "streaming" };
+    static const std::vector<const char*> normals{ "ifMissing", "always", "never" };
+    static const std::vector<const char*> axis{ "auto", "x", "y", "z", "-x", "-y", "-z" };
+    static const std::vector<const char*> collision{ "none", "mesh", "convex" };
+    static const std::vector<const char*> climbing{ "easy", "constrained" };
+    static const std::vector<const char*> driveMode{ "animation", "physics", "blend" };
+    const std::string field = Lower(key);
+    if (field == "bodytype") return &bodyType;
+    if (field == "collidertype") return &colliderType;
+    if (field == "rendertype") return &renderType;
+    if (field == "raytracingmode") return &rayTracingMode;
+    if (field == "materialtype") return &materialType;
+    if (field == "colorspace") return &colorSpace;
+    if (field == "playmode") return &playMode;
+    if (field == "generatenormals") return &normals;
+    if (field == "sourceupaxis") return &axis;
+    if (field == "collision") return &collision;
+    if (field == "climbingmode") return &climbing;
+    if (field == "drive_mode") return &driveMode;
+    return nullptr;
+}
 
-    ImGui::Checkbox("Show Probe Gizmos", &state.showProbeGizmos);
-    ImGui::SameLine();
-    ImGui::Checkbox("Influence Volumes", &state.showInfluenceVolumes);
-    ImGui::SameLine();
-    ImGui::Checkbox("Blend Volumes", &state.showBlendVolumes);
+Json DefaultComponentData(const std::string& type)
+{
+    if (type == "ModelRenderer") return { { "model", { { "guid", "" } } }, { "castShadows", true },
+        { "receiveShadows", true }, { "rayTracingMode", "auto" }, { "visibilityMask", 0xffffffffu },
+        { "materialOverrides", Json::object() }, { "orphanOverrides", Json::object() }, { "renderType", "opaque" } };
+    if (type == "Physics") return { { "name", "Physics" }, { "bodyType", "static" },
+        { "colliderType", "box" }, { "boxExtents", { 0.5f, 0.5f, 0.5f } }, { "mass", 1.0f },
+        { "layer", "Default" }, { "isTrigger", false },
+        { "material", { { "staticFriction", 0.5f }, { "dynamicFriction", 0.5f }, { "restitution", 0.0f } } } };
+    if (type == "Camera") return { { "fov", 60.0f }, { "nearClip", 0.1f }, { "farClip", 1000.0f } };
+    if (type == "CharacterController") return { { "radius", 0.5f }, { "height", 1.8f },
+        { "slopeLimit", 0.707f }, { "stepOffset", 0.3f }, { "contactOffset", 0.08f },
+        { "climbingMode", "easy" }, { "layer", "Default" }, { "positionOffset", { 0.0f, 0.9f, 0.0f } } };
+    if (type == "DirectionalLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f } };
+    if (type == "PointLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f }, { "radius", 10.0f } };
+    if (type == "SpotLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
+        { "radius", 10.0f }, { "innercutoff", 15.0f }, { "outerCutoff", 30.0f } };
+    if (type == "RectLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
+        { "width", 1.0f }, { "height", 1.0f }, { "range", 10.0f }, { "two_sided", false }, { "shadow", false } };
+    if (type == "Audio" || type == "Video") return { { "source", { { "guid", "" } } } };
+    if (type == "Particle") return { { "asset", "" }, { "play_on_awake", true } };
+    if (type == "Script") return { { "path", "Scripts/" }, { "class", "" } };
+    if (type == "Animation") return { { "name", "Animation" }, { "root_motion", false }, { "animator", "" } };
+    if (type == "Cloth") return { { "profilePath", "" }, { "physicsAttachOffsetY", 0.0f } };
+    if (type == "Vehicle") return { { "bodyObject", "" }, { "tireObjects", Json::array() } };
+    return Json::object();
+}
 
-    int debugView = (int)state.debugView;
-    const char* debugViews[] = { "None", "Influence", "Probe Color", "SSR Confidence",
-        "Region ID", "Parallax", "Fallback Only", "SSR Only" };
-    if (ImGui::Combo("Fullscreen Debug", &debugView, debugViews, 8))
+bool IsColorField(const std::string& key)
+{
+    const std::string field = Lower(key);
+    return field.find("color") != std::string::npos || field == "albedo" ||
+        field.find("emissive") != std::string::npos || field.find("tint") != std::string::npos;
+}
+
+bool IsNormalizedField(const std::string& key)
+{
+    const std::string field = Lower(key);
+    return field == "metallic" || field == "roughness" || field == "ao" ||
+        field == "opacity" || field == "alpha" || field.find("blend") != std::string::npos;
+}
+
+void BeginProperty(const std::string& label)
+{
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(FriendlyLabel(label).c_str());
+    ImGui::SameLine(150.0f);
+    ImGui::SetNextItemWidth(-1.0f);
+}
+}
+
+bool VansInspectorWindow::DrawAssetReference(const std::string& label, Json& reference,
+    const std::string& pointer, int expectedAssetTypeValue)
+{
+    const auto expectedType = static_cast<Vans::VansAssetType>(expectedAssetTypeValue);
+    Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+    if (!database || !reference.is_object()) return false;
+
+    std::string guidText = reference.value("guid", "");
+    std::string preview = "None (" + std::string(AssetTypeName(expectedType)) + ")";
+    Vans::VansAssetGuid guid;
+    bool missing = false;
+    if (Vans::VansAssetGuid::TryParse(guidText, guid))
     {
-        state.debugView = (ReflectionProbeDebugView)debugView;
-        system->UploadMetadata();
-    }
-    if (ImGui::TreeNode("Reflection Lighting"))
-    {
-        auto& lighting = system->GetLightingSettings();
-        bool lightingChanged = false;
-        int maxBlend = (int)lighting.maxBlendCount;
-        if (ImGui::SliderInt("Max Blended Probes", &maxBlend, 1, 4)) { lighting.maxBlendCount = (uint32_t)maxBlend; lightingChanged = true; }
-        lightingChanged |= ImGui::SliderFloat("SSR Roughness Fade Start", &lighting.ssrRoughnessFadeStart, 0.0f, 1.0f);
-        lightingChanged |= ImGui::SliderFloat("SSR Roughness Fade End", &lighting.ssrRoughnessFadeEnd, 0.0f, 1.0f);
-        lightingChanged |= ImGui::DragFloat("Sky Fallback Intensity", &lighting.skyIntensity, 0.02f, 0.0f, 100.0f);
-        if (lightingChanged) system->UploadMetadata();
-        ImGui::TreePop();
+        if (const auto record = database->Find(guid)) preview = record->sourcePath.filename().string();
+        else { preview = "Missing: " + guidText.substr(0, 8); missing = true; }
     }
 
-    if (state.selectedProbeIndex < 0 || state.selectedProbeIndex >= (int)probes.size()) return;
-    const int selected = state.selectedProbeIndex;
-    auto& probe = probes[selected];
-    auto& bake = results[selected];
+    BeginProperty(label);
     bool changed = false;
-    bool resourceChanged = false;
-
-    ImGui::SeparatorText("Probe Parameters");
-    char name[256]{};
-    std::strncpy(name, probe.name.c_str(), sizeof(name) - 1);
-    if (ImGui::InputText("Name", name, sizeof(name))) { probe.name = name; changed = true; }
-    int type = (int)probe.type;
-    const char* types[] = { "Baked", "Realtime", "Sky" };
-    if (probe.type == ReflectionProbeType::Sky) ImGui::Text("Type: Sky (global fallback)");
-    else if (ImGui::Combo("Type", &type, types, 2)) { probe.type = (ReflectionProbeType)type; changed = true; resourceChanged = true; }
-    int shape = (int)probe.shape;
-    const char* shapes[] = { "Sphere", "Box" };
-    if (ImGui::Combo("Shape", &shape, shapes, 2)) { probe.shape = (ReflectionProbeShape)shape; changed = true; }
-    int refresh = (int)probe.refreshMode;
-    const char* refreshModes[] = { "On Load", "On Demand", "Every Frame", "Time Sliced" };
-    if (ImGui::Combo("Refresh", &refresh, refreshModes, 4)) { probe.refreshMode = (ReflectionProbeRefreshMode)refresh; changed = true; }
-    changed |= ImGui::Checkbox("Enabled", &probe.enabled);
-    changed |= ImGui::DragFloat3("Position", &probe.position.x, 0.05f);
-    changed |= ImGui::DragFloat3("Capture Position", &probe.capturePosition.x, 0.05f);
-    if (probe.shape == ReflectionProbeShape::Box)
+    ImGui::PushID(pointer.c_str());
+    if (missing) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.3f, 1.0f));
+    if (ImGui::BeginCombo("##asset", preview.c_str()))
     {
-        changed |= ImGui::DragFloat3("Box Min", &probe.boxMin.x, 0.05f);
-        changed |= ImGui::DragFloat3("Box Max", &probe.boxMax.x, 0.05f);
-        changed |= ImGui::Checkbox("Box Projection", &probe.boxProjection);
-    }
-    else changed |= ImGui::DragFloat("Radius", &probe.radius, 0.05f, 0.01f, 10000.0f);
-    changed |= ImGui::DragFloat("Blend Distance", &probe.blendDistance, 0.02f, 0.001f, 1000.0f);
-    changed |= ImGui::DragFloat("Priority", &probe.priority, 0.05f, -8.0f, 8.0f);
-    changed |= ImGui::DragFloat("Intensity", &probe.intensity, 0.02f, 0.0f, 100.0f);
-    changed |= ImGui::DragFloat("Specular Intensity", &probe.specularIntensity, 0.02f, 0.0f, 100.0f);
-    changed |= ImGui::DragFloat("Near Plane", &probe.nearPlane, 0.01f, 0.001f, probe.farPlane);
-    changed |= ImGui::DragFloat("Far Plane", &probe.farPlane, 1.0f, probe.nearPlane + 0.01f, 100000.0f);
-    int cullingMask = (int)probe.cullingMask;
-    if (ImGui::InputInt("Culling Mask", &cullingMask)) { probe.cullingMask = (uint32_t)cullingMask; changed = true; }
-    if (probe.type == ReflectionProbeType::Realtime)
-    {
-        int facesPerFrame = (int)probe.realtimeFacesPerFrame;
-        if (ImGui::SliderInt("Faces Per Frame", &facesPerFrame, 1, 6)) { probe.realtimeFacesPerFrame = (uint32_t)facesPerFrame; changed = true; }
-    }
-    int resolution = probe.resolution <= 32 ? 0 : probe.resolution <= 64 ? 1 :
-        probe.resolution <= 128 ? 2 : probe.resolution <= 256 ? 3 : 4;
-    if (ImGui::Combo("Resolution", &resolution, "32\0 64\0 128\0 256\0 512\0"))
-    {
-        static const uint32_t values[] = { 32, 64, 128, 256, 512 };
-        probe.resolution = values[std::clamp(resolution, 0, 4)]; changed = true; resourceChanged = true;
-    }
-    int region = probe.regionId == 0xffffffffu ? -1 : (int)probe.regionId;
-    if (ImGui::InputInt("Region ID", &region)) { probe.regionId = region < 0 ? 0xffffffffu : (uint32_t)region; changed = true; }
-    changed |= ImGui::Checkbox("Portal Bridge", &probe.portal);
-    ImGui::Text("Source: %s", probe.autoGenerated ? "Auto generated" : "Manual");
-    ImGui::TextWrapped("Cache: %s", bake.cachePath.empty() ? "Not assigned" : bake.cachePath.c_str());
-    ImGui::Text("Bake status: %s", bake.status.c_str());
-
-    if (changed) system->MarkDirty(selected);
-    if (resourceChanged)
-    {
-        ResetProbePreview(); device.WaitForDevice(); system->CreateGPUResources(device, device.GetEditorCommandBuffer());
-        system->BakeQueuedProbesNow(*m_Scene, device, device.GetEditorCommandBuffer());
-        system->UpdateGlobalDescriptors(m_Scene->m_GlobalDescriptorSet); return;
-    }
-    if (probe.type != ReflectionProbeType::Sky)
-    {
-        if (ImGui::Button("Rebake Selected"))
+        static char search[128]{};
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##search", "Search assets...", search, sizeof(search));
+        const std::string filter = Lower(search);
+        if (ImGui::Selectable("None", guidText.empty()))
         {
-            device.WaitForDevice();
-            system->RequestBake(selected);
-            system->BakeQueuedProbesNow(*m_Scene, device, device.GetEditorCommandBuffer());
+            reference["guid"] = "";
+            changed = true;
         }
-        ImGui::SameLine();
-        if (probe.autoGenerated && ImGui::Button("Convert To Manual")) system->ConvertToManual(selected);
-        if (!probe.autoGenerated)
+        for (const Vans::VansAssetRecord& record : database->All())
         {
-            ImGui::SameLine();
-            if (ImGui::Button("Delete Probe"))
+            if (record.type != expectedType || record.state == Vans::VansAssetState::Missing) continue;
+            if (!filter.empty() && Lower(record.sourcePath.filename().string()).find(filter) == std::string::npos) continue;
+            const std::string candidateGuid = record.guid.ToString();
+            const std::string itemLabel = record.sourcePath.filename().string() + "##" + candidateGuid;
+            const bool selected = candidateGuid == guidText;
+            if (ImGui::Selectable(itemLabel.c_str(), selected))
             {
-                probes.erase(probes.begin() + selected); results.erase(results.begin() + selected);
-                state.selectedProbeIndex = std::min(selected, (int)probes.size() - 1);
-                ResetProbePreview(); device.WaitForDevice(); system->CreateGPUResources(device, device.GetEditorCommandBuffer());
-                system->BakeQueuedProbesNow(*m_Scene, device, device.GetEditorCommandBuffer());
-                system->UpdateGlobalDescriptors(m_Scene->m_GlobalDescriptorSet); return;
+                reference["guid"] = candidateGuid;
+                changed = true;
             }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", record.sourcePath.string().c_str());
         }
+        ImGui::EndCombo();
     }
-
-    if (ImGui::TreeNode("Auto Placement"))
+    if (missing) ImGui::PopStyleColor();
+    if (ImGui::BeginDragDropTarget())
     {
-        auto& settings = system->GetPlacementSettings();
-        ImGui::Checkbox("Enabled##auto", &settings.enabled);
-        ImGui::DragFloat3("Volume Min", &settings.volumeMin.x, 0.25f);
-        ImGui::DragFloat3("Volume Max", &settings.volumeMax.x, 0.25f);
-        ImGui::DragFloat("Uniform Spacing", &settings.uniformSpacing, 0.25f, 0.5f, 100.0f);
-        ImGui::DragFloat("Cell Size##legacy", &settings.cellSize, 0.1f, 0.25f, 100.0f);
-        ImGui::DragFloat("Indoor Spacing##legacy", &settings.indoorSpacing, 0.1f, 1.0f, 100.0f);
-        ImGui::DragFloat("Outdoor Spacing##legacy", &settings.outdoorSpacing, 0.1f, 1.0f, 1000.0f);
-        ImGui::SliderFloat("Solid Threshold##legacy", &settings.solidThreshold, 0.01f, 1.0f);
-        ImGui::SliderFloat("Refinement Threshold##legacy", &settings.refinementThreshold, 0.0f, 0.5f);
-        ImGui::Checkbox("Show Placement Grid##legacy", &state.showPlacementGrid);
-        ImGui::Checkbox("Show Regions##legacy", &state.showRegions);
-        int maxCount = (int)settings.maxProbeCount;
-        if (ImGui::InputInt("Max Probe Count", &maxCount)) settings.maxProbeCount = (uint32_t)std::clamp(maxCount, 1, 1024);
-        if (ImGui::Button("Regenerate Auto Probes"))
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("VANS_ASSET_GUID"))
         {
-            system->GenerateAutoProbes(*m_Scene, true); ResetProbePreview(); device.WaitForDevice();
-            system->CreateGPUResources(device, device.GetEditorCommandBuffer());
-            system->BakeQueuedProbesNow(*m_Scene, device, device.GetEditorCommandBuffer());
-            system->UpdateGlobalDescriptors(m_Scene->m_GlobalDescriptorSet);
+            const std::string dropped(static_cast<const char*>(payload->Data));
+            Vans::VansAssetGuid droppedGuid;
+            if (Vans::VansAssetGuid::TryParse(dropped, droppedGuid))
+                if (const auto record = database->Find(droppedGuid); record && record->type == expectedType)
+                { reference["guid"] = dropped; changed = true; }
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Clear Auto Probes"))
-        {
-            system->ClearAutoProbes(); ResetProbePreview(); device.WaitForDevice();
-            system->CreateGPUResources(device, device.GetEditorCommandBuffer());
-            system->BakeQueuedProbesNow(*m_Scene, device, device.GetEditorCommandBuffer());
-            system->UpdateGlobalDescriptors(m_Scene->m_GlobalDescriptorSet);
-        }
-        if (ImGui::Button("Validate Placement"))
-        {
-            const auto errors = system->ValidatePlacement();
-            bake.status = errors.empty() ? "Placement valid" : errors.front();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Apply Auto Probes")) system->SaveConfiguration();
-        ImGui::TreePop();
+        ImGui::EndDragDropTarget();
     }
-
-    if (!bake.valid || !system->GetSpecularArray()) return;
-    ImGui::SeparatorText("Baked Cubemap Preview");
-    state.previewCubemap = true;
-    ImGui::SliderFloat("Roughness / Mip", &state.previewRoughness, 0.0f, 1.0f);
-    const int mip = std::clamp((int)std::round(state.previewRoughness * float(system->GetMipCount() - 1)), 0, (int)system->GetMipCount() - 1);
-    ImGui::Text("Resolution %u, layer %u, mip %d", system->GetArrayResolution(), bake.arrayLayer, mip);
-    if (m_ProbePreviewIndex != selected || m_ProbePreviewMip != mip)
-    {
-        ResetProbePreview();
-        m_ProbePreviewDevice = device.GetLogicDevice();
-        auto& image = system->GetSpecularArray()->GetImage();
-        for (uint32_t face = 0; face < 6; ++face)
-        {
-            m_ProbePreviewViews[face] = image.CreateLayerMipView(m_ProbePreviewDevice, bake.arrayLayer * 6u + face, (uint32_t)mip);
-            if (m_ProbePreviewViews[face] != VK_NULL_HANDLE)
-                m_ProbePreviewSets[face] = ImGui_ImplVulkan_AddTexture(image.GetSampler(), m_ProbePreviewViews[face], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-        m_ProbePreviewIndex = selected; m_ProbePreviewMip = mip;
-    }
-    const char* faceNames[] = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
-    const float width = std::max(64.0f, (ImGui::GetContentRegionAvail().x - 8.0f) / 3.0f);
-    for (int face = 0; face < 6; ++face)
-    {
-        ImGui::BeginGroup(); ImGui::Text("%s", faceNames[face]);
-        if (m_ProbePreviewSets[face] != VK_NULL_HANDLE) ImGui::Image((ImTextureID)m_ProbePreviewSets[face], ImVec2(width, width));
-        ImGui::EndGroup();
-        if (face % 3 != 2) ImGui::SameLine();
-    }
+    ImGui::PopID();
+    return changed;
 }
 
-void VansGraphics::VansInspectorWindow::ShowTextAsset()
+bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
+    const std::string& pointer, bool readOnly, const std::string& componentType, const std::string& parentKey)
 {
-    auto currentFile = VansProjectWindow::m_CurrentSelectedFile;
-    static std::filesystem::path lastFile = "";
-    static std::vector<char> textBuffer;
-
-    if (currentFile != lastFile)
+    ImGui::PushID(pointer.c_str());
+    bool changed = false;
+    const Vans::VansAssetType assetType = InferAssetType(label, parentKey, componentType);
+    if (value.is_string() && assetType != Vans::VansAssetType::Unknown &&
+        (value.get_ref<const std::string&>().empty() || IsGuidText(value.get_ref<const std::string&>())))
     {
-        textBuffer.clear();
-        std::ifstream file(currentFile, std::ios::ate | std::ios::binary);
-        if (file.is_open()) {
-            size_t fileSize = (size_t)file.tellg();
-            textBuffer.resize(fileSize + 1024 * 10);
-            file.seekg(0);
-            file.read(textBuffer.data(), fileSize);
-            textBuffer[fileSize] = '\0';
-            file.close();
-        }
-        else {
-            textBuffer.assign(1024, '\0');
-        }
-        lastFile = currentFile;
+        Json reference = { { "guid", value.get<std::string>() } };
+        ImGui::PopID();
+        if (DrawAssetReference(label, reference, pointer, static_cast<int>(assetType)))
+        { value = reference.value("guid", ""); return true; }
+        return false;
+    }
+    if (value.is_object() && value.contains("guid") && value["guid"].is_string() &&
+        assetType != Vans::VansAssetType::Unknown)
+    {
+        ImGui::PopID();
+        return DrawAssetReference(label, value, pointer, static_cast<int>(assetType));
     }
 
-    ImGui::Text("Text Editor:");
-    ImVec2 contentSize = ImGui::GetContentRegionAvail();
-    contentSize.y -= 30.0f;
-
-    ImGui::InputTextMultiline("##texteditor", textBuffer.data(), textBuffer.size(), contentSize, ImGuiInputTextFlags_AllowTabInput);
-
-    if (ImGui::Button("Save")) {
-        std::ofstream file(currentFile, std::ios::trunc | std::ios::binary);
-        if (file.is_open()) {
-            file << textBuffer.data();
-            file.close();
-        }
-    }
-}
-
-void VansGraphics::VansInspectorWindow::ShowTextureAsset(VansVKDevice& device)
-{
-    auto currentFile = VansProjectWindow::m_CurrentSelectedFile;
-    static std::filesystem::path lastFile = "";
-    static VkDescriptorSet cachedImageDS = VK_NULL_HANDLE;
-    static VkImageView cachedImageView = VK_NULL_HANDLE;
-    static VkSampler cachedSampler = VK_NULL_HANDLE;
-    static VansGraphics::VansTexture* previewTexture = nullptr;
-
-    if (currentFile != lastFile)
+    if (value.is_object())
     {
-        if (previewTexture)
+        const ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed |
+            ImGuiTreeNodeFlags_SpanAvailWidth;
+        if (ImGui::TreeNodeEx(FriendlyLabel(label).c_str(), flags))
         {
-            delete previewTexture;
-            previewTexture = nullptr;
-        }
-        cachedImageDS = VK_NULL_HANDLE;
-        cachedImageView = VK_NULL_HANDLE;
-        cachedSampler = VK_NULL_HANDLE;
-
-        previewTexture = new VansGraphics::VansTexture();
-
-        device.WaitForDevice();
-
-        VansGraphics::VansVKCommandBuffer editorCommandbuffer = device.GetEditorCommandBuffer();
-        
-        previewTexture->LoadTexture(editorCommandbuffer, currentFile.string(), false,true,false);
-
-        lastFile = currentFile;
-    }
-
-    ImGui::Text("Image Preview:");
-    if (previewTexture)
-    {
-        VansGraphics::VansVKImage& image = previewTexture->GetImage();
-        if (cachedImageView != image.GetImageView() || cachedSampler != image.GetSampler() || cachedImageDS == VK_NULL_HANDLE)
-        {
-            cachedImageView = image.GetImageView();
-            cachedSampler = image.GetSampler();
-            cachedImageDS = ImGui_ImplVulkan_AddTexture(cachedSampler, cachedImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-
-        if (cachedImageDS != VK_NULL_HANDLE)
-        {
-            float width = (float)previewTexture->GetWidth();
-            float height = (float)previewTexture->GetHeight();
-            float aspect = width / height;
-            float displayWidth = ImGui::GetContentRegionAvail().x;
-            float displayHeight = displayWidth / aspect;
-            ImGui::Image((ImTextureID)cachedImageDS, ImVec2(displayWidth, displayHeight));
-        }
-    }
-    ImGui::Text("Path: %s", currentFile.string().c_str());
-    ImGui::Text("Size: %llu bytes", std::filesystem::file_size(currentFile));
-}
-
-void VansGraphics::VansInspectorWindow::ShowModelTextureAsset(VansVKDevice& device)
-{
-    auto currentFile = VansProjectWindow::m_CurrentSelectedFile;
-    ImGui::Text("Model Asset: %s", currentFile.filename().string().c_str());
-}
-
-// ════════════════════════════════════════════════════════════════
-//  Animation Clip (.vclip) Inspector
-// ════════════════════════════════════════════════════════════════
-
-// Recursive helper: draw a bone and its children as an ImGui tree
-static void DrawBoneTree(
-    const VansGraphics::Skeleton& skeleton,
-    const VansGraphics::VansAnimationClip& clip,
-    int boneIndex,
-    float time,
-    int& selectedBone)
-{
-    if (boneIndex < 0 || boneIndex >= (int)skeleton.bones.size())
-        return;
-
-    const auto& bone = skeleton.bones[boneIndex];
-    bool isLeaf = bone.children.empty();
-
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
-    if (isLeaf)
-        flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-    if (boneIndex == selectedBone)
-        flags |= ImGuiTreeNodeFlags_Selected;
-
-    // Label: "boneName (id)"
-    char label[256];
-    snprintf(label, sizeof(label), "%s  [%d]", bone.name.c_str(), bone.id);
-
-    bool nodeOpen = ImGui::TreeNodeEx((void*)(intptr_t)boneIndex, flags, "%s", label);
-
-    if (ImGui::IsItemClicked())
-        selectedBone = boneIndex;
-
-    // If this bone is selected, show its keyframe data inline
-    if (boneIndex == selectedBone)
-    {
-        ImGui::Indent(20.0f);
-
-        // Find interpolated TRS at current scrub time
-        if (boneIndex < (int)clip.boneKeyframes.size() && !clip.boneKeyframes[boneIndex].empty())
-        {
-            const auto& keyframes = clip.boneKeyframes[boneIndex];
-            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Keyframes: %d", (int)keyframes.size());
-
-            // Find surrounding keyframes for interpolation
-            glm::vec3 pos(0.0f);
-            glm::quat rot(1.0f, 0.0f, 0.0f, 0.0f);
-            glm::vec3 scl(1.0f);
-
-            if (keyframes.size() == 1 || time <= keyframes.front().time)
+            for (auto iterator = value.begin(); iterator != value.end(); ++iterator)
             {
-                pos = keyframes.front().position;
-                rot = keyframes.front().rotation;
-                scl = keyframes.front().scale;
+                const std::string childPointer = pointer + "/" + EscapePointerToken(iterator.key());
+                const bool identity = iterator.key() == "id" || iterator.key() == "guid" ||
+                    iterator.key() == "sceneGuid" || iterator.key() == "schemaVersion" ||
+                    iterator.key() == "version" || iterator.key() == "importer";
+                changed |= DrawJsonValue(iterator.key(), iterator.value(), childPointer,
+                    readOnly || identity, componentType, label);
             }
-            else if (time >= keyframes.back().time)
+            ImGui::TreePop();
+        }
+    }
+    else if (value.is_array() && value.size() >= 2 && value.size() <= 4 &&
+        std::all_of(value.begin(), value.end(), [](const Json& item) { return item.is_number(); }))
+    {
+        std::array<float, 4> values{};
+        for (std::size_t i = 0; i < value.size(); ++i) values[i] = value[i].get<float>();
+        BeginProperty(label);
+        if (readOnly)
+            ImGui::TextDisabled("%s", value.dump().c_str());
+        else if (Lower(label) == "rotation" && value.size() == 4)
+        {
+            const glm::quat quaternion(values[3], values[0], values[1], values[2]);
+            glm::vec3 euler = glm::degrees(glm::eulerAngles(quaternion));
+            if (ImGui::DragFloat3("##value", &euler.x, 0.25f, -360.0f, 360.0f, "%.2f"))
             {
-                pos = keyframes.back().position;
-                rot = keyframes.back().rotation;
-                scl = keyframes.back().scale;
+                const glm::quat edited = glm::quat(glm::radians(euler));
+                value = Json::array({ edited.x, edited.y, edited.z, edited.w });
+                changed = true;
             }
-            else
+        }
+        else if (IsColorField(label) && (value.size() == 3 || value.size() == 4))
+        {
+            const bool edited = value.size() == 3
+                ? ImGui::ColorEdit3("##value", values.data()) : ImGui::ColorEdit4("##value", values.data());
+            if (edited)
             {
-                // Linear search for surrounding pair
-                for (size_t k = 0; k + 1 < keyframes.size(); k++)
-                {
-                    if (time >= keyframes[k].time && time <= keyframes[k + 1].time)
-                    {
-                        float seg = keyframes[k + 1].time - keyframes[k].time;
-                        float alpha = (seg > 0.0001f) ? (time - keyframes[k].time) / seg : 0.0f;
-                        pos = glm::mix(keyframes[k].position, keyframes[k + 1].position, alpha);
-                        rot = glm::slerp(keyframes[k].rotation, keyframes[k + 1].rotation, alpha);
-                        scl = glm::mix(keyframes[k].scale, keyframes[k + 1].scale, alpha);
-                        break;
-                    }
-                }
+                for (std::size_t i = 0; i < value.size(); ++i) value[i] = values[i];
+                changed = true;
             }
-
-            ImGui::Text("Position: (%.3f, %.3f, %.3f)", pos.x, pos.y, pos.z);
-
-            // Show rotation as both quaternion and euler
-            ImGui::Text("Rotation (quat): (%.3f, %.3f, %.3f, %.3f)", rot.w, rot.x, rot.y, rot.z);
-            glm::vec3 euler = glm::degrees(glm::eulerAngles(rot));
-            ImGui::Text("Rotation (euler): (%.1f, %.1f, %.1f)", euler.x, euler.y, euler.z);
-
-            ImGui::Text("Scale:    (%.3f, %.3f, %.3f)", scl.x, scl.y, scl.z);
-
-            // Show keyframe time range
-            ImGui::TextDisabled("Time range: %.3f - %.3f s", keyframes.front().time, keyframes.back().time);
         }
         else
         {
-            ImGui::TextDisabled("No keyframes for this bone");
+            bool edited = false;
+            if (value.size() == 2) edited = ImGui::DragFloat2("##value", values.data(), 0.05f);
+            if (value.size() == 3) edited = ImGui::DragFloat3("##value", values.data(), 0.05f);
+            if (value.size() == 4) edited = ImGui::DragFloat4("##value", values.data(), 0.05f);
+            if (edited)
+            {
+                for (std::size_t i = 0; i < value.size(); ++i) value[i] = values[i];
+                changed = true;
+            }
         }
-
-        // Show offset matrix
-        if (ImGui::TreeNode("Offset Matrix"))
+    }
+    else if (value.is_array())
+    {
+        if (ImGui::TreeNodeEx(FriendlyLabel(label).c_str(), ImGuiTreeNodeFlags_DefaultOpen))
         {
-            const glm::mat4& m = bone.offsetMatrix;
-            for (int row = 0; row < 4; row++)
-                ImGui::Text("  [%.3f  %.3f  %.3f  %.3f]", m[0][row], m[1][row], m[2][row], m[3][row]);
+            for (std::size_t index = 0; index < value.size(); ++index)
+                changed |= DrawJsonValue("Element " + std::to_string(index), value[index],
+                    pointer + "/" + std::to_string(index), readOnly, componentType, label);
             ImGui::TreePop();
         }
-
-        ImGui::Unindent(20.0f);
     }
-
-    if (nodeOpen && !isLeaf)
+    else if (value.is_boolean())
     {
-        for (int childIdx : bone.children)
-            DrawBoneTree(skeleton, clip, childIdx, time, selectedBone);
-        ImGui::TreePop();
+        bool edited = value.get<bool>();
+        BeginProperty(label);
+        if (readOnly) ImGui::TextDisabled(edited ? "Enabled" : "Disabled");
+        else if (ImGui::Checkbox("##value", &edited)) { value = edited; changed = true; }
+    }
+    else if (value.is_number_integer() || value.is_number_unsigned())
+    {
+        std::int64_t edited = value.get<std::int64_t>();
+        BeginProperty(label);
+        if (readOnly) ImGui::TextDisabled("%lld", static_cast<long long>(edited));
+        else
+        {
+            const std::int64_t step = 1;
+            if (ImGui::InputScalar("##value", ImGuiDataType_S64, &edited, &step)) { value = edited; changed = true; }
+        }
+    }
+    else if (value.is_number_float())
+    {
+        float edited = value.get<float>();
+        BeginProperty(label);
+        if (readOnly) ImGui::TextDisabled("%.4f", edited);
+        else if (IsNormalizedField(label))
+        {
+            if (ImGui::SliderFloat("##value", &edited, 0.0f, 1.0f, "%.3f")) { value = edited; changed = true; }
+        }
+        else if (ImGui::DragFloat("##value", &edited, 0.05f, 0.0f, 0.0f, "%.3f"))
+        { value = edited; changed = true; }
+    }
+    else if (value.is_string())
+    {
+        const std::string current = value.get<std::string>();
+        BeginProperty(label);
+        if (readOnly) ImGui::TextDisabled("%s", current.c_str());
+        else if (Lower(label) == "layer")
+        {
+            auto& layers = VansEngine::VansCollisionLayerManager::Get();
+            if (ImGui::BeginCombo("##value", current.c_str()))
+            {
+                for (int index = 0; index < layers.GetLayerCount(); ++index)
+                {
+                    const std::string& option = layers.GetLayerName(index);
+                    if (ImGui::Selectable(option.c_str(), current == option)) { value = option; changed = true; }
+                }
+                ImGui::EndCombo();
+            }
+        }
+        else if (const auto* options = EnumOptions(label))
+        {
+            if (ImGui::BeginCombo("##value", current.c_str()))
+            {
+                for (const char* option : *options)
+                    if (ImGui::Selectable(option, current == option)) { value = option; changed = true; }
+                ImGui::EndCombo();
+            }
+        }
+        else
+        {
+            char buffer[1024]{};
+            std::strncpy(buffer, current.c_str(), sizeof(buffer) - 1);
+            if (ImGui::InputText("##value", buffer, sizeof(buffer)))
+            { value = std::string(buffer); changed = true; }
+        }
+    }
+    else if (value.is_null())
+    {
+        BeginProperty(label);
+        ImGui::TextDisabled("None");
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+bool VansInspectorWindow::DrawComponent(Json& component, const std::string& pointer, bool& removeRequested)
+{
+    const std::string type = component.value("type", "Component");
+    ImGui::PushID(pointer.c_str());
+    bool enabled = component.value("enabled", true);
+    bool changed = false;
+    ImGui::Checkbox("##enabled", &enabled);
+    if (enabled != component.value("enabled", true)) { component["enabled"] = enabled; changed = true; }
+    ImGui::SameLine();
+    const bool open = ImGui::CollapsingHeader(type.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+    if (ImGui::BeginPopupContextItem("ComponentMenu"))
+    {
+        if (type != "Transform" && ImGui::MenuItem("Remove Component")) removeRequested = true;
+        ImGui::TextDisabled("ID: %s", component.value("id", "").c_str());
+        ImGui::EndPopup();
+    }
+    if (open)
+    {
+        ImGui::Indent(8.0f);
+        if (!component.contains("data") || !component["data"].is_object()) component["data"] = Json::object();
+        Json& data = component["data"];
+        for (auto iterator = data.begin(); iterator != data.end(); ++iterator)
+        {
+            if (iterator.key() == "materialOverrides" && iterator.value().is_object())
+            {
+                Json& overrides = iterator.value();
+                if (overrides.empty())
+                {
+                    Json reference = { { "guid", "" } };
+                    if (DrawAssetReference("Material 0", reference, pointer + "/data/materialOverrides/default",
+                        static_cast<int>(Vans::VansAssetType::Material)) && !reference.value("guid", "").empty())
+                    { overrides["default"] = std::move(reference); changed = true; }
+                }
+                else
+                {
+                    std::size_t slotIndex = 0;
+                    for (auto slot = overrides.begin(); slot != overrides.end(); ++slot, ++slotIndex)
+                        changed |= DrawAssetReference("Material " + std::to_string(slotIndex), slot.value(),
+                            pointer + "/data/materialOverrides/" + EscapePointerToken(slot.key()),
+                            static_cast<int>(Vans::VansAssetType::Material));
+                }
+                continue;
+            }
+            changed |= DrawJsonValue(iterator.key(), iterator.value(), pointer + "/data/" + EscapePointerToken(iterator.key()),
+                false, type, "data");
+        }
+        if (data.empty()) ImGui::TextDisabled("No properties");
+        ImGui::Unindent(8.0f);
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+void VansInspectorWindow::DrawSceneEntity()
+{
+    Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
+    Vans::VansSceneEditService* editor = VansEditorWindow::GetSceneEditService();
+    if (!document || !editor) return;
+    const std::string& selected = Vans::VansEditorSelection::EntityGuid();
+    const auto& entities = document->Root()["entities"];
+    for (std::size_t index = 0; index < entities.size(); ++index)
+    {
+        if (entities[index].value("id", "") != selected) continue;
+        Json edited = entities[index];
+        const std::string pointer = "/entities/" + std::to_string(index);
+        bool changed = false;
+
+        char name[256]{};
+        std::strncpy(name, edited.value("name", "Entity").c_str(), sizeof(name) - 1);
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::InputText("##EntityName", name, sizeof(name)))
+        { edited["name"] = std::string(name); changed = true; }
+        ImGui::TextDisabled("Entity %s", selected.substr(0, 8).c_str());
+        ImGui::Separator();
+
+        if (edited.contains("components") && edited["components"].is_array())
+        {
+            for (std::size_t componentIndex = 0; componentIndex < edited["components"].size();)
+            {
+                bool remove = false;
+                changed |= DrawComponent(edited["components"][componentIndex],
+                    pointer + "/components/" + std::to_string(componentIndex), remove);
+                if (remove) { edited["components"].erase(edited["components"].begin() + componentIndex); changed = true; }
+                else ++componentIndex;
+            }
+        }
+
+        if (ImGui::Button("Add Component", ImVec2(-1.0f, 0.0f))) ImGui::OpenPopup("AddComponent");
+        if (ImGui::BeginPopup("AddComponent"))
+        {
+            static const char* types[] = { "ModelRenderer", "Physics", "Camera", "Animation",
+                "CharacterController", "DirectionalLight", "PointLight", "SpotLight", "RectLight",
+                "Audio", "Video", "Particle", "Cloth", "Vehicle", "Script" };
+            for (const char* type : types)
+            {
+                const bool singleton = std::strcmp(type, "ModelRenderer") == 0 || std::strcmp(type, "Physics") == 0;
+                bool alreadyPresent = false;
+                if (singleton)
+                    for (const Json& component : edited["components"])
+                        if (component.value("type", "") == type) { alreadyPresent = true; break; }
+                if (alreadyPresent) ImGui::BeginDisabled();
+                const bool selectedType = ImGui::Selectable(type);
+                if (alreadyPresent) ImGui::EndDisabled();
+                if (!selectedType || alreadyPresent) continue;
+                Json data = DefaultComponentData(type);
+                edited["components"].push_back({ { "id", Vans::VansComponentGuid::New().ToString() },
+                    { "type", type }, { "version", 1u }, { "enabled", true }, { "data", std::move(data) } });
+                changed = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        if (changed)
+        {
+            const Vans::SceneEditResult result = editor->Set(pointer, std::move(edited));
+            if (!result) VANS_LOG_ERROR("[Inspector] " << result.message);
+        }
+        return;
+    }
+    ImGui::TextDisabled("Selected entity no longer exists");
+}
+
+void VansInspectorWindow::DrawSceneSettings()
+{
+    Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
+    Vans::VansSceneEditService* editor = VansEditorWindow::GetSceneEditService();
+    if (!document || !editor) return;
+    Json settings = document->Root().value("settings", Json::object());
+    if (DrawJsonValue("Scene Settings", settings, "/settings"))
+    {
+        const Vans::SceneEditResult result = editor->Set("/settings", std::move(settings));
+        if (!result) VANS_LOG_ERROR("[Inspector] " << result.message);
     }
 }
 
-void VansGraphics::VansInspectorWindow::ShowAnimationClipAsset()
+bool VansInspectorWindow::LoadAssetDocuments(const std::filesystem::path& sourcePath)
 {
-    auto currentFile = VansProjectWindow::m_CurrentSelectedFile;
+    m_AssetPath = sourcePath;
+    m_MetaPath = Vans::VansAssetMeta::MetaPathFor(sourcePath);
+    m_Error.clear();
+    std::string sourceError;
+    m_AssetDocument.Load(m_AssetPath, sourceError);
+    m_MetaDocument.Load(m_MetaPath, m_Error);
+    if (!m_MetaDocument.IsLoaded() && !sourceError.empty()) m_Error = std::move(sourceError);
+    return m_AssetDocument.IsLoaded() || m_MetaDocument.IsLoaded();
+}
 
-    // Reload if selected file changed
-    if (currentFile != m_VClipCache.loadedPath)
+bool VansInspectorWindow::SaveAssetDocuments()
+{
+    m_Error.clear();
+    if (!m_AssetDocument.Save(m_Error)) return false;
+    if (!m_MetaDocument.Save(m_Error)) return false;
+    if (auto* database = Vans::VansProjectManager::Get().GetAssetDatabase())
     {
-        m_VClipCache = CachedVClipData{};
-        m_VClipCache.loadedPath = currentFile;
-        m_VClipCache.valid = VansAnimationClipIO::Load(
-            currentFile.string(), m_VClipCache.clip, m_VClipCache.skeleton);
+        std::string refreshError;
+        if (!database->RegisterOrRefresh(m_AssetPath, false, refreshError))
+            VANS_LOG_ERROR("[Inspector] Asset refresh failed: " << refreshError);
     }
+    VansEditorWindow::ReloadCurrentSceneForEditing();
+    return true;
+}
 
-    if (!m_VClipCache.valid)
-    {
-        ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Failed to load .vclip file");
-        return;
-    }
-
-    const auto& clip     = m_VClipCache.clip;
-    const auto& skeleton = m_VClipCache.skeleton;
-
-    // ── Header info ──────────────────────────────────────────────
-    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f), "Animation Clip");
+void VansInspectorWindow::DrawAsset()
+{
+    const std::filesystem::path& selected = Vans::VansEditorSelection::AssetPath();
+    if (selected != m_AssetPath) LoadAssetDocuments(selected);
+    ImGui::TextUnformatted(selected.filename().string().c_str());
+    ImGui::TextDisabled("%s", selected.parent_path().string().c_str());
     ImGui::Separator();
 
-    ImGui::Text("Clip Name:       %s", clip.clipName.c_str());
-    ImGui::Text("Duration:        %.3f s", clip.duration);
-    ImGui::Text("Ticks/Second:    %.1f", clip.ticksPerSecond);
-    ImGui::Text("Bone Count:      %d", (int)skeleton.bones.size());
-
-    // Count total keyframes
-    uint32_t totalKF = 0;
-    for (const auto& boneKFs : clip.boneKeyframes)
-        totalKF += (uint32_t)boneKFs.size();
-    ImGui::Text("Total Keyframes: %u", totalKF);
-
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    // ── Time scrubber ────────────────────────────────────────────
-    ImGui::Text("Scrub Time:");
-    float duration = clip.duration > 0.0f ? clip.duration : 1.0f;
-    ImGui::SliderFloat("##scrubTime", &m_VClipCache.scrubTime, 0.0f, duration, "%.3f s");
-
-    // Show as frame number (approximate)
-    float fps = clip.ticksPerSecond > 0.0f ? clip.ticksPerSecond : 30.0f;
-    int frameNum = (int)(m_VClipCache.scrubTime * fps);
-    int totalFrames = (int)(duration * fps);
-    ImGui::SameLine();
-    ImGui::TextDisabled("Frame %d / %d", frameNum, totalFrames);
-
-    // Also allow frame-based slider
-    if (ImGui::SliderInt("##scrubFrame", &frameNum, 0, totalFrames, "Frame %d"))
+    if (m_AssetDocument.IsLoaded())
     {
-        m_VClipCache.scrubTime = (float)frameNum / fps;
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    // ── Bone hierarchy tree ──────────────────────────────────────
-    ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.7f, 1.0f), "Bone Hierarchy");
-    ImGui::Spacing();
-
-    // Find root bones (parentIndex == -1) and draw recursively
-    ImGui::BeginChild("##boneTree", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
-    for (int b = 0; b < (int)skeleton.bones.size(); b++)
-    {
-        if (skeleton.bones[b].parentIndex < 0)
+        Json& root = m_AssetDocument.Root();
+        for (auto iterator = root.begin(); iterator != root.end(); ++iterator)
         {
-            DrawBoneTree(skeleton, clip, b, m_VClipCache.scrubTime, m_VClipCache.selectedBone);
+            const bool identity = iterator.key() == "schemaVersion" || iterator.key() == "guid";
+            if (DrawJsonValue(iterator.key(), iterator.value(), "/asset/" + EscapePointerToken(iterator.key()), identity))
+                m_AssetDocument.MarkDirty();
         }
     }
-    ImGui::EndChild();
+    else ImGui::TextDisabled("Binary asset");
+
+    if (m_MetaDocument.IsLoaded())
+    {
+        Json& meta = m_MetaDocument.Root();
+        if (meta.contains("settings") && DrawJsonValue("Import Settings", meta["settings"], "/meta/settings"))
+            m_MetaDocument.MarkDirty();
+        if (ImGui::TreeNode("Asset Identity"))
+        {
+            if (meta.contains("guid")) DrawJsonValue("GUID", meta["guid"], "/meta/guid", true);
+            if (meta.contains("importer")) DrawJsonValue("Importer", meta["importer"], "/meta/importer", true);
+            ImGui::TreePop();
+        }
+    }
+    if (!m_Error.empty()) ImGui::TextColored(ImVec4(1, 0.35f, 0.3f, 1), "%s", m_Error.c_str());
+
+    const bool dirty = m_AssetDocument.IsDirty() || m_MetaDocument.IsDirty();
+    if (!dirty) ImGui::BeginDisabled();
+    if (ImGui::Button("Apply", ImVec2(-1.0f, 0.0f)))
+        if (!SaveAssetDocuments()) VANS_LOG_ERROR("[Inspector] " << m_Error);
+    if (!dirty) ImGui::EndDisabled();
+}
+
+void VansInspectorWindow::ShowWindow(VansVKDevice& device)
+{
+    (void)device;
+    ImGui::Begin("Inspector");
+    if (Vans::VansEditorSelection::IsSceneSelected()) DrawSceneSettings();
+    else if (!Vans::VansEditorSelection::EntityGuid().empty()) DrawSceneEntity();
+    else if (!Vans::VansEditorSelection::AssetPath().empty()) DrawAsset();
+    else ImGui::TextDisabled("Select an entity or project asset");
+    ImGui::End();
+}
 }

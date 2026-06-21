@@ -7,6 +7,7 @@
 // -----------------------------------------------------------------------
 
 #include <string>
+#include <cstdint>
 #include <vector>
 #include <unordered_map>
 
@@ -29,7 +30,11 @@ struct VansProjectConfig
 	std::string createdAt;      // ISO 8601
 	std::string lastOpenedAt;   // ISO 8601
 	std::string defaultScene;   // e.g. "Scenes/MainScene.json"
-	std::string resourceFile;   // e.g. "resource.json" — project-wide asset definitions
+	std::uint32_t sceneSchemaVersion = 2;
+	std::string assetsRoot = "Assets";
+	std::string importedArtifactRoot = "Library/Artifacts";
+	std::string metaExtension = ".meta";
+	std::unordered_map<std::string, std::string> runtimeAssetBindings;
 
 	// Logical directory names (relative to project root)
 	std::unordered_map<std::string, std::string> assetDirectories;

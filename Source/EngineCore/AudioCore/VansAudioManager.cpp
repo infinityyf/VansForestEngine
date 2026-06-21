@@ -12,7 +12,7 @@ namespace VansEngine
 VansAudioManager::~VansAudioManager() = default;
 
 // ===========================================================================
-// LoadFromJson — 解析 resource.json["audio"] 数组，创建并 Open 每个 VansAudioNode
+// LoadFromJson — consumes generated asset descriptors and opens each audio node.
 // ===========================================================================
 void VansAudioManager::LoadFromJson(const json& audioArray, const std::string& assetPrefix)
 {

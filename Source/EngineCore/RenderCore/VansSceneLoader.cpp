@@ -5,6 +5,8 @@
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
 #include "../ProjectSystem/VansProjectManager.h"
+#include "../AssetCore/VansAssetDatabase.h"
+#include "../AssetCore/VansAssetMeta.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
@@ -43,41 +45,495 @@
 #include <fstream>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <filesystem>
 #include <mutex>
+#include <cctype>
+#include <functional>
+#include <glm/gtx/quaternion.hpp>
 
 namespace VansGraphics
 {
+namespace
+{
+const json* FindV2Component(const json& entity, const char* type)
+{
+    if (!entity.contains("components") || !entity["components"].is_array())
+        return nullptr;
+    for (const json& component : entity["components"])
+        if (component.value("type", "") == type)
+            return &component;
+    return nullptr;
+}
 
-// ===========================================================================
-// LoadProjectResources — 加载项目级资源（mesh/texture/shader）
-// ===========================================================================
-void VansScene::LoadProjectResources(const char* resourceJsonPath, VansVKDevice* device)
+std::string ReadStringField(const json& object, const char* key)
+{
+    if (!object.is_object())
+        return {};
+    const auto found = object.find(key);
+    return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
+}
+
+bool ReadBoolField(const json& object, const char* key, bool fallback)
+{
+    if (!object.is_object())
+        return fallback;
+    const auto found = object.find(key);
+    return found != object.end() && found->is_boolean() ? found->get<bool>() : fallback;
+}
+
+std::string RuntimeAssetNameFromReference(const json& reference)
+{
+	if (reference.is_string())
+		return reference.get<std::string>();
+	if (!reference.is_object())
+		return {};
+	const std::string guid = ReadStringField(reference, "guid");
+	if (guid.empty())
+		return {};
+	auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+	if (!database)
+		return guid;
+	for (const Vans::VansAssetRecord& record : database->All())
+	{
+		if (record.guid.ToString() != guid)
+			continue;
+		Vans::VansAssetMeta meta;
+		std::string error;
+		if (Vans::VansAssetMeta::Load(record.metaPath, meta, error) && meta.settings.is_object())
+		{
+			const std::string runtimeName = ReadStringField(meta.settings, "runtimeName");
+			if (!runtimeName.empty())
+				return runtimeName;
+		}
+		return guid;
+	}
+	return guid;
+}
+
+const json* ReadObjectField(const json& object, const char* key)
+{
+    if (!object.is_object())
+        return nullptr;
+    const auto found = object.find(key);
+    return found != object.end() && found->is_object() ? &(*found) : nullptr;
+}
+
+const json* ReadArrayField(const json& object, const char* key)
+{
+    if (!object.is_object())
+        return nullptr;
+    const auto found = object.find(key);
+    return found != object.end() && found->is_array() ? &(*found) : nullptr;
+}
+
+json RuntimeMaterialFromAsset(const Vans::VansAssetRecord& record)
+{
+    std::ifstream input(record.sourcePath);
+    if (!input)
+        return {};
+    const json asset = json::parse(input, nullptr, false);
+    if (asset.is_discarded() || !asset.is_object())
+        return {};
+
+    json material = asset.value("parameters", json::object());
+    material["name"] = record.guid.ToString();
+    material["type"] = asset.value("materialType", "pbr");
+    if (asset.contains("textures") && asset["textures"].is_object())
+    {
+        for (const auto& [slot, reference] : asset["textures"].items())
+        {
+            if (reference.is_object() && reference.contains("guid") && reference["guid"].is_string())
+                material[slot + "_texture"] = reference["guid"];
+        }
+    }
+    return material;
+}
+
+std::string RuntimeComponentKey(const std::string& type)
+{
+    static const std::unordered_map<std::string, std::string> keys = {
+        { "Physics", "physics" }, { "Camera", "camera" }, { "Animation", "animation" },
+        { "CharacterController", "charController" }, { "DirectionalLight", "directional_light" },
+        { "PointLight", "point_light" }, { "SpotLight", "spot_light" }, { "RectLight", "rect_light" },
+        { "Audio", "audio" }, { "Video", "video" }, { "Particle", "particle" },
+        { "Cloth", "cloth" }, { "Vehicle", "vehicle" }
+    };
+    const auto found = keys.find(type);
+    if (found != keys.end())
+        return found->second;
+    if (type.empty())
+        return {};
+    std::string result = type;
+    result.front() = static_cast<char>(std::tolower(static_cast<unsigned char>(result.front())));
+    return result;
+}
+
+bool BuildRuntimeSceneFromV2(json& sceneData)
+{
+    if (sceneData.value("schemaVersion", 0u) != 2u)
+        return false;
+    if (!sceneData.contains("entities") || !sceneData["entities"].is_array())
+        return false;
+
+    json projected = sceneData.value("settings", json::object());
+    projected["material"] = json::array();
+    if (Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase())
+    {
+        for (const Vans::VansAssetRecord& record : database->All())
+        {
+            if (record.type != Vans::VansAssetType::Material || record.state == Vans::VansAssetState::Missing)
+                continue;
+            json material = RuntimeMaterialFromAsset(record);
+            if (!material.empty())
+                projected["material"].push_back(std::move(material));
+        }
+    }
+
+    json objects = json::array();
+    json renderNodes = json::array();
+    for (const json& entity : sceneData["entities"])
+    {
+        const json* transformComponent = FindV2Component(entity, "Transform");
+        const json* rendererComponent = FindV2Component(entity, "ModelRenderer");
+        const json* animationComponent = FindV2Component(entity, "Animation");
+
+        json transform = {
+            { "position", { 0.0f, 0.0f, 0.0f } },
+            { "rotation", { 0.0f, 0.0f, 0.0f } },
+            { "scale", { 1.0f, 1.0f, 1.0f } }
+        };
+        if (transformComponent && transformComponent->value("enabled", true) && transformComponent->contains("data"))
+        {
+            const json& data = (*transformComponent)["data"];
+            transform["position"] = data.value("position", transform["position"]);
+            transform["scale"] = data.value("scale", transform["scale"]);
+            if (data.contains("rotation") && data["rotation"].is_array() && data["rotation"].size() == 4)
+            {
+                const glm::quat rotation(
+                    data["rotation"][3].get<float>(), data["rotation"][0].get<float>(),
+                    data["rotation"][1].get<float>(), data["rotation"][2].get<float>());
+                const glm::vec3 euler = glm::degrees(glm::eulerAngles(rotation));
+                transform["rotation"] = { euler.x, euler.y, euler.z };
+            }
+        }
+
+        json runtimeRender;
+        bool specialRenderNode = false;
+        if (rendererComponent && rendererComponent->value("enabled", true) && rendererComponent->contains("data"))
+        {
+            const json& data = (*rendererComponent)["data"];
+            const std::string modelGuid = data.value("model", json::object()).value("guid", "");
+            std::string materialGuid;
+            if (data.contains("materialOverrides") && data["materialOverrides"].is_object() && !data["materialOverrides"].empty())
+            {
+                const json& overrideValue = data["materialOverrides"].begin().value();
+                materialGuid = overrideValue.value("guid", "");
+            }
+            runtimeRender = {
+                { "name", animationComponent && animationComponent->value("enabled", true)
+					? (*animationComponent)["data"].value("name", entity.value("name", ""))
+					: entity.value("name", "") },
+                { "mesh", modelGuid },
+                { "material", materialGuid },
+                { "type", data.value("renderType", "opaque") },
+                { "support_shadow", data.value("castShadows", true) }
+            };
+            if (data.contains("sourceNode") && data["sourceNode"].is_string())
+                runtimeRender["parent"] = data["sourceNode"];
+            specialRenderNode = data.contains("renderRole") && data["renderRole"].is_string();
+        }
+
+        if (specialRenderNode)
+        {
+            renderNodes.push_back(std::move(runtimeRender));
+            continue;
+        }
+
+        json object = {
+			{ "entityGuid", entity.value("id", "") },
+            { "name", entity.value("name", "") },
+            { "transform", std::move(transform) },
+            { "components", json::object() }
+        };
+        if (!runtimeRender.empty())
+            object["components"]["render"] = std::move(runtimeRender);
+        object["pyScripts"] = json::array();
+
+        for (const json& component : entity["components"])
+        {
+            const std::string type = component.value("type", "");
+            if (type == "Transform" || type == "ModelRenderer")
+                continue;
+            if (type == "Script")
+            {
+				if (component.value("enabled", true))
+					object["pyScripts"].push_back(component.value("data", json::object()));
+                continue;
+            }
+            json data = component.value("data", json::object());
+			if ((type == "Audio" || type == "Video") && data.contains("source"))
+				data["source"] = RuntimeAssetNameFromReference(data["source"]);
+            // Runtime component loaders consume enabled from their data object,
+            // while scene v2 stores it on the component envelope.
+            data["enabled"] = component.value("enabled", true);
+            object["components"][RuntimeComponentKey(type)] = std::move(data);
+        }
+        if (object["pyScripts"].empty())
+            object.erase("pyScripts");
+        objects.push_back(std::move(object));
+    }
+
+    projected["scene"] = json::array({ {
+        { "objects", std::move(objects) },
+        { "rendernode", std::move(renderNodes) }
+    } });
+    sceneData = std::move(projected);
+    return true;
+}
+}
+
+bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
+    const std::filesystem::path& scenePath, VansVKDevice* device)
 {
     VANS_ASSERT_MAIN_THREAD();
-
-	VANS_LOG("[VansScene] LoadProjectResources: " << resourceJsonPath);
-
-	std::ifstream resFile(resourceJsonPath);
-	if (!resFile.is_open())
+    if (device == nullptr)
+    {
+        VANS_LOG_ERROR("[VansScene] Cannot load project assets without a Vulkan device");
+        return false;
+    }
+    VANS_LOG("[VansScene] Loading project assets from AssetDatabase: " << database.AssetsRoot().string());
+	m_ProjectMeshAliases.clear();
+	try
 	{
-		VANS_LOG_ERROR("[VansScene] Cannot open resource file: " << resourceJsonPath);
-		return;
+
+    json resourceData;
+    resourceData["mesh"] = json::array();
+    resourceData["texture"] = json::array();
+    const std::filesystem::path projectRoot = database.AssetsRoot().parent_path();
+	std::unordered_set<std::string> requiredModels;
+	std::unordered_set<std::string> requiredMaterials;
+	std::unordered_set<std::string> requiredTextures;
+	for (const auto& [alias, guid] : Vans::VansProjectManager::Get().GetConfig().runtimeAssetBindings)
+		if (alias != "fullScreenQuad" && alias != "plane") requiredModels.insert(guid);
+
+	std::ifstream sceneInput(scenePath);
+	json sceneDocument = sceneInput ? json::parse(sceneInput, nullptr, false) : json();
+	if (!sceneDocument.is_object() || sceneDocument.value("schemaVersion", 0u) != 2u)
+	{
+		VANS_LOG_ERROR("[AssetDatabase] Cannot collect Scene v2 dependencies from " << scenePath.string());
+		return false;
+	}
+	VANS_LOG("[AssetDatabase] Collecting dependencies from " << scenePath.string());
+	const json* entities = ReadArrayField(sceneDocument, "entities");
+	if (entities == nullptr)
+	{
+		VANS_LOG_ERROR("[AssetDatabase] Scene v2 entities must be an array");
+		return false;
+	}
+	for (const json& entity : *entities)
+	{
+		const json* components = ReadArrayField(entity, "components");
+		if (components == nullptr)
+			continue;
+		for (const json& component : *components)
+		{
+			if (ReadStringField(component, "type") != "ModelRenderer")
+				continue;
+			const json* data = ReadObjectField(component, "data");
+			if (data == nullptr)
+				continue;
+			const json* modelReference = ReadObjectField(*data, "model");
+			const std::string model = modelReference ? ReadStringField(*modelReference, "guid") : std::string{};
+			if (!model.empty()) requiredModels.insert(model);
+			const json* overrides = ReadObjectField(*data, "materialOverrides");
+			if (overrides == nullptr)
+				continue;
+			for (const auto& [slot, material] : overrides->items())
+			{
+				const std::string materialGuid = ReadStringField(material, "guid");
+				if (!materialGuid.empty()) requiredMaterials.insert(materialGuid);
+			}
+		}
 	}
 
-	json resourceData = json::parse(resFile);
+	// Settings and specialized components (terrain, sky, audio/video, particles)
+	// may reference assets outside ModelRenderer. Collect every GUID-shaped value
+	// against the database so the dependency closure remains schema-extensible.
+	const std::vector<Vans::VansAssetRecord> allRecords = database.All();
+	std::unordered_map<std::string, Vans::VansAssetType> assetTypesByGuid;
+	for (const Vans::VansAssetRecord& record : allRecords)
+		assetTypesByGuid.emplace(record.guid.ToString(), record.type);
+	std::function<void(const json&)> collectAssetReferences = [&](const json& value)
+	{
+		if (value.is_string())
+		{
+			const auto found = assetTypesByGuid.find(value.get<std::string>());
+			if (found == assetTypesByGuid.end()) return;
+			switch (found->second)
+			{
+			case Vans::VansAssetType::Model: requiredModels.insert(found->first); break;
+			case Vans::VansAssetType::Texture: requiredTextures.insert(found->first); break;
+			case Vans::VansAssetType::Material: requiredMaterials.insert(found->first); break;
+			default: break;
+			}
+			return;
+		}
+		if (value.is_array())
+			for (const json& item : value) collectAssetReferences(item);
+		else if (value.is_object())
+			for (const auto& [key, item] : value.items()) collectAssetReferences(item);
+	};
+	collectAssetReferences(sceneDocument);
 
-	// 切换项目时清空旧项目的视频纹理（项目级资源随项目生命周期管理）
-	m_VideoManager.Clear();
+	for (const Vans::VansAssetRecord& record : database.All())
+	{
+		if (record.type != Vans::VansAssetType::Material ||
+			requiredMaterials.find(record.guid.ToString()) == requiredMaterials.end())
+			continue;
+		std::ifstream materialInput(record.sourcePath);
+		const json material = materialInput ? json::parse(materialInput, nullptr, false) : json();
+		if (!material.is_object())
+		{
+			VANS_LOG_ERROR("[AssetDatabase] Cannot read material dependency data: " << record.sourcePath.string());
+			continue;
+		}
+		collectAssetReferences(material);
+		const json* textures = ReadObjectField(material, "textures");
+		if (textures == nullptr)
+		{
+			VANS_LOG_ERROR("[AssetDatabase] Material textures must be an object: " << record.sourcePath.string());
+			continue;
+		}
+		for (const auto& [slot, texture] : textures->items())
+		{
+			if (!texture.is_object())
+				continue;
+			const std::string textureGuid = ReadStringField(texture, "guid");
+			if (!textureGuid.empty()) requiredTextures.insert(textureGuid);
+		}
+	}
 
-	// 切换项目时清空旧项目的音频资源（项目级资源随项目生命周期管理）
-	m_AudioManager.Clear();
+    for (const Vans::VansAssetRecord& record : database.All())
+    {
+        if (record.state == Vans::VansAssetState::Missing)
+            continue;
 
-	RegisterEngineShaders();
-	LoadResources(resourceData);
-	m_ResourcesLoaded = true;
+        Vans::VansAssetMeta meta;
+        std::string metaError;
+        if (!Vans::VansAssetMeta::Load(record.metaPath, meta, metaError))
+        {
+            VANS_LOG_ERROR("[AssetDatabase] " << metaError);
+            continue;
+        }
+		if (!meta.settings.is_object())
+		{
+			VANS_LOG_ERROR("[AssetDatabase] Asset settings must be an object: " << record.metaPath.string());
+			continue;
+		}
 
-	VANS_LOG("[VansScene] Project resources loaded");
+        std::error_code relativeError;
+        const std::string relativePath = std::filesystem::relative(
+            record.sourcePath, projectRoot, relativeError).generic_string();
+        if (relativeError)
+        {
+            VANS_LOG_ERROR("[AssetDatabase] Cannot make project-relative path: " << record.sourcePath.string());
+            continue;
+        }
+
+        if (record.type == Vans::VansAssetType::Model)
+        {
+			if (requiredModels.find(record.guid.ToString()) == requiredModels.end())
+				continue;
+            const bool isFbx = record.sourcePath.extension() == ".fbx" || record.sourcePath.extension() == ".FBX";
+            resourceData["mesh"].push_back({
+                { "name", record.guid.ToString() },
+                { "path", relativePath },
+                { "need_tangent", ReadBoolField(meta.settings, "generateTangents", true) },
+                { "support_raytracing", ReadBoolField(meta.settings, "buildRayTracingData", true) },
+                { "need_cpu_data", ReadBoolField(meta.settings, "keepCpuMeshData", false) },
+				{ "load_multi_mesh", ReadBoolField(meta.settings, "loadMultiMesh", isFbx) }
+            });
+        }
+        else if (record.type == Vans::VansAssetType::Texture)
+        {
+			if (requiredTextures.find(record.guid.ToString()) == requiredTextures.end())
+				continue;
+			const bool isCubemap = record.sourcePath.extension() == ".cubemap";
+			const std::string texturePath = isCubemap
+				? ReadStringField(meta.settings, "sourcePath") : relativePath;
+            resourceData["texture"].push_back({
+                { "name", record.guid.ToString() },
+				{ "path", texturePath },
+				{ "type", isCubemap ? TEXTURE_CUBE : TEXTURE_2D },
+                { "sRGB", ReadStringField(meta.settings, "colorSpace") != "linear" }
+            });
+        }
+		else if (record.type == Vans::VansAssetType::Audio)
+		{
+			const std::string runtimeName = ReadStringField(meta.settings, "runtimeName");
+			resourceData["audio"].push_back({
+				{ "name", runtimeName.empty() ? record.guid.ToString() : runtimeName },
+				{ "path", relativePath },
+				{ "play_mode", ReadStringField(meta.settings, "playMode").empty() ? "static" : ReadStringField(meta.settings, "playMode") },
+				{ "loop", ReadBoolField(meta.settings, "loop", false) },
+				{ "auto_play", ReadBoolField(meta.settings, "autoPlay", false) },
+				{ "volume", meta.settings.value("volume", 1.0f) },
+				{ "pitch", meta.settings.value("pitch", 1.0f) },
+				{ "spatial", ReadBoolField(meta.settings, "spatial", false) },
+				{ "ref_dist", meta.settings.value("referenceDistance", 1.0f) },
+				{ "max_dist", meta.settings.value("maxDistance", 100.0f) },
+				{ "roll_off", meta.settings.value("rolloff", 1.0f) }
+			});
+		}
+		else if (record.type == Vans::VansAssetType::Video)
+		{
+			const std::string runtimeName = ReadStringField(meta.settings, "runtimeName");
+			resourceData["video"].push_back({
+				{ "name", runtimeName.empty() ? record.guid.ToString() : runtimeName },
+				{ "path", relativePath },
+				{ "loop", ReadBoolField(meta.settings, "loop", true) },
+				{ "autoplay", ReadBoolField(meta.settings, "autoPlay", false) },
+				{ "srgb", ReadBoolField(meta.settings, "sRGB", true) }
+			});
+		}
+    }
+
+    m_VideoManager.Clear();
+    m_AudioManager.Clear();
+	VANS_LOG("[AssetDatabase] Uploading dependency closure: " << resourceData["mesh"].size()
+		<< " models, " << resourceData["texture"].size() << " textures");
+
+    // Engine assets intentionally keep their established registry/default-texture path.
+    RegisterEngineShaders();
+    LoadResources(resourceData);
+	for (const auto& [alias, guid] : Vans::VansProjectManager::Get().GetConfig().runtimeAssetBindings)
+	{
+		if (alias == "fullScreenQuad" || alias == "plane")
+			continue;
+		if (VansAsset* asset = GetMeshAsset(guid))
+			m_ProjectMeshAliases[alias] = asset;
+		else
+			VANS_LOG_ERROR("[AssetDatabase] Runtime mesh binding '" << alias << "' references missing guid " << guid);
+	}
+    m_ResourcesLoaded = true;
+    VANS_LOG("[VansScene] AssetDatabase project resources loaded");
+	VANS_LOG("[AssetDatabase] Dependency closure: " << requiredModels.size() << " models, "
+		<< requiredMaterials.size() << " materials, " << requiredTextures.size() << " textures");
+	return true;
+	}
+	catch (const std::exception& error)
+	{
+		m_ResourcesLoaded = false;
+		VANS_LOG_ERROR("[AssetDatabase] Project asset loading failed: " << error.what());
+		return false;
+	}
+	catch (...)
+	{
+		m_ResourcesLoaded = false;
+		VANS_LOG_ERROR("[AssetDatabase] Project asset loading failed with an unknown exception");
+		return false;
+	}
 }
 
 // ===========================================================================
@@ -105,7 +561,7 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 
 	if (!m_ResourcesLoaded)
 	{
-		VANS_LOG_ERROR("[VansScene] LoadSceneForRendering called before LoadProjectResources!");
+		VANS_LOG_ERROR("[VansScene] LoadSceneForRendering called before project assets were loaded");
 		return;
 	}
 
@@ -306,6 +762,8 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
 
     // ── Resolve mesh ──────────────────────────────────────────────────────
     VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset(meshName));
+	std::string materialName = sceneRenderNode.value("material", "");
+	VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
 
     // ── Multi-mesh auto-expansion ─────────────────────────────────────────
     if (mesh && mesh->m_IsMultiMesh)
@@ -321,7 +779,8 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
         bool supportShadow = sceneRenderNode.value("support_shadow", false);
         std::string parentName = sceneRenderNode.value("name", "MultiMesh");
 
-        ExpandMultiMeshToRenderNodes(device, mesh, parentName, position, rotation, scale, supportShadow);
+		ExpandMultiMeshToRenderNodes(
+			device, mesh, parentName, position, rotation, scale, supportShadow, material);
 
         // 不从 m_Meshes 中移除父级 multi-mesh，场景切换时仍需通过名称找到它。
         // 子网格会在 ExpandMultiMeshToRenderNodes 内部被添加到 m_Meshes，
@@ -331,9 +790,6 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
         // that no single render node was created.
         return nullptr;
     }
-
-    std::string materialName = sceneRenderNode.value("material", "");
-    VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
 
     // ── Standard render node creation ─────────────────────────────────────
     VansRenderNode* renderNode = nullptr;
@@ -866,7 +1322,7 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
             GetTextureAsset(config.m_Foam.m_TextureName));
         if (!mat->m_FoamTexture)
             VANS_LOG_WARN("[AddWaterNode] foam texture '" << config.m_Foam.m_TextureName
-                << "' not found in loaded assets. Register it in resource.json.");
+                << "' not found in the AssetDatabase dependency closure.");
     }
 
     if (!config.m_NormalMap.m_TextureName.empty())
@@ -875,7 +1331,7 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
             GetTextureAsset(config.m_NormalMap.m_TextureName));
         if (!mat->m_WaterNormalTexture)
             VANS_LOG_WARN("[AddWaterNode] normalMap texture '" << config.m_NormalMap.m_TextureName
-                << "' not found in loaded assets. Register it in resource.json.");
+                << "' not found in the AssetDatabase dependency closure.");
     }
 
     // ── 注册到场景 ─────────────────────────────────────────────────────────
@@ -889,7 +1345,7 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
 
     // ── 创建 VansWaterRenderNode，使用引擎内置 "plane" 网格作为水面几何体 ──
     {
-        // "plane" 是 resource.json 中预注册的单位平面网格
+        // "plane" is an engine runtime binding for the unit plane mesh.
         VansMesh* planeMesh = static_cast<VansMesh*>(GetMeshAsset("plane"));
         if (planeMesh == nullptr)
         {
@@ -959,6 +1415,11 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
 void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
 {
     VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset("fullScreenQuad"));
+	if (mesh == nullptr)
+	{
+		VANS_LOG_ERROR("[VansScene] Missing engine mesh 'fullScreenQuad'");
+		return;
+	}
 
     // Build material directly from the already-loaded "Deferred" shader — no JSON material entry needed.
     VansGraphicsShader* deferredShader = static_cast<VansGraphicsShader*>(GetShaderAsset("Deferred"));
@@ -989,6 +1450,11 @@ void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
 void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
 {
     VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset("fullScreenQuad"));
+	if (mesh == nullptr)
+	{
+		VANS_LOG_ERROR("[VansScene] Missing engine mesh 'fullScreenQuad'");
+		return;
+	}
 
     // Each entry: { node/material name, shader name, material type }.
     // Materials are built internally — no JSON material entries needed.
@@ -1143,7 +1609,7 @@ void VansGraphics::VansScene::ImportDefaultTextures(const std::string& path, con
 
 // ===========================================================================
 // LoadResources — load project-wide resources (mesh, texture, shader)
-// Called once per project from resource.json, before any scene is loaded.
+// Consumes the internal upload batch generated from AssetDatabase records.
 // ===========================================================================
 
 void VansGraphics::VansScene::LoadResources(json& resourceData)
@@ -1158,6 +1624,19 @@ void VansGraphics::VansScene::LoadResources(json& resourceData)
 
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VkDevice nativeDevice = vkDevice->GetLogicDevice();
+
+	// Renderer-owned geometry never depends on project assets.
+	json engineMeshes = json::array({
+		{
+			{ "name", "fullScreenQuad" }, { "path", "EngineAssets/Models/fullscreen.obj" },
+			{ "need_tangent", false }, { "support_raytracing", false }, { "need_cpu_data", false }
+		},
+		{
+			{ "name", "plane" }, { "path", "EngineAssets/Models/plane.obj" },
+			{ "need_tangent", true }, { "support_raytracing", true }, { "need_cpu_data", false }
+		}
+	});
+	LoadMeshesFromJson(engineMeshes, enginePrefix, nativeDevice, vkDevice);
 
     if (resourceData.contains("mesh") && resourceData["mesh"].is_array())
     {
@@ -1236,45 +1715,50 @@ void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
         if (matType == VansMaterialType::VAN_PBR)
         {
             VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(material);
+
+            // A parameter-only PBR material is valid. Keep all five bindless
+            // texture slots populated, then replace individual defaults when
+            // the material supplies an explicit texture reference.
+            pbr->m_BaseColorTexture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
+            pbr->m_NormalTexture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
+            pbr->m_MetalTexture = static_cast<VansTexture*>(GetTextureAsset("defaultMetal"));
+            pbr->m_RoughnessTexture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
+            pbr->m_AoTexture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
+
             if (sceneMaterial.contains("basecolor_texture"))
             {
                 auto textureName = sceneMaterial["basecolor_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                pbr->m_BaseColorTexture = texture;
+                if (texture != nullptr)
+                    pbr->m_BaseColorTexture = texture;
             }
             if (sceneMaterial.contains("normal_texture"))
             {
                 auto textureName = sceneMaterial["normal_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-                pbr->m_NormalTexture = texture;
+                if (texture != nullptr)
+                    pbr->m_NormalTexture = texture;
             }
             if (sceneMaterial.contains("metal_texture"))
             {
                 auto textureName = sceneMaterial["metal_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultMetal"));
-                pbr->m_MetalTexture = texture;
+                if (texture != nullptr)
+                    pbr->m_MetalTexture = texture;
             }
             if (sceneMaterial.contains("roughness_texture"))
             {
                 auto textureName = sceneMaterial["roughness_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
-                pbr->m_RoughnessTexture = texture;
+                if (texture != nullptr)
+                    pbr->m_RoughnessTexture = texture;
             }
             if (sceneMaterial.contains("ao_texture"))
             {
                 auto textureName = sceneMaterial["ao_texture"];
                 VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
-                pbr->m_AoTexture = texture;
+                if (texture != nullptr)
+                    pbr->m_AoTexture = texture;
             }
             pbr->m_BasePBRParam.m_albedo    = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
             pbr->m_BasePBRParam.m_metallic  = sceneMaterial["metallic"];
@@ -1622,6 +2106,11 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
         return false;
     }
 	json sceneData = json::parse(jsonFile);
+	if (!BuildRuntimeSceneFromV2(sceneData))
+	{
+		VANS_LOG_ERROR("[VansScene] Invalid Scene v2 document: " << path);
+		return false;
+	}
 	m_ReflectionProbeSystem.LoadFromSceneJson(sceneData, path);
 
 	// GI settings are scene data because changing the volume dimensions requires
@@ -1678,7 +2167,7 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
             projectRoot = projectRoot.substr(0, pos + 1);
     }
 
-    // 场景文件只负责材质和实例数据；mesh/texture/shader/video 已由 resource.json 加载。
+    // Scene v2 owns component data; referenced assets were uploaded from the AssetDatabase closure.
     if (sceneData.contains("material") && sceneData["material"].is_array())
     {
         LoadMaterialsFromJson(sceneData["material"]);
@@ -1797,7 +2286,8 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
     const glm::vec3& position,
     const glm::vec3& rotation,
     const glm::vec3& scale,
-    bool supportShadow)
+	bool supportShadow,
+	VansMaterial* materialOverride)
 {
     if (!multiMesh || !multiMesh->m_IsMultiMesh)
         return;
@@ -1812,6 +2302,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
     // ── Create or retrieve the multi-mesh group for hierarchy display ─────
     MultiMeshGroup& group = m_MultiMeshGroups[resolvedParentName];
     group.parentName = resolvedParentName;
+    group.sourceMesh = multiMesh;
     group.position   = position;
     group.rotation   = rotation;
     group.scale      = scale;
@@ -1858,7 +2349,10 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
         const std::string materialBaseName = resolvedParentName + "_" + nodeName + "_" + fbxInfo.materialName;
         std::string matKey = MakeUniqueMaterialName(*this, materialBaseName);
 
-        VansMaterial* material = nullptr;
+		VansMaterial* material = materialOverride;
+		if (materialOverride)
+			matType = materialOverride->m_MaterialType;
+		else
         {
             // Typed factory for auto-expanded submesh materials
             if (matType == VansMaterialType::VAN_TRANSPARENT)
@@ -2030,20 +2524,31 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
         return nullptr;
 
     // 查找 mesh 资产
-    VansMesh* meshAsset = nullptr;
+    VansMesh* meshAsset = group.sourceMesh;
     for (auto* asset : m_Meshes)
     {
-        if (asset->m_AssetName == meshGroupName)
+        if (meshAsset == nullptr && asset->m_AssetName == meshGroupName)
         {
             meshAsset = dynamic_cast<VansMesh*>(asset);
             break;
         }
     }
 
-    if (!meshAsset || !meshAsset->m_HasAnimation)
+    if (!meshAsset)
     {
         VANS_LOG_WARN("[LoadAnimComp] mesh_group '" << meshGroupName
-                     << "' has no animation data. Skipping '" << objectName << "'");
+                     << "' has no source mesh. Skipping '" << objectName << "'");
+        return nullptr;
+    }
+
+    // A skinned bind-pose model may intentionally contain no embedded clips.
+    // In that workflow the .vanimator/.vclip assets provide the animation, so
+    // clip presence is not a valid capability check. A skeleton is required by
+    // both embedded and external animation paths.
+    if (meshAsset->m_AnimImportResult.skeleton.bones.empty())
+    {
+        VANS_LOG_WARN("[LoadAnimComp] mesh_group '" << meshGroupName
+                     << "' has no skeleton. Skipping '" << objectName << "'");
         return nullptr;
     }
 
@@ -2661,6 +3166,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
     for (const auto& objJson : objectsArray)
     {
         VansScriptObject* obj = new VansScriptObject();
+		obj->m_EntityGuid = objJson.value("entityGuid", "");
         obj->m_ObjectName = objJson.value("name", "");
 
         // ── 读取对象级 transform（新格式：与 components 并列）────────────
@@ -2729,7 +3235,18 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         {
             auto* renderComp = obj->GetComponent<VansScriptRenderComponent>();
             VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
-            VansPhysicsNode* pn = LoadSinglePhysicsNode(components["physics"], associatedNode);
+			if (!associatedNode && hasObjTransform)
+			{
+				obj->m_TransformID = VansTransformStore::AllocateTransform();
+				obj->m_OwnsTransform = true;
+				VansTransform& transform = VansTransformStore::GetTransform(obj->m_TransformID);
+				transform.m_Position = objPos;
+				transform.m_Rotation = objRot;
+				transform.m_Scale = objScl;
+			}
+			const uint32_t standaloneTransformID = obj->m_OwnsTransform ? obj->m_TransformID : UINT32_MAX;
+			VansPhysicsNode* pn = LoadSinglePhysicsNode(
+				components["physics"], associatedNode, standaloneTransformID);
             if (pn)
             {
                 auto* pc = new VansScriptPhysicsComponent();
@@ -2793,7 +3310,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         }
 
         // ── Non-render TransformID 分配（灯光 / 相机等无 render 组件的对象）──
-        bool objectTransformAllocated = false;
+		bool objectTransformAllocated = obj->m_OwnsTransform;
 
         auto ensureObjectTransform = [&]()
         {
@@ -2801,6 +3318,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 obj->GetComponent<VansScriptRenderComponent>() == nullptr)
             {
                 obj->m_TransformID = VansTransformStore::AllocateTransform();
+				obj->m_OwnsTransform = true;
                 if (objJson.contains("transform"))
                 {
                     const auto& tJson = objJson["transform"];
@@ -2817,7 +3335,13 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                                                  tJson["rotation"][1].get<float>(),
                                                  tJson["rotation"][2].get<float>());
                     }
-                    t.m_Scale = glm::vec3(1.0f);
+					if (tJson.contains("scale") && tJson["scale"].is_array())
+					{
+						t.m_Scale = glm::vec3(tJson["scale"][0].get<float>(),
+							tJson["scale"][1].get<float>(), tJson["scale"][2].get<float>());
+					}
+					else
+						t.m_Scale = glm::vec3(1.0f);
                 }
                 objectTransformAllocated = true;
             }
@@ -3154,7 +3678,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         }
 
         // ── Video component（显式挂载）────────────────────────────────────
-        // JSON 格式：{ "video": { "source": "<resource.json 中注册的名称>" } }
+        // Runtime descriptor format: { "video": { "source": "<asset runtime name>" } }
         // VideoComponent 只由此处显式创建；emissive 材质和面光源不再自动创建。
         if (components.contains("video"))
         {

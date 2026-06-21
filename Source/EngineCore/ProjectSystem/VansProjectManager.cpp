@@ -1,6 +1,7 @@
 #include "VansProjectManager.h"
 #include "../Util/VansLog.h"
 #include "../Configration/VansConfigration.h"
+#include "../AssetCore/VansAssetDatabase.h"
 
 #include <filesystem>
 #include <fstream>
@@ -23,6 +24,8 @@ VansProjectManager::VansProjectManager()
 	if (cfg)
 		m_PathResolver.SetEngineRoot(cfg->GetProjectRootPath());
 }
+
+VansProjectManager::~VansProjectManager() = default;
 
 VansProjectManager& VansProjectManager::Get()
 {
@@ -127,6 +130,13 @@ bool VansProjectManager::OpenProject(const std::string& projectRootPath)
 	m_SceneManager.SetDefaultScene(m_Config.defaultScene);
 	m_SceneManager.DiscoverScenes(root + "Scenes");
 
+	m_AssetDatabase = std::make_unique<VansAssetDatabase>(fs::path(root) / m_Config.assetsRoot);
+	const VansAssetScanResult assetScan = m_AssetDatabase->Scan();
+	for (const std::string& error : assetScan.errors)
+		VANS_LOG_ERROR("[AssetDatabase] " << error);
+	VANS_LOG("[AssetDatabase] Registered " << assetScan.registered
+		<< " assets, generated " << assetScan.generatedMeta << " meta files");
+
 	// Update recent list
 	RecentProjects::AddOrUpdate(m_Config.projectName, root, m_Config.engineVersion);
 
@@ -144,6 +154,7 @@ void VansProjectManager::CloseProject()
 	VANS_LOG("[ProjectManager] Closing project '" << m_Config.projectName << "'");
 
 	m_SceneManager.Clear();
+	m_AssetDatabase.reset();
 	m_Config = {};
 	m_ProjectSettings.SetDefaults();
 	m_ProjectRootPath.clear();

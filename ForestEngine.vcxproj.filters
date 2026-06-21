@@ -23,6 +23,15 @@
     <Filter Include="EngineCore\EditorCore">
       <UniqueIdentifier>{81996f81-a90d-438e-8e2a-3b3092a0ac65}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\SceneCore">
+      <UniqueIdentifier>{78eb7b2d-15c1-4bb4-8f7d-d8579637f1f1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineCore\AssetCore">
+      <UniqueIdentifier>{1f322160-05bc-48a7-a458-a9bebba0bcd0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EngineCore\AssetCore\Importers">
+      <UniqueIdentifier>{22eb9700-aa6a-4517-9c58-a6145578d59b}</UniqueIdentifier>
+    </Filter>
     <Filter Include="External">
       <UniqueIdentifier>{ae2db250-a0f4-4cec-bdaa-ad9b5bce1d50}</UniqueIdentifier>
     </Filter>
@@ -140,6 +149,31 @@
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorWindow.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDiagnostics.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDocument.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\VansAssetGuid.h"><Filter>EngineCore\AssetCore</Filter></ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\VansAssetMeta.h"><Filter>EngineCore\AssetCore</Filter></ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDatabase.h"><Filter>EngineCore\AssetCore</Filter></ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDocument.h"><Filter>EngineCore\AssetCore</Filter></ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\VansModelAsset.h"><Filter>EngineCore\AssetCore</Filter></ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.h"><Filter>EngineCore\AssetCore\Importers</Filter></ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneSchemaV2.h"><Filter>EngineCore\SceneCore</Filter></ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDocumentLoader.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneSaveService.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansSceneEditService.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansEditorSelection.h">
       <Filter>EngineCore\EditorCore</Filter>
     </ClInclude>
     <ClInclude Include="External\GUI\glfw-3.3.9\include\GLFW\glfw3.h">
@@ -708,6 +742,24 @@
       <Filter>External\imgui</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorWindow.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneDocument.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\VansAssetGuid.cpp"><Filter>EngineCore\AssetCore</Filter></ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\VansAssetMeta.cpp"><Filter>EngineCore\AssetCore</Filter></ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\VansAssetDatabase.cpp"><Filter>EngineCore\AssetCore</Filter></ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\VansAssetDocument.cpp"><Filter>EngineCore\AssetCore</Filter></ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.cpp"><Filter>EngineCore\AssetCore\Importers</Filter></ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneSchemaV2.cpp"><Filter>EngineCore\SceneCore</Filter></ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneDocumentLoader.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneSaveService.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansSceneEditService.cpp">
       <Filter>EngineCore\EditorCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\ForestEngineEntry.cpp">

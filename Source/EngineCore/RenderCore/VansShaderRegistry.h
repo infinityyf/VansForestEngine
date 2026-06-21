@@ -75,7 +75,7 @@ namespace VansGraphics
 
 // ---------------------------------------------------------------------------
 // Free function — defined in VansShaderRegistrations.cpp.
-// Call once (e.g. at the start of LoadProjectResources) to populate the registry.
+// Call once before uploading an AssetDatabase dependency closure.
 // Duplicate calls are safe — the registry ignores re-registration of the
 // same type.
 // ---------------------------------------------------------------------------

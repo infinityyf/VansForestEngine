@@ -115,7 +115,7 @@ namespace VansGraphics
 	struct VansWaterFoamConfig
 	{
 		bool        m_Enabled     = true;
-		// resource.json 中已加载纹理的名称
+		// Texture runtime name resolved from an asset reference.
 		std::string m_TextureName;
 		// 泡沫强度乘数
 		float       m_Intensity   = 1.0f;
@@ -126,7 +126,7 @@ namespace VansGraphics
 	// ============================================================
 	struct VansWaterNormalMapConfig
 	{
-		// resource.json 中已加载纹理的名称
+		// Texture runtime name resolved from an asset reference.
 		std::string m_TextureName;
 		// UV 平铺缩放（X=空间, Y=流动速率）
 		glm::vec2   m_Tiling      = {0.1f, 0.03f};

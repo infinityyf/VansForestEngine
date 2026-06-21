@@ -120,6 +120,7 @@ public:
 class VansScriptObject
 {
 public:
+	std::string m_EntityGuid;
 	std::string m_ObjectName;
 
 	// All components owned by this object (polymorphic pointers).
@@ -129,6 +130,7 @@ public:
 	// Transform ID shared across all components of this object.
 	// Typically taken from the render component's RenderNode.
 	uint32_t m_TransformID = 0;
+	bool m_OwnsTransform = false;
 
 	// ── Query helpers ────────────────────────────────────────────────
 	template<typename T>
@@ -147,12 +149,7 @@ public:
 		m_Components.push_back(comp);
 	}
 
-	~VansScriptObject()
-	{
-		for (auto* comp : m_Components)
-			delete comp;
-		m_Components.clear();
-	}
+	~VansScriptObject();
 };
 
 
@@ -311,7 +308,7 @@ class VansScriptVideoComponent : public VansScriptComponent
 public:
 	VansScriptVideoComponent() { m_ComponentName = "Video"; }
 
-	// 视频资源名称（来自 resource.json 注册的名称）
+	// Video runtime name resolved from an asset reference.
 	std::string m_VideoName;
 
 	// 非拥有指针，生命周期由 VansScene::m_VideoManager 管理

@@ -30,6 +30,10 @@
 #include "../VansFramePhase.h"
 
 #include "../ProjectSystem/VansProjectManager.h"
+#include "../SceneCore/VansSceneDocumentLoader.h"
+#include "../SceneCore/VansSceneSaveService.h"
+#include "VansSceneEditService.h"
+#include "VansEditorSelection.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
@@ -135,7 +139,6 @@ VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
 Vans::VansProjectSelector* VansGraphics::VansEditorWindow::m_ProjectSelector = nullptr;
 bool VansGraphics::VansEditorWindow::m_ProjectLoaded = false;
 std::string VansGraphics::VansEditorWindow::m_PendingScenePath;
-std::string VansGraphics::VansEditorWindow::m_PendingResourcePath;
 
 // 运行控制状态：默认处于编辑模式（时间冻结）
 VansGraphics::VansEditorPlayState VansGraphics::VansEditorWindow::m_PlayState = VansGraphics::VansEditorPlayState::Editing;
@@ -143,6 +146,27 @@ std::string VansGraphics::VansEditorWindow::m_CurrentLoadedScenePath;
 // 延迟加载模式：默认 Editor
 VansGraphics::VansSceneLoadMode VansGraphics::VansEditorWindow::m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Editor;
 VansGraphics::VansEditorWindow::VansPendingProjectLoad VansGraphics::VansEditorWindow::m_PendingProjectLoad;
+std::unique_ptr<Vans::VansSceneDocument> VansGraphics::VansEditorWindow::m_SceneDocument;
+std::unique_ptr<Vans::VansSceneEditService> VansGraphics::VansEditorWindow::m_SceneEditService;
+std::unique_ptr<Vans::VansSceneSaveService> VansGraphics::VansEditorWindow::m_SceneSaveService =
+    std::make_unique<Vans::VansSceneSaveService>();
+Vans::VansSceneDocument* VansGraphics::VansEditorWindow::GetSceneDocument()
+{
+    return m_SceneDocument.get();
+}
+
+Vans::VansSceneEditService* VansGraphics::VansEditorWindow::GetSceneEditService()
+{
+    return m_SceneEditService.get();
+}
+
+void VansGraphics::VansEditorWindow::ReloadCurrentSceneForEditing()
+{
+	if (m_PlayState != VansEditorPlayState::Editing || m_CurrentLoadedScenePath.empty())
+		return;
+	m_PendingSceneLoadMode = VansSceneLoadMode::Editor;
+	m_PendingScenePath = m_CurrentLoadedScenePath;
+}
 
 bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height, GRAPHICS_API api)
 {
@@ -201,6 +225,12 @@ void VansGraphics::VansEditorWindow::OnPlay()
     if (m_CurrentLoadedScenePath.empty())
     {
         VANS_LOG_WARN("[Editor] OnPlay: no scene loaded, cannot start");
+        return;
+    }
+
+    if (m_SceneDocument && m_SceneDocument->IsDirty())
+    {
+        VANS_LOG_WARN("[Editor] Save or undo scene changes before entering Play mode");
         return;
     }
 
@@ -386,10 +416,6 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
     m_TerrainWindow = new VansTerrainWindow();
     m_Windows.push_back(m_TerrainWindow);
 
-    // 将 AnimGraphEditor 引用传给 HierachyWindow
-    m_HierachyWindow->m_AnimGraphEditorRef = m_AnimGraphEditorWindow;
-    // 将 ClothProfileEditor 引用传给 HierachyWindow
-    m_HierachyWindow->m_ClothProfileEditorRef = m_ClothProfileEditorWindow;
 }
 
 void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
@@ -448,6 +474,16 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
     if (m_PendingScenePath.empty())
         return;
 
+    if (m_SceneDocument && m_SceneDocument->IsDirty() &&
+        !m_CurrentLoadedScenePath.empty() &&
+        std::filesystem::path(m_PendingScenePath).lexically_normal() !=
+            std::filesystem::path(m_CurrentLoadedScenePath).lexically_normal())
+    {
+        VANS_LOG_WARN("[Editor] Scene switch cancelled: save or undo current scene changes first");
+        m_PendingScenePath.clear();
+        return;
+    }
+
     auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
     VANS_LOG("[Editor] Loading deferred scene: " << m_PendingScenePath
              << " [mode=" << (m_PendingSceneLoadMode == VansGraphics::VansSceneLoadMode::Editor ? "Editor" : "Runtime") << "]");
@@ -458,6 +494,21 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 
     if (m_PendingSceneLoadMode == VansGraphics::VansSceneLoadMode::Editor)
     {
+		auto loadResult = Vans::VansSceneDocumentLoader::Load(m_PendingScenePath);
+		if (loadResult)
+		{
+			m_SceneDocument = std::move(loadResult.document);
+			m_SceneEditService = std::make_unique<Vans::VansSceneEditService>(*m_SceneDocument);
+			VANS_LOG("[SceneDocument] Document ready: " << m_PendingScenePath);
+		}
+		else
+		{
+			m_SceneEditService.reset();
+			m_SceneDocument.reset();
+			for (const auto& diagnostic : loadResult.diagnostics)
+				VANS_LOG_ERROR("[SceneDocument] " << diagnostic.jsonPointer << " " << diagnostic.message);
+		}
+
         // Editor 模式：注册相机控制，冻结时间，回到 Editing 状态
         RegisterCameraInputListeners();
         VansTimer::SetTimePaused(true);
@@ -495,6 +546,13 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
     if (!m_PendingProjectLoad.m_Requested)
         return;
 
+    if (m_SceneDocument && m_SceneDocument->IsDirty())
+    {
+        VANS_LOG_WARN("[Editor] Project switch cancelled: save or undo current scene changes first");
+        m_PendingProjectLoad = {};
+        return;
+    }
+
     VansPendingProjectLoad pending = m_PendingProjectLoad;
     m_PendingProjectLoad = {};
 
@@ -531,9 +589,10 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
     }
 
     m_ProjectLoaded = false;
+	m_SceneEditService.reset();
+	m_SceneDocument.reset();
     m_CurrentLoadedScenePath.clear();
     m_PendingScenePath.clear();
-    m_PendingResourcePath.clear();
     m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Editor;
 
     bool loaded = false;
@@ -559,20 +618,24 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
     VANS_LOG("[Editor] Project load completed");
 
     m_ScriptContext.SetupProjectVenv(projectMgr.GetProjectRootPath());
+	Vans::VansEditorSelection::Clear();
 
-    const std::string& resourceFile = projectMgr.GetConfig().resourceFile;
-    if (!resourceFile.empty())
+    const Vans::VansProjectConfig& projectConfig = projectMgr.GetConfig();
+    if (Vans::VansAssetDatabase* database = projectMgr.GetAssetDatabase())
     {
-        std::string absResourcePath = projectMgr.GetProjectRootPath() + resourceFile;
-        if (std::filesystem::exists(absResourcePath))
+        auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
+        const std::filesystem::path scenePath = std::filesystem::path(projectMgr.GetProjectRootPath()) /
+            projectConfig.defaultScene;
+        if (!m_Scene->LoadProjectAssets(*database, scenePath, vkDev))
         {
-            VANS_LOG("[Editor] Deferring resource load: " << absResourcePath);
-            m_PendingResourcePath = absResourcePath;
+            VANS_LOG_ERROR("[Editor] Scene v2 project asset loading failed; scene load cancelled");
+            return;
         }
-        else
-        {
-            VANS_LOG_WARN("[Editor] Resource file not found: " << absResourcePath);
-        }
+    }
+    else
+    {
+		VANS_LOG_ERROR("[Editor] Scene v2 project has no AssetDatabase");
+		return;
     }
 
     const std::string& defaultScene = projectMgr.GetConfig().defaultScene;
@@ -683,11 +746,45 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
         }
 
         // 顶部菜单栏
+		const bool sceneDocumentReady = m_PlayState == VansEditorPlayState::Editing &&
+			m_SceneDocument && m_SceneDocument->IsHealthy();
+		if (sceneDocumentReady && !io.WantTextInput && io.KeyCtrl)
+		{
+			if (ImGui::IsKeyPressed(ImGuiKey_S, false))
+			{
+				const Vans::SceneSaveResult saveResult = m_SceneSaveService->Save(*m_SceneDocument);
+				if (!saveResult) VANS_LOG_ERROR("[SceneSave] " << saveResult.message);
+				else if (saveResult.wroteFile) ReloadCurrentSceneForEditing();
+			}
+			else if (m_SceneEditService && ImGui::IsKeyPressed(ImGuiKey_Z, false))
+			{
+				m_SceneEditService->Undo();
+			}
+			else if (m_SceneEditService && ImGui::IsKeyPressed(ImGuiKey_Y, false))
+			{
+				m_SceneEditService->Redo();
+			}
+		}
+
         if (ImGui::BeginMenuBar())
         {
             if (ImGui::BeginMenu("File"))
             {
-                if (ImGui::MenuItem("Exit")) glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
+				if (ImGui::MenuItem("Save Scene", "Ctrl+S", false,
+					sceneDocumentReady && m_SceneDocument->IsDirty()))
+				{
+					const Vans::SceneSaveResult saveResult = m_SceneSaveService->Save(*m_SceneDocument);
+					if (!saveResult) VANS_LOG_ERROR("[SceneSave] " << saveResult.message);
+					else if (saveResult.wroteFile) ReloadCurrentSceneForEditing();
+				}
+				ImGui::Separator();
+                if (ImGui::MenuItem("Exit"))
+                {
+                    if (m_SceneDocument && m_SceneDocument->IsDirty())
+                        VANS_LOG_WARN("[Editor] Exit cancelled: save or undo current scene changes first");
+                    else
+                        glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
+                }
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Window"))
@@ -1065,17 +1162,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             ProcessPendingProjectLoad();
         }
 
-        // 1) Load project resources (mesh/texture/shader) from resource.json
-        if (!m_PendingResourcePath.empty())
-        {
-            VANS_PROFILE_SCOPE("Resource::LoadProjectResources", Vans::ProfileCategory::IO);
-            auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
-            VANS_LOG("[Editor] Loading deferred resources: " << m_PendingResourcePath);
-            m_Scene->LoadProjectResources(m_PendingResourcePath.c_str(), vkDev);
-            m_PendingResourcePath.clear();
-        }
-
-        // 2) Load scene content (materials + nodes)
+        // Load Scene v2 content after the AssetDatabase dependency closure.
         {
             VANS_PROFILE_SCOPE("Resource::ProcessPendingSceneLoad", Vans::ProfileCategory::IO);
             ProcessPendingSceneLoad();
