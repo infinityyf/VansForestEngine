@@ -152,38 +152,45 @@ namespace VansGraphics
 
 	void VansVKDevice::PrepareInstanceTransformData()
 	{
-		std::vector<VansRenderNode*> allRenderNodes;
-		auto& allCommonNodes = m_Scene->m_OpaqueRenderNodes;
-		allRenderNodes.insert(allRenderNodes.end(), allCommonNodes.begin(), allCommonNodes.end());
-		auto& allTransparentNodes = m_Scene->m_TransParentRenderNodes;
-		allRenderNodes.insert(allRenderNodes.end(), allTransparentNodes.begin(), allTransparentNodes.end());
-		// 贴花节点需要一个独立的变换槽位：OBB 越界测试和 UV 推导均依赖 ModelBuffer.transforms[objectIndex]
-		auto& allDecalNodes = m_Scene->m_DecalRenderNodes;
-		allRenderNodes.insert(allRenderNodes.end(), allDecalNodes.begin(), allDecalNodes.end());
+		// ── Step 0: 收集所有受管理的 RenderNode ──────────────────────────────
+		std::vector<VansRenderNode*> allRenderNodes =
+			m_Scene->CollectSSBOManagedRenderNodes();
 
-		int nodeCount = allRenderNodes.size();
-		const VkDeviceSize transformDataSize = sizeof(ModelDataStruct) * static_cast<VkDeviceSize>(nodeCount);
+		// ── Step 1: 按最大容量创建 Buffer (而非精确数量) ─────────────────────
+		const uint32_t maxCapacity = m_Scene->m_TransformSlotAllocator.GetMaxCapacity();
+		const VkDeviceSize bufferSize = sizeof(ModelDataStruct) * static_cast<VkDeviceSize>(maxCapacity);
+
 		m_Scene->m_InstanceTransformDataBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
-			std::max<VkDeviceSize>(transformDataSize, sizeof(ModelDataStruct)),
+			std::max<VkDeviceSize>(bufferSize, sizeof(ModelDataStruct)),
 			VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
-		for (int nodeIndex = 0; nodeIndex < nodeCount; ++nodeIndex)
+		// ── Step 2: 分配 Slot 并写入初始数据 ─────────────────────────────────
+		for (auto* node : allRenderNodes)
 		{
-			auto node = allRenderNodes[nodeIndex];
+			uint32_t slot = m_Scene->m_TransformSlotAllocator.AllocateSlot();
+			assert(slot != TransformSlotAllocator::INVALID_SLOT && "Initial load exceeded max capacity");
+
 			node->BeforeDrawCall();
-			m_Scene->m_InstanceTransformData.push_back(node->m_ModelData);
-			node->m_TransfromIndex = nodeIndex;
-		}
-		if (transformDataSize > 0)
-		{
+			node->m_TransfromIndex = static_cast<int>(slot);
+
+			// 按槽位写入
+			VkDeviceSize offset = slot * sizeof(ModelDataStruct);
 			m_Scene->m_InstanceTransformDataBuffer.SetBufferData(
-				m_Scene->m_InstanceTransformData.data(), 0, static_cast<int>(transformDataSize));
+				&node->m_ModelData,
+				static_cast<int>(offset),
+				sizeof(ModelDataStruct));
 		}
 
-		// Keep the transform buffer persistently mapped for fast per-frame CPU writes
+		// ── Step 2.5: m_InstanceTransformData CPU 镜像不再写入 ────────────────
+		// 原有代码在此处 push_back 到 m_InstanceTransformData，用于 GrowTransformBuffer
+		// 读回数据。迁移后由 TransformSlotAllocator 跟踪活跃槽位，Buffer 是
+		// HOST_VISIBLE 持久映射，ReadData 直接读 CPU 侧映射内存，无需该 CPU 镜像。
+		// m_InstanceTransformData 在 UnLoadScene 中保留 clear() 调用以确保兼容。
+
+		// ── Step 3: 持久映射 ─────────────────────────────────────────────────
 		m_Scene->m_InstanceTransformDataBuffer.PersistentMap();
 
 		VkDescriptorSetLayoutBinding instanceTransformBufferBinding =

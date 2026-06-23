@@ -25,6 +25,7 @@ namespace VansGraphics { class VansMesh; }
 #include "../AudioCore/VansAudioManager.h"
 #include "VansParticleRenderNode.h"
 #include "ReflectionProbeCore/VansReflectionProbeSystem.h"
+#include "VansTransformSlotAllocator.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -123,9 +124,6 @@ namespace VansGraphics
 		VansAsset* GetTextureAsset(const std::string& name);
 
 		VansAsset* GetMaterialAsset(const std::string& name);
-
-		void RegistRenderNode(VansRenderNode* renderNode, RenderNodeType type);
-
 
 	public:
 
@@ -358,6 +356,41 @@ namespace VansGraphics
 
 		void AddScreenSpaceFeatureNode(VkDevice& device);
 
+		void RegistRenderNode(VansRenderNode* renderNode, RenderNodeType type);
+
+		// ═══════════════════════════════════════════════════════════════════════════
+		//  Runtime Dynamic Entity API (运行时动态实体增删)
+		// ═══════════════════════════════════════════════════════════════════════════
+
+		// 创建单 Mesh 实体（运行时即时创建，不依赖 JSON 全量重载）
+		VansScriptObject* CreateEntity(
+			VkDevice& device, const std::string& entityName,
+			const std::string& meshName, const std::string& materialName,
+			const glm::vec3& position, const glm::vec3& rotation = glm::vec3(0.0f),
+			const glm::vec3& scale = glm::vec3(1.0f),
+			const std::string& parentName = "");
+
+		// 销毁实体（完整清理全部 16 种组件类型）
+		bool DestroyEntity(const std::string& entityName);
+		bool DestroyEntity(VansScriptObject* obj);
+
+		// 查询是否还有可用 SSBO 槽位
+		bool CanCreateEntity() const;
+
+		// Transform SSBO 扩容（当槽位使用率 > 80% 时触发）
+		bool GrowTransformBuffer(VkDevice& device, uint32_t newCapacity);
+
+		// 更新 Transform Descriptor Set 2 指向当前 Buffer（扩容后调用）
+		void UpdateTransformDescriptorSet();
+
+		// ── Transform Slot 统计 ──────────────────────────────────────────────────
+		size_t GetTransformSlotCount()    const;
+		size_t GetTransformSlotCapacity() const;
+		float  GetTransformSlotUsage()    const;
+
+		// ── Transform Slot 分配器 ─────────────────────────────────────────────────
+		TransformSlotAllocator m_TransformSlotAllocator;
+
 		void UnLoadScene();
 
 		// 项目级资源卸载入口。重构-08 会在此处集中释放 mesh/texture/shader/audio/video 等项目资源。
@@ -404,6 +437,14 @@ namespace VansGraphics
 	private:
 
 		void UpdateTransformRenderData();
+
+	public:
+		// ── Runtime Dynamic Entity 辅助函数 ─────────────────────────────────
+		void RemoveRenderNodeFromVector(VansRenderNode* node);
+		std::vector<VansRenderNode*> CollectSSBOManagedRenderNodes() const;
+
+		// 当 LightManager 某灯光被 swap-pop 后，更新所有 VansScriptObject 中的 LightIndex 引用
+		void UpdateLightComponentIndex(int oldIndex, int newIndex, VansLightType type);
 
 	private:
 

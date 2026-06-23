@@ -11,7 +11,14 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include "../../RenderCore/VulkanCore/VansTexture.h"
+#include "../VansEditorSelection.h"
+#include "../VansEditorWindow.h"
+#include "../VansSceneEditService.h"
+#include "../../AssetCore/VansAssetGuid.h"
+#include "../../SceneCore/VansSceneDocument.h"
+#include "../../RenderCore/VansScene.h"
 #include "../../RenderCore/VulkanCore/VansVKDevice.h"
+#include "../../RenderCore/VulkanCore/VansMesh.h"
 #include "../../RenderCore/VulkanCore/VansVKCommandBuffer.h"
 #include "../../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../../VansTimer.h"
@@ -22,6 +29,9 @@
 #include "../../AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../../ScriptCore/VansTransform.h"
 #include "VansHierachyWindow.h"
+#include "../../ProjectSystem/VansProjectManager.h"
+#include "../../AssetCore/VansAssetDatabase.h"
+#include "../../AssetCore/VansAssetGuid.h"
 
 void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
 {
@@ -152,6 +162,155 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
             // Use the exact screen-space rect of the rendered texture, not the
             // whole panel window, so gizmo clipping and NDC unprojection are accurate.
             ImVec2 imageScreenPos = ImGui::GetItemRectMin();
+
+            // ── Drag-drop target (紧贴 Image，被 ImGui 识别为 Image 的 drop zone) ──
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload =
+                    ImGui::AcceptDragDropPayload("VANS_ASSET_GUID"))
+                {
+                    if (payload->DataSize > 0 && payload->Data)
+                    {
+                        std::string guidStr(static_cast<const char*>(payload->Data));
+
+                        auto& projectMgr = Vans::VansProjectManager::Get();
+                        if (auto* database = projectMgr.GetAssetDatabase())
+                        {
+                            Vans::VansAssetGuid guid;
+                            if (Vans::VansAssetGuid::TryParse(guidStr, guid))
+                            {
+                                auto record = database->Find(guid);
+                                if (record.has_value() && record->type == Vans::VansAssetType::Model)
+                                {
+                                    // 使用资产文件名作为 mesh 名称
+                                    std::string meshName = record->sourcePath.stem().string();
+
+                                    // ── 按需加载 Mesh 到场景 m_Meshes ──────
+                                    // GetMeshAsset 在 CreateEntity 内部调用，需在此之前将 mesh 加载到 m_Meshes
+                                    VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+                                    if (vkDev && m_Scene && m_Scene->m_ProjectMeshAliases.find(meshName) == m_Scene->m_ProjectMeshAliases.end())
+                                    {
+                                        auto* mesh = new VansMesh(false, false);
+                                        mesh->LoadMesh(vkDev->GetLogicDevice(),
+                                            vkDev->GetGraphicsQueue(),
+                                            &vkDev->GetCommandBuffer(),
+                                            record->sourcePath.string(), false);
+                                        mesh->SetName(meshName);
+                                        m_Scene->m_Meshes.push_back(mesh);
+                                        m_Scene->m_ProjectMeshAliases[meshName] = mesh;
+                                        VANS_LOG("[SceneWindow] Mesh loaded: "
+                                            << record->sourcePath.string() << " as '" << meshName << "'");
+                                    }
+
+                                    // 生成唯一实体名称
+                                    std::string uniqueName = meshName;
+                                    int suffix = 1;
+                                    while (m_Scene && m_Scene->FindObjectByName(uniqueName))
+                                        uniqueName = meshName + "_" + std::to_string(suffix++);
+
+                                    // ── Screen → World（ray-ground 平面求交）──
+                                    float ndcX = 2.0f * (ImGui::GetMousePos().x - imageScreenPos.x) / drawSize.x - 1.0f;
+                                    float ndcY = 1.0f - 2.0f * (ImGui::GetMousePos().y - imageScreenPos.y) / drawSize.y;
+
+                                    glm::vec3 rayOrigin(0.0f), rayDir(0.0f, -1.0f, 0.0f);
+                                    if (m_Camera)
+                                    {
+                                        glm::mat4 view = m_Camera->GetViewMatrix();
+                                        glm::mat4 proj = m_Camera->GetProjectiveMatrix();
+                                        glm::mat4 invPV = glm::inverse(proj * view);
+                                        glm::vec4 nearPt = invPV * glm::vec4(ndcX, ndcY, 0.0f, 1.0f);
+                                        glm::vec4 farPt  = invPV * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+                                        nearPt /= nearPt.w;
+                                        farPt  /= farPt.w;
+                                        rayOrigin = glm::vec3(nearPt);
+                                        rayDir    = glm::normalize(glm::vec3(farPt) - rayOrigin);
+                                    }
+
+                                    // 与 y=0 地平面求交
+                                    glm::vec3 worldPos(0.0f);
+                                    if (std::abs(rayDir.y) > 0.0001f)
+                                    {
+                                        float t = -rayOrigin.y / rayDir.y;
+                                        worldPos = (t > 0.0f) ? rayOrigin + rayDir * t
+                                                             : rayOrigin + rayDir * 5.0f;
+                                    }
+                                    else
+                                    {
+                                        glm::vec4 fwd4 = m_Camera ? m_Camera->GetForward() : glm::vec4(0, 0, -1, 0);
+                                        glm::vec3 fwd = glm::vec3(fwd4); fwd.y = 0.0f;
+                                        float len = glm::length(fwd);
+                                        worldPos = rayOrigin + (len > 0.0001f ? glm::normalize(fwd) : glm::vec3(0, 0, -1)) * 5.0f;
+                                    }
+
+                                    if (m_Scene && vkDev)
+                                    {
+                                        VansScriptObject* obj = m_Scene->CreateEntity(
+                                            vkDev->GetLogicDevice(), uniqueName,
+                                            meshName, "DefaultPBR", worldPos);
+
+                                        // ── 同步写入 JSON 文档（SchemaV2 格式）──
+                                        // 注意：必须以 "entities/-" JSON Pointer 追加，否则 schema 验证失败
+                                        if (obj && !guidStr.empty())
+                                        {
+                                            auto* doc = VansEditorWindow::GetSceneDocument();
+                                            auto* editService = VansEditorWindow::GetSceneEditService();
+                                            if (doc && editService)
+                                            {
+                                                const std::string modelGuid = guidStr;
+
+                                                // 同时注册 mesh 的 GUID 别名（场景重载时 BuildRuntimeSceneFromV2 按 GUID 查找 mesh）
+                                                if (m_Scene)
+                                                    m_Scene->m_ProjectMeshAliases[modelGuid] = m_Scene->m_ProjectMeshAliases[meshName];
+
+                                                Vans::SceneJson transformComp;
+                                                transformComp["id"]      = Vans::VansAssetGuid::New().ToString();
+                                                transformComp["type"]    = "Transform";
+                                                transformComp["version"] = 1u;
+                                                transformComp["enabled"] = true;
+                                                transformComp["data"]    = {
+                                                    {"position", {worldPos.x, worldPos.y, worldPos.z}},
+                                                    {"rotation", {0.0f, 0.0f, 0.0f, 1.0f}},
+                                                    {"scale",    {1.0f, 1.0f, 1.0f}}
+                                                };
+
+                                                // ── 获取实际使用的 Material GUID（与 CreateEntity fallback 逻辑一致）──
+                                                std::string materialGuid;
+                                                if (!m_Scene->m_Materials.empty())
+                                                    materialGuid = m_Scene->m_Materials[0]->m_AssetName;
+
+                                                Vans::SceneJson modelData;
+                                                modelData["model"] = { {"guid", modelGuid} };
+                                                if (!materialGuid.empty())
+                                                    modelData["materialOverrides"] = {
+                                                        {"0", {{"guid", materialGuid}}}
+                                                    };
+
+                                                Vans::SceneJson rendererComp;
+                                                rendererComp["id"]      = Vans::VansAssetGuid::New().ToString();
+                                                rendererComp["type"]    = "ModelRenderer";
+                                                rendererComp["version"] = 1u;
+                                                rendererComp["enabled"] = true;
+                                                rendererComp["data"]    = std::move(modelData);
+
+                                                Vans::SceneJson newEntity;
+                                                newEntity["id"]         = obj->m_EntityGuid;
+                                                newEntity["name"]       = uniqueName;
+                                                newEntity["parent"]     = nullptr;
+                                                newEntity["components"] = Vans::SceneJson::array(
+                                                    {std::move(transformComp), std::move(rendererComp)});
+
+                                                // nlohmann json_pointer 支持 "-" 作为数组追加 token
+                                                editService->Set("/entities/-", newEntity);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
 
             // Inform the Noesis input adapter of the scene image's screen rect so
             // that raw GLFW cursor coordinates are mapped to Noesis view space.

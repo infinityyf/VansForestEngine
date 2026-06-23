@@ -614,6 +614,9 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VansShaderRegistry.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VansTransformSlotAllocator.h">
+      <Filter>EngineCore\RenderCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothNode.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>

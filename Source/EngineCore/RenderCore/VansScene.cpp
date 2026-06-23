@@ -25,6 +25,7 @@
 #include "../VansTimer.h"
 
 #include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
+#include "../AssetCore/VansAssetGuid.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
 #include <iostream>
@@ -895,6 +896,9 @@ void VansGraphics::VansScene::UnLoadScene()
 	m_InstanceTransformDataBuffer.DestroyVulkanBuffer(nativeDevice);
 	m_InstanceTransformData.clear();
 
+	// ── 重置 Transform Slot Allocator（必须在 DestroyVulkanBuffer 之后、下次 Prepare 之前）──
+	m_TransformSlotAllocator.Reset();
+
 	// 释放 Transform Data descriptor set 和 layout
 	auto descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_GlobalTransformDataDescriptorSets);
@@ -1659,3 +1663,597 @@ void VansGraphics::VansScene::UpdateTransformRenderData()
 VansGraphics::VansScene* m_Scene = nullptr;
 
 VansAssetsFileWatcher* m_SceneFileWatcher = nullptr;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Runtime Dynamic Entity API 实现
+// ═══════════════════════════════════════════════════════════════════════════════
+
+std::vector<VansRenderNode*> VansGraphics::VansScene::CollectSSBOManagedRenderNodes() const
+{
+    std::vector<VansRenderNode*> result;
+    result.reserve(m_OpaqueRenderNodes.size()
+                 + m_TransParentRenderNodes.size()
+                 + m_DecalRenderNodes.size());
+    result.insert(result.end(), m_OpaqueRenderNodes.begin(),    m_OpaqueRenderNodes.end());
+    result.insert(result.end(), m_TransParentRenderNodes.begin(), m_TransParentRenderNodes.end());
+    result.insert(result.end(), m_DecalRenderNodes.begin(),     m_DecalRenderNodes.end());
+    return result;
+}
+
+bool VansGraphics::VansScene::CanCreateEntity() const
+{
+    return m_TransformSlotAllocator.GetActiveCount()
+         < m_TransformSlotAllocator.GetMaxCapacity();
+}
+
+size_t VansGraphics::VansScene::GetTransformSlotCount() const
+{
+    return m_TransformSlotAllocator.GetActiveCount();
+}
+
+size_t VansGraphics::VansScene::GetTransformSlotCapacity() const
+{
+    return static_cast<size_t>(m_TransformSlotAllocator.GetMaxCapacity());
+}
+
+float VansGraphics::VansScene::GetTransformSlotUsage() const
+{
+    return m_TransformSlotAllocator.GetUsageRatio();
+}
+
+void VansGraphics::VansScene::UpdateTransformDescriptorSet()
+{
+    auto* descManager = VansVKDescriptorManager::GetInstance();
+    descManager->ResetState();
+    descManager->m_BufferDescInfos.push_back(
+    {
+        m_GlobalTransformDataDescriptorSets[0],
+        PassBinding::BUFFER_0,
+        0,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{
+            m_InstanceTransformDataBuffer.GetNativeBuffer(),
+            0,
+            m_InstanceTransformDataBuffer.GetBufferSize()
+        }}
+    });
+    descManager->UpdateDescriptorSets();
+}
+
+bool VansGraphics::VansScene::GrowTransformBuffer(VkDevice& device, uint32_t newCapacity)
+{
+    const uint32_t oldCapacity = m_TransformSlotAllocator.GetMaxCapacity();
+    if (newCapacity <= oldCapacity)
+    {
+        VANS_LOG("[Scene] GrowTransformBuffer: new capacity ("
+                  << newCapacity << ") <= old (" << oldCapacity << ")");
+        return false;
+    }
+
+    VANS_LOG("[Scene] GrowTransformBuffer: " << oldCapacity << " -> " << newCapacity);
+
+    // ── 1. 创建新的更大 Buffer ───────────────────────────────────────────
+    const VkDeviceSize newSize = sizeof(ModelDataStruct) * newCapacity;
+    VansVKBuffer newBuffer;
+    newBuffer.CreatVulkanBuffer(
+        device, newSize, VK_FORMAT_R32_SFLOAT,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+        VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+    // ── 2. 拷贝所有 Active Slot 到新 Buffer ──────────────────────────────
+    // slot 编号完全不变, 只是 buffer 容量变大
+    // 旧 Buffer 是 HOST_VISIBLE 持久映射的，直接从 CPU 映射内存读取
+    const uint8_t* oldMapped = static_cast<const uint8_t*>(m_InstanceTransformDataBuffer.GetMappedPtr());
+    for (uint32_t slot : m_TransformSlotAllocator.GetActiveSlots())
+    {
+        VkDeviceSize offset = slot * sizeof(ModelDataStruct);
+        ModelDataStruct data;
+        if (oldMapped)
+            memcpy(&data, oldMapped + offset, sizeof(ModelDataStruct));
+        newBuffer.SetBufferData(&data, static_cast<int>(offset), sizeof(ModelDataStruct));
+    }
+
+    // ── 3. 替换 Buffer（帧边界调用 + WaitIdle 确保 GPU 不在使用旧 Buffer）──
+    vkDeviceWaitIdle(device);
+    m_InstanceTransformDataBuffer.DestroyVulkanBuffer(device);
+    m_InstanceTransformDataBuffer = std::move(newBuffer);
+    m_InstanceTransformDataBuffer.PersistentMap();
+
+    // ── 4. 更新 Allocator 容量 ───────────────────────────────────────────
+    m_TransformSlotAllocator.SetMaxCapacity(newCapacity);
+
+    // ── 5. Re-write Descriptor Set 2 (指到新 Buffer) ─────────────────────
+    UpdateTransformDescriptorSet();
+
+    VANS_LOG("[Scene] GrowTransformBuffer: done, new capacity=" << newCapacity);
+
+    return true;
+}
+
+void VansGraphics::VansScene::RemoveRenderNodeFromVector(VansRenderNode* node)
+{
+    if (!node) return;
+    std::vector<VansRenderNode*>* vec = nullptr;
+    switch (node->GetNodeType())
+    {
+    case OPAQUE_NODE:      vec = &m_OpaqueRenderNodes;      break;
+    case TRANSPARENT_NODE: vec = &m_TransParentRenderNodes; break;
+    case DECAL_NODE:       vec = &m_DecalRenderNodes;       break;
+    default: return; // 不在 SSBO 管理的列表中
+    }
+    auto it = std::find(vec->begin(), vec->end(), node);
+    if (it != vec->end()) { std::swap(*it, vec->back()); vec->pop_back(); }
+}
+
+void VansGraphics::VansScene::UpdateLightComponentIndex(
+    int oldIndex, int newIndex, VansLightType type)
+{
+    for (auto* obj : m_SceneObjects)
+    {
+        if (!obj) continue;
+        for (auto* comp : obj->m_Components)
+        {
+            if (!comp) continue;
+            switch (type)
+            {
+            case VansLightType::DIRECTIONAL:
+                if (auto* dl = dynamic_cast<VansScriptDirectionalLightComponent*>(comp))
+                    if (dl->m_LightIndex == oldIndex) dl->m_LightIndex = newIndex;
+                break;
+            case VansLightType::POINT:
+                if (auto* pl = dynamic_cast<VansScriptPointLightComponent*>(comp))
+                    if (pl->m_LightIndex == oldIndex) pl->m_LightIndex = newIndex;
+                break;
+            case VansLightType::SPOT:
+                if (auto* sl = dynamic_cast<VansScriptSpotLightComponent*>(comp))
+                    if (sl->m_LightIndex == oldIndex) sl->m_LightIndex = newIndex;
+                break;
+            case VansLightType::RECT:
+                if (auto* rl = dynamic_cast<VansScriptRectLightComponent*>(comp))
+                    if (rl->m_LightIndex == oldIndex) rl->m_LightIndex = newIndex;
+                break;
+            default: break;
+            }
+        }
+    }
+}
+
+VansScriptObject* VansGraphics::VansScene::CreateEntity(
+    VkDevice& device, const std::string& entityName,
+    const std::string& meshName, const std::string& materialName,
+    const glm::vec3& position, const glm::vec3& rotation, const glm::vec3& scale,
+    const std::string& parentName)
+{
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Step 0: 前置检查
+    // ═══════════════════════════════════════════════════════════════════════
+    if (!CanCreateEntity())
+    {
+        VANS_LOG_ERROR("[Scene] CreateEntity: slot exhausted ("
+            << m_TransformSlotAllocator.GetActiveCount() << "/"
+            << m_TransformSlotAllocator.GetMaxCapacity() << ")");
+        return nullptr;
+    }
+    if (FindObjectByName(entityName))
+    {
+        VANS_LOG_ERROR("[Scene] CreateEntity: '" << entityName << "' already exists");
+        return nullptr;
+    }
+
+    // ── Resolve mesh ────────────────────────────────────────────────────
+    VansAsset* meshAsset = GetMeshAsset(meshName);
+    if (!meshAsset)
+    {
+        VANS_LOG_ERROR("[Scene] CreateEntity: mesh '" << meshName << "' not found");
+        return nullptr;
+    }
+    VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
+
+    // ── Resolve material (fallback to first available) ──────────────────
+    VansAsset* matAsset = GetMaterialAsset(materialName);
+    if (!matAsset && !m_Materials.empty())
+        matAsset = m_Materials[0];
+    if (!matAsset)
+    {
+        VANS_LOG_ERROR("[Scene] CreateEntity: no material available");
+        return nullptr;
+    }
+    auto* material = static_cast<VansMaterial*>(matAsset);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Step 1: 创建 VansScriptObject（桥接层容器）
+    // ═══════════════════════════════════════════════════════════════════════
+    auto* obj = new VansScriptObject();
+    obj->m_EntityGuid = Vans::VansAssetGuid::New().ToString();
+    obj->m_ObjectName = entityName;
+    // obj->m_OwnsTransform = false（默认）：Transform 由 RenderNode 拥有并在其析构时释放
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Step 2: 创建 RenderNode
+    //
+    //  VansCommonRenderNode 构造函数内部调用 VansTransformStore::AllocateTransform()
+    //  并将 ID 存入 m_TransformID，m_OwnsTransform = true。
+    //  此处直接用 SetTransformData 写入初始值，无需外部单独 Allocate。
+    // ═══════════════════════════════════════════════════════════════════════
+    RenderNodeType nodeType = (material->m_MaterialType == VansMaterialType::VAN_TRANSPARENT)
+        ? TRANSPARENT_NODE : OPAQUE_NODE;
+
+    auto* renderNode = new VansCommonRenderNode(device, nodeType);
+    renderNode->m_NodeName  = entityName;
+    renderNode->m_Mesh      = mesh;
+    renderNode->m_Material  = material;
+    renderNode->SetTransformData(position, rotation, scale);
+
+    // ── 分配 Transform SSBO 槽位 ─────────────────────────────────────────
+    uint32_t slot = m_TransformSlotAllocator.AllocateSlot();
+    assert(slot != TransformSlotAllocator::INVALID_SLOT);
+    renderNode->m_TransfromIndex = static_cast<int>(slot);
+
+    // ── 写入初始 ModelData 到持久映射的 SSBO ─────────────────────────────
+    renderNode->BeforeDrawCall();
+    m_InstanceTransformDataBuffer.UpdateMapped(
+        &renderNode->m_ModelData,
+        slot * sizeof(ModelDataStruct),
+        sizeof(ModelDataStruct));
+
+    // ── 注册到对应节点向量 ────────────────────────────────────────────────
+    RegistRenderNode(renderNode, nodeType);
+
+    // ── 创建描述符集 ──────────────────────────────────────────────────────
+    renderNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Step 3: 创建 VansScriptRenderComponent（桥接包装器）
+    // ═══════════════════════════════════════════════════════════════════════
+    auto* rc = new VansScriptRenderComponent();
+    rc->m_ComponentName = "render";
+    rc->m_RenderNode    = renderNode;
+    obj->AddComponent(rc);
+    obj->m_TransformID  = renderNode->m_TransformID;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Step 4: 建立层级关系
+    // ═══════════════════════════════════════════════════════════════════════
+    if (!parentName.empty())
+    {
+        VansScriptObject* parent = FindObjectByName(parentName);
+        if (parent)
+            m_TransformParentSystem.SetParent(
+                renderNode->m_TransformID, parent->m_TransformID);
+        else
+            VANS_LOG("[Scene] CreateEntity: parent '" << parentName
+                << "' not found, placed at root");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Step 5: 追加到 m_SceneObjects，标记 dirty
+    // ═══════════════════════════════════════════════════════════════════════
+    m_SceneObjects.push_back(obj);
+    VansTransformStore::TransformIDToTransformDirty[renderNode->m_TransformID] = true;
+
+    VANS_LOG("[Scene] CreateEntity: '" << entityName
+        << "' mesh=" << meshName << " slot=" << slot
+        << " active=" << m_TransformSlotAllocator.GetActiveCount());
+
+    return obj;
+}
+
+bool VansGraphics::VansScene::DestroyEntity(const std::string& entityName)
+{
+    VansScriptObject* obj = FindObjectByName(entityName);
+    if (!obj)
+    {
+        VANS_LOG("[Scene] DestroyEntity: '" << entityName << "' not found");
+        return false;
+    }
+    return DestroyEntity(obj);
+}
+
+bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
+{
+    if (!obj) return false;
+    const std::string name = obj->m_ObjectName;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  0. 清除编辑器选中状态（必须在任何 delete 之前，防止悬垂比较）
+    // ═══════════════════════════════════════════════════════════════════════
+    if (m_SelectedObject == obj)
+    {
+        m_SelectedObject = nullptr;
+        m_SelectedNode   = nullptr;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  1. 解除 TransformParentSystem 关联
+    // ═══════════════════════════════════════════════════════════════════════
+    if (m_TransformParentSystem.HasParent(obj->m_TransformID))
+        m_TransformParentSystem.ClearParent(obj->m_TransformID);
+
+    // 将以本实体为 parent 的子节点提升为根节点
+    {
+        std::vector<uint32_t> childrenToReparent;
+        for (const auto& link : m_TransformParentSystem.GetAllLinks())
+            if (link.parentTransformID == obj->m_TransformID)
+                childrenToReparent.push_back(link.childTransformID);
+        for (uint32_t childID : childrenToReparent)
+            m_TransformParentSystem.ClearParent(childID);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  2. 一遍扫描 m_Components，完成：
+    //       a) 收集所有底层 Node 指针（必须在 delete obj 前，析构后指针无效）
+    //       b) 生命周期前置操作（Teardown / Stop / Pause）
+    // ═══════════════════════════════════════════════════════════════════════
+    VansGraphics::VansRenderNode*            renderNode   = nullptr;
+    VansGraphics::VansParticleRenderNode*    particleRN   = nullptr;
+    VansGraphics::VansAnimationNode*         animNode     = nullptr;
+    VansEngine::VansPhysicsNode*             physicsNode  = nullptr;
+    VansEngine::VansClothNode*               clothNode    = nullptr;
+    VansEngine::VansCharacterControllerNode* cctNode      = nullptr;
+    VansEngine::VansPhysicsVehicle*          vehicleNode  = nullptr;
+    bool                                     hasRagdoll   = false;
+    bool                                     ownsTransform = obj->m_OwnsTransform;
+    uint32_t                                 transformID   = obj->m_TransformID;
+
+    int dlightIdx = -1, plightIdx = -1, slightIdx = -1, rlightIdx = -1;
+
+    for (auto* comp : obj->m_Components)
+    {
+        if (!comp) continue;
+
+        // ── 收集底层 Node 指针 ──
+        if      (auto* rc = dynamic_cast<VansScriptRenderComponent*>(comp))
+            renderNode   = rc->m_RenderNode;
+        else if (auto* pc = dynamic_cast<VansScriptPhysicsComponent*>(comp))
+            physicsNode  = pc->m_PhysicsNode;
+        else if (auto* cl = dynamic_cast<VansScriptClothComponent*>(comp))
+            clothNode    = cl->m_ClothNode;
+        else if (auto* ct = dynamic_cast<VansScriptCharacterControllerComponent*>(comp))
+            cctNode      = ct->m_ControllerNode;
+        else if (auto* an = dynamic_cast<VansScriptAnimationComponent*>(comp))
+            animNode     = an->m_AnimNode;
+        else if (auto* ve = dynamic_cast<VansScriptVehicleComponent*>(comp))
+        {
+            if (m_Vehicle == ve->m_Vehicle) vehicleNode = m_Vehicle;
+        }
+        else if (auto* dl = dynamic_cast<VansScriptDirectionalLightComponent*>(comp))
+            dlightIdx    = dl->m_LightIndex;
+        else if (auto* pl = dynamic_cast<VansScriptPointLightComponent*>(comp))
+            plightIdx    = pl->m_LightIndex;
+        else if (auto* sl = dynamic_cast<VansScriptSpotLightComponent*>(comp))
+            slightIdx    = sl->m_LightIndex;
+        else if (auto* rl = dynamic_cast<VansScriptRectLightComponent*>(comp))
+            rlightIdx    = rl->m_LightIndex;
+        else if (dynamic_cast<VansScriptRagdollComponent*>(comp))
+            hasRagdoll   = true;
+
+        // ── Camera：场景单例，不 delete，仅解绑 TransformID ─────────────
+        if (dynamic_cast<VansScriptCameraComponent*>(comp))
+        {
+            if (m_Camera)
+                m_Camera->SetTransformID(UINT32_MAX);
+        }
+
+        // ── Particle：注销运行时（m_Runtime 的 unique_ptr 析构前要先注销）──
+        if (auto* pt = dynamic_cast<VansScriptParticleComponent*>(comp))
+        {
+            if (pt->m_Runtime)
+                VansParticleManager::Instance().UnregisterRuntime(pt->m_Runtime.get());
+            particleRN = pt->m_RenderNode;
+        }
+
+        // ── Python：Teardown 释放 py::object（析构前必须调用）──────────────
+        if (auto* py = dynamic_cast<VanPyScriptComponent*>(comp))
+            py->Teardown();
+
+        // ── Audio：停止播放（项目级资源，不 delete）────────────────────────
+        if (auto* au = dynamic_cast<VansScriptAudioComponent*>(comp))
+            if (au->m_AudioNode) au->m_AudioNode->Stop();
+
+        // ── Video：暂停（项目级资源，不 delete）────────────────────────────
+        if (auto* vi = dynamic_cast<VansScriptVideoComponent*>(comp))
+            if (vi->m_VideoTex) vi->m_VideoTex->Pause();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  3. 从 m_SceneObjects 移除，delete obj
+    //
+    //  VansScriptObject 析构函数会逐一 delete m_Components（wrapper 层）。
+    //  底层 Node（RenderNode / PhysicsNode 等）不受影响——wrapper 只持非拥有指针。
+    // ═══════════════════════════════════════════════════════════════════════
+    auto sit = std::find(m_SceneObjects.begin(), m_SceneObjects.end(), obj);
+    if (sit != m_SceneObjects.end()) m_SceneObjects.erase(sit);
+    delete obj;     // 析构删除所有 VansScriptComponent wrapper
+    obj = nullptr;  // 置空防止后续误用
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  4. 持物理锁：清理 Ragdoll / Vehicle / CCT / Cloth / Physics
+    // ═══════════════════════════════════════════════════════════════════════
+    {
+        auto& physSys = VansEngine::VansPhysicsSystem::GetInstance();
+        std::lock_guard<std::mutex> lock(physSys.GetSimulationMutex());
+
+        // 4a. Ragdoll（依赖 animNode，必须在 PhysicsNode 之前）
+        if (hasRagdoll && animNode)
+            VansEngine::VansRagdollSystem::GetInstance().DestroyRagdoll(animNode);
+
+        // 4b. Vehicle（场景级单例）
+        if (vehicleNode) { delete vehicleNode; m_Vehicle = nullptr; }
+
+        // 4c. CharacterController（先 Release PhysX controller，再 delete node）
+        if (cctNode)
+        {
+            auto ci = std::find(m_CharControllerNodes.begin(),
+                                m_CharControllerNodes.end(), cctNode);
+            if (ci != m_CharControllerNodes.end())
+            {
+                cctNode->Release();
+                delete cctNode;
+                m_CharControllerNodes.erase(ci);
+            }
+        }
+
+        // 4d. Cloth（Shutdown + delete + 清理平行 staging buffer）
+        if (clothNode)
+        {
+            auto ci = std::find(m_ClothNodes.begin(), m_ClothNodes.end(), clothNode);
+            if (ci != m_ClothNodes.end())
+            {
+                size_t idx = static_cast<size_t>(ci - m_ClothNodes.begin());
+                clothNode->Shutdown();
+                delete clothNode;
+                m_ClothNodes.erase(ci);
+
+                // m_ClothStagingBuffers 与 m_ClothNodes 平行索引
+                if (idx < m_ClothStagingBuffers.size())
+                {
+                    VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+                    VkDevice natDev = vkDev ? vkDev->GetLogicDevice() : VK_NULL_HANDLE;
+                    if (m_ClothStagingBuffers[idx].IsMapped())
+                        m_ClothStagingBuffers[idx].Unmap();
+                    if (natDev != VK_NULL_HANDLE)
+                        m_ClothStagingBuffers[idx].DestroyVulkanBuffer(natDev);
+                    m_ClothStagingBuffers.erase(m_ClothStagingBuffers.begin() + idx);
+                }
+            }
+        }
+
+        // 4e. Physics（析构函数自动从 PxScene remove actor）
+        if (physicsNode)
+        {
+            auto pi = std::find(m_PhysicsNodes.begin(), m_PhysicsNodes.end(), physicsNode);
+            if (pi != m_PhysicsNodes.end()) { delete physicsNode; m_PhysicsNodes.erase(pi); }
+        }
+    } // ─── 释放 SimulationMutex ────────────────────────────────────────
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  5. 清理 RenderNode（必须在 AnimationNode 之前）
+    //
+    //  核心顺序约束：
+    //    VansCommonRenderNode 的 DescriptorSet (Set 3 Animation) 引用
+    //    VansAnimationNode 管理的 GPU bone buffer。
+    //    必须先 delete renderNode（释放 DescriptorSet / vkFreeDescriptorSets），
+    //    再 delete animNode（销毁 GPU bone buffer），否则 Vulkan 验证层报错。
+    // ═══════════════════════════════════════════════════════════════════════
+    if (renderNode)
+    {
+        // 5a. 回收 SSBO 槽位，置 -1 防止下一帧 UpdateModelData 悬垂写入
+        if (renderNode->m_TransfromIndex >= 0)
+        {
+            m_TransformSlotAllocator.FreeSlot(
+                static_cast<uint32_t>(renderNode->m_TransfromIndex));
+            renderNode->m_TransfromIndex = -1;
+        }
+
+        // 5b. swap-pop 移出节点向量
+        RemoveRenderNodeFromVector(renderNode);
+
+        // 5c. delete：
+        //   - 析构函数内部调用 DestroyDescriptorSets
+        //   - 若 m_OwnsTransform==true，析构函数同时调用 VansTransformStore::FreeTransform
+        delete renderNode;
+        renderNode = nullptr;
+    }
+
+    // 5d. Particle RenderNode（独立列表，析构不由 VansScriptParticleComponent 管理）
+    if (particleRN)
+    {
+        auto pi = std::find(m_ParticleRenderNodes.begin(),
+                            m_ParticleRenderNodes.end(), particleRN);
+        if (pi != m_ParticleRenderNodes.end()) m_ParticleRenderNodes.erase(pi);
+        delete particleRN;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  6. 清理 AnimationNode + AnimationController（在 RenderNode 之后）
+    // ═══════════════════════════════════════════════════════════════════════
+    if (animNode)
+    {
+        // 6a. 先清理 AnimationController（由 animNode->GetController() 获取）
+        VansAnimationController* ctrl = animNode->GetController();
+        if (ctrl)
+        {
+            auto ci = std::find(m_AnimationControllers.begin(),
+                                m_AnimationControllers.end(), ctrl);
+            if (ci != m_AnimationControllers.end())
+            {
+                delete *ci;
+                m_AnimationControllers.erase(ci);
+            }
+        }
+
+        // 6b. 删除 AnimationNode（析构释放 GPU bone buffer）
+        auto ai = std::find(m_AnimationNodes.begin(), m_AnimationNodes.end(), animNode);
+        if (ai != m_AnimationNodes.end()) { delete animNode; m_AnimationNodes.erase(ai); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  7. 清理 Light Components（swap-pop + 更新 LightIndex 引用）
+    //
+    //  LightManager 无独立 Remove API，通过 swap-pop 维护向量紧凑性。
+    //  swap-pop 后被移入位置的那盏灯 oldIndex 变成 newIndex，
+    //  需遍历所有 VansScriptObject 更新对应 m_LightIndex 字段。
+    // ═══════════════════════════════════════════════════════════════════════
+    auto removeLightByIndex = [&](auto& lightVec, int index, VansLightType type)
+    {
+        if (index < 0 || index >= static_cast<int>(lightVec.size())) return;
+        int last = static_cast<int>(lightVec.size()) - 1;
+        if (index != last)
+        {
+            std::swap(lightVec[index], lightVec[last]);
+            UpdateLightComponentIndex(last, index, type);
+        }
+        lightVec.pop_back();
+    };
+
+    if (dlightIdx >= 0)
+        removeLightByIndex(m_LightManager.GetDirectionLights(), dlightIdx,
+                           VansLightType::DIRECTIONAL);
+    if (plightIdx >= 0)
+        removeLightByIndex(m_LightManager.GetPointLights(), plightIdx,
+                           VansLightType::POINT);
+    if (slightIdx >= 0)
+        removeLightByIndex(m_LightManager.GetSpotLight(), slightIdx,
+                           VansLightType::SPOT);
+    if (rlightIdx >= 0)
+    {
+        // RectLight 额外清除发光纹理层
+        auto& rects = m_LightManager.GetRectLights();
+        if (rlightIdx < static_cast<int>(rects.size())
+            && rects[rlightIdx].m_TextureSlot >= 0.0f)
+        {
+            if (VansTexture* arr = m_MaterialManager.GetRuntimeRenderTexture(
+                    VansMaterialManager::RT_RECT_LIGHT_EMISSIVE))
+            {
+                VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+                if (vkDev)
+                {
+                    static const uint8_t black[4] = {0, 0, 0, 0};
+                    arr->UpdateArrayLayerFromPixels(
+                        vkDev->GetCommandBuffer(), black, 1, 1, rlightIdx);
+                }
+            }
+        }
+        removeLightByIndex(rects, rlightIdx, VansLightType::RECT);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  8. 回收 Transform Store ID（仅限无 RenderNode 的纯物理/相机实体）
+    //
+    //  当存在 RenderNode 时（m_OwnsTransform==false on obj），
+    //  renderNode->m_OwnsTransform==true，其析构函数（Step 5c）已调用
+    //  VansTransformStore::FreeTransform(m_TransformID)。外部不可重复调用。
+    //
+    //  当实体无 RenderNode（纯物理实体，obj->m_OwnsTransform==true）时，
+    //  LoadSceneObjects 会为其单独分配 transform 并设置 obj->m_OwnsTransform=true，
+    //  此处需要手动释放。
+    // ═══════════════════════════════════════════════════════════════════════
+    if (ownsTransform && renderNode == nullptr)
+        VansTransformStore::FreeTransform(transformID);
+
+    VANS_LOG("[Scene] DestroyEntity: '" << name
+        << "' active=" << m_TransformSlotAllocator.GetActiveCount());
+    return true;
+}
