@@ -758,11 +758,15 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
 			}
 			else if (m_SceneEditService && ImGui::IsKeyPressed(ImGuiKey_Z, false))
 			{
-				m_SceneEditService->Undo();
+				auto result = m_SceneEditService->Undo();
+				if (result)
+					ReloadCurrentSceneForEditing();
 			}
 			else if (m_SceneEditService && ImGui::IsKeyPressed(ImGuiKey_Y, false))
 			{
-				m_SceneEditService->Redo();
+				auto result = m_SceneEditService->Redo();
+				if (result)
+					ReloadCurrentSceneForEditing();
 			}
 		}
 

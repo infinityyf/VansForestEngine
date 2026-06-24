@@ -8,6 +8,8 @@
 #include "../../AssetCore/VansAssetMeta.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../PhysicsCore/VansCollisionLayerManager.h"
+#include "../../RenderCore/VansScene.h"
+#include "../../ScriptCore/VansScriptContext.h"
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../Util/VansLog.h"
 
@@ -23,6 +25,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -424,8 +427,17 @@ bool VansInspectorWindow::DrawComponent(Json& component, const std::string& poin
     ImGui::PushID(pointer.c_str());
     bool enabled = component.value("enabled", true);
     bool changed = false;
-    ImGui::Checkbox("##enabled", &enabled);
-    if (enabled != component.value("enabled", true)) { component["enabled"] = enabled; changed = true; }
+    if (ImGui::Checkbox("##enabled", &enabled))
+    {
+        if (enabled != component.value("enabled", true))
+        {
+            component["enabled"] = enabled;
+            changed = true;
+
+            // 连线到运行时：将 enabled 状态同步到 VansScriptComponent → VansNode
+            ApplyComponentEnabled(pointer, enabled);
+        }
+    }
     ImGui::SameLine();
     const bool open = ImGui::CollapsingHeader(type.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
     if (ImGui::BeginPopupContextItem("ComponentMenu"))
@@ -619,6 +631,72 @@ void VansInspectorWindow::DrawAsset()
     if (ImGui::Button("Apply", ImVec2(-1.0f, 0.0f)))
         if (!SaveAssetDocuments()) VANS_LOG_ERROR("[Inspector] " << m_Error);
     if (!dirty) ImGui::EndDisabled();
+}
+
+void VansInspectorWindow::ApplyComponentEnabled(
+    const std::string& jsonPointer, bool enabled)
+{
+    // jsonPointer 格式: "/entities/3/components/1"
+    //
+    // ⚠️ JSON 组件数组索引 ≠ 运行时 m_Components 索引！
+    //    JSON: [0]Transform [1]ModelRenderer [2]Physics [3]Camera
+    //    运行时: [0]render [1]physics [2]camera
+    //    Transform 不在 m_Components 中，所以 JSON 索引偏移了 2。
+    //
+    //    正确做法：从 JSON 读取 type 字段，映射到运行时 m_ComponentName，按名称匹配。
+
+    const std::string& selectedGuid = Vans::VansEditorSelection::EntityGuid();
+    if (selectedGuid.empty()) return;
+
+    VansGraphics::VansScene* scene = m_Scene;
+    if (!scene) return;
+
+    // 通过 GUID 找到 VansScriptObject
+    VansScriptObject* obj = nullptr;
+    for (auto* o : scene->m_SceneObjects)
+    {
+        if (o && o->m_EntityGuid == selectedGuid) { obj = o; break; }
+    }
+    if (!obj) return;
+
+    // ── 从 JSON Document 读取 component type ──────────────────────────
+    Vans::VansSceneDocument* doc = VansEditorWindow::GetSceneDocument();
+    if (!doc) return;
+
+    // jsonPointer 指向 V2 entities 数组中的组件，直接读取 type 字段
+    std::string typePointer = jsonPointer + "/type";
+    const auto& root = doc->Root();
+    auto typeIt = root.find(nlohmann::json::json_pointer(typePointer));
+    if (typeIt == root.end()) return;
+    std::string jsonType = typeIt->get<std::string>();
+
+    // ── JSON type → runtime m_ComponentName 映射 ─────────────────────
+    // (未列出的类型如 DirectionalLight, Audio 等与运行时同名，直接使用)
+    static const std::unordered_map<std::string, std::string> kTypeToRuntime = {
+        {"ModelRenderer",       "render"},
+        {"Physics",             "physics"},
+        {"Camera",              "camera"},
+        {"Cloth",               "cloth"},
+        {"Vehicle",             "vehicle"},
+        {"Animator",            "animation"},
+        {"CharacterController", "CharacterController"},
+    };
+    // 未在映射表中的类型（如 DirectionalLight, Audio 等）直接使用 JSON type 匹配
+
+    std::string runtimeName = jsonType;
+    auto mapIt = kTypeToRuntime.find(jsonType);
+    if (mapIt != kTypeToRuntime.end())
+        runtimeName = mapIt->second;
+
+    // ── 按名称匹配组件 ────────────────────────────────────────────
+    for (auto* comp : obj->m_Components)
+    {
+        if (comp && comp->m_ComponentName == runtimeName)
+        {
+            comp->SetEnabled(enabled);  // → OnEnable/OnDisable → 底层 VansNode
+            return;
+        }
+    }
 }
 
 void VansInspectorWindow::ShowWindow(VansVKDevice& device)

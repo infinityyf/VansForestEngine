@@ -23,6 +23,7 @@ private:
     bool DrawAssetReference(const std::string& label, Json& reference,
         const std::string& pointer, int expectedAssetType);
     bool DrawComponent(Json& component, const std::string& pointer, bool& removeRequested);
+    void ApplyComponentEnabled(const std::string& jsonPointer, bool enabled);
     bool LoadAssetDocuments(const std::filesystem::path& sourcePath);
     bool SaveAssetDocuments();
 

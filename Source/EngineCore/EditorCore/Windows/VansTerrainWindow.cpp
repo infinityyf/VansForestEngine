@@ -96,11 +96,51 @@ void VansTerrainWindow::ShowWindow(VansVKDevice& device)
 
             ImGui::Separator();
 
-            // ── Displacement Strength ──────────────────────────────────
-            float dispStr = terrain->GetTessDisplacementStrength();
-            if (ImGui::DragFloat("Micro-Displacement (m)", &dispStr, 0.005f, 0.0f, 0.0f, "%.3f"))
-                terrain->SetTessDisplacementStrength(dispStr);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Normal-map Y displacement in world meters. 0=off, try 0.5~2.0 for visible effect.");
+            // ── 程序化噪声细节 ──────────────────────────────────────────
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Procedural Noise Detail");
+
+            bool noiseEnabled = terrain->IsNoiseDetailEnabled();
+            if (ImGui::Checkbox("Enable Noise Detail", &noiseEnabled))
+                terrain->SetNoiseDetailEnabled(noiseEnabled);
+
+            if (noiseEnabled)
+            {
+                float noiseStr = terrain->GetNoiseStrength();
+                if (ImGui::DragFloat("Strength (m)", &noiseStr, 0.001f, 0.0f, 0.5f, "%.3f"))
+                    terrain->SetNoiseStrength(noiseStr);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Noise displacement in world meters. 0.03 = 3cm micro-detail.");
+
+                float noiseFreq = terrain->GetNoiseFrequency();
+                if (ImGui::DragFloat("Frequency", &noiseFreq, 0.01f, 0.01f, 10.0f, "%.2f"))
+                    terrain->SetNoiseFrequency(noiseFreq);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Base noise frequency. Higher = finer detail pattern.");
+
+                int noiseOct = terrain->GetNoiseOctaves();
+                if (ImGui::SliderInt("Octaves", &noiseOct, 1, 8))
+                    terrain->SetNoiseOctaves(noiseOct);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Number of noise layers. More = richer detail but more GPU cost.");
+
+                float noiseGain = terrain->GetNoiseGain();
+                if (ImGui::DragFloat("Gain", &noiseGain, 0.01f, 0.01f, 1.0f, "%.2f"))
+                    terrain->SetNoiseGain(noiseGain);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Amplitude falloff per octave. 0.52 = original ShaderToy hill().");
+
+                float noiseLac = terrain->GetNoiseLacunarity();
+                if (ImGui::DragFloat("Lacunarity", &noiseLac, 0.1f, 1.0f, 4.0f, "%.1f"))
+                    terrain->SetNoiseLacunarity(noiseLac);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Frequency multiplier per octave. 2.0 = standard.");
+
+                float noiseWarp = terrain->GetNoiseWarpStrength();
+                if (ImGui::DragFloat("Warp Strength", &noiseWarp, 0.01f, 0.0f, 1.0f, "%.2f"))
+                    terrain->SetNoiseWarpStrength(noiseWarp);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Domain warping. 0=off, 0.2~0.3 = visible ridge-like distortion (HIGH/ULTRA quality).");
+
+                float noiseFade = terrain->GetNoiseFadeStart();
+                if (ImGui::SliderFloat("Fade Start", &noiseFade, 0.0f, 1.0f, "%.2f"))
+                    terrain->SetNoiseFadeStart(noiseFade);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Distance ratio where noise begins fading out. 0.7 = fade starts at 70%% of tess distance.");
+            }
 
             // ── Patch stats ────────────────────────────────────────────
             ImGui::Separator();

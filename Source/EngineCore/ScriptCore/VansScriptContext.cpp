@@ -1025,13 +1025,89 @@ void VanPyScriptComponent::Instantiate()
     }
 }
 
-void VanPyScriptComponent::Enable()
+// ═══════════════════════════════════════════════════════════════════════════
+//  Component OnEnable/OnDisable — 委托给底层 VansNode
+//  （必须放在 .cpp 中，因为 VansScriptContext.h 中 Node 类型只有前向声明）
+// ═══════════════════════════════════════════════════════════════════════════
+
+void VansScriptRenderComponent::OnEnable()
 {
-    if (!m_IsValid || m_IsEnabled) return;
+    if (m_RenderNode) m_RenderNode->SetEnabled(true);
+}
+void VansScriptRenderComponent::OnDisable()
+{
+    if (m_RenderNode) m_RenderNode->SetEnabled(false);
+}
+
+void VansScriptPhysicsComponent::OnEnable()
+{
+    if (m_PhysicsNode) m_PhysicsNode->SetEnabled(true);
+}
+void VansScriptPhysicsComponent::OnDisable()
+{
+    if (m_PhysicsNode) m_PhysicsNode->SetEnabled(false);
+}
+
+void VansScriptClothComponent::OnEnable()
+{
+    if (m_ClothNode) m_ClothNode->SetEnabled(true);
+}
+void VansScriptClothComponent::OnDisable()
+{
+    if (m_ClothNode) m_ClothNode->SetEnabled(false);
+}
+
+void VansScriptAnimationComponent::OnEnable()
+{
+    if (m_AnimNode) m_AnimNode->SetEnabled(true);
+}
+void VansScriptAnimationComponent::OnDisable()
+{
+    if (m_AnimNode) m_AnimNode->SetEnabled(false);
+}
+
+void VansScriptRagdollComponent::OnEnable()
+{
+    if (m_AnimNode) m_AnimNode->SetEnabled(true);
+}
+void VansScriptRagdollComponent::OnDisable()
+{
+    if (m_AnimNode) m_AnimNode->SetEnabled(false);
+}
+
+void VansScriptCharacterControllerComponent::OnEnable()
+{
+    if (m_ControllerNode) m_ControllerNode->SetEnabled(true);
+}
+void VansScriptCharacterControllerComponent::OnDisable()
+{
+    if (m_ControllerNode) m_ControllerNode->SetEnabled(false);
+}
+
+void VansScriptCameraComponent::OnEnable()
+{
+    if (m_Camera) m_Camera->SetEnabled(true);
+}
+void VansScriptCameraComponent::OnDisable()
+{
+    if (m_Camera) m_Camera->SetEnabled(false);
+}
+
+void VansScriptAudioComponent::OnEnable()
+{
+    if (m_AudioNode) m_AudioNode->SetEnabled(true);
+}
+void VansScriptAudioComponent::OnDisable()
+{
+    if (m_AudioNode) m_AudioNode->SetEnabled(false);
+}
+
+void VanPyScriptComponent::OnEnable()
+{
+    if (!m_IsValid) return;
     try
     {
         m_PyInstance.attr("on_enable")();
-        m_IsEnabled = true;
     }
     catch (const py::error_already_set& e)
     {
@@ -1039,11 +1115,24 @@ void VanPyScriptComponent::Enable()
     }
 }
 
+void VanPyScriptComponent::OnDisable()
+{
+    if (!m_IsValid) return;
+    try
+    {
+        m_PyInstance.attr("on_disable")();
+    }
+    catch (const py::error_already_set& e)
+    {
+        VansConsole::Get().LogPython("[PyScript] on_disable error: " + std::string(e.what()));
+    }
+}
+
 void VanPyScriptComponent::CallUpdate()
 {
     VANS_PROFILE_SCOPE("Script::CallUpdate", Vans::ProfileCategory::Script);
 
-    if (!m_IsValid || !m_IsEnabled) return;
+    if (!m_IsValid || !m_Enabled) return;  // m_Enabled from VansScriptComponent base
     try
     {
         m_PyInstance.attr("update")();
@@ -1054,23 +1143,9 @@ void VanPyScriptComponent::CallUpdate()
     }
 }
 
-void VanPyScriptComponent::Disable()
-{
-    if (!m_IsValid || !m_IsEnabled) return;
-    try
-    {
-        m_PyInstance.attr("on_disable")();
-        m_IsEnabled = false;
-    }
-    catch (const py::error_already_set& e)
-    {
-        VansConsole::Get().LogPython("[PyScript] on_disable error: " + std::string(e.what()));
-    }
-}
-
 void VanPyScriptComponent::Teardown()
 {
-    if (m_IsEnabled) Disable();
+    if (m_Enabled) SetEnabled(false);  // → OnDisable → Python on_disable()
     m_PyInstance = py::none();
     m_IsValid = false;
 }
@@ -1081,7 +1156,7 @@ void VanPyScriptComponent::Teardown()
 
 void VanPyScriptComponent::CallOnCollisionEnter(const PhysicsEventInfo& info)
 {
-    if (!m_IsValid || !m_IsEnabled) return;
+    if (!m_IsValid || !m_Enabled) return;
     try
     {
         m_PyInstance.attr("on_collision_enter")(info);
@@ -1094,7 +1169,7 @@ void VanPyScriptComponent::CallOnCollisionEnter(const PhysicsEventInfo& info)
 
 void VanPyScriptComponent::CallOnCollisionExit(const PhysicsEventInfo& info)
 {
-    if (!m_IsValid || !m_IsEnabled) return;
+    if (!m_IsValid || !m_Enabled) return;
     try
     {
         m_PyInstance.attr("on_collision_exit")(info);
@@ -1107,7 +1182,7 @@ void VanPyScriptComponent::CallOnCollisionExit(const PhysicsEventInfo& info)
 
 void VanPyScriptComponent::CallOnTriggerEnter(const PhysicsEventInfo& info)
 {
-    if (!m_IsValid || !m_IsEnabled) return;
+    if (!m_IsValid || !m_Enabled) return;
     try
     {
         m_PyInstance.attr("on_trigger_enter")(info);
@@ -1120,7 +1195,7 @@ void VanPyScriptComponent::CallOnTriggerEnter(const PhysicsEventInfo& info)
 
 void VanPyScriptComponent::CallOnTriggerExit(const PhysicsEventInfo& info)
 {
-    if (!m_IsValid || !m_IsEnabled) return;
+    if (!m_IsValid || !m_Enabled) return;
     try
     {
         m_PyInstance.attr("on_trigger_exit")(info);
@@ -1212,7 +1287,7 @@ void VansScriptContext::DispatchEventToObject(
 
             VANS_LOG("[PhysX Dispatch] Calling callback on PyComp script='" << pyComp->m_ScriptPath
                      << "' class='" << pyComp->m_ScriptClassName
-                     << "' valid=" << pyComp->m_IsValid << " enabled=" << pyComp->m_IsEnabled);
+                     << "' valid=" << pyComp->m_IsValid << " enabled=" << pyComp->m_Enabled);
 
             switch (event.type)
             {

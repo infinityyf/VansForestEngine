@@ -22,7 +22,6 @@ namespace VansEngine
     VansPhysicsNode::VansPhysicsNode()
         : m_TransformID(0)
         , m_Mesh(nullptr)
-        , m_Enabled(false)
         , m_Actor(nullptr)
         , m_Material(nullptr)
         , m_Shape(nullptr)
@@ -422,25 +421,37 @@ namespace VansEngine
         dynamicActor->setKinematicTarget(transform);
     }
 
-    void VansPhysicsNode::SetEnabled(bool enabled)
+    void VansPhysicsNode::OnEnable()
     {
-        if (m_Enabled == enabled)
-            return;
-
-        if (enabled && !m_Actor)
+        if (!m_Actor)
         {
+            // Actor 尚未创建（例如 Initialize 时 enabled=false），按需创建
             CreatePhysicsActor();
         }
-        else if (!enabled && m_Actor)
+        else
         {
-            PxScene* scene = VansPhysicsSystem::GetInstance().GetScene();
+            // 将已有 actor 重新加入 PhysX Scene
+            auto& physSys = VansEngine::VansPhysicsSystem::GetInstance();
+            std::lock_guard<std::mutex> lock(physSys.GetSimulationMutex());
+            PxScene* scene = physSys.GetScene();
             if (scene)
-            {
-                scene->removeActor(*m_Actor);
-            }
+                scene->addActor(*m_Actor);
         }
+    }
 
-        m_Enabled = enabled;
+    void VansPhysicsNode::OnDisable()
+    {
+        if (!m_Actor) return;
+        auto& physSys = VansEngine::VansPhysicsSystem::GetInstance();
+        std::lock_guard<std::mutex> lock(physSys.GetSimulationMutex());
+        PxScene* scene = physSys.GetScene();
+        if (scene)
+            scene->removeActor(*m_Actor);
+    }
+
+    void VansPhysicsNode::OnDestroy()
+    {
+        Shutdown();
     }
 
     void VansPhysicsNode::AddForce(const glm::vec3& force, PxForceMode::Enum mode)

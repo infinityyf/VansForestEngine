@@ -1,4 +1,7 @@
 // Terrain 顶点阶段公共逻辑：统一高度参数、UV 映射和边缘缝合。
+
+#include "TerrainNoise.glsl"
+
 layout(set = 1, binding = 0) uniform sampler2D heightMap;
 layout(set = 1, binding = 6) uniform TerrainParams {
     ivec4 layerCountPacked;
@@ -79,10 +82,23 @@ vec3 TerrainBuildWorldPosition(vec2 localPos, vec2 instanceOffset, float instanc
     return vec3(worldPosXZ.x, TerrainRawHeightToWorldY(rawHeight), worldPosXZ.y);
 }
 
-// ── Tessellation parameters (binding 7, read by TCS and TES) ──────────────────
+// ── Tessellation parameters（binding 7，TCS + TES 读取） ──────────────────
+// 注：displacementStrength 已移除（原法线贴图 Y 位移逻辑被程序化噪声替代）
 layout(set = 1, binding = 7) uniform TessellationParams {
     float maxTessLevel;
     float tessDistance;
     float tessPower;
-    float displacementStrength;  // micro-displacement from normal map Y (world units)
+    float padding;  // 原 displacementStrength，现为 padding
 } tessParams;
+
+// ── 程序化噪声细节参数（binding 8，TES + FS 读取） ────────────
+layout(set = 1, binding = 8) uniform NoiseDetailParams {
+    float noiseStrength;      // 噪声强度（世界单位），默认 0.03
+    float noiseFrequency;     // 基础频率（世界单位倒数），默认 0.8
+    float noiseLacunarity;    // 频率倍增系数，默认 2.0（与 hill() 一致）
+    float noiseGain;          // 振幅衰减系数，默认 0.52（与 hill() 一致）
+    int   noiseOctaves;       // octave 数量，默认 4
+    float noiseWarpStrength;  // 域扭曲强度，默认 0.0（0=关闭）
+    float fadeStart;          // 距离衰减起始比例 [0,1]，默认 0.7
+    float noisePadding;
+} noiseParams;

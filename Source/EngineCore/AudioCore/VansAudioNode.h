@@ -7,6 +7,7 @@
 #include <queue>
 #include <atomic>
 #include <cstdint>
+#include "../VansNode.h"
 
 // 不在头文件中引入 OpenAL / FFmpeg 头（用无符号整型替代 ALuint）
 // ALuint 的底层类型在所有平台均为 unsigned int（OpenAL 1.1 规范保证）
@@ -53,7 +54,7 @@ namespace VansEngine
     // ===========================================================================
     class VansAudioDecoder;   // 前向声明，避免循环包含
 
-    class VansAudioNode
+    class VansAudioNode : public VansGraphics::VansNode
     {
     public:
         VansAudioNode()  = default;
@@ -70,6 +71,11 @@ namespace VansEngine
         // ── 播放控制（主线程） ───────────────────────────────────────────────
         void Play();
         void Pause();
+
+	protected:
+		void OnDisable() override { Pause(); }
+
+	public:
         void Stop();
         void Resume();
 

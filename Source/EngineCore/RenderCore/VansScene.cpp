@@ -1274,7 +1274,7 @@ void VansGraphics::VansScene::SyncAudioSourcePositions()
 void VansGraphics::VansScene::UpdateAnimations(float deltaTime){
     for (VansAnimationNode* animNode : m_AnimationNodes)
     {
-        if (animNode)
+        if (animNode && animNode->IsEnabled())
         {
             animNode->Update(deltaTime);
             VansEngine::VansRagdollSystem::GetInstance().PostAnimationUpdate(animNode);
@@ -1293,7 +1293,7 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
 
     auto updateNode = [&](VansRenderNode* node)
     {
-        if (node)
+        if (node && node->IsEnabled())
         {
             node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
             node->UpdateDescripterSets(m_MaterialManager);
@@ -1646,15 +1646,18 @@ void VansGraphics::VansScene::UpdateTransformRenderData()
 {
     for (auto node : m_OpaqueRenderNodes)
     {
+        if (!node->IsEnabled()) continue;
         node->UpdateModelData();
-	}
+    }
     for (auto node : m_TransParentRenderNodes)
     {
+        if (!node->IsEnabled()) continue;
         node->UpdateModelData();
     }
     // 贴花节点：每帧上传变换矩阵（OBB 越界测试依赖正确的 ModelMatrix）
     for (auto node : m_DecalRenderNodes)
     {
+        if (!node->IsEnabled()) continue;
         node->UpdateModelData();
     }
     VansGraphics::VansTransformStore::TransformIDToTransformDirty.clear();
@@ -1831,10 +1834,14 @@ VansScriptObject* VansGraphics::VansScene::CreateEntity(
     // ═══════════════════════════════════════════════════════════════════════
     if (!CanCreateEntity())
     {
-        VANS_LOG_ERROR("[Scene] CreateEntity: slot exhausted ("
-            << m_TransformSlotAllocator.GetActiveCount() << "/"
-            << m_TransformSlotAllocator.GetMaxCapacity() << ")");
-        return nullptr;
+        // 自动扩容：slot 耗尽时尝试翻倍容量
+        if (!GrowTransformBuffer(device, m_TransformSlotAllocator.GetMaxCapacity() * 2))
+        {
+            VANS_LOG_ERROR("[Scene] CreateEntity: slot exhausted and grow failed ("
+                << m_TransformSlotAllocator.GetActiveCount() << "/"
+                << m_TransformSlotAllocator.GetMaxCapacity() << ")");
+            return nullptr;
+        }
     }
     if (FindObjectByName(entityName))
     {
@@ -2127,6 +2134,50 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
             if (pi != m_PhysicsNodes.end()) { delete physicsNode; m_PhysicsNodes.erase(pi); }
         }
     } // ─── 释放 SimulationMutex ────────────────────────────────────────
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  4.5. MultiMeshGroup 清理（必须在 delete renderNode 之前）
+    //
+    //  当前 CreateEntity 仅支持单 Mesh 实体（§4.4.2 范围边界），
+    //  但场景加载（ExpandMultiMeshToRenderNodes）会产生 multi-mesh 实体。
+    //  若 DestroyEntity 作用于 multi-mesh 实体，必须清理 group 元数据
+    //  和非首子节点（VansScriptRenderComponent 仅持有 childNodes[0]）。
+    // ═══════════════════════════════════════════════════════════════════════
+    if (renderNode && !renderNode->m_ParentGroupName.empty())
+    {
+        auto groupIt = m_MultiMeshGroups.find(renderNode->m_ParentGroupName);
+        if (groupIt != m_MultiMeshGroups.end())
+        {
+            const auto& group = groupIt->second;
+
+            // 非首子节点：不在组件扫描范围内，需显式清理
+            for (auto* childNode : group.childNodes)
+            {
+                if (childNode && childNode != renderNode)
+                {
+                    if (childNode->m_TransfromIndex >= 0)
+                    {
+                        m_TransformSlotAllocator.FreeSlot(
+                            static_cast<uint32_t>(childNode->m_TransfromIndex));
+                        childNode->m_TransfromIndex = -1;
+                    }
+                    RemoveRenderNodeFromVector(childNode);
+                    delete childNode;
+                }
+            }
+
+            // 清理 m_SceneSubMeshes 中属于此 group 的子 mesh 资产引用
+            if (group.sourceMesh)
+            {
+                auto subIt = std::remove(m_SceneSubMeshes.begin(),
+                                          m_SceneSubMeshes.end(),
+                                          group.sourceMesh);
+                m_SceneSubMeshes.erase(subIt, m_SceneSubMeshes.end());
+            }
+
+            m_MultiMeshGroups.erase(groupIt);
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════════════
     //  5. 清理 RenderNode（必须在 AnimationNode 之前）

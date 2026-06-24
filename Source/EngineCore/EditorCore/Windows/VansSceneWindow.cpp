@@ -9,6 +9,7 @@
 #include <fstream>
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include "../../RenderCore/VulkanCore/VansTexture.h"
 #include "../VansEditorSelection.h"
@@ -267,9 +268,11 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                                 transformComp["type"]    = "Transform";
                                                 transformComp["version"] = 1u;
                                                 transformComp["enabled"] = true;
+                                                // euler → quat 转换（拖拽默认零旋转，未来可从 CreateEntity 传入实际 rotation）
+                                                glm::quat rotQuat = glm::quat(glm::radians(glm::vec3(0.0f)));
                                                 transformComp["data"]    = {
                                                     {"position", {worldPos.x, worldPos.y, worldPos.z}},
-                                                    {"rotation", {0.0f, 0.0f, 0.0f, 1.0f}},
+                                                    {"rotation", {rotQuat.x, rotQuat.y, rotQuat.z, rotQuat.w}},
                                                     {"scale",    {1.0f, 1.0f, 1.0f}}
                                                 };
 

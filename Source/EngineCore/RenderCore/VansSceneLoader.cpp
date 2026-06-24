@@ -915,6 +915,20 @@ void VansGraphics::VansScene::AddTerrainNode(VansVKDevice* device, json& terrain
         config.tessellationPower        = tessJson.value("power",               config.tessellationPower);
         config.tessLodBias              = tessJson.value("lodBias",             config.tessLodBias);
         config.tessDisplacementStrength = tessJson.value("displacementStrength", config.tessDisplacementStrength);
+
+        // 程序化噪声细节（替代 displacementStrength）
+        if (tessJson.contains("noiseDetail") && tessJson["noiseDetail"].is_object())
+        {
+            auto& noiseJson = tessJson["noiseDetail"];
+            config.enableNoiseDetail = noiseJson.value("enabled",       config.enableNoiseDetail);
+            config.noiseStrength     = noiseJson.value("strength",      config.noiseStrength);
+            config.noiseFrequency    = noiseJson.value("frequency",     config.noiseFrequency);
+            config.noiseLacunarity   = noiseJson.value("lacunarity",    config.noiseLacunarity);
+            config.noiseGain         = noiseJson.value("gain",          config.noiseGain);
+            config.noiseOctaves      = noiseJson.value("octaves",       config.noiseOctaves);
+            config.noiseWarpStrength = noiseJson.value("warpStrength",  config.noiseWarpStrength);
+            config.noiseFadeStart    = noiseJson.value("fadeStart",     config.noiseFadeStart);
+        }
     }
 
     // Splatmaps (required, array of 2)
@@ -3216,6 +3230,13 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 auto* rc = new VansScriptRenderComponent();
                 rc->m_ComponentName = "render";
                 rc->m_RenderNode = rn;
+
+                // ── 恢复 enabled 状态（场景保存时写入 JSON 的 enabled 字段）──
+                bool renderEnabled = components["render"].value("enabled", true);
+                if (!renderEnabled && rc->m_RenderNode)
+                    rc->m_RenderNode->SetEnabled(false);
+                rc->m_Enabled = renderEnabled;
+
                 obj->AddComponent(rc);
                 obj->m_TransformID = rn->m_TransformID;
 
@@ -3252,6 +3273,13 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 auto* pc = new VansScriptPhysicsComponent();
                 pc->m_ComponentName = "physics";
                 pc->m_PhysicsNode = pn;
+
+                // ── 恢复 enabled 状态 ──
+                bool physEnabled = components["physics"].value("enabled", true);
+                if (!physEnabled && pc->m_PhysicsNode)
+                    pc->m_PhysicsNode->SetEnabled(false);
+                pc->m_Enabled = physEnabled;
+
                 obj->AddComponent(pc);
             }
         }
@@ -3966,6 +3994,15 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         VansAnimationNode* animNode = LoadSingleAnimationComponent(
             pending.animJson, pending.objectName, projectRoot);
         pending.comp->m_AnimNode = animNode;
+
+        // ── 恢复 enabled 状态 ──
+        if (animNode)
+        {
+            bool animEnabled = pending.animJson.value("enabled", true);
+            if (!animEnabled)
+                animNode->SetEnabled(false);
+            pending.comp->m_Enabled = animEnabled;
+        }
 
         if (!animNode)
         {

@@ -277,7 +277,8 @@ namespace VansGraphics
 		TERRAIN_BINDING_NORMAL_ARRAY        = 4,  // descriptorCount = 8
 		TERRAIN_BINDING_ROUGHNESS_ARRAY     = 5,  // descriptorCount = 8
 		TERRAIN_BINDING_PARAMS_UBO          = 6,
-		TERRAIN_BINDING_TESSELLATION_PARAMS = 7,  // TessellationParams UBO (read by TCS)
+		TERRAIN_BINDING_TESSELLATION_PARAMS = 7,  // TessellationParams UBO (read by TCS + TES)
+		TERRAIN_BINDING_NOISE_DETAIL_PARAMS = 8,  // NoiseDetailParams UBO (read by TES + FS)
 	};
 
 	static constexpr uint32_t TERRAIN_MAX_LAYERS = 8;

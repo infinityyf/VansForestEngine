@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include "../VansNode.h"
 #include "../ScriptCore/VansCommonUtils.h"
 #include "../ScriptCore/VansTransform.h"
 #include "VansGraphicsDevice.h"
@@ -39,7 +40,7 @@ namespace VansGraphics
 
 
 
-	class VansCamera
+	class VansCamera : public VansNode
 	{
     private:
 

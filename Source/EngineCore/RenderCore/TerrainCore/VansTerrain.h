@@ -53,7 +53,17 @@ namespace VansGraphics
         float maxTessellationLevel  = 64.0f;
         float tessellationPower        = 2.0f;
         float tessLodBias              = 0.5f;
-        float tessDisplacementStrength = 0.05f;  // micro-displacement strength (world units)
+        float tessDisplacementStrength = 0.05f;  // deprecated: 由程序化噪声替代
+
+        // 程序化噪声细节（替代原 tessDisplacementStrength）
+        bool  enableNoiseDetail    = true;
+        float noiseStrength        = 0.03f;
+        float noiseFrequency       = 0.8f;
+        float noiseLacunarity      = 2.0f;
+        float noiseGain            = 0.52f;
+        int   noiseOctaves         = 4;
+        float noiseWarpStrength    = 0.0f;
+        float noiseFadeStart       = 0.7f;
     };
 
     // ----------------------------------------------------------
@@ -73,8 +83,21 @@ namespace VansGraphics
     {
         float maxTessLevel;     // maxTessellationLevel
         float tessDistance;     // tessellationDistance
-        float tessPower;             // tessellationPower
-        float displacementStrength;  // micro-displacement from normal map (world units)
+        float tessPower;        // tessellationPower
+        float padding;          // 原 displacementStrength，现为 padding（程序化噪声替代）
+    };
+
+    // GPU-side UBO matching the shader NoiseDetailParams block (binding 8)
+    struct alignas(16) TerrainNoiseDetailParamsGPU
+    {
+        float noiseStrength     = 0.03f;    // 噪声强度（世界单位）
+        float noiseFrequency    = 0.8f;     // 基础频率
+        float noiseLacunarity   = 2.0f;     // 频率倍增系数
+        float noiseGain         = 0.52f;    // 振幅衰减系数
+        int32_t noiseOctaves    = 4;        // octave 数量
+        float noiseWarpStrength = 0.0f;     // 域扭曲强度（0=关闭）
+        float fadeStart         = 0.7f;     // 距离衰减起始比例
+        float noisePadding      = 0.0f;     // std140 对齐
     };
 
     // 发送给 Shader 的每个 Instance 的数据
@@ -130,14 +153,35 @@ namespace VansGraphics
         float GetMaxTessellationLevel()   const { return m_MaxTessellationLevel; }
         float GetTessellationPower()      const { return m_TessellationPower; }
         float GetTessLodBias()            const { return m_TessLodBias; }
-        float GetTessDisplacementStrength() const { return m_TessDisplacementStrength; }
 
         void SetTessellationEnabled(bool v);
         void SetTessellationDistance(float v);
         void SetMaxTessellationLevel(float v);
         void SetTessellationPower(float v);
         void SetTessLodBias(float v);
-        void SetTessDisplacementStrength(float v);
+
+        // ── deprecated: 法线贴图 Y 位移已被程序化噪声替代 ──
+        void  SetTessDisplacementStrength(float v);
+        float GetTessDisplacementStrength() const { return m_TessDisplacementStrength; }
+
+        // ── 程序化噪声参数 accessors ──
+        bool  IsNoiseDetailEnabled()  const { return m_EnableNoiseDetail; }
+        float GetNoiseStrength()      const { return m_NoiseStrength; }
+        float GetNoiseFrequency()     const { return m_NoiseFrequency; }
+        float GetNoiseLacunarity()    const { return m_NoiseLacunarity; }
+        float GetNoiseGain()          const { return m_NoiseGain; }
+        int   GetNoiseOctaves()       const { return m_NoiseOctaves; }
+        float GetNoiseWarpStrength()  const { return m_NoiseWarpStrength; }
+        float GetNoiseFadeStart()     const { return m_NoiseFadeStart; }
+
+        void SetNoiseDetailEnabled(bool v);
+        void SetNoiseStrength(float v);
+        void SetNoiseFrequency(float v);
+        void SetNoiseLacunarity(float v);
+        void SetNoiseGain(float v);
+        void SetNoiseOctaves(int v);
+        void SetNoiseWarpStrength(float v);
+        void SetNoiseFadeStart(float v);
 
         float GetSplitDistMult()    const { return m_SplitDistMult; }
         void  SetSplitDistMult(float v)  { m_SplitDistMult = std::max(v, 0.1f); }
@@ -212,6 +256,9 @@ namespace VansGraphics
         // Tessellation Params UBO (binding 7)
         VansVKBuffer m_TessParamsUBO;
 
+        // Noise Detail UBO (binding 8)
+        VansVKBuffer m_NoiseDetailUBO;
+
         // 地形参数
         float m_TerrainSize = 1024.0f;
         float m_MaxHeight = 500.0f; // 地形最大高度
@@ -228,6 +275,19 @@ namespace VansGraphics
         float m_TessellationPower = 2.0f;
         float m_TessLodBias = 0.5f;
         float m_TessDisplacementStrength = 0.05f;
+
+        // 程序化噪声参数
+        bool  m_EnableNoiseDetail  = true;
+        float m_NoiseStrength      = 0.03f;
+        float m_NoiseFrequency     = 0.8f;
+        float m_NoiseLacunarity    = 2.0f;
+        float m_NoiseGain          = 0.52f;
+        int   m_NoiseOctaves       = 4;
+        float m_NoiseWarpStrength  = 0.0f;
+        float m_NoiseFadeStart     = 0.7f;
+
+        // 辅助：统一更新噪声 UBO
+        void UpdateNoiseDetailUBO();
 
         const int m_PatchGridSize = 16;   // 基础网格分辨率
     };

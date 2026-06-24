@@ -8,6 +8,7 @@
 #include <characterkinematic/PxControllerManager.h>
 #include <glm/glm.hpp>
 #include <string>
+#include "../VansNode.h"
 
 // 前向声明 VansAnimationNode，避免包含整个动画系统头文件
 namespace VansGraphics { class VansAnimationNode; }
@@ -53,7 +54,7 @@ namespace VansEngine
     // 封装一个 PhysX PxCapsuleController，并负责在每帧将物理位置
     // 同步回 VansTransformStore。
     // 生命周期由 VansScene::m_CharControllerNodes 管理。
-    class VansCharacterControllerNode
+    class VansCharacterControllerNode : public VansGraphics::VansNode
     {
     public:
         VansCharacterControllerNode();
@@ -88,7 +89,7 @@ namespace VansEngine
         // ── 状态查询 ──────────────────────────────────────────────────────
         glm::vec3 GetPosition() const;          // 返回胶囊中心坐标
         bool IsGrounded() const;                // COLLISION_DOWN 标志
-        bool IsEnabled() const { return m_Enabled; }
+        // [迁移到 VansNode] IsEnabled 由基类提供
         uint32_t GetTransformID() const { return m_TransformID; }
         const CharControllerProperties& GetProperties() const { return m_Properties; }
         PxControllerCollisionFlags GetLastCollisionFlags() const { return m_LastCollisionFlags; }
@@ -125,7 +126,6 @@ namespace VansEngine
         PxCapsuleController*              m_Controller        = nullptr;
         PxFilterData                      m_FilterData;
         uint32_t                          m_TransformID       = UINT32_MAX;  // UINT32_MAX 表示「尚未绑定」
-        bool                              m_Enabled           = false;
         PxControllerCollisionFlags        m_LastCollisionFlags;
 
         // ── 待执行位移缓冲 ────────────────────────────────────────────────

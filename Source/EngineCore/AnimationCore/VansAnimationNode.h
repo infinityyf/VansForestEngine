@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../VansNode.h"
 #include "VansAnimationTypes.h"
 #include "VansAnimationController.h"
 #include "../ScriptCore/VansTransform.h"
@@ -32,7 +33,7 @@ namespace VansGraphics
 	//  Node 管理: skeleton / GPU 资源 / bone overrides / root motion 应用
 	// ────────────────────────────────────────────────────────────────
 
-	class VansAnimationNode
+	class VansAnimationNode : public VansNode
 	{
 	public:
 		// ─── 构造 & 析构 ───

@@ -1,6 +1,7 @@
 #pragma once
 
 // ─── Engine core ─────────────────────────────────────────────────────────────
+#include "../VansNode.h"
 #include "../ScriptCore/VansTransform.h"
 #include "../RenderCore/VansRenderNode.h"
 #include "VansClothProfile.h"
@@ -102,7 +103,7 @@ namespace VansEngine
     //  • Writes simulated vertex positions each frame into a staging buffer.
     //  • The render node's VansTransform drives the positions of pinned particles.
     // =========================================================================
-    class VansClothNode
+    class VansClothNode : public VansGraphics::VansNode
     {
     public:
         VansClothNode();
@@ -184,8 +185,7 @@ namespace VansEngine
         void CommitPinnedTargets();
 
         // ── Accessors ─────────────────────────────────────────────────────────
-        bool               IsEnabled()  const { return m_Enabled; }
-        void               SetEnabled(bool v) { m_Enabled = v; }
+        // [迁移到 VansNode] IsEnabled/SetEnabled 由基类提供
         const std::string& GetName()    const { return m_Name; }
         void               SetName(const std::string& n) { m_Name = n; }
 

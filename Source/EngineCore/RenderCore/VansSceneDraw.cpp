@@ -26,7 +26,7 @@ void VansGraphics::VansScene::DrawShadowNodes()
     // Iterate opaque nodes instead of dedicated shadow node list
     for (auto& node : m_OpaqueRenderNodes)
     {
-        if (node == nullptr) continue;
+        if (node == nullptr || !node->IsEnabled()) continue;
 
         // Check support_shadow flag on the node
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
@@ -50,7 +50,7 @@ void VansGraphics::VansScene::DrawMotionVectorNodes()
 
     for (auto& node : m_OpaqueRenderNodes)
     {
-        if (node == nullptr) continue;
+        if (node == nullptr || !node->IsEnabled()) continue;
 
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
 
@@ -95,7 +95,7 @@ void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
 
         for (auto& node : m_OpaqueRenderNodes)
         {
-            if (node == nullptr) continue;
+            if (node == nullptr || !node->IsEnabled()) continue;
 
             auto* opaque = static_cast<VansCommonRenderNode*>(node);
             if (!opaque->m_SupportShadow) continue;
@@ -140,7 +140,7 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
 
     for (auto& node : m_OpaqueRenderNodes)
     {
-        if (node == nullptr) continue;
+        if (node == nullptr || !node->IsEnabled()) continue;
 
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
         if (!opaque->m_SupportShadow) continue;
@@ -189,7 +189,7 @@ void VansGraphics::VansScene::DrawRectShadow(int pointCount, int spotCount, int 
     int shaderLightIndex = pointCount + spotCount + lightIndex;
     for (auto& node : m_OpaqueRenderNodes)
     {
-        if (node == nullptr) continue;
+        if (node == nullptr || !node->IsEnabled()) continue;
 
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
         if (!opaque->m_SupportShadow) continue;
@@ -224,7 +224,7 @@ void VansGraphics::VansScene::DrawOpaqueNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_OpaqueRenderNodes)
     {
-        if (node == nullptr)
+        if (node == nullptr || !node->IsEnabled())
         {
             continue;
         }
@@ -352,7 +352,7 @@ void VansGraphics::VansScene::DrawTransParentNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_TransParentRenderNodes)
     {
-        if (node == nullptr)
+        if (node == nullptr || !node->IsEnabled())
         {
             continue;
         }
@@ -367,7 +367,7 @@ void VansGraphics::VansScene::DrawParticleNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto* node : m_ParticleRenderNodes)
     {
-        if (node == nullptr)
+        if (node == nullptr || !node->IsEnabled())
         {
             continue;
         }
@@ -382,6 +382,7 @@ void VansGraphics::VansScene::DrawPostProcessNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node  : m_PostProcessRenderNodes)
     {
+        if (!node->IsEnabled()) continue;
         //apply mesh
         node->Draw(cmd, globalStateData);
     }
@@ -397,6 +398,7 @@ void VansGraphics::VansScene::DrawScreenSpaceFeatureNode()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_ScreenSpaceRenderNodes)
     {
+        if (!node->IsEnabled()) continue;
         //apply mesh
         node->Draw(cmd, globalStateData);
     }
@@ -409,6 +411,7 @@ void VansGraphics::VansScene::DrawDecalNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_DecalRenderNodes)
     {
+        if (!node->IsEnabled()) continue;
         node->Draw(cmd, globalStateData);
     }
 }

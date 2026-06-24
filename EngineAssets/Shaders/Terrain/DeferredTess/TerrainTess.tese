@@ -21,13 +21,11 @@ layout(location = 6) patch in vec2 tcsPatchOffset;
 layout(location = 7) patch in float tcsPatchScale;
 layout(location = 8) patch in float tcsPatchStitchFlags;
 
-// ── Output to FS — must match Terrain.frag input EXACTLY ──
+// ── Output to FS — must match TerrainTess.frag input EXACTLY ──
 layout(location = 0) out vec2 outUV;
 layout(location = 1) out vec3 outWorldPos;
 layout(location = 2) out float outHeight;
-
-// ── Normal map array for micro-displacement (binding 4, same as frag shader) ──
-layout(set = 1, binding = 4) uniform sampler2D terrainNormals[8];
+layout(location = 3) out vec2 outNoiseGradient;  // 新增：噪声梯度 (∂noise/∂x, ∂noise/∂z)
 
 void main() {
     // Barycentric interpolation: reconstruct local XZ within the triangle
@@ -51,21 +49,75 @@ void main() {
         rawHeight
     );
 
-    // ── Micro displacement: sample normal map Y component ──
-    // Use layer 0's normal map at tiled UV for fine surface detail.
-    // Tangent-space Y maps to "up" — for mostly flat terrain this translates
-    // to world Y displacement, producing ground bumps/indentations.
-    float microDisp = 0.0;
-    if (tessParams.displacementStrength > 0.0) {
-        float layer0Tiling = terrainParams.tilingFactors[0];  // from TerrainCommon.glsl
-        vec2 tiledUV = heightUV * layer0Tiling;
-        float nmY = texture(terrainNormals[0], tiledUV).g;  // [0,1] tangent-space up
-        microDisp = nmY * tessParams.displacementStrength;  // 0..strength in world units
-    }
-    worldPos.y += microDisp;
+    // ── 3. 程序化噪声微细节（替代原 normal map Y 位移） ──
+    float noiseDisp = 0.0;
+    vec2  noiseGrad = vec2(0.0);
 
+    if (noiseParams.noiseStrength > 0.0) {
+        vec2 worldXZ = worldPos.xz;
+
+        // 距离衰减：在 tessellation 边界处平滑淡出
+        float distToCamera = length(worldPos - cameraPosition.xyz);
+        float noiseFade = 1.0 - smoothstep(
+            tessParams.tessDistance * noiseParams.fadeStart,
+            tessParams.tessDistance,
+            distToCamera
+        );
+
+        if (noiseFade > 0.001) {
+            // 自适应 octave 数：tess level 越高，octave 越多
+            int effectiveOctaves = min(
+                noiseParams.noiseOctaves,
+                1 + int(log2(max(1.0, gl_TessLevelInner[0])))
+            );
+
+            // 噪声梯度差分步长（世界单位）
+            float gradEps = 0.02;
+
+            if (noiseParams.noiseWarpStrength > 0.001) {
+                // ── 域扭曲路径：displacement 和 gradient 使用同一噪声函数 ──
+                noiseDisp = terrainDetailFbmWarped(
+                    worldXZ * noiseParams.noiseFrequency,
+                    effectiveOctaves,
+                    noiseParams.noiseGain,
+                    noiseParams.noiseLacunarity,
+                    noiseParams.noiseWarpStrength
+                );
+                noiseGrad = terrainDetailGradientWarped(
+                    worldXZ, noiseParams.noiseFrequency,
+                    effectiveOctaves,
+                    noiseParams.noiseGain,
+                    noiseParams.noiseLacunarity,
+                    noiseParams.noiseWarpStrength,
+                    gradEps
+                );
+            } else {
+                // ── 标准 FBM 路径 ──
+                noiseDisp = terrainDetailFbm(
+                    worldXZ * noiseParams.noiseFrequency,
+                    effectiveOctaves,
+                    noiseParams.noiseGain,
+                    noiseParams.noiseLacunarity
+                );
+                noiseGrad = terrainDetailGradient(
+                    worldXZ, noiseParams.noiseFrequency,
+                    effectiveOctaves,
+                    noiseParams.noiseGain,
+                    noiseParams.noiseLacunarity,
+                    gradEps
+                );
+            }
+
+            noiseDisp *= noiseParams.noiseStrength * noiseFade;
+            worldPos.y += noiseDisp;
+            noiseGrad *= noiseParams.noiseStrength * noiseFade;
+        }
+    }
+
+    // ── 4. 输出 ──
     gl_Position = VPMatrix * vec4(worldPos, 1.0);
-    outUV       = heightUV;
-    outWorldPos = worldPos;
-    outHeight   = rawHeight;
+    outUV            = heightUV;
+    outWorldPos      = worldPos;
+    outHeight        = rawHeight;
+    outNoiseGradient = noiseGrad;
 }

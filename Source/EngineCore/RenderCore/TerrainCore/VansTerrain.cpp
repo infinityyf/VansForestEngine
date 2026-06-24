@@ -34,6 +34,7 @@ namespace VansGraphics
         m_NearInstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_FarInstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_TessParamsUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
+        m_NoiseDetailUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
 
         // 释放地形专属 descriptor set 和 layout
         auto descMgr = VansVKDescriptorManager::GetInstance();
@@ -59,6 +60,16 @@ namespace VansGraphics
         m_TessellationPower    = config.tessellationPower;
         m_TessLodBias              = config.tessLodBias;
         m_TessDisplacementStrength = config.tessDisplacementStrength;
+
+        // 程序化噪声参数
+        m_EnableNoiseDetail = config.enableNoiseDetail;
+        m_NoiseStrength     = config.noiseStrength;
+        m_NoiseFrequency    = config.noiseFrequency;
+        m_NoiseLacunarity   = config.noiseLacunarity;
+        m_NoiseGain         = config.noiseGain;
+        m_NoiseOctaves      = config.noiseOctaves;
+        m_NoiseWarpStrength = config.noiseWarpStrength;
+        m_NoiseFadeStart    = config.noiseFadeStart;
 
         // -------------------------------------------------------
         // 1. Load heightmap
@@ -205,8 +216,8 @@ namespace VansGraphics
             TerrainTessellationParamsGPU tessParams{};
             tessParams.maxTessLevel = config.maxTessellationLevel;
             tessParams.tessDistance = config.tessellationDistance;
-            tessParams.tessPower            = config.tessellationPower;
-            tessParams.displacementStrength = config.tessDisplacementStrength;
+            tessParams.tessPower    = config.tessellationPower;
+            tessParams.padding      = 0.0f;  // 原 displacementStrength，现为 padding
 
             m_TessParamsUBO.CreatVulkanBuffer(
                 device->GetLogicDevice(), sizeof(TerrainTessellationParamsGPU),
@@ -214,6 +225,19 @@ namespace VansGraphics
                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             m_TessParamsUBO.SetBufferData(&tessParams, 0, sizeof(tessParams));
+        }
+
+        // -------------------------------------------------------
+        // 7d. Create NoiseDetail Params UBO (binding 8)
+        // -------------------------------------------------------
+        {
+            m_NoiseDetailUBO.CreatVulkanBuffer(
+                device->GetLogicDevice(), sizeof(TerrainNoiseDetailParamsGPU),
+                VK_FORMAT_R32_SFLOAT,
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+            UpdateNoiseDetailUBO();
         }
 
         // -------------------------------------------------------
@@ -293,11 +317,18 @@ namespace VansGraphics
             { { m_ParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainParamsGPU) } }
         });
 
-        // Binding 7: TessellationParams UBO (read by TCS)
+        // Binding 7: TessellationParams UBO (read by TCS + TES)
         descMgr->m_BufferDescInfos.push_back({
             m_DescriptorSets[0], TERRAIN_BINDING_TESSELLATION_PARAMS, 0,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             { { m_TessParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainTessellationParamsGPU) } }
+        });
+
+        // Binding 8: NoiseDetailParams UBO (read by TES + FS)
+        descMgr->m_BufferDescInfos.push_back({
+            m_DescriptorSets[0], TERRAIN_BINDING_NOISE_DETAIL_PARAMS, 0,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            { { m_NoiseDetailUBO.GetNativeBuffer(), 0, sizeof(TerrainNoiseDetailParamsGPU) } }
         });
 
         descMgr->UpdateDescriptorSets();
@@ -686,7 +717,7 @@ namespace VansGraphics
         p.maxTessLevel = m_MaxTessellationLevel;
         p.tessDistance = m_TessellationDistance;
         p.tessPower    = m_TessellationPower;
-        p.displacementStrength = m_TessDisplacementStrength;
+        p.padding = 0.0f;  // 原 displacementStrength，现为 padding
         m_TessParamsUBO.SetBufferData(&p, 0, sizeof(p));
     }
 
@@ -697,7 +728,7 @@ namespace VansGraphics
         p.maxTessLevel = m_MaxTessellationLevel;
         p.tessDistance = m_TessellationDistance;
         p.tessPower    = m_TessellationPower;
-        p.displacementStrength = m_TessDisplacementStrength;
+        p.padding = 0.0f;  // 原 displacementStrength，现为 padding
         m_TessParamsUBO.SetBufferData(&p, 0, sizeof(p));
     }
 
@@ -708,7 +739,7 @@ namespace VansGraphics
         p.maxTessLevel = m_MaxTessellationLevel;
         p.tessDistance = m_TessellationDistance;
         p.tessPower    = m_TessellationPower;
-        p.displacementStrength = m_TessDisplacementStrength;
+        p.padding = 0.0f;  // 原 displacementStrength，现为 padding
         m_TessParamsUBO.SetBufferData(&p, 0, sizeof(p));
     }
 
@@ -719,12 +750,74 @@ namespace VansGraphics
 
     void VansTerrain::SetTessDisplacementStrength(float v)
     {
-        m_TessDisplacementStrength = std::max(v, 0.0f);
-        TerrainTessellationParamsGPU p{};
-        p.maxTessLevel = m_MaxTessellationLevel;
-        p.tessDistance = m_TessellationDistance;
-        p.tessPower    = m_TessellationPower;
-        p.displacementStrength = m_TessDisplacementStrength;
-        m_TessParamsUBO.SetBufferData(&p, 0, sizeof(p));
+        // no-op: 法线贴图 Y 位移已被程序化噪声替代
+        // 使用 SetNoiseStrength() 代替
+        m_TessDisplacementStrength = v;  // 仅存值，不写 UBO
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // 程序化噪声参数 Setter 实现
+    // ──────────────────────────────────────────────────────────
+
+    void VansTerrain::UpdateNoiseDetailUBO()
+    {
+        TerrainNoiseDetailParamsGPU p{};
+        p.noiseStrength     = m_EnableNoiseDetail ? m_NoiseStrength : 0.0f;
+        p.noiseFrequency    = m_NoiseFrequency;
+        p.noiseLacunarity   = m_NoiseLacunarity;
+        p.noiseGain         = m_NoiseGain;
+        p.noiseOctaves      = m_NoiseOctaves;
+        p.noiseWarpStrength = m_NoiseWarpStrength;
+        p.fadeStart         = m_NoiseFadeStart;
+        p.noisePadding      = 0.0f;
+        m_NoiseDetailUBO.SetBufferData(&p, 0, sizeof(p));
+    }
+
+    void VansTerrain::SetNoiseDetailEnabled(bool v)
+    {
+        m_EnableNoiseDetail = v;
+        UpdateNoiseDetailUBO();
+    }
+
+    void VansTerrain::SetNoiseStrength(float v)
+    {
+        m_NoiseStrength = std::max(v, 0.0f);
+        UpdateNoiseDetailUBO();
+    }
+
+    void VansTerrain::SetNoiseFrequency(float v)
+    {
+        m_NoiseFrequency = std::max(v, 0.01f);
+        UpdateNoiseDetailUBO();
+    }
+
+    void VansTerrain::SetNoiseLacunarity(float v)
+    {
+        m_NoiseLacunarity = std::max(v, 1.0f);
+        UpdateNoiseDetailUBO();
+    }
+
+    void VansTerrain::SetNoiseGain(float v)
+    {
+        m_NoiseGain = std::clamp(v, 0.01f, 1.0f);
+        UpdateNoiseDetailUBO();
+    }
+
+    void VansTerrain::SetNoiseOctaves(int v)
+    {
+        m_NoiseOctaves = std::clamp(v, 1, 8);
+        UpdateNoiseDetailUBO();
+    }
+
+    void VansTerrain::SetNoiseWarpStrength(float v)
+    {
+        m_NoiseWarpStrength = std::max(v, 0.0f);
+        UpdateNoiseDetailUBO();
+    }
+
+    void VansTerrain::SetNoiseFadeStart(float v)
+    {
+        m_NoiseFadeStart = std::clamp(v, 0.0f, 1.0f);
+        UpdateNoiseDetailUBO();
     }
 }

@@ -8,6 +8,7 @@
 #include <string>
 #include <memory>
 #include "../ScriptCore/VansTransform.h"
+#include "../VansNode.h"
 #include "VansPhysics.h"
 
 using namespace physx;
@@ -73,7 +74,7 @@ namespace VansEngine
     };
 
     // Physics Node - manages physics actor and integrates with scene
-    class VansPhysicsNode
+    class VansPhysicsNode : public VansGraphics::VansNode
     {
     public:
         VansPhysicsNode();
@@ -90,9 +91,14 @@ namespace VansEngine
         void UpdatePhysicsFromTransform();
 
         // Physics control
-        void SetEnabled(bool enabled);
-        bool IsEnabled() const { return m_Enabled; }
+        // [迁移到 VansNode] SetEnabled/IsEnabled 由基类提供
 
+    protected:
+        void OnEnable()  override;
+        void OnDisable() override;
+        void OnDestroy() override;
+
+    public:
         // Dynamic body control
         void AddForce(const glm::vec3& force, PxForceMode::Enum mode = PxForceMode::eFORCE);
         void AddTorque(const glm::vec3& torque, PxForceMode::Enum mode = PxForceMode::eFORCE);
@@ -131,8 +137,6 @@ namespace VansEngine
         PhysicsNodeProperties m_Properties;
         uint32_t m_TransformID = 0;
         VansGraphics::VansMesh* m_Mesh = nullptr;
-        bool m_Enabled = false;
-
         // PhysX objects
         PxRigidActor* m_Actor = nullptr;
         PxMaterial* m_Material = nullptr;

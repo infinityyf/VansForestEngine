@@ -6,6 +6,7 @@
 layout(location = 0) in vec2 inUV;
 layout(location = 1) in vec3 inWorldPos;
 layout(location = 2) in float inHeight;
+layout(location = 3) in vec2 inNoiseGradient;  // 新增：来自 TES 的噪声梯度
 
 // --- Terrain descriptor set (set 1) ---
 layout(set = 1, binding = 0) uniform sampler2D heightMap;
@@ -19,6 +20,18 @@ layout(set = 1, binding = 6) uniform TerrainParams {
     float tilingFactors[8];   // std140: each element has vec4 (16-byte) stride
     vec4 heightfieldParams;   // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridSize
 } terrainParams;
+
+// ── 噪声参数（binding 8，与 TES 共享） ──
+layout(set = 1, binding = 8) uniform NoiseDetailParams {
+    float noiseStrength;
+    float noiseFrequency;
+    float noiseLacunarity;
+    float noiseGain;
+    int   noiseOctaves;
+    float noiseWarpStrength;
+    float fadeStart;
+    float noisePadding;
+} noiseParams;
 
 // --- GBuffer outputs ---
 layout(location = 0) out vec4 outNormal;
@@ -51,6 +64,28 @@ mat3 BuildTBN(vec3 geometricNormal) {
     vec3 tangent   = normalize(cross(up, geometricNormal));
     vec3 bitangent = cross(geometricNormal, tangent);
     return mat3(tangent, bitangent, geometricNormal);
+}
+
+// ── 含噪声扰动的最终法线 ──────────────────────────────────
+// 高度场 H(x,z) = H_heightmap(x,z) + noise(x,z)
+// 未归一化法线: (-∂H/∂x, 1, -∂H/∂z)
+//   = (-∂H_heightmap/∂x - ∂noise/∂x, 1, -∂H_heightmap/∂z - ∂noise/∂z)
+//   = 高度图法线分量 + (-∂noise/∂x, 0, -∂noise/∂z)
+vec3 CalculateFinalNormal(vec2 uv, vec2 noiseGradient) {
+    vec3 geoNormal = CalculateTerrainNormal(uv);
+
+    // 如果无噪声梯度，直接返回高度图法线
+    if (length(noiseGradient) < 0.0001) {
+        return geoNormal;
+    }
+
+    // 噪声对法线的扰动：坡度上升方向的相反方向
+    // noiseGradient.x = ∂noise/∂x, noiseGradient.y = ∂noise/∂z
+    // 扰动向量 = (-∂noise/∂x, 0, -∂noise/∂z)
+    vec3 noisePerturb = vec3(-noiseGradient.x, 0.0, -noiseGradient.y);
+
+    // 扰动强度可调（0.5 为推荐值，与噪声强度匹配）
+    return normalize(geoNormal + noisePerturb * 0.5);
 }
 
 void main() {
@@ -107,7 +142,7 @@ void main() {
     // --------------------------------------------------
     // 3. Compute final world-space normal
     // --------------------------------------------------
-    vec3 geometricNormal = CalculateTerrainNormal(inUV);
+    vec3 geometricNormal = CalculateFinalNormal(inUV, inNoiseGradient);
     mat3 TBN = BuildTBN(geometricNormal);
     vec3 finalNormal = normalize(TBN * normalize(blendedNormal));
     //blendedAlbedo = vec3(fract(inUV*terrainParams.tilingFactors[0]), 0.0); // debug UV tiling

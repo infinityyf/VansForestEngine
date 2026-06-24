@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 //#include "VulkanCore/VansMesh.h"
+#include "../VansNode.h"
 #include "VansMaterial.h"
 #include "../ScriptCore/VansTransform.h"
 #include "BRDFData/VansLight.h"
@@ -36,7 +37,7 @@ namespace VansGraphics
 
 	class VansCamera;
 	class VansAnimationNode;
-	class VansRenderNode
+	class VansRenderNode : public VansNode
 	{
 		public:
 

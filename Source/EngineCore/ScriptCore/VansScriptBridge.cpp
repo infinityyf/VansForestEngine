@@ -299,6 +299,32 @@ void VansInitEngineBridge()
 		return c ? static_cast<void*>(c->m_RenderNode) : nullptr;
 	};
 
+	// ── Component enable/disable ─────────────────────────────────────────
+	s_EngineBridge.componentSetEnabled = [](void* comp, bool enabled)
+	{
+		auto* c = AsScriptComponent(comp);
+		if (c) c->SetEnabled(enabled);
+	};
+
+	s_EngineBridge.componentIsEnabled = [](void* comp) -> bool
+	{
+		auto* c = AsScriptComponent(comp);
+		return c ? c->IsEnabled() : true;
+	};
+
+	// ── Object active state ──────────────────────────────────────────────
+	s_EngineBridge.objectSetActive = [](void* obj, bool active)
+	{
+		auto* o = AsScriptObject(obj);
+		if (o) o->SetActive(active);
+	};
+
+	s_EngineBridge.objectIsActive = [](void* obj) -> bool
+	{
+		auto* o = AsScriptObject(obj);
+		return o ? o->IsActive() : true;
+	};
+
 	// ── Object component query ───────────────────────────────────────────
 	s_EngineBridge.objectGetComponentCount = [](void* obj) -> int
 	{

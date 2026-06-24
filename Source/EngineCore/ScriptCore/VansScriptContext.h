@@ -113,8 +113,32 @@ class VansScriptComponent
 {
 public:
 	std::string m_ComponentName;
+	bool m_Enabled = true;
 
 	virtual ~VansScriptComponent() = default;
+
+	void SetEnabled(bool enabled)
+	{
+		if (m_Enabled == enabled) return;
+		m_Enabled = enabled;
+		if (enabled)
+			OnEnable();
+		else
+			OnDisable();
+	}
+
+	bool IsEnabled() const { return m_Enabled; }
+
+	void Destroy()
+	{
+		OnDestroy();
+		m_Enabled = false;
+	}
+
+protected:
+	virtual void OnEnable()  {}
+	virtual void OnDisable() {}
+	virtual void OnDestroy() {}
 };
 
 class VansScriptObject
@@ -131,6 +155,22 @@ public:
 	// Typically taken from the render component's RenderNode.
 	uint32_t m_TransformID = 0;
 	bool m_OwnsTransform = false;
+
+	// ── Entity level enable/disable (like Unity GameObject.SetActive) ──
+	bool m_Active = true;
+
+	void SetActive(bool active)
+	{
+		if (m_Active == active) return;
+		m_Active = active;
+		for (auto* comp : m_Components)
+		{
+			if (comp)
+				comp->SetEnabled(active);
+		}
+	}
+
+	bool IsActive() const { return m_Active; }
 
 	// ── Query helpers ────────────────────────────────────────────────
 	template<typename T>
@@ -166,6 +206,10 @@ class VansScriptRenderComponent : public VansScriptComponent
 {
 public:
 	VansGraphics::VansRenderNode* m_RenderNode = nullptr;
+
+protected:
+	void OnEnable()  override;
+	void OnDisable() override;
 };
 
 // ── Physics Component ───────────────────────────────────────────────────────
@@ -174,6 +218,10 @@ class VansScriptPhysicsComponent : public VansScriptComponent
 {
 public:
 	VansEngine::VansPhysicsNode* m_PhysicsNode = nullptr;
+
+protected:
+	void OnEnable()  override;
+	void OnDisable() override;
 };
 
 // ── Cloth Component ─────────────────────────────────────────────────────────
@@ -184,6 +232,10 @@ public:
 	VansEngine::VansClothNode* m_ClothNode = nullptr;
 	// 关联的 .clothprofile 文件路径（相对路径）；内联配置时为空
 	std::string m_ProfilePath;
+
+protected:
+	void OnEnable()  override;
+	void OnDisable() override;
 };
 
 // ── Vehicle Component ───────────────────────────────────────────────────────
@@ -192,6 +244,10 @@ class VansScriptVehicleComponent : public VansScriptComponent
 {
 public:
 	VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
+
+protected:
+	void OnEnable()  override {}
+	void OnDisable() override {}
 };
 
 // ── Animation Component ─────────────────────────────────────────────────────
@@ -202,6 +258,10 @@ class VansScriptAnimationComponent : public VansScriptComponent
 public:
 	// 非拥有指针，生命周期由 VansScene 管理
 	VansGraphics::VansAnimationNode* m_AnimNode = nullptr;
+
+protected:
+	void OnEnable()  override;
+	void OnDisable() override;
 };
 
 // ── Ragdoll Component ───────────────────────────────────────────────────────
@@ -222,6 +282,11 @@ public:
 	int m_ConfiguredBodyCount = 0;
 	int m_ConfiguredJointCount = 0;
 
+protected:
+	void OnEnable()  override;
+	void OnDisable() override;
+
+public:
 	void SetDriveMode(int mode);
 	void SetDriveModeWithVelocity(int mode, float vx, float vy, float vz);
 	int GetDriveMode() const;
@@ -247,6 +312,11 @@ public:
 	// 非拥有指针，实际 Node 由 VansScene::m_CharControllerNodes 管理
 	VansEngine::VansCharacterControllerNode* m_ControllerNode = nullptr;
 
+protected:
+	void OnEnable()  override;
+	void OnDisable() override;
+
+public:
 	// ── Ragdoll 接管接口 ───────────────────────────────────
 	// 将 ragdollComp 的 AnimNode 绑定到 ControllerNode，开启接管模式
 	void BindFollowRagdoll(VansScriptRagdollComponent* ragdollComp,
@@ -268,6 +338,10 @@ public:
 
 	// 该灯光在 m_LightManager::m_DirectionalLights 中的索引
 	int m_LightIndex = -1;
+
+protected:
+	void OnEnable()  override {}
+	void OnDisable() override {}
 };
 
 // ── Point Light Component ────────────────────────────────────────────────────
@@ -283,6 +357,10 @@ public:
 
 	// 该灯光在 m_LightManager::m_PointLights 中的索引
 	int m_LightIndex = -1;
+
+protected:
+	void OnEnable()  override {}
+	void OnDisable() override {}
 };
 
 // ── Spot Light Component ─────────────────────────────────────────────────────
@@ -298,6 +376,10 @@ public:
 
 	// 该灯光在 m_LightManager::m_SpotLights 中的索引
 	int m_LightIndex = -1;
+
+protected:
+	void OnEnable()  override {}
+	void OnDisable() override {}
 };
 // ── Video Component ─────────────────────────────────────────────────────────
 // 持有对 VansVideoManager 中视频纹理的非拥有指针。
@@ -331,6 +413,10 @@ public:
 	// 切换后，EmissiveMaterial / RectLight 下一帧自动使用新纹理。
 	// 返回 true 表示切换成功，false 表示资源名未找到（保持原状）。
 	bool SwitchSource(const std::string& name);
+
+protected:
+	void OnEnable()  override {}
+	void OnDisable() override {}
 };
 
 // ── Rect Light Component (area light, evaluated via LTC) ─────────────────────
@@ -353,6 +439,10 @@ public:
 	// 视频组件引用（非拥有指针）。非空时每帧从此组件获取视频帧写入发光数组层。
 	// 播放参数控制统一由 VansScriptVideoComponent 负责，面光源只读取 GPU 数据。
 	VansScriptVideoComponent* m_VideoComponent = nullptr;
+
+protected:
+	void OnEnable()  override {}
+	void OnDisable() override {}
 };// ── Camera Component ────────────────────────────────────────────────────────────────────
 // 持有对 VansCamera 的非拥有指针；VansCamera 由 VansScene 生命周期管理。
 // Transform 的 position/rotation(pitch/yaw) 每帧由 VansCamera::SyncFromTransform 同步。
@@ -363,6 +453,10 @@ public:
 
 	// 非拥有指针，生命周期由 VansScene::m_Camera 管理
 	VansGraphics::VansCamera* m_Camera = nullptr;
+
+protected:
+	void OnEnable()  override;
+	void OnDisable() override;
 };
 // ── Audio Component ─────────────────────────────────────────────────────────
 // 持有对 VansAudioManager 中音频节点的非拥有指针。
@@ -378,6 +472,11 @@ public:
 	// 反向引用，场景加载时由 VansSceneLoader 写入，不拥有生命周期
 	VansEngine::VansAudioManager* m_AudioManager = nullptr;
 
+protected:
+	void OnEnable()  override;
+	void OnDisable() override;
+
+public:
 	// 运行时切换音频资源（仅限已加载资源）。
 	// 不自动播放，由调用方决定是否立即调用 Play()。
 	// 返回 true 表示切换成功，false 表示资源名未找到（保持原状）。
@@ -405,6 +504,11 @@ public:
 	// 对应的渲染节点（非拥有指针，生命周期由 VansScene 管理）
 	VansGraphics::VansParticleRenderNode* m_RenderNode = nullptr;
 
+protected:
+	void OnEnable()  override { Play(); }
+	void OnDisable() override { Pause(); }
+
+public:
 	// ── 运行时状态 ───────────────────────────────────────────────────────
 	bool  m_PlayOnAwake = true;
 	bool  m_IsPlaying   = false;
@@ -432,6 +536,8 @@ public:
 class VanPyScriptComponent : public VansScriptComponent
 {
 public:
+	VanPyScriptComponent() { m_Enabled = false; }  // Python 脚本默认 disabled
+
 	// Path to the .py file (relative to project root), e.g. "Scripts/my_rotator.py"
 	std::string m_ScriptPath;
 	// The class name inside the script, e.g. "MyRotator"
@@ -447,16 +553,21 @@ public:
 	VansScriptObject* m_OwnerObject = nullptr;
 
 	// Runtime state
-	bool m_IsEnabled  = false;
+	// [m_IsEnabled removed — unified with VansScriptComponent::m_Enabled]
 	bool m_IsValid    = false;   // true after successful instantiation
 
 	// ── Lifecycle helpers (called from VansScriptContext) ─────────────
 	void Instantiate();   // import module, create class instance, bind owner
-	void Enable();        // call Python on_enable()
+	void Enable()  { SetEnabled(true);  }   // → OnEnable  → Python on_enable()
 	void CallUpdate();    // call Python update()
-	void Disable();       // call Python on_disable()
+	void Disable() { SetEnabled(false); }   // → OnDisable → Python on_disable()
 	void Teardown();      // release py::object, reset state
 
+protected:
+	void OnEnable()  override;  // calls Python on_enable()
+	void OnDisable() override;  // calls Python on_disable()
+
+	public:
 	// ── Physics event callbacks (called from VansScriptContext) ───────
 	void CallOnCollisionEnter(const PhysicsEventInfo& info);
 	void CallOnCollisionExit(const PhysicsEventInfo& info);

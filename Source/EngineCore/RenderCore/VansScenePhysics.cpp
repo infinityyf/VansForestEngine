@@ -561,13 +561,13 @@ void VansGraphics::VansScene::UpdateClothSimulation(float dt)
 
     // 第一步：计算本帧所有固定点的目标世界坐标（不写入粒子缓冲区）
     for (auto* clothNode : m_ClothNodes)
-        if (clothNode) clothNode->ComputePinnedTargets();
+        if (clothNode && clothNode->IsEnabled()) clothNode->ComputePinnedTargets();
 
     // 第二步：更新碰撞球（每帧一次，不需要随子步变化）
     static bool loggedOnce = false;
     for (auto* clothNode : m_ClothNodes)
     {
-        if (!clothNode) continue;
+        if (!clothNode || !clothNode->IsEnabled()) continue;
         auto& sphereRefs = clothNode->GetCollisionSphereRefs();
         if (sphereRefs.empty()) continue;
 
@@ -627,14 +627,14 @@ void VansGraphics::VansScene::UpdateClothSimulation(float dt)
         // alpha: 第 1 步=1/N, 第 2 步=2/N, ..., 最后一步=1.0
         const float alpha = static_cast<float>(s + 1) / static_cast<float>(kSubSteps);
         for (auto* clothNode : m_ClothNodes)
-            if (clothNode) clothNode->WritePinnedParticlesLerped(alpha);
+            if (clothNode && clothNode->IsEnabled()) clothNode->WritePinnedParticlesLerped(alpha);
 
         VansEngine::VansClothSystem::GetInstance().SimulateStep(subDt);
     }
 
     // 第四步：提交本帧目标为"上一帧"，供下帧插值使用
     for (auto* clothNode : m_ClothNodes)
-        if (clothNode) clothNode->CommitPinnedTargets();
+        if (clothNode && clothNode->IsEnabled()) clothNode->CommitPinnedTargets();
 }
 
 void VansGraphics::VansScene::WriteClothResultsToStagingBuffers()
