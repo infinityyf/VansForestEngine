@@ -1,171 +1,254 @@
-#include "VansShaderRegistry.h"
+#include "VansShaderManager.h"
 #include "VegetationCore/VansVegetationSystem.h"
+#include "WaterCore/VansWaterLOD.h"
 
 // ---------------------------------------------------------------------------
-// RegisterEngineShaders — declares every built-in engine shader in one place.
+// RegisterEngineShaders declares every built-in engine shader in one place.
 //
 // Two-step registration:
-//   Step 1: RegisterShader — one entry per unique shader (keyed by name).
-//   Step 2: RegisterMaterialPasses — maps each material type to { pass → shader }.
+//   Step 1: RegisterShader: one entry per unique shader (keyed by name).
+//   Step 2: RegisterMaterialPasses: maps each material type to { pass, shader }.
 // ---------------------------------------------------------------------------
 void RegisterEngineShaders()
 {
-    auto& reg = VansGraphics::VansShaderRegistry::Get();
+    auto& reg = VansGraphics::VansShaderManager::Get();
 
-    // ══════════════════════════════════════════════════════════════════════════
+    // -----------------------------------------------------------------------
     // Step 1: Register all shaders by name (one entry per unique shader)
-    // ══════════════════════════════════════════════════════════════════════════
+    // -----------------------------------------------------------------------
 
-    reg.RegisterShader("Unlit", {
+    reg.RegisterGraphicsShader("Unlit", {
         "Unlit",
-        "EngineAssets/Shaders/UnLit",
+        "EngineAssets/Shaders/UnLit/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        12, false
+        12, false, false, 4
     });
 
-    reg.RegisterShader("Shadow", {
+    reg.RegisterGraphicsShader("Shadow", {
         "Shadow",
         "EngineAssets/Shaders/Shadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         12, false
     });
 
-    reg.RegisterShader("PunctualShadow", {
+    reg.RegisterGraphicsShader("PunctualShadow", {
         "PunctualShadow",
         "EngineAssets/Shaders/PunctualShadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         16, false
     });
 
-    reg.RegisterShader("Skin", {
+    reg.RegisterGraphicsShader("Skin", {
         "Skin",
-        "EngineAssets/Shaders/UnlitSkin",
+        "EngineAssets/Shaders/UnlitSkin/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        12, false
+        12, false, false, 4
     });
 
-    reg.RegisterShader("Cloth", {
+    reg.RegisterGraphicsShader("Cloth", {
         "Cloth",
-        "EngineAssets/Shaders/Cloth",
+        "EngineAssets/Shaders/Cloth/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        12, false
+        12, false, false, 4
     });
 
-    reg.RegisterShader("Hair", {
+    reg.RegisterGraphicsShader("Hair", {
         "Hair",
-        "EngineAssets/Shaders/Hair",
+        "EngineAssets/Shaders/Hair/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        12, false
+        12, false, false, 4
     });
 
-    reg.RegisterShader("Coat", {
+    reg.RegisterGraphicsShader("Coat", {
         "Coat",
         "EngineAssets/Shaders/Coat",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
         12, false
     });
 
-    reg.RegisterShader("TransparentSimpleColor", {
+    reg.RegisterGraphicsShader("TransparentSimpleColor", {
         "TransparentSimpleColor",
         "EngineAssets/Shaders/UnlitTransparent/SimpleColor",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         8, true
     });
 
-    reg.RegisterShader("Deferred", {
+    reg.RegisterGraphicsShader("Deferred", {
         "Deferred",
         "EngineAssets/Shaders/Deferred",
         VK_FALSE, VK_FALSE, VK_COMPARE_OP_NEVER, VK_CULL_MODE_NONE,
         0, false
     });
 
-    reg.RegisterShader("Postprocess", {
+    reg.RegisterGraphicsShader("Postprocess", {
         "Postprocess",
         "EngineAssets/Shaders/PostProcess",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_ALWAYS, VK_CULL_MODE_NONE,
         0, false
     });
 
-    reg.RegisterShader("SkyBox", {
+    reg.RegisterGraphicsShader("SkyBox", {
         "SkyBox",
         "EngineAssets/Shaders/SkyBox",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         0, false
     });
 
-    reg.RegisterShader("SSAO", {
+    reg.RegisterGraphicsShader("SSAO", {
         "SSAO",
         "EngineAssets/Shaders/ScreenSpaceFeature/SSAO",
         VK_FALSE, VK_FALSE, VK_COMPARE_OP_NEVER, VK_CULL_MODE_NONE,
         0, false
     });
 
-    reg.RegisterShader("Subsurface", {
+    reg.RegisterGraphicsShader("Subsurface", {
         "Subsurface",
-        "EngineAssets/Shaders/Subsurface",
+        "EngineAssets/Shaders/Subsurface/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        12, false
+        12, false, false, 4
     });
 
-    reg.RegisterShader("GrassGBuffer", {
+    reg.RegisterGraphicsShader("GrassGBuffer", {
         "GrassGBuffer",
-        "EngineAssets/Shaders/Grass",
+        "EngineAssets/Shaders/Grass/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        sizeof(VansGraphics::GrassDrawPushConstants), false  // P1: 增加 LOD 距离参数，48 字节
+        sizeof(VansGraphics::GrassDrawPushConstants), false, false, 4  // P1: LOD distance parameters, 8 bytes.
     });
 
-    reg.RegisterShader("MotionVector", {
+    reg.RegisterGraphicsShader("MotionVector", {
         "MotionVector",
         "EngineAssets/Shaders/MotionVector",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
         8, false
     });
 
-    reg.RegisterShader("Emissive", {
+    reg.RegisterGraphicsShader("Emissive", {
         "Emissive",
-        "EngineAssets/Shaders/Emissive",
+        "EngineAssets/Shaders/Emissive/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        12, false
+        12, false, false, 4
     });
 
-    // 粒子 Billboard 着色器：
-    // - 深度测试开启、深度写入关闭（透明 Pass）
-    // - CULL_NONE：Billboard 双面可见
-    // - Alpha Blend 开启（支持加法/叠加混合）
-    // - Push Constant 16 字节（vec4 spriteSheetParams：精灵动画列/行数）
-    reg.RegisterShader("Particle", {
+    // Particle billboard shader.
+    // - Depth test enabled and depth write disabled for transparent pass.
+    // - CULL_NONE keeps billboards visible from both sides.
+    // - Alpha blend enabled for additive/overlay blending.
+    // - Push constant: 16 bytes, vec4 spriteSheetParams.
+    reg.RegisterGraphicsShader("Particle", {
         "Particle",
         "EngineAssets/Shaders/Particle",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         16, true
     });
 
-    // Six-Way Smoke Lighting 粒子 Shader：
-    // - 保持普通粒子透明渲染状态
-    // - Set 1 绑定 Positive/Negative Axes 两张 Lightmap
-    // - Push Constant 80 字节：Flipbook + 六向光照参数 + 预留主光参数
-    reg.RegisterShader("ParticleSixWay", {
+    // Six-way smoke lighting particle shader.
+    // - Keeps the regular transparent particle render state.
+    // - Set 1 binds positive/negative axis lightmaps.
+    // - Push constant: 80 bytes, flipbook plus six-way lighting and reserved main-light data.
+    reg.RegisterGraphicsShader("ParticleSixWay", {
         "ParticleSixWay",
         "EngineAssets/Shaders/ParticleSixWay",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         80, true
     });
 
-    // 贴花着色器：正确的 screen-space decal 方案
-    // - CULL_FRONT：只光栅化背面（cube 远离相机的面）
-    // - GREATER_OR_EQUAL：场景深度 <= 背面深度 → 场景几何在 cube 内部 → 通过
-    //   （天空/cube后方几何的深度 > 背面深度 → 拒绝，正确）
-    // - depthWrite = FALSE：不写入深度
-    reg.RegisterShader("Decal", {
+    // Screen-space decal shader.
+    // - CULL_FRONT rasterizes only the cube back faces.
+    // - GREATER_OR_EQUAL accepts scene geometry inside the decal volume.
+    // - depthWrite = FALSE avoids writing decal volume depth.
+
+    reg.RegisterGraphicsShader("Decal", {
         "Decal",
         "EngineAssets/Shaders/Decal",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_CULL_MODE_FRONT_BIT,
         12, false, true
     });
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Step 2: Register material type → { pass name → shader name } mappings
-    // ══════════════════════════════════════════════════════════════════════════
+    // -----------------------------------------------------------------------
+
+
+    reg.RegisterGraphicsShader("WaterGBuffer", {
+        "WaterGBuffer", "EngineAssets/Shaders/Water/WaterGBuffer",
+        VK_FALSE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_NONE,
+        sizeof(VansGraphics::WaterPatchPushConstant), false
+    });
+    reg.RegisterGraphicsShader("WaterComposite", {
+        "WaterComposite", "EngineAssets/Shaders/Water/WaterComposite",
+        VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS, VK_CULL_MODE_NONE,
+        0, false
+    });
+    reg.RegisterGraphicsShader("Terrain", {
+        "Terrain", "EngineAssets/Shaders/Terrain/Deferred",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        0, false, false, 4
+    });
+    reg.RegisterGraphicsShader("TerrainShadow", {
+        "TerrainShadow", "EngineAssets/Shaders/Terrain/Shadow",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        sizeof(int), false
+    });
+    reg.RegisterGraphicsShader("TerrainMotionVector", {
+        "TerrainMotionVector", "EngineAssets/Shaders/Terrain/MotionVector",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        0, false
+    });
+    reg.RegisterGraphicsShader("TerrainTess", {
+        "TerrainTess", "EngineAssets/Shaders/Terrain/DeferredTess",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_BACK_BIT,
+        0, false
+    });
+    reg.RegisterGraphicsShader("ReflectionProbeCapture", {
+        "ReflectionProbeCapture", "EngineAssets/Shaders/ReflectionProbeCapture",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        16, false
+    });
+    reg.RegisterGraphicsShader("ReflectionProbeCaptureSky", {
+        "ReflectionProbeCaptureSky", "EngineAssets/Shaders/ReflectionProbeCaptureSky",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        0, false
+    });
+    reg.RegisterComputeShader("PreConDiffuseEnvironment", "EngineAssets/Shaders/PreConDiffuseEnvironment");
+    reg.RegisterComputeShader("PreConSpecularEnvironment", "EngineAssets/Shaders/PreConSpecularEnvironment");
+    reg.RegisterComputeShader("SSGI", "EngineAssets/Shaders/SSGI");
+    reg.RegisterComputeShader("SSGITemporal", "EngineAssets/Shaders/SSGITemporal");
+    reg.RegisterComputeShader("HIZ", "EngineAssets/Shaders/HIZ");
+    reg.RegisterComputeShader("HIZSeed", "EngineAssets/Shaders/HIZ_SEED");
+    reg.RegisterComputeShader("ScreenSpaceShadow", "EngineAssets/Shaders/ScreenSpaceShadow");
+    reg.RegisterComputeShader("SSRTrace", "EngineAssets/Shaders/SSR_TRACE");
+    reg.RegisterComputeShader("SSRResolve", "EngineAssets/Shaders/SSR_RESOLVE");
+    reg.RegisterComputeShader("SSRTemporalAA", "EngineAssets/Shaders/SSR_TEMPORALAA");
+    reg.RegisterComputeShader("BilateralFilter", "EngineAssets/Shaders/BilateralFilter", sizeof(VansGraphics::VansMaterialManager::BilateralFilterPushConst));
+    reg.RegisterComputeShader("VolumetricFog", "EngineAssets/Shaders/VolumetricFog");
+    reg.RegisterComputeShader("FogLightInjection", "EngineAssets/Shaders/FogLightInjection");
+    reg.RegisterComputeShader("FogRayMarch", "EngineAssets/Shaders/FogRayMarch");
+    reg.RegisterComputeShader("CloudRayMarch", "EngineAssets/Shaders/Cloud");
+    reg.RegisterComputeShader("TileLightBuild", "EngineAssets/Shaders/TileLight");
+    reg.RegisterComputeShader("ExposureLuminance", "EngineAssets/Shaders/PostProcess/ExposureLuminance");
+    reg.RegisterComputeShader("ExposureAdapt", "EngineAssets/Shaders/PostProcess/ExposureAdapt");
+    reg.RegisterComputeShader("BloomPrefilter", "EngineAssets/Shaders/PostProcess/BloomPrefilter");
+    reg.RegisterComputeShader("BloomDownsample", "EngineAssets/Shaders/PostProcess/BloomDownsample");
+    reg.RegisterComputeShader("BloomUpsample", "EngineAssets/Shaders/PostProcess/BloomUpsample");
+    reg.RegisterComputeShader("GIPointLight", "EngineAssets/Shaders/GIPointLight");
+    reg.RegisterComputeShader("GISHUpdate", "EngineAssets/Shaders/GISHUpdate");
+    reg.RegisterComputeShader("ReflectionProbePrefilter", "EngineAssets/Shaders/ReflectionProbePrefilter");
+    reg.RegisterComputeShader("GrassBoneSim", "EngineAssets/Shaders/GrassBoneSim");
+    reg.RegisterComputeShader("GrassCull", "EngineAssets/Shaders/GrassCull", sizeof(VansGraphics::GrassCullPushConstants));
+    reg.RegisterComputeShader("WaterWave", "EngineAssets/Shaders/Water/WaterWave");
+    reg.RegisterComputeShader("WaterEffects", "EngineAssets/Shaders/Water/WaterEffects");
+    reg.RegisterComputeShader("WaterSSR", "EngineAssets/Shaders/Water/SSR");
+    reg.RegisterComputeShader("WaterRefraction", "EngineAssets/Shaders/Water/Refraction");
+    reg.RegisterComputeShader("WaterCaustics", "EngineAssets/Shaders/Water/Caustics");
+    reg.RegisterComputeShader("WaterDetailNormal", "EngineAssets/Shaders/Water/WaterDetailNormal");
+    reg.RegisterComputeShader("WaterThickness", "EngineAssets/Shaders/Water/SSS");
+    reg.RegisterComputeShader("WaterSSSScatter", "EngineAssets/Shaders/Water/SSSScatter");
+    reg.RegisterComputeShader("WaterInitSpectrum", "EngineAssets/Shaders/Water/FFT");
+    reg.RegisterComputeShader("WaterFFTIter", "EngineAssets/Shaders/Water/FFT");
+    reg.RegisterComputeShader("WaterTimeEvolve", "EngineAssets/Shaders/Water/FFT");
+    reg.RegisterComputeShader("WaterDisplacementExtract", "EngineAssets/Shaders/Water/FFT");
+    reg.RegisterRayTracingShader("RayTracingTest", "EngineAssets/Shaders/RayTracingTest");
+
+    // Step 2: Register material type to { pass name, shader name } mappings.
+
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_PBR, {
         { VansGraphics::VansPass::GBUFFER,          "Unlit"          },
@@ -231,12 +314,12 @@ void RegisterEngineShaders()
         { VansGraphics::VansPass::SCREEN_SPACE,     "SSAO"           },
     });
 
-    // 自发光：仅参与 GBuffer pass，不投射阴影，不参与 Velocity pass
+    // Emissive: only participates in GBuffer, without shadow or velocity passes.
     reg.RegisterMaterialPasses(VansGraphics::VAN_EMISSIVE, {
         { VansGraphics::VansPass::GBUFFER,          "Emissive"       },
     });
 
-    // 贴花：仅参与 DecalGBuffer pass，不投射阴影，不写深度
+    // Decal: only participates in DecalGBuffer, without shadow or depth writes.
     reg.RegisterMaterialPasses(VansGraphics::VAN_DECAL, {
         { VansGraphics::VansPass::DECAL_GBUFFER,    "Decal"          },
     });

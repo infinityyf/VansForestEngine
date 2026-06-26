@@ -184,7 +184,7 @@ glm::vec4 VansGraphics::VansCamera::GetUp()
 
 void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix)
 {
-// Sub鈥憄ixel jitter (Halton 2,3) for TAA / upscale
+// Sub-pixel jitter (Halton 2,3) for TAA / upscale
     auto halton = [](uint32_t i, uint32_t b)->float {
         float f = 1.0f;
         float r = 0.0f;

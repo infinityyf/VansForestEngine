@@ -13,12 +13,12 @@ VansConfigration::VansConfigration()
 	SupportRayTracing = true;
 
 	// Cascade Shadow Map defaults
-	CascadeShadowMapSize = 512;
+	CascadeShadowMapSize = 2048;
 	CascadeCount = 4;
-	CascadeSplits[0] = 5.0f;
-	CascadeSplits[1] = 20.0f;
-	CascadeSplits[2] = 80.0f;
-	CascadeSplits[3] = 320.0f;
+	CascadeSplits[0] = 10.0f;
+	CascadeSplits[1] = 35.0f;
+	CascadeSplits[2] = 120.0f;
+	CascadeSplits[3] = 350.0f;
 
 	// Get executable path and compute project root
 	char exePath[MAX_PATH];

@@ -1,4 +1,4 @@
-#include "VansVKDevice.h"
+﻿#include "VansVKDevice.h"
 #include "VansRenderPass.h"
 #include "VansVKDescriptorManager.h"
 #include "../VansScene.h"
@@ -275,6 +275,7 @@ namespace VansGraphics
 				// ★ TileLight Build（依赖相机矩阵 + 光源 SSBO，在 UpdateHZB 前完成）
 				BuildTileLightLists(m_VansVKCommandBuffer);
 				UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
+				UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer);
 				UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
 				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
 				UpdateRayTracing(m_VansVKCommandBuffer);
@@ -486,6 +487,7 @@ namespace VansGraphics
 				// CB2 通过 m_AsyncComputeDoneSemaphore 等待其完成，
 				// Tile 光源缓冲区的写入可见性由信号量保证。
 				UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
+				UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer);
 				UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
 				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
 				UpdateRayTracing(m_VansVKCommandBuffer);

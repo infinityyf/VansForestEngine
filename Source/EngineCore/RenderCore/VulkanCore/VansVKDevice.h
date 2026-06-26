@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../VansGraphicsDevice.h"
 #include "vulkan/vulkan.h"
 #include "VansVKSurface.h"
@@ -200,6 +200,7 @@ namespace VansGraphics
 			m_PPExposureDescSetsUpdated = false;
 			m_PPBloomDescSetsUpdated = false;
 			m_CloudRayMarchDescSetsUpdated = false;
+			m_ScreenSpaceShadowDescSetsUpdated = false;
 		}
 
 		void UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
@@ -207,6 +208,8 @@ namespace VansGraphics
 		void UpdateHZB(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		void UpdateSSR(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+
+		void UpdateScreenSpaceShadow(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		void UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
@@ -238,6 +241,7 @@ namespace VansGraphics
 		bool m_PPExposureDescSetsUpdated = false;
 		bool m_PPBloomDescSetsUpdated = false;
 		bool m_CloudRayMarchDescSetsUpdated = false;   // 体积云描述符集首次写入标记
+		bool m_ScreenSpaceShadowDescSetsUpdated = false;
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
@@ -256,6 +260,8 @@ namespace VansGraphics
 		void UpdateHZBDescriptorSets(VansRenderPassManager* renderPassManager);
 
 		void UpdateSSRDescriptorSets(VansRenderPassManager* renderPassManager);
+
+		void UpdateScreenSpaceShadowSets(VansRenderPassManager* renderPassManager);
 
 		void UpdateVolumetricFogSets(VansRenderPassManager* renderPassManager);
 
@@ -298,6 +304,8 @@ namespace VansGraphics
 		void PrepareSSGIRenderData();
 
 		void PrepareHZBRenderData();
+
+		void PrepareScreenSpaceShadowRenderData();
 
 		void PrepareSSRRenderData();
 

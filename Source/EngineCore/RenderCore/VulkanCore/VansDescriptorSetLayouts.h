@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <vulkan/vulkan.h>
 #include <array>
 #include <vector>
@@ -196,6 +196,7 @@ namespace VansGraphics
 		DEFERRED_BINDING_SH_G             = 11,
 		DEFERRED_BINDING_SH_B             = 12,
 		DEFERRED_BINDING_FOG              = 13,
+		DEFERRED_BINDING_SCREEN_SPACE_SHADOW = 14,
 		DEFERRED_BINDING_RECT_LIGHT_EMISSIVE = 15, // 面光源发光贴图数组 (sampler2DArray)
 		DEFERRED_BINDING_IES_PROFILES        = 16, // IES profile 纹理数组 (sampler2DArray, R16F)
 	};
@@ -297,6 +298,16 @@ namespace VansGraphics
 		SSGI_BINDING_SH_G         = 8,
 		SSGI_BINDING_SH_B         = 9,
 		SSGI_BINDING_HIZ_DEPTH    = 10,
+	};
+
+	// --- Screen Space Shadow Compute Pass ---
+	enum ScreenSpaceShadowPassBinding : uint32_t
+	{
+		SSS_BINDING_NORMAL = 0,
+		SSS_BINDING_GBUFFER2 = 1,
+		SSS_BINDING_HIZ = 2,
+		SSS_BINDING_RESULT = 3,
+		SSS_BINDING_PARAMS = 4,
 	};
 
 	// --- SSGI Temporal Accumulation Pass ---
@@ -707,6 +718,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_Empty(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_Terrain(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSGI(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_ScreenSpaceShadow(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSGITemporal(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_SSR_Trace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_Resolve(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

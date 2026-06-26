@@ -1,6 +1,6 @@
 ﻿#pragma once
 #include "VansRenderNode.h"
-#include "VansShaderRegistry.h"
+#include "VansShaderManager.h"
 #include "WaterCore/VansWaterConfig.h"
 
 // VansWaterMaterial 前向声明，避免循环依赖（完整定义在 WaterCore/VansWaterMaterial.h）
@@ -475,15 +475,19 @@ namespace VansGraphics
 
 		// Helper: creates and registers one shader from a registry entry.
 		// No-op if the shader is already loaded. Used by LoadShadersFromRegistry.
-		void LoadShaderFromEntry(const VansShaderRegistryEntry& entry,
+		void LoadShaderFromEntry(const VansShaderEntry& entry,
 			                     const std::string& pathPrefix, VkDevice& device);
 
 		// Loads all scene meshes from the JSON 'mesh' array.
 		void LoadMeshesFromJson(const json& meshData, const std::string& pathPrefix,
 			                    VkDevice& device, VansVKDevice* vkDevice);
 
+	public:
+
 		// Loads all shaders from the C++ shader registry.
 		void LoadShadersFromRegistry(const std::string& pathPrefix, VkDevice& device);
+
+	private:
 
 		// Loads all scene textures from the JSON 'texture' array and imports engine defaults.
 		// pathPrefix    = project root (for scene-relative asset paths)

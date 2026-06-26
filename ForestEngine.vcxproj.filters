@@ -611,7 +611,7 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VansRuntimeRenderTextureManager.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
-    <ClInclude Include="Source\EngineCore\RenderCore\VansShaderRegistry.h">
+    <ClInclude Include="Source\EngineCore\RenderCore\VansShaderManager.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VansTransformSlotAllocator.h">
@@ -1110,7 +1110,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VansShaderRegistrations.cpp">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
-    <ClCompile Include="Source\EngineCore\RenderCore\VansShaderRegistry.cpp">
+    <ClCompile Include="Source\EngineCore\RenderCore\VansShaderManager.cpp">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
     <ClCompile Include="External\GUI\ImGuizmo\ImGuizmo.cpp">

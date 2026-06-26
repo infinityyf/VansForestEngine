@@ -1180,6 +1180,8 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         //UI Pass
         m_SceneWindow->RegistCamera(&camera);
         m_SceneWindow->RegistScene(m_Scene);
+        m_InspectorWindow->RegistScene(m_Scene);
+        m_RenderDebugWindow->RegistScene(m_Scene);
         {
             VANS_PROFILE_SCOPE("Editor::DrawWindows", Vans::ProfileCategory::Editor);
             DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));

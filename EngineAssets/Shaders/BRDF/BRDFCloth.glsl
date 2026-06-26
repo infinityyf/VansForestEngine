@@ -129,6 +129,7 @@ void AmbientBRDF_Cloth(BRDFData brdf, vec3 viewDirection,
 void CalculateDirectLight_Cloth(BRDFData brdf,
                                 sampler2DArray cascadeShadowMap, float viewDepth,
                                 sampler2D punctualShadowMap,
+                                float screenSpaceShadow,
                                 inout LightResult lightResult)
 {
     lightResult.directDiffuse  = vec3(0);
@@ -141,7 +142,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
         dR *= uDirectionLight.color.rgb * uDirectionLight.intensity;
         sR *= uDirectionLight.color.rgb * uDirectionLight.intensity;
 
-        float shadow = SampleCascadeShadow(brdf.positionWS, cascadeShadowMap, viewDepth);
+        float shadow = min(SampleCascadeShadow(brdf.positionWS, brdf.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
         lightResult.directDiffuse  += dR * shadow;
         lightResult.directSpecular += sR * shadow;
     }

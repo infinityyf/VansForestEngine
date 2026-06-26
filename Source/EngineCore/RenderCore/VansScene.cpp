@@ -2,7 +2,7 @@
 #include "VansScene.h"
 #include "../VansFramePhase.h"
 #include "../VansThreadContract.h"
-#include "VansShaderRegistry.h"
+#include "VansShaderManager.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
 #include "../PhysicsCore/VansPhysics.h"
@@ -975,20 +975,6 @@ void VansGraphics::VansScene::UpdateSceneData()
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
 
-    // 先将灯光组件 transform 数据同步到灯光结构体，再计算阴影矩阵
-    {
-        VANS_PROFILE_SCOPE("Light::SyncTransforms", Vans::ProfileCategory::RenderPrepare);
-        SyncLightTransforms();
-    }
-    {
-        VANS_PROFILE_SCOPE("Light::UpdateShadowMatrices", Vans::ProfileCategory::RenderPrepare);
-        m_LightManager.UpdateLightShadowMatrixData(glm::vec3(m_Camera->GetPosition()));
-    }
-    {
-        VANS_PROFILE_SCOPE("Light::UpdateCPUData", Vans::ProfileCategory::RenderPrepare);
-        m_LightManager.UpdateLightCPUData();
-    }
-
     // Per-frame skeletal animation update + GPU bone matrix upload
     // Use the cached frame delta so all per-frame systems observe the same timestep.
     {
@@ -1008,6 +994,28 @@ void VansGraphics::VansScene::UpdateSceneData()
     {
         VANS_PROFILE_SCOPE("Transform::ResolveParentChild", Vans::ProfileCategory::RenderPrepare);
         m_TransformParentSystem.ResolveParentChildTransforms();
+    }
+
+    // Sync light components after transform parenting is resolved, then rebuild shadow matrices.
+    {
+        VANS_PROFILE_SCOPE("Light::SyncTransforms", Vans::ProfileCategory::RenderPrepare);
+        SyncLightTransforms();
+    }
+    {
+        VANS_PROFILE_SCOPE("Light::UpdateShadowMatrices", Vans::ProfileCategory::RenderPrepare);
+        VansCascadeCameraData shadowCamera = {};
+        shadowCamera.position = glm::vec3(m_Camera->GetPosition());
+        shadowCamera.forward = glm::normalize(glm::vec3(-m_Camera->GetForward()));
+        shadowCamera.up = glm::normalize(glm::vec3(m_Camera->GetUp()));
+        shadowCamera.verticalFovRadians = glm::radians(m_Camera->GetFov());
+        shadowCamera.aspectRatio = m_Camera->GetAspectRatio();
+        shadowCamera.nearPlane = m_Camera->GetNearClip();
+        shadowCamera.farPlane = m_Camera->GetFarClip();
+        m_LightManager.UpdateLightShadowMatrixData(shadowCamera);
+    }
+    {
+        VANS_PROFILE_SCOPE("Light::UpdateCPUData", Vans::ProfileCategory::RenderPrepare);
+        m_LightManager.UpdateLightCPUData();
     }
 
     // Advance cloth simulation and write results to staging buffers

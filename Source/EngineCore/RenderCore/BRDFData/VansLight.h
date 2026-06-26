@@ -24,6 +24,21 @@ namespace VansGraphics
 		float					padding[3];
 		glm::mat4x4				m_ShadowMatrix[4];      // one per cascade
 		glm::vec4				m_CascadeSplits;        // view-space far distances per cascade
+		glm::vec4				m_CascadeTexelSize;     // world units per shadow texel
+		glm::vec4				m_CascadeDepthScale;    // 1 / light-space depth range
+		glm::vec4				m_CascadeNormalBias;    // world normal bias per cascade
+		glm::vec4				m_CascadeFilterRadius;  // stable PCF radius in texels
+	};
+
+	struct VansCascadeCameraData
+	{
+		glm::vec3 position;
+		glm::vec3 forward;
+		glm::vec3 up;
+		float verticalFovRadians;
+		float aspectRatio;
+		float nearPlane;
+		float farPlane;
 	};
 
 	struct alignas(16) VansPointLight
@@ -115,9 +130,13 @@ namespace VansGraphics
 
 		void AddRectLight(const VansRectLight& light);
 
+		void UpdateLightShadowMatrixData(const VansCascadeCameraData& cameraData);
+
 		void UpdateLightShadowMatrixData(const glm::vec3& cameraPosition);
 
 		void UpdateLightCPUData();
+
+		void SyncLightGPUData(const VansCascadeCameraData& cameraData);
 
 		void SyncLightGPUData(const glm::vec3& cameraPosition);
 

@@ -286,7 +286,7 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VansRenderNode.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansScene.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansSceneLoadPass.h" />
-    <ClInclude Include="Source\EngineCore\RenderCore\VansShaderRegistry.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VansShaderManager.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansTransformSlotAllocator.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansVideoManager.h" />
     <ClInclude Include="Source\EngineCore\ScriptCore\VansTransform.h" />
@@ -469,7 +469,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VansSceneDraw.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansScenePhysics.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansVideoManager.cpp" />
-    <ClCompile Include="Source\EngineCore\RenderCore\VansShaderRegistry.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VansShaderManager.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansShaderRegistrations.cpp" />
     <ClCompile Include="Source\EngineCore\ScriptCore\VansTransform.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansGUIVulkanBackEnd.cpp" />

@@ -223,6 +223,7 @@ void AmbientBRDF_Skin(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, ino
 // Cascade shadow map version of skin lighting
 void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
                                sampler2DArray cascadeShadowMap, float viewDepth, sampler2D punctualShadowMap,
+                               float screenSpaceShadow,
                                inout LightResult lightResult)
 {
     lightResult.directDiffuse  = vec3(0);
@@ -237,7 +238,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     diffuseResult  *= uDirectionLight.color.rgb * uDirectionLight.intensity;
     specularResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
 
-    float shadowValue = SampleCascadeShadow(brdfData.positionWS, cascadeShadowMap, viewDepth);
+    float shadowValue = min(SampleCascadeShadow(brdfData.positionWS, brdfData.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
 
     diffuseResult  *= shadowValue;
     specularResult *= shadowValue;

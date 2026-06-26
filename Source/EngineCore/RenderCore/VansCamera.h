@@ -92,6 +92,7 @@ namespace VansGraphics
         float GetFov()      const { return m_Fov; }
         float GetNearClip() const { return m_NearClip; }
         float GetFarClip()  const { return m_FarClip; }
+        float GetAspectRatio() const { return m_AspectRatio; }
 
         void SetFov(float fov)       { m_Fov      = fov; }
         void SetNearClip(float val)  { m_NearClip = val; }

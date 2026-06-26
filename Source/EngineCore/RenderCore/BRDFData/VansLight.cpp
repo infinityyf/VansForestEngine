@@ -1,12 +1,14 @@
-#include "VansLight.h"
+﻿#include "VansLight.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include "../../../EngineCore/Configration/VansConfigration.h"
 #include "../../../EngineCore/VansTimer.h"
 #include "../VansCamera.h"
 #include <iostream>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace
 {
@@ -65,6 +67,155 @@ namespace
 		return best;
 	}
 
+	std::array<glm::vec3, 8> BuildFrustumSliceCornersWS(
+		const VansGraphics::VansCascadeCameraData& camera,
+		float splitNear,
+		float splitFar)
+	{
+		glm::vec3 forward = NormalizeLightDirectionSafe(camera.forward, glm::vec3(0.0f, 0.0f, -1.0f));
+		glm::vec3 up = NormalizeLightDirectionSafe(camera.up, glm::vec3(0.0f, 1.0f, 0.0f));
+		glm::vec3 right = glm::cross(forward, up);
+		if (glm::dot(right, right) <= MIN_DIRECTION_LENGTH_SQ)
+		{
+			up = ChooseStableUpVector(forward);
+			right = glm::cross(forward, up);
+		}
+		right = glm::normalize(right);
+		up = glm::normalize(glm::cross(right, forward));
+
+		const float tanHalfFov = std::tan(camera.verticalFovRadians * 0.5f);
+		const float nearHalfY = tanHalfFov * splitNear;
+		const float nearHalfX = nearHalfY * camera.aspectRatio;
+		const float farHalfY = tanHalfFov * splitFar;
+		const float farHalfX = farHalfY * camera.aspectRatio;
+
+		const glm::vec3 nearCenter = camera.position + forward * splitNear;
+		const glm::vec3 farCenter = camera.position + forward * splitFar;
+
+		return {
+			nearCenter - right * nearHalfX - up * nearHalfY,
+			nearCenter + right * nearHalfX - up * nearHalfY,
+			nearCenter + right * nearHalfX + up * nearHalfY,
+			nearCenter - right * nearHalfX + up * nearHalfY,
+			farCenter - right * farHalfX - up * farHalfY,
+			farCenter + right * farHalfX - up * farHalfY,
+			farCenter + right * farHalfX + up * farHalfY,
+			farCenter - right * farHalfX + up * farHalfY,
+		};
+	}
+
+	float ComputeCascadeNormalBias(int cascade, float worldUnitsPerTexel)
+	{
+		const float multipliers[4] = { 1.5f, 2.0f, 2.5f, 3.0f };
+		return worldUnitsPerTexel * multipliers[(std::min)(cascade, 3)];
+	}
+
+	float ComputeCascadeFilterRadius(int cascade)
+	{
+		const float radius[4] = { 1.0f, 1.25f, 1.5f, 2.0f };
+		return radius[(std::min)(cascade, 3)];
+	}
+
+	float ComputeCascadeBlendBand(const float* cascadeSplits, int cascade, float nearPlane, float farPlane)
+	{
+		const float prevSplit = (cascade > 0) ? (std::max)(cascadeSplits[cascade - 1], nearPlane) : nearPlane;
+		const float nextSplit = (cascade < 3) ? (std::min)(cascadeSplits[cascade + 1], farPlane) : farPlane;
+		const float cascadeSpan = (std::max)(nextSplit - prevSplit, 1.0f);
+		return std::clamp(cascadeSpan * 0.12f, 1.5f, 35.0f);
+	}
+
+	struct CascadeBuildResult
+	{
+		glm::mat4 viewProj;
+		float worldUnitsPerTexel;
+		float lightDepthRange;
+		float normalBias;
+		float filterRadiusTexels;
+	};
+
+	CascadeBuildResult BuildStableCascade(
+		const VansGraphics::VansCascadeCameraData& camera,
+		const glm::vec3& lightDirection,
+		float splitNear,
+		float splitFar,
+		int shadowMapSize,
+		int cascadeIndex)
+	{
+		auto corners = BuildFrustumSliceCornersWS(camera, splitNear, splitFar);
+
+		glm::vec3 center(0.0f);
+		for (const glm::vec3& p : corners)
+		{
+			center += p;
+		}
+		center /= 8.0f;
+
+		float radius = 0.0f;
+		for (const glm::vec3& p : corners)
+		{
+			radius = (std::max)(radius, glm::length(p - center));
+		}
+		radius = (std::max)(std::ceil(radius * 16.0f) / 16.0f, 0.01f);
+		const float receiverPadding = (std::max)(radius * 0.08f, 1.0f);
+		radius += receiverPadding;
+
+		glm::vec3 lightForward = NormalizeLightDirectionSafe(-lightDirection, glm::vec3(0.0f, -1.0f, 0.0f));
+		glm::vec3 up = ChooseStableUpVector(lightForward);
+		glm::vec3 lightRight = glm::normalize(glm::cross(up, lightForward));
+		glm::vec3 lightUp = glm::normalize(glm::cross(lightForward, lightRight));
+
+		glm::mat4 lightView = glm::lookAt(center - lightForward * radius, center, lightUp);
+		glm::vec3 centerLS = glm::vec3(lightView * glm::vec4(center, 1.0f));
+
+		float worldUnitsPerTexel = (2.0f * radius) / (std::max)(shadowMapSize, 1);
+		centerLS.x = std::floor(centerLS.x / worldUnitsPerTexel + 0.5f) * worldUnitsPerTexel;
+		centerLS.y = std::floor(centerLS.y / worldUnitsPerTexel + 0.5f) * worldUnitsPerTexel;
+		const glm::vec3 snappedCenter = glm::vec3(glm::inverse(lightView) * glm::vec4(centerLS, 1.0f));
+		lightView = glm::lookAt(snappedCenter - lightForward * radius, snappedCenter, lightUp);
+
+		float minZ = (std::numeric_limits<float>::max)();
+		float maxZ = -(std::numeric_limits<float>::max)();
+		for (const glm::vec3& p : corners)
+		{
+			glm::vec3 pLS = glm::vec3(lightView * glm::vec4(p, 1.0f));
+			minZ = (std::min)(minZ, pLS.z);
+			maxZ = (std::max)(maxZ, pLS.z);
+		}
+
+		const float casterMargin = radius * 3.0f;
+		minZ -= casterMargin;
+		maxZ += casterMargin;
+
+		glm::mat4 lightProj = glm::ortho(
+			-radius,
+			radius,
+			-radius,
+			radius,
+			minZ,
+			maxZ);
+
+		CascadeBuildResult result{};
+		result.viewProj = lightProj * lightView;
+		result.worldUnitsPerTexel = worldUnitsPerTexel;
+		result.lightDepthRange = (std::max)(maxZ - minZ, 0.001f);
+		result.normalBias = ComputeCascadeNormalBias(cascadeIndex, worldUnitsPerTexel);
+		result.filterRadiusTexels = ComputeCascadeFilterRadius(cascadeIndex);
+		return result;
+	}
+
+	VansGraphics::VansCascadeCameraData MakeFallbackCascadeCamera(const glm::vec3& cameraPosition)
+	{
+		VansGraphics::VansCascadeCameraData camera{};
+		camera.position = cameraPosition;
+		camera.forward = glm::vec3(0.0f, 0.0f, -1.0f);
+		camera.up = glm::vec3(0.0f, 1.0f, 0.0f);
+		camera.verticalFovRadians = glm::radians(45.0f);
+		camera.aspectRatio = 1.0f;
+		camera.nearPlane = 0.01f;
+		camera.farPlane = 10000.0f;
+		return camera;
+	}
+
 	float ClampSpotOuterCutoff(float angle)
 	{
 		if (!IsFiniteFloat(angle))
@@ -83,7 +234,7 @@ namespace
 		const std::vector<T>& lights)
 	{
 		std::vector<T> paddedLights(maxCount);
-		const size_t copyCount = std::min<size_t>(lights.size(), maxCount);
+		const size_t copyCount = (std::min)(lights.size(), static_cast<size_t>(maxCount));
 		if (copyCount > 0)
 		{
 			std::copy_n(lights.begin(), copyCount, paddedLights.begin());
@@ -134,81 +285,59 @@ glm::vec3 VansGraphics::VansLightManager::ComputeAtmosphereSunColor(
 	return baseColor * attenuation;
 }
 
-void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3& cameraPosition)
+void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCascadeCameraData& cameraData)
 {
 	auto vansConfig = VansConfigration::GetInstance();
 	int cascadeCount = vansConfig->GetCascadeCount();
 	const float* cascadeSplits = vansConfig->GetCascadeSplits();
 	int cascadeMapSize = vansConfig->GetCascadeShadowMapSize();
 
-	int directionLightCount = m_DirectionalLights.size();
+	int directionLightCount = static_cast<int>(m_DirectionalLights.size());
 	for (int dirLightIndex = 0; dirLightIndex < directionLightCount; dirLightIndex++)
 	{
-		auto lightDir = glm::normalize(m_DirectionalLights[dirLightIndex].m_Direction);
+		auto& dirLight = m_DirectionalLights[dirLightIndex];
+		auto lightDir = NormalizeLightDirectionSafe(dirLight.m_Direction, glm::vec3(0.0f, -1.0f, 0.0f));
 
-		// Store cascade split distances for shader usage
-		m_DirectionalLights[dirLightIndex].m_CascadeSplits = glm::vec4(
-			cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]);
+		dirLight.m_CascadeSplits = glm::vec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]);
 
-		// Coverage margin: each cascade covers 1.5x its split distance
-		const float coverageMargin = 1.5f;
-
+		float splitNear = (std::max)(cameraData.nearPlane, 0.001f);
 		for (int cascade = 0; cascade < cascadeCount; ++cascade)
 		{
-			float halfExtent = cascadeSplits[cascade] * coverageMargin;
-			float texelSize = 2.0f * halfExtent / (float)cascadeMapSize;
+			float splitFar = (std::min)(cascadeSplits[cascade], cameraData.farPlane);
+			splitFar = (std::max)(splitFar, splitNear + 0.01f);
+			const float overlapBand = ComputeCascadeBlendBand(cascadeSplits, cascade, cameraData.nearPlane, cameraData.farPlane);
+			const float buildNear = (std::max)(cameraData.nearPlane, splitNear - overlapBand);
+			const float buildFar = (std::min)(cameraData.farPlane, splitFar + overlapBand);
 
-			// Build light view matrix centered on the camera position.
-			// The light "eye" is placed far behind the camera along the light direction
-			// so the ortho frustum covers geometry around where the camera is looking.
-			glm::vec3 lightEye = cameraPosition + lightDir * halfExtent * 2.0f;
+			CascadeBuildResult cascadeData = BuildStableCascade(
+				cameraData, lightDir, buildNear, buildFar, cascadeMapSize, cascade);
 
-			// 使用 ChooseStableUpVector 以避免 lightDir 接近垂直时 cross(forward, up) 退化。
-			// 修复：原来直接比较 0.99f（仅约 8°）在临界角度附近会产生不稳定的硬切，
-			// 这里统一通过已有的 ChooseStableUpVector 函数处理，阈值为 0.9962（约 5°）。
-			glm::vec3 up = ChooseStableUpVector(lightDir);
-			glm::mat4x4 viewMatrix = glm::lookAt(lightEye, cameraPosition, up);
+			dirLight.m_ShadowMatrix[cascade] = cascadeData.viewProj;
+			dirLight.m_CascadeTexelSize[cascade] = cascadeData.worldUnitsPerTexel;
+			dirLight.m_CascadeDepthScale[cascade] = 1.0f / cascadeData.lightDepthRange;
+			dirLight.m_CascadeNormalBias[cascade] = cascadeData.normalBias;
+			dirLight.m_CascadeFilterRadius[cascade] = cascadeData.filterRadiusTexels;
 
-			// 将摄像机位置投影到光源视图空间，对正交投影坐标按 texelSize 对齐以减少阴影游泳。
-			// 修复：原来使用 std::fmod，对负数返回负余数，导致反向偏移；
-			// 改为 floor 对齐，保证 snapOffset 始终非负且方向正确。
-			glm::vec4 camLS = viewMatrix * glm::vec4(cameraPosition, 1.0f);
-			float snapOffsetX = camLS.x - std::floor(camLS.x / texelSize) * texelSize;
-			float snapOffsetY = camLS.y - std::floor(camLS.y / texelSize) * texelSize;
-			glm::mat4x4 snapMatrix = glm::translate(glm::mat4(1.0f), glm::vec3(-snapOffsetX, -snapOffsetY, 0.0f));
-
-			// Generous Z range to capture shadow casters behind the camera (from the light's perspective)
-			float zRange = halfExtent * 4.0f;
-			glm::mat4x4 projectionMatrix = glm::ortho<float>(
-				-halfExtent, halfExtent,
-				-halfExtent, halfExtent,
-				-zRange, zRange);
-
-			m_DirectionalLights[dirLightIndex].m_ShadowMatrix[cascade] = projectionMatrix * snapMatrix * viewMatrix;
+			splitNear = splitFar;
 		}
 	}
 
-	int pointLightCount = m_PointLights.size();
+	int pointLightCount = static_cast<int>(m_PointLights.size());
 	for (int pointLightIndex = 0; pointLightIndex < pointLightCount; pointLightIndex++)
 	{
 		glm::mat4 shadowProj = glm::perspective(glm::radians(90.0f), 1.0f, 0.001f, m_PointLights[pointLightIndex].m_Radius);
 		glm::vec3 lightPos = m_PointLights[pointLightIndex].m_Position;
 
-		m_PointLights[pointLightIndex].m_PointShadowMatrix[0] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(1, 0, 0), glm::vec3(0, -1, 0)); // +X
-
-		m_PointLights[pointLightIndex].m_PointShadowMatrix[1] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(-1, 0, 0), glm::vec3(0, -1, 0)); // -X
-
-		m_PointLights[pointLightIndex].m_PointShadowMatrix[2] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 1, 0), glm::vec3(0, 0, 1)); // +Y
-
-		m_PointLights[pointLightIndex].m_PointShadowMatrix[3] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, -1, 0), glm::vec3(0, 0, -1)); // -Y
-
-		m_PointLights[pointLightIndex].m_PointShadowMatrix[4] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 0, 1), glm::vec3(0, -1, 0)); // +Z
-		
-		m_PointLights[pointLightIndex].m_PointShadowMatrix[5] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 0, -1), glm::vec3(0, -1, 0)); // -Z
-		
-		m_PointLights[pointLightIndex].m_ShadowIndex = pointLightIndex;
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[0] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(1, 0, 0), glm::vec3(0, -1, 0));
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[1] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(-1, 0, 0), glm::vec3(0, -1, 0));
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[2] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 1, 0), glm::vec3(0, 0, 1));
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[3] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, -1, 0), glm::vec3(0, 0, -1));
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[4] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 0, 1), glm::vec3(0, -1, 0));
+		m_PointLights[pointLightIndex].m_PointShadowMatrix[5] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 0, -1), glm::vec3(0, -1, 0));
+		m_PointLights[pointLightIndex].m_ShadowIndex = static_cast<float>(pointLightIndex);
 	}
-	int spotLightCount = m_SpotLights.size();
+
+	int spotLightCount = static_cast<int>(m_SpotLights.size());
 	for (int spotLightIndex = 0; spotLightIndex < spotLightCount; spotLightIndex++)
 	{
 		glm::vec3 sanitizedDirection = NormalizeLightDirectionSafe(
@@ -221,17 +350,15 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3
 		m_SpotLights[spotLightIndex].m_Radius = (std::max)(m_SpotLights[spotLightIndex].m_Radius, MIN_SPOT_RADIUS);
 
 		glm::mat4 shadowProj = glm::perspective(spotAngle * 2.0f, 1.0f, 0.001f, m_SpotLights[spotLightIndex].m_Radius);
-
 		glm::vec3 lightPos = m_SpotLights[spotLightIndex].m_Position;
 		glm::vec3 lightDir = -sanitizedDirection;
 		glm::vec3 upVector = ChooseStableUpVector(lightDir);
 		glm::mat4 shadowView = glm::lookAt(lightPos, lightPos + lightDir, upVector);
 		m_SpotLights[spotLightIndex].m_SpotShadowMatrix = shadowProj * shadowView;
-		m_SpotLights[spotLightIndex].m_ShadowIndex = spotLightIndex;
+		m_SpotLights[spotLightIndex].m_ShadowIndex = static_cast<float>(spotLightIndex);
 	}
 
-	// ── RectLight VP 矩阵生成（Phase 3 shadow 使用，与 shadow 开关无关，预先计算）──────────
-	int rectLightCount = (int)std::min<size_t>(m_RectLights.size(), m_MaxRectLightCount);
+	int rectLightCount = static_cast<int>((std::min)(m_RectLights.size(), static_cast<size_t>(m_MaxRectLightCount)));
 	for (int rectLightIndex = 0; rectLightIndex < rectLightCount; rectLightIndex++)
 	{
 		auto& rl = m_RectLights[rectLightIndex];
@@ -248,10 +375,14 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3
 		glm::vec3 upVector = ChooseStableUpVector(lightDir);
 		glm::mat4 shadowView = glm::lookAt(lightPos, lightPos + lightDir, upVector);
 		rl.m_ShadowMatrix = shadowProj * shadowView;
-		rl.m_ShadowIndex = (float)rectLightIndex;
+		rl.m_ShadowIndex = static_cast<float>(rectLightIndex);
 	}
 }
 
+void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3& cameraPosition)
+{
+	UpdateLightShadowMatrixData(MakeFallbackCascadeCamera(cameraPosition));
+}
 void VansGraphics::VansLightManager::UpdateLightCPUData()
 {
 	//for (int spotLightIndex = 0; spotLightIndex < m_SpotLights.size(); spotLightIndex++)
@@ -261,22 +392,22 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 	//}
 
 	auto vansConfigration = VansConfigration::GetInstance();
-	float punctualShadowSize = vansConfigration->GetPunctualShadowMapWidth();
+	float punctualShadowSize = static_cast<float>(vansConfigration->GetPunctualShadowMapWidth());
 	float patchShadowSize = punctualShadowSize / 8;
 
 	uint32_t offset = 0;
 	uint32_t size = sizeof(uint32_t) * 4;
-	m_LightCounts[0] = static_cast<uint32_t>(std::min<size_t>(m_PointLights.size(), m_MaxPointLightCount));
-	m_LightCounts[1] = static_cast<uint32_t>(std::min<size_t>(m_SpotLights.size(), m_MaxSpotLightCount));
-	m_LightCounts[2] = patchShadowSize;
+	m_LightCounts[0] = static_cast<uint32_t>((std::min)(m_PointLights.size(), static_cast<size_t>(m_MaxPointLightCount)));
+	m_LightCounts[1] = static_cast<uint32_t>((std::min)(m_SpotLights.size(), static_cast<size_t>(m_MaxSpotLightCount)));
+	m_LightCounts[2] = static_cast<uint32_t>(patchShadowSize);
 	m_LightCounts[3] = 8;   // tilesPerRow，阴影 atlas 采样依赖该值，不可复用
 	m_LightBuffer.SetBufferData(m_LightCounts, offset, size);
 	offset += size;
 	size = sizeof(float) * 4;
 	m_SoftShadowParams[0] = m_SoftShadowParams[0] + 1;
-	m_SoftShadowParams[1] = 0.3; // 软阴影半径控制
+	m_SoftShadowParams[1] = 0.3f; // 软阴影半径控制
 	// softShadowParams.z = RectLight 计数（shader 以 uint(softShadowParams.z) 读取）
-	m_SoftShadowParams[2] = static_cast<float>(std::min<size_t>(m_RectLights.size(), m_MaxRectLightCount));
+	m_SoftShadowParams[2] = static_cast<float>((std::min)(m_RectLights.size(), static_cast<size_t>(m_MaxRectLightCount)));
 	m_SoftShadowParams[3] = 0;
 	m_LightBuffer.SetBufferData(m_SoftShadowParams, offset, size);
 	offset += size;
@@ -308,6 +439,12 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 void VansGraphics::VansLightManager::SyncLightGPUData(const glm::vec3& cameraPosition)
 {
 	UpdateLightShadowMatrixData(cameraPosition);
+	UpdateLightCPUData();
+}
+
+void VansGraphics::VansLightManager::SyncLightGPUData(const VansCascadeCameraData& cameraData)
+{
+	UpdateLightShadowMatrixData(cameraData);
 	UpdateLightCPUData();
 }
 

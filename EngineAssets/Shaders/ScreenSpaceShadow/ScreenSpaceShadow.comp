@@ -1,0 +1,136 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/CameraData.glsl"
+#include "../Common/Common.glsl"
+#include "../Lights/LightsData.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 1, binding = 0) uniform sampler2D normalInput;
+layout(set = 1, binding = 1) uniform sampler2D gbuffer2Input;
+layout(set = 1, binding = 2) uniform sampler2D hizDepth;
+layout(set = 1, binding = 3, rgba16f) uniform image2D outShadow;
+
+layout(std140, set = 1, binding = 4) uniform ScreenSpaceShadowParamsUBO
+{
+    vec4 screenSize;
+    vec4 halfSize;
+    vec4 rayParams;
+    vec4 fadeParams;
+} uSSS;
+
+float EdgeFade(vec2 uv)
+{
+    vec2 p = uv * uSSS.screenSize.xy;
+    vec2 d = min(p, uSSS.screenSize.xy - p);
+    return clamp(min(d.x, d.y) / max(uSSS.fadeParams.x, 1.0), 0.0, 1.0);
+}
+
+float TraceDirectionalScreenShadow(vec3 originWS, vec3 normalWS, float receiverDepth)
+{
+    vec3 lightDirWS = normalize(uDirectionLight.direction.xyz);
+    float ndotl = dot(normalWS, lightDirWS);
+    if (ndotl <= 0.02)
+        return 1.0;
+
+    float maxDistance = uSSS.rayParams.x;
+    float thickness = uSSS.rayParams.y;
+    float normalBias = uSSS.rayParams.z;
+    int maxSteps = int(uSSS.rayParams.w);
+
+    vec3 rayOrigin = originWS + normalWS * normalBias;
+    vec3 rayEnd = rayOrigin + lightDirWS * maxDistance;
+    vec3 startSS;
+    vec3 endSS;
+    if (!HiZ_ProjectToScreenChecked(ViewMatrix, ProjectionMatrix, rayOrigin, startSS))
+    {
+        return 1.0;
+    }
+    vec2 startUV = startSS.xy;
+
+    if (any(lessThan(startUV, vec2(0.0))) || any(greaterThan(startUV, vec2(1.0))))
+        return 1.0;
+
+    bool hasEndProjection = HiZ_ProjectToScreenChecked(ViewMatrix, ProjectionMatrix, rayEnd, endSS);
+    float pixelSpan = hasEndProjection ? length((endSS.xy - startUV) * uSSS.screenSize.xy) : float(maxSteps);
+    int steps = clamp(int(pixelSpan * 0.75), 6, maxSteps);
+
+    float shadow = 1.0;
+    float minTravel = max(normalBias * 1.5, 0.02);
+    bool previousHit = false;
+    float previousHitShadow = 1.0;
+    float jitter = RandomInterLeavedWithScale(startUV * uSSS.screenSize.xy, FrameIndex);
+    for (int i = 1; i <= steps; ++i)
+    {
+        float t = (float(i) - 0.35 * jitter) / float(steps);
+        t = clamp(t, 0.0, 1.0);
+        float travel = t * maxDistance;
+
+        vec3 rayWS = mix(rayOrigin, rayEnd, t);
+        vec3 raySS;
+        if (!HiZ_ProjectToScreenChecked(ViewMatrix, ProjectionMatrix, rayWS, raySS))
+            break;
+
+        vec2 uv = raySS.xy;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))
+            break;
+
+        float rayDepth = raySS.z;
+        if (travel < minTravel)
+            continue;
+
+        float sceneDepth = textureLod(hizDepth, uv, 0.0).r;
+        if (sceneDepth <= 0.0 || sceneDepth >= 99999.0)
+            continue;
+
+        float dz = rayDepth - sceneDepth;
+        float depthBias = max(0.01, normalBias * 0.25);
+        float localThickness = thickness * (1.0 + rayDepth * 0.01) * mix(0.75, 1.5, t);
+        float receiverSeparation = abs(sceneDepth - receiverDepth);
+        bool hit = dz > depthBias && dz < localThickness && receiverSeparation > normalBias * 0.35;
+        if (hit)
+        {
+            float hitWeight = 1.0 - smoothstep(depthBias, localThickness, dz);
+            float distanceFade = 1.0 - smoothstep(0.65, 1.0, t);
+            float candidateShadow = 1.0 - hitWeight * distanceFade;
+            if (previousHit)
+                shadow = min(shadow, min(candidateShadow, previousHitShadow));
+            previousHitShadow = candidateShadow;
+        }
+        previousHit = hit;
+    }
+
+    float fade = EdgeFade(startUV);
+    fade *= 1.0 - smoothstep(uSSS.fadeParams.y * 0.8, uSSS.fadeParams.y, receiverDepth);
+    float strength = clamp(uSSS.fadeParams.z, 0.0, 1.0);
+    return mix(1.0, shadow, fade * strength);
+}
+
+void main()
+{
+    ivec2 outSize = imageSize(outShadow);
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pix, outSize)))
+        return;
+
+    vec2 uv = (vec2(pix) + 0.5) / vec2(outSize);
+    vec4 posData = texture(gbuffer2Input, uv);
+    float receiverDepth = posData.w;
+    if (receiverDepth <= 0.0)
+    {
+        imageStore(outShadow, pix, vec4(1.0));
+        return;
+    }
+
+    vec3 normalWS = texture(normalInput, uv).xyz;
+    if (length(normalWS) < 0.5)
+    {
+        imageStore(outShadow, pix, vec4(1.0));
+        return;
+    }
+    normalWS = normalize(normalWS);
+
+    float sss = TraceDirectionalScreenShadow(posData.xyz, normalWS, receiverDepth);
+    imageStore(outShadow, pix, vec4(sss, sss, sss, 1.0));
+}

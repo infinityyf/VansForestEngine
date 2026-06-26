@@ -1,9 +1,10 @@
-#include "VansVKDevice.h"
+﻿#include "VansVKDevice.h"
 #include "VansVKDescriptorManager.h"
 #include "VansRenderPass.h"
 #include "../VansScene.h"
 #include "../VansPostProcessProfile.h"
 #include "../../VansTimer.h"
+#include <algorithm>
 #include <cstddef>
 #include <cmath>
 
@@ -88,7 +89,6 @@ namespace VansGraphics
 			return;
 		}
 
-		// 标记已更新：仅在所有纹理就绪、即将写�?descriptor 时才设置
 		m_GIDataDescSetsUpdated = true;
 
 		VansVKDescriptorManager::GetInstance()->ResetState();
@@ -467,7 +467,6 @@ namespace VansGraphics
 
 		VansVKDescriptorManager::GetInstance()->ResetState();
 
-		// binding 0: GBuffer position 采样器输�?
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				manager->m_HIZSeedDescriptorSets[0],
@@ -921,7 +920,6 @@ namespace VansGraphics
 
 		VansVKDescriptorManager::GetInstance()->ResetState();
 
-		// binding 0 �?inputPosition (COMBINED_IMAGE_SAMPLER)
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				manager->m_VolumetricFogDescriptorSets[0],
@@ -938,7 +936,6 @@ namespace VansGraphics
 			}
 		);
 
-		// binding 1 �?fogResult (STORAGE_IMAGE)
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				manager->m_VolumetricFogDescriptorSets[0],
@@ -955,7 +952,6 @@ namespace VansGraphics
 			}
 		);
 
-		// binding 2 �?FogParams UBO (UNIFORM_BUFFER)
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
 				manager->m_VolumetricFogDescriptorSets[0],
@@ -972,7 +968,6 @@ namespace VansGraphics
 			}
 		);
 
-		// binding 3 �?voxelFogVolume (COMBINED_IMAGE_SAMPLER, ray-march result)
 		VansTexture* fogVoxelRayMarch = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_RAYMARCH);
 		if (fogVoxelRayMarch != nullptr)
 		{
@@ -993,7 +988,6 @@ namespace VansGraphics
 			);
 		}
 
-		// binding 4 �?FogVolumeParams UBO (volumeNear/Far for depth-to-slice in compose)
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
 				manager->m_VolumetricFogDescriptorSets[0],
@@ -1025,15 +1019,12 @@ namespace VansGraphics
 			return;
 		}
 
-		// ── Pass 0: HIZ_SEED —�?�?GBuffer position.w 写入 HIZ mip 0（线性深度）──
-		// 取代原来�?BlitImage，完全在 Compute 中完成，无需布局转换
 		int seedGroupsX = (int)std::ceilf(m_RenderWidth  / 16.0f);
 		int seedGroupsY = (int)std::ceilf(m_RenderHeight / 16.0f);
 		computeCmd.EnsureComputeShader(*manager->m_HIZSeedShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_HIZSeedSetLayout });
 		computeCmd.DispatchCompute(*manager->m_HIZSeedShader, seedGroupsX, seedGroupsY, 1,
 			{ m_Scene->m_GlobalDescriptorSet, manager->m_HIZSeedDescriptorSets[0] });
 
-		// ── Barrier: mip 0 写入完毕 �?mip 1 读取可见 ──
 		VkMemoryBarrier seedBarrier = {};
 		seedBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 		seedBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1043,7 +1034,6 @@ namespace VansGraphics
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			{ seedBarrier });
 
-		// ── Pass 1+: HIZ.comp —�?�?mip 下采样（min-depth 金字塔）──
 		for (uint32_t mipIndex = 1; mipIndex < manager->m_HIZMipCount; ++mipIndex)
 		{
 			int threadGroupSizeX = (int)std::ceilf((m_RenderWidth  >> mipIndex) / 16.0f);
@@ -1053,7 +1043,6 @@ namespace VansGraphics
 			computeCmd.DispatchCompute(*manager->m_HZBShader, threadGroupSizeX, threadGroupSizeY, 1,
 				{ m_Scene->m_GlobalDescriptorSet, manager->m_HZBDescriptorSets[mipIndex - 1] });
 
-			// ── Barrier: mip N 写入完毕 �?mip N+1 读取可见 ──
 			VkMemoryBarrier mipBarrier = {};
 			mipBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 			mipBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1065,6 +1054,73 @@ namespace VansGraphics
 		}
 	}
 
+	void VansVKDevice::UpdateScreenSpaceShadowSets(VansRenderPassManager* renderPassManager)
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (m_ScreenSpaceShadowDescSetsUpdated)
+		{
+			return;
+		}
+
+		VansTexture* hzb = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
+		VansTexture* out = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
+		if (hzb == nullptr || out == nullptr || manager->m_ScreenSpaceShadowDescriptorSets.empty())
+		{
+			return;
+		}
+
+		auto& normal = renderPassManager->GetNormal();
+		auto& gbuffer2 = renderPassManager->GetGbuffer2();
+
+		VansVKDescriptorManager::GetInstance()->ResetState();
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{ manager->m_ScreenSpaceShadowDescriptorSets[0], SSS_BINDING_NORMAL, 0,
+			  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			  {{ normal.GetSampler(), normal.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }} });
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{ manager->m_ScreenSpaceShadowDescriptorSets[0], SSS_BINDING_GBUFFER2, 0,
+			  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			  {{ gbuffer2.GetSampler(), gbuffer2.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }} });
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{ manager->m_ScreenSpaceShadowDescriptorSets[0], SSS_BINDING_HIZ, 0,
+			  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			  {{ hzb->GetImage().GetSampler(), hzb->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }} });
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{ manager->m_ScreenSpaceShadowDescriptorSets[0], SSS_BINDING_RESULT, 0,
+			  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			  {{ out->GetImage().GetSampler(), out->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }} });
+		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
+			{ manager->m_ScreenSpaceShadowDescriptorSets[0], SSS_BINDING_PARAMS, 0,
+			  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			  {{ manager->m_ScreenSpaceShadowParamsCBBuffer.GetNativeBuffer(), 0, manager->m_ScreenSpaceShadowParamsCBBuffer.GetBufferSize() }} });
+		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+
+		m_ScreenSpaceShadowDescSetsUpdated = true;
+	}
+
+	void VansVKDevice::UpdateScreenSpaceShadow(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
+	{
+		UpdateScreenSpaceShadowSets(renderPassManager);
+
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager->m_ScreenSpaceShadowShader == nullptr || manager->m_ScreenSpaceShadowDescriptorSets.empty())
+		{
+			return;
+		}
+
+		uint32_t dispatchW = (std::max)(m_RenderWidth, 1u);
+		uint32_t dispatchH = (std::max)(m_RenderHeight, 1u);
+		computeCmd.EnsureComputeShader(
+			*manager->m_ScreenSpaceShadowShader,
+			{ m_Scene->m_GlobalDescriptorSetLayout, manager->m_ScreenSpaceShadowSetLayout });
+		computeCmd.DispatchCompute(
+			*manager->m_ScreenSpaceShadowShader,
+			(dispatchW + 7) / 8,
+			(dispatchH + 7) / 8,
+			1,
+			{ m_Scene->m_GlobalDescriptorSet, manager->m_ScreenSpaceShadowDescriptorSets[0] });
+	}
+
 	void VansVKDevice::UpdateSSR(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
 		UpdateSSRDescriptorSets(renderPassManager);
@@ -1074,7 +1130,6 @@ namespace VansGraphics
 		computeCmd.EnsureComputeShader(*manager->m_SSRTraceShader, { m_Scene->m_GlobalDescriptorSetLayout, manager->m_SSRTraceSetLayout });
 		computeCmd.DispatchCompute(*manager->m_SSRTraceShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRTraceDescriptorSets[0] });
 
-		// Trace 写入 traceHit / tracePDF，Resolve 会立即读取；必须显式保证 storage image 可见�?
 		VkMemoryBarrier traceBarrier = {};
 		traceBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 		traceBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1088,7 +1143,6 @@ namespace VansGraphics
 		// SSR_RESOLVE.comp 使用 8×8 local size，按 8 对齐取整覆盖全分辨率像素
 		computeCmd.DispatchCompute(*manager->m_SSRResolveShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->m_GlobalDescriptorSet, manager->m_SSRResolveDescriptorSets[0] });
 
-		// Resolve 写入 ssrResult，TemporalAA 会立即读取；避免�?wave/tile 可见性造成条纹状断层�?
 		VkMemoryBarrier resolveBarrier = {};
 		resolveBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 		resolveBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1103,7 +1157,6 @@ namespace VansGraphics
 	}
 
 	// ================================================================
-	// Fog Light Injection �?descriptor set writes (ping-pong)
 	//   set[0]: write→Injection, read←History
 	//   set[1]: write→History,   read←Injection
 	// ================================================================
@@ -1135,7 +1188,6 @@ namespace VansGraphics
 		{
 			VansVKDescriptorManager::GetInstance()->ResetState();
 
-			// binding 0 �?i_VoxelGrid (STORAGE_IMAGE, 3D) �?write target
 			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 				{
 					manager->m_FogLightInjectionDescriptorSets[i],
@@ -1152,7 +1204,6 @@ namespace VansGraphics
 				}
 			);
 
-			// binding 1 �?fogShadowMap (COMBINED_IMAGE_SAMPLER)
 			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 				{
 					manager->m_FogLightInjectionDescriptorSets[i],
@@ -1169,7 +1220,6 @@ namespace VansGraphics
 				}
 			);
 
-			// binding 2 �?FogVolumeParams UBO
 			VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 				{
 					manager->m_FogLightInjectionDescriptorSets[i],
@@ -1186,7 +1236,6 @@ namespace VansGraphics
 				}
 			);
 
-			// binding 3 �?s_History (COMBINED_IMAGE_SAMPLER, 3D) �?read from previous frame
 				VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 				{
 					manager->m_FogLightInjectionDescriptorSets[i],
@@ -1203,7 +1252,6 @@ namespace VansGraphics
 				}
 			);
 
-			// binding 4 �?punctualShadowMap (tile-based point/spot shadow atlas)
 			VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 				{
 					manager->m_FogLightInjectionDescriptorSets[i],
@@ -1225,7 +1273,6 @@ namespace VansGraphics
 	}
 
 	// ================================================================
-	// Fog Ray March �?descriptor set writes
 	// ================================================================
 	void VansVKDevice::UpdateFogRayMarchSets()
 	{
@@ -1234,8 +1281,6 @@ namespace VansGraphics
 		// Must update each frame: the injection output ping-pongs between two textures
 		uint32_t frameIdx = manager->m_FogTemporalFrame % 2;
 
-		// frameIdx==0 �?injection wrote to RT_FOG_VOXEL_INJECTION
-		// frameIdx==1 �?injection wrote to RT_FOG_VOXEL_INJECTION_HISTORY
 		const char* currentInjectionRT = (frameIdx == 0)
 			? VansMaterialManager::RT_FOG_VOXEL_INJECTION
 			: VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY;
@@ -1246,7 +1291,6 @@ namespace VansGraphics
 
 		VansVKDescriptorManager::GetInstance()->ResetState();
 
-		// binding 0 �?s_VoxelGrid (COMBINED_IMAGE_SAMPLER input from injection)
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				manager->m_FogRayMarchDescriptorSets[0],
@@ -1263,7 +1307,6 @@ namespace VansGraphics
 			}
 		);
 
-		// binding 1 �?i_RayMarchResult (STORAGE_IMAGE output)
 		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 			{
 				manager->m_FogRayMarchDescriptorSets[0],
@@ -1280,7 +1323,6 @@ namespace VansGraphics
 			}
 		);
 
-		// binding 2 �?FogVolumeParams UBO (volumeNear/Far for slice thickness)
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
 				manager->m_FogRayMarchDescriptorSets[0],
@@ -1301,7 +1343,6 @@ namespace VansGraphics
 	}
 
 	// ================================================================
-	// Fog Light Injection �?dispatch
 	// ================================================================
 	void VansVKDevice::UpdateFogLightInjection(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
@@ -1329,7 +1370,6 @@ namespace VansGraphics
 	}
 
 	// ================================================================
-	// Fog Ray March �?dispatch
 	// ================================================================
 	void VansVKDevice::UpdateFogRayMarch(VansVKCommandBuffer& computeCmd)
 	{
@@ -1463,7 +1503,6 @@ namespace VansGraphics
 	}
 
 	// ================================================================
-	// Volumetric Fog compose �?dispatch (injection �?ray-march �?compose)
 	// ================================================================
 	void VansVKDevice::UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
@@ -1502,7 +1541,6 @@ namespace VansGraphics
 	}
 
 	// ================================================================
-	// TileLight Build �?descriptor set writes (Set 1)
 	// ================================================================
 	void VansVKDevice::UpdateTileLightBuildSets()
 	{
@@ -1513,7 +1551,6 @@ namespace VansGraphics
 
 		VansVKDescriptorManager::GetInstance()->ResetState();
 
-		// binding 0 �?TileLightHeader SSBO (write)
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
 				manager->m_TileLightBuildDescriptorSets[0],
@@ -1530,7 +1567,6 @@ namespace VansGraphics
 			}
 		);
 
-		// binding 1 �?TileLight Index SSBO (write)
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
 				manager->m_TileLightBuildDescriptorSets[0],
@@ -1547,7 +1583,6 @@ namespace VansGraphics
 			}
 		);
 
-		// binding 2 �?TileLightBuildParams UBO
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
 			{
 				manager->m_TileLightBuildDescriptorSets[0],
@@ -1568,7 +1603,6 @@ namespace VansGraphics
 	}
 
 	// ================================================================
-	// TileLight Build �?dispatch compute pass
 	// ================================================================
 	void VansVKDevice::BuildTileLightLists(VansVKCommandBuffer& cmd)
 	{
@@ -1591,7 +1625,6 @@ namespace VansGraphics
 			{ m_Scene->m_GlobalDescriptorSet, manager->m_TileLightBuildDescriptorSets[0] }
 		);
 
-		// Barrier: compute SSBO write �?subsequent compute + fragment SSBO read
 		VkMemoryBarrier tileLightBarrier      = {};
 		tileLightBarrier.sType                = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 		tileLightBarrier.srcAccessMask        = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1649,7 +1682,6 @@ void VansVKDevice::UploadPostProcessProfileIfDirty()
 }
 
 // ================================================================
-// Exposure Luminance Compute���� SceneColorHDR ������������
 // ================================================================
 void VansVKDevice::UpdateExposureDescriptorSets(VansRenderPassManager* renderPassManager)
 {
@@ -1666,7 +1698,6 @@ auto& sceneColor = renderPassManager->GetColor();
 
 VansVKDescriptorManager::GetInstance()->ResetState();
 
-// ExposureLuminance set��SRC��SceneColorHDR��+ DST��64x64 ���ȣ�
 VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 {
 manager->m_ExposureLuminanceDescriptorSets[0],
@@ -1701,7 +1732,6 @@ VK_IMAGE_LAYOUT_GENERAL
 VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 VansVKDescriptorManager::GetInstance()->ResetState();
 
-// ExposureAdapt set��LUM_IN��64x64��+ EXP_OUT��1x1��+ UBO
 VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 {
 manager->m_ExposureAdaptDescriptorSets[0],
@@ -1746,7 +1776,6 @@ VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 
 // ================================================================
-// UpdateExposure��ÿִ֡�� Luminance ��ͼ + Adapt ��������
 // ================================================================
 void VansVKDevice::UpdateExposure(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 {
@@ -1754,7 +1783,6 @@ UpdateExposureDescriptorSets(renderPassManager);
 
 VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-// Step 1��SceneColorHDR �� 64x64 ������ͼ
 computeCmd.EnsureComputeShader(*manager->m_ExposureLuminanceShader,
 { m_Scene->m_GlobalDescriptorSetLayout, manager->m_ExposureLuminanceSetLayout });
 computeCmd.DispatchCompute(*manager->m_ExposureLuminanceShader,
@@ -1767,7 +1795,6 @@ lumBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 lumBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, { lumBarrier });
 
-// Step 2��64x64 ���� �� 1x1 �ع�����Ӧ���������߳� dispatch��
 computeCmd.EnsureComputeShader(*manager->m_ExposureAdaptShader,
 { m_Scene->m_GlobalDescriptorSetLayout, manager->m_ExposureAdaptSetLayout });
 computeCmd.DispatchCompute(*manager->m_ExposureAdaptShader,
@@ -1782,7 +1809,6 @@ computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STA
 }
 
 // ================================================================
-// Bloom Descriptor Sets��Prefilter + 4xDownsample + 4xUpsample
 // ================================================================
 void VansVKDevice::UpdateBloomDescriptorSets(VansRenderPassManager* renderPassManager)
 {
@@ -1817,7 +1843,6 @@ VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
   {{ manager->m_BloomParamsCBBuffer.GetNativeBuffer(), 0, manager->m_BloomParamsCBBuffer.GetBufferSize() }} });
 VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
-// ---- Downsample��prefilter��mip0, mip0��mip1, mip1��mip2, mip2��mip3 ----
 VansTexture* dsInputs[4]  = { prefilter, mip0, mip1, mip2 };
 VansTexture* dsOutputs[4] = { mip0,      mip1, mip2, mip3 };
 for (int i = 0; i < 4; ++i)
@@ -1834,8 +1859,6 @@ VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
 VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 
-// ---- Upsample��mip3��mip2, mip2��mip1, mip1��mip0, mip0��result ----
-// SRC_LO = �ϵͷֱ��ʣ���ǰ mip����SRC_HI = �ϸ߷ֱ��ʣ�ǰһ�������
 VansTexture* usLo[4] = { mip3, mip2, mip1, mip0 };
 VansTexture* usHi[4] = { mip2, mip1, mip0, prefilter };
 VansTexture* usDst[4] = { mip2, mip1, mip0, result };
@@ -1863,7 +1886,6 @@ VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 
 // ================================================================
-// UpdateBloom��ÿִ֡�� Prefilter + 4xDownsample + 4xUpsample
 // ================================================================
 void VansVKDevice::UpdateBloom(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 {
@@ -1871,7 +1893,6 @@ UpdateBloomDescriptorSets(renderPassManager);
 
 VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-// ��������ֱ��ʵ� dispatch group
 const uint32_t w2  = m_RenderWidth  / 2,  h2  = m_RenderHeight  / 2;
 const uint32_t w4  = m_RenderWidth  / 4,  h4  = m_RenderHeight  / 4;
 const uint32_t w8  = m_RenderWidth  / 8,  h8  = m_RenderHeight  / 8;
@@ -1887,7 +1908,6 @@ auto Barrier = [&]() {
 computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, { stageBarrier });
 };
 
-// ---- Prefilter��SceneColorHDR �� prefilter��1/2 �ֱ��ʣ�----
 computeCmd.EnsureComputeShader(*manager->m_BloomPrefilterShader,
 { m_Scene->m_GlobalDescriptorSetLayout, manager->m_BloomPrefilterSetLayout });
 computeCmd.DispatchCompute(*manager->m_BloomPrefilterShader, groups(w2), groups(h2), 1,

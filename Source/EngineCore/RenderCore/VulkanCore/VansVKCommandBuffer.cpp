@@ -191,7 +191,13 @@ void VansGraphics::VansVKCommandBuffer::SetBlendConstants(float blend_constants[
 
 void VansGraphics::VansVKCommandBuffer::DrawMesh(VansMesh& mesh, VansGraphicsShader& shader, uint32_t instance_count)
 {
-	BindGraphicsPipeline(*shader.GetGraphicsPipeline());
+	VansVKGraphicsPipeline* pipeline = shader.GetGraphicsPipeline();
+	if (pipeline == nullptr)
+	{
+		VANS_LOG_ERROR("draw skipped because graphics pipeline is null");
+		return;
+	}
+	BindGraphicsPipeline(*pipeline);
 	vkCmdDrawIndexed(
 		m_VansVKCommandBuffer,
 		mesh.GetIndexCount(),
@@ -280,10 +286,15 @@ void VansGraphics::VansVKCommandBuffer::EnsureComputeShader(VansComputeShader& s
 void VansGraphics::VansVKCommandBuffer::DispatchCompute(VansComputeShader& shader, uint32_t x_size, uint32_t y_size, uint32_t z_size, const std::vector<VkDescriptorSet>& descriptor_sets)
 {
 	VansVKComputePipeline* pipeline = shader.GetComputePipeline();
+	if (pipeline == nullptr)
+	{
+		VANS_LOG_ERROR("dispatch skipped because compute pipeline is null");
+		return;
+	}
 	//绑定管线
 	pipeline->BindComputePipeline(m_VansVKCommandBuffer);
 
-	//绑定描述符
+	//绑定描述�?
 	vkCmdBindDescriptorSets(
 		m_VansVKCommandBuffer,
 		VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -333,7 +344,7 @@ void VansGraphics::VansVKCommandBuffer::BlitImage(VansVKImage& source, int sourc
 		1, &copyRegion
 	);
 
-	//结束后转换回来
+	//结束后转换回�?
 	source.SetImageMemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		{
 			source.m_VansVKImage,
@@ -383,12 +394,18 @@ void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
 	const std::vector<VkDescriptorSet>& descriptor_sets, 
 	const std::vector<uint32_t>& dynamic_offsets)
 {
-	//将关联好的descriptor set 绑定到 pipeline
+	//将关联好的descriptor set 绑定�?pipeline
 	//通过bindSetCMD实现
+	VansVKGraphicsPipeline* pipeline = shader.GetGraphicsPipeline();
+	if (pipeline == nullptr)
+	{
+		VANS_LOG_ERROR("descriptor bind skipped because graphics pipeline is null");
+		return;
+	}
 	vkCmdBindDescriptorSets(
 		m_VansVKCommandBuffer,
 		pipeline_type,
-		shader.GetGraphicsPipeline()->m_VansPipelineLayout,
+		pipeline->m_VansPipelineLayout,
 		index_for_first_set,
 		static_cast<uint32_t>(descriptor_sets.size()),
 		descriptor_sets.data(),

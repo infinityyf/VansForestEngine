@@ -36,7 +36,7 @@ namespace VansGraphics
 
 		{
 			VANS_PROFILE_SCOPE("Video::Upload.StageMemcpy", Vans::ProfileCategory::Video);
-			if (!m_StageBuffer.SetBufferData(data, static_cast<int>(uploadOffset), dataSize))
+			if (!m_StageBuffer.SetBufferData(data, uploadOffset, dataSize))
 				return false;
 		}
 

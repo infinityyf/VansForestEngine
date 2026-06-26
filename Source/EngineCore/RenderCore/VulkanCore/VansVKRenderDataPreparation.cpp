@@ -1,4 +1,4 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKDevice.h"
 #include "VansVKDescriptorManager.h"
 #include "VansDescriptorSetLayouts.h"
@@ -45,7 +45,6 @@ namespace VansGraphics
 				emissive->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(emissive->m_BasePBRParam);
 
-				// Slot 0: emissive color texture (guaranteed non-null — loader sets defaultAlbedo fallback)
 				// Slots 1-4: not used by Emissive.frag but must be present to keep the 5-slot stride intact
 				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
@@ -55,7 +54,6 @@ namespace VansGraphics
 			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_DECAL)
 			{
-				// 贴花材质复用全局 PBR SSBO / Bindless 纹理体系，5 槽布局与 PBR 相同
 				VansDecalMaterial* decal = static_cast<VansDecalMaterial*>(material);
 				decal->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(decal->m_BasePBRParam);
@@ -152,11 +150,9 @@ namespace VansGraphics
 
 	void VansVKDevice::PrepareInstanceTransformData()
 	{
-		// ── Step 0: 收集所有受管理的 RenderNode ──────────────────────────────
 		std::vector<VansRenderNode*> allRenderNodes =
 			m_Scene->CollectSSBOManagedRenderNodes();
 
-		// ── Step 1: 按最大容量创建 Buffer (而非精确数量) ─────────────────────
 		const uint32_t maxCapacity = m_Scene->m_TransformSlotAllocator.GetMaxCapacity();
 		const VkDeviceSize bufferSize = sizeof(ModelDataStruct) * static_cast<VkDeviceSize>(maxCapacity);
 
@@ -167,7 +163,6 @@ namespace VansGraphics
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
-		// ── Step 2: 分配 Slot 并写入初始数据 ─────────────────────────────────
 		for (auto* node : allRenderNodes)
 		{
 			uint32_t slot = m_Scene->m_TransformSlotAllocator.AllocateSlot();
@@ -176,7 +171,6 @@ namespace VansGraphics
 			node->BeforeDrawCall();
 			node->m_TransfromIndex = static_cast<int>(slot);
 
-			// 按槽位写入
 			VkDeviceSize offset = slot * sizeof(ModelDataStruct);
 			m_Scene->m_InstanceTransformDataBuffer.SetBufferData(
 				&node->m_ModelData,
@@ -185,10 +179,6 @@ namespace VansGraphics
 		}
 
 		// ── Step 2.5: m_InstanceTransformData CPU 镜像不再写入 ────────────────
-		// 原有代码在此处 push_back 到 m_InstanceTransformData，用于 GrowTransformBuffer
-		// 读回数据。迁移后由 TransformSlotAllocator 跟踪活跃槽位，Buffer 是
-		// HOST_VISIBLE 持久映射，ReadData 直接读 CPU 侧映射内存，无需该 CPU 镜像。
-		// m_InstanceTransformData 在 UnLoadScene 中保留 clear() 调用以确保兼容。
 
 		// ── Step 3: 持久映射 ─────────────────────────────────────────────────
 		m_Scene->m_InstanceTransformDataBuffer.PersistentMap();
@@ -303,9 +293,6 @@ namespace VansGraphics
 				kSize, kSize, VK_FORMAT_R16G16B16A16_SFLOAT,
 				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
-			// 面光源发光贴图数组：256×256×32，RGBA8，完整 mip 链（9 级）。
-			// LoadTextureLayer 上传 mip 0 后调用 GenerateMipmapsForLayer 逐级 blit 生成其余 mip，
-			// 粗糙度通过 specLod 采样对应 mip 级别，实现模糊效果。
 			manager->m_RectLightEmissiveArray = new VansTexture();
 			manager->m_RectLightEmissiveArray->InitTextureArray(m_VansVKCommandBuffer,
 				256, 256, 32, 4, /*generateMip=*/true,
@@ -382,11 +369,9 @@ namespace VansGraphics
 		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding,sampleDiffuseConvBinding,sampleSpecularConBinding,environmentSHBuffer,skinBSDFLUTBinding,clothBRDFLUTBinding }, manager->m_BRDFInterationTexSetLayout);
 		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BRDFInterationTexSetLayout }, manager->m_BRDFInterationTextDescriptorSets);
 
-		VansComputeShader* m_PreConvDiffuseShader = new VansComputeShader();
-		m_PreConvDiffuseShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PreConDiffuseEnvironment").c_str());
+		VansComputeShader* m_PreConvDiffuseShader = VansGraphics::VansShaderManager::Get().FindComputeShader("PreConDiffuseEnvironment");
 
-		VansComputeShader* m_PreConvSpecularShader = new VansComputeShader();
-		m_PreConvSpecularShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PreConSpecularEnvironment").c_str());
+		VansComputeShader* m_PreConvSpecularShader = VansGraphics::VansShaderManager::Get().FindComputeShader("PreConSpecularEnvironment");
 
 		VkDescriptorSetLayoutBinding samplerCubeBinding =
 		{
@@ -599,11 +584,9 @@ namespace VansGraphics
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
-		manager->m_SSGIShader = new VansComputeShader();
-		manager->m_SSGIShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSGI").c_str());
+		manager->m_SSGIShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGI");
 
-		manager->m_SSGITemporalShader = new VansComputeShader();
-		manager->m_SSGITemporalShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSGITemporal").c_str());
+		manager->m_SSGITemporalShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGITemporal");
 
 		const VansGISettings& gi = m_Scene->GetGISettings();
 		const float volumeSize = static_cast<float>(gi.gridSize) * gi.probeSpacing;
@@ -633,7 +616,7 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		// HIZ 采用 32 位浮点，存储正线性视空间深度（单位米）
+	// HIZ stores positive linear view-space depth in meters.
 		VansTexture* hzbResult = new VansTexture();
 		hzbResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 1, false, true, true, HIGH_PRES_32);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT, hzbResult);
@@ -641,17 +624,57 @@ namespace VansGraphics
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
 
-		manager->m_HZBShader = new VansComputeShader();
-		manager->m_HZBShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/HIZ").c_str());
+		manager->m_HZBShader = VansGraphics::VansShaderManager::Get().FindComputeShader("HIZ");
 
-		// HIZ_SEED shader：GBuffer position.w → HIZ mip 0
-		manager->m_HIZSeedShader = new VansComputeShader();
-		manager->m_HIZSeedShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/HIZ_SEED").c_str());
+		// HIZ_SEED shader: GBuffer position.w -> HIZ mip 0.
+		manager->m_HIZSeedShader = VansGraphics::VansShaderManager::Get().FindComputeShader("HIZSeed");
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZSeed(
 			manager->m_HIZSeedSetLayout, manager->m_HIZSeedDescriptorSets, 1);
 
 		manager->m_HIZMipCount = 1 + (int)std::floor(std::log2(std::min(m_RenderWidth, m_RenderHeight)));
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZ(manager->m_HZBTexSetLayouts, manager->m_HZBDescriptorSets, manager->m_HIZMipCount - 1);
+	}
+
+	void VansVKDevice::PrepareScreenSpaceShadowRenderData()
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+
+		VansTexture* sssResult = new VansTexture();
+		sssResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer,
+			m_RenderWidth, m_RenderHeight,
+			1, 4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT, sssResult);
+
+		VansTexture* sssFilterResult = new VansTexture();
+		sssFilterResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer,
+			m_RenderWidth, m_RenderHeight,
+			1, 4, false, false, true, MID_PRES_16);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_FILTER_RESULT, sssFilterResult);
+
+		ScreenSpaceShadowParamsGPU data{};
+		data.screenSize = glm::vec4(
+			static_cast<float>(m_RenderWidth), static_cast<float>(m_RenderHeight),
+			1.0f / static_cast<float>(m_RenderWidth), 1.0f / static_cast<float>(m_RenderHeight));
+		data.halfSize = glm::vec4(
+			static_cast<float>(m_RenderWidth), static_cast<float>(m_RenderHeight),
+			1.0f / static_cast<float>(m_RenderWidth), 1.0f / static_cast<float>(m_RenderHeight));
+		data.rayParams = glm::vec4(2.8f, 0.055f, 0.05f, 48.0f);
+		data.fadeParams = glm::vec4(32.0f, 80.0f, 0.45f, 0.0f);
+
+		manager->m_ScreenSpaceShadowParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			sizeof(data),
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_ScreenSpaceShadowParamsCBBuffer.SetBufferData(&data, 0, sizeof(data));
+
+		manager->m_ScreenSpaceShadowShader = VansGraphics::VansShaderManager::Get().FindComputeShader("ScreenSpaceShadow");
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_ScreenSpaceShadow(
+			manager->m_ScreenSpaceShadowSetLayout,
+			manager->m_ScreenSpaceShadowDescriptorSets);
 	}
 
 	void VansVKDevice::PrepareSSRRenderData()
@@ -684,14 +707,11 @@ namespace VansGraphics
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
-		manager->m_SSRTraceShader = new VansComputeShader();
-		manager->m_SSRTraceShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSR_TRACE").c_str());
+		manager->m_SSRTraceShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRTrace");
 
-		manager->m_SSRResolveShader = new VansComputeShader();
-		manager->m_SSRResolveShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSR_RESOLVE").c_str());
+		manager->m_SSRResolveShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRResolve");
 
-		manager->m_SSRTemporalAAShader = new VansComputeShader();
-		manager->m_SSRTemporalAAShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/SSR_TEMPORALAA").c_str());
+		manager->m_SSRTemporalAAShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRTemporalAA");
 
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Trace(manager->m_SSRTraceSetLayout, manager->m_SSRTraceDescriptorSets);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Resolve(manager->m_SSRResolveSetLayout, manager->m_SSRResolveDescriptorSets);
@@ -741,16 +761,13 @@ namespace VansGraphics
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
 
 		// Height-exp fog compose shader (existing)
-		manager->m_VolumetrcFogShader = new VansComputeShader();
-		manager->m_VolumetrcFogShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/VolumetricFog").c_str());
+		manager->m_VolumetrcFogShader = VansGraphics::VansShaderManager::Get().FindComputeShader("VolumetricFog");
 
 		// Light injection compute shader
-		manager->m_FogLightInjectionShader = new VansComputeShader();
-		manager->m_FogLightInjectionShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/FogLightInjection").c_str());
+		manager->m_FogLightInjectionShader = VansGraphics::VansShaderManager::Get().FindComputeShader("FogLightInjection");
 
 		// Ray march accumulation compute shader
-		manager->m_FogRayMarchShader = new VansComputeShader();
-		manager->m_FogRayMarchShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/FogRayMarch").c_str());
+		manager->m_FogRayMarchShader = VansGraphics::VansShaderManager::Get().FindComputeShader("FogRayMarch");
 
 		// FogParams UBO (height-exp fog): { fogDensity, heightFalloff, sunScatterScale, ambientScale, fogMinHeight, skyFogDistance }
 		struct FogParamsData { float fogDensity; float heightFalloff; float sunScatterScale; float ambientScale; float fogMinHeight; float skyFogDistance; };
@@ -803,14 +820,12 @@ namespace VansGraphics
 			4, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_BUFFER, cloudBuffer);
 
-		// CloudParams UBO — 与 CloudRayMarch.comp 中的 CloudParamsUBO 结构体完全对应（std140）
 		manager->m_CloudParamsCBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(VansCloudParamsGPU), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 		manager->UploadCloudParamsToGPU();
 
-		// 预计算 Perlin-Worley 3D 噪声：主纹理 128^3 RGBA，细节纹理 32^3（以 RGBA8 上传，shader 只读取 RGB）
 		VansTexture* cloudMainNoise = new VansTexture();
 		if (cloudMainNoise->LoadTexture3DFromSlices(
 			m_VansVKCommandBuffer,
@@ -840,15 +855,13 @@ namespace VansGraphics
 		}
 
 		// Cloud Ray March compute shader
-		manager->m_CloudRayMarchShader = new VansComputeShader();
-		manager->m_CloudRayMarchShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/Cloud").c_str());
+		manager->m_CloudRayMarchShader = VansGraphics::VansShaderManager::Get().FindComputeShader("CloudRayMarch");
 
 		// Descriptor set layout + allocation for cloud ray march pass
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_CloudRayMarch(
 			manager->m_CloudRayMarchSetLayout,
 			manager->m_CloudRayMarchDescriptorSets);
 
-		// 重新绑定 SkyBox 描述符集（现在 RT_CLOUD_BUFFER 已注册，binding=2 写入有效）
 		manager->UpdateAtmosphereDescriptorSets();
 	}
 
@@ -875,8 +888,7 @@ namespace VansGraphics
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
-		manager->m_BilateralFilterShader = new VansComputeShader();
-		manager->m_BilateralFilterShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/BilateralFilter").c_str());
+		manager->m_BilateralFilterShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BilateralFilter");
 		manager->m_BilateralFilterShader->SetPushConstant(sizeof(manager->m_BilateralFilterPushConstant));
 		manager->m_BilateralFilterShader->SetPushConstantData(&(manager->m_BilateralFilterPushConstant));
 	}
@@ -891,6 +903,7 @@ namespace VansGraphics
 		PrepareSSGIRenderData();
 		PrepareBilaterFilterData();
 		PrepareHZBRenderData();
+		PrepareScreenSpaceShadowRenderData();
 		PrepareSSRRenderData();
 		PrepareVolumetricData();
 		PrepareCloudRenderData();
@@ -953,9 +966,6 @@ namespace VansGraphics
 	}
 
 	// =============================================================================
-	// IES profile GPU 资源初始化
-	// 在场景加载完成、所有 IES profile 已通过 m_IESProfileManager.LoadIESFile 解析后调用。
-	// 步骤：CreateGPUResources（分配纹理数组）→ UploadAllProfiles（staging 上传）。
 	// =============================================================================
 	void VansVKDevice::PrepareIESProfileData()
 	{
@@ -965,9 +975,6 @@ namespace VansGraphics
 	}
 
 	// ============================================================
-	// 后处理 Compute Pass：注册 RT、创建 Shader、分配 Descriptor Sets
-	// Bloom（Prefilter + 4 级 Downsample + 4 级 Upsample）
-	// Exposure（Luminance 缩图 + Adapt 收敛）
 	// ============================================================
 	void VansVKDevice::PreparePostProcessRenderData()
 	{
@@ -975,22 +982,18 @@ namespace VansGraphics
 		auto* config = VansConfigration::GetInstance();
 		const std::string projectRoot = config->GetProjectRootPath();
 
-		// ---- Exposure：亮度缩图（64x64，R16F）----
 		VansTexture* exposureLum = new VansTexture();
 		exposureLum->InitTextureWithoutData(m_VansVKCommandBuffer, 64, 64, 1, 1, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_LUMINANCE, exposureLum);
 
-		// ---- Exposure：当前曝光值（1x1，R16F）----
 		VansTexture* exposureCurrent = new VansTexture();
 		exposureCurrent->InitTextureWithoutData(m_VansVKCommandBuffer, 1, 1, 1, 1, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT, exposureCurrent);
 
-		// ---- Bloom Prefilter（半分辨率，RGBA16F）----
 		VansTexture* bloomPrefilter = new VansTexture();
 		bloomPrefilter->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_PREFILTER, bloomPrefilter);
 
-		// ---- Bloom Mip0 (1/2 分辨率)  ~ Mip3 (1/16 分辨率) ----
 		VansTexture* bloomMip0 = new VansTexture();
 		bloomMip0->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP0, bloomMip0);
@@ -1007,26 +1010,20 @@ namespace VansGraphics
 		bloomMip3->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 16, m_RenderHeight / 16, 1, 4, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP3, bloomMip3);
 
-		// ---- Bloom Result（1/2 分辨率，Upsample 最终输出）----
 		VansTexture* bloomResult = new VansTexture();
 		bloomResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_RESULT, bloomResult);
 
 		// ---- Shader 创建 ----
-		manager->m_ExposureLuminanceShader = new VansComputeShader();
-		manager->m_ExposureLuminanceShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PostProcess/ExposureLuminance").c_str());
+		manager->m_ExposureLuminanceShader = VansGraphics::VansShaderManager::Get().FindComputeShader("ExposureLuminance");
 
-		manager->m_ExposureAdaptShader = new VansComputeShader();
-		manager->m_ExposureAdaptShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PostProcess/ExposureAdapt").c_str());
+		manager->m_ExposureAdaptShader = VansGraphics::VansShaderManager::Get().FindComputeShader("ExposureAdapt");
 
-		manager->m_BloomPrefilterShader = new VansComputeShader();
-		manager->m_BloomPrefilterShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PostProcess/BloomPrefilter").c_str());
+		manager->m_BloomPrefilterShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BloomPrefilter");
 
-		manager->m_BloomDownsampleShader = new VansComputeShader();
-		manager->m_BloomDownsampleShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PostProcess/BloomDownsample").c_str());
+		manager->m_BloomDownsampleShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BloomDownsample");
 
-		manager->m_BloomUpsampleShader = new VansComputeShader();
-		manager->m_BloomUpsampleShader->InitShader(m_VansVKLogicDevice, (projectRoot + "EngineAssets/Shaders/PostProcess/BloomUpsample").c_str());
+		manager->m_BloomUpsampleShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BloomUpsample");
 
 		// ---- Descriptor Set Layouts + Allocation ----
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureLuminance(
@@ -1035,10 +1032,8 @@ namespace VansGraphics
 			manager->m_ExposureAdaptSetLayout, manager->m_ExposureAdaptDescriptorSets);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomPrefilter(
 			manager->m_BloomPrefilterSetLayout, manager->m_BloomPrefilterDescriptorSets);
-		// 4 个 Downsample set（每级独立）
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomDownsample(
 			manager->m_BloomDownsampleSetLayout, manager->m_BloomDownsampleDescriptorSets, 4);
-		// 4 个 Upsample set（每级独立）
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomUpsample(
 			manager->m_BloomUpsampleSetLayout, manager->m_BloomUpsampleDescriptorSets, 4);
 
@@ -1083,7 +1078,6 @@ namespace VansGraphics
 	}
 
 	// ================================================================
-	// PrepareTileLightData — create TileLight SSBOs + build pass resources
 	// ================================================================
 	void VansVKDevice::PrepareTileLightData()
 	{
@@ -1137,11 +1131,7 @@ namespace VansGraphics
 		// --- Build shader ---
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
-		manager->m_TileLightBuildShader = new VansComputeShader();
-		manager->m_TileLightBuildShader->InitShader(
-			m_VansVKLogicDevice,
-			(projectRoot + "EngineAssets/Shaders/TileLight").c_str()
-		);
+		manager->m_TileLightBuildShader = VansGraphics::VansShaderManager::Get().FindComputeShader("TileLightBuild");
 
 		// --- Descriptor set layout + allocation for Set 1 (write access) ---
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_TileLightBuild(

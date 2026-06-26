@@ -314,6 +314,7 @@ void CalculateDirectLight_Hair(
     sampler2DArray cascadeShadowMap,
     float viewDepth,
     sampler2D punctualShadowMap,
+    float screenSpaceShadow,
     inout LightResult lightResult)
 {
     lightResult.directDiffuse = vec3(0.0);
@@ -326,7 +327,7 @@ void CalculateDirectLight_Hair(
 
         DirectBRDF_Hair(brdfData, hair, uDirectionLight.direction.rgb, diffuseResult, specularResult);
 
-        float shadowValue = SampleCascadeShadow(brdfData.positionWS, cascadeShadowMap, viewDepth);
+        float shadowValue = min(SampleCascadeShadow(brdfData.positionWS, brdfData.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
         diffuseResult *= uDirectionLight.color.rgb * uDirectionLight.intensity * shadowValue;
         specularResult *= uDirectionLight.color.rgb * uDirectionLight.intensity * shadowValue;
 

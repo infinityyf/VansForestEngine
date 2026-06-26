@@ -13,6 +13,119 @@
 #include <iostream>
 #include <cstdlib>
 
+namespace
+{
+bool CompileShaderModuleData(
+	const std::string& shader_folder,
+	VansGraphics::ShaderType shaderType,
+	std::map<VkShaderStageFlagBits, VansGraphics::ShaderModuleData>& outModuleData)
+{
+	std::vector<std::string> shader_files = GetFilesInFolder(shader_folder);
+	if (shader_files.empty())
+	{
+		VANS_LOG_WARN("no shader files found:" << shader_folder);
+		return false;
+	}
+
+	outModuleData.clear();
+	for (auto& shader_file : shader_files)
+	{
+		std::string shader_type = GetFileExtension(shader_file);
+		if (shader_type == "spv")
+			continue;
+
+		VkShaderStageFlagBits shader_stage = {};
+		if (shaderType == VansGraphics::ShaderType::Normal)
+		{
+			auto shader_type_iter = VansGraphics::m_ShaderTypeMap.find(shader_type);
+			if (shader_type_iter == VansGraphics::m_ShaderTypeMap.end())
+			{
+				VANS_LOG_WARN("unknown shader type");
+				return false;
+			}
+			shader_stage = shader_type_iter->second;
+		}
+		else
+		{
+			auto shader_type_iter = VansGraphics::m_RayTracingShaderTypeMap.find(shader_type);
+			if (shader_type_iter == VansGraphics::m_RayTracingShaderTypeMap.end())
+			{
+				VANS_LOG_WARN("unknown ray tracing shader type");
+				return false;
+			}
+			shader_stage = shader_type_iter->second;
+		}
+
+		VansGraphics::ShaderModuleData shader_module_data;
+		shader_module_data.m_ShaderType = shader_type;
+		shader_module_data.m_ShaderTextResourceFileName = shader_folder + "\\" + shader_file;
+		outModuleData[shader_stage] = shader_module_data;
+	}
+
+	std::string command = "glslangValidator -V ";
+	for (auto& shader_module_data : outModuleData)
+	{
+		std::string spirv_file_name = GetFileWithoutExtension(shader_module_data.second.m_ShaderTextResourceFileName);
+		spirv_file_name += shader_module_data.second.m_ShaderType + ".spv";
+		spirv_file_name = shader_folder + "\\" + spirv_file_name;
+
+		std::string shader_command = command + " " + shader_module_data.second.m_ShaderTextResourceFileName;
+		shader_command += " -o " + spirv_file_name;
+		shader_command += " --target-env vulkan1.2";
+		int result = system(shader_command.c_str());
+
+		if (result != 0)
+		{
+			VANS_LOG_ERROR("glslangValidator failed");
+			return false;
+		}
+
+		VANS_LOG("glslangValidator pass " << shader_module_data.first);
+		ReadFile(spirv_file_name, shader_module_data.second.m_ShaderSPIRVCode);
+		if (shader_module_data.second.m_ShaderSPIRVCode.empty())
+		{
+			VANS_LOG_ERROR("read spirv file failed");
+			return false;
+		}
+	}
+	return true;
+}
+
+void DestroyShaderModuleData(VkDevice device, std::map<VkShaderStageFlagBits, VansGraphics::ShaderModuleData>& moduleData)
+{
+	for (auto& shader_module_data : moduleData)
+	{
+		if (shader_module_data.second.m_ShaderModule != VK_NULL_HANDLE)
+			VansGraphics::vkDestroyShaderModule(device, shader_module_data.second.m_ShaderModule, nullptr);
+		shader_module_data.second.m_ShaderModule = VK_NULL_HANDLE;
+	}
+	moduleData.clear();
+}
+
+bool CreateShaderModulesFromData(VkDevice device, std::map<VkShaderStageFlagBits, VansGraphics::ShaderModuleData>& moduleData)
+{
+	for (auto& shader_module_data : moduleData)
+	{
+		VkShaderModuleCreateInfo shader_module_create_info =
+		{
+			VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+			nullptr,
+			0,
+			shader_module_data.second.m_ShaderSPIRVCode.size(),
+			reinterpret_cast<uint32_t const*>(shader_module_data.second.m_ShaderSPIRVCode.data())
+		};
+		VkResult result = VansGraphics::vkCreateShaderModule(device, &shader_module_create_info, nullptr, &shader_module_data.second.m_ShaderModule);
+		if (VK_SUCCESS != result)
+		{
+			VANS_LOG_ERROR("Could not create a shader module.");
+			DestroyShaderModuleData(device, moduleData);
+			return false;
+		}
+	}
+	return true;
+}
+}
+
 //static std::vector<uint32_t> ToUint32Words(const std::vector<unsigned char>& bytes)
 //{
 //	if (bytes.size() % sizeof(uint32_t) != 0)
@@ -81,25 +194,27 @@
 bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::string& shader_folder)
 {
 	m_ShaderFolder = shader_folder;
+	m_ShaderType = ShaderType::Normal;
 
-	//如果是延迟管线需要切换使用的shader
-	bool supportDeferred = SwitchToDeferredShaderPath(m_ShaderFolder);
-	
-	m_SupportMRTOutput = supportDeferred;
+	m_SupportMRTOutput = false;
 
-	bool result = TranslateToSPIRV(m_ShaderFolder);
+	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
+	bool result = CompileShaderModuleData(m_ShaderFolder, m_ShaderType, moduleData);
 	if (!result)
 	{
 		VANS_LOG_ERROR("shader translation failed");
 		return false;
 	}
 
-	result = CreateShaderModule(logic_device);
+	result = CreateShaderModulesFromData(logic_device, moduleData);
 	if (!result)
 	{
 		VANS_LOG_ERROR("create shader module failed");
 		return false;
 	}
+
+	DestroyShaderModuleData(logic_device, m_ShaderModuleDataMap);
+	m_ShaderModuleDataMap = std::move(moduleData);
 
 	m_LogicDevice = logic_device;
 
@@ -112,19 +227,23 @@ bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::str
 
 bool VansGraphics::VansShader::RefreshShaderMoudle()
 {
-	bool result = TranslateToSPIRV(m_ShaderFolder);
+	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
+	bool result = CompileShaderModuleData(m_ShaderFolder, m_ShaderType, moduleData);
 	if (!result)
 	{
 		VANS_LOG_ERROR("shader translation failed");
 		return false;
 	}
 
-	result = CreateShaderModule(m_LogicDevice);
+	result = CreateShaderModulesFromData(m_LogicDevice, moduleData);
 	if (!result)
 	{
 		VANS_LOG_ERROR("create shader module failed");
 		return false;
 	}
+
+	DestroyShaderModuleData(m_LogicDevice, m_ShaderModuleDataMap);
+	m_ShaderModuleDataMap = std::move(moduleData);
 
 	return true;
 }
@@ -132,19 +251,24 @@ bool VansGraphics::VansShader::RefreshShaderMoudle()
 bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder)
 {
 	std::string shader_folder_string = shader_folder;
-	bool result = TranslateToSPIRV(shader_folder_string, ShaderType::RayTracing);
+	m_ShaderFolder = shader_folder;
+	m_ShaderType = ShaderType::RayTracing;
+	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
+	bool result = CompileShaderModuleData(shader_folder_string, ShaderType::RayTracing, moduleData);
 	if (!result)
 	{
 		VANS_LOG_ERROR("shader translation failed");
 		return false;
 	}
 	VANS_LOG("before ray tracing create shader module");
-	result = CreateShaderModule(logic_device);
+	result = CreateShaderModulesFromData(logic_device, moduleData);
 	if (!result)
 	{
 		VANS_LOG_ERROR("create shader module failed");
 		return false;
 	}
+	DestroyShaderModuleData(logic_device, m_ShaderModuleDataMap);
+	m_ShaderModuleDataMap = std::move(moduleData);
 	m_LogicDevice = logic_device;
 
 	m_PushConstantSize = 0;
@@ -162,134 +286,22 @@ bool VansGraphics::VansShader::CheckRefreshShader(VkDevice& logic_device)
 
 bool VansGraphics::VansShader::TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType)
 {
-	//根据路径下文件后缀先读取源glsl
-	std::vector<std::string> shader_files = GetFilesInFolder(shader_folder);
-
-	if (shader_files.size() == 0)
-	{
-		VANS_LOG_WARN("no shader files found:" << shader_folder);
+	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
+	if (!CompileShaderModuleData(shader_folder, shaderType, moduleData))
 		return false;
-	}
-	m_ShaderModuleDataMap.clear();
-
-	//根据文件后缀找到对应的shader类型生成module data
-	for (auto& shader_file : shader_files)
-	{
-		std::string shader_type = GetFileExtension(shader_file);
-		if (shader_type == "spv")
-		{
-			continue;
-		}
-
-		switch (shaderType)
-		{
-		case VansGraphics::Normal:
-			{
-				auto shader_type_iter = m_ShaderTypeMap.find(shader_type);
-				if (shader_type_iter == m_ShaderTypeMap.end())
-				{
-					VANS_LOG_WARN("unknown shader type");
-					return false;
-				}
-				VkShaderStageFlagBits shader_stage = shader_type_iter->second;
-				ShaderModuleData shader_module_data;
-				shader_module_data.m_ShaderType = shader_type;
-				shader_module_data.m_ShaderTextResourceFileName = shader_folder + "\\" + shader_file;
-				m_ShaderModuleDataMap[shader_stage] = shader_module_data;
-			}
-			break;
-		case VansGraphics::RayTracing:
-			{
-				auto shader_type_iter = m_RayTracingShaderTypeMap.find(shader_type);
-				if (shader_type_iter == m_RayTracingShaderTypeMap.end())
-				{
-					VANS_LOG_WARN("unknown shader type");
-					return false;
-				}
-				VkShaderStageFlagBits shader_stage = shader_type_iter->second;
-				ShaderModuleData shader_module_data;
-				shader_module_data.m_ShaderType = shader_type;
-				shader_module_data.m_ShaderTextResourceFileName = shader_folder + "\\" + shader_file;
-				m_ShaderModuleDataMap[shader_stage] = shader_module_data;
-			}
-
-			break;
-		default:
-			break;
-		}
-	}
-
-	std::string command = "glslangValidator -V ";
-	//遍历所有的shader moudle data然后调用glslang将text resource编译成spirv
-	for (auto& shader_module_data : m_ShaderModuleDataMap)
-	{
-		//创建对应的spirv文件
-		std::string spirv_file_name = GetFileWithoutExtension(shader_module_data.second.m_ShaderTextResourceFileName);
-		spirv_file_name += shader_module_data.second.m_ShaderType + ".spv";
-		spirv_file_name = shader_folder + "\\" + spirv_file_name;
-
-		//构建命令行
-		std::string shader_command = command + " " + shader_module_data.second.m_ShaderTextResourceFileName;
-		shader_command += " -o " + spirv_file_name;
-		shader_command += " --target-env vulkan1.2";
-		int result = system(shader_command.c_str());
-
-		if (result == 0) 
-		{
-			VANS_LOG("glslangValidator pass " << shader_module_data.first);
-		}
-		else 
-		{
-			VANS_LOG_ERROR("glslangValidator failed");
-			return false;
-		}
-
-		//读取spirv文件
-		ReadFile(spirv_file_name, shader_module_data.second.m_ShaderSPIRVCode);
-		if (shader_module_data.second.m_ShaderSPIRVCode.empty())
-		{
-			VANS_LOG_ERROR("read spirv file failed");
-			return false;
-		}
-	}
+	DestroyShaderModuleData(m_LogicDevice, m_ShaderModuleDataMap);
+	m_ShaderModuleDataMap = std::move(moduleData);
 	return true;
 }
 
 void VansGraphics::VansShader::DestroyShaderMoulde()
 {
-	//编译data map destroy shader module data
-	for (auto& shader_module_data : m_ShaderModuleDataMap)
-	{
-		vkDestroyShaderModule(m_LogicDevice, shader_module_data.second.m_ShaderModule, nullptr);
-	}
-	m_ShaderModuleDataMap.clear();
+	DestroyShaderModuleData(m_LogicDevice, m_ShaderModuleDataMap);
 }
 
 bool VansGraphics::VansShader::CreateShaderModule(VkDevice& logic_device)
 {
-	//遍历所有的module data
-	for (auto& shader_module_data : m_ShaderModuleDataMap)
-	{
-		VkShaderModuleCreateInfo shader_module_create_info = 
-		{
-			VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-			nullptr,
-			0,
-			shader_module_data.second.m_ShaderSPIRVCode.size(),
-			reinterpret_cast<uint32_t const*>(shader_module_data.second.m_ShaderSPIRVCode.data())
-		};
-		VkResult result = vkCreateShaderModule(logic_device, &shader_module_create_info, nullptr, &shader_module_data.second.m_ShaderModule);
-		if (VK_SUCCESS != result)
-		{
-			VANS_LOG_ERROR("Could not create a shader module.");
-			return false;
-		}
-
-		//// Convert bytes -> words (aligned)
-		//std::vector<uint32_t> spirv_words = ToUint32Words(shader_module_data.second.m_ShaderSPIRVCode);
-		//ReflectShaderResources(spirv_words);
-	}
-	return true;
+	return CreateShaderModulesFromData(logic_device, m_ShaderModuleDataMap);
 }
 
 VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data,const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
@@ -684,7 +696,7 @@ void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* 
 		handles.data());
 
 	uint8_t* handleData = handles.data();
-	int offset = 0;
+	VkDeviceSize offset = 0;
 	m_SBTBuffer.SetBufferData(handleData, offset, handleSize);
 	handleData += handleSize;
 	offset = m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.size;

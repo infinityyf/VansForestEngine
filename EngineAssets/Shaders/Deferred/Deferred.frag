@@ -74,9 +74,15 @@ layout( set = 1, binding = 11 ) uniform sampler3D SHGCoeff;
 // B通道球谐
 layout( set = 1, binding = 12 ) uniform sampler3D SHBCoeff;
 layout( set = 1, binding = 13 ) uniform sampler2D fogResult;
+layout( set = 1, binding = 14 ) uniform sampler2D screenSpaceShadow;
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
+
+float SampleScreenSpaceShadow(vec2 uv)
+{
+    return clamp(texture(screenSpaceShadow, uv).r, 0.0, 1.0);
+}
 
 vec3 SampleSHColor(vec3 dir) 
 {
@@ -145,13 +151,15 @@ void main()
     lightResult.ambientDiffuse = vec3(0);
     lightResult.ambientSpecular = vec3(0);
 
+    float sssShadow = SampleScreenSpaceShadow(fragTexCoord);
+
     int matID = int(round(materialID));
     if (matID == MATERIAL_ID_SKIN)
     {
         // --- Skin BRDF path ---
         // Curvature was stored in normalInput.w by UnlitSkin.frag
         float curvature = normalData.w;
-        CalculateDirectLight_Skin(brdfData, curvature, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        CalculateDirectLight_Skin(brdfData, curvature, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Skin(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else if (matID == MATERIAL_ID_CLOTH)
@@ -159,7 +167,7 @@ void main()
         // --- Cloth BRDF path ---
         // brdfData.roughness holds sheenRoughness (written into outGBuffer0.w by Cloth.frag)
         // Direct lighting uses the per-light cloth light loop
-        CalculateDirectLight_Cloth(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        CalculateDirectLight_Cloth(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
         // Ambient: ClothBRDFLUT .b channel used as the specular environment term
         AmbientBRDF_Cloth(brdfData, viewDirection,
                           lightResult.ambientDiffuse, lightResult.ambientSpecular);
@@ -182,7 +190,7 @@ void main()
         vec2 octT = vec2(metallic, gbufferData1.w) * 2.0 - 1.0;
         hair.tangentWS = OctDecodeHair(octT);
 
-        CalculateDirectLight_Hair(brdfData, hair, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        CalculateDirectLight_Hair(brdfData, hair, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Hair(brdfData, hair, viewDirection,
                          lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
@@ -200,7 +208,7 @@ void main()
         sss.subsurfacePower = subsurfacePower;
         sss.subsurfaceColor = vec3(1.0, 0.2, 0.1); // warm reddish scatter tint (default)
 
-        CalculateDirectLight_Subsurface(brdfData, sss, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        CalculateDirectLight_Subsurface(brdfData, sss, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Subsurface(brdfData, sss, viewDirection,
                                lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
@@ -220,7 +228,7 @@ void main()
         veg.sssAmbient     = 0.05;    // very low constant backlight
         veg.sssPower        = 14.0;   // high exponent = narrow forward-scatter cone
 
-        CalculateDirectLight_Vegetation(brdfData, veg, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        CalculateDirectLight_Vegetation(brdfData, veg, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Vegetation(brdfData, viewDirection,
                                lightResult.ambientDiffuse, lightResult.ambientSpecular);
         lightResult.ambientSpecular = vec3(0.0); // grass blades: no ambient specular
@@ -237,7 +245,7 @@ void main()
     else
     {
         // --- Default PBR path ---
-        CalculateDirectLight(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, lightResult);
+        CalculateDirectLight(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
 

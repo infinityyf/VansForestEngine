@@ -25,6 +25,15 @@ namespace VansGraphics
 	};
 	static_assert(sizeof(SSGIParamsGPU) == 48, "SSGI parameter layout must match GLSL");
 
+	struct alignas(16) ScreenSpaceShadowParamsGPU
+	{
+		glm::vec4 screenSize;
+		glm::vec4 halfSize;
+		glm::vec4 rayParams;
+		glm::vec4 fadeParams;
+	};
+	static_assert(sizeof(ScreenSpaceShadowParamsGPU) == 64, "Screen-space shadow parameter layout must match GLSL");
+
 	// ============================================================
 	// Well-known render-pass name constants.
 	// Each engine render pass queries the material for its unique pass name.
@@ -136,6 +145,8 @@ namespace VansGraphics
 		static constexpr const char* RT_SSGI_TEMPORAL_A = "Runtime.SSGI.TemporalA";
 		static constexpr const char* RT_SSGI_TEMPORAL_B = "Runtime.SSGI.TemporalB";
 		static constexpr const char* RT_HZB_RESULT = "Runtime.HZB.Result";
+		static constexpr const char* RT_SCREEN_SPACE_SHADOW_RESULT = "Runtime.ScreenSpaceShadow.Result";
+		static constexpr const char* RT_SCREEN_SPACE_SHADOW_FILTER_RESULT = "Runtime.ScreenSpaceShadow.FilterResult";
 		static constexpr const char* RT_SSR_HIT_INFO = "Runtime.SSR.HitInfo";
 		static constexpr const char* RT_SSR_RAY_PDF = "Runtime.SSR.RayPDF";
 		static constexpr const char* RT_SSR_RESULT = "Runtime.SSR.Result";
@@ -203,6 +214,10 @@ namespace VansGraphics
 		//SSR
 		VkDescriptorSetLayout m_SSRTraceSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_SSRTraceDescriptorSets;
+
+		VkDescriptorSetLayout m_ScreenSpaceShadowSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_ScreenSpaceShadowDescriptorSets;
+		VansVKBuffer m_ScreenSpaceShadowParamsCBBuffer;
 
 		VkDescriptorSetLayout m_SSRResolveSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_SSRResolveDescriptorSets;
@@ -295,6 +310,8 @@ namespace VansGraphics
 		std::vector<VkDescriptorSet> m_HIZSeedDescriptorSets;
 
 		VansComputeShader* m_SSRTraceShader;
+
+		VansComputeShader* m_ScreenSpaceShadowShader = nullptr;
 
 		VansComputeShader* m_SSRResolveShader;
 
@@ -408,7 +425,7 @@ namespace VansGraphics
 	};
 
 	// ============================================================
-	// VansPBRMaterial 鈥?opaque PBR surface (type 0)
+	// VansPBRMaterial - opaque PBR surface (type 0)
 	// ============================================================
 	class VansPBRMaterial : public VansMaterial
 	{
@@ -484,7 +501,7 @@ namespace VansGraphics
 
 		// Flat ordered texture list; binding index == position in vector
 		std::vector<VansTexture*>                          m_TransparentTextures;
-		// (slot label, asset name) 鈥?for debugging / tooling
+		// (slot label, asset name) - for debugging / tooling
 		std::vector<std::pair<std::string, std::string>>   m_TransparentTextureMap;
 
 		// Owned descriptor set layout / set for this transparent material
@@ -496,7 +513,7 @@ namespace VansGraphics
 	};
 
 	// ============================================================
-	// VansSkyBoxMaterial 鈥?sky / atmosphere (type 4)
+	// VansSkyBoxMaterial - sky / atmosphere (type 4)
 	// ============================================================
 	class VansSkyBoxMaterial : public VansMaterial
 	{
@@ -507,7 +524,7 @@ namespace VansGraphics
 	};
 
 	// ============================================================
-	// VansSkinMaterial 鈥?subsurface skin shading (type 9)
+	// VansSkinMaterial - subsurface skin shading (type 9)
 	// ============================================================
 	class VansSkinMaterial : public VansMaterial
 	{

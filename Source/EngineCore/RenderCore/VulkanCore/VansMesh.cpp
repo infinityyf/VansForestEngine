@@ -417,12 +417,12 @@ void VansGraphics::VansMesh::InitFromRawData(
 	m_VertexBuffer.CreatVulkanBuffer(device, vbSize, VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_VertexBuffer.SetBufferData(vertexData, 0, static_cast<int>(vbSize));
+	m_VertexBuffer.SetBufferData(vertexData, 0, vbSize);
 
 	// Index buffer
 	VkDeviceSize ibSize = sizeof(uint32_t) * indexCount;
 	m_IndexBuffer.CreatVulkanBuffer(device, ibSize, VK_FORMAT_R32_UINT,
 		VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_IndexBuffer.SetBufferData(indexData, 0, static_cast<int>(ibSize));
+	m_IndexBuffer.SetBufferData(indexData, 0, ibSize);
 }

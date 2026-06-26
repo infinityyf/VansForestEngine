@@ -1,7 +1,7 @@
 #include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
 #include "VansSceneLoadPass.h"
-#include "VansShaderRegistry.h"
+#include "VansShaderManager.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
 #include "../ProjectSystem/VansProjectManager.h"
@@ -504,8 +504,7 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
 	VANS_LOG("[AssetDatabase] Uploading dependency closure: " << resourceData["mesh"].size()
 		<< " models, " << resourceData["texture"].size() << " textures");
 
-    // Engine assets intentionally keep their established registry/default-texture path.
-    RegisterEngineShaders();
+    // Engine shaders are registered during InitializeGraphicsSystem().
     LoadResources(resourceData);
 	for (const auto& [alias, guid] : Vans::VansProjectManager::Get().GetConfig().runtimeAssetBindings)
 	{
@@ -1498,7 +1497,7 @@ void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
         material->m_MaterialType = feature.matType;
         // Populate m_PassShaders from registry
         {
-            auto& reg = VansGraphics::VansShaderRegistry::Get();
+            auto& reg = VansGraphics::VansShaderManager::Get();
             const auto& passMap = reg.GetMaterialPassMap(feature.matType);
             for (const auto& [passName, shaderName] : passMap)
             {
@@ -1568,11 +1567,23 @@ void VansGraphics::VansScene::LoadShadersFromRegistry(
     const std::string& pathPrefix,
     VkDevice& device)
 {
-    // Load shaders from the Shader Table
-    VansGraphics::VansShaderRegistry::Get().ForEachShader([&](const VansGraphics::VansShaderRegistryEntry& entry)
+    auto& manager = VansGraphics::VansShaderManager::Get();
+
+    // Load all registered shaders through the manager.
+    // This correctly handles Graphics / Compute / RayTracing shader types
+    // and populates the manager's internal records so that FindGraphicsShader /
+    // FindComputeShader / FindRayTracingShader return valid pointers.
+    manager.LoadAll(pathPrefix, device);
+
+    // Populate VansScene::m_Shaders for backward compatibility with
+    // GetShaderAsset() used by material-pass lookups.
+    std::vector<VansShader*> loaded = manager.GetLoadedShaderAssets();
+    for (VansShader* shader : loaded)
     {
-        LoadShaderFromEntry(entry, pathPrefix, device);
-    });
+        m_Shaders.push_back(shader);
+        // Set up file watching for hot-reload
+        m_SceneFileWatcher->AddWatch(shader->GetShaderFolder());
+    }
 }
 
 void VansGraphics::VansScene::LoadTexturesFromJson(
@@ -1657,8 +1668,6 @@ void VansGraphics::VansScene::LoadResources(json& resourceData)
         LoadMeshesFromJson(resourceData["mesh"], assetPrefix, nativeDevice, vkDevice);
     }
 
-    LoadShadersFromRegistry(enginePrefix, nativeDevice);
-
     if (resourceData.contains("texture") && resourceData["texture"].is_array())
     {
         LoadTexturesFromJson(resourceData["texture"], assetPrefix, enginePrefix, vkDevice);
@@ -1717,7 +1726,7 @@ void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
 
         // ── Populate m_PassShaders from the Material Pass Table ──────────────
         {
-            auto& reg = VansGraphics::VansShaderRegistry::Get();
+            auto& reg = VansGraphics::VansShaderManager::Get();
             const auto& passMap = reg.GetMaterialPassMap(matType);
             for (const auto& [passName, shaderName] : passMap)
             {
@@ -2274,7 +2283,7 @@ VansTexture* VansGraphics::VansScene::LoadOrGetTexture(const std::string& absPat
 }
 
 void VansGraphics::VansScene::LoadShaderFromEntry(
-    const VansGraphics::VansShaderRegistryEntry& entry,
+    const VansGraphics::VansShaderEntry& entry,
     const std::string& pathPrefix,
     VkDevice& device)
 {
@@ -2379,7 +2388,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
 
             // Populate m_PassShaders from Material Pass Table
             {
-                auto& reg = VansGraphics::VansShaderRegistry::Get();
+                auto& reg = VansGraphics::VansShaderManager::Get();
                 const auto& passMap = reg.GetMaterialPassMap(matType);
                 for (const auto& [passName, shaderName] : passMap)
                 {

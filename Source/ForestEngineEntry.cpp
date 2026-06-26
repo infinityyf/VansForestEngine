@@ -7,6 +7,7 @@
 #include "EngineCore/RenderCore/VansCamera.h"
 #include "EngineCore/RenderCore/VansScene.h"
 
+#include "EngineCore/Configration/VansConfigration.h"
 #include "EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
 #include "EngineCore/Util/VansJobSystem.h"
 #include "EngineCore/PhysicsCore/VansPhysics.h"
@@ -76,11 +77,21 @@ bool InitializeGraphicsSystem()
 
 	// Setup file watcher
 	m_SceneFileWatcher = new VansAssetsFileWatcher();
-	m_SceneFileWatcher->Start([](const std::string& folder, const std::string& filename) 
+	m_SceneFileWatcher->Start([](const std::string& folder, const std::string& filename)
 	{
 		VANS_LOG("[FileWatcher] File changed: " << folder + "\\" + filename);
 	});
 	VANS_LOG("[ForestEngine] Asset file watcher started");
+
+	// Register and load all built-in engine shaders early, before
+	// BeforeRendering() triggers PrepareRenderingData() which relies on
+	// compute shaders (PreConDiffuseEnvironment, etc.) already being loaded.
+	RegisterEngineShaders();
+	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+	m_Scene->LoadShadersFromRegistry(
+	    VansConfigration::GetInstance()->GetProjectRootPath(),
+	    vkDevice->GetLogicDevice());
+	VANS_LOG("[ForestEngine] Engine shaders registered and loaded");
 
 	return true;
 }

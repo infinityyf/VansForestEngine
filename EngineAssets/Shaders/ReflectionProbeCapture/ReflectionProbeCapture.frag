@@ -27,6 +27,10 @@ struct DirectionLightData
     float intensity;
     mat4 shadowMatrix[4];
     vec4 cascadeSplits;
+    vec4 cascadeTexelSize;
+    vec4 cascadeDepthScale;
+    vec4 cascadeNormalBias;
+    vec4 cascadeFilterRadius;
 };
 
 struct PointLightData

@@ -136,7 +136,7 @@ void VansGraphics::VansVKBuffer::SetBufferMemoryBarrier(VkPipelineStageFlags gen
 
 }
 
-bool VansGraphics::VansVKBuffer::SetBufferData(const void* data, int offset, int size)
+bool VansGraphics::VansVKBuffer::SetBufferData(const void* data, VkDeviceSize offset, VkDeviceSize size)
 {
 	// Fast path: persistent mapping was set up at creation time.
 	if (m_MappedPtr)

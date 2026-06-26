@@ -496,14 +496,14 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 		return false;
 	}
 
-	if (!stagingVertex.SetBufferData(m_MeshRawData.data(), 0, static_cast<int>(vertexBufferSize)))
+	if (!stagingVertex.SetBufferData(m_MeshRawData.data(), 0, vertexBufferSize))
 	{
 		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to upload vertex staging data. bytes=" << vertexBufferSize);
 		stagingVertex.DestroyVulkanBuffer(logic_device);
 		stagingIndex.DestroyVulkanBuffer(logic_device);
 		return false;
 	}
-	if (!stagingIndex.SetBufferData(m_MeshTriangleIndex.data(), 0, static_cast<int>(indexBufferSize)))
+	if (!stagingIndex.SetBufferData(m_MeshTriangleIndex.data(), 0, indexBufferSize))
 	{
 		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to upload index staging data. bytes=" << indexBufferSize);
 		stagingVertex.DestroyVulkanBuffer(logic_device);

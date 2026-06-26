@@ -29,7 +29,7 @@ namespace VansGraphics
 
 		//A single module may contain code for multiple shader stages
 		//一般包含一个stage
-		VkShaderModule m_ShaderModule;
+		VkShaderModule m_ShaderModule = VK_NULL_HANDLE;
 
 		//需要通过glsl翻译
 		std::vector<unsigned char> m_ShaderSPIRVCode;
@@ -78,7 +78,7 @@ namespace VansGraphics
 
 		std::map<VkShaderStageFlagBits, ShaderModuleData> m_ShaderModuleDataMap;
 
-		~VansShader()
+		virtual ~VansShader()
 		{
 			DestroyShaderMoulde();
 		}
@@ -88,6 +88,7 @@ namespace VansGraphics
 		bool TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType = ShaderType::Normal);
 
 		std::string m_ShaderFolder;
+		ShaderType m_ShaderType = ShaderType::Normal;
 
 	protected:
 		VkDevice m_LogicDevice;
@@ -107,6 +108,15 @@ namespace VansGraphics
 		VansVKComputePipeline* GetComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 
 		VansVKComputePipeline* GetComputePipeline() const { return m_ComputePipeline; };
+
+		void TriggerReCreateComputePipeline()
+		{
+			if (m_ComputePipeline != nullptr)
+			{
+				delete m_ComputePipeline;
+				m_ComputePipeline = nullptr;
+			}
+		}
 
 		VansComputeShader() : m_ComputePipeline(nullptr)
 		{
@@ -230,6 +240,16 @@ namespace VansGraphics
 
 			// 销毁旧 VkShaderModule，防止泄漏
 			DestroyShaderMoulde();
+		}
+
+		void TriggerReCreateRayTracingPipeline()
+		{
+			if (m_VansVkRayTracingPipeline != nullptr)
+			{
+				delete m_VansVkRayTracingPipeline;
+				m_VansVkRayTracingPipeline = nullptr;
+			}
+			m_SBTBuffer.DestroyVulkanBuffer(m_LogicDevice);
 		}
 
 	private:

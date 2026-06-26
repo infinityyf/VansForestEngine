@@ -29,7 +29,8 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
     }
 
     // Helper lambda to display an image with caching
-    auto DisplayImage = [](const char* label, VansVKImage& image, VkDescriptorSet& cachedDS, VkImageView& cachedImageView)
+    auto DisplayImage = [](const char* label, VansVKImage& image, VkDescriptorSet& cachedDS,
+        VkImageView& cachedImageView, VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
     {
         ImGui::Text("%s", label);
 
@@ -40,7 +41,7 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
             {
                 ImGui_ImplVulkan_RemoveTexture(cachedDS);
             }
-            cachedDS = ImGui_ImplVulkan_AddTexture(image.GetSampler(), currentImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            cachedDS = ImGui_ImplVulkan_AddTexture(image.GetSampler(), currentImageView, layout);
             cachedImageView = currentImageView;
         }
 
@@ -57,6 +58,7 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
     static VkDescriptorSet dsSSR = VK_NULL_HANDLE;  static VkImageView ivSSR = VK_NULL_HANDLE;
     static VkDescriptorSet dsSSGI = VK_NULL_HANDLE; static VkImageView ivSSGI = VK_NULL_HANDLE;
     static VkDescriptorSet dsFog = VK_NULL_HANDLE;  static VkImageView ivFog = VK_NULL_HANDLE;
+    static VkDescriptorSet dsSSS = VK_NULL_HANDLE;  static VkImageView ivSSS = VK_NULL_HANDLE;
 
     if (ImGui::BeginTable("RenderDebugTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
     {
@@ -71,7 +73,7 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
             VansTexture* ssrTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT);
             if (ssrTex)
             {
-                DisplayImage("SSR Resolve Result", ssrTex->GetImage(), dsSSR, ivSSR);
+                DisplayImage("SSR Resolve Result", ssrTex->GetImage(), dsSSR, ivSSR, VK_IMAGE_LAYOUT_GENERAL);
             }
             else
             {
@@ -90,7 +92,7 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
             VansTexture* ssgiTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT);
             if (ssgiTex)
             {
-                DisplayImage("SSGI Result", ssgiTex->GetImage(), dsSSGI, ivSSGI);
+                DisplayImage("SSGI Result", ssgiTex->GetImage(), dsSSGI, ivSSGI, VK_IMAGE_LAYOUT_GENERAL);
             }
             else
             {
@@ -109,7 +111,7 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
             VansTexture* fogTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
             if (fogTex)
             {
-                DisplayImage("Fog Blend Result", fogTex->GetImage(), dsFog, ivFog);
+                DisplayImage("Fog Blend Result", fogTex->GetImage(), dsFog, ivFog, VK_IMAGE_LAYOUT_GENERAL);
             }
             else
             {
@@ -119,6 +121,24 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
         else
         {
             ImGui::Text("Fog Blend Result: No MaterialManager");
+        }
+
+        ImGui::TableNextColumn();
+        if (materialManager)
+        {
+            VansTexture* sssTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
+            if (sssTex)
+            {
+                DisplayImage("Screen Space Shadow", sssTex->GetImage(), dsSSS, ivSSS, VK_IMAGE_LAYOUT_GENERAL);
+            }
+            else
+            {
+                ImGui::Text("Screen Space Shadow: N/A");
+            }
+        }
+        else
+        {
+            ImGui::Text("Screen Space Shadow: No MaterialManager");
         }
 
         ImGui::EndTable();

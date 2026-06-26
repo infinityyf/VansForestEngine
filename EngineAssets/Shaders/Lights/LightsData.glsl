@@ -8,6 +8,10 @@ struct DirectionLightData
     float intensity;
     mat4x4 shadowMatrix[CASCADE_COUNT];
     vec4 cascadeSplits;  // view-space Z distances for each cascade boundary
+    vec4 cascadeTexelSize;
+    vec4 cascadeDepthScale;
+    vec4 cascadeNormalBias;
+    vec4 cascadeFilterRadius;
 };
 
 struct PointLightData
@@ -364,106 +368,199 @@ int SelectCascade(float viewDepth)
 }
 
 // PCF sampling on a single cascade layer (sampler2DArray).
-float SampleCascadeShadowMap_PCF(vec3 position_world, sampler2DArray cascadeShadowMap, int cascadeIdx)
+struct CascadeProjection
 {
-    vec4 clipCoord = uDirectionLight.shadowMatrix[cascadeIdx] * vec4(position_world, 1.0);
-    float rawZ = clipCoord.z * 0.5 + 0.5;
-    clipCoord.z = rawZ - DEPTH_BIAS;  // biased depth used for shadow comparison
-    vec2 shadowUV = clipCoord.xy * 0.5 + 0.5;
-    shadowUV.y = 1.0 - shadowUV.y;
+    vec2 uv;
+    float depth;
+    float valid;
+};
 
-    // Smooth fade at all six shadow map boundaries (XY + depth range).
-    // Without the Z terms, any position beyond the cascade far plane has
-    // clipCoord.z > 1, making every PCF sample appear in shadow (visibility=0)
-    // while edgeFade (XY only) stays 1, producing a hard black edge with no fade.
-    float fadeWidth = 0.05;
-    float edgeFade = smoothstep(0.0, fadeWidth, shadowUV.x)
-                   * smoothstep(0.0, fadeWidth, 1.0 - shadowUV.x)
-                   * smoothstep(0.0, fadeWidth, shadowUV.y)
-                   * smoothstep(0.0, fadeWidth, 1.0 - shadowUV.y)
-                   * smoothstep(0.0, fadeWidth, rawZ)              // cascade near plane
-                   * smoothstep(0.0, fadeWidth, 1.0 - rawZ);      // cascade far plane
+CascadeProjection ProjectCascade(vec3 positionWS, int cascadeIdx)
+{
+    vec4 clip = uDirectionLight.shadowMatrix[cascadeIdx] * vec4(positionWS, 1.0);
+    vec3 ndc = clip.xyz / max(abs(clip.w), 1e-6);
 
-    if (edgeFade <= 0.0)
+    CascadeProjection p;
+    p.depth = ndc.z * 0.5 + 0.5;
+    p.uv = ndc.xy * 0.5 + 0.5;
+    p.uv.y = 1.0 - p.uv.y;
+    p.valid = (p.uv.x > 0.0 && p.uv.x < 1.0 &&
+               p.uv.y > 0.0 && p.uv.y < 1.0 &&
+               p.depth > 0.0 && p.depth < 1.0) ? 1.0 : 0.0;
+    return p;
+}
+
+float ComputeCascadeReceiverBias(vec3 normalWS, int cascadeIdx)
+{
+    vec3 n = normalize(normalWS);
+    vec3 l = normalize(uDirectionLight.direction.xyz);
+    float ndl = clamp(dot(n, l), 0.0, 1.0);
+    float slope = min(sqrt(max(0.0, 1.0 - ndl * ndl)) / max(ndl, 0.05), 4.0);
+    float normalBiasWorld = uDirectionLight.cascadeNormalBias[cascadeIdx] * (1.0 + slope * 0.75);
+    return max(DEPTH_BIAS, normalBiasWorld * uDirectionLight.cascadeDepthScale[cascadeIdx]);
+}
+
+float CompareCascadeDepthR32(sampler2DArray shadowMap, vec2 uv, int cascadeIdx, float receiverDepth)
+{
+    float shadowDepth = texture(shadowMap, vec3(uv, float(cascadeIdx))).r;
+    return (shadowDepth < receiverDepth) ? 0.0 : 1.0;
+}
+
+float SampleCascadeShadowMap_StablePCF(
+    vec3 positionWS,
+    vec3 normalWS,
+    sampler2DArray cascadeShadowMap,
+    int cascadeIdx,
+    out float projectionValid)
+{
+    CascadeProjection p = ProjectCascade(positionWS, cascadeIdx);
+    projectionValid = p.valid;
+    if (p.valid <= 0.0)
         return 1.0;
 
     ivec3 sz = textureSize(cascadeShadowMap, 0);
-    ivec2 shadowMapSize = sz.xy;
-    vec2 texelSize = 1.0 / vec2(shadowMapSize);
+    vec2 texelSize = 1.0 / vec2(sz.xy);
 
-    float sampleCountInverse = 1.0 / float(DISK_SAMPLE_COUNT);
-    float blockSearchRadius = 5.0;
+    float receiverDepth = p.depth - ComputeCascadeReceiverBias(normalWS, cascadeIdx);
+    float radius = max(uDirectionLight.cascadeFilterRadius[cascadeIdx], 1.35);
 
-    float receiverDepth = clipCoord.z;
-    float avgBlockerDepth = 0.0;
-    int blockerCount = 0;
+    float visibility = 0.0;
+    float weightSum = 0.0;
+    float totalWeight = 0.0;
 
-    // 采样核不能随 frameIndex 变化，否则会产生时间闪烁。
-    // 也不要把旋转角量化到 receiver texel，否则大半径 PCSS 会形成可见块状/条纹噪声。
-    // 这里使用 shadow-space 连续坐标生成稳定角度，避免时间闪烁并减少空间条纹。
-    float sampleJitterAngle = RandomInterLeavedWithScale(shadowUV * vec2(shadowMapSize), float(cascadeIdx) * 13.0) * TWO_PI;
-    vec2 jitter = vec2(sin(sampleJitterAngle), cos(sampleJitterAngle));
-
-    for(int i = 0; i < DISK_SAMPLE_COUNT; ++i)
+    for (int y = -3; y <= 3; ++y)
     {
-        float sampleDistNorm = 0;
-        vec2 offset = ComputeFibonacciSpiralDiskSampleClumped(i, sampleCountInverse, sampleDistNorm);
-        offset = vec2(offset.x * jitter.y + offset.y * jitter.x, offset.x * -jitter.x + offset.y * jitter.y);
-        vec2 sampleCoord = clamp(shadowUV + offset * texelSize * blockSearchRadius, vec2(0.0), vec2(1.0));
-        ivec2 sampleTexel = clamp(ivec2(round(sampleCoord * vec2(shadowMapSize - ivec2(1)))), ivec2(0), shadowMapSize - ivec2(1));
-        float texDepth = texelFetch(cascadeShadowMap, ivec3(sampleTexel, cascadeIdx), 0).r;
-        if(texDepth < receiverDepth)
+        for (int x = -3; x <= 3; ++x)
         {
-            avgBlockerDepth += texDepth;
-            blockerCount++;
+            vec2 o = vec2(float(x), float(y));
+            float wx = 1.0 - abs(float(x)) / 4.0;
+            float wy = 1.0 - abs(float(y)) / 4.0;
+            float w = wx * wy;
+            vec2 uv = p.uv + o * texelSize * radius;
+            totalWeight += w;
+            if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0)
+                continue;
+
+            visibility += CompareCascadeDepthR32(cascadeShadowMap, uv, cascadeIdx, receiverDepth) * w;
+            weightSum += w;
         }
     }
 
-    if(blockerCount == 0)
-        return 1.0;
-
-    avgBlockerDepth /= float(blockerCount);
-    float lightSizeScale = softShadowParams.y;
-    float maxFilterRadius = mix(6.0, 14.0, float(cascadeIdx) / float(CASCADE_COUNT - 1));
-    float radius = clamp((receiverDepth - avgBlockerDepth) / texelSize.x * lightSizeScale, 0.75, maxFilterRadius);
-
-    float visibility = 0.0;
-    for(int i = 0; i < DISK_SAMPLE_COUNT; ++i)
+    if (weightSum <= 1e-4)
     {
-        float sampleDistNorm = 0;
-        vec2 offset = ComputeFibonacciSpiralDiskSampleClumped(i, sampleCountInverse, sampleDistNorm);
-        offset = vec2(offset.x * jitter.y + offset.y * jitter.x, offset.x * -jitter.x + offset.y * jitter.y);
-        vec2 sampleCoord = clamp(shadowUV + offset * texelSize * radius, vec2(0.0), vec2(1.0));
-        float texDepth = texture(cascadeShadowMap, vec3(sampleCoord, float(cascadeIdx))).r;
-        visibility += (texDepth < clipCoord.z) ? 0.0 : 1.0;
+        projectionValid = 0.0;
+        return 1.0;
     }
 
-    visibility /= float(DISK_SAMPLE_COUNT);
-    return mix(1.0, visibility, edgeFade);
+    float edgeConfidence = clamp(weightSum / max(totalWeight, 1e-4), 0.0, 1.0);
+    projectionValid *= smoothstep(0.45, 0.85, edgeConfidence);
+    return visibility / max(weightSum, 1e-4);
 }
 
-// Sample cascade shadow with cross-cascade blending at boundaries.
-float SampleCascadeShadow(vec3 position_world, sampler2DArray cascadeShadowMap, float viewDepth)
+float ComputeCascadeBlendFactor(float viewDepth, int cascadeIdx)
+{
+    if (cascadeIdx >= CASCADE_COUNT - 1)
+        return 0.0;
+
+    float splitDist = uDirectionLight.cascadeSplits[cascadeIdx];
+    float nextSplit = uDirectionLight.cascadeSplits[cascadeIdx + 1];
+    float prevSplit = (cascadeIdx > 0) ? uDirectionLight.cascadeSplits[cascadeIdx - 1] : 0.0;
+    float cascadeSpan = max(nextSplit - prevSplit, 1.0);
+    float band = clamp(cascadeSpan * 0.08, 1.0, 25.0);
+    return smoothstep(splitDist - band, splitDist + band, viewDepth);
+}
+
+float SampleCascadeShadow(vec3 positionWS, vec3 normalWS, sampler2DArray cascadeShadowMap, float viewDepth)
 {
     int cascadeIdx = SelectCascade(viewDepth);
-    float shadow = SampleCascadeShadowMap_PCF(position_world, cascadeShadowMap, cascadeIdx);
+    float currentValid = 0.0;
+    float shadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, cascadeIdx, currentValid);
 
-    // Blend between cascades near the boundary to avoid visible seams
+    if (currentValid <= 0.0)
+    {
+        for (int offset = 1; offset < CASCADE_COUNT; ++offset)
+        {
+            int nearCascade = cascadeIdx - offset;
+            if (nearCascade >= 0)
+            {
+                float valid = 0.0;
+                float fallbackShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, nearCascade, valid);
+                if (valid > 0.0)
+                    return fallbackShadow;
+            }
+
+            int farCascade = cascadeIdx + offset;
+            if (farCascade < CASCADE_COUNT)
+            {
+                float valid = 0.0;
+                float fallbackShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, farCascade, valid);
+                if (valid > 0.0)
+                    return fallbackShadow;
+            }
+        }
+        return 1.0;
+    }
+
+    if (currentValid < 0.95)
+    {
+        for (int offset = 1; offset < CASCADE_COUNT; ++offset)
+        {
+            int nearCascade = cascadeIdx - offset;
+            if (nearCascade >= 0)
+            {
+                float valid = 0.0;
+                float fallbackShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, nearCascade, valid);
+                if (valid > currentValid)
+                {
+                    shadow = mix(fallbackShadow, shadow, currentValid);
+                    break;
+                }
+            }
+
+            int farCascade = cascadeIdx + offset;
+            if (farCascade < CASCADE_COUNT)
+            {
+                float valid = 0.0;
+                float fallbackShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, farCascade, valid);
+                if (valid > currentValid)
+                {
+                    shadow = mix(fallbackShadow, shadow, currentValid);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (cascadeIdx > 0)
+    {
+        float prevSplit = uDirectionLight.cascadeSplits[cascadeIdx - 1];
+        float currentSplit = uDirectionLight.cascadeSplits[cascadeIdx];
+        float prevPrevSplit = (cascadeIdx > 1) ? uDirectionLight.cascadeSplits[cascadeIdx - 2] : 0.0;
+        float cascadeSpan = max(currentSplit - prevPrevSplit, 1.0);
+        float band = clamp(cascadeSpan * 0.08, 1.0, 25.0);
+        float blendFromPrev = 1.0 - smoothstep(prevSplit - band, prevSplit + band, viewDepth);
+        if (blendFromPrev > 0.0)
+        {
+            float prevValid = 0.0;
+            float prevShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, cascadeIdx - 1, prevValid);
+            if (prevValid > 0.0)
+                shadow = mix(shadow, prevShadow, blendFromPrev);
+        }
+    }
     if (cascadeIdx < CASCADE_COUNT - 1)
     {
-        float splitDist = uDirectionLight.cascadeSplits[cascadeIdx];
-        float blendBand = splitDist * CASCADE_BLEND_BAND;
-        float blendFactor = smoothstep(splitDist - blendBand, splitDist, viewDepth);
+        float blendFactor = ComputeCascadeBlendFactor(viewDepth, cascadeIdx);
         if (blendFactor > 0.0)
         {
-            float nextShadow = SampleCascadeShadowMap_PCF(position_world, cascadeShadowMap, cascadeIdx + 1);
-            shadow = mix(shadow, nextShadow, blendFactor);
+            float nextValid = 0.0;
+            float nextShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, cascadeIdx + 1, nextValid);
+            if (nextValid > 0.0)
+                shadow = mix(shadow, nextShadow, blendFactor);
         }
     }
 
     return shadow;
 }
-
 void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2D punctualShadowMap, float sampleRadius, vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
 {
     diffuseResult = vec3(0);
@@ -570,7 +667,7 @@ void EvaluateRectLightLTC(
 // profileIndex = -1 means "no IES", in which case callers should skip the call.
 float SampleIESProfile(int profileIndex, vec3 lightDir, vec3 nadirDir);
 
-void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, float viewDepth, sampler2D punctualShadowMap, inout LightResult lightResult)
+void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, float viewDepth, sampler2D punctualShadowMap, float screenSpaceShadow, inout LightResult lightResult)
 {
     lightResult.directDiffuse = vec3(0);
     lightResult.directSpecular = vec3(0);
@@ -580,7 +677,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
     DirectBRDF(brdfData, uDirectionLight.direction.rgb, diffuseResult, specularResult);
     diffuseResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
 
-    float shadowValue = SampleCascadeShadow(brdfData.positionWS, cascadeShadowMap, viewDepth);
+    float shadowValue = min(SampleCascadeShadow(brdfData.positionWS, brdfData.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
     diffuseResult *= shadowValue;
     specularResult *= shadowValue;
 

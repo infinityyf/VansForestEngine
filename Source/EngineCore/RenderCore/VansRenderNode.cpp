@@ -1,4 +1,4 @@
-#include "VansRenderNode.h"
+﻿#include "VansRenderNode.h"
 #include "VansPostProcessProfile.h"
 #include "VansCamera.h"
 #include "VansScene.h"
@@ -702,11 +702,16 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 	VansTexture* shGResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
 	VansTexture* shBResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
 	VansTexture* volumetricFogResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
+	VansTexture* screenSpaceShadow = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
+	if (screenSpaceShadow == nullptr)
+	{
+		screenSpaceShadow = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_FILTER_RESULT);
+	}
 	VansTexture* rectLightEmissive = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
 
 	if (ssaoFilterResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
 		shRResult == nullptr || shGResult == nullptr || shBResult == nullptr || volumetricFogResult == nullptr ||
-		rectLightEmissive == nullptr ||
+		screenSpaceShadow == nullptr || rectLightEmissive == nullptr ||
 		!m_Scene->GetIESProfileManager()->IsGPUResourcesCreated())
 	{
 		// 不清除 dirty 标记，下帧重试（运行时纹理尚未就绪）
@@ -850,6 +855,22 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 					volumetricFogResult->GetImage().GetSampler(),
 					volumetricFogResult->GetImage().GetImageView(),
 					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}
+			}
+		}
+	);
+
+	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+		{
+			frameBufferInputDescriptorSets[0],
+			DEFERRED_BINDING_SCREEN_SPACE_SHADOW,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{
+				{
+					screenSpaceShadow->GetImage().GetSampler(),
+					screenSpaceShadow->GetImage().GetImageView(),
+					VK_IMAGE_LAYOUT_GENERAL
 				}
 			}
 		}

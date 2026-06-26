@@ -67,7 +67,7 @@ namespace VansGraphics
 		//设置buffer memory barrier
 		void SetBufferMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition);
 
-		bool SetBufferData(const void* data, int offset, int size);
+		bool SetBufferData(const void* data, VkDeviceSize offset, VkDeviceSize size);
 
 		// ── Persistent mapping API ────────────────────────────────────
 		// Map the whole buffer once and keep the pointer cached.

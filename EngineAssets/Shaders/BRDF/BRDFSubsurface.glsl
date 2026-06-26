@@ -134,6 +134,7 @@ void AmbientBRDF_Subsurface(BRDFData brdf, SubsurfaceParams sss, vec3 viewDirect
 void CalculateDirectLight_Subsurface(BRDFData brdfData, SubsurfaceParams sss,
                                      sampler2DArray cascadeShadowMap, float viewDepth,
                                      sampler2D punctualShadowMap,
+                                     float screenSpaceShadow,
                                      inout LightResult lightResult)
 {
     lightResult.directDiffuse  = vec3(0);
@@ -153,7 +154,7 @@ void CalculateDirectLight_Subsurface(BRDFData brdfData, SubsurfaceParams sss,
         specularResult   *= lightEnergy;
         transmission     *= lightEnergy;
 
-        float shadowValue = SampleCascadeShadow(brdfData.positionWS, cascadeShadowMap, viewDepth);
+        float shadowValue = min(SampleCascadeShadow(brdfData.positionWS, brdfData.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
 
         // Apply shadow uniformly — if the light is occluded, no contribution at all.
         // The subsurface BTDF already handles wrap-around lighting for back-facing
