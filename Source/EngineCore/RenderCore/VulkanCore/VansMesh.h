@@ -91,6 +91,11 @@ namespace VansGraphics
 
 		~VansMesh()
 		{
+			for (auto* subMesh : m_SubMeshes)
+			{
+				delete subMesh;
+			}
+			m_SubMeshes.clear();
 			m_VertexBuffer.DestroyVulkanBuffer(m_LogicalDevice);
 			//m_VertexPositionBuffer.DestroyVulkanBuffer(m_LogicalDevice);
 			m_IndexBuffer.DestroyVulkanBuffer(m_LogicalDevice);
@@ -122,13 +127,13 @@ namespace VansGraphics
 		//标记是否需要访问CPU数据
 		bool m_MeshRawPositionDataEnableCPURead;
 
-		VkDevice m_LogicalDevice;
+		VkDevice m_LogicalDevice = VK_NULL_HANDLE;
 
-		uint32_t m_VertexDataSize;
+		uint32_t m_VertexDataSize = 0;
 
-		int m_VertexCount;
+		int m_VertexCount = 0;
 
-		int m_IndexCount;
+		int m_IndexCount = 0;
 
 	public:
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansAnimationTypes.h"
+#include "FootPlacement/VansFootPlacementTypes.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -11,6 +12,7 @@ namespace VansGraphics
 	// 前向声明 (VansAnimGraph.h 包含本头文件，避免循环依赖)
 	class VansAnimGraph;
 	class VansMotionMatchingRuntime;
+	class VansFootPlacementSolver;
 	struct MotionMatchingSettings;
 	struct MotionMatchingDebugData;
 
@@ -219,6 +221,15 @@ namespace VansGraphics
 		bool IsMotionMatchingConfigured() const { return m_MotionMatching != nullptr; }
 		const MotionMatchingDebugData* GetMotionMatchingDebugData() const;
 
+		void ConfigureFootPlacement(const FootPlacementSettings& settings, const Skeleton& skeleton);
+		void SetFootPlacementEnabled(bool enabled);
+		void SetFootPlacementDebugVisualization(bool enabled);
+		void SetFootPlacementRuntimeState(const FootPlacementRuntimeState& state);
+		bool IsFootPlacementConfigured() const { return m_FootPlacement != nullptr; }
+		const FootPlacementSettings& GetFootPlacementSettings() const { return m_FootPlacementSettings; }
+		const FootPlacementDebugData* GetFootPlacementDebugData() const;
+		void SetOwnerWorldTransform(const glm::mat4& transform) { m_OwnerWorldTransform = transform; }
+
 	private:
 		std::string m_Name;
 
@@ -264,6 +275,10 @@ namespace VansGraphics
 		// ─── AnimGraph (v2) ───
 		std::unique_ptr<VansAnimGraph> m_Graph;
 		std::unique_ptr<VansMotionMatchingRuntime> m_MotionMatching;
+		std::unique_ptr<VansFootPlacementSolver> m_FootPlacement;
+		FootPlacementSettings m_FootPlacementSettings;
+		FootPlacementRuntimeState m_FootPlacementState;
+		glm::mat4 m_OwnerWorldTransform = glm::mat4(1.0f);
 
 		// ─── 内部方法 ───
 		void AdvanceStateTime(AnimatorState& state, float dt);
@@ -282,6 +297,11 @@ namespace VansGraphics
 		                     std::vector<glm::mat4>& outBlended);
 		void ApplyBoneOverrides(std::vector<glm::mat4>& localTransforms,
 		                       const Skeleton& skeleton);
+		void ApplyFootPlacement(float deltaTime,
+		                        const Skeleton& skeleton,
+		                        std::vector<glm::mat4>& localTransforms);
+		void NormalizeRootTransform(std::vector<glm::mat4>& localTransforms,
+		                            const Skeleton& skeleton);
 		void ExtractRootMotion(std::vector<glm::mat4>& localTransforms,
 		                       const Skeleton& skeleton);
 		void UpdateHierarchy(std::vector<glm::mat4>& localTransforms,

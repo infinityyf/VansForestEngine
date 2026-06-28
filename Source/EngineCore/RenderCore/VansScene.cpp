@@ -24,7 +24,7 @@
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
 #include "../VansTimer.h"
 
-#include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
+#include "../Interfaces/IShaderHotReloadService.h"
 #include "../AssetCore/VansAssetGuid.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
@@ -40,6 +40,41 @@
 #define VANS_UNLOAD_STEP(index, reason) do { (void)sizeof(index); } while (0)
 #endif
 
+namespace
+{
+	VansGraphics::VansAsset* FindAssetInLookup(
+		const std::unordered_map<std::string, VansGraphics::VansAsset*>& lookup,
+		const std::string& name)
+	{
+		const auto it = lookup.find(name);
+		return it != lookup.end() ? it->second : nullptr;
+	}
+
+	VansGraphics::VansAsset* FindAssetAndBackfillLookup(
+		const std::vector<VansGraphics::VansAsset*>& assets,
+		std::unordered_map<std::string, VansGraphics::VansAsset*>& lookup,
+		const std::string& name)
+	{
+		for (auto* asset : assets)
+		{
+			if (asset && asset->m_AssetName == name)
+			{
+				lookup[name] = asset;
+				return asset;
+			}
+		}
+		return nullptr;
+	}
+
+	void RegisterAssetByName(
+		std::unordered_map<std::string, VansGraphics::VansAsset*>& lookup,
+		VansGraphics::VansAsset* asset)
+	{
+		if (asset && !asset->m_AssetName.empty())
+			lookup[asset->m_AssetName] = asset;
+	}
+}
+
 
 VansGraphics::VansScene::~VansScene()
 {
@@ -53,62 +88,142 @@ VansAsset* VansGraphics::VansScene::GetMeshAsset(const std::string& name)
 {
 	if (const auto alias = m_ProjectMeshAliases.find(name); alias != m_ProjectMeshAliases.end())
 		return alias->second;
-    //搜索对应的mesh
-    for (auto mesh : m_Meshes)
-    {
-        if (mesh->m_AssetName== name)
-        {
-			return mesh;
-		}
-	}
-    for (auto mesh : m_SceneSubMeshes)
-    {
-        if (mesh->m_AssetName == name)
-        {
-            return mesh;
-        }
-    }
-    return nullptr;
+	if (auto* mesh = FindAssetInLookup(m_MeshAssetLookup, name))
+		return mesh;
+	if (auto* mesh = FindAssetInLookup(m_SceneSubMeshAssetLookup, name))
+		return mesh;
+	if (auto* mesh = FindAssetAndBackfillLookup(m_Meshes, m_MeshAssetLookup, name))
+		return mesh;
+	return FindAssetAndBackfillLookup(m_SceneSubMeshes, m_SceneSubMeshAssetLookup, name);
 }
 
 VansAsset* VansGraphics::VansScene::GetShaderAsset(const std::string& name)
 {
-    //搜索对应shader
-    for (auto shader : m_Shaders)
-    {
-        if (shader->m_AssetName == name)
-        {
-			return shader;
-		}
-	}
-    return nullptr;
+	if (auto* shader = FindAssetInLookup(m_ShaderAssetLookup, name))
+		return shader;
+	return FindAssetAndBackfillLookup(m_Shaders, m_ShaderAssetLookup, name);
 }
 
 VansAsset* VansGraphics::VansScene::GetTextureAsset(const std::string& name)
 {
-    //搜索texture
-    for (auto texture : m_Textures)
-    {
-        if (texture->m_AssetName == name)
-        {
-            return texture;
-        }
-    }
-
-    return nullptr;
+	if (auto* texture = FindAssetInLookup(m_TextureAssetLookup, name))
+		return texture;
+	return FindAssetAndBackfillLookup(m_Textures, m_TextureAssetLookup, name);
 }
 
 VansAsset* VansGraphics::VansScene::GetMaterialAsset(const std::string& name)
 {
-    //搜索material
-    for (auto material : m_Materials)
-    {
-        if (material->m_AssetName == name)
-        {
-			return material;
-		}
-	}
-    return nullptr;
+	if (auto* material = FindAssetInLookup(m_MaterialAssetLookup, name))
+		return material;
+	return FindAssetAndBackfillLookup(m_Materials, m_MaterialAssetLookup, name);
+}
+
+VansTexture* VansGraphics::VansScene::ResolveTextureOrDefault(VansTexture* texture, const char* fallbackName)
+{
+	if (texture)
+		return texture;
+
+	if (!fallbackName || fallbackName[0] == '\0')
+		return nullptr;
+
+	return static_cast<VansTexture*>(GetTextureAsset(fallbackName));
+}
+
+void VansGraphics::VansScene::RegisterMeshAsset(VansAsset* asset)
+{
+	RegisterAssetByName(m_MeshAssetLookup, asset);
+}
+
+void VansGraphics::VansScene::RegisterSceneSubMeshAsset(VansAsset* asset)
+{
+	RegisterAssetByName(m_SceneSubMeshAssetLookup, asset);
+}
+
+void VansGraphics::VansScene::RegisterShaderAsset(VansAsset* asset)
+{
+	RegisterAssetByName(m_ShaderAssetLookup, asset);
+}
+
+void VansGraphics::VansScene::RegisterTextureAsset(VansAsset* asset)
+{
+	RegisterAssetByName(m_TextureAssetLookup, asset);
+}
+
+void VansGraphics::VansScene::RegisterMaterialAsset(VansAsset* asset)
+{
+	RegisterAssetByName(m_MaterialAssetLookup, asset);
+}
+
+void VansGraphics::VansScene::AddMeshAsset(VansAsset* asset)
+{
+	m_Meshes.push_back(asset);
+	RegisterMeshAsset(asset);
+}
+
+void VansGraphics::VansScene::AddSceneSubMeshAsset(VansAsset* asset)
+{
+	m_SceneSubMeshes.push_back(asset);
+	RegisterSceneSubMeshAsset(asset);
+}
+
+void VansGraphics::VansScene::AddShaderAsset(VansAsset* asset)
+{
+	m_Shaders.push_back(asset);
+	RegisterShaderAsset(asset);
+}
+
+void VansGraphics::VansScene::AddTextureAsset(VansAsset* asset)
+{
+	m_Textures.push_back(asset);
+	RegisterTextureAsset(asset);
+}
+
+void VansGraphics::VansScene::AddMaterialAsset(VansAsset* asset)
+{
+	m_Materials.push_back(asset);
+	RegisterMaterialAsset(asset);
+}
+
+bool VansGraphics::VansScene::HasProjectMeshAlias(const std::string& name) const
+{
+	return m_ProjectMeshAliases.find(name) != m_ProjectMeshAliases.end();
+}
+
+void VansGraphics::VansScene::SetProjectMeshAlias(const std::string& name, VansAsset* asset)
+{
+	if (!name.empty() && asset)
+		m_ProjectMeshAliases[name] = asset;
+}
+
+VansAsset* VansGraphics::VansScene::FindMeshAsset(const std::string& name)
+{
+	return GetMeshAsset(name);
+}
+
+void VansGraphics::VansScene::RebuildAssetLookup()
+{
+	m_MeshAssetLookup.clear();
+	m_SceneSubMeshAssetLookup.clear();
+	m_TextureAssetLookup.clear();
+	m_ShaderAssetLookup.clear();
+	m_MaterialAssetLookup.clear();
+
+	for (auto* mesh : m_Meshes)
+		RegisterMeshAsset(mesh);
+	for (auto* mesh : m_SceneSubMeshes)
+		RegisterSceneSubMeshAsset(mesh);
+	for (auto* texture : m_Textures)
+		RegisterTextureAsset(texture);
+	for (auto* shader : m_Shaders)
+		RegisterShaderAsset(shader);
+	for (auto* material : m_Materials)
+		RegisterMaterialAsset(material);
+}
+
+void VansGraphics::VansScene::ClearSceneAssetLookup()
+{
+	m_SceneSubMeshAssetLookup.clear();
+	m_MaterialAssetLookup.clear();
 }
 
 void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, RenderNodeType type)
@@ -583,8 +698,6 @@ void VansGraphics::VansScene::UnLoadScene()
 
 	// ── 0. 清除编辑器选中状态 ─────────────────────────────────────────────
     VANS_UNLOAD_STEP(0, "清除编辑器选中状态");
-	m_SelectedNode = nullptr;
-	m_SelectedObject = nullptr;
 	VANS_LOG("[VansScene] Step 0: 编辑器选中状态已清除");
 
 	// ── 1. 清理场景级运行时纹理（SH 系数 + GI Visibility），保留屏幕空间纹理 ──
@@ -836,6 +949,7 @@ void VansGraphics::VansScene::UnLoadScene()
 		}
 	}
 	m_Materials.clear();
+	ClearSceneAssetLookup();
 	VANS_LOG("[VansScene] Step 10-11: Multi-mesh 和材质已清理");
 
 	// ── 12. 清理全局 PBR 数据和 descriptor ──────────────────────────────
@@ -960,10 +1074,37 @@ void VansGraphics::VansScene::UnloadProjectResources(VansVKDevice* device)
 {
     VANS_ASSERT_MAIN_THREAD();
 
-    // 重构-08 会在这里完整释放项目级资源。当前阶段只提供统一入口，避免改变既有资源生命周期。
-    (void)device;
+    if (device)
+    {
+        device->WaitForDevice();
+    }
+
+    m_VideoManager.Clear();
+    m_AudioManager.Clear();
+
+    // Shaders are owned by VansShaderManager. m_Shaders is only the legacy
+    // scene lookup view used by GetShaderAsset(), so do not delete entries here.
+    m_Shaders.clear();
+
+    for (auto* texture : m_Textures)
+    {
+        delete texture;
+    }
+    m_Textures.clear();
+
+    // Parent multi-mesh assets own their submeshes; m_SceneSubMeshes is a
+    // non-owning lookup list and must be cleared before deleting m_Meshes.
+    m_SceneSubMeshes.clear();
+    for (auto* mesh : m_Meshes)
+    {
+        delete mesh;
+    }
+    m_Meshes.clear();
+
 	m_ProjectMeshAliases.clear();
-    VANS_LOG("[VansScene] UnloadProjectResources 空桩已调用，完整项目资源释放将在重构-08 实现");
+    RebuildAssetLookup();
+    m_ResourcesLoaded = false;
+    VANS_LOG("[VansScene] Project resources unloaded");
 }
 
 void VansGraphics::VansScene::UpdateSceneData()
@@ -1673,7 +1814,6 @@ void VansGraphics::VansScene::UpdateTransformRenderData()
 
 VansGraphics::VansScene* m_Scene = nullptr;
 
-VansAssetsFileWatcher* m_SceneFileWatcher = nullptr;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Runtime Dynamic Entity API 实现
@@ -1974,11 +2114,6 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
     // ═══════════════════════════════════════════════════════════════════════
     //  0. 清除编辑器选中状态（必须在任何 delete 之前，防止悬垂比较）
     // ═══════════════════════════════════════════════════════════════════════
-    if (m_SelectedObject == obj)
-    {
-        m_SelectedObject = nullptr;
-        m_SelectedNode   = nullptr;
-    }
 
     // ═══════════════════════════════════════════════════════════════════════
     //  1. 解除 TransformParentSystem 关联
@@ -2184,6 +2319,7 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
             }
 
             m_MultiMeshGroups.erase(groupIt);
+            RebuildAssetLookup();
         }
     }
 

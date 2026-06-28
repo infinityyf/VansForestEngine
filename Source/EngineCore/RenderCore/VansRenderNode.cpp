@@ -2,7 +2,7 @@
 #include "VansPostProcessProfile.h"
 #include "VansCamera.h"
 #include "VansScene.h"
-#include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
+#include "../Interfaces/IShaderHotReloadService.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
@@ -39,7 +39,8 @@ bool VansGraphics::VansRenderNode::CheckRenderNodeState()
 	// Check all pass shaders for hot-reload (file watcher)
 	for (auto& [passName, shader] : m_Material->m_PassShaders)
 	{
-		if (shader != nullptr && m_SceneFileWatcher->ConsumeUpdated(shader->GetShaderFolder()))
+		auto* hotReload = m_Scene ? m_Scene->GetShaderHotReloadService() : nullptr;
+		if (shader != nullptr && hotReload && hotReload->ConsumeUpdatedShaderFolder(shader->GetShaderFolder()))
 		{
 			VANS_LOG("pipe update (" << passName << "): " << shader->GetShaderFolder());
 			shader->RefreshShaderMoudle();

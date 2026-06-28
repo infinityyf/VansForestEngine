@@ -193,6 +193,8 @@
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneSaveService.h" />
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneSchemaV2.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansSceneEditService.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\VansInspectorLiveEditService.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\VansMaterialLiveEditService.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorSelection.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansAssetWindow.h" />
@@ -241,6 +243,9 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansFABRIKSolver.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansLookAtSolver.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKChainBuilder.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootPlacementTypes.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootGroundProbe.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootPlacementSolver.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothNode.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothSystem.h" />
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansClothProfile.h" />
@@ -310,10 +315,13 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.h" />
     <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h" />
     <ClInclude Include="Source\EngineCore\Util\VansFileUtil.h" />
+    <ClInclude Include="Source\EngineCore\Util\ILogSink.h" />
     <ClInclude Include="Source\EngineCore\Util\VansInputManager.h" />
     <ClInclude Include="Source\EngineCore\Util\VansJobSystem.h" />
     <ClInclude Include="Source\EngineCore\Util\VansLog.h" />
     <ClInclude Include="Source\EngineCore\Util\VansProfiler.h" />
+    <ClInclude Include="Source\EngineCore\Interfaces\INativeWindowProvider.h" />
+    <ClInclude Include="Source\EngineCore\Interfaces\IShaderHotReloadService.h" />
     <ClInclude Include="Source\EngineCore\AudioCore\VansAudioDecoder.h" />
     <ClInclude Include="Source\EngineCore\AudioCore\VansAudioManager.h" />
     <ClInclude Include="Source\EngineCore\AudioCore\VansAudioNode.h" />
@@ -343,6 +351,8 @@
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneDocumentLoader.cpp" />
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneSaveService.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansSceneEditService.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\VansInspectorLiveEditService.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\VansMaterialLiveEditService.cpp" />
     <None Include="Source\Graphics\Vulkan\ListOfVulkanFunctions.inl" />
     <None Include="EngineAssets\Shaders\PostProcess\PostProcess.vert" />
     <None Include="EngineAssets\Shaders\PostProcess\PostProcess.frag" />
@@ -433,6 +443,8 @@
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansFABRIKSolver.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansLookAtSolver.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansIKChainBuilder.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootGroundProbe.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootPlacementSolver.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollider.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysics.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansPhysicsNode.cpp" />

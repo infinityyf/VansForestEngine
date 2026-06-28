@@ -10,6 +10,7 @@
 #include <atomic>
 #include <windows.h>
 #include <sys/stat.h>
+#include "../../Interfaces/IShaderHotReloadService.h"
 
 
 inline time_t get_last_write_time(const std::string& path) 
@@ -19,7 +20,7 @@ inline time_t get_last_write_time(const std::string& path)
         return result.st_mtime;
     return 0;
 }
-class VansAssetsFileWatcher
+class VansAssetsFileWatcher : public VansGraphics::IShaderHotReloadService
 {
 	//创建一个线程，可以动态的加入和删除监视路径，当对应文件修改后，触发对应的回调函数
 
@@ -68,6 +69,11 @@ public:
     using Callback = std::function<void(const std::string&, const std::string&)>; // (folder, filename)
 
     void AddWatch(const std::string& folder) 
+    {
+        WatchFolder(folder);
+    }
+
+    void WatchFolder(const std::string& folder) override
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
         if (std::find(m_Folders.begin(), m_Folders.end(), folder) != m_Folders.end())
@@ -143,6 +149,11 @@ public:
 
     // 读取并清除（常用于“消费一次更新事件”）
     bool ConsumeUpdated(const std::string& folder)
+    {
+        return ConsumeUpdatedShaderFolder(folder);
+    }
+
+    bool ConsumeUpdatedShaderFolder(const std::string& folder) override
     {
         bool result = false;
         {

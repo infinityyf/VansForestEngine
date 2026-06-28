@@ -248,6 +248,9 @@ void VansAnimationNode::Update(float deltaTime)
 		return;
 
 	// 1. 让 Controller 完成核心更新（状态机 + 关键帧插值 + 混合 + root motion + 矩阵输出）
+	if (m_HasTransformID)
+		m_Controller->SetOwnerWorldTransform(VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
+
 	m_Controller->Update(deltaTime, m_Skeleton);
 
 	// 2. 如果有 root motion，将 delta 应用到 Transform

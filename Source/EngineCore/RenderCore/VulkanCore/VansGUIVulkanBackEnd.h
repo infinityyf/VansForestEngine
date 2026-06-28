@@ -15,9 +15,13 @@ namespace VansGraphics
 	class VansGraphicsGUIBackEnd : public VansGUIBackEnd
 	{
 	private:
-		VkDescriptorPool m_ImGUIPool;
+		VkDevice m_Device = VK_NULL_HANDLE;
+		VkDescriptorPool m_ImGUIPool = VK_NULL_HANDLE;
+		bool m_Initialized = false;
 	public:
+		~VansGraphicsGUIBackEnd() override;
 		void InitBackEnd(VansGraphicsDevice& device, GLFWwindow* window) override;
+		void ShutdownBackEnd() override;
 	};
 	
 }

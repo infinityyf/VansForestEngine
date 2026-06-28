@@ -45,7 +45,7 @@ void VansWaterWindow::ApplyPreset(const WaterPreset& preset)
 {
     if (!m_Scene) return;
     VansWaterConfig& cfg = const_cast<VansWaterConfig&>(m_Scene->GetWaterConfig());
-    VansWaterMaterial* mat = m_Scene->m_WaterMaterial;
+    VansWaterMaterial* mat = m_Scene->GetWaterMaterial();
 
     cfg.m_Medium.m_DeepColor    = preset.deepColor;
     cfg.m_Medium.m_ShallowColor = preset.shallowColor;
@@ -80,7 +80,7 @@ void VansGraphics::VansWaterWindow::ShowWindow(VansVKDevice& device)
     ImGui::Begin("Water");
 
     VansWaterConfig& cfg = const_cast<VansWaterConfig&>(m_Scene->GetWaterConfig());
-    VansWaterMaterial* mat = m_Scene->m_WaterMaterial;
+    VansWaterMaterial* mat = m_Scene->GetWaterMaterial();
     VansWaterSystem* waterSys = m_Scene->GetWaterSystem();
 
     // ── Tab bar ───────────────────────────────────────────────────────
@@ -131,13 +131,13 @@ void VansGraphics::VansWaterWindow::ShowWindow(VansVKDevice& device)
                 {
                     cfg.m_WaterLevel = level;
                     if (waterSys) waterSys->SetWaterLevel(level);
-                    if (m_Scene->m_WaterRenderNode)
+                    if (VansRenderNode* waterNode = m_Scene->GetWaterRenderNode())
                     {
-                        glm::vec3 pos = m_Scene->m_WaterRenderNode->GetTransformPosition();
+                        glm::vec3 pos = waterNode->GetTransformPosition();
                         pos.y = level;
-                        m_Scene->m_WaterRenderNode->SetTransformData(
-                            pos, m_Scene->m_WaterRenderNode->GetTransformRotation(),
-                            m_Scene->m_WaterRenderNode->GetTransformScale());
+                        waterNode->SetTransformData(
+                            pos, waterNode->GetTransformRotation(),
+                            waterNode->GetTransformScale());
                     }
                 }
             }

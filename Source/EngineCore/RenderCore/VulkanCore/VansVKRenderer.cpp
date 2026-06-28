@@ -665,7 +665,7 @@ namespace VansGraphics
 			const uint32_t probeFrame = reflectionProbeFrame++;
 			const uint32_t faceBudget = reflectionProbes->GetBakeFaceBudget();
 			for (uint32_t face = 0; face < faceBudget; ++face)
-				reflectionProbes->ProcessBakeQueue(*m_Scene, *this, m_VansEditorCommandBuffer, probeFrame);
+				reflectionProbes->ProcessBakeQueue(*m_Scene, *this, m_ImmediateGraphicsCommandBuffer, probeFrame);
 		}
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
@@ -774,16 +774,5 @@ namespace VansGraphics
 		m_Scene->DrawPostProcessNodes();
 	}
 
-	// 保留兼容接口（无水面时可作为回退路径）
-	void VansVKDevice::DrawSceneDeferredPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
-	{
-		VkCommandBuffer& cmd = commandBuffer.GetVKCommandBuffer();
-		m_Scene->DrawScreenSpaceFeatureNode();
-		m_Scene->DeferredShading();
-		m_Scene->DrawSkyBoxNode();
-		m_Scene->DrawTransParentNodes();
-		m_Scene->DrawParticleNodes();
-		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
-		m_Scene->DrawPostProcessNodes();
-	}
 }
+

@@ -1,5 +1,5 @@
 #include "VansShaderManager.h"
-#include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
+#include "../Interfaces/IShaderHotReloadService.h"
 #include "../Util/VansLog.h"
 
 namespace VansGraphics
@@ -192,12 +192,12 @@ bool VansShaderManager::ReloadShader(const std::string& shaderName)
     return true;
 }
 
-void VansShaderManager::ReloadUpdatedShaders(VansAssetsFileWatcher& watcher)
+void VansShaderManager::ReloadUpdatedShaders(IShaderHotReloadService& hotReload)
 {
     for (auto& pair : m_Shaders)
     {
         VansShaderRecord& record = pair.second;
-        if (record.shader && watcher.ConsumeUpdated(record.shader->GetShaderFolder()))
+        if (record.shader && hotReload.ConsumeUpdatedShaderFolder(record.shader->GetShaderFolder()))
             ReloadShader(record.entry.name);
     }
 }

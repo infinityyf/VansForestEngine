@@ -49,7 +49,9 @@ namespace VansGraphics
 	class VansGUIBackEnd
 	{
 	public:
+		virtual ~VansGUIBackEnd() = default;
 		virtual void InitBackEnd(VansGraphicsDevice& device, GLFWwindow* window) = 0;
+		virtual void ShutdownBackEnd() = 0;
 	};
 
 }

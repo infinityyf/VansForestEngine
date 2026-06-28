@@ -13,7 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
-class VansAssetsFileWatcher;
+#include "../Interfaces/IShaderHotReloadService.h"
 
 namespace VansGraphics
 {
@@ -76,7 +76,7 @@ namespace VansGraphics
 
         bool LoadAll(const std::string& pathPrefix, VkDevice& device);
         bool ReloadShader(const std::string& shaderName);
-        void ReloadUpdatedShaders(VansAssetsFileWatcher& watcher);
+        void ReloadUpdatedShaders(IShaderHotReloadService& hotReload);
 
         void ForEachShader(const std::function<void(const VansShaderRecord&)>& fn) const;
         std::vector<VansShader*> GetLoadedShaderAssets() const;

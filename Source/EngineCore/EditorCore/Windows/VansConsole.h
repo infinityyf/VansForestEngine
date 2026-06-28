@@ -5,15 +5,13 @@
 #include <ctime>
 #include <sstream>
 #include <iomanip>
+#include "../../Util/VansLog.h"
 
 // -----------------------------------------------------------------------
 // VansConsole  –  A thread-safe, singleton ring-buffer log shared by
 //                 the engine (C++) side and the embedded Python side.
 //                 The Console *Window* reads from here.
 // -----------------------------------------------------------------------
-
-// Forward-declare so VansConsole.h does not depend on VansLog.h
-enum class VansLogLevel;
 
 enum class VansConsoleLogType
 {
@@ -36,7 +34,7 @@ struct VansConsoleEntry
     std::string         timestamp;  // HH:MM:SS
 };
 
-class VansConsole
+class VansConsole : public ILogSink
 {
 public:
     static VansConsole& Get()
@@ -64,6 +62,15 @@ public:
     void LogPython(const std::string& msg)
     {
         Push(VansConsoleLogType::Python, VansConsoleSeverity::Info, msg);
+    }
+
+    void OnLog(VansLogChannel channel, VansLogLevel level, const std::string& msg) override
+    {
+        VansConsoleSeverity sev = static_cast<VansConsoleSeverity>(static_cast<int>(level));
+        const VansConsoleLogType type = channel == VansLogChannel::Python
+            ? VansConsoleLogType::Python
+            : VansConsoleLogType::Engine;
+        Push(type, sev, msg);
     }
 
     // ---------- reading (called from UI thread) --------------------------

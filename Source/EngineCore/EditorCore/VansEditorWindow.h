@@ -112,7 +112,7 @@ namespace VansGraphics
 
 	public:
 
-		static std::vector<VansBaseWindowComponent*> m_Windows;
+		static std::vector<std::unique_ptr<VansBaseWindowComponent>> m_Windows;
 
 		static VansHierachuWindow* m_HierachyWindow;
 
@@ -149,7 +149,7 @@ namespace VansGraphics
 		static VansScriptContext m_ScriptContext;
 
 		/// ImGui-based project selector overlay (shown until a project is loaded)
-		static Vans::VansProjectSelector* m_ProjectSelector;
+		static std::unique_ptr<Vans::VansProjectSelector> m_ProjectSelector;
 
 		/// True once a project has been successfully opened/created
 		static bool m_ProjectLoaded;

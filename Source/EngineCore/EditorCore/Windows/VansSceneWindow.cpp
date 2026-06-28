@@ -189,7 +189,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                     // ── 按需加载 Mesh 到场景 m_Meshes ──────
                                     // GetMeshAsset 在 CreateEntity 内部调用，需在此之前将 mesh 加载到 m_Meshes
                                     VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-                                    if (vkDev && m_Scene && m_Scene->m_ProjectMeshAliases.find(meshName) == m_Scene->m_ProjectMeshAliases.end())
+                                    if (vkDev && m_Scene && !m_Scene->HasProjectMeshAlias(meshName))
                                     {
                                         auto* mesh = new VansMesh(false, false);
                                         mesh->LoadMesh(vkDev->GetLogicDevice(),
@@ -197,8 +197,8 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                             &vkDev->GetCommandBuffer(),
                                             record->sourcePath.string(), false);
                                         mesh->SetName(meshName);
-                                        m_Scene->m_Meshes.push_back(mesh);
-                                        m_Scene->m_ProjectMeshAliases[meshName] = mesh;
+                                        m_Scene->AddMeshAsset(mesh);
+                                        m_Scene->SetProjectMeshAlias(meshName, mesh);
                                         VANS_LOG("[SceneWindow] Mesh loaded: "
                                             << record->sourcePath.string() << " as '" << meshName << "'");
                                     }
@@ -261,7 +261,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
 
                                                 // 同时注册 mesh 的 GUID 别名（场景重载时 BuildRuntimeSceneFromV2 按 GUID 查找 mesh）
                                                 if (m_Scene)
-                                                    m_Scene->m_ProjectMeshAliases[modelGuid] = m_Scene->m_ProjectMeshAliases[meshName];
+                                                    m_Scene->SetProjectMeshAlias(modelGuid, m_Scene->FindMeshAsset(meshName));
 
                                                 Vans::SceneJson transformComp;
                                                 transformComp["id"]      = Vans::VansAssetGuid::New().ToString();
@@ -278,8 +278,9 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
 
                                                 // ── 获取实际使用的 Material GUID（与 CreateEntity fallback 逻辑一致）──
                                                 std::string materialGuid;
-                                                if (!m_Scene->m_Materials.empty())
-                                                    materialGuid = m_Scene->m_Materials[0]->m_AssetName;
+                                                const auto& materials = m_Scene->GetMaterialAssets();
+                                                if (!materials.empty())
+                                                    materialGuid = materials[0]->m_AssetName;
 
                                                 Vans::SceneJson modelData;
                                                 modelData["model"] = { {"guid", modelGuid} };
@@ -342,7 +343,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
             m_Gizmos.Draw(m_Scene, m_Camera, imageScreenPos, drawSize);
 
             // ── Motion Matching 轨迹可视化 ────────────────────────────────
-			if (m_Scene && !m_Scene->m_AnimationNodes.empty())
+			if (m_Scene && !m_Scene->GetAnimationNodes().empty())
 				ImGui::Checkbox("Motion Matching Debug", &VansHierachuWindow::m_ShowMMViz);
             if (VansHierachuWindow::m_ShowMMViz && m_Scene)
             {
@@ -350,7 +351,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                 const glm::mat4& proj = m_Camera->GetProjectiveMatrix();
                 ImDrawList* dl = ImGui::GetWindowDrawList();
 
-                for (auto* animNode : m_Scene->m_AnimationNodes)
+                for (auto* animNode : m_Scene->GetAnimationNodes())
                 {
                     auto* ctrl = animNode ? animNode->GetController() : nullptr;
                     if (!ctrl || !ctrl->IsMotionMatchingConfigured())
@@ -462,6 +463,151 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                     snprintf(lbl, sizeof(lbl), "%s", mm->activeClip.c_str());
                     dl->AddText(ImVec2(rootScr.x + 8, rootScr.y - 16),
                                 IM_COL32(255, 255, 180, 230), lbl);
+                }
+            }
+
+            // ── Foot IK debug visualization ───────────────────────────────
+            static bool s_ShowFootIKViz = false;
+            if (m_Scene && !m_Scene->GetAnimationNodes().empty())
+            {
+                ImGui::SameLine();
+                ImGui::Checkbox("Foot IK Debug", &s_ShowFootIKViz);
+            }
+            if (m_Scene)
+            {
+                const glm::mat4& view = m_Camera->GetViewMatrix();
+                const glm::mat4& proj = m_Camera->GetProjectiveMatrix();
+                glm::vec4 vp(0, 0, drawSize.x, drawSize.y);
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+
+                auto projectWorld = [&](const glm::vec3& w) -> ImVec2
+                {
+                    glm::vec3 s = glm::project(w, view, proj, vp);
+                    return ImVec2(imageScreenPos.x + s.x,
+                                  imageScreenPos.y + (drawSize.y - s.y));
+                };
+
+                auto drawCross = [&](const glm::vec3& w, ImU32 color, float radius)
+                {
+                    ImVec2 p = projectWorld(w);
+                    dl->AddLine(ImVec2(p.x - radius, p.y), ImVec2(p.x + radius, p.y), color, 1.5f);
+                    dl->AddLine(ImVec2(p.x, p.y - radius), ImVec2(p.x, p.y + radius), color, 1.5f);
+                };
+
+                auto drawLeg = [&](const FootPlacementDebugLeg& leg, const char* label, ImU32 chainColor)
+                {
+                    ImVec2 hip = projectWorld(leg.hip);
+                    ImVec2 knee = projectWorld(leg.knee);
+                    ImVec2 foot = projectWorld(leg.foot);
+                    dl->AddLine(hip, knee, chainColor, 2.0f);
+                    dl->AddLine(knee, foot, chainColor, 2.0f);
+                    dl->AddCircleFilled(hip, 3.5f, IM_COL32(80, 180, 255, 230));
+                    dl->AddCircleFilled(knee, 3.5f, IM_COL32(80, 180, 255, 230));
+                    dl->AddCircleFilled(foot, 4.0f, IM_COL32(255, 255, 255, 240));
+                    if (leg.hasOverlap)
+                    {
+                        drawCross(leg.overlapCenter, IM_COL32(80, 255, 255, 255), 9.0f);
+                        ImVec2 oc = projectWorld(leg.overlapCenter);
+                        char overlapLabel[96];
+                        snprintf(overlapLabel, sizeof(overlapLabel), "OVERLAP L%u %s",
+                                 leg.overlapLayer,
+                                 leg.overlapActorName.c_str());
+                        dl->AddText(ImVec2(oc.x + 8, oc.y - 24), IM_COL32(160, 255, 255, 240), overlapLabel);
+                    }
+
+                    int filteredHits = 0;
+                    int rawHits = 0;
+                    int acceptedHits = 0;
+                    const FootPlacementDebugSample* firstInterestingSample = nullptr;
+                    for (const auto& sample : leg.samples)
+                    {
+                        if (sample.hasHit)
+                            ++filteredHits;
+                        if (sample.hasRawHit)
+                            ++rawHits;
+                        if (sample.accepted)
+                            ++acceptedHits;
+                        if (!firstInterestingSample && !sample.status.empty())
+                            firstInterestingSample = &sample;
+
+                        const ImVec2 a = projectWorld(sample.rayStart);
+                        const ImVec2 b = projectWorld(sample.rayEnd);
+                        const ImU32 rayColor = sample.hasHit
+                            ? (sample.accepted ? IM_COL32(0, 255, 128, 220) : IM_COL32(255, 210, 64, 150))
+                            : IM_COL32(255, 70, 70, 120);
+                        dl->AddLine(a, b, rayColor, sample.accepted ? 2.0f : 1.0f);
+                        if (sample.hasHit)
+                        {
+                            ImVec2 h = projectWorld(sample.hitPosition);
+                            dl->AddCircleFilled(h, sample.accepted ? 4.0f : 2.5f, rayColor);
+                        }
+                        else if (sample.hasRawHit)
+                        {
+                            ImVec2 h = projectWorld(sample.rawHitPosition);
+                            dl->AddCircleFilled(h, 3.0f, IM_COL32(160, 160, 160, 180));
+                        }
+                    }
+
+                    if (leg.hasContact)
+                    {
+                        drawCross(leg.contact, IM_COL32(0, 255, 128, 255), 6.0f);
+                        dl->AddLine(projectWorld(leg.contact),
+                                    projectWorld(leg.contact + leg.normal * 0.18f),
+                                    IM_COL32(0, 255, 128, 220), 2.0f);
+                    }
+                    if (leg.hasTarget)
+                    {
+                        drawCross(leg.target, IM_COL32(255, 64, 255, 255), 8.0f);
+                        dl->AddLine(foot, projectWorld(leg.target), IM_COL32(255, 64, 255, 200), 2.0f);
+                        ImVec2 t = projectWorld(leg.target);
+                        char targetLabel[64];
+                        snprintf(targetLabel, sizeof(targetLabel), "%s %.2f", label, leg.targetWeight);
+                        dl->AddText(ImVec2(t.x + 8, t.y - 10), IM_COL32(255, 220, 255, 240), targetLabel);
+                    }
+
+                    char statusLabel[192];
+                    if (!leg.hasContact)
+                    {
+                        snprintf(statusLabel, sizeof(statusLabel), "%s NO CONTACT hit:%d raw:%d overlap:%d %s",
+                                 label,
+                                 filteredHits,
+                                 rawHits,
+                                 leg.hasOverlap ? 1 : 0,
+                                 firstInterestingSample ? firstInterestingSample->status.c_str() : "");
+                    }
+                    else if (!leg.hasTarget)
+                    {
+                        snprintf(statusLabel, sizeof(statusLabel), "%s NO TARGET hit:%d overlap:%d weight:%.2f",
+                                 label,
+                                 filteredHits,
+                                 leg.hasOverlap ? 1 : 0,
+                                 leg.targetWeight);
+                    }
+                    else
+                    {
+                        snprintf(statusLabel, sizeof(statusLabel), "%s TARGET hit:%d accepted:%d overlap:%d weight:%.2f",
+                                 label,
+                                 filteredHits,
+                                 acceptedHits,
+                                 leg.hasOverlap ? 1 : 0,
+                                 leg.targetWeight);
+                    }
+                    dl->AddText(ImVec2(foot.x + 8, foot.y + 8),
+                                leg.hasTarget ? IM_COL32(210, 255, 210, 240) : IM_COL32(255, 110, 110, 240),
+                                statusLabel);
+                };
+
+                for (auto* animNode : m_Scene->GetAnimationNodes())
+                {
+                    auto* ctrl = animNode ? animNode->GetController() : nullptr;
+                    if (!ctrl || !ctrl->IsFootPlacementConfigured())
+                        continue;
+                    ctrl->SetFootPlacementDebugVisualization(s_ShowFootIKViz);
+                    const auto* debug = ctrl->GetFootPlacementDebugData();
+                    if (!s_ShowFootIKViz || !debug || !debug->enabled)
+                        continue;
+                    drawLeg(debug->left, "L IK", IM_COL32(64, 180, 255, 220));
+                    drawLeg(debug->right, "R IK", IM_COL32(255, 150, 64, 220));
                 }
             }
 

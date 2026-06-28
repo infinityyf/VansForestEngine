@@ -206,30 +206,6 @@ const Json* FindComponent(const Json& entity, const std::string& type)
     return nullptr;
 }
 
-bool ReadVec3(const Json& value, glm::vec3& out)
-{
-    if (!value.is_array() || value.size() < 3) return false;
-    out = glm::vec3(value[0].get<float>(), value[1].get<float>(), value[2].get<float>());
-    return true;
-}
-
-bool ReadColor3(const Json& data, glm::vec3& out)
-{
-    const auto it = data.find("color");
-    return it != data.end() && ReadVec3(*it, out);
-}
-
-bool ReadTransformRotationEuler(const Json& value, glm::vec3& out)
-{
-    if (!value.is_array()) return false;
-    if (value.size() == 4)
-    {
-        const glm::quat q(value[3].get<float>(), value[0].get<float>(), value[1].get<float>(), value[2].get<float>());
-        out = glm::degrees(glm::eulerAngles(q));
-        return true;
-    }
-    return ReadVec3(value, out);
-}
 }
 
 bool VansInspectorWindow::DrawAssetReference(const std::string& label, Json& reference,
@@ -530,6 +506,7 @@ void VansInspectorWindow::DrawSceneEntity()
     Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
     Vans::VansSceneEditService* editor = VansEditorWindow::GetSceneEditService();
     if (!document || !editor) return;
+    m_LiveEdit.Bind(m_Scene, document);
     const std::string& selected = Vans::VansEditorSelection::EntityGuid();
     const auto& entities = document->Root()["entities"];
     for (std::size_t index = 0; index < entities.size(); ++index)
@@ -589,7 +566,7 @@ void VansInspectorWindow::DrawSceneEntity()
             Json runtimeEdited = edited;
             const Vans::SceneEditResult result = editor->Set(pointer, std::move(edited));
             if (!result) VANS_LOG_ERROR("[Inspector] " << result.message);
-            else ApplyRuntimeEntityEdits(runtimeEdited);
+            else m_LiveEdit.ApplyEntityPatch(runtimeEdited);
         }
         return;
     }
@@ -651,7 +628,10 @@ void VansInspectorWindow::DrawAsset()
         {
             const bool identity = iterator.key() == "schemaVersion" || iterator.key() == "guid";
             if (DrawJsonValue(iterator.key(), iterator.value(), "/asset/" + EscapePointerToken(iterator.key()), identity))
+            {
                 m_AssetDocument.MarkDirty();
+                m_MaterialLiveEdit.ApplyMaterialAssetPatch(selected, root);
+            }
         }
     }
     else ImGui::TextDisabled("Binary asset");
@@ -677,181 +657,12 @@ void VansInspectorWindow::DrawAsset()
     if (!dirty) ImGui::EndDisabled();
 }
 
-void VansInspectorWindow::ApplyRuntimeEntityEdits(const Json& entity)
-{
-    VansGraphics::VansScene* scene = m_Scene;
-    if (!scene) return;
-
-    const std::string entityGuid = entity.value("id", "");
-    if (entityGuid.empty()) return;
-
-    VansScriptObject* obj = nullptr;
-    for (auto* candidate : scene->m_SceneObjects)
-    {
-        if (candidate && candidate->m_EntityGuid == entityGuid)
-        {
-            obj = candidate;
-            break;
-        }
-    }
-    if (!obj) return;
-
-    if (const Json* transformComponent = FindComponent(entity, "Transform"))
-    {
-        if (transformComponent->value("enabled", true) && transformComponent->contains("data") &&
-            obj->m_TransformID < VansTransformStore::GlobalTransforms.size())
-        {
-            const Json& data = (*transformComponent)["data"];
-            VansTransform& transform = VansTransformStore::GetTransform(obj->m_TransformID);
-            glm::vec3 value;
-            if (data.contains("position") && ReadVec3(data["position"], value))
-                transform.m_Position = value;
-            if (data.contains("rotation") && ReadTransformRotationEuler(data["rotation"], value))
-                transform.m_Rotation = value;
-            if (data.contains("scale") && ReadVec3(data["scale"], value))
-                transform.m_Scale = value;
-
-            VansTransformStore::TransformIDToTransformDirty[obj->m_TransformID] = true;
-        }
-    }
-
-    auto applyDirectional = [&]()
-    {
-        const Json* component = FindComponent(entity, "DirectionalLight");
-        auto* runtime = obj->GetComponent<VansScriptDirectionalLightComponent>();
-        if (!component || !runtime || !runtime->m_LightManager || runtime->m_LightIndex < 0 ||
-            !component->contains("data")) return;
-
-        auto& lights = runtime->m_LightManager->GetDirectionLights();
-        if (runtime->m_LightIndex >= static_cast<int>(lights.size())) return;
-        const Json& data = (*component)["data"];
-        ReadColor3(data, lights[runtime->m_LightIndex].m_Color);
-        lights[runtime->m_LightIndex].m_Intensity = data.value("intensity", lights[runtime->m_LightIndex].m_Intensity);
-    };
-
-    auto applyPoint = [&]()
-    {
-        const Json* component = FindComponent(entity, "PointLight");
-        auto* runtime = obj->GetComponent<VansScriptPointLightComponent>();
-        if (!component || !runtime || !runtime->m_LightManager || runtime->m_LightIndex < 0 ||
-            !component->contains("data")) return;
-
-        auto& lights = runtime->m_LightManager->GetPointLights();
-        if (runtime->m_LightIndex >= static_cast<int>(lights.size())) return;
-        const Json& data = (*component)["data"];
-        ReadColor3(data, lights[runtime->m_LightIndex].m_Color);
-        lights[runtime->m_LightIndex].m_Intensity = data.value("intensity", lights[runtime->m_LightIndex].m_Intensity);
-        lights[runtime->m_LightIndex].m_Radius = data.value("radius", lights[runtime->m_LightIndex].m_Radius);
-    };
-
-    auto applySpot = [&]()
-    {
-        const Json* component = FindComponent(entity, "SpotLight");
-        auto* runtime = obj->GetComponent<VansScriptSpotLightComponent>();
-        if (!component || !runtime || !runtime->m_LightManager || runtime->m_LightIndex < 0 ||
-            !component->contains("data")) return;
-
-        auto& lights = runtime->m_LightManager->GetSpotLight();
-        if (runtime->m_LightIndex >= static_cast<int>(lights.size())) return;
-        const Json& data = (*component)["data"];
-        auto& light = lights[runtime->m_LightIndex];
-        ReadColor3(data, light.m_Color);
-        light.m_Intensity = data.value("intensity", light.m_Intensity);
-        light.m_Radius = data.value("radius", light.m_Radius);
-        light.m_InnerCutOff = glm::radians(data.value("innercutoff", glm::degrees(light.m_InnerCutOff)));
-        light.m_OuterCutOff = glm::radians(data.value("outerCutoff", glm::degrees(light.m_OuterCutOff)));
-    };
-
-    auto applyRect = [&]()
-    {
-        const Json* component = FindComponent(entity, "RectLight");
-        auto* runtime = obj->GetComponent<VansScriptRectLightComponent>();
-        if (!component || !runtime || !runtime->m_LightManager || runtime->m_LightIndex < 0 ||
-            !component->contains("data")) return;
-
-        auto& lights = runtime->m_LightManager->GetRectLights();
-        if (runtime->m_LightIndex >= static_cast<int>(lights.size())) return;
-        const Json& data = (*component)["data"];
-        auto& light = lights[runtime->m_LightIndex];
-        ReadColor3(data, light.m_Color);
-        light.m_Intensity = data.value("intensity", light.m_Intensity);
-        light.m_HalfWidth = data.value("width", light.m_HalfWidth * 2.0f) * 0.5f;
-        light.m_HalfHeight = data.value("height", light.m_HalfHeight * 2.0f) * 0.5f;
-        light.m_Range = data.value("range", light.m_Range);
-        light.m_TwoSided = data.value("two_sided", light.m_TwoSided != 0.0f) ? 1.0f : 0.0f;
-        light.m_ShadowIndex = data.value("shadow", light.m_ShadowIndex >= 0.0f) ? 0.0f : -1.0f;
-    };
-
-    applyDirectional();
-    applyPoint();
-    applySpot();
-    applyRect();
-}
-
 void VansInspectorWindow::ApplyComponentEnabled(
     const std::string& jsonPointer, bool enabled)
 {
-    // jsonPointer 格式: "/entities/3/components/1"
-    //
-    // ⚠️ JSON 组件数组索引 ≠ 运行时 m_Components 索引！
-    //    JSON: [0]Transform [1]ModelRenderer [2]Physics [3]Camera
-    //    运行时: [0]render [1]physics [2]camera
-    //    Transform 不在 m_Components 中，所以 JSON 索引偏移了 2。
-    //
-    //    正确做法：从 JSON 读取 type 字段，映射到运行时 m_ComponentName，按名称匹配。
-
     const std::string& selectedGuid = Vans::VansEditorSelection::EntityGuid();
-    if (selectedGuid.empty()) return;
-
-    VansGraphics::VansScene* scene = m_Scene;
-    if (!scene) return;
-
-    // 通过 GUID 找到 VansScriptObject
-    VansScriptObject* obj = nullptr;
-    for (auto* o : scene->m_SceneObjects)
-    {
-        if (o && o->m_EntityGuid == selectedGuid) { obj = o; break; }
-    }
-    if (!obj) return;
-
-    // ── 从 JSON Document 读取 component type ──────────────────────────
-    Vans::VansSceneDocument* doc = VansEditorWindow::GetSceneDocument();
-    if (!doc) return;
-
-    // jsonPointer 指向 V2 entities 数组中的组件，直接读取 type 字段
-    std::string typePointer = jsonPointer + "/type";
-    const auto& root = doc->Root();
-    auto typeIt = root.find(nlohmann::json::json_pointer(typePointer));
-    if (typeIt == root.end()) return;
-    std::string jsonType = typeIt->get<std::string>();
-
-    // ── JSON type → runtime m_ComponentName 映射 ─────────────────────
-    // (未列出的类型如 DirectionalLight, Audio 等与运行时同名，直接使用)
-    static const std::unordered_map<std::string, std::string> kTypeToRuntime = {
-        {"ModelRenderer",       "render"},
-        {"Physics",             "physics"},
-        {"Camera",              "camera"},
-        {"Cloth",               "cloth"},
-        {"Vehicle",             "vehicle"},
-        {"Animator",            "animation"},
-        {"CharacterController", "CharacterController"},
-    };
-    // 未在映射表中的类型（如 DirectionalLight, Audio 等）直接使用 JSON type 匹配
-
-    std::string runtimeName = jsonType;
-    auto mapIt = kTypeToRuntime.find(jsonType);
-    if (mapIt != kTypeToRuntime.end())
-        runtimeName = mapIt->second;
-
-    // ── 按名称匹配组件 ────────────────────────────────────────────
-    for (auto* comp : obj->m_Components)
-    {
-        if (comp && comp->m_ComponentName == runtimeName)
-        {
-            comp->SetEnabled(enabled);  // → OnEnable/OnDisable → 底层 VansNode
-            return;
-        }
-    }
+    m_LiveEdit.Bind(m_Scene, VansEditorWindow::GetSceneDocument());
+    m_LiveEdit.ApplyComponentEnabledFromPointer(selectedGuid, jsonPointer, enabled);
 }
 
 void VansInspectorWindow::ShowWindow(VansVKDevice& device)

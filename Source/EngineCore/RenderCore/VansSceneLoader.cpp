@@ -1,4 +1,4 @@
-#include "../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
 #include "VansSceneLoadPass.h"
 #include "VansShaderManager.h"
@@ -37,8 +37,9 @@
 #include "../AnimationCore/VansAnimationClipLoader.h"
 #include "../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
+#include "../AnimationCore/FootPlacement/VansFootPlacementTypes.h"
 
-#include "../../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
+#include "../Interfaces/IShaderHotReloadService.h"
 #include "../Util/VansLog.h"
 #include "../VansThreadContract.h"
 #include <iostream>
@@ -602,7 +603,7 @@ void VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* devic
 	{
 		m_ReflectionProbeSystem.GenerateAutoProbes(*this, true);
 	}
-	m_ReflectionProbeSystem.CreateGPUResources(*device, device->GetEditorCommandBuffer());
+	m_ReflectionProbeSystem.CreateGPUResources(*device, device->GetImmediateGraphicsCommandBuffer());
 	m_ReflectionProbeSystem.UpdateGlobalDescriptors(m_GlobalDescriptorSet);
 	// ── 修复：WaterSystem 在 AddWaterNode 中已创建，但 CreateGlobalDescriptorSet 后才
 	//    有有效的 m_GlobalDescriptorSet。此处同步正确的全局 descriptor set 到 WaterSystem。
@@ -688,7 +689,7 @@ static VansGraphics::RenderNodeType ParseRenderNodeType(const json& typeValue, c
 
 static bool HasMeshAssetName(const VansGraphics::VansScene& scene, const std::string& name)
 {
-    for (auto* mesh : scene.m_Meshes)
+    for (auto* mesh : scene.GetMeshAssets())
     {
         if (mesh && mesh->m_AssetName == name)
             return true;
@@ -698,7 +699,7 @@ static bool HasMeshAssetName(const VansGraphics::VansScene& scene, const std::st
 
 static bool HasMaterialAssetName(const VansGraphics::VansScene& scene, const std::string& name)
 {
-    for (auto* material : scene.m_Materials)
+    for (auto* material : scene.GetMaterialAssets())
     {
         if (material && material->m_AssetName == name)
             return true;
@@ -1349,7 +1350,7 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
 
     // ── 注册到场景 ─────────────────────────────────────────────────────────
     mat->SetName(waterData.value("name", "WaterMaterial"));
-    m_Materials.push_back(mat);
+    AddMaterialAsset(mat);
 
     // 记录完整配置供 VansWaterSystem 初始化时读取
     m_WaterConfig  = config;
@@ -1445,7 +1446,7 @@ void VansGraphics::VansScene::AddDeferredNode(VkDevice& device)
     material->m_MaterialType = VansMaterialType::VAN_DEFERRED;
     material->m_PassShaders[VansPass::DEFERRED] = deferredShader;
     material->SetName("DeferredMaterial");
-    m_Materials.push_back(material);
+    AddMaterialAsset(material);
 
     RenderNodeType type = RenderNodeType::DEFERRED_NODE;
     VansRenderNode* renderNode = new VansDeferredRenderNode(device, type);
@@ -1486,28 +1487,11 @@ void VansGraphics::VansScene::AddScreenSpaceFeatureNode(VkDevice& device)
             continue;
         }
 
-        // Typed factory for screen-space passes
-        VansMaterial* material = nullptr;
-        switch (feature.matType)
-        {
-        case VansMaterialType::VAN_SCREEN_SPACE_AO: material = new VansSSAOMaterial();        break;
-        case VansMaterialType::VAN_POST_PROCESS:    material = new VansPostProcessMaterial(); break;
-        default:                                    material = new VansMaterial();             break;
-        }
+        VansMaterial* material = CreateMaterialForType(feature.matType);
         material->m_MaterialType = feature.matType;
-        // Populate m_PassShaders from registry
-        {
-            auto& reg = VansGraphics::VansShaderManager::Get();
-            const auto& passMap = reg.GetMaterialPassMap(feature.matType);
-            for (const auto& [passName, shaderName] : passMap)
-            {
-                VansGraphicsShader* passShader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
-                if (passShader)
-                    material->m_PassShaders[passName] = passShader;
-            }
-        }
+        PopulateMaterialPassShaders(material, feature.matType);
         material->SetName(feature.name);
-        m_Materials.push_back(material);
+        AddMaterialAsset(material);
 
         RenderNodeType type = RenderNodeType::SCREEN_SPACE_NODE;
         VansRenderNode* renderNode = new VansScreenSpaceRenderNode(device, type);
@@ -1549,7 +1533,7 @@ void VansGraphics::VansScene::LoadMeshesFromJson(
 
             mesh->LoadMultiMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath, import_tangent, generate_as, needCpuData);
             mesh->SetName(sceneMesh["name"]);
-            m_Meshes.push_back(mesh);
+            AddMeshAsset(mesh);
         }
 		else
 		{
@@ -1558,7 +1542,7 @@ void VansGraphics::VansScene::LoadMeshesFromJson(
             VansMesh* mesh   = new VansMesh(needCpuData, generate_as);
             mesh->LoadMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath.c_str(), import_tangent);
             mesh->SetName(sceneMesh["name"]);
-            m_Meshes.push_back(mesh);
+            AddMeshAsset(mesh);
         }
     }
 }
@@ -1580,9 +1564,10 @@ void VansGraphics::VansScene::LoadShadersFromRegistry(
     std::vector<VansShader*> loaded = manager.GetLoadedShaderAssets();
     for (VansShader* shader : loaded)
     {
-        m_Shaders.push_back(shader);
+        AddShaderAsset(shader);
         // Set up file watching for hot-reload
-        m_SceneFileWatcher->AddWatch(shader->GetShaderFolder());
+        if (auto* hotReload = GetShaderHotReloadService())
+            hotReload->WatchFolder(shader->GetShaderFolder());
     }
 }
 
@@ -1609,8 +1594,8 @@ void VansGraphics::VansScene::LoadTexturesFromJson(
         default:
             break;
         }
-        m_Textures.push_back(texture);
         texture->SetName(sceneTexture["name"]);
+        AddTextureAsset(texture);
     }
 
     // Default textures are always loaded from the engine's EngineAssets directory
@@ -1628,8 +1613,8 @@ void VansGraphics::VansScene::ImportDefaultTextures(const std::string& path, con
     VansTexture* defaultMetalTexture = new VansTexture();
     defaultMetalTexture->m_TextureType = TEXTURE_2D;
     defaultMetalTexture->LoadTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB, true, true);
-    m_Textures.push_back(defaultMetalTexture);
     defaultMetalTexture->SetName(name);
+    AddTextureAsset(defaultMetalTexture);
 }
 
 // ===========================================================================
@@ -1683,6 +1668,14 @@ void VansGraphics::VansScene::LoadResources(json& resourceData)
         m_AudioManager.LoadFromJson(resourceData["audio"], assetPrefix);
     }
 
+    m_Shaders.clear();
+    for (VansShader* shader : VansGraphics::VansShaderManager::Get().GetLoadedShaderAssets())
+    {
+        AddShaderAsset(shader);
+    }
+
+    RebuildAssetLookup();
+
     VANS_LOG("[VansScene] Resources loaded: "
              << m_Meshes.size() << " meshes, "
              << m_Textures.size() << " textures, "
@@ -1696,418 +1689,254 @@ void VansGraphics::VansScene::LoadResources(json& resourceData)
 // Resources (mesh/texture/shader) must already be loaded.
 // ===========================================================================
 
+VansMaterial* VansGraphics::VansScene::CreateMaterialForType(VansMaterialType matType)
+{
+    switch (matType)
+    {
+    case VansMaterialType::VAN_PBR:
+    case VansMaterialType::VAN_COAT:            return new VansPBRMaterial();
+    case VansMaterialType::VAN_TRANSPARENT:     return new VansTransparentMaterial();
+    case VansMaterialType::VAN_POST_PROCESS:    return new VansPostProcessMaterial();
+    case VansMaterialType::VAN_SKY_BOX:         return new VansSkyBoxMaterial();
+    case VansMaterialType::VAN_DEFERRED:        return new VansDeferredMaterial();
+    case VansMaterialType::VAN_SCREEN_SPACE_AO: return new VansSSAOMaterial();
+    case VansMaterialType::VAN_SKIN:            return new VansSkinMaterial();
+    case VansMaterialType::VAN_CLOTH:           return new VansClothMaterial();
+    case VansMaterialType::VAN_HAIR:            return new VansHairMaterial();
+    case VansMaterialType::VAN_SUBSURFACE:      return new VansSubsurfaceMaterial();
+    case VansMaterialType::VAN_GRASS:           return new VansGrassMaterial();
+    case VansMaterialType::VAN_EMISSIVE:        return new VansEmissiveMaterial();
+    case VansMaterialType::VAN_DECAL:           return new VansDecalMaterial();
+    default:                                    return new VansMaterial();
+    }
+}
+
+void VansGraphics::VansScene::PopulateMaterialPassShaders(VansMaterial* material, VansMaterialType matType)
+{
+    if (!material)
+        return;
+
+    auto& reg = VansGraphics::VansShaderManager::Get();
+    const auto& passMap = reg.GetMaterialPassMap(matType);
+    for (const auto& [passName, shaderName] : passMap)
+    {
+        VansGraphicsShader* passShader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
+        if (passShader)
+            material->m_PassShaders[passName] = passShader;
+    }
+}
+
+VansTexture* VansGraphics::VansScene::ResolveMaterialTexture(const json& sceneMaterial, const char* key)
+{
+    if (sceneMaterial.contains(key) && sceneMaterial[key].is_string())
+        return static_cast<VansTexture*>(GetTextureAsset(sceneMaterial[key].get<std::string>()));
+    return nullptr;
+}
+
+VansTexture* VansGraphics::VansScene::ResolveMaterialTextureWithFallback(
+    const json& sceneMaterial,
+    const char* key,
+    const char* fallback)
+{
+    if (!sceneMaterial.contains(key))
+        return nullptr;
+    return ResolveTextureOrDefault(ResolveMaterialTexture(sceneMaterial, key), fallback);
+}
+
+VansTexture* VansGraphics::VansScene::ResolveMaterialTextureOrDefault(
+    const json& sceneMaterial,
+    const char* key,
+    const char* fallback)
+{
+    return ResolveTextureOrDefault(ResolveMaterialTexture(sceneMaterial, key), fallback);
+}
+
+void VansGraphics::VansScene::PopulateMaterialFromJson(
+    VansMaterial* material,
+    VansMaterialType matType,
+    const json& sceneMaterial)
+{
+    if (!material)
+        return;
+
+    switch (matType)
+    {
+    case VansMaterialType::VAN_PBR:
+    {
+        auto* pbr = static_cast<VansPBRMaterial*>(material);
+        pbr->m_BaseColorTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        pbr->m_NormalTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "normal_texture", "defaultNormal");
+        pbr->m_MetalTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "metal_texture", "defaultMetal");
+        pbr->m_RoughnessTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "roughness_texture", "defaultRoughness");
+        pbr->m_AoTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "ao_texture", "defaultAo");
+        pbr->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
+        pbr->m_BasePBRParam.m_metallic = sceneMaterial["metallic"];
+        pbr->m_BasePBRParam.m_roughness = sceneMaterial["roughness"];
+        pbr->m_BasePBRParam.m_ao = sceneMaterial["ao"];
+        break;
+    }
+    case VansMaterialType::VAN_CLOTH:
+    {
+        auto* cloth = static_cast<VansClothMaterial*>(material);
+        cloth->m_BaseColorTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        cloth->m_NormalTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "normal_texture", "defaultNormal");
+        cloth->m_RoughnessTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "roughness_texture", "defaultRoughness");
+        cloth->m_AoTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "ao_texture", "defaultAo");
+        cloth->m_SheenRoughness = sceneMaterial.value("sheenRoughness", 0.5f);
+        break;
+    }
+    case VansMaterialType::VAN_SKIN:
+    {
+        auto* skin = static_cast<VansSkinMaterial*>(material);
+        skin->m_BaseColorTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        skin->m_NormalTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "normal_texture", "defaultNormal");
+        break;
+    }
+    case VansMaterialType::VAN_HAIR:
+    {
+        auto* hair = static_cast<VansHairMaterial*>(material);
+        hair->m_AlbedoAlphaTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        hair->m_NormalTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "normal_texture", "defaultNormal");
+        hair->m_RoughnessTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "roughness_texture", "defaultRoughness");
+        hair->m_AoTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "ao_texture", "defaultAo");
+        hair->m_ShiftTexture = ResolveMaterialTexture(sceneMaterial, "shift_texture");
+        hair->m_AlphaTexture = ResolveMaterialTexture(sceneMaterial, "alpha_texture");
+        hair->m_FlowTexture = ResolveMaterialTexture(sceneMaterial, "flow_texture");
+        break;
+    }
+    case VansMaterialType::VAN_SUBSURFACE:
+    {
+        auto* sss = static_cast<VansSubsurfaceMaterial*>(material);
+        sss->m_BaseColorTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        sss->m_NormalTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "normal_texture", "defaultNormal");
+        sss->m_ThicknessTexture = ResolveMaterialTexture(sceneMaterial, "thickness_texture");
+        sss->m_RoughnessTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "roughness_texture", "defaultRoughness");
+        sss->m_SubsurfacePower = sceneMaterial.value("subsurfacePower", 12.234f);
+        sss->m_Thickness = sceneMaterial.value("thickness", 0.5f);
+        if (sceneMaterial.contains("subsurfaceColor") && sceneMaterial["subsurfaceColor"].is_array())
+        {
+            sss->m_SubsurfaceColor = glm::vec3(
+                sceneMaterial["subsurfaceColor"][0],
+                sceneMaterial["subsurfaceColor"][1],
+                sceneMaterial["subsurfaceColor"][2]);
+        }
+        break;
+    }
+    case VansMaterialType::VAN_TRANSPARENT:
+    {
+        auto* trans = static_cast<VansTransparentMaterial*>(material);
+        if (sceneMaterial.contains("textures") && sceneMaterial["textures"].is_array())
+        {
+            for (const auto& entry : sceneMaterial["textures"])
+            {
+                std::string slotName = entry.value("slot", "");
+                std::string textureName = entry.value("texture", "");
+                VansTexture* tex = nullptr;
+                if (!textureName.empty())
+                    tex = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                if (tex == nullptr)
+                    VANS_LOG_WARN("[LoadMaterials] Transparent material '" << sceneMaterial.value("name", "<unnamed>") << "': could not resolve texture for slot '" << slotName << "'");
+                trans->m_TransparentTextureMap.push_back({ slotName, textureName });
+                trans->m_TransparentTextures.push_back(tex);
+            }
+        }
+        break;
+    }
+    case VansMaterialType::VAN_GRASS:
+    {
+        auto* grass = static_cast<VansGrassMaterial*>(material);
+        grass->m_AlbedoTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        grass->m_NormalTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "normal_texture", "defaultNormal");
+        grass->m_RoughnessTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "roughness_texture", "defaultRoughness");
+        grass->m_TranslucencyTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "translucency_texture", "defaultAo");
+        grass->m_AOTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "ao_texture", "defaultAo");
+        break;
+    }
+    case VansMaterialType::VAN_EMISSIVE:
+    {
+        auto* emissive = static_cast<VansEmissiveMaterial*>(material);
+        if (sceneMaterial.contains("emissive_color") && sceneMaterial["emissive_color"].is_array())
+        {
+            emissive->m_BasePBRParam.m_albedo = glm::vec3(
+                sceneMaterial["emissive_color"][0],
+                sceneMaterial["emissive_color"][1],
+                sceneMaterial["emissive_color"][2]);
+        }
+        else
+        {
+            emissive->m_BasePBRParam.m_albedo = glm::vec3(1.0f);
+        }
+
+        emissive->m_BasePBRParam.m_roughness = sceneMaterial.value("emissive_intensity", 1.0f);
+        emissive->m_BasePBRParam.m_metallic = 0.0f;
+        emissive->m_BasePBRParam.m_ao = 1.0f;
+        emissive->m_EmissiveTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "emissive_texture", "defaultAlbedo");
+
+        if (sceneMaterial.contains("emissive_video"))
+        {
+            const std::string videoName = sceneMaterial["emissive_video"];
+            VansVideoTexture* videoTex = m_VideoManager.Get(videoName);
+            if (videoTex && videoTex->IsReady())
+            {
+                emissive->m_EmissiveTexture = videoTex->GetTexture();
+                emissive->m_VideoName = videoName;
+                VANS_LOG("[VansScene] Emissive 材质绑定视频纹理: " << videoName);
+            }
+            else
+            {
+                VANS_LOG_WARN("[VansScene] emissive_video 未找到或未就绪: " << videoName);
+            }
+        }
+        break;
+    }
+    case VansMaterialType::VAN_DECAL:
+    {
+        auto* decal = static_cast<VansDecalMaterial*>(material);
+        if (sceneMaterial.contains("albedo") && sceneMaterial["albedo"].is_array())
+            decal->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
+        else
+            decal->m_BasePBRParam.m_albedo = glm::vec3(1.0f);
+
+        decal->m_BasePBRParam.m_metallic = sceneMaterial.value("metallic", 0.0f);
+        decal->m_BasePBRParam.m_roughness = sceneMaterial.value("roughness", 0.5f);
+        decal->m_BasePBRParam.m_ao = sceneMaterial.value("ao", 1.0f);
+        decal->m_BaseColorTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        decal->m_NormalTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "normal_texture", "defaultNormal");
+        decal->m_MetalTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "metal_texture", "defaultMetal");
+        decal->m_RoughnessTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "roughness_texture", "defaultRoughness");
+        decal->m_AoTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "ao_texture", "defaultAo");
+        break;
+    }
+    case VansMaterialType::VAN_SKY_BOX:
+    {
+        auto* sky = static_cast<VansSkyBoxMaterial*>(material);
+        sky->m_AtmospherePBRParam.m_PlanetRadius = 6340000;
+        sky->m_AtmospherePBRParam.m_InitSeaLevel = 200;
+        sky->m_AtmospherePBRParam.m_AtmosphereWidth = 80000;
+        sky->m_AtmospherePBRParam.m_RayleighScalarHeight = 8500;
+        sky->m_AtmospherePBRParam.m_MieScalarHeight = 1200;
+        sky->m_AtmospherePBRParam.m_MieAnisotropy = 0.78;
+        sky->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25000;
+        sky->m_AtmospherePBRParam.m_OzoneLevelWidth = 15000;
+        sky->m_AtmospherePBRParam.m_SunLuminance = 10;
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
 {
     for (const auto& sceneMaterial : materialData)
     {
-        // ── Typed material factory ─────────────────────────────────────────────
         VansMaterialType matType = ParseMaterialType(sceneMaterial["type"], sceneMaterial.value("name", "<unnamed>"));
-
-        VansMaterial* material = nullptr;
-        switch (matType)
-        {
-        case VansMaterialType::VAN_PBR:
-        case VansMaterialType::VAN_COAT:            material = new VansPBRMaterial();          break;
-        case VansMaterialType::VAN_TRANSPARENT:     material = new VansTransparentMaterial();  break;
-        case VansMaterialType::VAN_POST_PROCESS:    material = new VansPostProcessMaterial();  break;
-        case VansMaterialType::VAN_SKY_BOX:         material = new VansSkyBoxMaterial();       break;
-        case VansMaterialType::VAN_DEFERRED:        material = new VansDeferredMaterial();     break;
-        case VansMaterialType::VAN_SCREEN_SPACE_AO: material = new VansSSAOMaterial();         break;
-        case VansMaterialType::VAN_SKIN:            material = new VansSkinMaterial();         break;
-        case VansMaterialType::VAN_CLOTH:           material = new VansClothMaterial();        break;
-        case VansMaterialType::VAN_HAIR:            material = new VansHairMaterial();         break;
-        case VansMaterialType::VAN_SUBSURFACE:      material = new VansSubsurfaceMaterial();   break;
-        case VansMaterialType::VAN_GRASS:           material = new VansGrassMaterial();        break;
-        case VansMaterialType::VAN_EMISSIVE:        material = new VansEmissiveMaterial();     break;
-        case VansMaterialType::VAN_DECAL:           material = new VansDecalMaterial();        break;
-        default:                                    material = new VansMaterial();             break;
-        }
+        VansMaterial* material = CreateMaterialForType(matType);
         material->m_MaterialType = matType;
-
-        // ── Populate m_PassShaders from the Material Pass Table ──────────────
-        {
-            auto& reg = VansGraphics::VansShaderManager::Get();
-            const auto& passMap = reg.GetMaterialPassMap(matType);
-            for (const auto& [passName, shaderName] : passMap)
-            {
-                VansGraphicsShader* passShader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
-                if (passShader)
-                    material->m_PassShaders[passName] = passShader;
-            }
-        }
-        if (matType == VansMaterialType::VAN_PBR)
-        {
-            VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(material);
-
-            // A parameter-only PBR material is valid. Keep all five bindless
-            // texture slots populated, then replace individual defaults when
-            // the material supplies an explicit texture reference.
-            pbr->m_BaseColorTexture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-            pbr->m_NormalTexture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-            pbr->m_MetalTexture = static_cast<VansTexture*>(GetTextureAsset("defaultMetal"));
-            pbr->m_RoughnessTexture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
-            pbr->m_AoTexture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
-
-            if (sceneMaterial.contains("basecolor_texture"))
-            {
-                auto textureName = sceneMaterial["basecolor_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture != nullptr)
-                    pbr->m_BaseColorTexture = texture;
-            }
-            if (sceneMaterial.contains("normal_texture"))
-            {
-                auto textureName = sceneMaterial["normal_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture != nullptr)
-                    pbr->m_NormalTexture = texture;
-            }
-            if (sceneMaterial.contains("metal_texture"))
-            {
-                auto textureName = sceneMaterial["metal_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture != nullptr)
-                    pbr->m_MetalTexture = texture;
-            }
-            if (sceneMaterial.contains("roughness_texture"))
-            {
-                auto textureName = sceneMaterial["roughness_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture != nullptr)
-                    pbr->m_RoughnessTexture = texture;
-            }
-            if (sceneMaterial.contains("ao_texture"))
-            {
-                auto textureName = sceneMaterial["ao_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture != nullptr)
-                    pbr->m_AoTexture = texture;
-            }
-            pbr->m_BasePBRParam.m_albedo    = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
-            pbr->m_BasePBRParam.m_metallic  = sceneMaterial["metallic"];
-            pbr->m_BasePBRParam.m_roughness = sceneMaterial["roughness"];
-            pbr->m_BasePBRParam.m_ao        = sceneMaterial["ao"];
-        }
-
-        if (matType == VansMaterialType::VAN_CLOTH)
-        {
-            VansClothMaterial* cloth = static_cast<VansClothMaterial*>(material);
-            if (sceneMaterial.contains("basecolor_texture"))
-            {
-                auto textureName = sceneMaterial["basecolor_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                cloth->m_BaseColorTexture = texture;
-            }
-            if (sceneMaterial.contains("normal_texture"))
-            {
-                auto textureName = sceneMaterial["normal_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-                cloth->m_NormalTexture = texture;
-            }
-            if (sceneMaterial.contains("roughness_texture"))
-            {
-                auto textureName = sceneMaterial["roughness_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
-                cloth->m_RoughnessTexture = texture;
-            }
-            if (sceneMaterial.contains("ao_texture"))
-            {
-                auto textureName = sceneMaterial["ao_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
-                cloth->m_AoTexture = texture;
-            }
-            cloth->m_SheenRoughness = sceneMaterial.value("sheenRoughness", 0.5f);
-        }
-
-        if (matType == VansMaterialType::VAN_SKIN)
-        {
-            VansSkinMaterial* skin = static_cast<VansSkinMaterial*>(material);
-            if (sceneMaterial.contains("basecolor_texture"))
-            {
-                auto textureName = sceneMaterial["basecolor_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                skin->m_BaseColorTexture = texture;
-            }
-            if (sceneMaterial.contains("normal_texture"))
-            {
-                auto textureName = sceneMaterial["normal_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-                skin->m_NormalTexture = texture;
-            }
-        }
-
-        if (matType == VansMaterialType::VAN_HAIR)
-        {
-            VansHairMaterial* hair = static_cast<VansHairMaterial*>(material);
-            if (sceneMaterial.contains("basecolor_texture"))
-            {
-                auto textureName = sceneMaterial["basecolor_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                hair->m_AlbedoAlphaTexture = texture;
-            }
-            if (sceneMaterial.contains("normal_texture"))
-            {
-                auto textureName = sceneMaterial["normal_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-                hair->m_NormalTexture = texture;
-            }
-            if (sceneMaterial.contains("roughness_texture"))
-            {
-                auto textureName = sceneMaterial["roughness_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
-                hair->m_RoughnessTexture = texture;
-            }
-            if (sceneMaterial.contains("ao_texture"))
-            {
-                auto textureName = sceneMaterial["ao_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
-                hair->m_AoTexture = texture;
-            }
-            if (sceneMaterial.contains("shift_texture"))
-            {
-                auto textureName = sceneMaterial["shift_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                hair->m_ShiftTexture = texture;
-            }
-            if (sceneMaterial.contains("alpha_texture"))
-            {
-                auto textureName = sceneMaterial["alpha_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                hair->m_AlphaTexture = texture;
-            }
-            if (sceneMaterial.contains("flow_texture"))
-            {
-                auto textureName = sceneMaterial["flow_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                hair->m_FlowTexture = texture;
-            }
-        }
-
-        if (matType == VansMaterialType::VAN_SUBSURFACE)
-        {
-            VansSubsurfaceMaterial* sss = static_cast<VansSubsurfaceMaterial*>(material);
-            if (sceneMaterial.contains("basecolor_texture"))
-            {
-                auto textureName = sceneMaterial["basecolor_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                sss->m_BaseColorTexture = texture;
-            }
-            if (sceneMaterial.contains("normal_texture"))
-            {
-                auto textureName = sceneMaterial["normal_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-                sss->m_NormalTexture = texture;
-            }
-            if (sceneMaterial.contains("thickness_texture"))
-            {
-                auto textureName = sceneMaterial["thickness_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                sss->m_ThicknessTexture = texture;
-            }
-            if (sceneMaterial.contains("roughness_texture"))
-            {
-                auto textureName = sceneMaterial["roughness_texture"];
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
-                sss->m_RoughnessTexture = texture;
-            }
-            sss->m_SubsurfacePower = sceneMaterial.value("subsurfacePower", 12.234f);
-            sss->m_Thickness       = sceneMaterial.value("thickness", 0.5f);
-            if (sceneMaterial.contains("subsurfaceColor") && sceneMaterial["subsurfaceColor"].is_array())
-            {
-                sss->m_SubsurfaceColor = glm::vec3(
-                    sceneMaterial["subsurfaceColor"][0],
-                    sceneMaterial["subsurfaceColor"][1],
-                    sceneMaterial["subsurfaceColor"][2]);
-            }
-        }
-
-        if (matType == VansMaterialType::VAN_TRANSPARENT)
-        {
-            VansTransparentMaterial* trans = static_cast<VansTransparentMaterial*>(material);
-            if (sceneMaterial.contains("textures") && sceneMaterial["textures"].is_array())
-            {
-                for (const auto& entry : sceneMaterial["textures"])
-                {
-                    std::string slotName    = entry.value("slot", "");
-                    std::string textureName = entry.value("texture", "");
-                    VansTexture* tex = nullptr;
-                    if (!textureName.empty())
-                        tex = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                    if (tex == nullptr)
-                        VANS_LOG_WARN("[LoadMaterials] Transparent material '" << sceneMaterial.value("name", "<unnamed>") << "': could not resolve texture for slot '" << slotName << "'");
-                    trans->m_TransparentTextureMap.push_back({ slotName, textureName });
-                    trans->m_TransparentTextures.push_back(tex);
-                }
-            }
-        }
-
-        if (matType == VansMaterialType::VAN_GRASS)
-        {
-            VansGrassMaterial* grass = static_cast<VansGrassMaterial*>(material);
-            if (sceneMaterial.contains("basecolor_texture"))
-            {
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial["basecolor_texture"]));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                grass->m_AlbedoTexture = texture;
-            }
-            if (sceneMaterial.contains("normal_texture"))
-            {
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial["normal_texture"]));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-                grass->m_NormalTexture = texture;
-            }
-            if (sceneMaterial.contains("roughness_texture"))
-            {
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial["roughness_texture"]));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
-                grass->m_RoughnessTexture = texture;
-            }
-            if (sceneMaterial.contains("translucency_texture"))
-            {
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial["translucency_texture"]));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
-                grass->m_TranslucencyTexture = texture;
-            }
-            if (sceneMaterial.contains("ao_texture"))
-            {
-                VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial["ao_texture"]));
-                if (texture == nullptr)
-                    texture = static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
-                grass->m_AOTexture = texture;
-            }
-        }
-
-        if (matType == VansMaterialType::VAN_EMISSIVE)
-        {
-            VansEmissiveMaterial* emissive = static_cast<VansEmissiveMaterial*>(material);
-
-            // 发光颜色，默认纯白
-            if (sceneMaterial.contains("emissive_color") && sceneMaterial["emissive_color"].is_array())
-            {
-                emissive->m_BasePBRParam.m_albedo = glm::vec3(
-                    sceneMaterial["emissive_color"][0],
-                    sceneMaterial["emissive_color"][1],
-                    sceneMaterial["emissive_color"][2]);
-            }
-            else
-            {
-                emissive->m_BasePBRParam.m_albedo = glm::vec3(1.0f);
-            }
-
-            // 发光强度，写入 roughness 插槽，默认 1.0（支持 HDR，>1.0 有效）
-            emissive->m_BasePBRParam.m_roughness = sceneMaterial.value("emissive_intensity", 1.0f);
-            emissive->m_BasePBRParam.m_metallic  = 0.0f;
-            emissive->m_BasePBRParam.m_ao        = 1.0f;
-
-            // Slot 0: 自发光纹理（可选，未指定时使用 defaultAlbedo 纯白占位）
-            {
-                VansTexture* tex = nullptr;
-                if (sceneMaterial.contains("emissive_texture"))
-                {
-                    auto textureName = sceneMaterial["emissive_texture"].get<std::string>();
-                    tex = static_cast<VansTexture*>(GetTextureAsset(textureName));
-                }
-                if (tex == nullptr)
-                    tex = static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                emissive->m_EmissiveTexture = tex;
-            }
-
-            // 视频纹理：若指定了 emissive_video，用视频纹理替换发光纹理槽
-            // GPU 纹理数据由 VansScriptVideoComponent 统一管理；此处仅绑定 GPU 句柄和记录名称
-            if (sceneMaterial.contains("emissive_video"))
-            {
-                const std::string videoName = sceneMaterial["emissive_video"];
-                VansVideoTexture* videoTex  = m_VideoManager.Get(videoName);
-                if (videoTex && videoTex->IsReady())
-                {
-                    emissive->m_EmissiveTexture = videoTex->GetTexture();
-                    emissive->m_VideoName       = videoName;
-                    VANS_LOG("[VansScene] Emissive 材质绑定视频纹理: " << videoName);
-                }
-                else
-                {
-                    VANS_LOG_WARN("[VansScene] emissive_video 未找到或未就绪: " << videoName);
-                }
-            }
-        }
-
-        if (matType == VansMaterialType::VAN_DECAL)
-        {
-            VansDecalMaterial* decal = static_cast<VansDecalMaterial*>(material);
-
-            // albedo 颜色乘数
-            if (sceneMaterial.contains("albedo") && sceneMaterial["albedo"].is_array())
-                decal->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
-            else
-                decal->m_BasePBRParam.m_albedo = glm::vec3(1.0f);
-
-            decal->m_BasePBRParam.m_metallic  = sceneMaterial.value("metallic",  0.0f);
-            decal->m_BasePBRParam.m_roughness = sceneMaterial.value("roughness", 0.5f);
-            decal->m_BasePBRParam.m_ao        = sceneMaterial.value("ao",        1.0f);
-
-            // 贴图绑定（与 PBR 格式相同，未指定时使用 default 占位纹理）
-            {
-                auto loadTex = [&](const std::string& key, const std::string& fallback) -> VansTexture* {
-                    if (sceneMaterial.contains(key))
-                    {
-                        VansTexture* tex = static_cast<VansTexture*>(GetTextureAsset(sceneMaterial[key].get<std::string>()));
-                        if (tex) return tex;
-                    }
-                    return static_cast<VansTexture*>(GetTextureAsset(fallback));
-                };
-                decal->m_BaseColorTexture  = loadTex("basecolor_texture", "defaultAlbedo");
-                decal->m_NormalTexture     = loadTex("normal_texture",    "defaultNormal");
-                decal->m_MetalTexture      = loadTex("metal_texture",     "defaultMetal");
-                decal->m_RoughnessTexture  = loadTex("roughness_texture", "defaultRoughness");
-                decal->m_AoTexture         = loadTex("ao_texture",        "defaultAo");
-            }
-        }
-
-        if (matType == VansMaterialType::VAN_SKY_BOX)
-        {
-            VansSkyBoxMaterial* sky = static_cast<VansSkyBoxMaterial*>(material);
-            sky->m_AtmospherePBRParam.m_PlanetRadius          = 6340000;
-            sky->m_AtmospherePBRParam.m_InitSeaLevel          = 200;
-            sky->m_AtmospherePBRParam.m_AtmosphereWidth       = 80000;
-            sky->m_AtmospherePBRParam.m_RayleighScalarHeight  = 8500;
-            sky->m_AtmospherePBRParam.m_MieScalarHeight       = 1200;
-            sky->m_AtmospherePBRParam.m_MieAnisotropy         = 0.78;
-            sky->m_AtmospherePBRParam.m_OzoneLevelCenterHeight= 25000;
-            sky->m_AtmospherePBRParam.m_OzoneLevelWidth       = 15000;
-            sky->m_AtmospherePBRParam.m_SunLuminance          = 10;
-        }
-        m_Materials.push_back(material);
+        PopulateMaterialPassShaders(material, matType);
+        PopulateMaterialFromJson(material, matType, sceneMaterial);
         material->SetName(sceneMaterial["name"]);
+        AddMaterialAsset(material);
     }
 }
 
@@ -2276,7 +2105,7 @@ VansTexture* VansGraphics::VansScene::LoadOrGetTexture(const std::string& absPat
     texture->m_TextureType = TEXTURE_2D;
     texture->LoadTexture(vkDevice->GetCommandBuffer(), absPath, isSRGB, true, true);
     texture->SetName(texName);
-    m_Textures.push_back(texture);
+    AddTextureAsset(texture);
 
     VANS_LOG("[LoadOrGetTexture] Loaded texture: " << texName << " from " << absPath);
     return texture;
@@ -2292,14 +2121,15 @@ void VansGraphics::VansScene::LoadShaderFromEntry(
 
     std::string fullPath = pathPrefix + entry.relativePath;
     VansGraphicsShader* shader = new VansGraphicsShader();
-    m_SceneFileWatcher->AddWatch(fullPath);
+    if (auto* hotReload = GetShaderHotReloadService())
+        hotReload->WatchFolder(fullPath);
     shader->InitShader(device, fullPath);
     shader->SetDrawStateData(entry.depthTest, entry.depthWrite, entry.depthCompareOp, entry.cullMode);
     if (entry.pushConstantSize > 0) shader->SetPushConstant(entry.pushConstantSize);
     if (entry.enableAlphaBlend)     shader->SetEnableAlphaBlend(VK_TRUE);
     if (entry.enableDecalBlend)     shader->SetEnableDecalBlend(VK_TRUE);
     shader->SetName(entry.name);
-    m_Shaders.push_back(shader);
+    AddShaderAsset(shader);
 }
 
 void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
@@ -2377,26 +2207,10 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
 			matType = materialOverride->m_MaterialType;
 		else
         {
-            // Typed factory for auto-expanded submesh materials
-            if (matType == VansMaterialType::VAN_TRANSPARENT)
-                material = new VansTransparentMaterial();
-            else
-                material = new VansPBRMaterial();
-
+            material = CreateMaterialForType(matType);
             material->m_MaterialType = matType;
             material->SetName(matKey);
-
-            // Populate m_PassShaders from Material Pass Table
-            {
-                auto& reg = VansGraphics::VansShaderManager::Get();
-                const auto& passMap = reg.GetMaterialPassMap(matType);
-                for (const auto& [passName, shaderName] : passMap)
-                {
-                    VansGraphicsShader* passShader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
-                    if (passShader)
-                        material->m_PassShaders[passName] = passShader;
-                }
-            }
+            PopulateMaterialPassShaders(material, matType);
 
             if (matType == VansMaterialType::VAN_PBR)
             {
@@ -2408,11 +2222,11 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
                 VansTexture* roughTex = LoadOrGetTexture(fbxInfo.roughnessTexPath, false);
                 VansTexture* aoTex    = LoadOrGetTexture(fbxInfo.aoTexPath, false);
 
-                pbr->m_BaseColorTexture = diffTex  ? diffTex  : static_cast<VansTexture*>(GetTextureAsset("defaultAlbedo"));
-                pbr->m_NormalTexture    = normTex  ? normTex  : static_cast<VansTexture*>(GetTextureAsset("defaultNormal"));
-                pbr->m_MetalTexture     = metalTex ? metalTex : static_cast<VansTexture*>(GetTextureAsset("defaultMetal"));
-                pbr->m_RoughnessTexture = roughTex ? roughTex : static_cast<VansTexture*>(GetTextureAsset("defaultRoughness"));
-                pbr->m_AoTexture        = aoTex    ? aoTex    : static_cast<VansTexture*>(GetTextureAsset("defaultAo"));
+                pbr->m_BaseColorTexture = ResolveTextureOrDefault(diffTex, "defaultAlbedo");
+                pbr->m_NormalTexture    = ResolveTextureOrDefault(normTex, "defaultNormal");
+                pbr->m_MetalTexture     = ResolveTextureOrDefault(metalTex, "defaultMetal");
+                pbr->m_RoughnessTexture = ResolveTextureOrDefault(roughTex, "defaultRoughness");
+                pbr->m_AoTexture        = ResolveTextureOrDefault(aoTex, "defaultAo");
 
                 pbr->m_BasePBRParam.m_albedo    = glm::vec3(1.0f);
                 pbr->m_BasePBRParam.m_metallic  = fbxInfo.metallic;
@@ -2438,7 +2252,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
                 }
             }
 
-            m_Materials.push_back(material);
+            AddMaterialAsset(material);
 
             VANS_LOG("[ExpandMultiMesh] Auto-created material: " << matKey
                      << " (type=" << static_cast<int>(matType) << ")");
@@ -2490,7 +2304,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
         // Register the sub-mesh in the scene-level lookup list so it can be found by name.
         // 子网格对象由父级 multi-mesh 持有，不能混入项目级 m_Meshes 所有权列表。
         subMesh->SetName(meshName);
-        m_SceneSubMeshes.push_back(subMesh);
+        AddSceneSubMeshAsset(subMesh);
 
         RegistRenderNode(renderNode, nodeType);
         group.childNodes.push_back(renderNode);
@@ -2757,6 +2571,59 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
                  << "' enabled=" << mmSettings.enabled
                  << " sampleRate=" << mmSettings.sampleRate
                  << " searchThrottle=" << mmSettings.searchThrottle);
+    }
+
+    if (animJson.contains("foot_placement") && animJson["foot_placement"].is_object())
+    {
+        const auto& fpJson = animJson["foot_placement"];
+        FootPlacementSettings fpSettings;
+        fpSettings.enabled = fpJson.value("enabled", false);
+        fpSettings.probeHeightAbove = fpJson.value("probe_height_above", fpSettings.probeHeightAbove);
+        fpSettings.probeDistanceBelow = fpJson.value("probe_distance_below", fpSettings.probeDistanceBelow);
+        fpSettings.probeFootRadius = fpJson.value("probe_foot_radius", fpSettings.probeFootRadius);
+        fpSettings.probeFootForwardExtent = fpJson.value("probe_foot_forward_extent", fpSettings.probeFootForwardExtent);
+        fpSettings.probeFootBackwardExtent = fpJson.value("probe_foot_backward_extent", fpSettings.probeFootBackwardExtent);
+        fpSettings.probeFootSideExtent = fpJson.value("probe_foot_side_extent", fpSettings.probeFootSideExtent);
+        fpSettings.footGroundOffset = fpJson.value("foot_ground_offset", fpSettings.footGroundOffset);
+        fpSettings.maxSurfaceAngleDeg = fpJson.value("max_surface_angle_deg", fpSettings.maxSurfaceAngleDeg);
+        fpSettings.maxVerticalCorrectionUp = fpJson.value("max_vertical_correction_up", fpSettings.maxVerticalCorrectionUp);
+        fpSettings.maxVerticalCorrectionDown = fpJson.value("max_vertical_correction_down", fpSettings.maxVerticalCorrectionDown);
+        fpSettings.maxHorizontalFootError = fpJson.value("max_horizontal_foot_error", fpSettings.maxHorizontalFootError);
+        fpSettings.minContactQuality = fpJson.value("min_contact_quality", fpSettings.minContactQuality);
+        fpSettings.pelvisMaxDown = fpJson.value("pelvis_max_down", fpSettings.pelvisMaxDown);
+        fpSettings.pelvisMaxUp = fpJson.value("pelvis_max_up", fpSettings.pelvisMaxUp);
+        fpSettings.pelvisInterpSpeed = fpJson.value("pelvis_interp_speed", fpSettings.pelvisInterpSpeed);
+        fpSettings.ikWeight = fpJson.value("ik_weight", fpSettings.ikWeight);
+        fpSettings.ikWeightSpeed = fpJson.value("ik_weight_speed", fpSettings.ikWeightSpeed);
+        fpSettings.footLockInterpSpeed = fpJson.value("foot_lock_interp_speed", fpSettings.footLockInterpSpeed);
+        fpSettings.normalInterpSpeed = fpJson.value("normal_interp_speed", fpSettings.normalInterpSpeed);
+        fpSettings.groundHeightInterpSpeed = fpJson.value("ground_height_interp_speed", fpSettings.groundHeightInterpSpeed);
+        fpSettings.footPlantFullHeight = fpJson.value("foot_plant_full_height", fpSettings.footPlantFullHeight);
+        fpSettings.footPlantFadeHeight = fpJson.value("foot_plant_fade_height", fpSettings.footPlantFadeHeight);
+        fpSettings.poleInterpSpeed = fpJson.value("pole_interp_speed", fpSettings.poleInterpSpeed);
+        fpSettings.enableFootRotation = fpJson.value("enable_foot_rotation", fpSettings.enableFootRotation);
+        fpSettings.footRotationWeight = fpJson.value("foot_rotation_weight", fpSettings.footRotationWeight);
+        fpSettings.ankleHeightOffset = fpJson.value("ankle_height_offset", fpSettings.ankleHeightOffset);
+        fpSettings.debugVisualization = fpJson.value("debug_visualization", fpSettings.debugVisualization);
+        fpSettings.collisionMask = fpJson.value("collision_mask", fpSettings.collisionMask);
+
+        if (fpJson.contains("bones") && fpJson["bones"].is_object())
+        {
+            const auto& bonesJson = fpJson["bones"];
+            fpSettings.bones.pelvis = bonesJson.value("pelvis", fpSettings.bones.pelvis);
+            fpSettings.bones.leftHip = bonesJson.value("left_hip", fpSettings.bones.leftHip);
+            fpSettings.bones.leftKnee = bonesJson.value("left_knee", fpSettings.bones.leftKnee);
+            fpSettings.bones.leftFoot = bonesJson.value("left_foot", fpSettings.bones.leftFoot);
+            fpSettings.bones.rightHip = bonesJson.value("right_hip", fpSettings.bones.rightHip);
+            fpSettings.bones.rightKnee = bonesJson.value("right_knee", fpSettings.bones.rightKnee);
+            fpSettings.bones.rightFoot = bonesJson.value("right_foot", fpSettings.bones.rightFoot);
+        }
+
+        controller->ConfigureFootPlacement(fpSettings, meshAsset->m_AnimImportResult.skeleton);
+        controller->SetFootPlacementEnabled(fpSettings.enabled);
+        VANS_LOG("[LoadAnimComp] FootPlacement configured for '" << objectName
+                 << "' enabled=" << fpSettings.enabled
+                 << " probe=(" << fpSettings.probeHeightAbove << "+" << fpSettings.probeDistanceBelow << ")");
     }
 
     VansAnimationNode* animNode = new VansAnimationNode(nodeName);
@@ -3136,6 +3003,26 @@ VansScriptObject* VansGraphics::VansScene::FindObjectByName(const std::string& n
         if (obj && obj->m_ObjectName == name)
             return obj;
     }
+    return nullptr;
+}
+
+VansScriptObject* VansGraphics::VansScene::FindObjectByGuid(const std::string& guid) const
+{
+    if (guid.empty()) return nullptr;
+    for (auto* obj : m_SceneObjects)
+    {
+        if (obj && obj->m_EntityGuid == guid)
+            return obj;
+    }
+    return nullptr;
+}
+
+VansGraphics::VansRenderNode* VansGraphics::VansScene::FindPrimaryRenderNodeByEntityGuid(const std::string& guid) const
+{
+    VansScriptObject* obj = FindObjectByGuid(guid);
+    if (!obj) return nullptr;
+    if (auto* render = obj->GetComponent<VansScriptRenderComponent>())
+        return render->m_RenderNode;
     return nullptr;
 }
 
@@ -4146,4 +4033,5 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
     // LoadFromJson 中触发一次，Runtime 重载后需在此补充调用。
     m_AudioManager.PlayAutoPlay();
 }
+
 

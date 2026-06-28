@@ -1,8 +1,7 @@
-#include "VansScriptContext.h"
+﻿#include "VansScriptContext.h"
 #include "../VansFramePhase.h"
 #include "../Configration/VansConfigration.h"
 #include "../ProjectSystem/VansProjectManager.h"
-#include "../EditorCore/Windows/VansConsole.h"
 #include "../Util/VansLog.h"
 #include "../VansTimer.h"
 #include "../RenderCore/VansScene.h"
@@ -340,7 +339,7 @@ static void InstallPythonOutputRedirect()
     {
         auto m = py::module::create_extension_module("_vans_console", "", new py::module::module_def);
         m.def("_log_python", [](const std::string& msg) {
-            VansConsole::Get().LogPython(msg);
+            VANS_LOG_PYTHON(msg);
         });
         // Make it importable
         py::module::import("sys").attr("modules")["_vans_console"] = m;
@@ -399,7 +398,7 @@ void VansScriptContext::CheckAndReloadPyScripts()
                 // which was set correctly by spec_from_file_location)
                 info.module = importlib.attr("reload")(info.module).cast<py::module>();
 
-                VansConsole::Get().LogPython("[Hot-Reload] Reloaded " + scriptPath);
+                VANS_LOG_PYTHON("[Hot-Reload] Reloaded " + scriptPath);
 
                 // Re-instantiate any VanPyScriptComponents using this script path
                 OnPyModuleReloaded(scriptPath);
@@ -407,7 +406,7 @@ void VansScriptContext::CheckAndReloadPyScripts()
         }
         catch (const py::error_already_set& e)
         {
-            VansConsole::Get().LogPython("[Hot-Reload] Error reloading " + scriptPath + ": " + e.what());
+            VANS_LOG_PYTHON("[Hot-Reload] Error reloading " + scriptPath + ": " + e.what());
         }
     }
 }
@@ -442,12 +441,12 @@ void VansScriptContext::ReloadAllPyScripts()
             if (std::filesystem::exists(info.filePath))
                 info.lastWriteTime = std::filesystem::last_write_time(info.filePath);
 
-            VansConsole::Get().LogPython("[Reload] Reloaded " + scriptPath);
+            VANS_LOG_PYTHON("[Reload] Reloaded " + scriptPath);
             reloadedPaths.push_back(scriptPath);
         }
         catch (const py::error_already_set& e)
         {
-            VansConsole::Get().LogPython("[Reload] Error reloading " + scriptPath + ": " + e.what());
+            VANS_LOG_PYTHON("[Reload] Error reloading " + scriptPath + ": " + e.what());
         }
     }
 
@@ -492,7 +491,7 @@ void VansScriptContext::ReloadPydModule(const std::string& moduleName)
 
         if (pydPath.empty())
         {
-            VansConsole::Get().LogPython("[PYD-Reload] No " + moduleName + ".pyd found in " + m_ScriptDir);
+            VANS_LOG_PYTHON("[PYD-Reload] No " + moduleName + ".pyd found in " + m_ScriptDir);
             return;
         }
 
@@ -525,7 +524,7 @@ void VansScriptContext::ReloadPydModule(const std::string& moduleName)
         modules[py::str(moduleName)] = mod;
         spec.attr("loader").attr("exec_module")(mod);
 
-        VansConsole::Get().LogPython("[PYD-Reload] Reloaded " + moduleName + " (v" +
+        VANS_LOG_PYTHON("[PYD-Reload] Reloaded " + moduleName + " (v" +
             std::to_string(m_PydReloadCounter) + ")");
 
         // Re-install the correct bridge depending on which module was reloaded
@@ -543,11 +542,11 @@ void VansScriptContext::ReloadPydModule(const std::string& moduleName)
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython("[PYD-Reload] Error: " + std::string(e.what()));
+        VANS_LOG_PYTHON("[PYD-Reload] Error: " + std::string(e.what()));
     }
     catch (const std::exception& e)
     {
-        VansConsole::Get().LogPython("[PYD-Reload] Error: " + std::string(e.what()));
+        VANS_LOG_PYTHON("[PYD-Reload] Error: " + std::string(e.what()));
     }
 }
 
@@ -574,7 +573,7 @@ void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 
 		std::string requirementsPath = projRoot + "Scripts/requirements.txt";
 
-		VansConsole::Get().LogPython(
+		VANS_LOG_PYTHON(
 			"[PyDeps] Checking requirements: " + requirementsPath);
 
 		// ── 1. 若 requirements.txt 不存在，生成默认模板 ───────────────
@@ -588,7 +587,7 @@ void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 				reqFile << "# matplotlib\n";
 				reqFile << "# numpy\n";
 				reqFile.close();
-				VansConsole::Get().LogPython(
+				VANS_LOG_PYTHON(
 					"[PyDeps] Created default requirements.txt: " + requirementsPath);
 			}
 			else
@@ -615,7 +614,7 @@ void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 
 			if (!hasRequirements)
 			{
-				VansConsole::Get().LogPython("[PyDeps] requirements.txt has no packages, skipping install.");
+				VANS_LOG_PYTHON("[PyDeps] requirements.txt has no packages, skipping install.");
 				return;
 			}
 		}
@@ -623,7 +622,7 @@ void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 		// ── 3. 用引擎内嵌 python.exe 的 pip 安装到其自身 site-packages ─────
 		// VansScriptSetup 中已通过 site.addsitedir() 将该目录加入 sys.path，
 		// 安装完成后调用 importlib.invalidate_caches() 刷新缓存即可立即使用。
-		VansConsole::Get().LogPython(
+		VANS_LOG_PYTHON(
 			"[PyDeps] Installing from: " + requirementsPath);
 
 		py::module subprocess = py::module::import("subprocess");
@@ -646,18 +645,18 @@ void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 		{
 			std::string err = result.attr("stderr")
 				.attr("decode")("utf-8", "replace").cast<std::string>();
-			VansConsole::Get().LogPython("[PyDeps] pip install failed: " + err);
+			VANS_LOG_PYTHON("[PyDeps] pip install failed: " + err);
 		}
 		else
 		{
-			VansConsole::Get().LogPython("[PyDeps] Requirements installed successfully.");
+			VANS_LOG_PYTHON("[PyDeps] Requirements installed successfully.");
 			// 刷新当前解释器的导入缓存，使子进程刚安装的包立即可见
 			py::module::import("importlib").attr("invalidate_caches")();
 		}
 	}
 	catch (const py::error_already_set& e)
 	{
-		VansConsole::Get().LogPython("[PyDeps] Python error: " + std::string(e.what()));
+		VANS_LOG_PYTHON("[PyDeps] Python error: " + std::string(e.what()));
 	}
 	catch (const std::exception& e)
 	{
@@ -774,11 +773,11 @@ void VansScriptContext::VansScriptSetup()
     {
         py::module vc = py::module::import("vanscomponent");
         vc.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetEngineBridgePtr()));
-        VansConsole::Get().LogPython("[Bridge] Engine bridge installed into vanscomponent");
+        VANS_LOG_PYTHON("[Bridge] Engine bridge installed into vanscomponent");
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython(std::string("[Bridge] Warning: ") + e.what());
+        VANS_LOG_PYTHON(std::string("[Bridge] Warning: ") + e.what());
         VANS_LOG_ERROR("Failed to install engine bridge: " << e.what());
     }
 
@@ -788,11 +787,11 @@ void VansScriptContext::VansScriptSetup()
     {
         py::module vi = py::module::import("vaninput");
         vi.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetInputBridgePtr()));
-        VansConsole::Get().LogPython("[Bridge] Input bridge installed into vaninput");
+        VANS_LOG_PYTHON("[Bridge] Input bridge installed into vaninput");
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython(std::string("[Bridge] Warning (vaninput): ") + e.what());
+        VANS_LOG_PYTHON(std::string("[Bridge] Warning (vaninput): ") + e.what());
         VANS_LOG_ERROR("Failed to install input bridge: " << e.what());
     }
 
@@ -920,7 +919,7 @@ void VanPyScriptComponent::Instantiate()
 
         if (!std::filesystem::exists(absPath))
         {
-            VansConsole::Get().LogPython(
+            VANS_LOG_PYTHON(
                 "[PyScript] Script file not found: " + absPath.string());
             m_IsValid = false;
             return;
@@ -975,7 +974,7 @@ void VanPyScriptComponent::Instantiate()
             m_ScriptModuleName, absPath.string());
         if (spec.is_none())
         {
-            VansConsole::Get().LogPython(
+            VANS_LOG_PYTHON(
                 "[PyScript] Failed to create module spec for: " + absPath.string());
             m_IsValid = false;
             return;
@@ -998,7 +997,7 @@ void VanPyScriptComponent::Instantiate()
         py::module vc = py::module::import("vanscomponent");
         if (!py::isinstance(m_PyInstance, vc.attr("vanspyscript")))
         {
-            VansConsole::Get().LogPython(
+            VANS_LOG_PYTHON(
                 "[PyScript] " + m_ScriptPath + "::" + m_ScriptClassName +
                 " does not inherit from vanspyscript!");
             m_IsValid = false;
@@ -1013,12 +1012,12 @@ void VanPyScriptComponent::Instantiate()
         }
 
         m_IsValid = true;
-        VansConsole::Get().LogPython(
+        VANS_LOG_PYTHON(
             "[PyScript] Loaded " + m_ScriptClassName + " from " + m_ScriptPath);
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython(
+        VANS_LOG_PYTHON(
             "[PyScript] Failed to instantiate " + m_ScriptPath +
             "::" + m_ScriptClassName + ": " + e.what());
         m_IsValid = false;
@@ -1111,7 +1110,7 @@ void VanPyScriptComponent::OnEnable()
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython("[PyScript] on_enable error: " + std::string(e.what()));
+        VANS_LOG_PYTHON("[PyScript] on_enable error: " + std::string(e.what()));
     }
 }
 
@@ -1124,7 +1123,7 @@ void VanPyScriptComponent::OnDisable()
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython("[PyScript] on_disable error: " + std::string(e.what()));
+        VANS_LOG_PYTHON("[PyScript] on_disable error: " + std::string(e.what()));
     }
 }
 
@@ -1139,7 +1138,7 @@ void VanPyScriptComponent::CallUpdate()
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython("[PyScript] update error: " + std::string(e.what()));
+        VANS_LOG_PYTHON("[PyScript] update error: " + std::string(e.what()));
     }
 }
 
@@ -1163,7 +1162,7 @@ void VanPyScriptComponent::CallOnCollisionEnter(const PhysicsEventInfo& info)
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython("[PyScript] on_collision_enter error: " + std::string(e.what()));
+        VANS_LOG_PYTHON("[PyScript] on_collision_enter error: " + std::string(e.what()));
     }
 }
 
@@ -1176,7 +1175,7 @@ void VanPyScriptComponent::CallOnCollisionExit(const PhysicsEventInfo& info)
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython("[PyScript] on_collision_exit error: " + std::string(e.what()));
+        VANS_LOG_PYTHON("[PyScript] on_collision_exit error: " + std::string(e.what()));
     }
 }
 
@@ -1189,7 +1188,7 @@ void VanPyScriptComponent::CallOnTriggerEnter(const PhysicsEventInfo& info)
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython("[PyScript] on_trigger_enter error: " + std::string(e.what()));
+        VANS_LOG_PYTHON("[PyScript] on_trigger_enter error: " + std::string(e.what()));
     }
 }
 
@@ -1202,7 +1201,7 @@ void VanPyScriptComponent::CallOnTriggerExit(const PhysicsEventInfo& info)
     }
     catch (const py::error_already_set& e)
     {
-        VansConsole::Get().LogPython("[PyScript] on_trigger_exit error: " + std::string(e.what()));
+        VANS_LOG_PYTHON("[PyScript] on_trigger_exit error: " + std::string(e.what()));
     }
 }
 
@@ -1314,3 +1313,4 @@ void VansScriptContext::DispatchEventToObject(
     //                   << " has no VanPyScriptComponent");
     // }
 }
+

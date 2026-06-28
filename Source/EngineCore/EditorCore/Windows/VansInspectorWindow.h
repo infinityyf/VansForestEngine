@@ -1,6 +1,8 @@
 #pragma once
 
 #include "VansBaseWindowComponent.h"
+#include "../VansInspectorLiveEditService.h"
+#include "../VansMaterialLiveEditService.h"
 #include "../../AssetCore/VansAssetDocument.h"
 #include "../../RenderCore/VansScene.h"
 
@@ -13,7 +15,7 @@ namespace VansGraphics
 class VansInspectorWindow final : public VansBaseWindowComponent
 {
 public:
-    void RegistScene(VansScene* scene) { m_Scene = scene; }
+    void RegistScene(VansScene* scene) { m_Scene = scene; m_LiveEdit.Bind(m_Scene, nullptr); m_MaterialLiveEdit.Bind(m_Scene); }
 
 private:
     using Json = nlohmann::ordered_json;
@@ -27,7 +29,6 @@ private:
     bool DrawAssetReference(const std::string& label, Json& reference,
         const std::string& pointer, int expectedAssetType);
     bool DrawComponent(Json& component, const std::string& pointer, bool& removeRequested);
-    void ApplyRuntimeEntityEdits(const Json& entity);
     void ApplyComponentEnabled(const std::string& jsonPointer, bool enabled);
     bool LoadAssetDocuments(const std::filesystem::path& sourcePath);
     bool SaveAssetDocuments();
@@ -38,5 +39,7 @@ private:
     Vans::VansAssetDocument m_MetaDocument;
     std::string m_Error;
     VansScene* m_Scene = nullptr;
+    VansInspectorLiveEditService m_LiveEdit;
+    VansMaterialLiveEditService m_MaterialLiveEdit;
 };
 }

@@ -1,10 +1,10 @@
 #include "VansLog.h"
-#include "../EditorCore/Windows/VansConsole.h"
 
 #include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <filesystem>
+#include <algorithm>
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -98,6 +98,11 @@ void VansLog::EnsureInitialized()
 
 void VansLog::Log(VansLogLevel level, const std::string& msg)
 {
+    Log(VansLogChannel::Engine, level, msg);
+}
+
+void VansLog::Log(VansLogChannel channel, VansLogLevel level, const std::string& msg)
+{
     std::lock_guard<std::mutex> lock(m_Mutex);
     EnsureInitialized();
 
@@ -119,6 +124,23 @@ void VansLog::Log(VansLogLevel level, const std::string& msg)
     // Also print to stdout for debug
     std::cout << line << std::endl;
 
-    // Push to VansConsole for the editor Console window
-    VansConsole::Get().LogEngine(level, msg);
+    for (ILogSink* sink : m_Sinks)
+    {
+        if (sink)
+            sink->OnLog(channel, level, msg);
+    }
+}
+
+void VansLog::RegisterSink(ILogSink* sink)
+{
+    if (!sink) return;
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    if (std::find(m_Sinks.begin(), m_Sinks.end(), sink) == m_Sinks.end())
+        m_Sinks.push_back(sink);
+}
+
+void VansLog::UnregisterSink(ILogSink* sink)
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    m_Sinks.erase(std::remove(m_Sinks.begin(), m_Sinks.end(), sink), m_Sinks.end());
 }

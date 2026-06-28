@@ -18,7 +18,7 @@ void VansTerrainWindow::ShowWindow(VansVKDevice& device)
         return;
     }
 
-    VansRenderNode* terrainRenderNode = m_Scene->m_TerrainRenderNode;
+    VansRenderNode* terrainRenderNode = m_Scene->GetTerrainRenderNode();
     if (!terrainRenderNode)
     {
         ImGui::Begin("Terrain");

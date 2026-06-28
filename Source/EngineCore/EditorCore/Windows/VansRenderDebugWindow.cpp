@@ -146,13 +146,13 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
 
     if (ImGui::CollapsingHeader("Motion Matching", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        if (!m_Scene || m_Scene->m_AnimationNodes.empty())
+        if (!m_Scene || m_Scene->GetAnimationNodes().empty())
         {
             ImGui::TextDisabled("No animation nodes in current scene.");
         }
         else
         {
-            for (auto* animNode : m_Scene->m_AnimationNodes)
+            for (auto* animNode : m_Scene->GetAnimationNodes())
             {
                 if (!animNode || !animNode->GetController())
                     continue;

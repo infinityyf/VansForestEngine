@@ -3,6 +3,8 @@
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../ScriptCore/VansTransform.h"
 #include "../Util/VansLog.h"
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 
 namespace VansEngine
@@ -188,6 +190,8 @@ namespace VansEngine
         {
             m_Actor->attachShape(*shape);
             m_Shape = shape;
+            const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+            m_AppliedShapeScale = transformData.m_Scale;
             shape->release(); // Actor holds a reference
         }
     }
@@ -349,6 +353,67 @@ namespace VansEngine
         return physics->createShape(convexGeom, *m_Material);
     }
 
+    void VansPhysicsNode::UpdateShapeGeometryFromTransformScale()
+    {
+        if (!m_Shape || m_TransformID >= VansGraphics::VansTransformStore::GlobalTransforms.size())
+            return;
+
+        const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        const glm::vec3 scale = transformData.m_Scale;
+        const glm::vec3 delta = glm::abs(scale - m_AppliedShapeScale);
+        if (delta.x <= 1e-5f && delta.y <= 1e-5f && delta.z <= 1e-5f)
+            return;
+
+        bool updated = true;
+        switch (m_Properties.colliderType)
+        {
+        case PhysicsColliderType::Box:
+        {
+            glm::vec3 scaledExtents = glm::abs(m_Properties.boxExtents * scale);
+            scaledExtents = glm::max(scaledExtents, glm::vec3(1e-4f));
+            m_Shape->setGeometry(PxBoxGeometry(scaledExtents.x, scaledExtents.y, scaledExtents.z));
+            break;
+        }
+        case PhysicsColliderType::Sphere:
+        {
+            const glm::vec3 absScale = glm::abs(scale);
+            const float avgScale = std::max((absScale.x + absScale.y + absScale.z) / 3.0f, 1e-4f);
+            m_Shape->setGeometry(PxSphereGeometry(std::max(m_Properties.sphereRadius * avgScale, 1e-4f)));
+            break;
+        }
+        case PhysicsColliderType::Capsule:
+        {
+            const glm::vec3 absScale = glm::abs(scale);
+            const float avgRadiusScale = std::max((absScale.x + absScale.z) / 2.0f, 1e-4f);
+            const float heightScale = std::max(absScale.y, 1e-4f);
+            m_Shape->setGeometry(PxCapsuleGeometry(
+                std::max(m_Properties.capsuleRadius * avgRadiusScale, 1e-4f),
+                std::max(m_Properties.capsuleHalfHeight * heightScale, 1e-4f)));
+            break;
+        }
+        case PhysicsColliderType::Mesh:
+            if (m_TriangleMesh)
+                m_Shape->setGeometry(PxTriangleMeshGeometry(m_TriangleMesh, PxMeshScale(ToPxVec3(scale))));
+            else
+                updated = false;
+            break;
+        case PhysicsColliderType::ConvexMesh:
+            if (m_ConvexMesh)
+                m_Shape->setGeometry(PxConvexMeshGeometry(m_ConvexMesh, PxMeshScale(ToPxVec3(scale))));
+            else
+                updated = false;
+            break;
+        default:
+            updated = false;
+            break;
+        }
+
+        if (updated)
+            m_AppliedShapeScale = scale;
+        else
+            VANS_LOG_WARN("[PhysX] Failed to update scaled geometry for node '" << m_Name << "'");
+    }
+
     PxMaterial* VansPhysicsNode::CreatePhysicsMaterial()
     {
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
@@ -400,6 +465,7 @@ namespace VansEngine
         // Kinematic 和 Trigger 都需要从 Transform 同步到 PhysX
         // Get transform from global storage
         const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        UpdateShapeGeometryFromTransformScale();
         PxVec3 position = ToPxVec3(transformData.m_Position);
         PxQuat rotation = ToPxQuat(glm::quat(glm::radians(transformData.m_Rotation)));
         PxTransform transform(position, rotation);

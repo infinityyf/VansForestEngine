@@ -41,7 +41,7 @@ namespace VansGraphics
         GizmoMode  m_Mode  = GizmoMode::Translate;
         GizmoSpace m_Space = GizmoSpace::World;
 
-        // Draw the 3-D manipulation handle for scene->m_SelectedNode.
+        // Draw the 3-D manipulation handle for the entity selected in VansEditorSelection.
         // Must be called inside the ImGui "Scene" window AFTER ImGui::Image().
         // windowPos  – top-left of the Scene ImGui window in screen coords.
         // windowSize – size of the Scene ImGui window in screen coords.

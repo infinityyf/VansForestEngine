@@ -1,5 +1,6 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "VansGizmos.h"
+#include "VansEditorSelection.h"
 #include "imgui.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../Util/VansInputManager.h"
@@ -178,7 +179,7 @@ void VansGizmos::Draw(VansScene*  scene,
         }
     }
 
-    VansRenderNode* node = scene->m_SelectedNode;
+    VansRenderNode* node = scene->FindPrimaryRenderNodeByEntityGuid(Vans::VansEditorSelection::EntityGuid());
     if (!node)  return;
 
     // ── 1. Bind ImGuizmo to the current ImGui window ─────────────────────────
@@ -323,7 +324,20 @@ void VansGizmos::TryPickObject(VansScene*  scene,
     for (VansRenderNode* n : scene->m_TransParentRenderNodes) testNode(n);
 
     if (bestNode)
-        scene->m_SelectedNode = bestNode;
+    {
+        for (VansScriptObject* obj : scene->m_SceneObjects)
+        {
+            if (!obj) continue;
+            if (auto* render = obj->GetComponent<VansScriptRenderComponent>())
+            {
+                if (render->m_RenderNode == bestNode)
+                {
+                    Vans::VansEditorSelection::SelectEntity(obj->m_EntityGuid);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -345,7 +359,7 @@ void VansGizmos::HandleHotkeys(VansScene* scene)
         m_Space = (m_Space == GizmoSpace::World) ? GizmoSpace::Local : GizmoSpace::World;
 
     if (input.IsKeyPressed(GLFW_KEY_ESCAPE) && scene)
-        scene->m_SelectedNode = nullptr;
+        Vans::VansEditorSelection::Clear();
 }
 
 } // namespace VansGraphics

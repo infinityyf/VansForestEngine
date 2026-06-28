@@ -8,6 +8,7 @@ namespace VansGraphics { class VansWaterMaterial; }
 // VansWaterSystem 前向声明（完整定义在 WaterCore/VansWaterSystem.h）
 namespace VansGraphics { class VansWaterSystem; }
 namespace VansGraphics { class VansMesh; }
+namespace VansGraphics { class VansTexture; }
 #include "VansCamera.h"
 #include "BRDFData/VansLight.h"
 #include "BRDFData/VansIESProfile.h"
@@ -46,6 +47,8 @@ namespace Vans
 
 namespace VansGraphics
 {
+	class IShaderHotReloadService;
+
 	// ── 场景加载状态枚举 ──────────────────────────────────────────────────
 	enum class VansSceneState
 	{
@@ -125,22 +128,57 @@ namespace VansGraphics
 
 		VansAsset* GetMaterialAsset(const std::string& name);
 
-	public:
+		VansTexture* ResolveTextureOrDefault(VansTexture* texture, const char* fallbackName);
+		VansMaterial* CreateMaterialForType(VansMaterialType matType);
+		void PopulateMaterialPassShaders(VansMaterial* material, VansMaterialType matType);
+		void PopulateMaterialFromJson(VansMaterial* material, VansMaterialType matType, const json& sceneMaterial);
+		VansTexture* ResolveMaterialTexture(const json& sceneMaterial, const char* key);
+		VansTexture* ResolveMaterialTextureWithFallback(const json& sceneMaterial, const char* key, const char* fallback);
+		VansTexture* ResolveMaterialTextureOrDefault(const json& sceneMaterial, const char* key, const char* fallback);
 
+		void RegisterMeshAsset(VansAsset* asset);
+		void RegisterSceneSubMeshAsset(VansAsset* asset);
+		void RegisterShaderAsset(VansAsset* asset);
+		void RegisterTextureAsset(VansAsset* asset);
+		void RegisterMaterialAsset(VansAsset* asset);
+		void RebuildAssetLookup();
+		void ClearSceneAssetLookup();
+
+	public:
+		void AddMeshAsset(VansAsset* asset);
+		void AddSceneSubMeshAsset(VansAsset* asset);
+		void AddShaderAsset(VansAsset* asset);
+		void AddTextureAsset(VansAsset* asset);
+		void AddMaterialAsset(VansAsset* asset);
+		bool HasProjectMeshAlias(const std::string& name) const;
+		void SetProjectMeshAlias(const std::string& name, VansAsset* asset);
+		VansAsset* FindMeshAsset(const std::string& name);
+		const std::vector<VansAsset*>& GetMeshAssets() const { return m_Meshes; }
+		const std::vector<VansAsset*>& GetSceneSubMeshAssets() const { return m_SceneSubMeshes; }
+		const std::vector<VansAsset*>& GetShaderAssets() const { return m_Shaders; }
+		const std::vector<VansAsset*>& GetTextureAssets() const { return m_Textures; }
+		const std::vector<VansAsset*>& GetMaterialAssets() const { return m_Materials; }
+
+	private:
 		//记录所有资产
 		std::vector<VansAsset*> m_Meshes;
 		std::unordered_map<std::string, VansAsset*> m_ProjectMeshAliases;
+		std::unordered_map<std::string, VansAsset*> m_MeshAssetLookup;
 
 		// ExpandMultiMeshToRenderNodes 生成的场景级子网格查找表。
 		// 子网格对象仍由父级 multi-mesh 持有，此处只保存非拥有引用，UnLoadScene 只清空列表。
 		std::vector<VansAsset*> m_SceneSubMeshes;
+		std::unordered_map<std::string, VansAsset*> m_SceneSubMeshAssetLookup;
 
 		std::vector<VansAsset*> m_Textures;
+		std::unordered_map<std::string, VansAsset*> m_TextureAssetLookup;
 
 		std::vector<VansAsset*> m_Shaders;
+		std::unordered_map<std::string, VansAsset*> m_ShaderAssetLookup;
 
 		//记录运行时数据
 		std::vector<VansAsset*> m_Materials;
+		std::unordered_map<std::string, VansAsset*> m_MaterialAssetLookup;
 
 	public:
 		VansRenderNode* m_SkyBoxNode = nullptr;
@@ -172,6 +210,10 @@ namespace VansGraphics
 
 		// 水面系统访问器（供 VansVKRenderer 调度 Water passes）
 		VansWaterSystem* GetWaterSystem() const { return m_WaterSystem; }
+		VansRenderNode* GetTerrainRenderNode() const { return m_TerrainRenderNode; }
+		VansRenderNode* GetWaterRenderNode() const { return m_WaterRenderNode; }
+		VansWaterMaterial* GetWaterMaterial() const { return m_WaterMaterial; }
+		const std::vector<VansAnimationNode*>& GetAnimationNodes() const { return m_AnimationNodes; }
 
 		std::vector<VansRenderNode*> m_TransParentRenderNodes;
 
@@ -266,11 +308,6 @@ namespace VansGraphics
 		void UpdateGlobalDescriptorSet();		// Writes only TileLight bindings (9, 10) into the global descriptor set.
 		// Called after PrepareTileLightData() creates the TileLight SSBO buffers.
 		void UpdateGlobalTileLightDescriptors();
-	public:
-		//editor
-		VansRenderNode* m_SelectedNode = nullptr;
-		VansScriptObject* m_SelectedObject = nullptr;
-
 		// ── Transform parenting system ──────────────────────────────────────────
 		VansTransformParentSystem m_TransformParentSystem;
 
@@ -341,6 +378,8 @@ namespace VansGraphics
 
 		// Find a render node by name across all render node lists
 		VansRenderNode* FindRenderNodeByName(const std::string& name) const;
+		VansScriptObject* FindObjectByGuid(const std::string& guid) const;
+		VansRenderNode* FindPrimaryRenderNodeByEntityGuid(const std::string& guid) const;
 
 		void AddTerrainNode(VansVKDevice* device, json& terrainData);
 
@@ -559,6 +598,9 @@ namespace VansGraphics
 
 		VansCamera* GetCamera() { return m_Camera; }
 
+		void SetShaderHotReloadService(IShaderHotReloadService* service) { m_ShaderHotReloadService = service; }
+		IShaderHotReloadService* GetShaderHotReloadService() const { return m_ShaderHotReloadService; }
+
 		// 获取场景加载模式（Editor / Runtime）
 		VansSceneLoadMode GetLoadMode() const { return m_LoadMode; }
 
@@ -629,10 +671,8 @@ namespace VansGraphics
 	private:
 		// Keep newly added scene data at the end to preserve existing member offsets.
 		VansGISettings m_GISettings;
+		IShaderHotReloadService* m_ShaderHotReloadService = nullptr;
 	};
 }
 
 extern VansGraphics::VansScene* m_Scene;
-
-class VansAssetsFileWatcher;
-extern VansAssetsFileWatcher* m_SceneFileWatcher;

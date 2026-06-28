@@ -7,9 +7,20 @@
 
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 
+VansGraphics::VansGraphicsGUIBackEnd::~VansGraphicsGUIBackEnd()
+{
+	ShutdownBackEnd();
+}
+
 void VansGraphics::VansGraphicsGUIBackEnd::InitBackEnd(VansGraphicsDevice& device, GLFWwindow* window)
 {
+	ShutdownBackEnd();
+
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(&device);
+	if (!vkDevice)
+	{
+		return;
+	}
 
 	VkDescriptorPoolSize pool_sizes[] =
 	{
@@ -33,13 +44,13 @@ void VansGraphics::VansGraphicsGUIBackEnd::InitBackEnd(VansGraphicsDevice& devic
 	pool_info.poolSizeCount = std::size(pool_sizes);
 	pool_info.pPoolSizes = pool_sizes;
 
-	VkDevice imguiDevice = vkDevice->GetLogicDevice();
+	m_Device = vkDevice->GetLogicDevice();
 	VkInstance imguiInstance = vkDevice->GetInstance();
 	VkPhysicalDevice imguiPhysicalDevice = vkDevice->GetPhysicalDevice();
 	VkQueue imguiGraphicsQueue = vkDevice->GetGraphicsQueue();
 	VkRenderPass imguiRenderPass = VansRenderPassManager::GetInstance()->GetVansRenderPass().GetRenderPass();
 	
-	vkCreateDescriptorPool(imguiDevice, &pool_info, nullptr, &m_ImGUIPool);
+	vkCreateDescriptorPool(m_Device, &pool_info, nullptr, &m_ImGUIPool);
 
 
 	// 2: initialize imgui library
@@ -53,7 +64,7 @@ void VansGraphics::VansGraphicsGUIBackEnd::InitBackEnd(VansGraphicsDevice& devic
 	ImGui_ImplVulkan_InitInfo init_info = {};
 	init_info.Instance = imguiInstance;
 	init_info.PhysicalDevice = imguiPhysicalDevice;
-	init_info.Device = imguiDevice;
+	init_info.Device = m_Device;
 	init_info.Queue = imguiGraphicsQueue;
 	init_info.DescriptorPool = m_ImGUIPool;
 	init_info.MinImageCount = 3;
@@ -66,4 +77,23 @@ void VansGraphics::VansGraphicsGUIBackEnd::InitBackEnd(VansGraphicsDevice& devic
 
 	//execute a gpu command to upload imgui font textures
 	ImGui_ImplVulkan_CreateFontsTexture();
+	m_Initialized = true;
+}
+
+void VansGraphics::VansGraphicsGUIBackEnd::ShutdownBackEnd()
+{
+	if (m_Initialized)
+	{
+		ImGui_ImplVulkan_Shutdown();
+		ImGui_ImplGlfw_Shutdown();
+		m_Initialized = false;
+	}
+
+	if (m_Device != VK_NULL_HANDLE && m_ImGUIPool != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorPool(m_Device, m_ImGUIPool, nullptr);
+		m_ImGUIPool = VK_NULL_HANDLE;
+	}
+
+	m_Device = VK_NULL_HANDLE;
 }

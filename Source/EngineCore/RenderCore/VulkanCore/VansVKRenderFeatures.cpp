@@ -61,7 +61,7 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		if (m_GIDataDescSetsUpdated)
+		if (IsFeatureDescriptorCurrent(m_GIDataDescSetGeneration))
 		{
 			return;
 		}
@@ -89,7 +89,7 @@ namespace VansGraphics
 			return;
 		}
 
-		m_GIDataDescSetsUpdated = true;
+		MarkFeatureDescriptorCurrent(m_GIDataDescSetGeneration);
 
 		VansVKDescriptorManager::GetInstance()->ResetState();
 		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
@@ -454,14 +454,14 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		if (m_HIZSeedDescSetsUpdated)
+		if (IsFeatureDescriptorCurrent(m_HIZSeedDescSetGeneration))
 			return;
 
 		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
 		if (hzbResult == nullptr)
 			return;
 
-		m_HIZSeedDescSetsUpdated = true;
+		MarkFeatureDescriptorCurrent(m_HIZSeedDescSetGeneration);
 
 		auto& position = renderPassManager->GetGbuffer2();
 
@@ -507,7 +507,7 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		if (m_HZBDescSetsUpdated)
+		if (IsFeatureDescriptorCurrent(m_HZBDescSetGeneration))
 		{
 			return;
 		}
@@ -518,7 +518,7 @@ namespace VansGraphics
 			return;
 		}
 
-		m_HZBDescSetsUpdated = true;
+		MarkFeatureDescriptorCurrent(m_HZBDescSetGeneration);
 
 		for (uint32_t mipIndex = 1; mipIndex < manager->m_HIZMipCount; ++mipIndex)
 		{
@@ -563,7 +563,7 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		if (m_SSRDescSetsUpdated)
+		if (IsFeatureDescriptorCurrent(m_SSRDescSetGeneration))
 		{
 			return;
 		}
@@ -587,7 +587,7 @@ namespace VansGraphics
 			return;
 		}
 
-		m_SSRDescSetsUpdated = true;
+		MarkFeatureDescriptorCurrent(m_SSRDescSetGeneration);
 
 		auto& normal = renderPassManager->GetNormal();
 		auto& position = renderPassManager->GetGbuffer2();
@@ -903,7 +903,7 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		if (m_VolumetricFogDescSetsUpdated)
+		if (IsFeatureDescriptorCurrent(m_VolumetricFogDescSetGeneration))
 		{
 			return;
 		}
@@ -914,7 +914,7 @@ namespace VansGraphics
 			return;
 		}
 
-		m_VolumetricFogDescSetsUpdated = true;
+		MarkFeatureDescriptorCurrent(m_VolumetricFogDescSetGeneration);
 
 		auto& position = renderPassManager->GetGbuffer2();
 
@@ -1057,7 +1057,7 @@ namespace VansGraphics
 	void VansVKDevice::UpdateScreenSpaceShadowSets(VansRenderPassManager* renderPassManager)
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		if (m_ScreenSpaceShadowDescSetsUpdated)
+		if (IsFeatureDescriptorCurrent(m_ScreenSpaceShadowDescSetGeneration))
 		{
 			return;
 		}
@@ -1095,7 +1095,7 @@ namespace VansGraphics
 			  {{ manager->m_ScreenSpaceShadowParamsCBBuffer.GetNativeBuffer(), 0, manager->m_ScreenSpaceShadowParamsCBBuffer.GetBufferSize() }} });
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 
-		m_ScreenSpaceShadowDescSetsUpdated = true;
+		MarkFeatureDescriptorCurrent(m_ScreenSpaceShadowDescSetGeneration);
 	}
 
 	void VansVKDevice::UpdateScreenSpaceShadow(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
@@ -1164,13 +1164,13 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		if (m_FogLightInjectionDescSetsUpdated) return;
+		if (IsFeatureDescriptorCurrent(m_FogLightInjectionDescSetGeneration)) return;
 
 		VansTexture* fogVoxelInjection = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION);
 		VansTexture* fogVoxelHistory   = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY);
 		if (fogVoxelInjection == nullptr || fogVoxelHistory == nullptr) return;
 
-		m_FogLightInjectionDescSetsUpdated = true;
+		MarkFeatureDescriptorCurrent(m_FogLightInjectionDescSetGeneration);
 
 		auto& shadowMap = renderPassManager->GetShadowMap();
 
@@ -1397,7 +1397,7 @@ namespace VansGraphics
 	void VansVKDevice::UpdateCloudRayMarchSets(VansRenderPassManager* renderPassManager)
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		if (m_CloudRayMarchDescSetsUpdated) return;
+		if (IsFeatureDescriptorCurrent(m_CloudRayMarchDescSetGeneration)) return;
 
 		VansTexture* cloudBuffer = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_BUFFER);
 		VansTexture* cloudMainNoise = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_MAIN_NOISE);
@@ -1475,7 +1475,7 @@ namespace VansGraphics
 		);
 
 		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
-		m_CloudRayMarchDescSetsUpdated = true;
+		MarkFeatureDescriptorCurrent(m_CloudRayMarchDescSetGeneration);
 	}
 
 	// ================================================================
@@ -1546,8 +1546,8 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
-		if (m_TileLightBuildDescSetsUpdated) return;
-		m_TileLightBuildDescSetsUpdated = true;
+		if (IsFeatureDescriptorCurrent(m_TileLightBuildDescSetGeneration)) return;
+		MarkFeatureDescriptorCurrent(m_TileLightBuildDescSetGeneration);
 
 		VansVKDescriptorManager::GetInstance()->ResetState();
 
@@ -1685,14 +1685,14 @@ void VansVKDevice::UploadPostProcessProfileIfDirty()
 // ================================================================
 void VansVKDevice::UpdateExposureDescriptorSets(VansRenderPassManager* renderPassManager)
 {
-if (m_PPExposureDescSetsUpdated) return;
+if (IsFeatureDescriptorCurrent(m_PPExposureDescSetGeneration)) return;
 
 VansMaterialManager* manager = m_Scene->GetMaterialManager();
 VansTexture* lumRT     = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_LUMINANCE);
 VansTexture* currentRT = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT);
 if (lumRT == nullptr || currentRT == nullptr) return;
 
-m_PPExposureDescSetsUpdated = true;
+MarkFeatureDescriptorCurrent(m_PPExposureDescSetGeneration);
 
 auto& sceneColor = renderPassManager->GetColor();
 
@@ -1812,7 +1812,7 @@ computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STA
 // ================================================================
 void VansVKDevice::UpdateBloomDescriptorSets(VansRenderPassManager* renderPassManager)
 {
-if (m_PPBloomDescSetsUpdated) return;
+if (IsFeatureDescriptorCurrent(m_PPBloomDescSetGeneration)) return;
 
 VansMaterialManager* manager = m_Scene->GetMaterialManager();
 VansTexture* prefilter = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_PREFILTER);
@@ -1823,7 +1823,7 @@ VansTexture* mip3      = manager->GetRuntimeRenderTexture(VansMaterialManager::R
 VansTexture* result    = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_RESULT);
 if (!prefilter || !mip0 || !mip1 || !mip2 || !mip3 || !result) return;
 
-m_PPBloomDescSetsUpdated = true;
+MarkFeatureDescriptorCurrent(m_PPBloomDescSetGeneration);
 
 auto& sceneColor = renderPassManager->GetColor();
 

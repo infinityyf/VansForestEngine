@@ -83,6 +83,9 @@
     <Filter Include="EngineCore\AnimationCore\IK">
       <UniqueIdentifier>{c4f1ae90-1234-5678-9abc-def012345678}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\AnimationCore\FootPlacement">
+      <UniqueIdentifier>{d5e2fb91-2345-6789-abcd-ef0123456789}</UniqueIdentifier>
+    </Filter>
     <Filter Include="EngineCore\PhysicsCore">
       <UniqueIdentifier>{eaf1286b-794d-4d1d-b61b-7cf7da65388c}</UniqueIdentifier>
     </Filter>
@@ -171,6 +174,12 @@
       <Filter>EngineCore\SceneCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\VansSceneEditService.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansInspectorLiveEditService.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansMaterialLiveEditService.h">
       <Filter>EngineCore\EditorCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorSelection.h">
@@ -545,6 +554,15 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKChainBuilder.h">
       <Filter>EngineCore\AnimationCore\IK</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootPlacementTypes.h">
+      <Filter>EngineCore\AnimationCore\FootPlacement</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootGroundProbe.h">
+      <Filter>EngineCore\AnimationCore\FootPlacement</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootPlacementSolver.h">
+      <Filter>EngineCore\AnimationCore\FootPlacement</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.h">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
@@ -593,6 +611,9 @@
     <ClInclude Include="Source\EngineCore\Util\VansFileUtil.h">
       <Filter>EngineCore\Utils</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\Util\ILogSink.h">
+      <Filter>EngineCore\Utils</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\Util\VansInputManager.h">
       <Filter>EngineCore\Utils</Filter>
     </ClInclude>
@@ -604,6 +625,12 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\Util\VansProfiler.h">
       <Filter>EngineCore\Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\Interfaces\INativeWindowProvider.h">
+      <Filter>EngineCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\Interfaces\IShaderHotReloadService.h">
+      <Filter>EngineCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\VansTimer.h">
       <Filter>EngineCore\Utils</Filter>
@@ -763,6 +790,12 @@
       <Filter>EngineCore\SceneCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\VansSceneEditService.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansInspectorLiveEditService.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansMaterialLiveEditService.cpp">
       <Filter>EngineCore\EditorCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\ForestEngineEntry.cpp">
@@ -1052,6 +1085,12 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansIKChainBuilder.cpp">
       <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootGroundProbe.cpp">
+      <Filter>EngineCore\AnimationCore\FootPlacement</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootPlacementSolver.cpp">
+      <Filter>EngineCore\AnimationCore\FootPlacement</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\VansAnimationClipLoader.cpp">
       <Filter>EngineCore\AnimationCore</Filter>

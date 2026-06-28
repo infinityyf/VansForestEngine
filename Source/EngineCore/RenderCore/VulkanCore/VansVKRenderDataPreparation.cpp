@@ -19,9 +19,9 @@ namespace VansGraphics
 {
 	void VansVKDevice::PreparePBRMaterialData()
 	{
-		auto& allmaterials = m_Scene->m_Materials;
+		const auto& allmaterials = m_Scene->GetMaterialAssets();
 		auto materialManager = m_Scene->GetMaterialManager();
-		int materialCount = allmaterials.size();
+		int materialCount = static_cast<int>(allmaterials.size());
 		int pbrMaterialIndex = 0;
 		for (int materialIndex = 0; materialIndex < materialCount; ++materialIndex)
 		{

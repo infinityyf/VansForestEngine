@@ -1,6 +1,7 @@
 #include "VansAnimationController.h"
 #include "VansAnimGraph.h"
 #include "MotionMatching/VansMotionMatching.h"
+#include "FootPlacement/VansFootPlacementSolver.h"
 #include "../Util/VansLog.h"
 
 #include <../../GLM/glm.hpp>
@@ -46,6 +47,42 @@ void VansAnimationController::ConfigureMotionMatching(const MotionMatchingSettin
 const MotionMatchingDebugData* VansAnimationController::GetMotionMatchingDebugData() const
 {
 	return m_MotionMatching ? &m_MotionMatching->GetDebugData() : nullptr;
+}
+
+const FootPlacementDebugData* VansAnimationController::GetFootPlacementDebugData() const
+{
+	return m_FootPlacement ? &m_FootPlacement->GetDebugData() : nullptr;
+}
+
+void VansAnimationController::ConfigureFootPlacement(const FootPlacementSettings& settings, const Skeleton& skeleton)
+{
+	m_FootPlacementSettings = settings;
+	if (!m_FootPlacement)
+		m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
+	if (!m_FootPlacement->Configure(settings, skeleton))
+	{
+		VANS_LOG_WARN("FootPlacement configure failed for controller '" << m_Name << "': missing humanoid leg bones");
+		m_FootPlacement.reset();
+	}
+}
+
+void VansAnimationController::SetFootPlacementEnabled(bool enabled)
+{
+	m_FootPlacementSettings.enabled = enabled;
+	if (m_FootPlacement)
+		m_FootPlacement->SetEnabled(enabled);
+}
+
+void VansAnimationController::SetFootPlacementDebugVisualization(bool enabled)
+{
+	m_FootPlacementSettings.debugVisualization = enabled;
+	if (m_FootPlacement)
+		m_FootPlacement->SetDebugVisualization(enabled);
+}
+
+void VansAnimationController::SetFootPlacementRuntimeState(const FootPlacementRuntimeState& state)
+{
+	m_FootPlacementState = state;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -500,19 +537,20 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 		{
 			ApplyBoneOverrides(localTransforms, skeleton);
 
+			if (m_RootBoneIndex < 0)
+				m_RootBoneIndex = DetectRootBoneIndex(skeleton);
+
 			if (m_RootMotionEnabled)
 			{
-				if (m_RootBoneIndex < 0)
-					m_RootBoneIndex = DetectRootBoneIndex(skeleton);
 				ExtractRootMotion(localTransforms, skeleton);
 			}
 			else
 			{
-				if (m_RootBoneIndex < 0)
-					m_RootBoneIndex = DetectRootBoneIndex(skeleton);
 				m_LoopJustWrapped = false;
+				NormalizeRootTransform(localTransforms, skeleton);
 			}
 
+			ApplyFootPlacement(deltaTime, skeleton, localTransforms);
 			UpdateHierarchy(localTransforms, skeleton);
 			BuildFinalMatrices(localTransforms, skeleton);
 			return;
@@ -541,19 +579,20 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 		// 骨骼覆盖 / Root Motion / 层级 / 最终矩阵 与 v1 共用
 		ApplyBoneOverrides(localTransforms, skeleton);
 
+		if (m_RootBoneIndex < 0)
+			m_RootBoneIndex = DetectRootBoneIndex(skeleton);
+
 		if (m_RootMotionEnabled)
 		{
-			if (m_RootBoneIndex < 0)
-				m_RootBoneIndex = DetectRootBoneIndex(skeleton);
 			ExtractRootMotion(localTransforms, skeleton);
 		}
 		else
 		{
-			if (m_RootBoneIndex < 0)
-				m_RootBoneIndex = DetectRootBoneIndex(skeleton);
 			m_LoopJustWrapped = false;
+			NormalizeRootTransform(localTransforms, skeleton);
 		}
 
+		ApplyFootPlacement(deltaTime, skeleton, localTransforms);
 		UpdateHierarchy(localTransforms, skeleton);
 		BuildFinalMatrices(localTransforms, skeleton);
 		return;
@@ -826,6 +865,51 @@ void VansAnimationController::ApplyBoneOverrides(std::vector<glm::mat4>& localTr
 //  内部方法: ExtractRootMotion
 // ════════════════════════════════════════════════════════════════
 
+void VansAnimationController::ApplyFootPlacement(float deltaTime,
+                                                 const Skeleton& skeleton,
+                                                 std::vector<glm::mat4>& localTransforms)
+{
+	if (!m_FootPlacement || !m_FootPlacementSettings.enabled)
+		return;
+
+	FootPlacementRuntimeState state = m_FootPlacementState;
+	auto airborneIt = m_Parameters.find("IsAirborne");
+	if (airborneIt != m_Parameters.end())
+	{
+		const AnimatorParameter& param = airborneIt->second;
+		if (param.type == AnimatorParamType::Bool)
+			state.airborne = param.boolVal;
+		else if (param.type == AnimatorParamType::Float)
+			state.airborne = param.floatVal > 0.5f;
+	}
+
+	m_FootPlacement->SetRuntimeState(state);
+	m_FootPlacement->Solve(deltaTime, skeleton, m_OwnerWorldTransform, localTransforms);
+}
+
+void VansAnimationController::NormalizeRootTransform(std::vector<glm::mat4>& localTransforms,
+                                                     const Skeleton& skeleton)
+{
+	if (m_RootBoneIndex < 0 || m_RootBoneIndex >= static_cast<int>(localTransforms.size()))
+		return;
+
+	glm::vec3 pos, scale, skew;
+	glm::quat rot;
+	glm::vec4 perspective;
+	glm::decompose(localTransforms[m_RootBoneIndex], scale, rot, pos, skew, perspective);
+
+	glm::vec3 bindPos, bindScale, bindSkew;
+	glm::quat bindRot;
+	glm::vec4 bindPerspective;
+	glm::decompose(skeleton.bones[m_RootBoneIndex].localTransform,
+	               bindScale, bindRot, bindPos, bindSkew, bindPerspective);
+
+	glm::mat4 T = glm::translate(glm::mat4(1.0f), bindPos);
+	glm::mat4 R = glm::toMat4(rot);
+	glm::mat4 S = glm::scale(glm::mat4(1.0f), scale);
+	localTransforms[m_RootBoneIndex] = T * R * S;
+}
+
 void VansAnimationController::ExtractRootMotion(std::vector<glm::mat4>& localTransforms,
                                                  const Skeleton& skeleton)
 {
@@ -897,26 +981,6 @@ void VansAnimationController::UpdateHierarchy(std::vector<glm::mat4>& localTrans
                                                const Skeleton& skeleton)
 {
 	uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
-
-	// 如果 root motion 关闭，也要把 root bone 水平位移归零
-	if (!m_RootMotionEnabled && m_RootBoneIndex >= 0 && m_RootBoneIndex < static_cast<int>(boneCount))
-	{
-		glm::vec3 pos, scale, skew;
-		glm::quat rot;
-		glm::vec4 perspective;
-		glm::decompose(localTransforms[m_RootBoneIndex], scale, rot, pos, skew, perspective);
-
-		glm::vec3 bindPos, bindScale, bindSkew;
-		glm::quat bindRot;
-		glm::vec4 bindPerspective;
-		glm::decompose(skeleton.bones[m_RootBoneIndex].localTransform,
-		               bindScale, bindRot, bindPos, bindSkew, bindPerspective);
-
-		glm::mat4 T = glm::translate(glm::mat4(1.0f), bindPos);
-		glm::mat4 R = glm::toMat4(rot);
-		glm::mat4 S = glm::scale(glm::mat4(1.0f), scale);
-		localTransforms[m_RootBoneIndex] = T * R * S;
-	}
 
 	// 按拓扑顺序遍历（父骨骼保证在子骨骼之前），解决 parentIndex > childIndex 时
 	// 单遍遍历结果错误的问题

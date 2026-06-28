@@ -50,6 +50,15 @@ VansFramePhase g_CurrentFramePhase = VansFramePhase::GameLogic;
 
 namespace
 {
+    template <typename T>
+    T* AddEditorWindowComponent(std::vector<std::unique_ptr<VansGraphics::VansBaseWindowComponent>>& windows)
+    {
+        auto window = std::make_unique<T>();
+        T* rawWindow = window.get();
+        windows.push_back(std::move(window));
+        return rawWindow;
+    }
+
     void ApplyProjectTimeSettings()
     {
         auto& projectManager = Vans::VansProjectManager::Get();
@@ -101,7 +110,7 @@ VansGraphics::VansBasicWindow VansGraphics::VansEditorWindow::m_VansEditorWindow
 std::vector<VansGraphics::VansCamera*> VansGraphics::VansEditorWindow::m_Cameras;
 
 //支持多个窗口
-std::vector<VansGraphics::VansBaseWindowComponent*> VansGraphics::VansEditorWindow::m_Windows;
+std::vector<std::unique_ptr<VansGraphics::VansBaseWindowComponent>> VansGraphics::VansEditorWindow::m_Windows;
 
 VansGraphics::VansHierachuWindow* VansGraphics::VansEditorWindow::m_HierachyWindow;
 
@@ -136,7 +145,7 @@ VansGraphics::VansTerrainWindow* VansGraphics::VansEditorWindow::m_TerrainWindow
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
 
 // Project selector overlay
-Vans::VansProjectSelector* VansGraphics::VansEditorWindow::m_ProjectSelector = nullptr;
+std::unique_ptr<Vans::VansProjectSelector> VansGraphics::VansEditorWindow::m_ProjectSelector;
 bool VansGraphics::VansEditorWindow::m_ProjectLoaded = false;
 std::string VansGraphics::VansEditorWindow::m_PendingScenePath;
 
@@ -170,6 +179,8 @@ void VansGraphics::VansEditorWindow::ReloadCurrentSceneForEditing()
 
 bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height, GRAPHICS_API api)
 {
+    VansLog::Get().RegisterSink(&VansConsole::Get());
+
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
     {
@@ -179,11 +190,18 @@ bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int heigh
     // Create window with Vulkan context
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-    m_VansEditorWindow.m_VansGraphicsHandle = glfwCreateWindow(width, height, "ForestEngine", nullptr, nullptr);
-
     if (!CheckGraphicsAPI(api))
     {
+        glfwTerminate();
+        return false;
+    }
+
+    m_VansEditorWindow.m_VansGraphicsHandle = glfwCreateWindow(width, height, "ForestEngine", nullptr, nullptr);
+    if (!m_VansEditorWindow.m_VansGraphicsHandle)
+    {
+        VANS_LOG_ERROR("[Editor] Failed to create GLFW window");
         m_VansEditorWindow.m_VansGraphicsHandle = nullptr;
+        glfwTerminate();
         return false;
     }
 
@@ -368,53 +386,40 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
 
 void VansGraphics::VansEditorWindow::CreateWindowComponents()
 {
+    m_Windows.clear();
+
     // Create the project selector overlay (shown before a project is loaded)
-    m_ProjectSelector = new Vans::VansProjectSelector();
+    m_ProjectSelector = std::make_unique<Vans::VansProjectSelector>();
 
-    m_HierachyWindow = new VansHierachuWindow();
-    m_Windows.push_back(m_HierachyWindow);
+    m_HierachyWindow = AddEditorWindowComponent<VansHierachuWindow>(m_Windows);
 
-    m_LightWindow = new VansLightWindow();
-    m_Windows.push_back(m_LightWindow);
+    m_LightWindow = AddEditorWindowComponent<VansLightWindow>(m_Windows);
 
-    m_ProjectWindow = new VansProjectWindow();
-    m_Windows.push_back(m_ProjectWindow);
+    m_ProjectWindow = AddEditorWindowComponent<VansProjectWindow>(m_Windows);
 
-    m_SceneWindow = new VansSceneWindow();
-    m_Windows.push_back(m_SceneWindow);
+    m_SceneWindow = AddEditorWindowComponent<VansSceneWindow>(m_Windows);
 
-    m_InspectorWindow = new VansInspectorWindow();
-    m_Windows.push_back(m_InspectorWindow);
+    m_InspectorWindow = AddEditorWindowComponent<VansInspectorWindow>(m_Windows);
 
-    m_GBufferWindow = new VansGBufferWindow();
-    m_Windows.push_back(m_GBufferWindow);
+    m_GBufferWindow = AddEditorWindowComponent<VansGBufferWindow>(m_Windows);
 
-    m_RenderDebugWindow = new VansRenderDebugWindow();
-    m_Windows.push_back(m_RenderDebugWindow);
+    m_RenderDebugWindow = AddEditorWindowComponent<VansRenderDebugWindow>(m_Windows);
 
-    m_ScriptorWindow = new VansScriptorWindow();
-    m_Windows.push_back(m_ScriptorWindow);
+    m_ScriptorWindow = AddEditorWindowComponent<VansScriptorWindow>(m_Windows);
 
-    m_ConsoleWindow = new VansConsoleWindow();
-    m_Windows.push_back(m_ConsoleWindow);
+    m_ConsoleWindow = AddEditorWindowComponent<VansConsoleWindow>(m_Windows);
 
-    m_ProfilerWindow = new VansProfilerWindow();
-    m_Windows.push_back(m_ProfilerWindow);
+    m_ProfilerWindow = AddEditorWindowComponent<VansProfilerWindow>(m_Windows);
 
-    m_AnimGraphEditorWindow = new VansAnimGraphEditorWindow();
-    m_Windows.push_back(m_AnimGraphEditorWindow);
+    m_AnimGraphEditorWindow = AddEditorWindowComponent<VansAnimGraphEditorWindow>(m_Windows);
 
-    m_UIEditorWindow = new VansUIEditorWindow();
-    m_Windows.push_back(m_UIEditorWindow);
+    m_UIEditorWindow = AddEditorWindowComponent<VansUIEditorWindow>(m_Windows);
 
-    m_ClothProfileEditorWindow = new VansClothProfileEditorWindow();
-    m_Windows.push_back(m_ClothProfileEditorWindow);
+    m_ClothProfileEditorWindow = AddEditorWindowComponent<VansClothProfileEditorWindow>(m_Windows);
 
-    m_WaterWindow = new VansWaterWindow();
-    m_Windows.push_back(m_WaterWindow);
+    m_WaterWindow = AddEditorWindowComponent<VansWaterWindow>(m_Windows);
 
-    m_TerrainWindow = new VansTerrainWindow();
-    m_Windows.push_back(m_TerrainWindow);
+    m_TerrainWindow = AddEditorWindowComponent<VansTerrainWindow>(m_Windows);
 
 }
 
@@ -820,7 +825,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
         }
 
         //绘制所有窗口
-        for (VansBaseWindowComponent* window : m_Windows)
+        for (const auto& window : m_Windows)
         {
             window->ShowWindow(*device);
         }
@@ -1226,6 +1231,27 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
 void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
 {
+    VansLog::Get().UnregisterSink(&VansConsole::Get());
+
+    m_ProjectSelector.reset();
+    m_Windows.clear();
+
+    m_HierachyWindow = nullptr;
+    m_LightWindow = nullptr;
+    m_ProjectWindow = nullptr;
+    m_SceneWindow = nullptr;
+    m_InspectorWindow = nullptr;
+    m_GBufferWindow = nullptr;
+    m_RenderDebugWindow = nullptr;
+    m_ScriptorWindow = nullptr;
+    m_ConsoleWindow = nullptr;
+    m_ProfilerWindow = nullptr;
+    m_AnimGraphEditorWindow = nullptr;
+    m_UIEditorWindow = nullptr;
+    m_ClothProfileEditorWindow = nullptr;
+    m_WaterWindow = nullptr;
+    m_TerrainWindow = nullptr;
+
     // Destroy GPU profiler
 #if VANS_PROFILER_ENABLED
     Vans::VansGpuProfiler::Get().Destroy();
@@ -1237,8 +1263,15 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     // Shutdown input manager
     Vans::VansInputManager::Get().Shutdown();
 
-    ImGui::DestroyContext();
+    if (ImGui::GetCurrentContext())
+    {
+        ImGui::DestroyContext();
+    }
 
-    glfwDestroyWindow(m_VansEditorWindow.m_VansGraphicsHandle);
+    if (m_VansEditorWindow.m_VansGraphicsHandle)
+    {
+        glfwDestroyWindow(m_VansEditorWindow.m_VansGraphicsHandle);
+        m_VansEditorWindow.m_VansGraphicsHandle = nullptr;
+    }
     glfwTerminate();
 }

@@ -11,8 +11,11 @@
 
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "../FidelityFXCore/VansFSR.h"
+#include <cstdint>
 namespace VansGraphics
 {
+	class INativeWindowProvider;
+
 	struct QueueInfo 
 	{
 		uint32_t FamilyIndex;
@@ -136,7 +139,9 @@ namespace VansGraphics
 
 		VansVKCommandBuffer& GetCommandBuffer() { return *m_pActiveCommandBuffer; }
 
-		VansVKCommandBuffer& GetEditorCommandBuffer() { return m_VansEditorCommandBuffer; }
+		VansVKCommandBuffer& GetImmediateGraphicsCommandBuffer() { return m_ImmediateGraphicsCommandBuffer; }
+
+		void SetNativeWindowProvider(INativeWindowProvider* provider) { m_NativeWindowProvider = provider; }
 
 		GlobalStateData& GetGlobalRenderStateData() { return m_globalRenderStateData; }
 
@@ -171,9 +176,6 @@ namespace VansGraphics
 		void DrawSceneDeferredSkybox(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 
-		// 保留兼容接口（转发给 DrawSceneDeferredSkybox + DrawSceneTransparentPost）
-		void DrawSceneDeferredPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
-
 		VkDeviceAddress GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo);
 
 		VkDeviceAddress GetBufferAddress(VkBufferDeviceAddressInfo* bufferInfo);
@@ -190,17 +192,7 @@ namespace VansGraphics
 		/// 使下次场景加载后重新绑定运行时纹理，避免引用已销毁的 VkImageView。
 		void ResetFeatureDescriptorSets()
 		{
-			m_GIDataDescSetsUpdated = false;
-			m_HZBDescSetsUpdated = false;
-			m_HIZSeedDescSetsUpdated = false;
-			m_SSRDescSetsUpdated = false;
-			m_VolumetricFogDescSetsUpdated = false;
-			m_FogLightInjectionDescSetsUpdated = false;
-			m_TileLightBuildDescSetsUpdated = false;
-			m_PPExposureDescSetsUpdated = false;
-			m_PPBloomDescSetsUpdated = false;
-			m_CloudRayMarchDescSetsUpdated = false;
-			m_ScreenSpaceShadowDescSetsUpdated = false;
+			++m_FeatureDescriptorGeneration;
 		}
 
 		void UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
@@ -231,17 +223,28 @@ namespace VansGraphics
 
 	private:
 
-		bool m_GIDataDescSetsUpdated = false;
-		bool m_HZBDescSetsUpdated = false;
-		bool m_HIZSeedDescSetsUpdated = false;
-		bool m_SSRDescSetsUpdated = false;
-		bool m_VolumetricFogDescSetsUpdated = false;
-		bool m_FogLightInjectionDescSetsUpdated = false;
-		bool m_TileLightBuildDescSetsUpdated = false;
-		bool m_PPExposureDescSetsUpdated = false;
-		bool m_PPBloomDescSetsUpdated = false;
-		bool m_CloudRayMarchDescSetsUpdated = false;   // 体积云描述符集首次写入标记
-		bool m_ScreenSpaceShadowDescSetsUpdated = false;
+		uint64_t m_FeatureDescriptorGeneration = 1;
+		uint64_t m_GIDataDescSetGeneration = 0;
+		uint64_t m_HZBDescSetGeneration = 0;
+		uint64_t m_HIZSeedDescSetGeneration = 0;
+		uint64_t m_SSRDescSetGeneration = 0;
+		uint64_t m_VolumetricFogDescSetGeneration = 0;
+		uint64_t m_FogLightInjectionDescSetGeneration = 0;
+		uint64_t m_TileLightBuildDescSetGeneration = 0;
+		uint64_t m_PPExposureDescSetGeneration = 0;
+		uint64_t m_PPBloomDescSetGeneration = 0;
+		uint64_t m_CloudRayMarchDescSetGeneration = 0;
+		uint64_t m_ScreenSpaceShadowDescSetGeneration = 0;
+
+		bool IsFeatureDescriptorCurrent(uint64_t generation) const
+		{
+			return generation == m_FeatureDescriptorGeneration;
+		}
+
+		void MarkFeatureDescriptorCurrent(uint64_t& generation)
+		{
+			generation = m_FeatureDescriptorGeneration;
+		}
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
@@ -398,7 +401,10 @@ namespace VansGraphics
 		VansVKCommandBuffer* m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
 		VansRayTracing rayTracingContext;
 		
-		VansVKCommandBuffer m_VansEditorCommandBuffer;
+		VansVKCommandBuffer m_ImmediateGraphicsCommandBuffer;
+
+		INativeWindowProvider* m_NativeWindowProvider = nullptr;
+		bool m_VulkanInitialized = false;
 		
 	private:
 		std::vector<uint32_t> m_SharingQueueFamilyIndices;
@@ -467,20 +473,24 @@ namespace VansGraphics
 
 		bool VulkanDestroy();
 	public:
-		VansVKDevice(VkExtent2D resolution)
+		VansVKDevice(VkExtent2D resolution, INativeWindowProvider* nativeWindowProvider = nullptr)
 		{
 			m_RenderWidth = resolution.width;
 			m_RenderHeight = resolution.height;
 			m_GraphicsAPI = GRAPHICS_API::VULKAN;
-			VulkanSetUp(resolution);
+			m_NativeWindowProvider = nativeWindowProvider;
+			m_VulkanInitialized = VulkanSetUp(resolution);
 			
 		}
 
 		~VansVKDevice()
 		{
 			m_GraphicsAPI = GRAPHICS_API::INVALIDE;
-			VulkanDestroy();
+			if (m_VulkanInitialized)
+				VulkanDestroy();
 		}
+
+		bool IsInitialized() const { return m_VulkanInitialized; }
 
 		// vkQueueWaitIdle wait for all command buffer in this queue
 		bool WaitForQueue(VkQueue queue);
@@ -493,36 +503,3 @@ namespace VansGraphics
 
 	};
 }
-
-////pipeline layout
-////Pipeline layouts define what types of resources can be accessed by a given pipeline
-////创建shader和资源之间的对应关系
-////descriptor + pushconstant （不同的shaderstage需要指定offset 和size，并且这个buffer的大小有限制）
-////创建一个uniform+image的例子
-//std::vector<VkDescriptorSetLayoutBinding> descriptor_set_layout_bindings =
-//{
-//	 {
-//		 0,
-//		 VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-//		 1,
-//		 VK_SHADER_STAGE_FRAGMENT_BIT,
-//		 nullptr
-//	 },
-//	 {
-//		 1,
-//		 VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-//		 1,
-//		 VK_SHADER_STAGE_VERTEX_BIT,
-//		 nullptr
-//	 }
-//};
-//VkDescriptorSetLayout descriptor_set_layout;
-//bool result = VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(descriptor_set_layout_bindings, descriptor_set_layout);
-//if (!result)
-//{
-//	std::cerr << "create descriptor set layout failed" << std::endl;
-//	return false;
-//}
-////通过指定描述符集的layout到pipelinelayout，就可以绑定对应的描述符集到对应的bind point,但是首先需要创建对应的描述符集
-////这里先每次创建，实际上只需要创建一次
-//VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ descriptor_set_layout }, descriptor_set);

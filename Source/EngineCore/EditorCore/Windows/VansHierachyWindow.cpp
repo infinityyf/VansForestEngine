@@ -60,19 +60,6 @@ void VansHierachuWindow::ShowWindow(VansVKDevice& device)
             if (ImGui::IsItemClicked())
             {
                 Vans::VansEditorSelection::SelectEntity(id);
-                if (m_Scene)
-                {
-                    m_Scene->m_SelectedObject = nullptr;
-                    m_Scene->m_SelectedNode = nullptr;
-                    for (VansScriptObject* object : m_Scene->m_SceneObjects)
-                    {
-                        if (!object || object->m_EntityGuid != id) continue;
-                        m_Scene->m_SelectedObject = object;
-                        if (auto* render = object->GetComponent<VansScriptRenderComponent>())
-                            m_Scene->m_SelectedNode = render->m_RenderNode;
-                        break;
-                    }
-                }
             }
 
             // ── 右键菜单：Delete ───────────────────────────────────────────

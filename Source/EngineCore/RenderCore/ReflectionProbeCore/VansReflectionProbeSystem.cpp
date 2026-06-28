@@ -980,7 +980,7 @@ namespace VansGraphics
 		commandBuffer.Draw(3, 1, 0, 0);
 
 		std::vector<VansRenderNode*> nodes = scene.m_OpaqueRenderNodes;
-		if (scene.m_TerrainRenderNode) nodes.push_back(scene.m_TerrainRenderNode);
+		if (scene.GetTerrainRenderNode()) nodes.push_back(scene.GetTerrainRenderNode());
 		for (VansRenderNode* node : nodes)
 		{
 			if (!node || !node->m_Mesh || !node->m_Material || (probe.cullingMask & uint32_t(node->GetNodeType())) == 0u) continue;

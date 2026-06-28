@@ -125,6 +125,7 @@ namespace VansEngine
         void CreatePhysicsActor();
         void CreateCollisionShape();
         void ApplyFilterData();
+        void UpdateShapeGeometryFromTransformScale();
         PxShape* CreateBoxShape();
         PxShape* CreateSphereShape();
         PxShape* CreateCapsuleShape();
@@ -141,6 +142,7 @@ namespace VansEngine
         PxRigidActor* m_Actor = nullptr;
         PxMaterial* m_Material = nullptr;
         PxShape* m_Shape = nullptr;
+        glm::vec3 m_AppliedShapeScale = glm::vec3(1.0f);
         
         // Cooked mesh data (owned by this node)
         PxTriangleMesh* m_TriangleMesh = nullptr;

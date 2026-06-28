@@ -15,12 +15,15 @@
 #include "EngineCore/VansThreadContract.h"
 #include "EngineCore/AudioCore/VansAudioSystem.h"
 #include "EngineCore/RuntimeUI/Public/VansUISystem.h"
+#include "EngineCore/RenderCore/VansShaderManager.h"
 
 // Project System
 #include "EngineCore/ProjectSystem/VansProjectManager.h"
 
 using namespace VansGraphics;
 using namespace VansEngine;
+
+static VansAssetsFileWatcher* g_EditorAssetFileWatcher = nullptr;
 
 #ifdef _DEBUG
 std::thread::id g_MainThreadId;
@@ -63,11 +66,22 @@ bool InitializeGraphicsSystem()
 	VANS_LOG("[ForestEngine] Initializing graphics system...");
 
 	// Create window
-	VansEditorWindow::CreateVansEditorWindow(1280 * 2, 720 * 2, VULKAN);
+	if (!VansEditorWindow::CreateVansEditorWindow(1280 * 2, 720 * 2, VULKAN))
+	{
+		VANS_LOG_ERROR("[ForestEngine] Failed to create editor window!");
+		return false;
+	}
 	VANS_LOG("[ForestEngine] Editor window created");
 
 	// Setup vulkan backend
-	m_GraphicsDevice = new VansVKDevice({ 1280, 720 });
+	auto* vkDevice = new VansVKDevice({ 1280, 720 }, &VansEditorWindow::m_VansEditorWindow);
+	if (!vkDevice->IsInitialized())
+	{
+		VANS_LOG_ERROR("[ForestEngine] Failed to initialize Vulkan device!");
+		delete vkDevice;
+		return false;
+	}
+	m_GraphicsDevice = vkDevice;
 	m_GUIBackEnd = new VansGraphicsGUIBackEnd();
 	VANS_LOG("[ForestEngine] Vulkan backend initialized");
 
@@ -76,8 +90,9 @@ bool InitializeGraphicsSystem()
 	VANS_LOG("[ForestEngine] Scene system initialized");
 
 	// Setup file watcher
-	m_SceneFileWatcher = new VansAssetsFileWatcher();
-	m_SceneFileWatcher->Start([](const std::string& folder, const std::string& filename)
+	g_EditorAssetFileWatcher = new VansAssetsFileWatcher();
+	m_Scene->SetShaderHotReloadService(g_EditorAssetFileWatcher);
+	g_EditorAssetFileWatcher->Start([](const std::string& folder, const std::string& filename)
 	{
 		VANS_LOG("[FileWatcher] File changed: " << folder + "\\" + filename);
 	});
@@ -87,7 +102,6 @@ bool InitializeGraphicsSystem()
 	// BeforeRendering() triggers PrepareRenderingData() which relies on
 	// compute shaders (PreConDiffuseEnvironment, etc.) already being loaded.
 	RegisterEngineShaders();
-	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	m_Scene->LoadShadersFromRegistry(
 	    VansConfigration::GetInstance()->GetProjectRootPath(),
 	    vkDevice->GetLogicDevice());
@@ -146,7 +160,10 @@ void ShutdownEngine()
 	// 5. RuntimeUI shutdown，Noesis RenderDevice 仍需要 Vulkan
 	// 6. physics Stop/Shutdown，释放 PhysX
 	// 7. AudioSystem shutdown，释放 OpenAL
-	// 8. graphicsDevice 最后销毁
+	// 8. GUI backend shutdown，释放 ImGui Vulkan/GLFW backend 与 descriptor pool
+	// 9. Editor window/panels shutdown，释放 ImGui context、GLFW 与编辑器工具对象
+	// 10. ShaderManager shutdown，释放 shader module / pipeline（Vulkan device 仍存活）
+	// 11. graphicsDevice 最后销毁
 	// 重构-02 已按上述顺序执行，后续阶段只补完整项目资源释放实现。
 	// ============================================================
 
@@ -182,12 +199,24 @@ void ShutdownEngine()
 	VANS_LOG("[ForestEngine] Audio system shutdown complete");
 
 	// Cleanup components
-	if (m_SceneFileWatcher)
+	if (g_EditorAssetFileWatcher)
 	{
-		delete m_SceneFileWatcher;
-		m_SceneFileWatcher = nullptr;
+		delete g_EditorAssetFileWatcher;
+		g_EditorAssetFileWatcher = nullptr;
 		VANS_LOG("[ForestEngine] File watcher stopped");
 	}
+
+	if (m_GUIBackEnd)
+	{
+		m_GUIBackEnd->ShutdownBackEnd();
+		VANS_LOG("[ForestEngine] GUI backend shutdown complete");
+	}
+
+	VansEditorWindow::DestroyVansEditorWindow();
+	VANS_LOG("[ForestEngine] Editor window released");
+
+	VansGraphics::VansShaderManager::Get().Clear();
+	VANS_LOG("[ForestEngine] Shader manager released");
 
 	if (m_GraphicsDevice)
 	{
@@ -210,36 +239,70 @@ void ShutdownEngine()
 	VANS_LOG("[ForestEngine] Engine shutdown complete!");
 }
 
+class EngineRuntime
+{
+public:
+	~EngineRuntime()
+	{
+		Shutdown();
+	}
+
+	bool Initialize()
+	{
+		if (!InitializeEngineCore())
+		{
+			VANS_LOG_ERROR("[ForestEngine] Failed to initialize core systems!");
+			return false;
+		}
+
+		if (!InitializeGraphicsSystem())
+		{
+			VANS_LOG_ERROR("[ForestEngine] Failed to initialize graphics systems!");
+			return false;
+		}
+
+		m_Initialized = true;
+		return true;
+	}
+
+	void Run()
+	{
+		if (!m_Initialized)
+			return;
+
+		// Create camera for the scene (parameters will be applied from Scene.json in LoadSceneContent)
+		VansCamera camera(m_GraphicsDevice);
+		RunMainLoop(camera);
+	}
+
+	void Shutdown()
+	{
+		if (m_Shutdown)
+			return;
+
+		ShutdownEngine();
+		m_Shutdown = true;
+	}
+
+private:
+	bool m_Initialized = false;
+	bool m_Shutdown = false;
+};
+
 int main()
 {
 	VANS_INIT_MAIN_THREAD();
 
 	VANS_LOG("=== ForestEngine Starting ===");
 
-	// Initialize core engine systems
-	if (!InitializeEngineCore())
+	EngineRuntime runtime;
+	if (!runtime.Initialize())
 	{
-		VANS_LOG_ERROR("[ForestEngine] Failed to initialize core systems!");
-		ShutdownEngine();
 		return -1;
 	}
 
-	// Initialize graphics systems
-	if (!InitializeGraphicsSystem())
-	{
-		VANS_LOG_ERROR("[ForestEngine] Failed to initialize graphics systems!");
-		ShutdownEngine();
-		return -1;
-	}
-
-	// Create camera for the scene (parameters will be applied from Scene.json in LoadSceneContent)
-	VansCamera camera(m_GraphicsDevice);
-
-	// Run the main engine loop
-	RunMainLoop(camera);
-
-	// Shutdown all systems
-	ShutdownEngine();
+	runtime.Run();
+	runtime.Shutdown();
 
 	VANS_LOG("=== ForestEngine Exited ===");
 	return 0;

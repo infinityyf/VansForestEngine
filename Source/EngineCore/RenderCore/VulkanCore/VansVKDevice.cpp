@@ -1,4 +1,4 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKDevice.h"
 #include "VansVKMemoryManager.h"
 #include "VansVKMemoryAllocator.h"
@@ -8,7 +8,7 @@
 #include "VansShader.h"
 #include "../VansScene.h"
 #include "../../Configration/VansConfigration.h"
-#include "../../EditorCore/VansEditorWindow.h"
+#include "../../Interfaces/INativeWindowProvider.h"
 #include "../../VansTimer.h"
 #include "../../Util/VansLog.h"
 #include <iostream>
@@ -656,13 +656,13 @@ namespace VansGraphics
 		}
 		CreateVKFence(false, m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
 
-		result = m_VansEditorCommandBuffer.CreateVulkanCommandBuffer(*this, m_GraphicsQueueFamilyIndex, params);
+		result = m_ImmediateGraphicsCommandBuffer.CreateVulkanCommandBuffer(*this, m_GraphicsQueueFamilyIndex, params);
 		if (!result)
 		{
-			VANS_LOG_ERROR("create m_VansEditorCommandBuffer failed");
+			VANS_LOG_ERROR("create m_ImmediateGraphicsCommandBuffer failed");
 			return false;
 		}
-		CreateVKFence(false, m_VansEditorCommandBuffer.m_CommandBufferFinishSubmitFence);
+		CreateVKFence(false, m_ImmediateGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
 
 
 		VansVKMemoryManager::GetInstance()->BindDevice(m_VansVKCommandBuffer.GetVKCommandBuffer(), *this);
@@ -690,12 +690,12 @@ namespace VansGraphics
 		DestroyVKFence(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansEditorCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_ImmediateGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKShadowCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKGBufferCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansEditorCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_ImmediateGraphicsCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 
 		// Tear down VMA before destroying the logical device. All buffer/image
 		// owners must have released their allocations by this point.
@@ -774,7 +774,15 @@ namespace VansGraphics
 		SetupDebugMessenger();
 #endif
 
-		if (!m_VansVKSurface.CreateVulkanPresentSurface(m_VansVKInstance, VansGraphics::VansEditorWindow::m_VansEditorWindow.m_VansGraphicsHandle))
+		if (!m_NativeWindowProvider)
+		{
+			VANS_LOG_ERROR("Vulkan surface creation failed: native window provider is null");
+			return false;
+		}
+
+		if (!m_VansVKSurface.CreateVulkanPresentSurface(
+			m_VansVKInstance,
+			static_cast<GLFWwindow*>(m_NativeWindowProvider->GetNativeWindowHandle())))
 		{
 			return false;
 		}
@@ -896,3 +904,4 @@ namespace VansGraphics
 		return true;
 	}
 }
+
