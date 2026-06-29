@@ -1,0 +1,93 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2DArray srcFields;
+layout(set = 0, binding = 1, rgba32f) uniform writeonly image2DArray dstFields;
+
+layout(push_constant) uniform FFTIterPC
+{
+    int stage;
+    int direction;
+    int inverse;
+    int resolution;
+    int normalize;
+    int fieldCount;
+    int lodCount;
+    int pad0;
+} pc;
+
+const float PI = 3.14159265358979323846;
+
+uint ReverseBits8(uint v)
+{
+    v = ((v & 0x55u) << 1) | ((v >> 1) & 0x55u);
+    v = ((v & 0x33u) << 2) | ((v >> 2) & 0x33u);
+    v = ((v & 0x0Fu) << 4) | ((v >> 4) & 0x0Fu);
+    return v;
+}
+
+vec2 ComplexMul(vec2 a, vec2 b)
+{
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+vec2 LoadComplex(ivec2 pixel, int layer)
+{
+    return imageLoad(srcFields, ivec3(pixel, layer)).xy;
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    int layer = int(gl_GlobalInvocationID.z);
+    int N = pc.resolution;
+    int maxLayer = pc.lodCount * pc.fieldCount;
+
+    if (pixel.x >= N || pixel.y >= N || layer >= maxLayer)
+        return;
+
+    int index = pc.direction == 0 ? pixel.x : pixel.y;
+    int butterflySize = 1 << (pc.stage + 1);
+    int halfSize = butterflySize >> 1;
+    int groupStart = (index / butterflySize) * butterflySize;
+    int pair = index - groupStart;
+    bool upper = pair < halfSize;
+    int pairIndex = upper ? pair : pair - halfSize;
+
+    int readEven = groupStart + pairIndex;
+    int readOdd = readEven + halfSize;
+
+    if (pc.stage == 0)
+    {
+        readEven = int(ReverseBits8(uint(readEven)));
+        readOdd = int(ReverseBits8(uint(readOdd)));
+    }
+
+    ivec2 coordEven = pixel;
+    ivec2 coordOdd = pixel;
+    if (pc.direction == 0)
+    {
+        coordEven.x = readEven;
+        coordOdd.x = readOdd;
+    }
+    else
+    {
+        coordEven.y = readEven;
+        coordOdd.y = readOdd;
+    }
+
+    vec2 evenValue = LoadComplex(coordEven, layer);
+    vec2 oddValue = LoadComplex(coordOdd, layer);
+
+    float sign = pc.inverse != 0 ? 1.0 : -1.0;
+    float angle = sign * 2.0 * PI * float(pairIndex) / float(butterflySize);
+    vec2 twiddle = vec2(cos(angle), sin(angle));
+    vec2 t = ComplexMul(twiddle, oddValue);
+    vec2 result = upper ? (evenValue + t) : (evenValue - t);
+
+    if (pc.normalize != 0)
+        result /= float(N * N);
+
+    imageStore(dstFields, ivec3(pixel, layer), vec4(result, 0.0, 0.0));
+}

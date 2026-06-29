@@ -197,16 +197,15 @@ void main()
     else if (matID == MATERIAL_ID_SUBSURFACE)
     {
         // --- Subsurface Scattering BRDF path ---
-        // Thickness was stored in normalInput.w by Subsurface.frag
-        float thickness = normalData.w;
-        // SubsurfacePower was packed into GBuffer1.x as (power / 50.0)
-        float subsurfacePowerPacked = metallic;  // reuses the metallic slot
-        float subsurfacePower = subsurfacePowerPacked * 50.0;
+        int mi = int(round(gbufferData1.w));
+        MaterialPayload mat = materialDataBuffer.materials[mi];
 
         SubsurfaceParams sss;
-        sss.thickness      = thickness;
-        sss.subsurfacePower = subsurfacePower;
-        sss.subsurfaceColor = vec3(1.0, 0.2, 0.1); // warm reddish scatter tint (default)
+        sss.thickness      = clamp(normalData.w, 0.0, 1.0);
+        sss.subsurfaceColor = max(mat.albedo.rgb, vec3(0.0));
+        sss.subsurfacePower = clamp(mat.roughness, 1.0, 64.0);
+        sss.subsurfaceAmount = clamp(gbufferData1.x, 0.0, 1.0);
+        sss.backlightShadowRelax = 0.25;
 
         CalculateDirectLight_Subsurface(brdfData, sss, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Subsurface(brdfData, sss, viewDirection,

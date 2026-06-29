@@ -32,6 +32,7 @@ layout(set = 1, binding = 0) uniform WaterGBufferParams
 } waterParams;
 
 layout(set = 1, binding = 1) uniform sampler2DArray waterDisplacementMap;
+layout(set = 1, binding = 4) uniform sampler2DArray waterDerivativeMap;
 
 layout(set = 1, binding = 2, std430) readonly buffer WaveSSBO
 {
@@ -73,7 +74,22 @@ vec4 SampleDisplacement(vec2 worldXZ, float lodScale, int lodIdx)
     return textureLod(waterDisplacementMap, vec3(uv, float(lodIdx)), 0.0);
 }
 
-vec3 SampleWaterNormal(vec2 worldXZ, float lodScale, int lodIdx)
+int GetWaveMode()
+{
+    return int(waterParams.pad3[2].x + 0.5);
+}
+
+bool UseDerivativeNormal()
+{
+    return waterParams.pad3[2].y > 0.5;
+}
+
+int GetFFTLODCount()
+{
+    return int(waterParams.pad3[2].z + 0.5);
+}
+
+vec3 SampleWaterNormalFromHeight(vec2 worldXZ, float lodScale, int lodIdx)
 {
     vec2 texel = 1.0 / vec2(textureSize(waterDisplacementMap, 0).xy);
     float worldStep = max(lodScale, 1.0) * texel.x;
@@ -86,6 +102,25 @@ vec3 SampleWaterNormal(vec2 worldXZ, float lodScale, int lodIdx)
     return normalize(vec3(-gradient.x * waterParams.waveTimeAndScale.w,
                            1.0,
                           -gradient.y * waterParams.waveTimeAndScale.w));
+}
+
+vec3 SampleWaterNormalFromDerivative(vec2 worldXZ, float lodScale, int lodIdx)
+{
+    vec2 uv = WorldToClipmapUV(worldXZ, lodScale);
+    vec4 d = textureLod(waterDerivativeMap, vec3(uv, float(lodIdx)), 0.0);
+    return normalize(vec3(-d.x * waterParams.waveTimeAndScale.w,
+                           1.0,
+                          -d.y * waterParams.waveTimeAndScale.w));
+}
+
+vec3 SampleWaterNormal(vec2 worldXZ, float lodScale, int lodIdx)
+{
+    int mode = GetWaveMode();
+    if (mode == 1 && UseDerivativeNormal())
+        return SampleWaterNormalFromDerivative(worldXZ, lodScale, lodIdx);
+    if (mode == 2 && UseDerivativeNormal() && lodIdx < GetFFTLODCount())
+        return SampleWaterNormalFromDerivative(worldXZ, lodScale, lodIdx);
+    return SampleWaterNormalFromHeight(worldXZ, lodScale, lodIdx);
 }
 
 layout(location = 0) out vec3 outWorldPos;

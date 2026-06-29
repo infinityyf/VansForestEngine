@@ -183,6 +183,14 @@ namespace VansGraphics
 		return true;
 	}
 
+	void VansFootPlacementSolver::ResetTransientState()
+	{
+		m_LeftState = FootPlacementFootState();
+		m_RightState = FootPlacementFootState();
+		m_CurrentWeight = 0.0f;
+		m_PelvisOffsetModel = 0.0f;
+	}
+
 	void VansFootPlacementSolver::Solve(float deltaTime,
 	                                    const Skeleton& skeleton,
 	                                    const glm::mat4& ownerWorldTransform,
@@ -191,8 +199,14 @@ namespace VansGraphics
 		if (!m_Configured || localTransforms.size() != skeleton.bones.size())
 			return;
 
-		const bool active = m_Settings.enabled && !m_RuntimeState.forceDisabled && !m_RuntimeState.airborne;
-		const float wantedWeight = active ? glm::clamp(m_Settings.ikWeight * m_RuntimeState.externalWeight, 0.0f, 1.0f) : 0.0f;
+		const bool active = m_Settings.enabled &&
+		                    !m_RuntimeState.forceDisabled &&
+		                    !m_RuntimeState.airborne &&
+		                    !m_RuntimeState.stanceChanging;
+		float runtimeWeight = m_RuntimeState.externalWeight;
+		if (m_RuntimeState.crouching)
+			runtimeWeight *= glm::clamp(m_Settings.crouchWeightScale, 0.0f, 1.0f);
+		const float wantedWeight = active ? glm::clamp(m_Settings.ikWeight * runtimeWeight, 0.0f, 1.0f) : 0.0f;
 		m_CurrentWeight = glm::mix(m_CurrentWeight, wantedWeight, ExpAlpha(m_Settings.ikWeightSpeed, deltaTime));
 
 		if (m_CurrentWeight <= 0.001f && !active)

@@ -38,6 +38,17 @@ namespace VansGraphics
 		int   m_GerstnerWaveCount   = 64;
 		int   m_FftLODCount         = 4;
 		int   m_FftResolution       = 256;
+		bool  m_FFTUseDerivativeNormal = true;
+		float m_FFTSpectrumAmplitude = 1.0f;
+		float m_FFTChoppiness       = 1.0f;
+		float m_FFTSmallWaveDamping = 0.001f;
+		float m_FFTWindDependency   = 0.07f;
+		float m_FFTDepth            = 10000.0f;
+		float m_FFTRepeatPeriod     = 0.0f;
+		float m_FFTFoamSlopeScale   = 0.25f;
+		float m_FFTFoamFoldScale    = 1.0f;
+		float m_FFTFoamFoldThreshold = 0.0f;
+		uint32_t m_FFTRandomSeed    = 1337;
 		float m_WindSpeed           = 12.0f;
 		float m_SwellAmplitude      = 0.2f;
 		float m_ChopScale           = 1.5f;

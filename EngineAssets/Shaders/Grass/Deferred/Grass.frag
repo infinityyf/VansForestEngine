@@ -1,6 +1,5 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-layout(early_fragment_tests) in;
 
 #include "../../Common/CameraData.glsl"
 #include "../../Common/Common.glsl"

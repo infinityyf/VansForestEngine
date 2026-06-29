@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <cstdint>
 #include <glm/glm.hpp>
 
 // ============================================================
@@ -72,6 +73,26 @@ namespace VansGraphics
 	};
 
 	// ============================================================
+	// Tessendorf FFT ocean 参数
+	// ============================================================
+	struct VansWaterFFTConfig
+	{
+		bool     m_UseDerivativeNormal = true;
+		int      m_Resolution          = 256;
+		int      m_LODCount            = 4;
+		float    m_SpectrumAmplitude   = 1.0f;
+		float    m_Choppiness          = 1.0f;
+		float    m_SmallWaveDamping    = 0.001f;
+		float    m_WindDependency      = 0.07f;
+		float    m_Depth               = 10000.0f;
+		float    m_RepeatPeriod        = 0.0f;
+		float    m_FoamSlopeScale      = 0.25f;
+		float    m_FoamFoldScale       = 1.0f;
+		float    m_FoamFoldThreshold   = 0.0f;
+		uint32_t m_RandomSeed          = 1337;
+	};
+
+	// ============================================================
 	// 波形仿真参数
 	// ============================================================
 	struct VansWaterWaveConfig
@@ -96,6 +117,8 @@ namespace VansGraphics
 		int          m_FftLODCount      = 4;
 		// FFT 分辨率（128 或 256）
 		int          m_FftResolution    = 256;
+		// Tessendorf FFT 详细参数
+		VansWaterFFTConfig m_FFT;
 		// N-01: 细节法线参数
 		VansWaterDetailNormalConfig m_DetailNormal;
 	};

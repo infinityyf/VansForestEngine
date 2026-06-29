@@ -831,6 +831,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterGBuffer(
 		// binding 3: Water normal map（W-08）
 		{WATER_GBUF_BINDING_NORMAL_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 4: FFT derivative Texture2DArray（slopeX/slopeZ/foam）
+		{WATER_GBUF_BINDING_DERIVATIVE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }

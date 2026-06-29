@@ -117,10 +117,15 @@ void AccumulateGerstner(vec2 worldXZ, GerstnerWave w, inout vec3 disp, inout vec
 void main()
 {
     ivec2 pixel   = ivec2(gl_GlobalInvocationID.xy);
-    int   lodIdx  = int(gl_WorkGroupID.z);  // W-01: 每个 workgroup Z = LOD index
+    int outputBaseLod = int(params.waveParamsPad[3].x + 0.5);
+    int outputLodCount = int(params.waveParamsPad[3].y + 0.5);
+    bool disableSpectrumApprox = params.waveParamsPad[3].z > 0.5;
+    int   lodIdx  = outputBaseLod + int(gl_WorkGroupID.z);  // W-01: 每个 workgroup Z = LOD offset
 
     ivec3 imgSize = imageSize(outDisplacement);  // ivec3 for image2DArray
     if (pixel.x >= imgSize.x || pixel.y >= imgSize.y)
+        return;
+    if (outputLodCount > 0 && int(gl_WorkGroupID.z) >= outputLodCount)
         return;
     if (lodIdx >= params.lodLevels)
         return;
@@ -156,8 +161,9 @@ void main()
         AccumulateGerstner(worldXZ, w, disp, slope, foam);
     }
 
-    // 频谱近似补充（仅在 Gerstner 模式使用，FFT 模式下跳过）
-    AccumulateSpectrum(worldXZ, disp, slope, foam);
+    // 频谱近似补充（Hybrid 远场可禁用，避免与 FFT 近场频谱不一致）
+    if (!disableSpectrumApprox)
+        AccumulateSpectrum(worldXZ, disp, slope, foam);
 
     float maxAmp = max(params.maxWaveAmp, 0.1);
     disp.y = clamp(disp.y, -maxAmp, maxAmp);

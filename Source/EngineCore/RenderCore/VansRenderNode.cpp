@@ -154,6 +154,9 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 		case VansMaterialType::VAN_DECAL:
 			pc.materialIndex = static_cast<VansDecalMaterial*>(m_Material)->m_MaterialIndex;
 			break;
+		case VansMaterialType::VAN_SUBSURFACE:
+			pc.materialIndex = static_cast<VansSubsurfaceMaterial*>(m_Material)->m_MaterialIndex;
+			break;
 		default:
 			pc.materialIndex = -1;
 			break;
@@ -315,22 +318,6 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		}
 	}
 
-	// Set 4: Per-Material Subsurface Texture (albedo + normal + thickness)
-	// Owned by VansSubsurfaceMaterial; built once and shared by all nodes using this material.
-	if (m_Material && m_Material->m_MaterialType == VansMaterialType::VAN_SUBSURFACE)
-	{
-		VansSubsurfaceMaterial* sss = static_cast<VansSubsurfaceMaterial*>(m_Material);
-		if (sss->m_SubsurfaceOwnedLayout == VK_NULL_HANDLE)
-		{
-			sss->BuildSubsurfaceTextureDescriptors();
-		}
-		m_UsedDescSetLayouts.push_back(sss->m_SubsurfaceOwnedLayout);
-		if (!sss->m_SubsurfaceOwnedDescSets.empty())
-		{
-			m_UsedDescSets.push_back(sss->m_SubsurfaceOwnedDescSets[0]);
-		}
-	}
-
 	// ── Shadow descriptor sets (Global + EmptyPass + Object + Animation) ──
 	// 动画节点使用独立的每节点骨骼描述符集；静态节点使用场景共享的 dummy set。
 	VkDescriptorSet shadowAnimSet = (m_HasSkeletonBone && m_AnimOwner && m_AnimBoneIDBuffer && m_AnimBoneWeightBuffer)
@@ -369,6 +356,20 @@ void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, Va
 		int idx = emissive->m_MaterialIndex;
 		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
 			&emissive->m_BasePBRParam,
+			sizeof(VansBasePBRParam) * idx,
+			sizeof(VansBasePBRParam));
+	}
+	else if (mat->m_MaterialType == VansMaterialType::VAN_SUBSURFACE)
+	{
+		VansSubsurfaceMaterial* sss = static_cast<VansSubsurfaceMaterial*>(mat);
+		int idx = sss->m_MaterialIndex;
+		sss->m_BasePBRParam.m_albedo = sss->m_SubsurfaceColor;
+		sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
+		sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
+		sss->m_BasePBRParam.m_ao = sss->m_SubsurfaceAmount;
+		sss->m_BasePBRParam.padding = sss->m_CurvatureInfluence;
+		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
+			&sss->m_BasePBRParam,
 			sizeof(VansBasePBRParam) * idx,
 			sizeof(VansBasePBRParam));
 	}

@@ -599,6 +599,11 @@ namespace VansGraphics
 		float        m_SubsurfacePower   = 12.234f;  // forward-scatter sharpness
 		float        m_Thickness         = 0.5f;      // default constant thickness
 		glm::vec3    m_SubsurfaceColor   = glm::vec3(1.0f, 0.2f, 0.1f); // scatter tint
+		float        m_SubsurfaceAmount  = 1.0f;
+		float        m_CurvatureInfluence = 0.35f;
+
+		VansBasePBRParam m_BasePBRParam;
+		int              m_MaterialIndex = -1;
 
 		VkDescriptorSetLayout          m_SubsurfaceOwnedLayout  = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet>   m_SubsurfaceOwnedDescSets;

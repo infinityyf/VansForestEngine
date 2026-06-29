@@ -883,6 +883,43 @@ void VansAnimationController::ApplyFootPlacement(float deltaTime,
 			state.airborne = param.floatVal > 0.5f;
 	}
 
+	auto crouchIt = m_Parameters.find("IsCrouching");
+	if (crouchIt != m_Parameters.end())
+	{
+		const AnimatorParameter& param = crouchIt->second;
+		if (param.type == AnimatorParamType::Bool)
+			state.crouching = param.boolVal;
+		else if (param.type == AnimatorParamType::Float)
+			state.crouching = param.floatVal > 0.5f;
+		else if (param.type == AnimatorParamType::Int)
+			state.crouching = param.intVal != 0;
+	}
+	auto moveStateIt = m_Parameters.find("MoveState");
+	if (moveStateIt != m_Parameters.end() &&
+	    moveStateIt->second.type == AnimatorParamType::Int &&
+	    moveStateIt->second.intVal == 4)
+	{
+		state.crouching = true;
+	}
+
+	if (!m_HasFootPlacementStanceState)
+	{
+		m_HasFootPlacementStanceState = true;
+		m_LastFootPlacementCrouching = state.crouching;
+	}
+	else if (m_LastFootPlacementCrouching != state.crouching)
+	{
+		m_LastFootPlacementCrouching = state.crouching;
+		m_FootPlacementStanceSuppressTimer = std::max(m_FootPlacementStanceSuppressTimer,
+		                                              m_FootPlacementSettings.stanceChangeSuppressionTime);
+		m_FootPlacement->ResetTransientState();
+	}
+	if (m_FootPlacementStanceSuppressTimer > 0.0f)
+	{
+		m_FootPlacementStanceSuppressTimer = std::max(0.0f, m_FootPlacementStanceSuppressTimer - std::max(deltaTime, 0.0f));
+		state.stanceChanging = true;
+	}
+
 	m_FootPlacement->SetRuntimeState(state);
 	m_FootPlacement->Solve(deltaTime, skeleton, m_OwnerWorldTransform, localTransforms);
 }

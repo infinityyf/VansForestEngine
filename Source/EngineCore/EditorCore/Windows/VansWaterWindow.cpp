@@ -4,6 +4,7 @@
 #include "../../RenderCore/WaterCore/VansWaterMaterial.h"
 #include "../../RenderCore/WaterCore/VansWaterSystem.h"
 #include "../../RenderCore/WaterCore/VansWaterLOD.h"
+#include "../../RenderCore/WaterCore/VansWaterFFT.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -166,8 +167,12 @@ ImGui::DragFloat("Anisotropy", &cfg.m_Medium.m_Anisotropy, 0.01f, 0.0f, 1.0f, "%
             {
                 const char* modeNames[] = { "Gerstner", "FFT", "Hybrid" };
                 int modeIdx = static_cast<int>(cfg.m_Waves.m_Mode);
-                if (ImGui::Combo("Wave Mode", &modeIdx, modeNames, 3)) { cfg.m_Waves.m_Mode = static_cast<VansWaveMode>(modeIdx); }
-				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Gerstner: ready. FFT/Hybrid: not implemented yet");
+                if (ImGui::Combo("Wave Mode", &modeIdx, modeNames, 3))
+                {
+                    cfg.m_Waves.m_Mode = static_cast<VansWaveMode>(modeIdx);
+                    if (mat) mat->m_Config.m_Waves.m_Mode = cfg.m_Waves.m_Mode;
+                    if (waterSys && waterSys->GetFFT()) waterSys->GetFFT()->MarkReinit();
+                }
 ImGui::DragFloat("Clipmap Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 4096.0f, "%.1f"); if (mat) mat->m_OceanBaseScale = cfg.m_Waves.m_BaseScale;
                 int maxLod = cfg.m_Waves.m_MaxLOD;
                 if (ImGui::SliderInt("Wave Clipmap LOD", &maxLod, 1, 10)) { cfg.m_Waves.m_MaxLOD = maxLod; }
@@ -178,6 +183,54 @@ ImGui::DragFloat("Clipmap Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 409
 	                if (ImGui::DragFloat("Chop Scale", &cfg.m_Waves.m_ChopScale, 0.01f, 0.0f, 2.0f, "%.3f")) { if (mat) mat->m_ChopScale = cfg.m_Waves.m_ChopScale; }
                 int gc = cfg.m_Waves.m_GerstnerWaveCount;
                 if (ImGui::SliderInt("Gerstner Waves", &gc, 1, 64)) { cfg.m_Waves.m_GerstnerWaveCount = gc; if (mat) mat->m_GerstnerWaveCount = gc; if (waterSys) waterSys->UpdateWaveSSBO(); }
+
+                if (cfg.m_Waves.m_Mode == VansWaveMode::FFT || cfg.m_Waves.m_Mode == VansWaveMode::Hybrid)
+                {
+                    ImGui::SeparatorText("FFT Ocean");
+                    bool fftDirty = false;
+                    fftDirty |= ImGui::Checkbox("Derivative Normal", &cfg.m_Waves.m_FFT.m_UseDerivativeNormal);
+                    int fftRes = cfg.m_Waves.m_FFT.m_Resolution;
+                    if (ImGui::SliderInt("FFT Resolution", &fftRes, 256, 256))
+                    {
+                        cfg.m_Waves.m_FFT.m_Resolution = fftRes;
+                        cfg.m_Waves.m_FftResolution = fftRes;
+                        if (mat) mat->m_FftResolution = fftRes;
+                        fftDirty = true;
+                    }
+                    int fftLod = cfg.m_Waves.m_FFT.m_LODCount;
+                    if (ImGui::SliderInt("FFT LOD Count", &fftLod, 1, cfg.m_Waves.m_MaxLOD))
+                    {
+                        cfg.m_Waves.m_FFT.m_LODCount = fftLod;
+                        cfg.m_Waves.m_FftLODCount = fftLod;
+                        if (mat) mat->m_FftLODCount = fftLod;
+                        fftDirty = true;
+                    }
+                    fftDirty |= ImGui::DragFloat("Spectrum Amplitude", &cfg.m_Waves.m_FFT.m_SpectrumAmplitude, 0.01f, 0.0f, 20.0f, "%.3f");
+                    fftDirty |= ImGui::DragFloat("FFT Choppiness", &cfg.m_Waves.m_FFT.m_Choppiness, 0.01f, 0.0f, 3.0f, "%.3f");
+                    fftDirty |= ImGui::DragFloat("Small Wave Damping", &cfg.m_Waves.m_FFT.m_SmallWaveDamping, 0.0001f, 0.0f, 0.1f, "%.5f");
+                    fftDirty |= ImGui::DragFloat("Wind Dependency", &cfg.m_Waves.m_FFT.m_WindDependency, 0.01f, 0.0f, 1.0f, "%.3f");
+                    fftDirty |= ImGui::DragFloat("Water Depth", &cfg.m_Waves.m_FFT.m_Depth, 1.0f, 0.1f, 10000.0f, "%.1f");
+                    fftDirty |= ImGui::DragFloat("Repeat Period", &cfg.m_Waves.m_FFT.m_RepeatPeriod, 1.0f, 0.0f, 600.0f, "%.1f");
+                    fftDirty |= ImGui::DragFloat("Foam Slope", &cfg.m_Waves.m_FFT.m_FoamSlopeScale, 0.01f, 0.0f, 5.0f, "%.3f");
+                    fftDirty |= ImGui::DragFloat("Foam Fold", &cfg.m_Waves.m_FFT.m_FoamFoldScale, 0.01f, 0.0f, 5.0f, "%.3f");
+                    if (mat)
+                    {
+                        mat->m_Config.m_Waves.m_FFT = cfg.m_Waves.m_FFT;
+                        mat->m_Config.m_Waves.m_FftLODCount = cfg.m_Waves.m_FftLODCount;
+                        mat->m_Config.m_Waves.m_FftResolution = cfg.m_Waves.m_FftResolution;
+                        mat->m_FFTUseDerivativeNormal = cfg.m_Waves.m_FFT.m_UseDerivativeNormal;
+                        mat->m_FFTSpectrumAmplitude = cfg.m_Waves.m_FFT.m_SpectrumAmplitude;
+                        mat->m_FFTChoppiness = cfg.m_Waves.m_FFT.m_Choppiness;
+                        mat->m_FFTSmallWaveDamping = cfg.m_Waves.m_FFT.m_SmallWaveDamping;
+                        mat->m_FFTWindDependency = cfg.m_Waves.m_FFT.m_WindDependency;
+                        mat->m_FFTDepth = cfg.m_Waves.m_FFT.m_Depth;
+                        mat->m_FFTRepeatPeriod = cfg.m_Waves.m_FFT.m_RepeatPeriod;
+                        mat->m_FFTFoamSlopeScale = cfg.m_Waves.m_FFT.m_FoamSlopeScale;
+                        mat->m_FFTFoamFoldScale = cfg.m_Waves.m_FFT.m_FoamFoldScale;
+                    }
+                    if (fftDirty && waterSys && waterSys->GetFFT())
+                        waterSys->GetFFT()->MarkReinit();
+                }
             }
 
             if (ImGui::CollapsingHeader("Geometry LOD"))

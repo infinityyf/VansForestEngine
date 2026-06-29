@@ -1,0 +1,90 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform FFTParams
+{
+    vec4 windDirection_Time;
+    vec4 scaleParams;
+    vec4 dampingParams;
+    vec4 outputParams;
+    vec4 foldParams;
+} params;
+
+layout(set = 0, binding = 1, rgba32f) uniform writeonly image2DArray h0Spectrum;
+
+const float PI = 3.14159265358979323846;
+const float G = 9.81;
+
+float Hash11(float x)
+{
+    return fract(sin(x * 127.1 + 311.7) * 43758.5453123);
+}
+
+float Hash21(vec2 p)
+{
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+vec2 Gaussian(vec2 seed)
+{
+    float u1 = max(Hash21(seed), 1e-6);
+    float u2 = Hash21(seed + vec2(19.19, 73.17));
+    float r = sqrt(-2.0 * log(u1));
+    float theta = 2.0 * PI * u2;
+    return vec2(r * cos(theta), r * sin(theta));
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    int lod = int(gl_WorkGroupID.z);
+    ivec3 size = imageSize(h0Spectrum);
+    int N = int(params.foldParams.z + 0.5);
+    int lodCount = int(params.foldParams.w + 0.5);
+
+    if (pixel.x >= size.x || pixel.y >= size.y || pixel.x >= N || pixel.y >= N || lod >= lodCount)
+        return;
+
+    float baseScale = params.scaleParams.x;
+    float detailBalance = max(params.scaleParams.y, 1.0);
+    float amplitude = params.scaleParams.z;
+    float smallWaveDamping = max(params.dampingParams.x, 0.0);
+    float windDependency = clamp(params.dampingParams.y, 0.0, 1.0);
+    vec2 windDir = normalize(params.windDirection_Time.xy);
+    float windSpeed = max(params.windDirection_Time.w, 0.001);
+    float randomSeed = params.foldParams.y;
+
+    float L = baseScale * pow(detailBalance, float(lod));
+    int nx = pixel.x - N / 2;
+    int ny = pixel.y - N / 2;
+    vec2 k = vec2(2.0 * PI * float(nx) / L, 2.0 * PI * float(ny) / L);
+    float kLen = length(k);
+
+    if (kLen < 1e-6)
+    {
+        imageStore(h0Spectrum, ivec3(pixel, lod), vec4(0.0));
+        return;
+    }
+
+    float Lw = windSpeed * windSpeed / G;
+    float k2 = kLen * kLen;
+    float k4 = k2 * k2;
+    vec2 kDir = k / kLen;
+    float windAlign = dot(kDir, windDir);
+    float directionFactor = windAlign * windAlign;
+    if (windAlign < 0.0)
+        directionFactor *= windDependency;
+
+    float dampingLength = smallWaveDamping * L;
+    float phillips = amplitude
+        * exp(-1.0 / max(k2 * Lw * Lw, 1e-6))
+        / max(k4, 1e-6)
+        * directionFactor
+        * exp(-k2 * dampingLength * dampingLength);
+
+    vec2 xi = Gaussian(vec2(pixel) + vec2(float(lod) * 37.0 + randomSeed, randomSeed * 0.013));
+    vec2 h0 = xi * sqrt(max(phillips, 0.0) * 0.5);
+
+    imageStore(h0Spectrum, ivec3(pixel, lod), vec4(h0, 0.0, 0.0));
+}

@@ -1,60 +1,74 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
 layout(early_fragment_tests) in;
+
 #include "../../Common/CameraData.glsl"
 #include "../../Common/Common.glsl"
+#include "../../BRDF/BRDFData.glsl"
 
-layout( location = 0 ) in vec2 frag_uv;
-layout( location = 1 ) in vec3 normal_ws;
-layout( location = 2 ) in vec3 tangent_ws;
-layout( location = 3 ) in vec3 bitangent_ws;
-layout( location = 4 ) in vec3 position_world;
+layout(location = 0) in vec2 frag_uv;
+layout(location = 1) in vec3 normal_ws;
+layout(location = 2) in vec3 tangent_ws;
+layout(location = 3) in vec3 bitangent_ws;
+layout(location = 4) in vec3 position_world;
 
-// Set 4 — per-node subsurface textures (albedo + normal + thickness + roughness)
-layout( set = 4, binding = 0 ) uniform sampler2D subsurfaceAlbedo;
-layout( set = 4, binding = 1 ) uniform sampler2D subsurfaceNormal;
-layout( set = 4, binding = 2 ) uniform sampler2D subsurfaceThickness;
-layout( set = 4, binding = 3 ) uniform sampler2D subsurfaceRoughness;
+layout(set = 0, binding = 50) uniform sampler2D globalPBRTextures[];
 
-layout( push_constant ) uniform MaterialPushConsts
+layout(push_constant) uniform MaterialPushConsts
 {
     int materialIndex;
     int objectIndex;
     int animationEnabled;
 } materialConst;
 
-// G-Buffer MRT outputs
-layout (location = 0) out vec4 outNormal;    // .xyz = world normal,  .w = thickness [0,1]
-layout (location = 1) out vec4 outGBuffer0;  // .rgb = albedo,        .w = roughness
-layout (location = 2) out vec4 outGBuffer1;  // .x = subsurfacePower (packed), .y = ao, .z = MATERIAL_ID_SUBSURFACE, .w = 1.0
-layout (location = 3) out vec4 outGBuffer2;  // .xyz = world pos,     .w = -linearDepth
+layout(location = 0) out vec4 outNormal;    // .xyz = world normal, .w = effective thickness
+layout(location = 1) out vec4 outGBuffer0;  // .rgb = albedo, .w = roughness
+layout(location = 2) out vec4 outGBuffer1;  // .x = subsurface amount, .y = ao, .z = material id, .w = material index
+layout(location = 3) out vec4 outGBuffer2;  // .xyz = world pos, .w = -linearDepth
 
-void main() 
+float EstimateEffectiveThickness(vec3 normalWS, vec3 positionWS,
+                                 float baseThickness, float curvatureInfluence)
 {
-    // Sample subsurface textures
-    vec3  albedo    = texture(subsurfaceAlbedo, frag_uv).rgb;
-    float thickness = texture(subsurfaceThickness, frag_uv).r; // 0 = thin (max transmission), 1 = thick (no transmission)
-    // 修正: roughness=0 会导致 GGX 在 NdotH=1 时 0/0=NaN，最小值限制为 0.045
-    float roughness = max(texture(subsurfaceRoughness, frag_uv).r, 0.045);
-    float ao        = 1.0;
+    vec3 dNdx = dFdx(normalWS);
+    vec3 dNdy = dFdy(normalWS);
+    vec3 dPdx = dFdx(positionWS);
+    vec3 dPdy = dFdy(positionWS);
 
-    // Normal mapping
-    vec3 normal_sample = textureLod(subsurfaceNormal, frag_uv, 0.0).rgb;
-    normal_sample = normal_sample * 2.0 - 1.0;
-    normal_sample.rg  *= 0.5;  // moderate normal strength
-    mat3 TBN           = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
-    vec3 normal        = normalize(TBN * normal_sample);
+    float kx = length(dNdx) / max(length(dPdx), 1e-4);
+    float ky = length(dNdy) / max(length(dPdy), 1e-4);
+    float curvature = (kx + ky) * 0.5;
+
+    float thinFeature = curvature / (curvature + 20.0);
+    return clamp(baseThickness - thinFeature * curvatureInfluence, 0.0, 1.0);
+}
+
+void main()
+{
+    int mi = nonuniformEXT(materialConst.materialIndex);
+    MaterialPayload mat = materialDataBuffer.materials[mi];
+
+    float baseThickness = clamp(mat.metallic, 0.0, 1.0);
+    float subsurfaceAmount = clamp(mat.ao, 0.0, 1.0);
+    float curvatureInfluence = clamp(mat.padding, 0.0, 1.0);
+
+    vec3 albedo = texture(globalPBRTextures[nonuniformEXT(mi * 5 + 0)], frag_uv).rgb;
+    float roughness = max(texture(globalPBRTextures[nonuniformEXT(mi * 5 + 3)], frag_uv).r, 0.045);
+    float ao = 1.0;
+
+    vec3 normalSample = textureLod(globalPBRTextures[nonuniformEXT(mi * 5 + 1)], frag_uv, 0.0).rgb;
+    normalSample = normalSample * 2.0 - 1.0;
+    normalSample.rg *= 0.5;
+
+    mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
+    vec3 normal = normalize(TBN * normalSample);
+    float effectiveThickness = EstimateEffectiveThickness(
+        normal, position_world, baseThickness, curvatureInfluence);
 
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
 
-    // Pack subsurfacePower into GBuffer1.x:
-    // subsurfacePower typically ranges [1, 50], normalize to [0,1] via power / 50.0
-    // Default subsurfacePower = 12.234 → packed ~ 0.245
-    float subsurfacePowerPacked = 12.234 / 50.0;
-
-    // Store thickness in outNormal.w for the deferred subsurface BRDF
-    outNormal   = vec4(normal, thickness);
+    outNormal = vec4(normal, effectiveThickness);
     outGBuffer0 = vec4(albedo, roughness);
-    outGBuffer1 = vec4(subsurfacePowerPacked, ao, float(MATERIAL_ID_SUBSURFACE), 1.0);
+    outGBuffer1 = vec4(subsurfaceAmount, ao, float(MATERIAL_ID_SUBSURFACE), float(mi));
     outGBuffer2 = vec4(position_world, -linearDepth);
 }

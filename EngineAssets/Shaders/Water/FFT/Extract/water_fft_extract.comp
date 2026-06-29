@@ -1,0 +1,68 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform FFTParams
+{
+    vec4 windDirection_Time;
+    vec4 scaleParams;
+    vec4 dampingParams;
+    vec4 outputParams;
+    vec4 foldParams;
+} params;
+
+layout(set = 0, binding = 1, rgba32f) uniform readonly image2DArray spatialFields;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2DArray outDisplacement;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2DArray outDerivative;
+
+const int FIELD_HEIGHT = 0;
+const int FIELD_SLOPE_X = 1;
+const int FIELD_SLOPE_Z = 2;
+const int FIELD_DISP_X = 3;
+const int FIELD_DISP_Z = 4;
+const int FIELD_COUNT = 6;
+
+int FieldLayer(int lod, int field)
+{
+    return lod * FIELD_COUNT + field;
+}
+
+float LoadReal(ivec2 pixel, int layer)
+{
+    return imageLoad(spatialFields, ivec3(pixel, layer)).x;
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    int lod = int(gl_WorkGroupID.z);
+    ivec3 outSize = imageSize(outDisplacement);
+    int N = int(params.foldParams.z + 0.5);
+    int lodCount = int(params.foldParams.w + 0.5);
+
+    if (pixel.x >= outSize.x || pixel.y >= outSize.y || pixel.x >= N || pixel.y >= N || lod >= lodCount)
+        return;
+
+    float height = LoadReal(pixel, FieldLayer(lod, FIELD_HEIGHT));
+    float slopeX = LoadReal(pixel, FieldLayer(lod, FIELD_SLOPE_X));
+    float slopeZ = LoadReal(pixel, FieldLayer(lod, FIELD_SLOPE_Z));
+    float dispX = LoadReal(pixel, FieldLayer(lod, FIELD_DISP_X));
+    float dispZ = LoadReal(pixel, FieldLayer(lod, FIELD_DISP_Z));
+
+    float checker = ((pixel.x + pixel.y) & 1) == 0 ? 1.0 : -1.0;
+    height *= checker;
+    slopeX *= checker;
+    slopeZ *= checker;
+    dispX *= checker;
+    dispZ *= checker;
+
+    float maxWaveAmp = max(params.outputParams.x, 0.001);
+    vec3 disp = vec3(dispX, height, dispZ);
+    disp.y = clamp(disp.y, -maxWaveAmp, maxWaveAmp);
+    disp.xz = clamp(disp.xz, vec2(-maxWaveAmp), vec2(maxWaveAmp));
+
+    float foam = clamp(length(vec2(slopeX, slopeZ)) * params.outputParams.z, 0.0, 1.0);
+
+    imageStore(outDisplacement, ivec3(pixel, lod), vec4(disp, foam));
+    imageStore(outDerivative, ivec3(pixel, lod), vec4(slopeX, slopeZ, foam, 0.0));
+}

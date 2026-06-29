@@ -1138,6 +1138,8 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
         config.m_Waves.m_GerstnerWaveCount = w.value("gerstnerWaveCount", config.m_Waves.m_GerstnerWaveCount);
         config.m_Waves.m_FftLODCount      = w.value("fftLODCount",       config.m_Waves.m_FftLODCount);
         config.m_Waves.m_FftResolution    = w.value("fftResolution",     config.m_Waves.m_FftResolution);
+        config.m_Waves.m_FFT.m_LODCount   = config.m_Waves.m_FftLODCount;
+        config.m_Waves.m_FFT.m_Resolution = config.m_Waves.m_FftResolution;
 
         if (w.contains("windDirection"))
         {
@@ -1147,6 +1149,26 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
             else if (d.is_object())
                 config.m_Waves.m_WindDirection = {
                     d.value("x", 0.7071f), d.value("y", 0.7071f)};
+        }
+
+        if (w.contains("fft") && w["fft"].is_object())
+        {
+            auto& fft = w["fft"];
+            config.m_Waves.m_FFT.m_UseDerivativeNormal = fft.value("useDerivativeNormal", config.m_Waves.m_FFT.m_UseDerivativeNormal);
+            config.m_Waves.m_FFT.m_Resolution          = fft.value("resolution",          config.m_Waves.m_FFT.m_Resolution);
+            config.m_Waves.m_FFT.m_LODCount            = fft.value("lodCount",            config.m_Waves.m_FFT.m_LODCount);
+            config.m_Waves.m_FFT.m_SpectrumAmplitude   = fft.value("spectrumAmplitude",   config.m_Waves.m_FFT.m_SpectrumAmplitude);
+            config.m_Waves.m_FFT.m_Choppiness          = fft.value("choppiness",          config.m_Waves.m_FFT.m_Choppiness);
+            config.m_Waves.m_FFT.m_SmallWaveDamping    = fft.value("smallWaveDamping",    config.m_Waves.m_FFT.m_SmallWaveDamping);
+            config.m_Waves.m_FFT.m_WindDependency      = fft.value("windDependency",      config.m_Waves.m_FFT.m_WindDependency);
+            config.m_Waves.m_FFT.m_Depth               = fft.value("depth",               config.m_Waves.m_FFT.m_Depth);
+            config.m_Waves.m_FFT.m_RepeatPeriod        = fft.value("repeatPeriod",        config.m_Waves.m_FFT.m_RepeatPeriod);
+            config.m_Waves.m_FFT.m_FoamSlopeScale      = fft.value("foamSlopeScale",      config.m_Waves.m_FFT.m_FoamSlopeScale);
+            config.m_Waves.m_FFT.m_FoamFoldScale       = fft.value("foamFoldScale",       config.m_Waves.m_FFT.m_FoamFoldScale);
+            config.m_Waves.m_FFT.m_FoamFoldThreshold   = fft.value("foamFoldThreshold",   config.m_Waves.m_FFT.m_FoamFoldThreshold);
+            config.m_Waves.m_FFT.m_RandomSeed          = fft.value("randomSeed",          config.m_Waves.m_FFT.m_RandomSeed);
+            config.m_Waves.m_FftLODCount               = config.m_Waves.m_FFT.m_LODCount;
+            config.m_Waves.m_FftResolution             = config.m_Waves.m_FFT.m_Resolution;
         }
 
         // N-01: detailNormal 子块
@@ -1289,6 +1311,17 @@ void VansGraphics::VansScene::AddWaterNode(VkDevice& device, json& waterData)
     mat->m_GerstnerWaveCount   = config.m_Waves.m_GerstnerWaveCount;
     mat->m_FftLODCount         = config.m_Waves.m_FftLODCount;
     mat->m_FftResolution       = config.m_Waves.m_FftResolution;
+    mat->m_FFTUseDerivativeNormal = config.m_Waves.m_FFT.m_UseDerivativeNormal;
+    mat->m_FFTSpectrumAmplitude = config.m_Waves.m_FFT.m_SpectrumAmplitude;
+    mat->m_FFTChoppiness       = config.m_Waves.m_FFT.m_Choppiness;
+    mat->m_FFTSmallWaveDamping = config.m_Waves.m_FFT.m_SmallWaveDamping;
+    mat->m_FFTWindDependency   = config.m_Waves.m_FFT.m_WindDependency;
+    mat->m_FFTDepth            = config.m_Waves.m_FFT.m_Depth;
+    mat->m_FFTRepeatPeriod     = config.m_Waves.m_FFT.m_RepeatPeriod;
+    mat->m_FFTFoamSlopeScale   = config.m_Waves.m_FFT.m_FoamSlopeScale;
+    mat->m_FFTFoamFoldScale    = config.m_Waves.m_FFT.m_FoamFoldScale;
+    mat->m_FFTFoamFoldThreshold = config.m_Waves.m_FFT.m_FoamFoldThreshold;
+    mat->m_FFTRandomSeed       = config.m_Waves.m_FFT.m_RandomSeed;
     mat->m_WindSpeed           = config.m_Waves.m_WindSpeed;
     mat->m_SwellAmplitude      = config.m_Waves.m_SwellAmplitude;
     mat->m_ChopScale           = config.m_Waves.m_ChopScale;
@@ -1535,6 +1568,7 @@ void VansGraphics::VansScene::LoadMeshesFromJson(
             mesh->SetName(sceneMesh["name"]);
             AddMeshAsset(mesh);
         }
+
 		else
 		{
 			bool generate_as = sceneMesh.value("support_raytracing", false);
@@ -1738,8 +1772,6 @@ VansTexture* VansGraphics::VansScene::ResolveMaterialTextureWithFallback(
     const char* key,
     const char* fallback)
 {
-    if (!sceneMaterial.contains(key))
-        return nullptr;
     return ResolveTextureOrDefault(ResolveMaterialTexture(sceneMaterial, key), fallback);
 }
 
@@ -1813,6 +1845,8 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
         sss->m_RoughnessTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "roughness_texture", "defaultRoughness");
         sss->m_SubsurfacePower = sceneMaterial.value("subsurfacePower", 12.234f);
         sss->m_Thickness = sceneMaterial.value("thickness", 0.5f);
+        sss->m_SubsurfaceAmount = sceneMaterial.value("subsurfaceAmount", 1.0f);
+        sss->m_CurvatureInfluence = sceneMaterial.value("curvatureInfluence", 0.35f);
         if (sceneMaterial.contains("subsurfaceColor") && sceneMaterial["subsurfaceColor"].is_array())
         {
             sss->m_SubsurfaceColor = glm::vec3(
@@ -1820,6 +1854,11 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
                 sceneMaterial["subsurfaceColor"][1],
                 sceneMaterial["subsurfaceColor"][2]);
         }
+        sss->m_BasePBRParam.m_albedo = sss->m_SubsurfaceColor;
+        sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
+        sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
+        sss->m_BasePBRParam.m_ao = sss->m_SubsurfaceAmount;
+        sss->m_BasePBRParam.padding = sss->m_CurvatureInfluence;
         break;
     }
     case VansMaterialType::VAN_TRANSPARENT:
@@ -2565,12 +2604,65 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
             for (const auto& token : mmJson["exclude_clip_tokens"])
                 if (token.is_string()) mmSettings.excludeClipNameTokens.push_back(token.get<std::string>());
         }
+        const auto readStringArray = [](const nlohmann::json& object,
+                                        const char* key,
+                                        std::vector<std::string>& out)
+        {
+            if (!object.contains(key) || !object[key].is_array())
+                return;
+            for (const auto& item : object[key])
+                if (item.is_string()) out.push_back(item.get<std::string>());
+        };
+        const auto readIntArray = [](const nlohmann::json& object,
+                                     const char* key,
+                                     std::vector<int>& out)
+        {
+            if (!object.contains(key) || !object[key].is_array())
+                return;
+            for (const auto& item : object[key])
+                if (item.is_number_integer()) out.push_back(item.get<int>());
+        };
+        const nlohmann::json* searchGroupsJson = nullptr;
+        if (mmJson.contains("search_groups") && mmJson["search_groups"].is_array())
+            searchGroupsJson = &mmJson["search_groups"];
+        else if (mmJson.contains("searchGroups") && mmJson["searchGroups"].is_array())
+            searchGroupsJson = &mmJson["searchGroups"];
+        if (searchGroupsJson)
+        {
+            for (const auto& groupJson : *searchGroupsJson)
+            {
+                if (!groupJson.is_object())
+                    continue;
+
+                MotionMatchingSearchGroup group;
+                group.name = groupJson.value("name", "");
+                group.stance = groupJson.value("stance", group.stance);
+                group.phase = groupJson.value("phase", group.phase);
+                readIntArray(groupJson, "move_states", group.moveStates);
+                readIntArray(groupJson, "moveStates", group.moveStates);
+                readStringArray(groupJson, "include", group.includeClipNameTokens);
+                readStringArray(groupJson, "include_tokens", group.includeClipNameTokens);
+                readStringArray(groupJson, "include_clip_tokens", group.includeClipNameTokens);
+                readStringArray(groupJson, "exclude", group.excludeClipNameTokens);
+                readStringArray(groupJson, "exclude_tokens", group.excludeClipNameTokens);
+                readStringArray(groupJson, "exclude_clip_tokens", group.excludeClipNameTokens);
+
+                if (!group.name.empty() ||
+                    !group.includeClipNameTokens.empty() ||
+                    !group.excludeClipNameTokens.empty() ||
+                    !group.moveStates.empty())
+                {
+                    mmSettings.searchGroups.push_back(std::move(group));
+                }
+            }
+        }
 
         controller->ConfigureMotionMatching(mmSettings);
         VANS_LOG("[LoadAnimComp] Motion Matching configured for '" << objectName
                  << "' enabled=" << mmSettings.enabled
                  << " sampleRate=" << mmSettings.sampleRate
-                 << " searchThrottle=" << mmSettings.searchThrottle);
+                 << " searchThrottle=" << mmSettings.searchThrottle
+                 << " searchGroups=" << mmSettings.searchGroups.size());
     }
 
     if (animJson.contains("foot_placement") && animJson["foot_placement"].is_object())
@@ -2595,6 +2687,8 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
         fpSettings.pelvisInterpSpeed = fpJson.value("pelvis_interp_speed", fpSettings.pelvisInterpSpeed);
         fpSettings.ikWeight = fpJson.value("ik_weight", fpSettings.ikWeight);
         fpSettings.ikWeightSpeed = fpJson.value("ik_weight_speed", fpSettings.ikWeightSpeed);
+        fpSettings.crouchWeightScale = fpJson.value("crouch_weight_scale", fpSettings.crouchWeightScale);
+        fpSettings.stanceChangeSuppressionTime = fpJson.value("stance_change_suppression_time", fpSettings.stanceChangeSuppressionTime);
         fpSettings.footLockInterpSpeed = fpJson.value("foot_lock_interp_speed", fpSettings.footLockInterpSpeed);
         fpSettings.normalInterpSpeed = fpJson.value("normal_interp_speed", fpSettings.normalInterpSpeed);
         fpSettings.groundHeightInterpSpeed = fpJson.value("ground_height_interp_speed", fpSettings.groundHeightInterpSpeed);

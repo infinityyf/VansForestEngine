@@ -63,6 +63,23 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_RoughnessTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_AoTexture->GetImage()));
 			}
+			else if (material->m_MaterialType == VansMaterialType::VAN_SUBSURFACE)
+			{
+				VansSubsurfaceMaterial* sss = static_cast<VansSubsurfaceMaterial*>(material);
+				sss->m_MaterialIndex = pbrMaterialIndex++;
+				sss->m_BasePBRParam.m_albedo = sss->m_SubsurfaceColor;
+				sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
+				sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
+				sss->m_BasePBRParam.m_ao = sss->m_SubsurfaceAmount;
+				sss->m_BasePBRParam.padding = sss->m_CurvatureInfluence;
+
+				materialManager->m_GlobalPBRParamData.push_back(sss->m_BasePBRParam);
+				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_NormalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_RoughnessTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
+			}
 		}
 
 		const VkDeviceSize materialDataSize = sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRParamData.size();

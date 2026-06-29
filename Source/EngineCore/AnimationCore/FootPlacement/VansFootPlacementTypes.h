@@ -44,6 +44,8 @@ namespace VansGraphics
 
 		float ikWeight = 1.0f;
 		float ikWeightSpeed = 8.0f;
+		float crouchWeightScale = 0.35f;
+		float stanceChangeSuppressionTime = 0.20f;
 		float footLockInterpSpeed = 16.0f;
 		float normalInterpSpeed = 12.0f;
 		float groundHeightInterpSpeed = 24.0f;
@@ -63,6 +65,8 @@ namespace VansGraphics
 	{
 		bool airborne = false;
 		bool forceDisabled = false;
+		bool crouching = false;
+		bool stanceChanging = false;
 		float externalWeight = 1.0f;
 	};
 

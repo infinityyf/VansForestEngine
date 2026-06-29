@@ -461,6 +461,7 @@ namespace VansGraphics
 		WATER_GBUF_BINDING_DISPLACEMENT  = 1,   // Compute 输出的水面位移贴图 Texture2DArray（Vertex 采样）
 		WATER_GBUF_BINDING_WAVE_SSBO     = 2,   // GerstnerWaveGPU SSBO（W-04）
 		WATER_GBUF_BINDING_NORMAL_MAP    = 3,   // 水面法线贴图（W-08）
+		WATER_GBUF_BINDING_DERIVATIVE    = 4,   // FFT slope/foam derivative Texture2DArray（Vertex 采样）
 	};
 
 	// --- Water Wave Compute Pass（Set 0）---

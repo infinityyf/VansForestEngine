@@ -20,6 +20,7 @@ namespace VansGraphics
 		const FootPlacementSettings& GetSettings() const { return m_Settings; }
 
 		void SetRuntimeState(const FootPlacementRuntimeState& state) { m_RuntimeState = state; }
+		void ResetTransientState();
 		const FootPlacementDebugData& GetDebugData() const { return m_DebugData; }
 
 		void Solve(float deltaTime,

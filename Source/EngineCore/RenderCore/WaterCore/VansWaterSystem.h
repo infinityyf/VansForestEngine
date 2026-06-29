@@ -154,12 +154,14 @@ namespace VansGraphics
         bool  IsDescriptorsReady() const                   { return m_DescriptorsReady; }
         VansWaterLOD* GetLOD() const                       { return m_WaterLOD; }
         VansWaterWaveSystem* GetWaveSystem() const         { return m_WaveSystem; }
+        VansWaterFFT* GetFFT() const                       { return m_WaterFFT; }
 
         // W-04: 运行时更新波分量 SSBO（editor 修改参数后调用）
         void UpdateWaveSSBO();
 
         // 纹理访问器（供 Editor 纹理预览，W-17）
         VansVKImage& GetDisplacementImage()      { return m_WaveDisplacementImage; }
+        VansVKImage& GetDerivativeImage()        { return m_WaveDerivativeImage; }
         VansVKImage& GetReflectionImage()        { return m_WaterReflectionImage; }
         VansVKImage& GetRefractionImage()        { return m_WaterRefractionImage; }
         VansVKImage& GetCausticsImage()          { return m_WaterCausticsImage; }
@@ -188,6 +190,7 @@ namespace VansGraphics
         // ── 拆分类（设计文档 W-02, W-03, W-09）───────────────────
         VansWaterLOD*       m_WaterLOD   = nullptr;  // W-02: CDLOD 管理
         VansWaterWaveSystem* m_WaveSystem = nullptr;  // W-03: 波形系统（含 FFT）
+        VansWaterFFT*        m_WaterFFT  = nullptr;  // Tessendorf FFT ocean
 
         // ── 着色器 ───────────────────────────────────────────────
         VansGraphicsShader* m_WaterGBufferShader   = nullptr;  // water_prepass.vert/.frag
@@ -258,6 +261,8 @@ namespace VansGraphics
         // W-01: 改为 Texture2DArray（256² × MAX_LOD_COUNT RGBA16F）
         VansVKImage m_WaveDisplacementImage;
         bool        m_WaveDisplacementReady = false;
+        VansVKImage m_WaveDerivativeImage;
+        bool        m_WaveDerivativeReady = false;
 
         // ── 水体效果贴图：Pre-Water Compute 输出，Composite 采样 ───
         VansVKImage m_WaterReflectionImage;

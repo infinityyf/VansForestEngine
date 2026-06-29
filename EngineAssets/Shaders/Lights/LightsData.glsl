@@ -475,6 +475,8 @@ float SampleCascadeShadow(vec3 positionWS, vec3 normalWS, sampler2DArray cascade
     int cascadeIdx = SelectCascade(viewDepth);
     float currentValid = 0.0;
     float shadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, cascadeIdx, currentValid);
+    float lastSplit = uDirectionLight.cascadeSplits[CASCADE_COUNT - 1];
+    float lastCascadeFade = 1.0 - smoothstep(lastSplit * 0.85, lastSplit, viewDepth);
 
     if (currentValid <= 0.0)
     {
@@ -486,7 +488,7 @@ float SampleCascadeShadow(vec3 positionWS, vec3 normalWS, sampler2DArray cascade
                 float valid = 0.0;
                 float fallbackShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, nearCascade, valid);
                 if (valid > 0.0)
-                    return fallbackShadow;
+                    return mix(1.0, fallbackShadow, lastCascadeFade);
             }
 
             int farCascade = cascadeIdx + offset;
@@ -495,7 +497,7 @@ float SampleCascadeShadow(vec3 positionWS, vec3 normalWS, sampler2DArray cascade
                 float valid = 0.0;
                 float fallbackShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, farCascade, valid);
                 if (valid > 0.0)
-                    return fallbackShadow;
+                    return mix(1.0, fallbackShadow, lastCascadeFade);
             }
         }
         return 1.0;
@@ -559,7 +561,7 @@ float SampleCascadeShadow(vec3 positionWS, vec3 normalWS, sampler2DArray cascade
         }
     }
 
-    return shadow;
+    return mix(1.0, shadow, lastCascadeFade);
 }
 void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2D punctualShadowMap, float sampleRadius, vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
 {

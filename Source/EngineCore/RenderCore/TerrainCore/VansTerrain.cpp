@@ -405,7 +405,12 @@ namespace VansGraphics
 
     void VansTerrain::CollectLeafNodes(const TerrainNode& node, const glm::vec3& camPos, std::vector<TerrainNode>& outNodes)
     {
-        if (node.size <= m_PatchGridSize || !ShouldSplit(node, camPos))
+        const float maxLeafSize = static_cast<float>(m_PatchGridSize) *
+            std::pow(std::max(m_LodDistanceRatio, 1.0f), 3.0f);
+        const bool reachedBasePatchSize = node.size <= m_PatchGridSize;
+        const bool reachedFarFieldSize = node.size <= std::max(maxLeafSize, static_cast<float>(m_PatchGridSize));
+
+        if (reachedBasePatchSize || (reachedFarFieldSize && !ShouldSplit(node, camPos)))
         {
             outNodes.push_back(node);
             return;
@@ -541,6 +546,7 @@ namespace VansGraphics
         BalanceLeafNodes(leafNodes);
 
         const glm::vec3& camPos = camera->GetPosition();
+        bool instanceOverflowWarned = false;
         for (const TerrainNode& node : leafNodes)
         {
             float centerX = node.x + node.size * 0.5f;
@@ -553,6 +559,16 @@ namespace VansGraphics
             data.Lod         = static_cast<float>(node.lodLevel);
             data.StitchFlags = static_cast<float>(ComputeStitchFlags(node, leafNodes));
             data.padding0    = glm::vec3(0.0);
+
+            if (m_InstanceDataCPU.size() < m_MaxPatchInstances)
+            {
+                m_InstanceDataCPU.push_back(data);
+            }
+            else if (!instanceOverflowWarned)
+            {
+                VANS_LOG_WARN("Terrain patch instance count exceeds maxPatchInstances=" << m_MaxPatchInstances << ", extra patches skipped");
+                instanceOverflowWarned = true;
+            }
 
             if (m_EnableTessellation && dist < m_TessellationDistance)
             {
@@ -574,8 +590,8 @@ namespace VansGraphics
             m_FarInstanceBuffer.SetBufferData(m_FarInstanceDataCPU.data(), 0,
                 sizeof(TerrainInstanceData) * m_FarInstanceDataCPU.size());
 
-        // Legacy: full set (used by DrawShadow, DrawMotionVector which don't split)
-        m_InstanceDataCPU = m_FarInstanceDataCPU;
+        // Full visible set used by DrawShadow/DrawMotionVector, which do not split
+        // terrain into near tessellated and far non-tessellated batches.
         if (!m_InstanceDataCPU.empty())
             m_InstanceBuffer.SetBufferData(m_InstanceDataCPU.data(), 0,
                 sizeof(TerrainInstanceData) * m_InstanceDataCPU.size());

@@ -337,6 +337,105 @@ bool VansMotionMatchingRuntime::ShouldIncludeClip(const std::string& clipName) c
 	return true;
 }
 
+bool VansMotionMatchingRuntime::SearchGroupAllowsSample(
+	const Sample& sample,
+	const std::unordered_map<std::string, AnimatorParameter>& parameters) const
+{
+	if (m_Settings.searchGroups.empty())
+		return true;
+
+	const bool isCrouching = ReadFloatParam(parameters, "IsCrouching", 0.0f) > 0.5f ||
+	                         ReadBoolParam(parameters, "IsCrouching", false);
+	const int moveState = ReadIntParam(parameters, "MoveState", 0);
+	const float speed01 = ReadFloatParam(parameters, "Speed", 0.0f);
+	const bool wantsIdle = speed01 < 0.05f || moveState == 0;
+	const int desiredMoveState = (isCrouching || moveState == 4)
+		? 4
+		: (wantsIdle ? 0 : moveState);
+	const bool desiredMoving = !wantsIdle;
+
+	const bool currentValid = m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size());
+	const Sample* currentSample = currentValid ? &m_Samples[m_CurrentSample] : nullptr;
+	const int currentMoveState = currentSample ? currentSample->targetMoveState : 0;
+	const bool currentMoving =
+		currentSample &&
+		!currentSample->idleLike &&
+		(currentSample->loopLike || currentSample->startLike || currentSample->turnLike) &&
+		(currentMoveState == 1 || currentMoveState == 2 || currentMoveState == 3 || currentMoveState == 4);
+	const bool startingFromIdle = !currentMoving && desiredMoving;
+	const bool stoppingToIdle = currentMoving && !desiredMoving;
+	const bool changingPace =
+		currentMoveState >= 1 && currentMoveState <= 3 &&
+		desiredMoveState >= 1 && desiredMoveState <= 3 &&
+		currentMoveState != desiredMoveState;
+	const bool changingStance =
+		(currentMoveState == 0 || currentMoveState == 4) &&
+		(desiredMoveState == 0 || desiredMoveState == 4) &&
+		currentMoveState != desiredMoveState;
+
+	const std::string loweredClip = ToLower(sample.clipName);
+	const bool desiredCrouchStance = desiredMoveState == 4;
+
+	for (const MotionMatchingSearchGroup& group : m_Settings.searchGroups)
+	{
+		const std::string stance = ToLower(group.stance);
+		if (stance == "crouch" && !desiredCrouchStance)
+			continue;
+		if ((stance == "stand" || stance == "standing") && desiredCrouchStance)
+			continue;
+
+		const std::string phase = ToLower(group.phase);
+		bool queryPhaseMatches = false;
+		if (phase.empty() || phase == "any" || phase == "*")
+			queryPhaseMatches = true;
+		else if (phase == "idle")
+			queryPhaseMatches = !desiredMoving;
+		else if (phase == "move" || phase == "moving" || phase == "locomotion")
+			queryPhaseMatches = desiredMoving;
+		else if (phase == "start")
+			queryPhaseMatches = startingFromIdle;
+		else if (phase == "stop")
+			queryPhaseMatches = stoppingToIdle;
+		else if (phase == "transition")
+			queryPhaseMatches = changingPace || changingStance;
+		else if (phase == "turn")
+			queryPhaseMatches = m_DirectionChangedForSearch && currentMoveState == desiredMoveState;
+		if (!queryPhaseMatches)
+			continue;
+
+		bool samplePhaseMatches = false;
+		if (phase.empty() || phase == "any" || phase == "*")
+			samplePhaseMatches = true;
+		else if (phase == "idle")
+			samplePhaseMatches = sample.idleLike;
+		else if (phase == "move" || phase == "moving" || phase == "locomotion")
+			samplePhaseMatches = sample.loopLike && !sample.idleLike;
+		else if (phase == "start")
+			samplePhaseMatches = sample.startLike;
+		else if (phase == "stop")
+			samplePhaseMatches = sample.stopLike;
+		else if (phase == "transition")
+			samplePhaseMatches = sample.paceTransitionLike;
+		else if (phase == "turn")
+			samplePhaseMatches = sample.turnLike;
+		if (!samplePhaseMatches)
+			continue;
+
+		if (!group.moveStates.empty() &&
+		    std::find(group.moveStates.begin(), group.moveStates.end(), sample.targetMoveState) == group.moveStates.end())
+			continue;
+		if (!group.includeClipNameTokens.empty() &&
+		    !ContainsToken(loweredClip, group.includeClipNameTokens))
+			continue;
+		if (!group.excludeClipNameTokens.empty() &&
+		    ContainsToken(loweredClip, group.excludeClipNameTokens))
+			continue;
+		return true;
+	}
+
+	return false;
+}
+
 int VansMotionMatchingRuntime::ResolveBoneIndex(const Skeleton& skeleton, const std::string& name) const
 {
 	if (name.empty())
@@ -886,6 +985,9 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 	const Sample& sample,
 	const std::unordered_map<std::string, AnimatorParameter>& parameters) const
 {
+	if (!SearchGroupAllowsSample(sample, parameters))
+		return false;
+
 	const bool isCrouching = ReadFloatParam(parameters, "IsCrouching", 0.0f) > 0.5f ||
 	                         ReadBoolParam(parameters, "IsCrouching", false);
 	const int moveState = ReadIntParam(parameters, "MoveState", 0);
@@ -1273,7 +1375,27 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			m_Samples[best.sampleIndex].startLike &&
 			isMoving &&
 			!activeMovingSample;
-		const bool shouldEnterContextTransition =
+		const bool bestIsContextTransition =
+			best.sampleIndex >= 0 &&
+			m_Samples[best.sampleIndex].transitionLike &&
+			(m_Samples[best.sampleIndex].startLike ||
+			 m_Samples[best.sampleIndex].stopLike ||
+			 m_Samples[best.sampleIndex].paceTransitionLike);
+		const bool contextTransitionHasValidSource =
+			bestIsContextTransition &&
+			m_CurrentSample >= 0 &&
+			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
+			(m_Samples[best.sampleIndex].sourceMoveState == m_Samples[m_CurrentSample].targetMoveState ||
+			 m_Samples[m_CurrentSample].idleLike);
+		const bool contextTransitionChangesRole =
+			bestIsContextTransition &&
+			m_CurrentSample >= 0 &&
+			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
+			(m_Samples[best.sampleIndex].startLike != m_Samples[m_CurrentSample].startLike ||
+			 m_Samples[best.sampleIndex].stopLike != m_Samples[m_CurrentSample].stopLike ||
+			 m_Samples[best.sampleIndex].idleLike != m_Samples[m_CurrentSample].idleLike ||
+			 m_Samples[best.sampleIndex].loopLike != m_Samples[m_CurrentSample].loopLike);
+		const bool legacyShouldEnterContextTransition =
 			shouldEnterStartTransition ||
 			(searchContextChanged &&
 			 best.sampleIndex >= 0 &&
@@ -1286,6 +1408,15 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			 (m_Samples[best.sampleIndex].sourceMoveState == m_Samples[m_CurrentSample].targetMoveState ||
 			  m_Samples[m_CurrentSample].idleLike) &&
 			 m_Samples[best.sampleIndex].targetMoveState != m_Samples[m_CurrentSample].targetMoveState);
+		const bool groupedShouldEnterContextTransition =
+			shouldEnterStartTransition ||
+			(searchContextChanged &&
+			 contextTransitionHasValidSource &&
+			 (m_Samples[best.sampleIndex].targetMoveState != m_Samples[m_CurrentSample].targetMoveState ||
+			  contextTransitionChangesRole));
+		const bool shouldEnterContextTransition = m_Settings.searchGroups.empty()
+			? legacyShouldEnterContextTransition
+			: groupedShouldEnterContextTransition;
 		float requiredImprovement = searchContextChanged
 			? m_Settings.minSwitchCostImprovement * 0.5f
 			: m_Settings.minSwitchCostImprovement;

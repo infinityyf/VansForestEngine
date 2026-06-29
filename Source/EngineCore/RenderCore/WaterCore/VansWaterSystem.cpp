@@ -1,5 +1,6 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansWaterSystem.h"
+#include "VansWaterFFT.h"
 #include "VansWaterWaveSystem.h"
 #include "../../Util/VansLog.h"
 #include "../../Configration/VansConfigration.h"
@@ -245,6 +246,26 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         false, false, true,
         VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
+    // Tessendorf FFT derivative map: R=slopeX, G=slopeZ, B=foam/fold, A=reserved.
+    m_WaveDerivativeImage.CreateVulkanImage(
+        logicDev,
+        { WAVE_TEXTURE_SIZE, WAVE_TEXTURE_SIZE, 1 },
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        1, VansWaterLOD::MAX_LOD_COUNT,
+        VK_IMAGE_TYPE_2D,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_SAMPLE_COUNT_1_BIT,
+        false, false, true,
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+    m_WaterFFT = new VansWaterFFT();
+    if (!m_WaterFFT->Initialize(device, projectRoot, &m_WaveDisplacementImage, &m_WaveDerivativeImage))
+    {
+        VANS_LOG_WARN("[VansWaterSystem] FFT initialize failed; FFT mode will fall back to Gerstner");
+        delete m_WaterFFT;
+        m_WaterFFT = nullptr;
+    }
+
     // ── N-01: Detail Normal Texture2DArray（1024² × 1 layer RGBA16F，世界空间平铺）──
     m_DetailNormalImage.CreateVulkanImage(
         logicDev,
@@ -450,6 +471,17 @@ void VansWaterSystem::SetupDescriptors(
             { {
                 m_DetailNormalImage.GetSampler(),
                 m_DetailNormalImage.GetImageView(),
+                VK_IMAGE_LAYOUT_GENERAL
+            } }
+        });
+
+        // binding 4: FFT derivative Texture2DArray — vertex shader reads slope normal.
+        descMgr->m_ImageDescInfos.push_back({
+            m_GBufPassSet, WATER_GBUF_BINDING_DERIVATIVE, 0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { {
+                m_WaveDerivativeImage.GetSampler(),
+                m_WaveDerivativeImage.GetImageView(),
                 VK_IMAGE_LAYOUT_GENERAL
             } }
         });
@@ -815,6 +847,12 @@ void VansWaterSystem::Shutdown()
         delete m_WaterLOD;
         m_WaterLOD = nullptr;
     }
+    if (m_WaterFFT)
+    {
+        m_WaterFFT->Shutdown(dev);
+        delete m_WaterFFT;
+        m_WaterFFT = nullptr;
+    }
 
     if (m_GBufPassLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_GBufPassLayout); m_GBufPassLayout = VK_NULL_HANDLE; }
     if (m_CompPassLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_CompPassLayout); m_CompPassLayout = VK_NULL_HANDLE; }
@@ -842,6 +880,8 @@ void VansWaterSystem::Shutdown()
 
     m_WaveDisplacementImage.DestroyVulkanImage(dev);
     m_WaveDisplacementReady = false;
+    m_WaveDerivativeImage.DestroyVulkanImage(dev);
+    m_WaveDerivativeReady = false;
     m_WaterReflectionImage.DestroyVulkanImage(dev);
     m_WaterRefractionImage.DestroyVulkanImage(dev);
     m_WaterCausticsImage.DestroyVulkanImage(dev);
@@ -955,6 +995,15 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     gbufParams.morphStartRatio = m_WaterLOD ? m_WaterLOD->GetMorphWidthRatio() : 0.5f;
     gbufParams.waveTimeAndScale = glm::vec4(m_Time, ampScale, chopScale, 1.0f);
 
+    VansWaveMode waveMode = m_WaterMaterial ? m_WaterMaterial->m_Config.m_Waves.m_Mode : VansWaveMode::Gerstner;
+    int fftLODCount = m_WaterMaterial ? m_WaterMaterial->m_Config.m_Waves.m_FFT.m_LODCount : 4;
+    if (m_WaterMaterial && m_WaterMaterial->m_FftLODCount > 0)
+        fftLODCount = m_WaterMaterial->m_FftLODCount;
+    fftLODCount = std::clamp(fftLODCount, 1, std::max(gbufParams.lodLevels, 1));
+    const bool useDerivativeNormal = m_WaterMaterial
+        ? m_WaterMaterial->m_Config.m_Waves.m_FFT.m_UseDerivativeNormal
+        : true;
+
     // N-01: Detail normal 参数写入 UBO padding
     if (m_WaterMaterial)
     {
@@ -970,6 +1019,38 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
             m_WaterMaterial->m_DetailNormalBaseScale,
             0.0f
         );
+    }
+
+    // FFT/Hybrid mode parameters for water_prepass.vert and partial Gerstner dispatch.
+    gbufParams.waveParamsPad[2] = glm::vec4(
+        float(static_cast<int>(waveMode)),
+        useDerivativeNormal ? 1.0f : 0.0f,
+        float(fftLODCount),
+        float(m_WaterMaterial ? m_WaterMaterial->m_FftResolution : VansWaterFFT::FFT_RESOLUTION));
+    gbufParams.waveParamsPad[3] = glm::vec4(0.0f, float(gbufParams.lodLevels), 0.0f, 0.0f);
+
+    if (m_WaterFFT && m_WaterMaterial)
+    {
+        VansWaterFFT::Params fp;
+        fp.resolution = VansWaterFFT::FFT_RESOLUTION;
+        fp.lodCount = uint32_t(waveMode == VansWaveMode::Hybrid ? fftLODCount : gbufParams.lodLevels);
+        fp.baseScale = baseScale;
+        fp.detailBalance = gbufParams.detailBalance;
+        fp.windDirection = m_WaterMaterial->m_WindDirection;
+        fp.windSpeed = m_WaterMaterial->m_WindSpeed;
+        fp.spectrumAmplitude = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_SpectrumAmplitude;
+        fp.choppiness = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_Choppiness;
+        fp.smallWaveDamping = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_SmallWaveDamping;
+        fp.windDependency = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_WindDependency;
+        fp.depth = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_Depth;
+        fp.repeatPeriod = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_RepeatPeriod;
+        fp.maxWaveAmp = maxAmp;
+        fp.normalScale = gbufParams.waveTimeAndScale.w;
+        fp.foamSlopeScale = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_FoamSlopeScale;
+        fp.foamFoldScale = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_FoamFoldScale;
+        fp.foamFoldThreshold = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_FoamFoldThreshold;
+        fp.randomSeed = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_RandomSeed;
+        m_WaterFFT->SetParams(fp);
     }
 
     if (m_Device != nullptr && m_GBufParamsMemory != VK_NULL_HANDLE)
@@ -1140,65 +1221,128 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
 // ============================================================
 void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*deltaTime*/)
 {
-    if (!m_Initialized || !m_DescriptorsReady || m_WaveSimShader == nullptr || m_WaveSimSet == VK_NULL_HANDLE)
+    if (!m_Initialized || !m_DescriptorsReady)
         return;
 
-    // W-11: 波形模式检查 — FFT/Hybrid 未实现，回退到 Gerstner
-    if (m_WaterMaterial)
+    const VansWaveMode mode = m_WaterMaterial
+        ? m_WaterMaterial->m_Config.m_Waves.m_Mode
+        : VansWaveMode::Gerstner;
+    const int lodLevels = m_WaterLOD ? m_WaterLOD->GetLodLevels() : int(VansWaterLOD::MAX_LOD_COUNT);
+    const int fftLODCount = std::clamp(
+        m_WaterMaterial ? m_WaterMaterial->m_Config.m_Waves.m_FFT.m_LODCount : 4,
+        1,
+        std::max(lodLevels, 1));
+
+    auto updateGerstnerDispatchParams = [&](int outputBaseLod, int outputLodCount, bool disableSpectrumApprox)
     {
-        VansWaveMode mode = m_WaterMaterial->m_Config.m_Waves.m_Mode;
-        if (mode != VansWaveMode::Gerstner)
+        if (m_GBufParamsMemory == VK_NULL_HANDLE)
+            return;
+
+        WaterGBufferParamsGPU params = {};
+        void* data = nullptr;
+        vkMapMemory(m_Device->GetLogicDevice(), m_GBufParamsMemory, 0, sizeof(WaterGBufferParamsGPU), 0, &data);
+        std::memcpy(&params, data, sizeof(WaterGBufferParamsGPU));
+        params.waveParamsPad[3] = glm::vec4(
+            float(outputBaseLod),
+            float(outputLodCount),
+            disableSpectrumApprox ? 1.0f : 0.0f,
+            0.0f);
+        std::memcpy(data, &params, sizeof(WaterGBufferParamsGPU));
+        vkUnmapMemory(m_Device->GetLogicDevice(), m_GBufParamsMemory);
+    };
+
+    auto runGerstner = [&](int outputBaseLod, int outputLodCount, bool disableSpectrumApprox)
+    {
+        if (outputLodCount <= 0 || m_WaveSimShader == nullptr || m_WaveSimSet == VK_NULL_HANDLE)
+            return;
+
+        updateGerstnerDispatchParams(outputBaseLod, outputLodCount, disableSpectrumApprox);
+
+        const VkImageLayout currentLayout = m_WaveDisplacementReady
+            ? VK_IMAGE_LAYOUT_GENERAL
+            : m_WaveDisplacementImage.GetImageLayout();
+
+        VkImageMemoryBarrier beforeCompute = {};
+        beforeCompute.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        beforeCompute.srcAccessMask       = m_WaveDisplacementReady ? VK_ACCESS_SHADER_READ_BIT : 0;
+        beforeCompute.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+        beforeCompute.oldLayout           = currentLayout;
+        beforeCompute.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        beforeCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        beforeCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        beforeCompute.image               = m_WaveDisplacementImage.GetImage();
+        beforeCompute.subresourceRange    = {
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
+            uint32_t(std::max(outputBaseLod, 0)),
+            uint32_t(std::max(outputLodCount, 0))
+        };
+        cmd.PipelineBarrier(
+            m_WaveDisplacementReady ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            {}, {}, { beforeCompute });
+        m_WaveDisplacementImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+
+        cmd.EnsureComputeShader(*m_WaveSimShader, { m_WaveSimLayout });
+        const uint32_t groups = (WAVE_TEXTURE_SIZE + 7u) / 8u;
+        cmd.DispatchCompute(*m_WaveSimShader, groups, groups, uint32_t(outputLodCount), { m_WaveSimSet });
+
+        VkImageMemoryBarrier afterCompute = {};
+        afterCompute.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        afterCompute.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+        afterCompute.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        afterCompute.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        afterCompute.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        afterCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        afterCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        afterCompute.image               = m_WaveDisplacementImage.GetImage();
+        afterCompute.subresourceRange    = beforeCompute.subresourceRange;
+        cmd.PipelineBarrier(
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+            {}, {}, { afterCompute });
+
+        m_WaveDisplacementReady = true;
+    };
+
+    if (mode == VansWaveMode::FFT)
+    {
+        if (m_WaterFFT && m_WaterFFT->IsReady())
         {
-            static int logSkip = 0;
-            if (++logSkip % 120 == 1)
-                VANS_LOG_WARN("[VansWaterSystem] Wave mode " << static_cast<int>(mode)
-                    << " not implemented, falling back to Gerstner");
+            m_WaterFFT->UpdateFFT(cmd, m_Time);
+            m_WaveDisplacementReady = true;
+            m_WaveDerivativeReady = true;
+            return;
         }
+
+        static bool s_FFTFallbackLogged = false;
+        if (!s_FFTFallbackLogged)
+        {
+            VANS_LOG_WARN("[VansWaterSystem] FFT requested but not ready; falling back to Gerstner");
+            s_FFTFallbackLogged = true;
+        }
+        runGerstner(0, lodLevels, false);
+        return;
     }
 
-    const VkImageLayout currentLayout = m_WaveDisplacementReady
-        ? VK_IMAGE_LAYOUT_GENERAL
-        : m_WaveDisplacementImage.GetImageLayout();
+    if (mode == VansWaveMode::Hybrid)
+    {
+        bool fftOk = false;
+        if (m_WaterFFT && m_WaterFFT->IsReady() && fftLODCount > 0)
+        {
+            m_WaterFFT->UpdateFFT(cmd, m_Time);
+            fftOk = true;
+            m_WaveDisplacementReady = true;
+            m_WaveDerivativeReady = true;
+        }
 
-    // W-01: barrier 覆盖全部 layers
-    VkImageMemoryBarrier beforeCompute = {};
-    beforeCompute.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    beforeCompute.srcAccessMask       = m_WaveDisplacementReady ? VK_ACCESS_SHADER_READ_BIT : 0;
-    beforeCompute.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-    beforeCompute.oldLayout           = currentLayout;
-    beforeCompute.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
-    beforeCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    beforeCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    beforeCompute.image               = m_WaveDisplacementImage.GetImage();
-    beforeCompute.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, VansWaterLOD::MAX_LOD_COUNT };
-    cmd.PipelineBarrier(
-        m_WaveDisplacementReady ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        {}, {}, { beforeCompute });
-    m_WaveDisplacementImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+        if (fftOk && fftLODCount < lodLevels)
+            runGerstner(fftLODCount, lodLevels - fftLODCount, true);
+        else if (!fftOk)
+            runGerstner(0, lodLevels, false);
+        return;
+    }
 
-    // W-01: 3D Dispatch — gl_WorkGroupID.z = LOD index
-    // 每层 32×32 groups (256/8=32)，10 layers total
-    cmd.EnsureComputeShader(*m_WaveSimShader, { m_WaveSimLayout });
-    const uint32_t groups = (WAVE_TEXTURE_SIZE + 7u) / 8u;
-    cmd.DispatchCompute(*m_WaveSimShader, groups, groups, VansWaterLOD::MAX_LOD_COUNT, { m_WaveSimSet });
-
-    VkImageMemoryBarrier afterCompute = {};
-    afterCompute.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    afterCompute.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-    afterCompute.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-    afterCompute.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
-    afterCompute.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
-    afterCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    afterCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    afterCompute.image               = m_WaveDisplacementImage.GetImage();
-    afterCompute.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, VansWaterLOD::MAX_LOD_COUNT };
-    cmd.PipelineBarrier(
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-        {}, {}, { afterCompute });
-
-    m_WaveDisplacementReady = true;
+    runGerstner(0, lodLevels, false);
 }
 
 // ============================================================

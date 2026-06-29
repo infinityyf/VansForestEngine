@@ -53,6 +53,16 @@ namespace VansGraphics
 		std::array<float, FutureTimeCount> futureTimes = { 0.25f, 0.50f, 1.00f };
 	};
 
+	struct MotionMatchingSearchGroup
+	{
+		std::string name;
+		std::string stance = "Any";
+		std::string phase = "Any";
+		std::vector<int> moveStates;
+		std::vector<std::string> includeClipNameTokens;
+		std::vector<std::string> excludeClipNameTokens;
+	};
+
 	struct MotionMatchingSettings
 	{
 		bool enabled = false;
@@ -75,6 +85,7 @@ namespace VansGraphics
 		MotionFeatureSchema schema;
 		std::vector<std::string> includeClipNameTokens;
 		std::vector<std::string> excludeClipNameTokens;
+		std::vector<MotionMatchingSearchGroup> searchGroups;
 	};
 
 	struct MotionMatchingCandidateDebug
@@ -201,6 +212,8 @@ namespace VansGraphics
 		bool m_HasQueryVelocity = false;
 
 		bool ShouldIncludeClip(const std::string& clipName) const;
+		bool SearchGroupAllowsSample(const Sample& sample,
+		                             const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
 		int ResolveBoneIndex(const Skeleton& skeleton, const std::string& name) const;
 		MotionMatchingResolvedRig ResolveRig(const Skeleton& skeleton);
 		MotionMatchingResolvedRig DetectLegacyRig(const Skeleton& skeleton) const;
