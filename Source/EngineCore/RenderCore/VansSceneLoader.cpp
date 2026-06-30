@@ -2042,9 +2042,11 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
 		volumeData.giVolumeMin = glm::vec4(volumeMin, 0.0f);
 		volumeData.giVolumeSizeAndBias = glm::vec4(
 			volumeSize, volumeSize, volumeSize, m_GISettings.normalBias);
+		volumeData.traceParams = glm::vec4(
+			m_GISettings.maxRayDistance, 0.75f, 0.0f, 0.0f);
 		if (m_MaterialManager.m_SSGICBBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
 			m_MaterialManager.m_SSGICBBuffer.SetBufferData(
-				&volumeData.giVolumeMin, sizeof(glm::vec4), sizeof(glm::vec4) * 2);
+				&volumeData.giVolumeMin, sizeof(glm::vec4), sizeof(glm::vec4) * 3);
 	}
 
     // 从 scene path 推导 project root（Scenes/ → 项目根目录）

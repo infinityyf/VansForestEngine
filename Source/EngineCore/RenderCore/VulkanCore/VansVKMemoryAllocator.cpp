@@ -268,6 +268,19 @@ namespace VansGraphics
 		vmaUnmapMemory(m_Allocator, allocation);
 	}
 
+	void VansVKMemoryAllocator::FlushAllocation(VmaAllocation allocation, VkDeviceSize offset, VkDeviceSize size)
+	{
+		if (m_Allocator == nullptr || allocation == nullptr || size == 0)
+		{
+			return;
+		}
+		VkResult result = vmaFlushAllocation(m_Allocator, allocation, offset, size);
+		if (result != VK_SUCCESS)
+		{
+			VANS_LOG_ERROR("[VMA] vmaFlushAllocation failed: " << result);
+		}
+	}
+
 	void* VansVKMemoryAllocator::GetPersistentMappedPtr(VmaAllocation allocation) const
 	{
 		if (m_Allocator == nullptr || allocation == nullptr)

@@ -1,3 +1,4 @@
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansWaterWindow.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../RenderCore/WaterCore/VansWaterConfig.h"
@@ -9,6 +10,8 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "backends/imgui_impl_vulkan.h"
+#include <algorithm>
+#include <cstdint>
 
 namespace VansGraphics
 {
@@ -440,53 +443,115 @@ ImGui::DragFloat("Clipmap Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 409
             }
 
             // 纹理预览辅助 lambda（与 VansGBufferWindow 使用相同模式）
-            static VkDescriptorSet dsDisp = VK_NULL_HANDLE, dsRefl = VK_NULL_HANDLE, dsRefr = VK_NULL_HANDLE;
-            static VkDescriptorSet dsCaus = VK_NULL_HANDLE, dsThck = VK_NULL_HANDLE, dsDetail = VK_NULL_HANDLE;
-            static VkImageView ivDisp = VK_NULL_HANDLE, ivRefl = VK_NULL_HANDLE, ivRefr = VK_NULL_HANDLE;
-            static VkImageView ivCaus = VK_NULL_HANDLE, ivThck = VK_NULL_HANDLE, ivDetail = VK_NULL_HANDLE;
+            struct TexturePreviewCache
+            {
+                VkDescriptorSet ds = VK_NULL_HANDLE;
+                VkImageView view = VK_NULL_HANDLE;
+                VkImage image = VK_NULL_HANDLE;
+                uint32_t layer = UINT32_MAX;
+            };
 
-            auto DisplayTex = [](const char* label, VansVKImage& image,
-                                  VkDescriptorSet& cachedDS, VkImageView& cachedIV)
+            static TexturePreviewCache previewDisp, previewDeriv, previewDetail;
+            static TexturePreviewCache previewRefl, previewRefr, previewCaus, previewThck;
+            static TexturePreviewCache previewH0, previewPing0, previewPing1;
+
+            auto DisplayTex = [&device](const char* label, VansVKImage& image,
+                                         TexturePreviewCache& cache, uint32_t requestedLayer = 0u)
             {
                 ImGui::Text("%s", label);
-                VkImageView iv = image.GetImageView();
-                if (iv == VK_NULL_HANDLE) { ImGui::TextDisabled("(not created)"); return; }
-                if (cachedDS == VK_NULL_HANDLE || cachedIV != iv)
+                if (image.GetImageView() == VK_NULL_HANDLE || image.GetImage() == VK_NULL_HANDLE)
                 {
-                    if (cachedDS != VK_NULL_HANDLE) ImGui_ImplVulkan_RemoveTexture(cachedDS);
-                    cachedDS = ImGui_ImplVulkan_AddTexture(image.GetSampler(), iv, VK_IMAGE_LAYOUT_GENERAL);
-                    cachedIV = iv;
+                    ImGui::TextDisabled("(not created)");
+                    return;
                 }
-                if (cachedDS != VK_NULL_HANDLE)
+
+                const uint32_t layerCount = std::max(image.GetImageCreateInfo().arrayLayers, 1u);
+                const uint32_t layer = std::min(requestedLayer, layerCount - 1u);
+                if (cache.ds == VK_NULL_HANDLE || cache.image != image.GetImage() || cache.layer != layer)
+                {
+                    if (cache.ds != VK_NULL_HANDLE)
+                    {
+                        ImGui_ImplVulkan_RemoveTexture(cache.ds);
+                        cache.ds = VK_NULL_HANDLE;
+                    }
+                    if (cache.view != VK_NULL_HANDLE)
+                    {
+                        vkDestroyImageView(device.GetLogicDevice(), cache.view, nullptr);
+                        cache.view = VK_NULL_HANDLE;
+                    }
+
+                    cache.view = image.CreateLayerMipView(device.GetLogicDevice(), layer, 0);
+                    if (cache.view != VK_NULL_HANDLE)
+                    {
+                        cache.ds = ImGui_ImplVulkan_AddTexture(image.GetSampler(), cache.view, VK_IMAGE_LAYOUT_GENERAL);
+                        cache.image = image.GetImage();
+                        cache.layer = layer;
+                    }
+                }
+                if (cache.ds != VK_NULL_HANDLE)
                 {
                     float w = ImGui::GetContentRegionAvail().x * 0.95f;
                     float aspect = (float)image.GetImageDimension().width / (float)image.GetImageDimension().height;
-                    ImGui::Image((ImTextureID)cachedDS, ImVec2(w, w / aspect));
+                    ImGui::Image((ImTextureID)cache.ds, ImVec2(w, w / aspect));
                 }
             };
 
             ImGui::TextWrapped("水面渲染管线中间纹理预览：");
 
             ImGui::Separator();
-            DisplayTex("Displacement Texture2DArray (layer 0)", waterSys->GetDisplacementImage(), dsDisp, ivDisp);
+            static int waterLayer = 0;
+            int maxWaterLayer = std::max(int(waterSys->GetDisplacementImage().GetImageCreateInfo().arrayLayers) - 1, 0);
+            waterLayer = std::clamp(waterLayer, 0, maxWaterLayer);
+            ImGui::SliderInt("Water Texture Layer", &waterLayer, 0, maxWaterLayer);
+            DisplayTex("Water Displacement", waterSys->GetDisplacementImage(), previewDisp, uint32_t(waterLayer));
 
             ImGui::Separator();
-            DisplayTex("Detail Normal Texture2DArray (layer 0)", waterSys->GetDetailNormalImage(), dsDetail, ivDetail);
+            DisplayTex("Water Derivative / FFT Normal Source", waterSys->GetDerivativeImage(), previewDeriv, uint32_t(waterLayer));
+
+            ImGui::Separator();
+            DisplayTex("Detail Normal", waterSys->GetDetailNormalImage(), previewDetail, uint32_t(waterLayer));
+
+            if (waterSys->GetFFT())
+            {
+                ImGui::SeparatorText("FFT Internal");
+
+                static int fftLod = 0;
+                int maxFftLod = std::max(int(VansWaterFFT::MAX_LOD_COUNT) - 1, 0);
+                fftLod = std::clamp(fftLod, 0, maxFftLod);
+                ImGui::SliderInt("FFT H0 LOD", &fftLod, 0, maxFftLod);
+                DisplayTex("FFT H0 Spectrum", waterSys->GetFFT()->GetH0SpectrumImage(), previewH0, uint32_t(fftLod));
+
+                const char* fieldNames[] = { "Height", "Slope X", "Slope Z", "Displacement X", "Displacement Z", "Fold" };
+                static int fftField = 0;
+                ImGui::Combo("FFT Spatial Field", &fftField, fieldNames, IM_ARRAYSIZE(fieldNames));
+                uint32_t fieldLayer = uint32_t(fftLod) * VansWaterFFT::FIELD_COUNT + uint32_t(fftField);
+
+                if (ImGui::BeginTable("FFTInternalTexTable", 2, ImGuiTableFlags_Borders))
+                {
+                    ImGui::TableNextColumn();
+                    DisplayTex("FFT Ping-Pong 0", waterSys->GetFFT()->GetPingPongImage(0), previewPing0, fieldLayer);
+
+                    ImGui::TableNextColumn();
+                    DisplayTex("FFT Ping-Pong 1", waterSys->GetFFT()->GetPingPongImage(1), previewPing1, fieldLayer);
+
+                    ImGui::EndTable();
+                }
+            }
 
             ImGui::Separator();
             if (ImGui::BeginTable("WaterTexTable", 2, ImGuiTableFlags_Borders))
             {
                 ImGui::TableNextColumn();
-                DisplayTex("Reflection", waterSys->GetReflectionImage(), dsRefl, ivRefl);
+                DisplayTex("Reflection", waterSys->GetReflectionImage(), previewRefl);
 
                 ImGui::TableNextColumn();
-                DisplayTex("Refraction", waterSys->GetRefractionImage(), dsRefr, ivRefr);
+                DisplayTex("Refraction", waterSys->GetRefractionImage(), previewRefr);
 
                 ImGui::TableNextColumn();
-                DisplayTex("Caustics", waterSys->GetCausticsImage(), dsCaus, ivCaus);
+                DisplayTex("Caustics", waterSys->GetCausticsImage(), previewCaus);
 
                 ImGui::TableNextColumn();
-                DisplayTex("Thickness", waterSys->GetThicknessImage(), dsThck, ivThck);
+                DisplayTex("Thickness", waterSys->GetThicknessImage(), previewThck);
 
                 ImGui::EndTable();
             }

@@ -142,6 +142,7 @@ bool VansGraphics::VansVKBuffer::SetBufferData(const void* data, VkDeviceSize of
 	if (m_MappedPtr)
 	{
 		std::memcpy(static_cast<char*>(m_MappedPtr) + offset, data, size);
+		VansVKMemoryAllocator::Get().FlushAllocation(m_VansVKBufferAllocation, offset, size);
 		return true;
 	}
 	return VansVKMemoryAllocator::Get().WriteToAllocation(
@@ -184,4 +185,12 @@ void VansGraphics::VansVKBuffer::UpdateMapped(const void* data, VkDeviceSize off
 	if (!m_MappedPtr)
 		return;
 	std::memcpy(static_cast<char*>(m_MappedPtr) + offset, data, size);
+	VansVKMemoryAllocator::Get().FlushAllocation(m_VansVKBufferAllocation, offset, size);
+}
+
+void VansGraphics::VansVKBuffer::FlushMappedRange(VkDeviceSize offset, VkDeviceSize size)
+{
+	if (!m_MappedPtr)
+		return;
+	VansVKMemoryAllocator::Get().FlushAllocation(m_VansVKBufferAllocation, offset, size);
 }

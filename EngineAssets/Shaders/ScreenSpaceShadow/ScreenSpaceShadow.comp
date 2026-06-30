@@ -31,8 +31,10 @@ float TraceDirectionalScreenShadow(vec3 originWS, vec3 normalWS, float receiverD
 {
     vec3 lightDirWS = normalize(uDirectionLight.direction.xyz);
     float ndotl = dot(normalWS, lightDirWS);
-    if (ndotl <= 0.02)
-        return 1.0;
+    float normalFade = mix(
+        clamp(uSSS.fadeParams.w, 0.0, 1.0),
+        1.0,
+        smoothstep(-0.08, 0.18, ndotl));
 
     float maxDistance = uSSS.rayParams.x;
     float thickness = uSSS.rayParams.y;
@@ -58,12 +60,10 @@ float TraceDirectionalScreenShadow(vec3 originWS, vec3 normalWS, float receiverD
 
     float shadow = 1.0;
     float minTravel = max(normalBias * 1.5, 0.02);
-    bool previousHit = false;
-    float previousHitShadow = 1.0;
     float jitter = RandomInterLeavedWithScale(startUV * uSSS.screenSize.xy, FrameIndex);
     for (int i = 1; i <= steps; ++i)
     {
-        float t = (float(i) - 0.35 * jitter) / float(steps);
+        float t = (float(i) + jitter) / float(steps);
         t = clamp(t, 0.0, 1.0);
         float travel = t * maxDistance;
 
@@ -85,26 +85,23 @@ float TraceDirectionalScreenShadow(vec3 originWS, vec3 normalWS, float receiverD
             continue;
 
         float dz = rayDepth - sceneDepth;
-        float depthBias = max(0.01, normalBias * 0.25);
-        float localThickness = thickness * (1.0 + rayDepth * 0.01) * mix(0.75, 1.5, t);
+        float depthBias = max(0.004, normalBias * 0.2);
+        float localThickness = thickness * (1.0 + rayDepth * 0.01) * mix(1.0, 1.8, t);
         float receiverSeparation = abs(sceneDepth - receiverDepth);
-        bool hit = dz > depthBias && dz < localThickness && receiverSeparation > normalBias * 0.35;
+        bool hit = dz > depthBias && dz < localThickness && receiverSeparation > normalBias * 0.2;
         if (hit)
         {
             float hitWeight = 1.0 - smoothstep(depthBias, localThickness, dz);
             float distanceFade = 1.0 - smoothstep(0.65, 1.0, t);
-            float candidateShadow = 1.0 - hitWeight * distanceFade;
-            if (previousHit)
-                shadow = min(shadow, min(candidateShadow, previousHitShadow));
-            previousHitShadow = candidateShadow;
+            shadow = min(shadow, 1.0 - hitWeight * distanceFade);
+            break;
         }
-        previousHit = hit;
     }
 
     float fade = EdgeFade(startUV);
     fade *= 1.0 - smoothstep(uSSS.fadeParams.y * 0.8, uSSS.fadeParams.y, receiverDepth);
     float strength = clamp(uSSS.fadeParams.z, 0.0, 1.0);
-    return mix(1.0, shadow, fade * strength);
+    return mix(1.0, shadow, fade * strength * normalFade);
 }
 
 void main()

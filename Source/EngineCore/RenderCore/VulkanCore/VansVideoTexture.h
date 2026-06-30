@@ -21,6 +21,7 @@ namespace VansGraphics
     {
         std::vector<uint8_t> pixels; // RGBA8，大小 = width * height * 4
         double               pts    = 0.0; // 显示时间戳（秒，循环时已加偏移）
+        int                  uploadSlot = -1;
     };
 
     // ===========================================================================
@@ -104,11 +105,16 @@ namespace VansGraphics
 
         // ── 将像素数据上传到 GPU（仅主线程录制阶段调用）────────────────────
         bool RecordFrameUpload(VansVKCommandBuffer& cmd, const uint8_t* pixels, int dataSize);
+        bool RecordFrameUploadFromSlot(VansVKCommandBuffer& cmd, int uploadSlot, int dataSize);
 
         // ── CPU 像素缓存池（必须在 m_QueueMutex 保护下调用）───────────────
         std::vector<uint8_t> AcquireFramePixelsLocked(int dataSize);
         void RecycleFramePixelsLocked(std::vector<uint8_t>& pixels);
         void ClearFramePixelPoolLocked();
+        bool CreateFrameUploadBuffer(int dataSize);
+        int AcquireUploadSlotLocked();
+        void RecycleUploadSlotLocked(int& uploadSlot);
+        void ClearUploadSlotsLocked();
 
         // ── 最后一帧 CPU 像素缓存内部访问器（仅供 CopyNewFrameToArrayLayer 使用）──
         bool HasNewFrame() const { return m_HasNewFrame; }
@@ -142,14 +148,19 @@ namespace VansGraphics
         // ── 帧队列（生产者：解码线程 → 消费者：主线程）──────────────────────
         static constexpr int     MAX_QUEUE_SIZE = 4;
         static constexpr int     MAX_FREE_FRAME_BUFFERS = MAX_QUEUE_SIZE + 2;
+        static constexpr int     MAX_UPLOAD_SLOTS = MAX_QUEUE_SIZE + 2;
         std::queue<VideoFrameData> m_FrameQueue;
         std::vector<std::vector<uint8_t>> m_FreeFrameBuffers;
+        VansVKBuffer               m_FrameUploadBuffer;
+        bool                       m_FrameUploadBufferReady = false;
+        std::vector<int>           m_FreeUploadSlots;
         std::mutex                 m_QueueMutex;
         std::condition_variable    m_ProducerCv; // 生产者等待队列有空位
         std::condition_variable    m_ConsumerCv; // 消费者等待队列有帧（预留）
 
         // ── 最后一帧像素缓存（主线程专用）────────────────────────────────────
         std::vector<uint8_t> m_LastFramePixels;
+        int                  m_LastFrameUploadSlot = -1;
         bool                 m_HasNewFrame = false;
         bool                 m_HasPendingUpload = false;
 

@@ -61,6 +61,9 @@ namespace VansGraphics
         bool NeedsReinit() const { return m_NeedsReinit; }
         void MarkReinit() { m_NeedsReinit = true; }
 
+        VansVKImage& GetH0SpectrumImage() { return m_H0Spectrum; }
+        VansVKImage& GetPingPongImage(uint32_t index) { return m_PingPong[index & 1u]; }
+
     private:
         bool AllocateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                             VkMemoryPropertyFlags props,

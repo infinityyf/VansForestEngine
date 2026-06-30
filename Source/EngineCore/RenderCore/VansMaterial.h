@@ -22,8 +22,9 @@ namespace VansGraphics
 		glm::vec4 screenSize;
 		glm::vec4 giVolumeMin;
 		glm::vec4 giVolumeSizeAndBias;
+		glm::vec4 traceParams; // x=max trace distance, y=fade start ratio
 	};
-	static_assert(sizeof(SSGIParamsGPU) == 48, "SSGI parameter layout must match GLSL");
+	static_assert(sizeof(SSGIParamsGPU) == 64, "SSGI parameter layout must match GLSL");
 
 	struct alignas(16) ScreenSpaceShadowParamsGPU
 	{

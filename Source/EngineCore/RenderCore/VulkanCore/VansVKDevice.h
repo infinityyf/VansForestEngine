@@ -54,6 +54,16 @@ namespace VansGraphics
 			int layerLevel,
 			VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
+		bool RecordDeviceImageBufferData(VansVKImage& destImage,
+			VansVKCommandBuffer& cmd,
+			VansVKBuffer& sourceBuffer,
+			VkDeviceSize sourceOffset,
+			VkOffset3D imageOffset,
+			VkExtent3D imageSize,
+			int mipLevel,
+			int layerLevel,
+			VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
 	private:
 
 		VansFSR m_FSRController;

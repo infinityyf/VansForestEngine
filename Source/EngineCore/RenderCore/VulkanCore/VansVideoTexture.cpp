@@ -1,6 +1,7 @@
 #include "VansVideoTexture.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
+#include <cstring>
 
 // FFmpeg C 头文件必须在 extern "C" 块内引入，避免 C++ 名称修饰
 extern "C"
@@ -191,6 +192,8 @@ bool VansVideoTexture::Open(VansVKDevice* device,
             VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
     }
 
+    CreateFrameUploadBuffer(firstFrameSize);
+
     m_IsReady.store(true);
 
     // ── 7. 启动后台解码线程 ──────────────────────────────────────────────────
@@ -225,6 +228,7 @@ void VansVideoTexture::Close()
         while (!m_FrameQueue.empty())
             m_FrameQueue.pop();
         ClearFramePixelPoolLocked();
+        ClearUploadSlotsLocked();
     }
 
     // 释放 FFmpeg 资源
@@ -239,7 +243,14 @@ void VansVideoTexture::Close()
     m_PlayTime     = 0.0;
     m_HasNewFrame = false;
     m_HasPendingUpload = false;
+    m_LastFrameUploadSlot = -1;
     std::vector<uint8_t>().swap(m_LastFramePixels);
+
+    if (m_FrameUploadBufferReady && m_VkDevice)
+    {
+        m_FrameUploadBuffer.DestroyVulkanBuffer(m_VkDevice->GetLogicDevice());
+        m_FrameUploadBufferReady = false;
+    }
 }
 
 // ===========================================================================
@@ -269,8 +280,10 @@ void VansVideoTexture::Stop()
             VideoFrameData frame = std::move(m_FrameQueue.front());
             m_FrameQueue.pop();
             RecycleFramePixelsLocked(frame.pixels);
+            RecycleUploadSlotLocked(frame.uploadSlot);
         }
         RecycleFramePixelsLocked(m_LastFramePixels);
+        RecycleUploadSlotLocked(m_LastFrameUploadSlot);
     }
 
     // 4. 重置播放时间（仅主线程写）
@@ -299,7 +312,10 @@ bool VansVideoTexture::Tick(double deltaTime)
         while (!m_FrameQueue.empty() && m_FrameQueue.front().pts <= m_PlayTime)
         {
             if (hasFrame)
+            {
                 RecycleFramePixelsLocked(frameToUpload.pixels);
+                RecycleUploadSlotLocked(frameToUpload.uploadSlot);
+            }
             frameToUpload = std::move(m_FrameQueue.front());
             m_FrameQueue.pop();
             hasFrame = true;
@@ -315,11 +331,14 @@ bool VansVideoTexture::Tick(double deltaTime)
         {
             std::lock_guard<std::mutex> lock(m_QueueMutex);
             RecycleFramePixelsLocked(m_LastFramePixels);
+            RecycleUploadSlotLocked(m_LastFrameUploadSlot);
         }
 
         // 缓存本帧像素：供后续图形命令录制阶段上传，也供面光源 emissive 数组层复用。
         // 使用 std::move 避免逐字节拷贝整个帧缓冲（1080p ≈ 8 MB）
         m_LastFramePixels = std::move(frameToUpload.pixels);
+        m_LastFrameUploadSlot = frameToUpload.uploadSlot;
+        frameToUpload.uploadSlot = -1;
         m_HasNewFrame = true;
         m_HasPendingUpload = true;
 
@@ -334,13 +353,21 @@ bool VansVideoTexture::Tick(double deltaTime)
 // ===========================================================================
 bool VansVideoTexture::RecordPendingUpload(VansVKCommandBuffer& cmd)
 {
-    if (!m_IsReady.load() || !m_HasPendingUpload || m_LastFramePixels.empty())
+    if (!m_IsReady.load() || !m_HasPendingUpload ||
+        (m_LastFrameUploadSlot < 0 && m_LastFramePixels.empty()))
         return false;
 
     VANS_PROFILE_SCOPE("Video::Upload.RecordMainTexture", Vans::ProfileCategory::Video);
     const int dataSize = m_Width * m_Height * 4;
-    if (!RecordFrameUpload(cmd, m_LastFramePixels.data(), dataSize))
+    if (m_LastFrameUploadSlot >= 0)
+    {
+        if (!RecordFrameUploadFromSlot(cmd, m_LastFrameUploadSlot, dataSize))
+            return false;
+    }
+    else if (!RecordFrameUpload(cmd, m_LastFramePixels.data(), dataSize))
+    {
         return false;
+    }
 
     m_HasPendingUpload = false;
     return true;
@@ -364,6 +391,30 @@ bool VansVideoTexture::RecordFrameUpload(VansVKCommandBuffer& cmd, const uint8_t
         cmd,
         pixels,
         dataSize,
+        offset, extent,
+        0, 0);
+}
+
+bool VansVideoTexture::RecordFrameUploadFromSlot(VansVKCommandBuffer& cmd, int uploadSlot, int dataSize)
+{
+    VANS_PROFILE_SCOPE("Video::Upload.RecordFrameUploadStaged", Vans::ProfileCategory::Video);
+    if (!m_FrameUploadBufferReady || uploadSlot < 0 || uploadSlot >= MAX_UPLOAD_SLOTS)
+        return false;
+
+    VkOffset3D offset = { 0, 0, 0 };
+    VkExtent3D extent = {
+        static_cast<uint32_t>(m_Width),
+        static_cast<uint32_t>(m_Height),
+        1u
+    };
+
+    const VkDeviceSize sourceOffset =
+        static_cast<VkDeviceSize>(uploadSlot) * static_cast<VkDeviceSize>(dataSize);
+    return m_VkDevice->RecordDeviceImageBufferData(
+        m_GpuTexture.GetImage(),
+        cmd,
+        m_FrameUploadBuffer,
+        sourceOffset,
         offset, extent,
         0, 0);
 }
@@ -411,6 +462,67 @@ void VansVideoTexture::ClearFramePixelPoolLocked()
 {
     m_FreeFrameBuffers.clear();
     m_FreeFrameBuffers.shrink_to_fit();
+}
+
+bool VansVideoTexture::CreateFrameUploadBuffer(int dataSize)
+{
+    if (!m_VkDevice || dataSize <= 0 || m_FrameUploadBufferReady)
+        return m_FrameUploadBufferReady;
+
+    const VkDeviceSize bufferSize =
+        static_cast<VkDeviceSize>(dataSize) * static_cast<VkDeviceSize>(MAX_UPLOAD_SLOTS);
+    const bool bufferCreated = m_FrameUploadBuffer.CreatVulkanBuffer(
+            m_VkDevice->GetLogicDevice(),
+            bufferSize,
+            VK_FORMAT_R32_SFLOAT,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (!bufferCreated || !m_FrameUploadBuffer.PersistentMap())
+    {
+        if (bufferCreated)
+            m_FrameUploadBuffer.DestroyVulkanBuffer(m_VkDevice->GetLogicDevice());
+        VANS_LOG_WARN("[VansVideoTexture] frame upload buffer unavailable; falling back to main-thread staging copy");
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_QueueMutex);
+        m_FreeUploadSlots.clear();
+        m_FreeUploadSlots.reserve(MAX_UPLOAD_SLOTS);
+        for (int i = MAX_UPLOAD_SLOTS - 1; i >= 0; --i)
+            m_FreeUploadSlots.push_back(i);
+    }
+    m_FrameUploadBufferReady = true;
+    return true;
+}
+
+int VansVideoTexture::AcquireUploadSlotLocked()
+{
+    if (!m_FrameUploadBufferReady || m_FreeUploadSlots.empty())
+        return -1;
+
+    int slot = m_FreeUploadSlots.back();
+    m_FreeUploadSlots.pop_back();
+    return slot;
+}
+
+void VansVideoTexture::RecycleUploadSlotLocked(int& uploadSlot)
+{
+    if (uploadSlot < 0)
+        return;
+
+    if (m_FrameUploadBufferReady &&
+        static_cast<int>(m_FreeUploadSlots.size()) < MAX_UPLOAD_SLOTS)
+    {
+        m_FreeUploadSlots.push_back(uploadSlot);
+    }
+    uploadSlot = -1;
+}
+
+void VansVideoTexture::ClearUploadSlotsLocked()
+{
+    m_FreeUploadSlots.clear();
+    m_FreeUploadSlots.shrink_to_fit();
 }
 
 // ===========================================================================
@@ -514,6 +626,7 @@ void VansVideoTexture::DecodeThreadFunc()
                     VideoFrameData oldFrame = std::move(m_FrameQueue.front());
                     m_FrameQueue.pop();
                     RecycleFramePixelsLocked(oldFrame.pixels);
+                    RecycleUploadSlotLocked(oldFrame.uploadSlot);
                 }
             }
             ptsOffset = 0.0;
@@ -596,6 +709,7 @@ void VansVideoTexture::DecodeThreadFunc()
                 {
                     std::lock_guard<std::mutex> lock(m_QueueMutex);
                     vfd.pixels = AcquireFramePixelsLocked(rgbaBufSize);
+                    vfd.uploadSlot = AcquireUploadSlotLocked();
                 }
 
                 uint8_t* dstData[4]   = { vfd.pixels.data(), nullptr, nullptr, nullptr };
@@ -605,6 +719,14 @@ void VansVideoTexture::DecodeThreadFunc()
                     sws_scale(m_SwsCtx,
                         frame->data, frame->linesize, 0, m_Height,
                         dstData, dstStride);
+                }
+
+                if (vfd.uploadSlot >= 0)
+                {
+                    VANS_PROFILE_SCOPE("Video::Decode.StageUploadMemcpy", Vans::ProfileCategory::Video);
+                    const VkDeviceSize uploadOffset =
+                        static_cast<VkDeviceSize>(vfd.uploadSlot) * static_cast<VkDeviceSize>(rgbaBufSize);
+                    m_FrameUploadBuffer.UpdateMapped(vfd.pixels.data(), uploadOffset, rgbaBufSize);
                 }
 
                 {

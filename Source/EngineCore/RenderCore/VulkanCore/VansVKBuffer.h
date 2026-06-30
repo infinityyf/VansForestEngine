@@ -80,6 +80,7 @@ namespace VansGraphics
 		// Write data into the persistently mapped region (no vkMapMemory call).
 		// The buffer must have been PersistentMap()'d first.
 		void UpdateMapped(const void* data, VkDeviceSize offset, VkDeviceSize size);
+		void FlushMappedRange(VkDeviceSize offset, VkDeviceSize size);
 
 		// Returns true when the buffer is currently persistently mapped.
 		bool IsMapped() const { return m_MappedPtr != nullptr; }

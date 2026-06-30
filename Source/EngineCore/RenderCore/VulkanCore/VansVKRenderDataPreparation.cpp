@@ -613,6 +613,7 @@ namespace VansGraphics
 			(float)m_RenderWidth, (float)m_RenderHeight, 1.0f / m_RenderWidth, 1.0f / m_RenderHeight);
 		data.giVolumeMin = glm::vec4(volumeMin, 0.0f);
 		data.giVolumeSizeAndBias = glm::vec4(volumeSize, volumeSize, volumeSize, gi.normalBias);
+		data.traceParams = glm::vec4(gi.maxRayDistance, 0.75f, 0.0f, 0.0f);
 		manager->m_SSGICBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(data), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
@@ -677,8 +678,8 @@ namespace VansGraphics
 		data.halfSize = glm::vec4(
 			static_cast<float>(m_RenderWidth), static_cast<float>(m_RenderHeight),
 			1.0f / static_cast<float>(m_RenderWidth), 1.0f / static_cast<float>(m_RenderHeight));
-		data.rayParams = glm::vec4(2.8f, 0.055f, 0.05f, 48.0f);
-		data.fadeParams = glm::vec4(32.0f, 80.0f, 0.45f, 0.0f);
+		data.rayParams = glm::vec4(0.75f, 0.065f, 0.018f, 40.0f);
+		data.fadeParams = glm::vec4(32.0f, 45.0f, 0.75f, 0.25f);
 
 		manager->m_ScreenSpaceShadowParamsCBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
