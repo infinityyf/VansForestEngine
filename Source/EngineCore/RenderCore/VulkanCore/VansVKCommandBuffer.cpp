@@ -593,7 +593,7 @@ bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice&
 	VkResult result = vkQueueSubmit(queue, 1, &submit_info, fence);
 	if (VK_SUCCESS != result) 
 	{
-		VANS_LOG_ERROR("Error occurred during command buffer submission.");
+		VANS_LOG_ERROR("Error occurred during command buffer submission. VkResult=" << static_cast<int>(result));
 		return false;
 	}
 

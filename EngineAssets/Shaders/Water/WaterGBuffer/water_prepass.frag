@@ -18,6 +18,7 @@ layout(location = 0) in  vec3  inWorldPos;
 layout(location = 1) in  float inLinearDepth;
 layout(location = 2) in  vec3  inWorldNormal;
 layout(location = 3) flat in int inLodLevel;
+layout(location = 4) in  vec2  inPatchUV;
 
 // ── Set 1：Water GBuffer Pass 输入 ───────────────────────────
 // binding 0-2 由 vertex shader 使用，frag 只使用 binding 0 的参数和 binding 3 的法线贴图
@@ -40,6 +41,7 @@ layout(set = 1, binding = 0) uniform WaterGBufferParams
 
 // N-01: Detail Normal Texture2DArray（compute 生成，替代旧 sampler2D）
 layout(set = 1, binding = 3) uniform sampler2DArray waterDetailNormalArray;
+layout(set = 1, binding = 4) uniform sampler2DArray waterDerivativeMap;
 
 // Attachment 0: WaterGBuf_Normal（RGBA16F, 世界空间法线 XYZ, A 留用）
 layout(location = 0) out vec4 outWaterNormal;
@@ -47,21 +49,62 @@ layout(location = 0) out vec4 outWaterNormal;
 layout(location = 1) out vec4 outWaterPosDepth;
 
 // ── N-01: 世界空间直接平铺采样切线空间 detail normal ──
-vec3 SampleDetailNormalTS(vec2 worldXZ)
+vec3 SampleDetailNormalTS(vec2 worldXZ, int lodLevel)
 {
-    // 世界空间直接平铺：每 detailWorldCoverage 米重复一次
     float detailWorldCoverage = waterParams.pad3[1].z;
-    if (detailWorldCoverage <= 0.0) detailWorldCoverage = 32.0;
-    vec2 uv = worldXZ / detailWorldCoverage;  // fract 由 CLAMP_TO_EDGE 替代…
-    // 实际上用 fract 实现重复平铺
-    uv = fract(uv);
-
-    // 始终采样 layer 0（单层纹理）
-    vec3 packed = textureLod(waterDetailNormalArray, vec3(uv, 0.0), 0.0).xyz;
+    if (detailWorldCoverage <= 0.0)
+        detailWorldCoverage = 32.0;
+    vec2 uv = worldXZ / detailWorldCoverage;
+    int layerCount = textureSize(waterDetailNormalArray, 0).z;
+    int layer = clamp(lodLevel, 0, max(layerCount - 1, 0));
+    vec3 packed = textureLod(waterDetailNormalArray, vec3(uv, float(layer)), 0.0).xyz;
     return packed * 2.0 - 1.0;  // [0,1] → [-1,1] 切线空间
 }
 
 // ── 从宏法线构建 TBN，将切线空间 detail normal 变换到世界空间 ──
+int GetWaveMode()
+{
+    return int(waterParams.pad3[2].x + 0.5);
+}
+
+bool UseDerivativeNormal()
+{
+    return waterParams.pad3[2].y > 0.5;
+}
+
+int GetFFTLODCount()
+{
+    return int(waterParams.pad3[2].z + 0.5);
+}
+
+bool UseFFTDerivativeNormal(int lodLevel)
+{
+    int mode = GetWaveMode();
+    if (!UseDerivativeNormal())
+        return false;
+    if (mode == 1)
+        return true;
+    return mode == 2 && lodLevel < GetFFTLODCount();
+}
+
+vec3 SampleFFTDerivativeNormal(vec2 patchUV, int lodLevel)
+{
+    ivec3 texSize = textureSize(waterDerivativeMap, 0);
+    int layerCount = texSize.z;
+    int layer = clamp(lodLevel, 0, max(layerCount - 1, 0));
+    vec2 uv = fract(patchUV);
+    vec2 texel = 1.0 / vec2(max(texSize.xy, ivec2(1)));
+    vec4 d =
+        textureLod(waterDerivativeMap, vec3(uv, float(layer)), 0.0) * 0.50 +
+        textureLod(waterDerivativeMap, vec3(fract(uv + vec2(texel.x, 0.0)), float(layer)), 0.0) * 0.125 +
+        textureLod(waterDerivativeMap, vec3(fract(uv - vec2(texel.x, 0.0)), float(layer)), 0.0) * 0.125 +
+        textureLod(waterDerivativeMap, vec3(fract(uv + vec2(0.0, texel.y)), float(layer)), 0.0) * 0.125 +
+        textureLod(waterDerivativeMap, vec3(fract(uv - vec2(0.0, texel.y)), float(layer)), 0.0) * 0.125;
+    return normalize(vec3(-d.x * waterParams.waveTimeAndScale.w,
+                           1.0,
+                          -d.y * waterParams.waveTimeAndScale.w));
+}
+
 vec3 TransformDetailToWorld(vec3 detailTS, vec3 macroNormalWS)
 {
     // 切线空间：Y 轴 = 水面法线方向（水平面时为世界 Y-up）
@@ -111,13 +154,15 @@ void main()
         return;
     }
 
-    vec3 worldNormal = normalize(inWorldNormal);
+    vec3 worldNormal = UseFFTDerivativeNormal(inLodLevel)
+        ? SampleFFTDerivativeNormal(inPatchUV, inLodLevel)
+        : normalize(inWorldNormal);
 
     // ── N-01: 细节法线混合 ──────────────────────────────────
     // detailIntensity 控制切线空间 detail normal 的 XZ 扰动强度
     // intensity=0 → detailTS.xz=0 → normalize → (0,1,0) → 宏法线不变
     float detailIntensity = waterParams.pad3[0].x;
-    vec3 detailTS = SampleDetailNormalTS(inWorldPos.xz);
+    vec3 detailTS = SampleDetailNormalTS(inWorldPos.xz, inLodLevel);
     detailTS.xz *= detailIntensity;
     detailTS = normalize(detailTS);
     vec3 detailWS = TransformDetailToWorld(detailTS, worldNormal);

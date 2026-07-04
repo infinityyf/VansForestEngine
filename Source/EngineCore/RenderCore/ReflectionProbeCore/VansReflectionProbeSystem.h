@@ -59,6 +59,7 @@ namespace VansGraphics
 		ReflectionProbeEditorState& GetEditorState() { return m_EditorState; }
 		const ReflectionProbeEditorState& GetEditorState() const { return m_EditorState; }
 		VansTexture* GetSpecularArray() const { return m_SpecularArray; }
+		VkImageView GetPreviewFaceView(size_t probeIndex, uint32_t face, uint32_t mipLevel);
 		uint32_t GetArrayResolution() const { return m_ArrayResolution; }
 		uint32_t GetMipCount() const { return m_MipCount; }
 		const std::string& GetScenePath() const { return m_ScenePath; }
@@ -100,6 +101,7 @@ namespace VansGraphics
 		VansVKBuffer m_MetadataBuffer;
 		VansTexture* m_SpecularArray = nullptr;
 		VkDevice m_Device = VK_NULL_HANDLE;
+		std::vector<VkImageView> m_EditorPreviewFaceViews;
 		VansComputeShader* m_PrefilterShader = nullptr;
 		VkDescriptorSetLayout m_PrefilterLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_PrefilterSets;

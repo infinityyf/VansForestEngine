@@ -8,6 +8,7 @@
 #include "VansMaterial.h"
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -45,6 +46,8 @@ namespace VansGraphics
         bool enableDecalBlend = false;
         int colorAttachmentCount = -1;
         VansManagedShaderKind kind = VansManagedShaderKind::Graphics;
+        std::map<VkShaderStageFlagBits, std::string> explicitStageFiles;
+        std::vector<std::string> materialPasses;
     };
 
     struct VansShaderRecord

@@ -159,6 +159,9 @@ namespace VansGraphics
 		// 此 pass 执行 ScreenSpaceFeature + DeferredLighting + SkyBox
 		VansVKRenderPass m_VansDeferredSkyboxPass;
 
+		// Forward opaque pass after deferred lighting and before transparent.
+		VansVKRenderPass m_VansForwardOpaqueAfterDeferredPass;
+
 		VkDevice m_LogicDevice;
 
 	public:
@@ -202,6 +205,8 @@ namespace VansGraphics
 
 		// Deferred + SkyBox pass 访问器
 		VansVKRenderPass& GetVansDeferredSkyboxPass() { return m_VansDeferredSkyboxPass; }
+
+		VansVKRenderPass& GetVansForwardOpaqueAfterDeferredPass() { return m_VansForwardOpaqueAfterDeferredPass; }
 
 		// Water GBuffer pass 访问器
 		VansVKRenderPass& GetVansWaterGBufferPass() { return m_VansWaterGBufferPass; }

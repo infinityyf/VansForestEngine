@@ -24,6 +24,7 @@ namespace VansGraphics
 		DECAL_NODE = 1 << 8,    // OBB 贴花节点，叠写 GBuffer
 		PARTICLE_NODE = 1 << 9, // 粒子实例化 Billboard 节点
 		WATER_NODE = 1 << 10,   // 水面节点，独立 Water GBuffer Pass
+		FORWARD_OPAQUE_AFTER_DEFERRED_NODE = 1 << 11,
 	};
 
 	struct alignas(16) ModelDataStruct

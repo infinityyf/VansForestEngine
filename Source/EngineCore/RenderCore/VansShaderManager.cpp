@@ -130,9 +130,9 @@ bool VansShaderManager::LoadShaderRecord(VansShaderRecord& record, const std::st
 
     bool loaded = false;
     if (record.entry.kind == VansManagedShaderKind::RayTracing)
-        loaded = shader->InitRayTracingShader(device, fullPath);
+        loaded = shader->InitRayTracingShader(device, fullPath, record.entry.explicitStageFiles);
     else
-        loaded = shader->InitShader(device, fullPath);
+        loaded = shader->InitShader(device, fullPath, record.entry.explicitStageFiles);
 
     if (!loaded)
     {

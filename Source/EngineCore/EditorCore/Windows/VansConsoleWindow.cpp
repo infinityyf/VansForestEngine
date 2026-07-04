@@ -1,8 +1,12 @@
 #include "VansConsoleWindow.h"
+#include "../VansEditorWindow.h"
 #include "imgui.h"
 
 void VansGraphics::VansConsoleWindow::ShowWindow(VansVKDevice& device)
 {
+    if (!VansEditorWindow::m_ConsoleWindowOpen)
+        return;
+
     ImGui::Begin("Console");
 
     // ---- Toolbar row ----

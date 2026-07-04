@@ -360,6 +360,21 @@ void VansGraphics::VansScene::DrawTransParentNodes()
     }
 }
 
+void VansGraphics::VansScene::DrawForwardOpaqueAfterDeferredNodes()
+{
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    for (auto& node : m_ForwardOpaqueAfterDeferredRenderNodes)
+    {
+        if (node == nullptr || !node->IsEnabled())
+        {
+            continue;
+        }
+        node->Draw(cmd, globalStateData);
+    }
+}
+
 void VansGraphics::VansScene::DrawParticleNodes()
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);

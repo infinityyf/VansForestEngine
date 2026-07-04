@@ -24,7 +24,7 @@ void main()
     vec3 hdr = texture(srcColor, uv).rgb;
 
     // 防止 NaN / INF 影响对数平均
-    float lum = max(Luminance(hdr), 1e-6);
+    float lum = clamp(Luminance(hdr), 1e-6, 256.0);
 
     // 存储对数亮度，便于下一 pass 计算几何平均
     imageStore(lumOut, coord, vec4(log(lum), 0.0, 0.0, 1.0));

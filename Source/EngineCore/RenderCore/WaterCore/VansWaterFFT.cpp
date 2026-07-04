@@ -405,6 +405,10 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
 
     for (int stage = 0; stage < log2N; ++stage)
     {
+        BarrierImage(cmd, m_PingPong[dst], VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, fieldLayers);
+
         FFTIterPC pc = {};
         pc.stage = stage;
         pc.direction = 0;
@@ -423,6 +427,10 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
 
     for (int stage = 0; stage < log2N; ++stage)
     {
+        BarrierImage(cmd, m_PingPong[dst], VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, fieldLayers);
+
         FFTIterPC pc = {};
         pc.stage = stage;
         pc.direction = 1;
@@ -443,7 +451,8 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
         VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, m_Params.lodCount);
     BarrierImage(cmd, *m_DerivativeImage, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, m_Params.lodCount);
 
     cmd.EnsureComputeShader(*m_DisplacementExtractShader, { m_ExtractLayout });
@@ -453,7 +462,8 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
         0, m_Params.lodCount);
     BarrierImage(cmd, *m_DerivativeImage, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, m_Params.lodCount);
 }
 

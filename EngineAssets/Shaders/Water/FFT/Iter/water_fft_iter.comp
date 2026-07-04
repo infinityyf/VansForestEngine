@@ -19,12 +19,15 @@ layout(push_constant) uniform FFTIterPC
 
 const float PI = 3.14159265358979323846;
 
-uint ReverseBits8(uint v)
+uint ReverseBits(uint v, int bits)
 {
-    v = ((v & 0x55u) << 1) | ((v >> 1) & 0x55u);
-    v = ((v & 0x33u) << 2) | ((v >> 2) & 0x33u);
-    v = ((v & 0x0Fu) << 4) | ((v >> 4) & 0x0Fu);
-    return v;
+    uint r = 0u;
+    for (int i = 0; i < bits; ++i)
+    {
+        r = (r << 1) | (v & 1u);
+        v >>= 1;
+    }
+    return r;
 }
 
 vec2 ComplexMul(vec2 a, vec2 b)
@@ -47,6 +50,10 @@ void main()
     if (pixel.x >= N || pixel.y >= N || layer >= maxLayer)
         return;
 
+    int bitCount = 0;
+    for (int n = N; n > 1; n >>= 1)
+        ++bitCount;
+
     int index = pc.direction == 0 ? pixel.x : pixel.y;
     int butterflySize = 1 << (pc.stage + 1);
     int halfSize = butterflySize >> 1;
@@ -60,8 +67,8 @@ void main()
 
     if (pc.stage == 0)
     {
-        readEven = int(ReverseBits8(uint(readEven)));
-        readOdd = int(ReverseBits8(uint(readOdd)));
+        readEven = int(ReverseBits(uint(readEven), bitCount));
+        readOdd = int(ReverseBits(uint(readOdd), bitCount));
     }
 
     ivec2 coordEven = pixel;

@@ -240,6 +240,9 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
 	case OPAQUE_NODE:
 		m_OpaqueRenderNodes.push_back(renderNode);
 		break;
+	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
+		m_ForwardOpaqueAfterDeferredRenderNodes.push_back(renderNode);
+		break;
     case TERRAIN_NODE:
         m_TerrainRenderNode = renderNode;
 		break;
@@ -284,6 +287,10 @@ void VansGraphics::VansScene::CreateNodeDescriptorSets()
     for (auto node : m_OpaqueRenderNodes)
     {
         node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+	}
+	for (auto node : m_ForwardOpaqueAfterDeferredRenderNodes)
+	{
+		node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
 	}
     if (m_TerrainRenderNode != nullptr)
     {
@@ -474,6 +481,23 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
                     m_MaterialManager.m_GlobalPBRDataBuffer.GetNativeBuffer(),
                     0,
                     m_MaterialManager.m_GlobalPBRDataBuffer.GetBufferSize()
+                }
+            }
+        }
+    );
+
+    // Binding 15: Custom material payload SSBO
+    descManager->m_BufferDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_CUSTOM_MATERIAL_SSBO,
+            0,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {
+                {
+                    m_MaterialManager.m_GlobalCustomMaterialDataBuffer.GetNativeBuffer(),
+                    0,
+                    m_MaterialManager.m_GlobalCustomMaterialDataBuffer.GetBufferSize()
                 }
             }
         }
@@ -677,6 +701,8 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::FindRenderNodeByName(cons
     // Search across all render node lists that store mesh nodes
     for (auto* node : m_OpaqueRenderNodes)
         if (node && node->m_NodeName == name) return node;
+	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
+		if (node && node->m_NodeName == name) return node;
     for (auto* node : m_TransParentRenderNodes)
         if (node && node->m_NodeName == name) return node;
     if (m_SkyBoxNode && m_SkyBoxNode->m_NodeName == name) return m_SkyBoxNode;
@@ -849,6 +875,10 @@ void VansGraphics::VansScene::UnLoadScene()
 	for (auto* node : m_OpaqueRenderNodes)
 		deleteRenderNode(node);
 	m_OpaqueRenderNodes.clear();
+
+	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
+		deleteRenderNode(node);
+	m_ForwardOpaqueAfterDeferredRenderNodes.clear();
 
 	for (auto* node : m_TransParentRenderNodes)
 		deleteRenderNode(node);
@@ -1457,6 +1487,8 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
 
     for (auto* node : m_OpaqueRenderNodes)
         updateNode(node);
+	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
+		updateNode(node);
     for (auto* node : m_TransParentRenderNodes)
         updateNode(node);
     for (auto* node : m_PostProcessRenderNodes)
@@ -1798,6 +1830,11 @@ void VansGraphics::VansScene::UpdateTransformRenderData()
         if (!node->IsEnabled()) continue;
         node->UpdateModelData();
     }
+	for (auto node : m_ForwardOpaqueAfterDeferredRenderNodes)
+	{
+		if (!node->IsEnabled()) continue;
+		node->UpdateModelData();
+	}
     for (auto node : m_TransParentRenderNodes)
     {
         if (!node->IsEnabled()) continue;
@@ -1823,9 +1860,11 @@ std::vector<VansRenderNode*> VansGraphics::VansScene::CollectSSBOManagedRenderNo
 {
     std::vector<VansRenderNode*> result;
     result.reserve(m_OpaqueRenderNodes.size()
+				 + m_ForwardOpaqueAfterDeferredRenderNodes.size()
                  + m_TransParentRenderNodes.size()
                  + m_DecalRenderNodes.size());
     result.insert(result.end(), m_OpaqueRenderNodes.begin(),    m_OpaqueRenderNodes.end());
+	result.insert(result.end(), m_ForwardOpaqueAfterDeferredRenderNodes.begin(), m_ForwardOpaqueAfterDeferredRenderNodes.end());
     result.insert(result.end(), m_TransParentRenderNodes.begin(), m_TransParentRenderNodes.end());
     result.insert(result.end(), m_DecalRenderNodes.begin(),     m_DecalRenderNodes.end());
     return result;
@@ -1930,6 +1969,9 @@ void VansGraphics::VansScene::RemoveRenderNodeFromVector(VansRenderNode* node)
     switch (node->GetNodeType())
     {
     case OPAQUE_NODE:      vec = &m_OpaqueRenderNodes;      break;
+	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
+		vec = &m_ForwardOpaqueAfterDeferredRenderNodes;
+		break;
     case TRANSPARENT_NODE: vec = &m_TransParentRenderNodes; break;
     case DECAL_NODE:       vec = &m_DecalRenderNodes;       break;
     default: return; // 不在 SSBO 管理的列表中

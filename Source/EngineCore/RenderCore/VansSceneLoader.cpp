@@ -51,6 +51,7 @@
 #include <mutex>
 #include <cctype>
 #include <functional>
+#include <optional>
 #include <glm/gtx/quaternion.hpp>
 
 namespace VansGraphics
@@ -83,6 +84,183 @@ bool ReadBoolField(const json& object, const char* key, bool fallback)
     return found != object.end() && found->is_boolean() ? found->get<bool>() : fallback;
 }
 
+float ReadFloatField(const json& object, const char* key, float fallback)
+{
+    if (!object.is_object())
+        return fallback;
+    const auto found = object.find(key);
+    return found != object.end() && found->is_number() ? found->get<float>() : fallback;
+}
+
+void ApplyVolumetricCloudSettings(VansMaterialManager& materialManager, const json& sceneData)
+{
+    const auto cloudIt = sceneData.find("volumetricClouds");
+    if (cloudIt == sceneData.end() || !cloudIt->is_object())
+        return;
+
+    const json& cloud = *cloudIt;
+    VansCloudParamsGPU& params = materialManager.m_CloudParams;
+
+    params.planetRadius = ReadFloatField(cloud, "planetRadius", params.planetRadius);
+    params.seaLevel = ReadFloatField(cloud, "seaLevel", params.seaLevel);
+
+    const float baseHeight = ReadFloatField(cloud, "cloudBaseHeight",
+        ReadFloatField(cloud, "cloudMinHeight", params.cloudMinHeight));
+    const float thickness = ReadFloatField(cloud, "cloudThickness",
+        ReadFloatField(cloud, "cloudMaxHeight", params.cloudMaxHeight) - baseHeight);
+    params.cloudMinHeight = baseHeight;
+    params.cloudMaxHeight = baseHeight + std::max(thickness, 100.0f);
+
+    params.density = ReadFloatField(cloud, "density", params.density);
+    params.coverage = ReadFloatField(cloud, "coverage", params.coverage);
+    params.sunBrightness = ReadFloatField(cloud, "sunBrightness", params.sunBrightness);
+    params.phaseG = ReadFloatField(cloud, "phaseG", params.phaseG);
+
+    params.mainTileMeters = ReadFloatField(cloud, "mainTileMeters", params.mainTileMeters);
+    params.detailTileMeters = ReadFloatField(cloud, "detailTileMeters", params.detailTileMeters);
+    params.mainHeightScale = ReadFloatField(cloud, "mainHeightScale", params.mainHeightScale);
+    params.detailHeightScale = ReadFloatField(cloud, "detailHeightScale", params.detailHeightScale);
+
+    params.thresholdLowCoverage = ReadFloatField(cloud, "thresholdLowCoverage", params.thresholdLowCoverage);
+    params.thresholdHighCoverage = ReadFloatField(cloud, "thresholdHighCoverage", params.thresholdHighCoverage);
+    params.densityRemapLow = ReadFloatField(cloud, "densityRemapLow", params.densityRemapLow);
+    params.densityRemapHigh = ReadFloatField(cloud, "densityRemapHigh", params.densityRemapHigh);
+
+    params.mainErosionStrength = ReadFloatField(cloud, "mainErosionStrength", params.mainErosionStrength);
+    params.detailErosionStrength = ReadFloatField(cloud, "detailErosionStrength", params.detailErosionStrength);
+    params.edgeErosionStrength = ReadFloatField(cloud, "edgeErosionStrength", params.edgeErosionStrength);
+    params.verticalShapePower = ReadFloatField(cloud, "verticalShapePower", params.verticalShapePower);
+
+    params.detailErosionLow = ReadFloatField(cloud, "detailErosionLow", params.detailErosionLow);
+    params.detailErosionHigh = ReadFloatField(cloud, "detailErosionHigh", params.detailErosionHigh);
+    params.detailEdgeStrength = ReadFloatField(cloud, "detailEdgeStrength", params.detailEdgeStrength);
+    params.shadowDensityScale = ReadFloatField(cloud, "shadowDensityScale", params.shadowDensityScale);
+
+    params.mainTileMeters = std::max(params.mainTileMeters, 1000.0f);
+    params.detailTileMeters = std::max(params.detailTileMeters, 500.0f);
+    params.densityRemapHigh = std::max(params.densityRemapHigh, params.densityRemapLow + 0.01f);
+    params.detailErosionHigh = std::max(params.detailErosionHigh, params.detailErosionLow + 0.01f);
+    materialManager.UploadCloudParamsToGPU();
+}
+
+std::filesystem::path ResolvePathUnderPrefix(const std::string& pathPrefix, const std::string& path)
+{
+    std::filesystem::path fsPath(path);
+    if (fsPath.is_absolute())
+        return fsPath;
+    return std::filesystem::path(pathPrefix) / fsPath;
+}
+
+VkShaderStageFlagBits ParseShaderStageName(const std::string& stageName)
+{
+    static const std::unordered_map<std::string, VkShaderStageFlagBits> stages = {
+        { "vertex", VK_SHADER_STAGE_VERTEX_BIT },
+        { "vert", VK_SHADER_STAGE_VERTEX_BIT },
+        { "fragment", VK_SHADER_STAGE_FRAGMENT_BIT },
+        { "frag", VK_SHADER_STAGE_FRAGMENT_BIT },
+        { "compute", VK_SHADER_STAGE_COMPUTE_BIT },
+        { "comp", VK_SHADER_STAGE_COMPUTE_BIT },
+        { "geometry", VK_SHADER_STAGE_GEOMETRY_BIT },
+        { "geom", VK_SHADER_STAGE_GEOMETRY_BIT },
+        { "tessControl", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT },
+        { "tesc", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT },
+        { "tessEval", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT },
+        { "tese", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT },
+        { "rayGen", VK_SHADER_STAGE_RAYGEN_BIT_KHR },
+        { "rgen", VK_SHADER_STAGE_RAYGEN_BIT_KHR },
+        { "miss", VK_SHADER_STAGE_MISS_BIT_KHR },
+        { "rmiss", VK_SHADER_STAGE_MISS_BIT_KHR },
+        { "closestHit", VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR },
+        { "rchit", VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR },
+        { "anyHit", VK_SHADER_STAGE_ANY_HIT_BIT_KHR },
+        { "rahit", VK_SHADER_STAGE_ANY_HIT_BIT_KHR },
+        { "intersection", VK_SHADER_STAGE_INTERSECTION_BIT_KHR },
+        { "rint", VK_SHADER_STAGE_INTERSECTION_BIT_KHR },
+    };
+    auto it = stages.find(stageName);
+    return it != stages.end() ? it->second : static_cast<VkShaderStageFlagBits>(0);
+}
+
+VansManagedShaderKind ParseShaderKind(const json& shaderJson)
+{
+    std::string kind = shaderJson.value("kind", shaderJson.value("type", "graphics"));
+    if (kind == "compute")
+        return VansManagedShaderKind::Compute;
+    if (kind == "rayTracing" || kind == "raytracing")
+        return VansManagedShaderKind::RayTracing;
+    return VansManagedShaderKind::Graphics;
+}
+
+VkCompareOp ParseCompareOp(const std::string& value, VkCompareOp fallback)
+{
+    static const std::unordered_map<std::string, VkCompareOp> ops = {
+        { "never", VK_COMPARE_OP_NEVER },
+        { "less", VK_COMPARE_OP_LESS },
+        { "equal", VK_COMPARE_OP_EQUAL },
+        { "lessOrEqual", VK_COMPARE_OP_LESS_OR_EQUAL },
+        { "greater", VK_COMPARE_OP_GREATER },
+        { "notEqual", VK_COMPARE_OP_NOT_EQUAL },
+        { "greaterOrEqual", VK_COMPARE_OP_GREATER_OR_EQUAL },
+        { "always", VK_COMPARE_OP_ALWAYS },
+    };
+    auto it = ops.find(value);
+    return it != ops.end() ? it->second : fallback;
+}
+
+VkCullModeFlags ParseCullMode(const std::string& value, VkCullModeFlags fallback)
+{
+    if (value == "none") return VK_CULL_MODE_NONE;
+    if (value == "front") return VK_CULL_MODE_FRONT_BIT;
+    if (value == "back") return VK_CULL_MODE_BACK_BIT;
+    if (value == "frontAndBack") return VK_CULL_MODE_FRONT_AND_BACK;
+    return fallback;
+}
+
+void ReadShaderStageFile(
+    const json& shaderJson,
+    const char* key,
+    VkShaderStageFlagBits stage,
+    std::map<VkShaderStageFlagBits, std::string>& stageFiles)
+{
+    const std::string file = ReadStringField(shaderJson, key);
+    if (!file.empty())
+        stageFiles[stage] = file;
+}
+
+std::vector<std::string> ReadShaderMaterialPasses(const json& shaderJson)
+{
+    std::vector<std::string> passes;
+    const json* passValue = nullptr;
+    if (shaderJson.contains("passes"))
+        passValue = &shaderJson["passes"];
+    else if (shaderJson.contains("materialPasses"))
+        passValue = &shaderJson["materialPasses"];
+    else if (shaderJson.contains("pass"))
+        passValue = &shaderJson["pass"];
+
+    if (!passValue)
+        return passes;
+
+    if (passValue->is_string())
+    {
+        passes.push_back(passValue->get<std::string>());
+    }
+    else if (passValue->is_array())
+    {
+        for (const json& passName : *passValue)
+            if (passName.is_string())
+                passes.push_back(passName.get<std::string>());
+    }
+    else if (passValue->is_object())
+    {
+        for (const auto& [passName, enabled] : passValue->items())
+            if (!enabled.is_boolean() || enabled.get<bool>())
+                passes.push_back(passName);
+    }
+
+    return passes;
+}
+
 std::string RuntimeAssetNameFromReference(const json& reference)
 {
 	if (reference.is_string())
@@ -107,9 +285,89 @@ std::string RuntimeAssetNameFromReference(const json& reference)
 			if (!runtimeName.empty())
 				return runtimeName;
 		}
+		if (record.type == Vans::VansAssetType::Shader)
+		{
+			std::ifstream shaderInput(record.sourcePath);
+			const json shader = shaderInput ? json::parse(shaderInput, nullptr, false) : json();
+			const std::string shaderName = ReadStringField(shader, "name");
+			if (!shaderName.empty())
+				return shaderName;
+		}
 		return guid;
 	}
 	return guid;
+}
+
+json RuntimeShaderAssetFromReference(const json& reference)
+{
+    if (!reference.is_object())
+        return json::object();
+
+    const std::string guidText = ReadStringField(reference, "guid");
+    if (guidText.empty())
+        return json::object();
+
+    Vans::VansAssetGuid guid;
+    if (!Vans::VansAssetGuid::TryParse(guidText, guid))
+        return json::object();
+
+    auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+    if (!database)
+        return json::object();
+
+    std::optional<Vans::VansAssetRecord> record = database->Find(guid);
+    if (!record || record->type != Vans::VansAssetType::Shader)
+        return json::object();
+
+    std::ifstream shaderInput(record->sourcePath);
+    json shader = shaderInput ? json::parse(shaderInput, nullptr, false) : json();
+    return shader.is_object() ? shader : json::object();
+}
+
+json MergeShaderParameterDefaults(const json& shader, const json& materialParameters)
+{
+    json merged = shader.contains("parameters") && shader["parameters"].is_object()
+        ? shader["parameters"]
+        : json::object();
+    if (materialParameters.is_object())
+    {
+        for (const auto& [name, value] : materialParameters.items())
+        {
+            if (merged.contains(name) && merged[name].is_object() && value.is_object())
+            {
+                for (const auto& [field, overrideValue] : value.items())
+                    merged[name][field] = overrideValue;
+            }
+            else
+            {
+                merged[name] = value;
+            }
+        }
+    }
+    return merged;
+}
+
+json MergeShaderTextureDefaults(const json& shader, const json& materialTextures)
+{
+    json merged = shader.contains("textures") && shader["textures"].is_object()
+        ? shader["textures"]
+        : json::object();
+    if (materialTextures.is_object())
+    {
+        for (const auto& [name, value] : materialTextures.items())
+        {
+            if (!merged.contains(name) || !merged[name].is_object())
+                merged[name] = json::object();
+            if (value.is_string())
+                merged[name]["value"] = value;
+            else if (value.is_object() && value.contains("guid"))
+                merged[name]["value"] = RuntimeAssetNameFromReference(value);
+            else if (value.is_object())
+                for (const auto& [field, overrideValue] : value.items())
+                    merged[name][field] = overrideValue;
+        }
+    }
+    return merged;
 }
 
 const json* ReadObjectField(const json& object, const char* key)
@@ -137,15 +395,63 @@ json RuntimeMaterialFromAsset(const Vans::VansAssetRecord& record)
     if (asset.is_discarded() || !asset.is_object())
         return {};
 
-    json material = asset.value("parameters", json::object());
+    const std::string materialType = asset.value("materialType", "pbr");
+    const bool customShaderMaterial = materialType == "customShader" || materialType == "custom";
+    const json shaderAsset = asset.contains("shader") ? RuntimeShaderAssetFromReference(asset["shader"]) : json::object();
+    json material = customShaderMaterial ? json::object() : asset.value("parameters", json::object());
     material["name"] = record.guid.ToString();
-    material["type"] = asset.value("materialType", "pbr");
+    material["type"] = materialType;
+    if (asset.contains("shader"))
+    {
+        if (asset["shader"].is_string())
+            material["shader"] = asset["shader"];
+        else if (asset["shader"].is_object() && asset["shader"].contains("guid"))
+            material["shader"] = RuntimeAssetNameFromReference(asset["shader"]);
+        else if (asset["shader"].is_object())
+            material["shader"] = asset["shader"];
+    }
+    if (asset.contains("shaderPasses") && asset["shaderPasses"].is_object())
+    {
+        material["shaderPasses"] = json::object();
+        for (const auto& [passName, shaderRef] : asset["shaderPasses"].items())
+        {
+            if (shaderRef.is_string())
+                material["shaderPasses"][passName] = shaderRef;
+            else if (shaderRef.is_object() && shaderRef.contains("guid"))
+                material["shaderPasses"][passName] = RuntimeAssetNameFromReference(shaderRef);
+        }
+    }
     if (asset.contains("textures") && asset["textures"].is_object())
     {
-        for (const auto& [slot, reference] : asset["textures"].items())
+        if (customShaderMaterial)
         {
-            if (reference.is_object() && reference.contains("guid") && reference["guid"].is_string())
-                material[slot + "_texture"] = reference["guid"];
+            material["customTextures"] = MergeShaderTextureDefaults(shaderAsset, asset["textures"]);
+        }
+        else
+        {
+            for (const auto& [slot, reference] : asset["textures"].items())
+            {
+                if (reference.is_object() && reference.contains("guid") && reference["guid"].is_string())
+                    material[slot + "_texture"] = reference["guid"];
+            }
+        }
+    }
+    if (customShaderMaterial)
+        material["customParameters"] = MergeShaderParameterDefaults(
+            shaderAsset,
+            asset.contains("parameters") ? asset["parameters"] : json::object());
+    else if (asset.contains("customParameters") && asset["customParameters"].is_object())
+        material["customParameters"] = asset["customParameters"];
+    if (asset.contains("customTextures") && asset["customTextures"].is_object())
+    {
+        if (!material.contains("customTextures") || !material["customTextures"].is_object())
+            material["customTextures"] = json::object();
+        for (const auto& [slot, reference] : asset["customTextures"].items())
+        {
+            if (reference.is_string())
+                material["customTextures"][slot] = reference;
+            else if (reference.is_object() && reference.contains("guid"))
+                material["customTextures"][slot] = RuntimeAssetNameFromReference(reference);
         }
     }
     return material;
@@ -311,10 +617,12 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
     json resourceData;
     resourceData["mesh"] = json::array();
     resourceData["texture"] = json::array();
+    resourceData["shader"] = json::array();
     const std::filesystem::path projectRoot = database.AssetsRoot().parent_path();
 	std::unordered_set<std::string> requiredModels;
 	std::unordered_set<std::string> requiredMaterials;
 	std::unordered_set<std::string> requiredTextures;
+	std::unordered_set<std::string> requiredShaders;
 	for (const auto& [alias, guid] : Vans::VansProjectManager::Get().GetConfig().runtimeAssetBindings)
 		if (alias != "fullScreenQuad" && alias != "plane") requiredModels.insert(guid);
 
@@ -376,6 +684,7 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
 			case Vans::VansAssetType::Model: requiredModels.insert(found->first); break;
 			case Vans::VansAssetType::Texture: requiredTextures.insert(found->first); break;
 			case Vans::VansAssetType::Material: requiredMaterials.insert(found->first); break;
+			case Vans::VansAssetType::Shader: requiredShaders.insert(found->first); break;
 			default: break;
 			}
 			return;
@@ -470,6 +779,28 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
                 { "sRGB", ReadStringField(meta.settings, "colorSpace") != "linear" }
             });
         }
+		else if (record.type == Vans::VansAssetType::Shader)
+		{
+			if (requiredShaders.find(record.guid.ToString()) == requiredShaders.end())
+				continue;
+			std::ifstream shaderInput(record.sourcePath);
+			json shader = shaderInput ? json::parse(shaderInput, nullptr, false) : json();
+			if (!shader.is_object())
+			{
+				VANS_LOG_ERROR("[AssetDatabase] Cannot read shader asset: " << record.sourcePath.string());
+				continue;
+			}
+			if (!shader.contains("name") || !shader["name"].is_string())
+				shader["name"] = record.guid.ToString();
+			if (!shader.contains("source") || !shader["source"].is_string())
+			{
+				std::error_code relErr;
+				shader["source"] = std::filesystem::relative(record.sourcePath.parent_path(), projectRoot, relErr).generic_string();
+				if (relErr)
+					shader["source"] = record.sourcePath.parent_path().string();
+			}
+			resourceData["shader"].push_back(std::move(shader));
+		}
 		else if (record.type == Vans::VansAssetType::Audio)
 		{
 			const std::string runtimeName = ReadStringField(meta.settings, "runtimeName");
@@ -499,7 +830,6 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
 			});
 		}
     }
-
     m_VideoManager.Clear();
     m_AudioManager.Clear();
 	VANS_LOG("[AssetDatabase] Uploading dependency closure: " << resourceData["mesh"].size()
@@ -662,6 +992,7 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "grass")        return VansMaterialType::VAN_GRASS;
         if (s == "emissive")     return VansMaterialType::VAN_EMISSIVE;
         if (s == "decal")        return VansMaterialType::VAN_DECAL;
+        if (s == "customShader" || s == "custom") return VansMaterialType::VAN_CUSTOM_SHADER;
         VANS_LOG_WARN("[ParseMaterialType] Material '" << materialName << "': unknown type string '" << s << "', defaulting to pbr.");
     }
     return VansMaterialType::VAN_PBR;
@@ -673,6 +1004,8 @@ static VansGraphics::RenderNodeType ParseRenderNodeType(const json& typeValue, c
     {
         const std::string s = typeValue.get<std::string>();
         if (s == "opaque")       return VansGraphics::OPAQUE_NODE;
+		if (s == "forward_opaque_after_deferred" || s == "forwardOpaqueAfterDeferred")
+			return VansGraphics::FORWARD_OPAQUE_AFTER_DEFERRED_NODE;
         if (s == "transparent")  return VansGraphics::TRANSPARENT_NODE;
         if (s == "post_process") return VansGraphics::POSTPROCESS_NODE;
         if (s == "sky_box")      return VansGraphics::SKY_BOX_NODE;
@@ -798,6 +1131,7 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
     case VansGraphics::NONE_NODE:
         break;
     case VansGraphics::OPAQUE_NODE:
+	case VansGraphics::FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
         renderNode = new VansCommonRenderNode(device, type);
         if (sceneRenderNode.contains("support_shadow"))
         {
@@ -1605,6 +1939,90 @@ void VansGraphics::VansScene::LoadShadersFromRegistry(
     }
 }
 
+void VansGraphics::VansScene::RegisterShadersFromJson(
+    const json& shaderData,
+    const std::string& pathPrefix,
+    VkDevice& device)
+{
+    auto& manager = VansGraphics::VansShaderManager::Get();
+
+    for (const json& shaderJson : shaderData)
+    {
+        if (!shaderJson.is_object())
+            continue;
+
+        VansShaderEntry entry{};
+        entry.name = shaderJson.value("name", "");
+        if (entry.name.empty())
+        {
+            VANS_LOG_WARN("[VansScene] Skipping shader asset without name");
+            continue;
+        }
+
+        const std::string source = shaderJson.value("source", shaderJson.value("path", ""));
+        if (source.empty())
+        {
+            VANS_LOG_WARN("[VansScene] Shader asset '" << entry.name << "' has no source/path");
+            continue;
+        }
+
+        entry.relativePath = ResolvePathUnderPrefix(pathPrefix, source).string();
+        entry.kind = ParseShaderKind(shaderJson);
+        entry.pushConstantSize = shaderJson.value("pushConstantSize", 0);
+        if (entry.kind == VansManagedShaderKind::Graphics && !shaderJson.contains("pushConstantSize"))
+            entry.pushConstantSize = sizeof(VansDrawPushConstant);
+        entry.depthTest = shaderJson.value("depthTest", true) ? VK_TRUE : VK_FALSE;
+        entry.depthWrite = shaderJson.value("depthWrite", true) ? VK_TRUE : VK_FALSE;
+        entry.depthCompareOp = ParseCompareOp(
+            shaderJson.value("depthCompare", std::string("lessOrEqual")),
+            VK_COMPARE_OP_LESS_OR_EQUAL);
+        entry.cullMode = ParseCullMode(
+            shaderJson.value("cull", std::string("back")),
+            VK_CULL_MODE_BACK_BIT);
+        entry.enableAlphaBlend = shaderJson.value("alphaBlend", false);
+        entry.enableDecalBlend = shaderJson.value("decalBlend", false);
+        entry.colorAttachmentCount = shaderJson.value("colorAttachmentCount", -1);
+        if (entry.colorAttachmentCount < 0 && shaderJson.value("renderPath", std::string{}) == "deferredSurface")
+            entry.colorAttachmentCount = 4;
+        entry.materialPasses = ReadShaderMaterialPasses(shaderJson);
+
+        if (const json* stages = ReadObjectField(shaderJson, "stages"))
+        {
+            for (const auto& [stageName, stageFile] : stages->items())
+            {
+                if (!stageFile.is_string())
+                    continue;
+                VkShaderStageFlagBits stage = ParseShaderStageName(stageName);
+                if (stage == 0)
+                {
+                    VANS_LOG_WARN("[VansScene] Shader '" << entry.name
+                        << "' has unknown stage '" << stageName << "'");
+                    continue;
+                }
+                entry.explicitStageFiles[stage] = stageFile.get<std::string>();
+            }
+        }
+
+        ReadShaderStageFile(shaderJson, "vertex", VK_SHADER_STAGE_VERTEX_BIT, entry.explicitStageFiles);
+        ReadShaderStageFile(shaderJson, "fragment", VK_SHADER_STAGE_FRAGMENT_BIT, entry.explicitStageFiles);
+        ReadShaderStageFile(shaderJson, "compute", VK_SHADER_STAGE_COMPUTE_BIT, entry.explicitStageFiles);
+        ReadShaderStageFile(shaderJson, "geometry", VK_SHADER_STAGE_GEOMETRY_BIT, entry.explicitStageFiles);
+        ReadShaderStageFile(shaderJson, "tessControl", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, entry.explicitStageFiles);
+        ReadShaderStageFile(shaderJson, "tessEval", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, entry.explicitStageFiles);
+
+        manager.RegisterShader(std::move(entry));
+    }
+
+    manager.LoadAll("", device);
+    m_Shaders.clear();
+    for (VansShader* shader : manager.GetLoadedShaderAssets())
+    {
+        AddShaderAsset(shader);
+        if (auto* hotReload = GetShaderHotReloadService())
+            hotReload->WatchFolder(shader->GetShaderFolder());
+    }
+}
+
 void VansGraphics::VansScene::LoadTexturesFromJson(
     const json& textureData,
     const std::string& pathPrefix,
@@ -1702,6 +2120,11 @@ void VansGraphics::VansScene::LoadResources(json& resourceData)
         m_AudioManager.LoadFromJson(resourceData["audio"], assetPrefix);
     }
 
+    if (resourceData.contains("shader") && resourceData["shader"].is_array())
+    {
+        RegisterShadersFromJson(resourceData["shader"], assetPrefix, nativeDevice);
+    }
+
     m_Shaders.clear();
     for (VansShader* shader : VansGraphics::VansShaderManager::Get().GetLoadedShaderAssets())
     {
@@ -1741,6 +2164,7 @@ VansMaterial* VansGraphics::VansScene::CreateMaterialForType(VansMaterialType ma
     case VansMaterialType::VAN_GRASS:           return new VansGrassMaterial();
     case VansMaterialType::VAN_EMISSIVE:        return new VansEmissiveMaterial();
     case VansMaterialType::VAN_DECAL:           return new VansDecalMaterial();
+    case VansMaterialType::VAN_CUSTOM_SHADER:   return new VansMaterial();
     default:                                    return new VansMaterial();
     }
 }
@@ -1757,6 +2181,54 @@ void VansGraphics::VansScene::PopulateMaterialPassShaders(VansMaterial* material
         VansGraphicsShader* passShader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
         if (passShader)
             material->m_PassShaders[passName] = passShader;
+    }
+}
+
+void VansGraphics::VansScene::ApplyMaterialShaderOverrides(VansMaterial* material)
+{
+    if (!material)
+        return;
+
+    for (const auto& [passName, shaderName] : material->m_PassShaderOverrides)
+    {
+        if (passName.empty() || shaderName.empty())
+            continue;
+
+        if (passName == "*")
+        {
+            if (material->m_MaterialType != VansMaterialType::VAN_CUSTOM_SHADER)
+            {
+                VANS_LOG_WARN("[LoadMaterials] Material '" << material->m_AssetName
+                    << "' ignored wildcard shader override on non-custom material.");
+                continue;
+            }
+
+            const VansShaderEntry* entry = VansGraphics::VansShaderManager::Get().FindShaderEntry(shaderName);
+            const std::vector<std::string> passes = entry && !entry->materialPasses.empty()
+                ? entry->materialPasses
+                : std::vector<std::string>{ VansPass::GBUFFER };
+            for (const std::string& declaredPass : passes)
+            {
+                VansGraphicsShader* declaredPassShader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
+                if (declaredPassShader)
+                    material->m_PassShaders[declaredPass] = declaredPassShader;
+                else
+                    VANS_LOG_WARN("[LoadMaterials] Material '" << material->m_AssetName
+                        << "' shader for pass '" << declaredPass
+                        << "' not found: " << shaderName << ". Keeping default shader.");
+            }
+            continue;
+        }
+
+        VansGraphicsShader* passShader = static_cast<VansGraphicsShader*>(GetShaderAsset(shaderName));
+        if (!passShader)
+        {
+            VANS_LOG_WARN("[LoadMaterials] Material '" << material->m_AssetName
+                << "' shader override for pass '" << passName
+                << "' not found: " << shaderName << ". Keeping default shader.");
+            continue;
+        }
+        material->m_PassShaders[passName] = passShader;
     }
 }
 
@@ -1783,6 +2255,98 @@ VansTexture* VansGraphics::VansScene::ResolveMaterialTextureOrDefault(
     return ResolveTextureOrDefault(ResolveMaterialTexture(sceneMaterial, key), fallback);
 }
 
+namespace
+{
+glm::vec4 ReadCustomMaterialVec4(const json& value)
+{
+    if (value.is_number())
+        return glm::vec4(value.get<float>(), 0.0f, 0.0f, 0.0f);
+    if (value.is_array())
+    {
+        glm::vec4 result(0.0f);
+        const std::size_t count = std::min<std::size_t>(value.size(), 4);
+        for (std::size_t i = 0; i < count; ++i)
+            if (value[i].is_number())
+                result[static_cast<int>(i)] = value[i].get<float>();
+        return result;
+    }
+    if (value.is_object())
+    {
+        if (value.contains("value"))
+            return ReadCustomMaterialVec4(value["value"]);
+        if (value.contains("default"))
+            return ReadCustomMaterialVec4(value["default"]);
+    }
+    return glm::vec4(0.0f);
+}
+
+void PopulateCustomMaterialData(VansGraphics::VansScene* scene, VansGraphics::VansMaterial* material, const json& sceneMaterial)
+{
+    if (!scene || !material)
+        return;
+
+    material->m_CustomParameterSlots.clear();
+    material->m_CustomTextureSlots.clear();
+    material->m_CustomTextures.clear();
+    material->m_CustomMaterialPayload = VansGraphics::VansCustomMaterialPayload{};
+
+    if (sceneMaterial.contains("customParameters") && sceneMaterial["customParameters"].is_object())
+    {
+        int nextSlot = 0;
+        for (const auto& [name, parameter] : sceneMaterial["customParameters"].items())
+        {
+            int slot = nextSlot;
+            if (parameter.is_object() && parameter.contains("slot") && parameter["slot"].is_number_integer())
+                slot = parameter["slot"].get<int>();
+            if (slot >= VansGraphics::VANS_CUSTOM_MATERIAL_VEC4_COUNT)
+            {
+                VANS_LOG_WARN("[LoadMaterials] Custom material parameter limit reached; skipping '" << name << "'");
+                continue;
+            }
+            if (slot < 0)
+                continue;
+            material->m_CustomParameterSlots[name] = slot;
+            material->m_CustomMaterialPayload.values[slot] = ReadCustomMaterialVec4(parameter);
+            nextSlot = std::max(nextSlot, slot + 1);
+        }
+    }
+
+    if (sceneMaterial.contains("customTextures") && sceneMaterial["customTextures"].is_object())
+    {
+        int nextSlot = 0;
+        for (const auto& [name, textureNameJson] : sceneMaterial["customTextures"].items())
+        {
+            int slot = nextSlot;
+            const json* textureReference = &textureNameJson;
+            if (textureNameJson.is_object())
+            {
+                if (textureNameJson.contains("slot") && textureNameJson["slot"].is_number_integer())
+                    slot = textureNameJson["slot"].get<int>();
+                if (textureNameJson.contains("value"))
+                    textureReference = &textureNameJson["value"];
+            }
+            if (slot >= VansGraphics::VANS_CUSTOM_MATERIAL_TEXTURE_COUNT)
+            {
+                VANS_LOG_WARN("[LoadMaterials] Custom material texture limit reached; skipping '" << name << "'");
+                continue;
+            }
+            if (slot < 0 || !textureReference->is_string())
+                continue;
+            const std::string textureName = textureReference->get<std::string>();
+            VansGraphics::VansTexture* texture = static_cast<VansGraphics::VansTexture*>(scene->GetTextureAsset(textureName));
+            if (!texture)
+            {
+                VANS_LOG_WARN("[LoadMaterials] Custom texture '" << name << "' not found: " << textureName);
+                continue;
+            }
+            material->m_CustomTextureSlots[name] = slot;
+            material->m_CustomTextures[name] = texture;
+            nextSlot = std::max(nextSlot, slot + 1);
+        }
+    }
+}
+}
+
 void VansGraphics::VansScene::PopulateMaterialFromJson(
     VansMaterial* material,
     VansMaterialType matType,
@@ -1790,6 +2354,43 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
 {
     if (!material)
         return;
+
+    if (matType == VansMaterialType::VAN_CUSTOM_SHADER)
+        PopulateCustomMaterialData(this, material, sceneMaterial);
+
+    if (sceneMaterial.contains("shader"))
+    {
+        const json& shaderOverride = sceneMaterial["shader"];
+        if (shaderOverride.is_string())
+        {
+            if (matType == VansMaterialType::VAN_CUSTOM_SHADER)
+            {
+                material->m_PassShaderOverrides["*"] = shaderOverride.get<std::string>();
+            }
+            else
+            {
+                VANS_LOG_WARN("[LoadMaterials] Material '" << material->m_AssetName
+                    << "' ignored string shader override on non-custom material. Use shaderPasses for explicit pass overrides.");
+            }
+        }
+        else if (shaderOverride.is_object())
+        {
+            for (const auto& [passName, shaderName] : shaderOverride.items())
+            {
+                if (shaderName.is_string())
+                    material->m_PassShaderOverrides[passName] = shaderName.get<std::string>();
+            }
+        }
+    }
+
+    if (sceneMaterial.contains("shaderPasses") && sceneMaterial["shaderPasses"].is_object())
+    {
+        for (const auto& [passName, shaderName] : sceneMaterial["shaderPasses"].items())
+        {
+            if (shaderName.is_string())
+                material->m_PassShaderOverrides[passName] = shaderName.get<std::string>();
+        }
+    }
 
     switch (matType)
     {
@@ -1958,6 +2559,28 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
         sky->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25000;
         sky->m_AtmospherePBRParam.m_OzoneLevelWidth = 15000;
         sky->m_AtmospherePBRParam.m_SunLuminance = 10;
+        if (sceneMaterial.contains("celestial") && sceneMaterial["celestial"].is_object())
+        {
+            const auto& celestial = sceneMaterial["celestial"];
+            if (celestial.contains("sun") && celestial["sun"].is_object())
+            {
+                const auto& sun = celestial["sun"];
+                sky->m_SunDiskEnabled = sun.value("enabled", sky->m_SunDiskEnabled);
+                sky->m_SunDiskAngularRadius = sun.value("angularRadius", sky->m_SunDiskAngularRadius);
+                sky->m_SunDiskFeather = sun.value("feather", sky->m_SunDiskFeather);
+                sky->m_SunDiskRadianceScale = sun.value("radianceScale", sky->m_SunDiskRadianceScale);
+                sky->m_SunDiskOcclusionStrength = sun.value("occlusionStrength", sky->m_SunDiskOcclusionStrength);
+            }
+            if (celestial.contains("moon") && celestial["moon"].is_object())
+            {
+                const auto& moon = celestial["moon"];
+                sky->m_MoonDiskEnabled = moon.value("enabled", sky->m_MoonDiskEnabled);
+                sky->m_MoonDiskAngularRadius = moon.value("angularRadius", sky->m_MoonDiskAngularRadius);
+                sky->m_MoonDiskFeather = moon.value("feather", sky->m_MoonDiskFeather);
+                sky->m_MoonDiskRadianceScale = moon.value("radianceScale", sky->m_MoonDiskRadianceScale);
+                sky->m_MoonDiskOcclusionStrength = moon.value("occlusionStrength", sky->m_MoonDiskOcclusionStrength);
+            }
+        }
         break;
     }
     default:
@@ -1975,6 +2598,7 @@ void VansGraphics::VansScene::LoadMaterialsFromJson(const json& materialData)
         PopulateMaterialPassShaders(material, matType);
         PopulateMaterialFromJson(material, matType, sceneMaterial);
         material->SetName(sceneMaterial["name"]);
+        ApplyMaterialShaderOverrides(material);
         AddMaterialAsset(material);
     }
 }
@@ -2002,6 +2626,7 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
 		VANS_LOG_ERROR("[VansScene] Invalid Scene v2 document: " << path);
 		return false;
 	}
+	ApplyVolumetricCloudSettings(m_MaterialManager, sceneData);
 	m_ReflectionProbeSystem.LoadFromSceneJson(sceneData, path);
 
 	// GI settings are scene data because changing the volume dimensions requires
@@ -2697,6 +3322,33 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
         fpSettings.footPlantFullHeight = fpJson.value("foot_plant_full_height", fpSettings.footPlantFullHeight);
         fpSettings.footPlantFadeHeight = fpJson.value("foot_plant_fade_height", fpSettings.footPlantFadeHeight);
         fpSettings.poleInterpSpeed = fpJson.value("pole_interp_speed", fpSettings.poleInterpSpeed);
+        if (animJson.contains("motion_matching") &&
+            animJson["motion_matching"].is_object() &&
+            animJson["motion_matching"].contains("rig") &&
+            animJson["motion_matching"]["rig"].is_object())
+        {
+            const auto& rigJson = animJson["motion_matching"]["rig"];
+            if (rigJson.contains("forward_axis") &&
+                rigJson["forward_axis"].is_array() &&
+                rigJson["forward_axis"].size() >= 3)
+            {
+                fpSettings.kneePoleModelDir = glm::vec3(
+                    rigJson["forward_axis"][0].get<float>(),
+                    rigJson["forward_axis"][1].get<float>(),
+                    rigJson["forward_axis"][2].get<float>());
+                fpSettings.kneePoleModelWeight = 0.85f;
+            }
+        }
+        fpSettings.kneePoleModelWeight = fpJson.value("knee_pole_model_weight", fpSettings.kneePoleModelWeight);
+        if (fpJson.contains("knee_pole_model_dir") &&
+            fpJson["knee_pole_model_dir"].is_array() &&
+            fpJson["knee_pole_model_dir"].size() >= 3)
+        {
+            fpSettings.kneePoleModelDir = glm::vec3(
+                fpJson["knee_pole_model_dir"][0].get<float>(),
+                fpJson["knee_pole_model_dir"][1].get<float>(),
+                fpJson["knee_pole_model_dir"][2].get<float>());
+        }
         fpSettings.enableFootRotation = fpJson.value("enable_foot_rotation", fpSettings.enableFootRotation);
         fpSettings.footRotationWeight = fpJson.value("foot_rotation_weight", fpSettings.footRotationWeight);
         fpSettings.ankleHeightOffset = fpJson.value("ankle_height_offset", fpSettings.ankleHeightOffset);
@@ -4129,5 +4781,6 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
     // LoadFromJson 中触发一次，Runtime 重载后需在此补充调用。
     m_AudioManager.PlayAutoPlay();
 }
+
 
 

@@ -256,7 +256,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_SAMPLE_COUNT_1_BIT,
         false, false, true,
-        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+        VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
     m_WaterFFT = new VansWaterFFT();
     if (!m_WaterFFT->Initialize(device, projectRoot, &m_WaveDisplacementImage, &m_WaveDerivativeImage))
@@ -271,12 +271,12 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         logicDev,
         { DETAIL_TEXTURE_SIZE, DETAIL_TEXTURE_SIZE, 1 },
         VK_FORMAT_R16G16B16A16_SFLOAT,
-        1, 1,  // 单层，世界空间平铺无需多 LOD
+        1, VansWaterLOD::MAX_LOD_COUNT,
         VK_IMAGE_TYPE_2D,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_SAMPLE_COUNT_1_BIT,
         false, false, true,
-        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+        VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
     // ── 5. 创建水体效果贴图（CLAMP_TO_EDGE 防止边缘平铺伪影）──
     auto createEffectImage = [&](VansVKImage& image)
@@ -963,6 +963,12 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
             ? m_WaterMaterial->m_OceanBaseScale
             : 4.0f * m_WaterMaterial->m_LODBasePatchSize;
         maxAmp    = m_WaterMaterial->m_SwellAmplitude * 3.0f;
+        if (m_WaterMaterial->m_Config.m_Waves.m_Mode == VansWaveMode::FFT ||
+            m_WaterMaterial->m_Config.m_Waves.m_Mode == VansWaveMode::Hybrid)
+        {
+            maxAmp = std::max(maxAmp,
+                m_WaterMaterial->m_Config.m_Waves.m_FFT.m_SpectrumAmplitude * 3.0f);
+        }
     }
 
     // W-02: 委托 VansWaterLOD 生成 Patch
@@ -1354,7 +1360,11 @@ void VansWaterSystem::UpdateDetailNormalCompute(VansVKCommandBuffer& cmd)
         m_DetailNormalShader == nullptr || m_DetailNormalSet == VK_NULL_HANDLE)
         return;
 
-    // Barrier: FRAGMENT read → COMPUTE write（单层贴图）
+    const uint32_t detailLayerCount = uint32_t(std::max(
+        m_WaterLOD ? m_WaterLOD->GetLodLevels() : int(VansWaterLOD::MAX_LOD_COUNT),
+        1));
+
+    // Barrier: FRAGMENT read -> COMPUTE write.
     const VkImageLayout currentLayout = m_DetailNormalReady
         ? VK_IMAGE_LAYOUT_GENERAL
         : m_DetailNormalImage.GetImageLayout();
@@ -1368,19 +1378,19 @@ void VansWaterSystem::UpdateDetailNormalCompute(VansVKCommandBuffer& cmd)
     beforeCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     beforeCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     beforeCompute.image               = m_DetailNormalImage.GetImage();
-    beforeCompute.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    beforeCompute.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, detailLayerCount };
     cmd.PipelineBarrier(
         m_DetailNormalReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         {}, {}, { beforeCompute });
     m_DetailNormalImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
 
-    // Dispatch: 单层 (groupsX, groupsY, 1), local 8×8
+    // Dispatch one layer per active water LOD, local 8x8.
     cmd.EnsureComputeShader(*m_DetailNormalShader, { m_DetailNormalLayout });
     const uint32_t groups = (DETAIL_TEXTURE_SIZE + 7u) / 8u;
-    cmd.DispatchCompute(*m_DetailNormalShader, groups, groups, 1, { m_DetailNormalSet });
+    cmd.DispatchCompute(*m_DetailNormalShader, groups, groups, detailLayerCount, { m_DetailNormalSet });
 
-    // Barrier: COMPUTE write → FRAGMENT read（单层贴图）
+    // Barrier: COMPUTE write -> FRAGMENT read.
     VkImageMemoryBarrier afterCompute = {};
     afterCompute.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     afterCompute.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1390,7 +1400,7 @@ void VansWaterSystem::UpdateDetailNormalCompute(VansVKCommandBuffer& cmd)
     afterCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     afterCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     afterCompute.image               = m_DetailNormalImage.GetImage();
-    afterCompute.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    afterCompute.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, detailLayerCount };
     cmd.PipelineBarrier(
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,

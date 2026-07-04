@@ -39,9 +39,9 @@ namespace VansGraphics
 		int   m_FftLODCount         = 4;
 		int   m_FftResolution       = 256;
 		bool  m_FFTUseDerivativeNormal = true;
-		float m_FFTSpectrumAmplitude = 1.0f;
+		float m_FFTSpectrumAmplitude = 4.0f;
 		float m_FFTChoppiness       = 1.0f;
-		float m_FFTSmallWaveDamping = 0.001f;
+		float m_FFTSmallWaveDamping = 0.003f;
 		float m_FFTWindDependency   = 0.07f;
 		float m_FFTDepth            = 10000.0f;
 		float m_FFTRepeatPeriod     = 0.0f;
@@ -93,7 +93,7 @@ namespace VansGraphics
 		float m_DetailNormalScale       = 1.0f;
 		int   m_DetailNormalOctaves     = 4;
 		float m_DetailNormalTimeOffset  = 0.0f;
-		float m_DetailNormalBaseScale   = 32.0f;   // 世界空间平铺覆盖范围（m），越小细节越密
+		float m_DetailNormalBaseScale   = 16.0f;   // 世界空间平铺覆盖范围（m），越小细节越密
 
 		// ── 完整配置备份（供运行时 VansWaterSystem 读取）──────
 		VansWaterConfig m_Config;

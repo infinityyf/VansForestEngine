@@ -28,6 +28,13 @@ layout(set=AtmosphereCBBind, binding=AtmosphereBinding) uniform AtmosphereUnifor
     // 内容：CPU 预计算的大气衰减后太阳色（baseColor × 仰角衰减）
     // 供无法直接读 LightsData 的 shader（如 VolumeCloud.frag）使用
     vec4 effectiveSunColor;
+    vec4 sunDiskDirectionAngularRadius;
+    vec4 sunDiskRadianceEnabled;
+    vec4 sunDiskParams;
+    vec4 moonDiskDirectionAngularRadius;
+    vec4 moonDiskRadianceEnabled;
+    vec4 moonDiskParams;
+    vec4 mainCelestialLightInfo;
 };
 
 struct AtmosphereParam
@@ -179,4 +186,46 @@ vec3 SingleScatter(AtmosphereParam param, vec3 start_position)
     }
 
     return color;
+}
+
+vec3 EvaluateCelestialDisk(
+    AtmosphereParam param,
+    vec3 viewPosition,
+    vec3 viewDir,
+    vec3 bodyDir,
+    float angularRadius,
+    float featherRad,
+    vec3 bodyRadiance,
+    float enabled)
+{
+    if (enabled <= 0.0 || angularRadius <= 0.0)
+    {
+        return vec3(0.0);
+    }
+
+    vec3 rayDir = normalize(viewDir);
+    vec3 diskDir = normalize(bodyDir);
+    float cosTheta = dot(rayDir, diskDir);
+
+    float feather = max(featherRad, 0.0);
+    float outerCos = cos(angularRadius + feather);
+    float innerCos = cos(max(angularRadius - feather, 0.0));
+    float disk = smoothstep(outerCos, innerCos, cosTheta);
+
+    float edgeWidth = max(fwidth(cosTheta), 1e-5);
+    float aaDisk = smoothstep(cos(angularRadius) - edgeWidth, cos(angularRadius) + edgeWidth, cosTheta);
+    disk = max(disk, aaDisk);
+    if (disk <= 0.0)
+    {
+        return vec3(0.0);
+    }
+
+    float tAtmosphere = RayIntersectSphere(
+        vec3(0.0),
+        param.planetRadius + param.atmosphereWidth,
+        viewPosition,
+        rayDir);
+    vec3 endPosition = viewPosition + rayDir * max(tAtmosphere, 0.0);
+    vec3 transmittance = Transmittance(param, viewPosition, endPosition);
+    return max(bodyRadiance, vec3(0.0)) * transmittance * disk;
 }

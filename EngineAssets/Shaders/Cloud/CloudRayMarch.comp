@@ -187,21 +187,26 @@ void main()
             uCloud.cloudMaxHeight
         );
         // 环境光颜色色调：正午偏蓝（天顶散射），黄昏随大气衰减变暖
-        float sunElevation = clamp(dot(sunDir, vec3(0.0, 1.0, 0.0)), 0.0, 1.0);
-        float duskFactor   = 1.0 - smoothstep(0.0, 0.25, sunElevation); // 0=正午，1=黄昏
-        vec3 skyBlue       = vec3(0.65, 0.80, 1.0);
-        vec3 ambientColor  = mix(skyBlue, normalize(sunColorAtmosphered + vec3(1e-4)) * 0.9,
-                                 duskFactor * 0.5);
-        // 【关键修复】环境光基数改为大气衰减后的太阳色 sunColorAtmosphered：
-        //   - 低仰角时 sunColorAtmosphered 已极暗，环境光随之减暗，不再过亮
-        //   - 正午时 CalcCloudSunAbsorbLight ≈ 0.85，基本无损
-        //   - 比例系数 0.06~0.18 补偿大气衰减（原 0.05~0.15 以 sunColor 为基数）
-        //   - 极小底色防止夜间/完全背光面全黑
-        const vec3 ambientFloor = vec3(0.002, 0.003, 0.006);
-        vec3 ambientSky = sunColorAtmosphered * mix(0.06, 0.18, heightFrac) * ambientColor
-                        + ambientFloor;
+        float rawSunElevation = dot(sunDir, vec3(0.0, 1.0, 0.0));
+        float sunElevation = clamp(rawSunElevation, 0.0, 1.0);
+        float duskFactor   = 1.0 - smoothstep(0.02, 0.28, sunElevation);
+        float daySky       = smoothstep(-0.08, 0.16, rawSunElevation);
+        float horizonFactor = 1.0 - smoothstep(0.04, 0.24, abs(rawSunElevation));
+
+        vec3 skyBlue       = vec3(0.55, 0.72, 0.95);
+        vec3 duskSky       = vec3(0.95, 0.62, 0.28);
+        vec3 ambientColor  = mix(skyBlue, duskSky, duskFactor * 0.65);
+
+        vec3 ambientSky = ambientColor * mix(0.010, 0.038, daySky) * mix(0.45, 1.0, heightFrac)
+                        + vec3(0.002, 0.003, 0.006);
+
+        float forwardAlign = clamp(dot(rayDir, sunDir), 0.0, 1.0);
+        float silverPow = mix(10.0, 3.5, horizonFactor);
+        float silverLining = pow(forwardAlign, silverPow) * (0.35 + 0.65 * sunVisibility);
+        vec3 horizonGlow = sunColorAtmosphered * silverLining * mix(0.05, 0.34, horizonFactor);
 
         vec3  scatterLit    = sunColorAtmosphered * sunVisibility * phase * powderTerm
+                            + horizonGlow
                             + ambientSky;
 
         // 有界散射积分：scatterIntegral = scatterLit * (1 - T_step)

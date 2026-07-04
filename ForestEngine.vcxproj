@@ -207,6 +207,7 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansClothProfileEditorWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansWaterWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansTerrainWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUISystem.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIDocument.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIElementHandle.h" />
@@ -415,6 +416,7 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansClothProfileEditorWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansWaterWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansTerrainWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.cpp" />
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUISystem.cpp" />
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUIScreenManager.cpp" />
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUIElementHandle.cpp" />

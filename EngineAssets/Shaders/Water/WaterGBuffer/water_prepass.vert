@@ -68,10 +68,38 @@ vec2 WorldToClipmapUV(vec2 worldXZ, float lodScale)
     return (relative / lodScale) + 0.5;
 }
 
+vec2 WorldToPeriodicFFTUV(vec2 worldXZ, float lodScale)
+{
+    return fract(worldXZ / max(lodScale, 0.001));
+}
+
+vec2 WorldToContinuousFFTUV(vec2 worldXZ, float lodScale)
+{
+    return worldXZ / max(lodScale, 0.001);
+}
+
 vec4 SampleDisplacement(vec2 worldXZ, float lodScale, int lodIdx)
 {
     vec2 uv = WorldToClipmapUV(worldXZ, lodScale);
     return textureLod(waterDisplacementMap, vec3(uv, float(lodIdx)), 0.0);
+}
+
+int GetWaveMode();
+int GetFFTLODCount();
+
+bool UsePatchUVSampling(int lodIdx)
+{
+    int mode = GetWaveMode();
+    if (mode == 1)
+        return true;
+    return mode == 2 && lodIdx < GetFFTLODCount();
+}
+
+vec4 SampleDisplacement(vec2 worldXZ, float lodScale, int lodIdx, vec2 patchUV)
+{
+    if (UsePatchUVSampling(lodIdx))
+        return textureLod(waterDisplacementMap, vec3(WorldToPeriodicFFTUV(worldXZ, lodScale), float(lodIdx)), 0.0);
+    return SampleDisplacement(worldXZ, lodScale, lodIdx);
 }
 
 int GetWaveMode()
@@ -89,14 +117,25 @@ int GetFFTLODCount()
     return int(waterParams.pad3[2].z + 0.5);
 }
 
-vec3 SampleWaterNormalFromHeight(vec2 worldXZ, float lodScale, int lodIdx)
+vec3 SampleWaterNormalFromHeight(vec2 worldXZ, float lodScale, int lodIdx, vec2 patchUV, float patchWorldSize)
 {
     vec2 texel = 1.0 / vec2(textureSize(waterDisplacementMap, 0).xy);
     float worldStep = max(lodScale, 1.0) * texel.x;
-    float hL = textureLod(waterDisplacementMap, vec3(WorldToClipmapUV(worldXZ - vec2(worldStep, 0.0), lodScale), float(lodIdx)), 0.0).y;
-    float hR = textureLod(waterDisplacementMap, vec3(WorldToClipmapUV(worldXZ + vec2(worldStep, 0.0), lodScale), float(lodIdx)), 0.0).y;
-    float hD = textureLod(waterDisplacementMap, vec3(WorldToClipmapUV(worldXZ - vec2(0.0, worldStep), lodScale), float(lodIdx)), 0.0).y;
-    float hU = textureLod(waterDisplacementMap, vec3(WorldToClipmapUV(worldXZ + vec2(0.0, worldStep), lodScale), float(lodIdx)), 0.0).y;
+    vec2 uvL = WorldToClipmapUV(worldXZ - vec2(worldStep, 0.0), lodScale);
+    vec2 uvR = WorldToClipmapUV(worldXZ + vec2(worldStep, 0.0), lodScale);
+    vec2 uvD = WorldToClipmapUV(worldXZ - vec2(0.0, worldStep), lodScale);
+    vec2 uvU = WorldToClipmapUV(worldXZ + vec2(0.0, worldStep), lodScale);
+    if (UsePatchUVSampling(lodIdx))
+    {
+        uvL = WorldToPeriodicFFTUV(worldXZ - vec2(worldStep, 0.0), lodScale);
+        uvR = WorldToPeriodicFFTUV(worldXZ + vec2(worldStep, 0.0), lodScale);
+        uvD = WorldToPeriodicFFTUV(worldXZ - vec2(0.0, worldStep), lodScale);
+        uvU = WorldToPeriodicFFTUV(worldXZ + vec2(0.0, worldStep), lodScale);
+    }
+    float hL = textureLod(waterDisplacementMap, vec3(uvL, float(lodIdx)), 0.0).y;
+    float hR = textureLod(waterDisplacementMap, vec3(uvR, float(lodIdx)), 0.0).y;
+    float hD = textureLod(waterDisplacementMap, vec3(uvD, float(lodIdx)), 0.0).y;
+    float hU = textureLod(waterDisplacementMap, vec3(uvU, float(lodIdx)), 0.0).y;
     vec2 gradient = vec2((hR - hL) / (2.0 * worldStep),
                          (hU - hD) / (2.0 * worldStep));
     return normalize(vec3(-gradient.x * waterParams.waveTimeAndScale.w,
@@ -104,29 +143,30 @@ vec3 SampleWaterNormalFromHeight(vec2 worldXZ, float lodScale, int lodIdx)
                           -gradient.y * waterParams.waveTimeAndScale.w));
 }
 
-vec3 SampleWaterNormalFromDerivative(vec2 worldXZ, float lodScale, int lodIdx)
+vec3 SampleWaterNormalFromDerivative(vec2 worldXZ, float lodScale, int lodIdx, vec2 patchUV)
 {
-    vec2 uv = WorldToClipmapUV(worldXZ, lodScale);
+    vec2 uv = UsePatchUVSampling(lodIdx) ? WorldToPeriodicFFTUV(worldXZ, lodScale) : WorldToClipmapUV(worldXZ, lodScale);
     vec4 d = textureLod(waterDerivativeMap, vec3(uv, float(lodIdx)), 0.0);
     return normalize(vec3(-d.x * waterParams.waveTimeAndScale.w,
                            1.0,
                           -d.y * waterParams.waveTimeAndScale.w));
 }
 
-vec3 SampleWaterNormal(vec2 worldXZ, float lodScale, int lodIdx)
+vec3 SampleWaterNormal(vec2 worldXZ, float lodScale, int lodIdx, vec2 patchUV, float patchWorldSize)
 {
     int mode = GetWaveMode();
     if (mode == 1 && UseDerivativeNormal())
-        return SampleWaterNormalFromDerivative(worldXZ, lodScale, lodIdx);
+        return SampleWaterNormalFromDerivative(worldXZ, lodScale, lodIdx, patchUV);
     if (mode == 2 && UseDerivativeNormal() && lodIdx < GetFFTLODCount())
-        return SampleWaterNormalFromDerivative(worldXZ, lodScale, lodIdx);
-    return SampleWaterNormalFromHeight(worldXZ, lodScale, lodIdx);
+        return SampleWaterNormalFromDerivative(worldXZ, lodScale, lodIdx, patchUV);
+    return SampleWaterNormalFromHeight(worldXZ, lodScale, lodIdx, patchUV, patchWorldSize);
 }
 
 layout(location = 0) out vec3 outWorldPos;
 layout(location = 1) out float outLinearDepth;
 layout(location = 2) out vec3 outWorldNormal;
 layout(location = 3) flat out int outLodLevel;
+layout(location = 4) out vec2 outPatchUV;
 
 void main()
 {
@@ -145,23 +185,23 @@ void main()
     vec2 morphedWorldXZ = pc.patchWorldOrigin + morphedMeshPos * pc.patchWorldSize;
 
     float lodScale = waterParams.clipmapBaseScale * pow(max(waterParams.detailBalance, 1.0), float(pc.lodLevel));
-    vec4 waveDisp = SampleDisplacement(morphedWorldXZ, lodScale, pc.lodLevel);
+    vec4 waveDisp = SampleDisplacement(morphedWorldXZ, lodScale, pc.lodLevel, morphedMeshPos);
 
     if (edgeMorph > 0.001 && pc.lodLevel < waterParams.lodLevels - 1)
     {
         float nextLodScale = lodScale * max(waterParams.detailBalance, 1.0);
-        vec4 waveDispNext = SampleDisplacement(morphedWorldXZ, nextLodScale, pc.lodLevel + 1);
+        vec4 waveDispNext = SampleDisplacement(morphedWorldXZ, nextLodScale, pc.lodLevel + 1, morphedMeshPos);
         waveDisp = mix(waveDisp, waveDispNext, edgeMorph);
     }
 
     vec2 displacedWorldXZ = morphedWorldXZ + waveDisp.xz;
     vec3 worldPos = vec3(displacedWorldXZ.x, pc.waterLevel + waveDisp.y, displacedWorldXZ.y);
 
-    vec3 worldNormal = SampleWaterNormal(displacedWorldXZ, lodScale, pc.lodLevel);
+    vec3 worldNormal = SampleWaterNormal(displacedWorldXZ, lodScale, pc.lodLevel, morphedMeshPos, pc.patchWorldSize);
     if (edgeMorph > 0.001 && pc.lodLevel < waterParams.lodLevels - 1)
     {
         float nextLodScaleN = lodScale * max(waterParams.detailBalance, 1.0);
-        vec3 normalNext = SampleWaterNormal(displacedWorldXZ, nextLodScaleN, pc.lodLevel + 1);
+        vec3 normalNext = SampleWaterNormal(displacedWorldXZ, nextLodScaleN, pc.lodLevel + 1, morphedMeshPos, pc.patchWorldSize * max(waterParams.detailBalance, 1.0));
         worldNormal = normalize(mix(worldNormal, normalNext, edgeMorph));
     }
 
@@ -172,6 +212,7 @@ void main()
     outLinearDepth = -viewPos.z;
     outWorldNormal = worldNormal;
     outLodLevel = pc.lodLevel;
+    outPatchUV = UsePatchUVSampling(pc.lodLevel) ? WorldToContinuousFFTUV(morphedWorldXZ, lodScale) : morphedMeshPos;
 
     gl_Position = clipPos;
 }

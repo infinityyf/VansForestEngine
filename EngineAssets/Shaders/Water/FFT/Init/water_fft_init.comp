@@ -16,20 +16,30 @@ layout(set = 0, binding = 1, rgba32f) uniform writeonly image2DArray h0Spectrum;
 const float PI = 3.14159265358979323846;
 const float G = 9.81;
 
-float Hash11(float x)
+uint PCGHash(uint seed)
 {
-    return fract(sin(x * 127.1 + 311.7) * 43758.5453123);
+    uint state = seed * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
 }
 
-float Hash21(vec2 p)
+uint MixSeed(ivec2 freq, int lod, uint randomSeed)
 {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+    uint x = uint(freq.x + 32768);
+    uint y = uint(freq.y + 32768);
+    uint seed = randomSeed ^ 0x9E3779B9u;
+    seed ^= x * 0x85EBCA6Bu;
+    seed ^= y * 0xC2B2AE35u;
+    seed ^= uint(lod) * 0x27D4EB2Fu;
+    return PCGHash(seed);
 }
 
-vec2 Gaussian(vec2 seed)
+vec2 Gaussian(uint seed)
 {
-    float u1 = max(Hash21(seed), 1e-6);
-    float u2 = Hash21(seed + vec2(19.19, 73.17));
+    uint s0 = PCGHash(seed);
+    uint s1 = PCGHash(s0);
+    float u1 = max(float(s0) / 4294967295.0, 1e-6);
+    float u2 = float(s1) / 4294967295.0;
     float r = sqrt(-2.0 * log(u1));
     float theta = 2.0 * PI * u2;
     return vec2(r * cos(theta), r * sin(theta));
@@ -49,11 +59,12 @@ void main()
     float baseScale = params.scaleParams.x;
     float detailBalance = max(params.scaleParams.y, 1.0);
     float amplitude = params.scaleParams.z;
-    float smallWaveDamping = max(params.dampingParams.x, 0.0);
+    float minStableDamping = 0.5 / max(float(N), 1.0);
+    float smallWaveDamping = max(params.dampingParams.x, minStableDamping);
     float windDependency = clamp(params.dampingParams.y, 0.0, 1.0);
     vec2 windDir = normalize(params.windDirection_Time.xy);
     float windSpeed = max(params.windDirection_Time.w, 0.001);
-    float randomSeed = params.foldParams.y;
+    uint randomSeed = uint(max(params.foldParams.y, 0.0));
 
     float L = baseScale * pow(detailBalance, float(lod));
     int nx = pixel.x - N / 2;
@@ -77,13 +88,16 @@ void main()
         directionFactor *= windDependency;
 
     float dampingLength = smallWaveDamping * L;
-    float phillips = amplitude
+    // h0 is sqrt(P), so square the UI amplitude to make the resulting
+    // spatial displacement respond linearly to Spectrum Amplitude.
+    float amplitudeScale = amplitude * amplitude;
+    float phillips = amplitudeScale
         * exp(-1.0 / max(k2 * Lw * Lw, 1e-6))
         / max(k4, 1e-6)
         * directionFactor
         * exp(-k2 * dampingLength * dampingLength);
 
-    vec2 xi = Gaussian(vec2(pixel) + vec2(float(lod) * 37.0 + randomSeed, randomSeed * 0.013));
+    vec2 xi = Gaussian(MixSeed(ivec2(nx, ny), lod, randomSeed));
     vec2 h0 = xi * sqrt(max(phillips, 0.0) * 0.5);
 
     imageStore(h0Spectrum, ivec3(pixel, lod), vec4(h0, 0.0, 0.0));

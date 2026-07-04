@@ -80,9 +80,9 @@ namespace VansGraphics
 		bool     m_UseDerivativeNormal = true;
 		int      m_Resolution          = 256;
 		int      m_LODCount            = 4;
-		float    m_SpectrumAmplitude   = 1.0f;
+		float    m_SpectrumAmplitude   = 4.0f;
 		float    m_Choppiness          = 1.0f;
-		float    m_SmallWaveDamping    = 0.001f;
+		float    m_SmallWaveDamping    = 0.003f;
 		float    m_WindDependency      = 0.07f;
 		float    m_Depth               = 10000.0f;
 		float    m_RepeatPeriod        = 0.0f;

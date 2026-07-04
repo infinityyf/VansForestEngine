@@ -1,4 +1,6 @@
 #include "VansMaterial.h"
+#include <algorithm>
+#include <cmath>
 using namespace VansGraphics;
 
 // ============================================================
@@ -116,10 +118,12 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	// 清空 CPU 侧 PBR 数组（指针不拥有所有权，material 由 VansScene 管理）
 	m_GlobalPBRMaterial.clear();
 	m_GlobalPBRParamData.clear();
+	m_GlobalCustomMaterialParamData.clear();
 	m_GlobalPBRTextures.clear();
 
 	// 销毁 GPU buffer
 	m_GlobalPBRDataBuffer.DestroyVulkanBuffer(device);
+	m_GlobalCustomMaterialDataBuffer.DestroyVulkanBuffer(device);
 
 	// 释放 descriptor set 和 layout
 	auto descMgr = VansVKDescriptorManager::GetInstance();
@@ -360,6 +364,24 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 			}
 		);
 	}
+	if (m_MoonAlbedoTexture != nullptr)
+	{
+		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
+			{
+				m_MaterialAtmosphereDataDescriptorSets[0],
+				SKYBOX_BINDING_MOON_ALBEDO,
+				0,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{
+					{
+						m_MoonAlbedoTexture->GetImage().GetSampler(),
+						m_MoonAlbedoTexture->GetImage().GetImageView(),
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					}
+				}
+			}
+		);
+	}
 	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
 }
 
@@ -389,11 +411,26 @@ void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterial
 	uint32_t offset = 0;
 	uint32_t size = sizeof(VansAtmospherePBRParam);
 	const auto& dirLight = lightManager.GetDirectionLights()[0];
-	m_AtmospherePBRParam.m_SunDirection = glm::normalize(dirLight.m_Direction);
+	glm::vec3 sunDirection = glm::normalize(dirLight.m_Direction);
+	m_AtmospherePBRParam.m_SunDirection = sunDirection;
 	// CPU 预计算大气衰减后的太阳颜色，写入 AtmosphereUBO
 	// 供无法直接读 LightsData.glsl 的 shader（如 VolumeCloud.frag）使用
 	m_AtmospherePBRParam.m_EffectiveSunColor = VansLightManager::ComputeAtmosphereSunColor(
 		dirLight.m_Direction, dirLight.m_Color);
+	const glm::vec3 moonDirection = -sunDirection;
+	const float moonPhase = std::clamp(0.5f * (1.0f - glm::dot(sunDirection, moonDirection)), 0.0f, 1.0f);
+	const glm::vec3 sunRadiance = glm::max(
+		dirLight.m_Color * dirLight.m_Intensity * m_AtmospherePBRParam.m_SunLuminance,
+		glm::vec3(0.0f));
+	const glm::vec3 moonRadiance = sunRadiance * m_MoonDiskRadianceScale * glm::vec3(0.82f, 0.86f, 1.0f);
+
+	m_AtmospherePBRParam.m_SunDiskDirectionAngularRadius = glm::vec4(sunDirection, m_SunDiskAngularRadius);
+	m_AtmospherePBRParam.m_SunDiskRadianceEnabled = glm::vec4(sunRadiance * m_SunDiskRadianceScale, m_SunDiskEnabled ? 1.0f : 0.0f);
+	m_AtmospherePBRParam.m_SunDiskParams = glm::vec4(m_SunDiskFeather, 1.0f, m_SunDiskOcclusionStrength, 0.0f);
+	m_AtmospherePBRParam.m_MoonDiskDirectionAngularRadius = glm::vec4(moonDirection, m_MoonDiskAngularRadius);
+	m_AtmospherePBRParam.m_MoonDiskRadianceEnabled = glm::vec4(moonRadiance, m_MoonDiskEnabled ? 1.0f : 0.0f);
+	m_AtmospherePBRParam.m_MoonDiskParams = glm::vec4(m_MoonDiskFeather, moonPhase, m_MoonDiskOcclusionStrength, 0.0f);
+	m_AtmospherePBRParam.m_MainCelestialLightInfo = glm::vec4(sunDirection, 0.0f);
 	materialManager.m_AtmospherePBRDataBuffer.SetBufferData(&m_AtmospherePBRParam, offset, size);
 }
 

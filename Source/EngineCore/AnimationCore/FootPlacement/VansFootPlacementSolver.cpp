@@ -237,6 +237,11 @@ namespace VansGraphics
 		ApplyPelvisOffset(deltaTime, skeleton, ownerWorldTransform, modelTransforms, left, right, localTransforms);
 		modelTransforms = BuildModelSpaceTransforms(skeleton, localTransforms);
 
+		if (!left.valid)
+			m_LeftState.poleInitialized = false;
+		if (!right.valid)
+			m_RightState.poleInitialized = false;
+
 		SolveLeg(deltaTime, skeleton, m_LeftLegChain, left.target, m_LeftState, localTransforms, modelTransforms);
 		SolveLeg(deltaTime, skeleton, m_RightLegChain, right.target, m_RightState, localTransforms, modelTransforms);
 
@@ -635,13 +640,25 @@ namespace VansGraphics
 		targetDistance = glm::clamp(targetDistance, minReach, maxReach);
 		desiredFoot = hip + targetDir * targetDistance;
 
-		glm::vec3 pole = knee - hip - targetDir * glm::dot(knee - hip, targetDir);
-		if (glm::length(pole) <= kEpsilon)
+		glm::vec3 currentPole = knee - hip - targetDir * glm::dot(knee - hip, targetDir);
+		if (glm::length(currentPole) <= kEpsilon)
 		{
 			const glm::vec3 currentDir = SafeNormalize(currentHipToFoot, targetDir);
-			pole = knee - hip - currentDir * glm::dot(knee - hip, currentDir);
+			currentPole = knee - hip - currentDir * glm::dot(knee - hip, currentDir);
 		}
-		glm::vec3 poleDir = SafeNormalize(pole, BuildOrthogonalDirection(targetDir));
+		glm::vec3 poleDir = SafeNormalize(currentPole, BuildOrthogonalDirection(targetDir));
+		const float stablePoleWeight = glm::clamp(m_Settings.kneePoleModelWeight, 0.0f, 1.0f);
+		if (stablePoleWeight > 0.001f)
+		{
+			const glm::vec3 stablePoleModelDir = SafeNormalize(m_Settings.kneePoleModelDir, poleDir);
+			const glm::vec3 stablePole =
+				stablePoleModelDir - targetDir * glm::dot(stablePoleModelDir, targetDir);
+			const glm::vec3 stablePoleDir = SafeNormalize(stablePole, poleDir);
+			const float poleDot = glm::dot(poleDir, stablePoleDir);
+			poleDir = poleDot < -0.2f
+				? stablePoleDir
+				: SafeNormalize(glm::mix(poleDir, stablePoleDir, stablePoleWeight), stablePoleDir);
+		}
 		if (!state.poleInitialized)
 		{
 			state.poleInitialized = true;

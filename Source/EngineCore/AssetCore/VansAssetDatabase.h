@@ -16,6 +16,7 @@ enum class VansAssetType
     Model,
     Texture,
     Material,
+	Shader,
 	Audio,
 	Video,
     Scene

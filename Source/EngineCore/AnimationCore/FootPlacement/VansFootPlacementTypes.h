@@ -52,6 +52,8 @@ namespace VansGraphics
 		float footPlantFullHeight = 0.05f;
 		float footPlantFadeHeight = 0.18f;
 		float poleInterpSpeed = 24.0f;
+		glm::vec3 kneePoleModelDir = glm::vec3(0.0f, 0.0f, 1.0f);
+		float kneePoleModelWeight = 0.0f;
 		bool enableFootRotation = false;
 		float footRotationWeight = 0.75f;
 		float ankleHeightOffset = 0.08f;

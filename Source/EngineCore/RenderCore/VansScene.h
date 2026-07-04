@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "VansRenderNode.h"
 #include "VansShaderManager.h"
 #include "WaterCore/VansWaterConfig.h"
@@ -124,13 +124,12 @@ namespace VansGraphics
 
 		VansAsset* GetShaderAsset(const std::string& name);
 
-		VansAsset* GetTextureAsset(const std::string& name);
-
 		VansAsset* GetMaterialAsset(const std::string& name);
 
 		VansTexture* ResolveTextureOrDefault(VansTexture* texture, const char* fallbackName);
 		VansMaterial* CreateMaterialForType(VansMaterialType matType);
 		void PopulateMaterialPassShaders(VansMaterial* material, VansMaterialType matType);
+		void ApplyMaterialShaderOverrides(VansMaterial* material);
 		void PopulateMaterialFromJson(VansMaterial* material, VansMaterialType matType, const json& sceneMaterial);
 		VansTexture* ResolveMaterialTexture(const json& sceneMaterial, const char* key);
 		VansTexture* ResolveMaterialTextureWithFallback(const json& sceneMaterial, const char* key, const char* fallback);
@@ -145,6 +144,8 @@ namespace VansGraphics
 		void ClearSceneAssetLookup();
 
 	public:
+		VansAsset* GetTextureAsset(const std::string& name);
+
 		void AddMeshAsset(VansAsset* asset);
 		void AddSceneSubMeshAsset(VansAsset* asset);
 		void AddShaderAsset(VansAsset* asset);
@@ -216,6 +217,8 @@ namespace VansGraphics
 		const std::vector<VansAnimationNode*>& GetAnimationNodes() const { return m_AnimationNodes; }
 
 		std::vector<VansRenderNode*> m_TransParentRenderNodes;
+
+		std::vector<VansRenderNode*> m_ForwardOpaqueAfterDeferredRenderNodes;
 
 		std::vector<VansRenderNode*> m_PostProcessRenderNodes;
 
@@ -533,6 +536,7 @@ namespace VansGraphics
 		// enginePrefix  = engine root  (for default textures in EngineAssets/)
 		void LoadTexturesFromJson(const json& textureData, const std::string& pathPrefix,
 			                      const std::string& enginePrefix, VansVKDevice* vkDevice);
+		void RegisterShadersFromJson(const json& shaderData, const std::string& pathPrefix, VkDevice& device);
 
 	public:
 
@@ -567,6 +571,8 @@ namespace VansGraphics
 		void DrawWaterNode();
 
 		void DrawVegetationNode();
+
+		void DrawForwardOpaqueAfterDeferredNodes();
 
 		void DrawTransParentNodes();
 
@@ -618,6 +624,8 @@ namespace VansGraphics
 
 		// 是否存在贴花节点（用于 renderer 决策是否插入 Decal Pass）
 		bool HasDecalNodes() const { return !m_DecalRenderNodes.empty(); }
+
+		bool HasForwardOpaqueAfterDeferredNodes() const { return !m_ForwardOpaqueAfterDeferredRenderNodes.empty(); }
 
 	private:
 

@@ -94,7 +94,7 @@ void main()
 
     // Early out for sky pixels
     float rawDepth = texture(inputDepth, uv).r;
-    if (rawDepth >= 0.9999) {
+    if (rawDepth == 1.0) {
         imageStore(resultR, pixelCoord, vec4(0.0));
         return;
     }

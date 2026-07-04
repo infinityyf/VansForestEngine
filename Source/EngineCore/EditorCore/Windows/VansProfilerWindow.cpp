@@ -1,4 +1,5 @@
 #include "VansProfilerWindow.h"
+#include "../VansEditorWindow.h"
 #include "../../Util/VansProfiler.h"
 #include "imgui.h"
 
@@ -46,6 +47,9 @@ namespace
 
 void VansGraphics::VansProfilerWindow::ShowWindow(VansVKDevice& /*device*/)
 {
+    if (!VansEditorWindow::m_ProfilerWindowOpen)
+        return;
+
 #if VANS_PROFILER_ENABLED
     VANS_PROFILE_SCOPE("Editor::ProfilerWindow", Vans::ProfileCategory::Editor);
 

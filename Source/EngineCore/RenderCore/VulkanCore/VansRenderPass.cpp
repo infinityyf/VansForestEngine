@@ -435,6 +435,67 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	// 此 pass 仅保留透明物体绘制（Subpass 0）和后处理（Subpass 1）。
 	// SceneColor 使用 LOAD：加载水面合成后的结果继续绘制透明物体。
 	// Deferred/PostProcess pass：Subpass 0 写 lighting color，Subpass 1 做后处理。
+	// ForwardOpaqueAfterDeferred pass: load SceneColor after deferred and draw opaque forward objects before transparent/post.
+	std::vector<VkAttachmentDescription> forwardOpaqueAttachmentDescs =
+	{
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+	VkAttachmentReference forwardOpaqueDepthRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+	std::vector<SubpassParameters> forwardOpaqueSubpassParams =
+	{
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{ { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } },
+			{},
+			&forwardOpaqueDepthRef,
+			{}
+		}
+	};
+	std::vector<VkSubpassDependency> forwardOpaqueDependencies =
+	{
+		{
+			VK_SUBPASS_EXTERNAL,
+			0,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		},
+		{
+			0,
+			VK_SUBPASS_EXTERNAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		}
+	};
+	m_VansForwardOpaqueAfterDeferredPass.m_ClearValues =
+	{
+		{ 0.0f, 0.0f, 0.0f, 1.0f },
+		{ 1.0f, 0 },
+	};
+	m_VansForwardOpaqueAfterDeferredPass.CreateRenderPass(logic_device, forwardOpaqueAttachmentDescs, forwardOpaqueSubpassParams, forwardOpaqueDependencies, resolution);
+	m_VansForwardOpaqueAfterDeferredPass.m_FrameBuffers.resize(1);
+	{
+		std::vector<VkImageView> forwardOpaqueViews =
+		{
+			m_ColorImage.GetImageView(),
+			m_DepthImage.GetDepthStencilView()
+		};
+		m_VansForwardOpaqueAfterDeferredPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansForwardOpaqueAfterDeferredPass.m_RenderPass, forwardOpaqueViews, { resolution.width, resolution.height, 1 });
+	}
+
 	std::vector<VkAttachmentDescription> deferredPostAttachmentDescs =
 	{
 		// SceneColor：LOAD 已有内容（来自水面合成或 Deferred pass 输出），透明物体叠加绘制
@@ -1639,6 +1700,7 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_VansGBufferPass.DestroyRenderPass(m_LogicDevice);
 	m_VansRenderPass.DestroyRenderPass(m_LogicDevice);
 	m_VansDeferredSkyboxPass.DestroyRenderPass(m_LogicDevice);
+	m_VansForwardOpaqueAfterDeferredPass.DestroyRenderPass(m_LogicDevice);
 	m_VansWaterGBufferPass.DestroyRenderPass(m_LogicDevice);
 	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
 	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);

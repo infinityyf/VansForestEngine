@@ -116,6 +116,8 @@ static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type)
 	switch (type)
 	{
 	case OPAQUE_NODE:       return VansPass::GBUFFER;
+	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
+		return VansPass::FORWARD_OPAQUE_AFTER_DEFERRED;
 	case TRANSPARENT_NODE:  return VansPass::FORWARD_TRANSPARENT;
 	case SKY_BOX_NODE:      return VansPass::SKY_BOX;
 	case POSTPROCESS_NODE:  return VansPass::POST_PROCESS;
@@ -157,9 +159,27 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 		case VansMaterialType::VAN_SUBSURFACE:
 			pc.materialIndex = static_cast<VansSubsurfaceMaterial*>(m_Material)->m_MaterialIndex;
 			break;
+		case VansMaterialType::VAN_CUSTOM_SHADER:
+			pc.materialIndex = m_Material->m_MaterialIndex;
+			break;
 		default:
 			pc.materialIndex = -1;
 			break;
+		}
+		if (m_Material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+		{
+			const auto* manager = m_Scene ? m_Scene->GetMaterialManager() : nullptr;
+			const int customPayloadCount = manager
+				? static_cast<int>(manager->m_GlobalCustomMaterialParamData.size())
+				: 0;
+			if (pc.materialIndex < 0 || pc.materialIndex >= customPayloadCount)
+			{
+				VANS_LOG_ERROR("[VansRenderNode] Skipping custom shader draw for material '"
+					<< m_Material->m_AssetName
+					<< "': materialIndex=" << pc.materialIndex
+					<< ", customPayloadCount=" << customPayloadCount);
+				return;
+			}
 		}
 		pc.transformIndex   = m_TransfromIndex;
 		pc.animationEnabled = m_AnimationEnabled ? 1 : 0;
@@ -373,6 +393,21 @@ void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, Va
 			sizeof(VansBasePBRParam) * idx,
 			sizeof(VansBasePBRParam));
 	}
+	else if (mat->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+	{
+		int idx = mat->m_MaterialIndex;
+		if (idx < 0 || idx >= static_cast<int>(materialManager.m_GlobalCustomMaterialParamData.size()))
+			return;
+
+		auto& gpuPayload = materialManager.m_GlobalCustomMaterialParamData[idx];
+		for (int valueIndex = 0; valueIndex < VANS_CUSTOM_MATERIAL_VEC4_COUNT; ++valueIndex)
+			gpuPayload.values[valueIndex] = mat->m_CustomMaterialPayload.values[valueIndex];
+
+		materialManager.m_GlobalCustomMaterialDataBuffer.UpdateMapped(
+			&gpuPayload,
+			sizeof(VansCustomMaterialPayload) * idx,
+			sizeof(VansCustomMaterialPayload));
+	}
 }
 
 void VansGraphics::VansCommonRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
@@ -428,17 +463,27 @@ void VansGraphics::VansTransparentRenderNode::CreateDescriptorSets(VansCamera* c
 	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
 	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
 
-	// Set 1: Material-owned resources (layout held by VansTransparentMaterial)
-	VansTransparentMaterial* trans = static_cast<VansTransparentMaterial*>(m_Material);
-	if (trans->m_TransparentOwnedLayout == VK_NULL_HANDLE)
+	if (m_Material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
 	{
-		// Build layout, allocate set, and write texture bindings from shader slot order
-		trans->BuildTransparentTextureDescriptors();
+		// Custom forward shaders consume global custom material payloads from set 0.
+		// Keep set numbering contiguous so they can still bind set 2 for transforms.
+		m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
+		m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
 	}
-	m_UsedDescSetLayouts.push_back(trans->m_TransparentOwnedLayout);
-	if (!trans->m_TransparentOwnedDescSets.empty())
+	else
 	{
-		m_UsedDescSets.push_back(trans->m_TransparentOwnedDescSets[0]);
+		// Set 1: Material-owned resources (layout held by VansTransparentMaterial)
+		VansTransparentMaterial* trans = static_cast<VansTransparentMaterial*>(m_Material);
+		if (trans->m_TransparentOwnedLayout == VK_NULL_HANDLE)
+		{
+			// Build layout, allocate set, and write texture bindings from shader slot order
+			trans->BuildTransparentTextureDescriptors();
+		}
+		m_UsedDescSetLayouts.push_back(trans->m_TransparentOwnedLayout);
+		if (!trans->m_TransparentOwnedDescSets.empty())
+		{
+			m_UsedDescSets.push_back(trans->m_TransparentOwnedDescSets[0]);
+		}
 	}
 
 	// Set 2: Object Transforms SSBO (accessed via objectIndex push constant)
@@ -476,13 +521,39 @@ void VansGraphics::VansTransparentRenderNode::Draw(VansVKCommandBuffer& cmd, Glo
 
 	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, m_UsedDescSets, {});
 
-	// Push objectIndex to look up model data from the transform SSBO
 	if (shader->GetPushConstantSize() > 0)
 	{
-		int objectIndex = m_TransfromIndex;
-		cmd.UpdatePushConstants(*shader->GetGraphicsPipeline(),
-			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			0, sizeof(int), &objectIndex);
+		if (m_Material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+		{
+			const auto* manager = m_Scene ? m_Scene->GetMaterialManager() : nullptr;
+			const int customPayloadCount = manager
+				? static_cast<int>(manager->m_GlobalCustomMaterialParamData.size())
+				: 0;
+			if (m_Material->m_MaterialIndex < 0 || m_Material->m_MaterialIndex >= customPayloadCount)
+			{
+				VANS_LOG_ERROR("[VansTransparentRenderNode] Skipping custom shader draw for material '"
+					<< m_Material->m_AssetName
+					<< "': materialIndex=" << m_Material->m_MaterialIndex
+					<< ", customPayloadCount=" << customPayloadCount);
+				return;
+			}
+
+			VansDrawPushConstant pc{};
+			pc.materialIndex = m_Material->m_MaterialIndex;
+			pc.transformIndex = m_TransfromIndex;
+			pc.animationEnabled = m_AnimationEnabled ? 1 : 0;
+			cmd.UpdatePushConstants(*shader->GetGraphicsPipeline(),
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				0, shader->GetPushConstantSize(), &pc);
+		}
+		else
+		{
+			// Legacy transparent shaders expect objectIndex as the first int.
+			int objectIndex = m_TransfromIndex;
+			cmd.UpdatePushConstants(*shader->GetGraphicsPipeline(),
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				0, sizeof(int), &objectIndex);
+		}
 	}
 
 	cmd.DrawMesh(*m_Mesh, *shader, 1);

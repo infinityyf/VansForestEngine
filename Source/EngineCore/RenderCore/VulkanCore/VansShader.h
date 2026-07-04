@@ -59,10 +59,12 @@ namespace VansGraphics
 	public:
 		//每个shader一个路径，路径里都是对应的所有shader
 		bool InitShader(VkDevice& logic_device, const std::string& shader_folder);
+		bool InitShader(VkDevice& logic_device, const std::string& shader_folder, const std::map<VkShaderStageFlagBits, std::string>& stageFiles);
 
 		bool RefreshShaderMoudle();
 
 		bool InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder);
+		bool InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder, const std::map<VkShaderStageFlagBits, std::string>& stageFiles);
 
 		bool CheckRefreshShader(VkDevice& logic_device);
 
@@ -88,6 +90,7 @@ namespace VansGraphics
 		bool TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType = ShaderType::Normal);
 
 		std::string m_ShaderFolder;
+		std::map<VkShaderStageFlagBits, std::string> m_ExplicitStageFiles;
 		ShaderType m_ShaderType = ShaderType::Normal;
 
 	protected:

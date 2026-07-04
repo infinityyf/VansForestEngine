@@ -12,65 +12,99 @@
 
 #include <iostream>
 #include <cstdlib>
+#include <filesystem>
 
 namespace
 {
+std::string QuoteCommandPath(const std::string& path)
+{
+	return "\"" + path + "\"";
+}
+
 bool CompileShaderModuleData(
 	const std::string& shader_folder,
 	VansGraphics::ShaderType shaderType,
+	const std::map<VkShaderStageFlagBits, std::string>& explicitStageFiles,
 	std::map<VkShaderStageFlagBits, VansGraphics::ShaderModuleData>& outModuleData)
 {
-	std::vector<std::string> shader_files = GetFilesInFolder(shader_folder);
-	if (shader_files.empty())
+	if (explicitStageFiles.empty())
 	{
-		VANS_LOG_WARN("no shader files found:" << shader_folder);
-		return false;
+		std::vector<std::string> shader_files = GetFilesInFolder(shader_folder);
+		if (shader_files.empty())
+		{
+			VANS_LOG_WARN("no shader files found:" << shader_folder);
+			return false;
+		}
+
+		outModuleData.clear();
+		for (auto& shader_file : shader_files)
+		{
+			std::string shader_type = GetFileExtension(shader_file);
+			if (shader_type == "spv")
+				continue;
+
+			VkShaderStageFlagBits shader_stage = {};
+			if (shaderType == VansGraphics::ShaderType::Normal)
+			{
+				auto shader_type_iter = VansGraphics::m_ShaderTypeMap.find(shader_type);
+				if (shader_type_iter == VansGraphics::m_ShaderTypeMap.end())
+				{
+					VANS_LOG_WARN("unknown shader type");
+					return false;
+				}
+				shader_stage = shader_type_iter->second;
+			}
+			else
+			{
+				auto shader_type_iter = VansGraphics::m_RayTracingShaderTypeMap.find(shader_type);
+				if (shader_type_iter == VansGraphics::m_RayTracingShaderTypeMap.end())
+				{
+					VANS_LOG_WARN("unknown ray tracing shader type");
+					return false;
+				}
+				shader_stage = shader_type_iter->second;
+			}
+
+			VansGraphics::ShaderModuleData shader_module_data;
+			shader_module_data.m_ShaderType = shader_type;
+			shader_module_data.m_ShaderTextResourceFileName = shader_folder + "\\" + shader_file;
+			outModuleData[shader_stage] = shader_module_data;
+		}
+	}
+	else
+	{
+		outModuleData.clear();
+		for (const auto& [shader_stage, shader_file] : explicitStageFiles)
+		{
+			if (shader_file.empty())
+				continue;
+
+			VansGraphics::ShaderModuleData shader_module_data;
+			shader_module_data.m_ShaderType = GetFileExtension(shader_file);
+			std::filesystem::path filePath(shader_file);
+			if (filePath.is_relative())
+				filePath = std::filesystem::path(shader_folder) / filePath;
+			shader_module_data.m_ShaderTextResourceFileName = filePath.string();
+			outModuleData[shader_stage] = shader_module_data;
+		}
 	}
 
-	outModuleData.clear();
-	for (auto& shader_file : shader_files)
+	if (outModuleData.empty())
 	{
-		std::string shader_type = GetFileExtension(shader_file);
-		if (shader_type == "spv")
-			continue;
-
-		VkShaderStageFlagBits shader_stage = {};
-		if (shaderType == VansGraphics::ShaderType::Normal)
-		{
-			auto shader_type_iter = VansGraphics::m_ShaderTypeMap.find(shader_type);
-			if (shader_type_iter == VansGraphics::m_ShaderTypeMap.end())
-			{
-				VANS_LOG_WARN("unknown shader type");
-				return false;
-			}
-			shader_stage = shader_type_iter->second;
-		}
-		else
-		{
-			auto shader_type_iter = VansGraphics::m_RayTracingShaderTypeMap.find(shader_type);
-			if (shader_type_iter == VansGraphics::m_RayTracingShaderTypeMap.end())
-			{
-				VANS_LOG_WARN("unknown ray tracing shader type");
-				return false;
-			}
-			shader_stage = shader_type_iter->second;
-		}
-
-		VansGraphics::ShaderModuleData shader_module_data;
-		shader_module_data.m_ShaderType = shader_type;
-		shader_module_data.m_ShaderTextResourceFileName = shader_folder + "\\" + shader_file;
-		outModuleData[shader_stage] = shader_module_data;
+		VANS_LOG_WARN("no shader stages found:" << shader_folder);
+		return false;
 	}
 
 	std::string command = "glslangValidator -V ";
 	for (auto& shader_module_data : outModuleData)
 	{
-		std::string spirv_file_name = GetFileWithoutExtension(shader_module_data.second.m_ShaderTextResourceFileName);
-		spirv_file_name += shader_module_data.second.m_ShaderType + ".spv";
-		spirv_file_name = shader_folder + "\\" + spirv_file_name;
+		std::filesystem::path sourcePath(shader_module_data.second.m_ShaderTextResourceFileName);
+		std::filesystem::path spirvPath = sourcePath.parent_path() /
+			(sourcePath.stem().string() + shader_module_data.second.m_ShaderType + ".spv");
+		std::string spirv_file_name = spirvPath.string();
 
-		std::string shader_command = command + " " + shader_module_data.second.m_ShaderTextResourceFileName;
-		shader_command += " -o " + spirv_file_name;
+		std::string shader_command = command + " " + QuoteCommandPath(shader_module_data.second.m_ShaderTextResourceFileName);
+		shader_command += " -o " + QuoteCommandPath(spirv_file_name);
 		shader_command += " --target-env vulkan1.2";
 		int result = system(shader_command.c_str());
 
@@ -193,13 +227,19 @@ bool CreateShaderModulesFromData(VkDevice device, std::map<VkShaderStageFlagBits
 
 bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::string& shader_folder)
 {
+	return InitShader(logic_device, shader_folder, {});
+}
+
+bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::string& shader_folder, const std::map<VkShaderStageFlagBits, std::string>& stageFiles)
+{
 	m_ShaderFolder = shader_folder;
 	m_ShaderType = ShaderType::Normal;
+	m_ExplicitStageFiles = stageFiles;
 
 	m_SupportMRTOutput = false;
 
 	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
-	bool result = CompileShaderModuleData(m_ShaderFolder, m_ShaderType, moduleData);
+	bool result = CompileShaderModuleData(m_ShaderFolder, m_ShaderType, m_ExplicitStageFiles, moduleData);
 	if (!result)
 	{
 		VANS_LOG_ERROR("shader translation failed");
@@ -228,7 +268,7 @@ bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::str
 bool VansGraphics::VansShader::RefreshShaderMoudle()
 {
 	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
-	bool result = CompileShaderModuleData(m_ShaderFolder, m_ShaderType, moduleData);
+	bool result = CompileShaderModuleData(m_ShaderFolder, m_ShaderType, m_ExplicitStageFiles, moduleData);
 	if (!result)
 	{
 		VANS_LOG_ERROR("shader translation failed");
@@ -250,11 +290,17 @@ bool VansGraphics::VansShader::RefreshShaderMoudle()
 
 bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder)
 {
+	return InitRayTracingShader(logic_device, shader_folder, {});
+}
+
+bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder, const std::map<VkShaderStageFlagBits, std::string>& stageFiles)
+{
 	std::string shader_folder_string = shader_folder;
 	m_ShaderFolder = shader_folder;
 	m_ShaderType = ShaderType::RayTracing;
+	m_ExplicitStageFiles = stageFiles;
 	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
-	bool result = CompileShaderModuleData(shader_folder_string, ShaderType::RayTracing, moduleData);
+	bool result = CompileShaderModuleData(shader_folder_string, ShaderType::RayTracing, m_ExplicitStageFiles, moduleData);
 	if (!result)
 	{
 		VANS_LOG_ERROR("shader translation failed");
@@ -287,7 +333,7 @@ bool VansGraphics::VansShader::CheckRefreshShader(VkDevice& logic_device)
 bool VansGraphics::VansShader::TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType)
 {
 	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
-	if (!CompileShaderModuleData(shader_folder, shaderType, moduleData))
+	if (!CompileShaderModuleData(shader_folder, shaderType, m_ExplicitStageFiles, moduleData))
 		return false;
 	DestroyShaderModuleData(m_LogicDevice, m_ShaderModuleDataMap);
 	m_ShaderModuleDataMap = std::move(moduleData);

@@ -38,6 +38,7 @@ namespace VansGraphics
 	class VansClothProfileEditorWindow;
 	class VansWaterWindow;
 	class VansTerrainWindow;
+	class VansReflectionProbeWindow;
 
 	// 前置声明（定义在 VansScene.h）
 	enum class VansSceneLoadMode;
@@ -56,8 +57,18 @@ namespace VansGraphics
 	public:
 
 		static bool m_GBufferWindowOpen;
+		static bool m_WaterGBufferWindowOpen;
 
 		static bool m_RenderDebugWindowOpen;
+
+		static bool m_LightWindowOpen;
+		static bool m_ScriptorWindowOpen;
+		static bool m_ConsoleWindowOpen;
+		static bool m_ProfilerWindowOpen;
+		static bool m_UIEditorWindowOpen;
+		static bool m_WaterWindowOpen;
+		static bool m_TerrainWindowOpen;
+		static bool m_ReflectionProbeWindowOpen;
 
 		static bool m_WireframeMode;
 
@@ -143,6 +154,8 @@ namespace VansGraphics
 		static VansWaterWindow* m_WaterWindow;
 
 		static VansTerrainWindow* m_TerrainWindow;
+
+		static VansReflectionProbeWindow* m_ReflectionProbeWindow;
 
 	private:
 

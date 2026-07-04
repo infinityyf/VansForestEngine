@@ -57,6 +57,13 @@ void main()
     dispZ *= checker;
 
     float maxWaveAmp = max(params.outputParams.x, 0.001);
+    float fftSpatialGain = sqrt(max(params.foldParams.z, 1.0));
+    height *= fftSpatialGain;
+    slopeX *= fftSpatialGain;
+    slopeZ *= fftSpatialGain;
+    dispX *= fftSpatialGain;
+    dispZ *= fftSpatialGain;
+
     vec3 disp = vec3(dispX, height, dispZ);
     disp.y = clamp(disp.y, -maxWaveAmp, maxWaveAmp);
     disp.xz = clamp(disp.xz, vec2(-maxWaveAmp), vec2(maxWaveAmp));

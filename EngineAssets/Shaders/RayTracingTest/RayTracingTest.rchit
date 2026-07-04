@@ -81,8 +81,16 @@ void main()
     //获取材质信息
     uint textureIndex = textureIndexData.indexs[modelIndex];
     vec2 uv = v0.uv * barycentrics.x + v1.uv* barycentrics.y + v2.uv * barycentrics.z;
-    vec4 albedo = texture(PBRTextures[textureIndex + ALBEDO_INDEX], uv);
-    float ropughness = texture(PBRTextures[textureIndex + ROUGHNESS_INDEX], uv).r;
+    // 非 PBR 材质（如自定义 Shader 材质）在收集阶段写入的贴图索引为 0xFFFFFFFF（CPU 端的 -1）。
+    // 若不做保护直接用它索引 bindless 贴图数组，会造成越界访问，进而触发 GPU 故障
+    // （命令缓冲提交时报 VK_ERROR_DEVICE_LOST）。此处对无效索引做兜底，输出中性材质。
+    if (textureIndex == 0xFFFFFFFFu || (textureIndex + AO_INDEX) >= 2048u)
+    {
+        prd.albedoRoughness = vec4(0.5, 0.5, 0.5, 1.0);
+        return;
+    }
+    vec4 albedo = texture(PBRTextures[nonuniformEXT(textureIndex + ALBEDO_INDEX)], uv);
+    float ropughness = texture(PBRTextures[nonuniformEXT(textureIndex + ROUGHNESS_INDEX)], uv).r;
     prd.albedoRoughness = vec4(albedo.rgb, ropughness);
 
 }

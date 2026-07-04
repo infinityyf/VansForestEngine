@@ -323,6 +323,14 @@ namespace VansGraphics
 				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
 			}
 
+			if (m_Scene->HasForwardOpaqueAfterDeferredNodes())
+			{
+				VANS_GPU_SCOPE(cmd, "Forward Opaque After Deferred Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansForwardOpaqueAfterDeferredPass(), cmd, m_globalRenderStateData);
+				m_Scene->DrawForwardOpaqueAfterDeferredNodes();
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+
 			// ── 设计文档 Pass 10-12：Transparent + PostProcess（LOAD SceneColor）────────
 			{
 				VANS_GPU_SCOPE(cmd, "Transparent PostProcess Pass");
@@ -522,6 +530,13 @@ namespace VansGraphics
 				waterSys->DispatchWaterSSR(m_VansVKCommandBuffer);
 				waterSys->DispatchRefractionCS(m_VansVKCommandBuffer);
 				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
+			}
+			if (m_Scene->HasForwardOpaqueAfterDeferredNodes())
+			{
+				VANS_GPU_SCOPE(cmd, "Forward Opaque After Deferred Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansForwardOpaqueAfterDeferredPass(), cmd, m_globalRenderStateData);
+				m_Scene->DrawForwardOpaqueAfterDeferredNodes();
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 			{
 				VANS_GPU_SCOPE(cmd, "Transparent PostProcess Pass");
@@ -762,7 +777,7 @@ namespace VansGraphics
 
 	// ============================================================
 	// DrawSceneTransparentPost — 设计文档 Pass 10-12
-	// Transparent + Particles + PostProcess（LOAD SceneColor，继承水面合成结果）
+	// ForwardOpaqueAfterDeferred + Transparent + Particles + PostProcess（LOAD SceneColor，继承水面合成结果）
 	// 在 m_VansRenderPass（修改后）内执行
 	// ============================================================
 	void VansVKDevice::DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)

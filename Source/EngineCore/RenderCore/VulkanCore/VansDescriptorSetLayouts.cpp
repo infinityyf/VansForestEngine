@@ -69,15 +69,20 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		 IBL_STAGES | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GLOBAL_BINDING_REFLECTION_PROBE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 IBL_STAGES | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		// binding 15: custom material payload SSBO
+		{GLOBAL_BINDING_CUSTOM_MATERIAL_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 MATERIAL_STAGES, nullptr},
 		// binding 50: Bindless PBR textures (fixed max count, no variable descriptor)
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},
 	};
 
-	// 为每个 binding 设置标志位：仅 bindless 纹理数组（最后一项）需要 UPDATE_AFTER_BIND，
-	// 以允许在 GPU 执行期间（如视频源切换时）通过 vkUpdateDescriptorSets 更新该槽位。
+	// 为每个 binding 设置标志位：bindless 纹理数组（最后一项）支持 UPDATE_AFTER_BIND，
+	// 且允许只写入实际使用的前 N 个 descriptor，避免未填满 MAX_BINDLESS_TEXTURES 时的动态索引风险。
 	std::vector<VkDescriptorBindingFlags> bindingFlags(bindings.size(), 0);
-	bindingFlags.back() = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+	bindingFlags.back() =
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
 	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayoutWithFlags(
 		bindings, bindingFlags,
@@ -303,6 +308,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_SkyBox(
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// 1/4 分辨率体积云结果（RGB=内散射，A=透射率）
 		{SKYBOX_BINDING_CLOUD, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{SKYBOX_BINDING_MOON_ALBEDO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
@@ -833,7 +840,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterGBuffer(
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// binding 4: FFT derivative Texture2DArray（slopeX/slopeZ/foam）
 		{WATER_GBUF_BINDING_DERIVATIVE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }

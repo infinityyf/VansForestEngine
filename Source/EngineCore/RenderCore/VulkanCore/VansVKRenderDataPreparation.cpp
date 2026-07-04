@@ -23,6 +23,31 @@ namespace VansGraphics
 		auto materialManager = m_Scene->GetMaterialManager();
 		int materialCount = static_cast<int>(allmaterials.size());
 		int pbrMaterialIndex = 0;
+		struct PendingCustomTexture
+		{
+			int payloadIndex = -1;
+			int textureSlot = -1;
+			VansTexture* texture = nullptr;
+		};
+		std::vector<PendingCustomTexture> pendingCustomTextures;
+		auto appendCustomMaterialData = [&](VansMaterial* material)
+		{
+			const int payloadIndex = static_cast<int>(materialManager->m_GlobalCustomMaterialParamData.size());
+			if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+				material->m_MaterialIndex = payloadIndex;
+			VansCustomMaterialPayload payload = material->m_CustomMaterialPayload;
+			payload.textureIndices = glm::ivec4(-1);
+			for (const auto& [slotName, slotIndex] : material->m_CustomTextureSlots)
+			{
+				if (slotIndex < 0 || slotIndex >= VANS_CUSTOM_MATERIAL_TEXTURE_COUNT)
+					continue;
+				auto textureIt = material->m_CustomTextures.find(slotName);
+				if (textureIt == material->m_CustomTextures.end() || !textureIt->second)
+					continue;
+				pendingCustomTextures.push_back({ payloadIndex, slotIndex, textureIt->second });
+			}
+			materialManager->m_GlobalCustomMaterialParamData.push_back(payload);
+		};
 		for (int materialIndex = 0; materialIndex < materialCount; ++materialIndex)
 		{
 			auto material = static_cast<VansMaterial*>(allmaterials[materialIndex]);
@@ -80,12 +105,41 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_RoughnessTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
 			}
+			else if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+			{
+				appendCustomMaterialData(material);
+			}
+		}
+
+		for (const PendingCustomTexture& pendingTexture : pendingCustomTextures)
+		{
+			if (!pendingTexture.texture ||
+				pendingTexture.payloadIndex < 0 ||
+				pendingTexture.payloadIndex >= static_cast<int>(materialManager->m_GlobalCustomMaterialParamData.size()) ||
+				pendingTexture.textureSlot < 0 ||
+				pendingTexture.textureSlot >= VANS_CUSTOM_MATERIAL_TEXTURE_COUNT)
+			{
+				continue;
+			}
+
+			materialManager->m_GlobalCustomMaterialParamData[pendingTexture.payloadIndex]
+				.textureIndices[pendingTexture.textureSlot] =
+				static_cast<int>(materialManager->m_GlobalPBRTextures.size());
+			materialManager->m_GlobalPBRTextures.push_back(&(pendingTexture.texture->GetImage()));
 		}
 
 		const VkDeviceSize materialDataSize = sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRParamData.size();
+		const VkDeviceSize customMaterialDataSize =
+			sizeof(VansCustomMaterialPayload) * materialManager->m_GlobalCustomMaterialParamData.size();
 		materialManager->m_GlobalPBRDataBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
 			std::max<VkDeviceSize>(materialDataSize, sizeof(VansBasePBRParam)),
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		materialManager->m_GlobalCustomMaterialDataBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			std::max<VkDeviceSize>(customMaterialDataSize, sizeof(VansCustomMaterialPayload)),
 			VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
@@ -95,9 +149,15 @@ namespace VansGraphics
 			materialManager->m_GlobalPBRDataBuffer.SetBufferData(
 				materialManager->m_GlobalPBRParamData.data(), 0, static_cast<int>(materialDataSize));
 		}
+		if (customMaterialDataSize > 0)
+		{
+			materialManager->m_GlobalCustomMaterialDataBuffer.SetBufferData(
+				materialManager->m_GlobalCustomMaterialParamData.data(), 0, static_cast<int>(customMaterialDataSize));
+		}
 
 		// Keep the PBR material buffer persistently mapped for fast per-frame CPU writes
 		materialManager->m_GlobalPBRDataBuffer.PersistentMap();
+		materialManager->m_GlobalCustomMaterialDataBuffer.PersistentMap();
 
 		VkDescriptorSetLayoutBinding globalPBRMaterialBufferBinding =
 		{
@@ -251,6 +311,9 @@ namespace VansGraphics
 
 		manager->m_ClothBRDFLUT = new VansTexture();
 		manager->m_ClothBRDFLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/ClothBRDFLUT.png").c_str(), false, false, false, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+		manager->m_MoonAlbedoTexture = new VansTexture();
+		manager->m_MoonAlbedoTexture->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/Celestial/MoonAlbedo.png").c_str(), false, false, true, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 		// ------------------------------------------------------------
 		// LTC LUTs (area-light BRDF). 64x64 RGBA16F, uploaded from the
@@ -679,7 +742,7 @@ namespace VansGraphics
 			static_cast<float>(m_RenderWidth), static_cast<float>(m_RenderHeight),
 			1.0f / static_cast<float>(m_RenderWidth), 1.0f / static_cast<float>(m_RenderHeight));
 		data.rayParams = glm::vec4(0.75f, 0.065f, 0.018f, 40.0f);
-		data.fadeParams = glm::vec4(32.0f, 45.0f, 0.75f, 0.25f);
+		data.fadeParams = glm::vec4(32.0f, 45.0f, 1.0f, 0.25f);
 
 		manager->m_ScreenSpaceShadowParamsCBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
@@ -832,9 +895,11 @@ namespace VansGraphics
 
 		// 1/4 分辨率云层结果纹理（RGB=内散射，A=透射率），RGBA16F
 		VansTexture* cloudBuffer = new VansTexture();
+		const uint32_t cloudW = (m_RenderWidth + 3) / 4;
+		const uint32_t cloudH = (m_RenderHeight + 3) / 4;
 		cloudBuffer->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
-			m_RenderWidth / 4, m_RenderHeight / 4, 1,
+			cloudW, cloudH, 1,
 			4, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_BUFFER, cloudBuffer);
 

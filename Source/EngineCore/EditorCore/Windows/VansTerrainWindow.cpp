@@ -1,4 +1,5 @@
 #include "VansTerrainWindow.h"
+#include "../VansEditorWindow.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../RenderCore/VansRenderNode.h"
 #include "../../RenderCore/TerrainCore/VansTerrain.h"
@@ -10,6 +11,9 @@ namespace VansGraphics
 
 void VansTerrainWindow::ShowWindow(VansVKDevice& device)
 {
+    if (!VansEditorWindow::m_TerrainWindowOpen)
+        return;
+
     if (!m_Scene)
     {
         ImGui::Begin("Terrain");

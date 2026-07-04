@@ -21,49 +21,49 @@ void RegisterEngineShaders()
         "Unlit",
         "EngineAssets/Shaders/UnLit/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        12, false, false, 4
+        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
     });
 
     reg.RegisterGraphicsShader("Shadow", {
         "Shadow",
         "EngineAssets/Shaders/Shadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        12, false
+        sizeof(VansGraphics::VansDrawPushConstant), false
     });
 
     reg.RegisterGraphicsShader("PunctualShadow", {
         "PunctualShadow",
         "EngineAssets/Shaders/PunctualShadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        16, false
+        sizeof(int) * 5, false
     });
 
     reg.RegisterGraphicsShader("Skin", {
         "Skin",
         "EngineAssets/Shaders/UnlitSkin/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        12, false, false, 4
+        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
     });
 
     reg.RegisterGraphicsShader("Cloth", {
         "Cloth",
         "EngineAssets/Shaders/Cloth/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        12, false, false, 4
+        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
     });
 
     reg.RegisterGraphicsShader("Hair", {
         "Hair",
         "EngineAssets/Shaders/Hair/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        12, false, false, 4
+        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
     });
 
     reg.RegisterGraphicsShader("Coat", {
         "Coat",
         "EngineAssets/Shaders/Coat",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        12, false
+        sizeof(VansGraphics::VansDrawPushConstant), false
     });
 
     reg.RegisterGraphicsShader("TransparentSimpleColor", {
@@ -105,7 +105,7 @@ void RegisterEngineShaders()
         "Subsurface",
         "EngineAssets/Shaders/Subsurface/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        12, false, false, 4
+        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
     });
 
     reg.RegisterGraphicsShader("GrassGBuffer", {
@@ -119,14 +119,14 @@ void RegisterEngineShaders()
         "MotionVector",
         "EngineAssets/Shaders/MotionVector",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        8, false
+        sizeof(VansGraphics::VansDrawPushConstant), false
     });
 
     reg.RegisterGraphicsShader("Emissive", {
         "Emissive",
         "EngineAssets/Shaders/Emissive/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        12, false, false, 4
+        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
     });
 
     // Particle billboard shader.
@@ -161,7 +161,7 @@ void RegisterEngineShaders()
         "Decal",
         "EngineAssets/Shaders/Decal",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_CULL_MODE_FRONT_BIT,
-        12, false, true
+        sizeof(VansGraphics::VansDrawPushConstant), false, true
     });
 
     // -----------------------------------------------------------------------

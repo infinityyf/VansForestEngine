@@ -314,6 +314,9 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansWaterWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUISystem.h">
       <Filter>EngineCore\RuntimeUI\Public</Filter>
     </ClInclude>
@@ -997,6 +1000,9 @@
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansWaterWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUISystem.cpp">

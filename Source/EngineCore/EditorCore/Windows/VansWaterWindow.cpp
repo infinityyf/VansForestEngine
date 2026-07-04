@@ -1,5 +1,6 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansWaterWindow.h"
+#include "../VansEditorWindow.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../RenderCore/WaterCore/VansWaterConfig.h"
 #include "../../RenderCore/WaterCore/VansWaterMaterial.h"
@@ -73,6 +74,9 @@ void VansWaterWindow::ApplyPreset(const WaterPreset& preset)
 
 void VansGraphics::VansWaterWindow::ShowWindow(VansVKDevice& device)
 {
+    if (!VansEditorWindow::m_WaterWindowOpen)
+        return;
+
     if (!m_Scene || !m_Scene->HasWaterNodes())
     {
         ImGui::Begin("Water");
@@ -210,7 +214,7 @@ ImGui::DragFloat("Clipmap Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 409
                     }
                     fftDirty |= ImGui::DragFloat("Spectrum Amplitude", &cfg.m_Waves.m_FFT.m_SpectrumAmplitude, 0.01f, 0.0f, 20.0f, "%.3f");
                     fftDirty |= ImGui::DragFloat("FFT Choppiness", &cfg.m_Waves.m_FFT.m_Choppiness, 0.01f, 0.0f, 3.0f, "%.3f");
-                    fftDirty |= ImGui::DragFloat("Small Wave Damping", &cfg.m_Waves.m_FFT.m_SmallWaveDamping, 0.0001f, 0.0f, 0.1f, "%.5f");
+                    fftDirty |= ImGui::DragFloat("Small Wave Damping", &cfg.m_Waves.m_FFT.m_SmallWaveDamping, 0.0001f, 0.001f, 0.1f, "%.5f");
                     fftDirty |= ImGui::DragFloat("Wind Dependency", &cfg.m_Waves.m_FFT.m_WindDependency, 0.01f, 0.0f, 1.0f, "%.3f");
                     fftDirty |= ImGui::DragFloat("Water Depth", &cfg.m_Waves.m_FFT.m_Depth, 1.0f, 0.1f, 10000.0f, "%.1f");
                     fftDirty |= ImGui::DragFloat("Repeat Period", &cfg.m_Waves.m_FFT.m_RepeatPeriod, 1.0f, 0.0f, 600.0f, "%.1f");
@@ -288,9 +292,9 @@ ImGui::DragFloat("Clipmap Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 409
                     { mat->m_DetailNormalOctaves = octaves; cfg.m_Waves.m_DetailNormal.m_OctaveCount = octaves; }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Octave count [1, 4]: more = richer detail but higher compute cost");
 
-                    if (ImGui::DragFloat("World Coverage (m)", &mat->m_DetailNormalBaseScale, 1.0f, 32.0f, 1024.0f, "%.0f"))
+                    if (ImGui::DragFloat("World Coverage (m)", &mat->m_DetailNormalBaseScale, 0.25f, 1.0f, 512.0f, "%.2f"))
                         cfg.m_Waves.m_DetailNormal.m_DetailBaseScale = mat->m_DetailNormalBaseScale;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("World-space tiling distance. Larger = less visible repetition. 256m default");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("World-space tiling distance. Smaller = denser detail. 16m default");
 
                     if (ImGui::DragFloat("Time Offset", &mat->m_DetailNormalTimeOffset, 0.01f, 0.0f, 10.0f, "%.2f"))
                         cfg.m_Waves.m_DetailNormal.m_TimeOffset = mat->m_DetailNormalTimeOffset;
@@ -467,6 +471,8 @@ ImGui::DragFloat("Clipmap Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 409
 
                 const uint32_t layerCount = std::max(image.GetImageCreateInfo().arrayLayers, 1u);
                 const uint32_t layer = std::min(requestedLayer, layerCount - 1u);
+                ImGui::SameLine();
+                ImGui::TextDisabled("layer %u / %u", layer, layerCount - 1u);
                 if (cache.ds == VK_NULL_HANDLE || cache.image != image.GetImage() || cache.layer != layer)
                 {
                     if (cache.ds != VK_NULL_HANDLE)
@@ -490,9 +496,16 @@ ImGui::DragFloat("Clipmap Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 409
                 }
                 if (cache.ds != VK_NULL_HANDLE)
                 {
+                    const float aspect = (float)image.GetImageDimension().width / (float)image.GetImageDimension().height;
                     float w = ImGui::GetContentRegionAvail().x * 0.95f;
-                    float aspect = (float)image.GetImageDimension().width / (float)image.GetImageDimension().height;
-                    ImGui::Image((ImTextureID)cache.ds, ImVec2(w, w / aspect));
+                    float h = w / aspect;
+                    const float maxPreviewHeight = 220.0f;
+                    if (h > maxPreviewHeight)
+                    {
+                        h = maxPreviewHeight;
+                        w = h * aspect;
+                    }
+                    ImGui::Image((ImTextureID)cache.ds, ImVec2(w, h));
                 }
             };
 
@@ -509,7 +522,7 @@ ImGui::DragFloat("Clipmap Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 409
             DisplayTex("Water Derivative / FFT Normal Source", waterSys->GetDerivativeImage(), previewDeriv, uint32_t(waterLayer));
 
             ImGui::Separator();
-            DisplayTex("Detail Normal", waterSys->GetDetailNormalImage(), previewDetail, uint32_t(waterLayer));
+            DisplayTex("Detail Normal", waterSys->GetDetailNormalImage(), previewDetail, 0u);
 
             if (waterSys->GetFFT())
             {

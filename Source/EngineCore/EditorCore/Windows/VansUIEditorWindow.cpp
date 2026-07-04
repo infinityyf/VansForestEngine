@@ -1,4 +1,5 @@
 #include "VansUIEditorWindow.h"
+#include "../VansEditorWindow.h"
 #include "../../../EngineCore/RuntimeUI/Public/VansUISystem.h"
 #include "../../../EngineCore/RuntimeUI/Public/VansUIDocument.h"
 #include "../../Util/VansInputManager.h"
@@ -17,6 +18,9 @@ VansUIEditorWindow::VansUIEditorWindow()
 
 void VansUIEditorWindow::ShowWindow(VansVKDevice& device)
 {
+    if (!VansEditorWindow::m_UIEditorWindowOpen)
+        return;
+
     ImGui::SetNextWindowSize(ImVec2(620.0f, 480.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("UI Editor");
 

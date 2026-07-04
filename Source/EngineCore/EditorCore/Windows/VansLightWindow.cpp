@@ -1,4 +1,5 @@
 #include "VansLightWindow.h"
+#include "../VansEditorWindow.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../RenderCore/VansMaterial.h"
 
@@ -64,6 +65,9 @@ namespace
 
 void VansGraphics::VansLightWindow::ShowWindow(VansVKDevice& device)
 {
+    if (!VansEditorWindow::m_LightWindowOpen)
+        return;
+
     ImGui::Begin("Light Info");
 
     bool lightChanged = false;
@@ -260,11 +264,11 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(VansVKDevice& device)
     float cloudThickness = std::max(cloudParams.cloudMaxHeight - cloudParams.cloudMinHeight, 100.0f);
     bool heightChanged = false;
     heightChanged |= ImGui::DragFloat("Cloud Base Height", &cloudBaseHeight, 10.0f, 0.0f, 20000.0f, "%.0f m");
-    heightChanged |= ImGui::DragFloat("Cloud Thickness", &cloudThickness, 10.0f, 100.0f, 15000.0f, "%.0f m");
+    heightChanged |= ImGui::DragFloat("Cloud Thickness", &cloudThickness, 10.0f, 100.0f, 30000.0f, "%.0f m");
     if (heightChanged)
     {
         cloudBaseHeight = std::clamp(cloudBaseHeight, 0.0f, 20000.0f);
-        cloudThickness = std::clamp(cloudThickness, 100.0f, 15000.0f);
+        cloudThickness = std::clamp(cloudThickness, 100.0f, 30000.0f);
         cloudParams.cloudMinHeight = cloudBaseHeight;
         cloudParams.cloudMaxHeight = cloudBaseHeight + cloudThickness;
         changed = true;
@@ -282,8 +286,8 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(VansVKDevice& device)
     changed |= ImGui::DragFloat("Detail Height Scale", &cloudParams.detailHeightScale, 0.01f, 0.0f, 16.0f, "%.2f");
 
     ImGui::Separator();
-    changed |= ImGui::DragFloat("Clear Threshold", &cloudParams.thresholdLowCoverage, 0.005f, 0.0f, 1.0f, "%.3f");
-    changed |= ImGui::DragFloat("Overcast Threshold", &cloudParams.thresholdHighCoverage, 0.005f, 0.0f, 1.0f, "%.3f");
+    changed |= ImGui::DragFloat("Overcast Threshold", &cloudParams.thresholdLowCoverage, 0.005f, 0.0f, 1.0f, "%.3f");
+    changed |= ImGui::DragFloat("Clear Threshold", &cloudParams.thresholdHighCoverage, 0.005f, 0.0f, 1.0f, "%.3f");
     changed |= ImGui::DragFloat("Density Smooth Low", &cloudParams.densityRemapLow, 0.005f, 0.0f, 1.0f, "%.3f");
     changed |= ImGui::DragFloat("Density Smooth High", &cloudParams.densityRemapHigh, 0.005f, 0.01f, 1.0f, "%.3f");
 

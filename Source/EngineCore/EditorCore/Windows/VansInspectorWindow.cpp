@@ -25,6 +25,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -87,7 +88,10 @@ Vans::VansAssetType InferAssetType(const std::string& key,
     if (field == "model" || field.find("mesh") != std::string::npos) return Vans::VansAssetType::Model;
     if (field.find("material") != std::string::npos || parent.find("materialoverride") != std::string::npos)
         return Vans::VansAssetType::Material;
+    if (field == "shader" || field.find("shader") != std::string::npos || parent.find("shader") != std::string::npos)
+        return Vans::VansAssetType::Shader;
     if (field.find("texture") != std::string::npos || parent == "textures" ||
+        parent.find("textures") != std::string::npos ||
         field == "basecolor" || field == "normal" || field == "metal" || field == "roughness" || field == "ao")
         return Vans::VansAssetType::Texture;
     if (field == "source" && component == "audio") return Vans::VansAssetType::Audio;
@@ -102,6 +106,7 @@ const char* AssetTypeName(Vans::VansAssetType type)
     case Vans::VansAssetType::Model: return "Model";
     case Vans::VansAssetType::Texture: return "Texture";
     case Vans::VansAssetType::Material: return "Material";
+    case Vans::VansAssetType::Shader: return "Shader";
     case Vans::VansAssetType::Audio: return "Audio";
     case Vans::VansAssetType::Video: return "Video";
     case Vans::VansAssetType::Scene: return "Scene";
@@ -180,6 +185,153 @@ bool IsNormalizedField(const std::string& key)
     const std::string field = Lower(key);
     return field == "metallic" || field == "roughness" || field == "ao" ||
         field == "opacity" || field == "alpha" || field.find("blend") != std::string::npos;
+}
+
+void BeginProperty(const std::string& label);
+
+Json LoadShaderAssetFromMaterial(const Json& materialRoot)
+{
+    if (!materialRoot.is_object() || Lower(materialRoot.value("materialType", "")) != "customshader")
+        return Json::object();
+    if (!materialRoot.contains("shader") || !materialRoot["shader"].is_object())
+        return Json::object();
+
+    const std::string shaderGuidText = materialRoot["shader"].value("guid", "");
+    Vans::VansAssetGuid shaderGuid;
+    if (!Vans::VansAssetGuid::TryParse(shaderGuidText, shaderGuid))
+        return Json::object();
+
+    Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+    if (!database)
+        return Json::object();
+    const auto record = database->Find(shaderGuid);
+    if (!record || record->type != Vans::VansAssetType::Shader)
+        return Json::object();
+
+    std::ifstream shaderInput(record->sourcePath);
+    Json shader = shaderInput ? Json::parse(shaderInput, nullptr, false) : Json();
+    return shader.is_object() ? shader : Json::object();
+}
+
+void MergeCustomShaderParameterSchema(Json& materialRoot)
+{
+    Json shader = LoadShaderAssetFromMaterial(materialRoot);
+    if (!shader.contains("parameters") || !shader["parameters"].is_object())
+        return;
+
+    if (!materialRoot.contains("parameters") || !materialRoot["parameters"].is_object())
+        materialRoot["parameters"] = Json::object();
+
+    for (const auto& [name, schema] : shader["parameters"].items())
+    {
+        if (!schema.is_object())
+            continue;
+
+        Json& materialParameter = materialRoot["parameters"][name];
+        if (!materialParameter.is_object())
+        {
+            Json value = materialParameter;
+            materialParameter = Json::object({ { "value", value } });
+        }
+
+        for (const auto& [field, schemaValue] : schema.items())
+        {
+            if (!materialParameter.contains(field))
+                materialParameter[field] = schemaValue;
+        }
+        if (!materialParameter.contains("value") && schema.contains("default"))
+            materialParameter["value"] = schema["default"];
+    }
+}
+
+float ReadFloatOr(const Json& value, float fallback)
+{
+    return value.is_number() ? value.get<float>() : fallback;
+}
+
+bool DrawTypedMaterialParameter(const std::string& label, Json& parameter, bool readOnly)
+{
+    if (!parameter.is_object())
+        return false;
+
+    if (!parameter.contains("value"))
+    {
+        if (parameter.contains("default"))
+            parameter["value"] = parameter["default"];
+        else
+            return false;
+    }
+
+    Json& value = parameter["value"];
+    const std::string type = Lower(parameter.value("type", ""));
+    bool changed = false;
+    BeginProperty(label);
+
+    if (readOnly)
+    {
+        ImGui::TextDisabled("%s", value.dump().c_str());
+        return false;
+    }
+
+    if ((type == "color" || (IsColorField(label) && (type == "vec3" || type == "vec4" || type.empty()))) &&
+        value.is_array() && (value.size() == 3 || value.size() == 4))
+    {
+        std::array<float, 4> color{};
+        for (std::size_t i = 0; i < value.size(); ++i) color[i] = value[i].get<float>();
+        const bool edited = value.size() == 3
+            ? ImGui::ColorEdit3("##value", color.data()) : ImGui::ColorEdit4("##value", color.data());
+        if (edited)
+        {
+            for (std::size_t i = 0; i < value.size(); ++i) value[i] = color[i];
+            changed = true;
+        }
+    }
+    else if (((type == "vec2" || type == "vec3" || type == "vec4") && value.is_array()) ||
+        (type.empty() && value.is_array() && value.size() >= 2 && value.size() <= 4 &&
+            std::all_of(value.begin(), value.end(), [](const Json& item) { return item.is_number(); })))
+    {
+        std::array<float, 4> values{};
+        const int count = type == "vec2" ? 2 : (type == "vec3" ? 3 : (type == "vec4" ? 4 : static_cast<int>(value.size())));
+        while (value.size() < static_cast<std::size_t>(count)) value.push_back(0.0f);
+        for (int i = 0; i < count; ++i) values[i] = value[i].get<float>();
+        bool edited = false;
+        if (count == 2) edited = ImGui::DragFloat2("##value", values.data(), 0.01f);
+        if (count == 3) edited = ImGui::DragFloat3("##value", values.data(), 0.01f);
+        if (count == 4) edited = ImGui::DragFloat4("##value", values.data(), 0.01f);
+        if (edited)
+        {
+            for (int i = 0; i < count; ++i) value[i] = values[i];
+            changed = true;
+        }
+    }
+    else if (type == "bool" && value.is_boolean())
+    {
+        bool edited = value.get<bool>();
+        if (ImGui::Checkbox("##value", &edited)) { value = edited; changed = true; }
+    }
+    else if ((type == "int" || type == "uint") && value.is_number_integer())
+    {
+        int edited = value.get<int>();
+        if (ImGui::InputInt("##value", &edited)) { value = edited; changed = true; }
+    }
+    else if (value.is_number())
+    {
+        float edited = value.get<float>();
+        const float minValue = ReadFloatOr(parameter.contains("min") ? parameter["min"] : Json(), 0.0f);
+        const float maxValue = ReadFloatOr(parameter.contains("max") ? parameter["max"] : Json(), IsNormalizedField(label) ? 1.0f : 0.0f);
+        if (maxValue > minValue)
+        {
+            if (ImGui::SliderFloat("##value", &edited, minValue, maxValue, "%.3f"))
+            { value = edited; changed = true; }
+        }
+        else if (ImGui::DragFloat("##value", &edited, 0.01f, 0.0f, 0.0f, "%.3f"))
+        { value = edited; changed = true; }
+    }
+    else
+    {
+        ImGui::TextDisabled("%s", value.dump().c_str());
+    }
+    return changed;
 }
 
 void BeginProperty(const std::string& label)
@@ -295,6 +447,15 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
         return DrawAssetReference(label, value, pointer, static_cast<int>(assetType));
     }
 
+    const std::string loweredParentKey = Lower(parentKey);
+    if (value.is_object() && loweredParentKey.find("parameters") != std::string::npos &&
+        (value.contains("value") || value.contains("default")))
+    {
+        changed = DrawTypedMaterialParameter(label, value, readOnly);
+        ImGui::PopID();
+        return changed;
+    }
+
     if (value.is_object())
     {
         const ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed |
@@ -377,6 +538,15 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
         std::int64_t edited = value.get<std::int64_t>();
         BeginProperty(label);
         if (readOnly) ImGui::TextDisabled("%lld", static_cast<long long>(edited));
+        else if (IsNormalizedField(label))
+        {
+            float normalized = static_cast<float>(edited);
+            if (ImGui::SliderFloat("##value", &normalized, 0.0f, 1.0f, "%.3f"))
+            {
+                value = normalized;
+                changed = true;
+            }
+        }
         else
         {
             const std::int64_t step = 1;
@@ -624,13 +794,17 @@ void VansInspectorWindow::DrawAsset()
     if (m_AssetDocument.IsLoaded())
     {
         Json& root = m_AssetDocument.Root();
+        MergeCustomShaderParameterSchema(root);
         for (auto iterator = root.begin(); iterator != root.end(); ++iterator)
         {
             const bool identity = iterator.key() == "schemaVersion" || iterator.key() == "guid";
             if (DrawJsonValue(iterator.key(), iterator.value(), "/asset/" + EscapePointerToken(iterator.key()), identity))
             {
                 m_AssetDocument.MarkDirty();
-                m_MaterialLiveEdit.ApplyMaterialAssetPatch(selected, root);
+                m_MaterialLiveEdit.ApplyMaterialAssetPatch(
+                    selected,
+                    root,
+                    "/asset/" + EscapePointerToken(iterator.key()));
             }
         }
     }

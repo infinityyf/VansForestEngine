@@ -181,7 +181,7 @@ namespace VansGraphics
 
 		// 拆分后的渲染 pass：
 		//   DrawSceneDeferredSkybox  — ScreenSpaceFeature + Deferred + SkyBox（写入 SceneColor）
-		//   DrawSceneTransparentPost — Transparent + Particles + PostProcess（读 SceneColor，写 PostProcess 输出）
+		//   DrawSceneTransparentPost — ForwardOpaqueAfterDeferred + Transparent + Particles + PostProcess（读 SceneColor，写 PostProcess 输出）
 		// 设计文档 §6.1 Pass 6 = DrawSceneDeferredSkybox，Pass 10-12 = DrawSceneTransparentPost
 		void DrawSceneDeferredSkybox(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);

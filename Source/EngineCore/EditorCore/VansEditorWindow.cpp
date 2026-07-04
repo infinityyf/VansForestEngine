@@ -22,6 +22,7 @@
 #include "Windows/VansWaterWindow.h"
 #include "Windows/VansTerrainWindow.h"
 #include "Windows/VansUIEditorWindow.h"
+#include "Windows/VansReflectionProbeWindow.h"
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
@@ -100,8 +101,18 @@ static bool CheckGraphicsAPI(VansGraphics::GRAPHICS_API api)
 }
 
 bool VansGraphics::VansEditorWindow::m_GBufferWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_WaterGBufferWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen = false;
+
+bool VansGraphics::VansEditorWindow::m_LightWindowOpen = true;
+bool VansGraphics::VansEditorWindow::m_ScriptorWindowOpen = true;
+bool VansGraphics::VansEditorWindow::m_ConsoleWindowOpen = true;
+bool VansGraphics::VansEditorWindow::m_ProfilerWindowOpen = true;
+bool VansGraphics::VansEditorWindow::m_UIEditorWindowOpen = true;
+bool VansGraphics::VansEditorWindow::m_WaterWindowOpen = true;
+bool VansGraphics::VansEditorWindow::m_TerrainWindowOpen = true;
+bool VansGraphics::VansEditorWindow::m_ReflectionProbeWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
 
@@ -140,6 +151,8 @@ VansGraphics::VansClothProfileEditorWindow* VansGraphics::VansEditorWindow::m_Cl
 VansGraphics::VansWaterWindow* VansGraphics::VansEditorWindow::m_WaterWindow;
 
 VansGraphics::VansTerrainWindow* VansGraphics::VansEditorWindow::m_TerrainWindow;
+
+VansGraphics::VansReflectionProbeWindow* VansGraphics::VansEditorWindow::m_ReflectionProbeWindow;
 
 //脚本上下文
 VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
@@ -333,7 +346,7 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(BUTTON_SPACING, 0.0f));
 
-    // ── ▶ Play ──────────────────────────────────────────────────────────
+    // ── ? Play ──────────────────────────────────────────────────────────
     // Editing 状态下可点击；其余状态置灰
     const bool canPlay = sceneReady && (m_PlayState == VansEditorPlayState::Editing);
     if (!canPlay) ImGui::BeginDisabled();
@@ -347,7 +360,7 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
 
     ImGui::SameLine();
 
-    // ── ⏸ Pause / ▶ Resume ──────────────────────────────────────────────
+    // ── ? Pause / ? Resume ──────────────────────────────────────────────
     // Playing 时显示 Pause（可点），Paused 时显示 Resume（可点），Editing 时置灰
     const bool canPause  = sceneReady && (m_PlayState == VansEditorPlayState::Playing);
     const bool canResume = sceneReady && (m_PlayState == VansEditorPlayState::Paused);
@@ -369,7 +382,7 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
 
     ImGui::SameLine();
 
-    // ── ⏹ Stop ──────────────────────────────────────────────────────────
+    // ── ? Stop ──────────────────────────────────────────────────────────
     // Playing 或 Paused 状态下可点击；Editing 时置灰
     const bool canStop = sceneReady && (m_PlayState != VansEditorPlayState::Editing);
     if (!canStop) ImGui::BeginDisabled();
@@ -420,6 +433,8 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
     m_WaterWindow = AddEditorWindowComponent<VansWaterWindow>(m_Windows);
 
     m_TerrainWindow = AddEditorWindowComponent<VansTerrainWindow>(m_Windows);
+
+    m_ReflectionProbeWindow = AddEditorWindowComponent<VansReflectionProbeWindow>(m_Windows);
 
 }
 
@@ -478,6 +493,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 {
     if (m_PendingScenePath.empty())
         return;
+
 
     if (m_SceneDocument && m_SceneDocument->IsDirty() &&
         !m_CurrentLoadedScenePath.empty() &&
@@ -550,6 +566,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
 {
     if (!m_PendingProjectLoad.m_Requested)
         return;
+
 
     if (m_SceneDocument && m_SceneDocument->IsDirty())
     {
@@ -798,16 +815,27 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
             }
             if (ImGui::BeginMenu("Window"))
             {
-                if (ImGui::MenuItem("GbufferWindow"))
+                ImGui::MenuItem("Light", nullptr, &m_LightWindowOpen);
+                ImGui::MenuItem("Scripts", nullptr, &m_ScriptorWindowOpen);
+                ImGui::MenuItem("Console", nullptr, &m_ConsoleWindowOpen);
+                ImGui::MenuItem("Profiler", nullptr, &m_ProfilerWindowOpen);
+                ImGui::MenuItem("UI Editor", nullptr, &m_UIEditorWindowOpen);
+                ImGui::Separator();
+                ImGui::MenuItem("GBuffer Visualization", nullptr, &m_GBufferWindowOpen);
+                ImGui::MenuItem("Water GBuffer Visualization", nullptr, &m_WaterGBufferWindowOpen);
+                ImGui::MenuItem("Render Debug", nullptr, &m_RenderDebugWindowOpen);
+                ImGui::MenuItem("Water", nullptr, &m_WaterWindowOpen);
+                ImGui::MenuItem("Terrain", nullptr, &m_TerrainWindowOpen);
+                if (m_ReflectionProbeWindow)
                 {
-                    m_GBufferWindowOpen = !m_GBufferWindowOpen;
+                    ImGui::MenuItem("Reflection Probe Inspector", nullptr, &m_ReflectionProbeWindowOpen);
                 }
-                if (ImGui::MenuItem("RenderDebugWindow"))
+                else
                 {
-                    m_RenderDebugWindowOpen = !m_RenderDebugWindowOpen;
+                    ImGui::BeginDisabled();
+                    ImGui::MenuItem("Reflection Probe Inspector");
+                    ImGui::EndDisabled();
                 }
-                // Water 面板常驻显示（内部判断场景是否含 water）
-                ImGui::MenuItem("WaterWindow (always on)", nullptr, nullptr, false);
                 ImGui::EndMenu();
             }
             // 新增 View 菜单用于控制线框模式
@@ -1176,7 +1204,6 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             VANS_PROFILE_SCOPE("Resource::ProcessPendingSceneLoad", Vans::ProfileCategory::IO);
             ProcessPendingSceneLoad();
         }
-
         // Rendering, 这里会结束renderpass
         {
             VANS_PROFILE_SCOPE("Render::CameraRendering", Vans::ProfileCategory::CommandRecord);
@@ -1187,6 +1214,8 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         m_SceneWindow->RegistScene(m_Scene);
         m_InspectorWindow->RegistScene(m_Scene);
         m_RenderDebugWindow->RegistScene(m_Scene);
+        if (m_ReflectionProbeWindow)
+            m_ReflectionProbeWindow->RegistScene(m_Scene);
         {
             VANS_PROFILE_SCOPE("Editor::DrawWindows", Vans::ProfileCategory::Editor);
             DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));
@@ -1251,6 +1280,7 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     m_ClothProfileEditorWindow = nullptr;
     m_WaterWindow = nullptr;
     m_TerrainWindow = nullptr;
+    m_ReflectionProbeWindow = nullptr;
 
     // Destroy GPU profiler
 #if VANS_PROFILER_ENABLED
@@ -1275,3 +1305,4 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     }
     glfwTerminate();
 }
+

@@ -175,8 +175,9 @@ vec3 calcWaterNormal(vec2 worldXZ, float eps, float worldPeriod, vec2 windDir, f
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    int layer = int(gl_GlobalInvocationID.z);
     ivec3 imgSize = imageSize(outDetailNormal);
-    if (pixel.x >= imgSize.x || pixel.y >= imgSize.y) return;
+    if (pixel.x >= imgSize.x || pixel.y >= imgSize.y || layer >= imgSize.z) return;
 
     // ── 从 UBO 读取参数 ─────────────────────────────────
     // 注：detailIntensity 在 compute 端未使用（由 frag 端控制混合强度）
@@ -217,5 +218,5 @@ void main()
     vec3 packed = n * 0.5 + 0.5;
 
     // ── 输出（layer 0）───────────────────────────────────
-    imageStore(outDetailNormal, ivec3(pixel, 0), vec4(packed, 0.0));
+    imageStore(outDetailNormal, ivec3(pixel, layer), vec4(packed, 0.0));
 }

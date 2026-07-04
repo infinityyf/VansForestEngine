@@ -1,4 +1,5 @@
 #include "VansScriptorWindow.h"
+#include "../VansEditorWindow.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansInputManager.h"
@@ -50,6 +51,9 @@ void VansGraphics::VansScriptorWindow::RefreshFileList()
 
 void VansGraphics::VansScriptorWindow::ShowWindow(VansVKDevice& device)
 {
+    if (!VansEditorWindow::m_ScriptorWindowOpen)
+        return;
+
     ImGui::Begin("Scripts");
 
     // Toolbar

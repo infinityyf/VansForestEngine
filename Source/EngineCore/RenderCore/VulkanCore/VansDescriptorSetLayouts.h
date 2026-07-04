@@ -37,6 +37,7 @@ namespace VansGraphics
 		GLOBAL_BINDING_LTC2_LUT                 = 12,  // Area-light LTC amplitude/Fresnel LUT (RGBA16F 64x64)
 		GLOBAL_BINDING_REFLECTION_PROBE_SPECULAR = 13, // Prefiltered samplerCubeArray
 		GLOBAL_BINDING_REFLECTION_PROBE_BUFFER   = 14, // Reflection probe metadata SSBO
+		GLOBAL_BINDING_CUSTOM_MATERIAL_SSBO      = 15, // Custom shader material vec4s + texture indices
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -207,6 +208,7 @@ namespace VansGraphics
 		SKYBOX_BINDING_ATMOSPHERE_UBO = 0,
 		SKYBOX_BINDING_FOG            = 1,
 		SKYBOX_BINDING_CLOUD          = 2,   // 1/4 分辨率体积云结果（COMBINED_IMAGE_SAMPLER）
+		SKYBOX_BINDING_MOON_ALBEDO    = 3,
 	};
 
 	// --- Screen-Space Pass (SSAO etc.) ---

@@ -115,8 +115,8 @@ float SampleCloudDensity(vec3 worldPos)
     vec3 detailNoise = texture(cloudDetailNoise, detailUVW).rgb;
 
     // R: Perlin-Worley 主形状。coverage 越大阈值越低，云量越多。
-    float threshold = mix(uCloud.thresholdLowCoverage,
-                          uCloud.thresholdHighCoverage,
+    float threshold = mix(uCloud.thresholdHighCoverage,
+                          uCloud.thresholdLowCoverage,
                           clamp(uCloud.coverage, 0.0, 1.0));
     float baseMask  = clamp(CloudRemap(mainNoise.r, threshold, 1.0, 0.0, 1.0), 0.0, 1.0);
 
@@ -153,6 +153,8 @@ float GetCloudSunVisibility(vec3 worldPos, vec3 sunDir)
 
     // 使用平面近似高度（与 SampleCloudDensity 中的 heightAbove 计算一致）
     float heightAbove = worldPos.y - uCloud.planetRadius;
+    float cloudThickness = max(uCloud.cloudMaxHeight - uCloud.cloudMinHeight, 1.0);
+    float absSunY = abs(sunDir.y);
 
     // 计算从当前点沿太阳方向到云层出口的实际距离
     float tSunExit;
@@ -169,11 +171,15 @@ float GetCloudSunVisibility(vec3 worldPos, vec3 sunDir)
     else
     {
         // 太阳近乎水平：限制最大光路为云层厚度的 3 倍，防止步长爆炸
-        tSunExit = (uCloud.cloudMaxHeight - uCloud.cloudMinHeight) * 3.0;
+        tSunExit = cloudThickness * 3.0;
     }
     tSunExit = max(tSunExit, 0.0);
 
     if (tSunExit <= 0.0) return 1.0;
+
+    float horizonFactor = 1.0 - smoothstep(0.05, 0.22, absSunY);
+    float maxProxyPath = mix(cloudThickness * 3.0, cloudThickness * 1.15, horizonFactor);
+    tSunExit = min(tSunExit, maxProxyPath);
 
     float stepSize = tSunExit / float(SHADOW_STEPS);
     vec3  increment = sunDir * stepSize;
@@ -183,7 +189,10 @@ float GetCloudSunVisibility(vec3 worldPos, vec3 sunDir)
     for (int i = 0; i < SHADOW_STEPS; i++, pos += increment)
         od += SampleCloudDensity(pos);
 
-    return exp(-od * stepSize * uCloud.shadowDensityScale);
+    float shadowScale = uCloud.shadowDensityScale * mix(1.0, 0.45, horizonFactor);
+    float visibility = exp(-od * stepSize * shadowScale);
+    float horizonFloor = mix(0.0, 0.11, horizonFactor);
+    return clamp(max(visibility, horizonFloor), 0.0, 1.0);
 }
 
 // --------------------------------------------------------------------------

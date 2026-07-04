@@ -181,6 +181,16 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
     if (extension == L".fbx" || extension == L".obj" || extension == L".gltf" || extension == L".glb") return VansAssetType::Model;
 	if (extension == L".png" || extension == L".jpg" || extension == L".jpeg" || extension == L".tga" || extension == L".hdr" || extension == L".exr" || extension == L".cubemap") return VansAssetType::Texture;
     if (extension == L".mat") return VansAssetType::Material;
+    if (extension == L".vshader") return VansAssetType::Shader;
+    if (extension == L".json")
+    {
+        std::wstring fileName = sourcePath.filename().wstring();
+        std::transform(fileName.begin(), fileName.end(), fileName.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+        const std::wstring suffix = L".vshader.json";
+        if (fileName.size() >= suffix.size() &&
+            fileName.compare(fileName.size() - suffix.size(), suffix.size(), suffix) == 0)
+            return VansAssetType::Shader;
+    }
 	if (extension == L".wav" || extension == L".mp3" || extension == L".ogg" || extension == L".flac") return VansAssetType::Audio;
 	if (extension == L".mp4" || extension == L".mkv" || extension == L".avi" || extension == L".mov" || extension == L".webm") return VansAssetType::Video;
     if (extension == L".scene" || extension == L".vscene") return VansAssetType::Scene;
@@ -194,6 +204,7 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
     case VansAssetType::Model: return "ModelImporter";
     case VansAssetType::Texture: return "TextureImporter";
     case VansAssetType::Material: return "MaterialImporter";
+    case VansAssetType::Shader: return "ShaderImporter";
 	case VansAssetType::Audio: return "AudioImporter";
 	case VansAssetType::Video: return "VideoImporter";
     case VansAssetType::Scene: return "SceneImporter";

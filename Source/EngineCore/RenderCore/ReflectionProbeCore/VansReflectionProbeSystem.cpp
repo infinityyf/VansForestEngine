@@ -275,6 +275,8 @@ namespace VansGraphics
 		for (VkImageView view : m_PrefilterMipViews) if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, nullptr);
 		m_PrefilterSets.clear(); m_PrefilterMipViews.clear(); m_PrefilterLayout = VK_NULL_HANDLE;
 		VANS_LOG("[ReflectionProbe] Prefilter descriptors and views released");
+		for (VkImageView view : m_EditorPreviewFaceViews) if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, nullptr);
+		m_EditorPreviewFaceViews.clear();
 		m_MetadataBuffer.DestroyVulkanBuffer(device);
 		VANS_LOG("[ReflectionProbe] Metadata buffer released");
 		delete m_SpecularArray; m_SpecularArray = nullptr;
@@ -284,6 +286,29 @@ namespace VansGraphics
 		m_ActiveBakeIndex = size_t(-1); m_ActiveBakeFace = 0;
 		m_GIWarmupFramesRemaining = 0; m_LastGIWarmupFrame = 0xffffffffu;
 		VANS_LOG("[ReflectionProbe] Scene GPU resources released");
+	}
+
+	VkImageView VansReflectionProbeSystem::GetPreviewFaceView(size_t probeIndex, uint32_t face, uint32_t mipLevel)
+	{
+		if (!m_SpecularArray || m_Device == VK_NULL_HANDLE || probeIndex >= m_BakeResults.size() || face >= 6)
+			return VK_NULL_HANDLE;
+
+		const auto& result = m_BakeResults[probeIndex];
+		mipLevel = std::min(mipLevel, m_MipCount > 0 ? m_MipCount - 1 : 0);
+		const uint32_t arrayLayer = result.arrayLayer * 6u + face;
+		auto& image = m_SpecularArray->GetImage();
+		if (arrayLayer >= image.GetImageCreateInfo().arrayLayers ||
+			mipLevel >= image.GetImageCreateInfo().mipLevels)
+		{
+			return VK_NULL_HANDLE;
+		}
+
+		const size_t key = (probeIndex * 6u + face) * std::max(1u, m_MipCount) + mipLevel;
+		if (m_EditorPreviewFaceViews.size() <= key)
+			m_EditorPreviewFaceViews.resize(key + 1, VK_NULL_HANDLE);
+		if (m_EditorPreviewFaceViews[key] == VK_NULL_HANDLE)
+			m_EditorPreviewFaceViews[key] = image.CreateLayerMipView(m_Device, arrayLayer, mipLevel);
+		return m_EditorPreviewFaceViews[key];
 	}
 
 	void VansReflectionProbeSystem::ClearAutoProbes()
