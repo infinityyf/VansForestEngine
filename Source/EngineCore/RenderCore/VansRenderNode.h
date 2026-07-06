@@ -316,6 +316,8 @@ namespace VansGraphics
 		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
+		void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
+		void DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex);
 	};
 
 	// ── Water render node — flat grid plane at waterLevel, driven by VansWaterConfig ──

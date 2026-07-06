@@ -386,7 +386,7 @@ namespace VansGraphics
 
 		void AddTerrainNode(VansVKDevice* device, json& terrainData);
 
-		void AddVegetationNode(VkDevice& device, json& vegetationData);
+		void AddVegetationNode(VkDevice& device, json& vegetationData, const std::string& projectRoot = "");
 
 		// 从 Scene JSON "water" 块解析配置、创建 VansWaterMaterial 并注册到 m_Materials
 		void AddWaterNode(VkDevice& device, json& waterData);

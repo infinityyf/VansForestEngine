@@ -171,6 +171,27 @@ namespace VansGraphics
 	};
 
 	// ====================================================================
+	// Vegetation Tree Draw — Per-Part SSBO Data (Set 3)
+	// ====================================================================
+	enum VegetationTreeDrawBinding : uint32_t
+	{
+		VEG_TREE_DRAW_BINDING_INSTANCES       = 0, // SSBO TreeInstanceGPU[]
+		VEG_TREE_DRAW_BINDING_VISIBLE_INDICES = 1, // SSBO uint[] compact visible tree indices
+	};
+
+	// ====================================================================
+	// Vegetation Tree Cull — GPU Cull Pass Binding Indices
+	// ====================================================================
+	enum VegetationTreeCullBinding : uint32_t
+	{
+		VEG_TREE_CULL_BINDING_INSTANCES       = 0, // SSBO (read) TreeInstanceGPU[]
+		VEG_TREE_CULL_BINDING_VISIBLE_COUNTS  = 1, // SSBO (read/write) uint per species
+		VEG_TREE_CULL_BINDING_VISIBLE_INDICES = 2, // SSBO (write) compact indices per species
+		VEG_TREE_CULL_BINDING_SPECIES_INFOS   = 3, // SSBO (read) TreeSpeciesCullInfo[]
+		VEG_TREE_CULL_BINDING_HIZ             = 4, // COMBINED_IMAGE_SAMPLER Hi-Z depth pyramid
+	};
+
+	// ====================================================================
 	// Constants
 	// ====================================================================
 	static constexpr uint32_t MAX_BINDLESS_TEXTURES = 2048;
@@ -744,6 +765,8 @@ namespace VansGraphics
 		static void CreateAndAllocate_VegetationBoneSim(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VegetationDraw(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VegetationCull(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_VegetationTreeDraw(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_VegetationTreeCull(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_TileLightBuild(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// 贴花 Pass Set 1：仅绑定 GBuffer2 用于世界坐标重建
 		static void CreateAndAllocate_DecalPass(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

@@ -115,6 +115,27 @@ void RegisterEngineShaders()
         sizeof(VansGraphics::GrassDrawPushConstants), false, false, 4  // P1: LOD distance parameters, 8 bytes.
     });
 
+    reg.RegisterGraphicsShader("TreeGBuffer", {
+        "TreeGBuffer",
+        "EngineAssets/Shaders/Tree/Deferred",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        sizeof(VansGraphics::TreeDrawPushConstants), false, false, 4
+    });
+
+    reg.RegisterGraphicsShader("TreeShadow", {
+        "TreeShadow",
+        "EngineAssets/Shaders/Tree/Shadow",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        sizeof(VansGraphics::TreeShadowPushConstants), false
+    });
+
+    reg.RegisterGraphicsShader("TreePunctualShadow", {
+        "TreePunctualShadow",
+        "EngineAssets/Shaders/Tree/PunctualShadow",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        sizeof(VansGraphics::TreePunctualShadowPushConstants), false
+    });
+
     reg.RegisterGraphicsShader("MotionVector", {
         "MotionVector",
         "EngineAssets/Shaders/MotionVector",
@@ -233,6 +254,7 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("ReflectionProbePrefilter", "EngineAssets/Shaders/ReflectionProbePrefilter");
     reg.RegisterComputeShader("GrassBoneSim", "EngineAssets/Shaders/GrassBoneSim");
     reg.RegisterComputeShader("GrassCull", "EngineAssets/Shaders/GrassCull", sizeof(VansGraphics::GrassCullPushConstants));
+    reg.RegisterComputeShader("TreeCull", "EngineAssets/Shaders/TreeCull", sizeof(VansGraphics::TreeCullPushConstants));
     reg.RegisterComputeShader("WaterWave", "EngineAssets/Shaders/Water/WaterWave");
     reg.RegisterComputeShader("WaterEffects", "EngineAssets/Shaders/Water/WaterEffects");
     reg.RegisterComputeShader("WaterSSR", "EngineAssets/Shaders/Water/SSR");

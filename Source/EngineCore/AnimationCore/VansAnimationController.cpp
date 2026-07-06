@@ -35,6 +35,7 @@ VansAnimationController::~VansAnimationController()
 void VansAnimationController::SetGraph(std::unique_ptr<VansAnimGraph> graph)
 {
 	m_Graph = std::move(graph);
+	EnsureMotionMatchingGraphNode();
 }
 
 void VansAnimationController::ConfigureMotionMatching(const MotionMatchingSettings& settings)
@@ -42,11 +43,53 @@ void VansAnimationController::ConfigureMotionMatching(const MotionMatchingSettin
 	if (!m_MotionMatching)
 		m_MotionMatching = std::make_unique<VansMotionMatchingRuntime>();
 	m_MotionMatching->Configure(settings);
+	EnsureMotionMatchingGraphNode();
 }
 
 const MotionMatchingDebugData* VansAnimationController::GetMotionMatchingDebugData() const
 {
 	return m_MotionMatching ? &m_MotionMatching->GetDebugData() : nullptr;
+}
+
+void VansAnimationController::EnsureMotionMatchingGraphNode()
+{
+	if (!m_Graph || !m_MotionMatching)
+		return;
+
+	for (const auto& [id, node] : m_Graph->GetNodes())
+	{
+		if (node && node->GetType() == AnimGraphNodeType::MotionMatching)
+			return;
+	}
+
+	const int outputId = m_Graph->GetOutputNodeId();
+	if (outputId < 0)
+		return;
+
+	int sourceNodeId = -1;
+	int sourcePinIndex = 0;
+	int outputLinkId = -1;
+	for (const AnimGraphLink& link : m_Graph->GetLinks())
+	{
+		if (link.toNodeId == outputId && link.toPinIndex == 0)
+		{
+			sourceNodeId = link.fromNodeId;
+			sourcePinIndex = link.fromPinIndex;
+			outputLinkId = link.linkId;
+			break;
+		}
+	}
+	if (sourceNodeId < 0 || outputLinkId < 0)
+		return;
+
+	auto mmNode = std::make_unique<AnimGraphMotionMatchingNode>();
+	const int mmNodeId = m_Graph->AddNode(std::move(mmNode));
+	if (mmNodeId < 0)
+		return;
+
+	m_Graph->RemoveLink(outputLinkId);
+	m_Graph->AddLink(sourceNodeId, sourcePinIndex, mmNodeId, 0);
+	m_Graph->AddLink(mmNodeId, 0, outputId, 0);
 }
 
 const FootPlacementDebugData* VansAnimationController::GetFootPlacementDebugData() const
@@ -530,33 +573,6 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 	// ════════════════════════════════════════════════════════════
 	//  v2 路径: AnimGraph 求值
 	// ════════════════════════════════════════════════════════════
-	if (m_MotionMatching)
-	{
-		std::vector<glm::mat4> localTransforms;
-		if (m_MotionMatching->Update(deltaTime, skeleton, m_Clips, m_Parameters, localTransforms))
-		{
-			ApplyBoneOverrides(localTransforms, skeleton);
-
-			if (m_RootBoneIndex < 0)
-				m_RootBoneIndex = DetectRootBoneIndex(skeleton);
-
-			if (m_RootMotionEnabled)
-			{
-				ExtractRootMotion(localTransforms, skeleton);
-			}
-			else
-			{
-				m_LoopJustWrapped = false;
-				NormalizeRootTransform(localTransforms, skeleton);
-			}
-
-			ApplyFootPlacement(deltaTime, skeleton, localTransforms);
-			UpdateHierarchy(localTransforms, skeleton);
-			BuildFinalMatrices(localTransforms, skeleton);
-			return;
-		}
-	}
-
 	if (m_Graph)
 	{
 		// 推进节点内部时间（乘以 GlobalSpeed，使速度滑条生效）
@@ -568,6 +584,7 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 		ctx.skeleton   = &skeleton;
 		ctx.parameters = &m_Parameters;
 		ctx.clips      = &m_Clips;
+		ctx.motionMatching = m_MotionMatching.get();
 
 		// pull 求值: Output → 上游节点递归采样
 		AnimGraphPose pose = m_Graph->Evaluate(ctx);
@@ -596,6 +613,33 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 		UpdateHierarchy(localTransforms, skeleton);
 		BuildFinalMatrices(localTransforms, skeleton);
 		return;
+	}
+
+	if (m_MotionMatching)
+	{
+		std::vector<glm::mat4> localTransforms;
+		if (m_MotionMatching->Update(deltaTime, skeleton, m_Clips, m_Parameters, localTransforms))
+		{
+			ApplyBoneOverrides(localTransforms, skeleton);
+
+			if (m_RootBoneIndex < 0)
+				m_RootBoneIndex = DetectRootBoneIndex(skeleton);
+
+			if (m_RootMotionEnabled)
+			{
+				ExtractRootMotion(localTransforms, skeleton);
+			}
+			else
+			{
+				m_LoopJustWrapped = false;
+				NormalizeRootTransform(localTransforms, skeleton);
+			}
+
+			ApplyFootPlacement(deltaTime, skeleton, localTransforms);
+			UpdateHierarchy(localTransforms, skeleton);
+			BuildFinalMatrices(localTransforms, skeleton);
+			return;
+		}
 	}
 }
 

@@ -155,7 +155,7 @@ void VansGraphics::VansVKCommandBuffer::UpdatePushConstants(VansVKGraphicsPipeli
 
 void VansGraphics::VansVKCommandBuffer::SetViewport(uint32_t first_viewport, const std::vector<VkViewport>& viewports)
 {
-	//first_viewport记录开启的索引offset
+	//first_viewport璁板綍寮€鍚殑绱㈠紩offset
 	vkCmdSetViewport(
 		m_VansVKCommandBuffer,
 		first_viewport,
@@ -180,7 +180,7 @@ void VansGraphics::VansVKCommandBuffer::SetLineWidth(float line_width)
 void VansGraphics::VansVKCommandBuffer::SetDepthBias(float constant_factor, float clamp, float slope_factor)
 {
 	//clamp:specify the maximal or minimal value of the depth bias
-	//slope_factor is a scalar factor applied to a fragment’s slope in depth bias calculations.
+	//slope_factor is a scalar factor applied to a fragment鈥檚 slope in depth bias calculations.
 	vkCmdSetDepthBias(m_VansVKCommandBuffer, constant_factor, clamp, slope_factor);
 }
 
@@ -246,7 +246,7 @@ void VansGraphics::VansVKCommandBuffer::BindMesh(VansMesh& mesh, uint32_t fist_b
 		iparam.MemoryOffset,
 		iparam.IndexType);
 
-	//记录mesh 的bind data
+	//璁板綍mesh 鐨刡ind data
 	global_state_data.vertexInputAttributeDescriptions = &mesh.m_VertexInputAttributeDescriptions;
 	global_state_data.vertexInputBindingDescriptions = &mesh.m_VertexInputBindingDescriptions;
 
@@ -267,13 +267,13 @@ void VansGraphics::VansVKCommandBuffer::EnsureGraphicsShader(VansGraphicsShader&
 	}
 	//BindGraphicsPipeline(*pipeline);
 
-	//根据shader声明和材质绑定的数据进行绑定
+	// Bind data declared by the shader and material.
 	//BindDescriptorSets();
 }
 
 void VansGraphics::VansVKCommandBuffer::EnsureComputeShader(VansComputeShader& shader, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
-	//检查compute shader是否修改
+	// Ensure the compute shader pipeline is ready.
 
 	VansVKComputePipeline* pipeline = shader.GetComputePipeline(m_VansVKDevice, descriptorset_layouts);
 	if (pipeline == nullptr)
@@ -291,10 +291,10 @@ void VansGraphics::VansVKCommandBuffer::DispatchCompute(VansComputeShader& shade
 		VANS_LOG_ERROR("dispatch skipped because compute pipeline is null");
 		return;
 	}
-	//绑定管线
+	// Bind pipeline.
 	pipeline->BindComputePipeline(m_VansVKCommandBuffer);
 
-	//绑定描述�?
+	// Bind descriptor sets.
 	vkCmdBindDescriptorSets(
 		m_VansVKCommandBuffer,
 		VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -344,7 +344,7 @@ void VansGraphics::VansVKCommandBuffer::BlitImage(VansVKImage& source, int sourc
 		1, &copyRegion
 	);
 
-	//结束后转换回�?
+	// Restore the source image layout after copying.
 	source.SetImageMemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		{
 			source.m_VansVKImage,
@@ -394,8 +394,8 @@ void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
 	const std::vector<VkDescriptorSet>& descriptor_sets, 
 	const std::vector<uint32_t>& dynamic_offsets)
 {
-	//将关联好的descriptor set 绑定�?pipeline
-	//通过bindSetCMD实现
+	// Bind the descriptor sets associated with this pipeline.
+	// Dynamic offsets are forwarded to vkCmdBindDescriptorSets.
 	VansVKGraphicsPipeline* pipeline = shader.GetGraphicsPipeline();
 	if (pipeline == nullptr)
 	{
@@ -511,7 +511,7 @@ void VansGraphics::VansVKCommandBuffer::WaitEvents(
 		imageMemoryBarriers.empty() ? nullptr : imageMemoryBarriers.data());
 }
 
-// ── Standalone draw / bind helpers ──────────────────────────────────────
+// 鈹€鈹€ Standalone draw / bind helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 void VansGraphics::VansVKCommandBuffer::BindVertexBuffers(uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* buffers, const VkDeviceSize* offsets)
 {
@@ -635,6 +635,6 @@ void VansGraphics::VansMultiThreadCommandBufferMangaer::SubmitMultiCommands(VkQu
 		m_CommandBufferRecordingThreads[i].join();
 		command_buffers[i] = m_CommandBufferRecordingThreadParameters[i].CommandBuffer;
 	}
-	//submit只能从一个线程，所以需要所有record都join后才能submit
+	//submit鍙兘浠庝竴涓嚎绋嬶紝鎵€浠ラ渶瑕佹墍鏈塺ecord閮絡oin鍚庢墠鑳絪ubmit
 	//VansVKCommandBuffer::SubmitCommands(queue, device, command_buffers, wait_semaphore_infos, signal_semaphores, command_buffer.m_CommandBufferFinishSubmitFence);
 }

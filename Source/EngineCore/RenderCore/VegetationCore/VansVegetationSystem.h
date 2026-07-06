@@ -101,8 +101,8 @@ namespace VansGraphics
 		float    terrainHeightOffset;  // 地形高度偏移
 		int      terrainEnabled;       // 是否启用地形
 		uint32_t subBladeCount;        // 子叶片数，用于 atomicAdd 直接计算 indirect instanceCount
-		// Hi-Z 遥测剪除参数 (HZB 使用 min-depth 降采样，实例深度超过进 cache 的最近几何则判定为遮挪)
-		float    hizSampleBias;        // 才被判为遮挪的保守浮点偏差，防止边界处误剪
+		// Hi-Z 遮挡剔除参数。当前 HZB 使用 min-depth 降采样，因此判断必须保守，避免边界误剔除。
+		float    hizSampleBias;        // 线性深度偏差，单位为米；只有超过该偏差才判为遮挡
 		int      hizMipCount;          // Hi-Z mip 层数
 		int      hizEnabled;           // 是否启用 Hi-Z 剪除
 	};
@@ -125,6 +125,99 @@ namespace VansGraphics
 		std::string meshName;       // empty = use procedural blade
 		std::string materialName;
 		float       percent = 1.0f; // fraction of total instances [0,1]
+	};
+
+	enum class TreePartType : uint32_t
+	{
+		Trunk = 0,
+		Leaves = 1,
+		Custom = 2,
+	};
+
+	struct TreePartConfig
+	{
+		TreePartType type = TreePartType::Custom;
+		std::string meshName;
+		std::string materialName;
+	};
+
+	struct TreeSpeciesConfig
+	{
+		std::string name;
+		float boundsRadius = 1.0f;
+		std::vector<TreePartConfig> parts;
+	};
+
+	struct TreeInstanceConfig
+	{
+		std::string speciesName;
+		glm::vec3 position = glm::vec3(0.0f);
+		float yawDeg = 0.0f;
+		float scale = 1.0f;
+	};
+
+	struct TreeVegetationConfig
+	{
+		bool enabled = false;
+		float cullDistance = 800.0f;
+		bool hizEnabled = true;
+		std::vector<TreeSpeciesConfig> species;
+		std::vector<TreeInstanceConfig> instances;
+	};
+
+	struct TreeInstanceGPU
+	{
+		glm::mat4 modelMatrix = glm::mat4(1.0f);
+		glm::vec4 boundsSphere = glm::vec4(0.0f); // xyz center, w radius
+		uint32_t speciesIndex = 0;
+		uint32_t regionIndex = 0;
+		uint32_t randomSeed = 0;
+		uint32_t flags = 0;
+	};
+
+	struct TreeSpeciesCullInfo
+	{
+		uint32_t visibleOffset = 0;
+		uint32_t maxCount = 0;
+		uint32_t padding[2] = { 0, 0 };
+	};
+
+	struct TreeCullPushConstants
+	{
+		float cullDistance;
+		uint32_t instanceCount;
+		uint32_t speciesCount;
+		uint32_t hizEnabled;
+		float hizSampleBias;
+		int hizMipCount;
+		float padding0;
+		float padding1;
+	};
+
+	struct TreeDrawPushConstants
+	{
+		int materialIndex;
+		int objectIndex;
+		uint32_t visibleOffset;
+		uint32_t padding;
+	};
+
+	struct TreeShadowPushConstants
+	{
+		int materialIndex;
+		int objectIndex;
+		uint32_t visibleOffset;
+		int cascadeIndex;
+	};
+
+	struct TreePunctualShadowPushConstants
+	{
+		int lightIndex;
+		int shadowIndex;
+		int materialIndex;
+		int objectIndex;
+		uint32_t visibleOffset;
+		uint32_t padding;
 	};
 
 	class VansMesh;
@@ -154,6 +247,19 @@ namespace VansGraphics
 		VansMaterial* material = nullptr;
 	};
 
+	struct TreeDrawConfigGPU
+	{
+		VansMesh* mesh = nullptr;
+		VansMaterial* material = nullptr;
+		int materialIndex = -1;
+		uint32_t speciesIndex = 0;
+		uint32_t partIndex = 0;
+		uint32_t visibleOffset = 0;
+		uint32_t instanceCapacity = 0;
+		VansVKBuffer indirectDrawBuffer;
+		VkDescriptorSet drawDescSet = VK_NULL_HANDLE;
+	};
+
 	class VansVegetationSystem
 	{
 	public:
@@ -167,11 +273,15 @@ namespace VansGraphics
 
 		// ── Render configs — call before Init() if JSON has renderConfigs ──
 		void SetRenderConfigs(const std::vector<GrassRenderConfig>& configs) { m_RenderConfigs = configs; }
+		void SetTreeConfig(const TreeVegetationConfig& config) { m_TreeConfig = config; }
 
 		// ── Build per-config GPU resources (call after Init and after meshes & materials are loaded) ──
 		// meshLookup / materialLookup: callables that resolve name → pointer.
 		// For procedural-blade configs (empty meshName), system's own buffers are used.
 		void BuildRenderConfigs(
+			std::function<VansMesh*(const std::string&)> meshLookup,
+			std::function<VansMaterial*(const std::string&)> materialLookup);
+		void BuildTreeResources(
 			std::function<VansMesh*(const std::string&)> meshLookup,
 			std::function<VansMaterial*(const std::string&)> materialLookup);
 
@@ -186,6 +296,7 @@ namespace VansGraphics
 
 		// ── P0: GPU frustum + distance cull — dispatch before Draw() ────
 		void DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance);
+		void DispatchTreeCullPass(VansVKCommandBuffer& computeCmd);
 
 		// ── Draw: issues one indirect indexed draw per render config ───
 		void Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsShader& shader,
@@ -193,6 +304,23 @@ namespace VansGraphics
 		          const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
 		          const std::vector<VkDescriptorSet>& baseDescSets,
 		          int pushConstantTransformIndex);
+		void DrawTrees(VansVKCommandBuffer& graphicsCmd,
+		               GlobalStateData& globalState,
+		               const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
+		               const std::vector<VkDescriptorSet>& baseDescSets,
+		               int pushConstantTransformIndex);
+		void DrawTreeCascadeShadow(VansVKCommandBuffer& graphicsCmd,
+		                            GlobalStateData& globalState,
+		                            const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
+		                            const std::vector<VkDescriptorSet>& baseDescSets,
+		                            int pushConstantTransformIndex);
+		void DrawTreePunctualShadow(VansVKCommandBuffer& graphicsCmd,
+		                             GlobalStateData& globalState,
+		                             const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
+		                             const std::vector<VkDescriptorSet>& baseDescSets,
+		                             int pushConstantTransformIndex,
+		                             int lightIndex,
+		                             int shadowIndex);
 
 		// ── Cleanup ────────────────────────────────────────────────────
 		void Cleanup(VkDevice device);
@@ -201,9 +329,9 @@ namespace VansGraphics
 		void SetTerrainHeightmap(VkImageView imageView, VkSampler sampler,
 		                         float terrainSize, float maxHeight, float heightOffset);
 
-		// ── Hi-Z 遥测剪除 (HZB 必须在包围球 descriptor 设置前就就绪 初始化) ─────
+		// ── Hi-Z 遮挡剔除 (HZB 必须在 cull descriptor 写入前就绪) ─────
 		void SetHiZDepth(VkImageView imageView, VkSampler sampler, uint32_t mipCount,
-		                float sampleBias = 0.005f);
+		                float sampleBias = 0.2f);
 
 		// ── Blade height — must be set before Init() ──────────────────────
 		void SetBladeHeight(float h) { m_BladeHeight = h; }
@@ -284,6 +412,8 @@ namespace VansGraphics
 
 		// ── Per-config GPU data (for render node to iterate) ──────────
 		const std::vector<GrassRenderConfigGPU>& GetRenderConfigsGPU() const { return m_RenderConfigsGPU; }
+		const std::vector<TreeDrawConfigGPU>& GetTreeDrawConfigsGPU() const { return m_TreeDrawConfigsGPU; }
+		bool HasTrees() const { return m_TreeEnabled && !m_TreeInstancesCPU.empty() && !m_TreeDrawConfigsGPU.empty(); }
 
 		// Bone sim descriptor sets (used by render node)
 		VkDescriptorSetLayout m_BoneSimLayout      = VK_NULL_HANDLE;
@@ -311,6 +441,10 @@ namespace VansGraphics
 		// ── Per-config helpers ──────────────────────────────────────────
 		void GenerateBoneWeights(GrassRenderConfigGPU& cfg, VansMesh* mesh);
 		void WriteDrawDescriptors(GrassRenderConfigGPU& cfg);
+		void CreateTreeDescriptorSets();
+		void WriteTreeCullDescriptors();
+		void WriteTreeDrawDescriptors(TreeDrawConfigGPU& cfg);
+		void LoadTreeShaders(VkDevice device);
 
 		// ── Configuration ───────────────────────────────────────────────
 		uint32_t m_InstanceCount        = 0;
@@ -343,6 +477,24 @@ namespace VansGraphics
 		// ── Render configs ──────────────────────────────────────────────
 		std::vector<GrassRenderConfig>    m_RenderConfigs;
 		std::vector<GrassRenderConfigGPU> m_RenderConfigsGPU;
+
+		TreeVegetationConfig m_TreeConfig;
+		bool m_TreeEnabled = false;
+		float m_TreeCullDistance = 800.0f;
+		std::vector<TreeInstanceGPU> m_TreeInstancesCPU;
+		std::vector<TreeSpeciesCullInfo> m_TreeSpeciesInfosCPU;
+		std::vector<TreeDrawConfigGPU> m_TreeDrawConfigsGPU;
+		VansVKBuffer m_TreeInstanceBuffer;
+		VansVKBuffer m_TreeVisibleCountsBuffer;
+		VansVKBuffer m_TreeVisibleIndexBuffer;
+		VansVKBuffer m_TreeSpeciesInfoBuffer;
+		VkDescriptorSetLayout m_TreeDrawLayout = VK_NULL_HANDLE;
+		VkDescriptorSetLayout m_TreeCullLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_TreeCullDescSets;
+		VansGraphicsShader* m_TreeGBufferShader = nullptr;
+		VansGraphicsShader* m_TreeShadowShader = nullptr;
+		VansGraphicsShader* m_TreePunctualShadowShader = nullptr;
+		VansComputeShader* m_TreeCullShader = nullptr;
 
 		// ── GPU Buffers ─────────────────────────────────────────────────
 		VansVKBuffer m_InstanceBuffer;

@@ -386,6 +386,69 @@ const json* ReadArrayField(const json& object, const char* key)
     return found != object.end() && found->is_array() ? &(*found) : nullptr;
 }
 
+const json* ReadVegetationField(const json& sceneDocument)
+{
+    if (!sceneDocument.is_object())
+        return nullptr;
+    auto found = sceneDocument.find("vegetation");
+    if (found != sceneDocument.end())
+        return &(*found);
+    const json* settings = ReadObjectField(sceneDocument, "settings");
+    if (settings == nullptr)
+        return nullptr;
+    found = settings->find("vegetation");
+    return found != settings->end() ? &(*found) : nullptr;
+}
+
+std::string ReadVegetationConfigPath(const json& vegetationData)
+{
+    if (vegetationData.is_string())
+        return vegetationData.get<std::string>();
+    if (!vegetationData.is_object())
+        return {};
+    std::string path = ReadStringField(vegetationData, "config");
+    if (path.empty()) path = ReadStringField(vegetationData, "configPath");
+    if (path.empty()) path = ReadStringField(vegetationData, "path");
+    return path;
+}
+
+json LoadVegetationConfigFromReference(const json& vegetationData, const std::string& projectRoot)
+{
+    const std::string configPath = ReadVegetationConfigPath(vegetationData);
+    if (configPath.empty())
+        return vegetationData;
+
+    std::filesystem::path resolved = std::filesystem::path(configPath);
+    if (resolved.is_relative())
+        resolved = std::filesystem::path(projectRoot) / resolved;
+
+    std::ifstream input(resolved);
+    if (!input)
+    {
+        VANS_LOG_ERROR("[VegetationConfig] Cannot open config file: " << resolved.string());
+        return json::object();
+    }
+
+    json loaded = json::parse(input, nullptr, false);
+    if (loaded.is_discarded() || !loaded.is_object())
+    {
+        VANS_LOG_ERROR("[VegetationConfig] Invalid JSON config file: " << resolved.string());
+        return json::object();
+    }
+    VANS_LOG("[VegetationConfig] Loaded config file: " << resolved.string());
+
+    if (vegetationData.is_object())
+    {
+        for (const auto& [key, value] : vegetationData.items())
+        {
+            if (key == "config" || key == "configPath" || key == "path")
+                continue;
+            loaded[key] = value;
+        }
+    }
+    return loaded;
+}
+
 json RuntimeMaterialFromAsset(const Vans::VansAssetRecord& record)
 {
     std::ifstream input(record.sourcePath);
@@ -613,6 +676,17 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
 	m_ProjectMeshAliases.clear();
 	try
 	{
+	const Vans::VansAssetScanResult scanResult = database.Scan();
+	if (!scanResult)
+	{
+		for (const std::string& error : scanResult.errors)
+			VANS_LOG_ERROR("[AssetDatabase] Scan error: " << error);
+	}
+	else
+	{
+		VANS_LOG("[AssetDatabase] Scan refreshed " << scanResult.registered
+			<< " assets, generated " << scanResult.generatedMeta << " meta files");
+	}
 
     json resourceData;
     resourceData["mesh"] = json::array();
@@ -695,6 +769,18 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
 			for (const auto& [key, item] : value.items()) collectAssetReferences(item);
 	};
 	collectAssetReferences(sceneDocument);
+	if (const json* vegetationConfig = ReadVegetationField(sceneDocument))
+	{
+		json externalVegetationConfig = LoadVegetationConfigFromReference(*vegetationConfig, projectRoot.string());
+		if (externalVegetationConfig.is_object())
+		{
+			collectAssetReferences(externalVegetationConfig);
+			VANS_LOG("[AssetDatabase] Collected vegetation dependencies: "
+				<< requiredModels.size() << " models, "
+				<< requiredMaterials.size() << " materials, "
+				<< requiredTextures.size() << " textures");
+		}
+	}
 
 	for (const Vans::VansAssetRecord& record : database.All())
 	{
@@ -979,6 +1065,7 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
     {
         const std::string s = typeValue.get<std::string>();
         if (s == "pbr")          return VansMaterialType::VAN_PBR;
+        if (s == "tree")         return VansMaterialType::VAN_PBR;
         if (s == "coat")         return VansMaterialType::VAN_COAT;
         if (s == "transparent")  return VansMaterialType::VAN_TRANSPARENT;
         if (s == "post_process") return VansMaterialType::VAN_POST_PROCESS;
@@ -2725,7 +2812,7 @@ bool VansGraphics::VansScene::LoadSceneContent(const char* path)
     // Vegetation
     if (sceneData.contains("vegetation"))
     {
-        AddVegetationNode(nativeDevice, sceneData["vegetation"]);
+        AddVegetationNode(nativeDevice, sceneData["vegetation"], projectRoot);
     }
 
     // Water
@@ -3187,6 +3274,18 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
         mmSettings.topCandidateCount = mmJson.value("top_candidates", 8);
         mmSettings.allowLegacyBoneDetection = mmJson.value("allow_legacy_bone_detection", true);
 
+        if (mmJson.contains("parameters") && mmJson["parameters"].is_object())
+        {
+            const auto& paramsJson = mmJson["parameters"];
+            mmSettings.parameters.enabled = paramsJson.value("enabled", mmSettings.parameters.enabled);
+            mmSettings.parameters.speed = paramsJson.value("speed", mmSettings.parameters.speed);
+            mmSettings.parameters.direction = paramsJson.value("direction", mmSettings.parameters.direction);
+            mmSettings.parameters.crouching = paramsJson.value("crouching", mmSettings.parameters.crouching);
+            mmSettings.parameters.airborne = paramsJson.value("airborne", mmSettings.parameters.airborne);
+            mmSettings.parameters.moveState = paramsJson.value("move_state", mmSettings.parameters.moveState);
+            mmSettings.parameters.moveState = paramsJson.value("moveState", mmSettings.parameters.moveState);
+        }
+
         if (mmJson.contains("rig") && mmJson["rig"].is_object())
         {
             const auto& rigJson = mmJson["rig"];
@@ -3249,6 +3348,30 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
             for (const auto& item : object[key])
                 if (item.is_number_integer()) out.push_back(item.get<int>());
         };
+        const auto readReplacingIntArray = [&](const nlohmann::json& object,
+                                               const char* key,
+                                               std::vector<int>& out)
+        {
+            if (!object.contains(key) || !object[key].is_array())
+                return;
+            out.clear();
+            readIntArray(object, key, out);
+        };
+        if (mmJson.contains("states") && mmJson["states"].is_object())
+        {
+            const auto& statesJson = mmJson["states"];
+            mmSettings.states.idleState = statesJson.value("idle", mmSettings.states.idleState);
+            mmSettings.states.idleState = statesJson.value("idle_state", mmSettings.states.idleState);
+            mmSettings.states.crouchState = statesJson.value("crouch", mmSettings.states.crouchState);
+            mmSettings.states.crouchState = statesJson.value("crouch_state", mmSettings.states.crouchState);
+            mmSettings.states.idleSpeedThreshold = statesJson.value("idle_speed_threshold", mmSettings.states.idleSpeedThreshold);
+            readReplacingIntArray(statesJson, "moving", mmSettings.states.movingStates);
+            readReplacingIntArray(statesJson, "moving_states", mmSettings.states.movingStates);
+            readReplacingIntArray(statesJson, "pace_transition", mmSettings.states.paceTransitionStates);
+            readReplacingIntArray(statesJson, "pace_transition_states", mmSettings.states.paceTransitionStates);
+            readReplacingIntArray(statesJson, "stance", mmSettings.states.stanceStates);
+            readReplacingIntArray(statesJson, "stance_states", mmSettings.states.stanceStates);
+        }
         const nlohmann::json* searchGroupsJson = nullptr;
         if (mmJson.contains("search_groups") && mmJson["search_groups"].is_array())
             searchGroupsJson = &mmJson["search_groups"];
@@ -3281,6 +3404,73 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
                 {
                     mmSettings.searchGroups.push_back(std::move(group));
                 }
+            }
+        }
+        const nlohmann::json* clipMetadataJson = nullptr;
+        if (mmJson.contains("clip_metadata") && mmJson["clip_metadata"].is_array())
+            clipMetadataJson = &mmJson["clip_metadata"];
+        else if (mmJson.contains("clipMetadata") && mmJson["clipMetadata"].is_array())
+            clipMetadataJson = &mmJson["clipMetadata"];
+        if (clipMetadataJson)
+        {
+            const auto readOptionalBool = [](const nlohmann::json& object,
+                                             const char* key,
+                                             bool& hasValue,
+                                             bool& value)
+            {
+                if (object.contains(key) && object[key].is_boolean())
+                {
+                    hasValue = true;
+                    value = object[key].get<bool>();
+                }
+            };
+            const auto readOptionalInt = [](const nlohmann::json& object,
+                                            const char* key,
+                                            bool& hasValue,
+                                            int& value)
+            {
+                if (object.contains(key) && object[key].is_number_integer())
+                {
+                    hasValue = true;
+                    value = object[key].get<int>();
+                }
+            };
+            for (const auto& itemJson : *clipMetadataJson)
+            {
+                if (!itemJson.is_object())
+                    continue;
+
+                MotionMatchingClipMetadata metadata;
+                metadata.name = itemJson.value("name", "");
+                readStringArray(itemJson, "match", metadata.matchTokens);
+                readStringArray(itemJson, "match_tokens", metadata.matchTokens);
+                readStringArray(itemJson, "matchTokens", metadata.matchTokens);
+                readOptionalBool(itemJson, "loop", metadata.hasLoopLike, metadata.loopLike);
+                readOptionalBool(itemJson, "loop_like", metadata.hasLoopLike, metadata.loopLike);
+                readOptionalBool(itemJson, "idle", metadata.hasIdleLike, metadata.idleLike);
+                readOptionalBool(itemJson, "idle_like", metadata.hasIdleLike, metadata.idleLike);
+                readOptionalBool(itemJson, "transition", metadata.hasTransitionLike, metadata.transitionLike);
+                readOptionalBool(itemJson, "transition_like", metadata.hasTransitionLike, metadata.transitionLike);
+                readOptionalBool(itemJson, "start", metadata.hasStartLike, metadata.startLike);
+                readOptionalBool(itemJson, "start_like", metadata.hasStartLike, metadata.startLike);
+                readOptionalBool(itemJson, "stop", metadata.hasStopLike, metadata.stopLike);
+                readOptionalBool(itemJson, "stop_like", metadata.hasStopLike, metadata.stopLike);
+                readOptionalBool(itemJson, "turn", metadata.hasTurnLike, metadata.turnLike);
+                readOptionalBool(itemJson, "turn_like", metadata.hasTurnLike, metadata.turnLike);
+                readOptionalBool(itemJson, "pace_transition", metadata.hasPaceTransitionLike, metadata.paceTransitionLike);
+                readOptionalBool(itemJson, "pace_transition_like", metadata.hasPaceTransitionLike, metadata.paceTransitionLike);
+                readOptionalInt(itemJson, "source_move_state", metadata.hasSourceMoveState, metadata.sourceMoveState);
+                readOptionalInt(itemJson, "sourceMoveState", metadata.hasSourceMoveState, metadata.sourceMoveState);
+                readOptionalInt(itemJson, "target_move_state", metadata.hasTargetMoveState, metadata.targetMoveState);
+                readOptionalInt(itemJson, "targetMoveState", metadata.hasTargetMoveState, metadata.targetMoveState);
+                readOptionalInt(itemJson, "direction_bucket", metadata.hasDirectionBucket, metadata.directionBucket);
+                readOptionalInt(itemJson, "directionBucket", metadata.hasDirectionBucket, metadata.directionBucket);
+                readOptionalInt(itemJson, "turn_direction_sign", metadata.hasTurnDirectionSign, metadata.turnDirectionSign);
+                readOptionalInt(itemJson, "turnDirectionSign", metadata.hasTurnDirectionSign, metadata.turnDirectionSign);
+                readOptionalInt(itemJson, "turn_bucket_delta", metadata.hasTurnBucketDelta, metadata.turnBucketDelta);
+                readOptionalInt(itemJson, "turnBucketDelta", metadata.hasTurnBucketDelta, metadata.turnBucketDelta);
+                if (!metadata.name.empty() || !metadata.matchTokens.empty())
+                    mmSettings.clipMetadata.push_back(std::move(metadata));
             }
         }
 
@@ -3608,8 +3798,16 @@ bool VansGraphics::VansScene::LoadSingleRagdollComponent(
 // Vegetation node
 // ===========================================================================
 
-void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetationData)
+void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetationData, const std::string& projectRoot)
 {
+    json resolvedVegetationData = LoadVegetationConfigFromReference(vegetationData, projectRoot);
+    if (!resolvedVegetationData.is_object())
+    {
+        VANS_LOG_ERROR("[SceneLoader] Vegetation config must be an object or config path.");
+        return;
+    }
+    vegetationData = resolvedVegetationData;
+
     // Read optional parameters from JSON
     uint32_t instanceCount = vegetationData.value("instanceCount", 2000000u);
     uint32_t boneCount     = vegetationData.value("boneCount", 6u);
@@ -3639,6 +3837,88 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
     m_VegetationSystem->SetBladeHeight(bladeHeight);   // must be set before Init()
     m_VegetationSystem->SetInitWindDirection(glm::vec2(windDirX, windDirZ), leanDeviation);
     m_VegetationSystem->SetSubBladeParams(subBladeCount, subBladeScatterRadiusMin, subBladeScatterRadiusMax);  // must be set before Init()
+
+    if (vegetationData.contains("trees") && vegetationData["trees"].is_object())
+    {
+        const json& treesJson = vegetationData["trees"];
+        TreeVegetationConfig treeConfig;
+        treeConfig.enabled = treesJson.value("enabled", false);
+        treeConfig.cullDistance = treesJson.value("cullDistance", 800.0f);
+        treeConfig.hizEnabled = treesJson.value("hizEnabled", true);
+
+        auto parsePartType = [](const std::string& type) -> TreePartType {
+            if (type == "trunk") return TreePartType::Trunk;
+            if (type == "leaves" || type == "leaf") return TreePartType::Leaves;
+            return TreePartType::Custom;
+        };
+
+        if (treesJson.contains("species") && treesJson["species"].is_array())
+        {
+            for (const auto& spJson : treesJson["species"])
+            {
+                TreeSpeciesConfig species;
+                species.name = spJson.value("name", std::string("TreeSpecies"));
+                species.boundsRadius = spJson.value("boundsRadius", 1.0f);
+                if (spJson.contains("parts") && spJson["parts"].is_array())
+                {
+                    for (const auto& partJson : spJson["parts"])
+                    {
+                        TreePartConfig part;
+                        part.type = parsePartType(partJson.value("type", std::string("custom")));
+                        part.meshName = partJson.value("mesh", std::string(""));
+                        part.materialName = partJson.value("material", std::string(""));
+                        species.parts.push_back(part);
+                    }
+                }
+                treeConfig.species.push_back(species);
+            }
+        }
+
+        if (treesJson.contains("instances") && treesJson["instances"].is_array())
+        {
+            for (const auto& instJson : treesJson["instances"])
+            {
+                TreeInstanceConfig inst;
+                inst.speciesName = instJson.value("species", treeConfig.species.empty() ? std::string("") : treeConfig.species[0].name);
+                if (instJson.contains("position") && instJson["position"].is_array() && instJson["position"].size() >= 3)
+                {
+                    inst.position = glm::vec3(
+                        instJson["position"][0].get<float>(),
+                        instJson["position"][1].get<float>(),
+                        instJson["position"][2].get<float>());
+                }
+                inst.yawDeg = instJson.value("yaw", 0.0f);
+                inst.scale = instJson.value("scale", 1.0f);
+                treeConfig.instances.push_back(inst);
+            }
+        }
+        else if (!treeConfig.species.empty())
+        {
+            uint32_t treeCount = treesJson.value("count", 10u);
+            float radius = treesJson.value("placementRadius", 12.0f);
+            glm::vec3 center(0.0f);
+            if (treesJson.contains("center") && treesJson["center"].is_array() && treesJson["center"].size() >= 3)
+            {
+                center = glm::vec3(
+                    treesJson["center"][0].get<float>(),
+                    treesJson["center"][1].get<float>(),
+                    treesJson["center"][2].get<float>());
+            }
+            for (uint32_t i = 0; i < treeCount; ++i)
+            {
+                float angle = (static_cast<float>(i) / std::max(1u, treeCount)) * 6.28318530718f;
+                float ring = radius * (0.55f + 0.45f * (static_cast<float>((i * 37u) % 100u) / 100.0f));
+                TreeInstanceConfig inst;
+                inst.speciesName = treeConfig.species[0].name;
+                inst.position = center + glm::vec3(cosf(angle) * ring, 0.0f, sinf(angle) * ring);
+                inst.yawDeg = angle * 57.2957795f;
+                inst.scale = 1.0f;
+                treeConfig.instances.push_back(inst);
+            }
+        }
+
+        m_VegetationSystem->SetTreeConfig(treeConfig);
+    }
 
     // ── Parse render configs (multi-mesh/material support) ─────────────────
     if (vegetationData.contains("renderConfigs") && vegetationData["renderConfigs"].is_array())
@@ -3697,17 +3977,18 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
         }
     }
 
-    // ── 连接 Hi-Z depth pyramid 进行遥测遮挡剪除 ────────────────────────────
+    // ── 连接 Hi-Z depth pyramid 进行保守遮挡剔除 ──────────────────────────
     {
         VansTexture* hzbTexture = m_MaterialManager.GetRuntimeRenderTexture(
             VansMaterialManager::RT_HZB_RESULT);
         if (hzbTexture != nullptr)
         {
+            float hizSampleBias = vegetationData.value("hizSampleBias", 0.2f);
             m_VegetationSystem->SetHiZDepth(
                 hzbTexture->GetImage().GetImageView(),
                 hzbTexture->GetImage().GetSampler(),
                 static_cast<uint32_t>(m_MaterialManager.m_HIZMipCount),
-                0.005f);
+                hizSampleBias);
         }
         else
         {
@@ -3723,6 +4004,7 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
         return static_cast<VansMaterial*>(GetMaterialAsset(name));
     };
     m_VegetationSystem->BuildRenderConfigs(meshLookup, materialLookup);
+    m_VegetationSystem->BuildTreeResources(meshLookup, materialLookup);
 
     // Create the vegetation render node
     RenderNodeType type = RenderNodeType::VEGETATION_NODE;

@@ -27,6 +27,7 @@ namespace VansGraphics
 	struct AnimatorParameter;
 	class VansAnimGraph;
 	class VansIKSolver;
+	class VansMotionMatchingRuntime;
 
 	// ─────────────────────────────────────────────────────────────
 	//  节点类型枚举
@@ -44,6 +45,7 @@ namespace VansGraphics
 		AdditiveBlend,   // 叠加混合：base + additive * weight
 		SpeedScale,      // 播放速度缩放（套在 Clip 输入上）
 		StateMachine,    // 嵌入式状态机节点（适配旧有 FSM 逻辑）
+		MotionMatching,  // Motion Matching pose source with fallback input
 		IK,              // 通用 IK 节点（CCD/FABRIK 求解人体或非关节链）
 		TwoBoneIK,       // 双骨骼 IK 节点（人体四肢快捷配置）
 		LookAt           // 朝向/瞄准节点
@@ -98,6 +100,7 @@ namespace VansGraphics
 		const Skeleton*                                            skeleton   = nullptr;
 		const std::unordered_map<std::string, AnimatorParameter>*  parameters = nullptr;
 		const std::unordered_map<std::string, VansAnimationClip>*  clips      = nullptr;
+		VansMotionMatchingRuntime*                                 motionMatching = nullptr;
 	};
 
 	// ─────────────────────────────────────────────────────────────
@@ -377,6 +380,18 @@ namespace VansGraphics
 		                          glm::vec3& outPos, glm::quat& outRot, glm::vec3& outScale);
 	};
 
+	class AnimGraphMotionMatchingNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphMotionMatchingNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraph& graph) override;
+		void Reset() override;
+
+		bool m_EnableFallbackInput = true;
+	};
+
 	// ─── IKNode ─────────────────────────────────────────────────
 	//  通用 IK 节点：使用配置好的 IKChainDefinition + 求解器
 	//  Input 0: Pose (上游动画)
@@ -415,7 +430,7 @@ namespace VansGraphics
 
 	// ─── TwoBoneIKNode ──────────────────────────────────────────
 	//  人体四肢专用快捷节点：root + mid + tip 三骨骼
-	//  内部构建 IKChainDefinition + CCDSolver
+	//  内部构建 IKChainDefinition + analytic two-bone solver
 
 	class AnimGraphTwoBoneIKNode : public VansAnimGraphNode
 	{
@@ -451,11 +466,12 @@ namespace VansGraphics
 		float       m_RotationWeight = 1.0f;
 
 	private:
-		std::unique_ptr<VansIKSolver> m_Solver;
 		IKChainDefinition             m_CachedChain;
 		bool                          m_ChainBuilt = false;
+		size_t                        m_CachedSkeletonSignature = 0;
 
 		void BuildChain(const Skeleton& skeleton);
+		bool NeedsRebuild(const Skeleton& skeleton) const;
 	};
 
 	// ─── LookAtNode ─────────────────────────────────────────────
@@ -488,8 +504,10 @@ namespace VansGraphics
 		std::unique_ptr<VansIKSolver> m_Solver;
 		IKChainDefinition             m_CachedChain;
 		bool                          m_ChainBuilt = false;
+		size_t                        m_CachedSkeletonSignature = 0;
 
 		void BuildChain(const Skeleton& skeleton);
+		bool NeedsRebuild(const Skeleton& skeleton) const;
 	};
 
 	// ═════════════════════════════════════════════════════════════

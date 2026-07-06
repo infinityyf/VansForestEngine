@@ -436,6 +436,7 @@ static ImU32 GetV2NodeHeaderColor(AnimGraphNodeType type)
 	case AnimGraphNodeType::AdditiveBlend: return IM_COL32(100, 180, 180, 255);  // 青
 	case AnimGraphNodeType::SpeedScale:    return IM_COL32(180, 140, 100, 255);  // 棕
 	case AnimGraphNodeType::StateMachine:  return IM_COL32(180, 180, 180, 255);  // 灰
+	case AnimGraphNodeType::MotionMatching:return IM_COL32(90,  190, 150, 255);
 	}
 	return IM_COL32(150, 150, 150, 255);
 }
@@ -469,6 +470,8 @@ static const char* GetV2NodeSubtitle(VansAnimGraphNode* node)
 		auto* n = static_cast<AnimGraphSwitchNode*>(node);
 		return n->m_ParamName.c_str();
 	}
+	case AnimGraphNodeType::MotionMatching:
+		return "UseMotionMatching";
 	default:
 		return "";
 	}
@@ -636,6 +639,13 @@ void VansAnimGraphEditorWindow::DrawV2PropertiesPanel()
 		ImGui::Text("Param: %s", n->m_ParamName.c_str());
 		ImGui::Text("Speed: %.2f", n->m_FixedSpeed);
 		ImGui::Text("Use Param: %s", n->m_UseParam ? "true" : "false");
+		break;
+	}
+	case AnimGraphNodeType::MotionMatching:
+	{
+		auto* n = static_cast<AnimGraphMotionMatchingNode*>(node);
+		ImGui::Text("Fallback Input: %s", n->m_EnableFallbackInput ? "true" : "false");
+		ImGui::Text("Runtime Param: UseMotionMatching");
 		break;
 	}
 	case AnimGraphNodeType::IK:

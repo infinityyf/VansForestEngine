@@ -794,6 +794,42 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationCull(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
+// ============================================================
+// Vegetation Tree Draw — Per-Part SSBO Data (Set 3)
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationTreeDraw(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{VEG_TREE_DRAW_BINDING_INSTANCES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		{VEG_TREE_DRAW_BINDING_VISIBLE_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Vegetation Tree Cull — GPU cull descriptor layout
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationTreeCull(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{VEG_TREE_CULL_BINDING_INSTANCES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_TREE_CULL_BINDING_VISIBLE_COUNTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_TREE_CULL_BINDING_VISIBLE_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_TREE_CULL_BINDING_SPECIES_INFOS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_TREE_CULL_BINDING_HIZ, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_TileLightBuild(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {

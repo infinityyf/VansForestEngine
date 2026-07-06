@@ -1324,6 +1324,27 @@ void VansGraphics::VansVegetationRenderNode::Draw(VansVKCommandBuffer& cmd, Glob
 	m_VegetationSystem->Draw(cmd, *gbufferShader, global_state,
 		m_UsedDescSetLayouts, m_UsedDescSets,
 		m_TransfromIndex);
+	m_VegetationSystem->DrawTrees(cmd, global_state,
+		m_UsedDescSetLayouts, m_UsedDescSets,
+		m_TransfromIndex);
+}
+
+void VansGraphics::VansVegetationRenderNode::DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
+{
+	if (!m_VegetationSystem)
+		return;
+	m_VegetationSystem->DrawTreeCascadeShadow(cmd, global_state,
+		m_UsedDescSetLayouts, m_UsedDescSets,
+		m_TransfromIndex);
+}
+
+void VansGraphics::VansVegetationRenderNode::DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex)
+{
+	if (!m_VegetationSystem)
+		return;
+	m_VegetationSystem->DrawTreePunctualShadow(cmd, global_state,
+		m_UsedDescSetLayouts, m_UsedDescSets,
+		m_TransfromIndex, lightIndex, shadowIndex);
 }
 
 // ── VansDecalRenderNode ────────────────────────────────────────────────────

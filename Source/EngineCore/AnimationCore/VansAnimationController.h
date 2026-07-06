@@ -311,6 +311,7 @@ namespace VansGraphics
 		                     const Skeleton& skeleton);
 		void BuildFinalMatrices(const std::vector<glm::mat4>& globalTransforms,
 		                        const Skeleton& skeleton);
+		void EnsureMotionMatchingGraphNode();
 
 		void InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,
 		                          float time,

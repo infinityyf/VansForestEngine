@@ -54,7 +54,7 @@ layout(std430, set = 1, binding = 3) writeonly buffer VisibleIndexBuffer
 // ── Terrain heightmap — 用于采样实例的实际地面高度 ─────────────────────────
 layout(set = 1, binding = 4) uniform sampler2D terrainHeightmap;
 
-// ── Hi-Z depth pyramid — 用于遥测遮挡剪除 (min-depth 降采样) ───────────────
+// ── Hi-Z depth pyramid — 用于保守遮挡剔除 (min-depth 降采样) ───────────────
 // HZB 存储每 cell 的最近深度；球前沿深度 > hizSample + bias 时判定为遮挡
 layout(set = 1, binding = 5) uniform sampler2D hizDepth;
 
@@ -70,10 +70,10 @@ layout(push_constant) uniform CullPushConstants
     float terrainHeightOffset; // 地形高度偏移
     int   terrainEnabled;    // 是否启用地形高度采样
     uint  subBladeCount;     // 子叶片数，用于 atomicAdd 直接计算 indirect instanceCount
-    // Hi-Z 遥测剪除参数
-    float hizSampleBias;     // 保守偏差，防止边界处误剪 (0.0 = 最严格, 推荐 0.005)
+    // Hi-Z 遮挡剔除参数
+    float hizSampleBias;     // 保守偏差，单位为米；线性深度下推荐 0.1-0.5
     int   hizMipCount;       // Hi-Z 金字塔 mip 层数
-    int   hizEnabled;        // 是否启用 Hi-Z 遥测剪除
+    int   hizEnabled;        // 是否启用 Hi-Z 遮挡剔除
 } pc;
 
 // ── 视锥裁剪: 从 VP 矩阵提取六个平面 ───────────────────────────────────────
@@ -178,7 +178,7 @@ void main()
         return;
     }
 
-    // ── Hi-Z 遥测遮挡剪除 ────────────────────────────────────────────
+    // ── Hi-Z 遮挡剔除 ────────────────────────────────────────────────
     // HIZ 存 min 正线性视空间深度（米），由 GBuffer position.w 生成。
     //
     // 测试逻辑：
@@ -225,7 +225,7 @@ void main()
                     // 因此不能用"覆盖整个球 footprint 的单个大 cell"直接剪，否则只要 cell 内
                     // 有一个近景 texel 就会误剪。这里使用较细 mip + 5 点全遮挡测试：只有中心和
                     // 四个边缘采样点都被更近深度遮挡时才剪除。
-                    int mipLevel = int(floor(log2(max(screenRadiusPx * 0.5, 1.0))));
+                    int mipLevel = min(int(floor(log2(max(screenRadiusPx * 0.25, 1.0)))), 2);
                     int mipMaxIndex = pc.hizMipCount - 1;
 
                     bool occluded = true;
@@ -234,6 +234,10 @@ void main()
                     occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x, 0.0), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
                     occluded = occluded && isHiZOccludedSample(hizUV + vec2(0.0,  uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
                     occluded = occluded && isHiZOccludedSample(hizUV + vec2(0.0, -uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+                    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x,  uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+                    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x,  uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+                    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x, -uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+                    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x, -uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
 
                     if (occluded)
                     {

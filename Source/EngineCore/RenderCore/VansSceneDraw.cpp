@@ -40,6 +40,9 @@ void VansGraphics::VansScene::DrawShadowNodes()
         node->DrawCascadeShadowWithPassShader(cmd, globalStateData, shadowShader,
                                                opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts);
     }
+
+    if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
+        static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawShadow(cmd, globalStateData);
 }
 
 void VansGraphics::VansScene::DrawMotionVectorNodes()
@@ -107,6 +110,10 @@ void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
                                                     opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
                                                     lightIndex, shadowDirection);
         }
+
+        if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
+            static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
+                cmd, globalStateData, lightIndex, shadowDirection);
     }
 }
 
@@ -152,6 +159,10 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
                                                 opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
                                                 pointCount + lightIndex, 0);
     }
+
+    if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
+        static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
+            cmd, globalStateData, pointCount + lightIndex, 0);
 }
 
 void VansGraphics::VansScene::DrawRectShadow(int pointCount, int spotCount, int lightIndex)
@@ -201,6 +212,10 @@ void VansGraphics::VansScene::DrawRectShadow(int pointCount, int spotCount, int 
                                                 opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
                                                 shaderLightIndex, 0);
     }
+
+    if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
+        static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
+            cmd, globalStateData, shaderLightIndex, 0);
 }
 
 void VansGraphics::VansScene::DrawSkyBoxNode()
@@ -343,6 +358,7 @@ void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
 
     // P0: GPU 视锥 + 距离剔除 — 写入每实例的可见性标志，绘制时 VS 早退出不可见实例
     m_VegetationSystem->DispatchCullPass(cmd, m_VegetationSystem->GetCullDistance());
+    m_VegetationSystem->DispatchTreeCullPass(cmd);
     }
 
 void VansGraphics::VansScene::DrawTransParentNodes()

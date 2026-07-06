@@ -211,6 +211,13 @@ namespace
 		return it->second.floatVal;
 	}
 
+	float ReadFloatParam(const std::unordered_map<std::string, AnimatorParameter>& parameters,
+	                     const std::string& name,
+	                     float fallback = 0.0f)
+	{
+		return ReadFloatParam(parameters, name.c_str(), fallback);
+	}
+
 	int ReadIntParam(const std::unordered_map<std::string, AnimatorParameter>& parameters,
 	                 const char* name,
 	                 int fallback = 0)
@@ -219,6 +226,13 @@ namespace
 		if (it == parameters.end() || it->second.type != AnimatorParamType::Int)
 			return fallback;
 		return it->second.intVal;
+	}
+
+	int ReadIntParam(const std::unordered_map<std::string, AnimatorParameter>& parameters,
+	                 const std::string& name,
+	                 int fallback = 0)
+	{
+		return ReadIntParam(parameters, name.c_str(), fallback);
 	}
 
 	bool ReadBoolParam(const std::unordered_map<std::string, AnimatorParameter>& parameters,
@@ -235,6 +249,13 @@ namespace
 		if (it->second.type == AnimatorParamType::Int)
 			return it->second.intVal != 0;
 		return fallback;
+	}
+
+	bool ReadBoolParam(const std::unordered_map<std::string, AnimatorParameter>& parameters,
+	                   const std::string& name,
+	                   bool fallback = false)
+	{
+		return ReadBoolParam(parameters, name.c_str(), fallback);
 	}
 
 	void InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,
@@ -337,6 +358,74 @@ bool VansMotionMatchingRuntime::ShouldIncludeClip(const std::string& clipName) c
 	return true;
 }
 
+const MotionMatchingClipMetadata* VansMotionMatchingRuntime::FindClipMetadata(const std::string& clipName) const
+{
+	const std::string lowered = ToLower(clipName);
+	for (const MotionMatchingClipMetadata& metadata : m_Settings.clipMetadata)
+	{
+		if (!metadata.name.empty() && ToLower(metadata.name) == lowered)
+			return &metadata;
+		if (!metadata.matchTokens.empty() && ContainsToken(lowered, metadata.matchTokens))
+			return &metadata;
+	}
+	return nullptr;
+}
+
+float VansMotionMatchingRuntime::ReadSpeedParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const
+{
+	return ReadFloatParam(parameters, m_Settings.parameters.speed, 0.0f);
+}
+
+float VansMotionMatchingRuntime::ReadDirectionParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const
+{
+	return ReadFloatParam(parameters, m_Settings.parameters.direction, 0.0f);
+}
+
+bool VansMotionMatchingRuntime::ReadCrouchingParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const
+{
+	return ReadFloatParam(parameters, m_Settings.parameters.crouching, 0.0f) > 0.5f ||
+	       ReadBoolParam(parameters, m_Settings.parameters.crouching, false);
+}
+
+bool VansMotionMatchingRuntime::ReadAirborneParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const
+{
+	return ReadFloatParam(parameters, m_Settings.parameters.airborne, 0.0f) > 0.5f ||
+	       ReadBoolParam(parameters, m_Settings.parameters.airborne, false);
+}
+
+int VansMotionMatchingRuntime::ReadMoveStateParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const
+{
+	return ReadIntParam(parameters, m_Settings.parameters.moveState, m_Settings.states.idleState);
+}
+
+bool VansMotionMatchingRuntime::IsMovingState(int state) const
+{
+	return std::find(m_Settings.states.movingStates.begin(), m_Settings.states.movingStates.end(), state) !=
+	       m_Settings.states.movingStates.end();
+}
+
+bool VansMotionMatchingRuntime::IsPaceTransitionState(int state) const
+{
+	return std::find(m_Settings.states.paceTransitionStates.begin(), m_Settings.states.paceTransitionStates.end(), state) !=
+	       m_Settings.states.paceTransitionStates.end();
+}
+
+bool VansMotionMatchingRuntime::IsStanceState(int state) const
+{
+	return std::find(m_Settings.states.stanceStates.begin(), m_Settings.states.stanceStates.end(), state) !=
+	       m_Settings.states.stanceStates.end();
+}
+
+int VansMotionMatchingRuntime::ResolveDesiredMoveState(const std::unordered_map<std::string, AnimatorParameter>& parameters) const
+{
+	const int moveState = ReadMoveStateParam(parameters);
+	const bool wantsIdle = ReadSpeedParam(parameters) < m_Settings.states.idleSpeedThreshold ||
+	                       moveState == m_Settings.states.idleState;
+	if (ReadCrouchingParam(parameters) || moveState == m_Settings.states.crouchState)
+		return m_Settings.states.crouchState;
+	return wantsIdle ? m_Settings.states.idleState : moveState;
+}
+
 bool VansMotionMatchingRuntime::SearchGroupAllowsSample(
 	const Sample& sample,
 	const std::unordered_map<std::string, AnimatorParameter>& parameters) const
@@ -344,14 +433,10 @@ bool VansMotionMatchingRuntime::SearchGroupAllowsSample(
 	if (m_Settings.searchGroups.empty())
 		return true;
 
-	const bool isCrouching = ReadFloatParam(parameters, "IsCrouching", 0.0f) > 0.5f ||
-	                         ReadBoolParam(parameters, "IsCrouching", false);
-	const int moveState = ReadIntParam(parameters, "MoveState", 0);
-	const float speed01 = ReadFloatParam(parameters, "Speed", 0.0f);
-	const bool wantsIdle = speed01 < 0.05f || moveState == 0;
-	const int desiredMoveState = (isCrouching || moveState == 4)
-		? 4
-		: (wantsIdle ? 0 : moveState);
+	const int moveState = ReadMoveStateParam(parameters);
+	const float speed01 = ReadSpeedParam(parameters);
+	const bool wantsIdle = speed01 < m_Settings.states.idleSpeedThreshold || moveState == m_Settings.states.idleState;
+	const int desiredMoveState = ResolveDesiredMoveState(parameters);
 	const bool desiredMoving = !wantsIdle;
 
 	const bool currentValid = m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size());
@@ -361,20 +446,20 @@ bool VansMotionMatchingRuntime::SearchGroupAllowsSample(
 		currentSample &&
 		!currentSample->idleLike &&
 		(currentSample->loopLike || currentSample->startLike || currentSample->turnLike) &&
-		(currentMoveState == 1 || currentMoveState == 2 || currentMoveState == 3 || currentMoveState == 4);
+		IsMovingState(currentMoveState);
 	const bool startingFromIdle = !currentMoving && desiredMoving;
 	const bool stoppingToIdle = currentMoving && !desiredMoving;
 	const bool changingPace =
-		currentMoveState >= 1 && currentMoveState <= 3 &&
-		desiredMoveState >= 1 && desiredMoveState <= 3 &&
+		IsPaceTransitionState(currentMoveState) &&
+		IsPaceTransitionState(desiredMoveState) &&
 		currentMoveState != desiredMoveState;
 	const bool changingStance =
-		(currentMoveState == 0 || currentMoveState == 4) &&
-		(desiredMoveState == 0 || desiredMoveState == 4) &&
+		IsStanceState(currentMoveState) &&
+		IsStanceState(desiredMoveState) &&
 		currentMoveState != desiredMoveState;
 
 	const std::string loweredClip = ToLower(sample.clipName);
-	const bool desiredCrouchStance = desiredMoveState == 4;
+	const bool desiredCrouchStance = desiredMoveState == m_Settings.states.crouchState;
 
 	for (const MotionMatchingSearchGroup& group : m_Settings.searchGroups)
 	{
@@ -599,8 +684,8 @@ glm::vec3 VansMotionMatchingRuntime::BuildDesiredVelocityRoot(
 	const std::unordered_map<std::string, AnimatorParameter>& parameters,
 	const MotionMatchingResolvedRig& rig) const
 {
-	const float speed01 = ReadFloatParam(parameters, "Speed", 0.0f);
-	const float direction = ReadFloatParam(parameters, "Direction", 0.0f);
+	const float speed01 = ReadSpeedParam(parameters);
+	const float direction = ReadDirectionParam(parameters);
 	const float desiredSpeed = speed01 * m_Settings.desiredSpeedScale;
 	glm::vec3 forwardAxis = rig.forwardAxis;
 	forwardAxis.z = 0.0f;
@@ -769,10 +854,10 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFe
 	BuildModelSpacePose(currentLocalPose, skeleton, currentModel);
 
 	const glm::mat4 rootModel = currentModel[rig.root];
-	const float speed01 = ReadFloatParam(parameters, "Speed", 0.0f);
-	const float direction = ReadFloatParam(parameters, "Direction", 0.0f);
-	const bool airborne = ReadFloatParam(parameters, "IsAirborne", 0.0f) > 0.5f || ReadBoolParam(parameters, "IsAirborne", false);
-	const int moveState = ReadIntParam(parameters, "MoveState", 0);
+	const float speed01 = ReadSpeedParam(parameters);
+	const float direction = ReadDirectionParam(parameters);
+	const bool airborne = ReadAirborneParam(parameters);
+	const int moveState = ReadMoveStateParam(parameters);
 	const glm::vec3 desiredVelRoot = BuildDesiredVelocityRoot(parameters, rig);
 	const glm::vec2 desiredVelXY(desiredVelRoot.x, desiredVelRoot.y);
 	const glm::vec3 currentForward = ExtractRootForward(rootModel, rig);
@@ -846,12 +931,14 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 	{
 		if (!ShouldIncludeClip(name) || clip.duration <= kEpsilon)
 			continue;
-		if (!IsMotionSearchClipName(name))
+		const MotionMatchingClipMetadata* metadata = FindClipMetadata(name);
+		if (!metadata && !IsMotionSearchClipName(name))
 			continue;
 
 		++includedClipCount;
-		const bool loopLike = IsLoopSearchClipName(name);
 		const std::string lowered = ToLower(name);
+		const bool legacyLoopLike = IsLoopSearchClipName(name);
+		const bool loopLike = metadata && metadata->hasLoopLike ? metadata->loopLike : legacyLoopLike;
 		for (float t = 0.0f; t < clip.duration; t += sampleStep)
 		{
 			Sample sample;
@@ -860,27 +947,49 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 			sample.rawFeature = ExtractDatabaseFeature(clip, t, loopLike, skeleton, m_Rig);
 			sample.feature = sample.rawFeature;
 			sample.loopLike = loopLike;
-			sample.idleLike = sample.loopLike && lowered.find("idle") != std::string::npos;
-			sample.transitionLike = !loopLike;
-			sample.startLike = sample.transitionLike && lowered.find("start") != std::string::npos;
-			sample.stopLike = sample.transitionLike && lowered.find("stop") != std::string::npos;
-			sample.turnLike = sample.transitionLike && lowered.find("turn") != std::string::npos;
-			sample.turnDirectionSign = sample.turnLike ? TurnDirectionSignFromName(lowered) : 0;
-			sample.turnBucketDelta = sample.turnLike ? TurnBucketDeltaFromName(lowered) : 0;
-			sample.paceTransitionLike = sample.transitionLike &&
+			sample.idleLike = metadata && metadata->hasIdleLike
+				? metadata->idleLike
+				: sample.loopLike && lowered.find("idle") != std::string::npos;
+			sample.transitionLike = metadata && metadata->hasTransitionLike
+				? metadata->transitionLike
+				: !loopLike;
+			sample.startLike = metadata && metadata->hasStartLike
+				? metadata->startLike
+				: sample.transitionLike && lowered.find("start") != std::string::npos;
+			sample.stopLike = metadata && metadata->hasStopLike
+				? metadata->stopLike
+				: sample.transitionLike && lowered.find("stop") != std::string::npos;
+			sample.turnLike = metadata && metadata->hasTurnLike
+				? metadata->turnLike
+				: sample.transitionLike && lowered.find("turn") != std::string::npos;
+			sample.turnDirectionSign = metadata && metadata->hasTurnDirectionSign
+				? metadata->turnDirectionSign
+				: (sample.turnLike ? TurnDirectionSignFromName(lowered) : 0);
+			sample.turnBucketDelta = metadata && metadata->hasTurnBucketDelta
+				? metadata->turnBucketDelta
+				: (sample.turnLike ? TurnBucketDeltaFromName(lowered) : 0);
+			sample.paceTransitionLike = metadata && metadata->hasPaceTransitionLike
+				? metadata->paceTransitionLike
+				: sample.transitionLike &&
 				(lowered.find("transition") != std::string::npos ||
 				 lowered.find("towalk") != std::string::npos ||
 				 lowered.find("torun") != std::string::npos ||
 				 lowered.find("tosprint") != std::string::npos ||
 				 lowered.find("tocrouch") != std::string::npos ||
 				 lowered.find("tostand") != std::string::npos);
-			sample.sourceMoveState = sample.transitionLike
+			sample.sourceMoveState = metadata && metadata->hasSourceMoveState
+				? metadata->sourceMoveState
+				: (sample.transitionLike
 				? TransitionSourceMoveStateFromName(lowered)
-				: MoveStateFromFamilyName(lowered);
-			sample.targetMoveState = sample.transitionLike
+				: MoveStateFromFamilyName(lowered));
+			sample.targetMoveState = metadata && metadata->hasTargetMoveState
+				? metadata->targetMoveState
+				: (sample.transitionLike
 				? TransitionTargetMoveStateFromName(lowered)
-				: MoveStateFromFamilyName(lowered);
-			sample.directionBucketFromName = DirectionBucketFromName(lowered);
+				: MoveStateFromFamilyName(lowered));
+			sample.directionBucketFromName = metadata && metadata->hasDirectionBucket
+				? metadata->directionBucket
+				: DirectionBucketFromName(lowered);
 			m_Samples.push_back(sample);
 		}
 	}
@@ -919,7 +1028,7 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 	m_CurrentSample = 0;
 	for (int i = 0; i < static_cast<int>(m_Samples.size()); ++i)
 	{
-		if (m_Samples[i].loopLike && m_Samples[i].targetMoveState == 0)
+		if (m_Samples[i].loopLike && m_Samples[i].targetMoveState == m_Settings.states.idleState)
 		{
 			m_CurrentSample = i;
 			break;
@@ -988,32 +1097,28 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 	if (!SearchGroupAllowsSample(sample, parameters))
 		return false;
 
-	const bool isCrouching = ReadFloatParam(parameters, "IsCrouching", 0.0f) > 0.5f ||
-	                         ReadBoolParam(parameters, "IsCrouching", false);
-	const int moveState = ReadIntParam(parameters, "MoveState", 0);
-	const float speed01 = ReadFloatParam(parameters, "Speed", 0.0f);
-	const bool wantsIdle = speed01 < 0.05f || moveState == 0;
+	const int moveState = ReadMoveStateParam(parameters);
+	const float speed01 = ReadSpeedParam(parameters);
+	const bool wantsIdle = speed01 < m_Settings.states.idleSpeedThreshold || moveState == m_Settings.states.idleState;
 	const bool currentValid = m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size());
 	const Sample* currentSample = currentValid ? &m_Samples[m_CurrentSample] : nullptr;
 	const int currentMoveState = currentSample ? currentSample->targetMoveState : 0;
-	const int desiredMoveState = (isCrouching || moveState == 4)
-		? 4
-		: (wantsIdle ? 0 : moveState);
+	const int desiredMoveState = ResolveDesiredMoveState(parameters);
 	const bool currentMoving =
 		currentSample &&
 		!currentSample->idleLike &&
 		(currentSample->loopLike || currentSample->startLike || currentSample->turnLike) &&
-		(currentMoveState == 1 || currentMoveState == 2 || currentMoveState == 3 || currentMoveState == 4);
+		IsMovingState(currentMoveState);
 	const bool desiredMoving = !wantsIdle;
 	const bool startingFromIdle = !currentMoving && desiredMoving;
 	const bool stoppingToIdle = currentMoving && !desiredMoving;
 	const bool changingPace =
-		currentMoveState >= 1 && currentMoveState <= 3 &&
-		desiredMoveState >= 1 && desiredMoveState <= 3 &&
+		IsPaceTransitionState(currentMoveState) &&
+		IsPaceTransitionState(desiredMoveState) &&
 		currentMoveState != desiredMoveState;
 	const bool changingStance =
-		(currentMoveState == 0 || currentMoveState == 4) &&
-		(desiredMoveState == 0 || desiredMoveState == 4) &&
+		IsStanceState(currentMoveState) &&
+		IsStanceState(desiredMoveState) &&
 		currentMoveState != desiredMoveState;
 	const glm::vec3 desiredVelRoot = BuildDesiredVelocityRoot(parameters, m_Rig);
 	const glm::vec2 desiredDir(desiredVelRoot.x, desiredVelRoot.y);
@@ -1224,9 +1329,9 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	if (!m_Settings.enabled)
 		return false;
 
-	m_DebugData.querySpeed = ReadFloatParam(parameters, "Speed", 0.0f) * m_Settings.desiredSpeedScale;
-	m_DebugData.queryDirection = ReadFloatParam(parameters, "Direction", 0.0f);
-	const bool parameterWantsMotionMatching = ReadBoolParam(parameters, "UseMotionMatching", true);
+	m_DebugData.querySpeed = ReadSpeedParam(parameters) * m_Settings.desiredSpeedScale;
+	m_DebugData.queryDirection = ReadDirectionParam(parameters);
+	const bool parameterWantsMotionMatching = ReadBoolParam(parameters, m_Settings.parameters.enabled, true);
 	if (!parameterWantsMotionMatching)
 	{
 		m_HasLastSearchContext = false;
@@ -1288,14 +1393,12 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_PreviousQueryModelPose = currentModel;
 
 	FeatureVector query = BuildQueryFeature(parameters, queryLocal, skeleton, m_Rig);
-	const float speed01 = ReadFloatParam(parameters, "Speed", 0.0f);
-	const float direction = ReadFloatParam(parameters, "Direction", 0.0f);
-	const int moveState = ReadIntParam(parameters, "MoveState", 0);
-	const bool isCrouching = ReadFloatParam(parameters, "IsCrouching", 0.0f) > 0.5f ||
-	                         ReadBoolParam(parameters, "IsCrouching", false);
-	const bool isAirborne = ReadFloatParam(parameters, "IsAirborne", 0.0f) > 0.5f ||
-	                        ReadBoolParam(parameters, "IsAirborne", false);
-	const bool isMoving = speed01 >= 0.05f;
+	const float speed01 = ReadSpeedParam(parameters);
+	const float direction = ReadDirectionParam(parameters);
+	const int moveState = ReadMoveStateParam(parameters);
+	const bool isCrouching = ReadCrouchingParam(parameters);
+	const bool isAirborne = ReadAirborneParam(parameters);
+	const bool isMoving = speed01 >= m_Settings.states.idleSpeedThreshold;
 	constexpr float kPi = 3.14159265358979323846f;
 	constexpr float kTwoPi = kPi * 2.0f;
 	float wrappedDirection = std::fmod(direction, kTwoPi);
@@ -1365,10 +1468,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			activeSample &&
 			!activeSample->idleLike &&
 			(activeSample->loopLike || activeSample->startLike || activeSample->turnLike) &&
-			(activeSample->targetMoveState == 1 ||
-			 activeSample->targetMoveState == 2 ||
-			 activeSample->targetMoveState == 3 ||
-			 activeSample->targetMoveState == 4);
+			IsMovingState(activeSample->targetMoveState);
 		const bool shouldEnterStartTransition =
 			searchContextChanged &&
 			best.sampleIndex >= 0 &&

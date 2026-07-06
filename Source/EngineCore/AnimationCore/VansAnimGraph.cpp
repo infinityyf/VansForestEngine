@@ -5,9 +5,16 @@
 #include "IK/VansFABRIKSolver.h"
 #include "IK/VansLookAtSolver.h"
 #include "IK/VansIKChainBuilder.h"
+#include "IK/VansIKConstraint.h"
+#include "MotionMatching/VansMotionMatching.h"
+#include <../../GLM/gtc/constants.hpp>
+#include <../../GLM/gtc/quaternion.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <../../GLM/gtx/quaternion.hpp>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <sstream>
 
 namespace VansGraphics
@@ -68,6 +75,18 @@ namespace VansGraphics
 		return result;
 	}
 
+	static size_t SkeletonSignature(const Skeleton& skeleton)
+	{
+		size_t seed = skeleton.bones.size();
+		std::hash<std::string> hashString;
+		for (const BoneInfo& bone : skeleton.bones)
+		{
+			seed ^= hashString(bone.name) + 0x9e3779b9u + (seed << 6) + (seed >> 2);
+			seed ^= static_cast<size_t>(bone.parentIndex + 1) + 0x9e3779b9u + (seed << 6) + (seed >> 2);
+		}
+		return seed;
+	}
+
 	// ═════════════════════════════════════════════════════════════
 	//  节点类型名称映射
 	// ═════════════════════════════════════════════════════════════
@@ -86,6 +105,7 @@ namespace VansGraphics
 		case AnimGraphNodeType::AdditiveBlend:  return "AdditiveBlend";
 		case AnimGraphNodeType::SpeedScale:     return "SpeedScale";
 		case AnimGraphNodeType::StateMachine:   return "StateMachine";
+		case AnimGraphNodeType::MotionMatching: return "MotionMatching";
 		case AnimGraphNodeType::IK:             return "IK";
 		case AnimGraphNodeType::TwoBoneIK:      return "TwoBoneIK";
 		case AnimGraphNodeType::LookAt:         return "LookAt";
@@ -105,6 +125,7 @@ namespace VansGraphics
 		if (str == "AdditiveBlend")  return AnimGraphNodeType::AdditiveBlend;
 		if (str == "SpeedScale")     return AnimGraphNodeType::SpeedScale;
 		if (str == "StateMachine")   return AnimGraphNodeType::StateMachine;
+		if (str == "MotionMatching") return AnimGraphNodeType::MotionMatching;
 		if (str == "IK")             return AnimGraphNodeType::IK;
 		if (str == "TwoBoneIK")      return AnimGraphNodeType::TwoBoneIK;
 		if (str == "LookAt")         return AnimGraphNodeType::LookAt;
@@ -1028,6 +1049,7 @@ namespace VansGraphics
 		case AnimGraphNodeType::AdditiveBlend: return std::make_unique<AnimGraphAdditiveBlendNode>();
 		case AnimGraphNodeType::SpeedScale:    return std::make_unique<AnimGraphSpeedScaleNode>();
 		case AnimGraphNodeType::StateMachine:  return std::make_unique<AnimGraphStateMachineNode>();
+		case AnimGraphNodeType::MotionMatching:return std::make_unique<AnimGraphMotionMatchingNode>();
 		case AnimGraphNodeType::IK:            return std::make_unique<AnimGraphIKNode>();
 		case AnimGraphNodeType::TwoBoneIK:     return std::make_unique<AnimGraphTwoBoneIKNode>();
 		case AnimGraphNodeType::LookAt:        return std::make_unique<AnimGraphLookAtNode>();
@@ -1175,6 +1197,12 @@ namespace VansGraphics
 				transJson.push_back(tj);
 			}
 			props["transitions"] = transJson;
+			break;
+		}
+		case AnimGraphNodeType::MotionMatching:
+		{
+			auto* n = static_cast<const AnimGraphMotionMatchingNode*>(node);
+			props["enableFallbackInput"] = n->m_EnableFallbackInput;
 			break;
 		}
 		case AnimGraphNodeType::IK:
@@ -1367,6 +1395,13 @@ namespace VansGraphics
 					n->m_Transitions.push_back(t);
 				}
 			}
+			break;
+		}
+		case AnimGraphNodeType::MotionMatching:
+		{
+			auto* n = static_cast<AnimGraphMotionMatchingNode*>(node);
+			if (props.contains("enableFallbackInput"))
+				n->m_EnableFallbackInput = props["enableFallbackInput"].get<bool>();
 			break;
 		}
 		case AnimGraphNodeType::IK:
@@ -1635,6 +1670,49 @@ namespace VansGraphics
 	}
 
 	// 从 ctx.parameters 读取 Vector3 参数
+	AnimGraphMotionMatchingNode::AnimGraphMotionMatchingNode()
+	{
+		m_Type = AnimGraphNodeType::MotionMatching;
+		m_Name = "MotionMatching";
+	}
+
+	std::vector<AnimGraphPin> AnimGraphMotionMatchingNode::GetPins() const
+	{
+		return {
+			{ 0, "FallbackPose", AnimGraphPinType::Pose, AnimGraphPinKind::Input  },
+			{ 0, "OutPose",      AnimGraphPinType::Pose, AnimGraphPinKind::Output }
+		};
+	}
+
+	AnimGraphPose AnimGraphMotionMatchingNode::Evaluate(const AnimGraphContext& ctx,
+	                                                   VansAnimGraph& graph)
+	{
+		if (ctx.motionMatching && ctx.skeleton && ctx.clips && ctx.parameters)
+		{
+			AnimGraphPose pose;
+			if (ctx.motionMatching->Update(ctx.deltaTime,
+			                               *ctx.skeleton,
+			                               *ctx.clips,
+			                               *ctx.parameters,
+			                               pose.localTransforms))
+			{
+				pose.valid = pose.localTransforms.size() == ctx.skeleton->bones.size();
+				if (pose.valid)
+					return pose;
+			}
+		}
+
+		if (!m_EnableFallbackInput)
+			return {};
+
+		VansAnimGraphNode* in = graph.GetInputNode(m_NodeId, 0);
+		return in ? in->Evaluate(ctx, graph) : AnimGraphPose{};
+	}
+
+	void AnimGraphMotionMatchingNode::Reset()
+	{
+	}
+
 	static void ResolveIKChainBoneIndices(IKChainDefinition& chain, const Skeleton& skeleton)
 	{
 		for (IKBoneLink& link : chain.bones)
@@ -1645,6 +1723,163 @@ namespace VansGraphics
 			auto it = skeleton.boneNameToIndex.find(link.boneName);
 			if (it != skeleton.boneNameToIndex.end())
 				link.boneIndex = it->second;
+		}
+	}
+
+	namespace
+	{
+		constexpr float kTwoBoneEpsilon = 1e-5f;
+
+		bool IsValidBoneIndex(int index, size_t count)
+		{
+			return index >= 0 && index < static_cast<int>(count);
+		}
+
+		glm::vec3 SafeNormalize(const glm::vec3& value, const glm::vec3& fallback)
+		{
+			const float len = glm::length(value);
+			return len > kTwoBoneEpsilon ? value / len : fallback;
+		}
+
+		glm::vec3 BuildOrthogonalDirection(const glm::vec3& direction)
+		{
+			const glm::vec3 n = SafeNormalize(direction, glm::vec3(0.0f, 1.0f, 0.0f));
+			const glm::vec3 axis = std::abs(n.y) < 0.75f
+				? glm::vec3(0.0f, 1.0f, 0.0f)
+				: glm::vec3(1.0f, 0.0f, 0.0f);
+			return SafeNormalize(glm::cross(axis, n), glm::vec3(0.0f, 0.0f, 1.0f));
+		}
+
+		glm::quat SafeRotationBetween(const glm::vec3& from, const glm::vec3& to)
+		{
+			const float fromLen = glm::length(from);
+			const float toLen = glm::length(to);
+			if (fromLen <= kTwoBoneEpsilon || toLen <= kTwoBoneEpsilon)
+				return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+			const glm::vec3 fromDir = from / fromLen;
+			const glm::vec3 toDir = to / toLen;
+			const float dotValue = glm::clamp(glm::dot(fromDir, toDir), -1.0f, 1.0f);
+			if (dotValue > 1.0f - 1e-5f)
+				return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+			if (dotValue < -1.0f + 1e-5f)
+				return glm::angleAxis(glm::pi<float>(), BuildOrthogonalDirection(fromDir));
+			return glm::rotation(fromDir, toDir);
+		}
+
+		void ApplyModelSpaceAimRotation(int boneIndex,
+		                                const glm::vec3& currentDirection,
+		                                const glm::vec3& desiredDirection,
+		                                const Skeleton& skeleton,
+		                                std::vector<glm::mat4>& localTransforms,
+		                                std::vector<glm::mat4>& modelTransforms)
+		{
+			if (!IsValidBoneIndex(boneIndex, skeleton.bones.size()) ||
+			    !IsValidBoneIndex(boneIndex, localTransforms.size()) ||
+			    !IsValidBoneIndex(boneIndex, modelTransforms.size()))
+				return;
+
+			const glm::quat modelDelta = SafeRotationBetween(currentDirection, desiredDirection);
+			if (std::abs(modelDelta.w) > 1.0f - 1e-6f &&
+			    std::abs(modelDelta.x) < 1e-6f &&
+			    std::abs(modelDelta.y) < 1e-6f &&
+			    std::abs(modelDelta.z) < 1e-6f)
+				return;
+
+			const BoneInfo& bone = skeleton.bones[boneIndex];
+			const glm::quat parentRot =
+				IsValidBoneIndex(bone.parentIndex, modelTransforms.size())
+					? IK_ExtractRotation(modelTransforms[bone.parentIndex])
+					: glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+			const glm::quat localDelta = IK_WorldDeltaToLocal(parentRot, modelDelta);
+			const glm::quat currentLocal = IK_ExtractRotation(localTransforms[boneIndex]);
+			IK_SetRotation(localTransforms[boneIndex], glm::normalize(localDelta * currentLocal));
+			IK_UpdateGlobalsForSubtree(boneIndex, localTransforms, modelTransforms, skeleton);
+		}
+
+		bool SolveAnalyticTwoBoneIK(const Skeleton& skeleton,
+		                            const IKChainDefinition& chain,
+		                            const IKTarget& target,
+		                            std::vector<glm::mat4>& localTransforms,
+		                            std::vector<glm::mat4>& modelTransforms)
+		{
+			if (target.positionWeight <= 0.001f || chain.bones.size() != 3)
+				return false;
+
+			const int rootIndex = chain.bones[0].boneIndex;
+			const int midIndex = chain.bones[1].boneIndex;
+			const int tipIndex = chain.bones[2].boneIndex;
+			if (!IsValidBoneIndex(rootIndex, skeleton.bones.size()) ||
+			    !IsValidBoneIndex(midIndex, skeleton.bones.size()) ||
+			    !IsValidBoneIndex(tipIndex, skeleton.bones.size()) ||
+			    !IsValidBoneIndex(rootIndex, localTransforms.size()) ||
+			    !IsValidBoneIndex(midIndex, localTransforms.size()) ||
+			    !IsValidBoneIndex(tipIndex, localTransforms.size()) ||
+			    !IsValidBoneIndex(rootIndex, modelTransforms.size()) ||
+			    !IsValidBoneIndex(midIndex, modelTransforms.size()) ||
+			    !IsValidBoneIndex(tipIndex, modelTransforms.size()))
+				return false;
+
+			const glm::vec3 root = IK_ExtractTranslation(modelTransforms[rootIndex]);
+			const glm::vec3 mid = IK_ExtractTranslation(modelTransforms[midIndex]);
+			const glm::vec3 tip = IK_ExtractTranslation(modelTransforms[tipIndex]);
+			const float upperLen = glm::distance(root, mid);
+			const float lowerLen = glm::distance(mid, tip);
+			if (upperLen <= kTwoBoneEpsilon || lowerLen <= kTwoBoneEpsilon)
+				return false;
+
+			const float weight = glm::clamp(target.positionWeight, 0.0f, 1.0f);
+			glm::vec3 desiredTip = glm::mix(tip, target.position, weight);
+			const glm::vec3 currentRootToTip = tip - root;
+			const glm::vec3 reachFallback = SafeNormalize(currentRootToTip, BuildOrthogonalDirection(mid - root));
+			glm::vec3 rootToTarget = desiredTip - root;
+			glm::vec3 targetDir = SafeNormalize(rootToTarget, reachFallback);
+
+			const float maxReach = std::max(upperLen + lowerLen - 1e-4f, kTwoBoneEpsilon);
+			const float minReach = std::max(std::abs(upperLen - lowerLen) + 1e-4f, kTwoBoneEpsilon);
+			float targetDistance = glm::length(rootToTarget);
+			targetDistance = glm::clamp(targetDistance, minReach, maxReach);
+			desiredTip = root + targetDir * targetDistance;
+
+			glm::vec3 currentPole = mid - root - targetDir * glm::dot(mid - root, targetDir);
+			if (glm::length(currentPole) <= kTwoBoneEpsilon)
+			{
+				const glm::vec3 currentDir = SafeNormalize(currentRootToTip, targetDir);
+				currentPole = mid - root - currentDir * glm::dot(mid - root, currentDir);
+			}
+
+			glm::vec3 poleDir = SafeNormalize(currentPole, BuildOrthogonalDirection(targetDir));
+			if (chain.poleWeight > 0.001f)
+			{
+				const glm::vec3 desiredPole = chain.poleVector - root;
+				const glm::vec3 projectedPole = desiredPole - targetDir * glm::dot(desiredPole, targetDir);
+				const glm::vec3 desiredPoleDir = SafeNormalize(projectedPole, poleDir);
+				const float poleWeight = glm::clamp(chain.poleWeight, 0.0f, 1.0f);
+				poleDir = SafeNormalize(glm::mix(poleDir, desiredPoleDir, poleWeight), desiredPoleDir);
+			}
+
+			const float distanceSq = targetDistance * targetDistance;
+			const float midAlongTarget = glm::clamp(
+				(upperLen * upperLen + distanceSq - lowerLen * lowerLen) /
+				(2.0f * std::max(targetDistance, kTwoBoneEpsilon)),
+				0.0f,
+				upperLen);
+			const float midSide = std::sqrt(std::max(upperLen * upperLen - midAlongTarget * midAlongTarget, 0.0f));
+			const glm::vec3 desiredMid = root + targetDir * midAlongTarget + poleDir * midSide;
+
+			ApplyModelSpaceAimRotation(rootIndex, mid - root, desiredMid - root,
+			                           skeleton, localTransforms, modelTransforms);
+
+			const glm::vec3 solvedMid = IK_ExtractTranslation(modelTransforms[midIndex]);
+			const glm::vec3 solvedTip = IK_ExtractTranslation(modelTransforms[tipIndex]);
+			ApplyModelSpaceAimRotation(midIndex, solvedTip - solvedMid, desiredTip - solvedMid,
+			                           skeleton, localTransforms, modelTransforms);
+
+			if (target.rotationWeight > 0.001f)
+				IK_ApplyEffectorRotationTarget(localTransforms, modelTransforms, skeleton, tipIndex, target);
+
+			return true;
 		}
 	}
 
@@ -1791,7 +2026,13 @@ namespace VansGraphics
 		}
 		m_CachedChain.enableRotationTarget = m_EnableRotationTarget;
 		m_CachedChain.rotationWeight = m_RotationWeight;
+		m_CachedSkeletonSignature = SkeletonSignature(skeleton);
 		m_ChainBuilt = true;
+	}
+
+	bool AnimGraphTwoBoneIKNode::NeedsRebuild(const Skeleton& skeleton) const
+	{
+		return !m_ChainBuilt || m_CachedSkeletonSignature != SkeletonSignature(skeleton);
 	}
 
 	AnimGraphPose AnimGraphTwoBoneIKNode::Evaluate(const AnimGraphContext& ctx,
@@ -1801,7 +2042,7 @@ namespace VansGraphics
 		AnimGraphPose pose = in ? in->Evaluate(ctx, graph) : AnimGraphPose{};
 		if (!pose.valid || !ctx.skeleton) return pose;
 
-		if (!m_ChainBuilt) BuildChain(*ctx.skeleton);
+		if (NeedsRebuild(*ctx.skeleton)) BuildChain(*ctx.skeleton);
 		if (m_CachedChain.bones.size() != 3) return pose;
 		if (m_CachedChain.bones[0].boneIndex < 0 ||
 		    m_CachedChain.bones[1].boneIndex < 0 ||
@@ -1825,9 +2066,8 @@ namespace VansGraphics
 		std::vector<glm::mat4> tempGlobals;
 		BuildTempGlobals(pose, *ctx.skeleton, tempGlobals);
 
-		if (!m_Solver) m_Solver = std::make_unique<VansCCDSolver>();
-		m_Solver->Solve(pose.localTransforms, tempGlobals,
-		                *ctx.skeleton, m_CachedChain, target, ctx.deltaTime);
+		SolveAnalyticTwoBoneIK(*ctx.skeleton, m_CachedChain, target,
+		                       pose.localTransforms, tempGlobals);
 		return pose;
 	}
 
@@ -1853,7 +2093,13 @@ namespace VansGraphics
 	{
 		m_CachedChain = VansIKChainBuilder::BuildLookAt(
 			skeleton, m_BoneNames, m_BoneWeights);
+		m_CachedSkeletonSignature = SkeletonSignature(skeleton);
 		m_ChainBuilt = true;
+	}
+
+	bool AnimGraphLookAtNode::NeedsRebuild(const Skeleton& skeleton) const
+	{
+		return !m_ChainBuilt || m_CachedSkeletonSignature != SkeletonSignature(skeleton);
 	}
 
 	AnimGraphPose AnimGraphLookAtNode::Evaluate(const AnimGraphContext& ctx,
@@ -1864,7 +2110,7 @@ namespace VansGraphics
 		if (!pose.valid || !ctx.skeleton) return pose;
 		if (m_BoneNames.empty()) return pose;
 
-		if (!m_ChainBuilt) BuildChain(*ctx.skeleton);
+		if (NeedsRebuild(*ctx.skeleton)) BuildChain(*ctx.skeleton);
 		if (m_CachedChain.bones.empty()) return pose;
 
 		float weight = m_UseFixedTarget

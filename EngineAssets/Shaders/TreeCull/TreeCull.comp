@@ -1,0 +1,180 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/CameraData.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct TreeInstanceGPU
+{
+    mat4 modelMatrix;
+    vec4 boundsSphere;
+    uint speciesIndex;
+    uint regionIndex;
+    uint randomSeed;
+    uint flags;
+};
+
+struct TreeSpeciesCullInfo
+{
+    uint visibleOffset;
+    uint maxCount;
+    uint padding0;
+    uint padding1;
+};
+
+layout(std430, set = 1, binding = 0) readonly buffer TreeInstances
+{
+    TreeInstanceGPU instances[];
+};
+
+layout(std430, set = 1, binding = 1) buffer TreeVisibleCounts
+{
+    uint visibleCounts[];
+};
+
+layout(std430, set = 1, binding = 2) writeonly buffer TreeVisibleIndices
+{
+    uint visibleIndices[];
+};
+
+layout(std430, set = 1, binding = 3) readonly buffer TreeSpeciesInfos
+{
+    TreeSpeciesCullInfo speciesInfos[];
+};
+
+layout(set = 1, binding = 4) uniform sampler2D hizDepth;
+
+layout(push_constant) uniform TreeCullPC
+{
+    float cullDistance;
+    uint instanceCount;
+    uint speciesCount;
+    uint hizEnabled;
+    float hizSampleBias;
+    int hizMipCount;
+    float padding0;
+    float padding1;
+} pc;
+
+struct Plane
+{
+    vec3 normal;
+    float d;
+};
+
+Plane extractPlane(mat4 m, int row, float sign)
+{
+    Plane p;
+    p.normal.x = m[0][3] + sign * m[0][row];
+    p.normal.y = m[1][3] + sign * m[1][row];
+    p.normal.z = m[2][3] + sign * m[2][row];
+    p.d = m[3][3] + sign * m[3][row];
+    float len = length(p.normal);
+    p.normal /= len;
+    p.d /= len;
+    return p;
+}
+
+bool sphereInsideFrustum(vec3 center, float radius, Plane planes[6])
+{
+    for (int i = 0; i < 6; ++i)
+    {
+        if (dot(planes[i].normal, center) + planes[i].d + radius < 0.0)
+            return false;
+    }
+    return true;
+}
+
+float sampleHiZ(vec2 uv, int mipLevel, int mipMaxIndex)
+{
+    int lod = clamp(mipLevel, 0, mipMaxIndex);
+    ivec2 mipSize = textureSize(hizDepth, lod);
+    ivec2 cell = clamp(ivec2(uv * vec2(mipSize)), ivec2(0), mipSize - 1);
+    return texelFetch(hizDepth, cell, lod).r;
+}
+
+bool isHiZOccludedSample(vec2 uv, int mipLevel, int mipMaxIndex, float sphereNearZ, float bias)
+{
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+        return false;
+
+    float sceneMinZ = sampleHiZ(uv, mipLevel, mipMaxIndex);
+    if (sceneMinZ >= 1e4)
+        return false;
+
+    return sphereNearZ > sceneMinZ + bias;
+}
+
+bool conservativeHiZOccluded(vec3 center, float radius)
+{
+    vec4 viewCenter = ViewMatrix * vec4(center, 1.0);
+    float sphereNearZ = -viewCenter.z - radius;
+    if (sphereNearZ <= 0.001)
+        return false;
+
+    vec4 clipCenter = ProjectionMatrix * viewCenter;
+    if (clipCenter.w <= 0.0001)
+        return false;
+
+    vec3 ndcCenter = clipCenter.xyz / clipCenter.w;
+    vec2 hizUV = vec2(ndcCenter.x * 0.5 + 0.5, 0.5 - ndcCenter.y * 0.5);
+    float ndcRadius = radius / clipCenter.w;
+    float screenRadiusPx = ndcRadius * 0.5 * max(ScreenParams.x, ScreenParams.y);
+    vec2 uvRadius = vec2(screenRadiusPx * ScreenParams.z, screenRadiusPx * ScreenParams.w);
+    vec2 uvMin = hizUV - uvRadius;
+    vec2 uvMax = hizUV + uvRadius;
+
+    if (uvMin.x < 0.0 || uvMax.x > 1.0 || uvMin.y < 0.0 || uvMax.y > 1.0 || screenRadiusPx <= 0.5)
+        return false;
+
+    int mipLevel = min(int(floor(log2(max(screenRadiusPx * 0.25, 1.0)))), 2);
+    int mipMaxIndex = pc.hizMipCount - 1;
+
+    bool occluded = true;
+    occluded = occluded && isHiZOccludedSample(hizUV,                                  mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x, 0.0),         mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x, 0.0),         mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+    occluded = occluded && isHiZOccludedSample(hizUV + vec2(0.0,  uvRadius.y),         mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+    occluded = occluded && isHiZOccludedSample(hizUV + vec2(0.0, -uvRadius.y),         mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x,  uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x,  uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x, -uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x, -uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
+    return occluded;
+}
+
+void main()
+{
+    uint instanceID = gl_GlobalInvocationID.x;
+    if (instanceID >= pc.instanceCount)
+        return;
+
+    TreeInstanceGPU inst = instances[instanceID];
+    if (inst.speciesIndex >= pc.speciesCount)
+        return;
+
+    vec3 center = inst.boundsSphere.xyz;
+    float radius = inst.boundsSphere.w;
+
+    if (distance(center, cameraPosition.xyz) > pc.cullDistance + radius)
+        return;
+
+    Plane frustum[6];
+    frustum[0] = extractPlane(VPMatrix, 0,  1.0);
+    frustum[1] = extractPlane(VPMatrix, 0, -1.0);
+    frustum[2] = extractPlane(VPMatrix, 1,  1.0);
+    frustum[3] = extractPlane(VPMatrix, 1, -1.0);
+    frustum[4] = extractPlane(VPMatrix, 2,  1.0);
+    frustum[5] = extractPlane(VPMatrix, 2, -1.0);
+    if (!sphereInsideFrustum(center, radius, frustum))
+        return;
+
+    if (pc.hizEnabled != 0 && conservativeHiZOccluded(center, radius))
+        return;
+
+    TreeSpeciesCullInfo info = speciesInfos[inst.speciesIndex];
+    uint slot = atomicAdd(visibleCounts[inst.speciesIndex], 1u);
+    if (slot < info.maxCount)
+        visibleIndices[info.visibleOffset + slot] = instanceID;
+}
