@@ -52,11 +52,46 @@ void RegisterEngineShaders()
         sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
     });
 
-    reg.RegisterGraphicsShader("Hair", {
-        "Hair",
-        "EngineAssets/Shaders/Hair/Deferred",
+    reg.RegisterGraphicsShader("HairVisibility", {
+        "HairVisibility",
+        "EngineAssets/Shaders/Hair/Visibility",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        sizeof(VansGraphics::VansDrawPushConstant), false, false, 0
+    });
+
+    reg.RegisterGraphicsShader("HairShadow", {
+        "HairShadow",
+        "EngineAssets/Shaders/Hair/Shadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
+        sizeof(int) * 4, false
+    });
+
+    reg.RegisterGraphicsShader("HairPunctualShadow", {
+        "HairPunctualShadow",
+        "EngineAssets/Shaders/Hair/PunctualShadow",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        sizeof(int) * 5, false
+    });
+
+    reg.RegisterGraphicsShader("HairDeepOpacity", {
+        "HairDeepOpacity",
+        "EngineAssets/Shaders/Hair/DeepOpacity",
+        VK_FALSE, VK_FALSE, VK_COMPARE_OP_NEVER, VK_CULL_MODE_NONE,
+        sizeof(int) * 4, false, false, 1, true
+    });
+
+    reg.RegisterGraphicsShader("HairLighting", {
+        "HairLighting",
+        "EngineAssets/Shaders/Hair/Lighting",
+        VK_FALSE, VK_FALSE, VK_COMPARE_OP_NEVER, VK_CULL_MODE_NONE,
+        0, false
+    });
+
+    reg.RegisterGraphicsShader("HairComposite", {
+        "HairComposite",
+        "EngineAssets/Shaders/Hair/Composite",
+        VK_FALSE, VK_FALSE, VK_COMPARE_OP_NEVER, VK_CULL_MODE_NONE,
+        0, false, false, -1, false, 0, true
     });
 
     reg.RegisterGraphicsShader("Coat", {
@@ -300,9 +335,10 @@ void RegisterEngineShaders()
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_HAIR, {
-        { VansGraphics::VansPass::GBUFFER,          "Hair"           },
-        { VansGraphics::VansPass::SHADOW,           "Shadow"         },
-        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
+        { VansGraphics::VansPass::HAIR_VISIBILITY,  "HairVisibility" },
+        { VansGraphics::VansPass::SHADOW,           "HairShadow"     },
+        { VansGraphics::VansPass::HAIR_SHADOW,      "HairShadow"     },
+        { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "HairPunctualShadow" },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_SUBSURFACE, {

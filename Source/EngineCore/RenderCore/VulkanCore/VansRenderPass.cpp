@@ -1421,6 +1421,202 @@ void VansGraphics::VansRenderPassManager::SetupVansDecalRenderPass(
 //
 // 调用时机：在 SetupVansDeferredRenderPass 之后（须先创建 m_DepthImage）。
 // ============================================================
+void VansGraphics::VansRenderPassManager::SetupVansHairVisibilityPass(
+	VkDevice& logic_device, const VkExtent2D& renderResolution)
+{
+	static constexpr uint32_t HairOITNodesPerPixel = 8;
+	static constexpr VkDeviceSize HairOITNodeStride = 40;
+	m_HairOITMaxNodes = renderResolution.width * renderResolution.height * HairOITNodesPerPixel;
+
+	m_HairOITHeadImage.CreateVulkanImage(
+		logic_device,
+		{ renderResolution.width, renderResolution.height, 1 },
+		VK_FORMAT_R32_UINT,
+		1, 1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false, false, false);
+
+	m_HairOITNodeBuffer.CreatVulkanBuffer(
+		logic_device,
+		static_cast<VkDeviceSize>(m_HairOITMaxNodes) * HairOITNodeStride,
+		VK_FORMAT_R32_UINT,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+	const uint32_t counterInit[2] = { 0u, m_HairOITMaxNodes };
+	m_HairOITCounterBuffer.CreatVulkanBuffer(
+		logic_device,
+		sizeof(counterInit),
+		VK_FORMAT_R32_UINT,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	m_HairOITCounterBuffer.SetBufferData(counterInit, 0, sizeof(counterInit));
+
+	std::vector<VkAttachmentDescription> attachments =
+	{
+		{ 0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+
+	VkAttachmentReference depthRef = { 0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+	std::vector<SubpassParameters> subpassParams =
+	{
+		{ VK_PIPELINE_BIND_POINT_GRAPHICS, {}, {}, {}, &depthRef, {} }
+	};
+
+	std::vector<VkSubpassDependency> dependencies =
+	{
+		{ VK_SUBPASS_EXTERNAL, 0,
+		  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+		  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+		  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+		  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+		  VK_DEPENDENCY_BY_REGION_BIT },
+		{ 0, VK_SUBPASS_EXTERNAL,
+		  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+		  VK_ACCESS_SHADER_READ_BIT,
+		  VK_DEPENDENCY_BY_REGION_BIT },
+	};
+
+	m_VansHairVisibilityPass.m_ClearValues =
+	{
+		{ 1.0f, 0 },
+	};
+
+	m_VansHairVisibilityPass.CreateRenderPass(logic_device, attachments, subpassParams, dependencies, renderResolution);
+	m_VansHairVisibilityPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> fbViews =
+	{
+		m_DepthImage.GetDepthStencilView(),
+	};
+	m_VansHairVisibilityPass.m_FrameBuffers[0].CreateFrameBuffer(
+		logic_device, m_VansHairVisibilityPass.m_RenderPass, fbViews,
+		{ renderResolution.width, renderResolution.height, 1 });
+}
+
+void VansGraphics::VansRenderPassManager::SetupVansHairLightingPass(
+	VkDevice& logic_device, const VkExtent2D& renderResolution)
+{
+	m_HairColorImage.CreateVulkanImage(
+		logic_device,
+		{ renderResolution.width, renderResolution.height, 1 },
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		1, 1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false, false, true);
+
+	std::vector<VkAttachmentDescription> attachments =
+	{
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+
+	std::vector<SubpassParameters> subpassParams =
+	{
+		{ VK_PIPELINE_BIND_POINT_GRAPHICS, {},
+			{ { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } },
+			{}, nullptr, {} }
+	};
+
+	std::vector<VkSubpassDependency> dependencies =
+	{
+		{ VK_SUBPASS_EXTERNAL, 0,
+		  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		  VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		  VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		  VK_DEPENDENCY_BY_REGION_BIT },
+		{ 0, VK_SUBPASS_EXTERNAL,
+		  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		  VK_ACCESS_SHADER_READ_BIT,
+		  VK_DEPENDENCY_BY_REGION_BIT },
+	};
+
+	m_VansHairLightingPass.m_ClearValues =
+	{
+		{ 0.0f, 0.0f, 0.0f, 0.0f },
+	};
+
+	m_VansHairLightingPass.CreateRenderPass(logic_device, attachments, subpassParams, dependencies, renderResolution);
+	m_VansHairLightingPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> fbViews =
+	{
+		m_HairColorImage.GetImageView(),
+	};
+	m_VansHairLightingPass.m_FrameBuffers[0].CreateFrameBuffer(
+		logic_device, m_VansHairLightingPass.m_RenderPass, fbViews,
+		{ renderResolution.width, renderResolution.height, 1 });
+}
+
+void VansGraphics::VansRenderPassManager::SetupVansHairDeepOpacityPass(
+	VkDevice& logic_device, const VkExtent2D& renderResolution)
+{
+	m_HairDeepOpacityImage.CreateVulkanImage(
+		logic_device,
+		{ renderResolution.width, renderResolution.height, 1 },
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		1, 1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false, false, true);
+
+	std::vector<VkAttachmentDescription> attachments =
+	{
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+
+	std::vector<SubpassParameters> subpassParams =
+	{
+		{ VK_PIPELINE_BIND_POINT_GRAPHICS, {},
+			{ { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } },
+			{}, nullptr, {} }
+	};
+
+	std::vector<VkSubpassDependency> dependencies =
+	{
+		{ VK_SUBPASS_EXTERNAL, 0,
+		  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		  VK_DEPENDENCY_BY_REGION_BIT },
+		{ 0, VK_SUBPASS_EXTERNAL,
+		  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		  VK_ACCESS_SHADER_READ_BIT,
+		  VK_DEPENDENCY_BY_REGION_BIT },
+	};
+
+	m_VansHairDeepOpacityPass.m_ClearValues =
+	{
+		{ 0.0f, 0.0f, 0.0f, 0.0f },
+	};
+
+	m_VansHairDeepOpacityPass.CreateRenderPass(logic_device, attachments, subpassParams, dependencies, renderResolution);
+	m_VansHairDeepOpacityPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> fbViews =
+	{
+		m_HairDeepOpacityImage.GetImageView(),
+	};
+	m_VansHairDeepOpacityPass.m_FrameBuffers[0].CreateFrameBuffer(
+		logic_device, m_VansHairDeepOpacityPass.m_RenderPass, fbViews,
+		{ renderResolution.width, renderResolution.height, 1 });
+}
+
 void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 	VkDevice& logic_device, const VkExtent2D& renderResolution)
 {
@@ -1691,6 +1887,11 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_GBufferImage0.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage1.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage2.DestroyVulkanImage(m_LogicDevice);
+	m_HairColorImage.DestroyVulkanImage(m_LogicDevice);
+	m_HairDeepOpacityImage.DestroyVulkanImage(m_LogicDevice);
+	m_HairOITHeadImage.DestroyVulkanImage(m_LogicDevice);
+	m_HairOITNodeBuffer.DestroyVulkanBuffer(m_LogicDevice);
+	m_HairOITCounterBuffer.DestroyVulkanBuffer(m_LogicDevice);
 
 	// 销毁水面 GBuffer 纹理
 	m_WaterGBufNormalImage.DestroyVulkanImage(m_LogicDevice);
@@ -1701,6 +1902,9 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_VansRenderPass.DestroyRenderPass(m_LogicDevice);
 	m_VansDeferredSkyboxPass.DestroyRenderPass(m_LogicDevice);
 	m_VansForwardOpaqueAfterDeferredPass.DestroyRenderPass(m_LogicDevice);
+	m_VansHairVisibilityPass.DestroyRenderPass(m_LogicDevice);
+	m_VansHairLightingPass.DestroyRenderPass(m_LogicDevice);
+	m_VansHairDeepOpacityPass.DestroyRenderPass(m_LogicDevice);
 	m_VansWaterGBufferPass.DestroyRenderPass(m_LogicDevice);
 	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
 	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);
@@ -1783,6 +1987,10 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			VK_QUEUE_FAMILY_IGNORED,
 			m_GBufferImage2.m_ImageAspect
 		});
+	m_HairColorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{ m_HairColorImage.m_VansVKImage, VK_ACCESS_NONE, VK_ACCESS_NONE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_HairColorImage.m_ImageAspect });
+	m_HairDeepOpacityImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		{ m_HairDeepOpacityImage.m_VansVKImage, VK_ACCESS_NONE, VK_ACCESS_NONE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_HairDeepOpacityImage.m_ImageAspect });
 	m_DepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_DepthImage.m_VansVKImage,

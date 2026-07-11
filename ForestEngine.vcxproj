@@ -185,6 +185,8 @@
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetMeta.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDatabase.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDocument.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\VansAssetDocumentRegistry.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\VansEditorAssetSaveService.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansModelAsset.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.h" />
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDiagnostics.h" />
@@ -346,6 +348,8 @@
     <ClCompile Include="Source\EngineCore\AssetCore\VansAssetMeta.cpp" />
     <ClCompile Include="Source\EngineCore\AssetCore\VansAssetDatabase.cpp" />
     <ClCompile Include="Source\EngineCore\AssetCore\VansAssetDocument.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\VansAssetDocumentRegistry.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\VansEditorAssetSaveService.cpp" />
     <ClCompile Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.cpp" />
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneSchemaV2.cpp" />
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneDocument.cpp" />

@@ -151,7 +151,8 @@ void main()
         return;
 
     TreeInstanceGPU inst = instances[instanceID];
-    if (inst.speciesIndex >= pc.speciesCount)
+    uint visibilityGroupIndex = inst.regionIndex;
+    if (visibilityGroupIndex >= pc.speciesCount)
         return;
 
     vec3 center = inst.boundsSphere.xyz;
@@ -173,8 +174,8 @@ void main()
     if (pc.hizEnabled != 0 && conservativeHiZOccluded(center, radius))
         return;
 
-    TreeSpeciesCullInfo info = speciesInfos[inst.speciesIndex];
-    uint slot = atomicAdd(visibleCounts[inst.speciesIndex], 1u);
+    TreeSpeciesCullInfo info = speciesInfos[visibilityGroupIndex];
+    uint slot = atomicAdd(visibleCounts[visibilityGroupIndex], 1u);
     if (slot < info.maxCount)
         visibleIndices[info.visibleOffset + slot] = instanceID;
 }

@@ -6,6 +6,9 @@
 #include "ImGuizmo.h"
 #include "../RenderCore/VansScene.h"
 #include "../RenderCore/VansCamera.h"
+#include "../ScriptCore/VansTransform.h"
+
+#include <string>
 
 // Requires External/GUI/ImGuizmo to be added to the project's include directories.
 // In VS project properties: C/C++ -> General -> Additional Include Directories
@@ -59,7 +62,13 @@ namespace VansGraphics
         void HandleHotkeys(VansScene* scene);
 
     private:
+        bool m_WasUsing = false;
+        bool m_PendingDocumentSync = false;
+        std::string m_PendingDocumentSyncEntityGuid;
+
         static ImGuizmo::OPERATION OperationFromMode(GizmoMode mode);
+        static void SyncTransformToSceneDocument(const std::string& entityGuid,
+                                                 const VansTransform& transform);
 
         // Shoot a world-space ray from the camera through the given NDC pixel.
         // Returns origin (camera position) and normalised direction.

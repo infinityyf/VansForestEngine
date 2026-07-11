@@ -102,6 +102,9 @@ namespace VansGraphics
 		VkBool32									enableAlphaBlend;
 		// 贴花 MRT 混合：3 个颜色附件均开启 Alpha Blend，GBuffer1 写入掩码仅含 R+G
 		VkBool32									enableDecalBlend;
+		VkBool32									enableAdditiveBlend;
+		VkBool32								enablePremultipliedAlphaBlend;
+		uint32_t								additiveBlendAttachmentMask;
 
 		DrawStateData():
 			primitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST),
@@ -129,7 +132,10 @@ namespace VansGraphics
 			minDepthBounds(0.0f),
 			maxDepthBounds(1.0f),
 			enableAlphaBlend(VK_FALSE),
-			enableDecalBlend(VK_FALSE)
+			enableDecalBlend(VK_FALSE),
+			enableAdditiveBlend(VK_FALSE),
+			enablePremultipliedAlphaBlend(VK_FALSE),
+			additiveBlendAttachmentMask(0)
 		{}
 	};
 

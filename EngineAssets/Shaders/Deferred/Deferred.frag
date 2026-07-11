@@ -14,7 +14,6 @@ layout( set = 1, binding = 15 ) uniform sampler2DArray rectLightEmissive;
 #include "../Lighting/RectLightLTC.glsl"
 #include "../BRDF/BRDFSkin.glsl"
 #include "../BRDF/BRDFCloth.glsl"
-#include "../BRDF/BRDFHair.glsl"
 #include "../BRDF/BRDFSubsurface.glsl"
 #include "../BRDF/BRDFVegetation.glsl"
 #include "../Common/CameraData.glsl"
@@ -166,33 +165,14 @@ void main()
     {
         // --- Cloth BRDF path ---
         // brdfData.roughness holds sheenRoughness (written into outGBuffer0.w by Cloth.frag)
+        // brdfData.metallic holds sheenStrength and fresnel0.r holds thin-cloth translucency.
+        brdfData.ao = clamp(min(ao, ssaoValue), 0.0, 1.0);
+        brdfData.fresnel0 = vec3(clamp(gbufferData1.w, 0.0, 1.0));
         // Direct lighting uses the per-light cloth light loop
         CalculateDirectLight_Cloth(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
-        // Ambient: ClothBRDFLUT .b channel used as the specular environment term
+        // Ambient: ClothBRDFLUT drives the cloth split-sum sheen energy.
         AmbientBRDF_Cloth(brdfData, viewDirection,
                           lightResult.ambientDiffuse, lightResult.ambientSpecular);
-    }
-    else if (matID == MATERIAL_ID_HAIR)
-    {
-        // --- Hair BRDF path (Marschner R / TT / TRT) ---
-        // Hair uses softer AO: the global pow(2.0) is too aggressive for
-        // thin translucent card geometry.  Re-apply with gentler exponent.
-        brdfData.ao = pow(min(ao, ssaoValue), 1.0);
-
-        HairBRDFParams hair;
-        hair.roughness         = brdfData.roughness;
-        hair.specularStrength  = 1.0;   // constant (not stored in GBuffer)
-        hair.scatter           = 0.35;  // constant (not stored in GBuffer)
-        hair.shift             = normalData.w * 2.0 - 1.0;
-        hair.flowBend          = 0.0;   // flow already baked into GBuffer tangent; set >0 to amplify shift
-
-        // Decode hair fiber tangent from octahedral encoding in GBuffer1.x / .w
-        vec2 octT = vec2(metallic, gbufferData1.w) * 2.0 - 1.0;
-        hair.tangentWS = OctDecodeHair(octT);
-
-        CalculateDirectLight_Hair(brdfData, hair, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
-        AmbientBRDF_Hair(brdfData, hair, viewDirection,
-                         lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else if (matID == MATERIAL_ID_SUBSURFACE)
     {

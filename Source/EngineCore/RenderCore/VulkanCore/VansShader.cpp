@@ -389,25 +389,42 @@ void VansGraphics::VansGraphicsShader::SetPolygonMode(VkPolygonMode mode)
 	m_DrawStateData.polygonMode = mode;
 }
 
-void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>& states, bool enableDeferred, bool enableAlphaBlend = false, bool enableDecalBlend = false, int explicitCount = -1)
+void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>& states, bool enableDeferred, bool enableAlphaBlend = false, bool enableDecalBlend = false, bool enableAdditiveBlend = false, bool enablePremultipliedAlphaBlend = false, int explicitCount = -1, uint32_t additiveBlendAttachmentMask = 0)
 {
 	// 显式指定颜色附件数量（如水面 GBuffer 的 2 个附件）：生成 count 个不混合、写入 RGBA 的 state
+	if (explicitCount == 0)
+	{
+		states.clear();
+		return;
+	}
+
 	if (explicitCount > 0)
 	{
-		states.resize(static_cast<size_t>(explicitCount),
+		VkPipelineColorBlendAttachmentState disabledState =
+		{
+			VK_FALSE,
+			 VK_BLEND_FACTOR_ONE,
+			 VK_BLEND_FACTOR_ONE,
+			 VK_BLEND_OP_ADD,
+			 VK_BLEND_FACTOR_ONE,
+			 VK_BLEND_FACTOR_ONE,
+			 VK_BLEND_OP_ADD,
+			 VK_COLOR_COMPONENT_R_BIT |
+			 VK_COLOR_COMPONENT_G_BIT |
+			 VK_COLOR_COMPONENT_B_BIT |
+			 VK_COLOR_COMPONENT_A_BIT
+		};
+		VkPipelineColorBlendAttachmentState additiveState = disabledState;
+		additiveState.blendEnable = VK_TRUE;
+		states.resize(static_cast<size_t>(explicitCount), disabledState);
+		if (enableAdditiveBlend)
+		{
+			for (int i = 0; i < explicitCount; ++i)
 			{
-				false,
-				 VK_BLEND_FACTOR_ONE,
-				 VK_BLEND_FACTOR_ONE,
-				 VK_BLEND_OP_ADD,
-				 VK_BLEND_FACTOR_ONE,
-				 VK_BLEND_FACTOR_ONE,
-				 VK_BLEND_OP_ADD,
-				 VK_COLOR_COMPONENT_R_BIT |
-				 VK_COLOR_COMPONENT_G_BIT |
-				 VK_COLOR_COMPONENT_B_BIT |
-				 VK_COLOR_COMPONENT_A_BIT
-			});
+				if (additiveBlendAttachmentMask == 0 || (additiveBlendAttachmentMask & (1u << i)) != 0)
+					states[static_cast<size_t>(i)] = additiveState;
+			}
+		}
 		return;
 	}
 
@@ -462,6 +479,44 @@ void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>&
 				 VK_BLEND_OP_ADD,
 				 VK_BLEND_FACTOR_ONE,
 				 VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+				 VK_BLEND_OP_ADD,
+				 VK_COLOR_COMPONENT_R_BIT |
+				 VK_COLOR_COMPONENT_G_BIT |
+				 VK_COLOR_COMPONENT_B_BIT |
+				 VK_COLOR_COMPONENT_A_BIT
+			 }
+		};
+	}
+	else if (enablePremultipliedAlphaBlend)
+	{
+		states =
+		{
+			 {
+				VK_TRUE,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+				 VK_BLEND_OP_ADD,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+				 VK_BLEND_OP_ADD,
+				 VK_COLOR_COMPONENT_R_BIT |
+				 VK_COLOR_COMPONENT_G_BIT |
+				 VK_COLOR_COMPONENT_B_BIT |
+				 VK_COLOR_COMPONENT_A_BIT
+			 }
+		};
+	}
+	else if (enableAdditiveBlend)
+	{
+		states =
+		{
+			 {
+				VK_TRUE,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_OP_ADD,
+				 VK_BLEND_FACTOR_ONE,
+				 VK_BLEND_FACTOR_ONE,
 				 VK_BLEND_OP_ADD,
 				 VK_COLOR_COMPONENT_R_BIT |
 				 VK_COLOR_COMPONENT_G_BIT |
@@ -585,7 +640,7 @@ void VansGraphics::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& 
 
 	//需要根据deferred的模式，设置每个rt的blend state，不然shader写不到对应的rt上
 	
-	InitAttachmentBlendStates(m_GraphicsPipelineCreateInfo.attachment_blend_states, enableDeferred, m_DrawStateData.enableAlphaBlend, m_DrawStateData.enableDecalBlend, m_ColorAttachmentCount);
+	InitAttachmentBlendStates(m_GraphicsPipelineCreateInfo.attachment_blend_states, enableDeferred, m_DrawStateData.enableAlphaBlend, m_DrawStateData.enableDecalBlend, m_DrawStateData.enableAdditiveBlend, m_DrawStateData.enablePremultipliedAlphaBlend, m_ColorAttachmentCount, m_DrawStateData.additiveBlendAttachmentMask);
 }
 
 bool VansGraphics::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data)

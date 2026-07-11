@@ -2,8 +2,6 @@
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
 
-layout(early_fragment_tests) in;
-
 #include "../../Common/CameraData.glsl"
 #include "../../BRDF/BRDFData.glsl"
 
@@ -20,7 +18,7 @@ layout(push_constant) uniform TreeDrawPC
     int materialIndex;
     int objectIndex;
     uint visibleOffset;
-    uint padding;
+    uint alphaTestEnabled;
 } pc;
 
 layout(location = 0) out vec4 outNormal;
@@ -38,7 +36,11 @@ void main()
     float metallicParam = materialData.metallic;
     float aoParam = materialData.ao;
 
-    vec3 albedo = albedoParam * texture(globalPBRTextures[materialIndex * 5 + 0], frag_uv).rgb;
+    vec4 albedoSample = texture(globalPBRTextures[materialIndex * 5 + 0], frag_uv);
+    if (pc.alphaTestEnabled != 0u && albedoSample.a < 0.5)
+        discard;
+
+    vec3 albedo = albedoParam * albedoSample.rgb;
     vec3 normalSample = texture(globalPBRTextures[materialIndex * 5 + 1], frag_uv).rgb * 2.0 - 1.0;
     float metallic = metallicParam * texture(globalPBRTextures[materialIndex * 5 + 2], frag_uv).r;
     float roughness = roughnessParam * texture(globalPBRTextures[materialIndex * 5 + 3], frag_uv).r;

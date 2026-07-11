@@ -45,6 +45,9 @@ namespace VansGraphics
         bool enableAlphaBlend = false;
         bool enableDecalBlend = false;
         int colorAttachmentCount = -1;
+        bool enableAdditiveBlend = false;
+        uint32_t additiveBlendAttachmentMask = 0;
+        bool enablePremultipliedAlphaBlend = false;
         VansManagedShaderKind kind = VansManagedShaderKind::Graphics;
         std::map<VkShaderStageFlagBits, std::string> explicitStageFiles;
         std::vector<std::string> materialPasses;

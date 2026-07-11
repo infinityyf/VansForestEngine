@@ -92,13 +92,15 @@ namespace VansGraphics
 	// ====================================================================
 	enum HairTextureBinding : uint32_t
 	{
-		HAIR_TEXTURE_BINDING_ALBEDO_ALPHA = 0,  // Hair albedo+alpha texture (COMBINED_IMAGE_SAMPLER)
-		HAIR_TEXTURE_BINDING_NORMAL       = 1,  // Hair normal texture (COMBINED_IMAGE_SAMPLER)
-		HAIR_TEXTURE_BINDING_ROUGHNESS    = 2,  // Hair roughness texture (COMBINED_IMAGE_SAMPLER)
-		HAIR_TEXTURE_BINDING_AO           = 3,  // Hair ambient occlusion texture (COMBINED_IMAGE_SAMPLER)
-		HAIR_TEXTURE_BINDING_SHIFT        = 4,  // Hair strand shift texture (COMBINED_IMAGE_SAMPLER)
-		HAIR_TEXTURE_BINDING_ALPHA        = 5,  // Hair dedicated alpha mask texture (COMBINED_IMAGE_SAMPLER)
-		HAIR_TEXTURE_BINDING_FLOW         = 6,  // Hair flow map texture (COMBINED_IMAGE_SAMPLER) — bends tangent/normal
+		HAIR_TEXTURE_BINDING_ALBEDO    = 0,
+		HAIR_TEXTURE_BINDING_ALPHA     = 1,
+		HAIR_TEXTURE_BINDING_NORMAL    = 2,
+		HAIR_TEXTURE_BINDING_ROUGHNESS = 3,
+		HAIR_TEXTURE_BINDING_AO        = 4,
+		HAIR_TEXTURE_BINDING_SHIFT     = 5,
+		HAIR_TEXTURE_BINDING_FLOW      = 6,
+		HAIR_TEXTURE_BINDING_ID        = 7,
+		HAIR_TEXTURE_BINDING_PARAMS    = 8,
 	};
 
 	// ====================================================================
@@ -512,6 +514,25 @@ namespace VansGraphics
 		WATER_COMP_BINDING_SSS_SCATTER  = 9,   // W-16: SSS 散射输出
 	};
 
+	// --- Hair Composite Pass（Set 1）---
+	enum HairCompositePassBinding : uint32_t
+	{
+		HAIR_COMP_BINDING_COLOR = 0,
+		HAIR_COMP_BINDING_SCENE_GBUFFER2 = 1,
+		HAIR_COMP_BINDING_HAIR_DEPTH = 2,
+		HAIR_COMP_BINDING_HAIR_COVERAGE = 3,
+	};
+
+	// --- Hair Lighting Pass（Set 1）---
+	enum HairLightingPassBinding : uint32_t
+	{
+		HAIR_LIGHTING_BINDING_OIT_HEAD = 0,
+		HAIR_LIGHTING_BINDING_OIT_NODES = 1,
+		HAIR_LIGHTING_BINDING_OIT_COUNTER = 2,
+		HAIR_LIGHTING_BINDING_DEEP_OPACITY = 3,
+		HAIR_LIGHTING_BINDING_CASCADE_SHADOW = 4,
+	};
+
 	// --- Water Effects Compute Pass（Set 0）---
 	// 对应 water_effects.comp 的 set=0 绑定
 	enum WaterEffectsComputeBinding : uint32_t
@@ -778,6 +799,10 @@ namespace VansGraphics
 		static void CreateAndAllocate_WaterWaveCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Water Composite Pass Set 1：WaterGBuf_Normal + WaterGBuf_LinearDepth + Params UBO
 		static void CreateAndAllocate_WaterComposite(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		// Hair Composite Pass Set 1：HairVis0(albedo + coverage)
+		static void CreateAndAllocate_HairComposite(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		// Hair Lighting Pass Set 1：HairVis0-3 visibility buffers
+		static void CreateAndAllocate_HairLighting(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Water Effects Compute Set 0：WaterGBuf / SceneColor 输入 + 反射折射焦散输出
 		static void CreateAndAllocate_WaterEffectsCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Phase 2 独立 CS Layouts

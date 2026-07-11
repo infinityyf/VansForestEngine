@@ -117,8 +117,37 @@ SceneDiagnostics VansSceneSchemaV2::Validate(const Json& root)
                 if (!data.contains("model") || !data["model"].is_object() || !data["model"].contains("guid") ||
                     !ReadGuid(data["model"]["guid"], model))
                     Error(diagnostics, componentPointer + "/data/model/guid", "ModelRenderer requires a valid model asset guid");
+                if (data.contains("submesh"))
+                {
+                    const Json& submesh = data["submesh"];
+                    if (!submesh.is_object())
+                    {
+                        Error(diagnostics, componentPointer + "/data/submesh", "ModelRenderer submesh must be an object");
+                    }
+                    else
+                    {
+                        if (!submesh.contains("index") || !submesh["index"].is_number_unsigned())
+                            Error(diagnostics, componentPointer + "/data/submesh/index", "ModelRenderer submesh.index must be an unsigned integer");
+                        const char* stringFields[] = { "sourceNode", "sourceMaterial", "slotName" };
+                        for (const char* field : stringFields)
+                        {
+                            if (submesh.contains(field) && !submesh[field].is_string())
+                                Error(diagnostics, componentPointer + "/data/submesh/" + std::string(field), "ModelRenderer submesh field must be a string");
+                        }
+                    }
+                }
             }
-            if ((type == "Transform" || type == "ModelRenderer" || type == "Physics") && !singletonTypes.insert(type).second)
+            if (type == "MultiMeshRoot" && component.contains("data") && component["data"].is_object())
+            {
+                VansAssetGuid model;
+                const auto& data = component["data"];
+                if (!data.contains("model") || !data["model"].is_object() || !data["model"].contains("guid") ||
+                    !ReadGuid(data["model"]["guid"], model))
+                    Error(diagnostics, componentPointer + "/data/model/guid", "MultiMeshRoot requires a valid model asset guid");
+                if (data.contains("submeshCount") && !data["submeshCount"].is_number_unsigned())
+                    Error(diagnostics, componentPointer + "/data/submeshCount", "MultiMeshRoot submeshCount must be an unsigned integer");
+            }
+            if ((type == "Transform" || type == "ModelRenderer" || type == "Physics" || type == "MultiMeshRoot") && !singletonTypes.insert(type).second)
                 Error(diagnostics, componentPointer + "/type", type + " is a singleton component");
         }
         if (singletonTypes.find("Transform") == singletonTypes.end())
@@ -239,6 +268,38 @@ VansSceneComponentData VansSceneSchemaV2::MakeModelRenderer(VansAssetGuid model)
         { "visibilityMask", 0xffffffffu },
         { "materialOverrides", Json::object() },
         { "orphanOverrides", Json::object() }
+    };
+    return result;
+}
+
+VansSceneComponentData VansSceneSchemaV2::MakeSubmeshModelRenderer(VansAssetGuid model,
+    std::uint32_t submeshIndex,
+    const std::string& sourceNode,
+    const std::string& sourceMaterial,
+    const std::string& slotName)
+{
+    VansSceneComponentData result = MakeModelRenderer(model);
+    result.data["submesh"] = {
+        { "index", submeshIndex },
+        { "sourceNode", sourceNode },
+        { "sourceMaterial", sourceMaterial },
+        { "slotName", slotName }
+    };
+    result.data["materialOverrides"] = {
+        { "default", nlohmann::ordered_json::object() }
+    };
+    return result;
+}
+
+VansSceneComponentData VansSceneSchemaV2::MakeMultiMeshRoot(VansAssetGuid model, std::uint32_t submeshCount)
+{
+    VansSceneComponentData result;
+    result.id = VansComponentGuid::New();
+    result.type = "MultiMeshRoot";
+    result.data = {
+        { "model", { { "guid", model.ToString() } } },
+        { "submeshCount", submeshCount },
+        { "generation", "object-hierarchy" }
     };
     return result;
 }

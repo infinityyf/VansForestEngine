@@ -142,7 +142,8 @@ namespace VansGraphics
 		// Loads only the specified aiMesh index from a file (used for submesh splitting).
 		// Returns false if the index is out of range.
 		bool LoadMeshSubmesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
-			const std::string& file_name, uint32_t submeshIndex, bool import_tangent = false);
+			const std::string& file_name, uint32_t submeshIndex, bool import_tangent = false,
+			float scaleFactor = 1.0f);
 
 		// Static helper: returns the list of (aiMesh flat index -> material name) pairs
 		// without uploading any GPU data. Used by the scene to enumerate submeshes.
@@ -186,13 +187,13 @@ namespace VansGraphics
 		// Internal helper to populate this mesh from an already-loaded aiScene/aiMesh (avoids re-reading files per submesh).
 		bool LoadMeshSubmeshFromScene(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
 			const aiScene* scene, aiMesh* mesh, const aiMatrix4x4* meshTransform = nullptr,
-			bool import_tangent = false, bool supportRayTracing = false);
+			bool import_tangent = false, bool supportRayTracing = false, float scaleFactor = 1.0f);
 
 		// Loads the whole file then splits it into per-material VansMesh slices stored in m_SubMeshes.
 		// Also populates m_SubmeshMaterialInfos with texture paths and material metadata.
 		void LoadMultiMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
 			const std::string& file_name, bool import_tangent = false,
-			bool supportRayTracing = false, bool needCPUData = false);
+			bool supportRayTracing = false, bool needCPUData = false, float scaleFactor = 1.0f);
 
 		// Static helper: extract FBXSubmeshMaterialInfo for each submesh from a file without GPU upload.
 		static std::vector<FBXSubmeshMaterialInfo> GetSubmeshMaterialInfos(const std::string& file_name);

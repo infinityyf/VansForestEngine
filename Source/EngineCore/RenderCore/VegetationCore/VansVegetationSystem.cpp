@@ -14,6 +14,31 @@
 
 using namespace VansGraphics;
 
+namespace
+{
+	int ResolveTreeMaterialIndex(VansMaterial* material)
+	{
+		if (!material)
+			return -1;
+
+		switch (material->m_MaterialType)
+		{
+		case VansMaterialType::VAN_PBR:
+			return static_cast<VansPBRMaterial*>(material)->m_MaterialIndex;
+		case VansMaterialType::VAN_EMISSIVE:
+			return static_cast<VansEmissiveMaterial*>(material)->m_MaterialIndex;
+		case VansMaterialType::VAN_DECAL:
+			return static_cast<VansDecalMaterial*>(material)->m_MaterialIndex;
+		case VansMaterialType::VAN_SUBSURFACE:
+			return static_cast<VansSubsurfaceMaterial*>(material)->m_MaterialIndex;
+		case VansMaterialType::VAN_CUSTOM_SHADER:
+			return material->m_MaterialIndex;
+		default:
+			return -1;
+		}
+	}
+}
+
 // ============================================================================
 // Destructor
 // ============================================================================
@@ -798,7 +823,7 @@ void VansVegetationSystem::DispatchTreeCullPass(VansVKCommandBuffer& computeCmd)
 	if (!m_TreeEnabled || !m_TreeCullShader || m_TreeCullDescSets.empty())
 		return;
 
-	std::vector<uint32_t> zeroCounts(m_TreeConfig.species.size(), 0);
+	std::vector<uint32_t> zeroCounts(m_TreeSpeciesInfosCPU.size(), 0);
 	if (!zeroCounts.empty())
 		m_TreeVisibleCountsBuffer.SetBufferData(zeroCounts.data(), 0, static_cast<int>(sizeof(uint32_t) * zeroCounts.size()));
 
@@ -814,7 +839,7 @@ void VansVegetationSystem::DispatchTreeCullPass(VansVKCommandBuffer& computeCmd)
 	TreeCullPushConstants pc = {};
 	pc.cullDistance = m_TreeCullDistance;
 	pc.instanceCount = static_cast<uint32_t>(m_TreeInstancesCPU.size());
-	pc.speciesCount = static_cast<uint32_t>(m_TreeConfig.species.size());
+	pc.speciesCount = static_cast<uint32_t>(m_TreeSpeciesInfosCPU.size());
 	pc.hizEnabled = (m_TreeConfig.hizEnabled && m_HiZEnabled && m_HiZView != VK_NULL_HANDLE) ? 1u : 0u;
 	pc.hizSampleBias = m_HiZSampleBias;
 	pc.hizMipCount = static_cast<int>(m_HiZMipCount);
@@ -838,7 +863,7 @@ void VansVegetationSystem::DispatchTreeCullPass(VansVKCommandBuffer& computeCmd)
 		computeCmd.CopyBuffer(
 			m_TreeVisibleCountsBuffer.GetNativeBuffer(),
 			cfg.indirectDrawBuffer.GetNativeBuffer(),
-			sizeof(uint32_t) * cfg.speciesIndex,
+			sizeof(uint32_t) * cfg.visibilityGroupIndex,
 			offsetof(VkDrawIndexedIndirectCommand, instanceCount),
 			sizeof(uint32_t));
 	}
@@ -1006,6 +1031,14 @@ void VansVegetationSystem::DrawTrees(VansVKCommandBuffer& graphicsCmd,
 		if (!cfg.mesh || !cfg.material || cfg.instanceCapacity == 0)
 			continue;
 
+		const int materialIndex = ResolveTreeMaterialIndex(cfg.material);
+		if (materialIndex < 0)
+		{
+			VANS_LOG_WARN("[VegetationSystem] Tree draw skipped: material '"
+				<< cfg.material->m_AssetName << "' has no GPU PBR material index.");
+			continue;
+		}
+
 		auto* savedBindings = globalState.vertexInputBindingDescriptions;
 		auto* savedAttributes = globalState.vertexInputAttributeDescriptions;
 		globalState.vertexInputBindingDescriptions = &cfg.mesh->m_VertexInputBindingDescriptions;
@@ -1025,10 +1058,10 @@ void VansVegetationSystem::DrawTrees(VansVKCommandBuffer& graphicsCmd,
 		graphicsCmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_TreeGBufferShader, 0, sets, {});
 
 		TreeDrawPushConstants pc = {};
-		pc.materialIndex = cfg.materialIndex;
+		pc.materialIndex = materialIndex;
 		pc.objectIndex = pushConstantTransformIndex;
 		pc.visibleOffset = cfg.visibleOffset;
-		pc.padding = 0;
+		pc.alphaTestEnabled = cfg.partType == TreePartType::Leaves ? 1u : 0u;
 		graphicsCmd.UpdatePushConstants(*m_TreeGBufferShader->GetGraphicsPipeline(),
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			0, m_TreeGBufferShader->GetPushConstantSize(), &pc);
@@ -1054,6 +1087,14 @@ void VansVegetationSystem::DrawTreeCascadeShadow(VansVKCommandBuffer& graphicsCm
 		if (!cfg.mesh || !cfg.material || cfg.instanceCapacity == 0)
 			continue;
 
+		const int materialIndex = ResolveTreeMaterialIndex(cfg.material);
+		if (materialIndex < 0)
+		{
+			VANS_LOG_WARN("[VegetationSystem] Tree cascade shadow skipped: material '"
+				<< cfg.material->m_AssetName << "' has no GPU PBR material index.");
+			continue;
+		}
+
 		auto* savedBindings = globalState.vertexInputBindingDescriptions;
 		auto* savedAttributes = globalState.vertexInputAttributeDescriptions;
 		globalState.vertexInputBindingDescriptions = &cfg.mesh->m_VertexInputBindingDescriptions;
@@ -1073,10 +1114,11 @@ void VansVegetationSystem::DrawTreeCascadeShadow(VansVKCommandBuffer& graphicsCm
 		graphicsCmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_TreeShadowShader, 0, sets, {});
 
 		TreeShadowPushConstants pc = {};
-		pc.materialIndex = cfg.materialIndex;
+		pc.materialIndex = materialIndex;
 		pc.objectIndex = pushConstantTransformIndex;
 		pc.visibleOffset = cfg.visibleOffset;
 		pc.cascadeIndex = globalState.cascadeIndex;
+		pc.alphaTestEnabled = cfg.partType == TreePartType::Leaves ? 1u : 0u;
 		graphicsCmd.UpdatePushConstants(*m_TreeShadowShader->GetGraphicsPipeline(),
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			0, m_TreeShadowShader->GetPushConstantSize(), &pc);
@@ -1104,6 +1146,14 @@ void VansVegetationSystem::DrawTreePunctualShadow(VansVKCommandBuffer& graphicsC
 		if (!cfg.mesh || !cfg.material || cfg.instanceCapacity == 0)
 			continue;
 
+		const int materialIndex = ResolveTreeMaterialIndex(cfg.material);
+		if (materialIndex < 0)
+		{
+			VANS_LOG_WARN("[VegetationSystem] Tree punctual shadow skipped: material '"
+				<< cfg.material->m_AssetName << "' has no GPU PBR material index.");
+			continue;
+		}
+
 		auto* savedBindings = globalState.vertexInputBindingDescriptions;
 		auto* savedAttributes = globalState.vertexInputAttributeDescriptions;
 		globalState.vertexInputBindingDescriptions = &cfg.mesh->m_VertexInputBindingDescriptions;
@@ -1125,10 +1175,10 @@ void VansVegetationSystem::DrawTreePunctualShadow(VansVKCommandBuffer& graphicsC
 		TreePunctualShadowPushConstants pc = {};
 		pc.lightIndex = lightIndex;
 		pc.shadowIndex = shadowIndex;
-		pc.materialIndex = cfg.materialIndex;
+		pc.materialIndex = materialIndex;
 		pc.objectIndex = pushConstantTransformIndex;
 		pc.visibleOffset = cfg.visibleOffset;
-		pc.padding = 0;
+		pc.alphaTestEnabled = cfg.partType == TreePartType::Leaves ? 1u : 0u;
 		graphicsCmd.UpdatePushConstants(*m_TreePunctualShadowShader->GetGraphicsPipeline(),
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			0, m_TreePunctualShadowShader->GetPushConstantSize(), &pc);
@@ -1333,7 +1383,38 @@ void VansVegetationSystem::BuildTreeResources(
 	for (uint32_t i = 0; i < static_cast<uint32_t>(m_TreeConfig.species.size()); ++i)
 		speciesIndexByName[m_TreeConfig.species[i].name] = i;
 
-	std::vector<uint32_t> speciesInstanceCounts(m_TreeConfig.species.size(), 0);
+	struct TreeVisibilityGroupBuildInfo
+	{
+		uint32_t speciesIndex = 0;
+		int32_t submeshIndex = -1;
+		uint32_t maxCount = 0;
+	};
+
+	std::vector<TreeVisibilityGroupBuildInfo> visibilityGroups;
+	std::unordered_map<uint64_t, uint32_t> visibilityGroupByKey;
+	auto makeVisibilityKey = [](uint32_t speciesIndex, int32_t submeshIndex) -> uint64_t
+	{
+		const uint32_t encodedSubmesh = submeshIndex < 0
+			? 0xffffffffu
+			: static_cast<uint32_t>(submeshIndex);
+		return (static_cast<uint64_t>(speciesIndex) << 32ull) | encodedSubmesh;
+	};
+	auto getVisibilityGroup = [&](uint32_t speciesIndex, int32_t submeshIndex) -> uint32_t
+	{
+		const uint64_t key = makeVisibilityKey(speciesIndex, submeshIndex);
+		auto found = visibilityGroupByKey.find(key);
+		if (found != visibilityGroupByKey.end())
+			return found->second;
+
+		const uint32_t groupIndex = static_cast<uint32_t>(visibilityGroups.size());
+		visibilityGroupByKey[key] = groupIndex;
+		TreeVisibilityGroupBuildInfo info = {};
+		info.speciesIndex = speciesIndex;
+		info.submeshIndex = submeshIndex;
+		visibilityGroups.push_back(info);
+		return groupIndex;
+	};
+
 	for (uint32_t i = 0; i < static_cast<uint32_t>(m_TreeConfig.instances.size()); ++i)
 	{
 		const auto& src = m_TreeConfig.instances[i];
@@ -1359,11 +1440,13 @@ void VansVegetationSystem::BuildTreeResources(
 		float radius = std::max(species.boundsRadius * scale, 0.1f);
 		gpu.boundsSphere = glm::vec4(src.position + glm::vec3(0.0f, radius, 0.0f), radius);
 		gpu.speciesIndex = speciesIndex;
-		gpu.regionIndex = 0;
+		const int32_t requestedSubmesh = src.submeshIndex >= 0 ? src.submeshIndex : -1;
+		const uint32_t visibilityGroupIndex = getVisibilityGroup(speciesIndex, requestedSubmesh);
+		gpu.regionIndex = visibilityGroupIndex;
 		gpu.randomSeed = i * 9781u + 17u;
-		gpu.flags = 0;
+		gpu.flags = requestedSubmesh >= 0 ? (static_cast<uint32_t>(requestedSubmesh) + 1u) : 0u;
 		m_TreeInstancesCPU.push_back(gpu);
-		speciesInstanceCounts[speciesIndex]++;
+		visibilityGroups[visibilityGroupIndex].maxCount++;
 	}
 
 	if (m_TreeInstancesCPU.empty())
@@ -1373,12 +1456,12 @@ void VansVegetationSystem::BuildTreeResources(
 	}
 
 	uint32_t visibleOffset = 0;
-	m_TreeSpeciesInfosCPU.resize(m_TreeConfig.species.size());
-	for (uint32_t i = 0; i < static_cast<uint32_t>(m_TreeConfig.species.size()); ++i)
+	m_TreeSpeciesInfosCPU.resize(visibilityGroups.size());
+	for (uint32_t i = 0; i < static_cast<uint32_t>(visibilityGroups.size()); ++i)
 	{
 		m_TreeSpeciesInfosCPU[i].visibleOffset = visibleOffset;
-		m_TreeSpeciesInfosCPU[i].maxCount = speciesInstanceCounts[i];
-		visibleOffset += speciesInstanceCounts[i];
+		m_TreeSpeciesInfosCPU[i].maxCount = visibilityGroups[i].maxCount;
+		visibleOffset += visibilityGroups[i].maxCount;
 	}
 
 	VkDeviceSize instanceSize = sizeof(TreeInstanceGPU) * m_TreeInstancesCPU.size();
@@ -1387,8 +1470,8 @@ void VansVegetationSystem::BuildTreeResources(
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	m_TreeInstanceBuffer.SetBufferData(m_TreeInstancesCPU.data(), 0, static_cast<int>(instanceSize));
 
-	VkDeviceSize countSize = sizeof(uint32_t) * std::max<size_t>(m_TreeConfig.species.size(), 1);
-	std::vector<uint32_t> zeroCounts(m_TreeConfig.species.size(), 0);
+	VkDeviceSize countSize = sizeof(uint32_t) * std::max<size_t>(visibilityGroups.size(), 1);
+	std::vector<uint32_t> zeroCounts(visibilityGroups.size(), 0);
 	m_TreeVisibleCountsBuffer.CreatVulkanBuffer(m_Device, countSize, VK_FORMAT_R32_UINT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -1421,13 +1504,21 @@ void VansVegetationSystem::BuildTreeResources(
 				continue;
 			}
 
-			std::vector<VansMesh*> drawableMeshes;
+			struct DrawableTreeMesh
+			{
+				VansMesh* mesh = nullptr;
+				int32_t submeshIndex = -1;
+			};
+			std::vector<DrawableTreeMesh> drawableMeshes;
 			if (mesh->m_IsMultiMesh)
 			{
-				for (VansMesh* subMesh : mesh->m_SubMeshes)
+				for (uint32_t submeshIdx = 0; submeshIdx < static_cast<uint32_t>(mesh->m_SubMeshes.size()); ++submeshIdx)
 				{
+					if (part.submeshIndex >= 0 && static_cast<uint32_t>(part.submeshIndex) != submeshIdx)
+						continue;
+					VansMesh* subMesh = mesh->m_SubMeshes[submeshIdx];
 					if (subMesh != nullptr && subMesh->GetIndexCount() > 0)
-						drawableMeshes.push_back(subMesh);
+						drawableMeshes.push_back({ subMesh, static_cast<int32_t>(submeshIdx) });
 				}
 				VANS_LOG("[VegetationSystem] Tree part species='" << species.name
 					<< "' expanded multi-mesh '" << part.meshName
@@ -1435,7 +1526,16 @@ void VansVegetationSystem::BuildTreeResources(
 			}
 			else if (mesh->GetIndexCount() > 0)
 			{
-				drawableMeshes.push_back(mesh);
+				if (part.submeshIndex > 0)
+				{
+					VANS_LOG_WARN("[VegetationSystem] Tree part species='" << species.name
+						<< "' requested submesh " << part.submeshIndex
+						<< " on non-multi mesh '" << part.meshName << "'.");
+				}
+				else
+				{
+					drawableMeshes.push_back({ mesh, -1 });
+				}
 			}
 
 			if (drawableMeshes.empty())
@@ -1445,33 +1545,46 @@ void VansVegetationSystem::BuildTreeResources(
 				continue;
 			}
 
-			for (VansMesh* drawMesh : drawableMeshes)
+			for (const DrawableTreeMesh& drawable : drawableMeshes)
 			{
-				TreeDrawConfigGPU cfg = {};
-				cfg.mesh = drawMesh;
-				cfg.material = material;
-				cfg.materialIndex = material->m_MaterialIndex >= 0 ? material->m_MaterialIndex : 0;
-				cfg.speciesIndex = speciesIdx;
-				cfg.partIndex = partIdx;
-				cfg.visibleOffset = m_TreeSpeciesInfosCPU[speciesIdx].visibleOffset;
-				cfg.instanceCapacity = speciesInstanceCounts[speciesIdx];
+				for (uint32_t groupIdx = 0; groupIdx < static_cast<uint32_t>(visibilityGroups.size()); ++groupIdx)
+				{
+					const TreeVisibilityGroupBuildInfo& group = visibilityGroups[groupIdx];
+					if (group.speciesIndex != speciesIdx || group.maxCount == 0)
+						continue;
+					if (part.submeshIndex < 0 && group.submeshIndex >= 0 &&
+						drawable.submeshIndex >= 0 && drawable.submeshIndex != group.submeshIndex)
+						continue;
 
-				VkDrawIndexedIndirectCommand draw = {};
-				draw.indexCount = drawMesh->GetIndexCount();
-				draw.instanceCount = 0;
-				draw.firstIndex = 0;
-				draw.vertexOffset = 0;
-				draw.firstInstance = 0;
-				cfg.indirectDrawBuffer.CreatVulkanBuffer(m_Device, sizeof(VkDrawIndexedIndirectCommand), VK_FORMAT_R32_UINT,
-					VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-				cfg.indirectDrawBuffer.SetBufferData(&draw, 0, sizeof(VkDrawIndexedIndirectCommand));
+					TreeDrawConfigGPU cfg = {};
+					cfg.mesh = drawable.mesh;
+					cfg.material = material;
+					cfg.materialIndex = std::max(ResolveTreeMaterialIndex(material), 0);
+					cfg.speciesIndex = speciesIdx;
+					cfg.partIndex = partIdx;
+					cfg.partType = part.type;
+					cfg.visibilityGroupIndex = groupIdx;
+					cfg.submeshIndex = drawable.submeshIndex;
+					cfg.visibleOffset = m_TreeSpeciesInfosCPU[groupIdx].visibleOffset;
+					cfg.instanceCapacity = group.maxCount;
 
-				std::vector<VkDescriptorSet> sets;
-				VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_TreeDrawLayout }, sets);
-				cfg.drawDescSet = sets.empty() ? VK_NULL_HANDLE : sets[0];
-				WriteTreeDrawDescriptors(cfg);
-				m_TreeDrawConfigsGPU.push_back(std::move(cfg));
+					VkDrawIndexedIndirectCommand draw = {};
+					draw.indexCount = drawable.mesh->GetIndexCount();
+					draw.instanceCount = 0;
+					draw.firstIndex = 0;
+					draw.vertexOffset = 0;
+					draw.firstInstance = 0;
+					cfg.indirectDrawBuffer.CreatVulkanBuffer(m_Device, sizeof(VkDrawIndexedIndirectCommand), VK_FORMAT_R32_UINT,
+						VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+						VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+					cfg.indirectDrawBuffer.SetBufferData(&draw, 0, sizeof(VkDrawIndexedIndirectCommand));
+
+					std::vector<VkDescriptorSet> sets;
+					VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_TreeDrawLayout }, sets);
+					cfg.drawDescSet = sets.empty() ? VK_NULL_HANDLE : sets[0];
+					WriteTreeDrawDescriptors(cfg);
+					m_TreeDrawConfigsGPU.push_back(std::move(cfg));
+				}
 			}
 		}
 	}
@@ -1487,6 +1600,7 @@ void VansVegetationSystem::BuildTreeResources(
 	WriteTreeCullDescriptors();
 	VANS_LOG("[VegetationSystem] Tree resources built: instances=" << m_TreeInstancesCPU.size()
 		<< ", species=" << m_TreeConfig.species.size()
+		<< ", visibilityGroups=" << visibilityGroups.size()
 		<< ", draws=" << m_TreeDrawConfigsGPU.size());
 }
 

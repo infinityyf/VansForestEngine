@@ -15,6 +15,7 @@ using namespace VansGraphics;
 
 VansGraphics::VansRenderNode::VansRenderNode(VkDevice& device, RenderNodeType typee)
 {
+	m_Device = device;
 	m_NodeType = typee;
 
 	// Allocate ECS Data
@@ -116,6 +117,7 @@ static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type)
 	switch (type)
 	{
 	case OPAQUE_NODE:       return VansPass::GBUFFER;
+	case HAIR_NODE:         return VansPass::HAIR_VISIBILITY;
 	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
 		return VansPass::FORWARD_OPAQUE_AFTER_DEFERRED;
 	case TRANSPARENT_NODE:  return VansPass::FORWARD_TRANSPARENT;
@@ -158,6 +160,9 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 			break;
 		case VansMaterialType::VAN_SUBSURFACE:
 			pc.materialIndex = static_cast<VansSubsurfaceMaterial*>(m_Material)->m_MaterialIndex;
+			break;
+		case VansMaterialType::VAN_CLOTH:
+			pc.materialIndex = m_Material->m_MaterialIndex;
 			break;
 		case VansMaterialType::VAN_CUSTOM_SHADER:
 			pc.materialIndex = m_Material->m_MaterialIndex;
@@ -329,7 +334,7 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		VansHairMaterial* hair = static_cast<VansHairMaterial*>(m_Material);
 		if (hair->m_HairOwnedLayout == VK_NULL_HANDLE)
 		{
-			hair->BuildHairTextureDescriptors();
+			hair->BuildHairDescriptors(m_Device);
 		}
 		m_UsedDescSetLayouts.push_back(hair->m_HairOwnedLayout);
 		if (!hair->m_HairOwnedDescSets.empty())
@@ -356,6 +361,51 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		m_Scene->m_ObjectDescriptorSet,              // Set 2
 		shadowAnimSet,                               // Set 3
 	};
+
+	if (m_Material && m_Material->m_MaterialType == VansMaterialType::VAN_HAIR)
+	{
+		VansHairMaterial* hair = static_cast<VansHairMaterial*>(m_Material);
+		if (hair->m_HairOwnedLayout != VK_NULL_HANDLE && !hair->m_HairOwnedDescSets.empty())
+		{
+			m_ShadowDescSetLayouts.push_back(hair->m_HairOwnedLayout);
+			m_ShadowDescSets.push_back(hair->m_HairOwnedDescSets[0]);
+		}
+	}
+}
+
+void VansGraphics::VansCommonRenderNode::RefreshAnimationDescriptorSet()
+{
+	if (!m_Scene)
+		return;
+
+	if (!(m_HasSkeletonBone && m_AnimOwner && m_AnimBoneIDBuffer && m_AnimBoneWeightBuffer))
+		return;
+
+	auto* descManager = VansVKDescriptorManager::GetInstance();
+	if (modelBufferDescriptorSets.empty())
+	{
+		descManager->AllocateDescriptorSet({ m_Scene->m_AnimationDescriptorSetLayout }, modelBufferDescriptorSets);
+	}
+
+	if (modelBufferDescriptorSets.empty())
+		return;
+
+	VkDescriptorSet animationSet = modelBufferDescriptorSets[0];
+	if (m_UsedDescSets.size() > 3)
+	{
+		m_UsedDescSets[3] = animationSet;
+	}
+	if (m_ShadowDescSets.size() > 3)
+	{
+		m_ShadowDescSets[3] = animationSet;
+	}
+
+	m_DescriptorsetsDirty = true;
+}
+
+void VansGraphics::VansCommonRenderNode::MarkAnimationDescriptorDirty()
+{
+	m_DescriptorsetsDirty = true;
 }
 
 void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager)
@@ -393,6 +443,16 @@ void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, Va
 			sizeof(VansBasePBRParam) * idx,
 			sizeof(VansBasePBRParam));
 	}
+	else if (mat->m_MaterialType == VansMaterialType::VAN_CLOTH)
+	{
+		VansClothMaterial* cloth = static_cast<VansClothMaterial*>(mat);
+		int idx = cloth->m_MaterialIndex;
+		if (idx < 0) return;
+		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
+			&cloth->m_BasePBRParam,
+			sizeof(VansBasePBRParam) * idx,
+			sizeof(VansBasePBRParam));
+	}
 	else if (mat->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
 	{
 		int idx = mat->m_MaterialIndex;
@@ -423,12 +483,17 @@ void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManage
 	{
 		return;
 	}
-	m_DescriptorsetsDirty = false;
 
 	// All resources are now in the global descriptor set (Set 0)
 	// No per-object descriptor updates needed
 	if (m_HasSkeletonBone && m_AnimOwner && m_AnimBoneIDBuffer && m_AnimBoneWeightBuffer)
 	{
+		RefreshAnimationDescriptorSet();
+		if (modelBufferDescriptorSets.empty())
+		{
+			return;
+		}
+
 		auto* descManager = VansVKDescriptorManager::GetInstance();
 		descManager->ResetState();
 		// binding 0: Per-vertex Bone IDs SSBO (per-submesh)
@@ -451,6 +516,8 @@ void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManage
 			});
 		descManager->UpdateDescriptorSets();
 	}
+
+	m_DescriptorsetsDirty = false;
 }
 
 // ============================================================

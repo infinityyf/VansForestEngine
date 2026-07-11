@@ -47,6 +47,10 @@ VansGraphics::VansHairMaterial::~VansHairMaterial()
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_HairOwnedDescSets);
 	descMgr->DestroyDescriptorSetLayout(m_HairOwnedLayout);
+	if (m_ParamsDevice != VK_NULL_HANDLE && m_ParamsBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
+	{
+		m_ParamsBuffer.DestroyVulkanBuffer(m_ParamsDevice);
+	}
 }
 
 VansGraphics::VansSubsurfaceMaterial::~VansSubsurfaceMaterial()
@@ -535,23 +539,47 @@ void VansGraphics::VansSkinMaterial::BuildSkinTextureDescriptors()
 	descManager->UpdateDescriptorSets();
 }
 
-void VansGraphics::VansHairMaterial::BuildHairTextureDescriptors()
+void VansGraphics::VansHairMaterial::BuildHairDescriptors(VkDevice& device)
 {
-	// Allocate the hair texture descriptor set (Set 4: albedo+alpha, normal, roughness, ao, shift)
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(m_HairOwnedLayout, m_HairOwnedDescSets);
+	m_ParamsDevice = device;
+	if (m_ParamsBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+	{
+		m_ParamsBuffer.CreatVulkanBuffer(
+			device,
+			sizeof(VansHairParamsGPU),
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	}
+	m_ParamsBuffer.SetBufferData(&m_Params, 0, sizeof(VansHairParamsGPU));
 
 	auto* descManager = VansVKDescriptorManager::GetInstance();
 	descManager->ResetState();
 
-	if (m_AlbedoAlphaTexture)
+	if (m_AlbedoTexture)
 	{
 		descManager->m_ImageDescInfos.push_back({
 			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_ALBEDO_ALPHA, 0,
+			HAIR_TEXTURE_BINDING_ALBEDO, 0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
-				m_AlbedoAlphaTexture->GetImage().GetSampler(),
-				m_AlbedoAlphaTexture->GetImage().GetImageView(),
+				m_AlbedoTexture->GetImage().GetSampler(),
+				m_AlbedoTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	if (m_AlphaTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_HairOwnedDescSets[0],
+			HAIR_TEXTURE_BINDING_ALPHA, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_AlphaTexture->GetImage().GetSampler(),
+				m_AlphaTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			}}
 		});
@@ -585,15 +613,15 @@ void VansGraphics::VansHairMaterial::BuildHairTextureDescriptors()
 		});
 	}
 
-	if (m_AoTexture)
+	if (m_AOTexture)
 	{
 		descManager->m_ImageDescInfos.push_back({
 			m_HairOwnedDescSets[0],
 			HAIR_TEXTURE_BINDING_AO, 0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
-				m_AoTexture->GetImage().GetSampler(),
-				m_AoTexture->GetImage().GetImageView(),
+				m_AOTexture->GetImage().GetSampler(),
+				m_AOTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			}}
 		});
@@ -613,20 +641,6 @@ void VansGraphics::VansHairMaterial::BuildHairTextureDescriptors()
 		});
 	}
 
-	if (m_AlphaTexture)
-	{
-		descManager->m_ImageDescInfos.push_back({
-			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_ALPHA, 0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{
-				m_AlphaTexture->GetImage().GetSampler(),
-				m_AlphaTexture->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
-	}
-
 	if (m_FlowTexture)
 	{
 		descManager->m_ImageDescInfos.push_back({
@@ -640,6 +654,32 @@ void VansGraphics::VansHairMaterial::BuildHairTextureDescriptors()
 			}}
 		});
 	}
+
+	if (m_IDTexture)
+	{
+		descManager->m_ImageDescInfos.push_back({
+			m_HairOwnedDescSets[0],
+			HAIR_TEXTURE_BINDING_ID, 0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				m_IDTexture->GetImage().GetSampler(),
+				m_IDTexture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+	}
+
+	descManager->m_BufferDescInfos.push_back({
+		m_HairOwnedDescSets[0],
+		HAIR_TEXTURE_BINDING_PARAMS,
+		0,
+		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		{{
+			m_ParamsBuffer.GetNativeBuffer(),
+			0,
+			m_ParamsBuffer.GetBufferSize()
+		}}
+	});
 
 	descManager->UpdateDescriptorSets();
 }

@@ -4,24 +4,35 @@
 #include "backends/imgui_impl_vulkan.h"
 #include "../../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../../RenderCore/VansMaterial.h"
+#include "../../RenderCore/VulkanCore/VansMesh.h"
 #include "../../RenderCore/VulkanCore/VansTexture.h"
 #include "../../RenderCore/VansScene.h"
 
 void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
 {
-    if (!VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen)
+    if (!VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen &&
+        !VansGraphics::VansEditorWindow::m_HairDebugWindowOpen)
     {
         return;
     }
-    ImGui::Begin("Render Debug");
 
     auto renderPassManager = VansRenderPassManager::GetInstance();
     VansMaterialManager* materialManager = m_Scene ? m_Scene->GetMaterialManager() : nullptr;
 
     if (!renderPassManager)
     {
-        ImGui::Text("RenderPassManager not initialized.");
-        ImGui::End();
+        if (VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen)
+        {
+            ImGui::Begin("Render Debug", &VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen);
+            ImGui::Text("RenderPassManager not initialized.");
+            ImGui::End();
+        }
+        if (VansGraphics::VansEditorWindow::m_HairDebugWindowOpen)
+        {
+            ImGui::Begin("Hair Debug", &VansGraphics::VansEditorWindow::m_HairDebugWindowOpen);
+            ImGui::Text("RenderPassManager not initialized.");
+            ImGui::End();
+        }
         return;
     }
 
@@ -56,90 +67,123 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
     static VkDescriptorSet dsSSGI = VK_NULL_HANDLE; static VkImageView ivSSGI = VK_NULL_HANDLE;
     static VkDescriptorSet dsFog = VK_NULL_HANDLE;  static VkImageView ivFog = VK_NULL_HANDLE;
     static VkDescriptorSet dsSSS = VK_NULL_HANDLE;  static VkImageView ivSSS = VK_NULL_HANDLE;
+    static VkDescriptorSet dsHairVis0 = VK_NULL_HANDLE;      static VkImageView ivHairVis0 = VK_NULL_HANDLE;
+    static VkDescriptorSet dsHairVis1 = VK_NULL_HANDLE;      static VkImageView ivHairVis1 = VK_NULL_HANDLE;
+    static VkDescriptorSet dsHairVis2 = VK_NULL_HANDLE;      static VkImageView ivHairVis2 = VK_NULL_HANDLE;
+    static VkDescriptorSet dsHairVis3 = VK_NULL_HANDLE;      static VkImageView ivHairVis3 = VK_NULL_HANDLE;
+    static VkDescriptorSet dsHairDepth = VK_NULL_HANDLE;     static VkImageView ivHairDepth = VK_NULL_HANDLE;
+    static VkDescriptorSet dsHairCoverage = VK_NULL_HANDLE;  static VkImageView ivHairCoverage = VK_NULL_HANDLE;
+    static VkDescriptorSet dsHairColor = VK_NULL_HANDLE;     static VkImageView ivHairColor = VK_NULL_HANDLE;
+    static VkDescriptorSet dsHairDeepOpacity = VK_NULL_HANDLE; static VkImageView ivHairDeepOpacity = VK_NULL_HANDLE;
 
-    if (ImGui::BeginTable("RenderDebugTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
+    if (VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen)
     {
-        // Motion Vector
-        ImGui::TableNextColumn();
-        DisplayImage("Motion Vector", renderPassManager->GetMotionVector(), dsMV, ivMV);
-
-        // SSR Resolve Result
-        ImGui::TableNextColumn();
-        if (materialManager)
+        ImGui::Begin("Render Debug", &VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen);
+        if (ImGui::BeginTable("RenderDebugTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
         {
-            VansTexture* ssrTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT);
-            if (ssrTex)
+            // Motion Vector
+            ImGui::TableNextColumn();
+            DisplayImage("Motion Vector", renderPassManager->GetMotionVector(), dsMV, ivMV);
+
+            // SSR Resolve Result
+            ImGui::TableNextColumn();
+            if (materialManager)
             {
-                DisplayImage("SSR Resolve Result", ssrTex->GetImage(), dsSSR, ivSSR, VK_IMAGE_LAYOUT_GENERAL);
+                VansTexture* ssrTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT);
+                if (ssrTex)
+                {
+                    DisplayImage("SSR Resolve Result", ssrTex->GetImage(), dsSSR, ivSSR, VK_IMAGE_LAYOUT_GENERAL);
+                }
+                else
+                {
+                    ImGui::Text("SSR Resolve Result: N/A");
+                }
             }
             else
             {
-                ImGui::Text("SSR Resolve Result: N/A");
+                ImGui::Text("SSR Resolve Result: No MaterialManager");
             }
-        }
-        else
-        {
-            ImGui::Text("SSR Resolve Result: No MaterialManager");
-        }
 
-        // SSGI Result
-        ImGui::TableNextColumn();
-        if (materialManager)
-        {
-            VansTexture* ssgiTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT);
-            if (ssgiTex)
+            // SSGI Result
+            ImGui::TableNextColumn();
+            if (materialManager)
             {
-                DisplayImage("SSGI Result", ssgiTex->GetImage(), dsSSGI, ivSSGI, VK_IMAGE_LAYOUT_GENERAL);
+                VansTexture* ssgiTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT);
+                if (ssgiTex)
+                {
+                    DisplayImage("SSGI Result", ssgiTex->GetImage(), dsSSGI, ivSSGI, VK_IMAGE_LAYOUT_GENERAL);
+                }
+                else
+                {
+                    ImGui::Text("SSGI Result: N/A");
+                }
             }
             else
             {
-                ImGui::Text("SSGI Result: N/A");
+                ImGui::Text("SSGI Result: No MaterialManager");
             }
-        }
-        else
-        {
-            ImGui::Text("SSGI Result: No MaterialManager");
-        }
 
-        // Fog Blend Result
-        ImGui::TableNextColumn();
-        if (materialManager)
-        {
-            VansTexture* fogTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
-            if (fogTex)
+            // Fog Blend Result
+            ImGui::TableNextColumn();
+            if (materialManager)
             {
-                DisplayImage("Fog Blend Result", fogTex->GetImage(), dsFog, ivFog, VK_IMAGE_LAYOUT_GENERAL);
+                VansTexture* fogTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
+                if (fogTex)
+                {
+                    DisplayImage("Fog Blend Result", fogTex->GetImage(), dsFog, ivFog, VK_IMAGE_LAYOUT_GENERAL);
+                }
+                else
+                {
+                    ImGui::Text("Fog Blend Result: N/A");
+                }
             }
             else
             {
-                ImGui::Text("Fog Blend Result: N/A");
+                ImGui::Text("Fog Blend Result: No MaterialManager");
             }
-        }
-        else
-        {
-            ImGui::Text("Fog Blend Result: No MaterialManager");
-        }
 
-        ImGui::TableNextColumn();
-        if (materialManager)
-        {
-            VansTexture* sssTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
-            if (sssTex)
+            ImGui::TableNextColumn();
+            if (materialManager)
             {
-                DisplayImage("Screen Space Shadow", sssTex->GetImage(), dsSSS, ivSSS, VK_IMAGE_LAYOUT_GENERAL);
+                VansTexture* sssTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
+                if (sssTex)
+                {
+                    DisplayImage("Screen Space Shadow", sssTex->GetImage(), dsSSS, ivSSS, VK_IMAGE_LAYOUT_GENERAL);
+                }
+                else
+                {
+                    ImGui::Text("Screen Space Shadow: N/A");
+                }
             }
             else
             {
-                ImGui::Text("Screen Space Shadow: N/A");
+                ImGui::Text("Screen Space Shadow: No MaterialManager");
             }
-        }
-        else
-        {
-            ImGui::Text("Screen Space Shadow: No MaterialManager");
-        }
 
-        ImGui::EndTable();
+            ImGui::EndTable();
+        }
+        ImGui::End();
     }
 
-    ImGui::End();
+    if (VansGraphics::VansEditorWindow::m_HairDebugWindowOpen)
+    {
+        ImGui::Begin("Hair Debug", &VansGraphics::VansEditorWindow::m_HairDebugWindowOpen);
+        ImGui::Text("Hair PPLL OIT");
+        ImGui::Text("Visibility pass writes per-pixel linked-list storage buffers.");
+        ImGui::Text("HairColor: RGB lit hair, A resolved coverage");
+        ImGui::Text("HairDeepOpacity: RGBA four opacity slices");
+        ImGui::Separator();
+
+        if (ImGui::BeginTable("HairDebugTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
+        {
+            ImGui::TableNextColumn();
+            DisplayImage("Hair Color", renderPassManager->GetHairColor(), dsHairColor, ivHairColor);
+
+            ImGui::TableNextColumn();
+            DisplayImage("Hair Deep Opacity", renderPassManager->GetHairDeepOpacity(), dsHairDeepOpacity, ivHairDeepOpacity);
+
+            ImGui::EndTable();
+        }
+        ImGui::End();
+    }
 }

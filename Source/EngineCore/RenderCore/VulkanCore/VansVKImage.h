@@ -34,7 +34,7 @@ namespace VansGraphics
 		friend class VansVKCommandBuffer;
 		friend class VansRenderPassManager;
 	private:
-		VkImage m_VansVKImage;
+		VkImage m_VansVKImage = VK_NULL_HANDLE;
 
 		// VMA-managed allocation backing the image (replaces raw VkDeviceMemory).
 		VmaAllocation m_VansVKImageAllocation = nullptr;
@@ -42,7 +42,7 @@ namespace VansGraphics
 		//defines additional metadata used for accessing the image. Through it, we can
 		//specify the parts of an image that should be accessed by the commands
 		//also defines how an image's memory should be interpreted.
-		VkImageView m_VansVKImageView;
+		VkImageView m_VansVKImageView = VK_NULL_HANDLE;
 		std::vector<VkImageView> m_VansVKImageMipViews;
 
 		// depth+stencil combined attachment view（仅对 D32S8/D24S8 等带 stencil 格式创建）
@@ -50,7 +50,7 @@ namespace VansGraphics
 		VkImageView m_DepthStencilView = VK_NULL_HANDLE;
 
 		//如果是combined sample image这里持有sampler，可能是空
-		VkSampler m_Sampler;
+		VkSampler m_Sampler = VK_NULL_HANDLE;
 
 		VkImageCreateInfo m_ImageCreateInfo;
 

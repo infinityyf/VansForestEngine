@@ -88,6 +88,7 @@ namespace VansGraphics
 	struct MultiMeshGroup
 	{
 		std::string parentName;
+		std::string parentEntityGuid;
 		VansMesh* sourceMesh = nullptr;              // non-owning project asset reference
 		glm::vec3 position = glm::vec3(0);
 		glm::vec3 rotation = glm::vec3(0);
@@ -187,6 +188,7 @@ namespace VansGraphics
 		VansRenderNode* m_DeferredNode = nullptr;
 
 		std::vector<VansRenderNode*> m_OpaqueRenderNodes;
+		std::vector<VansRenderNode*> m_HairRenderNodes;
 
 		VansRenderNode* m_TerrainRenderNode = nullptr;
 
@@ -465,7 +467,8 @@ namespace VansGraphics
 		// 从 JSON 加载单个 CharController（由 LoadSceneObjects Pass1 调用）
 		VansEngine::VansCharacterControllerNode* LoadSingleCharControllerNode(
 			const json& charCtrlJson,
-			VansRenderNode* associatedRenderNode);
+			VansRenderNode* associatedRenderNode,
+			uint32_t standaloneTransformID = UINT32_MAX);
 
 		// Cloth simulation: CPU advance + write results to staging buffers
 		void UpdateClothSimulation(float dt);
@@ -559,6 +562,8 @@ namespace VansGraphics
 		void DrawSkyBoxNode();
 
 		void DrawOpaqueNodes();
+		void DrawHairVisibilityNodes();
+		void DrawHairDeepOpacityNodes(VansGraphicsShader* shader);
 
 		void DrawTerrainNode(bool shadowPass = false, bool motionVectorPass = false);
 

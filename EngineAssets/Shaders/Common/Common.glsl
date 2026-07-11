@@ -28,7 +28,6 @@
 #define MATERIAL_ID_SKIN        3
 #define MATERIAL_ID_REFRACTION  4
 #define MATERIAL_ID_CLOTH       5
-#define MATERIAL_ID_HAIR        6
 #define MATERIAL_ID_SUBSURFACE  7
 #define MATERIAL_ID_GRASS       8
 #define MATERIAL_ID_EMISSIVE    9   // 自发光：albedo × intensity 直通，无 BRDF

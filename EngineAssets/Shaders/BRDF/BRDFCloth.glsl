@@ -5,191 +5,281 @@
 #include "BRDFData.glsl"
 
 // =============================================================================
-// Cloth BRDF  (Material ID = MATERIAL_ID_CLOTH = 5)
+// Cloth BRDF (Material ID = MATERIAL_ID_CLOTH)
 //
-// Sheen NDF : Charlie (fabric / cotton / denim)  -- used for direct lighting
-// ClothBRDFLUT channels:
-//   R = split-sum term A  (F-independent lobe,   used as mix start)
-//   G = split-sum term B  (F-dependent lobe,     used as mix end)
-//   B = sheen tint (pre-baked directional sheen colour scale)
-// E = mix(dfg.rrr, dfg.ggg, sheenColor)
+// Direct light:
+//   - Charlie NDF for fabric sheen
+//   - Neubelt visibility term for cloth
+//   - albedo-derived sheen tint with independent material strength
 //
-// References:
-//   Estevez & Kulla 2017 -- "Production Friendly Microfacet Sheen BRDF"
-//   Ashikhmin & Premoze 2007 -- "Distribution-based BRDFs"
-//   Neubelt & Pettineo 2013 -- "Crafting a Next-gen Material Pipeline..."
+// GBuffer convention for cloth in Deferred.frag:
+//   brdf.roughness = effective sheen roughness
+//   brdf.metallic  = sheen strength, not metallic
+//   brdf.fresnel0.r = thin-cloth translucency
 // =============================================================================
 
-// ---------------------------------------------------------------------------
-// Charlie NDF (fabric / cotton)  -  Estevez & Kulla 2017
-// D_Charlie = (2 + 1/a) * sin^(1/a)(th) / (2*PI)
-// ---------------------------------------------------------------------------
 float D_Charlie(float roughness, float NoH)
 {
-    float invAlpha = 1.0 / max(roughness * roughness, 1e-4);
-    float cos2h    = NoH * NoH;
-    float sin2h    = max(1.0 - cos2h, 0.0078125);
+    float alpha = max(roughness * roughness, 1e-4);
+    float invAlpha = 1.0 / alpha;
+    float sin2h = max(1.0 - NoH * NoH, 0.0078125);
     return (2.0 + invAlpha) * pow(sin2h, invAlpha * 0.5) / (2.0 * PI);
 }
 
-// ---------------------------------------------------------------------------
-// Ashikhmin NDF (silk / satin)  -  Ashikhmin & Premoze 2007
-// ---------------------------------------------------------------------------
-float D_Ashikhmin(float roughness, float NoH)
-{
-    float a  = roughness * roughness;
-    float a2 = a * a;
-    float d  = (1.0 - NoH * NoH) * (1.0 + a2 * NoH * NoH);
-    return max(0.0, (1.0 + 4.0 * exp(-2.0 / max(d, 1e-6))) / (PI * (1.0 + 4.0 * a2)));
-}
-
-// ---------------------------------------------------------------------------
-// Neubelt visibility  -  Neubelt & Pettineo 2013
-// V = 1 / (4 * (NoL + NoV - NoL*NoV))
-// ---------------------------------------------------------------------------
 float V_Cloth(float NoV, float NoL)
 {
     float denom = 4.0 * (NoL + NoV - NoL * NoV);
     return 1.0 / max(denom, 1e-5);
 }
 
-// ---------------------------------------------------------------------------
-// Sample the pre-baked cloth DFG LUT.
-// U = NoV,  V = perceptual roughness
-// R = split-sum DFG term A  (F-dependent part)
-// G = split-sum DFG term B  (F-independent part)
-// B = sheen tint            (pre-baked directional sheen colour scale)
-// ---------------------------------------------------------------------------
+float Max3(vec3 v)
+{
+    return max(max(v.x, v.y), v.z);
+}
+
+vec3 ClothSheenTint(vec3 albedo)
+{
+    vec3 safeAlbedo = max(albedo, vec3(0.0));
+    float luma = max(Luminance(safeAlbedo), 1e-4);
+    vec3 tint = safeAlbedo / luma;
+    return clamp(mix(vec3(1.0), tint, 0.5), vec3(0.0), vec3(4.0));
+}
+
+vec3 ClothSheenColor(BRDFData brdf)
+{
+    float strength = clamp(brdf.metallic, 0.0, 1.0);
+    return ClothSheenTint(brdf.albedo) * (0.24 * strength);
+}
+
+float ClothTranslucency(BRDFData brdf)
+{
+    return clamp(brdf.fresnel0.r, 0.0, 1.0);
+}
+
 vec3 SampleClothDFG(float NoV, float sheenRoughness)
 {
     return texture(ClothBRDFLUT, vec2(clamp(NoV, 0.0, 1.0), clamp(sheenRoughness, 0.0, 1.0))).rgb;
 }
 
-// ---------------------------------------------------------------------------
-// Direct cloth BRDF (per-light)
-//   Uses Charlie NDF for the sheen specular lobe.
-// ---------------------------------------------------------------------------
 void DirectBRDF_Cloth(BRDFData brdf, vec3 lightDirection,
                       inout vec3 diffuse, inout vec3 specular)
 {
-    vec3  viewDir = brdf.viewDirection;
-    vec3  H   = normalize(lightDirection + viewDir);
-    float NoH = max(dot(brdf.normal, H),             0.0);
-    float NoL = max(dot(brdf.normal, lightDirection), 0.0);
-    float NoV = max(dot(brdf.normal, viewDir),        0.0);
+    diffuse = vec3(0.0);
+    specular = vec3(0.0);
 
-    float D = D_Charlie(brdf.roughness, NoH);
-    float V = V_Cloth(NoV, NoL);
+    vec3 N = normalize(brdf.normal);
+    vec3 V = normalize(brdf.viewDirection);
+    vec3 L = normalize(lightDirection);
 
-    // Constant sheen colour: greyscale from roughness (no per-pixel tint yet)
-    vec3 F = vec3(brdf.roughness);
+    if (dot(N, V) < 0.0)
+        N = -N;
 
-    specular = D * V * F * NoL;
-    diffuse  = (brdf.albedo / PI) * NoL;
+    float NoV = max(dot(N, V), 1e-4);
+    float signedNoL = dot(N, L);
+    float frontNoL = max(signedNoL, 0.0);
+    float backNoL = max(-signedNoL, 0.0);
+    float twoSidedNoL = max(frontNoL, backNoL);
+    if (twoSidedNoL <= 0.0)
+        return;
+
+    float roughness = clamp(brdf.roughness, 0.045, 1.0);
+    float translucency = ClothTranslucency(brdf);
+    vec3 sheenColor = ClothSheenColor(brdf);
+
+    vec3 F = vec3(0.0);
+    vec3 sheen = vec3(0.0);
+    if (frontNoL > 0.0)
+    {
+        vec3 H = normalize(L + V);
+        float NoH = clamp(dot(N, H), 0.0, 1.0);
+        float VoH = clamp(dot(V, H), 0.0, 1.0);
+
+        float D = D_Charlie(roughness, NoH);
+        float Vis = V_Cloth(NoV, frontNoL);
+
+        float grazing = pow(1.0 - VoH, 5.0);
+        F = sheenColor * mix(0.25, 1.0, grazing);
+        sheen = D * Vis * F * frontNoL;
+    }
+
+    float diffuseEnergy = clamp(1.0 - Max3(F) * 0.75, 0.0, 1.0);
+    float transmittedNoL = backNoL * mix(0.15, 0.75, translucency);
+    float diffuseNoL = frontNoL + transmittedNoL;
+
+    diffuse = (brdf.albedo * diffuseEnergy / PI) * diffuseNoL;
+    specular = sheen;
 }
 
-// ---------------------------------------------------------------------------
-// Ambient cloth BRDF (IBL path)
-//   .rg = split-sum DFG (F-dependent / F-independent parts)
-//   .b  = sheen tint scale (pre-baked directional sheen colour)
-// ---------------------------------------------------------------------------
 void AmbientBRDF_Cloth(BRDFData brdf, vec3 viewDirection,
                        inout vec3 diffuse, inout vec3 specular)
 {
-    float NoV = max(dot(brdf.normal, viewDirection), 0.0);
+    vec3 N = normalize(brdf.normal);
+    vec3 V = normalize(viewDirection);
+    if (dot(N, V) < 0.0)
+        N = -N;
 
-    vec3  lut       = SampleClothDFG(NoV, brdf.roughness);
-    // Greyscale sheen colour (roughness-based until per-pixel tint added)
-    // Filament-style cloth split-sum:  mix(dfg.rrr, dfg.ggg, f0)
-    //   = dfg.r * (1 - sheenColor) + dfg.g * sheenColor
-    vec3  sheenColor = vec3(brdf.roughness);
-    vec3  E          = mix(lut.rrr, lut.ggg, sheenColor);  // split-sum specular energy
-    vec3  sheenTint  = vec3(lut.b);                        // pre-baked sheen tint from .b
+    float NoV = clamp(dot(N, V), 0.0, 1.0);
+    float roughness = clamp(brdf.roughness, 0.045, 1.0);
 
-    // Specular: blend IBL cubemap with SSR result, modulated by sheen tint
-    vec3  R        = reflect(-viewDirection, brdf.normal);
-    float lod      = GetMipLevelFromRoughness(brdf.roughness);
-    ReflectionProbeSample probeSample = SampleReflectionProbes(brdf.positionWS, brdf.normal, R, brdf.roughness);
-    vec3  skySpec = textureLod(PreConvSpecularEnvironment, R, lod).rgb * reflectionProbeLightingParams.z;
-    vec3  iblSpec = mix(skySpec, probeSample.specular, probeSample.coverage);
-    vec3  ssrColor = brdf.indirectSpecular.rgb;
-    // Roughness fade: SSR quality degrades on rough surfaces
-    float ssrFade  = 1.0 - smoothstep(reflectionProbeLightingParams.x, reflectionProbeLightingParams.y, brdf.roughness);
-    float ssrMask  = brdf.indirectSpecular.a * ssrFade;
-    specular       = E * sheenTint * mix(iblSpec, ssrColor, ssrMask) * brdf.ao;
+    vec3 lut = SampleClothDFG(NoV, roughness);
+    vec3 sheenColor = ClothSheenColor(brdf);
+    vec3 sheenEnergy = mix(lut.rrr, lut.ggg, clamp(sheenColor, vec3(0.0), vec3(1.0)));
+    sheenEnergy *= mix(vec3(1.0), vec3(lut.b), 0.5);
+    sheenEnergy = clamp(sheenEnergy, vec3(0.0), vec3(0.95));
 
-    // Diffuse: filtered SSGI attenuated by sheen energy.
-    diffuse = brdf.albedo * brdf.indirectDiffuse * (1.0 - E) * brdf.ao;
+    vec3 R = reflect(-V, N);
+    float lod = GetMipLevelFromRoughness(roughness);
+    ReflectionProbeSample probeSample = SampleReflectionProbes(brdf.positionWS, N, R, roughness);
+    vec3 skySpec = textureLod(PreConvSpecularEnvironment, R, lod).rgb * reflectionProbeLightingParams.z;
+    vec3 iblSpec = mix(skySpec, probeSample.specular, probeSample.coverage);
+
+    float ssrFade = 1.0 - smoothstep(reflectionProbeLightingParams.x, reflectionProbeLightingParams.y, roughness);
+    float ssrMask = clamp(brdf.indirectSpecular.a * ssrFade, 0.0, 1.0);
+    vec3 specLighting = mix(iblSpec, brdf.indirectSpecular.rgb, ssrMask);
+
+    float diffuseEnergy = clamp(1.0 - Max3(sheenEnergy), 0.0, 1.0);
+    diffuse = brdf.albedo * brdf.indirectDiffuse * diffuseEnergy * brdf.ao;
+    specular = specLighting * sheenEnergy * brdf.ao;
 }
 
-// ---------------------------------------------------------------------------
-// Full per-light loop for cloth — mirrors CalculateDirectLight_Skin structure.
-// Included after LightsData.glsl so light uniforms / helpers are visible.
-// ---------------------------------------------------------------------------
 void CalculateDirectLight_Cloth(BRDFData brdf,
                                 sampler2DArray cascadeShadowMap, float viewDepth,
                                 sampler2D punctualShadowMap,
                                 float screenSpaceShadow,
                                 inout LightResult lightResult)
 {
-    lightResult.directDiffuse  = vec3(0);
-    lightResult.directSpecular = vec3(0);
+    lightResult.directDiffuse = vec3(0.0);
+    lightResult.directSpecular = vec3(0.0);
 
-    // ---- Directional light ----
     {
-        vec3 dR = vec3(0), sR = vec3(0);
+        vec3 dR = vec3(0.0);
+        vec3 sR = vec3(0.0);
         DirectBRDF_Cloth(brdf, uDirectionLight.direction.rgb, dR, sR);
-        dR *= uDirectionLight.color.rgb * uDirectionLight.intensity;
-        sR *= uDirectionLight.color.rgb * uDirectionLight.intensity;
 
         float shadow = min(SampleCascadeShadow(brdf.positionWS, brdf.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
-        lightResult.directDiffuse  += dR * shadow;
-        lightResult.directSpecular += sR * shadow;
+        lightResult.directDiffuse += dR * uDirectionLight.color.rgb * uDirectionLight.intensity * shadow;
+        lightResult.directSpecular += sR * uDirectionLight.color.rgb * uDirectionLight.intensity * shadow;
     }
 
-    // ---- Point lights ----
-    for (uint i = 0; i < uPointLightCount; ++i)
+#ifdef TILE_LIGHT
+    TileLightHeader tileLightHdr = GetFragTileLightHeader();
+
+    for (uint ptk = 0u; ptk < tileLightHdr.pointCount; ++ptk)
     {
-        PointLightData pl  = GetPointLight(int(i));
-        vec3  lightDir     = pl.position.xyz - brdf.positionWS;
-        float dist         = length(lightDir);
+        uint i = tileLightIndices[tileLightHdr.pointOffset + ptk];
+        PointLightData pl = GetPointLight(int(i));
+        vec3 lightDir = pl.position.xyz - brdf.positionWS;
+        float dist = length(lightDir);
         if (dist > pl.radius) continue;
-        lightDir /= dist;
+        lightDir /= max(dist, 1e-5);
 
-        float atten  = 1.0 - (dist / pl.radius);
-        atten       *= atten;
-        atten        = min(atten, SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(pl.shadowIndex)));
+        float attenuation = 1.0 - (dist / pl.radius);
+        attenuation *= attenuation;
+        attenuation = min(attenuation, SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(pl.shadowIndex)));
 
-        vec3 dR = vec3(0), sR = vec3(0);
+#ifdef IES_PROFILE_ENABLED
+        int iesIdx = int(pl.iesProfileIndex);
+        if (iesIdx >= 0)
+            attenuation *= SampleIESProfile(iesIdx, lightDir, vec3(0.0, -1.0, 0.0));
+#endif
+
+        vec3 dR = vec3(0.0);
+        vec3 sR = vec3(0.0);
         DirectBRDF_Cloth(brdf, lightDir, dR, sR);
-        lightResult.directDiffuse  += dR * pl.color.rgb * pl.intensity * atten;
-        lightResult.directSpecular += sR * pl.color.rgb * pl.intensity * atten;
+        lightResult.directDiffuse += dR * pl.color.rgb * pl.intensity * attenuation;
+        lightResult.directSpecular += sR * pl.color.rgb * pl.intensity * attenuation;
     }
 
-    // ---- Spot lights ----
-    for (uint i = 0; i < uSpotLightCount; ++i)
+    for (uint spk = 0u; spk < tileLightHdr.spotCount; ++spk)
     {
+        uint i = tileLightIndices[tileLightHdr.spotOffset + spk];
         SpotLightData sl = GetSpotLight(int(i));
-        vec3  lightDir   = sl.position.xyz - brdf.positionWS;
-        float dist       = length(lightDir);
+        vec3 lightDir = sl.position.xyz - brdf.positionWS;
+        float dist = length(lightDir);
         if (dist > sl.radius) continue;
-        lightDir /= dist;
+        lightDir /= max(dist, 1e-5);
 
-        float atten  = 1.0 - (dist / sl.radius);
-        atten       *= atten;
-        atten        = min(atten, SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(sl.shadowIndex)));
+        float attenuation = 1.0 - (dist / sl.radius);
+        attenuation *= attenuation;
+        attenuation = min(attenuation, SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(sl.shadowIndex)));
 
         float coneAngle = dot(normalize(sl.direction.xyz), lightDir);
         if (coneAngle < cos(sl.outerConeAngle)) continue;
-        float coneAtten = clamp((coneAngle - cos(sl.outerConeAngle)) /
-                                (cos(sl.innerConeAngle) - cos(sl.outerConeAngle)), 0.0, 1.0);
-        atten *= coneAtten;
 
-        vec3 dR = vec3(0), sR = vec3(0);
+        float innerCone = cos(sl.innerConeAngle);
+        float outerCone = cos(sl.outerConeAngle);
+        float coneAtten = clamp((coneAngle - outerCone) / max(innerCone - outerCone, 1e-4), 0.0, 1.0);
+
+#ifdef IES_PROFILE_ENABLED
+        int iesIdx = int(sl.iesProfileIndex);
+        if (iesIdx >= 0)
+            attenuation *= SampleIESProfile(iesIdx, lightDir, sl.direction.xyz) * sl.iesIntensityScale;
+#endif
+
+        vec3 dR = vec3(0.0);
+        vec3 sR = vec3(0.0);
         DirectBRDF_Cloth(brdf, lightDir, dR, sR);
-        lightResult.directDiffuse  += dR * sl.color.rgb * sl.intensity * atten;
-        lightResult.directSpecular += sR * sl.color.rgb * sl.intensity * atten;
+        lightResult.directDiffuse += dR * sl.color.rgb * sl.intensity * attenuation * coneAtten;
+        lightResult.directSpecular += sR * sl.color.rgb * sl.intensity * attenuation * coneAtten;
     }
+#else
+    for (uint i = 0u; i < uPointLightCount; ++i)
+    {
+        PointLightData pl = GetPointLight(int(i));
+        vec3 lightDir = pl.position.xyz - brdf.positionWS;
+        float dist = length(lightDir);
+        if (dist > pl.radius) continue;
+        lightDir /= max(dist, 1e-5);
+
+        float attenuation = 1.0 - (dist / pl.radius);
+        attenuation *= attenuation;
+        attenuation = min(attenuation, SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(pl.shadowIndex)));
+
+#ifdef IES_PROFILE_ENABLED
+        int iesIdx = int(pl.iesProfileIndex);
+        if (iesIdx >= 0)
+            attenuation *= SampleIESProfile(iesIdx, lightDir, vec3(0.0, -1.0, 0.0));
+#endif
+
+        vec3 dR = vec3(0.0);
+        vec3 sR = vec3(0.0);
+        DirectBRDF_Cloth(brdf, lightDir, dR, sR);
+        lightResult.directDiffuse += dR * pl.color.rgb * pl.intensity * attenuation;
+        lightResult.directSpecular += sR * pl.color.rgb * pl.intensity * attenuation;
+    }
+
+    for (uint i = 0u; i < uSpotLightCount; ++i)
+    {
+        SpotLightData sl = GetSpotLight(int(i));
+        vec3 lightDir = sl.position.xyz - brdf.positionWS;
+        float dist = length(lightDir);
+        if (dist > sl.radius) continue;
+        lightDir /= max(dist, 1e-5);
+
+        float attenuation = 1.0 - (dist / sl.radius);
+        attenuation *= attenuation;
+        attenuation = min(attenuation, SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(sl.shadowIndex)));
+
+        float coneAngle = dot(normalize(sl.direction.xyz), lightDir);
+        if (coneAngle < cos(sl.outerConeAngle)) continue;
+
+        float innerCone = cos(sl.innerConeAngle);
+        float outerCone = cos(sl.outerConeAngle);
+        float coneAtten = clamp((coneAngle - outerCone) / max(innerCone - outerCone, 1e-4), 0.0, 1.0);
+
+#ifdef IES_PROFILE_ENABLED
+        int iesIdx = int(sl.iesProfileIndex);
+        if (iesIdx >= 0)
+            attenuation *= SampleIESProfile(iesIdx, lightDir, sl.direction.xyz) * sl.iesIntensityScale;
+#endif
+
+        vec3 dR = vec3(0.0);
+        vec3 sR = vec3(0.0);
+        DirectBRDF_Cloth(brdf, lightDir, dR, sR);
+        lightResult.directDiffuse += dR * sl.color.rgb * sl.intensity * attenuation * coneAtten;
+        lightResult.directSpecular += sR * sl.color.rgb * sl.intensity * attenuation * coneAtten;
+    }
+#endif
 }
 
 #endif // BRDF_CLOTH_INCLUDED

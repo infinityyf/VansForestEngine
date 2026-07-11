@@ -54,5 +54,11 @@ public:
 
     static VansSceneComponentData MakeTransform(const VansSceneTransform& transform = {});
     static VansSceneComponentData MakeModelRenderer(VansAssetGuid model);
+    static VansSceneComponentData MakeSubmeshModelRenderer(VansAssetGuid model,
+        std::uint32_t submeshIndex,
+        const std::string& sourceNode = {},
+        const std::string& sourceMaterial = {},
+        const std::string& slotName = {});
+    static VansSceneComponentData MakeMultiMeshRoot(VansAssetGuid model, std::uint32_t submeshCount);
 };
 }

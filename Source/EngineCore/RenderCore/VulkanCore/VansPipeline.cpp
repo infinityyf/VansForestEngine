@@ -156,7 +156,7 @@ VkSampleMask实质上就是uint32_t。Sample mask的比特与采样点一一对�
 		 false,
 		 VK_LOGIC_OP_COPY,
 		 static_cast<uint32_t>(create_info.attachment_blend_states.size()),
-		 create_info.attachment_blend_states.data(),
+		 create_info.attachment_blend_states.empty() ? nullptr : create_info.attachment_blend_states.data(),
 		 //颜色mask
 		 {
 			 1.0f,

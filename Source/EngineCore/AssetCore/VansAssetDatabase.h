@@ -16,10 +16,16 @@ enum class VansAssetType
     Model,
     Texture,
     Material,
-	Shader,
+    Shader,
 	Audio,
 	Video,
-    Scene
+    Scene,
+    Particle,
+    AnimationClip,
+    AnimatorController,
+    ClothProfile,
+    PostProcessProfile,
+    RagdollProfile
 };
 
 enum class VansAssetState

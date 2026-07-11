@@ -12,10 +12,59 @@
 
 namespace Vans
 {
+VansAssetFileFingerprint VansAssetDocument::Fingerprint(const std::filesystem::path& path, std::string& error)
+{
+    VansAssetFileFingerprint fingerprint;
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec))
+        return fingerprint;
+    if (ec)
+    {
+        error = ec.message();
+        return fingerprint;
+    }
+
+    fingerprint.exists = true;
+    fingerprint.size = std::filesystem::file_size(path, ec);
+    if (ec)
+    {
+        error = ec.message();
+        return {};
+    }
+    fingerprint.lastWriteTime = std::filesystem::last_write_time(path, ec);
+    if (ec)
+    {
+        error = ec.message();
+        return {};
+    }
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+    {
+        error = "Cannot open file for fingerprint: " + path.string();
+        return {};
+    }
+
+    std::uint64_t hash = 14695981039346656037ull;
+    char buffer[4096];
+    while (input.read(buffer, sizeof(buffer)) || input.gcount() > 0)
+    {
+        const std::streamsize count = input.gcount();
+        for (std::streamsize index = 0; index < count; ++index)
+        {
+            hash ^= static_cast<unsigned char>(buffer[index]);
+            hash *= 1099511628211ull;
+        }
+    }
+    fingerprint.contentHash = hash;
+    return fingerprint;
+}
+
 void VansAssetDocument::Reset()
 {
     m_Path.clear();
     m_Root = Json();
+    m_LoadedFingerprint = {};
     m_Loaded = false;
     m_Dirty = false;
 }
@@ -34,6 +83,9 @@ bool VansAssetDocument::Load(const std::filesystem::path& path, std::string& err
             return false;
         }
         m_Path = std::filesystem::absolute(path).lexically_normal();
+        m_LoadedFingerprint = Fingerprint(m_Path, error);
+        if (!m_LoadedFingerprint.exists)
+            return false;
         m_Loaded = true;
         return true;
     }
@@ -47,6 +99,15 @@ bool VansAssetDocument::Load(const std::filesystem::path& path, std::string& err
 bool VansAssetDocument::Save(std::string& error)
 {
     if (!m_Loaded || !m_Dirty) return true;
+    const VansAssetFileFingerprint currentFingerprint = Fingerprint(m_Path, error);
+    if (!error.empty())
+        return false;
+    if (currentFingerprint != m_LoadedFingerprint)
+    {
+        error = "Asset document changed on disk: " + m_Path.string();
+        return false;
+    }
+
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path temporary = m_Path.parent_path() /
         (m_Path.filename().string() + ".tmp." + std::to_string(nonce));
@@ -72,6 +133,9 @@ bool VansAssetDocument::Save(std::string& error)
         std::filesystem::rename(temporary, m_Path, ec);
         if (ec) throw std::runtime_error(ec.message());
 #endif
+        m_LoadedFingerprint = Fingerprint(m_Path, error);
+        if (!error.empty())
+            return false;
         m_Dirty = false;
         return true;
     }

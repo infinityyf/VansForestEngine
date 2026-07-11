@@ -87,6 +87,25 @@ void VansGraphics::VansVKCommandBuffer::ClearColor(VansVKImage& image, const VkC
 		&image_subresource_range);
 }
 
+void VansGraphics::VansVKCommandBuffer::ClearColorImage(VansVKImage& image, VkImageLayout layout, const VkClearColorValue& value)
+{
+	VkImageSubresourceRange image_subresource_range =
+	{
+		VK_IMAGE_ASPECT_COLOR_BIT,
+		0,
+		1,
+		0,
+		1,
+	};
+	vkCmdClearColorImage(
+		m_VansVKCommandBuffer,
+		image.m_VansVKImage,
+		layout,
+		&value,
+		1,
+		&image_subresource_range);
+}
+
 void VansGraphics::VansVKCommandBuffer::ClearMRTColor(const std::vector<VansVKImage>& images, const std::vector<VkClearColorValue>& values)
 {
 	VkImageSubresourceRange image_subresource_range =
@@ -219,6 +238,11 @@ void VansGraphics::VansVKCommandBuffer::CopyBuffer(VkBuffer srcBuffer, VkBuffer 
 	region.dstOffset = dstOffset;
 	region.size      = size;
 	vkCmdCopyBuffer(m_VansVKCommandBuffer, srcBuffer, dstBuffer, 1, &region);
+}
+
+void VansGraphics::VansVKCommandBuffer::FillBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, uint32_t data)
+{
+	vkCmdFillBuffer(m_VansVKCommandBuffer, buffer, offset, size, data);
 }
 
 void VansGraphics::VansVKCommandBuffer::ExecuteSecondaryCommandBuffer(std::vector<VkCommandBuffer>& secondary_command_buffers)

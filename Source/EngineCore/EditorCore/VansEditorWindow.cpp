@@ -33,6 +33,8 @@
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSaveService.h"
+#include "VansAssetDocumentRegistry.h"
+#include "VansEditorAssetSaveService.h"
 #include "VansSceneEditService.h"
 #include "VansEditorSelection.h"
 
@@ -104,6 +106,7 @@ bool VansGraphics::VansEditorWindow::m_GBufferWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_WaterGBufferWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_HairDebugWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_LightWindowOpen = true;
 bool VansGraphics::VansEditorWindow::m_ScriptorWindowOpen = true;
@@ -574,6 +577,12 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
         m_PendingProjectLoad = {};
         return;
     }
+    if (Vans::VansAssetDocumentRegistry::Get().HasDirtyDocuments())
+    {
+        VANS_LOG_WARN("[Editor] Project switch cancelled: save or revert dirty asset changes first");
+        m_PendingProjectLoad = {};
+        return;
+    }
 
     VansPendingProjectLoad pending = m_PendingProjectLoad;
     m_PendingProjectLoad = {};
@@ -609,6 +618,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
     {
         projectMgr.CloseProject();
     }
+    Vans::VansAssetDocumentRegistry::Get().Clear();
 
     m_ProjectLoaded = false;
 	m_SceneEditService.reset();
@@ -768,11 +778,28 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
         }
 
         // 顶部菜单栏
-		const bool sceneDocumentReady = m_PlayState == VansEditorPlayState::Editing &&
-			m_SceneDocument && m_SceneDocument->IsHealthy();
-		if (sceneDocumentReady && !io.WantTextInput && io.KeyCtrl)
+		const bool editingMode = m_PlayState == VansEditorPlayState::Editing;
+		const bool sceneDocumentReady = editingMode && m_SceneDocument && m_SceneDocument->IsHealthy();
+		const bool hasDirtyAssets = Vans::VansAssetDocumentRegistry::Get().HasDirtyDocuments();
+		std::shared_ptr<Vans::VansOpenAssetDocument> selectedAssetDocument;
+		if (!Vans::VansEditorSelection::AssetPath().empty())
+			selectedAssetDocument = Vans::VansAssetDocumentRegistry::Get().Find(Vans::VansEditorSelection::AssetPath());
+		const bool selectedAssetDirty = editingMode && selectedAssetDocument && selectedAssetDocument->IsDirty();
+		if (editingMode && !io.WantTextInput && io.KeyCtrl)
 		{
-			if (ImGui::IsKeyPressed(ImGuiKey_S, false))
+			if (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S, false))
+			{
+				const Vans::VansAssetSaveResult assetSaveResult =
+					Vans::VansEditorAssetSaveService::Get().SaveAllDirtyAssets();
+				if (!assetSaveResult)
+				{
+					for (const std::string& error : assetSaveResult.errors)
+						VANS_LOG_ERROR("[AssetSave] " << error);
+				}
+				else if (assetSaveResult.wroteFile)
+					ReloadCurrentSceneForEditing();
+			}
+			else if (sceneDocumentReady && ImGui::IsKeyPressed(ImGuiKey_S, false))
 			{
 				const Vans::SceneSaveResult saveResult = m_SceneSaveService->Save(*m_SceneDocument);
 				if (!saveResult) VANS_LOG_ERROR("[SceneSave] " << saveResult.message);
@@ -803,11 +830,37 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
 					if (!saveResult) VANS_LOG_ERROR("[SceneSave] " << saveResult.message);
 					else if (saveResult.wroteFile) ReloadCurrentSceneForEditing();
 				}
+				if (ImGui::MenuItem("Save Asset", nullptr, false, selectedAssetDirty))
+				{
+					const Vans::VansAssetSaveResult assetSaveResult =
+						Vans::VansEditorAssetSaveService::Get().SaveAsset(Vans::VansEditorSelection::AssetPath());
+					if (!assetSaveResult)
+					{
+						for (const std::string& error : assetSaveResult.errors)
+							VANS_LOG_ERROR("[AssetSave] " << error);
+					}
+					else if (assetSaveResult.wroteFile)
+						ReloadCurrentSceneForEditing();
+				}
+				if (ImGui::MenuItem("Save All Dirty Assets", "Ctrl+Shift+S", false, hasDirtyAssets))
+				{
+					const Vans::VansAssetSaveResult assetSaveResult =
+						Vans::VansEditorAssetSaveService::Get().SaveAllDirtyAssets();
+					if (!assetSaveResult)
+					{
+						for (const std::string& error : assetSaveResult.errors)
+							VANS_LOG_ERROR("[AssetSave] " << error);
+					}
+					else if (assetSaveResult.wroteFile)
+						ReloadCurrentSceneForEditing();
+				}
 				ImGui::Separator();
                 if (ImGui::MenuItem("Exit"))
                 {
                     if (m_SceneDocument && m_SceneDocument->IsDirty())
                         VANS_LOG_WARN("[Editor] Exit cancelled: save or undo current scene changes first");
+                    else if (Vans::VansAssetDocumentRegistry::Get().HasDirtyDocuments())
+                        VANS_LOG_WARN("[Editor] Exit cancelled: save or revert dirty asset changes first");
                     else
                         glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
                 }
@@ -824,6 +877,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
                 ImGui::MenuItem("GBuffer Visualization", nullptr, &m_GBufferWindowOpen);
                 ImGui::MenuItem("Water GBuffer Visualization", nullptr, &m_WaterGBufferWindowOpen);
                 ImGui::MenuItem("Render Debug", nullptr, &m_RenderDebugWindowOpen);
+                ImGui::MenuItem("Hair Debug", nullptr, &m_HairDebugWindowOpen);
                 ImGui::MenuItem("Water", nullptr, &m_WaterWindowOpen);
                 ImGui::MenuItem("Terrain", nullptr, &m_TerrainWindowOpen);
                 if (m_ReflectionProbeWindow)

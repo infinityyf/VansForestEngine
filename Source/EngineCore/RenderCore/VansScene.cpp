@@ -240,6 +240,9 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
 	case OPAQUE_NODE:
 		m_OpaqueRenderNodes.push_back(renderNode);
 		break;
+	case HAIR_NODE:
+		m_HairRenderNodes.push_back(renderNode);
+		break;
 	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
 		m_ForwardOpaqueAfterDeferredRenderNodes.push_back(renderNode);
 		break;
@@ -287,6 +290,10 @@ void VansGraphics::VansScene::CreateNodeDescriptorSets()
     for (auto node : m_OpaqueRenderNodes)
     {
         node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+	}
+	for (auto node : m_HairRenderNodes)
+	{
+		node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
 	}
 	for (auto node : m_ForwardOpaqueAfterDeferredRenderNodes)
 	{
@@ -588,6 +595,23 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
         }
     );
 
+    // Binding 8: Cloth pre-integrated BRDF LUT
+    descManager->m_ImageDescInfos.push_back(
+        {
+            m_GlobalDescriptorSet,
+            GLOBAL_BINDING_CLOTH_BRDF_LUT,
+            0,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {
+                {
+                    m_MaterialManager.m_ClothBRDFLUT->GetImage().GetSampler(),
+                    m_MaterialManager.m_ClothBRDFLUT->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                }
+            }
+        }
+    );
+
     // Binding 11/12: LTC LUTs (area-light BRDF, runtime-uploaded RGBA16F 64x64)
     if (m_MaterialManager.m_LTC1 && m_MaterialManager.m_LTC2)
     {
@@ -701,6 +725,8 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::FindRenderNodeByName(cons
     // Search across all render node lists that store mesh nodes
     for (auto* node : m_OpaqueRenderNodes)
         if (node && node->m_NodeName == name) return node;
+	for (auto* node : m_HairRenderNodes)
+		if (node && node->m_NodeName == name) return node;
 	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
 		if (node && node->m_NodeName == name) return node;
     for (auto* node : m_TransParentRenderNodes)
@@ -875,6 +901,10 @@ void VansGraphics::VansScene::UnLoadScene()
 	for (auto* node : m_OpaqueRenderNodes)
 		deleteRenderNode(node);
 	m_OpaqueRenderNodes.clear();
+
+	for (auto* node : m_HairRenderNodes)
+		deleteRenderNode(node);
+	m_HairRenderNodes.clear();
 
 	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
 		deleteRenderNode(node);
@@ -1487,6 +1517,8 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
 
     for (auto* node : m_OpaqueRenderNodes)
         updateNode(node);
+	for (auto* node : m_HairRenderNodes)
+		updateNode(node);
 	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
 		updateNode(node);
     for (auto* node : m_TransParentRenderNodes)
@@ -1860,10 +1892,12 @@ std::vector<VansRenderNode*> VansGraphics::VansScene::CollectSSBOManagedRenderNo
 {
     std::vector<VansRenderNode*> result;
     result.reserve(m_OpaqueRenderNodes.size()
+				 + m_HairRenderNodes.size()
 				 + m_ForwardOpaqueAfterDeferredRenderNodes.size()
                  + m_TransParentRenderNodes.size()
                  + m_DecalRenderNodes.size());
     result.insert(result.end(), m_OpaqueRenderNodes.begin(),    m_OpaqueRenderNodes.end());
+	result.insert(result.end(), m_HairRenderNodes.begin(), m_HairRenderNodes.end());
 	result.insert(result.end(), m_ForwardOpaqueAfterDeferredRenderNodes.begin(), m_ForwardOpaqueAfterDeferredRenderNodes.end());
     result.insert(result.end(), m_TransParentRenderNodes.begin(), m_TransParentRenderNodes.end());
     result.insert(result.end(), m_DecalRenderNodes.begin(),     m_DecalRenderNodes.end());
@@ -1969,6 +2003,7 @@ void VansGraphics::VansScene::RemoveRenderNodeFromVector(VansRenderNode* node)
     switch (node->GetNodeType())
     {
     case OPAQUE_NODE:      vec = &m_OpaqueRenderNodes;      break;
+	case HAIR_NODE:        vec = &m_HairRenderNodes;        break;
 	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
 		vec = &m_ForwardOpaqueAfterDeferredRenderNodes;
 		break;

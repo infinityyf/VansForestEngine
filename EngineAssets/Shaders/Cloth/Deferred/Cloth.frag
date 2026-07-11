@@ -3,6 +3,7 @@
 layout(early_fragment_tests) in;
 #include "../../Common/CameraData.glsl"
 #include "../../Common/Common.glsl"
+#include "../../BRDF/BRDFData.glsl"
 
 layout( location = 0 ) in vec2 frag_uv;
 layout( location = 1 ) in vec3 normal_ws;
@@ -26,17 +27,19 @@ layout( push_constant ) uniform MaterialPushConsts
 // G-Buffer MRT outputs
 layout (location = 0) out vec4 outNormal;   // .xyz = world normal,  .w = sheenRoughness
 layout (location = 1) out vec4 outGBuffer0; // .rgb = albedo,        .w = sheenRoughness (mirror)
-layout (location = 2) out vec4 outGBuffer1; // .x = 0 (no metallic), .y = ao, .z = MATERIAL_ID_CLOTH, .w = silk/fabric blend
+layout (location = 2) out vec4 outGBuffer1; // .x = sheenStrength, .y = ao, .z = MATERIAL_ID_CLOTH, .w = translucency
 layout (location = 3) out vec4 outGBuffer2; // .xyz = world pos,     .w = linear depth
 
 void main()
 {
-    // 0.0 = full fabric (Charlie), 1.0 = full silk (Ashikhmin)
-    const float silkMode = 0.0;
+    int mi = max(materialConst.materialIndex, 0);
+    MaterialPayload mat = materialDataBuffer.materials[mi];
 
-    vec3  albedo         = texture(clothAlbedo,    frag_uv).rgb;
-    float sheenRoughness = texture(clothRoughness, frag_uv).r;
-    float ao             = texture(clothAO,        frag_uv).r;
+    vec3  albedo         = max(mat.albedo.rgb, vec3(0.0)) * texture(clothAlbedo, frag_uv).rgb;
+    float sheenRoughness = clamp(mat.roughness * texture(clothRoughness, frag_uv).r, 0.045, 1.0);
+    float ao             = clamp(mat.ao * texture(clothAO, frag_uv).r, 0.0, 1.0);
+    float sheenStrength  = clamp(mat.padding, 0.0, 1.0);
+    float translucency   = clamp(mat.metallic, 0.0, 1.0);
 
     // Normal mapping
     vec3 normal_sample = textureLod(clothNormal, frag_uv, 0.0).rgb;
@@ -48,6 +51,6 @@ void main()
 
     outNormal   = vec4(normal, sheenRoughness);
     outGBuffer0 = vec4(albedo, sheenRoughness);
-    outGBuffer1 = vec4(0.0, ao, float(MATERIAL_ID_CLOTH), silkMode);
+    outGBuffer1 = vec4(sheenStrength, ao, float(MATERIAL_ID_CLOTH), translucency);
     outGBuffer2 = vec4(position_world, -linearDepth);
 }

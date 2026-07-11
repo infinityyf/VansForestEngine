@@ -83,6 +83,8 @@ namespace VansGraphics
 	public :
 		void ClearColor(VansVKImage& image, const VkClearColorValue& value);
 
+		void ClearColorImage(VansVKImage& image, VkImageLayout layout, const VkClearColorValue& value);
+
 		void ClearMRTColor(const std::vector<VansVKImage>& images, const std::vector<VkClearColorValue>& values);
 
 		void ClearDepthStencil(VansVKImage& image, const VkClearDepthStencilValue& value);
@@ -162,6 +164,8 @@ namespace VansGraphics
 
 		// ── Buffer copy (GPU-side) ──
 		void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize srcOffset, VkDeviceSize dstOffset, VkDeviceSize size);
+
+		void FillBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, uint32_t data);
 
 		// ── Pipeline barrier ──
 		void PipelineBarrier(

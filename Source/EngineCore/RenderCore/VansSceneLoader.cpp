@@ -92,6 +92,62 @@ float ReadFloatField(const json& object, const char* key, float fallback)
     return found != object.end() && found->is_number() ? found->get<float>() : fallback;
 }
 
+const json& UnwrapMaterialValue(const json& value)
+{
+    if (value.is_object())
+    {
+        const auto valueIt = value.find("value");
+        if (valueIt != value.end())
+            return *valueIt;
+
+        const auto defaultIt = value.find("default");
+        if (defaultIt != value.end())
+            return *defaultIt;
+    }
+    return value;
+}
+
+const json* FindMaterialField(const json& object, const char* key)
+{
+    if (!object.is_object())
+        return nullptr;
+
+    const auto direct = object.find(key);
+    if (direct != object.end())
+        return &(*direct);
+
+    const auto params = object.find("parameters");
+    if (params != object.end() && params->is_object())
+    {
+        const auto parameter = params->find(key);
+        if (parameter != params->end())
+            return &(*parameter);
+    }
+
+    return nullptr;
+}
+
+float ReadMaterialFloatField(const json& object, const char* key, float fallback)
+{
+    const json* found = FindMaterialField(object, key);
+    if (!found)
+        return fallback;
+    const json& raw = UnwrapMaterialValue(*found);
+    return raw.is_number() ? raw.get<float>() : fallback;
+}
+
+glm::vec3 ReadMaterialVec3Field(const json& object, const char* key, const glm::vec3& fallback)
+{
+    const json* found = FindMaterialField(object, key);
+    if (!found)
+        return fallback;
+    const json& raw = UnwrapMaterialValue(*found);
+    if (!raw.is_array() || raw.size() < 3 ||
+        !raw[0].is_number() || !raw[1].is_number() || !raw[2].is_number())
+        return fallback;
+    return glm::vec3(raw[0].get<float>(), raw[1].get<float>(), raw[2].get<float>());
+}
+
 void ApplyVolumetricCloudSettings(VansMaterialManager& materialManager, const json& sceneData)
 {
     const auto cloudIt = sceneData.find("volumetricClouds");
@@ -562,11 +618,47 @@ bool BuildRuntimeSceneFromV2(json& sceneData)
 
     json objects = json::array();
     json renderNodes = json::array();
+    auto resolveMaterialOverride = [](const json& data) -> std::string
+    {
+        if (!data.contains("materialOverrides") || !data["materialOverrides"].is_object())
+            return {};
+        const json& overrides = data["materialOverrides"];
+        auto readGuid = [&](const std::string& key) -> std::string
+        {
+            if (!overrides.contains(key) || !overrides[key].is_object())
+                return {};
+            return overrides[key].value("guid", "");
+        };
+        std::string materialGuid = readGuid("default");
+        if (!materialGuid.empty())
+            return materialGuid;
+        materialGuid = readGuid("0");
+        if (!materialGuid.empty())
+            return materialGuid;
+        if (data.contains("submesh") && data["submesh"].is_object())
+        {
+            const std::string slotName = data["submesh"].value("slotName", "");
+            if (!slotName.empty())
+            {
+                materialGuid = readGuid(slotName);
+                if (!materialGuid.empty())
+                    return materialGuid;
+            }
+        }
+        if (!overrides.empty())
+            return overrides.begin().value().value("guid", "");
+        return {};
+    };
+
     for (const json& entity : sceneData["entities"])
     {
         const json* transformComponent = FindV2Component(entity, "Transform");
         const json* rendererComponent = FindV2Component(entity, "ModelRenderer");
         const json* animationComponent = FindV2Component(entity, "Animation");
+        const std::string entityGuid = entity.value("id", "");
+        const std::string parentEntityGuid = entity.contains("parent") && entity["parent"].is_string()
+            ? entity["parent"].get<std::string>()
+            : std::string{};
 
         json transform = {
             { "position", { 0.0f, 0.0f, 0.0f } },
@@ -594,13 +686,10 @@ bool BuildRuntimeSceneFromV2(json& sceneData)
         {
             const json& data = (*rendererComponent)["data"];
             const std::string modelGuid = data.value("model", json::object()).value("guid", "");
-            std::string materialGuid;
-            if (data.contains("materialOverrides") && data["materialOverrides"].is_object() && !data["materialOverrides"].empty())
-            {
-                const json& overrideValue = data["materialOverrides"].begin().value();
-                materialGuid = overrideValue.value("guid", "");
-            }
+            std::string materialGuid = resolveMaterialOverride(data);
             runtimeRender = {
+                { "entityGuid", entityGuid },
+                { "parentEntityGuid", parentEntityGuid },
                 { "name", animationComponent && animationComponent->value("enabled", true)
 					? (*animationComponent)["data"].value("name", entity.value("name", ""))
 					: entity.value("name", "") },
@@ -609,6 +698,14 @@ bool BuildRuntimeSceneFromV2(json& sceneData)
                 { "type", data.value("renderType", "opaque") },
                 { "support_shadow", data.value("castShadows", true) }
             };
+            if (data.contains("submesh") && data["submesh"].is_object())
+            {
+                const json& submesh = data["submesh"];
+                runtimeRender["submesh"] = submesh.value("index", 0u);
+                runtimeRender["submeshSlotName"] = submesh.value("slotName", "");
+                runtimeRender["submeshSourceNode"] = submesh.value("sourceNode", "");
+                runtimeRender["submeshSourceMaterial"] = submesh.value("sourceMaterial", "");
+            }
             if (data.contains("sourceNode") && data["sourceNode"].is_string())
                 runtimeRender["parent"] = data["sourceNode"];
             specialRenderNode = data.contains("renderRole") && data["renderRole"].is_string();
@@ -621,7 +718,8 @@ bool BuildRuntimeSceneFromV2(json& sceneData)
         }
 
         json object = {
-			{ "entityGuid", entity.value("id", "") },
+			{ "entityGuid", entityGuid },
+            { "parentEntityGuid", parentEntityGuid },
             { "name", entity.value("name", "") },
             { "transform", std::move(transform) },
             { "components", json::object() }
@@ -848,6 +946,8 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
                 { "need_tangent", ReadBoolField(meta.settings, "generateTangents", true) },
                 { "support_raytracing", ReadBoolField(meta.settings, "buildRayTracingData", true) },
                 { "need_cpu_data", ReadBoolField(meta.settings, "keepCpuMeshData", false) },
+                { "scale_factor", ReadFloatField(meta.settings, "scaleFactor",
+                    ReadFloatField(meta.settings, "scale", 1.0f)) },
 				{ "load_multi_mesh", ReadBoolField(meta.settings, "loadMultiMesh", isFbx) }
             });
         }
@@ -1184,9 +1284,108 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
     VansMesh* mesh = static_cast<VansMesh*>(GetMeshAsset(meshName));
 	std::string materialName = sceneRenderNode.value("material", "");
 	VansMaterial* material = static_cast<VansMaterial*>(GetMaterialAsset(materialName));
+    VansMesh* sourceMesh = nullptr;
+    uint32_t submeshIndex = UINT32_MAX;
+    const bool hasSerializedSubmesh = sceneRenderNode.contains("submesh") && sceneRenderNode["submesh"].is_number_unsigned();
+
+    if (hasSerializedSubmesh)
+    {
+        sourceMesh = mesh;
+        submeshIndex = sceneRenderNode["submesh"].get<uint32_t>();
+        if (!sourceMesh || !sourceMesh->m_IsMultiMesh)
+        {
+            VANS_LOG_WARN("[LoadSingleRenderNode] Render node '" << sceneRenderNode.value("name", "")
+                << "' references submesh " << submeshIndex << " but mesh '" << meshName
+                << "' is not a loaded multi-mesh.");
+            return nullptr;
+        }
+        if (submeshIndex >= sourceMesh->m_SubMeshes.size() || sourceMesh->m_SubMeshes[submeshIndex] == nullptr)
+        {
+            VANS_LOG_WARN("[LoadSingleRenderNode] Render node '" << sceneRenderNode.value("name", "")
+                << "' has invalid submesh index " << submeshIndex << " for mesh '" << meshName << "'.");
+            return nullptr;
+        }
+
+        mesh = sourceMesh->m_SubMeshes[submeshIndex];
+
+        const FBXSubmeshMaterialInfo& fbxInfo = sourceMesh->m_SubmeshMaterialInfos.empty()
+            ? FBXSubmeshMaterialInfo{}
+            : (submeshIndex < sourceMesh->m_SubmeshMaterialInfos.size()
+                ? sourceMesh->m_SubmeshMaterialInfos[submeshIndex]
+                : sourceMesh->m_SubmeshMaterialInfos[0]);
+
+        VansMaterialType matType = material ? material->m_MaterialType
+            : (fbxInfo.IsTransparent() ? VansMaterialType::VAN_TRANSPARENT : VansMaterialType::VAN_PBR);
+
+        if (!material)
+        {
+            const std::string slotName = sceneRenderNode.value("submeshSlotName", "");
+            std::string materialBaseName = sceneRenderNode.value("name", meshName);
+            if (!slotName.empty())
+                materialBaseName += "_" + slotName;
+            else if (!fbxInfo.materialName.empty())
+                materialBaseName += "_" + fbxInfo.materialName;
+            std::string matKey = MakeUniqueMaterialName(*this, materialBaseName);
+
+            material = CreateMaterialForType(matType);
+            material->m_MaterialType = matType;
+            material->SetName(matKey);
+            PopulateMaterialPassShaders(material, matType);
+
+            if (matType == VansMaterialType::VAN_PBR)
+            {
+                VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(material);
+                VansTexture* diffTex  = LoadOrGetTexture(fbxInfo.diffuseTexPath, true);
+                VansTexture* normTex  = LoadOrGetTexture(fbxInfo.normalTexPath, false);
+                VansTexture* metalTex = LoadOrGetTexture(fbxInfo.metallicTexPath, false);
+                VansTexture* roughTex = LoadOrGetTexture(fbxInfo.roughnessTexPath, false);
+                VansTexture* aoTex    = LoadOrGetTexture(fbxInfo.aoTexPath, false);
+
+                pbr->m_BaseColorTexture = ResolveTextureOrDefault(diffTex, "defaultAlbedo");
+                pbr->m_NormalTexture    = ResolveTextureOrDefault(normTex, "defaultNormal");
+                pbr->m_MetalTexture     = ResolveTextureOrDefault(metalTex, "defaultMetal");
+                pbr->m_RoughnessTexture = ResolveTextureOrDefault(roughTex, "defaultRoughness");
+                pbr->m_AoTexture        = ResolveTextureOrDefault(aoTex, "defaultAo");
+
+                pbr->m_BasePBRParam.m_albedo    = glm::vec3(1.0f);
+                pbr->m_BasePBRParam.m_metallic  = fbxInfo.metallic;
+                pbr->m_BasePBRParam.m_roughness = fbxInfo.roughness;
+                pbr->m_BasePBRParam.m_ao        = 1.0f;
+            }
+            else if (matType == VansMaterialType::VAN_TRANSPARENT)
+            {
+                VansTransparentMaterial* trans = static_cast<VansTransparentMaterial*>(material);
+                VansTexture* diffTex    = LoadOrGetTexture(fbxInfo.diffuseTexPath, true);
+                VansTexture* opacityTex = LoadOrGetTexture(fbxInfo.opacityTexPath, false);
+
+                if (diffTex)
+                {
+                    trans->m_TransparentTextureMap.push_back({ "diffuse", diffTex->m_AssetName });
+                    trans->m_TransparentTextures.push_back(diffTex);
+                }
+                if (opacityTex)
+                {
+                    trans->m_TransparentTextureMap.push_back({ "opacity", opacityTex->m_AssetName });
+                    trans->m_TransparentTextures.push_back(opacityTex);
+                }
+            }
+
+            AddMaterialAsset(material);
+            VANS_LOG("[LoadSingleRenderNode] Auto-created submesh material: " << matKey
+                << " for node '" << sceneRenderNode.value("name", "") << "'");
+        }
+
+        type = (matType == VansMaterialType::VAN_TRANSPARENT)
+            ? RenderNodeType::TRANSPARENT_NODE
+            : RenderNodeType::OPAQUE_NODE;
+
+        const std::string meshAlias = MakeUniqueMeshName(*this, sceneRenderNode.value("name", meshName) + "_mesh");
+        mesh->SetName(meshAlias);
+        AddSceneSubMeshAsset(mesh);
+    }
 
     // ── Multi-mesh auto-expansion ─────────────────────────────────────────
-    if (mesh && mesh->m_IsMultiMesh)
+    if (mesh && mesh->m_IsMultiMesh && !hasSerializedSubmesh)
     {
         glm::vec3 position(0), rotation(0), scale(1);
         if (sceneRenderNode.contains("transform"))
@@ -1212,12 +1411,18 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
     }
 
     // ── Standard render node creation ─────────────────────────────────────
+	if (material && material->m_MaterialType == VansMaterialType::VAN_HAIR)
+	{
+		type = RenderNodeType::HAIR_NODE;
+	}
+
     VansRenderNode* renderNode = nullptr;
     switch (type)
     {
     case VansGraphics::NONE_NODE:
         break;
     case VansGraphics::OPAQUE_NODE:
+	case VansGraphics::HAIR_NODE:
 	case VansGraphics::FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
         renderNode = new VansCommonRenderNode(device, type);
         if (sceneRenderNode.contains("support_shadow"))
@@ -1257,6 +1462,10 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
     }
 
     renderNode->m_Mesh     = mesh;
+    renderNode->m_SourceMesh = sourceMesh;
+    renderNode->m_SubmeshIndex = submeshIndex;
+    renderNode->m_EntityGuid = sceneRenderNode.value("entityGuid", "");
+    renderNode->m_ParentEntityGuid = sceneRenderNode.value("parentEntityGuid", "");
     renderNode->m_Material = material;
     renderNode->SetName(sceneRenderNode["name"]);
 
@@ -1976,6 +2185,7 @@ void VansGraphics::VansScene::LoadMeshesFromJson(
         std::string meshPath    = pathPrefix + std::string(sceneMesh["path"]);
         bool import_tangent     = sceneMesh.value("need_tangent", false);
         bool loadMultiMesh      = sceneMesh.value("load_multi_mesh", false);
+        float scaleFactor       = sceneMesh.value("scale_factor", sceneMesh.value("scaleFactor", 1.0f));
 
 		if (loadMultiMesh)
 		{
@@ -1985,7 +2195,7 @@ void VansGraphics::VansScene::LoadMeshesFromJson(
 
             // 动画配置由 object.components.animation 统一处理。
 
-            mesh->LoadMultiMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath, import_tangent, generate_as, needCpuData);
+            mesh->LoadMultiMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath, import_tangent, generate_as, needCpuData, scaleFactor);
             mesh->SetName(sceneMesh["name"]);
             AddMeshAsset(mesh);
         }
@@ -2489,10 +2699,13 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
         pbr->m_MetalTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "metal_texture", "defaultMetal");
         pbr->m_RoughnessTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "roughness_texture", "defaultRoughness");
         pbr->m_AoTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "ao_texture", "defaultAo");
-        pbr->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
-        pbr->m_BasePBRParam.m_metallic = sceneMaterial["metallic"];
-        pbr->m_BasePBRParam.m_roughness = sceneMaterial["roughness"];
-        pbr->m_BasePBRParam.m_ao = sceneMaterial["ao"];
+        glm::vec3 pbrColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
+        pbrColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", pbrColor);
+        pbrColor = ReadMaterialVec3Field(sceneMaterial, "baseColor", pbrColor);
+        pbr->m_BasePBRParam.m_albedo = ReadMaterialVec3Field(sceneMaterial, "albedo", pbrColor);
+        pbr->m_BasePBRParam.m_metallic = ReadMaterialFloatField(sceneMaterial, "metallic", 0.0f);
+        pbr->m_BasePBRParam.m_roughness = ReadMaterialFloatField(sceneMaterial, "roughness", 0.5f);
+        pbr->m_BasePBRParam.m_ao = ReadMaterialFloatField(sceneMaterial, "ao", 1.0f);
         break;
     }
     case VansMaterialType::VAN_CLOTH:
@@ -2502,7 +2715,15 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
         cloth->m_NormalTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "normal_texture", "defaultNormal");
         cloth->m_RoughnessTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "roughness_texture", "defaultRoughness");
         cloth->m_AoTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "ao_texture", "defaultAo");
-        cloth->m_SheenRoughness = sceneMaterial.value("sheenRoughness", 0.5f);
+        cloth->m_SheenRoughness = ReadMaterialFloatField(sceneMaterial, "sheenRoughness", 0.5f);
+        glm::vec3 clothColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
+        clothColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", clothColor);
+        clothColor = ReadMaterialVec3Field(sceneMaterial, "baseColor", clothColor);
+        cloth->m_BasePBRParam.m_albedo = ReadMaterialVec3Field(sceneMaterial, "albedo", clothColor);
+        cloth->m_BasePBRParam.m_roughness = cloth->m_SheenRoughness;
+        cloth->m_BasePBRParam.m_metallic = ReadMaterialFloatField(sceneMaterial, "translucency", 0.35f);
+        cloth->m_BasePBRParam.m_ao = ReadMaterialFloatField(sceneMaterial, "ao", 1.0f);
+        cloth->m_BasePBRParam.padding = ReadMaterialFloatField(sceneMaterial, "sheenStrength", 0.5f);
         break;
     }
     case VansMaterialType::VAN_SKIN:
@@ -2515,13 +2736,30 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
     case VansMaterialType::VAN_HAIR:
     {
         auto* hair = static_cast<VansHairMaterial*>(material);
-        hair->m_AlbedoAlphaTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        hair->m_AlbedoTexture = ResolveMaterialTexture(sceneMaterial, "albedo_texture");
+		if (hair->m_AlbedoTexture == nullptr)
+			hair->m_AlbedoTexture = ResolveMaterialTexture(sceneMaterial, "basecolor_texture");
+		hair->m_AlbedoTexture = ResolveTextureOrDefault(hair->m_AlbedoTexture, "defaultAlbedo");
+        hair->m_AlphaTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "alpha_texture", "defaultAlbedo");
         hair->m_NormalTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "normal_texture", "defaultNormal");
         hair->m_RoughnessTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "roughness_texture", "defaultRoughness");
-        hair->m_AoTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "ao_texture", "defaultAo");
-        hair->m_ShiftTexture = ResolveMaterialTexture(sceneMaterial, "shift_texture");
-        hair->m_AlphaTexture = ResolveMaterialTexture(sceneMaterial, "alpha_texture");
-        hair->m_FlowTexture = ResolveMaterialTexture(sceneMaterial, "flow_texture");
+        hair->m_AOTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "ao_texture", "defaultAo");
+        hair->m_ShiftTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "shift_texture", "defaultRoughness");
+        hair->m_FlowTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "flow_texture", "defaultAlbedo");
+        hair->m_IDTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "id_texture", "defaultAlbedo");
+		if (sceneMaterial.contains("params") && sceneMaterial["params"].is_object())
+		{
+			const auto& params = sceneMaterial["params"];
+			auto readVec4 = [](const json& obj, const char* key, glm::vec4 fallback) {
+				if (!obj.contains(key) || !obj[key].is_array() || obj[key].size() < 4)
+					return fallback;
+				return glm::vec4(obj[key][0], obj[key][1], obj[key][2], obj[key][3]);
+			};
+			hair->m_Params.absorption = readVec4(params, "absorption", hair->m_Params.absorption);
+			hair->m_Params.roughnessScale = readVec4(params, "roughness_scale", hair->m_Params.roughnessScale);
+			hair->m_Params.shiftParams = readVec4(params, "shift_params", hair->m_Params.shiftParams);
+			hair->m_Params.coverageParams = readVec4(params, "coverage_params", hair->m_Params.coverageParams);
+		}
         break;
     }
     case VansMaterialType::VAN_SUBSURFACE:
@@ -2531,17 +2769,15 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
         sss->m_NormalTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "normal_texture", "defaultNormal");
         sss->m_ThicknessTexture = ResolveMaterialTexture(sceneMaterial, "thickness_texture");
         sss->m_RoughnessTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "roughness_texture", "defaultRoughness");
-        sss->m_SubsurfacePower = sceneMaterial.value("subsurfacePower", 12.234f);
-        sss->m_Thickness = sceneMaterial.value("thickness", 0.5f);
-        sss->m_SubsurfaceAmount = sceneMaterial.value("subsurfaceAmount", 1.0f);
-        sss->m_CurvatureInfluence = sceneMaterial.value("curvatureInfluence", 0.35f);
-        if (sceneMaterial.contains("subsurfaceColor") && sceneMaterial["subsurfaceColor"].is_array())
-        {
-            sss->m_SubsurfaceColor = glm::vec3(
-                sceneMaterial["subsurfaceColor"][0],
-                sceneMaterial["subsurfaceColor"][1],
-                sceneMaterial["subsurfaceColor"][2]);
-        }
+        sss->m_SubsurfacePower = ReadMaterialFloatField(sceneMaterial, "subsurfacePower", 12.234f);
+        sss->m_Thickness = ReadMaterialFloatField(sceneMaterial, "thickness", 0.5f);
+        sss->m_SubsurfaceAmount = ReadMaterialFloatField(sceneMaterial, "subsurfaceAmount", 1.0f);
+        sss->m_CurvatureInfluence = ReadMaterialFloatField(sceneMaterial, "curvatureInfluence", 0.35f);
+        glm::vec3 sssColor = ReadMaterialVec3Field(sceneMaterial, "albedo", sss->m_SubsurfaceColor);
+        sssColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", sssColor);
+        sssColor = ReadMaterialVec3Field(sceneMaterial, "baseColor", sssColor);
+        sssColor = ReadMaterialVec3Field(sceneMaterial, "color", sssColor);
+        sss->m_SubsurfaceColor = ReadMaterialVec3Field(sceneMaterial, "subsurfaceColor", sssColor);
         sss->m_BasePBRParam.m_albedo = sss->m_SubsurfaceColor;
         sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
         sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
@@ -2582,19 +2818,12 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
     case VansMaterialType::VAN_EMISSIVE:
     {
         auto* emissive = static_cast<VansEmissiveMaterial*>(material);
-        if (sceneMaterial.contains("emissive_color") && sceneMaterial["emissive_color"].is_array())
-        {
-            emissive->m_BasePBRParam.m_albedo = glm::vec3(
-                sceneMaterial["emissive_color"][0],
-                sceneMaterial["emissive_color"][1],
-                sceneMaterial["emissive_color"][2]);
-        }
-        else
-        {
-            emissive->m_BasePBRParam.m_albedo = glm::vec3(1.0f);
-        }
-
-        emissive->m_BasePBRParam.m_roughness = sceneMaterial.value("emissive_intensity", 1.0f);
+        glm::vec3 emissiveColor = ReadMaterialVec3Field(sceneMaterial, "albedo", glm::vec3(1.0f));
+        emissiveColor = ReadMaterialVec3Field(sceneMaterial, "color", emissiveColor);
+        emissiveColor = ReadMaterialVec3Field(sceneMaterial, "emissive", emissiveColor);
+        emissive->m_BasePBRParam.m_albedo = ReadMaterialVec3Field(sceneMaterial, "emissive_color", emissiveColor);
+        const float emissiveIntensity = ReadMaterialFloatField(sceneMaterial, "intensity", 1.0f);
+        emissive->m_BasePBRParam.m_roughness = ReadMaterialFloatField(sceneMaterial, "emissive_intensity", emissiveIntensity);
         emissive->m_BasePBRParam.m_metallic = 0.0f;
         emissive->m_BasePBRParam.m_ao = 1.0f;
         emissive->m_EmissiveTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "emissive_texture", "defaultAlbedo");
@@ -2619,14 +2848,13 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
     case VansMaterialType::VAN_DECAL:
     {
         auto* decal = static_cast<VansDecalMaterial*>(material);
-        if (sceneMaterial.contains("albedo") && sceneMaterial["albedo"].is_array())
-            decal->m_BasePBRParam.m_albedo = glm::vec3(sceneMaterial["albedo"][0], sceneMaterial["albedo"][1], sceneMaterial["albedo"][2]);
-        else
-            decal->m_BasePBRParam.m_albedo = glm::vec3(1.0f);
-
-        decal->m_BasePBRParam.m_metallic = sceneMaterial.value("metallic", 0.0f);
-        decal->m_BasePBRParam.m_roughness = sceneMaterial.value("roughness", 0.5f);
-        decal->m_BasePBRParam.m_ao = sceneMaterial.value("ao", 1.0f);
+        glm::vec3 decalColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
+        decalColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", decalColor);
+        decalColor = ReadMaterialVec3Field(sceneMaterial, "baseColor", decalColor);
+        decal->m_BasePBRParam.m_albedo = ReadMaterialVec3Field(sceneMaterial, "albedo", decalColor);
+        decal->m_BasePBRParam.m_metallic = ReadMaterialFloatField(sceneMaterial, "metallic", 0.0f);
+        decal->m_BasePBRParam.m_roughness = ReadMaterialFloatField(sceneMaterial, "roughness", 0.5f);
+        decal->m_BasePBRParam.m_ao = ReadMaterialFloatField(sceneMaterial, "ao", 1.0f);
         decal->m_BaseColorTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "basecolor_texture", "defaultAlbedo");
         decal->m_NormalTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "normal_texture", "defaultNormal");
         decal->m_MetalTexture = ResolveMaterialTextureOrDefault(sceneMaterial, "metal_texture", "defaultMetal");
@@ -3037,6 +3265,8 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
         std::string meshName = MakeUniqueMeshName(*this, nodeBaseName);
 
         renderNode->m_Mesh     = subMesh;
+        renderNode->m_SourceMesh = multiMesh;
+        renderNode->m_SubmeshIndex = static_cast<uint32_t>(i);
         renderNode->m_Material = material;
         renderNode->m_ParentGroupName = resolvedParentName;
 
@@ -3105,8 +3335,18 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
     auto groupIt = m_MultiMeshGroups.find(meshGroupName);
     if (groupIt == m_MultiMeshGroups.end())
     {
-        VANS_LOG_WARN("[LoadAnimComp] mesh_group '" << meshGroupName << "' not found for object '" << objectName << "'");
-        return nullptr;
+        groupIt = std::find_if(m_MultiMeshGroups.begin(), m_MultiMeshGroups.end(),
+            [&](const auto& entry)
+            {
+                const MultiMeshGroup& group = entry.second;
+                return group.parentName == objectName ||
+                    (group.sourceMesh && group.sourceMesh->m_AssetName == meshGroupName);
+            });
+        if (groupIt == m_MultiMeshGroups.end())
+        {
+            VANS_LOG_WARN("[LoadAnimComp] mesh_group '" << meshGroupName << "' not found for object '" << objectName << "'");
+            return nullptr;
+        }
     }
 
     MultiMeshGroup& group = groupIt->second;
@@ -3583,14 +3823,26 @@ VansGraphics::VansAnimationNode* VansGraphics::VansScene::LoadSingleAnimationCom
     for (size_t ci = 0; ci < group.childNodes.size(); ci++)
     {
         VansRenderNode* childNode = group.childNodes[ci];
+        const uint32_t submeshIndex = childNode->m_SubmeshIndex != UINT32_MAX
+            ? childNode->m_SubmeshIndex
+            : static_cast<uint32_t>(ci);
         childNode->m_HasSkeletonBone  = true;
         childNode->m_AnimationEnabled = true;
         childNode->m_AnimOwner        = animNode;
-        childNode->m_AnimSubmeshIndex = static_cast<uint32_t>(ci);
-        if (ci < animNode->GetSubmeshBufferCount())
+        childNode->m_AnimSubmeshIndex = submeshIndex;
+        if (submeshIndex < animNode->GetSubmeshBufferCount())
         {
-            childNode->m_AnimBoneIDBuffer    = &animNode->GetBoneIDBuffer(static_cast<uint32_t>(ci));
-            childNode->m_AnimBoneWeightBuffer = &animNode->GetBoneWeightBuffer(static_cast<uint32_t>(ci));
+            childNode->m_AnimBoneIDBuffer    = &animNode->GetBoneIDBuffer(submeshIndex);
+            childNode->m_AnimBoneWeightBuffer = &animNode->GetBoneWeightBuffer(submeshIndex);
+            childNode->MarkAnimationDescriptorDirty();
+        }
+        else
+        {
+            childNode->m_AnimationEnabled = false;
+            childNode->m_AnimBoneIDBuffer = nullptr;
+            childNode->m_AnimBoneWeightBuffer = nullptr;
+            VANS_LOG_WARN("[LoadAnimComp] submesh index " << submeshIndex
+                << " has no bone buffer for node '" << childNode->m_NodeName << "'");
         }
     }
 
@@ -3851,6 +4103,18 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
             if (type == "leaves" || type == "leaf") return TreePartType::Leaves;
             return TreePartType::Custom;
         };
+        auto readSubmeshIndex = [](const json& value) -> int32_t {
+            if (value.contains("submeshIndex") && value["submeshIndex"].is_number_integer())
+                return value["submeshIndex"].get<int32_t>();
+            if (value.contains("submesh") && value["submesh"].is_number_integer())
+                return value["submesh"].get<int32_t>();
+            if (value.contains("submesh") && value["submesh"].is_object() &&
+                value["submesh"].contains("index") && value["submesh"]["index"].is_number_integer())
+            {
+                return value["submesh"]["index"].get<int32_t>();
+            }
+            return -1;
+        };
 
         if (treesJson.contains("species") && treesJson["species"].is_array())
         {
@@ -3867,6 +4131,7 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
                         part.type = parsePartType(partJson.value("type", std::string("custom")));
                         part.meshName = partJson.value("mesh", std::string(""));
                         part.materialName = partJson.value("material", std::string(""));
+                        part.submeshIndex = readSubmeshIndex(partJson);
                         species.parts.push_back(part);
                     }
                 }
@@ -3889,6 +4154,7 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
                 }
                 inst.yawDeg = instJson.value("yaw", 0.0f);
                 inst.scale = instJson.value("scale", 1.0f);
+                inst.submeshIndex = readSubmeshIndex(instJson);
                 treeConfig.instances.push_back(inst);
             }
         }
@@ -4069,6 +4335,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
     // ── First pass: create all Objects and component instances ────────────
     // animation component 需要等待所有 render 节点创建完毕后再解析。
     struct ParentLink { std::string childName; std::string parentName; };
+    struct ParentEntityLink { uint32_t childTransformID; std::string childName; std::string parentEntityGuid; };
     struct PendingAnimComp
     {
         VansScriptObject*           obj;
@@ -4078,6 +4345,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
     };
 
     std::vector<ParentLink>    parentLinks;
+    std::vector<ParentEntityLink> parentEntityLinks;
     std::vector<PendingAnimComp> pendingAnimComps;
 
     // ── 对象级 Transform 解析 helper ─────────────────────────────────────
@@ -4114,6 +4382,44 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         bool hasObjTransform = parseObjTransform(objJson, objPos, objRot, objScl);
 
         auto& components = objJson["components"];
+
+        // ── Non-render TransformID 分配（灯光 / 相机 / 逻辑根节点等无 render 组件的对象）──
+		bool objectTransformAllocated = obj->m_OwnsTransform;
+
+        auto ensureObjectTransform = [&]()
+        {
+            if (!objectTransformAllocated &&
+                obj->GetComponent<VansScriptRenderComponent>() == nullptr)
+            {
+                obj->m_TransformID = VansTransformStore::AllocateTransform();
+				obj->m_OwnsTransform = true;
+                if (objJson.contains("transform"))
+                {
+                    const auto& tJson = objJson["transform"];
+                    auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                    if (tJson.contains("position") && tJson["position"].is_array())
+                    {
+                        t.m_Position = glm::vec3(tJson["position"][0].get<float>(),
+                                                 tJson["position"][1].get<float>(),
+                                                 tJson["position"][2].get<float>());
+                    }
+                    if (tJson.contains("rotation") && tJson["rotation"].is_array())
+                    {
+                        t.m_Rotation = glm::vec3(tJson["rotation"][0].get<float>(),
+                                                 tJson["rotation"][1].get<float>(),
+                                                 tJson["rotation"][2].get<float>());
+                    }
+					if (tJson.contains("scale") && tJson["scale"].is_array())
+					{
+						t.m_Scale = glm::vec3(tJson["scale"][0].get<float>(),
+							tJson["scale"][1].get<float>(), tJson["scale"][2].get<float>());
+					}
+					else
+						t.m_Scale = glm::vec3(1.0f);
+                }
+                objectTransformAllocated = true;
+            }
+        };
 
         // ── Render component ──────────────────────────────────────────────
         if (components.contains("render"))
@@ -4174,6 +4480,15 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                     link.parentName = renderJson["parent"].get<std::string>();
                     parentLinks.push_back(link);
                 }
+                if (renderJson.contains("parentEntityGuid") && renderJson["parentEntityGuid"].is_string())
+                {
+                    ParentEntityLink link;
+                    link.childTransformID = rn->m_TransformID;
+                    link.childName = renderJson.value("name", "");
+                    link.parentEntityGuid = renderJson["parentEntityGuid"].get<std::string>();
+                    if (!link.parentEntityGuid.empty())
+                        parentEntityLinks.push_back(link);
+                }
             }
         }
 
@@ -4183,14 +4498,7 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             auto* renderComp = obj->GetComponent<VansScriptRenderComponent>();
             VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
 			if (!associatedNode && hasObjTransform)
-			{
-				obj->m_TransformID = VansTransformStore::AllocateTransform();
-				obj->m_OwnsTransform = true;
-				VansTransform& transform = VansTransformStore::GetTransform(obj->m_TransformID);
-				transform.m_Position = objPos;
-				transform.m_Rotation = objRot;
-				transform.m_Scale = objScl;
-			}
+				ensureObjectTransform();
 			const uint32_t standaloneTransformID = obj->m_OwnsTransform ? obj->m_TransformID : UINT32_MAX;
 			VansPhysicsNode* pn = LoadSinglePhysicsNode(
 				components["physics"], associatedNode, standaloneTransformID);
@@ -4239,8 +4547,13 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         {
             auto* renderComp = obj->GetComponent<VansScriptRenderComponent>();
             VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
+            if (!associatedNode)
+                ensureObjectTransform();
+            const uint32_t standaloneTransformID = (!associatedNode && obj->m_OwnsTransform)
+                ? obj->m_TransformID
+                : UINT32_MAX;
             VansEngine::VansCharacterControllerNode* cctNode =
-                LoadSingleCharControllerNode(components["charController"], associatedNode);
+                LoadSingleCharControllerNode(components["charController"], associatedNode, standaloneTransformID);
             if (cctNode)
             {
                 auto* cctComp = new VansScriptCharacterControllerComponent();
@@ -4263,43 +4576,11 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             obj->AddComponent(vc);
         }
 
-        // ── Non-render TransformID 分配（灯光 / 相机等无 render 组件的对象）──
-		bool objectTransformAllocated = obj->m_OwnsTransform;
-
-        auto ensureObjectTransform = [&]()
+        if (components.contains("multiMeshRoot") ||
+            (components.contains("animation") && obj->GetComponent<VansScriptRenderComponent>() == nullptr))
         {
-            if (!objectTransformAllocated &&
-                obj->GetComponent<VansScriptRenderComponent>() == nullptr)
-            {
-                obj->m_TransformID = VansTransformStore::AllocateTransform();
-				obj->m_OwnsTransform = true;
-                if (objJson.contains("transform"))
-                {
-                    const auto& tJson = objJson["transform"];
-                    auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
-                    if (tJson.contains("position") && tJson["position"].is_array())
-                    {
-                        t.m_Position = glm::vec3(tJson["position"][0].get<float>(),
-                                                 tJson["position"][1].get<float>(),
-                                                 tJson["position"][2].get<float>());
-                    }
-                    if (tJson.contains("rotation") && tJson["rotation"].is_array())
-                    {
-                        t.m_Rotation = glm::vec3(tJson["rotation"][0].get<float>(),
-                                                 tJson["rotation"][1].get<float>(),
-                                                 tJson["rotation"][2].get<float>());
-                    }
-					if (tJson.contains("scale") && tJson["scale"].is_array())
-					{
-						t.m_Scale = glm::vec3(tJson["scale"][0].get<float>(),
-							tJson["scale"][1].get<float>(), tJson["scale"][2].get<float>());
-					}
-					else
-						t.m_Scale = glm::vec3(1.0f);
-                }
-                objectTransformAllocated = true;
-            }
-        };
+            ensureObjectTransform();
+        }
 
         // ── Light components (方向光 / 点光源 / 聚光灯) ────────────────────
         {
@@ -4910,6 +5191,105 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             VANS_LOG("[TransformParent] '" << link.childName << "' parented to '" << link.parentName << "'");
         }
     }
+    for (const auto& link : parentEntityLinks)
+    {
+        if (link.parentEntityGuid.empty())
+            continue;
+        VansScriptObject* parentObj = FindObjectByGuid(link.parentEntityGuid);
+        if (parentObj && parentObj->m_TransformID != UINT32_MAX)
+        {
+            m_TransformParentSystem.SetParent(link.childTransformID, parentObj->m_TransformID);
+            VANS_LOG("[TransformParent] '" << link.childName << "' parented to entity '" << parentObj->m_ObjectName << "'");
+        }
+        else
+        {
+            VANS_LOG_WARN("[TransformParent] Could not resolve parent entity for child='"
+                << link.childName << "' parentGuid='" << link.parentEntityGuid << "'");
+        }
+    }
+
+    // === [VansSceneLoadPass::Pass3.5_MultiMeshGroupRebuild] ===
+    // New object-hierarchy multi-mesh scenes serialize one child ModelRenderer per submesh.
+    // Rebuild the runtime group from entity parent links so animation can bind by submesh index.
+    for (size_t parentIndex = 0; parentIndex < objectsArray.size(); ++parentIndex)
+    {
+        const json& parentJson = objectsArray[parentIndex];
+        const json& components = parentJson.value("components", json::object());
+        if (!components.contains("multiMeshRoot") || !components["multiMeshRoot"].is_object())
+            continue;
+
+        const std::string parentGuid = parentJson.value("entityGuid", "");
+        const std::string parentName = parentJson.value("name", "");
+        if (parentGuid.empty() || parentName.empty())
+            continue;
+
+        const json& rootJson = components["multiMeshRoot"];
+        const std::string modelGuid = rootJson.value("model", json::object()).value("guid", "");
+        VansMesh* sourceMesh = static_cast<VansMesh*>(GetMeshAsset(modelGuid));
+        if (!sourceMesh || !sourceMesh->m_IsMultiMesh)
+        {
+            VANS_LOG_WARN("[MultiMeshGroup] Root '" << parentName << "' references missing/non-multi mesh '" << modelGuid << "'");
+            continue;
+        }
+
+        MultiMeshGroup& group = m_MultiMeshGroups[parentName];
+        group.parentName = parentName;
+        group.parentEntityGuid = parentGuid;
+        group.sourceMesh = sourceMesh;
+        group.childNodes.clear();
+
+        VansScriptObject* parentObj = FindObjectByGuid(parentGuid);
+        if (parentObj && parentObj->m_TransformID != UINT32_MAX)
+            group.sharedTransformID = parentObj->m_TransformID;
+
+        std::unordered_set<uint32_t> usedIndices;
+        for (auto* childObj : m_SceneObjects)
+        {
+            if (!childObj || childObj->m_EntityGuid.empty())
+                continue;
+            auto* rc = childObj->GetComponent<VansScriptRenderComponent>();
+            if (!rc || !rc->m_RenderNode)
+                continue;
+            VansRenderNode* node = rc->m_RenderNode;
+            if (node->m_ParentEntityGuid != parentGuid)
+                continue;
+            if (node->m_SourceMesh != sourceMesh)
+                continue;
+            if (node->m_SubmeshIndex == UINT32_MAX)
+                continue;
+            if (!usedIndices.insert(node->m_SubmeshIndex).second)
+            {
+                VANS_LOG_WARN("[MultiMeshGroup] Duplicate submesh index " << node->m_SubmeshIndex
+                    << " under root '" << parentName << "', keeping first node.");
+                continue;
+            }
+
+            // Serialized submesh children are logical pieces of the MultiMeshRoot.
+            // They must use the root transform directly; TransformParentSystem is
+            // not part of VansRenderNode::ComputeModelDataFromTransform().
+            const uint32_t oldTransformID = node->m_TransformID;
+            if (oldTransformID != group.sharedTransformID)
+            {
+                if (m_TransformParentSystem.HasParent(oldTransformID))
+                    m_TransformParentSystem.ClearParent(oldTransformID);
+                node->ShareTransform(group.sharedTransformID);
+            }
+            childObj->m_TransformID = group.sharedTransformID;
+            childObj->m_OwnsTransform = false;
+
+            node->m_ParentGroupName = parentName;
+            group.childNodes.push_back(node);
+        }
+
+        std::sort(group.childNodes.begin(), group.childNodes.end(),
+            [](const VansRenderNode* lhs, const VansRenderNode* rhs)
+            {
+                return lhs->m_SubmeshIndex < rhs->m_SubmeshIndex;
+            });
+
+        VANS_LOG("[MultiMeshGroup] Rebuilt group '" << parentName << "' children="
+            << group.childNodes.size() << " sourceMesh=" << modelGuid);
+    }
 
     // === [VansSceneLoadPass::Pass4_AnimationRagdoll] ===
     // 依赖：Pass1/Pass3 已创建 render 与 transform；输出：动画节点与 ragdoll 绑定。
@@ -5005,12 +5385,25 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         // 策略2：parentTransformID 有效时按 TransformID 匹配（独立对象 render.parent 路径）
         auto FindAnimNodeForCloth = [&]() -> VansAnimationNode*
         {
+            if (parentTransformID != UINT32_MAX)
+            {
+                for (auto* animNode : m_AnimationNodes)
+                {
+                    if (animNode && animNode->GetTransformID() == parentTransformID)
+                        return animNode;
+                }
+            }
+
             for (auto* animNode : m_AnimationNodes)
             {
                 for (auto* ownedRN : animNode->GetRenderNodes())
                 {
+                    if (!ownedRN)
+                        continue;
                     // 策略1：名称匹配
-                    if (!parentName.empty() && ownedRN->m_NodeName == parentName)
+                    if (!parentName.empty()
+                        && (ownedRN->m_NodeName == parentName
+                            || ownedRN->m_ParentGroupName == parentName))
                         return animNode;
                     // 策略2：TransformID 匹配
                     if (parentTransformID != UINT32_MAX
@@ -5018,6 +5411,12 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                         return animNode;
                 }
             }
+
+            // 独立 cloth 对象可只通过 clothprofile 中的 boneBindings 表达跟随关系。
+            // TestV2 这类单角色场景没有显式 parent，此时唯一 AnimationNode 就是目标。
+            if (m_AnimationNodes.size() == 1)
+                return m_AnimationNodes[0];
+
             return nullptr;
         };
 

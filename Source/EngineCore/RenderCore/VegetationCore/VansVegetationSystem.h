@@ -139,6 +139,7 @@ namespace VansGraphics
 		TreePartType type = TreePartType::Custom;
 		std::string meshName;
 		std::string materialName;
+		int32_t submeshIndex = -1; // -1 = draw all drawable submeshes for this part
 	};
 
 	struct TreeSpeciesConfig
@@ -154,6 +155,7 @@ namespace VansGraphics
 		glm::vec3 position = glm::vec3(0.0f);
 		float yawDeg = 0.0f;
 		float scale = 1.0f;
+		int32_t submeshIndex = -1; // -1 = use species default; >=0 selects one multi-mesh submesh variant
 	};
 
 	struct TreeVegetationConfig
@@ -170,7 +172,7 @@ namespace VansGraphics
 		glm::mat4 modelMatrix = glm::mat4(1.0f);
 		glm::vec4 boundsSphere = glm::vec4(0.0f); // xyz center, w radius
 		uint32_t speciesIndex = 0;
-		uint32_t regionIndex = 0;
+		uint32_t regionIndex = 0; // visibility group index for GPU cull output
 		uint32_t randomSeed = 0;
 		uint32_t flags = 0;
 	};
@@ -199,7 +201,7 @@ namespace VansGraphics
 		int materialIndex;
 		int objectIndex;
 		uint32_t visibleOffset;
-		uint32_t padding;
+		uint32_t alphaTestEnabled;
 	};
 
 	struct TreeShadowPushConstants
@@ -208,6 +210,7 @@ namespace VansGraphics
 		int objectIndex;
 		uint32_t visibleOffset;
 		int cascadeIndex;
+		uint32_t alphaTestEnabled;
 	};
 
 	struct TreePunctualShadowPushConstants
@@ -217,7 +220,7 @@ namespace VansGraphics
 		int materialIndex;
 		int objectIndex;
 		uint32_t visibleOffset;
-		uint32_t padding;
+		uint32_t alphaTestEnabled;
 	};
 
 	class VansMesh;
@@ -254,6 +257,9 @@ namespace VansGraphics
 		int materialIndex = -1;
 		uint32_t speciesIndex = 0;
 		uint32_t partIndex = 0;
+		TreePartType partType = TreePartType::Custom;
+		uint32_t visibilityGroupIndex = 0;
+		int32_t submeshIndex = -1;
 		uint32_t visibleOffset = 0;
 		uint32_t instanceCapacity = 0;
 		VansVKBuffer indirectDrawBuffer;

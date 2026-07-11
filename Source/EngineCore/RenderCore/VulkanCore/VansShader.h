@@ -164,6 +164,9 @@ namespace VansGraphics
 
 		// 贴花专用：MRT 3 附件 Alpha Blend，GBuffer1 colorMask 仅 R+G
 		void SetEnableDecalBlend(VkBool32 enable) { m_DrawStateData.enableDecalBlend = enable; }
+		void SetEnableAdditiveBlend(VkBool32 enable) { m_DrawStateData.enableAdditiveBlend = enable; }
+		void SetEnablePremultipliedAlphaBlend(VkBool32 enable) { m_DrawStateData.enablePremultipliedAlphaBlend = enable; }
+		void SetAdditiveBlendAttachmentMask(uint32_t mask) { m_DrawStateData.additiveBlendAttachmentMask = mask; }
 
 		// Tessellation support: set primitive topology and patch control points
 		void SetPrimitiveTopology(VkPrimitiveTopology topology) { m_DrawStateData.primitiveTopology = topology; TriggerReCreateGraphicsPipeline(); }

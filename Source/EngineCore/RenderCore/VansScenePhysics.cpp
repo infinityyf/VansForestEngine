@@ -466,7 +466,8 @@ void VansGraphics::VansScene::UpdateCharControllerTransforms()
 VansEngine::VansCharacterControllerNode*
 VansGraphics::VansScene::LoadSingleCharControllerNode(
     const json& charCtrlJson,
-    VansRenderNode* associatedRenderNode)
+    VansRenderNode* associatedRenderNode,
+    uint32_t standaloneTransformID)
 {
     using namespace VansEngine;
 
@@ -508,6 +509,12 @@ VansGraphics::VansScene::LoadSingleCharControllerNode(
     if (associatedRenderNode)
     {
         transformID = associatedRenderNode->m_TransformID;
+        const VansTransform& t = VansTransformStore::GetTransform(transformID);
+        spawnPos = t.m_Position + props.m_PositionOffset;
+    }
+    else if (standaloneTransformID != UINT32_MAX)
+    {
+        transformID = standaloneTransformID;
         const VansTransform& t = VansTransformStore::GetTransform(transformID);
         spawnPos = t.m_Position + props.m_PositionOffset;
     }

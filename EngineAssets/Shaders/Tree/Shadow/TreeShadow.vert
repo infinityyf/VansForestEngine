@@ -10,6 +10,7 @@ layout(location = 3) in vec3 tangent;
 layout(location = 4) in vec3 bitangent;
 
 layout(location = 0) out float shadowDepth;
+layout(location = 1) out vec2 frag_uv;
 
 struct TreeInstanceGPU
 {
@@ -49,4 +50,5 @@ void main()
     clipCoord.z = clipCoord.z * 0.5 + 0.5;
     gl_Position = clipCoord;
     shadowDepth = clipCoord.z;
+    frag_uv = uv;
 }

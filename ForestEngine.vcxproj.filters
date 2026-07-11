@@ -164,6 +164,8 @@
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetMeta.h"><Filter>EngineCore\AssetCore</Filter></ClInclude>
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDatabase.h"><Filter>EngineCore\AssetCore</Filter></ClInclude>
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDocument.h"><Filter>EngineCore\AssetCore</Filter></ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansAssetDocumentRegistry.h"><Filter>EngineCore\EditorCore</Filter></ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansEditorAssetSaveService.h"><Filter>EngineCore\EditorCore</Filter></ClInclude>
     <ClInclude Include="Source\EngineCore\AssetCore\VansModelAsset.h"><Filter>EngineCore\AssetCore</Filter></ClInclude>
     <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.h"><Filter>EngineCore\AssetCore\Importers</Filter></ClInclude>
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneSchemaV2.h"><Filter>EngineCore\SceneCore</Filter></ClInclude>
@@ -1162,6 +1164,12 @@
       <Filter>External\imguiZmo</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\VansGizmos.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansAssetDocumentRegistry.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansEditorAssetSaveService.cpp">
       <Filter>EngineCore\EditorCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothNode.cpp">

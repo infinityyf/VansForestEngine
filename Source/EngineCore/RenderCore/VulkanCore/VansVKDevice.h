@@ -185,6 +185,15 @@ namespace VansGraphics
 		// 设计文档 §6.1 Pass 6 = DrawSceneDeferredSkybox，Pass 10-12 = DrawSceneTransparentPost
 		void DrawSceneDeferredSkybox(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void DrawHairLighting(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void DrawHairComposite(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void ClearHairOITResources(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void PrepareHairOITForResolve(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		VkDescriptorSetLayout GetHairOITPassLayout() const { return m_HairLightingPassLayout; }
+		VkDescriptorSet GetHairOITPassDescriptorSet() const
+		{
+			return m_HairLightingPassSets.empty() ? VK_NULL_HANDLE : m_HairLightingPassSets[0];
+		}
 
 		VkDeviceAddress GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo);
 
@@ -245,6 +254,18 @@ namespace VansGraphics
 		uint64_t m_PPBloomDescSetGeneration = 0;
 		uint64_t m_CloudRayMarchDescSetGeneration = 0;
 		uint64_t m_ScreenSpaceShadowDescSetGeneration = 0;
+
+		VkDescriptorSetLayout m_HairCompositePassLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_HairCompositePassSets;
+		bool m_HairCompositeDescriptorsReady = false;
+		VkDescriptorSetLayout m_HairLightingPassLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_HairLightingPassSets;
+		bool m_HairLightingDescriptorsReady = false;
+
+		void SetupHairLightingDescriptors(VansRenderPassManager* renderPassManager);
+		void DestroyHairLightingDescriptors();
+		void SetupHairCompositeDescriptors(VansRenderPassManager* renderPassManager);
+		void DestroyHairCompositeDescriptors();
 
 		bool IsFeatureDescriptorCurrent(uint64_t generation) const
 		{

@@ -25,6 +25,7 @@ namespace VansGraphics
 		PARTICLE_NODE = 1 << 9, // 粒子实例化 Billboard 节点
 		WATER_NODE = 1 << 10,   // 水面节点，独立 Water GBuffer Pass
 		FORWARD_OPAQUE_AFTER_DEFERRED_NODE = 1 << 11,
+		HAIR_NODE = 1 << 12,
 	};
 
 	struct alignas(16) ModelDataStruct
@@ -53,6 +54,14 @@ namespace VansGraphics
 			std::string m_ParentGroupName;
 
 			VansMesh* m_Mesh = nullptr;
+
+			// Original model asset and serialized submesh identity.
+			// m_Mesh may point at the current runtime slice implementation
+			// (sourceMesh->m_SubMeshes[m_SubmeshIndex]).
+			VansMesh* m_SourceMesh = nullptr;
+			uint32_t m_SubmeshIndex = UINT32_MAX;
+			std::string m_EntityGuid;
+			std::string m_ParentEntityGuid;
 
 			VansMaterial* m_Material = nullptr;
 
@@ -88,6 +97,7 @@ namespace VansGraphics
 
 		// ID-based Data Access
 		uint32_t m_TransformID;
+		VkDevice m_Device = VK_NULL_HANDLE;
 
 		// When false, this node shares another node's transform and must NOT free it.
 		bool m_OwnsTransform = true;
@@ -140,6 +150,19 @@ namespace VansGraphics
 		void virtual UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) {};
 
 		void virtual UpdateDescripterSets(VansMaterialManager& materialManager) {}
+
+		virtual void RefreshAnimationDescriptorSet() {}
+
+		virtual void MarkAnimationDescriptorDirty() {}
+
+		void OverridePassDescriptorSet(uint32_t setIndex, VkDescriptorSetLayout layout, VkDescriptorSet descriptorSet)
+		{
+			if (setIndex < m_UsedDescSetLayouts.size() && setIndex < m_UsedDescSets.size())
+			{
+				m_UsedDescSetLayouts[setIndex] = layout;
+				m_UsedDescSets[setIndex] = descriptorSet;
+			}
+		}
 
 		// New function for updating model data from logic code
 		void UpdateModelData();
@@ -215,6 +238,10 @@ namespace VansGraphics
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 		
 		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+
+		void RefreshAnimationDescriptorSet() override;
+
+		void MarkAnimationDescriptorDirty() override;
 
 		void SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager);
 

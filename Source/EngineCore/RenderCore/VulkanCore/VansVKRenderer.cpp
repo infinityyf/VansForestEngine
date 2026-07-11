@@ -1,7 +1,9 @@
 ﻿#include "VansVKDevice.h"
 #include "VansRenderPass.h"
 #include "VansVKDescriptorManager.h"
+#include "VansDescriptorSetLayouts.h"
 #include "../VansScene.h"
+#include "../VansShaderManager.h"
 #include "../WaterCore/VansWaterSystem.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
@@ -98,6 +100,11 @@ namespace VansGraphics
 		renderPassManager->SetupVansShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
 		renderPassManager->SetupVansPunctualShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
 		renderPassManager->SetupVansMotionVectorRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, { m_RenderWidth, m_RenderHeight });
+		renderPassManager->SetupVansHairDeepOpacityPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
+		renderPassManager->SetupVansHairVisibilityPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
+		renderPassManager->SetupVansHairLightingPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
+		SetupHairLightingDescriptors(renderPassManager);
+		SetupHairCompositeDescriptors(renderPassManager);
 		// 贴花 Pass：引用 GBuffer 图像（须在 SetupVansDeferredRenderPass 之后调用）
 		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
 		// 水面 GBuffer Pass：须在 SetupVansDeferredRenderPass 之后调用（依赖已创建的 m_DepthImage）
@@ -216,6 +223,13 @@ namespace VansGraphics
 			}
 
 			{
+				VANS_GPU_SCOPE(cmd, "Hair Deep Opacity Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairDeepOpacityPass(), cmd, m_globalRenderStateData);
+				m_Scene->DrawHairDeepOpacityNodes(VansShaderManager::Get().FindGraphicsShader("HairDeepOpacity"));
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+
+			{
 				VANS_GPU_SCOPE(cmd, "Motion Vector Pass");
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansMotionVectorPass, cmd, m_globalRenderStateData);
 				DrawMotionVectorPass(renderPassManager, cmd);
@@ -330,6 +344,20 @@ namespace VansGraphics
 				m_Scene->DrawForwardOpaqueAfterDeferredNodes();
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
+			{
+				VANS_GPU_SCOPE(cmd, "Hair Visibility Pass");
+				ClearHairOITResources(renderPassManager, m_VansVKCommandBuffer);
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairVisibilityPass(), cmd, m_globalRenderStateData);
+				m_Scene->DrawHairVisibilityNodes();
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+				PrepareHairOITForResolve(renderPassManager, m_VansVKCommandBuffer);
+			}
+			{
+				VANS_GPU_SCOPE(cmd, "Hair Lighting Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairLightingPass(), cmd, m_globalRenderStateData);
+				DrawHairLighting(renderPassManager, m_VansVKCommandBuffer);
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
 
 			// ── 设计文档 Pass 10-12：Transparent + PostProcess（LOAD SceneColor）────────
 			{
@@ -393,6 +421,11 @@ namespace VansGraphics
 				{
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, shadowCmd, m_globalRenderStateData);
 				DrawPunctualShadowMap(renderPassManager, shadowCmd);
+				renderPassManager->EndRenderPass(shadowCmd, m_globalRenderStateData);
+				}
+				{
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairDeepOpacityPass(), shadowCmd, m_globalRenderStateData);
+				m_Scene->DrawHairDeepOpacityNodes(VansShaderManager::Get().FindGraphicsShader("HairDeepOpacity"));
 				renderPassManager->EndRenderPass(shadowCmd, m_globalRenderStateData);
 				}
 				m_VansVKShadowCommandBuffer.EndCommandBufferRecord();
@@ -536,6 +569,20 @@ namespace VansGraphics
 				VANS_GPU_SCOPE(cmd, "Forward Opaque After Deferred Pass");
 				renderPassManager->BeginRenderPass(renderPassManager->GetVansForwardOpaqueAfterDeferredPass(), cmd, m_globalRenderStateData);
 				m_Scene->DrawForwardOpaqueAfterDeferredNodes();
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+			}
+			{
+				VANS_GPU_SCOPE(cmd, "Hair Visibility Pass");
+				ClearHairOITResources(renderPassManager, m_VansVKCommandBuffer);
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairVisibilityPass(), cmd, m_globalRenderStateData);
+				m_Scene->DrawHairVisibilityNodes();
+				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+				PrepareHairOITForResolve(renderPassManager, m_VansVKCommandBuffer);
+			}
+			{
+				VANS_GPU_SCOPE(cmd, "Hair Lighting Pass");
+				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairLightingPass(), cmd, m_globalRenderStateData);
+				DrawHairLighting(renderPassManager, m_VansVKCommandBuffer);
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 			{
@@ -699,6 +746,8 @@ namespace VansGraphics
 
 	void VansVKDevice::AfterRendering()
 	{
+		DestroyHairLightingDescriptors();
+		DestroyHairCompositeDescriptors();
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 		renderPassManager->DestroyRenderPass();
 
@@ -783,10 +832,295 @@ namespace VansGraphics
 	void VansVKDevice::DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
 		VkCommandBuffer& cmd = commandBuffer.GetVKCommandBuffer();
+		DrawHairComposite(renderPassManager, commandBuffer);
 		m_Scene->DrawTransParentNodes();
 		m_Scene->DrawParticleNodes();
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 		m_Scene->DrawPostProcessNodes();
+	}
+
+	void VansVKDevice::SetupHairLightingDescriptors(VansRenderPassManager* renderPassManager)
+	{
+		DestroyHairLightingDescriptors();
+
+		if (renderPassManager == nullptr)
+		{
+			return;
+		}
+
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_HairLighting(
+			m_HairLightingPassLayout, m_HairLightingPassSets);
+
+		if (m_HairLightingPassSets.empty())
+		{
+			return;
+		}
+
+		auto* descManager = VansVKDescriptorManager::GetInstance();
+		descManager->ResetState();
+		descManager->m_ImageDescInfos.push_back({
+			m_HairLightingPassSets[0],
+			HAIR_LIGHTING_BINDING_OIT_HEAD,
+			0,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{
+				VK_NULL_HANDLE,
+				renderPassManager->GetHairOITHead().GetImageView(),
+				VK_IMAGE_LAYOUT_GENERAL
+			}}
+		});
+		descManager->m_BufferDescInfos.push_back({
+			m_HairLightingPassSets[0],
+			HAIR_LIGHTING_BINDING_OIT_NODES,
+			0,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ renderPassManager->GetHairOITNodeBuffer().GetNativeBuffer(), 0, renderPassManager->GetHairOITNodeBuffer().GetBufferSize() }}
+		});
+		descManager->m_BufferDescInfos.push_back({
+			m_HairLightingPassSets[0],
+			HAIR_LIGHTING_BINDING_OIT_COUNTER,
+			0,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ renderPassManager->GetHairOITCounterBuffer().GetNativeBuffer(), 0, renderPassManager->GetHairOITCounterBuffer().GetBufferSize() }}
+		});
+		descManager->m_ImageDescInfos.push_back({
+			m_HairLightingPassSets[0],
+			HAIR_LIGHTING_BINDING_DEEP_OPACITY,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				renderPassManager->GetHairDeepOpacity().GetSampler(),
+				renderPassManager->GetHairDeepOpacity().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+		descManager->m_ImageDescInfos.push_back({
+			m_HairLightingPassSets[0],
+			HAIR_LIGHTING_BINDING_CASCADE_SHADOW,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				renderPassManager->GetCascadeShadowSampler(),
+				renderPassManager->GetCascadeShadowArrayView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+		descManager->UpdateDescriptorSets();
+		m_HairLightingDescriptorsReady = true;
+	}
+
+	void VansVKDevice::ClearHairOITResources(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+	{
+		if (renderPassManager == nullptr)
+			return;
+
+		VansVKImage& headImage = renderPassManager->GetHairOITHead();
+		const VkImageLayout oldHeadLayout = headImage.GetImageLayout();
+		VkImageMemoryBarrier toClear{};
+		toClear.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toClear.srcAccessMask = (oldHeadLayout == VK_IMAGE_LAYOUT_UNDEFINED) ? 0 : (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+		toClear.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		toClear.oldLayout = oldHeadLayout;
+		toClear.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		toClear.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toClear.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toClear.image = headImage.GetImage();
+		toClear.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		commandBuffer.PipelineBarrier(
+			(oldHeadLayout == VK_IMAGE_LAYOUT_UNDEFINED) ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			{}, {}, { toClear });
+
+		VkClearColorValue clearHead{};
+		clearHead.uint32[0] = 0xffffffffu;
+		commandBuffer.ClearColorImage(headImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, clearHead);
+
+		VkImageMemoryBarrier toShader{};
+		toShader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		toShader.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toShader.image = headImage.GetImage();
+		toShader.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		commandBuffer.PipelineBarrier(
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{}, {}, { toShader });
+		headImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+
+		commandBuffer.FillBuffer(renderPassManager->GetHairOITCounterBuffer().GetNativeBuffer(), 0, sizeof(uint32_t), 0u);
+		VkBufferMemoryBarrier counterBarrier{};
+		counterBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		counterBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		counterBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		counterBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		counterBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		counterBarrier.buffer = renderPassManager->GetHairOITCounterBuffer().GetNativeBuffer();
+		counterBarrier.offset = 0;
+		counterBarrier.size = renderPassManager->GetHairOITCounterBuffer().GetBufferSize();
+		commandBuffer.PipelineBarrier(
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{}, { counterBarrier }, {});
+
+		VkBufferMemoryBarrier nodeWriteBarrier{};
+		nodeWriteBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		nodeWriteBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		nodeWriteBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		nodeWriteBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		nodeWriteBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		nodeWriteBarrier.buffer = renderPassManager->GetHairOITNodeBuffer().GetNativeBuffer();
+		nodeWriteBarrier.offset = 0;
+		nodeWriteBarrier.size = renderPassManager->GetHairOITNodeBuffer().GetBufferSize();
+		commandBuffer.PipelineBarrier(
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{}, { nodeWriteBarrier }, {});
+	}
+
+	void VansVKDevice::PrepareHairOITForResolve(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+	{
+		if (renderPassManager == nullptr)
+			return;
+
+		VansVKImage& headImage = renderPassManager->GetHairOITHead();
+		VkImageMemoryBarrier headBarrier{};
+		headBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		headBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		headBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		headBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		headBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		headBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		headBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		headBarrier.image = headImage.GetImage();
+		headBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		VkBufferMemoryBarrier bufferBarriers[2]{};
+		bufferBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		bufferBarriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		bufferBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		bufferBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarriers[0].buffer = renderPassManager->GetHairOITNodeBuffer().GetNativeBuffer();
+		bufferBarriers[0].offset = 0;
+		bufferBarriers[0].size = renderPassManager->GetHairOITNodeBuffer().GetBufferSize();
+
+		bufferBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		bufferBarriers[1].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		bufferBarriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		bufferBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarriers[1].buffer = renderPassManager->GetHairOITCounterBuffer().GetNativeBuffer();
+		bufferBarriers[1].offset = 0;
+		bufferBarriers[1].size = renderPassManager->GetHairOITCounterBuffer().GetBufferSize();
+
+		commandBuffer.PipelineBarrier(
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{}, { bufferBarriers[0], bufferBarriers[1] }, { headBarrier });
+	}
+
+	void VansVKDevice::DestroyHairLightingDescriptors()
+	{
+		auto* descManager = VansVKDescriptorManager::GetInstance();
+		descManager->DestroyDescriptorSet(m_HairLightingPassSets);
+		descManager->DestroyDescriptorSetLayout(m_HairLightingPassLayout);
+		m_HairLightingDescriptorsReady = false;
+	}
+
+	void VansVKDevice::SetupHairCompositeDescriptors(VansRenderPassManager* renderPassManager)
+	{
+		DestroyHairCompositeDescriptors();
+
+		if (renderPassManager == nullptr)
+		{
+			return;
+		}
+
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_HairComposite(
+			m_HairCompositePassLayout, m_HairCompositePassSets);
+
+		if (m_HairCompositePassSets.empty())
+		{
+			return;
+		}
+
+		auto* descManager = VansVKDescriptorManager::GetInstance();
+		descManager->ResetState();
+		descManager->m_ImageDescInfos.push_back({
+			m_HairCompositePassSets[0],
+			HAIR_COMP_BINDING_COLOR,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				renderPassManager->GetHairColor().GetSampler(),
+				renderPassManager->GetHairColor().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				}}
+			});
+		descManager->UpdateDescriptorSets();
+		m_HairCompositeDescriptorsReady = true;
+	}
+
+	void VansVKDevice::DestroyHairCompositeDescriptors()
+	{
+		auto* descManager = VansVKDescriptorManager::GetInstance();
+		descManager->DestroyDescriptorSet(m_HairCompositePassSets);
+		descManager->DestroyDescriptorSetLayout(m_HairCompositePassLayout);
+		m_HairCompositeDescriptorsReady = false;
+	}
+
+		void VansVKDevice::DrawHairLighting(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+		{
+			if (!m_HairLightingDescriptorsReady || m_HairLightingPassSets.empty())
+			{
+				return;
+			}
+
+			VansGraphicsShader* shader = VansShaderManager::Get().FindGraphicsShader("HairLighting");
+			if (shader == nullptr)
+			{
+				return;
+			}
+
+			m_globalRenderStateData.vertexInputBindingDescriptions = nullptr;
+			m_globalRenderStateData.vertexInputAttributeDescriptions = nullptr;
+
+			std::vector<VkDescriptorSetLayout> layouts = { m_Scene->m_GlobalDescriptorSetLayout, m_HairLightingPassLayout };
+			std::vector<VkDescriptorSet> sets = { m_Scene->m_GlobalDescriptorSet, m_HairLightingPassSets[0] };
+
+			commandBuffer.EnsureGraphicsShader(*shader, m_globalRenderStateData, layouts);
+			commandBuffer.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, sets, {});
+			commandBuffer.BindGraphicsPipeline(*shader->GetGraphicsPipeline());
+			commandBuffer.Draw(3, 1, 0, 0);
+		}
+
+	void VansVKDevice::DrawHairComposite(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+	{
+		if (!m_HairCompositeDescriptorsReady || m_HairCompositePassSets.empty())
+		{
+			return;
+		}
+
+		VansGraphicsShader* shader = VansShaderManager::Get().FindGraphicsShader("HairComposite");
+		if (shader == nullptr)
+		{
+			return;
+		}
+
+		m_globalRenderStateData.vertexInputBindingDescriptions = nullptr;
+		m_globalRenderStateData.vertexInputAttributeDescriptions = nullptr;
+
+		std::vector<VkDescriptorSetLayout> layouts = { m_Scene->m_GlobalDescriptorSetLayout, m_HairCompositePassLayout };
+		std::vector<VkDescriptorSet> sets = { m_Scene->m_GlobalDescriptorSet, m_HairCompositePassSets[0] };
+
+		commandBuffer.EnsureGraphicsShader(*shader, m_globalRenderStateData, layouts);
+		commandBuffer.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, sets, {});
+		commandBuffer.BindGraphicsPipeline(*shader->GetGraphicsPipeline());
+		commandBuffer.Draw(3, 1, 0, 0);
 	}
 
 }

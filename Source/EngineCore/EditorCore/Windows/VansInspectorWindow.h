@@ -1,12 +1,13 @@
 #pragma once
 
 #include "VansBaseWindowComponent.h"
+#include "../VansAssetDocumentRegistry.h"
 #include "../VansInspectorLiveEditService.h"
 #include "../VansMaterialLiveEditService.h"
-#include "../../AssetCore/VansAssetDocument.h"
 #include "../../RenderCore/VansScene.h"
 
 #include <filesystem>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -31,12 +32,10 @@ private:
     bool DrawComponent(Json& component, const std::string& pointer, bool& removeRequested);
     void ApplyComponentEnabled(const std::string& jsonPointer, bool enabled);
     bool LoadAssetDocuments(const std::filesystem::path& sourcePath);
-    bool SaveAssetDocuments();
+    bool SaveAssetDocuments(bool reloadSceneOnSuccess = true);
 
     std::filesystem::path m_AssetPath;
-    std::filesystem::path m_MetaPath;
-    Vans::VansAssetDocument m_AssetDocument;
-    Vans::VansAssetDocument m_MetaDocument;
+    std::shared_ptr<Vans::VansOpenAssetDocument> m_AssetDocuments;
     std::string m_Error;
     VansScene* m_Scene = nullptr;
     VansInspectorLiveEditService m_LiveEdit;

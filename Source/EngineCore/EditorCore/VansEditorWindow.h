@@ -60,6 +60,7 @@ namespace VansGraphics
 		static bool m_WaterGBufferWindowOpen;
 
 		static bool m_RenderDebugWindowOpen;
+		static bool m_HairDebugWindowOpen;
 
 		static bool m_LightWindowOpen;
 		static bool m_ScriptorWindowOpen;

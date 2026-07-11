@@ -105,6 +105,17 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_RoughnessTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
 			}
+			else if (material->m_MaterialType == VansMaterialType::VAN_CLOTH)
+			{
+				VansClothMaterial* cloth = static_cast<VansClothMaterial*>(material);
+				cloth->m_MaterialIndex = pbrMaterialIndex++;
+				materialManager->m_GlobalPBRParamData.push_back(cloth->m_BasePBRParam);
+				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_NormalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_RoughnessTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_AoTexture->GetImage()));
+			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
 			{
 				appendCustomMaterialData(material);

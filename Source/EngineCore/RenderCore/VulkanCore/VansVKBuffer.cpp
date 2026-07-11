@@ -65,8 +65,10 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 		return false;
 	}
 
+	if ((usage & (VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT)) != 0)
 	{
-		// Buffer view: how shaders interpret the buffer data.
+		// Buffer views are only valid/needed for texel buffers. Plain UBO/SSBO
+		// descriptors bind VkBuffer directly and large SSBOs may exceed texel view limits.
 		VkBufferViewCreateInfo buffer_view_create_info =
 		{
 			 VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,

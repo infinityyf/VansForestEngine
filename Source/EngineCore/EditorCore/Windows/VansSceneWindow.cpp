@@ -7,6 +7,7 @@
 #include "ImGuizmo.h"
 #include <filesystem>
 #include <fstream>
+#include <unordered_set>
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -189,6 +190,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                     // ── 按需加载 Mesh 到场景 m_Meshes ──────
                                     // GetMeshAsset 在 CreateEntity 内部调用，需在此之前将 mesh 加载到 m_Meshes
                                     VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+                                    VansMesh* droppedMesh = nullptr;
                                     if (vkDev && m_Scene && !m_Scene->HasProjectMeshAlias(meshName))
                                     {
                                         auto* mesh = new VansMesh(false, false);
@@ -202,6 +204,8 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                         VANS_LOG("[SceneWindow] Mesh loaded: "
                                             << record->sourcePath.string() << " as '" << meshName << "'");
                                     }
+                                    if (m_Scene)
+                                        droppedMesh = static_cast<VansMesh*>(m_Scene->FindMeshAsset(meshName));
 
                                     // 生成唯一实体名称
                                     std::string uniqueName = meshName;
@@ -245,17 +249,130 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
 
                                     if (m_Scene && vkDev)
                                     {
-                                        VansScriptObject* obj = m_Scene->CreateEntity(
-                                            vkDev->GetLogicDevice(), uniqueName,
-                                            meshName, "DefaultPBR", worldPos);
-
-                                        // ── 同步写入 JSON 文档（SchemaV2 格式）──
-                                        // 注意：必须以 "entities/-" JSON Pointer 追加，否则 schema 验证失败
-                                        if (obj && !guidStr.empty())
+                                        auto* doc = VansEditorWindow::GetSceneDocument();
+                                        auto* editService = VansEditorWindow::GetSceneEditService();
+                                        if (droppedMesh && droppedMesh->m_IsMultiMesh && doc && editService && !guidStr.empty())
                                         {
-                                            auto* doc = VansEditorWindow::GetSceneDocument();
-                                            auto* editService = VansEditorWindow::GetSceneEditService();
-                                            if (doc && editService)
+                                            const std::string modelGuid = guidStr;
+                                            m_Scene->SetProjectMeshAlias(modelGuid, m_Scene->FindMeshAsset(meshName));
+
+                                            const std::string parentId = Vans::VansAssetGuid::New().ToString();
+                                            glm::quat rotQuat = glm::quat(glm::radians(glm::vec3(0.0f)));
+
+                                            Vans::SceneJson transformComp;
+                                            transformComp["id"]      = Vans::VansAssetGuid::New().ToString();
+                                            transformComp["type"]    = "Transform";
+                                            transformComp["version"] = 1u;
+                                            transformComp["enabled"] = true;
+                                            transformComp["data"]    = {
+                                                {"position", {worldPos.x, worldPos.y, worldPos.z}},
+                                                {"rotation", {rotQuat.x, rotQuat.y, rotQuat.z, rotQuat.w}},
+                                                {"scale",    {1.0f, 1.0f, 1.0f}}
+                                            };
+
+                                            Vans::SceneJson rootComp;
+                                            rootComp["id"]      = Vans::VansAssetGuid::New().ToString();
+                                            rootComp["type"]    = "MultiMeshRoot";
+                                            rootComp["version"] = 1u;
+                                            rootComp["enabled"] = true;
+                                            rootComp["data"]    = {
+                                                {"model", {{"guid", modelGuid}}},
+                                                {"submeshCount", static_cast<uint32_t>(droppedMesh->m_SubMeshes.size())},
+                                                {"generation", "object-hierarchy"}
+                                            };
+
+                                            Vans::SceneJson parentEntity;
+                                            parentEntity["id"] = parentId;
+                                            parentEntity["name"] = uniqueName;
+                                            parentEntity["parent"] = nullptr;
+                                            parentEntity["components"] = Vans::SceneJson::array(
+                                                { std::move(transformComp), std::move(rootComp) });
+                                            editService->Set("/entities/-", parentEntity);
+
+                                            std::unordered_set<std::string> usedSlots;
+                                            auto makeSlotName = [&](const std::string& nodeName,
+                                                                    const std::string& materialName,
+                                                                    uint32_t index)
+                                            {
+                                                std::string base = (!nodeName.empty() || !materialName.empty())
+                                                    ? nodeName + "/" + materialName
+                                                    : "Submesh_" + std::to_string(index);
+                                                if (base == "/")
+                                                    base = "Submesh_" + std::to_string(index);
+                                                std::string candidate = base;
+                                                uint32_t suffix = 1;
+                                                while (!usedSlots.insert(candidate).second)
+                                                    candidate = base + "_" + std::to_string(suffix++);
+                                                return candidate;
+                                            };
+
+                                            for (uint32_t i = 0; i < droppedMesh->m_SubMeshes.size(); ++i)
+                                            {
+                                                VansMesh* subMesh = droppedMesh->m_SubMeshes[i];
+                                                if (!subMesh || subMesh->GetMeshVertexCount() == 0 || subMesh->GetIndexCount() == 0)
+                                                    continue;
+
+                                                const auto& matInfos = droppedMesh->m_SubmeshMaterialInfos;
+                                                const VansGraphics::FBXSubmeshMaterialInfo fbxInfo = matInfos.empty()
+                                                    ? VansGraphics::FBXSubmeshMaterialInfo{}
+                                                    : (i < matInfos.size() ? matInfos[i] : matInfos[0]);
+                                                const std::string sourceNode = subMesh->m_SourceNodeName;
+                                                const std::string sourceMaterial = fbxInfo.materialName;
+                                                const std::string slotName = makeSlotName(sourceNode, sourceMaterial, i);
+
+                                                Vans::SceneJson childTransform;
+                                                childTransform["id"]      = Vans::VansAssetGuid::New().ToString();
+                                                childTransform["type"]    = "Transform";
+                                                childTransform["version"] = 1u;
+                                                childTransform["enabled"] = true;
+                                                childTransform["data"] = {
+                                                    {"position", {0.0f, 0.0f, 0.0f}},
+                                                    {"rotation", {0.0f, 0.0f, 0.0f, 1.0f}},
+                                                    {"scale",    {1.0f, 1.0f, 1.0f}}
+                                                };
+
+                                                Vans::SceneJson modelData;
+                                                modelData["model"] = { {"guid", modelGuid} };
+                                                modelData["submesh"] = {
+                                                    {"index", i},
+                                                    {"sourceNode", sourceNode},
+                                                    {"sourceMaterial", sourceMaterial},
+                                                    {"slotName", slotName}
+                                                };
+                                                modelData["castShadows"] = true;
+                                                modelData["receiveShadows"] = true;
+                                                modelData["rayTracingMode"] = "auto";
+                                                modelData["visibilityMask"] = 0xffffffffu;
+                                                modelData["materialOverrides"] = Vans::SceneJson::object();
+                                                modelData["orphanOverrides"] = Vans::SceneJson::object();
+
+                                                Vans::SceneJson rendererComp;
+                                                rendererComp["id"]      = Vans::VansAssetGuid::New().ToString();
+                                                rendererComp["type"]    = "ModelRenderer";
+                                                rendererComp["version"] = 1u;
+                                                rendererComp["enabled"] = true;
+                                                rendererComp["data"]    = std::move(modelData);
+
+                                                std::string childName = uniqueName + "_" +
+                                                    (!sourceNode.empty() ? sourceNode : ("Submesh_" + std::to_string(i)));
+                                                Vans::SceneJson childEntity;
+                                                childEntity["id"] = Vans::VansAssetGuid::New().ToString();
+                                                childEntity["name"] = childName;
+                                                childEntity["parent"] = parentId;
+                                                childEntity["components"] = Vans::SceneJson::array(
+                                                    { std::move(childTransform), std::move(rendererComp) });
+                                                editService->Set("/entities/-", childEntity);
+                                            }
+                                        }
+                                        else
+                                        {
+                                            VansScriptObject* obj = m_Scene->CreateEntity(
+                                                vkDev->GetLogicDevice(), uniqueName,
+                                                meshName, "DefaultPBR", worldPos);
+
+                                            // ── 同步写入 JSON 文档（SchemaV2 格式）──
+                                            // 注意：必须以 "entities/-" JSON Pointer 追加，否则 schema 验证失败
+                                            if (obj && !guidStr.empty() && doc && editService)
                                             {
                                                 const std::string modelGuid = guidStr;
 
@@ -268,7 +385,6 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                                 transformComp["type"]    = "Transform";
                                                 transformComp["version"] = 1u;
                                                 transformComp["enabled"] = true;
-                                                // euler → quat 转换（拖拽默认零旋转，未来可从 CreateEntity 传入实际 rotation）
                                                 glm::quat rotQuat = glm::quat(glm::radians(glm::vec3(0.0f)));
                                                 transformComp["data"]    = {
                                                     {"position", {worldPos.x, worldPos.y, worldPos.z}},
@@ -276,7 +392,6 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                                     {"scale",    {1.0f, 1.0f, 1.0f}}
                                                 };
 
-                                                // ── 获取实际使用的 Material GUID（与 CreateEntity fallback 逻辑一致）──
                                                 std::string materialGuid;
                                                 const auto& materials = m_Scene->GetMaterialAssets();
                                                 if (!materials.empty())
@@ -286,7 +401,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                                 modelData["model"] = { {"guid", modelGuid} };
                                                 if (!materialGuid.empty())
                                                     modelData["materialOverrides"] = {
-                                                        {"0", {{"guid", materialGuid}}}
+                                                        {"default", {{"guid", materialGuid}}}
                                                     };
 
                                                 Vans::SceneJson rendererComp;
@@ -303,7 +418,6 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                                 newEntity["components"] = Vans::SceneJson::array(
                                                     {std::move(transformComp), std::move(rendererComp)});
 
-                                                // nlohmann json_pointer 支持 "-" 作为数组追加 token
                                                 editService->Set("/entities/-", newEntity);
                                             }
                                         }

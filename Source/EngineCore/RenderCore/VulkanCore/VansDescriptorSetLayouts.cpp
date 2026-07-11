@@ -52,6 +52,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		// binding 7: Skin pre-integrated BSDF LUT
 		{GLOBAL_BINDING_SKIN_BSDF_LUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 IBL_STAGES, nullptr},
+		// binding 8: Cloth pre-integrated BRDF LUT
+		{GLOBAL_BINDING_CLOTH_BRDF_LUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 IBL_STAGES, nullptr},
 		// binding 9: TileLight Header SSBO (readonly in shaders)
 		{GLOBAL_BINDING_TILE_LIGHT_GRID,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 GLOBAL_STAGES, nullptr},
@@ -640,33 +643,30 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_ClothTexture(
 }
 
 // ============================================================
-// Set 4: Per-Node Hair Texture Layout (7 bindings: albedo+alpha, normal, roughness, ao, shift, alpha, flow)
+// Set 4: Per-Node Hair Texture Layout.
 // Each hair render node owns its own descriptor set with dedicated textures.
 // ============================================================
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		// binding 0: Hair albedo + alpha texture
-		{HAIR_TEXTURE_BINDING_ALBEDO_ALPHA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		{HAIR_TEXTURE_BINDING_ALBEDO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 1: Hair normal texture
-		{HAIR_TEXTURE_BINDING_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 2: Hair roughness texture
-		{HAIR_TEXTURE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 3: Hair ambient occlusion texture
-		{HAIR_TEXTURE_BINDING_AO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 4: Hair strand shift texture
-		{HAIR_TEXTURE_BINDING_SHIFT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 5: Hair dedicated alpha mask texture
 		{HAIR_TEXTURE_BINDING_ALPHA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 6: Hair flow map texture (RG = tangent-space flow direction)
+		{HAIR_TEXTURE_BINDING_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{HAIR_TEXTURE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{HAIR_TEXTURE_BINDING_AO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{HAIR_TEXTURE_BINDING_SHIFT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{HAIR_TEXTURE_BINDING_FLOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{HAIR_TEXTURE_BINDING_ID, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{HAIR_TEXTURE_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
@@ -935,6 +935,42 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterComposite(
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// binding 9: W-16 Phase 2 SSS 散射输出
 		{WATER_COMP_BINDING_SSS_SCATTER,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Hair Composite Pass Set 1
+// HairComposite.frag：HairColor（RGB=lit hair，A=coverage/opacity）
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairComposite(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{HAIR_COMP_BINDING_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Hair Lighting Pass Set 1
+// HairVisibility.frag writes a per-pixel linked list; HairLighting.frag resolves it.
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairLighting(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{HAIR_LIGHTING_BINDING_OIT_HEAD, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{HAIR_LIGHTING_BINDING_OIT_NODES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{HAIR_LIGHTING_BINDING_OIT_COUNTER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{HAIR_LIGHTING_BINDING_CASCADE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{HAIR_LIGHTING_BINDING_DEEP_OPACITY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);

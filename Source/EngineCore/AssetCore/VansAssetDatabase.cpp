@@ -194,6 +194,12 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
 	if (extension == L".wav" || extension == L".mp3" || extension == L".ogg" || extension == L".flac") return VansAssetType::Audio;
 	if (extension == L".mp4" || extension == L".mkv" || extension == L".avi" || extension == L".mov" || extension == L".webm") return VansAssetType::Video;
     if (extension == L".scene" || extension == L".vscene") return VansAssetType::Scene;
+    if (extension == L".particle") return VansAssetType::Particle;
+    if (extension == L".vclip") return VansAssetType::AnimationClip;
+    if (extension == L".vanimator") return VansAssetType::AnimatorController;
+    if (extension == L".clothprofile") return VansAssetType::ClothProfile;
+    if (extension == L".pprofile") return VansAssetType::PostProcessProfile;
+    if (extension == L".ragdoll") return VansAssetType::RagdollProfile;
     return VansAssetType::Unknown;
 }
 
@@ -208,6 +214,12 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
 	case VansAssetType::Audio: return "AudioImporter";
 	case VansAssetType::Video: return "VideoImporter";
     case VansAssetType::Scene: return "SceneImporter";
+    case VansAssetType::Particle: return "ParticleImporter";
+    case VansAssetType::AnimationClip: return "AnimationClipImporter";
+    case VansAssetType::AnimatorController: return "AnimatorControllerImporter";
+    case VansAssetType::ClothProfile: return "ClothProfileImporter";
+    case VansAssetType::PostProcessProfile: return "PostProcessProfileImporter";
+    case VansAssetType::RagdollProfile: return "RagdollProfileImporter";
     default: return {};
     }
 }

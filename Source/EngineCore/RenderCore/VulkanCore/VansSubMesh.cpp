@@ -152,7 +152,7 @@ static void CollectAiMeshes(aiNode* node, const aiScene* scene, const aiMatrix4x
 
 void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queue,
 	VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent,
-	bool supportRayTracing, bool needCPUData)
+	bool supportRayTracing, bool needCPUData, float scaleFactor)
 {
 	m_IsMultiMesh = true;
 	m_SupportRayTracing = false;
@@ -277,7 +277,7 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 			xform = &collectedMesh.transform;
 
 		VansMesh* slice = new VansMesh(needCPUData, supportRayTracing);
-		if (slice->LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, collectedMesh.mesh, xform, import_tangent, supportRayTracing))
+		if (slice->LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, collectedMesh.mesh, xform, import_tangent, supportRayTracing, scaleFactor))
 		{
 			slice->m_SourceNodeName = collectedMesh.nodeName;
 			m_SubMeshes.push_back(slice);
@@ -294,7 +294,7 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 
 bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& queue,
 	VansVKCommandBuffer* commandbuffer, const std::string& file_name,
-	uint32_t submeshIndex, bool import_tangent)
+	uint32_t submeshIndex, bool import_tangent, float scaleFactor)
 {
 	VANS_LOG("Load Submesh [" << submeshIndex << "] from : " << file_name);
 
@@ -328,11 +328,11 @@ bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& qu
 	}
 
 	const CollectedAiMesh& collectedMesh = allMeshes[submeshIndex];
-	return LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, collectedMesh.mesh, &collectedMesh.transform, import_tangent);
+	return LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, collectedMesh.mesh, &collectedMesh.transform, import_tangent, false, scaleFactor);
 }
 
 bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, VkQueue& queue,
-	VansVKCommandBuffer* commandbuffer, const aiScene* scene, aiMesh* mesh, const aiMatrix4x4* meshTransform, bool import_tangent, bool supportRayTracing)
+	VansVKCommandBuffer* commandbuffer, const aiScene* scene, aiMesh* mesh, const aiMatrix4x4* meshTransform, bool import_tangent, bool supportRayTracing, float scaleFactor)
 {
 	if (!scene || !mesh)
 	{
@@ -374,6 +374,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 		aiVector3D vertex  = mesh->mVertices[i];
 		aiVector3D normal  = mesh->mNormals ? mesh->mNormals[i] : aiVector3D(0, 1, 0);
 		vertex = TransformPosition(transform, vertex);
+		vertex *= scaleFactor;
 		normal = TransformDirection(transform, normal);
 		aiVector3D texCoord(0, 0, 0);
 		if (mesh->mTextureCoords[0])

@@ -50,6 +50,10 @@ namespace VansGraphics
 		static constexpr const char* DEFERRED         = "deferred";         // deferred lighting resolve
 		static constexpr const char* POST_PROCESS     = "postProcess";      // post-processing
 		static constexpr const char* SCREEN_SPACE     = "screenSpace";      // SSAO / SSR etc.
+		static constexpr const char* HAIR_VISIBILITY  = "hairVisibility";
+		static constexpr const char* HAIR_SHADOW      = "hairShadow";
+		static constexpr const char* HAIR_LIGHTING    = "hairLighting";
+		static constexpr const char* HAIR_COMPOSITE   = "hairComposite";
 		// future
 		static constexpr const char* VELOCITY         = "velocity";
 		static constexpr const char* PRE_DEPTH        = "preDepth";
@@ -179,6 +183,14 @@ namespace VansGraphics
 		static constexpr const char* RT_FOG_VOXEL_INJECTION = "Runtime.Fog.VoxelInjection";
 		static constexpr const char* RT_FOG_VOXEL_INJECTION_HISTORY = "Runtime.Fog.VoxelInjectionHistory";
 		static constexpr const char* RT_FOG_VOXEL_RAYMARCH  = "Runtime.Fog.VoxelRayMarch";
+		static constexpr const char* RT_HAIR_VIS0           = "Runtime.Hair.Vis0";
+		static constexpr const char* RT_HAIR_VIS1           = "Runtime.Hair.Vis1";
+		static constexpr const char* RT_HAIR_VIS2           = "Runtime.Hair.Vis2";
+		static constexpr const char* RT_HAIR_VIS3           = "Runtime.Hair.Vis3";
+		static constexpr const char* RT_HAIR_DEPTH          = "Runtime.Hair.Depth";
+		static constexpr const char* RT_HAIR_COVERAGE       = "Runtime.Hair.Coverage";
+		static constexpr const char* RT_HAIR_COLOR          = "Runtime.Hair.Color";
+		static constexpr const char* RT_HAIR_DEEP_OPACITY   = "Runtime.Hair.DeepOpacity";
 		// 1/4 鍒嗚鲸鐜囦綋绉簯缁撴灉锛圧GB=鍐呮暎灏勶紝A=閫忓皠鐜囷級
 		static constexpr const char* RT_CLOUD_BUFFER         = "Runtime.Cloud.Buffer";
 		static constexpr const char* RT_CLOUD_MAIN_NOISE     = "Runtime.Cloud.MainNoise3D";
@@ -590,6 +602,7 @@ namespace VansGraphics
 		VansTexture* m_AoTexture         = nullptr;
 
 		float        m_SheenRoughness    = 0.5f;   // 0 = silk, 1 = rough fabric
+		VansBasePBRParam m_BasePBRParam{ glm::vec3(1.0f), 0.5f, 0.35f, 1.0f, 0.5f };
 
 		VkDescriptorSetLayout          m_ClothOwnedLayout   = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet>   m_ClothOwnedDescSets;
@@ -600,23 +613,37 @@ namespace VansGraphics
 	// VansHairMaterial 鈥?card-based hair shading (type 11)
 	// Textures: albedo+alpha, normal, roughness, AO, strand shift
 	// ============================================================
+	struct alignas(16) VansHairParamsGPU
+	{
+		glm::vec4 absorption     = glm::vec4(0.35f, 0.22f, 0.12f, 1.0f);
+		glm::vec4 roughnessScale = glm::vec4(1.0f, 0.55f, 2.0f, 0.35f);
+		glm::vec4 shiftParams    = glm::vec4(1.0f, 1.0f, 1.5f, 0.25f);
+		glm::vec4 coverageParams = glm::vec4(0.35f, 1.5f, 0.25f, 1.0f);
+	};
+	static_assert(sizeof(VansHairParamsGPU) == sizeof(glm::vec4) * 4, "VansHairParamsGPU layout must match GLSL");
+
 	class VansHairMaterial : public VansMaterial
 	{
 	public:
 		~VansHairMaterial() override;
 
-		VansTexture* m_AlbedoAlphaTexture = nullptr;  // .rgb = albedo, .a = alpha mask
-		VansTexture* m_NormalTexture      = nullptr;  // tangent-space normal
-		VansTexture* m_RoughnessTexture   = nullptr;  // .r = roughness
-		VansTexture* m_AoTexture          = nullptr;  // .r = ambient occlusion
-		VansTexture* m_ShiftTexture       = nullptr;  // .r = strand shift (0.5 = neutral)
-		VansTexture* m_AlphaTexture       = nullptr;  // .r = dedicated alpha mask
-		VansTexture* m_FlowTexture        = nullptr;  // .rg = tangent-space flow direction (0.5 = neutral)
+		VansTexture* m_AlbedoTexture      = nullptr;
+		VansTexture* m_AlphaTexture       = nullptr;
+		VansTexture* m_NormalTexture      = nullptr;
+		VansTexture* m_RoughnessTexture   = nullptr;
+		VansTexture* m_AOTexture          = nullptr;
+		VansTexture* m_ShiftTexture       = nullptr;
+		VansTexture* m_FlowTexture        = nullptr;
+		VansTexture* m_IDTexture          = nullptr;
+
+		VansHairParamsGPU m_Params;
+		VansVKBuffer m_ParamsBuffer;
+		VkDevice m_ParamsDevice = VK_NULL_HANDLE;
 
 		VkDescriptorSetLayout          m_HairOwnedLayout  = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet>   m_HairOwnedDescSets;
 
-		void BuildHairTextureDescriptors();
+		void BuildHairDescriptors(VkDevice& device);
 	};
 	// ============================================================
 	// VansSubsurfaceMaterial 鈥?subsurface scattering (type 12)

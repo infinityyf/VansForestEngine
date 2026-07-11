@@ -1,5 +1,6 @@
 #include "VansInspectorWindow.h"
 
+#include "../VansEditorAssetSaveService.h"
 #include "../VansEditorSelection.h"
 #include "../VansEditorWindow.h"
 #include "../VansSceneEditService.h"
@@ -96,6 +97,16 @@ Vans::VansAssetType InferAssetType(const std::string& key,
         return Vans::VansAssetType::Texture;
     if (field == "source" && component == "audio") return Vans::VansAssetType::Audio;
     if (field == "source" && component == "video") return Vans::VansAssetType::Video;
+    if ((field == "asset" && component == "particle") || field.find("particle") != std::string::npos)
+        return Vans::VansAssetType::Particle;
+    if (field == "animator" || field.find("animator") != std::string::npos)
+        return Vans::VansAssetType::AnimatorController;
+    if (field.find("clip") != std::string::npos && component == "animation")
+        return Vans::VansAssetType::AnimationClip;
+    if (field == "profilepath" && component == "cloth")
+        return Vans::VansAssetType::ClothProfile;
+    if (field.find("ragdoll") != std::string::npos)
+        return Vans::VansAssetType::RagdollProfile;
     return Vans::VansAssetType::Unknown;
 }
 
@@ -110,6 +121,12 @@ const char* AssetTypeName(Vans::VansAssetType type)
     case Vans::VansAssetType::Audio: return "Audio";
     case Vans::VansAssetType::Video: return "Video";
     case Vans::VansAssetType::Scene: return "Scene";
+    case Vans::VansAssetType::Particle: return "Particle";
+    case Vans::VansAssetType::AnimationClip: return "Animation Clip";
+    case Vans::VansAssetType::AnimatorController: return "Animator Controller";
+    case Vans::VansAssetType::ClothProfile: return "Cloth Profile";
+    case Vans::VansAssetType::PostProcessProfile: return "Post Process Profile";
+    case Vans::VansAssetType::RagdollProfile: return "Ragdoll Profile";
     default: return "Asset";
     }
 }
@@ -759,27 +776,25 @@ void VansInspectorWindow::DrawSceneSettings()
 bool VansInspectorWindow::LoadAssetDocuments(const std::filesystem::path& sourcePath)
 {
     m_AssetPath = sourcePath;
-    m_MetaPath = Vans::VansAssetMeta::MetaPathFor(sourcePath);
-    m_Error.clear();
-    std::string sourceError;
-    m_AssetDocument.Load(m_AssetPath, sourceError);
-    m_MetaDocument.Load(m_MetaPath, m_Error);
-    if (!m_MetaDocument.IsLoaded() && !sourceError.empty()) m_Error = std::move(sourceError);
-    return m_AssetDocument.IsLoaded() || m_MetaDocument.IsLoaded();
+    m_AssetDocuments = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(sourcePath);
+    m_Error = m_AssetDocuments ? m_AssetDocuments->lastError : "Cannot open asset document";
+    return m_AssetDocuments &&
+        (m_AssetDocuments->sourceDocument.IsLoaded() || m_AssetDocuments->metaDocument.IsLoaded());
 }
 
-bool VansInspectorWindow::SaveAssetDocuments()
+bool VansInspectorWindow::SaveAssetDocuments(bool reloadSceneOnSuccess)
 {
     m_Error.clear();
-    if (!m_AssetDocument.Save(m_Error)) return false;
-    if (!m_MetaDocument.Save(m_Error)) return false;
-    if (auto* database = Vans::VansProjectManager::Get().GetAssetDatabase())
+    const Vans::VansAssetSaveResult result = Vans::VansEditorAssetSaveService::Get().SaveAsset(m_AssetDocuments);
+    if (!result)
     {
-        std::string refreshError;
-        if (!database->RegisterOrRefresh(m_AssetPath, false, refreshError))
-            VANS_LOG_ERROR("[Inspector] Asset refresh failed: " << refreshError);
+        m_Error = result.message;
+        for (const std::string& error : result.errors)
+            VANS_LOG_ERROR("[AssetSave] " << error);
+        return false;
     }
-    VansEditorWindow::ReloadCurrentSceneForEditing();
+    if (reloadSceneOnSuccess && result.wroteFile)
+        VansEditorWindow::ReloadCurrentSceneForEditing();
     return true;
 }
 
@@ -789,18 +804,24 @@ void VansInspectorWindow::DrawAsset()
     if (selected != m_AssetPath) LoadAssetDocuments(selected);
     ImGui::TextUnformatted(selected.filename().string().c_str());
     ImGui::TextDisabled("%s", selected.parent_path().string().c_str());
+    if (m_AssetDocuments)
+    {
+        ImGui::TextDisabled("Source: %s  Meta: %s",
+            m_AssetDocuments->sourceDocument.IsDirty() ? "Dirty" : "Clean",
+            m_AssetDocuments->metaDocument.IsDirty() ? "Dirty" : "Clean");
+    }
     ImGui::Separator();
 
-    if (m_AssetDocument.IsLoaded())
+    if (m_AssetDocuments && m_AssetDocuments->sourceDocument.IsLoaded())
     {
-        Json& root = m_AssetDocument.Root();
+        Json& root = m_AssetDocuments->sourceDocument.Root();
         MergeCustomShaderParameterSchema(root);
         for (auto iterator = root.begin(); iterator != root.end(); ++iterator)
         {
             const bool identity = iterator.key() == "schemaVersion" || iterator.key() == "guid";
             if (DrawJsonValue(iterator.key(), iterator.value(), "/asset/" + EscapePointerToken(iterator.key()), identity))
             {
-                m_AssetDocument.MarkDirty();
+                m_AssetDocuments->sourceDocument.MarkDirty();
                 m_MaterialLiveEdit.ApplyMaterialAssetPatch(
                     selected,
                     root,
@@ -810,11 +831,11 @@ void VansInspectorWindow::DrawAsset()
     }
     else ImGui::TextDisabled("Binary asset");
 
-    if (m_MetaDocument.IsLoaded())
+    if (m_AssetDocuments && m_AssetDocuments->metaDocument.IsLoaded())
     {
-        Json& meta = m_MetaDocument.Root();
+        Json& meta = m_AssetDocuments->metaDocument.Root();
         if (meta.contains("settings") && DrawJsonValue("Import Settings", meta["settings"], "/meta/settings"))
-            m_MetaDocument.MarkDirty();
+            m_AssetDocuments->metaDocument.MarkDirty();
         if (ImGui::TreeNode("Asset Identity"))
         {
             if (meta.contains("guid")) DrawJsonValue("GUID", meta["guid"], "/meta/guid", true);
@@ -824,7 +845,7 @@ void VansInspectorWindow::DrawAsset()
     }
     if (!m_Error.empty()) ImGui::TextColored(ImVec4(1, 0.35f, 0.3f, 1), "%s", m_Error.c_str());
 
-    const bool dirty = m_AssetDocument.IsDirty() || m_MetaDocument.IsDirty();
+    const bool dirty = m_AssetDocuments && m_AssetDocuments->IsDirty();
     if (!dirty) ImGui::BeginDisabled();
     if (ImGui::Button("Apply", ImVec2(-1.0f, 0.0f)))
         if (!SaveAssetDocuments()) VANS_LOG_ERROR("[Inspector] " << m_Error);

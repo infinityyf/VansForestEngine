@@ -41,6 +41,19 @@ void VansGraphics::VansScene::DrawShadowNodes()
                                                opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts);
     }
 
+	for (auto& node : m_HairRenderNodes)
+	{
+		if (node == nullptr || !node->IsEnabled()) continue;
+		auto* hairNode = static_cast<VansCommonRenderNode*>(node);
+		if (!hairNode->m_SupportShadow) continue;
+		VansGraphicsShader* hairShadowShader = node->m_Material->GetPassShader(VansPass::SHADOW);
+		if (!hairShadowShader)
+			hairShadowShader = node->m_Material->GetPassShader(VansPass::HAIR_SHADOW);
+		if (!hairShadowShader) continue;
+		node->DrawCascadeShadowWithPassShader(cmd, globalStateData, hairShadowShader,
+			hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts);
+	}
+
     if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
         static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawShadow(cmd, globalStateData);
 }
@@ -106,10 +119,22 @@ void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
             VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
             if (!shader) continue;
 
-            node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
+        node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
                                                     opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
                                                     lightIndex, shadowDirection);
         }
+
+		for (auto& node : m_HairRenderNodes)
+		{
+			if (node == nullptr || !node->IsEnabled()) continue;
+			auto* hairNode = static_cast<VansCommonRenderNode*>(node);
+			if (!hairNode->m_SupportShadow) continue;
+			VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
+			if (!shader) continue;
+			node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
+				hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts,
+				lightIndex, shadowDirection);
+		}
 
         if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
             static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
@@ -159,6 +184,18 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
                                                 opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
                                                 pointCount + lightIndex, 0);
     }
+
+	for (auto& node : m_HairRenderNodes)
+	{
+		if (node == nullptr || !node->IsEnabled()) continue;
+		auto* hairNode = static_cast<VansCommonRenderNode*>(node);
+		if (!hairNode->m_SupportShadow) continue;
+		VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
+		if (!shader) continue;
+		node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
+			hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts,
+			pointCount + lightIndex, 0);
+	}
 
     if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
         static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
@@ -212,6 +249,18 @@ void VansGraphics::VansScene::DrawRectShadow(int pointCount, int spotCount, int 
                                                 opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
                                                 shaderLightIndex, 0);
     }
+
+	for (auto& node : m_HairRenderNodes)
+	{
+		if (node == nullptr || !node->IsEnabled()) continue;
+		auto* hairNode = static_cast<VansCommonRenderNode*>(node);
+		if (!hairNode->m_SupportShadow) continue;
+		VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
+		if (!shader) continue;
+		node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
+			hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts,
+			shaderLightIndex, 0);
+	}
 
     if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
         static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
@@ -373,6 +422,44 @@ void VansGraphics::VansScene::DrawTransParentNodes()
             continue;
         }
         node->Draw(cmd, globalStateData);
+    }
+}
+
+void VansGraphics::VansScene::DrawHairVisibilityNodes()
+{
+	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+	VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+	GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+	VkDescriptorSetLayout oitLayout = vkDevice ? vkDevice->GetHairOITPassLayout() : VK_NULL_HANDLE;
+	VkDescriptorSet oitSet = vkDevice ? vkDevice->GetHairOITPassDescriptorSet() : VK_NULL_HANDLE;
+	for (auto& node : m_HairRenderNodes)
+	{
+		if (node == nullptr || !node->IsEnabled())
+			continue;
+		if (oitLayout != VK_NULL_HANDLE && oitSet != VK_NULL_HANDLE)
+		{
+			node->OverridePassDescriptorSet(1, oitLayout, oitSet);
+		}
+		node->Draw(cmd, globalStateData);
+	}
+}
+
+void VansGraphics::VansScene::DrawHairDeepOpacityNodes(VansGraphicsShader* shader)
+{
+    if (!shader)
+        return;
+
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
+    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    globalStateData.cascadeIndex = 0;
+    for (auto& node : m_HairRenderNodes)
+    {
+        if (node == nullptr || !node->IsEnabled())
+            continue;
+        auto* hairNode = static_cast<VansCommonRenderNode*>(node);
+        node->DrawCascadeShadowWithPassShader(cmd, globalStateData, shader,
+            hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts);
     }
 }
 

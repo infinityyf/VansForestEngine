@@ -13,8 +13,27 @@ namespace
 {
 bool ReadVec3(const nlohmann::ordered_json& value, glm::vec3& out)
 {
-	if (!value.is_array() || value.size() < 3) return false;
-	out = glm::vec3(value[0].get<float>(), value[1].get<float>(), value[2].get<float>());
+	const nlohmann::ordered_json* scalarValue = &value;
+	if (value.is_object())
+	{
+		if (value.contains("value")) scalarValue = &value["value"];
+		else if (value.contains("default")) scalarValue = &value["default"];
+	}
+	if (!scalarValue->is_array() || scalarValue->size() < 3) return false;
+	out = glm::vec3((*scalarValue)[0].get<float>(), (*scalarValue)[1].get<float>(), (*scalarValue)[2].get<float>());
+	return true;
+}
+
+bool ReadFloat(const nlohmann::ordered_json& value, float& out)
+{
+	const nlohmann::ordered_json* scalarValue = &value;
+	if (value.is_object())
+	{
+		if (value.contains("value")) scalarValue = &value["value"];
+		else if (value.contains("default")) scalarValue = &value["default"];
+	}
+	if (!scalarValue->is_number()) return false;
+	out = scalarValue->get<float>();
 	return true;
 }
 
@@ -104,6 +123,8 @@ int VansMaterialLiveEditService::GetGlobalMaterialIndex(VansMaterial* material)
 		return decal->m_MaterialIndex;
 	if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(material))
 		return sss->m_MaterialIndex;
+	if (auto* cloth = dynamic_cast<VansClothMaterial*>(material))
+		return cloth->m_MaterialIndex;
 	if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
 		return material->m_MaterialIndex;
 	return -1;
@@ -140,6 +161,12 @@ void VansMaterialLiveEditService::UploadPBRPayload(VansMaterial* material, VansM
 		if (index < static_cast<int>(manager->m_GlobalPBRParamData.size()))
 			manager->m_GlobalPBRParamData[index] = sss->m_BasePBRParam;
 		manager->m_GlobalPBRDataBuffer.SetBufferData(&sss->m_BasePBRParam, offset, sizeof(VansBasePBRParam));
+	}
+	else if (auto* cloth = dynamic_cast<VansClothMaterial*>(material))
+	{
+		if (index < static_cast<int>(manager->m_GlobalPBRParamData.size()))
+			manager->m_GlobalPBRParamData[index] = cloth->m_BasePBRParam;
+		manager->m_GlobalPBRDataBuffer.SetBufferData(&cloth->m_BasePBRParam, offset, sizeof(VansBasePBRParam));
 	}
 }
 
@@ -261,21 +288,92 @@ bool VansMaterialLiveEditService::ApplyMaterialParameter(
 			UploadPBRPayload(material, m_Scene->GetMaterialManager());
 			return true;
 		}
-		if (key == "roughness" && value.is_number())
+		float scalar = 0.0f;
+		if (key == "roughness" && ReadFloat(value, scalar))
 		{
-			pbr->m_BasePBRParam.m_roughness = value.get<float>();
+			pbr->m_BasePBRParam.m_roughness = scalar;
 			UploadPBRPayload(material, m_Scene->GetMaterialManager());
 			return true;
 		}
-		if (key == "metallic" && value.is_number())
+		if (key == "metallic" && ReadFloat(value, scalar))
 		{
-			pbr->m_BasePBRParam.m_metallic = value.get<float>();
+			pbr->m_BasePBRParam.m_metallic = scalar;
 			UploadPBRPayload(material, m_Scene->GetMaterialManager());
 			return true;
 		}
-		if (key == "ao" && value.is_number())
+		if (key == "ao" && ReadFloat(value, scalar))
 		{
-			pbr->m_BasePBRParam.m_ao = value.get<float>();
+			pbr->m_BasePBRParam.m_ao = scalar;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+	}
+	else if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(material))
+	{
+		glm::vec3 color;
+		if ((key == "subsurfaceColor" || key == "color" || key == "albedo" || key == "baseColor" || key == "basecolor") &&
+			ReadVec3(value, color))
+		{
+			sss->m_SubsurfaceColor = color;
+			sss->m_BasePBRParam.m_albedo = color;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		float scalar = 0.0f;
+		if (key == "subsurfacePower" && ReadFloat(value, scalar))
+		{
+			sss->m_SubsurfacePower = scalar;
+			sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		if (key == "thickness" && ReadFloat(value, scalar))
+		{
+			sss->m_Thickness = scalar;
+			sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		if (key == "subsurfaceAmount" && ReadFloat(value, scalar))
+		{
+			sss->m_SubsurfaceAmount = scalar;
+			sss->m_BasePBRParam.m_ao = sss->m_SubsurfaceAmount;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		if (key == "curvatureInfluence" && ReadFloat(value, scalar))
+		{
+			sss->m_CurvatureInfluence = scalar;
+			sss->m_BasePBRParam.padding = sss->m_CurvatureInfluence;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+	}
+	else if (auto* decal = dynamic_cast<VansDecalMaterial*>(material))
+	{
+		glm::vec3 color;
+		if ((key == "albedo" || key == "baseColor" || key == "basecolor" || key == "color") && ReadVec3(value, color))
+		{
+			decal->m_BasePBRParam.m_albedo = color;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		float scalar = 0.0f;
+		if (key == "roughness" && ReadFloat(value, scalar))
+		{
+			decal->m_BasePBRParam.m_roughness = scalar;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		if (key == "metallic" && ReadFloat(value, scalar))
+		{
+			decal->m_BasePBRParam.m_metallic = scalar;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		if (key == "ao" && ReadFloat(value, scalar))
+		{
+			decal->m_BasePBRParam.m_ao = scalar;
 			UploadPBRPayload(material, m_Scene->GetMaterialManager());
 			return true;
 		}
@@ -283,15 +381,53 @@ bool VansMaterialLiveEditService::ApplyMaterialParameter(
 	else if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(material))
 	{
 		glm::vec3 color;
-		if ((key == "albedo" || key == "emissive" || key == "color") && ReadVec3(value, color))
+		if ((key == "albedo" || key == "emissive" || key == "emissive_color" || key == "color") && ReadVec3(value, color))
 		{
 			emissive->m_BasePBRParam.m_albedo = color;
 			UploadPBRPayload(material, m_Scene->GetMaterialManager());
 			return true;
 		}
-		if ((key == "intensity" || key == "emissiveIntensity" || key == "roughness") && value.is_number())
+		float scalar = 0.0f;
+		if ((key == "intensity" || key == "emissiveIntensity" || key == "emissive_intensity" || key == "roughness") &&
+			ReadFloat(value, scalar))
 		{
-			emissive->m_BasePBRParam.m_roughness = value.get<float>();
+			emissive->m_BasePBRParam.m_roughness = scalar;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+	}
+	else if (auto* cloth = dynamic_cast<VansClothMaterial*>(material))
+	{
+		glm::vec3 color;
+		if ((key == "albedo" || key == "baseColor" || key == "basecolor" || key == "color") && ReadVec3(value, color))
+		{
+			cloth->m_BasePBRParam.m_albedo = color;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		float scalar = 0.0f;
+		if ((key == "sheenRoughness" || key == "roughness") && ReadFloat(value, scalar))
+		{
+			cloth->m_SheenRoughness = std::clamp(scalar, 0.045f, 1.0f);
+			cloth->m_BasePBRParam.m_roughness = cloth->m_SheenRoughness;
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		if (key == "sheenStrength" && ReadFloat(value, scalar))
+		{
+			cloth->m_BasePBRParam.padding = std::clamp(scalar, 0.0f, 1.0f);
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		if (key == "translucency" && ReadFloat(value, scalar))
+		{
+			cloth->m_BasePBRParam.m_metallic = std::clamp(scalar, 0.0f, 1.0f);
+			UploadPBRPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+		if (key == "ao" && ReadFloat(value, scalar))
+		{
+			cloth->m_BasePBRParam.m_ao = std::clamp(scalar, 0.0f, 1.0f);
 			UploadPBRPayload(material, m_Scene->GetMaterialManager());
 			return true;
 		}

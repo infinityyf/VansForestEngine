@@ -1,12 +1,16 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "VansGizmos.h"
+#include "VansEditorWindow.h"
 #include "VansEditorSelection.h"
+#include "VansSceneEditService.h"
 #include "imgui.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
+#include "../SceneCore/VansSceneDocument.h"
 #include "../Util/VansInputManager.h"
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace VansGraphics
 {
@@ -23,6 +27,47 @@ ImGuizmo::OPERATION VansGizmos::OperationFromMode(GizmoMode mode)
     case GizmoMode::Rotate:    return ImGuizmo::ROTATE;
     case GizmoMode::Scale:     return ImGuizmo::SCALE;
     default:                   return ImGuizmo::TRANSLATE;
+    }
+}
+
+void VansGizmos::SyncTransformToSceneDocument(const std::string& entityGuid,
+                                              const VansTransform& transform)
+{
+    if (entityGuid.empty()) return;
+
+    Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
+    Vans::VansSceneEditService* editService = VansEditorWindow::GetSceneEditService();
+    if (!document || !editService) return;
+
+    const auto& root = document->Root();
+    if (!root.contains("entities") || !root["entities"].is_array()) return;
+
+    for (std::size_t entityIndex = 0; entityIndex < root["entities"].size(); ++entityIndex)
+    {
+        const auto& entity = root["entities"][entityIndex];
+        if (entity.value("id", "") != entityGuid)
+            continue;
+        if (!entity.contains("components") || !entity["components"].is_array())
+            return;
+
+        for (std::size_t componentIndex = 0; componentIndex < entity["components"].size(); ++componentIndex)
+        {
+            const auto& component = entity["components"][componentIndex];
+            if (component.value("type", "") != "Transform")
+                continue;
+
+            Vans::SceneJson data = {
+                { "position", { transform.m_Position.x, transform.m_Position.y, transform.m_Position.z } },
+                { "rotation", { transform.m_Rotation.x, transform.m_Rotation.y, transform.m_Rotation.z } },
+                { "scale",    { transform.m_Scale.x,    transform.m_Scale.y,    transform.m_Scale.z    } }
+            };
+
+            const std::string pointer = "/entities/" + std::to_string(entityIndex) +
+                "/components/" + std::to_string(componentIndex) + "/data";
+            editService->Set(pointer, std::move(data));
+            return;
+        }
+        return;
     }
 }
 
@@ -246,7 +291,22 @@ void VansGizmos::Draw(VansScene*  scene,
 
         // Mark dirty so UpdateTransformRenderData() re-uploads the GPU SSBO.
         VansTransformStore::TransformIDToTransformDirty[node->m_TransformID] = true;
+
+        m_PendingDocumentSync = true;
+        m_PendingDocumentSyncEntityGuid = Vans::VansEditorSelection::EntityGuid();
     }
+
+    const bool isUsing = ImGuizmo::IsUsing();
+    if ((m_WasUsing && !isUsing) || (changed && !isUsing))
+    {
+        if (m_PendingDocumentSync)
+        {
+            SyncTransformToSceneDocument(m_PendingDocumentSyncEntityGuid, tf);
+            m_PendingDocumentSync = false;
+            m_PendingDocumentSyncEntityGuid.clear();
+        }
+    }
+    m_WasUsing = isUsing;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -161,6 +161,12 @@ void VansShaderManager::ApplyGraphicsState(VansGraphicsShader& shader, const Van
         shader.SetEnableAlphaBlend(VK_TRUE);
     if (entry.enableDecalBlend)
         shader.SetEnableDecalBlend(VK_TRUE);
+    if (entry.enableAdditiveBlend)
+        shader.SetEnableAdditiveBlend(VK_TRUE);
+    if (entry.additiveBlendAttachmentMask != 0)
+        shader.SetAdditiveBlendAttachmentMask(entry.additiveBlendAttachmentMask);
+    if (entry.enablePremultipliedAlphaBlend)
+        shader.SetEnablePremultipliedAlphaBlend(VK_TRUE);
     if (entry.colorAttachmentCount > 0)
         shader.SetColorAttachmentCount(entry.colorAttachmentCount);
 }

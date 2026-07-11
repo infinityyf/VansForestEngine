@@ -53,10 +53,10 @@ layout(set = PBRLutSetBind, binding = 7) uniform sampler2D SkinPreIntegratedLUT;
 
 // Cloth pre-integrated DFG LUT  (EngineAssets/Textures/ClothBRDFLUT.png)
 // U = NoV [0..1],  V = perceptualRoughness [0..1]
-// R = split-sum term A  (F-independent, mix start)
-// G = split-sum term B  (F-dependent,   mix end)
-// B = sheen tint (pre-baked directional sheen colour scale)
-// Usage: E = mix(dfg.rrr, dfg.ggg, sheenColor)
+// R = split-sum term when sheen color is 0
+// G = split-sum term when sheen color is 1
+// B = additional pre-baked cloth sheen scale
+// Usage: E = mix(dfg.rrr, dfg.ggg, sheenColor) * scale(dfg.b)
 layout(set = PBRLutSetBind, binding = 8) uniform sampler2D ClothBRDFLUT;
 
 // =============================================================================
