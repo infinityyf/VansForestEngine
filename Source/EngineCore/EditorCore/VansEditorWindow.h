@@ -72,6 +72,7 @@ namespace VansGraphics
 		static bool m_ReflectionProbeWindowOpen;
 
 		static bool m_WireframeMode;
+		static bool m_VehicleDebugGizmos;
 
 	public: 
 		static VansBasicWindow m_VansEditorWindow;
@@ -104,6 +105,7 @@ namespace VansGraphics
 
 		/// 处理延迟场景加载（从主循环中提取）
 		static void ProcessPendingSceneLoad();
+		static void ProcessRuntimeMultiMeshHierarchyExpansion();
 
 		/// 处理延迟项目加载，确保项目切换只发生在主循环安全点
 		static void ProcessPendingProjectLoad();

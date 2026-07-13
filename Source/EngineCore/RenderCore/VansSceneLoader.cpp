@@ -9,6 +9,7 @@
 #include "../AssetCore/VansAssetMeta.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "../PhysicsCore/VansPhysics.h"
+#include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansTerrainPhysicsNode.h"
 #include "../PhysicsCore/VansRagdollSystem.h"
@@ -45,6 +46,9 @@
 #include <iostream>
 #include <fstream>
 #include <algorithm>
+#include <array>
+#include <cfloat>
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 #include <filesystem>
@@ -52,6 +56,7 @@
 #include <cctype>
 #include <functional>
 #include <optional>
+#include <random>
 #include <glm/gtx/quaternion.hpp>
 
 namespace VansGraphics
@@ -505,6 +510,10 @@ json LoadVegetationConfigFromReference(const json& vegetationData, const std::st
     return loaded;
 }
 
+std::string ResolveTextureGuidFromAlias(const std::string& textureName, const std::string& preferredRoot);
+std::string RuntimeTextureNameFromAssetReference(const json& reference, const std::string& preferredRoot);
+void CollectMaterialTextureDependencies(const json& material, std::unordered_set<std::string>& requiredTextures);
+
 json RuntimeMaterialFromAsset(const Vans::VansAssetRecord& record)
 {
     std::ifstream input(record.sourcePath);
@@ -515,6 +524,7 @@ json RuntimeMaterialFromAsset(const Vans::VansAssetRecord& record)
         return {};
 
     const std::string materialType = asset.value("materialType", "pbr");
+    const std::string preferredRoot = asset.value("importSource", json::object()).value("model", "");
     const bool customShaderMaterial = materialType == "customShader" || materialType == "custom";
     const json shaderAsset = asset.contains("shader") ? RuntimeShaderAssetFromReference(asset["shader"]) : json::object();
     json material = customShaderMaterial ? json::object() : asset.value("parameters", json::object());
@@ -540,7 +550,22 @@ json RuntimeMaterialFromAsset(const Vans::VansAssetRecord& record)
                 material["shaderPasses"][passName] = RuntimeAssetNameFromReference(shaderRef);
         }
     }
-    if (asset.contains("textures") && asset["textures"].is_object())
+    if (materialType == "transparent" && asset.contains("textures") && asset["textures"].is_array())
+    {
+        material["textures"] = json::array();
+        for (const auto& entry : asset["textures"])
+        {
+            if (!entry.is_object())
+                continue;
+            json runtimeEntry;
+            runtimeEntry["slot"] = entry.value("slot", "");
+            if (entry.contains("texture"))
+                runtimeEntry["texture"] = RuntimeTextureNameFromAssetReference(entry["texture"], preferredRoot);
+            if (!runtimeEntry.value("slot", "").empty() && runtimeEntry.contains("texture"))
+                material["textures"].push_back(std::move(runtimeEntry));
+        }
+    }
+    else if (asset.contains("textures") && asset["textures"].is_object())
     {
         if (customShaderMaterial)
         {
@@ -550,8 +575,16 @@ json RuntimeMaterialFromAsset(const Vans::VansAssetRecord& record)
         {
             for (const auto& [slot, reference] : asset["textures"].items())
             {
-                if (reference.is_object() && reference.contains("guid") && reference["guid"].is_string())
-                    material[slot + "_texture"] = reference["guid"];
+                const std::string textureName = RuntimeTextureNameFromAssetReference(reference, preferredRoot);
+                if (preferredRoot == "BMW_M4" || record.sourcePath.generic_string().find("MultiMeshMaterials") != std::string::npos)
+                {
+                    VANS_LOG("[MaterialAsset] " << record.sourcePath.string()
+                        << " slot=" << slot
+                        << " preferredRoot=" << preferredRoot
+                        << " runtimeTexture=" << textureName);
+                }
+                if (!textureName.empty())
+                    material[slot + "_texture"] = textureName;
             }
         }
     }
@@ -574,6 +607,113 @@ json RuntimeMaterialFromAsset(const Vans::VansAssetRecord& record)
         }
     }
     return material;
+}
+
+std::string LowerAsciiCopy(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+std::string ResolveTextureGuidFromAlias(const std::string& textureName, const std::string& preferredRoot)
+{
+    if (textureName.empty())
+        return {};
+    Vans::VansAssetGuid parsed;
+    if (Vans::VansAssetGuid::TryParse(textureName, parsed))
+        return textureName;
+
+    Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+    if (database == nullptr)
+        return {};
+
+    const std::string wantedStem = LowerAsciiCopy(std::filesystem::path(textureName).stem().string());
+    const std::string wantedFile = LowerAsciiCopy(textureName);
+    const std::string preferredToken = LowerAsciiCopy(preferredRoot);
+    std::string fallbackGuid;
+    for (const Vans::VansAssetRecord& candidate : database->All())
+    {
+        if (candidate.type != Vans::VansAssetType::Texture || candidate.state == Vans::VansAssetState::Missing)
+            continue;
+        const std::string candidateStem = LowerAsciiCopy(candidate.sourcePath.stem().string());
+        const std::string candidateFile = LowerAsciiCopy(candidate.sourcePath.filename().string());
+        if (candidateStem != wantedStem && candidateFile != wantedFile)
+            continue;
+
+        if (fallbackGuid.empty())
+            fallbackGuid = candidate.guid.ToString();
+        const std::string candidatePath = LowerAsciiCopy(candidate.sourcePath.generic_string());
+        if (!preferredToken.empty() && candidatePath.find(preferredToken) != std::string::npos)
+            return candidate.guid.ToString();
+    }
+    return fallbackGuid;
+}
+
+std::string RuntimeTextureNameFromAssetReference(const json& reference, const std::string& preferredRoot)
+{
+    if (reference.is_object() && reference.contains("guid"))
+        return RuntimeAssetNameFromReference(reference);
+    if (reference.is_string())
+    {
+        const std::string textureName = reference.get<std::string>();
+        const std::string resolvedGuid = ResolveTextureGuidFromAlias(textureName, preferredRoot);
+        return resolvedGuid.empty() ? textureName : resolvedGuid;
+    }
+    return {};
+}
+
+void CollectMaterialTextureDependencies(const json& material, std::unordered_set<std::string>& requiredTextures)
+{
+    const std::string preferredRoot = material.value("importSource", json::object()).value("model", "");
+    if (const json* texturesObject = ReadObjectField(material, "textures"))
+    {
+        for (const auto& [slot, texture] : texturesObject->items())
+        {
+            std::string textureGuid;
+            if (texture.is_object())
+                textureGuid = ReadStringField(texture, "guid");
+            else if (texture.is_string())
+                textureGuid = ResolveTextureGuidFromAlias(texture.get<std::string>(), preferredRoot);
+            if (!textureGuid.empty())
+            {
+                if (preferredRoot == "BMW_M4" || material.value("importSource", json::object()).value("generatedFor", "") == "runtimeMultiMeshExpansion")
+                {
+                    VANS_LOG("[MaterialDeps] material=" << material.value("guid", std::string{})
+                        << " slot=" << slot
+                        << " textureGuid=" << textureGuid
+                        << " preferredRoot=" << preferredRoot);
+                }
+                requiredTextures.insert(textureGuid);
+            }
+        }
+        return;
+    }
+    if (material.contains("textures") && material["textures"].is_array())
+    {
+        for (const auto& entry : material["textures"])
+        {
+            if (!entry.is_object() || !entry.contains("texture"))
+                continue;
+            const json& texture = entry["texture"];
+            std::string textureGuid;
+            if (texture.is_object())
+                textureGuid = ReadStringField(texture, "guid");
+            else if (texture.is_string())
+                textureGuid = ResolveTextureGuidFromAlias(texture.get<std::string>(), preferredRoot);
+            if (!textureGuid.empty())
+            {
+                if (preferredRoot == "BMW_M4" || material.value("importSource", json::object()).value("generatedFor", "") == "runtimeMultiMeshExpansion")
+                {
+                    VANS_LOG("[MaterialDeps] material=" << material.value("guid", std::string{})
+                        << " slot=" << entry.value("slot", std::string{})
+                        << " textureGuid=" << textureGuid
+                        << " preferredRoot=" << preferredRoot);
+                }
+                requiredTextures.insert(textureGuid);
+            }
+        }
+    }
 }
 
 std::string RuntimeComponentKey(const std::string& type)
@@ -819,7 +959,8 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
 			continue;
 		for (const json& component : *components)
 		{
-			if (ReadStringField(component, "type") != "ModelRenderer")
+			const std::string componentType = ReadStringField(component, "type");
+			if (componentType != "ModelRenderer" && componentType != "MultiMeshRoot")
 				continue;
 			const json* data = ReadObjectField(component, "data");
 			if (data == nullptr)
@@ -827,6 +968,8 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
 			const json* modelReference = ReadObjectField(*data, "model");
 			const std::string model = modelReference ? ReadStringField(*modelReference, "guid") : std::string{};
 			if (!model.empty()) requiredModels.insert(model);
+			if (componentType != "ModelRenderer")
+				continue;
 			const json* overrides = ReadObjectField(*data, "materialOverrides");
 			if (overrides == nullptr)
 				continue;
@@ -893,19 +1036,7 @@ bool VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
 			continue;
 		}
 		collectAssetReferences(material);
-		const json* textures = ReadObjectField(material, "textures");
-		if (textures == nullptr)
-		{
-			VANS_LOG_ERROR("[AssetDatabase] Material textures must be an object: " << record.sourcePath.string());
-			continue;
-		}
-		for (const auto& [slot, texture] : textures->items())
-		{
-			if (!texture.is_object())
-				continue;
-			const std::string textureGuid = ReadStringField(texture, "guid");
-			if (!textureGuid.empty()) requiredTextures.insert(textureGuid);
-		}
+		CollectMaterialTextureDependencies(material, requiredTextures);
 	}
 
     for (const Vans::VansAssetRecord& record : database.All())
@@ -1168,6 +1299,7 @@ static VansMaterialType ParseMaterialType(const json& typeValue, const std::stri
         if (s == "tree")         return VansMaterialType::VAN_PBR;
         if (s == "coat")         return VansMaterialType::VAN_COAT;
         if (s == "transparent")  return VansMaterialType::VAN_TRANSPARENT;
+        if (s == "glass" || s == "transmission" || s == "pbr_transmission") return VansMaterialType::VAN_PBR_TRANSMISSION;
         if (s == "post_process") return VansMaterialType::VAN_POST_PROCESS;
         if (s == "sky_box")      return VansMaterialType::VAN_SKY_BOX;
         if (s == "deferred")     return VansMaterialType::VAN_DEFERRED;
@@ -1307,6 +1439,9 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
         }
 
         mesh = sourceMesh->m_SubMeshes[submeshIndex];
+        // Multi-mesh sub-meshes are borrowed slices from the source mesh. Their buffers are
+        // not created with the required RT flags and no BLAS is built for them in BuildRayTracingAS.
+        mesh->m_SupportRayTracing = false;
 
         const FBXSubmeshMaterialInfo& fbxInfo = sourceMesh->m_SubmeshMaterialInfos.empty()
             ? FBXSubmeshMaterialInfo{}
@@ -1347,7 +1482,7 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
                 pbr->m_RoughnessTexture = ResolveTextureOrDefault(roughTex, "defaultRoughness");
                 pbr->m_AoTexture        = ResolveTextureOrDefault(aoTex, "defaultAo");
 
-                pbr->m_BasePBRParam.m_albedo    = glm::vec3(1.0f);
+                pbr->m_BasePBRParam.m_albedo    = glm::vec3(fbxInfo.diffuseColor[0], fbxInfo.diffuseColor[1], fbxInfo.diffuseColor[2]);
                 pbr->m_BasePBRParam.m_metallic  = fbxInfo.metallic;
                 pbr->m_BasePBRParam.m_roughness = fbxInfo.roughness;
                 pbr->m_BasePBRParam.m_ao        = 1.0f;
@@ -1375,7 +1510,8 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
                 << " for node '" << sceneRenderNode.value("name", "") << "'");
         }
 
-        type = (matType == VansMaterialType::VAN_TRANSPARENT)
+        type = (matType == VansMaterialType::VAN_TRANSPARENT ||
+            matType == VansMaterialType::VAN_PBR_TRANSMISSION)
             ? RenderNodeType::TRANSPARENT_NODE
             : RenderNodeType::OPAQUE_NODE;
 
@@ -1399,7 +1535,8 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::LoadSingleRenderNode(VkDe
         std::string parentName = sceneRenderNode.value("name", "MultiMesh");
 
 		ExpandMultiMeshToRenderNodes(
-			device, mesh, parentName, position, rotation, scale, supportShadow, material);
+			device, mesh, parentName, sceneRenderNode.value("entityGuid", ""),
+            position, rotation, scale, supportShadow, material);
 
         // 不从 m_Meshes 中移除父级 multi-mesh，场景切换时仍需通过名称找到它。
         // 子网格会在 ExpandMultiMeshToRenderNodes 内部被添加到 m_Meshes，
@@ -2450,6 +2587,7 @@ VansMaterial* VansGraphics::VansScene::CreateMaterialForType(VansMaterialType ma
     case VansMaterialType::VAN_PBR:
     case VansMaterialType::VAN_COAT:            return new VansPBRMaterial();
     case VansMaterialType::VAN_TRANSPARENT:     return new VansTransparentMaterial();
+    case VansMaterialType::VAN_PBR_TRANSMISSION:return new VansTransmissionMaterial();
     case VansMaterialType::VAN_POST_PROCESS:    return new VansPostProcessMaterial();
     case VansMaterialType::VAN_SKY_BOX:         return new VansSkyBoxMaterial();
     case VansMaterialType::VAN_DEFERRED:        return new VansDeferredMaterial();
@@ -2532,7 +2670,38 @@ void VansGraphics::VansScene::ApplyMaterialShaderOverrides(VansMaterial* materia
 VansTexture* VansGraphics::VansScene::ResolveMaterialTexture(const json& sceneMaterial, const char* key)
 {
     if (sceneMaterial.contains(key) && sceneMaterial[key].is_string())
-        return static_cast<VansTexture*>(GetTextureAsset(sceneMaterial[key].get<std::string>()));
+    {
+        const std::string textureName = sceneMaterial[key].get<std::string>();
+        VansTexture* texture = static_cast<VansTexture*>(GetTextureAsset(textureName));
+        if (!texture)
+        {
+            Vans::VansAssetGuid textureGuid;
+            if (Vans::VansAssetGuid::TryParse(textureName, textureGuid))
+            {
+                auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+                const auto record = database ? database->Find(textureGuid) : std::nullopt;
+                if (record && record->type == Vans::VansAssetType::Texture &&
+                    record->state != Vans::VansAssetState::Missing)
+                {
+                    const std::string keyName = key ? std::string(key) : std::string{};
+                    const bool isSRGB = keyName == "basecolor_texture" ||
+                        keyName == "diffuse_texture" ||
+                        keyName == "albedo_texture";
+                    texture = LoadOrGetTexture(record->sourcePath.string(), isSRGB);
+                }
+            }
+        }
+        if (std::string(key) == "basecolor_texture" ||
+            sceneMaterial.value("generatedFor", std::string{}) == "runtimeMultiMeshExpansion")
+        {
+            VANS_LOG("[LoadMaterials] Resolve texture material="
+                << sceneMaterial.value("name", std::string{"<unnamed>"})
+                << " key=" << key
+                << " request=" << textureName
+                << " result=" << (texture ? texture->m_AssetName : std::string{"<missing>"}));
+        }
+        return texture;
+    }
     return nullptr;
 }
 
@@ -2796,13 +2965,71 @@ void VansGraphics::VansScene::PopulateMaterialFromJson(
                 std::string textureName = entry.value("texture", "");
                 VansTexture* tex = nullptr;
                 if (!textureName.empty())
+                {
                     tex = static_cast<VansTexture*>(GetTextureAsset(textureName));
+                    if (!tex)
+                    {
+                        Vans::VansAssetGuid textureGuid;
+                        if (Vans::VansAssetGuid::TryParse(textureName, textureGuid))
+                        {
+                            auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+                            const auto record = database ? database->Find(textureGuid) : std::nullopt;
+                            if (record && record->type == Vans::VansAssetType::Texture &&
+                                record->state != Vans::VansAssetState::Missing)
+                            {
+                                const bool isSRGB = slotName == "diffuse" || slotName == "basecolor" || slotName == "baseColor";
+                                tex = LoadOrGetTexture(record->sourcePath.string(), isSRGB);
+                            }
+                        }
+                    }
+                }
                 if (tex == nullptr)
                     VANS_LOG_WARN("[LoadMaterials] Transparent material '" << sceneMaterial.value("name", "<unnamed>") << "': could not resolve texture for slot '" << slotName << "'");
                 trans->m_TransparentTextureMap.push_back({ slotName, textureName });
                 trans->m_TransparentTextures.push_back(tex);
             }
         }
+        break;
+    }
+    case VansMaterialType::VAN_PBR_TRANSMISSION:
+    {
+        auto* glass = static_cast<VansTransmissionMaterial*>(material);
+        glass->m_BaseColorTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        glass->m_NormalTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "normal_texture", "defaultNormal");
+        glass->m_RoughnessTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "roughness_texture", "defaultRoughness");
+        glass->m_ThicknessTexture = ResolveMaterialTextureWithFallback(sceneMaterial, "thickness_texture", "defaultRoughness");
+
+        glm::vec3 baseColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
+        baseColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", baseColor);
+        baseColor = ReadMaterialVec3Field(sceneMaterial, "baseColor", baseColor);
+        baseColor = ReadMaterialVec3Field(sceneMaterial, "albedo", baseColor);
+
+        const float alphaCoverage = ReadMaterialFloatField(sceneMaterial, "alphaCoverage", 1.0f);
+        const float roughness = ReadMaterialFloatField(sceneMaterial, "roughness", 0.02f);
+        const float transmission = ReadMaterialFloatField(sceneMaterial, "transmission", 1.0f);
+        const float ior = ReadMaterialFloatField(sceneMaterial, "ior", 1.5f);
+        const float thickness = ReadMaterialFloatField(sceneMaterial, "thickness", 0.01f);
+        glm::vec3 attenuationColor = ReadMaterialVec3Field(sceneMaterial, "attenuationColor", glm::vec3(1.0f));
+        const float attenuationDistance = ReadMaterialFloatField(sceneMaterial, "attenuationDistance", 0.0f);
+        const float normalScale = ReadMaterialFloatField(sceneMaterial, "normalScale", 1.0f);
+        const float refractionStrength = ReadMaterialFloatField(sceneMaterial, "refractionStrength", 1.0f);
+        const float reflectionStrength = ReadMaterialFloatField(sceneMaterial, "reflectionStrength", 1.0f);
+        const float refractionMode = ReadMaterialFloatField(sceneMaterial, "refractionMode", 0.0f);
+
+        glass->m_CustomMaterialPayload = VansCustomMaterialPayload{};
+        glass->m_CustomMaterialPayload.values[0] = glm::vec4(baseColor, alphaCoverage);
+        glass->m_CustomMaterialPayload.values[1] = glm::vec4(roughness, transmission, ior, thickness);
+        glass->m_CustomMaterialPayload.values[2] = glm::vec4(attenuationColor, attenuationDistance);
+        glass->m_CustomMaterialPayload.values[3] = glm::vec4(normalScale, refractionStrength, reflectionStrength, refractionMode);
+
+        glass->m_CustomTextureSlots["baseColor"] = 0;
+        glass->m_CustomTextureSlots["normal"] = 1;
+        glass->m_CustomTextureSlots["roughness"] = 2;
+        glass->m_CustomTextureSlots["thickness"] = 3;
+        glass->m_CustomTextures["baseColor"] = glass->m_BaseColorTexture;
+        glass->m_CustomTextures["normal"] = glass->m_NormalTexture;
+        glass->m_CustomTextures["roughness"] = glass->m_RoughnessTexture;
+        glass->m_CustomTextures["thickness"] = glass->m_ThicknessTexture;
         break;
     }
     case VansMaterialType::VAN_GRASS:
@@ -3117,6 +3344,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
     VkDevice& device,
     VansMesh* multiMesh,
     const std::string& parentName,
+    const std::string& parentEntityGuid,
     const glm::vec3& position,
     const glm::vec3& rotation,
     const glm::vec3& scale,
@@ -3136,6 +3364,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
     // ── Create or retrieve the multi-mesh group for hierarchy display ─────
     MultiMeshGroup& group = m_MultiMeshGroups[resolvedParentName];
     group.parentName = resolvedParentName;
+    group.parentEntityGuid = parentEntityGuid;
     group.sourceMesh = multiMesh;
     group.position   = position;
     group.rotation   = rotation;
@@ -3209,7 +3438,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
                 pbr->m_RoughnessTexture = ResolveTextureOrDefault(roughTex, "defaultRoughness");
                 pbr->m_AoTexture        = ResolveTextureOrDefault(aoTex, "defaultAo");
 
-                pbr->m_BasePBRParam.m_albedo    = glm::vec3(1.0f);
+                pbr->m_BasePBRParam.m_albedo    = glm::vec3(fbxInfo.diffuseColor[0], fbxInfo.diffuseColor[1], fbxInfo.diffuseColor[2]);
                 pbr->m_BasePBRParam.m_metallic  = fbxInfo.metallic;
                 pbr->m_BasePBRParam.m_roughness = fbxInfo.roughness;
                 pbr->m_BasePBRParam.m_ao        = 1.0f;
@@ -3240,7 +3469,8 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
         }
 
         // ── Create render node for this submesh ──────────────────────────
-        RenderNodeType nodeType = (matType == VansMaterialType::VAN_TRANSPARENT)
+        RenderNodeType nodeType = (matType == VansMaterialType::VAN_TRANSPARENT ||
+            matType == VansMaterialType::VAN_PBR_TRANSMISSION)
             ? RenderNodeType::TRANSPARENT_NODE
             : RenderNodeType::OPAQUE_NODE;
 
@@ -3269,6 +3499,7 @@ void VansGraphics::VansScene::ExpandMultiMeshToRenderNodes(
         renderNode->m_SubmeshIndex = static_cast<uint32_t>(i);
         renderNode->m_Material = material;
         renderNode->m_ParentGroupName = resolvedParentName;
+        renderNode->m_ParentEntityGuid = parentEntityGuid;
 
         // All children share the first child's transform so they move together.
         if (group.childNodes.empty())
@@ -4084,11 +4315,32 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
     float lodFullDist   = vegetationData.value("lodFullDist",  15.0f);
     float lodFadeDist   = vegetationData.value("lodFadeDist",  20.0f);
 
+    glm::vec2 placementMinXZ(-100.0f, -100.0f);
+    glm::vec2 placementMaxXZ( 100.0f,  100.0f);
+    float grassScaleMin = vegetationData.value("grassScaleMin", 0.4f);
+    float grassScaleMax = vegetationData.value("grassScaleMax", 1.5f);
+    auto readVec2FromJson = [](const json& value, const glm::vec2& fallback) -> glm::vec2
+    {
+        if (value.is_array() && value.size() >= 2)
+            return glm::vec2(value[0].get<float>(), value[1].get<float>());
+        return fallback;
+    };
+    if (vegetationData.contains("placement") && vegetationData["placement"].is_object())
+    {
+        const json& placementJson = vegetationData["placement"];
+        placementMinXZ = readVec2FromJson(placementJson.value("boundsMin", json::array()), placementMinXZ);
+        placementMaxXZ = readVec2FromJson(placementJson.value("boundsMax", json::array()), placementMaxXZ);
+        grassScaleMin = placementJson.value("grassScaleMin", grassScaleMin);
+        grassScaleMax = placementJson.value("grassScaleMax", grassScaleMax);
+    }
+
     // Create the vegetation system
     m_VegetationSystem = new VansVegetationSystem();
     m_VegetationSystem->SetBladeHeight(bladeHeight);   // must be set before Init()
     m_VegetationSystem->SetInitWindDirection(glm::vec2(windDirX, windDirZ), leanDeviation);
     m_VegetationSystem->SetSubBladeParams(subBladeCount, subBladeScatterRadiusMin, subBladeScatterRadiusMax);  // must be set before Init()
+    m_VegetationSystem->SetPlacementBounds(placementMinXZ, placementMaxXZ);
+    m_VegetationSystem->SetGrassScaleRange(grassScaleMin, grassScaleMax);
 
     if (vegetationData.contains("trees") && vegetationData["trees"].is_object())
     {
@@ -4096,6 +4348,7 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
         TreeVegetationConfig treeConfig;
         treeConfig.enabled = treesJson.value("enabled", false);
         treeConfig.cullDistance = treesJson.value("cullDistance", 800.0f);
+        treeConfig.cullEnabled = treesJson.value("cullEnabled", true);
         treeConfig.hizEnabled = treesJson.value("hizEnabled", true);
 
         auto parsePartType = [](const std::string& type) -> TreePartType {
@@ -4155,6 +4408,36 @@ void VansGraphics::VansScene::AddVegetationNode(VkDevice& device, json& vegetati
                 inst.yawDeg = instJson.value("yaw", 0.0f);
                 inst.scale = instJson.value("scale", 1.0f);
                 inst.submeshIndex = readSubmeshIndex(instJson);
+                treeConfig.instances.push_back(inst);
+            }
+        }
+        else if (treesJson.contains("randomInstances") && treesJson["randomInstances"].is_object() && !treeConfig.species.empty())
+        {
+            const json& randomJson = treesJson["randomInstances"];
+            uint32_t treeCount = randomJson.value("count", 80u);
+            uint32_t seed = randomJson.value("seed", 1337u);
+            float scaleMin = randomJson.value("scaleMin", 0.9f);
+            float scaleMax = randomJson.value("scaleMax", 1.15f);
+            glm::vec2 treeMinXZ = readVec2FromJson(randomJson.value("boundsMin", json::array()), placementMinXZ);
+            glm::vec2 treeMaxXZ = readVec2FromJson(randomJson.value("boundsMax", json::array()), placementMaxXZ);
+            const glm::vec2 normalizedMinXZ = glm::min(treeMinXZ, treeMaxXZ);
+            const glm::vec2 normalizedMaxXZ = glm::max(treeMinXZ, treeMaxXZ);
+            treeMinXZ = normalizedMinXZ;
+            treeMaxXZ = normalizedMaxXZ;
+            std::mt19937 rng(seed);
+            std::uniform_real_distribution<float> xDist(treeMinXZ.x, treeMaxXZ.x);
+            std::uniform_real_distribution<float> zDist(treeMinXZ.y, treeMaxXZ.y);
+            std::uniform_real_distribution<float> yawDist(0.0f, 360.0f);
+            std::uniform_real_distribution<float> scaleDist(std::min(scaleMin, scaleMax), std::max(scaleMin, scaleMax));
+
+            for (uint32_t i = 0; i < treeCount; ++i)
+            {
+                TreeInstanceConfig inst;
+                inst.speciesName = randomJson.value("species", treeConfig.species[0].name);
+                inst.position = glm::vec3(xDist(rng), 0.0f, zDist(rng));
+                inst.yawDeg = yawDist(rng);
+                inst.scale = scaleDist(rng);
+                inst.submeshIndex = readSubmeshIndex(randomJson);
                 treeConfig.instances.push_back(inst);
             }
         }
@@ -4347,6 +4630,325 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
     std::vector<ParentLink>    parentLinks;
     std::vector<ParentEntityLink> parentEntityLinks;
     std::vector<PendingAnimComp> pendingAnimComps;
+    std::unordered_set<uint32_t> vehicleDrivenTransformIDs;
+
+    auto getObjectTransformID = [](VansScriptObject* sceneObject) -> uint32_t
+    {
+        if (!sceneObject)
+            return UINT32_MAX;
+        if (auto* renderComp = sceneObject->GetComponent<VansScriptRenderComponent>())
+        {
+            if (renderComp->m_RenderNode)
+                return renderComp->m_RenderNode->m_TransformID;
+        }
+        return sceneObject->m_TransformID;
+    };
+
+    auto readPxVec3 = [](const json& j, PxVec3& out)
+    {
+        if (!j.is_array() || j.size() < 3)
+            return;
+        out = PxVec3(j[0].get<float>(), j[1].get<float>(), j[2].get<float>());
+    };
+
+    auto readPxTransformPosition = [&](const json& j, PxTransform& out)
+    {
+        if (!j.is_array() || j.size() < 3)
+            return;
+        PxVec3 p = out.p;
+        readPxVec3(j, p);
+        out.p = p;
+    };
+
+    auto readFloatArray4 = [](const json& j, std::array<PxReal, 4>& out)
+    {
+        if (!j.is_array())
+            return;
+        const size_t count = std::min<size_t>(j.size(), out.size());
+        for (size_t i = 0; i < count; ++i)
+            out[i] = j[i].get<float>();
+    };
+
+    auto readVec3Array4 = [&](const json& j, std::array<PxVec3, 4>& out)
+    {
+        if (!j.is_array())
+            return;
+        const size_t count = std::min<size_t>(j.size(), out.size());
+        for (size_t i = 0; i < count; ++i)
+            readPxVec3(j[i], out[i]);
+    };
+
+    auto parseVehicleAxis = [](const json& value, PxVehicleAxes::Enum fallback) -> PxVehicleAxes::Enum
+    {
+        if (value.is_number_integer())
+        {
+            const int axis = value.get<int>();
+            if (axis >= 0 && axis < static_cast<int>(PxVehicleAxes::eMAX_NB_AXES))
+                return static_cast<PxVehicleAxes::Enum>(axis);
+            return fallback;
+        }
+        if (!value.is_string())
+            return fallback;
+
+        std::string axis = value.get<std::string>();
+        std::transform(axis.begin(), axis.end(), axis.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (axis == "posx" || axis == "+x" || axis == "x") return PxVehicleAxes::ePosX;
+        if (axis == "negx" || axis == "-x") return PxVehicleAxes::eNegX;
+        if (axis == "posy" || axis == "+y" || axis == "y") return PxVehicleAxes::ePosY;
+        if (axis == "negy" || axis == "-y") return PxVehicleAxes::eNegY;
+        if (axis == "posz" || axis == "+z" || axis == "z") return PxVehicleAxes::ePosZ;
+        if (axis == "negz" || axis == "-z") return PxVehicleAxes::eNegZ;
+        return fallback;
+    };
+
+    auto vehicleAxisToVec3 = [](PxVehicleAxes::Enum axis) -> PxVec3
+    {
+        switch (axis)
+        {
+        case PxVehicleAxes::ePosX: return PxVec3(1.0f, 0.0f, 0.0f);
+        case PxVehicleAxes::eNegX: return PxVec3(-1.0f, 0.0f, 0.0f);
+        case PxVehicleAxes::ePosY: return PxVec3(0.0f, 1.0f, 0.0f);
+        case PxVehicleAxes::eNegY: return PxVec3(0.0f, -1.0f, 0.0f);
+        case PxVehicleAxes::ePosZ: return PxVec3(0.0f, 0.0f, 1.0f);
+        case PxVehicleAxes::eNegZ: return PxVec3(0.0f, 0.0f, -1.0f);
+        default: return PxVec3(0.0f, 1.0f, 0.0f);
+        }
+    };
+    auto vehicleAxisCoordinate = [](const PxVec3& value, PxVehicleAxes::Enum axis) -> float
+    {
+        switch (axis)
+        {
+        case PxVehicleAxes::ePosX: return value.x;
+        case PxVehicleAxes::eNegX: return -value.x;
+        case PxVehicleAxes::ePosY: return value.y;
+        case PxVehicleAxes::eNegY: return -value.y;
+        case PxVehicleAxes::ePosZ: return value.z;
+        case PxVehicleAxes::eNegZ: return -value.z;
+        default: return value.y;
+        }
+    };
+
+    auto accumulateMeshBounds = [](VansMesh* mesh, PxVec3& outMin, PxVec3& outMax) -> bool
+    {
+        if (!mesh)
+            return false;
+        if (mesh->HasLocalBounds())
+        {
+            const glm::vec3 bmin = mesh->GetLocalBoundsMin();
+            const glm::vec3 bmax = mesh->GetLocalBoundsMax();
+            outMin = PxVec3(bmin.x, bmin.y, bmin.z);
+            outMax = PxVec3(bmax.x, bmax.y, bmax.z);
+            return true;
+        }
+
+        const std::vector<float>& raw = mesh->GetMeshRawPositionData();
+        if (raw.empty())
+            return false;
+
+        const uint32_t vertexCount = mesh->GetMeshVertexCount();
+        size_t stride = 3;
+        if (vertexCount > 0 && raw.size() >= static_cast<size_t>(vertexCount) * 8)
+            stride = 8;
+        else if (vertexCount > 0 && raw.size() >= static_cast<size_t>(vertexCount) * 4)
+            stride = 4;
+
+        bool any = false;
+        for (size_t i = 0; i + 2 < raw.size(); i += stride)
+        {
+            const PxVec3 p(raw[i], raw[i + 1], raw[i + 2]);
+            if (!any)
+            {
+                outMin = p;
+                outMax = p;
+                any = true;
+            }
+            else
+            {
+                outMin.x = std::min(outMin.x, p.x);
+                outMin.y = std::min(outMin.y, p.y);
+                outMin.z = std::min(outMin.z, p.z);
+                outMax.x = std::max(outMax.x, p.x);
+                outMax.y = std::max(outMax.y, p.y);
+                outMax.z = std::max(outMax.z, p.z);
+            }
+        }
+        return any;
+    };
+
+    auto calculateBoundsFromRenderNodes = [&](const std::vector<VansRenderNode*>& renderNodes, PxVec3& boundsMin, PxVec3& boundsMax) -> bool
+    {
+        boundsMin = PxVec3(FLT_MAX, FLT_MAX, FLT_MAX);
+        boundsMax = PxVec3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+        bool any = false;
+        for (VansRenderNode* node : renderNodes)
+        {
+            PxVec3 meshMin, meshMax;
+            if (!node || !accumulateMeshBounds(node->m_Mesh, meshMin, meshMax))
+                continue;
+            if (!any)
+            {
+                boundsMin = meshMin;
+                boundsMax = meshMax;
+                any = true;
+            }
+            else
+            {
+                boundsMin.x = std::min(boundsMin.x, meshMin.x);
+                boundsMin.y = std::min(boundsMin.y, meshMin.y);
+                boundsMin.z = std::min(boundsMin.z, meshMin.z);
+                boundsMax.x = std::max(boundsMax.x, meshMax.x);
+                boundsMax.y = std::max(boundsMax.y, meshMax.y);
+                boundsMax.z = std::max(boundsMax.z, meshMax.z);
+            }
+        }
+        return any;
+    };
+
+    auto calculatePivotFromRenderNodes = [&](const std::vector<VansRenderNode*>& renderNodes) -> PxVec3
+    {
+        PxVec3 boundsMin, boundsMax;
+        const bool any = calculateBoundsFromRenderNodes(renderNodes, boundsMin, boundsMax);
+        return any ? (boundsMin + boundsMax) * 0.5f : PxVec3(0.0f);
+    };
+
+    auto vehicleAxisExtent = [](const PxVec3& boundsMin, const PxVec3& boundsMax, PxVehicleAxes::Enum axis) -> float
+    {
+        switch (axis)
+        {
+        case PxVehicleAxes::ePosX:
+        case PxVehicleAxes::eNegX:
+            return boundsMax.x - boundsMin.x;
+        case PxVehicleAxes::ePosY:
+        case PxVehicleAxes::eNegY:
+            return boundsMax.y - boundsMin.y;
+        case PxVehicleAxes::ePosZ:
+        case PxVehicleAxes::eNegZ:
+            return boundsMax.z - boundsMin.z;
+        default:
+            return 0.0f;
+        }
+    };
+
+    auto parseVehicleTuning = [&](const json& vehJson) -> VansVehicleTuning
+    {
+        VansVehicleTuning tuning;
+        const json& t = vehJson.contains("tuning") && vehJson["tuning"].is_object()
+            ? vehJson["tuning"]
+            : vehJson;
+
+        if (t.contains("bodyMass")) tuning.bodyMass = t["bodyMass"].get<float>();
+        if (t.contains("bodyMoi")) readPxVec3(t["bodyMoi"], tuning.bodyMoi);
+        if (t.contains("centerOfMass")) readPxTransformPosition(t["centerOfMass"], tuning.centerOfMassLocalPose);
+        if (t.contains("bodyBoxHalfExtents")) readPxVec3(t["bodyBoxHalfExtents"], tuning.bodyBoxHalfExtents);
+        if (t.contains("bodyBoxLocalPosition")) readPxTransformPosition(t["bodyBoxLocalPosition"], tuning.bodyBoxLocalPose);
+        if (t.contains("autoBodyGeometry")) tuning.autoBodyGeometry = t["autoBodyGeometry"].get<bool>();
+        if (t.contains("bodyGeometryPadding")) readPxVec3(t["bodyGeometryPadding"], tuning.bodyGeometryPadding);
+        if (t.contains("bodyGeometryHalfExtentsScale")) readPxVec3(t["bodyGeometryHalfExtentsScale"], tuning.bodyGeometryHalfExtentsScale);
+        if (t.contains("bodyGeometryCenterOffset")) readPxVec3(t["bodyGeometryCenterOffset"], tuning.bodyGeometryCenterOffset);
+        if (t.contains("longitudinalAxis")) tuning.longitudinalAxis = parseVehicleAxis(t["longitudinalAxis"], tuning.longitudinalAxis);
+        if (t.contains("forwardAxis")) tuning.longitudinalAxis = parseVehicleAxis(t["forwardAxis"], tuning.longitudinalAxis);
+        if (t.contains("lateralAxis")) tuning.lateralAxis = parseVehicleAxis(t["lateralAxis"], tuning.lateralAxis);
+        if (t.contains("verticalAxis")) tuning.verticalAxis = parseVehicleAxis(t["verticalAxis"], tuning.verticalAxis);
+
+        if (t.contains("wheelRadius")) tuning.wheelRadius = t["wheelRadius"].get<float>();
+        if (t.contains("wheelHalfWidth")) tuning.wheelHalfWidth = t["wheelHalfWidth"].get<float>();
+        tuning.wheelRadius = std::clamp(tuning.wheelRadius, 0.01f, 2.0f);
+        tuning.wheelHalfWidth = std::clamp(tuning.wheelHalfWidth, 0.01f, 2.0f);
+        if (t.contains("wheelMass")) tuning.wheelMass = t["wheelMass"].get<float>();
+        if (t.contains("wheelMoi")) tuning.wheelMoi = t["wheelMoi"].get<float>();
+        if (t.contains("wheelDampingRate")) tuning.wheelDampingRate = t["wheelDampingRate"].get<float>();
+        if (t.contains("visualWheelRollSign")) tuning.visualWheelRollSign = t["visualWheelRollSign"].get<float>();
+        if (t.contains("wheelVisualGroundClearance")) tuning.wheelVisualGroundClearance = t["wheelVisualGroundClearance"].get<float>();
+        if (t.contains("enableWheelSimulationCollision")) tuning.enableWheelSimulationCollision = t["enableWheelSimulationCollision"].get<bool>();
+        if (t.contains("collisionLayer") && t["collisionLayer"].is_string()) tuning.collisionLayerName = t["collisionLayer"].get<std::string>();
+        if (t.contains("layer") && t["layer"].is_string()) tuning.collisionLayerName = t["layer"].get<std::string>();
+        if (t.contains("useRoadQueryLayerFilter")) tuning.useRoadQueryLayerFilter = t["useRoadQueryLayerFilter"].get<bool>();
+        if (t.contains("roadQueryLayerFilter")) tuning.useRoadQueryLayerFilter = t["roadQueryLayerFilter"].get<bool>();
+        if (t.contains("physxActorUpdateMode") && t["physxActorUpdateMode"].is_string())
+        {
+            std::string mode = t["physxActorUpdateMode"].get<std::string>();
+            std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            mode.erase(std::remove_if(mode.begin(), mode.end(), [](unsigned char c) {
+                return c == '_' || c == '-' || c == ' ';
+            }), mode.end());
+            if (mode == "acceleration" || mode == "applyacceleration")
+                tuning.physxActorUpdateMode = PxVehiclePhysXActorUpdateMode::eAPPLY_ACCELERATION;
+            else if (mode == "velocity" || mode == "applyvelocity")
+                tuning.physxActorUpdateMode = PxVehiclePhysXActorUpdateMode::eAPPLY_VELOCITY;
+            else
+                VANS_LOG_WARN("[VehicleTuning] Unknown physxActorUpdateMode '" << mode << "'; using default velocity mode.");
+        }
+        if (t.contains("roadQueryMask") && t["roadQueryMask"].is_number_unsigned())
+        {
+            tuning.roadQueryMask = t["roadQueryMask"].get<PxU32>();
+            tuning.useCustomRoadQueryMask = true;
+        }
+        if (t.contains("roadQueryLayers") && t["roadQueryLayers"].is_array())
+        {
+            PxU32 roadMask = 0u;
+            auto& layerMgr = VansEngine::VansCollisionLayerManager::Get();
+            for (const auto& layerNameJson : t["roadQueryLayers"])
+            {
+                if (!layerNameJson.is_string())
+                    continue;
+                const int layerIndex = layerMgr.GetLayerIndex(layerNameJson.get<std::string>());
+                if (layerIndex >= 0 && layerIndex < 32)
+                    roadMask |= (1u << static_cast<PxU32>(layerIndex));
+            }
+            if (roadMask != 0u)
+            {
+                tuning.roadQueryMask = roadMask;
+                tuning.useCustomRoadQueryMask = true;
+            }
+            else
+            {
+                VANS_LOG_WARN("[VehicleTuning] roadQueryLayers resolved to an empty mask; using the collision layer mask.");
+            }
+        }
+        if (t.contains("autoAlignToGround")) tuning.autoAlignToGround = t["autoAlignToGround"].get<bool>();
+        if (t.contains("groundHeight")) tuning.groundHeight = t["groundHeight"].get<float>();
+        if (t.contains("groundClearance")) tuning.groundClearance = t["groundClearance"].get<float>();
+        tuning.groundClearance = std::clamp(tuning.groundClearance, -0.5f, 1.0f);
+        if (t.contains("startHeightOffset")) tuning.startHeightOffset = t["startHeightOffset"].get<float>();
+        if (t.contains("wheelCollisionMode") && t["wheelCollisionMode"].is_string())
+        {
+            std::string mode = t["wheelCollisionMode"].get<std::string>();
+            std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            tuning.enableWheelSimulationCollision =
+                (mode == "simulation" || mode == "simulationandquery" ||
+                 mode == "simulation_and_query" || mode == "collider");
+        }
+
+        if (t.contains("suspensionAttachmentPositions"))
+            readVec3Array4(t["suspensionAttachmentPositions"], tuning.suspensionAttachmentPositions);
+        if (t.contains("suspensionTravelDist")) tuning.suspensionTravelDist = t["suspensionTravelDist"].get<float>();
+        if (t.contains("suspensionStiffness")) readFloatArray4(t["suspensionStiffness"], tuning.suspensionStiffness);
+        if (t.contains("suspensionDamping")) readFloatArray4(t["suspensionDamping"], tuning.suspensionDamping);
+        if (t.contains("sprungMass")) readFloatArray4(t["sprungMass"], tuning.sprungMass);
+
+        if (t.contains("brakeMaxTorque")) tuning.brakeMaxTorque = t["brakeMaxTorque"].get<float>();
+        if (t.contains("handbrakeMaxTorque")) tuning.handbrakeMaxTorque = t["handbrakeMaxTorque"].get<float>();
+        if (t.contains("maxSteerAngleDeg")) tuning.maxSteerAngleRad = glm::radians(t["maxSteerAngleDeg"].get<float>());
+        if (t.contains("maxSteerAngleRad")) tuning.maxSteerAngleRad = t["maxSteerAngleRad"].get<float>();
+        if (t.contains("ackermannWheelBase")) tuning.ackermannWheelBase = t["ackermannWheelBase"].get<float>();
+        if (t.contains("ackermannTrackWidth")) tuning.ackermannTrackWidth = t["ackermannTrackWidth"].get<float>();
+        if (t.contains("ackermannStrength")) tuning.ackermannStrength = t["ackermannStrength"].get<float>();
+
+        if (t.contains("enginePeakTorque")) tuning.enginePeakTorque = t["enginePeakTorque"].get<float>();
+        if (t.contains("engineMaxOmega")) tuning.engineMaxOmega = t["engineMaxOmega"].get<float>();
+        if (t.contains("gearboxFinalRatio")) tuning.gearboxFinalRatio = t["gearboxFinalRatio"].get<float>();
+        if (t.contains("gearboxSwitchTime")) tuning.gearboxSwitchTime = t["gearboxSwitchTime"].get<float>();
+        if (t.contains("autoboxLatency")) tuning.autoboxLatency = t["autoboxLatency"].get<float>();
+        if (t.contains("clutchStrength")) tuning.clutchStrength = t["clutchStrength"].get<float>();
+
+        return tuning;
+    };
 
     // ── 对象级 Transform 解析 helper ─────────────────────────────────────
     auto parseObjTransform = [](const json& objJson,
@@ -5130,36 +5732,161 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
 
             // Resolve body object → render node name
             std::string bodyNodeName;
+            uint32_t bodyTransformID = UINT32_MAX;
+            VansScriptObject* bodyObj = nullptr;
+            std::vector<VansRenderNode*> bodyRenderNodesForBounds;
             if (vehJson.contains("bodyObject"))
             {
                 std::string bodyObjName = vehJson["bodyObject"].get<std::string>();
-                VansScriptObject* bodyObj = FindObjectByName(bodyObjName);
+                bodyObj = FindObjectByName(bodyObjName);
                 if (bodyObj)
                 {
+                    bodyTransformID = getObjectTransformID(bodyObj);
                     auto* rc = bodyObj->GetComponent<VansScriptRenderComponent>();
                     if (rc && rc->m_RenderNode)
                         bodyNodeName = rc->m_RenderNode->m_NodeName;
+                }
+                else
+                {
+                    VANS_LOG_WARN("[LoadSceneObjects] Vehicle body object not found: " << bodyObjName);
+                }
+            }
+            if (bodyObj && !bodyObj->m_EntityGuid.empty())
+            {
+                for (VansScriptObject* candidate : m_SceneObjects)
+                {
+                    if (!candidate)
+                        continue;
+                    auto* rc = candidate->GetComponent<VansScriptRenderComponent>();
+                    VansRenderNode* rn = rc ? rc->m_RenderNode : nullptr;
+                    if (!rn)
+                        continue;
+
+                    if (rn->m_ParentEntityGuid == bodyObj->m_EntityGuid ||
+                        rn->m_ParentGroupName == bodyObj->m_ObjectName ||
+                        candidate == bodyObj)
+                    {
+                        bodyRenderNodesForBounds.push_back(rn);
+                    }
                 }
             }
 
             // Resolve tire objects → render node names
             std::vector<std::string> tireNodeNames;
+            std::vector<uint32_t> tireTransformIDs;
+            std::vector<std::vector<VansVehicleVisualBinding>> wheelVisualBindings;
+            std::vector<PxVec3> wheelGroupPivots;
+            std::vector<PxVec3> wheelGroupBoundsMin;
+            std::vector<PxVec3> wheelGroupBoundsMax;
+            std::unordered_set<VansRenderNode*> tireRenderNodesForBodyExclusion;
             if (vehJson.contains("tireObjects"))
             {
-                for (const auto& t : vehJson["tireObjects"])
+                auto collectObjectNames = [](const json& tireJson) -> std::vector<std::string>
                 {
-                    std::string tireObjName = t.get<std::string>();
-                    VansScriptObject* tireObj = FindObjectByName(tireObjName);
-                    if (tireObj)
+                    std::vector<std::string> names;
+                    if (tireJson.is_string())
                     {
+                        names.push_back(tireJson.get<std::string>());
+                    }
+                    else if (tireJson.is_array())
+                    {
+                        for (const auto& item : tireJson)
+                            if (item.is_string())
+                                names.push_back(item.get<std::string>());
+                    }
+                    else if (tireJson.is_object())
+                    {
+                        if (tireJson.contains("object") && tireJson["object"].is_string())
+                            names.push_back(tireJson["object"].get<std::string>());
+                        if (tireJson.contains("objects") && tireJson["objects"].is_array())
+                        {
+                            for (const auto& item : tireJson["objects"])
+                                if (item.is_string())
+                                    names.push_back(item.get<std::string>());
+                        }
+                    }
+                    return names;
+                };
+
+                for (const auto& tireJson : vehJson["tireObjects"])
+                {
+                    std::vector<std::string> groupObjectNames = collectObjectNames(tireJson);
+                    if (groupObjectNames.empty())
+                        continue;
+
+                    struct PendingWheelVisual
+                    {
+                        uint32_t transformID = UINT32_MAX;
+                        VansRenderNode* renderNode = nullptr;
+                    };
+                    std::vector<PendingWheelVisual> pendingVisuals;
+                    std::vector<VansRenderNode*> renderNodesForPivot;
+
+                    for (const std::string& tireObjName : groupObjectNames)
+                    {
+                        VansScriptObject* tireObj = FindObjectByName(tireObjName);
+                        if (!tireObj)
+                        {
+                            VANS_LOG_WARN("[LoadSceneObjects] Vehicle tire object not found: " << tireObjName);
+                            continue;
+                        }
+
+                        PendingWheelVisual visual;
+                        visual.transformID = getObjectTransformID(tireObj);
+                        if (visual.transformID != UINT32_MAX)
+                            vehicleDrivenTransformIDs.insert(visual.transformID);
+
                         auto* rc = tireObj->GetComponent<VansScriptRenderComponent>();
                         if (rc && rc->m_RenderNode)
                         {
-                            tireNodeNames.push_back(rc->m_RenderNode->m_NodeName);
-                            continue;
+                            visual.renderNode = rc->m_RenderNode;
+                            renderNodesForPivot.push_back(rc->m_RenderNode);
+                            tireRenderNodesForBodyExclusion.insert(rc->m_RenderNode);
                         }
+
+                        if (visual.transformID != UINT32_MAX)
+                            pendingVisuals.push_back(visual);
                     }
-                    VANS_LOG_WARN("[LoadSceneObjects] Vehicle tire object not found: " << tireObjName);
+
+                    if (pendingVisuals.empty())
+                        continue;
+
+                    PxVec3 groupBoundsMin, groupBoundsMax;
+                    const bool hasGroupBounds = calculateBoundsFromRenderNodes(renderNodesForPivot, groupBoundsMin, groupBoundsMax);
+                    PxVec3 groupPivot = hasGroupBounds ? (groupBoundsMin + groupBoundsMax) * 0.5f : PxVec3(0.0f);
+                    if (tireJson.is_object() && tireJson.contains("pivot"))
+                        readPxVec3(tireJson["pivot"], groupPivot);
+
+                    PxVec3 visualPivot = groupPivot;
+                    if (tireJson.is_object() && tireJson.contains("visualPivot"))
+                        readPxVec3(tireJson["visualPivot"], visualPivot);
+
+                    PxVec3 wheelCenter = groupPivot;
+                    if (tireJson.is_object())
+                    {
+                        if (tireJson.contains("wheelCenter"))
+                            readPxVec3(tireJson["wheelCenter"], wheelCenter);
+                        else if (tireJson.contains("suspensionPivot"))
+                            readPxVec3(tireJson["suspensionPivot"], wheelCenter);
+                    }
+
+                    wheelGroupPivots.push_back(wheelCenter);
+                    wheelGroupBoundsMin.push_back(hasGroupBounds ? groupBoundsMin : groupPivot);
+                    wheelGroupBoundsMax.push_back(hasGroupBounds ? groupBoundsMax : groupPivot);
+
+                    std::vector<VansVehicleVisualBinding> groupBindings;
+                    groupBindings.reserve(pendingVisuals.size());
+                    for (const PendingWheelVisual& visual : pendingVisuals)
+                    {
+                        VansVehicleVisualBinding binding;
+                        binding.transformID = visual.transformID;
+                        binding.pivotLocal = visualPivot;
+                        groupBindings.push_back(binding);
+                    }
+                    wheelVisualBindings.push_back(std::move(groupBindings));
+
+                    tireTransformIDs.push_back(pendingVisuals.front().transformID);
+                    tireNodeNames.push_back(pendingVisuals.front().renderNode ? pendingVisuals.front().renderNode->m_NodeName : std::string());
                 }
             }
 
@@ -5169,8 +5896,252 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
                 auto& p = vehJson["position"];
                 spawnPos = glm::vec3(p[0].get<float>(), p[1].get<float>(), p[2].get<float>());
             }
+            else if (bodyTransformID != UINT32_MAX &&
+                     bodyTransformID < static_cast<uint32_t>(VansTransformStore::GlobalTransforms.size()))
+            {
+                spawnPos = VansTransformStore::GetTransform(bodyTransformID).m_Position;
+            }
 
-            InitVehicle(&VansEngine::VansPhysicsSystem::GetInstance(), spawnPos, bodyNodeName, tireNodeNames);
+            VansVehicleTuning tuning = parseVehicleTuning(vehJson);
+            const json& tuningJson = vehJson.contains("tuning") && vehJson["tuning"].is_object()
+                ? vehJson["tuning"]
+                : vehJson;
+            auto parseWheelSlot = [](const json& value) -> int
+            {
+                if (value.is_number_integer())
+                {
+                    const int slot = value.get<int>();
+                    return (slot >= 0 && slot < 4) ? slot : -1;
+                }
+                if (!value.is_string())
+                    return -1;
+
+                std::string slot = value.get<std::string>();
+                std::transform(slot.begin(), slot.end(), slot.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                slot.erase(std::remove_if(slot.begin(), slot.end(), [](unsigned char c) {
+                    return c == '_' || c == '-' || c == ' ';
+                }), slot.end());
+
+                if (slot == "frontleft" || slot == "leftfront" || slot == "fl" || slot == "lf")
+                    return 0;
+                if (slot == "frontright" || slot == "rightfront" || slot == "fr" || slot == "rf")
+                    return 1;
+                if (slot == "rearleft" || slot == "leftrear" || slot == "rl" || slot == "lr" ||
+                    slot == "backleft" || slot == "leftback")
+                    return 2;
+                if (slot == "rearright" || slot == "rightrear" || slot == "rr" || slot == "rightr" ||
+                    slot == "backright" || slot == "rightback")
+                    return 3;
+                return -1;
+            };
+
+            auto parseConfiguredWheelOrder = [&](const json& source, std::vector<size_t>& outOrder) -> bool
+            {
+                if (!source.contains("wheelOrder") || !source["wheelOrder"].is_array())
+                    return false;
+
+                const json& orderJson = source["wheelOrder"];
+                if (orderJson.size() < 4)
+                {
+                    VANS_LOG_WARN("[VehicleWheelOrder] object='" << obj->m_ObjectName
+                        << "' wheelOrder must contain four wheel slots; keeping tireObjects order.");
+                    return false;
+                }
+
+                outOrder.assign(wheelGroupPivots.size(), 0);
+                for (size_t i = 0; i < outOrder.size(); ++i)
+                    outOrder[i] = i;
+
+                std::array<bool, 4> seen = { false, false, false, false };
+                for (size_t sourceIndex = 0; sourceIndex < std::min<size_t>(4, orderJson.size()); ++sourceIndex)
+                {
+                    const int slot = parseWheelSlot(orderJson[sourceIndex]);
+                    if (slot < 0 || seen[slot])
+                    {
+                        VANS_LOG_WARN("[VehicleWheelOrder] object='" << obj->m_ObjectName
+                            << "' invalid wheelOrder entry at index " << sourceIndex
+                            << "; keeping tireObjects order.");
+                        return false;
+                    }
+                    seen[slot] = true;
+                    outOrder[slot] = sourceIndex;
+                }
+
+                return seen[0] && seen[1] && seen[2] && seen[3];
+            };
+
+            std::vector<size_t> wheelOrder;
+            if (wheelGroupPivots.size() >= 4 &&
+                (parseConfiguredWheelOrder(vehJson, wheelOrder) ||
+                 parseConfiguredWheelOrder(tuningJson, wheelOrder)))
+            {
+                auto applyWheelOrder = [&](auto& values)
+                {
+                    auto ordered = values;
+                    const size_t count = std::min(values.size(), wheelOrder.size());
+                    for (size_t i = 0; i < count; ++i)
+                        ordered[i] = values[wheelOrder[i]];
+                    values = std::move(ordered);
+                };
+
+                applyWheelOrder(wheelGroupPivots);
+                applyWheelOrder(wheelGroupBoundsMin);
+                applyWheelOrder(wheelGroupBoundsMax);
+                applyWheelOrder(wheelVisualBindings);
+                applyWheelOrder(tireTransformIDs);
+                applyWheelOrder(tireNodeNames);
+
+                VANS_LOG("[VehicleWheelOrder] object='" << obj->m_ObjectName
+                    << "' configured wheelOrder applied: frontLeft=(" << wheelGroupPivots[0].x << ", "
+                    << wheelGroupPivots[0].y << ", " << wheelGroupPivots[0].z << ")"
+                    << " frontRight=(" << wheelGroupPivots[1].x << ", "
+                    << wheelGroupPivots[1].y << ", " << wheelGroupPivots[1].z << ")"
+                    << " rearLeft=(" << wheelGroupPivots[2].x << ", "
+                    << wheelGroupPivots[2].y << ", " << wheelGroupPivots[2].z << ")"
+                    << " rearRight=(" << wheelGroupPivots[3].x << ", "
+                    << wheelGroupPivots[3].y << ", " << wheelGroupPivots[3].z << ")");
+            }
+            const bool autoWheelGeometry = tuningJson.value("autoWheelGeometry", false);
+            if (tuningJson.contains("bodyGeometryExcludeObjects") && tuningJson["bodyGeometryExcludeObjects"].is_array())
+            {
+                for (const auto& excludeNameJson : tuningJson["bodyGeometryExcludeObjects"])
+                {
+                    if (!excludeNameJson.is_string())
+                        continue;
+                    VansScriptObject* excludedObj = FindObjectByName(excludeNameJson.get<std::string>());
+                    auto* rc = excludedObj ? excludedObj->GetComponent<VansScriptRenderComponent>() : nullptr;
+                    if (rc && rc->m_RenderNode)
+                        tireRenderNodesForBodyExclusion.insert(rc->m_RenderNode);
+                }
+            }
+            if (tuning.autoBodyGeometry && !bodyRenderNodesForBounds.empty())
+            {
+                std::vector<VansRenderNode*> filteredBodyRenderNodes;
+                filteredBodyRenderNodes.reserve(bodyRenderNodesForBounds.size());
+                for (VansRenderNode* rn : bodyRenderNodesForBounds)
+                {
+                    if (rn && tireRenderNodesForBodyExclusion.find(rn) == tireRenderNodesForBodyExclusion.end())
+                        filteredBodyRenderNodes.push_back(rn);
+                }
+
+                PxVec3 bodyBoundsMin, bodyBoundsMax;
+                if (calculateBoundsFromRenderNodes(filteredBodyRenderNodes, bodyBoundsMin, bodyBoundsMax))
+                {
+                    const PxVec3 unscaledHalfExtents = (bodyBoundsMax - bodyBoundsMin) * 0.5f + tuning.bodyGeometryPadding;
+                    const PxVec3 halfExtents(
+                        unscaledHalfExtents.x * tuning.bodyGeometryHalfExtentsScale.x,
+                        unscaledHalfExtents.y * tuning.bodyGeometryHalfExtentsScale.y,
+                        unscaledHalfExtents.z * tuning.bodyGeometryHalfExtentsScale.z);
+                    const PxVec3 center = (bodyBoundsMin + bodyBoundsMax) * 0.5f + tuning.bodyGeometryCenterOffset;
+                    tuning.bodyBoxHalfExtents = PxVec3(
+                        std::max(halfExtents.x, 0.01f),
+                        std::max(halfExtents.y, 0.01f),
+                        std::max(halfExtents.z, 0.01f));
+                    tuning.bodyBoxLocalPose = PxTransform(center, PxQuat(PxIdentity));
+                    VANS_LOG("[VehicleAutoBodyGeometry] object='" << obj->m_ObjectName
+                        << "' bodyNodes=" << filteredBodyRenderNodes.size()
+                        << " excludedTireNodes=" << tireRenderNodesForBodyExclusion.size()
+                        << " bodyBoundsMin=(" << bodyBoundsMin.x << ", " << bodyBoundsMin.y << ", " << bodyBoundsMin.z << ")"
+                        << " bodyBoundsMax=(" << bodyBoundsMax.x << ", " << bodyBoundsMax.y << ", " << bodyBoundsMax.z << ")"
+                        << " bodyHalfExtentsScale=(" << tuning.bodyGeometryHalfExtentsScale.x << ", "
+                        << tuning.bodyGeometryHalfExtentsScale.y << ", " << tuning.bodyGeometryHalfExtentsScale.z << ")"
+                        << " bodyCenterOffset=(" << tuning.bodyGeometryCenterOffset.x << ", "
+                        << tuning.bodyGeometryCenterOffset.y << ", " << tuning.bodyGeometryCenterOffset.z << ")"
+                        << " bodyBoxHalfExtents=(" << tuning.bodyBoxHalfExtents.x << ", "
+                        << tuning.bodyBoxHalfExtents.y << ", " << tuning.bodyBoxHalfExtents.z << ")"
+                        << " bodyBoxLocalPosition=(" << tuning.bodyBoxLocalPose.p.x << ", "
+                        << tuning.bodyBoxLocalPose.p.y << ", " << tuning.bodyBoxLocalPose.p.z << ")");
+                }
+            }
+            if (autoWheelGeometry && wheelGroupBoundsMin.size() >= 4 && wheelGroupBoundsMax.size() >= 4)
+            {
+                float radiusSum = 0.0f;
+                float halfWidthSum = 0.0f;
+                for (size_t wi = 0; wi < 4; ++wi)
+                {
+                    const float verticalExtent = vehicleAxisExtent(wheelGroupBoundsMin[wi], wheelGroupBoundsMax[wi], tuning.verticalAxis);
+                    const float longitudinalExtent = vehicleAxisExtent(wheelGroupBoundsMin[wi], wheelGroupBoundsMax[wi], tuning.longitudinalAxis);
+                    const float lateralExtent = vehicleAxisExtent(wheelGroupBoundsMin[wi], wheelGroupBoundsMax[wi], tuning.lateralAxis);
+                    radiusSum += 0.5f * std::max(verticalExtent, longitudinalExtent);
+                    halfWidthSum += 0.5f * lateralExtent;
+                    VANS_LOG("[VehicleAutoWheelGeometry] object='" << obj->m_ObjectName
+                        << "' wheel=" << wi
+                        << " boundsMin=(" << wheelGroupBoundsMin[wi].x << ", " << wheelGroupBoundsMin[wi].y << ", " << wheelGroupBoundsMin[wi].z << ")"
+                        << " boundsMax=(" << wheelGroupBoundsMax[wi].x << ", " << wheelGroupBoundsMax[wi].y << ", " << wheelGroupBoundsMax[wi].z << ")"
+                        << " verticalExtent=" << verticalExtent
+                        << " longitudinalExtent=" << longitudinalExtent
+                        << " lateralExtent=" << lateralExtent
+                        << " renderRadius=" << (0.5f * std::max(verticalExtent, longitudinalExtent))
+                        << " renderHalfWidth=" << (0.5f * lateralExtent));
+                }
+                tuning.wheelRadius = std::max(0.01f, radiusSum * 0.25f);
+                tuning.wheelHalfWidth = std::max(0.01f, halfWidthSum * 0.25f);
+                VANS_LOG("[VehicleAutoWheelGeometry] object='" << obj->m_ObjectName
+                    << "' final wheelRadius=" << tuning.wheelRadius
+                    << " wheelHalfWidth=" << tuning.wheelHalfWidth);
+            }
+            if (!tuningJson.contains("suspensionAttachmentPositions") && wheelGroupPivots.size() >= 4)
+            {
+                const PxVec3 upAxis = vehicleAxisToVec3(tuning.verticalAxis);
+                constexpr float kGravityMagnitude = 9.81f;
+                for (size_t wi = 0; wi < 4; ++wi)
+                {
+                    const float stiffness = std::max(1.0f, tuning.suspensionStiffness[wi]);
+                    const float staticJounce = std::clamp(
+                        tuning.sprungMass[wi] * kGravityMagnitude / stiffness,
+                        0.0f,
+                        tuning.suspensionTravelDist);
+                    const float visualRestOffset = tuning.suspensionTravelDist - staticJounce + tuning.wheelVisualGroundClearance;
+                    tuning.suspensionAttachmentPositions[wi] = wheelGroupPivots[wi] + upAxis * visualRestOffset;
+                    VANS_LOG("[VehicleAutoSuspension] object='" << obj->m_ObjectName
+                        << "' wheel=" << wi
+                        << " pivot=(" << wheelGroupPivots[wi].x << ", " << wheelGroupPivots[wi].y << ", " << wheelGroupPivots[wi].z << ")"
+                        << " staticJounce=" << staticJounce
+                        << " clearance=" << tuning.wheelVisualGroundClearance
+                        << " attachment=(" << tuning.suspensionAttachmentPositions[wi].x << ", "
+                        << tuning.suspensionAttachmentPositions[wi].y << ", "
+                        << tuning.suspensionAttachmentPositions[wi].z << ")");
+                }
+            }
+            if (tuning.autoAlignToGround && wheelGroupPivots.size() >= 4)
+            {
+                const PxVec3 upAxis = vehicleAxisToVec3(tuning.verticalAxis);
+                const PxVec3 suspensionTravelDir = -upAxis;
+                float averageWheelCenterHeight = 0.0f;
+                for (size_t wi = 0; wi < 4; ++wi)
+                {
+                    const float stiffness = std::max(1.0f, tuning.suspensionStiffness[wi]);
+                    const float staticJounce = std::clamp(
+                        tuning.sprungMass[wi] * 9.81f / stiffness,
+                        0.0f,
+                        tuning.suspensionTravelDist);
+                    const PxVec3 wheelCenterLocal =
+                        tuning.suspensionAttachmentPositions[wi] +
+                        suspensionTravelDir * (tuning.suspensionTravelDist - staticJounce);
+                    averageWheelCenterHeight += vehicleAxisCoordinate(wheelCenterLocal, tuning.verticalAxis);
+                }
+                averageWheelCenterHeight *= 0.25f;
+
+                const PxVec3 spawnPx(spawnPos.x, spawnPos.y, spawnPos.z);
+                const float spawnHeight = vehicleAxisCoordinate(spawnPx, tuning.verticalAxis);
+                const float desiredWheelCenterHeight =
+                    tuning.groundHeight + tuning.wheelRadius + tuning.groundClearance;
+                const float currentWheelCenterHeight = spawnHeight + averageWheelCenterHeight;
+                const float deltaHeight = desiredWheelCenterHeight - currentWheelCenterHeight;
+                spawnPos += glm::vec3(upAxis.x, upAxis.y, upAxis.z) * deltaHeight;
+
+                VANS_LOG("[VehicleAutoGroundAlign] object='" << obj->m_ObjectName
+                    << "' groundHeight=" << tuning.groundHeight
+                    << " wheelRadius=" << tuning.wheelRadius
+                    << " groundClearance=" << tuning.groundClearance
+                    << " averageWheelCenterHeight=" << averageWheelCenterHeight
+                    << " oldSpawnHeight=" << spawnHeight
+                    << " newSpawn=(" << spawnPos.x << ", " << spawnPos.y << ", " << spawnPos.z << ")");
+            }
+            InitVehicle(&VansEngine::VansPhysicsSystem::GetInstance(), spawnPos,
+                bodyNodeName, tireNodeNames, bodyTransformID, tireTransformIDs, tuning, wheelVisualBindings);
             if (vc)
                 vc->m_Vehicle = m_Vehicle;
         }
@@ -5187,6 +6158,8 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         VansRenderNode* parentNode = FindRenderNodeByName(link.parentName);
         if (childNode && parentNode)
         {
+            if (vehicleDrivenTransformIDs.count(childNode->m_TransformID) > 0)
+                continue;
             m_TransformParentSystem.SetParent(childNode->m_TransformID, parentNode->m_TransformID);
             VANS_LOG("[TransformParent] '" << link.childName << "' parented to '" << link.parentName << "'");
         }
@@ -5198,6 +6171,8 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
         VansScriptObject* parentObj = FindObjectByGuid(link.parentEntityGuid);
         if (parentObj && parentObj->m_TransformID != UINT32_MAX)
         {
+            if (vehicleDrivenTransformIDs.count(link.childTransformID) > 0)
+                continue;
             m_TransformParentSystem.SetParent(link.childTransformID, parentObj->m_TransformID);
             VANS_LOG("[TransformParent] '" << link.childName << "' parented to entity '" << parentObj->m_ObjectName << "'");
         }
@@ -5268,6 +6243,16 @@ void VansGraphics::VansScene::LoadSceneObjects(VkDevice& device, json& objectsAr
             // They must use the root transform directly; TransformParentSystem is
             // not part of VansRenderNode::ComputeModelDataFromTransform().
             const uint32_t oldTransformID = node->m_TransformID;
+            if (vehicleDrivenTransformIDs.count(oldTransformID) > 0)
+            {
+                if (m_TransformParentSystem.HasParent(oldTransformID))
+                    m_TransformParentSystem.ClearParent(oldTransformID);
+                node->m_ParentGroupName = parentName;
+                group.childNodes.push_back(node);
+                VANS_LOG("[MultiMeshGroup] Keeping vehicle-driven child '" << childObj->m_ObjectName
+                    << "' on its own transformID=" << oldTransformID);
+                continue;
+            }
             if (oldTransformID != group.sharedTransformID)
             {
                 if (m_TransformParentSystem.HasParent(oldTransformID))

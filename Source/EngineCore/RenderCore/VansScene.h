@@ -270,9 +270,14 @@ namespace VansGraphics
 		// Vehicle
 		VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
 		// Initialize the vehicle in the scene from JSON-specified parameters.
-		// Render node name bindings are stored on the vehicle itself.
+		// Object transform bindings are preferred; render node names are kept as a legacy fallback.
 		void InitVehicle(VansEngine::VansPhysicsSystem* physicsSystem, const glm::vec3& position,
-			const std::string& bodyRenderNodeName, const std::vector<std::string>& tireRenderNodeNames);
+			const std::string& bodyRenderNodeName, const std::vector<std::string>& tireRenderNodeNames,
+			uint32_t bodyTransformID = UINT32_MAX,
+			const std::vector<uint32_t>& tireTransformIDs = std::vector<uint32_t>(),
+			const VansEngine::VansVehicleTuning& tuning = VansEngine::VansVehicleTuning(),
+			const std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>& wheelVisualBindings =
+				std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>());
 
 		// ── ScriptableObject layer ──────────────────────────────────────────
 		// Each VansScriptObject groups render / physics / cloth components for
@@ -322,6 +327,7 @@ namespace VansGraphics
 
 		/// Are project resources loaded? (mesh/texture/shader)
 		bool AreResourcesLoaded() const { return m_ResourcesLoaded; }
+		VansEngine::VansPhysicsVehicle* GetVehicle() const { return m_Vehicle; }
 
 		/// Is a scene currently loaded and ready for rendering?
 		bool IsSceneReady() const { return m_SceneState == VansSceneState::Ready; }
@@ -487,6 +493,7 @@ namespace VansGraphics
 		// ── Runtime Dynamic Entity 辅助函数 ─────────────────────────────────
 		void RemoveRenderNodeFromVector(VansRenderNode* node);
 		std::vector<VansRenderNode*> CollectSSBOManagedRenderNodes() const;
+		const std::unordered_map<std::string, MultiMeshGroup>& GetMultiMeshGroups() const { return m_MultiMeshGroups; }
 
 		// 当 LightManager 某灯光被 swap-pop 后，更新所有 VansScriptObject 中的 LightIndex 引用
 		void UpdateLightComponentIndex(int oldIndex, int newIndex, VansLightType type);
@@ -508,6 +515,7 @@ namespace VansGraphics
 			VkDevice& device,
 			VansMesh* multiMesh,
 			const std::string& parentName,
+			const std::string& parentEntityGuid,
 			const glm::vec3& position,
 			const glm::vec3& rotation,
 			const glm::vec3& scale,

@@ -530,7 +530,23 @@ void VansGraphics::VansTransparentRenderNode::CreateDescriptorSets(VansCamera* c
 	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
 	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
 
-	if (m_Material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+	if (m_Material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
+	{
+		VansVKDevice* device = camera ? static_cast<VansVKDevice*>(camera->GetGraphicsDevice()) : nullptr;
+		const VkDescriptorSetLayout passLayout = device ? device->GetTransmissionGlassPassLayout() : VK_NULL_HANDLE;
+		const VkDescriptorSet passSet = device ? device->GetTransmissionGlassPassDescriptorSet() : VK_NULL_HANDLE;
+		if (passLayout != VK_NULL_HANDLE && passSet != VK_NULL_HANDLE)
+		{
+			m_UsedDescSetLayouts.push_back(passLayout);
+			m_UsedDescSets.push_back(passSet);
+		}
+		else
+		{
+			m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
+			m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
+		}
+	}
+	else if (m_Material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
 	{
 		// Custom forward shaders consume global custom material payloads from set 0.
 		// Keep set numbering contiguous so they can still bind set 2 for transforms.
@@ -590,7 +606,8 @@ void VansGraphics::VansTransparentRenderNode::Draw(VansVKCommandBuffer& cmd, Glo
 
 	if (shader->GetPushConstantSize() > 0)
 	{
-		if (m_Material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+		if (m_Material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER ||
+			m_Material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
 		{
 			const auto* manager = m_Scene ? m_Scene->GetMaterialManager() : nullptr;
 			const int customPayloadCount = manager
@@ -1373,6 +1390,8 @@ void VansGraphics::VansVegetationRenderNode::Draw(VansVKCommandBuffer& cmd, Glob
 	if (!m_VegetationSystem)
 		return;
 
+	const bool hasTrees = m_VegetationSystem->HasTrees();
+
 	// Use the first config's material as the shader source (all configs share the
 	// same vertex/fragment shader; they only differ in descriptor bindings).
 	VansMaterial* drawMaterial = m_Material;
@@ -1382,15 +1401,21 @@ void VansGraphics::VansVegetationRenderNode::Draw(VansVKCommandBuffer& cmd, Glob
 		if (!configs.empty() && configs[0].material)
 			drawMaterial = configs[0].material;
 	}
-	if (!drawMaterial) return;
-
-	auto* gbufferShader = drawMaterial->GetPassShader(VansPass::GBUFFER);
-	if (!gbufferShader)
+	if (drawMaterial)
+	{
+		auto* gbufferShader = drawMaterial->GetPassShader(VansPass::GBUFFER);
+		if (gbufferShader)
+		{
+			m_VegetationSystem->Draw(cmd, *gbufferShader, global_state,
+				m_UsedDescSetLayouts, m_UsedDescSets,
+				m_TransfromIndex);
+		}
+	}
+	else if (!hasTrees)
+	{
 		return;
+	}
 
-	m_VegetationSystem->Draw(cmd, *gbufferShader, global_state,
-		m_UsedDescSetLayouts, m_UsedDescSets,
-		m_TransfromIndex);
 	m_VegetationSystem->DrawTrees(cmd, global_state,
 		m_UsedDescSetLayouts, m_UsedDescSets,
 		m_TransfromIndex);

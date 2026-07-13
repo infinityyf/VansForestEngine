@@ -60,6 +60,7 @@ namespace VansEngine
         PhysicsMaterialProperties material;
         
         // Collision shape parameters
+        glm::vec3 shapeOffset = glm::vec3(0.0f);
         glm::vec3 boxExtents = glm::vec3(1.0f, 1.0f, 1.0f);
         float sphereRadius = 1.0f;
         float capsuleRadius = 0.5f;

@@ -2,7 +2,10 @@
 #include "../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../RenderCore/VulkanCore/VansGUIVulkanBackEnd.h"
 #include "../RenderCore/VulkanCore/VansVKDescriptorManager.h"
+#include "../RenderCore/VulkanCore/VansMesh.h"
+#include "../RenderCore/VulkanCore/VansTexture.h"
 #include "../RenderCore/VansCamera.h"
+#include "../RenderCore/VansMaterial.h"
 #include "../RenderCore/VansScene.h"
 #include "../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../VansTimer.h"
@@ -31,6 +34,8 @@
 #include "../VansFramePhase.h"
 
 #include "../ProjectSystem/VansProjectManager.h"
+#include "../AssetCore/VansAssetDatabase.h"
+#include "../AssetCore/VansAssetGuid.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSaveService.h"
 #include "VansAssetDocumentRegistry.h"
@@ -45,7 +50,12 @@
 #include <iostream>
 #include <string>
 #include <filesystem>
+#include <algorithm>
+#include <cctype>
+#include <fstream>
 #include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 
 #ifdef _DEBUG
 VansFramePhase g_CurrentFramePhase = VansFramePhase::GameLogic;
@@ -74,6 +84,485 @@ namespace
         VansGraphics::VansTimer::SetPhysicsDeltaTime(static_cast<double>(physicsDeltaTime));
         VansEngine::VansPhysicsSystem::GetInstance().SetFixedTimeStep(physicsDeltaTime);
         VANS_LOG("[Editor] Applied project physics delta time: " << physicsDeltaTime << "s");
+    }
+
+    std::string SafeAssetName(std::string value)
+    {
+        if (value.empty())
+            value = "Unnamed";
+        for (char& c : value)
+        {
+            const unsigned char uc = static_cast<unsigned char>(c);
+            if (!std::isalnum(uc) && c != '_' && c != '-')
+                c = '_';
+        }
+        while (!value.empty() && value.front() == '_') value.erase(value.begin());
+        while (!value.empty() && value.back() == '_') value.pop_back();
+        if (value.empty())
+            value = "Unnamed";
+        if (value.size() > 96)
+            value.resize(96);
+        return value;
+    }
+
+    std::string SanitizeJsonText(std::string value)
+    {
+        for (char& c : value)
+        {
+            const unsigned char uc = static_cast<unsigned char>(c);
+            if (uc < 0x20 || uc >= 0x7f)
+                c = '_';
+        }
+        return value;
+    }
+
+    Vans::SceneJson Vec3Json(const glm::vec3& value)
+    {
+        return Vans::SceneJson::array({ value.x, value.y, value.z });
+    }
+
+    Vans::VansAssetGuid ReadOrCreateMetaGuid(const std::filesystem::path& metaPath)
+    {
+        std::ifstream input(metaPath);
+        if (input)
+        {
+            const auto meta = Vans::SceneJson::parse(input, nullptr, false);
+            if (!meta.is_discarded() && meta.is_object() && meta.contains("guid") && meta["guid"].is_string())
+            {
+                Vans::VansAssetGuid parsed;
+                if (Vans::VansAssetGuid::TryParse(meta["guid"].get<std::string>(), parsed))
+                    return parsed;
+            }
+        }
+        return Vans::VansAssetGuid::New();
+    }
+
+    bool WriteJsonFile(const std::filesystem::path& path, const Vans::SceneJson& json)
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        if (!output)
+            return false;
+        output << json.dump(4);
+        return static_cast<bool>(output);
+    }
+
+    bool IsGuidString(const std::string& value)
+    {
+        Vans::VansAssetGuid parsed;
+        return Vans::VansAssetGuid::TryParse(value, parsed);
+    }
+
+    std::string LowerAscii(std::string value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value;
+    }
+
+    std::string ResolveRuntimeTextureGuid(
+        const std::string& textureName,
+        Vans::VansAssetDatabase* database,
+        const std::string& rootName)
+    {
+        if (textureName.empty())
+            return {};
+        if (IsGuidString(textureName))
+            return textureName;
+        if (database == nullptr)
+            return {};
+
+        const std::string wanted = LowerAscii(std::filesystem::path(textureName).stem().string());
+        const std::string rootToken = LowerAscii(SafeAssetName(rootName));
+        std::string fallbackGuid;
+        for (const Vans::VansAssetRecord& record : database->All())
+        {
+            if (record.type != Vans::VansAssetType::Texture || record.state == Vans::VansAssetState::Missing)
+                continue;
+            const std::string recordStem = LowerAscii(record.sourcePath.stem().string());
+            const std::string recordFile = LowerAscii(record.sourcePath.filename().string());
+            if (recordStem != wanted && recordFile != LowerAscii(textureName))
+                continue;
+
+            if (fallbackGuid.empty())
+                fallbackGuid = record.guid.ToString();
+            const std::string recordPath = LowerAscii(record.sourcePath.generic_string());
+            if (!rootToken.empty() && recordPath.find(rootToken) != std::string::npos)
+                return record.guid.ToString();
+        }
+        return fallbackGuid;
+    }
+
+    std::string ResolveRuntimeTextureGuid(
+        VansGraphics::VansTexture* texture,
+        Vans::VansAssetDatabase* database,
+        const std::string& rootName)
+    {
+        return texture ? ResolveRuntimeTextureGuid(texture->m_AssetName, database, rootName) : std::string{};
+    }
+
+    bool IsDefaultRuntimeTextureName(const std::string& textureName)
+    {
+        const std::string lowered = LowerAscii(std::filesystem::path(textureName).stem().string());
+        return lowered == "defaultalbedo" ||
+               lowered == "defaultnormal" ||
+               lowered == "defaultmetal" ||
+               lowered == "defaultroughness" ||
+               lowered == "defaultao";
+    }
+
+    void AddTextureRefIfResolvable(
+        Vans::SceneJson& textures,
+        const char* slot,
+        VansGraphics::VansTexture* texture,
+        Vans::VansAssetDatabase* database,
+        const std::string& rootName)
+    {
+        const std::string textureGuid = ResolveRuntimeTextureGuid(texture, database, rootName);
+        if (!textureGuid.empty())
+            textures[slot] = { { "guid", textureGuid } };
+    }
+
+    void AddTextureRefFromPathIfResolvable(
+        Vans::SceneJson& textures,
+        const char* slot,
+        const std::string& texturePath,
+        Vans::VansAssetDatabase* database,
+        const std::string& rootName)
+    {
+        const std::string textureGuid = ResolveRuntimeTextureGuid(texturePath, database, rootName);
+        if (!textureGuid.empty())
+            textures[slot] = { { "guid", textureGuid } };
+    }
+
+    Vans::SceneJson SerializeFbxMaterialInfo(
+        const VansGraphics::FBXSubmeshMaterialInfo& fbxInfo,
+        Vans::VansAssetDatabase* database,
+        const std::string& rootName)
+    {
+        Vans::SceneJson json;
+        json["schemaVersion"] = 1u;
+
+        if (fbxInfo.IsTransparent())
+        {
+            json["materialType"] = "transparent";
+            json["parameters"] = Vans::SceneJson::object();
+            json["textures"] = Vans::SceneJson::array();
+
+            auto addTransparentTexture = [&](const char* slot, const std::string& texturePath)
+            {
+                const std::string textureGuid = ResolveRuntimeTextureGuid(texturePath, database, rootName);
+                if (textureGuid.empty())
+                    return;
+                json["textures"].push_back({
+                    { "slot", slot },
+                    { "texture", { { "guid", textureGuid } } }
+                });
+            };
+
+            addTransparentTexture("diffuse", fbxInfo.diffuseTexPath);
+            addTransparentTexture("opacity", fbxInfo.opacityTexPath);
+            return json;
+        }
+
+        json["materialType"] = "pbr";
+        json["parameters"] = {
+            { "albedo", Vans::SceneJson::array({
+                fbxInfo.diffuseColor[0],
+                fbxInfo.diffuseColor[1],
+                fbxInfo.diffuseColor[2] }) },
+            { "metallic", fbxInfo.metallic },
+            { "roughness", fbxInfo.roughness },
+            { "ao", 1.0f }
+        };
+
+        Vans::SceneJson textures = Vans::SceneJson::object();
+        AddTextureRefFromPathIfResolvable(textures, "basecolor", fbxInfo.diffuseTexPath, database, rootName);
+        AddTextureRefFromPathIfResolvable(textures, "normal", fbxInfo.normalTexPath, database, rootName);
+        AddTextureRefFromPathIfResolvable(textures, "metal", fbxInfo.metallicTexPath, database, rootName);
+        AddTextureRefFromPathIfResolvable(textures, "roughness", fbxInfo.roughnessTexPath, database, rootName);
+        AddTextureRefFromPathIfResolvable(textures, "ao", fbxInfo.aoTexPath, database, rootName);
+        json["textures"] = std::move(textures);
+        return json;
+    }
+
+    Vans::SceneJson SerializeRuntimeMaterial(
+        VansGraphics::VansMaterial* material,
+        Vans::VansAssetDatabase* database,
+        const std::string& rootName)
+    {
+        Vans::SceneJson json;
+        json["schemaVersion"] = 1u;
+
+        if (auto* pbr = dynamic_cast<VansGraphics::VansPBRMaterial*>(material))
+        {
+            json["materialType"] = "pbr";
+            json["parameters"] = {
+                { "albedo", Vec3Json(pbr->m_BasePBRParam.m_albedo) },
+                { "metallic", pbr->m_BasePBRParam.m_metallic },
+                { "roughness", pbr->m_BasePBRParam.m_roughness },
+                { "ao", pbr->m_BasePBRParam.m_ao }
+            };
+            Vans::SceneJson textures = Vans::SceneJson::object();
+            AddTextureRefIfResolvable(textures, "basecolor", pbr->m_BaseColorTexture, database, rootName);
+            AddTextureRefIfResolvable(textures, "normal", pbr->m_NormalTexture, database, rootName);
+            AddTextureRefIfResolvable(textures, "metal", pbr->m_MetalTexture, database, rootName);
+            AddTextureRefIfResolvable(textures, "roughness", pbr->m_RoughnessTexture, database, rootName);
+            AddTextureRefIfResolvable(textures, "ao", pbr->m_AoTexture, database, rootName);
+            json["textures"] = std::move(textures);
+            return json;
+        }
+
+        if (auto* transparent = dynamic_cast<VansGraphics::VansTransparentMaterial*>(material))
+        {
+            json["materialType"] = "transparent";
+            json["parameters"] = Vans::SceneJson::object();
+            json["textures"] = Vans::SceneJson::array();
+            const size_t textureCount = std::max(
+                transparent->m_TransparentTextures.size(),
+                transparent->m_TransparentTextureMap.size());
+            for (size_t index = 0; index < textureCount; ++index)
+            {
+                const std::string slot = index < transparent->m_TransparentTextureMap.size()
+                    ? transparent->m_TransparentTextureMap[index].first
+                    : "texture_" + std::to_string(index);
+                std::string textureName = index < transparent->m_TransparentTextureMap.size()
+                    ? transparent->m_TransparentTextureMap[index].second
+                    : std::string{};
+                if (textureName.empty() && index < transparent->m_TransparentTextures.size()
+                    && transparent->m_TransparentTextures[index] != nullptr)
+                {
+                    textureName = transparent->m_TransparentTextures[index]->m_AssetName;
+                }
+                if (textureName.empty())
+                    continue;
+
+                Vans::SceneJson textureEntry = { { "slot", slot } };
+                const std::string textureGuid = ResolveRuntimeTextureGuid(textureName, database, rootName);
+                if (!textureGuid.empty())
+                {
+                    textureEntry["texture"] = { { "guid", textureGuid } };
+                    json["textures"].push_back(std::move(textureEntry));
+                }
+            }
+            return json;
+        }
+
+        json["materialType"] = "pbr";
+        json["parameters"] = {
+            { "albedo", Vans::SceneJson::array({ 1.0f, 1.0f, 1.0f }) },
+            { "metallic", 0.0f },
+            { "roughness", 0.5f },
+            { "ao", 1.0f }
+        };
+        json["textures"] = Vans::SceneJson::object();
+        return json;
+    }
+
+    bool HasTextureSlot(const Vans::SceneJson& materialJson, const std::string& slot)
+    {
+        const auto texturesIt = materialJson.find("textures");
+        if (texturesIt == materialJson.end())
+            return false;
+
+        if (texturesIt->is_object())
+            return texturesIt->contains(slot);
+
+        if (texturesIt->is_array())
+        {
+            for (const auto& entry : *texturesIt)
+            {
+                if (entry.is_object() && entry.value("slot", "") == slot)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    void AddRuntimeBaseColorFallback(
+        Vans::SceneJson& materialJson,
+        VansGraphics::VansMaterial* material,
+        Vans::VansAssetDatabase* database,
+        const std::string& rootName)
+    {
+        if (material == nullptr || database == nullptr)
+            return;
+
+        const std::string materialType = materialJson.value("materialType", "pbr");
+        if (materialType == "transparent")
+        {
+            if (HasTextureSlot(materialJson, "diffuse"))
+                return;
+
+            auto* transparent = dynamic_cast<VansGraphics::VansTransparentMaterial*>(material);
+            if (transparent == nullptr)
+                return;
+
+            std::string textureName;
+            for (const auto& [slot, name] : transparent->m_TransparentTextureMap)
+            {
+                if (slot == "diffuse" || slot == "basecolor" || slot == "baseColor")
+                {
+                    textureName = name;
+                    break;
+                }
+            }
+        if (textureName.empty() && !transparent->m_TransparentTextures.empty()
+                && transparent->m_TransparentTextures[0] != nullptr)
+            {
+                textureName = transparent->m_TransparentTextures[0]->m_AssetName;
+            }
+            if (IsDefaultRuntimeTextureName(textureName))
+            {
+                VANS_LOG("[MultiMeshMaterialGen] Skip default transparent diffuse fallback for "
+                    << rootName << " material=" << material->m_AssetName
+                    << " texture=" << textureName);
+                return;
+            }
+
+            const std::string textureGuid = ResolveRuntimeTextureGuid(textureName, database, rootName);
+            if (!textureGuid.empty())
+            {
+                if (!materialJson["textures"].is_array())
+                    materialJson["textures"] = Vans::SceneJson::array();
+                materialJson["textures"].push_back({
+                    { "slot", "diffuse" },
+                    { "texture", { { "guid", textureGuid } } }
+                });
+            }
+            return;
+        }
+
+        if (HasTextureSlot(materialJson, "basecolor"))
+            return;
+
+        auto* pbr = dynamic_cast<VansGraphics::VansPBRMaterial*>(material);
+        if (pbr == nullptr || pbr->m_BaseColorTexture == nullptr)
+            return;
+
+        const std::string runtimeTextureName = pbr->m_BaseColorTexture->m_AssetName;
+        if (IsDefaultRuntimeTextureName(runtimeTextureName))
+        {
+            VANS_LOG("[MultiMeshMaterialGen] Skip default PBR basecolor fallback for "
+                << rootName << " material=" << material->m_AssetName
+                << " texture=" << runtimeTextureName);
+            return;
+        }
+
+        const std::string textureGuid = ResolveRuntimeTextureGuid(pbr->m_BaseColorTexture, database, rootName);
+        if (!textureGuid.empty())
+        {
+            if (!materialJson["textures"].is_object())
+                materialJson["textures"] = Vans::SceneJson::object();
+            materialJson["textures"]["basecolor"] = { { "guid", textureGuid } };
+            VANS_LOG("[MultiMeshMaterialGen] Added runtime basecolor fallback for "
+                << rootName << " material=" << material->m_AssetName
+                << " texture=" << runtimeTextureName
+                << " guid=" << textureGuid);
+        }
+        else
+        {
+            VANS_LOG_WARN("[MultiMeshMaterialGen] Runtime basecolor fallback unresolved for "
+                << rootName << " material=" << material->m_AssetName
+                << " texture=" << runtimeTextureName);
+        }
+    }
+
+    std::string EnsureRuntimeGeneratedMaterialAsset(
+        const std::string& rootName,
+        VansGraphics::VansRenderNode* node,
+        const std::filesystem::path& assetsRoot)
+    {
+        if (node == nullptr || node->m_Material == nullptr)
+            return {};
+
+        const std::string materialName = SafeAssetName(
+            rootName + "_" + node->m_Material->m_AssetName + "_" + std::to_string(node->m_SubmeshIndex));
+        const std::filesystem::path materialDir = assetsRoot / "Generated" / "MultiMeshMaterials" / SafeAssetName(rootName);
+        const std::filesystem::path materialPath = materialDir / (materialName + ".mat");
+        const std::filesystem::path metaPath = materialPath.string() + ".meta";
+        const Vans::VansAssetGuid guid = ReadOrCreateMetaGuid(metaPath);
+
+        Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+        Vans::SceneJson materialJson;
+        if (node->m_SourceMesh != nullptr &&
+            node->m_SubmeshIndex != UINT32_MAX &&
+            !node->m_SourceMesh->m_SubmeshMaterialInfos.empty())
+        {
+            const auto& materialInfos = node->m_SourceMesh->m_SubmeshMaterialInfos;
+            const VansGraphics::FBXSubmeshMaterialInfo& fbxInfo =
+                node->m_SubmeshIndex < materialInfos.size() ? materialInfos[node->m_SubmeshIndex] : materialInfos[0];
+            materialJson = SerializeFbxMaterialInfo(fbxInfo, database, rootName);
+            AddRuntimeBaseColorFallback(materialJson, node->m_Material, database, rootName);
+            const bool hasBaseColor = HasTextureSlot(materialJson, fbxInfo.IsTransparent() ? "diffuse" : "basecolor");
+            VANS_LOG("[MultiMeshMaterialGen] " << rootName
+                << " submesh=" << node->m_SubmeshIndex
+                << " node=" << (node->m_Mesh ? node->m_Mesh->m_SourceNodeName : std::string{})
+                << " material=" << node->m_Material->m_AssetName
+                << " fbxDiffuse=" << fbxInfo.diffuseTexPath
+                << " runtimeBase="
+                << (dynamic_cast<VansGraphics::VansPBRMaterial*>(node->m_Material) &&
+                    dynamic_cast<VansGraphics::VansPBRMaterial*>(node->m_Material)->m_BaseColorTexture
+                    ? dynamic_cast<VansGraphics::VansPBRMaterial*>(node->m_Material)->m_BaseColorTexture->m_AssetName
+                    : std::string{})
+                << " hasBaseColor=" << (hasBaseColor ? "true" : "false"));
+        }
+        else
+        {
+            materialJson = SerializeRuntimeMaterial(node->m_Material, database, rootName);
+        }
+        materialJson["guid"] = guid.ToString();
+        materialJson["importSource"] = {
+            { "model", rootName },
+            { "sourceNode", SanitizeJsonText(node->m_Mesh ? node->m_Mesh->m_SourceNodeName : std::string{}) },
+            { "sourceMaterial", SanitizeJsonText(node->m_Material->m_AssetName) },
+            { "submeshIndex", node->m_SubmeshIndex },
+            { "generatedFor", "runtimeMultiMeshExpansion" }
+        };
+        if (!WriteJsonFile(materialPath, materialJson))
+            return {};
+
+        Vans::SceneJson metaJson = {
+            { "guid", guid.ToString() },
+            { "importer", "MaterialImporter" },
+            { "version", 1u },
+            { "settings", {
+                { "generatedFrom", rootName },
+                { "generatedFor", "runtimeMultiMeshExpansion" }
+            } },
+            { "subAssets", Vans::SceneJson::object() }
+        };
+        if (!WriteJsonFile(metaPath, metaJson))
+            return {};
+
+        return guid.ToString();
+    }
+
+    const Vans::SceneJson* FindComponent(const Vans::SceneJson& entity, const std::string& type)
+    {
+        if (!entity.contains("components") || !entity["components"].is_array())
+            return nullptr;
+        for (const auto& component : entity["components"])
+        {
+            if (component.is_object() && component.value("type", "") == type)
+                return &component;
+        }
+        return nullptr;
+    }
+
+    bool EntityHasChildren(const Vans::SceneJson& root, const std::string& parentId)
+    {
+        if (!root.contains("entities") || !root["entities"].is_array())
+            return false;
+        for (const auto& entity : root["entities"])
+        {
+            if (entity.contains("parent") && entity["parent"].is_string() &&
+                entity["parent"].get<std::string>() == parentId)
+                return true;
+        }
+        return false;
     }
 }
 
@@ -118,6 +607,7 @@ bool VansGraphics::VansEditorWindow::m_TerrainWindowOpen = true;
 bool VansGraphics::VansEditorWindow::m_ReflectionProbeWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
+bool VansGraphics::VansEditorWindow::m_VehicleDebugGizmos = false;
 
 VansGraphics::VansBasicWindow VansGraphics::VansEditorWindow::m_VansEditorWindow;
 //支持多个相机
@@ -191,6 +681,196 @@ void VansGraphics::VansEditorWindow::ReloadCurrentSceneForEditing()
 		return;
 	m_PendingSceneLoadMode = VansSceneLoadMode::Editor;
 	m_PendingScenePath = m_CurrentLoadedScenePath;
+}
+
+void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
+{
+    if (m_PlayState != VansEditorPlayState::Editing || !m_PendingScenePath.empty())
+        return;
+    if (!m_Scene || !m_Scene->IsSceneReady() || !m_SceneDocument || !m_SceneEditService || !m_SceneSaveService)
+        return;
+    auto& projectManager = Vans::VansProjectManager::Get();
+    auto* database = projectManager.GetAssetDatabase();
+    if (database == nullptr)
+        return;
+
+    const Vans::SceneJson& root = m_SceneDocument->Root();
+    if (!root.contains("entities") || !root["entities"].is_array())
+        return;
+
+    Vans::SceneJson newEntities = root["entities"];
+    bool changed = false;
+    const auto& groups = m_Scene->GetMultiMeshGroups();
+
+    for (auto& entity : newEntities)
+    {
+        if (!entity.is_object())
+            continue;
+        const std::string entityId = entity.value("id", "");
+        const std::string entityName = entity.value("name", "");
+        if (entityId.empty() || entityName.empty())
+            continue;
+        if (EntityHasChildren(root, entityId))
+            continue;
+        if (FindComponent(entity, "MultiMeshRoot") != nullptr)
+            continue;
+
+        const Vans::SceneJson* renderer = FindComponent(entity, "ModelRenderer");
+        const Vans::SceneJson* transform = FindComponent(entity, "Transform");
+        if (renderer == nullptr || !renderer->value("enabled", true) || !renderer->contains("data"))
+            continue;
+
+        const Vans::SceneJson& rendererData = (*renderer)["data"];
+        if (!rendererData.value("autoExpandSubmeshes", false))
+            continue;
+
+        const std::string modelGuid = rendererData.value("model", Vans::SceneJson::object()).value("guid", "");
+        if (modelGuid.empty())
+            continue;
+
+        auto groupIt = groups.find(entityName);
+        if (groupIt == groups.end())
+            continue;
+        const MultiMeshGroup& group = groupIt->second;
+        if (group.childNodes.empty() || group.sourceMesh == nullptr)
+            continue;
+
+        Vans::SceneJson childEntities = Vans::SceneJson::array();
+        bool entityExpansionFailed = false;
+        std::unordered_set<std::string> usedSlotNames;
+        for (VansRenderNode* childNode : group.childNodes)
+        {
+            if (childNode == nullptr || childNode->m_SubmeshIndex == UINT32_MAX)
+                continue;
+
+            const std::string sourceNode = SanitizeJsonText(childNode->m_Mesh ? childNode->m_Mesh->m_SourceNodeName : std::string{});
+            const std::string sourceMaterial = SanitizeJsonText(childNode->m_Material ? childNode->m_Material->m_AssetName : std::string{});
+            std::string slotBase = (!sourceNode.empty() || !sourceMaterial.empty())
+                ? sourceNode + "/" + sourceMaterial
+                : "Submesh_" + std::to_string(childNode->m_SubmeshIndex);
+            if (slotBase == "/")
+                slotBase = "Submesh_" + std::to_string(childNode->m_SubmeshIndex);
+            std::string slotName = slotBase;
+            uint32_t slotSuffix = 1;
+            while (!usedSlotNames.insert(slotName).second)
+                slotName = slotBase + "_" + std::to_string(slotSuffix++);
+
+            const std::string materialGuid = EnsureRuntimeGeneratedMaterialAsset(
+                entityName, childNode, database->AssetsRoot());
+            if (materialGuid.empty())
+            {
+                entityExpansionFailed = true;
+                break;
+            }
+
+            const std::string childName = entityName + "_" + SafeAssetName(sourceNode.empty()
+                ? "Submesh_" + std::to_string(childNode->m_SubmeshIndex)
+                : sourceNode) + "_" + std::to_string(childNode->m_SubmeshIndex);
+
+            Vans::SceneJson child = {
+                { "id", Vans::VansAssetGuid::New().ToString() },
+                { "name", childName },
+                { "parent", entityId },
+                { "components", Vans::SceneJson::array({
+                    {
+                        { "id", Vans::VansAssetGuid::New().ToString() },
+                        { "type", "Transform" },
+                        { "version", 1u },
+                        { "enabled", true },
+                        { "data", {
+                            { "position", Vans::SceneJson::array({ 0.0f, 0.0f, 0.0f }) },
+                            { "rotation", Vans::SceneJson::array({ 0.0f, 0.0f, 0.0f, 1.0f }) },
+                            { "scale", Vans::SceneJson::array({ 1.0f, 1.0f, 1.0f }) }
+                        } }
+                    },
+                    {
+                        { "id", Vans::VansAssetGuid::New().ToString() },
+                        { "type", "ModelRenderer" },
+                        { "version", 1u },
+                        { "enabled", true },
+                        { "data", {
+                            { "model", { { "guid", modelGuid } } },
+                            { "submesh", {
+                                { "index", childNode->m_SubmeshIndex },
+                                { "sourceNode", sourceNode },
+                                { "sourceMaterial", sourceMaterial },
+                                { "slotName", slotName }
+                            } },
+                            { "castShadows", rendererData.value("castShadows", true) },
+                            { "receiveShadows", rendererData.value("receiveShadows", true) },
+                            { "rayTracingMode", rendererData.value("rayTracingMode", "auto") },
+                            { "visibilityMask", rendererData.value("visibilityMask", 0xffffffffu) },
+                            { "materialOverrides", { { "default", { { "guid", materialGuid } } } } },
+                            { "orphanOverrides", Vans::SceneJson::object() },
+                            { "renderType", rendererData.value("renderType", "opaque") }
+                        } }
+                    }
+                }) }
+            };
+            childEntities.push_back(std::move(child));
+        }
+
+        if (entityExpansionFailed || childEntities.empty())
+            continue;
+
+        Vans::SceneJson components = Vans::SceneJson::array();
+        if (transform != nullptr)
+            components.push_back(*transform);
+        else
+        {
+            components.push_back({
+                { "id", Vans::VansAssetGuid::New().ToString() },
+                { "type", "Transform" },
+                { "version", 1u },
+                { "enabled", true },
+                { "data", {
+                    { "position", Vans::SceneJson::array({ 0.0f, 0.0f, 0.0f }) },
+                    { "rotation", Vans::SceneJson::array({ 0.0f, 0.0f, 0.0f, 1.0f }) },
+                    { "scale", Vans::SceneJson::array({ 1.0f, 1.0f, 1.0f }) }
+                } }
+            });
+        }
+        components.push_back({
+            { "id", Vans::VansAssetGuid::New().ToString() },
+            { "type", "MultiMeshRoot" },
+            { "version", 1u },
+            { "enabled", true },
+            { "data", {
+                { "model", { { "guid", modelGuid } } },
+                { "submeshCount", static_cast<uint32_t>(childEntities.size()) },
+                { "generation", "runtime-object-hierarchy" }
+            } }
+        });
+        entity["components"] = std::move(components);
+
+        for (auto& childEntity : childEntities)
+            newEntities.push_back(std::move(childEntity));
+
+        changed = true;
+    }
+
+    if (!changed)
+        return;
+
+    const Vans::SceneEditResult editResult = m_SceneEditService->Set("/entities", std::move(newEntities));
+    if (!editResult)
+    {
+        VANS_LOG_ERROR("[MultiMeshHierarchy] Failed to update scene document: " << editResult.message);
+        return;
+    }
+
+    if (database)
+        database->Scan();
+
+    const Vans::SceneSaveResult saveResult = m_SceneSaveService->Save(*m_SceneDocument);
+    if (!saveResult)
+    {
+        VANS_LOG_ERROR("[MultiMeshHierarchy] Failed to save expanded scene: " << saveResult.message);
+        return;
+    }
+
+    VANS_LOG("[MultiMeshHierarchy] Runtime expansion persisted to scene. Reloading editor scene.");
+    ReloadCurrentSceneForEditing();
 }
 
 bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height, GRAPHICS_API api)
@@ -898,6 +1578,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
                 if (ImGui::MenuItem("Wireframe", nullptr, &m_WireframeMode))
                 {
                 }
+                ImGui::MenuItem("Vehicle Debug Gizmos", nullptr, &m_VehicleDebugGizmos);
                 ImGui::EndMenu();
             }
             // 运行控制工具栏：直接在菜单栏内居中渲染按钮
@@ -1190,16 +1871,12 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
 
             // Vehicle control inputs via InputManager
-            if (input.IsKeyDown(GLFW_KEY_W))
-                m_Scene->m_Vehicle->SetInputs(20.0f, 0.0f, 0.0f, 0.0f);
-            else if (input.IsKeyDown(GLFW_KEY_S))
-                m_Scene->m_Vehicle->SetInputs(0.0f, 100.0f, 0.0f, 0.0f); // Brake
-            else if (input.IsKeyDown(GLFW_KEY_A))
-                m_Scene->m_Vehicle->SetInputs(0.0f, 0.0f, -1.0f, 0.0f);
-            else if (input.IsKeyDown(GLFW_KEY_D))
-                m_Scene->m_Vehicle->SetInputs(0.0f, 0.0f, 1.0f, 0.0f);
-            else
-                m_Scene->m_Vehicle->SetInputs(0.0f, 0.0f, 0.0f, 0.0f); // Coast
+            const float throttle = input.IsKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f;
+            const float brake = input.IsKeyDown(GLFW_KEY_S) ? 1.0f : 0.0f;
+            float steer = 0.0f;
+            if (input.IsKeyDown(GLFW_KEY_A)) steer -= 1.0f;
+            if (input.IsKeyDown(GLFW_KEY_D)) steer += 1.0f;
+            m_Scene->m_Vehicle->SetInputs(throttle, brake, steer, 0.0f);
         }
 
         // Synchronize rigid-body physics transforms to render transforms.
@@ -1257,6 +1934,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         {
             VANS_PROFILE_SCOPE("Resource::ProcessPendingSceneLoad", Vans::ProfileCategory::IO);
             ProcessPendingSceneLoad();
+            ProcessRuntimeMultiMeshHierarchyExpansion();
         }
         // Rendering, 这里会结束renderpass
         {

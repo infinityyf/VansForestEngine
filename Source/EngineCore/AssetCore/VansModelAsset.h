@@ -17,6 +17,10 @@ struct VansModelImportSettings
     bool generateTangents = true;
     bool flipUV = true;
     bool importMaterials = false;
+    bool redirectTextures = false;
+    std::string materialMode = "none";
+    std::string textureRedirection = "none";
+    std::string defaultShader = "PBR";
     bool importAnimations = true;
     bool keepCpuMeshData = false;
     bool buildRayTracingData = true;
@@ -37,6 +41,8 @@ struct VansMeshPrimitiveAsset
     std::uint32_t firstIndex = 0;
     std::uint32_t indexCount = 0;
     std::uint32_t materialSlot = 0;
+    VansSubAssetId materialSlotId;
+    VansSubAssetId sourceNodeId;
     std::array<float, 3> boundsMin{};
     std::array<float, 3> boundsMax{};
     bool hasCpuCollisionData = false;
@@ -64,6 +70,26 @@ struct VansImportedMaterialSlot
 {
     VansSubAssetId id;
     std::string name;
+    std::array<float, 4> baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+    std::array<float, 3> specularColor{ 0.0f, 0.0f, 0.0f };
+    std::array<float, 3> emissiveColor{ 0.0f, 0.0f, 0.0f };
+    float opacity = 1.0f;
+    float metallic = 0.0f;
+    float roughness = 0.5f;
+    float specularFactor = 0.0f;
+    float shininess = 0.0f;
+    float reflectionFactor = 0.0f;
+    bool transparent = false;
+};
+
+struct VansImportedTextureRef
+{
+    VansSubAssetId materialSlotId;
+    std::string materialName;
+    std::string semantic;
+    std::filesystem::path sourcePath;
+    VansAssetGuid redirectedTextureGuid;
+    bool srgb = false;
 };
 
 struct VansModelAsset
@@ -74,6 +100,7 @@ struct VansModelAsset
     std::vector<VansModelNodeAsset> nodes;
     std::vector<VansMeshAsset> meshes;
     std::vector<VansImportedMaterialSlot> materialSlots;
+    std::vector<VansImportedTextureRef> textureReferences;
     bool hasSkeleton = false;
     std::uint32_t animationClipCount = 0;
 };

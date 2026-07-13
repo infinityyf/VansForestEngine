@@ -2109,7 +2109,8 @@ VansScriptObject* VansGraphics::VansScene::CreateEntity(
     //  并将 ID 存入 m_TransformID，m_OwnsTransform = true。
     //  此处直接用 SetTransformData 写入初始值，无需外部单独 Allocate。
     // ═══════════════════════════════════════════════════════════════════════
-    RenderNodeType nodeType = (material->m_MaterialType == VansMaterialType::VAN_TRANSPARENT)
+    RenderNodeType nodeType = (material->m_MaterialType == VansMaterialType::VAN_TRANSPARENT ||
+        material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
         ? TRANSPARENT_NODE : OPAQUE_NODE;
 
     auto* renderNode = new VansCommonRenderNode(device, nodeType);

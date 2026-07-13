@@ -10,6 +10,7 @@
 #include "VulkanCore/VansRenderPass.h"
 #include "../VansTimer.h"
 #include "../VansFramePhase.h"
+#include <algorithm>
 
 // ===========================================================================
 // Draw commands — one per render pass type
@@ -415,12 +416,34 @@ void VansGraphics::VansScene::DrawTransParentNodes()
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    for (auto& node : m_TransParentRenderNodes)
+    glm::vec3 cameraPos(0.0f);
+    if (m_Camera)
     {
-        if (node == nullptr || !node->IsEnabled())
+        cameraPos = glm::vec3(m_Camera->GetPosition());
+    }
+
+    std::vector<VansRenderNode*> sortedNodes;
+    sortedNodes.reserve(m_TransParentRenderNodes.size());
+    for (auto* node : m_TransParentRenderNodes)
+    {
+        if (node != nullptr && node->IsEnabled())
         {
-            continue;
+            sortedNodes.push_back(node);
         }
+    }
+
+    std::stable_sort(sortedNodes.begin(), sortedNodes.end(),
+        [cameraPos](const VansRenderNode* a, const VansRenderNode* b)
+        {
+            const glm::vec3 pa = glm::vec3(a->m_ModelData.Postion);
+            const glm::vec3 pb = glm::vec3(b->m_ModelData.Postion);
+            const float da = glm::dot(pa - cameraPos, pa - cameraPos);
+            const float db = glm::dot(pb - cameraPos, pb - cameraPos);
+            return da > db;
+        });
+
+    for (auto* node : sortedNodes)
+    {
         node->Draw(cmd, globalStateData);
     }
 }

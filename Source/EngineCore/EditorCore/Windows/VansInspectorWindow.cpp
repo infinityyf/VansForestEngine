@@ -138,7 +138,7 @@ const std::vector<const char*>* EnumOptions(const std::string& key)
     static const std::vector<const char*> renderType{ "opaque", "transparent", "decal" };
     static const std::vector<const char*> rayTracingMode{ "auto", "enabled", "disabled" };
     static const std::vector<const char*> materialType{
-        "pbr", "coat", "transparent", "skin", "cloth", "hair", "subsurface", "grass", "emissive", "decal" };
+        "pbr", "coat", "transparent", "pbr_transmission", "skin", "cloth", "hair", "subsurface", "grass", "emissive", "decal" };
     static const std::vector<const char*> colorSpace{ "sRGB", "linear" };
     static const std::vector<const char*> playMode{ "static", "streaming" };
     static const std::vector<const char*> normals{ "ifMissing", "always", "never" };
@@ -201,7 +201,48 @@ bool IsNormalizedField(const std::string& key)
 {
     const std::string field = Lower(key);
     return field == "metallic" || field == "roughness" || field == "ao" ||
-        field == "opacity" || field == "alpha" || field.find("blend") != std::string::npos;
+        field == "opacity" || field == "alpha" || field == "alphacoverage" ||
+        field == "transmission" || field.find("blend") != std::string::npos;
+}
+
+bool ShouldUseFloatControl(const std::string& label, const std::string& parentKey)
+{
+    const std::string parent = Lower(parentKey);
+    const std::string field = Lower(label);
+    if (parent.find("parameters") != std::string::npos)
+        return field != "refractionmode";
+    return false;
+}
+
+bool VehicleScalarLimits(const std::string& label, const std::string& componentType,
+    float& minValue, float& maxValue, float& speed)
+{
+    if (Lower(componentType) != "vehicle")
+        return false;
+
+    const std::string field = Lower(label);
+    if (field == "wheelradius" || field == "wheelhalfwidth")
+    {
+        minValue = 0.01f;
+        maxValue = 2.0f;
+        speed = 0.005f;
+        return true;
+    }
+    if (field == "groundclearance" || field == "wheelvisualgroundclearance")
+    {
+        minValue = -0.5f;
+        maxValue = 1.0f;
+        speed = 0.005f;
+        return true;
+    }
+    if (field == "suspensiontraveldist")
+    {
+        minValue = 0.01f;
+        maxValue = 2.0f;
+        speed = 0.005f;
+        return true;
+    }
+    return false;
 }
 
 void BeginProperty(const std::string& label);
@@ -564,6 +605,15 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
                 changed = true;
             }
         }
+        else if (ShouldUseFloatControl(label, parentKey))
+        {
+            float numeric = static_cast<float>(edited);
+            if (ImGui::DragFloat("##value", &numeric, 0.05f, 0.0f, 0.0f, "%.3f"))
+            {
+                value = numeric;
+                changed = true;
+            }
+        }
         else
         {
             const std::int64_t step = 1;
@@ -573,8 +623,20 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
     else if (value.is_number_float())
     {
         float edited = value.get<float>();
+        float minValue = 0.0f;
+        float maxValue = 0.0f;
+        float speed = 0.05f;
         BeginProperty(label);
         if (readOnly) ImGui::TextDisabled("%.4f", edited);
+        else if (VehicleScalarLimits(label, componentType, minValue, maxValue, speed))
+        {
+            if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
+            {
+                edited = std::clamp(edited, minValue, maxValue);
+                value = edited;
+                changed = true;
+            }
+        }
         else if (IsNormalizedField(label))
         {
             if (ImGui::SliderFloat("##value", &edited, 0.0f, 1.0f, "%.3f")) { value = edited; changed = true; }
@@ -684,6 +746,8 @@ bool VansInspectorWindow::DrawComponent(Json& component, const std::string& poin
         if (data.empty()) ImGui::TextDisabled("No properties");
         ImGui::Unindent(8.0f);
     }
+    if (type == "Vehicle" && changed)
+        m_PendingVehicleRebuild = true;
     ImGui::PopID();
     return changed;
 }
@@ -869,5 +933,11 @@ void VansInspectorWindow::ShowWindow(VansVKDevice& device)
     else if (!Vans::VansEditorSelection::AssetPath().empty()) DrawAsset();
     else ImGui::TextDisabled("Select an entity or project asset");
     ImGui::End();
+
+    if (m_PendingVehicleRebuild && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+    {
+        m_PendingVehicleRebuild = false;
+        VansEditorWindow::ReloadCurrentSceneForEditing();
+    }
 }
 }

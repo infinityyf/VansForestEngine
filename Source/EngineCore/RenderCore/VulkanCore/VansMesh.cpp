@@ -33,6 +33,56 @@ VansGraphics::IndexBufferParameters VansGraphics::VansMesh::GetIndexBufferParame
 	return p;
 }
 
+void VansGraphics::VansMesh::ResetLocalBounds()
+{
+	m_HasLocalBounds = false;
+	m_LocalBoundsMin = glm::vec3(0.0f);
+	m_LocalBoundsMax = glm::vec3(0.0f);
+}
+
+void VansGraphics::VansMesh::ExpandLocalBounds(const glm::vec3& point)
+{
+	if (!m_HasLocalBounds)
+	{
+		m_LocalBoundsMin = point;
+		m_LocalBoundsMax = point;
+		m_HasLocalBounds = true;
+		return;
+	}
+
+	m_LocalBoundsMin = glm::min(m_LocalBoundsMin, point);
+	m_LocalBoundsMax = glm::max(m_LocalBoundsMax, point);
+}
+
+void VansGraphics::VansMesh::RebuildLocalBoundsFromRawPositions()
+{
+	ResetLocalBounds();
+	if (m_VertexCount <= 0 || m_MeshRawPositionData.empty())
+	{
+		return;
+	}
+
+	size_t stride = 0;
+	const size_t vertexCount = static_cast<size_t>(m_VertexCount);
+	if (m_MeshRawPositionData.size() >= vertexCount * 8)
+		stride = 8;
+	else if (m_MeshRawPositionData.size() >= vertexCount * 4)
+		stride = 4;
+	else if (m_MeshRawPositionData.size() >= vertexCount * 3)
+		stride = 3;
+	else
+		return;
+
+	for (size_t i = 0; i < vertexCount; ++i)
+	{
+		const size_t offset = i * stride;
+		ExpandLocalBounds(glm::vec3(
+			m_MeshRawPositionData[offset + 0],
+			m_MeshRawPositionData[offset + 1],
+			m_MeshRawPositionData[offset + 2]));
+	}
+}
+
 uint16_t FloatToHalf(float f) 
 {
 	// 这里需要一个 float16 转换算法，或者使用 glm::packHalf1x16
@@ -129,6 +179,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 	m_LogicalDevice = logic_device;
 	m_MeshRawDataCPULoaded = false;
 	m_VertexCount = 0;
+	ResetLocalBounds();
 	//用assimp
 	Assimp::Importer importer;
 	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals;
@@ -143,6 +194,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 		return;
 	}
 	ProcessNode(scene->mRootNode, scene, m_MeshRawData, m_MeshRawPositionData, m_MeshRawTexCoordData, m_MeshTriangleIndex, m_VertexCount, import_tangent);
+	RebuildLocalBoundsFromRawPositions();
 	m_MeshRawDataCPULoaded = true;
 
 	m_IndexCount = m_MeshTriangleIndex.size();
@@ -410,7 +462,14 @@ void VansGraphics::VansMesh::InitFromRawData(
 	m_VertexInputAttributeDescriptions = attribs;
 
 	if (!rawPositionData.empty())
+	{
 		m_MeshRawPositionData = rawPositionData;
+		RebuildLocalBoundsFromRawPositions();
+	}
+	else
+	{
+		ResetLocalBounds();
+	}
 
 	// Vertex buffer
 	VkDeviceSize vbSize = static_cast<VkDeviceSize>(vertexStride) * vertexCount;

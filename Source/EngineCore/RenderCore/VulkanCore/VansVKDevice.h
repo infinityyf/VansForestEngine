@@ -189,10 +189,16 @@ namespace VansGraphics
 		void DrawHairComposite(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void ClearHairOITResources(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void PrepareHairOITForResolve(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void CopyOpaqueSceneColorForTransmission(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		VkDescriptorSetLayout GetHairOITPassLayout() const { return m_HairLightingPassLayout; }
 		VkDescriptorSet GetHairOITPassDescriptorSet() const
 		{
 			return m_HairLightingPassSets.empty() ? VK_NULL_HANDLE : m_HairLightingPassSets[0];
+		}
+		VkDescriptorSetLayout GetTransmissionGlassPassLayout() const { return m_TransmissionGlassPassLayout; }
+		VkDescriptorSet GetTransmissionGlassPassDescriptorSet() const
+		{
+			return m_TransmissionGlassPassSets.empty() ? VK_NULL_HANDLE : m_TransmissionGlassPassSets[0];
 		}
 
 		VkDeviceAddress GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo);
@@ -261,11 +267,16 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_HairLightingPassLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_HairLightingPassSets;
 		bool m_HairLightingDescriptorsReady = false;
+		VkDescriptorSetLayout m_TransmissionGlassPassLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_TransmissionGlassPassSets;
+		bool m_TransmissionGlassDescriptorsReady = false;
 
 		void SetupHairLightingDescriptors(VansRenderPassManager* renderPassManager);
 		void DestroyHairLightingDescriptors();
 		void SetupHairCompositeDescriptors(VansRenderPassManager* renderPassManager);
 		void DestroyHairCompositeDescriptors();
+		void SetupTransmissionGlassDescriptors(VansRenderPassManager* renderPassManager);
+		void DestroyTransmissionGlassDescriptors();
 
 		bool IsFeatureDescriptorCurrent(uint64_t generation) const
 		{

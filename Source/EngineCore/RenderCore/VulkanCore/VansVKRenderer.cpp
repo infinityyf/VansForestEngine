@@ -105,6 +105,7 @@ namespace VansGraphics
 		renderPassManager->SetupVansHairLightingPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
 		SetupHairLightingDescriptors(renderPassManager);
 		SetupHairCompositeDescriptors(renderPassManager);
+		SetupTransmissionGlassDescriptors(renderPassManager);
 		// 贴花 Pass：引用 GBuffer 图像（须在 SetupVansDeferredRenderPass 之后调用）
 		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
 		// 水面 GBuffer Pass：须在 SetupVansDeferredRenderPass 之后调用（依赖已创建的 m_DepthImage）
@@ -118,6 +119,7 @@ namespace VansGraphics
 		);
 
 		PrepareRenderingData();
+		SetupTransmissionGlassDescriptors(renderPassManager);
 
 		// Scene loading is deferred — done via LoadSceneForRendering() from the
 		// editor after the user selects a project and opens a scene file.
@@ -360,6 +362,7 @@ namespace VansGraphics
 			}
 
 			// ── 设计文档 Pass 10-12：Transparent + PostProcess（LOAD SceneColor）────────
+			CopyOpaqueSceneColorForTransmission(renderPassManager, m_VansVKCommandBuffer);
 			{
 				VANS_GPU_SCOPE(cmd, "Transparent PostProcess Pass");
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
@@ -586,6 +589,7 @@ namespace VansGraphics
 				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
 			}
 			{
+				CopyOpaqueSceneColorForTransmission(renderPassManager, m_VansVKCommandBuffer);
 				VANS_GPU_SCOPE(cmd, "Transparent PostProcess Pass");
 				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
 				if (m_Scene->HasWaterNodes())
@@ -748,6 +752,7 @@ namespace VansGraphics
 	{
 		DestroyHairLightingDescriptors();
 		DestroyHairCompositeDescriptors();
+		DestroyTransmissionGlassDescriptors();
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 		renderPassManager->DestroyRenderPass();
 
@@ -837,6 +842,81 @@ namespace VansGraphics
 		m_Scene->DrawParticleNodes();
 		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
 		m_Scene->DrawPostProcessNodes();
+	}
+
+	void VansVKDevice::CopyOpaqueSceneColorForTransmission(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+	{
+		if (renderPassManager == nullptr || !m_TransmissionGlassDescriptorsReady)
+		{
+			return;
+		}
+
+		VansVKImage& source = renderPassManager->GetColor();
+		VansVKImage& target = renderPassManager->GetOpaqueSceneColor();
+		const VkImageLayout oldSourceLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		const VkImageLayout oldTargetLayout = target.GetImageLayout();
+
+		VkImageMemoryBarrier toCopy[2]{};
+		toCopy[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toCopy[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		toCopy[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		toCopy[0].oldLayout = oldSourceLayout;
+		toCopy[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		toCopy[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toCopy[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toCopy[0].image = source.GetImage();
+		toCopy[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		toCopy[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toCopy[1].srcAccessMask = (oldTargetLayout == VK_IMAGE_LAYOUT_UNDEFINED) ? 0 : VK_ACCESS_SHADER_READ_BIT;
+		toCopy[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		toCopy[1].oldLayout = oldTargetLayout;
+		toCopy[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		toCopy[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toCopy[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toCopy[1].image = target.GetImage();
+		toCopy[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		commandBuffer.PipelineBarrier(
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			{}, {}, { toCopy[0], toCopy[1] });
+
+		VkImageCopy copyRegion{};
+		copyRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		copyRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		copyRegion.extent = source.GetImageDimension();
+		commandBuffer.CopyImageRegions(source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, { copyRegion });
+
+		VkImageMemoryBarrier toShader[2]{};
+		toShader[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toShader[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		toShader[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		toShader[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		toShader[0].newLayout = oldSourceLayout;
+		toShader[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toShader[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toShader[0].image = source.GetImage();
+		toShader[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		toShader[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toShader[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		toShader[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		toShader[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		toShader[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		toShader[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toShader[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toShader[1].image = target.GetImage();
+		toShader[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		commandBuffer.PipelineBarrier(
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			{}, {}, { toShader[0], toShader[1] });
+
+		source.SetTrackedImageLayout(oldSourceLayout);
+		target.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	}
 
 	void VansVKDevice::SetupHairLightingDescriptors(VansRenderPassManager* renderPassManager)
@@ -1071,6 +1151,64 @@ namespace VansGraphics
 		descManager->DestroyDescriptorSet(m_HairCompositePassSets);
 		descManager->DestroyDescriptorSetLayout(m_HairCompositePassLayout);
 		m_HairCompositeDescriptorsReady = false;
+	}
+
+	void VansVKDevice::SetupTransmissionGlassDescriptors(VansRenderPassManager* renderPassManager)
+	{
+		DestroyTransmissionGlassDescriptors();
+
+		if (renderPassManager == nullptr)
+		{
+			return;
+		}
+
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_TransmissionGlass(
+			m_TransmissionGlassPassLayout, m_TransmissionGlassPassSets);
+
+		if (m_TransmissionGlassPassSets.empty())
+		{
+			return;
+		}
+
+		auto* descManager = VansVKDescriptorManager::GetInstance();
+		VansTexture* ssrReflection = nullptr;
+		if (m_Scene != nullptr && m_Scene->GetMaterialManager() != nullptr)
+		{
+			ssrReflection = m_Scene->GetMaterialManager()->GetRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT);
+		}
+		descManager->ResetState();
+		descManager->m_ImageDescInfos.push_back({
+			m_TransmissionGlassPassSets[0],
+			TRANSMISSION_GLASS_BINDING_OPAQUE_SCENE_COLOR,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				renderPassManager->GetOpaqueSceneColor().GetSampler(),
+				renderPassManager->GetOpaqueSceneColor().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+		descManager->m_ImageDescInfos.push_back({
+			m_TransmissionGlassPassSets[0],
+			TRANSMISSION_GLASS_BINDING_SSR_REFLECTION,
+			0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				ssrReflection != nullptr ? ssrReflection->GetImage().GetSampler() : renderPassManager->GetOpaqueSceneColor().GetSampler(),
+				ssrReflection != nullptr ? ssrReflection->GetImage().GetImageView() : renderPassManager->GetOpaqueSceneColor().GetImageView(),
+				ssrReflection != nullptr ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}}
+		});
+		descManager->UpdateDescriptorSets();
+		m_TransmissionGlassDescriptorsReady = true;
+	}
+
+	void VansVKDevice::DestroyTransmissionGlassDescriptors()
+	{
+		auto* descManager = VansVKDescriptorManager::GetInstance();
+		descManager->DestroyDescriptorSet(m_TransmissionGlassPassSets);
+		descManager->DestroyDescriptorSetLayout(m_TransmissionGlassPassLayout);
+		m_TransmissionGlassDescriptorsReady = false;
 	}
 
 		void VansVKDevice::DrawHairLighting(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)

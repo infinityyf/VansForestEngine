@@ -33,7 +33,8 @@ namespace VansGraphics
 		auto appendCustomMaterialData = [&](VansMaterial* material)
 		{
 			const int payloadIndex = static_cast<int>(materialManager->m_GlobalCustomMaterialParamData.size());
-			if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+			if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER ||
+				material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
 				material->m_MaterialIndex = payloadIndex;
 			VansCustomMaterialPayload payload = material->m_CustomMaterialPayload;
 			payload.textureIndices = glm::ivec4(-1);
@@ -117,6 +118,10 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_AoTexture->GetImage()));
 			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+			{
+				appendCustomMaterialData(material);
+			}
+			else if (material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
 			{
 				appendCustomMaterialData(material);
 			}

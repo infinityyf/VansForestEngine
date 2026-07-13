@@ -125,7 +125,8 @@ int VansMaterialLiveEditService::GetGlobalMaterialIndex(VansMaterial* material)
 		return sss->m_MaterialIndex;
 	if (auto* cloth = dynamic_cast<VansClothMaterial*>(material))
 		return cloth->m_MaterialIndex;
-	if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+	if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER ||
+		material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
 		return material->m_MaterialIndex;
 	return -1;
 }
@@ -275,6 +276,83 @@ bool VansMaterialLiveEditService::ApplyMaterialParameter(
 			slot->second >= 0 && slot->second < VANS_CUSTOM_MATERIAL_VEC4_COUNT)
 		{
 			material->m_CustomMaterialPayload.values[slot->second] = ReadVec4Value(value);
+			UploadCustomPayload(material, m_Scene->GetMaterialManager());
+			return true;
+		}
+	}
+	if (material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
+	{
+		glm::vec3 color;
+		float scalar = 0.0f;
+		bool changed = false;
+
+		if ((key == "color" || key == "albedo" || key == "baseColor" || key == "basecolor") && ReadVec3(value, color))
+		{
+			material->m_CustomMaterialPayload.values[0].x = color.x;
+			material->m_CustomMaterialPayload.values[0].y = color.y;
+			material->m_CustomMaterialPayload.values[0].z = color.z;
+			changed = true;
+		}
+		else if (key == "alphaCoverage" && ReadFloat(value, scalar))
+		{
+			material->m_CustomMaterialPayload.values[0].w = std::clamp(scalar, 0.0f, 1.0f);
+			changed = true;
+		}
+		else if (key == "roughness" && ReadFloat(value, scalar))
+		{
+			material->m_CustomMaterialPayload.values[1].x = std::clamp(scalar, 0.0f, 1.0f);
+			changed = true;
+		}
+		else if (key == "transmission" && ReadFloat(value, scalar))
+		{
+			material->m_CustomMaterialPayload.values[1].y = std::clamp(scalar, 0.0f, 1.0f);
+			changed = true;
+		}
+		else if (key == "ior" && ReadFloat(value, scalar))
+		{
+			material->m_CustomMaterialPayload.values[1].z = std::max(scalar, 1.0001f);
+			changed = true;
+		}
+		else if (key == "thickness" && ReadFloat(value, scalar))
+		{
+			material->m_CustomMaterialPayload.values[1].w = std::max(scalar, 0.0f);
+			changed = true;
+		}
+		else if (key == "attenuationColor" && ReadVec3(value, color))
+		{
+			material->m_CustomMaterialPayload.values[2].x = color.x;
+			material->m_CustomMaterialPayload.values[2].y = color.y;
+			material->m_CustomMaterialPayload.values[2].z = color.z;
+			changed = true;
+		}
+		else if (key == "attenuationDistance" && ReadFloat(value, scalar))
+		{
+			material->m_CustomMaterialPayload.values[2].w = std::max(scalar, 0.0f);
+			changed = true;
+		}
+		else if (key == "normalScale" && ReadFloat(value, scalar))
+		{
+			material->m_CustomMaterialPayload.values[3].x = scalar;
+			changed = true;
+		}
+		else if (key == "refractionStrength" && ReadFloat(value, scalar))
+		{
+			material->m_CustomMaterialPayload.values[3].y = std::max(scalar, 0.0f);
+			changed = true;
+		}
+		else if (key == "reflectionStrength" && ReadFloat(value, scalar))
+		{
+			material->m_CustomMaterialPayload.values[3].z = std::max(scalar, 0.0f);
+			changed = true;
+		}
+		else if (key == "refractionMode" && ReadFloat(value, scalar))
+		{
+			material->m_CustomMaterialPayload.values[3].w = scalar;
+			changed = true;
+		}
+
+		if (changed)
+		{
 			UploadCustomPayload(material, m_Scene->GetMaterialManager());
 			return true;
 		}

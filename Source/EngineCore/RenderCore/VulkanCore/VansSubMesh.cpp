@@ -14,6 +14,9 @@
 #include <GLM/gtc/packing.hpp>
 #include <filesystem>
 #include <unordered_map>
+#include <algorithm>
+#include <cmath>
+#include <cctype>
 
 static uint16_t FloatToHalf(float f)
 {
@@ -46,6 +49,26 @@ static std::string ExtractTexturePath(const aiMaterial* mat, aiTextureType type,
 	return texPath.lexically_normal().string();
 }
 
+static float Clamp01(float value)
+{
+	return std::max(0.0f, std::min(1.0f, value));
+}
+
+static float RoughnessFromShininess(float shininess)
+{
+	if (shininess <= 0.0f)
+		return 0.5f;
+	return std::max(0.045f, std::min(1.0f, std::sqrt(2.0f / (shininess + 2.0f))));
+}
+
+static bool ContainsToken(std::string text, const char* token)
+{
+	std::transform(text.begin(), text.end(), text.begin(), [](unsigned char value) {
+		return static_cast<char>(std::tolower(value));
+	});
+	return text.find(token) != std::string::npos;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: build FBXSubmeshMaterialInfo from an aiMaterial.
 // ---------------------------------------------------------------------------
@@ -62,7 +85,9 @@ static VansGraphics::FBXSubmeshMaterialInfo BuildSubmeshMaterialInfo(const aiSce
 		info.materialName = matName.C_Str();
 
 		// Extract texture paths
-		info.diffuseTexPath   = ExtractTexturePath(mat, aiTextureType_DIFFUSE,            baseDir);
+		info.diffuseTexPath   = ExtractTexturePath(mat, aiTextureType_BASE_COLOR,         baseDir);
+		if (info.diffuseTexPath.empty())
+			info.diffuseTexPath = ExtractTexturePath(mat, aiTextureType_DIFFUSE,          baseDir);
 		info.normalTexPath    = ExtractTexturePath(mat, aiTextureType_NORMALS,             baseDir);
 		if (info.normalTexPath.empty())
 			info.normalTexPath = ExtractTexturePath(mat, aiTextureType_HEIGHT,             baseDir);
@@ -77,12 +102,41 @@ static VansGraphics::FBXSubmeshMaterialInfo BuildSubmeshMaterialInfo(const aiSce
 
 		// Scalar parameters
 		float val;
+		aiColor3D color;
+		if (mat->Get(AI_MATKEY_COLOR_DIFFUSE, color) == AI_SUCCESS)
+			info.diffuseColor = { color.r, color.g, color.b };
+		if (mat->Get(AI_MATKEY_COLOR_SPECULAR, color) == AI_SUCCESS)
+			info.specularColor = { color.r, color.g, color.b };
+		if (mat->Get(AI_MATKEY_COLOR_EMISSIVE, color) == AI_SUCCESS)
+			info.emissiveColor = { color.r, color.g, color.b };
 		if (mat->Get(AI_MATKEY_OPACITY, val) == AI_SUCCESS)
-			info.opacity = val;
+			info.opacity = Clamp01(val);
+		if (mat->Get(AI_MATKEY_TRANSPARENCYFACTOR, val) == AI_SUCCESS)
+			info.opacity = Clamp01(info.opacity * (1.0f - Clamp01(val)));
 		if (mat->Get(AI_MATKEY_METALLIC_FACTOR, val) == AI_SUCCESS)
-			info.metallic = val;
+			info.metallic = Clamp01(val);
 		if (mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, val) == AI_SUCCESS)
-			info.roughness = val;
+			info.roughness = std::max(0.045f, Clamp01(val));
+		if (mat->Get(AI_MATKEY_SHININESS, val) == AI_SUCCESS)
+		{
+			info.shininess = val;
+			float roughnessCheck;
+			if (mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughnessCheck) != AI_SUCCESS)
+				info.roughness = RoughnessFromShininess(info.shininess);
+		}
+		if (mat->Get(AI_MATKEY_SHININESS_STRENGTH, val) == AI_SUCCESS)
+			info.specularFactor = Clamp01(val);
+		if (mat->Get(AI_MATKEY_REFLECTIVITY, val) == AI_SUCCESS)
+			info.reflectionFactor = Clamp01(val);
+
+		if (info.metallic <= 0.0f &&
+			(ContainsToken(info.materialName, "metal") ||
+			 ContainsToken(info.materialName, "chrome") ||
+			 ContainsToken(info.materialName, "metallic")))
+		{
+			info.metallic = 1.0f;
+			info.roughness = std::min(info.roughness, 0.35f);
+		}
 	}
 
 	return info;
@@ -353,6 +407,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 	m_MeshTriangleIndex.clear();
 	m_VertexInputAttributeDescriptions.clear();
 	m_VertexInputBindingDescriptions.clear();
+	ResetLocalBounds();
 
 	m_LogicalDevice = logic_device;
 	m_MeshRawDataCPULoaded = false;
@@ -375,6 +430,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 		aiVector3D normal  = mesh->mNormals ? mesh->mNormals[i] : aiVector3D(0, 1, 0);
 		vertex = TransformPosition(transform, vertex);
 		vertex *= scaleFactor;
+		ExpandLocalBounds(glm::vec3(vertex.x, vertex.y, vertex.z));
 		normal = TransformDirection(transform, normal);
 		aiVector3D texCoord(0, 0, 0);
 		if (mesh->mTextureCoords[0])

@@ -12,6 +12,7 @@
 #include "VansVKBuffer.h"
 #include "../../AnimationCore/VansAnimationTypes.h"
 #include "VansSubMesh.h"
+#include <GLM/glm.hpp>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -76,6 +77,9 @@ namespace VansGraphics
 		const std::vector<float>& GetMeshRawPositionData() const { return m_MeshRawPositionData; }
 		const std::vector<int>& GetMeshTriangleIndex() const { return m_MeshTriangleIndex; }
 		const std::vector<float>& GetMeshRawTexCoordData() const { return m_MeshRawTexCoordData; }
+		bool HasLocalBounds() const { return m_HasLocalBounds; }
+		glm::vec3 GetLocalBoundsMin() const { return m_LocalBoundsMin; }
+		glm::vec3 GetLocalBoundsMax() const { return m_LocalBoundsMax; }
 		bool HasCPUPlacementData() const
 		{
 			return m_MeshRawPositionDataEnableCPURead && m_MeshRawPositionData.size() >= 24;
@@ -120,6 +124,10 @@ namespace VansGraphics
 		std::vector<float> m_MeshRawTexCoordData;
 
 		std::vector<int> m_MeshTriangleIndex;
+
+		bool m_HasLocalBounds = false;
+		glm::vec3 m_LocalBoundsMin = glm::vec3(0.0f);
+		glm::vec3 m_LocalBoundsMax = glm::vec3(0.0f);
 
 		//标记CPU数据释放生效
 		bool m_MeshRawDataCPULoaded;
@@ -227,5 +235,9 @@ namespace VansGraphics
 
 		//用于记录这个blas在整体中的索引
 		int m_BLASIndex;
+
+		void ResetLocalBounds();
+		void ExpandLocalBounds(const glm::vec3& point);
+		void RebuildLocalBoundsFromRawPositions();
 	};
 }

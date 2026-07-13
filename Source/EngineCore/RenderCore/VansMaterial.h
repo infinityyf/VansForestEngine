@@ -91,6 +91,7 @@ namespace VansGraphics
 		VAN_DECAL    = 15,   // 璐磋姳鏉愯川锛氬彔鍐欏埌 GBuffer Normal/GBuffer0/GBuffer1
 		VAN_WATER    = 16,   // 姘撮潰鏉愯川锛氱嫭绔?Water GBuffer + Composite 绠＄嚎
 		VAN_CUSTOM_SHADER = 17,
+		VAN_PBR_TRANSMISSION = 18,
 	};
 
 	// Lightweight push-constant payload built at draw time.
@@ -549,6 +550,15 @@ namespace VansGraphics
 
 		void BuildTransparentTextureDescriptors();
 		void CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings = {});
+	};
+
+	class VansTransmissionMaterial : public VansMaterial
+	{
+	public:
+		VansTexture* m_BaseColorTexture = nullptr;
+		VansTexture* m_NormalTexture = nullptr;
+		VansTexture* m_RoughnessTexture = nullptr;
+		VansTexture* m_ThicknessTexture = nullptr;
 	};
 
 	// ============================================================

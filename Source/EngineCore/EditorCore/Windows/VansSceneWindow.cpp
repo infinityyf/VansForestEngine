@@ -7,6 +7,11 @@
 #include "ImGuizmo.h"
 #include <filesystem>
 #include <fstream>
+#include <cctype>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <unordered_map>
 #include <unordered_set>
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -29,11 +34,122 @@
 #include "../../AnimationCore/VansAnimationNode.h"
 #include "../../AnimationCore/VansAnimationController.h"
 #include "../../AnimationCore/MotionMatching/VansMotionMatching.h"
+#include "../../PhysicsCore/VansPhysicsVehicle.h"
 #include "../../ScriptCore/VansTransform.h"
 #include "VansHierachyWindow.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansAssetGuid.h"
+
+namespace
+{
+std::string LowerAscii(std::string value)
+{
+    for (char& c : value)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return value;
+}
+
+std::string TextureFileKey(const std::string& path)
+{
+    if (path.empty())
+        return {};
+    return LowerAscii(std::filesystem::path(path).filename().string());
+}
+
+struct GeneratedMaterialLookup
+{
+    std::vector<std::string> byIndex;
+    std::unordered_map<std::string, std::string> byTextureName;
+};
+
+GeneratedMaterialLookup BuildGeneratedMaterialLookup(const std::string& modelGuid)
+{
+    GeneratedMaterialLookup lookup;
+    auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+    if (database == nullptr || modelGuid.empty())
+        return lookup;
+
+    Vans::VansAssetGuid parsedGuid;
+    if (!Vans::VansAssetGuid::TryParse(modelGuid, parsedGuid))
+        return lookup;
+
+    const auto record = database->Find(parsedGuid);
+    if (!record || record->metaPath.empty())
+        return lookup;
+
+    std::ifstream input(record->metaPath);
+    if (!input)
+        return lookup;
+
+    const auto meta = Vans::SceneJson::parse(input, nullptr, false);
+    if (meta.is_discarded() || !meta.is_object())
+        return lookup;
+
+    const auto settingsIt = meta.find("settings");
+    if (settingsIt == meta.end() || !settingsIt->is_object())
+        return lookup;
+    const auto reportIt = settingsIt->find("importReport");
+    if (reportIt == settingsIt->end() || !reportIt->is_object())
+        return lookup;
+
+    std::unordered_map<std::string, std::string> textureGuidToName;
+    const auto texturesIt = reportIt->find("textures");
+    if (texturesIt != reportIt->end() && texturesIt->is_array())
+    {
+        for (const auto& texture : *texturesIt)
+        {
+            if (!texture.is_object())
+                continue;
+            const std::string guid = texture.value("guid", "");
+            std::string name = texture.value("name", "");
+            if (name.empty())
+                name = TextureFileKey(texture.value("path", ""));
+            else
+                name = TextureFileKey(name);
+            if (!guid.empty() && !name.empty())
+                textureGuidToName[guid] = name;
+        }
+    }
+
+    const auto matsIt = reportIt->find("generatedMaterials");
+    if (matsIt != reportIt->end() && matsIt->is_array())
+    {
+        for (const auto& material : *matsIt)
+        {
+            if (!material.is_object())
+                continue;
+            const std::string matGuid = material.value("guid", "");
+            if (matGuid.empty())
+                continue;
+
+            lookup.byIndex.push_back(matGuid);
+            const std::string textureGuid = material.value("texture", "");
+            const auto texIt = textureGuidToName.find(textureGuid);
+            if (texIt != textureGuidToName.end())
+                lookup.byTextureName[texIt->second] = matGuid;
+        }
+    }
+
+    return lookup;
+}
+
+std::string ResolveGeneratedMaterialOverride(const GeneratedMaterialLookup& lookup,
+    const VansGraphics::FBXSubmeshMaterialInfo& fbxInfo,
+    uint32_t submeshIndex)
+{
+    const std::string textureKey = TextureFileKey(fbxInfo.diffuseTexPath);
+    if (!textureKey.empty())
+    {
+        const auto found = lookup.byTextureName.find(textureKey);
+        if (found != lookup.byTextureName.end())
+            return found->second;
+    }
+    if (submeshIndex < lookup.byIndex.size())
+        return lookup.byIndex[submeshIndex];
+    return {};
+}
+}
 
 void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
 {
@@ -290,6 +406,8 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                             editService->Set("/entities/-", parentEntity);
 
                                             std::unordered_set<std::string> usedSlots;
+                                            const GeneratedMaterialLookup generatedMaterials =
+                                                BuildGeneratedMaterialLookup(modelGuid);
                                             auto makeSlotName = [&](const std::string& nodeName,
                                                                     const std::string& materialName,
                                                                     uint32_t index)
@@ -343,7 +461,14 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
                                                 modelData["receiveShadows"] = true;
                                                 modelData["rayTracingMode"] = "auto";
                                                 modelData["visibilityMask"] = 0xffffffffu;
-                                                modelData["materialOverrides"] = Vans::SceneJson::object();
+                                                const std::string materialGuid =
+                                                    ResolveGeneratedMaterialOverride(generatedMaterials, fbxInfo, i);
+                                                if (!materialGuid.empty())
+                                                    modelData["materialOverrides"] = {
+                                                        {"default", {{"guid", materialGuid}}}
+                                                    };
+                                                else
+                                                    modelData["materialOverrides"] = Vans::SceneJson::object();
                                                 modelData["orphanOverrides"] = Vans::SceneJson::object();
 
                                                 Vans::SceneJson rendererComp;
@@ -455,6 +580,133 @@ void VansGraphics::VansSceneWindow::ShowWindow(VansVKDevice& device)
 
             m_Gizmos.HandleHotkeys(m_Scene);
             m_Gizmos.Draw(m_Scene, m_Camera, imageScreenPos, drawSize);
+
+            // ── Vehicle physics debug visualization ───────────────────────
+            if (m_Scene && m_Scene->GetVehicle())
+            {
+                ImGui::Checkbox("Vehicle Debug", &VansEditorWindow::m_VehicleDebugGizmos);
+            }
+            if (VansEditorWindow::m_VehicleDebugGizmos && m_Scene && m_Scene->GetVehicle())
+            {
+                VansEngine::VansPhysicsVehicle* vehicle = m_Scene->GetVehicle();
+                const glm::mat4 view = m_Camera->GetViewMatrix();
+                const glm::mat4 proj = m_Camera->GetProjectiveMatrix();
+                const glm::mat4 viewProj = proj * view;
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+
+                auto toGlm = [](const PxVec3& v) { return glm::vec3(v.x, v.y, v.z); };
+                auto axisToPx = [](PxVehicleAxes::Enum axis) -> PxVec3
+                {
+                    switch (axis)
+                    {
+                    case PxVehicleAxes::ePosX: return PxVec3(1.0f, 0.0f, 0.0f);
+                    case PxVehicleAxes::eNegX: return PxVec3(-1.0f, 0.0f, 0.0f);
+                    case PxVehicleAxes::ePosY: return PxVec3(0.0f, 1.0f, 0.0f);
+                    case PxVehicleAxes::eNegY: return PxVec3(0.0f, -1.0f, 0.0f);
+                    case PxVehicleAxes::ePosZ: return PxVec3(0.0f, 0.0f, 1.0f);
+                    case PxVehicleAxes::eNegZ: return PxVec3(0.0f, 0.0f, -1.0f);
+                    default: return PxVec3(0.0f, 1.0f, 0.0f);
+                    }
+                };
+                auto projectWorld = [&](const glm::vec3& world, ImVec2& screen) -> bool
+                {
+                    glm::vec4 clip = viewProj * glm::vec4(world, 1.0f);
+                    if (clip.w <= 1e-5f)
+                        return false;
+                    glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                    screen = ImVec2(
+                        imageScreenPos.x + (ndc.x * 0.5f + 0.5f) * drawSize.x,
+                        imageScreenPos.y + (-ndc.y * 0.5f + 0.5f) * drawSize.y);
+                    return ndc.z >= 0.0f && ndc.z <= 1.0f;
+                };
+                auto drawLineWorld = [&](const glm::vec3& a, const glm::vec3& b, ImU32 color, float thickness)
+                {
+                    ImVec2 sa, sb;
+                    if (projectWorld(a, sa) && projectWorld(b, sb))
+                        dl->AddLine(sa, sb, color, thickness);
+                };
+                auto drawPointWorld = [&](const glm::vec3& p, ImU32 color, float radius)
+                {
+                    ImVec2 sp;
+                    if (projectWorld(p, sp))
+                        dl->AddCircleFilled(sp, radius, color);
+                };
+                auto drawLabelWorld = [&](const glm::vec3& p, ImU32 color, const char* text)
+                {
+                    ImVec2 sp;
+                    if (projectWorld(p, sp))
+                        dl->AddText(ImVec2(sp.x + 6.0f, sp.y - 8.0f), color, text);
+                };
+                auto drawRingWorld = [&](const glm::vec3& center, const glm::vec3& axisA,
+                                         const glm::vec3& axisB, float radius, ImU32 color)
+                {
+                    constexpr int kSegments = 40;
+                    glm::vec3 prev = center + axisA * radius;
+                    for (int i = 1; i <= kSegments; ++i)
+                    {
+                        const float angle = (float)i / (float)kSegments * 6.28318530718f;
+                        glm::vec3 cur = center + (axisA * std::cos(angle) + axisB * std::sin(angle)) * radius;
+                        drawLineWorld(prev, cur, color, 1.75f);
+                        prev = cur;
+                    }
+                };
+                auto drawOrientedBox = [&](const PxTransform& pose, const PxVec3& halfExtents, ImU32 color)
+                {
+                    const PxVec3 he = halfExtents;
+                    const PxVec3 localCorners[8] = {
+                        PxVec3(-he.x, -he.y, -he.z), PxVec3( he.x, -he.y, -he.z),
+                        PxVec3( he.x,  he.y, -he.z), PxVec3(-he.x,  he.y, -he.z),
+                        PxVec3(-he.x, -he.y,  he.z), PxVec3( he.x, -he.y,  he.z),
+                        PxVec3( he.x,  he.y,  he.z), PxVec3(-he.x,  he.y,  he.z)
+                    };
+                    glm::vec3 corners[8];
+                    for (int i = 0; i < 8; ++i)
+                        corners[i] = toGlm(pose.transform(localCorners[i]));
+                    const int edges[12][2] = {
+                        {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}
+                    };
+                    for (const auto& edge : edges)
+                        drawLineWorld(corners[edge[0]], corners[edge[1]], color, 2.0f);
+                };
+
+                const PxTransform bodyPose = vehicle->GetTransform();
+                const VansEngine::VansVehicleTuning& tuning = vehicle->GetTuning();
+                const PxTransform chassisPose = bodyPose * vehicle->GetBodyBoxLocalPose();
+                drawOrientedBox(chassisPose, vehicle->GetBodyBoxHalfExtents(), IM_COL32(70, 170, 255, 235));
+                drawLabelWorld(toGlm(chassisPose.p), IM_COL32(120, 210, 255, 255), "chassis collider");
+
+                const PxVec3 localLat = axisToPx(tuning.lateralAxis);
+                const PxVec3 localVrt = axisToPx(tuning.verticalAxis);
+                const PxVec3 localLng = axisToPx(tuning.longitudinalAxis);
+                const uint32_t wheelCount = std::min<uint32_t>(vehicle->GetNumWheels(), 4u);
+                for (uint32_t wi = 0; wi < wheelCount; ++wi)
+                {
+                    const PxTransform wheelPose = vehicle->GetWheelWorldPose(wi);
+                    const float radius = vehicle->GetWheelRadius(wi);
+                    const float halfWidth = vehicle->GetWheelHalfWidth(wi);
+                    const glm::vec3 center = toGlm(wheelPose.p);
+                    const glm::vec3 lat = glm::normalize(toGlm(wheelPose.q.rotate(localLat)));
+                    const glm::vec3 vrt = glm::normalize(toGlm(wheelPose.q.rotate(localVrt)));
+                    const glm::vec3 lng = glm::normalize(toGlm(wheelPose.q.rotate(localLng)));
+
+                    drawRingWorld(center, vrt, lng, radius, IM_COL32(255, 220, 40, 245));
+                    drawLineWorld(center - lat * halfWidth, center + lat * halfWidth, IM_COL32(50, 255, 255, 245), 2.0f);
+                    drawPointWorld(center, IM_COL32(255, 255, 255, 245), 3.5f);
+
+                    const PxVec3 attachLocal = vehicle->GetSuspensionAttachmentLocal(wi);
+                    const glm::vec3 attach = toGlm(bodyPose.transform(attachLocal));
+                    const PxVec3 travelDir = vehicle->GetSuspensionTravelDir(wi);
+                    const float travel = vehicle->GetSuspensionTravelDist(wi);
+                    const glm::vec3 rayEnd = toGlm(bodyPose.transform(attachLocal + travelDir * (travel + radius)));
+                    drawPointWorld(attach, IM_COL32(255, 120, 40, 245), 4.0f);
+                    drawLineWorld(attach, center, IM_COL32(255, 150, 40, 220), 2.0f);
+                    drawLineWorld(attach, rayEnd, IM_COL32(255, 60, 80, 190), 1.5f);
+
+                    char label[96];
+                    snprintf(label, sizeof(label), "W%u r=%.2f hw=%.2f", wi, radius, halfWidth);
+                    drawLabelWorld(center + vrt * (radius + 0.05f), IM_COL32(255, 245, 140, 255), label);
+                }
+            }
 
             // ── Motion Matching 轨迹可视化 ────────────────────────────────
 			if (m_Scene && !m_Scene->GetAnimationNodes().empty())

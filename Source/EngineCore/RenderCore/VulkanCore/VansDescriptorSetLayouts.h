@@ -533,6 +533,13 @@ namespace VansGraphics
 		HAIR_LIGHTING_BINDING_CASCADE_SHADOW = 4,
 	};
 
+	// --- Transmission Glass Pass（Set 1）---
+	enum TransmissionGlassPassBinding : uint32_t
+	{
+		TRANSMISSION_GLASS_BINDING_OPAQUE_SCENE_COLOR = 0,
+		TRANSMISSION_GLASS_BINDING_SSR_REFLECTION = 1,
+	};
+
 	// --- Water Effects Compute Pass（Set 0）---
 	// 对应 water_effects.comp 的 set=0 绑定
 	enum WaterEffectsComputeBinding : uint32_t
@@ -803,6 +810,8 @@ namespace VansGraphics
 		static void CreateAndAllocate_HairComposite(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Hair Lighting Pass Set 1：HairVis0-3 visibility buffers
 		static void CreateAndAllocate_HairLighting(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		// Transmission Glass Pass Set 1：opaque scene color snapshot for screen-space refraction
+		static void CreateAndAllocate_TransmissionGlass(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Water Effects Compute Set 0：WaterGBuf / SceneColor 输入 + 反射折射焦散输出
 		static void CreateAndAllocate_WaterEffectsCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Phase 2 独立 CS Layouts

@@ -3,8 +3,10 @@
 #include "VansPhysics.h"
 #include <PxPhysicsAPI.h>
 #include <vehicle2/PxVehicleAPI.h>
+#include <array>
 #include <vector>
 #include <string>
+#include <cstdint>
 
 using namespace physx;
 using namespace physx::vehicle2;
@@ -87,6 +89,77 @@ namespace VansEngine
         void setToDefault();
     };
 
+    struct VansVehicleTuning
+    {
+        PxReal bodyMass = 2014.39990234375f;
+        PxVec3 bodyMoi = PxVec3(3200.0f, 3414.39990234375f, 750.0f);
+        PxTransform centerOfMassLocalPose = PxTransform(PxVec3(0.0f, 0.55f, 1.594f), PxQuat(PxIdentity));
+        PxVec3 bodyBoxHalfExtents = PxVec3(0.84097f, 0.65458f, 2.46971f);
+        PxTransform bodyBoxLocalPose = PxTransform(PxVec3(0.0f, 0.830066f, 1.37003f), PxQuat(PxIdentity));
+        bool autoBodyGeometry = false;
+        PxVec3 bodyGeometryPadding = PxVec3(0.0f);
+        PxVec3 bodyGeometryHalfExtentsScale = PxVec3(1.0f);
+        PxVec3 bodyGeometryCenterOffset = PxVec3(0.0f);
+        PxVehicleAxes::Enum longitudinalAxis = PxVehicleAxes::ePosZ;
+        PxVehicleAxes::Enum lateralAxis = PxVehicleAxes::ePosX;
+        PxVehicleAxes::Enum verticalAxis = PxVehicleAxes::ePosY;
+
+        PxReal wheelRadius = 0.3432520031929016f;
+        PxReal wheelHalfWidth = 0.15768450498580934f;
+        PxReal wheelMass = 20.0f;
+        PxReal wheelMoi = 1.1716899871826172f;
+        PxReal wheelDampingRate = 0.25f;
+        PxReal visualWheelRollSign = 1.0f;
+        PxReal wheelVisualGroundClearance = 0.0f;
+        bool enableWheelSimulationCollision = false;
+        std::string collisionLayerName = "Default";
+        PxU32 roadQueryMask = 0xFFFFFFFFu;
+        bool useCustomRoadQueryMask = false;
+        bool useRoadQueryLayerFilter = true;
+        PxVehiclePhysXActorUpdateMode::Enum physxActorUpdateMode = PxVehiclePhysXActorUpdateMode::eAPPLY_VELOCITY;
+        bool autoAlignToGround = false;
+        PxReal groundHeight = 0.0f;
+        PxReal groundClearance = 0.0f;
+        PxReal startHeightOffset = 2.0f;
+
+        std::array<PxVec3, 4> suspensionAttachmentPositions = {
+            PxVec3(-0.7952629923820496f, 0.3161f,  1.377f),
+            PxVec3( 0.7952629923820496f, 0.3161f,  1.377f),
+            PxVec3(-0.7952629923820496f, 0.3161f, -1.1787f),
+            PxVec3( 0.7952629923820496f, 0.3161f, -1.1787f)
+        };
+        PxReal suspensionTravelDist = 0.221110999584198f;
+        std::array<PxReal, 4> suspensionStiffness = {
+            32833.30078125f, 33657.3984375f, 26049.0f, 26894.099609375f
+        };
+        std::array<PxReal, 4> suspensionDamping = {
+            8528.1201171875f, 8742.1904296875f, 6765.97021484375f, 6985.47998046875f
+        };
+        std::array<PxReal, 4> sprungMass = {
+            553.7739868164063f, 567.6749877929688f, 439.3489990234375f, 453.6029968261719f
+        };
+
+        PxReal brakeMaxTorque = 1875.0f;
+        PxReal handbrakeMaxTorque = 0.0f;
+        PxReal maxSteerAngleRad = 0.5235990285873413f;
+        PxReal ackermannWheelBase = 2.863219976425171f;
+        PxReal ackermannTrackWidth = 1.5510799884796143f;
+        PxReal ackermannStrength = 1.0f;
+
+        PxReal enginePeakTorque = 500.0f;
+        PxReal engineMaxOmega = 600.0f;
+        PxReal gearboxFinalRatio = 4.0f;
+        PxReal gearboxSwitchTime = 0.5f;
+        PxReal autoboxLatency = 2.0f;
+        PxReal clutchStrength = 10.0f;
+    };
+
+    struct VansVehicleVisualBinding
+    {
+        uint32_t transformID = UINT32_MAX;
+        PxVec3 pivotLocal = PxVec3(0.0f);
+    };
+
     class VansPhysicsVehicle 
         : public PxVehiclePhysXActorBeginComponent
         , public PxVehiclePhysXActorEndComponent
@@ -113,9 +186,39 @@ namespace VansEngine
         void SetInputs(float throttle, float brake, float steer, float handbrake);
         void SetGear(uint32_t gear);
         void SetAutomaticGear(bool automatic);
+        void SetTuning(const VansVehicleTuning& tuning) { m_Tuning = tuning; }
+        const VansVehicleTuning& GetTuning() const { return m_Tuning; }
+        PxVec3 GetBodyBoxHalfExtents() const { return m_Params.physxActorBoxShapeHalfExtents; }
+        PxTransform GetBodyBoxLocalPose() const { return m_Params.physxActorBoxShapeLocalPose; }
+        PxReal GetWheelRadius(uint32_t wheelIndex) const
+        {
+            return wheelIndex < PxVehicleLimits::eMAX_NB_WHEELS ? m_Params.wheelParams[wheelIndex].radius : 0.0f;
+        }
+        PxReal GetWheelHalfWidth(uint32_t wheelIndex) const
+        {
+            return wheelIndex < PxVehicleLimits::eMAX_NB_WHEELS ? m_Params.wheelParams[wheelIndex].halfWidth : 0.0f;
+        }
+        PxVec3 GetSuspensionAttachmentLocal(uint32_t wheelIndex) const
+        {
+            return wheelIndex < PxVehicleLimits::eMAX_NB_WHEELS
+                ? m_Params.suspensionParams[wheelIndex].suspensionAttachment.p
+                : PxVec3(0.0f);
+        }
+        PxVec3 GetSuspensionTravelDir(uint32_t wheelIndex) const
+        {
+            return wheelIndex < PxVehicleLimits::eMAX_NB_WHEELS
+                ? m_Params.suspensionParams[wheelIndex].suspensionTravelDir
+                : PxVec3(0.0f, -1.0f, 0.0f);
+        }
+        PxReal GetSuspensionTravelDist(uint32_t wheelIndex) const
+        {
+            return wheelIndex < PxVehicleLimits::eMAX_NB_WHEELS
+                ? m_Params.suspensionParams[wheelIndex].suspensionTravelDist
+                : 0.0f;
+        }
 
         // Access
-        const PxTransform& GetTransform() const;
+        PxTransform GetTransform() const;
         PxRigidActor* GetActor() const { return m_State.physxActor.rigidBody; }
 
         // Returns the world-space transform of wheel at wheelIndex.
@@ -126,6 +229,26 @@ namespace VansEngine
                 return PxTransform(PxIdentity);
             const PxTransform bodyPose = m_State.physxActor.rigidBody->getGlobalPose();
             return bodyPose * m_State.wheelLocalPoses[wheelIndex].localPose;
+        }
+
+        PxTransform GetWheelVisualWorldPose(uint32_t wheelIndex) const
+        {
+            if (!m_State.physxActor.rigidBody || wheelIndex >= PxVehicleLimits::eMAX_NB_WHEELS)
+                return PxTransform(PxIdentity);
+            if (m_Tuning.visualWheelRollSign >= 0.0f)
+                return GetWheelWorldPose(wheelIndex);
+
+            const PxTransform bodyPose = m_State.physxActor.rigidBody->getGlobalPose();
+            PxVehicleWheelRigidBody1dState wheelState = m_State.wheelRigidBody1dStates[wheelIndex];
+            wheelState.rotationAngle = -wheelState.rotationAngle;
+            const PxTransform localPose = PxVehicleComputeWheelLocalPose(
+                m_Params.frame,
+                m_Params.suspensionParams[wheelIndex],
+                m_State.suspensionStates[wheelIndex],
+                m_State.suspensionComplianceStates[wheelIndex],
+                m_State.steerCommandResponseStates[wheelIndex],
+                wheelState);
+            return bodyPose * localPose;
         }
 
         // Number of wheels configured for this vehicle
@@ -140,6 +263,23 @@ namespace VansEngine
 
         void SetTireRenderNodeNames(const std::vector<std::string>& names) { m_TireRenderNodeNames = names; }
         const std::vector<std::string>& GetTireRenderNodeNames() const { return m_TireRenderNodeNames; }
+
+        // Preferred object-level transform bindings. These allow vehicles to
+        // drive regular render objects, empty objects, and MultiMeshRoot entities.
+        void SetBodyTransformID(uint32_t transformID) { m_BodyTransformID = transformID; }
+        uint32_t GetBodyTransformID() const { return m_BodyTransformID; }
+
+        void SetTireTransformIDs(const std::vector<uint32_t>& transformIDs) { m_TireTransformIDs = transformIDs; }
+        const std::vector<uint32_t>& GetTireTransformIDs() const { return m_TireTransformIDs; }
+
+        void SetWheelVisualBindings(const std::vector<std::vector<VansVehicleVisualBinding>>& bindings)
+        {
+            m_WheelVisualBindings = bindings;
+        }
+        const std::vector<std::vector<VansVehicleVisualBinding>>& GetWheelVisualBindings() const
+        {
+            return m_WheelVisualBindings;
+        }
         
         // Data Provider overrides
         virtual void getDataForPhysXActorBeginComponent(
@@ -306,6 +446,7 @@ namespace VansEngine
     private:
         VansVehicleParams m_Params;
         VansVehicleState m_State;
+        VansVehicleTuning m_Tuning;
         
         PxVehicleCommandState m_CommandState;
         PxVehicleEngineDriveTransmissionCommandState m_TransmissionCommandState;
@@ -323,5 +464,9 @@ namespace VansEngine
         std::string m_BodyRenderNodeName;
         // Render node names per wheel (index matches vehicle wheel index: 0=FL,1=FR,2=RL,3=RR)
         std::vector<std::string> m_TireRenderNodeNames;
+
+        uint32_t m_BodyTransformID = UINT32_MAX;
+        std::vector<uint32_t> m_TireTransformIDs;
+        std::vector<std::vector<VansVehicleVisualBinding>> m_WheelVisualBindings;
     };
 }

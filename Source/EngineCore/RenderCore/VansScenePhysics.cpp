@@ -17,6 +17,7 @@
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "../Util/VansLog.h"
+#include <algorithm>
 #include <cstring>
 
 // ===========================================================================
@@ -24,21 +25,47 @@
 // ===========================================================================
 
 void VansGraphics::VansScene::InitVehicle(VansEngine::VansPhysicsSystem* physicsSystem, const glm::vec3& position,
-    const std::string& bodyRenderNodeName, const std::vector<std::string>& tireRenderNodeNames)
+    const std::string& bodyRenderNodeName, const std::vector<std::string>& tireRenderNodeNames,
+    uint32_t bodyTransformID, const std::vector<uint32_t>& tireTransformIDs,
+    const VansEngine::VansVehicleTuning& tuning,
+    const std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>& wheelVisualBindings)
 {
     if (m_Vehicle) return; // Already initialized
 
     m_Vehicle = new VansEngine::VansPhysicsVehicle();
+    m_Vehicle->SetTuning(tuning);
     m_Vehicle->SetBodyRenderNodeName(bodyRenderNodeName);
     m_Vehicle->SetTireRenderNodeNames(tireRenderNodeNames);
-    // Convert glm::vec3 to PxTransform (physx uses right-handed Y-up, similar to GLM standard)
-    PxTransform startPose(PxVec3(position.x, position.y + 2.0f, position.z), PxQuat(PxIdentity));
+    m_Vehicle->SetBodyTransformID(bodyTransformID);
+    m_Vehicle->SetTireTransformIDs(tireTransformIDs);
+    m_Vehicle->SetWheelVisualBindings(wheelVisualBindings);
+    auto vehicleAxisToVec3 = [](PxVehicleAxes::Enum axis) -> PxVec3
+    {
+        switch (axis)
+        {
+        case PxVehicleAxes::ePosX: return PxVec3(1.0f, 0.0f, 0.0f);
+        case PxVehicleAxes::eNegX: return PxVec3(-1.0f, 0.0f, 0.0f);
+        case PxVehicleAxes::ePosY: return PxVec3(0.0f, 1.0f, 0.0f);
+        case PxVehicleAxes::eNegY: return PxVec3(0.0f, -1.0f, 0.0f);
+        case PxVehicleAxes::ePosZ: return PxVec3(0.0f, 0.0f, 1.0f);
+        case PxVehicleAxes::eNegZ: return PxVec3(0.0f, 0.0f, -1.0f);
+        default: return PxVec3(0.0f, 1.0f, 0.0f);
+        }
+    };
+
+    const PxVec3 upAxis = vehicleAxisToVec3(tuning.verticalAxis);
+    const PxVec3 startPosition(position.x, position.y, position.z);
+    PxTransform startPose(startPosition + upAxis * tuning.startHeightOffset, PxQuat(PxIdentity));
 
     // Initialize with default parameters (empty path triggers built-in defaults)
     m_Vehicle->Initialize(physicsSystem, "", startPose);
 
     VANS_LOG("[VansScene] Vehicle initialized at " << position.x << ", " << position.y << ", " << position.z
-              << ", bodyNode='" << bodyRenderNodeName << "', tires=" << tireRenderNodeNames.size());
+              << ", startHeightOffset=" << tuning.startHeightOffset
+              << ", bodyNode='" << bodyRenderNodeName << "', bodyTransformID=" << bodyTransformID
+              << ", tires=" << tireRenderNodeNames.size()
+              << ", tireTransformIDs=" << tireTransformIDs.size()
+              << ", wheelVisualGroups=" << wheelVisualBindings.size());
 }
 
 // ===========================================================================
@@ -268,6 +295,18 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(
         auto& extents = physicsNodeJson["boxExtents"];
         properties.boxExtents = glm::vec3(extents[0], extents[1], extents[2]);
     }
+    if (physicsNodeJson.contains("shapeOffset"))
+    {
+        auto& offset = physicsNodeJson["shapeOffset"];
+        if (offset.is_array() && offset.size() >= 3)
+            properties.shapeOffset = glm::vec3(offset[0], offset[1], offset[2]);
+    }
+    if (physicsNodeJson.contains("colliderOffset"))
+    {
+        auto& offset = physicsNodeJson["colliderOffset"];
+        if (offset.is_array() && offset.size() >= 3)
+            properties.shapeOffset = glm::vec3(offset[0], offset[1], offset[2]);
+    }
     if (physicsNodeJson.contains("sphereRadius"))
         properties.sphereRadius = physicsNodeJson["sphereRadius"];
     if (physicsNodeJson.contains("capsuleRadius"))
@@ -402,36 +441,65 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
             return glm::degrees(glm::eulerAngles(gq));
         };
 
-        // Update car body render node
-        const std::string& bodyNodeName = m_Vehicle->GetBodyRenderNodeName();
-        if (!bodyNodeName.empty())
+        auto writeTransform = [&](uint32_t transformID, const PxTransform& pose, const PxVec3& pivotLocal = PxVec3(0.0f))
         {
-            VansRenderNode* bodyNode = FindRenderNodeByName(bodyNodeName);
-            if (bodyNode)
+            if (transformID == UINT32_MAX ||
+                transformID >= static_cast<uint32_t>(VansTransformStore::GlobalTransforms.size()))
+                return false;
+
+            VansTransform& t = VansTransformStore::GetTransform(transformID);
+            const PxVec3 correctedPosition = pose.p - pose.q.rotate(pivotLocal);
+            t.m_Position = glm::vec3(correctedPosition.x, correctedPosition.y, correctedPosition.z);
+            t.m_Rotation = PxQuatToEulerDeg(pose.q);
+            VansTransformStore::TransformIDToTransformDirty[transformID] = true;
+            m_TransformParentSystem.MarkOffsetDirty(transformID);
+            return true;
+        };
+
+        // Update car body object transform. Fall back to the legacy render node binding.
+        const PxTransform bodyPose = m_Vehicle->GetTransform();
+        if (!writeTransform(m_Vehicle->GetBodyTransformID(), bodyPose))
+        {
+            const std::string& bodyNodeName = m_Vehicle->GetBodyRenderNodeName();
+            if (!bodyNodeName.empty())
             {
-                const PxTransform& bodyPose = m_Vehicle->GetTransform();
-                VansTransform& t = VansTransformStore::GetTransform(bodyNode->m_TransformID);
-                t.m_Position = glm::vec3(bodyPose.p.x, bodyPose.p.y, bodyPose.p.z);
-                t.m_Rotation = PxQuatToEulerDeg(bodyPose.q);
-                VansTransformStore::TransformIDToTransformDirty.insert({ bodyNode->m_TransformID, true });
+                VansRenderNode* bodyNode = FindRenderNodeByName(bodyNodeName);
+                if (bodyNode)
+                    writeTransform(bodyNode->m_TransformID, bodyPose);
             }
         }
 
-        // Update tire render nodes (one per wheel index)
+        // Update tire object transforms (one per wheel index). Fall back to legacy render node bindings.
+        const std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>& wheelVisualBindings =
+            m_Vehicle->GetWheelVisualBindings();
+        if (!wheelVisualBindings.empty())
+        {
+            const uint32_t numWheelGroups = static_cast<uint32_t>(wheelVisualBindings.size());
+            for (uint32_t wi = 0; wi < numWheelGroups; ++wi)
+            {
+                PxTransform wheelPose = m_Vehicle->GetWheelVisualWorldPose(wi);
+                for (const VansEngine::VansVehicleVisualBinding& binding : wheelVisualBindings[wi])
+                    writeTransform(binding.transformID, wheelPose, binding.pivotLocal);
+            }
+            return;
+        }
+
+        const std::vector<uint32_t>& tireTransformIDs = m_Vehicle->GetTireTransformIDs();
         const std::vector<std::string>& tireNodeNames = m_Vehicle->GetTireRenderNodeNames();
-        const uint32_t numTires = static_cast<uint32_t>(tireNodeNames.size());
+        const uint32_t numTires = static_cast<uint32_t>(std::max(tireTransformIDs.size(), tireNodeNames.size()));
         for (uint32_t wi = 0; wi < numTires; ++wi)
         {
+            PxTransform wheelPose = m_Vehicle->GetWheelVisualWorldPose(wi);
+            if (wi < tireTransformIDs.size() && writeTransform(tireTransformIDs[wi], wheelPose))
+                continue;
+
+            if (wi >= tireNodeNames.size())
+                continue;
             const std::string& tireName = tireNodeNames[wi];
             if (tireName.empty()) continue;
             VansRenderNode* tireNode = FindRenderNodeByName(tireName);
-            if (!tireNode) continue;
-
-            PxTransform wheelPose = m_Vehicle->GetWheelWorldPose(wi);
-            VansTransform& t = VansTransformStore::GetTransform(tireNode->m_TransformID);
-            t.m_Position = glm::vec3(wheelPose.p.x, wheelPose.p.y, wheelPose.p.z);
-            t.m_Rotation = PxQuatToEulerDeg(wheelPose.q);
-            VansTransformStore::TransformIDToTransformDirty.insert({ tireNode->m_TransformID, true });
+            if (tireNode)
+                writeTransform(tireNode->m_TransformID, wheelPose);
         }
     }
 }

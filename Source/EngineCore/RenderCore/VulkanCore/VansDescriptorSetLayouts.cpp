@@ -977,6 +977,22 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairLighting(
 }
 
 // ============================================================
+// Transmission Glass Pass Set 1
+// TransmissionGlass.frag：OpaqueSceneColor snapshot for refraction + SSR reflection
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_TransmissionGlass(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{TRANSMISSION_GLASS_BINDING_OPAQUE_SCENE_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TRANSMISSION_GLASS_BINDING_SSR_REFLECTION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
 // Water Effects Compute Set 0
 // water_effects.comp：WaterGBuf + SceneColor → Reflection/Refraction/Caustics
 // ============================================================

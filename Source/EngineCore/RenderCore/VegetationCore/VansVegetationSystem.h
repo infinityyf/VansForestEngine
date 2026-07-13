@@ -9,6 +9,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <algorithm>
 
 namespace VansGraphics
 {
@@ -162,6 +163,7 @@ namespace VansGraphics
 	{
 		bool enabled = false;
 		float cullDistance = 800.0f;
+		bool cullEnabled = true;
 		bool hizEnabled = true;
 		std::vector<TreeSpeciesConfig> species;
 		std::vector<TreeInstanceConfig> instances;
@@ -350,6 +352,18 @@ namespace VansGraphics
 			m_SubBladeScatterRadiusMax = radiusMax;
 		}
 
+		void SetPlacementBounds(const glm::vec2& minXZ, const glm::vec2& maxXZ)
+		{
+			m_PlacementMinXZ = glm::min(minXZ, maxXZ);
+			m_PlacementMaxXZ = glm::max(minXZ, maxXZ);
+		}
+
+		void SetGrassScaleRange(float minScale, float maxScale)
+		{
+			m_GrassScaleMin = std::max(0.001f, std::min(minScale, maxScale));
+			m_GrassScaleMax = std::max(m_GrassScaleMin, std::max(minScale, maxScale));
+		}
+
 		// ── Runtime simulation parameters (updated from JSON at load time) ─────
 		void SetSimParams(glm::vec2 windDir, float windStrength, float windFrequency,
 		                  float windSpeed, float windBendMult,
@@ -467,6 +481,10 @@ namespace VansGraphics
 		float     m_CullDistance        = 100.0f;  // P0: 最大绘制距离，超出则剔除
 		float     m_SubBladeLodMidDist  = 40.0f;   // P1: 中距离子叶片 LOD 阈值
 		float     m_SubBladeLodFarDist  = 70.0f;   // P1: 远距离子叶片 LOD 阈值
+		glm::vec2 m_PlacementMinXZ      = glm::vec2(-100.0f, -100.0f);
+		glm::vec2 m_PlacementMaxXZ      = glm::vec2( 100.0f,  100.0f);
+		float     m_GrassScaleMin       = 0.4f;
+		float     m_GrassScaleMax       = 1.5f;
 
 		// ── Per-frame simulation parameters ─────────────────────────────
 		glm::vec2 m_SimWindDirection  = glm::vec2(1.0f, 0.0f);

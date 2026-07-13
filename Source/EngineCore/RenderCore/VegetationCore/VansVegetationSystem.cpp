@@ -186,8 +186,9 @@ void VansVegetationSystem::CreateInstanceBuffer(VkDevice device)
 {
 	std::vector<GrassInstance> instances(m_InstanceCount);
 	std::mt19937 rng(42);
-	std::uniform_real_distribution<float> posDist(-100.0f, 100.0f);
-	std::uniform_real_distribution<float> scaleDist(0.4f, 1.5f);
+	std::uniform_real_distribution<float> posXDist(m_PlacementMinXZ.x, m_PlacementMaxXZ.x);
+	std::uniform_real_distribution<float> posZDist(m_PlacementMinXZ.y, m_PlacementMaxXZ.y);
+	std::uniform_real_distribution<float> scaleDist(m_GrassScaleMin, m_GrassScaleMax);
 	std::uniform_real_distribution<float> rotDist(0.0f, 6.28318530718f);
 
 	for (uint32_t i = 0; i < m_InstanceCount; ++i)
@@ -196,8 +197,8 @@ void VansVegetationSystem::CreateInstanceBuffer(VkDevice device)
 		// function arguments, so glm::vec3(posDist(rng),0,posDist(rng)) produces
 		// unspecified X/Z mapping.  Sequential statements give a defined draw order
 		// that must match CreateBoneBuffer and CreateSubBladeRootsBuffer exactly.
-		float px               = posDist(rng);
-		float pz               = posDist(rng);
+		float px               = posXDist(rng);
+		float pz               = posZDist(rng);
 		instances[i].position  = glm::vec3(px, 0.0f, pz);
 		instances[i].scale     = scaleDist(rng);
 		// P4 优化: 预计算 sin/cos 并存入实例数据，GPU 端直接读取
@@ -231,8 +232,9 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 	// Read back instance data for root positions
 	// (we just generated it in-line, so regenerate with same seed)
 	std::mt19937 rng(42);
-	std::uniform_real_distribution<float> posDist(-100.0f, 100.0f);
-	std::uniform_real_distribution<float> scaleDist(0.4f, 1.5f);
+	std::uniform_real_distribution<float> posXDist(m_PlacementMinXZ.x, m_PlacementMaxXZ.x);
+	std::uniform_real_distribution<float> posZDist(m_PlacementMinXZ.y, m_PlacementMaxXZ.y);
+	std::uniform_real_distribution<float> scaleDist(m_GrassScaleMin, m_GrassScaleMax);
 	std::uniform_real_distribution<float> rotDist(0.0f, 6.28318530718f);
 	// Per-blade lean deviation: random angle within ±m_InitLeanDeviation around wind direction
 	// NOTE: do NOT add an extra rng draw here — it would break sync with CreateInstanceBuffer
@@ -245,8 +247,8 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 	{
 		// Explicit sequential draws — must match CreateInstanceBuffer and
 		// CreateSubBladeRootsBuffer exactly (draw1 → X, draw2 → Z).
-		float bpx = posDist(rng);
-		float bpz = posDist(rng);
+		float bpx = posXDist(rng);
+		float bpz = posZDist(rng);
 		glm::vec3 pos(bpx, 0.0f, bpz);
 		float scale = scaleDist(rng);
 		float rot   = rotDist(rng);   // same draw as CreateInstanceBuffer — RNG stays in sync
@@ -821,6 +823,8 @@ void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 void VansVegetationSystem::DispatchTreeCullPass(VansVKCommandBuffer& computeCmd)
 {
 	if (!m_TreeEnabled || !m_TreeCullShader || m_TreeCullDescSets.empty())
+		return;
+	if (!m_TreeConfig.cullEnabled)
 		return;
 
 	std::vector<uint32_t> zeroCounts(m_TreeSpeciesInfosCPU.size(), 0);
@@ -1472,15 +1476,34 @@ void VansVegetationSystem::BuildTreeResources(
 
 	VkDeviceSize countSize = sizeof(uint32_t) * std::max<size_t>(visibilityGroups.size(), 1);
 	std::vector<uint32_t> zeroCounts(visibilityGroups.size(), 0);
+	std::vector<uint32_t> initialCounts = zeroCounts;
+	if (!m_TreeConfig.cullEnabled)
+	{
+		for (uint32_t i = 0; i < static_cast<uint32_t>(m_TreeSpeciesInfosCPU.size()); ++i)
+			initialCounts[i] = m_TreeSpeciesInfosCPU[i].maxCount;
+	}
 	m_TreeVisibleCountsBuffer.CreatVulkanBuffer(m_Device, countSize, VK_FORMAT_R32_UINT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_TreeVisibleCountsBuffer.SetBufferData(zeroCounts.data(), 0, static_cast<int>(countSize));
+	m_TreeVisibleCountsBuffer.SetBufferData(initialCounts.data(), 0, static_cast<int>(countSize));
 
 	VkDeviceSize visibleIndexSize = sizeof(uint32_t) * m_TreeInstancesCPU.size();
+	std::vector<uint32_t> initialVisibleIndices(m_TreeInstancesCPU.size(), 0);
+	std::vector<uint32_t> groupWriteOffsets(m_TreeSpeciesInfosCPU.size(), 0);
+	for (uint32_t i = 0; i < static_cast<uint32_t>(m_TreeInstancesCPU.size()); ++i)
+	{
+		const uint32_t groupIdx = m_TreeInstancesCPU[i].regionIndex;
+		if (groupIdx >= m_TreeSpeciesInfosCPU.size())
+			continue;
+		const uint32_t slot = groupWriteOffsets[groupIdx]++;
+		const uint32_t dst = m_TreeSpeciesInfosCPU[groupIdx].visibleOffset + slot;
+		if (dst < initialVisibleIndices.size())
+			initialVisibleIndices[dst] = i;
+	}
 	m_TreeVisibleIndexBuffer.CreatVulkanBuffer(m_Device, visibleIndexSize, VK_FORMAT_R32_UINT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	m_TreeVisibleIndexBuffer.SetBufferData(initialVisibleIndices.data(), 0, static_cast<int>(visibleIndexSize));
 
 	VkDeviceSize speciesInfoSize = sizeof(TreeSpeciesCullInfo) * m_TreeSpeciesInfosCPU.size();
 	m_TreeSpeciesInfoBuffer.CreatVulkanBuffer(m_Device, speciesInfoSize, VK_FORMAT_R32_UINT,
@@ -1570,7 +1593,7 @@ void VansVegetationSystem::BuildTreeResources(
 
 					VkDrawIndexedIndirectCommand draw = {};
 					draw.indexCount = drawable.mesh->GetIndexCount();
-					draw.instanceCount = 0;
+					draw.instanceCount = m_TreeConfig.cullEnabled ? 0 : group.maxCount;
 					draw.firstIndex = 0;
 					draw.vertexOffset = 0;
 					draw.firstInstance = 0;

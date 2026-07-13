@@ -188,6 +188,10 @@ namespace VansEngine
 
         if (shape)
         {
+            shape->setLocalPose(PxTransform(PxVec3(
+                m_Properties.shapeOffset.x,
+                m_Properties.shapeOffset.y,
+                m_Properties.shapeOffset.z)));
             m_Actor->attachShape(*shape);
             m_Shape = shape;
             const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];

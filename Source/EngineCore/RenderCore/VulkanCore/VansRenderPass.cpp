@@ -162,11 +162,25 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
 		false,
 		false,
 		true
+	);
+	m_OpaqueSceneColorImage.CreateVulkanImage(
+		logic_device,
+		{ resolution.width,resolution.height,1 },
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		1,
+		1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true,
+		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
 	);
 	m_DepthImage.CreateVulkanImage(
 		logic_device,
@@ -272,6 +286,10 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_ColorImage.GetImage());
 	nameInfo.pObjectName = "ColorImage";
+	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_OpaqueSceneColorImage.GetImage());
+	nameInfo.pObjectName = "OpaqueSceneColorImage";
 	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_DepthImage.GetImage());
@@ -1857,6 +1875,7 @@ void VansGraphics::VansRenderPassManager::BlitToSwapChainImage(VansVKCommandBuff
 void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 {
 	m_ColorImage.DestroyVulkanImage(m_LogicDevice);
+	m_OpaqueSceneColorImage.DestroyVulkanImage(m_LogicDevice);
 	m_DepthImage.DestroyVulkanImage(m_LogicDevice);
 	m_MotionVectorImage.DestroyVulkanImage(m_LogicDevice);
 	m_MotionVectorDepthImage.DestroyVulkanImage(m_LogicDevice);

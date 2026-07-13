@@ -1,4 +1,5 @@
 #include "VansShaderManager.h"
+#include "VansMaterial.h"
 #include "VegetationCore/VansVegetationSystem.h"
 #include "WaterCore/VansWaterLOD.h"
 
@@ -104,8 +105,15 @@ void RegisterEngineShaders()
     reg.RegisterGraphicsShader("TransparentSimpleColor", {
         "TransparentSimpleColor",
         "EngineAssets/Shaders/UnlitTransparent/SimpleColor",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         8, true
+    });
+
+    reg.RegisterGraphicsShader("TransmissionGlass", {
+        "TransmissionGlass",
+        "EngineAssets/Shaders/Transmission/Glass",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        sizeof(VansGraphics::VansDrawPushConstant), true
     });
 
     reg.RegisterGraphicsShader("Deferred", {
@@ -153,7 +161,7 @@ void RegisterEngineShaders()
     reg.RegisterGraphicsShader("TreeGBuffer", {
         "TreeGBuffer",
         "EngineAssets/Shaders/Tree/Deferred",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         sizeof(VansGraphics::TreeDrawPushConstants), false, false, 4
     });
 
@@ -354,6 +362,10 @@ void RegisterEngineShaders()
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_TRANSPARENT, {
         { VansGraphics::VansPass::FORWARD_TRANSPARENT, "TransparentSimpleColor" },
+    });
+
+    reg.RegisterMaterialPasses(VansGraphics::VAN_PBR_TRANSMISSION, {
+        { VansGraphics::VansPass::FORWARD_TRANSPARENT, "TransmissionGlass" },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_DEFERRED, {

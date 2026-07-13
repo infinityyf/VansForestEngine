@@ -37,6 +37,7 @@ private:
     std::filesystem::path m_AssetPath;
     std::shared_ptr<Vans::VansOpenAssetDocument> m_AssetDocuments;
     std::string m_Error;
+    bool m_PendingVehicleRebuild = false;
     VansScene* m_Scene = nullptr;
     VansInspectorLiveEditService m_LiveEdit;
     VansMaterialLiveEditService m_MaterialLiveEdit;

@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <string>
 #include <vector>
 
@@ -27,9 +28,15 @@ namespace VansGraphics
 		std::string opacityTexPath;      // aiTextureType_OPACITY
 
 		// Basic material parameters from aiMaterial
+		std::array<float, 3> diffuseColor{ 1.0f, 1.0f, 1.0f };
+		std::array<float, 3> specularColor{ 0.0f, 0.0f, 0.0f };
+		std::array<float, 3> emissiveColor{ 0.0f, 0.0f, 0.0f };
 		float opacity = 1.0f;            // AI_MATKEY_OPACITY
 		float metallic = 0.0f;
 		float roughness = 0.5f;
+		float specularFactor = 0.0f;
+		float shininess = 0.0f;
+		float reflectionFactor = 0.0f;
 
 		// Returns true if the submesh should use a transparent material
 		bool IsTransparent() const

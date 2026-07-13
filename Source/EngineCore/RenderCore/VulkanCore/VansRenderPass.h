@@ -85,6 +85,10 @@ namespace VansGraphics
 	private:
 		VansVKImage m_ColorImage;
 
+		// Deferred / forward-opaque scene color snapshot used by transmission
+		// glass during the later transparent pass.
+		VansVKImage m_OpaqueSceneColorImage;
+
 		VansVKImage m_DepthImage;
 
 		VansVKImage m_MotionVectorImage;
@@ -281,6 +285,8 @@ namespace VansGraphics
 		VansVKImage& GetPunctualShadowMap() { return m_PunctualShadowMapImage; }
 
 		VansVKImage& GetColor() { return m_ColorImage; }
+
+		VansVKImage& GetOpaqueSceneColor() { return m_OpaqueSceneColorImage; }
 
 		VansVKImage& GetDepth() { return m_DepthImage; }
 
