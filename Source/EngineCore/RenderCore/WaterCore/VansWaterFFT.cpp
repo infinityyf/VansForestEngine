@@ -1,13 +1,12 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansWaterFFT.h"
 #include "../../Util/VansLog.h"
 #include "../VulkanCore/VansVKDevice.h"
 #include "../VulkanCore/VansVKCommandBuffer.h"
 #include "../VulkanCore/VansShader.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
+#include "../VulkanCore/VansDescriptorSetLayouts.h"
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <vector>
 
 namespace VansGraphics
@@ -46,59 +45,6 @@ namespace
         int lodCount;
         int pad0;
     };
-}
-
-bool VansWaterFFT::AllocateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                                  VkMemoryPropertyFlags props,
-                                  VkBuffer& outBuffer, VkDeviceMemory& outMemory)
-{
-    VkDevice device = m_Device->GetLogicDevice();
-
-    VkBufferCreateInfo ci = {};
-    ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    ci.size = size;
-    ci.usage = usage;
-    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(device, &ci, nullptr, &outBuffer) != VK_SUCCESS)
-        return false;
-
-    VkMemoryRequirements memReq;
-    vkGetBufferMemoryRequirements(device, outBuffer, &memReq);
-
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(m_Device->GetPhysicalDevice(), &memProps);
-
-    uint32_t memTypeIndex = UINT32_MAX;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
-    {
-        if ((memReq.memoryTypeBits & (1u << i)) &&
-            (memProps.memoryTypes[i].propertyFlags & props) == props)
-        {
-            memTypeIndex = i;
-            break;
-        }
-    }
-
-    if (memTypeIndex == UINT32_MAX)
-    {
-        vkDestroyBuffer(device, outBuffer, nullptr);
-        outBuffer = VK_NULL_HANDLE;
-        return false;
-    }
-
-    VkMemoryAllocateInfo ai = {};
-    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize = memReq.size;
-    ai.memoryTypeIndex = memTypeIndex;
-    if (vkAllocateMemory(device, &ai, nullptr, &outMemory) != VK_SUCCESS)
-    {
-        vkDestroyBuffer(device, outBuffer, nullptr);
-        outBuffer = VK_NULL_HANDLE;
-        return false;
-    }
-
-    vkBindBufferMemory(device, outBuffer, outMemory, 0);
-    return true;
 }
 
 bool VansWaterFFT::Initialize(VansVKDevice* device, const std::string& shaderRoot,
@@ -142,10 +88,12 @@ bool VansWaterFFT::Initialize(VansVKDevice* device, const std::string& shaderRoo
     createFFTImage(m_PingPong[0], MAX_LOD_COUNT * FIELD_COUNT);
     createFFTImage(m_PingPong[1], MAX_LOD_COUNT * FIELD_COUNT);
 
-    if (!AllocateBuffer(sizeof(FFTParamsGPU),
+    m_ParamsBufferCreated = m_ParamsBuffer.CreatVulkanBuffer(logicDev,
+        sizeof(FFTParamsGPU),
+        VK_FORMAT_UNDEFINED,
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        m_ParamsBuffer, m_ParamsMemory))
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (!m_ParamsBufferCreated)
     {
         return false;
     }
@@ -170,10 +118,8 @@ bool VansWaterFFT::CreateDescriptors()
                                   VkDescriptorSetLayout& layout,
                                   VkDescriptorSet& set) -> bool
     {
-        if (!descMgr->CreateDesciptorSetLayout(bindings, layout))
-            return false;
         std::vector<VkDescriptorSet> sets;
-        if (!descMgr->AllocateDescriptorSet({ layout }, sets) || sets.empty())
+        if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(bindings, layout, sets) || sets.empty())
             return false;
         set = sets[0];
         return true;
@@ -192,61 +138,54 @@ bool VansWaterFFT::CreateDescriptors()
     }, m_EvolveLayout, m_EvolveSet))
         return false;
 
-    if (!descMgr->CreateDesciptorSetLayout({
+    std::vector<VkDescriptorSet> sets;
+    if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom({
         { 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-    }, m_IterLayout))
+    }, m_IterLayout, sets, 2) || sets.size() < 2)
         return false;
-    {
-        std::vector<VkDescriptorSet> sets;
-        if (!descMgr->AllocateDescriptorSet({ m_IterLayout, m_IterLayout }, sets) || sets.size() < 2)
-            return false;
-        m_IterSet[0] = sets[0];
-        m_IterSet[1] = sets[1];
-    }
+    m_IterSet[0] = sets[0];
+    m_IterSet[1] = sets[1];
 
-    if (!descMgr->CreateDesciptorSetLayout({
+    sets.clear();
+    if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom({
         { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-    }, m_ExtractLayout))
+    }, m_ExtractLayout, sets, 2) || sets.size() < 2)
         return false;
-    {
-        std::vector<VkDescriptorSet> sets;
-        if (!descMgr->AllocateDescriptorSet({ m_ExtractLayout, m_ExtractLayout }, sets) || sets.size() < 2)
-            return false;
-        m_ExtractSet[0] = sets[0];
-        m_ExtractSet[1] = sets[1];
-    }
+    m_ExtractSet[0] = sets[0];
+    m_ExtractSet[1] = sets[1];
 
-    const VkDescriptorBufferInfo paramsInfo = { m_ParamsBuffer, 0, sizeof(FFTParamsGPU) };
+    const VkDescriptorBufferInfo paramsInfo = { m_ParamsBuffer.GetNativeBuffer(), 0, sizeof(FFTParamsGPU) };
     auto storageInfo = [](VansVKImage& image)
     {
         return VkDescriptorImageInfo{ VK_NULL_HANDLE, image.GetImageView(), VK_IMAGE_LAYOUT_GENERAL };
     };
 
-    descMgr->m_BufferDescInfos.push_back({ m_InitSet, 0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo } });
-    descMgr->m_ImageDescInfos.push_back({ m_InitSet, 1, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_H0Spectrum) } });
+    descMgr->BeginDescriptorUpdate();
+    descMgr->WriteBufferDescriptor(m_InitSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo });
+    descMgr->WriteImageDescriptor(m_InitSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_H0Spectrum) });
 
-    descMgr->m_BufferDescInfos.push_back({ m_EvolveSet, 0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo } });
-    descMgr->m_ImageDescInfos.push_back({ m_EvolveSet, 1, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_H0Spectrum) } });
-    descMgr->m_ImageDescInfos.push_back({ m_EvolveSet, 2, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[0]) } });
+    descMgr->WriteBufferDescriptor(m_EvolveSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo });
+    descMgr->WriteImageDescriptor(m_EvolveSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_H0Spectrum) });
+    descMgr->WriteImageDescriptor(m_EvolveSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[0]) });
 
-    descMgr->m_ImageDescInfos.push_back({ m_IterSet[0], 0, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[0]) } });
-    descMgr->m_ImageDescInfos.push_back({ m_IterSet[0], 1, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[1]) } });
-    descMgr->m_ImageDescInfos.push_back({ m_IterSet[1], 0, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[1]) } });
-    descMgr->m_ImageDescInfos.push_back({ m_IterSet[1], 1, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[0]) } });
+    descMgr->WriteImageDescriptor(m_IterSet[0], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[0]) });
+    descMgr->WriteImageDescriptor(m_IterSet[0], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[1]) });
+    descMgr->WriteImageDescriptor(m_IterSet[1], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[1]) });
+    descMgr->WriteImageDescriptor(m_IterSet[1], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[0]) });
 
     for (uint32_t i = 0; i < 2; ++i)
     {
-        descMgr->m_BufferDescInfos.push_back({ m_ExtractSet[i], 0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo } });
-        descMgr->m_ImageDescInfos.push_back({ m_ExtractSet[i], 1, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[i]) } });
-        descMgr->m_ImageDescInfos.push_back({ m_ExtractSet[i], 2, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DisplacementImage) } });
-        descMgr->m_ImageDescInfos.push_back({ m_ExtractSet[i], 3, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DerivativeImage) } });
+        descMgr->WriteBufferDescriptor(m_ExtractSet[i], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo });
+        descMgr->WriteImageDescriptor(m_ExtractSet[i], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[i]) });
+        descMgr->WriteImageDescriptor(m_ExtractSet[i], 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DisplacementImage) });
+        descMgr->WriteImageDescriptor(m_ExtractSet[i], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DerivativeImage) });
     }
 
-    descMgr->UpdateDescriptorSets();
+    descMgr->CommitDescriptorUpdates();
     m_DescriptorsReady = true;
     return true;
 }
@@ -260,8 +199,11 @@ void VansWaterFFT::Shutdown(VkDevice logicDevice)
     if (m_IterLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_IterLayout); m_IterLayout = VK_NULL_HANDLE; }
     if (m_ExtractLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_ExtractLayout); m_ExtractLayout = VK_NULL_HANDLE; }
 
-    if (m_ParamsBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(logicDevice, m_ParamsBuffer, nullptr); m_ParamsBuffer = VK_NULL_HANDLE; }
-    if (m_ParamsMemory != VK_NULL_HANDLE) { vkFreeMemory(logicDevice, m_ParamsMemory, nullptr); m_ParamsMemory = VK_NULL_HANDLE; }
+    if (m_ParamsBufferCreated)
+    {
+        m_ParamsBuffer.DestroyVulkanBuffer(logicDevice);
+        m_ParamsBufferCreated = false;
+    }
 
     m_H0Spectrum.DestroyVulkanImage(logicDevice);
     m_PingPong[0].DestroyVulkanImage(logicDevice);
@@ -291,8 +233,8 @@ void VansWaterFFT::SetParams(const Params& params)
     if (glm::length(next.windDirection) < 0.001f)
         next.windDirection = glm::vec2(0.7071f, 0.7071f);
     next.windDirection = glm::normalize(next.windDirection);
-    next.detailBalance = std::max(next.detailBalance, 1.0f);
-    next.baseScale = std::max(next.baseScale, 1.0f);
+    next.detailBalance = (std::max)(next.detailBalance, 1.0f);
+    next.baseScale = (std::max)(next.baseScale, 1.0f);
 
     const bool spectrumDirty =
         next.lodCount != m_Params.lodCount ||
@@ -313,7 +255,7 @@ void VansWaterFFT::SetParams(const Params& params)
 
 void VansWaterFFT::UpdateParamsBuffer(float time)
 {
-    if (m_Device == nullptr || m_ParamsMemory == VK_NULL_HANDLE)
+    if (m_Device == nullptr || !m_ParamsBufferCreated)
         return;
 
     FFTParamsGPU gpu = {};
@@ -327,10 +269,7 @@ void VansWaterFFT::UpdateParamsBuffer(float time)
     gpu.foldParams = glm::vec4(m_Params.foamFoldThreshold, float(m_Params.randomSeed),
         float(m_Params.resolution), float(m_Params.lodCount));
 
-    void* data = nullptr;
-    vkMapMemory(m_Device->GetLogicDevice(), m_ParamsMemory, 0, sizeof(FFTParamsGPU), 0, &data);
-    std::memcpy(data, &gpu, sizeof(FFTParamsGPU));
-    vkUnmapMemory(m_Device->GetLogicDevice(), m_ParamsMemory);
+    m_ParamsBuffer.SetBufferData(&gpu, 0, sizeof(FFTParamsGPU));
 }
 
 void VansWaterFFT::BarrierImage(VansVKCommandBuffer& cmd, VansVKImage& image,

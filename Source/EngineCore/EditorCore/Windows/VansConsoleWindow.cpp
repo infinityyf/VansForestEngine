@@ -2,7 +2,12 @@
 #include "../VansEditorWindow.h"
 #include "imgui.h"
 
-void VansGraphics::VansConsoleWindow::ShowWindow(VansVKDevice& device)
+void VansGraphics::VansConsoleWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI&)
+{
+    DrawConsoleContents();
+}
+
+void VansGraphics::VansConsoleWindow::DrawConsoleContents()
 {
     if (!VansEditorWindow::m_ConsoleWindowOpen)
         return;

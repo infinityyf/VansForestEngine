@@ -80,7 +80,7 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 			 size
 		};
 
-		VkResult result = vkCreateBufferView(logical_device, &buffer_view_create_info, nullptr, &m_VansVKBufferView);
+		VkResult result = VansGraphics::vkCreateBufferView(logical_device, &buffer_view_create_info, nullptr, &m_VansVKBufferView);
 		if (VK_SUCCESS != result)
 		{
 			VANS_LOG_ERROR("Could not creat buffer view.");
@@ -105,7 +105,7 @@ void VansGraphics::VansVKBuffer::DestroyVulkanBuffer(VkDevice& logical_device)
 
 	if (VK_NULL_HANDLE != m_VansVKBufferView)
 	{
-		vkDestroyBufferView(logical_device, m_VansVKBufferView, nullptr);
+		VansGraphics::vkDestroyBufferView(logical_device, m_VansVKBufferView, nullptr);
 		m_VansVKBufferView = VK_NULL_HANDLE;
 	}
 
@@ -195,4 +195,12 @@ void VansGraphics::VansVKBuffer::FlushMappedRange(VkDeviceSize offset, VkDeviceS
 	if (!m_MappedPtr)
 		return;
 	VansVKMemoryAllocator::Get().FlushAllocation(m_VansVKBufferAllocation, offset, size);
+}
+
+VkDeviceAddress VansGraphics::VansVKBuffer::GetDeviceAddress(VkDevice& logical_device) const
+{
+	VkBufferDeviceAddressInfoKHR address_info{};
+	address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR;
+	address_info.buffer = m_VansVKBuffer;
+	return VansGraphics::vkGetBufferDeviceAddressKHR(logical_device, &address_info);
 }

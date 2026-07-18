@@ -3,7 +3,7 @@
 #include "VansClothSystem.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
-#include "../VansThreadContract.h"
+#include "../RuntimeCore/VansThreadContract.h"
 #include <iostream>
 #include <chrono>
 #include <vehicle2/PxVehicleAPI.h>

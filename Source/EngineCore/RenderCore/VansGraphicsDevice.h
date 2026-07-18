@@ -1,6 +1,8 @@
 ﻿#pragma once
 #include "../ScriptCore/VansCommonUtils.h"
 
+struct ImDrawData;
+
 namespace VansGraphics
 {
 	enum GRAPHICS_API
@@ -31,6 +33,18 @@ namespace VansGraphics
 		//释放渲染资源
 		virtual void AfterRendering() = 0;
 
+		virtual bool WaitForIdle() { return true; }
+
+		virtual void OnWindowResize(uint32_t width, uint32_t height) {}
+
+		virtual void BeginUIRenderPass() {}
+
+		virtual void EndUIRenderPass() {}
+
+		virtual void InitializeGpuProfiler() {}
+
+		virtual void EndGpuProfilerFrame() {}
+
 		//获取底层device指针
 		virtual void* GetNativeGraphicsDevice() = 0;
 
@@ -51,6 +65,8 @@ namespace VansGraphics
 	public:
 		virtual ~VansGUIBackEnd() = default;
 		virtual void InitBackEnd(VansGraphicsDevice& device, GLFWwindow* window) = 0;
+		virtual void BeginFrame() = 0;
+		virtual void RenderDrawData(VansGraphicsDevice& device, ImDrawData* drawData) = 0;
 		virtual void ShutdownBackEnd() = 0;
 	};
 

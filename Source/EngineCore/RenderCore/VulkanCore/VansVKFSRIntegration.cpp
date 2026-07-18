@@ -2,6 +2,8 @@
 #include "VansVKDevice.h"
 #include "VansRenderPass.h"
 #include "../VansScene.h"
+#include "../VansCamera.h"
+#include "../../Util/VansLog.h"
 
 namespace VansGraphics
 {
@@ -77,14 +79,12 @@ namespace VansGraphics
 		blitRegion.dstOffsets[0] = { 0, 0, 0 };
 		blitRegion.dstOffsets[1] = { (int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height, 1 };
 
-		vkCmdBlitImage(
-			m_VansVKCommandBuffer.GetVKCommandBuffer(),
+		m_VansVKCommandBuffer.BlitImageRegions(
 			m_FSRController.GetTempFSRImage().GetImage(),
 			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 			m_VansVKSurface.GetSwapChainImage(m_SwapChainImageIndex),
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			1,
-			&blitRegion,
+			{ blitRegion },
 			VK_FILTER_LINEAR);
 
 		m_VansVKSurface.SetSwapChainImageBarrier(
@@ -102,10 +102,12 @@ namespace VansGraphics
 			},
 			m_SwapChainImageIndex);
 
-		m_VansVKCommandBuffer.EndCommandBufferRecord();
-
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		if (!m_VansVKCommandBuffer.EndCommandBufferRecord()
+			|| !VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence)
+			|| !m_VansVKCommandBuffer.ResetCommandBuffer(false))
+		{
+			VANS_LOG_ERROR("[VansVKDevice] FSR output blit submit failed.");
+		}
 	}
 
 	void VansVKDevice::InitializeFSR()

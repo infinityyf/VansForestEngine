@@ -1,18 +1,18 @@
-#include "../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansScene.h"
+#include "SceneBuild/VansScenePhysicsComponentBuilder.h"
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansClothSystem.h"
-#include "../PhysicsCore/VansClothProfile.h"
+#include "../AssetCore/VansClothProfile.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../Configration/VansConfigration.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../AnimationCore/VansAnimationNode.h"
-#include "../VansFramePhase.h"
+#include "../RuntimeCore/VansFramePhase.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -68,6 +68,45 @@ void VansGraphics::VansScene::InitVehicle(VansEngine::VansPhysicsSystem* physics
               << ", wheelVisualGroups=" << wheelVisualBindings.size());
 }
 
+void VansGraphics::VansScene::RegisterPhysicsNode(VansEngine::VansPhysicsNode* physicsNode)
+{
+    if (physicsNode)
+        m_PhysicsNodes.push_back(physicsNode);
+}
+
+void VansGraphics::VansScene::RegisterClothNode(VansEngine::VansClothNode* clothNode, VansRenderNode* renderNodeForStaging)
+{
+    if (!clothNode)
+        return;
+
+    m_ClothNodes.push_back(clothNode);
+
+    VkDeviceSize stagingSize =
+        static_cast<VkDeviceSize>(renderNodeForStaging && renderNodeForStaging->m_Mesh
+            ? renderNodeForStaging->m_Mesh->GetMeshVertexCount() : 0)
+        * static_cast<VkDeviceSize>(renderNodeForStaging && renderNodeForStaging->m_Mesh
+            ? renderNodeForStaging->m_Mesh->GetMeshVertexStride() : 8 * sizeof(uint16_t));
+    VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VkDevice nativeDev = vkDev ? vkDev->GetLogicDevice() : VK_NULL_HANDLE;
+    m_ClothStagingBuffers.emplace_back();
+    if (stagingSize > 0 && nativeDev != VK_NULL_HANDLE)
+    {
+        m_ClothStagingBuffers.back().CreatVulkanBuffer(
+            nativeDev,
+            stagingSize,
+            VK_FORMAT_UNDEFINED,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_ClothStagingBuffers.back().PersistentMap();
+    }
+}
+
+void VansGraphics::VansScene::RegisterCharacterControllerNode(VansEngine::VansCharacterControllerNode* controllerNode)
+{
+    if (controllerNode)
+        m_CharControllerNodes.push_back(controllerNode);
+}
+
 // ===========================================================================
 // Physics node loading from JSON
 // ===========================================================================
@@ -76,7 +115,11 @@ void VansGraphics::VansScene::InitVehicle(VansEngine::VansPhysicsSystem* physics
 // Single cloth node loading
 // ===========================================================================
 
-VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const json& clothNodeJson, VansRenderNode* associatedRenderNode, std::string* outProfilePath)
+VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadClothNode(
+    VansScene& scene,
+    const json& clothNodeJson,
+    VansRenderNode* associatedRenderNode,
+    std::string* outProfilePath)
 {
     using namespace VansEngine;
 
@@ -84,7 +127,7 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
 
     if (!renderNode)
     {
-        VANS_LOG_WARN("[VansScene] LoadSingleClothNode: no valid render node, skipping.");
+        VANS_LOG_WARN("[VansScenePhysicsComponentBuilder] LoadClothNode: no valid render node, skipping.");
         return nullptr;
     }
 
@@ -98,7 +141,7 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
         VansClothProfile profile;
         if (!profile.LoadFromFile(profilePath))
         {
-            VANS_LOG_ERROR("[VansScene] LoadSingleClothNode: 加载 Profile 失败: " << profilePath
+            VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: 加载 Profile 失败: " << profilePath
                            << "，回退为默认参数。");
         }
         else
@@ -117,7 +160,7 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
             }
             else
             {
-                VANS_LOG_WARN("[VansScene] LoadSingleClothNode: RenderNode 无 Mesh，无法解析固定点索引。");
+                VANS_LOG_WARN("[VansScenePhysicsComponentBuilder] LoadClothNode: RenderNode 无 Mesh，无法解析固定点索引。");
                 clothProps.stiffness     = profile.m_Stiffness;
                 clothProps.damping       = profile.m_Damping;
                 clothProps.friction      = profile.m_Friction;
@@ -171,7 +214,7 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
                 std::string objectName = csJson["objectRef"].get<std::string>();
                 ref.sceneObjectName = objectName;  // 始终保存原始名称，供延迟解析使用
 
-                VansScriptObject* refObj = FindObjectByName(objectName);
+                VansScriptObject* refObj = scene.FindSceneObjectByName(objectName);
                 if (refObj)
                 {
                     auto* rc = refObj->GetComponent<VansScriptRenderComponent>();
@@ -200,27 +243,7 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
     // AnimationNode 绑定延迟至 Pass5（VansSceneLoader::LoadSceneObjects 末尾）完成，
     // 届时 m_AnimationNodes 已由 Pass4 完全填充。
 
-    m_ClothNodes.push_back(clothNode);
-
-    // Allocate a scene-owned HOST_VISIBLE staging buffer for this cloth node.
-    VkDeviceSize stagingSize =
-        static_cast<VkDeviceSize>(renderNode->m_Mesh
-            ? renderNode->m_Mesh->GetMeshVertexCount() : 0)
-        * static_cast<VkDeviceSize>(renderNode->m_Mesh
-            ? renderNode->m_Mesh->GetMeshVertexStride() : 8 * sizeof(uint16_t));
-    VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VkDevice nativeDev  = vkDev ? vkDev->GetLogicDevice() : VK_NULL_HANDLE;
-    m_ClothStagingBuffers.emplace_back();
-    if (stagingSize > 0 && nativeDev != VK_NULL_HANDLE)
-    {
-        m_ClothStagingBuffers.back().CreatVulkanBuffer(
-            nativeDev,
-            stagingSize,
-            VK_FORMAT_UNDEFINED,
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        m_ClothStagingBuffers.back().PersistentMap();
-    }
+    scene.RegisterClothNode(clothNode, renderNode);
     VANS_LOG("[VansScene] Cloth node created for render node '" << renderNode->m_NodeName << "'");
 
     return clothNode;
@@ -230,8 +253,11 @@ VansEngine::VansClothNode* VansGraphics::VansScene::LoadSingleClothNode(const js
 // Single physics node loading
 // ===========================================================================
 
-VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(
-	const json& physicsNodeJson, VansRenderNode* associatedRenderNode, uint32_t standaloneTransformID)
+VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadPhysicsNode(
+    VansScene& scene,
+	const json& physicsNodeJson,
+    VansRenderNode* associatedRenderNode,
+    uint32_t standaloneTransformID)
 {
     using namespace VansEngine;
 
@@ -336,7 +362,7 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(
     if (properties.useMeshCollider && physicsNodeJson.contains("mesh"))
     {
         std::string meshName = physicsNodeJson["mesh"];
-        mesh = static_cast<VansMesh*>(GetMeshAsset(meshName));
+        mesh = static_cast<VansMesh*>(scene.FindMeshAsset(meshName));
     }
 
     VansPhysicsNode* physicsNode = new VansPhysicsNode();
@@ -350,7 +376,7 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScene::LoadSinglePhysicsNode(
 		delete physicsNode;
 		return nullptr;
 	}
-    m_PhysicsNodes.push_back(physicsNode);
+    scene.RegisterPhysicsNode(physicsNode);
 	VANS_LOG("[VansScene] Created physics node '" << physicsNode->GetName()
 		<< "' transformID=" << transformID);
     return physicsNode;
@@ -532,7 +558,8 @@ void VansGraphics::VansScene::UpdateCharControllerTransforms()
 // ===========================================================================
 
 VansEngine::VansCharacterControllerNode*
-VansGraphics::VansScene::LoadSingleCharControllerNode(
+VansGraphics::VansScenePhysicsComponentBuilder::LoadCharacterControllerNode(
+    VansScene& scene,
     const json& charCtrlJson,
     VansRenderNode* associatedRenderNode,
     uint32_t standaloneTransformID)
@@ -612,7 +639,7 @@ VansGraphics::VansScene::LoadSingleCharControllerNode(
         node->SetPendingFollowRagdoll(true, bone);
     }
 
-    m_CharControllerNodes.push_back(node);
+    scene.RegisterCharacterControllerNode(node);
     VANS_LOG("[VansScene] CharController 节点已创建，transformID=" << transformID);
     return node;
 }
@@ -735,7 +762,7 @@ void VansGraphics::VansScene::WriteClothResultsToStagingBuffers()
     }
 }
 
-void VansGraphics::VansScene::RecordClothVertexUploads(VkCommandBuffer cmd)
+void VansGraphics::VansScene::RecordClothVertexUploads(VansVKCommandBuffer& cmd)
 {
     for (size_t i = 0; i < m_ClothNodes.size(); ++i)
     {
@@ -752,11 +779,7 @@ void VansGraphics::VansScene::RecordClothVertexUploads(VkCommandBuffer cmd)
         VkDeviceSize size   = clothNode->GetSimulatedDataByteSize();
         if (size == 0) continue;
 
-        VkBufferCopy region{};
-        region.srcOffset = 0;
-        region.dstOffset = 0;
-        region.size      = size;
-        vkCmdCopyBuffer(cmd, staging.GetNativeBuffer(), dstBuffer, 1, &region);
+        cmd.CopyBuffer(staging.GetNativeBuffer(), dstBuffer, 0, 0, size);
 
         // TRANSFER_WRITE → VERTEX_ATTRIBUTE_READ barrier
         VkBufferMemoryBarrier barrier{};
@@ -769,13 +792,10 @@ void VansGraphics::VansScene::RecordClothVertexUploads(VkCommandBuffer cmd)
         barrier.buffer              = dstBuffer;
         barrier.offset              = 0;
         barrier.size                = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(
-            cmd,
+        cmd.PipelineBarrier(
             VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-            0,
-            0, nullptr,
-            1, &barrier,
-            0, nullptr);
+            {},
+            { barrier });
     }
 }

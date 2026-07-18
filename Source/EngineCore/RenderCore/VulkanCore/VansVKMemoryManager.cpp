@@ -17,7 +17,7 @@ void VansGraphics::VansVKMemoryManager::BindDevice(VkCommandBuffer& commandBuffe
 	m_CommandBuffer = commandBuffer;
 	m_DeviceProperties = device.GetDeviceProperties();
 	m_Device = &device;
-	vkGetPhysicalDeviceMemoryProperties(m_PhysicalDevice, &m_MemoryProperties);
+	VansGraphics::vkGetPhysicalDeviceMemoryProperties(m_PhysicalDevice, &m_MemoryProperties);
 }
 
 const std::vector<uint32_t>& VansGraphics::VansVKMemoryManager::GetSharingQueueFamilyIndices() const
@@ -36,7 +36,7 @@ void VansGraphics::VansVKMemoryManager::SetBufferMemoryBarrier(
 {
 	if (bufferMemoryBarriers.size() > 0)
 	{
-		vkCmdPipelineBarrier(m_CommandBuffer, generating_stages,
+		VansGraphics::vkCmdPipelineBarrier(m_CommandBuffer, generating_stages,
 			consuming_stages, 0, 0, nullptr,
 			static_cast<uint32_t>(bufferMemoryBarriers.size()),
 			&bufferMemoryBarriers[0], 0, nullptr);
@@ -50,7 +50,7 @@ void VansGraphics::VansVKMemoryManager::SetImageMemoryBarrier(
 {
 	if (imageMemoryBarriers.size() > 0)
 	{
-		vkCmdPipelineBarrier(m_CommandBuffer, generating_stages,
+		VansGraphics::vkCmdPipelineBarrier(m_CommandBuffer, generating_stages,
 			consuming_stages, 0, 0, nullptr,
 			0, nullptr,
 			static_cast<uint32_t>(imageMemoryBarriers.size()),
@@ -67,7 +67,7 @@ void VansGraphics::VansVKMemoryManager::CopyBufferData(VansVKCommandBuffer& comm
 {
 	if (regions.size() > 0)
 	{
-		vkCmdCopyBuffer(command_buffer.m_VansVKCommandBuffer, source_buffer.m_VansVKBuffer, dest_buffer.m_VansVKBuffer, static_cast<uint32_t>(regions.size()), &regions[0]);
+		VansGraphics::vkCmdCopyBuffer(command_buffer.m_VansVKCommandBuffer, source_buffer.m_VansVKBuffer, dest_buffer.m_VansVKBuffer, static_cast<uint32_t>(regions.size()), &regions[0]);
 	}
 }
 
@@ -75,7 +75,7 @@ void VansGraphics::VansVKMemoryManager::CopyBufferToImage(VansVKCommandBuffer& c
 {
 	if (regions.size() > 0) 
 	{
-		vkCmdCopyBufferToImage(command_buffer.m_VansVKCommandBuffer, source_buffer.m_VansVKBuffer, dest_image.m_VansVKImage, layout, static_cast<uint32_t>(regions.size()), &regions[0]);
+		VansGraphics::vkCmdCopyBufferToImage(command_buffer.m_VansVKCommandBuffer, source_buffer.m_VansVKBuffer, dest_image.m_VansVKImage, layout, static_cast<uint32_t>(regions.size()), &regions[0]);
 	}
 }
 
@@ -83,6 +83,6 @@ void VansGraphics::VansVKMemoryManager::CopyImageToBuffer(VansVKCommandBuffer& c
 {
 	if (regions.size() > 0) 
 	{
-		vkCmdCopyImageToBuffer(command_buffer.m_VansVKCommandBuffer, source_image.m_VansVKImage, layout, dest_buffer.m_VansVKBuffer, static_cast<uint32_t>(regions.size()), &regions[0]);
+		VansGraphics::vkCmdCopyImageToBuffer(command_buffer.m_VansVKCommandBuffer, source_image.m_VansVKImage, layout, dest_buffer.m_VansVKBuffer, static_cast<uint32_t>(regions.size()), &regions[0]);
 	}
 }

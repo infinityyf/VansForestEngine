@@ -3,14 +3,17 @@
 #include "VansVKMemoryManager.h"
 #include "VansVKMemoryAllocator.h"
 #include "VansVKDescriptorManager.h"
+#include "VansPipelineRegistry.h"
 #include "VansRenderPass.h"
 #include "VansMesh.h"
 #include "VansShader.h"
+#include "../VansShaderManager.h"
 #include "../VansScene.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../Interfaces/INativeWindowProvider.h"
 #include "../../VansTimer.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansProfiler.h"
 #include <iostream>
 #include <cstring>
 
@@ -29,7 +32,7 @@ namespace VansGraphics
 	{
 		uint32_t extensions_count = 0;
 		VkResult result = VK_SUCCESS;
-		result = vkEnumerateInstanceExtensionProperties(nullptr, &extensions_count, nullptr);
+		result = VansGraphics::vkEnumerateInstanceExtensionProperties(nullptr, &extensions_count, nullptr);
 		if ((result != VK_SUCCESS) || (extensions_count == 0))
 		{
 			VANS_LOG_ERROR("Could not get the number of Instance extensions.");
@@ -37,7 +40,7 @@ namespace VansGraphics
 		}
 
 		available_extensions.resize(extensions_count);
-		result = vkEnumerateInstanceExtensionProperties(nullptr, &extensions_count, &available_extensions[0]);
+		result = VansGraphics::vkEnumerateInstanceExtensionProperties(nullptr, &extensions_count, &available_extensions[0]);
 		if ((result != VK_SUCCESS) || (extensions_count == 0))
 		{
 			VANS_LOG_ERROR("Could not enumerate Instance extensions.");
@@ -50,14 +53,14 @@ namespace VansGraphics
 	{
 		uint32_t layer_count;
 		VkResult result = VK_SUCCESS;
-		result = vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
+		result = VansGraphics::vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
 		if ((result != VK_SUCCESS) || (layer_count == 0))
 		{
 			VANS_LOG_ERROR("Could not get the number of Instance layers.");
 			return false;
 		}
 		available_layers.resize(layer_count);
-		result = vkEnumerateInstanceLayerProperties(&layer_count, available_layers.data());
+		result = VansGraphics::vkEnumerateInstanceLayerProperties(&layer_count, available_layers.data());
 		if ((result != VK_SUCCESS) || (layer_count == 0))
 		{
 			VANS_LOG_ERROR("Could not enumerate Instance extensions.");
@@ -96,14 +99,14 @@ namespace VansGraphics
 
 	void VansVKDevice::RequestDeviceQueue(uint32_t queue_family_index, uint32_t queue_index, VkQueue& queue)
 	{
-		vkGetDeviceQueue(m_VansVKLogicDevice, queue_family_index, queue_index, &queue);
+		VansGraphics::vkGetDeviceQueue(m_VansVKLogicDevice, queue_family_index, queue_index, &queue);
 	}
 
 	bool VansVKDevice::CheckAvaliableDeviceExtensions(VkPhysicalDevice device, std::vector<VkExtensionProperties>& available_extensions)
 	{
 		uint32_t extensions_count = 0;
 		VkResult result = VK_SUCCESS;
-		result = vkEnumerateDeviceExtensionProperties(device, nullptr, &extensions_count, nullptr);
+		result = VansGraphics::vkEnumerateDeviceExtensionProperties(device, nullptr, &extensions_count, nullptr);
 		if ((result != VK_SUCCESS) || (extensions_count == 0))
 		{
 			VANS_LOG_ERROR("Could not get the number of device extensions.");
@@ -112,7 +115,7 @@ namespace VansGraphics
 
 
 		available_extensions.resize(extensions_count);
-		result = vkEnumerateDeviceExtensionProperties(device, nullptr, &extensions_count, &available_extensions[0]);
+		result = VansGraphics::vkEnumerateDeviceExtensionProperties(device, nullptr, &extensions_count, &available_extensions[0]);
 		if ((result != VK_SUCCESS) || (extensions_count == 0))
 		{
 			VANS_LOG_ERROR("Could not enumerate device extensions.");
@@ -126,7 +129,7 @@ namespace VansGraphics
 
 		//check queue famliy
 		uint32_t queue_families_count = 0;
-		vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families_count, nullptr);
+		VansGraphics::vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families_count, nullptr);
 		if (queue_families_count == 0)
 		{
 			VANS_LOG_ERROR("Could not get the number of queue families.");
@@ -135,7 +138,7 @@ namespace VansGraphics
 
 		std::vector<VkQueueFamilyProperties> queue_families;
 		queue_families.resize(queue_families_count);
-		vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families_count, &queue_families[0]);
+		VansGraphics::vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families_count, &queue_families[0]);
 		if (queue_families_count == 0)
 		{
 			VANS_LOG_ERROR("Could not acquire properties of queue families.");
@@ -157,7 +160,7 @@ namespace VansGraphics
 			if ((desired_capabilty & VK_QUEUE_GRAPHICS_BIT) != 0)
 			{
 				VkBool32 present_surface_support = VK_FALSE;
-				VkResult result = vkGetPhysicalDeviceSurfaceSupportKHR(device, index, m_VansVKSurface.m_VansVKPresentSurface, &present_surface_support);
+				VkResult result = VansGraphics::vkGetPhysicalDeviceSurfaceSupportKHR(device, index, m_VansVKSurface.m_VansVKPresentSurface, &present_surface_support);
 				if (result != VK_SUCCESS || present_surface_support != VK_TRUE)
 				{
 					return false;
@@ -248,14 +251,14 @@ namespace VansGraphics
 		m_DeviceProperties2.pNext = &m_RayTracingProperties;
 		m_DeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
 		//set the feature we need for create device
-		vkGetPhysicalDeviceFeatures2(device, &m_DeviceFeatures2);
-		vkGetPhysicalDeviceProperties2(device, &m_DeviceProperties2);
+		VansGraphics::vkGetPhysicalDeviceFeatures2(device, &m_DeviceFeatures2);
+		VansGraphics::vkGetPhysicalDeviceProperties2(device, &m_DeviceProperties2);
 		return true;
 	}
 
 	bool VansVKDevice::WaitForQueue(VkQueue queue)
 	{
-		VkResult result = vkQueueWaitIdle(queue);
+		VkResult result = VansGraphics::vkQueueWaitIdle(queue);
 		if (VK_SUCCESS != result)
 		{
 			VANS_LOG_ERROR("Waiting for all operations submitted to queue failed.");
@@ -266,20 +269,20 @@ namespace VansGraphics
 
 	bool VansVKDevice::WaitForDevice()
 	{
-		VkResult result = vkDeviceWaitIdle(m_VansVKLogicDevice);
+		VkResult result = VansGraphics::vkDeviceWaitIdle(m_VansVKLogicDevice);
 		if (VK_SUCCESS != result)
 		{
 			VANS_LOG_ERROR("Waiting on a device failed.");
 			return false;
 		}
 
-		// vkDeviceWaitIdle 之后所有已提交的 CB fence 都处于 signaled 状态。
+		// VansGraphics::vkDeviceWaitIdle 之后所有已提交的 CB fence 都处于 signaled 状态。
 		// 若不在此处 reset，下一帧 async 路径直接用 signaled fence 提交 vkQueueSubmit
 		// 会触发 Vulkan Validation Error（NSight 对此会直接 crash）。
 		auto resetIfValid = [&](VkFence f)
 		{
 			if (f != VK_NULL_HANDLE)
-				vkResetFences(m_VansVKLogicDevice, 1, &f);
+				VansGraphics::vkResetFences(m_VansVKLogicDevice, 1, &f);
 		};
 		resetIfValid(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
@@ -287,6 +290,133 @@ namespace VansGraphics
 		resetIfValid(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
 
 		return true;
+	}
+
+	VkDeviceAddress VansVKDevice::GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo)
+	{
+		return VansGraphics::vkGetAccelerationStructureDeviceAddressKHR(m_VansVKLogicDevice, addressInfo);
+	}
+
+	VkDeviceAddress VansVKDevice::GetBufferAddress(VkBufferDeviceAddressInfo* bufferInfo)
+	{
+		return VansGraphics::vkGetBufferDeviceAddressKHR(m_VansVKLogicDevice, bufferInfo);
+	}
+
+	void VansVKDevice::GetAccelerationStructureBuildSizes(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, uint32_t* maxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR* buildSizeInfo)
+	{
+		VansGraphics::vkGetAccelerationStructureBuildSizesKHR(
+			m_VansVKLogicDevice,
+			VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+			buildInfo,
+			maxPrimitiveCounts,
+			buildSizeInfo);
+	}
+
+	void VansVKDevice::CreateAccelerationStructure(VkAccelerationStructureCreateInfoKHR* createInfo, VkAccelerationStructureKHR* as)
+	{
+		VkResult result = VansGraphics::vkCreateAccelerationStructureKHR(m_VansVKLogicDevice, createInfo, nullptr, as);
+		if (result != VK_SUCCESS)
+		{
+			VANS_LOG_ERROR("CreateAccelerationStructure failed");
+		}
+	}
+
+	void VansVKDevice::DestroyAccelerationStructure(VkAccelerationStructureKHR as)
+	{
+		if (as != VK_NULL_HANDLE)
+		{
+			VansGraphics::vkDestroyAccelerationStructureKHR(m_VansVKLogicDevice, as, nullptr);
+		}
+	}
+
+	PFN_vkGetDeviceProcAddr VansVKDevice::GetDeviceProcAddr()
+	{
+		return VansGraphics::vkGetDeviceProcAddr;
+	}
+
+	double VansVKDevice::GetTimestampPeriodMs(VkPhysicalDevice physicalDevice)
+	{
+		VkPhysicalDeviceProperties props{};
+		VansGraphics::vkGetPhysicalDeviceProperties(physicalDevice, &props);
+		return static_cast<double>(props.limits.timestampPeriod) * 1e-6;
+	}
+
+	bool VansVKDevice::CreateQueryPool(VkDevice device, const VkQueryPoolCreateInfo& createInfo, VkQueryPool& pool)
+	{
+		VkResult result = VansGraphics::vkCreateQueryPool(device, &createInfo, nullptr, &pool);
+		if (result != VK_SUCCESS)
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Failed to create query pool: " << result);
+			pool = VK_NULL_HANDLE;
+			return false;
+		}
+		return true;
+	}
+
+	void VansVKDevice::DestroyQueryPool(VkDevice device, VkQueryPool& pool)
+	{
+		if (pool != VK_NULL_HANDLE)
+		{
+			VansGraphics::vkDestroyQueryPool(device, pool, nullptr);
+			pool = VK_NULL_HANDLE;
+		}
+	}
+
+	void VansVKDevice::CmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool pool, uint32_t firstQuery, uint32_t queryCount)
+	{
+		VansGraphics::vkCmdResetQueryPool(commandBuffer, pool, firstQuery, queryCount);
+	}
+
+	void VansVKDevice::CmdWriteTimestamp(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, VkQueryPool pool, uint32_t query)
+	{
+		VansGraphics::vkCmdWriteTimestamp(commandBuffer, pipelineStage, pool, query);
+	}
+
+	void VansVKDevice::CmdBeginDebugLabel(VkCommandBuffer commandBuffer, const VkDebugUtilsLabelEXT& labelInfo)
+	{
+#ifdef _DEBUG
+		if (VansGraphics::vkCmdBeginDebugUtilsLabelEXT)
+		{
+			VansGraphics::vkCmdBeginDebugUtilsLabelEXT(commandBuffer, &labelInfo);
+		}
+#else
+		(void)commandBuffer;
+		(void)labelInfo;
+#endif
+	}
+
+	void VansVKDevice::CmdEndDebugLabel(VkCommandBuffer commandBuffer)
+	{
+#ifdef _DEBUG
+		if (VansGraphics::vkCmdEndDebugUtilsLabelEXT)
+		{
+			VansGraphics::vkCmdEndDebugUtilsLabelEXT(commandBuffer);
+		}
+#else
+		(void)commandBuffer;
+#endif
+	}
+
+	VkResult VansVKDevice::GetQueryPoolResults(VkDevice device, VkQueryPool pool, uint32_t firstQuery, uint32_t queryCount, size_t dataSize, void* data, VkDeviceSize stride, VkQueryResultFlags flags)
+	{
+		return VansGraphics::vkGetQueryPoolResults(device, pool, firstQuery, queryCount, dataSize, data, stride, flags);
+	}
+
+	void VansVKDevice::InitializeGpuProfiler()
+	{
+#if VANS_PROFILER_ENABLED
+		Vans::VansGpuProfiler::Get().Init(
+			GetLogicDevice(),
+			GetPhysicalDevice(),
+			GetGraphicsQueueFamilyIndex());
+#endif
+	}
+
+	void VansVKDevice::EndGpuProfilerFrame()
+	{
+#if VANS_PROFILER_ENABLED
+		VANS_PROFILER_END_FRAME(GetLogicDevice());
+#endif
 	}
 
 	void* VansVKDevice::GetNativeGraphicsDevice()
@@ -308,7 +438,7 @@ namespace VansGraphics
 			 signaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0
 		};
 
-		VkResult result = vkCreateFence(m_VansVKLogicDevice, &fence_create_info, nullptr, &fence);
+		VkResult result = VansGraphics::vkCreateFence(m_VansVKLogicDevice, &fence_create_info, nullptr, &fence);
 		if (VK_SUCCESS != result)
 		{
 			VANS_LOG_ERROR("Could not create a fence.");
@@ -326,7 +456,7 @@ namespace VansGraphics
 			 0
 		};
 
-		VkResult result = vkCreateSemaphore(m_VansVKLogicDevice, &semaphore_create_info, nullptr, &semaphore);
+		VkResult result = VansGraphics::vkCreateSemaphore(m_VansVKLogicDevice, &semaphore_create_info, nullptr, &semaphore);
 		if (VK_SUCCESS != result)
 		{
 			VANS_LOG_ERROR("Could not create a semaphore.");
@@ -344,7 +474,7 @@ namespace VansGraphics
 			0
 		};
 
-		VkResult result = vkCreateEvent(m_VansVKLogicDevice, &event_create_info, nullptr, &eventHandle);
+		VkResult result = VansGraphics::vkCreateEvent(m_VansVKLogicDevice, &event_create_info, nullptr, &eventHandle);
 		if (VK_SUCCESS != result)
 		{
 			VANS_LOG_ERROR("Could not create an event.");
@@ -355,17 +485,17 @@ namespace VansGraphics
 
 	void VansVKDevice::DestroyVKFence(VkFence& fence)
 	{
-		vkDestroyFence(m_VansVKLogicDevice, fence, nullptr);
+		VansGraphics::vkDestroyFence(m_VansVKLogicDevice, fence, nullptr);
 	}
 
 	void VansVKDevice::DestroyVKSemaphore(VkSemaphore& semaphore)
 	{
-		vkDestroySemaphore(m_VansVKLogicDevice, semaphore, nullptr);
+		VansGraphics::vkDestroySemaphore(m_VansVKLogicDevice, semaphore, nullptr);
 	}
 
 	void VansVKDevice::DestroyVKEvent(VkEvent& eventHandle)
 	{
-		vkDestroyEvent(m_VansVKLogicDevice, eventHandle, nullptr);
+		VansGraphics::vkDestroyEvent(m_VansVKLogicDevice, eventHandle, nullptr);
 	}
 
 	bool VansVKDevice::PrepareVulkanLibrary()
@@ -390,7 +520,7 @@ namespace VansGraphics
 	bool VansVKDevice::CreateVulkanInstance(std::vector<char const*>& desired_extensions, std::vector<char const*>& desired_layers)
 	{
 		uint32_t apiVersion = 0;
-		vkEnumerateInstanceVersion(&apiVersion);
+		VansGraphics::vkEnumerateInstanceVersion(&apiVersion);
 		VANS_LOG("Vulkan API version: " << VK_VERSION_MAJOR(apiVersion) << "." << VK_VERSION_MINOR(apiVersion) << "." << VK_VERSION_PATCH(apiVersion));
 
 		std::vector<VkExtensionProperties> available_extensions;
@@ -448,12 +578,12 @@ namespace VansGraphics
 
 #ifdef _DEBUG
 		// Chain the messenger create info so the validation layer can report
-		// errors that occur during vkCreateInstance / vkDestroyInstance.
+		// errors that occur during VansGraphics::vkCreateInstance / VansGraphics::vkDestroyInstance.
 		VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = MakeDebugMessengerCreateInfo();
 		instance_create_info.pNext = &debugCreateInfo;
 #endif
 
-		VkResult result = vkCreateInstance(&instance_create_info, nullptr, &m_VansVKInstance);
+		VkResult result = VansGraphics::vkCreateInstance(&instance_create_info, nullptr, &m_VansVKInstance);
 		if ((result != VK_SUCCESS) || (m_VansVKInstance == VK_NULL_HANDLE))
 		{
 			VANS_LOG_ERROR("Could not create Vulkan Instance.");
@@ -466,7 +596,7 @@ namespace VansGraphics
 	{
 		uint32_t devices_count = 0;
 		VkResult result = VK_SUCCESS;
-		result = vkEnumeratePhysicalDevices(m_VansVKInstance, &devices_count, nullptr);
+		result = VansGraphics::vkEnumeratePhysicalDevices(m_VansVKInstance, &devices_count, nullptr);
 		if ((result != VK_SUCCESS) || (devices_count == 0))
 		{
 			VANS_LOG_ERROR("Could not get the number of available physical devices.");
@@ -475,7 +605,7 @@ namespace VansGraphics
 
 		std::vector<VkPhysicalDevice> available_devices;
 		available_devices.resize(devices_count);
-		result = vkEnumeratePhysicalDevices(m_VansVKInstance, &devices_count, &available_devices[0]);
+		result = VansGraphics::vkEnumeratePhysicalDevices(m_VansVKInstance, &devices_count, &available_devices[0]);
 		if ((result != VK_SUCCESS) || (devices_count == 0))
 		{
 			VANS_LOG_ERROR("Could not enumerate physical devices.");
@@ -541,9 +671,9 @@ namespace VansGraphics
 			// Request a second graphics queue for parallel shadow rendering when available.
 			{
 				uint32_t qfCount = 0;
-				vkGetPhysicalDeviceQueueFamilyProperties(device, &qfCount, nullptr);
+				VansGraphics::vkGetPhysicalDeviceQueueFamilyProperties(device, &qfCount, nullptr);
 				std::vector<VkQueueFamilyProperties> qfProps(qfCount);
-				vkGetPhysicalDeviceQueueFamilyProperties(device, &qfCount, qfProps.data());
+				VansGraphics::vkGetPhysicalDeviceQueueFamilyProperties(device, &qfCount, qfProps.data());
 				if (m_GraphicsQueueFamilyIndex < qfCount &&
 					qfProps[m_GraphicsQueueFamilyIndex].queueCount >= 2)
 				{
@@ -592,7 +722,7 @@ namespace VansGraphics
 				 nullptr
 			};
 
-			VkResult result = vkCreateDevice(device, &device_create_info, nullptr, &m_VansVKLogicDevice);
+			VkResult result = VansGraphics::vkCreateDevice(device, &device_create_info, nullptr, &m_VansVKLogicDevice);
 			if ((result != VK_SUCCESS) || (m_VansVKLogicDevice == VK_NULL_HANDLE))
 			{
 				VANS_LOG_ERROR("Could not create logical device.");
@@ -687,6 +817,14 @@ namespace VansGraphics
 
 	bool VansVKDevice::DestroyVulkanLogicDevice()
 	{
+		if (m_VansVKLogicDevice != VK_NULL_HANDLE)
+		{
+			WaitForDevice();
+		}
+
+		VansShaderManager::Get().ReleaseLoadedShaderAssets();
+		VansPipelineRegistry::Get().Clear();
+
 		VansVKDescriptorManager::GetInstance()->DestroyDescriptorPool();
 
 		m_StageBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
@@ -708,7 +846,7 @@ namespace VansGraphics
 
 		if (m_VansVKLogicDevice)
 		{
-			vkDestroyDevice(m_VansVKLogicDevice, nullptr);
+			VansGraphics::vkDestroyDevice(m_VansVKLogicDevice, nullptr);
 			m_VansVKLogicDevice = VK_NULL_HANDLE;
 		}
 		return true;
@@ -718,7 +856,7 @@ namespace VansGraphics
 	{
 		if (m_VansVKInstance)
 		{
-			vkDestroyInstance(m_VansVKInstance, nullptr);
+			VansGraphics::vkDestroyInstance(m_VansVKInstance, nullptr);
 			m_VansVKInstance = VK_NULL_HANDLE;
 		}
 		return true;
@@ -873,7 +1011,7 @@ namespace VansGraphics
 	bool VansVKDevice::SetupDebugMessenger()
 	{
 		VkDebugUtilsMessengerCreateInfoEXT createInfo = MakeDebugMessengerCreateInfo();
-		VkResult result = vkCreateDebugUtilsMessengerEXT(m_VansVKInstance, &createInfo, nullptr, &m_DebugMessenger);
+		VkResult result = VansGraphics::vkCreateDebugUtilsMessengerEXT(m_VansVKInstance, &createInfo, nullptr, &m_DebugMessenger);
 		if (result != VK_SUCCESS)
 		{
 			VANS_LOG_WARN("Could not create debug utils messenger. Validation output will be unavailable.");
@@ -887,7 +1025,7 @@ namespace VansGraphics
 	{
 		if (m_DebugMessenger != VK_NULL_HANDLE)
 		{
-			vkDestroyDebugUtilsMessengerEXT(m_VansVKInstance, m_DebugMessenger, nullptr);
+			VansGraphics::vkDestroyDebugUtilsMessengerEXT(m_VansVKInstance, m_DebugMessenger, nullptr);
 			m_DebugMessenger = VK_NULL_HANDLE;
 		}
 	}
@@ -895,6 +1033,8 @@ namespace VansGraphics
 
 	bool VansVKDevice::VulkanDestroy()
 	{
+		WaitForDevice();
+		FlushCurrentFrameDeferredDeletes();
 		CleanupFSR();
 		{
 			m_VansVKSurface.DestroyVulkanSwapChain(m_VansVKLogicDevice);

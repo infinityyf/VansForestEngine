@@ -16,7 +16,12 @@ VansUIEditorWindow::VansUIEditorWindow()
 
 // ─── ShowWindow ─────────────────────────────────────────────────────────────
 
-void VansUIEditorWindow::ShowWindow(VansVKDevice& device)
+void VansUIEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI&)
+{
+    DrawUIEditorContents();
+}
+
+void VansUIEditorWindow::DrawUIEditorContents()
 {
     if (!VansEditorWindow::m_UIEditorWindowOpen)
         return;
@@ -33,7 +38,7 @@ void VansUIEditorWindow::ShowWindow(VansVKDevice& device)
     ImGui::SameLine();
     if (ImGui::Button("Load Preview", ImVec2(100.0f, 0.0f)))
     {
-        LoadPreview(device);
+        LoadPreview();
     }
     ImGui::SameLine();
     if (ImGui::Button("Unload", ImVec2(50.0f, 0.0f)))
@@ -51,7 +56,7 @@ void VansUIEditorWindow::ShowWindow(VansVKDevice& device)
             const std::string prevPath = m_PreviewDocument->GetSourcePath();
             UnloadPreview();
             std::strncpy(m_XamlPathBuf, prevPath.c_str(), sizeof(m_XamlPathBuf) - 1);
-            LoadPreview(device);
+            LoadPreview();
         }
         m_ReloadKeyWasDown = reloadKeyDown;
     }
@@ -76,7 +81,7 @@ void VansUIEditorWindow::ShowWindow(VansVKDevice& device)
 
 // ─── LoadPreview ────────────────────────────────────────────────────────────
 
-void VansUIEditorWindow::LoadPreview(VansVKDevice& /*device*/)
+void VansUIEditorWindow::LoadPreview()
 {
     UnloadPreview();
 

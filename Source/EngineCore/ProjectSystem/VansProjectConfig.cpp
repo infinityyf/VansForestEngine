@@ -1,4 +1,5 @@
 #include "VansProjectConfig.h"
+#include "../SceneCore/VansSceneSchema.h"
 #include "../Util/VansLog.h"
 
 #include <nlohmann/json.hpp>
@@ -47,7 +48,7 @@ void VansProjectConfig::SetDefaults(const std::string& name)
 	createdAt = NowISO8601();
 	lastOpenedAt = createdAt;
 	defaultScene = "Scenes/MainScene.json";
-	sceneSchemaVersion = 2;
+	sceneSchemaVersion = VansSceneSchemaVersion;
 	assetsRoot = "Assets";
 	importedArtifactRoot = "Library/Artifacts";
 	metaExtension = ".meta";
@@ -84,10 +85,10 @@ bool VansProjectConfig::LoadFromFile(const std::string& filePath)
 		createdAt      = j.value("createdAt", "");
 		lastOpenedAt   = j.value("lastOpenedAt", "");
 		defaultScene   = j.value("defaultScene", "Scenes/MainScene.json");
-		sceneSchemaVersion = j.value("sceneSchemaVersion", 2u);
-		if (sceneSchemaVersion != 2u)
+		sceneSchemaVersion = j.value("sceneSchemaVersion", Vans::VansSceneSchemaVersion);
+		if (sceneSchemaVersion != Vans::VansSceneSchemaVersion)
 		{
-			VANS_LOG_ERROR("[ProjectConfig] Only Scene schema version 2 projects are supported");
+			VANS_LOG_ERROR("[ProjectConfig] Unsupported Scene schema version");
 			return false;
 		}
 		assetsRoot = "Assets";
@@ -142,7 +143,7 @@ bool VansProjectConfig::SaveToFile(const std::string& filePath) const
 	j["createdAt"]      = createdAt;
 	j["lastOpenedAt"]   = lastOpenedAt;
 	j["defaultScene"]   = defaultScene;
-	j["sceneSchemaVersion"] = 2;
+	j["sceneSchemaVersion"] = VansSceneSchemaVersion;
 	j["assetDatabase"] = {
 		{ "assetsRoot", assetsRoot },
 		{ "importedArtifactRoot", importedArtifactRoot },

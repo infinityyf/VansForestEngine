@@ -454,6 +454,7 @@ namespace VansEngine
         PxVehicleComponentSequence m_ComponentSequence;
         PxU8 m_ComponentSequenceSubstepGroupHandle;
         PxVehiclePhysXSimulationContext m_SimulationContext;
+        float m_DebugLogAccumulator = 0.0f;
         
         // PhysX Integration internal helper params
         PxVehiclePhysXRoadGeometryQueryState m_PhysXRoadGeometryQueryState[PxVehicleLimits::eMAX_NB_WHEELS];

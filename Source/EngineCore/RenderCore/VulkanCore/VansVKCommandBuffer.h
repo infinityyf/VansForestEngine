@@ -7,8 +7,6 @@
 #endif
 #include "vulkan/vulkan.h"
 #include "VansPipeline.h"
-#include <functional>
-#include <thread>
 
 namespace VansGraphics
 {
@@ -26,12 +24,6 @@ namespace VansGraphics
 	};
 
 	//用于多线程record commandbuffer
-	struct CommandBufferRecordingThreadParameters 
-	{
-		VkCommandBuffer CommandBuffer;
-		std::function<bool(VkCommandBuffer)> RecordingFunction;
-	};
-
 	struct BufferTransition;
 	struct ImageTransition;
 	class VansVKBuffer;
@@ -41,6 +33,8 @@ namespace VansGraphics
 	class VansGraphicsShader;
 	class VansComputeShader;
 	class VansVKGraphicsPipeline;
+	class VansVKComputePipeline;
+	class VansVKRayTracingPipeline;
 
 
 
@@ -53,7 +47,7 @@ namespace VansGraphics
 	
 		void DestroyVulkanCommandBuffer(VkDevice& logical_device);
 
-		bool BeginCommandBufferRecord(VkCommandBufferUsageFlagBits commandBufferUsage);
+		bool BeginCommandBufferRecord(VkCommandBufferUsageFlags commandBufferUsage);
 
 		bool EndCommandBufferRecord();
 
@@ -110,6 +104,12 @@ namespace VansGraphics
 		//rectangle within the specified viewport dimensions
 		void SetScissor(uint32_t first_scissor, const std::vector<VkRect2D>& scissors);
 
+		void BeginRenderPass(const VkRenderPassBeginInfo& render_pass_begin_info, VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE);
+
+		void NextSubpass(VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE);
+
+		void EndRenderPass();
+
 		void SetLineWidth(float line_width);
 
 		//Depth bias modifies the calculated depth value--the value used during the depth test and
@@ -138,11 +138,40 @@ namespace VansGraphics
 			const std::vector<VkImageBlit>& blitRegions,
 			VkFilter filter = VK_FILTER_LINEAR);
 
+		void BlitImageRegions(VkImage source, VkImageLayout sourceLayout,
+			VkImage target, VkImageLayout targetLayout,
+			const std::vector<VkImageBlit>& blitRegions,
+			VkFilter filter = VK_FILTER_LINEAR);
+
 		void ExecuteSecondaryCommandBuffer(std::vector<VkCommandBuffer>& secondary_command_buffers);
 
 		void BuildAccelerationStructures(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, const VkAccelerationStructureBuildRangeInfoKHR* rangeInfo);
+		void BuildAccelerationStructures(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, const VkAccelerationStructureBuildRangeInfoKHR* const* rangeInfos);
 		
 		void BindGraphicsPipeline(VansVKGraphicsPipeline& graphicsPipeline);
+
+		void BindComputePipeline(VansVKComputePipeline& computePipeline);
+
+		void BindRayTracingPipeline(VansVKRayTracingPipeline& rayTracingPipeline);
+
+		void BindRayTracingDescriptorSets(
+			VansVKRayTracingPipeline& rayTracingPipeline,
+			uint32_t firstSet,
+			const std::vector<VkDescriptorSet>& descriptorSets,
+			const std::vector<uint32_t>& dynamicOffsets = {});
+
+		void UpdateRayTracingPushConstants(
+			VansVKRayTracingPipeline& rayTracingPipeline,
+			VkShaderStageFlags flags,
+			uint32_t offset,
+			uint32_t size,
+			const void* data);
+
+		void TraceRays(
+			VansVKRayTracingPipeline& rayTracingPipeline,
+			uint32_t width,
+			uint32_t height,
+			uint32_t depth);
 
 		void BindDescriptorSets(VkPipelineBindPoint pipeline_type,
 			VansGraphicsShader& shader,
@@ -188,24 +217,14 @@ namespace VansGraphics
 
 		VkDevice m_VansVKDevice;
 
+		VkPipeline m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+
+		VkPipeline m_BoundComputePipeline = VK_NULL_HANDLE;
+
+		VkPipeline m_BoundRayTracingPipeline = VK_NULL_HANDLE;
+
 
 	};
 
-	class VansMultiThreadCommandBufferMangaer
-	{
-	private:
-		std::vector<CommandBufferRecordingThreadParameters> m_CommandBufferRecordingThreadParameters;
-
-		std::vector<std::thread> m_CommandBufferRecordingThreads;
 		//vk中不要在多线中中对同一个object进行修改，例如
-		//1. allocate command buffers from a single pool
-		//2. update a descriptor set
-
-	public:
-
-		void InitCommandRecordThreads(std::vector<VansVKCommandBuffer>& vans_command_buffers);
-
-		void SubmitMultiCommands(VkQueue& queue, VkDevice& device, const std::vector<WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, VkFence& fence);
-
-	};
 }

@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 #include <unordered_map>
 
 #if defined(_WIN32)
@@ -23,6 +24,61 @@
 
 namespace VansRuntime
 {
+
+namespace
+{
+    class OwnedMemoryStream final : public Noesis::Stream
+    {
+    public:
+        explicit OwnedMemoryStream(std::vector<uint8_t>&& data)
+            : m_Data(std::move(data))
+        {}
+
+        void SetPosition(uint32_t pos) override
+        {
+            m_Offset = std::min<uint32_t>(pos, GetLength());
+        }
+
+        uint32_t GetPosition() const override
+        {
+            return m_Offset;
+        }
+
+        uint32_t GetLength() const override
+        {
+            return static_cast<uint32_t>(m_Data.size());
+        }
+
+        uint32_t Read(void* buffer, uint32_t size) override
+        {
+            if (buffer == nullptr || size == 0 || m_Offset >= GetLength())
+            {
+                return 0;
+            }
+
+            const uint32_t readSize = std::min<uint32_t>(size, GetLength() - m_Offset);
+            std::memcpy(buffer, m_Data.data() + m_Offset, readSize);
+            m_Offset += readSize;
+            return readSize;
+        }
+
+        const void* GetMemoryBase() const override
+        {
+            return m_Data.empty() ? nullptr : m_Data.data();
+        }
+
+        void Close() override
+        {
+            m_Data.clear();
+            m_Data.shrink_to_fit();
+            m_Offset = 0;
+        }
+
+    private:
+        std::vector<uint8_t> m_Data;
+        uint32_t m_Offset = 0;
+    };
+}
 
 // ── 通用路径解析 ──────────────────────────────────────────────────────
 
@@ -89,20 +145,7 @@ Noesis::Ptr<Noesis::Stream> VansNoesisXamlProvider::LoadXaml(const Noesis::Uri& 
         return nullptr;
     }
 
-    // MemoryStream 不拥有数据，需要将 buffer 转移到堆上
-    // Noesis::MemoryStream 构造时直接接收 void* 指针和大小
-    // 此处用 new 分配持久化内存，Stream 关闭时由 Noesis 侧触发 Close()，
-    // 但 MemoryStream 不负责释放 buffer，所以用 shared ownership 的方式：
-    // 将 buffer 数据拷贝到 Noesis 管理的内存区块
-    // FIXME-LEAK[重构-04]: XAML buffer 当前由 new[] 保活，后续实现 OwnedMemoryStream 释放所有权。
-    uint8_t* data     = new uint8_t[buffer.size()];
-    const uint32_t sz = static_cast<uint32_t>(buffer.size());
-    memcpy(data, buffer.data(), sz);
-
-    // MemoryStream 持有指针但不释放；此处通过自定义 Stream 子类处理
-    // MVP 阶段：直接使用 MemoryStream，data 生命周期由此处 new 保持（内存泄漏可接受于调试阶段）
-    // TODO: 实现带所有权的 OwnedMemoryStream 替换此处
-    return Noesis::Ptr<Noesis::Stream>(*new Noesis::MemoryStream(data, sz));
+    return Noesis::Ptr<Noesis::Stream>(*new OwnedMemoryStream(std::move(buffer)));
 }
 
 // ── VansNoesisTextureProvider ─────────────────────────────────────────

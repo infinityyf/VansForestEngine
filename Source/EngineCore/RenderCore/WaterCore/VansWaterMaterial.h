@@ -7,7 +7,7 @@
 // 水面材质类，继承 VansMaterial。
 // 持有从 VansWaterConfig 展开的所有 GPU 可读字段，
 // 以及从场景纹理管理器解析的纹理指针。
-// 由 VansSceneLoader::AddWaterNode() 创建并注册到 m_Materials。
+// 由 VansSceneEnvironmentNodeBuilder::AddWaterNode() 创建并注册到 m_Materials。
 // ============================================================
 
 namespace VansGraphics

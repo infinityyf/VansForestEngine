@@ -7,8 +7,10 @@
 #endif
 #include "vulkan/vulkan.h"
 #include "VansPipeline.h"
+#include "VansPipelineRegistry.h"
 #include "VansVKBuffer.h"
 #include "../VansAsset.h"
+#include <memory>
 #include <string>
 #include <map>
 #include <unordered_map>
@@ -68,7 +70,7 @@ namespace VansGraphics
 
 		bool CheckRefreshShader(VkDevice& logic_device);
 
-		void SetPushConstant(int size) { m_PushConstantSize = size; }
+		void SetPushConstant(int size) { m_PushConstantSize = size; m_PipelineProgramDesc.pushConstantSize = size; }
 
 		int GetPushConstantSize() const { return m_PushConstantSize; }
 
@@ -77,6 +79,10 @@ namespace VansGraphics
 		void* GetPushConstantData() { return m_PushConstantData; }
 
 		std::string GetShaderFolder() { return m_ShaderFolder; }
+
+		void SetPipelineProgramDesc(const VansPipelineProgramDesc& desc) { m_PipelineProgramDesc = desc; }
+
+		const VansPipelineProgramDesc& GetPipelineProgramDesc() const { return m_PipelineProgramDesc; }
 
 		std::map<VkShaderStageFlagBits, ShaderModuleData> m_ShaderModuleDataMap;
 
@@ -103,6 +109,8 @@ namespace VansGraphics
 		int m_PushConstantSize;
 
 		void* m_PushConstantData;
+
+		VansPipelineProgramDesc m_PipelineProgramDesc;
 	};
 
 	class VansComputeShader : public VansShader
@@ -110,36 +118,25 @@ namespace VansGraphics
 	public:
 		VansVKComputePipeline* GetComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 
-		VansVKComputePipeline* GetComputePipeline() const { return m_ComputePipeline; };
+		VansVKComputePipeline* GetComputePipeline() const { return m_ComputePipeline.get(); };
 
 		void TriggerReCreateComputePipeline()
 		{
-			if (m_ComputePipeline != nullptr)
-			{
-				delete m_ComputePipeline;
-				m_ComputePipeline = nullptr;
-			}
+			m_ComputePipeline.reset();
 		}
 
-		VansComputeShader() : m_ComputePipeline(nullptr)
+		VansComputeShader()
 		{
 
 		}
 
-		~VansComputeShader()
-		{
-			if (m_ComputePipeline != nullptr)
-			{
-				delete m_ComputePipeline;
-			}
-			
-		}
+		~VansComputeShader() = default;
 
 	private:
 
 		VkPipelineShaderStageCreateInfo m_ComputeShaderStageCreateInfo;
 
-		VansVKComputePipeline* m_ComputePipeline;
+		std::shared_ptr<VansVKComputePipeline> m_ComputePipeline;
 
 		bool CreateComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 
@@ -152,44 +149,39 @@ namespace VansGraphics
 	public :
 		VansVKGraphicsPipeline* GetGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 
-		VansVKGraphicsPipeline* GetGraphicsPipeline() const { return m_GraphicsPipeline; };
+		VansVKGraphicsPipeline* GetGraphicsPipeline() const { return m_GraphicsPipeline.get(); };
 
 		void SetDrawStateData(VkBool32 depthTestEnable, VkBool32 depthWriteEnable, VkCompareOp depthCompareOp, VkCullModeFlags cullmode);
+		void ApplyGraphicsStateDesc(const VansGraphicsPipelineStateDesc& graphicsState);
 
 		void SetPolygonMode(VkPolygonMode mode);
 
-		void SetFrontFace(VkFrontFace frontFace) { m_DrawStateData.frontFace = frontFace; TriggerReCreateGraphicsPipeline(); }
+		void SetFrontFace(VkFrontFace frontFace) { m_DrawStateData.frontFace = frontFace; SyncPipelineGraphicsStateDesc(); TriggerReCreateGraphicsPipeline(); }
 
-		void SetEnableAlphaBlend(VkBool32 enable) { m_DrawStateData.enableAlphaBlend = enable; }
+		void SetEnableAlphaBlend(VkBool32 enable) { m_DrawStateData.enableAlphaBlend = enable; SyncPipelineGraphicsStateDesc(); }
 
 		// 贴花专用：MRT 3 附件 Alpha Blend，GBuffer1 colorMask 仅 R+G
-		void SetEnableDecalBlend(VkBool32 enable) { m_DrawStateData.enableDecalBlend = enable; }
-		void SetEnableAdditiveBlend(VkBool32 enable) { m_DrawStateData.enableAdditiveBlend = enable; }
-		void SetEnablePremultipliedAlphaBlend(VkBool32 enable) { m_DrawStateData.enablePremultipliedAlphaBlend = enable; }
-		void SetAdditiveBlendAttachmentMask(uint32_t mask) { m_DrawStateData.additiveBlendAttachmentMask = mask; }
+		void SetEnableDecalBlend(VkBool32 enable) { m_DrawStateData.enableDecalBlend = enable; SyncPipelineGraphicsStateDesc(); }
+		void SetEnableAdditiveBlend(VkBool32 enable) { m_DrawStateData.enableAdditiveBlend = enable; SyncPipelineGraphicsStateDesc(); }
+		void SetEnablePremultipliedAlphaBlend(VkBool32 enable) { m_DrawStateData.enablePremultipliedAlphaBlend = enable; SyncPipelineGraphicsStateDesc(); }
+		void SetAdditiveBlendAttachmentMask(uint32_t mask) { m_DrawStateData.additiveBlendAttachmentMask = mask; SyncPipelineGraphicsStateDesc(); }
 
 		// Tessellation support: set primitive topology and patch control points
-		void SetPrimitiveTopology(VkPrimitiveTopology topology) { m_DrawStateData.primitiveTopology = topology; TriggerReCreateGraphicsPipeline(); }
-		void SetPatchControlPoints(uint32_t points) { m_DrawStateData.patchControlPoints = points; TriggerReCreateGraphicsPipeline(); }
+		void SetPrimitiveTopology(VkPrimitiveTopology topology) { m_DrawStateData.primitiveTopology = topology; SyncPipelineGraphicsStateDesc(); TriggerReCreateGraphicsPipeline(); }
+		void SetPatchControlPoints(uint32_t points) { m_DrawStateData.patchControlPoints = points; SyncPipelineGraphicsStateDesc(); TriggerReCreateGraphicsPipeline(); }
 
 		// 显式指定颜色附件数量（用于非主 GBuffer 的 MRT pass，如水面 GBuffer 的 2 个附件）。
 		// count > 0 时生成 count 个不混合、写入 RGBA 的 blend state，覆盖自动推断。
-		void SetColorAttachmentCount(int count) { m_ColorAttachmentCount = count; }
+		void SetColorAttachmentCount(int count) { m_ColorAttachmentCount = count; SyncPipelineGraphicsStateDesc(); }
 
 		void TriggerReCreateGraphicsPipeline();
 
-		VansGraphicsShader() : m_GraphicsPipeline(nullptr)
+		VansGraphicsShader()
 		{
 
 		}
 
-		~VansGraphicsShader()
-		{
-			if (m_GraphicsPipeline != nullptr)
-			{
-				delete m_GraphicsPipeline;
-			}
-		}
+		~VansGraphicsShader() = default;
 	private:
 		//记录当前pipeline的渲染状态,initshader时就可以被设置
 		DrawStateData m_DrawStateData;
@@ -201,12 +193,13 @@ namespace VansGraphics
 		//之后graphics shader才有效
 		GraphicsPipeCreateInfo m_GraphicsPipelineCreateInfo;
 
-		VansVKGraphicsPipeline* m_GraphicsPipeline;
+		std::shared_ptr<VansVKGraphicsPipeline> m_GraphicsPipeline;
 
 		VkGraphicsPipelineCreateInfo m_VkGraphicsPipelineCreateInfo;
 
 	private:
 		void InitGraphicsPipelinInfo(GlobalStateData& global_state_data);
+		void SyncPipelineGraphicsStateDesc();
 
 		bool CreateGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data);
 
@@ -218,30 +211,21 @@ namespace VansGraphics
 
 		VansVKRayTracingPipeline* GetRayTracingPipeline(VansVKDevice* device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 
-		VansVKRayTracingPipeline* GetRayTracingPipeline() const { return m_VansVkRayTracingPipeline; };
+		VansVKRayTracingPipeline* GetRayTracingPipeline() const { return m_VansVkRayTracingPipeline.get(); };
 
-		VansRayTracingShader() : m_VansVkRayTracingPipeline(nullptr)
+		VansRayTracingShader()
 		{
 		}
 
 		~VansRayTracingShader()
 		{
-			if (m_VansVkRayTracingPipeline != nullptr)
-			{
-				delete m_VansVkRayTracingPipeline;
-			}
-
 			m_SBTBuffer.DestroyVulkanBuffer(m_LogicDevice);
 		}
 
 		/// 场景切换时调用：销毁 pipeline / SBT，使下次 GetRayTracingPipeline 重建
 		void CleanupPipeline()
 		{
-			if (m_VansVkRayTracingPipeline != nullptr)
-			{
-				delete m_VansVkRayTracingPipeline;
-				m_VansVkRayTracingPipeline = nullptr;
-			}
+			m_VansVkRayTracingPipeline.reset();
 			m_SBTBuffer.DestroyVulkanBuffer(m_LogicDevice);
 
 			// 销毁旧 VkShaderModule，防止泄漏
@@ -250,11 +234,7 @@ namespace VansGraphics
 
 		void TriggerReCreateRayTracingPipeline()
 		{
-			if (m_VansVkRayTracingPipeline != nullptr)
-			{
-				delete m_VansVkRayTracingPipeline;
-				m_VansVkRayTracingPipeline = nullptr;
-			}
+			m_VansVkRayTracingPipeline.reset();
 			m_SBTBuffer.DestroyVulkanBuffer(m_LogicDevice);
 		}
 
@@ -262,7 +242,7 @@ namespace VansGraphics
 
 		VansVKBuffer m_SBTBuffer;
 
-		VansVKRayTracingPipeline* m_VansVkRayTracingPipeline;
+		std::shared_ptr<VansVKRayTracingPipeline> m_VansVkRayTracingPipeline;
 
 		void CreateShaderBindingTable(VansVKDevice* device);
 

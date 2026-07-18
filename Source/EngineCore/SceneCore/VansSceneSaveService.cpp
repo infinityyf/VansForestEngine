@@ -1,6 +1,6 @@
 #include "VansSceneSaveService.h"
 #include "VansSceneDocumentLoader.h"
-#include "VansSceneSchemaV2.h"
+#include "VansSceneSchema.h"
 
 #include <chrono>
 #include <fstream>
@@ -66,7 +66,7 @@ SceneSaveResult VansSceneSaveService::SaveSnapshot(VansSceneDocument& document,
     const SceneDocumentSnapshot& snapshot, const std::filesystem::path& rawTarget,
     bool checkSourceFingerprint, bool allowOverwrite) const
 {
-    if (!document.IsHealthy() || !snapshot.root.is_object() || !VansSceneSchemaV2::Validate(snapshot.root).empty())
+    if (!document.IsHealthy() || !snapshot.root.is_object() || !VansSceneSchema::Validate(snapshot.root).empty())
         return { SceneSaveError::InvalidDocument, "Cannot save an invalid scene document", rawTarget, false };
     if (rawTarget.empty())
         return { SceneSaveError::InvalidTarget, "Scene save target is empty", rawTarget, false };

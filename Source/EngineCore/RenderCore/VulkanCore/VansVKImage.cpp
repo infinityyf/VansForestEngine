@@ -1,4 +1,4 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKImage.h"
 #include "VansVKMemoryManager.h"
 #include "VansVKMemoryAllocator.h"
@@ -21,7 +21,7 @@ namespace VansGraphics
 			VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
 		info.subresourceRange = { m_ImageAspect, mipLevel, 1u, arrayLayer, 1u };
 		VkImageView result = VK_NULL_HANDLE;
-		if (vkCreateImageView(device, &info, nullptr, &result) != VK_SUCCESS) return VK_NULL_HANDLE;
+		if (VansGraphics::vkCreateImageView(device, &info, nullptr, &result) != VK_SUCCESS) return VK_NULL_HANDLE;
 		return result;
 	}
 
@@ -33,7 +33,15 @@ namespace VansGraphics
 		info.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
 		info.subresourceRange = { m_ImageAspect, mipLevel, 1u, 0u, m_ImageCreateInfo.arrayLayers };
 		VkImageView result = VK_NULL_HANDLE;
-		return vkCreateImageView(device, &info, nullptr, &result) == VK_SUCCESS ? result : VK_NULL_HANDLE;
+		return VansGraphics::vkCreateImageView(device, &info, nullptr, &result) == VK_SUCCESS ? result : VK_NULL_HANDLE;
+	}
+
+	void VansVKImage::DestroyImageView(VkDevice device, VkImageView& imageView)
+	{
+		if (imageView == VK_NULL_HANDLE)
+			return;
+		VansGraphics::vkDestroyImageView(device, imageView, nullptr);
+		imageView = VK_NULL_HANDLE;
 	}
 
     VkImageViewType VansVKImage::ConvertImageViewType(VkImageType type, bool isCube, int layer_num)
@@ -199,11 +207,11 @@ namespace VansGraphics
         nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
         nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_VansVKImage);
         nameInfo.pObjectName = "image";
-        vkSetDebugUtilsObjectNameEXT(logical_device, &nameInfo);
+        VansGraphics::vkSetDebugUtilsObjectNameEXT(logical_device, &nameInfo);
 #endif
 
         //imgee view创建时必须时需要绑定memory
-        result = vkCreateImageView(logical_device, &image_view_create_info, nullptr, &m_VansVKImageView);
+        result = VansGraphics::vkCreateImageView(logical_device, &image_view_create_info, nullptr, &m_VansVKImageView);
         if (VK_SUCCESS != result)
         {
             VANS_LOG_ERROR("Could not create an image view.");
@@ -216,7 +224,7 @@ namespace VansGraphics
         {
             VkImageViewCreateInfo dsViewInfo      = image_view_create_info;
             dsViewInfo.subresourceRange.aspectMask = m_ImageAspect; // DEPTH|STENCIL
-            result = vkCreateImageView(logical_device, &dsViewInfo, nullptr, &m_DepthStencilView);
+            result = VansGraphics::vkCreateImageView(logical_device, &dsViewInfo, nullptr, &m_DepthStencilView);
             if (VK_SUCCESS != result)
             {
                 VANS_LOG_ERROR("Could not create depth-stencil attachment image view.");
@@ -252,7 +260,7 @@ namespace VansGraphics
                          VK_REMAINING_ARRAY_LAYERS
                      }
                 };
-                vkCreateImageView(logical_device, &mip_view_create_info, nullptr, &m_VansVKImageMipViews[miplevel]);
+                VansGraphics::vkCreateImageView(logical_device, &mip_view_create_info, nullptr, &m_VansVKImageMipViews[miplevel]);
             }
         }
 
@@ -294,12 +302,12 @@ namespace VansGraphics
     {
         if (VK_NULL_HANDLE != m_DepthStencilView)
         {
-            vkDestroyImageView(logical_device, m_DepthStencilView, nullptr);
+            VansGraphics::vkDestroyImageView(logical_device, m_DepthStencilView, nullptr);
             m_DepthStencilView = VK_NULL_HANDLE;
         }
         if (VK_NULL_HANDLE != m_VansVKImageView)
         {
-            vkDestroyImageView(logical_device, m_VansVKImageView, nullptr);
+            VansGraphics::vkDestroyImageView(logical_device, m_VansVKImageView, nullptr);
             m_VansVKImageView = VK_NULL_HANDLE;
         }
 
@@ -307,7 +315,7 @@ namespace VansGraphics
         {
             if (VK_NULL_HANDLE != view)
             {
-                vkDestroyImageView(logical_device, view, nullptr);
+                VansGraphics::vkDestroyImageView(logical_device, view, nullptr);
                 view = VK_NULL_HANDLE;
             }
         }

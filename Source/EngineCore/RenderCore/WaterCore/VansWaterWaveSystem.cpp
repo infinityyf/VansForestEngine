@@ -1,53 +1,14 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansWaterWaveSystem.h"
 #include "VansWaterFFT.h"
 #include "../../Util/VansLog.h"
 #include "../VulkanCore/VansVKDevice.h"
 #include "../VulkanCore/VansVKCommandBuffer.h"
 #include "../VulkanCore/VansShader.h"
-#include "../VulkanCore/VansDescriptorSetLayouts.h"
-#include "../VulkanCore/VansVKDescriptorManager.h"
-#include "../../Configration/VansConfigration.h"
 #include <cmath>
-#include <cstring>
 #include <algorithm>
 
 namespace VansGraphics
 {
-
-bool VansWaterWaveSystem::AllocateBuffer(
-    VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props,
-    VkBuffer& outBuffer, VkDeviceMemory& outMemory)
-{
-    VkDevice device = m_Device->GetLogicDevice();
-    VkBufferCreateInfo ci = {};
-    ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    ci.size = size;
-    ci.usage = usage;
-    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(device, &ci, nullptr, &outBuffer) != VK_SUCCESS)
-        return false;
-    VkMemoryRequirements memReq;
-    vkGetBufferMemoryRequirements(device, outBuffer, &memReq);
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(m_Device->GetPhysicalDevice(), &memProps);
-    uint32_t memTypeIndex = UINT32_MAX;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
-    {
-        if ((memReq.memoryTypeBits & (1u << i)) &&
-            (memProps.memoryTypes[i].propertyFlags & props) == props)
-        { memTypeIndex = i; break; }
-    }
-    if (memTypeIndex == UINT32_MAX) { vkDestroyBuffer(device, outBuffer, nullptr); outBuffer = VK_NULL_HANDLE; return false; }
-    VkMemoryAllocateInfo ai = {};
-    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize = memReq.size;
-    ai.memoryTypeIndex = memTypeIndex;
-    if (vkAllocateMemory(device, &ai, nullptr, &outMemory) != VK_SUCCESS)
-    { vkDestroyBuffer(device, outBuffer, nullptr); outBuffer = VK_NULL_HANDLE; return false; }
-    vkBindBufferMemory(device, outBuffer, outMemory, 0);
-    return true;
-}
 
 void VansWaterWaveSystem::AddWave(const GerstnerWaveGPU& w)
 {
@@ -63,13 +24,11 @@ void VansWaterWaveSystem::RemoveWave(uint32_t index)
 
 void VansWaterWaveSystem::UpdateSSBO(VkDevice logicDevice)
 {
-    if (m_WaveSSBO == VK_NULL_HANDLE || m_Waves.empty())
+    (void)logicDevice;
+    if (!m_WaveSSBOCreated || m_Waves.empty())
         return;
     VkDeviceSize size = m_Waves.size() * sizeof(GerstnerWaveGPU);
-    void* data = nullptr;
-    vkMapMemory(logicDevice, m_WaveSSBOMemory, 0, size, 0, &data);
-    std::memcpy(data, m_Waves.data(), static_cast<size_t>(size));
-    vkUnmapMemory(logicDevice, m_WaveSSBOMemory);
+    m_WaveSSBO.SetBufferData(m_Waves.data(), 0, size);
 }
 
 void VansWaterWaveSystem::AutoGenerateWaves(int count, const glm::vec2& windDir,
@@ -129,10 +88,13 @@ bool VansWaterWaveSystem::Initialize(VansVKDevice* device, const std::string& sh
 
     // Create SSBO (64 waves × 32B = 2KB)
     VkDeviceSize ssboSize = MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU);
-    AllocateBuffer(ssboSize,
+    m_WaveSSBOCreated = m_WaveSSBO.CreatVulkanBuffer(logicDev,
+        ssboSize,
+        VK_FORMAT_UNDEFINED,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        m_WaveSSBO, m_WaveSSBOMemory);
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (!m_WaveSSBOCreated)
+        return false;
 
     // Auto-generate default waves
     AutoGenerateWaves(32, glm::vec2(0.7071f, 0.7071f), 1.5f, 12.0f);
@@ -145,8 +107,11 @@ bool VansWaterWaveSystem::Initialize(VansVKDevice* device, const std::string& sh
 
 void VansWaterWaveSystem::Shutdown(VkDevice logicDevice)
 {
-    if (m_WaveSSBO != VK_NULL_HANDLE) { vkDestroyBuffer(logicDevice, m_WaveSSBO, nullptr); m_WaveSSBO = VK_NULL_HANDLE; }
-    if (m_WaveSSBOMemory != VK_NULL_HANDLE) { vkFreeMemory(logicDevice, m_WaveSSBOMemory, nullptr); m_WaveSSBOMemory = VK_NULL_HANDLE; }
+    if (m_WaveSSBOCreated)
+    {
+        m_WaveSSBO.DestroyVulkanBuffer(logicDevice);
+        m_WaveSSBOCreated = false;
+    }
     m_WaveDisplacementImage.DestroyVulkanImage(logicDevice);
     m_WaveDisplacementReady = false;
     delete m_WaveSimShader; m_WaveSimShader = nullptr;

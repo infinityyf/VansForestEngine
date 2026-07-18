@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansReflectionProbe.h"
+#include "../VulkanCore/VansRenderPass.h"
 #include "../VulkanCore/VansVKBuffer.h"
 #include "../VulkanCore/VansVKImage.h"
 #include <nlohmann/json.hpp>
@@ -112,9 +113,10 @@ namespace VansGraphics
 		VansVKBuffer m_CaptureCameraBuffer;
 		VkDescriptorSetLayout m_CaptureDescriptorLayout = VK_NULL_HANDLE;
 		VkDescriptorSet m_CaptureDescriptorSet = VK_NULL_HANDLE;
-		VkRenderPass m_CaptureRenderPass = VK_NULL_HANDLE;
+		VansVKRenderPass m_CaptureRenderPass;
+		bool m_CaptureRenderPassCreated = false;
 		std::vector<VkImageView> m_CaptureFaceViews;
-		std::vector<VkFramebuffer> m_CaptureFramebuffers;
+		std::vector<VansFrameBuffer> m_CaptureFramebuffers;
 		bool m_CaptureDepthCreated = false;
 		bool m_CaptureCameraBufferCreated = false;
 		std::string m_ScenePath;

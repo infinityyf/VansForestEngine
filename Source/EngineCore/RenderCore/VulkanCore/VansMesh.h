@@ -20,6 +20,7 @@ using namespace VansGraphics;
 
 struct aiScene;
 struct aiMesh;
+namespace VansGraphics { class VansVKDevice; class VansVKCommandBuffer; }
 
 namespace VansGraphics
 {
@@ -210,10 +211,10 @@ namespace VansGraphics
 		// without uploading any GPU data.  Used by the scene loader for auto-detection.
 		static uint32_t ProbeSubmeshCount(const std::string& file_name);
 
-		void BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer);
+		void BuildBLAS(VansVKDevice& device, VansVKCommandBuffer& commandBuffer);
 
 		// 释放 BLAS 加速结构及其 buffer（场景切换时调用，防止资源泄漏）
-		void DestroyBLAS(VkDevice& logic_device);
+		void DestroyBLAS(VansVKDevice& device);
 
 		void ReleaseASTempData(VkDevice& logic_device);
 

@@ -1,75 +1,16 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansWaterLOD.h"
 #include "../../Util/VansLog.h"
 #include "../VulkanCore/VansVKDevice.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 
 namespace VansGraphics
 {
 
-bool VansWaterLOD::AllocateBuffer(
-    VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props,
-    VkBuffer& outBuffer, VkDeviceMemory& outMemory)
-{
-    VkDevice device = m_Device->GetLogicDevice();
-
-    VkBufferCreateInfo ci = {};
-    ci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    ci.size        = size;
-    ci.usage       = usage;
-    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(device, &ci, nullptr, &outBuffer) != VK_SUCCESS)
-    {
-        VANS_LOG_ERROR("[VansWaterLOD] vkCreateBuffer failed");
-        return false;
-    }
-
-    VkMemoryRequirements memReq;
-    vkGetBufferMemoryRequirements(device, outBuffer, &memReq);
-
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(m_Device->GetPhysicalDevice(), &memProps);
-    uint32_t memTypeIndex = UINT32_MAX;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
-    {
-        const bool typeBit = (memReq.memoryTypeBits >> i) & 1u;
-        const bool propsFit = (memProps.memoryTypes[i].propertyFlags & props) == props;
-        if (typeBit && propsFit)
-        {
-            memTypeIndex = i;
-            break;
-        }
-    }
-
-    if (memTypeIndex == UINT32_MAX)
-    {
-        VANS_LOG_ERROR("[VansWaterLOD] no suitable memory type");
-        vkDestroyBuffer(device, outBuffer, nullptr);
-        outBuffer = VK_NULL_HANDLE;
-        return false;
-    }
-
-    VkMemoryAllocateInfo ai = {};
-    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize  = memReq.size;
-    ai.memoryTypeIndex = memTypeIndex;
-    if (vkAllocateMemory(device, &ai, nullptr, &outMemory) != VK_SUCCESS)
-    {
-        VANS_LOG_ERROR("[VansWaterLOD] vkAllocateMemory failed");
-        vkDestroyBuffer(device, outBuffer, nullptr);
-        outBuffer = VK_NULL_HANDLE;
-        return false;
-    }
-
-    vkBindBufferMemory(device, outBuffer, outMemory, 0);
-    return true;
-}
-
 void VansWaterLOD::BuildPatchMesh(VkDevice logicDevice)
 {
+    (void)logicDevice;
     const int M = m_MeshDim;
     const float step = 1.0f / static_cast<float>(M - 1);
 
@@ -101,27 +42,34 @@ void VansWaterLOD::BuildPatchMesh(VkDevice logicDevice)
     m_IndexCount = static_cast<uint32_t>(indices.size());
 
     const VkDeviceSize vbSize = static_cast<VkDeviceSize>(vertices.size() * sizeof(float));
-    if (AllocateBuffer(vbSize,
+    VkDevice device = m_Device->GetLogicDevice();
+    m_VertexBufferCreated = m_VertexBuffer.CreatVulkanBuffer(device,
+        vbSize,
+        VK_FORMAT_UNDEFINED,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        m_VertexBuffer, m_VertexMemory))
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (m_VertexBufferCreated)
     {
-        void* data = nullptr;
-        vkMapMemory(logicDevice, m_VertexMemory, 0, vbSize, 0, &data);
-        std::memcpy(data, vertices.data(), static_cast<size_t>(vbSize));
-        vkUnmapMemory(logicDevice, m_VertexMemory);
+        m_VertexBuffer.SetBufferData(vertices.data(), 0, vbSize);
+    }
+    else
+    {
+        VANS_LOG_ERROR("[VansWaterLOD] vertex buffer create failed");
     }
 
     const VkDeviceSize ibSize = static_cast<VkDeviceSize>(indices.size() * sizeof(uint32_t));
-    if (AllocateBuffer(ibSize,
+    m_IndexBufferCreated = m_IndexBuffer.CreatVulkanBuffer(device,
+        ibSize,
+        VK_FORMAT_UNDEFINED,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        m_IndexBuffer, m_IndexMemory))
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (m_IndexBufferCreated)
     {
-        void* data = nullptr;
-        vkMapMemory(logicDevice, m_IndexMemory, 0, ibSize, 0, &data);
-        std::memcpy(data, indices.data(), static_cast<size_t>(ibSize));
-        vkUnmapMemory(logicDevice, m_IndexMemory);
+        m_IndexBuffer.SetBufferData(indices.data(), 0, ibSize);
+    }
+    else
+    {
+        VANS_LOG_ERROR("[VansWaterLOD] index buffer create failed");
     }
 
     m_VertexBindings = { { 0, sizeof(float) * 2, VK_VERTEX_INPUT_RATE_VERTEX } };
@@ -164,10 +112,16 @@ bool VansWaterLOD::Initialize(VansVKDevice* device,
 
 void VansWaterLOD::Shutdown(VkDevice logicDevice)
 {
-    if (m_VertexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(logicDevice, m_VertexBuffer, nullptr); m_VertexBuffer = VK_NULL_HANDLE; }
-    if (m_VertexMemory != VK_NULL_HANDLE) { vkFreeMemory(logicDevice, m_VertexMemory, nullptr); m_VertexMemory = VK_NULL_HANDLE; }
-    if (m_IndexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(logicDevice, m_IndexBuffer, nullptr); m_IndexBuffer = VK_NULL_HANDLE; }
-    if (m_IndexMemory != VK_NULL_HANDLE) { vkFreeMemory(logicDevice, m_IndexMemory, nullptr); m_IndexMemory = VK_NULL_HANDLE; }
+    if (m_VertexBufferCreated)
+    {
+        m_VertexBuffer.DestroyVulkanBuffer(logicDevice);
+        m_VertexBufferCreated = false;
+    }
+    if (m_IndexBufferCreated)
+    {
+        m_IndexBuffer.DestroyVulkanBuffer(logicDevice);
+        m_IndexBufferCreated = false;
+    }
     m_IndexCount = 0;
     m_Patches.clear();
     m_Device = nullptr;
@@ -178,8 +132,8 @@ void VansWaterLOD::SetLodConfig(const VansWaterLODConfig& config)
 {
     const int previousMeshDim = m_MeshDim;
     m_LodLevels = std::clamp(config.m_MaxLOD, 1, MAX_LOD_COUNT);
-    m_BasePatchSize = std::max(config.m_BasePatchSize, 0.001f);
-    m_MeshDim = std::max(config.m_MeshDim, 3);
+    m_BasePatchSize = (std::max)(config.m_BasePatchSize, 0.001f);
+    m_MeshDim = (std::max)(config.m_MeshDim, 3);
     if (((m_MeshDim - 1) % 2) != 0)
         ++m_MeshDim;
 
@@ -188,17 +142,19 @@ void VansWaterLOD::SetLodConfig(const VansWaterLODConfig& config)
     m_DetailBalance = 2.0f;
     m_MorphWidthRatio = std::clamp(config.m_MorphWidthRatio, 0.001f, 1.0f);
 
-    if (m_Device != nullptr && m_VertexBuffer != VK_NULL_HANDLE && m_MeshDim != previousMeshDim)
+    if (m_Device != nullptr && (m_VertexBufferCreated || m_IndexBufferCreated) && m_MeshDim != previousMeshDim)
     {
-        const VkDevice logicDevice = m_Device->GetLogicDevice();
-        vkDestroyBuffer(logicDevice, m_VertexBuffer, nullptr);
-        vkFreeMemory(logicDevice, m_VertexMemory, nullptr);
-        vkDestroyBuffer(logicDevice, m_IndexBuffer, nullptr);
-        vkFreeMemory(logicDevice, m_IndexMemory, nullptr);
-        m_VertexBuffer = VK_NULL_HANDLE;
-        m_VertexMemory = VK_NULL_HANDLE;
-        m_IndexBuffer = VK_NULL_HANDLE;
-        m_IndexMemory = VK_NULL_HANDLE;
+        VkDevice logicDevice = m_Device->GetLogicDevice();
+        if (m_VertexBufferCreated)
+        {
+            m_VertexBuffer.DestroyVulkanBuffer(logicDevice);
+            m_VertexBufferCreated = false;
+        }
+        if (m_IndexBufferCreated)
+        {
+            m_IndexBuffer.DestroyVulkanBuffer(logicDevice);
+            m_IndexBufferCreated = false;
+        }
         m_IndexCount = 0;
         BuildPatchMesh(logicDevice);
     }
@@ -244,7 +200,7 @@ void VansWaterLOD::GeneratePatches(const glm::vec3& cameraPos)
     };
 
     const int lodCount = std::clamp(m_LodLevels, 1, MAX_LOD_COUNT);
-    m_Patches.reserve(static_cast<size_t>(16 + 12 * std::max(lodCount - 1, 0)));
+    m_Patches.reserve(static_cast<size_t>(16 + 12 * (std::max)(lodCount - 1, 0)));
 
     const float ps0 = GetPatchSize(0);
     const float parentPs = (lodCount > 1) ? GetPatchSize(1) : ps0;

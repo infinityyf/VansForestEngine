@@ -2,6 +2,7 @@
 #include "vulkan/vulkan.h"
 #include "glm/glm.hpp"
 #include "../VulkanCore/VansVKImage.h"
+#include "../VulkanCore/VansVKBuffer.h"
 #include <string>
 #include <cstdint>
 
@@ -65,9 +66,6 @@ namespace VansGraphics
         VansVKImage& GetPingPongImage(uint32_t index) { return m_PingPong[index & 1u]; }
 
     private:
-        bool AllocateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                            VkMemoryPropertyFlags props,
-                            VkBuffer& outBuffer, VkDeviceMemory& outMemory);
         bool CreateDescriptors();
         void UpdateParamsBuffer(float time);
         void BarrierImage(VansVKCommandBuffer& cmd, VansVKImage& image,
@@ -87,8 +85,8 @@ namespace VansGraphics
         VansVKImage m_H0Spectrum;
         VansVKImage m_PingPong[2];
 
-        VkBuffer       m_ParamsBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory m_ParamsMemory = VK_NULL_HANDLE;
+        VansVKBuffer m_ParamsBuffer;
+        bool m_ParamsBufferCreated = false;
 
         VkDescriptorSetLayout m_InitLayout = VK_NULL_HANDLE;
         VkDescriptorSet       m_InitSet = VK_NULL_HANDLE;

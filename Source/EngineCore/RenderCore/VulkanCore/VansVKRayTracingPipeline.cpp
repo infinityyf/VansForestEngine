@@ -1,5 +1,6 @@
 #include "VansVKDevice.h"
 #include "../VansScene.h"
+#include "../VansCamera.h"
 
 namespace VansGraphics
 {

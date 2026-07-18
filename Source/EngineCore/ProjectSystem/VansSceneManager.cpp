@@ -1,6 +1,6 @@
 #include "VansSceneManager.h"
 #include "../Util/VansLog.h"
-#include "../SceneCore/VansSceneSchemaV2.h"
+#include "../SceneCore/VansSceneSchema.h"
 
 #include <filesystem>
 #include <fstream>
@@ -95,7 +95,7 @@ std::string VansSceneManager::CreateEmptyScene(const std::string& sceneName,
 
 	VansSceneData sceneData;
 	sceneData.sceneGuid = VansAssetGuid::New();
-	const auto scene = VansSceneSchemaV2::Serialize(sceneData);
+	const auto scene = VansSceneSchema::Serialize(sceneData);
 
 	std::ofstream ofs(absPath);
 	if (!ofs.is_open())

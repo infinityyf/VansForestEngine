@@ -1,12 +1,17 @@
 ﻿#include "VansScriptContext.h"
-#include "../VansFramePhase.h"
+#include "../RuntimeCore/VansFramePhase.h"
 #include "../Configration/VansConfigration.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../Util/VansLog.h"
 #include "../VansTimer.h"
 #include "../RenderCore/VansScene.h"
+#include "../RenderCore/VansCamera.h"
 #include "VansTransform.h"
 #include "../PhysicsCore/VansPhysics.h"
+#include "../PhysicsCore/VansPhysicsNode.h"
+#include "../PhysicsCore/VansClothNode.h"
+#include "../PhysicsCore/VansCharacterControllerNode.h"
+#include "../AnimationCore/VansAnimationNode.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../RenderCore/VansVideoManager.h"
 #include "../Util/VansProfiler.h"
@@ -853,7 +858,7 @@ void VansScriptContext::UpdateScriptComponents(bool cameraScriptsOnly, bool skip
     // ── Per-object VanPyScriptComponent update ───────────────────────
     if (!m_Scene) return;
 
-    for (auto* obj : m_Scene->m_SceneObjects)
+    for (auto* obj : m_Scene->GetSceneObjects())
     {
         const bool hasCameraComponent = (obj->GetComponent<VansScriptCameraComponent>() != nullptr);
         if (cameraScriptsOnly && !hasCameraComponent)
@@ -885,7 +890,7 @@ void VansScriptContext::OnPyModuleReloaded(const std::string& scriptPath)
 {
     if (!m_Scene) return;
 
-    for (auto* obj : m_Scene->m_SceneObjects)
+    for (auto* obj : m_Scene->GetSceneObjects())
     {
         for (auto* comp : obj->m_Components)
         {
@@ -1261,7 +1266,7 @@ void VansScriptContext::DispatchEventToObject(
     bool foundObj = false;
     bool foundPyComp = false;
 
-    for (auto* obj : m_Scene->m_SceneObjects)
+    for (auto* obj : m_Scene->GetSceneObjects())
     {
         if (obj->m_TransformID != selfTransformID) continue;
         foundObj = true;

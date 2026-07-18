@@ -3,7 +3,7 @@
 
 #if VANS_PROFILER_ENABLED
 
-#include "../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../RenderCore/VulkanCore/VansVKDevice.h"
 
 #include <nlohmann/json.hpp>
 
@@ -313,9 +313,7 @@ void Vans::VansGpuProfiler::Init(void* device, void* physDevice, uint32_t /*queu
     VkPhysicalDevice vkPhys = static_cast<VkPhysicalDevice>(physDevice);
     m_Device = device;
 
-    VkPhysicalDeviceProperties props;
-    VansGraphics::vkGetPhysicalDeviceProperties(vkPhys, &props);
-    m_TimestampPeriodMs = static_cast<double>(props.limits.timestampPeriod) * 1e-6;
+    m_TimestampPeriodMs = VansGraphics::VansVKDevice::GetTimestampPeriodMs(vkPhys);
 
     VkQueryPoolCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -325,10 +323,8 @@ void Vans::VansGpuProfiler::Init(void* device, void* physDevice, uint32_t /*queu
     for (int i = 0; i < POOL_COUNT; ++i)
     {
         VkQueryPool pool = VK_NULL_HANDLE;
-        VkResult res = VansGraphics::vkCreateQueryPool(vkDev, &ci, nullptr, &pool);
-        if (res != VK_SUCCESS)
+        if (!VansGraphics::VansVKDevice::CreateQueryPool(vkDev, ci, pool))
         {
-            VANS_LOG_ERROR("[VansProfiler] Failed to create GPU query pool " << i << ": " << res);
             m_Pools[i] = nullptr;
         }
         else
@@ -351,7 +347,8 @@ void Vans::VansGpuProfiler::Destroy()
     {
         if (m_Pools[i] != nullptr)
         {
-            VansGraphics::vkDestroyQueryPool(vkDev, static_cast<VkQueryPool>(m_Pools[i]), nullptr);
+            VkQueryPool pool = static_cast<VkQueryPool>(m_Pools[i]);
+            VansGraphics::VansVKDevice::DestroyQueryPool(vkDev, pool);
             m_Pools[i] = nullptr;
         }
     }
@@ -369,7 +366,7 @@ void Vans::VansGpuProfiler::BeginFrame(void* cmd)
 
     if (m_Pools[cur] != nullptr)
     {
-        VansGraphics::vkCmdResetQueryPool(static_cast<VkCommandBuffer>(cmd), static_cast<VkQueryPool>(m_Pools[cur]), 0, MAX_GPU_QUERIES * 2);
+        VansGraphics::VansVKDevice::CmdResetQueryPool(static_cast<VkCommandBuffer>(cmd), static_cast<VkQueryPool>(m_Pools[cur]), 0, MAX_GPU_QUERIES * 2);
     }
 }
 
@@ -393,20 +390,17 @@ void Vans::VansGpuProfiler::Push(void* cmd, const char* name)
     ++m_StackDepth;
 
 #ifdef _DEBUG
-    if (VansGraphics::vkCmdBeginDebugUtilsLabelEXT)
-    {
-        VkDebugUtilsLabelEXT labelInfo = {};
-        labelInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
-        labelInfo.pLabelName = name;
-        labelInfo.color[0] = 0.2f;
-        labelInfo.color[1] = 0.6f;
-        labelInfo.color[2] = 1.0f;
-        labelInfo.color[3] = 1.0f;
-        VansGraphics::vkCmdBeginDebugUtilsLabelEXT(static_cast<VkCommandBuffer>(cmd), &labelInfo);
-    }
+    VkDebugUtilsLabelEXT labelInfo = {};
+    labelInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    labelInfo.pLabelName = name;
+    labelInfo.color[0] = 0.2f;
+    labelInfo.color[1] = 0.6f;
+    labelInfo.color[2] = 1.0f;
+    labelInfo.color[3] = 1.0f;
+    VansGraphics::VansVKDevice::CmdBeginDebugLabel(static_cast<VkCommandBuffer>(cmd), labelInfo);
 #endif
 
-    VansGraphics::vkCmdWriteTimestamp(static_cast<VkCommandBuffer>(cmd), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, static_cast<VkQueryPool>(m_Pools[cur]), beginIdx);
+    VansGraphics::VansVKDevice::CmdWriteTimestamp(static_cast<VkCommandBuffer>(cmd), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, static_cast<VkQueryPool>(m_Pools[cur]), beginIdx);
 }
 
 void Vans::VansGpuProfiler::Pop(void* cmd)
@@ -423,10 +417,9 @@ void Vans::VansGpuProfiler::Pop(void* cmd)
     {
         if (m_Slots[cur][i].depth == static_cast<uint16_t>(m_StackDepth))
         {
-            VansGraphics::vkCmdWriteTimestamp(static_cast<VkCommandBuffer>(cmd), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, static_cast<VkQueryPool>(m_Pools[cur]), m_Slots[cur][i].endSlot);
+            VansGraphics::VansVKDevice::CmdWriteTimestamp(static_cast<VkCommandBuffer>(cmd), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, static_cast<VkQueryPool>(m_Pools[cur]), m_Slots[cur][i].endSlot);
 #ifdef _DEBUG
-            if (VansGraphics::vkCmdEndDebugUtilsLabelEXT)
-                VansGraphics::vkCmdEndDebugUtilsLabelEXT(static_cast<VkCommandBuffer>(cmd));
+            VansGraphics::VansVKDevice::CmdEndDebugLabel(static_cast<VkCommandBuffer>(cmd));
 #endif
             break;
         }
@@ -458,7 +451,7 @@ void Vans::VansGpuProfiler::Resolve(void* device)
         return;
     }
 
-    VkResult res = VansGraphics::vkGetQueryPoolResults(
+    VkResult res = VansGraphics::VansVKDevice::GetQueryPoolResults(
         vkDev, vkPool, 0, queryCount,
         queryCount * sizeof(uint64_t), m_RawResults, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
 

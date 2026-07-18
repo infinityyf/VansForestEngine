@@ -1,10 +1,8 @@
 ﻿#pragma once
 #include "../RenderCore/VansCamera.h"
 #include "../RenderCore/VansGraphicsDevice.h"
-#include "../../VansBasicWindow.h"
+#include "../../Application/VansBasicWindow.h"
 #include "Windows/VansBaseWindowComponent.h"
-#include "../ScriptCore/VansScriptContext.h"
-#include "../ProjectSystem/VansProjectSelector.h"
 #include <memory>
 #include <vector>
 
@@ -13,6 +11,13 @@ namespace Vans
     class VansSceneDocument;
     class VansSceneEditService;
     class VansSceneSaveService;
+    class VansProjectSelector;
+}
+
+namespace Vans::EditorAPI
+{
+	class IEngineEditorAPI;
+	enum class RuntimeSceneLoadMode;
 }
 
 #if defined _WIN32
@@ -39,9 +44,6 @@ namespace VansGraphics
 	class VansWaterWindow;
 	class VansTerrainWindow;
 	class VansReflectionProbeWindow;
-
-	// 前置声明（定义在 VansScene.h）
-	enum class VansSceneLoadMode;
 
 	/// 编辑器运行控制状态
 	enum class VansEditorPlayState
@@ -82,12 +84,13 @@ namespace VansGraphics
 
 		static void StartEditorLoop(VansGraphics::VansCamera& camera);
 
-		static void DrawEditorWindows(VansVKDevice* device);
+		static void DrawEditorWindows(VansGraphicsDevice& device);
 
 		static void DestroyVansEditorWindow();
 
 		static Vans::VansSceneDocument* GetSceneDocument();
 		static Vans::VansSceneEditService* GetSceneEditService();
+		static Vans::EditorAPI::IEngineEditorAPI* GetEditorAPI();
 		static void ReloadCurrentSceneForEditing();
 
 	private:
@@ -162,8 +165,6 @@ namespace VansGraphics
 
 	private:
 
-		static VansScriptContext m_ScriptContext;
-
 		/// ImGui-based project selector overlay (shown until a project is loaded)
 		static std::unique_ptr<Vans::VansProjectSelector> m_ProjectSelector;
 
@@ -177,7 +178,7 @@ namespace VansGraphics
 		static std::string m_CurrentLoadedScenePath;
 
 		/// 下一次延迟场景加载所使用的模式（Editor / Runtime）
-		static VansGraphics::VansSceneLoadMode m_PendingSceneLoadMode;
+		static Vans::EditorAPI::RuntimeSceneLoadMode m_PendingSceneLoadMode;
 
 		struct VansPendingProjectLoad
 		{
@@ -192,6 +193,7 @@ namespace VansGraphics
 		static std::unique_ptr<Vans::VansSceneDocument> m_SceneDocument;
 		static std::unique_ptr<Vans::VansSceneEditService> m_SceneEditService;
 		static std::unique_ptr<Vans::VansSceneSaveService> m_SceneSaveService;
+		static Vans::EditorAPI::IEngineEditorAPI* m_EditorAPI;
 
 	public:
 		/// Deferred scene load: set during ImGui frame, processed before next Rendering()

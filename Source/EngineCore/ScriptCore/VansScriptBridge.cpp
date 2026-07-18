@@ -22,10 +22,10 @@
 #include <unordered_map>
 #include <memory>
 
-// ══════════════════════════════════════════════════════════════════════════�?
-//  VansScriptBridge.cpp �?Fills the VansEngineBridge function-pointer table
+
+
 //  so the .pyd module can call engine code without any engine headers.
-// ══════════════════════════════════════════════════════════════════════════�?
+
 
 static VansEngineBridge s_EngineBridge;
 
@@ -115,7 +115,7 @@ static inline VansScriptParticleComponent* AsParticleComp(void* p)
 }
 
 // ---------------------------------------------------------------------------
-//  后处理参数访问辅助（文件作用域静态函数，可被无捕�?lambda 直接调用�?
+
 // ---------------------------------------------------------------------------
 static VansGraphics::VansPostProcessProfile* GetPPProfile()
 {
@@ -978,7 +978,7 @@ void VansInitEngineBridge()
 		lights[c->m_LightIndex].m_Intensity = v;
 	};
 
-	// 宽度 / 高度以完整边长暴露给 Python，内部存储剧半边�?
+
 	s_EngineBridge.rectLightGetWidth = [](void* comp) -> float
 	{
 		auto* c = AsRectLightComp(comp);
@@ -1508,7 +1508,7 @@ void VansInitEngineBridge()
 		if (!ctx || !ctx->GetScene() || transformID == 0) return false;
 
 		VansEngine::VansPhysicsNode* targetNode = nullptr;
-		for (auto* physicsNode : ctx->GetScene()->m_PhysicsNodes)
+		for (auto* physicsNode : ctx->GetScene()->GetPhysicsNodes())
 		{
 			if (!physicsNode || physicsNode->GetTransformID() != transformID) continue;
 			targetNode = physicsNode;
@@ -1876,7 +1876,7 @@ void VansInitEngineBridge()
 		if (pp) { pp->m_EnableDithering = v; pp->m_IsDirty = true; }
 	};
 
-	// 序列�?
+
 	s_EngineBridge.ppSaveToFile = [](const char* path) -> bool
 	{
 		auto* pp = GetPPProfile();
@@ -1908,7 +1908,7 @@ VansEngineBridge* VansGetEngineBridgePtr()
 }
 
 // ===========================================================================
-//  VansInputBridge �?�?VansInputManager 的接口暴露给 vaninput .pyd
+
 // ===========================================================================
 
 static VansInputBridge s_InputBridge;

@@ -600,15 +600,36 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 		return false;
 	}
 
-	commandbuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	VkBufferCopy copyRegion{};
-	copyRegion.size = vertexBufferSize;
-	vkCmdCopyBuffer(commandbuffer->GetVKCommandBuffer(), stagingVertex.GetNativeBuffer(), m_VertexBuffer.GetNativeBuffer(), 1, &copyRegion);
-	copyRegion.size = indexBufferSize;
-	vkCmdCopyBuffer(commandbuffer->GetVKCommandBuffer(), stagingIndex.GetNativeBuffer(), m_IndexBuffer.GetNativeBuffer(), 1, &copyRegion);
-	commandbuffer->EndCommandBufferRecord();
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { commandbuffer->GetVKCommandBuffer() }, {}, {}, commandbuffer->m_CommandBufferFinishSubmitFence);
-	commandbuffer->ResetCommandBuffer(false);
+	if (!commandbuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+	{
+		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to begin GPU buffer upload command buffer.");
+		stagingVertex.DestroyVulkanBuffer(logic_device);
+		stagingIndex.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+	commandbuffer->CopyBuffer(stagingVertex.GetNativeBuffer(), m_VertexBuffer.GetNativeBuffer(), 0, 0, vertexBufferSize);
+	commandbuffer->CopyBuffer(stagingIndex.GetNativeBuffer(), m_IndexBuffer.GetNativeBuffer(), 0, 0, indexBufferSize);
+	if (!commandbuffer->EndCommandBufferRecord())
+	{
+		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to end GPU buffer upload command buffer.");
+		stagingVertex.DestroyVulkanBuffer(logic_device);
+		stagingIndex.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+	if (!VansVKCommandBuffer::SubmitCommands(queue, logic_device, { commandbuffer->GetVKCommandBuffer() }, {}, {}, commandbuffer->m_CommandBufferFinishSubmitFence))
+	{
+		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to submit GPU buffer upload command buffer.");
+		stagingVertex.DestroyVulkanBuffer(logic_device);
+		stagingIndex.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+	if (!commandbuffer->ResetCommandBuffer(false))
+	{
+		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to reset GPU buffer upload command buffer.");
+		stagingVertex.DestroyVulkanBuffer(logic_device);
+		stagingIndex.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
 
 	stagingVertex.DestroyVulkanBuffer(logic_device);
 	stagingIndex.DestroyVulkanBuffer(logic_device);

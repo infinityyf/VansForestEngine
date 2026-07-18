@@ -1,5 +1,5 @@
 #include "VansSceneDocumentLoader.h"
-#include "VansSceneSchemaV2.h"
+#include "VansSceneSchema.h"
 
 #include <fstream>
 #include <iterator>
@@ -57,7 +57,7 @@ SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::pat
         document->m_SourcePath = std::filesystem::absolute(path).lexically_normal();
         document->m_LoadedFingerprint = Fingerprint(document->m_SourcePath, &error);
 
-        document->m_Diagnostics = VansSceneSchemaV2::Validate(document->m_Root);
+        document->m_Diagnostics = VansSceneSchema::Validate(document->m_Root);
 
         if (!document->m_LoadedFingerprint.valid)
             document->m_Diagnostics.push_back({ SceneDiagnosticSeverity::Error, "", error });

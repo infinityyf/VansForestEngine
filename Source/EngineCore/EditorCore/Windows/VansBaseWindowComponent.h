@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../RenderCore/VulkanCore/VansVKDevice.h"
+#include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
 
 namespace VansGraphics
 {
@@ -8,7 +8,10 @@ namespace VansGraphics
 	{
 	public:
 		virtual ~VansBaseWindowComponent() = default;
-		virtual void ShowWindow(VansVKDevice& device) = 0;
+
+		virtual void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&)
+		{
+		}
 	};
 }
 

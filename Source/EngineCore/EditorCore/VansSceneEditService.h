@@ -1,7 +1,9 @@
 #pragma once
 
+#include "../EngineAPILayer/Public/EngineDTOs.h"
 #include "../SceneCore/VansSceneDocument.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,6 +16,12 @@ struct SceneEditResult
     std::string message;
 
     explicit operator bool() const { return success; }
+};
+
+struct SceneEditLifecycleHooks
+{
+    std::function<void()> afterUndo;
+    std::function<void()> afterRedo;
 };
 
 class VansSceneEditCommand
@@ -57,6 +65,47 @@ private:
     SceneStateId m_AfterState = 0;
 };
 
+class VansAssignAssetReferenceCommand final : public VansSceneEditCommand
+{
+public:
+    VansAssignAssetReferenceCommand(std::string jsonPointer,
+        std::string assetGuid,
+        EditorAPI::AssetType expectedType,
+        bool writeObjectReference);
+    SceneEditResult Execute(VansSceneDocument& document) override;
+    SceneEditResult Undo(VansSceneDocument& document) override;
+    SceneEditResult Redo(VansSceneDocument& document) override;
+
+private:
+    SceneJson BuildReferenceValue() const;
+
+    std::string m_JsonPointer;
+    std::string m_AssetGuid;
+    EditorAPI::AssetType m_ExpectedType = EditorAPI::AssetType::Unknown;
+    bool m_WriteObjectReference = true;
+    SceneJson m_OldValue;
+    bool m_HadOldValue = false;
+    SceneStateId m_BeforeState = 0;
+    SceneStateId m_AfterState = 0;
+};
+
+class VansAppendSceneEntitiesCommand final : public VansSceneEditCommand
+{
+public:
+    explicit VansAppendSceneEntitiesCommand(std::vector<SceneJson> entities,
+        SceneEditLifecycleHooks hooks = {});
+    SceneEditResult Execute(VansSceneDocument& document) override;
+    SceneEditResult Undo(VansSceneDocument& document) override;
+    SceneEditResult Redo(VansSceneDocument& document) override;
+
+private:
+    std::vector<SceneJson> m_Entities;
+    SceneEditLifecycleHooks m_Hooks;
+    std::size_t m_InsertIndex = 0;
+    SceneStateId m_BeforeState = 0;
+    SceneStateId m_AfterState = 0;
+};
+
 class VansSceneEditService
 {
 public:
@@ -64,6 +113,12 @@ public:
 
     SceneEditResult Execute(std::unique_ptr<VansSceneEditCommand> command);
     SceneEditResult Set(const std::string& jsonPointer, SceneJson value);
+    SceneEditResult AssignAssetReference(const std::string& jsonPointer,
+        std::string assetGuid,
+        EditorAPI::AssetType expectedType,
+        bool writeObjectReference);
+    SceneEditResult AppendEntities(std::vector<SceneJson> entities,
+        SceneEditLifecycleHooks hooks = {});
     SceneEditResult Remove(const std::string& jsonPointer);
     SceneEditResult Undo();
     SceneEditResult Redo();

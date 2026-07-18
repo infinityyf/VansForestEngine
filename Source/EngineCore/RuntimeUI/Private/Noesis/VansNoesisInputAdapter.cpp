@@ -212,16 +212,6 @@ void VansNoesisInputAdapter::OnMouseClick(int glfwButton, int action, int /*mods
     int ix = 0, iy = 0;
     TransformMouse(mx, my, ix, iy);
 
-    VANS_LOG("[NoesisInput] Click btn=" << glfwButton
-        << " action=" << action
-        << " raw=(" << (int)mx << "," << (int)my << ")"
-        << " noesis=(" << ix << "," << iy << ")"
-        << " viewport=(" << (int)m_ViewportX << "," << (int)m_ViewportY
-        << " " << (int)m_ViewportW << "x" << (int)m_ViewportH << ")"
-        << " noesisSize=(" << (int)m_NoesisW << "x" << (int)m_NoesisH << ")"
-        << " inViewport=" << (mx >= m_ViewportX && mx <= m_ViewportX + m_ViewportW
-                           && my >= m_ViewportY && my <= m_ViewportY + m_ViewportH ? "YES" : "NO"));
-
     for (auto* view : m_Views)
     {
         if (view == nullptr) continue;

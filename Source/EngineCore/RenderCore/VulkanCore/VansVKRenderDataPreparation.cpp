@@ -183,26 +183,23 @@ namespace VansGraphics
 			VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ globalPBRMaterialBufferBinding }, materialManager->m_GlobalPBRDataSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ materialManager->m_GlobalPBRDataSetLayout }, materialManager->m_GlobalPBRDataDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+			{ globalPBRMaterialBufferBinding },
+			materialManager->m_GlobalPBRDataSetLayout,
+			materialManager->m_GlobalPBRDataDescriptorSets);
 
-		VansVKDescriptorManager::GetInstance()->ResetState();
-		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
-			{
-				materialManager->m_GlobalPBRDataDescriptorSets[0],
-				PassBinding::BUFFER_0,
+		auto* descMgr = VansVKDescriptorManager::GetInstance();
+		descMgr->BeginDescriptorUpdate();
+		descMgr->WriteBufferDescriptor(
+			materialManager->m_GlobalPBRDataDescriptorSets[0],
+			PassBinding::BUFFER_0,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{ {
+				materialManager->m_GlobalPBRDataBuffer.GetNativeBuffer(),
 				0,
-				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				{
-					{
-						materialManager->m_GlobalPBRDataBuffer.GetNativeBuffer(),
-						0,
-						materialManager->m_GlobalPBRDataBuffer.GetBufferSize()
-					}
-				}
-			}
-		);
-		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+				materialManager->m_GlobalPBRDataBuffer.GetBufferSize()
+			} });
+		descMgr->CommitDescriptorUpdates();
 
 		VkDescriptorSetLayoutBinding bindlessTextureArrayBinding =
 		{
@@ -213,8 +210,10 @@ namespace VansGraphics
 			nullptr
 		};
 
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ bindlessTextureArrayBinding }, materialManager->m_GlobalPBRTexSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ materialManager->m_GlobalPBRTexSetLayout }, materialManager->m_GlobalPBRTexDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+			{ bindlessTextureArrayBinding },
+			materialManager->m_GlobalPBRTexSetLayout,
+			materialManager->m_GlobalPBRTexDescriptorSets);
 
 		auto& bindlessTextures = materialManager->m_GlobalPBRTextures;
 		std::vector<VkDescriptorImageInfo> bindlessTextureInfos;
@@ -228,17 +227,13 @@ namespace VansGraphics
 				}
 			);
 		}
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				materialManager->m_GlobalPBRTexDescriptorSets[0],
-				GLOBAL_BINDING_BINDLESS_TEXTURES,
-				0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				bindlessTextureInfos
-			}
-		);
-
-		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+		descMgr->BeginDescriptorUpdate();
+		descMgr->WriteImageDescriptor(
+			materialManager->m_GlobalPBRTexDescriptorSets[0],
+			GLOBAL_BINDING_BINDLESS_TEXTURES,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			bindlessTextureInfos);
+		descMgr->CommitDescriptorUpdates();
 	}
 
 	void VansVKDevice::PrepareInstanceTransformData()
@@ -246,35 +241,30 @@ namespace VansGraphics
 		std::vector<VansRenderNode*> allRenderNodes =
 			m_Scene->CollectSSBOManagedRenderNodes();
 
-		const uint32_t maxCapacity = m_Scene->m_TransformSlotAllocator.GetMaxCapacity();
+		const uint32_t maxCapacity = static_cast<uint32_t>(m_Scene->GetTransformSlotCapacity());
 		const VkDeviceSize bufferSize = sizeof(ModelDataStruct) * static_cast<VkDeviceSize>(maxCapacity);
 
-		m_Scene->m_InstanceTransformDataBuffer.CreatVulkanBuffer(
+		m_Scene->CreateInstanceTransformBuffer(
 			m_VansVKLogicDevice,
-			std::max<VkDeviceSize>(bufferSize, sizeof(ModelDataStruct)),
-			VK_FORMAT_R32_SFLOAT,
+			bufferSize,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
 		for (auto* node : allRenderNodes)
 		{
-			uint32_t slot = m_Scene->m_TransformSlotAllocator.AllocateSlot();
+			uint32_t slot = m_Scene->AllocateTransformSlot();
 			assert(slot != TransformSlotAllocator::INVALID_SLOT && "Initial load exceeded max capacity");
 
 			node->BeforeDrawCall();
 			node->m_TransfromIndex = static_cast<int>(slot);
 
-			VkDeviceSize offset = slot * sizeof(ModelDataStruct);
-			m_Scene->m_InstanceTransformDataBuffer.SetBufferData(
-				&node->m_ModelData,
-				static_cast<int>(offset),
-				sizeof(ModelDataStruct));
+			m_Scene->SetInstanceTransformData(node->m_ModelData, slot);
 		}
 
 		// ── Step 2.5: m_InstanceTransformData CPU 镜像不再写入 ────────────────
 
 		// ── Step 3: 持久映射 ─────────────────────────────────────────────────
-		m_Scene->m_InstanceTransformDataBuffer.PersistentMap();
+		m_Scene->PersistentlyMapInstanceTransformBuffer();
 
 		VkDescriptorSetLayoutBinding instanceTransformBufferBinding =
 		{
@@ -284,25 +274,7 @@ namespace VansGraphics
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ instanceTransformBufferBinding }, m_Scene->m_GlobalTransformDataSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_Scene->m_GlobalTransformDataSetLayout }, m_Scene->m_GlobalTransformDataDescriptorSets);
-		VansVKDescriptorManager::GetInstance()->ResetState();
-		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
-			{
-				m_Scene->m_GlobalTransformDataDescriptorSets[0],
-				PassBinding::BUFFER_0,
-				0,
-				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				{
-					{
-						m_Scene->m_InstanceTransformDataBuffer.GetNativeBuffer(),
-						0,
-						m_Scene->m_InstanceTransformDataBuffer.GetBufferSize()
-					}
-				}
-			}
-		);
-		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+		m_Scene->CreateGlobalTransformDescriptorSet(instanceTransformBufferBinding);
 	}
 
 	void VansVKDevice::PrepareSkyRenderData()
@@ -319,17 +291,37 @@ namespace VansGraphics
 		manager->m_PreConvSpecular = new VansTexture();
 		manager->m_PreConvSpecular->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 1, 4, true, true, true);
 
+		auto loadEngineTexture = [&](VansTexture* texture,
+			const std::string& path,
+			bool isSRGB,
+			bool useCompress,
+			bool needMip,
+			TexturePrecision precision = LOW_PRES_8,
+			int importChannel = 4,
+			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT)
+		{
+			VansTexture::TextureLoadDesc desc{};
+			desc.path = path;
+			desc.isSRGB = isSRGB;
+			desc.useCompress = useCompress;
+			desc.needMip = needMip;
+			desc.precision = precision;
+			desc.importChannel = importChannel;
+			desc.addressMode = addressMode;
+			texture->LoadTexture(m_VansVKCommandBuffer, desc);
+		};
+
 		manager->m_BRDFIntegralLUT = new VansTexture();
-		manager->m_BRDFIntegralLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/BRDFIntegralLUT.png").c_str(), false, false, false);
+		loadEngineTexture(manager->m_BRDFIntegralLUT, projectRoot + "EngineAssets/Textures/BRDFIntegralLUT.png", false, false, false);
 
 		manager->m_SkinBSDFLUT = new VansTexture();
-		manager->m_SkinBSDFLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/SkinBSDFLUT.png").c_str(), false, false, false,LOW_PRES_8, 4 , VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		loadEngineTexture(manager->m_SkinBSDFLUT, projectRoot + "EngineAssets/Textures/SkinBSDFLUT.png", false, false, false, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 		manager->m_ClothBRDFLUT = new VansTexture();
-		manager->m_ClothBRDFLUT->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/ClothBRDFLUT.png").c_str(), false, false, false, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		loadEngineTexture(manager->m_ClothBRDFLUT, projectRoot + "EngineAssets/Textures/ClothBRDFLUT.png", false, false, false, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 		manager->m_MoonAlbedoTexture = new VansTexture();
-		manager->m_MoonAlbedoTexture->LoadTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/Celestial/MoonAlbedo.png").c_str(), false, false, true, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		loadEngineTexture(manager->m_MoonAlbedoTexture, projectRoot + "EngineAssets/Textures/Celestial/MoonAlbedo.png", false, false, true, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 		// ------------------------------------------------------------
 		// LTC LUTs (area-light BRDF). 64x64 RGBA16F, uploaded from the
@@ -462,8 +454,10 @@ namespace VansGraphics
 			VK_SHADER_STAGE_FRAGMENT_BIT,
 			nullptr
 		};
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerLUTBinding,sampleDiffuseConvBinding,sampleSpecularConBinding,environmentSHBuffer,skinBSDFLUTBinding,clothBRDFLUTBinding }, manager->m_BRDFInterationTexSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ manager->m_BRDFInterationTexSetLayout }, manager->m_BRDFInterationTextDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+			{ samplerLUTBinding, sampleDiffuseConvBinding, sampleSpecularConBinding, environmentSHBuffer, skinBSDFLUTBinding, clothBRDFLUTBinding },
+			manager->m_BRDFInterationTexSetLayout,
+			manager->m_BRDFInterationTextDescriptorSets);
 
 		VansComputeShader* m_PreConvDiffuseShader = VansGraphics::VansShaderManager::Get().FindComputeShader("PreConDiffuseEnvironment");
 
@@ -514,72 +508,51 @@ namespace VansGraphics
 		};
 		VkDescriptorSetLayout m_PreConvSetLayout;
 		std::vector<VkDescriptorSet> m_PreConvtDescriptorSets;
-		VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ samplerCubeBinding,uavCubeBinding0,uavCubeBinding1,prefilterCB,shResultBuffer }, m_PreConvSetLayout);
-		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_PreConvSetLayout }, m_PreConvtDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+			{ samplerCubeBinding, uavCubeBinding0, uavCubeBinding1, prefilterCB, shResultBuffer },
+			m_PreConvSetLayout,
+			m_PreConvtDescriptorSets);
 
-		VansVKDescriptorManager::GetInstance()->ResetState();
-		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
-			{
-				m_PreConvtDescriptorSets[0],
-				PassBinding::CBUFFER_3,
+		auto* descMgr = VansVKDescriptorManager::GetInstance();
+		descMgr->BeginDescriptorUpdate();
+		descMgr->WriteBufferDescriptor(
+			m_PreConvtDescriptorSets[0],
+			PassBinding::CBUFFER_3,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{ {
+				prefilterCBBuffer.GetNativeBuffer(),
 				0,
-				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-				{
-					{
-						prefilterCBBuffer.GetNativeBuffer(),
-						0,
-						prefilterCBBuffer.GetBufferSize()
-					}
-				}
-			}
-		);
+				prefilterCBBuffer.GetBufferSize()
+			} });
 
-		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
-			{
-				m_PreConvtDescriptorSets[0],
-				PassBinding::BUFFER_4,
+		descMgr->WriteBufferDescriptor(
+			m_PreConvtDescriptorSets[0],
+			PassBinding::BUFFER_4,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{ {
+				manager->m_SkySHResultBuffer.GetNativeBuffer(),
 				0,
-				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				{
-					{
-						manager->m_SkySHResultBuffer.GetNativeBuffer(),
-						0,
-						manager->m_SkySHResultBuffer.GetBufferSize()
-					}
-				}
-			}
-		);
+				manager->m_SkySHResultBuffer.GetBufferSize()
+			} });
 
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				m_PreConvtDescriptorSets[0],
-				PassBinding::TEXTURE_0,
-				0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				{
-					{
-						texture->GetImage().GetSampler(),
-						texture->GetImage().GetImageView(),
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-					}
-				}
-			}
-		);
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				m_PreConvtDescriptorSets[0],
-				PassBinding::UAV_IMAGE_0,
-				0,
-				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-				{
-					{
-						manager->m_PreConvDiffuse->GetImage().GetSampler(),
-						manager->m_PreConvDiffuse->GetImage().GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL
-					}
-				}
-			}
-		);
+		descMgr->WriteImageDescriptor(
+			m_PreConvtDescriptorSets[0],
+			PassBinding::TEXTURE_0,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{ {
+				texture->GetImage().GetSampler(),
+				texture->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			} });
+		descMgr->WriteImageDescriptor(
+			m_PreConvtDescriptorSets[0],
+			PassBinding::UAV_IMAGE_0,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{ {
+				manager->m_PreConvDiffuse->GetImage().GetSampler(),
+				manager->m_PreConvDiffuse->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_GENERAL
+			} });
 
 		std::vector<VkDescriptorImageInfo> cubeMipImageInfos;
 		for (int mipLevel = 0; mipLevel < mipCount; mipLevel++)
@@ -592,16 +565,12 @@ namespace VansGraphics
 				}
 			);
 		}
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				m_PreConvtDescriptorSets[0],
-				PassBinding::UAV_IMAGE_1,
-				0,
-				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-				cubeMipImageInfos
-			}
-		);
-		VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+		descMgr->WriteImageDescriptor(
+			m_PreConvtDescriptorSets[0],
+			PassBinding::UAV_IMAGE_1,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			cubeMipImageInfos);
+		descMgr->CommitDescriptorUpdates();
 
 		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 		m_VansVKCommandBuffer.EnsureComputeShader(*m_PreConvDiffuseShader, { m_PreConvSetLayout });
@@ -643,9 +612,12 @@ namespace VansGraphics
 				manager->m_PreConvDiffuse->GetImage().m_ImageAspect
 			});
 
-		m_VansVKCommandBuffer.EndCommandBufferRecord();
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		if (!m_VansVKCommandBuffer.EndCommandBufferRecord()
+			|| !VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence)
+			|| !m_VansVKCommandBuffer.ResetCommandBuffer(false))
+		{
+			VANS_LOG_ERROR("[VansVKDevice] PBR prefilter command submit failed.");
+		}
 
 		prefilterCBBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
 	}
@@ -866,33 +838,17 @@ namespace VansGraphics
 		// Ray march accumulation compute shader
 		manager->m_FogRayMarchShader = VansGraphics::VansShaderManager::Get().FindComputeShader("FogRayMarch");
 
-		// FogParams UBO (height-exp fog): { fogDensity, heightFalloff, sunScatterScale, ambientScale, fogMinHeight, skyFogDistance }
-		struct FogParamsData { float fogDensity; float heightFalloff; float sunScatterScale; float ambientScale; float fogMinHeight; float skyFogDistance; };
-		FogParamsData fogDefaults = { 0.002f, 0.08f, 0.3f, 0.5f, -100.0f, 10000.0f };
 		manager->m_FogParamsCBBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice, sizeof(FogParamsData), VK_FORMAT_R32_SFLOAT,
+			m_VansVKLogicDevice, sizeof(VansFogSettings), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_FogParamsCBBuffer.SetBufferData(&fogDefaults, 0, sizeof(FogParamsData));
+		manager->ApplyFogSettings(VansFogSettings());
 
-		// FogVolumeParams UBO (voxel fog): matches FogVolumeParams in shaders (std140, 64 bytes)
-		struct FogVolumeParamsData {
-			float density;       float anisotropy;    float scatterScale;  float ambientScale;
-			float volumeNear;    float volumeFar;     float slicePower;    float _pad1;
-			float fogBoxMin[4];  // xyz + pad
-			float fogBoxMax[4];  // xyz + pad
-		};
-		FogVolumeParamsData volumeDefaults = {
-			0.05f, 0.6f, 1.0f, 0.05f,           // density, anisotropy, scatterScale, ambientScale
-			2.0f, 200.0f, 2.0f, 0.0f,            // volumeNear, volumeFar, slicePower, pad
-			{-50.0f, -50.0f, -50.0f, 0.0f},     // fogBoxMin
-			{ 50.0f,  50.0f,  50.0f, 0.0f}      // fogBoxMax
-		};
 		manager->m_FogVolumeParamsCBBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice, sizeof(FogVolumeParamsData), VK_FORMAT_R32_SFLOAT,
+			m_VansVKLogicDevice, sizeof(VansFogVolumeSettings), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_FogVolumeParamsCBBuffer.SetBufferData(&volumeDefaults, 0, sizeof(FogVolumeParamsData));
+		manager->ApplyFogVolumeSettings(VansFogVolumeSettings());
 
 		// Descriptor set layouts + allocation
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_VolumetricFog(manager->m_VolumetricFogSetLayout, manager->m_VolumetricFogDescriptorSets);
@@ -1021,45 +977,45 @@ namespace VansGraphics
 
 		nameInfo.objectHandle = reinterpret_cast<uint64_t>(manager->m_PreConvDiffuse->GetImage().GetImage());
 		nameInfo.pObjectName = "PreConvDiffuse";
-		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		VansGraphics::vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 
 		nameInfo.objectHandle = reinterpret_cast<uint64_t>(manager->m_PreConvSpecular->GetImage().GetImage());
 		nameInfo.pObjectName = "PreConvSpecular";
-		vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+		VansGraphics::vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 
 		if (ssaoResult)
 		{
 			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssaoResult->GetImage().GetImage());
 			nameInfo.pObjectName = "SSAOResult";
-			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+			VansGraphics::vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 		}
 
 		if (ssgiResult)
 		{
 			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssgiResult->GetImage().GetImage());
 			nameInfo.pObjectName = "SSGIResult";
-			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+			VansGraphics::vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 		}
 
 		if (ssrResult)
 		{
 			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssrResult->GetImage().GetImage());
 			nameInfo.pObjectName = "SSRResult";
-			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+			VansGraphics::vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 		}
 
 		if (ssrHitInfo)
 		{
 			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssrHitInfo->GetImage().GetImage());
 			nameInfo.pObjectName = "SSRHitInfo";
-			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+			VansGraphics::vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 		}
 
 		if (ssrRayPdf)
 		{
 			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssrRayPdf->GetImage().GetImage());
 			nameInfo.pObjectName = "SSRRayPDF";
-			vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
+			VansGraphics::vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 		}
 #endif
 	}
@@ -1163,11 +1119,20 @@ namespace VansGraphics
 
 	void VansVKDevice::PrepareRayTracingData()
 	{
-		m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Failed to begin ray tracing AS build command buffer.");
+			return;
+		}
 		m_Scene->BuildRayTracingAS(this, &m_VansVKCommandBuffer);
-		m_VansVKCommandBuffer.EndCommandBufferRecord();
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-		m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		if (!m_VansVKCommandBuffer.EndCommandBufferRecord()
+			|| !VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence)
+			|| !m_VansVKCommandBuffer.ResetCommandBuffer(false))
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Ray tracing AS build command submit failed.");
+			m_Scene->ReleaseASTempBuffer(this);
+			return;
+		}
 		m_Scene->ReleaseASTempBuffer(this);
 		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene);
 	}

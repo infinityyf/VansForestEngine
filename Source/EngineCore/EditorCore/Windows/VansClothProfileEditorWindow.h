@@ -1,12 +1,17 @@
 #pragma once
 
 #include "VansBaseWindowComponent.h"
-#include "../../PhysicsCore/VansClothProfile.h"
 
 #include <imgui.h>
 #include <GLM/glm.hpp>
+#include <memory>
 #include <string>
 #include <vector>
+
+namespace VansEngine
+{
+    struct VansClothProfile;
+}
 
 namespace VansGraphics
 {
@@ -20,7 +25,10 @@ namespace VansGraphics
     class VansClothProfileEditorWindow : public VansBaseWindowComponent
     {
     public:
-        void ShowWindow(VansVKDevice& device) override;
+        VansClothProfileEditorWindow();
+        ~VansClothProfileEditorWindow() override;
+
+        void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 
         // 通过 profilePath 打开已有配置文件（HierachyWindow 或 ProjectWindow 调用）
         void OpenProfile(const std::string& profilePath);
@@ -34,7 +42,8 @@ namespace VansGraphics
         // ── 核心状态（围绕 Profile 本身，无任何 RenderNode 引用）─────────────
         bool                          m_IsOpen            = false;
         std::string                   m_CurrentProfilePath;
-        VansEngine::VansClothProfile  m_Profile;
+        std::string                   m_ProjectRootPath;
+        std::unique_ptr<VansEngine::VansClothProfile> m_Profile;
         bool                          m_IsDirty           = false; // 有未保存改动
 
         // ── 编辑器专用 CPU 网格数据（由 m_Profile.m_ModelPath 独立加载）──────
@@ -119,6 +128,7 @@ namespace VansGraphics
 
         void SaveProfile();
         void RevertProfile(); // 重新从文件加载，丢弃当前改动
+        void DrawProfileEditorContents();
 
         // Assimp CPU-only 辅助（静态，不依赖任何引擎对象）
         struct RawEditorMesh

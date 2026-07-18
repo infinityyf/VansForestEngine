@@ -48,10 +48,6 @@ namespace VansGraphics
 
 	public:
 
-		/*void BuildBottomLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansMesh* mesh);
-
-		void BuildTopLevelAS(VansVKDevice* device, VansVKCommandBuffer* commandBuffer);*/
-
 		void DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene);
 		
 		void CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene);

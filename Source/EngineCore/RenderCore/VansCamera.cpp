@@ -1,5 +1,6 @@
 ﻿#include "VansCamera.h"
 #include "../ScriptCore/VansTransform.h"
+#include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "../VansTimer.h"
 #include "../Util/VansLog.h"
 
@@ -24,8 +25,10 @@ VansGraphics::VansCamera::VansCamera(VansGraphicsDevice* device)
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
         nullptr
     };
-    VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ uniformBufferBinding }, m_CameraBufferLayout);
-    VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_CameraBufferLayout }, m_CameraBufferDescriptorSets);
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+        { uniformBufferBinding },
+        m_CameraBufferLayout,
+        m_CameraBufferDescriptorSets);
 
     // Create uniform buffer
     m_CameraDataBuffer.CreatVulkanBuffer(static_cast<VansVKDevice*>(device)->GetLogicDevice(), sizeof(m_CameraData), VK_FORMAT_R32_SFLOAT,
@@ -259,23 +262,18 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
 
     m_CameraDataBuffer.SetBufferData(&m_CameraData, 0, sizeof(m_CameraData));
 
-    VansVKDescriptorManager::GetInstance()->ResetState();
-    VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
-        {
-            m_CameraBufferDescriptorSets[0],
-            GLOBAL_BINDING_CAMERA_UBO,
+    auto* descManager = VansVKDescriptorManager::GetInstance();
+    descManager->BeginDescriptorUpdate();
+    descManager->WriteBufferDescriptor(
+        m_CameraBufferDescriptorSets[0],
+        GLOBAL_BINDING_CAMERA_UBO,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        {{
+            m_CameraDataBuffer.GetNativeBuffer(),
             0,
-            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            {
-                {
-                    m_CameraDataBuffer.GetNativeBuffer(),
-                    0,
-                    m_CameraDataBuffer.GetBufferSize()
-                }
-            }
-        }
-    );
-    VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+            m_CameraDataBuffer.GetBufferSize()
+        }});
+    descManager->CommitDescriptorUpdates();
 }
 
 glm::mat4 VansGraphics::VansCamera::GetViewMatrix()

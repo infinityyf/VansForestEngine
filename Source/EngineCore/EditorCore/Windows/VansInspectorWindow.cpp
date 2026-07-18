@@ -1,17 +1,12 @@
 #include "VansInspectorWindow.h"
 
+#include "../VansAssetDocumentEditService.h"
 #include "../VansEditorAssetSaveService.h"
+#include "../VansAssetReferenceSlotRegistry.h"
 #include "../VansEditorSelection.h"
 #include "../VansEditorWindow.h"
 #include "../VansSceneEditService.h"
-#include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansAssetGuid.h"
-#include "../../AssetCore/VansAssetMeta.h"
-#include "../../ProjectSystem/VansProjectManager.h"
-#include "../../PhysicsCore/VansCollisionLayerManager.h"
-#include "../../RenderCore/VansScene.h"
-#include "../../ScriptCore/VansTransform.h"
-#include "../../ScriptCore/VansScriptContext.h"
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../Util/VansLog.h"
 
@@ -74,61 +69,30 @@ std::string FriendlyLabel(const std::string& key)
     return label;
 }
 
-bool IsGuidText(const std::string& value)
-{
-    Vans::VansAssetGuid guid;
-    return Vans::VansAssetGuid::TryParse(value, guid);
-}
-
-Vans::VansAssetType InferAssetType(const std::string& key,
-    const std::string& parentKey, const std::string& componentType)
-{
-    const std::string field = Lower(key);
-    const std::string parent = Lower(parentKey);
-    const std::string component = Lower(componentType);
-    if (field == "model" || field.find("mesh") != std::string::npos) return Vans::VansAssetType::Model;
-    if (field.find("material") != std::string::npos || parent.find("materialoverride") != std::string::npos)
-        return Vans::VansAssetType::Material;
-    if (field == "shader" || field.find("shader") != std::string::npos || parent.find("shader") != std::string::npos)
-        return Vans::VansAssetType::Shader;
-    if (field.find("texture") != std::string::npos || parent == "textures" ||
-        parent.find("textures") != std::string::npos ||
-        field == "basecolor" || field == "normal" || field == "metal" || field == "roughness" || field == "ao")
-        return Vans::VansAssetType::Texture;
-    if (field == "source" && component == "audio") return Vans::VansAssetType::Audio;
-    if (field == "source" && component == "video") return Vans::VansAssetType::Video;
-    if ((field == "asset" && component == "particle") || field.find("particle") != std::string::npos)
-        return Vans::VansAssetType::Particle;
-    if (field == "animator" || field.find("animator") != std::string::npos)
-        return Vans::VansAssetType::AnimatorController;
-    if (field.find("clip") != std::string::npos && component == "animation")
-        return Vans::VansAssetType::AnimationClip;
-    if (field == "profilepath" && component == "cloth")
-        return Vans::VansAssetType::ClothProfile;
-    if (field.find("ragdoll") != std::string::npos)
-        return Vans::VansAssetType::RagdollProfile;
-    return Vans::VansAssetType::Unknown;
-}
-
-const char* AssetTypeName(Vans::VansAssetType type)
+const char* AssetTypeName(Vans::EditorAPI::AssetType type)
 {
     switch (type)
     {
-    case Vans::VansAssetType::Model: return "Model";
-    case Vans::VansAssetType::Texture: return "Texture";
-    case Vans::VansAssetType::Material: return "Material";
-    case Vans::VansAssetType::Shader: return "Shader";
-    case Vans::VansAssetType::Audio: return "Audio";
-    case Vans::VansAssetType::Video: return "Video";
-    case Vans::VansAssetType::Scene: return "Scene";
-    case Vans::VansAssetType::Particle: return "Particle";
-    case Vans::VansAssetType::AnimationClip: return "Animation Clip";
-    case Vans::VansAssetType::AnimatorController: return "Animator Controller";
-    case Vans::VansAssetType::ClothProfile: return "Cloth Profile";
-    case Vans::VansAssetType::PostProcessProfile: return "Post Process Profile";
-    case Vans::VansAssetType::RagdollProfile: return "Ragdoll Profile";
+    case Vans::EditorAPI::AssetType::Model: return "Model";
+    case Vans::EditorAPI::AssetType::Texture: return "Texture";
+    case Vans::EditorAPI::AssetType::Material: return "Material";
+    case Vans::EditorAPI::AssetType::Shader: return "Shader";
+    case Vans::EditorAPI::AssetType::Audio: return "Audio";
+    case Vans::EditorAPI::AssetType::Video: return "Video";
+    case Vans::EditorAPI::AssetType::Scene: return "Scene";
+    case Vans::EditorAPI::AssetType::Particle: return "Particle";
+    case Vans::EditorAPI::AssetType::AnimationClip: return "Animation Clip";
+    case Vans::EditorAPI::AssetType::AnimatorController: return "Animator Controller";
+    case Vans::EditorAPI::AssetType::ClothProfile: return "Cloth Profile";
+    case Vans::EditorAPI::AssetType::PostProcessProfile: return "Post Process Profile";
+    case Vans::EditorAPI::AssetType::RagdollProfile: return "Ragdoll Profile";
     default: return "Asset";
     }
+}
+
+Vans::EditorAPI::AssetType ToEditorAssetType(int value)
+{
+    return static_cast<Vans::EditorAPI::AssetType>(value);
 }
 
 const std::vector<const char*>* EnumOptions(const std::string& key)
@@ -247,7 +211,7 @@ bool VehicleScalarLimits(const std::string& label, const std::string& componentT
 
 void BeginProperty(const std::string& label);
 
-Json LoadShaderAssetFromMaterial(const Json& materialRoot)
+Json LoadShaderAssetFromMaterial(Vans::EditorAPI::IEngineEditorAPI& api, const Json& materialRoot)
 {
     if (!materialRoot.is_object() || Lower(materialRoot.value("materialType", "")) != "customshader")
         return Json::object();
@@ -255,25 +219,18 @@ Json LoadShaderAssetFromMaterial(const Json& materialRoot)
         return Json::object();
 
     const std::string shaderGuidText = materialRoot["shader"].value("guid", "");
-    Vans::VansAssetGuid shaderGuid;
-    if (!Vans::VansAssetGuid::TryParse(shaderGuidText, shaderGuid))
+    const Vans::EditorAPI::AssetGuidResolution shaderAsset = api.ResolveAssetGuid(shaderGuidText);
+    if (!shaderAsset.found || shaderAsset.asset.type != Vans::EditorAPI::AssetType::Shader)
         return Json::object();
 
-    Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
-    if (!database)
-        return Json::object();
-    const auto record = database->Find(shaderGuid);
-    if (!record || record->type != Vans::VansAssetType::Shader)
-        return Json::object();
-
-    std::ifstream shaderInput(record->sourcePath);
+    std::ifstream shaderInput(shaderAsset.sourcePath);
     Json shader = shaderInput ? Json::parse(shaderInput, nullptr, false) : Json();
     return shader.is_object() ? shader : Json::object();
 }
 
-void MergeCustomShaderParameterSchema(Json& materialRoot)
+void MergeCustomShaderParameterSchema(Vans::EditorAPI::IEngineEditorAPI& api, Json& materialRoot)
 {
-    Json shader = LoadShaderAssetFromMaterial(materialRoot);
+    Json shader = LoadShaderAssetFromMaterial(api, materialRoot);
     if (!shader.contains("parameters") || !shader["parameters"].is_object())
         return;
 
@@ -419,20 +376,35 @@ const Json* FindComponent(const Json& entity, const std::string& type)
 }
 
 bool VansInspectorWindow::DrawAssetReference(const std::string& label, Json& reference,
-    const std::string& pointer, int expectedAssetTypeValue)
+    const std::string& pointer, int expectedAssetTypeValue, bool writeObjectReference)
 {
-    const auto expectedType = static_cast<Vans::VansAssetType>(expectedAssetTypeValue);
-    Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
-    if (!database || !reference.is_object()) return false;
+    const auto expectedType = ToEditorAssetType(expectedAssetTypeValue);
+    if (!m_ActiveAPI || !reference.is_object()) return false;
+
+    auto assignGuid = [&](std::string guid)
+    {
+        reference["guid"] = guid;
+        m_PendingAssetReferenceEdit = PendingAssetReferenceEdit{
+            pointer,
+            std::move(guid),
+            expectedAssetTypeValue,
+            writeObjectReference
+        };
+    };
 
     std::string guidText = reference.value("guid", "");
     std::string preview = "None (" + std::string(AssetTypeName(expectedType)) + ")";
-    Vans::VansAssetGuid guid;
     bool missing = false;
-    if (Vans::VansAssetGuid::TryParse(guidText, guid))
+    if (!guidText.empty())
     {
-        if (const auto record = database->Find(guid)) preview = record->sourcePath.filename().string();
-        else { preview = "Missing: " + guidText.substr(0, 8); missing = true; }
+        const Vans::EditorAPI::AssetGuidResolution resolved = m_ActiveAPI->ResolveAssetGuid(guidText);
+        if (resolved.found)
+            preview = resolved.asset.name;
+        else
+        {
+            preview = "Missing: " + guidText.substr(0, 8);
+            missing = true;
+        }
     }
 
     BeginProperty(label);
@@ -447,22 +419,24 @@ bool VansInspectorWindow::DrawAssetReference(const std::string& label, Json& ref
         const std::string filter = Lower(search);
         if (ImGui::Selectable("None", guidText.empty()))
         {
-            reference["guid"] = "";
+            assignGuid("");
             changed = true;
         }
-        for (const Vans::VansAssetRecord& record : database->All())
+        Vans::EditorAPI::AssetTypeFilter assetFilter;
+        assetFilter.type = expectedType;
+        for (const Vans::EditorAPI::AssetEntry& asset : m_ActiveAPI->QueryAssets(assetFilter))
         {
-            if (record.type != expectedType || record.state == Vans::VansAssetState::Missing) continue;
-            if (!filter.empty() && Lower(record.sourcePath.filename().string()).find(filter) == std::string::npos) continue;
-            const std::string candidateGuid = record.guid.ToString();
-            const std::string itemLabel = record.sourcePath.filename().string() + "##" + candidateGuid;
+            if (!filter.empty() && Lower(asset.name).find(filter) == std::string::npos) continue;
+            const std::string candidateGuid = asset.guid;
+            if (candidateGuid.empty()) continue;
+            const std::string itemLabel = asset.name + "##" + candidateGuid;
             const bool selected = candidateGuid == guidText;
             if (ImGui::Selectable(itemLabel.c_str(), selected))
             {
-                reference["guid"] = candidateGuid;
+                assignGuid(candidateGuid);
                 changed = true;
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", record.sourcePath.string().c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", asset.relativePath.c_str());
         }
         ImGui::EndCombo();
     }
@@ -472,10 +446,12 @@ bool VansInspectorWindow::DrawAssetReference(const std::string& label, Json& ref
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("VANS_ASSET_GUID"))
         {
             const std::string dropped(static_cast<const char*>(payload->Data));
-            Vans::VansAssetGuid droppedGuid;
-            if (Vans::VansAssetGuid::TryParse(dropped, droppedGuid))
-                if (const auto record = database->Find(droppedGuid); record && record->type == expectedType)
-                { reference["guid"] = dropped; changed = true; }
+            const Vans::EditorAPI::AssetGuidResolution resolved = m_ActiveAPI->ResolveAssetGuid(dropped);
+            if (resolved.found && resolved.asset.type == expectedType)
+            {
+                assignGuid(dropped);
+                changed = true;
+            }
         }
         ImGui::EndDragDropTarget();
     }
@@ -488,18 +464,23 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
 {
     ImGui::PushID(pointer.c_str());
     bool changed = false;
-    const Vans::VansAssetType assetType = InferAssetType(label, parentKey, componentType);
-    if (value.is_string() && assetType != Vans::VansAssetType::Unknown &&
-        (value.get_ref<const std::string&>().empty() || IsGuidText(value.get_ref<const std::string&>())))
+    const Vans::AssetReferenceSlotDescriptor slotDescriptor =
+        Vans::VansAssetReferenceSlotRegistry::Resolve(componentType, parentKey, label);
+    const Vans::EditorAPI::AssetType assetType = slotDescriptor.expectedType;
+    const std::string* stringValue = value.is_string() ? &value.get_ref<const std::string&>() : nullptr;
+    const bool isEmptyOrKnownGuid = stringValue &&
+        (stringValue->empty() || (m_ActiveAPI && m_ActiveAPI->ResolveAssetGuid(*stringValue).found));
+    if (value.is_string() && assetType != Vans::EditorAPI::AssetType::Unknown &&
+        isEmptyOrKnownGuid)
     {
         Json reference = { { "guid", value.get<std::string>() } };
         ImGui::PopID();
-        if (DrawAssetReference(label, reference, pointer, static_cast<int>(assetType)))
+        if (DrawAssetReference(label, reference, pointer, static_cast<int>(assetType), false))
         { value = reference.value("guid", ""); return true; }
         return false;
     }
     if (value.is_object() && value.contains("guid") && value["guid"].is_string() &&
-        assetType != Vans::VansAssetType::Unknown)
+        assetType != Vans::EditorAPI::AssetType::Unknown)
     {
         ImGui::PopID();
         return DrawAssetReference(label, value, pointer, static_cast<int>(assetType));
@@ -651,12 +632,10 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
         if (readOnly) ImGui::TextDisabled("%s", current.c_str());
         else if (Lower(label) == "layer")
         {
-            auto& layers = VansEngine::VansCollisionLayerManager::Get();
             if (ImGui::BeginCombo("##value", current.c_str()))
             {
-                for (int index = 0; index < layers.GetLayerCount(); ++index)
+                for (const std::string& option : m_CollisionLayerNames)
                 {
-                    const std::string& option = layers.GetLayerName(index);
                     if (ImGui::Selectable(option.c_str(), current == option)) { value = option; changed = true; }
                 }
                 ImGui::EndCombo();
@@ -688,7 +667,8 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
     return changed;
 }
 
-bool VansInspectorWindow::DrawComponent(Json& component, const std::string& pointer, bool& removeRequested)
+bool VansInspectorWindow::DrawComponent(Vans::EditorAPI::IEngineEditorAPI& api, Json& component,
+    const std::string& pointer, bool& removeRequested)
 {
     const std::string type = component.value("type", "Component");
     ImGui::PushID(pointer.c_str());
@@ -702,7 +682,7 @@ bool VansInspectorWindow::DrawComponent(Json& component, const std::string& poin
             changed = true;
 
             // 连线到运行时：将 enabled 状态同步到 VansScriptComponent → VansNode
-            ApplyComponentEnabled(pointer, enabled);
+            ApplyComponentEnabled(api, type, enabled);
         }
     }
     ImGui::SameLine();
@@ -727,7 +707,7 @@ bool VansInspectorWindow::DrawComponent(Json& component, const std::string& poin
                 {
                     Json reference = { { "guid", "" } };
                     if (DrawAssetReference("Material 0", reference, pointer + "/data/materialOverrides/default",
-                        static_cast<int>(Vans::VansAssetType::Material)) && !reference.value("guid", "").empty())
+                        static_cast<int>(Vans::EditorAPI::AssetType::Material)) && !reference.value("guid", "").empty())
                     { overrides["default"] = std::move(reference); changed = true; }
                 }
                 else
@@ -736,7 +716,7 @@ bool VansInspectorWindow::DrawComponent(Json& component, const std::string& poin
                     for (auto slot = overrides.begin(); slot != overrides.end(); ++slot, ++slotIndex)
                         changed |= DrawAssetReference("Material " + std::to_string(slotIndex), slot.value(),
                             pointer + "/data/materialOverrides/" + EscapePointerToken(slot.key()),
-                            static_cast<int>(Vans::VansAssetType::Material));
+                            static_cast<int>(Vans::EditorAPI::AssetType::Material));
                 }
                 continue;
             }
@@ -752,17 +732,17 @@ bool VansInspectorWindow::DrawComponent(Json& component, const std::string& poin
     return changed;
 }
 
-void VansInspectorWindow::DrawSceneEntity()
+void VansInspectorWindow::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api)
 {
     Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
     Vans::VansSceneEditService* editor = VansEditorWindow::GetSceneEditService();
     if (!document || !editor) return;
-    m_LiveEdit.Bind(m_Scene, document);
     const std::string& selected = Vans::VansEditorSelection::EntityGuid();
     const auto& entities = document->Root()["entities"];
     for (std::size_t index = 0; index < entities.size(); ++index)
     {
         if (entities[index].value("id", "") != selected) continue;
+        m_PendingAssetReferenceEdit.reset();
         Json edited = entities[index];
         const std::string pointer = "/entities/" + std::to_string(index);
         bool changed = false;
@@ -780,7 +760,7 @@ void VansInspectorWindow::DrawSceneEntity()
             for (std::size_t componentIndex = 0; componentIndex < edited["components"].size();)
             {
                 bool remove = false;
-                changed |= DrawComponent(edited["components"][componentIndex],
+                changed |= DrawComponent(api, edited["components"][componentIndex],
                     pointer + "/components/" + std::to_string(componentIndex), remove);
                 if (remove) { edited["components"].erase(edited["components"].begin() + componentIndex); changed = true; }
                 else ++componentIndex;
@@ -815,9 +795,22 @@ void VansInspectorWindow::DrawSceneEntity()
         if (changed)
         {
             Json runtimeEdited = edited;
-            const Vans::SceneEditResult result = editor->Set(pointer, std::move(edited));
+            Vans::SceneEditResult result;
+            if (m_PendingAssetReferenceEdit)
+            {
+                const PendingAssetReferenceEdit edit = *m_PendingAssetReferenceEdit;
+                result = editor->AssignAssetReference(edit.pointer,
+                    edit.guid,
+                    static_cast<Vans::EditorAPI::AssetType>(edit.expectedAssetType),
+                    edit.writeObjectReference);
+                m_PendingAssetReferenceEdit.reset();
+            }
+            else
+            {
+                result = editor->Set(pointer, std::move(edited));
+            }
             if (!result) VANS_LOG_ERROR("[Inspector] " << result.message);
-            else m_LiveEdit.ApplyEntityPatch(runtimeEdited);
+            else api.ApplyRuntimeEntityPatchJson(runtimeEdited.dump());
         }
         return;
     }
@@ -849,7 +842,14 @@ bool VansInspectorWindow::LoadAssetDocuments(const std::filesystem::path& source
 bool VansInspectorWindow::SaveAssetDocuments(bool reloadSceneOnSuccess)
 {
     m_Error.clear();
-    const Vans::VansAssetSaveResult result = Vans::VansEditorAssetSaveService::Get().SaveAsset(m_AssetDocuments);
+    if (!m_ActiveAPI)
+    {
+        m_Error = "Engine editor API is not available";
+        return false;
+    }
+
+    const Vans::VansAssetSaveResult result =
+        Vans::VansEditorAssetSaveService::Get().SaveAsset(*m_ActiveAPI, m_AssetDocuments);
     if (!result)
     {
         m_Error = result.message;
@@ -862,7 +862,7 @@ bool VansInspectorWindow::SaveAssetDocuments(bool reloadSceneOnSuccess)
     return true;
 }
 
-void VansInspectorWindow::DrawAsset()
+void VansInspectorWindow::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api)
 {
     const std::filesystem::path& selected = Vans::VansEditorSelection::AssetPath();
     if (selected != m_AssetPath) LoadAssetDocuments(selected);
@@ -879,17 +879,46 @@ void VansInspectorWindow::DrawAsset()
     if (m_AssetDocuments && m_AssetDocuments->sourceDocument.IsLoaded())
     {
         Json& root = m_AssetDocuments->sourceDocument.Root();
-        MergeCustomShaderParameterSchema(root);
+        MergeCustomShaderParameterSchema(api, root);
         for (auto iterator = root.begin(); iterator != root.end(); ++iterator)
         {
-            const bool identity = iterator.key() == "schemaVersion" || iterator.key() == "guid";
-            if (DrawJsonValue(iterator.key(), iterator.value(), "/asset/" + EscapePointerToken(iterator.key()), identity))
+            const std::string propertyKey = iterator.key();
+            const std::string propertyPointer = "/asset/" + EscapePointerToken(propertyKey);
+            const bool identity = propertyKey == "schemaVersion" || propertyKey == "guid";
+            const Json beforeEditRoot = root;
+            if (DrawJsonValue(propertyKey, iterator.value(), propertyPointer, identity))
             {
-                m_AssetDocuments->sourceDocument.MarkDirty();
-                m_MaterialLiveEdit.ApplyMaterialAssetPatch(
-                    selected,
-                    root,
-                    "/asset/" + EscapePointerToken(iterator.key()));
+                bool editApplied = false;
+                bool rootRestored = false;
+                if (m_PendingAssetReferenceEdit)
+                {
+                    const PendingAssetReferenceEdit edit = *m_PendingAssetReferenceEdit;
+                    root = beforeEditRoot;
+                    rootRestored = true;
+                    const Vans::AssetDocumentEditResult result =
+                        Vans::VansAssetDocumentEditService::SetAssetReference(
+                            m_AssetDocuments->sourceDocument,
+                            edit.pointer,
+                            edit.guid,
+                            edit.writeObjectReference);
+                    if (!result)
+                        VANS_LOG_ERROR("[Inspector] " << result.message);
+                    editApplied = static_cast<bool>(result);
+                    m_PendingAssetReferenceEdit.reset();
+                }
+                else
+                {
+                    m_AssetDocuments->sourceDocument.MarkDirty();
+                    editApplied = true;
+                }
+
+                if (editApplied)
+                    api.ApplyRuntimeMaterialAssetPatch(
+                        selected.string(),
+                        root.dump(),
+                        propertyPointer);
+                if (rootRestored)
+                    break;
             }
         }
     }
@@ -917,22 +946,24 @@ void VansInspectorWindow::DrawAsset()
 }
 
 void VansInspectorWindow::ApplyComponentEnabled(
-    const std::string& jsonPointer, bool enabled)
+    Vans::EditorAPI::IEngineEditorAPI& api, const std::string& componentType, bool enabled)
 {
     const std::string& selectedGuid = Vans::VansEditorSelection::EntityGuid();
-    m_LiveEdit.Bind(m_Scene, VansEditorWindow::GetSceneDocument());
-    m_LiveEdit.ApplyComponentEnabledFromPointer(selectedGuid, jsonPointer, enabled);
+    api.SetRuntimeComponentEnabled(selectedGuid, componentType, enabled);
 }
 
-void VansInspectorWindow::ShowWindow(VansVKDevice& device)
+void VansInspectorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
 {
-    (void)device;
     ImGui::Begin("Inspector");
+    m_ActiveAPI = &api;
+    m_CollisionLayerNames = api.GetRuntimeCollisionLayerNames();
+    m_PendingAssetReferenceEdit.reset();
     if (Vans::VansEditorSelection::IsSceneSelected()) DrawSceneSettings();
-    else if (!Vans::VansEditorSelection::EntityGuid().empty()) DrawSceneEntity();
-    else if (!Vans::VansEditorSelection::AssetPath().empty()) DrawAsset();
+    else if (!Vans::VansEditorSelection::EntityGuid().empty()) DrawSceneEntity(api);
+    else if (!Vans::VansEditorSelection::AssetPath().empty()) DrawAsset(api);
     else ImGui::TextDisabled("Select an entity or project asset");
     ImGui::End();
+    m_ActiveAPI = nullptr;
 
     if (m_PendingVehicleRebuild && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
     {

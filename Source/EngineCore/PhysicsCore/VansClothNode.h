@@ -4,7 +4,7 @@
 #include "../VansNode.h"
 #include "../ScriptCore/VansTransform.h"
 #include "../RenderCore/VansRenderNode.h"
-#include "VansClothProfile.h"
+#include "../AssetCore/VansClothProfile.h"
 
 // ─── NvCloth core ─────────────────────────────────────────────────────────────
 #include <NvCloth/Cloth.h>
@@ -155,7 +155,7 @@ namespace VansEngine
         { return m_CollisionSphereRefs; }
 
         // ── V2：骨骼跟随接口 ─────────────────────────────────────────────────
-        // 由 VansScene::LoadSingleClothNode() 在创建后立即注入。
+        // 由 VansScenePhysicsComponentBuilder 在创建后立即注入。
         // 必须在调用 SyncPinnedParticlesToRenderNode() 之前设置。
         void SetAnimationNode(VansGraphics::VansAnimationNode* animNode)
         {

@@ -1,6 +1,7 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansMesh.h"
 #include "VansVKCommandBuffer.h"
+#include "VansVKDevice.h"
 #include "../../Util/VansLog.h"
 #include <iostream>
 
@@ -308,17 +309,25 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
     
     // 这里你需要一个即时执行的 CommandBuffer (Single Time Command)
     // 假设你有这样的工具函数 VansVKFunctions::BeginSingleTimeCommands / EndSingleTimeCommands
-	commandbuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-    VkBufferCopy copyRegion{};
-    copyRegion.size = vertexBufferSize;
-    vkCmdCopyBuffer(commandbuffer->GetVKCommandBuffer(), stagingVertexBuffer.GetNativeBuffer(), m_VertexBuffer.GetNativeBuffer(), 1, &copyRegion);
-
-    copyRegion.size = indexBufferSize;
-    vkCmdCopyBuffer(commandbuffer->GetVKCommandBuffer(), stagingIndexBuffer.GetNativeBuffer(), m_IndexBuffer.GetNativeBuffer(), 1, &copyRegion);
+	if (!commandbuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+	{
+		VANS_LOG_ERROR("[VansMesh] Failed to begin mesh GPU buffer upload command buffer.");
+		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
+		stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
+		return;
+	}
+	commandbuffer->CopyBuffer(stagingVertexBuffer.GetNativeBuffer(), m_VertexBuffer.GetNativeBuffer(), 0, 0, vertexBufferSize);
+	commandbuffer->CopyBuffer(stagingIndexBuffer.GetNativeBuffer(), m_IndexBuffer.GetNativeBuffer(), 0, 0, indexBufferSize);
 	
-	commandbuffer->EndCommandBufferRecord();
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { commandbuffer->GetVKCommandBuffer() }, {}, {}, commandbuffer->m_CommandBufferFinishSubmitFence);
-	commandbuffer->ResetCommandBuffer(false);
+	if (!commandbuffer->EndCommandBufferRecord()
+		|| !VansVKCommandBuffer::SubmitCommands(queue, logic_device, { commandbuffer->GetVKCommandBuffer() }, {}, {}, commandbuffer->m_CommandBufferFinishSubmitFence)
+		|| !commandbuffer->ResetCommandBuffer(false))
+	{
+		VANS_LOG_ERROR("[VansMesh] Failed to submit mesh GPU buffer upload.");
+		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
+		stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
+		return;
+	}
 
     // =================================================================================
     // 5. 清理 Staging Buffers
@@ -336,17 +345,12 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 	}
 }
 
-void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& commandBuffer)
+void VansGraphics::VansMesh::BuildBLAS(VansVKDevice& device, VansVKCommandBuffer& commandBuffer)
 {
+	VkDevice logic_device = device.GetLogicDevice();
 	// 获取顶点缓冲区地址
-	VkBufferDeviceAddressInfo addressInfo{};
-	addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-	addressInfo.buffer = m_VertexBuffer.GetNativeBuffer();
-	addressInfo.pNext = nullptr;
-	VkDeviceAddress vertexBufferAddress = vkGetBufferDeviceAddressKHR(logic_device, &addressInfo);
-
-	addressInfo.buffer = m_IndexBuffer.GetNativeBuffer();
-	VkDeviceAddress indexBufferAddress = vkGetBufferDeviceAddressKHR(logic_device, &addressInfo);
+	VkDeviceAddress vertexBufferAddress = m_VertexBuffer.GetDeviceAddress(logic_device);
+	VkDeviceAddress indexBufferAddress = m_IndexBuffer.GetDeviceAddress(logic_device);
 
 	// 定义几何数据
 	VkAccelerationStructureGeometryTrianglesDataKHR triangles{};
@@ -387,8 +391,7 @@ void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& 
 
 	VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo{};
 	buildSizesInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
-	vkGetAccelerationStructureBuildSizesKHR(logic_device,
-		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildGeometryInfo, primitiveCounts, &buildSizesInfo);
+	device.GetAccelerationStructureBuildSizes(&buildGeometryInfo, primitiveCounts, &buildSizesInfo);
 
 	//给blas创建buffer
 	m_BottomLevelASBuffer.CreatVulkanBuffer(
@@ -404,7 +407,7 @@ void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& 
 	accelCreateInfo.size = buildSizesInfo.accelerationStructureSize;
 	accelCreateInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 
-	vkCreateAccelerationStructureKHR(logic_device, &accelCreateInfo, nullptr, &m_BottomLevelAS);
+	device.CreateAccelerationStructure(&accelCreateInfo, &m_BottomLevelAS);
 
 	buildGeometryInfo.dstAccelerationStructure = m_BottomLevelAS;
 
@@ -415,22 +418,19 @@ void VansGraphics::VansMesh::BuildBLAS(VkDevice& logic_device, VkCommandBuffer& 
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-	VkBufferDeviceAddressInfo bufferAddressInfo;
-	bufferAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-	bufferAddressInfo.buffer = m_BLASScratchBuffer.GetNativeBuffer();
-	bufferAddressInfo.pNext = nullptr;
-	buildGeometryInfo.scratchData.deviceAddress = vkGetBufferDeviceAddressKHR(logic_device, &bufferAddressInfo);
+	buildGeometryInfo.scratchData.deviceAddress = m_BLASScratchBuffer.GetDeviceAddress(logic_device);
 
 	//创建加速结构
 	const VkAccelerationStructureBuildRangeInfoKHR* pRangeInfo = &buildRangeInfo;
-	vkCmdBuildAccelerationStructuresKHR(commandBuffer, 1, &buildGeometryInfo, &pRangeInfo);
+	commandBuffer.BuildAccelerationStructures(&buildGeometryInfo, pRangeInfo);
 }
 
-void VansGraphics::VansMesh::DestroyBLAS(VkDevice& logic_device)
+void VansGraphics::VansMesh::DestroyBLAS(VansVKDevice& device)
 {
+	VkDevice logic_device = device.GetLogicDevice();
 	if (m_BottomLevelAS != VK_NULL_HANDLE)
 	{
-		vkDestroyAccelerationStructureKHR(logic_device, m_BottomLevelAS, nullptr);
+		device.DestroyAccelerationStructure(m_BottomLevelAS);
 		m_BottomLevelAS = VK_NULL_HANDLE;
 	}
 	m_BottomLevelASBuffer.DestroyVulkanBuffer(logic_device);

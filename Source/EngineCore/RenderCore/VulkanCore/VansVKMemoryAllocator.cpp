@@ -16,6 +16,7 @@
 #include "vk_mem_alloc.h"
 
 #include "VansVKMemoryAllocator.h"
+#include <cassert>
 
 namespace VansGraphics
 {
@@ -164,7 +165,12 @@ namespace VansGraphics
 		{
 			return;
 		}
-		if (buffer != VK_NULL_HANDLE || allocation != nullptr)
+		if ((buffer == VK_NULL_HANDLE) != (allocation == nullptr))
+		{
+			VANS_LOG_ERROR("[VMA] DestroyBuffer skipped half-initialized handle/allocation pair.");
+			assert(false && "VMA buffer and allocation must be destroyed as a valid pair.");
+		}
+		else if (buffer != VK_NULL_HANDLE && allocation != nullptr)
 		{
 			vmaDestroyBuffer(m_Allocator, buffer, allocation);
 		}
@@ -214,7 +220,12 @@ namespace VansGraphics
 		{
 			return;
 		}
-		if (image != VK_NULL_HANDLE || allocation != nullptr)
+		if ((image == VK_NULL_HANDLE) != (allocation == nullptr))
+		{
+			VANS_LOG_ERROR("[VMA] DestroyImage skipped half-initialized handle/allocation pair.");
+			assert(false && "VMA image and allocation must be destroyed as a valid pair.");
+		}
+		else if (image != VK_NULL_HANDLE && allocation != nullptr)
 		{
 			vmaDestroyImage(m_Allocator, image, allocation);
 		}

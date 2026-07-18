@@ -6,6 +6,9 @@
 #endif
 #include "vulkan/vulkan.h"
 #include "VansDescriptorSetLayouts.h"
+#include <cstdint>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 
@@ -65,6 +68,30 @@ namespace VansGraphics
 		uint32_t DescriptorCount;
 	};
 
+	struct VansDescriptorPoolDiagnostics
+	{
+		uint32_t standardPoolCount = 0;
+		uint32_t updateAfterBindPoolCount = 0;
+		uint32_t trackedDescriptorSetCount = 0;
+		uint32_t updateAfterBindLayoutCount = 0;
+		uint32_t globalPersistentSetCount = 0;
+		uint32_t scenePersistentSetCount = 0;
+		uint32_t frameTransientSetCount = 0;
+		uint32_t passPersistentSetCount = 0;
+		uint32_t uploadScratchSetCount = 0;
+		uint32_t rayTracingPersistentSetCount = 0;
+	};
+
+	enum class VansDescriptorLifetimeRole : uint8_t
+	{
+		GlobalPersistent,
+		ScenePersistent,
+		FrameTransient,
+		PassPersistent,
+		UploadScratch,
+		RayTracingPersistent
+	};
+
 	class VansVKDescriptorManager
 	{
 	public:
@@ -72,7 +99,7 @@ namespace VansGraphics
 	private:
 
 		//各个类似的描述符在这个pool中的最大数量，不是在一个set中的
-		int m_MaxSetsCount = 800 * 100;
+		uint32_t m_MaxSetsCount = 800 * 100;
 		uint32_t m_MaxSamplerDescCount = 20000;
 		uint32_t m_MaxCombinedSamplerDescCount = 20000;
 		uint32_t m_MaxSampledImageDescCount = 20000;
@@ -101,7 +128,7 @@ namespace VansGraphics
 			{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, m_MaxInputAttachDescCount },
 			{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, m_MaxAccelerationStructureDescCount },
 		};
-	public:
+	private:
 		//待更新的各种类型的descinfo
 		std::vector<BufferDescriptorInfo> m_BufferDescInfos;
 		std::vector<ImageDescriptorInfo> m_ImageDescInfos;
@@ -141,6 +168,40 @@ namespace VansGraphics
 			m_RayTraceASInfos.clear();
 		}
 
+		void BeginDescriptorUpdate() { ResetState(); }
+		void WriteImageDescriptor(
+			VkDescriptorSet dstSet,
+			uint32_t binding,
+			VkDescriptorType type,
+			const std::vector<VkDescriptorImageInfo>& imageInfos,
+			uint32_t firstElement = 0);
+		void WriteBufferDescriptor(
+			VkDescriptorSet dstSet,
+			uint32_t binding,
+			VkDescriptorType type,
+			const std::vector<VkDescriptorBufferInfo>& bufferInfos,
+			uint32_t firstElement = 0);
+		void WriteTexelBufferDescriptor(
+			VkDescriptorSet dstSet,
+			uint32_t binding,
+			VkDescriptorType type,
+			const std::vector<VkBufferView>& texelBufferViews,
+			uint32_t firstElement = 0);
+		void WriteAccelerationStructureDescriptor(
+			VkDescriptorSet dstSet,
+			uint32_t binding,
+			VkAccelerationStructureKHR accelerationStructure,
+			uint32_t firstElement = 0);
+		void CopyDescriptor(
+			VkDescriptorSet dstSet,
+			uint32_t dstBinding,
+			VkDescriptorSet srcSet,
+			uint32_t srcBinding,
+			uint32_t descriptorCount,
+			uint32_t dstArrayElement = 0,
+			uint32_t srcArrayElement = 0);
+		void CommitDescriptorUpdates();
+
 		void BindDevice(VkPhysicalDevice& physicDevice, VkDevice& logicalDevice, VkCommandBuffer& commandBuffer)
 		{
 			m_PhysicalDevice = physicDevice;
@@ -161,9 +222,26 @@ namespace VansGraphics
 		{
 			return m_DescriptorPool;
 		}
+		VansDescriptorPoolDiagnostics GetDiagnostics() const;
 	private:
 
-		VkDescriptorPool m_DescriptorPool;
+		VkDescriptorPool m_DescriptorPool = VK_NULL_HANDLE;
+		VkDescriptorPool m_UpdateAfterBindDescriptorPool = VK_NULL_HANDLE;
+		VkDescriptorPoolCreateFlags m_DescriptorPoolFlags = 0;
+		std::vector<VkDescriptorPool> m_DescriptorPools;
+		std::vector<VkDescriptorPool> m_UpdateAfterBindDescriptorPools;
+		std::unordered_set<VkDescriptorSetLayout> m_UpdateAfterBindLayouts;
+		std::unordered_map<VkDescriptorSet, VkDescriptorPool> m_DescriptorSetPools;
+		std::unordered_map<VkDescriptorSet, VansDescriptorLifetimeRole> m_DescriptorSetRoles;
+
+		bool CreateDescriptorPoolHandle(VkDescriptorPoolCreateFlags flags, VkDescriptorPool& outPool);
+		bool UsesUpdateAfterBindPool(const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts) const;
+		bool AllocateDescriptorSetFromPool(
+			VkDescriptorPool descriptorPool,
+			const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts,
+			std::vector<VkDescriptorSet>& descriptorSets,
+			VkResult& outResult,
+			VansDescriptorLifetimeRole lifetimeRole);
 
 	public:
 
@@ -202,7 +280,10 @@ namespace VansGraphics
 	
 		void DestroyDescriptorSetLayout(VkDescriptorSetLayout& descriptor_set_layout);
 
-		bool AllocateDescriptorSet(const std::vector<VkDescriptorSetLayout>& discriptor_set_layout, std::vector<VkDescriptorSet>& descriptor_sets);
+		bool AllocateDescriptorSet(
+			const std::vector<VkDescriptorSetLayout>& discriptor_set_layout,
+			std::vector<VkDescriptorSet>& descriptor_sets,
+			VansDescriptorLifetimeRole lifetimeRole = VansDescriptorLifetimeRole::ScenePersistent);
 		
 		bool DestroyDescriptorSet(std::vector<VkDescriptorSet>& descriptor_sets);
 

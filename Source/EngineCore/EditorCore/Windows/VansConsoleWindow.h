@@ -10,9 +10,11 @@ namespace VansGraphics
     class VansConsoleWindow : public VansBaseWindowComponent
     {
     public:
-        void ShowWindow(VansVKDevice& device) override;
+        void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 
     private:
+        void DrawConsoleContents();
+
         // 0 = All, 1 = Engine only, 2 = Python only
         int m_FilterMode = 0;
 

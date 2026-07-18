@@ -2,6 +2,7 @@
 
 #include "VansWaterConfig.h"
 #include "glm/glm.hpp"
+#include "../VulkanCore/VansVKBuffer.h"
 #include <vulkan/vulkan.h>
 #include <vector>
 
@@ -64,8 +65,8 @@ namespace VansGraphics
         const std::vector<CDLODPatch>& GetPatches() const { return m_Patches; }
         size_t GetPatchCount() const { return m_Patches.size(); }
 
-        VkBuffer GetVertexBuffer() const { return m_VertexBuffer; }
-        VkBuffer GetIndexBuffer() const { return m_IndexBuffer; }
+        VkBuffer GetVertexBuffer() const { return m_VertexBufferCreated ? m_VertexBuffer.GetNativeBuffer() : VK_NULL_HANDLE; }
+        VkBuffer GetIndexBuffer() const { return m_IndexBufferCreated ? m_IndexBuffer.GetNativeBuffer() : VK_NULL_HANDLE; }
         uint32_t GetIndexCount() const { return m_IndexCount; }
         int GetMeshDim() const { return m_MeshDim; }
         int GetLodLevels() const { return m_LodLevels; }
@@ -78,9 +79,6 @@ namespace VansGraphics
 
     private:
         void BuildPatchMesh(VkDevice logicDevice);
-        bool AllocateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                            VkMemoryPropertyFlags props,
-                            VkBuffer& outBuffer, VkDeviceMemory& outMemory);
 
         static uint32_t ComputeOuterEdgeMask(int ix, int iz);
         static uint32_t ComputeInnerEdgeMask(int lod, int ix, int iz);
@@ -93,11 +91,11 @@ namespace VansGraphics
         float m_DetailBalance = 2.0f;
         float m_MorphWidthRatio = 0.5f;
 
-        VkBuffer       m_VertexBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory m_VertexMemory = VK_NULL_HANDLE;
-        VkBuffer       m_IndexBuffer  = VK_NULL_HANDLE;
-        VkDeviceMemory m_IndexMemory  = VK_NULL_HANDLE;
-        uint32_t       m_IndexCount   = 0;
+        VansVKBuffer   m_VertexBuffer;
+        VansVKBuffer   m_IndexBuffer;
+        bool           m_VertexBufferCreated = false;
+        bool           m_IndexBufferCreated = false;
+        uint32_t       m_IndexCount = 0;
 
         std::vector<VkVertexInputBindingDescription>   m_VertexBindings;
         std::vector<VkVertexInputAttributeDescription> m_VertexAttributes;

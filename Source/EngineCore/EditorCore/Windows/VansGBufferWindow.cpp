@@ -1,144 +1,66 @@
 #include "VansGBufferWindow.h"
 #include "../VansEditorWindow.h"
 #include "imgui.h"
-#include "backends/imgui_impl_vulkan.h"
-#include "../../RenderCore/VulkanCore/VansRenderPass.h"
 
-void VansGraphics::VansGBufferWindow::ShowWindow(VansVKDevice& device)
+#include <vector>
+
+namespace
 {
-    if (!VansGraphics::VansEditorWindow::m_GBufferWindowOpen &&
-        !VansGraphics::VansEditorWindow::m_WaterGBufferWindowOpen)
-    {
-        return;
-    }
+	void DrawPreviewTable(
+		const char* tableId,
+		const std::vector<Vans::EditorAPI::RenderTexturePreview>& previews)
+	{
+		if (previews.empty())
+		{
+			ImGui::TextDisabled("No render texture previews are available.");
+			return;
+		}
 
-    auto renderPassManager = VansRenderPassManager::GetInstance();
-    if (VansGraphics::VansEditorWindow::m_GBufferWindowOpen)
-    {
-        ImGui::Begin("GBuffer Visualization");
-        if (renderPassManager)
-        {
-            // Get GBuffer images
-            VansVKImage& gbuffer0 = renderPassManager->GetGbuffer0(); // Albedo + Roughness
-            VansVKImage& gbuffer1 = renderPassManager->GetGbuffer1(); // Metallic + AO + MaterialID
-            VansVKImage& gbuffer2 = renderPassManager->GetGbuffer2(); // WorldPosition + LinearDepth
-            VansVKImage& normal = renderPassManager->GetNormal();     // Normal
+		if (ImGui::BeginTable(tableId, 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
+		{
+			for (const auto& preview : previews)
+			{
+				ImGui::TableNextColumn();
+				ImGui::Text("%s", preview.name.c_str());
+				if (!preview.texture || preview.width == 0 || preview.height == 0)
+				{
+					ImGui::TextDisabled("(image not created)");
+					continue;
+				}
 
-            // Helper lambda to display an image with caching
-            auto DisplayImage = [](const char* label, VansVKImage& image, VkDescriptorSet& cachedDS, VkImageView& cachedImageView)
-            {
-                ImGui::Text("%s", label);
-            
-                VkImageView currentImageView = image.GetImageView();
-                if (cachedDS == VK_NULL_HANDLE || cachedImageView != currentImageView)
-                {
-                    if (cachedDS != VK_NULL_HANDLE)
-                    {
-                        ImGui_ImplVulkan_RemoveTexture(cachedDS);
-                    }
-                    // Ensure the image is in a readable layout (SHADER_READ_ONLY_OPTIMAL)
-                    cachedDS = ImGui_ImplVulkan_AddTexture(image.GetSampler(), currentImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    cachedImageView = currentImageView;
-                }
+				const float width = ImGui::GetContentRegionAvail().x;
+				const float aspect = static_cast<float>(preview.width) / static_cast<float>(preview.height);
+				ImGui::Image(preview.texture, ImVec2(width, width / aspect));
+			}
+			ImGui::EndTable();
+		}
+	}
+}
 
-                if (cachedDS != VK_NULL_HANDLE)
-                {
-                    float width = ImGui::GetContentRegionAvail().x;
-                    float aspect = (float)image.GetImageDimension().width / (float)image.GetImageDimension().height;
-                    ImGui::Image((ImTextureID)cachedDS, ImVec2(width, width / aspect));
-                }
-            };
+void VansGraphics::VansGBufferWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+{
+	if (!VansGraphics::VansEditorWindow::m_GBufferWindowOpen &&
+		!VansGraphics::VansEditorWindow::m_WaterGBufferWindowOpen)
+	{
+		return;
+	}
 
-            // Static cache for each slot to avoid recreating descriptor sets every frame
-            static VkDescriptorSet ds0 = VK_NULL_HANDLE; static VkImageView iv0 = VK_NULL_HANDLE;
-            static VkDescriptorSet ds1 = VK_NULL_HANDLE; static VkImageView iv1 = VK_NULL_HANDLE;
-            static VkDescriptorSet ds2 = VK_NULL_HANDLE; static VkImageView iv2 = VK_NULL_HANDLE;
-            static VkDescriptorSet dsN = VK_NULL_HANDLE; static VkImageView ivN = VK_NULL_HANDLE;
+	if (VansGraphics::VansEditorWindow::m_GBufferWindowOpen)
+	{
+		ImGui::Begin("GBuffer Visualization");
+		Vans::EditorAPI::RenderTextureFilter filter;
+		filter.category = "gbuffer";
+		DrawPreviewTable("GBufferTable", editorAPI.QueryRenderTexturePreviews(filter));
+		ImGui::End();
+	}
 
-            if (ImGui::BeginTable("GBufferTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
-            {
-                ImGui::TableNextColumn();
-                DisplayImage("GBuffer 0 (Albedo + Roughness)", gbuffer0, ds0, iv0);
+	if (!VansGraphics::VansEditorWindow::m_WaterGBufferWindowOpen)
+		return;
 
-                ImGui::TableNextColumn();
-                DisplayImage("GBuffer 1 (Metallic + AO + MatID)", gbuffer1, ds1, iv1);
-
-                ImGui::TableNextColumn();
-                DisplayImage("GBuffer 2 (WorldPos + LinearDepth)", gbuffer2, ds2, iv2);
-
-                ImGui::TableNextColumn();
-                DisplayImage("Normal", normal, dsN, ivN);
-
-                ImGui::EndTable();
-            }
-        }
-        else
-        {
-            ImGui::Text("RenderPassManager not initialized.");
-        }
-
-        ImGui::End();
-    }
-
-    // ── 独立的 Water GBuffer 调试窗口 ─────────────────────────────
-    // 可视化水面专属 GBuffer（WaterGBuf_Normal + WaterGBuf_WorldPosDepth），
-    // 用于确认水面是否正确写入独立 GBuffer，且不污染场景 GBuffer。
-    if (!VansGraphics::VansEditorWindow::m_WaterGBufferWindowOpen)
-        return;
-
-    ImGui::Begin("Water GBuffer Visualization");
-    if (renderPassManager)
-    {
-        VansVKImage& waterNormal = renderPassManager->GetWaterGBufNormal();      // 世界空间法线 XYZ（RGBA16F）
-        VansVKImage& waterDepth  = renderPassManager->GetWaterGBufLinearDepth(); // 世界位置 RGB + 线性深度 A（RGBA16F）
-
-        auto DisplayWaterImage = [](const char* label, VansVKImage& image,
-                                    VkDescriptorSet& cachedDS, VkImageView& cachedImageView)
-        {
-            ImGui::Text("%s", label);
-
-            VkImageView currentImageView = image.GetImageView();
-            if (currentImageView == VK_NULL_HANDLE)
-            {
-                ImGui::TextDisabled("(image not created)");
-                return;
-            }
-            if (cachedDS == VK_NULL_HANDLE || cachedImageView != currentImageView)
-            {
-                if (cachedDS != VK_NULL_HANDLE)
-                {
-                    ImGui_ImplVulkan_RemoveTexture(cachedDS);
-                }
-                cachedDS = ImGui_ImplVulkan_AddTexture(image.GetSampler(), currentImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                cachedImageView = currentImageView;
-            }
-
-            if (cachedDS != VK_NULL_HANDLE)
-            {
-                float width = ImGui::GetContentRegionAvail().x;
-                float aspect = (float)image.GetImageDimension().width / (float)image.GetImageDimension().height;
-                ImGui::Image((ImTextureID)cachedDS, ImVec2(width, width / aspect));
-            }
-        };
-
-        static VkDescriptorSet dsWN = VK_NULL_HANDLE; static VkImageView ivWN = VK_NULL_HANDLE;
-        static VkDescriptorSet dsWD = VK_NULL_HANDLE; static VkImageView ivWD = VK_NULL_HANDLE;
-
-        ImGui::TextWrapped("水面专属 GBuffer。法线非零 / 深度小于 1e9 的区域即为已渲染的水面像素。");
-        if (ImGui::BeginTable("WaterGBufferTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
-        {
-            ImGui::TableNextColumn();
-            DisplayWaterImage("WaterGBuf Normal", waterNormal, dsWN, ivWN);
-
-            ImGui::TableNextColumn();
-            DisplayWaterImage("WaterGBuf WorldPos+Depth (RGBA16F)", waterDepth, dsWD, ivWD);
-
-            ImGui::EndTable();
-        }
-    }
-    else
-    {
-        ImGui::Text("RenderPassManager not initialized.");
-    }
-    ImGui::End();
+	ImGui::Begin("Water GBuffer Visualization");
+	ImGui::TextWrapped("Water-specific GBuffer outputs used to confirm water pixels are isolated from the scene GBuffer.");
+	Vans::EditorAPI::RenderTextureFilter filter;
+	filter.category = "water_gbuffer";
+	DrawPreviewTable("WaterGBufferTable", editorAPI.QueryRenderTexturePreviews(filter));
+	ImGui::End();
 }

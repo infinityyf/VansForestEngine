@@ -5,7 +5,7 @@
 
 // ============================================================
 // VansWaterConfig.h
-// 水面系统完整配置结构体，由 VansSceneLoader::AddWaterNode()
+// 水面系统完整配置结构体，由 VansSceneEnvironmentNodeBuilder::AddWaterNode()
 // 从 Scene JSON 的顶层 "water" 块解析并填充。
 // 不依赖任何 Vulkan 类型，可安全被非渲染层代码包含。
 // ============================================================

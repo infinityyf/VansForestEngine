@@ -1,12 +1,12 @@
 #pragma once
 #include "VansBaseWindowComponent.h"
-#include "../../RenderCore/VansCamera.h"
-#include "../../RenderCore/VansScene.h"
 #include "../VansGizmos.h"
 #include <string>
 #include <vector>
 namespace VansGraphics
 {
+	class VansCamera;
+
 	class VansSceneWindow : public VansBaseWindowComponent
 	{
 	public:
@@ -16,19 +16,11 @@ namespace VansGraphics
 			m_Camera = camera;
 		}
 
-		void RegistScene(VansScene* scene)
-		{
-			m_Scene = scene;
-		}
-
 	private:
 
 		VansGraphics::VansCamera* m_Camera = nullptr;
 
-		VansGraphics::VansScene*  m_Scene  = nullptr;
-
 		VansGizmos m_Gizmos;
-
-		void ShowWindow(VansVKDevice& device) override;
+		void ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI) override;
 	};
 }

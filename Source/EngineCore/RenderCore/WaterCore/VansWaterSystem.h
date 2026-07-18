@@ -5,6 +5,7 @@
 #include "VansWaterConfig.h"
 #include "VansWaterLOD.h"
 #include "../VulkanCore/VansVKImage.h"
+#include "../VulkanCore/VansVKBuffer.h"
 #include <vector>
 
 // ============================================================
@@ -171,9 +172,10 @@ namespace VansGraphics
 
     private:
         // ── 原始 Vulkan 缓冲分配 ────────────────────────────────
-        bool AllocateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                            VkMemoryPropertyFlags props,
-                            VkBuffer& outBuffer, VkDeviceMemory& outMemory);
+        bool CreateWaterBuffer(VansVKBuffer& buffer, bool& created,
+                               VkDeviceSize size, VkBufferUsageFlags usage);
+        void DestroyWaterBuffer(VansVKBuffer& buffer, bool& created, VkDevice logicDevice);
+        static VkBuffer GetNativeBuffer(const VansVKBuffer& buffer, bool created);
 
         // ── 引擎设备 ──────────────────────────────────────────────
         VansVKDevice*      m_Device        = nullptr;
@@ -244,18 +246,19 @@ namespace VansGraphics
         VkDescriptorSet       m_CompPassSet    = VK_NULL_HANDLE;
 
         // ── GPU Params UBO ───────────────────────────────────────
-        VkBuffer       m_GBufParamsBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory m_GBufParamsMemory = VK_NULL_HANDLE;
-        VkBuffer       m_CompParamsBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory m_CompParamsMemory = VK_NULL_HANDLE;
-        VkBuffer       m_SSRParamsBuffer  = VK_NULL_HANDLE;
-        VkDeviceMemory m_SSRParamsMemory  = VK_NULL_HANDLE;
-        VkBuffer       m_CausticsParamsBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory m_CausticsParamsMemory = VK_NULL_HANDLE;
-        VkBuffer       m_ThicknessParamsBuffer = VK_NULL_HANDLE;   // W-16: 厚度图参数 UBO
-        VkDeviceMemory m_ThicknessParamsMemory = VK_NULL_HANDLE;
-        VkBuffer       m_SSSParamsBuffer = VK_NULL_HANDLE;         // W-16: SSS 散射参数 UBO
-        VkDeviceMemory m_SSSParamsMemory = VK_NULL_HANDLE;
+        VansVKBuffer m_GBufParamsBuffer;
+        VansVKBuffer m_CompParamsBuffer;
+        VansVKBuffer m_SSRParamsBuffer;
+        VansVKBuffer m_CausticsParamsBuffer;
+        VansVKBuffer m_ThicknessParamsBuffer;   // W-16: 厚度图参数 UBO
+        VansVKBuffer m_SSSParamsBuffer;         // W-16: SSS 散射参数 UBO
+        bool m_GBufParamsBufferCreated = false;
+        bool m_CompParamsBufferCreated = false;
+        bool m_SSRParamsBufferCreated = false;
+        bool m_CausticsParamsBufferCreated = false;
+        bool m_ThicknessParamsBufferCreated = false;
+        bool m_SSSParamsBufferCreated = false;
+        WaterGBufferParamsGPU m_GBufParamsCache = {};
 
         // ── 波形贴图：Compute 写入，WaterGBuffer 顶点采样 ─────────
         // W-01: 改为 Texture2DArray（256² × MAX_LOD_COUNT RGBA16F）
@@ -277,8 +280,8 @@ namespace VansGraphics
         bool        m_DetailNormalReady   = false;
 
         // ── SSBO：Gerstner 波分量（W-04）───────────────────────────
-        VkBuffer       m_WaveSSBO      = VK_NULL_HANDLE;
-        VkDeviceMemory m_WaveSSBOMemory = VK_NULL_HANDLE;
+        VansVKBuffer   m_WaveSSBO;
+        bool           m_WaveSSBOCreated = false;
         static constexpr uint32_t MAX_WAVE_COUNT = 128;  // 提升到 128 以覆盖粗 LOD（LOD4+ Nyquist 需要长波）
 
         // 全局 descriptor set（从 VansScene 传入，不拥有）

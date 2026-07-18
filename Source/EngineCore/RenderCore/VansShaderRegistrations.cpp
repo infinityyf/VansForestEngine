@@ -231,16 +231,21 @@ void RegisterEngineShaders()
     // -----------------------------------------------------------------------
 
 
-    reg.RegisterGraphicsShader("WaterGBuffer", {
+    VansGraphics::VansShaderEntry waterGBufferShader{
         "WaterGBuffer", "EngineAssets/Shaders/Water/WaterGBuffer",
         VK_FALSE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_NONE,
         sizeof(VansGraphics::WaterPatchPushConstant), false
-    });
-    reg.RegisterGraphicsShader("WaterComposite", {
+    };
+    waterGBufferShader.colorAttachmentCount = 2;
+    reg.RegisterGraphicsShader("WaterGBuffer", std::move(waterGBufferShader));
+
+    VansGraphics::VansShaderEntry waterCompositeShader{
         "WaterComposite", "EngineAssets/Shaders/Water/WaterComposite",
         VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS, VK_CULL_MODE_NONE,
         0, false
-    });
+    };
+    waterCompositeShader.colorAttachmentCount = 1;
+    reg.RegisterGraphicsShader("WaterComposite", std::move(waterCompositeShader));
     reg.RegisterGraphicsShader("Terrain", {
         "Terrain", "EngineAssets/Shaders/Terrain/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
@@ -256,21 +261,32 @@ void RegisterEngineShaders()
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
         0, false
     });
-    reg.RegisterGraphicsShader("TerrainTess", {
+    VansGraphics::VansShaderEntry terrainTessShader{
         "TerrainTess", "EngineAssets/Shaders/Terrain/DeferredTess",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_BACK_BIT,
         0, false
-    });
-    reg.RegisterGraphicsShader("ReflectionProbeCapture", {
+    };
+    terrainTessShader.colorAttachmentCount = 4;
+    terrainTessShader.primitiveTopology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+    terrainTessShader.patchControlPoints = 3;
+    reg.RegisterGraphicsShader("TerrainTess", std::move(terrainTessShader));
+
+    VansGraphics::VansShaderEntry reflectionProbeCaptureShader{
         "ReflectionProbeCapture", "EngineAssets/Shaders/ReflectionProbeCapture",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        16, false
-    });
-    reg.RegisterGraphicsShader("ReflectionProbeCaptureSky", {
+        sizeof(float) * (16 + 4 + 4 + 4), false
+    };
+    reflectionProbeCaptureShader.colorAttachmentCount = 1;
+    reflectionProbeCaptureShader.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    reg.RegisterGraphicsShader("ReflectionProbeCapture", std::move(reflectionProbeCaptureShader));
+
+    VansGraphics::VansShaderEntry reflectionProbeCaptureSkyShader{
         "ReflectionProbeCaptureSky", "EngineAssets/Shaders/ReflectionProbeCaptureSky",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS, VK_CULL_MODE_NONE,
         0, false
-    });
+    };
+    reflectionProbeCaptureSkyShader.colorAttachmentCount = 1;
+    reg.RegisterGraphicsShader("ReflectionProbeCaptureSky", std::move(reflectionProbeCaptureSkyShader));
     reg.RegisterComputeShader("PreConDiffuseEnvironment", "EngineAssets/Shaders/PreConDiffuseEnvironment");
     reg.RegisterComputeShader("PreConSpecularEnvironment", "EngineAssets/Shaders/PreConSpecularEnvironment");
     reg.RegisterComputeShader("SSGI", "EngineAssets/Shaders/SSGI");

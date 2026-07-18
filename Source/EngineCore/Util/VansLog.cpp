@@ -6,6 +6,11 @@
 #include <filesystem>
 #include <algorithm>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
@@ -75,6 +80,11 @@ void VansLog::EnsureInitialized()
     if (m_Initialized)
         return;
 
+#ifdef _WIN32
+    SetConsoleCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
+#endif
+
     // Create LOG/ folder next to the executable
     std::filesystem::path logDir = std::filesystem::current_path() / "LOG";
     if (!std::filesystem::exists(logDir))
@@ -84,9 +94,10 @@ void VansLog::EnsureInitialized()
     std::string filename = "ForestEngine.log";
     std::filesystem::path logPath = logDir / filename;
 
-    m_File.open(logPath, std::ios::out | std::ios::trunc);
+    m_File.open(logPath, std::ios::out | std::ios::binary | std::ios::trunc);
     if (m_File.is_open())
     {
+        m_File << "\xEF\xBB\xBF";
         m_File << "\n========================================\n";
         m_File << "  ForestEngine Log  " << GetDateStamp() << " " << GetTimestamp() << "\n";
         m_File << "========================================\n\n";

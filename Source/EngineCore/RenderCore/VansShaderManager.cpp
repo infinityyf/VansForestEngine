@@ -2,6 +2,8 @@
 #include "../Interfaces/IShaderHotReloadService.h"
 #include "../Util/VansLog.h"
 
+#include <algorithm>
+
 namespace VansGraphics
 {
 const std::unordered_map<std::string, std::string> VansShaderManager::s_EmptyPassMap;
@@ -26,6 +28,7 @@ void VansShaderManager::RegisterShader(VansShaderEntry entry)
         VANS_LOG_WARN("[VansShaderManager] Shader '" << entry.name << "' already registered. Ignoring duplicate.");
         return;
     }
+    it->second.pipelineDesc = BuildPipelineDesc(entry, entry.relativePath);
     it->second.entry = std::move(entry);
 }
 
@@ -62,6 +65,12 @@ const VansShaderEntry* VansShaderManager::FindShaderEntry(const std::string& sha
     return it == m_Shaders.end() ? nullptr : &it->second.entry;
 }
 
+const VansPipelineProgramDesc* VansShaderManager::FindPipelineDesc(const std::string& shaderName) const
+{
+    auto it = m_Shaders.find(shaderName);
+    return it == m_Shaders.end() ? nullptr : &it->second.pipelineDesc;
+}
+
 VansShader* VansShaderManager::FindShader(const std::string& shaderName) const
 {
     auto it = m_Shaders.find(shaderName);
@@ -85,6 +94,21 @@ VansRayTracingShader* VansShaderManager::FindRayTracingShader(const std::string&
 
 void VansShaderManager::RegisterMaterialPasses(VansMaterialType type, std::unordered_map<std::string, std::string> passMap)
 {
+    for (const auto& [passName, shaderName] : passMap)
+    {
+        auto shaderIt = m_Shaders.find(shaderName);
+        if (shaderIt == m_Shaders.end())
+            continue;
+
+        auto& passes = shaderIt->second.entry.materialPasses;
+        if (std::find(passes.begin(), passes.end(), passName) == passes.end())
+            passes.emplace_back(passName);
+
+        auto& descPasses = shaderIt->second.pipelineDesc.materialPasses;
+        if (std::find(descPasses.begin(), descPasses.end(), passName) == descPasses.end())
+            descPasses.emplace_back(passName);
+    }
+
     m_MaterialPasses[static_cast<int>(type)] = std::move(passMap);
 }
 
@@ -113,6 +137,7 @@ bool VansShaderManager::LoadShaderRecord(VansShaderRecord& record, const std::st
         return true;
 
     const std::string fullPath = pathPrefix + record.entry.relativePath;
+    record.pipelineDesc = BuildPipelineDesc(record.entry, fullPath);
 
     std::unique_ptr<VansShader> shader;
     switch (record.entry.kind)
@@ -143,10 +168,11 @@ bool VansShaderManager::LoadShaderRecord(VansShaderRecord& record, const std::st
     }
 
     shader->SetName(record.entry.name);
+    shader->SetPipelineProgramDesc(record.pipelineDesc);
     if (record.entry.pushConstantSize > 0)
         shader->SetPushConstant(record.entry.pushConstantSize);
     if (auto* graphics = dynamic_cast<VansGraphicsShader*>(shader.get()))
-        ApplyGraphicsState(*graphics, record.entry);
+        ApplyGraphicsState(*graphics, record.pipelineDesc);
 
     record.shader = std::move(shader);
     record.status = VansShaderStatus::Valid;
@@ -154,21 +180,89 @@ bool VansShaderManager::LoadShaderRecord(VansShaderRecord& record, const std::st
     return true;
 }
 
-void VansShaderManager::ApplyGraphicsState(VansGraphicsShader& shader, const VansShaderEntry& entry)
+VansPipelineProgramDesc VansShaderManager::BuildPipelineDesc(
+    const VansShaderEntry& entry,
+    const std::string& fullPath) const
 {
-    shader.SetDrawStateData(entry.depthTest, entry.depthWrite, entry.depthCompareOp, entry.cullMode);
-    if (entry.enableAlphaBlend)
-        shader.SetEnableAlphaBlend(VK_TRUE);
-    if (entry.enableDecalBlend)
-        shader.SetEnableDecalBlend(VK_TRUE);
-    if (entry.enableAdditiveBlend)
-        shader.SetEnableAdditiveBlend(VK_TRUE);
-    if (entry.additiveBlendAttachmentMask != 0)
-        shader.SetAdditiveBlendAttachmentMask(entry.additiveBlendAttachmentMask);
-    if (entry.enablePremultipliedAlphaBlend)
-        shader.SetEnablePremultipliedAlphaBlend(VK_TRUE);
-    if (entry.colorAttachmentCount > 0)
-        shader.SetColorAttachmentCount(entry.colorAttachmentCount);
+    VansPipelineProgramDesc desc{};
+    desc.name = entry.name;
+    desc.shaderPath = fullPath;
+    desc.pushConstantSize = entry.pushConstantSize;
+    desc.materialPasses = entry.materialPasses;
+
+    switch (entry.kind)
+    {
+    case VansManagedShaderKind::Graphics:
+        desc.kind = VansPipelineProgramKind::Graphics;
+        break;
+    case VansManagedShaderKind::Compute:
+        desc.kind = VansPipelineProgramKind::Compute;
+        break;
+    case VansManagedShaderKind::RayTracing:
+        desc.kind = VansPipelineProgramKind::RayTracing;
+        break;
+    }
+
+    desc.graphicsState.depthTest = entry.depthTest;
+    desc.graphicsState.depthWrite = entry.depthWrite;
+    desc.graphicsState.depthCompareOp = entry.depthCompareOp;
+    desc.graphicsState.cullMode = entry.cullMode;
+    desc.graphicsState.colorAttachmentCount = entry.colorAttachmentCount;
+    desc.graphicsState.polygonMode = entry.polygonMode;
+    desc.graphicsState.frontFace = entry.frontFace;
+    desc.graphicsState.primitiveTopology = entry.primitiveTopology;
+    desc.graphicsState.patchControlPoints = entry.patchControlPoints;
+    desc.graphicsState.enableAlphaBlend = entry.enableAlphaBlend;
+    desc.graphicsState.enableDecalBlend = entry.enableDecalBlend;
+    desc.graphicsState.enableAdditiveBlend = entry.enableAdditiveBlend;
+    desc.graphicsState.additiveBlendAttachmentMask = entry.additiveBlendAttachmentMask;
+    desc.graphicsState.enablePremultipliedAlphaBlend = entry.enablePremultipliedAlphaBlend;
+    desc.stages = VansPipelineDescriptorBuilder::BuildStageFiles(
+        fullPath,
+        desc.kind,
+        entry.explicitStageFiles);
+
+    return desc;
+}
+
+void VansShaderManager::ApplyGraphicsState(VansGraphicsShader& shader, const VansPipelineProgramDesc& desc) const
+{
+    shader.ApplyGraphicsStateDesc(desc.graphicsState);
+}
+
+bool VansShaderManager::ConfigureGraphicsShader(
+    VansGraphicsShader& shader,
+    const std::string& shaderName,
+    const std::string& fullPath) const
+{
+    const VansShaderEntry* entry = FindShaderEntry(shaderName);
+    if (entry == nullptr || entry->kind != VansManagedShaderKind::Graphics)
+    {
+        VANS_LOG_ERROR("[VansShaderManager] Missing graphics shader registration for '" << shaderName << "'");
+        return false;
+    }
+
+    return ConfigureGraphicsShader(shader, *entry, fullPath);
+}
+
+bool VansShaderManager::ConfigureGraphicsShader(
+    VansGraphicsShader& shader,
+    const VansShaderEntry& entry,
+    const std::string& fullPath) const
+{
+    if (entry.kind != VansManagedShaderKind::Graphics)
+    {
+        VANS_LOG_ERROR("[VansShaderManager] Shader entry '" << entry.name << "' is not a graphics shader");
+        return false;
+    }
+
+    VansPipelineProgramDesc desc = BuildPipelineDesc(entry, fullPath);
+    shader.SetName(entry.name);
+    shader.SetPipelineProgramDesc(desc);
+    if (entry.pushConstantSize > 0)
+        shader.SetPushConstant(entry.pushConstantSize);
+    ApplyGraphicsState(shader, desc);
+    return true;
 }
 
 bool VansShaderManager::ReloadShader(const std::string& shaderName)
@@ -224,6 +318,17 @@ std::vector<VansShader*> VansShaderManager::GetLoadedShaderAssets() const
             result.push_back(pair.second.shader.get());
     }
     return result;
+}
+
+void VansShaderManager::ReleaseLoadedShaderAssets()
+{
+    for (auto& pair : m_Shaders)
+    {
+        VansShaderRecord& record = pair.second;
+        record.shader.reset();
+        record.status = VansShaderStatus::Unloaded;
+        record.lastError.clear();
+    }
 }
 
 void VansShaderManager::Clear()

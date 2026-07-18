@@ -33,8 +33,10 @@ namespace VansGraphics
 
 		void DestroyFrameBuffer(VkDevice& logic_device);
 
+		VkFramebuffer GetFrameBuffer() const { return m_FrameBuffer; }
+
 	private:
-		VkFramebuffer m_FrameBuffer;
+		VkFramebuffer m_FrameBuffer = VK_NULL_HANDLE;
 	};
 
 	class VansVKRenderPass
@@ -74,7 +76,7 @@ namespace VansGraphics
 		//这里只是记录一些格式上的信息，并不不包含运行时的数据，而framebuffer则是记录运行市的resources
 	private:
 
-		VkRenderPass m_RenderPass;
+		VkRenderPass m_RenderPass = VK_NULL_HANDLE;
 	};
 
 	class VansVKCommandBuffer;
@@ -258,11 +260,11 @@ namespace VansGraphics
 		void RecreateUIRenderPass(VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);
 
 		//渲染区域大小
-		void BeginRenderPass(VansVKRenderPass& renderPass, VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index = 0);
+		void BeginRenderPass(VansVKRenderPass& renderPass, VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, int swap_chain_index = 0);
 
-		void NextSubPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data);
+		void NextSubPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data);
 
-		void EndRenderPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data);
+		void EndRenderPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data);
 
 		void BlitToSwapChainImage(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex, const VkExtent2D& renderResolution);
 

@@ -1,21 +1,21 @@
 ﻿#include "VansProjectWindow.h"
 #include "../VansEditorWindow.h"
-#include "../../Configration/VansConfigration.h"
-#include "../../ProjectSystem/VansProjectManager.h"
-#include "../../AssetCore/VansAssetDatabase.h"
-#include "../../RenderCore/VulkanCore/VansVKDevice.h"
+#include "../../SceneCore/VansSceneSchema.h"
 #include "../../Util/VansLog.h"
 #include "../VansEditorSelection.h"
 #include "imgui.h"
-#include "backends/imgui_impl_glfw.h"
-#include "backends/imgui_impl_vulkan.h"
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <string>
 
-void VansGraphics::VansProjectWindow::ShowWindow(VansVKDevice& device)
+void VansGraphics::VansProjectWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+{
+    DrawProjectContents(editorAPI);
+}
+
+void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
     // -------------------------------------------------------------------------
     // Project 窗口 (资源浏览器)
@@ -25,21 +25,9 @@ void VansGraphics::VansProjectWindow::ShowWindow(VansVKDevice& device)
 
         // Determine the browsing root: project directory when loaded,
         // otherwise fall back to the engine's EngineAssets directory.
-        auto& projectMgr = Vans::VansProjectManager::Get();
-        std::string rootPath;
-        std::string rootLabel;
-
-        if (projectMgr.IsProjectLoaded())
-        {
-            rootPath  = projectMgr.GetProjectRootPath();
-            rootLabel = projectMgr.GetProjectName();
-        }
-        else
-        {
-            auto vansConfigration = VansConfigration::GetInstance();
-            rootPath  = vansConfigration->GetProjectRootPath() + "EngineAssets";
-            rootLabel = "EngineAssets";
-        }
+        const Vans::EditorAPI::ProjectBrowserRootSnapshot root = editorAPI.GetProjectBrowserRoot();
+        const std::string& rootPath = root.rootPath;
+        const std::string& rootLabel = root.rootLabel;
 
         static std::filesystem::path currentPath = "";
         // Reset currentPath when the root changes (e.g. project just opened)
@@ -109,22 +97,19 @@ void VansGraphics::VansProjectWindow::ShowWindow(VansVKDevice& device)
                             Vans::VansEditorSelection::SelectAsset(entry.path());
                         }
 
-                        if (projectMgr.IsProjectLoaded() && ImGui::BeginDragDropSource())
+                        if (root.projectLoaded && ImGui::BeginDragDropSource())
                         {
-                            if (Vans::VansAssetDatabase* database = projectMgr.GetAssetDatabase())
+                            const Vans::EditorAPI::AssetDragPayload payload =
+                                editorAPI.CreateAssetDragPayload(entry.path().string());
+                            if (payload.available)
                             {
-                                std::string registrationError;
-                                if (!database->Find(entry.path()))
-                                    database->RegisterOrRefresh(entry.path(), true, registrationError);
-                                if (const auto record = database->Find(entry.path()))
-                                {
-                                    const std::string guid = record->guid.ToString();
-                                    ImGui::SetDragDropPayload("VANS_ASSET_GUID", guid.c_str(), guid.size() + 1);
-                                    ImGui::TextUnformatted(filename.c_str());
-                                }
-                                else if (!registrationError.empty())
-                                    ImGui::TextUnformatted(registrationError.c_str());
+                                ImGui::SetDragDropPayload("VANS_ASSET_GUID",
+                                    payload.guid.c_str(),
+                                    payload.guid.size() + 1);
+                                ImGui::TextUnformatted(filename.c_str());
                             }
+                            else if (!payload.error.empty())
+                                ImGui::TextUnformatted(payload.error.c_str());
                             ImGui::EndDragDropSource();
                         }
 
@@ -132,10 +117,10 @@ void VansGraphics::VansProjectWindow::ShowWindow(VansVKDevice& device)
                         {
 							std::ifstream input(entry.path());
 							nlohmann::json document = nlohmann::json::parse(input, nullptr, false);
-							if (document.is_object() && document.value("schemaVersion", 0u) == 2u)
+							if (document.is_object() && document.value("schemaVersion", 0u) == Vans::VansSceneSchemaVersion)
 							{
 								std::string scenePath = entry.path().string();
-								VANS_LOG("[Project] Deferring Scene v2 load: " << scenePath);
+								VANS_LOG("[Project] Deferring Scene load: " << scenePath);
 								VansEditorWindow::m_PendingScenePath = scenePath;
 							}
                         }

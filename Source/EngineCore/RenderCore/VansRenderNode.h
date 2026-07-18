@@ -5,6 +5,7 @@
 #include "VansMaterial.h"
 #include "../ScriptCore/VansTransform.h"
 #include "BRDFData/VansLight.h"
+#include <cstdint>
 #include <vector>
 #include <queue>
 
@@ -141,6 +142,11 @@ namespace VansGraphics
 
 		bool CheckRenderNodeState();
 
+		bool ValidateDescriptorBindings(
+			const char* passName,
+			const std::vector<VkDescriptorSetLayout>& layouts,
+			const std::vector<VkDescriptorSet>& sets) const;
+
 		// Helper function to compute model matrix from transform
 		void ComputeModelDataFromTransform();
 
@@ -149,11 +155,14 @@ namespace VansGraphics
 
 		void virtual UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) {};
 
-		void virtual UpdateDescripterSets(VansMaterialManager& materialManager) {}
+		virtual void UpdateDescriptorSets(VansMaterialManager& materialManager) {}
 
 		virtual void RefreshAnimationDescriptorSet() {}
 
 		virtual void MarkAnimationDescriptorDirty() {}
+
+		static std::uint64_t GetDescriptorValidationFailureCount();
+		static void ResetDescriptorValidationFailureCount();
 
 		void OverridePassDescriptorSet(uint32_t setIndex, VkDescriptorSetLayout layout, VkDescriptorSet descriptorSet)
 		{
@@ -237,7 +246,7 @@ namespace VansGraphics
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 		
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 
 		void RefreshAnimationDescriptorSet() override;
 
@@ -265,7 +274,7 @@ namespace VansGraphics
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
 	};
@@ -280,7 +289,7 @@ namespace VansGraphics
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 	};
 
 	class VansPostProcessRenderNode : public VansRenderNode
@@ -293,7 +302,7 @@ namespace VansGraphics
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 	};
 
 	class VansDeferredRenderNode : public VansRenderNode
@@ -306,7 +315,7 @@ namespace VansGraphics
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 	};
 
 	class VansScreenSpaceRenderNode : public VansRenderNode
@@ -319,7 +328,7 @@ namespace VansGraphics
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 	};
 
 	// ── Vegetation render node — GPU-driven grass (indirect draw) ──────────────
@@ -340,7 +349,7 @@ namespace VansGraphics
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
 		void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
@@ -360,7 +369,7 @@ namespace VansGraphics
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
 	};
@@ -385,7 +394,7 @@ namespace VansGraphics
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
@@ -404,7 +413,7 @@ namespace VansGraphics
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
-		void UpdateDescripterSets(VansMaterialManager& materialManager) override;
+		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 	};
 
 }

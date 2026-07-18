@@ -1,7 +1,5 @@
 #include "VansScriptorWindow.h"
 #include "../VansEditorWindow.h"
-#include "../../ProjectSystem/VansProjectManager.h"
-#include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansInputManager.h"
 #include "VansConsole.h"
 #include "imgui.h"
@@ -22,12 +20,11 @@ void VansGraphics::VansScriptorWindow::RefreshFileList()
 {
     m_PythonFiles.clear();
 
-    auto& projectMgr = Vans::VansProjectManager::Get();
-    if (!projectMgr.IsProjectLoaded())
+    if (m_ProjectRootPath.empty())
         return;
 
     // 当前项目根路径下的 Scripts/ 目录
-    std::string scriptsDir = projectMgr.GetProjectRootPath() + "Scripts";
+    std::string scriptsDir = m_ProjectRootPath + "Scripts";
 
     if (!std::filesystem::exists(scriptsDir))
         return;
@@ -49,7 +46,19 @@ void VansGraphics::VansScriptorWindow::RefreshFileList()
     m_NeedsRefresh = false;
 }
 
-void VansGraphics::VansScriptorWindow::ShowWindow(VansVKDevice& device)
+void VansGraphics::VansScriptorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+{
+    const std::string projectRootPath = editorAPI.GetProjectRootPath();
+    if (m_ProjectRootPath != projectRootPath)
+    {
+        m_ProjectRootPath = projectRootPath;
+        m_NeedsRefresh = true;
+    }
+
+    DrawScriptorContents(editorAPI);
+}
+
+void VansGraphics::VansScriptorWindow::DrawScriptorContents(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
     if (!VansEditorWindow::m_ScriptorWindowOpen)
         return;
@@ -63,11 +72,8 @@ void VansGraphics::VansScriptorWindow::ShowWindow(VansVKDevice& device)
     ImGui::SameLine();
     if (ImGui::Button("Reload .py"))
     {
-        if (auto* ctx = VansScriptContext::GetInstance())
-        {
-            ctx->ReloadAllPyScripts();
-            m_NeedsRefresh = true;
-        }
+        editorAPI.ReloadRuntimeScripts();
+        m_NeedsRefresh = true;
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Force-reload all tracked Python scripts");
@@ -75,11 +81,8 @@ void VansGraphics::VansScriptorWindow::ShowWindow(VansVKDevice& device)
     ImGui::SameLine();
     if (ImGui::Button("Reload .pyd"))
     {
-        if (auto* ctx = VansScriptContext::GetInstance())
-        {
-            ctx->ReloadPydModule();
-            m_NeedsRefresh = true;
-        }
+        editorAPI.ReloadRuntimeScriptModule();
+        m_NeedsRefresh = true;
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Rebuild vanscomponent, then click here to hot-reload the C++ .pyd module");
@@ -177,7 +180,7 @@ void VansGraphics::VansScriptorWindow::ShowWindow(VansVKDevice& device)
 
         // Ctrl+S shortcut
         if (m_Dirty && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
-            SaveCurrentFile();
+            SaveCurrentFile(editorAPI);
 
         ImGui::Separator();
 
@@ -202,7 +205,7 @@ void VansGraphics::VansScriptorWindow::ShowWindow(VansVKDevice& device)
         if (m_Dirty)
         {
             if (ImGui::Button("Save"))
-                SaveCurrentFile();
+                SaveCurrentFile(editorAPI);
             ImGui::SameLine();
             if (ImGui::Button("Revert"))
                 LoadSelectedFile();
@@ -242,7 +245,7 @@ void VansGraphics::VansScriptorWindow::LoadSelectedFile()
     m_EditBuffer.resize(EDIT_BUF_SIZE, '\0');
 }
 
-void VansGraphics::VansScriptorWindow::SaveCurrentFile()
+void VansGraphics::VansScriptorWindow::SaveCurrentFile(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
     if (m_LoadedPath.empty()) return;
 
@@ -258,8 +261,7 @@ void VansGraphics::VansScriptorWindow::SaveCurrentFile()
         VansConsole::Get().LogPython("[Script] Saved " + m_LoadedPath.filename().string());
 
         // Auto-reload the saved script in the Python interpreter
-        if (auto* ctx = VansScriptContext::GetInstance())
-            ctx->ReloadAllPyScripts();
+        editorAPI.ReloadRuntimeScripts();
     }
     else
     {

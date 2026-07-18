@@ -4,9 +4,8 @@
 // are already declared when ImGuizmo's inline function signatures are parsed.
 #include "imgui.h"
 #include "ImGuizmo.h"
-#include "../RenderCore/VansScene.h"
+#include "../EngineAPILayer/Public/IEngineEditorAPI.h"
 #include "../RenderCore/VansCamera.h"
-#include "../ScriptCore/VansTransform.h"
 
 #include <string>
 
@@ -35,8 +34,8 @@ namespace VansGraphics
     // ─────────────────────────────────────────────────────────────────────────
     //  VansGizmos
     //
-    //  Thin wrapper around ImGuizmo that integrates with VansScene selection
-    //  and VansTransformStore.  All methods are called from VansSceneWindow.
+    //  Thin wrapper around ImGuizmo. Runtime picking and transform writes go
+    //  through IEngineEditorAPI; document sync remains in the editor layer.
     // ─────────────────────────────────────────────────────────────────────────
     class VansGizmos
     {
@@ -48,27 +47,28 @@ namespace VansGraphics
         // Must be called inside the ImGui "Scene" window AFTER ImGui::Image().
         // windowPos  – top-left of the Scene ImGui window in screen coords.
         // windowSize – size of the Scene ImGui window in screen coords.
-        void Draw(VansScene* scene, VansCamera* camera,
-                  ImVec2 windowPos, ImVec2 windowSize);
+        void Draw(Vans::EditorAPI::IEngineEditorAPI& api,
+                  VansCamera* camera, ImVec2 windowPos, ImVec2 windowSize);
 
         // Screen-space left-click picking via ray–sphere test.
         // Call when LMB is pressed inside the Scene window and ImGuizmo is not active.
-        void TryPickObject(VansScene* scene, VansCamera* camera,
-                           ImVec2 mousePos,
+        void TryPickObject(Vans::EditorAPI::IEngineEditorAPI& api,
+                           VansCamera* camera, ImVec2 mousePos,
                            ImVec2 windowPos, ImVec2 windowSize);
 
         // Handle W / E / R / X / Escape hotkeys.
         // Call once per frame inside the Scene window.
-        void HandleHotkeys(VansScene* scene);
+        void HandleHotkeys();
 
     private:
         bool m_WasUsing = false;
         bool m_PendingDocumentSync = false;
         std::string m_PendingDocumentSyncEntityGuid;
+        Vans::EditorAPI::RuntimeTransformSnapshot m_PendingDocumentSyncTransform;
 
         static ImGuizmo::OPERATION OperationFromMode(GizmoMode mode);
         static void SyncTransformToSceneDocument(const std::string& entityGuid,
-                                                 const VansTransform& transform);
+                                                 const Vans::EditorAPI::RuntimeTransformSnapshot& transform);
 
         // Shoot a world-space ray from the camera through the given NDC pixel.
         // Returns origin (camera position) and normalised direction.
@@ -78,8 +78,6 @@ namespace VansGraphics
                                  glm::vec3& outDir);
 
         // Ray–sphere intersection.  Returns the smallest positive t, or -1 if no hit.
-        static float RaySphereIntersect(const glm::vec3& ro, const glm::vec3& rd,
-                                        const glm::vec3& center, float radius);
     };
 
 } // namespace VansGraphics

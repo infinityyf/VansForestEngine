@@ -61,7 +61,7 @@ namespace VansEngine
         ~VansCharacterControllerNode();
 
         // ── 生命周期 ──────────────────────────────────────────────────────
-        // 由 VansScene::LoadSingleCharControllerNode 调用。
+        // 由 VansScenePhysicsComponentBuilder 调用。
         // manager   : 来自 VansPhysicsSystem::GetControllerManager()
         // spawnPos  : 胶囊中心世界坐标 (= transform.m_Position + positionOffset)
         bool Initialize(const CharControllerProperties& props,

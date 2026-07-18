@@ -1,12 +1,12 @@
-#define IMGUI_DEFINE_MATH_OPERATORS
+﻿#define IMGUI_DEFINE_MATH_OPERATORS
 #include "VansGizmos.h"
 #include "VansEditorWindow.h"
 #include "VansEditorSelection.h"
 #include "VansSceneEditService.h"
 #include "imgui.h"
-#include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../SceneCore/VansSceneDocument.h"
 #include "../Util/VansInputManager.h"
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 #include <cmath>
@@ -15,9 +15,9 @@
 namespace VansGraphics
 {
 
-// ─────────────────────────────────────────────────────────────────────────────
+
 //  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+
 
 ImGuizmo::OPERATION VansGizmos::OperationFromMode(GizmoMode mode)
 {
@@ -31,7 +31,7 @@ ImGuizmo::OPERATION VansGizmos::OperationFromMode(GizmoMode mode)
 }
 
 void VansGizmos::SyncTransformToSceneDocument(const std::string& entityGuid,
-                                              const VansTransform& transform)
+                                              const Vans::EditorAPI::RuntimeTransformSnapshot& transform)
 {
     if (entityGuid.empty()) return;
 
@@ -57,9 +57,9 @@ void VansGizmos::SyncTransformToSceneDocument(const std::string& entityGuid,
                 continue;
 
             Vans::SceneJson data = {
-                { "position", { transform.m_Position.x, transform.m_Position.y, transform.m_Position.z } },
-                { "rotation", { transform.m_Rotation.x, transform.m_Rotation.y, transform.m_Rotation.z } },
-                { "scale",    { transform.m_Scale.x,    transform.m_Scale.y,    transform.m_Scale.z    } }
+                { "position", { transform.position.x, transform.position.y, transform.position.z } },
+                { "rotation", { transform.rotationDegrees.x, transform.rotationDegrees.y, transform.rotationDegrees.z } },
+                { "scale",    { transform.scale.x,    transform.scale.y,    transform.scale.z    } }
             };
 
             const std::string pointer = "/entities/" + std::to_string(entityIndex) +
@@ -69,6 +69,30 @@ void VansGizmos::SyncTransformToSceneDocument(const std::string& entityGuid,
         }
         return;
     }
+}
+
+glm::vec3 ToGlm(const Vans::EditorAPI::Vec3& value)
+{
+    return glm::vec3(value.x, value.y, value.z);
+}
+
+Vans::EditorAPI::Vec3 ToEditorVec3(const glm::vec3& value)
+{
+    return { value.x, value.y, value.z };
+}
+
+glm::mat4 BuildModelMatrix(const Vans::EditorAPI::RuntimeTransformSnapshot& transform)
+{
+    glm::mat4 model(1.0f);
+    const glm::vec3 position = ToGlm(transform.position);
+    const glm::vec3 rotation = ToGlm(transform.rotationDegrees);
+    const glm::vec3 scale = ToGlm(transform.scale);
+    model = glm::translate(model, position);
+    model = glm::rotate(model, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+    model = glm::rotate(model, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::rotate(model, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    model = glm::scale(model, scale);
+    return model;
 }
 
 void VansGizmos::UnprojectRay(VansCamera*  camera,
@@ -93,40 +117,22 @@ void VansGizmos::UnprojectRay(VansCamera*  camera,
     outDir    = glm::normalize(glm::vec3(farPt) - glm::vec3(nearPt));
 }
 
-float VansGizmos::RaySphereIntersect(const glm::vec3& ro,
-                                      const glm::vec3& rd,
-                                      const glm::vec3& center,
-                                      float            radius)
-{
-    glm::vec3 oc = ro - center;
-    float b = glm::dot(oc, rd);
-    float c = glm::dot(oc, oc) - radius * radius;
-    float disc = b * b - c;
-    if (disc < 0.0f) return -1.0f;
-    float sqrtDisc = glm::sqrt(disc);
-    float t0 = -b - sqrtDisc;
-    float t1 = -b + sqrtDisc;
-    if (t0 > 0.0f) return t0;
-    if (t1 > 0.0f) return t1;
-    return -1.0f;
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  VansGizmos::Draw
-// ─────────────────────────────────────────────────────────────────────────────
 
-void VansGizmos::Draw(VansScene*  scene,
+
+void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
                       VansCamera* camera,
                       ImVec2      windowPos,
                       ImVec2      windowSize)
 {
-    if (!scene || !camera) return;
+    if (!camera) return;
 
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(windowPos.x, windowPos.y, windowSize.x, windowSize.y);
 
-    auto* probeSystem = scene->GetReflectionProbeSystem();
-    if (probeSystem && probeSystem->GetEditorState().showProbeGizmos)
+    const auto probeSettings = api.GetReflectionProbeSettings();
+    if (probeSettings.available && probeSettings.editor.showProbeGizmos)
     {
         const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
         ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -151,30 +157,33 @@ void VansGizmos::Draw(VansScene*  scene,
                 if (project(corners[edge[0]], a) && project(corners[edge[1]], b)) drawList->AddLine(a, b, color, thickness);
             }
         };
-        const auto& probes = probeSystem->GetProbes();
-        const auto& editor = probeSystem->GetEditorState();
+        const auto& probes = probeSettings.probes;
+        const auto& editor = probeSettings.editor;
         const glm::vec3 cameraRight = glm::normalize(glm::vec3(glm::inverse(camera->GetViewMatrix())[0]));
         for (int i = 0; i < (int)probes.size(); ++i)
         {
             const auto& probe = probes[i];
-            if (!probe.enabled || probe.type == ReflectionProbeType::Sky) continue;
-            ImU32 color = probe.portal ? IM_COL32(255,220,40,220) :
-                (probe.type == ReflectionProbeType::Realtime ? IM_COL32(255,40,220,220) :
-                (probe.shape == ReflectionProbeShape::Box ? IM_COL32(30,220,255,220) : IM_COL32(40,255,100,220)));
+            if (!probe.enabled || probe.type == 2) continue;
+            ImU32 color = probe.type == 1 ? IM_COL32(255,40,220,220) :
+                (probe.shape == 1 ? IM_COL32(30,220,255,220) : IM_COL32(40,255,100,220));
             const bool selected = editor.selectedProbeIndex == i;
             if (selected) color = IM_COL32(255,255,255,255);
             const float thickness = selected ? 2.5f : 1.5f;
-            if (probe.shape == ReflectionProbeShape::Box)
+            const glm::vec3 boxMin = ToGlm(probe.boxMin);
+            const glm::vec3 boxMax = ToGlm(probe.boxMax);
+            const glm::vec3 position = ToGlm(probe.position);
+            const glm::vec3 capturePosition = ToGlm(probe.capturePosition);
+            if (probe.shape == 1)
             {
                 if (editor.showInfluenceVolumes)
-                    drawBox(probe.boxMin, probe.boxMax, color, thickness);
+                    drawBox(boxMin, boxMax, color, thickness);
                 if (editor.showBlendVolumes)
-                    drawBox(probe.boxMin + glm::vec3(probe.blendDistance), probe.boxMax - glm::vec3(probe.blendDistance), color, 1.0f);
+                    drawBox(boxMin + glm::vec3(probe.blendDistance), boxMax - glm::vec3(probe.blendDistance), color, 1.0f);
             }
             else
             {
                 ImVec2 center, edge;
-                if (project(probe.position, center) && project(probe.position + cameraRight * probe.radius, edge))
+                if (project(position, center) && project(position + cameraRight * probe.radius, edge))
                 {
                     const float dx = edge.x - center.x;
                     const float dy = edge.y - center.y;
@@ -186,72 +195,43 @@ void VansGizmos::Draw(VansScene*  scene,
                 }
             }
             ImVec2 capture;
-            if (project(probe.capturePosition, capture))
+            if (project(capturePosition, capture))
             {
                 drawList->AddCircleFilled(capture, selected ? 5.0f : 3.5f, color);
                 drawList->AddLine(ImVec2(capture.x - 7, capture.y), ImVec2(capture.x + 7, capture.y), color, 1.0f);
                 drawList->AddLine(ImVec2(capture.x, capture.y - 7), ImVec2(capture.x, capture.y + 7), color, 1.0f);
             }
         }
-        if (editor.showRegions)
-        {
-            for (const auto& region : probeSystem->GetRegions())
-            {
-                const ImU32 color = region.type == ProbeRegionType::Exterior ? IM_COL32(40,180,80,100) :
-                    (region.type == ProbeRegionType::Corridor ? IM_COL32(255,170,30,150) : IM_COL32(40,170,255,150));
-                drawBox(region.boundsMin, region.boundsMax, color, 1.0f);
-                ImVec2 label;
-                if (project(region.centroid, label)) drawList->AddText(label, color, ("Region " + std::to_string(region.id)).c_str());
-            }
-        }
-        if (editor.showPlacementGrid)
-        {
-            const auto& grid = probeSystem->GetPlacementGrid();
-            const uint32_t stride = std::max(1u, (uint32_t)(grid.cells.size() / 2048u));
-            for (uint32_t i = 0; i < grid.cells.size(); i += stride)
-            {
-                const auto& cell = grid.cells[i];
-                if (cell.cellClass == ProbeCellClass::Empty || cell.cellClass == ProbeCellClass::Unknown) continue;
-                const uint32_t x = i % grid.dimensions.x;
-                const uint32_t yz = i / grid.dimensions.x;
-                const uint32_t y = yz % grid.dimensions.y;
-                const uint32_t z = yz / grid.dimensions.y;
-                const glm::vec3 bmin = grid.origin + glm::vec3(x,y,z) * grid.cellSize;
-                ImU32 color = cell.cellClass == ProbeCellClass::Solid ? IM_COL32(255,50,50,90) :
-                    (cell.cellClass == ProbeCellClass::Boundary ? IM_COL32(255,220,50,90) : IM_COL32(50,180,90,45));
-                drawBox(bmin, bmin + glm::vec3(grid.cellSize), color, 0.75f);
-            }
-        }
     }
 
-    VansRenderNode* node = scene->FindPrimaryRenderNodeByEntityGuid(Vans::VansEditorSelection::EntityGuid());
-    if (!node)  return;
+    const std::string selectedGuid = Vans::VansEditorSelection::EntityGuid();
+    auto transform = api.GetRuntimeTransform(selectedGuid);
+    if (!transform.available)  return;
 
-    // ── 1. Bind ImGuizmo to the current ImGui window ─────────────────────────
+
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(windowPos.x, windowPos.y,
                       windowSize.x, windowSize.y);
 
-    // ── 2. Build camera matrices ──────────────────────────────────────────────
+
     glm::mat4 view = camera->GetViewMatrix();
     glm::mat4 proj = camera->GetProjectiveMatrix();
 
     // ImGuizmo renders through ImGui's screen-space draw list; pass the
     // projection matrix exactly as the engine stores it (Vulkan Y-flip included).
-    // Do NOT negate proj[1][1] here — ImGuizmo's screen-space math already
+    // Do NOT negate proj[1][1] here 鈥?ImGuizmo's screen-space math already
     // compensates, and negating it causes the visible Y-axis flip.
 
-    // ── 3. Current model matrix ───────────────────────────────────────────────
-    VansTransform& tf = VansTransformStore::GetTransform(node->m_TransformID);
-    glm::mat4 modelMatrix = tf.GetModelMatrix();
 
-    // ── 4. Mode and space ─────────────────────────────────────────────────────
+    glm::mat4 modelMatrix = BuildModelMatrix(transform);
+
+
     ImGuizmo::OPERATION op    = OperationFromMode(m_Mode);
     ImGuizmo::MODE      space = (m_Space == GizmoSpace::World)
                                 ? ImGuizmo::WORLD
                                 : ImGuizmo::LOCAL;
 
-    // ── 5. Draw + interact ────────────────────────────────────────────────────
+
     float delta[16] = {};
     bool changed = ImGuizmo::Manipulate(
         glm::value_ptr(view),
@@ -261,7 +241,7 @@ void VansGizmos::Draw(VansScene*  scene,
         delta
     );
 
-    // ── 6. Write back decomposed T / R / S ────────────────────────────────────
+
     if (changed)
     {
         glm::vec3 pos, rotDeg, scale;
@@ -279,21 +259,29 @@ void VansGizmos::Draw(VansScene*  scene,
         switch (m_Mode)
         {
         case GizmoMode::Translate:
-            tf.m_Position = pos;
+            transform.position = ToEditorVec3(pos);
             break;
         case GizmoMode::Scale:
-            tf.m_Scale = scale;
+            transform.scale = ToEditorVec3(scale);
             break;
         case GizmoMode::Rotate:
-            tf.m_Rotation = rotDeg;
+            transform.rotationDegrees = ToEditorVec3(rotDeg);
             break;
         }
 
-        // Mark dirty so UpdateTransformRenderData() re-uploads the GPU SSBO.
-        VansTransformStore::TransformIDToTransformDirty[node->m_TransformID] = true;
+        Vans::EditorAPI::RuntimeTransformEdit edit;
+        edit.entityGuid = selectedGuid;
+        edit.position = transform.position;
+        edit.rotationDegrees = transform.rotationDegrees;
+        edit.scale = transform.scale;
+        edit.writePosition = m_Mode == GizmoMode::Translate;
+        edit.writeRotation = m_Mode == GizmoMode::Rotate;
+        edit.writeScale = m_Mode == GizmoMode::Scale;
+        api.ApplyRuntimeTransform(edit);
 
         m_PendingDocumentSync = true;
-        m_PendingDocumentSyncEntityGuid = Vans::VansEditorSelection::EntityGuid();
+        m_PendingDocumentSyncEntityGuid = selectedGuid;
+        m_PendingDocumentSyncTransform = transform;
     }
 
     const bool isUsing = ImGuizmo::IsUsing();
@@ -301,110 +289,49 @@ void VansGizmos::Draw(VansScene*  scene,
     {
         if (m_PendingDocumentSync)
         {
-            SyncTransformToSceneDocument(m_PendingDocumentSyncEntityGuid, tf);
+            SyncTransformToSceneDocument(m_PendingDocumentSyncEntityGuid, m_PendingDocumentSyncTransform);
             m_PendingDocumentSync = false;
             m_PendingDocumentSyncEntityGuid.clear();
+            m_PendingDocumentSyncTransform = {};
         }
     }
     m_WasUsing = isUsing;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  VansGizmos::TryPickObject
-// ─────────────────────────────────────────────────────────────────────────────
 
-void VansGizmos::TryPickObject(VansScene*  scene,
+//  VansGizmos::TryPickObject
+
+
+void VansGizmos::TryPickObject(Vans::EditorAPI::IEngineEditorAPI& api,
                                 VansCamera* camera,
                                 ImVec2      mousePos,
                                 ImVec2      windowPos,
                                 ImVec2      windowSize)
 {
-    if (!scene || !camera) return;
+    if (!camera) return;
     if (windowSize.x <= 0.0f || windowSize.y <= 0.0f) return;
 
-    // Mouse → NDC in [-1, 1]
+    // Mouse 鈫?NDC in [-1, 1]
     float ndcX = 2.0f * (mousePos.x - windowPos.x) / windowSize.x - 1.0f;
     float ndcY = 1.0f - 2.0f * (mousePos.y - windowPos.y) / windowSize.y;
 
     glm::vec3 rayOrigin, rayDir;
     UnprojectRay(camera, ndcX, ndcY, rayOrigin, rayDir);
 
-    // Collect all candidate render nodes
-    struct Candidate
-    {
-        VansRenderNode* node;
-        float           t;
-    };
-
-    float         bestT    = FLT_MAX;
-    VansRenderNode* bestNode = nullptr;
-
-    auto testNode = [&](VansRenderNode* node)
-    {
-        if (!node || !node->m_Mesh) return;
-
-        VansTransform& tf   = VansTransformStore::GetTransform(node->m_TransformID);
-        glm::vec3      pos  = tf.m_Position;
-
-        // ── Prefer exact bounds from CPU mesh data when available ─────────────
-        const std::vector<float>& rawPos = node->m_Mesh->GetMeshRawPositionData();
-        float radius = 1.0f;
-
-        if (rawPos.size() >= 3)
-        {
-            // Compute local AABB from raw XYZ triples and convert to world-space sphere
-            glm::vec3 localMin( FLT_MAX), localMax(-FLT_MAX);
-            for (size_t i = 0; i + 2 < rawPos.size(); i += 3)
-            {
-                glm::vec3 v(rawPos[i], rawPos[i + 1], rawPos[i + 2]);
-                localMin = glm::min(localMin, v);
-                localMax = glm::max(localMax, v);
-            }
-            glm::vec3 halfExt = (localMax - localMin) * 0.5f * tf.m_Scale;
-            // World-space AABB center (approximate – ignores rotation)
-            glm::vec3 localCenter = (localMin + localMax) * 0.5f;
-            pos += localCenter * tf.m_Scale;
-            radius = glm::length(halfExt);
-        }
-        else
-        {
-            // Fallback: sphere whose radius approximates the mesh extent via scale
-            radius = glm::max(glm::length(tf.m_Scale) * 0.5f, 0.25f);
-        }
-
-        float t = RaySphereIntersect(rayOrigin, rayDir, pos, radius);
-        if (t > 0.0f && t < bestT)
-        {
-            bestT    = t;
-            bestNode = node;
-        }
-    };
-
-    for (VansRenderNode* n : scene->m_OpaqueRenderNodes)      testNode(n);
-    for (VansRenderNode* n : scene->m_TransParentRenderNodes) testNode(n);
-
-    if (bestNode)
-    {
-        for (VansScriptObject* obj : scene->m_SceneObjects)
-        {
-            if (!obj) continue;
-            if (auto* render = obj->GetComponent<VansScriptRenderComponent>())
-            {
-                if (render->m_RenderNode == bestNode)
-                {
-                    Vans::VansEditorSelection::SelectEntity(obj->m_EntityGuid);
-                    break;
-                }
-            }
-        }
-    }
+    Vans::EditorAPI::Ray ray;
+    ray.origin = ToEditorVec3(rayOrigin);
+    ray.direction = ToEditorVec3(rayDir);
+    const std::string entityGuid = api.PickRuntimeEntity(ray);
+    if (!entityGuid.empty())
+        Vans::VansEditorSelection::SelectEntity(entityGuid);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  VansGizmos::HandleHotkeys
-// ─────────────────────────────────────────────────────────────────────────────
 
-void VansGizmos::HandleHotkeys(VansScene* scene)
+
+//  VansGizmos::HandleHotkeys
+
+
+void VansGizmos::HandleHotkeys()
 {
     // Only fire when no text widget is active (avoids conflicts with input fields)
     if (ImGui::GetIO().WantCaptureKeyboard) return;
@@ -418,8 +345,9 @@ void VansGizmos::HandleHotkeys(VansScene* scene)
     if (input.IsKeyPressed(GLFW_KEY_X))
         m_Space = (m_Space == GizmoSpace::World) ? GizmoSpace::Local : GizmoSpace::World;
 
-    if (input.IsKeyPressed(GLFW_KEY_ESCAPE) && scene)
+    if (input.IsKeyPressed(GLFW_KEY_ESCAPE))
         Vans::VansEditorSelection::Clear();
 }
 
 } // namespace VansGraphics
+

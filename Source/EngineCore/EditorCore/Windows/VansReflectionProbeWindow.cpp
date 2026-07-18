@@ -1,64 +1,42 @@
-﻿#include "VansReflectionProbeWindow.h"
+#include "VansReflectionProbeWindow.h"
+
 #include "../VansEditorWindow.h"
-#include "../../RenderCore/ReflectionProbeCore/VansReflectionProbeSystem.h"
-#include "../../RenderCore/VulkanCore/VansVKDevice.h"
-#include "../../RenderCore/VulkanCore/VansTexture.h"
+#include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
 
 #include "imgui.h"
-#include "backends/imgui_impl_vulkan.h"
-#include <glm/gtc/type_ptr.hpp>
+
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 namespace VansGraphics
 {
 namespace
 {
-	const char* ProbeTypeName(ReflectionProbeType type)
+	const char* ProbeTypeName(int type)
 	{
 		switch (type)
 		{
-		case ReflectionProbeType::Realtime: return "Realtime";
-		case ReflectionProbeType::Sky: return "Sky";
-		case ReflectionProbeType::Baked:
+		case 1: return "Realtime";
+		case 2: return "Sky";
+		case 0:
 		default: return "Baked";
 		}
 	}
 
-	void RebuildProbeResources(VansScene* scene, VansVKDevice& device, VansReflectionProbeSystem* probes)
+	bool EditVec3(const char* label, Vans::EditorAPI::Vec3& value, float speed)
 	{
-		if (!scene || !probes) return;
-		probes->CreateGPUResources(device, device.GetImmediateGraphicsCommandBuffer());
-		probes->UpdateGlobalDescriptors(scene->m_GlobalDescriptorSet);
-	}
+		float values[3] = { value.x, value.y, value.z };
+		if (!ImGui::DragFloat3(label, values, speed))
+			return false;
 
-	VkDescriptorSet GetPreviewDescriptor(VansReflectionProbeSystem* probes, VkImageView view)
-	{
-		if (!probes || view == VK_NULL_HANDLE || !probes->GetSpecularArray())
-			return VK_NULL_HANDLE;
-
-		static VkImageView cachedView = VK_NULL_HANDLE;
-		static VkSampler cachedSampler = VK_NULL_HANDLE;
-		static VkDescriptorSet cachedDescriptor = VK_NULL_HANDLE;
-		static VansTexture* cachedTexture = nullptr;
-
-		VansTexture* texture = probes->GetSpecularArray();
-		VkSampler sampler = texture->GetImage().GetSampler();
-		if (cachedTexture != texture || cachedView != view || cachedSampler != sampler || cachedDescriptor == VK_NULL_HANDLE)
-		{
-			cachedTexture = texture;
-			cachedView = view;
-			cachedSampler = sampler;
-			cachedDescriptor = ImGui_ImplVulkan_AddTexture(
-				cachedSampler,
-				cachedView,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		}
-		return cachedDescriptor;
+		value = { values[0], values[1], values[2] };
+		return true;
 	}
 }
 
-void VansReflectionProbeWindow::ShowWindow(VansVKDevice& device)
+void VansReflectionProbeWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
 	if (!VansEditorWindow::m_ReflectionProbeWindowOpen)
 		return;
@@ -69,106 +47,106 @@ void VansReflectionProbeWindow::ShowWindow(VansVKDevice& device)
 		return;
 	}
 
-	if (!m_Scene)
-	{
-		ImGui::TextDisabled("No scene loaded.");
-		ImGui::End();
-		return;
-	}
-
-	VansReflectionProbeSystem* probes = m_Scene->GetReflectionProbeSystem();
-	if (!probes)
+	Vans::EditorAPI::ReflectionProbeSettingsSnapshot settings = editorAPI.GetReflectionProbeSettings();
+	if (!settings.available)
 	{
 		ImGui::TextDisabled("Reflection probe system is not available.");
 		ImGui::End();
 		return;
 	}
-	auto& editor = probes->GetEditorState();
-	auto& placement = probes->GetPlacementSettings();
-	auto& lighting = probes->GetLightingSettings();
-	auto& probeList = probes->GetProbes();
-	auto& bakeResults = probes->GetBakeResults();
+
+	bool changed = false;
 
 	if (ImGui::CollapsingHeader("Scene Gizmos", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::Checkbox("Show Probe Gizmos", &editor.showProbeGizmos);
-		ImGui::Checkbox("Show Influence Volumes", &editor.showInfluenceVolumes);
-		ImGui::Checkbox("Show Blend Volumes", &editor.showBlendVolumes);
-		ImGui::Checkbox("Show Placement Grid", &editor.showPlacementGrid);
-		ImGui::Checkbox("Show Regions", &editor.showRegions);
+		changed |= ImGui::Checkbox("Show Probe Gizmos", &settings.editor.showProbeGizmos);
+		changed |= ImGui::Checkbox("Show Influence Volumes", &settings.editor.showInfluenceVolumes);
+		changed |= ImGui::Checkbox("Show Blend Volumes", &settings.editor.showBlendVolumes);
+		changed |= ImGui::Checkbox("Show Placement Grid", &settings.editor.showPlacementGrid);
+		changed |= ImGui::Checkbox("Show Regions", &settings.editor.showRegions);
 
 		const char* debugViews[] = {
 			"None", "Influence", "Probe Color", "SSR Confidence",
 			"Region Id", "Parallax", "Fallback Only", "SSR Only"
 		};
-		int debugIndex = static_cast<int>(editor.debugView);
+		int debugIndex = std::clamp(settings.editor.debugView, 0, 7);
 		if (ImGui::Combo("Debug View", &debugIndex, debugViews, IM_ARRAYSIZE(debugViews)))
 		{
-			editor.debugView = static_cast<ReflectionProbeDebugView>(debugIndex);
-			probes->UploadMetadata();
+			settings.editor.debugView = debugIndex;
+			changed = true;
 		}
 	}
 
 	if (ImGui::CollapsingHeader("Placement", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::Checkbox("Auto Placement Enabled", &placement.enabled);
-		ImGui::DragFloat3("Volume Min", glm::value_ptr(placement.volumeMin), 0.25f);
-		ImGui::DragFloat3("Volume Max", glm::value_ptr(placement.volumeMax), 0.25f);
-		ImGui::DragFloat("Uniform Spacing", &placement.uniformSpacing, 0.1f, 0.5f, 100.0f, "%.2f");
-		ImGui::DragFloat("Uniform Box Scale", &placement.uniformBoxSizeScale, 0.01f, 0.05f, 1.0f, "%.2f");
-		int uniformResolution = static_cast<int>(placement.uniformProbeResolution);
+		changed |= ImGui::Checkbox("Auto Placement Enabled", &settings.placement.enabled);
+		changed |= EditVec3("Volume Min", settings.placement.volumeMin, 0.25f);
+		changed |= EditVec3("Volume Max", settings.placement.volumeMax, 0.25f);
+		changed |= ImGui::DragFloat("Uniform Spacing", &settings.placement.uniformSpacing, 0.1f, 0.5f, 100.0f, "%.2f");
+		changed |= ImGui::DragFloat("Uniform Box Scale", &settings.placement.uniformBoxSizeScale, 0.01f, 0.05f, 1.0f, "%.2f");
+
+		int uniformResolution = static_cast<int>(settings.placement.uniformProbeResolution);
 		if (ImGui::InputInt("Uniform Resolution", &uniformResolution))
-			placement.uniformProbeResolution = static_cast<uint32_t>(std::clamp(uniformResolution, 32, 512));
-		int maxProbeCount = static_cast<int>(placement.maxProbeCount);
+		{
+			settings.placement.uniformProbeResolution = static_cast<std::uint32_t>(std::clamp(uniformResolution, 32, 512));
+			changed = true;
+		}
+
+		int maxProbeCount = static_cast<int>(settings.placement.maxProbeCount);
 		if (ImGui::InputInt("Max Probe Count", &maxProbeCount))
-			placement.maxProbeCount = static_cast<uint32_t>(std::clamp(maxProbeCount, 1, 4096));
+		{
+			settings.placement.maxProbeCount = static_cast<std::uint32_t>(std::clamp(maxProbeCount, 1, 4096));
+			changed = true;
+		}
 
 		if (ImGui::Button("Generate Auto Probes"))
 		{
-			probes->GenerateAutoProbes(*m_Scene, true);
-			RebuildProbeResources(m_Scene, device, probes);
+			if (changed)
+			{
+				editorAPI.ApplyReflectionProbeSettings(settings);
+				changed = false;
+			}
+			editorAPI.GenerateAutoReflectionProbes();
+			settings = editorAPI.GetReflectionProbeSettings();
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Clear Auto Probes"))
 		{
-			probes->ClearAutoProbes();
-			RebuildProbeResources(m_Scene, device, probes);
+			editorAPI.ClearAutoReflectionProbes();
+			settings = editorAPI.GetReflectionProbeSettings();
 		}
 	}
 
 	if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		int maxBlend = static_cast<int>(lighting.maxBlendCount);
+		int maxBlend = static_cast<int>(settings.lighting.maxBlendCount);
 		if (ImGui::SliderInt("Max Blend Count", &maxBlend, 1, 4))
 		{
-			lighting.maxBlendCount = static_cast<uint32_t>(maxBlend);
-			probes->UploadMetadata();
+			settings.lighting.maxBlendCount = static_cast<std::uint32_t>(maxBlend);
+			changed = true;
 		}
-		bool lightingDirty = false;
-		lightingDirty |= ImGui::DragFloat("SSR Roughness Fade Start", &lighting.ssrRoughnessFadeStart, 0.01f, 0.0f, 1.0f, "%.2f");
-		lightingDirty |= ImGui::DragFloat("SSR Roughness Fade End", &lighting.ssrRoughnessFadeEnd, 0.01f, 0.0f, 1.0f, "%.2f");
-		lightingDirty |= ImGui::DragFloat("Sky Intensity", &lighting.skyIntensity, 0.01f, 0.0f, 20.0f, "%.2f");
-		if (lightingDirty)
-			probes->UploadMetadata();
+		changed |= ImGui::DragFloat("SSR Roughness Fade Start", &settings.lighting.ssrRoughnessFadeStart, 0.01f, 0.0f, 1.0f, "%.2f");
+		changed |= ImGui::DragFloat("SSR Roughness Fade End", &settings.lighting.ssrRoughnessFadeEnd, 0.01f, 0.0f, 1.0f, "%.2f");
+		changed |= ImGui::DragFloat("Sky Intensity", &settings.lighting.skyIntensity, 0.01f, 0.0f, 20.0f, "%.2f");
 	}
 
 	if (ImGui::CollapsingHeader("Bake", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::Text("Array Resolution: %u", probes->GetArrayResolution());
-		ImGui::Text("Mip Count: %u", probes->GetMipCount());
+		ImGui::Text("Array Resolution: %u", settings.arrayResolution);
+		ImGui::Text("Mip Count: %u", settings.mipCount);
 		if (ImGui::Button("Request Bake All"))
-			probes->RequestBakeAll();
+			editorAPI.RequestReflectionProbeBakeAll();
 		ImGui::SameLine();
 		if (ImGui::Button("Bake Queue Now"))
-			probes->BakeQueuedProbesNow(*m_Scene, device, device.GetImmediateGraphicsCommandBuffer());
+			editorAPI.BakeQueuedReflectionProbesNow();
 		ImGui::SameLine();
 		if (ImGui::Button("Save Config"))
-			probes->SaveConfiguration();
+			editorAPI.SaveReflectionProbeConfiguration();
 	}
 
 	if (ImGui::CollapsingHeader("Probes", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::Text("Probe Count: %d", static_cast<int>(probeList.size()));
+		ImGui::Text("Probe Count: %d", static_cast<int>(settings.probes.size()));
 		if (ImGui::BeginTable("ReflectionProbeTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
 		{
 			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed, 45.0f);
@@ -177,100 +155,116 @@ void VansReflectionProbeWindow::ShowWindow(VansVKDevice& device)
 			ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 140.0f);
 			ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_WidthFixed, 65.0f);
 			ImGui::TableHeadersRow();
-			for (int i = 0; i < static_cast<int>(probeList.size()); ++i)
+			for (int i = 0; i < static_cast<int>(settings.probes.size()); ++i)
 			{
-				auto& probe = probeList[i];
+				auto& probe = settings.probes[i];
 				ImGui::TableNextRow();
 				ImGui::TableNextColumn();
 				ImGui::Text("%d", i);
 				ImGui::TableNextColumn();
-				const bool selected = editor.selectedProbeIndex == i;
+				const bool selected = settings.editor.selectedProbeIndex == i;
 				if (ImGui::Selectable(probe.name.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns))
-					editor.selectedProbeIndex = i;
+				{
+					settings.editor.selectedProbeIndex = i;
+					changed = true;
+				}
 				ImGui::TableNextColumn();
 				ImGui::Text("%s", ProbeTypeName(probe.type));
 				ImGui::TableNextColumn();
-				const char* status = i < static_cast<int>(bakeResults.size()) ? bakeResults[i].status.c_str() : "No bake result";
-				ImGui::TextWrapped("%s", status);
+				ImGui::TextWrapped("%s", probe.bakeStatus.empty() ? "No bake result" : probe.bakeStatus.c_str());
 				ImGui::TableNextColumn();
-				if (probe.type == ReflectionProbeType::Sky)
+				if (probe.type == 2)
 				{
 					ImGui::TextDisabled("-");
 				}
 				else
 				{
 					ImGui::PushID(i);
-					if (ImGui::Checkbox("##enabled", &probe.enabled))
-						probes->UploadMetadata();
+					changed |= ImGui::Checkbox("##enabled", &probe.enabled);
 					ImGui::PopID();
 				}
 			}
 			ImGui::EndTable();
 		}
 
-		if (editor.selectedProbeIndex >= 0 && editor.selectedProbeIndex < static_cast<int>(probeList.size()))
+		if (settings.editor.selectedProbeIndex >= 0
+			&& settings.editor.selectedProbeIndex < static_cast<int>(settings.probes.size()))
 		{
 			ImGui::Separator();
-			auto& probe = probeList[editor.selectedProbeIndex];
+			const int selectedIndex = settings.editor.selectedProbeIndex;
+			auto& probe = settings.probes[selectedIndex];
 			ImGui::Text("Selected: %s", probe.name.c_str());
-			bool dirty = false;
-			dirty |= ImGui::DragFloat3("Position", glm::value_ptr(probe.position), 0.1f);
-			dirty |= ImGui::DragFloat3("Capture Position", glm::value_ptr(probe.capturePosition), 0.1f);
-			if (probe.shape == ReflectionProbeShape::Box)
+
+			changed |= EditVec3("Position", probe.position, 0.1f);
+			changed |= EditVec3("Capture Position", probe.capturePosition, 0.1f);
+			if (probe.shape == 1)
 			{
-				dirty |= ImGui::DragFloat3("Box Min", glm::value_ptr(probe.boxMin), 0.1f);
-				dirty |= ImGui::DragFloat3("Box Max", glm::value_ptr(probe.boxMax), 0.1f);
-				dirty |= ImGui::Checkbox("Box Projection", &probe.boxProjection);
+				changed |= EditVec3("Box Min", probe.boxMin, 0.1f);
+				changed |= EditVec3("Box Max", probe.boxMax, 0.1f);
+				changed |= ImGui::Checkbox("Box Projection", &probe.boxProjection);
 			}
 			else
 			{
-				dirty |= ImGui::DragFloat("Radius", &probe.radius, 0.1f, 0.01f, 10000.0f, "%.2f");
+				changed |= ImGui::DragFloat("Radius", &probe.radius, 0.1f, 0.01f, 10000.0f, "%.2f");
 			}
-			dirty |= ImGui::DragFloat("Blend Distance", &probe.blendDistance, 0.05f, 0.001f, 1000.0f, "%.2f");
-			dirty |= ImGui::DragFloat("Intensity", &probe.intensity, 0.05f, 0.0f, 100.0f, "%.2f");
-			dirty |= ImGui::DragFloat("Specular Intensity", &probe.specularIntensity, 0.05f, 0.0f, 100.0f, "%.2f");
-			dirty |= ImGui::DragFloat("Priority", &probe.priority, 0.05f, -1000.0f, 1000.0f, "%.2f");
-			if (dirty)
-			{
-				probes->MarkDirty(static_cast<size_t>(editor.selectedProbeIndex));
-				probes->UploadMetadata();
-			}
+			changed |= ImGui::DragFloat("Blend Distance", &probe.blendDistance, 0.05f, 0.001f, 1000.0f, "%.2f");
+			changed |= ImGui::DragFloat("Intensity", &probe.intensity, 0.05f, 0.0f, 100.0f, "%.2f");
+			changed |= ImGui::DragFloat("Specular Intensity", &probe.specularIntensity, 0.05f, 0.0f, 100.0f, "%.2f");
+			changed |= ImGui::DragFloat("Priority", &probe.priority, 0.05f, -1000.0f, 1000.0f, "%.2f");
 
-			if (probe.type != ReflectionProbeType::Sky)
+			if (probe.type != 2)
 			{
 				if (ImGui::Button("Request Bake Selected"))
-					probes->RequestBake(static_cast<size_t>(editor.selectedProbeIndex));
+				{
+					if (changed)
+					{
+						editorAPI.ApplyReflectionProbeSettings(settings);
+						changed = false;
+					}
+					editorAPI.RequestReflectionProbeBake(static_cast<std::uint32_t>(selectedIndex));
+				}
 				ImGui::SameLine();
 				if (probe.autoGenerated && ImGui::Button("Convert To Manual"))
-					probes->ConvertToManual(static_cast<size_t>(editor.selectedProbeIndex));
+				{
+					if (changed)
+					{
+						editorAPI.ApplyReflectionProbeSettings(settings);
+						changed = false;
+					}
+					editorAPI.ConvertReflectionProbeToManual(static_cast<std::uint32_t>(selectedIndex));
+					settings = editorAPI.GetReflectionProbeSettings();
+				}
 			}
 
-			if (probe.type != ReflectionProbeType::Sky && ImGui::CollapsingHeader("Cubemap Preview", ImGuiTreeNodeFlags_DefaultOpen))
+			if (probe.type != 2 && ImGui::CollapsingHeader("Cubemap Preview", ImGuiTreeNodeFlags_DefaultOpen))
 			{
-				ImGui::Checkbox("Preview Cubemap", &editor.previewCubemap);
+				changed |= ImGui::Checkbox("Preview Cubemap", &settings.editor.previewCubemap);
 				const char* faces[] = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
-				editor.previewFace = std::clamp(editor.previewFace, 0, 5);
-				ImGui::Combo("Face", &editor.previewFace, faces, IM_ARRAYSIZE(faces));
-				ImGui::SliderFloat("Roughness", &editor.previewRoughness, 0.0f, 1.0f, "%.2f");
+				settings.editor.previewFace = std::clamp(settings.editor.previewFace, 0, 5);
+				if (ImGui::Combo("Face", &settings.editor.previewFace, faces, IM_ARRAYSIZE(faces)))
+					changed = true;
+				changed |= ImGui::SliderFloat("Roughness", &settings.editor.previewRoughness, 0.0f, 1.0f, "%.2f");
 
-				if (editor.previewCubemap)
+				if (settings.editor.previewCubemap)
 				{
-					const uint32_t mipCount = std::max(1u, probes->GetMipCount());
-					const uint32_t mip = static_cast<uint32_t>(
-						std::round(std::clamp(editor.previewRoughness, 0.0f, 1.0f) * float(mipCount - 1)));
-					VkImageView previewView = probes->GetPreviewFaceView(
-						static_cast<size_t>(editor.selectedProbeIndex),
-						static_cast<uint32_t>(editor.previewFace),
-						mip);
-					VkDescriptorSet previewDescriptor = GetPreviewDescriptor(probes, previewView);
-					if (previewDescriptor != VK_NULL_HANDLE)
+					const std::uint32_t mipCount = std::max(1u, settings.mipCount);
+					const std::uint32_t mip = static_cast<std::uint32_t>(
+						std::round(std::clamp(settings.editor.previewRoughness, 0.0f, 1.0f) * float(mipCount - 1)));
+					Vans::EditorAPI::RenderTextureFilter filter;
+					filter.category = "reflection_probe";
+					filter.probeIndex = static_cast<std::uint32_t>(selectedIndex);
+					filter.face = static_cast<std::uint32_t>(settings.editor.previewFace);
+					filter.roughness = settings.editor.previewRoughness;
+					std::vector<Vans::EditorAPI::RenderTexturePreview> previews =
+						editorAPI.QueryRenderTexturePreviews(filter);
+					const Vans::EditorAPI::RenderTexturePreview preview =
+						previews.empty() ? Vans::EditorAPI::RenderTexturePreview{} : previews.front();
+					if (preview.texture)
 					{
-						const float mipScale = 1.0f / float(1u << mip);
-						const float textureSize = std::max(1.0f, float(probes->GetArrayResolution()) * mipScale);
 						const float maxPreviewSize = std::min(ImGui::GetContentRegionAvail().x, 320.0f);
-						const float previewSize = std::max(96.0f, std::min(maxPreviewSize, textureSize));
+						const float previewSize = std::max(96.0f, std::min(maxPreviewSize, static_cast<float>(preview.width)));
 						ImGui::Text("Mip %u / %u", mip, mipCount - 1);
-						ImGui::Image((ImTextureID)previewDescriptor, ImVec2(previewSize, previewSize));
+						ImGui::Image(preview.texture, ImVec2(previewSize, previewSize));
 					}
 					else
 					{
@@ -281,17 +275,16 @@ void VansReflectionProbeWindow::ShowWindow(VansVKDevice& device)
 		}
 	}
 
-	const auto errors = probes->ValidatePlacement();
-	if (!errors.empty() && ImGui::CollapsingHeader("Validation", ImGuiTreeNodeFlags_DefaultOpen))
+	if (!settings.validationErrors.empty() && ImGui::CollapsingHeader("Validation", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		for (const std::string& error : errors)
+		for (const std::string& error : settings.validationErrors)
 			ImGui::TextWrapped("%s", error.c_str());
 	}
+
+	if (changed)
+		editorAPI.ApplyReflectionProbeSettings(settings);
 
 	ImGui::End();
 }
 
-}
-
-
-
+} // namespace VansGraphics

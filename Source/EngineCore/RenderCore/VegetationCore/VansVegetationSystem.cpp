@@ -473,49 +473,34 @@ void VansVegetationSystem::CreateTreeDescriptorSets()
 void VansVegetationSystem::WriteBoneSimDescriptors()
 {
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->ResetState();
+	descMgr->BeginDescriptorUpdate();
 
-	descMgr->m_BufferDescInfos.push_back({
-		m_BoneSimDescSets[0], VEG_SIM_BINDING_INSTANCE_DATA, 0,
+	descMgr->WriteBufferDescriptor(
+		m_BoneSimDescSets[0], VEG_SIM_BINDING_INSTANCE_DATA,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_InstanceBuffer.GetNativeBuffer(), 0, m_InstanceBuffer.GetBufferSize() }}
-		});
-	descMgr->m_BufferDescInfos.push_back({
-		m_BoneSimDescSets[0], VEG_SIM_BINDING_BONE_DATA, 0,
+		{{ m_InstanceBuffer.GetNativeBuffer(), 0, m_InstanceBuffer.GetBufferSize() }});
+	descMgr->WriteBufferDescriptor(
+		m_BoneSimDescSets[0], VEG_SIM_BINDING_BONE_DATA,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_BoneBuffer.GetNativeBuffer(), 0, m_BoneBuffer.GetBufferSize() }}
-		});
-	descMgr->m_BufferDescInfos.push_back({
-		m_BoneSimDescSets[0], VEG_SIM_BINDING_BONE_MATRICES, 0,
+		{{ m_BoneBuffer.GetNativeBuffer(), 0, m_BoneBuffer.GetBufferSize() }});
+	descMgr->WriteBufferDescriptor(
+		m_BoneSimDescSets[0], VEG_SIM_BINDING_BONE_MATRICES,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_BoneMatrixBuffer.GetNativeBuffer(), 0, m_BoneMatrixBuffer.GetBufferSize() }}
-		});
+		{{ m_BoneMatrixBuffer.GetNativeBuffer(), 0, m_BoneMatrixBuffer.GetBufferSize() }});
 
 	// Terrain heightmap (binding 3) — always write a valid descriptor
 	if (m_TerrainEnabled && m_TerrainHeightmapView != VK_NULL_HANDLE && m_TerrainHeightmapSampler != VK_NULL_HANDLE)
 	{
-		descMgr->m_ImageDescInfos.push_back({
-			m_BoneSimDescSets[0], VEG_SIM_BINDING_TERRAIN_HEIGHTMAP, 0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}
-			});
+		descMgr->WriteImageDescriptor(m_BoneSimDescSets[0], VEG_SIM_BINDING_TERRAIN_HEIGHTMAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 	}
 
 	// LOD factors buffer (binding 4)
-	descMgr->m_BufferDescInfos.push_back({
-		m_BoneSimDescSets[0], VEG_SIM_BINDING_LOD_FACTORS, 0,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_LodFactorsBuffer.GetNativeBuffer(), 0, m_LodFactorsBuffer.GetBufferSize() }}
-		});
+	descMgr->WriteBufferDescriptor(m_BoneSimDescSets[0], VEG_SIM_BINDING_LOD_FACTORS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_LodFactorsBuffer.GetNativeBuffer(), 0, m_LodFactorsBuffer.GetBufferSize() }});
 
 	// P6a: Scatter offset UBO (binding 5) — 仅 subBladeCount 个共享散布偏移
-	descMgr->m_BufferDescInfos.push_back({
-		m_BoneSimDescSets[0], VEG_SIM_BINDING_SCATTER_OFFSETS, 0,
-		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		{{ m_ScatterOffsetUBO.GetNativeBuffer(), 0, m_ScatterOffsetUBO.GetBufferSize() }}
-		});
+	descMgr->WriteBufferDescriptor(m_BoneSimDescSets[0], VEG_SIM_BINDING_SCATTER_OFFSETS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ m_ScatterOffsetUBO.GetNativeBuffer(), 0, m_ScatterOffsetUBO.GetBufferSize() }});
 
-	descMgr->UpdateDescriptorSets();
+	descMgr->CommitDescriptorUpdates();
 }
 
 // ============================================================================
@@ -526,44 +511,39 @@ void VansVegetationSystem::WriteCullDescriptors()
 	if (m_CullDescSets.empty()) return;
 
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->ResetState();
+	descMgr->BeginDescriptorUpdate();
 
 	// Binding 0: Instance data (read)
-	descMgr->m_BufferDescInfos.push_back({
-		m_CullDescSets[0], VEG_CULL_BINDING_INSTANCE_DATA, 0,
+	descMgr->WriteBufferDescriptor(
+		m_CullDescSets[0], VEG_CULL_BINDING_INSTANCE_DATA,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_InstanceBuffer.GetNativeBuffer(), 0, m_InstanceBuffer.GetBufferSize() }}
-	});
+		{{ m_InstanceBuffer.GetNativeBuffer(), 0, m_InstanceBuffer.GetBufferSize() }});
 
 	// Binding 1: Visibility flags (write)
-	descMgr->m_BufferDescInfos.push_back({
-		m_CullDescSets[0], VEG_CULL_BINDING_VISIBILITY, 0,
+	descMgr->WriteBufferDescriptor(
+		m_CullDescSets[0], VEG_CULL_BINDING_VISIBILITY,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_VisibilityBuffer.GetNativeBuffer(), 0, m_VisibilityBuffer.GetBufferSize() }}
-	});
+		{{ m_VisibilityBuffer.GetNativeBuffer(), 0, m_VisibilityBuffer.GetBufferSize() }});
 
 	// Binding 2: Visible count (atomic counter)
-	descMgr->m_BufferDescInfos.push_back({
-		m_CullDescSets[0], VEG_CULL_BINDING_VISIBLE_COUNT, 0,
+	descMgr->WriteBufferDescriptor(
+		m_CullDescSets[0], VEG_CULL_BINDING_VISIBLE_COUNT,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_VisibleCountBuffer.GetNativeBuffer(), 0, m_VisibleCountBuffer.GetBufferSize() }}
-	});
+		{{ m_VisibleCountBuffer.GetNativeBuffer(), 0, m_VisibleCountBuffer.GetBufferSize() }});
 
 	// Binding 3: Visible index list (write)
-	descMgr->m_BufferDescInfos.push_back({
-		m_CullDescSets[0], VEG_CULL_BINDING_VISIBLE_INDICES, 0,
+	descMgr->WriteBufferDescriptor(
+		m_CullDescSets[0], VEG_CULL_BINDING_VISIBLE_INDICES,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_VisibleIndexBuffer.GetNativeBuffer(), 0, m_VisibleIndexBuffer.GetBufferSize() }}
-	});
+		{{ m_VisibleIndexBuffer.GetNativeBuffer(), 0, m_VisibleIndexBuffer.GetBufferSize() }});
 
 	// Binding 4: Terrain heightmap — 用于采样实例的实际地面高度，修正包围球 Y 位置
 	if (m_TerrainEnabled && m_TerrainHeightmapView != VK_NULL_HANDLE && m_TerrainHeightmapSampler != VK_NULL_HANDLE)
 	{
-		descMgr->m_ImageDescInfos.push_back({
-			m_CullDescSets[0], VEG_CULL_BINDING_TERRAIN_HEIGHTMAP, 0,
+		descMgr->WriteImageDescriptor(
+			m_CullDescSets[0], VEG_CULL_BINDING_TERRAIN_HEIGHTMAP,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}
-		});
+			{{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 	}
 
 	// Binding 5: Hi-Z depth pyramid — 用于保守遮挡剔除，判断实例是否被地形或建筑物遮挡
@@ -571,14 +551,13 @@ void VansVegetationSystem::WriteCullDescriptors()
 	//       必须与此处 descriptor 声明的 layout 一致，否则 Vulkan 采样结果未定义。
 	if (m_HiZEnabled && m_HiZView != VK_NULL_HANDLE && m_HiZSampler != VK_NULL_HANDLE)
 	{
-		descMgr->m_ImageDescInfos.push_back({
-			m_CullDescSets[0], VEG_CULL_BINDING_HIZ, 0,
+		descMgr->WriteImageDescriptor(
+			m_CullDescSets[0], VEG_CULL_BINDING_HIZ,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ m_HiZSampler, m_HiZView, VK_IMAGE_LAYOUT_GENERAL }}
-		});
+			{{ m_HiZSampler, m_HiZView, VK_IMAGE_LAYOUT_GENERAL }});
 	}
 
-	descMgr->UpdateDescriptorSets();
+	descMgr->CommitDescriptorUpdates();
 }
 
 // (WriteSkinningDescriptors removed — skinning moved to vertex shader)
@@ -586,72 +565,40 @@ void VansVegetationSystem::WriteCullDescriptors()
 void VansVegetationSystem::WriteDrawDescriptors(GrassRenderConfigGPU& cfg)
 {
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->ResetState();
+	descMgr->BeginDescriptorUpdate();
 
 	// Binding 0: Bone matrices (compute output, VS reads)
-	descMgr->m_BufferDescInfos.push_back({
-		cfg.drawDescSet, VEG_DRAW_BINDING_BONE_MATRICES, 0,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_BoneMatrixBuffer.GetNativeBuffer(), 0, m_BoneMatrixBuffer.GetBufferSize() }}
-	});
+	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_BONE_MATRICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_BoneMatrixBuffer.GetNativeBuffer(), 0, m_BoneMatrixBuffer.GetBufferSize() }});
 
 	// Binding 1: Bone weights (static, per-vertex)
-	descMgr->m_BufferDescInfos.push_back({
-		cfg.drawDescSet, VEG_DRAW_BINDING_BONE_WEIGHTS, 0,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ cfg.boneWeightBuffer.GetNativeBuffer(), 0, cfg.boneWeightBuffer.GetBufferSize() }}
-	});
+	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_BONE_WEIGHTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ cfg.boneWeightBuffer.GetNativeBuffer(), 0, cfg.boneWeightBuffer.GetBufferSize() }});
 
 	// Binding 2: Instance remap (uint indices into global instance/bone arrays)
 	// 单配置快速路径: 使用 GPU cull 输出的 visibleIndices 替代静态 remap，
 	// 这样 indirect draw 只启动可见实例的 VS，配合 CopyBuffer 更新 instanceCount
 	bool singleConfigFastPath = (m_RenderConfigsGPU.size() == 1);
 	VansVKBuffer& remapBuffer = singleConfigFastPath ? m_VisibleIndexBuffer : cfg.instanceRemapBuffer;
-	descMgr->m_BufferDescInfos.push_back({
-		cfg.drawDescSet, VEG_DRAW_BINDING_INSTANCE_REMAP, 0,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ remapBuffer.GetNativeBuffer(), 0, remapBuffer.GetBufferSize() }}
-	});
+	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_INSTANCE_REMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ remapBuffer.GetNativeBuffer(), 0, remapBuffer.GetBufferSize() }});
 
 	// Binding 3: P6a — Scatter offset UBO (shared sub-blade XZ offsets)
-	descMgr->m_BufferDescInfos.push_back({
-		cfg.drawDescSet, VEG_DRAW_BINDING_SCATTER_OFFSETS, 0,
-		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		{{ m_ScatterOffsetUBO.GetNativeBuffer(), 0, m_ScatterOffsetUBO.GetBufferSize() }}
-	});
+	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_SCATTER_OFFSETS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ m_ScatterOffsetUBO.GetNativeBuffer(), 0, m_ScatterOffsetUBO.GetBufferSize() }});
 
 	// Binding 4: LOD factors
-	descMgr->m_BufferDescInfos.push_back({
-		cfg.drawDescSet, VEG_DRAW_BINDING_LOD_FACTORS, 0,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_LodFactorsBuffer.GetNativeBuffer(), 0, m_LodFactorsBuffer.GetBufferSize() }}
-	});
+	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_LOD_FACTORS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_LodFactorsBuffer.GetNativeBuffer(), 0, m_LodFactorsBuffer.GetBufferSize() }});
 
 	// Binding 5: Instance data (positions, rotations, etc.)
-	descMgr->m_BufferDescInfos.push_back({
-		cfg.drawDescSet, VEG_DRAW_BINDING_INSTANCE_DATA, 0,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_InstanceBuffer.GetNativeBuffer(), 0, m_InstanceBuffer.GetBufferSize() }}
-	});
+	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_INSTANCE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_InstanceBuffer.GetNativeBuffer(), 0, m_InstanceBuffer.GetBufferSize() }});
 
 	// Binding 6: P6a — Terrain heightmap for VS sub-blade Y sampling
 	if (m_TerrainEnabled && m_TerrainHeightmapView != VK_NULL_HANDLE && m_TerrainHeightmapSampler != VK_NULL_HANDLE)
 	{
-		descMgr->m_ImageDescInfos.push_back({
-			cfg.drawDescSet, VEG_DRAW_BINDING_TERRAIN_HEIGHTMAP, 0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}
-		});
+		descMgr->WriteImageDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_TERRAIN_HEIGHTMAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 	}
 
 	// Binding 7: P0 — Per-instance visibility flags from GPU cull
-	descMgr->m_BufferDescInfos.push_back({
-		cfg.drawDescSet, VEG_DRAW_BINDING_VISIBILITY_FLAGS, 0,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_VisibilityBuffer.GetNativeBuffer(), 0, m_VisibilityBuffer.GetBufferSize() }}
-	});
+	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_VISIBILITY_FLAGS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_VisibilityBuffer.GetNativeBuffer(), 0, m_VisibilityBuffer.GetBufferSize() }});
 
-	descMgr->UpdateDescriptorSets();
+	descMgr->CommitDescriptorUpdates();
 }
 
 void VansVegetationSystem::WriteTreeCullDescriptors()
@@ -660,58 +607,51 @@ void VansVegetationSystem::WriteTreeCullDescriptors()
 		return;
 
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->ResetState();
+	descMgr->BeginDescriptorUpdate();
 
-	descMgr->m_BufferDescInfos.push_back({
-		m_TreeCullDescSets[0], VEG_TREE_CULL_BINDING_INSTANCES, 0,
+	descMgr->WriteBufferDescriptor(
+		m_TreeCullDescSets[0], VEG_TREE_CULL_BINDING_INSTANCES,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_TreeInstanceBuffer.GetNativeBuffer(), 0, m_TreeInstanceBuffer.GetBufferSize() }}
-	});
-	descMgr->m_BufferDescInfos.push_back({
-		m_TreeCullDescSets[0], VEG_TREE_CULL_BINDING_VISIBLE_COUNTS, 0,
+		{{ m_TreeInstanceBuffer.GetNativeBuffer(), 0, m_TreeInstanceBuffer.GetBufferSize() }});
+	descMgr->WriteBufferDescriptor(
+		m_TreeCullDescSets[0], VEG_TREE_CULL_BINDING_VISIBLE_COUNTS,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_TreeVisibleCountsBuffer.GetNativeBuffer(), 0, m_TreeVisibleCountsBuffer.GetBufferSize() }}
-	});
-	descMgr->m_BufferDescInfos.push_back({
-		m_TreeCullDescSets[0], VEG_TREE_CULL_BINDING_VISIBLE_INDICES, 0,
+		{{ m_TreeVisibleCountsBuffer.GetNativeBuffer(), 0, m_TreeVisibleCountsBuffer.GetBufferSize() }});
+	descMgr->WriteBufferDescriptor(
+		m_TreeCullDescSets[0], VEG_TREE_CULL_BINDING_VISIBLE_INDICES,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_TreeVisibleIndexBuffer.GetNativeBuffer(), 0, m_TreeVisibleIndexBuffer.GetBufferSize() }}
-	});
-	descMgr->m_BufferDescInfos.push_back({
-		m_TreeCullDescSets[0], VEG_TREE_CULL_BINDING_SPECIES_INFOS, 0,
+		{{ m_TreeVisibleIndexBuffer.GetNativeBuffer(), 0, m_TreeVisibleIndexBuffer.GetBufferSize() }});
+	descMgr->WriteBufferDescriptor(
+		m_TreeCullDescSets[0], VEG_TREE_CULL_BINDING_SPECIES_INFOS,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_TreeSpeciesInfoBuffer.GetNativeBuffer(), 0, m_TreeSpeciesInfoBuffer.GetBufferSize() }}
-	});
+		{{ m_TreeSpeciesInfoBuffer.GetNativeBuffer(), 0, m_TreeSpeciesInfoBuffer.GetBufferSize() }});
 
 	if (m_HiZEnabled && m_HiZView != VK_NULL_HANDLE && m_HiZSampler != VK_NULL_HANDLE)
 	{
-		descMgr->m_ImageDescInfos.push_back({
-			m_TreeCullDescSets[0], VEG_TREE_CULL_BINDING_HIZ, 0,
+		descMgr->WriteImageDescriptor(
+			m_TreeCullDescSets[0], VEG_TREE_CULL_BINDING_HIZ,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ m_HiZSampler, m_HiZView, VK_IMAGE_LAYOUT_GENERAL }}
-		});
+			{{ m_HiZSampler, m_HiZView, VK_IMAGE_LAYOUT_GENERAL }});
 	}
 
-	descMgr->UpdateDescriptorSets();
+	descMgr->CommitDescriptorUpdates();
 }
 
 void VansVegetationSystem::WriteTreeDrawDescriptors(TreeDrawConfigGPU& cfg)
 {
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->ResetState();
+	descMgr->BeginDescriptorUpdate();
 
-	descMgr->m_BufferDescInfos.push_back({
-		cfg.drawDescSet, VEG_TREE_DRAW_BINDING_INSTANCES, 0,
+	descMgr->WriteBufferDescriptor(
+		cfg.drawDescSet, VEG_TREE_DRAW_BINDING_INSTANCES,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_TreeInstanceBuffer.GetNativeBuffer(), 0, m_TreeInstanceBuffer.GetBufferSize() }}
-	});
-	descMgr->m_BufferDescInfos.push_back({
-		cfg.drawDescSet, VEG_TREE_DRAW_BINDING_VISIBLE_INDICES, 0,
+		{{ m_TreeInstanceBuffer.GetNativeBuffer(), 0, m_TreeInstanceBuffer.GetBufferSize() }});
+	descMgr->WriteBufferDescriptor(
+		cfg.drawDescSet, VEG_TREE_DRAW_BINDING_VISIBLE_INDICES,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{ m_TreeVisibleIndexBuffer.GetNativeBuffer(), 0, m_TreeVisibleIndexBuffer.GetBufferSize() }}
-	});
+		{{ m_TreeVisibleIndexBuffer.GetNativeBuffer(), 0, m_TreeVisibleIndexBuffer.GetBufferSize() }});
 
-	descMgr->UpdateDescriptorSets();
+	descMgr->CommitDescriptorUpdates();
 }
 
 // ============================================================================
@@ -1346,7 +1286,10 @@ void VansVegetationSystem::BuildRenderConfigs(
 		// ── Allocate per-config descriptor set (Set 3) ──────────────
 		{
 			std::vector<VkDescriptorSet> sets;
-			VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_VegDrawLayout }, sets);
+			VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(
+				{ m_VegDrawLayout },
+				sets,
+				VansDescriptorLifetimeRole::ScenePersistent);
 			cfg.drawDescSet = sets.empty() ? VK_NULL_HANDLE : sets[0];
 		}
 
@@ -1603,7 +1546,10 @@ void VansVegetationSystem::BuildTreeResources(
 					cfg.indirectDrawBuffer.SetBufferData(&draw, 0, sizeof(VkDrawIndexedIndirectCommand));
 
 					std::vector<VkDescriptorSet> sets;
-					VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_TreeDrawLayout }, sets);
+					VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(
+						{ m_TreeDrawLayout },
+						sets,
+						VansDescriptorLifetimeRole::ScenePersistent);
 					cfg.drawDescSet = sets.empty() ? VK_NULL_HANDLE : sets[0];
 					WriteTreeDrawDescriptors(cfg);
 					m_TreeDrawConfigsGPU.push_back(std::move(cfg));

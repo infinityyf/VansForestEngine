@@ -1,6 +1,6 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansFSR.h"
 #include "../../VansTimer.h"
+#include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../RenderCore/VulkanCore/VansVKImage.h"
 #include <iostream>
 
@@ -22,7 +22,7 @@ void VansGraphics::VansFSR::InitializeContext(VkDevice device, VkPhysicalDevice 
 	backendDesc.header.pNext = nullptr;
 	backendDesc.vkDevice = device;
 	backendDesc.vkPhysicalDevice = physicalDevice;
-	backendDesc.vkDeviceProcAddr = vkGetDeviceProcAddr;
+	backendDesc.vkDeviceProcAddr = VansVKDevice::GetDeviceProcAddr();
 	
 	ffx::CreateContextDescUpscale createUpscaling{};
 	createUpscaling.header.type   = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;

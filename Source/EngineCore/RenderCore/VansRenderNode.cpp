@@ -10,8 +10,14 @@
 #include "../../EngineCore/RenderCore/TerrainCore/VansTerrain.h"
 #include "../Util/VansLog.h"
 #include "../AnimationCore/VansAnimationNode.h"
+#include <atomic>
 #include <iostream>
 using namespace VansGraphics;
+
+namespace
+{
+	std::atomic<std::uint64_t> g_RenderNodeDescriptorValidationFailures{ 0 };
+}
 
 VansGraphics::VansRenderNode::VansRenderNode(VkDevice& device, RenderNodeType typee)
 {
@@ -37,6 +43,18 @@ VansGraphics::VansRenderNode::~VansRenderNode()
 
 bool VansGraphics::VansRenderNode::CheckRenderNodeState()
 {
+	if (!m_Mesh)
+	{
+		VANS_LOG_ERROR("[VansRenderNode] Skipping draw for node '" << m_NodeName << "': missing mesh.");
+		return false;
+	}
+
+	if (!m_Material)
+	{
+		VANS_LOG_ERROR("[VansRenderNode] Skipping draw for node '" << m_NodeName << "': missing material.");
+		return false;
+	}
+
 	// Check all pass shaders for hot-reload (file watcher)
 	for (auto& [passName, shader] : m_Material->m_PassShaders)
 	{
@@ -51,6 +69,46 @@ bool VansGraphics::VansRenderNode::CheckRenderNodeState()
 	}
 
 	return true;
+}
+
+bool VansGraphics::VansRenderNode::ValidateDescriptorBindings(
+	const char* passName,
+	const std::vector<VkDescriptorSetLayout>& layouts,
+	const std::vector<VkDescriptorSet>& sets) const
+{
+	if (layouts.size() != sets.size())
+	{
+		g_RenderNodeDescriptorValidationFailures.fetch_add(1, std::memory_order_relaxed);
+		VANS_LOG_ERROR("[VansRenderNode] Skipping draw for node '" << m_NodeName
+			<< "' pass '" << (passName ? passName : "Unknown")
+			<< "': descriptor layout/set count mismatch. layouts=" << layouts.size()
+			<< ", sets=" << sets.size());
+		return false;
+	}
+
+	for (size_t i = 0; i < layouts.size(); ++i)
+	{
+		if (layouts[i] == VK_NULL_HANDLE || sets[i] == VK_NULL_HANDLE)
+		{
+			g_RenderNodeDescriptorValidationFailures.fetch_add(1, std::memory_order_relaxed);
+			VANS_LOG_ERROR("[VansRenderNode] Skipping draw for node '" << m_NodeName
+				<< "' pass '" << (passName ? passName : "Unknown")
+				<< "': null descriptor binding at set " << i);
+			return false;
+		}
+	}
+
+	return true;
+}
+
+std::uint64_t VansGraphics::VansRenderNode::GetDescriptorValidationFailureCount()
+{
+	return g_RenderNodeDescriptorValidationFailures.load(std::memory_order_relaxed);
+}
+
+void VansGraphics::VansRenderNode::ResetDescriptorValidationFailureCount()
+{
+	g_RenderNodeDescriptorValidationFailures.store(0, std::memory_order_relaxed);
 }
 
 void VansGraphics::VansRenderNode::DestroyDescriptorSets()
@@ -105,8 +163,7 @@ void VansGraphics::VansRenderNode::UpdateModelData()
 	// Update at the offset specified by m_TransfromIndex
 	if (m_Scene && m_TransfromIndex >= 0)
 	{
-		size_t offset = m_TransfromIndex * sizeof(ModelDataStruct);
-		m_Scene->m_InstanceTransformDataBuffer.UpdateMapped(&m_ModelData, offset, sizeof(m_ModelData));
+		m_Scene->UpdateMappedInstanceTransformData(m_ModelData, static_cast<uint32_t>(m_TransfromIndex));
 	}
 }
 
@@ -137,6 +194,9 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 
 	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType));
 	if (!shader) return;
+
+	if (!ValidateDescriptorBindings(GetPrimaryPassName(m_NodeType), m_UsedDescSetLayouts, m_UsedDescSets))
+		return;
 
 	cmd.BindMesh(*m_Mesh, 0, globalStateData);
 
@@ -202,6 +262,12 @@ void VansGraphics::VansRenderNode::DrawCascadeShadowWithPassShader(VansVKCommand
 {
 	if (!passShader) return;
 
+	if (!CheckRenderNodeState())
+		return;
+
+	if (!ValidateDescriptorBindings("CascadeShadow", descSetLayouts, descSets))
+		return;
+
 	cmd.BindMesh(*m_Mesh, 0, global_state);
 
 	cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
@@ -232,6 +298,12 @@ void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKComman
                                                                       int lightIndex, int shadowIndex)
 {
 	if (!passShader) return;
+
+	if (!CheckRenderNodeState())
+		return;
+
+	if (!ValidateDescriptorBindings("PunctualShadow", descSetLayouts, descSets))
+		return;
 
 	cmd.BindMesh(*m_Mesh, 0, global_state);
 
@@ -264,27 +336,30 @@ void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKComman
 void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	// Set 0: Global (Camera + Lights + Materials + IBL + Bindless)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: Per-Pass (empty for common geometry pass)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
-	m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetEmptyPassLayout());
+	m_UsedDescSets.push_back(m_Scene->GetEmptyPassDescriptorSet());
 
 	// Set 2: Per-Object — shared Transform SSBO (all nodes, animated or not)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetObjectDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetObjectDescriptorSet());
 
 	// Set 3: Per-Node Animation (Bone IDs + Bone Matrices + Bone Weights)
 	// Animated nodes get a freshly allocated descriptor set with real GPU buffers.
 	// Each submesh has its own bone ID and weight buffers — no offset needed.
 	// Static nodes reuse the scene-shared dummy set (never accessed when animationEnabled==0).
-	m_UsedDescSetLayouts.push_back(m_Scene->m_AnimationDescriptorSetLayout);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetAnimationDescriptorSetLayout());
 
 	if (m_HasSkeletonBone && m_AnimOwner && m_AnimBoneIDBuffer && m_AnimBoneWeightBuffer)
 	{
 		auto* descManager = VansVKDescriptorManager::GetInstance();
-		descManager->AllocateDescriptorSet({ m_Scene->m_AnimationDescriptorSetLayout }, modelBufferDescriptorSets);
+		descManager->AllocateDescriptorSet(
+			{ m_Scene->GetAnimationDescriptorSetLayout() },
+			modelBufferDescriptorSets,
+			VansDescriptorLifetimeRole::ScenePersistent);
 
 		m_UsedDescSets.push_back(modelBufferDescriptorSets[0]);
 		VANS_LOG("[VansCommonRenderNode] " << m_NodeName << ": per-node animation descriptor set (Set 3) created");
@@ -292,7 +367,7 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 	else
 	{
 		// Static node: bind shared dummy animation set — bone/weight data is never read
-		m_UsedDescSets.push_back(m_Scene->m_AnimationDescriptorSet);
+		m_UsedDescSets.push_back(m_Scene->GetAnimationDescriptorSet());
 	}
 
 	// Set 4: Per-Material Skin Texture (albedo + normal)
@@ -304,10 +379,14 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		{
 			skin->BuildSkinTextureDescriptors();
 		}
-		m_UsedDescSetLayouts.push_back(skin->m_SkinOwnedLayout);
-		if (!skin->m_SkinOwnedDescSets.empty())
+		if (skin->m_SkinOwnedLayout != VK_NULL_HANDLE && !skin->m_SkinOwnedDescSets.empty())
 		{
+			m_UsedDescSetLayouts.push_back(skin->m_SkinOwnedLayout);
 			m_UsedDescSets.push_back(skin->m_SkinOwnedDescSets[0]);
+		}
+		else
+		{
+			VANS_LOG_ERROR("[VansCommonRenderNode] " << m_NodeName << ": skin material descriptors are not ready.");
 		}
 	}
 
@@ -320,10 +399,14 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		{
 			cloth->BuildClothTextureDescriptors();
 		}
-		m_UsedDescSetLayouts.push_back(cloth->m_ClothOwnedLayout);
-		if (!cloth->m_ClothOwnedDescSets.empty())
+		if (cloth->m_ClothOwnedLayout != VK_NULL_HANDLE && !cloth->m_ClothOwnedDescSets.empty())
 		{
+			m_UsedDescSetLayouts.push_back(cloth->m_ClothOwnedLayout);
 			m_UsedDescSets.push_back(cloth->m_ClothOwnedDescSets[0]);
+		}
+		else
+		{
+			VANS_LOG_ERROR("[VansCommonRenderNode] " << m_NodeName << ": cloth material descriptors are not ready.");
 		}
 	}
 
@@ -336,10 +419,14 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		{
 			hair->BuildHairDescriptors(m_Device);
 		}
-		m_UsedDescSetLayouts.push_back(hair->m_HairOwnedLayout);
-		if (!hair->m_HairOwnedDescSets.empty())
+		if (hair->m_HairOwnedLayout != VK_NULL_HANDLE && !hair->m_HairOwnedDescSets.empty())
 		{
+			m_UsedDescSetLayouts.push_back(hair->m_HairOwnedLayout);
 			m_UsedDescSets.push_back(hair->m_HairOwnedDescSets[0]);
+		}
+		else
+		{
+			VANS_LOG_ERROR("[VansCommonRenderNode] " << m_NodeName << ": hair material descriptors are not ready.");
 		}
 	}
 
@@ -347,18 +434,18 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 	// 动画节点使用独立的每节点骨骼描述符集；静态节点使用场景共享的 dummy set。
 	VkDescriptorSet shadowAnimSet = (m_HasSkeletonBone && m_AnimOwner && m_AnimBoneIDBuffer && m_AnimBoneWeightBuffer)
 		? modelBufferDescriptorSets[0]
-		: m_Scene->m_AnimationDescriptorSet;
+		: m_Scene->GetAnimationDescriptorSet();
 
 	m_ShadowDescSetLayouts = {
-		m_Scene->m_GlobalDescriptorSetLayout,        // Set 0
-		m_Scene->m_EmptyPassLayout,                  // Set 1
-		m_Scene->m_ObjectDescriptorSetLayout,        // Set 2
-		m_Scene->m_AnimationDescriptorSetLayout,     // Set 3
+		m_Scene->GetGlobalDescriptorSetLayout(),        // Set 0
+		m_Scene->GetEmptyPassLayout(),                  // Set 1
+		m_Scene->GetObjectDescriptorSetLayout(),        // Set 2
+		m_Scene->GetAnimationDescriptorSetLayout(),     // Set 3
 	};
 	m_ShadowDescSets = {
-		m_Scene->m_GlobalDescriptorSet,              // Set 0
-		m_Scene->m_EmptyPassDescriptorSet,           // Set 1
-		m_Scene->m_ObjectDescriptorSet,              // Set 2
+		m_Scene->GetGlobalDescriptorSet(),              // Set 0
+		m_Scene->GetEmptyPassDescriptorSet(),           // Set 1
+		m_Scene->GetObjectDescriptorSet(),              // Set 2
 		shadowAnimSet,                               // Set 3
 	};
 
@@ -384,7 +471,10 @@ void VansGraphics::VansCommonRenderNode::RefreshAnimationDescriptorSet()
 	auto* descManager = VansVKDescriptorManager::GetInstance();
 	if (modelBufferDescriptorSets.empty())
 	{
-		descManager->AllocateDescriptorSet({ m_Scene->m_AnimationDescriptorSetLayout }, modelBufferDescriptorSets);
+		descManager->AllocateDescriptorSet(
+			{ m_Scene->GetAnimationDescriptorSetLayout() },
+			modelBufferDescriptorSets,
+			VansDescriptorLifetimeRole::ScenePersistent);
 	}
 
 	if (modelBufferDescriptorSets.empty())
@@ -474,10 +564,10 @@ void VansGraphics::VansCommonRenderNode::UpdateRenderData(VansVKDevice* device, 
 {
 	// Sync CPU material params to the global GPU PBR buffer so editor changes take effect.
 	SyncMaterialToGPU(m_Material, materialManager);
-	UpdateDescripterSets(materialManager);
+	UpdateDescriptorSets(materialManager);
 }
 
-void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+void VansGraphics::VansCommonRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
 	if (!m_DescriptorsetsDirty)
 	{
@@ -495,26 +585,23 @@ void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManage
 		}
 
 		auto* descManager = VansVKDescriptorManager::GetInstance();
-		descManager->ResetState();
+		descManager->BeginDescriptorUpdate();
 		// binding 0: Per-vertex Bone IDs SSBO (per-submesh)
-		descManager->m_BufferDescInfos.push_back({
-			modelBufferDescriptorSets[0], ANIMATION_BINDING_BONEID_SSBO, 0,
+		descManager->WriteBufferDescriptor(
+			modelBufferDescriptorSets[0], ANIMATION_BINDING_BONEID_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_AnimBoneIDBuffer->GetNativeBuffer(), 0, VK_WHOLE_SIZE }}
-			});
+			{{ m_AnimBoneIDBuffer->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		// binding 1: Bone Matrices SSBO (shared across all submeshes)
-		descManager->m_BufferDescInfos.push_back({
-			modelBufferDescriptorSets[0], ANIMATION_BINDING_BONE_SSBO, 0,
+		descManager->WriteBufferDescriptor(
+			modelBufferDescriptorSets[0], ANIMATION_BINDING_BONE_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_AnimOwner->GetBoneBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }}
-			});
+			{{ m_AnimOwner->GetBoneBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		// binding 2: Per-vertex Bone Weights SSBO (per-submesh)
-		descManager->m_BufferDescInfos.push_back({
-			modelBufferDescriptorSets[0], ANIMATION_BINDING_BONEWEIGHT_SSBO, 0,
+		descManager->WriteBufferDescriptor(
+			modelBufferDescriptorSets[0], ANIMATION_BINDING_BONEWEIGHT_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_AnimBoneWeightBuffer->GetNativeBuffer(), 0, VK_WHOLE_SIZE }}
-			});
-		descManager->UpdateDescriptorSets();
+			{{ m_AnimBoneWeightBuffer->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+		descManager->CommitDescriptorUpdates();
 	}
 
 	m_DescriptorsetsDirty = false;
@@ -527,8 +614,8 @@ void VansGraphics::VansCommonRenderNode::UpdateDescripterSets(VansMaterialManage
 void VansGraphics::VansTransparentRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	// Set 0: Global (Camera UBO is universal, still needed for VP matrices)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	if (m_Material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
 	{
@@ -542,16 +629,16 @@ void VansGraphics::VansTransparentRenderNode::CreateDescriptorSets(VansCamera* c
 		}
 		else
 		{
-			m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
-			m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
+			m_UsedDescSetLayouts.push_back(m_Scene->GetEmptyPassLayout());
+			m_UsedDescSets.push_back(m_Scene->GetEmptyPassDescriptorSet());
 		}
 	}
 	else if (m_Material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
 	{
 		// Custom forward shaders consume global custom material payloads from set 0.
 		// Keep set numbering contiguous so they can still bind set 2 for transforms.
-		m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
-		m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
+		m_UsedDescSetLayouts.push_back(m_Scene->GetEmptyPassLayout());
+		m_UsedDescSets.push_back(m_Scene->GetEmptyPassDescriptorSet());
 	}
 	else
 	{
@@ -562,24 +649,28 @@ void VansGraphics::VansTransparentRenderNode::CreateDescriptorSets(VansCamera* c
 			// Build layout, allocate set, and write texture bindings from shader slot order
 			trans->BuildTransparentTextureDescriptors();
 		}
-		m_UsedDescSetLayouts.push_back(trans->m_TransparentOwnedLayout);
-		if (!trans->m_TransparentOwnedDescSets.empty())
+		if (trans->m_TransparentOwnedLayout != VK_NULL_HANDLE && !trans->m_TransparentOwnedDescSets.empty())
 		{
+			m_UsedDescSetLayouts.push_back(trans->m_TransparentOwnedLayout);
 			m_UsedDescSets.push_back(trans->m_TransparentOwnedDescSets[0]);
+		}
+		else
+		{
+			VANS_LOG_ERROR("[VansTransparentRenderNode] " << m_NodeName << ": transparent material descriptors are not ready.");
 		}
 	}
 
 	// Set 2: Object Transforms SSBO (accessed via objectIndex push constant)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetObjectDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetObjectDescriptorSet());
 }
 
 void VansGraphics::VansTransparentRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
-	UpdateDescripterSets(materialManager);
+	UpdateDescriptorSets(materialManager);
 }
 
-void VansGraphics::VansTransparentRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+void VansGraphics::VansTransparentRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
 	if (!m_DescriptorsetsDirty)
 	{
@@ -597,6 +688,9 @@ void VansGraphics::VansTransparentRenderNode::Draw(VansVKCommandBuffer& cmd, Glo
 
 	VansGraphicsShader* shader = m_Material->GetPassShader(VansPass::FORWARD_TRANSPARENT);
 	if (!shader) return;
+
+	if (!ValidateDescriptorBindings(VansPass::FORWARD_TRANSPARENT, m_UsedDescSetLayouts, m_UsedDescSets))
+		return;
 
 	cmd.BindMesh(*m_Mesh, 0, globalStateData);
 
@@ -646,8 +740,8 @@ void VansGraphics::VansTransparentRenderNode::Draw(VansVKCommandBuffer& cmd, Glo
 void VansGraphics::VansPostProcessRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	// Set 0: Global
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: Per-Pass (post-process input attachment)
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_PostProcess(frameBufferInputLayout, frameBufferInputDescriptorSets);
@@ -658,10 +752,10 @@ void VansGraphics::VansPostProcessRenderNode::CreateDescriptorSets(VansCamera* c
 
 void VansGraphics::VansPostProcessRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
-	UpdateDescripterSets(materialManager);
+	UpdateDescriptorSets(materialManager);
 }
 
-void VansGraphics::VansPostProcessRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+void VansGraphics::VansPostProcessRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
 	if (!m_DescriptorsetsDirty)
 	{
@@ -669,87 +763,66 @@ void VansGraphics::VansPostProcessRenderNode::UpdateDescripterSets(VansMaterialM
 	}
 	m_DescriptorsetsDirty = false;
 
-	VansVKDescriptorManager::GetInstance()->ResetState();
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			POSTPROCESS_BINDING_COLOR_INPUT,
-			0,
-			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
-			{
-				{
-					VK_NULL_HANDLE,
-					VansRenderPassManager::GetInstance()->GetColor().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->BeginDescriptorUpdate();
+	descMgr->WriteImageDescriptor(
+		frameBufferInputDescriptorSets[0],
+		POSTPROCESS_BINDING_COLOR_INPUT,
+		VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+		{ {
+			VK_NULL_HANDLE,
+			VansRenderPassManager::GetInstance()->GetColor().GetImageView(),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		} });
 
 	// 绑定 Bloom 结果贴图
 	VansTexture* bloomResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_RESULT);
 	if (bloomResult)
 	{
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				frameBufferInputDescriptorSets[0],
-				POSTPROCESS_BINDING_BLOOM_RESULT,
-				0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				{
-					{
-						bloomResult->GetImage().GetSampler(),
-						bloomResult->GetImage().GetImageView(),
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-					}
-				}
-			}
-		);
+		descMgr->WriteImageDescriptor(
+			frameBufferInputDescriptorSets[0],
+			POSTPROCESS_BINDING_BLOOM_RESULT,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{ {
+				bloomResult->GetImage().GetSampler(),
+				bloomResult->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			} });
 	}
 
 	// 绑定曝光当前值贴图
 	VansTexture* exposureCurrent = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT);
 	if (exposureCurrent)
 	{
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				frameBufferInputDescriptorSets[0],
-				POSTPROCESS_BINDING_EXPOSURE_VAL,
-				0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				{
-					{
-						exposureCurrent->GetImage().GetSampler(),
-						exposureCurrent->GetImage().GetImageView(),
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-					}
-				}
-			}
-		);
+		descMgr->WriteImageDescriptor(
+			frameBufferInputDescriptorSets[0],
+			POSTPROCESS_BINDING_EXPOSURE_VAL,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{ {
+				exposureCurrent->GetImage().GetSampler(),
+				exposureCurrent->GetImage().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			} });
 	}
 
 	// 绑定后处理参数 UBO
 	if (materialManager.m_PostProcessParamsCBBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
 	{
-		VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
-			{
-				frameBufferInputDescriptorSets[0],
-				POSTPROCESS_BINDING_PP_PARAMS,
-				0,
-				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-				{{ materialManager.m_PostProcessParamsCBBuffer.GetNativeBuffer(), 0, materialManager.m_PostProcessParamsCBBuffer.GetBufferSize() }}
-			}
-		);
+		descMgr->WriteBufferDescriptor(
+			frameBufferInputDescriptorSets[0],
+			POSTPROCESS_BINDING_PP_PARAMS,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{{ materialManager.m_PostProcessParamsCBBuffer.GetNativeBuffer(), 0, materialManager.m_PostProcessParamsCBBuffer.GetBufferSize() }});
 	}
 
-	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	descMgr->CommitDescriptorUpdates();
 }
 
 void VansGraphics::VansDeferredRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	// Set 0: Global (Camera + Lights + Materials + IBL + Bindless)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: Per-Pass (GBuffer inputs + screen-space effect textures merged)
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(frameBufferInputLayout, frameBufferInputDescriptorSets);
@@ -760,97 +833,15 @@ void VansGraphics::VansDeferredRenderNode::CreateDescriptorSets(VansCamera* came
 
 void VansGraphics::VansDeferredRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
-	UpdateDescripterSets(materialManager);
+	UpdateDescriptorSets(materialManager);
 }
 
-void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
 	if (!m_DescriptorsetsDirty)
 	{
 		return;
 	}
-	m_DescriptorsetsDirty = false;
-
-	VansVKDescriptorManager::GetInstance()->ResetState();
-
-	// Bindings 0-4: 独立 GBuffer pass 输出，Deferred 使用采样器读取。
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			0, // Normal
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetNormal().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetNormal().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			1, // Gbuffer0
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetGbuffer0().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetGbuffer0().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			2, // Gbuffer1
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetGbuffer1().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetGbuffer1().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			3, // Gbuffer2
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetGbuffer2().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			4, // Depth
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetDepth().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetDepth().GetImageView(),
-					// DEPTH_STENCIL_READ_ONLY_OPTIMAL 与 deferred pass 附件引用布局匹配，
-					// 支持在同一 subpass 中同时 sampling 和 depth test
-					VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
 
 	VansTexture* ssaoFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT);
 	VansTexture* ssgiFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT);
@@ -876,205 +867,53 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescripterSets(VansMaterialMana
 		return;
 	}
 
-	// Bindings 5-13: Screen-space effect results
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			5, // SSAO
-			0,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			{
-				{
-					ssaoFilterResult->GetImage().GetSampler(),
-					ssaoFilterResult->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_GENERAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			6, // SSGI
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					ssgiFilterResult->GetImage().GetSampler(),
-					ssgiFilterResult->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_GENERAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			7, // SSR
-			0,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			{
-				{
-					ssrAaResult->GetImage().GetSampler(),
-					ssrAaResult->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_GENERAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			8, // Shadow map (cascade array)
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetCascadeShadowSampler(),
-					VansRenderPassManager::GetInstance()->GetCascadeShadowArrayView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			9, // Punctual shadow map
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetPunctualShadowMap().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetPunctualShadowMap().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	auto* rp = VansRenderPassManager::GetInstance();
+	descMgr->BeginDescriptorUpdate();
 
-	// GI SH coefficient textures
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			10, // SH R
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					shRResult->GetImage().GetSampler(),
-					shRResult->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			11, // SH G
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					shGResult->GetImage().GetSampler(),
-					shGResult->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			12, // SH B
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					shBResult->GetImage().GetSampler(),
-					shBResult->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-
-	// Volumetric fog
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			13, // Fog
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					volumetricFogResult->GetImage().GetSampler(),
-					volumetricFogResult->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			DEFERRED_BINDING_SCREEN_SPACE_SHADOW,
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					screenSpaceShadow->GetImage().GetSampler(),
-					screenSpaceShadow->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_GENERAL
-				}
-			}
-		}
-	);
-
-	// 面光源发光贴图数组 (sampler2DArray, binding 15)
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			DEFERRED_BINDING_RECT_LIGHT_EMISSIVE, // 15
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					rectLightEmissive->GetImage().GetSampler(),
-					rectLightEmissive->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-
-	// IES profile 纹理数组 (sampler2DArray, binding 16)
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			frameBufferInputDescriptorSets[0],
-			DEFERRED_BINDING_IES_PROFILES, // 16
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetSampler(),
-					m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-
-	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { rp->GetNormal().GetSampler(), rp->GetNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { rp->GetGbuffer0().GetSampler(), rp->GetGbuffer0().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { rp->GetGbuffer1().GetSampler(), rp->GetGbuffer1().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { rp->GetGbuffer2().GetSampler(), rp->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { rp->GetDepth().GetSampler(), rp->GetDepth().GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		{ { ssaoFilterResult->GetImage().GetSampler(), ssaoFilterResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { ssgiFilterResult->GetImage().GetSampler(), ssgiFilterResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		{ { ssrAaResult->GetImage().GetSampler(), ssrAaResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { rp->GetCascadeShadowSampler(), rp->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { rp->GetPunctualShadowMap().GetSampler(), rp->GetPunctualShadowMap().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { shRResult->GetImage().GetSampler(), shRResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { shGResult->GetImage().GetSampler(), shGResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { shBResult->GetImage().GetSampler(), shBResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { volumetricFogResult->GetImage().GetSampler(), volumetricFogResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { screenSpaceShadow->GetImage().GetSampler(), screenSpaceShadow->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_RECT_LIGHT_EMISSIVE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { rectLightEmissive->GetImage().GetSampler(), rectLightEmissive->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_IES_PROFILES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetSampler(), m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->CommitDescriptorUpdates();
+	m_DescriptorsetsDirty = false;
 }
 
 void VansGraphics::VansScreenSpaceRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	// Set 0: Global
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: Per-Pass (screen-space textures)
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_ScreenSpace(textureResourceLayout, textureResourceDescriptorSets);
@@ -1085,10 +924,10 @@ void VansGraphics::VansScreenSpaceRenderNode::CreateDescriptorSets(VansCamera* c
 
 void VansGraphics::VansScreenSpaceRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
-	UpdateDescripterSets(materialManager);
+	UpdateDescriptorSets(materialManager);
 }
 
-void VansGraphics::VansScreenSpaceRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+void VansGraphics::VansScreenSpaceRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
 	if (!m_DescriptorsetsDirty)
 	{
@@ -1096,110 +935,47 @@ void VansGraphics::VansScreenSpaceRenderNode::UpdateDescripterSets(VansMaterialM
 	}
 	m_DescriptorsetsDirty = false;
 
-	VansVKDescriptorManager::GetInstance()->ResetState();
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			textureResourceDescriptorSets[0],
-			0, // Normal
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetNormal().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetNormal().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			textureResourceDescriptorSets[0],
-			1, // Gbuffer0
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetGbuffer0().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetGbuffer0().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			textureResourceDescriptorSets[0],
-			2, // Gbuffer1
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetGbuffer1().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetGbuffer1().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			textureResourceDescriptorSets[0],
-			3, // Gbuffer2
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetGbuffer2().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			textureResourceDescriptorSets[0],
-			4, // Depth
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetDepth().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetDepth().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
 	VansTexture* ssaoResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_RESULT);
 	if (ssaoResult == nullptr)
 	{
+		m_DescriptorsetsDirty = true;
 		return;
 	}
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			textureResourceDescriptorSets[0],
-			5, // SSAO output
-			0,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			{
-				{
-					ssaoResult->GetImage().GetSampler(),
-					ssaoResult->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_GENERAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->BeginDescriptorUpdate();
+	descMgr->WriteImageDescriptor(
+		textureResourceDescriptorSets[0], 0, // Normal
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { VansRenderPassManager::GetInstance()->GetNormal().GetSampler(), VansRenderPassManager::GetInstance()->GetNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(
+		textureResourceDescriptorSets[0], 1, // Gbuffer0
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { VansRenderPassManager::GetInstance()->GetGbuffer0().GetSampler(), VansRenderPassManager::GetInstance()->GetGbuffer0().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(
+		textureResourceDescriptorSets[0], 2, // Gbuffer1
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { VansRenderPassManager::GetInstance()->GetGbuffer1().GetSampler(), VansRenderPassManager::GetInstance()->GetGbuffer1().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(
+		textureResourceDescriptorSets[0], 3, // Gbuffer2
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { VansRenderPassManager::GetInstance()->GetGbuffer2().GetSampler(), VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(
+		textureResourceDescriptorSets[0], 4, // Depth
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { VansRenderPassManager::GetInstance()->GetDepth().GetSampler(), VansRenderPassManager::GetInstance()->GetDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(
+		textureResourceDescriptorSets[0], 5, // SSAO output
+		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		{ { ssaoResult->GetImage().GetSampler(), ssaoResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+	descMgr->CommitDescriptorUpdates();
 }
 
 void VansGraphics::VansSkyBoxRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	// Set 0: Global
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: Per-Pass (Atmosphere UBO)
 	m_UsedDescSetLayouts.push_back(materialManager.m_MaterialAtmosphereDataLayout);
@@ -1210,10 +986,10 @@ void VansGraphics::VansSkyBoxRenderNode::UpdateRenderData(VansVKDevice* device, 
 {
 	static_cast<VansSkyBoxMaterial*>(m_Material)->UpdateAtmosphereMaterialData(materialManager, lightManager);
 
-	UpdateDescripterSets(materialManager);
+	UpdateDescriptorSets(materialManager);
 }
 
-void VansGraphics::VansSkyBoxRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+void VansGraphics::VansSkyBoxRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
 	if (!m_DescriptorsetsDirty)
 	{
@@ -1232,29 +1008,29 @@ void VansGraphics::VansSkyBoxRenderNode::UpdateDescripterSets(VansMaterialManage
 void VansGraphics::VansWaterRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	// Set 0: Global（Camera + Lights + Materials + IBL + Bindless）
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: Per-Pass（empty，水面暂用空集占位）
-	m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
-	m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetEmptyPassLayout());
+	m_UsedDescSets.push_back(m_Scene->GetEmptyPassDescriptorSet());
 
 	// Set 2: Per-Object（Transform SSBO）
-	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetObjectDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetObjectDescriptorSet());
 
 	// Set 3: Animation（水面为静态，绑定共享 dummy set）
-	m_UsedDescSetLayouts.push_back(m_Scene->m_AnimationDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_AnimationDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetAnimationDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetAnimationDescriptorSet());
 }
 
 void VansGraphics::VansWaterRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
-	UpdateDescripterSets(materialManager);
+	UpdateDescriptorSets(materialManager);
 	UpdateModelData();
 }
 
-void VansGraphics::VansWaterRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+void VansGraphics::VansWaterRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
 	if (!m_DescriptorsetsDirty)
 		return;
@@ -1284,8 +1060,8 @@ VansGraphics::VansTerrainRenderNode::~VansTerrainRenderNode()
 void VansGraphics::VansTerrainRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	// Set 0: Global (Camera + Lights + Materials + IBL + Bindless)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: Per-Pass (terrain-specific: heightmap + albedo)
 	m_UsedDescSetLayouts.push_back(m_Terrain->m_DescriptorSetLayout);
@@ -1294,12 +1070,12 @@ void VansGraphics::VansTerrainRenderNode::CreateDescriptorSets(VansCamera* camer
 
 void VansGraphics::VansTerrainRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
-	UpdateDescripterSets(materialManager);
+	UpdateDescriptorSets(materialManager);
 
 	m_Terrain->Update(camera);
 }
 
-void VansGraphics::VansTerrainRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+void VansGraphics::VansTerrainRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
 	if (!m_DescriptorsetsDirty)
 	{
@@ -1339,24 +1115,24 @@ void VansGraphics::VansVegetationRenderNode::CreateDescriptorSets(VansCamera* ca
 	}
 
 	// Set 0: Global (Camera + Lights + Materials + IBL + Bindless)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: Per-Pass (empty — vegetation has no pass-specific uniforms)
-	m_UsedDescSetLayouts.push_back(m_Scene->m_EmptyPassLayout);
-	m_UsedDescSets.push_back(m_Scene->m_EmptyPassDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetEmptyPassLayout());
+	m_UsedDescSets.push_back(m_Scene->GetEmptyPassDescriptorSet());
 
 	// Set 2: Per-Object — shared Transform SSBO
-	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetObjectDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetObjectDescriptorSet());
 
 	// Set 3+ (draw desc + grass textures) are bound per-config inside
 	// VansVegetationSystem::Draw() and are NOT stored here.
 
 	// Wire global camera descriptor set into the vegetation system for bone sim compute
 	m_VegetationSystem->SetGlobalDescriptorSet(
-		m_Scene->m_GlobalDescriptorSetLayout,
-		m_Scene->m_GlobalDescriptorSet);
+		m_Scene->GetGlobalDescriptorSetLayout(),
+		m_Scene->GetGlobalDescriptorSet());
 
 	// Ensure grass texture descriptors are built for every material in configs
 	for (auto& cfg : m_VegetationSystem->GetRenderConfigsGPU())
@@ -1375,10 +1151,10 @@ void VansGraphics::VansVegetationRenderNode::CreateDescriptorSets(VansCamera* ca
 void VansGraphics::VansVegetationRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
 	// GPU-driven — no per-frame CPU data upload needed
-	UpdateDescripterSets(materialManager);
+	UpdateDescriptorSets(materialManager);
 }
 
-void VansGraphics::VansVegetationRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+void VansGraphics::VansVegetationRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
 	if (!m_DescriptorsetsDirty)
 		return;
@@ -1444,8 +1220,8 @@ void VansGraphics::VansDecalRenderNode::CreateDescriptorSets(
 	VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
 	// Set 0: Global（Camera / Lights / PBR SSBO / Bindless 纹理）
-	m_UsedDescSetLayouts.push_back(m_Scene->m_GlobalDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_GlobalDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: DecalPass（仅绑定 GBuffer2 用于世界坐标重建）
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_DecalPass(textureResourceLayout, textureResourceDescriptorSets);
@@ -1453,39 +1229,35 @@ void VansGraphics::VansDecalRenderNode::CreateDescriptorSets(
 	m_UsedDescSets.push_back(textureResourceDescriptorSets[0]);
 
 	// Set 2: Object（变换 SSBO）
-	m_UsedDescSetLayouts.push_back(m_Scene->m_ObjectDescriptorSetLayout);
-	m_UsedDescSets.push_back(m_Scene->m_ObjectDescriptorSet);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetObjectDescriptorSetLayout());
+	m_UsedDescSets.push_back(m_Scene->GetObjectDescriptorSet());
 }
 
 void VansGraphics::VansDecalRenderNode::UpdateRenderData(
 	VansVKDevice* device, VansMaterialManager& materialManager,
 	VansLightManager& lightManager, VansCamera* camera)
 {
-	UpdateDescripterSets(materialManager);
+	UpdateDescriptorSets(materialManager);
 }
 
-void VansGraphics::VansDecalRenderNode::UpdateDescripterSets(VansMaterialManager& materialManager)
+void VansGraphics::VansDecalRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
 	if (!m_DescriptorsetsDirty)
 		return;
 	m_DescriptorsetsDirty = false;
 
-	VansVKDescriptorManager::GetInstance()->ResetState();
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->BeginDescriptorUpdate();
 	// binding 0: GBuffer2（世界坐标 / 深度重建）
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			textureResourceDescriptorSets[0],
-			DECAL_PASS_BINDING_GBUFFER2,
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					VansRenderPassManager::GetInstance()->GetGbuffer2().GetSampler(),
-					VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	descMgr->WriteImageDescriptor(
+		textureResourceDescriptorSets[0],
+		DECAL_PASS_BINDING_GBUFFER2,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ {
+			VansRenderPassManager::GetInstance()->GetGbuffer2().GetSampler(),
+			VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		} });
+	descMgr->CommitDescriptorUpdates();
 }
+

@@ -1,9 +1,9 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
-#include "VansWaterSystem.h"
+﻿#include "VansWaterSystem.h"
 #include "VansWaterFFT.h"
 #include "VansWaterWaveSystem.h"
 #include "../../Util/VansLog.h"
 #include "../../Configration/VansConfigration.h"
+#include "../VansShaderManager.h"
 #include "../VulkanCore/VansVKDevice.h"
 #include "../VulkanCore/VansVKCommandBuffer.h"
 #include "../VulkanCore/VansRenderPass.h"
@@ -12,7 +12,6 @@
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../VulkanCore/VansPipeline.h"
 #include <cmath>
-#include <cstring>
 #include <string>
 #include <algorithm>
 #include <cstddef>
@@ -22,7 +21,7 @@ namespace VansGraphics
 
 namespace
 {
-    // W-04: 自动生成对数分布的 Gerstner 波分量
+    // W-04: 鑷姩鐢熸垚瀵规暟鍒嗗竷鐨?Gerstner 娉㈠垎閲?
     void AutoGenerateGerstnerWaves(std::vector<GerstnerWaveGPU>& waves,
                                     int count, const glm::vec2& windDir,
                                     float swellAmplitude, float windSpeed)
@@ -33,7 +32,7 @@ namespace
         if (glm::length(dir) < 0.001f)
             dir = glm::vec2(0.7071f, 0.7071f);
 
-        // 波长从 256m 到 0.5m 对数分布（扩展上限以覆盖粗 LOD Nyquist 过滤）
+        // 娉㈤暱浠?256m 鍒?0.5m 瀵规暟鍒嗗竷锛堟墿灞曚笂闄愪互瑕嗙洊绮?LOD Nyquist 杩囨护锛?
         const float minWL = 0.5f;
         const float maxWL = 256.0f;
         const float PI = 3.14159265358979323846f;
@@ -45,11 +44,11 @@ namespace
             float wavelength = maxWL * std::powf(minWL / maxWL, t);
             float k = 2.0f * PI / wavelength;
             float omega = std::sqrtf(GRAVITY * k);
-            float speed = omega / k;  // 相速度
+            float speed = omega / k;  // 鐩搁€熷害
 
-            // 振幅随波长减小（短波能量小），加入一定随机性
+            // 鎸箙闅忔尝闀垮噺灏忥紙鐭尝鑳介噺灏忥級锛屽姞鍏ヤ竴瀹氶殢鏈烘€?
             float baseAmp = swellAmplitude * std::powf(wavelength / maxWL, 0.75f);
-            // 方向：风方向 + 小角度扩散
+            // 鏂瑰悜锛氶鏂瑰悜 + 灏忚搴︽墿鏁?
             float angleSpread = (static_cast<float>((i * 7 + 3) % 17) / 17.0f - 0.5f) * 0.6f;
             float angle = std::atan2f(dir.y, dir.x) + angleSpread;
             float dx = std::cosf(angle);
@@ -61,71 +60,78 @@ namespace
             wave.directionX = dx;
             wave.directionY = dy;
             wave.speed      = speed;
-            wave.steepness  = 0.05f + 0.55f * (1.0f - t);  // 长波更陡
+            wave.steepness  = 0.05f + 0.55f * (1.0f - t);  // 闀挎尝鏇撮櫋
             wave.pad0       = 0.0f;
             wave.pad1       = 0.0f;
             waves.push_back(wave);
         }
     }
+
+    struct WaterSSRParamsGPU
+    {
+        glm::vec4 cameraPosition;
+        glm::mat4 projMatrix;
+        glm::mat4 invProjMatrix;
+        glm::mat4 viewMatrix;
+        float maxDistance;
+        int   maxSteps;
+        float thickness;
+        float maxRoughness;
+    };
+
+    struct ThicknessParamsGPU
+    {
+        float maxThickness;
+        float deepFallback;
+        float pad0;
+        float pad1;
+    };
+
+    struct SSSParamsGPU
+    {
+        glm::vec4 absorptionCoeff;
+        glm::vec4 scatteringCoeff;
+        float maxThickness;
+        float anisotropy;
+        float pad0;
+        float pad1;
+    };
+
+    constexpr VkDeviceSize SSR_PARAMS_BUFFER_SIZE = 256;
+    constexpr VkDeviceSize SSS_PARAMS_DESCRIPTOR_SIZE = sizeof(float) * 16;
 }
 
 // ============================================================
-// AllocateBuffer — 封装 vkCreateBuffer + vkAllocateMemory
+// Water buffer helpers
 // ============================================================
-bool VansWaterSystem::AllocateBuffer(
-    VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props,
-    VkBuffer& outBuffer, VkDeviceMemory& outMemory)
+bool VansWaterSystem::CreateWaterBuffer(
+    VansVKBuffer& buffer, bool& created, VkDeviceSize size, VkBufferUsageFlags usage)
 {
-    VkDevice device = m_Device->GetLogicDevice();
-
-    VkBufferCreateInfo ci = {};
-    ci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    ci.size        = size;
-    ci.usage       = usage;
-    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(device, &ci, nullptr, &outBuffer) != VK_SUCCESS)
-    {
-        VANS_LOG_ERROR("[VansWaterSystem] vkCreateBuffer failed");
+    if (m_Device == nullptr)
         return false;
-    }
 
-    VkMemoryRequirements memReq;
-    vkGetBufferMemoryRequirements(device, outBuffer, &memReq);
+    VkDevice logicDevice = m_Device->GetLogicDevice();
+    created = buffer.CreatVulkanBuffer(logicDevice,
+        size,
+        VK_FORMAT_UNDEFINED,
+        usage,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (!created)
+        VANS_LOG_ERROR("[VansWaterSystem] water buffer create failed, size=" << size);
+    return created;
+}
 
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(m_Device->GetPhysicalDevice(), &memProps);
-    uint32_t memTypeIndex = UINT32_MAX;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
-    {
-        bool typeBit  = (memReq.memoryTypeBits >> i) & 1u;
-        bool propsFit = (memProps.memoryTypes[i].propertyFlags & props) == props;
-        if (typeBit && propsFit)
-        {
-            memTypeIndex = i;
-            break;
-        }
-    }
-    if (memTypeIndex == UINT32_MAX)
-    {
-        VANS_LOG_ERROR("[VansWaterSystem] no suitable memory type");
-        vkDestroyBuffer(device, outBuffer, nullptr);
-        outBuffer = VK_NULL_HANDLE;
-        return false;
-    }
+void VansWaterSystem::DestroyWaterBuffer(VansVKBuffer& buffer, bool& created, VkDevice logicDevice)
+{
+    if (!created)
+        return;
+    buffer.DestroyVulkanBuffer(logicDevice);
+    created = false;
+}
 
-    VkMemoryAllocateInfo ai = {};
-    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize  = memReq.size;
-    ai.memoryTypeIndex = memTypeIndex;
-    if (vkAllocateMemory(device, &ai, nullptr, &outMemory) != VK_SUCCESS)
-    {
-        VANS_LOG_ERROR("[VansWaterSystem] vkAllocateMemory failed");
-        vkDestroyBuffer(device, outBuffer, nullptr);
-        outBuffer = VK_NULL_HANDLE;
-        return false;
-    }
-    vkBindBufferMemory(device, outBuffer, outMemory, 0);
-    return true;
+VkBuffer VansWaterSystem::GetNativeBuffer(const VansVKBuffer& buffer, bool created)
+{
+    return created ? buffer.GetNativeBuffer() : VK_NULL_HANDLE;
 }
 
 // ============================================================
@@ -139,7 +145,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     m_RenderWidth  = renderWidth;
     m_RenderHeight = renderHeight;
 
-    // ── 1. 创建 CDLOD 管理器（W-02: VansWaterLOD 独立类）────────
+    // 鈹€鈹€ 1. 鍒涘缓 CDLOD 绠＄悊鍣紙W-02: VansWaterLOD 鐙珛绫伙級鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     m_WaterLOD = new VansWaterLOD();
     m_WaterLOD->Initialize(device,
         VansWaterLOD::MAX_LOD_COUNT,
@@ -147,24 +153,21 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         VansWaterLOD::WATER_MESH_DIM,
         VansWaterLOD::BASE_PATCH_SIZE);
 
-    // ── 2. 编译着色器 ─────────────────────────────────────────
+    // 鈹€鈹€ 2. 缂栬瘧鐫€鑹插櫒 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     auto*       cfg         = VansConfigration::GetInstance();
     std::string projectRoot = cfg->GetProjectRootPath();
     VkDevice    logicDev    = device->GetLogicDevice();
 
     m_WaterGBufferShader = new VansGraphicsShader();
-    m_WaterGBufferShader->InitShader(logicDev,
-        (projectRoot + "EngineAssets/Shaders/Water/WaterGBuffer").c_str());
-    m_WaterGBufferShader->SetPushConstant(sizeof(WaterPatchPushConstant));
-    // 开启深度测试 + 深度写入：利用独立水面深度缓冲保证 CDLOD 多层遮挡顺序
-    // depthTest: TRUE, depthWrite: TRUE, compareOp: LESS（近处 patch 遮挡远处 patch）
-    m_WaterGBufferShader->SetDrawStateData(
-        VK_FALSE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_NONE);
-    // CDLOD 填充模式（生产环境）
-    m_WaterGBufferShader->SetPolygonMode(VK_POLYGON_MODE_FILL);
-    m_WaterGBufferShader->SetColorAttachmentCount(2);
+    const std::string waterGBufferShaderPath = projectRoot + "EngineAssets/Shaders/Water/WaterGBuffer";
+    m_WaterGBufferShader->InitShader(logicDev, waterGBufferShaderPath.c_str());
+    VansShaderManager::Get().ConfigureGraphicsShader(*m_WaterGBufferShader, "WaterGBuffer", waterGBufferShaderPath);
+    // 寮€鍚繁搴︽祴璇?+ 娣卞害鍐欏叆锛氬埄鐢ㄧ嫭绔嬫按闈㈡繁搴︾紦鍐蹭繚璇?CDLOD 澶氬眰閬尅椤哄簭
+    // depthTest: TRUE, depthWrite: TRUE, compareOp: LESS锛堣繎澶?patch 閬尅杩滃 patch锛?
+    
+    // CDLOD 濉厖妯″紡锛堢敓浜х幆澧冿級
 
-    // Wave compute shader（W-01: Texture2DArray + SSBO + Nyquist）
+    // Wave compute shader锛圵-01: Texture2DArray + SSBO + Nyquist锛?
     m_WaveSimShader = new VansComputeShader();
     m_WaveSimShader->InitShader(logicDev,
         (projectRoot + "EngineAssets/Shaders/Water/WaterWave").c_str());
@@ -185,7 +188,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     m_WaterCausticsShader->InitShader(logicDev,
         (projectRoot + "EngineAssets/Shaders/Water/Caustics").c_str());
 
-    // N-01: Detail Normal compute shader（独立目录，避免与 water_wave_spectrum.comp 冲突）
+    // N-01: Detail Normal compute shader锛堢嫭绔嬬洰褰曪紝閬垮厤涓?water_wave_spectrum.comp 鍐茬獊锛?
     m_DetailNormalShader = new VansComputeShader();
     m_DetailNormalShader->InitShader(logicDev,
         (projectRoot + "EngineAssets/Shaders/Water/WaterDetailNormal").c_str());
@@ -201,17 +204,14 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         (projectRoot + "EngineAssets/Shaders/Water/SSSScatter").c_str());
 
     m_WaterCompositeShader = new VansGraphicsShader();
-    m_WaterCompositeShader->InitShader(logicDev,
-        (projectRoot + "EngineAssets/Shaders/Water/WaterComposite").c_str());
-    m_WaterCompositeShader->SetDrawStateData(
-        VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS, VK_CULL_MODE_NONE);
-    m_WaterCompositeShader->SetColorAttachmentCount(1);
+    const std::string waterCompositeShaderPath = projectRoot + "EngineAssets/Shaders/Water/WaterComposite";
+    m_WaterCompositeShader->InitShader(logicDev, waterCompositeShaderPath.c_str());
+    VansShaderManager::Get().ConfigureGraphicsShader(*m_WaterCompositeShader, "WaterComposite", waterCompositeShaderPath);
 
-    // ── 3. 创建 WaterGBufferParams UBO ─────────────────────────
-    AllocateBuffer(sizeof(WaterGBufferParamsGPU),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        m_GBufParamsBuffer, m_GBufParamsMemory);
+    // 鈹€鈹€ 3. 鍒涘缓 WaterGBufferParams UBO 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    CreateWaterBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated,
+        sizeof(WaterGBufferParamsGPU),
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
     WaterGBufferParamsGPU gbufParams = {};
     gbufParams.VPMatrix       = glm::mat4(1.0f);
@@ -225,16 +225,13 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     gbufParams.detailBalance   = m_WaterLOD ? m_WaterLOD->GetDetailBalance() : 2.0f;
     gbufParams.morphStartRatio = 0.5f;
     gbufParams.waveTimeAndScale = glm::vec4(0.0f, 0.2f, 1.5f, 1.0f);  // Initialize() initial UBO
-    {
-        void* data = nullptr;
-        vkMapMemory(logicDev, m_GBufParamsMemory, 0, sizeof(WaterGBufferParamsGPU), 0, &data);
-        std::memcpy(data, &gbufParams, sizeof(WaterGBufferParamsGPU));
-        vkUnmapMemory(logicDev, m_GBufParamsMemory);
-    }
+    m_GBufParamsCache = gbufParams;
+    if (m_GBufParamsBufferCreated)
+        m_GBufParamsBuffer.SetBufferData(&m_GBufParamsCache, 0, sizeof(WaterGBufferParamsGPU));
 
-    // ── 4. 创建波形位移贴图（W-01: Texture2DArray, 256² × MAX_LOD_COUNT）──
-    // CLAMP_TO_EDGE：贴图覆盖 snappedOrigin ± lodScale/2 的世界范围，
-    // 边界外的 Patch 由 CDLOD 距离环约束保证不会采样到，CLAMP 作为安全网
+    // 鈹€鈹€ 4. 鍒涘缓娉㈠舰浣嶇Щ璐村浘锛圵-01: Texture2DArray, 256虏 脳 MAX_LOD_COUNT锛夆攢鈹€
+    // CLAMP_TO_EDGE锛氳创鍥捐鐩?snappedOrigin 卤 lodScale/2 鐨勪笘鐣岃寖鍥达紝
+    // 杈圭晫澶栫殑 Patch 鐢?CDLOD 璺濈鐜害鏉熶繚璇佷笉浼氶噰鏍峰埌锛孋LAMP 浣滀负瀹夊叏缃?
     m_WaveDisplacementImage.CreateVulkanImage(
         logicDev,
         { WAVE_TEXTURE_SIZE, WAVE_TEXTURE_SIZE, 1 },
@@ -266,7 +263,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         m_WaterFFT = nullptr;
     }
 
-    // ── N-01: Detail Normal Texture2DArray（1024² × 1 layer RGBA16F，世界空间平铺）──
+    // 鈹€鈹€ N-01: Detail Normal Texture2DArray锛?024虏 脳 1 layer RGBA16F锛屼笘鐣岀┖闂村钩閾猴級鈹€鈹€
     m_DetailNormalImage.CreateVulkanImage(
         logicDev,
         { DETAIL_TEXTURE_SIZE, DETAIL_TEXTURE_SIZE, 1 },
@@ -278,7 +275,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         false, false, true,
         VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
-    // ── 5. 创建水体效果贴图（CLAMP_TO_EDGE 防止边缘平铺伪影）──
+    // 鈹€鈹€ 5. 鍒涘缓姘翠綋鏁堟灉璐村浘锛圕LAMP_TO_EDGE 闃叉杈圭紭骞抽摵浼奖锛夆攢鈹€
     auto createEffectImage = [&](VansVKImage& image)
     {
         image.CreateVulkanImage(
@@ -290,102 +287,84 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             VK_SAMPLE_COUNT_1_BIT,
             false, false, true,
-            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);  // 屏幕空间效果贴图不应 repeat
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);  // 灞忓箷绌洪棿鏁堟灉璐村浘涓嶅簲 repeat
     };
     createEffectImage(m_WaterReflectionImage);
     createEffectImage(m_WaterRefractionImage);
     createEffectImage(m_WaterCausticsImage);
-    createEffectImage(m_WaterThicknessImage);  // W-16: CLAMP_TO_EDGE 同上
-    createEffectImage(m_WaterSSSScatterImage); // W-16 Phase 2: SSS 散射输出
+    createEffectImage(m_WaterThicknessImage);  // W-16: CLAMP_TO_EDGE 鍚屼笂
+    createEffectImage(m_WaterSSSScatterImage); // W-16 Phase 2: SSS 鏁ｅ皠杈撳嚭
 
-    // ── 6. 创建 WaterCompositeParams UBO ──────────────────────
-    AllocateBuffer(sizeof(WaterCompositeParamsGPU),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        m_CompParamsBuffer, m_CompParamsMemory);
+    // 鈹€鈹€ 6. 鍒涘缓 WaterCompositeParams UBO 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    CreateWaterBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated,
+        sizeof(WaterCompositeParamsGPU),
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
     WaterCompositeParamsGPU compParams = {};
-    // 蓝色水体默认参数（物理方向：红光吸收最快，蓝光穿透最深）
-    compParams.deepWaterColor    = glm::vec4(0.01f, 0.04f, 0.18f, 1.0f);   // 深水暗蓝
-    compParams.shallowWaterColor = glm::vec4(0.05f, 0.18f, 0.55f, 1.0f);   // 浅水亮蓝（散射色）
+    // 钃濊壊姘翠綋榛樿鍙傛暟锛堢墿鐞嗘柟鍚戯細绾㈠厜鍚告敹鏈€蹇紝钃濆厜绌块€忔渶娣憋級
+    compParams.deepWaterColor    = glm::vec4(0.01f, 0.04f, 0.18f, 1.0f);   // 娣辨按鏆楄摑
+    compParams.shallowWaterColor = glm::vec4(0.05f, 0.18f, 0.55f, 1.0f);   // 娴呮按浜摑锛堟暎灏勮壊锛?
     compParams.fresnelPower      = 5.0f;
     compParams.waterLevel        = m_WaterLevel;
     compParams.specularIntensity = 0.6f;
     compParams.foamIntensity     = 1.0f;
-    compParams.absorptionCoeff   = glm::vec4(0.25f, 0.08f, 0.02f, 1.0f);  // R>G>B, 消光 0.27>0.12>0.08
-    compParams.scatteringCoeff   = glm::vec4(0.02f, 0.04f, 0.06f, 1.0f);  // B>G>R, 蓝光穿透最深
+    compParams.absorptionCoeff   = glm::vec4(0.25f, 0.08f, 0.02f, 1.0f);  // R>G>B, 娑堝厜 0.27>0.12>0.08
+    compParams.scatteringCoeff   = glm::vec4(0.02f, 0.04f, 0.06f, 1.0f);  // B>G>R, 钃濆厜绌块€忔渶娣?
     compParams.sssAnisotropy     = 0.85f;
     compParams.waterRoughness    = 0.02f;
     compParams.waterIOR          = 1.33f;
     compParams.cameraPosition    = glm::vec4(0.0f, 10.0f, 0.0f, 1.0f);
     compParams.viewMatrix        = glm::mat4(1.0f);
     compParams.projMatrix        = glm::mat4(1.0f);
+    if (m_CompParamsBufferCreated)
+        m_CompParamsBuffer.SetBufferData(&compParams, 0, sizeof(WaterCompositeParamsGPU));
+
+    // 鈹€鈹€ SSR Params UBO锛圵-12锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    CreateWaterBuffer(m_SSRParamsBuffer, m_SSRParamsBufferCreated,
+        SSR_PARAMS_BUFFER_SIZE,
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+
+    // 鈹€鈹€ Caustics Params UBO锛圵-14锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    CreateWaterBuffer(m_CausticsParamsBuffer, m_CausticsParamsBufferCreated,
+        sizeof(WaterCausticsParamsGPU),
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+
+    // 鈹€鈹€ W-16: Thickness Params UBO 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     {
-        void* data = nullptr;
-        vkMapMemory(logicDev, m_CompParamsMemory, 0, sizeof(WaterCompositeParamsGPU), 0, &data);
-        std::memcpy(data, &compParams, sizeof(WaterCompositeParamsGPU));
-        vkUnmapMemory(logicDev, m_CompParamsMemory);
+        CreateWaterBuffer(m_ThicknessParamsBuffer, m_ThicknessParamsBufferCreated,
+            sizeof(ThicknessParamsGPU),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        ThicknessParamsGPU tp = { 15.0f, 0.8f, 0.0f, 0.0f };
+        if (m_ThicknessParamsBufferCreated)
+            m_ThicknessParamsBuffer.SetBufferData(&tp, 0, sizeof(ThicknessParamsGPU));
     }
 
-    // ── SSR Params UBO（W-12）────────────────────────────────
-    AllocateBuffer(256,
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        m_SSRParamsBuffer, m_SSRParamsMemory);
-
-    // ── Caustics Params UBO（W-14）────────────────────────────
-    AllocateBuffer(sizeof(WaterCausticsParamsGPU),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        m_CausticsParamsBuffer, m_CausticsParamsMemory);
-
-    // ── W-16: Thickness Params UBO ────────────────────────────
+    // 鈹€鈹€ W-16 Phase 2: SSS Params UBO 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     {
-        struct ThicknessParams { float maxThickness; float deepFallback; float pad0; float pad1; };
-        AllocateBuffer(sizeof(ThicknessParams),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            m_ThicknessParamsBuffer, m_ThicknessParamsMemory);
-        ThicknessParams tp = { 15.0f, 0.8f, 0.0f, 0.0f };
-        void* data = nullptr;
-        vkMapMemory(logicDev, m_ThicknessParamsMemory, 0, sizeof(ThicknessParams), 0, &data);
-        std::memcpy(data, &tp, sizeof(ThicknessParams));
-        vkUnmapMemory(logicDev, m_ThicknessParamsMemory);
-    }
-
-    // ── W-16 Phase 2: SSS Params UBO ──────────────────────────
-    {
-        struct SSSParams { glm::vec4 absorptionCoeff; glm::vec4 scatteringCoeff; float maxThickness; float anisotropy; float pad0; float pad1; };
-        AllocateBuffer(sizeof(SSSParams),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            m_SSSParamsBuffer, m_SSSParamsMemory);
-        SSSParams sp = {
+        CreateWaterBuffer(m_SSSParamsBuffer, m_SSSParamsBufferCreated,
+            SSS_PARAMS_DESCRIPTOR_SIZE,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        SSSParamsGPU sp = {
             glm::vec4(0.25f, 0.08f, 0.02f, 1.0f),
             glm::vec4(0.02f, 0.04f, 0.06f, 1.0f),
             15.0f, 0.85f, 0.0f, 0.0f
         };
-        void* data = nullptr;
-        vkMapMemory(logicDev, m_SSSParamsMemory, 0, sizeof(SSSParams), 0, &data);
-        std::memcpy(data, &sp, sizeof(SSSParams));
-        vkUnmapMemory(logicDev, m_SSSParamsMemory);
+        if (m_SSSParamsBufferCreated)
+            m_SSSParamsBuffer.SetBufferData(&sp, 0, sizeof(SSSParamsGPU));
     }
 
-    // ── 7. 创建 Gerstner 波 SSBO（W-04）────────────────────────
+    // 鈹€鈹€ 7. 鍒涘缓 Gerstner 娉?SSBO锛圵-04锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     {
         VkDeviceSize ssboSize = MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU);
-        AllocateBuffer(ssboSize,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            m_WaveSSBO, m_WaveSSBOMemory);
+        CreateWaterBuffer(m_WaveSSBO, m_WaveSSBOCreated,
+            ssboSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-        // 自动生成默认波分量
+        // 鑷姩鐢熸垚榛樿娉㈠垎閲?
         std::vector<GerstnerWaveGPU> waves;
         AutoGenerateGerstnerWaves(waves, 128, glm::vec2(0.7071f, 0.7071f), 0.2f, 12.0f);
-        void* data = nullptr;
-        vkMapMemory(logicDev, m_WaveSSBOMemory, 0, ssboSize, 0, &data);
-        std::memcpy(data, waves.data(), waves.size() * sizeof(GerstnerWaveGPU));
-        vkUnmapMemory(logicDev, m_WaveSSBOMemory);
+        if (m_WaveSSBOCreated)
+            m_WaveSSBO.SetBufferData(waves.data(), 0, waves.size() * sizeof(GerstnerWaveGPU));
 
         VANS_LOG("[VansWaterSystem] Wave SSBO: " << waves.size() << " waves, " << ssboSize << " bytes");
     }
@@ -397,7 +376,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
 }
 
 // ============================================================
-// SetGlobalDescriptorSet — 在 CreateGlobalDescriptorSet 之后调用
+// SetGlobalDescriptorSet 鈥?鍦?CreateGlobalDescriptorSet 涔嬪悗璋冪敤
 // ============================================================
 void VansWaterSystem::SetGlobalDescriptorSet(
     VkDescriptorSetLayout globalLayout,
@@ -432,397 +411,365 @@ void VansWaterSystem::SetupDescriptors(
     m_GlobalSet    = globalSet;
     auto* descMgr  = VansVKDescriptorManager::GetInstance();
 
-    // ── Water GBuffer Pass descriptor set（Set 1）────────────
+    // 鈹€鈹€ Water GBuffer Pass descriptor set锛圫et 1锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterGBuffer(
             m_GBufPassLayout, sets, 1);
         m_GBufPassSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
 
-        // binding 0：WaterGBufferParams UBO
-        descMgr->m_BufferDescInfos.push_back({
-            m_GBufPassSet, WATER_GBUF_BINDING_PARAMS, 0,
+        // binding 0锛歐aterGBufferParams UBO
+        descMgr->WriteBufferDescriptor(
+            m_GBufPassSet,
+            WATER_GBUF_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_GBufParamsBuffer, 0, sizeof(WaterGBufferParamsGPU) } }
-        });
+            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
 
-        // binding 1：位移贴图 Texture2DArray（W-01）
-        descMgr->m_ImageDescInfos.push_back({
-            m_GBufPassSet, WATER_GBUF_BINDING_DISPLACEMENT, 0,
+        // binding 1锛氫綅绉昏创鍥?Texture2DArray锛圵-01锛?
+        descMgr->WriteImageDescriptor(
+            m_GBufPassSet,
+            WATER_GBUF_BINDING_DISPLACEMENT,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { {
                 m_WaveDisplacementImage.GetSampler(),
                 m_WaveDisplacementImage.GetImageView(),
                 VK_IMAGE_LAYOUT_GENERAL
-            } }
-        });
+            } });
 
-        // binding 2：GerstnerWave SSBO（W-04）— 顶点着色器读取
-        descMgr->m_BufferDescInfos.push_back({
-            m_GBufPassSet, WATER_GBUF_BINDING_WAVE_SSBO, 0,
+        // binding 2锛欸erstnerWave SSBO锛圵-04锛夆€?椤剁偣鐫€鑹插櫒璇诲彇
+        descMgr->WriteBufferDescriptor(
+            m_GBufPassSet,
+            WATER_GBUF_BINDING_WAVE_SSBO,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            { { m_WaveSSBO, 0, MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU) } }
-        });
+            { { GetNativeBuffer(m_WaveSSBO, m_WaveSSBOCreated), 0, MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU) } });
 
-        // binding 3: Detail Normal Texture2DArray（N-01）— 复用原 normal map binding slot
-        descMgr->m_ImageDescInfos.push_back({
-            m_GBufPassSet, WATER_GBUF_BINDING_NORMAL_MAP, 0,
+        // binding 3: Detail Normal Texture2DArray锛圢-01锛夆€?澶嶇敤鍘?normal map binding slot
+        descMgr->WriteImageDescriptor(
+            m_GBufPassSet,
+            WATER_GBUF_BINDING_NORMAL_MAP,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { {
                 m_DetailNormalImage.GetSampler(),
                 m_DetailNormalImage.GetImageView(),
                 VK_IMAGE_LAYOUT_GENERAL
-            } }
-        });
+            } });
 
-        // binding 4: FFT derivative Texture2DArray — vertex shader reads slope normal.
-        descMgr->m_ImageDescInfos.push_back({
-            m_GBufPassSet, WATER_GBUF_BINDING_DERIVATIVE, 0,
+        // binding 4: FFT derivative Texture2DArray 鈥?vertex shader reads slope normal.
+        descMgr->WriteImageDescriptor(
+            m_GBufPassSet,
+            WATER_GBUF_BINDING_DERIVATIVE,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { {
                 m_WaveDerivativeImage.GetSampler(),
                 m_WaveDerivativeImage.GetImageView(),
                 VK_IMAGE_LAYOUT_GENERAL
-            } }
-        });
+            } });
 
-        descMgr->UpdateDescriptorSets();
+        descMgr->CommitDescriptorUpdates();
     }
 
-    // ── Water Wave Compute descriptor set（Set 0）────────────
+    // 鈹€鈹€ Water Wave Compute descriptor set锛圫et 0锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterWaveCompute(
             m_WaveSimLayout, sets, 1);
         m_WaveSimSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
 
-        descMgr->m_BufferDescInfos.push_back({
-            m_WaveSimSet, WATER_WAVE_BINDING_PARAMS, 0,
+        descMgr->WriteBufferDescriptor(
+            m_WaveSimSet,
+            WATER_WAVE_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_GBufParamsBuffer, 0, sizeof(WaterGBufferParamsGPU) } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_WaveSimSet, WATER_WAVE_BINDING_DISPLACEMENT, 0,
+            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
+        descMgr->WriteImageDescriptor(
+            m_WaveSimSet,
+            WATER_WAVE_BINDING_DISPLACEMENT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { {
                 m_WaveDisplacementImage.GetSampler(),
                 m_WaveDisplacementImage.GetImageView(),
                 VK_IMAGE_LAYOUT_GENERAL
-            } }
-        });
-        // binding 2：GerstnerWave SSBO 输入
-        descMgr->m_BufferDescInfos.push_back({
-            m_WaveSimSet, WATER_WAVE_BINDING_WAVE_SSBO, 0,
+            } });
+        // binding 2锛欸erstnerWave SSBO 杈撳叆
+        descMgr->WriteBufferDescriptor(
+            m_WaveSimSet,
+            WATER_WAVE_BINDING_WAVE_SSBO,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            { { m_WaveSSBO, 0, MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU) } }
-        });
+            { { GetNativeBuffer(m_WaveSSBO, m_WaveSSBOCreated), 0, MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU) } });
 
-        descMgr->UpdateDescriptorSets();
+        descMgr->CommitDescriptorUpdates();
     }
 
-    // ── Water Composite Pass descriptor set（Set 1）──────────
+    // 鈹€鈹€ Water Composite Pass descriptor set锛圫et 1锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterComposite(
             m_CompPassLayout, sets, 1);
         m_CompPassSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
 
-        descMgr->m_ImageDescInfos.push_back({
-            m_CompPassSet, WATER_COMP_BINDING_GBUF_NORMAL, 0,
+        descMgr->WriteImageDescriptor(
+            m_CompPassSet, WATER_COMP_BINDING_GBUF_NORMAL,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_CompPassSet, WATER_COMP_BINDING_GBUF_DEPTH, 0,
+            { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_CompPassSet, WATER_COMP_BINDING_GBUF_DEPTH,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_BufferDescInfos.push_back({
-            m_CompPassSet, WATER_COMP_BINDING_PARAMS, 0,
+            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteBufferDescriptor(
+            m_CompPassSet, WATER_COMP_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_CompParamsBuffer, 0, sizeof(WaterCompositeParamsGPU) } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_CompPassSet, WATER_COMP_BINDING_SCENE_GBUF2, 0,
+            { { GetNativeBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated), 0, sizeof(WaterCompositeParamsGPU) } });
+        descMgr->WriteImageDescriptor(
+            m_CompPassSet, WATER_COMP_BINDING_SCENE_GBUF2,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_CompPassSet, WATER_COMP_BINDING_REFLECTION, 0,
+            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_CompPassSet, WATER_COMP_BINDING_REFLECTION,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_CompPassSet, WATER_COMP_BINDING_REFRACTION, 0,
+            { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+        descMgr->WriteImageDescriptor(
+            m_CompPassSet, WATER_COMP_BINDING_REFRACTION,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_CompPassSet, WATER_COMP_BINDING_CAUSTICS, 0,
+            { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+        descMgr->WriteImageDescriptor(
+            m_CompPassSet, WATER_COMP_BINDING_CAUSTICS,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaterCausticsImage.GetSampler(), m_WaterCausticsImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        // W-15: 泡沫纹理 — 使用反射贴图作为 placeholder，后续从 VansWaterMaterial::m_FoamTexture 绑定真实纹理
-        descMgr->m_ImageDescInfos.push_back({
-            m_CompPassSet, WATER_COMP_BINDING_FOAM_TEXTURE, 0,
+            { { m_WaterCausticsImage.GetSampler(), m_WaterCausticsImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+        // W-15: 娉℃搏绾圭悊 鈥?浣跨敤鍙嶅皠璐村浘浣滀负 placeholder锛屽悗缁粠 VansWaterMaterial::m_FoamTexture 缁戝畾鐪熷疄绾圭悊
+        descMgr->WriteImageDescriptor(
+            m_CompPassSet, WATER_COMP_BINDING_FOAM_TEXTURE,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        // W-16: 厚度图
-        descMgr->m_ImageDescInfos.push_back({
-            m_CompPassSet, WATER_COMP_BINDING_THICKNESS, 0,
+            { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+        // W-16: 鍘氬害鍥?
+        descMgr->WriteImageDescriptor(
+            m_CompPassSet, WATER_COMP_BINDING_THICKNESS,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaterThicknessImage.GetSampler(), m_WaterThicknessImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        // W-16 Phase 2: SSS 散射输出
-        descMgr->m_ImageDescInfos.push_back({
-            m_CompPassSet, WATER_COMP_BINDING_SSS_SCATTER, 0,
+            { { m_WaterThicknessImage.GetSampler(), m_WaterThicknessImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+        // W-16 Phase 2: SSS 鏁ｅ皠杈撳嚭
+        descMgr->WriteImageDescriptor(
+            m_CompPassSet, WATER_COMP_BINDING_SSS_SCATTER,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaterSSSScatterImage.GetSampler(), m_WaterSSSScatterImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        descMgr->UpdateDescriptorSets();
+            { { m_WaterSSSScatterImage.GetSampler(), m_WaterSSSScatterImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+        descMgr->CommitDescriptorUpdates();
     }
 
-    // ── Water Effects Compute descriptor set（Set 0）──────────
+    // 鈹€鈹€ Water Effects Compute descriptor set锛圫et 0锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterEffectsCompute(
             m_EffectsLayout, sets, 1);
         m_EffectsSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
 
-        descMgr->m_ImageDescInfos.push_back({
-            m_EffectsSet, WATER_EFFECT_BINDING_GBUF_NORMAL, 0,
+        descMgr->WriteImageDescriptor(
+            m_EffectsSet, WATER_EFFECT_BINDING_GBUF_NORMAL,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_EffectsSet, WATER_EFFECT_BINDING_GBUF_DEPTH, 0,
+            { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_EffectsSet, WATER_EFFECT_BINDING_GBUF_DEPTH,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_EffectsSet, WATER_EFFECT_BINDING_SCENE_GBUF2, 0,
+            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_EffectsSet, WATER_EFFECT_BINDING_SCENE_GBUF2,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_EffectsSet, WATER_EFFECT_BINDING_SCENE_COLOR, 0,
+            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_EffectsSet, WATER_EFFECT_BINDING_SCENE_COLOR,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetColor().GetSampler(), renderPassManager->GetColor().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_BufferDescInfos.push_back({
-            m_EffectsSet, WATER_EFFECT_BINDING_PARAMS, 0,
+            { { renderPassManager->GetColor().GetSampler(), renderPassManager->GetColor().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteBufferDescriptor(
+            m_EffectsSet, WATER_EFFECT_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_CompParamsBuffer, 0, sizeof(WaterCompositeParamsGPU) } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_EffectsSet, WATER_EFFECT_BINDING_REFLECTION_OUT, 0,
+            { { GetNativeBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated), 0, sizeof(WaterCompositeParamsGPU) } });
+        descMgr->WriteImageDescriptor(
+            m_EffectsSet, WATER_EFFECT_BINDING_REFLECTION_OUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_EffectsSet, WATER_EFFECT_BINDING_REFRACTION_OUT, 0,
+            { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+        descMgr->WriteImageDescriptor(
+            m_EffectsSet, WATER_EFFECT_BINDING_REFRACTION_OUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_EffectsSet, WATER_EFFECT_BINDING_CAUSTICS_OUT, 0,
+            { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+        descMgr->WriteImageDescriptor(
+            m_EffectsSet, WATER_EFFECT_BINDING_CAUSTICS_OUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            { { m_WaterCausticsImage.GetSampler(), m_WaterCausticsImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        descMgr->UpdateDescriptorSets();
+            { { m_WaterCausticsImage.GetSampler(), m_WaterCausticsImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+        descMgr->CommitDescriptorUpdates();
     }
 
-    // ── Water SSR Compute descriptor set（Set 0, W-12）───────
-    // 延迟到 HZB 可用时创建（见 EnsureSSRDescriptorSet）
+    // 鈹€鈹€ Water SSR Compute descriptor set锛圫et 0, W-12锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€
+    // 寤惰繜鍒?HZB 鍙敤鏃跺垱寤猴紙瑙?EnsureSSRDescriptorSet锛?
 
-    // ── Water Refraction Compute descriptor set（Set 0）──────
+    // 鈹€鈹€ Water Refraction Compute descriptor set锛圫et 0锛夆攢鈹€鈹€鈹€鈹€鈹€
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterRefractionCompute(
             m_RefractionLayout, sets, 1);
         m_RefractionSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
 
-        descMgr->m_ImageDescInfos.push_back({
-            m_RefractionSet, WATER_REFRACTION_BINDING_GBUF_NORMAL, 0,
+        descMgr->WriteImageDescriptor(
+            m_RefractionSet, WATER_REFRACTION_BINDING_GBUF_NORMAL,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_RefractionSet, WATER_REFRACTION_BINDING_GBUF_DEPTH, 0,
+            { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_RefractionSet, WATER_REFRACTION_BINDING_GBUF_DEPTH,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_RefractionSet, WATER_REFRACTION_BINDING_SCENE_GBUF2, 0,
+            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_RefractionSet, WATER_REFRACTION_BINDING_SCENE_GBUF2,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_RefractionSet, WATER_REFRACTION_BINDING_SCENE_COLOR, 0,
+            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_RefractionSet, WATER_REFRACTION_BINDING_SCENE_COLOR,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetColor().GetSampler(), renderPassManager->GetColor().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_BufferDescInfos.push_back({
-            m_RefractionSet, WATER_REFRACTION_BINDING_PARAMS, 0,
+            { { renderPassManager->GetColor().GetSampler(), renderPassManager->GetColor().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteBufferDescriptor(
+            m_RefractionSet, WATER_REFRACTION_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_CompParamsBuffer, 0, sizeof(WaterCompositeParamsGPU) } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_RefractionSet, WATER_REFRACTION_BINDING_REFRACTION_OUT, 0,
+            { { GetNativeBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated), 0, sizeof(WaterCompositeParamsGPU) } });
+        descMgr->WriteImageDescriptor(
+            m_RefractionSet, WATER_REFRACTION_BINDING_REFRACTION_OUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
+            { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 
-        descMgr->UpdateDescriptorSets();
+        descMgr->CommitDescriptorUpdates();
     }
 
-    // ── Water Caustics Compute descriptor set（Set 0, W-14）───
+    // 鈹€鈹€ Water Caustics Compute descriptor set锛圫et 0, W-14锛夆攢鈹€鈹€
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterCausticsCompute(
             m_CausticsLayout, sets, 1);
         m_CausticsSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
 
-        descMgr->m_ImageDescInfos.push_back({
-            m_CausticsSet, WATER_CAUSTICS_BINDING_GBUF_NORMAL, 0,
+        descMgr->WriteImageDescriptor(
+            m_CausticsSet, WATER_CAUSTICS_BINDING_GBUF_NORMAL,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_CausticsSet, WATER_CAUSTICS_BINDING_GBUF_DEPTH, 0,
+            { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_CausticsSet, WATER_CAUSTICS_BINDING_GBUF_DEPTH,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_CausticsSet, WATER_CAUSTICS_BINDING_SCENE_GBUF2, 0,
+            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_CausticsSet, WATER_CAUSTICS_BINDING_SCENE_GBUF2,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_BufferDescInfos.push_back({
-            m_CausticsSet, WATER_CAUSTICS_BINDING_PARAMS, 0,
+            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteBufferDescriptor(
+            m_CausticsSet, WATER_CAUSTICS_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_CausticsParamsBuffer, 0, sizeof(WaterCausticsParamsGPU) } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_CausticsSet, WATER_CAUSTICS_BINDING_CAUSTICS_OUT, 0,
+            { { GetNativeBuffer(m_CausticsParamsBuffer, m_CausticsParamsBufferCreated), 0, sizeof(WaterCausticsParamsGPU) } });
+        descMgr->WriteImageDescriptor(
+            m_CausticsSet, WATER_CAUSTICS_BINDING_CAUSTICS_OUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            { { m_WaterCausticsImage.GetSampler(), m_WaterCausticsImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-        });
+            { { m_WaterCausticsImage.GetSampler(), m_WaterCausticsImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 
-        descMgr->UpdateDescriptorSets();
+        descMgr->CommitDescriptorUpdates();
     }
 
-    // ── W-16: Water Thickness Compute descriptor set ───────────
+    // 鈹€鈹€ W-16: Water Thickness Compute descriptor set 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterThicknessCompute(
             m_ThicknessLayout, sets, 1);
         m_ThicknessSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
 
-        descMgr->m_ImageDescInfos.push_back({
-            m_ThicknessSet, WATER_THICKNESS_BINDING_GBUF_DEPTH, 0,
+        descMgr->WriteImageDescriptor(
+            m_ThicknessSet, WATER_THICKNESS_BINDING_GBUF_DEPTH,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(),
                 renderPassManager->GetWaterGBufLinearDepth().GetImageView(),
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_ThicknessSet, WATER_THICKNESS_BINDING_SCENE_GBUF2, 0,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_ThicknessSet, WATER_THICKNESS_BINDING_SCENE_GBUF2,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetGbuffer2().GetSampler(),
                 renderPassManager->GetGbuffer2().GetImageView(),
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_BufferDescInfos.push_back({
-            m_ThicknessSet, WATER_THICKNESS_BINDING_PARAMS, 0,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteBufferDescriptor(
+            m_ThicknessSet, WATER_THICKNESS_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_ThicknessParamsBuffer, 0, sizeof(float) * 4 } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_ThicknessSet, WATER_THICKNESS_BINDING_THICKNESS_OUT, 0,
+            { { GetNativeBuffer(m_ThicknessParamsBuffer, m_ThicknessParamsBufferCreated), 0, sizeof(float) * 4 } });
+        descMgr->WriteImageDescriptor(
+            m_ThicknessSet, WATER_THICKNESS_BINDING_THICKNESS_OUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterThicknessImage.GetSampler(),
                 m_WaterThicknessImage.GetImageView(),
-                VK_IMAGE_LAYOUT_GENERAL } }
-        });
+                VK_IMAGE_LAYOUT_GENERAL } });
 
-        descMgr->UpdateDescriptorSets();
+        descMgr->CommitDescriptorUpdates();
     }
 
-    // ── W-16 Phase 2: Water SSS Scatter Compute descriptor set ──
+    // 鈹€鈹€ W-16 Phase 2: Water SSS Scatter Compute descriptor set 鈹€鈹€
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterSSSScatterCompute(
             m_SSSScatterLayout, sets, 1);
         m_SSSScatterSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
 
-        descMgr->m_ImageDescInfos.push_back({
-            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_GBUF_NORMAL, 0,
+        descMgr->WriteImageDescriptor(
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_GBUF_NORMAL,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufNormal().GetSampler(),
                 renderPassManager->GetWaterGBufNormal().GetImageView(),
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_GBUF_DEPTH, 0,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_GBUF_DEPTH,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(),
                 renderPassManager->GetWaterGBufLinearDepth().GetImageView(),
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_THICKNESS_MAP, 0,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_THICKNESS_MAP,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterThicknessImage.GetSampler(),
                 m_WaterThicknessImage.GetImageView(),
-                VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_SCENE_GBUF2, 0,
+                VK_IMAGE_LAYOUT_GENERAL } });
+        descMgr->WriteImageDescriptor(
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_SCENE_GBUF2,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetGbuffer2().GetSampler(),
                 renderPassManager->GetGbuffer2().GetImageView(),
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
-        descMgr->m_BufferDescInfos.push_back({
-            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_PARAMS, 0,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteBufferDescriptor(
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_SSSParamsBuffer, 0, sizeof(float) * 16 } }
-        });
-        descMgr->m_ImageDescInfos.push_back({
-            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_SCATTER_OUT, 0,
+            { { GetNativeBuffer(m_SSSParamsBuffer, m_SSSParamsBufferCreated), 0, sizeof(float) * 16 } });
+        descMgr->WriteImageDescriptor(
+            m_SSSScatterSet, WATER_SSS_SCATTER_BINDING_SCATTER_OUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterSSSScatterImage.GetSampler(),
                 m_WaterSSSScatterImage.GetImageView(),
-                VK_IMAGE_LAYOUT_GENERAL } }
-        });
+                VK_IMAGE_LAYOUT_GENERAL } });
 
-        descMgr->UpdateDescriptorSets();
+        descMgr->CommitDescriptorUpdates();
     }
 
-    // ── N-01: Detail Normal Compute descriptor set ──────────────
+    // 鈹€鈹€ N-01: Detail Normal Compute descriptor set 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterDetailNormalCompute(
             m_DetailNormalLayout, sets, 1);
         m_DetailNormalSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
 
-        // binding 0: WaterGBufferParams UBO（复用 m_GBufParamsBuffer）
-        descMgr->m_BufferDescInfos.push_back({
-            m_DetailNormalSet, WATER_DETAIL_BINDING_PARAMS, 0,
+        // binding 0: WaterGBufferParams UBO锛堝鐢?m_GBufParamsBuffer锛?
+        descMgr->WriteBufferDescriptor(
+            m_DetailNormalSet, WATER_DETAIL_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_GBufParamsBuffer, 0, sizeof(WaterGBufferParamsGPU) } }
-        });
+            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
         // binding 1: Detail normal output storage image array
-        descMgr->m_ImageDescInfos.push_back({
-            m_DetailNormalSet, WATER_DETAIL_BINDING_OUTPUT, 0,
+        descMgr->WriteImageDescriptor(
+            m_DetailNormalSet, WATER_DETAIL_BINDING_OUTPUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_DetailNormalImage.GetSampler(),
                 m_DetailNormalImage.GetImageView(),
-                VK_IMAGE_LAYOUT_GENERAL } }
-        });
-        descMgr->UpdateDescriptorSets();
+                VK_IMAGE_LAYOUT_GENERAL } });
+        descMgr->CommitDescriptorUpdates();
     }
 
     m_DescriptorsReady = true;
@@ -840,7 +787,7 @@ void VansWaterSystem::Shutdown()
     VkDevice dev = m_Device->GetLogicDevice();
     auto*  descMgr = VansVKDescriptorManager::GetInstance();
 
-    // W-02: 委托 VansWaterLOD 清理网格缓冲
+    // W-02: 濮旀墭 VansWaterLOD 娓呯悊缃戞牸缂撳啿
     if (m_WaterLOD)
     {
         m_WaterLOD->Shutdown(dev);
@@ -865,18 +812,14 @@ void VansWaterSystem::Shutdown()
     if (m_CausticsLayout != VK_NULL_HANDLE)  { descMgr->DestroyDescriptorSetLayout(m_CausticsLayout);  m_CausticsLayout  = VK_NULL_HANDLE; }
     if (m_DetailNormalLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_DetailNormalLayout); m_DetailNormalLayout = VK_NULL_HANDLE; }
 
-    auto destroyBuf = [&](VkBuffer& buf, VkDeviceMemory& mem)
-    {
-        if (buf != VK_NULL_HANDLE) { vkDestroyBuffer(dev, buf, nullptr); buf = VK_NULL_HANDLE; }
-        if (mem != VK_NULL_HANDLE) { vkFreeMemory(dev, mem, nullptr);    mem = VK_NULL_HANDLE; }
-    };
-    destroyBuf(m_GBufParamsBuffer, m_GBufParamsMemory);
-    destroyBuf(m_CompParamsBuffer, m_CompParamsMemory);
-    destroyBuf(m_SSRParamsBuffer,  m_SSRParamsMemory);
-    destroyBuf(m_CausticsParamsBuffer, m_CausticsParamsMemory);
-    destroyBuf(m_ThicknessParamsBuffer, m_ThicknessParamsMemory);
-    destroyBuf(m_SSSParamsBuffer, m_SSSParamsMemory);
-    destroyBuf(m_WaveSSBO,         m_WaveSSBOMemory);
+    DestroyWaterBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated, dev);
+    DestroyWaterBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated, dev);
+    DestroyWaterBuffer(m_SSRParamsBuffer, m_SSRParamsBufferCreated, dev);
+    DestroyWaterBuffer(m_CausticsParamsBuffer, m_CausticsParamsBufferCreated, dev);
+    DestroyWaterBuffer(m_ThicknessParamsBuffer, m_ThicknessParamsBufferCreated, dev);
+    DestroyWaterBuffer(m_SSSParamsBuffer, m_SSSParamsBufferCreated, dev);
+    DestroyWaterBuffer(m_WaveSSBO, m_WaveSSBOCreated, dev);
+    m_GBufParamsCache = {};
 
     m_WaveDisplacementImage.DestroyVulkanImage(dev);
     m_WaveDisplacementReady = false;
@@ -911,12 +854,12 @@ void VansWaterSystem::Shutdown()
 }
 
 // ============================================================
-// UpdateWaveSSBO — 运行时重新生成波分量并上传到 SSBO（W-04）
-// 当编辑器修改波参数（波数、风速、涌浪幅度等）时调用。
+// UpdateWaveSSBO 鈥?杩愯鏃堕噸鏂扮敓鎴愭尝鍒嗛噺骞朵笂浼犲埌 SSBO锛圵-04锛?
+// 褰撶紪杈戝櫒淇敼娉㈠弬鏁帮紙娉㈡暟銆侀閫熴€佹秾娴箙搴︾瓑锛夋椂璋冪敤銆?
 // ============================================================
 void VansWaterSystem::UpdateWaveSSBO()
 {
-    if (!m_Initialized || m_WaveSSBO == VK_NULL_HANDLE || m_WaveSSBOMemory == VK_NULL_HANDLE)
+    if (!m_Initialized || !m_WaveSSBOCreated)
         return;
     if (!m_WaterMaterial)
         return;
@@ -929,19 +872,14 @@ void VansWaterSystem::UpdateWaveSSBO()
 
     AutoGenerateGerstnerWaves(waves, count, windDir, swell, windSp);
 
-    VkDevice logicDev = m_Device->GetLogicDevice();
     VkDeviceSize size = waves.size() * sizeof(GerstnerWaveGPU);
-    VkDeviceSize ssboSize = MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU);
-    void* data = nullptr;
-    vkMapMemory(logicDev, m_WaveSSBOMemory, 0, ssboSize, 0, &data);
-    std::memcpy(data, waves.data(), static_cast<size_t>(size));
-    vkUnmapMemory(logicDev, m_WaveSSBOMemory);
+    m_WaveSSBO.SetBufferData(waves.data(), 0, size);
 
     VANS_LOG("[VansWaterSystem] UpdateWaveSSBO: " << waves.size() << " waves regenerated");
 }
 
 // ============================================================
-// Update — 每帧 CPU 端状态更新
+// Update 鈥?姣忓抚 CPU 绔姸鎬佹洿鏂?
 // ============================================================
 void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
                              const glm::mat4& viewMatrix, const glm::mat4& vpMatrix,
@@ -950,7 +888,7 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
 {
     m_Time += deltaTime;
 
-    // 从 WaterMaterial 读取运行时参数（支持编辑器实时调整）
+    // 浠?WaterMaterial 璇诲彇杩愯鏃跺弬鏁帮紙鏀寔缂栬緫鍣ㄥ疄鏃惰皟鏁达級
     float ampScale   = 0.2f;
     float chopScale  = 1.5f;
     float baseScale  = 4.0f * VansWaterLOD::BASE_PATCH_SIZE;
@@ -966,12 +904,12 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         if (m_WaterMaterial->m_Config.m_Waves.m_Mode == VansWaveMode::FFT ||
             m_WaterMaterial->m_Config.m_Waves.m_Mode == VansWaveMode::Hybrid)
         {
-            maxAmp = std::max(maxAmp,
+            maxAmp = (std::max)(maxAmp,
                 m_WaterMaterial->m_Config.m_Waves.m_FFT.m_SpectrumAmplitude * 3.0f);
         }
     }
 
-    // W-02: 委托 VansWaterLOD 生成 Patch
+    // W-02: 濮旀墭 VansWaterLOD 鐢熸垚 Patch
     if (m_WaterLOD)
     {
         VansWaterLODConfig lodConfig;
@@ -987,7 +925,7 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         m_WaterLOD->GeneratePatches(cameraPos);
     }
 
-    // 每帧写入水面 pass 自有相机数据
+    // 姣忓抚鍐欏叆姘撮潰 pass 鑷湁鐩告満鏁版嵁
     WaterGBufferParamsGPU gbufParams = {};
     gbufParams.VPMatrix       = vpMatrix;
     gbufParams.ViewMatrix     = viewMatrix;
@@ -997,7 +935,7 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     gbufParams.meshDim        = m_WaterLOD ? m_WaterLOD->GetMeshDim() : VansWaterLOD::WATER_MESH_DIM;
     gbufParams.clipmapBaseScale = baseScale;
     gbufParams.maxWaveAmp     = maxAmp;
-    gbufParams.detailBalance   = m_WaterLOD ? m_WaterLOD->GetDetailBalance() : 2.0f;  // CPU/GPU 同步：从 VansWaterLOD 运行时读取
+    gbufParams.detailBalance   = m_WaterLOD ? m_WaterLOD->GetDetailBalance() : 2.0f;  // CPU/GPU 鍚屾锛氫粠 VansWaterLOD 杩愯鏃惰鍙?
     gbufParams.morphStartRatio = m_WaterLOD ? m_WaterLOD->GetMorphWidthRatio() : 0.5f;
     gbufParams.waveTimeAndScale = glm::vec4(m_Time, ampScale, chopScale, 1.0f);
 
@@ -1005,12 +943,12 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     int fftLODCount = m_WaterMaterial ? m_WaterMaterial->m_Config.m_Waves.m_FFT.m_LODCount : 4;
     if (m_WaterMaterial && m_WaterMaterial->m_FftLODCount > 0)
         fftLODCount = m_WaterMaterial->m_FftLODCount;
-    fftLODCount = std::clamp(fftLODCount, 1, std::max(gbufParams.lodLevels, 1));
+    fftLODCount = std::clamp(fftLODCount, 1, (std::max)(gbufParams.lodLevels, 1));
     const bool useDerivativeNormal = m_WaterMaterial
         ? m_WaterMaterial->m_Config.m_Waves.m_FFT.m_UseDerivativeNormal
         : true;
 
-    // N-01: Detail normal 参数写入 UBO padding
+    // N-01: Detail normal 鍙傛暟鍐欏叆 UBO padding
     if (m_WaterMaterial)
     {
         gbufParams.waveParamsPad[0] = glm::vec4(
@@ -1059,17 +997,13 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         m_WaterFFT->SetParams(fp);
     }
 
-    if (m_Device != nullptr && m_GBufParamsMemory != VK_NULL_HANDLE)
-    {
-        void* data = nullptr;
-        vkMapMemory(m_Device->GetLogicDevice(), m_GBufParamsMemory, 0, sizeof(WaterGBufferParamsGPU), 0, &data);
-        std::memcpy(data, &gbufParams, sizeof(WaterGBufferParamsGPU));
-        vkUnmapMemory(m_Device->GetLogicDevice(), m_GBufParamsMemory);
-    }
+    m_GBufParamsCache = gbufParams;
+    if (m_Device != nullptr && m_GBufParamsBufferCreated)
+        m_GBufParamsBuffer.SetBufferData(&m_GBufParamsCache, 0, sizeof(WaterGBufferParamsGPU));
 
-    // 每帧全量更新 composite UBO：从 VansWaterMaterial 读取所有介质参数 +
-    // 相机位置 + invViewProj + 主光方向（确保 Editor 修改实时生效）
-    if (m_Device != nullptr && m_CompParamsMemory != VK_NULL_HANDLE)
+    // 姣忓抚鍏ㄩ噺鏇存柊 composite UBO锛氫粠 VansWaterMaterial 璇诲彇鎵€鏈変粙璐ㄥ弬鏁?+
+    // 鐩告満浣嶇疆 + invViewProj + 涓诲厜鏂瑰悜锛堢‘淇?Editor 淇敼瀹炴椂鐢熸晥锛?
+    if (m_Device != nullptr && m_CompParamsBufferCreated)
     {
         WaterCompositeParamsGPU compParams = {};
         if (m_WaterMaterial)
@@ -1088,7 +1022,7 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         }
         else
         {
-            // fallback 默认参数
+            // fallback 榛樿鍙傛暟
             compParams.deepWaterColor    = glm::vec4(0.01f, 0.04f, 0.18f, 1.0f);
             compParams.shallowWaterColor = glm::vec4(0.05f, 0.18f, 0.55f, 1.0f);
             compParams.fresnelPower      = 5.0f;
@@ -1107,26 +1041,13 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         compParams.viewMatrix      = viewMatrix;
         compParams.projMatrix      = vpMatrix * glm::inverse(viewMatrix);  // proj = VP * inv(View)
 
-        void* data = nullptr;
-        vkMapMemory(m_Device->GetLogicDevice(), m_CompParamsMemory, 0,
-            sizeof(WaterCompositeParamsGPU), 0, &data);
-        std::memcpy(data, &compParams, sizeof(WaterCompositeParamsGPU));
-        vkUnmapMemory(m_Device->GetLogicDevice(), m_CompParamsMemory);
+        m_CompParamsBuffer.SetBufferData(&compParams, 0, sizeof(WaterCompositeParamsGPU));
     }
 
-    // ── 更新 SSR Params UBO（W-12）──────────────────────
-    if (m_Device != nullptr && m_SSRParamsMemory != VK_NULL_HANDLE)
+    // 鈹€鈹€ 鏇存柊 SSR Params UBO锛圵-12锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    if (m_Device != nullptr && m_SSRParamsBufferCreated)
     {
-        struct WaterSSRParamsGPU {
-            glm::vec4 cameraPosition;
-            glm::mat4 projMatrix;
-            glm::mat4 invProjMatrix;
-            glm::mat4 viewMatrix;
-            float maxDistance;
-            int   maxSteps;
-            float thickness;
-            float maxRoughness;   // Inspector optimization: above this → fallback to IBL
-        } ssrParams;
+        WaterSSRParamsGPU ssrParams = {};
         ssrParams.cameraPosition = glm::vec4(cameraPos, 1.0f);
         ssrParams.projMatrix     = vpMatrix * glm::inverse(viewMatrix);
         ssrParams.invProjMatrix  = glm::inverse(ssrParams.projMatrix);
@@ -1147,14 +1068,11 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
             ssrParams.maxRoughness = 0.3f;
         }
 
-        void* data = nullptr;
-        vkMapMemory(m_Device->GetLogicDevice(), m_SSRParamsMemory, 0, sizeof(WaterSSRParamsGPU), 0, &data);
-        std::memcpy(data, &ssrParams, sizeof(WaterSSRParamsGPU));
-        vkUnmapMemory(m_Device->GetLogicDevice(), m_SSRParamsMemory);
+        m_SSRParamsBuffer.SetBufferData(&ssrParams, 0, sizeof(WaterSSRParamsGPU));
     }
 
-    // ── 更新 Caustics Params UBO（W-14）──────────────────
-    if (m_Device != nullptr && m_CausticsParamsMemory != VK_NULL_HANDLE)
+    // 鈹€鈹€ 鏇存柊 Caustics Params UBO锛圵-14锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    if (m_Device != nullptr && m_CausticsParamsBufferCreated)
     {
         WaterCausticsParamsGPU causticParams = {};
         causticParams.sunDirection     = glm::vec4(glm::normalize(mainLightDir), 0.0f);
@@ -1175,17 +1093,13 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         causticParams.waterLevel = m_WaterLevel;
         causticParams.maxDepth   = 15.0f;
 
-        void* data = nullptr;
-        vkMapMemory(m_Device->GetLogicDevice(), m_CausticsParamsMemory, 0, sizeof(WaterCausticsParamsGPU), 0, &data);
-        std::memcpy(data, &causticParams, sizeof(WaterCausticsParamsGPU));
-        vkUnmapMemory(m_Device->GetLogicDevice(), m_CausticsParamsMemory);
+        m_CausticsParamsBuffer.SetBufferData(&causticParams, 0, sizeof(WaterCausticsParamsGPU));
     }
 
-    // ── W-16: 更新 Thickness Params UBO ───────────────────────
-    if (m_Device != nullptr && m_ThicknessParamsMemory != VK_NULL_HANDLE)
+    // 鈹€鈹€ W-16: 鏇存柊 Thickness Params UBO 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    if (m_Device != nullptr && m_ThicknessParamsBufferCreated)
     {
-        struct ThicknessParams { float maxThickness; float deepFallback; float pad0; float pad1; };
-        ThicknessParams tp;
+        ThicknessParamsGPU tp = {};
         tp.maxThickness = 15.0f;
         tp.deepFallback = 0.8f;
         if (m_WaterMaterial)
@@ -1193,17 +1107,13 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
             tp.maxThickness = m_WaterMaterial->m_MaxThicknessDistance;
             tp.deepFallback = m_WaterMaterial->m_DeepWaterThicknessFallback;
         }
-        void* data = nullptr;
-        vkMapMemory(m_Device->GetLogicDevice(), m_ThicknessParamsMemory, 0, sizeof(ThicknessParams), 0, &data);
-        std::memcpy(data, &tp, sizeof(ThicknessParams));
-        vkUnmapMemory(m_Device->GetLogicDevice(), m_ThicknessParamsMemory);
+        m_ThicknessParamsBuffer.SetBufferData(&tp, 0, sizeof(ThicknessParamsGPU));
     }
 
-    // ── W-16 Phase 2: 更新 SSS Params UBO ─────────────────────
-    if (m_Device != nullptr && m_SSSParamsMemory != VK_NULL_HANDLE)
+    // 鈹€鈹€ W-16 Phase 2: 鏇存柊 SSS Params UBO 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    if (m_Device != nullptr && m_SSSParamsBufferCreated)
     {
-        struct SSSParams { glm::vec4 absorptionCoeff; glm::vec4 scatteringCoeff; float maxThickness; float anisotropy; float pad0; float pad1; };
-        SSSParams sp;
+        SSSParamsGPU sp = {};
         sp.absorptionCoeff = glm::vec4(0.25f, 0.08f, 0.02f, 1.0f);
         sp.scatteringCoeff = glm::vec4(0.02f, 0.04f, 0.06f, 1.0f);
         sp.maxThickness = 15.0f;
@@ -1215,15 +1125,12 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
             sp.maxThickness    = m_WaterMaterial->m_MaxThicknessDistance;
             sp.anisotropy      = m_WaterMaterial->m_Anisotropy;
         }
-        void* data = nullptr;
-        vkMapMemory(m_Device->GetLogicDevice(), m_SSSParamsMemory, 0, sizeof(SSSParams), 0, &data);
-        std::memcpy(data, &sp, sizeof(SSSParams));
-        vkUnmapMemory(m_Device->GetLogicDevice(), m_SSSParamsMemory);
+        m_SSSParamsBuffer.SetBufferData(&sp, 0, sizeof(SSSParamsGPU));
     }
 }
 
 // ============================================================
-// UpdateWaveSimulation — Compute 生成 Gerstner 波形位移贴图（W-01: 逐 LOD）
+// UpdateWaveSimulation 鈥?Compute 鐢熸垚 Gerstner 娉㈠舰浣嶇Щ璐村浘锛圵-01: 閫?LOD锛?
 // ============================================================
 void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*deltaTime*/)
 {
@@ -1237,24 +1144,19 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
     const int fftLODCount = std::clamp(
         m_WaterMaterial ? m_WaterMaterial->m_Config.m_Waves.m_FFT.m_LODCount : 4,
         1,
-        std::max(lodLevels, 1));
+        (std::max)(lodLevels, 1));
 
     auto updateGerstnerDispatchParams = [&](int outputBaseLod, int outputLodCount, bool disableSpectrumApprox)
     {
-        if (m_GBufParamsMemory == VK_NULL_HANDLE)
+        if (!m_GBufParamsBufferCreated)
             return;
 
-        WaterGBufferParamsGPU params = {};
-        void* data = nullptr;
-        vkMapMemory(m_Device->GetLogicDevice(), m_GBufParamsMemory, 0, sizeof(WaterGBufferParamsGPU), 0, &data);
-        std::memcpy(&params, data, sizeof(WaterGBufferParamsGPU));
-        params.waveParamsPad[3] = glm::vec4(
+        m_GBufParamsCache.waveParamsPad[3] = glm::vec4(
             float(outputBaseLod),
             float(outputLodCount),
             disableSpectrumApprox ? 1.0f : 0.0f,
             0.0f);
-        std::memcpy(data, &params, sizeof(WaterGBufferParamsGPU));
-        vkUnmapMemory(m_Device->GetLogicDevice(), m_GBufParamsMemory);
+        m_GBufParamsBuffer.SetBufferData(&m_GBufParamsCache, 0, sizeof(WaterGBufferParamsGPU));
     };
 
     auto runGerstner = [&](int outputBaseLod, int outputLodCount, bool disableSpectrumApprox)
@@ -1279,8 +1181,8 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
         beforeCompute.image               = m_WaveDisplacementImage.GetImage();
         beforeCompute.subresourceRange    = {
             VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
-            uint32_t(std::max(outputBaseLod, 0)),
-            uint32_t(std::max(outputLodCount, 0))
+            uint32_t((std::max)(outputBaseLod, 0)),
+            uint32_t((std::max)(outputLodCount, 0))
         };
         cmd.PipelineBarrier(
             m_WaveDisplacementReady ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -1352,7 +1254,7 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
 }
 
 // ============================================================
-// UpdateDetailNormalCompute — N-01: Compute 生成细节法线贴图
+// UpdateDetailNormalCompute 鈥?N-01: Compute 鐢熸垚缁嗚妭娉曠嚎璐村浘
 // ============================================================
 void VansWaterSystem::UpdateDetailNormalCompute(VansVKCommandBuffer& cmd)
 {
@@ -1360,7 +1262,7 @@ void VansWaterSystem::UpdateDetailNormalCompute(VansVKCommandBuffer& cmd)
         m_DetailNormalShader == nullptr || m_DetailNormalSet == VK_NULL_HANDLE)
         return;
 
-    const uint32_t detailLayerCount = uint32_t(std::max(
+    const uint32_t detailLayerCount = uint32_t((std::max)(
         m_WaterLOD ? m_WaterLOD->GetLodLevels() : int(VansWaterLOD::MAX_LOD_COUNT),
         1));
 
@@ -1410,7 +1312,7 @@ void VansWaterSystem::UpdateDetailNormalCompute(VansVKCommandBuffer& cmd)
 }
 
 // ============================================================
-// RenderWaterGBuffer — 设计文档 Pass 7
+// RenderWaterGBuffer 鈥?璁捐鏂囨。 Pass 7
 // ============================================================
 void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateData& globalState)
 {
@@ -1420,13 +1322,13 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
     if (!m_Initialized || !m_DescriptorsReady || !m_WaterLOD || m_WaterLOD->GetPatchCount() == 0)
     {
         if (dbgLog)
-            VANS_LOG_WARN("[WaterGBuffer] EARLY RETURN: init/descReady/patches 条件不满足");
+            VANS_LOG_WARN("[WaterGBuffer] EARLY RETURN: init/descReady/patches not ready");
         return;
     }
     if (m_WaterGBufferShader == nullptr || m_WaterLOD->GetVertexBuffer() == VK_NULL_HANDLE)
     {
         if (dbgLog)
-            VANS_LOG_WARN("[WaterGBuffer] EARLY RETURN: shader/vbuf 为空");
+            VANS_LOG_WARN("[WaterGBuffer] EARLY RETURN: shader or vertex buffer is null");
         return;
     }
 
@@ -1439,11 +1341,11 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
                  << " waterLevel=" << m_WaterLevel);
     }
 
-    // ── 设置顶点输入布局 ──
+    // 鈹€鈹€ 璁剧疆椤剁偣杈撳叆甯冨眬 鈹€鈹€
     globalState.vertexInputBindingDescriptions   = &m_WaterLOD->GetVertexBindings();
     globalState.vertexInputAttributeDescriptions = &m_WaterLOD->GetVertexAttributes();
 
-    // ── Descriptor Set 布局数组：[Set 0: Global, Set 1: WaterGBuf Pass]
+    // 鈹€鈹€ Descriptor Set 甯冨眬鏁扮粍锛歔Set 0: Global, Set 1: WaterGBuf Pass]
     std::vector<VkDescriptorSetLayout> layouts = { m_GlobalLayout, m_GBufPassLayout };
     std::vector<VkDescriptorSet>       sets    = { m_GlobalSet,    m_GBufPassSet    };
 
@@ -1452,7 +1354,7 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
         *m_WaterGBufferShader, 0, sets, {});
     cmd.BindGraphicsPipeline(*m_WaterGBufferShader->GetGraphicsPipeline());
 
-    // ── 绑定共用顶点 / 索引缓冲（来自 VansWaterLOD）─────────────
+    // 鈹€鈹€ 缁戝畾鍏辩敤椤剁偣 / 绱㈠紩缂撳啿锛堟潵鑷?VansWaterLOD锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     VkDeviceSize offset = 0;
     VkBuffer vbuf = m_WaterLOD->GetVertexBuffer();
     VkBuffer ibuf = m_WaterLOD->GetIndexBuffer();
@@ -1462,7 +1364,7 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
     const std::vector<CDLODPatch>& patches = m_WaterLOD->GetPatches();
     uint32_t indexCount = m_WaterLOD->GetIndexCount();
 
-    // ── 逐 Patch 推送常量 + DrawIndexed ──────────────────────
+    // 鈹€鈹€ 閫?Patch 鎺ㄩ€佸父閲?+ DrawIndexed 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     for (auto patchIter = patches.rbegin(); patchIter != patches.rend(); ++patchIter)
     {
         const CDLODPatch& patch = *patchIter;
@@ -1495,7 +1397,7 @@ void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
     if (m_WaterMaterial && !m_WaterMaterial->m_EnableSSR)
         return;
 
-    // ── Water SSR (HZB Ray March) → Reflection ───────────────
+    // 鈹€鈹€ Water SSR (HZB Ray March) 鈫?Reflection 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     if (m_WaterSSRShader != nullptr && m_SSRSet != VK_NULL_HANDLE)
     {
         VkImageMemoryBarrier beforeSSR = {};
@@ -1532,7 +1434,7 @@ void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
 }
 
 // ============================================================
-// EnsureSSRDescriptorSet — HZB 可用时延迟创建 SSR descriptor set
+// EnsureSSRDescriptorSet 鈥?HZB 鍙敤鏃跺欢杩熷垱寤?SSR descriptor set
 // ============================================================
 void VansWaterSystem::EnsureSSRDescriptorSet(VansVKImage* hzbImage)
 {
@@ -1550,43 +1452,37 @@ void VansWaterSystem::EnsureSSRDescriptorSet(VansVKImage* hzbImage)
         m_SSRLayout, sets, 1);
     m_SSRSet = sets[0];
 
-    descMgr->m_ImageDescInfos.push_back({
-        m_SSRSet, WATER_SSR_BINDING_GBUF_NORMAL, 0,
+    descMgr->BeginDescriptorUpdate();
+    descMgr->WriteImageDescriptor(
+        m_SSRSet, WATER_SSR_BINDING_GBUF_NORMAL,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        { { rp->GetWaterGBufNormal().GetSampler(), rp->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-    });
-    descMgr->m_ImageDescInfos.push_back({
-        m_SSRSet, WATER_SSR_BINDING_GBUF_DEPTH, 0,
+        { { rp->GetWaterGBufNormal().GetSampler(), rp->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+    descMgr->WriteImageDescriptor(
+        m_SSRSet, WATER_SSR_BINDING_GBUF_DEPTH,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        { { rp->GetWaterGBufLinearDepth().GetSampler(), rp->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-    });
-    descMgr->m_ImageDescInfos.push_back({
-        m_SSRSet, WATER_SSR_BINDING_SCENE_HZB, 0,
+        { { rp->GetWaterGBufLinearDepth().GetSampler(), rp->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+    descMgr->WriteImageDescriptor(
+        m_SSRSet, WATER_SSR_BINDING_SCENE_HZB,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        { { hzbImage->GetSampler(), hzbImage->GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-    });
-    descMgr->m_ImageDescInfos.push_back({
-        m_SSRSet, WATER_SSR_BINDING_SCENE_GBUF2, 0,
+        { { hzbImage->GetSampler(), hzbImage->GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+    descMgr->WriteImageDescriptor(
+        m_SSRSet, WATER_SSR_BINDING_SCENE_GBUF2,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        { { rp->GetGbuffer2().GetSampler(), rp->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-    });
-    descMgr->m_ImageDescInfos.push_back({
-        m_SSRSet, WATER_SSR_BINDING_SCENE_COLOR, 0,
+        { { rp->GetGbuffer2().GetSampler(), rp->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+    descMgr->WriteImageDescriptor(
+        m_SSRSet, WATER_SSR_BINDING_SCENE_COLOR,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        { { rp->GetColor().GetSampler(), rp->GetColor().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-    });
-    descMgr->m_BufferDescInfos.push_back({
-        m_SSRSet, WATER_SSR_BINDING_PARAMS, 0,
+        { { rp->GetColor().GetSampler(), rp->GetColor().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+    descMgr->WriteBufferDescriptor(
+        m_SSRSet, WATER_SSR_BINDING_PARAMS,
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        { { m_SSRParamsBuffer, 0, 256 } }
-    });
-    descMgr->m_ImageDescInfos.push_back({
-        m_SSRSet, WATER_SSR_BINDING_REFLECTION_OUT, 0,
+        { { GetNativeBuffer(m_SSRParamsBuffer, m_SSRParamsBufferCreated), 0, SSR_PARAMS_BUFFER_SIZE } });
+    descMgr->WriteImageDescriptor(
+        m_SSRSet, WATER_SSR_BINDING_REFLECTION_OUT,
         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } }
-    });
+        { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 
-    descMgr->UpdateDescriptorSets();
+    descMgr->CommitDescriptorUpdates();
     VANS_LOG("[VansWaterSystem] SSR descriptor set created with HZB.");
 }
 
@@ -1602,7 +1498,7 @@ void VansWaterSystem::DispatchRefractionCS(VansVKCommandBuffer& cmd)
     if (m_WaterRefractionShader == nullptr || m_RefractionSet == VK_NULL_HANDLE)
         return;
 
-    // Barrier: refraction image → compute write
+    // Barrier: refraction image 鈫?compute write
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1628,7 +1524,7 @@ void VansWaterSystem::DispatchRefractionCS(VansVKCommandBuffer& cmd)
         1,
         { m_RefractionSet });
 
-    // Barrier: refraction image → fragment read (for composite pass)
+    // Barrier: refraction image 鈫?fragment read (for composite pass)
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1656,7 +1552,7 @@ void VansWaterSystem::DispatchCausticsCS(VansVKCommandBuffer& cmd)
 
     if (m_WaterCausticsShader == nullptr || m_CausticsSet == VK_NULL_HANDLE) return;
 
-    // Barrier: caustics image → compute write
+    // Barrier: caustics image 鈫?compute write
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1681,7 +1577,7 @@ void VansWaterSystem::DispatchCausticsCS(VansVKCommandBuffer& cmd)
         (m_RenderHeight + 7u) / 8u,
         1, { m_CausticsSet });
 
-    // Barrier: caustics image → fragment read
+    // Barrier: caustics image 鈫?fragment read
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1699,7 +1595,7 @@ void VansWaterSystem::DispatchCausticsCS(VansVKCommandBuffer& cmd)
 }
 
 // ============================================================
-// DispatchWaterThicknessCS — W-16 阶段1: 厚度图（设计文档 §3.2）
+// DispatchWaterThicknessCS 鈥?W-16 闃舵1: 鍘氬害鍥撅紙璁捐鏂囨。 搂3.2锛?
 // ============================================================
 void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
 {
@@ -1713,7 +1609,7 @@ void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
     if (m_WaterThicknessShader == nullptr || m_ThicknessSet == VK_NULL_HANDLE)
         return;
 
-    // Barrier: thickness image → compute write
+    // Barrier: thickness image 鈫?compute write
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1738,7 +1634,7 @@ void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
         (m_RenderHeight + 7u) / 8u,
         1, { m_ThicknessSet });
 
-    // Barrier: thickness image → fragment/compute read (for SSS scatter + composite)
+    // Barrier: thickness image 鈫?fragment/compute read (for SSS scatter + composite)
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1758,7 +1654,7 @@ void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
 }
 
 // ============================================================
-// DispatchWaterSSSScatterCS — W-16 阶段2: SSS 单次散射（设计文档 §3.3）
+// DispatchWaterSSSScatterCS 鈥?W-16 闃舵2: SSS 鍗曟鏁ｅ皠锛堣璁℃枃妗?搂3.3锛?
 // ============================================================
 void VansWaterSystem::DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd)
 {
@@ -1772,7 +1668,7 @@ void VansWaterSystem::DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd)
     if (m_WaterSSSScatterShader == nullptr || m_SSSScatterSet == VK_NULL_HANDLE)
         return;
 
-    // Barrier: SSS scatter image → compute write
+    // Barrier: SSS scatter image 鈫?compute write
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1797,7 +1693,7 @@ void VansWaterSystem::DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd)
         (m_RenderHeight + 7u) / 8u,
         1, { m_SSSScatterSet });
 
-    // Barrier: SSS scatter image → fragment read (for composite pass)
+    // Barrier: SSS scatter image 鈫?fragment read (for composite pass)
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1817,7 +1713,7 @@ void VansWaterSystem::DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd)
 }
 
 // ============================================================
-// RenderWaterComposite — 设计文档 Pass 9（全屏 1△ 延迟合成）
+// RenderWaterComposite 鈥?璁捐鏂囨。 Pass 9锛堝叏灞?1鈻?寤惰繜鍚堟垚锛?
 // ============================================================
 void VansWaterSystem::RenderWaterComposite(VansVKCommandBuffer& cmd, GlobalStateData& globalState)
 {

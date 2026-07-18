@@ -1,15 +1,8 @@
 ﻿#include "VansEditorWindow.h"
-#include "../RenderCore/VulkanCore/VansVKDevice.h"
-#include "../RenderCore/VulkanCore/VansGUIVulkanBackEnd.h"
-#include "../RenderCore/VulkanCore/VansVKDescriptorManager.h"
-#include "../RenderCore/VulkanCore/VansMesh.h"
-#include "../RenderCore/VulkanCore/VansTexture.h"
 #include "../RenderCore/VansCamera.h"
-#include "../RenderCore/VansMaterial.h"
-#include "../RenderCore/VansScene.h"
-#include "../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../VansTimer.h"
-#include "../PhysicsCore/VansPhysics.h"
+#include "../EngineAPILayer/Private/EngineAPIImpl.h"
+#include "VansAssetDocumentEditService.h"
 #include "Windows/VansHierachyWindow.h"
 #include "Windows/VansLightWindow.h"
 #include "Windows/VansProjectWindow.h"
@@ -31,11 +24,10 @@
 #include "../Util/VansJobSystem.h"
 #include "../Util/VansInputManager.h"
 #include "../Util/VansLog.h"
-#include "../VansFramePhase.h"
+#include "../RuntimeCore/VansFramePhase.h"
 
-#include "../ProjectSystem/VansProjectManager.h"
-#include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/VansAssetGuid.h"
+#include "Windows/VansProjectSelector.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSaveService.h"
 #include "VansAssetDocumentRegistry.h"
@@ -45,24 +37,20 @@
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
-#include "backends/imgui_impl_vulkan.h"
 
 #include <iostream>
 #include <string>
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
-#include <fstream>
-#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 
-#ifdef _DEBUG
-VansFramePhase g_CurrentFramePhase = VansFramePhase::GameLogic;
-#endif
 
 namespace
 {
+    Vans::EditorAPI::EngineAPIImpl& GetMutableEditorAPI();
+
     template <typename T>
     T* AddEditorWindowComponent(std::vector<std::unique_ptr<VansGraphics::VansBaseWindowComponent>>& windows)
     {
@@ -74,16 +62,20 @@ namespace
 
     void ApplyProjectTimeSettings()
     {
-        auto& projectManager = Vans::VansProjectManager::Get();
-        if (!projectManager.IsProjectLoaded())
-        {
+        auto& editorAPI = GetMutableEditorAPI();
+        const float physicsDeltaTime = editorAPI.GetProjectPhysicsFixedTimeStep();
+        if (physicsDeltaTime <= 0.0f)
             return;
-        }
 
-        const float physicsDeltaTime = projectManager.GetProjectSettings().GetFixedTimeStep();
         VansGraphics::VansTimer::SetPhysicsDeltaTime(static_cast<double>(physicsDeltaTime));
-        VansEngine::VansPhysicsSystem::GetInstance().SetFixedTimeStep(physicsDeltaTime);
+        editorAPI.SetRuntimePhysicsFixedTimeStep(physicsDeltaTime);
         VANS_LOG("[Editor] Applied project physics delta time: " << physicsDeltaTime << "s");
+    }
+
+    Vans::EditorAPI::EngineAPIImpl& GetMutableEditorAPI()
+    {
+        static Vans::EditorAPI::EngineAPIImpl editorAPI;
+        return editorAPI;
     }
 
     std::string SafeAssetName(std::string value)
@@ -103,441 +95,6 @@ namespace
         if (value.size() > 96)
             value.resize(96);
         return value;
-    }
-
-    std::string SanitizeJsonText(std::string value)
-    {
-        for (char& c : value)
-        {
-            const unsigned char uc = static_cast<unsigned char>(c);
-            if (uc < 0x20 || uc >= 0x7f)
-                c = '_';
-        }
-        return value;
-    }
-
-    Vans::SceneJson Vec3Json(const glm::vec3& value)
-    {
-        return Vans::SceneJson::array({ value.x, value.y, value.z });
-    }
-
-    Vans::VansAssetGuid ReadOrCreateMetaGuid(const std::filesystem::path& metaPath)
-    {
-        std::ifstream input(metaPath);
-        if (input)
-        {
-            const auto meta = Vans::SceneJson::parse(input, nullptr, false);
-            if (!meta.is_discarded() && meta.is_object() && meta.contains("guid") && meta["guid"].is_string())
-            {
-                Vans::VansAssetGuid parsed;
-                if (Vans::VansAssetGuid::TryParse(meta["guid"].get<std::string>(), parsed))
-                    return parsed;
-            }
-        }
-        return Vans::VansAssetGuid::New();
-    }
-
-    bool WriteJsonFile(const std::filesystem::path& path, const Vans::SceneJson& json)
-    {
-        std::error_code ec;
-        std::filesystem::create_directories(path.parent_path(), ec);
-        std::ofstream output(path, std::ios::binary | std::ios::trunc);
-        if (!output)
-            return false;
-        output << json.dump(4);
-        return static_cast<bool>(output);
-    }
-
-    bool IsGuidString(const std::string& value)
-    {
-        Vans::VansAssetGuid parsed;
-        return Vans::VansAssetGuid::TryParse(value, parsed);
-    }
-
-    std::string LowerAscii(std::string value)
-    {
-        std::transform(value.begin(), value.end(), value.begin(),
-            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return value;
-    }
-
-    std::string ResolveRuntimeTextureGuid(
-        const std::string& textureName,
-        Vans::VansAssetDatabase* database,
-        const std::string& rootName)
-    {
-        if (textureName.empty())
-            return {};
-        if (IsGuidString(textureName))
-            return textureName;
-        if (database == nullptr)
-            return {};
-
-        const std::string wanted = LowerAscii(std::filesystem::path(textureName).stem().string());
-        const std::string rootToken = LowerAscii(SafeAssetName(rootName));
-        std::string fallbackGuid;
-        for (const Vans::VansAssetRecord& record : database->All())
-        {
-            if (record.type != Vans::VansAssetType::Texture || record.state == Vans::VansAssetState::Missing)
-                continue;
-            const std::string recordStem = LowerAscii(record.sourcePath.stem().string());
-            const std::string recordFile = LowerAscii(record.sourcePath.filename().string());
-            if (recordStem != wanted && recordFile != LowerAscii(textureName))
-                continue;
-
-            if (fallbackGuid.empty())
-                fallbackGuid = record.guid.ToString();
-            const std::string recordPath = LowerAscii(record.sourcePath.generic_string());
-            if (!rootToken.empty() && recordPath.find(rootToken) != std::string::npos)
-                return record.guid.ToString();
-        }
-        return fallbackGuid;
-    }
-
-    std::string ResolveRuntimeTextureGuid(
-        VansGraphics::VansTexture* texture,
-        Vans::VansAssetDatabase* database,
-        const std::string& rootName)
-    {
-        return texture ? ResolveRuntimeTextureGuid(texture->m_AssetName, database, rootName) : std::string{};
-    }
-
-    bool IsDefaultRuntimeTextureName(const std::string& textureName)
-    {
-        const std::string lowered = LowerAscii(std::filesystem::path(textureName).stem().string());
-        return lowered == "defaultalbedo" ||
-               lowered == "defaultnormal" ||
-               lowered == "defaultmetal" ||
-               lowered == "defaultroughness" ||
-               lowered == "defaultao";
-    }
-
-    void AddTextureRefIfResolvable(
-        Vans::SceneJson& textures,
-        const char* slot,
-        VansGraphics::VansTexture* texture,
-        Vans::VansAssetDatabase* database,
-        const std::string& rootName)
-    {
-        const std::string textureGuid = ResolveRuntimeTextureGuid(texture, database, rootName);
-        if (!textureGuid.empty())
-            textures[slot] = { { "guid", textureGuid } };
-    }
-
-    void AddTextureRefFromPathIfResolvable(
-        Vans::SceneJson& textures,
-        const char* slot,
-        const std::string& texturePath,
-        Vans::VansAssetDatabase* database,
-        const std::string& rootName)
-    {
-        const std::string textureGuid = ResolveRuntimeTextureGuid(texturePath, database, rootName);
-        if (!textureGuid.empty())
-            textures[slot] = { { "guid", textureGuid } };
-    }
-
-    Vans::SceneJson SerializeFbxMaterialInfo(
-        const VansGraphics::FBXSubmeshMaterialInfo& fbxInfo,
-        Vans::VansAssetDatabase* database,
-        const std::string& rootName)
-    {
-        Vans::SceneJson json;
-        json["schemaVersion"] = 1u;
-
-        if (fbxInfo.IsTransparent())
-        {
-            json["materialType"] = "transparent";
-            json["parameters"] = Vans::SceneJson::object();
-            json["textures"] = Vans::SceneJson::array();
-
-            auto addTransparentTexture = [&](const char* slot, const std::string& texturePath)
-            {
-                const std::string textureGuid = ResolveRuntimeTextureGuid(texturePath, database, rootName);
-                if (textureGuid.empty())
-                    return;
-                json["textures"].push_back({
-                    { "slot", slot },
-                    { "texture", { { "guid", textureGuid } } }
-                });
-            };
-
-            addTransparentTexture("diffuse", fbxInfo.diffuseTexPath);
-            addTransparentTexture("opacity", fbxInfo.opacityTexPath);
-            return json;
-        }
-
-        json["materialType"] = "pbr";
-        json["parameters"] = {
-            { "albedo", Vans::SceneJson::array({
-                fbxInfo.diffuseColor[0],
-                fbxInfo.diffuseColor[1],
-                fbxInfo.diffuseColor[2] }) },
-            { "metallic", fbxInfo.metallic },
-            { "roughness", fbxInfo.roughness },
-            { "ao", 1.0f }
-        };
-
-        Vans::SceneJson textures = Vans::SceneJson::object();
-        AddTextureRefFromPathIfResolvable(textures, "basecolor", fbxInfo.diffuseTexPath, database, rootName);
-        AddTextureRefFromPathIfResolvable(textures, "normal", fbxInfo.normalTexPath, database, rootName);
-        AddTextureRefFromPathIfResolvable(textures, "metal", fbxInfo.metallicTexPath, database, rootName);
-        AddTextureRefFromPathIfResolvable(textures, "roughness", fbxInfo.roughnessTexPath, database, rootName);
-        AddTextureRefFromPathIfResolvable(textures, "ao", fbxInfo.aoTexPath, database, rootName);
-        json["textures"] = std::move(textures);
-        return json;
-    }
-
-    Vans::SceneJson SerializeRuntimeMaterial(
-        VansGraphics::VansMaterial* material,
-        Vans::VansAssetDatabase* database,
-        const std::string& rootName)
-    {
-        Vans::SceneJson json;
-        json["schemaVersion"] = 1u;
-
-        if (auto* pbr = dynamic_cast<VansGraphics::VansPBRMaterial*>(material))
-        {
-            json["materialType"] = "pbr";
-            json["parameters"] = {
-                { "albedo", Vec3Json(pbr->m_BasePBRParam.m_albedo) },
-                { "metallic", pbr->m_BasePBRParam.m_metallic },
-                { "roughness", pbr->m_BasePBRParam.m_roughness },
-                { "ao", pbr->m_BasePBRParam.m_ao }
-            };
-            Vans::SceneJson textures = Vans::SceneJson::object();
-            AddTextureRefIfResolvable(textures, "basecolor", pbr->m_BaseColorTexture, database, rootName);
-            AddTextureRefIfResolvable(textures, "normal", pbr->m_NormalTexture, database, rootName);
-            AddTextureRefIfResolvable(textures, "metal", pbr->m_MetalTexture, database, rootName);
-            AddTextureRefIfResolvable(textures, "roughness", pbr->m_RoughnessTexture, database, rootName);
-            AddTextureRefIfResolvable(textures, "ao", pbr->m_AoTexture, database, rootName);
-            json["textures"] = std::move(textures);
-            return json;
-        }
-
-        if (auto* transparent = dynamic_cast<VansGraphics::VansTransparentMaterial*>(material))
-        {
-            json["materialType"] = "transparent";
-            json["parameters"] = Vans::SceneJson::object();
-            json["textures"] = Vans::SceneJson::array();
-            const size_t textureCount = std::max(
-                transparent->m_TransparentTextures.size(),
-                transparent->m_TransparentTextureMap.size());
-            for (size_t index = 0; index < textureCount; ++index)
-            {
-                const std::string slot = index < transparent->m_TransparentTextureMap.size()
-                    ? transparent->m_TransparentTextureMap[index].first
-                    : "texture_" + std::to_string(index);
-                std::string textureName = index < transparent->m_TransparentTextureMap.size()
-                    ? transparent->m_TransparentTextureMap[index].second
-                    : std::string{};
-                if (textureName.empty() && index < transparent->m_TransparentTextures.size()
-                    && transparent->m_TransparentTextures[index] != nullptr)
-                {
-                    textureName = transparent->m_TransparentTextures[index]->m_AssetName;
-                }
-                if (textureName.empty())
-                    continue;
-
-                Vans::SceneJson textureEntry = { { "slot", slot } };
-                const std::string textureGuid = ResolveRuntimeTextureGuid(textureName, database, rootName);
-                if (!textureGuid.empty())
-                {
-                    textureEntry["texture"] = { { "guid", textureGuid } };
-                    json["textures"].push_back(std::move(textureEntry));
-                }
-            }
-            return json;
-        }
-
-        json["materialType"] = "pbr";
-        json["parameters"] = {
-            { "albedo", Vans::SceneJson::array({ 1.0f, 1.0f, 1.0f }) },
-            { "metallic", 0.0f },
-            { "roughness", 0.5f },
-            { "ao", 1.0f }
-        };
-        json["textures"] = Vans::SceneJson::object();
-        return json;
-    }
-
-    bool HasTextureSlot(const Vans::SceneJson& materialJson, const std::string& slot)
-    {
-        const auto texturesIt = materialJson.find("textures");
-        if (texturesIt == materialJson.end())
-            return false;
-
-        if (texturesIt->is_object())
-            return texturesIt->contains(slot);
-
-        if (texturesIt->is_array())
-        {
-            for (const auto& entry : *texturesIt)
-            {
-                if (entry.is_object() && entry.value("slot", "") == slot)
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    void AddRuntimeBaseColorFallback(
-        Vans::SceneJson& materialJson,
-        VansGraphics::VansMaterial* material,
-        Vans::VansAssetDatabase* database,
-        const std::string& rootName)
-    {
-        if (material == nullptr || database == nullptr)
-            return;
-
-        const std::string materialType = materialJson.value("materialType", "pbr");
-        if (materialType == "transparent")
-        {
-            if (HasTextureSlot(materialJson, "diffuse"))
-                return;
-
-            auto* transparent = dynamic_cast<VansGraphics::VansTransparentMaterial*>(material);
-            if (transparent == nullptr)
-                return;
-
-            std::string textureName;
-            for (const auto& [slot, name] : transparent->m_TransparentTextureMap)
-            {
-                if (slot == "diffuse" || slot == "basecolor" || slot == "baseColor")
-                {
-                    textureName = name;
-                    break;
-                }
-            }
-        if (textureName.empty() && !transparent->m_TransparentTextures.empty()
-                && transparent->m_TransparentTextures[0] != nullptr)
-            {
-                textureName = transparent->m_TransparentTextures[0]->m_AssetName;
-            }
-            if (IsDefaultRuntimeTextureName(textureName))
-            {
-                VANS_LOG("[MultiMeshMaterialGen] Skip default transparent diffuse fallback for "
-                    << rootName << " material=" << material->m_AssetName
-                    << " texture=" << textureName);
-                return;
-            }
-
-            const std::string textureGuid = ResolveRuntimeTextureGuid(textureName, database, rootName);
-            if (!textureGuid.empty())
-            {
-                if (!materialJson["textures"].is_array())
-                    materialJson["textures"] = Vans::SceneJson::array();
-                materialJson["textures"].push_back({
-                    { "slot", "diffuse" },
-                    { "texture", { { "guid", textureGuid } } }
-                });
-            }
-            return;
-        }
-
-        if (HasTextureSlot(materialJson, "basecolor"))
-            return;
-
-        auto* pbr = dynamic_cast<VansGraphics::VansPBRMaterial*>(material);
-        if (pbr == nullptr || pbr->m_BaseColorTexture == nullptr)
-            return;
-
-        const std::string runtimeTextureName = pbr->m_BaseColorTexture->m_AssetName;
-        if (IsDefaultRuntimeTextureName(runtimeTextureName))
-        {
-            VANS_LOG("[MultiMeshMaterialGen] Skip default PBR basecolor fallback for "
-                << rootName << " material=" << material->m_AssetName
-                << " texture=" << runtimeTextureName);
-            return;
-        }
-
-        const std::string textureGuid = ResolveRuntimeTextureGuid(pbr->m_BaseColorTexture, database, rootName);
-        if (!textureGuid.empty())
-        {
-            if (!materialJson["textures"].is_object())
-                materialJson["textures"] = Vans::SceneJson::object();
-            materialJson["textures"]["basecolor"] = { { "guid", textureGuid } };
-            VANS_LOG("[MultiMeshMaterialGen] Added runtime basecolor fallback for "
-                << rootName << " material=" << material->m_AssetName
-                << " texture=" << runtimeTextureName
-                << " guid=" << textureGuid);
-        }
-        else
-        {
-            VANS_LOG_WARN("[MultiMeshMaterialGen] Runtime basecolor fallback unresolved for "
-                << rootName << " material=" << material->m_AssetName
-                << " texture=" << runtimeTextureName);
-        }
-    }
-
-    std::string EnsureRuntimeGeneratedMaterialAsset(
-        const std::string& rootName,
-        VansGraphics::VansRenderNode* node,
-        const std::filesystem::path& assetsRoot)
-    {
-        if (node == nullptr || node->m_Material == nullptr)
-            return {};
-
-        const std::string materialName = SafeAssetName(
-            rootName + "_" + node->m_Material->m_AssetName + "_" + std::to_string(node->m_SubmeshIndex));
-        const std::filesystem::path materialDir = assetsRoot / "Generated" / "MultiMeshMaterials" / SafeAssetName(rootName);
-        const std::filesystem::path materialPath = materialDir / (materialName + ".mat");
-        const std::filesystem::path metaPath = materialPath.string() + ".meta";
-        const Vans::VansAssetGuid guid = ReadOrCreateMetaGuid(metaPath);
-
-        Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
-        Vans::SceneJson materialJson;
-        if (node->m_SourceMesh != nullptr &&
-            node->m_SubmeshIndex != UINT32_MAX &&
-            !node->m_SourceMesh->m_SubmeshMaterialInfos.empty())
-        {
-            const auto& materialInfos = node->m_SourceMesh->m_SubmeshMaterialInfos;
-            const VansGraphics::FBXSubmeshMaterialInfo& fbxInfo =
-                node->m_SubmeshIndex < materialInfos.size() ? materialInfos[node->m_SubmeshIndex] : materialInfos[0];
-            materialJson = SerializeFbxMaterialInfo(fbxInfo, database, rootName);
-            AddRuntimeBaseColorFallback(materialJson, node->m_Material, database, rootName);
-            const bool hasBaseColor = HasTextureSlot(materialJson, fbxInfo.IsTransparent() ? "diffuse" : "basecolor");
-            VANS_LOG("[MultiMeshMaterialGen] " << rootName
-                << " submesh=" << node->m_SubmeshIndex
-                << " node=" << (node->m_Mesh ? node->m_Mesh->m_SourceNodeName : std::string{})
-                << " material=" << node->m_Material->m_AssetName
-                << " fbxDiffuse=" << fbxInfo.diffuseTexPath
-                << " runtimeBase="
-                << (dynamic_cast<VansGraphics::VansPBRMaterial*>(node->m_Material) &&
-                    dynamic_cast<VansGraphics::VansPBRMaterial*>(node->m_Material)->m_BaseColorTexture
-                    ? dynamic_cast<VansGraphics::VansPBRMaterial*>(node->m_Material)->m_BaseColorTexture->m_AssetName
-                    : std::string{})
-                << " hasBaseColor=" << (hasBaseColor ? "true" : "false"));
-        }
-        else
-        {
-            materialJson = SerializeRuntimeMaterial(node->m_Material, database, rootName);
-        }
-        materialJson["guid"] = guid.ToString();
-        materialJson["importSource"] = {
-            { "model", rootName },
-            { "sourceNode", SanitizeJsonText(node->m_Mesh ? node->m_Mesh->m_SourceNodeName : std::string{}) },
-            { "sourceMaterial", SanitizeJsonText(node->m_Material->m_AssetName) },
-            { "submeshIndex", node->m_SubmeshIndex },
-            { "generatedFor", "runtimeMultiMeshExpansion" }
-        };
-        if (!WriteJsonFile(materialPath, materialJson))
-            return {};
-
-        Vans::SceneJson metaJson = {
-            { "guid", guid.ToString() },
-            { "importer", "MaterialImporter" },
-            { "version", 1u },
-            { "settings", {
-                { "generatedFrom", rootName },
-                { "generatedFor", "runtimeMultiMeshExpansion" }
-            } },
-            { "subAssets", Vans::SceneJson::object() }
-        };
-        if (!WriteJsonFile(metaPath, metaJson))
-            return {};
-
-        return guid.ToString();
     }
 
     const Vans::SceneJson* FindComponent(const Vans::SceneJson& entity, const std::string& type)
@@ -562,6 +119,42 @@ namespace
                 entity["parent"].get<std::string>() == parentId)
                 return true;
         }
+        return false;
+    }
+
+    bool HasRuntimeMultiMeshExpansionCandidates(const Vans::SceneJson& root)
+    {
+        if (!root.contains("entities") || !root["entities"].is_array())
+            return false;
+
+        for (const auto& entity : root["entities"])
+        {
+            if (!entity.is_object())
+                continue;
+
+            const std::string entityId = entity.value("id", "");
+            if (entityId.empty())
+                continue;
+
+            if (EntityHasChildren(root, entityId))
+                continue;
+
+            if (FindComponent(entity, "MultiMeshRoot") != nullptr)
+                continue;
+
+            const Vans::SceneJson* renderer = FindComponent(entity, "ModelRenderer");
+            if (renderer == nullptr || !renderer->value("enabled", true) || !renderer->contains("data"))
+                continue;
+
+            const Vans::SceneJson& rendererData = (*renderer)["data"];
+            if (!rendererData.value("autoExpandSubmeshes", false))
+                continue;
+
+            const std::string modelGuid = rendererData.value("model", Vans::SceneJson::object()).value("guid", "");
+            if (!modelGuid.empty())
+                return true;
+        }
+
         return false;
     }
 }
@@ -647,9 +240,6 @@ VansGraphics::VansTerrainWindow* VansGraphics::VansEditorWindow::m_TerrainWindow
 
 VansGraphics::VansReflectionProbeWindow* VansGraphics::VansEditorWindow::m_ReflectionProbeWindow;
 
-//脚本上下文
-VansScriptContext VansGraphics::VansEditorWindow::m_ScriptContext;
-
 // Project selector overlay
 std::unique_ptr<Vans::VansProjectSelector> VansGraphics::VansEditorWindow::m_ProjectSelector;
 bool VansGraphics::VansEditorWindow::m_ProjectLoaded = false;
@@ -659,12 +249,14 @@ std::string VansGraphics::VansEditorWindow::m_PendingScenePath;
 VansGraphics::VansEditorPlayState VansGraphics::VansEditorWindow::m_PlayState = VansGraphics::VansEditorPlayState::Editing;
 std::string VansGraphics::VansEditorWindow::m_CurrentLoadedScenePath;
 // 延迟加载模式：默认 Editor
-VansGraphics::VansSceneLoadMode VansGraphics::VansEditorWindow::m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Editor;
+Vans::EditorAPI::RuntimeSceneLoadMode VansGraphics::VansEditorWindow::m_PendingSceneLoadMode = Vans::EditorAPI::RuntimeSceneLoadMode::Editor;
 VansGraphics::VansEditorWindow::VansPendingProjectLoad VansGraphics::VansEditorWindow::m_PendingProjectLoad;
 std::unique_ptr<Vans::VansSceneDocument> VansGraphics::VansEditorWindow::m_SceneDocument;
 std::unique_ptr<Vans::VansSceneEditService> VansGraphics::VansEditorWindow::m_SceneEditService;
 std::unique_ptr<Vans::VansSceneSaveService> VansGraphics::VansEditorWindow::m_SceneSaveService =
     std::make_unique<Vans::VansSceneSaveService>();
+Vans::EditorAPI::IEngineEditorAPI* VansGraphics::VansEditorWindow::m_EditorAPI = nullptr;
+
 Vans::VansSceneDocument* VansGraphics::VansEditorWindow::GetSceneDocument()
 {
     return m_SceneDocument.get();
@@ -675,11 +267,16 @@ Vans::VansSceneEditService* VansGraphics::VansEditorWindow::GetSceneEditService(
     return m_SceneEditService.get();
 }
 
+Vans::EditorAPI::IEngineEditorAPI* VansGraphics::VansEditorWindow::GetEditorAPI()
+{
+    return m_EditorAPI;
+}
+
 void VansGraphics::VansEditorWindow::ReloadCurrentSceneForEditing()
 {
 	if (m_PlayState != VansEditorPlayState::Editing || m_CurrentLoadedScenePath.empty())
 		return;
-	m_PendingSceneLoadMode = VansSceneLoadMode::Editor;
+	m_PendingSceneLoadMode = Vans::EditorAPI::RuntimeSceneLoadMode::Editor;
 	m_PendingScenePath = m_CurrentLoadedScenePath;
 }
 
@@ -687,20 +284,23 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
 {
     if (m_PlayState != VansEditorPlayState::Editing || !m_PendingScenePath.empty())
         return;
-    if (!m_Scene || !m_Scene->IsSceneReady() || !m_SceneDocument || !m_SceneEditService || !m_SceneSaveService)
+    auto& editorAPI = GetMutableEditorAPI();
+    if (!editorAPI.IsRuntimeSceneReady() || !m_SceneDocument || !m_SceneEditService || !m_SceneSaveService)
         return;
-    auto& projectManager = Vans::VansProjectManager::Get();
-    auto* database = projectManager.GetAssetDatabase();
-    if (database == nullptr)
-        return;
-
     const Vans::SceneJson& root = m_SceneDocument->Root();
     if (!root.contains("entities") || !root["entities"].is_array())
         return;
 
+    if (!HasRuntimeMultiMeshExpansionCandidates(root))
+        return;
+
     Vans::SceneJson newEntities = root["entities"];
     bool changed = false;
-    const auto& groups = m_Scene->GetMultiMeshGroups();
+    const auto groups = editorAPI.BuildRuntimeMultiMeshExpansionSnapshot();
+    std::unordered_map<std::string, const Vans::EditorAPI::RuntimeMultiMeshGroupSnapshot*> groupsByName;
+    groupsByName.reserve(groups.size());
+    for (const auto& group : groups)
+        groupsByName[group.parentName] = &group;
 
     for (auto& entity : newEntities)
     {
@@ -728,44 +328,35 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
         if (modelGuid.empty())
             continue;
 
-        auto groupIt = groups.find(entityName);
-        if (groupIt == groups.end())
+        auto groupIt = groupsByName.find(entityName);
+        if (groupIt == groupsByName.end())
             continue;
-        const MultiMeshGroup& group = groupIt->second;
-        if (group.childNodes.empty() || group.sourceMesh == nullptr)
+        const Vans::EditorAPI::RuntimeMultiMeshGroupSnapshot& group = *groupIt->second;
+        if (group.children.empty())
             continue;
 
         Vans::SceneJson childEntities = Vans::SceneJson::array();
-        bool entityExpansionFailed = false;
         std::unordered_set<std::string> usedSlotNames;
-        for (VansRenderNode* childNode : group.childNodes)
+        for (const auto& childSnapshot : group.children)
         {
-            if (childNode == nullptr || childNode->m_SubmeshIndex == UINT32_MAX)
+            if (childSnapshot.materialGuid.empty())
                 continue;
 
-            const std::string sourceNode = SanitizeJsonText(childNode->m_Mesh ? childNode->m_Mesh->m_SourceNodeName : std::string{});
-            const std::string sourceMaterial = SanitizeJsonText(childNode->m_Material ? childNode->m_Material->m_AssetName : std::string{});
+            const std::string& sourceNode = childSnapshot.sourceNode;
+            const std::string& sourceMaterial = childSnapshot.sourceMaterial;
             std::string slotBase = (!sourceNode.empty() || !sourceMaterial.empty())
                 ? sourceNode + "/" + sourceMaterial
-                : "Submesh_" + std::to_string(childNode->m_SubmeshIndex);
+                : "Submesh_" + std::to_string(childSnapshot.submeshIndex);
             if (slotBase == "/")
-                slotBase = "Submesh_" + std::to_string(childNode->m_SubmeshIndex);
+                slotBase = "Submesh_" + std::to_string(childSnapshot.submeshIndex);
             std::string slotName = slotBase;
             uint32_t slotSuffix = 1;
             while (!usedSlotNames.insert(slotName).second)
                 slotName = slotBase + "_" + std::to_string(slotSuffix++);
 
-            const std::string materialGuid = EnsureRuntimeGeneratedMaterialAsset(
-                entityName, childNode, database->AssetsRoot());
-            if (materialGuid.empty())
-            {
-                entityExpansionFailed = true;
-                break;
-            }
-
             const std::string childName = entityName + "_" + SafeAssetName(sourceNode.empty()
-                ? "Submesh_" + std::to_string(childNode->m_SubmeshIndex)
-                : sourceNode) + "_" + std::to_string(childNode->m_SubmeshIndex);
+                ? "Submesh_" + std::to_string(childSnapshot.submeshIndex)
+                : sourceNode) + "_" + std::to_string(childSnapshot.submeshIndex);
 
             Vans::SceneJson child = {
                 { "id", Vans::VansAssetGuid::New().ToString() },
@@ -791,7 +382,7 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
                         { "data", {
                             { "model", { { "guid", modelGuid } } },
                             { "submesh", {
-                                { "index", childNode->m_SubmeshIndex },
+                                { "index", childSnapshot.submeshIndex },
                                 { "sourceNode", sourceNode },
                                 { "sourceMaterial", sourceMaterial },
                                 { "slotName", slotName }
@@ -800,7 +391,7 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
                             { "receiveShadows", rendererData.value("receiveShadows", true) },
                             { "rayTracingMode", rendererData.value("rayTracingMode", "auto") },
                             { "visibilityMask", rendererData.value("visibilityMask", 0xffffffffu) },
-                            { "materialOverrides", { { "default", { { "guid", materialGuid } } } } },
+                            { "materialOverrides", { { "default", { { "guid", childSnapshot.materialGuid } } } } },
                             { "orphanOverrides", Vans::SceneJson::object() },
                             { "renderType", rendererData.value("renderType", "opaque") }
                         } }
@@ -810,7 +401,7 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
             childEntities.push_back(std::move(child));
         }
 
-        if (entityExpansionFailed || childEntities.empty())
+        if (childEntities.empty())
             continue;
 
         Vans::SceneJson components = Vans::SceneJson::array();
@@ -859,8 +450,7 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
         return;
     }
 
-    if (database)
-        database->Scan();
+    editorAPI.ScanProjectAssets();
 
     const Vans::SceneSaveResult saveResult = m_SceneSaveService->Save(*m_SceneDocument);
     if (!saveResult)
@@ -910,15 +500,7 @@ bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int heigh
     });
 
     // Register Physics Pre-Step Callback for Vehicle
-    VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback([](float dt) {
-        if (m_Scene && m_Scene->m_Vehicle)
-        {
-            // This runs on the physics thread!
-            // Thread safety note: ensure m_Scene->m_Vehicle is not deleted while this runs.
-            // Since shutdown stops physics first, this should be safe.
-            m_Scene->m_Vehicle->Step(dt);
-        }
-    });
+    GetMutableEditorAPI().InstallRuntimeVehiclePhysicsStepCallback();
 
     //创建功能窗口
     CreateWindowComponents();
@@ -951,7 +533,7 @@ void VansGraphics::VansEditorWindow::OnPlay()
     // Play = 卸载当前场景，以 Runtime 模式重新加载
     // 时间解冻、物理启动均在场景加载完成后（延迟块中）执行
     VANS_LOG("[Editor] Play: reloading scene in Runtime mode: " << m_CurrentLoadedScenePath);
-    m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Runtime;
+    m_PendingSceneLoadMode = Vans::EditorAPI::RuntimeSceneLoadMode::Runtime;
     m_PendingScenePath     = m_CurrentLoadedScenePath;
 }
 
@@ -964,9 +546,10 @@ void VansGraphics::VansEditorWindow::OnPause()
     VansTimer::SetTimePaused(true);
 
     // 暂停物理（线程仍存活，仅冻结步进）
-    VansEngine::VansPhysicsSystem::GetInstance().PauseSimulation();
+    GetMutableEditorAPI().PauseRuntimePhysics();
 
     m_PlayState = VansEditorPlayState::Paused;
+    GetMutableEditorAPI().SetPlayState(Vans::EditorAPI::EnginePlayState::Pause);
     VANS_LOG("[Editor] Scene paused");
 }
 
@@ -979,9 +562,10 @@ void VansGraphics::VansEditorWindow::OnResume()
     VansTimer::SetTimePaused(false);
 
     // 恢复物理步进
-    VansEngine::VansPhysicsSystem::GetInstance().ResumeSimulation();
+    GetMutableEditorAPI().ResumeRuntimePhysics();
 
     m_PlayState = VansEditorPlayState::Playing;
+    GetMutableEditorAPI().SetPlayState(Vans::EditorAPI::EnginePlayState::Play);
     VANS_LOG("[Editor] Scene resumed");
 }
 
@@ -994,14 +578,15 @@ void VansGraphics::VansEditorWindow::OnStop()
     VansTimer::SetTimePaused(true);
 
     // 暂停物理（重载时无需模拟）
-    VansEngine::VansPhysicsSystem::GetInstance().PauseSimulation();
+    GetMutableEditorAPI().PauseRuntimePhysics();
 
     // 提前切回编辑模式，避免重载期间触发脚本 Update
     m_PlayState = VansEditorPlayState::Editing;
+    GetMutableEditorAPI().SetPlayState(Vans::EditorAPI::EnginePlayState::Edit);
 
     // Stop = 卸载场景，以 Editor 模式重新加载
     VANS_LOG("[Editor] Stop: reloading scene in Editor mode: " << m_CurrentLoadedScenePath);
-    m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Editor;
+    m_PendingSceneLoadMode = Vans::EditorAPI::RuntimeSceneLoadMode::Editor;
     m_PendingScenePath     = m_CurrentLoadedScenePath;
 }
 
@@ -1014,7 +599,8 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
     // 此函数在 BeginMenuBar() 内被调用，直接向菜单栏追加控件。
     // 三个按钮始终同时显示，根据当前状态决定各自是否可点击。
 
-    const bool sceneReady = (m_Scene && m_Scene->IsSceneReady() && !m_Scene->IsSceneSwitching());
+    auto& editorAPI = GetMutableEditorAPI();
+    const bool sceneReady = editorAPI.IsRuntimeSceneReady() && !editorAPI.IsRuntimeSceneSwitching();
 
     constexpr float BUTTON_WIDTH   = 62.0f;
     constexpr float BUTTON_HEIGHT  = 18.0f;
@@ -1188,15 +774,20 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
         return;
     }
 
-    auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
     VANS_LOG("[Editor] Loading deferred scene: " << m_PendingScenePath
-             << " [mode=" << (m_PendingSceneLoadMode == VansGraphics::VansSceneLoadMode::Editor ? "Editor" : "Runtime") << "]");
-    m_Scene->LoadSceneForRendering(m_PendingScenePath.c_str(), vkDev, m_PendingSceneLoadMode);
+             << " [mode=" << (m_PendingSceneLoadMode == Vans::EditorAPI::RuntimeSceneLoadMode::Editor ? "Editor" : "Runtime") << "]");
+    auto& editorAPI = GetMutableEditorAPI();
+    if (!editorAPI.LoadRuntimeScene(m_PendingScenePath, m_PendingSceneLoadMode))
+    {
+        VANS_LOG_ERROR("[Editor] Runtime scene load request failed: " << m_PendingScenePath);
+        m_PendingScenePath.clear();
+        return;
+    }
 
     // 记录当前已加载场景路径（用于 Play/Stop 时重载）
     m_CurrentLoadedScenePath = m_PendingScenePath;
 
-    if (m_PendingSceneLoadMode == VansGraphics::VansSceneLoadMode::Editor)
+    if (m_PendingSceneLoadMode == Vans::EditorAPI::RuntimeSceneLoadMode::Editor)
     {
 		auto loadResult = Vans::VansSceneDocumentLoader::Load(m_PendingScenePath);
 		if (loadResult)
@@ -1217,6 +808,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
         RegisterCameraInputListeners();
         VansTimer::SetTimePaused(true);
         m_PlayState = VansEditorPlayState::Editing;
+        editorAPI.SetPlayState(Vans::EditorAPI::EnginePlayState::Edit);
     }
     else
     {
@@ -1224,23 +816,14 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
         // Play 模式下相机由 Python 脚本接管，注销 Editor 相机控制监听器
         UnregisterCameraInputListeners();
         VansTimer::SetTimePaused(false);
-        auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
-        if (!physics.IsSimulationRunning())
-            physics.StartSimulation();
-        else
-            physics.ResumeSimulation();
+        GetMutableEditorAPI().StartRuntimePhysicsIfNeeded();
         m_PlayState = VansEditorPlayState::Playing;
+        editorAPI.SetPlayState(Vans::EditorAPI::EnginePlayState::Play);
         VANS_LOG("[Editor] Scene started playing (Runtime mode)");
     }
 
     // 更新场景管理器当前场景（尽量使用相对路径）
-    auto& projectMgr = Vans::VansProjectManager::Get();
-    if (projectMgr.IsProjectLoaded())
-    {
-        std::string rel = projectMgr.MakeRelativePath(m_PendingScenePath);
-        if (!rel.empty())
-            projectMgr.GetSceneManager().SetCurrentScene(rel);
-    }
+    GetMutableEditorAPI().SetCurrentProjectScenePath(m_PendingScenePath);
 
     m_PendingScenePath.clear();
 }
@@ -1267,37 +850,23 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
     VansPendingProjectLoad pending = m_PendingProjectLoad;
     m_PendingProjectLoad = {};
 
-    auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
-    auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
-    auto& projectMgr = Vans::VansProjectManager::Get();
-
     VANS_LOG("[Editor] Processing pending project load: " << pending.m_ProjectPath);
 
     VansTimer::SetTimePaused(true);
-    physics.PauseSimulation();
+    GetMutableEditorAPI().PauseRuntimePhysics();
     UnregisterCameraInputListeners();
 
-    if (vkDev)
+    if (m_GraphicsDevice)
     {
-        vkDev->WaitForDevice();
+        m_GraphicsDevice->WaitForIdle();
     }
 
-    if (m_Scene)
-    {
-        if (m_Scene->IsSceneReady() || m_Scene->IsSceneSwitching())
-        {
-            m_Scene->UnLoadScene();
-        }
-        if (m_Scene->AreResourcesLoaded())
-        {
-            m_Scene->UnloadProjectResources(vkDev);
-        }
-    }
+    auto& editorAPI = GetMutableEditorAPI();
+    editorAPI.UnloadRuntimeScene();
+    editorAPI.UnloadRuntimeProjectResources();
 
-    if (projectMgr.IsProjectLoaded())
-    {
-        projectMgr.CloseProject();
-    }
+    editorAPI.CloseProject();
+    Vans::VansAssetDocumentEditService::ClearAllHistories();
     Vans::VansAssetDocumentRegistry::Get().Clear();
 
     m_ProjectLoaded = false;
@@ -1305,21 +874,23 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
 	m_SceneDocument.reset();
     m_CurrentLoadedScenePath.clear();
     m_PendingScenePath.clear();
-    m_PendingSceneLoadMode = VansGraphics::VansSceneLoadMode::Editor;
+    m_PendingSceneLoadMode = Vans::EditorAPI::RuntimeSceneLoadMode::Editor;
 
-    bool loaded = false;
+    Vans::EditorAPI::ProjectOpenRequest projectOpenRequest;
+    projectOpenRequest.projectPath = pending.m_ProjectPath;
+    projectOpenRequest.projectName = pending.m_ProjectName;
+    projectOpenRequest.createNew = pending.m_CreateNew;
     if (pending.m_CreateNew)
     {
         VANS_LOG("[Editor] Creating project '" << pending.m_ProjectName << "' at " << pending.m_ProjectPath);
-        loaded = projectMgr.CreateProject(pending.m_ProjectPath, pending.m_ProjectName);
     }
     else
     {
         VANS_LOG("[Editor] Opening project: " << pending.m_ProjectPath);
-        loaded = projectMgr.OpenProject(pending.m_ProjectPath);
     }
 
-    if (!loaded)
+    const Vans::EditorAPI::ProjectOpenResult projectOpenResult = editorAPI.OpenProject(projectOpenRequest);
+    if (!projectOpenResult.success)
     {
         VANS_LOG_ERROR("[Editor] Pending project load failed: " << pending.m_ProjectPath);
         return;
@@ -1329,31 +900,21 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
     m_ProjectLoaded = true;
     VANS_LOG("[Editor] Project load completed");
 
-    m_ScriptContext.SetupProjectVenv(projectMgr.GetProjectRootPath());
+    editorAPI.SetupRuntimeScriptProjectVenv(projectOpenResult.projectRootPath);
 	Vans::VansEditorSelection::Clear();
 
-    const Vans::VansProjectConfig& projectConfig = projectMgr.GetConfig();
-    if (Vans::VansAssetDatabase* database = projectMgr.GetAssetDatabase())
+    if (!projectOpenResult.defaultScenePath.empty())
     {
-        auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
-        const std::filesystem::path scenePath = std::filesystem::path(projectMgr.GetProjectRootPath()) /
-            projectConfig.defaultScene;
-        if (!m_Scene->LoadProjectAssets(*database, scenePath, vkDev))
+        if (!editorAPI.LoadRuntimeProjectAssetsForScene(projectOpenResult.defaultScenePath))
         {
-            VANS_LOG_ERROR("[Editor] Scene v2 project asset loading failed; scene load cancelled");
+            VANS_LOG_ERROR("[Editor] Scene project asset loading failed; scene load cancelled");
             return;
         }
     }
-    else
-    {
-		VANS_LOG_ERROR("[Editor] Scene v2 project has no AssetDatabase");
-		return;
-    }
 
-    const std::string& defaultScene = projectMgr.GetConfig().defaultScene;
-    if (!defaultScene.empty())
+    if (!projectOpenResult.defaultScenePath.empty())
     {
-        std::string absScenePath = projectMgr.GetProjectRootPath() + defaultScene;
+        const std::string& absScenePath = projectOpenResult.defaultScenePath;
         if (std::filesystem::exists(absScenePath))
         {
             VANS_LOG("[Editor] Deferring default scene load: " << absScenePath);
@@ -1366,10 +927,10 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
     }
 }
 
-void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
+void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 {
     // Start the Dear ImGui frame
-    ImGui_ImplVulkan_NewFrame();
+    m_GUIBackEnd->BeginFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
@@ -1378,7 +939,8 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
     // of the normal editor windows.
     if (!m_ProjectLoaded)
     {
-        auto result = m_ProjectSelector->Render();
+        auto& editorAPI = GetMutableEditorAPI();
+        auto result = m_ProjectSelector->Render(editorAPI);
 
         switch (result)
         {
@@ -1412,9 +974,9 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
         // Render the ImGui frame (project selector only)
         ImGui::Render();
         ImDrawData* draw_data = ImGui::GetDrawData();
-        device->BeginUIRenderPass();
-        ImGui_ImplVulkan_RenderDrawData(draw_data, *static_cast<VkCommandBuffer*>(device->GetNativeCommandBuffer()));
-        device->EndUIRenderPass();
+        device.BeginUIRenderPass();
+        m_GUIBackEnd->RenderDrawData(device, draw_data);
+        device.EndUIRenderPass();
         return;
     }
 
@@ -1465,12 +1027,74 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
 		if (!Vans::VansEditorSelection::AssetPath().empty())
 			selectedAssetDocument = Vans::VansAssetDocumentRegistry::Get().Find(Vans::VansEditorSelection::AssetPath());
 		const bool selectedAssetDirty = editingMode && selectedAssetDocument && selectedAssetDocument->IsDirty();
+		auto& editorAPI = GetMutableEditorAPI();
+		editorAPI.BindGlobalRuntime(&device);
+		m_EditorAPI = &editorAPI;
+		const bool canUndoSceneDocument = m_SceneEditService && m_SceneEditService->CanUndo();
+		const bool canRedoSceneDocument = m_SceneEditService && m_SceneEditService->CanRedo();
+		const bool canUndoAssetDocument = selectedAssetDocument &&
+			Vans::VansAssetDocumentEditService::CanUndo(selectedAssetDocument->sourceDocument);
+		const bool canRedoAssetDocument = selectedAssetDocument &&
+			Vans::VansAssetDocumentEditService::CanRedo(selectedAssetDocument->sourceDocument);
+		const bool canUndoRuntimeCommand = editorAPI.CanUndo();
+		const bool canRedoRuntimeCommand = editorAPI.CanRedo();
+		auto applySelectedAssetRuntimePatch = [&]()
+		{
+			if (!selectedAssetDocument || !selectedAssetDocument->sourceDocument.IsLoaded())
+				return;
+			editorAPI.ApplyRuntimeMaterialAssetPatch(
+				selectedAssetDocument->sourcePath.string(),
+				selectedAssetDocument->sourceDocument.Root().dump(),
+				{});
+		};
+		auto undoEditorChange = [&]()
+		{
+			if (canUndoAssetDocument)
+			{
+				auto result = Vans::VansAssetDocumentEditService::Undo(selectedAssetDocument->sourceDocument);
+				if (result)
+					applySelectedAssetRuntimePatch();
+				else
+					VANS_LOG_ERROR("[AssetEdit] " << result.message);
+				return;
+			}
+			if (canUndoSceneDocument)
+			{
+				auto result = m_SceneEditService->Undo();
+				if (result)
+					ReloadCurrentSceneForEditing();
+				return;
+			}
+			if (editorAPI.CanUndo())
+				editorAPI.Undo();
+		};
+		auto redoEditorChange = [&]()
+		{
+			if (canRedoAssetDocument)
+			{
+				auto result = Vans::VansAssetDocumentEditService::Redo(selectedAssetDocument->sourceDocument);
+				if (result)
+					applySelectedAssetRuntimePatch();
+				else
+					VANS_LOG_ERROR("[AssetEdit] " << result.message);
+				return;
+			}
+			if (canRedoSceneDocument)
+			{
+				auto result = m_SceneEditService->Redo();
+				if (result)
+					ReloadCurrentSceneForEditing();
+				return;
+			}
+			if (editorAPI.CanRedo())
+				editorAPI.Redo();
+		};
 		if (editingMode && !io.WantTextInput && io.KeyCtrl)
 		{
 			if (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S, false))
 			{
 				const Vans::VansAssetSaveResult assetSaveResult =
-					Vans::VansEditorAssetSaveService::Get().SaveAllDirtyAssets();
+					Vans::VansEditorAssetSaveService::Get().SaveAllDirtyAssets(editorAPI);
 				if (!assetSaveResult)
 				{
 					for (const std::string& error : assetSaveResult.errors)
@@ -1485,17 +1109,13 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
 				if (!saveResult) VANS_LOG_ERROR("[SceneSave] " << saveResult.message);
 				else if (saveResult.wroteFile) ReloadCurrentSceneForEditing();
 			}
-			else if (m_SceneEditService && ImGui::IsKeyPressed(ImGuiKey_Z, false))
+			else if ((canUndoAssetDocument || canUndoSceneDocument || canUndoRuntimeCommand) && ImGui::IsKeyPressed(ImGuiKey_Z, false))
 			{
-				auto result = m_SceneEditService->Undo();
-				if (result)
-					ReloadCurrentSceneForEditing();
+				undoEditorChange();
 			}
-			else if (m_SceneEditService && ImGui::IsKeyPressed(ImGuiKey_Y, false))
+			else if ((canRedoAssetDocument || canRedoSceneDocument || canRedoRuntimeCommand) && ImGui::IsKeyPressed(ImGuiKey_Y, false))
 			{
-				auto result = m_SceneEditService->Redo();
-				if (result)
-					ReloadCurrentSceneForEditing();
+				redoEditorChange();
 			}
 		}
 
@@ -1513,7 +1133,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
 				if (ImGui::MenuItem("Save Asset", nullptr, false, selectedAssetDirty))
 				{
 					const Vans::VansAssetSaveResult assetSaveResult =
-						Vans::VansEditorAssetSaveService::Get().SaveAsset(Vans::VansEditorSelection::AssetPath());
+						Vans::VansEditorAssetSaveService::Get().SaveAsset(editorAPI, Vans::VansEditorSelection::AssetPath());
 					if (!assetSaveResult)
 					{
 						for (const std::string& error : assetSaveResult.errors)
@@ -1525,7 +1145,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
 				if (ImGui::MenuItem("Save All Dirty Assets", "Ctrl+Shift+S", false, hasDirtyAssets))
 				{
 					const Vans::VansAssetSaveResult assetSaveResult =
-						Vans::VansEditorAssetSaveService::Get().SaveAllDirtyAssets();
+						Vans::VansEditorAssetSaveService::Get().SaveAllDirtyAssets(editorAPI);
 					if (!assetSaveResult)
 					{
 						for (const std::string& error : assetSaveResult.errors)
@@ -1544,6 +1164,20 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
                     else
                         glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
                 }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Edit"))
+            {
+				if (ImGui::MenuItem("Undo", "Ctrl+Z", false,
+					editingMode && (canUndoAssetDocument || canUndoSceneDocument || canUndoRuntimeCommand)))
+				{
+					undoEditorChange();
+				}
+				if (ImGui::MenuItem("Redo", "Ctrl+Y", false,
+					editingMode && (canRedoAssetDocument || canRedoSceneDocument || canRedoRuntimeCommand)))
+				{
+					redoEditorChange();
+				}
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Window"))
@@ -1590,7 +1224,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
         //绘制所有窗口
         for (const auto& window : m_Windows)
         {
-            window->ShowWindow(*device);
+            window->ShowWindow(editorAPI);
         }
 
         ImGui::End();
@@ -1604,9 +1238,9 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansVKDevice* device)
     ImDrawData* draw_data = ImGui::GetDrawData();
 
     // ImGui 编辑器覆盖层渲染到 swapchain
-    device->BeginUIRenderPass();
-    ImGui_ImplVulkan_RenderDrawData(draw_data, *static_cast<VkCommandBuffer*>(device->GetNativeCommandBuffer()));
-    device->EndUIRenderPass();
+    device.BeginUIRenderPass();
+    m_GUIBackEnd->RenderDrawData(device, draw_data);
+    device.EndUIRenderPass();
 }
 
 void VansGraphics::VansEditorWindow::SetupImGuiStyle()
@@ -1790,17 +1424,13 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
     // Initialize GPU profiler
 #if VANS_PROFILER_ENABLED
-    {
-        auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
-        Vans::VansGpuProfiler::Get().Init(
-            vkDev->GetLogicDevice(),
-            vkDev->GetPhysicalDevice(),
-            vkDev->GetGraphicsQueueFamilyIndex());
-    }
+    m_GraphicsDevice->InitializeGpuProfiler();
 #endif
 
     //初始化脚本环境
-    m_ScriptContext.VansScriptSetup();
+    auto& startupEditorAPI = GetMutableEditorAPI();
+    startupEditorAPI.BindGlobalRuntime(m_GraphicsDevice);
+    startupEditorAPI.InitializeRuntimeScripts();
 
     // Main loop
     while (!glfwWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle))
@@ -1832,8 +1462,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             glfwGetFramebufferSize(m_VansEditorWindow.m_VansGraphicsHandle, &width, &height);
             if (width > 0 && height > 0)
             {
-                auto* vkDevice = static_cast<VansVKDevice*>(m_GraphicsDevice);
-                vkDevice->OnWindowResize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+                m_GraphicsDevice->OnWindowResize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
 
                 // NOTE: internal render resolution is unchanged, so camera aspect ratio
                 // and all SSGI/SSR/GBuffer render targets are unaffected.
@@ -1843,9 +1472,8 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             else
             {
                 // Window minimized — skip rendering this frame
-                auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
                 if (profilerFrameActive)
-                    VANS_PROFILER_END_FRAME(vkDev->GetLogicDevice());
+                    m_GraphicsDevice->EndGpuProfilerFrame();
                 continue;
             }
         }
@@ -1861,14 +1489,14 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             VansGraphics::VansTimer::Update();
         }
 
-        Vans::VansInputManager& input = Vans::VansInputManager::Get();
-    VansEngine::VansPhysicsSystem& physics = VansEngine::VansPhysicsSystem::GetInstance();
+        auto& editorAPI = GetMutableEditorAPI();
+        editorAPI.BindGlobalRuntime(m_GraphicsDevice);
 
+        Vans::VansInputManager& input = Vans::VansInputManager::Get();
         // Step Vehicle Physics - MOVED TO PHYSICS THREAD via Callback
-        if (m_Scene && m_Scene->IsSceneReady() && m_Scene->m_Vehicle)
+        if (editorAPI.IsRuntimeSceneReady())
         {
             VANS_PROFILE_SCOPE("Frame::VehicleInput", Vans::ProfileCategory::Physics);
-            std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
 
             // Vehicle control inputs via InputManager
             const float throttle = input.IsKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f;
@@ -1876,16 +1504,16 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             float steer = 0.0f;
             if (input.IsKeyDown(GLFW_KEY_A)) steer -= 1.0f;
             if (input.IsKeyDown(GLFW_KEY_D)) steer += 1.0f;
-            m_Scene->m_Vehicle->SetInputs(throttle, brake, steer, 0.0f);
+            editorAPI.SetRuntimeVehicleInput(throttle, brake, steer, 0.0f);
         }
 
         // Synchronize rigid-body physics transforms to render transforms.
         // IMPORTANT: This uses PxSceneReadLock internally to prevent race conditions
         // with the background physics simulation thread.
-        if (physics.IsSimulationRunning() && m_Scene && m_Scene->IsSceneReady())
+        if (editorAPI.IsRuntimePhysicsRunning() && editorAPI.IsRuntimeSceneReady())
         {
             VANS_PROFILE_SCOPE("Physics::SyncRigidBodies", Vans::ProfileCategory::Physics);
-            m_Scene->UpdatePhysicsTransforms();
+            editorAPI.SyncRuntimePhysicsTransforms();
         }
 
         // ── Script update BEFORE CCT flush and BEFORE rendering ──────────
@@ -1899,26 +1527,25 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         //                                      (zero-frame lag)
         //   ④ VansScriptUpdateCameraScripts — camera follows refreshed CCT transform
         //   ⑤ camera.Rendering         — render with up-to-date positions
-        m_ScriptContext.SetScene(m_Scene);
-        if (m_Scene && m_Scene->IsSceneReady() && m_PlayState == VansEditorPlayState::Playing)
+        if (editorAPI.IsRuntimeSceneReady() && m_PlayState == VansEditorPlayState::Playing)
         {
             VANS_PROFILE_SCOPE("Script::Update", Vans::ProfileCategory::Script);
-            m_ScriptContext.VansScriptUpdateNonCameraScripts();
+            editorAPI.UpdateRuntimeNonCameraScripts();
         }
 
         // Flush CCT displacements queued by scripts this frame.
-        if (physics.IsSimulationRunning() && m_Scene && m_Scene->IsSceneReady())
+        if (editorAPI.IsRuntimePhysicsRunning() && editorAPI.IsRuntimeSceneReady())
         {
             VANS_PROFILE_SCOPE("Physics::FlushCharacterController", Vans::ProfileCategory::Physics);
-            m_Scene->UpdateCharControllerTransforms();
+            editorAPI.FlushRuntimeCharacterControllerTransforms();
         }
 
         // 相机脚本必须在 CCT 刷新后执行，否则 MainCamera 在场景对象列表中排在角色前面时，
         // 会读取上一帧的角色位置，表现为跟随失效或明显滞后。
-        if (m_Scene && m_Scene->IsSceneReady() && m_PlayState == VansEditorPlayState::Playing)
+        if (editorAPI.IsRuntimeSceneReady() && m_PlayState == VansEditorPlayState::Playing)
         {
             VANS_PROFILE_SCOPE("Script::UpdateCameraScripts", Vans::ProfileCategory::Script);
-            m_ScriptContext.VansScriptUpdateCameraScripts();
+            editorAPI.UpdateRuntimeCameraScripts();
         }
 
         // ── Deferred resource & scene loading ───────────────────────────
@@ -1930,10 +1557,13 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             ProcessPendingProjectLoad();
         }
 
-        // Load Scene v2 content after the AssetDatabase dependency closure.
+        // Load Scene content after the AssetDatabase dependency closure.
         {
             VANS_PROFILE_SCOPE("Resource::ProcessPendingSceneLoad", Vans::ProfileCategory::IO);
             ProcessPendingSceneLoad();
+        }
+        {
+            VANS_PROFILE_SCOPE("Editor::ProcessRuntimeMultiMeshExpansion", Vans::ProfileCategory::IO);
             ProcessRuntimeMultiMeshHierarchyExpansion();
         }
         // Rendering, 这里会结束renderpass
@@ -1943,14 +1573,9 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         }
         //UI Pass
         m_SceneWindow->RegistCamera(&camera);
-        m_SceneWindow->RegistScene(m_Scene);
-        m_InspectorWindow->RegistScene(m_Scene);
-        m_RenderDebugWindow->RegistScene(m_Scene);
-        if (m_ReflectionProbeWindow)
-            m_ReflectionProbeWindow->RegistScene(m_Scene);
         {
             VANS_PROFILE_SCOPE("Editor::DrawWindows", Vans::ProfileCategory::Editor);
-            DrawEditorWindows(static_cast<VansVKDevice*>(m_GraphicsDevice));
+            DrawEditorWindows(*m_GraphicsDevice);
         }
 
         //结束录制
@@ -1977,9 +1602,8 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
         // Profiler 在 Present 之后结束，确保 Submit / Present CPU 耗时被纳入同一帧。
         {
-            auto* vkDev = static_cast<VansVKDevice*>(m_GraphicsDevice);
             if (profilerFrameActive)
-                VANS_PROFILER_END_FRAME(vkDev->GetLogicDevice());
+                m_GraphicsDevice->EndGpuProfilerFrame();
         }
     }
 
@@ -2020,7 +1644,7 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
 #endif
 
     // Unregister Physics Callback on shutdown to avoid calling into destroyed objects
-    VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback(nullptr);
+    GetMutableEditorAPI().ClearRuntimePhysicsStepCallback();
 
     // Shutdown input manager
     Vans::VansInputManager::Get().Shutdown();

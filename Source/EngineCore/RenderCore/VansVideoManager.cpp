@@ -1,9 +1,61 @@
 #include "VansVideoManager.h"
+#include "../SceneCore/VansSceneAssetDependencyBuilder.h"
 #include "../Util/VansLog.h"
 #include <filesystem>
 
 namespace VansGraphics
 {
+
+void VansVideoManager::Load(const std::vector<Vans::VansSceneVideoResourceRequest>& videos,
+                            const std::string& projectRoot,
+                            VansVKDevice* device)
+{
+    if (!device)
+    {
+        VANS_LOG_ERROR("[VansVideoManager] Load failed: device is null");
+        return;
+    }
+
+    for (const auto& entry : videos)
+    {
+        const std::string& name = entry.name;
+        const std::string& relPath = entry.path;
+        const bool loop = entry.loop;
+        const bool autoplay = entry.autoplay;
+        const bool srgb = entry.srgb;
+
+        if (name.empty() || relPath.empty())
+        {
+            VANS_LOG_WARN("[VansVideoManager] name or path is empty, skipped");
+            continue;
+        }
+
+        const std::string absPath = projectRoot + relPath;
+
+        if (!std::filesystem::exists(absPath))
+        {
+            VANS_LOG_ERROR("[VansVideoManager] Video file not found: " << absPath);
+            continue;
+        }
+
+        if (m_Videos.count(name) > 0)
+        {
+            VANS_LOG_WARN("[VansVideoManager] Duplicate video name, replacing: " << name);
+            m_Videos[name]->Close();
+            m_Videos.erase(name);
+        }
+
+        auto videoTex = std::make_unique<VansVideoTexture>();
+        if (!videoTex->Open(device, absPath, loop, autoplay, srgb))
+        {
+            VANS_LOG_ERROR("[VansVideoManager] Failed to open video: " << absPath);
+            continue;
+        }
+
+        VANS_LOG("[VansVideoManager] Loaded video texture: name=" << name << " path=" << absPath);
+        m_Videos.emplace(name, std::move(videoTex));
+    }
+}
 
 // ===========================================================================
 // LoadFromJson — 解析 JSON video_textures 数组并批量打开视频

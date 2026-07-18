@@ -1,0 +1,68 @@
+#pragma once
+
+#include "VansRenderGraph.h"
+
+namespace VansGraphics
+{
+	class VansScene;
+
+	enum class VansRenderPassCondition
+	{
+		Always,
+		HasWater,
+		HasDecal,
+		HasForwardOpaqueAfterDeferred
+	};
+
+	namespace VansRenderPassNames
+	{
+		constexpr const char* VideoTextureUpload = "Video Texture Upload";
+		constexpr const char* ClothVertexUpload = "Cloth Vertex Upload";
+		constexpr const char* VegetationCompute = "Vegetation Compute";
+		constexpr const char* CascadeShadow = "Cascade Shadow";
+		constexpr const char* PunctualShadow = "Punctual Shadow";
+		constexpr const char* HairDeepOpacity = "Hair Deep Opacity";
+		constexpr const char* MotionVector = "Motion Vector";
+		constexpr const char* GBuffer = "GBuffer";
+		constexpr const char* WaterWaveCompute = "Water Wave Compute";
+		constexpr const char* WaterGBuffer = "Water GBuffer";
+		constexpr const char* Decal = "Decal";
+		constexpr const char* TileLightBuild = "Tile Light Build";
+		constexpr const char* HZB = "HZB";
+		constexpr const char* ScreenSpaceShadow = "Screen Space Shadow";
+		constexpr const char* GIData = "GI Data";
+		constexpr const char* SSR = "SSR";
+		constexpr const char* RayTracing = "Ray Tracing";
+		constexpr const char* VolumetricFog = "Volumetric Fog";
+		constexpr const char* CloudRayMarch = "Cloud Ray March";
+		constexpr const char* ExposureBloom = "Exposure Bloom";
+		constexpr const char* DeferredSkybox = "Deferred Skybox";
+		constexpr const char* WaterPreCompute = "Water Pre Compute";
+		constexpr const char* ForwardOpaqueAfterDeferred = "Forward Opaque After Deferred";
+		constexpr const char* HairVisibility = "Hair Visibility";
+		constexpr const char* HairLighting = "Hair Lighting";
+		constexpr const char* TransparentPostProcess = "Transparent PostProcess";
+		constexpr const char* FSRRuntimeUI = "FSR Runtime UI";
+		constexpr const char* ReflectionProbeBakeQueue = "Reflection Probe Bake Queue";
+	}
+
+	class VansRenderPassCatalog
+	{
+	public:
+		static void BuildCompatibilityFramePlan(
+			VansRenderFramePlan& outPlan,
+			VansScene& scene,
+			uint64_t frameNumber);
+
+		static bool IsPassEnabled(
+			VansRenderPassCondition condition,
+			const VansScene& scene);
+
+		static bool IsKnownPassName(const char* passName);
+
+		static void GetPreservedFeatureAuditList(
+			const VansScene& scene,
+			std::vector<std::string>& outRequiredFeatures,
+			std::vector<std::string>& outConditionallyDisabledFeatures);
+	};
+}

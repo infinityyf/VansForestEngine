@@ -1,4 +1,4 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKSampler.h"
 #include "../../Util/VansLog.h"
 #include <iostream>
@@ -45,7 +45,7 @@ bool VansGraphics::VansVKSampler::CreateSampler(
 		 unnormalizedCoordinates,
 	};
 
-	VkResult result = vkCreateSampler(logical_device, &sampler_create_info, nullptr, &sampler);
+	VkResult result = VansGraphics::vkCreateSampler(logical_device, &sampler_create_info, nullptr, &sampler);
 	if (VK_SUCCESS != result)
 	{
 		VANS_LOG_ERROR("Could not create sampler.");
@@ -58,7 +58,7 @@ void VansGraphics::VansVKSampler::DestroySampler(VkDevice& logical_device, VkSam
 {
 	if (VK_NULL_HANDLE != sampler)
 	{
-		vkDestroySampler(logical_device, sampler, nullptr);
+		VansGraphics::vkDestroySampler(logical_device, sampler, nullptr);
 		sampler = VK_NULL_HANDLE;
 	}
 }

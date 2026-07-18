@@ -12,7 +12,7 @@ namespace VansGraphics
 	{
 		//get present mode
 		uint32_t present_modes_count;
-		VkResult result = vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, m_VansVKPresentSurface, &present_modes_count, nullptr);
+		VkResult result = VansGraphics::vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, m_VansVKPresentSurface, &present_modes_count, nullptr);
 		if (result != VK_SUCCESS || present_modes_count == 0)
 		{
 			VANS_LOG_ERROR("Could not get the number of available present modes. Dont suppoty FIFO MODE");
@@ -21,7 +21,7 @@ namespace VansGraphics
 
 		std::vector<VkPresentModeKHR> present_modes;
 		present_modes.resize(present_modes_count);
-		result = vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, m_VansVKPresentSurface, &present_modes_count, &present_modes[0]);
+		result = VansGraphics::vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, m_VansVKPresentSurface, &present_modes_count, &present_modes[0]);
 		if (result != VK_SUCCESS)
 		{
 			VANS_LOG_ERROR("Could not enumerate present modes.");
@@ -117,7 +117,7 @@ namespace VansGraphics
 	{
 		//color format , date type, color space : formate + color space = surface format
 		uint32_t  formats_count;
-		VkResult result = vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, m_VansVKPresentSurface, &formats_count, nullptr);
+		VkResult result = VansGraphics::vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, m_VansVKPresentSurface, &formats_count, nullptr);
 		if ((VK_SUCCESS != result) || (0 == formats_count))
 		{
 			VANS_LOG_ERROR("Could not get the number of supported surface formats.");
@@ -125,7 +125,7 @@ namespace VansGraphics
 		}
 
 		std::vector<VkSurfaceFormatKHR> surface_formats(formats_count);
-		result = vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, m_VansVKPresentSurface, &formats_count, &surface_formats[0]);
+		result = VansGraphics::vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, m_VansVKPresentSurface, &formats_count, &surface_formats[0]);
 		if ((VK_SUCCESS != result) || (0 == formats_count)) 
 		{
 			VANS_LOG_ERROR("Could not enumerate supported surface formats.");
@@ -164,7 +164,7 @@ namespace VansGraphics
 	{
 		uint32_t images_count = 0;
 		VkResult result = VK_SUCCESS;
-		result = vkGetSwapchainImagesKHR(logical_device, swapchain, &images_count, nullptr);
+		result = VansGraphics::vkGetSwapchainImagesKHR(logical_device, swapchain, &images_count, nullptr);
 		if ((VK_SUCCESS != result) || (0 == images_count)) 
 		{
 			VANS_LOG_ERROR("Could not get the number of swapchain images.");
@@ -177,7 +177,7 @@ namespace VansGraphics
 
 		m_VansVKSwapChainImages.resize(images_count);
 		m_VansVKSwapChainImageViews.resize(images_count);
-		result = vkGetSwapchainImagesKHR(logical_device, swapchain, &images_count, &m_VansVKSwapChainImages[0]);
+		result = VansGraphics::vkGetSwapchainImagesKHR(logical_device, swapchain, &images_count, &m_VansVKSwapChainImages[0]);
 		if ((VK_SUCCESS != result) || (0 == images_count)) 
 		{
 			VANS_LOG_ERROR("Could not enumerate swapchain images.");
@@ -202,7 +202,7 @@ namespace VansGraphics
 			createInfo.subresourceRange.baseArrayLayer = 0;
 			createInfo.subresourceRange.layerCount = 1;
 
-			if (vkCreateImageView(logical_device, &createInfo, nullptr, &m_VansVKSwapChainImageViews[i]) != VK_SUCCESS)
+			if (VansGraphics::vkCreateImageView(logical_device, &createInfo, nullptr, &m_VansVKSwapChainImageViews[i]) != VK_SUCCESS)
 			{
 				VANS_LOG_ERROR("Failed to create image view for swapchain image " << i);
 				return false;
@@ -212,14 +212,12 @@ namespace VansGraphics
 		return true;
 	}
 
-	bool VansVKSurface::AcquireVulkanSwapChainImages(VkDevice& logical_device, uint32_t& image_index, VkSemaphore& image_acquired_semaphore, VkFence& image_acquired_fence)
+	bool VansVKSurface::AcquireVulkanSwapChainImages(VkDevice& logical_device, uint32_t& image_index, VkSemaphore& image_acquired_semaphore)
 	{
-		vkResetFences(logical_device, 1, &image_acquired_fence);
 		//it may not reture immediately , set time out to 2s
 		//We need to wait for all previously submitted operations that referenced this image to finish
 		//用于在GPU上同步，image是否quri完成
-		VkResult result = vkAcquireNextImageKHR(logical_device, m_VansVKSwapChain, 2000000000, image_acquired_semaphore, image_acquired_fence, &image_index);
-		vkWaitForFences(logical_device, 1, &image_acquired_fence, VK_TRUE, UINT64_MAX);
+		VkResult result = VansGraphics::vkAcquireNextImageKHR(logical_device, m_VansVKSwapChain, 2000000000, image_acquired_semaphore, VK_NULL_HANDLE, &image_index);
 		switch (result) 
 		{
 		case VK_SUCCESS:
@@ -245,7 +243,7 @@ namespace VansGraphics
 			 nullptr
 		};
 
-		VkResult result = vkQueuePresentKHR(queue, &present_info);
+		VkResult result = VansGraphics::vkQueuePresentKHR(queue, &present_info);
 		switch (result) {
 		case VK_SUCCESS:
 			return true;
@@ -262,14 +260,14 @@ namespace VansGraphics
 		for (auto& imageView : m_VansVKSwapChainImageViews)
 		{
 			if (imageView != VK_NULL_HANDLE)
-				vkDestroyImageView(logical_device, imageView, nullptr);
+				VansGraphics::vkDestroyImageView(logical_device, imageView, nullptr);
 		}
 		m_VansVKSwapChainImageViews.clear();
 		m_VansVKSwapChainImages.clear();
 
 		if (m_VansVKSwapChain) 
 		{
-			vkDestroySwapchainKHR(logical_device, m_VansVKSwapChain, nullptr);
+			VansGraphics::vkDestroySwapchainKHR(logical_device, m_VansVKSwapChain, nullptr);
 			m_VansVKSwapChain = VK_NULL_HANDLE;
 		}
 		return true;
@@ -281,7 +279,7 @@ namespace VansGraphics
 		for (auto& imageView : m_VansVKSwapChainImageViews)
 		{
 			if (imageView != VK_NULL_HANDLE)
-				vkDestroyImageView(logical_device, imageView, nullptr);
+				VansGraphics::vkDestroyImageView(logical_device, imageView, nullptr);
 		}
 		m_VansVKSwapChainImageViews.clear();
 		m_VansVKSwapChainImages.clear();
@@ -304,7 +302,7 @@ namespace VansGraphics
 	{
 		if (m_VansVKPresentSurface) 
 		{
-			vkDestroySurfaceKHR(instance, m_VansVKPresentSurface, nullptr);
+			VansGraphics::vkDestroySurfaceKHR(instance, m_VansVKPresentSurface, nullptr);
 			m_VansVKPresentSurface = VK_NULL_HANDLE;
 		}
 		return true;
@@ -405,7 +403,7 @@ namespace VansGraphics
 
 		//prepare to create swapchain
 		VkSurfaceCapabilitiesKHR surface_capabilities;
-		VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, m_VansVKPresentSurface, &surface_capabilities);
+		VkResult result = VansGraphics::vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, m_VansVKPresentSurface, &surface_capabilities);
 		if (result != VK_SUCCESS)
 		{
 			VANS_LOG_ERROR("Could not get the capabilities of the presentation surface.");
@@ -452,7 +450,7 @@ namespace VansGraphics
 			 m_VansVKOldSwapChain
 		};
 
-		result = vkCreateSwapchainKHR(logical_device, &swapchain_create_info, nullptr, &m_VansVKSwapChain);
+		result = VansGraphics::vkCreateSwapchainKHR(logical_device, &swapchain_create_info, nullptr, &m_VansVKSwapChain);
 		if ((VK_SUCCESS != result) || (VK_NULL_HANDLE == m_VansVKSwapChain)) 
 		{
 			VANS_LOG_ERROR("Could not create a swapchain.");
@@ -461,7 +459,7 @@ namespace VansGraphics
 
 		if (VK_NULL_HANDLE != m_VansVKOldSwapChain)
 		{ 
-			vkDestroySwapchainKHR(logical_device, m_VansVKOldSwapChain, nullptr);
+			VansGraphics::vkDestroySwapchainKHR(logical_device, m_VansVKOldSwapChain, nullptr);
 			m_VansVKOldSwapChain = VK_NULL_HANDLE;
 		}
 

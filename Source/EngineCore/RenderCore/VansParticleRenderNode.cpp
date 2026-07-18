@@ -199,48 +199,37 @@ namespace VansGraphics
                       VK_SHADER_STAGE_FRAGMENT_BIT, nullptr });
             }
             std::vector<VkDescriptorSet> texSets;
-            VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(
-                texBindings, m_DescriptorSetLayout);
-            std::vector<VkDescriptorSetLayout> layouts(1, m_DescriptorSetLayout);
-            VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(layouts, texSets);
+            VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+                texBindings,
+                m_DescriptorSetLayout,
+                texSets);
             m_DescriptorSet = texSets[0];
 
             // 写入纹理图像描述符
-            VansVKDescriptorManager::GetInstance()->ResetState();
-            VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-                {
-                    m_DescriptorSet,
-                    0,   // binding 0
-                    0,
-                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    {
-                        {
-                            (useSixWay ? positiveTex : primaryTex)->GetImage().GetSampler(),
-                            (useSixWay ? positiveTex : primaryTex)->GetImage().GetImageView(),
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                        }
-                    }
-                }
-            );
+            auto* descMgr = VansVKDescriptorManager::GetInstance();
+            descMgr->BeginDescriptorUpdate();
+            descMgr->WriteImageDescriptor(
+                m_DescriptorSet,
+                0,   // binding 0
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                { {
+                    (useSixWay ? positiveTex : primaryTex)->GetImage().GetSampler(),
+                    (useSixWay ? positiveTex : primaryTex)->GetImage().GetImageView(),
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                } });
             if (useSixWay)
             {
-                VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-                    {
-                        m_DescriptorSet,
-                        1,   // binding 1
-                        0,
-                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                        {
-                            {
-                                negativeTex->GetImage().GetSampler(),
-                                negativeTex->GetImage().GetImageView(),
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                            }
-                        }
-                    }
-                );
+                descMgr->WriteImageDescriptor(
+                    m_DescriptorSet,
+                    1,   // binding 1
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    { {
+                        negativeTex->GetImage().GetSampler(),
+                        negativeTex->GetImage().GetImageView(),
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                    } });
             }
-            VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+            descMgr->CommitDescriptorUpdates();
         }
 
         // Set 1 layout/set 追加到公共数组，用于 EnsureGraphicsShader 管线布局创建
@@ -328,6 +317,21 @@ namespace VansGraphics
         // ── 4. 绑定描述符集（Set 0 全局 + Set 1 粒子纹理） ───────────────────
         if (!m_UsedDescSets.empty())
         {
+            if (m_UsedDescSetLayouts.size() != m_UsedDescSets.size())
+            {
+                VANS_LOG_WARN("[ParticleRenderNode] descriptor layout/set count mismatch, skip draw");
+                return;
+            }
+            for (size_t descriptorIndex = 0; descriptorIndex < m_UsedDescSets.size(); ++descriptorIndex)
+            {
+                if (m_UsedDescSetLayouts[descriptorIndex] == VK_NULL_HANDLE ||
+                    m_UsedDescSets[descriptorIndex] == VK_NULL_HANDLE)
+                {
+                    VANS_LOG_WARN("[ParticleRenderNode] descriptor layout/set contains VK_NULL_HANDLE, skip draw");
+                    return;
+                }
+            }
+
             cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS,
                                    *activeShader, 0, m_UsedDescSets, {});
         }

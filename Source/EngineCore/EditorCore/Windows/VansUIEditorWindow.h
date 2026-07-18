@@ -25,11 +25,11 @@ namespace VansGraphics
     {
     public:
         VansUIEditorWindow();
-
-        void ShowWindow(VansVKDevice& device) override;
+        void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 
     private:
-        void LoadPreview(VansVKDevice& device);
+        void DrawUIEditorContents();
+        void LoadPreview();
         void UnloadPreview();
         void DrawMetaPanel();
         void DrawPreviewViewport();

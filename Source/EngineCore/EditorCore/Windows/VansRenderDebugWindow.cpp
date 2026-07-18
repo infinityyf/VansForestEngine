@@ -1,189 +1,223 @@
 #include "VansRenderDebugWindow.h"
 #include "../VansEditorWindow.h"
+#include "../../RenderCore/VulkanCore/VansPipelineRegistry.h"
 #include "imgui.h"
-#include "backends/imgui_impl_vulkan.h"
-#include "../../RenderCore/VulkanCore/VansRenderPass.h"
-#include "../../RenderCore/VansMaterial.h"
-#include "../../RenderCore/VulkanCore/VansMesh.h"
-#include "../../RenderCore/VulkanCore/VansTexture.h"
-#include "../../RenderCore/VansScene.h"
 
-void VansGraphics::VansRenderDebugWindow::ShowWindow(VansVKDevice& device)
+#include <cfloat>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace
 {
-    if (!VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen &&
-        !VansGraphics::VansEditorWindow::m_HairDebugWindowOpen)
-    {
-        return;
-    }
+	unsigned long long ToImGuiCount(size_t value)
+	{
+		return static_cast<unsigned long long>(value);
+	}
 
-    auto renderPassManager = VansRenderPassManager::GetInstance();
-    VansMaterialManager* materialManager = m_Scene ? m_Scene->GetMaterialManager() : nullptr;
+	void DrawPreviewTable(
+		const char* tableId,
+		const std::vector<Vans::EditorAPI::RenderTexturePreview>& previews)
+	{
+		if (previews.empty())
+		{
+			ImGui::TextDisabled("No render texture previews are available.");
+			return;
+		}
 
-    if (!renderPassManager)
-    {
-        if (VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen)
-        {
-            ImGui::Begin("Render Debug", &VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen);
-            ImGui::Text("RenderPassManager not initialized.");
-            ImGui::End();
-        }
-        if (VansGraphics::VansEditorWindow::m_HairDebugWindowOpen)
-        {
-            ImGui::Begin("Hair Debug", &VansGraphics::VansEditorWindow::m_HairDebugWindowOpen);
-            ImGui::Text("RenderPassManager not initialized.");
-            ImGui::End();
-        }
-        return;
-    }
+		if (ImGui::BeginTable(tableId, 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
+		{
+			for (const auto& preview : previews)
+			{
+				ImGui::TableNextColumn();
+				ImGui::Text("%s", preview.name.c_str());
+				if (!preview.texture || preview.width == 0 || preview.height == 0)
+				{
+					ImGui::TextDisabled("(image not created)");
+					continue;
+				}
 
-    // Helper lambda to display an image with caching
-    auto DisplayImage = [](const char* label, VansVKImage& image, VkDescriptorSet& cachedDS,
-        VkImageView& cachedImageView, VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-    {
-        ImGui::Text("%s", label);
+				const float width = ImGui::GetContentRegionAvail().x;
+				const float aspect = static_cast<float>(preview.width) / static_cast<float>(preview.height);
+				ImGui::Image(preview.texture, ImVec2(width, width / aspect));
+			}
+			ImGui::EndTable();
+		}
+	}
 
-        VkImageView currentImageView = image.GetImageView();
-        if (cachedDS == VK_NULL_HANDLE || cachedImageView != currentImageView)
-        {
-            if (cachedDS != VK_NULL_HANDLE)
-            {
-                ImGui_ImplVulkan_RemoveTexture(cachedDS);
-            }
-            cachedDS = ImGui_ImplVulkan_AddTexture(image.GetSampler(), currentImageView, layout);
-            cachedImageView = currentImageView;
-        }
+	void DrawPipelineRegistryRow(
+		const char* label,
+		const VansGraphics::VansPipelineRegistryMapStats& stats)
+	{
+		ImGui::TableNextRow();
+		ImGui::TableNextColumn();
+		ImGui::TextUnformatted(label);
+		ImGui::TableNextColumn();
+		ImGui::Text("%llu", ToImGuiCount(stats.bucketCount));
+		ImGui::TableNextColumn();
+		ImGui::Text("%llu", ToImGuiCount(stats.activeCount));
+		ImGui::TableNextColumn();
+		ImGui::Text("%llu", ToImGuiCount(stats.expiredCount));
+	}
 
-        if (cachedDS != VK_NULL_HANDLE)
-        {
-            float width = ImGui::GetContentRegionAvail().x;
-            float aspect = (float)image.GetImageDimension().width / (float)image.GetImageDimension().height;
-            ImGui::Image((ImTextureID)cachedDS, ImVec2(width, width / aspect));
-        }
-    };
+	void DrawPipelineRegistryStats()
+	{
+		const VansGraphics::VansPipelineRegistryStats stats =
+			VansGraphics::VansPipelineRegistry::Get().GetStats();
 
-    // Static cache for each slot
-    static VkDescriptorSet dsMV = VK_NULL_HANDLE;  static VkImageView ivMV = VK_NULL_HANDLE;
-    static VkDescriptorSet dsSSR = VK_NULL_HANDLE;  static VkImageView ivSSR = VK_NULL_HANDLE;
-    static VkDescriptorSet dsSSGI = VK_NULL_HANDLE; static VkImageView ivSSGI = VK_NULL_HANDLE;
-    static VkDescriptorSet dsFog = VK_NULL_HANDLE;  static VkImageView ivFog = VK_NULL_HANDLE;
-    static VkDescriptorSet dsSSS = VK_NULL_HANDLE;  static VkImageView ivSSS = VK_NULL_HANDLE;
-    static VkDescriptorSet dsHairVis0 = VK_NULL_HANDLE;      static VkImageView ivHairVis0 = VK_NULL_HANDLE;
-    static VkDescriptorSet dsHairVis1 = VK_NULL_HANDLE;      static VkImageView ivHairVis1 = VK_NULL_HANDLE;
-    static VkDescriptorSet dsHairVis2 = VK_NULL_HANDLE;      static VkImageView ivHairVis2 = VK_NULL_HANDLE;
-    static VkDescriptorSet dsHairVis3 = VK_NULL_HANDLE;      static VkImageView ivHairVis3 = VK_NULL_HANDLE;
-    static VkDescriptorSet dsHairDepth = VK_NULL_HANDLE;     static VkImageView ivHairDepth = VK_NULL_HANDLE;
-    static VkDescriptorSet dsHairCoverage = VK_NULL_HANDLE;  static VkImageView ivHairCoverage = VK_NULL_HANDLE;
-    static VkDescriptorSet dsHairColor = VK_NULL_HANDLE;     static VkImageView ivHairColor = VK_NULL_HANDLE;
-    static VkDescriptorSet dsHairDeepOpacity = VK_NULL_HANDLE; static VkImageView ivHairDeepOpacity = VK_NULL_HANDLE;
+		if (!ImGui::CollapsingHeader("Pipeline Registry", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			return;
+		}
 
-    if (VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen)
-    {
-        ImGui::Begin("Render Debug", &VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen);
-        if (ImGui::BeginTable("RenderDebugTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
-        {
-            // Motion Vector
-            ImGui::TableNextColumn();
-            DisplayImage("Motion Vector", renderPassManager->GetMotionVector(), dsMV, ivMV);
+		ImGui::Text("Total Active: %llu", ToImGuiCount(stats.GetTotalActiveCount()));
+		ImGui::Text("Total Expired: %llu", ToImGuiCount(stats.GetTotalExpiredCount()));
 
-            // SSR Resolve Result
-            ImGui::TableNextColumn();
-            if (materialManager)
-            {
-                VansTexture* ssrTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT);
-                if (ssrTex)
-                {
-                    DisplayImage("SSR Resolve Result", ssrTex->GetImage(), dsSSR, ivSSR, VK_IMAGE_LAYOUT_GENERAL);
-                }
-                else
-                {
-                    ImGui::Text("SSR Resolve Result: N/A");
-                }
-            }
-            else
-            {
-                ImGui::Text("SSR Resolve Result: No MaterialManager");
-            }
+		if (ImGui::BeginTable("PipelineRegistryStatsTable", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+		{
+			ImGui::TableSetupColumn("Type");
+			ImGui::TableSetupColumn("Buckets");
+			ImGui::TableSetupColumn("Active");
+			ImGui::TableSetupColumn("Expired");
+			ImGui::TableHeadersRow();
 
-            // SSGI Result
-            ImGui::TableNextColumn();
-            if (materialManager)
-            {
-                VansTexture* ssgiTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT);
-                if (ssgiTex)
-                {
-                    DisplayImage("SSGI Result", ssgiTex->GetImage(), dsSSGI, ivSSGI, VK_IMAGE_LAYOUT_GENERAL);
-                }
-                else
-                {
-                    ImGui::Text("SSGI Result: N/A");
-                }
-            }
-            else
-            {
-                ImGui::Text("SSGI Result: No MaterialManager");
-            }
+			DrawPipelineRegistryRow("Graphics", stats.graphics);
+			DrawPipelineRegistryRow("Compute", stats.compute);
+			DrawPipelineRegistryRow("Ray Tracing", stats.rayTracing);
+			ImGui::EndTable();
+		}
+	}
 
-            // Fog Blend Result
-            ImGui::TableNextColumn();
-            if (materialManager)
-            {
-                VansTexture* fogTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
-                if (fogTex)
-                {
-                    DisplayImage("Fog Blend Result", fogTex->GetImage(), dsFog, ivFog, VK_IMAGE_LAYOUT_GENERAL);
-                }
-                else
-                {
-                    ImGui::Text("Fog Blend Result: N/A");
-                }
-            }
-            else
-            {
-                ImGui::Text("Fog Blend Result: No MaterialManager");
-            }
+	void DrawRenderBackendDiagnostics(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	{
+		if (!ImGui::CollapsingHeader("Render Backend Diagnostics", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			return;
+		}
 
-            ImGui::TableNextColumn();
-            if (materialManager)
-            {
-                VansTexture* sssTex = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
-                if (sssTex)
-                {
-                    DisplayImage("Screen Space Shadow", sssTex->GetImage(), dsSSS, ivSSS, VK_IMAGE_LAYOUT_GENERAL);
-                }
-                else
-                {
-                    ImGui::Text("Screen Space Shadow: N/A");
-                }
-            }
-            else
-            {
-                ImGui::Text("Screen Space Shadow: No MaterialManager");
-            }
+		const Vans::EditorAPI::RenderBackendDiagnostics diagnostics =
+			editorAPI.GetRenderBackendDiagnostics();
 
-            ImGui::EndTable();
-        }
-        ImGui::End();
-    }
+		if (ImGui::BeginTable("RenderBackendDiagnosticsTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+		{
+			ImGui::TableSetupColumn("Metric");
+			ImGui::TableSetupColumn("Value");
+			ImGui::TableHeadersRow();
 
-    if (VansGraphics::VansEditorWindow::m_HairDebugWindowOpen)
-    {
-        ImGui::Begin("Hair Debug", &VansGraphics::VansEditorWindow::m_HairDebugWindowOpen);
-        ImGui::Text("Hair PPLL OIT");
-        ImGui::Text("Visibility pass writes per-pixel linked-list storage buffers.");
-        ImGui::Text("HairColor: RGB lit hair, A resolved coverage");
-        ImGui::Text("HairDeepOpacity: RGBA four opacity slices");
-        ImGui::Separator();
+			auto drawBoolRow = [](const char* label, bool value)
+			{
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(label);
+				ImGui::TableNextColumn();
+				ImGui::TextColored(
+					value ? ImVec4(0.30f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.35f, 0.25f, 1.0f),
+					"%s",
+					value ? "true" : "false");
+			};
 
-        if (ImGui::BeginTable("HairDebugTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
-        {
-            ImGui::TableNextColumn();
-            DisplayImage("Hair Color", renderPassManager->GetHairColor(), dsHairColor, ivHairColor);
+			auto drawCountRow = [](const char* label, std::uint32_t value)
+			{
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(label);
+				ImGui::TableNextColumn();
+				ImGui::Text("%u", value);
+			};
 
-            ImGui::TableNextColumn();
-            DisplayImage("Hair Deep Opacity", renderPassManager->GetHairDeepOpacity(), dsHairDeepOpacity, ivHairDeepOpacity);
+			auto drawCount64Row = [](const char* label, std::uint64_t value)
+			{
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(label);
+				ImGui::TableNextColumn();
+				ImGui::Text("%llu", static_cast<unsigned long long>(value));
+			};
 
-            ImGui::EndTable();
-        }
-        ImGui::End();
-    }
+			drawBoolRow("Graph Diagnostics Available", diagnostics.available);
+			drawBoolRow("Frame Submit Succeeded", diagnostics.frameSubmitSucceeded);
+			drawBoolRow("Shadow Submitted", diagnostics.shadowSubmitted);
+			drawBoolRow("GBuffer Submitted", diagnostics.gbufferSubmitted);
+			drawBoolRow("Async Compute Submitted", diagnostics.asyncComputeSubmitted);
+			drawCount64Row("Frame Number", diagnostics.frameNumber);
+			drawCountRow("Swapchain Image", diagnostics.swapchainImageIndex);
+			drawCountRow("Descriptor Standard Pools", diagnostics.descriptorStandardPoolCount);
+			drawCountRow("Descriptor Update-After-Bind Pools", diagnostics.descriptorUpdateAfterBindPoolCount);
+			drawCountRow("Descriptor Tracked Sets", diagnostics.descriptorTrackedSetCount);
+			drawCountRow("Descriptor UAB Layouts", diagnostics.descriptorUpdateAfterBindLayoutCount);
+			drawCountRow("Descriptor Global Persistent Sets", diagnostics.descriptorGlobalPersistentSetCount);
+			drawCountRow("Descriptor Scene Persistent Sets", diagnostics.descriptorScenePersistentSetCount);
+			drawCountRow("Descriptor Frame Transient Sets", diagnostics.descriptorFrameTransientSetCount);
+			drawCountRow("Descriptor Pass Persistent Sets", diagnostics.descriptorPassPersistentSetCount);
+			drawCountRow("Descriptor Upload Scratch Sets", diagnostics.descriptorUploadScratchSetCount);
+			drawCountRow("Descriptor Ray Tracing Sets", diagnostics.descriptorRayTracingPersistentSetCount);
+			drawCount64Row("Deferred Deletes Last Flush", diagnostics.deferredDeleteLastFlushCount);
+			drawCount64Row("Deferred Deletes Pending", diagnostics.deferredDeletePendingCount);
+			drawCount64Row("RenderNode Descriptor Failures", diagnostics.renderNodeDescriptorValidationFailureCount);
+			drawCount64Row("Texture Upload Failures", diagnostics.textureUploadFailureCount);
+			drawBoolRow("Compiled Graph Valid", diagnostics.compiledGraphValid);
+			drawBoolRow("Feature Audit Passed", diagnostics.featureAuditPassed);
+			drawCountRow("Frame Passes", diagnostics.framePlanPassCount);
+			drawCountRow("Compiled Resources", diagnostics.compiledResourceCount);
+			drawCountRow("Barrier Dependencies", diagnostics.barrierDependencyCount);
+			ImGui::EndTable();
+		}
+
+		if (ImGui::CollapsingHeader("RenderGraph Summary"))
+		{
+			if (!diagnostics.available)
+			{
+				ImGui::TextDisabled("No render graph diagnostics are available yet.");
+			}
+			else
+			{
+				if (ImGui::BeginChild(
+					"RenderGraphSummaryText",
+					ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 18.0f),
+					true,
+					ImGuiWindowFlags_HorizontalScrollbar))
+				{
+					ImGui::TextUnformatted(diagnostics.renderGraphSummary.c_str());
+				}
+				ImGui::EndChild();
+			}
+		}
+	}
+}
+
+void VansGraphics::VansRenderDebugWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+{
+	if (!VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen &&
+		!VansGraphics::VansEditorWindow::m_HairDebugWindowOpen)
+	{
+		return;
+	}
+
+	if (VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen)
+	{
+		ImGui::Begin("Render Debug", &VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen);
+		Vans::EditorAPI::RenderTextureFilter filter;
+		filter.category = "render_debug";
+		DrawPreviewTable("RenderDebugTable", editorAPI.QueryRenderTexturePreviews(filter));
+		ImGui::Separator();
+		DrawRenderBackendDiagnostics(editorAPI);
+		ImGui::Separator();
+		DrawPipelineRegistryStats();
+		ImGui::End();
+	}
+
+	if (VansGraphics::VansEditorWindow::m_HairDebugWindowOpen)
+	{
+		ImGui::Begin("Hair Debug", &VansGraphics::VansEditorWindow::m_HairDebugWindowOpen);
+		ImGui::Text("Hair PPLL OIT");
+		ImGui::Text("Visibility pass writes per-pixel linked-list storage buffers.");
+		ImGui::Text("HairColor: RGB lit hair, A resolved coverage");
+		ImGui::Text("HairDeepOpacity: RGBA four opacity slices");
+		ImGui::Separator();
+
+		Vans::EditorAPI::RenderTextureFilter filter;
+		filter.category = "hair_debug";
+		DrawPreviewTable("HairDebugTable", editorAPI.QueryRenderTexturePreviews(filter));
+		ImGui::End();
+	}
 }

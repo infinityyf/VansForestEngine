@@ -7,6 +7,11 @@
 #include <string>
 #include <vector>
 
+namespace Vans::EditorAPI
+{
+class IEngineEditorAPI;
+}
+
 namespace Vans
 {
 struct VansAssetSaveResult
@@ -23,10 +28,10 @@ struct VansAssetSaveResult
 class VansEditorAssetSaveService
 {
 public:
-    static VansEditorAssetSaveService& Get();
+	static VansEditorAssetSaveService& Get();
 
-    VansAssetSaveResult SaveAsset(const std::filesystem::path& sourcePath);
-    VansAssetSaveResult SaveAsset(const std::shared_ptr<VansOpenAssetDocument>& document);
-    VansAssetSaveResult SaveAllDirtyAssets();
+    VansAssetSaveResult SaveAsset(EditorAPI::IEngineEditorAPI& editorAPI, const std::filesystem::path& sourcePath);
+    VansAssetSaveResult SaveAsset(EditorAPI::IEngineEditorAPI& editorAPI, const std::shared_ptr<VansOpenAssetDocument>& document);
+    VansAssetSaveResult SaveAllDirtyAssets(EditorAPI::IEngineEditorAPI& editorAPI);
 };
 }

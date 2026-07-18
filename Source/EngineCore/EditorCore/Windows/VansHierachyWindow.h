@@ -11,6 +11,6 @@ public:
     inline static bool m_ShowMMViz = false;
 
 private:
-    void ShowWindow(VansVKDevice& device) override;
+    void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 };
 }

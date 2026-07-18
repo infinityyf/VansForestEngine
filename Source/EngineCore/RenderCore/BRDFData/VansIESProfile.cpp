@@ -459,13 +459,17 @@ namespace VansGraphics
                 fp16[j] = FloatToHalf(fp32[j]);
 
             // SetDeviceImageData 内部自行 Begin/Submit/Reset，无需外部 BeginCommandBufferRecord
-            device->SetDeviceImageData(
+            if (!device->SetDeviceImageData(
                 m_IESTextureArray, cmd,
                 fp16.data(), 0, byteSize,
                 zeroOffset, layerExt,
                 0,  // mip_level
                 i   // layer_level
-            );
+            ))
+            {
+                VANS_LOG_ERROR("[VansIESProfileManager] IES profile [" << i << "] GPU upload failed");
+                return;
+            }
 
             VANS_LOG("[VansIESProfileManager] 上传 IES profile [" << i << "] 完成");
         }

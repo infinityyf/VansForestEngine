@@ -249,8 +249,6 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 	// 从 .vclip 还原的骨架也需要拓扑排序
 	outSkeleton.BuildTopologicalOrder();
 
-	VANS_LOG("[VansAnimationClipIO] Loaded: " << filePath
-	         << " (" << boneCount << " bones, clip=\"" << outClip.clipName << "\")");
 	return true;
 }
 

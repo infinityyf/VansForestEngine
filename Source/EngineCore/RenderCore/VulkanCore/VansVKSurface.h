@@ -61,7 +61,7 @@ namespace VansGraphics
 
 		bool CreateVulkanSwapChain(VkPhysicalDevice& physical_device, VkDevice& logical_device);
 
-		bool AcquireVulkanSwapChainImages(VkDevice& logical_device,  uint32_t& image_index, VkSemaphore& aquire_image_semaphore, VkFence& acquire_image_fence);
+		bool AcquireVulkanSwapChainImages(VkDevice& logical_device,  uint32_t& image_index, VkSemaphore& aquire_image_semaphore);
 
 		bool PresentImage(VkDevice& logical_device, VkQueue& queue, const std::vector<VkSemaphore>& rendering_semaphores, uint32_t image_index);
 

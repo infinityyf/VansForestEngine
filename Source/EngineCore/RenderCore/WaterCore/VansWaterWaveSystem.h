@@ -1,6 +1,7 @@
 #pragma once
 #include "vulkan/vulkan.h"
 #include "glm/glm.hpp"
+#include "../VulkanCore/VansVKBuffer.h"
 #include "../VulkanCore/VansVKImage.h"
 #include "VansWaterConfig.h"
 #include <vector>
@@ -71,15 +72,11 @@ namespace VansGraphics
         // ── 访问 ──────────────────────────────────────────────────
         VansVKImage& GetDisplacementImage()      { return m_WaveDisplacementImage; }
         bool         IsDisplacementReady() const { return m_WaveDisplacementReady; }
-        VkBuffer     GetWaveSSBO() const         { return m_WaveSSBO; }
+        VkBuffer     GetWaveSSBO() const         { return m_WaveSSBO.GetNativeBuffer(); }
         VkDescriptorSetLayout GetWaveSimLayout() const { return m_WaveSimLayout; }
         VkDescriptorSet       GetWaveSimSet()    const { return m_WaveSimSet; }
 
     private:
-        bool AllocateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                            VkMemoryPropertyFlags props,
-                            VkBuffer& outBuffer, VkDeviceMemory& outMemory);
-
         VansVKDevice*      m_Device       = nullptr;
         VansComputeShader* m_WaveSimShader = nullptr;
         VansWaterFFT*      m_FFT          = nullptr;
@@ -90,8 +87,8 @@ namespace VansGraphics
 
         // Gerstner 波分量
         std::vector<GerstnerWaveGPU> m_Waves;
-        VkBuffer       m_WaveSSBO        = VK_NULL_HANDLE;
-        VkDeviceMemory m_WaveSSBOMemory  = VK_NULL_HANDLE;
+        VansVKBuffer m_WaveSSBO;
+        bool m_WaveSSBOCreated = false;
 
         // 位移贴图 (Texture2DArray, 256² × 10 RGBA16F)
         VansVKImage m_WaveDisplacementImage;

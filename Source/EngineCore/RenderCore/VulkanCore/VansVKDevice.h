@@ -5,6 +5,8 @@
 #include "VansVKBuffer.h"
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
+#include "VansRenderGraph.h"
+#include "VansRenderGraphVulkanSync.h"
 #include "VansShader.h"
 #include "../RayTracingCore/VansRayTracing.h"
 #include <vector>
@@ -12,6 +14,8 @@
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "../FidelityFXCore/VansFSR.h"
 #include <cstdint>
+#include <functional>
+#include <string>
 namespace VansGraphics
 {
 	class INativeWindowProvider;
@@ -38,6 +42,7 @@ namespace VansGraphics
 		bool SetDeviceBufferData(VansVKBuffer& dest_buffer, void* data, int data_offset, int data_size, VkDeviceSize buffer_offset, VkDeviceSize buffer_size);
 
 		bool SetDeviceImageData(VansVKImage& dest_image, VansVKCommandBuffer& cmd, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level);
+		bool SetDeviceImageData(VansVKImage& dest_image, VansVKCommandBuffer& cmd, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level, VkImageLayout finalLayout);
 
 		// 每帧开始时重置临时上传分配器。该接口只重置 CPU 侧 offset，调用前必须确保上一帧图形提交已完成。
 		void ResetFrameStageUploadAllocator();
@@ -81,9 +86,9 @@ namespace VansGraphics
 
 	public:
 
-		void BeginUIRenderPass();
+		void BeginUIRenderPass() override;
 
-		void EndUIRenderPass();
+		void EndUIRenderPass() override;
 
 		/// 运行时 UI pass（Noesis → FSR 输出图像）
 		void BeginSceneUIRenderPass();
@@ -99,7 +104,7 @@ namespace VansGraphics
 		bool GetFSRJitterOffset(uint32_t frameIndex, float& outPixelX, float& outPixelY) override;
 
 		// 窗口大小改变时重建交换链和UI渲染pass
-		void OnWindowResize(uint32_t width, uint32_t height);
+		void OnWindowResize(uint32_t width, uint32_t height) override;
 
 	public:
 
@@ -111,6 +116,16 @@ namespace VansGraphics
 		void Present() override;
 		//释放被渲染数据
 		void AfterRendering() override;
+
+		bool WaitForIdle() override { return WaitForDevice(); }
+
+		const std::string& GetCurrentRenderGraphDebugSummary() const { return m_CurrentRenderGraphDebugSummary; }
+		const VansFrameContext& GetCurrentFrameContext() const { return m_CurrentFrameContext; }
+		void EnqueueDeferredDelete(std::function<void()> destroy);
+
+		void InitializeGpuProfiler() override;
+
+		void EndGpuProfilerFrame() override;
 
 		void* GetNativeGraphicsDevice() override;
 
@@ -175,7 +190,7 @@ namespace VansGraphics
 
 		void DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
-		void DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
+		void DrawSceneForward(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 
 		void DrawSceneGBuffer(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 
@@ -209,6 +224,16 @@ namespace VansGraphics
 
 		void CreateAccelerationStructure(VkAccelerationStructureCreateInfoKHR* createInfo, VkAccelerationStructureKHR* as);
 		void DestroyAccelerationStructure(VkAccelerationStructureKHR as);
+
+		static PFN_vkGetDeviceProcAddr GetDeviceProcAddr();
+		static double GetTimestampPeriodMs(VkPhysicalDevice physicalDevice);
+		static bool CreateQueryPool(VkDevice device, const VkQueryPoolCreateInfo& createInfo, VkQueryPool& pool);
+		static void DestroyQueryPool(VkDevice device, VkQueryPool& pool);
+		static void CmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool pool, uint32_t firstQuery, uint32_t queryCount);
+		static void CmdWriteTimestamp(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, VkQueryPool pool, uint32_t query);
+		static void CmdBeginDebugLabel(VkCommandBuffer commandBuffer, const VkDebugUtilsLabelEXT& labelInfo);
+		static void CmdEndDebugLabel(VkCommandBuffer commandBuffer);
+		static VkResult GetQueryPoolResults(VkDevice device, VkQueryPool pool, uint32_t firstQuery, uint32_t queryCount, size_t dataSize, void* data, VkDeviceSize stride, VkQueryResultFlags flags);
 
 	public:
 		VansRayTracing& GetRayTracingContext() { return rayTracingContext; }
@@ -371,11 +396,11 @@ namespace VansGraphics
 	private:
 
 		//用于渲染GPU上进行同步
+		uint64_t m_RenderFrameNumber = 0;
+
 		uint32_t m_SwapChainImageIndex;
 
 		VkSemaphore m_SwapChainImageAcquiredSemaphore;
-
-		VkFence m_SwapChainImageAcquiredFence;
 
 		VkSemaphore m_CommandBufferReadyToPresentSemaphore;
 
@@ -441,6 +466,13 @@ namespace VansGraphics
 		// Defaults to m_VansVKCommandBuffer; switched temporarily to
 		// m_VansVKShadowCommandBuffer during shadow CB recording in async path.
 		VansVKCommandBuffer* m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+		VansFrameContext m_CurrentFrameContext;
+		VansRenderFramePlan m_CurrentFramePlan;
+		VansCompiledRenderGraph m_CurrentCompiledRenderGraph;
+		VansRenderGraphBarrierPlan m_CurrentBarrierPlan;
+		VansVulkanRenderGraphSyncPlan m_CurrentVulkanSyncPlan;
+		VansRenderFeatureAuditResult m_CurrentFeatureAudit;
+		std::string m_CurrentRenderGraphDebugSummary;
 		VansRayTracing rayTracingContext;
 		
 		VansVKCommandBuffer m_ImmediateGraphicsCommandBuffer;
@@ -514,6 +546,10 @@ namespace VansGraphics
 		bool VulkanSetUp(VkExtent2D resolution);
 
 		bool VulkanDestroy();
+
+		void BuildCurrentRenderFramePlan(VansRenderPassManager* renderPassManager);
+		void BindCurrentFrameSyncResources();
+		void FlushCurrentFrameDeferredDeletes();
 	public:
 		VansVKDevice(VkExtent2D resolution, INativeWindowProvider* nativeWindowProvider = nullptr)
 		{

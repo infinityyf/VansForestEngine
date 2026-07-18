@@ -2,6 +2,8 @@
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
 #include "../VansAsset.h"
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -27,9 +29,25 @@ namespace VansGraphics
 	class VansTexture : public VansAsset
 	{
 	public:
+		struct TextureLoadDesc
+		{
+			std::string path;
+			bool isSRGB = true;
+			bool useCompress = false;
+			bool needMip = false;
+			TexturePrecision precision = LOW_PRES_8;
+			int importChannel = 4;
+			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		};
+
 		~VansTexture();
 
+		static std::uint64_t GetUploadFailureCount();
+		static void ResetUploadFailureCount();
+
 		//读取texture数据
+		void LoadTexture(VansVKCommandBuffer& command_buffer, const TextureLoadDesc& loadDesc);
+
 		void LoadTexture(VansVKCommandBuffer& command_buffer, 
 			std::string texture_path, 
 			bool isSRGB = true, 
@@ -115,24 +133,109 @@ namespace VansGraphics
 	private:
 		VansVKImage m_Image;
 
+		enum class TextureCompressionMode
+		{
+			None,
+			BC3
+		};
+
+		enum class TextureMipGeneration
+		{
+			None,
+			GPUBlit,
+			CPUCompressedChain
+		};
+
+		enum class TextureContentIntent
+		{
+			Color,
+			LinearData,
+			HDRData
+		};
+
+		struct TextureUploadPlan
+		{
+			VkFormat format = VK_FORMAT_UNDEFINED;
+			TextureContentIntent contentIntent = TextureContentIntent::Color;
+			int sourceChannels = 4;
+			int bytesPerChannel = 1;
+			int mipLevels = 1;
+			TextureCompressionMode compressionMode = TextureCompressionMode::None;
+			TextureMipGeneration mipGeneration = TextureMipGeneration::None;
+			int compressedBlockWidth = 4;
+			int compressedBlockHeight = 4;
+			int compressedBytesPerBlock = 0;
+			bool compressedHasAlpha = false;
+			VkImageUsageFlags imageUsage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		};
+
+		struct TextureUploadRequest
+		{
+			const void* sourceData = nullptr;
+			size_t sourceDataSize = 0;
+			int width = 0;
+			int height = 0;
+			TextureUploadPlan plan{};
+			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		};
+
+		struct TextureCompressionProfile
+		{
+			TextureCompressionMode mode = TextureCompressionMode::None;
+			VkFormat format = VK_FORMAT_UNDEFINED;
+			int blockWidth = 4;
+			int blockHeight = 4;
+			int bytesPerBlock = 0;
+			bool hasAlpha = false;
+			bool forceFullMipChain = false;
+		};
+
 		// 格式选择（统一替代原有三个CheckTexture*Format方法）
 		static VkFormat ChooseFormat(int channel, TexturePrecision precision, bool isSRGB = false);
+		static TextureContentIntent DetermineTextureContentIntent(bool isSRGB, TexturePrecision precision);
+		static TextureCompressionProfile ChooseCompressionProfile(
+			int sourceChannels, int bytesPerChannel,
+			bool isSRGB, bool useCompress, TexturePrecision precision);
+		static int CalculateMipLevels(int width, int height, bool generateMip);
+		static TextureUploadPlan BuildTextureUploadPlan(
+			int width, int height, int sourceChannels, int bytesPerChannel,
+			bool isSRGB, bool useCompress, bool needMip, TexturePrecision precision);
+		static TextureUploadRequest BuildTextureUploadRequest(
+			const void* sourceData,
+			int width, int height,
+			bool isSRGB, bool useCompress, bool needMip,
+			TexturePrecision precision,
+			int sourceChannels, int bytesPerChannel,
+			VkSamplerAddressMode addressMode);
+		static size_t CalculateTextureDataSize(int width, int height, int channels, int bytesPerChannel);
+		static bool IsValidTextureUploadRequest(const TextureUploadRequest& request);
+		static const char* ToString(TextureCompressionMode mode);
+		static const char* ToString(TextureMipGeneration mode);
+		static const char* ToString(TextureContentIntent intent);
 
 		// 文件读取
 		void* ReadTextureFile(const std::string& texture_path, TexturePrecision texture_precision, int& bytes_per_channel, int& width, int& height, int& num_components, int import_channel);
 
 		// 通用辅助
-		void SubmitAndWait(VansVKCommandBuffer& command_buffer, VkQueue queue, VkDevice device);
-		void GenerateMipmaps(VkCommandBuffer cmd, int width, int height, int mipLevels);
+		bool SubmitAndWait(VansVKCommandBuffer& command_buffer, VkQueue queue, VkDevice device);
+		void GenerateMipmaps(VansVKCommandBuffer& command_buffer, int width, int height, int mipLevels);
+		void GenerateMipmapsForLayer(VansVKCommandBuffer& command_buffer, int width, int height, int mipLevels, int layerIndex);
+		void GenerateMipmapsForLayer(
+			VansVKCommandBuffer& command_buffer,
+			int width,
+			int height,
+			int mipLevels,
+			int layerIndex,
+			VkImageLayout targetMipInitialLayout,
+			VkAccessFlags targetMipInitialAccessMask,
+			VkPipelineStageFlags targetMipInitialStage);
 
-		// GenerateMipmaps 的贴图数组变体：只为指定层生成 mip 链。
-		// 调用前 mip 0 必须处于 TRANSFER_DST_OPTIMAL；高层级 mip 必须处于 SHADER_READ_ONLY_OPTIMAL。
-		// 调用后所有 mip 均转换为 SHADER_READ_ONLY_OPTIMAL。
-		void GenerateMipmapsForLayer(VkCommandBuffer cmd, int width, int height, int mipLevels, int layerIndex);
+		void FinalizeUploadedLayer(VansVKCommandBuffer& command_buffer, int width, int height, int layerIndex);
 
 		// 上传路径
-		void UploadCompressedTexture(VansVKCommandBuffer& command_buffer, const uint8_t* srcData, int width, int height, bool isSRGB, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
-		void UploadUncompressedTexture(VansVKCommandBuffer& command_buffer, const void* data, size_t dataSize, int width, int height, VkFormat format, bool needMip, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
+		bool UploadTexture(VansVKCommandBuffer& command_buffer, const TextureUploadRequest& request);
+		bool UploadCompressedTexture(VansVKCommandBuffer& command_buffer, const uint8_t* srcData, int width, int height, const TextureUploadPlan& uploadPlan, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
+		bool UploadUncompressedTexture(VansVKCommandBuffer& command_buffer, const void* data, size_t dataSize, int width, int height, const TextureUploadPlan& uploadPlan, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
 		int m_TextureWidth;
 		int m_TextureHeight;

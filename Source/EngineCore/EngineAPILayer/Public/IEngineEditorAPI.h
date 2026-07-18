@@ -1,0 +1,130 @@
+#pragma once
+
+#include "EngineDTOs.h"
+#include "IEngineCommand.h"
+#include "IEngineEventListener.h"
+
+#include <memory>
+#include <vector>
+
+namespace Vans::EditorAPI
+{
+	class IEngineEditorAPI
+	{
+	public:
+		virtual ~IEngineEditorAPI() = default;
+
+		virtual SceneDataSnapshot GetSceneSnapshot() const = 0;
+		virtual EntityDataSnapshot GetEntitySnapshot(EntityId id) const = 0;
+		virtual ComponentDataSnapshot GetComponentSnapshot(EntityId entityId, ComponentId componentId) const = 0;
+
+		virtual void SubmitCommand(std::unique_ptr<IEngineCommand> command) = 0;
+		virtual void BreakCommandMergeGroup() = 0;
+
+		virtual std::vector<AssetEntry> QueryAssets(AssetTypeFilter filter) const = 0;
+		virtual AssetMetaSnapshot GetAssetMeta(AssetId id) const = 0;
+		virtual ProjectBrowserRootSnapshot GetProjectBrowserRoot() const = 0;
+		virtual AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) = 0;
+		virtual AssetGuidResolution ResolveAssetGuid(const std::string& assetGuid) const = 0;
+		virtual AssetRefreshResult RefreshProjectAsset(const std::string& assetPath, bool importIfMissing) = 0;
+		virtual std::vector<RecentProjectEntry> GetRecentProjects() const = 0;
+		virtual ProjectOpenResult OpenProject(const ProjectOpenRequest& request) = 0;
+		virtual void CloseProject() = 0;
+		virtual float GetProjectPhysicsFixedTimeStep() const = 0;
+		virtual bool SetCurrentProjectScenePath(const std::string& scenePath) = 0;
+		virtual void ScanProjectAssets() = 0;
+
+		virtual EditorTextureHandle GetViewportTexture(ViewportId id) const = 0;
+		virtual RenderTexturePreview GetViewportPreview(ViewportId id) const = 0;
+		virtual std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const = 0;
+		virtual RenderBackendDiagnostics GetRenderBackendDiagnostics() const = 0;
+		virtual void RebuildReflectionProbeResources() = 0;
+		virtual void BakeQueuedReflectionProbesNow() = 0;
+		virtual ReflectionProbeSettingsSnapshot GetReflectionProbeSettings() const = 0;
+		virtual void ApplyReflectionProbeSettings(const ReflectionProbeSettingsSnapshot& settings) = 0;
+		virtual void GenerateAutoReflectionProbes() = 0;
+		virtual void ClearAutoReflectionProbes() = 0;
+		virtual void RequestReflectionProbeBakeAll() = 0;
+		virtual void RequestReflectionProbeBake(std::uint32_t probeIndex) = 0;
+		virtual void SaveReflectionProbeConfiguration() = 0;
+		virtual void ConvertReflectionProbeToManual(std::uint32_t probeIndex) = 0;
+		virtual WaterSettingsSnapshot GetWaterSettings() const = 0;
+		virtual void ApplyWaterSettings(const WaterSettingsSnapshot& settings) = 0;
+		virtual WaterRuntimeStats GetWaterRuntimeStats() const = 0;
+		virtual MeshLoadResult EnsureProjectMeshLoaded(const MeshLoadRequest& request) = 0;
+		virtual ProjectMeshInfoSnapshot GetProjectMeshInfo(const std::string& meshName) const = 0;
+		virtual void RegisterProjectMeshAlias(const ProjectMeshAliasRequest& request) = 0;
+		virtual std::string GetDefaultMaterialAssetName() const = 0;
+		virtual RuntimeModelEntityCreateResult CreateRuntimeModelEntity(const RuntimeModelEntityCreateRequest& request) = 0;
+		virtual ModelAssetPlacementPayload PrepareModelAssetPlacement(const ModelAssetPlacementRequest& request) = 0;
+		virtual RuntimeEntityDestroyResult DestroyRuntimeEntityByName(const RuntimeEntityDestroyRequest& request) = 0;
+		virtual std::string MakeUniqueRuntimeEntityName(const std::string& baseName) const = 0;
+		virtual std::string GetProjectRootPath() const = 0;
+		virtual bool IsRuntimeSceneReady() const = 0;
+		virtual bool IsRuntimeSceneSwitching() const = 0;
+		virtual bool LoadRuntimeScene(const std::string& scenePath, RuntimeSceneLoadMode mode) = 0;
+		virtual void UnloadRuntimeScene() = 0;
+		virtual bool AreRuntimeProjectResourcesLoaded() const = 0;
+		virtual void UnloadRuntimeProjectResources() = 0;
+		virtual bool LoadRuntimeProjectAssetsForScene(const std::string& scenePath) = 0;
+		virtual VehicleDebugSnapshot GetVehicleDebugSnapshot() const = 0;
+		virtual bool HasAnimationDebugNodes() const = 0;
+		virtual MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const = 0;
+		virtual void SetFootIKDebugVisualization(bool enabled) = 0;
+		virtual FootIKDebugSnapshot GetFootIKDebugSnapshot() const = 0;
+		virtual TerrainSettingsSnapshot GetTerrainSettings() const = 0;
+		virtual void ApplyTerrainSettings(const TerrainSettingsSnapshot& settings) = 0;
+		virtual void ApplyRuntimeEntityPatchJson(const std::string& entityJson) = 0;
+		virtual void SetRuntimeComponentEnabled(const std::string& entityGuid, const std::string& componentType, bool enabled) = 0;
+		virtual bool ApplyRuntimeMaterialAssetPatch(
+			const std::string& assetPath,
+			const std::string& assetRootJson,
+			const std::string& changedPointer) = 0;
+
+		virtual void CommitLightingChanges() = 0;
+		virtual LightingSettingsSnapshot GetLightingSettings() const = 0;
+		virtual void ApplyLightingSettings(const LightingSettingsSnapshot& settings) = 0;
+		virtual FogSettings GetFogSettings() const = 0;
+		virtual void ApplyFogSettings(const FogSettings& settings) = 0;
+		virtual FogVolumeSettings GetFogVolumeSettings() const = 0;
+		virtual void ApplyFogVolumeSettings(const FogVolumeSettings& settings) = 0;
+		virtual CloudSettings GetCloudSettings() const = 0;
+		virtual void ApplyCloudSettings(const CloudSettings& settings) = 0;
+		virtual void ResetCloudSettings() = 0;
+		virtual void CommitCloudSettings() = 0;
+
+		virtual EnginePlayState GetPlayState() const = 0;
+		virtual void SetPlayState(EnginePlayState state) = 0;
+		virtual EntityId RaycastScene(const Ray& ray) const = 0;
+		virtual std::string PickRuntimeEntity(const Ray& ray) const = 0;
+		virtual RuntimeTransformSnapshot GetRuntimeTransform(const std::string& entityGuid) const = 0;
+		virtual void ApplyRuntimeTransform(const RuntimeTransformEdit& edit) = 0;
+		virtual std::vector<RuntimeMultiMeshGroupSnapshot> BuildRuntimeMultiMeshExpansionSnapshot() = 0;
+		virtual void SetRuntimePhysicsFixedTimeStep(float deltaTimeSeconds) = 0;
+		virtual std::vector<std::string> GetRuntimeCollisionLayerNames() const = 0;
+		virtual void InstallRuntimeVehiclePhysicsStepCallback() = 0;
+		virtual void ClearRuntimePhysicsStepCallback() = 0;
+		virtual bool IsRuntimePhysicsRunning() const = 0;
+		virtual void StartRuntimePhysicsIfNeeded() = 0;
+		virtual void PauseRuntimePhysics() = 0;
+		virtual void ResumeRuntimePhysics() = 0;
+		virtual void StepRuntimeVehicle(float deltaTimeSeconds) = 0;
+		virtual void SetRuntimeVehicleInput(float throttle, float brake, float steer, float handbrake) = 0;
+		virtual void SyncRuntimePhysicsTransforms() = 0;
+		virtual void FlushRuntimeCharacterControllerTransforms() = 0;
+		virtual void UpdateRuntimeNonCameraScripts() = 0;
+		virtual void UpdateRuntimeCameraScripts() = 0;
+		virtual void InitializeRuntimeScripts() = 0;
+		virtual void SetupRuntimeScriptProjectVenv(const std::string& projectRootPath) = 0;
+		virtual void ReloadRuntimeScripts() = 0;
+		virtual void ReloadRuntimeScriptModule() = 0;
+
+		virtual bool CanUndo() const = 0;
+		virtual bool CanRedo() const = 0;
+		virtual void Undo() = 0;
+		virtual void Redo() = 0;
+
+		virtual void Subscribe(IEngineEventListener* listener) = 0;
+		virtual void Unsubscribe(IEngineEventListener* listener) = 0;
+	};
+}

@@ -1,5 +1,5 @@
-﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansTerrain.h"
+#include "../VansShaderManager.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
@@ -74,17 +74,37 @@ namespace VansGraphics
         // -------------------------------------------------------
         // 1. Load heightmap
         // -------------------------------------------------------
+        auto loadTexture = [&](VansTexture* texture,
+            const std::string& path,
+            bool isSRGB,
+            bool useCompress,
+            bool needMip = false,
+            TexturePrecision precision = LOW_PRES_8,
+            int importChannel = 4,
+            VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT)
+        {
+            VansTexture::TextureLoadDesc desc{};
+            desc.path = path;
+            desc.isSRGB = isSRGB;
+            desc.useCompress = useCompress;
+            desc.needMip = needMip;
+            desc.precision = precision;
+            desc.importChannel = importChannel;
+            desc.addressMode = addressMode;
+            texture->LoadTexture(device->GetCommandBuffer(), desc);
+        };
+
         m_HeightMap = new VansTexture();
-        m_HeightMap->LoadTexture(device->GetCommandBuffer(), config.heightmapPath, false, false, false, MID_PRES_16, 1);
+        loadTexture(m_HeightMap, config.heightmapPath, false, false, false, MID_PRES_16, 1);
 
         // -------------------------------------------------------
         // 2. Load splatmaps
         // -------------------------------------------------------
         m_Splatmap0 = new VansTexture();
-        m_Splatmap0->LoadTexture(device->GetCommandBuffer(), config.splatmap0Path, false, false);
+        loadTexture(m_Splatmap0, config.splatmap0Path, false, false);
 
         m_Splatmap1 = new VansTexture();
-        m_Splatmap1->LoadTexture(device->GetCommandBuffer(), config.splatmap1Path, false, false);
+        loadTexture(m_Splatmap1, config.splatmap1Path, false, false);
 
         // -------------------------------------------------------
         // 3. Load per-layer PBR textures
@@ -109,13 +129,13 @@ namespace VansGraphics
             {
                 // Fallback: load from path
                 m_LayerAlbedos[i] = new VansTexture();
-                m_LayerAlbedos[i]->LoadTexture(device->GetCommandBuffer(), layer.albedoPath, true, true);
+                loadTexture(m_LayerAlbedos[i], layer.albedoPath, true, true);
 
                 m_LayerNormals[i] = new VansTexture();
-                m_LayerNormals[i]->LoadTexture(device->GetCommandBuffer(), layer.normalPath, false, true);
+                loadTexture(m_LayerNormals[i], layer.normalPath, false, true);
 
                 m_LayerRoughness[i] = new VansTexture();
-                m_LayerRoughness[i]->LoadTexture(device->GetCommandBuffer(), layer.roughnessPath, false, true);
+                loadTexture(m_LayerRoughness[i], layer.roughnessPath, false, true);
             }
         }
 
@@ -202,12 +222,9 @@ namespace VansGraphics
         // 7b. Create Tessellation Shader (DeferredTess folder)
         // -------------------------------------------------------
         m_TerrainTessShader = new VansGraphicsShader();
-        m_TerrainTessShader->InitShader(device->GetLogicDevice(),
-            (projectRoot + "EngineAssets/Shaders/Terrain/DeferredTess").c_str());
-        m_TerrainTessShader->SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_PATCH_LIST);
-        m_TerrainTessShader->SetPatchControlPoints(3);
-        m_TerrainTessShader->SetDrawStateData(VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_BACK_BIT);
-        m_TerrainTessShader->SetColorAttachmentCount(4); // 4 MRT outputs for GBuffer (DeferredTess has no /Deferred subdir)
+        const std::string terrainTessShaderPath = projectRoot + "EngineAssets/Shaders/Terrain/DeferredTess";
+        m_TerrainTessShader->InitShader(device->GetLogicDevice(), terrainTessShaderPath.c_str());
+        VansShaderManager::Get().ConfigureGraphicsShader(*m_TerrainTessShader, "TerrainTess", terrainTessShaderPath);
 
         // -------------------------------------------------------
         // 7c. Create Tessellation Params UBO (binding 7)
@@ -246,27 +263,25 @@ namespace VansGraphics
         VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(m_DescriptorSetLayout, m_DescriptorSets, 1);
 
         auto* descMgr = VansVKDescriptorManager::GetInstance();
+        descMgr->BeginDescriptorUpdate();
 
         // Binding 0: heightMap
-        descMgr->m_ImageDescInfos.push_back({
-            m_DescriptorSets[0], TERRAIN_BINDING_HEIGHT_MAP, 0,
+        descMgr->WriteImageDescriptor(
+            m_DescriptorSets[0], TERRAIN_BINDING_HEIGHT_MAP,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_HeightMap->GetImage().GetSampler(), m_HeightMap->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
+            {{ m_HeightMap->GetImage().GetSampler(), m_HeightMap->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 
         // Binding 1: splatMap0
-        descMgr->m_ImageDescInfos.push_back({
-            m_DescriptorSets[0], TERRAIN_BINDING_SPLATMAP_0, 0,
+        descMgr->WriteImageDescriptor(
+            m_DescriptorSets[0], TERRAIN_BINDING_SPLATMAP_0,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_Splatmap0->GetImage().GetSampler(), m_Splatmap0->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
+            {{ m_Splatmap0->GetImage().GetSampler(), m_Splatmap0->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 
         // Binding 2: splatMap1
-        descMgr->m_ImageDescInfos.push_back({
-            m_DescriptorSets[0], TERRAIN_BINDING_SPLATMAP_1, 0,
+        descMgr->WriteImageDescriptor(
+            m_DescriptorSets[0], TERRAIN_BINDING_SPLATMAP_1,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_Splatmap1->GetImage().GetSampler(), m_Splatmap1->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }
-        });
+            {{ m_Splatmap1->GetImage().GetSampler(), m_Splatmap1->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 
         // Binding 3: albedo array [8]
         {
@@ -276,10 +291,9 @@ namespace VansGraphics
                 VansTexture* tex = (i < m_LayerCount) ? m_LayerAlbedos[i] : m_LayerAlbedos[0];
                 albedoInfos[i] = { tex->GetImage().GetSampler(), tex->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             }
-            descMgr->m_ImageDescInfos.push_back({
-                m_DescriptorSets[0], TERRAIN_BINDING_ALBEDO_ARRAY, 0,
-                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, albedoInfos
-            });
+            descMgr->WriteImageDescriptor(
+                m_DescriptorSets[0], TERRAIN_BINDING_ALBEDO_ARRAY,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, albedoInfos);
         }
 
         // Binding 4: normal array [8]
@@ -290,10 +304,9 @@ namespace VansGraphics
                 VansTexture* tex = (i < m_LayerCount) ? m_LayerNormals[i] : m_LayerNormals[0];
                 normalInfos[i] = { tex->GetImage().GetSampler(), tex->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             }
-            descMgr->m_ImageDescInfos.push_back({
-                m_DescriptorSets[0], TERRAIN_BINDING_NORMAL_ARRAY, 0,
-                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, normalInfos
-            });
+            descMgr->WriteImageDescriptor(
+                m_DescriptorSets[0], TERRAIN_BINDING_NORMAL_ARRAY,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, normalInfos);
         }
 
         // Binding 5: roughness array [8]
@@ -304,34 +317,30 @@ namespace VansGraphics
                 VansTexture* tex = (i < m_LayerCount) ? m_LayerRoughness[i] : m_LayerRoughness[0];
                 roughInfos[i] = { tex->GetImage().GetSampler(), tex->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             }
-            descMgr->m_ImageDescInfos.push_back({
-                m_DescriptorSets[0], TERRAIN_BINDING_ROUGHNESS_ARRAY, 0,
-                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, roughInfos
-            });
+            descMgr->WriteImageDescriptor(
+                m_DescriptorSets[0], TERRAIN_BINDING_ROUGHNESS_ARRAY,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, roughInfos);
         }
 
         // Binding 6: terrain params UBO
-        descMgr->m_BufferDescInfos.push_back({
-            m_DescriptorSets[0], TERRAIN_BINDING_PARAMS_UBO, 0,
+        descMgr->WriteBufferDescriptor(
+            m_DescriptorSets[0], TERRAIN_BINDING_PARAMS_UBO,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_ParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainParamsGPU) } }
-        });
+            {{ m_ParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainParamsGPU) }});
 
         // Binding 7: TessellationParams UBO (read by TCS + TES)
-        descMgr->m_BufferDescInfos.push_back({
-            m_DescriptorSets[0], TERRAIN_BINDING_TESSELLATION_PARAMS, 0,
+        descMgr->WriteBufferDescriptor(
+            m_DescriptorSets[0], TERRAIN_BINDING_TESSELLATION_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_TessParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainTessellationParamsGPU) } }
-        });
+            {{ m_TessParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainTessellationParamsGPU) }});
 
         // Binding 8: NoiseDetailParams UBO (read by TES + FS)
-        descMgr->m_BufferDescInfos.push_back({
-            m_DescriptorSets[0], TERRAIN_BINDING_NOISE_DETAIL_PARAMS, 0,
+        descMgr->WriteBufferDescriptor(
+            m_DescriptorSets[0], TERRAIN_BINDING_NOISE_DETAIL_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { m_NoiseDetailUBO.GetNativeBuffer(), 0, sizeof(TerrainNoiseDetailParamsGPU) } }
-        });
+            {{ m_NoiseDetailUBO.GetNativeBuffer(), 0, sizeof(TerrainNoiseDetailParamsGPU) }});
 
-        descMgr->UpdateDescriptorSets();
+        descMgr->CommitDescriptorUpdates();
     }
 
     // 辅助函数：计算切比雪夫距离(Chebyshev Distance)

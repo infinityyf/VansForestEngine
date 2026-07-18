@@ -1,35 +1,142 @@
 ﻿#include "VansVKDevice.h"
 #include "VansRenderPass.h"
+#include "VansRenderPassCatalog.h"
+#include "VansRenderGraphVulkanSync.h"
 #include "VansVKDescriptorManager.h"
 #include "VansDescriptorSetLayouts.h"
 #include "../VansScene.h"
+#include "../VansCamera.h"
 #include "../VansShaderManager.h"
 #include "../WaterCore/VansWaterSystem.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
 #include "../../VansTimer.h"
-#include "../../VansFramePhase.h"
+#include "../../RuntimeCore/VansFramePhase.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RuntimeUI/Public/VansUISystem.h"
 #include <algorithm>
 #include <iostream>
 #include <fstream>
+#include <utility>
 
 namespace VansGraphics
 {
+	namespace
+	{
+		bool EnsureKnownFramePassName(const char* passName)
+		{
+			if (VansRenderPassCatalog::IsKnownPassName(passName))
+			{
+				return true;
+			}
+
+			static std::vector<std::string> loggedUnknownPassNames;
+			const std::string safePassName = passName != nullptr ? passName : "<null>";
+			if (std::find(loggedUnknownPassNames.begin(), loggedUnknownPassNames.end(), safePassName) == loggedUnknownPassNames.end())
+			{
+				loggedUnknownPassNames.emplace_back(safePassName);
+				VANS_LOG_ERROR("FramePlan execution references unknown render pass id: " << safePassName);
+			}
+			return false;
+		}
+
+		bool IsFramePassEnabled(const VansRenderFramePlan& framePlan, const char* passName)
+		{
+			if (!EnsureKnownFramePassName(passName))
+			{
+				return false;
+			}
+			return framePlan.FindPass(passName) != nullptr;
+		}
+
+		template <typename DrawFunc>
+		void RecordFrameGraphicsPass(
+			const VansRenderFramePlan& framePlan,
+			const char* passName,
+			const char* gpuScopeName,
+			VansRenderPassManager* renderPassManager,
+			VansVKRenderPass& renderPass,
+			VansVKCommandBuffer& commandBuffer,
+			GlobalStateData& globalStateData,
+			DrawFunc&& drawFunc,
+			int framebufferIndex = 0)
+		{
+			if (!IsFramePassEnabled(framePlan, passName))
+			{
+				return;
+			}
+
+			VkCommandBuffer cmd = commandBuffer.GetVKCommandBuffer();
+			VANS_GPU_SCOPE(cmd, gpuScopeName);
+			renderPassManager->BeginRenderPass(renderPass, commandBuffer, globalStateData, framebufferIndex);
+			drawFunc();
+			renderPassManager->EndRenderPass(commandBuffer, globalStateData);
+		}
+
+		template <typename DrawFunc>
+		void RecordFrameGraphicsPassNoGpuScope(
+			const VansRenderFramePlan& framePlan,
+			const char* passName,
+			VansRenderPassManager* renderPassManager,
+			VansVKRenderPass& renderPass,
+			VansVKCommandBuffer& commandBuffer,
+			GlobalStateData& globalStateData,
+			DrawFunc&& drawFunc,
+			int framebufferIndex = 0)
+		{
+			if (!IsFramePassEnabled(framePlan, passName))
+			{
+				return;
+			}
+
+			renderPassManager->BeginRenderPass(renderPass, commandBuffer, globalStateData, framebufferIndex);
+			drawFunc();
+			renderPassManager->EndRenderPass(commandBuffer, globalStateData);
+		}
+
+		template <typename RecordFunc>
+		void RecordFrameStep(
+			const VansRenderFramePlan& framePlan,
+			const char* passName,
+			RecordFunc&& recordFunc)
+		{
+			if (!IsFramePassEnabled(framePlan, passName))
+			{
+				return;
+			}
+
+			recordFunc();
+		}
+
+		template <typename RecordFunc>
+		void RecordFrameGpuStep(
+			const VansRenderFramePlan& framePlan,
+			const char* passName,
+			const char* gpuScopeName,
+			VkCommandBuffer cmd,
+			RecordFunc&& recordFunc)
+		{
+			if (!IsFramePassEnabled(framePlan, passName))
+			{
+				return;
+			}
+
+			VANS_GPU_SCOPE(cmd, gpuScopeName);
+			recordFunc();
+		}
+	}
+
 	void VansVKDevice::BeginUIRenderPass()
 	{
-		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 		auto renderPassManager = VansRenderPassManager::GetInstance();
-		renderPassManager->BeginRenderPass(renderPassManager->m_VansUIPass, cmd, m_globalRenderStateData, m_SwapChainImageIndex);
+		renderPassManager->BeginRenderPass(renderPassManager->m_VansUIPass, m_VansVKCommandBuffer, m_globalRenderStateData, m_SwapChainImageIndex);
 	}
 
 	void VansVKDevice::EndUIRenderPass()
 	{
-		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 		auto renderPassManager = VansRenderPassManager::GetInstance();
-		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+		renderPassManager->EndRenderPass(m_VansVKCommandBuffer, m_globalRenderStateData);
 	}
 
 	VkRenderPass VansVKDevice::GetSceneUIRenderPassHandle()
@@ -40,17 +147,15 @@ namespace VansGraphics
 
 	void VansVKDevice::BeginSceneUIRenderPass()
 	{
-		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 		// Scene UI pass 只有一个 framebuffer（索引 0）
-		renderPassManager->BeginRenderPass(renderPassManager->m_VansSceneUIPass, cmd, m_globalRenderStateData, 0);
+		renderPassManager->BeginRenderPass(renderPassManager->m_VansSceneUIPass, m_VansVKCommandBuffer, m_globalRenderStateData, 0);
 	}
 
 	void VansVKDevice::EndSceneUIRenderPass()
 	{
-		VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 		auto renderPassManager = VansRenderPassManager::GetInstance();
-		renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+		renderPassManager->EndRenderPass(m_VansVKCommandBuffer, m_globalRenderStateData);
 	}
 
 	void VansVKDevice::OnWindowResize(uint32_t width, uint32_t height)
@@ -93,7 +198,6 @@ namespace VansGraphics
 		CreateVKSemaphore(m_ShadowDoneSemaphore);
 		CreateVKSemaphore(m_GBufferDoneSemaphore);
 		CreateVKSemaphore(m_AsyncComputeDoneSemaphore);
-		CreateVKFence(false, m_SwapChainImageAcquiredFence);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 		renderPassManager->SetupVansDeferredRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, { m_RenderWidth, m_RenderHeight });
@@ -110,7 +214,7 @@ namespace VansGraphics
 		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
 		// 水面 GBuffer Pass：须在 SetupVansDeferredRenderPass 之后调用（依赖已创建的 m_DepthImage）
 		renderPassManager->SetupVansWaterGBufferPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
-		// 注：水面 descriptor sets 在场景加载时（VansSceneLoader::AddWaterNode）调用 SetupDescriptors 完成。
+		// 注：水面 descriptor sets 在场景加载时（VansSceneEnvironmentNodeBuilder::AddWaterNode）调用 SetupDescriptors 完成。
 		renderPassManager->SetupVansUIRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface,
 			{
 				m_VansVKSurface.m_VansVKSwapChainImageExtent.width,
@@ -143,14 +247,116 @@ namespace VansGraphics
 		}
 	}
 
+	void VansVKDevice::BuildCurrentRenderFramePlan(VansRenderPassManager* renderPassManager)
+	{
+		(void)renderPassManager;
+
+		FlushCurrentFrameDeferredDeletes();
+		m_CurrentFrameContext.frameNumber = ++m_RenderFrameNumber;
+		m_CurrentFrameContext.swapchainImageIndex = m_SwapChainImageIndex;
+		m_CurrentFrameContext.graphicsCmd = &m_VansVKCommandBuffer;
+		m_CurrentFrameContext.shadowCmd = m_UseAsyncCompute ? &m_VansVKShadowCommandBuffer : &m_VansVKCommandBuffer;
+		m_CurrentFrameContext.gbufferCmd = m_UseAsyncCompute ? &m_VansVKGBufferCommandBuffer : &m_VansVKCommandBuffer;
+		m_CurrentFrameContext.asyncComputeCmd = m_UseAsyncCompute ? &m_VansVKRayTracingCommandBuffer : &m_VansVKCommandBuffer;
+		m_CurrentFrameContext.frameSubmitSucceeded = true;
+		m_CurrentFrameContext.shadowSubmitted = false;
+		m_CurrentFrameContext.gbufferSubmitted = false;
+		m_CurrentFrameContext.asyncComputeSubmitted = false;
+		BindCurrentFrameSyncResources();
+
+		VansRenderPassCatalog::BuildCompatibilityFramePlan(
+			m_CurrentFramePlan,
+			*m_Scene,
+			m_CurrentFrameContext.frameNumber);
+
+		m_CurrentCompiledRenderGraph = VansRenderGraphCompiler::CompileFramePlan(m_CurrentFramePlan);
+		m_CurrentBarrierPlan = VansRenderGraphBarrierPlanner::BuildBarrierPlan(m_CurrentCompiledRenderGraph);
+		m_CurrentVulkanSyncPlan = VansRenderGraphVulkanSyncMapper::BuildSyncPlan(m_CurrentBarrierPlan);
+
+		std::vector<std::string> requiredFeatures;
+		std::vector<std::string> conditionallyDisabledFeatures;
+		VansRenderPassCatalog::GetPreservedFeatureAuditList(
+			*m_Scene,
+			requiredFeatures,
+			conditionallyDisabledFeatures);
+		m_CurrentFeatureAudit = VansRenderFeatureAuditor::AuditFramePlan(
+			m_CurrentFramePlan,
+			requiredFeatures,
+			conditionallyDisabledFeatures);
+
+		m_CurrentRenderGraphDebugSummary =
+			VansRenderGraphDebugDumper::BuildFramePlanSummary(m_CurrentFramePlan)
+			+ VansRenderGraphDebugDumper::BuildCompiledGraphSummary(m_CurrentCompiledRenderGraph)
+			+ VansRenderGraphDebugDumper::BuildBarrierPlanSummary(m_CurrentBarrierPlan)
+			+ VansRenderGraphVulkanSyncDebugDumper::BuildSyncPlanSummary(m_CurrentVulkanSyncPlan)
+			+ VansRenderGraphDebugDumper::BuildFeatureAuditSummary(m_CurrentFeatureAudit);
+
+		if (!m_CurrentCompiledRenderGraph.IsValid() || !m_CurrentFeatureAudit.Passed())
+		{
+			static bool loggedRenderGraphCompatibilityError = false;
+			if (!loggedRenderGraphCompatibilityError)
+			{
+				loggedRenderGraphCompatibilityError = true;
+				for (const auto& error : m_CurrentCompiledRenderGraph.errors)
+				{
+					VANS_LOG_ERROR("RenderGraph compatibility compile error: " << error);
+				}
+				for (const auto& missingFeature : m_CurrentFeatureAudit.missingFeatures)
+				{
+					VANS_LOG_ERROR("RenderGraph compatibility audit missing preserved feature: " << missingFeature);
+				}
+				VANS_LOG_ERROR("RenderGraph compatibility debug summary:\n" << m_CurrentRenderGraphDebugSummary);
+			}
+		}
+
+		m_CurrentFrameContext.framePlan = m_CurrentFramePlan;
+	}
+
+	void VansVKDevice::EnqueueDeferredDelete(std::function<void()> destroy)
+	{
+		m_CurrentFrameContext.deferredDeletes.Enqueue(std::move(destroy));
+		m_CurrentFrameContext.pendingDeferredDeleteCount =
+			static_cast<uint64_t>(m_CurrentFrameContext.deferredDeletes.Size());
+	}
+
+	void VansVKDevice::FlushCurrentFrameDeferredDeletes()
+	{
+		const uint64_t deleteCount =
+			static_cast<uint64_t>(m_CurrentFrameContext.deferredDeletes.Size());
+		m_CurrentFrameContext.lastDeferredDeleteFlushCount = deleteCount;
+		if (deleteCount > 0)
+		{
+			m_CurrentFrameContext.deferredDeletes.Flush();
+		}
+		m_CurrentFrameContext.pendingDeferredDeleteCount =
+			static_cast<uint64_t>(m_CurrentFrameContext.deferredDeletes.Size());
+	}
+
+	void VansVKDevice::BindCurrentFrameSyncResources()
+	{
+		m_CurrentFrameContext.imageAcquiredSemaphore = m_SwapChainImageAcquiredSemaphore;
+		m_CurrentFrameContext.renderFinishedSemaphore = m_CommandBufferReadyToPresentSemaphore;
+		m_CurrentFrameContext.shadowFinishedSemaphore = m_ShadowDoneSemaphore;
+		m_CurrentFrameContext.gbufferFinishedSemaphore = m_GBufferDoneSemaphore;
+		m_CurrentFrameContext.asyncComputeFinishedSemaphore = m_AsyncComputeDoneSemaphore;
+		m_CurrentFrameContext.graphicsFence = m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence;
+		m_CurrentFrameContext.shadowFence = m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence;
+		m_CurrentFrameContext.gbufferFence = m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence;
+		m_CurrentFrameContext.asyncComputeFence = m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence;
+	}
+
 	void VansVKDevice::Rendering()
 	{
 		VANS_PROFILE_SCOPE("Vulkan::Rendering", Vans::ProfileCategory::CommandRecord);
+		BindCurrentFrameSyncResources();
 
 		bool requireImage = false;
 		{
 			VANS_PROFILE_SCOPE("Vulkan::AcquireSwapchainImage", Vans::ProfileCategory::CommandRecord);
-			requireImage = m_VansVKSurface.AcquireVulkanSwapChainImages(m_VansVKLogicDevice, m_SwapChainImageIndex, m_SwapChainImageAcquiredSemaphore, m_SwapChainImageAcquiredFence);
+			requireImage = m_VansVKSurface.AcquireVulkanSwapChainImages(
+				m_VansVKLogicDevice,
+				m_SwapChainImageIndex,
+				m_CurrentFrameContext.imageAcquiredSemaphore);
 		}
 		if (!requireImage)
 		{
@@ -165,7 +371,11 @@ namespace VansGraphics
 			// No scene loaded yet — begin the command buffer so the UI render
 			// pass (recorded by DrawEditorWindows) can still be appended.
 			// Present() will end the recording and submit.
-			m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+			{
+				m_CurrentFrameContext.frameSubmitSucceeded = false;
+				VANS_LOG_ERROR("[VansVKDevice] Failed to begin main command buffer without scene.");
+			}
 			return;
 		}
 
@@ -174,30 +384,47 @@ namespace VansGraphics
 		VANS_SET_FRAME_PHASE(VansFramePhase::GPURecord);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
+		BuildCurrentRenderFramePlan(renderPassManager);
 
 		if (!m_UseAsyncCompute)
 		{
 			// ── Original single-submit path ─────────────────────────────────
 			{
 				VANS_PROFILE_SCOPE("Vulkan::BeginCommandBuffer", Vans::ProfileCategory::CommandRecord);
-				m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+				if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to begin main graphics command buffer.");
+					return;
+				}
 			}
 			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
 
 			// 录制本帧视频纹理上传，合并到主图形提交，避免 Video::TickAll 同步等待。
-			m_Scene->RecordVideoUploads(m_VansVKCommandBuffer);
+			RecordFrameStep(
+				m_CurrentFramePlan,
+				VansRenderPassNames::VideoTextureUpload,
+				[&]() { m_Scene->RecordVideoUploads(m_VansVKCommandBuffer); });
 
 			// Upload cloth simulation results from staging buffers to device-local vertex buffers
-			{
-				VANS_PROFILE_SCOPE("Vulkan::RecordClothVertexUploads", Vans::ProfileCategory::CommandRecord);
-				m_Scene->RecordClothVertexUploads(cmd);
-			}
+			RecordFrameStep(
+				m_CurrentFramePlan,
+				VansRenderPassNames::ClothVertexUpload,
+				[&]()
+				{
+					VANS_PROFILE_SCOPE("Vulkan::RecordClothVertexUploads", Vans::ProfileCategory::CommandRecord);
+					m_Scene->RecordClothVertexUploads(m_VansVKCommandBuffer);
+				});
 
 			// Dispatch vegetation bone-sim + skinning compute passes
-			{
-				VANS_PROFILE_SCOPE("Vulkan::RecordVegetationCompute", Vans::ProfileCategory::CommandRecord);
-				m_Scene->RecordVegetationCompute(m_VansVKCommandBuffer);
-			}
+			RecordFrameStep(
+				m_CurrentFramePlan,
+				VansRenderPassNames::VegetationCompute,
+				[&]()
+				{
+					VANS_PROFILE_SCOPE("Vulkan::RecordVegetationCompute", Vans::ProfileCategory::CommandRecord);
+					m_Scene->RecordVegetationCompute(m_VansVKCommandBuffer);
+				});
 
 			// 重置本帧的 GPU Profiler 查询池
 #if VANS_PROFILER_ENABLED
@@ -210,44 +437,62 @@ namespace VansGraphics
 				for (int cascade = 0; cascade < cascadeCount; ++cascade)
 				{
 					m_globalRenderStateData.cascadeIndex = cascade;
-					renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, cmd, m_globalRenderStateData, cascade);
-					DrawShadowMap(renderPassManager, cmd);
-					renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+					RecordFrameGraphicsPassNoGpuScope(
+						m_CurrentFramePlan,
+						VansRenderPassNames::CascadeShadow,
+						renderPassManager,
+						renderPassManager->m_VansShadowPass,
+						m_VansVKCommandBuffer,
+						m_globalRenderStateData,
+						[&]() { DrawShadowMap(renderPassManager, cmd); },
+						cascade);
 				}
 				m_globalRenderStateData.cascadeIndex = -1;
 			}
 
-			{
-				VANS_GPU_SCOPE(cmd, "Punctual light Shadow Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, cmd, m_globalRenderStateData);
-				DrawPunctualShadowMap(renderPassManager, cmd);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::PunctualShadow,
+				"Punctual light Shadow Pass",
+				renderPassManager,
+				renderPassManager->m_VansPunctualShadowPass,
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { DrawPunctualShadowMap(renderPassManager, cmd); });
 
-			{
-				VANS_GPU_SCOPE(cmd, "Hair Deep Opacity Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairDeepOpacityPass(), cmd, m_globalRenderStateData);
-				m_Scene->DrawHairDeepOpacityNodes(VansShaderManager::Get().FindGraphicsShader("HairDeepOpacity"));
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::HairDeepOpacity,
+				"Hair Deep Opacity Pass",
+				renderPassManager,
+				renderPassManager->GetVansHairDeepOpacityPass(),
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { m_Scene->DrawHairDeepOpacityNodes(VansShaderManager::Get().FindGraphicsShader("HairDeepOpacity")); });
 
-			{
-				VANS_GPU_SCOPE(cmd, "Motion Vector Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansMotionVectorPass, cmd, m_globalRenderStateData);
-				DrawMotionVectorPass(renderPassManager, cmd);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::MotionVector,
+				"Motion Vector Pass",
+				renderPassManager,
+				renderPassManager->m_VansMotionVectorPass,
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { DrawMotionVectorPass(renderPassManager, cmd); });
 
-			{
-				VANS_GPU_SCOPE(cmd, "GBuffer Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansGBufferPass, cmd, m_globalRenderStateData);
-				DrawSceneGBuffer(renderPassManager, m_VansVKCommandBuffer);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::GBuffer,
+				"GBuffer Pass",
+				renderPassManager,
+				renderPassManager->m_VansGBufferPass,
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { DrawSceneGBuffer(renderPassManager, m_VansVKCommandBuffer); });
 
 			// ── 设计文档 Pass 7：Water GBuffer（在场景 GBuffer 之后、Deferred 之前执行）──
 			// 仅需场景深度作遮挡测试，SceneColor 尚不需要；可与 Deferred 前的 Compute 并排。
-			if (m_Scene->HasWaterNodes())
+			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
 			{
 				// 每帧更新 CDLOD Patch 列表（play 和非 play 模式均需要），依赖当前帧相机位置
 				auto* waterSys = m_Scene->GetWaterSystem();
@@ -266,41 +511,59 @@ namespace VansGraphics
 						}
 						waterSys->Update(static_cast<float>(VansTimer::GetDeltaTime()), camPos, viewMatrix, vpMatrix, mainLightDir, mainLightColor);
 				}
-				{
-					VANS_GPU_SCOPE(cmd, "Water Wave Compute");
-					waterSys->UpdateWaveSimulation(m_VansVKCommandBuffer, static_cast<float>(VansTimer::GetDeltaTime()));
-					// N-01: Detail Normal compute（在 wave simulation 之后、GBuffer pass 之前）
-					waterSys->UpdateDetailNormalCompute(m_VansVKCommandBuffer);
-				}
-				VANS_GPU_SCOPE(cmd, "Water GBuffer Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansWaterGBufferPass(), cmd, m_globalRenderStateData);
-				m_Scene->DrawWaterGBufferNode();
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+				RecordFrameGpuStep(
+					m_CurrentFramePlan,
+					VansRenderPassNames::WaterWaveCompute,
+					"Water Wave Compute",
+					cmd,
+					[&]()
+					{
+						waterSys->UpdateWaveSimulation(m_VansVKCommandBuffer, static_cast<float>(VansTimer::GetDeltaTime()));
+						// N-01: Detail Normal compute（在 wave simulation 之后、GBuffer pass 之前）
+						waterSys->UpdateDetailNormalCompute(m_VansVKCommandBuffer);
+					});
+				RecordFrameGraphicsPass(
+					m_CurrentFramePlan,
+					VansRenderPassNames::WaterGBuffer,
+					"Water GBuffer Pass",
+					renderPassManager,
+					renderPassManager->GetVansWaterGBufferPass(),
+					m_VansVKCommandBuffer,
+					m_globalRenderStateData,
+					[&]() { m_Scene->DrawWaterGBufferNode(); });
 			}
 
-			if (m_Scene->HasDecalNodes())
-			{
-				VANS_GPU_SCOPE(cmd, "Decal Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansDecalPass(), cmd, m_globalRenderStateData);
-				m_Scene->DrawDecalNodes();
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::Decal,
+				"Decal Pass",
+				renderPassManager,
+				renderPassManager->GetVansDecalPass(),
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { m_Scene->DrawDecalNodes(); });
 
 			{
 				VANS_GPU_SCOPE(cmd, "Compute Between GBuffer And Deferred");
 				// ★ TileLight Build（依赖相机矩阵 + 光源 SSBO，在 UpdateHZB 前完成）
-				BuildTileLightLists(m_VansVKCommandBuffer);
-				UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
-				UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer);
-				UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
-				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
-				UpdateRayTracing(m_VansVKCommandBuffer);
-				UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::TileLightBuild, [&]() { BuildTileLightLists(m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::HZB, [&]() { UpdateHZB(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::GIData, [&]() { UpdateGIData(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSR, [&]() { UpdateSSR(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::VolumetricFog, [&]() { UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer); });
 				// 体积云 1/4 分辨率光线步进（Deferred pass 前完成，结果由 SkyBox.frag 合成）
-				UpdateCloudRayMarch(renderPassManager, m_VansVKCommandBuffer);
-				UploadPostProcessProfileIfDirty();
-				UpdateExposure(renderPassManager, m_VansVKCommandBuffer);
-				UpdateBloom(renderPassManager, m_VansVKCommandBuffer);
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::CloudRayMarch, [&]() { UpdateCloudRayMarch(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(
+					m_CurrentFramePlan,
+					VansRenderPassNames::ExposureBloom,
+					[&]()
+					{
+						UploadPostProcessProfileIfDirty();
+						UpdateExposure(renderPassManager, m_VansVKCommandBuffer);
+						UpdateBloom(renderPassManager, m_VansVKCommandBuffer);
+					});
 
 				// 单队列路径中，SSR / SSGI / Fog 等 compute 结果随后会被 Deferred fragment 读取。
 				// 这里补充 compute shader 写入到 fragment shader 读取的显式可见性依赖。
@@ -315,15 +578,18 @@ namespace VansGraphics
 			}
 
 			// ── 设计文档 Pass 6：Deferred + SkyBox（写 SceneColor）────────────────────
-			{
-				VANS_GPU_SCOPE(cmd, "Deferred Skybox Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansDeferredSkyboxPass(), cmd, m_globalRenderStateData);
-				DrawSceneDeferredSkybox(renderPassManager, m_VansVKCommandBuffer);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::DeferredSkybox,
+				"Deferred Skybox Pass",
+				renderPassManager,
+				renderPassManager->GetVansDeferredSkyboxPass(),
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { DrawSceneDeferredSkybox(renderPassManager, m_VansVKCommandBuffer); });
 
 			// ── 设计文档 Pass 8：Pre-Water Compute ──────────────
-			if (m_Scene->HasWaterNodes())
+			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
 			{
 				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
 				auto* waterSys = m_Scene->GetWaterSystem();
@@ -339,41 +605,60 @@ namespace VansGraphics
 				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
 			}
 
-			if (m_Scene->HasForwardOpaqueAfterDeferredNodes())
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::ForwardOpaqueAfterDeferred,
+				"Forward Opaque After Deferred Pass",
+				renderPassManager,
+				renderPassManager->GetVansForwardOpaqueAfterDeferredPass(),
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { m_Scene->DrawForwardOpaqueAfterDeferredNodes(); });
+
+			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
 			{
-				VANS_GPU_SCOPE(cmd, "Forward Opaque After Deferred Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansForwardOpaqueAfterDeferredPass(), cmd, m_globalRenderStateData);
-				m_Scene->DrawForwardOpaqueAfterDeferredNodes();
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
-			{
-				VANS_GPU_SCOPE(cmd, "Hair Visibility Pass");
 				ClearHairOITResources(renderPassManager, m_VansVKCommandBuffer);
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairVisibilityPass(), cmd, m_globalRenderStateData);
-				m_Scene->DrawHairVisibilityNodes();
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+				RecordFrameGraphicsPass(
+					m_CurrentFramePlan,
+					VansRenderPassNames::HairVisibility,
+					"Hair Visibility Pass",
+					renderPassManager,
+					renderPassManager->GetVansHairVisibilityPass(),
+					m_VansVKCommandBuffer,
+					m_globalRenderStateData,
+					[&]() { m_Scene->DrawHairVisibilityNodes(); });
 				PrepareHairOITForResolve(renderPassManager, m_VansVKCommandBuffer);
 			}
-			{
-				VANS_GPU_SCOPE(cmd, "Hair Lighting Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairLightingPass(), cmd, m_globalRenderStateData);
-				DrawHairLighting(renderPassManager, m_VansVKCommandBuffer);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::HairLighting,
+				"Hair Lighting Pass",
+				renderPassManager,
+				renderPassManager->GetVansHairLightingPass(),
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { DrawHairLighting(renderPassManager, m_VansVKCommandBuffer); });
 
 			// ── 设计文档 Pass 10-12：Transparent + PostProcess（LOAD SceneColor）────────
 			CopyOpaqueSceneColorForTransmission(renderPassManager, m_VansVKCommandBuffer);
-			{
-				VANS_GPU_SCOPE(cmd, "Transparent PostProcess Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-				if (m_Scene->HasWaterNodes())
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::TransparentPostProcess,
+				"Transparent PostProcess Pass",
+				renderPassManager,
+				renderPassManager->m_VansRenderPass,
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]()
 				{
-					VANS_GPU_SCOPE(cmd, "Water Composite");
-					m_Scene->DrawWaterCompositeNode();
-				}
-				DrawSceneTransparentPost(renderPassManager, m_VansVKCommandBuffer);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+					if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
+					{
+						VANS_GPU_SCOPE(cmd, "Water Composite");
+						m_Scene->DrawWaterCompositeNode();
+					}
+					DrawSceneTransparentPost(renderPassManager, m_VansVKCommandBuffer);
+				});
 		}
 		else
 		{
@@ -385,18 +670,42 @@ namespace VansGraphics
 			m_pActiveCommandBuffer = &m_VansVKRayTracingCommandBuffer;
 			{
 				VANS_PROFILE_SCOPE("Vulkan::RecordAsyncComputeCB", Vans::ProfileCategory::CommandRecord);
-				m_VansVKRayTracingCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-				BuildTileLightLists(m_VansVKRayTracingCommandBuffer);
-				m_VansVKRayTracingCommandBuffer.EndCommandBufferRecord();
+				if (!m_VansVKRayTracingCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to begin async compute command buffer.");
+					m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+					return;
+				}
+				RecordFrameStep(
+					m_CurrentFramePlan,
+					VansRenderPassNames::TileLightBuild,
+					[&]() { BuildTileLightLists(m_VansVKRayTracingCommandBuffer); });
+				if (!m_VansVKRayTracingCommandBuffer.EndCommandBufferRecord())
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to end async compute command buffer.");
+					m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+					m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+					return;
+				}
 			}
 			m_pActiveCommandBuffer = &m_VansVKCommandBuffer;  // restore
 			{
 				VANS_PROFILE_SCOPE("Vulkan::QueueSubmit.Compute", Vans::ProfileCategory::VulkanSubmit);
-				VansVKCommandBuffer::SubmitCommands(
+				m_CurrentFrameContext.asyncComputeSubmitted = m_CurrentFrameContext.frameSubmitSucceeded && VansVKCommandBuffer::SubmitCommands(
 					m_VansVKComputeQueue, m_VansVKLogicDevice,
 					{ m_VansVKRayTracingCommandBuffer.GetVKCommandBuffer() },
-					{}, { m_AsyncComputeDoneSemaphore },
-					m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence, false);
+					{}, { m_CurrentFrameContext.asyncComputeFinishedSemaphore },
+					m_CurrentFrameContext.asyncComputeFence, false);
+				if (!m_CurrentFrameContext.asyncComputeSubmitted)
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Async compute frame submit failed.");
+					m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+					m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+					return;
+				}
 			}
 
 			// ── 1. Shadow CB (m_VansVKShadowCommandBuffer → m_VansVKShadowQueue) ──────
@@ -409,38 +718,81 @@ namespace VansGraphics
 			VkCommandBuffer shadowCmd = m_VansVKShadowCommandBuffer.GetVKCommandBuffer();
 			{
 				VANS_PROFILE_SCOPE("Vulkan::RecordShadowCB", Vans::ProfileCategory::CommandRecord);
-				m_VansVKShadowCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+				if (!m_VansVKShadowCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to begin shadow command buffer.");
+					m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+					return;
+				}
 				{
 				int cascadeCount = VansConfigration::GetInstance()->GetCascadeCount();
 				for (int cascade = 0; cascade < cascadeCount; ++cascade)
 				{
 					m_globalRenderStateData.cascadeIndex = cascade;
-					renderPassManager->BeginRenderPass(renderPassManager->m_VansShadowPass, shadowCmd, m_globalRenderStateData, cascade);
-					DrawShadowMap(renderPassManager, shadowCmd);
-					renderPassManager->EndRenderPass(shadowCmd, m_globalRenderStateData);
+					RecordFrameGraphicsPassNoGpuScope(
+						m_CurrentFramePlan,
+						VansRenderPassNames::CascadeShadow,
+						renderPassManager,
+						renderPassManager->m_VansShadowPass,
+						m_VansVKShadowCommandBuffer,
+						m_globalRenderStateData,
+						[&]() { DrawShadowMap(renderPassManager, shadowCmd); },
+						cascade);
 				}
 				m_globalRenderStateData.cascadeIndex = -1;
 				}
+				RecordFrameGraphicsPassNoGpuScope(
+					m_CurrentFramePlan,
+					VansRenderPassNames::PunctualShadow,
+					renderPassManager,
+					renderPassManager->m_VansPunctualShadowPass,
+					m_VansVKShadowCommandBuffer,
+					m_globalRenderStateData,
+					[&]() { DrawPunctualShadowMap(renderPassManager, shadowCmd); });
+				RecordFrameGraphicsPassNoGpuScope(
+					m_CurrentFramePlan,
+					VansRenderPassNames::HairDeepOpacity,
+					renderPassManager,
+					renderPassManager->GetVansHairDeepOpacityPass(),
+					m_VansVKShadowCommandBuffer,
+					m_globalRenderStateData,
+					[&]() { m_Scene->DrawHairDeepOpacityNodes(VansShaderManager::Get().FindGraphicsShader("HairDeepOpacity")); });
+				if (!m_VansVKShadowCommandBuffer.EndCommandBufferRecord())
 				{
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansPunctualShadowPass, shadowCmd, m_globalRenderStateData);
-				DrawPunctualShadowMap(renderPassManager, shadowCmd);
-				renderPassManager->EndRenderPass(shadowCmd, m_globalRenderStateData);
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to end shadow command buffer.");
+					if (m_CurrentFrameContext.asyncComputeSubmitted)
+					{
+						VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.asyncComputeFence);
+						m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+					}
+					m_VansVKShadowCommandBuffer.ResetCommandBuffer(false);
+					m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+					return;
 				}
-				{
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairDeepOpacityPass(), shadowCmd, m_globalRenderStateData);
-				m_Scene->DrawHairDeepOpacityNodes(VansShaderManager::Get().FindGraphicsShader("HairDeepOpacity"));
-				renderPassManager->EndRenderPass(shadowCmd, m_globalRenderStateData);
-				}
-				m_VansVKShadowCommandBuffer.EndCommandBufferRecord();
 			}
 			m_pActiveCommandBuffer = &m_VansVKCommandBuffer;  // restore active CB
 			{
 				VANS_PROFILE_SCOPE("Vulkan::QueueSubmit.Shadow", Vans::ProfileCategory::VulkanSubmit);
-				VansVKCommandBuffer::SubmitCommands(
+				m_CurrentFrameContext.shadowSubmitted = m_CurrentFrameContext.frameSubmitSucceeded && VansVKCommandBuffer::SubmitCommands(
 					m_VansVKShadowQueue, m_VansVKLogicDevice,
 					{ m_VansVKShadowCommandBuffer.GetVKCommandBuffer() },
-					{}, { m_ShadowDoneSemaphore },
-					m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence, false);
+					{}, { m_CurrentFrameContext.shadowFinishedSemaphore },
+					m_CurrentFrameContext.shadowFence, false);
+				if (!m_CurrentFrameContext.shadowSubmitted)
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Shadow frame submit failed.");
+					if (m_CurrentFrameContext.asyncComputeSubmitted)
+					{
+						VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.asyncComputeFence);
+						m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+					}
+					m_VansVKShadowCommandBuffer.ResetCommandBuffer(false);
+					m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+					return;
+				}
 			}
 
 			// ── 2. Graphics CB1 (ClothUpload + VegCompute + MotionVec + GBuffer) ────
@@ -450,24 +802,45 @@ namespace VansGraphics
 			VkCommandBuffer cmd = m_VansVKGBufferCommandBuffer.GetVKCommandBuffer();
 			{
 				VANS_PROFILE_SCOPE("Vulkan::RecordGBufferCB", Vans::ProfileCategory::CommandRecord);
-				m_VansVKGBufferCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+				if (!m_VansVKGBufferCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to begin GBuffer command buffer.");
+					m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+					return;
+				}
 				// 视频在 GBuffer 之前上传，确保材质采样到本帧新帧。
-				m_Scene->RecordVideoUploads(m_VansVKGBufferCommandBuffer);
-				m_Scene->RecordClothVertexUploads(cmd);
-				m_Scene->RecordVegetationCompute(m_VansVKGBufferCommandBuffer);
+				RecordFrameStep(
+					m_CurrentFramePlan,
+					VansRenderPassNames::VideoTextureUpload,
+					[&]() { m_Scene->RecordVideoUploads(m_VansVKGBufferCommandBuffer); });
+				RecordFrameStep(
+					m_CurrentFramePlan,
+					VansRenderPassNames::ClothVertexUpload,
+					[&]() { m_Scene->RecordClothVertexUploads(m_VansVKGBufferCommandBuffer); });
+				RecordFrameStep(
+					m_CurrentFramePlan,
+					VansRenderPassNames::VegetationCompute,
+					[&]() { m_Scene->RecordVegetationCompute(m_VansVKGBufferCommandBuffer); });
 			// 注意：此 CB 同样不使用 VANS_GPU_SCOPE，原因同 Shadow CB。
-			{
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansMotionVectorPass, cmd, m_globalRenderStateData);
-				DrawMotionVectorPass(renderPassManager, cmd);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
-			{
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansGBufferPass, cmd, m_globalRenderStateData);
-				DrawSceneGBuffer(renderPassManager, m_VansVKGBufferCommandBuffer);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+			RecordFrameGraphicsPassNoGpuScope(
+				m_CurrentFramePlan,
+				VansRenderPassNames::MotionVector,
+				renderPassManager,
+				renderPassManager->m_VansMotionVectorPass,
+				m_VansVKGBufferCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { DrawMotionVectorPass(renderPassManager, cmd); });
+			RecordFrameGraphicsPassNoGpuScope(
+				m_CurrentFramePlan,
+				VansRenderPassNames::GBuffer,
+				renderPassManager,
+				renderPassManager->m_VansGBufferPass,
+				m_VansVKGBufferCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { DrawSceneGBuffer(renderPassManager, m_VansVKGBufferCommandBuffer); });
 			// 水面 GBuffer Pass（设计文档 Pass 7）：在 GBuffer 之后、Decal 之前执行
-			if (m_Scene->HasWaterNodes())
+			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
 			{
 				// 每帧更新 CDLOD Patch 列表（异步路径同样需要）
 				auto* waterSys = m_Scene->GetWaterSystem();
@@ -486,31 +859,78 @@ namespace VansGraphics
 						}
 						waterSys->Update(static_cast<float>(VansTimer::GetDeltaTime()), camPos, viewMatrix, vpMatrix, mainLightDir, mainLightColor);
 				}
+				RecordFrameGpuStep(
+					m_CurrentFramePlan,
+					VansRenderPassNames::WaterWaveCompute,
+					"Water Wave Compute",
+					cmd,
+					[&]()
+					{
+						waterSys->UpdateWaveSimulation(m_VansVKGBufferCommandBuffer, static_cast<float>(VansTimer::GetDeltaTime()));
+						// N-01: Detail Normal compute（在 wave simulation 之后、GBuffer pass 之前）
+						waterSys->UpdateDetailNormalCompute(m_VansVKGBufferCommandBuffer);
+					});
+				RecordFrameGraphicsPassNoGpuScope(
+					m_CurrentFramePlan,
+					VansRenderPassNames::WaterGBuffer,
+					renderPassManager,
+					renderPassManager->GetVansWaterGBufferPass(),
+					m_VansVKGBufferCommandBuffer,
+					m_globalRenderStateData,
+					[&]() { m_Scene->DrawWaterGBufferNode(); });
+			}
+			RecordFrameGraphicsPassNoGpuScope(
+				m_CurrentFramePlan,
+				VansRenderPassNames::Decal,
+				renderPassManager,
+				renderPassManager->GetVansDecalPass(),
+				m_VansVKGBufferCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { m_Scene->DrawDecalNodes(); });
+				if (!m_VansVKGBufferCommandBuffer.EndCommandBufferRecord())
 				{
-					VANS_GPU_SCOPE(cmd, "Water Wave Compute");
-					waterSys->UpdateWaveSimulation(m_VansVKGBufferCommandBuffer, static_cast<float>(VansTimer::GetDeltaTime()));
-					// N-01: Detail Normal compute（在 wave simulation 之后、GBuffer pass 之前）
-					waterSys->UpdateDetailNormalCompute(m_VansVKGBufferCommandBuffer);
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to end GBuffer command buffer.");
+					if (m_CurrentFrameContext.asyncComputeSubmitted)
+					{
+						VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.asyncComputeFence);
+						m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+					}
+					if (m_CurrentFrameContext.shadowSubmitted)
+					{
+						VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.shadowFence);
+						m_VansVKShadowCommandBuffer.ResetCommandBuffer(false);
+					}
+					m_VansVKGBufferCommandBuffer.ResetCommandBuffer(false);
+					m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+					return;
 				}
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansWaterGBufferPass(), cmd, m_globalRenderStateData);
-				m_Scene->DrawWaterGBufferNode();
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
-			if (m_Scene->HasDecalNodes())
-			{
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansDecalPass(), cmd, m_globalRenderStateData);
-				m_Scene->DrawDecalNodes();
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
-				m_VansVKGBufferCommandBuffer.EndCommandBufferRecord();
 			}
 			{
 				VANS_PROFILE_SCOPE("Vulkan::QueueSubmit.GBuffer", Vans::ProfileCategory::VulkanSubmit);
-				VansVKCommandBuffer::SubmitCommands(
+				m_CurrentFrameContext.gbufferSubmitted = m_CurrentFrameContext.frameSubmitSucceeded && VansVKCommandBuffer::SubmitCommands(
 					m_VansVKGraphicsQueue, m_VansVKLogicDevice,
 					{ m_VansVKGBufferCommandBuffer.GetVKCommandBuffer() },
-					{}, { m_GBufferDoneSemaphore },
-					m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence, false);
+					{}, { m_CurrentFrameContext.gbufferFinishedSemaphore },
+					m_CurrentFrameContext.gbufferFence, false);
+				if (!m_CurrentFrameContext.gbufferSubmitted)
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] GBuffer frame submit failed.");
+					if (m_CurrentFrameContext.asyncComputeSubmitted)
+					{
+						VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.asyncComputeFence);
+						m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+					}
+					if (m_CurrentFrameContext.shadowSubmitted)
+					{
+						VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.shadowFence);
+						m_VansVKShadowCommandBuffer.ResetCommandBuffer(false);
+					}
+					m_VansVKGBufferCommandBuffer.ResetCommandBuffer(false);
+					m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
+					return;
+				}
 			}
 
 			// m_VansVKCommandBuffer 尚未提交，无需 CPU fence 等待，直接录制 CB2。
@@ -530,17 +950,23 @@ namespace VansGraphics
 				// BuildTileLightLists 已移至 Async Compute CB（Step 0）单独提交。
 				// CB2 通过 m_AsyncComputeDoneSemaphore 等待其完成，
 				// Tile 光源缓冲区的写入可见性由信号量保证。
-				UpdateHZB(renderPassManager, m_VansVKCommandBuffer);
-				UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer);
-				UpdateGIData(renderPassManager, m_VansVKCommandBuffer);
-				UpdateSSR(renderPassManager, m_VansVKCommandBuffer);
-				UpdateRayTracing(m_VansVKCommandBuffer);
-				UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer);
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::HZB, [&]() { UpdateHZB(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::GIData, [&]() { UpdateGIData(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSR, [&]() { UpdateSSR(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::VolumetricFog, [&]() { UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer); });
 				// 体积云 1/4 分辨率光线步进（Deferred pass 前完成，结果由 SkyBox.frag 合成）
-				UpdateCloudRayMarch(renderPassManager, m_VansVKCommandBuffer);
-				UploadPostProcessProfileIfDirty();
-				UpdateExposure(renderPassManager, m_VansVKCommandBuffer);
-				UpdateBloom(renderPassManager, m_VansVKCommandBuffer);
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::CloudRayMarch, [&]() { UpdateCloudRayMarch(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(
+					m_CurrentFramePlan,
+					VansRenderPassNames::ExposureBloom,
+					[&]()
+					{
+						UploadPostProcessProfileIfDirty();
+						UpdateExposure(renderPassManager, m_VansVKCommandBuffer);
+						UpdateBloom(renderPassManager, m_VansVKCommandBuffer);
+					});
 				VkMemoryBarrier computeToFragmentBarrier = {};
 				computeToFragmentBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 				computeToFragmentBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -550,14 +976,17 @@ namespace VansGraphics
 					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 					{ computeToFragmentBarrier });
 			}
-			{
-				VANS_GPU_SCOPE(cmd, "Deferred Skybox Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansDeferredSkyboxPass(), cmd, m_globalRenderStateData);
-				DrawSceneDeferredSkybox(renderPassManager, m_VansVKCommandBuffer);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::DeferredSkybox,
+				"Deferred Skybox Pass",
+				renderPassManager,
+				renderPassManager->GetVansDeferredSkyboxPass(),
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { DrawSceneDeferredSkybox(renderPassManager, m_VansVKCommandBuffer); });
 			// Pre-Water Compute（Stub，Phase 2 实现）
-			if (m_Scene->HasWaterNodes())
+			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
 			{
 				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
 				auto* waterSys = m_Scene->GetWaterSystem();
@@ -567,45 +996,65 @@ namespace VansGraphics
 				waterSys->DispatchRefractionCS(m_VansVKCommandBuffer);
 				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
 			}
-			if (m_Scene->HasForwardOpaqueAfterDeferredNodes())
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::ForwardOpaqueAfterDeferred,
+				"Forward Opaque After Deferred Pass",
+				renderPassManager,
+				renderPassManager->GetVansForwardOpaqueAfterDeferredPass(),
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { m_Scene->DrawForwardOpaqueAfterDeferredNodes(); });
+			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
 			{
-				VANS_GPU_SCOPE(cmd, "Forward Opaque After Deferred Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansForwardOpaqueAfterDeferredPass(), cmd, m_globalRenderStateData);
-				m_Scene->DrawForwardOpaqueAfterDeferredNodes();
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
-			{
-				VANS_GPU_SCOPE(cmd, "Hair Visibility Pass");
 				ClearHairOITResources(renderPassManager, m_VansVKCommandBuffer);
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairVisibilityPass(), cmd, m_globalRenderStateData);
-				m_Scene->DrawHairVisibilityNodes();
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
+				RecordFrameGraphicsPass(
+					m_CurrentFramePlan,
+					VansRenderPassNames::HairVisibility,
+					"Hair Visibility Pass",
+					renderPassManager,
+					renderPassManager->GetVansHairVisibilityPass(),
+					m_VansVKCommandBuffer,
+					m_globalRenderStateData,
+					[&]() { m_Scene->DrawHairVisibilityNodes(); });
 				PrepareHairOITForResolve(renderPassManager, m_VansVKCommandBuffer);
 			}
-			{
-				VANS_GPU_SCOPE(cmd, "Hair Lighting Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->GetVansHairLightingPass(), cmd, m_globalRenderStateData);
-				DrawHairLighting(renderPassManager, m_VansVKCommandBuffer);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
-			{
-				CopyOpaqueSceneColorForTransmission(renderPassManager, m_VansVKCommandBuffer);
-				VANS_GPU_SCOPE(cmd, "Transparent PostProcess Pass");
-				renderPassManager->BeginRenderPass(renderPassManager->m_VansRenderPass, cmd, m_globalRenderStateData);
-				if (m_Scene->HasWaterNodes())
+
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::HairLighting,
+				"Hair Lighting Pass",
+				renderPassManager,
+				renderPassManager->GetVansHairLightingPass(),
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { DrawHairLighting(renderPassManager, m_VansVKCommandBuffer); });
+
+			CopyOpaqueSceneColorForTransmission(renderPassManager, m_VansVKCommandBuffer);
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::TransparentPostProcess,
+				"Transparent PostProcess Pass",
+				renderPassManager,
+				renderPassManager->m_VansRenderPass,
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]()
 				{
-					VANS_GPU_SCOPE(cmd, "Water Composite");
-					m_Scene->DrawWaterCompositeNode();
-				}
-				DrawSceneTransparentPost(renderPassManager, m_VansVKCommandBuffer);
-				renderPassManager->EndRenderPass(cmd, m_globalRenderStateData);
-			}
+					if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
+					{
+						VANS_GPU_SCOPE(cmd, "Water Composite");
+						m_Scene->DrawWaterCompositeNode();
+					}
+					DrawSceneTransparentPost(renderPassManager, m_VansVKCommandBuffer);
+				});
 		}
 
 		// ── FSR Upscale ─────────────────────────────────────────────────────
 		// Dispatch FSR upscale on the current command buffer so the upscaled
 		// image is ready before the UI render pass samples it in the editor
 		// Scene window.
+		RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::FSRRuntimeUI, [&]()
 		{
 			VANS_PROFILE_SCOPE("Vulkan::RecordFSRAndRuntimeUI", Vans::ProfileCategory::CommandRecord);
 			VkCommandBuffer cmd = m_VansVKCommandBuffer.GetVKCommandBuffer();
@@ -618,19 +1067,14 @@ namespace VansGraphics
 			// 将 FSR 输出图像从 compute write 转为 color attachment，
 			// 供 Noesis 场景 UI 渲染通道（m_VansSceneUIPass）写入
 			VansVKImage& fsrOut = m_FSRController.GetTempFSRImage();
-			fsrOut.SetImageMemoryBarrier(
+			VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
+				fsrOut,
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-				{
-					fsrOut.GetImage(),
-					VK_ACCESS_SHADER_WRITE_BIT,
-					VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-					fsrOut.GetImageLayout(),
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_IMAGE_ASPECT_COLOR_BIT
-				});
+				VK_ACCESS_SHADER_WRITE_BIT,
+				VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+				fsrOut.GetImageLayout(),
+				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 			// ── Noesis 运行时 UI 合成到场景色图 ──────────────────────────
 			// 1. 每帧逻辑更新（输入分发、动画推进、绑定刷新）
@@ -647,14 +1091,24 @@ namespace VansGraphics
 				static_cast<void*>(GetSceneUIRenderPassHandle()), 1);
 			EndSceneUIRenderPass();
 			// 此时 FSR 图像已处于 SHADER_READ_ONLY_OPTIMAL，ImGui 场景窗口可直接采样
-		}
+		});
 	}
 
 	void VansVKDevice::Present()
 	{
+		if (!m_CurrentFrameContext.frameSubmitSucceeded)
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Skipping present because frame recording failed before submit.");
+			return;
+		}
+
 		{
 			VANS_PROFILE_SCOPE("Vulkan::EndCommandBuffer", Vans::ProfileCategory::VulkanSubmit);
-			m_VansVKCommandBuffer.EndCommandBufferRecord();
+			if (!m_VansVKCommandBuffer.EndCommandBufferRecord())
+			{
+				m_CurrentFrameContext.frameSubmitSucceeded = false;
+				VANS_LOG_ERROR("[VansVKDevice] Failed to end main graphics command buffer.");
+			}
 		}
 
 		// When no scene is loaded, always use the single-submit path because
@@ -663,68 +1117,140 @@ namespace VansGraphics
 		{
 			// ── Single-submit present ───────────────────────────────────────
 			std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {
-				{ m_SwapChainImageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }
+				{ m_CurrentFrameContext.imageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }
 			};
 
 			{
 				VANS_PROFILE_SCOPE("Vulkan::QueueSubmit.Graphics", Vans::ProfileCategory::VulkanSubmit);
-				VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+				m_CurrentFrameContext.frameSubmitSucceeded = VansVKCommandBuffer::SubmitCommands(
+					m_VansVKGraphicsQueue,
+					m_VansVKLogicDevice,
+					{ m_VansVKCommandBuffer.GetVKCommandBuffer() },
+					wait_semaphore_infos,
+					{ m_CurrentFrameContext.renderFinishedSemaphore },
+					m_CurrentFrameContext.graphicsFence);
+				if (!m_CurrentFrameContext.frameSubmitSucceeded)
+				{
+					VANS_LOG_ERROR("[VansVKDevice] Graphics frame submit failed.");
+				}
 			}
 			{
 				VANS_PROFILE_SCOPE("Vulkan::ResetCommandBuffer", Vans::ProfileCategory::VulkanSubmit);
-				m_VansVKCommandBuffer.ResetCommandBuffer(false);
+				if (!m_VansVKCommandBuffer.ResetCommandBuffer(false))
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to reset main graphics command buffer.");
+				}
 			}
 
 		}
 		else
 		{
+			if (!m_CurrentFrameContext.frameSubmitSucceeded
+				|| !m_CurrentFrameContext.shadowSubmitted
+				|| !m_CurrentFrameContext.gbufferSubmitted
+				|| !m_CurrentFrameContext.asyncComputeSubmitted)
+			{
+				VANS_LOG_ERROR("[VansVKDevice] Skipping graphics CB2 submit/present because a prerequisite frame submit failed.");
+				m_VansVKCommandBuffer.ResetCommandBuffer(false);
+				if (m_CurrentFrameContext.shadowSubmitted)
+				{
+					VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.shadowFence);
+					m_VansVKShadowCommandBuffer.ResetCommandBuffer(false);
+				}
+				if (m_CurrentFrameContext.gbufferSubmitted)
+				{
+					VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.gbufferFence);
+					m_VansVKGBufferCommandBuffer.ResetCommandBuffer(false);
+				}
+				if (m_CurrentFrameContext.asyncComputeSubmitted)
+				{
+					VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.asyncComputeFence);
+					m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+				}
+				return;
+			}
+
 			// ── Shadow-Parallel + Async Compute present ──────────────────────────────
 			// CB2 waits for: swapchain image acquired + shadow pass done + GBuffer done +
 			//               async compute done (BuildTileLightLists on compute queue).
 			std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {
-				{ m_SwapChainImageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT },
-				{ m_ShadowDoneSemaphore,             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT         },
-				{ m_GBufferDoneSemaphore,            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT          },
-				{ m_AsyncComputeDoneSemaphore,       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT          },
+				{ m_CurrentFrameContext.imageAcquiredSemaphore,       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT },
+				{ m_CurrentFrameContext.shadowFinishedSemaphore,      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT         },
+				{ m_CurrentFrameContext.gbufferFinishedSemaphore,     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT          },
+				{ m_CurrentFrameContext.asyncComputeFinishedSemaphore,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT          },
 			};
 
 			{
 				VANS_PROFILE_SCOPE("Vulkan::QueueSubmit.Graphics.CB2", Vans::ProfileCategory::VulkanSubmit);
-				VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, wait_semaphore_infos, { m_CommandBufferReadyToPresentSemaphore }, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+				m_CurrentFrameContext.frameSubmitSucceeded = VansVKCommandBuffer::SubmitCommands(
+					m_VansVKGraphicsQueue,
+					m_VansVKLogicDevice,
+					{ m_VansVKCommandBuffer.GetVKCommandBuffer() },
+					wait_semaphore_infos,
+					{ m_CurrentFrameContext.renderFinishedSemaphore },
+					m_CurrentFrameContext.graphicsFence);
+				if (!m_CurrentFrameContext.frameSubmitSucceeded)
+				{
+					VANS_LOG_ERROR("[VansVKDevice] Graphics CB2 frame submit failed.");
+				}
 			}
 			{
 				VANS_PROFILE_SCOPE("Vulkan::ResetCommandBuffer.CB2", Vans::ProfileCategory::VulkanSubmit);
-				m_VansVKCommandBuffer.ResetCommandBuffer(false);
+				if (!m_VansVKCommandBuffer.ResetCommandBuffer(false))
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to reset graphics CB2 command buffer.");
+				}
 			}
 
 			// 等待 Shadow CB fence，确保下一帧可安全复用该命令缓冲区。
 			{
 				VANS_PROFILE_WAIT("Vulkan::WaitFence.Shadow");
-				VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
-				m_VansVKShadowCommandBuffer.ResetCommandBuffer(false);
+				if (!VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.shadowFence)
+					|| !m_VansVKShadowCommandBuffer.ResetCommandBuffer(false))
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to wait/reset shadow command buffer.");
+				}
 			}
 
 			// CB2 在 GPU 端通过 m_GBufferDoneSemaphore 等待 GBuffer CB，
 			// m_VansVKCommandBuffer fence 触发时 GBuffer CB 一定已完成，此处重置安全。
 			{
 				VANS_PROFILE_WAIT("Vulkan::WaitFence.GBuffer");
-				VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
-				m_VansVKGBufferCommandBuffer.ResetCommandBuffer(false);
+				if (!VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.gbufferFence)
+					|| !m_VansVKGBufferCommandBuffer.ResetCommandBuffer(false))
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to wait/reset GBuffer command buffer.");
+				}
 			}
 
 			// 同理 AsyncCompute CB（m_VansVKRayTracingCommandBuffer）：
 			// CB2 已等待 m_AsyncComputeDoneSemaphore，故其 fence 此时必然已触发。
 			{
 				VANS_PROFILE_WAIT("Vulkan::WaitFence.AsyncCompute");
-				VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
-				m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
+				if (!VansVKCommandBuffer::WaitForFence(m_VansVKLogicDevice, m_CurrentFrameContext.asyncComputeFence)
+					|| !m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false))
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to wait/reset async compute command buffer.");
+				}
 			}
+		}
+
+		if (!m_CurrentFrameContext.frameSubmitSucceeded)
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Skipping present because frame submit/reset failed.");
+			return;
 		}
 
 		// Probe capture samples the directional shadow map. Run it only after this
 		// frame's graphics work has completed, while the map and its matching light
 		// matrices are still in SHADER_READ_ONLY_OPTIMAL.
-		if (m_Scene->IsSceneReady())
+		if (m_Scene->IsSceneReady()
+			&& IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::ReflectionProbeBakeQueue))
 		{
 			static uint32_t reflectionProbeFrame = 0;
 			auto* reflectionProbes = m_Scene->GetReflectionProbeSystem();
@@ -737,14 +1263,27 @@ namespace VansGraphics
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 		{
 			VANS_PROFILE_SCOPE("Vulkan::PresentImage", Vans::ProfileCategory::VulkanSubmit);
-			m_VansVKSurface.PresentImage(m_VansVKLogicDevice, m_VansVKGraphicsQueue, { m_CommandBufferReadyToPresentSemaphore }, m_SwapChainImageIndex);
+			m_VansVKSurface.PresentImage(
+				m_VansVKLogicDevice,
+				m_VansVKGraphicsQueue,
+				{ m_CurrentFrameContext.renderFinishedSemaphore },
+				m_SwapChainImageIndex);
 		}
 
 		renderPassManager->ResetFrameBufferImageLayout(m_VansVKCommandBuffer, m_VansVKSurface, m_SwapChainImageIndex);
 		{
 			VANS_PROFILE_SCOPE("Vulkan::ResetFrameBufferImageLayoutSubmit", Vans::ProfileCategory::VulkanSubmit);
-			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-			m_VansVKCommandBuffer.ResetCommandBuffer(false);
+			if (!VansVKCommandBuffer::SubmitCommands(
+				m_VansVKGraphicsQueue,
+				m_VansVKLogicDevice,
+				{ m_VansVKCommandBuffer.GetVKCommandBuffer() },
+				{},
+				{},
+				m_CurrentFrameContext.graphicsFence)
+				|| !m_VansVKCommandBuffer.ResetCommandBuffer(false))
+			{
+				VANS_LOG_ERROR("[VansVKDevice] Swapchain image layout reset submit failed.");
+			}
 		}
 	}
 
@@ -761,7 +1300,6 @@ namespace VansGraphics
 		DestroyVKSemaphore(m_ShadowDoneSemaphore);
 		DestroyVKSemaphore(m_GBufferDoneSemaphore);
 		DestroyVKSemaphore(m_AsyncComputeDoneSemaphore);
-		DestroyVKFence(m_SwapChainImageAcquiredFence);
 	}
 
 	void VansVKDevice::DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
@@ -802,11 +1340,11 @@ namespace VansGraphics
 		}
 	}
 
-	void VansVKDevice::DrawSceneForward(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
+	void VansVKDevice::DrawSceneForward(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
 		m_Scene->DrawSkyBoxNode();
 		m_Scene->DrawOpaqueNodes();
-		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
+		renderPassManager->NextSubPass(commandBuffer, m_globalRenderStateData);
 		m_Scene->DrawPostProcessNodes();
 	}
 
@@ -836,11 +1374,10 @@ namespace VansGraphics
 	// ============================================================
 	void VansVKDevice::DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
-		VkCommandBuffer& cmd = commandBuffer.GetVKCommandBuffer();
 		DrawHairComposite(renderPassManager, commandBuffer);
 		m_Scene->DrawTransParentNodes();
 		m_Scene->DrawParticleNodes();
-		renderPassManager->NextSubPass(cmd, m_globalRenderStateData);
+		renderPassManager->NextSubPass(commandBuffer, m_globalRenderStateData);
 		m_Scene->DrawPostProcessNodes();
 	}
 
@@ -937,55 +1474,45 @@ namespace VansGraphics
 		}
 
 		auto* descManager = VansVKDescriptorManager::GetInstance();
-		descManager->ResetState();
-		descManager->m_ImageDescInfos.push_back({
+		descManager->BeginDescriptorUpdate();
+		descManager->WriteImageDescriptor(
 			m_HairLightingPassSets[0],
 			HAIR_LIGHTING_BINDING_OIT_HEAD,
-			0,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{
 				VK_NULL_HANDLE,
 				renderPassManager->GetHairOITHead().GetImageView(),
 				VK_IMAGE_LAYOUT_GENERAL
-			}}
-		});
-		descManager->m_BufferDescInfos.push_back({
+			}});
+		descManager->WriteBufferDescriptor(
 			m_HairLightingPassSets[0],
 			HAIR_LIGHTING_BINDING_OIT_NODES,
-			0,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ renderPassManager->GetHairOITNodeBuffer().GetNativeBuffer(), 0, renderPassManager->GetHairOITNodeBuffer().GetBufferSize() }}
-		});
-		descManager->m_BufferDescInfos.push_back({
+			{{ renderPassManager->GetHairOITNodeBuffer().GetNativeBuffer(), 0, renderPassManager->GetHairOITNodeBuffer().GetBufferSize() }});
+		descManager->WriteBufferDescriptor(
 			m_HairLightingPassSets[0],
 			HAIR_LIGHTING_BINDING_OIT_COUNTER,
-			0,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ renderPassManager->GetHairOITCounterBuffer().GetNativeBuffer(), 0, renderPassManager->GetHairOITCounterBuffer().GetBufferSize() }}
-		});
-		descManager->m_ImageDescInfos.push_back({
+			{{ renderPassManager->GetHairOITCounterBuffer().GetNativeBuffer(), 0, renderPassManager->GetHairOITCounterBuffer().GetBufferSize() }});
+		descManager->WriteImageDescriptor(
 			m_HairLightingPassSets[0],
 			HAIR_LIGHTING_BINDING_DEEP_OPACITY,
-			0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				renderPassManager->GetHairDeepOpacity().GetSampler(),
 				renderPassManager->GetHairDeepOpacity().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
-		descManager->m_ImageDescInfos.push_back({
+			}});
+		descManager->WriteImageDescriptor(
 			m_HairLightingPassSets[0],
 			HAIR_LIGHTING_BINDING_CASCADE_SHADOW,
-			0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				renderPassManager->GetCascadeShadowSampler(),
 				renderPassManager->GetCascadeShadowArrayView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
-		descManager->UpdateDescriptorSets();
+			}});
+		descManager->CommitDescriptorUpdates();
 		m_HairLightingDescriptorsReady = true;
 	}
 
@@ -1129,19 +1656,17 @@ namespace VansGraphics
 		}
 
 		auto* descManager = VansVKDescriptorManager::GetInstance();
-		descManager->ResetState();
-		descManager->m_ImageDescInfos.push_back({
+		descManager->BeginDescriptorUpdate();
+		descManager->WriteImageDescriptor(
 			m_HairCompositePassSets[0],
 			HAIR_COMP_BINDING_COLOR,
-			0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				renderPassManager->GetHairColor().GetSampler(),
 				renderPassManager->GetHairColor().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}}
-			});
-		descManager->UpdateDescriptorSets();
+			}});
+		descManager->CommitDescriptorUpdates();
 		m_HairCompositeDescriptorsReady = true;
 	}
 
@@ -1176,30 +1701,26 @@ namespace VansGraphics
 		{
 			ssrReflection = m_Scene->GetMaterialManager()->GetRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT);
 		}
-		descManager->ResetState();
-		descManager->m_ImageDescInfos.push_back({
+		descManager->BeginDescriptorUpdate();
+		descManager->WriteImageDescriptor(
 			m_TransmissionGlassPassSets[0],
 			TRANSMISSION_GLASS_BINDING_OPAQUE_SCENE_COLOR,
-			0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				renderPassManager->GetOpaqueSceneColor().GetSampler(),
 				renderPassManager->GetOpaqueSceneColor().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
-		descManager->m_ImageDescInfos.push_back({
+			}});
+		descManager->WriteImageDescriptor(
 			m_TransmissionGlassPassSets[0],
 			TRANSMISSION_GLASS_BINDING_SSR_REFLECTION,
-			0,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				ssrReflection != nullptr ? ssrReflection->GetImage().GetSampler() : renderPassManager->GetOpaqueSceneColor().GetSampler(),
 				ssrReflection != nullptr ? ssrReflection->GetImage().GetImageView() : renderPassManager->GetOpaqueSceneColor().GetImageView(),
 				ssrReflection != nullptr ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
-		descManager->UpdateDescriptorSets();
+			}});
+		descManager->CommitDescriptorUpdates();
 		m_TransmissionGlassDescriptorsReady = true;
 	}
 
@@ -1227,8 +1748,8 @@ namespace VansGraphics
 			m_globalRenderStateData.vertexInputBindingDescriptions = nullptr;
 			m_globalRenderStateData.vertexInputAttributeDescriptions = nullptr;
 
-			std::vector<VkDescriptorSetLayout> layouts = { m_Scene->m_GlobalDescriptorSetLayout, m_HairLightingPassLayout };
-			std::vector<VkDescriptorSet> sets = { m_Scene->m_GlobalDescriptorSet, m_HairLightingPassSets[0] };
+			std::vector<VkDescriptorSetLayout> layouts = { m_Scene->GetGlobalDescriptorSetLayout(), m_HairLightingPassLayout };
+			std::vector<VkDescriptorSet> sets = { m_Scene->GetGlobalDescriptorSet(), m_HairLightingPassSets[0] };
 
 			commandBuffer.EnsureGraphicsShader(*shader, m_globalRenderStateData, layouts);
 			commandBuffer.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, sets, {});
@@ -1252,8 +1773,8 @@ namespace VansGraphics
 		m_globalRenderStateData.vertexInputBindingDescriptions = nullptr;
 		m_globalRenderStateData.vertexInputAttributeDescriptions = nullptr;
 
-		std::vector<VkDescriptorSetLayout> layouts = { m_Scene->m_GlobalDescriptorSetLayout, m_HairCompositePassLayout };
-		std::vector<VkDescriptorSet> sets = { m_Scene->m_GlobalDescriptorSet, m_HairCompositePassSets[0] };
+		std::vector<VkDescriptorSetLayout> layouts = { m_Scene->GetGlobalDescriptorSetLayout(), m_HairCompositePassLayout };
+		std::vector<VkDescriptorSet> sets = { m_Scene->GetGlobalDescriptorSet(), m_HairCompositePassSets[0] };
 
 		commandBuffer.EnsureGraphicsShader(*shader, m_globalRenderStateData, layouts);
 		commandBuffer.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, sets, {});
@@ -1262,4 +1783,5 @@ namespace VansGraphics
 	}
 
 }
+
 

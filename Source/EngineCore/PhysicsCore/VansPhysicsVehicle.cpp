@@ -546,7 +546,61 @@ namespace VansEngine
     void VansPhysicsVehicle::Step(float dt)
     {
         m_ComponentSequence.update(dt, m_SimulationContext);
-		//std::cout << "[VansVehicle] Step completed. Position: " << GetTransform().p.x << ", " << GetTransform().p.y << ", " << GetTransform().p.z << std::endl;
+        if (m_CommandState.throttle > 0.0f)
+        {
+            m_DebugLogAccumulator += dt;
+            if (m_DebugLogAccumulator >= 0.5f)
+            {
+                m_DebugLogAccumulator = 0.0f;
+
+                const PxTransform pose = GetTransform();
+                PxVec3 linearVelocity(0.0f);
+                PxVec3 angularVelocity(0.0f);
+                if (PxRigidDynamic* dynamicBody = m_State.physxActor.rigidBody
+                    ? m_State.physxActor.rigidBody->is<PxRigidDynamic>()
+                    : nullptr)
+                {
+                    linearVelocity = dynamicBody->getLinearVelocity();
+                    angularVelocity = dynamicBody->getAngularVelocity();
+                }
+
+                VANS_LOG("[VehicleDebug] throttle=" << m_CommandState.throttle
+                    << " gear=" << m_State.gearboxState.currentGear
+                    << " targetGear=" << m_State.gearboxState.targetGear
+                    << " pose=(" << pose.p.x << ", " << pose.p.y << ", " << pose.p.z << ")"
+                    << " linVel=(" << linearVelocity.x << ", " << linearVelocity.y << ", " << linearVelocity.z << ")"
+                    << " angVel=(" << angularVelocity.x << ", " << angularVelocity.y << ", " << angularVelocity.z << ")");
+
+                for (PxU32 i = 0; i < 4; ++i)
+                {
+                    const PxVehicleRoadGeometryState& road = m_State.roadGeomStates[i];
+                    const PxVehicleSuspensionState& suspension = m_State.suspensionStates[i];
+                    const PxVehicleSuspensionForce& suspensionForce = m_State.suspensionForces[i];
+                    const PxVehicleTireGripState& grip = m_State.tireGripStates[i];
+                    const PxVehicleTireForce& tireForce = m_State.tireForces[i];
+                    const PxVehicleWheelRigidBody1dState& wheelState = m_State.wheelRigidBody1dStates[i];
+
+                    const PxVec3& longForce = tireForce.forces[PxVehicleTireDirectionModes::eLONGITUDINAL];
+                    const PxVec3& latForce = tireForce.forces[PxVehicleTireDirectionModes::eLATERAL];
+                    VANS_LOG("[VehicleDebug] wheel=" << i
+                        << " roadHit=" << (road.hitState ? 1 : 0)
+                        << " roadFriction=" << road.friction
+                        << " jounce=" << suspension.jounce
+                        << " separation=" << suspension.separation
+                        << " normalForce=" << suspensionForce.normalForce
+                        << " gripLoad=" << grip.load
+                        << " gripFriction=" << grip.friction
+                        << " wheelOmega=" << wheelState.rotationSpeed
+                        << " longForce=(" << longForce.x << ", " << longForce.y << ", " << longForce.z << ")"
+                        << " latForce=(" << latForce.x << ", " << latForce.y << ", " << latForce.z << ")"
+                        << " wheelTorque=" << tireForce.wheelTorque);
+                }
+            }
+        }
+        else
+        {
+            m_DebugLogAccumulator = 0.0f;
+        }
     }
 
     void VansPhysicsVehicle::SetInputs(float throttle, float brake, float steer, float handbrake)

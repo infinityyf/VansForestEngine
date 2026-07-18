@@ -3,8 +3,60 @@
 #include <cmath>
 using namespace VansGraphics;
 
+namespace
+{
+bool ReadMaterialVec3(const nlohmann::ordered_json& value, glm::vec3& out)
+{
+	const nlohmann::ordered_json* scalarValue = &value;
+	if (value.is_object())
+	{
+		if (value.contains("value")) scalarValue = &value["value"];
+		else if (value.contains("default")) scalarValue = &value["default"];
+	}
+	if (!scalarValue->is_array() || scalarValue->size() < 3) return false;
+	out = glm::vec3((*scalarValue)[0].get<float>(), (*scalarValue)[1].get<float>(), (*scalarValue)[2].get<float>());
+	return true;
+}
+
+bool ReadMaterialFloat(const nlohmann::ordered_json& value, float& out)
+{
+	const nlohmann::ordered_json* scalarValue = &value;
+	if (value.is_object())
+	{
+		if (value.contains("value")) scalarValue = &value["value"];
+		else if (value.contains("default")) scalarValue = &value["default"];
+	}
+	if (!scalarValue->is_number()) return false;
+	out = scalarValue->get<float>();
+	return true;
+}
+
+glm::vec4 ReadMaterialVec4Value(const nlohmann::ordered_json& value)
+{
+	if (value.is_number())
+		return glm::vec4(value.get<float>(), 0.0f, 0.0f, 0.0f);
+	if (value.is_array())
+	{
+		glm::vec4 result(0.0f);
+		const std::size_t count = std::min<std::size_t>(value.size(), 4);
+		for (std::size_t i = 0; i < count; ++i)
+			if (value[i].is_number())
+				result[static_cast<int>(i)] = value[i].get<float>();
+		return result;
+	}
+	if (value.is_object())
+	{
+		if (value.contains("value"))
+			return ReadMaterialVec4Value(value["value"]);
+		if (value.contains("default"))
+			return ReadMaterialVec4Value(value["default"]);
+	}
+	return glm::vec4(0.0f);
+}
+}
+
 // ============================================================
-// VansMaterial — pass shader accessors
+// VansMaterial �?pass shader accessors
 // ============================================================
 VansGraphicsShader* VansGraphics::VansMaterial::GetPassShader(const std::string& passName) const
 {
@@ -18,7 +70,7 @@ bool VansGraphics::VansMaterial::HasPass(const std::string& passName) const
 }
 
 // ============================================================
-// Material subclass destructors — release owned Vulkan resources
+// Material subclass destructors �?release owned Vulkan resources
 // ============================================================
 
 VansGraphics::VansTransparentMaterial::~VansTransparentMaterial()
@@ -119,17 +171,17 @@ void VansGraphics::VansMaterialManager::ClearRuntimeRenderTextures()
 
 void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 {
-	// 清空 CPU 侧 PBR 数组（指针不拥有所有权，material 由 VansScene 管理）
+	// 清空 CPU �?PBR 数组（指针不拥有所有权，material �?VansScene 管理�?
 	m_GlobalPBRMaterial.clear();
 	m_GlobalPBRParamData.clear();
 	m_GlobalCustomMaterialParamData.clear();
 	m_GlobalPBRTextures.clear();
 
-	// 销毁 GPU buffer
+	// 销�?GPU buffer
 	m_GlobalPBRDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalCustomMaterialDataBuffer.DestroyVulkanBuffer(device);
 
-	// 释放 descriptor set 和 layout
+	// 释放 descriptor set �?layout
 	auto descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_GlobalPBRDataDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRDataSetLayout);
@@ -137,109 +189,396 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRTexSetLayout);
 }
 
+bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& material)
+{
+	auto getGlobalMaterialIndex = [](VansMaterial& source) -> int
+	{
+		if (auto* pbr = dynamic_cast<VansPBRMaterial*>(&source))
+			return pbr->m_MaterialIndex;
+		if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(&source))
+			return emissive->m_MaterialIndex;
+		if (auto* decal = dynamic_cast<VansDecalMaterial*>(&source))
+			return decal->m_MaterialIndex;
+		if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&source))
+			return sss->m_MaterialIndex;
+		if (auto* cloth = dynamic_cast<VansClothMaterial*>(&source))
+			return cloth->m_MaterialIndex;
+		if (source.m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER ||
+			source.m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
+		{
+			return source.m_MaterialIndex;
+		}
+		return -1;
+	};
+
+	const int index = getGlobalMaterialIndex(material);
+	if (index < 0)
+		return false;
+
+	auto flushPbrPayload = [&](const VansBasePBRParam& payload) -> bool
+	{
+		if (m_GlobalPBRDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+			return false;
+		if (index < static_cast<int>(m_GlobalPBRParamData.size()))
+			m_GlobalPBRParamData[index] = payload;
+		const VkDeviceSize offset = sizeof(VansBasePBRParam) * static_cast<VkDeviceSize>(index);
+		m_GlobalPBRDataBuffer.SetBufferData(&payload, offset, sizeof(VansBasePBRParam));
+		return true;
+	};
+
+	if (auto* pbr = dynamic_cast<VansPBRMaterial*>(&material))
+		return flushPbrPayload(pbr->m_BasePBRParam);
+	if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(&material))
+		return flushPbrPayload(emissive->m_BasePBRParam);
+	if (auto* decal = dynamic_cast<VansDecalMaterial*>(&material))
+		return flushPbrPayload(decal->m_BasePBRParam);
+	if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&material))
+		return flushPbrPayload(sss->m_BasePBRParam);
+	if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
+		return flushPbrPayload(cloth->m_BasePBRParam);
+
+	if (m_GlobalCustomMaterialDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+		return false;
+	if (index < static_cast<int>(m_GlobalCustomMaterialParamData.size()))
+		m_GlobalCustomMaterialParamData[index] = material.m_CustomMaterialPayload;
+	const VkDeviceSize offset = sizeof(VansCustomMaterialPayload) * static_cast<VkDeviceSize>(index);
+	m_GlobalCustomMaterialDataBuffer.SetBufferData(
+		&material.m_CustomMaterialPayload,
+		offset,
+		sizeof(VansCustomMaterialPayload));
+	return true;
+}
+
+bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
+	VansMaterial& material,
+	const std::string& parameterPath,
+	const nlohmann::ordered_json& value)
+{
+	const std::string key = parameterPath;
+	if (key.rfind("customParameters/", 0) == 0)
+	{
+		const std::string customName = key.substr(std::string("customParameters/").size());
+		auto slot = material.m_CustomParameterSlots.find(customName);
+		if (slot != material.m_CustomParameterSlots.end() &&
+			slot->second >= 0 && slot->second < VANS_CUSTOM_MATERIAL_VEC4_COUNT)
+		{
+			material.m_CustomMaterialPayload.values[slot->second] = ReadMaterialVec4Value(value);
+			FlushMaterialPayload(material);
+			return true;
+		}
+	}
+	if (material.m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+	{
+		auto slot = material.m_CustomParameterSlots.find(key);
+		if (slot != material.m_CustomParameterSlots.end() &&
+			slot->second >= 0 && slot->second < VANS_CUSTOM_MATERIAL_VEC4_COUNT)
+		{
+			material.m_CustomMaterialPayload.values[slot->second] = ReadMaterialVec4Value(value);
+			FlushMaterialPayload(material);
+			return true;
+		}
+	}
+	if (material.m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
+	{
+		glm::vec3 color;
+		float scalar = 0.0f;
+		bool changed = false;
+
+		if ((key == "color" || key == "albedo" || key == "baseColor" || key == "basecolor") && ReadMaterialVec3(value, color))
+		{
+			material.m_CustomMaterialPayload.values[0].x = color.x;
+			material.m_CustomMaterialPayload.values[0].y = color.y;
+			material.m_CustomMaterialPayload.values[0].z = color.z;
+			changed = true;
+		}
+		else if (key == "alphaCoverage" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[0].w = std::clamp(scalar, 0.0f, 1.0f);
+			changed = true;
+		}
+		else if (key == "roughness" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[1].x = std::clamp(scalar, 0.0f, 1.0f);
+			changed = true;
+		}
+		else if (key == "transmission" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[1].y = std::clamp(scalar, 0.0f, 1.0f);
+			changed = true;
+		}
+		else if (key == "ior" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[1].z = std::max(scalar, 1.0001f);
+			changed = true;
+		}
+		else if (key == "thickness" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[1].w = std::max(scalar, 0.0f);
+			changed = true;
+		}
+		else if (key == "attenuationColor" && ReadMaterialVec3(value, color))
+		{
+			material.m_CustomMaterialPayload.values[2].x = color.x;
+			material.m_CustomMaterialPayload.values[2].y = color.y;
+			material.m_CustomMaterialPayload.values[2].z = color.z;
+			changed = true;
+		}
+		else if (key == "attenuationDistance" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[2].w = std::max(scalar, 0.0f);
+			changed = true;
+		}
+		else if (key == "normalScale" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[3].x = scalar;
+			changed = true;
+		}
+		else if (key == "refractionStrength" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[3].y = std::max(scalar, 0.0f);
+			changed = true;
+		}
+		else if (key == "reflectionStrength" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[3].z = std::max(scalar, 0.0f);
+			changed = true;
+		}
+		else if (key == "refractionMode" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[3].w = scalar;
+			changed = true;
+		}
+
+		if (changed)
+		{
+			FlushMaterialPayload(material);
+			return true;
+		}
+	}
+	if (auto* pbr = dynamic_cast<VansPBRMaterial*>(&material))
+	{
+		glm::vec3 color;
+		if ((key == "albedo" || key == "baseColor" || key == "basecolor") && ReadMaterialVec3(value, color))
+		{
+			pbr->m_BasePBRParam.m_albedo = color;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		float scalar = 0.0f;
+		if (key == "roughness" && ReadMaterialFloat(value, scalar))
+		{
+			pbr->m_BasePBRParam.m_roughness = scalar;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "metallic" && ReadMaterialFloat(value, scalar))
+		{
+			pbr->m_BasePBRParam.m_metallic = scalar;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "ao" && ReadMaterialFloat(value, scalar))
+		{
+			pbr->m_BasePBRParam.m_ao = scalar;
+			FlushMaterialPayload(material);
+			return true;
+		}
+	}
+	else if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&material))
+	{
+		glm::vec3 color;
+		if ((key == "subsurfaceColor" || key == "color" || key == "albedo" || key == "baseColor" || key == "basecolor") &&
+			ReadMaterialVec3(value, color))
+		{
+			sss->m_SubsurfaceColor = color;
+			sss->m_BasePBRParam.m_albedo = color;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		float scalar = 0.0f;
+		if (key == "subsurfacePower" && ReadMaterialFloat(value, scalar))
+		{
+			sss->m_SubsurfacePower = scalar;
+			sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "thickness" && ReadMaterialFloat(value, scalar))
+		{
+			sss->m_Thickness = scalar;
+			sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "subsurfaceAmount" && ReadMaterialFloat(value, scalar))
+		{
+			sss->m_SubsurfaceAmount = scalar;
+			sss->m_BasePBRParam.m_ao = sss->m_SubsurfaceAmount;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "curvatureInfluence" && ReadMaterialFloat(value, scalar))
+		{
+			sss->m_CurvatureInfluence = scalar;
+			sss->m_BasePBRParam.padding = sss->m_CurvatureInfluence;
+			FlushMaterialPayload(material);
+			return true;
+		}
+	}
+	else if (auto* decal = dynamic_cast<VansDecalMaterial*>(&material))
+	{
+		glm::vec3 color;
+		if ((key == "albedo" || key == "baseColor" || key == "basecolor" || key == "color") && ReadMaterialVec3(value, color))
+		{
+			decal->m_BasePBRParam.m_albedo = color;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		float scalar = 0.0f;
+		if (key == "roughness" && ReadMaterialFloat(value, scalar))
+		{
+			decal->m_BasePBRParam.m_roughness = scalar;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "metallic" && ReadMaterialFloat(value, scalar))
+		{
+			decal->m_BasePBRParam.m_metallic = scalar;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "ao" && ReadMaterialFloat(value, scalar))
+		{
+			decal->m_BasePBRParam.m_ao = scalar;
+			FlushMaterialPayload(material);
+			return true;
+		}
+	}
+	else if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(&material))
+	{
+		glm::vec3 color;
+		if ((key == "albedo" || key == "emissive" || key == "emissive_color" || key == "color") && ReadMaterialVec3(value, color))
+		{
+			emissive->m_BasePBRParam.m_albedo = color;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		float scalar = 0.0f;
+		if ((key == "intensity" || key == "emissiveIntensity" || key == "emissive_intensity" || key == "roughness") &&
+			ReadMaterialFloat(value, scalar))
+		{
+			emissive->m_BasePBRParam.m_roughness = scalar;
+			FlushMaterialPayload(material);
+			return true;
+		}
+	}
+	else if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
+	{
+		glm::vec3 color;
+		if ((key == "albedo" || key == "baseColor" || key == "basecolor" || key == "color") && ReadMaterialVec3(value, color))
+		{
+			cloth->m_BasePBRParam.m_albedo = color;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		float scalar = 0.0f;
+		if ((key == "sheenRoughness" || key == "roughness") && ReadMaterialFloat(value, scalar))
+		{
+			cloth->m_SheenRoughness = std::clamp(scalar, 0.045f, 1.0f);
+			cloth->m_BasePBRParam.m_roughness = cloth->m_SheenRoughness;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "sheenStrength" && ReadMaterialFloat(value, scalar))
+		{
+			cloth->m_BasePBRParam.padding = std::clamp(scalar, 0.0f, 1.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "translucency" && ReadMaterialFloat(value, scalar))
+		{
+			cloth->m_BasePBRParam.m_metallic = std::clamp(scalar, 0.0f, 1.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "ao" && ReadMaterialFloat(value, scalar))
+		{
+			cloth->m_BasePBRParam.m_ao = std::clamp(scalar, 0.0f, 1.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void VansGraphics::VansMaterialManager::ApplyFogSettings(const VansFogSettings& settings)
+{
+	m_FogSettings = settings;
+	if (m_FogParamsCBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+		return;
+
+	m_FogParamsCBBuffer.SetBufferData(
+		&m_FogSettings,
+		0,
+		sizeof(VansFogSettings));
+}
+
+void VansGraphics::VansMaterialManager::ApplyFogVolumeSettings(const VansFogVolumeSettings& settings)
+{
+	m_FogVolumeSettings = settings;
+	if (m_FogVolumeParamsCBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+		return;
+
+	m_FogVolumeParamsCBBuffer.SetBufferData(
+		&m_FogVolumeSettings,
+		0,
+		sizeof(VansFogVolumeSettings));
+}
+
 void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 {
 	//update descriptor
-	VansVKDescriptorManager::GetInstance()->ResetState();
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
-		{
-			m_BRDFInterationTextDescriptorSets[0],
-			PassBinding::BUFFER_3,
-			0,
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{
-				{
-					m_SkySHResultBuffer.GetNativeBuffer(),
-					0,
-					m_SkySHResultBuffer.GetBufferSize()
-				}
-			}
-		}
-	);
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->BeginDescriptorUpdate();
+	descMgr->WriteBufferDescriptor(
+		m_BRDFInterationTextDescriptorSets[0],
+		PassBinding::BUFFER_3,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		{ { m_SkySHResultBuffer.GetNativeBuffer(), 0, m_SkySHResultBuffer.GetBufferSize() } });
 
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			m_BRDFInterationTextDescriptorSets[0],
-			PassBinding::TEXTURE_0,
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					m_BRDFIntegralLUT->GetImage().GetSampler(),
-					m_BRDFIntegralLUT->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			m_BRDFInterationTextDescriptorSets[0],
-			PassBinding::TEXTURE_1,
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					m_PreConvDiffuse->GetImage().GetSampler(),
-					m_PreConvDiffuse->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			m_BRDFInterationTextDescriptorSets[0],
-			PassBinding::TEXTURE_2,
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					m_PreConvSpecular->GetImage().GetSampler(),
-					m_PreConvSpecular->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
+	descMgr->WriteImageDescriptor(
+		m_BRDFInterationTextDescriptorSets[0],
+		PassBinding::TEXTURE_0,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { m_BRDFIntegralLUT->GetImage().GetSampler(), m_BRDFIntegralLUT->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(
+		m_BRDFInterationTextDescriptorSets[0],
+		PassBinding::TEXTURE_1,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { m_PreConvDiffuse->GetImage().GetSampler(), m_PreConvDiffuse->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(
+		m_BRDFInterationTextDescriptorSets[0],
+		PassBinding::TEXTURE_2,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { m_PreConvSpecular->GetImage().GetSampler(), m_PreConvSpecular->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(
+		m_BRDFInterationTextDescriptorSets[0],
+		PassBinding::TEXTURE_4,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { m_SkinBSDFLUT->GetImage().GetSampler(), m_SkinBSDFLUT->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 
-	VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-		{
-			m_BRDFInterationTextDescriptorSets[0],
-			PassBinding::TEXTURE_4,
-			0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{
-				{
-					m_SkinBSDFLUT->GetImage().GetSampler(),
-					m_SkinBSDFLUT->GetImage().GetImageView(),
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}
-		}
-	);
-
-	// binding 8 — Cloth BRDF LUT (split-sum .rg + sheen tint .b)
+	// binding 8 �?Cloth BRDF LUT (split-sum .rg + sheen tint .b)
 	if (m_ClothBRDFLUT)
 	{
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				m_BRDFInterationTextDescriptorSets[0],
-				PassBinding::TEXTURE_5,
-				0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				{
-					{
-						m_ClothBRDFLUT->GetImage().GetSampler(),
-						m_ClothBRDFLUT->GetImage().GetImageView(),
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-					}
-				}
-			}
-		);
+		descMgr->WriteImageDescriptor(
+			m_BRDFInterationTextDescriptorSets[0],
+			PassBinding::TEXTURE_5,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{ { m_ClothBRDFLUT->GetImage().GetSampler(), m_ClothBRDFLUT->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	}
 
-	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	descMgr->CommitDescriptorUpdates();
 }
 
 void VansGraphics::VansClothMaterial::BuildClothTextureDescriptors()
@@ -247,146 +586,103 @@ void VansGraphics::VansClothMaterial::BuildClothTextureDescriptors()
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_ClothTexture(m_ClothOwnedLayout, m_ClothOwnedDescSets);
 
 	auto* descManager = VansVKDescriptorManager::GetInstance();
-	descManager->ResetState();
+	descManager->BeginDescriptorUpdate();
 
 	if (m_BaseColorTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_ClothOwnedDescSets[0],
-			CLOTH_TEXTURE_BINDING_ALBEDO, 0,
+			CLOTH_TEXTURE_BINDING_ALBEDO,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_BaseColorTexture->GetImage().GetSampler(),
 				m_BaseColorTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_NormalTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_ClothOwnedDescSets[0],
-			CLOTH_TEXTURE_BINDING_NORMAL, 0,
+			CLOTH_TEXTURE_BINDING_NORMAL,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_NormalTexture->GetImage().GetSampler(),
 				m_NormalTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_RoughnessTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_ClothOwnedDescSets[0],
-			CLOTH_TEXTURE_BINDING_ROUGHNESS, 0,
+			CLOTH_TEXTURE_BINDING_ROUGHNESS,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_RoughnessTexture->GetImage().GetSampler(),
 				m_RoughnessTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_AoTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_ClothOwnedDescSets[0],
-			CLOTH_TEXTURE_BINDING_AO, 0,
+			CLOTH_TEXTURE_BINDING_AO,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_AoTexture->GetImage().GetSampler(),
 				m_AoTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
-	descManager->UpdateDescriptorSets();
+	descManager->CommitDescriptorUpdates();
 }
 
 void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 {
 	//update descriptor
-	VansVKDescriptorManager::GetInstance()->ResetState();
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
-		{
-			m_MaterialAtmosphereDataDescriptorSets[0],
-			SKYBOX_BINDING_ATMOSPHERE_UBO,
-			0,
-			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			{
-				{
-					m_AtmospherePBRDataBuffer.GetNativeBuffer(),
-					0,
-					m_AtmospherePBRDataBuffer.GetBufferSize()
-				}
-			}
-		}
-	);
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->BeginDescriptorUpdate();
+	descMgr->WriteBufferDescriptor(
+		m_MaterialAtmosphereDataDescriptorSets[0],
+		SKYBOX_BINDING_ATMOSPHERE_UBO,
+		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		{ { m_AtmospherePBRDataBuffer.GetNativeBuffer(), 0, m_AtmospherePBRDataBuffer.GetBufferSize() } });
 
 	VansTexture* volumetricFogResult = GetRuntimeRenderTexture(RT_VOLUMETRIC_FOG_RESULT);
 	if (volumetricFogResult != nullptr)
 	{
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				m_MaterialAtmosphereDataDescriptorSets[0],
-				SKYBOX_BINDING_FOG,
-				0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				{
-					{
-						volumetricFogResult->GetImage().GetSampler(),
-						volumetricFogResult->GetImage().GetImageView(),
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-					}
-				}
-			}
-		);
+		descMgr->WriteImageDescriptor(
+			m_MaterialAtmosphereDataDescriptorSets[0],
+			SKYBOX_BINDING_FOG,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{ { volumetricFogResult->GetImage().GetSampler(), volumetricFogResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	}
 
-	// 绑定 1/4 分辨率体积云结果到 SkyBox set 的 binding=2（SKYBOX_BINDING_CLOUD）
+	// 绑定 1/4 分辨率体积云结果�?SkyBox set �?binding=2（SKYBOX_BINDING_CLOUD�?
 	VansTexture* cloudBuffer = GetRuntimeRenderTexture(RT_CLOUD_BUFFER);
 	if (cloudBuffer != nullptr)
 	{
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				m_MaterialAtmosphereDataDescriptorSets[0],
-				SKYBOX_BINDING_CLOUD,
-				0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				{
-					{
-						cloudBuffer->GetImage().GetSampler(),
-						cloudBuffer->GetImage().GetImageView(),
-						VK_IMAGE_LAYOUT_GENERAL  // cloud buffer 由 compute shader 以 GENERAL 布局写入，采样时保持一致
-					}
-				}
-			}
-		);
+		descMgr->WriteImageDescriptor(
+			m_MaterialAtmosphereDataDescriptorSets[0],
+			SKYBOX_BINDING_CLOUD,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{ { cloudBuffer->GetImage().GetSampler(), cloudBuffer->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	}
 	if (m_MoonAlbedoTexture != nullptr)
 	{
-		VansVKDescriptorManager::GetInstance()->m_ImageDescInfos.push_back(
-			{
-				m_MaterialAtmosphereDataDescriptorSets[0],
-				SKYBOX_BINDING_MOON_ALBEDO,
-				0,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				{
-					{
-						m_MoonAlbedoTexture->GetImage().GetSampler(),
-						m_MoonAlbedoTexture->GetImage().GetImageView(),
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-					}
-				}
-			}
-		);
+		descMgr->WriteImageDescriptor(
+			m_MaterialAtmosphereDataDescriptorSets[0],
+			SKYBOX_BINDING_MOON_ALBEDO,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{ { m_MoonAlbedoTexture->GetImage().GetSampler(), m_MoonAlbedoTexture->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	}
-	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+	descMgr->CommitDescriptorUpdates();
 }
 
 //void VansGraphics::VansMaterial::CreatePBRMaterialDataBuffer(VkDevice& logic_device)
@@ -408,7 +704,7 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 
 void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager)
 {
-	// 场景没有方向光时，保持 m_SunDirection 不变，避免空向量访问越界
+	// 场景没有方向光时，保�?m_SunDirection 不变，避免空向量访问越界
 	if (lightManager.GetDirectionLights().empty())
 		return;
 
@@ -418,7 +714,7 @@ void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterial
 	glm::vec3 sunDirection = glm::normalize(dirLight.m_Direction);
 	m_AtmospherePBRParam.m_SunDirection = sunDirection;
 	// CPU 预计算大气衰减后的太阳颜色，写入 AtmosphereUBO
-	// 供无法直接读 LightsData.glsl 的 shader（如 VolumeCloud.frag）使用
+	// 供无法直接读 LightsData.glsl �?shader（如 VolumeCloud.frag）使�?
 	m_AtmospherePBRParam.m_EffectiveSunColor = VansLightManager::ComputeAtmosphereSunColor(
 		dirLight.m_Direction, dirLight.m_Color);
 	const glm::vec3 moonDirection = -sunDirection;
@@ -440,10 +736,10 @@ void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterial
 
 void VansGraphics::VansTransparentMaterial::CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings)
 {
-	auto* descManager = VansVKDescriptorManager::GetInstance();
-	descManager->CreateDesciptorSetLayout(bindings, m_TransparentOwnedLayout);
-	std::vector<VkDescriptorSetLayout> layouts(1, m_TransparentOwnedLayout);
-	descManager->AllocateDescriptorSet(layouts, m_TransparentOwnedDescSets);
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+		bindings,
+		m_TransparentOwnedLayout,
+		m_TransparentOwnedDescSets);
 }
 
 void VansGraphics::VansTransparentMaterial::BuildTransparentTextureDescriptors()
@@ -452,7 +748,7 @@ void VansGraphics::VansTransparentMaterial::BuildTransparentTextureDescriptors()
 	const uint32_t slotCount = static_cast<uint32_t>(m_TransparentTextures.size());
 	if (slotCount == 0)
 	{
-		// No textures — create an empty layout so the pipeline still has Set 1.
+		// No textures �?create an empty layout so the pipeline still has Set 1.
 		CreateTransparentDescriptorLayout();
 		return;
 	}
@@ -474,30 +770,20 @@ void VansGraphics::VansTransparentMaterial::BuildTransparentTextureDescriptors()
 
 	// 3. Write texture descriptors
 	auto* descManager = VansVKDescriptorManager::GetInstance();
-	descManager->ResetState();
+	descManager->BeginDescriptorUpdate();
 	for (uint32_t i = 0; i < slotCount; ++i)
 	{
 		VansTexture* tex = m_TransparentTextures[i];
 		if (tex == nullptr)
 			continue; // skip unresolved slots
 
-		descManager->m_ImageDescInfos.push_back(
-			{
-				m_TransparentOwnedDescSets[0],
-				i,  // binding
-				0,  // array element
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				{
-					{
-						tex->GetImage().GetSampler(),
-						tex->GetImage().GetImageView(),
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-					}
-				}
-			}
-		);
+		descManager->WriteImageDescriptor(
+			m_TransparentOwnedDescSets[0],
+			i,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{ { tex->GetImage().GetSampler(), tex->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	}
-	descManager->UpdateDescriptorSets();
+	descManager->CommitDescriptorUpdates();
 }
 
 void VansGraphics::VansSkinMaterial::BuildSkinTextureDescriptors()
@@ -506,37 +792,35 @@ void VansGraphics::VansSkinMaterial::BuildSkinTextureDescriptors()
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_SkinTexture(m_SkinOwnedLayout, m_SkinOwnedDescSets);
 
 	auto* descManager = VansVKDescriptorManager::GetInstance();
-	descManager->ResetState();
+	descManager->BeginDescriptorUpdate();
 
 	if (m_BaseColorTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_SkinOwnedDescSets[0],
-			SKIN_TEXTURE_BINDING_ALBEDO, 0,
+			SKIN_TEXTURE_BINDING_ALBEDO,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_BaseColorTexture->GetImage().GetSampler(),
 				m_BaseColorTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_NormalTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_SkinOwnedDescSets[0],
-			SKIN_TEXTURE_BINDING_NORMAL, 0,
+			SKIN_TEXTURE_BINDING_NORMAL,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_NormalTexture->GetImage().GetSampler(),
 				m_NormalTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
-	descManager->UpdateDescriptorSets();
+	descManager->CommitDescriptorUpdates();
 }
 
 void VansGraphics::VansHairMaterial::BuildHairDescriptors(VkDevice& device)
@@ -555,133 +839,123 @@ void VansGraphics::VansHairMaterial::BuildHairDescriptors(VkDevice& device)
 	m_ParamsBuffer.SetBufferData(&m_Params, 0, sizeof(VansHairParamsGPU));
 
 	auto* descManager = VansVKDescriptorManager::GetInstance();
-	descManager->ResetState();
+	descManager->BeginDescriptorUpdate();
 
 	if (m_AlbedoTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_ALBEDO, 0,
+			HAIR_TEXTURE_BINDING_ALBEDO,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_AlbedoTexture->GetImage().GetSampler(),
 				m_AlbedoTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_AlphaTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_ALPHA, 0,
+			HAIR_TEXTURE_BINDING_ALPHA,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_AlphaTexture->GetImage().GetSampler(),
 				m_AlphaTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_NormalTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_NORMAL, 0,
+			HAIR_TEXTURE_BINDING_NORMAL,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_NormalTexture->GetImage().GetSampler(),
 				m_NormalTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_RoughnessTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_ROUGHNESS, 0,
+			HAIR_TEXTURE_BINDING_ROUGHNESS,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_RoughnessTexture->GetImage().GetSampler(),
 				m_RoughnessTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_AOTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_AO, 0,
+			HAIR_TEXTURE_BINDING_AO,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_AOTexture->GetImage().GetSampler(),
 				m_AOTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_ShiftTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_SHIFT, 0,
+			HAIR_TEXTURE_BINDING_SHIFT,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_ShiftTexture->GetImage().GetSampler(),
 				m_ShiftTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_FlowTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_FLOW, 0,
+			HAIR_TEXTURE_BINDING_FLOW,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_FlowTexture->GetImage().GetSampler(),
 				m_FlowTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_IDTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_ID, 0,
+			HAIR_TEXTURE_BINDING_ID,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_IDTexture->GetImage().GetSampler(),
 				m_IDTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
-	descManager->m_BufferDescInfos.push_back({
+	descManager->WriteBufferDescriptor(
 		m_HairOwnedDescSets[0],
 		HAIR_TEXTURE_BINDING_PARAMS,
-		0,
 		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 		{{
 			m_ParamsBuffer.GetNativeBuffer(),
 			0,
 			m_ParamsBuffer.GetBufferSize()
-		}}
-	});
+		}});
 
-	descManager->UpdateDescriptorSets();
+	descManager->CommitDescriptorUpdates();
 }
 
 void VansGraphics::VansSubsurfaceMaterial::BuildSubsurfaceTextureDescriptors()
@@ -689,65 +963,61 @@ void VansGraphics::VansSubsurfaceMaterial::BuildSubsurfaceTextureDescriptors()
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_SubsurfaceTexture(m_SubsurfaceOwnedLayout, m_SubsurfaceOwnedDescSets);
 
 	auto* descManager = VansVKDescriptorManager::GetInstance();
-	descManager->ResetState();
+	descManager->BeginDescriptorUpdate();
 
 	if (m_BaseColorTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_SubsurfaceOwnedDescSets[0],
-			SUBSURFACE_TEXTURE_BINDING_ALBEDO, 0,
+			SUBSURFACE_TEXTURE_BINDING_ALBEDO,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_BaseColorTexture->GetImage().GetSampler(),
 				m_BaseColorTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_NormalTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_SubsurfaceOwnedDescSets[0],
-			SUBSURFACE_TEXTURE_BINDING_NORMAL, 0,
+			SUBSURFACE_TEXTURE_BINDING_NORMAL,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_NormalTexture->GetImage().GetSampler(),
 				m_NormalTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_ThicknessTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_SubsurfaceOwnedDescSets[0],
-			SUBSURFACE_TEXTURE_BINDING_THICKNESS, 0,
+			SUBSURFACE_TEXTURE_BINDING_THICKNESS,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_ThicknessTexture->GetImage().GetSampler(),
 				m_ThicknessTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_RoughnessTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_SubsurfaceOwnedDescSets[0],
-			SUBSURFACE_TEXTURE_BINDING_ROUGHNESS, 0,
+			SUBSURFACE_TEXTURE_BINDING_ROUGHNESS,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_RoughnessTexture->GetImage().GetSampler(),
 				m_RoughnessTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
-	descManager->UpdateDescriptorSets();
+	descManager->CommitDescriptorUpdates();
 }
 
 void VansGraphics::VansGrassMaterial::BuildGrassTextureDescriptors()
@@ -755,77 +1025,72 @@ void VansGraphics::VansGrassMaterial::BuildGrassTextureDescriptors()
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_GrassTexture(m_GrassOwnedLayout, m_GrassOwnedDescSets);
 
 	auto* descManager = VansVKDescriptorManager::GetInstance();
-	descManager->ResetState();
+	descManager->BeginDescriptorUpdate();
 
 	if (m_AlbedoTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_GrassOwnedDescSets[0],
-			GRASS_TEXTURE_BINDING_ALBEDO, 0,
+			GRASS_TEXTURE_BINDING_ALBEDO,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_AlbedoTexture->GetImage().GetSampler(),
 				m_AlbedoTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_NormalTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_GrassOwnedDescSets[0],
-			GRASS_TEXTURE_BINDING_NORMAL, 0,
+			GRASS_TEXTURE_BINDING_NORMAL,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_NormalTexture->GetImage().GetSampler(),
 				m_NormalTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_RoughnessTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_GrassOwnedDescSets[0],
-			GRASS_TEXTURE_BINDING_ROUGHNESS, 0,
+			GRASS_TEXTURE_BINDING_ROUGHNESS,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_RoughnessTexture->GetImage().GetSampler(),
 				m_RoughnessTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_TranslucencyTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_GrassOwnedDescSets[0],
-			GRASS_TEXTURE_BINDING_TRANSLUCENCY, 0,
+			GRASS_TEXTURE_BINDING_TRANSLUCENCY,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_TranslucencyTexture->GetImage().GetSampler(),
 				m_TranslucencyTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
 	if (m_AOTexture)
 	{
-		descManager->m_ImageDescInfos.push_back({
+		descManager->WriteImageDescriptor(
 			m_GrassOwnedDescSets[0],
-			GRASS_TEXTURE_BINDING_AO, 0,
+			GRASS_TEXTURE_BINDING_AO,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
 				m_AOTexture->GetImage().GetSampler(),
 				m_AOTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}}
-		});
+			}});
 	}
 
-	descManager->UpdateDescriptorSets();
+	descManager->CommitDescriptorUpdates();
 }

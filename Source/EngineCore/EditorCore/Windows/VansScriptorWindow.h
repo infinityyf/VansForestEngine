@@ -14,19 +14,20 @@ namespace VansGraphics
     {
     public:
         VansScriptorWindow();
-
-        void ShowWindow(VansVKDevice& device) override;
+        void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 
         // The currently selected .py file (absolute path)
         static std::filesystem::path m_SelectedScript;
 
     private:
+        void DrawScriptorContents(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
         void RefreshFileList();
         void LoadSelectedFile();
-        void SaveCurrentFile();
+        void SaveCurrentFile(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 
         std::vector<std::filesystem::path> m_PythonFiles;
         bool m_NeedsRefresh = true;
+        std::string m_ProjectRootPath;
 
         // ---- Editor buffer ----
         static constexpr size_t EDIT_BUF_SIZE = 1024 * 256; // 256 KB max

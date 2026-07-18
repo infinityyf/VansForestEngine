@@ -10,7 +10,7 @@ namespace VansGraphics
     class VansProfilerWindow : public VansBaseWindowComponent
     {
     public:
-        void ShowWindow(VansVKDevice& device) override;
+        void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 
     private:
         // ── 帧历史 ─────────────────────────────────────────────────────
@@ -30,6 +30,7 @@ namespace VansGraphics
         bool   m_ShowCpu = true;
         bool   m_ShowGpu = true;
 
+        void DrawProfilerContents();
         void DrawTimeline();
         void DrawTimelineToolbar(const Vans::ProfileFrame& frame);
         void DrawTimeRuler(const Vans::ProfileFrame& frame, const ImVec2& origin, float width);

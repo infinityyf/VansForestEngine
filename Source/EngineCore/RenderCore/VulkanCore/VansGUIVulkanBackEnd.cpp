@@ -50,7 +50,7 @@ void VansGraphics::VansGraphicsGUIBackEnd::InitBackEnd(VansGraphicsDevice& devic
 	VkQueue imguiGraphicsQueue = vkDevice->GetGraphicsQueue();
 	VkRenderPass imguiRenderPass = VansRenderPassManager::GetInstance()->GetVansRenderPass().GetRenderPass();
 	
-	vkCreateDescriptorPool(m_Device, &pool_info, nullptr, &m_ImGUIPool);
+	VansGraphics::vkCreateDescriptorPool(m_Device, &pool_info, nullptr, &m_ImGUIPool);
 
 
 	// 2: initialize imgui library
@@ -80,6 +80,24 @@ void VansGraphics::VansGraphicsGUIBackEnd::InitBackEnd(VansGraphicsDevice& devic
 	m_Initialized = true;
 }
 
+void VansGraphics::VansGraphicsGUIBackEnd::BeginFrame()
+{
+	if (!m_Initialized)
+		return;
+
+	ImGui_ImplVulkan_NewFrame();
+}
+
+void VansGraphics::VansGraphicsGUIBackEnd::RenderDrawData(VansGraphicsDevice& device, ImDrawData* drawData)
+{
+	if (!m_Initialized || !drawData)
+		return;
+
+	ImGui_ImplVulkan_RenderDrawData(
+		drawData,
+		*static_cast<VkCommandBuffer*>(device.GetNativeCommandBuffer()));
+}
+
 void VansGraphics::VansGraphicsGUIBackEnd::ShutdownBackEnd()
 {
 	if (m_Initialized)
@@ -91,7 +109,7 @@ void VansGraphics::VansGraphicsGUIBackEnd::ShutdownBackEnd()
 
 	if (m_Device != VK_NULL_HANDLE && m_ImGUIPool != VK_NULL_HANDLE)
 	{
-		vkDestroyDescriptorPool(m_Device, m_ImGUIPool, nullptr);
+		VansGraphics::vkDestroyDescriptorPool(m_Device, m_ImGUIPool, nullptr);
 		m_ImGUIPool = VK_NULL_HANDLE;
 	}
 

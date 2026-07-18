@@ -35,6 +35,8 @@ class VansSceneEditService;
 class VansSceneSaveService;
 class VansSetScenePropertyCommand;
 class VansRemoveScenePropertyCommand;
+class VansAssignAssetReferenceCommand;
+class VansAppendSceneEntitiesCommand;
 
 class VansSceneDocument
 {
@@ -54,6 +56,8 @@ private:
     friend class VansSceneSaveService;
     friend class VansSetScenePropertyCommand;
     friend class VansRemoveScenePropertyCommand;
+    friend class VansAssignAssetReferenceCommand;
+    friend class VansAppendSceneEntitiesCommand;
 
     SceneStateId AllocateStateId();
     void MarkSaved(const std::filesystem::path& path,

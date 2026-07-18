@@ -13,11 +13,37 @@ static void CreateLayoutAndAllocateSets(
 	const std::vector<VkDescriptorSetLayoutBinding>& bindings,
 	VkDescriptorSetLayout& outLayout,
 	std::vector<VkDescriptorSet>& outSets,
+	uint32_t setCount,
+	VansDescriptorLifetimeRole lifetimeRole = VansDescriptorLifetimeRole::PassPersistent)
+{
+	if (!VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(bindings, outLayout))
+	{
+		outSets.clear();
+		return;
+	}
+
+	std::vector<VkDescriptorSetLayout> layouts(setCount, outLayout);
+	if (!VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(layouts, outSets, lifetimeRole))
+	{
+		outSets.clear();
+	}
+}
+
+bool VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+	const std::vector<VkDescriptorSetLayoutBinding>& bindings,
+	VkDescriptorSetLayout& outLayout,
+	std::vector<VkDescriptorSet>& outSets,
 	uint32_t setCount)
 {
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(bindings, outLayout);
+	if (!VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(bindings, outLayout))
+		return false;
+
 	std::vector<VkDescriptorSetLayout> layouts(setCount, outLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(layouts, outSets);
+	if (!VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(
+		layouts, outSets, VansDescriptorLifetimeRole::ScenePersistent))
+		return false;
+
+	return true;
 }
 
 // ============================================================
@@ -93,7 +119,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		outLayout);
 
 	std::vector<VkDescriptorSetLayout> layouts(setCount, outLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(layouts, outSets);
+	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(
+		layouts, outSets, VansDescriptorLifetimeRole::GlobalPersistent);
 }
 
 // ============================================================
@@ -109,7 +136,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(
 		{OBJECT_BINDING_TRANSFORM_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
 
 // ============================================================
@@ -132,7 +159,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Animation(
 		{ANIMATION_BINDING_BONEWEIGHT_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
 
 
@@ -177,7 +204,7 @@ void VansDescriptorSetLayoutFactory::DestroyLayout(VkDevice device, VkDescriptor
 {
 	if (layout != VK_NULL_HANDLE)
 	{
-		vkDestroyDescriptorSetLayout(device, layout, nullptr);
+		VansGraphics::vkDestroyDescriptorSetLayout(device, layout, nullptr);
 		layout = VK_NULL_HANDLE;
 	}
 }
@@ -492,13 +519,12 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZ(
 		{HIZ_BINDING_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout(bindings, layout);
+	CreateLayoutAndAllocateSets(bindings, layout, outSets, mipCount, VansDescriptorLifetimeRole::PassPersistent);
 	outLayouts.resize(mipCount);
 	for (uint32_t i = 0; i < mipCount; ++i)
 	{
 		outLayouts[i] = layout;
 	}
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(outLayouts, outSets);
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZSeed(
@@ -510,14 +536,14 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZSeed(
 		{HIZ_SEED_BINDING_POSITION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{HIZ_SEED_BINDING_HIZ_MIP0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::PassPersistent);
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_Empty(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings;
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(
@@ -550,7 +576,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(
 		{TERRAIN_BINDING_NOISE_DETAIL_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
 		 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_GISHUpdate(
@@ -562,7 +588,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_GISHUpdate(
 		{GISH_BINDING_RESULT_G,     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GISH_BINDING_RESULT_B,     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_GIPointLight(
@@ -580,7 +606,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_GIPointLight(
 		{GIPL_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_PBR_DATA,        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_RayTracing(
@@ -597,7 +623,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_RayTracing(
 		{RT_BINDING_INSTANCE_TEX_INDEX,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
 		{RT_BINDING_HIT_ALBEDO_ROUGHNESS,  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
 	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::RayTracingPersistent);
 }
 
 // ============================================================

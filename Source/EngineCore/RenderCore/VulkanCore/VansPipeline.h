@@ -5,9 +5,11 @@
 
 #endif
 #include "vulkan/vulkan.h"
+#include <cstddef>
 #include <vector>
 
 #include "VansVKImage.h"
+#include "VansPipelineDescriptor.h"
 
 namespace VansGraphics
 {
@@ -141,6 +143,8 @@ namespace VansGraphics
 
 	struct GraphicsPipeCreateInfo
 	{
+		VansPipelineProgramDesc pipeline_program_desc;
+
 		std::vector<ShaderStageParameters> shader_stage_params;
 
 		VkPipelineInputAssemblyStateCreateInfo input_assembly_state_create_info;
@@ -163,6 +167,7 @@ namespace VansGraphics
 
 		void Clear()
 		{
+			pipeline_program_desc.Clear();
 			shader_stage_params.clear();
 			attachment_blend_states.clear();
 			descriptorset_layouts.clear();
@@ -182,6 +187,10 @@ namespace VansGraphics
 		VkPipeline m_GraphicsPipeline;
 
 		VkDevice m_Device;
+
+		VansPipelineDescriptorKey m_DescriptorKey;
+
+		void BindGraphicsPipeline(VkCommandBuffer& command_buffer);
 
 	private:
 
@@ -209,11 +218,11 @@ namespace VansGraphics
 
 		bool CreateGraphicsPipeline(VkDevice& logic_device, const VkGraphicsPipelineCreateInfo& create_info);
 
+		const VansPipelineDescriptorKey& GetDescriptorKey() const { return m_DescriptorKey; }
+
 		bool CreatePipelineCache(VkDevice& logic_device);
 
 		bool GetPipelineCacheData(VkDevice& logic_device);
-
-		void BindGraphicsPipeline(VkCommandBuffer& command_buffer);
 
 		void DestroyPipeline(VkDevice& logic_device);
 
@@ -231,8 +240,6 @@ namespace VansGraphics
 	public :
 		static bool MergePipelineCache(VkDevice& logic_device, std::vector<VkPipelineCache>& source_pipeline_caches, VkPipelineCache& merged_cache);
 	
-		static VkPipeline CurrentValidGraphicsPipeline;
-
 		VkPipeline GetNativePipeline() { return m_GraphicsPipeline; }
 	};
 
@@ -248,11 +255,15 @@ namespace VansGraphics
 
 		VkDevice m_Device;
 
-	public:
-		bool CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount = 0, VkPushConstantRange* pushConstRange = nullptr);
-		
+		VansPipelineDescriptorKey m_DescriptorKey;
+
 		void BindComputePipeline(VkCommandBuffer& command_buffer);
 
+	public:
+		bool CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount = 0, VkPushConstantRange* pushConstRange = nullptr, const VansPipelineProgramDesc* programDesc = nullptr);
+		
+		const VansPipelineDescriptorKey& GetDescriptorKey() const { return m_DescriptorKey; }
+		
 		void DestroyPipeline(VkDevice& logic_device);
 
 		void DestroyPipelineLayout(VkDevice& logic_device);
@@ -280,6 +291,8 @@ namespace VansGraphics
 
 		VkDevice m_Device;
 
+		VansPipelineDescriptorKey m_DescriptorKey;
+
 	private:
 
 		VkStridedDeviceAddressRegionKHR m_RaygenShaderBindingTable{};
@@ -292,7 +305,11 @@ namespace VansGraphics
 
 	public:
 
-		bool CreateRayTracingPipeline(VkDevice& logic_device, std::vector<VkRayTracingShaderGroupCreateInfoKHR>& shaderGroupCreateInfo, std::vector<VkPipelineShaderStageCreateInfo>& shaderStageCreateInfo,  const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount = 0, VkPushConstantRange* pushConstRange = nullptr);
+		bool CreateRayTracingPipeline(VkDevice& logic_device, std::vector<VkRayTracingShaderGroupCreateInfoKHR>& shaderGroupCreateInfo, std::vector<VkPipelineShaderStageCreateInfo>& shaderStageCreateInfo,  const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount = 0, VkPushConstantRange* pushConstRange = nullptr, const VansPipelineProgramDesc* programDesc = nullptr);
+
+		const VansPipelineDescriptorKey& GetDescriptorKey() const { return m_DescriptorKey; }
+
+		VkResult GetShaderGroupHandles(VkDevice& logic_device, uint32_t firstGroup, uint32_t groupCount, size_t dataSize, void* data) const;
 
 		void DestroyPipeline(VkDevice& logic_device);
 

@@ -1,6 +1,7 @@
 #include "VansAudioManager.h"
 #include "VansAudioDecoder.h"
 #include "VansAudioSystem.h"
+#include "../SceneCore/VansSceneAssetDependencyBuilder.h"
 #include "../Util/VansLog.h"
 
 namespace VansEngine
@@ -10,6 +11,52 @@ namespace VansEngine
 // 析构函数（定义在此处使 unique_ptr<VansAudioDecoder> 析构时类型完整）
 // ===========================================================================
 VansAudioManager::~VansAudioManager() = default;
+
+void VansAudioManager::Load(const std::vector<Vans::VansSceneAudioResourceRequest>& audios, const std::string& assetPrefix)
+{
+    for (const auto& entry : audios)
+    {
+        const std::string& name = entry.name;
+        const std::string& rel = entry.path;
+
+        if (name.empty() || rel.empty())
+        {
+            VANS_LOG_WARN("[VansAudioManager] Load: name or path is empty, skipped");
+            continue;
+        }
+
+        if (m_Nodes.count(name))
+        {
+            VANS_LOG_WARN("[VansAudioManager] Load: duplicate audio name '" << name << "', skipped");
+            continue;
+        }
+
+        std::string fullPath = assetPrefix + "/" + rel;
+
+        AudioNodeProperties props;
+        props.m_Name = name;
+        props.m_FilePath = fullPath;
+        props.m_PlayMode = entry.playMode == "streaming" ? AudioPlayMode::Streaming : AudioPlayMode::Static;
+        props.m_Loop = entry.loop;
+        props.m_AutoPlay = entry.autoPlay;
+        props.m_Volume = entry.volume;
+        props.m_Pitch = entry.pitch;
+        props.m_Spatial = entry.spatial;
+        props.m_RefDist = entry.referenceDistance;
+        props.m_MaxDist = entry.maxDistance;
+        props.m_RollOff = entry.rolloff;
+
+        auto node = std::make_unique<VansAudioNode>();
+        if (!node->Open(props))
+        {
+            VANS_LOG_ERROR("[VansAudioManager] VansAudioNode::Open failed: " << fullPath);
+            continue;
+        }
+
+        VANS_LOG("[VansAudioManager] Loaded audio: " << name << " <- " << rel);
+        m_Nodes[name] = std::move(node);
+    }
+}
 
 // ===========================================================================
 // LoadFromJson — consumes generated asset descriptors and opens each audio node.

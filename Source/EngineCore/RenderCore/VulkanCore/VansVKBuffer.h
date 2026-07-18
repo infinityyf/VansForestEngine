@@ -89,6 +89,8 @@ namespace VansGraphics
 
 		VkBuffer GetNativeBuffer() const { return m_VansVKBuffer; }
 
+		VkDeviceAddress GetDeviceAddress(VkDevice& logical_device) const;
+
 		VmaAllocation GetNativeAllocation() const { return m_VansVKBufferAllocation; }
 
 		VkDeviceSize GetBufferSize() const { return m_BufferSize; }

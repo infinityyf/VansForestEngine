@@ -1,4 +1,4 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKCommandBuffer.h"
 #include "VansVKBuffer.h"
 #include "VansVKImage.h"
@@ -10,6 +10,44 @@
 #include "../../Util/VansLog.h"
 #include <iostream>
 #include <cassert>
+
+namespace
+{
+	bool ValidateDescriptorSetLayouts(
+		const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts,
+		const char* usage)
+	{
+		for (VkDescriptorSetLayout layout : descriptorSetLayouts)
+		{
+			if (layout == VK_NULL_HANDLE)
+			{
+				VANS_LOG_ERROR(usage << " skipped because descriptor set layout list contains VK_NULL_HANDLE");
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool ValidateDescriptorSets(
+		const std::vector<VkDescriptorSet>& descriptorSets,
+		const char* usage)
+	{
+		if (descriptorSets.empty())
+		{
+			VANS_LOG_ERROR(usage << " skipped because descriptor set list is empty");
+			return false;
+		}
+		for (VkDescriptorSet descriptorSet : descriptorSets)
+		{
+			if (descriptorSet == VK_NULL_HANDLE)
+			{
+				VANS_LOG_ERROR(usage << " skipped because descriptor set list contains VK_NULL_HANDLE");
+				return false;
+			}
+		}
+		return true;
+	}
+}
 
 bool VansGraphics::VansVKCommandBuffer::CreateVulkanCommandBuffer(VansVKDevice& device ,uint32_t queue_family, CommandBufferCreateParams& buffer_create_info)
 {
@@ -28,7 +66,7 @@ bool VansGraphics::VansVKCommandBuffer::CreateVulkanCommandBuffer(VansVKDevice& 
 
 	//Command pools cannot be accessed at the same time from multiple threads
 	//each application thread on which a command buffer will be recorded should use separate command pools
-	VkResult result = vkCreateCommandPool(m_VansVKDevice, &command_pool_create_info, nullptr, &m_VansVKCommandPool);
+	VkResult result = VansGraphics::vkCreateCommandPool(m_VansVKDevice, &command_pool_create_info, nullptr, &m_VansVKCommandPool);
 	if (VK_SUCCESS != result) 
 	{
 		VANS_LOG_ERROR("Could not create command pool.");
@@ -44,7 +82,7 @@ bool VansGraphics::VansVKCommandBuffer::CreateVulkanCommandBuffer(VansVKDevice& 
 		 buffer_create_info.commandbuffer_level,
 		 buffer_create_info.commandbuffer_count
 	};
-	result = vkAllocateCommandBuffers(m_VansVKDevice, &command_buffer_allocate_info, &m_VansVKCommandBuffer);
+	result = VansGraphics::vkAllocateCommandBuffers(m_VansVKDevice, &command_buffer_allocate_info, &m_VansVKCommandBuffer);
 	if (VK_SUCCESS != result) 
 	{
 		VANS_LOG_ERROR("Could not allocate command buffers.");
@@ -60,7 +98,7 @@ void VansGraphics::VansVKCommandBuffer::DestroyVulkanCommandBuffer(VkDevice& log
 	//POOL free alse free the buffer
 	if (VK_NULL_HANDLE != m_VansVKCommandPool)
 	{
-		vkDestroyCommandPool(logical_device, m_VansVKCommandPool, nullptr);
+		VansGraphics::vkDestroyCommandPool(logical_device, m_VansVKCommandPool, nullptr);
 		m_VansVKCommandPool = VK_NULL_HANDLE;
 		m_VansVKCommandBuffer = VK_NULL_HANDLE;
 	}
@@ -78,7 +116,7 @@ void VansGraphics::VansVKCommandBuffer::ClearColor(VansVKImage& image, const VkC
 		0,
 		1,
 	};
-	vkCmdClearColorImage(
+	VansGraphics::vkCmdClearColorImage(
 		m_VansVKCommandBuffer, 
 		image.m_VansVKImage, 
 		image.m_ImageLayout,
@@ -97,7 +135,7 @@ void VansGraphics::VansVKCommandBuffer::ClearColorImage(VansVKImage& image, VkIm
 		0,
 		1,
 	};
-	vkCmdClearColorImage(
+	VansGraphics::vkCmdClearColorImage(
 		m_VansVKCommandBuffer,
 		image.m_VansVKImage,
 		layout,
@@ -120,7 +158,7 @@ void VansGraphics::VansVKCommandBuffer::ClearMRTColor(const std::vector<VansVKIm
 	for (int imageIndex = 0; imageIndex < images.size(); imageIndex++)
 	{
 		auto& image = images[imageIndex];
-		vkCmdClearColorImage(
+		VansGraphics::vkCmdClearColorImage(
 			m_VansVKCommandBuffer,
 			image.m_VansVKImage,
 			image.m_ImageLayout,
@@ -140,7 +178,7 @@ void VansGraphics::VansVKCommandBuffer::ClearDepthStencil(VansVKImage& image, co
 		0,
 		1,
 	};
-	vkCmdClearDepthStencilImage(
+	VansGraphics::vkCmdClearDepthStencilImage(
 		m_VansVKCommandBuffer,
 		image.m_VansVKImage,
 		image.m_ImageLayout,
@@ -151,19 +189,22 @@ void VansGraphics::VansVKCommandBuffer::ClearDepthStencil(VansVKImage& image, co
 
 void VansGraphics::VansVKCommandBuffer::ClearAttachment(std::vector<VkClearAttachment>& attachments, std::vector<VkClearRect>& rests)
 {
-	std::vector<VkClearRect> rects;
-	vkCmdClearAttachments(
+	if (attachments.empty() || rests.empty())
+	{
+		return;
+	}
+	VansGraphics::vkCmdClearAttachments(
 		m_VansVKCommandBuffer,
 		static_cast<uint32_t>(attachments.size()), 
 		attachments.data(),
-		static_cast<uint32_t>(rects.size()), 
-		rects.data());
+		static_cast<uint32_t>(rests.size()), 
+		rests.data());
 }
 
 
 void VansGraphics::VansVKCommandBuffer::UpdatePushConstants(VansVKGraphicsPipeline& pipeline, VkShaderStageFlags flags, uint32_t offset, uint32_t size, void* data)
 {
-	vkCmdPushConstants(
+	VansGraphics::vkCmdPushConstants(
 		m_VansVKCommandBuffer,
 		pipeline.m_VansPipelineLayout,
 		flags,
@@ -174,8 +215,8 @@ void VansGraphics::VansVKCommandBuffer::UpdatePushConstants(VansVKGraphicsPipeli
 
 void VansGraphics::VansVKCommandBuffer::SetViewport(uint32_t first_viewport, const std::vector<VkViewport>& viewports)
 {
-	//first_viewport璁板綍寮€鍚殑绱㈠紩offset
-	vkCmdSetViewport(
+
+	VansGraphics::vkCmdSetViewport(
 		m_VansVKCommandBuffer,
 		first_viewport,
 		static_cast<uint32_t>(viewports.size()), 
@@ -184,28 +225,43 @@ void VansGraphics::VansVKCommandBuffer::SetViewport(uint32_t first_viewport, con
 
 void VansGraphics::VansVKCommandBuffer::SetScissor(uint32_t first_scissor, const std::vector<VkRect2D>& scissors)
 {
-	vkCmdSetScissor(
+	VansGraphics::vkCmdSetScissor(
 		m_VansVKCommandBuffer,
 		first_scissor,
 		static_cast<uint32_t>(scissors.size()), 
 		scissors.data());
 }
 
+void VansGraphics::VansVKCommandBuffer::BeginRenderPass(const VkRenderPassBeginInfo& render_pass_begin_info, VkSubpassContents contents)
+{
+	VansGraphics::vkCmdBeginRenderPass(m_VansVKCommandBuffer, &render_pass_begin_info, contents);
+}
+
+void VansGraphics::VansVKCommandBuffer::NextSubpass(VkSubpassContents contents)
+{
+	VansGraphics::vkCmdNextSubpass(m_VansVKCommandBuffer, contents);
+}
+
+void VansGraphics::VansVKCommandBuffer::EndRenderPass()
+{
+	VansGraphics::vkCmdEndRenderPass(m_VansVKCommandBuffer);
+}
+
 void VansGraphics::VansVKCommandBuffer::SetLineWidth(float line_width)
 {
-	vkCmdSetLineWidth(m_VansVKCommandBuffer, line_width);
+	VansGraphics::vkCmdSetLineWidth(m_VansVKCommandBuffer, line_width);
 }
 
 void VansGraphics::VansVKCommandBuffer::SetDepthBias(float constant_factor, float clamp, float slope_factor)
 {
 	//clamp:specify the maximal or minimal value of the depth bias
 	//slope_factor is a scalar factor applied to a fragment鈥檚 slope in depth bias calculations.
-	vkCmdSetDepthBias(m_VansVKCommandBuffer, constant_factor, clamp, slope_factor);
+	VansGraphics::vkCmdSetDepthBias(m_VansVKCommandBuffer, constant_factor, clamp, slope_factor);
 }
 
 void VansGraphics::VansVKCommandBuffer::SetBlendConstants(float blend_constants[4])
 {
-	vkCmdSetBlendConstants(m_VansVKCommandBuffer, blend_constants);
+	VansGraphics::vkCmdSetBlendConstants(m_VansVKCommandBuffer, blend_constants);
 }
 
 void VansGraphics::VansVKCommandBuffer::DrawMesh(VansMesh& mesh, VansGraphicsShader& shader, uint32_t instance_count)
@@ -217,7 +273,7 @@ void VansGraphics::VansVKCommandBuffer::DrawMesh(VansMesh& mesh, VansGraphicsSha
 		return;
 	}
 	BindGraphicsPipeline(*pipeline);
-	vkCmdDrawIndexed(
+	VansGraphics::vkCmdDrawIndexed(
 		m_VansVKCommandBuffer,
 		mesh.GetIndexCount(),
 		instance_count, 
@@ -228,7 +284,7 @@ void VansGraphics::VansVKCommandBuffer::DrawMesh(VansMesh& mesh, VansGraphicsSha
 
 void VansGraphics::VansVKCommandBuffer::DrawIndexedIndirect(VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)
 {
-	vkCmdDrawIndexedIndirect(m_VansVKCommandBuffer, buffer, offset, drawCount, stride);
+	VansGraphics::vkCmdDrawIndexedIndirect(m_VansVKCommandBuffer, buffer, offset, drawCount, stride);
 }
 
 void VansGraphics::VansVKCommandBuffer::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize srcOffset, VkDeviceSize dstOffset, VkDeviceSize size)
@@ -237,17 +293,17 @@ void VansGraphics::VansVKCommandBuffer::CopyBuffer(VkBuffer srcBuffer, VkBuffer 
 	region.srcOffset = srcOffset;
 	region.dstOffset = dstOffset;
 	region.size      = size;
-	vkCmdCopyBuffer(m_VansVKCommandBuffer, srcBuffer, dstBuffer, 1, &region);
+	VansGraphics::vkCmdCopyBuffer(m_VansVKCommandBuffer, srcBuffer, dstBuffer, 1, &region);
 }
 
 void VansGraphics::VansVKCommandBuffer::FillBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, uint32_t data)
 {
-	vkCmdFillBuffer(m_VansVKCommandBuffer, buffer, offset, size, data);
+	VansGraphics::vkCmdFillBuffer(m_VansVKCommandBuffer, buffer, offset, size, data);
 }
 
 void VansGraphics::VansVKCommandBuffer::ExecuteSecondaryCommandBuffer(std::vector<VkCommandBuffer>& secondary_command_buffers)
 {
-	vkCmdExecuteCommands(
+	VansGraphics::vkCmdExecuteCommands(
 		m_VansVKCommandBuffer,
 		static_cast<uint32_t>(secondary_command_buffers.size()),
 		secondary_command_buffers.data());
@@ -256,7 +312,7 @@ void VansGraphics::VansVKCommandBuffer::ExecuteSecondaryCommandBuffer(std::vecto
 void VansGraphics::VansVKCommandBuffer::BindMesh(VansMesh& mesh, uint32_t fist_bind, GlobalStateData& global_state_data)
 {
 	VertexBufferParameters vparam = mesh.GetVertexBufferParameter();
-	vkCmdBindVertexBuffers(
+	VansGraphics::vkCmdBindVertexBuffers(
 		m_VansVKCommandBuffer,
 		fist_bind,
 		1,
@@ -264,13 +320,13 @@ void VansGraphics::VansVKCommandBuffer::BindMesh(VansMesh& mesh, uint32_t fist_b
 		&vparam.MemoryOffset);
 
 	IndexBufferParameters iparam = mesh.GetIndexBufferParameter();
-	vkCmdBindIndexBuffer(
+	VansGraphics::vkCmdBindIndexBuffer(
 		m_VansVKCommandBuffer,
 		iparam.Buffer,
 		iparam.MemoryOffset,
 		iparam.IndexType);
 
-	//璁板綍mesh 鐨刡ind data
+	// ?? mesh ? vertex input data
 	global_state_data.vertexInputAttributeDescriptions = &mesh.m_VertexInputAttributeDescriptions;
 	global_state_data.vertexInputBindingDescriptions = &mesh.m_VertexInputBindingDescriptions;
 
@@ -278,26 +334,37 @@ void VansGraphics::VansVKCommandBuffer::BindMesh(VansMesh& mesh, uint32_t fist_b
 
 void VansGraphics::VansVKCommandBuffer::BuildAccelerationStructures(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, const VkAccelerationStructureBuildRangeInfoKHR* rangeInfo)
 {
-	vkCmdBuildAccelerationStructuresKHR(m_VansVKCommandBuffer, 1, buildInfo, &rangeInfo);
+	const VkAccelerationStructureBuildRangeInfoKHR* rangeInfos[] = { rangeInfo };
+	BuildAccelerationStructures(buildInfo, rangeInfos);
+}
+
+void VansGraphics::VansVKCommandBuffer::BuildAccelerationStructures(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, const VkAccelerationStructureBuildRangeInfoKHR* const* rangeInfos)
+{
+	VansGraphics::vkCmdBuildAccelerationStructuresKHR(m_VansVKCommandBuffer, 1, buildInfo, rangeInfos);
 }
 
 void VansGraphics::VansVKCommandBuffer::EnsureGraphicsShader(VansGraphicsShader& shader, GlobalStateData& global_state_data, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
+	if (!ValidateDescriptorSetLayouts(descriptorset_layouts, "graphics pipeline ensure"))
+	{
+		return;
+	}
+
 	VansVKGraphicsPipeline* pipeline = shader.GetGraphicsPipeline(m_VansVKDevice, global_state_data, descriptorset_layouts);
 	if (pipeline == nullptr)
 	{
 		VANS_LOG_ERROR("pipe get failed");
 		return;
 	}
-	//BindGraphicsPipeline(*pipeline);
-
-	// Bind data declared by the shader and material.
-	//BindDescriptorSets();
 }
 
 void VansGraphics::VansVKCommandBuffer::EnsureComputeShader(VansComputeShader& shader, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
 	// Ensure the compute shader pipeline is ready.
+	if (!ValidateDescriptorSetLayouts(descriptorset_layouts, "compute pipeline ensure"))
+	{
+		return;
+	}
 
 	VansVKComputePipeline* pipeline = shader.GetComputePipeline(m_VansVKDevice, descriptorset_layouts);
 	if (pipeline == nullptr)
@@ -315,11 +382,19 @@ void VansGraphics::VansVKCommandBuffer::DispatchCompute(VansComputeShader& shade
 		VANS_LOG_ERROR("dispatch skipped because compute pipeline is null");
 		return;
 	}
-	// Bind pipeline.
-	pipeline->BindComputePipeline(m_VansVKCommandBuffer);
+	if (pipeline->m_VansPipelineLayout == VK_NULL_HANDLE)
+	{
+		VANS_LOG_ERROR("dispatch skipped because compute pipeline layout is null");
+		return;
+	}
+	if (!ValidateDescriptorSets(descriptor_sets, "compute dispatch"))
+	{
+		return;
+	}
+	BindComputePipeline(*pipeline);
 
 	// Bind descriptor sets.
-	vkCmdBindDescriptorSets(
+	VansGraphics::vkCmdBindDescriptorSets(
 		m_VansVKCommandBuffer,
 		VK_PIPELINE_BIND_POINT_COMPUTE,
 		pipeline->m_VansPipelineLayout,
@@ -333,7 +408,7 @@ void VansGraphics::VansVKCommandBuffer::DispatchCompute(VansComputeShader& shade
 	void* pushConstantData = shader.GetPushConstantData();
 	if (pushConstantSize > 0 && pushConstantData != nullptr)
 	{
-		vkCmdPushConstants(m_VansVKCommandBuffer, pipeline->m_VansPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+		VansGraphics::vkCmdPushConstants(m_VansVKCommandBuffer, pipeline->m_VansPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
 			0, pushConstantSize, pushConstantData);
 	}
 
@@ -361,7 +436,7 @@ void VansGraphics::VansVKCommandBuffer::BlitImage(VansVKImage& source, int sourc
 	copyRegion.extent.height = height;
 	copyRegion.extent.depth = 1;
 
-	vkCmdCopyImage(
+	VansGraphics::vkCmdCopyImage(
 		m_VansVKCommandBuffer,
 		source.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 		target.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -389,7 +464,7 @@ void VansGraphics::VansVKCommandBuffer::CopyImageRegions(VansVKImage& source, Vk
 	if (copyRegions.empty())
 		return;
 
-	vkCmdCopyImage(
+	VansGraphics::vkCmdCopyImage(
 		m_VansVKCommandBuffer,
 		source.GetImage(), sourceLayout,
 		target.GetImage(), targetLayout,
@@ -404,10 +479,21 @@ void VansGraphics::VansVKCommandBuffer::BlitImageRegions(VansVKImage& source, Vk
 	if (blitRegions.empty())
 		return;
 
-	vkCmdBlitImage(
+	BlitImageRegions(source.GetImage(), sourceLayout, target.GetImage(), targetLayout, blitRegions, filter);
+}
+
+void VansGraphics::VansVKCommandBuffer::BlitImageRegions(VkImage source, VkImageLayout sourceLayout,
+	VkImage target, VkImageLayout targetLayout,
+	const std::vector<VkImageBlit>& blitRegions,
+	VkFilter filter)
+{
+	if (blitRegions.empty())
+		return;
+
+	VansGraphics::vkCmdBlitImage(
 		m_VansVKCommandBuffer,
-		source.GetImage(), sourceLayout,
-		target.GetImage(), targetLayout,
+		source, sourceLayout,
+		target, targetLayout,
 		static_cast<uint32_t>(blitRegions.size()), blitRegions.data(), filter);
 }
 
@@ -426,7 +512,16 @@ void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
 		VANS_LOG_ERROR("descriptor bind skipped because graphics pipeline is null");
 		return;
 	}
-	vkCmdBindDescriptorSets(
+	if (pipeline->m_VansPipelineLayout == VK_NULL_HANDLE)
+	{
+		VANS_LOG_ERROR("descriptor bind skipped because graphics pipeline layout is null");
+		return;
+	}
+	if (!ValidateDescriptorSets(descriptor_sets, "descriptor bind"))
+	{
+		return;
+	}
+	VansGraphics::vkCmdBindDescriptorSets(
 		m_VansVKCommandBuffer,
 		pipeline_type,
 		pipeline->m_VansPipelineLayout,
@@ -439,19 +534,111 @@ void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
 
 void VansGraphics::VansVKCommandBuffer::BindGraphicsPipeline(VansVKGraphicsPipeline& graphicsPipeline)
 {
-	if (VansVKGraphicsPipeline::CurrentValidGraphicsPipeline == graphicsPipeline.m_GraphicsPipeline)
+	if (m_BoundGraphicsPipeline == graphicsPipeline.m_GraphicsPipeline)
 	{
 		return;
 	}
-	else
-	{
-		VansVKGraphicsPipeline::CurrentValidGraphicsPipeline = graphicsPipeline.m_GraphicsPipeline;
-	}
 
 	graphicsPipeline.BindGraphicsPipeline(m_VansVKCommandBuffer);
+	m_BoundGraphicsPipeline = graphicsPipeline.m_GraphicsPipeline;
 }
 
-bool VansGraphics::VansVKCommandBuffer::BeginCommandBufferRecord(VkCommandBufferUsageFlagBits commandBufferUsage)
+void VansGraphics::VansVKCommandBuffer::BindComputePipeline(VansVKComputePipeline& computePipeline)
+{
+	if (m_BoundComputePipeline == computePipeline.m_ComputePipeline)
+	{
+		return;
+	}
+
+	computePipeline.BindComputePipeline(m_VansVKCommandBuffer);
+	m_BoundComputePipeline = computePipeline.m_ComputePipeline;
+}
+
+void VansGraphics::VansVKCommandBuffer::BindRayTracingPipeline(VansVKRayTracingPipeline& rayTracingPipeline)
+{
+	if (m_BoundRayTracingPipeline == rayTracingPipeline.m_RayTracingPipeline)
+	{
+		return;
+	}
+
+	VansGraphics::vkCmdBindPipeline(m_VansVKCommandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rayTracingPipeline.m_RayTracingPipeline);
+	m_BoundRayTracingPipeline = rayTracingPipeline.m_RayTracingPipeline;
+}
+
+void VansGraphics::VansVKCommandBuffer::BindRayTracingDescriptorSets(
+	VansVKRayTracingPipeline& rayTracingPipeline,
+	uint32_t firstSet,
+	const std::vector<VkDescriptorSet>& descriptorSets,
+	const std::vector<uint32_t>& dynamicOffsets)
+{
+	if (descriptorSets.empty())
+	{
+		return;
+	}
+	if (rayTracingPipeline.m_RayTracingLayout == VK_NULL_HANDLE)
+	{
+		VANS_LOG_ERROR("ray tracing descriptor bind skipped because pipeline layout is null");
+		return;
+	}
+	for (VkDescriptorSet descriptorSet : descriptorSets)
+	{
+		if (descriptorSet == VK_NULL_HANDLE)
+		{
+			VANS_LOG_ERROR("ray tracing descriptor bind skipped because descriptor set list contains VK_NULL_HANDLE");
+			return;
+		}
+	}
+
+	VansGraphics::vkCmdBindDescriptorSets(
+		m_VansVKCommandBuffer,
+		VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+		rayTracingPipeline.m_RayTracingLayout,
+		firstSet,
+		static_cast<uint32_t>(descriptorSets.size()),
+		descriptorSets.data(),
+		static_cast<uint32_t>(dynamicOffsets.size()),
+		dynamicOffsets.data());
+}
+
+void VansGraphics::VansVKCommandBuffer::UpdateRayTracingPushConstants(
+	VansVKRayTracingPipeline& rayTracingPipeline,
+	VkShaderStageFlags flags,
+	uint32_t offset,
+	uint32_t size,
+	const void* data)
+{
+	if (size == 0 || data == nullptr)
+	{
+		return;
+	}
+
+	VansGraphics::vkCmdPushConstants(
+		m_VansVKCommandBuffer,
+		rayTracingPipeline.m_RayTracingLayout,
+		flags,
+		offset,
+		size,
+		data);
+}
+
+void VansGraphics::VansVKCommandBuffer::TraceRays(
+	VansVKRayTracingPipeline& rayTracingPipeline,
+	uint32_t width,
+	uint32_t height,
+	uint32_t depth)
+{
+	VansGraphics::vkCmdTraceRaysKHR(
+		m_VansVKCommandBuffer,
+		&rayTracingPipeline.m_RaygenShaderBindingTable,
+		&rayTracingPipeline.m_MissShaderBindingTable,
+		&rayTracingPipeline.m_HitShaderBindingTable,
+		&rayTracingPipeline.m_CallableShaderBindingTable,
+		width,
+		height,
+		depth);
+}
+
+bool VansGraphics::VansVKCommandBuffer::BeginCommandBufferRecord(VkCommandBufferUsageFlags commandBufferUsage)
 {
 	//only meaningful for secondary command buffers
 	VkCommandBufferInheritanceInfo* secondary_command_buffer_info = nullptr;
@@ -463,18 +650,21 @@ bool VansGraphics::VansVKCommandBuffer::BeginCommandBufferRecord(VkCommandBuffer
 		secondary_command_buffer_info
 	};
 	//when beginCommandbuffer, it implicity reset
-	VkResult result = vkBeginCommandBuffer(m_VansVKCommandBuffer, &command_buffer_begin_info);
+	VkResult result = VansGraphics::vkBeginCommandBuffer(m_VansVKCommandBuffer, &command_buffer_begin_info);
 	if (VK_SUCCESS != result)
 	{
 		VANS_LOG_ERROR("Could not begin command buffer.");
 		return false;
 	}
+	m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+	m_BoundComputePipeline = VK_NULL_HANDLE;
+	m_BoundRayTracingPipeline = VK_NULL_HANDLE;
 	return true;
 }
 
 bool VansGraphics::VansVKCommandBuffer::EndCommandBufferRecord()
 {
-	VkResult result = vkEndCommandBuffer(m_VansVKCommandBuffer);
+	VkResult result = VansGraphics::vkEndCommandBuffer(m_VansVKCommandBuffer);
 	if (VK_SUCCESS != result) 
 	{
 		VANS_LOG_ERROR("Error occurred during command buffer recording.");
@@ -486,19 +676,22 @@ bool VansGraphics::VansVKCommandBuffer::EndCommandBufferRecord()
 bool VansGraphics::VansVKCommandBuffer::ResetCommandBuffer(bool release_buffer_memory)
 {
 	//judge whther we shold return the memory to a pool, or if the command buffer should keep it and reuse it during the next command recording
-	VkResult result = vkResetCommandBuffer(m_VansVKCommandBuffer, release_buffer_memory ?
+	VkResult result = VansGraphics::vkResetCommandBuffer(m_VansVKCommandBuffer, release_buffer_memory ?
 		VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT : 0);
 	if (VK_SUCCESS != result) 
 	{
 		VANS_LOG_ERROR("Error occurred during command buffer reset.");
 		return false;
 	}
+	m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+	m_BoundComputePipeline = VK_NULL_HANDLE;
+	m_BoundRayTracingPipeline = VK_NULL_HANDLE;
 	return true;
 }
 
 bool VansGraphics::VansVKCommandBuffer::ResetEvent(VkEvent eventHandle)
 {
-	VkResult result = vkResetEvent(m_VansVKDevice, eventHandle);
+	VkResult result = VansGraphics::vkResetEvent(m_VansVKDevice, eventHandle);
 	if (VK_SUCCESS != result)
 	{
 		VANS_LOG_ERROR("Error occurred during event reset.");
@@ -510,7 +703,7 @@ bool VansGraphics::VansVKCommandBuffer::ResetEvent(VkEvent eventHandle)
 
 void VansGraphics::VansVKCommandBuffer::SetEvent(VkEvent eventHandle, VkPipelineStageFlags stageMask)
 {
-	vkCmdSetEvent(m_VansVKCommandBuffer, eventHandle, stageMask);
+	VansGraphics::vkCmdSetEvent(m_VansVKCommandBuffer, eventHandle, stageMask);
 }
 
 void VansGraphics::VansVKCommandBuffer::WaitEvents(
@@ -521,7 +714,7 @@ void VansGraphics::VansVKCommandBuffer::WaitEvents(
 	const std::vector<VkBufferMemoryBarrier>& bufferMemoryBarriers,
 	const std::vector<VkImageMemoryBarrier>& imageMemoryBarriers)
 {
-	vkCmdWaitEvents(
+	VansGraphics::vkCmdWaitEvents(
 		m_VansVKCommandBuffer,
 		static_cast<uint32_t>(events.size()),
 		events.empty() ? nullptr : events.data(),
@@ -535,26 +728,26 @@ void VansGraphics::VansVKCommandBuffer::WaitEvents(
 		imageMemoryBarriers.empty() ? nullptr : imageMemoryBarriers.data());
 }
 
-// 鈹€鈹€ Standalone draw / bind helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+
 
 void VansGraphics::VansVKCommandBuffer::BindVertexBuffers(uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* buffers, const VkDeviceSize* offsets)
 {
-	vkCmdBindVertexBuffers(m_VansVKCommandBuffer, firstBinding, bindingCount, buffers, offsets);
+	VansGraphics::vkCmdBindVertexBuffers(m_VansVKCommandBuffer, firstBinding, bindingCount, buffers, offsets);
 }
 
 void VansGraphics::VansVKCommandBuffer::BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType)
 {
-	vkCmdBindIndexBuffer(m_VansVKCommandBuffer, buffer, offset, indexType);
+	VansGraphics::vkCmdBindIndexBuffer(m_VansVKCommandBuffer, buffer, offset, indexType);
 }
 
 void VansGraphics::VansVKCommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
 {
-	vkCmdDrawIndexed(m_VansVKCommandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+	VansGraphics::vkCmdDrawIndexed(m_VansVKCommandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 }
 
 void VansGraphics::VansVKCommandBuffer::Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
 {
-	vkCmdDraw(m_VansVKCommandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+	VansGraphics::vkCmdDraw(m_VansVKCommandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
 }
 
 void VansGraphics::VansVKCommandBuffer::PipelineBarrier(
@@ -564,7 +757,7 @@ void VansGraphics::VansVKCommandBuffer::PipelineBarrier(
 	const std::vector<VkBufferMemoryBarrier>& bufferMemoryBarriers,
 	const std::vector<VkImageMemoryBarrier>& imageMemoryBarriers)
 {
-	vkCmdPipelineBarrier(
+	VansGraphics::vkCmdPipelineBarrier(
 		m_VansVKCommandBuffer,
 		srcStageMask,
 		dstStageMask,
@@ -581,9 +774,20 @@ bool VansGraphics::VansVKCommandBuffer::WaitForFence(VkDevice& device, const VkF
 {
 	if (fence != VK_NULL_HANDLE)
 	{
-		bool result = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-		vkResetFences(device, 1, &fence);
-		return result;
+		VkResult result = VansGraphics::vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+		if (result != VK_SUCCESS)
+		{
+			VANS_LOG_ERROR("vkWaitForFences failed. VkResult=" << static_cast<int>(result));
+			return false;
+		}
+
+		result = VansGraphics::vkResetFences(device, 1, &fence);
+		if (result != VK_SUCCESS)
+		{
+			VANS_LOG_ERROR("vkResetFences failed. VkResult=" << static_cast<int>(result));
+			return false;
+		}
+		return true;
 	}
 	return true;
 }
@@ -614,7 +818,7 @@ bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice&
 	};
 
 	//send this fence to queue, it will be signaled when the command buffer has finished execution
-	VkResult result = vkQueueSubmit(queue, 1, &submit_info, fence);
+	VkResult result = VansGraphics::vkQueueSubmit(queue, 1, &submit_info, fence);
 	if (VK_SUCCESS != result) 
 	{
 		VANS_LOG_ERROR("Error occurred during command buffer submission. VkResult=" << static_cast<int>(result));
@@ -627,38 +831,4 @@ bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice&
 	}
 
 	return true;
-}
-
-void VansGraphics::VansMultiThreadCommandBufferMangaer::InitCommandRecordThreads(std::vector<VansGraphics::VansVKCommandBuffer>& vans_command_buffers)
-{
-	m_CommandBufferRecordingThreadParameters.clear();
-	m_CommandBufferRecordingThreadParameters.reserve(vans_command_buffers.size());
-	for (size_t i = 0; i < vans_command_buffers.size(); ++i)
-	{
-		m_CommandBufferRecordingThreadParameters.push_back(
-		{
-			vans_command_buffers[i].GetVKCommandBuffer(),
-			NULL,
-		});
-	}
-	assert(m_CommandBufferRecordingThreadParameters.size() > 0);
-	m_CommandBufferRecordingThreads.resize(m_CommandBufferRecordingThreadParameters.size());
-	for (size_t i = 0; i < m_CommandBufferRecordingThreadParameters.size(); ++i)
-	{
-		m_CommandBufferRecordingThreads[i] = std::thread::thread(
-			m_CommandBufferRecordingThreadParameters[i].RecordingFunction,
-			m_CommandBufferRecordingThreadParameters[i].CommandBuffer);
-	}
-}
-
-void VansGraphics::VansMultiThreadCommandBufferMangaer::SubmitMultiCommands(VkQueue& queue, VkDevice& device, const std::vector<WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, VkFence& fence)
-{
-	std::vector<VkCommandBuffer> command_buffers(m_CommandBufferRecordingThreadParameters.size());
-	for (size_t i = 0; i < m_CommandBufferRecordingThreadParameters.size(); ++i)
-	{
-		m_CommandBufferRecordingThreads[i].join();
-		command_buffers[i] = m_CommandBufferRecordingThreadParameters[i].CommandBuffer;
-	}
-	//submit鍙兘浠庝竴涓嚎绋嬶紝鎵€浠ラ渶瑕佹墍鏈塺ecord閮絡oin鍚庢墠鑳絪ubmit
-	//VansVKCommandBuffer::SubmitCommands(queue, device, command_buffers, wait_semaphore_infos, signal_semaphores, command_buffer.m_CommandBufferFinishSubmitFence);
 }

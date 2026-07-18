@@ -96,6 +96,7 @@ namespace VansGraphics
 		// editor previews of cubemap-array faces.
 		VkImageView CreateLayerMipView(VkDevice device, uint32_t arrayLayer, uint32_t mipLevel);
 		VkImageView CreateMipArrayView(VkDevice device, uint32_t mipLevel) const;
+		static void DestroyImageView(VkDevice device, VkImageView& imageView);
 
 		VkImageLayout GetImageLayout();
 

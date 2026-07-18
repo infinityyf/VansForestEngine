@@ -1,5 +1,7 @@
 #include "VansSceneEditService.h"
 
+#include "../AssetCore/VansAssetGuid.h"
+
 namespace Vans
 {
 namespace
@@ -174,6 +176,152 @@ SceneEditResult VansRemoveScenePropertyCommand::Redo(VansSceneDocument& document
     return result;
 }
 
+VansAssignAssetReferenceCommand::VansAssignAssetReferenceCommand(std::string jsonPointer,
+    std::string assetGuid,
+    EditorAPI::AssetType expectedType,
+    bool writeObjectReference)
+    : m_JsonPointer(std::move(jsonPointer))
+    , m_AssetGuid(std::move(assetGuid))
+    , m_ExpectedType(expectedType)
+    , m_WriteObjectReference(writeObjectReference)
+{
+}
+
+SceneJson VansAssignAssetReferenceCommand::BuildReferenceValue() const
+{
+    if (m_WriteObjectReference)
+        return SceneJson{ { "guid", m_AssetGuid } };
+    return m_AssetGuid;
+}
+
+SceneEditResult VansAssignAssetReferenceCommand::Execute(VansSceneDocument& document)
+{
+    if (auto validation = ValidatePointer(m_JsonPointer); !validation)
+        return validation;
+    if (m_ExpectedType == EditorAPI::AssetType::Unknown)
+        return { false, "Asset reference slot has no expected asset type" };
+    if (!m_AssetGuid.empty())
+    {
+        VansAssetGuid parsedGuid;
+        if (!VansAssetGuid::TryParse(m_AssetGuid, parsedGuid))
+            return { false, "Asset reference value is not a valid asset GUID" };
+    }
+
+    const JsonPointer pointer(m_JsonPointer);
+    const SceneJson newValue = BuildReferenceValue();
+    m_HadOldValue = TryRead(document.m_Root, pointer, m_OldValue);
+    m_BeforeState = document.m_CurrentStateId;
+    if (m_HadOldValue && m_OldValue == newValue)
+        return { false, "Asset reference is unchanged" };
+
+    SceneJson candidate = document.m_Root;
+    if (auto result = WriteAt(candidate, pointer, newValue); !result)
+        return result;
+    document.m_Root.swap(candidate);
+    m_AfterState = document.AllocateStateId();
+    document.m_CurrentStateId = m_AfterState;
+    return { true, {} };
+}
+
+SceneEditResult VansAssignAssetReferenceCommand::Undo(VansSceneDocument& document)
+{
+    const JsonPointer pointer(m_JsonPointer);
+    SceneJson candidate = document.m_Root;
+    SceneEditResult result = m_HadOldValue ? WriteAt(candidate, pointer, m_OldValue)
+                                           : RemoveAt(candidate, pointer);
+    if (result)
+    {
+        document.m_Root.swap(candidate);
+        document.m_CurrentStateId = m_BeforeState;
+    }
+    return result;
+}
+
+SceneEditResult VansAssignAssetReferenceCommand::Redo(VansSceneDocument& document)
+{
+    SceneJson candidate = document.m_Root;
+    SceneEditResult result = WriteAt(candidate, JsonPointer(m_JsonPointer), BuildReferenceValue());
+    if (result)
+    {
+        document.m_Root.swap(candidate);
+        document.m_CurrentStateId = m_AfterState;
+    }
+    return result;
+}
+
+VansAppendSceneEntitiesCommand::VansAppendSceneEntitiesCommand(
+    std::vector<SceneJson> entities,
+    SceneEditLifecycleHooks hooks)
+    : m_Entities(std::move(entities))
+    , m_Hooks(std::move(hooks))
+{
+}
+
+SceneEditResult VansAppendSceneEntitiesCommand::Execute(VansSceneDocument& document)
+{
+    if (m_Entities.empty())
+        return { false, "No scene entities to append" };
+    if (!document.m_Root.contains("entities") || !document.m_Root["entities"].is_array())
+        return { false, "Scene document has no entities array" };
+
+    SceneJson candidate = document.m_Root;
+    SceneJson& entities = candidate["entities"];
+    m_InsertIndex = entities.size();
+    m_BeforeState = document.m_CurrentStateId;
+    for (const SceneJson& entity : m_Entities)
+        entities.push_back(entity);
+
+    document.m_Root.swap(candidate);
+    m_AfterState = document.AllocateStateId();
+    document.m_CurrentStateId = m_AfterState;
+    return { true, {} };
+}
+
+SceneEditResult VansAppendSceneEntitiesCommand::Undo(VansSceneDocument& document)
+{
+    if (!document.m_Root.contains("entities") || !document.m_Root["entities"].is_array())
+        return { false, "Scene document has no entities array" };
+
+    SceneJson candidate = document.m_Root;
+    SceneJson& entities = candidate["entities"];
+    if (m_InsertIndex > entities.size() || entities.size() - m_InsertIndex < m_Entities.size())
+        return { false, "Scene entity append range is no longer valid" };
+
+    entities.erase(
+        entities.begin() + static_cast<SceneJson::difference_type>(m_InsertIndex),
+        entities.begin() + static_cast<SceneJson::difference_type>(m_InsertIndex + m_Entities.size()));
+
+    document.m_Root.swap(candidate);
+    document.m_CurrentStateId = m_BeforeState;
+    if (m_Hooks.afterUndo)
+        m_Hooks.afterUndo();
+    return { true, {} };
+}
+
+SceneEditResult VansAppendSceneEntitiesCommand::Redo(VansSceneDocument& document)
+{
+    if (!document.m_Root.contains("entities") || !document.m_Root["entities"].is_array())
+        return { false, "Scene document has no entities array" };
+
+    SceneJson candidate = document.m_Root;
+    SceneJson& entities = candidate["entities"];
+    if (m_InsertIndex > entities.size())
+        return { false, "Scene entity append index is no longer valid" };
+
+    auto insertIt = entities.begin() + static_cast<SceneJson::difference_type>(m_InsertIndex);
+    for (const SceneJson& entity : m_Entities)
+    {
+        insertIt = entities.insert(insertIt, entity);
+        ++insertIt;
+    }
+
+    document.m_Root.swap(candidate);
+    document.m_CurrentStateId = m_AfterState;
+    if (m_Hooks.afterRedo)
+        m_Hooks.afterRedo();
+    return { true, {} };
+}
+
 SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditCommand> command)
 {
     if (!command)
@@ -189,6 +337,22 @@ SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditComma
 SceneEditResult VansSceneEditService::Set(const std::string& jsonPointer, SceneJson value)
 {
     return Execute(std::make_unique<VansSetScenePropertyCommand>(jsonPointer, std::move(value)));
+}
+
+SceneEditResult VansSceneEditService::AssignAssetReference(const std::string& jsonPointer,
+    std::string assetGuid,
+    EditorAPI::AssetType expectedType,
+    bool writeObjectReference)
+{
+    return Execute(std::make_unique<VansAssignAssetReferenceCommand>(
+        jsonPointer, std::move(assetGuid), expectedType, writeObjectReference));
+}
+
+SceneEditResult VansSceneEditService::AppendEntities(std::vector<SceneJson> entities,
+    SceneEditLifecycleHooks hooks)
+{
+    return Execute(std::make_unique<VansAppendSceneEntitiesCommand>(
+        std::move(entities), std::move(hooks)));
 }
 
 SceneEditResult VansSceneEditService::Remove(const std::string& jsonPointer)

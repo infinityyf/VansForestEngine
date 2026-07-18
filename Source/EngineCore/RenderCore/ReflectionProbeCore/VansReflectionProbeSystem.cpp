@@ -1,4 +1,4 @@
-#if defined(_WIN32)
+﻿#if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -10,9 +10,9 @@
 #endif
 #endif
 
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansReflectionProbeSystem.h"
 #include "../VansScene.h"
+#include "../VansShaderManager.h"
 #include "../VulkanCore/VansMesh.h"
 #include "../VulkanCore/VansTexture.h"
 #include "../VulkanCore/VansVKDevice.h"
@@ -272,10 +272,10 @@ namespace VansGraphics
 		auto* descriptors = VansVKDescriptorManager::GetInstance();
 		if (!m_PrefilterSets.empty()) descriptors->DestroyDescriptorSet(m_PrefilterSets);
 		if (m_PrefilterLayout != VK_NULL_HANDLE) descriptors->DestroyDescriptorSetLayout(m_PrefilterLayout);
-		for (VkImageView view : m_PrefilterMipViews) if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, nullptr);
+		for (VkImageView& view : m_PrefilterMipViews) VansVKImage::DestroyImageView(device, view);
 		m_PrefilterSets.clear(); m_PrefilterMipViews.clear(); m_PrefilterLayout = VK_NULL_HANDLE;
 		VANS_LOG("[ReflectionProbe] Prefilter descriptors and views released");
-		for (VkImageView view : m_EditorPreviewFaceViews) if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, nullptr);
+		for (VkImageView& view : m_EditorPreviewFaceViews) VansVKImage::DestroyImageView(device, view);
 		m_EditorPreviewFaceViews.clear();
 		m_MetadataBuffer.DestroyVulkanBuffer(device);
 		VANS_LOG("[ReflectionProbe] Metadata buffer released");
@@ -396,7 +396,7 @@ namespace VansGraphics
 			return glm::clamp(glm::ivec3(glm::floor((p - grid.origin) / grid.cellSize)), glm::ivec3(0), glm::ivec3(grid.dimensions) - 1);
 		};
 
-		std::vector<VansRenderNode*> placementNodes = scene.m_OpaqueRenderNodes;
+		std::vector<VansRenderNode*> placementNodes = scene.GetOpaqueRenderNodes();
 		for (auto* node : placementNodes)
 		{
 			if (!node || !node->m_Mesh || !node->m_Mesh->HasCPUPlacementData()) continue;
@@ -608,20 +608,22 @@ namespace VansGraphics
 		VkDescriptorSetLayoutBinding source{ 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
 		VkDescriptorSetLayoutBinding output{ 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
 		auto* manager = VansVKDescriptorManager::GetInstance();
-		manager->CreateDesciptorSetLayout({ source, output }, m_PrefilterLayout);
-		std::vector<VkDescriptorSetLayout> layouts(m_MipCount - 1, m_PrefilterLayout);
-		manager->AllocateDescriptorSet(layouts, m_PrefilterSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+			{ source, output },
+			m_PrefilterLayout,
+			m_PrefilterSets,
+			m_MipCount - 1);
 		m_PrefilterMipViews.resize(m_MipCount - 1, VK_NULL_HANDLE);
-		manager->ResetState();
+		manager->BeginDescriptorUpdate();
 		for (uint32_t mip = 1; mip < m_MipCount; ++mip)
 		{
 			m_PrefilterMipViews[mip - 1] = m_SpecularArray->GetImage().CreateMipArrayView(device.GetLogicDevice(), mip);
-			manager->m_ImageDescInfos.push_back({ m_PrefilterSets[mip - 1], 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				{{ m_SpecularArray->GetImage().GetSampler(), m_SpecularArray->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }} });
-			manager->m_ImageDescInfos.push_back({ m_PrefilterSets[mip - 1], 1, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-				{{ VK_NULL_HANDLE, m_PrefilterMipViews[mip - 1], VK_IMAGE_LAYOUT_GENERAL }} });
+			manager->WriteImageDescriptor(m_PrefilterSets[mip - 1], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{{ m_SpecularArray->GetImage().GetSampler(), m_SpecularArray->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+			manager->WriteImageDescriptor(m_PrefilterSets[mip - 1], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{{ VK_NULL_HANDLE, m_PrefilterMipViews[mip - 1], VK_IMAGE_LAYOUT_GENERAL }});
 		}
-		manager->UpdateDescriptorSets();
+		manager->CommitDescriptorUpdates();
 	}
 
 	void VansReflectionProbeSystem::PrefilterAll(VansVKDevice& device, VansVKCommandBuffer& commandBuffer)
@@ -755,12 +757,13 @@ namespace VansGraphics
 	void VansReflectionProbeSystem::UpdateGlobalDescriptors(VkDescriptorSet globalSet)
 	{
 		if (!m_SpecularArray || globalSet == VK_NULL_HANDLE || m_MetadataBuffer.GetNativeBuffer() == VK_NULL_HANDLE) return;
-		auto* desc = VansVKDescriptorManager::GetInstance(); desc->ResetState();
-		desc->m_ImageDescInfos.push_back({ globalSet, GLOBAL_BINDING_REFLECTION_PROBE_SPECULAR, 0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ m_SpecularArray->GetImage().GetSampler(), m_SpecularArray->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }} });
-		desc->m_BufferDescInfos.push_back({ globalSet, GLOBAL_BINDING_REFLECTION_PROBE_BUFFER, 0,
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_MetadataBuffer.GetNativeBuffer(), 0, m_MetadataBuffer.GetBufferSize() }} });
-		desc->UpdateDescriptorSets();
+		auto* desc = VansVKDescriptorManager::GetInstance();
+		desc->BeginDescriptorUpdate();
+		desc->WriteImageDescriptor(globalSet, GLOBAL_BINDING_REFLECTION_PROBE_SPECULAR,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ m_SpecularArray->GetImage().GetSampler(), m_SpecularArray->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		desc->WriteBufferDescriptor(globalSet, GLOBAL_BINDING_REFLECTION_PROBE_BUFFER,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_MetadataBuffer.GetNativeBuffer(), 0, m_MetadataBuffer.GetBufferSize() }});
+		desc->CommitDescriptorUpdates();
 	}
 
 	void VansReflectionProbeSystem::RequestBake(size_t index)
@@ -807,7 +810,7 @@ namespace VansGraphics
 
 	bool VansReflectionProbeSystem::EnsureCaptureResources(VansScene& scene, VansVKDevice& device)
 	{
-		if (!m_SpecularArray || scene.m_GlobalDescriptorSet == VK_NULL_HANDLE) return false;
+		if (!m_SpecularArray || scene.GetGlobalDescriptorSet() == VK_NULL_HANDLE) return false;
 		auto* materialManager = scene.GetMaterialManager();
 		if (!materialManager || materialManager->m_AtmospherePBRDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
 		{
@@ -820,7 +823,7 @@ namespace VansGraphics
 			VANS_LOG_ERROR("Reflection probe capture array is stale; recreate GPU resources before baking.");
 			return false;
 		}
-		if (m_CaptureRenderPass != VK_NULL_HANDLE)
+		if (m_CaptureRenderPassCreated)
 		{
 			if (m_CaptureFramebuffers.size() == requiredLayerCount) return true;
 			DestroyCaptureResources();
@@ -855,35 +858,37 @@ namespace VansGraphics
 			{ 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
 			{ 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
 		};
-		if (!descriptors->CreateDesciptorSetLayout(bindings, m_CaptureDescriptorLayout)) return fail();
 		std::vector<VkDescriptorSet> captureSets;
-		if (!descriptors->AllocateDescriptorSet({ m_CaptureDescriptorLayout }, captureSets) || captureSets.empty()) return fail();
+		if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+			bindings,
+			m_CaptureDescriptorLayout,
+			captureSets) || captureSets.empty()) return fail();
 		m_CaptureDescriptorSet = captureSets[0];
 		auto* renderPassManager = VansRenderPassManager::GetInstance();
-		descriptors->ResetState();
-		descriptors->m_BufferDescInfos.push_back({ m_CaptureDescriptorSet, 0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			{{ m_CaptureCameraBuffer.GetNativeBuffer(), 0, sizeof(CaptureCameraData) }} });
-		descriptors->m_BufferDescInfos.push_back({ m_CaptureDescriptorSet, 2, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		descriptors->BeginDescriptorUpdate();
+		descriptors->WriteBufferDescriptor(m_CaptureDescriptorSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{{ m_CaptureCameraBuffer.GetNativeBuffer(), 0, sizeof(CaptureCameraData) }});
+		descriptors->WriteBufferDescriptor(m_CaptureDescriptorSet, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			{{ materialManager->m_AtmospherePBRDataBuffer.GetNativeBuffer(), 0,
-				materialManager->m_AtmospherePBRDataBuffer.GetBufferSize() }} });
-		descriptors->m_ImageDescInfos.push_back({ m_CaptureDescriptorSet, 1, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ renderPassManager->GetCascadeShadowSampler(), renderPassManager->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }} });
-		descriptors->m_ImageDescInfos.push_back({ m_CaptureDescriptorSet, 3, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ materialManager->m_PreConvDiffuse->GetImage().GetSampler(), materialManager->m_PreConvDiffuse->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }} });
-		descriptors->m_ImageDescInfos.push_back({ m_CaptureDescriptorSet, 4, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ shR->GetImage().GetSampler(), shR->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }} });
-		descriptors->m_ImageDescInfos.push_back({ m_CaptureDescriptorSet, 5, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ shG->GetImage().GetSampler(), shG->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }} });
-		descriptors->m_ImageDescInfos.push_back({ m_CaptureDescriptorSet, 6, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ shB->GetImage().GetSampler(), shB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }} });
-		descriptors->UpdateDescriptorSets();
+				materialManager->m_AtmospherePBRDataBuffer.GetBufferSize() }});
+		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ renderPassManager->GetCascadeShadowSampler(), renderPassManager->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ materialManager->m_PreConvDiffuse->GetImage().GetSampler(), materialManager->m_PreConvDiffuse->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ shR->GetImage().GetSampler(), shR->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ shG->GetImage().GetSampler(), shG->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ shB->GetImage().GetSampler(), shB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		descriptors->CommitDescriptorUpdates();
 
 		const VkExtent3D extent{ m_ArrayResolution, m_ArrayResolution, 1u };
 		if (!m_CaptureDepthImage.CreateVulkanImage(logicalDevice, extent, VK_FORMAT_D32_SFLOAT, 1, 1,
 			VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_SAMPLE_COUNT_1_BIT)) return fail();
 		m_CaptureDepthCreated = true;
 
-		VkAttachmentDescription attachments[2]{};
+		std::vector<VkAttachmentDescription> attachments(2);
 		attachments[0] = { 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -894,44 +899,46 @@ namespace VansGraphics
 			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 		VkAttachmentReference colorRef{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
 		VkAttachmentReference depthRef{ 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
-		VkSubpassDescription subpass{}; subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-		subpass.colorAttachmentCount = 1; subpass.pColorAttachments = &colorRef; subpass.pDepthStencilAttachment = &depthRef;
-		VkSubpassDependency dependencies[2]{};
+		SubpassParameters subpass{};
+		subpass.PipelineType = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subpass.ColorAttachments = { colorRef };
+		subpass.DepthStencilAttachment = &depthRef;
+		std::vector<SubpassParameters> subpasses{ subpass };
+		std::vector<VkSubpassDependency> dependencies(2);
 		dependencies[0] = { VK_SUBPASS_EXTERNAL, 0, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_DEPENDENCY_BY_REGION_BIT };
 		dependencies[1] = { 0, VK_SUBPASS_EXTERNAL, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_DEPENDENCY_BY_REGION_BIT };
-		VkRenderPassCreateInfo renderPassInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-		renderPassInfo.attachmentCount = 2; renderPassInfo.pAttachments = attachments;
-		renderPassInfo.subpassCount = 1; renderPassInfo.pSubpasses = &subpass;
-		renderPassInfo.dependencyCount = 2; renderPassInfo.pDependencies = dependencies;
-		if (vkCreateRenderPass(logicalDevice, &renderPassInfo, nullptr, &m_CaptureRenderPass) != VK_SUCCESS) return fail();
+		const VkExtent2D captureExtent{ m_ArrayResolution, m_ArrayResolution };
+		m_CaptureRenderPass.CreateRenderPass(logicalDevice, attachments, subpasses, dependencies, captureExtent);
+		m_CaptureRenderPassCreated = m_CaptureRenderPass.GetRenderPass() != VK_NULL_HANDLE;
+		if (!m_CaptureRenderPassCreated) return fail();
 
 		m_CaptureFaceViews.resize(requiredLayerCount, VK_NULL_HANDLE);
-		m_CaptureFramebuffers.resize(requiredLayerCount, VK_NULL_HANDLE);
+		m_CaptureFramebuffers.resize(requiredLayerCount);
 		for (size_t layer = 0; layer < m_CaptureFaceViews.size(); ++layer)
 		{
 			m_CaptureFaceViews[layer] = m_SpecularArray->GetImage().CreateLayerMipView(logicalDevice, (uint32_t)layer, 0);
 			if (m_CaptureFaceViews[layer] == VK_NULL_HANDLE) return fail();
-			VkImageView framebufferAttachments[] = { m_CaptureFaceViews[layer], m_CaptureDepthImage.GetImageView() };
-			VkFramebufferCreateInfo framebufferInfo{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-			framebufferInfo.renderPass = m_CaptureRenderPass; framebufferInfo.attachmentCount = 2;
-			framebufferInfo.pAttachments = framebufferAttachments; framebufferInfo.width = m_ArrayResolution;
-			framebufferInfo.height = m_ArrayResolution; framebufferInfo.layers = 1;
-			if (vkCreateFramebuffer(logicalDevice, &framebufferInfo, nullptr, &m_CaptureFramebuffers[layer]) != VK_SUCCESS) return fail();
+			std::vector<VkImageView> framebufferAttachments{ m_CaptureFaceViews[layer], m_CaptureDepthImage.GetImageView() };
+			VkRenderPass captureRenderPass = m_CaptureRenderPass.GetRenderPass();
+			m_CaptureFramebuffers[layer].CreateFrameBuffer(
+				logicalDevice,
+				captureRenderPass,
+				framebufferAttachments,
+				{ m_ArrayResolution, m_ArrayResolution, 1u });
+			if (m_CaptureFramebuffers[layer].GetFrameBuffer() == VK_NULL_HANDLE) return fail();
 		}
 
 		const std::string shaderRoot = VansConfigration::GetInstance()->GetProjectRootPath() + "EngineAssets/Shaders/";
 		m_CaptureGeometryShader = new VansGraphicsShader();
-		if (!m_CaptureGeometryShader->InitShader(logicalDevice, (shaderRoot + "ReflectionProbeCapture").c_str())) return fail();
-		m_CaptureGeometryShader->SetPushConstant(sizeof(CaptureDrawData));
-		m_CaptureGeometryShader->SetColorAttachmentCount(1);
-		m_CaptureGeometryShader->SetDrawStateData(VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_BACK_BIT);
-		m_CaptureGeometryShader->SetFrontFace(VK_FRONT_FACE_CLOCKWISE);
+		const std::string captureGeometryShaderPath = shaderRoot + "ReflectionProbeCapture";
+		if (!m_CaptureGeometryShader->InitShader(logicalDevice, captureGeometryShaderPath.c_str())) return fail();
+		VansShaderManager::Get().ConfigureGraphicsShader(*m_CaptureGeometryShader, "ReflectionProbeCapture", captureGeometryShaderPath);
 		m_CaptureSkyShader = new VansGraphicsShader();
-		if (!m_CaptureSkyShader->InitShader(logicalDevice, (shaderRoot + "ReflectionProbeCaptureSky").c_str())) return fail();
-		m_CaptureSkyShader->SetColorAttachmentCount(1);
-		m_CaptureSkyShader->SetDrawStateData(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS, VK_CULL_MODE_NONE);
+		const std::string captureSkyShaderPath = shaderRoot + "ReflectionProbeCaptureSky";
+		if (!m_CaptureSkyShader->InitShader(logicalDevice, captureSkyShaderPath.c_str())) return fail();
+		VansShaderManager::Get().ConfigureGraphicsShader(*m_CaptureSkyShader, "ReflectionProbeCaptureSky", captureSkyShaderPath);
 		return true;
 	}
 
@@ -953,13 +960,13 @@ namespace VansGraphics
 		}
 		descriptors->DestroyDescriptorSetLayout(m_CaptureDescriptorLayout);
 
-		for (VkFramebuffer framebuffer : m_CaptureFramebuffers)
-			if (framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(m_Device, framebuffer, nullptr);
+		for (VansFrameBuffer& framebuffer : m_CaptureFramebuffers)
+			framebuffer.DestroyFrameBuffer(m_Device);
 		for (VkImageView view : m_CaptureFaceViews)
-			if (view != VK_NULL_HANDLE) vkDestroyImageView(m_Device, view, nullptr);
+			VansVKImage::DestroyImageView(m_Device, view);
 		m_CaptureFramebuffers.clear(); m_CaptureFaceViews.clear();
-		if (m_CaptureRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(m_Device, m_CaptureRenderPass, nullptr);
-		m_CaptureRenderPass = VK_NULL_HANDLE;
+		if (m_CaptureRenderPassCreated) m_CaptureRenderPass.DestroyRenderPass(m_Device);
+		m_CaptureRenderPassCreated = false;
 		if (m_CaptureDepthCreated) m_CaptureDepthImage.DestroyVulkanImage(m_Device);
 		if (m_CaptureCameraBufferCreated) m_CaptureCameraBuffer.DestroyVulkanBuffer(m_Device);
 		m_CaptureDepthCreated = false; m_CaptureCameraBufferCreated = false;
@@ -987,24 +994,25 @@ namespace VansGraphics
 		commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 		VkClearValue clears[2]{}; clears[0].color = {{ 0.0f, 0.0f, 0.0f, 1.0f }}; clears[1].depthStencil = { 1.0f, 0 };
 		VkRenderPassBeginInfo beginInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-		beginInfo.renderPass = m_CaptureRenderPass; beginInfo.framebuffer = m_CaptureFramebuffers[probeIndex * 6u + face];
+		beginInfo.renderPass = m_CaptureRenderPass.GetRenderPass();
+		beginInfo.framebuffer = m_CaptureFramebuffers[probeIndex * 6u + face].GetFrameBuffer();
 		beginInfo.renderArea = { {0,0}, {m_ArrayResolution,m_ArrayResolution} }; beginInfo.clearValueCount = 2; beginInfo.pClearValues = clears;
-		vkCmdBeginRenderPass(commandBuffer.GetVKCommandBuffer(), &beginInfo, VK_SUBPASS_CONTENTS_INLINE);
+		commandBuffer.BeginRenderPass(beginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-		GlobalStateData state; state.currentRenderPass = m_CaptureRenderPass; state.currentSubpass = 0;
+		GlobalStateData state; state.currentRenderPass = m_CaptureRenderPass.GetRenderPass(); state.currentSubpass = 0;
 		// Cube images use Vulkan's native top-to-bottom t coordinate. A negative
 		// viewport vertically mirrored every captured face relative to samplerCube.
 		state.viewport = { 0.0f, 0.0f, float(m_ArrayResolution), float(m_ArrayResolution), 0.0f, 1.0f };
 		state.scissor = { {0,0}, {m_ArrayResolution,m_ArrayResolution} };
 		commandBuffer.SetViewport(0, { state.viewport }); commandBuffer.SetScissor(0, { state.scissor });
-		const std::vector<VkDescriptorSetLayout> layouts{ scene.m_GlobalDescriptorSetLayout, m_CaptureDescriptorLayout };
-		const std::vector<VkDescriptorSet> sets{ scene.m_GlobalDescriptorSet, m_CaptureDescriptorSet };
+		const std::vector<VkDescriptorSetLayout> layouts{ scene.GetGlobalDescriptorSetLayout(), m_CaptureDescriptorLayout };
+		const std::vector<VkDescriptorSet> sets{ scene.GetGlobalDescriptorSet(), m_CaptureDescriptorSet };
 		commandBuffer.EnsureGraphicsShader(*m_CaptureSkyShader, state, layouts);
 		commandBuffer.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_CaptureSkyShader, 0, sets, {});
 		commandBuffer.BindGraphicsPipeline(*m_CaptureSkyShader->GetGraphicsPipeline());
 		commandBuffer.Draw(3, 1, 0, 0);
 
-		std::vector<VansRenderNode*> nodes = scene.m_OpaqueRenderNodes;
+		std::vector<VansRenderNode*> nodes = scene.GetOpaqueRenderNodes();
 		if (scene.GetTerrainRenderNode()) nodes.push_back(scene.GetTerrainRenderNode());
 		for (VansRenderNode* node : nodes)
 		{
@@ -1031,7 +1039,7 @@ namespace VansGraphics
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(draw), &draw);
 			commandBuffer.DrawMesh(*node->m_Mesh, *m_CaptureGeometryShader, 1);
 		}
-		vkCmdEndRenderPass(commandBuffer.GetVKCommandBuffer());
+		commandBuffer.EndRenderPass();
 		commandBuffer.EndCommandBufferRecord();
 		const bool submitted = VansVKCommandBuffer::SubmitCommands(device.GetGraphicsQueue(), device.GetLogicDevice(),
 			{ commandBuffer.GetVKCommandBuffer() }, {}, {}, commandBuffer.m_CommandBufferFinishSubmitFence);
@@ -1153,3 +1161,4 @@ namespace VansGraphics
 		return std::clamp(m_Probes[index].realtimeFacesPerFrame, 1u, 6u);
 	}
 }
+

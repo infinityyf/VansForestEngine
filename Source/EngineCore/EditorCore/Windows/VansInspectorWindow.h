@@ -2,44 +2,52 @@
 
 #include "VansBaseWindowComponent.h"
 #include "../VansAssetDocumentRegistry.h"
-#include "../VansInspectorLiveEditService.h"
-#include "../VansMaterialLiveEditService.h"
-#include "../../RenderCore/VansScene.h"
 
 #include <filesystem>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace VansGraphics
 {
 class VansInspectorWindow final : public VansBaseWindowComponent
 {
 public:
-    void RegistScene(VansScene* scene) { m_Scene = scene; m_LiveEdit.Bind(m_Scene, nullptr); m_MaterialLiveEdit.Bind(m_Scene); }
 
 private:
     using Json = nlohmann::ordered_json;
 
-    void ShowWindow(VansVKDevice& device) override;
-    void DrawSceneEntity();
+    struct PendingAssetReferenceEdit
+    {
+        std::string pointer;
+        std::string guid;
+        int expectedAssetType = 0;
+        bool writeObjectReference = true;
+    };
+
+    void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
+    void DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api);
 	void DrawSceneSettings();
-    void DrawAsset();
+    void DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api);
     bool DrawJsonValue(const std::string& label, Json& value, const std::string& pointer,
         bool readOnly = false, const std::string& componentType = {}, const std::string& parentKey = {});
     bool DrawAssetReference(const std::string& label, Json& reference,
-        const std::string& pointer, int expectedAssetType);
-    bool DrawComponent(Json& component, const std::string& pointer, bool& removeRequested);
-    void ApplyComponentEnabled(const std::string& jsonPointer, bool enabled);
+        const std::string& pointer, int expectedAssetType, bool writeObjectReference = true);
+    bool DrawComponent(Vans::EditorAPI::IEngineEditorAPI& api, Json& component,
+        const std::string& pointer, bool& removeRequested);
+    void ApplyComponentEnabled(Vans::EditorAPI::IEngineEditorAPI& api,
+        const std::string& componentType, bool enabled);
     bool LoadAssetDocuments(const std::filesystem::path& sourcePath);
     bool SaveAssetDocuments(bool reloadSceneOnSuccess = true);
 
     std::filesystem::path m_AssetPath;
     std::shared_ptr<Vans::VansOpenAssetDocument> m_AssetDocuments;
     std::string m_Error;
+    std::vector<std::string> m_CollisionLayerNames;
+    Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
     bool m_PendingVehicleRebuild = false;
-    VansScene* m_Scene = nullptr;
-    VansInspectorLiveEditService m_LiveEdit;
-    VansMaterialLiveEditService m_MaterialLiveEdit;
+    std::optional<PendingAssetReferenceEdit> m_PendingAssetReferenceEdit;
 };
 }

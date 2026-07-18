@@ -1,4 +1,4 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansRenderPass.h"
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
@@ -9,6 +9,39 @@
 #include <vector>
 
 VansGraphics::VansRenderPassManager* VansGraphics::VansRenderPassManager::instance = nullptr;
+
+namespace
+{
+	bool EndSubmitAndResetOneTimeCommand(
+		VansGraphics::VansVKCommandBuffer& commandBuffer,
+		VkQueue& queue,
+		VkDevice& device,
+		const char* context)
+	{
+		if (!commandBuffer.EndCommandBufferRecord())
+		{
+			VANS_LOG_ERROR(context << ": failed to end one-time command buffer.");
+			return false;
+		}
+		if (!VansGraphics::VansVKCommandBuffer::SubmitCommands(
+			queue,
+			device,
+			{ commandBuffer.GetVKCommandBuffer() },
+			{},
+			{},
+			commandBuffer.m_CommandBufferFinishSubmitFence))
+		{
+			VANS_LOG_ERROR(context << ": failed to submit one-time command buffer.");
+			return false;
+		}
+		if (!commandBuffer.ResetCommandBuffer(false))
+		{
+			VANS_LOG_ERROR(context << ": failed to reset one-time command buffer.");
+			return false;
+		}
+		return true;
+	}
+}
 
 void VansGraphics::VansVKRenderPass::CreateRenderPass(VkDevice& logic_device, std::vector<VkAttachmentDescription>& attachments, std::vector<SubpassParameters>& subpass_params, std::vector<VkSubpassDependency>& subpass_dependency, const VkExtent2D& resolution)
 {
@@ -84,7 +117,7 @@ void VansGraphics::VansVKRenderPass::CreateRenderPass(VkDevice& logic_device, st
 		 static_cast<uint32_t>(m_SubpassDependencies.size()),
 		 m_SubpassDependencies.data()
 	};
-	VkResult result = vkCreateRenderPass(logic_device, &render_pass_create_info, nullptr, &m_RenderPass);
+	VkResult result = VansGraphics::vkCreateRenderPass(logic_device, &render_pass_create_info, nullptr, &m_RenderPass);
 	if (VK_SUCCESS != result)
 	{
 		VANS_LOG_ERROR("Could not create a render pass.");
@@ -100,7 +133,7 @@ void VansGraphics::VansVKRenderPass::DestroyRenderPass(VkDevice& logic_device)
 
 	if (VK_NULL_HANDLE != m_RenderPass)
 	{
-		vkDestroyRenderPass(logic_device, m_RenderPass, nullptr);
+		VansGraphics::vkDestroyRenderPass(logic_device, m_RenderPass, nullptr);
 		m_RenderPass = VK_NULL_HANDLE;
 	}
 }
@@ -120,7 +153,7 @@ void VansGraphics::VansFrameBuffer::CreateFrameBuffer(VkDevice& logic_device, Vk
 		 framebuffer_size.depth
 	};
 
-	VkResult result = vkCreateFramebuffer(logic_device, &framebuffer_create_info, nullptr, &m_FrameBuffer);
+	VkResult result = VansGraphics::vkCreateFramebuffer(logic_device, &framebuffer_create_info, nullptr, &m_FrameBuffer);
 	if (VK_SUCCESS != result) 
 	{
 		VANS_LOG_ERROR("Could not create a framebuffer.");
@@ -131,7 +164,7 @@ void VansGraphics::VansFrameBuffer::DestroyFrameBuffer(VkDevice& logic_device)
 {
 	if (m_FrameBuffer != VK_NULL_HANDLE)
 	{
-		vkDestroyFramebuffer(logic_device, m_FrameBuffer, nullptr);
+		VansGraphics::vkDestroyFramebuffer(logic_device, m_FrameBuffer, nullptr);
 		m_FrameBuffer = VK_NULL_HANDLE;
 	}
 }
@@ -286,31 +319,31 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_ColorImage.GetImage());
 	nameInfo.pObjectName = "ColorImage";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_OpaqueSceneColorImage.GetImage());
 	nameInfo.pObjectName = "OpaqueSceneColorImage";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_DepthImage.GetImage());
 	nameInfo.pObjectName = "DepthImage";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_NormalImage.GetImage());
 	nameInfo.pObjectName = "NormalImage";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_GBufferImage0.GetImage());
 	nameInfo.pObjectName = "GBuffer0Image";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_GBufferImage1.GetImage());
 	nameInfo.pObjectName = "GBuffer1Image";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_GBufferImage2.GetImage());
 	nameInfo.pObjectName = "GBuffer2Image";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 #endif
 
 	// GBuffer pass：只写本帧 GBuffer / Depth，结束后立刻允许 compute 读取。
@@ -699,11 +732,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			VK_QUEUE_FAMILY_IGNORED,
 			m_DepthImage.m_ImageAspect
 		});
-	//end record
-	command_buffer.EndCommandBufferRecord();
-
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
-	command_buffer.ResetCommandBuffer(false);
+	EndSubmitAndResetOneTimeCommand(command_buffer, queue, logic_device, "SetupVansGBufferRenderPass");
 }
 
 void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue)
@@ -814,7 +843,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 			viewInfo.subresourceRange.levelCount = 1;
 			viewInfo.subresourceRange.baseArrayLayer = (uint32_t)i;
 			viewInfo.subresourceRange.layerCount = 1;
-			vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeColorLayerViews[i]);
+			VansGraphics::vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeColorLayerViews[i]);
 		}
 		// Depth layer view
 		{
@@ -828,7 +857,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 			viewInfo.subresourceRange.levelCount = 1;
 			viewInfo.subresourceRange.baseArrayLayer = (uint32_t)i;
 			viewInfo.subresourceRange.layerCount = 1;
-			vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeDepthLayerViews[i]);
+			VansGraphics::vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeDepthLayerViews[i]);
 		}
 	}
 
@@ -844,7 +873,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		viewInfo.subresourceRange.levelCount = 1;
 		viewInfo.subresourceRange.baseArrayLayer = 0;
 		viewInfo.subresourceRange.layerCount = (uint32_t)cascadeCount;
-		vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeShadowArrayView);
+		VansGraphics::vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeShadowArrayView);
 	}
 
 	// Create sampler for cascade shadow array
@@ -864,7 +893,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 		samplerInfo.minLod = 0.0f;
 		samplerInfo.maxLod = 1.0f;
-		vkCreateSampler(logic_device, &samplerInfo, nullptr, &m_CascadeShadowSampler);
+		VansGraphics::vkCreateSampler(logic_device, &samplerInfo, nullptr, &m_CascadeShadowSampler);
 	}
 
 #ifdef _DEBUG
@@ -873,11 +902,11 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_CascadeShadowMapImage.GetImage());
 	nameInfo.pObjectName = "CascadeShadowMap";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_CascadeShadowMapDepthImage.GetImage());
 	nameInfo.pObjectName = "CascadeShadowMapDepth";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 #endif
 
 	// Create 4 framebuffers — one per cascade layer
@@ -920,10 +949,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 			m_CascadeShadowMapDepthImage.m_ImageAspect
 		});
 
-	command_buffer.EndCommandBufferRecord();
-
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
-	command_buffer.ResetCommandBuffer(false);
+	EndSubmitAndResetOneTimeCommand(command_buffer, queue, logic_device, "SetupVansShadowRenderPass");
 }
 
 void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue)
@@ -1025,11 +1051,11 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_PunctualShadowMapImage.GetImage());
 	nameInfo.pObjectName = "PunctualShadowMap";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_PunctualShadowMapDepthImage.GetImage());
 	nameInfo.pObjectName = "PunctualShadowMapDepth";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 #endif
 
 	m_VansPunctualShadowPass.m_FrameBuffers.resize(1);
@@ -1066,11 +1092,7 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 			m_PunctualShadowMapDepthImage.m_ImageAspect
 		});
 
-	//end record
-	command_buffer.EndCommandBufferRecord();
-
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
-	command_buffer.ResetCommandBuffer(false);
+	EndSubmitAndResetOneTimeCommand(command_buffer, queue, logic_device, "SetupVansPunctualShadowRenderPass");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1166,11 +1188,11 @@ void VansGraphics::VansRenderPassManager::SetupVansMotionVectorRenderPass(VkDevi
 	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_MotionVectorImage.GetImage());
 	nameInfo.pObjectName = "MotionVectorImage";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_MotionVectorDepthImage.GetImage());
 	nameInfo.pObjectName = "MotionVectorDepthImage";
-	vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 #endif
 
 	// Single framebuffer at render resolution
@@ -1198,10 +1220,7 @@ void VansGraphics::VansRenderPassManager::SetupVansMotionVectorRenderPass(VkDevi
 			VK_QUEUE_FAMILY_IGNORED,
 			m_MotionVectorDepthImage.m_ImageAspect
 		});
-	command_buffer.EndCommandBufferRecord();
-
-	VansVKCommandBuffer::SubmitCommands(queue, logic_device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
-	command_buffer.ResetCommandBuffer(false);
+	EndSubmitAndResetOneTimeCommand(command_buffer, queue, logic_device, "SetupVansMotionVectorRenderPass");
 }
 
 void VansGraphics::VansRenderPassManager::SetupVansUIRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution)
@@ -1756,7 +1775,7 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 		{ renderResolution.width, renderResolution.height, 1 });
 }
 
-void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VkCommandBuffer command_buffer, GlobalStateData& global_state_data, int swap_chain_index)
+void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, int swap_chain_index)
 {
 	//将当前render pass 记录到globaldata中
 	global_state_data.currentRenderPass = renderPass.m_RenderPass;
@@ -1777,24 +1796,24 @@ void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& rend
 		 renderPass.m_ClearValues.data()
 	};
 
-	vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+	command_buffer.BeginRenderPass(render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
 	//begin的时候设置viewport和sissor
-	vkCmdSetViewport(command_buffer, 0, 1, &renderPass.m_RenderPassViewport);
-	vkCmdSetScissor(command_buffer, 0, 1, &renderPass.m_RenderPassScissor);
+	command_buffer.SetViewport(0, { renderPass.m_RenderPassViewport });
+	command_buffer.SetScissor(0, { renderPass.m_RenderPassScissor });
 }
 
-void VansGraphics::VansRenderPassManager::NextSubPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data)
+void VansGraphics::VansRenderPassManager::NextSubPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data)
 {
 	global_state_data.currentSubpass++;
-	vkCmdNextSubpass(command_buffer, VK_SUBPASS_CONTENTS_INLINE);
+	command_buffer.NextSubpass(VK_SUBPASS_CONTENTS_INLINE);
 }
 
-void VansGraphics::VansRenderPassManager::EndRenderPass(VkCommandBuffer command_buffer, GlobalStateData& global_state_data)
+void VansGraphics::VansRenderPassManager::EndRenderPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data)
 {
 	global_state_data.currentRenderPass = VK_NULL_HANDLE;
 	global_state_data.currentSubpass = 0;
-	vkCmdEndRenderPass(command_buffer);
+	command_buffer.EndRenderPass();
 }
 
 void VansGraphics::VansRenderPassManager::BlitToSwapChainImage(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex, const VkExtent2D& renderResolution)
@@ -1804,7 +1823,7 @@ void VansGraphics::VansRenderPassManager::BlitToSwapChainImage(VansVKCommandBuff
     // Steps:
     // 1. Transition source to TRANSFER_SRC_OPTIMAL.
     // 2. Transition destination (swapchain) to TRANSFER_DST_OPTIMAL.
-    // 3. vkCmdBlitImage
+    // 3. Blit via command buffer wrapper.
     // 4. Transition destination to PRESENT_SRC_KHR again (source back to PRESENT optional).
 
     VkExtent2D swapchainExtent = surface.m_VansVKSwapChainImageExtent;
@@ -1843,14 +1862,12 @@ void VansGraphics::VansRenderPassManager::BlitToSwapChainImage(VansVKCommandBuff
     blitRegion.dstOffsets[0] = { 0, 0, 0 };
     blitRegion.dstOffsets[1] = { (int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height, 1 };
 
-    vkCmdBlitImage(
-        command_buffer.GetVKCommandBuffer(),
+    command_buffer.BlitImageRegions(
         m_ColorAfterPostProcessImage.GetImage(),
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         surface.GetSwapChainImage(swapChainIndex),
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        1,
-        &blitRegion,
+        { blitRegion },
         VK_FILTER_LINEAR);
 
     // Transition swapchain image to PRESENT_SRC_KHR for presentation
@@ -1888,14 +1905,14 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	for (int i = 0; i < 4; ++i)
 	{
 		if (m_CascadeColorLayerViews[i] != VK_NULL_HANDLE)
-			vkDestroyImageView(m_LogicDevice, m_CascadeColorLayerViews[i], nullptr);
+			VansGraphics::vkDestroyImageView(m_LogicDevice, m_CascadeColorLayerViews[i], nullptr);
 		if (m_CascadeDepthLayerViews[i] != VK_NULL_HANDLE)
-			vkDestroyImageView(m_LogicDevice, m_CascadeDepthLayerViews[i], nullptr);
+			VansGraphics::vkDestroyImageView(m_LogicDevice, m_CascadeDepthLayerViews[i], nullptr);
 	}
 	if (m_CascadeShadowArrayView != VK_NULL_HANDLE)
-		vkDestroyImageView(m_LogicDevice, m_CascadeShadowArrayView, nullptr);
+		VansGraphics::vkDestroyImageView(m_LogicDevice, m_CascadeShadowArrayView, nullptr);
 	if (m_CascadeShadowSampler != VK_NULL_HANDLE)
-		vkDestroySampler(m_LogicDevice, m_CascadeShadowSampler, nullptr);
+		VansGraphics::vkDestroySampler(m_LogicDevice, m_CascadeShadowSampler, nullptr);
 	m_CascadeShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 	m_CascadeShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
 

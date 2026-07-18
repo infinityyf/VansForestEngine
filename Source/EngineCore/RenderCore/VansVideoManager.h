@@ -3,9 +3,15 @@
 #include <unordered_map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
+
+namespace Vans
+{
+    struct VansSceneVideoResourceRequest;
+}
 
 namespace VansGraphics
 {
@@ -41,6 +47,10 @@ namespace VansGraphics
         //     "autoplay" : true,             // 可选，默认 true
         //     "srgb"     : true              // 可选，默认 true
         //   }
+        void Load(const std::vector<Vans::VansSceneVideoResourceRequest>& videos,
+                  const std::string& projectRoot,
+                  VansVKDevice* device);
+
         void LoadFromJson(const json& videoArray,
                           const std::string& projectRoot,
                           VansVKDevice* device);

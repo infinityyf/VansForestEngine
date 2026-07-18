@@ -2,6 +2,7 @@
 #include "VansVKDescriptorManager.h"
 #include "../../Util/VansLog.h"
 #include <iostream>
+#include <unordered_map>
 
 VansGraphics::VansVKDescriptorManager* VansGraphics::VansVKDescriptorManager::instance = nullptr;
 
@@ -9,47 +10,191 @@ VansGraphics::VansVKDescriptorManager::VansVKDescriptorManager()
 {
 }
 
-void VansGraphics::VansVKDescriptorManager::CreateDescriptorPool(bool free_individual_sets)
+bool VansGraphics::VansVKDescriptorManager::CreateDescriptorPoolHandle(VkDescriptorPoolCreateFlags flags, VkDescriptorPool& outPool)
 {
-	//类似command buffer pool，用于allocate descriptor sets
-	//指定最大set数量，以及每个类型额描述符数量
-	//但是不能多线程同时分配
-	VkDescriptorPoolCreateInfo descriptor_pool_create_info = 
+	VkDescriptorPoolCreateInfo descriptor_pool_create_info =
 	{
 		 VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 		 nullptr,
-		 // 注意：必须包含 UPDATE_AFTER_BIND_BIT，以支持全局 bindless 纹理数组在 GPU 执行期间更新
-		 (free_individual_sets ? VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT : 0u)
-		     | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+		 flags,
 		 m_MaxSetsCount,
 		 static_cast<uint32_t>(m_DescriptorPoolSizes.size()),
 		 m_DescriptorPoolSizes.data()
 	};
 
-	VkResult result = vkCreateDescriptorPool(m_LogicalDevice, &descriptor_pool_create_info, nullptr, &m_DescriptorPool);
-	if (VK_SUCCESS != result) 
+	VkResult result = VansGraphics::vkCreateDescriptorPool(m_LogicalDevice, &descriptor_pool_create_info, nullptr, &outPool);
+	if (VK_SUCCESS != result)
 	{
 		VANS_LOG_ERROR("Could not create a descriptor pool.");
+		outPool = VK_NULL_HANDLE;
+		return false;
 	}
+
+	return true;
+}
+
+bool VansGraphics::VansVKDescriptorManager::UsesUpdateAfterBindPool(const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts) const
+{
+	for (VkDescriptorSetLayout layout : descriptorSetLayouts)
+	{
+		if (m_UpdateAfterBindLayouts.find(layout) != m_UpdateAfterBindLayouts.end())
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool VansGraphics::VansVKDescriptorManager::AllocateDescriptorSetFromPool(
+	VkDescriptorPool descriptorPool,
+	const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts,
+	std::vector<VkDescriptorSet>& descriptorSets,
+	VkResult& outResult,
+	VansDescriptorLifetimeRole lifetimeRole)
+{
+	if (descriptorPool == VK_NULL_HANDLE)
+	{
+		outResult = VK_ERROR_INITIALIZATION_FAILED;
+		return false;
+	}
+
+	VkDescriptorSetAllocateInfo descriptor_set_allocate_info =
+	{
+		 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		 nullptr,
+		 descriptorPool,
+		 static_cast<uint32_t>(descriptorSetLayouts.size()),
+		 descriptorSetLayouts.data()
+	};
+
+	descriptorSets.assign(descriptorSetLayouts.size(), VK_NULL_HANDLE);
+	outResult = VansGraphics::vkAllocateDescriptorSets(m_LogicalDevice, &descriptor_set_allocate_info, descriptorSets.data());
+	if (outResult != VK_SUCCESS)
+	{
+		descriptorSets.clear();
+		return false;
+	}
+
+	for (VkDescriptorSet descriptorSet : descriptorSets)
+	{
+		if (descriptorSet != VK_NULL_HANDLE)
+		{
+			m_DescriptorSetPools[descriptorSet] = descriptorPool;
+			m_DescriptorSetRoles[descriptorSet] = lifetimeRole;
+		}
+	}
+
+	return true;
+}
+
+void VansGraphics::VansVKDescriptorManager::CreateDescriptorPool(bool free_individual_sets)
+{
+	// Standard descriptors should not inherit UPDATE_AFTER_BIND. The dedicated
+	// update-after-bind pool is selected only for layouts that explicitly ask for it.
+	m_DescriptorPoolFlags = free_individual_sets ? VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT : 0u;
+	CreateDescriptorPoolHandle(m_DescriptorPoolFlags, m_DescriptorPool);
+	if (m_DescriptorPool != VK_NULL_HANDLE)
+	{
+		m_DescriptorPools.push_back(m_DescriptorPool);
+	}
+	CreateDescriptorPoolHandle(
+		m_DescriptorPoolFlags | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+		m_UpdateAfterBindDescriptorPool);
+	if (m_UpdateAfterBindDescriptorPool != VK_NULL_HANDLE)
+	{
+		m_UpdateAfterBindDescriptorPools.push_back(m_UpdateAfterBindDescriptorPool);
+	}
+}
+
+VansGraphics::VansDescriptorPoolDiagnostics VansGraphics::VansVKDescriptorManager::GetDiagnostics() const
+{
+	VansDescriptorPoolDiagnostics diagnostics{};
+	diagnostics.standardPoolCount = static_cast<uint32_t>(m_DescriptorPools.size());
+	diagnostics.updateAfterBindPoolCount = static_cast<uint32_t>(m_UpdateAfterBindDescriptorPools.size());
+	diagnostics.trackedDescriptorSetCount = static_cast<uint32_t>(m_DescriptorSetPools.size());
+	diagnostics.updateAfterBindLayoutCount = static_cast<uint32_t>(m_UpdateAfterBindLayouts.size());
+	for (const auto& descriptorRole : m_DescriptorSetRoles)
+	{
+		switch (descriptorRole.second)
+		{
+		case VansDescriptorLifetimeRole::GlobalPersistent:
+			++diagnostics.globalPersistentSetCount;
+			break;
+		case VansDescriptorLifetimeRole::ScenePersistent:
+			++diagnostics.scenePersistentSetCount;
+			break;
+		case VansDescriptorLifetimeRole::FrameTransient:
+			++diagnostics.frameTransientSetCount;
+			break;
+		case VansDescriptorLifetimeRole::PassPersistent:
+			++diagnostics.passPersistentSetCount;
+			break;
+		case VansDescriptorLifetimeRole::UploadScratch:
+			++diagnostics.uploadScratchSetCount;
+			break;
+		case VansDescriptorLifetimeRole::RayTracingPersistent:
+			++diagnostics.rayTracingPersistentSetCount;
+			break;
+		}
+	}
+	return diagnostics;
 }
 
 bool VansGraphics::VansVKDescriptorManager::ResetDescriptorPool()
 {
-	VkResult result = vkResetDescriptorPool(m_LogicalDevice, m_DescriptorPool, 0);
-	if (VK_SUCCESS != result) {
-		VANS_LOG_ERROR("Error occurred during descriptor pool reset.");
-		return false;
+	for (VkDescriptorPool descriptorPool : m_DescriptorPools)
+	{
+		if (descriptorPool == VK_NULL_HANDLE)
+		{
+			continue;
+		}
+		VkResult result = VansGraphics::vkResetDescriptorPool(m_LogicalDevice, descriptorPool, 0);
+		if (VK_SUCCESS != result) {
+			VANS_LOG_ERROR("Error occurred during descriptor pool reset.");
+			return false;
+		}
 	}
+	for (VkDescriptorPool descriptorPool : m_UpdateAfterBindDescriptorPools)
+	{
+		if (descriptorPool == VK_NULL_HANDLE)
+		{
+			continue;
+		}
+		VkResult result = VansGraphics::vkResetDescriptorPool(m_LogicalDevice, descriptorPool, 0);
+		if (VK_SUCCESS != result) {
+			VANS_LOG_ERROR("Error occurred during update-after-bind descriptor pool reset.");
+			return false;
+		}
+	}
+	m_DescriptorSetPools.clear();
+	m_DescriptorSetRoles.clear();
 	return true;
 }
 
 void VansGraphics::VansVKDescriptorManager::DestroyDescriptorPool()
 {
-	if (VK_NULL_HANDLE != m_DescriptorPool)
+	for (VkDescriptorPool descriptorPool : m_UpdateAfterBindDescriptorPools)
 	{
-		vkDestroyDescriptorPool(m_LogicalDevice, m_DescriptorPool, nullptr);
-		m_DescriptorPool = VK_NULL_HANDLE;
+		if (descriptorPool != VK_NULL_HANDLE)
+		{
+			VansGraphics::vkDestroyDescriptorPool(m_LogicalDevice, descriptorPool, nullptr);
+		}
 	}
+	for (VkDescriptorPool descriptorPool : m_DescriptorPools)
+	{
+		if (descriptorPool != VK_NULL_HANDLE)
+		{
+			VansGraphics::vkDestroyDescriptorPool(m_LogicalDevice, descriptorPool, nullptr);
+		}
+	}
+	m_UpdateAfterBindDescriptorPools.clear();
+	m_DescriptorPools.clear();
+	m_UpdateAfterBindDescriptorPool = VK_NULL_HANDLE;
+	m_DescriptorPool = VK_NULL_HANDLE;
+	m_UpdateAfterBindLayouts.clear();
+	m_DescriptorSetPools.clear();
+	m_DescriptorSetRoles.clear();
 }
 
 
@@ -74,7 +219,7 @@ bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayout(const std::
 		 bindings.data()
 	};
 
-	VkResult result = vkCreateDescriptorSetLayout(m_LogicalDevice, &descriptor_set_layout_create_info, nullptr, &descriptor_set_layout);
+	VkResult result = VansGraphics::vkCreateDescriptorSetLayout(m_LogicalDevice, &descriptor_set_layout_create_info, nullptr, &descriptor_set_layout);
 	if (VK_SUCCESS != result) 
 	{
 		VANS_LOG_ERROR("Could not create a layout for descriptor sets.");
@@ -102,11 +247,15 @@ bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayoutWithFlags(
 	layoutCI.bindingCount = static_cast<uint32_t>(bindings.size());
 	layoutCI.pBindings    = bindings.data();
 
-	VkResult result = vkCreateDescriptorSetLayout(m_LogicalDevice, &layoutCI, nullptr, &descriptor_set_layout);
+	VkResult result = VansGraphics::vkCreateDescriptorSetLayout(m_LogicalDevice, &layoutCI, nullptr, &descriptor_set_layout);
 	if (VK_SUCCESS != result)
 	{
 		VANS_LOG_ERROR("Could not create descriptor set layout with binding flags.");
 		return false;
+	}
+	if ((layoutFlags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT) != 0)
+	{
+		m_UpdateAfterBindLayouts.insert(descriptor_set_layout);
 	}
 	return true;
 }
@@ -115,30 +264,69 @@ void VansGraphics::VansVKDescriptorManager::DestroyDescriptorSetLayout(VkDescrip
 {
 	if (VK_NULL_HANDLE != descriptor_set_layout) 
 	{
-		vkDestroyDescriptorSetLayout(m_LogicalDevice, descriptor_set_layout, nullptr);
+		m_UpdateAfterBindLayouts.erase(descriptor_set_layout);
+		VansGraphics::vkDestroyDescriptorSetLayout(m_LogicalDevice, descriptor_set_layout, nullptr);
 		descriptor_set_layout = VK_NULL_HANDLE;
 	}
 }
 
-bool VansGraphics::VansVKDescriptorManager::AllocateDescriptorSet(const std::vector<VkDescriptorSetLayout>& discriptor_set_layout, std::vector<VkDescriptorSet>& descriptor_sets)
+bool VansGraphics::VansVKDescriptorManager::AllocateDescriptorSet(
+	const std::vector<VkDescriptorSetLayout>& discriptor_set_layout,
+	std::vector<VkDescriptorSet>& descriptor_sets,
+	VansDescriptorLifetimeRole lifetimeRole)
 {
-	VkDescriptorSetAllocateInfo descriptor_set_allocate_info = 
+	if (discriptor_set_layout.empty())
 	{
-		 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-		 nullptr,
-		 m_DescriptorPool,
-		 static_cast<uint32_t>(discriptor_set_layout.size()),
-		 discriptor_set_layout.data()
-	};
+		descriptor_sets.clear();
+		return true;
+	}
 
-	descriptor_sets.resize(discriptor_set_layout.size());
-	VkResult result = vkAllocateDescriptorSets(m_LogicalDevice,&descriptor_set_allocate_info, descriptor_sets.data());
-	if (VK_SUCCESS != result) 
+	const bool useUpdateAfterBindPool = UsesUpdateAfterBindPool(discriptor_set_layout);
+	std::vector<VkDescriptorPool>& descriptorPools = useUpdateAfterBindPool
+		? m_UpdateAfterBindDescriptorPools
+		: m_DescriptorPools;
+	const VkDescriptorPoolCreateFlags poolFlags = useUpdateAfterBindPool
+		? (m_DescriptorPoolFlags | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT)
+		: m_DescriptorPoolFlags;
+
+	VkResult lastResult = VK_SUCCESS;
+	for (VkDescriptorPool descriptorPool : descriptorPools)
 	{
-		VANS_LOG_ERROR("Could not allocate descriptor sets.");
+		if (AllocateDescriptorSetFromPool(descriptorPool, discriptor_set_layout, descriptor_sets, lastResult, lifetimeRole))
+		{
+			return true;
+		}
+		if (lastResult != VK_ERROR_OUT_OF_POOL_MEMORY && lastResult != VK_ERROR_FRAGMENTED_POOL)
+		{
+			VANS_LOG_ERROR("Could not allocate descriptor sets. VkResult=" << static_cast<int>(lastResult));
+			return false;
+		}
+	}
+
+	VkDescriptorPool newPool = VK_NULL_HANDLE;
+	if (!CreateDescriptorPoolHandle(poolFlags, newPool) || newPool == VK_NULL_HANDLE)
+	{
+		VANS_LOG_ERROR("Could not grow descriptor pool chain.");
 		return false;
 	}
-	return true;
+
+	descriptorPools.push_back(newPool);
+	if (useUpdateAfterBindPool && m_UpdateAfterBindDescriptorPool == VK_NULL_HANDLE)
+	{
+		m_UpdateAfterBindDescriptorPool = newPool;
+	}
+	else if (!useUpdateAfterBindPool && m_DescriptorPool == VK_NULL_HANDLE)
+	{
+		m_DescriptorPool = newPool;
+	}
+
+	if (AllocateDescriptorSetFromPool(newPool, discriptor_set_layout, descriptor_sets, lastResult, lifetimeRole))
+	{
+		return true;
+	}
+
+	VANS_LOG_ERROR("Could not allocate descriptor sets from a newly grown descriptor pool. VkResult=" << static_cast<int>(lastResult));
+	return false;
 }
 
 bool VansGraphics::VansVKDescriptorManager::DestroyDescriptorSet(std::vector<VkDescriptorSet>& descriptor_sets)
@@ -146,14 +334,133 @@ bool VansGraphics::VansVKDescriptorManager::DestroyDescriptorSet(std::vector<VkD
 	if (descriptor_sets.empty())
 		return true;
 
-	VkResult result = vkFreeDescriptorSets(m_LogicalDevice, m_DescriptorPool, static_cast<uint32_t>(descriptor_sets.size()), descriptor_sets.data());
-	if (VK_SUCCESS != result) 
+	std::unordered_map<VkDescriptorPool, std::vector<VkDescriptorSet>> setsByPool;
+	for (VkDescriptorSet descriptorSet : descriptor_sets)
 	{
-		VANS_LOG_ERROR("Error occurred during freeing descriptor sets.");
-		return false;
+		if (descriptorSet == VK_NULL_HANDLE)
+		{
+			continue;
+		}
+
+		auto iter = m_DescriptorSetPools.find(descriptorSet);
+		VkDescriptorPool ownerPool = iter != m_DescriptorSetPools.end()
+			? iter->second
+			: m_DescriptorPool;
+		setsByPool[ownerPool].push_back(descriptorSet);
+	}
+
+	for (auto& poolSets : setsByPool)
+	{
+		if (poolSets.first == VK_NULL_HANDLE || poolSets.second.empty())
+		{
+			continue;
+		}
+
+		VkResult result = VansGraphics::vkFreeDescriptorSets(
+			m_LogicalDevice,
+			poolSets.first,
+			static_cast<uint32_t>(poolSets.second.size()),
+			poolSets.second.data());
+		if (VK_SUCCESS != result)
+		{
+			VANS_LOG_ERROR("Error occurred during freeing descriptor sets.");
+			return false;
+		}
+
+		for (VkDescriptorSet descriptorSet : poolSets.second)
+		{
+			m_DescriptorSetPools.erase(descriptorSet);
+			m_DescriptorSetRoles.erase(descriptorSet);
+		}
 	}
 	descriptor_sets.clear();
 	return true;
+}
+
+void VansGraphics::VansVKDescriptorManager::WriteImageDescriptor(
+	VkDescriptorSet dstSet,
+	uint32_t binding,
+	VkDescriptorType type,
+	const std::vector<VkDescriptorImageInfo>& imageInfos,
+	uint32_t firstElement)
+{
+	if (dstSet == VK_NULL_HANDLE || imageInfos.empty())
+		return;
+
+	m_ImageDescInfos.push_back({ dstSet, binding, firstElement, type, imageInfos });
+}
+
+void VansGraphics::VansVKDescriptorManager::WriteBufferDescriptor(
+	VkDescriptorSet dstSet,
+	uint32_t binding,
+	VkDescriptorType type,
+	const std::vector<VkDescriptorBufferInfo>& bufferInfos,
+	uint32_t firstElement)
+{
+	if (dstSet == VK_NULL_HANDLE || bufferInfos.empty())
+		return;
+
+	m_BufferDescInfos.push_back({ dstSet, binding, firstElement, type, bufferInfos });
+}
+
+void VansGraphics::VansVKDescriptorManager::WriteTexelBufferDescriptor(
+	VkDescriptorSet dstSet,
+	uint32_t binding,
+	VkDescriptorType type,
+	const std::vector<VkBufferView>& texelBufferViews,
+	uint32_t firstElement)
+{
+	if (dstSet == VK_NULL_HANDLE || texelBufferViews.empty())
+		return;
+
+	m_TexelBufferDescInfos.push_back({ dstSet, binding, firstElement, type, texelBufferViews });
+}
+
+void VansGraphics::VansVKDescriptorManager::WriteAccelerationStructureDescriptor(
+	VkDescriptorSet dstSet,
+	uint32_t binding,
+	VkAccelerationStructureKHR accelerationStructure,
+	uint32_t firstElement)
+{
+	if (dstSet == VK_NULL_HANDLE || accelerationStructure == VK_NULL_HANDLE)
+		return;
+
+	m_RayTraceASInfos.push_back({
+		dstSet,
+		binding,
+		firstElement,
+		VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+		accelerationStructure
+	});
+}
+
+void VansGraphics::VansVKDescriptorManager::CopyDescriptor(
+	VkDescriptorSet dstSet,
+	uint32_t dstBinding,
+	VkDescriptorSet srcSet,
+	uint32_t srcBinding,
+	uint32_t descriptorCount,
+	uint32_t dstArrayElement,
+	uint32_t srcArrayElement)
+{
+	if (dstSet == VK_NULL_HANDLE || srcSet == VK_NULL_HANDLE || descriptorCount == 0)
+		return;
+
+	m_CopyDescInfos.push_back({
+		dstSet,
+		dstBinding,
+		dstArrayElement,
+		srcSet,
+		srcBinding,
+		srcArrayElement,
+		descriptorCount
+	});
+}
+
+void VansGraphics::VansVKDescriptorManager::CommitDescriptorUpdates()
+{
+	UpdateDescriptorSets();
+	ResetState();
 }
 
 void VansGraphics::VansVKDescriptorManager::UpdateDescriptorSets()
@@ -249,7 +556,7 @@ void VansGraphics::VansVKDescriptorManager::UpdateDescriptorSets()
 			});
 	}
 
-	vkUpdateDescriptorSets(m_LogicalDevice, static_cast<uint32_t>(write_descriptors.size()), write_descriptors.data(), static_cast<uint32_t>(copy_descriptors.size()), copy_descriptors.data());
+	VansGraphics::vkUpdateDescriptorSets(m_LogicalDevice, static_cast<uint32_t>(write_descriptors.size()), write_descriptors.data(), static_cast<uint32_t>(copy_descriptors.size()), copy_descriptors.data());
 }
 
 void VansGraphics::VansVKDescriptorManager::DirectUpdateImageDescriptors(
@@ -270,6 +577,6 @@ void VansGraphics::VansVKDescriptorManager::DirectUpdateImageDescriptors(
 	write.descriptorType  = type;
 	write.pImageInfo      = imageInfos.data();
 
-	vkUpdateDescriptorSets(m_LogicalDevice, 1, &write, 0, nullptr);
+	VansGraphics::vkUpdateDescriptorSets(m_LogicalDevice, 1, &write, 0, nullptr);
 }
 

@@ -518,9 +518,6 @@ namespace VansGraphics
 	enum HairCompositePassBinding : uint32_t
 	{
 		HAIR_COMP_BINDING_COLOR = 0,
-		HAIR_COMP_BINDING_SCENE_GBUFFER2 = 1,
-		HAIR_COMP_BINDING_HAIR_DEPTH = 2,
-		HAIR_COMP_BINDING_HAIR_COVERAGE = 3,
 	};
 
 	// --- Hair Lighting Pass（Set 1）---
@@ -755,6 +752,12 @@ namespace VansGraphics
 
 		// Cleanup
 		static void DestroyLayout(VkDevice device, VkDescriptorSetLayout& layout);
+
+		static bool CreateAndAllocate_Custom(
+			const std::vector<VkDescriptorSetLayoutBinding>& bindings,
+			VkDescriptorSetLayout& outLayout,
+			std::vector<VkDescriptorSet>& outSets,
+			uint32_t setCount = 1);
 
 		// ==============================================
 		// Combined Layout Creation + Set Allocation

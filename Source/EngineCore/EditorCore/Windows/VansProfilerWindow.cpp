@@ -45,7 +45,12 @@ namespace
     }
 }
 
-void VansGraphics::VansProfilerWindow::ShowWindow(VansVKDevice& /*device*/)
+void VansGraphics::VansProfilerWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI&)
+{
+    DrawProfilerContents();
+}
+
+void VansGraphics::VansProfilerWindow::DrawProfilerContents()
 {
     if (!VansEditorWindow::m_ProfilerWindowOpen)
         return;

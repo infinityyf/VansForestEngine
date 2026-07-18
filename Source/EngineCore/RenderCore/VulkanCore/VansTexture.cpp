@@ -5,10 +5,14 @@
 #include "../../Util/VansJobSystem.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
+#include <atomic>
 #include <iostream>
 #include <vector>
 #include <algorithm>
 #include <cstdio>
+#include <cmath>
+#include <cstring>
+#include <utility>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <../../STBImge/stb_image.h>
@@ -18,6 +22,16 @@
 
 namespace VansGraphics
 {
+	namespace
+	{
+		std::atomic<std::uint64_t> g_TextureUploadFailures{ 0 };
+
+		void RecordTextureUploadFailure()
+		{
+			g_TextureUploadFailures.fetch_add(1, std::memory_order_relaxed);
+		}
+	}
+
 	// =====================================================================
 	// 静态工具函数
 	// =====================================================================
@@ -60,12 +74,30 @@ namespace VansGraphics
 		return dst;
 	}
 
-	//将单层RGBA8数据压缩为BC块格式
-	static std::vector<uint8_t> CompressMipToBC(const uint8_t* rgba, int w, int h, bool hasAlpha)
+	static size_t CalculateBlockCompressedDataSize(
+		int width,
+		int height,
+		int blockWidth,
+		int blockHeight,
+		int bytesPerBlock)
 	{
-		int bytesPerBlock = hasAlpha ? 16 : 8;
-		int blocksX = (w + 3) / 4;
-		int blocksY = (h + 3) / 4;
+		const int blocksX = (width + blockWidth - 1) / blockWidth;
+		const int blocksY = (height + blockHeight - 1) / blockHeight;
+		return static_cast<size_t>(blocksX) * static_cast<size_t>(blocksY) * static_cast<size_t>(bytesPerBlock);
+	}
+
+	//将单层RGBA8数据压缩为BC块格式
+	static std::vector<uint8_t> CompressMipToBC(
+		const uint8_t* rgba,
+		int w,
+		int h,
+		int blockWidth,
+		int blockHeight,
+		int bytesPerBlock,
+		bool hasAlpha)
+	{
+		int blocksX = (w + blockWidth - 1) / blockWidth;
+		int blocksY = (h + blockHeight - 1) / blockHeight;
 		std::vector<uint8_t> compressed(size_t(blocksX) * size_t(blocksY) * size_t(bytesPerBlock));
 
 		auto fetch = [&](int x, int y) -> const uint8_t* {
@@ -81,12 +113,12 @@ namespace VansGraphics
 		{
 			for (int bx = 0; bx < blocksX; ++bx)
 			{
-				for (int ty = 0; ty < 4; ++ty)
+				for (int ty = 0; ty < blockHeight; ++ty)
 				{
-					for (int tx = 0; tx < 4; ++tx)
+					for (int tx = 0; tx < blockWidth; ++tx)
 					{
-						const uint8_t* s = fetch(bx * 4 + tx, by * 4 + ty);
-						int idx = (ty * 4 + tx) * 4;
+						const uint8_t* s = fetch(bx * blockWidth + tx, by * blockHeight + ty);
+						int idx = (ty * blockWidth + tx) * 4;
 						blockRGBA[idx + 0] = s[0];
 						blockRGBA[idx + 1] = s[1];
 						blockRGBA[idx + 2] = s[2];
@@ -100,6 +132,55 @@ namespace VansGraphics
 		return compressed;
 	}
 
+	struct RGBA8LayerUploadView
+	{
+		const uint8_t* pixels = nullptr;
+		int width = 0;
+		int height = 0;
+		std::vector<uint8_t> resizedPixels;
+	};
+
+	static RGBA8LayerUploadView PrepareRGBA8LayerUpload(
+		const uint8_t* sourcePixels,
+		int sourceWidth,
+		int sourceHeight,
+		int targetWidth,
+		int targetHeight)
+	{
+		RGBA8LayerUploadView upload{};
+		upload.pixels = sourcePixels;
+		upload.width = sourceWidth;
+		upload.height = sourceHeight;
+
+		if (sourceWidth == targetWidth && sourceHeight == targetHeight)
+		{
+			return upload;
+		}
+
+		upload.resizedPixels.resize(size_t(targetWidth) * targetHeight * 4);
+		const float scaleX = float(sourceWidth) / float(targetWidth);
+		const float scaleY = float(sourceHeight) / float(targetHeight);
+		for (int y = 0; y < targetHeight; ++y)
+		{
+			for (int x = 0; x < targetWidth; ++x)
+			{
+				const int srcX = std::min(static_cast<int>(x * scaleX), sourceWidth - 1);
+				const int srcY = std::min(static_cast<int>(y * scaleY), sourceHeight - 1);
+				const uint8_t* src = sourcePixels + (size_t(srcY) * sourceWidth + srcX) * 4;
+				uint8_t* dst = upload.resizedPixels.data() + (size_t(y) * targetWidth + x) * 4;
+				dst[0] = src[0];
+				dst[1] = src[1];
+				dst[2] = src[2];
+				dst[3] = src[3];
+			}
+		}
+
+		upload.pixels = upload.resizedPixels.data();
+		upload.width = targetWidth;
+		upload.height = targetHeight;
+		return upload;
+	}
+
 	// =====================================================================
 	// VansTexture 实现
 	// =====================================================================
@@ -107,6 +188,16 @@ namespace VansGraphics
 	VansTexture::~VansTexture()
 	{
 		m_Image.DestroyVulkanImage(*(VkDevice*)m_GraphicsDevice->GetNativeGraphicsDevice());
+	}
+
+	std::uint64_t VansTexture::GetUploadFailureCount()
+	{
+		return g_TextureUploadFailures.load(std::memory_order_relaxed);
+	}
+
+	void VansTexture::ResetUploadFailureCount()
+	{
+		g_TextureUploadFailures.store(0, std::memory_order_relaxed);
 	}
 
 	// ----- 格式选择 -----
@@ -131,6 +222,196 @@ namespace VansGraphics
 		}
 	}
 
+	VansTexture::TextureContentIntent VansTexture::DetermineTextureContentIntent(bool isSRGB, TexturePrecision precision)
+	{
+		if (precision == HDR_PRES_16 || precision == HIGH_PRES_32)
+		{
+			return TextureContentIntent::HDRData;
+		}
+
+		return isSRGB
+			? TextureContentIntent::Color
+			: TextureContentIntent::LinearData;
+	}
+
+	VansTexture::TextureCompressionProfile VansTexture::ChooseCompressionProfile(
+		int sourceChannels, int bytesPerChannel,
+		bool isSRGB, bool useCompress, TexturePrecision precision)
+	{
+		TextureCompressionProfile profile{};
+		const bool canUseBC3 =
+			useCompress
+			&& precision == LOW_PRES_8
+			&& sourceChannels == 4
+			&& bytesPerChannel == 1;
+
+		if (canUseBC3)
+		{
+			profile.mode = TextureCompressionMode::BC3;
+			profile.format = isSRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+			profile.blockWidth = 4;
+			profile.blockHeight = 4;
+			profile.bytesPerBlock = 16;
+			profile.hasAlpha = true;
+			profile.forceFullMipChain = true;
+		}
+
+		return profile;
+	}
+
+	int VansTexture::CalculateMipLevels(int width, int height, bool generateMip)
+	{
+		if (!generateMip)
+		{
+			return 1;
+		}
+
+		return 1 + static_cast<int>(std::floor(std::log2(std::max(width, height))));
+	}
+
+	VansTexture::TextureUploadPlan VansTexture::BuildTextureUploadPlan(
+		int width, int height, int sourceChannels, int bytesPerChannel,
+		bool isSRGB, bool useCompress, bool needMip, TexturePrecision precision)
+	{
+		TextureUploadPlan uploadPlan{};
+		uploadPlan.contentIntent = DetermineTextureContentIntent(isSRGB, precision);
+		uploadPlan.sourceChannels = sourceChannels;
+		uploadPlan.bytesPerChannel = bytesPerChannel;
+		const TextureCompressionProfile compressionProfile = ChooseCompressionProfile(
+			sourceChannels, bytesPerChannel,
+			isSRGB, useCompress, precision);
+
+		if (compressionProfile.mode != TextureCompressionMode::None)
+		{
+			// Preserve the previous compression behavior: RGBA8 uploads use BC3
+			// and build the full compressed mip chain on the CPU.
+			uploadPlan.format = compressionProfile.format;
+			uploadPlan.mipLevels = CalculateMipLevels(width, height, compressionProfile.forceFullMipChain);
+			uploadPlan.compressionMode = compressionProfile.mode;
+			uploadPlan.mipGeneration = TextureMipGeneration::CPUCompressedChain;
+			uploadPlan.compressedBlockWidth = compressionProfile.blockWidth;
+			uploadPlan.compressedBlockHeight = compressionProfile.blockHeight;
+			uploadPlan.compressedBytesPerBlock = compressionProfile.bytesPerBlock;
+			uploadPlan.compressedHasAlpha = compressionProfile.hasAlpha;
+			uploadPlan.imageUsage =
+				VK_IMAGE_USAGE_SAMPLED_BIT
+				| VK_IMAGE_USAGE_TRANSFER_DST_BIT
+				| VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		}
+		else
+		{
+			uploadPlan.format = ChooseFormat(sourceChannels, precision, isSRGB);
+			uploadPlan.mipLevels = CalculateMipLevels(width, height, needMip);
+			uploadPlan.compressionMode = TextureCompressionMode::None;
+			uploadPlan.mipGeneration = uploadPlan.mipLevels > 1
+				? TextureMipGeneration::GPUBlit
+				: TextureMipGeneration::None;
+			uploadPlan.imageUsage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+			if (uploadPlan.mipGeneration == TextureMipGeneration::GPUBlit)
+			{
+				uploadPlan.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+			}
+		}
+
+		return uploadPlan;
+	}
+
+	VansTexture::TextureUploadRequest VansTexture::BuildTextureUploadRequest(
+		const void* sourceData,
+		int width, int height,
+		bool isSRGB, bool useCompress, bool needMip,
+		TexturePrecision precision,
+		int sourceChannels, int bytesPerChannel,
+		VkSamplerAddressMode addressMode)
+	{
+		TextureUploadRequest request{};
+		request.sourceData = sourceData;
+		request.width = width;
+		request.height = height;
+		request.plan = BuildTextureUploadPlan(
+			width, height, sourceChannels, bytesPerChannel,
+			isSRGB, useCompress, needMip, precision);
+		request.sourceDataSize = CalculateTextureDataSize(
+			width, height, sourceChannels, bytesPerChannel);
+		request.addressMode = addressMode;
+		return request;
+	}
+
+	size_t VansTexture::CalculateTextureDataSize(int width, int height, int channels, int bytesPerChannel)
+	{
+		return static_cast<size_t>(width)
+			* static_cast<size_t>(height)
+			* static_cast<size_t>(channels)
+			* static_cast<size_t>(bytesPerChannel);
+	}
+
+	bool VansTexture::IsValidTextureUploadRequest(const TextureUploadRequest& request)
+	{
+		if (request.sourceData == nullptr
+			|| request.width <= 0
+			|| request.height <= 0
+			|| request.sourceDataSize == 0
+			|| request.plan.format == VK_FORMAT_UNDEFINED
+			|| request.plan.mipLevels <= 0)
+		{
+			return false;
+		}
+
+		if (request.plan.compressionMode == TextureCompressionMode::BC3)
+		{
+			return request.plan.sourceChannels == 4
+				&& request.plan.bytesPerChannel == 1
+				&& request.plan.compressedBlockWidth > 0
+				&& request.plan.compressedBlockHeight > 0
+				&& request.plan.compressedBytesPerBlock > 0;
+		}
+
+		return request.plan.compressionMode == TextureCompressionMode::None;
+	}
+
+	const char* VansTexture::ToString(TextureCompressionMode mode)
+	{
+		switch (mode)
+		{
+		case TextureCompressionMode::None:
+			return "None";
+		case TextureCompressionMode::BC3:
+			return "BC3";
+		}
+
+		return "Unknown";
+	}
+
+	const char* VansTexture::ToString(TextureMipGeneration mode)
+	{
+		switch (mode)
+		{
+		case TextureMipGeneration::None:
+			return "None";
+		case TextureMipGeneration::GPUBlit:
+			return "GPUBlit";
+		case TextureMipGeneration::CPUCompressedChain:
+			return "CPUCompressedChain";
+		}
+
+		return "Unknown";
+	}
+
+	const char* VansTexture::ToString(TextureContentIntent intent)
+	{
+		switch (intent)
+		{
+		case TextureContentIntent::Color:
+			return "Color";
+		case TextureContentIntent::LinearData:
+			return "LinearData";
+		case TextureContentIntent::HDRData:
+			return "HDRData";
+		}
+
+		return "Unknown";
+	}
+
 	// ----- 文件读取 -----
 
 	void* VansTexture::ReadTextureFile(const std::string& texture_path, TexturePrecision texture_precision, int& bytes_per_channel, int& width, int& height, int& num_components, int import_channel)
@@ -151,83 +432,97 @@ namespace VansGraphics
 
 	// ----- 通用辅助方法 -----
 
-	void VansTexture::SubmitAndWait(VansVKCommandBuffer& command_buffer, VkQueue queue, VkDevice device)
+	bool VansTexture::SubmitAndWait(VansVKCommandBuffer& command_buffer, VkQueue queue, VkDevice device)
 	{
-		command_buffer.EndCommandBufferRecord();
-		VansVKCommandBuffer::SubmitCommands(queue, device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence);
-		command_buffer.ResetCommandBuffer(false);
+		if (!command_buffer.EndCommandBufferRecord())
+		{
+			VANS_LOG_ERROR("[VansTexture] Failed to end texture upload command buffer.");
+			return false;
+		}
+		if (!VansVKCommandBuffer::SubmitCommands(queue, device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence))
+		{
+			VANS_LOG_ERROR("[VansTexture] Failed to submit texture upload command buffer.");
+			return false;
+		}
+		if (!command_buffer.ResetCommandBuffer(false))
+		{
+			VANS_LOG_ERROR("[VansTexture] Failed to reset texture upload command buffer.");
+			return false;
+		}
+		return true;
 	}
 
-	void VansTexture::GenerateMipmaps(VkCommandBuffer cmd, int width, int height, int mipLevels)
+	void VansTexture::GenerateMipmaps(VansVKCommandBuffer& command_buffer, int width, int height, int mipLevels)
 	{
-		VkImageMemoryBarrier barrier{};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.image = m_Image.GetImage();
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.subresourceRange.aspectMask = m_Image.GetImageAspect();
-		barrier.subresourceRange.baseArrayLayer = 0;
-		barrier.subresourceRange.layerCount = 1;
-		barrier.subresourceRange.levelCount = 1;
+		GenerateMipmapsForLayer(
+			command_buffer,
+			width,
+			height,
+			mipLevels,
+			0,
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			0,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+	}
 
-		int32_t mipW = width, mipH = height;
-
-		for (int i = 1; i < mipLevels; ++i)
+	bool VansTexture::UploadTexture(VansVKCommandBuffer& command_buffer, const TextureUploadRequest& request)
+	{
+		if (!IsValidTextureUploadRequest(request))
 		{
-			//上一级 TRANSFER_DST -> TRANSFER_SRC
-			barrier.subresourceRange.baseMipLevel = i - 1;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-			//当前级 UNDEFINED -> TRANSFER_DST
-			barrier.subresourceRange.baseMipLevel = i;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			barrier.srcAccessMask = 0;
-			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-			int32_t dstW = std::max(1, mipW / 2);
-			int32_t dstH = std::max(1, mipH / 2);
-
-			VkImageBlit blit{};
-			blit.srcSubresource = { m_Image.GetImageAspect(), (uint32_t)(i - 1), 0, 1 };
-			blit.srcOffsets[0] = { 0, 0, 0 };
-			blit.srcOffsets[1] = { mipW, mipH, 1 };
-			blit.dstSubresource = { m_Image.GetImageAspect(), (uint32_t)i, 0, 1 };
-			blit.dstOffsets[0] = { 0, 0, 0 };
-			blit.dstOffsets[1] = { dstW, dstH, 1 };
-
-			vkCmdBlitImage(cmd,
-				m_Image.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				m_Image.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				1, &blit, VK_FILTER_LINEAR);
-
-			mipW = dstW;
-			mipH = dstH;
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Invalid texture upload request.");
+			return false;
 		}
 
-		//所有mip级 -> SHADER_READ_ONLY_OPTIMAL
-		VkImageMemoryBarrier finalBarrier{};
-		finalBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		finalBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		finalBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		finalBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		finalBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		finalBarrier.image = m_Image.GetImage();
-		finalBarrier.subresourceRange = { m_Image.GetImageAspect(), 0, (uint32_t)mipLevels, 0, 1 };
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			0, 0, nullptr, 0, nullptr, 1, &finalBarrier);
+		switch (request.plan.compressionMode)
+		{
+		case TextureCompressionMode::BC3:
+			return UploadCompressedTexture(
+				command_buffer,
+				static_cast<const uint8_t*>(request.sourceData),
+				request.width,
+				request.height,
+				request.plan,
+				request.addressMode);
+		case TextureCompressionMode::None:
+			return UploadUncompressedTexture(
+				command_buffer,
+				request.sourceData,
+				request.sourceDataSize,
+				request.width,
+				request.height,
+				request.plan,
+				request.addressMode);
+		}
+
+		VANS_LOG_ERROR("Unsupported texture compression mode.");
+		return false;
 	}
 
-	// ----- 压缩贴图上传 -----
+	// ----- mip 链生成 -----
 
-	void VansTexture::GenerateMipmapsForLayer(VkCommandBuffer cmd, int width, int height, int mipLevels, int layerIndex)
+	void VansTexture::GenerateMipmapsForLayer(VansVKCommandBuffer& command_buffer, int width, int height, int mipLevels, int layerIndex)
+	{
+		GenerateMipmapsForLayer(
+			command_buffer,
+			width,
+			height,
+			mipLevels,
+			layerIndex,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+	}
+
+	void VansTexture::GenerateMipmapsForLayer(
+		VansVKCommandBuffer& command_buffer,
+		int width,
+		int height,
+		int mipLevels,
+		int layerIndex,
+		VkImageLayout targetMipInitialLayout,
+		VkAccessFlags targetMipInitialAccessMask,
+		VkPipelineStageFlags targetMipInitialStage)
 	{
 		VkImageMemoryBarrier barrier{};
 		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -249,17 +544,21 @@ namespace VansGraphics
 			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 			barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				0, 0, nullptr, 0, nullptr, 1, &barrier);
+			command_buffer.PipelineBarrier(
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				{}, {}, { barrier });
 
-			// mip i：SHADER_READ_ONLY → TRANSFER_DST（InitTextureArray 初始化为 SHADER_READ_ONLY）
+			// mip i：按调用方声明的初始布局转换为 TRANSFER_DST，作为本次 blit 目标。
 			barrier.subresourceRange.baseMipLevel = i;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier.oldLayout = targetMipInitialLayout;
 			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			barrier.srcAccessMask = targetMipInitialAccessMask;
 			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				0, 0, nullptr, 0, nullptr, 1, &barrier);
+			command_buffer.PipelineBarrier(
+				targetMipInitialStage,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				{}, {}, { barrier });
 
 			int32_t dstW = std::max(1, mipW / 2);
 			int32_t dstH = std::max(1, mipH / 2);
@@ -272,10 +571,10 @@ namespace VansGraphics
 			blit.dstOffsets[0] = { 0, 0, 0 };
 			blit.dstOffsets[1] = { dstW, dstH, 1 };
 
-			vkCmdBlitImage(cmd,
-				m_Image.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				m_Image.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				1, &blit, VK_FILTER_LINEAR);
+			command_buffer.BlitImageRegions(
+				m_Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				m_Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				{ blit }, VK_FILTER_LINEAR);
 
 			// mip i-1：blit 完成后转回 SHADER_READ_ONLY，可被后续帧采样
 			barrier.subresourceRange.baseMipLevel = i - 1;
@@ -283,8 +582,10 @@ namespace VansGraphics
 			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				0, 0, nullptr, 0, nullptr, 1, &barrier);
+			command_buffer.PipelineBarrier(
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				{}, {}, { barrier });
 
 			mipW = dstW;
 			mipH = dstH;
@@ -296,45 +597,91 @@ namespace VansGraphics
 		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			0, 0, nullptr, 0, nullptr, 1, &barrier);
+		command_buffer.PipelineBarrier(
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{}, {}, { barrier });
+		m_Image.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	}
 
-	void VansTexture::UploadCompressedTexture(VansVKCommandBuffer& command_buffer, const uint8_t* srcData, int width, int height, bool isSRGB, VkSamplerAddressMode addressMode)
+	void VansTexture::FinalizeUploadedLayer(VansVKCommandBuffer& command_buffer, int width, int height, int layerIndex)
+	{
+		const int mipLevels = static_cast<int>(m_Image.GetImageCreateInfo().mipLevels);
+		if (mipLevels > 1)
+		{
+			GenerateMipmapsForLayer(command_buffer, width, height, mipLevels, layerIndex);
+			return;
+		}
+
+		VkImageMemoryBarrier toShaderRead{};
+		toShaderRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toShaderRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		toShaderRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		toShaderRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		toShaderRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		toShaderRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toShaderRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toShaderRead.image = m_Image.GetImage();
+		toShaderRead.subresourceRange = { m_Image.GetImageAspect(), 0, 1u, static_cast<uint32_t>(layerIndex), 1u };
+		command_buffer.PipelineBarrier(
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{}, {}, { toShaderRead });
+		m_Image.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	}
+
+	bool VansTexture::UploadCompressedTexture(VansVKCommandBuffer& command_buffer, const uint8_t* srcData, int width, int height, const TextureUploadPlan& uploadPlan, VkSamplerAddressMode addressMode)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		VkDevice device = vkDevice->GetLogicDevice();
 		VkQueue queue = vkDevice->GetGraphicsQueue();
 
-		bool hasAlpha = true;
-		int bytesPerBlock = hasAlpha ? 16 : 8;
-		VkFormat format = hasAlpha
-			? (isSRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK)
-			: (isSRGB ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK);
-
-		int mipLevels = 1 + (int)std::floor(std::log2(std::max(width, height)));
-
 		//创建GPU Image
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
-		m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,
-			VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+		m_Image.CreateVulkanImage(device, extent, uploadPlan.format, uploadPlan.mipLevels, 1,
+			VK_IMAGE_TYPE_2D, uploadPlan.imageUsage,
 			VK_SAMPLE_COUNT_1_BIT, false, true, true, addressMode);
 
 		//CPU端逐级降采样 + 压缩 + 上传
 		std::vector<uint8_t> mipRGBA(srcData, srcData + width * height * 4);
 		int mipW = width, mipH = height;
 
-		for (int m = 0; m < mipLevels; ++m)
+		for (int m = 0; m < uploadPlan.mipLevels; ++m)
 		{
-			std::vector<uint8_t> compressed = CompressMipToBC(mipRGBA.data(), mipW, mipH, hasAlpha);
+			std::vector<uint8_t> compressed = CompressMipToBC(
+				mipRGBA.data(),
+				mipW,
+				mipH,
+				uploadPlan.compressedBlockWidth,
+				uploadPlan.compressedBlockHeight,
+				uploadPlan.compressedBytesPerBlock,
+				uploadPlan.compressedHasAlpha);
+			const size_t expectedCompressedSize = CalculateBlockCompressedDataSize(
+				mipW,
+				mipH,
+				uploadPlan.compressedBlockWidth,
+				uploadPlan.compressedBlockHeight,
+				uploadPlan.compressedBytesPerBlock);
+		if (compressed.size() != expectedCompressedSize)
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Compressed mip size mismatch.");
+			return false;
+		}
 
 			VkExtent3D mipExtent = { (uint32_t)mipW, (uint32_t)mipH, 1 };
 			VkOffset3D offset = { 0, 0, 0 };
-			vkDevice->SetDeviceImageData(m_Image, command_buffer, compressed.data(),
-				0, static_cast<int>(compressed.size()), offset, mipExtent, m, 0);
+			if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, compressed.data(),
+				0, static_cast<int>(compressed.size()), offset, mipExtent, m, 0,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Compressed texture upload failed at mip " << m << ".");
+			return false;
+		}
 
 			//降采样生成下一级
-			if (m + 1 < mipLevels)
+			if (m + 1 < uploadPlan.mipLevels)
 			{
 				mipRGBA = Downsample2x2_RGBA8(mipRGBA.data(), mipW, mipH);
 				mipW = std::max(1, mipW / 2);
@@ -343,7 +690,12 @@ namespace VansGraphics
 		}
 
 		//全部mip -> SHADER_READ_ONLY
-		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Failed to begin compressed texture final layout command buffer.");
+			return false;
+		}
 		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 			{
 				m_Image.GetImage(),
@@ -355,52 +707,63 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED,
 				m_Image.GetImageAspect()
 			});
-		SubmitAndWait(command_buffer, queue, device);
+		if (!SubmitAndWait(command_buffer, queue, device))
+		{
+			RecordTextureUploadFailure();
+			return false;
+		}
+		return true;
 	}
 
 	// ----- 非压缩贴图上传 -----
 
-	void VansTexture::UploadUncompressedTexture(VansVKCommandBuffer& command_buffer, const void* data, size_t dataSize, int width, int height, VkFormat format, bool needMip, VkSamplerAddressMode addressMode)
+	bool VansTexture::UploadUncompressedTexture(VansVKCommandBuffer& command_buffer, const void* data, size_t dataSize, int width, int height, const TextureUploadPlan& uploadPlan, VkSamplerAddressMode addressMode)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		VkDevice device = vkDevice->GetLogicDevice();
 		VkQueue queue = vkDevice->GetGraphicsQueue();
 
-		int mipLevels = needMip ? 1 + (int)std::floor(std::log2(std::max(width, height))) : 1;
-
 		//创建GPU Image
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
-		m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,
-			VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		m_Image.CreateVulkanImage(device, extent, uploadPlan.format, uploadPlan.mipLevels, 1,
+			VK_IMAGE_TYPE_2D, uploadPlan.imageUsage,
 			VK_SAMPLE_COUNT_1_BIT, false, true, true, addressMode);
 
 		//上传mip 0
 		VkOffset3D offset = { 0, 0, 0 };
-		vkDevice->SetDeviceImageData(m_Image, command_buffer, const_cast<void*>(data), 0, static_cast<int>(dataSize), offset, extent, 0, 0);
+		if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, const_cast<void*>(data), 0, static_cast<int>(dataSize), offset, extent, 0, 0,
+			uploadPlan.mipGeneration == TextureMipGeneration::GPUBlit
+				? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+				: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Uncompressed texture upload failed.");
+			return false;
+		}
 
 		//生成mip链或直接转换layout
-		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-
-		if (mipLevels > 1)
+		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
-			GenerateMipmaps(command_buffer.GetVKCommandBuffer(), width, height, mipLevels);
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Failed to begin texture mip/final layout command buffer.");
+			return false;
+		}
+
+		if (uploadPlan.mipGeneration == TextureMipGeneration::GPUBlit)
+		{
+			GenerateMipmaps(command_buffer, width, height, uploadPlan.mipLevels);
 		}
 		else
 		{
-			m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				{
-					m_Image.GetImage(),
-					VK_ACCESS_TRANSFER_WRITE_BIT,
-					VK_ACCESS_SHADER_READ_BIT,
-					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED,
-					m_Image.GetImageAspect()
-				});
+			m_Image.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
 
-		SubmitAndWait(command_buffer, queue, device);
+		if (!SubmitAndWait(command_buffer, queue, device))
+		{
+			RecordTextureUploadFailure();
+			return false;
+		}
+		return true;
 	}
 
 	// =====================================================================
@@ -409,11 +772,29 @@ namespace VansGraphics
 
 	void VansTexture::LoadTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB, bool useCompress, bool need_mip, TexturePrecision texture_precision, int import_channel, VkSamplerAddressMode addressMode)
 	{
-		VANS_LOG("Load Texture : " << texture_path);
+		TextureLoadDesc loadDesc{};
+		loadDesc.path = std::move(texture_path);
+		loadDesc.isSRGB = isSRGB;
+		loadDesc.useCompress = useCompress;
+		loadDesc.needMip = need_mip;
+		loadDesc.precision = texture_precision;
+		loadDesc.importChannel = import_channel;
+		loadDesc.addressMode = addressMode;
+		LoadTexture(command_buffer, loadDesc);
+	}
 
+	void VansTexture::LoadTexture(VansVKCommandBuffer& command_buffer, const TextureLoadDesc& loadDesc)
+	{
 		// 1. 读取文件
 		int width = 0, height = 0, num_components = 0, bytes_per_channel = 1;
-		void* pixel_data = ReadTextureFile(texture_path, texture_precision, bytes_per_channel, width, height, num_components, import_channel);
+		void* pixel_data = ReadTextureFile(
+			loadDesc.path,
+			loadDesc.precision,
+			bytes_per_channel,
+			width,
+			height,
+			num_components,
+			loadDesc.importChannel);
 
 		if (!pixel_data || width <= 0 || height <= 0 || num_components <= 0)
 		{
@@ -421,24 +802,24 @@ namespace VansGraphics
 			return;
 		}
 
-		if (import_channel != 0)
-			num_components = import_channel;
+		if (loadDesc.importChannel != 0)
+			num_components = loadDesc.importChannel;
 
 		m_TextureWidth = width;
 		m_TextureHeight = height;
 
-		// 2. 根据是否压缩选择上传路径
-		bool canCompress = useCompress && texture_precision == LOW_PRES_8 && num_components == 4;
+		// 2. 生成数据驱动上传请求：格式、压缩路径、mip 策略和数据大小集中在这里决定。
+		const TextureUploadRequest uploadRequest = BuildTextureUploadRequest(
+			pixel_data,
+			width, height,
+			loadDesc.isSRGB, loadDesc.useCompress, loadDesc.needMip,
+			loadDesc.precision,
+			num_components, bytes_per_channel,
+			loadDesc.addressMode);
 
-		if (canCompress)
+		if (!UploadTexture(command_buffer, uploadRequest))
 		{
-			UploadCompressedTexture(command_buffer, static_cast<const uint8_t*>(pixel_data), width, height, isSRGB, addressMode);
-		}
-		else
-		{
-			size_t dataSize = (size_t)width * height * num_components * bytes_per_channel;
-			VkFormat format = ChooseFormat(num_components, texture_precision, isSRGB);
-			UploadUncompressedTexture(command_buffer, pixel_data, dataSize, width, height, format, need_mip, addressMode);
+			VANS_LOG_ERROR("Texture upload failed: " << loadDesc.path);
 		}
 
 		stbi_image_free(pixel_data);
@@ -481,7 +862,12 @@ namespace VansGraphics
 
 			VkOffset3D offset = { 0, 0, 0 };
 			VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
-			vkDevice->SetDeviceImageData(m_Image, command_buffer, stbi_data.get(), 0, dataSize, offset, extent, 0, face);
+			if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, stbi_data.get(), 0, dataSize, offset, extent, 0, face))
+			{
+				RecordTextureUploadFailure();
+				VANS_LOG_ERROR("Cube texture upload failed at face " << face << ": " << path);
+				return;
+			}
 
 			if (face == 0)
 			{
@@ -491,7 +877,12 @@ namespace VansGraphics
 		}
 
 		//切换layout到SHADER_READ_ONLY_OPTIMAL
-		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Cube texture final layout command buffer begin failed: " << texture_parent_path);
+			return;
+		}
 		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{
 				m_Image.GetImage(),
@@ -503,7 +894,11 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED,
 				m_Image.GetImageAspect()
 			});
-		SubmitAndWait(command_buffer, queue, device);
+		if (!SubmitAndWait(command_buffer, queue, device))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Cube texture final layout submit failed: " << texture_parent_path);
+		}
 	}
 
 	void VansTexture::LoadFromMemory(VansVKCommandBuffer& command_buffer,
@@ -514,8 +909,19 @@ namespace VansGraphics
 		m_TextureWidth = width;
 		m_TextureHeight = height;
 		m_TextureSlice = 1;
-		UploadUncompressedTexture(command_buffer, data, dataSize, width, height, format,
-			/*needMip*/ false, addressMode);
+		TextureUploadRequest uploadRequest{};
+		uploadRequest.sourceData = data;
+		uploadRequest.sourceDataSize = dataSize;
+		uploadRequest.width = width;
+		uploadRequest.height = height;
+		uploadRequest.plan.format = format;
+		uploadRequest.plan.mipLevels = 1;
+		uploadRequest.plan.imageUsage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		uploadRequest.addressMode = addressMode;
+		if (!UploadTexture(command_buffer, uploadRequest))
+		{
+			VANS_LOG_ERROR("Texture memory upload failed.");
+		}
 	}
 
 	void VansTexture::InitTextureArray(VansVKCommandBuffer& command_buffer,
@@ -531,10 +937,10 @@ namespace VansGraphics
 		VkQueue queue = vkDevice->GetGraphicsQueue();
 
 		VkFormat format = ChooseFormat(numComponents, texture_precision);
-		int mipLevels = generateMip ? 1 + (int)std::floor(std::log2((float)std::max(width, height))) : 1;
+		int mipLevels = CalculateMipLevels(width, height, generateMip);
 
 		// 创建 2D 贴图数组：VK_IMAGE_TYPE_2D + layer_num > 1 → VK_IMAGE_VIEW_TYPE_2D_ARRAY
-		// TRANSFER_SRC_BIT：vkCmdBlitImage 将已上传的 mip 0 逐级下采样时需要读源
+		// TRANSFER_SRC_BIT：BlitImageRegions 将已上传的 mip 0 逐级下采样时需要读源
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
 		m_Image.CreateVulkanImage(device, extent, format, mipLevels, (uint32_t)layerCount,
 			VK_IMAGE_TYPE_2D,
@@ -542,7 +948,12 @@ namespace VansGraphics
 			VK_SAMPLE_COUNT_1_BIT, false, true, true, addressMode);
 
 		// 将所有层从 UNDEFINED → SHADER_READ_ONLY_OPTIMAL
-		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Texture array initial layout command buffer begin failed.");
+			return;
+		}
 		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 			{
 				m_Image.GetImage(),
@@ -554,7 +965,11 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED,
 				m_Image.GetImageAspect()
 			});
-		SubmitAndWait(command_buffer, queue, device);
+		if (!SubmitAndWait(command_buffer, queue, device))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Texture array initial layout submit failed.");
+		}
 	}
 
 	bool VansTexture::LoadTextureLayer(VansVKCommandBuffer& command_buffer,
@@ -573,69 +988,46 @@ namespace VansGraphics
 			return false;
 		}
 
-		// 若分辨率与数组贴图不一致，进行最近邻缩放
-		std::vector<uint8_t> resized;
-		const uint8_t* uploadData = static_cast<const uint8_t*>(pixelData);
-		int uploadW = fileW, uploadH = fileH;
+		RGBA8LayerUploadView upload = PrepareRGBA8LayerUpload(
+			static_cast<const uint8_t*>(pixelData),
+			fileW, fileH,
+			m_TextureWidth, m_TextureHeight);
 
-		if (fileW != m_TextureWidth || fileH != m_TextureHeight)
+		size_t dataSize = size_t(upload.width) * upload.height * 4;
+		VkExtent3D extent = { (uint32_t)upload.width, (uint32_t)upload.height, 1 };
+		VkOffset3D zeroOffset = { 0, 0, 0 };
+		if (!vkDevice->SetDeviceImageData(m_Image, command_buffer,
+			const_cast<uint8_t*>(upload.pixels), 0, (int)dataSize, zeroOffset, extent, 0, layerIndex,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
 		{
-			resized.resize(size_t(m_TextureWidth) * m_TextureHeight * 4);
-			float scaleX = float(fileW) / float(m_TextureWidth);
-			float scaleY = float(fileH) / float(m_TextureHeight);
-			for (int y = 0; y < m_TextureHeight; ++y)
-			{
-				for (int x = 0; x < m_TextureWidth; ++x)
-				{
-					int srcX = std::min((int)(x * scaleX), fileW - 1);
-					int srcY = std::min((int)(y * scaleY), fileH - 1);
-					const uint8_t* src = static_cast<const uint8_t*>(pixelData) + (srcY * fileW + srcX) * 4;
-					uint8_t* dst = resized.data() + (size_t(y) * m_TextureWidth + x) * 4;
-					dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
-				}
-			}
-			uploadData = resized.data();
-			uploadW = m_TextureWidth;
-			uploadH = m_TextureHeight;
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("LoadTextureLayer: GPU upload failed for layer " << layerIndex << ": " << texturePath);
+			stbi_image_free(pixelData);
+			return false;
 		}
 
-		size_t dataSize = size_t(uploadW) * uploadH * 4;
-		VkExtent3D extent = { (uint32_t)uploadW, (uint32_t)uploadH, 1 };
-		VkOffset3D zeroOffset = { 0, 0, 0 };
-		vkDevice->SetDeviceImageData(m_Image, command_buffer,
-			const_cast<uint8_t*>(uploadData), 0, (int)dataSize, zeroOffset, extent, 0, layerIndex);
-
 		// SetDeviceImageData 将 mip 0 of layerIndex 置于 TRANSFER_DST_OPTIMAL。
-		// 若分配了多级 mip（generateMip=true），则用 vkCmdBlitImage 逐级下采样生成完整 mip 链；
+		// 若分配了多级 mip（generateMip=true），则用 BlitImageRegions 逐级下采样生成完整 mip 链；
 		// 单 mip 时直接转换回 SHADER_READ_ONLY_OPTIMAL 即可。
 		{
 			VkQueue queue = vkDevice->GetGraphicsQueue();
 			VkDevice device = vkDevice->GetLogicDevice();
-			int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
 
-			command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-			if (mipLevels > 1)
+			if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 			{
-				GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(),
-					uploadW, uploadH, mipLevels, layerIndex);
+				RecordTextureUploadFailure();
+				VANS_LOG_ERROR("LoadTextureLayer: mip/final layout command buffer begin failed for layer " << layerIndex << ": " << texturePath);
+				stbi_image_free(pixelData);
+				return false;
 			}
-			else
+			FinalizeUploadedLayer(command_buffer, upload.width, upload.height, layerIndex);
+			if (!SubmitAndWait(command_buffer, queue, device))
 			{
-				m_Image.SetImageMemoryBarrier(
-					VK_PIPELINE_STAGE_TRANSFER_BIT,
-					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-					{
-						m_Image.GetImage(),
-						VK_ACCESS_TRANSFER_WRITE_BIT,
-						VK_ACCESS_SHADER_READ_BIT,
-						VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-						VK_QUEUE_FAMILY_IGNORED,
-						VK_QUEUE_FAMILY_IGNORED,
-						m_Image.GetImageAspect()
-					});
+				RecordTextureUploadFailure();
+				VANS_LOG_ERROR("LoadTextureLayer: mip/final layout submit failed for layer " << layerIndex << ": " << texturePath);
+				stbi_image_free(pixelData);
+				return false;
 			}
-			SubmitAndWait(command_buffer, queue, device);
 		}
 
 		stbi_image_free(pixelData);
@@ -658,69 +1050,43 @@ namespace VansGraphics
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		if (!vkDevice) return false;
 
-		// 若分辨率与数组贴图不一致，进行最近邻缩放
-		std::vector<uint8_t> resized;
-		const uint8_t* uploadData = pixels;
-		int uploadW = srcW, uploadH = srcH;
-
-		if (srcW != m_TextureWidth || srcH != m_TextureHeight)
+		RGBA8LayerUploadView upload{};
 		{
 			VANS_PROFILE_SCOPE("RectLightVideo::ResizeCPU", Vans::ProfileCategory::Video);
-			resized.resize(size_t(m_TextureWidth) * m_TextureHeight * 4);
-			float scaleX = float(srcW) / float(m_TextureWidth);
-			float scaleY = float(srcH) / float(m_TextureHeight);
-			for (int y = 0; y < m_TextureHeight; ++y)
-			{
-				for (int x = 0; x < m_TextureWidth; ++x)
-				{
-					int srcX = std::min((int)(x * scaleX), srcW - 1);
-					int srcY = std::min((int)(y * scaleY), srcH - 1);
-					const uint8_t* src = pixels + (size_t(srcY) * srcW + srcX) * 4;
-					uint8_t* dst = resized.data() + (size_t(y) * m_TextureWidth + x) * 4;
-					dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
-				}
-			}
-			uploadData = resized.data();
-			uploadW = m_TextureWidth;
-			uploadH = m_TextureHeight;
+			upload = PrepareRGBA8LayerUpload(pixels, srcW, srcH, m_TextureWidth, m_TextureHeight);
 		}
 
-		size_t dataSize = size_t(uploadW) * uploadH * 4;
-		VkExtent3D extent = { (uint32_t)uploadW, (uint32_t)uploadH, 1 };
+		size_t dataSize = size_t(upload.width) * upload.height * 4;
+		VkExtent3D extent = { (uint32_t)upload.width, (uint32_t)upload.height, 1 };
 		VkOffset3D zeroOffset = { 0, 0, 0 };
 		// SetDeviceImageData 上传 mip 0，并通过 fence 同步等待
-		vkDevice->SetDeviceImageData(m_Image, command_buffer,
-			const_cast<uint8_t*>(uploadData), 0, (int)dataSize, zeroOffset, extent, 0, layerIndex);
+		if (!vkDevice->SetDeviceImageData(m_Image, command_buffer,
+			const_cast<uint8_t*>(upload.pixels), 0, (int)dataSize, zeroOffset, extent, 0, layerIndex,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("[VansTexture] UpdateArrayLayerFromPixels: GPU upload failed layer=" << layerIndex);
+			return false;
+		}
 
 		// 重新生成该层的完整 mip 链（与 LoadTextureLayer 逻辑完全一致）
 		{
 			VkQueue queue = vkDevice->GetGraphicsQueue();
 			VkDevice device = vkDevice->GetLogicDevice();
-			int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
 
-			command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-			if (mipLevels > 1)
+			if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 			{
-				GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(),
-					uploadW, uploadH, mipLevels, layerIndex);
+				RecordTextureUploadFailure();
+				VANS_LOG_ERROR("[VansTexture] UpdateArrayLayerFromPixels: mip/final layout command buffer begin failed layer=" << layerIndex);
+				return false;
 			}
-			else
+			FinalizeUploadedLayer(command_buffer, upload.width, upload.height, layerIndex);
+			if (!SubmitAndWait(command_buffer, queue, device))
 			{
-				m_Image.SetImageMemoryBarrier(
-					VK_PIPELINE_STAGE_TRANSFER_BIT,
-					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-					{
-						m_Image.GetImage(),
-						VK_ACCESS_TRANSFER_WRITE_BIT,
-						VK_ACCESS_SHADER_READ_BIT,
-						VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-						VK_QUEUE_FAMILY_IGNORED,
-						VK_QUEUE_FAMILY_IGNORED,
-						m_Image.GetImageAspect()
-					});
+				RecordTextureUploadFailure();
+				VANS_LOG_ERROR("[VansTexture] UpdateArrayLayerFromPixels: mip/final layout submit failed layer=" << layerIndex);
+				return false;
 			}
-			SubmitAndWait(command_buffer, queue, device);
 		}
 
 		return true;
@@ -743,70 +1109,26 @@ namespace VansGraphics
 		if (!vkDevice) return false;
 
 		// 若分辨率与数组贴图不一致，保持旧路径的最近邻缩放效果。
-		std::vector<uint8_t> resized;
-		const uint8_t* uploadData = pixels;
-		int uploadW = srcW, uploadH = srcH;
+		RGBA8LayerUploadView upload = PrepareRGBA8LayerUpload(
+			pixels, srcW, srcH,
+			m_TextureWidth, m_TextureHeight);
 
-		if (srcW != m_TextureWidth || srcH != m_TextureHeight)
-		{
-			resized.resize(size_t(m_TextureWidth) * m_TextureHeight * 4);
-			float scaleX = float(srcW) / float(m_TextureWidth);
-			float scaleY = float(srcH) / float(m_TextureHeight);
-			for (int y = 0; y < m_TextureHeight; ++y)
-			{
-				for (int x = 0; x < m_TextureWidth; ++x)
-				{
-					int srcX = std::min((int)(x * scaleX), srcW - 1);
-					int srcY = std::min((int)(y * scaleY), srcH - 1);
-					const uint8_t* src = pixels + (size_t(srcY) * srcW + srcX) * 4;
-					uint8_t* dst = resized.data() + (size_t(y) * m_TextureWidth + x) * 4;
-					dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
-				}
-			}
-			uploadData = resized.data();
-			uploadW = m_TextureWidth;
-			uploadH = m_TextureHeight;
-		}
-
-		size_t dataSize = size_t(uploadW) * uploadH * 4;
-		VkExtent3D extent = { (uint32_t)uploadW, (uint32_t)uploadH, 1 };
+		size_t dataSize = size_t(upload.width) * upload.height * 4;
+		VkExtent3D extent = { (uint32_t)upload.width, (uint32_t)upload.height, 1 };
 		VkOffset3D zeroOffset = { 0, 0, 0 };
 		{
 			VANS_PROFILE_SCOPE("RectLightVideo::UploadArrayLayer", Vans::ProfileCategory::Video);
 			if (!vkDevice->RecordDeviceImageData(m_Image, command_buffer,
-				uploadData, static_cast<int>(dataSize), zeroOffset, extent,
+				upload.pixels, static_cast<int>(dataSize), zeroOffset, extent,
 				0, layerIndex, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
 			{
+				RecordTextureUploadFailure();
 				return false;
 			}
 		}
 
-		int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
-		if (mipLevels > 1)
-		{
-			VANS_PROFILE_SCOPE("RectLightVideo::GenerateMipmaps", Vans::ProfileCategory::Video);
-			GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(),
-				uploadW, uploadH, mipLevels, layerIndex);
-		}
-		else
-		{
-			VkImageMemoryBarrier toShaderRead{};
-			toShaderRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			toShaderRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			toShaderRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			toShaderRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			toShaderRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			toShaderRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			toShaderRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			toShaderRead.image = m_Image.GetImage();
-			toShaderRead.subresourceRange = { m_Image.GetImageAspect(), 0, 1u, (uint32_t)layerIndex, 1u };
-			command_buffer.PipelineBarrier(
-				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				{}, {}, { toShaderRead });
-		}
+		FinalizeUploadedLayer(command_buffer, upload.width, upload.height, layerIndex);
 
-		m_Image.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		return true;
 	}
 
@@ -906,32 +1228,7 @@ namespace VansGraphics
 			sourceImage.SetTrackedImageLayout(sourceOriginalLayout);
 		}
 
-		int mipLevels = static_cast<int>(m_Image.GetImageCreateInfo().mipLevels);
-		if (mipLevels > 1)
-		{
-			VANS_PROFILE_SCOPE("RectLightVideo::GpuCopy.GenerateMipmaps", Vans::ProfileCategory::Video);
-			GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(),
-				m_TextureWidth, m_TextureHeight, mipLevels, layerIndex);
-		}
-		else
-		{
-			VkImageMemoryBarrier targetToShaderRead{};
-			targetToShaderRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			targetToShaderRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			targetToShaderRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			targetToShaderRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			targetToShaderRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			targetToShaderRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			targetToShaderRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			targetToShaderRead.image = m_Image.GetImage();
-			targetToShaderRead.subresourceRange = { m_Image.GetImageAspect(), 0, 1u, static_cast<uint32_t>(layerIndex), 1u };
-			command_buffer.PipelineBarrier(
-				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				{}, {}, { targetToShaderRead });
-		}
-
-		m_Image.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		FinalizeUploadedLayer(command_buffer, m_TextureWidth, m_TextureHeight, layerIndex);
 		return true;
 	}
 
@@ -947,7 +1244,7 @@ namespace VansGraphics
 
 		bool is3D = slice > 1;
 		VkFormat format = ChooseFormat(num_components, texture_precision);
-		int mipLevels = generateMip ? 1 + (int)std::floor(std::log2((float)width)) : 1;
+		int mipLevels = CalculateMipLevels(width, height, generateMip);
 
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, (uint32_t)slice };
 		m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,
@@ -957,7 +1254,12 @@ namespace VansGraphics
 
 		VkImageLayout targetLayout = enabeRandonWrite ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("InitTextureWithoutData: initial layout command buffer begin failed.");
+			return;
+		}
 		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{
 				m_Image.GetImage(),
@@ -969,7 +1271,11 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED,
 				m_Image.GetImageAspect()
 			});
-		SubmitAndWait(command_buffer, queue, device);
+		if (!SubmitAndWait(command_buffer, queue, device))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("InitTextureWithoutData: initial layout submit failed.");
+		}
 	}
 
 	static uint16_t FloatToHalf(float value)
@@ -1011,17 +1317,28 @@ namespace VansGraphics
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		const VkExtent3D extent = { (uint32_t)m_TextureWidth, (uint32_t)m_TextureHeight, 1u };
 		const VkOffset3D offset = { 0, 0, 0 };
-		vkDevice->SetDeviceImageData(m_Image, command_buffer, upload.data(), 0,
-			(int)(upload.size() * sizeof(uint16_t)), offset, extent, 0, layerIndex);
+		if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, upload.data(), 0,
+			(int)(upload.size() * sizeof(uint16_t)), offset, extent, 0, layerIndex,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("LoadHDRTextureLayer: GPU upload failed for layer " << layerIndex << ": " << texturePath);
+			return false;
+		}
 		VkQueue queue = vkDevice->GetGraphicsQueue(); VkDevice device = vkDevice->GetLogicDevice();
-		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-		const int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
-		if (mipLevels > 1) GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(), m_TextureWidth, m_TextureHeight, mipLevels, layerIndex);
-		else m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			{ m_Image.GetImage(), VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-			  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_Image.GetImageAspect() });
-		SubmitAndWait(command_buffer, queue, device);
+		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("LoadHDRTextureLayer: final layout command buffer begin failed for layer " << layerIndex << ": " << texturePath);
+			return false;
+		}
+		FinalizeUploadedLayer(command_buffer, m_TextureWidth, m_TextureHeight, layerIndex);
+		if (!SubmitAndWait(command_buffer, queue, device))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("LoadHDRTextureLayer: final layout submit failed for layer " << layerIndex << ": " << texturePath);
+			return false;
+		}
 		return true;
 	}
 
@@ -1042,15 +1359,27 @@ namespace VansGraphics
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		const VkExtent3D extent = { (uint32_t)m_TextureWidth, (uint32_t)m_TextureHeight, 1u };
 		const VkOffset3D offset = { 0, 0, 0 };
-		vkDevice->SetDeviceImageData(m_Image, command_buffer, upload.data(), 0, (int)(upload.size() * sizeof(uint16_t)), offset, extent, 0, layerIndex);
+		if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, upload.data(), 0, (int)(upload.size() * sizeof(uint16_t)), offset, extent, 0, layerIndex,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("UpdateHDRArrayLayerFromPixels: GPU upload failed for layer " << layerIndex);
+			return false;
+		}
 		VkQueue queue = vkDevice->GetGraphicsQueue(); VkDevice device = vkDevice->GetLogicDevice();
-		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-		const int mipLevels = (int)m_Image.GetImageCreateInfo().mipLevels;
-		if (mipLevels > 1) GenerateMipmapsForLayer(command_buffer.GetVKCommandBuffer(), m_TextureWidth, m_TextureHeight, mipLevels, layerIndex);
-		else m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			{ m_Image.GetImage(), VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_Image.GetImageAspect() });
-		SubmitAndWait(command_buffer, queue, device);
+		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("UpdateHDRArrayLayerFromPixels: final layout command buffer begin failed for layer " << layerIndex);
+			return false;
+		}
+		FinalizeUploadedLayer(command_buffer, m_TextureWidth, m_TextureHeight, layerIndex);
+		if (!SubmitAndWait(command_buffer, queue, device))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("UpdateHDRArrayLayerFromPixels: final layout submit failed for layer " << layerIndex);
+			return false;
+		}
 		return true;
 	}
 
@@ -1067,7 +1396,7 @@ namespace VansGraphics
 		VkDevice device = vkDevice->GetLogicDevice();
 		VkQueue queue = vkDevice->GetGraphicsQueue();
 		const VkFormat format = ChooseFormat(numComponents, texturePrecision);
-		const int mipLevels = generateMip ? 1 + (int)std::floor(std::log2((float)width)) : 1;
+		const int mipLevels = CalculateMipLevels(width, height, generateMip);
 		const VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1u };
 
 		m_Image.CreateVulkanImage(device, extent, format, mipLevels,
@@ -1077,14 +1406,23 @@ namespace VansGraphics
 			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 			VK_SAMPLE_COUNT_1_BIT, true, true, true, addressMode);
 
-		command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Cube texture array initial layout command buffer begin failed.");
+			return;
+		}
 		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{ m_Image.GetImage(), VK_ACCESS_NONE, VK_ACCESS_NONE,
 			  m_Image.GetImageLayout(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
 			  m_Image.GetImageAspect() });
-		SubmitAndWait(command_buffer, queue, device);
+		if (!SubmitAndWait(command_buffer, queue, device))
+		{
+			RecordTextureUploadFailure();
+			VANS_LOG_ERROR("Cube texture array initial layout submit failed.");
+		}
 	}
 
 	bool VansTexture::LoadTexture3DFromSlices(VansVKCommandBuffer& command_buffer,
@@ -1169,6 +1507,7 @@ namespace VansGraphics
 
 		if (!success)
 		{
+			RecordTextureUploadFailure();
 			VANS_LOG_ERROR("LoadTexture3DFromSlices: 3D 纹理切片上传失败: " << slicePathFormat);
 		}
 		return success;

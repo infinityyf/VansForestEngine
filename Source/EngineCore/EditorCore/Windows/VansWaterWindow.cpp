@@ -1,578 +1,404 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansWaterWindow.h"
+
 #include "../VansEditorWindow.h"
-#include "../../RenderCore/VansScene.h"
-#include "../../RenderCore/WaterCore/VansWaterConfig.h"
-#include "../../RenderCore/WaterCore/VansWaterMaterial.h"
-#include "../../RenderCore/WaterCore/VansWaterSystem.h"
-#include "../../RenderCore/WaterCore/VansWaterLOD.h"
-#include "../../RenderCore/WaterCore/VansWaterFFT.h"
+#include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
 
 #include "imgui.h"
-#include "imgui_internal.h"
-#include "backends/imgui_impl_vulkan.h"
+
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 
 namespace VansGraphics
 {
+namespace
+{
+    bool EditVec2(const char* label, Vans::EditorAPI::Vec2& value, float speed, float minValue, float maxValue, const char* format)
+    {
+        float values[2] = { value.x, value.y };
+        if (!ImGui::DragFloat2(label, values, speed, minValue, maxValue, format))
+            return false;
 
-// 4 个内置水质预设（设计文档 §9.3，W-19）
+        value = { values[0], values[1] };
+        return true;
+    }
+
+    bool EditVec3(const char* label, Vans::EditorAPI::Vec3& value, float speed, float minValue, float maxValue, const char* format)
+    {
+        float values[3] = { value.x, value.y, value.z };
+        if (!ImGui::DragFloat3(label, values, speed, minValue, maxValue, format))
+            return false;
+
+        value = { values[0], values[1], values[2] };
+        return true;
+    }
+
+    bool EditColor4(const char* label, Vans::EditorAPI::Vec4& value)
+    {
+        float values[4] = { value.x, value.y, value.z, value.w };
+        if (!ImGui::ColorEdit4(label, values))
+            return false;
+
+        value = { values[0], values[1], values[2], values[3] };
+        return true;
+    }
+
+    void DisplayWaterTexture(
+        Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+        const char* label,
+        const char* textureName,
+        std::uint32_t requestedLayer = 0u)
+    {
+        ImGui::Text("%s", label);
+        ImGui::SameLine();
+        ImGui::TextDisabled("layer %u", requestedLayer);
+
+        Vans::EditorAPI::RenderTextureFilter filter;
+        filter.category = "water";
+        filter.name = textureName;
+        filter.layer = requestedLayer;
+        std::vector<Vans::EditorAPI::RenderTexturePreview> previews =
+            editorAPI.QueryRenderTexturePreviews(filter);
+        const Vans::EditorAPI::RenderTexturePreview preview =
+            previews.empty() ? Vans::EditorAPI::RenderTexturePreview{} : previews.front();
+        if (!preview.texture || preview.width == 0 || preview.height == 0)
+        {
+            ImGui::TextDisabled("(not created)");
+            return;
+        }
+
+        const float aspect = static_cast<float>(preview.width) / static_cast<float>(preview.height);
+        float width = ImGui::GetContentRegionAvail().x * 0.95f;
+        float height = width / aspect;
+        constexpr float MAX_PREVIEW_HEIGHT = 220.0f;
+        if (height > MAX_PREVIEW_HEIGHT)
+        {
+            height = MAX_PREVIEW_HEIGHT;
+            width = height * aspect;
+        }
+        ImGui::Image(preview.texture, ImVec2(width, height));
+    }
+}
+
 const WaterPreset kWaterPresets[] = {
     {
-        "Tropical Ocean", "热带海洋",
-        {0.0f, 0.08f, 0.28f, 1.0f}, {0.05f, 0.35f, 0.55f, 1.0f},
-        {0.35f, 0.12f, 0.03f}, {0.02f, 0.05f, 0.08f},   // 消光 R:0.37 G:0.17 B:0.11, 蓝光穿透最深
+        "Tropical Ocean", "Warm clear ocean",
+        { 0.0f, 0.08f, 0.28f, 1.0f }, { 0.05f, 0.35f, 0.55f, 1.0f },
+        { 0.35f, 0.12f, 0.03f }, { 0.02f, 0.05f, 0.08f },
         1.33f, 5.5f, 1.2f
     },
     {
-        "Temperate Lake", "温带湖泊",
-        {0.02f, 0.05f, 0.10f, 1.0f}, {0.08f, 0.25f, 0.35f, 1.0f},
-        {0.20f, 0.10f, 0.04f}, {0.03f, 0.05f, 0.07f},   // 消光 R:0.23 G:0.15 B:0.11
+        "Temperate Lake", "Calm inland water",
+        { 0.02f, 0.05f, 0.10f, 1.0f }, { 0.08f, 0.25f, 0.35f, 1.0f },
+        { 0.20f, 0.10f, 0.04f }, { 0.03f, 0.05f, 0.07f },
         1.34f, 4.5f, 0.7f
     },
     {
-        "Arctic Sea", "极地海域",
-        {0.0f, 0.03f, 0.08f, 1.0f}, {0.12f, 0.45f, 0.60f, 1.0f},
-        {0.30f, 0.08f, 0.02f}, {0.01f, 0.02f, 0.04f},   // 极清澈，消光 R:0.31 G:0.10 B:0.06
+        "Arctic Sea", "Cold bright water",
+        { 0.0f, 0.03f, 0.08f, 1.0f }, { 0.12f, 0.45f, 0.60f, 1.0f },
+        { 0.30f, 0.08f, 0.02f }, { 0.01f, 0.02f, 0.04f },
         1.33f, 6.0f, 1.5f
     },
     {
-        "Muddy River", "浑浊河流",
-        {0.08f, 0.06f, 0.02f, 1.0f}, {0.15f, 0.12f, 0.06f, 1.0f},
-        {0.10f, 0.08f, 0.22f}, {0.08f, 0.06f, 0.02f},   // 浑浊水体蓝光被吸收，消光 R:0.18 G:0.14 B:0.24
+        "Muddy River", "Sediment-heavy river",
+        { 0.08f, 0.06f, 0.02f, 1.0f }, { 0.15f, 0.12f, 0.06f, 1.0f },
+        { 0.10f, 0.08f, 0.22f }, { 0.08f, 0.06f, 0.02f },
         1.34f, 3.0f, 0.3f
     }
 };
 const int kWaterPresetCount = 4;
 
-void VansWaterWindow::ApplyPreset(const WaterPreset& preset)
+void VansWaterWindow::ApplyPreset(Vans::EditorAPI::WaterSettingsSnapshot& settings, const WaterPreset& preset)
 {
-    if (!m_Scene) return;
-    VansWaterConfig& cfg = const_cast<VansWaterConfig&>(m_Scene->GetWaterConfig());
-    VansWaterMaterial* mat = m_Scene->GetWaterMaterial();
-
-    cfg.m_Medium.m_DeepColor    = preset.deepColor;
-    cfg.m_Medium.m_ShallowColor = preset.shallowColor;
-    cfg.m_Medium.m_AbsorptionCoeff = preset.absorption;
-    cfg.m_Medium.m_ScatteringCoeff = preset.scattering;
-    cfg.m_Medium.m_IOR          = preset.ior;
-    cfg.m_Medium.m_FresnelPower = preset.fresnelPower;
-    cfg.m_SpecularIntensity     = preset.specularIntensity;
-
-    if (mat)
-    {
-        mat->m_DeepWaterColor    = preset.deepColor;
-        mat->m_ShallowWaterColor = preset.shallowColor;
-        mat->m_AbsorptionCoeffs  = preset.absorption;
-        mat->m_ScatteringCoeffs  = preset.scattering;
-        mat->m_WaterIOR          = preset.ior;
-        mat->m_FresnelPower      = preset.fresnelPower;
-        mat->m_SpecularIntensity = preset.specularIntensity;
-    }
+    settings.medium.deepColor = preset.deepColor;
+    settings.medium.shallowColor = preset.shallowColor;
+    settings.medium.absorptionCoeff = preset.absorption;
+    settings.medium.scatteringCoeff = preset.scattering;
+    settings.medium.ior = preset.ior;
+    settings.medium.fresnelPower = preset.fresnelPower;
+    settings.specularIntensity = preset.specularIntensity;
 }
 
-void VansGraphics::VansWaterWindow::ShowWindow(VansVKDevice& device)
+void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
     if (!VansEditorWindow::m_WaterWindowOpen)
         return;
 
-    if (!m_Scene || !m_Scene->HasWaterNodes())
+    Vans::EditorAPI::WaterSettingsSnapshot settings = editorAPI.GetWaterSettings();
+    Vans::EditorAPI::WaterRuntimeStats stats = editorAPI.GetWaterRuntimeStats();
+
+    if (!settings.available)
     {
         ImGui::Begin("Water");
-        ImGui::TextDisabled("Scene has no water config. Add \"water\" block to Scene JSON and reload.");
+        ImGui::TextDisabled("Scene has no water config. Add a water block to Scene JSON and reload.");
         ImGui::End();
         return;
     }
 
+    bool changed = false;
     ImGui::Begin("Water");
 
-    VansWaterConfig& cfg = const_cast<VansWaterConfig&>(m_Scene->GetWaterConfig());
-    VansWaterMaterial* mat = m_Scene->GetWaterMaterial();
-    VansWaterSystem* waterSys = m_Scene->GetWaterSystem();
-
-    // ── Tab bar ───────────────────────────────────────────────────────
     if (ImGui::BeginTabBar("WaterTabs"))
     {
-        // ============================================================
-        // Tab 1: 参数编辑
-        // ============================================================
         if (ImGui::BeginTabItem("Parameters"))
         {
-            // ── W-19: 预设管理 ─────────────────────────────────────────
-            if (ImGui::CollapsingHeader("Presets (W-19)", ImGuiTreeNodeFlags_DefaultOpen))
+            if (ImGui::CollapsingHeader("Presets", ImGuiTreeNodeFlags_DefaultOpen))
             {
                 for (int i = 0; i < kWaterPresetCount; ++i)
                 {
-                    const WaterPreset& p = kWaterPresets[i];
-                    if (ImGui::Button(p.name))
-                        ApplyPreset(p);
+                    const WaterPreset& preset = kWaterPresets[i];
+                    if (ImGui::Button(preset.name))
+                    {
+                        ApplyPreset(settings, preset);
+                        changed = true;
+                    }
                     ImGui::SameLine();
-                    ImGui::TextDisabled("%s", p.description);
+                    ImGui::TextDisabled("%s", preset.description);
                 }
                 ImGui::Separator();
             }
 
-            if (mat)
-            {
-                float spec = cfg.m_SpecularIntensity;
-                if (ImGui::DragFloat("Specular Intensity", &spec, 0.01f, 0.0f, 10.0f, "%.3f"))
-                { cfg.m_SpecularIntensity = spec; mat->m_SpecularIntensity = spec; }
-                float rough = cfg.m_Medium.m_WaterRoughness;
-                if (ImGui::DragFloat("Water Roughness", &rough, 0.001f, 0.001f, 1.0f, "%.4f"))
-                { cfg.m_Medium.m_WaterRoughness = rough; mat->m_WaterRoughness = rough; }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("水面微面元粗糙度: 0=镜面反射, 1=漫反射");
-            }
+            changed |= ImGui::DragFloat("Specular Intensity", &settings.specularIntensity, 0.01f, 0.0f, 10.0f, "%.3f");
+            changed |= ImGui::DragFloat("Water Roughness", &settings.medium.waterRoughness, 0.001f, 0.001f, 1.0f, "%.4f");
 
-            // ── 基础 ─────────────────────────────────────────────────
             if (ImGui::CollapsingHeader("Basic", ImGuiTreeNodeFlags_DefaultOpen))
             {
                 const char* typeNames[] = { "Ocean", "Lake", "River", "Pool" };
-                int typeIdx = static_cast<int>(cfg.m_Type);
-                if (ImGui::Combo("Type", &typeIdx, typeNames, 4))
+                int typeIndex = std::clamp(settings.type, 0, 3);
+                if (ImGui::Combo("Type", &typeIndex, typeNames, 4))
                 {
-                    cfg.m_Type = static_cast<VansWaterType>(typeIdx);
+                    settings.type = typeIndex;
+                    changed = true;
                 }
-
-                float level = cfg.m_WaterLevel;
-                if (ImGui::DragFloat("Water Level (Y)", &level, 0.1f, -10000.0f, 10000.0f, "%.2f"))
-                {
-                    cfg.m_WaterLevel = level;
-                    if (waterSys) waterSys->SetWaterLevel(level);
-                    if (VansRenderNode* waterNode = m_Scene->GetWaterRenderNode())
-                    {
-                        glm::vec3 pos = waterNode->GetTransformPosition();
-                        pos.y = level;
-                        waterNode->SetTransformData(
-                            pos, waterNode->GetTransformRotation(),
-                            waterNode->GetTransformScale());
-                    }
-                }
+                changed |= ImGui::DragFloat("Water Level (Y)", &settings.waterLevel, 0.1f, -10000.0f, 10000.0f, "%.2f");
             }
 
-            // ── 介质参数 ─────────────────────────────────────────────
             if (ImGui::CollapsingHeader("Medium"))
             {
-                float abs3[3] = { cfg.m_Medium.m_AbsorptionCoeff.x, cfg.m_Medium.m_AbsorptionCoeff.y, cfg.m_Medium.m_AbsorptionCoeff.z };
-                if (ImGui::DragFloat3("Absorption (RGB)", abs3, 0.001f, 0.0f, 10.0f, "%.4f"))
-                { cfg.m_Medium.m_AbsorptionCoeff = {abs3[0], abs3[1], abs3[2]}; if (mat) mat->m_AbsorptionCoeffs = cfg.m_Medium.m_AbsorptionCoeff; }
-                float sca3[3] = { cfg.m_Medium.m_ScatteringCoeff.x, cfg.m_Medium.m_ScatteringCoeff.y, cfg.m_Medium.m_ScatteringCoeff.z };
-                if (ImGui::DragFloat3("Scattering (RGB)", sca3, 0.001f, 0.0f, 10.0f, "%.4f"))
-                { cfg.m_Medium.m_ScatteringCoeff = {sca3[0], sca3[1], sca3[2]}; if (mat) mat->m_ScatteringCoeffs = cfg.m_Medium.m_ScatteringCoeff; }
-ImGui::DragFloat("IOR", &cfg.m_Medium.m_IOR, 0.001f, 1.0f, 3.0f, "%.4f"); if (mat) mat->m_WaterIOR = cfg.m_Medium.m_IOR;
-	if (ImGui::IsItemHovered()) ImGui::SetTooltip("F0 = ((IOR-1)/(IOR+1))^2, realtime to Composite UBO");
-ImGui::DragFloat("Fresnel Power", &cfg.m_Medium.m_FresnelPower, 0.1f, 0.1f, 20.0f, "%.2f"); if (mat) mat->m_FresnelPower = cfg.m_Medium.m_FresnelPower;
-ImGui::DragFloat("Anisotropy", &cfg.m_Medium.m_Anisotropy, 0.01f, 0.0f, 1.0f, "%.3f"); if (mat) mat->m_Anisotropy = cfg.m_Medium.m_Anisotropy;
-                float dc[4] = { cfg.m_Medium.m_DeepColor.x, cfg.m_Medium.m_DeepColor.y, cfg.m_Medium.m_DeepColor.z, cfg.m_Medium.m_DeepColor.w };
-                if (ImGui::ColorEdit4("Deep Color", dc)) { cfg.m_Medium.m_DeepColor = {dc[0], dc[1], dc[2], dc[3]}; if (mat) mat->m_DeepWaterColor = cfg.m_Medium.m_DeepColor; }
-                float sc[4] = { cfg.m_Medium.m_ShallowColor.x, cfg.m_Medium.m_ShallowColor.y, cfg.m_Medium.m_ShallowColor.z, cfg.m_Medium.m_ShallowColor.w };
-                if (ImGui::ColorEdit4("Shallow Color", sc)) { cfg.m_Medium.m_ShallowColor = {sc[0], sc[1], sc[2], sc[3]}; if (mat) mat->m_ShallowWaterColor = cfg.m_Medium.m_ShallowColor; }
+                changed |= EditVec3("Absorption (RGB)", settings.medium.absorptionCoeff, 0.001f, 0.0f, 10.0f, "%.4f");
+                changed |= EditVec3("Scattering (RGB)", settings.medium.scatteringCoeff, 0.001f, 0.0f, 10.0f, "%.4f");
+                changed |= ImGui::DragFloat("IOR", &settings.medium.ior, 0.001f, 1.0f, 3.0f, "%.4f");
+                changed |= ImGui::DragFloat("Fresnel Power", &settings.medium.fresnelPower, 0.1f, 0.1f, 20.0f, "%.2f");
+                changed |= ImGui::DragFloat("Anisotropy", &settings.medium.anisotropy, 0.01f, 0.0f, 1.0f, "%.3f");
+                changed |= EditColor4("Deep Color", settings.medium.deepColor);
+                changed |= EditColor4("Shallow Color", settings.medium.shallowColor);
             }
 
-            // ── 波形 ─────────────────────────────────────────────────
             if (ImGui::CollapsingHeader("Waves"))
             {
                 const char* modeNames[] = { "Gerstner", "FFT", "Hybrid" };
-                int modeIdx = static_cast<int>(cfg.m_Waves.m_Mode);
-                if (ImGui::Combo("Wave Mode", &modeIdx, modeNames, 3))
+                int modeIndex = std::clamp(settings.waves.mode, 0, 2);
+                if (ImGui::Combo("Wave Mode", &modeIndex, modeNames, 3))
                 {
-                    cfg.m_Waves.m_Mode = static_cast<VansWaveMode>(modeIdx);
-                    if (mat) mat->m_Config.m_Waves.m_Mode = cfg.m_Waves.m_Mode;
-                    if (waterSys && waterSys->GetFFT()) waterSys->GetFFT()->MarkReinit();
+                    settings.waves.mode = modeIndex;
+                    changed = true;
                 }
-ImGui::DragFloat("Clipmap Base Scale", &cfg.m_Waves.m_BaseScale, 1.0f, 1.0f, 4096.0f, "%.1f"); if (mat) mat->m_OceanBaseScale = cfg.m_Waves.m_BaseScale;
-                int maxLod = cfg.m_Waves.m_MaxLOD;
-                if (ImGui::SliderInt("Wave Clipmap LOD", &maxLod, 1, 10)) { cfg.m_Waves.m_MaxLOD = maxLod; }
-                float wd[2] = { cfg.m_Waves.m_WindDirection.x, cfg.m_Waves.m_WindDirection.y };
-                if (ImGui::DragFloat2("Wind Dir (XZ)", wd, 0.01f, -1.0f, 1.0f, "%.3f")) { cfg.m_Waves.m_WindDirection = {wd[0], wd[1]}; if (mat) mat->m_WindDirection = cfg.m_Waves.m_WindDirection; if (waterSys) waterSys->UpdateWaveSSBO(); }
-	                if (ImGui::DragFloat("Wind Speed", &cfg.m_Waves.m_WindSpeed, 0.1f, 0.0f, 100.0f, "%.2f")) { if (mat) mat->m_WindSpeed = cfg.m_Waves.m_WindSpeed; if (waterSys) waterSys->UpdateWaveSSBO(); }
-	                if (ImGui::DragFloat("Swell Amplitude", &cfg.m_Waves.m_SwellAmplitude, 0.01f, 0.0f, 20.0f, "%.3f")) { if (mat) mat->m_SwellAmplitude = cfg.m_Waves.m_SwellAmplitude; if (waterSys) waterSys->UpdateWaveSSBO(); }
-	                if (ImGui::DragFloat("Chop Scale", &cfg.m_Waves.m_ChopScale, 0.01f, 0.0f, 2.0f, "%.3f")) { if (mat) mat->m_ChopScale = cfg.m_Waves.m_ChopScale; }
-                int gc = cfg.m_Waves.m_GerstnerWaveCount;
-                if (ImGui::SliderInt("Gerstner Waves", &gc, 1, 64)) { cfg.m_Waves.m_GerstnerWaveCount = gc; if (mat) mat->m_GerstnerWaveCount = gc; if (waterSys) waterSys->UpdateWaveSSBO(); }
 
-                if (cfg.m_Waves.m_Mode == VansWaveMode::FFT || cfg.m_Waves.m_Mode == VansWaveMode::Hybrid)
+                changed |= ImGui::DragFloat("Clipmap Base Scale", &settings.waves.baseScale, 1.0f, 1.0f, 4096.0f, "%.1f");
+                changed |= ImGui::SliderInt("Wave Clipmap LOD", &settings.waves.maxLod, 1, 10);
+                changed |= EditVec2("Wind Dir (XZ)", settings.waves.windDirection, 0.01f, -1.0f, 1.0f, "%.3f");
+                changed |= ImGui::DragFloat("Wind Speed", &settings.waves.windSpeed, 0.1f, 0.0f, 100.0f, "%.2f");
+                changed |= ImGui::DragFloat("Swell Amplitude", &settings.waves.swellAmplitude, 0.01f, 0.0f, 20.0f, "%.3f");
+                changed |= ImGui::DragFloat("Chop Scale", &settings.waves.chopScale, 0.01f, 0.0f, 2.0f, "%.3f");
+                changed |= ImGui::SliderInt("Gerstner Waves", &settings.waves.gerstnerWaveCount, 1, 64);
+
+                if (settings.waves.mode == 1 || settings.waves.mode == 2)
                 {
                     ImGui::SeparatorText("FFT Ocean");
-                    bool fftDirty = false;
-                    fftDirty |= ImGui::Checkbox("Derivative Normal", &cfg.m_Waves.m_FFT.m_UseDerivativeNormal);
-                    int fftRes = cfg.m_Waves.m_FFT.m_Resolution;
-                    if (ImGui::SliderInt("FFT Resolution", &fftRes, 256, 256))
+                    changed |= ImGui::Checkbox("Derivative Normal", &settings.waves.fft.useDerivativeNormal);
+                    if (ImGui::SliderInt("FFT Resolution", &settings.waves.fft.resolution, 256, 256))
                     {
-                        cfg.m_Waves.m_FFT.m_Resolution = fftRes;
-                        cfg.m_Waves.m_FftResolution = fftRes;
-                        if (mat) mat->m_FftResolution = fftRes;
-                        fftDirty = true;
+                        settings.waves.fftResolution = settings.waves.fft.resolution;
+                        changed = true;
                     }
-                    int fftLod = cfg.m_Waves.m_FFT.m_LODCount;
-                    if (ImGui::SliderInt("FFT LOD Count", &fftLod, 1, cfg.m_Waves.m_MaxLOD))
+                    if (ImGui::SliderInt("FFT LOD Count", &settings.waves.fft.lodCount, 1, settings.waves.maxLod))
                     {
-                        cfg.m_Waves.m_FFT.m_LODCount = fftLod;
-                        cfg.m_Waves.m_FftLODCount = fftLod;
-                        if (mat) mat->m_FftLODCount = fftLod;
-                        fftDirty = true;
+                        settings.waves.fftLodCount = settings.waves.fft.lodCount;
+                        changed = true;
                     }
-                    fftDirty |= ImGui::DragFloat("Spectrum Amplitude", &cfg.m_Waves.m_FFT.m_SpectrumAmplitude, 0.01f, 0.0f, 20.0f, "%.3f");
-                    fftDirty |= ImGui::DragFloat("FFT Choppiness", &cfg.m_Waves.m_FFT.m_Choppiness, 0.01f, 0.0f, 3.0f, "%.3f");
-                    fftDirty |= ImGui::DragFloat("Small Wave Damping", &cfg.m_Waves.m_FFT.m_SmallWaveDamping, 0.0001f, 0.001f, 0.1f, "%.5f");
-                    fftDirty |= ImGui::DragFloat("Wind Dependency", &cfg.m_Waves.m_FFT.m_WindDependency, 0.01f, 0.0f, 1.0f, "%.3f");
-                    fftDirty |= ImGui::DragFloat("Water Depth", &cfg.m_Waves.m_FFT.m_Depth, 1.0f, 0.1f, 10000.0f, "%.1f");
-                    fftDirty |= ImGui::DragFloat("Repeat Period", &cfg.m_Waves.m_FFT.m_RepeatPeriod, 1.0f, 0.0f, 600.0f, "%.1f");
-                    fftDirty |= ImGui::DragFloat("Foam Slope", &cfg.m_Waves.m_FFT.m_FoamSlopeScale, 0.01f, 0.0f, 5.0f, "%.3f");
-                    fftDirty |= ImGui::DragFloat("Foam Fold", &cfg.m_Waves.m_FFT.m_FoamFoldScale, 0.01f, 0.0f, 5.0f, "%.3f");
-                    if (mat)
-                    {
-                        mat->m_Config.m_Waves.m_FFT = cfg.m_Waves.m_FFT;
-                        mat->m_Config.m_Waves.m_FftLODCount = cfg.m_Waves.m_FftLODCount;
-                        mat->m_Config.m_Waves.m_FftResolution = cfg.m_Waves.m_FftResolution;
-                        mat->m_FFTUseDerivativeNormal = cfg.m_Waves.m_FFT.m_UseDerivativeNormal;
-                        mat->m_FFTSpectrumAmplitude = cfg.m_Waves.m_FFT.m_SpectrumAmplitude;
-                        mat->m_FFTChoppiness = cfg.m_Waves.m_FFT.m_Choppiness;
-                        mat->m_FFTSmallWaveDamping = cfg.m_Waves.m_FFT.m_SmallWaveDamping;
-                        mat->m_FFTWindDependency = cfg.m_Waves.m_FFT.m_WindDependency;
-                        mat->m_FFTDepth = cfg.m_Waves.m_FFT.m_Depth;
-                        mat->m_FFTRepeatPeriod = cfg.m_Waves.m_FFT.m_RepeatPeriod;
-                        mat->m_FFTFoamSlopeScale = cfg.m_Waves.m_FFT.m_FoamSlopeScale;
-                        mat->m_FFTFoamFoldScale = cfg.m_Waves.m_FFT.m_FoamFoldScale;
-                    }
-                    if (fftDirty && waterSys && waterSys->GetFFT())
-                        waterSys->GetFFT()->MarkReinit();
+                    changed |= ImGui::DragFloat("Spectrum Amplitude", &settings.waves.fft.spectrumAmplitude, 0.01f, 0.0f, 20.0f, "%.3f");
+                    changed |= ImGui::DragFloat("FFT Choppiness", &settings.waves.fft.choppiness, 0.01f, 0.0f, 3.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Small Wave Damping", &settings.waves.fft.smallWaveDamping, 0.0001f, 0.001f, 0.1f, "%.5f");
+                    changed |= ImGui::DragFloat("Wind Dependency", &settings.waves.fft.windDependency, 0.01f, 0.0f, 1.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Water Depth", &settings.waves.fft.depth, 1.0f, 0.1f, 10000.0f, "%.1f");
+                    changed |= ImGui::DragFloat("Repeat Period", &settings.waves.fft.repeatPeriod, 1.0f, 0.0f, 600.0f, "%.1f");
+                    changed |= ImGui::DragFloat("Foam Slope", &settings.waves.fft.foamSlopeScale, 0.01f, 0.0f, 5.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Foam Fold", &settings.waves.fft.foamFoldScale, 0.01f, 0.0f, 5.0f, "%.3f");
                 }
             }
 
             if (ImGui::CollapsingHeader("Geometry LOD"))
             {
-                int maxLod = cfg.m_LOD.m_MaxLOD;
-                if (ImGui::SliderInt("Max LOD##WaterGeometry", &maxLod, 1, 10))
+                changed |= ImGui::SliderInt("Max LOD##WaterGeometry", &settings.lod.maxLod, 1, 10);
+                changed |= ImGui::DragFloat("Base Patch Size", &settings.lod.basePatchSize, 0.5f, 1.0f, 512.0f, "%.1f");
+                if (ImGui::SliderInt("Mesh Dim", &settings.lod.meshDim, 3, 257))
                 {
-                    cfg.m_LOD.m_MaxLOD = maxLod;
-                    if (mat) mat->m_MaxLODCount = maxLod;
+                    if (((settings.lod.meshDim - 1) % 2) != 0)
+                        ++settings.lod.meshDim;
+                    changed = true;
                 }
-                if (ImGui::DragFloat("Base Patch Size", &cfg.m_LOD.m_BasePatchSize, 0.5f, 1.0f, 512.0f, "%.1f"))
-                {
-                    if (mat) mat->m_LODBasePatchSize = cfg.m_LOD.m_BasePatchSize;
-                }
-                int meshDim = cfg.m_LOD.m_MeshDim;
-                if (ImGui::SliderInt("Mesh Dim", &meshDim, 3, 257))
-                {
-                    if (((meshDim - 1) % 2) != 0)
-                        ++meshDim;
-                    cfg.m_LOD.m_MeshDim = meshDim;
-                    if (mat) mat->m_LODMeshDim = meshDim;
-                }
-                if (ImGui::DragFloat("Morph Width", &cfg.m_LOD.m_MorphWidthRatio, 0.01f, 0.05f, 1.0f, "%.2f"))
-                {
-                    if (mat) mat->m_LODMorphWidthRatio = cfg.m_LOD.m_MorphWidthRatio;
-                }
+                changed |= ImGui::DragFloat("Morph Width", &settings.lod.morphWidthRatio, 0.01f, 0.05f, 1.0f, "%.2f");
             }
 
-            // ── N-01: Detail Normal ──────────────────────────────────
-            if (ImGui::CollapsingHeader("Detail Normal (N-01)"))
+            if (ImGui::CollapsingHeader("Detail Normal"))
             {
-                if (mat)
-                {
-                    bool dnEnabled = mat->m_DetailNormalEnabled;
-                    if (ImGui::Checkbox("Enable##DetailNormal", &dnEnabled))
-                    {
-                        mat->m_DetailNormalEnabled = dnEnabled;
-                        cfg.m_Waves.m_DetailNormal.m_Enabled = dnEnabled;
-                    }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable compute-generated detail normal (multi-octave capillary waves)");
-
-                    if (ImGui::DragFloat("Intensity##DetailNormal", &mat->m_DetailNormalIntensity, 0.01f, 0.0f, 3.0f, "%.3f"))
-                        cfg.m_Waves.m_DetailNormal.m_Intensity = mat->m_DetailNormalIntensity;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Detail normal XZ perturbation strength. 0 = flat normal (0,1,0), 1 = full detail");
-
-                    if (ImGui::DragFloat("Scale##DetailNormal", &mat->m_DetailNormalScale, 0.01f, 0.1f, 5.0f, "%.2f"))
-                        cfg.m_Waves.m_DetailNormal.m_Scale = mat->m_DetailNormalScale;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Gradient scaling factor [0.1, 5]");
-
-                    int octaves = mat->m_DetailNormalOctaves;
-                    if (ImGui::SliderInt("Octaves", &octaves, 1, 4))
-                    { mat->m_DetailNormalOctaves = octaves; cfg.m_Waves.m_DetailNormal.m_OctaveCount = octaves; }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Octave count [1, 4]: more = richer detail but higher compute cost");
-
-                    if (ImGui::DragFloat("World Coverage (m)", &mat->m_DetailNormalBaseScale, 0.25f, 1.0f, 512.0f, "%.2f"))
-                        cfg.m_Waves.m_DetailNormal.m_DetailBaseScale = mat->m_DetailNormalBaseScale;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("World-space tiling distance. Smaller = denser detail. 16m default");
-
-                    if (ImGui::DragFloat("Time Offset", &mat->m_DetailNormalTimeOffset, 0.01f, 0.0f, 10.0f, "%.2f"))
-                        cfg.m_Waves.m_DetailNormal.m_TimeOffset = mat->m_DetailNormalTimeOffset;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Time phase offset to desync from macro waves");
-                }
+                changed |= ImGui::Checkbox("Enable##DetailNormal", &settings.waves.detailNormal.enabled);
+                changed |= ImGui::DragFloat("Intensity##DetailNormal", &settings.waves.detailNormal.intensity, 0.01f, 0.0f, 3.0f, "%.3f");
+                changed |= ImGui::DragFloat("Scale##DetailNormal", &settings.waves.detailNormal.scale, 0.01f, 0.1f, 5.0f, "%.2f");
+                changed |= ImGui::SliderInt("Octaves", &settings.waves.detailNormal.octaveCount, 1, 4);
+                changed |= ImGui::DragFloat("World Coverage (m)", &settings.waves.detailNormal.detailBaseScale, 0.25f, 1.0f, 512.0f, "%.2f");
+                changed |= ImGui::DragFloat("Time Offset", &settings.waves.detailNormal.timeOffset, 0.01f, 0.0f, 10.0f, "%.2f");
             }
 
-            // ── W-16: SSS 次表面散射 ──────────────────────────────────
             if (ImGui::CollapsingHeader("SSS (Subsurface Scattering)"))
             {
-                if (mat)
-                {
-                    bool sssEnable = mat->m_SSSEnabled;
-                    if (ImGui::Checkbox("Enable##SSS", &sssEnable))
-                    { mat->m_SSSEnabled = sssEnable; cfg.m_SSS.m_Enabled = sssEnable; }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable/disable subsurface scattering (thickness + SSS compute passes)");
-
-                    if (ImGui::DragFloat("Max Thickness (m)", &mat->m_MaxThicknessDistance, 0.1f, 1.0f, 50.0f, "%.1f"))
-                        cfg.m_SSS.m_MaxThicknessDistance = mat->m_MaxThicknessDistance;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum water thickness in meters. Thickness beyond this value is clamped. 15m default");
-
-                    if (ImGui::DragFloat("Deep Water Fallback", &mat->m_DeepWaterThicknessFallback, 0.01f, 0.0f, 1.0f, "%.2f"))
-                        cfg.m_SSS.m_DeepWaterThicknessFallback = mat->m_DeepWaterThicknessFallback;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Normalized thickness [0-1] for deep water areas with no scene geometry. 0.8 default (80% of max thickness)");
-
-                    ImGui::Separator();
-                    ImGui::TextDisabled("Scattering params (shared with Medium section):");
-                    ImGui::Text("Anisotropy: %.3f", mat->m_Anisotropy);
-                    ImGui::Text("Absorption: R=%.3f G=%.3f B=%.3f", mat->m_AbsorptionCoeffs.x, mat->m_AbsorptionCoeffs.y, mat->m_AbsorptionCoeffs.z);
-                    ImGui::Text("Scattering: R=%.3f G=%.3f B=%.3f", mat->m_ScatteringCoeffs.x, mat->m_ScatteringCoeffs.y, mat->m_ScatteringCoeffs.z);
-                }
+                changed |= ImGui::Checkbox("Enable##SSS", &settings.sssEnabled);
+                changed |= ImGui::DragFloat("Max Thickness (m)", &settings.maxThicknessDistance, 0.1f, 1.0f, 50.0f, "%.1f");
+                changed |= ImGui::DragFloat("Deep Water Fallback", &settings.deepWaterThicknessFallback, 0.01f, 0.0f, 1.0f, "%.2f");
+                ImGui::Separator();
+                ImGui::TextDisabled("Scattering params are shared with Medium.");
+                ImGui::Text("Anisotropy: %.3f", settings.medium.anisotropy);
+                ImGui::Text("Absorption: R=%.3f G=%.3f B=%.3f",
+                    settings.medium.absorptionCoeff.x,
+                    settings.medium.absorptionCoeff.y,
+                    settings.medium.absorptionCoeff.z);
+                ImGui::Text("Scattering: R=%.3f G=%.3f B=%.3f",
+                    settings.medium.scatteringCoeff.x,
+                    settings.medium.scatteringCoeff.y,
+                    settings.medium.scatteringCoeff.z);
             }
 
-            // ── Inspector optimization: Caustics section ──────────────
             if (ImGui::CollapsingHeader("Caustics"))
             {
-                if (mat)
-                {
-                    bool cauEnable = mat->m_EnableCaustics;
-                    if (ImGui::Checkbox("Enable##Caustics", &cauEnable))
-                    { mat->m_EnableCaustics = cauEnable; cfg.m_Caustics.m_Enabled = cauEnable; }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable/disable caustics compute dispatch");
-
-                    if (ImGui::DragFloat("Intensity##Caustics", &mat->m_CausticsIntensity, 0.01f, 0.0f, 3.0f, "%.3f"))
-                        cfg.m_Caustics.m_Intensity = mat->m_CausticsIntensity;
-
-                    if (ImGui::DragFloat("Scale##Caustics", &mat->m_CausticsScale, 0.01f, 0.01f, 2.0f, "%.3f"))
-                        cfg.m_Caustics.m_Scale = mat->m_CausticsScale;
-                }
+                changed |= ImGui::Checkbox("Enable##Caustics", &settings.causticsEnabled);
+                changed |= ImGui::DragFloat("Intensity##Caustics", &settings.causticsIntensity, 0.01f, 0.0f, 3.0f, "%.3f");
+                changed |= ImGui::DragFloat("Scale##Caustics", &settings.causticsScale, 0.01f, 0.01f, 2.0f, "%.3f");
             }
 
-            // ── Inspector optimization: Refraction section ────────────
             if (ImGui::CollapsingHeader("Refraction"))
             {
-                if (mat)
-                {
-                    bool refrEnable = mat->m_EnableRefraction;
-                    if (ImGui::Checkbox("Enable##Refraction", &refrEnable))
-                    { mat->m_EnableRefraction = refrEnable; cfg.m_Refraction.m_Enabled = refrEnable; }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable/disable refraction compute dispatch");
-
-                    if (ImGui::DragFloat("Max Distance (m)", &mat->m_RefractionMaxDist, 1.0f, 1.0f, 500.0f, "%.1f"))
-                        cfg.m_Refraction.m_MaxDistance = mat->m_RefractionMaxDist;
-
-                    if (ImGui::DragFloat("Scale##Refraction", &mat->m_RefractionScale, 0.01f, 0.0f, 2.0f, "%.3f"))
-                        cfg.m_Refraction.m_Scale = mat->m_RefractionScale;
-                }
+                changed |= ImGui::Checkbox("Enable##Refraction", &settings.refractionEnabled);
+                changed |= ImGui::DragFloat("Max Distance (m)", &settings.refractionMaxDistance, 1.0f, 1.0f, 500.0f, "%.1f");
+                changed |= ImGui::DragFloat("Scale##Refraction", &settings.refractionScale, 0.01f, 0.0f, 2.0f, "%.3f");
             }
 
-            // ── Inspector optimization: SSR section ───────────────────
             if (ImGui::CollapsingHeader("Screen-Space Reflection"))
             {
-                if (mat)
-                {
-                    bool ssrEnable = mat->m_EnableSSR;
-                    if (ImGui::Checkbox("Enable##SSR", &ssrEnable))
-                    { mat->m_EnableSSR = ssrEnable; cfg.m_SSR.m_Enabled = ssrEnable; }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable/disable SSR compute dispatch");
-
-                    if (ImGui::DragFloat("Max Distance (m)", &mat->m_SSRMaxDistance, 1.0f, 10.0f, 2000.0f, "%.0f"))
-                        cfg.m_SSR.m_MaxDistance = mat->m_SSRMaxDistance;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("SSR ray march max trace distance. 500m default, increase for distant reflections");
-
-                    if (ImGui::DragFloat("Max Roughness", &mat->m_SSRMaxRoughness, 0.01f, 0.0f, 1.0f, "%.3f"))
-                        cfg.m_SSR.m_MaxRoughness = mat->m_SSRMaxRoughness;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Above this roughness, fallback to IBL");
-                }
+                changed |= ImGui::Checkbox("Enable##SSR", &settings.ssrEnabled);
+                changed |= ImGui::DragFloat("Max Distance (m)", &settings.ssrMaxDistance, 1.0f, 10.0f, 2000.0f, "%.0f");
+                changed |= ImGui::DragFloat("Max Roughness", &settings.ssrMaxRoughness, 0.01f, 0.0f, 1.0f, "%.3f");
             }
 
-            // ── Inspector optimization: Foam section ──────────────────
             if (ImGui::CollapsingHeader("Foam"))
             {
-                if (mat)
-                {
-                    bool foamEnable = mat->m_EnableFoam;
-                    if (ImGui::Checkbox("Enable##Foam", &foamEnable))
-                    { mat->m_EnableFoam = foamEnable; cfg.m_Foam.m_Enabled = foamEnable; }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Foam rendering (shader code commented out, WIP)");
-
-                    if (ImGui::DragFloat("Intensity##Foam", &mat->m_FoamIntensity, 0.01f, 0.0f, 3.0f, "%.3f"))
-                        cfg.m_Foam.m_Intensity = mat->m_FoamIntensity;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Foam blend intensity (WIP: shader foam code commented out)");
-                }
+                changed |= ImGui::Checkbox("Enable##Foam", &settings.foamEnabled);
+                changed |= ImGui::DragFloat("Intensity##Foam", &settings.foamIntensity, 0.01f, 0.0f, 3.0f, "%.3f");
             }
 
             ImGui::EndTabItem();
         }
 
-        // ============================================================
-        // Tab 2: LOD Debug (W-18)
-        // ============================================================
         if (ImGui::BeginTabItem("LOD Debug"))
         {
-            // LOD stats
-            if (waterSys && waterSys->GetLOD())
+            if (stats.systemInitialized)
             {
-                auto* lod = waterSys->GetLOD();
-                ImGui::Text("Patches: %zu", lod->GetPatchCount());
-                ImGui::Text("Mesh Dim: %d", lod->GetMeshDim());
-                ImGui::Text("Base Patch Size: %.1f m", lod->GetBasePatchSize());
-                ImGui::Text("Index Count: %u", lod->GetIndexCount());
+                ImGui::Text("Patches: %u", stats.patchCount);
+                ImGui::Text("Mesh Dim: %d", stats.meshDim);
+                ImGui::Text("Base Patch Size: %.1f m", stats.basePatchSize);
+                ImGui::Text("Index Count: %u", stats.indexCount);
 
                 if (ImGui::TreeNode("Ring Patch Sizes"))
                 {
-                    float patchSize = lod->GetBasePatchSize();
-                    for (int i = 0; i < lod->GetLodLevels(); ++i)
+                    float patchSize = stats.basePatchSize;
+                    for (int i = 0; i < stats.lodLevels; ++i)
                     {
                         ImGui::Text("LOD %d: %.1f m", i, patchSize);
-                        patchSize *= lod->GetDetailBalance();
+                        patchSize *= stats.detailBalance;
                     }
                     ImGui::TreePop();
                 }
             }
+            else
+            {
+                ImGui::TextDisabled("Water system not initialized.");
+            }
 
             ImGui::EndTabItem();
         }
 
-        // ============================================================
-        // Tab 3: Texture Preview (W-17)
-        // ============================================================
         if (ImGui::BeginTabItem("Textures"))
         {
-            if (!waterSys)
+            if (!stats.systemInitialized)
             {
                 ImGui::TextDisabled("Water system not initialized.");
-                ImGui::EndTabItem();
-                ImGui::EndTabBar();
-                ImGui::End();
-                return;
             }
-
-            // 纹理预览辅助 lambda（与 VansGBufferWindow 使用相同模式）
-            struct TexturePreviewCache
+            else
             {
-                VkDescriptorSet ds = VK_NULL_HANDLE;
-                VkImageView view = VK_NULL_HANDLE;
-                VkImage image = VK_NULL_HANDLE;
-                uint32_t layer = UINT32_MAX;
-            };
+                static int waterLayer = 0;
+                waterLayer = std::clamp(waterLayer, 0, stats.maxWaterTextureLayer);
+                ImGui::SliderInt("Water Texture Layer", &waterLayer, 0, stats.maxWaterTextureLayer);
+                DisplayWaterTexture(editorAPI, "Water Displacement", "displacement", static_cast<std::uint32_t>(waterLayer));
 
-            static TexturePreviewCache previewDisp, previewDeriv, previewDetail;
-            static TexturePreviewCache previewRefl, previewRefr, previewCaus, previewThck;
-            static TexturePreviewCache previewH0, previewPing0, previewPing1;
+                ImGui::Separator();
+                DisplayWaterTexture(editorAPI, "Water Derivative / FFT Normal Source", "derivative", static_cast<std::uint32_t>(waterLayer));
 
-            auto DisplayTex = [&device](const char* label, VansVKImage& image,
-                                         TexturePreviewCache& cache, uint32_t requestedLayer = 0u)
-            {
-                ImGui::Text("%s", label);
-                if (image.GetImageView() == VK_NULL_HANDLE || image.GetImage() == VK_NULL_HANDLE)
+                ImGui::Separator();
+                DisplayWaterTexture(editorAPI, "Detail Normal", "detail_normal", 0u);
+
+                if (stats.fftAvailable)
                 {
-                    ImGui::TextDisabled("(not created)");
-                    return;
+                    ImGui::SeparatorText("FFT Internal");
+
+                    static int fftLod = 0;
+                    fftLod = std::clamp(fftLod, 0, stats.maxFftLod);
+                    ImGui::SliderInt("FFT H0 LOD", &fftLod, 0, stats.maxFftLod);
+                    DisplayWaterTexture(editorAPI, "FFT H0 Spectrum", "fft_h0", static_cast<std::uint32_t>(fftLod));
+
+                    const char* fieldNames[] = { "Height", "Slope X", "Slope Z", "Displacement X", "Displacement Z", "Fold" };
+                    static int fftField = 0;
+                    ImGui::Combo("FFT Spatial Field", &fftField, fieldNames, IM_ARRAYSIZE(fieldNames));
+                    const std::uint32_t fieldLayer = static_cast<std::uint32_t>(fftLod * stats.fftFieldCount + fftField);
+
+                    if (ImGui::BeginTable("FFTInternalTexTable", 2, ImGuiTableFlags_Borders))
+                    {
+                        ImGui::TableNextColumn();
+                        DisplayWaterTexture(editorAPI, "FFT Ping-Pong 0", "fft_ping0", fieldLayer);
+
+                        ImGui::TableNextColumn();
+                        DisplayWaterTexture(editorAPI, "FFT Ping-Pong 1", "fft_ping1", fieldLayer);
+
+                        ImGui::EndTable();
+                    }
                 }
 
-                const uint32_t layerCount = std::max(image.GetImageCreateInfo().arrayLayers, 1u);
-                const uint32_t layer = std::min(requestedLayer, layerCount - 1u);
-                ImGui::SameLine();
-                ImGui::TextDisabled("layer %u / %u", layer, layerCount - 1u);
-                if (cache.ds == VK_NULL_HANDLE || cache.image != image.GetImage() || cache.layer != layer)
-                {
-                    if (cache.ds != VK_NULL_HANDLE)
-                    {
-                        ImGui_ImplVulkan_RemoveTexture(cache.ds);
-                        cache.ds = VK_NULL_HANDLE;
-                    }
-                    if (cache.view != VK_NULL_HANDLE)
-                    {
-                        vkDestroyImageView(device.GetLogicDevice(), cache.view, nullptr);
-                        cache.view = VK_NULL_HANDLE;
-                    }
-
-                    cache.view = image.CreateLayerMipView(device.GetLogicDevice(), layer, 0);
-                    if (cache.view != VK_NULL_HANDLE)
-                    {
-                        cache.ds = ImGui_ImplVulkan_AddTexture(image.GetSampler(), cache.view, VK_IMAGE_LAYOUT_GENERAL);
-                        cache.image = image.GetImage();
-                        cache.layer = layer;
-                    }
-                }
-                if (cache.ds != VK_NULL_HANDLE)
-                {
-                    const float aspect = (float)image.GetImageDimension().width / (float)image.GetImageDimension().height;
-                    float w = ImGui::GetContentRegionAvail().x * 0.95f;
-                    float h = w / aspect;
-                    const float maxPreviewHeight = 220.0f;
-                    if (h > maxPreviewHeight)
-                    {
-                        h = maxPreviewHeight;
-                        w = h * aspect;
-                    }
-                    ImGui::Image((ImTextureID)cache.ds, ImVec2(w, h));
-                }
-            };
-
-            ImGui::TextWrapped("水面渲染管线中间纹理预览：");
-
-            ImGui::Separator();
-            static int waterLayer = 0;
-            int maxWaterLayer = std::max(int(waterSys->GetDisplacementImage().GetImageCreateInfo().arrayLayers) - 1, 0);
-            waterLayer = std::clamp(waterLayer, 0, maxWaterLayer);
-            ImGui::SliderInt("Water Texture Layer", &waterLayer, 0, maxWaterLayer);
-            DisplayTex("Water Displacement", waterSys->GetDisplacementImage(), previewDisp, uint32_t(waterLayer));
-
-            ImGui::Separator();
-            DisplayTex("Water Derivative / FFT Normal Source", waterSys->GetDerivativeImage(), previewDeriv, uint32_t(waterLayer));
-
-            ImGui::Separator();
-            DisplayTex("Detail Normal", waterSys->GetDetailNormalImage(), previewDetail, 0u);
-
-            if (waterSys->GetFFT())
-            {
-                ImGui::SeparatorText("FFT Internal");
-
-                static int fftLod = 0;
-                int maxFftLod = std::max(int(VansWaterFFT::MAX_LOD_COUNT) - 1, 0);
-                fftLod = std::clamp(fftLod, 0, maxFftLod);
-                ImGui::SliderInt("FFT H0 LOD", &fftLod, 0, maxFftLod);
-                DisplayTex("FFT H0 Spectrum", waterSys->GetFFT()->GetH0SpectrumImage(), previewH0, uint32_t(fftLod));
-
-                const char* fieldNames[] = { "Height", "Slope X", "Slope Z", "Displacement X", "Displacement Z", "Fold" };
-                static int fftField = 0;
-                ImGui::Combo("FFT Spatial Field", &fftField, fieldNames, IM_ARRAYSIZE(fieldNames));
-                uint32_t fieldLayer = uint32_t(fftLod) * VansWaterFFT::FIELD_COUNT + uint32_t(fftField);
-
-                if (ImGui::BeginTable("FFTInternalTexTable", 2, ImGuiTableFlags_Borders))
+                ImGui::Separator();
+                if (ImGui::BeginTable("WaterTexTable", 2, ImGuiTableFlags_Borders))
                 {
                     ImGui::TableNextColumn();
-                    DisplayTex("FFT Ping-Pong 0", waterSys->GetFFT()->GetPingPongImage(0), previewPing0, fieldLayer);
+                    DisplayWaterTexture(editorAPI, "Reflection", "reflection");
 
                     ImGui::TableNextColumn();
-                    DisplayTex("FFT Ping-Pong 1", waterSys->GetFFT()->GetPingPongImage(1), previewPing1, fieldLayer);
+                    DisplayWaterTexture(editorAPI, "Refraction", "refraction");
+
+                    ImGui::TableNextColumn();
+                    DisplayWaterTexture(editorAPI, "Caustics", "caustics");
+
+                    ImGui::TableNextColumn();
+                    DisplayWaterTexture(editorAPI, "Thickness", "thickness");
 
                     ImGui::EndTable();
                 }
-            }
-
-            ImGui::Separator();
-            if (ImGui::BeginTable("WaterTexTable", 2, ImGuiTableFlags_Borders))
-            {
-                ImGui::TableNextColumn();
-                DisplayTex("Reflection", waterSys->GetReflectionImage(), previewRefl);
-
-                ImGui::TableNextColumn();
-                DisplayTex("Refraction", waterSys->GetRefractionImage(), previewRefr);
-
-                ImGui::TableNextColumn();
-                DisplayTex("Caustics", waterSys->GetCausticsImage(), previewCaus);
-
-                ImGui::TableNextColumn();
-                DisplayTex("Thickness", waterSys->GetThicknessImage(), previewThck);
-
-                ImGui::EndTable();
             }
 
             ImGui::EndTabItem();
         }
 
         ImGui::EndTabBar();
+    }
+
+    if (changed)
+    {
+        editorAPI.ApplyWaterSettings(settings);
     }
 
     ImGui::End();

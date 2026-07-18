@@ -1,5 +1,6 @@
 ﻿#include "VansLight.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansVKDescriptorManager.h"
+#include "../../../EngineCore/RenderCore/VulkanCore/VansDescriptorSetLayouts.h"
 #include "../../../EngineCore/Configration/VansConfigration.h"
 #include "../../../EngineCore/VansTimer.h"
 #include "../VansCamera.h"
@@ -469,27 +470,24 @@ void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_devi
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
 		nullptr
 	};
-	VansVKDescriptorManager::GetInstance()->CreateDesciptorSetLayout({ lightBufferBinding }, m_LightDataDescriptorSetLayout);
-	VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_LightDataDescriptorSetLayout }, m_LightDataDescriptorSets);
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+		{ lightBufferBinding },
+		m_LightDataDescriptorSetLayout,
+		m_LightDataDescriptorSets);
 
 	//update descriptor
-	VansVKDescriptorManager::GetInstance()->ResetState();
-	VansVKDescriptorManager::GetInstance()->m_BufferDescInfos.push_back(
-		{
-			m_LightDataDescriptorSets[0],
-			PassBinding::CBUFFER_0,
+	auto* descManager = VansVKDescriptorManager::GetInstance();
+	descManager->BeginDescriptorUpdate();
+	descManager->WriteBufferDescriptor(
+		m_LightDataDescriptorSets[0],
+		PassBinding::CBUFFER_0,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		{{
+			m_LightBuffer.GetNativeBuffer(),
 			0,
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{
-				{
-					m_LightBuffer.GetNativeBuffer(),
-					0,
-					m_LightBuffer.GetBufferSize()
-				}
-			}
-		}
-	);
-	VansVKDescriptorManager::GetInstance()->UpdateDescriptorSets();
+			m_LightBuffer.GetBufferSize()
+		}});
+	descManager->CommitDescriptorUpdates();
 }
 
 VansGraphics::VansLightManager::~VansLightManager()

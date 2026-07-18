@@ -3,9 +3,15 @@
 #include <unordered_map>
 #include <memory>
 #include <string>
+#include <vector>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
+
+namespace Vans
+{
+    struct VansSceneAudioResourceRequest;
+}
 
 namespace VansEngine
 {
@@ -43,6 +49,7 @@ namespace VansEngine
         // ── 项目级加载（LoadResources 中调用） ──────────────────────────────
         // audioArray: generated descriptors containing name/path/play_mode/loop/auto_play.
         // assetPrefix  : VansProjectManager::GetProjectRootPath()，用于拼接完整路径
+        void Load(const std::vector<Vans::VansSceneAudioResourceRequest>& audios, const std::string& assetPrefix);
         void LoadFromJson(const json& audioArray, const std::string& assetPrefix);
 
         // ── 场景级配置（LoadSceneObjects / LoadSceneContent 中调用） ────────

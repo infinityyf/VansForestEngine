@@ -1,7 +1,6 @@
 #include "VansEditorAssetSaveService.h"
 
-#include "../AssetCore/VansAssetDatabase.h"
-#include "../ProjectSystem/VansProjectManager.h"
+#include "../EngineAPILayer/Public/IEngineEditorAPI.h"
 
 namespace Vans
 {
@@ -22,12 +21,16 @@ VansEditorAssetSaveService& VansEditorAssetSaveService::Get()
     return service;
 }
 
-VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(const std::filesystem::path& sourcePath)
+VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
+    EditorAPI::IEngineEditorAPI& editorAPI,
+    const std::filesystem::path& sourcePath)
 {
-    return SaveAsset(VansAssetDocumentRegistry::Get().GetOrOpen(sourcePath));
+    return SaveAsset(editorAPI, VansAssetDocumentRegistry::Get().GetOrOpen(sourcePath));
 }
 
-VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(const std::shared_ptr<VansOpenAssetDocument>& document)
+VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
+    EditorAPI::IEngineEditorAPI& editorAPI,
+    const std::shared_ptr<VansOpenAssetDocument>& document)
 {
     VansAssetSaveResult result;
     if (!document)
@@ -63,24 +66,22 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(const std::shared_ptr<
 
     if (result.wroteFile)
     {
-        if (auto* database = VansProjectManager::Get().GetAssetDatabase())
-        {
-            std::string refreshError;
-            if (!database->RegisterOrRefresh(document->sourcePath, false, refreshError))
-                AppendError(result, document->sourcePath, "Asset refresh failed: " + refreshError);
-        }
+        const EditorAPI::AssetRefreshResult refresh =
+            editorAPI.RefreshProjectAsset(document->sourcePath.string(), false);
+        if (!refresh.success)
+            AppendError(result, document->sourcePath, "Asset refresh failed: " + refresh.message);
         if (result)
             result.savedDocuments = 1;
     }
     return result;
 }
 
-VansAssetSaveResult VansEditorAssetSaveService::SaveAllDirtyAssets()
+VansAssetSaveResult VansEditorAssetSaveService::SaveAllDirtyAssets(EditorAPI::IEngineEditorAPI& editorAPI)
 {
     VansAssetSaveResult result;
     for (const auto& document : VansAssetDocumentRegistry::Get().DirtyDocuments())
     {
-        VansAssetSaveResult item = SaveAsset(document);
+        VansAssetSaveResult item = SaveAsset(editorAPI, document);
         result.wroteFile = result.wroteFile || item.wroteFile;
         result.savedDocuments += item.savedDocuments;
         if (!item)

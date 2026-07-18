@@ -114,7 +114,6 @@ bool CompileShaderModuleData(
 			return false;
 		}
 
-		VANS_LOG("glslangValidator pass " << shader_module_data.first);
 		ReadFile(spirv_file_name, shader_module_data.second.m_ShaderSPIRVCode);
 		if (shader_module_data.second.m_ShaderSPIRVCode.empty())
 		{
@@ -235,6 +234,13 @@ bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::str
 	m_ShaderFolder = shader_folder;
 	m_ShaderType = ShaderType::Normal;
 	m_ExplicitStageFiles = stageFiles;
+	m_PipelineProgramDesc.name = m_PipelineProgramDesc.name.empty() ? shader_folder : m_PipelineProgramDesc.name;
+	m_PipelineProgramDesc.shaderPath = shader_folder;
+	m_PipelineProgramDesc.kind = VansPipelineProgramKind::Graphics;
+	m_PipelineProgramDesc.stages = VansPipelineDescriptorBuilder::BuildStageFiles(
+		shader_folder,
+		m_PipelineProgramDesc.kind,
+		stageFiles);
 
 	m_SupportMRTOutput = false;
 
@@ -299,6 +305,13 @@ bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, cons
 	m_ShaderFolder = shader_folder;
 	m_ShaderType = ShaderType::RayTracing;
 	m_ExplicitStageFiles = stageFiles;
+	m_PipelineProgramDesc.name = m_PipelineProgramDesc.name.empty() ? shader_folder : m_PipelineProgramDesc.name;
+	m_PipelineProgramDesc.shaderPath = shader_folder;
+	m_PipelineProgramDesc.kind = VansPipelineProgramKind::RayTracing;
+	m_PipelineProgramDesc.stages = VansPipelineDescriptorBuilder::BuildStageFiles(
+		shader_folder,
+		m_PipelineProgramDesc.kind,
+		stageFiles);
 	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
 	bool result = CompileShaderModuleData(shader_folder_string, ShaderType::RayTracing, m_ExplicitStageFiles, moduleData);
 	if (!result)
@@ -354,7 +367,7 @@ VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraph
 {
 	if (m_GraphicsPipeline != nullptr)
 	{
-		return m_GraphicsPipeline;
+		return m_GraphicsPipeline.get();
 	}
 	//设置描述符layout，用于创建pipeline
 	m_GraphicsPipelineCreateInfo.descriptorset_layouts.resize(descriptorset_layouts.size());
@@ -364,6 +377,9 @@ VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraph
 	}
 
 	m_GraphicsPipelineCreateInfo.push_constant_size = m_PushConstantSize;
+	SyncPipelineGraphicsStateDesc();
+	m_GraphicsPipelineCreateInfo.pipeline_program_desc = m_PipelineProgramDesc;
+	m_GraphicsPipelineCreateInfo.pipeline_program_desc.pushConstantSize = m_PushConstantSize;
 
 	//创建pipeline
 	InitGraphicsPipelinInfo(global_state_data);
@@ -373,7 +389,7 @@ VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraph
 		VANS_LOG_ERROR("create graphics pipeline failed");
 		return NULL;
 	}
-	return m_GraphicsPipeline;
+	return m_GraphicsPipeline.get();
 }
 
 void VansGraphics::VansGraphicsShader::SetDrawStateData(VkBool32 depthTestEnable, VkBool32 depthWriteEnable, VkCompareOp depthCompareOp, VkCullModeFlags cullmode)
@@ -382,11 +398,84 @@ void VansGraphics::VansGraphicsShader::SetDrawStateData(VkBool32 depthTestEnable
 	m_DrawStateData.depthWriteEnable = depthWriteEnable;
 	m_DrawStateData.depthCompareOp = depthCompareOp;
 	m_DrawStateData.cullMode = cullmode;
+	SyncPipelineGraphicsStateDesc();
+}
+
+void VansGraphics::VansGraphicsShader::ApplyGraphicsStateDesc(const VansGraphicsPipelineStateDesc& graphicsState)
+{
+	m_DrawStateData.depthTestEnable = graphicsState.depthTest;
+	m_DrawStateData.depthWriteEnable = graphicsState.depthWrite;
+	m_DrawStateData.depthCompareOp = graphicsState.depthCompareOp;
+	m_DrawStateData.depthBoundsTestEnable = graphicsState.depthBoundsTest;
+	m_DrawStateData.stencilTestEnable = graphicsState.stencilTest;
+	m_DrawStateData.front = graphicsState.stencilFront;
+	m_DrawStateData.back = graphicsState.stencilBack;
+	m_DrawStateData.minDepthBounds = graphicsState.minDepthBounds;
+	m_DrawStateData.maxDepthBounds = graphicsState.maxDepthBounds;
+	m_DrawStateData.cullMode = graphicsState.cullMode;
+	m_DrawStateData.polygonMode = graphicsState.polygonMode;
+	m_DrawStateData.frontFace = graphicsState.frontFace;
+	m_DrawStateData.primitiveTopology = graphicsState.primitiveTopology;
+	m_DrawStateData.primitiveRestartEnable = graphicsState.primitiveRestart;
+	m_DrawStateData.patchControlPoints = graphicsState.patchControlPoints;
+	m_DrawStateData.depthClampEnable = graphicsState.depthClamp;
+	m_DrawStateData.rasterizerDiscardEnable = graphicsState.rasterizerDiscard;
+	m_DrawStateData.depthBiasEnable = graphicsState.depthBias;
+	m_DrawStateData.depthBiasConstantFactor = graphicsState.depthBiasConstantFactor;
+	m_DrawStateData.depthBiasClamp = graphicsState.depthBiasClamp;
+	m_DrawStateData.depthBiasSlopeFactor = graphicsState.depthBiasSlopeFactor;
+	m_DrawStateData.lineWidth = graphicsState.lineWidth;
+	m_DrawStateData.alphaToCoverageEnable = graphicsState.alphaToCoverage;
+	m_DrawStateData.alphaToOneEnable = graphicsState.alphaToOne;
+	m_DrawStateData.enableAlphaBlend = graphicsState.enableAlphaBlend ? VK_TRUE : VK_FALSE;
+	m_DrawStateData.enableDecalBlend = graphicsState.enableDecalBlend ? VK_TRUE : VK_FALSE;
+	m_DrawStateData.enableAdditiveBlend = graphicsState.enableAdditiveBlend ? VK_TRUE : VK_FALSE;
+	m_DrawStateData.additiveBlendAttachmentMask = graphicsState.additiveBlendAttachmentMask;
+	m_DrawStateData.enablePremultipliedAlphaBlend = graphicsState.enablePremultipliedAlphaBlend ? VK_TRUE : VK_FALSE;
+	m_ColorAttachmentCount = graphicsState.colorAttachmentCount;
+	SyncPipelineGraphicsStateDesc();
+	TriggerReCreateGraphicsPipeline();
 }
 
 void VansGraphics::VansGraphicsShader::SetPolygonMode(VkPolygonMode mode)
 {
 	m_DrawStateData.polygonMode = mode;
+	SyncPipelineGraphicsStateDesc();
+}
+
+void VansGraphics::VansGraphicsShader::SyncPipelineGraphicsStateDesc()
+{
+	VansGraphicsPipelineStateDesc& graphicsState = m_PipelineProgramDesc.graphicsState;
+	graphicsState.depthTest = m_DrawStateData.depthTestEnable;
+	graphicsState.depthWrite = m_DrawStateData.depthWriteEnable;
+	graphicsState.depthCompareOp = m_DrawStateData.depthCompareOp;
+	graphicsState.depthBoundsTest = m_DrawStateData.depthBoundsTestEnable;
+	graphicsState.stencilTest = m_DrawStateData.stencilTestEnable;
+	graphicsState.stencilFront = m_DrawStateData.front;
+	graphicsState.stencilBack = m_DrawStateData.back;
+	graphicsState.minDepthBounds = m_DrawStateData.minDepthBounds;
+	graphicsState.maxDepthBounds = m_DrawStateData.maxDepthBounds;
+	graphicsState.cullMode = m_DrawStateData.cullMode;
+	graphicsState.polygonMode = m_DrawStateData.polygonMode;
+	graphicsState.frontFace = m_DrawStateData.frontFace;
+	graphicsState.primitiveTopology = m_DrawStateData.primitiveTopology;
+	graphicsState.primitiveRestart = m_DrawStateData.primitiveRestartEnable;
+	graphicsState.patchControlPoints = m_DrawStateData.patchControlPoints;
+	graphicsState.depthClamp = m_DrawStateData.depthClampEnable;
+	graphicsState.rasterizerDiscard = m_DrawStateData.rasterizerDiscardEnable;
+	graphicsState.depthBias = m_DrawStateData.depthBiasEnable;
+	graphicsState.depthBiasConstantFactor = m_DrawStateData.depthBiasConstantFactor;
+	graphicsState.depthBiasClamp = m_DrawStateData.depthBiasClamp;
+	graphicsState.depthBiasSlopeFactor = m_DrawStateData.depthBiasSlopeFactor;
+	graphicsState.lineWidth = m_DrawStateData.lineWidth;
+	graphicsState.alphaToCoverage = m_DrawStateData.alphaToCoverageEnable;
+	graphicsState.alphaToOne = m_DrawStateData.alphaToOneEnable;
+	graphicsState.colorAttachmentCount = m_ColorAttachmentCount;
+	graphicsState.enableAlphaBlend = m_DrawStateData.enableAlphaBlend == VK_TRUE;
+	graphicsState.enableDecalBlend = m_DrawStateData.enableDecalBlend == VK_TRUE;
+	graphicsState.enableAdditiveBlend = m_DrawStateData.enableAdditiveBlend == VK_TRUE;
+	graphicsState.additiveBlendAttachmentMask = m_DrawStateData.additiveBlendAttachmentMask;
+	graphicsState.enablePremultipliedAlphaBlend = m_DrawStateData.enablePremultipliedAlphaBlend == VK_TRUE;
 }
 
 void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>& states, bool enableDeferred, bool enableAlphaBlend = false, bool enableDecalBlend = false, bool enableAdditiveBlend = false, bool enablePremultipliedAlphaBlend = false, int explicitCount = -1, uint32_t additiveBlendAttachmentMask = 0)
@@ -645,36 +734,45 @@ void VansGraphics::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& 
 
 bool VansGraphics::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data)
 {
-	if (m_GraphicsPipeline == nullptr)
-	{
-		m_GraphicsPipeline = new VansVKGraphicsPipeline();
-	}
+	m_PipelineProgramDesc.kind = VansPipelineProgramKind::Graphics;
+	m_PipelineProgramDesc.pushConstantSize = m_PushConstantSize;
 
-	bool result = m_GraphicsPipeline->CreateGraphicsPipelineInfo(logic_device, m_GraphicsPipelineCreateInfo, global_state_data, m_VkGraphicsPipelineCreateInfo);
+	std::shared_ptr<VansVKGraphicsPipeline> pipeline = std::make_shared<VansVKGraphicsPipeline>();
+	bool result = pipeline->CreateGraphicsPipelineInfo(logic_device, m_GraphicsPipelineCreateInfo, global_state_data, m_VkGraphicsPipelineCreateInfo);
 	if (!result)
 	{
 		VANS_LOG_ERROR("create graphics pipeline info failed");
 		return false;
 	}
-	return m_GraphicsPipeline->CreateGraphicsPipeline(logic_device, m_VkGraphicsPipelineCreateInfo);
+
+	if (std::shared_ptr<VansVKGraphicsPipeline> cachedPipeline = VansPipelineRegistry::Get().FindGraphicsPipeline(pipeline->GetDescriptorKey()))
+	{
+		m_GraphicsPipeline = cachedPipeline;
+		return true;
+	}
+
+	result = pipeline->CreateGraphicsPipeline(logic_device, m_VkGraphicsPipelineCreateInfo);
+	if (!result)
+	{
+		return false;
+	}
+
+	m_GraphicsPipeline = VansPipelineRegistry::Get().StoreGraphicsPipeline(pipeline);
+	return true;
 }
 
 void VansGraphics::VansGraphicsShader::TriggerReCreateGraphicsPipeline()
 {
-	if (m_GraphicsPipeline != nullptr)
-	{
-		delete m_GraphicsPipeline;
-		m_GraphicsPipeline = nullptr;
-	}
+	m_GraphicsPipeline.reset();
 	m_GraphicsPipelineCreateInfo.Clear();
 }
 
 
 VansGraphics::VansVKComputePipeline* VansGraphics::VansComputeShader::GetComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
-	if (m_ComputePipeline != VK_NULL_HANDLE)
+	if (m_ComputePipeline != nullptr)
 	{
-		return m_ComputePipeline;
+		return m_ComputePipeline.get();
 	}
 	bool result = CreateComputePipeline(logic_device, descriptorset_layouts);
 	if (!result)
@@ -682,15 +780,13 @@ VansGraphics::VansVKComputePipeline* VansGraphics::VansComputeShader::GetCompute
 		VANS_LOG_ERROR("create compute pipeline failed");
 		return NULL;
 	}
-	return m_ComputePipeline;
+	return m_ComputePipeline.get();
 }
 
 bool VansGraphics::VansComputeShader::CreateComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
-	if (m_ComputePipeline == nullptr)
-	{
-		m_ComputePipeline = new VansVKComputePipeline();
-	}
+	m_PipelineProgramDesc.kind = VansPipelineProgramKind::Compute;
+	m_PipelineProgramDesc.pushConstantSize = m_PushConstantSize;
 
 	std::map<VkShaderStageFlagBits, ShaderModuleData>::iterator it = m_ShaderModuleDataMap.find(VK_SHADER_STAGE_COMPUTE_BIT);
 	if (it == m_ShaderModuleDataMap.end())
@@ -720,15 +816,33 @@ bool VansGraphics::VansComputeShader::CreateComputePipeline(VkDevice& logic_devi
 		pushConstRangeCount = 1;
 	}
 
-	return m_ComputePipeline->CreateComputePipeline(logic_device, compute_shader_stage, VK_NULL_HANDLE, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr);
+	const VansPipelineRuntimeDesc runtimeDesc = VansPipelineDescriptorBuilder::BuildRuntimeDesc(
+		descriptorset_layouts,
+		m_PushConstantSize > 0 ? static_cast<uint32_t>(m_PushConstantSize) : 0);
+	const VansPipelineDescriptorKey key = VansPipelineDescriptorBuilder::BuildPipelineKey(m_PipelineProgramDesc, runtimeDesc);
+	if (std::shared_ptr<VansVKComputePipeline> cachedPipeline = VansPipelineRegistry::Get().FindComputePipeline(key))
+	{
+		m_ComputePipeline = cachedPipeline;
+		return true;
+	}
+
+	std::shared_ptr<VansVKComputePipeline> pipeline = std::make_shared<VansVKComputePipeline>();
+	const bool result = pipeline->CreateComputePipeline(logic_device, compute_shader_stage, VK_NULL_HANDLE, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr, &m_PipelineProgramDesc);
+	if (!result)
+	{
+		return false;
+	}
+
+	m_ComputePipeline = VansPipelineRegistry::Get().StoreComputePipeline(pipeline);
+	return true;
 }
 
 VansGraphics::VansVKRayTracingPipeline* VansGraphics::VansRayTracingShader::GetRayTracingPipeline(VansVKDevice* device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
 	m_LogicDevice = device->GetLogicDevice();
-	if (m_VansVkRayTracingPipeline != VK_NULL_HANDLE)
+	if (m_VansVkRayTracingPipeline != nullptr)
 	{
-		return m_VansVkRayTracingPipeline;
+		return m_VansVkRayTracingPipeline.get();
 	}
 
 	bool result = CreateRayTracingPipeline(m_LogicDevice, descriptorset_layouts);
@@ -741,7 +855,7 @@ VansGraphics::VansVKRayTracingPipeline* VansGraphics::VansRayTracingShader::GetR
 	//创建并设置SBT
 	CreateShaderBindingTable(device);
 
-	return m_VansVkRayTracingPipeline;
+	return m_VansVkRayTracingPipeline.get();
 }
 
 void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* device)
@@ -788,13 +902,17 @@ void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* 
 	std::vector<uint8_t> handles(groupCount * handleSize);
 
 	// 获取所有着色器组句柄
-	VkResult result = vkGetRayTracingShaderGroupHandlesKHR(
+	VkResult result = m_VansVkRayTracingPipeline->GetShaderGroupHandles(
 		m_LogicDevice,
-		m_VansVkRayTracingPipeline->m_RayTracingPipeline,
 		0,
 		groupCount,
 		groupCount * handleSize,
 		handles.data());
+	if (result != VK_SUCCESS)
+	{
+		VANS_LOG_ERROR("Could not get ray tracing shader group handles. VkResult: " << result);
+		return;
+	}
 
 	uint8_t* handleData = handles.data();
 	VkDeviceSize offset = 0;
@@ -818,12 +936,7 @@ void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* 
 		offset += m_VansVkRayTracingPipeline->m_HitShaderBindingTable.stride;
 	}
 
-	// 设置SBT区域
-	VkBufferDeviceAddressInfoKHR addressInfo{};
-	addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR;
-	addressInfo.buffer = m_SBTBuffer.GetNativeBuffer();
-	addressInfo.pNext = nullptr;
-	VkDeviceAddress sbtAddress = vkGetBufferDeviceAddressKHR(m_LogicDevice, &addressInfo);
+	const VkDeviceAddress sbtAddress = m_SBTBuffer.GetDeviceAddress(m_LogicDevice);
 
 	// 射线生成区域
 	m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.deviceAddress = sbtAddress;
@@ -840,11 +953,6 @@ void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* 
 
 bool VansGraphics::VansRayTracingShader::CreateRayTracingPipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
-	if (m_VansVkRayTracingPipeline == nullptr)
-	{
-		m_VansVkRayTracingPipeline = new VansVKRayTracingPipeline();
-	}
-
 	std::vector<VkRayTracingShaderGroupCreateInfoKHR> shaderGroupCreateInfo;
 	std::vector<VkPipelineShaderStageCreateInfo> rayTracingStages;
 
@@ -913,5 +1021,27 @@ bool VansGraphics::VansRayTracingShader::CreateRayTracingPipeline(VkDevice& logi
 		pushConstRangePtr = &pushConstantRange;
 		pushConstRangeCount = 1;
 	}
-	return m_VansVkRayTracingPipeline->CreateRayTracingPipeline(logic_device, shaderGroupCreateInfo, rayTracingStages, VK_NULL_HANDLE, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr);
+
+	m_PipelineProgramDesc.kind = VansPipelineProgramKind::RayTracing;
+	m_PipelineProgramDesc.pushConstantSize = m_PushConstantSize;
+
+	const VansPipelineRuntimeDesc runtimeDesc = VansPipelineDescriptorBuilder::BuildRuntimeDesc(
+		descriptorset_layouts,
+		m_PushConstantSize > 0 ? static_cast<uint32_t>(m_PushConstantSize) : 0);
+	const VansPipelineDescriptorKey key = VansPipelineDescriptorBuilder::BuildPipelineKey(m_PipelineProgramDesc, runtimeDesc);
+	if (std::shared_ptr<VansVKRayTracingPipeline> cachedPipeline = VansPipelineRegistry::Get().FindRayTracingPipeline(key))
+	{
+		m_VansVkRayTracingPipeline = cachedPipeline;
+		return true;
+	}
+
+	std::shared_ptr<VansVKRayTracingPipeline> pipeline = std::make_shared<VansVKRayTracingPipeline>();
+	const bool result = pipeline->CreateRayTracingPipeline(logic_device, shaderGroupCreateInfo, rayTracingStages, VK_NULL_HANDLE, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr, &m_PipelineProgramDesc);
+	if (!result)
+	{
+		return false;
+	}
+
+	m_VansVkRayTracingPipeline = VansPipelineRegistry::Get().StoreRayTracingPipeline(pipeline);
+	return true;
 }

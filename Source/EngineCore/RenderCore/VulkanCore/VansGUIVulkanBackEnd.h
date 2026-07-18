@@ -21,6 +21,8 @@ namespace VansGraphics
 	public:
 		~VansGraphicsGUIBackEnd() override;
 		void InitBackEnd(VansGraphicsDevice& device, GLFWwindow* window) override;
+		void BeginFrame() override;
+		void RenderDrawData(VansGraphicsDevice& device, ImDrawData* drawData) override;
 		void ShutdownBackEnd() override;
 	};
 	

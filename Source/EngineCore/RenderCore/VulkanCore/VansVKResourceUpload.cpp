@@ -43,9 +43,15 @@ namespace VansGraphics
 		{
 			VANS_PROFILE_SCOPE("Video::Upload.RecordCopyAndBarriers", Vans::ProfileCategory::Video);
 			const VkImageLayout originalLayout = destImage.m_ImageLayout;
+			const VkPipelineStageFlags beforeStage = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
+				? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+				: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			const VkAccessFlags beforeAccess = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
+				? 0
+				: VK_ACCESS_SHADER_READ_BIT;
 			VkImageMemoryBarrier toTransferBarrier{};
 			toTransferBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			toTransferBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			toTransferBarrier.srcAccessMask = beforeAccess;
 			toTransferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 			toTransferBarrier.oldLayout = originalLayout;
 			toTransferBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -58,7 +64,7 @@ namespace VansGraphics
 			toTransferBarrier.subresourceRange.baseArrayLayer = static_cast<uint32_t>(layerLevel);
 			toTransferBarrier.subresourceRange.layerCount = 1;
 			cmd.PipelineBarrier(
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				beforeStage,
 				VK_PIPELINE_STAGE_TRANSFER_BIT,
 				{}, {}, { toTransferBarrier });
 
@@ -118,9 +124,15 @@ namespace VansGraphics
 
 		VANS_PROFILE_SCOPE("Video::Upload.RecordCopyAndBarriers", Vans::ProfileCategory::Video);
 		const VkImageLayout originalLayout = destImage.m_ImageLayout;
+		const VkPipelineStageFlags beforeStage = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
+			? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+			: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		const VkAccessFlags beforeAccess = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
+			? 0
+			: VK_ACCESS_SHADER_READ_BIT;
 		VkImageMemoryBarrier toTransferBarrier{};
 		toTransferBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		toTransferBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		toTransferBarrier.srcAccessMask = beforeAccess;
 		toTransferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 		toTransferBarrier.oldLayout = originalLayout;
 		toTransferBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -133,7 +145,7 @@ namespace VansGraphics
 		toTransferBarrier.subresourceRange.baseArrayLayer = static_cast<uint32_t>(layerLevel);
 		toTransferBarrier.subresourceRange.layerCount = 1;
 		cmd.PipelineBarrier(
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			beforeStage,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{}, {}, { toTransferBarrier });
 
@@ -179,7 +191,11 @@ namespace VansGraphics
 
 	bool VansVKDevice::SetDeviceBufferData(VansVKBuffer& dest_buffer, void* data, int data_offset, int data_size, VkDeviceSize buffer_offset, VkDeviceSize buffer_size)
 	{
-		m_StageBuffer.SetBufferData(data, data_offset, data_size);
+		if (!m_StageBuffer.SetBufferData(data, data_offset, data_size))
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Failed to stage buffer upload data. size=" << data_size);
+			return false;
+		}
 
 		if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
@@ -212,14 +228,35 @@ namespace VansGraphics
 			return false;
 		}
 
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-		m_VansVKCommandBuffer.ResetCommandBuffer(false);
-		return true;
+		if (!VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence))
+		{
+			return false;
+		}
+		return m_VansVKCommandBuffer.ResetCommandBuffer(false);
 	}
 
 	bool VansVKDevice::SetDeviceImageData(VansVKImage& dest_image, VansVKCommandBuffer& cmd, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level)
 	{
-		m_StageBuffer.SetBufferData(data, data_offset, data_size);
+		return SetDeviceImageData(
+			dest_image,
+			cmd,
+			data,
+			data_offset,
+			data_size,
+			image_offset,
+			image_size,
+			mip_level,
+			layer_level,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	}
+
+	bool VansVKDevice::SetDeviceImageData(VansVKImage& dest_image, VansVKCommandBuffer& cmd, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level, VkImageLayout finalLayout)
+	{
+		if (!m_StageBuffer.SetBufferData(data, data_offset, data_size))
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Failed to stage image upload data. size=" << data_size);
+			return false;
+		}
 
 		if (!cmd.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
@@ -233,10 +270,17 @@ namespace VansGraphics
 		// GPU 采样时触发未定义行为并最终崩溃（VK_ERROR_DEVICE_LOST）。
 		const VkImageLayout originalLayout = dest_image.m_ImageLayout;
 
-		dest_image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		const VkPipelineStageFlags beforeStage = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
+			? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+			: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		const VkAccessFlags beforeAccess = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
+			? 0
+			: VK_ACCESS_SHADER_READ_BIT;
+
+		dest_image.SetImageMemoryBarrier(beforeStage, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				dest_image.m_VansVKImage,
-				VK_ACCESS_SHADER_READ_BIT,
+				beforeAccess,
 				VK_ACCESS_TRANSFER_WRITE_BIT,
 				originalLayout,
 				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -266,26 +310,31 @@ namespace VansGraphics
 				}
 			});
 
-		dest_image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			{
-				dest_image.m_VansVKImage,
-				VK_ACCESS_TRANSFER_WRITE_BIT,
-				VK_ACCESS_SHADER_READ_BIT,
-				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				originalLayout,
-				VK_QUEUE_FAMILY_IGNORED,
-				VK_QUEUE_FAMILY_IGNORED,
-				dest_image.m_ImageAspect
-			}
-		);
+		if (finalLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+		{
+			dest_image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				{
+					dest_image.m_VansVKImage,
+					VK_ACCESS_TRANSFER_WRITE_BIT,
+					VK_ACCESS_SHADER_READ_BIT,
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					finalLayout,
+					VK_QUEUE_FAMILY_IGNORED,
+					VK_QUEUE_FAMILY_IGNORED,
+					dest_image.m_ImageAspect
+				}
+			);
+		}
 
 		if (!cmd.EndCommandBufferRecord())
 		{
 			return false;
 		}
 
-		VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { cmd.GetVKCommandBuffer() }, {}, {}, cmd.m_CommandBufferFinishSubmitFence);
-		cmd.ResetCommandBuffer(false);
-		return true;
+		if (!VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { cmd.GetVKCommandBuffer() }, {}, {}, cmd.m_CommandBufferFinishSubmitFence))
+		{
+			return false;
+		}
+		return cmd.ResetCommandBuffer(false);
 	}
 }

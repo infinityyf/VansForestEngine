@@ -6,8 +6,9 @@ namespace VansGraphics
 	class VansProjectWindow : public VansBaseWindowComponent
 	{
 	public:
+		void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 
 	private:
-		void ShowWindow(VansVKDevice& device) override;
+		void DrawProjectContents(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 	};
 }
