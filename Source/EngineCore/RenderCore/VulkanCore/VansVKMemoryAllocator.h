@@ -79,6 +79,7 @@ namespace VansGraphics
 		void* MapAllocation(VmaAllocation allocation);
 		void  UnmapAllocation(VmaAllocation allocation);
 		void  FlushAllocation(VmaAllocation allocation, VkDeviceSize offset, VkDeviceSize size);
+		void  InvalidateAllocation(VmaAllocation allocation, VkDeviceSize offset, VkDeviceSize size);
 
 		// Returns persistently mapped pointer (only valid for allocations
 		// created with PersistentUpload + needPersistentMap == true).

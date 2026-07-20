@@ -1,19 +1,17 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-// ============================================================
-// water_refraction.comp — 水面折射（独立 CS）
-//
-// 从 water_effects.comp 拆分，计算流程保持不变。
-// 折射 = Beer-Lambert 透射 + 散射
-// ============================================================
+#include "../water_screen_common.glsl"
 
+// Stable screen-space refraction.  No receiver trace is performed: the
+// current water thickness and view-space surface normal define one continuous
+// UV displacement, which is then used to sample the opaque scene color.
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D waterGBufNormal;
-layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;   // RGBA16F: RGB=worldPos, A=linearDepth
-layout(set = 0, binding = 2) uniform sampler2D sceneGBuf2;
-layout(set = 0, binding = 3) uniform sampler2D sceneColor;
+layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;
+layout(set = 0, binding = 2) uniform sampler2D sceneColor;
+layout(set = 0, binding = 3) uniform sampler2D thicknessMap;
 
 layout(set = 0, binding = 4) uniform WaterCompositeParams
 {
@@ -22,13 +20,19 @@ layout(set = 0, binding = 4) uniform WaterCompositeParams
     float fresnelPower;
     float waterLevel;
     float specularIntensity;
-    float foamIntensity;
+    float refractionStrength;
     vec4  absorptionCoeff;
     vec4  scatteringCoeff;
     float sssAnisotropy;
+    float waterRoughness;
+    float waterIOR;
+    float maxOpticalDepth;
     vec4  cameraPosition;
     mat4  invViewProjMatrix;
     vec4  mainLightDir;
+    mat4  viewMatrix;
+    mat4  projMatrix;
+    ivec4 effectFlags;
 } params;
 
 layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D refractionOut;
@@ -36,40 +40,55 @@ layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D refractionOut;
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size  = imageSize(refractionOut);
-    if (pixel.x >= size.x || pixel.y >= size.y) return;
+    ivec2 size = imageSize(refractionOut);
+    if (any(greaterThanEqual(pixel, size)))
+        return;
 
-    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
-    float waterDepth = texture(waterGBufPosDepth, uv).a;  // linear depth in alpha
-    vec4 zero = vec4(0.0);
-
-    // 无水面像素 → 输出 0
-    if (waterDepth >= 9999.0)
+    vec4 normalCoverage = texelFetch(waterGBufNormal, pixel, 0);
+    vec4 surface = texelFetch(waterGBufPosDepth, pixel, 0);
+    if (!WaterSurfaceValid(normalCoverage, surface))
     {
-        imageStore(refractionOut, pixel, zero);
+        imageStore(refractionOut, pixel, vec4(0.0));
         return;
     }
 
-    // 场景遮挡：物体在水面之前
-    float sceneDepth = texture(sceneGBuf2, uv).w;
-    if (sceneDepth > 0.1 && sceneDepth < waterDepth + 0.05)
-    {
-        imageStore(refractionOut, pixel, zero);
-        return;
-    }
+    float normalizedThickness = clamp(texelFetch(thicknessMap, pixel, 0).r, 0.0, 1.0);
+    float thicknessWeight = pow(normalizedThickness, 0.65);
 
-    vec3 normal = normalize(texture(waterGBufNormal, uv).rgb);
+    vec3 worldNormal = normalize(normalCoverage.xyz);
+    vec3 viewNormal = normalize(mat3(params.viewMatrix) * worldNormal);
+    vec3 flatViewNormal = normalize(mat3(params.viewMatrix) * vec3(0.0, 1.0, 0.0));
+    // Attachment UV has +Y downward while view space has +Y upward.
+    // Subtract the projected flat-water normal: otherwise even a perfectly
+    // flat surface receives a large camera-pitch-dependent uniform offset.
+    vec2 normalDeviation = viewNormal.xy - flatViewNormal.xy;
+    vec2 screenNormal = vec2(normalDeviation.x, -normalDeviation.y);
 
-    // 厚度 (m)
-    float thickness = (sceneDepth > waterDepth) ? (sceneDepth - waterDepth) : 22.5;
+    float aspect = float(size.x) / max(float(size.y), 1.0);
+    vec2 uvOffset = screenNormal * params.refractionStrength * thicknessWeight;
+    uvOffset.x /= max(aspect, 1e-5);
 
-    // 折射 = 背景场景 × Beer-Lambert 透射 + 散射
-    vec2 distort = normal.xz * 0.03;
-    vec3 bgColor  = texture(sceneColor, clamp(uv + distort, 0.001, 0.999)).rgb;
-    vec3 extinct  = params.absorptionCoeff.rgb + params.scatteringCoeff.rgb;
-    vec3 transmit = exp(-extinct * thickness);
-    vec3 scatter  = params.scatteringCoeff.rgb * (vec3(1.0) - transmit) * params.shallowWaterColor.rgb * 0.6;
-    vec3 refraction = bgColor * transmit + scatter;
+    vec2 baseUV = WaterPixelUV(pixel, size);
+    float edgeDistance = min(min(baseUV.x, 1.0 - baseUV.x),
+                             min(baseUV.y, 1.0 - baseUV.y));
+    float edgeFade = smoothstep(0.0,
+        max(params.refractionStrength * 1.5, 1.0 / float(size.y)),
+        edgeDistance);
+    vec2 sampleUV = clamp(baseUV + uvOffset * edgeFade, vec2(0.001), vec2(0.999));
+    vec3 background = textureLod(sceneColor, sampleUV, 0.0).rgb;
 
-    imageStore(refractionOut, pixel, vec4(refraction, 1.0));
+    float opticalDistance = normalizedThickness * max(params.maxOpticalDepth, 0.01);
+    vec3 sigmaA = max(params.absorptionCoeff.rgb, vec3(0.0));
+    vec3 sigmaS = max(params.scatteringCoeff.rgb, vec3(0.0));
+    vec3 sigmaT = sigmaA + sigmaS;
+    vec3 transmittance = exp(-sigmaT * opticalDistance);
+    vec3 scatteringAlbedo = sigmaS / max(sigmaT, vec3(1e-5));
+    vec3 inScattering = scatteringAlbedo * (vec3(1.0) - transmittance)
+        * params.shallowWaterColor.rgb;
+    vec3 result = background * transmittance + inScattering;
+
+    if (params.effectFlags.y == 0)
+        result = params.shallowWaterColor.rgb;
+
+    imageStore(refractionOut, pixel, vec4(max(result, vec3(0.0)), 1.0));
 }

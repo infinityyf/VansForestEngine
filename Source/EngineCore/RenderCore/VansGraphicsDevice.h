@@ -25,6 +25,7 @@ namespace VansGraphics
 	public :
 		//初始化渲染资源
 		virtual void BeforeRendering() = 0;
+		virtual void PrepareRenderingFrame() {}
 
 		virtual void Rendering() = 0;
 
@@ -58,6 +59,9 @@ namespace VansGraphics
 
 		// 查询 FSR 内置抖动偏移（像素空间），子类实现后返回 true；默认返回 false 表示使用 Halton 回退
 		virtual bool GetFSRJitterOffset(uint32_t frameIndex, float& outPixelX, float& outPixelY) { return false; }
+
+		// Material texture LOD bias selected by the active temporal-upscale mode.
+		virtual float GetUpscaleMipBias() const { return 0.0f; }
 	};
 
 	class VansGUIBackEnd

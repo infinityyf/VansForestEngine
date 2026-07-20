@@ -26,7 +26,7 @@ layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 // ---------------------------------------------------------------------------
 
 layout(set = 1, binding = 0, rgba16f) uniform image3D i_VoxelGrid;
-layout(set = 1, binding = 1) uniform sampler2D fogShadowMap;
+layout(set = 1, binding = 1) uniform sampler2DArray fogShadowMap;
 
 layout(set = 1, binding = 2) uniform FogVolumeParams
 {
@@ -37,7 +37,7 @@ layout(set = 1, binding = 2) uniform FogVolumeParams
     float volumeNear;       // depth range near
     float volumeFar;        // depth range far
     float slicePower;       // power-curve exponent for depth slicing (>1 = more near slices)
-    float _pad1;
+    float historyValid;     // CPU invalidates history on creation/scene changes
     vec4  fogBoxMin;        // static fog AABB min  (xyz)
     vec4  fogBoxMax;        // static fog AABB max  (xyz)
 } uVolume;
@@ -57,24 +57,56 @@ float ShadowEdgeFade(vec2 uv)
     return fadeMin.x * fadeMin.y * fadeMax.x * fadeMax.y;
 }
 
-float SampleFogShadow(vec3 worldPos)
+float SampleFogShadowCascade(vec3 worldPos, int cascadeIdx)
 {
-    vec4 clipCoord = uDirectionLight.shadowMatrix[FOG_CASCADE_INDEX] * vec4(worldPos, 1.0);
-    clipCoord.z = clipCoord.z * 0.5 + 0.5;
-    clipCoord.z -= DEPTH_BIAS;
-    vec2 shadowUV = clipCoord.xy * 0.5 + 0.5;
-    shadowUV.y = 1.0 - shadowUV.y;
-
-    // Fully outside shadow map — treat as fully lit (no shadow contribution)
-    if (any(greaterThan(shadowUV, vec2(1.0))) || any(lessThan(shadowUV, vec2(0.0))))
+    CascadeProjection p = ProjectCascade(worldPos, cascadeIdx);
+    if (p.valid <= 0.0)
         return 1.0;
 
-    float shadowDepth = texture(fogShadowMap, shadowUV).r;
-    float shadow = (shadowDepth < clipCoord.z) ? 0.0 : 1.0;
+    ivec2 shadowSize = textureSize(fogShadowMap, 0).xy;
+    float receiverBias = max(
+        uDirectionLight.cascadeTexelSize[cascadeIdx] * 0.25,
+        uDirectionLight.cascadeNormalBias[cascadeIdx]) * uDirectionLight.cascadeDepthScale[cascadeIdx];
+    float receiverDepth = p.depth - receiverBias;
+    float maxRadiusTexels = max(uDirectionLight.cascadeFilterRadius[cascadeIdx], 1.0);
+    float depthRange = 1.0 / max(uDirectionLight.cascadeDepthScale[cascadeIdx], 1e-6);
+    float worldUnitsPerTexel = max(uDirectionLight.cascadeTexelSize[cascadeIdx], 1e-6);
+    float tanAngularRadius = tan(CascadeSunAngularRadius());
+    float searchRadiusTexels = clamp(
+        max(p.depth, 0.0) * depthRange * tanAngularRadius / worldUnitsPerTexel,
+        2.0,
+        maxRadiusTexels);
 
-    // Blend shadow toward 1.0 (lit) near shadow map edges to remove the clamp line
-    float edgeFade = ShadowEdgeFade(shadowUV);
-    return mix(1.0, shadow, edgeFade);
+    float blockerCount = 0.0;
+    float averageBlockerDepth = FindCascadeAverageBlockerDepth(
+        fogShadowMap, p, cascadeIdx, receiverDepth, searchRadiusTexels, blockerCount);
+    if (blockerCount <= 0.0)
+        return 1.0;
+
+    float separationWorld = max(p.depth - averageBlockerDepth, 0.0) * depthRange;
+    float filterRadiusTexels = clamp(
+        separationWorld * tanAngularRadius / worldUnitsPerTexel,
+        0.75,
+        maxRadiusTexels);
+    float visibility = FilterCascadePCF(
+        fogShadowMap, p, cascadeIdx, receiverDepth, filterRadiusTexels);
+    float footprint = CascadeFootprintConfidence(p.uv, shadowSize, filterRadiusTexels);
+    return mix(1.0, visibility, ShadowEdgeFade(p.uv) * footprint);
+}
+
+float SampleFogShadow(vec3 worldPos)
+{
+    float viewDepth = -(ViewMatrix * vec4(worldPos, 1.0)).z;
+    int cascadeIdx = SelectCascade(viewDepth);
+    float visibility = SampleFogShadowCascade(worldPos, cascadeIdx);
+
+    float cascadeBlend = ComputeCascadeBlendFactor(viewDepth, cascadeIdx);
+    if (cascadeBlend > 0.0 && cascadeIdx < CASCADE_COUNT - 1)
+        visibility = mix(visibility, SampleFogShadowCascade(worldPos, cascadeIdx + 1), cascadeBlend);
+
+    float lastSplit = uDirectionLight.cascadeSplits[CASCADE_COUNT - 1];
+    float rangeFade = 1.0 - smoothstep(lastSplit * 0.85, lastSplit, viewDepth);
+    return mix(1.0, visibility, rangeFade);
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +177,12 @@ void main()
                                           vec2(jitterX, jitterY), jitterZ,
                                           uVolume.slicePower);
 
+    // Lighting remains jittered, but history reprojection must use the stable
+    // froxel centre or the lookup itself oscillates by as much as one cell.
+    vec3 stableWorldPos = VoxelToWorld(coord, gridSize,
+                                       uVolume.volumeNear, uVolume.volumeFar,
+                                       uVolume.slicePower);
+
     // Query static fog density from scene fog box — soft boundary to avoid hard edges
     vec3 boxCenter = (uVolume.fogBoxMin.xyz + uVolume.fogBoxMax.xyz) * 0.5;
     vec3 boxHalf   = (uVolume.fogBoxMax.xyz - uVolume.fogBoxMin.xyz) * 0.5;
@@ -188,7 +226,7 @@ void main()
             float attenuation = 1.0 - (dist / pl.radius);
             attenuation *= attenuation;
 
-            float shadow = SamplePointShadowMap(worldPos, punctualShadowMap, int(pl.shadowIndex));
+            float shadow = SamplePointShadowMap(worldPos, punctualShadowMap, int(ptIdx));
             attenuation *= shadow;
 
             vec3 lightDir  = toLight / dist;
@@ -222,7 +260,7 @@ void main()
                 ? clamp((coneAngle - outerCone) / coneRange, 0.0, 1.0)
                 : step(outerCone, coneAngle);
 
-            float shadow = SampleSpotShadowMap(worldPos, punctualShadowMap, int(sl.shadowIndex));
+            float shadow = SampleSpotShadowMap(worldPos, punctualShadowMap, int(spIdx));
             attenuation *= shadow * coneAtten;
 
             vec3 lightDir  = toLight / dist;
@@ -290,7 +328,7 @@ void main()
 
                     float shadow = 1.0;
                     if (shadowIdx >= 0)
-                        shadow = SampleRectShadowMap(worldPos, punctualShadowMap, shadowIdx);
+                        shadow = SampleRectShadowMap(worldPos, punctualShadowMap, int(rcIdx));
 
                     float cosTheta = dot(Wo, -sampleDir);
                     float phaseR   = FogInjectionPhase(cosTheta, uVolume.anisotropy);
@@ -318,20 +356,48 @@ void main()
     // of camera near/far settings.
     ivec3 gs          = gridSize;
     vec2  tileAligned = vec2(gs.xy) * float(TILE_SIZE);
-    vec4  lastUVW     = WorldToLastFrameUVW(worldPos,
+    vec4  lastUVW     = WorldToLastFrameUVW(stableWorldPos,
                                              uVolume.volumeNear, uVolume.volumeFar,
                                              tileAligned,
                                              uVolume.slicePower);
 
-    bool historyValid = (lastUVW.w > 0.5);
-    if (historyValid)
+    vec3 halfTexel = 0.5 / vec3(gridSize);
+    bool canUseHistory = uVolume.historyValid > 0.5 && lastUVW.w > 0.5 &&
+                         all(greaterThanEqual(lastUVW.xyz, halfTexel)) &&
+                         all(lessThanEqual(lastUVW.xyz, vec3(1.0) - halfTexel));
+    if (canUseHistory)
     {
         vec4 history = texture(s_History, lastUVW.xyz);
 
-        // Blend weight: 0.9 gives ~10-frame effective averaging.
-        // For the first frame (FrameIndex < 1.5) or invalid history we use
-        // the current sample directly so there is no ghost on scene load.
-        float blend = (FrameIndex < 1.5) ? 0.0 : 0.9;
+        // Reject history when density, lighting, or the projected froxel
+        // footprint changed. A fixed 0.9 blend retained stale lit fog for
+        // roughly ten frames and produced visible camera trails.
+        float densityScale = max(max(current.a, history.a), 1e-3);
+        float densityDelta = abs(current.a - history.a) / densityScale;
+        float densityConfidence = 1.0 - smoothstep(0.10, 0.55, densityDelta);
+
+        float currentLum = dot(current.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float historyLum = dot(history.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float luminanceDelta = abs(currentLum - historyLum) /
+                               max(max(currentLum, historyLum), 0.02);
+        float lightingConfidence = 1.0 - smoothstep(0.35, 1.50, luminanceDelta);
+
+        vec3 currentUVW = (vec3(coord) + 0.5) / vec3(gridSize);
+        float motionInCells = length((lastUVW.xyz - currentUVW) * vec3(gridSize));
+        float motionConfidence = 1.0 - smoothstep(0.25, 8.0, motionInCells);
+
+        // Clamp reprojected radiance to a current-centred envelope so one
+        // bright historical froxel cannot leak into its neighbours.
+        vec3 radianceTolerance = max(vec3(0.02), abs(current.rgb) * 0.75);
+        history.rgb = clamp(history.rgb,
+                            current.rgb - radianceTolerance,
+                            current.rgb + radianceTolerance);
+        float densityTolerance = max(0.005, current.a * 0.35);
+        history.a = clamp(history.a,
+                          current.a - densityTolerance,
+                          current.a + densityTolerance);
+
+        float blend = 0.9 * densityConfidence * lightingConfidence * motionConfidence;
         current = mix(current, history, blend);
     }
 

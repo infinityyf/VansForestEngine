@@ -292,6 +292,19 @@ namespace VansGraphics
 		}
 	}
 
+	void VansVKMemoryAllocator::InvalidateAllocation(VmaAllocation allocation, VkDeviceSize offset, VkDeviceSize size)
+	{
+		if (m_Allocator == nullptr || allocation == nullptr || size == 0)
+		{
+			return;
+		}
+		VkResult result = vmaInvalidateAllocation(m_Allocator, allocation, offset, size);
+		if (result != VK_SUCCESS)
+		{
+			VANS_LOG_ERROR("[VMA] vmaInvalidateAllocation failed: " << result);
+		}
+	}
+
 	void* VansVKMemoryAllocator::GetPersistentMappedPtr(VmaAllocation allocation) const
 	{
 		if (m_Allocator == nullptr || allocation == nullptr)

@@ -247,16 +247,10 @@ void VansSceneEnvironmentNodeBuilder::AddTerrainNode(VansScene& scene, VansVKDev
 
 void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& device, json& waterData)
 {
-    // ── 类型解析 ───────────────────────────────────────────────────────────
     VansWaterConfig config;
-
-    const std::string typeStr = waterData.value("type", "ocean");
-    if      (typeStr == "ocean")  config.m_Type = VansWaterType::Ocean;
-    else if (typeStr == "lake")   config.m_Type = VansWaterType::Lake;
-    else if (typeStr == "river")  config.m_Type = VansWaterType::River;
-    else if (typeStr == "pool")   config.m_Type = VansWaterType::Pool;
-    else
-        VANS_LOG_WARN("[AddWaterNode] Unknown water type '" << typeStr << "', defaulting to ocean.");
+    const std::uint32_t schemaVersion = waterData.value("schemaVersion", 0u);
+    if (schemaVersion != VansWaterConfig::SCHEMA_VERSION)
+        VANS_LOG_WARN("[AddWaterNode] Water data is not schema V3; deprecated fields are ignored.");
 
     config.m_WaterLevel        = waterData.value("level", 3.4f);
     config.m_SpecularIntensity = waterData.value("specularIntensity", 1.0f);
@@ -313,105 +307,58 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
         }
     }
 
-    // ── waves 块 ───────────────────────────────────────────────────────────
-    if (waterData.contains("waves") && waterData["waves"].is_object())
+    // V2 spectral cascades are independent of geometry clipmap LODs.
+    if (waterData.contains("spectrum") && waterData["spectrum"].is_object())
     {
-        auto& w = waterData["waves"];
+        auto& w = waterData["spectrum"];
 
-        const std::string modeStr = w.value("mode", "gerstner");
-        if      (modeStr == "fft")     config.m_Waves.m_Mode = VansWaveMode::FFT;
-        else if (modeStr == "hybrid")  config.m_Waves.m_Mode = VansWaveMode::Hybrid;
-        else                           config.m_Waves.m_Mode = VansWaveMode::Gerstner;
-
-        config.m_Waves.m_BaseScale        = w.value("baseScale",         config.m_Waves.m_BaseScale);
-        config.m_Waves.m_MaxLOD           = w.value("maxLOD",            config.m_Waves.m_MaxLOD);
-        config.m_Waves.m_WindSpeed        = w.value("windSpeed",         config.m_Waves.m_WindSpeed);
-        config.m_Waves.m_SwellAmplitude   = w.value("swellAmplitude",    config.m_Waves.m_SwellAmplitude);
-        config.m_Waves.m_ChopScale        = w.value("chopScale",         config.m_Waves.m_ChopScale);
-        config.m_Waves.m_GerstnerWaveCount = w.value("gerstnerWaveCount", config.m_Waves.m_GerstnerWaveCount);
-        config.m_Waves.m_FftLODCount      = w.value("fftLODCount",       config.m_Waves.m_FftLODCount);
-        config.m_Waves.m_FftResolution    = w.value("fftResolution",     config.m_Waves.m_FftResolution);
-        config.m_Waves.m_FFT.m_LODCount   = config.m_Waves.m_FftLODCount;
-        config.m_Waves.m_FFT.m_Resolution = config.m_Waves.m_FftResolution;
+        const std::string modeStr = w.value("mode", "hybrid");
+        if (modeStr == "fft") config.m_Spectrum.m_Mode = VansWaveMode::FFT;
+        else if (modeStr == "gerstner") config.m_Spectrum.m_Mode = VansWaveMode::Gerstner;
+        else config.m_Spectrum.m_Mode = VansWaveMode::Hybrid;
+        config.m_Spectrum.m_BaseCoverage = w.value("baseCoverage", config.m_Spectrum.m_BaseCoverage);
+        config.m_Spectrum.m_CascadeScale = w.value("cascadeScale", config.m_Spectrum.m_CascadeScale);
+        config.m_Spectrum.m_CascadeCount = w.value("cascadeCount", config.m_Spectrum.m_CascadeCount);
+        config.m_Spectrum.m_WindSpeed = w.value("windSpeed", config.m_Spectrum.m_WindSpeed);
+        config.m_Spectrum.m_SwellAmplitude = w.value("swellAmplitude", config.m_Spectrum.m_SwellAmplitude);
+        config.m_Spectrum.m_Choppiness = w.value("choppiness", config.m_Spectrum.m_Choppiness);
+        config.m_Spectrum.m_GerstnerWaveCount = w.value("gerstnerWaveCount", config.m_Spectrum.m_GerstnerWaveCount);
 
         if (w.contains("windDirection"))
         {
             auto& d = w["windDirection"];
             if (d.is_array() && d.size() >= 2)
-                config.m_Waves.m_WindDirection = {d[0], d[1]};
+                config.m_Spectrum.m_WindDirection = {d[0], d[1]};
             else if (d.is_object())
-                config.m_Waves.m_WindDirection = {
+                config.m_Spectrum.m_WindDirection = {
                     d.value("x", 0.7071f), d.value("y", 0.7071f)};
         }
 
-        if (w.contains("fft") && w["fft"].is_object())
-        {
-            auto& fft = w["fft"];
-            config.m_Waves.m_FFT.m_UseDerivativeNormal = fft.value("useDerivativeNormal", config.m_Waves.m_FFT.m_UseDerivativeNormal);
-            config.m_Waves.m_FFT.m_Resolution          = fft.value("resolution",          config.m_Waves.m_FFT.m_Resolution);
-            config.m_Waves.m_FFT.m_LODCount            = fft.value("lodCount",            config.m_Waves.m_FFT.m_LODCount);
-            config.m_Waves.m_FFT.m_SpectrumAmplitude   = fft.value("spectrumAmplitude",   config.m_Waves.m_FFT.m_SpectrumAmplitude);
-            config.m_Waves.m_FFT.m_Choppiness          = fft.value("choppiness",          config.m_Waves.m_FFT.m_Choppiness);
-            config.m_Waves.m_FFT.m_SmallWaveDamping    = fft.value("smallWaveDamping",    config.m_Waves.m_FFT.m_SmallWaveDamping);
-            config.m_Waves.m_FFT.m_WindDependency      = fft.value("windDependency",      config.m_Waves.m_FFT.m_WindDependency);
-            config.m_Waves.m_FFT.m_Depth               = fft.value("depth",               config.m_Waves.m_FFT.m_Depth);
-            config.m_Waves.m_FFT.m_RepeatPeriod        = fft.value("repeatPeriod",        config.m_Waves.m_FFT.m_RepeatPeriod);
-            config.m_Waves.m_FFT.m_FoamSlopeScale      = fft.value("foamSlopeScale",      config.m_Waves.m_FFT.m_FoamSlopeScale);
-            config.m_Waves.m_FFT.m_FoamFoldScale       = fft.value("foamFoldScale",       config.m_Waves.m_FFT.m_FoamFoldScale);
-            config.m_Waves.m_FFT.m_FoamFoldThreshold   = fft.value("foamFoldThreshold",   config.m_Waves.m_FFT.m_FoamFoldThreshold);
-            config.m_Waves.m_FFT.m_RandomSeed          = fft.value("randomSeed",          config.m_Waves.m_FFT.m_RandomSeed);
-            config.m_Waves.m_FftLODCount               = config.m_Waves.m_FFT.m_LODCount;
-            config.m_Waves.m_FftResolution             = config.m_Waves.m_FFT.m_Resolution;
-        }
-
-        // N-01: detailNormal 子块
-        if (w.contains("detailNormal") && w["detailNormal"].is_object())
-        {
-            auto& dn = w["detailNormal"];
-            config.m_Waves.m_DetailNormal.m_Enabled         = dn.value("enabled",    true);
-            config.m_Waves.m_DetailNormal.m_Intensity       = dn.value("intensity",  1.0f);
-            config.m_Waves.m_DetailNormal.m_Scale           = dn.value("scale",      1.0f);
-            config.m_Waves.m_DetailNormal.m_OctaveCount     = dn.value("octaves",    4);
-            config.m_Waves.m_DetailNormal.m_TimeOffset      = dn.value("timeOffset", 0.0f);
-            config.m_Waves.m_DetailNormal.m_DetailBaseScale = dn.value("baseScale",  32.0f);
-        }
-
-        // maxLOD 范围校验
-        if (config.m_Waves.m_MaxLOD < 1 || config.m_Waves.m_MaxLOD > 10)
-        {
-            VANS_LOG_WARN("[AddWaterNode] waves.maxLOD = " << config.m_Waves.m_MaxLOD
-                << " 越界（合法范围 1-10），截断至合法值。");
-            config.m_Waves.m_MaxLOD = glm::clamp(config.m_Waves.m_MaxLOD, 1, 10);
-        }
+        config.m_Spectrum.m_SpectrumAmplitude = w.value("spectrumAmplitude", config.m_Spectrum.m_SpectrumAmplitude);
+        config.m_Spectrum.m_MinWavelength = w.value("minWavelength", config.m_Spectrum.m_MinWavelength);
+        config.m_Spectrum.m_SmallWaveDamping = w.value("smallWaveDamping", config.m_Spectrum.m_SmallWaveDamping);
+        config.m_Spectrum.m_WindDependency = w.value("windDependency", config.m_Spectrum.m_WindDependency);
+        config.m_Spectrum.m_Depth = w.value("depth", config.m_Spectrum.m_Depth);
+        config.m_Spectrum.m_RepeatPeriod = w.value("repeatPeriod", config.m_Spectrum.m_RepeatPeriod);
+        config.m_Spectrum.m_RandomSeed = w.value("randomSeed", config.m_Spectrum.m_RandomSeed);
     }
 
-    // ── foam 块 ────────────────────────────────────────────────────────────
-    if (waterData.contains("foam") && waterData["foam"].is_object())
+    if (waterData.contains("microSlope") && waterData["microSlope"].is_object())
     {
-        auto& f = waterData["foam"];
-        config.m_Foam.m_Enabled     = f.value("enabled",   true);
-        config.m_Foam.m_TextureName = f.value("texture",   std::string{});
-        config.m_Foam.m_Intensity   = f.value("intensity", 1.0f);
-    }
-
-    // ── normalMap 块 ───────────────────────────────────────────────────────
-    if (waterData.contains("normalMap") && waterData["normalMap"].is_object())
-    {
-        auto& n = waterData["normalMap"];
-        config.m_NormalMap.m_TextureName = n.value("texture", std::string{});
-        if (n.contains("tiling"))
-        {
-            auto& t = n["tiling"];
-            if (t.is_array() && t.size() >= 2)
-                config.m_NormalMap.m_Tiling = {t[0], t[1]};
-        }
+        auto& micro = waterData["microSlope"];
+        config.m_MicroSlope.m_Enabled = micro.value("enabled", config.m_MicroSlope.m_Enabled);
+        config.m_MicroSlope.m_Intensity = micro.value("intensity", config.m_MicroSlope.m_Intensity);
+        config.m_MicroSlope.m_MinWavelength = micro.value("minWavelength", config.m_MicroSlope.m_MinWavelength);
+        config.m_MicroSlope.m_PrimaryCoverage = micro.value("primaryCoverage", config.m_MicroSlope.m_PrimaryCoverage);
+        config.m_MicroSlope.m_SecondaryCoverage = micro.value("secondaryCoverage", config.m_MicroSlope.m_SecondaryCoverage);
+        config.m_MicroSlope.m_RotationDegrees = micro.value("rotationDegrees", config.m_MicroSlope.m_RotationDegrees);
     }
 
     // ── caustics 块 ────────────────────────────────────────────────────────
     if (waterData.contains("caustics") && waterData["caustics"].is_object())
     {
         auto& c = waterData["caustics"];
-        config.m_Caustics.m_Enabled   = c.value("enabled",   true);
+        config.m_Caustics.m_Enabled   = c.value("enabled", config.m_Caustics.m_Enabled);
         config.m_Caustics.m_Intensity = c.value("intensity", 1.0f);
         config.m_Caustics.m_Scale     = c.value("scale",     0.5f);
     }
@@ -421,8 +368,8 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
     {
         auto& r = waterData["refraction"];
         config.m_Refraction.m_Enabled     = r.value("enabled",     true);
-        config.m_Refraction.m_MaxDistance = r.value("maxDistance", 50.0f);
-        config.m_Refraction.m_Scale       = r.value("scale",       0.5f);
+        config.m_Refraction.m_DistortionStrength = r.value(
+            "distortionStrength", config.m_Refraction.m_DistortionStrength);
     }
 
     // ── ssr 块 ────────────────────────────────────────────────────────────
@@ -443,136 +390,20 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
         config.m_SSS.m_DeepWaterThicknessFallback = s.value("deepFallback",  0.8f);
     }
 
-    // ── lod 块（W-07）─────────────────────────────────────────────────────
-    if (waterData.contains("lod") && waterData["lod"].is_object())
+    if (waterData.contains("geometry") && waterData["geometry"].is_object())
     {
-        auto& l = waterData["lod"];
-        config.m_LOD.m_MaxLOD          = l.value("levels",          config.m_LOD.m_MaxLOD);
-        config.m_LOD.m_BasePatchSize   = l.value("basePatchSize",   config.m_LOD.m_BasePatchSize);
-        config.m_LOD.m_MeshDim         = l.value("meshDim",         config.m_LOD.m_MeshDim);
-        config.m_LOD.m_DetailBalance   = l.value("detailBalance",   config.m_LOD.m_DetailBalance);
-        config.m_LOD.m_MorphWidthRatio = l.value("morphWidthRatio", config.m_LOD.m_MorphWidthRatio);
-        if (!waterData.contains("waves") || !waterData["waves"].contains("baseScale"))
-            config.m_Waves.m_BaseScale = l.value("minDistance", config.m_Waves.m_BaseScale);
-
-        config.m_LOD.m_MaxLOD = glm::clamp(config.m_LOD.m_MaxLOD, 1, 10);
-        if (config.m_LOD.m_MeshDim < 3)
-            config.m_LOD.m_MeshDim = 65;
-        if (((config.m_LOD.m_MeshDim - 1) % 2) != 0)
-            ++config.m_LOD.m_MeshDim;
-
-        VANS_LOG("[AddWaterNode] lod block: levels=" << config.m_LOD.m_MaxLOD
-            << " basePatchSize=" << config.m_LOD.m_BasePatchSize
-            << " meshDim=" << config.m_LOD.m_MeshDim);
+        auto& l = waterData["geometry"];
+        config.m_Geometry.m_LodCount = l.value("lodCount", config.m_Geometry.m_LodCount);
+        config.m_Geometry.m_BasePatchSize = l.value("basePatchSize", config.m_Geometry.m_BasePatchSize);
+        config.m_Geometry.m_MeshDim = l.value("meshDim", config.m_Geometry.m_MeshDim);
+        config.m_Geometry.m_MorphStartRatio = l.value("morphStartRatio", config.m_Geometry.m_MorphStartRatio);
     }
 
-    // ── debug 块（W-07）───────────────────────────────────────────────────
-    if (waterData.contains("debug") && waterData["debug"].is_object())
-    {
-        auto& d = waterData["debug"];
-        bool showWire   = d.value("showLODWireframe", false);
-        bool freezeLOD  = d.value("freezeLOD",        false);
-        bool visMorph   = d.value("visualizeMorph",   false);
-        VANS_LOG("[AddWaterNode] debug: wireframe=" << showWire
-            << " freezeLOD=" << freezeLOD << " visualizeMorph=" << visMorph);
-        // Debug 标志存储在 VansWaterConfig 中（可后续添加 m_Debug 子结构）
-    }
-
-    // ── 创建 VansWaterMaterial 并展开所有字段 ──────────────────────────────
+    config.Validate();
+    // ── 创建只持有单一 V2 配置的 WaterMaterial ─────────────────────────────
     VansWaterMaterial* mat = new VansWaterMaterial();
     mat->m_MaterialType = VansMaterialType::VAN_WATER;
     mat->m_Config       = config;
-
-    // 参与介质参数
-    mat->m_AbsorptionCoeffs  = config.m_Medium.m_AbsorptionCoeff;
-    mat->m_ScatteringCoeffs  = config.m_Medium.m_ScatteringCoeff;
-    mat->m_WaterIOR          = config.m_Medium.m_IOR;
-    mat->m_FresnelPower      = config.m_Medium.m_FresnelPower;
-    mat->m_Anisotropy        = config.m_Medium.m_Anisotropy;
-    mat->m_WaterRoughness    = config.m_Medium.m_WaterRoughness;
-    mat->m_SpecularIntensity = config.m_SpecularIntensity;
-    mat->m_DeepWaterColor    = config.m_Medium.m_DeepColor;
-    mat->m_ShallowWaterColor = config.m_Medium.m_ShallowColor;
-
-    // 波形参数
-    mat->m_OceanBaseScale      = config.m_Waves.m_BaseScale;
-    mat->m_MaxLODCount         = config.m_LOD.m_MaxLOD;
-    mat->m_LODBasePatchSize    = config.m_LOD.m_BasePatchSize;
-    mat->m_LODMeshDim          = config.m_LOD.m_MeshDim;
-    mat->m_LODDetailBalance    = config.m_LOD.m_DetailBalance;
-    mat->m_LODMorphWidthRatio  = config.m_LOD.m_MorphWidthRatio;
-    mat->m_GerstnerWaveCount   = config.m_Waves.m_GerstnerWaveCount;
-    mat->m_FftLODCount         = config.m_Waves.m_FftLODCount;
-    mat->m_FftResolution       = config.m_Waves.m_FftResolution;
-    mat->m_FFTUseDerivativeNormal = config.m_Waves.m_FFT.m_UseDerivativeNormal;
-    mat->m_FFTSpectrumAmplitude = config.m_Waves.m_FFT.m_SpectrumAmplitude;
-    mat->m_FFTChoppiness       = config.m_Waves.m_FFT.m_Choppiness;
-    mat->m_FFTSmallWaveDamping = config.m_Waves.m_FFT.m_SmallWaveDamping;
-    mat->m_FFTWindDependency   = config.m_Waves.m_FFT.m_WindDependency;
-    mat->m_FFTDepth            = config.m_Waves.m_FFT.m_Depth;
-    mat->m_FFTRepeatPeriod     = config.m_Waves.m_FFT.m_RepeatPeriod;
-    mat->m_FFTFoamSlopeScale   = config.m_Waves.m_FFT.m_FoamSlopeScale;
-    mat->m_FFTFoamFoldScale    = config.m_Waves.m_FFT.m_FoamFoldScale;
-    mat->m_FFTFoamFoldThreshold = config.m_Waves.m_FFT.m_FoamFoldThreshold;
-    mat->m_FFTRandomSeed       = config.m_Waves.m_FFT.m_RandomSeed;
-    mat->m_WindSpeed           = config.m_Waves.m_WindSpeed;
-    mat->m_SwellAmplitude      = config.m_Waves.m_SwellAmplitude;
-    mat->m_ChopScale           = config.m_Waves.m_ChopScale;
-    mat->m_WindDirection       = config.m_Waves.m_WindDirection;
-
-    // 泡沫
-    mat->m_EnableFoam    = config.m_Foam.m_Enabled;
-    mat->m_FoamIntensity = config.m_Foam.m_Intensity;
-
-    // 法线贴图平铺
-    mat->m_NormalMapTiling = config.m_NormalMap.m_Tiling;
-
-    // 焦散
-    mat->m_EnableCaustics    = config.m_Caustics.m_Enabled;
-    mat->m_CausticsIntensity = config.m_Caustics.m_Intensity;
-    mat->m_CausticsScale     = config.m_Caustics.m_Scale;
-
-    // 折射
-    mat->m_EnableRefraction  = config.m_Refraction.m_Enabled;
-    mat->m_RefractionMaxDist = config.m_Refraction.m_MaxDistance;
-    mat->m_RefractionScale   = config.m_Refraction.m_Scale;
-
-    // SSR
-    mat->m_EnableSSR       = config.m_SSR.m_Enabled;
-    mat->m_SSRMaxDistance   = config.m_SSR.m_MaxDistance;
-    mat->m_SSRMaxRoughness  = config.m_SSR.m_MaxRoughness;
-
-    // SSS（W-16: 次表面散射）
-    mat->m_SSSEnabled                = config.m_SSS.m_Enabled;
-    mat->m_MaxThicknessDistance      = config.m_SSS.m_MaxThicknessDistance;
-    mat->m_DeepWaterThicknessFallback = config.m_SSS.m_DeepWaterThicknessFallback;
-
-    // N-01: 细节法线
-    mat->m_DetailNormalEnabled     = config.m_Waves.m_DetailNormal.m_Enabled;
-    mat->m_DetailNormalIntensity   = config.m_Waves.m_DetailNormal.m_Intensity;
-    mat->m_DetailNormalScale       = config.m_Waves.m_DetailNormal.m_Scale;
-    mat->m_DetailNormalOctaves     = config.m_Waves.m_DetailNormal.m_OctaveCount;
-    mat->m_DetailNormalTimeOffset  = config.m_Waves.m_DetailNormal.m_TimeOffset;
-    mat->m_DetailNormalBaseScale   = config.m_Waves.m_DetailNormal.m_DetailBaseScale;
-
-    // ── 纹理绑定（通过名称查找已加载资产）─────────────────────────────────
-    if (!config.m_Foam.m_TextureName.empty())
-    {
-        mat->m_FoamTexture = static_cast<VansTexture*>(
-            scene.GetTextureAsset(config.m_Foam.m_TextureName));
-        if (!mat->m_FoamTexture)
-            VANS_LOG_WARN("[AddWaterNode] foam texture '" << config.m_Foam.m_TextureName
-                << "' not found in the AssetDatabase dependency closure.");
-    }
-
-    if (!config.m_NormalMap.m_TextureName.empty())
-    {
-        mat->m_WaterNormalTexture = static_cast<VansTexture*>(
-            scene.GetTextureAsset(config.m_NormalMap.m_TextureName));
-        if (!mat->m_WaterNormalTexture)
-            VANS_LOG_WARN("[AddWaterNode] normalMap texture '" << config.m_NormalMap.m_TextureName
-                << "' not found in the AssetDatabase dependency closure.");
-    }
 
     // ── 注册到场景 ─────────────────────────────────────────────────────────
     mat->SetName(waterData.value("name", "WaterMaterial"));
@@ -609,11 +440,9 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
         }
     }
 
-    VANS_LOG("[AddWaterNode] 水面配置加载完成: type=" << typeStr
-        << " level=" << config.m_WaterLevel
-        << " lod=" << config.m_LOD.m_MaxLOD
-        << " waveLOD=" << config.m_Waves.m_MaxLOD
-        << " foam=" << (config.m_Foam.m_Enabled ? "on" : "off")
+    VANS_LOG("[AddWaterNode] Water V2 loaded: level=" << config.m_WaterLevel
+        << " geometryLod=" << config.m_Geometry.m_LodCount
+        << " spectrumCascades=" << config.m_Spectrum.m_CascadeCount
         << " ssr=" << (config.m_SSR.m_Enabled ? "on" : "off"));
 
     // ── 创建 VansWaterSystem（设计文档 §12.1）────────────────────────────────

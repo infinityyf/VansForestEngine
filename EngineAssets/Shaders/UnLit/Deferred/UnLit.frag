@@ -40,11 +40,11 @@ void main()
     float aoParam = materialData.ao;
 
     //采样其他 PBR 纹理 (通过 Bindless 索引)
-    vec3 albedo     = albedoParam * texture( globalPBRTextures[materialIndex * 5 + 0], frag_uv ).rgb;
-    vec3 normal_sample = texture(globalPBRTextures[materialIndex * 5 + 1], frag_uv).rgb;
-    float metallic  = metallicParam * texture( globalPBRTextures[materialIndex * 5 + 2], frag_uv ).r;
-    float roughness = roughnessParam * texture( globalPBRTextures[materialIndex * 5 + 3], frag_uv ).r;
-    float ao        = aoParam * texture( globalPBRTextures[materialIndex * 5 + 4], frag_uv ).r;
+    vec3 albedo     = albedoParam * texture( globalPBRTextures[materialIndex * 5 + 0], frag_uv, MaterialMipBias ).rgb;
+    vec3 normal_sample = texture(globalPBRTextures[materialIndex * 5 + 1], frag_uv, MaterialMipBias).rgb;
+    float metallic  = metallicParam * texture( globalPBRTextures[materialIndex * 5 + 2], frag_uv, MaterialMipBias ).r;
+    float roughness = roughnessParam * texture( globalPBRTextures[materialIndex * 5 + 3], frag_uv, MaterialMipBias ).r;
+    float ao        = aoParam * texture( globalPBRTextures[materialIndex * 5 + 4], frag_uv, MaterialMipBias ).r;
 
     normal_sample = normal_sample * 2.0 - 1.0;
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));

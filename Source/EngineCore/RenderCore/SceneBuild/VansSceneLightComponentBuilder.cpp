@@ -120,11 +120,12 @@ void VansSceneLightComponentBuilder::BuildLights(
 	{
 		ensureObjectTransform();
 		const auto& plJson = components["point_light"];
-		VansPointLight pointLight;
+		VansPointLight pointLight{};
 		pointLight.m_Color = ReadColorOrWhite(plJson);
 		pointLight.m_Intensity = plJson.value("intensity", 1.0f);
 		pointLight.m_Radius = plJson.value("radius", 10.0f);
 		pointLight.m_IESProfileIndex = -1.0f;
+		pointLight.m_ShadowIndex = plJson.value("castShadows", true) ? 0.0f : -1.0f;
 		pointLight.m_Position = glm::vec3(0.0f);
 
 		if (plJson.contains("ies_profile") && plJson["ies_profile"].is_string())
@@ -151,7 +152,7 @@ void VansSceneLightComponentBuilder::BuildLights(
 	{
 		ensureObjectTransform();
 		const auto& slJson = components["spot_light"];
-		VansSpotLight spotLight;
+		VansSpotLight spotLight{};
 		spotLight.m_Color = ReadColorOrWhite(slJson);
 		spotLight.m_Intensity = slJson.value("intensity", 1.0f);
 		spotLight.m_Radius = slJson.value("radius", 10.0f);
@@ -159,6 +160,7 @@ void VansSceneLightComponentBuilder::BuildLights(
 		spotLight.m_OuterCutOff = glm::radians(slJson.value("outerCutoff", 45.0f));
 		spotLight.m_IESProfileIndex = -1.0f;
 		spotLight.m_IESIntensityScale = slJson.value("ies_intensity_scale", 1.0f);
+		spotLight.m_ShadowIndex = slJson.value("castShadows", true) ? 0.0f : -1.0f;
 		spotLight.m_pad0 = 0.0f;
 		spotLight.m_Position = glm::vec3(0.0f);
 		spotLight.m_Direction = glm::vec3(0.0f, 1.0f, 0.0f);

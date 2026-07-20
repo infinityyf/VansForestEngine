@@ -323,6 +323,8 @@ namespace VansGraphics
 		SSGI_BINDING_SH_G         = 8,
 		SSGI_BINDING_SH_B         = 9,
 		SSGI_BINDING_HIZ_DEPTH    = 10,
+		SSGI_BINDING_MATERIAL     = 11,
+		SSGI_BINDING_GI_VISIBILITY = 12,
 	};
 
 	// --- Screen Space Shadow Compute Pass ---
@@ -463,6 +465,20 @@ namespace VansGraphics
 		GISH_BINDING_RESULT_B      = 4,
 	};
 
+	// --- GI ray-tracing intermediate preview (Set 0) ---
+	enum GIRTPreviewPassBinding : uint32_t
+	{
+		GI_RT_PREVIEW_BINDING_HIT_POSITION = 0,
+		GI_RT_PREVIEW_BINDING_HIT_NORMAL = 1,
+		GI_RT_PREVIEW_BINDING_HIT_PBR = 2,
+		GI_RT_PREVIEW_BINDING_DIRECT_LIGHT = 3,
+		GI_RT_PREVIEW_BINDING_RAY_SUMMARY = 4,
+		GI_RT_PREVIEW_BINDING_SH_R = 5,
+		GI_RT_PREVIEW_BINDING_SH_G = 6,
+		GI_RT_PREVIEW_BINDING_SH_B = 7,
+		GI_RT_PREVIEW_BINDING_OUTPUT = 8,
+	};
+
 	// --- GI Point Light Compute Pass ---
 	enum GIPointLightPassBinding : uint32_t
 	{
@@ -476,17 +492,24 @@ namespace VansGraphics
 		GIPL_BINDING_SHADOW_MAP       = 8,
 		GIPL_BINDING_PUNCTUAL_SHADOW  = 9,
 		GIPL_BINDING_PBR_DATA         = 10,
+		GIPL_BINDING_GI_VISIBILITY    = 11,
+	};
+
+	// --- GI Visibility Atlas Update Compute Pass ---
+	enum GIVisibilityUpdatePassBinding : uint32_t
+	{
+		GI_VISIBILITY_BINDING_HIT_POSITION = 0,
+		GI_VISIBILITY_BINDING_RESULT       = 1,
 	};
 
 	// --- Water GBuffer Pass（Set 1）---
 	// 对应 water_prepass.vert/.frag 的 set=1 绑定
 	enum WaterGBufferPassBinding : uint32_t
 	{
-		WATER_GBUF_BINDING_PARAMS        = 0,   // WaterGBufferParams UBO（lodRanges / meshDim 等）
+		WATER_GBUF_BINDING_PARAMS        = 0,   // Geometry clipmap + spectral cascade UBO
 		WATER_GBUF_BINDING_DISPLACEMENT  = 1,   // Compute 输出的水面位移贴图 Texture2DArray（Vertex 采样）
-		WATER_GBUF_BINDING_WAVE_SSBO     = 2,   // GerstnerWaveGPU SSBO（W-04）
-		WATER_GBUF_BINDING_NORMAL_MAP    = 3,   // 水面法线贴图（W-08）
-		WATER_GBUF_BINDING_DERIVATIVE    = 4,   // FFT slope/foam derivative Texture2DArray（Vertex 采样）
+		WATER_GBUF_BINDING_MICRO_SLOPE   = 3,   // FFT height-gradient Texture2DArray
+		WATER_GBUF_BINDING_DERIVATIVE    = 4,   // dPdx/dPdz Texture2DArray
 	};
 
 	// --- Water Wave Compute Pass（Set 0）---
@@ -496,6 +519,7 @@ namespace VansGraphics
 		WATER_WAVE_BINDING_PARAMS        = 0,   // WaterGBufferParams UBO（时间 / 波参数）
 		WATER_WAVE_BINDING_DISPLACEMENT  = 1,   // RGBA16F Storage ImageArray，输出 xyz 位移 + w 坡度（W-01）
 		WATER_WAVE_BINDING_WAVE_SSBO     = 2,   // GerstnerWaveGPU SSBO 输入（W-04）
+		WATER_WAVE_BINDING_DERIVATIVE    = 3,   // dPdx/dPdz Texture2DArray output
 	};
 
 	// --- Water Composite Pass（Set 1）---
@@ -509,7 +533,6 @@ namespace VansGraphics
 		WATER_COMP_BINDING_REFLECTION    = 4,   // WaterSSR/反射结果
 		WATER_COMP_BINDING_REFRACTION    = 5,   // 折射颜色结果
 		WATER_COMP_BINDING_CAUSTICS      = 6,   // 焦散结果
-		WATER_COMP_BINDING_FOAM_TEXTURE  = 7,   // W-15: 泡沫纹理
 		WATER_COMP_BINDING_THICKNESS     = 8,   // W-16: 厚度图
 		WATER_COMP_BINDING_SSS_SCATTER  = 9,   // W-16: SSS 散射输出
 	};
@@ -535,20 +558,9 @@ namespace VansGraphics
 	{
 		TRANSMISSION_GLASS_BINDING_OPAQUE_SCENE_COLOR = 0,
 		TRANSMISSION_GLASS_BINDING_SSR_REFLECTION = 1,
-	};
-
-	// --- Water Effects Compute Pass（Set 0）---
-	// 对应 water_effects.comp 的 set=0 绑定
-	enum WaterEffectsComputeBinding : uint32_t
-	{
-		WATER_EFFECT_BINDING_GBUF_NORMAL    = 0,
-		WATER_EFFECT_BINDING_GBUF_DEPTH     = 1,
-		WATER_EFFECT_BINDING_SCENE_GBUF2    = 2,
-		WATER_EFFECT_BINDING_SCENE_COLOR    = 3,
-		WATER_EFFECT_BINDING_PARAMS         = 4,
-		WATER_EFFECT_BINDING_REFLECTION_OUT = 5,
-		WATER_EFFECT_BINDING_REFRACTION_OUT = 6,
-		WATER_EFFECT_BINDING_CAUSTICS_OUT   = 7,
+		TRANSMISSION_GLASS_BINDING_OPAQUE_DEPTH = 2,
+		TRANSMISSION_GLASS_BINDING_CASCADE_SHADOW = 3,
+		TRANSMISSION_GLASS_BINDING_PUNCTUAL_SHADOW = 4,
 	};
 
 	// --- Water SSR Compute（Set 0）- W-12 ---
@@ -568,8 +580,8 @@ namespace VansGraphics
 	{
 		WATER_REFRACTION_BINDING_GBUF_NORMAL  = 0,
 		WATER_REFRACTION_BINDING_GBUF_DEPTH   = 1,
-		WATER_REFRACTION_BINDING_SCENE_GBUF2  = 2,
-		WATER_REFRACTION_BINDING_SCENE_COLOR  = 3,
+		WATER_REFRACTION_BINDING_SCENE_COLOR  = 2,
+		WATER_REFRACTION_BINDING_THICKNESS    = 3,
 		WATER_REFRACTION_BINDING_PARAMS       = 4,
 		WATER_REFRACTION_BINDING_REFRACTION_OUT = 5,
 	};
@@ -579,7 +591,7 @@ namespace VansGraphics
 	{
 		WATER_CAUSTICS_BINDING_GBUF_NORMAL  = 0,
 		WATER_CAUSTICS_BINDING_GBUF_DEPTH   = 1,
-		WATER_CAUSTICS_BINDING_SCENE_GBUF2  = 2,
+		WATER_CAUSTICS_BINDING_THICKNESS    = 2,
 		WATER_CAUSTICS_BINDING_PARAMS       = 3,
 		WATER_CAUSTICS_BINDING_CAUSTICS_OUT = 4,
 	};
@@ -602,13 +614,6 @@ namespace VansGraphics
 		WATER_SSS_SCATTER_BINDING_SCENE_GBUF2   = 3,
 		WATER_SSS_SCATTER_BINDING_PARAMS        = 4,
 		WATER_SSS_SCATTER_BINDING_SCATTER_OUT   = 5,
-	};
-
-	// --- Water Detail Normal Compute（Set 0）- N-01 ---
-	enum WaterDetailNormalBinding : uint32_t
-	{
-		WATER_DETAIL_BINDING_PARAMS       = 0,   // WaterGBufferParams UBO
-		WATER_DETAIL_BINDING_OUTPUT       = 1,   // Detail normal storage image array
 	};
 
 	// --- Ray Tracing Pass ---
@@ -786,7 +791,9 @@ namespace VansGraphics
 		static void CreateAndAllocate_HIZ(std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount);
 		static void CreateAndAllocate_HIZSeed(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GISHUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_GIRTPreview(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GIPointLight(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_GIVisibilityUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_RayTracing(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SkinTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_ClothTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -815,8 +822,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_HairLighting(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Transmission Glass Pass Set 1：opaque scene color snapshot for screen-space refraction
 		static void CreateAndAllocate_TransmissionGlass(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		// Water Effects Compute Set 0：WaterGBuf / SceneColor 输入 + 反射折射焦散输出
-		static void CreateAndAllocate_WaterEffectsCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Phase 2 独立 CS Layouts
 		static void CreateAndAllocate_WaterSSRCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterRefractionCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -824,8 +829,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_WaterThicknessCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// W-16 Phase 2: Water SSS Scatter Compute (water_sss_scatter.comp)
 		static void CreateAndAllocate_WaterSSSScatterCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		// N-01: Water Detail Normal Compute (water_detail_normal.comp)
-		static void CreateAndAllocate_WaterDetailNormalCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 
 		// --- 后处理 Compute Pass Layouts ---
 		static void CreateAndAllocate_ExposureLuminance(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

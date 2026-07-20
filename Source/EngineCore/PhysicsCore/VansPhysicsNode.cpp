@@ -297,7 +297,10 @@ namespace VansEngine
         // Build triangle mesh from VansMesh
         PxTriangleMeshDesc meshDesc;
         meshDesc.points.count = m_Mesh->GetMeshVertexCount();
-        meshDesc.points.stride = sizeof(float) * 8;
+        // GetMeshRawPositionData() is a tightly-packed xyz array.  Using the
+        // render vertex stride here makes PhysX skip five floats per vertex
+        // and produces invalid triangle/convex cooking for project assets.
+        meshDesc.points.stride = sizeof(float) * 3;
         meshDesc.points.data = m_Mesh->GetMeshRawPositionData().data();
 
         meshDesc.triangles.count = static_cast<PxU32>(m_Mesh->GetMeshTriangleIndex().size() / 3);
@@ -335,7 +338,7 @@ namespace VansEngine
         // Build convex mesh from VansMesh
         PxConvexMeshDesc convexDesc;
         convexDesc.points.count = m_Mesh->GetMeshVertexCount();
-        convexDesc.points.stride = sizeof(float) * 8;
+        convexDesc.points.stride = sizeof(float) * 3;
         convexDesc.points.data = m_Mesh->GetMeshRawPositionData().data();
         convexDesc.flags = PxConvexFlag::eCOMPUTE_CONVEX;
         convexDesc.vertexLimit = 255;

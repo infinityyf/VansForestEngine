@@ -1,8 +1,8 @@
 #include "VansFSR.h"
-#include "../../VansTimer.h"
 #include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../RenderCore/VulkanCore/VansVKImage.h"
 #include <iostream>
+#include <algorithm>
 
 void VansGraphics::VansFSR::InitializeContext(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t renderWidth, uint32_t renderHeight, uint32_t displayWidth, uint32_t displayHeight)
 {
@@ -29,9 +29,10 @@ void VansGraphics::VansFSR::InitializeContext(VkDevice device, VkPhysicalDevice 
 	createUpscaling.header.pNext = nullptr;
 	createUpscaling.maxUpscaleSize = { displayWidth, displayHeight };
 	createUpscaling.maxRenderSize = { renderWidth, renderHeight };
-	createUpscaling.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE
-		| FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE
-		| FFX_UPSCALE_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION; // MV 已使用 UnjitteredVPMatrix，无需 FSR 内部再次去抖动
+	// The current input is the tone-mapped post-process target. It is LDR,
+	// un-pre-exposed, and its motion vectors are generated from unjittered
+	// matrices. Do not advertise HDR/auto-exposure/jittered-MV semantics.
+	createUpscaling.flags = 0;
 	createUpscaling.fpMessage = nullptr;
 
 	ffx::ReturnCode retCode = ffx::CreateContext(m_UpscalingContext, nullptr, createUpscaling,backendDesc);
@@ -91,28 +92,24 @@ void VansGraphics::VansFSR::DispatchUpscale(VkCommandBuffer& commandBuffer, FSRI
 	dispatchUpscale.reactive = ffxApiGetResourceVK(nullptr, FfxApiResourceDescription(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 	dispatchUpscale.transparencyAndComposition = ffxApiGetResourceVK(nullptr, FfxApiResourceDescription(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 
-	// 曝光纹理绑定：使用引擎的 1x1 曝光输出纹理
-	if (input.exposure != VK_NULL_HANDLE) {
-		dispatchUpscale.exposure = ffxApiGetResourceVK(
-			(void*)input.exposure,
-			ffxApiGetImageResourceDescriptionVK(input.exposure, input.exposureCreateInfo, 0),
-			FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
-	} else {
-		dispatchUpscale.exposure = ffxApiGetResourceVK(nullptr, FfxApiResourceDescription(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
-	}
+	// The post-process input has already applied engine exposure and tone mapping.
+	// FSR therefore receives neither an exposure resource nor pre-exposure.
+	dispatchUpscale.exposure = ffxApiGetResourceVK(
+		nullptr, FfxApiResourceDescription(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 	
 	// 抖动偏移：像素空间单位（Camera 已优先从 FSR 内置序列取得）
 	dispatchUpscale.jitterOffset.x = -input.jitterPixelX;
 	dispatchUpscale.jitterOffset.y = -input.jitterPixelY;
-	// MV 缩放：MotionVector 输出为 UV 空间增量，FSR 期望像素单位
-	dispatchUpscale.motionVectorScale.x = static_cast<float>(m_RenderWidth);
-	dispatchUpscale.motionVectorScale.y = static_cast<float>(m_RenderHeight);
+	// Engine MV is currentUV-previousUV, while FSR expects current-to-previous.
+	// A negative scale converts both direction and UV units at the API boundary,
+	// preserving the convention used by the engine's SSR/SSGI consumers.
+	dispatchUpscale.motionVectorScale.x = -static_cast<float>(m_RenderWidth);
+	dispatchUpscale.motionVectorScale.y = -static_cast<float>(m_RenderHeight);
 	dispatchUpscale.reset = false;
-	dispatchUpscale.enableSharpening = true;
+	dispatchUpscale.enableSharpening = m_Sharpness > 0.0f;
 	dispatchUpscale.sharpness = m_Sharpness;
 
-	// Cauldron keeps time in seconds, but FSR expects milliseconds.
-	dispatchUpscale.frameTimeDelta = static_cast<float>(VansTimer::GetDeltaTime() * 1000.0);
+	dispatchUpscale.frameTimeDelta = input.frameTimeDeltaMs;
 
 	dispatchUpscale.preExposure = 1.0f;
 	dispatchUpscale.renderSize.width = m_RenderWidth;
@@ -131,6 +128,11 @@ void VansGraphics::VansFSR::DispatchUpscale(VkCommandBuffer& commandBuffer, FSRI
 	ffx::ReturnCode retCode = ffx::Dispatch(m_UpscalingContext, dispatchUpscale);
 
 	//std::cout << "FSR Upscaling dispatch return code: " << static_cast<uint32_t>(retCode) << std::endl;
+}
+
+void VansGraphics::VansFSR::SetSharpness(float sharpness)
+{
+	m_Sharpness = std::max(0.0f, std::min(sharpness, 1.0f));
 }
 
 void VansGraphics::VansFSR::Cleanup()

@@ -60,7 +60,10 @@ float TraceDirectionalScreenShadow(vec3 originWS, vec3 normalWS, float receiverD
 
     float shadow = 1.0;
     float minTravel = max(normalBias * 1.5, 0.02);
-    float jitter = RandomInterLeavedWithScale(startUV * uSSS.screenSize.xy, FrameIndex);
+    // This pass has no dedicated temporal accumulation.  A frame-varying seed
+    // turns the ray-march error into visible shimmer at the CSM edge, so use a
+    // stable spatial seed instead.
+    float jitter = RandomInterLeaved(startUV * uSSS.screenSize.xy);
     for (int i = 1; i <= steps; ++i)
     {
         float t = (float(i) + jitter) / float(steps);

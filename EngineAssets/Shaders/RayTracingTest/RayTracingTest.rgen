@@ -4,14 +4,11 @@
 
 #include "../Common/Common.glsl"
 
-// Ray payload: will be set to 1 if hit, 0 if miss
 layout(location = 0) rayPayloadEXT RayTracePayload hitResult;
 
-// TLAS
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
-// Output buffer
-layout(set = 0, binding = 1, rgba32f) uniform image3D resultImage;
+layout(set = 0, binding = 1, rgba16f) uniform image3D resultImage;
 layout(set = 0, binding = 2, std430) buffer hitPositionBuffer
 {
     f16vec4 hitPosition[];
@@ -22,64 +19,63 @@ layout(set = 0, binding = 6, std430) buffer hitNormalBuffer
     f16vec4 hitNormal[];
 } hitNormalInfoBuffer;
 
-layout(set = 0, binding = 8, std430) buffer hitAlbedoRoughnessBuffer {
+layout(set = 0, binding = 8, std430) buffer hitAlbedoRoughnessBuffer
+{
     f16vec4 albedoRoughness[];
 } hitAlbedoRoughnessInfoBuffer;
 
-layout(push_constant) uniform PushConstants 
+layout(push_constant) uniform PushConstants
 {
-    vec4 cameraPos;
+    vec4 gridParams;     // xyz = probe spacing, w = max ray distance
     vec4 cameraDir;
     vec4 cameraUp;
     vec4 cameraRight;
-    vec4 originParams;
+    vec4 dispatchParams; // xyz = probe counts, w = rays per probe
     vec4 frameParams;
     vec4 regionParams;
     vec4 lightingParams;
 } pushConstants;
 
-
-
-// Ray generation shader
 void main()
 {
-    int originCount = int(pushConstants.originParams.x);
-    float originStride = pushConstants.originParams.y;
-    int sampleCount = int(pushConstants.originParams.z);
+    ivec3 originCount = ivec3(pushConstants.dispatchParams.xyz);
+    vec3 originStride = pushConstants.gridParams.xyz;
+    int sampleCount = int(pushConstants.dispatchParams.w);
 
-    float originSize = float(originCount) * originStride;
-    vec3 groupOrigin = pushConstants.regionParams.xyz - vec3(originSize * 0.5);
+    vec3 originSize = vec3(originCount) * originStride;
+    vec3 volumeMin = pushConstants.regionParams.xyz - originSize * 0.5;
 
-    ivec3 currentIndex = ivec3(gl_LaunchIDEXT);
-    vec3 currentOrigin = groupOrigin + (vec3(currentIndex) + 0.5) * originStride;
+    ivec3 probeIndex = ivec3(gl_LaunchIDEXT);
+    vec3 probeWorld = volumeMin + (vec3(probeIndex) + 0.5) * originStride;
 
-    ivec3 pixelCoord = currentIndex;
-    // vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(gl_LaunchSizeEXT.xy);
-
-    // // Example: center of screen, shoot ray forward
-    // vec3 rayOrigin = vec3(0,0,10);
-    // // vec3 rayDirection = normalize(pushConstants.cameraDir.xyz + 
-    // //                       pushConstants.cameraRight.xyz * uv.x + 
-    // //                       pushConstants.cameraUp.xyz * uv.y);
-    // rayOrigin = rayOrigin + vec3(1,1,0) * vec3(pixelCoord,0) / vec3(gl_LaunchSizeEXT.xy,1);
-
-    float hitCount = 0;
-    int bufferIndex = currentIndex.z * (originCount * originCount) + currentIndex.y * originCount + currentIndex.x;
+    float hitCount = 0.0;
+    int bufferIndex = probeIndex.z * (originCount.x * originCount.y) + probeIndex.y * originCount.x + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;
-    for(int rayIndex = 0; rayIndex < sampleCount; rayIndex++)
-    {
-        vec3 rayDirection = SampleSphere(rayIndex,sampleCount);
 
-        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
-            currentOrigin, 0.001, rayDirection, pushConstants.originParams.w, 0);
-    
+    for (int rayIndex = 0; rayIndex < sampleCount; ++rayIndex)
+    {
+        vec3 rayDirection = SampleSphere(rayIndex, sampleCount);
+
+        traceRayEXT(
+            tlas,
+            gl_RayFlagsOpaqueEXT,
+            0xFF,
+            0, 0, 0,
+            probeWorld,
+            0.001,
+            rayDirection,
+            pushConstants.gridParams.w,
+            0);
+
         hitCount += hitResult.positionHit.w;
 
-        //记录命中点
+        // 缓存每个 probe、每个方向的首次命中信息。
+        // 后续 GIPointLight 在这些静态命中点上重新计算光照与 shadow。
         hitPositionInfoBuffer.hitPosition[bufferOffset + rayIndex] = f16vec4(hitResult.positionHit);
         hitNormalInfoBuffer.hitNormal[bufferOffset + rayIndex] = f16vec4(hitResult.normalHit);
         hitAlbedoRoughnessInfoBuffer.albedoRoughness[bufferOffset + rayIndex] = f16vec4(hitResult.albedoRoughness);
     }
 
-    imageStore(resultImage, pixelCoord, vec4(1 - hitCount/sampleCount, 0, 0, 0));
+    // resultImage.x 记录 miss ratio，可用于检查 probe 是否被几何包围。
+    imageStore(resultImage, probeIndex, vec4(1.0 - hitCount / float(sampleCount), 0.0, 0.0, 0.0));
 }

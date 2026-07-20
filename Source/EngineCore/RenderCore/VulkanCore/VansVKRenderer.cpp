@@ -179,13 +179,14 @@ namespace VansGraphics
 			m_VansVKSurface, { newDisplayExtent.width, newDisplayExtent.height }
 		);
 
-		CleanupFSR();
-		m_FSRController.InitializeContext(
-			m_VansVKLogicDevice, m_VansVKPhysicalDevice,
-			m_RenderWidth, m_RenderHeight,
-			newDisplayExtent.width, newDisplayExtent.height
-		);
-		PrepareFSRDispatchInputData(3.14f / 2, 0.01f, 100.0f);
+		// FSR targets the Scene viewport rather than the swapchain. Before the
+		// first viewport measurement, keep the swapchain extent as a fallback.
+		if (m_FSRMode == VansFSRMode::MatchViewport &&
+			m_RequestedSceneViewportExtent.width == 0)
+		{
+			m_RequestedSceneViewportExtent = newDisplayExtent;
+			m_FSRConfigDirty = true;
+		}
 
 		VANS_LOG("OnWindowResize: display=" << newDisplayExtent.width << "x" << newDisplayExtent.height
 			<< "  render=" << m_RenderWidth << "x" << m_RenderHeight);
@@ -381,6 +382,7 @@ namespace VansGraphics
 
 		VANS_SET_FRAME_PHASE(VansFramePhase::RenderPrep);
 		m_Scene->UpdateSceneData();
+		ProcessPendingGISettings();
 		VANS_SET_FRAME_PHASE(VansFramePhase::GPURecord);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
@@ -490,49 +492,6 @@ namespace VansGraphics
 				m_globalRenderStateData,
 				[&]() { DrawSceneGBuffer(renderPassManager, m_VansVKCommandBuffer); });
 
-			// ── 设计文档 Pass 7：Water GBuffer（在场景 GBuffer 之后、Deferred 之前执行）──
-			// 仅需场景深度作遮挡测试，SceneColor 尚不需要；可与 Deferred 前的 Compute 并排。
-			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
-			{
-				// 每帧更新 CDLOD Patch 列表（play 和非 play 模式均需要），依赖当前帧相机位置
-				auto* waterSys = m_Scene->GetWaterSystem();
-				{
-					auto* camera = m_Scene->GetCamera();
-					glm::vec3 camPos = glm::vec3(camera->GetPosition());
-					glm::mat4 viewMatrix = camera->GetViewMatrix();
-					glm::mat4 vpMatrix = camera->GetProjectiveMatrix() * viewMatrix;
-					glm::vec3 mainLightDir = glm::vec3(0.35f, 1.0f, 0.25f);
-					glm::vec3 mainLightColor = glm::vec3(1.0f);
-						auto& dirLights = m_Scene->GetLightManager()->GetDirectionLights();
-						if (!dirLights.empty())
-						{
-							mainLightDir = glm::normalize(dirLights[0].m_Direction);
-							mainLightColor = dirLights[0].m_Color * dirLights[0].m_Intensity;
-						}
-						waterSys->Update(static_cast<float>(VansTimer::GetDeltaTime()), camPos, viewMatrix, vpMatrix, mainLightDir, mainLightColor);
-				}
-				RecordFrameGpuStep(
-					m_CurrentFramePlan,
-					VansRenderPassNames::WaterWaveCompute,
-					"Water Wave Compute",
-					cmd,
-					[&]()
-					{
-						waterSys->UpdateWaveSimulation(m_VansVKCommandBuffer, static_cast<float>(VansTimer::GetDeltaTime()));
-						// N-01: Detail Normal compute（在 wave simulation 之后、GBuffer pass 之前）
-						waterSys->UpdateDetailNormalCompute(m_VansVKCommandBuffer);
-					});
-				RecordFrameGraphicsPass(
-					m_CurrentFramePlan,
-					VansRenderPassNames::WaterGBuffer,
-					"Water GBuffer Pass",
-					renderPassManager,
-					renderPassManager->GetVansWaterGBufferPass(),
-					m_VansVKCommandBuffer,
-					m_globalRenderStateData,
-					[&]() { m_Scene->DrawWaterGBufferNode(); });
-			}
-
 			RecordFrameGraphicsPass(
 				m_CurrentFramePlan,
 				VansRenderPassNames::Decal,
@@ -549,9 +508,20 @@ namespace VansGraphics
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::TileLightBuild, [&]() { BuildTileLightLists(m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::HZB, [&]() { UpdateHZB(renderPassManager, m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(m_VansVKCommandBuffer); });
+				// RayTracing/GIPointLight/GISHUpdate 写入 probe SH；SSGI 随后读取当帧可用的分帧结果。
+				{
+					VkMemoryBarrier giProbeToSSGIBarrier = {};
+					giProbeToSSGIBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+					giProbeToSSGIBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+					giProbeToSSGIBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+					m_VansVKCommandBuffer.PipelineBarrier(
+						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						{ giProbeToSSGIBarrier });
+				}
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::GIData, [&]() { UpdateGIData(renderPassManager, m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSR, [&]() { UpdateSSR(renderPassManager, m_VansVKCommandBuffer); });
-				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::VolumetricFog, [&]() { UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer); });
 				// 体积云 1/4 分辨率光线步进（Deferred pass 前完成，结果由 SkyBox.frag 合成）
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::CloudRayMarch, [&]() { UpdateCloudRayMarch(renderPassManager, m_VansVKCommandBuffer); });
@@ -588,7 +558,60 @@ namespace VansGraphics
 				m_globalRenderStateData,
 				[&]() { DrawSceneDeferredSkybox(renderPassManager, m_VansVKCommandBuffer); });
 
-			// ── 设计文档 Pass 8：Pre-Water Compute ──────────────
+			// Custom shaders with depthWrite=true are automatically routed here.
+			// This pass writes SceneColor and the main scene depth before water coverage is generated.
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::ForwardOpaqueAfterDeferred,
+				"Forward Opaque After Deferred Pass",
+				renderPassManager,
+				renderPassManager->GetVansForwardOpaqueAfterDeferredPass(),
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]() { m_Scene->DrawForwardOpaqueAfterDeferredNodes(); });
+
+			// Generate water coverage only after opaque custom materials have populated main depth.
+			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
+			{
+				auto* waterSys = m_Scene->GetWaterSystem();
+				{
+					auto* camera = m_Scene->GetCamera();
+					glm::vec3 camPos = glm::vec3(camera->GetPosition());
+					glm::mat4 viewMatrix = camera->GetViewMatrix();
+					glm::mat4 vpMatrix = camera->GetProjectiveMatrix() * viewMatrix;
+					glm::vec3 mainLightDir = glm::vec3(0.35f, 1.0f, 0.25f);
+					glm::vec3 mainLightColor = glm::vec3(1.0f);
+					auto& dirLights = m_Scene->GetLightManager()->GetDirectionLights();
+					if (!dirLights.empty())
+					{
+						mainLightDir = glm::normalize(dirLights[0].m_Direction);
+						mainLightColor = dirLights[0].m_Color * dirLights[0].m_Intensity;
+					}
+					waterSys->Update(static_cast<float>(VansTimer::GetDeltaTime()), camPos, viewMatrix,
+						vpMatrix, mainLightDir, mainLightColor);
+				}
+				RecordFrameGpuStep(
+					m_CurrentFramePlan,
+					VansRenderPassNames::WaterWaveCompute,
+					"Water Wave Compute",
+					cmd,
+					[&]()
+					{
+						waterSys->UpdateWaveSimulation(m_VansVKCommandBuffer,
+							static_cast<float>(VansTimer::GetDeltaTime()));
+					});
+				RecordFrameGraphicsPass(
+					m_CurrentFramePlan,
+					VansRenderPassNames::WaterGBuffer,
+					"Water GBuffer Pass",
+					renderPassManager,
+					renderPassManager->GetVansWaterGBufferPass(),
+					m_VansVKCommandBuffer,
+					m_globalRenderStateData,
+					[&]() { m_Scene->DrawWaterGBufferNode(); });
+			}
+
+			// Water effects consume the coverage generated against the updated main depth.
 			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
 			{
 				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
@@ -604,16 +627,6 @@ namespace VansGraphics
 				waterSys->DispatchRefractionCS(m_VansVKCommandBuffer);
 				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
 			}
-
-			RecordFrameGraphicsPass(
-				m_CurrentFramePlan,
-				VansRenderPassNames::ForwardOpaqueAfterDeferred,
-				"Forward Opaque After Deferred Pass",
-				renderPassManager,
-				renderPassManager->GetVansForwardOpaqueAfterDeferredPass(),
-				m_VansVKCommandBuffer,
-				m_globalRenderStateData,
-				[&]() { m_Scene->DrawForwardOpaqueAfterDeferredNodes(); });
 
 			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
 			{
@@ -839,46 +852,6 @@ namespace VansGraphics
 				m_VansVKGBufferCommandBuffer,
 				m_globalRenderStateData,
 				[&]() { DrawSceneGBuffer(renderPassManager, m_VansVKGBufferCommandBuffer); });
-			// 水面 GBuffer Pass（设计文档 Pass 7）：在 GBuffer 之后、Decal 之前执行
-			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
-			{
-				// 每帧更新 CDLOD Patch 列表（异步路径同样需要）
-				auto* waterSys = m_Scene->GetWaterSystem();
-				{
-					auto* camera = m_Scene->GetCamera();
-					glm::vec3 camPos = glm::vec3(camera->GetPosition());
-					glm::mat4 viewMatrix = camera->GetViewMatrix();
-					glm::mat4 vpMatrix = camera->GetProjectiveMatrix() * viewMatrix;
-					glm::vec3 mainLightDir = glm::vec3(0.35f, 1.0f, 0.25f);
-					glm::vec3 mainLightColor = glm::vec3(1.0f);
-						auto& dirLights = m_Scene->GetLightManager()->GetDirectionLights();
-						if (!dirLights.empty())
-						{
-							mainLightDir = glm::normalize(dirLights[0].m_Direction);
-							mainLightColor = dirLights[0].m_Color * dirLights[0].m_Intensity;
-						}
-						waterSys->Update(static_cast<float>(VansTimer::GetDeltaTime()), camPos, viewMatrix, vpMatrix, mainLightDir, mainLightColor);
-				}
-				RecordFrameGpuStep(
-					m_CurrentFramePlan,
-					VansRenderPassNames::WaterWaveCompute,
-					"Water Wave Compute",
-					cmd,
-					[&]()
-					{
-						waterSys->UpdateWaveSimulation(m_VansVKGBufferCommandBuffer, static_cast<float>(VansTimer::GetDeltaTime()));
-						// N-01: Detail Normal compute（在 wave simulation 之后、GBuffer pass 之前）
-						waterSys->UpdateDetailNormalCompute(m_VansVKGBufferCommandBuffer);
-					});
-				RecordFrameGraphicsPassNoGpuScope(
-					m_CurrentFramePlan,
-					VansRenderPassNames::WaterGBuffer,
-					renderPassManager,
-					renderPassManager->GetVansWaterGBufferPass(),
-					m_VansVKGBufferCommandBuffer,
-					m_globalRenderStateData,
-					[&]() { m_Scene->DrawWaterGBufferNode(); });
-			}
 			RecordFrameGraphicsPassNoGpuScope(
 				m_CurrentFramePlan,
 				VansRenderPassNames::Decal,
@@ -952,9 +925,20 @@ namespace VansGraphics
 				// Tile 光源缓冲区的写入可见性由信号量保证。
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::HZB, [&]() { UpdateHZB(renderPassManager, m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(m_VansVKCommandBuffer); });
+				// RayTracing/GIPointLight/GISHUpdate 写入 probe SH；SSGI 随后读取当帧可用的分帧结果。
+				{
+					VkMemoryBarrier giProbeToSSGIBarrier = {};
+					giProbeToSSGIBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+					giProbeToSSGIBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+					giProbeToSSGIBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+					m_VansVKCommandBuffer.PipelineBarrier(
+						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						{ giProbeToSSGIBarrier });
+				}
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::GIData, [&]() { UpdateGIData(renderPassManager, m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSR, [&]() { UpdateSSR(renderPassManager, m_VansVKCommandBuffer); });
-				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::VolumetricFog, [&]() { UpdateVolumetricFog(renderPassManager, m_VansVKCommandBuffer); });
 				// 体积云 1/4 分辨率光线步进（Deferred pass 前完成，结果由 SkyBox.frag 合成）
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::CloudRayMarch, [&]() { UpdateCloudRayMarch(renderPassManager, m_VansVKCommandBuffer); });
@@ -985,17 +969,6 @@ namespace VansGraphics
 				m_VansVKCommandBuffer,
 				m_globalRenderStateData,
 				[&]() { DrawSceneDeferredSkybox(renderPassManager, m_VansVKCommandBuffer); });
-			// Pre-Water Compute（Stub，Phase 2 实现）
-			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
-			{
-				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
-				auto* waterSys = m_Scene->GetWaterSystem();
-				waterSys->DispatchWaterThicknessCS(m_VansVKCommandBuffer);
-				waterSys->DispatchWaterSSSScatterCS(m_VansVKCommandBuffer);
-				waterSys->DispatchWaterSSR(m_VansVKCommandBuffer);
-				waterSys->DispatchRefractionCS(m_VansVKCommandBuffer);
-				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
-			}
 			RecordFrameGraphicsPass(
 				m_CurrentFramePlan,
 				VansRenderPassNames::ForwardOpaqueAfterDeferred,
@@ -1005,6 +978,61 @@ namespace VansGraphics
 				m_VansVKCommandBuffer,
 				m_globalRenderStateData,
 				[&]() { m_Scene->DrawForwardOpaqueAfterDeferredNodes(); });
+
+			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
+			{
+				auto* waterSys = m_Scene->GetWaterSystem();
+				{
+					auto* camera = m_Scene->GetCamera();
+					glm::vec3 camPos = glm::vec3(camera->GetPosition());
+					glm::mat4 viewMatrix = camera->GetViewMatrix();
+					glm::mat4 vpMatrix = camera->GetProjectiveMatrix() * viewMatrix;
+					glm::vec3 mainLightDir = glm::vec3(0.35f, 1.0f, 0.25f);
+					glm::vec3 mainLightColor = glm::vec3(1.0f);
+					auto& dirLights = m_Scene->GetLightManager()->GetDirectionLights();
+					if (!dirLights.empty())
+					{
+						mainLightDir = glm::normalize(dirLights[0].m_Direction);
+						mainLightColor = dirLights[0].m_Color * dirLights[0].m_Intensity;
+					}
+					waterSys->Update(static_cast<float>(VansTimer::GetDeltaTime()), camPos, viewMatrix,
+						vpMatrix, mainLightDir, mainLightColor);
+				}
+				RecordFrameGpuStep(
+					m_CurrentFramePlan,
+					VansRenderPassNames::WaterWaveCompute,
+					"Water Wave Compute",
+					cmd,
+					[&]()
+					{
+						waterSys->UpdateWaveSimulation(m_VansVKCommandBuffer,
+							static_cast<float>(VansTimer::GetDeltaTime()));
+					});
+				RecordFrameGraphicsPass(
+					m_CurrentFramePlan,
+					VansRenderPassNames::WaterGBuffer,
+					"Water GBuffer Pass",
+					renderPassManager,
+					renderPassManager->GetVansWaterGBufferPass(),
+					m_VansVKCommandBuffer,
+					m_globalRenderStateData,
+					[&]() { m_Scene->DrawWaterGBufferNode(); });
+			}
+
+			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
+			{
+				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
+				auto* waterSys = m_Scene->GetWaterSystem();
+				auto* matMgr = m_Scene->GetMaterialManager();
+				auto* hzbTex = matMgr ? matMgr->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT) : nullptr;
+				if (hzbTex)
+					waterSys->EnsureSSRDescriptorSet(&hzbTex->GetImage());
+				waterSys->DispatchWaterThicknessCS(m_VansVKCommandBuffer);
+				waterSys->DispatchWaterSSSScatterCS(m_VansVKCommandBuffer);
+				waterSys->DispatchWaterSSR(m_VansVKCommandBuffer);
+				waterSys->DispatchRefractionCS(m_VansVKCommandBuffer);
+				waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
+			}
 			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
 			{
 				ClearHairOITResources(renderPassManager, m_VansVKCommandBuffer);
@@ -1061,6 +1089,8 @@ namespace VansGraphics
 			auto camera = m_Scene->GetCamera();
 			m_FSRInput.jitterPixelX = camera->m_JitterPixelX;
 			m_FSRInput.jitterPixelY = camera->m_JitterPixelY;
+			m_FSRInput.frameTimeDeltaMs = static_cast<float>(
+				std::max(VansTimer::GetRealDeltaTime(), 0.0001) * 1000.0);
 
 			m_FSRController.DispatchUpscale(cmd, m_FSRInput);
 
@@ -1322,6 +1352,7 @@ namespace VansGraphics
 		int pointLightCount = static_cast<int>(std::min<size_t>(pointLights.size(), lightManager->GetMaxPointLightCount()));
 		for (int lightIndex = 0; lightIndex < pointLightCount; lightIndex++)
 		{
+			if (pointLights[lightIndex].m_ShadowIndex < 0.0f) continue;
 			m_Scene->DrawPointShadow(lightIndex);
 		}
 
@@ -1329,6 +1360,7 @@ namespace VansGraphics
 		int spotLightCount = static_cast<int>(std::min<size_t>(spotLights.size(), lightManager->GetMaxSpotLightCount()));
 		for (int lightIndex = 0; lightIndex < spotLightCount; lightIndex++)
 		{
+			if (spotLights[lightIndex].m_ShadowIndex < 0.0f) continue;
 			m_Scene->DrawSpotShadow(pointLightCount, lightIndex);
 		}
 
@@ -1336,6 +1368,7 @@ namespace VansGraphics
 		int rectLightCount = static_cast<int>(std::min<size_t>(rectLights.size(), lightManager->GetMaxRectLightCount()));
 		for (int lightIndex = 0; lightIndex < rectLightCount; lightIndex++)
 		{
+			if (rectLights[lightIndex].m_ShadowIndex < 0.0f) continue;
 			m_Scene->DrawRectShadow(pointLightCount, spotLightCount, lightIndex);
 		}
 	}
@@ -1376,7 +1409,6 @@ namespace VansGraphics
 	{
 		DrawHairComposite(renderPassManager, commandBuffer);
 		m_Scene->DrawTransParentNodes();
-		m_Scene->DrawParticleNodes();
 		renderPassManager->NextSubPass(commandBuffer, m_globalRenderStateData);
 		m_Scene->DrawPostProcessNodes();
 	}
@@ -1392,6 +1424,8 @@ namespace VansGraphics
 		VansVKImage& target = renderPassManager->GetOpaqueSceneColor();
 		const VkImageLayout oldSourceLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		const VkImageLayout oldTargetLayout = target.GetImageLayout();
+		const uint32_t mipCount = target.GetImageCreateInfo().mipLevels;
+		const VkExtent3D sourceExtent = source.GetImageDimension();
 
 		VkImageMemoryBarrier toCopy[2]{};
 		toCopy[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1412,19 +1446,63 @@ namespace VansGraphics
 		toCopy[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		toCopy[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		toCopy[1].image = target.GetImage();
-		toCopy[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		toCopy[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mipCount, 0, 1 };
 
 		commandBuffer.PipelineBarrier(
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{}, {}, { toCopy[0], toCopy[1] });
 
 		VkImageCopy copyRegion{};
 		copyRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
 		copyRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-		copyRegion.extent = source.GetImageDimension();
+		copyRegion.extent = sourceExtent;
 		commandBuffer.CopyImageRegions(source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 			target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, { copyRegion });
+
+		int32_t mipWidth = static_cast<int32_t>(sourceExtent.width);
+		int32_t mipHeight = static_cast<int32_t>(sourceExtent.height);
+		VkImageMemoryBarrier mipBarrier{};
+		mipBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		mipBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		mipBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		mipBarrier.image = target.GetImage();
+		mipBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		for (uint32_t mip = 1; mip < mipCount; ++mip)
+		{
+			mipBarrier.subresourceRange.baseMipLevel = mip - 1;
+			mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			mipBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			mipBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			commandBuffer.PipelineBarrier(
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				{}, {}, { mipBarrier });
+
+			const int32_t nextWidth = std::max(1, mipWidth / 2);
+			const int32_t nextHeight = std::max(1, mipHeight / 2);
+			VkImageBlit blit{};
+			blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 0, 1 };
+			blit.srcOffsets[1] = { mipWidth, mipHeight, 1 };
+			blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1 };
+			blit.dstOffsets[1] = { nextWidth, nextHeight, 1 };
+			commandBuffer.BlitImageRegions(
+				target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				{ blit }, VK_FILTER_LINEAR);
+
+			mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			mipBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			mipBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			commandBuffer.PipelineBarrier(
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				{}, {}, { mipBarrier });
+
+			mipWidth = nextWidth;
+			mipHeight = nextHeight;
+		}
 
 		VkImageMemoryBarrier toShader[2]{};
 		toShader[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1445,7 +1523,7 @@ namespace VansGraphics
 		toShader[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		toShader[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		toShader[1].image = target.GetImage();
-		toShader[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		toShader[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, mipCount - 1, 1, 0, 1 };
 
 		commandBuffer.PipelineBarrier(
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1719,6 +1797,33 @@ namespace VansGraphics
 				ssrReflection != nullptr ? ssrReflection->GetImage().GetSampler() : renderPassManager->GetOpaqueSceneColor().GetSampler(),
 				ssrReflection != nullptr ? ssrReflection->GetImage().GetImageView() : renderPassManager->GetOpaqueSceneColor().GetImageView(),
 				ssrReflection != nullptr ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}});
+		descManager->WriteImageDescriptor(
+			m_TransmissionGlassPassSets[0],
+			TRANSMISSION_GLASS_BINDING_OPAQUE_DEPTH,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				renderPassManager->GetDepth().GetSampler(),
+				renderPassManager->GetDepth().GetImageView(),
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+			}});
+		descManager->WriteImageDescriptor(
+			m_TransmissionGlassPassSets[0],
+			TRANSMISSION_GLASS_BINDING_CASCADE_SHADOW,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				renderPassManager->GetCascadeShadowSampler(),
+				renderPassManager->GetCascadeShadowArrayView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			}});
+		descManager->WriteImageDescriptor(
+			m_TransmissionGlassPassSets[0],
+			TRANSMISSION_GLASS_BINDING_PUNCTUAL_SHADOW,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{
+				renderPassManager->GetPunctualShadowMap().GetSampler(),
+				renderPassManager->GetPunctualShadowMap().GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			}});
 		descManager->CommitDescriptorUpdates();
 		m_TransmissionGlassDescriptorsReady = true;

@@ -355,6 +355,70 @@ namespace Vans::EditorAPI
 		std::vector<std::string> validationErrors;
 	};
 
+	enum class FSRUpscaleMode : std::uint32_t
+	{
+		MatchViewport = 0,
+		NativeAA = 1,
+		Quality = 2,
+		Performance = 3
+	};
+
+	struct FSRSettingsSnapshot
+	{
+		FSRUpscaleMode mode = FSRUpscaleMode::MatchViewport;
+		float sharpness = 0.35f;
+		float mipBias = 0.0f;
+		std::uint32_t renderWidth = 0;
+		std::uint32_t renderHeight = 0;
+		std::uint32_t outputWidth = 0;
+		std::uint32_t outputHeight = 0;
+	};
+
+	struct GIInspectorSettingsSnapshot
+	{
+		bool available = false;
+		Vec3 regionCenter = { 0.0f, 6.0f, 0.0f };
+		Vec3 volumeMin;
+		Vec3 volumeMax;
+		std::uint32_t gridSize = 0;
+		Vec3 gridDimensions;
+		float probeSpacing = 0.0f;
+		Vec3 probeSpacingAxes;
+		float normalBias = 0.0f;
+		float maxRayDistance = 0.0f;
+		float volumeFadeDistance = 0.0f;
+		std::uint32_t raysPerProbe = 0;
+		std::uint32_t spatialUpdateDivisor = 1;
+		std::uint32_t directionUpdateSlices = 1;
+		float environmentIntensity = 0.0f;
+		float maxIndirectRadiance = 0.0f;
+		float maxSHL0 = 0.0f;
+		bool showProbeGizmos = false;
+		bool showProbeVolume = false;
+		int debugView = 0;
+		float debugExposure = 1.0f;
+		std::uint32_t gizmoStride = 8;
+		std::uint32_t totalProbeCount = 0;
+	};
+
+	struct GIProbeDebugEntrySnapshot
+	{
+		Vec3 position;
+		Vec3 l0Diffuse;
+		float l1Ratio = 0.0f;
+	};
+
+	struct GIProbeDebugSnapshot
+	{
+		bool available = false;
+		std::uint32_t gridSize = 0;
+		Vec3 gridDimensions;
+		std::uint32_t stride = 1;
+		float exposure = 1.0f;
+		std::vector<GIProbeDebugEntrySnapshot> probes;
+		std::string status;
+	};
+
 	struct WaterMediumSettings
 	{
 		Vec3 absorptionCoeff = { 0.25f, 0.08f, 0.02f };
@@ -367,79 +431,62 @@ namespace Vans::EditorAPI
 		Vec4 shallowColor = { 0.05f, 0.18f, 0.55f, 1.0f };
 	};
 
-	struct WaterFFTSettings
+	struct WaterMicroSlopeSettings
 	{
-		bool useDerivativeNormal = true;
-		int resolution = 256;
-		int lodCount = 4;
-		float spectrumAmplitude = 4.0f;
+		bool enabled = true;
+		float intensity = 0.35f;
+		float minWavelength = 0.09f;
+		float primaryCoverage = 8.0f;
+		float secondaryCoverage = 11.313708f;
+		float rotationDegrees = 31.0f;
+	};
+
+	struct WaterSpectrumSettings
+	{
+		int mode = 2;
+		int cascadeCount = 4;
+		float baseCoverage = 64.0f;
+		float cascadeScale = 4.0f;
+		Vec2 windDirection = { 0.7071f, 0.7071f };
+		float windSpeed = 12.0f;
+		float swellAmplitude = 0.2f;
 		float choppiness = 1.0f;
+		int gerstnerWaveCount = 32;
+		float spectrumAmplitude = 0.001f;
+		float minWavelength = 0.5f;
 		float smallWaveDamping = 0.003f;
 		float windDependency = 0.07f;
 		float depth = 10000.0f;
 		float repeatPeriod = 0.0f;
-		float foamSlopeScale = 0.25f;
-		float foamFoldScale = 1.0f;
 	};
 
-	struct WaterDetailNormalSettings
+	struct WaterGeometrySettings
 	{
-		bool enabled = true;
-		float intensity = 1.0f;
-		float scale = 1.0f;
-		int octaveCount = 4;
-		float timeOffset = 0.0f;
-		float detailBaseScale = 16.0f;
-	};
-
-	struct WaterWaveSettings
-	{
-		int mode = 0;
-		float baseScale = 64.0f;
-		int maxLod = 10;
-		Vec2 windDirection = { 0.7071f, 0.7071f };
-		float windSpeed = 12.0f;
-		float swellAmplitude = 0.2f;
-		float chopScale = 1.5f;
-		int gerstnerWaveCount = 64;
-		int fftLodCount = 4;
-		int fftResolution = 256;
-		WaterFFTSettings fft;
-		WaterDetailNormalSettings detailNormal;
-	};
-
-	struct WaterLODSettings
-	{
-		int maxLod = 10;
+		int lodCount = 10;
 		float basePatchSize = 16.0f;
-		int meshDim = 65;
-		float detailBalance = 2.0f;
-		float morphWidthRatio = 0.5f;
+		float morphStartRatio = 0.5f;
 	};
 
 	struct WaterSettingsSnapshot
 	{
 		bool available = false;
-		int type = 0;
 		float waterLevel = 3.4f;
 		float specularIntensity = 1.0f;
 		WaterMediumSettings medium;
-		WaterLODSettings lod;
-		WaterWaveSettings waves;
+		WaterGeometrySettings geometry;
+		WaterSpectrumSettings spectrum;
+		WaterMicroSlopeSettings microSlope;
 		bool sssEnabled = true;
 		float maxThicknessDistance = 15.0f;
 		float deepWaterThicknessFallback = 0.8f;
-		bool causticsEnabled = true;
+		bool causticsEnabled = false;
 		float causticsIntensity = 1.0f;
 		float causticsScale = 0.5f;
 		bool refractionEnabled = true;
-		float refractionMaxDistance = 50.0f;
-		float refractionScale = 0.5f;
+		float refractionDistortionStrength = 0.025f;
 		bool ssrEnabled = true;
 		float ssrMaxDistance = 500.0f;
 		float ssrMaxRoughness = 0.3f;
-		bool foamEnabled = true;
-		float foamIntensity = 1.0f;
 	};
 
 	struct WaterRuntimeStats
@@ -452,9 +499,8 @@ namespace Vans::EditorAPI
 		float basePatchSize = 0.0f;
 		std::uint32_t indexCount = 0;
 		int lodLevels = 0;
-		float detailBalance = 2.0f;
-		int maxWaterTextureLayer = 0;
-		int maxFftLod = 0;
+		float geometryLodRatio = 2.0f;
+		int maxSpectrumCascade = 0;
 		int fftFieldCount = 0;
 	};
 
@@ -668,6 +714,35 @@ namespace Vans::EditorAPI
 		std::vector<DirectionalLightSettings> directionalLights;
 		std::vector<PointLightSettings> pointLights;
 		std::vector<SpotLightSettings> spotLights;
+	};
+
+	struct PostProcessSettingsSnapshot
+	{
+		bool available = false;
+
+		bool enableAutoExposure = true;
+		float exposureCompensation = 0.0f;
+		float minEV100 = -6.0f;
+		float maxEV100 = 16.0f;
+		float adaptationSpeedUp = 3.0f;
+		float adaptationSpeedDown = 1.0f;
+
+		bool enableBloom = true;
+		float bloomThreshold = 1.0f;
+		float bloomKnee = 0.5f;
+		float bloomIntensity = 0.12f;
+		float bloomScatter = 0.7f;
+
+		int toneMapperType = 1;
+		float whitePoint = 11.2f;
+
+		bool enableColorGrading = true;
+		float contrast = 1.0f;
+		float saturation = 1.0f;
+		float hueShift = 0.0f;
+		float temperature = 0.0f;
+		float tint = 0.0f;
+
 	};
 
 	struct FogSettings

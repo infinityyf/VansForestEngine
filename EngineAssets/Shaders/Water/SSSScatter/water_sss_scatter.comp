@@ -1,5 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#include "../water_screen_common.glsl"
 
 // ============================================================
 // water_sss_scatter.comp — 水面 SSS 单次散射（W-16 Phase 2）
@@ -14,7 +15,7 @@
 //   [2] Schlick Phase Function (Blasi et al. 1993)
 // ============================================================
 
-#include "../water_common.glsl"
+const float PI = 3.14159265358979323846;
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -64,27 +65,26 @@ void main()
     if (pixel.x >= size.x || pixel.y >= size.y)
         return;
 
-    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
-
     // ── 水面存在性检查 ──────────────────────────────────────
-    vec4 posDepth    = texture(waterGBufPosDepth, uv);
+    vec4 normalCoverage = texelFetch(waterGBufNormal, pixel, 0);
+    vec4 posDepth    = texelFetch(waterGBufPosDepth, pixel, 0);
     float waterDepth = posDepth.a;
-    if (waterDepth >= 9999.0)
+    if (!WaterSurfaceValid(normalCoverage, posDepth))
     {
         imageStore(sssScatterOut, pixel, vec4(0.0));
         return;
     }
 
     // 场景遮挡：物体在水面之前 → 无水面可见
-    float sceneDepth = texture(sceneGBuf2, uv).w;
-    if (sceneDepth > 0.1 && sceneDepth < waterDepth + 0.05)
+    float sceneDepth = texelFetch(sceneGBuf2, pixel, 0).w;
+    if (SceneOccludesWater(sceneDepth, waterDepth))
     {
         imageStore(sssScatterOut, pixel, vec4(0.0));
         return;
     }
 
     // ── 读取厚度图 ─────────────────────────────────────────
-    float thicknessNorm = texture(waterThicknessMap, uv).r;
+    float thicknessNorm = texelFetch(waterThicknessMap, pixel, 0).r;
     float thicknessM = thicknessNorm * params.maxThickness;
 
     // ── 参与介质参数 ───────────────────────────────────────

@@ -981,14 +981,14 @@ namespace VansGraphics
 		glm::mat4 view = glm::lookAt(probe.capturePosition, probe.capturePosition + directions[face], up[face]);
 		glm::mat4 projection = glm::perspective(glm::radians(90.0f), 1.0f, probe.nearPlane, probe.farPlane);
 		const VansGISettings& gi = scene.GetGISettings();
-		const float giVolumeSize = float(gi.gridSize) * gi.probeSpacing;
-		const glm::vec3 giVolumeMin = gi.regionCenter - glm::vec3(giVolumeSize * 0.5f);
+		const glm::vec3 giVolumeSize = glm::vec3(gi.gridDimensions) * gi.probeSpacingAxes;
+		const glm::vec3 giVolumeMin = gi.regionCenter - giVolumeSize * 0.5f;
 		CaptureCameraData cameraData{};
 		cameraData.viewProjection = projection * view;
 		cameraData.inverseViewProjection = glm::inverse(cameraData.viewProjection);
 		cameraData.position = glm::vec4(probe.capturePosition, 1.0f);
 		cameraData.giVolumeMin = glm::vec4(giVolumeMin, 0.0f);
-		cameraData.giVolumeSizeAndBias = glm::vec4(giVolumeSize, giVolumeSize, giVolumeSize, gi.normalBias);
+		cameraData.giVolumeSizeAndBias = glm::vec4(giVolumeSize, gi.normalBias);
 		m_CaptureCameraBuffer.SetBufferData(&cameraData, 0, sizeof(cameraData));
 
 		commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);

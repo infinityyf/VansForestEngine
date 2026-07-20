@@ -20,6 +20,7 @@
 #include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include "../../RenderCore/VulkanCore/VansVKImage.h"
+#include "../../RenderCore/VulkanCore/VansVKMemoryManager.h"
 #include "../../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../../RenderCore/VulkanCore/VansTexture.h"
 #include "../../PhysicsCore/VansCollisionLayerManager.h"
@@ -32,6 +33,7 @@
 #include "../../AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../ScriptCore/VansTransform.h"
+
 #include "../../Util/VansLog.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -1653,7 +1655,6 @@ namespace Vans::EditorAPI
 		{
 			WaterSettingsSnapshot settings;
 			settings.available = true;
-			settings.type = static_cast<int>(source.m_Type);
 			settings.waterLevel = source.m_WaterLevel;
 			settings.specularIntensity = source.m_SpecularIntensity;
 
@@ -1666,39 +1667,32 @@ namespace Vans::EditorAPI
 			settings.medium.deepColor = ToEditorVec4(source.m_Medium.m_DeepColor);
 			settings.medium.shallowColor = ToEditorVec4(source.m_Medium.m_ShallowColor);
 
-			settings.lod.maxLod = source.m_LOD.m_MaxLOD;
-			settings.lod.basePatchSize = source.m_LOD.m_BasePatchSize;
-			settings.lod.meshDim = source.m_LOD.m_MeshDim;
-			settings.lod.detailBalance = source.m_LOD.m_DetailBalance;
-			settings.lod.morphWidthRatio = source.m_LOD.m_MorphWidthRatio;
+			settings.geometry.lodCount = source.m_Geometry.m_LodCount;
+			settings.geometry.basePatchSize = source.m_Geometry.m_BasePatchSize;
+			settings.geometry.morphStartRatio = source.m_Geometry.m_MorphStartRatio;
 
-			settings.waves.mode = static_cast<int>(source.m_Waves.m_Mode);
-			settings.waves.baseScale = source.m_Waves.m_BaseScale;
-			settings.waves.maxLod = source.m_Waves.m_MaxLOD;
-			settings.waves.windDirection = ToEditorVec2(source.m_Waves.m_WindDirection);
-			settings.waves.windSpeed = source.m_Waves.m_WindSpeed;
-			settings.waves.swellAmplitude = source.m_Waves.m_SwellAmplitude;
-			settings.waves.chopScale = source.m_Waves.m_ChopScale;
-			settings.waves.gerstnerWaveCount = source.m_Waves.m_GerstnerWaveCount;
-			settings.waves.fftLodCount = source.m_Waves.m_FftLODCount;
-			settings.waves.fftResolution = source.m_Waves.m_FftResolution;
-			settings.waves.fft.useDerivativeNormal = source.m_Waves.m_FFT.m_UseDerivativeNormal;
-			settings.waves.fft.resolution = source.m_Waves.m_FFT.m_Resolution;
-			settings.waves.fft.lodCount = source.m_Waves.m_FFT.m_LODCount;
-			settings.waves.fft.spectrumAmplitude = source.m_Waves.m_FFT.m_SpectrumAmplitude;
-			settings.waves.fft.choppiness = source.m_Waves.m_FFT.m_Choppiness;
-			settings.waves.fft.smallWaveDamping = source.m_Waves.m_FFT.m_SmallWaveDamping;
-			settings.waves.fft.windDependency = source.m_Waves.m_FFT.m_WindDependency;
-			settings.waves.fft.depth = source.m_Waves.m_FFT.m_Depth;
-			settings.waves.fft.repeatPeriod = source.m_Waves.m_FFT.m_RepeatPeriod;
-			settings.waves.fft.foamSlopeScale = source.m_Waves.m_FFT.m_FoamSlopeScale;
-			settings.waves.fft.foamFoldScale = source.m_Waves.m_FFT.m_FoamFoldScale;
-			settings.waves.detailNormal.enabled = source.m_Waves.m_DetailNormal.m_Enabled;
-			settings.waves.detailNormal.intensity = source.m_Waves.m_DetailNormal.m_Intensity;
-			settings.waves.detailNormal.scale = source.m_Waves.m_DetailNormal.m_Scale;
-			settings.waves.detailNormal.octaveCount = source.m_Waves.m_DetailNormal.m_OctaveCount;
-			settings.waves.detailNormal.timeOffset = source.m_Waves.m_DetailNormal.m_TimeOffset;
-			settings.waves.detailNormal.detailBaseScale = source.m_Waves.m_DetailNormal.m_DetailBaseScale;
+			settings.spectrum.mode = static_cast<int>(source.m_Spectrum.m_Mode);
+			settings.spectrum.cascadeCount = source.m_Spectrum.m_CascadeCount;
+			settings.spectrum.baseCoverage = source.m_Spectrum.m_BaseCoverage;
+			settings.spectrum.cascadeScale = source.m_Spectrum.m_CascadeScale;
+			settings.spectrum.windDirection = ToEditorVec2(source.m_Spectrum.m_WindDirection);
+			settings.spectrum.windSpeed = source.m_Spectrum.m_WindSpeed;
+			settings.spectrum.swellAmplitude = source.m_Spectrum.m_SwellAmplitude;
+			settings.spectrum.choppiness = source.m_Spectrum.m_Choppiness;
+			settings.spectrum.gerstnerWaveCount = source.m_Spectrum.m_GerstnerWaveCount;
+			settings.spectrum.spectrumAmplitude = source.m_Spectrum.m_SpectrumAmplitude;
+			settings.spectrum.minWavelength = source.m_Spectrum.m_MinWavelength;
+			settings.spectrum.smallWaveDamping = source.m_Spectrum.m_SmallWaveDamping;
+			settings.spectrum.windDependency = source.m_Spectrum.m_WindDependency;
+			settings.spectrum.depth = source.m_Spectrum.m_Depth;
+			settings.spectrum.repeatPeriod = source.m_Spectrum.m_RepeatPeriod;
+
+			settings.microSlope.enabled = source.m_MicroSlope.m_Enabled;
+			settings.microSlope.intensity = source.m_MicroSlope.m_Intensity;
+			settings.microSlope.minWavelength = source.m_MicroSlope.m_MinWavelength;
+			settings.microSlope.primaryCoverage = source.m_MicroSlope.m_PrimaryCoverage;
+			settings.microSlope.secondaryCoverage = source.m_MicroSlope.m_SecondaryCoverage;
+			settings.microSlope.rotationDegrees = source.m_MicroSlope.m_RotationDegrees;
 
 			settings.sssEnabled = source.m_SSS.m_Enabled;
 			settings.maxThicknessDistance = source.m_SSS.m_MaxThicknessDistance;
@@ -1707,19 +1701,15 @@ namespace Vans::EditorAPI
 			settings.causticsIntensity = source.m_Caustics.m_Intensity;
 			settings.causticsScale = source.m_Caustics.m_Scale;
 			settings.refractionEnabled = source.m_Refraction.m_Enabled;
-			settings.refractionMaxDistance = source.m_Refraction.m_MaxDistance;
-			settings.refractionScale = source.m_Refraction.m_Scale;
+			settings.refractionDistortionStrength = source.m_Refraction.m_DistortionStrength;
 			settings.ssrEnabled = source.m_SSR.m_Enabled;
 			settings.ssrMaxDistance = source.m_SSR.m_MaxDistance;
 			settings.ssrMaxRoughness = source.m_SSR.m_MaxRoughness;
-			settings.foamEnabled = source.m_Foam.m_Enabled;
-			settings.foamIntensity = source.m_Foam.m_Intensity;
 			return settings;
 		}
 
 		void ApplyWaterSettingsToConfig(const WaterSettingsSnapshot& settings, VansGraphics::VansWaterConfig& destination)
 		{
-			destination.m_Type = static_cast<VansGraphics::VansWaterType>(std::clamp(settings.type, 0, 3));
 			destination.m_WaterLevel = settings.waterLevel;
 			destination.m_SpecularIntensity = settings.specularIntensity;
 
@@ -1732,39 +1722,32 @@ namespace Vans::EditorAPI
 			destination.m_Medium.m_DeepColor = ToRuntimeVec4(settings.medium.deepColor);
 			destination.m_Medium.m_ShallowColor = ToRuntimeVec4(settings.medium.shallowColor);
 
-			destination.m_LOD.m_MaxLOD = settings.lod.maxLod;
-			destination.m_LOD.m_BasePatchSize = settings.lod.basePatchSize;
-			destination.m_LOD.m_MeshDim = settings.lod.meshDim;
-			destination.m_LOD.m_DetailBalance = settings.lod.detailBalance;
-			destination.m_LOD.m_MorphWidthRatio = settings.lod.morphWidthRatio;
+			destination.m_Geometry.m_LodCount = settings.geometry.lodCount;
+			destination.m_Geometry.m_BasePatchSize = settings.geometry.basePatchSize;
+			destination.m_Geometry.m_MorphStartRatio = settings.geometry.morphStartRatio;
 
-			destination.m_Waves.m_Mode = static_cast<VansGraphics::VansWaveMode>(std::clamp(settings.waves.mode, 0, 2));
-			destination.m_Waves.m_BaseScale = settings.waves.baseScale;
-			destination.m_Waves.m_MaxLOD = settings.waves.maxLod;
-			destination.m_Waves.m_WindDirection = ToRuntimeVec2(settings.waves.windDirection);
-			destination.m_Waves.m_WindSpeed = settings.waves.windSpeed;
-			destination.m_Waves.m_SwellAmplitude = settings.waves.swellAmplitude;
-			destination.m_Waves.m_ChopScale = settings.waves.chopScale;
-			destination.m_Waves.m_GerstnerWaveCount = settings.waves.gerstnerWaveCount;
-			destination.m_Waves.m_FftLODCount = settings.waves.fftLodCount;
-			destination.m_Waves.m_FftResolution = settings.waves.fftResolution;
-			destination.m_Waves.m_FFT.m_UseDerivativeNormal = settings.waves.fft.useDerivativeNormal;
-			destination.m_Waves.m_FFT.m_Resolution = settings.waves.fft.resolution;
-			destination.m_Waves.m_FFT.m_LODCount = settings.waves.fft.lodCount;
-			destination.m_Waves.m_FFT.m_SpectrumAmplitude = settings.waves.fft.spectrumAmplitude;
-			destination.m_Waves.m_FFT.m_Choppiness = settings.waves.fft.choppiness;
-			destination.m_Waves.m_FFT.m_SmallWaveDamping = settings.waves.fft.smallWaveDamping;
-			destination.m_Waves.m_FFT.m_WindDependency = settings.waves.fft.windDependency;
-			destination.m_Waves.m_FFT.m_Depth = settings.waves.fft.depth;
-			destination.m_Waves.m_FFT.m_RepeatPeriod = settings.waves.fft.repeatPeriod;
-			destination.m_Waves.m_FFT.m_FoamSlopeScale = settings.waves.fft.foamSlopeScale;
-			destination.m_Waves.m_FFT.m_FoamFoldScale = settings.waves.fft.foamFoldScale;
-			destination.m_Waves.m_DetailNormal.m_Enabled = settings.waves.detailNormal.enabled;
-			destination.m_Waves.m_DetailNormal.m_Intensity = settings.waves.detailNormal.intensity;
-			destination.m_Waves.m_DetailNormal.m_Scale = settings.waves.detailNormal.scale;
-			destination.m_Waves.m_DetailNormal.m_OctaveCount = settings.waves.detailNormal.octaveCount;
-			destination.m_Waves.m_DetailNormal.m_TimeOffset = settings.waves.detailNormal.timeOffset;
-			destination.m_Waves.m_DetailNormal.m_DetailBaseScale = settings.waves.detailNormal.detailBaseScale;
+			destination.m_Spectrum.m_Mode = static_cast<VansGraphics::VansWaveMode>(std::clamp(settings.spectrum.mode, 0, 2));
+			destination.m_Spectrum.m_CascadeCount = settings.spectrum.cascadeCount;
+			destination.m_Spectrum.m_BaseCoverage = settings.spectrum.baseCoverage;
+			destination.m_Spectrum.m_CascadeScale = settings.spectrum.cascadeScale;
+			destination.m_Spectrum.m_WindDirection = ToRuntimeVec2(settings.spectrum.windDirection);
+			destination.m_Spectrum.m_WindSpeed = settings.spectrum.windSpeed;
+			destination.m_Spectrum.m_SwellAmplitude = settings.spectrum.swellAmplitude;
+			destination.m_Spectrum.m_Choppiness = settings.spectrum.choppiness;
+			destination.m_Spectrum.m_GerstnerWaveCount = settings.spectrum.gerstnerWaveCount;
+			destination.m_Spectrum.m_SpectrumAmplitude = settings.spectrum.spectrumAmplitude;
+			destination.m_Spectrum.m_MinWavelength = settings.spectrum.minWavelength;
+			destination.m_Spectrum.m_SmallWaveDamping = settings.spectrum.smallWaveDamping;
+			destination.m_Spectrum.m_WindDependency = settings.spectrum.windDependency;
+			destination.m_Spectrum.m_Depth = settings.spectrum.depth;
+			destination.m_Spectrum.m_RepeatPeriod = settings.spectrum.repeatPeriod;
+
+			destination.m_MicroSlope.m_Enabled = settings.microSlope.enabled;
+			destination.m_MicroSlope.m_Intensity = settings.microSlope.intensity;
+			destination.m_MicroSlope.m_MinWavelength = settings.microSlope.minWavelength;
+			destination.m_MicroSlope.m_PrimaryCoverage = settings.microSlope.primaryCoverage;
+			destination.m_MicroSlope.m_SecondaryCoverage = settings.microSlope.secondaryCoverage;
+			destination.m_MicroSlope.m_RotationDegrees = settings.microSlope.rotationDegrees;
 
 			destination.m_SSS.m_Enabled = settings.sssEnabled;
 			destination.m_SSS.m_MaxThicknessDistance = settings.maxThicknessDistance;
@@ -1773,92 +1756,38 @@ namespace Vans::EditorAPI
 			destination.m_Caustics.m_Intensity = settings.causticsIntensity;
 			destination.m_Caustics.m_Scale = settings.causticsScale;
 			destination.m_Refraction.m_Enabled = settings.refractionEnabled;
-			destination.m_Refraction.m_MaxDistance = settings.refractionMaxDistance;
-			destination.m_Refraction.m_Scale = settings.refractionScale;
+			destination.m_Refraction.m_DistortionStrength = settings.refractionDistortionStrength;
 			destination.m_SSR.m_Enabled = settings.ssrEnabled;
 			destination.m_SSR.m_MaxDistance = settings.ssrMaxDistance;
 			destination.m_SSR.m_MaxRoughness = settings.ssrMaxRoughness;
-			destination.m_Foam.m_Enabled = settings.foamEnabled;
-			destination.m_Foam.m_Intensity = settings.foamIntensity;
-		}
-
-		void SyncWaterConfigToMaterial(const VansGraphics::VansWaterConfig& config, VansGraphics::VansWaterMaterial* material)
-		{
-			if (!material)
-				return;
-
-			material->m_Config = config;
-			material->m_AbsorptionCoeffs = config.m_Medium.m_AbsorptionCoeff;
-			material->m_ScatteringCoeffs = config.m_Medium.m_ScatteringCoeff;
-			material->m_WaterIOR = config.m_Medium.m_IOR;
-			material->m_FresnelPower = config.m_Medium.m_FresnelPower;
-			material->m_Anisotropy = config.m_Medium.m_Anisotropy;
-			material->m_WaterRoughness = config.m_Medium.m_WaterRoughness;
-			material->m_SpecularIntensity = config.m_SpecularIntensity;
-			material->m_DeepWaterColor = config.m_Medium.m_DeepColor;
-			material->m_ShallowWaterColor = config.m_Medium.m_ShallowColor;
-			material->m_OceanBaseScale = config.m_Waves.m_BaseScale;
-			material->m_GerstnerWaveCount = config.m_Waves.m_GerstnerWaveCount;
-			material->m_FftLODCount = config.m_Waves.m_FftLODCount;
-			material->m_FftResolution = config.m_Waves.m_FftResolution;
-			material->m_FFTUseDerivativeNormal = config.m_Waves.m_FFT.m_UseDerivativeNormal;
-			material->m_FFTSpectrumAmplitude = config.m_Waves.m_FFT.m_SpectrumAmplitude;
-			material->m_FFTChoppiness = config.m_Waves.m_FFT.m_Choppiness;
-			material->m_FFTSmallWaveDamping = config.m_Waves.m_FFT.m_SmallWaveDamping;
-			material->m_FFTWindDependency = config.m_Waves.m_FFT.m_WindDependency;
-			material->m_FFTDepth = config.m_Waves.m_FFT.m_Depth;
-			material->m_FFTRepeatPeriod = config.m_Waves.m_FFT.m_RepeatPeriod;
-			material->m_FFTFoamSlopeScale = config.m_Waves.m_FFT.m_FoamSlopeScale;
-			material->m_FFTFoamFoldScale = config.m_Waves.m_FFT.m_FoamFoldScale;
-			material->m_WindSpeed = config.m_Waves.m_WindSpeed;
-			material->m_SwellAmplitude = config.m_Waves.m_SwellAmplitude;
-			material->m_ChopScale = config.m_Waves.m_ChopScale;
-			material->m_WindDirection = config.m_Waves.m_WindDirection;
-			material->m_MaxLODCount = config.m_LOD.m_MaxLOD;
-			material->m_LODBasePatchSize = config.m_LOD.m_BasePatchSize;
-			material->m_LODMeshDim = config.m_LOD.m_MeshDim;
-			material->m_LODDetailBalance = config.m_LOD.m_DetailBalance;
-			material->m_LODMorphWidthRatio = config.m_LOD.m_MorphWidthRatio;
-			material->m_EnableFoam = config.m_Foam.m_Enabled;
-			material->m_FoamIntensity = config.m_Foam.m_Intensity;
-			material->m_SSSEnabled = config.m_SSS.m_Enabled;
-			material->m_MaxThicknessDistance = config.m_SSS.m_MaxThicknessDistance;
-			material->m_DeepWaterThicknessFallback = config.m_SSS.m_DeepWaterThicknessFallback;
-			material->m_EnableCaustics = config.m_Caustics.m_Enabled;
-			material->m_CausticsIntensity = config.m_Caustics.m_Intensity;
-			material->m_CausticsScale = config.m_Caustics.m_Scale;
-			material->m_EnableRefraction = config.m_Refraction.m_Enabled;
-			material->m_RefractionMaxDist = config.m_Refraction.m_MaxDistance;
-			material->m_RefractionScale = config.m_Refraction.m_Scale;
-			material->m_EnableSSR = config.m_SSR.m_Enabled;
-			material->m_SSRMaxDistance = config.m_SSR.m_MaxDistance;
-			material->m_SSRMaxRoughness = config.m_SSR.m_MaxRoughness;
-			material->m_DetailNormalEnabled = config.m_Waves.m_DetailNormal.m_Enabled;
-			material->m_DetailNormalIntensity = config.m_Waves.m_DetailNormal.m_Intensity;
-			material->m_DetailNormalScale = config.m_Waves.m_DetailNormal.m_Scale;
-			material->m_DetailNormalOctaves = config.m_Waves.m_DetailNormal.m_OctaveCount;
-			material->m_DetailNormalTimeOffset = config.m_Waves.m_DetailNormal.m_TimeOffset;
-			material->m_DetailNormalBaseScale = config.m_Waves.m_DetailNormal.m_DetailBaseScale;
+			destination.Validate();
 		}
 
 		bool ShouldReinitializeWaterFFT(
 			const VansGraphics::VansWaterConfig& previous,
 			const VansGraphics::VansWaterConfig& current)
 		{
-			return previous.m_Waves.m_Mode != current.m_Waves.m_Mode
-				|| previous.m_Waves.m_FftLODCount != current.m_Waves.m_FftLODCount
-				|| previous.m_Waves.m_FftResolution != current.m_Waves.m_FftResolution
-				|| previous.m_Waves.m_FFT.m_UseDerivativeNormal != current.m_Waves.m_FFT.m_UseDerivativeNormal
-				|| previous.m_Waves.m_FFT.m_LODCount != current.m_Waves.m_FFT.m_LODCount
-				|| previous.m_Waves.m_FFT.m_Resolution != current.m_Waves.m_FFT.m_Resolution
-				|| previous.m_Waves.m_FFT.m_SpectrumAmplitude != current.m_Waves.m_FFT.m_SpectrumAmplitude
-				|| previous.m_Waves.m_FFT.m_Choppiness != current.m_Waves.m_FFT.m_Choppiness
-				|| previous.m_Waves.m_FFT.m_SmallWaveDamping != current.m_Waves.m_FFT.m_SmallWaveDamping
-				|| previous.m_Waves.m_FFT.m_WindDependency != current.m_Waves.m_FFT.m_WindDependency
-				|| previous.m_Waves.m_FFT.m_Depth != current.m_Waves.m_FFT.m_Depth
-				|| previous.m_Waves.m_FFT.m_RepeatPeriod != current.m_Waves.m_FFT.m_RepeatPeriod
-				|| previous.m_Waves.m_FFT.m_FoamSlopeScale != current.m_Waves.m_FFT.m_FoamSlopeScale
-				|| previous.m_Waves.m_FFT.m_FoamFoldScale != current.m_Waves.m_FFT.m_FoamFoldScale;
+			return previous.m_Spectrum.m_CascadeCount != current.m_Spectrum.m_CascadeCount
+				|| previous.m_Spectrum.m_BaseCoverage != current.m_Spectrum.m_BaseCoverage
+				|| previous.m_Spectrum.m_CascadeScale != current.m_Spectrum.m_CascadeScale
+				|| previous.m_Spectrum.m_WindDirection != current.m_Spectrum.m_WindDirection
+				|| previous.m_Spectrum.m_WindSpeed != current.m_Spectrum.m_WindSpeed
+				|| previous.m_Spectrum.m_SpectrumAmplitude != current.m_Spectrum.m_SpectrumAmplitude
+				|| previous.m_Spectrum.m_MinWavelength != current.m_Spectrum.m_MinWavelength
+				|| previous.m_Spectrum.m_SmallWaveDamping != current.m_Spectrum.m_SmallWaveDamping
+				|| previous.m_Spectrum.m_WindDependency != current.m_Spectrum.m_WindDependency
+				|| previous.m_Spectrum.m_Depth != current.m_Spectrum.m_Depth
+				|| previous.m_Spectrum.m_RandomSeed != current.m_Spectrum.m_RandomSeed;
+		}
+
+		bool ShouldRegenerateGerstnerSpectrum(
+			const VansGraphics::VansWaterConfig& previous,
+			const VansGraphics::VansWaterConfig& current)
+		{
+			return previous.m_Spectrum.m_GerstnerWaveCount != current.m_Spectrum.m_GerstnerWaveCount
+				|| previous.m_Spectrum.m_WindDirection != current.m_Spectrum.m_WindDirection
+				|| previous.m_Spectrum.m_WindSpeed != current.m_Spectrum.m_WindSpeed
+				|| previous.m_Spectrum.m_SwellAmplitude != current.m_Spectrum.m_SwellAmplitude;
 		}
 
 		ReflectionProbeSettingsSnapshot ToReflectionProbeSettings(VansGraphics::VansReflectionProbeSystem& source)
@@ -2038,6 +1967,120 @@ namespace Vans::EditorAPI
 			destination.detailEdgeStrength = settings.detailEdgeStrength;
 			destination.shadowDensityScale = settings.shadowDensityScale;
 		}
+
+		PostProcessSettingsSnapshot ToAPIPostProcessSettings(
+			const VansGraphics::VansPostProcessProfile& source)
+		{
+			PostProcessSettingsSnapshot settings;
+			settings.available = true;
+			settings.enableAutoExposure = source.m_EnableAutoExposure;
+			settings.exposureCompensation = source.m_ExposureCompensation;
+			settings.minEV100 = source.m_MinEV100;
+			settings.maxEV100 = source.m_MaxEV100;
+			settings.adaptationSpeedUp = source.m_AdaptationSpeedUp;
+			settings.adaptationSpeedDown = source.m_AdaptationSpeedDown;
+			settings.enableBloom = source.m_EnableBloom;
+			settings.bloomThreshold = source.m_BloomThreshold;
+			settings.bloomKnee = source.m_BloomKnee;
+			settings.bloomIntensity = source.m_BloomIntensity;
+			settings.bloomScatter = source.m_BloomScatter;
+			settings.toneMapperType = source.m_ToneMapperType;
+			settings.whitePoint = source.m_WhitePoint;
+			settings.enableColorGrading = source.m_EnableColorGrading;
+			settings.contrast = source.m_Contrast;
+			settings.saturation = source.m_Saturation;
+			settings.hueShift = source.m_HueShift;
+			settings.temperature = source.m_Temperature;
+			settings.tint = source.m_Tint;
+			return settings;
+		}
+
+		void ApplyPostProcessSettingsToProfile(
+			const PostProcessSettingsSnapshot& settings,
+			VansGraphics::VansPostProcessProfile& destination)
+		{
+			destination.m_EnableAutoExposure = settings.enableAutoExposure;
+			destination.m_ExposureCompensation = std::clamp(settings.exposureCompensation, -16.0f, 16.0f);
+			destination.m_MinEV100 = std::clamp(settings.minEV100, -24.0f, 24.0f);
+			destination.m_MaxEV100 = std::clamp(settings.maxEV100, destination.m_MinEV100, 24.0f);
+			destination.m_AdaptationSpeedUp = std::clamp(settings.adaptationSpeedUp, 0.0f, 20.0f);
+			destination.m_AdaptationSpeedDown = std::clamp(settings.adaptationSpeedDown, 0.0f, 20.0f);
+			destination.m_EnableBloom = settings.enableBloom;
+			destination.m_BloomThreshold = std::clamp(settings.bloomThreshold, 0.0f, 64.0f);
+			destination.m_BloomKnee = std::clamp(settings.bloomKnee, 0.0f, 1.0f);
+			destination.m_BloomIntensity = std::clamp(settings.bloomIntensity, 0.0f, 10.0f);
+			destination.m_BloomScatter = std::clamp(settings.bloomScatter, 0.0f, 1.0f);
+			destination.m_ToneMapperType = std::clamp(settings.toneMapperType, 0, 2);
+			destination.m_WhitePoint = std::clamp(settings.whitePoint, 0.1f, 64.0f);
+			destination.m_EnableColorGrading = settings.enableColorGrading;
+			destination.m_Contrast = std::clamp(settings.contrast, 0.0f, 4.0f);
+			destination.m_Saturation = std::clamp(settings.saturation, 0.0f, 4.0f);
+			destination.m_HueShift = std::clamp(settings.hueShift, -1.0f, 1.0f);
+			destination.m_Temperature = std::clamp(settings.temperature, -1.0f, 1.0f);
+			destination.m_Tint = std::clamp(settings.tint, -1.0f, 1.0f);
+			destination.m_IsDirty = true;
+		}
+
+		class SetPostProcessSettingsCommand final : public IEngineCommand
+		{
+		public:
+			explicit SetPostProcessSettingsCommand(PostProcessSettingsSnapshot settings)
+				: m_Settings(settings)
+			{
+			}
+
+			void Execute(EngineCommandContext& context) override
+			{
+				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
+				auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
+				if (!materialManager)
+					return;
+
+				if (!m_HasBefore)
+				{
+					m_Before = ToAPIPostProcessSettings(materialManager->m_PostProcessProfile);
+					m_HasBefore = true;
+				}
+				ApplyPostProcessSettingsToProfile(m_Settings, materialManager->m_PostProcessProfile);
+			}
+
+			void Undo(EngineCommandContext& context) override
+			{
+				if (!m_HasBefore)
+					return;
+
+				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
+				auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
+				if (materialManager)
+					ApplyPostProcessSettingsToProfile(m_Before, materialManager->m_PostProcessProfile);
+			}
+
+			std::string GetDescription() const override
+			{
+				return "Set post-process settings";
+			}
+
+			bool CanMergeWith(const IEngineCommand& other) const override
+			{
+				return dynamic_cast<const SetPostProcessSettingsCommand*>(&other) != nullptr;
+			}
+
+			bool MergeWith(const IEngineCommand& other, EngineCommandContext& context) override
+			{
+				const auto* next = dynamic_cast<const SetPostProcessSettingsCommand*>(&other);
+				if (!next)
+					return false;
+
+				m_Settings = next->m_Settings;
+				Execute(context);
+				return true;
+			}
+
+		private:
+			PostProcessSettingsSnapshot m_Settings;
+			PostProcessSettingsSnapshot m_Before;
+			bool m_HasBefore = false;
+		};
 
 		FogSettings ToAPIFogSettings(const VansGraphics::VansFogSettings& source)
 		{
@@ -2527,6 +2570,18 @@ namespace Vans::EditorAPI
 		if (!result.defaultSceneRelativePath.empty())
 			result.defaultScenePath =
 				(std::filesystem::path(result.projectRootPath) / result.defaultSceneRelativePath).string();
+
+		if (auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device))
+		{
+			const Vans::VansProjectFSRSettings& fsrSettings =
+				projectManager.GetProjectSettings().GetFSRSettings();
+			const VkExtent2D viewportExtent = device->GetRequestedSceneViewportExtent();
+			device->RequestFSRConfig(
+				static_cast<VansGraphics::VansFSRMode>(fsrSettings.mode),
+				viewportExtent.width,
+				viewportExtent.height,
+				fsrSettings.sharpness);
+		}
 		return result;
 	}
 
@@ -2604,6 +2659,60 @@ namespace Vans::EditorAPI
 		preview.width = extent.width;
 		preview.height = extent.height;
 		return preview;
+	}
+
+	FSRSettingsSnapshot EngineAPIImpl::GetFSRSettings() const
+	{
+		FSRSettingsSnapshot settings;
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (!device)
+			return settings;
+
+		settings.mode = static_cast<FSRUpscaleMode>(device->GetFSRMode());
+		settings.sharpness = device->GetFSRSharpness();
+		settings.mipBias = device->GetUpscaleMipBias();
+		settings.renderWidth = device->GetRenderWidth();
+		settings.renderHeight = device->GetRenderHeight();
+		const VkExtent3D outputExtent = device->GetFSROutputImage().GetImageDimension();
+		settings.outputWidth = outputExtent.width;
+		settings.outputHeight = outputExtent.height;
+		return settings;
+	}
+
+	void EngineAPIImpl::SetFSRSettings(FSRUpscaleMode mode, float sharpness)
+	{
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (!device)
+			return;
+		const VkExtent2D viewportExtent = device->GetRequestedSceneViewportExtent();
+		device->RequestFSRConfig(
+			static_cast<VansGraphics::VansFSRMode>(mode),
+			viewportExtent.width,
+			viewportExtent.height,
+			sharpness);
+
+		auto& projectManager = Vans::VansProjectManager::Get();
+		if (projectManager.IsProjectLoaded())
+		{
+			projectManager.GetProjectSettings().SetFSRSettings(
+				static_cast<Vans::VansProjectFSRMode>(mode), sharpness);
+			if (!projectManager.SaveProjectSettings())
+			{
+				VANS_LOG_WARN("[EngineAPI] Failed to persist FSR project settings");
+			}
+		}
+	}
+
+	void EngineAPIImpl::SetSceneViewportExtent(std::uint32_t width, std::uint32_t height)
+	{
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (!device || width == 0 || height == 0)
+			return;
+		device->RequestFSRConfig(
+			device->GetFSRMode(),
+			width,
+			height,
+			device->GetFSRSharpness());
 	}
 
 	std::vector<RenderTexturePreview> EngineAPIImpl::QueryRenderTexturePreviews(RenderTextureFilter filter) const
@@ -2835,6 +2944,347 @@ namespace Vans::EditorAPI
 		ApplyReflectionProbeSettingsToSystem(settings, *probes);
 	}
 
+	GIInspectorSettingsSnapshot EngineAPIImpl::GetGISettings() const
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene)
+			return {};
+
+		const VansGraphics::VansGISettings& gi = scene->GetGISettings();
+		const glm::vec3 volumeSize = glm::vec3(gi.gridDimensions) * gi.probeSpacingAxes;
+		const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
+		const glm::vec3 volumeMax = volumeMin + volumeSize;
+
+		GIInspectorSettingsSnapshot settings;
+		settings.available = true;
+		settings.regionCenter = ToEditorVec3(gi.regionCenter);
+		settings.volumeMin = ToEditorVec3(volumeMin);
+		settings.volumeMax = ToEditorVec3(volumeMax);
+		settings.gridSize = gi.gridDimensions.x;
+		settings.gridDimensions = {
+			static_cast<float>(gi.gridDimensions.x),
+			static_cast<float>(gi.gridDimensions.y),
+			static_cast<float>(gi.gridDimensions.z) };
+		settings.probeSpacing = gi.probeSpacingAxes.x;
+		settings.probeSpacingAxes = ToEditorVec3(gi.probeSpacingAxes);
+		settings.normalBias = gi.normalBias;
+		settings.maxRayDistance = gi.maxRayDistance;
+		settings.volumeFadeDistance = gi.volumeFadeDistance;
+		settings.raysPerProbe = gi.raysPerProbe;
+		settings.spatialUpdateDivisor = gi.spatialUpdateDivisor;
+		settings.directionUpdateSlices = gi.directionUpdateSlices;
+		settings.environmentIntensity = gi.environmentIntensity;
+		settings.maxIndirectRadiance = gi.maxIndirectRadiance;
+		settings.maxSHL0 = gi.maxSHL0;
+		settings.showProbeGizmos = gi.showProbeGizmos;
+		settings.showProbeVolume = gi.showProbeVolume;
+		settings.debugView = static_cast<int>(gi.debugView);
+		settings.debugExposure = gi.debugExposure;
+		settings.gizmoStride = gi.gizmoStride;
+		settings.totalProbeCount = gi.gridDimensions.x * gi.gridDimensions.y * gi.gridDimensions.z;
+		return settings;
+	}
+
+	void EngineAPIImpl::ApplyGISettings(const GIInspectorSettingsSnapshot& settings)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (!scene || !settings.available)
+			return;
+
+		VansGraphics::VansGISettings gi = scene->GetGISettings();
+		const std::uint32_t legacyGridSize = std::clamp(
+			settings.gridSize > 0u ? settings.gridSize : gi.gridSize, 1u, 256u);
+		const float legacyProbeSpacing =
+			std::isfinite(settings.probeSpacing) && settings.probeSpacing > 0.0f
+			? settings.probeSpacing
+			: std::max(gi.probeSpacing, 0.001f);
+		auto clampDimension = [legacyGridSize](float value) {
+			if (!std::isfinite(value) || value < 1.0f)
+				return legacyGridSize;
+			return std::clamp(static_cast<std::uint32_t>(std::lround(value)), 1u, 256u);
+		};
+		auto clampSpacing = [legacyProbeSpacing](float value) {
+			return std::isfinite(value) && value > 0.0f
+				? std::max(value, 0.001f)
+				: legacyProbeSpacing;
+		};
+		gi.gridDimensions = glm::uvec3(
+			clampDimension(settings.gridDimensions.x),
+			clampDimension(settings.gridDimensions.y),
+			clampDimension(settings.gridDimensions.z));
+		gi.probeSpacingAxes = glm::vec3(
+			clampSpacing(settings.probeSpacingAxes.x),
+			clampSpacing(settings.probeSpacingAxes.y),
+			clampSpacing(settings.probeSpacingAxes.z));
+		gi.gridSize = gi.gridDimensions.x;
+		gi.probeSpacing = gi.probeSpacingAxes.x;
+		gi.regionCenter = glm::vec3(settings.regionCenter.x, settings.regionCenter.y, settings.regionCenter.z);
+		gi.raysPerProbe = std::clamp(settings.raysPerProbe, 1u, 4096u);
+		gi.spatialUpdateDivisor = std::clamp(
+			settings.spatialUpdateDivisor, 1u,
+			std::min({ gi.gridDimensions.x, gi.gridDimensions.y, gi.gridDimensions.z }));
+		gi.directionUpdateSlices = std::clamp(settings.directionUpdateSlices, 1u, gi.raysPerProbe);
+		gi.maxRayDistance = std::max(settings.maxRayDistance, 0.001f);
+		gi.normalBias = std::max(settings.normalBias, 0.0f);
+		gi.environmentIntensity = std::max(settings.environmentIntensity, 0.0f);
+		gi.maxIndirectRadiance = std::max(settings.maxIndirectRadiance, 0.0f);
+		gi.maxSHL0 = std::max(settings.maxSHL0, 0.0f);
+		gi.volumeFadeDistance = std::max(settings.volumeFadeDistance, 0.0f);
+		gi.showProbeGizmos = settings.showProbeGizmos;
+		gi.showProbeVolume = settings.showProbeVolume;
+		gi.debugView = static_cast<std::uint32_t>(std::max(settings.debugView, 0));
+		gi.debugExposure = std::max(settings.debugExposure, 0.001f);
+		gi.gizmoStride = std::clamp(settings.gizmoStride, 1u,
+			std::max({ 1u, gi.gridDimensions.x, gi.gridDimensions.y, gi.gridDimensions.z }));
+		scene->SetGISettings(gi);
+
+		auto* materialManager = scene->GetMaterialManager();
+		if (!device || !materialManager || materialManager->m_SSGICBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+			return;
+
+		const glm::vec3 volumeSize = glm::vec3(gi.gridDimensions) * gi.probeSpacingAxes;
+		const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
+		VansGraphics::SSGIParamsGPU data{};
+		data.screenSize = glm::vec4(
+			static_cast<float>(device->GetRenderWidth()),
+			static_cast<float>(device->GetRenderHeight()),
+			1.0f / std::max(1u, device->GetRenderWidth()),
+			1.0f / std::max(1u, device->GetRenderHeight()));
+		data.giVolumeMin = glm::vec4(volumeMin, 0.0f);
+		data.giVolumeSizeAndBias = glm::vec4(volumeSize, gi.normalBias);
+		data.traceParams = glm::vec4(gi.maxRayDistance, 0.75f, gi.volumeFadeDistance, 0.0f);
+		materialManager->m_SSGICBBuffer.SetBufferData(&data, 0, sizeof(data));
+	}
+
+	GIProbeDebugSnapshot EngineAPIImpl::CaptureGIProbeDebugSnapshot(std::uint32_t stride, float exposure)
+	{
+		m_GIProbeDebugSnapshot = {};
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (!scene || !device)
+		{
+			m_GIProbeDebugSnapshot.status = "Runtime scene or device is not available.";
+			return m_GIProbeDebugSnapshot;
+		}
+
+		auto* materialManager = scene->GetMaterialManager();
+		if (!materialManager)
+		{
+			m_GIProbeDebugSnapshot.status = "Material manager is not available.";
+			return m_GIProbeDebugSnapshot;
+		}
+
+		VansGraphics::VansTexture* shR = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_R_RESULT);
+		VansGraphics::VansTexture* shG = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_G_RESULT);
+		VansGraphics::VansTexture* shB = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_B_RESULT);
+		if (!shR || !shG || !shB)
+		{
+			m_GIProbeDebugSnapshot.status = "GI SH textures are not created yet.";
+			return m_GIProbeDebugSnapshot;
+		}
+
+		const VansGraphics::VansGISettings& gi = scene->GetGISettings();
+		const glm::uvec3 gridDimensions = glm::max(gi.gridDimensions, glm::uvec3(1u));
+		const std::uint32_t maxGridDimension = std::max({ gridDimensions.x, gridDimensions.y, gridDimensions.z });
+		stride = std::clamp(stride, 1u, maxGridDimension);
+		exposure = std::max(exposure, 0.001f);
+
+		const VkDeviceSize textureBytes =
+			static_cast<VkDeviceSize>(gridDimensions.x) * gridDimensions.y * gridDimensions.z * 4u * sizeof(float);
+		VansGraphics::VansVKBuffer readR;
+		VansGraphics::VansVKBuffer readG;
+		VansGraphics::VansVKBuffer readB;
+		auto destroyReadbacks = [&]()
+		{
+			if (readR.IsMapped()) readR.Unmap();
+			if (readG.IsMapped()) readG.Unmap();
+			if (readB.IsMapped()) readB.Unmap();
+			readR.DestroyVulkanBuffer(device->GetLogicDevice());
+			readG.DestroyVulkanBuffer(device->GetLogicDevice());
+			readB.DestroyVulkanBuffer(device->GetLogicDevice());
+		};
+
+		const VkBufferUsageFlags readUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		const VkMemoryPropertyFlags readMemory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		if (!readR.CreatVulkanBuffer(device->GetLogicDevice(), textureBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
+			!readG.CreatVulkanBuffer(device->GetLogicDevice(), textureBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
+			!readB.CreatVulkanBuffer(device->GetLogicDevice(), textureBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
+			!readR.PersistentMap() || !readG.PersistentMap() || !readB.PersistentMap())
+		{
+			m_GIProbeDebugSnapshot.status = "Failed to allocate GI SH readback buffers.";
+			destroyReadbacks();
+			return m_GIProbeDebugSnapshot;
+		}
+
+		std::vector<VkBufferImageCopy> regions(1);
+		regions[0].bufferOffset = 0;
+		regions[0].imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		regions[0].imageExtent = { gridDimensions.x, gridDimensions.y, gridDimensions.z };
+
+		VansGraphics::VansVKCommandBuffer& commandBuffer = device->GetImmediateGraphicsCommandBuffer();
+		if (!commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			m_GIProbeDebugSnapshot.status = "Failed to begin GI SH readback command buffer.";
+			destroyReadbacks();
+			return m_GIProbeDebugSnapshot;
+		}
+
+		auto transition = [&](VansGraphics::VansTexture* texture, VkAccessFlags srcAccess, VkAccessFlags dstAccess,
+			VkImageLayout oldLayout, VkImageLayout newLayout, VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage)
+		{
+			VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+			barrier.srcAccessMask = srcAccess;
+			barrier.dstAccessMask = dstAccess;
+			barrier.oldLayout = oldLayout;
+			barrier.newLayout = newLayout;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = texture->GetImage().GetImage();
+			barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+			commandBuffer.PipelineBarrier(srcStage, dstStage, {}, {}, { barrier });
+			texture->GetImage().SetTrackedImageLayout(newLayout);
+		};
+
+		const VkAccessFlags readbackSourceAccess = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		const VkPipelineStageFlags readbackSourceStage =
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+
+		transition(shR, readbackSourceAccess, VK_ACCESS_TRANSFER_READ_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			readbackSourceStage, VK_PIPELINE_STAGE_TRANSFER_BIT);
+		transition(shG, readbackSourceAccess, VK_ACCESS_TRANSFER_READ_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			readbackSourceStage, VK_PIPELINE_STAGE_TRANSFER_BIT);
+		transition(shB, readbackSourceAccess, VK_ACCESS_TRANSFER_READ_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			readbackSourceStage, VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+		VansGraphics::VansVKMemoryManager::CopyImageToBuffer(commandBuffer, shR->GetImage(), readR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, regions);
+		VansGraphics::VansVKMemoryManager::CopyImageToBuffer(commandBuffer, shG->GetImage(), readG, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, regions);
+		VansGraphics::VansVKMemoryManager::CopyImageToBuffer(commandBuffer, shB->GetImage(), readB, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, regions);
+
+		transition(shR, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+		transition(shG, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+		transition(shB, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+		commandBuffer.EndCommandBufferRecord();
+		const bool submitted = VansGraphics::VansVKCommandBuffer::SubmitCommands(
+			device->GetGraphicsQueue(),
+			device->GetLogicDevice(),
+			{ commandBuffer.GetVKCommandBuffer() },
+			{}, {},
+			commandBuffer.m_CommandBufferFinishSubmitFence);
+		commandBuffer.ResetCommandBuffer(false);
+		if (!submitted)
+		{
+			m_GIProbeDebugSnapshot.status = "Failed to submit GI SH readback command buffer.";
+			destroyReadbacks();
+			return m_GIProbeDebugSnapshot;
+		}
+
+		readR.InvalidateMappedRange(0, textureBytes);
+		readG.InvalidateMappedRange(0, textureBytes);
+		readB.InvalidateMappedRange(0, textureBytes);
+
+		const float* rData = static_cast<const float*>(readR.GetMappedPtr());
+		const float* gData = static_cast<const float*>(readG.GetMappedPtr());
+		const float* bData = static_cast<const float*>(readB.GetMappedPtr());
+		if (!rData || !gData || !bData)
+		{
+			m_GIProbeDebugSnapshot.status = "GI SH readback buffers are not mapped.";
+			destroyReadbacks();
+			return m_GIProbeDebugSnapshot;
+		}
+
+		const glm::vec3 volumeSize = glm::vec3(gridDimensions) * gi.probeSpacingAxes;
+		const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
+		m_GIProbeDebugSnapshot.available = true;
+		m_GIProbeDebugSnapshot.gridSize = gridDimensions.x;
+		m_GIProbeDebugSnapshot.gridDimensions = {
+			static_cast<float>(gridDimensions.x),
+			static_cast<float>(gridDimensions.y),
+			static_cast<float>(gridDimensions.z) };
+		m_GIProbeDebugSnapshot.stride = stride;
+		m_GIProbeDebugSnapshot.exposure = exposure;
+		m_GIProbeDebugSnapshot.status = "Captured GI probe SH.";
+		m_GIProbeDebugSnapshot.probes.clear();
+
+		for (std::uint32_t z = 0; z < gridDimensions.z; z += stride)
+		for (std::uint32_t y = 0; y < gridDimensions.y; y += stride)
+		for (std::uint32_t x = 0; x < gridDimensions.x; x += stride)
+		{
+			const std::size_t texel = (static_cast<std::size_t>(z) * gridDimensions.x * gridDimensions.y +
+				static_cast<std::size_t>(y) * gridDimensions.x + x) * 4u;
+			const glm::vec3 l0(std::max(rData[texel + 0], 0.0f), std::max(gData[texel + 0], 0.0f), std::max(bData[texel + 0], 0.0f));
+			const glm::vec3 l1(
+				std::abs(rData[texel + 1]) + std::abs(rData[texel + 2]) + std::abs(rData[texel + 3]),
+				std::abs(gData[texel + 1]) + std::abs(gData[texel + 2]) + std::abs(gData[texel + 3]),
+				std::abs(bData[texel + 1]) + std::abs(bData[texel + 2]) + std::abs(bData[texel + 3]));
+			const float l0Energy = std::max({ l0.r, l0.g, l0.b, 1e-4f });
+			const float l1Energy = std::max({ l1.r, l1.g, l1.b });
+			GIProbeDebugEntrySnapshot entry;
+			entry.position = ToEditorVec3(
+				volumeMin + (glm::vec3(x, y, z) + glm::vec3(0.5f)) * gi.probeSpacingAxes);
+			entry.l0Diffuse = ToEditorVec3(l0 * 0.28209479f * exposure);
+			entry.l1Ratio = std::clamp(l1Energy / l0Energy, 0.0f, 1.0f);
+			m_GIProbeDebugSnapshot.probes.push_back(entry);
+		}
+
+		destroyReadbacks();
+		return m_GIProbeDebugSnapshot;
+	}
+
+	GIProbeDebugSnapshot EngineAPIImpl::GetGIProbeDebugSnapshot() const
+	{
+		return m_GIProbeDebugSnapshot;
+	}
+
+	RenderTexturePreview EngineAPIImpl::RequestGIRTPreview(
+		std::uint32_t mode,
+		std::uint32_t zSlice,
+		std::uint32_t rayIndex,
+		float exposure,
+		float positionScale)
+	{
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (device == nullptr)
+			return {};
+
+		auto& rayTracing = device->GetRayTracingContext();
+		rayTracing.RequestGIRTPreview(mode, zSlice, rayIndex, exposure, positionScale);
+		auto* texture = rayTracing.GetGIRTPreviewTexture();
+		if (texture == nullptr)
+			return {};
+
+		static constexpr const char* kPreviewNames[] = {
+			"RT Miss Ratio",
+			"RT Hit Mask",
+			"RT Hit Position",
+			"RT Hit Normal",
+			"RT Hit Albedo",
+			"RT Hit Roughness",
+			"GI Direct Radiance",
+			"GI SH L0",
+			"GI SH L1 Magnitude",
+			"GI SH R L1 (Signed)",
+			"GI SH G L1 (Signed)",
+			"GI SH B L1 (Signed)"
+		};
+		const std::uint32_t safeMode = std::min<std::uint32_t>(mode, 11u);
+		return BuildImagePreview(
+			180,
+			kPreviewNames[safeMode],
+			texture->GetImage(),
+			VK_IMAGE_LAYOUT_GENERAL);
+	}
+
 	void EngineAPIImpl::GenerateAutoReflectionProbes()
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
@@ -2923,8 +3373,8 @@ namespace Vans::EditorAPI
 			return build(200, "Water Displacement", waterSystem->GetDisplacementImage(), filter.layer);
 		if (textureName == "derivative")
 			return build(201, "Water Derivative / FFT Normal Source", waterSystem->GetDerivativeImage(), filter.layer);
-		if (textureName == "detail_normal")
-			return build(202, "Detail Normal", waterSystem->GetDetailNormalImage(), 0u);
+		if (textureName == "micro_normal")
+			return build(202, "Micro FFT Slope", waterSystem->GetMicroSlopeImage(), filter.layer);
 		if (textureName == "reflection")
 			return build(203, "Reflection", waterSystem->GetReflectionImage(), 0u);
 		if (textureName == "refraction")
@@ -2963,18 +3413,17 @@ namespace Vans::EditorAPI
 		if (!scene || !scene->HasWaterNodes() || !settings.available)
 			return;
 
-		VansGraphics::VansWaterConfig& config = const_cast<VansGraphics::VansWaterConfig&>(scene->GetWaterConfig());
+		VansGraphics::VansWaterConfig& config = scene->EditWaterConfig();
 		const VansGraphics::VansWaterConfig previousConfig = config;
 		ApplyWaterSettingsToConfig(settings, config);
 
-		auto* waterMaterial = scene->GetWaterMaterial();
 		auto* waterSystem = scene->GetWaterSystem();
-		SyncWaterConfigToMaterial(config, waterMaterial);
 
 		if (waterSystem)
 		{
 			waterSystem->SetWaterLevel(config.m_WaterLevel);
-			waterSystem->UpdateWaveSSBO();
+			if (ShouldRegenerateGerstnerSpectrum(previousConfig, config))
+				waterSystem->UpdateWaveSSBO();
 			if (ShouldReinitializeWaterFFT(previousConfig, config))
 			{
 				if (auto* fft = waterSystem->GetFFT())
@@ -3001,8 +3450,7 @@ namespace Vans::EditorAPI
 			return stats;
 
 		stats.available = true;
-		stats.maxWaterTextureLayer = std::max(int(VansGraphics::VansWaterLOD::MAX_LOD_COUNT) - 1, 0);
-		stats.maxFftLod = std::max(int(VansGraphics::VansWaterFFT::MAX_LOD_COUNT) - 1, 0);
+		stats.maxSpectrumCascade = std::max(scene->GetWaterConfig().m_Spectrum.m_CascadeCount - 1, 0);
 		stats.fftFieldCount = int(VansGraphics::VansWaterFFT::FIELD_COUNT);
 
 		auto* waterSystem = scene->GetWaterSystem();
@@ -3011,15 +3459,15 @@ namespace Vans::EditorAPI
 
 		stats.systemInitialized = true;
 		stats.fftAvailable = waterSystem->GetFFT() != nullptr;
-		auto* lod = waterSystem->GetLOD();
-		if (lod)
+		auto* geometry = waterSystem->GetGeometryClipmap();
+		if (geometry)
 		{
-			stats.patchCount = static_cast<std::uint32_t>(lod->GetPatchCount());
-			stats.meshDim = lod->GetMeshDim();
-			stats.basePatchSize = lod->GetBasePatchSize();
-			stats.indexCount = lod->GetIndexCount();
-			stats.lodLevels = lod->GetLodLevels();
-			stats.detailBalance = lod->GetDetailBalance();
+			stats.patchCount = static_cast<std::uint32_t>(geometry->GetPatchCount());
+			stats.meshDim = geometry->GetMeshDim();
+			stats.basePatchSize = geometry->GetBasePatchSize();
+			stats.indexCount = geometry->GetIndexCount();
+			stats.lodLevels = geometry->GetLodLevels();
+			stats.geometryLodRatio = VansGraphics::VansWaterConfig::GEOMETRY_LOD_RATIO;
 		}
 		return stats;
 	}
@@ -3312,6 +3760,33 @@ namespace Vans::EditorAPI
 		return scene && !scene->GetAnimationNodes().empty();
 	}
 
+	VansGraphics::VansAnimationNode* EngineAPIImpl::FindRuntimeAnimationNodeByEntityGuid(
+		const std::string& entityGuid) const
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene || entityGuid.empty())
+			return nullptr;
+
+		for (auto* animNode : scene->GetAnimationNodes())
+		{
+			if (!animNode)
+				continue;
+
+			for (auto* renderNode : animNode->GetRenderNodes())
+			{
+				if (!renderNode)
+					continue;
+				if (renderNode->m_EntityGuid == entityGuid ||
+				    renderNode->m_ParentEntityGuid == entityGuid)
+				{
+					return animNode;
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
 	MotionMatchingDebugSnapshot EngineAPIImpl::GetMotionMatchingDebugSnapshot() const
 	{
 		MotionMatchingDebugSnapshot snapshot;
@@ -3555,6 +4030,23 @@ namespace Vans::EditorAPI
 	void EngineAPIImpl::ApplyLightingSettings(const LightingSettingsSnapshot& settings)
 	{
 		SubmitCommand(std::make_unique<SetLightingSettingsCommand>(settings));
+	}
+
+	PostProcessSettingsSnapshot EngineAPIImpl::GetPostProcessSettings() const
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
+		if (!materialManager)
+			return {};
+
+		return ToAPIPostProcessSettings(materialManager->m_PostProcessProfile);
+	}
+
+	void EngineAPIImpl::ApplyPostProcessSettings(const PostProcessSettingsSnapshot& settings)
+	{
+		if (!settings.available)
+			return;
+		SubmitCommand(std::make_unique<SetPostProcessSettingsCommand>(settings));
 	}
 
 	void EngineAPIImpl::ApplyFogSettings(const FogSettings& settings)

@@ -52,11 +52,11 @@ void main()
     float subsurfaceAmount = clamp(mat.ao, 0.0, 1.0);
     float curvatureInfluence = clamp(mat.padding, 0.0, 1.0);
 
-    vec3 albedo = texture(globalPBRTextures[nonuniformEXT(mi * 5 + 0)], frag_uv).rgb;
-    float roughness = max(texture(globalPBRTextures[nonuniformEXT(mi * 5 + 3)], frag_uv).r, 0.045);
+    vec3 albedo = texture(globalPBRTextures[nonuniformEXT(mi * 5 + 0)], frag_uv, MaterialMipBias).rgb;
+    float roughness = max(texture(globalPBRTextures[nonuniformEXT(mi * 5 + 3)], frag_uv, MaterialMipBias).r, 0.045);
     float ao = 1.0;
 
-    vec3 normalSample = textureLod(globalPBRTextures[nonuniformEXT(mi * 5 + 1)], frag_uv, 0.0).rgb;
+    vec3 normalSample = texture(globalPBRTextures[nonuniformEXT(mi * 5 + 1)], frag_uv, MaterialMipBias).rgb;
     normalSample = normalSample * 2.0 - 1.0;
     normalSample.rg *= 0.5;
 

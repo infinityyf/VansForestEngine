@@ -1,10 +1,12 @@
 #pragma once
 #include "vulkan/vulkan.h"
 #include "glm/glm.hpp"
+#include "VansWaterConfig.h"
 #include "../VulkanCore/VansVKImage.h"
 #include "../VulkanCore/VansVKBuffer.h"
 #include <string>
 #include <cstdint>
+#include <array>
 
 namespace VansGraphics
 {
@@ -16,19 +18,22 @@ namespace VansGraphics
     {
     public:
         static constexpr uint32_t FFT_RESOLUTION = 256;
-        static constexpr uint32_t MAX_LOD_COUNT  = 10;
-        static constexpr uint32_t FIELD_COUNT    = 6;
+        static constexpr uint32_t MAX_CASCADE_COUNT = VansWaterConfig::MAX_SPECTRUM_CASCADES;
+        static constexpr uint32_t FIELD_COUNT    = 3;
+
+        enum class OutputMode : uint32_t
+        {
+            Displacement = 0,
+            SpectralSlope = 1,
+        };
 
         struct Params
         {
             uint32_t resolution = FFT_RESOLUTION;
-            uint32_t lodCount = MAX_LOD_COUNT;
-            float baseScale = 64.0f;
-            float detailBalance = 2.0f;
-
+            uint32_t cascadeCount = MAX_CASCADE_COUNT;
             glm::vec2 windDirection = {0.7071f, 0.7071f};
             float windSpeed = 12.0f;
-            float spectrumAmplitude = 1.0f;
+            float spectrumAmplitude = 0.001f;
 
             float choppiness = 1.0f;
             float smallWaveDamping = 0.001f;
@@ -36,13 +41,11 @@ namespace VansGraphics
             float depth = 10000.0f;
             float repeatPeriod = 0.0f;
 
-            float maxWaveAmp = 5.0f;
-            float normalScale = 1.0f;
-            float foamSlopeScale = 0.25f;
-            float foamFoldScale = 1.0f;
-            float foamFoldThreshold = 0.0f;
-
             uint32_t randomSeed = 1337;
+            float capillaryCoefficient = 0.000074f; // surface tension / water density (m^3/s^2)
+            std::array<float, MAX_CASCADE_COUNT> domainCoverage = { 64.0f, 256.0f, 1024.0f, 4096.0f };
+            std::array<float, MAX_CASCADE_COUNT> minWavelength = { 0.5f, 64.0f, 256.0f, 1024.0f };
+            std::array<float, MAX_CASCADE_COUNT> maxWavelength = { 64.0f, 256.0f, 1024.0f, 4096.0f };
         };
 
         VansWaterFFT() = default;
@@ -50,7 +53,8 @@ namespace VansGraphics
 
         bool Initialize(VansVKDevice* device, const std::string& shaderRoot,
                         VansVKImage* displacementImage,
-                        VansVKImage* derivativeImage);
+                        VansVKImage* derivativeImage,
+                        OutputMode outputMode = OutputMode::Displacement);
         void Shutdown(VkDevice logicDevice);
 
         void SetParams(const Params& params);
@@ -76,6 +80,7 @@ namespace VansGraphics
         VansVKDevice* m_Device = nullptr;
         VansVKImage*  m_DisplacementImage = nullptr;
         VansVKImage*  m_DerivativeImage = nullptr;
+        OutputMode m_OutputMode = OutputMode::Displacement;
 
         VansComputeShader* m_InitSpectrumShader = nullptr;
         VansComputeShader* m_TimeEvolveShader = nullptr;

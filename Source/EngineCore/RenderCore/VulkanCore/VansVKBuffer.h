@@ -81,6 +81,7 @@ namespace VansGraphics
 		// The buffer must have been PersistentMap()'d first.
 		void UpdateMapped(const void* data, VkDeviceSize offset, VkDeviceSize size);
 		void FlushMappedRange(VkDeviceSize offset, VkDeviceSize size);
+		void InvalidateMappedRange(VkDeviceSize offset, VkDeviceSize size);
 
 		// Returns true when the buffer is currently persistently mapped.
 		bool IsMapped() const { return m_MappedPtr != nullptr; }

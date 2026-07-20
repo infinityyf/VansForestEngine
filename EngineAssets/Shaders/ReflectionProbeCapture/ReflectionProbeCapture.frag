@@ -1,5 +1,8 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : enable
+
+#include "../GI/GIProbeCommon.glsl"
 
 layout(location = 0) in vec3 worldPosition;
 layout(location = 1) in vec3 worldNormal;
@@ -7,9 +10,6 @@ layout(location = 2) in vec2 fragUV;
 layout(location = 3) in vec3 worldTangent;
 layout(location = 4) in vec3 worldBitangent;
 layout(location = 0) out vec4 outColor;
-
-const float PI = 3.14159265359;
-const int CASCADE_COUNT = 4;
 
 struct MaterialPayload
 {
@@ -30,7 +30,7 @@ struct DirectionLightData
     vec4 cascadeTexelSize;
     vec4 cascadeDepthScale;
     vec4 cascadeNormalBias;
-    vec4 cascadeFilterRadius;
+    vec4 cascadeFilterRadius; // maximum PCSS footprint in texels
 };
 
 struct PointLightData
@@ -102,29 +102,30 @@ layout(push_constant) uniform CaptureDraw
     vec4 params;
 } drawData;
 
-bool IsInsideGIVolume(vec3 worldPosition)
-{
-    vec3 volumeMax = captureCamera.giVolumeMin.xyz + captureCamera.giVolumeSizeAndBias.xyz;
-    return all(greaterThanEqual(worldPosition, captureCamera.giVolumeMin.xyz)) &&
-        all(lessThanEqual(worldPosition, volumeMax));
-}
-
 vec3 SampleIndirectDiffuseRadiance(vec3 worldPosition, vec3 normal)
 {
-    if (IsInsideGIVolume(worldPosition))
-    {
-        vec3 biasedPosition = worldPosition + normal * captureCamera.giVolumeSizeAndBias.w;
-        vec3 uvw = clamp((biasedPosition - captureCamera.giVolumeMin.xyz) /
-            captureCamera.giVolumeSizeAndBias.xyz, vec3(0.0), vec3(1.0));
-        // The GI textures store radiance SH coefficients per color channel.
-        // SH0 reconstructs constant incident radiance as C0 * Y00.
-        vec3 sh0 = vec3(texture(giSHR, uvw).x, texture(giSHG, uvw).x,
-            texture(giSHB, uvw).x) * 0.282095;
-        return max(sh0, vec3(0.0));
-    }
+    vec3 samplePosition = worldPosition + normalize(normal) * captureCamera.giVolumeSizeAndBias.w;
+    bool insideGIVolume = GI_IsInsideVolume(
+        samplePosition,
+        captureCamera.giVolumeMin.xyz,
+        captureCamera.giVolumeSizeAndBias.xyz);
 
-    // The sky diffuse cubemap stores irradiance. Lambertian outgoing radiance
-    // is irradiance * albedo / PI, so convert it before applying baseColor.
+    vec3 probeLighting = GI_SampleProbeDiffuseLightingL1(
+        giSHR,
+        giSHG,
+        giSHB,
+        worldPosition,
+        normal,
+        captureCamera.giVolumeMin.xyz,
+        captureCamera.giVolumeSizeAndBias.xyz,
+        captureCamera.giVolumeSizeAndBias.w,
+        0.0);
+
+    if (insideGIVolume)
+        return probeLighting;
+
+    // sky diffuse cubemap 存的是 irradiance；这里返回 lighting 项，
+    // 和 GI probe helper 一样在调用处再乘 baseColor/kD。
     return max(texture(skyDiffuseEnvironment, normal).rgb / PI, vec3(0.0));
 }
 
@@ -155,10 +156,40 @@ vec3 FresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
         pow(1.0 - cosTheta, 5.0);
 }
 
+float FetchCaptureCascadeDepth(ivec2 texel, int cascade)
+{
+    ivec2 size = textureSize(cascadeShadowMap, 0).xy;
+    texel = clamp(texel, ivec2(0), size - ivec2(1));
+    return texelFetch(cascadeShadowMap, ivec3(texel, cascade), 0).r;
+}
+
+float CompareCaptureCascadeBilinear(vec2 uv, int cascade, float receiverDepth)
+{
+    ivec2 size = textureSize(cascadeShadowMap, 0).xy;
+    vec2 texelPosition = uv * vec2(size) - 0.5;
+    ivec2 base = ivec2(floor(texelPosition));
+    vec2 f = fract(texelPosition);
+    float c00 = FetchCaptureCascadeDepth(base, cascade) < receiverDepth ? 0.0 : 1.0;
+    float c10 = FetchCaptureCascadeDepth(base + ivec2(1, 0), cascade) < receiverDepth ? 0.0 : 1.0;
+    float c01 = FetchCaptureCascadeDepth(base + ivec2(0, 1), cascade) < receiverDepth ? 0.0 : 1.0;
+    float c11 = FetchCaptureCascadeDepth(base + ivec2(1, 1), cascade) < receiverDepth ? 0.0 : 1.0;
+    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
+vec2 CaptureCascadeDiskSample(int sampleIndex, int sampleCount, bool clumped, int cascade)
+{
+    float u = (float(sampleIndex) + 0.5) / float(sampleCount);
+    float radius = clumped ? u : sqrt(u);
+    vec2 d = fibonacciSpiralDirection[sampleIndex] * radius;
+    float angle = float(cascade) * 1.61803398875;
+    float c = cos(angle);
+    float s = sin(angle);
+    return vec2(c * d.x - s * d.y, s * d.x + c * d.y);
+}
+
 float DirectionalShadow(vec3 position, vec3 normal, vec3 lightDirection)
 {
-    float bias = max(0.0005 * (1.0 - dot(normal, lightDirection)), 0.0001);
-    vec2 texelSize = 1.0 / vec2(textureSize(cascadeShadowMap, 0).xy);
+    ivec2 size = textureSize(cascadeShadowMap, 0).xy;
 
     // Capture has no meaningful main-camera linear depth. Select the finest
     // cascade whose world-space projection contains the shaded point.
@@ -169,20 +200,65 @@ float DirectionalShadow(vec3 position, vec3 normal, vec3 lightDirection)
         vec3 projected = clip.xyz / clip.w;
         vec2 shadowUV = projected.xy * 0.5 + 0.5;
         shadowUV.y = 1.0 - shadowUV.y;
-        float receiverDepth = projected.z * 0.5 + 0.5;
+        float rawReceiverDepth = projected.z * 0.5 + 0.5;
         if (any(lessThan(shadowUV, vec2(0.0))) || any(greaterThan(shadowUV, vec2(1.0))) ||
-            receiverDepth < 0.0 || receiverDepth > 1.0) continue;
+            rawReceiverDepth < 0.0 || rawReceiverDepth > 1.0) continue;
 
-        float visibility = 0.0;
-        for (int y = -1; y <= 1; ++y)
-        for (int x = -1; x <= 1; ++x)
+        float ndl = clamp(dot(normalize(normal), normalize(lightDirection)), 0.0, 1.0);
+        float slope = min(sqrt(max(0.0, 1.0 - ndl * ndl)) / max(ndl, 0.05), 4.0);
+        float normalBiasWorld = directionLight.cascadeNormalBias[cascade] * (1.0 + slope * 0.75);
+        float minimumBiasWorld = directionLight.cascadeTexelSize[cascade] * 0.25;
+        float receiverDepth = rawReceiverDepth
+            - max(minimumBiasWorld, normalBiasWorld) * directionLight.cascadeDepthScale[cascade];
+        float maxRadiusTexels = max(directionLight.cascadeFilterRadius[cascade], 1.0);
+        float depthRange = 1.0 / max(directionLight.cascadeDepthScale[cascade], 1e-6);
+        float worldUnitsPerTexel = max(directionLight.cascadeTexelSize[cascade], 1e-6);
+        float angularRadius = 0.00464258 * clamp(softShadowParams.y / 0.3, 0.0, 4.0);
+        float searchRadiusTexels = clamp(
+            max(receiverDepth, 0.0) * depthRange * tan(angularRadius) / worldUnitsPerTexel,
+            2.0,
+            maxRadiusTexels);
+        vec2 edgeTexels = min(shadowUV, vec2(1.0) - shadowUV) * vec2(size);
+        if (min(edgeTexels.x, edgeTexels.y) <= searchRadiusTexels + 1.5)
+            continue;
+
+        const int blockerSampleCount = 12;
+        float blockerDepthSum = 0.0;
+        float blockerCount = 0.0;
+        vec2 texelSize = 1.0 / vec2(size);
+        for (int i = 0; i < blockerSampleCount; ++i)
         {
-            float depth = texture(cascadeShadowMap,
-                vec3(clamp(shadowUV + vec2(x, y) * texelSize, vec2(0.0), vec2(1.0)),
-                    float(cascade))).r;
-            visibility += receiverDepth - bias <= depth ? 1.0 : 0.0;
+            vec2 d = CaptureCascadeDiskSample(i, blockerSampleCount, true, cascade);
+            ivec2 texel = ivec2(floor((shadowUV + d * texelSize * searchRadiusTexels) * vec2(size)));
+            float depth = FetchCaptureCascadeDepth(texel, cascade);
+            if (depth < receiverDepth)
+            {
+                blockerDepthSum += depth;
+                blockerCount += 1.0;
+            }
         }
-        return visibility / 9.0;
+
+        if (blockerCount <= 0.0)
+            return 1.0;
+
+        float averageBlockerDepth = blockerDepthSum / blockerCount;
+        float separationWorld = max(rawReceiverDepth - averageBlockerDepth, 0.0) * depthRange;
+        float filterRadiusTexels = clamp(
+            separationWorld * tan(angularRadius) / worldUnitsPerTexel,
+            0.75,
+            maxRadiusTexels);
+
+        const int filterSampleCount = 16;
+        float visibility = 0.0;
+        for (int i = 0; i < filterSampleCount; ++i)
+        {
+            vec2 d = CaptureCascadeDiskSample(i, filterSampleCount, false, cascade);
+            visibility += CompareCaptureCascadeBilinear(
+                shadowUV + d * texelSize * filterRadiusTexels,
+                cascade,
+                receiverDepth);
+        }
+        return visibility / float(filterSampleCount);
     }
 
     // Outside the main-light shadow coverage: keep the direct light visible.

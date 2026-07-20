@@ -223,7 +223,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_PostProcess(
 		{POSTPROCESS_BINDING_BLOOM_RESULT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// binding 2：1x1 当前曝光值（R16F，auto-exposure 输出）
 		{POSTPROCESS_BINDING_EXPOSURE_VAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 3：后处理参数 UBO（ToneMapping / ColorGrading / Vignette / FilmGrain 等）
+		// binding 3：后处理参数 UBO（Exposure / Bloom / ToneMapping / ColorGrading）
 		{POSTPROCESS_BINDING_PP_PARAMS,    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
@@ -374,6 +374,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(
 		{SSGI_BINDING_SH_G,        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{SSGI_BINDING_SH_B,        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{SSGI_BINDING_HIZ_DEPTH,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_MATERIAL,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSGI_BINDING_GI_VISIBILITY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -605,6 +607,34 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_GIPointLight(
 		{GIPL_BINDING_SHADOW_MAP,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_PBR_DATA,        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_GI_VISIBILITY,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_GIRTPreview(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{GI_RT_PREVIEW_BINDING_HIT_POSITION, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GI_RT_PREVIEW_BINDING_HIT_NORMAL, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GI_RT_PREVIEW_BINDING_HIT_PBR, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GI_RT_PREVIEW_BINDING_DIRECT_LIGHT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GI_RT_PREVIEW_BINDING_RAY_SUMMARY, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GI_RT_PREVIEW_BINDING_SH_R, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GI_RT_PREVIEW_BINDING_SH_G, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GI_RT_PREVIEW_BINDING_SH_B, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GI_RT_PREVIEW_BINDING_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_GIVisibilityUpdate(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{GI_VISIBILITY_BINDING_HIT_POSITION, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GI_VISIBILITY_BINDING_RESULT,       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
@@ -882,7 +912,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_DecalPass(
 
 // ============================================================
 // Water GBuffer Pass Set 1
-// water_prepass.vert/.frag：CDLOD LOD 参数 UBO（lodRanges / meshDim / oceanBaseScale）
+// water_prepass.vert/.frag: geometry clipmap and spectral cascade inputs.
 // ============================================================
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterGBuffer(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
@@ -894,13 +924,10 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterGBuffer(
 		// binding 1: Wave displacement Texture2DArray（W-01）
 		{WATER_GBUF_BINDING_DISPLACEMENT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-		// binding 2: GerstnerWaveGPU SSBO（W-04）
-		{WATER_GBUF_BINDING_WAVE_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-		// binding 3: Water normal map（W-08）
-		{WATER_GBUF_BINDING_NORMAL_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		// binding 3: band-limited micro normal array
+		{WATER_GBUF_BINDING_MICRO_SLOPE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 4: FFT derivative Texture2DArray（slopeX/slopeZ/foam）
+		// binding 4: macro surface derivatives
 		{WATER_GBUF_BINDING_DERIVATIVE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
@@ -921,6 +948,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterWaveCompute(
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		// binding 2: GerstnerWaveGPU SSBO 输入（W-04）
 		{WATER_WAVE_BINDING_WAVE_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_WAVE_BINDING_DERIVATIVE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
@@ -952,9 +981,6 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterComposite(
 		{WATER_COMP_BINDING_REFRACTION,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{WATER_COMP_BINDING_CAUSTICS,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 7: W-15 泡沫纹理
-		{WATER_COMP_BINDING_FOAM_TEXTURE,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// binding 8: W-16 厚度图
 		{WATER_COMP_BINDING_THICKNESS,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
@@ -1004,7 +1030,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairLighting(
 
 // ============================================================
 // Transmission Glass Pass Set 1
-// TransmissionGlass.frag：OpaqueSceneColor snapshot for refraction + SSR reflection
+// TransmissionGlass.frag: opaque snapshot/depth plus direct-light shadow maps.
 // ============================================================
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_TransmissionGlass(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
@@ -1014,26 +1040,12 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_TransmissionGlass(
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{TRANSMISSION_GLASS_BINDING_SSR_REFLECTION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
-}
-
-// ============================================================
-// Water Effects Compute Set 0
-// water_effects.comp：WaterGBuf + SceneColor → Reflection/Refraction/Caustics
-// ============================================================
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterEffectsCompute(
-	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{WATER_EFFECT_BINDING_GBUF_NORMAL,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_EFFECT_BINDING_GBUF_DEPTH,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_EFFECT_BINDING_SCENE_GBUF2,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_EFFECT_BINDING_SCENE_COLOR,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_EFFECT_BINDING_PARAMS,         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_EFFECT_BINDING_REFLECTION_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_EFFECT_BINDING_REFRACTION_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_EFFECT_BINDING_CAUSTICS_OUT,   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{TRANSMISSION_GLASS_BINDING_OPAQUE_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TRANSMISSION_GLASS_BINDING_CASCADE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TRANSMISSION_GLASS_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -1065,8 +1077,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterRefractionCompute(
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
 		{WATER_REFRACTION_BINDING_GBUF_NORMAL,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_REFRACTION_BINDING_GBUF_DEPTH,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_REFRACTION_BINDING_SCENE_GBUF2,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_REFRACTION_BINDING_SCENE_COLOR,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_REFRACTION_BINDING_THICKNESS,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_REFRACTION_BINDING_PARAMS,       VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_REFRACTION_BINDING_REFRACTION_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,        1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
@@ -1080,7 +1092,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterCausticsCompute(
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
 		{WATER_CAUSTICS_BINDING_GBUF_NORMAL,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_CAUSTICS_BINDING_GBUF_DEPTH,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_SCENE_GBUF2,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_THICKNESS,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_CAUSTICS_BINDING_PARAMS,       VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_CAUSTICS_BINDING_CAUSTICS_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
@@ -1111,19 +1123,6 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterSSSScatterCompute(
 		{WATER_SSS_SCATTER_BINDING_SCENE_GBUF2,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_SSS_SCATTER_BINDING_PARAMS,        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_SSS_SCATTER_BINDING_SCATTER_OUT,   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
-}
-
-// N-01: Water Detail Normal Compute (water_detail_normal.comp)
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterDetailNormalCompute(
-	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{WATER_DETAIL_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_DETAIL_BINDING_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
-		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }

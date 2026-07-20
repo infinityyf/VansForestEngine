@@ -113,7 +113,10 @@ namespace
 
 	float ComputeCascadeFilterRadius(int cascade)
 	{
-		const float radius[4] = { 1.0f, 1.25f, 1.5f, 2.0f };
+		// Maximum PCSS footprint.  The actual radius is derived from blocker /
+		// receiver separation in world units.  Far cascades use a smaller texel
+		// cap because each texel already spans a larger world-space footprint.
+		const float radius[4] = { 24.0f, 20.0f, 16.0f, 12.0f };
 		return radius[(std::min)(cascade, 3)];
 	}
 
@@ -165,14 +168,24 @@ namespace
 		glm::vec3 lightRight = glm::normalize(glm::cross(up, lightForward));
 		glm::vec3 lightUp = glm::normalize(glm::cross(lightForward, lightRight));
 
-		glm::mat4 lightView = glm::lookAt(center - lightForward * radius, center, lightUp);
-		glm::vec3 centerLS = glm::vec3(lightView * glm::vec4(center, 1.0f));
-
 		float worldUnitsPerTexel = (2.0f * radius) / (std::max)(shadowMapSize, 1);
-		centerLS.x = std::floor(centerLS.x / worldUnitsPerTexel + 0.5f) * worldUnitsPerTexel;
-		centerLS.y = std::floor(centerLS.y / worldUnitsPerTexel + 0.5f) * worldUnitsPerTexel;
-		const glm::vec3 snappedCenter = glm::vec3(glm::inverse(lightView) * glm::vec4(centerLS, 1.0f));
-		lightView = glm::lookAt(snappedCenter - lightForward * radius, snappedCenter, lightUp);
+
+		// Snap in a fixed light-space basis.  Snapping center after a lookAt that
+		// already targets center is a no-op because centerLS.xy is always zero.
+		// Quantising the world-space projections onto lightRight/lightUp keeps the
+		// orthographic projection locked to the shadow texel grid while the camera
+		// translates.
+		const float centerRight = glm::dot(center, lightRight);
+		const float centerUp = glm::dot(center, lightUp);
+		const float snappedRight = std::floor(centerRight / worldUnitsPerTexel + 0.5f) * worldUnitsPerTexel;
+		const float snappedUp = std::floor(centerUp / worldUnitsPerTexel + 0.5f) * worldUnitsPerTexel;
+		const glm::vec3 snappedCenter = center
+			+ lightRight * (snappedRight - centerRight)
+			+ lightUp * (snappedUp - centerUp);
+		glm::mat4 lightView = glm::lookAt(
+			snappedCenter - lightForward * radius,
+			snappedCenter,
+			lightUp);
 
 		float minZ = (std::numeric_limits<float>::max)();
 		float maxZ = -(std::numeric_limits<float>::max)();
@@ -192,8 +205,8 @@ namespace
 			radius,
 			-radius,
 			radius,
-			minZ,
-			maxZ);
+			-maxZ,
+			-minZ);
 
 		CascadeBuildResult result{};
 		result.viewProj = lightProj * lightView;
@@ -323,9 +336,18 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCasca
 		}
 	}
 
-	int pointLightCount = static_cast<int>(m_PointLights.size());
+	uint32_t nextShadowAtlasSlot = 0;
+	int pointLightCount = static_cast<int>((std::min)(m_PointLights.size(), static_cast<size_t>(m_MaxPointLightCount)));
 	for (int pointLightIndex = 0; pointLightIndex < pointLightCount; pointLightIndex++)
 	{
+		const bool wantsShadow = m_PointLights[pointLightIndex].m_ShadowIndex >= 0.0f;
+		if (!wantsShadow || nextShadowAtlasSlot + 6u > m_MaxPunctualShadowAtlasSlots)
+		{
+			m_PointLights[pointLightIndex].m_ShadowIndex = -1.0f;
+			continue;
+		}
+		m_PointLights[pointLightIndex].m_ShadowIndex = static_cast<float>(nextShadowAtlasSlot);
+		nextShadowAtlasSlot += 6u;
 		glm::mat4 shadowProj = glm::perspective(glm::radians(90.0f), 1.0f, 0.001f, m_PointLights[pointLightIndex].m_Radius);
 		glm::vec3 lightPos = m_PointLights[pointLightIndex].m_Position;
 
@@ -335,12 +357,18 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCasca
 		m_PointLights[pointLightIndex].m_PointShadowMatrix[3] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, -1, 0), glm::vec3(0, 0, -1));
 		m_PointLights[pointLightIndex].m_PointShadowMatrix[4] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 0, 1), glm::vec3(0, -1, 0));
 		m_PointLights[pointLightIndex].m_PointShadowMatrix[5] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0, 0, -1), glm::vec3(0, -1, 0));
-		m_PointLights[pointLightIndex].m_ShadowIndex = static_cast<float>(pointLightIndex);
 	}
 
-	int spotLightCount = static_cast<int>(m_SpotLights.size());
+	int spotLightCount = static_cast<int>((std::min)(m_SpotLights.size(), static_cast<size_t>(m_MaxSpotLightCount)));
 	for (int spotLightIndex = 0; spotLightIndex < spotLightCount; spotLightIndex++)
 	{
+		const bool wantsShadow = m_SpotLights[spotLightIndex].m_ShadowIndex >= 0.0f;
+		if (!wantsShadow || nextShadowAtlasSlot >= m_MaxPunctualShadowAtlasSlots)
+		{
+			m_SpotLights[spotLightIndex].m_ShadowIndex = -1.0f;
+			continue;
+		}
+		m_SpotLights[spotLightIndex].m_ShadowIndex = static_cast<float>(nextShadowAtlasSlot++);
 		glm::vec3 sanitizedDirection = NormalizeLightDirectionSafe(
 			m_SpotLights[spotLightIndex].m_Direction,
 			glm::vec3(0.0f, -1.0f, 0.0f));
@@ -356,14 +384,18 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCasca
 		glm::vec3 upVector = ChooseStableUpVector(lightDir);
 		glm::mat4 shadowView = glm::lookAt(lightPos, lightPos + lightDir, upVector);
 		m_SpotLights[spotLightIndex].m_SpotShadowMatrix = shadowProj * shadowView;
-		m_SpotLights[spotLightIndex].m_ShadowIndex = static_cast<float>(spotLightIndex);
 	}
 
 	int rectLightCount = static_cast<int>((std::min)(m_RectLights.size(), static_cast<size_t>(m_MaxRectLightCount)));
 	for (int rectLightIndex = 0; rectLightIndex < rectLightCount; rectLightIndex++)
 	{
 		auto& rl = m_RectLights[rectLightIndex];
-		if (rl.m_ShadowIndex < 0.0f) continue;
+		if (rl.m_ShadowIndex < 0.0f || nextShadowAtlasSlot >= m_MaxPunctualShadowAtlasSlots)
+		{
+			rl.m_ShadowIndex = -1.0f;
+			continue;
+		}
+		rl.m_ShadowIndex = static_cast<float>(nextShadowAtlasSlot++);
 
 		float halfDiag = std::sqrt(rl.m_HalfWidth * rl.m_HalfWidth + rl.m_HalfHeight * rl.m_HalfHeight);
 		float fovY = 2.0f * std::atan2(halfDiag + rl.m_Range * 0.05f, 0.001f);
@@ -376,7 +408,6 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCasca
 		glm::vec3 upVector = ChooseStableUpVector(lightDir);
 		glm::mat4 shadowView = glm::lookAt(lightPos, lightPos + lightDir, upVector);
 		rl.m_ShadowMatrix = shadowProj * shadowView;
-		rl.m_ShadowIndex = static_cast<float>(rectLightIndex);
 	}
 }
 

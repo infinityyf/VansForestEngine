@@ -1,7 +1,7 @@
 #include "VansShaderManager.h"
 #include "VansMaterial.h"
 #include "VegetationCore/VansVegetationSystem.h"
-#include "WaterCore/VansWaterLOD.h"
+#include "WaterCore/VansWaterGeometryClipmap.h"
 
 // ---------------------------------------------------------------------------
 // RegisterEngineShaders declares every built-in engine shader in one place.
@@ -109,12 +109,14 @@ void RegisterEngineShaders()
         8, true
     });
 
-    reg.RegisterGraphicsShader("TransmissionGlass", {
+    VansGraphics::VansShaderEntry transmissionGlass = {
         "TransmissionGlass",
         "EngineAssets/Shaders/Transmission/Glass",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(VansGraphics::VansDrawPushConstant), true
-    });
+        sizeof(VansGraphics::VansDrawPushConstant), false
+    };
+    transmissionGlass.enablePremultipliedAlphaBlend = true;
+    reg.RegisterGraphicsShader("TransmissionGlass", transmissionGlass);
 
     reg.RegisterGraphicsShader("Deferred", {
         "Deferred",
@@ -233,7 +235,7 @@ void RegisterEngineShaders()
 
     VansGraphics::VansShaderEntry waterGBufferShader{
         "WaterGBuffer", "EngineAssets/Shaders/Water/WaterGBuffer",
-        VK_FALSE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_NONE,
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         sizeof(VansGraphics::WaterPatchPushConstant), false
     };
     waterGBufferShader.colorAttachmentCount = 2;
@@ -248,22 +250,22 @@ void RegisterEngineShaders()
     reg.RegisterGraphicsShader("WaterComposite", std::move(waterCompositeShader));
     reg.RegisterGraphicsShader("Terrain", {
         "Terrain", "EngineAssets/Shaders/Terrain/Deferred",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         0, false, false, 4
     });
     reg.RegisterGraphicsShader("TerrainShadow", {
         "TerrainShadow", "EngineAssets/Shaders/Terrain/Shadow",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         sizeof(int), false
     });
     reg.RegisterGraphicsShader("TerrainMotionVector", {
         "TerrainMotionVector", "EngineAssets/Shaders/Terrain/MotionVector",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         0, false
     });
     VansGraphics::VansShaderEntry terrainTessShader{
         "TerrainTess", "EngineAssets/Shaders/Terrain/DeferredTess",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_BACK_BIT,
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_NONE,
         0, false
     };
     terrainTessShader.colorAttachmentCount = 4;
@@ -310,22 +312,17 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("BloomUpsample", "EngineAssets/Shaders/PostProcess/BloomUpsample");
     reg.RegisterComputeShader("GIPointLight", "EngineAssets/Shaders/GIPointLight");
     reg.RegisterComputeShader("GISHUpdate", "EngineAssets/Shaders/GISHUpdate");
+    reg.RegisterComputeShader("GIVisibilityUpdate", "EngineAssets/Shaders/GIVisibilityUpdate");
     reg.RegisterComputeShader("ReflectionProbePrefilter", "EngineAssets/Shaders/ReflectionProbePrefilter");
     reg.RegisterComputeShader("GrassBoneSim", "EngineAssets/Shaders/GrassBoneSim");
     reg.RegisterComputeShader("GrassCull", "EngineAssets/Shaders/GrassCull", sizeof(VansGraphics::GrassCullPushConstants));
     reg.RegisterComputeShader("TreeCull", "EngineAssets/Shaders/TreeCull", sizeof(VansGraphics::TreeCullPushConstants));
     reg.RegisterComputeShader("WaterWave", "EngineAssets/Shaders/Water/WaterWave");
-    reg.RegisterComputeShader("WaterEffects", "EngineAssets/Shaders/Water/WaterEffects");
     reg.RegisterComputeShader("WaterSSR", "EngineAssets/Shaders/Water/SSR");
     reg.RegisterComputeShader("WaterRefraction", "EngineAssets/Shaders/Water/Refraction");
     reg.RegisterComputeShader("WaterCaustics", "EngineAssets/Shaders/Water/Caustics");
-    reg.RegisterComputeShader("WaterDetailNormal", "EngineAssets/Shaders/Water/WaterDetailNormal");
     reg.RegisterComputeShader("WaterThickness", "EngineAssets/Shaders/Water/SSS");
     reg.RegisterComputeShader("WaterSSSScatter", "EngineAssets/Shaders/Water/SSSScatter");
-    reg.RegisterComputeShader("WaterInitSpectrum", "EngineAssets/Shaders/Water/FFT");
-    reg.RegisterComputeShader("WaterFFTIter", "EngineAssets/Shaders/Water/FFT");
-    reg.RegisterComputeShader("WaterTimeEvolve", "EngineAssets/Shaders/Water/FFT");
-    reg.RegisterComputeShader("WaterDisplacementExtract", "EngineAssets/Shaders/Water/FFT");
     reg.RegisterRayTracingShader("RayTracingTest", "EngineAssets/Shaders/RayTracingTest");
 
     // Step 2: Register material type to { pass name, shader name } mappings.

@@ -172,17 +172,20 @@ void VansGraphics::VansCamera::HandleKeyboardInput(int key, int scancode, int ac
 
 glm::vec4 VansGraphics::VansCamera::GetForward()
 {
-    return m_CameraData.ViewMatrix[2];
+    // GLM matrices are column-major.  ViewMatrix[2] is not the camera's
+    // world-space forward vector once the camera rotates.  The inverse-view
+    // basis columns are the camera axes in world space; local -Z is forward.
+    return glm::vec4(-glm::vec3(m_CameraData.InverseViewMatrix[2]), 0.0f);
 }
 
 glm::vec4 VansGraphics::VansCamera::GetRight()
 {
-    return m_CameraData.ViewMatrix[0];
+    return glm::vec4(glm::vec3(m_CameraData.InverseViewMatrix[0]), 0.0f);
 }
 
 glm::vec4 VansGraphics::VansCamera::GetUp()
 {
-    return m_CameraData.ViewMatrix[1];
+    return glm::vec4(glm::vec3(m_CameraData.InverseViewMatrix[1]), 0.0f);
 }
 
 void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix)
@@ -232,9 +235,11 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     jitteredProj[2][0] += m_JitterX;
     jitteredProj[2][1] += m_JitterY;
 
+    const glm::mat4 inverseView = glm::inverse(view_matrix);
+
     // Store camera data
     m_CameraData.CameraPosition   = glm::vec4(m_Position, 1.0f);
-    m_CameraData.CameraDirection  = glm::vec4(-view_matrix[2]);
+    m_CameraData.CameraDirection  = glm::vec4(-glm::vec3(inverseView[2]), 0.0f);
     m_CameraData.LastPrevViewMatrix = m_CameraData.LastViewMatrix;
     m_CameraData.LastPrevProjectionMatrix = m_CameraData.LastProjectionMatrix;
     m_CameraData.LastPrevVPMatrix = m_CameraData.LastVPMatrix;
@@ -252,12 +257,16 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     m_CameraData.LastUnjitteredVPMatrix = (m_RenderFrameIndex == 0) ? unjitteredVP : m_CameraData.UnjitteredVPMatrix;
     m_CameraData.UnjitteredVPMatrix     = unjitteredVP;
 
-    m_CameraData.InverseViewMatrix       = glm::inverse(view_matrix);
+    m_CameraData.InverseViewMatrix       = inverseView;
     m_CameraData.InverseProjectionMatrix = glm::inverse(jitteredProj);
     m_CameraData.ScreenParams     = glm::vec4(width, height, 1.0f / width, 1.0f / height);
 
     float time = VansTimer::GetFrameTime();
-    m_CameraData.FrameParams  = glm::vec4(m_RenderFrameIndex, time, 0, 0);
+    m_CameraData.FrameParams  = glm::vec4(
+        m_RenderFrameIndex,
+        time,
+        m_RenderDevice->GetUpscaleMipBias(),
+        0.0f);
     m_CameraData.CameraParams = glm::vec4(m_NearClip, m_FarClip, m_Fov, m_AspectRatio);
 
     m_CameraDataBuffer.SetBufferData(&m_CameraData, 0, sizeof(m_CameraData));
@@ -302,6 +311,7 @@ VansGraphics::VansCamera::~VansCamera()
 }
 void VansGraphics::VansCamera::Rendering()
 {
+	m_RenderDevice->PrepareRenderingFrame();
     // 若绑定了 Transform，先同步位置/旋转再构建矩阵，确保 GetViewMatrix 使用最新数据
     SyncFromTransform();
 

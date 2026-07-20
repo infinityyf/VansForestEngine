@@ -19,6 +19,8 @@
 #include "Windows/VansTerrainWindow.h"
 #include "Windows/VansUIEditorWindow.h"
 #include "Windows/VansReflectionProbeWindow.h"
+#include "Windows/VansGIWindow.h"
+#include "Windows/VansPostProcessWindow.h"
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
@@ -27,6 +29,7 @@
 #include "../RuntimeCore/VansFramePhase.h"
 
 #include "../AssetCore/VansAssetGuid.h"
+#include "../AnimationCore/VansAnimationNode.h"
 #include "Windows/VansProjectSelector.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSaveService.h"
@@ -109,20 +112,28 @@ namespace
         return nullptr;
     }
 
-    bool EntityHasChildren(const Vans::SceneJson& root, const std::string& parentId)
+    std::unordered_set<std::string> CollectParentEntityIds(const Vans::SceneJson& root)
     {
+        std::unordered_set<std::string> parentIds;
         if (!root.contains("entities") || !root["entities"].is_array())
-            return false;
+            return parentIds;
+
+        parentIds.reserve(root["entities"].size());
         for (const auto& entity : root["entities"])
         {
-            if (entity.contains("parent") && entity["parent"].is_string() &&
-                entity["parent"].get<std::string>() == parentId)
-                return true;
+            if (!entity.is_object() || !entity.contains("parent") || !entity["parent"].is_string())
+                continue;
+
+            const std::string parentId = entity["parent"].get<std::string>();
+            if (!parentId.empty())
+                parentIds.insert(parentId);
         }
-        return false;
+        return parentIds;
     }
 
-    bool HasRuntimeMultiMeshExpansionCandidates(const Vans::SceneJson& root)
+    bool HasRuntimeMultiMeshExpansionCandidates(
+        const Vans::SceneJson& root,
+        const std::unordered_set<std::string>& parentEntityIds)
     {
         if (!root.contains("entities") || !root["entities"].is_array())
             return false;
@@ -136,9 +147,6 @@ namespace
             if (entityId.empty())
                 continue;
 
-            if (EntityHasChildren(root, entityId))
-                continue;
-
             if (FindComponent(entity, "MultiMeshRoot") != nullptr)
                 continue;
 
@@ -148,6 +156,9 @@ namespace
 
             const Vans::SceneJson& rendererData = (*renderer)["data"];
             if (!rendererData.value("autoExpandSubmeshes", false))
+                continue;
+
+            if (parentEntityIds.find(entityId) != parentEntityIds.end())
                 continue;
 
             const std::string modelGuid = rendererData.value("model", Vans::SceneJson::object()).value("guid", "");
@@ -198,6 +209,8 @@ bool VansGraphics::VansEditorWindow::m_UIEditorWindowOpen = true;
 bool VansGraphics::VansEditorWindow::m_WaterWindowOpen = true;
 bool VansGraphics::VansEditorWindow::m_TerrainWindowOpen = true;
 bool VansGraphics::VansEditorWindow::m_ReflectionProbeWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_GIWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_PostProcessWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
 bool VansGraphics::VansEditorWindow::m_VehicleDebugGizmos = false;
@@ -239,6 +252,8 @@ VansGraphics::VansWaterWindow* VansGraphics::VansEditorWindow::m_WaterWindow;
 VansGraphics::VansTerrainWindow* VansGraphics::VansEditorWindow::m_TerrainWindow;
 
 VansGraphics::VansReflectionProbeWindow* VansGraphics::VansEditorWindow::m_ReflectionProbeWindow;
+VansGraphics::VansGIWindow* VansGraphics::VansEditorWindow::m_GIWindow;
+VansGraphics::VansPostProcessWindow* VansGraphics::VansEditorWindow::m_PostProcessWindow;
 
 // Project selector overlay
 std::unique_ptr<Vans::VansProjectSelector> VansGraphics::VansEditorWindow::m_ProjectSelector;
@@ -256,6 +271,7 @@ std::unique_ptr<Vans::VansSceneEditService> VansGraphics::VansEditorWindow::m_Sc
 std::unique_ptr<Vans::VansSceneSaveService> VansGraphics::VansEditorWindow::m_SceneSaveService =
     std::make_unique<Vans::VansSceneSaveService>();
 Vans::EditorAPI::IEngineEditorAPI* VansGraphics::VansEditorWindow::m_EditorAPI = nullptr;
+std::uint64_t VansGraphics::VansEditorWindow::m_RuntimeMultiMeshExpansionScannedStateId = 0;
 
 Vans::VansSceneDocument* VansGraphics::VansEditorWindow::GetSceneDocument()
 {
@@ -291,7 +307,13 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
     if (!root.contains("entities") || !root["entities"].is_array())
         return;
 
-    if (!HasRuntimeMultiMeshExpansionCandidates(root))
+    const std::uint64_t documentStateId = m_SceneDocument->CurrentStateId();
+    if (m_RuntimeMultiMeshExpansionScannedStateId == documentStateId)
+        return;
+
+    const std::unordered_set<std::string> parentEntityIds = CollectParentEntityIds(root);
+    m_RuntimeMultiMeshExpansionScannedStateId = documentStateId;
+    if (!HasRuntimeMultiMeshExpansionCandidates(root, parentEntityIds))
         return;
 
     Vans::SceneJson newEntities = root["entities"];
@@ -310,7 +332,7 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
         const std::string entityName = entity.value("name", "");
         if (entityId.empty() || entityName.empty())
             continue;
-        if (EntityHasChildren(root, entityId))
+        if (parentEntityIds.find(entityId) != parentEntityIds.end())
             continue;
         if (FindComponent(entity, "MultiMeshRoot") != nullptr)
             continue;
@@ -590,6 +612,39 @@ void VansGraphics::VansEditorWindow::OnStop()
     m_PendingScenePath     = m_CurrentLoadedScenePath;
 }
 
+void VansGraphics::VansEditorWindow::OpenSelectedAnimationGraph()
+{
+    if (!m_AnimGraphEditorWindow)
+    {
+        VANS_LOG_WARN("[AnimationEditor] Animation Graph Editor window is not initialized");
+        return;
+    }
+
+    const std::string& selectedGuid = Vans::VansEditorSelection::EntityGuid();
+    if (selectedGuid.empty())
+    {
+        VANS_LOG_WARN("[AnimationEditor] Select a scene entity with an Animation component first");
+        return;
+    }
+
+    auto& editorAPI = GetMutableEditorAPI();
+    VansAnimationNode* animNode = editorAPI.FindRuntimeAnimationNodeByEntityGuid(selectedGuid);
+    if (!animNode)
+    {
+        VANS_LOG_WARN("[AnimationEditor] Selected entity has no runtime Animation node: " << selectedGuid);
+        return;
+    }
+
+    VansAnimationController* controller = animNode->GetController();
+    if (!controller)
+    {
+        VANS_LOG_WARN("[AnimationEditor] Selected Animation node has no controller: " << animNode->GetName());
+        return;
+    }
+
+    m_AnimGraphEditorWindow->Open(controller, animNode);
+}
+
 // ============================================================================
 // 工具栏 UI：Play / Pause / Resume / Stop 按钮
 // ============================================================================
@@ -705,6 +760,10 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_ReflectionProbeWindow = AddEditorWindowComponent<VansReflectionProbeWindow>(m_Windows);
 
+    m_GIWindow = AddEditorWindowComponent<VansGIWindow>(m_Windows);
+
+    m_PostProcessWindow = AddEditorWindowComponent<VansPostProcessWindow>(m_Windows);
+
 }
 
 void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
@@ -794,6 +853,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 		{
 			m_SceneDocument = std::move(loadResult.document);
 			m_SceneEditService = std::make_unique<Vans::VansSceneEditService>(*m_SceneDocument);
+			m_RuntimeMultiMeshExpansionScannedStateId = 0;
 			VANS_LOG("[SceneDocument] Document ready: " << m_PendingScenePath);
 		}
 		else
@@ -1030,6 +1090,12 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 		auto& editorAPI = GetMutableEditorAPI();
 		editorAPI.BindGlobalRuntime(&device);
 		m_EditorAPI = &editorAPI;
+		const std::string& selectedEntityGuid = Vans::VansEditorSelection::EntityGuid();
+		VansAnimationNode* selectedAnimationNode = selectedEntityGuid.empty()
+			? nullptr
+			: editorAPI.FindRuntimeAnimationNodeByEntityGuid(selectedEntityGuid);
+		const bool canOpenSelectedAnimationGraph =
+			selectedAnimationNode && selectedAnimationNode->GetController();
 		const bool canUndoSceneDocument = m_SceneEditService && m_SceneEditService->CanUndo();
 		const bool canRedoSceneDocument = m_SceneEditService && m_SceneEditService->CanRedo();
 		const bool canUndoAssetDocument = selectedAssetDocument &&
@@ -1188,12 +1254,26 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
                 ImGui::MenuItem("Profiler", nullptr, &m_ProfilerWindowOpen);
                 ImGui::MenuItem("UI Editor", nullptr, &m_UIEditorWindowOpen);
                 ImGui::Separator();
+                if (ImGui::BeginMenu("Animation"))
+                {
+                    if (ImGui::MenuItem("Animation Graph", nullptr, false, canOpenSelectedAnimationGraph))
+                    {
+                        OpenSelectedAnimationGraph();
+                    }
+                    if (!canOpenSelectedAnimationGraph)
+                    {
+                        ImGui::TextDisabled("Select an entity with Animation");
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::Separator();
                 ImGui::MenuItem("GBuffer Visualization", nullptr, &m_GBufferWindowOpen);
                 ImGui::MenuItem("Water GBuffer Visualization", nullptr, &m_WaterGBufferWindowOpen);
                 ImGui::MenuItem("Render Debug", nullptr, &m_RenderDebugWindowOpen);
                 ImGui::MenuItem("Hair Debug", nullptr, &m_HairDebugWindowOpen);
                 ImGui::MenuItem("Water", nullptr, &m_WaterWindowOpen);
                 ImGui::MenuItem("Terrain", nullptr, &m_TerrainWindowOpen);
+                ImGui::MenuItem("Post Process", nullptr, &m_PostProcessWindowOpen);
                 if (m_ReflectionProbeWindow)
                 {
                     ImGui::MenuItem("Reflection Probe Inspector", nullptr, &m_ReflectionProbeWindowOpen);
@@ -1202,6 +1282,16 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
                 {
                     ImGui::BeginDisabled();
                     ImGui::MenuItem("Reflection Probe Inspector");
+                    ImGui::EndDisabled();
+                }
+                if (m_GIWindow)
+                {
+                    ImGui::MenuItem("GI Inspector", nullptr, &m_GIWindowOpen);
+                }
+                else
+                {
+                    ImGui::BeginDisabled();
+                    ImGui::MenuItem("GI Inspector");
                     ImGui::EndDisabled();
                 }
                 ImGui::EndMenu();
@@ -1492,21 +1582,6 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         auto& editorAPI = GetMutableEditorAPI();
         editorAPI.BindGlobalRuntime(m_GraphicsDevice);
 
-        Vans::VansInputManager& input = Vans::VansInputManager::Get();
-        // Step Vehicle Physics - MOVED TO PHYSICS THREAD via Callback
-        if (editorAPI.IsRuntimeSceneReady())
-        {
-            VANS_PROFILE_SCOPE("Frame::VehicleInput", Vans::ProfileCategory::Physics);
-
-            // Vehicle control inputs via InputManager
-            const float throttle = input.IsKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f;
-            const float brake = input.IsKeyDown(GLFW_KEY_S) ? 1.0f : 0.0f;
-            float steer = 0.0f;
-            if (input.IsKeyDown(GLFW_KEY_A)) steer -= 1.0f;
-            if (input.IsKeyDown(GLFW_KEY_D)) steer += 1.0f;
-            editorAPI.SetRuntimeVehicleInput(throttle, brake, steer, 0.0f);
-        }
-
         // Synchronize rigid-body physics transforms to render transforms.
         // IMPORTANT: This uses PxSceneReadLock internally to prevent race conditions
         // with the background physics simulation thread.
@@ -1637,6 +1712,8 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     m_WaterWindow = nullptr;
     m_TerrainWindow = nullptr;
     m_ReflectionProbeWindow = nullptr;
+    m_GIWindow = nullptr;
+    m_PostProcessWindow = nullptr;
 
     // Destroy GPU profiler
 #if VANS_PROFILER_ENABLED

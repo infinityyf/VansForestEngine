@@ -313,7 +313,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
         float attenuation = 1.0 - (distance / pointLight.radius);
         attenuation *= attenuation;
 
-        float pShadow = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(pointLight.shadowIndex));
+        float pShadow = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
         float litAttenuation = attenuation * pShadow;
         float transmissionAttenuation = attenuation *
             SkinTransmissionShadow(pShadow, dot(brdfData.normal, lightDirection), curvature);
@@ -343,7 +343,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
 
-        float sShadow = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(spotLight.shadowIndex));
+        float sShadow = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
 
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
         if (coneAngle < cos(spotLight.outerConeAngle)) continue;

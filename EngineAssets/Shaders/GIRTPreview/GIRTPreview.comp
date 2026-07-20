@@ -1,0 +1,127 @@
+#version 450
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer HitPositionBuffer
+{
+    f16vec4 values[];
+} hitPositionBuffer;
+
+layout(set = 0, binding = 1, std430) readonly buffer HitNormalBuffer
+{
+    f16vec4 values[];
+} hitNormalBuffer;
+
+layout(set = 0, binding = 2, std430) readonly buffer HitPBRBuffer
+{
+    f16vec4 values[];
+} hitPBRBuffer;
+
+layout(set = 0, binding = 3, std430) readonly buffer DirectLightBuffer
+{
+    f16vec4 values[];
+} directLightBuffer;
+
+layout(set = 0, binding = 4, rgba16f) readonly uniform image3D raySummaryImage;
+layout(set = 0, binding = 5, rgba32f) readonly uniform image3D shRImage;
+layout(set = 0, binding = 6, rgba32f) readonly uniform image3D shGImage;
+layout(set = 0, binding = 7, rgba32f) readonly uniform image3D shBImage;
+layout(set = 0, binding = 8, rgba32f) writeonly uniform image2D outputImage;
+
+layout(push_constant) uniform PreviewConstants
+{
+    vec4 gridParams;       // xyz = grid dimensions, w = rays per probe
+    vec4 selectionParams;  // x = mode, y = z slice, z = ray index, w = exposure
+    vec4 displayParams;    // x = signed world-position scale
+} preview;
+
+vec3 TonemapPositive(vec3 value, float exposure)
+{
+    value = max(value * exposure, vec3(0.0));
+    return value / (vec3(1.0) + value);
+}
+
+vec3 EncodeSigned(vec3 value)
+{
+    return vec3(0.5) + 0.5 * value / (vec3(1.0) + abs(value));
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec3 grid = max(ivec3(preview.gridParams.xyz), ivec3(1));
+    if (pixel.x >= grid.x || pixel.y >= grid.y)
+        return;
+
+    int raysPerProbe = max(int(preview.gridParams.w), 1);
+    int zSlice = clamp(int(preview.selectionParams.y), 0, grid.z - 1);
+    int rayIndex = clamp(int(preview.selectionParams.z), 0, raysPerProbe - 1);
+    int mode = int(preview.selectionParams.x);
+    float exposure = max(preview.selectionParams.w, 0.001);
+    ivec3 probeCoord = ivec3(pixel, zSlice);
+    int probeIndex = zSlice * grid.x * grid.y + pixel.y * grid.x + pixel.x;
+    int sliceElementBase = max(int(preview.displayParams.y), 0);
+    int sampleIndex = sliceElementBase + (pixel.y * grid.x + pixel.x) * raysPerProbe + rayIndex;
+
+    vec4 hitPosition = vec4(hitPositionBuffer.values[sampleIndex]);
+    vec4 hitNormal = vec4(hitNormalBuffer.values[sampleIndex]);
+    vec4 hitPBR = vec4(hitPBRBuffer.values[sampleIndex]);
+    vec4 directLight = vec4(directLightBuffer.values[sampleIndex]);
+    vec4 shR = imageLoad(shRImage, probeCoord);
+    vec4 shG = imageLoad(shGImage, probeCoord);
+    vec4 shB = imageLoad(shBImage, probeCoord);
+
+    vec3 color = vec3(0.0);
+    if (mode == 0)
+    {
+        color = vec3(clamp(imageLoad(raySummaryImage, probeCoord).x, 0.0, 1.0));
+    }
+    else if (mode == 1)
+    {
+        color = vec3(clamp(hitPosition.w, 0.0, 1.0));
+    }
+    else if (mode == 2)
+    {
+        color = EncodeSigned(hitPosition.xyz * max(preview.displayParams.x, 0.0001));
+    }
+    else if (mode == 3)
+    {
+        color = clamp(hitNormal.xyz * 0.5 + 0.5, 0.0, 1.0);
+    }
+    else if (mode == 4)
+    {
+        color = clamp(hitPBR.rgb, 0.0, 1.0);
+    }
+    else if (mode == 5)
+    {
+        color = vec3(clamp(hitPBR.a, 0.0, 1.0));
+    }
+    else if (mode == 6)
+    {
+        color = TonemapPositive(directLight.rgb, exposure);
+    }
+    else if (mode == 7)
+    {
+        color = TonemapPositive(vec3(shR.x, shG.x, shB.x) * 0.28209479, exposure);
+    }
+    else if (mode == 8)
+    {
+        color = TonemapPositive(vec3(length(shR.yzw), length(shG.yzw), length(shB.yzw)), exposure);
+    }
+    else if (mode == 9)
+    {
+        color = EncodeSigned(shR.yzw * exposure);
+    }
+    else if (mode == 10)
+    {
+        color = EncodeSigned(shG.yzw * exposure);
+    }
+    else
+    {
+        color = EncodeSigned(shB.yzw * exposure);
+    }
+
+    imageStore(outputImage, pixel, vec4(color, 1.0));
+}

@@ -93,8 +93,9 @@ void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (int shadowDirection = 0; shadowDirection < 6; shadowDirection++)
     {
-        float regionOffsetX = (lightIndex * 6 + shadowDirection) % 8 * patchShadowSize;
-        float regionOffsetY = (lightIndex * 6 + shadowDirection) / 8 * patchShadowSize;
+        int atlasSlot = static_cast<int>(m_LightManager.GetPointLights()[lightIndex].m_ShadowIndex) + shadowDirection;
+        float regionOffsetX = atlasSlot % 8 * patchShadowSize;
+        float regionOffsetY = atlasSlot / 8 * patchShadowSize;
 
         VkViewport viewPort = {};
         viewPort.x = regionOffsetX;
@@ -154,8 +155,9 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
 
-    float regionOffsetX = (pointCount * 6 + lightIndex) % 8 * patchShadowSize;
-    float regionOffsetY = (pointCount * 6 + lightIndex) / 8 * patchShadowSize;
+    int atlasSlot = static_cast<int>(m_LightManager.GetSpotLight()[lightIndex].m_ShadowIndex);
+    float regionOffsetX = atlasSlot % 8 * patchShadowSize;
+    float regionOffsetY = atlasSlot / 8 * patchShadowSize;
 
     VkViewport viewPort = {};
     viewPort.x = regionOffsetX;
@@ -214,8 +216,7 @@ void VansGraphics::VansScene::DrawRectShadow(int pointCount, int spotCount, int 
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
 
-    // Atlas slot index = pointCount*6 (point uses 6 faces) + spotCount + lightIndex
-    int slotIndex = pointCount * 6 + spotCount + lightIndex;
+    int slotIndex = static_cast<int>(m_LightManager.GetRectLights()[lightIndex].m_ShadowIndex);
     float regionOffsetX = (slotIndex % 8) * patchShadowSize;
     float regionOffsetY = (slotIndex / 8) * patchShadowSize;
 
@@ -417,14 +418,14 @@ void VansGraphics::VansScene::DrawTransParentNodes()
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    glm::vec3 cameraPos(0.0f);
+    glm::mat4 viewMatrix(1.0f);
     if (m_Camera)
     {
-        cameraPos = glm::vec3(m_Camera->GetPosition());
+        viewMatrix = m_Camera->GetViewMatrix();
     }
 
     std::vector<VansRenderNode*> sortedNodes;
-    sortedNodes.reserve(m_TransParentRenderNodes.size());
+    sortedNodes.reserve(m_TransParentRenderNodes.size() + m_ParticleRenderNodes.size());
     for (auto* node : m_TransParentRenderNodes)
     {
         if (node != nullptr && node->IsEnabled())
@@ -432,14 +433,23 @@ void VansGraphics::VansScene::DrawTransParentNodes()
             sortedNodes.push_back(node);
         }
     }
+    for (auto* particleNode : m_ParticleRenderNodes)
+    {
+        if (particleNode != nullptr && particleNode->IsEnabled())
+            sortedNodes.push_back(particleNode);
+    }
 
     std::stable_sort(sortedNodes.begin(), sortedNodes.end(),
-        [cameraPos](const VansRenderNode* a, const VansRenderNode* b)
+        [viewMatrix](const VansRenderNode* a, const VansRenderNode* b)
         {
-            const glm::vec3 pa = glm::vec3(a->m_ModelData.Postion);
-            const glm::vec3 pb = glm::vec3(b->m_ModelData.Postion);
-            const float da = glm::dot(pa - cameraPos, pa - cameraPos);
-            const float db = glm::dot(pb - cameraPos, pb - cameraPos);
+            const glm::vec3 pa = a->GetNodeType() == PARTICLE_NODE
+                ? static_cast<const VansParticleRenderNode*>(a)->GetSortCenterWS()
+                : glm::vec3(a->m_ModelData.Postion);
+            const glm::vec3 pb = b->GetNodeType() == PARTICLE_NODE
+                ? static_cast<const VansParticleRenderNode*>(b)->GetSortCenterWS()
+                : glm::vec3(b->m_ModelData.Postion);
+            const float da = -(viewMatrix * glm::vec4(pa, 1.0f)).z;
+            const float db = -(viewMatrix * glm::vec4(pb, 1.0f)).z;
             return da > db;
         });
 
@@ -493,21 +503,6 @@ void VansGraphics::VansScene::DrawForwardOpaqueAfterDeferredNodes()
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     for (auto& node : m_ForwardOpaqueAfterDeferredRenderNodes)
-    {
-        if (node == nullptr || !node->IsEnabled())
-        {
-            continue;
-        }
-        node->Draw(cmd, globalStateData);
-    }
-}
-
-void VansGraphics::VansScene::DrawParticleNodes()
-{
-    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    for (auto* node : m_ParticleRenderNodes)
     {
         if (node == nullptr || !node->IsEnabled())
         {

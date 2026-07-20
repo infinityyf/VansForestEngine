@@ -5,7 +5,13 @@
 #include "IEngineEventListener.h"
 
 #include <memory>
+#include <string>
 #include <vector>
+
+namespace VansGraphics
+{
+	class VansAnimationNode;
+}
 
 namespace Vans::EditorAPI
 {
@@ -36,12 +42,25 @@ namespace Vans::EditorAPI
 
 		virtual EditorTextureHandle GetViewportTexture(ViewportId id) const = 0;
 		virtual RenderTexturePreview GetViewportPreview(ViewportId id) const = 0;
+		virtual FSRSettingsSnapshot GetFSRSettings() const = 0;
+		virtual void SetFSRSettings(FSRUpscaleMode mode, float sharpness) = 0;
+		virtual void SetSceneViewportExtent(std::uint32_t width, std::uint32_t height) = 0;
 		virtual std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const = 0;
 		virtual RenderBackendDiagnostics GetRenderBackendDiagnostics() const = 0;
 		virtual void RebuildReflectionProbeResources() = 0;
 		virtual void BakeQueuedReflectionProbesNow() = 0;
 		virtual ReflectionProbeSettingsSnapshot GetReflectionProbeSettings() const = 0;
 		virtual void ApplyReflectionProbeSettings(const ReflectionProbeSettingsSnapshot& settings) = 0;
+		virtual GIInspectorSettingsSnapshot GetGISettings() const = 0;
+		virtual void ApplyGISettings(const GIInspectorSettingsSnapshot& settings) = 0;
+		virtual GIProbeDebugSnapshot CaptureGIProbeDebugSnapshot(std::uint32_t stride, float exposure) = 0;
+		virtual GIProbeDebugSnapshot GetGIProbeDebugSnapshot() const = 0;
+		virtual RenderTexturePreview RequestGIRTPreview(
+			std::uint32_t mode,
+			std::uint32_t zSlice,
+			std::uint32_t rayIndex,
+			float exposure,
+			float positionScale) = 0;
 		virtual void GenerateAutoReflectionProbes() = 0;
 		virtual void ClearAutoReflectionProbes() = 0;
 		virtual void RequestReflectionProbeBakeAll() = 0;
@@ -69,6 +88,7 @@ namespace Vans::EditorAPI
 		virtual bool LoadRuntimeProjectAssetsForScene(const std::string& scenePath) = 0;
 		virtual VehicleDebugSnapshot GetVehicleDebugSnapshot() const = 0;
 		virtual bool HasAnimationDebugNodes() const = 0;
+		virtual VansGraphics::VansAnimationNode* FindRuntimeAnimationNodeByEntityGuid(const std::string& entityGuid) const = 0;
 		virtual MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const = 0;
 		virtual void SetFootIKDebugVisualization(bool enabled) = 0;
 		virtual FootIKDebugSnapshot GetFootIKDebugSnapshot() const = 0;
@@ -84,6 +104,8 @@ namespace Vans::EditorAPI
 		virtual void CommitLightingChanges() = 0;
 		virtual LightingSettingsSnapshot GetLightingSettings() const = 0;
 		virtual void ApplyLightingSettings(const LightingSettingsSnapshot& settings) = 0;
+		virtual PostProcessSettingsSnapshot GetPostProcessSettings() const = 0;
+		virtual void ApplyPostProcessSettings(const PostProcessSettingsSnapshot& settings) = 0;
 		virtual FogSettings GetFogSettings() const = 0;
 		virtual void ApplyFogSettings(const FogSettings& settings) = 0;
 		virtual FogVolumeSettings GetFogVolumeSettings() const = 0;

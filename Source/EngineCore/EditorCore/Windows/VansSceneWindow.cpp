@@ -5,6 +5,7 @@
 #include "backends/imgui_impl_glfw.h"
 #include "ImGuizmo.h"
 #include <cmath>
+#include <algorithm>
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -25,6 +26,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
     {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         ImGui::Begin("Scene");
+		Vans::EditorAPI::FSRSettingsSnapshot fsrSettings = editorAPI.GetFSRSettings();
 
         // ImGuizmo must be told a new frame is starting once per ImGui frame.
         ImGuizmo::BeginFrame();
@@ -57,6 +59,31 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             if (ImGui::Checkbox("World##gizmo", &isWorld))
                 m_Gizmos.m_Space = isWorld ? GizmoSpace::World : GizmoSpace::Local;
 
+			ImGui::SameLine();
+			ImGui::Text("|");
+			ImGui::SameLine();
+			const char* fsrModeNames[] = { "Viewport", "Native AA", "Quality 1.5x", "Performance 2x" };
+			int fsrMode = static_cast<int>(fsrSettings.mode);
+			ImGui::SetNextItemWidth(125.0f);
+			if (ImGui::Combo("##fsrMode", &fsrMode, fsrModeNames, IM_ARRAYSIZE(fsrModeNames)))
+			{
+				fsrSettings.mode = static_cast<Vans::EditorAPI::FSRUpscaleMode>(fsrMode);
+				editorAPI.SetFSRSettings(fsrSettings.mode, fsrSettings.sharpness);
+			}
+
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(90.0f);
+			if (ImGui::SliderFloat("RCAS##fsr", &fsrSettings.sharpness, 0.0f, 1.0f, "%.2f"))
+				editorAPI.SetFSRSettings(fsrSettings.mode, fsrSettings.sharpness);
+
+			ImGui::SameLine();
+			ImGui::TextDisabled("%ux%u -> %ux%u  bias %.2f",
+				fsrSettings.renderWidth,
+				fsrSettings.renderHeight,
+				fsrSettings.outputWidth,
+				fsrSettings.outputHeight,
+				fsrSettings.mipBias);
+
             ImGui::Unindent(4.0f);
             ImGui::Spacing();
             ImGui::PopStyleVar();
@@ -64,6 +91,47 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 
         // 获取当前窗口可用区域大小
         ImVec2 viewportSize = ImGui::GetContentRegionAvail();
+
+		// Match the output to the aspect-fitted Scene image in framebuffer pixels.
+		// Debouncing avoids rebuilding the FSR context for every pixel while a dock
+		// splitter is actively dragged.
+		if (viewportSize.x > 1.0f && viewportSize.y > 1.0f &&
+			fsrSettings.renderWidth > 0 && fsrSettings.renderHeight > 0)
+		{
+			const float renderAspect = static_cast<float>(fsrSettings.renderWidth) /
+				static_cast<float>(fsrSettings.renderHeight);
+			ImVec2 desiredDrawSize = viewportSize;
+			if (viewportSize.x / viewportSize.y > renderAspect)
+				desiredDrawSize.x = viewportSize.y * renderAspect;
+			else
+				desiredDrawSize.y = viewportSize.x / renderAspect;
+
+			const ImVec2 framebufferScale = ImGui::GetIO().DisplayFramebufferScale;
+			const std::uint32_t candidateWidth = static_cast<std::uint32_t>(
+				std::max(1.0f, std::round(desiredDrawSize.x * framebufferScale.x)));
+			const std::uint32_t candidateHeight = static_cast<std::uint32_t>(
+				std::max(1.0f, std::round(desiredDrawSize.y * framebufferScale.y)));
+
+			if (candidateWidth != m_ViewportCandidateWidth || candidateHeight != m_ViewportCandidateHeight)
+			{
+				m_ViewportCandidateWidth = candidateWidth;
+				m_ViewportCandidateHeight = candidateHeight;
+				m_ViewportStableFrames = 0;
+			}
+			else if (m_ViewportStableFrames < 3)
+			{
+				++m_ViewportStableFrames;
+			}
+
+			if (m_ViewportStableFrames == 3 &&
+				(candidateWidth != m_LastRequestedViewportWidth ||
+				 candidateHeight != m_LastRequestedViewportHeight))
+			{
+				editorAPI.SetSceneViewportExtent(candidateWidth, candidateHeight);
+				m_LastRequestedViewportWidth = candidateWidth;
+				m_LastRequestedViewportHeight = candidateHeight;
+			}
+		}
 
         // ── No scene loaded: show an empty black region ───────────────────
         if (!editorAPI.IsRuntimeSceneReady())
@@ -76,9 +144,6 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             ImGui::PopStyleVar();
             return;
         }
-
-        // TODO: 检测 viewportSize 是否变化，如果变化则通知渲染器调整 RenderTarget (Framebuffer) 的大小
-        // if (viewportSize.x != m_LastWidth || viewportSize.y != m_LastHeight) { ResizeRenderTarget(...); }
 
         Vans::EditorAPI::RenderTexturePreview scenePreview = editorAPI.GetViewportPreview(0);
 

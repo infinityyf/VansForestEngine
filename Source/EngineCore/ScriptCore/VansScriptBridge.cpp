@@ -11,6 +11,7 @@
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
+#include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../Util/VansInputManager.h"
 #include "../RenderCore/VulkanCore/VansVideoTexture.h"
 #include "../RuntimeUI/Public/VansUISystem.h"
@@ -63,6 +64,12 @@ static inline VansScriptRagdollComponent* AsRagdollComp(void* p)
 static inline VansScriptCharacterControllerComponent* AsCCTComp(void* p)
 {
 	return dynamic_cast<VansScriptCharacterControllerComponent*>(
+		static_cast<VansScriptComponent*>(p));
+}
+
+static inline VansScriptVehicleComponent* AsVehicleComp(void* p)
+{
+	return dynamic_cast<VansScriptVehicleComponent*>(
 		static_cast<VansScriptComponent*>(p));
 }
 
@@ -1784,63 +1791,6 @@ void VansInitEngineBridge()
 		if (pp) { pp->m_Tint = v; pp->m_IsDirty = true; }
 	};
 
-	// Vignette
-	s_EngineBridge.ppGetEnableVignette = []() -> bool
-	{
-		auto* pp = GetPPProfile();
-		return pp ? pp->m_EnableVignette : false;
-	};
-	s_EngineBridge.ppSetEnableVignette = [](bool v)
-	{
-		auto* pp = GetPPProfile();
-		if (pp) { pp->m_EnableVignette = v; pp->m_IsDirty = true; }
-	};
-
-	s_EngineBridge.ppGetVignetteIntensity = []() -> float
-	{
-		auto* pp = GetPPProfile();
-		return pp ? pp->m_VignetteIntensity : 0.2f;
-	};
-	s_EngineBridge.ppSetVignetteIntensity = [](float v)
-	{
-		auto* pp = GetPPProfile();
-		if (pp) { pp->m_VignetteIntensity = v; pp->m_IsDirty = true; }
-	};
-
-	s_EngineBridge.ppGetVignetteSmoothness = []() -> float
-	{
-		auto* pp = GetPPProfile();
-		return pp ? pp->m_VignetteSmoothness : 0.5f;
-	};
-	s_EngineBridge.ppSetVignetteSmoothness = [](float v)
-	{
-		auto* pp = GetPPProfile();
-		if (pp) { pp->m_VignetteSmoothness = v; pp->m_IsDirty = true; }
-	};
-
-	// Film Grain
-	s_EngineBridge.ppGetEnableFilmGrain = []() -> bool
-	{
-		auto* pp = GetPPProfile();
-		return pp ? pp->m_EnableFilmGrain : false;
-	};
-	s_EngineBridge.ppSetEnableFilmGrain = [](bool v)
-	{
-		auto* pp = GetPPProfile();
-		if (pp) { pp->m_EnableFilmGrain = v; pp->m_IsDirty = true; }
-	};
-
-	s_EngineBridge.ppGetFilmGrainIntensity = []() -> float
-	{
-		auto* pp = GetPPProfile();
-		return pp ? pp->m_FilmGrainIntensity : 0.04f;
-	};
-	s_EngineBridge.ppSetFilmGrainIntensity = [](float v)
-	{
-		auto* pp = GetPPProfile();
-		if (pp) { pp->m_FilmGrainIntensity = v; pp->m_IsDirty = true; }
-	};
-
 	// Sharpen
 	s_EngineBridge.ppGetEnableSharpen = []() -> bool
 	{
@@ -1864,19 +1814,6 @@ void VansInitEngineBridge()
 		if (pp) { pp->m_SharpenIntensity = v; pp->m_IsDirty = true; }
 	};
 
-	// Dithering
-	s_EngineBridge.ppGetEnableDithering = []() -> bool
-	{
-		auto* pp = GetPPProfile();
-		return pp ? pp->m_EnableDithering : false;
-	};
-	s_EngineBridge.ppSetEnableDithering = [](bool v)
-	{
-		auto* pp = GetPPProfile();
-		if (pp) { pp->m_EnableDithering = v; pp->m_IsDirty = true; }
-	};
-
-
 	s_EngineBridge.ppSaveToFile = [](const char* path) -> bool
 	{
 		auto* pp = GetPPProfile();
@@ -1896,6 +1833,32 @@ void VansInitEngineBridge()
 	{
 		auto* pp = GetPPProfile();
 		if (pp) { pp->ResetToDefaults(); pp->m_IsDirty = true; }
+	};
+
+	// Vehicle commands are synchronized with the background PhysX simulation.
+	s_EngineBridge.objectGetVehicleComp = [](void* obj) -> void*
+	{
+		auto* o = AsScriptObject(obj);
+		return o ? o->GetComponent<VansScriptVehicleComponent>() : nullptr;
+	};
+
+	s_EngineBridge.vehicleSetInputs = [](void* comp, float throttle, float brake,
+		float steer, float handbrake)
+	{
+		auto* vc = AsVehicleComp(comp);
+		if (!vc || !vc->m_Vehicle) return;
+		auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+		std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
+		vc->m_Vehicle->SetInputs(throttle, brake, steer, handbrake);
+	};
+
+	s_EngineBridge.vehicleSetGear = [](void* comp, uint32_t gear)
+	{
+		auto* vc = AsVehicleComp(comp);
+		if (!vc || !vc->m_Vehicle) return;
+		auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+		std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
+		vc->m_Vehicle->SetGear(gear);
 	};
 }
 

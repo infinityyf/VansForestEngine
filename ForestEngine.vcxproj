@@ -218,6 +218,8 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansWaterWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansTerrainWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansGIWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansPostProcessWindow.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUISystem.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIDocument.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIElementHandle.h" />
@@ -285,10 +287,9 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VegetationCore\VansVegetationSystem.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterConfig.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterFFT.h" />
-    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterLOD.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterGeometryClipmap.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterMaterial.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterSystem.h" />
-    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterWaveSystem.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansAsset.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VansCamera.h" />
     <ClInclude Include="Source\EngineCore\ScriptCore\VansCommonUtils.h" />
@@ -309,11 +310,11 @@
     <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneLightComponentBuilder.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneLoadPass.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneMaterialBuilder.h" />
-      <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneParticleComponentBuilder.h" />
-      <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansScenePhysicsComponentBuilder.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneParticleComponentBuilder.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansScenePhysicsComponentBuilder.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneProjectResourceBuilder.h" />
-      <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneRenderNodeBuilder.h" />
-      <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneRenderPreparationExecutor.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneRenderNodeBuilder.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneRenderPreparationExecutor.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneResourceBatchExecutor.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneScriptComponentBuilder.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneVehicleComponentBuilder.h" />
@@ -327,6 +328,7 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineDescriptor.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineRegistry.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderDocCapture.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderPassCatalog.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderGraph.h" />
@@ -465,6 +467,8 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansWaterWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansTerrainWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansGIWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansPostProcessWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EngineAPILayer\Private\EngineAPIImpl.cpp" />
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUISystem.cpp" />
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUIScreenManager.cpp" />
@@ -517,9 +521,8 @@
     <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VegetationCore\VansVegetationSystem.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterFFT.cpp" />
-    <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterLOD.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterGeometryClipmap.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterSystem.cpp" />
-    <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterWaveSystem.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansCamera.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansGraphicsDevice.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansMaterial.cpp" />
@@ -538,11 +541,11 @@
     <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneObjectBuildExecutor.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VansSceneLoader.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneMaterialBuilder.cpp" />
-      <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneParticleComponentBuilder.cpp" />
-      <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansScenePhysicsComponentBuilder.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneParticleComponentBuilder.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansScenePhysicsComponentBuilder.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneProjectResourceBuilder.cpp" />
-      <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneRenderNodeBuilder.cpp" />
-      <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneRenderPreparationExecutor.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneRenderNodeBuilder.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneRenderPreparationExecutor.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneResourceBatchExecutor.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneScriptComponentBuilder.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneVehicleComponentBuilder.cpp" />
@@ -558,6 +561,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineDescriptor.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineRegistry.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderDocCapture.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansShader.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansTexture.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVideoTexture.cpp" />
@@ -611,6 +615,9 @@ xcopy /y /d "$(SolutionDir)\ForestEngine\External\ffmpeg\bin\*.dll" "$(OutDir)"
 xcopy /y /d "$(SolutionDir)\ForestEngine\External\openal\bin\OpenAL32.dll" "$(OutDir)"</Command>
       <Message>Copying Debug DLLs to output directory</Message>
     </PostBuildEvent>
+    <ClCompile>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <PostBuildEvent>
@@ -620,6 +627,9 @@ xcopy /y /d "$(SolutionDir)\ForestEngine\External\ffmpeg\bin\*.dll" "$(OutDir)"
 xcopy /y /d "$(SolutionDir)\ForestEngine\External\openal\bin\OpenAL32.dll" "$(OutDir)"</Command>
       <Message>Copying Release DLLs to output directory</Message>
     </PostBuildEvent>
+    <ClCompile>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -175,7 +175,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         float attenuation = 1.0 - (dist / pl.radius);
         attenuation *= attenuation;
-        attenuation = min(attenuation, SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(pl.shadowIndex)));
+        attenuation = min(attenuation, SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i)));
 
 #ifdef IES_PROFILE_ENABLED
         int iesIdx = int(pl.iesProfileIndex);
@@ -201,7 +201,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         float attenuation = 1.0 - (dist / sl.radius);
         attenuation *= attenuation;
-        attenuation = min(attenuation, SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(sl.shadowIndex)));
+        attenuation = min(attenuation, SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i)));
 
         float coneAngle = dot(normalize(sl.direction.xyz), lightDir);
         if (coneAngle < cos(sl.outerConeAngle)) continue;
@@ -233,7 +233,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         float attenuation = 1.0 - (dist / pl.radius);
         attenuation *= attenuation;
-        attenuation = min(attenuation, SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(pl.shadowIndex)));
+        attenuation = min(attenuation, SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i)));
 
 #ifdef IES_PROFILE_ENABLED
         int iesIdx = int(pl.iesProfileIndex);
@@ -258,7 +258,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         float attenuation = 1.0 - (dist / sl.radius);
         attenuation *= attenuation;
-        attenuation = min(attenuation, SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(sl.shadowIndex)));
+        attenuation = min(attenuation, SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i)));
 
         float coneAngle = dot(normalize(sl.direction.xyz), lightDir);
         if (coneAngle < cos(sl.outerConeAngle)) continue;

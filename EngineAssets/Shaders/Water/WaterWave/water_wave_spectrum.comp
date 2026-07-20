@@ -1,175 +1,102 @@
 #version 450
 
-// ============================================================
-// water_wave_spectrum.comp — Gerstner 波位移贴图生成（W-01/W-04/W-06）
-//
-// 设计文档：波形 Clipmap 方案 §2.3-§2.4
-//
-// W-01: Texture2DArray 输出（10 层，256² per layer RGBA16F）
-// W-04: SSBO 波分量输入（GerstnerWaveGPU[64]）
-// W-06: 逐 LOD Nyquist 波长过滤
-//
-// Dispatch: (32, 32, MAX_LOD_COUNT) — gl_WorkGroupID.z = LOD index
-// ============================================================
-
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// ── Set 0 binding 0: 波形参数 UBO ──────────────────────────
-layout(set = 0, binding = 0) uniform WaterGBufferParams
+layout(set = 0, binding = 0) uniform WaterSurfaceParams
 {
     mat4 VPMatrix;
     mat4 ViewMatrix;
     vec4 cameraPosition;
-    float minLodDist;
-    int   lodLevels;
-    int   meshDim;
-    float clipmapBaseScale;  // LOD 0 Clipmap 世界覆盖边长（m），默认 128
-    float maxWaveAmp;
-    float detailBalance;      // LOD 缩放因子（CPU/GPU 同步，默认 2.0）
-    float morphStartRatio;   // morph zone 起点比例 [0, 1)（compute 未使用）
-    float pad1;
-    vec4 waveTimeAndScale;   // x=time, y=ampScale, z=chopScale, w=normalIntensity
-    vec4 waveParamsPad[8];   // W-04: 预留填充
+    ivec4 geometryParams;
+    vec4 geometryScale;
+    vec4 spectrumScale;
+    vec4 windAndChop;
+    ivec4 simulationParams;
+    vec4 microSlopeParams;
+    vec4 microDomainParams;
 } params;
 
-// ── Set 0 binding 1: 位移贴图输出（Texture2DArray）──────────
-layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray outDisplacement;
+layout(set = 0, binding = 1, rgba16f) uniform image2DArray outDisplacement;
 
-// ── Set 0 binding 2: Gerstner 波分量 SSBO（W-04）────────────
 struct GerstnerWave
 {
     float amplitude;
     float wavelength;
     float directionX;
     float directionY;
-    float speed;
+    float phaseSpeed;
     float steepness;
     float pad0;
     float pad1;
 };
-
-layout(set = 0, binding = 2, std430) readonly buffer WaveBuffer
-{
-    GerstnerWave waves[];
-} waveSSBO;
+layout(set = 0, binding = 2, std430) readonly buffer WaveBuffer { GerstnerWave waves[]; } waveSSBO;
+layout(set = 0, binding = 3, rgba16f) uniform image2DArray outDerivative;
 
 const float PI = 3.14159265358979323846;
-const float GRAVITY = 9.81;
-
-// ── 频谱近似项（FFT 频谱的低成本替代，用于 Gerstner 模式）─────
-float Hash11(float x)
-{
-    return fract(sin(x * 127.1 + 311.7) * 43758.5453123);
-}
-
-vec2 HashDir(float seed)
-{
-    float a = Hash11(seed) * PI * 2.0;
-    return vec2(cos(a), sin(a));
-}
-
-void AccumulateSpectrum(vec2 worldXZ, inout vec3 disp, inout vec2 slope, inout float foam)
-{
-    const int BAND_COUNT = 16;
-    vec2 windDir = normalize(vec2(0.82, 0.57));
-    float windSpeed = 19.0;
-    float spectrumScale = 0.10 * params.waveTimeAndScale.y;
-
-    for (int i = 0; i < BAND_COUNT; ++i)
-    {
-        float fi = float(i);
-        vec2 dir = normalize(mix(HashDir(fi + 13.0), windDir, 0.42));
-        float wavelength = mix(2.0, 48.0, (fi + 0.5) / float(BAND_COUNT));
-        float k = 2.0 * PI / wavelength;
-        float w = sqrt(GRAVITY * k);
-        float alignment = max(dot(dir, windDir), 0.0);
-        float phillips = pow(alignment, 4.0) * exp(-1.0 / max(k * windSpeed * windSpeed / GRAVITY, 0.001));
-        float amp = spectrumScale * phillips / max(k, 0.35);
-        float phase = k * dot(dir, worldXZ) + w * params.waveTimeAndScale.x + Hash11(fi + 91.0) * PI * 2.0;
-        float s = sin(phase);
-        float c = cos(phase);
-
-        disp.xz += dir * (0.35 * amp * c);
-        disp.y  += amp * s;
-        slope   += dir * (amp * k * c);
-        foam    += max(0.0, amp * k * s);
-    }
-}
-
-// ── 累加单个 Gerstner 波 ──────────────────────────────────
-void AccumulateGerstner(vec2 worldXZ, GerstnerWave w, inout vec3 disp, inout vec2 slope, inout float foam)
-{
-    vec2 dir = normalize(vec2(w.directionX, w.directionY));
-    float amp = w.amplitude * params.waveTimeAndScale.y;
-    float wavelength = max(w.wavelength, 0.05);
-    float k = 2.0 * PI / wavelength;
-    float phase = k * dot(dir, worldXZ) + k * params.waveTimeAndScale.x * w.speed;  // k*speed = omega, 量纲 rad
-    float s = sin(phase);
-    float c = cos(phase);
-    float q = w.steepness * params.waveTimeAndScale.z;
-
-    disp.xz += dir * (q * amp * c);
-    disp.y  += amp * s;
-    slope   += dir * (amp * k * c);
-    foam    += max(0.0, q * amp * k * s);
-}
+const float G = 9.81;
 
 void main()
 {
-    ivec2 pixel   = ivec2(gl_GlobalInvocationID.xy);
-    int outputBaseLod = int(params.waveParamsPad[3].x + 0.5);
-    int outputLodCount = int(params.waveParamsPad[3].y + 0.5);
-    bool disableSpectrumApprox = params.waveParamsPad[3].z > 0.5;
-    int   lodIdx  = outputBaseLod + int(gl_WorkGroupID.z);  // W-01: 每个 workgroup Z = LOD offset
-
-    ivec3 imgSize = imageSize(outDisplacement);  // ivec3 for image2DArray
-    if (pixel.x >= imgSize.x || pixel.y >= imgSize.y)
-        return;
-    if (outputLodCount > 0 && int(gl_WorkGroupID.z) >= outputLodCount)
-        return;
-    if (lodIdx >= params.lodLevels)
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    int cascade = int(gl_WorkGroupID.z);
+    ivec3 size = imageSize(outDisplacement);
+    int cascadeCount = params.geometryParams.z;
+    if (any(greaterThanEqual(pixel, size.xy)) || cascade >= cascadeCount)
         return;
 
-    // ── W-06: 逐 LOD Nyquist 过滤 ──────────────────────────
-    // LOD i Clipmap 覆盖 = clipmapBaseScale × detailBalance^i
-    float lodScale = params.clipmapBaseScale * pow(max(params.detailBalance, 1.0), float(lodIdx));
-    float texelSize = lodScale / float(imgSize.x);
-    float minWavelength = 2.0 * texelSize;  // Nyquist 限制
+    float coverage = params.spectrumScale.x * pow(params.spectrumScale.y, float(cascade));
+    float lowerWavelength = cascade == 0 ? 2.0 * coverage / float(size.x) : coverage / params.spectrumScale.y;
+    float upperWavelength = coverage;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size.xy);
+    vec2 worldXZ = uv * coverage;
 
-    // ── 相机中心对齐（无 Snap）─────────────────────────────
-    // Clipmap 始终以相机位置为中心，与 CDLOD 网格移动同步
-    vec2 camXZ = params.cameraPosition.xz;
-
-    // 世界空间 XZ：以相机为中心，覆盖 ±lodScale/2
-    vec2 uv = (vec2(pixel) + 0.5) / vec2(imgSize.xy);
-    vec2 worldXZ = camXZ + (uv - 0.5) * lodScale;
-
-    vec3 disp = vec3(0.0);
-    vec2 slope = vec2(0.0);
-    float foam = 0.0;
-
-    // ── W-04: 遍历 SSBO 波分量，跳过不合格的波 ────────────
-    int waveCount = waveSSBO.waves.length();
-    for (int i = 0; i < waveCount; ++i)
+    vec3 displacement = vec3(0.0);
+    vec3 dPdx = vec3(1.0, 0.0, 0.0);
+    vec3 dPdz = vec3(0.0, 0.0, 1.0);
+    int activeCount = clamp(params.simulationParams.x, 0, waveSSBO.waves.length());
+    for (int i = 0; i < activeCount; ++i)
     {
-        GerstnerWave w = waveSSBO.waves[i];
-
-        // W-06: Nyquist 过滤 — 跳过波长太短、无法在当前 LOD 代表样的波
-        if (w.wavelength < minWavelength)
+        GerstnerWave wave = waveSSBO.waves[i];
+        if (wave.wavelength < lowerWavelength || wave.wavelength >= upperWavelength)
             continue;
 
-        AccumulateGerstner(worldXZ, w, disp, slope, foam);
+        vec2 desiredDirection = normalize(vec2(wave.directionX, wave.directionY));
+        float desiredK = 2.0 * PI / max(wave.wavelength, 0.05);
+        float latticeStep = 2.0 * PI / coverage;
+        vec2 lattice = round(desiredDirection * desiredK / latticeStep);
+        if (dot(lattice, lattice) < 0.5)
+            continue;
+        vec2 k = lattice * latticeStep;
+        float kLength = length(k);
+        vec2 direction = k / kLength;
+        float omega = kLength * wave.phaseSpeed;
+        float phase = dot(k, worldXZ) + omega * params.spectrumScale.z;
+        float sinePhase = sin(phase);
+        float cosinePhase = cos(phase);
+        float amplitude = wave.amplitude;
+        float horizontalAmplitude = wave.steepness * params.windAndChop.w * amplitude;
+
+        displacement += vec3(direction.x * horizontalAmplitude * cosinePhase,
+                             amplitude * sinePhase,
+                             direction.y * horizontalAmplitude * cosinePhase);
+        vec3 phaseDerivative = vec3(-direction.x * horizontalAmplitude * sinePhase,
+                                    amplitude * cosinePhase,
+                                   -direction.y * horizontalAmplitude * sinePhase);
+        dPdx += phaseDerivative * k.x;
+        dPdz += phaseDerivative * k.y;
     }
 
-    // 频谱近似补充（Hybrid 远场可禁用，避免与 FFT 近场频谱不一致）
-    if (!disableSpectrumApprox)
-        AccumulateSpectrum(worldXZ, disp, slope, foam);
+    bool additive = params.simulationParams.w != 0;
+    if (additive)
+    {
+        displacement += imageLoad(outDisplacement, ivec3(pixel, cascade)).xyz;
+        dPdx += imageLoad(outDerivative, ivec3(pixel, cascade * 2)).xyz - vec3(1.0, 0.0, 0.0);
+        dPdz += imageLoad(outDerivative, ivec3(pixel, cascade * 2 + 1)).xyz - vec3(0.0, 0.0, 1.0);
+    }
 
-    float maxAmp = max(params.maxWaveAmp, 0.1);
-    disp.y = clamp(disp.y, -maxAmp, maxAmp);
-    disp.xz = clamp(disp.xz, vec2(-maxAmp), vec2(maxAmp));
-    float foamHint = clamp(length(slope) * 0.25 + foam * 0.08, 0.0, 1.0);
-
-    // W-01: 写入 Texture2DArray 的对应 layer
-    imageStore(outDisplacement, ivec3(pixel, lodIdx), vec4(disp, foamHint));
+    float jacobian = dPdx.x * dPdz.z - dPdx.z * dPdz.x;
+    float foldDiagnostic = clamp(1.0 - jacobian, 0.0, 1.0);
+    imageStore(outDisplacement, ivec3(pixel, cascade), vec4(displacement, foldDiagnostic));
+    imageStore(outDerivative, ivec3(pixel, cascade * 2), vec4(dPdx, foldDiagnostic));
+    imageStore(outDerivative, ivec3(pixel, cascade * 2 + 1), vec4(dPdz, jacobian));
 }

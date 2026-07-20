@@ -42,24 +42,9 @@ namespace VansGraphics
 		float   _pad7 = 0.0f;
 		float   _pad8 = 0.0f;
 
-		// ---------- Vignette ----------
-		int32_t m_EnableVignette      = 1;
-		float   m_VignetteIntensity   = 0.2f;
-		float   m_VignetteSmoothness  = 0.5f;
-		float   _pad9 = 0.0f;
-
-		// ---------- Film Grain ----------
-		int32_t m_EnableFilmGrain      = 1;
-		float   m_FilmGrainIntensity   = 0.04f;
-		float   m_Time                 = 0.0f;   // 用于 Film Grain 动态随机种子
-		float   _pad10 = 0.0f;
-
-		// ---------- Dithering ----------
-		int32_t m_EnableDithering = 1;
-		float   _pad11 = 0.0f;
-		float   _pad12 = 0.0f;
-		float   _pad13 = 0.0f;
 	};
+	static_assert(sizeof(VansPostProcessParamsGPU) == 80,
+		"Post-process CPU UBO layout must match PostProcess.frag");
 
 	// Exposure Adapt Compute Shader 使用的 UBO（Set 1, Binding 2）
 	struct alignas(16) VansExposureAdaptParamsGPU
@@ -138,34 +123,17 @@ namespace VansGraphics
 		float   m_ShutterScale       = 0.5f;
 		int32_t m_MotionBlurSamples  = 12;
 
-		// ---------- Vignette ----------
-		bool    m_EnableVignette      = true;
-		float   m_VignetteIntensity   = 0.2f;
-		float   m_VignetteSmoothness  = 0.5f;
-
 		// ---------- Chromatic Aberration ----------
 		bool    m_EnableChromaticAberration    = false;
 		float   m_ChromaticAberrationIntensity = 0.02f;
 
-		// ---------- Film Grain ----------
-		bool    m_EnableFilmGrain     = true;
-		float   m_FilmGrainIntensity  = 0.04f;
-
-		// ---------- Lens Dirt ----------
-		bool    m_EnableLensDirt      = false;
-		float   m_LensDirtIntensity   = 0.5f;
-
 		// ---------- AA / Sharpen ----------
-		bool    m_EnableFXAA          = false;
 		bool    m_EnableSharpen       = true;
 		float   m_SharpenIntensity    = 0.15f;
 
-		// ---------- Dithering ----------
-		bool    m_EnableDithering     = true;
-
 	public:
 		// 将当前参数打包为 GPU UBO 结构
-		VansPostProcessParamsGPU ToGPUParams(float time) const;
+		VansPostProcessParamsGPU ToGPUParams() const;
 		VansExposureAdaptParamsGPU ToExposureAdaptParams(float deltaTime) const;
 		VansBloomParamsGPU ToBloomParams() const;
 

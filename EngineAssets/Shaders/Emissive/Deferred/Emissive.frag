@@ -40,10 +40,10 @@ void main()
     // 采样自发光纹理（Bindless slot 0，与 PBR albedo 规则一致）
     // 未配置纹理时 defaultAlbedo 为纯白，乘法中性
     vec3 emissiveColor = emissiveColorParam
-                       * texture( globalPBRTextures[materialIndex * 5 + 0], frag_uv ).rgb;
+                       * texture( globalPBRTextures[materialIndex * 5 + 0], frag_uv, MaterialMipBias ).rgb;
 
     // ── 法线：与 PBR 路径保持一致，通过法线贴图做 TBN 变换（slot 1）──────────
-    vec3 normal_sample = texture( globalPBRTextures[materialIndex * 5 + 1], frag_uv ).rgb;
+    vec3 normal_sample = texture( globalPBRTextures[materialIndex * 5 + 1], frag_uv, MaterialMipBias ).rgb;
     normal_sample = normal_sample * 2.0 - 1.0;
     mat3 TBN   = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);

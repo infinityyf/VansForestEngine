@@ -1,0 +1,42 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform FFTParams
+{
+    vec4 windDirection_Time;
+    vec4 spectrumParams;
+    vec4 dampingParams;
+    vec4 spectrumMeta;
+    vec4 domainCoverage;
+    vec4 minWavelength;
+    vec4 maxWavelength;
+    vec4 spectralOptions;
+} params;
+layout(set = 0, binding = 1, rgba32f) uniform readonly image2DArray spatialFields;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2DArray outSlope;
+
+const int FIELD_SLOPE_X = 0;
+const int FIELD_SLOPE_Z = 1;
+const int FIELD_COUNT = 2;
+
+float Spatial(ivec2 pixel, int cascade, int field, int N)
+{
+    ivec2 wrapped = ivec2((pixel.x + N) & (N - 1), (pixel.y + N) & (N - 1));
+    float value = imageLoad(spatialFields, ivec3(wrapped, cascade * FIELD_COUNT + field)).x;
+    return (((wrapped.x + wrapped.y) & 1) == 0) ? value : -value;
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    int cascade = int(gl_WorkGroupID.z);
+    int N = int(params.spectrumMeta.y + 0.5);
+    int cascadeCount = int(params.spectrumMeta.z + 0.5);
+    if (any(greaterThanEqual(pixel, ivec2(N))) || cascade >= cascadeCount)
+        return;
+
+    vec2 slope = vec2(
+        Spatial(pixel, cascade, FIELD_SLOPE_X, N),
+        Spatial(pixel, cascade, FIELD_SLOPE_Z, N));
+    imageStore(outSlope, ivec3(pixel, cascade), vec4(slope, 0.0, 1.0));
+}

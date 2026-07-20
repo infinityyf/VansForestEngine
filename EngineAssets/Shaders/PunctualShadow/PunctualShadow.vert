@@ -76,6 +76,7 @@ void main()
         // 点光源：lightIndex = 点光源下标，shadowIndex = 立方体面下标
         mat4x4 shadowMatrix = uPointLights[lightIndex].shadowMatrix[shadowIndex];
         vec4 clipCoord = shadowMatrix * ModelMatrix * pos;
+        clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
         gl_Position = clipCoord;
     }
     else if (lightIndex < rectLightStart)
@@ -84,6 +85,7 @@ void main()
         int spotLightIndex = lightIndex - pointLightCount;
         mat4x4 shadowMatrix = uSpotLights[spotLightIndex].shadowMatrix;
         vec4 clipCoord = shadowMatrix * ModelMatrix * pos;
+        clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
         gl_Position = clipCoord;
     }
     else
@@ -92,6 +94,7 @@ void main()
         int rectLightIndex = lightIndex - rectLightStart;
         mat4x4 shadowMatrix = uRectLights[rectLightIndex].shadowMatrix;
         vec4 clipCoord = shadowMatrix * ModelMatrix * pos;
+        clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
         gl_Position = clipCoord;
     }
 }

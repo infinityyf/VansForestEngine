@@ -1,6 +1,9 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
+#define TILE_LIGHT
+#include "../Common/CameraData.glsl"
+#include "../Common/TileLightData.glsl"
 #include "../Lights/LightsData.glsl"
 
 layout(location = 0) in vec4 fragColor;
@@ -10,22 +13,34 @@ layout(location = 3) in vec3 fragBillboardRight;
 layout(location = 4) in vec3 fragBillboardUp;
 layout(location = 5) in vec3 fragBillboardForward;
 
-// Unity Six-Way 标准打包：
-// Positive: R=Right, G=Top,    B=Back,  A=Alpha
-// Negative: R=Left,  G=Bottom, B=Front, A=Emissive
+// Unity/EmberGen style six-way packing:
+// positive RGB = right, top, back; A = alpha
+// negative RGB = left, bottom, front; A = emissive
 layout(set = 1, binding = 0) uniform sampler2D positiveAxesTex;
 layout(set = 1, binding = 1) uniform sampler2D negativeAxesTex;
+layout(set = 1, binding = 2) uniform sampler2DArray cascadeShadowMap;
+layout(set = 1, binding = 3) uniform sampler2D punctualShadowMap;
 
 layout(location = 0) out vec4 outColor;
 
 layout(push_constant) uniform ParticleSixWayPushConst
 {
-    vec4 spriteSheetParams;     // x: columns, y: rows
-    vec4 sixWayParams0;         // x: direct, y: ambient, z: emissive, w: absorption
-    vec4 sixWayParams1;         // x: remapMin, y: remapMax, z: alphaCutoff, w: debugMode
-    vec4 mainLightDirAndPad;    // 预留
-    vec4 mainLightColor;        // 预留
+    vec4 spriteSheetParams;
+    vec4 sixWayParams0; // x: direct, y: GI/ambient, z: emissive, w: absorption
+    vec4 sixWayParams1; // x: remapMin, y: remapMax, z: alphaCutoff, w: debugMode
+    vec4 mainLightDirAndPad;
+    vec4 mainLightColor;
 } pushConst;
+
+struct SixWaySample
+{
+    float right;
+    float top;
+    float back;
+    float left;
+    float bottom;
+    float front;
+};
 
 float RemapLightmap(float value)
 {
@@ -34,65 +49,130 @@ float RemapLightmap(float value)
     return clamp((value - lo) / (hi - lo), 0.0, 1.0);
 }
 
-float EvalSixWay(vec3 lightDirWorld, vec3 lmPositive, vec3 lmNegative)
+SixWaySample DecodeSixWay(vec3 positiveAxes, vec3 negativeAxes)
+{
+    SixWaySample s;
+    s.right = RemapLightmap(positiveAxes.r);
+    s.top = RemapLightmap(positiveAxes.g);
+    s.back = RemapLightmap(positiveAxes.b);
+    s.left = RemapLightmap(negativeAxes.r);
+    s.bottom = RemapLightmap(negativeAxes.g);
+    s.front = RemapLightmap(negativeAxes.b);
+    return s;
+}
+
+float EvalSixWay(vec3 lightDirWorld, SixWaySample s)
 {
     vec3 localDir = normalize(vec3(
         dot(lightDirWorld, normalize(fragBillboardRight)),
         dot(lightDirWorld, normalize(fragBillboardUp)),
-        dot(lightDirWorld, normalize(fragBillboardForward))
-    ));
+        dot(lightDirWorld, normalize(fragBillboardForward))));
 
     vec3 p = max(localDir, vec3(0.0));
     vec3 n = max(-localDir, vec3(0.0));
-
-    float rightValue  = RemapLightmap(lmPositive.r);
-    float topValue    = RemapLightmap(lmPositive.g);
-    float backValue   = RemapLightmap(lmPositive.b);
-    float leftValue   = RemapLightmap(lmNegative.r);
-    float bottomValue = RemapLightmap(lmNegative.g);
-    float frontValue  = RemapLightmap(lmNegative.b);
-
     float weightSum = p.x + p.y + p.z + n.x + n.y + n.z + 1e-4;
+
     float value = 0.0;
-    value += rightValue  * p.x;
-    value += topValue    * p.y;
-    value += frontValue  * p.z;
-    value += leftValue   * n.x;
-    value += bottomValue * n.y;
-    value += backValue   * n.z;
+    value += s.right * p.x;
+    value += s.top * p.y;
+    value += s.back * p.z;
+    value += s.left * n.x;
+    value += s.bottom * n.y;
+    value += s.front * n.z;
     return value / weightSum;
 }
 
-vec3 EvalSixWayLighting(vec3 lmPositive, vec3 lmNegative)
+float DistanceAttenuation(float distanceToLight, float radius)
+{
+    float attenuation = 1.0 - clamp(distanceToLight / max(radius, 1e-4), 0.0, 1.0);
+    return attenuation * attenuation;
+}
+
+float SpotConeAttenuation(SpotLightData light, vec3 lightDirToLight)
+{
+    float coneAngle = dot(normalize(light.direction.xyz), normalize(lightDirToLight));
+    float outerCone = cos(light.outerConeAngle);
+    if (coneAngle < outerCone)
+        return 0.0;
+
+    float innerCone = cos(light.innerConeAngle);
+    return clamp((coneAngle - outerCone) / max(innerCone - outerCone, 1e-4), 0.0, 1.0);
+}
+
+vec3 ParticleShadowNormal(vec3 lightDir)
+{
+    return normalize(lightDir + normalize(fragBillboardForward) * 0.15);
+}
+
+vec3 EvalEnvironmentGI(SixWaySample s)
+{
+    float ambientSixWay = (s.right + s.top + s.back + s.left + s.bottom + s.front) / 6.0;
+    vec3 skyDiffuse = texture(PreConvDiffuseEnvironment, normalize(fragBillboardUp)).rgb;
+    vec3 shAmbient = vec3(shCoefficients[0], shCoefficients[9], shCoefficients[18]) * 0.282095;
+    return max(skyDiffuse + shAmbient, vec3(0.0)) * ambientSixWay * pushConst.sixWayParams0.y;
+}
+
+void AccumulatePointLight(uint lightIndex, SixWaySample sixWay, inout vec3 result)
+{
+    PointLightData light = GetPointLight(int(lightIndex));
+    vec3 toLight = light.position.xyz - fragWorldPos;
+    float distanceToLight = length(toLight);
+    if (distanceToLight > light.radius || light.radius <= 0.001)
+        return;
+
+    vec3 lightDir = toLight / max(distanceToLight, 1e-4);
+    float attenuation = DistanceAttenuation(distanceToLight, light.radius);
+    int shadowIndex = int(light.shadowIndex);
+    if (shadowIndex >= 0)
+        attenuation *= SamplePointShadowMapBRDF(
+            fragWorldPos, ParticleShadowNormal(lightDir), lightDir, punctualShadowMap, int(lightIndex));
+
+    float sixWayValue = EvalSixWay(lightDir, sixWay);
+    result += sixWayValue * light.color.rgb * light.intensity * attenuation * pushConst.sixWayParams0.x;
+}
+
+void AccumulateSpotLight(uint lightIndex, SixWaySample sixWay, inout vec3 result)
+{
+    SpotLightData light = GetSpotLight(int(lightIndex));
+    vec3 toLight = light.position.xyz - fragWorldPos;
+    float distanceToLight = length(toLight);
+    if (distanceToLight > light.radius || light.radius <= 0.001)
+        return;
+
+    vec3 lightDir = toLight / max(distanceToLight, 1e-4);
+    float attenuation = DistanceAttenuation(distanceToLight, light.radius) *
+        SpotConeAttenuation(light, lightDir);
+    if (attenuation <= 0.0)
+        return;
+
+    int shadowIndex = int(light.shadowIndex);
+    if (shadowIndex >= 0)
+        attenuation *= SampleSpotShadowMapBRDF(
+            fragWorldPos, ParticleShadowNormal(lightDir), lightDir, punctualShadowMap, int(lightIndex));
+
+    float sixWayValue = EvalSixWay(lightDir, sixWay);
+    result += sixWayValue * light.color.rgb * light.intensity * attenuation * pushConst.sixWayParams0.x;
+}
+
+vec3 EvalSixWayLighting(SixWaySample sixWay)
 {
     vec3 result = vec3(0.0);
+    float viewDepth = -(ViewMatrix * vec4(fragWorldPos, 1.0)).z;
 
     vec3 mainLightDir = normalize(uDirectionLight.direction.xyz);
-    float mainSixWay = EvalSixWay(mainLightDir, lmPositive, lmNegative);
-    result += mainSixWay * uDirectionLight.color.rgb * uDirectionLight.intensity * pushConst.sixWayParams0.x;
+    float mainShadow = SampleCascadeShadow(
+        fragWorldPos, ParticleShadowNormal(mainLightDir), cascadeShadowMap, viewDepth);
+    float mainSixWay = EvalSixWay(mainLightDir, sixWay);
+    result += mainSixWay * uDirectionLight.color.rgb * uDirectionLight.intensity *
+        mainShadow * pushConst.sixWayParams0.x;
 
-    uint pointCount = min(uPointLightCount, 8u);
-    for (uint i = 0u; i < pointCount; ++i)
-    {
-        PointLightData pointLight = GetPointLight(int(i));
-        vec3 toLight = pointLight.position.xyz - fragWorldPos;
-        float distanceToLight = length(toLight);
-        if (distanceToLight > pointLight.radius || pointLight.radius <= 0.001)
-            continue;
+    TileLightHeader tile = GetFragTileLightHeader();
+    for (uint slot = 0u; slot < tile.pointCount; ++slot)
+        AccumulatePointLight(tileLightIndices[tile.pointOffset + slot], sixWay, result);
+    for (uint slot = 0u; slot < tile.spotCount; ++slot)
+        AccumulateSpotLight(tileLightIndices[tile.spotOffset + slot], sixWay, result);
 
-        vec3 lightDir = toLight / max(distanceToLight, 1e-4);
-        float attenuation = 1.0 - clamp(distanceToLight / pointLight.radius, 0.0, 1.0);
-        attenuation *= attenuation;
-
-        float sixWay = EvalSixWay(lightDir, lmPositive, lmNegative);
-        result += sixWay * pointLight.color.rgb * pointLight.intensity * attenuation * pushConst.sixWayParams0.x;
-    }
-
-    float ambientSixWay = (
-        RemapLightmap(lmPositive.r) + RemapLightmap(lmPositive.g) + RemapLightmap(lmPositive.b) +
-        RemapLightmap(lmNegative.r) + RemapLightmap(lmNegative.g) + RemapLightmap(lmNegative.b)) / 6.0;
-    result += vec3(ambientSixWay * pushConst.sixWayParams0.y);
-
+    result += EvalEnvironmentGI(sixWay);
     return result;
 }
 
@@ -105,7 +185,8 @@ void main()
     if (alpha < pushConst.sixWayParams1.z)
         discard;
 
-    vec3 lighting = EvalSixWayLighting(lmA.rgb, lmB.rgb);
+    SixWaySample sixWay = DecodeSixWay(lmA.rgb, lmB.rgb);
+    vec3 lighting = EvalSixWayLighting(sixWay);
 
     vec3 tint = max(fragColor.rgb, vec3(0.0));
     float absorption = clamp(pushConst.sixWayParams0.w, 0.0, 1.0);

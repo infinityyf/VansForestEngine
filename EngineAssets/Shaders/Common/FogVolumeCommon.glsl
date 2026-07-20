@@ -7,7 +7,7 @@
 // Grid layout:
 //   XY : one voxel per TILE_SIZE × TILE_SIZE pixel tile on screen
 //        → gridX = ceil(screenW / TILE_SIZE),  gridY = ceil(screenH / TILE_SIZE)
-//   Z  : VOXEL_GRID_Z slices with exponential depth distribution
+//   Z  : runtime-configured slices with exponential depth distribution
 //
 // Updated every frame from the camera's perspective:
 //   VoxelToWorld() reconstructs world positions via InverseProjection / View.
@@ -16,7 +16,6 @@
 // ============================================================================
 
 #define TILE_SIZE      8
-#define VOXEL_GRID_Z  256
 
 // Near/far for the fog depth distribution are taken from the FogVolumeParams UBO
 // (uVolume.volumeNear / uVolume.volumeFar) so that they are artist-controllable
@@ -58,7 +57,7 @@ float SliceThickness(int z, float near, float far, float gridZ, float powerCoeff
 // Voxel → world position   (requires CameraData.glsl in the including file)
 //
 //   id       : integer voxel coordinate
-//   gridSize : ivec3(tilesX, tilesY, VOXEL_GRID_Z)
+//   gridSize : ivec3(tilesX, tilesY, runtime slice count)
 //   near/far : fog volume depth range
 // ---------------------------------------------------------------------------
 vec3 VoxelToWorld(ivec3 id, ivec3 gridSize, float near, float far, float powerCoeff)
@@ -130,7 +129,8 @@ vec4 WorldToLastFrameUVW(vec3 worldPos, float near, float far, vec2 screenSize,
 {
     // Project into previous frame clip space
     vec4 lastClip = LastVPMatrix * vec4(worldPos, 1.0);
-    vec3 lastNDC  = lastClip.xyz / lastClip.w;
+    float clipValid = lastClip.w > 1e-5 ? 1.0 : 0.0;
+    vec3 lastNDC  = lastClip.xyz / max(lastClip.w, 1e-5);
 
     // NDC → screen UV  (undo Vulkan Y-flip)
     vec2 uv = lastNDC.xy * 0.5 + 0.5;
@@ -151,7 +151,8 @@ vec4 WorldToLastFrameUVW(vec3 worldPos, float near, float far, vec2 screenSize,
     float w = clamp(pow(t, 1.0 / max(powerCoeff, 1e-4)), 0.0, 1.0);
 
     // Validity: UV in [0,1] and depth in fog range
-    float valid = (all(greaterThanEqual(uv, vec2(0.0))) &&
+    float valid = (clipValid > 0.5 &&
+                   all(greaterThanEqual(uv, vec2(0.0))) &&
                    all(lessThanEqual(uv, vec2(1.0)))    &&
                    linearDepth >= near && linearDepth <= far) ? 1.0 : 0.0;
 

@@ -13,7 +13,7 @@ layout(push_constant) uniform FFTIterPC
     int resolution;
     int normalize;
     int fieldCount;
-    int lodCount;
+    int cascadeCount;
     int pad0;
 } pc;
 
@@ -45,7 +45,7 @@ void main()
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     int layer = int(gl_GlobalInvocationID.z);
     int N = pc.resolution;
-    int maxLayer = pc.lodCount * pc.fieldCount;
+    int maxLayer = pc.cascadeCount * pc.fieldCount;
 
     if (pixel.x >= N || pixel.y >= N || layer >= maxLayer)
         return;

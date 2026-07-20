@@ -1,17 +1,12 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 #extension GL_GOOGLE_include_directive : enable
-
-//用于性能优化，提示编译器，不同线程组会访问不同索引的资源
 #extension GL_EXT_nonuniform_qualifier : require
-
-//取消padding
 #extension GL_EXT_scalar_block_layout : require
 
 #include "../Common/Common.glsl"
 
-//vertex data
-struct Vertex 
+struct Vertex
 {
     vec4 position;
     vec2 uv;
@@ -23,24 +18,28 @@ struct Vertex
 layout(location = 0) rayPayloadInEXT RayTracePayload prd;
 hitAttributeEXT vec2 attribs;
 
-layout(set = 0, binding = 3, std430, scalar) buffer VertexBuffers {
+layout(set = 0, binding = 3, std430, scalar) buffer VertexBuffers
+{
     Vertex vertices[];
 } vertexBuffers[];
 
-layout(set = 0, binding = 4, std430) buffer IndexBuffers {
+layout(set = 0, binding = 4, std430) buffer IndexBuffers
+{
     uint indices[];
 } indexBuffers[];
 
-layout(set = 0, binding = 5, std430) buffer InstanceDataBuffer {
+layout(set = 0, binding = 5, std430) buffer InstanceDataBuffer
+{
     uint instances[];
 } instanceData;
 
-layout(set = 0, binding = 7, std430) buffer InstanceToTextureIndexBuffer {
+layout(set = 0, binding = 7, std430) buffer InstanceToTextureIndexBuffer
+{
     uint indexs[];
 } textureIndexData;
 
+layout(set = 0, binding = 50) uniform sampler2D PBRTextures[];
 
-layout(set = 0, binding = 50) uniform sampler2D PBRTextures[]; 
 #define ALBEDO_INDEX 0
 #define NORMAL_INDEX 1
 #define METALLIC_INDEX 2
@@ -64,33 +63,29 @@ void main()
     Vertex v2 = vertexBuffers[modelIndex].vertices[i2];
 
     vec3 position = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
-    //获取插值坐标
     vec3 barycentrics = vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
-    vec3 normal      = v0.normal.xyz * barycentrics.x + v1.normal.xyz * barycentrics.y + v2.normal.xyz * barycentrics.z;
+
+    vec3 normal = v0.normal * barycentrics.x + v1.normal * barycentrics.y + v2.normal * barycentrics.z;
     mat3 normalMat = transpose(mat3(gl_WorldToObjectEXT));
-    vec3 worldNormal = normalize(normalMat * normal); // Transforming the normal to world space
-
-    
+    vec3 worldNormal = normalize(normalMat * normal);
     if (gl_HitKindEXT == gl_HitKindBackFacingTriangleEXT)
-    {
         worldNormal = -worldNormal;
-    }
-    prd.positionHit = vec4(position,1);
-    prd.normalHit = vec4(worldNormal,1);
 
-    //获取材质信息
+    prd.positionHit = vec4(position, 1.0);
+    prd.normalHit = vec4(worldNormal, 1.0);
+
     uint textureIndex = textureIndexData.indexs[modelIndex];
-    vec2 uv = v0.uv * barycentrics.x + v1.uv* barycentrics.y + v2.uv * barycentrics.z;
-    // 非 PBR 材质（如自定义 Shader 材质）在收集阶段写入的贴图索引为 0xFFFFFFFF（CPU 端的 -1）。
-    // 若不做保护直接用它索引 bindless 贴图数组，会造成越界访问，进而触发 GPU 故障
-    // （命令缓冲提交时报 VK_ERROR_DEVICE_LOST）。此处对无效索引做兜底，输出中性材质。
+    vec2 uv = v0.uv * barycentrics.x + v1.uv * barycentrics.y + v2.uv * barycentrics.z;
+
+    // 非 PBR 材质在 CPU 收集阶段写入 0xFFFFFFFF。这里给中性材质兜底，
+    // 避免越界访问 bindless texture array 导致 GPU device lost。
     if (textureIndex == 0xFFFFFFFFu || (textureIndex + AO_INDEX) >= 2048u)
     {
         prd.albedoRoughness = vec4(0.5, 0.5, 0.5, 1.0);
         return;
     }
-    vec4 albedo = texture(PBRTextures[nonuniformEXT(textureIndex + ALBEDO_INDEX)], uv);
-    float ropughness = texture(PBRTextures[nonuniformEXT(textureIndex + ROUGHNESS_INDEX)], uv).r;
-    prd.albedoRoughness = vec4(albedo.rgb, ropughness);
 
+    vec4 albedo = texture(PBRTextures[nonuniformEXT(textureIndex + ALBEDO_INDEX)], uv);
+    float roughness = texture(PBRTextures[nonuniformEXT(textureIndex + ROUGHNESS_INDEX)], uv).r;
+    prd.albedoRoughness = vec4(albedo.rgb, roughness);
 }

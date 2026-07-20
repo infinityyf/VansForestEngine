@@ -1,0 +1,105 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/Common.glsl"
+#include "../GI/GIProbeCommon.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer hitPositionBuffer
+{
+    f16vec4 hitPosition[];
+} hitPositionInfoBuffer;
+
+layout(set = 0, binding = 1, rgba32f) uniform image2D visibilityAtlas;
+
+layout(push_constant) uniform PushConstants
+{
+    vec4 gridParams;     // xyz = probe spacing, w = max ray distance
+    vec4 cameraDir;
+    vec4 cameraUp;
+    vec4 cameraRight;
+    vec4 dispatchParams; // xyz = probe counts, w = rays per probe
+    vec4 frameParams;    // x = frame index, y = spatial update divisor, z = direction update slices
+    vec4 regionParams;   // xyz = volume center, w = normal bias
+    vec4 lightingParams; // x = sky intensity, y = max indirect radiance, z = max SH L0
+} pushConstants;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 atlasSize = imageSize(visibilityAtlas);
+    if (pixel.x >= atlasSize.x || pixel.y >= atlasSize.y)
+        return;
+
+    ivec3 probeCount = ivec3(pushConstants.dispatchParams.xyz);
+    int sampleCount = max(int(pushConstants.dispatchParams.w), 1);
+    vec3 probeSpacing = pushConstants.gridParams.xyz;
+    float maxRayDistance = pushConstants.gridParams.w;
+    vec3 volumeSize = vec3(probeCount) * probeSpacing;
+    vec3 volumeMin = pushConstants.regionParams.xyz - volumeSize * 0.5;
+
+    ivec2 tileCoord = ivec2(
+        pixel.x % GI_VISIBILITY_OCTA_RES,
+        pixel.y % GI_VISIBILITY_OCTA_RES);
+    ivec2 tileIndex = ivec2(
+        pixel.x / GI_VISIBILITY_OCTA_RES,
+        pixel.y / GI_VISIBILITY_OCTA_RES);
+
+    int totalProbeCount = probeCount.x * probeCount.y * probeCount.z;
+    int probesPerRow = max(atlasSize.x / GI_VISIBILITY_OCTA_RES, 1);
+    int probeLinearIndex = tileIndex.y * probesPerRow + tileIndex.x;
+    if (probeLinearIndex >= totalProbeCount)
+    {
+        imageStore(visibilityAtlas, pixel, vec4(maxRayDistance, maxRayDistance * maxRayDistance, 0.0, 0.0));
+        return;
+    }
+
+    ivec3 probeIndex = ivec3(
+        probeLinearIndex % probeCount.x,
+        (probeLinearIndex / probeCount.x) % probeCount.y,
+        probeLinearIndex / (probeCount.x * probeCount.y));
+
+    vec2 octUV = (vec2(tileCoord) + 0.5) / float(GI_VISIBILITY_OCTA_RES);
+    vec3 atlasDirection = GI_OctahedralDecode(octUV);
+    vec3 probeWorld = volumeMin + (vec3(probeIndex) + 0.5) * probeSpacing;
+
+    int bufferOffset = probeLinearIndex * sampleCount;
+
+    float weightSum = 0.0;
+    float moment1 = 0.0;
+    float moment2 = 0.0;
+    float hitWeight = 0.0;
+
+    for (int rayIndex = 0; rayIndex < sampleCount; ++rayIndex)
+    {
+        vec3 rayDirection = SampleSphere(rayIndex, sampleCount);
+        float angularWeight = pow(max(dot(atlasDirection, rayDirection), 0.0), 24.0);
+        if (angularWeight <= 1e-5)
+            continue;
+
+        vec4 hitPos = vec4(hitPositionInfoBuffer.hitPosition[bufferOffset + rayIndex]);
+        float distance = maxRayDistance;
+        if (hitPos.w > 0.5)
+        {
+            distance = clamp(length(hitPos.xyz - probeWorld), 0.0, maxRayDistance);
+            hitWeight += angularWeight;
+        }
+
+        weightSum += angularWeight;
+        moment1 += distance * angularWeight;
+        moment2 += distance * distance * angularWeight;
+    }
+
+    if (weightSum <= 1e-5)
+    {
+        imageStore(visibilityAtlas, pixel, vec4(maxRayDistance, maxRayDistance * maxRayDistance, 0.0, 0.0));
+        return;
+    }
+
+    moment1 /= weightSum;
+    moment2 /= weightSum;
+
+    // b 记录 hit confidence，debug 时可判断该方向是否主要由 miss ray 支撑。
+    imageStore(visibilityAtlas, pixel, vec4(moment1, moment2, hitWeight / weightSum, 1.0));
+}

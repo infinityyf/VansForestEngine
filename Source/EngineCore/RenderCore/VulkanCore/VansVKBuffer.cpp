@@ -41,6 +41,7 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 	m_BufferFormat = format;
 
 	const auto& sharingFamilies = VansVKMemoryManager::GetInstance()->GetSharingQueueFamilyIndices();
+	const bool concurrentSharing = sharingFamilies.size() > 1;
 
 	VkBufferCreateInfo buffer_create_info =
 	{
@@ -49,9 +50,9 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 		 0,
 		 size,
 		 usage,
-		 VK_SHARING_MODE_CONCURRENT,
-		 static_cast<uint32_t>(sharingFamilies.size()),
-		 sharingFamilies.data()
+		 concurrentSharing ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+		 concurrentSharing ? static_cast<uint32_t>(sharingFamilies.size()) : 0u,
+		 concurrentSharing ? sharingFamilies.data() : nullptr
 	};
 
 	const VansMemoryUsage vu = TranslateLegacyProps(memory_properties, usage);
@@ -195,6 +196,13 @@ void VansGraphics::VansVKBuffer::FlushMappedRange(VkDeviceSize offset, VkDeviceS
 	if (!m_MappedPtr)
 		return;
 	VansVKMemoryAllocator::Get().FlushAllocation(m_VansVKBufferAllocation, offset, size);
+}
+
+void VansGraphics::VansVKBuffer::InvalidateMappedRange(VkDeviceSize offset, VkDeviceSize size)
+{
+	if (!m_MappedPtr)
+		return;
+	VansVKMemoryAllocator::Get().InvalidateAllocation(m_VansVKBufferAllocation, offset, size);
 }
 
 VkDeviceAddress VansGraphics::VansVKBuffer::GetDeviceAddress(VkDevice& logical_device) const

@@ -1,111 +1,94 @@
 #version 450
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-
 layout(set = 0, binding = 0) uniform FFTParams
 {
     vec4 windDirection_Time;
-    vec4 scaleParams;
+    vec4 spectrumParams;
     vec4 dampingParams;
-    vec4 outputParams;
-    vec4 foldParams;
+    vec4 spectrumMeta;
+    vec4 domainCoverage;
+    vec4 minWavelength;
+    vec4 maxWavelength;
+    vec4 spectralOptions;
 } params;
-
 layout(set = 0, binding = 1, rgba32f) uniform readonly image2DArray h0Spectrum;
 layout(set = 0, binding = 2, rgba32f) uniform writeonly image2DArray outFields;
 
 const float PI = 3.14159265358979323846;
 const float G = 9.81;
 const int FIELD_HEIGHT = 0;
-const int FIELD_SLOPE_X = 1;
-const int FIELD_SLOPE_Z = 2;
-const int FIELD_DISP_X = 3;
-const int FIELD_DISP_Z = 4;
-const int FIELD_FOLD = 5;
-const int FIELD_COUNT = 6;
+const int FIELD_DISP_X = 1;
+const int FIELD_DISP_Z = 2;
+const int FIELD_COUNT = 3;
 
-vec2 ComplexMul(vec2 a, vec2 b)
+vec2 Multiply(vec2 a, vec2 b) { return vec2(a.x*b.x-a.y*b.y, a.x*b.y+a.y*b.x); }
+vec2 UnitComplex(float phase) { return vec2(cos(phase), sin(phase)); }
+void Store(ivec2 p, int cascade, int field, vec2 value)
 {
-    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
-}
-
-vec2 ExpI(float a)
-{
-    return vec2(cos(a), sin(a));
-}
-
-int FieldLayer(int lod, int field)
-{
-    return lod * FIELD_COUNT + field;
-}
-
-void StoreComplex(ivec2 pixel, int layer, vec2 v)
-{
-    imageStore(outFields, ivec3(pixel, layer), vec4(v, 0.0, 0.0));
+    int fieldCount = params.spectrumMeta.w > 0.5 ? 2 : FIELD_COUNT;
+    imageStore(outFields, ivec3(p, cascade * fieldCount + field), vec4(value, 0.0, 0.0));
 }
 
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    int lod = int(gl_WorkGroupID.z);
-    ivec3 size = imageSize(h0Spectrum);
-    int N = int(params.foldParams.z + 0.5);
-    int lodCount = int(params.foldParams.w + 0.5);
-
-    if (pixel.x >= size.x || pixel.y >= size.y || pixel.x >= N || pixel.y >= N || lod >= lodCount)
+    int cascade = int(gl_WorkGroupID.z);
+    int N = int(params.spectrumMeta.y + 0.5);
+    int cascadeCount = int(params.spectrumMeta.z + 0.5);
+    if (any(greaterThanEqual(pixel, ivec2(N))) || cascade >= cascadeCount)
         return;
 
-    float baseScale = params.scaleParams.x;
-    float detailBalance = max(params.scaleParams.y, 1.0);
-    float choppiness = params.scaleParams.w;
-    float depth = params.dampingParams.z;
-    float repeatPeriod = params.dampingParams.w;
-    float time = params.windDirection_Time.z;
+    float coverage = params.domainCoverage[cascade];
+    vec2 k = 2.0 * PI * vec2(pixel - ivec2(N / 2)) / coverage;
+    float kLength = length(k);
+    ivec2 negativePixel = ivec2((N - pixel.x) & (N - 1), (N - pixel.y) & (N - 1));
+    vec2 h0 = imageLoad(h0Spectrum, ivec3(pixel, cascade)).xy;
+    vec2 h0Negative = imageLoad(h0Spectrum, ivec3(negativePixel, cascade)).xy;
+    h0Negative.y = -h0Negative.y;
 
-    float L = baseScale * pow(detailBalance, float(lod));
-    int nx = pixel.x - N / 2;
-    int ny = pixel.y - N / 2;
-    vec2 k = vec2(2.0 * PI * float(nx) / L, 2.0 * PI * float(ny) / L);
-    float kLen = length(k);
-
-    ivec2 negPixel = ivec2((N - pixel.x) & (N - 1), (N - pixel.y) & (N - 1));
-
-    vec2 h0 = imageLoad(h0Spectrum, ivec3(pixel, lod)).xy;
-    vec2 h0Neg = imageLoad(h0Spectrum, ivec3(negPixel, lod)).xy;
-    vec2 conjH0Neg = vec2(h0Neg.x, -h0Neg.y);
-
-    float omega = 0.0;
-    if (kLen > 1e-6)
+    float depthTerm = params.dampingParams.z < 9999.0
+        ? tanh(kLength * params.dampingParams.z) : 1.0;
+    float omega = kLength > 1e-6
+        ? sqrt((G * kLength + params.spectralOptions.x * kLength * kLength * kLength) * depthTerm)
+        : 0.0;
+    if (params.dampingParams.w > 0.0)
     {
-        if (depth > 0.0 && depth < 9999.0)
-            omega = sqrt(G * kLen * tanh(kLen * depth));
+        float fundamental = 2.0 * PI / params.dampingParams.w;
+        omega = round(omega / fundamental) * fundamental;
+    }
+    vec2 height = Multiply(h0, UnitComplex(omega * params.windDirection_Time.z))
+                + Multiply(h0Negative, UnitComplex(-omega * params.windDirection_Time.z));
+    vec2 minusIHeight = vec2(height.y, -height.x);
+    vec2 iHeight = vec2(-height.y, height.x);
+    if (kLength > 1e-6)
+    {
+        if (params.spectrumMeta.w > 0.5)
+        {
+            // Exact spectral height gradient.  The inverse FFT directly
+            // produces dh/dx and dh/dz; no finite-difference normal map pass.
+            Store(pixel, cascade, 0, iHeight * k.x);
+            Store(pixel, cascade, 1, iHeight * k.y);
+        }
         else
-            omega = sqrt(G * kLen);
-    }
-
-    if (repeatPeriod > 0.0)
-    {
-        float omega0 = 2.0 * PI / repeatPeriod;
-        omega = floor(omega / omega0) * omega0;
-    }
-
-    vec2 H = ComplexMul(h0, ExpI(omega * time)) + ComplexMul(conjH0Neg, ExpI(-omega * time));
-    vec2 iH = vec2(-H.y, H.x);
-    vec2 minusIH = vec2(H.y, -H.x);
-
-    StoreComplex(pixel, FieldLayer(lod, FIELD_HEIGHT), H);
-    StoreComplex(pixel, FieldLayer(lod, FIELD_SLOPE_X), iH * k.x);
-    StoreComplex(pixel, FieldLayer(lod, FIELD_SLOPE_Z), iH * k.y);
-
-    if (kLen > 1e-6)
-    {
-        StoreComplex(pixel, FieldLayer(lod, FIELD_DISP_X), minusIH * (k.x / kLen) * choppiness);
-        StoreComplex(pixel, FieldLayer(lod, FIELD_DISP_Z), minusIH * (k.y / kLen) * choppiness);
+        {
+            Store(pixel, cascade, FIELD_HEIGHT, height);
+            Store(pixel, cascade, FIELD_DISP_X, minusIHeight * (k.x / kLength) * params.spectrumParams.y);
+            Store(pixel, cascade, FIELD_DISP_Z, minusIHeight * (k.y / kLength) * params.spectrumParams.y);
+        }
     }
     else
     {
-        StoreComplex(pixel, FieldLayer(lod, FIELD_DISP_X), vec2(0.0));
-        StoreComplex(pixel, FieldLayer(lod, FIELD_DISP_Z), vec2(0.0));
+        if (params.spectrumMeta.w > 0.5)
+        {
+            Store(pixel, cascade, 0, vec2(0.0));
+            Store(pixel, cascade, 1, vec2(0.0));
+        }
+        else
+        {
+            Store(pixel, cascade, FIELD_HEIGHT, height);
+            Store(pixel, cascade, FIELD_DISP_X, vec2(0.0));
+            Store(pixel, cascade, FIELD_DISP_Z, vec2(0.0));
+        }
     }
-    StoreComplex(pixel, FieldLayer(lod, FIELD_FOLD), vec2(0.0));
 }

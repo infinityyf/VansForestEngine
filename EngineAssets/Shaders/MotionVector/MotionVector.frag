@@ -5,7 +5,8 @@
 // Outputs a screen-space motion vector (UV delta) encoding how each pixel
 // moved from the previous frame to the current frame.
 //
-// Convention (matches SSGITemporal / FSR consumers):
+// Engine convention (matches SSGITemporal / SSR consumers; the FSR boundary
+// converts this to current-to-previous with a negative motionVectorScale):
 //   motionVector = currentUV − previousUV
 //   previousUV   = currentUV − motionVector
 // ---------------------------------------------------------------------------

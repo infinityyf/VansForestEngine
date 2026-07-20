@@ -118,7 +118,7 @@ void CalculateDirectLight_Subsurface(BRDFData brdfData, SubsurfaceParams sss,
         L /= distance;
         float attenuation = 1.0 - (distance / pointLight.radius);
         attenuation *= attenuation;
-        float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, L, punctualShadowMap, int(pointLight.shadowIndex));
+        float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, L, punctualShadowMap, int(i));
 
         vec3 dR = vec3(0.0);
         vec3 sR = vec3(0.0);
@@ -150,7 +150,7 @@ void CalculateDirectLight_Subsurface(BRDFData brdfData, SubsurfaceParams sss,
         float innerConeAngle = cos(spotLight.innerConeAngle);
         float outerConeAngle = cos(spotLight.outerConeAngle);
         float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
-        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, L, punctualShadowMap, int(spotLight.shadowIndex));
+        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, L, punctualShadowMap, int(i));
 
         vec3 dR = vec3(0.0);
         vec3 sR = vec3(0.0);

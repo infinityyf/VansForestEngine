@@ -212,7 +212,7 @@ namespace VansGraphics
 		std::string GetName() const { return m_Name; }
 		void SetName(const std::string& name) { m_Name = name; }
 
-		// ─── AnimGraph (v2) ───────────────────────────────────────────
+		// ─── AnimGraph ───────────────────────────────────────────
 		void SetGraph(std::unique_ptr<VansAnimGraph> graph);
 		VansAnimGraph* GetGraph() const { return m_Graph.get(); }
 		bool HasGraph() const { return m_Graph != nullptr; }
@@ -272,7 +272,7 @@ namespace VansGraphics
 		BoneMatricesSSBO m_BoneMatricesSSBO;
 		std::vector<glm::mat4> m_CachedGlobalTransforms;
 
-		// ─── AnimGraph (v2) ───
+		// ─── AnimGraph ───
 		std::unique_ptr<VansAnimGraph> m_Graph;
 		std::unique_ptr<VansMotionMatchingRuntime> m_MotionMatching;
 		std::unique_ptr<VansFootPlacementSolver> m_FootPlacement;

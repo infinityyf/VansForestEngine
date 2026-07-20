@@ -75,6 +75,9 @@ namespace VansGraphics
 
 		//用于dispatch的信息
 		FSRInput m_FSRInput;
+		VansFSRMode m_FSRMode = VansFSRMode::MatchViewport;
+		VkExtent2D m_RequestedSceneViewportExtent{ 0, 0 };
+		bool m_FSRConfigDirty = false;
 
 		void PrepareFSRDispatchInputData(float fovy, float nearPlane, float farPlane);
 
@@ -83,6 +86,9 @@ namespace VansGraphics
 		void InitializeFSR();
 
 		void CleanupFSR();
+
+		VkExtent2D CalculateFSROutputExtent() const;
+		void ProcessPendingFSRConfig();
 
 	public:
 
@@ -102,6 +108,12 @@ namespace VansGraphics
 
 		// 查询 FSR 内置抖动偏移（像素空间 [-0.5, 0.5]），供 VansCamera 替代 Halton 序列
 		bool GetFSRJitterOffset(uint32_t frameIndex, float& outPixelX, float& outPixelY) override;
+		float GetUpscaleMipBias() const override;
+
+		void RequestFSRConfig(VansFSRMode mode, uint32_t viewportWidth, uint32_t viewportHeight, float sharpness);
+		VansFSRMode GetFSRMode() const { return m_FSRMode; }
+		float GetFSRSharpness() const { return m_FSRController.GetSharpness(); }
+		VkExtent2D GetRequestedSceneViewportExtent() const { return m_RequestedSceneViewportExtent; }
 
 		// 窗口大小改变时重建交换链和UI渲染pass
 		void OnWindowResize(uint32_t width, uint32_t height) override;
@@ -110,6 +122,7 @@ namespace VansGraphics
 
 		//初始化被渲染的数据
 		void BeforeRendering() override;
+		void PrepareRenderingFrame() override { ProcessPendingFSRConfig(); }
 
 		void Rendering() override;
 
@@ -255,9 +268,9 @@ namespace VansGraphics
 
 		void UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
-		void UpdateFogLightInjection(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+		void UpdateFogLightInjection(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd, uint32_t frameIdx);
 
-		void UpdateFogRayMarch(VansVKCommandBuffer& computeCmd);
+		void UpdateFogRayMarch(VansVKCommandBuffer& computeCmd, uint32_t frameIdx);
 
 		// 体积云 1/4 分辨率光线步进（Compute Pass，在 Deferred 之前执行）
 		void UpdateCloudRayMarch(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
@@ -270,6 +283,7 @@ namespace VansGraphics
 		void UpdateBloom(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 		// 检测后处理 Profile 脏标记，将 CPU 参数上传到三个 UBO（每帧调用，开销极低）
 		void UploadPostProcessProfileIfDirty();
+		void ProcessPendingGISettings();
 
 	private:
 
@@ -280,6 +294,7 @@ namespace VansGraphics
 		uint64_t m_SSRDescSetGeneration = 0;
 		uint64_t m_VolumetricFogDescSetGeneration = 0;
 		uint64_t m_FogLightInjectionDescSetGeneration = 0;
+		uint64_t m_FogRayMarchDescSetGeneration = 0;
 		uint64_t m_TileLightBuildDescSetGeneration = 0;
 		uint64_t m_PPExposureDescSetGeneration = 0;
 		uint64_t m_PPBloomDescSetGeneration = 0;
@@ -324,6 +339,7 @@ namespace VansGraphics
 	private:
 
 		void UpdateGIDataDescriptorSets(VansRenderPassManager* renderPassManager);
+		void UploadSSGIParamsFromGISettings();
 
 		void UpdateHIZSeedDescriptorSet(VansRenderPassManager* renderPassManager);
 
@@ -484,9 +500,9 @@ namespace VansGraphics
 		std::vector<uint32_t> m_SharingQueueFamilyIndices;
 
 		//recored all supported queue before device create
-		uint32_t m_GraphicsQueueFamilyIndex;
-		uint32_t m_ComputeQueueFamilyIndex;
-		uint32_t m_PresentQueueFamilyIndex;
+		uint32_t m_GraphicsQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		uint32_t m_ComputeQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		uint32_t m_PresentQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
 	private:
 

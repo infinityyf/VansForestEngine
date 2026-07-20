@@ -1,237 +1,181 @@
 #pragma once
-#include <string>
+
+#include <algorithm>
 #include <cstdint>
 #include <glm/glm.hpp>
-
-// ============================================================
-// VansWaterConfig.h
-// 水面系统完整配置结构体，由 VansSceneEnvironmentNodeBuilder::AddWaterNode()
-// 从 Scene JSON 的顶层 "water" 块解析并填充。
-// 不依赖任何 Vulkan 类型，可安全被非渲染层代码包含。
-// ============================================================
+#include <string>
 
 namespace VansGraphics
 {
-	// ============================================================
-	// 波形生成模式
-	// ============================================================
-	enum class VansWaveMode
-	{
-		Gerstner,  // Gerstner 波叠加（快速，可控）
-		FFT,       // FFT 海洋频谱（物理真实）
-		Hybrid,    // 近处 FFT + 远处 Gerstner
-	};
+    // V2 contract: geometry density and spectral frequency bands are independent.
+    enum class VansWaveMode : std::uint32_t
+    {
+        Gerstner = 0,
+        FFT = 1,
+        Hybrid = 2, // FFT spectrum plus authored Gerstner components at every cascade.
+    };
 
-	// ============================================================
-	// 水体类型
-	// ============================================================
-	enum class VansWaterType
-	{
-		Ocean,  // 无边界海洋
-		Lake,   // 有边界湖泊
-		River,  // 河流
-		Pool,   // 水池
-	};
+    struct VansWaterMediumConfig
+    {
+        glm::vec3 m_AbsorptionCoeff = { 0.25f, 0.08f, 0.02f };
+        glm::vec3 m_ScatteringCoeff = { 0.02f, 0.04f, 0.06f };
+        float m_IOR = 1.33f;
+        float m_FresnelPower = 5.0f;
+        float m_Anisotropy = 0.85f;
+        float m_WaterRoughness = 0.02f;
+        glm::vec4 m_DeepColor = { 0.01f, 0.04f, 0.18f, 1.0f };
+        glm::vec4 m_ShallowColor = { 0.05f, 0.18f, 0.55f, 1.0f };
+    };
 
-	// ============================================================
-	// 水体介质参数（参与介质 Beer-Lambert 模型）
-	// ============================================================
-	struct VansWaterMediumConfig
-	{
-		// 吸收系数 (m⁻¹)，遵循水光学：红光吸收最强，蓝光吸收最弱
-		// 消光 = absorption + scattering，需保证 totalExtinction_R > totalExtinction_B
-		glm::vec3 m_AbsorptionCoeff  = {0.25f, 0.08f, 0.02f};  // R>G>B
-		// 散射系数 (m⁻¹)，蓝光瑞利散射最强，但需保证蓝光总消光最低
-		glm::vec3 m_ScatteringCoeff  = {0.02f, 0.04f, 0.06f};  // B>G>R, totalExt_{0.27,0.12,0.08}
-		// 折射率，1.0 = 空气，水约 1.33
-		float     m_IOR              = 1.33f;
-		// Fresnel 指数（影响掠射角反射强度）
-		float     m_FresnelPower     = 5.0f;
-		// Schlick 各向异性 g ∈ (-1, 1)，0 = 各向同性
-		float     m_Anisotropy       = 0.85f;
-		// 水面微面元粗糙度（0=镜面反射, 1=漫反射）
-		float     m_WaterRoughness   = 0.02f;
-		// 深水颜色
-		glm::vec4 m_DeepColor        = {0.01f, 0.04f, 0.18f, 1.0f};   // 深水暗蓝
-		// 浅水颜色
-		glm::vec4 m_ShallowColor     = {0.05f, 0.18f, 0.55f, 1.0f};   // 浅水亮蓝（散射色）
-	};
+    // Fixed 2:1 geometry clipmap. A mesh rebuild is a frame-boundary operation.
+    struct VansWaterGeometryConfig
+    {
+        int m_LodCount = 10;
+        float m_BasePatchSize = 16.0f;
+        int m_MeshDim = 65;
+        float m_MorphStartRatio = 0.5f;
+    };
 
-	// ============================================================
-	// Detail Normal（细节法线）参数 — N-01
-	// ============================================================
-	struct VansWaterDetailNormalConfig
-	{
-		bool  m_Enabled       = true;
-		float m_Intensity     = 1.0f;   // 细节法线混合强度 [0, 3]
-		float m_Scale         = 1.0f;   // 法线缩放因子 [0.1, 5]
-		int   m_OctaveCount   = 4;      // 八度数 [1, 4]
-		float m_TimeOffset    = 0.0f;   // 时间相位偏移（避免与宏波同步）
-		float m_DetailBaseScale  = 16.0f;  // 细节法线 LOD 0 世界覆盖范围（m），远小于 clipmapBaseScale 以获得厘米级细节
-		float m_LodFadeStart  = 2.5f;   // LOD 衰减起始
-		float m_LodFadeEnd    = 5.5f;   // LOD 衰减结束
-	};
+    // Band-limited spectral cascades. Resolution is a runtime invariant in V2.
+    struct VansWaterSpectrumConfig
+    {
+        VansWaveMode m_Mode = VansWaveMode::Hybrid;
+        int m_CascadeCount = 4;
+        float m_BaseCoverage = 64.0f;
+        float m_CascadeScale = 4.0f;
 
-	// ============================================================
-	// Tessendorf FFT ocean 参数
-	// ============================================================
-	struct VansWaterFFTConfig
-	{
-		bool     m_UseDerivativeNormal = true;
-		int      m_Resolution          = 256;
-		int      m_LODCount            = 4;
-		float    m_SpectrumAmplitude   = 4.0f;
-		float    m_Choppiness          = 1.0f;
-		float    m_SmallWaveDamping    = 0.003f;
-		float    m_WindDependency      = 0.07f;
-		float    m_Depth               = 10000.0f;
-		float    m_RepeatPeriod        = 0.0f;
-		float    m_FoamSlopeScale      = 0.25f;
-		float    m_FoamFoldScale       = 1.0f;
-		float    m_FoamFoldThreshold   = 0.0f;
-		uint32_t m_RandomSeed          = 1337;
-	};
+        glm::vec2 m_WindDirection = { 0.7071f, 0.7071f };
+        float m_WindSpeed = 12.0f;
+        float m_SwellAmplitude = 0.2f;
+        float m_Choppiness = 1.0f;
+        int m_GerstnerWaveCount = 32;
 
-	// ============================================================
-	// 波形仿真参数
-	// ============================================================
-	struct VansWaterWaveConfig
-	{
-		// 波形生成模式
-		VansWaveMode m_Mode             = VansWaveMode::Gerstner;
-		// Clipmap 基础缩放（oceanBaseScale，影响 LOD 覆盖范围）
-		float        m_BaseScale        = 64.0f;
-		// 最大 LOD 数量 [1, 10]
-		int          m_MaxLOD           = 10;
-		// 风向（单位向量，XZ 平面）
-		glm::vec2    m_WindDirection    = {0.7071f, 0.7071f};
-		// 风速 (m/s)
-		float        m_WindSpeed        = 12.0f;
-		// 涌浪振幅 (m)
-		float        m_SwellAmplitude   = 0.2f;
-		// Gerstner chop 强度 [0, 2]
-		float        m_ChopScale        = 1.5f;
-		// Gerstner 叠加的波分量数量 [1, 64]
-		int          m_GerstnerWaveCount = 64;
-		// 混合模式（Hybrid）下 FFT 覆盖的 LOD 数
-		int          m_FftLODCount      = 4;
-		// FFT 分辨率（128 或 256）
-		int          m_FftResolution    = 256;
-		// Tessendorf FFT 详细参数
-		VansWaterFFTConfig m_FFT;
-		// N-01: 细节法线参数
-		VansWaterDetailNormalConfig m_DetailNormal;
-	};
+        float m_SpectrumAmplitude = 0.001f;
+        // Shorter wavelengths are owned exclusively by the spectral slope
+        // fields.  This is a power-spectrum split, not a geometry LOD knob.
+        float m_MinWavelength = 0.5f;
+        float m_SmallWaveDamping = 0.003f;
+        float m_WindDependency = 0.07f;
+        float m_Depth = 10000.0f;
+        float m_RepeatPeriod = 0.0f;
+        std::uint32_t m_RandomSeed = 1337;
+    };
 
-	struct VansWaterLODConfig
-	{
-		int   m_MaxLOD          = 10;
-		float m_BasePatchSize   = 16.0f;
-		int   m_MeshDim         = 65;
-		float m_DetailBalance   = 2.0f;
-		float m_MorphWidthRatio = 0.5f;
-	};
+    // Two decorrelated, world-anchored FFT slope fields cover the same short-
+    // wave spectrum.  Different torus periods and rotations make the combined
+    // repetition period large while every source field remains four-edge
+    // periodic.  Their upper wavelength is m_Spectrum.m_MinWavelength.
+    struct VansWaterMicroSlopeConfig
+    {
+        bool m_Enabled = true;
+        float m_Intensity = 0.35f;
+        float m_MinWavelength = 0.09f;
+        float m_PrimaryCoverage = 8.0f;
+        float m_SecondaryCoverage = 11.313708f;
+        float m_RotationDegrees = 31.0f;
+    };
 
-	// ============================================================
-	// 泡沫参数
-	// ============================================================
-	struct VansWaterFoamConfig
-	{
-		bool        m_Enabled     = true;
-		// Texture runtime name resolved from an asset reference.
-		std::string m_TextureName;
-		// 泡沫强度乘数
-		float       m_Intensity   = 1.0f;
-	};
+    struct VansWaterCausticsConfig
+    {
+        bool m_Enabled = false;
+        float m_Intensity = 1.0f;
+        float m_Scale = 0.5f;
+    };
 
-	// ============================================================
-	// 法线贴图参数
-	// ============================================================
-	struct VansWaterNormalMapConfig
-	{
-		// Texture runtime name resolved from an asset reference.
-		std::string m_TextureName;
-		// UV 平铺缩放（X=空间, Y=流动速率）
-		glm::vec2   m_Tiling      = {0.1f, 0.03f};
-	};
+    struct VansWaterRefractionConfig
+    {
+        bool m_Enabled = true;
+        // Maximum screen-height UV displacement at normalized thickness 1.
+        float m_DistortionStrength = 0.025f;
+    };
 
-	// ============================================================
-	// 焦散参数
-	// ============================================================
-	struct VansWaterCausticsConfig
-	{
-		bool  m_Enabled   = true;
-		float m_Intensity = 1.0f;
-		// 焦散纹理 UV 缩放
-		float m_Scale     = 0.5f;
-	};
+    struct VansWaterSSRConfig
+    {
+        bool m_Enabled = true;
+        float m_MaxDistance = 500.0f;
+        float m_MaxRoughness = 0.3f;
+    };
 
-	// ============================================================
-	// 折射参数
-	// ============================================================
-	struct VansWaterRefractionConfig
-	{
-		bool  m_Enabled     = true;
-		// 最大屏幕空间折射偏移距离 (m)
-		float m_MaxDistance = 50.0f;
-		// 折射偏移强度
-		float m_Scale       = 0.5f;
-	};
+    struct VansWaterSSSConfig
+    {
+        bool m_Enabled = true;
+        float m_MaxThicknessDistance = 15.0f;
+        float m_DeepWaterThicknessFallback = 0.8f;
+    };
 
-	// ============================================================
-	// SSR 参数
-	// ============================================================
-	struct VansWaterSSRConfig
-	{
-		bool  m_Enabled       = true;
-		float m_MaxDistance   = 500.0f;  // SSR 最大追踪距离（m），独立于折射距离
-		float m_MaxRoughness  = 0.3f;    // 超过该粗糙度退化为 IBL（[0, 1]）
-	};
+    struct VansWaterConfig
+    {
+        static constexpr std::uint32_t SCHEMA_VERSION = 3;
+        static constexpr int SPECTRUM_RESOLUTION = 256;
+        static constexpr int MAX_GEOMETRY_LODS = 10;
+        static constexpr int MAX_SPECTRUM_CASCADES = 4;
+        static constexpr int MICRO_SLOPE_BAND_COUNT = 2;
+        static constexpr int MICRO_SLOPE_DOMAIN_COUNT = 2;
+        static constexpr int MICRO_SLOPE_LAYER_COUNT =
+            MICRO_SLOPE_BAND_COUNT * MICRO_SLOPE_DOMAIN_COUNT;
+        static constexpr float GEOMETRY_LOD_RATIO = 2.0f;
 
-	// ============================================================
-	// SSS 次表面散射参数 — W-16
-	// ============================================================
-	struct VansWaterSSSConfig
-	{
-		bool  m_Enabled                 = true;
-		float m_MaxThicknessDistance    = 15.0f;   // 最大厚度 (m)，超过此值 clamp
-		float m_DeepWaterThicknessFallback = 0.8f;  // 深水 fallback 归一化厚度 [0,1]
-	};
+        std::uint32_t m_SchemaVersion = SCHEMA_VERSION;
+        float m_WaterLevel = 3.4f;
+        float m_SpecularIntensity = 1.0f;
 
-	// ============================================================
-	// VansWaterConfig — 完整水面配置
-	//
-	// JSON 对应关系：
-	//   "water" : {
-	//     "type"       : "ocean",      // VansWaterType
-	//     "level"      : 0.0,          // m_WaterLevel
-	//     "medium"     : { ... },      // VansWaterMediumConfig
-	//     "waves"      : { ... },      // VansWaterWaveConfig
-	//     "foam"       : { ... },      // VansWaterFoamConfig
-	//     "normalMap"  : { ... },      // VansWaterNormalMapConfig
-	//     "caustics"   : { ... },      // VansWaterCausticsConfig
-	//     "refraction" : { ... },      // VansWaterRefractionConfig
-	//     "ssr"        : { ... },      // VansWaterSSRConfig
-	//     "specularIntensity" : 1.0
-	//   }
-	// ============================================================
-	struct VansWaterConfig
-	{
-		VansWaterType            m_Type             = VansWaterType::Ocean;
-		// 水面 Y 轴高度（世界空间）
-		float                    m_WaterLevel       = 3.4f;
-		// 高光强度乘数
-		float                    m_SpecularIntensity = 1.0f;
+        VansWaterMediumConfig m_Medium;
+        VansWaterGeometryConfig m_Geometry;
+        VansWaterSpectrumConfig m_Spectrum;
+        VansWaterMicroSlopeConfig m_MicroSlope;
+        VansWaterCausticsConfig m_Caustics;
+        VansWaterRefractionConfig m_Refraction;
+        VansWaterSSRConfig m_SSR;
+        VansWaterSSSConfig m_SSS;
 
-		VansWaterMediumConfig    m_Medium;
-		VansWaterLODConfig       m_LOD;
-		VansWaterWaveConfig      m_Waves;
-		VansWaterFoamConfig      m_Foam;
-		VansWaterNormalMapConfig m_NormalMap;
-		VansWaterCausticsConfig  m_Caustics;
-		VansWaterRefractionConfig m_Refraction;
-		VansWaterSSRConfig       m_SSR;
-		VansWaterSSSConfig       m_SSS;       // W-16: 次表面散射
-	};
+        void Validate()
+        {
+            m_SchemaVersion = SCHEMA_VERSION;
+            m_Geometry.m_LodCount = std::clamp(m_Geometry.m_LodCount, 1, MAX_GEOMETRY_LODS);
+            m_Geometry.m_BasePatchSize = (std::max)(m_Geometry.m_BasePatchSize, 0.25f);
+            m_Geometry.m_MeshDim = std::clamp(m_Geometry.m_MeshDim, 17, 257);
+            if (((m_Geometry.m_MeshDim - 1) & 1) != 0)
+                ++m_Geometry.m_MeshDim;
+            m_Geometry.m_MorphStartRatio = std::clamp(m_Geometry.m_MorphStartRatio, 0.05f, 0.95f);
 
-} // namespace VansGraphics
+            m_Spectrum.m_CascadeCount = std::clamp(m_Spectrum.m_CascadeCount, 1, MAX_SPECTRUM_CASCADES);
+            m_Spectrum.m_BaseCoverage = (std::max)(m_Spectrum.m_BaseCoverage, 4.0f);
+            m_Spectrum.m_CascadeScale = std::clamp(m_Spectrum.m_CascadeScale, 2.0f, 8.0f);
+            m_Spectrum.m_WindSpeed = (std::max)(m_Spectrum.m_WindSpeed, 0.0f);
+            m_Spectrum.m_SwellAmplitude = (std::max)(m_Spectrum.m_SwellAmplitude, 0.0f);
+            m_Spectrum.m_Choppiness = std::clamp(m_Spectrum.m_Choppiness, 0.0f, 3.0f);
+            m_Spectrum.m_GerstnerWaveCount = std::clamp(m_Spectrum.m_GerstnerWaveCount, 0, 64);
+            m_Spectrum.m_SpectrumAmplitude = std::clamp(m_Spectrum.m_SpectrumAmplitude, 0.0f, 0.02f);
+            const float macroNyquist = 2.0f * m_Spectrum.m_BaseCoverage / float(SPECTRUM_RESOLUTION);
+            m_Spectrum.m_MinWavelength = std::clamp(
+                m_Spectrum.m_MinWavelength, macroNyquist, m_Spectrum.m_BaseCoverage);
+            m_Spectrum.m_SmallWaveDamping = std::clamp(m_Spectrum.m_SmallWaveDamping, 0.0f, 0.1f);
+            m_Spectrum.m_WindDependency = std::clamp(m_Spectrum.m_WindDependency, 0.0f, 1.0f);
+            m_Spectrum.m_Depth = (std::max)(m_Spectrum.m_Depth, 0.1f);
+            m_Spectrum.m_RepeatPeriod = (std::max)(m_Spectrum.m_RepeatPeriod, 0.0f);
+            if (glm::length(m_Spectrum.m_WindDirection) < 0.001f)
+                m_Spectrum.m_WindDirection = { 0.7071f, 0.7071f };
+            else
+                m_Spectrum.m_WindDirection = glm::normalize(m_Spectrum.m_WindDirection);
+
+            const float maxMicroCoverage = (std::max)(2.0f,
+                m_Spectrum.m_MinWavelength * 0.95f * float(SPECTRUM_RESOLUTION) * 0.5f);
+            m_MicroSlope.m_PrimaryCoverage = std::clamp(
+                m_MicroSlope.m_PrimaryCoverage, 2.0f, (std::min)(64.0f, maxMicroCoverage));
+            m_MicroSlope.m_SecondaryCoverage = std::clamp(
+                m_MicroSlope.m_SecondaryCoverage, 2.0f, (std::min)(64.0f, maxMicroCoverage));
+            const float microNyquist = 2.0f * (std::max)(
+                m_MicroSlope.m_PrimaryCoverage, m_MicroSlope.m_SecondaryCoverage)
+                / float(SPECTRUM_RESOLUTION);
+            m_MicroSlope.m_MinWavelength = std::clamp(
+                m_MicroSlope.m_MinWavelength,
+                microNyquist,
+                m_Spectrum.m_MinWavelength * 0.95f);
+            m_MicroSlope.m_Intensity = std::clamp(m_MicroSlope.m_Intensity, 0.0f, 3.0f);
+            m_MicroSlope.m_RotationDegrees = std::clamp(
+                m_MicroSlope.m_RotationDegrees, 0.0f, 89.0f);
+            m_Refraction.m_DistortionStrength = std::clamp(
+                m_Refraction.m_DistortionStrength, 0.0f, 0.1f);
+        }
+    };
+}

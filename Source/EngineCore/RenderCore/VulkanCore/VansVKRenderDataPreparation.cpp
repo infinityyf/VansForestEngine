@@ -138,9 +138,12 @@ namespace VansGraphics
 				continue;
 			}
 
-			materialManager->m_GlobalCustomMaterialParamData[pendingTexture.payloadIndex]
-				.textureIndices[pendingTexture.textureSlot] =
-				static_cast<int>(materialManager->m_GlobalPBRTextures.size());
+			const int globalTextureIndex = static_cast<int>(materialManager->m_GlobalPBRTextures.size());
+			auto& payload = materialManager->m_GlobalCustomMaterialParamData[pendingTexture.payloadIndex];
+			if (pendingTexture.textureSlot < 4)
+				payload.textureIndices[pendingTexture.textureSlot] = globalTextureIndex;
+			else
+				payload.values[5][pendingTexture.textureSlot - 4] = static_cast<float>(globalTextureIndex);
 			materialManager->m_GlobalPBRTextures.push_back(&(pendingTexture.texture->GetImage()));
 		}
 
@@ -657,25 +660,28 @@ namespace VansGraphics
 		manager->m_SSGITemporalShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGITemporal");
 
 		const VansGISettings& gi = m_Scene->GetGISettings();
-		const float volumeSize = static_cast<float>(gi.gridSize) * gi.probeSpacing;
-		const glm::vec3 volumeMin = gi.regionCenter - glm::vec3(volumeSize * 0.5f);
+		const glm::vec3 volumeSize = glm::vec3(gi.gridDimensions) * gi.probeSpacingAxes;
+		const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
 		SSGIParamsGPU data{};
 		data.screenSize = glm::vec4(
 			(float)m_RenderWidth, (float)m_RenderHeight, 1.0f / m_RenderWidth, 1.0f / m_RenderHeight);
 		data.giVolumeMin = glm::vec4(volumeMin, 0.0f);
-		data.giVolumeSizeAndBias = glm::vec4(volumeSize, volumeSize, volumeSize, gi.normalBias);
-		data.traceParams = glm::vec4(gi.maxRayDistance, 0.75f, 0.0f, 0.0f);
+		data.giVolumeSizeAndBias = glm::vec4(volumeSize, gi.normalBias);
+		data.traceParams = glm::vec4(gi.maxRayDistance, 0.75f, gi.volumeFadeDistance, 0.0f);
 		manager->m_SSGICBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(data), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 		manager->m_SSGICBBuffer.SetBufferData(&data, 0, sizeof(data));
 
+		SSGITemporalParamsGPU temporalData{};
+		temporalData.screenSize = data.screenSize;
+		temporalData.frameParams = glm::vec4(0.0f);
 		manager->m_SSGITemporalCBBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice, sizeof(float) * 4, VK_FORMAT_R32_SFLOAT,
+			m_VansVKLogicDevice, sizeof(temporalData), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_SSGITemporalCBBuffer.SetBufferData(&data.screenSize, 0, sizeof(data.screenSize));
+		manager->m_SSGITemporalCBBuffer.SetBufferData(&temporalData, 0, sizeof(temporalData));
 
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(manager->m_SSGITexSetLayout, manager->m_SSGIDescriptorSets);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGITemporal(manager->m_SSGITemporalSetLayout, manager->m_SSGITemporalDescriptorSets, 2);
@@ -791,7 +797,7 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		VansTexture* volumetricFogResult = new VansTexture();
-		volumetricFogResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, HIGH_PRES_32);
+		volumetricFogResult->InitTextureWithoutData(m_VansVKCommandBuffer, (m_RenderWidth + 1) / 2, (m_RenderHeight + 1) / 2, 1, 4, false, false, true, HIGH_PRES_32, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT, volumetricFogResult);
 		
 		// ================================================================
@@ -800,7 +806,7 @@ namespace VansGraphics
 		// Format: RGBA16F
 		// ================================================================
 		static constexpr int TILE_SIZE    = 8;
-		static constexpr int VOXEL_GRID_Z = 256;
+		static constexpr int VOXEL_GRID_Z = 128;
 		uint32_t gridX = (m_RenderWidth  + TILE_SIZE - 1) / TILE_SIZE;
 		uint32_t gridY = (m_RenderHeight + TILE_SIZE - 1) / TILE_SIZE;
 
@@ -808,7 +814,7 @@ namespace VansGraphics
 		fogVoxelInjection->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
 			gridX, gridY, VOXEL_GRID_Z,
-			4, false, false, true, MID_PRES_16);
+			4, false, false, true, MID_PRES_16, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION, fogVoxelInjection);
 
 		// History texture for temporal reprojection (ping-pong with injection)
@@ -816,14 +822,14 @@ namespace VansGraphics
 		fogVoxelInjectionHistory->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
 			gridX, gridY, VOXEL_GRID_Z,
-			4, false, false, true, MID_PRES_16);
+			4, false, false, true, MID_PRES_16, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY, fogVoxelInjectionHistory);
 
 		VansTexture* fogVoxelRayMarch = new VansTexture();
 		fogVoxelRayMarch->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
 			gridX, gridY, VOXEL_GRID_Z,
-			4, false, false, true, MID_PRES_16);
+			4, false, false, true, MID_PRES_16, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_RAYMARCH, fogVoxelRayMarch);
 
 		auto vansConfigration = VansConfigration::GetInstance();
@@ -853,8 +859,9 @@ namespace VansGraphics
 		// Descriptor set layouts + allocation
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_VolumetricFog(manager->m_VolumetricFogSetLayout, manager->m_VolumetricFogDescriptorSets);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_FogLightInjection(manager->m_FogLightInjectionSetLayout, manager->m_FogLightInjectionDescriptorSets, 2); // 2 sets for ping-pong
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_FogRayMarch(manager->m_FogRayMarchSetLayout, manager->m_FogRayMarchDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_FogRayMarch(manager->m_FogRayMarchSetLayout, manager->m_FogRayMarchDescriptorSets, 2);
 		manager->m_FogTemporalFrame = 0;
+		manager->m_FogHistoryValid = false;
 
 		manager->UpdateAtmosphereDescriptorSets();
 	}
@@ -1094,7 +1101,7 @@ namespace VansGraphics
 
 		// ---- UBO 创建与初始化 ----
 		VansPostProcessProfile& defaultProfile = manager->m_PostProcessProfile;
-		VansPostProcessParamsGPU ppParams  = defaultProfile.ToGPUParams(0.0f);
+		VansPostProcessParamsGPU ppParams  = defaultProfile.ToGPUParams();
 		VansExposureAdaptParamsGPU expParams = defaultProfile.ToExposureAdaptParams(0.016f);
 		VansBloomParamsGPU bloomParams     = defaultProfile.ToBloomParams();
 
@@ -1135,6 +1142,9 @@ namespace VansGraphics
 		}
 		m_Scene->ReleaseASTempBuffer(this);
 		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene);
+		rayTracingContext.UpdateGISettings(m_Scene->GetGISettings());
+		m_Scene->ClearGIProbeResourcesDirty();
+		m_Scene->ClearGIParametersDirty();
 	}
 
 	void VansVKDevice::PrepareGlobalIllumiationData()

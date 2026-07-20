@@ -27,7 +27,7 @@ namespace VansGraphics
 		glm::vec4				m_CascadeTexelSize;     // world units per shadow texel
 		glm::vec4				m_CascadeDepthScale;    // 1 / light-space depth range
 		glm::vec4				m_CascadeNormalBias;    // world normal bias per cascade
-		glm::vec4				m_CascadeFilterRadius;  // stable PCF radius in texels
+		glm::vec4				m_CascadeFilterRadius;  // maximum PCSS search/filter radius in texels
 	};
 
 	struct VansCascadeCameraData
@@ -112,6 +112,9 @@ namespace VansGraphics
 		const uint32_t m_MaxPointLightCount = 64;
 		const uint32_t m_MaxSpotLightCount = 64;
 		const uint32_t m_MaxRectLightCount = 32;
+		// Punctual shadow atlas is 8x8 tiles. Point lights consume six tiles,
+		// spot/rect lights consume one tile each.
+		const uint32_t m_MaxPunctualShadowAtlasSlots = 64;
 
 	public:
 

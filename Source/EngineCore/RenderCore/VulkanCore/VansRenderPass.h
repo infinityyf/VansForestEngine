@@ -106,9 +106,9 @@ namespace VansGraphics
 
 		VansVKImage m_ShadowMapDepthImage;
 
-		// Cascade shadow map (4 array layers, 512x512 each)
-		VansVKImage m_CascadeShadowMapImage;       // R32_SFLOAT, 512x512, 4 layers
-		VansVKImage m_CascadeShadowMapDepthImage;  // D16_UNORM, 512x512, 4 layers
+		// Cascade shadow map (four configuration-sized array layers).
+		VansVKImage m_CascadeShadowMapImage;       // R32_SFLOAT linear depth for PCSS
+		VansVKImage m_CascadeShadowMapDepthImage;  // D32_SFLOAT visibility/depth test
 		VkImageView m_CascadeColorLayerViews[4];   // per-layer views for framebuffers
 		VkImageView m_CascadeDepthLayerViews[4];   // per-layer views for framebuffers
 		VkImageView m_CascadeShadowArrayView;      // 2D_ARRAY view for sampling
@@ -168,11 +168,10 @@ namespace VansGraphics
 		// 设计文档 Pass 7：在 Deferred 之后、Transparent 之前执行
 		// 输出：WaterGBuf_Normal（RGBA16F）+ WaterGBuf_WorldPosDepth（RGBA16F）
 		// RGB=世界空间法线/位置, A=预留/线性深度
-		// 独立深度缓冲：启动深度写入+深度测试，保证多层 CDLOD patch 遮挡顺序
+		// 复用主场景深度（只读）：opaque custom 先写入，水面覆盖率随后接受硬件深度测试。
 		VansVKRenderPass m_VansWaterGBufferPass;
 		VansVKImage m_WaterGBufNormalImage;       // 世界空间法线 XYZ + 预留 A（RGBA16F）
 		VansVKImage m_WaterGBufLinearDepthImage;  // 世界空间位置 RGB + 线性深度 A（RGBA16F）
-		VansVKImage m_WaterDepthImage;            // 水面专用深度缓冲（D32_SFLOAT_S8_UINT）
 
 		// ── Deferred + SkyBox 专用 pass（从 m_VansRenderPass 中拆出）──────
 		// m_VansRenderPass 拆分后仅保留 Transparent + PostProcess；
@@ -214,6 +213,7 @@ namespace VansGraphics
 		// scene ui pass（Noesis 运行时 UI → FSR 输出图像，格式 R16G16B16A16_SFLOAT）
 		// fsrImageView：FSR 输出图像的 ImageView；displayExtent：显示分辨率
 		void SetupVansSceneUIRenderPass(VkDevice& logic_device, VkImageView fsrImageView, const VkExtent2D& displayExtent);
+		void DestroySceneUIRenderPass();
 
 		// 贴花 pass：引用现有 GBuffer 图像（Normal/GBuffer0/GBuffer1），LOAD 内容并 alpha blend 叠写
 		void SetupVansDecalRenderPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
@@ -228,7 +228,6 @@ namespace VansGraphics
 		// 水面 GBuffer 纹理访问器（供 VansWaterSystem / 描述符写入使用）
 		VansVKImage& GetWaterGBufNormal()      { return m_WaterGBufNormalImage; }
 		VansVKImage& GetWaterGBufLinearDepth() { return m_WaterGBufLinearDepthImage; }
-		VansVKImage& GetWaterDepthImage()      { return m_WaterDepthImage; }
 
 		// Deferred + SkyBox pass 访问器
 		VansVKRenderPass& GetVansDeferredSkyboxPass() { return m_VansDeferredSkyboxPass; }

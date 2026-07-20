@@ -3,6 +3,7 @@
 #include "../RenderCore/VansGraphicsDevice.h"
 #include "../../Application/VansBasicWindow.h"
 #include "Windows/VansBaseWindowComponent.h"
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -44,6 +45,8 @@ namespace VansGraphics
 	class VansWaterWindow;
 	class VansTerrainWindow;
 	class VansReflectionProbeWindow;
+	class VansGIWindow;
+	class VansPostProcessWindow;
 
 	/// 编辑器运行控制状态
 	enum class VansEditorPlayState
@@ -72,6 +75,8 @@ namespace VansGraphics
 		static bool m_WaterWindowOpen;
 		static bool m_TerrainWindowOpen;
 		static bool m_ReflectionProbeWindowOpen;
+		static bool m_GIWindowOpen;
+		static bool m_PostProcessWindowOpen;
 
 		static bool m_WireframeMode;
 		static bool m_VehicleDebugGizmos;
@@ -121,6 +126,7 @@ namespace VansGraphics
 		static void OnPause();
 		static void OnResume();
 		static void OnStop();
+		static void OpenSelectedAnimationGraph();
 
 		/// 查询当前是否处于编辑模式（非 Playing / Paused）
 		static bool IsEditing() { return m_PlayState == VansEditorPlayState::Editing; }
@@ -163,6 +169,10 @@ namespace VansGraphics
 
 		static VansReflectionProbeWindow* m_ReflectionProbeWindow;
 
+		static VansGIWindow* m_GIWindow;
+
+		static VansPostProcessWindow* m_PostProcessWindow;
+
 	private:
 
 		/// ImGui-based project selector overlay (shown until a project is loaded)
@@ -194,6 +204,7 @@ namespace VansGraphics
 		static std::unique_ptr<Vans::VansSceneEditService> m_SceneEditService;
 		static std::unique_ptr<Vans::VansSceneSaveService> m_SceneSaveService;
 		static Vans::EditorAPI::IEngineEditorAPI* m_EditorAPI;
+		static std::uint64_t m_RuntimeMultiMeshExpansionScannedStateId;
 
 	public:
 		/// Deferred scene load: set during ImGui frame, processed before next Rendering()

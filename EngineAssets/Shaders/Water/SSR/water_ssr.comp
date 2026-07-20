@@ -16,6 +16,7 @@
 // ============================================================
 
 #include "../../Common/Common.glsl"
+#include "../water_screen_common.glsl"
 // NOTE: CameraData.glsl NOT included — set=0 binding=0 is used by waterGBufNormal
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -36,7 +37,8 @@ layout(set = 0, binding = 5) uniform WaterSSRParams
     float maxDistance;         // 最大追踪距离（m）
     int   maxSteps;            // 最大步数
     float thickness;           // HZB 深度容差
-    float pad0;
+    float maxRoughness;
+    vec4  surfaceParams;        // x=current water roughness
 } params;
 
 // ── 输出 ────────────────────────────────────────────────────
@@ -49,30 +51,37 @@ void main()
     if (pixel.x >= size.x || pixel.y >= size.y)
         return;
 
-    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    if (params.surfaceParams.x > params.maxRoughness)
+    {
+        imageStore(reflectionOut, pixel, vec4(0.0));
+        return;
+    }
+
+    vec2 uv = WaterPixelUV(pixel, size);
 
     // ── 读取 Water GBuffer（修复后的格式）──────────────────
-    vec4 posDepth    = texture(waterGBufPosDepth, uv);
+    vec4 normalCoverage = texelFetch(waterGBufNormal, pixel, 0);
+    vec4 posDepth    = texelFetch(waterGBufPosDepth, pixel, 0);
     float waterDepth = posDepth.a;
     vec3  worldPos   = posDepth.rgb;
 
     // 无水面的像素跳过
-    if (waterDepth >= 9999.0)
+    if (!WaterSurfaceValid(normalCoverage, posDepth))
     {
         imageStore(reflectionOut, pixel, vec4(0.0, 0.0, 0.0, 0.0));
         return;
     }
 
     // 场景遮挡：场景在水面之前则无水面可见
-    float sceneDepth = texture(sceneGBuf2, uv).w;
-    if (sceneDepth > 0.1 && sceneDepth < waterDepth + 0.05)
+    float sceneDepth = texelFetch(sceneGBuf2, pixel, 0).w;
+    if (SceneOccludesWater(sceneDepth, waterDepth))
     {
         imageStore(reflectionOut, pixel, vec4(0.0, 0.0, 0.0, 0.0));
         return;
     }
 
     // 世界空间法线（直接读取 RGB，非 oct 解码）
-    vec3 normal = normalize(texture(waterGBufNormal, uv).rgb);
+    vec3 normal = normalize(normalCoverage.rgb);
 
     // 视线方向
     vec3 viewDir = normalize(params.cameraPosition.xyz - worldPos);
@@ -98,7 +107,7 @@ void main()
         reflectDir,
         params.maxDistance,
         1.0,    // traceStride: 初始步长（像素）
-        1.0     // thicknessThreshold: 1.0m 厚度阈值
+        max(params.thickness, 0.01)
     );
 
     vec3 reflectionColor;

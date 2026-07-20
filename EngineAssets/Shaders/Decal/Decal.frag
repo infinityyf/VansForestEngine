@@ -67,10 +67,10 @@ void main()
     int mi = nonuniformEXT(materialConst.materialIndex);
     MaterialPayload matData = materialDataBuffer.materials[mi];
 
-    vec4 albedoSample    = texture(globalPBRTextures[mi * 5 + 0], decal_uv);
-    vec3 normalSample    = texture(globalPBRTextures[mi * 5 + 1], decal_uv).rgb;
-    float metallicSample = texture(globalPBRTextures[mi * 5 + 2], decal_uv).r;
-    float aoSample       = texture(globalPBRTextures[mi * 5 + 4], decal_uv).r;
+    vec4 albedoSample    = texture(globalPBRTextures[mi * 5 + 0], decal_uv, MaterialMipBias);
+    vec3 normalSample    = texture(globalPBRTextures[mi * 5 + 1], decal_uv, MaterialMipBias).rgb;
+    float metallicSample = texture(globalPBRTextures[mi * 5 + 2], decal_uv, MaterialMipBias).r;
+    float aoSample       = texture(globalPBRTextures[mi * 5 + 4], decal_uv, MaterialMipBias).r;
 
     // 临时规则：贴花 albedo 贴图暂时只作为遮罩使用，R 通道控制覆盖强度。
     // alpha 为 0 的区域直接丢弃，避免贴花 OBB 边界参与 GBuffer 写入。

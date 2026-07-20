@@ -2,9 +2,10 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "../Common/Common.glsl"
+
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
-layout( set = 1, binding = 0, std430 ) buffer directLightResult
+layout(set = 1, binding = 0, std430) buffer directLightResult
 {
     f16vec4 directLight[];
 } directLightBuffer;
@@ -13,28 +14,23 @@ layout(set = 1, binding = 2, rgba32f) uniform image3D resultRImage;
 layout(set = 1, binding = 3, rgba32f) uniform image3D resultGImage;
 layout(set = 1, binding = 4, rgba32f) uniform image3D resultBImage;
 
-
-// layout( set = 0, binding = 5, std430 ) buffer ReservoirBuffer
-// {
-//     ReservoirData reservoirs[];
-// } reservoirInfo;
-
-layout(push_constant) uniform PushConstants 
+layout(push_constant) uniform PushConstants
 {
-    vec4 cameraPos;
+    vec4 gridParams;     // xyz = probe spacing, w = max ray distance
     vec4 cameraDir;
     vec4 cameraUp;
     vec4 cameraRight;
-    vec4 originParams;
-    vec4 frameParams;
-    vec4 regionParams;
-    vec4 lightingParams;
+    vec4 dispatchParams; // xyz = probe counts, w = rays per probe
+    vec4 frameParams;    // x = frame index, y = spatial update divisor, z = direction update slices
+    vec4 regionParams;   // xyz = volume center, w = normal bias
+    vec4 lightingParams; // x = sky intensity, y = max indirect radiance, z = max SH L0
 } pushConstants;
 
-void main() 
+void main()
 {
-    int originCount = int(pushConstants.originParams.x);
-    int sampleCount = int(pushConstants.originParams.z);
+    ivec3 originCount = ivec3(pushConstants.dispatchParams.xyz);
+    int sampleCount = max(int(pushConstants.dispatchParams.w), 1);
+
     int updateDivisor = max(int(pushConstants.frameParams.y), 1);
     int spatialPhaseCount = updateDivisor * updateDivisor * updateDivisor;
     int spatialPhase = int(pushConstants.frameParams.x) % spatialPhaseCount;
@@ -42,212 +38,62 @@ void main()
         spatialPhase % updateDivisor,
         (spatialPhase / updateDivisor) % updateDivisor,
         spatialPhase / (updateDivisor * updateDivisor));
+
     ivec3 probeIndex = ivec3(gl_GlobalInvocationID) * updateDivisor + spatialOffset;
-    if (any(greaterThanEqual(probeIndex, ivec3(originCount))))
+    if (any(greaterThanEqual(probeIndex, originCount)))
         return;
 
-    //分帧计算每次计算1/8的采样点
-    int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
+    int bufferIndex = probeIndex.z * (originCount.x * originCount.y) + probeIndex.y * originCount.x + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;
 
+    int directionSlices = max(int(pushConstants.frameParams.z), 1);
+    int completedDirectionCycles = int(pushConstants.frameParams.x) / spatialPhaseCount;
+    int currentDirSlice = completedDirectionCycles % directionSlices;
+    int endSample = (sampleCount * (currentDirSlice + 1)) / directionSlices;
+    bool directionWarmup = completedDirectionCycles < directionSlices;
+    int integratedSampleCount = directionWarmup ? clamp(endSample, 1, sampleCount) : sampleCount;
+    float weight = FOUR_PI / float(integratedSampleCount);
 
-    // // 1. 读取 ReSTIR 蓄水池结果
-    // ReservoirData reservoir = reservoirInfo.reservoirs[bufferIndex];
-    
-    // float W = reservoir.state.z;              // 最终权重
-    // int selectedRayIndex = int(reservoir.state.w); // 选中的方向索引
-    // vec3 radiance = reservoir.radiance.rgb;    // 选中的辐射度
+    vec4 rCurrent = vec4(0.0);
+    vec4 gCurrent = vec4(0.0);
+    vec4 bCurrent = vec4(0.0);
 
-    // // 2. 重建方向
-    // vec3 rayDirection = SampleSphere(selectedRayIndex, sampleCount);
-
-    // // 3. 计算当前样本的 SH 投影
-    // // ReSTIR 的 W 已经包含了积分所需的权重 (1/pdf * 1/M * w_sum)
-    // // 积分公式: Integral(L * Basis) approx L_sample * Basis_sample * W
-    
-    // vec4 rCurrent = vec4(0.0);
-    // vec4 gCurrent = vec4(0.0);
-    // vec4 bCurrent = vec4(0.0);
-
-    // // 只有当权重有效时才计算
-    // if (W > 0.0 && dot(radiance, radiance) > 0.0)
-    // {
-    //     for(int i = 0; i < 4; i++) 
-    //     {
-    //         float basis = SHBasis(i, rayDirection);
-    //         rCurrent[i] = radiance.r * basis * W;
-    //         gCurrent[i] = radiance.g * basis * W;
-    //         bCurrent[i] = radiance.b * basis * W;
-    //     }
-    // }
-
-    // // 4. 应用预乘系数 (与历史数据格式保持一致)
-    // // 原始逻辑中，L1 频段系数乘以了 0.5
-    // for(int i = 1; i < 4; i++) 
-    // {
-    //     rCurrent[i] *= 0.5;
-    //     gCurrent[i] *= 0.5;
-    //     bCurrent[i] *= 0.5;
-    // }
-
-    // // 5. EMA 平滑 (Exponential Moving Average)
-    // // 读取上一帧的 SH 系数
-    // vec4 rPrev = imageLoad(resultRImage, probeIndex);
-    // vec4 gPrev = imageLoad(resultGImage, probeIndex);
-    // vec4 bPrev = imageLoad(resultBImage, probeIndex);
-
-    // // 混合因子 alpha
-    // // 较小的 alpha 值意味着更平滑但有滞后 (0.05 = 5% 新, 95% 旧)
-    // // 较大的 alpha 值意味着响应快但噪点多
-    // // 可以根据 reservoir.state.y (样本数 M) 动态调整，这里使用固定值保证平滑
-    // float alpha = 1; 
-    
-    // // 如果是第一帧或者历史数据无效(NaN/Inf)，可以直接使用当前值
-    // // 这里简单处理直接混合
-    // vec4 rResult = mix(rPrev, rCurrent, alpha);
-    // vec4 gResult = mix(gPrev, gCurrent, alpha);
-    // vec4 bResult = mix(bPrev, bCurrent, alpha);
-
-    // // 6. 存储结果
-    // imageStore(resultRImage, probeIndex, rResult);
-    // imageStore(resultGImage, probeIndex, gResult);
-    // imageStore(resultBImage, probeIndex, bResult);
-
-
-    // 球面积分的权重系数 (4π / SAMPLE_COUNT)
-    float weight = FOUR_PI / sampleCount;
-
-    vec4 rResult = vec4(0.0);
-    vec4 gResult = vec4(0.0);
-    vec4 bResult = vec4(0.0);
-
-        
-    float maxLumination = 0;
-    vec3 maxLuminationDir = vec3(0,0,0);
-    float minLumination = 1e20;
-    vec3 minLuminationDir = vec3(0,0,0);
-
-    for(int rayIndex = 0; rayIndex < sampleCount; rayIndex++)
+    for (int rayIndex = 0; rayIndex < integratedSampleCount; ++rayIndex)
     {
-        vec3 rayDirection = SampleSphere(rayIndex,sampleCount);
-        vec3 lightResult = directLightBuffer.directLight[bufferOffset + rayIndex].rgb;
-        vec3 color = lightResult;
+        vec3 rayDirection = SampleSphere(rayIndex, sampleCount);
+        vec3 radiance = directLightBuffer.directLight[bufferOffset + rayIndex].rgb;
 
-        // // --- Directional blur begin ---
-        // const int   kNeighborCount = 10;          // max neighbors to test
-        // const float blurAngle      = 0.78;       // radians: ~14 degrees
-        // vec3 accumColor = color;
-        // int  accumCount = 1;
-
-        // // Simple neighbor selection: next kNeighborCount samples (wrap)
-        // // (Replace with spatial hash / precomputed adjacency if needed)
-        // for(int n = 1; n <= kNeighborCount; n++)
-        // {
-        //     int ni = (rayIndex + n) % sampleCount;
-        //     vec3 ndir = SampleSphere(ni, sampleCount);
-        //     float ang = acos(clamp(dot(rayDirection, ndir), -1.0, 1.0));
-        //     if (ang <= blurAngle)
-        //     {
-        //         vec3 ndirect   = directLightBuffer.directLight[bufferOffset + ni].rgb;
-        //         vec3 nindirect = indirectLightBuffer.indirectLight[bufferOffset + ni].rgb;
-        //         accumColor += (ndirect + nindirect);
-        //         accumCount++;
-        //     }
-        // }
-        // vec3 blurredColor = accumColor / float(accumCount);
-        // color = blurredColor;
-        // // --- Directional blur end ---
-
-        // track max luminance direction
-        float lumination = dot(color, vec3(0.2126, 0.7152, 0.0722));
-        if (lumination > maxLumination) {
-            maxLumination = lumination;
-            maxLuminationDir = rayDirection;
-        }
-        if (lumination < minLumination) {
-            minLumination = lumination;
-            minLuminationDir = rayDirection;
-        }
-
-        // //修正过大数值
-        // float maxChannel = max(max(color.r, color.g), color.b);
-        // float scale = maxChannel <  0.1 ? 1 : log(1 + maxChannel) / (maxChannel);
-        // color *= scale;
-
-        // //如果亮度过小直接跳过
-        // if (lumination < 2)
-        //     continue;
-
-        // 计算每个基函数并累积系数
-        for(int i = 0; i < 4; i++) 
+        // 将已写入方向的入射 radiance 投影到 L0+L1 SH。
+        // 冷启动阶段只积分已经更新过的方向，完整预热后每次都重新积分全方向。
+        for (int i = 0; i < 4; ++i)
         {
             float basis = SHBasis(i, rayDirection);
-            rResult[i] += color.r * basis * weight;  // 红色通道系数
-            gResult[i] += color.g * basis * weight;  // 绿色通道系数
-            bResult[i] += color.b * basis * weight;  // 蓝色通道系数
+            rCurrent[i] += radiance.r * basis * weight;
+            gCurrent[i] += radiance.g * basis * weight;
+            bCurrent[i] += radiance.b * basis * weight;
         }
     }
 
-    // // Ensure -d direction has at least 5% of max luminance
-    // if (maxLumination > 0.0 && any(notEqual(maxLuminationDir, vec3(0.0))))
-    // {
-    //     vec3 negD = minLuminationDir;
-
-    //     // Evaluate current SH at -d
-    //     float bvals[4];
-    //     for (int i = 0; i < 4; ++i) bvals[i] = SHBasis(i, negD);
-    //     float vals[4];
-    //     for (int i = 0; i < 4; ++i) vals[i] = SHBasis(i, maxLuminationDir);
-
-    //     vec3 shAtNegD = vec3(0.0);
-    //     for (int i = 0; i < 4; ++i) {
-    //         shAtNegD.r += rResult[i] * bvals[i]/PI;
-    //         shAtNegD.g += gResult[i] * bvals[i]/PI;
-    //         shAtNegD.b += bResult[i] * bvals[i]/PI;
-    //     }
-
-    //     vec3 shAtD = vec3(0.0);
-    //     for (int i = 0; i < 4; ++i) {
-    //         shAtD.r += rResult[i] * vals[i]/PI;
-    //         shAtD.g += gResult[i] * vals[i]/PI;
-    //         shAtD.b += bResult[i] * vals[i]/PI;
-    //     }
-
-    //     vec3 needLum = max(vec3(0,0,0), shAtD);
-
-    //     // Distribute neededLum back into SH coefficients
-    //     for (int i = 0; i < 4; ++i) 
-    //     {
-    //         rResult[i] += (needLum.r * bvals[i]);
-    //         gResult[i] += (needLum.g * bvals[i]);
-    //         bResult[i] += (needLum.b * bvals[i]);
-    //     }
-    // }
-
-    // L1 windowing：标准 Hann/Lanczos 系数 2/3（优于随意的 0.5）
-    // 作用：轻微衰减 L1 方向分量，抑制强方向光导致的 SH ringing 亮斑
-    for(int i = 1; i < 4; i++) 
+    // L1 做轻微 windowing，降低强方向光导致的低阶 SH ringing。
+    const float l1Window = 0.85;
+    for (int i = 1; i < 4; ++i)
     {
-        rResult[i] *= (2.0 / 3.0);
-        gResult[i] *= (2.0 / 3.0);
-        bResult[i] *= (2.0 / 3.0);
+        rCurrent[i] *= l1Window;
+        gCurrent[i] *= l1Window;
+        bCurrent[i] *= l1Window;
     }
 
-    // 防止探针坐入几何体时 SH L0 系数过大，通过三线性插值泄漏为圆形光晕亮斑
-    float MAX_L0 = pushConstants.lightingParams.z;
-    rResult[0] = clamp(rResult[0], -MAX_L0, MAX_L0);
-    gResult[0] = clamp(gResult[0], -MAX_L0, MAX_L0);
-    bResult[0] = clamp(bResult[0], -MAX_L0, MAX_L0);
+    float maxL0 = max(pushConstants.lightingParams.z, 0.0);
+    if (maxL0 > 0.0)
+    {
+        rCurrent[0] = clamp(rCurrent[0], -maxL0, maxL0);
+        gCurrent[0] = clamp(gCurrent[0], -maxL0, maxL0);
+        bCurrent[0] = clamp(bCurrent[0], -maxL0, maxL0);
+    }
 
-    // EMA 时序平滑：消除方向分片轮转导致的帧间 SH 积分跳变
-    // alpha=0.08：约 8 倍帧周期收敛，平衡响应速度与平滑度
-    vec4 rPrev = imageLoad(resultRImage, probeIndex);
-    vec4 gPrev = imageLoad(resultGImage, probeIndex);
-    vec4 bPrev = imageLoad(resultBImage, probeIndex);
-    bool isFirst = (dot(rPrev, rPrev) + dot(gPrev, gPrev) + dot(bPrev, bPrev)) < 1e-6;
-    float alpha  = isFirst ? 1.0 : pushConstants.lightingParams.w;
-
-    imageStore(resultRImage, probeIndex, mix(rPrev, rResult, alpha));
-    imageStore(resultGImage, probeIndex, mix(gPrev, gResult, alpha));
-    imageStore(resultBImage, probeIndex, mix(bPrev, bResult, alpha));
+    // 当前 SH 由 directLightBuffer 的有效方向集合直接重积分得到。
+    // 历史混合会残留旧太阳亮度/颜色，导致主光变化时 GI 明显滞后，因此不在这里做混合。
+    imageStore(resultRImage, probeIndex, rCurrent);
+    imageStore(resultGImage, probeIndex, gCurrent);
+    imageStore(resultBImage, probeIndex, bCurrent);
 }

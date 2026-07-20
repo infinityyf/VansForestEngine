@@ -1,6 +1,7 @@
 #include "VansRenderDebugWindow.h"
 #include "../VansEditorWindow.h"
 #include "../../RenderCore/VulkanCore/VansPipelineRegistry.h"
+#include "../../RenderCore/VulkanCore/VansRenderDocCapture.h"
 #include "imgui.h"
 
 #include <cfloat>
@@ -85,6 +86,64 @@ namespace
 			DrawPipelineRegistryRow("Compute", stats.compute);
 			DrawPipelineRegistryRow("Ray Tracing", stats.rayTracing);
 			ImGui::EndTable();
+		}
+	}
+
+	void DrawRenderDocControls()
+	{
+		if (!ImGui::CollapsingHeader("RenderDoc Capture", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			return;
+		}
+
+		auto& capture = VansGraphics::VansRenderDocCapture::Get();
+		VansGraphics::VansRenderDocStatus status = capture.QueryStatus();
+		const ImVec4 statusColor = status.available
+			? ImVec4(0.30f, 0.85f, 0.45f, 1.0f)
+			: ImVec4(0.95f, 0.65f, 0.20f, 1.0f);
+		ImGui::TextColored(statusColor, "%s", status.available ? "Injected / ready" : "Not injected");
+		ImGui::TextWrapped("%s", status.message.c_str());
+
+		if (!status.available)
+		{
+			ImGui::TextDisabled("Open RenderDoc, choose ForestEngine.exe as the executable, then Launch Application.");
+			return;
+		}
+
+		ImGui::Text("API: %d.%d.%d", status.apiMajor, status.apiMinor, status.apiPatch);
+		ImGui::Text("Target control: %s", status.targetControlConnected ? "connected" : "not connected");
+		ImGui::Text("Captures: %u", status.captureCount);
+		ImGui::TextWrapped("Capture template: %s", status.capturePathTemplate.c_str());
+		if (!status.lastCapturePath.empty())
+		{
+			ImGui::TextWrapped("Last capture: %s", status.lastCapturePath.c_str());
+		}
+
+		bool apiValidation = status.apiValidationEnabled;
+		if (ImGui::Checkbox("Capture API validation messages", &apiValidation))
+		{
+			capture.SetAPIValidationEnabled(apiValidation);
+		}
+
+		bool referenceAllResources = status.referenceAllResources;
+		if (ImGui::Checkbox("Reference all live resources (larger capture)", &referenceAllResources))
+		{
+			capture.SetReferenceAllResources(referenceAllResources);
+		}
+
+		if (status.frameCapturing)
+		{
+			ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.25f, 1.0f), "Capturing frame...");
+		}
+		else if (ImGui::Button("Capture Next Frame"))
+		{
+			capture.CaptureNextFrame();
+		}
+
+		ImGui::SameLine();
+		if (ImGui::Button("Open RenderDoc UI"))
+		{
+			capture.OpenReplayUI();
 		}
 	}
 
@@ -199,6 +258,8 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(Vans::EditorAPI::IEngineEdi
 		Vans::EditorAPI::RenderTextureFilter filter;
 		filter.category = "render_debug";
 		DrawPreviewTable("RenderDebugTable", editorAPI.QueryRenderTexturePreviews(filter));
+		ImGui::Separator();
+		DrawRenderDocControls();
 		ImGui::Separator();
 		DrawRenderBackendDiagnostics(editorAPI);
 		ImGui::Separator();

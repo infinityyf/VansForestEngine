@@ -335,17 +335,29 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 		}
 		else if (key == "refractionStrength" && ReadMaterialFloat(value, scalar))
 		{
-			material.m_CustomMaterialPayload.values[3].y = std::max(scalar, 0.0f);
+			material.m_CustomMaterialPayload.values[3].y = std::clamp(scalar, 0.0f, 1.0f);
 			changed = true;
 		}
 		else if (key == "reflectionStrength" && ReadMaterialFloat(value, scalar))
 		{
-			material.m_CustomMaterialPayload.values[3].z = std::max(scalar, 0.0f);
+			material.m_CustomMaterialPayload.values[3].z = std::clamp(scalar, 0.0f, 1.0f);
 			changed = true;
 		}
 		else if (key == "refractionMode" && ReadMaterialFloat(value, scalar))
 		{
-			material.m_CustomMaterialPayload.values[3].w = scalar;
+			material.m_CustomMaterialPayload.values[3].w = std::clamp(scalar, 0.0f, 2.0f);
+			changed = true;
+		}
+		else if (key == "scatteringColor" && ReadMaterialVec3(value, color))
+		{
+			material.m_CustomMaterialPayload.values[4].x = std::max(color.x, 0.0f);
+			material.m_CustomMaterialPayload.values[4].y = std::max(color.y, 0.0f);
+			material.m_CustomMaterialPayload.values[4].z = std::max(color.z, 0.0f);
+			changed = true;
+		}
+		else if (key == "scatteringStrength" && ReadMaterialFloat(value, scalar))
+		{
+			material.m_CustomMaterialPayload.values[4].w = std::max(scalar, 0.0f);
 			changed = true;
 		}
 
@@ -661,7 +673,7 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 			m_MaterialAtmosphereDataDescriptorSets[0],
 			SKYBOX_BINDING_FOG,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{ { volumetricFogResult->GetImage().GetSampler(), volumetricFogResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+			{ { volumetricFogResult->GetImage().GetSampler(), volumetricFogResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	}
 
 	// 绑定 1/4 分辨率体积云结果�?SkyBox set �?binding=2（SKYBOX_BINDING_CLOUD�?

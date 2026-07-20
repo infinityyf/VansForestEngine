@@ -163,13 +163,7 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 
             if (ImGui::CollapsingHeader("Basic", ImGuiTreeNodeFlags_DefaultOpen))
             {
-                const char* typeNames[] = { "Ocean", "Lake", "River", "Pool" };
-                int typeIndex = std::clamp(settings.type, 0, 3);
-                if (ImGui::Combo("Type", &typeIndex, typeNames, 4))
-                {
-                    settings.type = typeIndex;
-                    changed = true;
-                }
+                ImGui::TextDisabled("Geometry: Infinite Ocean (V2)");
                 changed |= ImGui::DragFloat("Water Level (Y)", &settings.waterLevel, 0.1f, -10000.0f, 10000.0f, "%.2f");
             }
 
@@ -187,67 +181,52 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
             if (ImGui::CollapsingHeader("Waves"))
             {
                 const char* modeNames[] = { "Gerstner", "FFT", "Hybrid" };
-                int modeIndex = std::clamp(settings.waves.mode, 0, 2);
+                int modeIndex = std::clamp(settings.spectrum.mode, 0, 2);
                 if (ImGui::Combo("Wave Mode", &modeIndex, modeNames, 3))
                 {
-                    settings.waves.mode = modeIndex;
+                    settings.spectrum.mode = modeIndex;
                     changed = true;
                 }
 
-                changed |= ImGui::DragFloat("Clipmap Base Scale", &settings.waves.baseScale, 1.0f, 1.0f, 4096.0f, "%.1f");
-                changed |= ImGui::SliderInt("Wave Clipmap LOD", &settings.waves.maxLod, 1, 10);
-                changed |= EditVec2("Wind Dir (XZ)", settings.waves.windDirection, 0.01f, -1.0f, 1.0f, "%.3f");
-                changed |= ImGui::DragFloat("Wind Speed", &settings.waves.windSpeed, 0.1f, 0.0f, 100.0f, "%.2f");
-                changed |= ImGui::DragFloat("Swell Amplitude", &settings.waves.swellAmplitude, 0.01f, 0.0f, 20.0f, "%.3f");
-                changed |= ImGui::DragFloat("Chop Scale", &settings.waves.chopScale, 0.01f, 0.0f, 2.0f, "%.3f");
-                changed |= ImGui::SliderInt("Gerstner Waves", &settings.waves.gerstnerWaveCount, 1, 64);
+                changed |= ImGui::SliderInt("Spectrum Cascades", &settings.spectrum.cascadeCount, 1, 4);
+                changed |= ImGui::DragFloat("Base Coverage (m)", &settings.spectrum.baseCoverage, 1.0f, 4.0f, 2048.0f, "%.1f");
+                changed |= ImGui::DragFloat("Cascade Scale", &settings.spectrum.cascadeScale, 0.1f, 2.0f, 8.0f, "%.2f");
+                ImGui::TextDisabled("FFT resolution: 256 (runtime invariant)");
+                changed |= EditVec2("Wind Dir (XZ)", settings.spectrum.windDirection, 0.01f, -1.0f, 1.0f, "%.3f");
+                changed |= ImGui::DragFloat("Wind Speed", &settings.spectrum.windSpeed, 0.1f, 0.0f, 100.0f, "%.2f");
+                changed |= ImGui::DragFloat("Swell Amplitude", &settings.spectrum.swellAmplitude, 0.01f, 0.0f, 20.0f, "%.3f");
+                changed |= ImGui::DragFloat("Choppiness", &settings.spectrum.choppiness, 0.01f, 0.0f, 3.0f, "%.3f");
+                changed |= ImGui::SliderInt("Gerstner Components", &settings.spectrum.gerstnerWaveCount, 0, 64);
 
-                if (settings.waves.mode == 1 || settings.waves.mode == 2)
+                if (settings.spectrum.mode == 1 || settings.spectrum.mode == 2)
                 {
-                    ImGui::SeparatorText("FFT Ocean");
-                    changed |= ImGui::Checkbox("Derivative Normal", &settings.waves.fft.useDerivativeNormal);
-                    if (ImGui::SliderInt("FFT Resolution", &settings.waves.fft.resolution, 256, 256))
-                    {
-                        settings.waves.fftResolution = settings.waves.fft.resolution;
-                        changed = true;
-                    }
-                    if (ImGui::SliderInt("FFT LOD Count", &settings.waves.fft.lodCount, 1, settings.waves.maxLod))
-                    {
-                        settings.waves.fftLodCount = settings.waves.fft.lodCount;
-                        changed = true;
-                    }
-                    changed |= ImGui::DragFloat("Spectrum Amplitude", &settings.waves.fft.spectrumAmplitude, 0.01f, 0.0f, 20.0f, "%.3f");
-                    changed |= ImGui::DragFloat("FFT Choppiness", &settings.waves.fft.choppiness, 0.01f, 0.0f, 3.0f, "%.3f");
-                    changed |= ImGui::DragFloat("Small Wave Damping", &settings.waves.fft.smallWaveDamping, 0.0001f, 0.001f, 0.1f, "%.5f");
-                    changed |= ImGui::DragFloat("Wind Dependency", &settings.waves.fft.windDependency, 0.01f, 0.0f, 1.0f, "%.3f");
-                    changed |= ImGui::DragFloat("Water Depth", &settings.waves.fft.depth, 1.0f, 0.1f, 10000.0f, "%.1f");
-                    changed |= ImGui::DragFloat("Repeat Period", &settings.waves.fft.repeatPeriod, 1.0f, 0.0f, 600.0f, "%.1f");
-                    changed |= ImGui::DragFloat("Foam Slope", &settings.waves.fft.foamSlopeScale, 0.01f, 0.0f, 5.0f, "%.3f");
-                    changed |= ImGui::DragFloat("Foam Fold", &settings.waves.fft.foamFoldScale, 0.01f, 0.0f, 5.0f, "%.3f");
+                    ImGui::SeparatorText("Tessendorf Spectrum");
+                    changed |= ImGui::DragFloat("Spectrum Amplitude", &settings.spectrum.spectrumAmplitude, 0.00005f, 0.0f, 0.02f, "%.6f");
+                    changed |= ImGui::DragFloat("Macro Min Wavelength", &settings.spectrum.minWavelength, 0.01f, 0.05f, 8.0f, "%.3f m");
+                    changed |= ImGui::DragFloat("Small Wave Damping", &settings.spectrum.smallWaveDamping, 0.0001f, 0.0f, 0.1f, "%.5f");
+                    changed |= ImGui::DragFloat("Wind Dependency", &settings.spectrum.windDependency, 0.01f, 0.0f, 1.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Water Depth", &settings.spectrum.depth, 1.0f, 0.1f, 10000.0f, "%.1f");
+                    changed |= ImGui::DragFloat("Repeat Period", &settings.spectrum.repeatPeriod, 1.0f, 0.0f, 600.0f, "%.1f");
                 }
             }
 
             if (ImGui::CollapsingHeader("Geometry LOD"))
             {
-                changed |= ImGui::SliderInt("Max LOD##WaterGeometry", &settings.lod.maxLod, 1, 10);
-                changed |= ImGui::DragFloat("Base Patch Size", &settings.lod.basePatchSize, 0.5f, 1.0f, 512.0f, "%.1f");
-                if (ImGui::SliderInt("Mesh Dim", &settings.lod.meshDim, 3, 257))
-                {
-                    if (((settings.lod.meshDim - 1) % 2) != 0)
-                        ++settings.lod.meshDim;
-                    changed = true;
-                }
-                changed |= ImGui::DragFloat("Morph Width", &settings.lod.morphWidthRatio, 0.01f, 0.05f, 1.0f, "%.2f");
+                changed |= ImGui::SliderInt("LOD Count", &settings.geometry.lodCount, 1, 10);
+                changed |= ImGui::DragFloat("Base Patch Size", &settings.geometry.basePatchSize, 0.5f, 1.0f, 512.0f, "%.1f");
+                changed |= ImGui::DragFloat("Morph Start Ratio", &settings.geometry.morphStartRatio, 0.01f, 0.05f, 0.95f, "%.2f");
+                ImGui::TextDisabled("Topology ratio: 2:1; mesh: immutable after initialization");
             }
 
-            if (ImGui::CollapsingHeader("Detail Normal"))
+            if (ImGui::CollapsingHeader("Spectral Micro Slopes"))
             {
-                changed |= ImGui::Checkbox("Enable##DetailNormal", &settings.waves.detailNormal.enabled);
-                changed |= ImGui::DragFloat("Intensity##DetailNormal", &settings.waves.detailNormal.intensity, 0.01f, 0.0f, 3.0f, "%.3f");
-                changed |= ImGui::DragFloat("Scale##DetailNormal", &settings.waves.detailNormal.scale, 0.01f, 0.1f, 5.0f, "%.2f");
-                changed |= ImGui::SliderInt("Octaves", &settings.waves.detailNormal.octaveCount, 1, 4);
-                changed |= ImGui::DragFloat("World Coverage (m)", &settings.waves.detailNormal.detailBaseScale, 0.25f, 1.0f, 512.0f, "%.2f");
-                changed |= ImGui::DragFloat("Time Offset", &settings.waves.detailNormal.timeOffset, 0.01f, 0.0f, 10.0f, "%.2f");
+                changed |= ImGui::Checkbox("Enable##MicroSlope", &settings.microSlope.enabled);
+                changed |= ImGui::DragFloat("Intensity##MicroSlope", &settings.microSlope.intensity, 0.01f, 0.0f, 3.0f, "%.3f");
+                changed |= ImGui::DragFloat("Min Wavelength##MicroSlope", &settings.microSlope.minWavelength, 0.005f, 0.02f, 1.0f, "%.3f m");
+                changed |= ImGui::DragFloat("Primary Torus", &settings.microSlope.primaryCoverage, 0.1f, 2.0f, 64.0f, "%.2f m");
+                changed |= ImGui::DragFloat("Secondary Torus", &settings.microSlope.secondaryCoverage, 0.1f, 2.0f, 64.0f, "%.2f m");
+                changed |= ImGui::DragFloat("Decorrelation Rotation", &settings.microSlope.rotationDegrees, 0.25f, 0.0f, 89.0f, "%.2f deg");
+                ImGui::TextDisabled("Upper bound = Macro Min Wavelength; two FFT slope fields, world anchored.");
             }
 
             if (ImGui::CollapsingHeader("SSS (Subsurface Scattering)"))
@@ -278,8 +257,9 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
             if (ImGui::CollapsingHeader("Refraction"))
             {
                 changed |= ImGui::Checkbox("Enable##Refraction", &settings.refractionEnabled);
-                changed |= ImGui::DragFloat("Max Distance (m)", &settings.refractionMaxDistance, 1.0f, 1.0f, 500.0f, "%.1f");
-                changed |= ImGui::DragFloat("Scale##Refraction", &settings.refractionScale, 0.01f, 0.0f, 2.0f, "%.3f");
+                changed |= ImGui::DragFloat("UV Distortion", &settings.refractionDistortionStrength,
+                    0.0005f, 0.0f, 0.1f, "%.4f");
+                ImGui::TextDisabled("Continuous view-normal offset scaled by water thickness.");
             }
 
             if (ImGui::CollapsingHeader("Screen-Space Reflection"))
@@ -287,12 +267,6 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 changed |= ImGui::Checkbox("Enable##SSR", &settings.ssrEnabled);
                 changed |= ImGui::DragFloat("Max Distance (m)", &settings.ssrMaxDistance, 1.0f, 10.0f, 2000.0f, "%.0f");
                 changed |= ImGui::DragFloat("Max Roughness", &settings.ssrMaxRoughness, 0.01f, 0.0f, 1.0f, "%.3f");
-            }
-
-            if (ImGui::CollapsingHeader("Foam"))
-            {
-                changed |= ImGui::Checkbox("Enable##Foam", &settings.foamEnabled);
-                changed |= ImGui::DragFloat("Intensity##Foam", &settings.foamIntensity, 0.01f, 0.0f, 3.0f, "%.3f");
             }
 
             ImGui::EndTabItem();
@@ -313,7 +287,7 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                     for (int i = 0; i < stats.lodLevels; ++i)
                     {
                         ImGui::Text("LOD %d: %.1f m", i, patchSize);
-                        patchSize *= stats.detailBalance;
+                        patchSize *= stats.geometryLodRatio;
                     }
                     ImGui::TreePop();
                 }
@@ -335,26 +309,29 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
             else
             {
                 static int waterLayer = 0;
-                waterLayer = std::clamp(waterLayer, 0, stats.maxWaterTextureLayer);
-                ImGui::SliderInt("Water Texture Layer", &waterLayer, 0, stats.maxWaterTextureLayer);
+                waterLayer = std::clamp(waterLayer, 0, stats.maxSpectrumCascade);
+                ImGui::SliderInt("Spectrum Cascade", &waterLayer, 0, stats.maxSpectrumCascade);
                 DisplayWaterTexture(editorAPI, "Water Displacement", "displacement", static_cast<std::uint32_t>(waterLayer));
 
                 ImGui::Separator();
-                DisplayWaterTexture(editorAPI, "Water Derivative / FFT Normal Source", "derivative", static_cast<std::uint32_t>(waterLayer));
+                DisplayWaterTexture(editorAPI, "Surface dPdx", "derivative", static_cast<std::uint32_t>(waterLayer * 2));
 
                 ImGui::Separator();
-                DisplayWaterTexture(editorAPI, "Detail Normal", "detail_normal", 0u);
+                static int microBand = 0;
+                microBand = std::clamp(microBand, 0, 2);
+                ImGui::SliderInt("Micro Normal Band", &microBand, 0, 2);
+                DisplayWaterTexture(editorAPI, "Micro Normal", "micro_normal", static_cast<std::uint32_t>(microBand));
 
                 if (stats.fftAvailable)
                 {
                     ImGui::SeparatorText("FFT Internal");
 
                     static int fftLod = 0;
-                    fftLod = std::clamp(fftLod, 0, stats.maxFftLod);
-                    ImGui::SliderInt("FFT H0 LOD", &fftLod, 0, stats.maxFftLod);
+                    fftLod = std::clamp(fftLod, 0, stats.maxSpectrumCascade);
+                    ImGui::SliderInt("FFT H0 Cascade", &fftLod, 0, stats.maxSpectrumCascade);
                     DisplayWaterTexture(editorAPI, "FFT H0 Spectrum", "fft_h0", static_cast<std::uint32_t>(fftLod));
 
-                    const char* fieldNames[] = { "Height", "Slope X", "Slope Z", "Displacement X", "Displacement Z", "Fold" };
+                    const char* fieldNames[] = { "Height", "Displacement X", "Displacement Z" };
                     static int fftField = 0;
                     ImGui::Combo("FFT Spatial Field", &fftField, fieldNames, IM_ARRAYSIZE(fieldNames));
                     const std::uint32_t fieldLayer = static_cast<std::uint32_t>(fftLod * stats.fftFieldCount + fftField);

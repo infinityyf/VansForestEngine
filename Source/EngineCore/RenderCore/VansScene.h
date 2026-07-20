@@ -148,7 +148,11 @@ namespace VansGraphics
 
 		uint32_t gridSize = 80;
 
+		glm::uvec3 gridDimensions = glm::uvec3(80u);
+
 		float probeSpacing = 0.5f;
+
+		glm::vec3 probeSpacingAxes = glm::vec3(0.5f);
 
 		glm::vec3 regionCenter = glm::vec3(0.0f, 6.0f, 0.0f);
 
@@ -168,7 +172,17 @@ namespace VansGraphics
 
 		float maxSHL0 = 8.0f;
 
-		float temporalBlend = 0.08f;
+		float volumeFadeDistance = 1.0f;
+
+		bool showProbeGizmos = false;
+
+		bool showProbeVolume = false;
+
+		uint32_t debugView = 0;
+
+		float debugExposure = 1.0f;
+
+		uint32_t gizmoStride = 8;
 
 	};
 
@@ -350,7 +364,6 @@ namespace VansGraphics
 		VansRenderNode* m_VegetationRenderNode = nullptr;
 		VansVegetationSystem* m_VegetationSystem = nullptr;
 		VansRenderNode* m_WaterRenderNode = nullptr;
-		VansWaterConfig m_WaterConfig;
 		VansWaterMaterial* m_WaterMaterial = nullptr;
 		bool m_HasWater = false;
 		VansWaterSystem* m_WaterSystem = nullptr;
@@ -751,7 +764,8 @@ namespace VansGraphics
 
 
 
-		const VansWaterConfig& GetWaterConfig() const { return m_WaterConfig; }
+		const VansWaterConfig& GetWaterConfig() const;
+		VansWaterConfig& EditWaterConfig();
 
 
 
@@ -1024,7 +1038,6 @@ namespace VansGraphics
 
 
 
-		void DrawParticleNodes();
 
 
 
@@ -1064,7 +1077,29 @@ namespace VansGraphics
 
 		const VansGISettings& GetGISettings() const { return m_GISettings; }
 
-		void SetGISettings(const VansGISettings& settings) { m_GISettings = settings; }
+		void SetGISettings(const VansGISettings& settings)
+		{
+			const bool resourceLayoutChanged =
+				m_GISettings.gridDimensions != settings.gridDimensions ||
+				m_GISettings.raysPerProbe != settings.raysPerProbe ||
+				m_GISettings.probeSpacingAxes != settings.probeSpacingAxes ||
+				m_GISettings.maxRayDistance != settings.maxRayDistance ||
+				m_GISettings.regionCenter.x != settings.regionCenter.x ||
+				m_GISettings.regionCenter.y != settings.regionCenter.y ||
+				m_GISettings.regionCenter.z != settings.regionCenter.z;
+
+			m_GISettings = settings;
+			if (resourceLayoutChanged)
+			{
+				m_GIProbeResourcesDirty = true;
+			}
+			m_GIParametersDirty = true;
+		}
+
+		bool AreGIProbeResourcesDirty() const { return m_GIProbeResourcesDirty; }
+		bool AreGIParametersDirty() const { return m_GIParametersDirty; }
+		void ClearGIProbeResourcesDirty() { m_GIProbeResourcesDirty = false; }
+		void ClearGIParametersDirty() { m_GIParametersDirty = false; }
 
 
 
@@ -1243,6 +1278,8 @@ namespace VansGraphics
 		// Keep newly added scene data at the end to preserve existing member offsets.
 
 		VansGISettings m_GISettings;
+		bool m_GIProbeResourcesDirty = false;
+		bool m_GIParametersDirty = false;
 
 		IShaderHotReloadService* m_ShaderHotReloadService = nullptr;
 

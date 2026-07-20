@@ -66,6 +66,11 @@ double VansGraphics::VansTimer::GetDeltaTime()
     return m_LastFrameDelta;
 }
 
+double VansGraphics::VansTimer::GetRealDeltaTime()
+{
+    return m_EditorDeltaTime;
+}
+
 double VansGraphics::VansTimer::GetLastFrameDelta()
 {
     return m_LastFrameDelta;

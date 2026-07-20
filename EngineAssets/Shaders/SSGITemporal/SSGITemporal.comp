@@ -1,29 +1,21 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
 
-// ============================================================================
-// SSGI Temporal Accumulation
-// Blends current 1-SPP GI with reprojected history using variance clipping.
-// ============================================================================
-
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// Inputs
-layout( set = 1, binding = 0 ) uniform sampler2D inputDepth;         // Current frame depth
-layout( set = 1, binding = 1 ) uniform sampler2D inputMotionVector;  // Screen-space motion vectors (xy)
-layout( set = 1, binding = 2 ) uniform sampler2D inputHistoryGI;     // Previous frame accumulated GI
+layout(set = 1, binding = 0) uniform sampler2D inputDepth;
+layout(set = 1, binding = 1) uniform sampler2D inputMotionVector;
+layout(set = 1, binding = 2) uniform sampler2D inputHistoryGI;
+layout(set = 1, binding = 3, rgba32f) readonly uniform image2D inputCurrentGI;
+layout(set = 1, binding = 4, rgba32f) writeonly uniform image2D outputAccumulatedGI;
 
-// Current frame GI (from SSGI trace pass — storage image for read)
-layout( set = 1, binding = 3, rgba32f ) readonly uniform image2D inputCurrentGI;
-
-// Output: accumulated GI
-layout( set = 1, binding = 4, rgba32f ) writeonly uniform image2D outputAccumulatedGI;
-
-layout( set = 1, binding = 5 ) uniform ssgiTemporalInfo
+layout(set = 1, binding = 5) uniform ssgiTemporalInfo
 {
-    vec4 screenSize;   // xy = resolution, zw = 1/resolution
+    vec4 screenSize;  // xy = resolution, zw = 1 / resolution
+    vec4 frameParams; // x = temporal frame index, 0 means reset history
 };
 
 float FetchLinearDepth(ivec2 coord, ivec2 imgSize)
@@ -38,11 +30,6 @@ float SampleLinearDepth(vec2 uv)
     return (rawDepth >= 0.9999) ? FarPlane : LinearizeDepth(rawDepth, NearPlane, FarPlane);
 }
 
-// ---- Variance clipping + depth-bilateral spatial prefilter (AABB in color space) ----
-// Computes 3×3 neighborhood statistics for AABB clamping AND returns a
-// depth-bilateral-weighted mean as a spatially prefiltered current-frame sample.
-// Feeding the prefilter into temporal blend effectively gives each frame ~9
-// equivalent samples instead of 1, dramatically reducing residual noise.
 void ComputeNeighborhoodBoundsAndFilter(
     ivec2 coord,
     ivec2 imgSize,
@@ -53,34 +40,32 @@ void ComputeNeighborhoodBoundsAndFilter(
     float centerDepth = FetchLinearDepth(coord, imgSize);
     float edgeThreshold = max(centerDepth * 0.015, 0.08);
 
-    vec4  m1          = vec4(0.0);
-    vec4  m2          = vec4(0.0);
-    vec4  weightedSum = vec4(0.0);
+    vec4 m1 = vec4(0.0);
+    vec4 m2 = vec4(0.0);
+    vec4 weightedSum = vec4(0.0);
     float totalWeight = 0.0;
-    float statWeight  = 0.0;
+    float statWeight = 0.0;
 
-    for (int y = -1; y <= 1; y++)
+    for (int y = -1; y <= 1; ++y)
     {
-        for (int x = -1; x <= 1; x++)
+        for (int x = -1; x <= 1; ++x)
         {
-            // Clamp to screen bounds: imageLoad out-of-bounds is undefined on some drivers
             ivec2 tap = clamp(coord + ivec2(x, y), ivec2(0), imgSize - 1);
-            vec4  s   = imageLoad(inputCurrentGI, tap);
+            vec4 sampleGI = imageLoad(inputCurrentGI, tap);
 
-            // 深度纹理保持原绑定，但先线性化到视空间米制距离，再做硬边界过滤。
-            // 这样可以避免 raw depth 的非线性分布让远处/斜边跨表面混色。
-            float tapDepth  = FetchLinearDepth(tap, imgSize);
+            // 深度先线性化到视空间米制距离，再做边界过滤。
+            // 这样可避免 raw depth 的非线性分布让远处和斜边跨表面混色。
+            float tapDepth = FetchLinearDepth(tap, imgSize);
             float depthDiff = abs(centerDepth - tapDepth);
             if (depthDiff > edgeThreshold)
                 continue;
 
             float w = exp(-depthDiff / max(centerDepth * 0.008, 0.04));
-
-            m1          += s * w;
-            m2          += s * s * w;
-            weightedSum += s * w;
+            m1 += sampleGI * w;
+            m2 += sampleGI * sampleGI * w;
+            weightedSum += sampleGI * w;
             totalWeight += w;
-            statWeight  += w;
+            statWeight += w;
         }
     }
 
@@ -88,10 +73,9 @@ void ComputeNeighborhoodBoundsAndFilter(
     m2 = (statWeight > 1e-5) ? (m2 / statWeight) : (m1 * m1);
     vec4 sigma = sqrt(max(m2 - m1 * m1, vec4(0.0)));
 
-    // 只用同一深度面的样本生成 AABB，避免门框/墙角另一侧颜色进入 history clamp 范围。
+    // 只用同一深度面的样本生成 AABB，避免门框、墙角另一侧颜色进入 history clamp 范围。
     boundsMin = m1 - sigma * 1.25;
     boundsMax = m1 + sigma * 1.25;
-
     filteredColor = (totalWeight > 1e-5) ? (weightedSum / totalWeight) : m1;
 }
 
@@ -99,28 +83,23 @@ void main()
 {
     ivec2 id = ivec2(gl_GlobalInvocationID.xy);
     ivec2 imgSize = imageSize(outputAccumulatedGI);
-    vec2 invImgSize = 1.0 / vec2(imgSize);
-
     if (id.x >= imgSize.x || id.y >= imgSize.y)
         return;
 
+    vec2 invImgSize = 1.0 / vec2(imgSize);
     vec2 uv = (vec2(id) + 0.5) * invImgSize;
 
-    // Current depth for disocclusion check
     float currentRawDepth = texture(inputDepth, uv).r;
     float currentDepth = (currentRawDepth >= 0.9999) ? FarPlane : LinearizeDepth(currentRawDepth, NearPlane, FarPlane);
 
-    // ---- Reproject using motion vectors ----
     vec2 motionVector = texture(inputMotionVector, uv).xy;
     vec2 prevUV = uv - motionVector;
     float velocityLen = length(motionVector * screenSize.xy);
 
-    // Check if reprojected UV is within screen
     bool valid = all(greaterThan(prevUV, vec2(0.001))) &&
                  all(lessThan(prevUV, vec2(0.999))) &&
                  currentRawDepth < 0.9999;
 
-    // Depth consistency check — reject history if depth changed significantly (disocclusion)
     if (valid)
     {
         float prevDepth = SampleLinearDepth(prevUV);
@@ -128,29 +107,20 @@ void main()
         valid = depthDiff < max(currentDepth * 0.02, 0.12);
     }
 
-    // Spatial bilateral prefilter: computes 3×3 depth-weighted mean (spatialFilteredGI)
-    // and AABB bounds simultaneously. Using the prefiltered sample in the temporal
-    // blend reduces 1-SPP noise by ~3× (9 neighbors with depth weighting) before
-    // history accumulation, while the AABB still uses raw statistics for accurate
-    // variance estimation and anti-ghosting.
-    vec4 boundsMin, boundsMax, spatialFilteredGI;
+    vec4 boundsMin;
+    vec4 boundsMax;
+    vec4 spatialFilteredGI;
     ComputeNeighborhoodBoundsAndFilter(id, imgSize, boundsMin, boundsMax, spatialFilteredGI);
 
-    // 无效 reprojection 不读取历史，避免越界/边缘采样把旧 GI 重新带回来。
     vec4 historyGI = valid ? texture(inputHistoryGI, prevUV) : spatialFilteredGI;
     if (valid)
-    {
         historyGI = clamp(historyGI, boundsMin, boundsMax);
-    }
 
-    // Blend factor:
-    //   valid history   -> 0.07: slightly higher than old 0.05 because spatial
-    //                      prefilter reduced noise, so each frame is worth more.
-    //   invalid history -> 1.0: restart accumulation (disocclusion / first frame)
-    // 有明显运动时提高当前帧占比，缩短 history 长尾，降低拖影。
+    // 主光或 GI 配置变化时 CPU 会把 frameParams.x 置为 0。
+    // reset 帧直接采用当前 GI，避免旧亮度在 SSGI temporal history 里继续残留。
+    bool resetHistory = frameParams.x < 0.5;
     float motionBlend = mix(0.07, 0.35, clamp(velocityLen / 8.0, 0.0, 1.0));
-    float blendFactor = valid ? motionBlend : 1.0;
-    vec4 result = mix(historyGI, spatialFilteredGI, blendFactor);
+    float blendFactor = (valid && !resetHistory) ? motionBlend : 1.0;
 
-    imageStore(outputAccumulatedGI, id, result);
+    imageStore(outputAccumulatedGI, id, mix(historyGI, spatialFilteredGI, blendFactor));
 }

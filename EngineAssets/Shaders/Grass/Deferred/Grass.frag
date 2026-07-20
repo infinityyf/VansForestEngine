@@ -35,7 +35,7 @@ layout (location = 3) out vec4 outGBuffer2;  // .xyz = world pos,     .w = -line
 void main() 
 {
     // Sample textures
-    vec4  albedoSample = texture(grassAlbedo, frag_uv);
+    vec4  albedoSample = texture(grassAlbedo, frag_uv, MaterialMipBias);
 
     // Alpha test — discard transparent pixels (grass cards)
     if (albedoSample.a < 0.5)
@@ -43,8 +43,8 @@ void main()
 
     vec3  albedo       = albedoSample.rgb * vec3(0.3, 0.75, 0.15); // tint grass green
     float roughness    = 0.5;  // fixed roughness for grass — clear specular highlight
-    float translucency = texture(grassTranslucency, frag_uv).r;
-    float ao           = texture(grassAO, frag_uv).r;
+    float translucency = texture(grassTranslucency, frag_uv, MaterialMipBias).r;
+    float ao           = texture(grassAO, frag_uv, MaterialMipBias).r;
 
     // Use interpolated vertex normal directly (skinned and bent by bone animation).
     // The blade is a two-sided mesh: for back-facing fragments, negate the

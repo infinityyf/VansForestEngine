@@ -199,7 +199,9 @@ void main()
 
     // --- 重建世界坐标与视线方向 ---
     vec3 camPos  = cameraPosition.xyz;
-    vec4 gbuffer = texelFetch(inputPosition, pixelCoord * SCREEN_SCALE, 0);
+    ivec2 inputSize = textureSize(inputPosition, 0);
+    ivec2 fullPixelCoord = min(pixelCoord * SCREEN_SCALE + ivec2(1), inputSize - 1);
+    vec4 gbuffer = texelFetch(inputPosition, fullPixelCoord, 0);
     float linearDepth = gbuffer.w;
     vec3 posWS   = gbuffer.xyz;
 
@@ -209,7 +211,7 @@ void main()
     if (isSky)
     {
         // 天空像素：posWS 未定义，从 NDC 重建视线方向
-        vec2 uv  = (vec2(pixelCoord) * float(SCREEN_SCALE) + 0.5) / ScreenParams.xy;
+        vec2 uv  = (vec2(fullPixelCoord) + 0.5) / ScreenParams.xy;
         vec2 ndc = uv * 2.0 - 1.0;
         ndc.y *= -1.0; // Vulkan Y 轴翻转
         vec4 clip = vec4(ndc, 1.0, 1.0);
@@ -287,7 +289,7 @@ void main()
     ivec3 volSize = textureSize(voxelFogVolume, 0);
     vec2  tileAlignedExtent = vec2(volSize.xy) * float(TILE_SIZE);
     vec3 uvw = ScreenToFrustumUVW(
-        vec2(pixelCoord) * float(SCREEN_SCALE),
+        vec2(fullPixelCoord),
         viewZ,
         tileAlignedExtent,
         uVolume.volumeNear,

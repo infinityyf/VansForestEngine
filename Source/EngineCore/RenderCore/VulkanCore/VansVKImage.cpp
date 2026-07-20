@@ -115,6 +115,7 @@ namespace VansGraphics
         //VK_IMAGE_TILING_OPTIMAL : 贴图在内存里的排布往往不是线性的，需要适配硬件快速采样，一般linear的tiling用于直接从COU上初始化或读取
 
         const auto& sharingFamilies = VansVKMemoryManager::GetInstance()->GetSharingQueueFamilyIndices();
+		const bool concurrentSharing = sharingFamilies.size() > 1;
 
         m_ImageCreateInfo =
         {
@@ -130,9 +131,9 @@ namespace VansGraphics
              VK_IMAGE_TILING_OPTIMAL,
              //如果需要被sample需要设置sample bit
              usage,
-             VK_SHARING_MODE_CONCURRENT,
-             static_cast<uint32_t>(sharingFamilies.size()),
-             sharingFamilies.data(),
+             concurrentSharing ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+             concurrentSharing ? static_cast<uint32_t>(sharingFamilies.size()) : 0u,
+             concurrentSharing ? sharingFamilies.data() : nullptr,
              VK_IMAGE_LAYOUT_UNDEFINED
         };
         //由于image的内存排布是不确定的，就选哟一个stagig resource去read 或者初始化一个image

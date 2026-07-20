@@ -67,6 +67,8 @@ void main()
         shadowMatrix = uRectLights[rectLightIndex].shadowMatrix;
     }
 
-    gl_Position = shadowMatrix * model * position;
+    vec4 clipCoord = shadowMatrix * model * position;
+    clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
+    gl_Position = clipCoord;
     frag_uv = uv;
 }

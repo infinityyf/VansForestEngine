@@ -96,11 +96,23 @@ namespace VansGraphics
 
 		glm::vec4 giVolumeSizeAndBias;
 
-		glm::vec4 traceParams; // x=max trace distance, y=fade start ratio
+		glm::vec4 traceParams; // x=max trace distance, y=fade start ratio, z=probe volume fade distance
 
 	};
 
 	static_assert(sizeof(SSGIParamsGPU) == 64, "SSGI parameter layout must match GLSL");
+
+	struct alignas(16) SSGITemporalParamsGPU
+
+	{
+
+		glm::vec4 screenSize;
+
+		glm::vec4 frameParams; // x = temporal frame index, yzw = reserved
+
+	};
+
+	static_assert(sizeof(SSGITemporalParamsGPU) == 32, "SSGI temporal parameter layout must match GLSL");
 
 
 
@@ -266,7 +278,7 @@ namespace VansGraphics
 
 	static constexpr int VANS_CUSTOM_MATERIAL_VEC4_COUNT = 8;
 
-	static constexpr int VANS_CUSTOM_MATERIAL_TEXTURE_COUNT = 4;
+	static constexpr int VANS_CUSTOM_MATERIAL_TEXTURE_COUNT = 5;
 
 
 
@@ -277,6 +289,7 @@ namespace VansGraphics
 		glm::vec4 values[VANS_CUSTOM_MATERIAL_VEC4_COUNT] = {};
 
 		glm::ivec4 textureIndices = glm::ivec4(-1);
+
 
 	};
 
@@ -408,6 +421,8 @@ namespace VansGraphics
 		static constexpr const char* RT_SH_G_RESULT = "Runtime.RayTracing.SH.G";
 
 		static constexpr const char* RT_SH_B_RESULT = "Runtime.RayTracing.SH.B";
+
+		static constexpr const char* RT_GI_VISIBILITY_ATLAS = "Runtime.RayTracing.GI.VisibilityAtlas";
 
 		static constexpr const char* RT_VOLUMETRIC_FOG_RESULT = "Runtime.VolumetricFog.Result";
 
@@ -609,6 +624,8 @@ namespace VansGraphics
 		VansFogVolumeSettings m_FogVolumeSettings;
 
 		uint32_t     m_FogTemporalFrame = 0;       // ping-pong frame index for fog injection
+
+		bool         m_FogHistoryValid = false;    // invalidated on creation/scene change
 
 
 
@@ -957,6 +974,11 @@ namespace VansGraphics
 
 		std::unordered_map<std::string, std::string> m_PassShaderOverrides;
 
+		// Custom materials are scheduled from the graphics shader state instead of
+		// the serialized render-node type. Depth-writing shaders join the forward
+		// opaque queue; non-depth-writing shaders join the transparent queue.
+		bool m_CustomShaderDepthWrite = true;
+
 		int m_MaterialIndex = -1;
 
 
@@ -1172,6 +1194,8 @@ namespace VansGraphics
 		VansTexture* m_RoughnessTexture = nullptr;
 
 		VansTexture* m_ThicknessTexture = nullptr;
+
+		VansTexture* m_ReflectionTexture = nullptr;
 
 	};
 

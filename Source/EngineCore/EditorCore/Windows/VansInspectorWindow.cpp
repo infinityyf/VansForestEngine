@@ -140,9 +140,11 @@ Json DefaultComponentData(const std::string& type)
         { "slopeLimit", 0.707f }, { "stepOffset", 0.3f }, { "contactOffset", 0.08f },
         { "climbingMode", "easy" }, { "layer", "Default" }, { "positionOffset", { 0.0f, 0.9f, 0.0f } } };
     if (type == "DirectionalLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f } };
-    if (type == "PointLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f }, { "radius", 10.0f } };
+    if (type == "PointLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
+        { "radius", 10.0f }, { "castShadows", true } };
     if (type == "SpotLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
-        { "radius", 10.0f }, { "innercutoff", 15.0f }, { "outerCutoff", 30.0f } };
+        { "radius", 10.0f }, { "innercutoff", 15.0f }, { "outerCutoff", 30.0f },
+        { "castShadows", true } };
     if (type == "RectLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
         { "width", 1.0f }, { "height", 1.0f }, { "range", 10.0f }, { "two_sided", false }, { "shadow", false } };
     if (type == "Audio" || type == "Video") return { { "source", { { "guid", "" } } } };

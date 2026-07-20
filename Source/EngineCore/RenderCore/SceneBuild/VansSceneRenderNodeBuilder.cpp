@@ -30,6 +30,18 @@ static VansGraphics::RenderNodeType ParseRenderNodeType(const json& typeValue, c
     return VansGraphics::NONE_NODE;
 }
 
+static VansGraphics::RenderNodeType ResolveMaterialRenderNodeType(
+    const VansGraphics::VansMaterial* material,
+    VansGraphics::RenderNodeType serializedType)
+{
+    if (!material || material->m_MaterialType != VansGraphics::VansMaterialType::VAN_CUSTOM_SHADER)
+        return serializedType;
+
+    return material->m_CustomShaderDepthWrite
+        ? VansGraphics::RenderNodeType::FORWARD_OPAQUE_AFTER_DEFERRED_NODE
+        : VansGraphics::RenderNodeType::TRANSPARENT_NODE;
+}
+
 static bool HasMeshAssetName(const VansGraphics::VansScene& scene, const std::string& name)
 {
     for (auto* mesh : scene.GetMeshAssets())
@@ -323,6 +335,10 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(VansScene& scen
 	{
 		type = RenderNodeType::HAIR_NODE;
 	}
+	else
+	{
+		type = ResolveMaterialRenderNodeType(material, type);
+	}
 
     VansRenderNode* renderNode = nullptr;
     switch (type)
@@ -554,13 +570,15 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
             matType == VansMaterialType::VAN_PBR_TRANSMISSION)
             ? RenderNodeType::TRANSPARENT_NODE
             : RenderNodeType::OPAQUE_NODE;
+		nodeType = ResolveMaterialRenderNodeType(material, nodeType);
 
         VansRenderNode* renderNode = nullptr;
         // Multi-mesh sub-meshes do not support ray tracing; their buffers
         // are not created with the required RT flags.  Force RT off.
         subMesh->m_SupportRayTracing = false;
 
-        if (nodeType == RenderNodeType::OPAQUE_NODE)
+        if (nodeType == RenderNodeType::OPAQUE_NODE ||
+			nodeType == RenderNodeType::FORWARD_OPAQUE_AFTER_DEFERRED_NODE)
         {
             auto* opaque = new VansCommonRenderNode(device, nodeType);
             opaque->m_SupportShadow = supportShadow;

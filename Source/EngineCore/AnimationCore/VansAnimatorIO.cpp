@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <filesystem>
+#include <memory>
 
 using json = nlohmann::json;
 using namespace VansGraphics;
@@ -66,6 +67,107 @@ static CompareOp StringToCompareOp(const std::string& str)
 	return CompareOp::Equal;
 }
 
+static void ReadTransitionConditionValue(const json& source, TransitionCondition& cond)
+{
+	if (source.contains("floatVal"))
+		cond.floatVal = source["floatVal"].get<float>();
+	if (source.contains("boolVal"))
+		cond.boolVal = source["boolVal"].get<bool>();
+	if (source.contains("intVal"))
+		cond.intVal = source["intVal"].get<int>();
+
+	if (!source.contains("value"))
+		return;
+
+	const json& value = source["value"];
+	if (value.is_boolean())
+	{
+		cond.boolVal = value.get<bool>();
+		cond.floatVal = cond.boolVal ? 1.0f : 0.0f;
+		cond.intVal = cond.boolVal ? 1 : 0;
+	}
+	else if (value.is_number_integer())
+	{
+		cond.intVal = value.get<int>();
+		cond.floatVal = static_cast<float>(cond.intVal);
+		cond.boolVal = cond.intVal != 0;
+	}
+	else if (value.is_number_float())
+	{
+		cond.floatVal = value.get<float>();
+		cond.intVal = static_cast<int>(cond.floatVal);
+		cond.boolVal = cond.floatVal != 0.0f;
+	}
+}
+
+static std::unique_ptr<VansAnimGraph> BuildGraphFromTopLevelStateMachine(const json& root)
+{
+	if (!root.contains("states") || !root["states"].is_array() || root["states"].empty())
+		return nullptr;
+
+	auto stateMachine = std::make_unique<AnimGraphStateMachineNode>();
+	stateMachine->m_DefaultStateName = root.value("defaultState", std::string{});
+	for (const auto& stateJson : root["states"])
+	{
+		AnimatorState state;
+		state.name = stateJson.value("name", "");
+		state.clipName = stateJson.value("clip", stateJson.value("clipName", ""));
+		state.speed = stateJson.value("speed", 1.0f);
+		state.loop = stateJson.value("loop", true);
+		state.rootMotion = stateJson.value("rootMotion", false);
+		state.startTime = stateJson.value("startTime", 0.0f);
+		state.endTime = stateJson.value("endTime", -1.0f);
+
+		if (state.name.empty())
+			state.name = state.clipName;
+		if (!state.name.empty())
+			stateMachine->m_States.push_back(state);
+	}
+
+	if (stateMachine->m_States.empty())
+		return nullptr;
+
+	if (stateMachine->m_DefaultStateName.empty())
+		stateMachine->m_DefaultStateName = stateMachine->m_States.front().name;
+	stateMachine->m_CurrentStateName = stateMachine->m_DefaultStateName;
+
+	if (root.contains("transitions") && root["transitions"].is_array())
+	{
+		for (const auto& transitionJson : root["transitions"])
+		{
+			AnimatorTransition transition;
+			transition.fromState = transitionJson.value("from", "");
+			transition.toState = transitionJson.value("to", "");
+			transition.blendDuration = transitionJson.value("blendDuration", 0.2f);
+			transition.hasExitTime = transitionJson.value("hasExitTime", false);
+			transition.exitTime = transitionJson.value("exitTime", 1.0f);
+
+			if (transitionJson.contains("conditions") && transitionJson["conditions"].is_array())
+			{
+				for (const auto& conditionJson : transitionJson["conditions"])
+				{
+					TransitionCondition condition;
+					condition.paramName = conditionJson.value("param", conditionJson.value("paramName", ""));
+					condition.op = StringToCompareOp(conditionJson.value("op", "=="));
+					ReadTransitionConditionValue(conditionJson, condition);
+					if (!condition.paramName.empty())
+						transition.conditions.push_back(condition);
+				}
+			}
+
+			if (!transition.fromState.empty() && !transition.toState.empty())
+				stateMachine->m_Transitions.push_back(transition);
+		}
+	}
+
+	auto graph = std::make_unique<VansAnimGraph>();
+	const int stateMachineId = graph->AddNode(std::move(stateMachine));
+	const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+	if (stateMachineId >= 0 && outputId >= 0)
+		graph->AddLink(stateMachineId, 0, outputId, 0);
+	return graph;
+}
+
 // ════════════════════════════════════════════════════════════════
 //  Save
 // ════════════════════════════════════════════════════════════════
@@ -76,7 +178,6 @@ bool VansAnimatorIO::Save(const std::string& filePath,
 {
 	json root;
 	root["magic"]   = VANIMATOR_MAGIC;
-	root["version"] = VANIMATOR_VERSION;
 	root["name"]    = controller.GetName();
 
 	// ── 参数 ──
@@ -190,6 +291,16 @@ bool VansAnimatorIO::Save(const std::string& filePath,
 		transArray.push_back(tr);
 	}
 	root["transitions"] = transArray;
+	if (const VansAnimGraph* graph = controller.GetGraph())
+	{
+		json graphJson;
+		graph->SerializeToJsonObject(graphJson);
+		root["graph"] = graphJson;
+	}
+	else
+	{
+		VANS_LOG_WARN("[VansAnimatorIO] Saving animator without graph: " << filePath);
+	}
 
 	// ── 确保目录存在 ──
 	std::filesystem::path dirPath = std::filesystem::path(filePath).parent_path();
@@ -243,7 +354,6 @@ bool VansAnimatorIO::Load(const std::string& filePath, AnimatorAssetData& outDat
 	}
 
 	outData.name = root.value("name", "Unnamed");
-	outData.version = root.value("version", 1u);
 
 	// ── 参数 ──
 	if (root.contains("parameters") && root["parameters"].is_array())
@@ -297,8 +407,8 @@ bool VansAnimatorIO::Load(const std::string& filePath, AnimatorAssetData& outDat
 		}
 	}
 
-	// ── v2: AnimGraph ──
-	if (outData.version >= 2 && root.contains("graph") && root["graph"].is_object())
+	// ── AnimGraph ──
+	if (root.contains("graph") && root["graph"].is_object())
 	{
 		outData.animGraph = VansAnimGraph::DeserializeFromJsonObject(root["graph"]);
 		if (!outData.animGraph)
@@ -306,8 +416,20 @@ bool VansAnimatorIO::Load(const std::string& filePath, AnimatorAssetData& outDat
 			VANS_LOG_WARN("[VansAnimatorIO] Failed to deserialize graph in: " << filePath);
 		}
 	}
+	else
+	{
+		outData.animGraph = BuildGraphFromTopLevelStateMachine(root);
+		if (outData.animGraph)
+		{
+			VANS_LOG_WARN("[VansAnimatorIO] Upgraded top-level states/transitions to graph in memory: " << filePath);
+		}
+		else
+		{
+			VANS_LOG_WARN("[VansAnimatorIO] .vanimator has no graph and cannot be upgraded: " << filePath);
+		}
+	}
 
-	VANS_LOG("[VansAnimatorIO] Loaded .vanimator v" << outData.version << ": " << filePath
+	VANS_LOG("[VansAnimatorIO] Loaded .vanimator: " << filePath
 	         << " (" << outData.parameters.size() << " params"
 	         << (outData.animGraph ? ", has graph" : "") << ")");
 	return true;
@@ -340,7 +462,28 @@ bool VansAnimatorIO::Peek(const std::string& filePath,
 		return false;
 
 	outName       = root.value("name", "Unnamed");
-	outStateCount = root.contains("states") ? static_cast<uint32_t>(root["states"].size()) : 0;
+	outStateCount = 0;
+	if (root.contains("graph") && root["graph"].is_object()
+	    && root["graph"].contains("nodes") && root["graph"]["nodes"].is_array())
+	{
+		for (const auto& node : root["graph"]["nodes"])
+		{
+			if (node.value("type", "") != "StateMachine")
+				continue;
+			if (!node.contains("properties") || !node["properties"].is_object())
+				continue;
+
+			const json& props = node["properties"];
+			if (props.contains("states") && props["states"].is_array())
+			{
+				outStateCount += static_cast<uint32_t>(props["states"].size());
+			}
+		}
+	}
+	if (outStateCount == 0 && root.contains("states") && root["states"].is_array())
+	{
+		outStateCount = static_cast<uint32_t>(root["states"].size());
+	}
 	outParamCount = root.contains("parameters") ? static_cast<uint32_t>(root["parameters"].size()) : 0;
 
 	return true;

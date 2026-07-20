@@ -5,6 +5,14 @@
 
 namespace VansGraphics
 {
+	enum class VansFSRMode : uint32_t
+	{
+		MatchViewport = 0,
+		NativeAA = 1,
+		Quality = 2,
+		Performance = 3
+	};
+
 	struct FSRInput
 	{
 		VkImage color = VK_NULL_HANDLE;
@@ -13,10 +21,6 @@ namespace VansGraphics
 		VkImageCreateInfo depthCreateInfo;
 		VkImage motionVectors = VK_NULL_HANDLE;
 		VkImageCreateInfo motionVectorsCreateInfo;
-
-		// 曝光纹理（1x1 R16F），由 UpdateExposure 写入
-		VkImage exposure = VK_NULL_HANDLE;
-		VkImageCreateInfo exposureCreateInfo;
 
 		VkImage reactive = VK_NULL_HANDLE;
 		VkImage transparencyAndComposition = VK_NULL_HANDLE;
@@ -27,6 +31,7 @@ namespace VansGraphics
 		// 像素空间抖动偏移（[-0.5, 0.5] 范围），FSR API 期望的单位
 		float jitterPixelX = 0.0f;
 		float jitterPixelY = 0.0f;
+		float frameTimeDeltaMs = 16.6667f;
 		
 		bool reset = false;
 	};
@@ -53,8 +58,8 @@ namespace VansGraphics
 		VansVKImage* m_TempFSRImage = nullptr;
 
 	public:
-		// 锐化强度（0~1），可由外部配置
-		float m_Sharpness = 0.5f;
+		// RCAS sharpening strength in the FSR API's normalized range.
+		float m_Sharpness = 0.35f;
 
 		void InitializeContext(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t renderWidth, uint32_t renderHeight, uint32_t displayWidth, uint32_t displayHeight);
 	
@@ -68,6 +73,9 @@ namespace VansGraphics
 		{
 			return { m_DisplayWidth, m_DisplayHeight };
 		}
+
+		void SetSharpness(float sharpness);
+		float GetSharpness() const { return m_Sharpness; }
 
 		// 返回 FSR 内置抖动序列相位数量
 		int32_t GetJitterPhaseCount() const { return m_JitterPhaseCount; }

@@ -5,30 +5,26 @@
 #include "BRDFData.glsl"
 
 // =============================================================================
-// Vegetation BRDF (Material ID = MATERIAL_ID_GRASS)
-//   - Wrap diffuse for soft light penetration through thin leaves/blades
-//   - Forward-scatter translucency restricted to narrow V≈L angles
-//   - Enhanced GGX specular with higher Fresnel floor for wet/waxy grass
+// Vegetation BRDF
+//   - 正面：能量受控的 wrap diffuse，减少叶片/草片法线抖动导致的硬黑。
+//   - 背面：薄片透射，光从叶背穿过时贡献带 albedo 色相的 diffuse。
+//   - 高光：只在视线侧法线计算 GGX，使用较低的叶面蜡质 F0，避免塑料感。
 //
-// Suitable for grass, foliage, thin plant surfaces.
+// 这类模型接近 Unreal Two Sided Foliage / Frostbite vegetation 的工程近似：
+// 它不是体散射，而是为 alpha-cutout 薄片提供稳定的双面接收光照。
 // =============================================================================
 
-// ---------------------------------------------------------------------------
-// Vegetation-specific parameters, unpacked from the G-Buffer in deferred pass.
-// ---------------------------------------------------------------------------
 struct VegetationParams
 {
-    float translucency;     // [0,1] — how much light passes through
-    float scatterWidth;     // wrap-diffuse width (typically 0.5)
-    float sssDistortion;    // normal distortion for back-lit scatter
-    float sssAmbient;       // ambient scatter term
-    float sssPower;         // exponent for forward scatter lobe
+    float translucency;     // [0,1] 透光强度，草/叶片高，树干为 0
+    float scatterWidth;     // wrap diffuse 宽度，越大暗面越柔
+    float sssDistortion;    // 预留：用于后续扭曲透射法线
+    float sssAmbient;       // 背光透射的最低环境量
+    float sssPower;         // 视线-光线 forward scatter 锥形指数
 };
 
-// ---------------------------------------------------------------------------
-// Wrap diffuse — extends Lambertian to wrap around the surface.
-//   WrapDiffuse(N, L, w) = max(0, (N·L + w) / (1 + w)^2 )
-// ---------------------------------------------------------------------------
+// Wrap diffuse：把 Lambert 的 N·L 向暗面扩展。
+// 使用 (N·L + w) / (1 + w)^2，可避免 wrap 变宽后总能量无限增加。
 float WrapDiffuse(vec3 N, vec3 L, float wrap)
 {
     float NoL = dot(N, L);
@@ -36,81 +32,64 @@ float WrapDiffuse(vec3 N, vec3 L, float wrap)
     return max(0.0, (NoL + wrap) / denom);
 }
 
-// ---------------------------------------------------------------------------
-// Subsurface scatter approximation for thin translucent vegetation.
-//   Only activates when the view direction is nearly aligned with the light
-//   direction (forward-scatter through the blade).  Uses a high exponent
-//   and a narrow angular window so it does NOT brighten the grass when
-//   the surface is merely back-lit at wide angles.
-// ---------------------------------------------------------------------------
-vec3 SubsurfaceScatter(vec3 V, vec3 L, vec3 N, float translucency,
-                       float distortion, float ambient, float power,
-                       vec3 albedo)
+// 薄片透射近似：
+//   backNoL 表示光从几何背面打入叶片，forwardScatter 表示视线接近透射方向。
+//   两者组合可得到常见的逆光叶缘/草尖发亮，同时不会无条件抬亮所有暗面。
+vec3 ThinSurfaceTransmission(vec3 V, vec3 L, vec3 N, VegetationParams veg, vec3 albedo)
 {
-    // Forward-scatter direction: view looking along light direction through
-    // the thin surface.  Uses dot(V, -L) as the base angle.
-    float VdotL = max(0.0, dot(V, -L));
+    float trans = clamp(veg.translucency, 0.0, 1.0);
+    if (trans <= 0.0)
+        return vec3(0.0);
 
-    // Narrow the scatter lobe — only fire when V is closely aligned with L.
-    // pow with high exponent (power, typically 12-16) plus a threshold
-    // ensures only a tight cone around the light direction contributes.
-    float scatter = pow(VdotL, power) * translucency;
+    float backNoL = max(dot(-N, L), 0.0);
+    float forwardScatter = pow(max(dot(V, -L), 0.0), max(veg.sssPower, 1.0));
+    float broadBackLight = pow(backNoL, 0.45);
+    float scatter = broadBackLight * mix(0.65, 1.0, forwardScatter);
+    scatter += clamp(veg.sssAmbient, 0.0, 1.0) * 0.15;
 
-    // Very small ambient term so there is minimal constant back-lit glow.
-    float backContrib = scatter + ambient * translucency * 0.15;
-    return albedo * backContrib;
+    return albedo * (scatter * trans / PI);
 }
 
-// ---------------------------------------------------------------------------
-// Direct BRDF for vegetation materials.
-//
-// Algorithm:
-//   1. Wrap diffuse for soft Lambert (instead of hard N·L clamp)
-//   2. Cook-Torrance GGX specular with elevated F0 for waxy/wet grass
-//   3. Forward scatter (narrow-angle translucency)
-//   4. Total = (Fd_wrap + Fr) * occlusion + subsurface
-// ---------------------------------------------------------------------------
 void DirectBRDF_Vegetation(BRDFData brdf, vec3 lightDirection, VegetationParams veg,
                            inout vec3 diffuse, inout vec3 specular,
                            inout vec3 subsurfaceTransmission)
 {
-    vec3  V = brdf.viewDirection;
-    vec3  N = brdf.normal;
-    vec3  L = lightDirection;
-    vec3  H = normalize(V + L);
+    vec3 V = normalize(brdf.viewDirection);
+    vec3 N = normalize(brdf.normal);
+    vec3 L = normalize(lightDirection);
+    vec3 Nf = (dot(N, V) < 0.0) ? -N : N;
+    vec3 H = normalize(V + L);
 
-    float NoL = dot(N, L);
-    float NoH = clamp(dot(N, H), 0.0, 1.0);
     float VoH = clamp(dot(V, H), 0.0, 1.0);
-    float NoV = max(dot(N, V), 0.001);
-    vec3  F0 = mix(vec3(0.20), brdf.albedo, brdf.metallic);
-    vec3  F  = FresnelSchlick(VoH, F0);
+    float NoV = max(dot(Nf, V), 0.001);
+    float NoL = max(dot(Nf, L), 0.0);
 
-    // ── Wrap diffuse ────────────────────────────────────────────────────────
-    float wrapNoL = WrapDiffuse(N, L, veg.scatterWidth);
-    vec3  kD = (vec3(1.0) - F) * (1.0 - brdf.metallic);
-    diffuse = brdf.albedo * kD * (wrapNoL / PI);
+    float metallic = clamp(brdf.metallic, 0.0, 1.0);
+    vec3 dielectricF0 = mix(vec3(0.035), vec3(0.08), clamp(veg.translucency, 0.0, 1.0));
+    vec3 F0 = mix(dielectricF0, brdf.albedo, metallic);
+    vec3 F = FresnelSchlick(VoH, F0);
+    vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
 
-    // ── Specular GGX — enhanced for grass ───────────────────────────────────
-    // Grass has a waxy cuticle layer: high F0 for strong specular.
-    // Clamp roughness low to keep the highlight tight and prominent.
-    if (NoL > 0.0)
+    float wrap = clamp(veg.scatterWidth, 0.0, 0.9);
+    float wrappedNoL = WrapDiffuse(Nf, L, wrap);
+    float diffuseNoL = mix(NoL, wrappedNoL, 0.75);
+    diffuse = brdf.albedo * kD * (diffuseNoL / PI);
+
+    // 透射项与正面漫反射分开累加：只有光从叶片背面入射时才显著贡献。
+    subsurfaceTransmission = ThinSurfaceTransmission(V, L, Nf, veg, brdf.albedo);
+
+    // 叶面蜡质高光：仍按 microfacet GGX，只使用视线侧法线，避免背面翻光。
+    if (NoL > 0.0 && VoH > 0.0)
     {
-        float specRough = clamp(brdf.roughness, 0.15, 0.6);
-        float D  = DistributionTrowbridgeReitzGGX(N, H, specRough);
-        float G  = GeometrySmith(N, V, L, specRough);
+        float specRough = clamp(brdf.roughness, 0.18, 0.75);
+        float D = DistributionTrowbridgeReitzGGX(Nf, H, specRough);
+        float G = GeometrySmith(Nf, V, L, specRough);
 
-        float denom = 4.0 * max(NoL, 0.001) * NoV;
-        specular = (D * G * F / denom) * max(NoL, 0.0);
+        float denom = max(4.0 * NoL * NoV, 0.001);
+        specular = (D * G * F / denom) * NoL;
     }
-
-    // ── Scatter disabled ────────────────────────────────────────────────────
-    subsurfaceTransmission = vec3(0.0);
 }
 
-// ---------------------------------------------------------------------------
-// Full vegetation direct light loop (directional + point + spot).
-// ---------------------------------------------------------------------------
 void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
                                      sampler2DArray cascadeShadowMap, float viewDepth,
                                      sampler2D punctualShadowMap,
@@ -120,7 +99,6 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
     lightResult.directDiffuse  = vec3(0);
     lightResult.directSpecular = vec3(0);
 
-    // ── Directional light ───────────────────────────────────────────────────
     {
         vec3 dR = vec3(0), sR = vec3(0), tR = vec3(0);
         DirectBRDF_Vegetation(brdfData, uDirectionLight.direction.rgb, veg, dR, sR, tR);
@@ -128,16 +106,14 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         vec3 lightEnergy = uDirectionLight.color.rgb * uDirectionLight.intensity;
         float shadow = min(SampleCascadeShadow(brdfData.positionWS, brdfData.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
 
-        lightResult.directDiffuse  += dR  * lightEnergy * shadow;
-        lightResult.directSpecular += sR  * lightEnergy * shadow;
-        lightResult.directDiffuse  += tR  * lightEnergy * shadow;
+        lightResult.directDiffuse  += (dR + tR) * lightEnergy * shadow;
+        lightResult.directSpecular += sR * lightEnergy * shadow;
     }
 
-    // ── Point lights ────────────────────────────────────────────────────────
     for (uint i = 0; i < uPointLightCount; ++i)
     {
         PointLightData pointLight = GetPointLight(int(i));
-        vec3  lightDirection = pointLight.position.xyz - brdfData.positionWS;
+        vec3 lightDirection = pointLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > pointLight.radius) continue;
 
@@ -145,7 +121,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         float attenuation = 1.0 - (distance / pointLight.radius);
         attenuation *= attenuation;
 
-        float pShadow = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(pointLight.shadowIndex));
+        float pShadow = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
 
         vec3 dR = vec3(0), sR = vec3(0), tR = vec3(0);
         DirectBRDF_Vegetation(brdfData, lightDirection, veg, dR, sR, tR);
@@ -155,11 +131,10 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         lightResult.directSpecular += sR * lightEnergy * pShadow;
     }
 
-    // ── Spot lights ─────────────────────────────────────────────────────────
     for (uint i = 0; i < uSpotLightCount; ++i)
     {
         SpotLightData spotLight = GetSpotLight(int(i));
-        vec3  lightDirection = spotLight.position.xyz - brdfData.positionWS;
+        vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;
 
@@ -167,7 +142,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
 
-        float sShadow = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(spotLight.shadowIndex));
+        float sShadow = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
 
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
         if (coneAngle < cos(spotLight.outerConeAngle)) continue;
@@ -185,18 +160,14 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Ambient BRDF for vegetation (reuse standard PBR ambient with higher F0).
-// ---------------------------------------------------------------------------
 void AmbientBRDF_Vegetation(BRDFData brdf, vec3 viewDirection,
                             inout vec3 diffuse, inout vec3 specular)
 {
-    // Use the standard PBR ambient but with the elevated F0
+    // SSGI/probe 已在接收端为薄片植被做双面环境光采样；这里仅调整蜡质 F0。
     vec3 savedFresnel = brdf.fresnel0;
-    brdf.fresnel0 = vec3(0.20);  // waxy cuticle — strong specular
+    brdf.fresnel0 = vec3(0.06);
     AmbientBRDF(brdf, viewDirection, diffuse, specular);
     brdf.fresnel0 = savedFresnel;
 }
-
 
 #endif // BRDF_VEGETATION_INCLUDED

@@ -182,7 +182,7 @@ VansAnimationNode* VansSceneAnimationComponentBuilder::LoadAnimationComponent(
                 controller->AddClip(clip.clipName, clip);
         }
 
-        // 将所有 clip 封装为 AnimGraphStateMachineNode，驱动 v2 AnimGraph
+        // 将所有 clip 封装为 AnimGraphStateMachineNode，驱动 AnimGraph
         auto clipNames = controller->GetClipNames();
 
         auto smNode = std::make_unique<AnimGraphStateMachineNode>();
@@ -205,7 +205,7 @@ VansAnimationNode* VansSceneAnimationComponentBuilder::LoadAnimationComponent(
         graph->AddLink(smId, 0, outId, 0);
         controller->SetGraph(std::move(graph));
 
-        VANS_LOG("[LoadAnimComp] Auto-generated v2 graph controller for '" << meshGroupName
+        VANS_LOG("[LoadAnimComp] Auto-generated graph controller for '" << meshGroupName
                  << "' with " << clipNames.size() << " clip(s)");
     }
 

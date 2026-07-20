@@ -35,9 +35,9 @@ void main()
     int mi = max(materialConst.materialIndex, 0);
     MaterialPayload mat = materialDataBuffer.materials[mi];
 
-    vec3  albedo         = max(mat.albedo.rgb, vec3(0.0)) * texture(clothAlbedo, frag_uv).rgb;
-    float sheenRoughness = clamp(mat.roughness * texture(clothRoughness, frag_uv).r, 0.045, 1.0);
-    float ao             = clamp(mat.ao * texture(clothAO, frag_uv).r, 0.0, 1.0);
+    vec3  albedo         = max(mat.albedo.rgb, vec3(0.0)) * texture(clothAlbedo, frag_uv, MaterialMipBias).rgb;
+    float sheenRoughness = clamp(mat.roughness * texture(clothRoughness, frag_uv, MaterialMipBias).r, 0.045, 1.0);
+    float ao             = clamp(mat.ao * texture(clothAO, frag_uv, MaterialMipBias).r, 0.0, 1.0);
     float sheenStrength  = clamp(mat.padding, 0.0, 1.0);
     float translucency   = clamp(mat.metallic, 0.0, 1.0);
 

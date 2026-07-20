@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include <vulkan/vulkan.h>
 #include <vector>
+#include <cstddef>
 #include "../../RenderCore/VulkanCore/VansVKBuffer.h"
 #include "../../RenderCore/VulkanCore/VansShader.h"
 #include "../../RenderCore/BRDFData/VansLight.h"
@@ -18,10 +19,11 @@ namespace VansGraphics
 	class VansMesh;
 	class VansRayTracingShader;
 	class VansTexture;
+	struct VansGISettings;
 
 	struct alignas(16) RayTracingPushConstant
 	{
-		glm::vec4 cameraPos;
+		glm::vec4 gridParams;
 		glm::vec4 cameraDir;
 		glm::vec4 cameraUp;
 		glm::vec4 cameraRight;
@@ -31,12 +33,18 @@ namespace VansGraphics
 		glm::vec4 lightingParams;
 	};
 	static_assert(sizeof(RayTracingPushConstant) == 128, "GI push constant layout must match GLSL");
+	static_assert(alignof(RayTracingPushConstant) == 16, "GI push constant alignment must match GLSL vec4");
+	static_assert(offsetof(RayTracingPushConstant, gridParams) == 0, "GI grid parameters must occupy GLSL slot 0");
+	static_assert(offsetof(RayTracingPushConstant, dispatchParams) == 64, "GI dispatch parameters must occupy GLSL slot 4");
+	static_assert(offsetof(RayTracingPushConstant, lightingParams) == 112, "GI lighting parameters must occupy GLSL slot 7");
 
-	struct alignas(16) ResTIRStruct
+	struct alignas(16) GIRTPreviewPushConstant
 	{
-		glm::vec4 state;
-		glm::vec4 radiance;
+		glm::vec4 gridParams;       // xyz = grid dimensions, w = rays per probe
+		glm::vec4 selectionParams;  // x = mode, y = z slice, z = ray index, w = exposure
+		glm::vec4 displayParams;    // x = signed world-position scale
 	};
+	static_assert(sizeof(GIRTPreviewPushConstant) == 48, "GI RT preview push constant layout must match GLSL");
 
 	class VansRayTracing
 	{
@@ -57,6 +65,13 @@ namespace VansGraphics
 		void CleanupSceneResources(VkDevice device);
 
 		void UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager);
+
+		void UpdateGISettings(const VansGISettings& settings);
+
+		bool IsReady() const { return m_RTResourcesReady; }
+
+		void RequestGIRTPreview(uint32_t mode, uint32_t zSlice, uint32_t rayIndex, float exposure, float positionScale);
+		VansTexture* GetGIRTPreviewTexture() const { return m_GIRTPreviewTexture; }
 		
 		RayTracingPushConstant m_RayTracingConstant;
 
@@ -68,6 +83,10 @@ namespace VansGraphics
 
 		void CreateGISHUpdateDescriptorSets(VansVKDevice* device);
 
+		void CreateGIVisibilityUpdateDescriptorSets(VansVKDevice* device);
+
+		void CreateGIRTPreviewDescriptorSets(VansVKDevice* device);
+
 
 		//绑定数据
 		void BindRayTracingData(VansVKDevice* device, VansScene* scene);
@@ -76,17 +95,34 @@ namespace VansGraphics
 
 		void BindGISHData(VansMaterialManager* materialManager);
 
+		void BindGIVisibilityData(VansMaterialManager* materialManager);
 
-		bool m_RayTracingDescriptorSetIsDirty;
+		void BindGIRTPreviewData(VansMaterialManager* materialManager);
 
-		bool m_GIPointLightDescriptorSetIsDirty;
+		void DispatchGIRTPreview(VansVKCommandBuffer* commandBuffer, VansMaterialManager* materialManager);
 
-		bool m_GISHUpdateDesctiproeSetIsDirty;
+		void CopyCurrentSHToFeedback(VansVKCommandBuffer* commandBuffer, VansMaterialManager* materialManager);
+
+		bool UpdateLightingResponseState(VansLightManager* lightManager);
+
+
+		bool m_RayTracingDescriptorSetIsDirty = true;
+
+		bool m_GIPointLightDescriptorSetIsDirty = true;
+
+		bool m_GISHUpdateDesctiproeSetIsDirty = true;
+
+		bool m_GIVisibilityDescriptorSetIsDirty = true;
 
 
 	private:
 
-		VansTexture* m_RayTracingResult;
+		VansTexture* m_RayTracingResult = nullptr;
+
+		VansTexture* m_SHFeedbackR = nullptr;
+		VansTexture* m_SHFeedbackG = nullptr;
+		VansTexture* m_SHFeedbackB = nullptr;
+		VansTexture* m_GIRTPreviewTexture = nullptr;
 
 		
 		VansRayTracingShader m_VansRayTracingShader;
@@ -103,14 +139,20 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_GISHUpdateSetLayout;
 		std::vector<VkDescriptorSet> m_GISHUpdateDescriptorSets;
 
+		VkDescriptorSetLayout m_GIVisibilityUpdateSetLayout;
+		std::vector<VkDescriptorSet> m_GIVisibilityUpdateDescriptorSets;
+
+		VkDescriptorSetLayout m_GIRTPreviewSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_GIRTPreviewDescriptorSets;
+
 		//平面平铺的几个位置为中心，每个点向外发射32条光线，用斐波那契螺旋分布
 		//击中点的信息保存到0，1，保存到buffer中
 		//然后通过球谐积分，得到积分的结果存到result里
-		int m_RayTracingPositionCount;
+		glm::uvec3 m_RayTracingGridDimensions = glm::uvec3(1u);
 
 		int m_RayCountPerSample;
 
-		float m_RayTracingPositionStride;
+		glm::vec3 m_RayTracingProbeSpacing = glm::vec3(0.5f);
 
 		VansVKBuffer m_RayTracingHitPositionResult;
 		VansVKBuffer m_RayTracingHitNormalResult;
@@ -119,27 +161,34 @@ namespace VansGraphics
 		VansVKBuffer m_BLASInstanceBuffer;
 		VansVKBuffer m_TLASInstanceTextureIndexBuffer;
 
-		//记录缓存的有效方向，和对应的权重
-		//HEAD 1 float 当前有效采样数量
-		// //ELEMENT
-		//1 float 方向索引
-		//2 float 方向权重
-		//3 float 方向存在时间
-		VansVKBuffer m_ReSTIRBuffer;
-		std::vector<ResTIRStruct> m_ReSTIRCPUData;
+		VansComputeShader* m_RayTracingPointLighting = nullptr;
 
-		VansComputeShader* m_RayTracingPointLighting;
+		VansComputeShader* m_GISHUpdateShader = nullptr;
 
-		VansComputeShader* m_GISHUpdateShader;
+		VansComputeShader* m_GIVisibilityUpdateShader = nullptr;
+
+		VansComputeShader* m_GIRTPreviewShader = nullptr;
+		GIRTPreviewPushConstant m_GIRTPreviewConstant{};
+		uint32_t m_GIRTPreviewRequestFrames = 0;
+		bool m_GIRTPreviewDescriptorSetIsDirty = true;
+		uint32_t m_GIRTPreviewBoundZSlice = 0xffffffffu;
+		VkDeviceSize m_GIRTPreviewStorageBufferAlignment = 1;
 
 		//GI 可见度计算
 
 		//记录命中点的光照信息
 		VansVKBuffer m_HitPointLightBuffer;
 
-		bool m_HitPositionCalculateDone;
+		bool m_HitPositionCalculateDone = false;
+
+		bool m_GIVisibilityCalculateDone = false;
 
 		int m_GIUpdateFrameIndex;
+
+		glm::vec4 m_LastGIMainLightDirectionIntensity = glm::vec4(0.0f);
+		glm::vec4 m_LastGIMainLightColor = glm::vec4(0.0f);
+		bool m_HasLastGIMainLight = false;
+		uint32_t m_GILightingResponseFramesRemaining = 0;
 
 		// True after CreateRayTracingResource succeeds (scene has RT geometry).
 		bool m_RTResourcesReady = false;

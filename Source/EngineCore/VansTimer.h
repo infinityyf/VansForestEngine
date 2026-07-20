@@ -12,6 +12,10 @@ namespace VansGraphics
         // Returns the cached per-frame delta. This value is stable for the whole frame.
         static double GetDeltaTime();
 
+        // Unscaled wall-clock delta for rendering systems. Unlike game time, this
+        // keeps advancing while the editor is paused.
+        static double GetRealDeltaTime();
+
         // Alias for GetDeltaTime() kept for compatibility with existing call sites.
         static double GetLastFrameDelta();
 

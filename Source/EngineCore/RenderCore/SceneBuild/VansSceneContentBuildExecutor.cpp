@@ -149,9 +149,26 @@ void VansSceneContentBuildExecutor::ApplyGISettings(VansScene& scene, const json
 		const json& gi = sceneData["globalIllumination"];
 		giSettings.gridSize = std::clamp(gi.value("gridSize", giSettings.gridSize), 1u, 256u);
 		giSettings.probeSpacing = std::max(gi.value("probeSpacing", giSettings.probeSpacing), 0.001f);
+		giSettings.gridDimensions = glm::uvec3(giSettings.gridSize);
+		giSettings.probeSpacingAxes = glm::vec3(giSettings.probeSpacing);
+		if (gi.contains("gridDimensions") && gi["gridDimensions"].is_array() && gi["gridDimensions"].size() == 3)
+		{
+			giSettings.gridDimensions = glm::uvec3(
+				std::clamp(gi["gridDimensions"][0].get<uint32_t>(), 1u, 256u),
+				std::clamp(gi["gridDimensions"][1].get<uint32_t>(), 1u, 256u),
+				std::clamp(gi["gridDimensions"][2].get<uint32_t>(), 1u, 256u));
+		}
+		if (gi.contains("probeSpacingAxes") && gi["probeSpacingAxes"].is_array() && gi["probeSpacingAxes"].size() == 3)
+		{
+			giSettings.probeSpacingAxes = glm::vec3(
+				std::max(gi["probeSpacingAxes"][0].get<float>(), 0.001f),
+				std::max(gi["probeSpacingAxes"][1].get<float>(), 0.001f),
+				std::max(gi["probeSpacingAxes"][2].get<float>(), 0.001f));
+		}
 		giSettings.raysPerProbe = std::clamp(gi.value("raysPerProbe", giSettings.raysPerProbe), 1u, 4096u);
 		giSettings.spatialUpdateDivisor = std::clamp(
-			gi.value("spatialUpdateDivisor", giSettings.spatialUpdateDivisor), 1u, giSettings.gridSize);
+			gi.value("spatialUpdateDivisor", giSettings.spatialUpdateDivisor), 1u,
+			std::min({ giSettings.gridDimensions.x, giSettings.gridDimensions.y, giSettings.gridDimensions.z }));
 		giSettings.directionUpdateSlices = std::clamp(
 			gi.value("directionUpdateSlices", giSettings.directionUpdateSlices), 1u, giSettings.raysPerProbe);
 		giSettings.maxRayDistance = std::max(gi.value("maxRayDistance", giSettings.maxRayDistance), 0.001f);
@@ -159,7 +176,12 @@ void VansSceneContentBuildExecutor::ApplyGISettings(VansScene& scene, const json
 		giSettings.environmentIntensity = std::max(gi.value("environmentIntensity", giSettings.environmentIntensity), 0.0f);
 		giSettings.maxIndirectRadiance = std::max(gi.value("maxIndirectRadiance", giSettings.maxIndirectRadiance), 0.0f);
 		giSettings.maxSHL0 = std::max(gi.value("maxSHL0", giSettings.maxSHL0), 0.0f);
-		giSettings.temporalBlend = std::clamp(gi.value("temporalBlend", giSettings.temporalBlend), 0.0f, 1.0f);
+		giSettings.volumeFadeDistance = std::max(gi.value("volumeFadeDistance", giSettings.volumeFadeDistance), 0.0f);
+		giSettings.gizmoStride = std::clamp(
+			gi.value("gizmoStride", giSettings.gizmoStride), 1u,
+			std::max({ giSettings.gridDimensions.x, giSettings.gridDimensions.y, giSettings.gridDimensions.z }));
+		giSettings.showProbeGizmos = gi.value("showProbeGizmos", giSettings.showProbeGizmos);
+		giSettings.showProbeVolume = gi.value("showProbeVolume", giSettings.showProbeVolume);
 
 		if (gi.contains("regionCenter") && gi["regionCenter"].is_array() && gi["regionCenter"].size() == 3)
 		{
@@ -172,12 +194,24 @@ void VansSceneContentBuildExecutor::ApplyGISettings(VansScene& scene, const json
 
 	scene.SetGISettings(giSettings);
 
-	const float volumeSize = static_cast<float>(giSettings.gridSize) * giSettings.probeSpacing;
-	const glm::vec3 volumeMin = giSettings.regionCenter - glm::vec3(volumeSize * 0.5f);
+	const glm::vec3 volumeSize = glm::vec3(giSettings.gridDimensions) * giSettings.probeSpacingAxes;
+	const glm::vec3 volumeMin = giSettings.regionCenter - volumeSize * 0.5f;
+	VANS_LOG("[GISettings] grid="
+		<< giSettings.gridDimensions.x << "x"
+		<< giSettings.gridDimensions.y << "x"
+		<< giSettings.gridDimensions.z
+		<< " spacing=(" << giSettings.probeSpacingAxes.x << ","
+		<< giSettings.probeSpacingAxes.y << ","
+		<< giSettings.probeSpacingAxes.z << ")"
+		<< " center=(" << giSettings.regionCenter.x << ","
+		<< giSettings.regionCenter.y << ","
+		<< giSettings.regionCenter.z << ")"
+		<< " volume=(" << volumeSize.x << ","
+		<< volumeSize.y << "," << volumeSize.z << ")");
 	SSGIParamsGPU volumeData{};
 	volumeData.giVolumeMin = glm::vec4(volumeMin, 0.0f);
-	volumeData.giVolumeSizeAndBias = glm::vec4(volumeSize, volumeSize, volumeSize, giSettings.normalBias);
-	volumeData.traceParams = glm::vec4(giSettings.maxRayDistance, 0.75f, 0.0f, 0.0f);
+	volumeData.giVolumeSizeAndBias = glm::vec4(volumeSize, giSettings.normalBias);
+	volumeData.traceParams = glm::vec4(giSettings.maxRayDistance, 0.75f, giSettings.volumeFadeDistance, 0.0f);
 	VansMaterialManager* materialManager = scene.GetMaterialManager();
 	if (materialManager->m_SSGICBBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
 		materialManager->m_SSGICBBuffer.SetBufferData(

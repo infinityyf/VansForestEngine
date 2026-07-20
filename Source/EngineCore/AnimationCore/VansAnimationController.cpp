@@ -571,7 +571,7 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 		return;
 
 	// ════════════════════════════════════════════════════════════
-	//  v2 路径: AnimGraph 求值
+	//  AnimGraph 求值路径
 	// ════════════════════════════════════════════════════════════
 	if (m_Graph)
 	{

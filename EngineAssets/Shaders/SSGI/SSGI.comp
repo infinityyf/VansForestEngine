@@ -1,83 +1,126 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
+#include "../GI/GIProbeCommon.glsl"
+#include "../Lights/LightsData.glsl"
 
-// ============================================================================
-// SSGI — 1 SPP HiZ-Accelerated Tracing (temporal accumulation in separate pass)
-// ============================================================================
-
+// SSGI 输出当前表面的 diffuse lighting 项，不包含当前表面的 albedo。
+// 屏幕空间 trace 失败或置信度不足时，使用 GI probe SH 与动态天空 diffuse 作为 fallback。
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// GBuffer inputs
-layout( set = 1, binding = 0 ) uniform sampler2D inputNormal;
-layout( set = 1, binding = 1 ) uniform sampler2D inputDepth;
-layout( set = 1, binding = 2 ) uniform sampler2D inputColor;
-layout( set = 1, binding = 3 ) uniform sampler2D inputPosition;
-layout( set = 1, binding = 4 ) uniform samplerCube inputSkydiffuse;
+layout(set = 1, binding = 0) uniform sampler2D inputNormal;
+layout(set = 1, binding = 1) uniform sampler2D inputDepth;
+layout(set = 1, binding = 2) uniform sampler2D inputColor;
+layout(set = 1, binding = 3) uniform sampler2D inputPosition;
+layout(set = 1, binding = 4) uniform samplerCube inputSkydiffuse;
 
-// Output: single-sample GI for this frame (temporal pass blends it later)
-layout( set = 1, binding = 5, rgba32f ) uniform image2D resultR;
+layout(set = 1, binding = 5, rgba32f) uniform image2D resultR;
 
-layout( set = 1, binding = 6 ) uniform ssgiInfo
+layout(set = 1, binding = 6) uniform ssgiInfo
 {
-    vec4 screenSize;   // xy = resolution, zw = 1/resolution
+    vec4 screenSize;          // xy = resolution, zw = 1 / resolution
     vec4 giVolumeMin;
     vec4 giVolumeSizeAndBias; // xyz = volume size, w = normal bias
-    vec4 traceParams;  // x=max trace distance, y=fade start ratio
+    vec4 traceParams;         // x = max trace distance, y = fade start ratio, z = probe volume fade distance
 };
 
-// SH probes for fallback lighting
-layout( set = 1, binding = 7 ) uniform sampler3D SHRCoeff;
-layout( set = 1, binding = 8 ) uniform sampler3D SHGCoeff;
-layout( set = 1, binding = 9 ) uniform sampler3D SHBCoeff;
+layout(set = 1, binding = 7) uniform sampler3D SHRCoeff;
+layout(set = 1, binding = 8) uniform sampler3D SHGCoeff;
+layout(set = 1, binding = 9) uniform sampler3D SHBCoeff;
+layout(set = 1, binding = 10) uniform sampler2D hizDepth;
+layout(set = 1, binding = 11) uniform sampler2D inputMaterial;
+layout(set = 1, binding = 12) uniform sampler2D giVisibilityAtlas;
 
-// Hierarchical-Z depth pyramid for accelerated tracing
-layout( set = 1, binding = 10) uniform sampler2D hizDepth;
-
-bool IsInsideGIVolume(vec3 worldPos)
+float GetVegetationTranslucency(vec2 uv, float normalAlpha)
 {
-    vec3 maxBound = giVolumeMin.xyz + giVolumeSizeAndBias.xyz;
-    return all(greaterThanEqual(worldPos, giVolumeMin.xyz))
-        && all(lessThanEqual(worldPos, maxBound));
+    int materialId = int(round(texture(inputMaterial, uv).z));
+    bool vegetationMaterial = materialId == MATERIAL_ID_GRASS || materialId == MATERIAL_ID_TREE;
+    return vegetationMaterial ? clamp(normalAlpha, 0.0, 1.0) : 0.0;
 }
 
-// ---- SH fallback helper ----
-vec3 EvaluateSHFallback(vec3 worldPos, vec3 normal, vec3 dir)
+vec3 EvaluateDynamicSkyDiffuse(vec3 direction)
 {
-    // 法线偏移统一为 0.25m（与 GIPointLight.comp / Deferred.frag 保持一致）
-    // 原值 0.5*1.732=0.866m 会跨越约 2 个探针格，导致室内地面采样到室外探针
-    vec3 uvw = (worldPos + normal * giVolumeSizeAndBias.w - giVolumeMin.xyz) / giVolumeSizeAndBias.xyz;
-    vec4 rC = texture(SHRCoeff, uvw);
-    vec4 gC = texture(SHGCoeff, uvw);
-    vec4 bC = texture(SHBCoeff, uvw);
+    vec3 sunVector = uDirectionLight.direction.xyz;
+    if (dot(sunVector, sunVector) <= 1e-6)
+        return vec3(0.0);
 
-    vec3 shDiffuse = vec3(0.0);
-    for (int k = 0; k < 4; ++k) {
-        float basis = SHBasis(k, dir);
-        shDiffuse.r += rC[k] * basis;
-        shDiffuse.g += gC[k] * basis;
-        shDiffuse.b += bC[k] * basis;
-    }
-    return max(shDiffuse / PI, vec3(0.0));
+    vec3 sunDirection = normalize(sunVector);
+    vec3 sunRadiance = max(uDirectionLight.color.rgb * uDirectionLight.intensity, vec3(0.0));
+    float sunEnergy = max(max(sunRadiance.r, sunRadiance.g), sunRadiance.b);
+    if (sunEnergy <= 1e-5)
+        return vec3(0.0);
+
+    float dayVisibility = smoothstep(-0.04, 0.28, sunDirection.y);
+    float horizon = pow(1.0 - abs(clamp(direction.y, -1.0, 1.0)), 2.0);
+    float lowSun = (1.0 - smoothstep(0.12, 0.55, sunDirection.y)) * dayVisibility;
+
+    // inputSkydiffuse 是预卷积天空，当前不会随主光实时重算。
+    // 接收端必须按太阳高度衰减，否则 probe 外或体积边缘 fallback 会在夜晚继续漏亮。
+    vec3 staticSky = texture(inputSkydiffuse, direction).rgb * mix(0.015, 1.0, dayVisibility);
+    vec3 sunsetTint = vec3(1.0, 0.46, 0.18);
+    vec3 scatterColor = mix(sunRadiance, sunRadiance * sunsetTint, lowSun * horizon);
+    vec3 dynamicScatter = scatterColor * dayVisibility * (0.02 * horizon + 0.04 * lowSun * horizon);
+    return staticSky + dynamicScatter;
 }
 
-vec3 EvaluateSSGIFallback(vec3 worldPos, vec3 normal, vec3 dir)
+vec3 EvaluateSSGIFallback(vec3 worldPos, vec3 normal, float vegetationTranslucency)
 {
-    if (IsInsideGIVolume(worldPos))
-        return EvaluateSHFallback(worldPos, normal, dir);
+    vec3 N = normalize(normal);
+    vec3 skyIrradiance = EvaluateDynamicSkyDiffuse(N);
 
-    return texture(inputSkydiffuse, dir).rgb;
+    float volumeFadeDistance = max(traceParams.z, 0.0);
+    float probeWeight = GI_IsInsideVolume(worldPos, giVolumeMin.xyz, giVolumeSizeAndBias.xyz)
+        ? GI_VolumeFade(worldPos, giVolumeMin.xyz, giVolumeSizeAndBias.xyz, volumeFadeDistance)
+        : 0.0;
+
+    // probe SH 存储入射 radiance；接收端按当前表面法线做 Lambert diffuse convolution。
+    // SSGI fallback 在外层用 probeWeight 与天空混合，因此这里关闭采样函数内部的体积边缘 fade，避免双重衰减。
+    vec3 probeIrradiance = GI_SampleProbeDiffuseLightingL1Visible(
+        SHRCoeff,
+        SHGCoeff,
+        SHBCoeff,
+        giVisibilityAtlas,
+        worldPos,
+        N,
+        giVolumeMin.xyz,
+        giVolumeSizeAndBias.xyz,
+        giVolumeSizeAndBias.w,
+        0.0);
+
+    vec3 frontIrradiance = mix(skyIrradiance, probeIrradiance, probeWeight);
+    if (vegetationTranslucency <= 0.001)
+        return frontIrradiance;
+
+    vec3 backN = -N;
+    vec3 backSkyIrradiance = EvaluateDynamicSkyDiffuse(backN);
+    vec3 backProbeIrradiance = GI_SampleProbeDiffuseLightingL1Visible(
+        SHRCoeff,
+        SHGCoeff,
+        SHBCoeff,
+        giVisibilityAtlas,
+        worldPos,
+        backN,
+        giVolumeMin.xyz,
+        giVolumeSizeAndBias.xyz,
+        giVolumeSizeAndBias.w,
+        0.0);
+    vec3 backIrradiance = mix(backSkyIrradiance, backProbeIrradiance, probeWeight);
+
+    // 薄片植被接收 GI 时近似为双面，背侧环境光可以透过叶片参与暗部照明。
+    // 这里只改变当前像素的 GI 接收，不把植被写入 probe SH。
+    float backWeight = clamp(vegetationTranslucency * 0.7, 0.0, 0.7);
+    return mix(frontIrradiance, max(frontIrradiance, backIrradiance), backWeight);
 }
 
-// ---- Cosine-weighted hemisphere sample ----
 vec3 CosineWeightedDirection(vec2 u, mat3 TBN)
 {
     float phi = TWO_PI * u.x;
-    float r   = sqrt(u.y);
+    float r = sqrt(u.y);
     float x = r * cos(phi);
     float z = r * sin(phi);
-    float y = sqrt(max(0.0, 1.0 - x*x - z*z));
+    float y = sqrt(max(0.0, 1.0 - x * x - z * z));
     return normalize(TBN * vec3(x, y, z));
 }
 
@@ -85,43 +128,36 @@ void main()
 {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 imgSize = imageSize(resultR);
-
-    // 使用实际输出纹理尺寸计算 UV，避免 screenSize UBO 与运行时目标尺寸不一致。
     if (pixelCoord.x >= imgSize.x || pixelCoord.y >= imgSize.y)
         return;
 
-    vec2  uv = (vec2(pixelCoord) + 0.5) / vec2(imgSize);
+    vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(imgSize);
 
-    // Early out for sky pixels
     float rawDepth = texture(inputDepth, uv).r;
-    if (rawDepth == 1.0) {
+    if (rawDepth == 1.0)
+    {
         imageStore(resultR, pixelCoord, vec4(0.0));
         return;
     }
 
-    vec3 normal        = normalize(texture(inputNormal, uv).xyz);
+    vec4 normalData = texture(inputNormal, uv);
+    vec3 normal = normalize(normalData.xyz);
     vec3 startPosition = texture(inputPosition, uv).xyz + normal * 0.05;
-    vec3 viewDir       = normalize(cameraPosition.xyz - startPosition);
 
-    vec3 tangent, bitangent;
+    vec3 tangent;
+    vec3 bitangent;
     BuildTBN(normal, tangent, bitangent);
     mat3 TBN = mat3(tangent, bitangent, normal);
 
-    // ---- 1 SPP: one ray per pixel, temporally jittered ----
-    // PixelSeedHash 在空间上去相关（相邻像素采样不同方向），R2Sequence 提供
-    // 低差异准随机覆盖，512帧循环比 HashRandom 的 64帧 sin-hash 减少时域重复。
     uint rseed = PixelSeedHash(pixelCoord);
     vec2 noise = R2Sequence(int((rseed + uint(FrameIndex)) % 512u));
-
     vec3 dir = CosineWeightedDirection(noise, TBN);
 
-    // ---- HiZ-accelerated screen-space trace ----
     float maxTraceDist = clamp(traceParams.x, 1.0, FarPlane);
     float fadeStartRatio = clamp(traceParams.y, 0.05, 0.99);
-    const float basePixelStep  = 1.0;
-    const float depthBias      = 0.02;
+    const float basePixelStep = 1.0;
+    const float depthBias = 0.02;
 
-    // 必须用 *当前帧* 矩阵投影到 *当前帧* HIZ
     HiZTraceResult traceResult = TraceHiZ_UV(
         hizDepth,
         ViewMatrix,
@@ -130,64 +166,46 @@ void main()
         dir,
         maxTraceDist,
         basePixelStep,
-        depthBias
-    );
+        depthBias);
 
-    vec3 fallbackIrradiance = EvaluateSSGIFallback(startPosition, normal, dir);
+    float vegetationTranslucency = GetVegetationTranslucency(uv, normalData.w);
+    vec3 fallbackIrradiance = EvaluateSSGIFallback(startPosition, normal, vegetationTranslucency);
     vec3 irradiance = fallbackIrradiance;
 
     if (traceResult.hit)
     {
         vec2 hitUV = traceResult.uv;
-
-        // Check back-face: if the hit normal faces away from ray, use SH fallback
         vec3 hitN = normalize(texture(inputNormal, hitUV).xyz);
         bool facingRay = dot(hitN, -dir) > 0.0;
 
         if (facingRay)
         {
-            // inputColor 是上一帧 scene color（m_ColorImage 在 SSGI 运行时尚未被本帧
-            // deferred pass 写入）。hitUV 是当帧 HiZ 追踪得到的屏幕 UV，相机/物体
-            // 运动时相同世界坐标在上一帧可能对应不同屏幕位置，直接用 hitUV 采样会错。
-            // 正确做法：取命中点的当帧世界坐标，通过上一帧矩阵重投影到上一帧 UV，
-            // 再采样 inputColor（与 SSR_RESOLVE 的处理完全对称）。
+            // 当前仍使用上一帧 scene color 作为屏幕空间命中贡献。
+            // 该来源包含 specular、fog、已有 GI 和历史边缘，必须用置信度限制。
             vec3 hitWorldPos = texture(inputPosition, hitUV).xyz;
-            vec4 lastClip    = LastProjectionMatrix * LastViewMatrix * vec4(hitWorldPos, 1.0);
-            lastClip        /= lastClip.w;
-            lastClip.y       = -lastClip.y;
+            vec4 lastClip = LastProjectionMatrix * LastViewMatrix * vec4(hitWorldPos, 1.0);
+            lastClip /= lastClip.w;
+            lastClip.y = -lastClip.y;
             vec2 lastColorUV = lastClip.xy * 0.5 + 0.5;
-            bool colorValid  = all(greaterThanEqual(lastColorUV, vec2(0.0))) &&
-                               all(lessThanEqual(lastColorUV, vec2(1.0)));
+            bool colorValid = all(greaterThanEqual(lastColorUV, vec2(0.0))) &&
+                              all(lessThanEqual(lastColorUV, vec2(1.0)));
             if (colorValid)
             {
-                vec3 screenIrradiance = texture(inputColor, lastColorUV).rgb;
+                vec3 screenIrradiance = max(texture(inputColor, lastColorUV).rgb, vec3(0.0));
                 float hitDistance = length(hitWorldPos - startPosition);
                 float screenTraceWeight = 1.0 - smoothstep(maxTraceDist * fadeStartRatio, maxTraceDist, hitDistance);
+
+                // 如果 fallback 有明显能量，而屏幕命中却接近黑色，通常是边缘/遮挡/历史颜色不稳定。
+                // 降低这种命中的权重，让 probe field 保持暗部基础照明。
+                float fallbackLum = Luminance(fallbackIrradiance);
+                float screenLum = Luminance(screenIrradiance);
+                float darkHitConfidence = smoothstep(0.12, 0.55, screenLum / max(fallbackLum, 1e-3));
+                screenTraceWeight *= mix(1.0, darkHitConfidence, step(0.02, fallbackLum));
+
                 irradiance = mix(fallbackIrradiance, screenIrradiance, screenTraceWeight);
             }
-            else
-            {
-                irradiance = fallbackIrradiance;
-            }
-        }
-        else
-        {
-            irradiance = fallbackIrradiance;
-        }
-    }
-    else
-    {
-        // Miss — use SH probes only when shading point is inside GI volume,
-        // otherwise fall back to sky cubemap.
-        if (IsInsideGIVolume(startPosition))
-        {
-            irradiance = fallbackIrradiance;
-        }
-        else
-        {
-            irradiance = fallbackIrradiance;
         }
     }
 
-    imageStore(resultR, pixelCoord, vec4(irradiance, 1.0));
+    imageStore(resultR, pixelCoord, vec4(max(irradiance, vec3(0.0)), 1.0));
 }

@@ -1,134 +1,92 @@
-//convole the environment map to get the diffuse irradiance
-//use different mip level to map different roughness
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-
 #include "../Common/Common.glsl"
-
+#include "../GI/GIProbeCommon.glsl"
 #include "../Lights/LightsData.glsl"
 
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
-layout( set = 1, binding = 0, std430 ) buffer hitPositionBuffer
+layout(set = 1, binding = 0, std430) buffer hitPositionBuffer
 {
     f16vec4 hitPosition[];
 } hitPositionInfoBuffer;
 
-layout( set = 1, binding = 1, std430 ) buffer hitNormalBuffer
+layout(set = 1, binding = 1, std430) buffer hitNormalBuffer
 {
     f16vec4 hitNormal[];
 } hitNormalInfoBuffer;
 
-layout( set = 1, binding = 2, std430 ) buffer directLightResult
+layout(set = 1, binding = 2, std430) buffer directLightResult
 {
     f16vec4 directLight[];
 } directLightBuffer;
 
+layout(set = 1, binding = 4) uniform samplerCube environmentMap;
+layout(set = 1, binding = 5) uniform sampler3D SHRCoeff;
+layout(set = 1, binding = 6) uniform sampler3D SHGCoeff;
+layout(set = 1, binding = 7) uniform sampler3D SHBCoeff;
+layout(set = 1, binding = 8) uniform sampler2D shadowMap;
+layout(set = 1, binding = 9) uniform sampler2D punctualShadowMap;
+layout(set = 1, binding = 11) uniform sampler2D giVisibilityAtlas;
 
-//miss 结果
-layout( set = 1, binding = 4 ) uniform samplerCube environmentMap;
-
-// R通道球谐
-layout( set = 1, binding = 5 ) uniform sampler3D SHRCoeff;
-
-// B通道球谐
-layout( set = 1, binding = 6 ) uniform sampler3D SHGCoeff;
-
-// B通道球谐
-layout( set = 1, binding = 7 ) uniform sampler3D SHBCoeff;
-
-layout( set = 1, binding = 8 ) uniform sampler2D shadowMap;
-layout( set = 1, binding = 9 ) uniform sampler2D punctualShadowMap;
-
-
-layout( set = 1, binding = 10, std430 ) buffer pbrDataBuffer
+layout(set = 1, binding = 10, std430) buffer pbrDataBuffer
 {
     f16vec4 albedoRoughness[];
 } pbrInfo;
 
-// layout( set = 1, binding = 11, std430 ) buffer ReservoirBuffer
-// {
-//     ReservoirData reservoirs[];
-// } reservoirInfo;
-
-layout(push_constant) uniform PushConstants 
+layout(push_constant) uniform PushConstants
 {
-    vec4 cameraPos;
+    vec4 gridParams;     // xyz = probe spacing, w = max ray distance
     vec4 cameraDir;
     vec4 cameraUp;
     vec4 cameraRight;
-    vec4 originParams;
-    vec4 frameParams;
-    vec4 regionParams;
-    vec4 lightingParams;
+    vec4 dispatchParams; // xyz = probe counts, w = rays per probe
+    vec4 frameParams;    // x = frame index, y = spatial update divisor, z = direction update slices
+    vec4 regionParams;   // xyz = volume center, w = normal bias
+    vec4 lightingParams; // x = sky intensity, y = max indirect radiance, z = max SH L0
 } pushConstants;
 
-// 简单的随机数生成器 (Tiny Encryption Algorithm)
-uint tea(uint val0, uint val1) 
+vec3 EvaluateGIMissSkyRadiance(vec3 rayDirection)
 {
-    uint v0 = val0; uint v1 = val1; uint s0 = 0;
-    for(uint n = 0; n < 16; n++) {
-        s0 += 0x9e3779b9;
-        v0 += ((v1 << 4) + 0xa341316c) ^ (v1 + s0) ^ ((v1 >> 5) + 0xc8013ea4);
-        v1 += ((v0 << 4) + 0xad90777d) ^ (v0 + s0) ^ ((v0 >> 5) + 0x7e95761e);
-    }
-    return v0;
+    vec3 sunVector = uDirectionLight.direction.xyz;
+    if (dot(sunVector, sunVector) <= 1e-6)
+        return vec3(0.0);
+
+    vec3 sunDirection = normalize(sunVector);
+    vec3 sunRadiance = max(uDirectionLight.color.rgb * uDirectionLight.intensity, vec3(0.0));
+    float sunEnergy = max(max(sunRadiance.r, sunRadiance.g), sunRadiance.b);
+    if (sunEnergy <= 1e-5)
+        return vec3(0.0);
+
+    float sunHeight = sunDirection.y;
+    float dayVisibility = smoothstep(-0.04, 0.28, sunHeight);
+    float lowSun = (1.0 - smoothstep(0.12, 0.55, sunHeight)) * dayVisibility;
+    float horizon = pow(1.0 - abs(clamp(rayDirection.y, -1.0, 1.0)), 2.0);
+    float forwardScatter = pow(max(dot(rayDirection, sunDirection), 0.0), 8.0);
+    float sunDisk = pow(max(dot(rayDirection, sunDirection), 0.0), 512.0);
+
+    vec3 baseSky = texture(environmentMap, rayDirection).rgb *
+        pushConstants.lightingParams.x *
+        mix(0.015, 1.0, dayVisibility);
+
+    vec3 sunsetTint = vec3(1.0, 0.46, 0.18);
+    vec3 scatterColor = mix(sunRadiance, sunRadiance * sunsetTint, lowSun * horizon);
+
+    // miss ray 需要方向 radiance。当前绑定的 environmentMap 是静态 diffuse 预卷积结果，
+    // 必须按太阳高度衰减，否则夜晚或背向太阳时 probe 仍会从旧天空拿到过亮能量。
+    vec3 analyticSky = scatterColor * dayVisibility *
+        (0.015 * horizon + 0.045 * lowSun * horizon + 0.035 * forwardScatter);
+    vec3 analyticSun = sunRadiance * dayVisibility * sunDisk * 0.12;
+    return baseSky + analyticSky + analyticSun;
 }
 
-vec3 CalculateSHDiffuse(vec3 position_world, vec3 normal, vec3 origin, vec3 size)
+void main()
 {
-    ivec3 texSize = textureSize(SHRCoeff, 0);
-    vec3  texPos  = (position_world - origin) / size * vec3(texSize) - 0.5;
-    ivec3 base    = ivec3(floor(texPos));
-    vec3  frac    = texPos - floor(texPos);
+    ivec3 originCount = ivec3(pushConstants.dispatchParams.xyz);
+    vec3 originStride = pushConstants.gridParams.xyz;
+    int sampleCount = max(int(pushConstants.dispatchParams.w), 1);
 
-    vec3  colorSum  = vec3(0.0);
-    float weightSum = 0.0;
-
-    for (int dz = 0; dz <= 1; dz++)
-    for (int dy = 0; dy <= 1; dy++)
-    for (int dx = 0; dx <= 1; dx++)
-    {
-        ivec3 tap = clamp(base + ivec3(dx, dy, dz), ivec3(0), texSize - 1);
-
-        // trilinear distance weight
-        vec3  blend = mix(1.0 - frac, frac, vec3(dx, dy, dz));
-        float triW  = blend.x * blend.y * blend.z;
-
-        // normal weight: probe must be on the same side as the surface normal
-        vec3  probeWorld = (vec3(tap) + 0.5) / vec3(texSize) * size + origin;
-        vec3  toProbe    = normalize(probeWorld - position_world);
-        float normalW    = max(dot(toProbe, normal), 0.0) + 0.001;
-
-        float w = triW * normalW;
-
-        // evaluate SH for this probe, clamp before weighting
-        vec4 rC = texelFetch(SHRCoeff, tap, 0);
-        vec4 gC = texelFetch(SHGCoeff, tap, 0);
-        vec4 bC = texelFetch(SHBCoeff, tap, 0);
-        vec3 irr = vec3(0.0);
-        for (int i = 0; i < 4; i++)
-        {
-            float basis = SHBasis(i, normal);
-            irr.r += rC[i] * basis / PI;
-            irr.g += gC[i] * basis / PI;
-            irr.b += bC[i] * basis / PI;
-        }
-        irr = max(irr, vec3(0.0));
-
-        colorSum  += irr * w;
-        weightSum += w;
-    }
-
-    return (weightSum > 1e-5) ? colorSum / weightSum : vec3(0.0);
-}
-
-void main() 
-{
-    int originCount = int(pushConstants.originParams.x);
-    float originStride = pushConstants.originParams.y;
-    int sampleCount = int(pushConstants.originParams.z);
     int updateDivisor = max(int(pushConstants.frameParams.y), 1);
     int spatialPhaseCount = updateDivisor * updateDivisor * updateDivisor;
     int spatialPhase = int(pushConstants.frameParams.x) % spatialPhaseCount;
@@ -136,160 +94,72 @@ void main()
         spatialPhase % updateDivisor,
         (spatialPhase / updateDivisor) % updateDivisor,
         spatialPhase / (updateDivisor * updateDivisor));
+
     ivec3 probeIndex = ivec3(gl_GlobalInvocationID) * updateDivisor + spatialOffset;
-    if (any(greaterThanEqual(probeIndex, ivec3(originCount))))
+    if (any(greaterThanEqual(probeIndex, originCount)))
         return;
 
-    float originSize = float(originCount) * originStride;
-    vec3 groupOrigin = pushConstants.regionParams.xyz - vec3(originSize * 0.5);
+    vec3 originSize = vec3(originCount) * originStride;
+    vec3 volumeMin = pushConstants.regionParams.xyz - originSize * 0.5;
 
-    // Spatially phase probe updates according to the CPU-configured divisor.
-    int bufferIndex = probeIndex.z * (originCount * originCount) + probeIndex.y * originCount + probeIndex.x;
+    int bufferIndex = probeIndex.z * (originCount.x * originCount.y) + probeIndex.y * originCount.x + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;
 
-    float solideAngle = 4.0 * PI / float(sampleCount);
-    vec3 sampleCenter = (groupOrigin + 0.5 * vec3(originStride,originStride,originStride) + vec3(probeIndex) * originStride);
-    
-    // //使用蓄水池算法更新采样
-    // // 1. 初始化随机种子
-    // uint seed = tea(uint(bufferIndex), uint(pushConstants.frameParams.x));
+    float solidAngle = FOUR_PI / float(sampleCount);
+    vec3 probeWorld = volumeMin + vec3(originStride * 0.5) + vec3(probeIndex) * originStride;
 
-    // // 2. 读取历史蓄水池
-    // ReservoirData reservoir = reservoirInfo.reservoirs[bufferIndex];
-
-    // // 3. 时序钳制 (Temporal Clamping)
-    // // 限制历史样本数量，防止历史权重过大导致新样本无法进入（减少鬼影和滞后）
-    // const float kMaxHistory = 128.0;
-    // if (reservoir.state.y > kMaxHistory) 
-    // {
-    //     float ratio = kMaxHistory / reservoir.state.y;
-    //     reservoir.state.x *= ratio; // 缩放 w_sum
-    //     reservoir.state.y = kMaxHistory; // 重置 M
-    // }
-
-    // // 4. 生成当前帧的候选样本 (随机选择一个方向)
-    // int candidateIndex = int(seed % uint(sampleCount));
-
-    // // 5. 计算候选样本的 Radiance
-    // vec3 candidateRadiance = vec3(0.0);
-    // {
-    //     vec3 rayDirection = SampleSphere(candidateIndex, sampleCount);
-    //     int resultIndex = bufferOffset + candidateIndex;
-    //     vec4 hitPos = hitPositionInfoBuffer.hitPosition[resultIndex];
-    //     vec4 hitNrm = hitNormalInfoBuffer.hitNormal[resultIndex];
-
-    //     if(hitPos.w < 0.5)
-    //     {
-    //         // Miss: 天空盒
-    //         vec3 envColor = texture(environmentMap, rayDirection).rgb * 5;
-    //         candidateRadiance = envColor;
-    //     }
-    //     else
-    //     {
-    //         // Hit: 计算光照
-    //         vec4 albedoRoughness = pbrInfo.albedoRoughness[resultIndex];
-    //         float hitDistance = length(hitPos.xyz - sampleCenter);
-    //         float radius = hitDistance * solideAngle;
-
-    //         // 直接光
-    //         vec3 directDiffuse = vec3(0);
-    //         CalculateDirectDiffuse(hitPos.xyz, hitNrm.xyz, shadowMap, punctualShadowMap, radius, albedoRoughness, directDiffuse);
-            
-    //         // 间接光
-    //         vec3 inDirectDiffuse = CalculateSHDiffuse(hitPos.xyz + hitNrm.xyz * originStride * 0.5, hitNrm.xyz, groupOrigin, vec3(originSize));
-            
-    //         candidateRadiance = directDiffuse + inDirectDiffuse;
-    //     }
-    // }
-
-    // // 6. RIS 更新 (Resampled Importance Sampling)
-    // // 目标 PDF (p_hat) 通常取亮度
-    // float p_hat_candidate = dot(candidateRadiance, vec3(0.2126, 0.7152, 0.0722));
-    
-    // // 权重 w = p_hat / source_pdf
-    // // 因为我们是均匀随机选择，source_pdf = 1/sampleCount，是常数，所以 w 正比于 p_hat
-    // float w_candidate = p_hat_candidate;
-
-    // // 更新蓄水池状态
-    // reservoir.state.x += w_candidate; // Update w_sum
-    // reservoir.state.y += 1.0;         // Update M
-
-    // // 决定是否替换当前样本
-    // float r2 = float((seed >> 16) & 0xFFFF) / 65536.0;
-    // if (r2 < (w_candidate / reservoir.state.x)) 
-    // {
-    //     reservoir.state.w = float(candidateIndex); // 更新选中的索引
-    //     reservoir.radiance = vec4(candidateRadiance, 1.0); // 更新选中的 Radiance
-    // }
-
-    // // 7. 计算最终权重 W
-    // // W = w_sum / (M * p_hat_selected)
-    // float p_hat_selected = dot(reservoir.radiance.rgb, vec3(0.2126, 0.7152, 0.0722));
-    // if (p_hat_selected > 0.0) {
-    //     reservoir.state.z = reservoir.state.x / (reservoir.state.y * p_hat_selected) * 4 * PI;
-    // } else {
-    //     reservoir.state.z = 0.0;
-    // }
-
-    // // 8. 写回蓄水池
-    // reservoirInfo.reservoirs[bufferIndex] = reservoir;
-
-    // Advance one direction slice after a complete spatial phase cycle.
     int directionSlices = max(int(pushConstants.frameParams.z), 1);
     int dirSliceIndex = (int(pushConstants.frameParams.x) / spatialPhaseCount) % directionSlices;
-    
-    // 计算当前帧需要计算的采样范围
     int startSample = (sampleCount * dirSliceIndex) / directionSlices;
     int endSample = (sampleCount * (dirSliceIndex + 1)) / directionSlices;
 
-    for(int hitIndex = startSample; hitIndex < endSample; hitIndex++)
+    for (int hitIndex = startSample; hitIndex < endSample; ++hitIndex)
     {
-        vec3 rayDirection = SampleSphere(hitIndex,sampleCount);
-
+        vec3 rayDirection = SampleSphere(hitIndex, sampleCount);
         int resultIndex = bufferOffset + hitIndex;
+
         vec4 hitPos = hitPositionInfoBuffer.hitPosition[resultIndex];
         vec4 hitNrm = hitNormalInfoBuffer.hitNormal[resultIndex];
-        if(hitPos.w < 0.5)
+
+        if (hitPos.w < 0.5)
         {
-            //这里需要根据太阳角度实施修改天空颜色和强度
-            vec3 envColor = texture(environmentMap, rayDirection).rgb * pushConstants.lightingParams.x;
-            directLightBuffer.directLight[resultIndex] = f16vec4(envColor, 1);
+            directLightBuffer.directLight[resultIndex] = f16vec4(EvaluateGIMissSkyRadiance(rayDirection), 1.0);
             continue;
         }
 
+        vec3 hitNormal = normalize(hitNrm.xyz);
         vec4 albedoRoughness = pbrInfo.albedoRoughness[resultIndex];
+        vec3 hitAlbedo = clamp(albedoRoughness.rgb, vec3(0.0), vec3(1.0));
 
-        float hitDistance = length(hitPos.xyz - sampleCenter);
-        float radius = hitDistance * solideAngle;
+        float hitDistance = length(hitPos.xyz - probeWorld);
+        float radius = hitDistance * solidAngle;
 
-        //计算当前点的直接光diffse
-        vec3 directDiffuse = vec3(0);
-        CalculateDirectDiffuse(hitPos.xyz,hitNrm.xyz, shadowMap, punctualShadowMap,radius, albedoRoughness, directDiffuse);
-    
-        // //计算当前点的间接漫反射
-        // vec3 inDirectDiffuse = vec3(0);
-        // //计算当前点在GI区域内的uvw
-        // vec3 uvw = (hitPos.xyz - groupOrigin) / originSize;
+        vec3 directDiffuse = vec3(0.0);
+        CalculateDirectDiffuse(
+            hitPos.xyz,
+            hitNormal,
+            shadowMap,
+            punctualShadowMap,
+            radius,
+            albedoRoughness,
+            directDiffuse);
 
-        // //获取球谐系数还原颜色
-        // vec4 rCoeff = texture(SHRCoeff, uvw);
-        // vec4 gCoeff = texture(SHGCoeff, uvw); 
-        // vec4 bCoeff = texture(SHBCoeff, uvw);
-        // for(int i = 0; i < 4; i++) 
-        // {
-        //     //这里ray direcction是错的，应该用击中点的法线
-        //     float basis = SHBasis(i, hitNrm.xyz);
-        //     inDirectDiffuse.r += rCoeff[i] * basis / PI;
-        //     inDirectDiffuse.g += gCoeff[i] * basis / PI;
-        //     inDirectDiffuse.b += bCoeff[i] * basis / PI;
-        // }
-        // inDirectDiffuse = max(vec3(0, 0, 0), inDirectDiffuse);
+        vec3 indirectDiffuse = GI_SampleProbeDiffuseLightingL1Visible(
+            SHRCoeff,
+            SHGCoeff,
+            SHBCoeff,
+            giVisibilityAtlas,
+            hitPos.xyz,
+            hitNormal,
+            volumeMin,
+            originSize,
+            pushConstants.regionParams.w,
+            min(min(originStride.x, originStride.y), originStride.z) * 2.0);
 
-        //计算当前点的间接漫反射
-        // clamp 防止正反馈循环：如果附近探针因其他 bug 偏亮，间接光会持续放大亮斑
-        vec3 inDirectDiffuse = min(
-            CalculateSHDiffuse(hitPos.xyz + hitNrm.xyz * pushConstants.regionParams.w, hitNrm.xyz, groupOrigin, vec3(originSize)),
-            vec3(pushConstants.lightingParams.y));
-        directLightBuffer.directLight[resultIndex] = f16vec4(directDiffuse + inDirectDiffuse, 1.0);
+        // 多次反弹反馈读取的是命中点接收到的 diffuse lighting。
+        // 命中点向外反射时需要乘本表面 albedo，避免暗材质反弹过多能量。
+        indirectDiffuse = min(indirectDiffuse * hitAlbedo, vec3(pushConstants.lightingParams.y));
+
+        directLightBuffer.directLight[resultIndex] = f16vec4(directDiffuse + indirectDiffuse, 1.0);
     }
 }

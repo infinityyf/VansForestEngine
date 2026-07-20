@@ -3,6 +3,7 @@
 #include "VansVKMemoryManager.h"
 #include "VansVKMemoryAllocator.h"
 #include "VansVKDescriptorManager.h"
+#include "VansRenderDocCapture.h"
 #include "VansPipelineRegistry.h"
 #include "VansRenderPass.h"
 #include "VansMesh.h"
@@ -16,6 +17,11 @@
 #include "../../Util/VansProfiler.h"
 #include <iostream>
 #include <cstring>
+
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 
 namespace VansGraphics
 {
@@ -660,11 +666,9 @@ namespace VansGraphics
 			{
 				m_SharingQueueFamilyIndices.push_back(m_ComputeQueueFamilyIndex);
 			}
-			if (m_PresentQueueFamilyIndex != m_GraphicsQueueFamilyIndex &&
-				m_PresentQueueFamilyIndex != m_ComputeQueueFamilyIndex)
-			{
-				m_SharingQueueFamilyIndices.push_back(m_PresentQueueFamilyIndex);
-			}
+			// Ordinary buffers/images are consumed by graphics and compute queues.
+			// The present queue only owns swapchain images and is not selected yet here;
+			// adding it used to append an uninitialized family index to every resource.
 
 			//recored all need queue family index
 			std::vector<QueueInfo> queue_infos;
@@ -864,6 +868,11 @@ namespace VansGraphics
 
 	bool VansVKDevice::VulkanSetUp(VkExtent2D resolution)
 	{
+		// This is intentionally optional. When launched normally there is no
+		// RenderDoc dependency; when RenderDoc injected its DLL, configure its API
+		// before creating the Vulkan instance.
+		VansRenderDocCapture::Get().Initialize();
+
 		if (!PrepareVulkanLibrary())
 		{
 			return false;
@@ -890,13 +899,9 @@ namespace VansGraphics
 		};
 
 		auto vansConfigration = VansConfigration::GetInstance();
-#ifdef _DEBUG
-		//desired_instance_layers.push_back("VK_LAYER_KHRONOS_validation");
-		if (!vansConfigration->GetSupportRayTracing())
-		{
-			desired_instance_layers.push_back("VK_LAYER_RENDERDOC_Capture");
-		}
-#endif
+		// RenderDoc's Vulkan layer is injected by RenderDoc itself. Requiring
+		// VK_LAYER_RENDERDOC_Capture here makes ordinary debug launches fail on
+		// machines without RenderDoc and incorrectly disables capture with RT on.
 
 		if (!CreateVulkanInstance(desired_instance_extrensions, desired_instance_layers))
 		{
@@ -929,6 +934,13 @@ namespace VansGraphics
 		{
 			return false;
 		}
+
+#ifdef _WIN32
+		VansRenderDocCapture::Get().BindVulkanWindow(
+			static_cast<void*>(m_VansVKInstance),
+			static_cast<void*>(glfwGetWin32Window(
+				static_cast<GLFWwindow*>(m_NativeWindowProvider->GetNativeWindowHandle()))));
+#endif
 
 		std::vector<char const*> desired_device_extrensions =
 		{

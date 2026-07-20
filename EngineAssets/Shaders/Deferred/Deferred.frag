@@ -66,12 +66,6 @@ layout(set = 1, binding = 6) uniform sampler2D ssgi;
 layout(set = 1, binding = 7, rgba32f ) uniform image2D ssr;
 layout(set = 1, binding = 8) uniform sampler2DArray cascadeShadowMap;
 layout(set = 1, binding = 9) uniform sampler2D punctualShadowMap;
-// R通道球谐
-layout( set = 1, binding = 10 ) uniform sampler3D SHRCoeff;
-// B通道球谐
-layout( set = 1, binding = 11 ) uniform sampler3D SHGCoeff;
-// B通道球谐
-layout( set = 1, binding = 12 ) uniform sampler3D SHBCoeff;
 layout( set = 1, binding = 13 ) uniform sampler2D fogResult;
 layout( set = 1, binding = 14 ) uniform sampler2D screenSpaceShadow;
 
@@ -81,19 +75,6 @@ layout(location = 0) out vec4 outColor;
 float SampleScreenSpaceShadow(vec2 uv)
 {
     return clamp(texture(screenSpaceShadow, uv).r, 0.0, 1.0);
-}
-
-vec3 SampleSHColor(vec3 dir) 
-{
-    vec3 v = normalize(dir);
-    vec3 color = vec3(0.0);
-
-    for(int i = 0; i < 9; i++) 
-    {
-        float basis = SHBasis(i, v);
-        color += vec3(shCoefficients[i * 3 + 0],shCoefficients[i * 3 + 1],shCoefficients[i * 3 + 2]) * basis;
-    }
-    return color;
 }
 
 void main() 
@@ -139,8 +120,6 @@ void main()
     // GBuffer / SSR / Fog are produced from current-frame inputs after the RenderPass split.
     // and blurring edges that the temporal pass already correctly resolved.
     brdfData.indirectDiffuse = texture(ssgi, fragTexCoord).rgb;
-    //b : 计算球谐
-    //brdfData.indirectDiffuse = SampleSHColor(normal);
     brdfData.indirectSpecular = imageLoad(ssr,ivec2(fragTexCoord * ScreenParams.xy)).rgba;
     
     //计算光照
@@ -202,15 +181,43 @@ void main()
 
         VegetationParams veg;
         veg.translucency   = translucency;
-        veg.scatterWidth   = 0.45;    // wrap diffuse width
-        veg.sssDistortion  = 0.3;     // normal distortion (unused in new scatter)
-        veg.sssAmbient     = 0.05;    // very low constant backlight
-        veg.sssPower        = 14.0;   // high exponent = narrow forward-scatter cone
+        veg.scatterWidth   = 0.55;    // 草片法线变化密，wrap 稍宽可减少暗面硬切
+        veg.sssDistortion  = 0.25;
+        veg.sssAmbient     = 0.06;
+        veg.sssPower        = 9.0;    // 草叶更细，透射锥比树叶略宽
 
         CalculateDirectLight_Vegetation(brdfData, veg, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Vegetation(brdfData, viewDirection,
                                lightResult.ambientDiffuse, lightResult.ambientSpecular);
         lightResult.ambientSpecular = vec3(0.0); // grass blades: no ambient specular
+    }
+    else if (matID == MATERIAL_ID_TREE)
+    {
+        float leafTranslucency = clamp(normalData.w, 0.0, 1.0);
+        if (leafTranslucency > 0.0)
+        {
+            // 树叶是薄片材质：使用 vegetation wrap diffuse 减少背光硬黑。
+            // 它只改变当前像素如何接收 direct/SSGI/probe GI，不把树加入 probe SH 更新源。
+            brdfData.ao = clamp(min(ao, ssaoValue), 0.0, 1.0);
+
+            VegetationParams veg;
+            veg.translucency   = leafTranslucency;
+            veg.scatterWidth   = 0.5;
+            veg.sssDistortion  = 0.25;
+            veg.sssAmbient     = 0.06;
+            veg.sssPower       = 12.0; // 树叶保留更集中的逆光透射高亮
+
+            CalculateDirectLight_Vegetation(brdfData, veg, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
+            AmbientBRDF_Vegetation(brdfData, viewDirection,
+                                   lightResult.ambientDiffuse, lightResult.ambientSpecular);
+            lightResult.ambientSpecular *= 0.35;
+        }
+        else
+        {
+            // 树干/枝干仍按标准 PBR 接收 GI。
+            CalculateDirectLight(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
+            AmbientBRDF(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+        }
     }
     else if (matID == MATERIAL_ID_EMISSIVE)
     {
@@ -261,6 +268,5 @@ void main()
     outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
     //outColor.rgb = vec3(brdfData.ao,brdfData.ao,brdfData.ao);
     //outColor.rgb = lightResult.ambientSpecular;
-    //outColor.rgb = CalculateSHDiffuse(position_world, normal);
     outColor.a = 1;
 }

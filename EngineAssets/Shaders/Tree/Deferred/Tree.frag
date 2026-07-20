@@ -36,15 +36,15 @@ void main()
     float metallicParam = materialData.metallic;
     float aoParam = materialData.ao;
 
-    vec4 albedoSample = texture(globalPBRTextures[materialIndex * 5 + 0], frag_uv);
+    vec4 albedoSample = texture(globalPBRTextures[materialIndex * 5 + 0], frag_uv, MaterialMipBias);
     if (pc.alphaTestEnabled != 0u && albedoSample.a < 0.5)
         discard;
 
     vec3 albedo = albedoParam * albedoSample.rgb;
-    vec3 normalSample = texture(globalPBRTextures[materialIndex * 5 + 1], frag_uv).rgb * 2.0 - 1.0;
-    float metallic = metallicParam * texture(globalPBRTextures[materialIndex * 5 + 2], frag_uv).r;
-    float roughness = roughnessParam * texture(globalPBRTextures[materialIndex * 5 + 3], frag_uv).r;
-    float ao = aoParam * texture(globalPBRTextures[materialIndex * 5 + 4], frag_uv).r;
+    vec3 normalSample = texture(globalPBRTextures[materialIndex * 5 + 1], frag_uv, MaterialMipBias).rgb * 2.0 - 1.0;
+    float metallic = metallicParam * texture(globalPBRTextures[materialIndex * 5 + 2], frag_uv, MaterialMipBias).r;
+    float roughness = roughnessParam * texture(globalPBRTextures[materialIndex * 5 + 3], frag_uv, MaterialMipBias).r;
+    float ao = aoParam * texture(globalPBRTextures[materialIndex * 5 + 4], frag_uv, MaterialMipBias).r;
 
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 n = normalize(TBN * normalSample);
@@ -52,8 +52,9 @@ void main()
         n = -n;
 
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
-    outNormal = vec4(n, 1.0);
+    float leafTranslucency = (pc.alphaTestEnabled != 0u) ? 0.55 : 0.0;
+    outNormal = vec4(n, leafTranslucency);
     outGBuffer0 = vec4(albedo, roughness);
-    outGBuffer1 = vec4(metallic, ao, float(MATERIAL_ID_PBR), 1.0);
+    outGBuffer1 = vec4(metallic, ao, float(MATERIAL_ID_TREE), 1.0);
     outGBuffer2 = vec4(position_world, -linearDepth);
 }

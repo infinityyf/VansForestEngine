@@ -1,129 +1,154 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-// ============================================================
-// water_caustics.comp — 焦散计算 (W-14)
-//
-// 算法: 水面法线曲率 + Snell折射投射 + Beer-Lambert深度衰减 + 主光同步
-//
-// 设计文档: EngineDoc/WaterDoc/焦散系统实现方案.md
-// ============================================================
+#include "../water_screen_common.glsl"
 
+// Stable forward screen-space caustics.  The local water-surface ray bundle
+// is refracted along the sun direction and projected by the current thickness.
+// It does not search a view-refracted receiver, so camera motion cannot switch
+// between discrete receiver candidates.
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// 输入: 水面 GBuffer
-layout(set = 0, binding = 0) uniform sampler2D waterGBufNormal;     // 水面法线 (RGB)
-layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;   // 水面深度 (A)
-layout(set = 0, binding = 2) uniform sampler2D sceneGBuf2;          // 场景深度 (W)
+layout(set = 0, binding = 0) uniform sampler2D waterGBufNormal;
+layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;
+layout(set = 0, binding = 2) uniform sampler2D thicknessMap;
 
-// 参数 UBO
 layout(set = 0, binding = 3) uniform WaterCausticsParams
 {
-    vec4  sunDirection;         // xyz=太阳方向(世界空间), w=unused
-    vec4  mainLightColor;       // rgb=主光颜色, a=主光强度乘数
-    vec4  extinctionCoeff;      // rgb=消光系数(m⁻¹), a=unused
-    float causticsIntensity;    // 焦散强度乘数 [0, 2]
-    float causticsScale;        // 焦散图案缩放
-    float waterLevel;           // 水面世界Y坐标
-    float maxDepth;             // 最大焦散深度 (m)
+    vec4  sunDirection;
+    vec4  mainLightColor;
+    vec4  extinctionCoeff;
+    float causticsIntensity;
+    float causticsScale;
+    float shoreFadeStart;
+    float maxDepth;
+    vec4  opticalParams;
 } params;
 
-// 输出
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D causticsOut;
 
-// ── Snell 折射 ──────────────────────────────────────────
-vec3 RefractDirection(vec3 I, vec3 N, float eta)
+bool LoadPosition(ivec2 pixel, ivec2 size, out vec3 position)
 {
-    float cosI = dot(-I, N);
-    float sinT2 = eta * eta * (1.0 - cosI * cosI);
-    if (sinT2 > 1.0)
-        return reflect(I, N);   // 全内反射
-    float cosT = sqrt(1.0 - sinT2);
-    return eta * I + (eta * cosI - cosT) * N;
+    if (any(lessThan(pixel, ivec2(0))) || any(greaterThanEqual(pixel, size)))
+        return false;
+    vec4 nc = texelFetch(waterGBufNormal, pixel, 0);
+    vec4 pd = texelFetch(waterGBufPosDepth, pixel, 0);
+    if (!WaterSurfaceValid(nc, pd))
+        return false;
+    position = pd.xyz;
+    return true;
 }
 
-// ── 法线曲率 = 散度 (决定光聚焦/散焦) ──────────────────
-float ComputeCurvature(vec2 uv, vec2 texelSize)
+bool LoadSurface(ivec2 pixel, ivec2 size,
+                 out vec3 position, out vec3 normal,
+                 out float normalizedThickness)
 {
-    vec3 nC = normalize(texture(waterGBufNormal, uv).rgb);
-    vec3 nL = normalize(texture(waterGBufNormal, uv - vec2(texelSize.x, 0.0)).rgb);
-    vec3 nR = normalize(texture(waterGBufNormal, uv + vec2(texelSize.x, 0.0)).rgb);
-    vec3 nU = normalize(texture(waterGBufNormal, uv - vec2(0.0, texelSize.y)).rgb);
-    vec3 nD = normalize(texture(waterGBufNormal, uv + vec2(0.0, texelSize.y)).rgb);
+    if (any(lessThan(pixel, ivec2(0))) || any(greaterThanEqual(pixel, size)))
+        return false;
+    vec4 nc = texelFetch(waterGBufNormal, pixel, 0);
+    vec4 pd = texelFetch(waterGBufPosDepth, pixel, 0);
+    if (!WaterSurfaceValid(nc, pd))
+        return false;
 
-    // 散度: ∇·N ≈ ∂Nx/∂x + ∂Nz/∂z = -∇²h
-    // 散度 > 0（波峰）→ 光线发散 → 暗
-    // 散度 < 0（波谷）→ 光线汇聚 → 亮，只保留汇聚信号
-    float divergence = (nR.x - nL.x + nD.z - nU.z) * 0.5;
-    return max(-divergence, 0.0);
+    position = pd.xyz;
+    normalizedThickness = clamp(texelFetch(thicknessMap, pixel, 0).r, 0.0, 1.0);
+
+    // Ray-bundle differentials use a geometric normal reconstructed from the
+    // water positions, excluding high-frequency BRDF/refraction micro slopes.
+    vec3 leftP, rightP, upP, downP;
+    if (LoadPosition(pixel + ivec2(-1, 0), size, leftP) &&
+        LoadPosition(pixel + ivec2( 1, 0), size, rightP) &&
+        LoadPosition(pixel + ivec2( 0,-1), size, upP) &&
+        LoadPosition(pixel + ivec2( 0, 1), size, downP))
+    {
+        vec3 geometric = cross(downP - upP, rightP - leftP);
+        if (dot(geometric, geometric) > 1e-10)
+        {
+            normal = normalize(geometric);
+            if (normal.y < 0.0)
+                normal = -normal;
+            return true;
+        }
+    }
+
+    normal = normalize(nc.xyz);
+    return true;
 }
-// ============================================================
+
+vec3 SunRayInWater(vec3 normal)
+{
+    vec3 ray = refract(-normalize(params.sunDirection.xyz), normal,
+                       1.0 / max(params.opticalParams.x, 1.0001));
+    if (dot(ray, ray) < 1e-8)
+        ray = -normalize(params.sunDirection.xyz);
+    return normalize(ray);
+}
+
+vec2 ReceiverXZ(vec3 waterPosition, vec3 normal, float opticalDepth)
+{
+    vec3 ray = SunRayInWater(normal);
+    float travel = opticalDepth / max(-ray.y, 0.08);
+    return waterPosition.xz + ray.xz * travel;
+}
+
+float Cross2D(vec2 a, vec2 b)
+{
+    return a.x * b.y - a.y * b.x;
+}
+
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size  = imageSize(causticsOut);
-    if (pixel.x >= size.x || pixel.y >= size.y) return;
+    ivec2 size = imageSize(causticsOut);
+    if (any(greaterThanEqual(pixel, size)))
+        return;
 
-    vec2 uv        = (vec2(pixel) + 0.5) / vec2(size);
-    vec2 texelSize = 1.0 / vec2(size);
-
-    // ── 1. 检查水面存在 ──────────────────────────────────
-    float waterDepth = texture(waterGBufPosDepth, uv).a;
-    if (waterDepth >= 9999.0)
+    vec3 W, N;
+    float thickness;
+    if (params.causticsIntensity <= 0.0 ||
+        !LoadSurface(pixel, size, W, N, thickness))
     {
         imageStore(causticsOut, pixel, vec4(0.0));
         return;
     }
 
-    // ── 2. 检查场景在水面以下 (焦散接收面) ──────────────
-    float sceneDepth = texture(sceneGBuf2, uv).w;
-    if (sceneDepth <= waterDepth + 0.01)
+    vec3 Wx, Nx, Wy, Ny;
+    float thicknessX, thicknessY;
+    if (!LoadSurface(pixel + ivec2(1, 0), size, Wx, Nx, thicknessX) ||
+        !LoadSurface(pixel + ivec2(0, 1), size, Wy, Ny, thicknessY))
     {
         imageStore(causticsOut, pixel, vec4(0.0));
         return;
     }
 
-    // ── 3. 水体厚度 ──────────────────────────────────────
-    float thickness = sceneDepth - waterDepth;
+    float depth = thickness * params.maxDepth;
+    float depthX = thicknessX * params.maxDepth;
+    float depthY = thicknessY * params.maxDepth;
+    vec2 Q = ReceiverXZ(W, N, depth);
+    vec2 Qx = ReceiverXZ(Wx, Nx, depthX);
+    vec2 Qy = ReceiverXZ(Wy, Ny, depthY);
 
-    // ── 4. 水面法线 ──────────────────────────────────────
-    vec3 N = normalize(texture(waterGBufNormal, uv).rgb);
+    vec2 sourceX = Wx.xz - W.xz;
+    vec2 sourceY = Wy.xz - W.xz;
+    float sourceArea = abs(Cross2D(sourceX, sourceY));
+    float receiverArea = abs(Cross2D(Qx - Q, Qy - Q));
+    if (sourceArea < 1e-8)
+    {
+        imageStore(causticsOut, pixel, vec4(0.0));
+        return;
+    }
 
-    // ── 5. Snell 折射 (空气→水) ─────────────────────────
-    vec3 sunDir = normalize(params.sunDirection.xyz);
-    float eta  = 1.0 / 1.33;  // air → water
-    vec3 refractDir = normalize(RefractDirection(-sunDir, N, eta));
+    float concentration = sourceArea / max(receiverArea, sourceArea * 0.15);
+    float focusing = clamp((concentration - 1.0) * params.causticsScale, 0.0, 1.5);
+    float shoreFade = smoothstep(params.shoreFadeStart,
+                                 params.shoreFadeStart * 8.0, thickness);
+    float deepFade = 1.0 - smoothstep(0.65, 1.0, thickness);
+    float incidence = max(dot(N, normalize(params.sunDirection.xyz)), 0.0);
+    vec3 attenuation = exp(-max(params.extinctionCoeff.rgb, vec3(0.0)) * depth);
 
-    // ── 6. 计算水面入射点 (反向追踪) ────────────────────
-    // 光线穿过水柱 d 米, 水平偏移 = refractDir.xz × d / |refractDir.y|
-    float projScale = params.causticsScale * 0.05;
-    vec2 offset = refractDir.xz * thickness * projScale / max(abs(refractDir.y), 0.05);
-    vec2 entryUV = clamp(uv - offset, 0.001, 0.999);
-
-    // ── 7. 入射点法线曲率 → 焦散强度 ────────────────────
-    float curvature = ComputeCurvature(entryUV, texelSize);
-
-    // 入射点法线与当前像素法线的差异 → 附加纹理图案
-    vec3 N_entry = normalize(texture(waterGBufNormal, entryUV).rgb);
-    float normalDiff = length(N_entry.xz - N.xz);
-    float causticPattern = curvature * 3.0;
-
-    // ── 8. 太阳高度角调制 ────────────────────────────────
-    float sunElevation = clamp(sunDir.y, 0.05, 1.0);
-
-    // ── 9. Beer-Lambert 深度衰减 ─────────────────────────
-    vec3 extinction = params.extinctionCoeff.rgb;
-    vec3 attenuation = exp(-extinction * thickness);
-
-    // 线性辅助衰减 (确保 maxDepth 外焦散为零)
-    float depthFade = 1.0 - clamp(thickness / max(params.maxDepth, 1.0), 0.0, 1.0);
-
-    // ── 10. 合成 ─────────────────────────────────────────
-    float intensity = causticPattern * sunElevation
-                    * depthFade * params.causticsIntensity;
-    intensity = clamp(intensity, 0.0, 2.0);
-
-    vec3 causticColor = params.mainLightColor.rgb * intensity * attenuation;
-
-    imageStore(causticsOut, pixel, vec4(causticColor, intensity));
+    float gain = clamp(focusing * shoreFade * deepFade * incidence
+        * params.causticsIntensity, 0.0, 1.0);
+    vec3 coloredGain = params.mainLightColor.rgb * params.mainLightColor.a
+        * attenuation * gain;
+    imageStore(causticsOut, pixel, vec4(coloredGain, gain));
 }

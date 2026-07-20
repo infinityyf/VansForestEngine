@@ -1661,11 +1661,29 @@ namespace VansGraphics
 		outGlobals = pose.localTransforms;
 		if (outGlobals.size() != N) return;
 
-		for (int bi : skeleton.topologicalOrder)
+		if (!skeleton.topologicalOrder.empty())
 		{
-			const BoneInfo& bone = skeleton.bones[bi];
-			if (bone.parentIndex >= 0)
-				outGlobals[bi] = outGlobals[bone.parentIndex] * pose.localTransforms[bi];
+			for (int bi : skeleton.topologicalOrder)
+			{
+				if (bi < 0 || bi >= static_cast<int>(N))
+					continue;
+
+				const BoneInfo& bone = skeleton.bones[bi];
+				if (bone.parentIndex >= 0 && bone.parentIndex < static_cast<int>(N) && bone.parentIndex != bi)
+					outGlobals[bi] = outGlobals[bone.parentIndex] * pose.localTransforms[bi];
+				else
+					outGlobals[bi] = pose.localTransforms[bi];
+			}
+			return;
+		}
+
+		for (int bi = 0; bi < static_cast<int>(N); ++bi)
+		{
+			const int parent = skeleton.bones[bi].parentIndex;
+			if (parent >= 0 && parent < bi)
+				outGlobals[bi] = outGlobals[parent] * pose.localTransforms[bi];
+			else
+				outGlobals[bi] = pose.localTransforms[bi];
 		}
 	}
 

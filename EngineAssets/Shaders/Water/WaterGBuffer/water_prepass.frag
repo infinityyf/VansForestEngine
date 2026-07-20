@@ -1,176 +1,98 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-// ============================================================
-// water_prepass.frag — 水面 GBuffer Pass 片元着色器
-//
-// 输出（对应 SetupVansWaterGBufferPass 的 Attachment 顺序）：
-//   location 0 → WaterGBuf_Normal（RGBA16F）：世界空间法线 XYZ，A 留用
-//   location 1 → WaterGBuf_WorldPosDepth（RGBA16F）：RGB=世界空间位置，A=视空间线性深度
-//
-// W-08: 法线贴图混合 — 从 VansWaterMaterial 法线纹理采样并与 Gerstner/FFT 法线混合
-// ============================================================
-
 #include "../../Common/CameraData.glsl"
-#include "../water_common.glsl"
 
-layout(location = 0) in  vec3  inWorldPos;
-layout(location = 1) in  float inLinearDepth;
-layout(location = 2) in  vec3  inWorldNormal;
+layout(location = 0) in vec3 inWorldPos;
+layout(location = 1) in float inLinearDepth;
+layout(location = 2) in vec3 inWorldNormal;
 layout(location = 3) flat in int inLodLevel;
-layout(location = 4) in  vec2  inPatchUV;
+layout(location = 4) in vec2 inWorldXZ;
 
-// ── Set 1：Water GBuffer Pass 输入 ───────────────────────────
-// binding 0-2 由 vertex shader 使用，frag 只使用 binding 0 的参数和 binding 3 的法线贴图
-layout(set = 1, binding = 0) uniform WaterGBufferParams
+layout(set = 1, binding = 0) uniform WaterSurfaceParams
 {
-    mat4  waterVPMatrix;
-    mat4  waterViewMatrix;
-    vec4  waterCameraPosition;
-    float minLodDist;
-    int   lodLevels;
-    int   meshDim;
-    float clipmapBaseScale; // LOD 0 Clipmap 世界覆盖边长（m），默认 128
-    float maxWaveAmp;
-    float detailBalance;     // LOD 缩放因子（默认 2.0）
-    float morphStartRatio;  // morph zone 起点比例 [0, 1)，默认 0.6
-    float pad1;
-    vec4  waveTimeAndScale;    // x=time, y=ampScale, z=chopScale, w=normalIntensity
-    vec4  pad3[8];
-} waterParams;
+    mat4 waterVPMatrix;
+    mat4 waterViewMatrix;
+    vec4 waterCameraPosition;
+    ivec4 geometryParams;
+    vec4 geometryScale;
+    vec4 spectrumScale;
+    vec4 windAndChop;
+    ivec4 simulationParams;
+    vec4 microSlopeParams;
+    vec4 microDomainParams;
+} params;
+layout(set = 1, binding = 3) uniform sampler2DArray microSlopeMap;
 
-// N-01: Detail Normal Texture2DArray（compute 生成，替代旧 sampler2D）
-layout(set = 1, binding = 3) uniform sampler2DArray waterDetailNormalArray;
-layout(set = 1, binding = 4) uniform sampler2DArray waterDerivativeMap;
-
-// Attachment 0: WaterGBuf_Normal（RGBA16F, 世界空间法线 XYZ, A 留用）
 layout(location = 0) out vec4 outWaterNormal;
-// Attachment 1: WaterGBuf_WorldPosDepth（RGBA16F, RGB=世界空间位置, A=视空间线性深度）
 layout(location = 1) out vec4 outWaterPosDepth;
 
-// ── N-01: 世界空间直接平铺采样切线空间 detail normal ──
-vec3 SampleDetailNormalTS(vec2 worldXZ, int lodLevel)
+vec2 RotatePosition(vec2 p, float angle)
 {
-    float detailWorldCoverage = waterParams.pad3[1].z;
-    if (detailWorldCoverage <= 0.0)
-        detailWorldCoverage = 32.0;
-    vec2 uv = worldXZ / detailWorldCoverage;
-    int layerCount = textureSize(waterDetailNormalArray, 0).z;
-    int layer = clamp(lodLevel, 0, max(layerCount - 1, 0));
-    vec3 packed = textureLod(waterDetailNormalArray, vec3(uv, float(layer)), 0.0).xyz;
-    return packed * 2.0 - 1.0;  // [0,1] → [-1,1] 切线空间
+    float c = cos(angle);
+    float s = sin(angle);
+    return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
 }
 
-// ── 从宏法线构建 TBN，将切线空间 detail normal 变换到世界空间 ──
-int GetWaveMode()
+// If q = R * worldXZ, gradients transform back with R^T.
+vec2 RotateGradientToWorld(vec2 gradient, float angle)
 {
-    return int(waterParams.pad3[2].x + 0.5);
+    float c = cos(angle);
+    float s = sin(angle);
+    return vec2(c * gradient.x + s * gradient.y,
+               -s * gradient.x + c * gradient.y);
 }
 
-bool UseDerivativeNormal()
+vec2 SampleSlopeField(int layer, float coverage, float angle)
 {
-    return waterParams.pad3[2].y > 0.5;
+    vec2 spectralXZ = RotatePosition(inWorldXZ, angle);
+    vec2 localGradient = texture(microSlopeMap,
+        vec3(spectralXZ / coverage, float(layer))).xy;
+    return RotateGradientToWorld(localGradient, angle);
 }
 
-int GetFFTLODCount()
+vec3 ApplyMicroSlope(vec3 macroNormal)
 {
-    return int(waterParams.pad3[2].z + 0.5);
-}
+    if (params.simulationParams.z == 0 || params.microSlopeParams.x <= 0.0)
+        return normalize(macroNormal);
 
-bool UseFFTDerivativeNormal(int lodLevel)
-{
-    int mode = GetWaveMode();
-    if (!UseDerivativeNormal())
-        return false;
-    if (mode == 1)
-        return true;
-    return mode == 2 && lodLevel < GetFFTLODCount();
-}
+    float pixelFootprint = max(length(dFdx(inWorldXZ)), length(dFdy(inWorldXZ)));
+    float bandMinimums[2] = float[2](params.microSlopeParams.y, params.microSlopeParams.z);
+    float primaryCoverage = params.microDomainParams.x;
+    float secondaryCoverage = params.microDomainParams.y;
+    float decorrelationAngle = params.microDomainParams.z;
 
-vec3 SampleFFTDerivativeNormal(vec2 patchUV, int lodLevel)
-{
-    ivec3 texSize = textureSize(waterDerivativeMap, 0);
-    int layerCount = texSize.z;
-    int layer = clamp(lodLevel, 0, max(layerCount - 1, 0));
-    vec2 uv = fract(patchUV);
-    vec2 texel = 1.0 / vec2(max(texSize.xy, ivec2(1)));
-    vec4 d =
-        textureLod(waterDerivativeMap, vec3(uv, float(layer)), 0.0) * 0.50 +
-        textureLod(waterDerivativeMap, vec3(fract(uv + vec2(texel.x, 0.0)), float(layer)), 0.0) * 0.125 +
-        textureLod(waterDerivativeMap, vec3(fract(uv - vec2(texel.x, 0.0)), float(layer)), 0.0) * 0.125 +
-        textureLod(waterDerivativeMap, vec3(fract(uv + vec2(0.0, texel.y)), float(layer)), 0.0) * 0.125 +
-        textureLod(waterDerivativeMap, vec3(fract(uv - vec2(0.0, texel.y)), float(layer)), 0.0) * 0.125;
-    return normalize(vec3(-d.x * waterParams.waveTimeAndScale.w,
-                           1.0,
-                          -d.y * waterParams.waveTimeAndScale.w));
-}
+    vec2 heightGradient = vec2(0.0);
+    const float pairVarianceNormalization = 0.70710678118;
+    for (int band = 0; band < 2; ++band)
+    {
+        float nyquistWeight = smoothstep(
+            2.0 * pixelFootprint,
+            4.0 * pixelFootprint,
+            bandMinimums[band]);
+        int firstLayer = band * 2;
+        vec2 pairedGradient =
+            SampleSlopeField(firstLayer, primaryCoverage, decorrelationAngle)
+          + SampleSlopeField(firstLayer + 1, secondaryCoverage, -decorrelationAngle);
+        heightGradient += pairedGradient * (pairVarianceNormalization * nyquistWeight);
+    }
 
-vec3 TransformDetailToWorld(vec3 detailTS, vec3 macroNormalWS)
-{
-    // 切线空间：Y 轴 = 水面法线方向（水平面时为世界 Y-up）
-    // T = 垂直于宏法线且在 XZ 平面附近，B = cross(N, T)
-    vec3 N = normalize(macroNormalWS);
-    vec3 up = vec3(0.0, 1.0, 0.0);
-    vec3 T = cross(up, N);
-    float Tlen = length(T);
-    if (Tlen < 0.0001)
-        T = vec3(1.0, 0.0, 0.0);   // 宏法线接近垂直，任意水平方向均可
-    else
-        T /= Tlen;
-    vec3 B = cross(N, T);           // 右手系：N × B → T, B × T → N
+    vec2 normalSlope = -heightGradient * params.microSlopeParams.x;
+    vec3 detailTS = normalize(vec3(normalSlope.x, 1.0, normalSlope.y));
 
-    // detailTS: x=T方向, y=N方向(surface normal), z=B方向
-    return normalize(T * detailTS.x + N * detailTS.y + B * detailTS.z);
-}
-
-// ── N-01: LOD 衰减 ────────────────────────────────────────
-float GetDetailNormalLodFade(int lodLevel)
-{
-    // LOD 0-2: 全强度, LOD 3-5: 渐变衰减, LOD 6+: 零
-    return 1.0 - smoothstep(2.5, 5.5, float(lodLevel));
+    vec3 N = normalize(macroNormal);
+    vec3 tangent = normalize(abs(N.y) > 0.05 ? vec3(1.0, -N.x / N.y, 0.0) : vec3(1.0, 0.0, 0.0));
+    // T x N points along world +Z for a flat water surface.  The previous
+    // N x T order inverted the spectral Z slope.
+    vec3 bitangent = normalize(cross(tangent, N));
+    return normalize(tangent * detailTS.x + N * detailTS.y + bitangent * detailTS.z);
 }
 
 void main()
 {
-    const bool DEBUG_VISUALIZE_LOD = false;
-
-    if (DEBUG_VISUALIZE_LOD)
-    {
-        const vec3 lodColors[10] = vec3[10](
-            vec3(1.0, 0.0, 0.0),  // LOD0 红
-            vec3(1.0, 0.5, 0.0),  // LOD1 橙
-            vec3(1.0, 1.0, 0.0),  // LOD2 黄
-            vec3(0.0, 1.0, 0.0),  // LOD3 绿
-            vec3(0.0, 1.0, 1.0),  // LOD4 青
-            vec3(0.0, 0.3, 1.0),  // LOD5 蓝
-            vec3(0.5, 0.0, 1.0),  // LOD6 紫
-            vec3(1.0, 0.0, 1.0),  // LOD7 品红
-            vec3(1.0, 1.0, 1.0),  // LOD8 白
-            vec3(0.4, 0.4, 0.4)   // LOD9 灰
-        );
-        int lodIndex = clamp(inLodLevel, 0, 9);
-        outWaterNormal   = vec4(lodColors[lodIndex], 1.0);
-        outWaterPosDepth = vec4(inWorldPos, inLinearDepth);
-        return;
-    }
-
-    vec3 worldNormal = UseFFTDerivativeNormal(inLodLevel)
-        ? SampleFFTDerivativeNormal(inPatchUV, inLodLevel)
-        : normalize(inWorldNormal);
-
-    // ── N-01: 细节法线混合 ──────────────────────────────────
-    // detailIntensity 控制切线空间 detail normal 的 XZ 扰动强度
-    // intensity=0 → detailTS.xz=0 → normalize → (0,1,0) → 宏法线不变
-    float detailIntensity = waterParams.pad3[0].x;
-    vec3 detailTS = SampleDetailNormalTS(inWorldPos.xz, inLodLevel);
-    detailTS.xz *= detailIntensity;
-    detailTS = normalize(detailTS);
-    vec3 detailWS = TransformDetailToWorld(detailTS, worldNormal);
-    worldNormal = normalize(worldNormal + detailWS);
-
-    // 写入世界空间法线（RGB = XYZ, Y 朝上）
-    outWaterNormal   = vec4(worldNormal, 0.0);
-
-    // 世界空间位置 + 视空间线性深度
+    vec3 finalNormal = ApplyMicroSlope(inWorldNormal);
+    // Alpha is an explicit, unfiltered coverage bit.  The optical passes use
+    // it together with the depth sentinel to classify shoreline pixels.
+    outWaterNormal = vec4(finalNormal, 1.0);
     outWaterPosDepth = vec4(inWorldPos, inLinearDepth);
 }

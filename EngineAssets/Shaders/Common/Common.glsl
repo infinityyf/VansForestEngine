@@ -8,6 +8,9 @@
 #define TWO_PI 6.28318530718
 #define FOUR_PI 12.566370614359172
 #define HALF_PI 1.57079632679
+#ifndef INV_PI
+#define INV_PI 0.31830988618
+#endif
 #define INV_TWO_PI 0.15915494309  // 1 / (2π)，IES profile 采样时将水平角 θ 映射到 U 坐标
 
 // IES 光照衰减：启用后点光源和聚光灯从 iesProfileTexture 采样方向衰减系数
@@ -30,6 +33,7 @@
 #define MATERIAL_ID_CLOTH       5
 #define MATERIAL_ID_SUBSURFACE  7
 #define MATERIAL_ID_GRASS       8
+#define MATERIAL_ID_TREE        10  // 树木接收 GI，并可参与 SSGI；probe SH 更新阶段暂不纳入。
 #define MATERIAL_ID_EMISSIVE    9   // 自发光：albedo × intensity 直通，无 BRDF
 
 #define DEPTH_BIAS 0.001

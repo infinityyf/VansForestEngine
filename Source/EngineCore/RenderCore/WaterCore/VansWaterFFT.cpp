@@ -17,21 +17,21 @@ namespace
     enum FFTField
     {
         FIELD_HEIGHT = 0,
-        FIELD_SLOPE_X = 1,
-        FIELD_SLOPE_Z = 2,
-        FIELD_DISP_X = 3,
-        FIELD_DISP_Z = 4,
-        FIELD_FOLD = 5,
-        FIELD_COUNT_LOCAL = 6
+        FIELD_DISP_X = 1,
+        FIELD_DISP_Z = 2,
+        FIELD_COUNT_LOCAL = 3
     };
 
     struct alignas(16) FFTParamsGPU
     {
         glm::vec4 windDirection_Time;      // xy=wind dir, z=time, w=windSpeed
-        glm::vec4 scaleParams;             // x=baseScale, y=detailBalance, z=amplitude, w=choppiness
+        glm::vec4 spectrumParams;          // x=amplitude, y=choppiness
         glm::vec4 dampingParams;           // x=smallWaveDamping, y=windDependency, z=depth, w=repeatPeriod
-        glm::vec4 outputParams;            // x=maxWaveAmp, y=normalScale, z=foamSlopeScale, w=foamFoldScale
-        glm::vec4 foldParams;              // x=foamFoldThreshold, y=randomSeed, z=resolution, w=lodCount
+        glm::vec4 spectrumMeta;             // x=randomSeed, y=resolution, z=cascadeCount, w=outputMode
+        glm::vec4 domainCoverage;
+        glm::vec4 minWavelength;
+        glm::vec4 maxWavelength;
+        glm::vec4 spectralOptions;          // x=capillary coefficient
     };
 
     struct alignas(16) FFTIterPC
@@ -42,18 +42,24 @@ namespace
         int resolution;
         int normalize;
         int fieldCount;
-        int lodCount;
+        int cascadeCount;
         int pad0;
     };
 }
 
 bool VansWaterFFT::Initialize(VansVKDevice* device, const std::string& shaderRoot,
                               VansVKImage* displacementImage,
-                              VansVKImage* derivativeImage)
+                              VansVKImage* derivativeImage,
+                              OutputMode outputMode)
 {
     m_Device = device;
     m_DisplacementImage = displacementImage;
     m_DerivativeImage = derivativeImage;
+    m_OutputMode = outputMode;
+
+    if (m_DisplacementImage == nullptr ||
+        (m_OutputMode == OutputMode::Displacement && m_DerivativeImage == nullptr))
+        return false;
 
     VkDevice logicDev = device->GetLogicDevice();
     const uint32_t N = FFT_RESOLUTION;
@@ -72,7 +78,10 @@ bool VansWaterFFT::Initialize(VansVKDevice* device, const std::string& shaderRoo
     m_FFTIterShader->SetPushConstant(sizeof(FFTIterPC));
 
     m_DisplacementExtractShader = new VansComputeShader();
-    if (!m_DisplacementExtractShader->InitShader(logicDev, shaderRoot + "EngineAssets/Shaders/Water/FFT/Extract"))
+    const std::string extractPath = m_OutputMode == OutputMode::SpectralSlope
+        ? "EngineAssets/Shaders/Water/FFT/ExtractSlope"
+        : "EngineAssets/Shaders/Water/FFT/Extract";
+    if (!m_DisplacementExtractShader->InitShader(logicDev, shaderRoot + extractPath))
         return false;
 
     auto createFFTImage = [&](VansVKImage& image, uint32_t layers)
@@ -84,9 +93,9 @@ bool VansWaterFFT::Initialize(VansVKDevice* device, const std::string& shaderRoo
             VK_SAMPLER_ADDRESS_MODE_REPEAT);
     };
 
-    createFFTImage(m_H0Spectrum, MAX_LOD_COUNT);
-    createFFTImage(m_PingPong[0], MAX_LOD_COUNT * FIELD_COUNT);
-    createFFTImage(m_PingPong[1], MAX_LOD_COUNT * FIELD_COUNT);
+    createFFTImage(m_H0Spectrum, MAX_CASCADE_COUNT);
+    createFFTImage(m_PingPong[0], MAX_CASCADE_COUNT * FIELD_COUNT);
+    createFFTImage(m_PingPong[1], MAX_CASCADE_COUNT * FIELD_COUNT);
 
     m_ParamsBufferCreated = m_ParamsBuffer.CreatVulkanBuffer(logicDev,
         sizeof(FFTParamsGPU),
@@ -102,11 +111,13 @@ bool VansWaterFFT::Initialize(VansVKDevice* device, const std::string& shaderRoo
         return false;
 
     m_Params.resolution = FFT_RESOLUTION;
-    m_Params.lodCount = MAX_LOD_COUNT;
+    m_Params.cascadeCount = MAX_CASCADE_COUNT;
     m_NeedsReinit = true;
     m_Initialized = true;
 
-    VANS_LOG("[VansWaterFFT] Initialized Tessendorf FFT ocean, N=" << FFT_RESOLUTION);
+    VANS_LOG("[VansWaterFFT] Initialized "
+        << (m_OutputMode == OutputMode::SpectralSlope ? "spectral slope" : "displacement")
+        << " FFT, N=" << FFT_RESOLUTION);
     return true;
 }
 
@@ -148,12 +159,15 @@ bool VansWaterFFT::CreateDescriptors()
     m_IterSet[1] = sets[1];
 
     sets.clear();
-    if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom({
+    std::vector<VkDescriptorSetLayoutBinding> extractBindings = {
         { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-        { 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-    }, m_ExtractLayout, sets, 2) || sets.size() < 2)
+    };
+    if (m_OutputMode == OutputMode::Displacement)
+        extractBindings.push_back({ 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr });
+    if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+        extractBindings, m_ExtractLayout, sets, 2) || sets.size() < 2)
         return false;
     m_ExtractSet[0] = sets[0];
     m_ExtractSet[1] = sets[1];
@@ -182,7 +196,8 @@ bool VansWaterFFT::CreateDescriptors()
         descMgr->WriteBufferDescriptor(m_ExtractSet[i], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo });
         descMgr->WriteImageDescriptor(m_ExtractSet[i], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[i]) });
         descMgr->WriteImageDescriptor(m_ExtractSet[i], 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DisplacementImage) });
-        descMgr->WriteImageDescriptor(m_ExtractSet[i], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DerivativeImage) });
+        if (m_OutputMode == OutputMode::Displacement)
+            descMgr->WriteImageDescriptor(m_ExtractSet[i], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DerivativeImage) });
     }
 
     descMgr->CommitDescriptorUpdates();
@@ -229,24 +244,38 @@ void VansWaterFFT::SetParams(const Params& params)
 {
     Params next = params;
     next.resolution = FFT_RESOLUTION;
-    next.lodCount = std::clamp(next.lodCount, 1u, MAX_LOD_COUNT);
+    next.cascadeCount = std::clamp(next.cascadeCount, 1u, MAX_CASCADE_COUNT);
     if (glm::length(next.windDirection) < 0.001f)
         next.windDirection = glm::vec2(0.7071f, 0.7071f);
     next.windDirection = glm::normalize(next.windDirection);
-    next.detailBalance = (std::max)(next.detailBalance, 1.0f);
-    next.baseScale = (std::max)(next.baseScale, 1.0f);
+    next.spectrumAmplitude = std::clamp(next.spectrumAmplitude, 0.0f, 0.02f);
+    next.choppiness = std::clamp(next.choppiness, 0.0f, 3.0f);
+    next.smallWaveDamping = std::clamp(next.smallWaveDamping, 0.0f, 0.1f);
+    next.windDependency = std::clamp(next.windDependency, 0.0f, 1.0f);
+    next.depth = (std::max)(next.depth, 0.1f);
+    next.repeatPeriod = (std::max)(next.repeatPeriod, 0.0f);
+    next.capillaryCoefficient = (std::max)(next.capillaryCoefficient, 0.0f);
+    for (uint32_t i = 0; i < MAX_CASCADE_COUNT; ++i)
+    {
+        next.domainCoverage[i] = (std::max)(next.domainCoverage[i], 1.0f);
+        next.minWavelength[i] = (std::max)(next.minWavelength[i],
+            2.0f * next.domainCoverage[i] / float(FFT_RESOLUTION));
+        next.maxWavelength[i] = (std::max)(next.maxWavelength[i], next.minWavelength[i]);
+    }
 
     const bool spectrumDirty =
-        next.lodCount != m_Params.lodCount ||
-        next.baseScale != m_Params.baseScale ||
-        next.detailBalance != m_Params.detailBalance ||
+        next.cascadeCount != m_Params.cascadeCount ||
         glm::length(next.windDirection - m_Params.windDirection) > 0.0001f ||
         next.windSpeed != m_Params.windSpeed ||
         next.spectrumAmplitude != m_Params.spectrumAmplitude ||
         next.smallWaveDamping != m_Params.smallWaveDamping ||
         next.windDependency != m_Params.windDependency ||
         next.depth != m_Params.depth ||
-        next.randomSeed != m_Params.randomSeed;
+        next.randomSeed != m_Params.randomSeed ||
+        next.capillaryCoefficient != m_Params.capillaryCoefficient ||
+        next.domainCoverage != m_Params.domainCoverage ||
+        next.minWavelength != m_Params.minWavelength ||
+        next.maxWavelength != m_Params.maxWavelength;
 
     m_Params = next;
     if (spectrumDirty)
@@ -260,14 +289,22 @@ void VansWaterFFT::UpdateParamsBuffer(float time)
 
     FFTParamsGPU gpu = {};
     gpu.windDirection_Time = glm::vec4(m_Params.windDirection, time, m_Params.windSpeed);
-    gpu.scaleParams = glm::vec4(m_Params.baseScale, m_Params.detailBalance,
-        m_Params.spectrumAmplitude, m_Params.choppiness);
+    gpu.spectrumParams = glm::vec4(
+        m_Params.spectrumAmplitude, m_Params.choppiness, 0.0f, 0.0f);
     gpu.dampingParams = glm::vec4(m_Params.smallWaveDamping, m_Params.windDependency,
         m_Params.depth, m_Params.repeatPeriod);
-    gpu.outputParams = glm::vec4(m_Params.maxWaveAmp, m_Params.normalScale,
-        m_Params.foamSlopeScale, m_Params.foamFoldScale);
-    gpu.foldParams = glm::vec4(m_Params.foamFoldThreshold, float(m_Params.randomSeed),
-        float(m_Params.resolution), float(m_Params.lodCount));
+    gpu.spectrumMeta = glm::vec4(float(m_Params.randomSeed), float(m_Params.resolution),
+        float(m_Params.cascadeCount), float(m_OutputMode));
+    gpu.domainCoverage = glm::vec4(
+        m_Params.domainCoverage[0], m_Params.domainCoverage[1],
+        m_Params.domainCoverage[2], m_Params.domainCoverage[3]);
+    gpu.minWavelength = glm::vec4(
+        m_Params.minWavelength[0], m_Params.minWavelength[1],
+        m_Params.minWavelength[2], m_Params.minWavelength[3]);
+    gpu.maxWavelength = glm::vec4(
+        m_Params.maxWavelength[0], m_Params.maxWavelength[1],
+        m_Params.maxWavelength[2], m_Params.maxWavelength[3]);
+    gpu.spectralOptions = glm::vec4(m_Params.capillaryCoefficient, 0.0f, 0.0f, 0.0f);
 
     m_ParamsBuffer.SetBufferData(&gpu, 0, sizeof(FFTParamsGPU));
 }
@@ -295,7 +332,8 @@ void VansWaterFFT::BarrierImage(VansVKCommandBuffer& cmd, VansVKImage& image,
 
 void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
 {
-    if (!IsReady() || m_DisplacementImage == nullptr || m_DerivativeImage == nullptr)
+    if (!IsReady() || m_DisplacementImage == nullptr ||
+        (m_OutputMode == OutputMode::Displacement && m_DerivativeImage == nullptr))
         return;
 
     UpdateParamsBuffer(time);
@@ -303,25 +341,30 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
     const uint32_t N = FFT_RESOLUTION;
     const uint32_t groups = (N + 7u) / 8u;
     const int log2N = 8;
-    const uint32_t fieldLayers = m_Params.lodCount * FIELD_COUNT;
+    const uint32_t activeFieldCount = m_OutputMode == OutputMode::SpectralSlope ? 2u : FIELD_COUNT;
+    const uint32_t fieldLayers = MAX_CASCADE_COUNT * FIELD_COUNT;
+    const uint32_t activeFieldLayers = m_Params.cascadeCount * activeFieldCount;
 
-    BarrierImage(cmd, m_PingPong[0], 0, VK_ACCESS_SHADER_WRITE_BIT,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    BarrierImage(cmd, m_PingPong[0], VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        VK_ACCESS_SHADER_WRITE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, fieldLayers);
-    BarrierImage(cmd, m_PingPong[1], 0, VK_ACCESS_SHADER_WRITE_BIT,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    BarrierImage(cmd, m_PingPong[1], VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        VK_ACCESS_SHADER_WRITE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, fieldLayers);
 
     if (m_NeedsReinit)
     {
-        BarrierImage(cmd, m_H0Spectrum, 0, VK_ACCESS_SHADER_WRITE_BIT,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, m_Params.lodCount);
+        BarrierImage(cmd, m_H0Spectrum, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, MAX_CASCADE_COUNT);
         cmd.EnsureComputeShader(*m_InitSpectrumShader, { m_InitLayout });
-        cmd.DispatchCompute(*m_InitSpectrumShader, groups, groups, m_Params.lodCount, { m_InitSet });
+        cmd.DispatchCompute(*m_InitSpectrumShader, groups, groups, m_Params.cascadeCount, { m_InitSet });
         BarrierImage(cmd, m_H0Spectrum, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, m_Params.lodCount);
+            0, MAX_CASCADE_COUNT);
         m_NeedsReinit = false;
     }
     else
@@ -329,11 +372,11 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
         BarrierImage(cmd, m_H0Spectrum, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
             VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, m_Params.lodCount);
+            0, MAX_CASCADE_COUNT);
     }
 
     cmd.EnsureComputeShader(*m_TimeEvolveShader, { m_EvolveLayout });
-    cmd.DispatchCompute(*m_TimeEvolveShader, groups, groups, m_Params.lodCount, { m_EvolveSet });
+    cmd.DispatchCompute(*m_TimeEvolveShader, groups, groups, m_Params.cascadeCount, { m_EvolveSet });
     BarrierImage(cmd, m_PingPong[0], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, fieldLayers);
@@ -354,10 +397,10 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
         pc.inverse = 1;
         pc.resolution = int(N);
         pc.normalize = 0;
-        pc.fieldCount = int(FIELD_COUNT);
-        pc.lodCount = int(m_Params.lodCount);
+        pc.fieldCount = int(activeFieldCount);
+        pc.cascadeCount = int(m_Params.cascadeCount);
         m_FFTIterShader->SetPushConstantData(&pc);
-        cmd.DispatchCompute(*m_FFTIterShader, groups, groups, fieldLayers, { m_IterSet[src] });
+        cmd.DispatchCompute(*m_FFTIterShader, groups, groups, activeFieldLayers, { m_IterSet[src] });
         BarrierImage(cmd, m_PingPong[dst], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, fieldLayers);
@@ -375,35 +418,40 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
         pc.direction = 1;
         pc.inverse = 1;
         pc.resolution = int(N);
-        pc.normalize = (stage == log2N - 1) ? 1 : 0;
-        pc.fieldCount = int(FIELD_COUNT);
-        pc.lodCount = int(m_Params.lodCount);
+        pc.normalize = 0; // spectral coefficients use the unnormalised inverse DFT sum
+        pc.fieldCount = int(activeFieldCount);
+        pc.cascadeCount = int(m_Params.cascadeCount);
         m_FFTIterShader->SetPushConstantData(&pc);
-        cmd.DispatchCompute(*m_FFTIterShader, groups, groups, fieldLayers, { m_IterSet[src] });
+        cmd.DispatchCompute(*m_FFTIterShader, groups, groups, activeFieldLayers, { m_IterSet[src] });
         BarrierImage(cmd, m_PingPong[dst], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, fieldLayers);
         std::swap(src, dst);
     }
 
+    const VkPipelineStageFlags outputReadStage = m_OutputMode == OutputMode::SpectralSlope
+        ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+        : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
     BarrierImage(cmd, *m_DisplacementImage, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, m_Params.lodCount);
-    BarrierImage(cmd, *m_DerivativeImage, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, m_Params.lodCount);
+        outputReadStage, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, MAX_CASCADE_COUNT);
+    if (m_OutputMode == OutputMode::Displacement)
+        BarrierImage(cmd, *m_DerivativeImage, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, MAX_CASCADE_COUNT * 2);
 
     cmd.EnsureComputeShader(*m_DisplacementExtractShader, { m_ExtractLayout });
-    cmd.DispatchCompute(*m_DisplacementExtractShader, groups, groups, m_Params.lodCount, { m_ExtractSet[src] });
+    cmd.DispatchCompute(*m_DisplacementExtractShader, groups, groups, m_Params.cascadeCount, { m_ExtractSet[src] });
 
     BarrierImage(cmd, *m_DisplacementImage, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-        0, m_Params.lodCount);
-    BarrierImage(cmd, *m_DerivativeImage, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, m_Params.lodCount);
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, outputReadStage,
+        0, MAX_CASCADE_COUNT);
+    if (m_OutputMode == OutputMode::Displacement)
+        BarrierImage(cmd, *m_DerivativeImage, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, MAX_CASCADE_COUNT * 2);
 }
 
 } // namespace VansGraphics

@@ -36,6 +36,7 @@ namespace VansGraphics
         VansVKBuffer m_InstanceBuffer;
         uint32_t     m_InstanceCount      = 0;
         uint32_t     m_InstanceCapacity   = 0;   // 当前分配容量（粒子数）
+        glm::vec3    m_SortCenterWS       = glm::vec3(0.0f);
 
         // 粒子纹理（非拥有指针）
         VansTexture* m_ParticleTexture  = nullptr;
@@ -84,7 +85,10 @@ namespace VansGraphics
 
         // 将 CPU 侧实例数据上传到 GPU 实例缓冲（主线程调用）
         void UpdateInstanceBuffer(VkDevice& device,
-                                   const std::vector<VansParticleInstanceData>& data);
+                                   const std::vector<VansParticleInstanceData>& data,
+                                   const glm::mat4& viewMatrix);
+
+        glm::vec3 GetSortCenterWS() const { return m_SortCenterWS; }
 
         // Draw：绑定 Pipeline + 描述符集 + 顶点/实例缓冲 → DrawIndexed
         void Draw(VansVKCommandBuffer& cmd,

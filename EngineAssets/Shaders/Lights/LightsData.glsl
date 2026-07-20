@@ -152,20 +152,33 @@ int GetCubemapFaceIndex(vec3 dir)
 
 
 
-float SamplePointShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIndex)
+float SamplePointShadowMap(vec3 position_world, sampler2D shadowMap, int lightIndex)
 {
-    vec3 direction = position_world - uPointLights[shadowIndex].position.xyz;
+    PointLightData light = uPointLights[lightIndex];
+    int shadowBaseSlot = int(light.shadowIndex);
+    if (shadowBaseSlot < 0)
+        return 1.0;
+    vec3 direction = position_world - light.position.xyz;
 
     //获取采样的方向
     int shadowDirectionIndex = GetCubemapFaceIndex(direction);
 
-    ivec2 shadowOffset = ivec2((shadowIndex * 6 + shadowDirectionIndex) % uShadowAtlasCount, (shadowIndex * 6 + shadowDirectionIndex) / uShadowAtlasCount);
+    int atlasSlot = shadowBaseSlot + shadowDirectionIndex;
+    ivec2 shadowOffset = ivec2(atlasSlot % uShadowAtlasCount, atlasSlot / uShadowAtlasCount);
     shadowOffset *= int(uShadowAtlasSize);
 
-    mat4x4 shadowMatrix = uPointLights[shadowIndex].shadowMatrix[shadowDirectionIndex];
+    mat4x4 shadowMatrix = light.shadowMatrix[shadowDirectionIndex];
     vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
-    clipCoord/=  clipCoord.w;
+    if (clipCoord.w <= 1e-6)
+        return 1.0;
+    clipCoord /= clipCoord.w;
+    clipCoord.z = clipCoord.z * 0.5 + 0.5;
     clipCoord.xy  = clipCoord.xy * 0.5 + 0.5;
+
+    if (any(lessThanEqual(clipCoord.xy, vec2(0.0))) ||
+        any(greaterThanEqual(clipCoord.xy, vec2(1.0))) ||
+        clipCoord.z <= 0.0 || clipCoord.z >= 1.0)
+        return 1.0;
 
     ivec2 shadowUV = ivec2(clipCoord.xy * uShadowAtlasSize);
 
@@ -174,16 +187,27 @@ float SamplePointShadowMap(vec3 position_world, sampler2D shadowMap, int shadowI
     return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
 }
 
-float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIndex)
+float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int lightIndex)
 {
-    int pointLightCount = int(uPointLightCount);
-    ivec2 shadowOffset = ivec2((pointLightCount * 6 + shadowIndex) % uShadowAtlasCount, (pointLightCount * 6 + shadowIndex) / uShadowAtlasCount);
+    SpotLightData light = uSpotLights[lightIndex];
+    int atlasSlot = int(light.shadowIndex);
+    if (atlasSlot < 0)
+        return 1.0;
+    ivec2 shadowOffset = ivec2(atlasSlot % uShadowAtlasCount, atlasSlot / uShadowAtlasCount);
     shadowOffset *= int(uShadowAtlasSize);
 
-    mat4x4 shadowMatrix = uSpotLights[shadowIndex].shadowMatrix;
+    mat4x4 shadowMatrix = light.shadowMatrix;
     vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
-    clipCoord/=  clipCoord.w;
+    if (clipCoord.w <= 1e-6)
+        return 1.0;
+    clipCoord /= clipCoord.w;
+    clipCoord.z = clipCoord.z * 0.5 + 0.5;
     clipCoord.xy  = clipCoord.xy * 0.5 + 0.5;
+
+    if (any(lessThanEqual(clipCoord.xy, vec2(0.0))) ||
+        any(greaterThanEqual(clipCoord.xy, vec2(1.0))) ||
+        clipCoord.z <= 0.0 || clipCoord.z >= 1.0)
+        return 1.0;
 
     ivec2 shadowUV = ivec2(clipCoord.xy * uShadowAtlasSize);
 
@@ -193,21 +217,26 @@ float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIn
 }
 
 // Hard rect-shadow sampling for volumetric fog (Phase 4).
-float SampleRectShadowMap(vec3 position_world, sampler2D shadowMap, int shadowIndex)
+float SampleRectShadowMap(vec3 position_world, sampler2D shadowMap, int lightIndex)
 {
-    int pointLightCount = int(uPointLightCount);
-    int spotLightCount  = int(uSpotLightCount);
-    int slotIndex = pointLightCount * 6 + spotLightCount + shadowIndex;
+    RectLightData light = uRectLights[lightIndex];
+    int slotIndex = int(light.shadowParams.x);
+    if (slotIndex < 0)
+        return 1.0;
     ivec2 shadowOffset = ivec2(slotIndex % uShadowAtlasCount, slotIndex / uShadowAtlasCount);
     shadowOffset *= int(uShadowAtlasSize);
 
-    mat4x4 shadowMatrix = uRectLights[shadowIndex].shadowMatrix;
+    mat4x4 shadowMatrix = light.shadowMatrix;
     vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
+    if (clipCoord.w <= 1e-6)
+        return 1.0;
     clipCoord /= clipCoord.w;
+    clipCoord.z = clipCoord.z * 0.5 + 0.5;
     clipCoord.xy = clipCoord.xy * 0.5 + 0.5;
 
     if (clipCoord.x <= 0.0 || clipCoord.x >= 1.0 ||
-        clipCoord.y <= 0.0 || clipCoord.y >= 1.0 || clipCoord.z <= 0.0)
+        clipCoord.y <= 0.0 || clipCoord.y >= 1.0 ||
+        clipCoord.z <= 0.0 || clipCoord.z >= 1.0)
         return 1.0;
 
     ivec2 shadowUV = ivec2(clipCoord.xy * uShadowAtlasSize);
@@ -236,6 +265,31 @@ float ComputePunctualSoftShadowRadius(float distanceToLight, float lightRadius)
     return mix(1.5, 4.5, distanceRatio) * softnessScale;
 }
 
+float FetchPunctualShadowDepth(
+    sampler2D shadowMap,
+    ivec2 texel,
+    ivec2 atlasMin,
+    ivec2 atlasMax)
+{
+    return texelFetch(shadowMap, clamp(texel, atlasMin, atlasMax), 0).r;
+}
+
+float ComparePunctualShadowBilinear(
+    sampler2D shadowMap,
+    vec2 atlasTexelPosition,
+    ivec2 atlasMin,
+    ivec2 atlasMax,
+    float receiverDepth)
+{
+    ivec2 base = ivec2(floor(atlasTexelPosition));
+    vec2 f = fract(atlasTexelPosition);
+    float c00 = FetchPunctualShadowDepth(shadowMap, base, atlasMin, atlasMax) < receiverDepth ? 0.0 : 1.0;
+    float c10 = FetchPunctualShadowDepth(shadowMap, base + ivec2(1, 0), atlasMin, atlasMax) < receiverDepth ? 0.0 : 1.0;
+    float c01 = FetchPunctualShadowDepth(shadowMap, base + ivec2(0, 1), atlasMin, atlasMax) < receiverDepth ? 0.0 : 1.0;
+    float c11 = FetchPunctualShadowDepth(shadowMap, base + ivec2(1, 1), atlasMin, atlasMax) < receiverDepth ? 0.0 : 1.0;
+    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
 float SamplePunctualShadowAtlasSoft(
     sampler2D shadowMap,
     ivec2 atlasOffset,
@@ -243,96 +297,107 @@ float SamplePunctualShadowAtlasSoft(
     float receiverDepth,
     float filterRadiusTexels)
 {
-    if (receiverDepth <= 0.0)
+    if (receiverDepth <= 0.0 || receiverDepth >= 1.0)
         return 1.0;
 
     if (localShadowUV.x <= 0.0 || localShadowUV.x >= 1.0 ||
         localShadowUV.y <= 0.0 || localShadowUV.y >= 1.0)
         return 1.0;
 
-    const int PUNCTUAL_SOFT_SAMPLE_COUNT = 32;
+    const int PUNCTUAL_SOFT_SAMPLE_COUNT = 24;
     float sampleCountInverse = 1.0 / float(PUNCTUAL_SOFT_SAMPLE_COUNT);
 
-    ivec2 localTexel = ivec2(localShadowUV * float(uShadowAtlasSize));
     ivec2 atlasMin = atlasOffset;
     ivec2 atlasMax = atlasOffset + ivec2(int(uShadowAtlasSize) - 1);
 
-    float frameIndex = softShadowParams.x;
-    float jitterAngle = RandomInterLeavedWithScale(vec2(atlasOffset + localTexel), mod(frameIndex, 64.0)) * TWO_PI;
+    vec2 localTexelPosition = localShadowUV * float(uShadowAtlasSize) - 0.5;
+    float jitterAngle = RandomInterLeaved(floor(localTexelPosition / 8.0) + vec2(atlasOffset)) * TWO_PI;
     vec2 jitter = vec2(sin(jitterAngle), cos(jitterAngle));
 
     float visibility = 0.0;
     for (int i = 0; i < PUNCTUAL_SOFT_SAMPLE_COUNT; ++i)
     {
-        float sampleDistNorm = 0.0;
-        vec2 offset = ComputeFibonacciSpiralDiskSampleClumped(i, sampleCountInverse, sampleDistNorm);
+        float sampleDistNorm = sqrt((float(i) + 0.5) * sampleCountInverse);
+        vec2 offset = fibonacciSpiralDirection[i] * sampleDistNorm;
         offset = vec2(offset.x * jitter.y + offset.y * jitter.x,
                       offset.x * -jitter.x + offset.y * jitter.y);
 
-        ivec2 sampleTexel = atlasOffset + localTexel + ivec2(round(offset * filterRadiusTexels));
-        sampleTexel = clamp(sampleTexel, atlasMin, atlasMax);
-
-        float shadowDepth = texelFetch(shadowMap, sampleTexel, 0).r;
-        visibility += (shadowDepth < receiverDepth) ? 0.0 : 1.0;
+        vec2 atlasTexelPosition = vec2(atlasOffset) + localTexelPosition
+            + offset * filterRadiusTexels;
+        visibility += ComparePunctualShadowBilinear(
+            shadowMap, atlasTexelPosition, atlasMin, atlasMax, receiverDepth);
     }
 
     return visibility * sampleCountInverse;
 }
 
-float SamplePointShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int shadowIndex)
+float SamplePointShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int lightIndex)
 {
-    vec3 toLight = position_world - uPointLights[shadowIndex].position.xyz;
+    PointLightData light = uPointLights[lightIndex];
+    int shadowBaseSlot = int(light.shadowIndex);
+    if (shadowBaseSlot < 0)
+        return 1.0;
+    vec3 toLight = position_world - light.position.xyz;
     int shadowDirectionIndex = GetCubemapFaceIndex(toLight);
 
-    ivec2 shadowOffset = ivec2((shadowIndex * 6 + shadowDirectionIndex) % uShadowAtlasCount,
-                               (shadowIndex * 6 + shadowDirectionIndex) / uShadowAtlasCount);
+    int atlasSlot = shadowBaseSlot + shadowDirectionIndex;
+    ivec2 shadowOffset = ivec2(atlasSlot % uShadowAtlasCount,
+                               atlasSlot / uShadowAtlasCount);
     shadowOffset *= int(uShadowAtlasSize);
 
     // 在世界空间沿法线偏置接收点，再投影；避免 NDC 固定 bias 的透视放大问题
     float normalOffset = ComputePunctualNormalOffset(normalWS, lightDirectionWS);
     vec3 biasedPos = position_world + normalWS * normalOffset;
 
-    mat4x4 shadowMatrix = uPointLights[shadowIndex].shadowMatrix[shadowDirectionIndex];
+    mat4x4 shadowMatrix = light.shadowMatrix[shadowDirectionIndex];
     vec4 clipCoord = shadowMatrix * vec4(biasedPos, 1.0);
+    if (clipCoord.w <= 1e-6)
+        return 1.0;
     clipCoord /= clipCoord.w;
 
-    float receiverDepth = clipCoord.z;
+    float receiverDepth = clipCoord.z * 0.5 + 0.5;
     vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
 
-    float filterRadiusTexels = ComputePunctualSoftShadowRadius(length(toLight), uPointLights[shadowIndex].radius);
+    float filterRadiusTexels = ComputePunctualSoftShadowRadius(length(toLight), light.radius);
     return SamplePunctualShadowAtlasSoft(shadowMap, shadowOffset, localShadowUV, receiverDepth, filterRadiusTexels);
 }
 
-float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int shadowIndex)
+float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int lightIndex)
 {
-    int pointLightCount = int(uPointLightCount);
-    ivec2 shadowOffset = ivec2((pointLightCount * 6 + shadowIndex) % uShadowAtlasCount,
-                               (pointLightCount * 6 + shadowIndex) / uShadowAtlasCount);
+    SpotLightData light = uSpotLights[lightIndex];
+    int atlasSlot = int(light.shadowIndex);
+    if (atlasSlot < 0)
+        return 1.0;
+    ivec2 shadowOffset = ivec2(atlasSlot % uShadowAtlasCount,
+                               atlasSlot / uShadowAtlasCount);
     shadowOffset *= int(uShadowAtlasSize);
 
     // 在世界空间沿法线偏置接收点，再投影；避免 NDC 固定 bias 的透视放大问题
     float normalOffset = ComputePunctualNormalOffset(normalWS, lightDirectionWS);
     vec3 biasedPos = position_world + normalWS * normalOffset;
 
-    mat4x4 shadowMatrix = uSpotLights[shadowIndex].shadowMatrix;
+    mat4x4 shadowMatrix = light.shadowMatrix;
     vec4 clipCoord = shadowMatrix * vec4(biasedPos, 1.0);
+    if (clipCoord.w <= 1e-6)
+        return 1.0;
     clipCoord /= clipCoord.w;
 
-    float receiverDepth = clipCoord.z;
+    float receiverDepth = clipCoord.z * 0.5 + 0.5;
     vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
 
-    float distanceToLight = length(uSpotLights[shadowIndex].position.xyz - position_world);
-    float filterRadiusTexels = ComputePunctualSoftShadowRadius(distanceToLight, uSpotLights[shadowIndex].radius);
+    float distanceToLight = length(light.position.xyz - position_world);
+    float filterRadiusTexels = ComputePunctualSoftShadowRadius(distanceToLight, light.radius);
     return SamplePunctualShadowAtlasSoft(shadowMap, shadowOffset, localShadowUV, receiverDepth, filterRadiusTexels);
 }
 
 // RectLight shadow sampling — Phase 3.
 // Atlas slot:  pointCount*6 + spotCount + shadowIndex   (mirrors VansScene::DrawRectShadow).
-float SampleRectShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int shadowIndex)
+float SampleRectShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int lightIndex)
 {
-    int pointLightCount = int(uPointLightCount);
-    int spotLightCount  = int(uSpotLightCount);
-    int slotIndex = pointLightCount * 6 + spotLightCount + shadowIndex;
+    RectLightData light = uRectLights[lightIndex];
+    int slotIndex = int(light.shadowParams.x);
+    if (slotIndex < 0)
+        return 1.0;
     ivec2 shadowOffset = ivec2(slotIndex % uShadowAtlasCount,
                                slotIndex / uShadowAtlasCount);
     shadowOffset *= int(uShadowAtlasSize);
@@ -340,15 +405,17 @@ float SampleRectShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDire
     float normalOffset = ComputePunctualNormalOffset(normalWS, lightDirectionWS);
     vec3 biasedPos = position_world + normalWS * normalOffset;
 
-    mat4x4 shadowMatrix = uRectLights[shadowIndex].shadowMatrix;
+    mat4x4 shadowMatrix = light.shadowMatrix;
     vec4 clipCoord = shadowMatrix * vec4(biasedPos, 1.0);
+    if (clipCoord.w <= 1e-6)
+        return 1.0;
     clipCoord /= clipCoord.w;
 
-    float receiverDepth = clipCoord.z;
+    float receiverDepth = clipCoord.z * 0.5 + 0.5;
     vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
 
-    float distanceToLight = length(uRectLights[shadowIndex].position_halfW.xyz - position_world);
-    float filterRadiusTexels = ComputePunctualSoftShadowRadius(distanceToLight, uRectLights[shadowIndex].right_range.w);
+    float distanceToLight = length(light.position_halfW.xyz - position_world);
+    float filterRadiusTexels = ComputePunctualSoftShadowRadius(distanceToLight, light.right_range.w);
     return SamplePunctualShadowAtlasSoft(shadowMap, shadowOffset, localShadowUV, receiverDepth, filterRadiusTexels);
 }
 
@@ -367,7 +434,10 @@ int SelectCascade(float viewDepth)
     return CASCADE_COUNT - 1;
 }
 
-// PCF sampling on a single cascade layer (sampler2DArray).
+// Directional-light PCSS on a single cascade layer.  Raw blocker depths are
+// always fetched with texelFetch; the final filter performs compare-before-
+// bilinear interpolation, avoiding the invalid "linear depth then compare"
+// behaviour that produced contour bands at shadow discontinuities.
 struct CascadeProjection
 {
     vec2 uv;
@@ -397,16 +467,136 @@ float ComputeCascadeReceiverBias(vec3 normalWS, int cascadeIdx)
     float ndl = clamp(dot(n, l), 0.0, 1.0);
     float slope = min(sqrt(max(0.0, 1.0 - ndl * ndl)) / max(ndl, 0.05), 4.0);
     float normalBiasWorld = uDirectionLight.cascadeNormalBias[cascadeIdx] * (1.0 + slope * 0.75);
-    return max(DEPTH_BIAS, normalBiasWorld * uDirectionLight.cascadeDepthScale[cascadeIdx]);
+    float minimumBiasWorld = uDirectionLight.cascadeTexelSize[cascadeIdx] * 0.25;
+    return max(minimumBiasWorld, normalBiasWorld) * uDirectionLight.cascadeDepthScale[cascadeIdx];
+}
+
+float FetchCascadeDepthR32(sampler2DArray shadowMap, ivec2 texel, int cascadeIdx)
+{
+    ivec3 size = textureSize(shadowMap, 0);
+    texel = clamp(texel, ivec2(0), size.xy - ivec2(1));
+    return texelFetch(shadowMap, ivec3(texel, cascadeIdx), 0).r;
 }
 
 float CompareCascadeDepthR32(sampler2DArray shadowMap, vec2 uv, int cascadeIdx, float receiverDepth)
 {
-    float shadowDepth = texture(shadowMap, vec3(uv, float(cascadeIdx))).r;
+    ivec2 size = textureSize(shadowMap, 0).xy;
+    ivec2 texel = ivec2(floor(uv * vec2(size)));
+    float shadowDepth = FetchCascadeDepthR32(shadowMap, texel, cascadeIdx);
     return (shadowDepth < receiverDepth) ? 0.0 : 1.0;
 }
 
-float SampleCascadeShadowMap_StablePCF(
+float CompareCascadeDepthBilinear(
+    sampler2DArray shadowMap,
+    vec2 uv,
+    int cascadeIdx,
+    float receiverDepth)
+{
+    ivec2 size = textureSize(shadowMap, 0).xy;
+    vec2 texelPosition = uv * vec2(size) - 0.5;
+    ivec2 base = ivec2(floor(texelPosition));
+    vec2 f = fract(texelPosition);
+
+    float c00 = FetchCascadeDepthR32(shadowMap, base, cascadeIdx) < receiverDepth ? 0.0 : 1.0;
+    float c10 = FetchCascadeDepthR32(shadowMap, base + ivec2(1, 0), cascadeIdx) < receiverDepth ? 0.0 : 1.0;
+    float c01 = FetchCascadeDepthR32(shadowMap, base + ivec2(0, 1), cascadeIdx) < receiverDepth ? 0.0 : 1.0;
+    float c11 = FetchCascadeDepthR32(shadowMap, base + ivec2(1, 1), cascadeIdx) < receiverDepth ? 0.0 : 1.0;
+    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
+vec2 CascadeDiskSample(int sampleIndex, int sampleCount, bool clumped)
+{
+    float u = (float(sampleIndex) + 0.5) / float(sampleCount);
+    float radius = clumped ? u : sqrt(u);
+    return fibonacciSpiralDirection[sampleIndex] * radius;
+}
+
+vec2 RotateCascadeDiskSample(vec2 sampleOffset, int cascadeIdx)
+{
+    // One stable rotation per cascade.  A circular low-discrepancy kernel does
+    // not need per-pixel/frame noise, which would trade contouring for shimmer.
+    float angle = float(cascadeIdx) * 1.61803398875;
+    float c = cos(angle);
+    float s = sin(angle);
+    return vec2(c * sampleOffset.x - s * sampleOffset.y,
+                s * sampleOffset.x + c * sampleOffset.y);
+}
+
+float CascadeSunAngularRadius()
+{
+    // Physical solar angular radius is about 0.266 degrees.  Preserve the
+    // existing 0.3 softness setting as the neutral artistic scale.
+    const float solarAngularRadius = 0.00464258;
+    float artisticScale = clamp(softShadowParams.y / 0.3, 0.0, 4.0);
+    return solarAngularRadius * artisticScale;
+}
+
+float CascadeFootprintConfidence(vec2 uv, ivec2 size, float radiusTexels)
+{
+    vec2 edgeTexels = min(uv, vec2(1.0) - uv) * vec2(size);
+    float nearestEdge = min(edgeTexels.x, edgeTexels.y);
+    return smoothstep(max(radiusTexels * 0.5, 1.0), radiusTexels + 1.5, nearestEdge);
+}
+
+float FindCascadeAverageBlockerDepth(
+    sampler2DArray shadowMap,
+    CascadeProjection p,
+    int cascadeIdx,
+    float receiverDepth,
+    float searchRadiusTexels,
+    out float blockerCount)
+{
+    const int blockerSampleCount = 16;
+    ivec2 size = textureSize(shadowMap, 0).xy;
+    vec2 texelSize = 1.0 / vec2(size);
+    float blockerDepthSum = 0.0;
+    blockerCount = 0.0;
+
+    for (int i = 0; i < blockerSampleCount; ++i)
+    {
+        vec2 disk = RotateCascadeDiskSample(
+            CascadeDiskSample(i, blockerSampleCount, true), cascadeIdx);
+        vec2 sampleUV = p.uv + disk * texelSize * searchRadiusTexels;
+        if (any(lessThanEqual(sampleUV, vec2(0.0))) || any(greaterThanEqual(sampleUV, vec2(1.0))))
+            continue;
+
+        ivec2 sampleTexel = ivec2(floor(sampleUV * vec2(size)));
+        float depth = FetchCascadeDepthR32(shadowMap, sampleTexel, cascadeIdx);
+        if (depth < receiverDepth)
+        {
+            blockerDepthSum += depth;
+            blockerCount += 1.0;
+        }
+    }
+
+    return blockerCount > 0.0 ? blockerDepthSum / blockerCount : 1.0;
+}
+
+float FilterCascadePCF(
+    sampler2DArray shadowMap,
+    CascadeProjection p,
+    int cascadeIdx,
+    float receiverDepth,
+    float filterRadiusTexels)
+{
+    const int filterSampleCount = 24;
+    ivec2 size = textureSize(shadowMap, 0).xy;
+    vec2 texelSize = 1.0 / vec2(size);
+    float visibility = 0.0;
+
+    for (int i = 0; i < filterSampleCount; ++i)
+    {
+        vec2 disk = RotateCascadeDiskSample(
+            CascadeDiskSample(i, filterSampleCount, false), cascadeIdx);
+        vec2 sampleUV = p.uv + disk * texelSize * filterRadiusTexels;
+        visibility += CompareCascadeDepthBilinear(
+            shadowMap, sampleUV, cascadeIdx, receiverDepth);
+    }
+
+    return visibility / float(filterSampleCount);
+}
+
+float SampleCascadeShadowMap_PCSS(
     vec3 positionWS,
     vec3 normalWS,
     sampler2DArray cascadeShadowMap,
@@ -418,43 +608,51 @@ float SampleCascadeShadowMap_StablePCF(
     if (p.valid <= 0.0)
         return 1.0;
 
-    ivec3 sz = textureSize(cascadeShadowMap, 0);
-    vec2 texelSize = 1.0 / vec2(sz.xy);
-
+    ivec2 size = textureSize(cascadeShadowMap, 0).xy;
     float receiverDepth = p.depth - ComputeCascadeReceiverBias(normalWS, cascadeIdx);
-    float radius = max(uDirectionLight.cascadeFilterRadius[cascadeIdx], 1.35);
+    float maxRadiusTexels = max(uDirectionLight.cascadeFilterRadius[cascadeIdx], 1.0);
+    float depthRange = 1.0 / max(uDirectionLight.cascadeDepthScale[cascadeIdx], 1e-6);
+    float worldUnitsPerTexel = max(uDirectionLight.cascadeTexelSize[cascadeIdx], 1e-6);
+    float tanAngularRadius = tan(CascadeSunAngularRadius());
 
-    float visibility = 0.0;
-    float weightSum = 0.0;
-    float totalWeight = 0.0;
+    // This is an upper bound on the penumbra of a blocker between the light
+    // near plane and the receiver, expressed in shadow texels.
+    float receiverDistanceFromNear = max(p.depth, 0.0) * depthRange;
+    float searchRadiusTexels = clamp(
+        receiverDistanceFromNear * tanAngularRadius / worldUnitsPerTexel,
+        2.0,
+        maxRadiusTexels);
 
-    for (int y = -3; y <= 3; ++y)
-    {
-        for (int x = -3; x <= 3; ++x)
-        {
-            vec2 o = vec2(float(x), float(y));
-            float wx = 1.0 - abs(float(x)) / 4.0;
-            float wy = 1.0 - abs(float(y)) / 4.0;
-            float w = wx * wy;
-            vec2 uv = p.uv + o * texelSize * radius;
-            totalWeight += w;
-            if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0)
-                continue;
-
-            visibility += CompareCascadeDepthR32(cascadeShadowMap, uv, cascadeIdx, receiverDepth) * w;
-            weightSum += w;
-        }
-    }
-
-    if (weightSum <= 1e-4)
-    {
-        projectionValid = 0.0;
+    projectionValid *= CascadeFootprintConfidence(
+        p.uv, size, max(searchRadiusTexels, 1.0));
+    if (projectionValid <= 0.0)
         return 1.0;
-    }
 
-    float edgeConfidence = clamp(weightSum / max(totalWeight, 1e-4), 0.0, 1.0);
-    projectionValid *= smoothstep(0.45, 0.85, edgeConfidence);
-    return visibility / max(weightSum, 1e-4);
+    float blockerCount = 0.0;
+    float averageBlockerDepth = FindCascadeAverageBlockerDepth(
+        cascadeShadowMap,
+        p,
+        cascadeIdx,
+        receiverDepth,
+        searchRadiusTexels,
+        blockerCount);
+
+    if (blockerCount <= 0.0)
+        return 1.0;
+
+    float blockerSeparationWorld = max(p.depth - averageBlockerDepth, 0.0) * depthRange;
+    float filterRadiusTexels = clamp(
+        blockerSeparationWorld * tanAngularRadius / worldUnitsPerTexel,
+        0.75,
+        maxRadiusTexels);
+
+    projectionValid *= CascadeFootprintConfidence(p.uv, size, filterRadiusTexels);
+    return FilterCascadePCF(
+        cascadeShadowMap,
+        p,
+        cascadeIdx,
+        receiverDepth,
+        filterRadiusTexels);
 }
 
 float ComputeCascadeBlendFactor(float viewDepth, int cascadeIdx)
@@ -474,61 +672,46 @@ float SampleCascadeShadow(vec3 positionWS, vec3 normalWS, sampler2DArray cascade
 {
     int cascadeIdx = SelectCascade(viewDepth);
     float currentValid = 0.0;
-    float shadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, cascadeIdx, currentValid);
+    float shadow = SampleCascadeShadowMap_PCSS(positionWS, normalWS, cascadeShadowMap, cascadeIdx, currentValid);
     float lastSplit = uDirectionLight.cascadeSplits[CASCADE_COUNT - 1];
     float lastCascadeFade = 1.0 - smoothstep(lastSplit * 0.85, lastSplit, viewDepth);
 
     if (currentValid <= 0.0)
     {
-        for (int offset = 1; offset < CASCADE_COUNT; ++offset)
+        // Prefer the adjacent coarser cascade.  Searching arbitrary layers hid
+        // broken cascade matrices and could send near pixels to the farthest
+        // layer, producing metre-sized shadow texels.
+        int farCascade = cascadeIdx + 1;
+        if (farCascade < CASCADE_COUNT)
         {
-            int nearCascade = cascadeIdx - offset;
-            if (nearCascade >= 0)
-            {
-                float valid = 0.0;
-                float fallbackShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, nearCascade, valid);
-                if (valid > 0.0)
-                    return mix(1.0, fallbackShadow, lastCascadeFade);
-            }
-
-            int farCascade = cascadeIdx + offset;
-            if (farCascade < CASCADE_COUNT)
-            {
-                float valid = 0.0;
-                float fallbackShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, farCascade, valid);
-                if (valid > 0.0)
-                    return mix(1.0, fallbackShadow, lastCascadeFade);
-            }
+            float valid = 0.0;
+            float fallbackShadow = SampleCascadeShadowMap_PCSS(positionWS, normalWS, cascadeShadowMap, farCascade, valid);
+            if (valid > 0.0)
+                return mix(1.0, fallbackShadow, lastCascadeFade);
+        }
+        int nearCascade = cascadeIdx - 1;
+        if (nearCascade >= 0)
+        {
+            float valid = 0.0;
+            float fallbackShadow = SampleCascadeShadowMap_PCSS(positionWS, normalWS, cascadeShadowMap, nearCascade, valid);
+            if (valid > 0.0)
+                return mix(1.0, fallbackShadow, lastCascadeFade);
         }
         return 1.0;
     }
 
     if (currentValid < 0.95)
     {
-        for (int offset = 1; offset < CASCADE_COUNT; ++offset)
+        int fallbackCascade = cascadeIdx < CASCADE_COUNT - 1 ? cascadeIdx + 1 : cascadeIdx - 1;
+        if (fallbackCascade >= 0 && fallbackCascade < CASCADE_COUNT)
         {
-            int nearCascade = cascadeIdx - offset;
-            if (nearCascade >= 0)
+            float valid = 0.0;
+            float fallbackShadow = SampleCascadeShadowMap_PCSS(
+                positionWS, normalWS, cascadeShadowMap, fallbackCascade, valid);
+            if (valid > currentValid)
             {
-                float valid = 0.0;
-                float fallbackShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, nearCascade, valid);
-                if (valid > currentValid)
-                {
-                    shadow = mix(fallbackShadow, shadow, currentValid);
-                    break;
-                }
-            }
-
-            int farCascade = cascadeIdx + offset;
-            if (farCascade < CASCADE_COUNT)
-            {
-                float valid = 0.0;
-                float fallbackShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, farCascade, valid);
-                if (valid > currentValid)
-                {
-                    shadow = mix(fallbackShadow, shadow, currentValid);
-                    break;
-                }
+                shadow = mix(fallbackShadow, shadow, currentValid);
+                currentValid = valid;
             }
         }
     }
@@ -544,7 +727,7 @@ float SampleCascadeShadow(vec3 positionWS, vec3 normalWS, sampler2DArray cascade
         if (blendFromPrev > 0.0)
         {
             float prevValid = 0.0;
-            float prevShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, cascadeIdx - 1, prevValid);
+            float prevShadow = SampleCascadeShadowMap_PCSS(positionWS, normalWS, cascadeShadowMap, cascadeIdx - 1, prevValid);
             if (prevValid > 0.0)
                 shadow = mix(shadow, prevShadow, blendFromPrev);
         }
@@ -555,7 +738,7 @@ float SampleCascadeShadow(vec3 positionWS, vec3 normalWS, sampler2DArray cascade
         if (blendFactor > 0.0)
         {
             float nextValid = 0.0;
-            float nextShadow = SampleCascadeShadowMap_StablePCF(positionWS, normalWS, cascadeShadowMap, cascadeIdx + 1, nextValid);
+            float nextShadow = SampleCascadeShadowMap_PCSS(positionWS, normalWS, cascadeShadowMap, cascadeIdx + 1, nextValid);
             if (nextValid > 0.0)
                 shadow = mix(shadow, nextShadow, blendFactor);
         }
@@ -563,96 +746,121 @@ float SampleCascadeShadow(vec3 positionWS, vec3 normalWS, sampler2DArray cascade
 
     return mix(1.0, shadow, lastCascadeFade);
 }
+
+float FetchGICascadeDepth(sampler2D shadowMap, ivec2 texel)
+{
+    ivec2 size = textureSize(shadowMap, 0);
+    return texelFetch(shadowMap, clamp(texel, ivec2(0), size - ivec2(1)), 0).r;
+}
+
+float CompareGICascadeDepthBilinear(sampler2D shadowMap, vec2 texelPosition, float receiverDepth)
+{
+    ivec2 base = ivec2(floor(texelPosition - vec2(0.5)));
+    vec2 f = fract(texelPosition - vec2(0.5));
+    float c00 = FetchGICascadeDepth(shadowMap, base) < receiverDepth ? 0.0 : 1.0;
+    float c10 = FetchGICascadeDepth(shadowMap, base + ivec2(1, 0)) < receiverDepth ? 0.0 : 1.0;
+    float c01 = FetchGICascadeDepth(shadowMap, base + ivec2(0, 1)) < receiverDepth ? 0.0 : 1.0;
+    float c11 = FetchGICascadeDepth(shadowMap, base + ivec2(1, 1)) < receiverDepth ? 0.0 : 1.0;
+    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
+// The GI pass binds one cascade layer as sampler2D.  Use a compact, stable PCF
+// here instead of filtering R32 depth and comparing the interpolated value.
+float SampleGICascadeShadow(vec3 positionWS, vec3 normalWS, sampler2D shadowMap)
+{
+    const int cascadeIdx = RAYTRACING_CASCADE_INDEX;
+    CascadeProjection p = ProjectCascade(positionWS, cascadeIdx);
+    if (p.valid <= 0.0)
+        return 1.0;
+
+    ivec2 size = textureSize(shadowMap, 0);
+    float receiverDepth = p.depth - ComputeCascadeReceiverBias(normalWS, cascadeIdx);
+    float radiusTexels = min(max(uDirectionLight.cascadeFilterRadius[cascadeIdx] * 0.1, 1.0), 2.0);
+    float confidence = CascadeFootprintConfidence(p.uv, size, radiusTexels);
+    if (confidence <= 0.0)
+        return 1.0;
+
+    const int sampleCount = 8;
+    float visibility = 0.0;
+    for (int i = 0; i < sampleCount; ++i)
+    {
+        vec2 disk = RotateCascadeDiskSample(CascadeDiskSample(i, sampleCount, true), cascadeIdx);
+        vec2 texelPosition = p.uv * vec2(size) + disk * radiusTexels;
+        visibility += CompareGICascadeDepthBilinear(shadowMap, texelPosition, receiverDepth);
+    }
+    return mix(1.0, visibility / float(sampleCount), confidence);
+}
+
 void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2D punctualShadowMap, float sampleRadius, vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
 {
-    diffuseResult = vec3(0);
+    diffuseResult = vec3(0.0);
 
     vec3 T, B;
     BuildTBN(normalWS, T, B);
 
-    int sampleCount = 4;
+    const int sampleCount = 4;
     uint n = uint(sampleCount);
     float invN = 1.0 / float(sampleCount);
-    float rotAngle = 0;
-    float c = cos(rotAngle), s = sin(rotAngle);
+    float radius = min(sampleRadius, 10.0);
+    vec3 albedo = clamp(surfaceAlbedoRoughness.rgb, vec3(0.0), vec3(1.0));
 
-    vec3 albedo = surfaceAlbedoRoughness.rgb;
-    float roughness = surfaceAlbedoRoughness.a;
-
-    // Limit effective area for stability
-    float radius = min(sampleRadius, 10.0); // arbitrary max
-    for (uint i = 0u; i < n; ++i)
+    for (uint diskIndex = 0u; diskIndex < n; ++diskIndex)
     {
-        vec2 d2 = DiskSample(i, n);              // in [0,1] radius
-        d2 = vec2(d2.x * c - d2.y * s, d2.x * s + d2.y * c); // rotate
+        vec2 d2 = DiskSample(diskIndex, n);
         vec3 samplePos = positionWS + (T * d2.x + B * d2.y) * radius;
-        float ndl = max(dot(normalWS, uDirectionLight.direction.xyz), 0);
-        // Simple shadow test using the GI cascade layer
-        vec4 sClip = uDirectionLight.shadowMatrix[RAYTRACING_CASCADE_INDEX] * vec4(samplePos, 1.0);
-        sClip.z = sClip.z * 0.5 + 0.5 - DEPTH_BIAS;
-        vec2 sUV = sClip.xy * 0.5 + 0.5;
-        sUV.y = 1.0 - sUV.y;
-        float shadowV = (texture(shadowMap, sUV).r < sClip.z) ? 0.0 : 1.0;
-        diffuseResult += ndl * uDirectionLight.color.rgb *albedo * uDirectionLight.intensity * shadowV;
 
-        for (uint i = 0; i < uPointLightCount; ++i)
+        // GI probe 缓存 hit 点向外反射的 diffuse radiance；Lambert BRDF 为 albedo / PI。
+        float dirNoL = max(dot(normalWS, uDirectionLight.direction.xyz), 0.0);
+        float dirShadow = SampleGICascadeShadow(samplePos, normalWS, shadowMap);
+        diffuseResult += dirNoL * uDirectionLight.color.rgb * uDirectionLight.intensity * dirShadow * albedo * INV_PI;
+
+        for (uint lightIndex = 0u; lightIndex < uPointLightCount; ++lightIndex)
         {
-            PointLightData pointLight = GetPointLight(int(i));
-            vec3 lightDirection = pointLight.position.xyz - positionWS;
+            PointLightData pointLight = GetPointLight(int(lightIndex));
+            vec3 lightDirection = pointLight.position.xyz - samplePos;
             float distance = length(lightDirection);
-            if (distance > pointLight.radius) continue;
+            if (distance > pointLight.radius)
+                continue;
 
             lightDirection /= distance;
             float attenuation = 1.0 - (distance / pointLight.radius);
             attenuation *= attenuation;
+            attenuation = min(attenuation, SamplePointShadowMap(
+                samplePos, punctualShadowMap, int(lightIndex)));
 
-            // 计算阴影
-            float shadowValue = SamplePointShadowMap(positionWS, punctualShadowMap, int(pointLight.shadowIndex));
-            attenuation = min(attenuation, shadowValue);
-
-            float ndl = max(dot(normalWS, lightDirection), 0.0); //
-
-            vec3 diffuse = vec3(0);
-            diffuse = ndl * pointLight.color.rgb * pointLight.intensity * attenuation * albedo;
-            diffuseResult += diffuse;
+            float noL = max(dot(normalWS, lightDirection), 0.0);
+            diffuseResult += noL * pointLight.color.rgb * pointLight.intensity * attenuation * albedo * INV_PI;
         }
 
-        //聚光灯计算
-        for (uint i = 0; i < uSpotLightCount; ++i)
+        for (uint lightIndex = 0u; lightIndex < uSpotLightCount; ++lightIndex)
         {
-            SpotLightData spotLight = GetSpotLight(int(i));
-            vec3 lightDirection = spotLight.position.xyz - positionWS;
+            SpotLightData spotLight = GetSpotLight(int(lightIndex));
+            vec3 lightDirection = spotLight.position.xyz - samplePos;
             float distance = length(lightDirection);
-            if (distance > spotLight.radius) continue;
+            if (distance > spotLight.radius)
+                continue;
 
             lightDirection /= distance;
             float attenuation = 1.0 - (distance / spotLight.radius);
             attenuation *= attenuation;
+            attenuation = min(attenuation, SampleSpotShadowMap(
+                samplePos, punctualShadowMap, int(lightIndex)));
 
-            // // 计算阴影
-            // float shadowValue = SampleSpotShadowMap(positionWS, punctualShadowMap, int(spotLight.shadowIndex));
-            // attenuation = min(attenuation, shadowValue);
-
-            
             float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
-            if (coneAngle < cos(spotLight.outerConeAngle)) continue;
+            if (coneAngle < cos(spotLight.outerConeAngle))
+                continue;
 
             float innerConeAngle = cos(spotLight.innerConeAngle);
             float outerConeAngle = cos(spotLight.outerConeAngle);
             float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
 
-            float ndl = max(dot(normalWS, lightDirection), 0);//
-            vec3 diffuse = vec3(0);
-            diffuse = ndl * spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation * albedo;
-
-            diffuseResult += diffuse;
+            float noL = max(dot(normalWS, lightDirection), 0.0);
+            diffuseResult += noL * spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation * albedo * INV_PI;
         }
     }
-    diffuseResult *= invN * 5;
+
+    diffuseResult *= invN;
 }
-
-
-
 // Cascade shadow map version of CalculateDirectLight
 // Forward declaration: EvaluateRectLightLTC is defined in Lighting/RectLightLTC.glsl,
 // which downstream shaders include AFTER this file (RectLightLTC depends on
@@ -703,7 +911,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float attenuation = 1.0 - (distance / pointLight.radius);
         attenuation *= attenuation;
 
-        float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(pointLight.shadowIndex));
+        float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
         attenuation = min(attenuation, shadowValue);
 
 #ifdef IES_PROFILE_ENABLED
@@ -738,7 +946,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
 
-        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(spotLight.shadowIndex));
+        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
         attenuation = min(attenuation, shadowValue);
 
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
@@ -788,7 +996,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
             if (shadowIdx >= 0)
             {
                 vec3 lightDirRect = normalize(rl.position_halfW.xyz - brdfData.positionWS);
-                float shadowVal = SampleRectShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirRect, punctualShadowMap, shadowIdx);
+                float shadowVal = SampleRectShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirRect, punctualShadowMap, int(i));
                 rectD *= shadowVal;
                 rectS *= shadowVal;
             }
@@ -810,7 +1018,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float attenuation = 1.0 - (distance / pointLight.radius);
         attenuation *= attenuation;
 
-        float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(pointLight.shadowIndex));
+        float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
         attenuation = min(attenuation, shadowValue);
 
 #ifdef IES_PROFILE_ENABLED
@@ -843,7 +1051,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
 
-        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(spotLight.shadowIndex));
+        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
         attenuation = min(attenuation, shadowValue);
 
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
@@ -896,7 +1104,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
                 if (shadowIdx >= 0)
                 {
                     vec3 lightDirRect = normalize(rl.position_halfW.xyz - brdfData.positionWS);
-                    float shadowVal = SampleRectShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirRect, punctualShadowMap, shadowIdx);
+                    float shadowVal = SampleRectShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirRect, punctualShadowMap, int(i));
                     rectD *= shadowVal;
                     rectS *= shadowVal;
                 }

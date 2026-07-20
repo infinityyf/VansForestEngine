@@ -48,12 +48,25 @@ namespace Vans::EditorAPI
 
 		EditorTextureHandle GetViewportTexture(ViewportId id) const override;
 		RenderTexturePreview GetViewportPreview(ViewportId id) const override;
+		FSRSettingsSnapshot GetFSRSettings() const override;
+		void SetFSRSettings(FSRUpscaleMode mode, float sharpness) override;
+		void SetSceneViewportExtent(std::uint32_t width, std::uint32_t height) override;
 		std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const override;
 		RenderBackendDiagnostics GetRenderBackendDiagnostics() const override;
 		void RebuildReflectionProbeResources() override;
 		void BakeQueuedReflectionProbesNow() override;
 		ReflectionProbeSettingsSnapshot GetReflectionProbeSettings() const override;
 		void ApplyReflectionProbeSettings(const ReflectionProbeSettingsSnapshot& settings) override;
+		GIInspectorSettingsSnapshot GetGISettings() const override;
+		void ApplyGISettings(const GIInspectorSettingsSnapshot& settings) override;
+		GIProbeDebugSnapshot CaptureGIProbeDebugSnapshot(std::uint32_t stride, float exposure) override;
+		GIProbeDebugSnapshot GetGIProbeDebugSnapshot() const override;
+		RenderTexturePreview RequestGIRTPreview(
+			std::uint32_t mode,
+			std::uint32_t zSlice,
+			std::uint32_t rayIndex,
+			float exposure,
+			float positionScale) override;
 		void GenerateAutoReflectionProbes() override;
 		void ClearAutoReflectionProbes() override;
 		void RequestReflectionProbeBakeAll() override;
@@ -81,6 +94,7 @@ namespace Vans::EditorAPI
 		bool LoadRuntimeProjectAssetsForScene(const std::string& scenePath) override;
 		VehicleDebugSnapshot GetVehicleDebugSnapshot() const override;
 		bool HasAnimationDebugNodes() const override;
+		VansGraphics::VansAnimationNode* FindRuntimeAnimationNodeByEntityGuid(const std::string& entityGuid) const override;
 		MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const override;
 		void SetFootIKDebugVisualization(bool enabled) override;
 		FootIKDebugSnapshot GetFootIKDebugSnapshot() const override;
@@ -96,6 +110,8 @@ namespace Vans::EditorAPI
 		void CommitLightingChanges() override;
 		LightingSettingsSnapshot GetLightingSettings() const override;
 		void ApplyLightingSettings(const LightingSettingsSnapshot& settings) override;
+		PostProcessSettingsSnapshot GetPostProcessSettings() const override;
+		void ApplyPostProcessSettings(const PostProcessSettingsSnapshot& settings) override;
 		FogSettings GetFogSettings() const override;
 		void ApplyFogSettings(const FogSettings& settings) override;
 		FogVolumeSettings GetFogVolumeSettings() const override;
@@ -151,5 +167,6 @@ namespace Vans::EditorAPI
 		std::vector<std::unique_ptr<IEngineCommand>> m_UndoStack;
 		std::vector<std::unique_ptr<IEngineCommand>> m_RedoStack;
 		bool m_AllowNextCommandMerge = true;
+		GIProbeDebugSnapshot m_GIProbeDebugSnapshot;
 	};
 }

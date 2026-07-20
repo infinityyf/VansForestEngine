@@ -1,6 +1,7 @@
 #include "VansParticleRenderNode.h"
 #include "VulkanCore/VansVKBuffer.h"
 #include "VulkanCore/VansVKCommandBuffer.h"
+#include "VulkanCore/VansRenderPass.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "../Util/VansLog.h"
@@ -116,11 +117,26 @@ namespace VansGraphics
 
     void VansParticleRenderNode::UpdateInstanceBuffer(
         VkDevice& device,
-        const std::vector<VansParticleInstanceData>& data)
+        const std::vector<VansParticleInstanceData>& data,
+        const glm::mat4& viewMatrix)
     {
         m_InstanceCount = static_cast<uint32_t>(data.size());
 
         if (m_InstanceCount == 0) return;
+
+        std::vector<VansParticleInstanceData> sortedData(data.begin(), data.end());
+        glm::vec3 center(0.0f);
+        for (const auto& instance : sortedData)
+            center += instance.m_WorldPosition;
+        m_SortCenterWS = center / static_cast<float>(sortedData.size());
+
+        std::sort(sortedData.begin(), sortedData.end(),
+            [&viewMatrix](const VansParticleInstanceData& a, const VansParticleInstanceData& b)
+            {
+                const float depthA = -(viewMatrix * glm::vec4(a.m_WorldPosition, 1.0f)).z;
+                const float depthB = -(viewMatrix * glm::vec4(b.m_WorldPosition, 1.0f)).z;
+                return depthA > depthB;
+            });
 
         VkDeviceSize requiredSize = m_InstanceCount * sizeof(VansParticleInstanceData);
 
@@ -150,7 +166,7 @@ namespace VansGraphics
         }
 
         // 直接写入持久映射地址
-        m_InstanceBuffer.UpdateMapped(data.data(), 0, requiredSize);
+        m_InstanceBuffer.UpdateMapped(sortedData.data(), 0, requiredSize);
     }
 
     // ── SetupDescriptors ─────────────────────────────────────────────────
@@ -197,6 +213,12 @@ namespace VansGraphics
                 texBindings.push_back(
                     { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                       VK_SHADER_STAGE_FRAGMENT_BIT, nullptr });
+                texBindings.push_back(
+                    { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                      VK_SHADER_STAGE_FRAGMENT_BIT, nullptr });
+                texBindings.push_back(
+                    { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                      VK_SHADER_STAGE_FRAGMENT_BIT, nullptr });
             }
             std::vector<VkDescriptorSet> texSets;
             VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
@@ -226,6 +248,26 @@ namespace VansGraphics
                     { {
                         negativeTex->GetImage().GetSampler(),
                         negativeTex->GetImage().GetImageView(),
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                    } });
+
+                auto* renderPassManager = VansRenderPassManager::GetInstance();
+                descMgr->WriteImageDescriptor(
+                    m_DescriptorSet,
+                    2,
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    { {
+                        renderPassManager->GetCascadeShadowSampler(),
+                        renderPassManager->GetCascadeShadowArrayView(),
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                    } });
+                descMgr->WriteImageDescriptor(
+                    m_DescriptorSet,
+                    3,
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    { {
+                        renderPassManager->GetPunctualShadowMap().GetSampler(),
+                        renderPassManager->GetPunctualShadowMap().GetImageView(),
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                     } });
             }

@@ -44,7 +44,13 @@ float TerrainRawHeightToWorldY(float rawHeight)
     return rawHeight + TerrainHeightOffset();
 }
 
-vec2 TerrainApplyStitch(vec2 localPos, float stitchFlags)
+float TerrainSampleLocalRawHeight(vec2 localPos, vec2 instanceOffset, float instanceScale)
+{
+    vec2 worldPosXZ = localPos * instanceScale + instanceOffset;
+    return TerrainSampleRawHeight(TerrainWorldXZToHeightUV(worldPosXZ));
+}
+
+float TerrainSampleStitchedRawHeight(vec2 localPos, vec2 instanceOffset, float instanceScale, float stitchFlags)
 {
     int flags = int(stitchFlags);
     float patchSize = TerrainPatchGridSize();
@@ -59,31 +65,44 @@ vec2 TerrainApplyStitch(vec2 localPos, float stitchFlags)
     bool stitchTop = isTop && ((flags & 4) != 0);
     bool stitchBottom = isBottom && ((flags & 8) != 0);
 
-    vec2 snappedLocalPos = localPos;
+    // 细 LOD 与粗 LOD 相邻时，不能移动边缘 XZ；只把高度投影到粗 LOD 边缘线段上。
     if (stitchLeft || stitchRight)
     {
-        snappedLocalPos.y = floor(localPos.y * 0.5) * 2.0;
+        float edgeX = stitchLeft ? 0.0 : patchSize;
+        float coarse0 = clamp(floor(localPos.y * 0.5) * 2.0, 0.0, patchSize);
+        float coarse1 = min(coarse0 + 2.0, patchSize);
+        float denom = max(coarse1 - coarse0, 0.0001);
+        float t = clamp((localPos.y - coarse0) / denom, 0.0, 1.0);
+        float h0 = TerrainSampleLocalRawHeight(vec2(edgeX, coarse0), instanceOffset, instanceScale);
+        float h1 = TerrainSampleLocalRawHeight(vec2(edgeX, coarse1), instanceOffset, instanceScale);
+        return mix(h0, h1, t);
     }
 
     if (stitchTop || stitchBottom)
     {
-        snappedLocalPos.x = floor(localPos.x * 0.5) * 2.0;
+        float edgeY = stitchTop ? 0.0 : patchSize;
+        float coarse0 = clamp(floor(localPos.x * 0.5) * 2.0, 0.0, patchSize);
+        float coarse1 = min(coarse0 + 2.0, patchSize);
+        float denom = max(coarse1 - coarse0, 0.0001);
+        float t = clamp((localPos.x - coarse0) / denom, 0.0, 1.0);
+        float h0 = TerrainSampleLocalRawHeight(vec2(coarse0, edgeY), instanceOffset, instanceScale);
+        float h1 = TerrainSampleLocalRawHeight(vec2(coarse1, edgeY), instanceOffset, instanceScale);
+        return mix(h0, h1, t);
     }
 
-    return snappedLocalPos;
+    return TerrainSampleLocalRawHeight(localPos, instanceOffset, instanceScale);
 }
 
 vec3 TerrainBuildWorldPosition(vec2 localPos, vec2 instanceOffset, float instanceScale, float stitchFlags, out vec2 heightUV, out float rawHeight)
 {
-    vec2 snappedLocalPos = TerrainApplyStitch(localPos, stitchFlags);
-    vec2 worldPosXZ = snappedLocalPos * instanceScale + instanceOffset;
+    vec2 worldPosXZ = localPos * instanceScale + instanceOffset;
     heightUV = TerrainWorldXZToHeightUV(worldPosXZ);
-    rawHeight = TerrainSampleRawHeight(heightUV);
+    rawHeight = TerrainSampleStitchedRawHeight(localPos, instanceOffset, instanceScale, stitchFlags);
     return vec3(worldPosXZ.x, TerrainRawHeightToWorldY(rawHeight), worldPosXZ.y);
 }
 
-// ── Tessellation parameters（binding 7，TCS + TES 读取） ──────────────────
-// 注：displacementStrength 已移除（原法线贴图 Y 位移逻辑被程序化噪声替代）
+// 细分参数（binding 7，TCS 与 TES 读取）。
+// 注：displacementStrength 已移除，原法线贴图 Y 位移逻辑由程序化噪声替代。
 layout(set = 1, binding = 7) uniform TessellationParams {
     float maxTessLevel;
     float tessDistance;
@@ -91,14 +110,14 @@ layout(set = 1, binding = 7) uniform TessellationParams {
     float padding;  // 原 displacementStrength，现为 padding
 } tessParams;
 
-// ── 程序化噪声细节参数（binding 8，TES + FS 读取） ────────────
+// 程序化噪声细节参数（binding 8，TES 与 FS 读取）。
 layout(set = 1, binding = 8) uniform NoiseDetailParams {
     float noiseStrength;      // 噪声强度（世界单位），默认 0.03
     float noiseFrequency;     // 基础频率（世界单位倒数），默认 0.8
     float noiseLacunarity;    // 频率倍增系数，默认 2.0（与 hill() 一致）
     float noiseGain;          // 振幅衰减系数，默认 0.52（与 hill() 一致）
     int   noiseOctaves;       // octave 数量，默认 4
-    float noiseWarpStrength;  // 域扭曲强度，默认 0.0（0=关闭）
+    float noiseWarpStrength;  // 域扭曲强度，默认 0.0 表示关闭
     float fadeStart;          // 距离衰减起始比例 [0,1]，默认 0.7
     float noisePadding;
 } noiseParams;

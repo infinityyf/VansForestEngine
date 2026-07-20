@@ -24,6 +24,24 @@ namespace VansGraphics
 
 	namespace
 	{
+		SSGIParamsGPU BuildSSGIParamsFromGISettings(
+			const VansGISettings& gi,
+			uint32_t renderWidth,
+			uint32_t renderHeight)
+		{
+			const float width = static_cast<float>(std::max(renderWidth, 1u));
+			const float height = static_cast<float>(std::max(renderHeight, 1u));
+			const glm::vec3 volumeSize = glm::vec3(gi.gridDimensions) * gi.probeSpacingAxes;
+			const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
+
+			SSGIParamsGPU data{};
+			data.screenSize = glm::vec4(width, height, 1.0f / width, 1.0f / height);
+			data.giVolumeMin = glm::vec4(volumeMin, 0.0f);
+			data.giVolumeSizeAndBias = glm::vec4(volumeSize, gi.normalBias);
+			data.traceParams = glm::vec4(gi.maxRayDistance, 0.75f, gi.volumeFadeDistance, 0.0f);
+			return data;
+		}
+
 		void RecordShaderWriteToReadMemoryDependency(
 			VansVKCommandBuffer& commandBuffer,
 			VkPipelineStageFlags srcStageMask,
@@ -36,6 +54,22 @@ namespace VansGraphics
 
 			commandBuffer.PipelineBarrier(srcStageMask, dstStageMask, { memoryBarrier });
 		}
+	}
+
+	void VansVKDevice::UploadSSGIParamsFromGISettings()
+	{
+		if (m_Scene == nullptr)
+			return;
+
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager == nullptr || manager->m_SSGICBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+			return;
+
+		const SSGIParamsGPU data = BuildSSGIParamsFromGISettings(
+			m_Scene->GetGISettings(),
+			m_RenderWidth,
+			m_RenderHeight);
+		manager->m_SSGICBBuffer.SetBufferData(&data, 0, sizeof(data));
 	}
 
 	void VansVKDevice::UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
@@ -59,6 +93,13 @@ namespace VansGraphics
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
 		uint32_t writeIdx = manager->m_SSGITemporalFrame % 2;
+
+		SSGITemporalParamsGPU temporalData{};
+		const float width = static_cast<float>(std::max(m_RenderWidth, 1u));
+		const float height = static_cast<float>(std::max(m_RenderHeight, 1u));
+		temporalData.screenSize = glm::vec4(width, height, 1.0f / width, 1.0f / height);
+		temporalData.frameParams = glm::vec4(static_cast<float>(manager->m_SSGITemporalFrame), 0.0f, 0.0f, 0.0f);
+		manager->m_SSGITemporalCBBuffer.SetBufferData(&temporalData, 0, sizeof(temporalData));
 
 
 
@@ -168,6 +209,8 @@ namespace VansGraphics
 
 		VansTexture* shbResult = getRuntimeTexture(VansMaterialManager::RT_SH_B_RESULT);
 
+		VansTexture* giVisibilityAtlas = getRuntimeTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
+
 		VansTexture* hzbResult = getRuntimeTexture(VansMaterialManager::RT_HZB_RESULT);
 
 		VansTexture* ssgiTemporalA = getRuntimeTexture(VansMaterialManager::RT_SSGI_TEMPORAL_A);
@@ -184,7 +227,7 @@ namespace VansGraphics
 
 		if (ssgiResult == nullptr || shrResult == nullptr || shgResult == nullptr || shbResult == nullptr ||
 
-			hzbResult == nullptr || ssgiTemporalA == nullptr || ssgiTemporalB == nullptr ||
+			giVisibilityAtlas == nullptr || hzbResult == nullptr || ssgiTemporalA == nullptr || ssgiTemporalB == nullptr ||
 
 			ssaoResult == nullptr || ssaoFilterResult == nullptr || ssgiFilterResult == nullptr)
 
@@ -225,6 +268,8 @@ namespace VansGraphics
 		auto& color = renderPassManager->GetColor();
 
 		auto& positionGbuffer = renderPassManager->GetGbuffer2();
+
+		auto& materialGbuffer = renderPassManager->GetGbuffer1();
 
 		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_SSGIDescriptorSets[0], PassBinding::TEXTURE_0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {
 
@@ -363,6 +408,34 @@ namespace VansGraphics
 						hzbResult->GetImage().GetSampler(),
 
 						hzbResult->GetImage().GetImageView(),
+
+						VK_IMAGE_LAYOUT_GENERAL
+
+					}
+
+				}, 0);
+
+		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_SSGIDescriptorSets[0], PassBinding::TEXTURE_11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {
+
+					{
+
+						materialGbuffer.GetSampler(),
+
+						materialGbuffer.GetImageView(),
+
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+
+					}
+
+				}, 0);
+
+		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_SSGIDescriptorSets[0], SSGI_BINDING_GI_VISIBILITY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {
+
+					{
+
+						giVisibilityAtlas->GetImage().GetSampler(),
+
+						giVisibilityAtlas->GetImage().GetImageView(),
 
 						VK_IMAGE_LAYOUT_GENERAL
 
@@ -1376,7 +1449,7 @@ namespace VansGraphics
 			desc->WriteImageDescriptor(manager->m_FogLightInjectionDescriptorSets[i], FOG_INJECT_BINDING_VOXEL_GRID, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ voxelTargets[i]->GetImage().GetSampler(), voxelTargets[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 			desc->WriteImageDescriptor(manager->m_FogLightInjectionDescriptorSets[i], FOG_INJECT_BINDING_SHADOW_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ renderPassManager->GetCascadeShadowSampler(), renderPassManager->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 			desc->WriteBufferDescriptor(manager->m_FogLightInjectionDescriptorSets[i], FOG_INJECT_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ manager->m_FogVolumeParamsCBBuffer.GetNativeBuffer(), 0, manager->m_FogVolumeParamsCBBuffer.GetBufferSize() }});
-			desc->WriteImageDescriptor(manager->m_FogLightInjectionDescriptorSets[i], FOG_INJECT_BINDING_HISTORY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ voxelHistory[i]->GetImage().GetSampler(), voxelHistory[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+			desc->WriteImageDescriptor(manager->m_FogLightInjectionDescriptorSets[i], FOG_INJECT_BINDING_HISTORY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ voxelHistory[i]->GetImage().GetSampler(), voxelHistory[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 			auto& punctualShadow = renderPassManager->GetPunctualShadowMap();
 			desc->WriteImageDescriptor(manager->m_FogLightInjectionDescriptorSets[i], FOG_INJECT_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ punctualShadow.GetSampler(), punctualShadow.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 			desc->CommitDescriptorUpdates();
@@ -1387,36 +1460,54 @@ namespace VansGraphics
 	void VansVKDevice::UpdateFogRayMarchSets()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		if (manager->m_FogRayMarchDescriptorSets.empty()) return;
+		if (IsFeatureDescriptorCurrent(m_FogRayMarchDescSetGeneration)) return;
+		if (manager->m_FogRayMarchDescriptorSets.size() < 2) return;
 		VansTexture* fogVoxelInjection = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION);
+		VansTexture* fogVoxelHistory = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY);
 		VansTexture* fogVoxelRayMarch = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_RAYMARCH);
-		if (fogVoxelInjection == nullptr || fogVoxelRayMarch == nullptr) return;
+		if (fogVoxelInjection == nullptr || fogVoxelHistory == nullptr || fogVoxelRayMarch == nullptr) return;
+		VansTexture* voxelInputs[2] = { fogVoxelInjection, fogVoxelHistory };
 		auto* desc = VansVKDescriptorManager::GetInstance();
-		desc->BeginDescriptorUpdate();
-		desc->WriteImageDescriptor(manager->m_FogRayMarchDescriptorSets[0], FOG_MARCH_BINDING_INPUT_VOXEL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ fogVoxelInjection->GetImage().GetSampler(), fogVoxelInjection->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-		desc->WriteImageDescriptor(manager->m_FogRayMarchDescriptorSets[0], FOG_MARCH_BINDING_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ fogVoxelRayMarch->GetImage().GetSampler(), fogVoxelRayMarch->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		desc->WriteBufferDescriptor(manager->m_FogRayMarchDescriptorSets[0], FOG_MARCH_BINDING_VOLUME_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ manager->m_FogVolumeParamsCBBuffer.GetNativeBuffer(), 0, manager->m_FogVolumeParamsCBBuffer.GetBufferSize() }});
-		desc->CommitDescriptorUpdates();
+		for (uint32_t i = 0; i < 2; ++i)
+		{
+			desc->BeginDescriptorUpdate();
+			desc->WriteImageDescriptor(manager->m_FogRayMarchDescriptorSets[i], FOG_MARCH_BINDING_INPUT_VOXEL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ voxelInputs[i]->GetImage().GetSampler(), voxelInputs[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+			desc->WriteImageDescriptor(manager->m_FogRayMarchDescriptorSets[i], FOG_MARCH_BINDING_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ fogVoxelRayMarch->GetImage().GetSampler(), fogVoxelRayMarch->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+			desc->WriteBufferDescriptor(manager->m_FogRayMarchDescriptorSets[i], FOG_MARCH_BINDING_VOLUME_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ manager->m_FogVolumeParamsCBBuffer.GetNativeBuffer(), 0, manager->m_FogVolumeParamsCBBuffer.GetBufferSize() }});
+			desc->CommitDescriptorUpdates();
+		}
+		MarkFeatureDescriptorCurrent(m_FogRayMarchDescSetGeneration);
 	}
 
-	void VansVKDevice::UpdateFogLightInjection(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
+	void VansVKDevice::UpdateFogLightInjection(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd, uint32_t frameIdx)
 	{
 		UpdateFogLightInjectionSets(renderPassManager);
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		if (manager->m_FogLightInjectionShader == nullptr || manager->m_FogLightInjectionDescriptorSets.size() < 2) return;
-		uint32_t frameIdx = manager->m_FogTemporalFrame & 1u;
+		VansTexture* fogTarget = manager->GetRuntimeRenderTexture(
+			frameIdx == 0 ? VansMaterialManager::RT_FOG_VOXEL_INJECTION : VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY);
+		if (fogTarget == nullptr) return;
 		computeCmd.EnsureComputeShader(*manager->m_FogLightInjectionShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_FogLightInjectionSetLayout });
-		computeCmd.DispatchCompute(*manager->m_FogLightInjectionShader, (m_RenderWidth + 31) / 32, (m_RenderHeight + 31) / 32, 16, { m_Scene->GetGlobalDescriptorSet(), manager->m_FogLightInjectionDescriptorSets[frameIdx] });
-		manager->m_FogTemporalFrame = (manager->m_FogTemporalFrame + 1u) & 1u;
+		computeCmd.DispatchCompute(*manager->m_FogLightInjectionShader,
+			(fogTarget->GetWidth() + 3) / 4,
+			(fogTarget->GetHeight() + 3) / 4,
+			(fogTarget->GetSlice() + 3) / 4,
+			{ m_Scene->GetGlobalDescriptorSet(), manager->m_FogLightInjectionDescriptorSets[frameIdx] });
 	}
 
-	void VansVKDevice::UpdateFogRayMarch(VansVKCommandBuffer& computeCmd)
+	void VansVKDevice::UpdateFogRayMarch(VansVKCommandBuffer& computeCmd, uint32_t frameIdx)
 	{
 		UpdateFogRayMarchSets();
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		if (manager->m_FogRayMarchShader == nullptr || manager->m_FogRayMarchDescriptorSets.empty()) return;
+		if (manager->m_FogRayMarchShader == nullptr || manager->m_FogRayMarchDescriptorSets.size() < 2) return;
+		VansTexture* fogVoxelRayMarch = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_RAYMARCH);
+		if (fogVoxelRayMarch == nullptr) return;
 		computeCmd.EnsureComputeShader(*manager->m_FogRayMarchShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_FogRayMarchSetLayout });
-		computeCmd.DispatchCompute(*manager->m_FogRayMarchShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_FogRayMarchDescriptorSets[0] });
+		computeCmd.DispatchCompute(*manager->m_FogRayMarchShader,
+			(fogVoxelRayMarch->GetWidth() + 7) / 8,
+			(fogVoxelRayMarch->GetHeight() + 7) / 8,
+			1,
+			{ m_Scene->GetGlobalDescriptorSet(), manager->m_FogRayMarchDescriptorSets[frameIdx] });
 	}
 
 	void VansVKDevice::UpdateCloudRayMarchSets(VansRenderPassManager* renderPassManager)
@@ -1449,15 +1540,41 @@ namespace VansGraphics
 
 	void VansVKDevice::UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
-		UpdateFogLightInjection(renderPassManager, computeCmd);
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		VansTexture* fogVoxelInjection = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION);
+		VansTexture* fogVoxelHistory = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY);
+		VansTexture* fogVoxelRayMarch = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_RAYMARCH);
+		VansTexture* volumetricFogResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
+		if (fogVoxelInjection == nullptr || fogVoxelHistory == nullptr || fogVoxelRayMarch == nullptr || volumetricFogResult == nullptr ||
+			manager->m_FogLightInjectionShader == nullptr || manager->m_FogRayMarchShader == nullptr || manager->m_VolumetrcFogShader == nullptr ||
+			manager->m_FogLightInjectionDescriptorSets.size() < 2 || manager->m_FogRayMarchDescriptorSets.size() < 2 ||
+			manager->m_VolumetricFogDescriptorSets.empty())
+		{
+			manager->m_FogHistoryValid = false;
+			return;
+		}
+
+		// padding is reserved as a GPU-only history-valid flag; keep the public settings unchanged.
+		VansFogVolumeSettings gpuSettings = manager->GetFogVolumeSettings();
+		gpuSettings.padding = manager->m_FogHistoryValid ? 1.0f : 0.0f;
+		manager->m_FogVolumeParamsCBBuffer.SetBufferData(&gpuSettings, 0, sizeof(gpuSettings));
+
+		const uint32_t frameIdx = manager->m_FogTemporalFrame & 1u;
+		UpdateFogLightInjection(renderPassManager, computeCmd, frameIdx);
 		RecordShaderWriteToReadMemoryDependency(computeCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-		UpdateFogRayMarch(computeCmd);
+		UpdateFogRayMarch(computeCmd, frameIdx);
 		RecordShaderWriteToReadMemoryDependency(computeCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 		UpdateVolumetricFogSets(renderPassManager);
-		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		if (manager->m_VolumetrcFogShader == nullptr || manager->m_VolumetricFogDescriptorSets.empty()) return;
 		computeCmd.EnsureComputeShader(*manager->m_VolumetrcFogShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_VolumetricFogSetLayout });
-		computeCmd.DispatchCompute(*manager->m_VolumetrcFogShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_VolumetricFogDescriptorSets[0] });
+		computeCmd.DispatchCompute(*manager->m_VolumetrcFogShader,
+			(volumetricFogResult->GetWidth() + 7) / 8,
+			(volumetricFogResult->GetHeight() + 7) / 8,
+			1,
+			{ m_Scene->GetGlobalDescriptorSet(), manager->m_VolumetricFogDescriptorSets[0] });
+
+		manager->m_FogTemporalFrame = frameIdx ^ 1u;
+		manager->m_FogHistoryValid = true;
 	}
 
 	void VansVKDevice::UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
@@ -1494,6 +1611,10 @@ namespace VansGraphics
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 		BilateralFilterSSGI(renderPassManager, computeCmd);
+		RecordShaderWriteToReadMemoryDependency(
+			computeCmd,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 		++manager->m_SSGITemporalFrame;
 	}
 
@@ -1531,9 +1652,8 @@ namespace VansGraphics
 
 		VansPostProcessProfile& profile = manager->m_PostProcessProfile;
 		const float deltaTime = static_cast<float>(VansGraphics::VansTimer::GetEditorDeltaTime());
-		const float time = static_cast<float>(VansGraphics::VansTimer::GetFrameTime());
 
-		VansPostProcessParamsGPU ppParams = profile.ToGPUParams(time);
+		VansPostProcessParamsGPU ppParams = profile.ToGPUParams();
 		VansExposureAdaptParamsGPU expParams = profile.ToExposureAdaptParams(deltaTime);
 		manager->m_PostProcessParamsCBBuffer.SetBufferData(&ppParams, 0, sizeof(VansPostProcessParamsGPU));
 		manager->m_ExposureAdaptParamsCBBuffer.SetBufferData(&expParams, 0, sizeof(VansExposureAdaptParamsGPU));

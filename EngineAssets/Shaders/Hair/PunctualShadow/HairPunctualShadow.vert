@@ -24,12 +24,17 @@ void main()
     int spotLightCount = int(uSpotLightCount);
     int rectLightStart = pointLightCount + spotLightCount;
 
+    mat4 shadowMatrix;
     if (lightIndex < pointLightCount)
-        gl_Position = uPointLights[lightIndex].shadowMatrix[shadowIndex] * modelMatrix * position;
+        shadowMatrix = uPointLights[lightIndex].shadowMatrix[shadowIndex];
     else if (lightIndex < rectLightStart)
-        gl_Position = uSpotLights[lightIndex - pointLightCount].shadowMatrix * modelMatrix * position;
+        shadowMatrix = uSpotLights[lightIndex - pointLightCount].shadowMatrix;
     else
-        gl_Position = uRectLights[lightIndex - rectLightStart].shadowMatrix * modelMatrix * position;
+        shadowMatrix = uRectLights[lightIndex - rectLightStart].shadowMatrix;
+
+    vec4 clipCoord = shadowMatrix * modelMatrix * position;
+    clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
+    gl_Position = clipCoord;
 
     fragUV = uv;
 }

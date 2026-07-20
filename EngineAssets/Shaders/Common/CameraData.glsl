@@ -31,6 +31,7 @@ layout(set=CameraCBBind, binding=0) uniform    CameraUniformBuffer
 
 #define FrameIndex FrameParams.x
 #define FrameTime FrameParams.y
+#define MaterialMipBias FrameParams.z
 
 #define NearPlane CameraParams.x
 #define FarPlane CameraParams.y

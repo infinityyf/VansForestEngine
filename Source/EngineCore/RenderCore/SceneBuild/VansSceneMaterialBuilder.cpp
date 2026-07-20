@@ -142,6 +142,24 @@ namespace VansGraphics
 		if (!material)
 			return;
 
+		const auto bindAutomaticCustomPass = [&](const std::string& shaderName,
+			VansGraphicsShader* shader)
+		{
+			if (material->m_MaterialType != VansMaterialType::VAN_CUSTOM_SHADER || !shader)
+				return;
+
+			const VansShaderEntry* entry = VansShaderManager::Get().FindShaderEntry(shaderName);
+			material->m_CustomShaderDepthWrite = entry == nullptr || entry->depthWrite == VK_TRUE;
+			const char* automaticPass = material->m_CustomShaderDepthWrite
+				? VansPass::FORWARD_OPAQUE_AFTER_DEFERRED
+				: VansPass::FORWARD_TRANSPARENT;
+			material->m_PassShaders[automaticPass] = shader;
+
+			VANS_LOG("[LoadMaterials] Custom material '" << material->m_AssetName
+				<< "' automatically routed to '" << automaticPass
+				<< "' from shader depthWrite=" << (material->m_CustomShaderDepthWrite ? "true" : "false"));
+		};
+
 		for (const auto& [passName, shaderName] : material->m_PassShaderOverrides)
 		{
 			if (passName.empty() || shaderName.empty())
@@ -157,12 +175,13 @@ namespace VansGraphics
 				}
 
 				const VansShaderEntry* entry = VansShaderManager::Get().FindShaderEntry(shaderName);
+				VansGraphicsShader* declaredPassShader =
+					static_cast<VansGraphicsShader*>(scene.FindShaderAsset(shaderName));
 				const std::vector<std::string> passes = entry && !entry->materialPasses.empty()
 					? entry->materialPasses
 					: std::vector<std::string>{ VansPass::GBUFFER };
 				for (const std::string& declaredPass : passes)
 				{
-					VansGraphicsShader* declaredPassShader = static_cast<VansGraphicsShader*>(scene.FindShaderAsset(shaderName));
 					if (declaredPassShader)
 						material->m_PassShaders[declaredPass] = declaredPassShader;
 					else
@@ -172,6 +191,7 @@ namespace VansGraphics
 							<< "' not found: " << shaderName << ". Keeping default shader.");
 					}
 				}
+				bindAutomaticCustomPass(shaderName, declaredPassShader);
 				continue;
 			}
 
@@ -184,6 +204,7 @@ namespace VansGraphics
 				continue;
 			}
 			material->m_PassShaders[passName] = passShader;
+			bindAutomaticCustomPass(shaderName, passShader);
 		}
 	}
 
@@ -520,7 +541,11 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         glass->m_BaseColorTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
         glass->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
         glass->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
-        glass->m_ThicknessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "thickness_texture", "defaultRoughness");
+        glass->m_ThicknessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "thickness_texture", "defaultAo");
+        glass->m_ReflectionTexture = ResolveMaterialTexture(scene, sceneMaterial, "reflection_texture");
+        if (glass->m_ReflectionTexture == nullptr)
+            glass->m_ReflectionTexture = ResolveMaterialTexture(scene, sceneMaterial, "reflectionTexture");
+        glass->m_ReflectionTexture = scene.ResolveTextureAssetOrDefault(glass->m_ReflectionTexture, "defaultAo");
 
         glm::vec3 baseColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
         baseColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", baseColor);
@@ -535,24 +560,32 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         glm::vec3 attenuationColor = ReadMaterialVec3Field(sceneMaterial, "attenuationColor", glm::vec3(1.0f));
         const float attenuationDistance = ReadMaterialFloatField(sceneMaterial, "attenuationDistance", 0.0f);
         const float normalScale = ReadMaterialFloatField(sceneMaterial, "normalScale", 1.0f);
-        const float refractionStrength = ReadMaterialFloatField(sceneMaterial, "refractionStrength", 1.0f);
-        const float reflectionStrength = ReadMaterialFloatField(sceneMaterial, "reflectionStrength", 1.0f);
-        const float refractionMode = ReadMaterialFloatField(sceneMaterial, "refractionMode", 0.0f);
+        const float refractionStrength = std::clamp(ReadMaterialFloatField(sceneMaterial, "refractionStrength", 1.0f), 0.0f, 1.0f);
+        const float reflectionStrength = std::clamp(ReadMaterialFloatField(sceneMaterial, "reflectionStrength", 1.0f), 0.0f, 1.0f);
+        const float refractionMode = std::clamp(ReadMaterialFloatField(sceneMaterial, "refractionMode", 1.0f), 0.0f, 2.0f);
+        const glm::vec3 scatteringColor = ReadMaterialVec3Field(sceneMaterial, "scatteringColor", glm::vec3(1.0f));
+        const float scatteringStrength = std::max(ReadMaterialFloatField(sceneMaterial, "scatteringStrength", 0.0f), 0.0f);
 
         glass->m_CustomMaterialPayload = VansCustomMaterialPayload{};
         glass->m_CustomMaterialPayload.values[0] = glm::vec4(baseColor, alphaCoverage);
         glass->m_CustomMaterialPayload.values[1] = glm::vec4(roughness, transmission, ior, thickness);
         glass->m_CustomMaterialPayload.values[2] = glm::vec4(attenuationColor, attenuationDistance);
         glass->m_CustomMaterialPayload.values[3] = glm::vec4(normalScale, refractionStrength, reflectionStrength, refractionMode);
+        glass->m_CustomMaterialPayload.values[4] = glm::vec4(scatteringColor, scatteringStrength);
+        // Slot 4 is encoded into the first unused scalar so the shared custom-material
+        // SSBO keeps its existing ABI while glass gains a reflection-mask texture.
+        glass->m_CustomMaterialPayload.values[5].x = -1.0f;
 
         glass->m_CustomTextureSlots["baseColor"] = 0;
         glass->m_CustomTextureSlots["normal"] = 1;
         glass->m_CustomTextureSlots["roughness"] = 2;
         glass->m_CustomTextureSlots["thickness"] = 3;
+        glass->m_CustomTextureSlots["reflection"] = 4;
         glass->m_CustomTextures["baseColor"] = glass->m_BaseColorTexture;
         glass->m_CustomTextures["normal"] = glass->m_NormalTexture;
         glass->m_CustomTextures["roughness"] = glass->m_RoughnessTexture;
         glass->m_CustomTextures["thickness"] = glass->m_ThicknessTexture;
+        glass->m_CustomTextures["reflection"] = glass->m_ReflectionTexture;
         break;
     }
     case VansMaterialType::VAN_GRASS:

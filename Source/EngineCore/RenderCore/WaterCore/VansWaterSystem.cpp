@@ -1,6 +1,5 @@
 ﻿#include "VansWaterSystem.h"
 #include "VansWaterFFT.h"
-#include "VansWaterWaveSystem.h"
 #include "../../Util/VansLog.h"
 #include "../../Configration/VansConfigration.h"
 #include "../VansShaderManager.h"
@@ -34,9 +33,9 @@ namespace
 
         // 娉㈤暱浠?256m 鍒?0.5m 瀵规暟鍒嗗竷锛堟墿灞曚笂闄愪互瑕嗙洊绮?LOD Nyquist 杩囨护锛?
         const float minWL = 0.5f;
-        const float maxWL = 256.0f;
         const float PI = 3.14159265358979323846f;
         const float GRAVITY = 9.81f;
+        const float maxWL = std::clamp(2.0f * PI * windSpeed * windSpeed / GRAVITY, 8.0f, 512.0f);
 
         for (int i = 0; i < count; ++i)
         {
@@ -47,7 +46,8 @@ namespace
             float speed = omega / k;  // 鐩搁€熷害
 
             // 鎸箙闅忔尝闀垮噺灏忥紙鐭尝鑳介噺灏忥級锛屽姞鍏ヤ竴瀹氶殢鏈烘€?
-            float baseAmp = swellAmplitude * std::powf(wavelength / maxWL, 0.75f);
+            float baseAmp = swellAmplitude * std::powf(wavelength / maxWL, 0.75f)
+                * std::sqrt(2.0f / float((std::max)(count, 1)));
             // 鏂瑰悜锛氶鏂瑰悜 + 灏忚搴︽墿鏁?
             float angleSpread = (static_cast<float>((i * 7 + 3) % 17) / 17.0f - 0.5f) * 0.6f;
             float angle = std::atan2f(dir.y, dir.x) + angleSpread;
@@ -59,10 +59,10 @@ namespace
             wave.wavelength = wavelength;
             wave.directionX = dx;
             wave.directionY = dy;
-            wave.speed      = speed;
+            wave.phaseSpeed = speed;
             wave.steepness  = 0.05f + 0.55f * (1.0f - t);  // 闀挎尝鏇撮櫋
-            wave.pad0       = 0.0f;
-            wave.pad1       = 0.0f;
+            wave.padding0   = 0.0f;
+            wave.padding1   = 0.0f;
             waves.push_back(wave);
         }
     }
@@ -77,6 +77,7 @@ namespace
         int   maxSteps;
         float thickness;
         float maxRoughness;
+        glm::vec4 surfaceParams; // x=current water roughness
     };
 
     struct ThicknessParamsGPU
@@ -96,6 +97,23 @@ namespace
         float pad0;
         float pad1;
     };
+
+    static_assert(offsetof(WaterCompositeParamsGPU, effectFlags) == 320,
+        "WaterCompositeParamsGPU must match std140 shader layout");
+    static_assert(sizeof(WaterCompositeParamsGPU) == 336,
+        "WaterCompositeParamsGPU size must match std140 shader layout");
+    static_assert(offsetof(WaterCausticsParamsGPU, opticalParams) == 64,
+        "WaterCausticsParamsGPU must match std140 shader layout");
+    static_assert(sizeof(WaterCausticsParamsGPU) == 80,
+        "WaterCausticsParamsGPU size must match std140 shader layout");
+    static_assert(offsetof(WaterGBufferParamsGPU, geometryParams) == 144,
+        "WaterGBufferParamsGPU geometry offset must match std140 shader layout");
+    static_assert(offsetof(WaterGBufferParamsGPU, microSlopeParams) == 224,
+        "WaterGBufferParamsGPU micro slope offset must match std140 shader layout");
+    static_assert(offsetof(WaterGBufferParamsGPU, microDomainParams) == 240,
+        "WaterGBufferParamsGPU micro domain offset must match std140 shader layout");
+    static_assert(sizeof(WaterGBufferParamsGPU) == 256,
+        "WaterGBufferParamsGPU size must match std140 shader layout");
 
     constexpr VkDeviceSize SSR_PARAMS_BUFFER_SIZE = 256;
     constexpr VkDeviceSize SSS_PARAMS_DESCRIPTOR_SIZE = sizeof(float) * 16;
@@ -145,13 +163,13 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     m_RenderWidth  = renderWidth;
     m_RenderHeight = renderHeight;
 
-    // 鈹€鈹€ 1. 鍒涘缓 CDLOD 绠＄悊鍣紙W-02: VansWaterLOD 鐙珛绫伙級鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    m_WaterLOD = new VansWaterLOD();
-    m_WaterLOD->Initialize(device,
-        VansWaterLOD::MAX_LOD_COUNT,
-        VansWaterLOD::MIN_LOD_DIST,
-        VansWaterLOD::WATER_MESH_DIM,
-        VansWaterLOD::BASE_PATCH_SIZE);
+    // V2 fixed 2:1 geometry clipmap.
+    VansWaterGeometryConfig geometryConfig;
+    if (m_WaterMaterial)
+        geometryConfig = m_WaterMaterial->m_Config.m_Geometry;
+    m_GeometryClipmap = new VansWaterGeometryClipmap();
+    if (!m_GeometryClipmap->Initialize(device, geometryConfig))
+        VANS_LOG_ERROR("[VansWaterSystem] geometry clipmap initialization failed");
 
     // 鈹€鈹€ 2. 缂栬瘧鐫€鑹插櫒 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     auto*       cfg         = VansConfigration::GetInstance();
@@ -172,10 +190,6 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     m_WaveSimShader->InitShader(logicDev,
         (projectRoot + "EngineAssets/Shaders/Water/WaterWave").c_str());
 
-    m_WaterEffectsShader = new VansComputeShader();
-    m_WaterEffectsShader->InitShader(logicDev,
-        (projectRoot + "EngineAssets/Shaders/Water/WaterEffects").c_str());
-
     m_WaterSSRShader = new VansComputeShader();
     m_WaterSSRShader->InitShader(logicDev,
         (projectRoot + "EngineAssets/Shaders/Water/SSR").c_str());
@@ -187,11 +201,6 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     m_WaterCausticsShader = new VansComputeShader();
     m_WaterCausticsShader->InitShader(logicDev,
         (projectRoot + "EngineAssets/Shaders/Water/Caustics").c_str());
-
-    // N-01: Detail Normal compute shader锛堢嫭绔嬬洰褰曪紝閬垮厤涓?water_wave_spectrum.comp 鍐茬獊锛?
-    m_DetailNormalShader = new VansComputeShader();
-    m_DetailNormalShader->InitShader(logicDev,
-        (projectRoot + "EngineAssets/Shaders/Water/WaterDetailNormal").c_str());
 
     // W-16: Water Thickness compute shader
     m_WaterThicknessShader = new VansComputeShader();
@@ -217,26 +226,25 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     gbufParams.VPMatrix       = glm::mat4(1.0f);
     gbufParams.ViewMatrix     = glm::mat4(1.0f);
     gbufParams.cameraPosition = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-    gbufParams.minLodDist     = VansWaterLOD::BASE_PATCH_SIZE;
-    gbufParams.lodLevels      = m_WaterLOD ? m_WaterLOD->GetLodLevels() : VansWaterLOD::MAX_LOD_COUNT;
-    gbufParams.meshDim        = m_WaterLOD ? m_WaterLOD->GetMeshDim() : VansWaterLOD::WATER_MESH_DIM;
-    gbufParams.clipmapBaseScale = 4.0f * VansWaterLOD::BASE_PATCH_SIZE;
-    gbufParams.maxWaveAmp      = 0.6f;  // swellAmplitude(0.2) * 3
-    gbufParams.detailBalance   = m_WaterLOD ? m_WaterLOD->GetDetailBalance() : 2.0f;
-    gbufParams.morphStartRatio = 0.5f;
-    gbufParams.waveTimeAndScale = glm::vec4(0.0f, 0.2f, 1.5f, 1.0f);  // Initialize() initial UBO
+    gbufParams.geometryParams = glm::ivec4(geometryConfig.m_LodCount, geometryConfig.m_MeshDim, 4, 0);
+    gbufParams.geometryScale = glm::vec4(geometryConfig.m_BasePatchSize, geometryConfig.m_MorphStartRatio, 1.0f, 2.0f);
+    gbufParams.spectrumScale = glm::vec4(64.0f, 4.0f, 0.0f, 1.0f);
+    gbufParams.windAndChop = glm::vec4(0.7071f, 0.7071f, 12.0f, 1.0f);
+    gbufParams.simulationParams = glm::ivec4(32, VansWaterConfig::MICRO_SLOPE_LAYER_COUNT, 1, 0);
+    gbufParams.microSlopeParams = glm::vec4(0.35f, 0.09f, std::sqrt(0.09f * 0.5f), 0.5f);
+    gbufParams.microDomainParams = glm::vec4(8.0f, 11.313708f, glm::radians(31.0f), 0.0f);
     m_GBufParamsCache = gbufParams;
     if (m_GBufParamsBufferCreated)
         m_GBufParamsBuffer.SetBufferData(&m_GBufParamsCache, 0, sizeof(WaterGBufferParamsGPU));
 
-    // 鈹€鈹€ 4. 鍒涘缓娉㈠舰浣嶇Щ璐村浘锛圵-01: Texture2DArray, 256虏 脳 MAX_LOD_COUNT锛夆攢鈹€
+    // Macro displacement and derivative cascade arrays.
     // CLAMP_TO_EDGE锛氳创鍥捐鐩?snappedOrigin 卤 lodScale/2 鐨勪笘鐣岃寖鍥达紝
     // 杈圭晫澶栫殑 Patch 鐢?CDLOD 璺濈鐜害鏉熶繚璇佷笉浼氶噰鏍峰埌锛孋LAMP 浣滀负瀹夊叏缃?
     m_WaveDisplacementImage.CreateVulkanImage(
         logicDev,
         { WAVE_TEXTURE_SIZE, WAVE_TEXTURE_SIZE, 1 },
         VK_FORMAT_R16G16B16A16_SFLOAT,
-        1, VansWaterLOD::MAX_LOD_COUNT,  // 10 layers
+        1, VansWaterConfig::MAX_SPECTRUM_CASCADES,
         VK_IMAGE_TYPE_2D,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_SAMPLE_COUNT_1_BIT,
@@ -248,7 +256,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         logicDev,
         { WAVE_TEXTURE_SIZE, WAVE_TEXTURE_SIZE, 1 },
         VK_FORMAT_R16G16B16A16_SFLOAT,
-        1, VansWaterLOD::MAX_LOD_COUNT,
+        1, VansWaterConfig::MAX_SPECTRUM_CASCADES * 2,
         VK_IMAGE_TYPE_2D,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_SAMPLE_COUNT_1_BIT,
@@ -263,17 +271,27 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         m_WaterFFT = nullptr;
     }
 
-    // 鈹€鈹€ N-01: Detail Normal Texture2DArray锛?024虏 脳 1 layer RGBA16F锛屼笘鐣岀┖闂村钩閾猴級鈹€鈹€
-    m_DetailNormalImage.CreateVulkanImage(
+    // Exact short-wave FFT slopes.  Two spectral bands are each represented
+    // by two decorrelated toroidal domains (four layers total).
+    m_MicroSlopeImage.CreateVulkanImage(
         logicDev,
         { DETAIL_TEXTURE_SIZE, DETAIL_TEXTURE_SIZE, 1 },
         VK_FORMAT_R16G16B16A16_SFLOAT,
-        1, VansWaterLOD::MAX_LOD_COUNT,
+        1, VansWaterConfig::MICRO_SLOPE_LAYER_COUNT,
         VK_IMAGE_TYPE_2D,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_SAMPLE_COUNT_1_BIT,
         false, false, true,
         VK_SAMPLER_ADDRESS_MODE_REPEAT);
+
+    m_MicroFFT = new VansWaterFFT();
+    if (!m_MicroFFT->Initialize(device, projectRoot, &m_MicroSlopeImage, nullptr,
+        VansWaterFFT::OutputMode::SpectralSlope))
+    {
+        VANS_LOG_WARN("[VansWaterSystem] micro slope FFT initialization failed; micro slopes disabled");
+        delete m_MicroFFT;
+        m_MicroFFT = nullptr;
+    }
 
     // 鈹€鈹€ 5. 鍒涘缓姘翠綋鏁堟灉璐村浘锛圕LAMP_TO_EDGE 闃叉杈圭紭骞抽摵浼奖锛夆攢鈹€
     auto createEffectImage = [&](VansVKImage& image)
@@ -292,7 +310,19 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     createEffectImage(m_WaterReflectionImage);
     createEffectImage(m_WaterRefractionImage);
     createEffectImage(m_WaterCausticsImage);
-    createEffectImage(m_WaterThicknessImage);  // W-16: CLAMP_TO_EDGE 鍚屼笂
+    // Thickness is declared as r16f in water_thickness.comp.  Keeping the
+    // Vulkan image format identical to the storage-image declaration avoids
+    // undefined format reinterpretation and saves 3 unused channels.
+    m_WaterThicknessImage.CreateVulkanImage(
+        logicDev,
+        { m_RenderWidth, m_RenderHeight, 1 },
+        VK_FORMAT_R16_SFLOAT,
+        1, 1,
+        VK_IMAGE_TYPE_2D,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_SAMPLE_COUNT_1_BIT,
+        false, false, true,
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
     createEffectImage(m_WaterSSSScatterImage); // W-16 Phase 2: SSS 鏁ｅ皠杈撳嚭
 
     // 鈹€鈹€ 6. 鍒涘缓 WaterCompositeParams UBO 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -307,15 +337,17 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     compParams.fresnelPower      = 5.0f;
     compParams.waterLevel        = m_WaterLevel;
     compParams.specularIntensity = 0.6f;
-    compParams.foamIntensity     = 1.0f;
+    compParams.refractionStrength = 0.025f;
     compParams.absorptionCoeff   = glm::vec4(0.25f, 0.08f, 0.02f, 1.0f);  // R>G>B, 娑堝厜 0.27>0.12>0.08
     compParams.scatteringCoeff   = glm::vec4(0.02f, 0.04f, 0.06f, 1.0f);  // B>G>R, 钃濆厜绌块€忔渶娣?
     compParams.sssAnisotropy     = 0.85f;
     compParams.waterRoughness    = 0.02f;
     compParams.waterIOR          = 1.33f;
+    compParams.maxOpticalDepth   = 15.0f;
     compParams.cameraPosition    = glm::vec4(0.0f, 10.0f, 0.0f, 1.0f);
     compParams.viewMatrix        = glm::mat4(1.0f);
     compParams.projMatrix        = glm::mat4(1.0f);
+    compParams.effectFlags       = glm::ivec4(1);
     if (m_CompParamsBufferCreated)
         m_CompParamsBuffer.SetBufferData(&compParams, 0, sizeof(WaterCompositeParamsGPU));
 
@@ -360,19 +392,26 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
             ssboSize,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-        // 鑷姩鐢熸垚榛樿娉㈠垎閲?
+        VansWaterConfig initialConfig;
+        if (m_WaterMaterial)
+            initialConfig = m_WaterMaterial->m_Config;
+        initialConfig.Validate();
+        const auto& spectrum = initialConfig.m_Spectrum;
         std::vector<GerstnerWaveGPU> waves;
-        AutoGenerateGerstnerWaves(waves, 128, glm::vec2(0.7071f, 0.7071f), 0.2f, 12.0f);
+        AutoGenerateGerstnerWaves(waves, spectrum.m_GerstnerWaveCount,
+            spectrum.m_WindDirection, spectrum.m_SwellAmplitude, spectrum.m_WindSpeed);
+        const std::size_t activeCount = waves.size();
+        waves.resize(MAX_WAVE_COUNT, GerstnerWaveGPU{});
         if (m_WaveSSBOCreated)
             m_WaveSSBO.SetBufferData(waves.data(), 0, waves.size() * sizeof(GerstnerWaveGPU));
 
-        VANS_LOG("[VansWaterSystem] Wave SSBO: " << waves.size() << " waves, " << ssboSize << " bytes");
+        VANS_LOG("[VansWaterSystem] Wave SSBO: " << activeCount << " active waves, " << ssboSize << " bytes");
     }
 
     m_Initialized = true;
     VANS_LOG("[VansWaterSystem] Initialize: " << renderWidth << "x" << renderHeight
              << " waterLevel=" << m_WaterLevel
-             << " meshDim=" << m_WaterLOD->GetMeshDim());
+             << " meshDim=" << m_GeometryClipmap->GetMeshDim());
 }
 
 // ============================================================
@@ -437,21 +476,14 @@ void VansWaterSystem::SetupDescriptors(
                 VK_IMAGE_LAYOUT_GENERAL
             } });
 
-        // binding 2锛欸erstnerWave SSBO锛圵-04锛夆€?椤剁偣鐫€鑹插櫒璇诲彇
-        descMgr->WriteBufferDescriptor(
-            m_GBufPassSet,
-            WATER_GBUF_BINDING_WAVE_SSBO,
-            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            { { GetNativeBuffer(m_WaveSSBO, m_WaveSSBOCreated), 0, MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU) } });
-
-        // binding 3: Detail Normal Texture2DArray锛圢-01锛夆€?澶嶇敤鍘?normal map binding slot
+        // binding 3: band-limited micro normal Texture2DArray
         descMgr->WriteImageDescriptor(
             m_GBufPassSet,
-            WATER_GBUF_BINDING_NORMAL_MAP,
+            WATER_GBUF_BINDING_MICRO_SLOPE,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { {
-                m_DetailNormalImage.GetSampler(),
-                m_DetailNormalImage.GetImageView(),
+                m_MicroSlopeImage.GetSampler(),
+                m_MicroSlopeImage.GetImageView(),
                 VK_IMAGE_LAYOUT_GENERAL
             } });
 
@@ -497,6 +529,11 @@ void VansWaterSystem::SetupDescriptors(
             WATER_WAVE_BINDING_WAVE_SSBO,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             { { GetNativeBuffer(m_WaveSSBO, m_WaveSSBOCreated), 0, MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU) } });
+        descMgr->WriteImageDescriptor(
+            m_WaveSimSet,
+            WATER_WAVE_BINDING_DERIVATIVE,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            { { m_WaveDerivativeImage.GetSampler(), m_WaveDerivativeImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 
         descMgr->CommitDescriptorUpdates();
     }
@@ -537,11 +574,6 @@ void VansWaterSystem::SetupDescriptors(
             m_CompPassSet, WATER_COMP_BINDING_CAUSTICS,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterCausticsImage.GetSampler(), m_WaterCausticsImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        // W-15: 娉℃搏绾圭悊 鈥?浣跨敤鍙嶅皠璐村浘浣滀负 placeholder锛屽悗缁粠 VansWaterMaterial::m_FoamTexture 缁戝畾鐪熷疄绾圭悊
-        descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_FOAM_TEXTURE,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         // W-16: 鍘氬害鍥?
         descMgr->WriteImageDescriptor(
             m_CompPassSet, WATER_COMP_BINDING_THICKNESS,
@@ -552,49 +584,6 @@ void VansWaterSystem::SetupDescriptors(
             m_CompPassSet, WATER_COMP_BINDING_SSS_SCATTER,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterSSSScatterImage.GetSampler(), m_WaterSSSScatterImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->CommitDescriptorUpdates();
-    }
-
-    // 鈹€鈹€ Water Effects Compute descriptor set锛圫et 0锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    {
-        std::vector<VkDescriptorSet> sets;
-        VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterEffectsCompute(
-            m_EffectsLayout, sets, 1);
-        m_EffectsSet = sets[0];
-        descMgr->BeginDescriptorUpdate();
-
-        descMgr->WriteImageDescriptor(
-            m_EffectsSet, WATER_EFFECT_BINDING_GBUF_NORMAL,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(
-            m_EffectsSet, WATER_EFFECT_BINDING_GBUF_DEPTH,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(
-            m_EffectsSet, WATER_EFFECT_BINDING_SCENE_GBUF2,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(
-            m_EffectsSet, WATER_EFFECT_BINDING_SCENE_COLOR,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetColor().GetSampler(), renderPassManager->GetColor().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteBufferDescriptor(
-            m_EffectsSet, WATER_EFFECT_BINDING_PARAMS,
-            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated), 0, sizeof(WaterCompositeParamsGPU) } });
-        descMgr->WriteImageDescriptor(
-            m_EffectsSet, WATER_EFFECT_BINDING_REFLECTION_OUT,
-            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(
-            m_EffectsSet, WATER_EFFECT_BINDING_REFRACTION_OUT,
-            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(
-            m_EffectsSet, WATER_EFFECT_BINDING_CAUSTICS_OUT,
-            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            { { m_WaterCausticsImage.GetSampler(), m_WaterCausticsImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->CommitDescriptorUpdates();
     }
 
@@ -618,13 +607,13 @@ void VansWaterSystem::SetupDescriptors(
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_RefractionSet, WATER_REFRACTION_BINDING_SCENE_GBUF2,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(
             m_RefractionSet, WATER_REFRACTION_BINDING_SCENE_COLOR,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetColor().GetSampler(), renderPassManager->GetColor().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            m_RefractionSet, WATER_REFRACTION_BINDING_THICKNESS,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { m_WaterThicknessImage.GetSampler(), m_WaterThicknessImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->WriteBufferDescriptor(
             m_RefractionSet, WATER_REFRACTION_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -654,9 +643,9 @@ void VansWaterSystem::SetupDescriptors(
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_SCENE_GBUF2,
+            m_CausticsSet, WATER_CAUSTICS_BINDING_THICKNESS,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+            { { m_WaterThicknessImage.GetSampler(), m_WaterThicknessImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->WriteBufferDescriptor(
             m_CausticsSet, WATER_CAUSTICS_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -750,28 +739,6 @@ void VansWaterSystem::SetupDescriptors(
     }
 
     // 鈹€鈹€ N-01: Detail Normal Compute descriptor set 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    {
-        std::vector<VkDescriptorSet> sets;
-        VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterDetailNormalCompute(
-            m_DetailNormalLayout, sets, 1);
-        m_DetailNormalSet = sets[0];
-        descMgr->BeginDescriptorUpdate();
-
-        // binding 0: WaterGBufferParams UBO锛堝鐢?m_GBufParamsBuffer锛?
-        descMgr->WriteBufferDescriptor(
-            m_DetailNormalSet, WATER_DETAIL_BINDING_PARAMS,
-            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
-        // binding 1: Detail normal output storage image array
-        descMgr->WriteImageDescriptor(
-            m_DetailNormalSet, WATER_DETAIL_BINDING_OUTPUT,
-            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            { { m_DetailNormalImage.GetSampler(),
-                m_DetailNormalImage.GetImageView(),
-                VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->CommitDescriptorUpdates();
-    }
-
     m_DescriptorsReady = true;
     VANS_LOG("[VansWaterSystem] SetupDescriptors completed");
 }
@@ -787,12 +754,12 @@ void VansWaterSystem::Shutdown()
     VkDevice dev = m_Device->GetLogicDevice();
     auto*  descMgr = VansVKDescriptorManager::GetInstance();
 
-    // W-02: 濮旀墭 VansWaterLOD 娓呯悊缃戞牸缂撳啿
-    if (m_WaterLOD)
+    // Geometry clipmap owns immutable patch mesh buffers.
+    if (m_GeometryClipmap)
     {
-        m_WaterLOD->Shutdown(dev);
-        delete m_WaterLOD;
-        m_WaterLOD = nullptr;
+        m_GeometryClipmap->Shutdown(dev);
+        delete m_GeometryClipmap;
+        m_GeometryClipmap = nullptr;
     }
     if (m_WaterFFT)
     {
@@ -801,16 +768,21 @@ void VansWaterSystem::Shutdown()
         m_WaterFFT = nullptr;
     }
 
+    if (m_MicroFFT)
+    {
+        m_MicroFFT->Shutdown(dev);
+        delete m_MicroFFT;
+        m_MicroFFT = nullptr;
+    }
+
     if (m_GBufPassLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_GBufPassLayout); m_GBufPassLayout = VK_NULL_HANDLE; }
     if (m_CompPassLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_CompPassLayout); m_CompPassLayout = VK_NULL_HANDLE; }
     if (m_WaveSimLayout != VK_NULL_HANDLE)    { descMgr->DestroyDescriptorSetLayout(m_WaveSimLayout);  m_WaveSimLayout  = VK_NULL_HANDLE; }
-    if (m_EffectsLayout != VK_NULL_HANDLE)    { descMgr->DestroyDescriptorSetLayout(m_EffectsLayout);  m_EffectsLayout  = VK_NULL_HANDLE; }
     if (m_SSRLayout != VK_NULL_HANDLE)        { descMgr->DestroyDescriptorSetLayout(m_SSRLayout);      m_SSRLayout      = VK_NULL_HANDLE; }
     if (m_RefractionLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_RefractionLayout); m_RefractionLayout = VK_NULL_HANDLE; }
     if (m_ThicknessLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_ThicknessLayout); m_ThicknessLayout = VK_NULL_HANDLE; }
     if (m_SSSScatterLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_SSSScatterLayout); m_SSSScatterLayout = VK_NULL_HANDLE; }
     if (m_CausticsLayout != VK_NULL_HANDLE)  { descMgr->DestroyDescriptorSetLayout(m_CausticsLayout);  m_CausticsLayout  = VK_NULL_HANDLE; }
-    if (m_DetailNormalLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_DetailNormalLayout); m_DetailNormalLayout = VK_NULL_HANDLE; }
 
     DestroyWaterBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated, dev);
     DestroyWaterBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated, dev);
@@ -830,21 +802,22 @@ void VansWaterSystem::Shutdown()
     m_WaterCausticsImage.DestroyVulkanImage(dev);
     m_WaterThicknessImage.DestroyVulkanImage(dev);
     m_WaterSSSScatterImage.DestroyVulkanImage(dev);
-    m_DetailNormalImage.DestroyVulkanImage(dev);
-    m_DetailNormalReady = false;
-    m_WaterEffectsReady = false;
+    m_MicroSlopeImage.DestroyVulkanImage(dev);
+    m_MicroSlopeReady = false;
+    m_ReflectionOutputReady = false;
+    m_RefractionOutputReady = false;
+    m_CausticsOutputReady = false;
+    m_ThicknessOutputReady = false;
+    m_SSSOutputReady = false;
 
     delete m_WaterGBufferShader;    m_WaterGBufferShader   = nullptr;
     delete m_WaterCompositeShader;  m_WaterCompositeShader = nullptr;
     delete m_WaveSimShader;         m_WaveSimShader        = nullptr;
-    delete m_WaterEffectsShader;    m_WaterEffectsShader   = nullptr;
     delete m_WaterSSRShader;        m_WaterSSRShader       = nullptr;
     delete m_WaterRefractionShader; m_WaterRefractionShader = nullptr;
     delete m_WaterCausticsShader;   m_WaterCausticsShader   = nullptr;
-    delete m_DetailNormalShader;    m_DetailNormalShader    = nullptr;
     delete m_WaterThicknessShader;  m_WaterThicknessShader  = nullptr;
     delete m_WaterSSSScatterShader; m_WaterSSSScatterShader = nullptr;
-    delete m_WaveSystem;    m_WaveSystem    = nullptr;
 
     m_Initialized      = false;
     m_DescriptorsReady = false;
@@ -864,18 +837,16 @@ void VansWaterSystem::UpdateWaveSSBO()
     if (!m_WaterMaterial)
         return;
 
+    VansWaterConfig config = m_WaterMaterial->m_Config;
+    config.Validate();
+    const auto& spectrum = config.m_Spectrum;
     std::vector<GerstnerWaveGPU> waves;
-    int   count  = m_WaterMaterial->m_GerstnerWaveCount;
-    glm::vec2 windDir = m_WaterMaterial->m_WindDirection;
-    float swell  = m_WaterMaterial->m_SwellAmplitude;
-    float windSp = m_WaterMaterial->m_WindSpeed;
-
-    AutoGenerateGerstnerWaves(waves, count, windDir, swell, windSp);
-
-    VkDeviceSize size = waves.size() * sizeof(GerstnerWaveGPU);
-    m_WaveSSBO.SetBufferData(waves.data(), 0, size);
-
-    VANS_LOG("[VansWaterSystem] UpdateWaveSSBO: " << waves.size() << " waves regenerated");
+    AutoGenerateGerstnerWaves(waves, spectrum.m_GerstnerWaveCount,
+        spectrum.m_WindDirection, spectrum.m_SwellAmplitude, spectrum.m_WindSpeed);
+    const std::size_t activeCount = waves.size();
+    waves.resize(MAX_WAVE_COUNT, GerstnerWaveGPU{}); // clear stale SSBO tail
+    m_WaveSSBO.SetBufferData(waves.data(), 0, waves.size() * sizeof(GerstnerWaveGPU));
+    VANS_LOG("[VansWaterSystem] Gerstner spectrum regenerated: " << activeCount << " active waves");
 }
 
 // ============================================================
@@ -887,114 +858,107 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
                              const glm::vec3& mainLightColor)
 {
     m_Time += deltaTime;
-
-    // 浠?WaterMaterial 璇诲彇杩愯鏃跺弬鏁帮紙鏀寔缂栬緫鍣ㄥ疄鏃惰皟鏁达級
-    float ampScale   = 0.2f;
-    float chopScale  = 1.5f;
-    float baseScale  = 4.0f * VansWaterLOD::BASE_PATCH_SIZE;
-    float maxAmp     = 0.6f;  // swellAmplitude(0.2) * 3
+    VansWaterConfig config;
     if (m_WaterMaterial)
     {
-        ampScale  = m_WaterMaterial->m_SwellAmplitude;
-        chopScale = m_WaterMaterial->m_ChopScale;
-        baseScale = (m_WaterMaterial->m_OceanBaseScale > 0.0f)
-            ? m_WaterMaterial->m_OceanBaseScale
-            : 4.0f * m_WaterMaterial->m_LODBasePatchSize;
-        maxAmp    = m_WaterMaterial->m_SwellAmplitude * 3.0f;
-        if (m_WaterMaterial->m_Config.m_Waves.m_Mode == VansWaveMode::FFT ||
-            m_WaterMaterial->m_Config.m_Waves.m_Mode == VansWaveMode::Hybrid)
-        {
-            maxAmp = (std::max)(maxAmp,
-                m_WaterMaterial->m_Config.m_Waves.m_FFT.m_SpectrumAmplitude * 3.0f);
-        }
+        config = m_WaterMaterial->m_Config;
+        config.Validate();
+        m_WaterMaterial->m_Config = config;
     }
+    const auto& geometry = config.m_Geometry;
+    const auto& spectrum = config.m_Spectrum;
+    const auto& micro = config.m_MicroSlope;
+    m_WaterLevel = config.m_WaterLevel;
 
-    // W-02: 濮旀墭 VansWaterLOD 鐢熸垚 Patch
-    if (m_WaterLOD)
+    const float windLength = spectrum.m_WindSpeed * spectrum.m_WindSpeed / 9.81f;
+    const float spectralFourSigma = 5.5f * windLength
+        * std::sqrt((std::max)(spectrum.m_SpectrumAmplitude, 0.0f));
+    const float displacementBound = spectrum.m_SwellAmplitude * 2.0f + spectralFourSigma;
+    if (m_GeometryClipmap)
     {
-        VansWaterLODConfig lodConfig;
-        if (m_WaterMaterial)
-        {
-            lodConfig.m_MaxLOD = m_WaterMaterial->m_MaxLODCount;
-            lodConfig.m_BasePatchSize = m_WaterMaterial->m_LODBasePatchSize;
-            lodConfig.m_MeshDim = m_WaterMaterial->m_LODMeshDim;
-            lodConfig.m_DetailBalance = m_WaterMaterial->m_LODDetailBalance;
-            lodConfig.m_MorphWidthRatio = m_WaterMaterial->m_LODMorphWidthRatio;
-        }
-        m_WaterLOD->SetLodConfig(lodConfig);
-        m_WaterLOD->GeneratePatches(cameraPos);
+        m_GeometryClipmap->ApplyConfig(geometry);
+        m_GeometryClipmap->GeneratePatches(cameraPos);
+        m_GeometryClipmap->FrustumCullPatches(vpMatrix, m_WaterLevel, displacementBound);
     }
 
-    // 姣忓抚鍐欏叆姘撮潰 pass 鑷湁鐩告満鏁版嵁
     WaterGBufferParamsGPU gbufParams = {};
-    gbufParams.VPMatrix       = vpMatrix;
-    gbufParams.ViewMatrix     = viewMatrix;
+    gbufParams.VPMatrix = vpMatrix;
+    gbufParams.ViewMatrix = viewMatrix;
     gbufParams.cameraPosition = glm::vec4(cameraPos, 1.0f);
-    gbufParams.minLodDist     = m_WaterLOD ? m_WaterLOD->GetBasePatchSize() : VansWaterLOD::BASE_PATCH_SIZE;
-    gbufParams.lodLevels      = m_WaterLOD ? m_WaterLOD->GetLodLevels() : VansWaterLOD::MAX_LOD_COUNT;
-    gbufParams.meshDim        = m_WaterLOD ? m_WaterLOD->GetMeshDim() : VansWaterLOD::WATER_MESH_DIM;
-    gbufParams.clipmapBaseScale = baseScale;
-    gbufParams.maxWaveAmp     = maxAmp;
-    gbufParams.detailBalance   = m_WaterLOD ? m_WaterLOD->GetDetailBalance() : 2.0f;  // CPU/GPU 鍚屾锛氫粠 VansWaterLOD 杩愯鏃惰鍙?
-    gbufParams.morphStartRatio = m_WaterLOD ? m_WaterLOD->GetMorphWidthRatio() : 0.5f;
-    gbufParams.waveTimeAndScale = glm::vec4(m_Time, ampScale, chopScale, 1.0f);
+    gbufParams.geometryParams = glm::ivec4(
+        geometry.m_LodCount, geometry.m_MeshDim, spectrum.m_CascadeCount, int(spectrum.m_Mode));
+    gbufParams.geometryScale = glm::vec4(
+        geometry.m_BasePatchSize, geometry.m_MorphStartRatio, displacementBound,
+        VansWaterConfig::GEOMETRY_LOD_RATIO);
+    gbufParams.spectrumScale = glm::vec4(
+        spectrum.m_BaseCoverage, spectrum.m_CascadeScale, m_Time, 1.0f);
+    gbufParams.windAndChop = glm::vec4(
+        spectrum.m_WindDirection, spectrum.m_WindSpeed, spectrum.m_Choppiness);
+    gbufParams.simulationParams = glm::ivec4(
+        spectrum.m_GerstnerWaveCount, VansWaterConfig::MICRO_SLOPE_LAYER_COUNT,
+        micro.m_Enabled && m_MicroFFT && m_MicroFFT->IsReady() ? 1 : 0,
+        spectrum.m_Mode == VansWaveMode::Hybrid && m_WaterFFT && m_WaterFFT->IsReady() ? 1 : 0);
+    const float microBandSplit = std::sqrt(micro.m_MinWavelength * spectrum.m_MinWavelength);
+    gbufParams.microSlopeParams = glm::vec4(
+        micro.m_Intensity, micro.m_MinWavelength, microBandSplit, spectrum.m_MinWavelength);
+    gbufParams.microDomainParams = glm::vec4(
+        micro.m_PrimaryCoverage, micro.m_SecondaryCoverage,
+        glm::radians(micro.m_RotationDegrees), 0.0f);
 
-    VansWaveMode waveMode = m_WaterMaterial ? m_WaterMaterial->m_Config.m_Waves.m_Mode : VansWaveMode::Gerstner;
-    int fftLODCount = m_WaterMaterial ? m_WaterMaterial->m_Config.m_Waves.m_FFT.m_LODCount : 4;
-    if (m_WaterMaterial && m_WaterMaterial->m_FftLODCount > 0)
-        fftLODCount = m_WaterMaterial->m_FftLODCount;
-    fftLODCount = std::clamp(fftLODCount, 1, (std::max)(gbufParams.lodLevels, 1));
-    const bool useDerivativeNormal = m_WaterMaterial
-        ? m_WaterMaterial->m_Config.m_Waves.m_FFT.m_UseDerivativeNormal
-        : true;
-
-    // N-01: Detail normal 鍙傛暟鍐欏叆 UBO padding
-    if (m_WaterMaterial)
-    {
-        gbufParams.waveParamsPad[0] = glm::vec4(
-            m_WaterMaterial->m_DetailNormalIntensity,
-            m_WaterMaterial->m_DetailNormalScale,
-            m_WaterMaterial->m_WindDirection.x,
-            m_WaterMaterial->m_WindDirection.y
-        );
-        gbufParams.waveParamsPad[1] = glm::vec4(
-            m_WaterMaterial->m_DetailNormalTimeOffset,
-            float(m_WaterMaterial->m_DetailNormalOctaves),
-            m_WaterMaterial->m_DetailNormalBaseScale,
-            0.0f
-        );
-    }
-
-    // FFT/Hybrid mode parameters for water_prepass.vert and partial Gerstner dispatch.
-    gbufParams.waveParamsPad[2] = glm::vec4(
-        float(static_cast<int>(waveMode)),
-        useDerivativeNormal ? 1.0f : 0.0f,
-        float(fftLODCount),
-        float(m_WaterMaterial ? m_WaterMaterial->m_FftResolution : VansWaterFFT::FFT_RESOLUTION));
-    gbufParams.waveParamsPad[3] = glm::vec4(0.0f, float(gbufParams.lodLevels), 0.0f, 0.0f);
-
-    if (m_WaterFFT && m_WaterMaterial)
+    if (m_WaterFFT)
     {
         VansWaterFFT::Params fp;
         fp.resolution = VansWaterFFT::FFT_RESOLUTION;
-        fp.lodCount = uint32_t(waveMode == VansWaveMode::Hybrid ? fftLODCount : gbufParams.lodLevels);
-        fp.baseScale = baseScale;
-        fp.detailBalance = gbufParams.detailBalance;
-        fp.windDirection = m_WaterMaterial->m_WindDirection;
-        fp.windSpeed = m_WaterMaterial->m_WindSpeed;
-        fp.spectrumAmplitude = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_SpectrumAmplitude;
-        fp.choppiness = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_Choppiness;
-        fp.smallWaveDamping = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_SmallWaveDamping;
-        fp.windDependency = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_WindDependency;
-        fp.depth = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_Depth;
-        fp.repeatPeriod = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_RepeatPeriod;
-        fp.maxWaveAmp = maxAmp;
-        fp.normalScale = gbufParams.waveTimeAndScale.w;
-        fp.foamSlopeScale = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_FoamSlopeScale;
-        fp.foamFoldScale = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_FoamFoldScale;
-        fp.foamFoldThreshold = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_FoamFoldThreshold;
-        fp.randomSeed = m_WaterMaterial->m_Config.m_Waves.m_FFT.m_RandomSeed;
+        fp.cascadeCount = std::uint32_t(spectrum.m_CascadeCount);
+        fp.windDirection = spectrum.m_WindDirection;
+        fp.windSpeed = spectrum.m_WindSpeed;
+        fp.spectrumAmplitude = spectrum.m_SpectrumAmplitude;
+        fp.choppiness = spectrum.m_Choppiness;
+        fp.smallWaveDamping = spectrum.m_SmallWaveDamping;
+        fp.windDependency = spectrum.m_WindDependency;
+        fp.depth = spectrum.m_Depth;
+        fp.repeatPeriod = spectrum.m_RepeatPeriod;
+        fp.randomSeed = spectrum.m_RandomSeed;
+        fp.capillaryCoefficient = 0.000074f;
+        float previousCoverage = spectrum.m_MinWavelength;
+        for (uint32_t cascade = 0; cascade < VansWaterFFT::MAX_CASCADE_COUNT; ++cascade)
+        {
+            const float coverage = spectrum.m_BaseCoverage
+                * std::pow(spectrum.m_CascadeScale, float(cascade));
+            fp.domainCoverage[cascade] = coverage;
+            fp.minWavelength[cascade] = cascade == 0
+                ? spectrum.m_MinWavelength : previousCoverage;
+            fp.maxWavelength[cascade] = coverage;
+            previousCoverage = coverage;
+        }
         m_WaterFFT->SetParams(fp);
+    }
+
+    if (m_MicroFFT)
+    {
+        VansWaterFFT::Params fp;
+        fp.resolution = VansWaterFFT::FFT_RESOLUTION;
+        fp.cascadeCount = VansWaterFFT::MAX_CASCADE_COUNT;
+        fp.windDirection = spectrum.m_WindDirection;
+        fp.windSpeed = spectrum.m_WindSpeed;
+        fp.spectrumAmplitude = spectrum.m_SpectrumAmplitude;
+        fp.choppiness = 0.0f;
+        fp.smallWaveDamping = spectrum.m_SmallWaveDamping;
+        fp.windDependency = spectrum.m_WindDependency;
+        fp.depth = spectrum.m_Depth;
+        fp.repeatPeriod = spectrum.m_RepeatPeriod;
+        fp.randomSeed = spectrum.m_RandomSeed ^ 0x9e3779b9u;
+        fp.capillaryCoefficient = 0.000074f;
+        fp.domainCoverage = {
+            micro.m_PrimaryCoverage, micro.m_SecondaryCoverage,
+            micro.m_PrimaryCoverage, micro.m_SecondaryCoverage };
+        fp.minWavelength = {
+            micro.m_MinWavelength, micro.m_MinWavelength,
+            microBandSplit, microBandSplit };
+        fp.maxWavelength = {
+            microBandSplit, microBandSplit,
+            spectrum.m_MinWavelength, spectrum.m_MinWavelength };
+        m_MicroFFT->SetParams(fp);
     }
 
     m_GBufParamsCache = gbufParams;
@@ -1006,40 +970,28 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     if (m_Device != nullptr && m_CompParamsBufferCreated)
     {
         WaterCompositeParamsGPU compParams = {};
-        if (m_WaterMaterial)
-        {
-            compParams.deepWaterColor    = m_WaterMaterial->m_DeepWaterColor;
-            compParams.shallowWaterColor = m_WaterMaterial->m_ShallowWaterColor;
-            compParams.fresnelPower      = m_WaterMaterial->m_FresnelPower;
-            compParams.waterLevel        = m_WaterLevel;
-            compParams.specularIntensity = m_WaterMaterial->m_SpecularIntensity;
-            compParams.foamIntensity     = m_WaterMaterial->m_FoamIntensity;
-            compParams.absorptionCoeff   = glm::vec4(m_WaterMaterial->m_AbsorptionCoeffs, 1.0f);
-            compParams.scatteringCoeff   = glm::vec4(m_WaterMaterial->m_ScatteringCoeffs, 1.0f);
-            compParams.sssAnisotropy     = m_WaterMaterial->m_Anisotropy;
-            compParams.waterRoughness    = m_WaterMaterial->m_WaterRoughness;
-            compParams.waterIOR          = m_WaterMaterial->m_WaterIOR;
-        }
-        else
-        {
-            // fallback 榛樿鍙傛暟
-            compParams.deepWaterColor    = glm::vec4(0.01f, 0.04f, 0.18f, 1.0f);
-            compParams.shallowWaterColor = glm::vec4(0.05f, 0.18f, 0.55f, 1.0f);
-            compParams.fresnelPower      = 5.0f;
-            compParams.waterLevel        = m_WaterLevel;
-            compParams.specularIntensity = 0.6f;
-            compParams.foamIntensity     = 1.0f;
-            compParams.absorptionCoeff   = glm::vec4(0.25f, 0.08f, 0.02f, 1.0f);
-            compParams.scatteringCoeff   = glm::vec4(0.02f, 0.04f, 0.06f, 1.0f);
-            compParams.sssAnisotropy     = 0.85f;
-            compParams.waterRoughness    = 0.02f;
-            compParams.waterIOR          = 1.33f;
-        }
+        compParams.deepWaterColor = config.m_Medium.m_DeepColor;
+        compParams.shallowWaterColor = config.m_Medium.m_ShallowColor;
+        compParams.fresnelPower = config.m_Medium.m_FresnelPower;
+        compParams.waterLevel = m_WaterLevel;
+        compParams.specularIntensity = config.m_SpecularIntensity;
+        compParams.refractionStrength = config.m_Refraction.m_DistortionStrength;
+        compParams.absorptionCoeff = glm::vec4(config.m_Medium.m_AbsorptionCoeff, 1.0f);
+        compParams.scatteringCoeff = glm::vec4(config.m_Medium.m_ScatteringCoeff, 1.0f);
+        compParams.sssAnisotropy = config.m_Medium.m_Anisotropy;
+        compParams.waterRoughness = config.m_Medium.m_WaterRoughness;
+        compParams.waterIOR = config.m_Medium.m_IOR;
+        compParams.maxOpticalDepth = config.m_SSS.m_MaxThicknessDistance;
         compParams.cameraPosition  = glm::vec4(cameraPos, 1.0f);
         compParams.invViewProjMatrix = glm::inverse(vpMatrix);
         compParams.mainLightDir    = glm::vec4(glm::normalize(mainLightDir), 0.0f);
         compParams.viewMatrix      = viewMatrix;
         compParams.projMatrix      = vpMatrix * glm::inverse(viewMatrix);  // proj = VP * inv(View)
+        compParams.effectFlags = glm::ivec4(
+            config.m_SSR.m_Enabled ? 1 : 0,
+            config.m_Refraction.m_Enabled ? 1 : 0,
+            config.m_Caustics.m_Enabled ? 1 : 0,
+            config.m_SSS.m_Enabled ? 1 : 0);
 
         m_CompParamsBuffer.SetBufferData(&compParams, 0, sizeof(WaterCompositeParamsGPU));
     }
@@ -1052,21 +1004,11 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         ssrParams.projMatrix     = vpMatrix * glm::inverse(viewMatrix);
         ssrParams.invProjMatrix  = glm::inverse(ssrParams.projMatrix);
         ssrParams.viewMatrix     = viewMatrix;
-        // Inspector optimization: read SSR params from material
-        if (m_WaterMaterial)
-        {
-            ssrParams.maxDistance  = m_WaterMaterial->m_SSRMaxDistance;
-            ssrParams.maxSteps     = 64;
-            ssrParams.thickness    = 1.0f;
-            ssrParams.maxRoughness = m_WaterMaterial->m_SSRMaxRoughness;
-        }
-        else
-        {
-            ssrParams.maxDistance  = 500.0f;
-            ssrParams.maxSteps     = 64;
-            ssrParams.thickness    = 1.0f;
-            ssrParams.maxRoughness = 0.3f;
-        }
+        ssrParams.maxDistance = config.m_SSR.m_MaxDistance;
+        ssrParams.maxSteps = 64;
+        ssrParams.thickness = 1.0f;
+        ssrParams.maxRoughness = config.m_SSR.m_MaxRoughness;
+        ssrParams.surfaceParams = glm::vec4(config.m_Medium.m_WaterRoughness, 0.0f, 0.0f, 0.0f);
 
         m_SSRParamsBuffer.SetBufferData(&ssrParams, 0, sizeof(WaterSSRParamsGPU));
     }
@@ -1077,21 +1019,13 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         WaterCausticsParamsGPU causticParams = {};
         causticParams.sunDirection     = glm::vec4(glm::normalize(mainLightDir), 0.0f);
         causticParams.mainLightColor   = glm::vec4(mainLightColor, 1.0f);
-        if (m_WaterMaterial)
-        {
-            glm::vec3 ext = m_WaterMaterial->m_AbsorptionCoeffs + m_WaterMaterial->m_ScatteringCoeffs;
-            causticParams.extinctionCoeff = glm::vec4(ext, 0.0f);
-            causticParams.causticsIntensity = m_WaterMaterial->m_CausticsIntensity;
-            causticParams.causticsScale     = m_WaterMaterial->m_CausticsScale;
-        }
-        else
-        {
-            causticParams.extinctionCoeff  = glm::vec4(0.27f, 0.12f, 0.08f, 0.0f);
-            causticParams.causticsIntensity = 1.0f;
-            causticParams.causticsScale     = 0.5f;
-        }
-        causticParams.waterLevel = m_WaterLevel;
-        causticParams.maxDepth   = 15.0f;
+        const glm::vec3 extinction = config.m_Medium.m_AbsorptionCoeff + config.m_Medium.m_ScatteringCoeff;
+        causticParams.extinctionCoeff = glm::vec4(extinction, 0.0f);
+        causticParams.causticsIntensity = config.m_Caustics.m_Enabled ? config.m_Caustics.m_Intensity : 0.0f;
+        causticParams.causticsScale = config.m_Caustics.m_Scale;
+        causticParams.shoreFadeStart = 0.015f;
+        causticParams.maxDepth   = config.m_SSS.m_MaxThicknessDistance;
+        causticParams.opticalParams = glm::vec4(config.m_Medium.m_IOR, 0.0f, 0.0f, 0.0f);
 
         m_CausticsParamsBuffer.SetBufferData(&causticParams, 0, sizeof(WaterCausticsParamsGPU));
     }
@@ -1100,13 +1034,8 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     if (m_Device != nullptr && m_ThicknessParamsBufferCreated)
     {
         ThicknessParamsGPU tp = {};
-        tp.maxThickness = 15.0f;
-        tp.deepFallback = 0.8f;
-        if (m_WaterMaterial)
-        {
-            tp.maxThickness = m_WaterMaterial->m_MaxThicknessDistance;
-            tp.deepFallback = m_WaterMaterial->m_DeepWaterThicknessFallback;
-        }
+        tp.maxThickness = config.m_SSS.m_MaxThicknessDistance;
+        tp.deepFallback = config.m_SSS.m_DeepWaterThicknessFallback;
         m_ThicknessParamsBuffer.SetBufferData(&tp, 0, sizeof(ThicknessParamsGPU));
     }
 
@@ -1114,17 +1043,10 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     if (m_Device != nullptr && m_SSSParamsBufferCreated)
     {
         SSSParamsGPU sp = {};
-        sp.absorptionCoeff = glm::vec4(0.25f, 0.08f, 0.02f, 1.0f);
-        sp.scatteringCoeff = glm::vec4(0.02f, 0.04f, 0.06f, 1.0f);
-        sp.maxThickness = 15.0f;
-        sp.anisotropy = 0.85f;
-        if (m_WaterMaterial)
-        {
-            sp.absorptionCoeff = glm::vec4(m_WaterMaterial->m_AbsorptionCoeffs, 1.0f);
-            sp.scatteringCoeff = glm::vec4(m_WaterMaterial->m_ScatteringCoeffs, 1.0f);
-            sp.maxThickness    = m_WaterMaterial->m_MaxThicknessDistance;
-            sp.anisotropy      = m_WaterMaterial->m_Anisotropy;
-        }
+        sp.absorptionCoeff = glm::vec4(config.m_Medium.m_AbsorptionCoeff, 1.0f);
+        sp.scatteringCoeff = glm::vec4(config.m_Medium.m_ScatteringCoeff, 1.0f);
+        sp.maxThickness = config.m_SSS.m_MaxThicknessDistance;
+        sp.anisotropy = config.m_Medium.m_Anisotropy;
         m_SSSParamsBuffer.SetBufferData(&sp, 0, sizeof(SSSParamsGPU));
     }
 }
@@ -1137,34 +1059,17 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
     if (!m_Initialized || !m_DescriptorsReady)
         return;
 
-    const VansWaveMode mode = m_WaterMaterial
-        ? m_WaterMaterial->m_Config.m_Waves.m_Mode
-        : VansWaveMode::Gerstner;
-    const int lodLevels = m_WaterLOD ? m_WaterLOD->GetLodLevels() : int(VansWaterLOD::MAX_LOD_COUNT);
-    const int fftLODCount = std::clamp(
-        m_WaterMaterial ? m_WaterMaterial->m_Config.m_Waves.m_FFT.m_LODCount : 4,
-        1,
-        (std::max)(lodLevels, 1));
+    VansWaterConfig config;
+    if (m_WaterMaterial)
+        config = m_WaterMaterial->m_Config;
+    config.Validate();
+    const VansWaveMode mode = config.m_Spectrum.m_Mode;
+    const int cascadeCount = config.m_Spectrum.m_CascadeCount;
 
-    auto updateGerstnerDispatchParams = [&](int outputBaseLod, int outputLodCount, bool disableSpectrumApprox)
+    auto runGerstner = [&]()
     {
-        if (!m_GBufParamsBufferCreated)
+        if (m_WaveSimShader == nullptr || m_WaveSimSet == VK_NULL_HANDLE)
             return;
-
-        m_GBufParamsCache.waveParamsPad[3] = glm::vec4(
-            float(outputBaseLod),
-            float(outputLodCount),
-            disableSpectrumApprox ? 1.0f : 0.0f,
-            0.0f);
-        m_GBufParamsBuffer.SetBufferData(&m_GBufParamsCache, 0, sizeof(WaterGBufferParamsGPU));
-    };
-
-    auto runGerstner = [&](int outputBaseLod, int outputLodCount, bool disableSpectrumApprox)
-    {
-        if (outputLodCount <= 0 || m_WaveSimShader == nullptr || m_WaveSimSet == VK_NULL_HANDLE)
-            return;
-
-        updateGerstnerDispatchParams(outputBaseLod, outputLodCount, disableSpectrumApprox);
 
         const VkImageLayout currentLayout = m_WaveDisplacementReady
             ? VK_IMAGE_LAYOUT_GENERAL
@@ -1172,7 +1077,8 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
 
         VkImageMemoryBarrier beforeCompute = {};
         beforeCompute.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        beforeCompute.srcAccessMask       = m_WaveDisplacementReady ? VK_ACCESS_SHADER_READ_BIT : 0;
+        beforeCompute.srcAccessMask       = m_WaveDisplacementReady
+            ? VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT : 0;
         beforeCompute.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
         beforeCompute.oldLayout           = currentLayout;
         beforeCompute.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
@@ -1181,18 +1087,22 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
         beforeCompute.image               = m_WaveDisplacementImage.GetImage();
         beforeCompute.subresourceRange    = {
             VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
-            uint32_t((std::max)(outputBaseLod, 0)),
-            uint32_t((std::max)(outputLodCount, 0))
+            0, uint32_t(VansWaterConfig::MAX_SPECTRUM_CASCADES)
         };
+        VkImageMemoryBarrier beforeDerivative = beforeCompute;
+        beforeDerivative.srcAccessMask = m_WaveDerivativeReady ? VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT : 0;
+        beforeDerivative.image = m_WaveDerivativeImage.GetImage();
+        beforeDerivative.subresourceRange.layerCount = uint32_t(VansWaterConfig::MAX_SPECTRUM_CASCADES * 2);
         cmd.PipelineBarrier(
-            m_WaveDisplacementReady ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            (m_WaveDisplacementReady || m_WaveDerivativeReady) ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            {}, {}, { beforeCompute });
+            {}, {}, { beforeCompute, beforeDerivative });
         m_WaveDisplacementImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+        m_WaveDerivativeImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
 
         cmd.EnsureComputeShader(*m_WaveSimShader, { m_WaveSimLayout });
         const uint32_t groups = (WAVE_TEXTURE_SIZE + 7u) / 8u;
-        cmd.DispatchCompute(*m_WaveSimShader, groups, groups, uint32_t(outputLodCount), { m_WaveSimSet });
+        cmd.DispatchCompute(*m_WaveSimShader, groups, groups, uint32_t(cascadeCount), { m_WaveSimSet });
 
         VkImageMemoryBarrier afterCompute = {};
         afterCompute.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1204,111 +1114,49 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
         afterCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         afterCompute.image               = m_WaveDisplacementImage.GetImage();
         afterCompute.subresourceRange    = beforeCompute.subresourceRange;
+        VkImageMemoryBarrier afterDerivative = afterCompute;
+        afterDerivative.image = m_WaveDerivativeImage.GetImage();
+        afterDerivative.subresourceRange = beforeDerivative.subresourceRange;
         cmd.PipelineBarrier(
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-            {}, {}, { afterCompute });
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            {}, {}, { afterCompute, afterDerivative });
 
         m_WaveDisplacementReady = true;
+        m_WaveDerivativeReady = true;
     };
 
-    if (mode == VansWaveMode::FFT)
+    bool fftReady = false;
+    if ((mode == VansWaveMode::FFT || mode == VansWaveMode::Hybrid) && m_WaterFFT && m_WaterFFT->IsReady())
     {
-        if (m_WaterFFT && m_WaterFFT->IsReady())
-        {
-            m_WaterFFT->UpdateFFT(cmd, m_Time);
-            m_WaveDisplacementReady = true;
-            m_WaveDerivativeReady = true;
-            return;
-        }
+        m_WaterFFT->UpdateFFT(cmd, m_Time);
+        m_WaveDisplacementReady = true;
+        m_WaveDerivativeReady = true;
+        fftReady = true;
+    }
 
+    if (mode == VansWaveMode::FFT && !fftReady)
+    {
         static bool s_FFTFallbackLogged = false;
         if (!s_FFTFallbackLogged)
         {
             VANS_LOG_WARN("[VansWaterSystem] FFT requested but not ready; falling back to Gerstner");
             s_FFTFallbackLogged = true;
         }
-        runGerstner(0, lodLevels, false);
-        return;
+        runGerstner();
     }
+    else if (mode == VansWaveMode::Gerstner || mode == VansWaveMode::Hybrid)
+        runGerstner();
 
-    if (mode == VansWaveMode::Hybrid)
+    // Short-wave detail is part of the same spectral simulation stage.  Run
+    // once even when disabled so the statically bound sampled image has a
+    // valid layout; subsequent disabled frames skip the work.
+    if (m_MicroFFT && m_MicroFFT->IsReady() &&
+        (config.m_MicroSlope.m_Enabled || !m_MicroSlopeReady))
     {
-        bool fftOk = false;
-        if (m_WaterFFT && m_WaterFFT->IsReady() && fftLODCount > 0)
-        {
-            m_WaterFFT->UpdateFFT(cmd, m_Time);
-            fftOk = true;
-            m_WaveDisplacementReady = true;
-            m_WaveDerivativeReady = true;
-        }
-
-        if (fftOk && fftLODCount < lodLevels)
-            runGerstner(fftLODCount, lodLevels - fftLODCount, true);
-        else if (!fftOk)
-            runGerstner(0, lodLevels, false);
-        return;
+        m_MicroFFT->UpdateFFT(cmd, m_Time);
+        m_MicroSlopeReady = true;
     }
-
-    runGerstner(0, lodLevels, false);
-}
-
-// ============================================================
-// UpdateDetailNormalCompute 鈥?N-01: Compute 鐢熸垚缁嗚妭娉曠嚎璐村浘
-// ============================================================
-void VansWaterSystem::UpdateDetailNormalCompute(VansVKCommandBuffer& cmd)
-{
-    if (!m_Initialized || !m_DescriptorsReady ||
-        m_DetailNormalShader == nullptr || m_DetailNormalSet == VK_NULL_HANDLE)
-        return;
-
-    const uint32_t detailLayerCount = uint32_t((std::max)(
-        m_WaterLOD ? m_WaterLOD->GetLodLevels() : int(VansWaterLOD::MAX_LOD_COUNT),
-        1));
-
-    // Barrier: FRAGMENT read -> COMPUTE write.
-    const VkImageLayout currentLayout = m_DetailNormalReady
-        ? VK_IMAGE_LAYOUT_GENERAL
-        : m_DetailNormalImage.GetImageLayout();
-
-    VkImageMemoryBarrier beforeCompute = {};
-    beforeCompute.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    beforeCompute.srcAccessMask       = m_DetailNormalReady ? VK_ACCESS_SHADER_READ_BIT : 0;
-    beforeCompute.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-    beforeCompute.oldLayout           = currentLayout;
-    beforeCompute.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
-    beforeCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    beforeCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    beforeCompute.image               = m_DetailNormalImage.GetImage();
-    beforeCompute.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, detailLayerCount };
-    cmd.PipelineBarrier(
-        m_DetailNormalReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        {}, {}, { beforeCompute });
-    m_DetailNormalImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
-
-    // Dispatch one layer per active water LOD, local 8x8.
-    cmd.EnsureComputeShader(*m_DetailNormalShader, { m_DetailNormalLayout });
-    const uint32_t groups = (DETAIL_TEXTURE_SIZE + 7u) / 8u;
-    cmd.DispatchCompute(*m_DetailNormalShader, groups, groups, detailLayerCount, { m_DetailNormalSet });
-
-    // Barrier: COMPUTE write -> FRAGMENT read.
-    VkImageMemoryBarrier afterCompute = {};
-    afterCompute.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    afterCompute.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-    afterCompute.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-    afterCompute.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
-    afterCompute.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
-    afterCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    afterCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    afterCompute.image               = m_DetailNormalImage.GetImage();
-    afterCompute.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, detailLayerCount };
-    cmd.PipelineBarrier(
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        {}, {}, { afterCompute });
-
-    m_DetailNormalReady = true;
 }
 
 // ============================================================
@@ -1319,13 +1167,13 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
     static int s_DbgFrame = 0;
     bool dbgLog = (s_DbgFrame++ % 120) == 0;
 
-    if (!m_Initialized || !m_DescriptorsReady || !m_WaterLOD || m_WaterLOD->GetPatchCount() == 0)
+    if (!m_Initialized || !m_DescriptorsReady || !m_GeometryClipmap || m_GeometryClipmap->GetPatchCount() == 0)
     {
         if (dbgLog)
             VANS_LOG_WARN("[WaterGBuffer] EARLY RETURN: init/descReady/patches not ready");
         return;
     }
-    if (m_WaterGBufferShader == nullptr || m_WaterLOD->GetVertexBuffer() == VK_NULL_HANDLE)
+    if (m_WaterGBufferShader == nullptr || m_GeometryClipmap->GetVertexBuffer() == VK_NULL_HANDLE)
     {
         if (dbgLog)
             VANS_LOG_WARN("[WaterGBuffer] EARLY RETURN: shader or vertex buffer is null");
@@ -1336,14 +1184,14 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
     {
         VANS_LOG("[WaterGBuffer] Render: init=" << m_Initialized
                  << " descReady=" << m_DescriptorsReady
-                 << " patches=" << m_WaterLOD->GetPatchCount()
+                 << " patches=" << m_GeometryClipmap->GetPatchCount()
                  << " shader=" << (m_WaterGBufferShader != nullptr)
                  << " waterLevel=" << m_WaterLevel);
     }
 
     // 鈹€鈹€ 璁剧疆椤剁偣杈撳叆甯冨眬 鈹€鈹€
-    globalState.vertexInputBindingDescriptions   = &m_WaterLOD->GetVertexBindings();
-    globalState.vertexInputAttributeDescriptions = &m_WaterLOD->GetVertexAttributes();
+    globalState.vertexInputBindingDescriptions   = &m_GeometryClipmap->GetVertexBindings();
+    globalState.vertexInputAttributeDescriptions = &m_GeometryClipmap->GetVertexAttributes();
 
     // 鈹€鈹€ Descriptor Set 甯冨眬鏁扮粍锛歔Set 0: Global, Set 1: WaterGBuf Pass]
     std::vector<VkDescriptorSetLayout> layouts = { m_GlobalLayout, m_GBufPassLayout };
@@ -1354,27 +1202,26 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
         *m_WaterGBufferShader, 0, sets, {});
     cmd.BindGraphicsPipeline(*m_WaterGBufferShader->GetGraphicsPipeline());
 
-    // 鈹€鈹€ 缁戝畾鍏辩敤椤剁偣 / 绱㈠紩缂撳啿锛堟潵鑷?VansWaterLOD锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    // Bind shared immutable geometry clipmap mesh.
     VkDeviceSize offset = 0;
-    VkBuffer vbuf = m_WaterLOD->GetVertexBuffer();
-    VkBuffer ibuf = m_WaterLOD->GetIndexBuffer();
+    VkBuffer vbuf = m_GeometryClipmap->GetVertexBuffer();
+    VkBuffer ibuf = m_GeometryClipmap->GetIndexBuffer();
     cmd.BindVertexBuffers(0, 1, &vbuf, &offset);
     cmd.BindIndexBuffer(ibuf, 0, VK_INDEX_TYPE_UINT32);
 
-    const std::vector<CDLODPatch>& patches = m_WaterLOD->GetPatches();
-    uint32_t indexCount = m_WaterLOD->GetIndexCount();
+    const std::vector<WaterGeometryPatch>& patches = m_GeometryClipmap->GetPatches();
+    uint32_t indexCount = m_GeometryClipmap->GetIndexCount();
 
     // 鈹€鈹€ 閫?Patch 鎺ㄩ€佸父閲?+ DrawIndexed 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     for (auto patchIter = patches.rbegin(); patchIter != patches.rend(); ++patchIter)
     {
-        const CDLODPatch& patch = *patchIter;
+        const WaterGeometryPatch& patch = *patchIter;
         WaterPatchPushConstant pc = {};
         pc.patchWorldOrigin = patch.worldOrigin;
         pc.patchWorldSize   = patch.worldSize;
         pc.lodLevel         = patch.lodLevel;
         pc.waterLevel       = m_WaterLevel;
         pc.outerEdgeMask    = patch.outerEdgeMask;
-        pc.innerEdgeMask    = patch.innerEdgeMask;
 
         cmd.UpdatePushConstants(
             *m_WaterGBufferShader->GetGraphicsPipeline(),
@@ -1394,7 +1241,7 @@ void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
         return;
 
     // Inspector optimization: SSR enable guard
-    if (m_WaterMaterial && !m_WaterMaterial->m_EnableSSR)
+    if (m_WaterMaterial && !m_WaterMaterial->m_Config.m_SSR.m_Enabled)
         return;
 
     // 鈹€鈹€ Water SSR (HZB Ray March) 鈫?Reflection 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -1402,14 +1249,15 @@ void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
     {
         VkImageMemoryBarrier beforeSSR = {};
         beforeSSR.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        beforeSSR.srcAccessMask = 0;
+        beforeSSR.srcAccessMask = m_ReflectionOutputReady ? VK_ACCESS_SHADER_READ_BIT : 0;
         beforeSSR.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         beforeSSR.oldLayout = m_WaterReflectionImage.GetImageLayout();
         beforeSSR.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         beforeSSR.image = m_WaterReflectionImage.GetImage();
         beforeSSR.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         m_WaterReflectionImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
-        cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        cmd.PipelineBarrier(m_ReflectionOutputReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                                                    : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, {}, {}, { beforeSSR });
 
         cmd.EnsureComputeShader(*m_WaterSSRShader, { m_SSRLayout });
@@ -1430,7 +1278,7 @@ void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, {}, {}, { afterSSR });
     }
 
-    m_WaterEffectsReady = true;
+    m_ReflectionOutputReady = true;
 }
 
 // ============================================================
@@ -1492,7 +1340,7 @@ void VansWaterSystem::DispatchRefractionCS(VansVKCommandBuffer& cmd)
         return;
 
     // Inspector optimization: Refraction enable guard
-    if (m_WaterMaterial && !m_WaterMaterial->m_EnableRefraction)
+    if (m_WaterMaterial && !m_WaterMaterial->m_Config.m_Refraction.m_Enabled)
         return;
 
     if (m_WaterRefractionShader == nullptr || m_RefractionSet == VK_NULL_HANDLE)
@@ -1502,9 +1350,9 @@ void VansWaterSystem::DispatchRefractionCS(VansVKCommandBuffer& cmd)
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.srcAccessMask       = m_WaterEffectsReady ? VK_ACCESS_SHADER_READ_BIT : 0;
+        barrier.srcAccessMask       = m_RefractionOutputReady ? VK_ACCESS_SHADER_READ_BIT : 0;
         barrier.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.oldLayout           = m_WaterEffectsReady ? VK_IMAGE_LAYOUT_GENERAL : m_WaterRefractionImage.GetImageLayout();
+        barrier.oldLayout           = m_RefractionOutputReady ? VK_IMAGE_LAYOUT_GENERAL : m_WaterRefractionImage.GetImageLayout();
         barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1512,7 +1360,7 @@ void VansWaterSystem::DispatchRefractionCS(VansVKCommandBuffer& cmd)
         barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         m_WaterRefractionImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
         cmd.PipelineBarrier(
-            m_WaterEffectsReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            m_RefractionOutputReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             {}, {}, { barrier });
     }
@@ -1541,13 +1389,15 @@ void VansWaterSystem::DispatchRefractionCS(VansVKCommandBuffer& cmd)
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             {}, {}, { barrier });
     }
+    m_RefractionOutputReady = true;
 }
 void VansWaterSystem::DispatchCausticsCS(VansVKCommandBuffer& cmd)
 {
     if (!m_Initialized || !m_DescriptorsReady) return;
 
-    // Inspector optimization: Caustics enable guard
-    if (m_WaterMaterial && !m_WaterMaterial->m_EnableCaustics)
+    // Caustics are opt-in.  Do not leave the compute pass running when the
+    // material is unavailable or the effect is disabled in the Inspector.
+    if (!m_WaterMaterial || !m_WaterMaterial->m_Config.m_Caustics.m_Enabled)
         return;
 
     if (m_WaterCausticsShader == nullptr || m_CausticsSet == VK_NULL_HANDLE) return;
@@ -1556,16 +1406,16 @@ void VansWaterSystem::DispatchCausticsCS(VansVKCommandBuffer& cmd)
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.srcAccessMask       = m_WaterEffectsReady ? VK_ACCESS_SHADER_READ_BIT : 0;
+        barrier.srcAccessMask       = m_CausticsOutputReady ? VK_ACCESS_SHADER_READ_BIT : 0;
         barrier.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.oldLayout           = m_WaterEffectsReady ? VK_IMAGE_LAYOUT_GENERAL
+        barrier.oldLayout           = m_CausticsOutputReady ? VK_IMAGE_LAYOUT_GENERAL
                                                           : m_WaterCausticsImage.GetImageLayout();
         barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
         barrier.image               = m_WaterCausticsImage.GetImage();
         barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         m_WaterCausticsImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
         cmd.PipelineBarrier(
-            m_WaterEffectsReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+            m_CausticsOutputReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
                                 : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             {}, {}, { barrier });
@@ -1592,6 +1442,7 @@ void VansWaterSystem::DispatchCausticsCS(VansVKCommandBuffer& cmd)
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             {}, {}, { barrier });
     }
+    m_CausticsOutputReady = true;
 }
 
 // ============================================================
@@ -1603,7 +1454,7 @@ void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
         return;
 
     // Inspector optimization: SSS enable guard
-    if (m_WaterMaterial && !m_WaterMaterial->m_SSSEnabled)
+    if (m_WaterMaterial && !m_WaterMaterial->m_Config.m_SSS.m_Enabled)
         return;
 
     if (m_WaterThicknessShader == nullptr || m_ThicknessSet == VK_NULL_HANDLE)
@@ -1613,9 +1464,9 @@ void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.srcAccessMask       = m_WaterEffectsReady ? VK_ACCESS_SHADER_READ_BIT : 0;
+        barrier.srcAccessMask       = m_ThicknessOutputReady ? VK_ACCESS_SHADER_READ_BIT : 0;
         barrier.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.oldLayout           = m_WaterEffectsReady ? VK_IMAGE_LAYOUT_GENERAL : m_WaterThicknessImage.GetImageLayout();
+        barrier.oldLayout           = m_ThicknessOutputReady ? VK_IMAGE_LAYOUT_GENERAL : m_WaterThicknessImage.GetImageLayout();
         barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1623,7 +1474,9 @@ void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
         barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         m_WaterThicknessImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
         cmd.PipelineBarrier(
-            m_WaterEffectsReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            m_ThicknessOutputReady
+                ? (VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+                : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             {}, {}, { barrier });
     }
@@ -1651,6 +1504,7 @@ void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             {}, {}, { barrier });
     }
+    m_ThicknessOutputReady = true;
 }
 
 // ============================================================
@@ -1662,7 +1516,7 @@ void VansWaterSystem::DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd)
         return;
 
     // Inspector optimization: SSS enable guard
-    if (m_WaterMaterial && !m_WaterMaterial->m_SSSEnabled)
+    if (m_WaterMaterial && !m_WaterMaterial->m_Config.m_SSS.m_Enabled)
         return;
 
     if (m_WaterSSSScatterShader == nullptr || m_SSSScatterSet == VK_NULL_HANDLE)
@@ -1672,9 +1526,9 @@ void VansWaterSystem::DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd)
     {
         VkImageMemoryBarrier barrier = {};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.srcAccessMask       = m_WaterEffectsReady ? VK_ACCESS_SHADER_READ_BIT : 0;
+        barrier.srcAccessMask       = m_SSSOutputReady ? VK_ACCESS_SHADER_READ_BIT : 0;
         barrier.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.oldLayout           = m_WaterEffectsReady ? VK_IMAGE_LAYOUT_GENERAL : m_WaterSSSScatterImage.GetImageLayout();
+        barrier.oldLayout           = m_SSSOutputReady ? VK_IMAGE_LAYOUT_GENERAL : m_WaterSSSScatterImage.GetImageLayout();
         barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1682,7 +1536,7 @@ void VansWaterSystem::DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd)
         barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         m_WaterSSSScatterImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
         cmd.PipelineBarrier(
-            m_WaterEffectsReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            m_SSSOutputReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             {}, {}, { barrier });
     }
@@ -1710,6 +1564,7 @@ void VansWaterSystem::DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd)
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             {}, {}, { barrier });
     }
+    m_SSSOutputReady = true;
 }
 
 // ============================================================

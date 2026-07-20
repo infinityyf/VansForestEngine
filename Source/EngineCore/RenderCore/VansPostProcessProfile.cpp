@@ -13,7 +13,7 @@ namespace VansGraphics
 	// GPU 参数打包
 	// ============================================================
 
-	VansPostProcessParamsGPU VansPostProcessProfile::ToGPUParams(float time) const
+	VansPostProcessParamsGPU VansPostProcessProfile::ToGPUParams() const
 	{
 		VansPostProcessParamsGPU p;
 		p.m_ExposureCompensation = m_ExposureCompensation;
@@ -27,13 +27,6 @@ namespace VansGraphics
 		p.m_HueShift             = m_HueShift;
 		p.m_Temperature          = m_Temperature;
 		p.m_Tint                 = m_Tint;
-		p.m_EnableVignette       = m_EnableVignette ? 1 : 0;
-		p.m_VignetteIntensity    = m_VignetteIntensity;
-		p.m_VignetteSmoothness   = m_VignetteSmoothness;
-		p.m_EnableFilmGrain      = m_EnableFilmGrain ? 1 : 0;
-		p.m_FilmGrainIntensity   = m_FilmGrainIntensity;
-		p.m_Time                 = time;
-		p.m_EnableDithering      = m_EnableDithering ? 1 : 0;
 		return p;
 	}
 
@@ -106,24 +99,11 @@ namespace VansGraphics
 		j["motionBlur"]["shutter"]  = m_ShutterScale;
 		j["motionBlur"]["samples"]  = m_MotionBlurSamples;
 
-		j["vignette"]["enable"]      = m_EnableVignette;
-		j["vignette"]["intensity"]   = m_VignetteIntensity;
-		j["vignette"]["smoothness"]  = m_VignetteSmoothness;
-
 		j["chromaticAberration"]["enable"]    = m_EnableChromaticAberration;
 		j["chromaticAberration"]["intensity"] = m_ChromaticAberrationIntensity;
 
-		j["filmGrain"]["enable"]    = m_EnableFilmGrain;
-		j["filmGrain"]["intensity"] = m_FilmGrainIntensity;
-
-		j["lensDirt"]["enable"]    = m_EnableLensDirt;
-		j["lensDirt"]["intensity"] = m_LensDirtIntensity;
-
-		j["aa"]["enableFXAA"]   = m_EnableFXAA;
 		j["aa"]["enableSharpen"] = m_EnableSharpen;
 		j["aa"]["sharpenIntensity"] = m_SharpenIntensity;
-
-		j["dithering"]["enable"] = m_EnableDithering;
 
 		fs::path outPath(filePath);
 		if (outPath.has_parent_path())
@@ -200,24 +180,10 @@ namespace VansGraphics
 		m_ShutterScale           = j["motionBlur"].value("shutter", 0.5f);
 		m_MotionBlurSamples      = j["motionBlur"].value("samples", 12);
 
-		m_EnableVignette         = j["vignette"].value("enable",     true);
-		m_VignetteIntensity      = j["vignette"].value("intensity",  0.2f);
-		m_VignetteSmoothness     = j["vignette"].value("smoothness", 0.5f);
-
 		m_EnableChromaticAberration    = j["chromaticAberration"].value("enable",    false);
 		m_ChromaticAberrationIntensity = j["chromaticAberration"].value("intensity", 0.02f);
-
-		m_EnableFilmGrain        = j["filmGrain"].value("enable",    true);
-		m_FilmGrainIntensity     = j["filmGrain"].value("intensity", 0.04f);
-
-		m_EnableLensDirt         = j["lensDirt"].value("enable",    false);
-		m_LensDirtIntensity      = j["lensDirt"].value("intensity", 0.5f);
-
-		m_EnableFXAA             = j["aa"].value("enableFXAA",       false);
 		m_EnableSharpen          = j["aa"].value("enableSharpen",    true);
 		m_SharpenIntensity       = j["aa"].value("sharpenIntensity", 0.15f);
-
-		m_EnableDithering        = j["dithering"].value("enable", true);
 
 		m_IsDirty = true;
 		return true;

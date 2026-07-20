@@ -4,6 +4,10 @@
 #include "../VansScene.h"
 #include "../VansCamera.h"
 #include "../../Util/VansLog.h"
+#include "../../VansTimer.h"
+#include "../../RuntimeUI/Public/VansUISystem.h"
+#include <algorithm>
+#include <cmath>
 
 namespace VansGraphics
 {
@@ -19,19 +23,6 @@ namespace VansGraphics
 		m_FSRInput.depthCreateInfo = depth.GetImageCreateInfo();
 		m_FSRInput.motionVectors = motionVector.GetImage();
 		m_FSRInput.motionVectorsCreateInfo = motionVector.GetImageCreateInfo();
-
-		// 绑定引擎的 1x1 曝光纹理到 FSRInput
-		if (m_Scene != nullptr) {
-			auto* materialManager = m_Scene->GetMaterialManager();
-			if (materialManager != nullptr) {
-				VansTexture* exposureTex = materialManager->GetRuntimeRenderTexture(
-					VansMaterialManager::RT_EXPOSURE_CURRENT);
-				if (exposureTex != nullptr) {
-					m_FSRInput.exposure = exposureTex->GetImage().GetImage();
-					m_FSRInput.exposureCreateInfo = exposureTex->GetImage().GetImageCreateInfo();
-				}
-			}
-		}
 
 		m_FSRInput.fovy = fovy;
 		m_FSRInput.nearPlane = nearPlane;
@@ -112,8 +103,14 @@ namespace VansGraphics
 
 	void VansVKDevice::InitializeFSR()
 	{
-		VkExtent2D swapChainExtent = m_VansVKSurface.m_VansVKSwapChainImageExtent;
-		m_FSRController.InitializeContext(m_VansVKLogicDevice, m_VansVKPhysicalDevice, m_RenderWidth, m_RenderHeight, swapChainExtent.width, swapChainExtent.height);
+		const VkExtent2D outputExtent = CalculateFSROutputExtent();
+		m_FSRController.InitializeContext(
+			m_VansVKLogicDevice,
+			m_VansVKPhysicalDevice,
+			m_RenderWidth,
+			m_RenderHeight,
+			outputExtent.width,
+			outputExtent.height);
 	}
 
 	void VansVKDevice::CleanupFSR()
@@ -129,5 +126,109 @@ namespace VansGraphics
 			static_cast<int32_t>(frameIndex % static_cast<uint32_t>(phaseCount)),
 			outPixelX, outPixelY);
 		return true;
+	}
+
+	VkExtent2D VansVKDevice::CalculateFSROutputExtent() const
+	{
+		switch (m_FSRMode)
+		{
+		case VansFSRMode::NativeAA:
+			return { m_RenderWidth, m_RenderHeight };
+		case VansFSRMode::Quality:
+			return {
+				static_cast<uint32_t>(std::lround(static_cast<double>(m_RenderWidth) * 1.5)),
+				static_cast<uint32_t>(std::lround(static_cast<double>(m_RenderHeight) * 1.5)) };
+		case VansFSRMode::Performance:
+			return { m_RenderWidth * 2u, m_RenderHeight * 2u };
+		case VansFSRMode::MatchViewport:
+		default:
+			if (m_RequestedSceneViewportExtent.width > 0 && m_RequestedSceneViewportExtent.height > 0)
+			{
+				// FSR is an upscaler. If the docked viewport is smaller than the
+				// fixed render input, keep Native-AA size instead of issuing an
+				// unsupported downscale dispatch.
+				if (m_RequestedSceneViewportExtent.width < m_RenderWidth ||
+					m_RequestedSceneViewportExtent.height < m_RenderHeight)
+				{
+					return { m_RenderWidth, m_RenderHeight };
+				}
+				return {
+					std::min(m_RequestedSceneViewportExtent.width, m_RenderWidth * 3u),
+					std::min(m_RequestedSceneViewportExtent.height, m_RenderHeight * 3u) };
+			}
+			return m_VansVKSurface.m_VansVKSwapChainImageExtent;
+		}
+	}
+
+	float VansVKDevice::GetUpscaleMipBias() const
+	{
+		const VkExtent2D outputExtent = CalculateFSROutputExtent();
+		if (outputExtent.width == 0 || m_RenderWidth == 0)
+			return 0.0f;
+
+		// AMD recommendation: log2(render/display) - 1. Performance 2x = -2.
+		const float ratio = static_cast<float>(m_RenderWidth) /
+			static_cast<float>(outputExtent.width);
+		return std::clamp(std::log2(std::max(ratio, 0.0001f)) - 1.0f, -3.0f, 0.0f);
+	}
+
+	void VansVKDevice::RequestFSRConfig(
+		VansFSRMode mode,
+		uint32_t viewportWidth,
+		uint32_t viewportHeight,
+		float sharpness)
+	{
+		viewportWidth = std::max(viewportWidth, 1u);
+		viewportHeight = std::max(viewportHeight, 1u);
+		sharpness = std::clamp(sharpness, 0.0f, 1.0f);
+
+		const bool extentChanged =
+			m_RequestedSceneViewportExtent.width != viewportWidth ||
+			m_RequestedSceneViewportExtent.height != viewportHeight;
+		const bool modeChanged = m_FSRMode != mode;
+		const bool sharpnessChanged = std::abs(m_FSRController.GetSharpness() - sharpness) > 0.0001f;
+
+		m_RequestedSceneViewportExtent = { viewportWidth, viewportHeight };
+		m_FSRMode = mode;
+		m_FSRController.SetSharpness(sharpness);
+		m_FSRConfigDirty = m_FSRConfigDirty || modeChanged ||
+			(mode == VansFSRMode::MatchViewport && extentChanged);
+
+		if (sharpnessChanged)
+		{
+			VANS_LOG("[FSR] RCAS sharpness=" << sharpness);
+		}
+	}
+
+	void VansVKDevice::ProcessPendingFSRConfig()
+	{
+		if (!m_FSRConfigDirty)
+			return;
+
+		const VkExtent2D requestedExtent = CalculateFSROutputExtent();
+		const VkExtent2D currentExtent = m_FSRController.GetDisplayExtent();
+		m_FSRConfigDirty = false;
+		if (requestedExtent.width == currentExtent.width &&
+			requestedExtent.height == currentExtent.height)
+		{
+			return;
+		}
+
+		WaitForDevice();
+		auto* renderPassManager = VansRenderPassManager::GetInstance();
+		renderPassManager->DestroySceneUIRenderPass();
+		CleanupFSR();
+		InitializeFSR();
+		renderPassManager->SetupVansSceneUIRenderPass(
+			m_VansVKLogicDevice,
+			m_FSRController.GetTempFSRImage().GetImageView(),
+			m_FSRController.GetDisplayExtent());
+		VansRuntime::VansUISystem::Get().SetScreenSize(
+			m_FSRController.GetDisplayExtent().width,
+			m_FSRController.GetDisplayExtent().height);
+
+		VANS_LOG("[FSR] output=" << requestedExtent.width << "x" << requestedExtent.height
+			<< " render=" << m_RenderWidth << "x" << m_RenderHeight
+			<< " mipBias=" << GetUpscaleMipBias());
 	}
 }

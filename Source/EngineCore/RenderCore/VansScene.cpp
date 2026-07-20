@@ -681,9 +681,22 @@ void VansGraphics::VansScene::PlayAllSceneVideos()
 
 void VansGraphics::VansScene::SetWaterRuntimeConfig(const VansWaterConfig& config, VansWaterMaterial* material)
 {
-    m_WaterConfig = config;
     m_WaterMaterial = material;
+    if (m_WaterMaterial)
+        m_WaterMaterial->m_Config = config;
     m_HasWater = material != nullptr;
+}
+
+const VansGraphics::VansWaterConfig& VansGraphics::VansScene::GetWaterConfig() const
+{
+    static const VansWaterConfig defaultConfig;
+    return m_WaterMaterial ? m_WaterMaterial->m_Config : defaultConfig;
+}
+
+VansGraphics::VansWaterConfig& VansGraphics::VansScene::EditWaterConfig()
+{
+    static VansWaterConfig fallbackConfig;
+    return m_WaterMaterial ? m_WaterMaterial->m_Config : fallbackConfig;
 }
 
 void VansGraphics::VansScene::SetTerrainPhysicsNode(VansEngine::VansTerrainPhysicsNode* terrainPhysicsNode)
@@ -751,8 +764,10 @@ void VansGraphics::VansScene::UnLoadScene()
 	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
 	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
 	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
+	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
 	m_MaterialManager.m_SSGITemporalFrame = 0;
 	m_MaterialManager.m_FogTemporalFrame  = 0;
+	m_MaterialManager.m_FogHistoryValid   = false;
 	// SH 绾圭悊宸茬Щ闄わ紝鏍囪娓叉煋 Feature 鐨?descriptor set 闇€瑕侀噸鏂板啓鍏?
 	if (vkDevice)
 	{
@@ -1197,7 +1212,7 @@ void VansGraphics::VansScene::UpdateSceneData()
         VANS_PROFILE_SCOPE("Light::UpdateShadowMatrices", Vans::ProfileCategory::RenderPrepare);
         VansCascadeCameraData shadowCamera = {};
         shadowCamera.position = glm::vec3(m_Camera->GetPosition());
-        shadowCamera.forward = glm::normalize(glm::vec3(-m_Camera->GetForward()));
+        shadowCamera.forward = glm::normalize(glm::vec3(m_Camera->GetForward()));
         shadowCamera.up = glm::normalize(glm::vec3(m_Camera->GetUp()));
         shadowCamera.verticalFovRadians = glm::radians(m_Camera->GetFov());
         shadowCamera.aspectRatio = m_Camera->GetAspectRatio();
@@ -1278,6 +1293,7 @@ void VansGraphics::VansScene::UpdateSceneData()
         if (nativeDevice != VK_NULL_HANDLE)
         {
             VANS_PROFILE_SCOPE("Particle::UploadInstanceBuffers", Vans::ProfileCategory::Particles);
+            const glm::mat4 particleViewMatrix = m_Camera ? m_Camera->GetViewMatrix() : glm::mat4(1.0f);
             for (auto* obj : m_SceneObjects)
             {
                 if (!obj) continue;
@@ -1290,7 +1306,8 @@ void VansGraphics::VansScene::UpdateSceneData()
 
                 particleComp->m_RenderNode->UpdateInstanceBuffer(
                     nativeDevice,
-                    particleComp->m_Runtime->GetRenderBuffer());
+                    particleComp->m_Runtime->GetRenderBuffer(),
+                    particleViewMatrix);
             }
         }
     }
@@ -2095,8 +2112,16 @@ VansScriptObject* VansGraphics::VansScene::CreateEntity(
     RenderNodeType nodeType = (material->m_MaterialType == VansMaterialType::VAN_TRANSPARENT ||
         material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
         ? TRANSPARENT_NODE : OPAQUE_NODE;
+	if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+	{
+		nodeType = material->m_CustomShaderDepthWrite
+			? FORWARD_OPAQUE_AFTER_DEFERRED_NODE
+			: TRANSPARENT_NODE;
+	}
 
-    auto* renderNode = new VansCommonRenderNode(device, nodeType);
+    VansRenderNode* renderNode = nodeType == TRANSPARENT_NODE
+        ? static_cast<VansRenderNode*>(new VansTransparentRenderNode(device, nodeType))
+        : static_cast<VansRenderNode*>(new VansCommonRenderNode(device, nodeType));
     renderNode->m_NodeName  = entityName;
     renderNode->m_Mesh      = mesh;
     renderNode->m_Material  = material;

@@ -16,7 +16,7 @@
 namespace VansGraphics
 {
     // ----------------------------------------------------------
-    // Configuration structs (populated from JSON)
+    // 从场景 JSON 读取的地形配置。
     // ----------------------------------------------------------
     struct TerrainLayerConfig
     {
@@ -25,8 +25,7 @@ namespace VansGraphics
         std::string roughnessPath;
         float tiling = 64.0f;
 
-        // Pre-loaded texture pointers (from scene texture manager)
-        // When set, paths are ignored and these are used directly.
+        // 场景纹理管理器预加载的贴图；非空时忽略路径并直接借用。
         VansTexture* albedoTex   = nullptr;
         VansTexture* normalTex   = nullptr;
         VansTexture* roughnessTex = nullptr;
@@ -37,7 +36,7 @@ namespace VansGraphics
         std::string heightmapPath;
         std::string splatmap0Path;
         std::string splatmap1Path;
-        std::vector<TerrainLayerConfig> layers;  // up to TERRAIN_MAX_LAYERS
+        std::vector<TerrainLayerConfig> layers;  // 最多 TERRAIN_MAX_LAYERS 层
 
         float terrainSize = 1024.0f;
         float maxHeight = 500.0f;
@@ -47,13 +46,13 @@ namespace VansGraphics
         float morphStartRatio = 0.70f;
         uint32_t maxPatchInstances = 20000;
 
-        // Tessellation parameters (configurable from JSON)
+        // 细分参数，可由 JSON 配置。
         bool  enableTessellation   = true;
         float tessellationDistance  = 300.0f;
         float maxTessellationLevel  = 64.0f;
         float tessellationPower        = 2.0f;
         float tessLodBias              = 0.5f;
-        float tessDisplacementStrength = 0.05f;  // deprecated: 由程序化噪声替代
+        float tessDisplacementStrength = 0.05f;  // 已弃用：由程序化噪声替代
 
         // 程序化噪声细节（替代原 tessDisplacementStrength）
         bool  enableNoiseDetail    = true;
@@ -67,27 +66,26 @@ namespace VansGraphics
     };
 
     // ----------------------------------------------------------
-    // GPU-side UBO matching the shader TerrainParams block
+    // 与着色器 TerrainParams 块对齐的 GPU UBO。
     // ----------------------------------------------------------
     struct alignas(16) TerrainParamsGPU
     {
-        glm::ivec4 layerCountPacked;             // .x = layerCount, .yzw = unused (16 bytes, matches std140 ivec4)
-        // std140: array elements have vec4 (16-byte) stride
-        // Each tilingFactor is stored as .x of a vec4
-        float tilingFactors[TERRAIN_MAX_LAYERS * 4];  // [i*4+0] = tiling, [i*4+1..3] = padding
+        glm::ivec4 layerCountPacked;             // .x 为 layerCount，.yzw 保留，按 std140 ivec4 对齐
+        // std140 中数组元素按 vec4 步长排列，每层 tiling 写入 vec4.x。
+        float tilingFactors[TERRAIN_MAX_LAYERS * 4];  // [i*4+0] 为 tiling，其余为 padding
         glm::vec4 heightfieldParams;             // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridSize
     };
 
-    // GPU-side UBO matching the shader TessellationParams block (binding 7)
+    // 与着色器 TessellationParams 块对齐的 GPU UBO（绑定 7）。
     struct alignas(16) TerrainTessellationParamsGPU
     {
-        float maxTessLevel;     // maxTessellationLevel
-        float tessDistance;     // tessellationDistance
-        float tessPower;        // tessellationPower
+        float maxTessLevel;     // 最大细分等级
+        float tessDistance;     // 细分距离
+        float tessPower;        // 距离衰减指数
         float padding;          // 原 displacementStrength，现为 padding（程序化噪声替代）
     };
 
-    // GPU-side UBO matching the shader NoiseDetailParams block (binding 8)
+    // 与着色器 NoiseDetailParams 块对齐的 GPU UBO（绑定 8）。
     struct alignas(16) TerrainNoiseDetailParamsGPU
     {
         float noiseStrength     = 0.03f;    // 噪声强度（世界单位）
@@ -100,14 +98,21 @@ namespace VansGraphics
         float noisePadding      = 0.0f;     // std140 对齐
     };
 
-    // 发送给 Shader 的每个 Instance 的数据
+    // 发送给着色器的每个地形实例数据。
     struct TerrainInstanceData
     {
         glm::vec2 Offset; // 世界坐标偏移 (x, z)
         float Scale;      // 缩放倍率 (相对于基础 16x16 patch)
-        float Lod;    // lod
-        float StitchFlags; // 新增：位掩码 (Bit 0: Left, 1: Right, 2: Top, 3: Bottom)
+        float Lod;    // LOD 层级
+        float StitchFlags; // 边缘缝合位掩码：0 左、1 右、2 上、3 下
         glm::vec3 padding0;
+    };
+
+    struct TerrainPatchVertex
+    {
+        uint16_t position[3];
+        uint16_t uv[2];
+        uint16_t normal[3];
     };
 
     // 四叉树节点结构
@@ -128,10 +133,10 @@ namespace VansGraphics
         VansTerrain();
         ~VansTerrain();
 
-        // Initialize with full splatmap terrain config
+        // 使用完整 splatmap 地形配置初始化。
         void Init(VansVKDevice* device, const TerrainConfig& config);
 
-        // 每帧更新：计算 LOD，更新 Instance Buffer
+        // 每帧更新：计算 LOD，更新实例缓冲。
         void Update(VansCamera* camera);
 
         // 绘制
@@ -141,13 +146,13 @@ namespace VansGraphics
 
         void DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets);
 
-        // ── Accessors for vegetation terrain integration ────────────────
+        // ── 供植被系统接入地形高度图 ────────────────
         VansTexture* GetHeightMap() const { return m_HeightMap; }
         float GetTerrainSize() const { return m_TerrainSize; }
         float GetMaxHeight() const { return m_MaxHeight; }
         float GetHeightOffset() const { return m_HeightOffset; }
 
-        // ── Accessors for editor terrain inspector ────────────────────────
+        // ── 供编辑器 Terrain Inspector 读取和修改 ────────────────────────
         bool  IsTessellationEnabled()     const { return m_EnableTessellation; }
         float GetTessellationDistance()   const { return m_TessellationDistance; }
         float GetMaxTessellationLevel()   const { return m_MaxTessellationLevel; }
@@ -160,11 +165,11 @@ namespace VansGraphics
         void SetTessellationPower(float v);
         void SetTessLodBias(float v);
 
-        // ── deprecated: 法线贴图 Y 位移已被程序化噪声替代 ──
+        // ── 已废弃：法线贴图 Y 位移已被程序化噪声替代 ──
         void  SetTessDisplacementStrength(float v);
         float GetTessDisplacementStrength() const { return m_TessDisplacementStrength; }
 
-        // ── 程序化噪声参数 accessors ──
+        // ── 程序化噪声参数访问接口 ──
         bool  IsNoiseDetailEnabled()  const { return m_EnableNoiseDetail; }
         float GetNoiseStrength()      const { return m_NoiseStrength; }
         float GetNoiseFrequency()     const { return m_NoiseFrequency; }
@@ -199,21 +204,23 @@ namespace VansGraphics
         // 递归收集初始四叉树叶子节点
         void CollectLeafNodes(const TerrainNode& node, const glm::vec3& camPos, std::vector<TerrainNode>& outNodes);
 
-        // 执行 2:1 balance，保证 shader snapping 的前提成立
+        void BuildPatchMesh();
+        void EnsureInstanceBufferCapacity(uint32_t requiredCapacity);
+
+        // 执行 2:1 平衡，保证着色器边缘吸附的前提成立。
         void BalanceLeafNodes(std::vector<TerrainNode>& nodes);
 
         // 根据最终叶子集合计算边缘缝合标记
         int ComputeStitchFlags(const TerrainNode& node, const std::vector<TerrainNode>& nodes) const;
 
-        // 将叶子节点转换为 GPU instance data
-        void AppendInstanceData(const std::vector<TerrainNode>& nodes);
-
-        // 检查节点是否需要细分
+        // 判断四叉树节点是否需要继续细分。
         bool ShouldSplit(const TerrainNode& node, const glm::vec3& camPos);
+
+        float GetMinPatchWorldSize() const;
     private:
         VansVKDevice* m_Device = nullptr;
 
-        // --- Textures ---
+        // --- 贴图资源 ---
         VansTexture* m_HeightMap = nullptr;
         VansTexture* m_Splatmap0 = nullptr;
         VansTexture* m_Splatmap1 = nullptr;
@@ -221,42 +228,42 @@ namespace VansGraphics
         VansTexture* m_LayerNormals[TERRAIN_MAX_LAYERS]    = {};
         VansTexture* m_LayerRoughness[TERRAIN_MAX_LAYERS]  = {};
         uint32_t     m_LayerCount = 0;
-        bool         m_OwnsLayerTextures = true; // false when textures are borrowed from scene
+        bool         m_OwnsLayerTextures = true; // false 表示贴图由场景持有，本类只借用
 
-        // Terrain params UBO
+        // 地形参数 UBO
         VansVKBuffer m_ParamsUBO;
 
-        VansMesh* m_BasePatchMesh = nullptr; // 16x16 grid
+        VansMesh* m_BasePatchMesh = nullptr; // 16x16 基础网格
 
-        //attribute data
+        // 实例顶点属性描述。
         std::vector<VkVertexInputAttributeDescription> m_TerrainInstanceInputAttributeDescriptions;
 
-        //vertex bind data
+        // 实例顶点绑定描述。
         std::vector <VkVertexInputBindingDescription> m_TerrainInstanceInputBindingDescriptions;
         
-        // Shader & Pipeline
+        // 着色器和管线
         VansGraphicsShader* m_TerrainShader = nullptr;
         VansGraphicsShader* m_TerrainShadowShader = nullptr;
         VansGraphicsShader* m_TerrainMotionVectorShader = nullptr;
-        VansGraphicsShader* m_TerrainTessShader = nullptr;       // DeferredTess pipeline
+        VansGraphicsShader* m_TerrainTessShader = nullptr;       // DeferredTess 管线
 
         VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
         VkPipeline m_Pipeline = VK_NULL_HANDLE;
 
-        // Instance Buffer (每帧更新)
+        // 实例缓冲（每帧更新）
         VansVKBuffer m_InstanceBuffer;
         std::vector<TerrainInstanceData> m_InstanceDataCPU;
 
-        // Split instance buffers for near (tessellation) / far (VS-only)
+        // 按近场细分和远场 VS-only 拆分的实例缓冲。
         VansVKBuffer m_NearInstanceBuffer;
         VansVKBuffer m_FarInstanceBuffer;
         std::vector<TerrainInstanceData> m_NearInstanceDataCPU;
         std::vector<TerrainInstanceData> m_FarInstanceDataCPU;
 
-        // Tessellation Params UBO (binding 7)
+        // 细分参数 UBO（binding 7）
         VansVKBuffer m_TessParamsUBO;
 
-        // Noise Detail UBO (binding 8)
+        // 噪声细节 UBO（binding 8）
         VansVKBuffer m_NoiseDetailUBO;
 
         // 地形参数
@@ -267,8 +274,9 @@ namespace VansGraphics
         float m_LodDistanceRatio = 2.0f;
         float m_MorphStartRatio = 0.70f;
         uint32_t m_MaxPatchInstances = 20000;
+        uint32_t m_InstanceBufferCapacity = 0;
 
-        // Tessellation config
+        // 细分配置
         bool  m_EnableTessellation = true;
         float m_TessellationDistance = 300.0f;
         float m_MaxTessellationLevel = 64.0f;

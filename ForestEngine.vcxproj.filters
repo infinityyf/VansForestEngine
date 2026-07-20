@@ -390,6 +390,12 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansGIWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansPostProcessWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUISystem.h">
       <Filter>EngineCore\RuntimeUI\Public</Filter>
     </ClInclude>
@@ -591,16 +597,13 @@
     <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterFFT.h">
       <Filter>EngineCore\RenderCore\WaterCore</Filter>
     </ClInclude>
-    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterLOD.h">
+    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterGeometryClipmap.h">
       <Filter>EngineCore\RenderCore\WaterCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterMaterial.h">
       <Filter>EngineCore\RenderCore\WaterCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterSystem.h">
-      <Filter>EngineCore\RenderCore\WaterCore</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\EngineCore\RenderCore\WaterCore\VansWaterWaveSystem.h">
       <Filter>EngineCore\RenderCore\WaterCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VansAsset.h">
@@ -715,6 +718,9 @@
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineRegistry.h">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderDocCapture.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderPass.h">
@@ -1079,6 +1085,12 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansGIWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansPostProcessWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\EngineAPILayer\Private\EngineAPIImpl.cpp">
       <Filter>EngineCore\EngineAPILayer\Private</Filter>
     </ClCompile>
@@ -1235,13 +1247,10 @@
     <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterFFT.cpp">
       <Filter>EngineCore\RenderCore\WaterCore</Filter>
     </ClCompile>
-    <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterLOD.cpp">
+    <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterGeometryClipmap.cpp">
       <Filter>EngineCore\RenderCore\WaterCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterSystem.cpp">
-      <Filter>EngineCore\RenderCore\WaterCore</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\EngineCore\RenderCore\WaterCore\VansWaterWaveSystem.cpp">
       <Filter>EngineCore\RenderCore\WaterCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VansCamera.cpp">
@@ -1356,6 +1365,9 @@
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineRegistry.cpp">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderDocCapture.cpp">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansShader.cpp">
