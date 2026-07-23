@@ -5,27 +5,66 @@
 #include "VansVKDescriptorManager.h"
 #include "VansVKDevice.h"
 
+#include "../../AssetCore/Importers/Shader/VansShaderArtifactCache.h"
 #include "../../Util/VansFileUtil.h"
 #include "../../Util/VansLog.h"
 //#include "spirv_cross/spirv_cross.hpp"
 //#include "spirv_cross/spirv_glsl.hpp"
 
 #include <iostream>
-#include <cstdlib>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <filesystem>
 
 namespace
 {
-std::string QuoteCommandPath(const std::string& path)
+std::filesystem::path FindShaderRoot(const std::filesystem::path& sourceFolder)
 {
-	return "\"" + path + "\"";
+	std::filesystem::path current = sourceFolder;
+	while (!current.empty() && current != current.root_path())
+	{
+		std::string name = current.filename().string();
+		std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c)
+		{
+			return static_cast<char>(std::tolower(c));
+		});
+		if (name == "shaders")
+			return current;
+		current = current.parent_path();
+	}
+	return sourceFolder;
+}
+
+std::string BuildStableUnmanagedProgramId(const std::string& shaderFolder)
+{
+	const std::filesystem::path normalized = std::filesystem::path(shaderFolder).lexically_normal();
+	std::filesystem::path relative;
+	bool afterShaderRoot = false;
+	for (const auto& component : normalized)
+	{
+		std::string name = component.string();
+		std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c)
+		{
+			return static_cast<char>(std::tolower(c));
+		});
+		if (afterShaderRoot)
+			relative /= component;
+		else if (name == "shaders")
+			afterShaderRoot = true;
+	}
+	return afterShaderRoot && !relative.empty()
+		? std::string("Unmanaged/") + relative.generic_u8string()
+		: std::string("Unmanaged/") + normalized.filename().generic_u8string();
 }
 
 bool CompileShaderModuleData(
 	const std::string& shader_folder,
 	VansGraphics::ShaderType shaderType,
 	const std::map<VkShaderStageFlagBits, std::string>& explicitStageFiles,
-	std::map<VkShaderStageFlagBits, VansGraphics::ShaderModuleData>& outModuleData)
+	const std::string& programId,
+	std::map<VkShaderStageFlagBits, VansGraphics::ShaderModuleData>& outModuleData,
+	Vans::VansShaderArtifactPrepareResult& outPrepared)
 {
 	if (explicitStageFiles.empty())
 	{
@@ -33,7 +72,6 @@ bool CompileShaderModuleData(
 		if (shader_files.empty())
 		{
 			VANS_LOG_WARN("no shader files found:" << shader_folder);
-			return false;
 		}
 
 		outModuleData.clear();
@@ -89,37 +127,70 @@ bool CompileShaderModuleData(
 		}
 	}
 
-	if (outModuleData.empty())
+	Vans::VansShaderCompileRequest request;
+	request.programId = programId.empty() ? shader_folder : programId;
+	request.sourceFolder = shader_folder;
+	request.includeRoots.push_back(FindShaderRoot(request.sourceFolder));
+	for (const auto& [stage, moduleData] : outModuleData)
 	{
-		VANS_LOG_WARN("no shader stages found:" << shader_folder);
-		return false;
+		(void)stage;
+		Vans::VansShaderStageCompileSource source;
+		source.stage = moduleData.m_ShaderType;
+		source.sourcePath = moduleData.m_ShaderTextResourceFileName;
+		request.stages.emplace_back(std::move(source));
 	}
 
-	std::string command = "glslangValidator -V ";
-	for (auto& shader_module_data : outModuleData)
+	outPrepared = Vans::VansShaderArtifactCache::Get().Prepare(request, true);
+	for (const std::string& diagnostic : outPrepared.compileResult.diagnostics)
 	{
-		std::filesystem::path sourcePath(shader_module_data.second.m_ShaderTextResourceFileName);
-		std::filesystem::path spirvPath = sourcePath.parent_path() /
-			(sourcePath.stem().string() + shader_module_data.second.m_ShaderType + ".spv");
-		std::string spirv_file_name = spirvPath.string();
+		if (outPrepared.success)
+			VANS_LOG_WARN("[ShaderArtifact] " << request.programId << ": " << diagnostic);
+		else
+			VANS_LOG_ERROR("[ShaderArtifact] " << request.programId << ": " << diagnostic);
+	}
+	if (!outPrepared.success)
+		return false;
 
-		std::string shader_command = command + " " + QuoteCommandPath(shader_module_data.second.m_ShaderTextResourceFileName);
-		shader_command += " -o " + QuoteCommandPath(spirv_file_name);
-		shader_command += " --target-env vulkan1.2";
-		int result = system(shader_command.c_str());
-
-		if (result != 0)
+	for (const auto& compiled : outPrepared.compileResult.stages)
+	{
+		VkShaderStageFlagBits stage = static_cast<VkShaderStageFlagBits>(0);
+		if (shaderType == VansGraphics::ShaderType::Normal)
 		{
-			VANS_LOG_ERROR("glslangValidator failed");
+			const auto found = VansGraphics::m_ShaderTypeMap.find(compiled.stage);
+			if (found != VansGraphics::m_ShaderTypeMap.end())
+				stage = found->second;
+		}
+		else
+		{
+			const auto found = VansGraphics::m_RayTracingShaderTypeMap.find(compiled.stage);
+			if (found != VansGraphics::m_RayTracingShaderTypeMap.end())
+				stage = found->second;
+		}
+		if (stage == 0 || compiled.spirv.empty())
+		{
+			VANS_LOG_ERROR("[ShaderArtifact] Artifact stage set does not match program '" << request.programId << "'");
 			return false;
 		}
-
-		ReadFile(spirv_file_name, shader_module_data.second.m_ShaderSPIRVCode);
-		if (shader_module_data.second.m_ShaderSPIRVCode.empty())
+		auto module = outModuleData.find(stage);
+		if (module == outModuleData.end())
 		{
-			VANS_LOG_ERROR("read spirv file failed");
-			return false;
+			if (!request.stages.empty())
+			{
+				VANS_LOG_ERROR("[ShaderArtifact] Artifact contains an unexpected stage for '" << request.programId << "'");
+				return false;
+			}
+			VansGraphics::ShaderModuleData moduleData;
+			moduleData.m_ShaderType = compiled.stage;
+			module = outModuleData.emplace(stage, std::move(moduleData)).first;
 		}
+		module->second.m_ShaderSPIRVCode.resize(compiled.spirv.size() * sizeof(std::uint32_t));
+		std::memcpy(module->second.m_ShaderSPIRVCode.data(), compiled.spirv.data(), module->second.m_ShaderSPIRVCode.size());
+	}
+	for (const auto& [stage, moduleData] : outModuleData)
+	{
+		(void)stage;
+		if (moduleData.m_ShaderSPIRVCode.empty())
+			return false;
 	}
 	return true;
 }
@@ -234,7 +305,8 @@ bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::str
 	m_ShaderFolder = shader_folder;
 	m_ShaderType = ShaderType::Normal;
 	m_ExplicitStageFiles = stageFiles;
-	m_PipelineProgramDesc.name = m_PipelineProgramDesc.name.empty() ? shader_folder : m_PipelineProgramDesc.name;
+	m_PipelineProgramDesc.name = m_PipelineProgramDesc.name.empty()
+		? BuildStableUnmanagedProgramId(shader_folder) : m_PipelineProgramDesc.name;
 	m_PipelineProgramDesc.shaderPath = shader_folder;
 	m_PipelineProgramDesc.kind = VansPipelineProgramKind::Graphics;
 	m_PipelineProgramDesc.stages = VansPipelineDescriptorBuilder::BuildStageFiles(
@@ -245,7 +317,10 @@ bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::str
 	m_SupportMRTOutput = false;
 
 	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
-	bool result = CompileShaderModuleData(m_ShaderFolder, m_ShaderType, m_ExplicitStageFiles, moduleData);
+	Vans::VansShaderArtifactPrepareResult prepared;
+	bool result = CompileShaderModuleData(
+		m_ShaderFolder, m_ShaderType, m_ExplicitStageFiles,
+		m_PipelineProgramDesc.name, moduleData, prepared);
 	if (!result)
 	{
 		VANS_LOG_ERROR("shader translation failed");
@@ -261,6 +336,9 @@ bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::str
 
 	DestroyShaderModuleData(logic_device, m_ShaderModuleDataMap);
 	m_ShaderModuleDataMap = std::move(moduleData);
+	m_PipelineProgramDesc.shaderBinaryHash = prepared.binaryHash;
+	if (!Vans::VansShaderArtifactCache::Get().CommitActive(prepared))
+		VANS_LOG_WARN("[ShaderArtifact] Failed to commit active artifact for '" << m_PipelineProgramDesc.name << "'");
 
 	m_LogicDevice = logic_device;
 
@@ -271,26 +349,65 @@ bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::str
 	return true;
 }
 
-bool VansGraphics::VansShader::RefreshShaderMoudle()
+bool VansGraphics::VansShader::ReplaceShaderModulesFromSPIRV(
+	const std::map<VkShaderStageFlagBits, std::vector<std::uint32_t>>& stageSpirv,
+	std::string& error)
 {
-	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
-	bool result = CompileShaderModuleData(m_ShaderFolder, m_ShaderType, m_ExplicitStageFiles, moduleData);
-	if (!result)
+	if (stageSpirv.empty())
 	{
-		VANS_LOG_ERROR("shader translation failed");
+		error = "compiled shader candidate has no stages";
 		return false;
 	}
 
-	result = CreateShaderModulesFromData(m_LogicDevice, moduleData);
-	if (!result)
+	std::map<VkShaderStageFlagBits, ShaderModuleData> candidate;
+	for (const auto& [stage, words] : stageSpirv)
 	{
-		VANS_LOG_ERROR("create shader module failed");
+		if (words.empty() || words.front() != 0x07230203u)
+		{
+			error = "compiled shader candidate contains invalid SPIR-V";
+			return false;
+		}
+
+		ShaderModuleData moduleData;
+		const auto activeIt = m_ShaderModuleDataMap.find(stage);
+		if (activeIt != m_ShaderModuleDataMap.end())
+		{
+			moduleData.m_ShaderTextResourceFileName = activeIt->second.m_ShaderTextResourceFileName;
+			moduleData.m_ShaderType = activeIt->second.m_ShaderType;
+		}
+
+		moduleData.m_ShaderSPIRVCode.resize(words.size() * sizeof(std::uint32_t));
+		std::memcpy(moduleData.m_ShaderSPIRVCode.data(), words.data(), moduleData.m_ShaderSPIRVCode.size());
+		candidate.emplace(stage, std::move(moduleData));
+	}
+
+	if (!CreateShaderModulesFromData(m_LogicDevice, candidate))
+	{
+		error = "failed to create Vulkan shader modules from compiled candidate";
 		return false;
 	}
 
 	DestroyShaderModuleData(m_LogicDevice, m_ShaderModuleDataMap);
-	m_ShaderModuleDataMap = std::move(moduleData);
+	m_ShaderModuleDataMap = std::move(candidate);
 
+	std::uint64_t binaryHash = 14695981039346656037ull;
+	for (const auto& [stage, module] : m_ShaderModuleDataMap)
+	{
+		const std::uint32_t stageValue = static_cast<std::uint32_t>(stage);
+		for (const auto* bytes = reinterpret_cast<const unsigned char*>(&stageValue);
+			bytes != reinterpret_cast<const unsigned char*>(&stageValue) + sizeof(stageValue); ++bytes)
+		{
+			binaryHash ^= *bytes;
+			binaryHash *= 1099511628211ull;
+		}
+		for (unsigned char byte : module.m_ShaderSPIRVCode)
+		{
+			binaryHash ^= byte;
+			binaryHash *= 1099511628211ull;
+		}
+	}
+	m_PipelineProgramDesc.shaderBinaryHash = binaryHash == 0 ? 1 : binaryHash;
+	error.clear();
 	return true;
 }
 
@@ -305,7 +422,8 @@ bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, cons
 	m_ShaderFolder = shader_folder;
 	m_ShaderType = ShaderType::RayTracing;
 	m_ExplicitStageFiles = stageFiles;
-	m_PipelineProgramDesc.name = m_PipelineProgramDesc.name.empty() ? shader_folder : m_PipelineProgramDesc.name;
+	m_PipelineProgramDesc.name = m_PipelineProgramDesc.name.empty()
+		? BuildStableUnmanagedProgramId(shader_folder) : m_PipelineProgramDesc.name;
 	m_PipelineProgramDesc.shaderPath = shader_folder;
 	m_PipelineProgramDesc.kind = VansPipelineProgramKind::RayTracing;
 	m_PipelineProgramDesc.stages = VansPipelineDescriptorBuilder::BuildStageFiles(
@@ -313,7 +431,10 @@ bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, cons
 		m_PipelineProgramDesc.kind,
 		stageFiles);
 	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
-	bool result = CompileShaderModuleData(shader_folder_string, ShaderType::RayTracing, m_ExplicitStageFiles, moduleData);
+	Vans::VansShaderArtifactPrepareResult prepared;
+	bool result = CompileShaderModuleData(
+		shader_folder_string, ShaderType::RayTracing, m_ExplicitStageFiles,
+		m_PipelineProgramDesc.name, moduleData, prepared);
 	if (!result)
 	{
 		VANS_LOG_ERROR("shader translation failed");
@@ -328,6 +449,9 @@ bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, cons
 	}
 	DestroyShaderModuleData(logic_device, m_ShaderModuleDataMap);
 	m_ShaderModuleDataMap = std::move(moduleData);
+	m_PipelineProgramDesc.shaderBinaryHash = prepared.binaryHash;
+	if (!Vans::VansShaderArtifactCache::Get().CommitActive(prepared))
+		VANS_LOG_WARN("[ShaderArtifact] Failed to commit active artifact for '" << m_PipelineProgramDesc.name << "'");
 	m_LogicDevice = logic_device;
 
 	m_PushConstantSize = 0;
@@ -336,50 +460,68 @@ bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, cons
 	return true;
 }
 
-bool VansGraphics::VansShader::CheckRefreshShader(VkDevice& logic_device)
-{
-	return false;
-}
-
-
-
-bool VansGraphics::VansShader::TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType)
-{
-	std::map<VkShaderStageFlagBits, ShaderModuleData> moduleData;
-	if (!CompileShaderModuleData(shader_folder, shaderType, m_ExplicitStageFiles, moduleData))
-		return false;
-	DestroyShaderModuleData(m_LogicDevice, m_ShaderModuleDataMap);
-	m_ShaderModuleDataMap = std::move(moduleData);
-	return true;
-}
-
 void VansGraphics::VansShader::DestroyShaderMoulde()
 {
 	DestroyShaderModuleData(m_LogicDevice, m_ShaderModuleDataMap);
 }
 
-bool VansGraphics::VansShader::CreateShaderModule(VkDevice& logic_device)
-{
-	return CreateShaderModulesFromData(logic_device, m_ShaderModuleDataMap);
-}
-
 VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data,const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
-	if (m_GraphicsPipeline != nullptr)
+	m_PipelineProgramDesc.kind = VansPipelineProgramKind::Graphics;
+	m_PipelineProgramDesc.pushConstantSize = m_PushConstantSize;
+	const uint32_t pushConstantSize = m_PushConstantSize > 0
+		? static_cast<uint32_t>(m_PushConstantSize) : 0;
+	const auto* vertexBindings = global_state_data.vertexInputBindingDescriptions;
+	const auto* vertexAttributes = global_state_data.vertexInputAttributeDescriptions;
+	const uint64_t variantHash = VansPipelineDescriptorBuilder::BuildVariantHash(
+		m_PipelineProgramDesc,
+		global_state_data.currentRenderPass,
+		global_state_data.currentSubpass,
+		descriptorset_layouts,
+		pushConstantSize,
+		vertexBindings,
+		vertexAttributes,
+		global_state_data.rasterizationSamples,
+		global_state_data.sampleShadingEnable);
+
+	auto matchesRequest = [&](const GraphicsPipelineVariantEntry& entry)
 	{
+		return entry.identity.hash == variantHash &&
+			VansPipelineDescriptorBuilder::MatchesVariant(
+				entry.identity,
+				m_PipelineProgramDesc,
+				global_state_data.currentRenderPass,
+				global_state_data.currentSubpass,
+				descriptorset_layouts,
+				pushConstantSize,
+				vertexBindings,
+				vertexAttributes,
+				global_state_data.rasterizationSamples,
+				global_state_data.sampleShadingEnable);
+	};
+
+	if (m_LastGraphicsPipelineVariant != nullptr && matchesRequest(*m_LastGraphicsPipelineVariant))
+	{
+		m_GraphicsPipeline = m_LastGraphicsPipelineVariant->pipeline;
 		return m_GraphicsPipeline.get();
 	}
-	//设置描述符layout，用于创建pipeline
-	m_GraphicsPipelineCreateInfo.descriptorset_layouts.resize(descriptorset_layouts.size());
-	for (int i = 0; i < descriptorset_layouts.size(); i++)
+
+	const auto variantRange = m_GraphicsPipelineVariants.equal_range(variantHash);
+	for (auto it = variantRange.first; it != variantRange.second; ++it)
 	{
-		m_GraphicsPipelineCreateInfo.descriptorset_layouts[i]=descriptorset_layouts[i];
+		if (!matchesRequest(it->second))
+			continue;
+		m_LastGraphicsPipelineVariant = &it->second;
+		m_GraphicsPipeline = it->second.pipeline;
+		return m_GraphicsPipeline.get();
 	}
 
+	// The expensive canonical descriptor and Vulkan create-info are cold-path
+	// work: only build them when this shader/runtime combination is new.
+	m_GraphicsPipelineCreateInfo.Clear();
+	m_GraphicsPipelineCreateInfo.descriptorset_layouts = descriptorset_layouts;
 	m_GraphicsPipelineCreateInfo.push_constant_size = m_PushConstantSize;
-	SyncPipelineGraphicsStateDesc();
 	m_GraphicsPipelineCreateInfo.pipeline_program_desc = m_PipelineProgramDesc;
-	m_GraphicsPipelineCreateInfo.pipeline_program_desc.pushConstantSize = m_PushConstantSize;
 
 	//创建pipeline
 	InitGraphicsPipelinInfo(global_state_data);
@@ -389,6 +531,34 @@ VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraph
 		VANS_LOG_ERROR("create graphics pipeline failed");
 		return NULL;
 	}
+
+	const uint32_t vertexBindingCount = vertexBindings
+		? static_cast<uint32_t>(vertexBindings->size()) : 0;
+	const uint32_t vertexAttributeCount = vertexAttributes
+		? static_cast<uint32_t>(vertexAttributes->size()) : 0;
+	VansPipelineRuntimeDesc runtimeDesc = VansPipelineDescriptorBuilder::BuildRuntimeDesc(
+		global_state_data.currentRenderPass,
+		global_state_data.currentSubpass,
+		descriptorset_layouts,
+		pushConstantSize,
+		vertexBindingCount,
+		vertexAttributeCount,
+		global_state_data.rasterizationSamples,
+		global_state_data.sampleShadingEnable);
+	if (vertexBindings)
+		runtimeDesc.vertexBindings = *vertexBindings;
+	if (vertexAttributes)
+		runtimeDesc.vertexAttributes = *vertexAttributes;
+
+	VansPipelineVariantIdentity identity;
+	identity.hash = variantHash;
+	identity.shaderBinaryHash = m_PipelineProgramDesc.shaderBinaryHash;
+	identity.pushConstantSize = m_PipelineProgramDesc.pushConstantSize;
+	identity.graphicsState = m_PipelineProgramDesc.graphicsState;
+	identity.runtimeDesc = std::move(runtimeDesc);
+	GraphicsPipelineVariantEntry entry{ std::move(identity), m_GraphicsPipeline };
+	auto inserted = m_GraphicsPipelineVariants.emplace(variantHash, std::move(entry));
+	m_LastGraphicsPipelineVariant = &inserted->second;
 	return m_GraphicsPipeline.get();
 }
 
@@ -764,22 +934,77 @@ bool VansGraphics::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_de
 void VansGraphics::VansGraphicsShader::TriggerReCreateGraphicsPipeline()
 {
 	m_GraphicsPipeline.reset();
+	m_LastGraphicsPipelineVariant = nullptr;
+	m_GraphicsPipelineVariants.clear();
 	m_GraphicsPipelineCreateInfo.Clear();
 }
 
 
 VansGraphics::VansVKComputePipeline* VansGraphics::VansComputeShader::GetComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
-	if (m_ComputePipeline != nullptr)
+	m_PipelineProgramDesc.kind = VansPipelineProgramKind::Compute;
+	m_PipelineProgramDesc.pushConstantSize = m_PushConstantSize;
+	const uint32_t pushConstantSize = m_PushConstantSize > 0
+		? static_cast<uint32_t>(m_PushConstantSize) : 0;
+	const uint64_t variantHash = VansPipelineDescriptorBuilder::BuildVariantHash(
+		m_PipelineProgramDesc,
+		VK_NULL_HANDLE,
+		0,
+		descriptorset_layouts,
+		pushConstantSize,
+		nullptr,
+		nullptr,
+		VK_SAMPLE_COUNT_1_BIT,
+		VK_FALSE);
+
+	auto matchesRequest = [&](const ComputePipelineVariantEntry& entry)
 	{
+		return entry.identity.hash == variantHash &&
+			VansPipelineDescriptorBuilder::MatchesVariant(
+				entry.identity,
+				m_PipelineProgramDesc,
+				VK_NULL_HANDLE,
+				0,
+				descriptorset_layouts,
+				pushConstantSize,
+				nullptr,
+				nullptr,
+				VK_SAMPLE_COUNT_1_BIT,
+				VK_FALSE);
+	};
+
+	if (m_LastComputePipelineVariant != nullptr && matchesRequest(*m_LastComputePipelineVariant))
+	{
+		m_ComputePipeline = m_LastComputePipelineVariant->pipeline;
 		return m_ComputePipeline.get();
 	}
+
+	const auto variantRange = m_ComputePipelineVariants.equal_range(variantHash);
+	for (auto it = variantRange.first; it != variantRange.second; ++it)
+	{
+		if (!matchesRequest(it->second))
+			continue;
+		m_LastComputePipelineVariant = &it->second;
+		m_ComputePipeline = it->second.pipeline;
+		return m_ComputePipeline.get();
+	}
+
 	bool result = CreateComputePipeline(logic_device, descriptorset_layouts);
 	if (!result)
 	{
 		VANS_LOG_ERROR("create compute pipeline failed");
 		return NULL;
 	}
+
+	VansPipelineVariantIdentity identity;
+	identity.hash = variantHash;
+	identity.shaderBinaryHash = m_PipelineProgramDesc.shaderBinaryHash;
+	identity.pushConstantSize = m_PipelineProgramDesc.pushConstantSize;
+	identity.runtimeDesc = VansPipelineDescriptorBuilder::BuildRuntimeDesc(
+		descriptorset_layouts, pushConstantSize);
+	ComputePipelineVariantEntry entry{ std::move(identity), m_ComputePipeline };
+	auto inserted = m_ComputePipelineVariants.emplace(variantHash, std::move(entry));
+	m_LastComputePipelineVariant = &inserted->second;
 	return m_ComputePipeline.get();
 }
 
@@ -827,7 +1052,7 @@ bool VansGraphics::VansComputeShader::CreateComputePipeline(VkDevice& logic_devi
 	}
 
 	std::shared_ptr<VansVKComputePipeline> pipeline = std::make_shared<VansVKComputePipeline>();
-	const bool result = pipeline->CreateComputePipeline(logic_device, compute_shader_stage, VK_NULL_HANDLE, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr, &m_PipelineProgramDesc);
+	const bool result = pipeline->CreateComputePipeline(logic_device, compute_shader_stage, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr, &m_PipelineProgramDesc);
 	if (!result)
 	{
 		return false;
@@ -1036,7 +1261,7 @@ bool VansGraphics::VansRayTracingShader::CreateRayTracingPipeline(VkDevice& logi
 	}
 
 	std::shared_ptr<VansVKRayTracingPipeline> pipeline = std::make_shared<VansVKRayTracingPipeline>();
-	const bool result = pipeline->CreateRayTracingPipeline(logic_device, shaderGroupCreateInfo, rayTracingStages, VK_NULL_HANDLE, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr, &m_PipelineProgramDesc);
+	const bool result = pipeline->CreateRayTracingPipeline(logic_device, shaderGroupCreateInfo, rayTracingStages, descriptorset_layouts, pushConstRangeCount, pushConstRangePtr, &m_PipelineProgramDesc);
 	if (!result)
 	{
 		return false;

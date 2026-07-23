@@ -176,46 +176,28 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     std::string projectRoot = cfg->GetProjectRootPath();
     VkDevice    logicDev    = device->GetLogicDevice();
 
-    m_WaterGBufferShader = new VansGraphicsShader();
-    const std::string waterGBufferShaderPath = projectRoot + "EngineAssets/Shaders/Water/WaterGBuffer";
-    m_WaterGBufferShader->InitShader(logicDev, waterGBufferShaderPath.c_str());
-    VansShaderManager::Get().ConfigureGraphicsShader(*m_WaterGBufferShader, "WaterGBuffer", waterGBufferShaderPath);
+    auto& shaderManager = VansShaderManager::Get();
+    m_WaterGBufferShader = shaderManager.FindGraphicsShader("WaterGBuffer");
     // 寮€鍚繁搴︽祴璇?+ 娣卞害鍐欏叆锛氬埄鐢ㄧ嫭绔嬫按闈㈡繁搴︾紦鍐蹭繚璇?CDLOD 澶氬眰閬尅椤哄簭
     // depthTest: TRUE, depthWrite: TRUE, compareOp: LESS锛堣繎澶?patch 閬尅杩滃 patch锛?
     
     // CDLOD 濉厖妯″紡锛堢敓浜х幆澧冿級
 
     // Wave compute shader锛圵-01: Texture2DArray + SSBO + Nyquist锛?
-    m_WaveSimShader = new VansComputeShader();
-    m_WaveSimShader->InitShader(logicDev,
-        (projectRoot + "EngineAssets/Shaders/Water/WaterWave").c_str());
+    m_WaveSimShader = shaderManager.FindComputeShader("WaterWave");
+    m_WaterSSRShader = shaderManager.FindComputeShader("WaterSSR");
+    m_WaterRefractionShader = shaderManager.FindComputeShader("WaterRefraction");
+    m_WaterCausticsShader = shaderManager.FindComputeShader("WaterCaustics");
+    m_WaterThicknessShader = shaderManager.FindComputeShader("WaterThickness");
+    m_WaterSSSScatterShader = shaderManager.FindComputeShader("WaterSSSScatter");
+    m_WaterCompositeShader = shaderManager.FindGraphicsShader("WaterComposite");
 
-    m_WaterSSRShader = new VansComputeShader();
-    m_WaterSSRShader->InitShader(logicDev,
-        (projectRoot + "EngineAssets/Shaders/Water/SSR").c_str());
-
-    m_WaterRefractionShader = new VansComputeShader();
-    m_WaterRefractionShader->InitShader(logicDev,
-        (projectRoot + "EngineAssets/Shaders/Water/Refraction").c_str());
-
-    m_WaterCausticsShader = new VansComputeShader();
-    m_WaterCausticsShader->InitShader(logicDev,
-        (projectRoot + "EngineAssets/Shaders/Water/Caustics").c_str());
-
-    // W-16: Water Thickness compute shader
-    m_WaterThicknessShader = new VansComputeShader();
-    m_WaterThicknessShader->InitShader(logicDev,
-        (projectRoot + "EngineAssets/Shaders/Water/SSS").c_str());
-
-    // W-16 Phase 2: Water SSS Scatter compute shader
-    m_WaterSSSScatterShader = new VansComputeShader();
-    m_WaterSSSScatterShader->InitShader(logicDev,
-        (projectRoot + "EngineAssets/Shaders/Water/SSSScatter").c_str());
-
-    m_WaterCompositeShader = new VansGraphicsShader();
-    const std::string waterCompositeShaderPath = projectRoot + "EngineAssets/Shaders/Water/WaterComposite";
-    m_WaterCompositeShader->InitShader(logicDev, waterCompositeShaderPath.c_str());
-    VansShaderManager::Get().ConfigureGraphicsShader(*m_WaterCompositeShader, "WaterComposite", waterCompositeShaderPath);
+    if (!m_WaterGBufferShader || !m_WaterCompositeShader || !m_WaveSimShader ||
+        !m_WaterSSRShader || !m_WaterRefractionShader || !m_WaterCausticsShader ||
+        !m_WaterThicknessShader || !m_WaterSSSScatterShader)
+    {
+        VANS_LOG_ERROR("[VansWaterSystem] One or more managed water shaders are unavailable");
+    }
 
     // 鈹€鈹€ 3. 鍒涘缓 WaterGBufferParams UBO 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     CreateWaterBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated,
@@ -810,14 +792,15 @@ void VansWaterSystem::Shutdown()
     m_ThicknessOutputReady = false;
     m_SSSOutputReady = false;
 
-    delete m_WaterGBufferShader;    m_WaterGBufferShader   = nullptr;
-    delete m_WaterCompositeShader;  m_WaterCompositeShader = nullptr;
-    delete m_WaveSimShader;         m_WaveSimShader        = nullptr;
-    delete m_WaterSSRShader;        m_WaterSSRShader       = nullptr;
-    delete m_WaterRefractionShader; m_WaterRefractionShader = nullptr;
-    delete m_WaterCausticsShader;   m_WaterCausticsShader   = nullptr;
-    delete m_WaterThicknessShader;  m_WaterThicknessShader  = nullptr;
-    delete m_WaterSSSScatterShader; m_WaterSSSScatterShader = nullptr;
+    // Managed shader programs outlive scene-local water resources.
+    m_WaterGBufferShader = nullptr;
+    m_WaterCompositeShader = nullptr;
+    m_WaveSimShader = nullptr;
+    m_WaterSSRShader = nullptr;
+    m_WaterRefractionShader = nullptr;
+    m_WaterCausticsShader = nullptr;
+    m_WaterThicknessShader = nullptr;
+    m_WaterSSSScatterShader = nullptr;
 
     m_Initialized      = false;
     m_DescriptorsReady = false;

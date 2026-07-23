@@ -277,10 +277,10 @@ namespace VansGraphics
 		std::unique_ptr<VansMotionMatchingRuntime> m_MotionMatching;
 		std::unique_ptr<VansFootPlacementSolver> m_FootPlacement;
 		FootPlacementSettings m_FootPlacementSettings;
+		FootPlacementSettings m_ExternalFootPlacementSettings;
+		bool m_HasExternalFootPlacementSettings = false;
+		int m_FootPlacementSourceNodeId = -1;
 		FootPlacementRuntimeState m_FootPlacementState;
-		bool m_LastFootPlacementCrouching = false;
-		bool m_HasFootPlacementStanceState = false;
-		float m_FootPlacementStanceSuppressTimer = 0.0f;
 		glm::mat4 m_OwnerWorldTransform = glm::mat4(1.0f);
 
 		// ─── 内部方法 ───

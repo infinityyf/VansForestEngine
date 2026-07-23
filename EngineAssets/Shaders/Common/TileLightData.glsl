@@ -27,9 +27,26 @@ struct TileLightHeader
     uint spotCount;    // 该 tile 覆盖的聚光灯实际数量
     uint rectOffset;   // 面光源（RectLight）索引起始位置
     uint rectCount;    // 该 tile 覆盖的面光源实际数量
-    uint pad0;
-    uint pad1;
+    uint fallbackPoint0;
+    uint fallbackPoint1;
+    uint fallbackSpot;
+    uint fallbackRect;
 };
+
+bool IsPointShadowFallbackSelected(TileLightHeader header, uint lightIndex)
+{
+    return lightIndex == header.fallbackPoint0 || lightIndex == header.fallbackPoint1;
+}
+
+bool IsSpotShadowFallbackSelected(TileLightHeader header, uint lightIndex)
+{
+    return lightIndex == header.fallbackSpot;
+}
+
+bool IsRectShadowFallbackSelected(TileLightHeader header, uint lightIndex)
+{
+    return lightIndex == header.fallbackRect;
+}
 
 // --- Set 0 只读绑定（BuildTileLightList.comp 写，其余 pass 读）---
 layout(set = 0, binding = 9, std430)

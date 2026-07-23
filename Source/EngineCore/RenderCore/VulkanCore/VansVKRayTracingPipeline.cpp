@@ -46,10 +46,6 @@ namespace VansGraphics
 
 	void VansVKDevice::UpdateRayTracing(VansVKCommandBuffer& computeCmd)
 	{
-		auto camera = m_Scene->GetCamera();
-		rayTracingContext.m_RayTracingConstant.cameraDir = camera->GetForward();
-		rayTracingContext.m_RayTracingConstant.cameraRight = camera->GetRight();
-		rayTracingContext.m_RayTracingConstant.cameraUp = camera->GetUp();
 		rayTracingContext.DispatchRayTracing(this, &computeCmd, m_Scene);
 
 		VansLightManager* lightManager = m_Scene->GetLightManager();

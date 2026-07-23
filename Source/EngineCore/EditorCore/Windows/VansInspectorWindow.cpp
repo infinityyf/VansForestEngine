@@ -141,12 +141,25 @@ Json DefaultComponentData(const std::string& type)
         { "climbingMode", "easy" }, { "layer", "Default" }, { "positionOffset", { 0.0f, 0.9f, 0.0f } } };
     if (type == "DirectionalLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f } };
     if (type == "PointLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
-        { "radius", 10.0f }, { "castShadows", true } };
+        { "radius", 10.0f }, { "castShadows", true }, { "shadowPolicy", "Auto" },
+        { "shadowPriority", 128 }, { "shadowResolution", "Auto" }, { "shadowUpdateMode", "OnChange" },
+        { "shadowFallback", "ScreenSpace" }, { "shadowMaxDistance", 30.0f }, { "shadowNearPlane", 0.0f },
+        { "shadowDepthBiasTexels", 1.0f }, { "shadowNormalBiasTexels", 1.0f },
+        { "shadowSourceRadius", 0.02f }, { "shadowAffectsFog", true }, { "shadowAffectsGI", true } };
     if (type == "SpotLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
         { "radius", 10.0f }, { "innercutoff", 15.0f }, { "outerCutoff", 30.0f },
-        { "castShadows", true } };
+        { "castShadows", true }, { "shadowPolicy", "Auto" }, { "shadowPriority", 128 },
+        { "shadowResolution", "Auto" }, { "shadowUpdateMode", "OnChange" }, { "shadowFallback", "ScreenSpace" },
+        { "shadowMaxDistance", 30.0f }, { "shadowNearPlane", 0.0f }, { "shadowDepthBiasTexels", 1.0f },
+        { "shadowNormalBiasTexels", 1.0f }, { "shadowSourceRadius", 0.02f },
+        { "shadowAffectsFog", true }, { "shadowAffectsGI", true } };
     if (type == "RectLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
-        { "width", 1.0f }, { "height", 1.0f }, { "range", 10.0f }, { "two_sided", false }, { "shadow", false } };
+        { "width", 1.0f }, { "height", 1.0f }, { "range", 10.0f }, { "two_sided", false },
+        { "castShadows", false }, { "shadowPolicy", "Auto" }, { "shadowPriority", 128 },
+        { "shadowResolution", "Auto" }, { "shadowUpdateMode", "OnChange" }, { "shadowFallback", "ScreenSpace" },
+        { "shadowMaxDistance", 30.0f }, { "shadowNearPlane", 0.0f }, { "shadowDepthBiasTexels", 1.0f },
+        { "shadowNormalBiasTexels", 1.0f }, { "shadowSourceRadius", 0.02f },
+        { "shadowAffectsFog", true }, { "shadowAffectsGI", true } };
     if (type == "Audio" || type == "Video") return { { "source", { { "guid", "" } } } };
     if (type == "Particle") return { { "asset", "" }, { "play_on_awake", true } };
     if (type == "Script") return { { "path", "Scripts/" }, { "class", "" } };

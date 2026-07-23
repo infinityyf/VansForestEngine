@@ -12,6 +12,7 @@ namespace VansGraphics
 		bool DrawDirectionalLights(std::vector<Vans::EditorAPI::DirectionalLightSettings>& directionLights);
 		bool DrawPointLights(std::vector<Vans::EditorAPI::PointLightSettings>& pointLights);
 		bool DrawSpotLights(std::vector<Vans::EditorAPI::SpotLightSettings>& spotLights);
+		bool DrawRectLights(std::vector<Vans::EditorAPI::RectLightSettings>& rectLights);
 
 		void DrawFogParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 		void DrawFogVolumeParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI);

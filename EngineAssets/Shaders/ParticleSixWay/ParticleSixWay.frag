@@ -19,7 +19,7 @@ layout(location = 5) in vec3 fragBillboardForward;
 layout(set = 1, binding = 0) uniform sampler2D positiveAxesTex;
 layout(set = 1, binding = 1) uniform sampler2D negativeAxesTex;
 layout(set = 1, binding = 2) uniform sampler2DArray cascadeShadowMap;
-layout(set = 1, binding = 3) uniform sampler2D punctualShadowMap;
+layout(set = 1, binding = 3) uniform sampler2DShadow punctualShadowMap;
 
 layout(location = 0) out vec4 outColor;
 
@@ -122,8 +122,8 @@ void AccumulatePointLight(uint lightIndex, SixWaySample sixWay, inout vec3 resul
 
     vec3 lightDir = toLight / max(distanceToLight, 1e-4);
     float attenuation = DistanceAttenuation(distanceToLight, light.radius);
-    int shadowIndex = int(light.shadowIndex);
-    if (shadowIndex >= 0)
+    uint shadowIndex = light.shadowMetaIndex;
+    if (shadowIndex != INVALID_SHADOW_INDEX)
         attenuation *= SamplePointShadowMapBRDF(
             fragWorldPos, ParticleShadowNormal(lightDir), lightDir, punctualShadowMap, int(lightIndex));
 
@@ -145,8 +145,8 @@ void AccumulateSpotLight(uint lightIndex, SixWaySample sixWay, inout vec3 result
     if (attenuation <= 0.0)
         return;
 
-    int shadowIndex = int(light.shadowIndex);
-    if (shadowIndex >= 0)
+    uint shadowIndex = light.shadowMetaIndex;
+    if (shadowIndex != INVALID_SHADOW_INDEX)
         attenuation *= SampleSpotShadowMapBRDF(
             fragWorldPos, ParticleShadowNormal(lightDir), lightDir, punctualShadowMap, int(lightIndex));
 

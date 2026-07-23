@@ -1,0 +1,46 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// RenderCore diagnostic conversion. The runtime Atlas remains D32; this pass
+// produces a small RGBA8 image that ordinary editor texture shaders can show.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D punctualShadowAtlas;
+layout(set = 0, binding = 1, rgba8) writeonly uniform image2D debugPreview;
+
+void main()
+{
+    ivec2 dstCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dstSize = imageSize(debugPreview);
+    if (any(greaterThanEqual(dstCoord, dstSize)))
+        return;
+
+    ivec2 srcSize = textureSize(punctualShadowAtlas, 0);
+    vec2 srcPerDst = vec2(srcSize) / vec2(dstSize);
+    vec2 srcBase = vec2(dstCoord) * srcPerDst;
+
+    // Four stratified point samples retain small casters while keeping this
+    // on-demand diagnostic resolve much cheaper than processing the full D32
+    // Atlas. Min depth represents the closest caster in the preview cell.
+    const vec2 offsets[4] = vec2[4](
+        vec2(0.20, 0.20),
+        vec2(0.80, 0.20),
+        vec2(0.20, 0.80),
+        vec2(0.80, 0.80));
+
+    float minDepth = 1.0;
+    for (int sampleIndex = 0; sampleIndex < 4; ++sampleIndex)
+    {
+        ivec2 srcCoord = clamp(
+            ivec2(srcBase + offsets[sampleIndex] * srcPerDst),
+            ivec2(0),
+            srcSize - ivec2(1));
+        minDepth = min(minDepth, texelFetch(punctualShadowAtlas, srcCoord, 0).r);
+    }
+
+    // Cleared Atlas texels are 1.0. Invert and apply a logarithmic-like power
+    // curve so the non-linear depth values close to one remain visible.
+    float occupiedDepth = max(1.0 - minDepth, 0.0);
+    float value = occupiedDepth > 1e-7 ? pow(occupiedDepth, 0.20) : 0.0;
+    imageStore(debugPreview, dstCoord, vec4(vec3(value), 1.0));
+}

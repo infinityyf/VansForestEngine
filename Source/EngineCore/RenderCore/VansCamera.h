@@ -73,6 +73,8 @@ namespace VansGraphics
 
         void HandleKeyboardInput(int key, int scancode, int action, int mods, float deltaTime);
 
+        void HandleKeyboardMovement(float forwardAxis, float rightAxis, float upAxis, float deltaTime);
+
         glm::vec4 GetPosition() { return glm::vec4(m_Position,1); }
 
         glm::vec4 GetForward();

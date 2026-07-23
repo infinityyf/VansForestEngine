@@ -180,13 +180,11 @@ namespace VansGraphics
 		friend class VansVKCommandBuffer;
 	private:
 
-		VkPipelineLayout m_VansPipelineLayout;
+		VkPipelineLayout m_VansPipelineLayout = VK_NULL_HANDLE;
 
-		VkPipelineCache m_PipelineCache;
+		VkPipeline m_GraphicsPipeline = VK_NULL_HANDLE;
 
-		VkPipeline m_GraphicsPipeline;
-
-		VkDevice m_Device;
+		VkDevice m_Device = VK_NULL_HANDLE;
 
 		VansPipelineDescriptorKey m_DescriptorKey;
 
@@ -220,13 +218,7 @@ namespace VansGraphics
 
 		const VansPipelineDescriptorKey& GetDescriptorKey() const { return m_DescriptorKey; }
 
-		bool CreatePipelineCache(VkDevice& logic_device);
-
-		bool GetPipelineCacheData(VkDevice& logic_device);
-
 		void DestroyPipeline(VkDevice& logic_device);
-
-		void DestroyPipelineCache(VkDevice& logic_device);
 
 		void DestroyPipelineLayout(VkDevice& logic_device);
 
@@ -234,11 +226,7 @@ namespace VansGraphics
 		{
 			DestroyPipelineLayout(m_Device);
 			DestroyPipeline(m_Device);
-			DestroyPipelineCache(m_Device);
 		}
-
-	public :
-		static bool MergePipelineCache(VkDevice& logic_device, std::vector<VkPipelineCache>& source_pipeline_caches, VkPipelineCache& merged_cache);
 	
 		VkPipeline GetNativePipeline() { return m_GraphicsPipeline; }
 	};
@@ -249,18 +237,18 @@ namespace VansGraphics
 		//Compute pipelines cannot be used inside render passes.
 	private:
 
-		VkPipeline m_ComputePipeline;
+		VkPipeline m_ComputePipeline = VK_NULL_HANDLE;
 
-		VkPipelineLayout m_VansPipelineLayout;
+		VkPipelineLayout m_VansPipelineLayout = VK_NULL_HANDLE;
 
-		VkDevice m_Device;
+		VkDevice m_Device = VK_NULL_HANDLE;
 
 		VansPipelineDescriptorKey m_DescriptorKey;
 
 		void BindComputePipeline(VkCommandBuffer& command_buffer);
 
 	public:
-		bool CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount = 0, VkPushConstantRange* pushConstRange = nullptr, const VansPipelineProgramDesc* programDesc = nullptr);
+		bool CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount = 0, VkPushConstantRange* pushConstRange = nullptr, const VansPipelineProgramDesc* programDesc = nullptr);
 		
 		const VansPipelineDescriptorKey& GetDescriptorKey() const { return m_DescriptorKey; }
 		
@@ -285,11 +273,11 @@ namespace VansGraphics
 		//Compute pipelines cannot be used inside render passes.
 	private:
 
-		VkPipeline m_RayTracingPipeline;
+		VkPipeline m_RayTracingPipeline = VK_NULL_HANDLE;
 
-		VkPipelineLayout m_RayTracingLayout;
+		VkPipelineLayout m_RayTracingLayout = VK_NULL_HANDLE;
 
-		VkDevice m_Device;
+		VkDevice m_Device = VK_NULL_HANDLE;
 
 		VansPipelineDescriptorKey m_DescriptorKey;
 
@@ -305,7 +293,7 @@ namespace VansGraphics
 
 	public:
 
-		bool CreateRayTracingPipeline(VkDevice& logic_device, std::vector<VkRayTracingShaderGroupCreateInfoKHR>& shaderGroupCreateInfo, std::vector<VkPipelineShaderStageCreateInfo>& shaderStageCreateInfo,  const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount = 0, VkPushConstantRange* pushConstRange = nullptr, const VansPipelineProgramDesc* programDesc = nullptr);
+		bool CreateRayTracingPipeline(VkDevice& logic_device, std::vector<VkRayTracingShaderGroupCreateInfoKHR>& shaderGroupCreateInfo, std::vector<VkPipelineShaderStageCreateInfo>& shaderStageCreateInfo, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount = 0, VkPushConstantRange* pushConstRange = nullptr, const VansPipelineProgramDesc* programDesc = nullptr);
 
 		const VansPipelineDescriptorKey& GetDescriptorKey() const { return m_DescriptorKey; }
 

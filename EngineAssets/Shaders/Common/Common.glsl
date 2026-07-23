@@ -480,7 +480,7 @@ vec3 HiZ_ProjectToScreen(mat4 viewMat, mat4 projMat, vec3 ws)
 //
 // 必须 POINT SAMPLE：HZB sampler 默认是 LINEAR，textureLod 会破坏 min-depth 语义。
 // ============================================================================
-HiZTraceResult TraceHiZ_UV(
+HiZTraceResult TraceHiZ_UV_Bounded(
     sampler2D hiz,
     mat4 lastView,
     mat4 lastProj,
@@ -488,7 +488,8 @@ HiZTraceResult TraceHiZ_UV(
     vec3 dirWS,
     float maxDistWorld,
     float traceStride,           // 保留接口但当前未使用
-    float thicknessThreshold     // 米，命中点前后允许的深度误差
+    float thicknessThreshold,    // 米，命中点前后允许的深度误差
+    int iterationBudget
 ) {
     dirWS = normalize(dirWS);
 
@@ -559,6 +560,9 @@ HiZTraceResult TraceHiZ_UV(
 
     for (int iter = 0; iter < kMaxIterations; iter++)
     {
+        if (iter >= max(iterationBudget, 1))
+            break;
+
         if (t >= tEnd)
             return HiZTraceResult(false, vec2(0.0), 0.0);
 
@@ -632,6 +636,30 @@ HiZTraceResult TraceHiZ_UV(
     }
 
     return HiZTraceResult(false, vec2(0.0), 0.0);
+}
+
+// Compatibility entry point for SSR/SSGI/Water. Punctual contact shadows use
+// the bounded variant so their per-tile Top-K cost remains deterministic.
+HiZTraceResult TraceHiZ_UV(
+    sampler2D hiz,
+    mat4 lastView,
+    mat4 lastProj,
+    vec3 startWS,
+    vec3 dirWS,
+    float maxDistWorld,
+    float traceStride,
+    float thicknessThreshold
+) {
+    return TraceHiZ_UV_Bounded(
+        hiz,
+        lastView,
+        lastProj,
+        startWS,
+        dirWS,
+        maxDistWorld,
+        traceStride,
+        thicknessThreshold,
+        512);
 }
 
 // --- 新增：ReSTIR 蓄水池 Buffer ---

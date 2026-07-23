@@ -101,6 +101,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		// binding 15: custom material payload SSBO
 		{GLOBAL_BINDING_CUSTOM_MATERIAL_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 MATERIAL_STAGES, nullptr},
+		// binding 16: cloth extension payload SSBO (same materialIndex as binding 2)
+		{GLOBAL_BINDING_CLOTH_MATERIAL_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 MATERIAL_STAGES, nullptr},
 		// binding 50: Bindless PBR textures (fixed max count, no variable descriptor)
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},
@@ -324,6 +327,10 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(
 		{15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// IES profile 纹理数组 (binding 16, sampler2DArray, R16F)
 		{16, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// HZB mip 0 is sampled by per-light screen-space contact shadows in Deferred.frag.
+		{17, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// Shared screen-space shadow parameters used by deferred punctual contact shadows.
+		{18, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -581,25 +588,13 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
 
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_GISHUpdate(
-	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{GISH_BINDING_DIRECT_LIGHT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{GISH_BINDING_RESULT_R,     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{GISH_BINDING_RESULT_G,     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{GISH_BINDING_RESULT_B,     VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
-}
-
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_GIPointLight(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
 		{GIPL_BINDING_HIT_POSITION,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_HIT_NORMAL,      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{GIPL_BINDING_DIRECT_LIGHT,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_RADIANCE,        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_ENVIRONMENT_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_SH_R,            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_SH_G,            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
@@ -608,6 +603,10 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_GIPointLight(
 		{GIPL_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_PBR_DATA,        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_GI_VISIBILITY,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_DIRECT_CACHE,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_RESULT_R,        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_RESULT_G,        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_RESULT_B,        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
@@ -898,6 +897,21 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_TileLightBuild(
 		{TILE_BUILD_BINDING_PARAMS,  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_PunctualShadowDebug(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{PUNCTUAL_SHADOW_DEBUG_BINDING_ATLAS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{PUNCTUAL_SHADOW_DEBUG_BINDING_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(
+		bindings,
+		outLayout,
+		outSets,
+		setCount,
+		VansDescriptorLifetimeRole::PassPersistent);
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_DecalPass(

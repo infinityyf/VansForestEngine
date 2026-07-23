@@ -354,6 +354,38 @@ namespace
 			}
 		}
 	}
+
+	void CollectScenePhysicsMeshColliderDependencies(
+		const nlohmann::json& sceneDocument,
+		std::unordered_set<std::string>& meshColliderModels)
+	{
+		const nlohmann::json* entities = ReadArrayField(sceneDocument, "entities");
+		if (entities == nullptr)
+			return;
+
+		for (const nlohmann::json& entity : *entities)
+		{
+			const nlohmann::json* components = ReadArrayField(entity, "components");
+			if (components == nullptr)
+				continue;
+			for (const nlohmann::json& component : *components)
+			{
+				if (ReadStringField(component, "type") != "Physics")
+					continue;
+				const nlohmann::json* data = ReadObjectField(component, "data");
+				if (data == nullptr || !ReadBoolField(*data, "useMeshCollider", false))
+					continue;
+
+				const std::string colliderType = ReadStringField(*data, "colliderType");
+				if (colliderType != "mesh" && colliderType != "convex")
+					continue;
+
+				const std::string meshGuid = ReadStringField(*data, "mesh");
+				if (!meshGuid.empty())
+					meshColliderModels.insert(meshGuid);
+			}
+		}
+	}
 }
 
 VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResourcePlan(
@@ -387,6 +419,9 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	}
 
 	CollectSceneModelRendererDependencies(sceneDocument, result.requiredModels, result.requiredMaterials);
+	std::unordered_set<std::string> meshColliderModels;
+	CollectScenePhysicsMeshColliderDependencies(sceneDocument, meshColliderModels);
+	result.requiredModels.insert(meshColliderModels.begin(), meshColliderModels.end());
 
 	const std::vector<VansAssetRecord> allRecords = database.All();
 	std::unordered_map<std::string, VansAssetType> assetTypesByGuid;
@@ -482,10 +517,15 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			request.path = relativePath;
 			request.needTangent = ReadBoolField(meta.settings, "generateTangents", true);
 			request.supportRayTracing = ReadBoolField(meta.settings, "buildRayTracingData", true);
-			request.needCpuData = ReadBoolField(meta.settings, "keepCpuMeshData", false);
+			request.needCpuData = ReadBoolField(meta.settings, "keepCpuMeshData", false) ||
+				meshColliderModels.find(record.guid.ToString()) != meshColliderModels.end();
 			request.scaleFactor = ReadFloatField(meta.settings, "scaleFactor",
 				ReadFloatField(meta.settings, "scale", 1.0f));
 			request.loadMultiMesh = ReadBoolField(meta.settings, "loadMultiMesh", isFbx);
+			request.rebuildIdentityBoneOffsetsFromHierarchy = ReadBoolField(
+				meta.settings, "rebuildIdentityBoneOffsetsFromHierarchy", false);
+			request.remapWeaponAttachmentBonesToHands = ReadBoolField(
+				meta.settings, "remapWeaponAttachmentBonesToHands", false);
 			result.resourcePlan.meshes.push_back(std::move(request));
 		}
 		else if (record.type == VansAssetType::Texture)
@@ -498,6 +538,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			VansSceneTextureResourceRequest request;
 			request.name = record.guid.ToString();
 			request.path = texturePath;
+			request.artifactPath = record.artifactPath.string();
 			request.textureType = isCubemap ? SceneTextureCube : SceneTexture2D;
 			const std::string colorSpace = ReadStringField(meta.settings, "colorSpace");
 			request.srgb = colorSpace.empty()

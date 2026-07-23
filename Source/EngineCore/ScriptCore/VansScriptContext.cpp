@@ -1,5 +1,6 @@
 ﻿#include "VansScriptContext.h"
 #include "../RuntimeCore/VansFramePhase.h"
+#include "../RuntimeCore/VansThreadContract.h"
 #include "../Configration/VansConfigration.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../Util/VansLog.h"
@@ -20,6 +21,7 @@
 #include <fstream>
 #include <string>
 #include <algorithm>
+#include <cctype>
 #include <glm/glm.hpp>
 #include "../../../../ForestExporter/VansEngineBridge.h"
 #include "../../../../ForestExporter/VansInputBridge.h"
@@ -34,6 +36,90 @@ namespace py = pybind11;
 
 // Singleton instance
 VansScriptContext* VansScriptContext::s_Instance = nullptr;
+
+namespace
+{
+py::module LoadScriptModuleFromFile(
+    const std::filesystem::path& filePath,
+    const std::string& moduleName,
+    bool publish)
+{
+    py::module importlibUtil = py::module::import("importlib.util");
+    py::dict modules = py::module::import("sys").attr("modules");
+    const bool hadPrevious = modules.contains(moduleName.c_str());
+    py::object previous;
+    if (hadPrevious)
+        previous = modules[py::str(moduleName)];
+
+    try
+    {
+        py::object spec = importlibUtil.attr("spec_from_file_location")(
+            moduleName, filePath.string());
+        if (spec.is_none())
+            throw std::runtime_error("could not create a module spec");
+
+        py::object moduleObject = importlibUtil.attr("module_from_spec")(spec);
+        modules[py::str(moduleName)] = moduleObject;
+        spec.attr("loader").attr("exec_module")(moduleObject);
+
+        if (!publish)
+        {
+            if (hadPrevious)
+                modules[py::str(moduleName)] = previous;
+            else
+                modules.attr("pop")(moduleName, py::none());
+        }
+        return moduleObject.cast<py::module>();
+    }
+    catch (...)
+    {
+        if (hadPrevious)
+            modules[py::str(moduleName)] = previous;
+        else
+            modules.attr("pop")(moduleName, py::none());
+        throw;
+    }
+}
+}
+
+VansScriptContext::~VansScriptContext()
+{
+    ShutdownPython();
+}
+
+void VansScriptContext::AssertPythonThread() const
+{
+    VANS_ASSERT_MAIN_THREAD();
+    assert(m_PythonThreadId == std::thread::id{} ||
+           m_PythonThreadId == std::this_thread::get_id());
+}
+
+std::string VansScriptContext::CanonicalScriptKey(const std::filesystem::path& path)
+{
+    std::error_code ec;
+    std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
+    if (ec)
+        canonical = std::filesystem::absolute(path, ec).lexically_normal();
+
+    std::string key = canonical.generic_string();
+#ifdef _WIN32
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+#endif
+    return key;
+}
+
+std::string VansScriptContext::MakeScriptModuleName(const std::string& canonicalPath)
+{
+    uint64_t hash = 1469598103934665603ull;
+    for (unsigned char value : canonicalPath)
+    {
+        hash ^= value;
+        hash *= 1099511628211ull;
+    }
+    return "_vans_script_" + std::to_string(hash);
+}
 
 VansScriptObject::~VansScriptObject()
 {
@@ -353,31 +439,60 @@ static void InstallPythonOutputRedirect()
     py::module::import("_engine_redirect");
 }
 
-// ---------------------------------------------------------------------------
-// Track a Python module for hot-reload (store its file path + write time)
-// Keyed by the relative script path so each file is tracked exactly once.
-// ---------------------------------------------------------------------------
-void VansScriptContext::TrackPyModule(const std::string& scriptPath,
-                                      const std::string& moduleName,
-                                      py::module mod,
-                                      const std::filesystem::path& absPath)
+bool VansScriptContext::ResolveScriptClass(
+    const std::string& scriptPath,
+    const std::string& className,
+    const std::filesystem::path& absPath,
+    std::string& moduleName,
+    py::object& scriptClass)
 {
+    if (!m_Interpreter)
+        return false;
+    AssertPythonThread();
+    const std::string key = CanonicalScriptKey(absPath);
+    auto [it, inserted] = m_TrackedPyModules.try_emplace(key);
+    PyModuleInfo& info = it->second;
+
+    if (inserted)
+    {
+        info.scriptPath = scriptPath;
+        info.filePath = absPath;
+        info.moduleName = MakeScriptModuleName(key);
+        if (std::filesystem::exists(absPath))
+            info.lastWriteTime = std::filesystem::last_write_time(absPath);
+    }
+
+    moduleName = info.moduleName;
+    if (info.loadFailed)
+        return false;
+
     try
     {
-        if (std::filesystem::exists(absPath))
+        if (!info.module)
+            info.module = LoadScriptModuleFromFile(info.filePath, info.moduleName, true);
+
+        auto classIt = info.classes.find(className);
+        if (classIt == info.classes.end())
         {
-            PyModuleInfo info;
-            info.module        = mod;
-            info.moduleName    = moduleName;
-            info.filePath      = absPath;
-            info.lastWriteTime = std::filesystem::last_write_time(absPath);
-            m_TrackedPyModules[scriptPath] = info;
+            py::object resolvedClass = info.module.attr(className.c_str());
+            classIt = info.classes.emplace(className, std::move(resolvedClass)).first;
         }
+        scriptClass = classIt->second;
+        return true;
+    }
+    catch (const py::error_already_set& e)
+    {
+        info.loadFailed = !info.module;
+        VANS_LOG_PYTHON("[PyScript] Failed to load " + scriptPath +
+            "::" + className + ": " + e.what());
     }
     catch (const std::exception& e)
     {
-        VANS_LOG_ERROR("TrackPyModule(" << scriptPath << "): " << e.what());
+        info.loadFailed = !info.module;
+        VANS_LOG_PYTHON("[PyScript] Failed to load " + scriptPath +
+            "::" + className + ": " + e.what());
     }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -385,9 +500,8 @@ void VansScriptContext::TrackPyModule(const std::string& scriptPath,
 // ---------------------------------------------------------------------------
 void VansScriptContext::CheckAndReloadPyScripts()
 {
-    py::module importlib = py::module::import("importlib");
-
-    for (auto& [scriptPath, info] : m_TrackedPyModules)
+    AssertPythonThread();
+    for (auto& [canonicalPath, info] : m_TrackedPyModules)
     {
         try
         {
@@ -397,23 +511,107 @@ void VansScriptContext::CheckAndReloadPyScripts()
             auto currentTime = std::filesystem::last_write_time(info.filePath);
             if (currentTime != info.lastWriteTime)
             {
+                // Record the observed fingerprint before attempting reload so a
+                // broken file is not retried and logged every polling interval.
                 info.lastWriteTime = currentTime;
-
-                // Reload the module in-place (importlib.reload uses __file__
-                // which was set correctly by spec_from_file_location)
-                info.module = importlib.attr("reload")(info.module).cast<py::module>();
-
-                VANS_LOG_PYTHON("[Hot-Reload] Reloaded " + scriptPath);
-
-                // Re-instantiate any VanPyScriptComponents using this script path
-                OnPyModuleReloaded(scriptPath);
+                ReloadPyModule(info);
             }
         }
         catch (const py::error_already_set& e)
         {
-            VANS_LOG_PYTHON("[Hot-Reload] Error reloading " + scriptPath + ": " + e.what());
+            VANS_LOG_PYTHON("[Hot-Reload] Error checking " + info.scriptPath + ": " + e.what());
+        }
+        catch (const std::exception& e)
+        {
+            VANS_LOG_PYTHON("[Hot-Reload] Error checking " + info.scriptPath + ": " + e.what());
         }
     }
+}
+
+bool VansScriptContext::ReloadPyModule(PyModuleInfo& moduleInfo)
+{
+    AssertPythonThread();
+    py::dict modules;
+    py::object previousModule;
+    bool candidatePublished = false;
+    try
+    {
+        py::module candidate = LoadScriptModuleFromFile(
+            moduleInfo.filePath, moduleInfo.moduleName, false);
+
+        modules = py::module::import("sys").attr("modules");
+        previousModule = moduleInfo.module;
+        modules[py::str(moduleInfo.moduleName)] = candidate;
+        candidatePublished = true;
+
+        struct CandidateInstance
+        {
+            VanPyScriptComponent* component = nullptr;
+            py::object instance;
+        };
+        std::vector<CandidateInstance> candidates;
+
+        for (const ScheduledScript& scheduled : m_ScheduledScripts)
+        {
+            auto* component = scheduled.component;
+            if (!component || component->m_ScriptModuleName != moduleInfo.moduleName)
+            {
+                continue;
+            }
+
+            py::object scriptClass = candidate.attr(component->m_ScriptClassName.c_str());
+            py::object instance;
+            std::string error;
+            if (!component->BuildPythonInstance(scriptClass, instance, error))
+            {
+                VANS_LOG_PYTHON("[Hot-Reload] Kept previous module for " +
+                    moduleInfo.scriptPath + ": " + error);
+                if (previousModule)
+                    modules[py::str(moduleInfo.moduleName)] = previousModule;
+                else
+                    modules.attr("pop")(moduleInfo.moduleName, py::none());
+                return false;
+            }
+            candidates.push_back({ component, std::move(instance) });
+        }
+
+        moduleInfo.module = candidate;
+        moduleInfo.classes.clear();
+        moduleInfo.loadFailed = false;
+        candidatePublished = false;
+
+        for (auto& candidateInstance : candidates)
+            candidateInstance.component->CommitPythonInstance(
+                std::move(candidateInstance.instance));
+
+        VANS_LOG_PYTHON("[Hot-Reload] Reloaded " + moduleInfo.scriptPath);
+        return true;
+    }
+    catch (const py::error_already_set& e)
+    {
+        if (candidatePublished)
+        {
+            if (previousModule)
+                modules[py::str(moduleInfo.moduleName)] = previousModule;
+            else
+                modules.attr("pop")(moduleInfo.moduleName, py::none());
+        }
+        VANS_LOG_PYTHON("[Hot-Reload] Kept previous module for " +
+            moduleInfo.scriptPath + ": " + e.what());
+    }
+    catch (const std::exception& e)
+    {
+        if (candidatePublished)
+        {
+            if (previousModule)
+                modules[py::str(moduleInfo.moduleName)] = previousModule;
+            else
+                modules.attr("pop")(moduleInfo.moduleName, py::none());
+        }
+        VANS_LOG_PYTHON("[Hot-Reload] Kept previous module for " +
+            moduleInfo.scriptPath + ": " + e.what());
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,9 +619,32 @@ void VansScriptContext::CheckAndReloadPyScripts()
 // ---------------------------------------------------------------------------
 void VansScriptContext::ClearTrackedModules()
 {
+    if (m_Interpreter)
+    {
+        AssertPythonThread();
+        py::dict modules = py::module::import("sys").attr("modules");
+        for (const auto& [canonicalPath, info] : m_TrackedPyModules)
+            modules.attr("pop")(info.moduleName, py::none());
+    }
     m_TrackedPyModules.clear();
+    m_ScheduledScripts.clear();
+    m_EventSubscribers.clear();
     m_FileCheckAccumulator = 0.0f;
     VANS_LOG("[VansScriptContext] Tracked Python modules cleared for scene switch");
+}
+
+void VansScriptContext::ShutdownPython()
+{
+    if (!m_Interpreter)
+        return;
+
+    AssertPythonThread();
+    ClearTrackedModules();
+    m_ProjectPythonPaths.clear();
+    m_ActiveProjectRoot.clear();
+    s_Instance = nullptr;
+    m_Interpreter.reset();
+    m_PythonThreadId = {};
 }
 
 // ---------------------------------------------------------------------------
@@ -431,140 +652,86 @@ void VansScriptContext::ClearTrackedModules()
 // ---------------------------------------------------------------------------
 void VansScriptContext::ReloadAllPyScripts()
 {
-    py::module importlib = py::module::import("importlib");
-
-    // Collect script paths of modules successfully reloaded so we can
-    // re-instantiate their VanPyScriptComponents afterwards.
-    std::vector<std::string> reloadedPaths;
-
-    for (auto& [scriptPath, info] : m_TrackedPyModules)
+    if (!m_Interpreter)
+        return;
+    AssertPythonThread();
+    for (auto& [canonicalPath, info] : m_TrackedPyModules)
     {
         try
         {
-            info.module = importlib.attr("reload")(info.module).cast<py::module>();
-
             if (std::filesystem::exists(info.filePath))
                 info.lastWriteTime = std::filesystem::last_write_time(info.filePath);
-
-            VANS_LOG_PYTHON("[Reload] Reloaded " + scriptPath);
-            reloadedPaths.push_back(scriptPath);
+            ReloadPyModule(info);
         }
-        catch (const py::error_already_set& e)
+        catch (const std::exception& e)
         {
-            VANS_LOG_PYTHON("[Reload] Error reloading " + scriptPath + ": " + e.what());
+            VANS_LOG_PYTHON("[Reload] Error reloading " + info.scriptPath + ": " + e.what());
         }
-    }
-
-    // Teardown + re-instantiate every VanPyScriptComponent whose script was
-    // reloaded so they pick up the new class definitions (new on_enable,
-    // update, on_disable, etc.).
-    for (const auto& path : reloadedPaths)
-    {
-        OnPyModuleReloaded(path);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Reload a .pyd C++ extension module at runtime.
-// Strategy: copy the .pyd to a temp name (Windows locks loaded DLLs),
-// remove the old entry from sys.modules, and re-import from the copy.
-// After reloading the .pyd, also reload dependent .py scripts.
+// Native extension modules remain loaded for the interpreter lifetime. The
+// editor action reports the required restart instead of accumulating DLL/type
+// copies in one process.
 // ---------------------------------------------------------------------------
 void VansScriptContext::ReloadPydModule(const std::string& moduleName)
 {
-    try
+    VANS_LOG_PYTHON("[Native module] " + moduleName +
+        " changed. Restart the editor to load the rebuilt extension safely.");
+}
+
+void VansScriptContext::ConfigureProjectPythonPaths(const std::string& projectRoot)
+{
+    if (!m_Interpreter)
+        return;
+    AssertPythonThread();
+    const std::string canonicalRoot = CanonicalScriptKey(projectRoot);
+    if (canonicalRoot == m_ActiveProjectRoot)
+        return;
+
+    py::list path = py::module::import("sys").attr("path");
+    for (const std::string& oldPath : m_ProjectPythonPaths)
     {
-        py::module importlib      = py::module::import("importlib");
-        py::module importlib_util = py::module::import("importlib.util");
-        py::module sys            = py::module::import("sys");
-        py::module shutil_mod     = py::module::import("shutil");
+        while (path.attr("__contains__")(oldPath).cast<bool>())
+            path.attr("remove")(oldPath);
+    }
+    m_ProjectPythonPaths.clear();
+    m_ActiveProjectRoot = canonicalRoot;
 
-        // Find the source .pyd in EngineExported/
-        // (skip any previous _hot copies)
-        std::filesystem::path pydPath;
-        for (auto& entry : std::filesystem::directory_iterator(m_ScriptDir))
-        {
-            std::string fname = entry.path().filename().string();
-            if (fname.find(moduleName) == 0 &&
-                entry.path().extension() == ".pyd" &&
-                fname.find("_hot") == std::string::npos)
-            {
-                pydPath = entry.path();
-                break;
-            }
-        }
-
-        if (pydPath.empty())
-        {
-            VANS_LOG_PYTHON("[PYD-Reload] No " + moduleName + ".pyd found in " + m_ScriptDir);
+    auto appendPath = [&](const std::filesystem::path& candidate) {
+        if (!std::filesystem::exists(candidate))
             return;
-        }
-
-        m_PydReloadCounter++;
-        std::string tempName = moduleName + "_hot" + std::to_string(m_PydReloadCounter) + ".pyd";
-        std::filesystem::path tempPath = std::filesystem::path(m_ScriptDir) / tempName;
-
-        // FIXME-LEAK[重构-04]: _hot*.pyd 与 sys.modules 引用跨场景残留，后续集中记录并在 Teardown 清理。
-        // Clean up previous temp copy (best-effort, ignore errors)
-        if (m_PydReloadCounter > 1)
+        const std::string value = candidate.lexically_normal().string();
+        if (!path.attr("__contains__")(value).cast<bool>())
         {
-            std::string prevName = moduleName + "_hot" + std::to_string(m_PydReloadCounter - 1) + ".pyd";
-            std::filesystem::path prevPath = std::filesystem::path(m_ScriptDir) / prevName;
-            std::error_code ec;
-            std::filesystem::remove(prevPath, ec);
+            path.attr("append")(value);
+            m_ProjectPythonPaths.push_back(value);
         }
+    };
 
-        // Copy the rebuilt .pyd to a unique temp file
-        std::filesystem::copy_file(pydPath, tempPath, std::filesystem::copy_options::overwrite_existing);
-
-        // Remove old module from sys.modules
-        py::dict modules = sys.attr("modules");
-        if (modules.contains(moduleName.c_str()))
-            modules.attr("__delitem__")(moduleName.c_str());
-
-        // Load from the temp copy
-        py::object spec = importlib_util.attr("spec_from_file_location")(
-            moduleName, tempPath.string());
-        py::object mod = importlib_util.attr("module_from_spec")(spec);
-        modules[py::str(moduleName)] = mod;
-        spec.attr("loader").attr("exec_module")(mod);
-
-        VANS_LOG_PYTHON("[PYD-Reload] Reloaded " + moduleName + " (v" +
-            std::to_string(m_PydReloadCounter) + ")");
-
-        // Re-install the correct bridge depending on which module was reloaded
-        if (moduleName == "vaninput")
-        {
-            mod.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetInputBridgePtr()));
-        }
-        else
-        {
-            mod.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetEngineBridgePtr()));
-        }
-
-        // Reload dependent .py scripts so they pick up the new .pyd
-        ReloadAllPyScripts();
-    }
-    catch (const py::error_already_set& e)
-    {
-        VANS_LOG_PYTHON("[PYD-Reload] Error: " + std::string(e.what()));
-    }
-    catch (const std::exception& e)
-    {
-        VANS_LOG_PYTHON("[PYD-Reload] Error: " + std::string(e.what()));
-    }
+    const std::filesystem::path root(projectRoot);
+    // Project paths are appended so they cannot shadow the standard library or
+    // engine bindings. Exact script files are still loaded by absolute path.
+    appendPath(root);
+    appendPath(root / "Scripts");
+    appendPath(root / ".vans" / "python" / "site-packages");
 }
 
 // ---------------------------------------------------------------------------
-// 读取项目 Scripts/requirements.txt，将缺失的包安装到引擎内嵌 Python 的
-// site-packages。VansScriptSetup 已通过 site.addsitedir() 将该目录加入
-// sys.path，安装完后调用 importlib.invalidate_caches() 刷新缓存即可立即使用。
-// 若 requirements.txt 不存在则自动创建模板。
+// Explicit editor operation: install project dependencies into a project-local
+// directory. Runtime startup never invokes pip.
 // ---------------------------------------------------------------------------
 void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 {
+	if (!m_Interpreter)
+	{
+		VANS_LOG_ERROR("[PyDeps] Python runtime is not initialized");
+		return;
+	}
 	try
 	{
+		AssertPythonThread();
 		// ── 引擎内嵌 Python 可执行文件路径 ──────────────────────────────
 		auto* cfg = VansConfigration::GetInstance();
 		std::string engineRoot = cfg->GetProjectRootPath();
@@ -624,11 +791,12 @@ void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 			}
 		}
 
-		// ── 3. 用引擎内嵌 python.exe 的 pip 安装到其自身 site-packages ─────
-		// VansScriptSetup 中已通过 site.addsitedir() 将该目录加入 sys.path，
-		// 安装完成后调用 importlib.invalidate_caches() 刷新缓存即可立即使用。
+		// ── 3. 安装到项目私有目录，避免污染引擎 Python 与其他项目 ─────
+		std::filesystem::path dependencyPath =
+			std::filesystem::path(projRoot) / ".vans" / "python" / "site-packages";
+		std::filesystem::create_directories(dependencyPath);
 		VANS_LOG_PYTHON(
-			"[PyDeps] Installing from: " + requirementsPath);
+			"[PyDeps] Installing project dependencies from: " + requirementsPath);
 
 		py::module subprocess = py::module::import("subprocess");
 		py::list   pipCmd;
@@ -638,6 +806,8 @@ void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 		pipCmd.append("install");
 		pipCmd.append("-r");
 		pipCmd.append(requirementsPath);
+		pipCmd.append("--target");
+		pipCmd.append(dependencyPath.string());
 		pipCmd.append("--quiet");
 		pipCmd.append("--no-warn-script-location");
 
@@ -654,7 +824,9 @@ void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 		}
 		else
 		{
-			VANS_LOG_PYTHON("[PyDeps] Requirements installed successfully.");
+			VANS_LOG_PYTHON("[PyDeps] Project dependencies installed successfully.");
+			m_ActiveProjectRoot.clear();
+			ConfigureProjectPythonPaths(projRoot);
 			// 刷新当前解释器的导入缓存，使子进程刚安装的包立即可见
 			py::module::import("importlib").attr("invalidate_caches")();
 		}
@@ -672,7 +844,9 @@ void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 // ---------------------------------------------------------------------------
 void VansScriptContext::VansScriptSetup()
 {
-    s_Instance = this;
+    VANS_ASSERT_MAIN_THREAD();
+    if (m_Interpreter)
+        return;
 
     auto vansConfigration = VansConfigration::GetInstance();
     std::string projectRoot = vansConfigration->GetProjectRootPath();
@@ -689,7 +863,9 @@ void VansScriptContext::VansScriptSetup()
     _putenv(("TCL_LIBRARY=" + tcltkBase + "/tcl8.6").c_str());
     _putenv(("TK_LIBRARY="  + tcltkBase + "/tk8.6").c_str());
 
-    static py::scoped_interpreter guard{};// 每个进程只能创建一个
+    m_Interpreter = std::make_unique<py::scoped_interpreter>();
+    m_PythonThreadId = std::this_thread::get_id();
+    s_Instance = this;
 
     // Add your script directory to sys.path
     // EngineExported holds the .pyd modules and user scripts
@@ -756,16 +932,7 @@ void VansScriptContext::VansScriptSetup()
     if (projectMgr.IsProjectLoaded())
     {
         std::string projectScriptDir = projectMgr.GetProjectRootPath();
-        sys.attr("path").attr("insert")(0, projectScriptDir);
-
-        // 将 Scripts/ 子目录也加入 sys.path，使 Scripts/ 下的模块可直接
-        // 用裸名导入（import game_state），方便脚本之间互相引用。
-        std::string projectScriptsSubDir = projectScriptDir + "Scripts";
-        sys.attr("path").attr("insert")(0, projectScriptsSubDir);
-
-        // ── 确保项目 venv 已创建并将 site-packages 加入 sys.path ─────
-        // （解释器刚启动，此处的 Python subprocess 调用是合法的）
-        SetupProjectVenv(projectScriptDir);
+        ConfigureProjectPythonPaths(projectScriptDir);
     }
 
     // Install stdout/stderr redirect so print() goes to console window
@@ -777,7 +944,8 @@ void VansScriptContext::VansScriptSetup()
     try
     {
         py::module vc = py::module::import("vanscomponent");
-        vc.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetEngineBridgePtr()));
+        vc.attr("_install_bridge")(py::capsule(
+            VansGetEngineBridgePtr(), VANS_ENGINE_BRIDGE_CAPSULE_NAME));
         VANS_LOG_PYTHON("[Bridge] Engine bridge installed into vanscomponent");
     }
     catch (const py::error_already_set& e)
@@ -791,7 +959,8 @@ void VansScriptContext::VansScriptSetup()
     try
     {
         py::module vi = py::module::import("vaninput");
-        vi.attr("_install_bridge")(reinterpret_cast<uintptr_t>(VansGetInputBridgePtr()));
+        vi.attr("_install_bridge")(py::capsule(
+            VansGetInputBridgePtr(), VANS_INPUT_BRIDGE_CAPSULE_NAME));
         VANS_LOG_PYTHON("[Bridge] Input bridge installed into vaninput");
     }
     catch (const py::error_already_set& e)
@@ -800,6 +969,7 @@ void VansScriptContext::VansScriptSetup()
         VANS_LOG_ERROR("Failed to install input bridge: " << e.what());
     }
 
+    RebuildScriptSchedule();
 }
 
 void VansScriptContext::VansScriptUpdate()
@@ -853,55 +1023,106 @@ void VansScriptContext::VansScriptPreUpdate()
     }
 }
 
-void VansScriptContext::UpdateScriptComponents(bool cameraScriptsOnly, bool skipCameraScripts)
+void VansScriptContext::SetScene(VansGraphics::VansScene* scene)
 {
-    // ── Per-object VanPyScriptComponent update ───────────────────────
-    if (!m_Scene) return;
+    if (m_Scene == scene)
+        return;
+    m_Scene = scene;
+    RebuildScriptSchedule();
+}
 
-    for (auto* obj : m_Scene->GetSceneObjects())
+void VansScriptContext::RegisterScriptComponent(
+    VansScriptObject* owner, VanPyScriptComponent* component)
+{
+    if (!owner || !component)
+        return;
+
+    auto existing = std::find_if(
+        m_ScheduledScripts.begin(), m_ScheduledScripts.end(),
+        [component](const ScheduledScript& scheduled) {
+            return scheduled.component == component;
+        });
+    if (existing != m_ScheduledScripts.end())
+        return;
+
+    const bool cameraScript =
+        owner->GetComponent<VansScriptCameraComponent>() != nullptr;
+    m_ScheduledScripts.push_back({ owner, component, cameraScript });
+    m_EventSubscribers[owner->m_TransformID].push_back(component);
+}
+
+void VansScriptContext::UnregisterScriptComponent(VanPyScriptComponent* component)
+{
+    if (!component)
+        return;
+
+    m_ScheduledScripts.erase(
+        std::remove_if(
+            m_ScheduledScripts.begin(), m_ScheduledScripts.end(),
+            [component](const ScheduledScript& scheduled) {
+                return scheduled.component == component;
+            }),
+        m_ScheduledScripts.end());
+
+    for (auto it = m_EventSubscribers.begin(); it != m_EventSubscribers.end();)
     {
-        const bool hasCameraComponent = (obj->GetComponent<VansScriptCameraComponent>() != nullptr);
-        if (cameraScriptsOnly && !hasCameraComponent)
-            continue;
-        if (skipCameraScripts && hasCameraComponent)
-            continue;
+        auto& subscribers = it->second;
+        subscribers.erase(
+            std::remove(subscribers.begin(), subscribers.end(), component),
+            subscribers.end());
+        if (subscribers.empty())
+            it = m_EventSubscribers.erase(it);
+        else
+            ++it;
+    }
+}
 
-        for (auto* comp : obj->m_Components)
+void VansScriptContext::RebuildScriptSchedule()
+{
+    m_ScheduledScripts.clear();
+    m_EventSubscribers.clear();
+    if (!m_Scene)
+        return;
+
+    for (auto* owner : m_Scene->GetSceneObjects())
+    {
+        if (!owner)
+            continue;
+        for (auto* baseComponent : owner->m_Components)
         {
-            auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
-            if (!pyComp) continue;
-
-            // Lazy instantiation on first encounter
-            if (!pyComp->m_IsValid && !pyComp->m_ScriptPath.empty() && !pyComp->m_ScriptClassName.empty())
-            {
-                pyComp->m_OwnerObject = obj;
-                pyComp->Instantiate();
-                pyComp->Enable();
-            }
-
-            pyComp->CallUpdate();
+            if (auto* component = dynamic_cast<VanPyScriptComponent*>(baseComponent))
+                RegisterScriptComponent(owner, component);
         }
     }
 }
-// ===========================================================================
-//  OnPyModuleReloaded — re-instantiate script components after hot reload
-// ===========================================================================
-void VansScriptContext::OnPyModuleReloaded(const std::string& scriptPath)
+
+void VansScriptContext::UpdateScriptComponents(bool cameraScriptsOnly, bool skipCameraScripts)
 {
     if (!m_Scene) return;
 
-    for (auto* obj : m_Scene->GetSceneObjects())
+    for (const ScheduledScript& scheduled : m_ScheduledScripts)
     {
-        for (auto* comp : obj->m_Components)
-        {
-            auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
-            if (!pyComp || pyComp->m_ScriptPath != scriptPath) continue;
+        if (cameraScriptsOnly && !scheduled.cameraScript)
+            continue;
+        if (skipCameraScripts && scheduled.cameraScript)
+            continue;
 
-            pyComp->Teardown();
-            pyComp->m_OwnerObject = obj;
-            pyComp->Instantiate();
-            pyComp->Enable();
+        auto* component = scheduled.component;
+        if (!component)
+            continue;
+
+        if (component->m_State == VansPythonScriptState::Unloaded &&
+            !component->m_ScriptPath.empty() &&
+            !component->m_ScriptClassName.empty())
+        {
+            component->m_OwnerObject = scheduled.owner;
+            component->Instantiate();
+            // Enable also records the requested state when instantiation failed,
+            // allowing a later file-change reload to recover correctly.
+            component->Enable();
         }
+
+        component->CallUpdate();
     }
 }
 
@@ -909,8 +1130,13 @@ void VansScriptContext::OnPyModuleReloaded(const std::string& scriptPath)
 //  VanPyScriptComponent — lifecycle implementations
 // ===========================================================================
 
-void VanPyScriptComponent::Instantiate()
+bool VanPyScriptComponent::Instantiate()
 {
+    if (m_State == VansPythonScriptState::Destroyed)
+        return false;
+
+    m_State = VansPythonScriptState::Loading;
+    m_IsValid = false;
     try
     {
         // Resolve absolute path — prefer user project root, fall back to engine root
@@ -922,111 +1148,46 @@ void VanPyScriptComponent::Instantiate()
 
         std::filesystem::path absPath = std::filesystem::path(projectRoot) / m_ScriptPath;
 
-        if (!std::filesystem::exists(absPath))
+        auto* context = VansScriptContext::GetInstance();
+        if (!context)
         {
-            VANS_LOG_PYTHON(
-                "[PyScript] Script file not found: " + absPath.string());
-            m_IsValid = false;
-            return;
+            EnterFaultedState("load", "Python runtime is not initialized");
+            return false;
         }
 
-        // Ensure the project root is on sys.path so user scripts can import
-        // each other.  This is a lazy update — VansScriptSetup() may run
-        // before the project is opened, so we add it here the first time
-        // a project script is loaded.
+        context->ConfigureProjectPythonPaths(projectRoot);
+        py::object scriptClass;
+        if (!context->ResolveScriptClass(
+                m_ScriptPath, m_ScriptClassName, absPath,
+                m_ScriptModuleName, scriptClass))
         {
-            py::module sys = py::module::import("sys");
-            py::list   path = sys.attr("path");
-            bool found = false;
-            for (auto item : path)
-            {
-                if (item.cast<std::string>() == projectRoot)
-                { found = true; break; }
-            }
-            if (!found)
-                path.attr("insert")(0, projectRoot);
-
-            // 同步确保 Scripts/ 子目录也在 sys.path 中
-            std::string scriptsSubDir = projectRoot + "Scripts";
-            bool foundScripts = false;
-            for (auto item : path)
-            {
-                if (item.cast<std::string>() == scriptsSubDir)
-                { foundScripts = true; break; }
-            }
-            if (!foundScripts)
-                path.attr("insert")(0, scriptsSubDir);
+            EnterFaultedState("load", "module or class resolution failed");
+            return false;
         }
 
-        // Derive a unique Python module name from the relative path
-        // e.g. "Scripts/my_rotator.py" -> "Scripts.my_rotator"
-        m_ScriptModuleName = m_ScriptPath;
-        // Strip .py extension
-        if (m_ScriptModuleName.size() > 3 &&
-            m_ScriptModuleName.substr(m_ScriptModuleName.size() - 3) == ".py")
+        py::object instance;
+        std::string error;
+        if (!BuildPythonInstance(scriptClass, instance, error))
         {
-            m_ScriptModuleName = m_ScriptModuleName.substr(0, m_ScriptModuleName.size() - 3);
-        }
-        // Replace path separators with dots
-        std::replace(m_ScriptModuleName.begin(), m_ScriptModuleName.end(), '/', '.');
-        std::replace(m_ScriptModuleName.begin(), m_ScriptModuleName.end(), '\\', '.');
-
-        // Load the script from file path using importlib.util
-        py::module importlib_util = py::module::import("importlib.util");
-        py::module sys = py::module::import("sys");
-
-        py::object spec = importlib_util.attr("spec_from_file_location")(
-            m_ScriptModuleName, absPath.string());
-        if (spec.is_none())
-        {
-            VANS_LOG_PYTHON(
-                "[PyScript] Failed to create module spec for: " + absPath.string());
-            m_IsValid = false;
-            return;
+            EnterFaultedState("construct", error);
+            return false;
         }
 
-        py::object mod = importlib_util.attr("module_from_spec")(spec);
-        sys.attr("modules")[py::str(m_ScriptModuleName)] = mod;
-        spec.attr("loader").attr("exec_module")(mod);
-
-        py::module scriptMod = mod.cast<py::module>();
-
-        // Register this module for hot-reload tracking (idempotent)
-        if (auto* ctx = VansScriptContext::GetInstance())
-            ctx->TrackPyModule(m_ScriptPath, m_ScriptModuleName, scriptMod, absPath);
-
-        py::object cls = scriptMod.attr(m_ScriptClassName.c_str());
-        m_PyInstance = cls();   // call the constructor
-
-        // Validate: the instance must be a vanspyscript subclass
-        py::module vc = py::module::import("vanscomponent");
-        if (!py::isinstance(m_PyInstance, vc.attr("vanspyscript")))
-        {
-            VANS_LOG_PYTHON(
-                "[PyScript] " + m_ScriptPath + "::" + m_ScriptClassName +
-                " does not inherit from vanspyscript!");
-            m_IsValid = false;
-            return;
-        }
-
-        // Pass the owning VansScriptObject to the Python instance via bridge
-        if (m_OwnerObject)
-        {
-            m_PyInstance.attr("_bind_native_object")(
-                reinterpret_cast<uintptr_t>(m_OwnerObject));
-        }
-
-        m_IsValid = true;
+        CommitPythonInstance(std::move(instance));
+        context->RegisterScriptComponent(m_OwnerObject, this);
         VANS_LOG_PYTHON(
             "[PyScript] Loaded " + m_ScriptClassName + " from " + m_ScriptPath);
+        return true;
     }
     catch (const py::error_already_set& e)
     {
-        VANS_LOG_PYTHON(
-            "[PyScript] Failed to instantiate " + m_ScriptPath +
-            "::" + m_ScriptClassName + ": " + e.what());
-        m_IsValid = false;
+        EnterFaultedState("construct", e.what());
     }
+    catch (const std::exception& e)
+    {
+        EnterFaultedState("construct", e.what());
+    }
+    return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1106,29 +1267,141 @@ void VansScriptAudioComponent::OnDisable()
     if (m_AudioNode) m_AudioNode->SetEnabled(false);
 }
 
-void VanPyScriptComponent::OnEnable()
+VanPyScriptComponent::~VanPyScriptComponent()
 {
-    if (!m_IsValid) return;
+    Teardown();
+    m_State = VansPythonScriptState::Destroyed;
+}
+
+bool VanPyScriptComponent::BuildPythonInstance(
+    const py::object& scriptClass, py::object& instance, std::string& error) const
+{
     try
     {
-        m_PyInstance.attr("on_enable")();
+        instance = scriptClass();
+        py::module componentModule = py::module::import("vanscomponent");
+        if (!py::isinstance(instance, componentModule.attr("vanspyscript")))
+        {
+            error = m_ScriptPath + "::" + m_ScriptClassName +
+                " must inherit from vanspyscript";
+            instance = py::object();
+            return false;
+        }
+
+        if (m_OwnerObject)
+        {
+            instance.attr("_bind_native_object")(
+                reinterpret_cast<uintptr_t>(m_OwnerObject));
+        }
+        return true;
     }
     catch (const py::error_already_set& e)
     {
-        VANS_LOG_PYTHON("[PyScript] on_enable error: " + std::string(e.what()));
+        error = e.what();
+    }
+    catch (const std::exception& e)
+    {
+        error = e.what();
+    }
+    instance = py::object();
+    return false;
+}
+
+void VanPyScriptComponent::CacheCallbacks()
+{
+    m_OnEnableCallback = py::getattr(m_PyInstance, "on_enable", py::none());
+    m_OnDisableCallback = py::getattr(m_PyInstance, "on_disable", py::none());
+    m_UpdateCallback = py::getattr(m_PyInstance, "update", py::none());
+    m_CollisionEnterCallback = py::getattr(m_PyInstance, "on_collision_enter", py::none());
+    m_CollisionExitCallback = py::getattr(m_PyInstance, "on_collision_exit", py::none());
+    m_TriggerEnterCallback = py::getattr(m_PyInstance, "on_trigger_enter", py::none());
+    m_TriggerExitCallback = py::getattr(m_PyInstance, "on_trigger_exit", py::none());
+}
+
+void VanPyScriptComponent::ResetPythonObjects()
+{
+    m_TriggerExitCallback = py::object();
+    m_TriggerEnterCallback = py::object();
+    m_CollisionExitCallback = py::object();
+    m_CollisionEnterCallback = py::object();
+    m_UpdateCallback = py::object();
+    m_OnDisableCallback = py::object();
+    m_OnEnableCallback = py::object();
+    m_PyInstance = py::object();
+}
+
+void VanPyScriptComponent::CommitPythonInstance(py::object instance)
+{
+    const bool shouldEnable = m_EnableRequested;
+    if (m_Enabled && m_IsValid)
+        SetEnabled(false);
+    ResetPythonObjects();
+
+    m_PyInstance = std::move(instance);
+    CacheCallbacks();
+    m_IsValid = true;
+    m_Enabled = false;
+    m_State = VansPythonScriptState::Disabled;
+    if (shouldEnable)
+        SetEnabled(true);
+}
+
+void VanPyScriptComponent::EnterFaultedState(
+    const char* phase, const std::string& error)
+{
+    m_IsValid = false;
+    m_Enabled = false;
+    m_State = VansPythonScriptState::Faulted;
+    VANS_LOG_PYTHON("[PyScript] Faulted " + m_ScriptPath + "::" +
+        m_ScriptClassName + " during " + phase + ": " + error);
+}
+
+void VanPyScriptComponent::Enable()
+{
+    m_EnableRequested = true;
+    if (m_IsValid && m_State != VansPythonScriptState::Faulted && !m_Enabled)
+        SetEnabled(true);
+}
+
+void VanPyScriptComponent::Disable()
+{
+    m_EnableRequested = false;
+    if (m_Enabled)
+        SetEnabled(false);
+    else if (m_State != VansPythonScriptState::Faulted &&
+             m_State != VansPythonScriptState::Destroyed)
+        m_State = VansPythonScriptState::Disabled;
+}
+
+void VanPyScriptComponent::OnEnable()
+{
+    if (!m_IsValid) return;
+    m_EnableRequested = true;
+    try
+    {
+        if (m_OnEnableCallback && !m_OnEnableCallback.is_none())
+            m_OnEnableCallback();
+        m_State = VansPythonScriptState::Active;
+    }
+    catch (const py::error_already_set& e)
+    {
+        EnterFaultedState("on_enable", e.what());
     }
 }
 
 void VanPyScriptComponent::OnDisable()
 {
     if (!m_IsValid) return;
+    m_EnableRequested = false;
     try
     {
-        m_PyInstance.attr("on_disable")();
+        if (m_OnDisableCallback && !m_OnDisableCallback.is_none())
+            m_OnDisableCallback();
+        m_State = VansPythonScriptState::Disabled;
     }
     catch (const py::error_already_set& e)
     {
-        VANS_LOG_PYTHON("[PyScript] on_disable error: " + std::string(e.what()));
+        EnterFaultedState("on_disable", e.what());
     }
 }
 
@@ -1136,22 +1409,31 @@ void VanPyScriptComponent::CallUpdate()
 {
     VANS_PROFILE_SCOPE("Script::CallUpdate", Vans::ProfileCategory::Script);
 
-    if (!m_IsValid || !m_Enabled) return;  // m_Enabled from VansScriptComponent base
+    if (!m_IsValid || m_State != VansPythonScriptState::Active) return;
     try
     {
-        m_PyInstance.attr("update")();
+        if (m_UpdateCallback && !m_UpdateCallback.is_none())
+            m_UpdateCallback();
     }
     catch (const py::error_already_set& e)
     {
-        VANS_LOG_PYTHON("[PyScript] update error: " + std::string(e.what()));
+        EnterFaultedState("update", e.what());
     }
 }
 
 void VanPyScriptComponent::Teardown()
 {
-    if (m_Enabled) SetEnabled(false);  // → OnDisable → Python on_disable()
-    m_PyInstance = py::none();
+    if (m_State == VansPythonScriptState::Destroyed)
+        return;
+    if (auto* context = VansScriptContext::GetInstance())
+        context->UnregisterScriptComponent(this);
+    if (m_Enabled && m_IsValid)
+        SetEnabled(false);
+    ResetPythonObjects();
     m_IsValid = false;
+    m_EnableRequested = false;
+    m_Enabled = false;
+    m_State = VansPythonScriptState::Unloaded;
 }
 
 // ===========================================================================
@@ -1160,53 +1442,57 @@ void VanPyScriptComponent::Teardown()
 
 void VanPyScriptComponent::CallOnCollisionEnter(const PhysicsEventInfo& info)
 {
-    if (!m_IsValid || !m_Enabled) return;
+    if (!m_IsValid || m_State != VansPythonScriptState::Active) return;
     try
     {
-        m_PyInstance.attr("on_collision_enter")(info);
+        if (m_CollisionEnterCallback && !m_CollisionEnterCallback.is_none())
+            m_CollisionEnterCallback(info);
     }
     catch (const py::error_already_set& e)
     {
-        VANS_LOG_PYTHON("[PyScript] on_collision_enter error: " + std::string(e.what()));
+        EnterFaultedState("on_collision_enter", e.what());
     }
 }
 
 void VanPyScriptComponent::CallOnCollisionExit(const PhysicsEventInfo& info)
 {
-    if (!m_IsValid || !m_Enabled) return;
+    if (!m_IsValid || m_State != VansPythonScriptState::Active) return;
     try
     {
-        m_PyInstance.attr("on_collision_exit")(info);
+        if (m_CollisionExitCallback && !m_CollisionExitCallback.is_none())
+            m_CollisionExitCallback(info);
     }
     catch (const py::error_already_set& e)
     {
-        VANS_LOG_PYTHON("[PyScript] on_collision_exit error: " + std::string(e.what()));
+        EnterFaultedState("on_collision_exit", e.what());
     }
 }
 
 void VanPyScriptComponent::CallOnTriggerEnter(const PhysicsEventInfo& info)
 {
-    if (!m_IsValid || !m_Enabled) return;
+    if (!m_IsValid || m_State != VansPythonScriptState::Active) return;
     try
     {
-        m_PyInstance.attr("on_trigger_enter")(info);
+        if (m_TriggerEnterCallback && !m_TriggerEnterCallback.is_none())
+            m_TriggerEnterCallback(info);
     }
     catch (const py::error_already_set& e)
     {
-        VANS_LOG_PYTHON("[PyScript] on_trigger_enter error: " + std::string(e.what()));
+        EnterFaultedState("on_trigger_enter", e.what());
     }
 }
 
 void VanPyScriptComponent::CallOnTriggerExit(const PhysicsEventInfo& info)
 {
-    if (!m_IsValid || !m_Enabled) return;
+    if (!m_IsValid || m_State != VansPythonScriptState::Active) return;
     try
     {
-        m_PyInstance.attr("on_trigger_exit")(info);
+        if (m_TriggerExitCallback && !m_TriggerExitCallback.is_none())
+            m_TriggerExitCallback(info);
     }
     catch (const py::error_already_set& e)
     {
-        VANS_LOG_PYTHON("[PyScript] on_trigger_exit error: " + std::string(e.what()));
+        EnterFaultedState("on_trigger_exit", e.what());
     }
 }
 
@@ -1229,18 +1515,6 @@ void VansScriptContext::DispatchPhysicsEvents()
 
     for (const auto& event : events)
     {
-        const char* typeStr = "Unknown";
-        switch (event.type)
-        {
-        case VansEngine::PhysicsEventType::CollisionEnter: typeStr = "CollisionEnter"; break;
-        case VansEngine::PhysicsEventType::CollisionExit:  typeStr = "CollisionExit";  break;
-        case VansEngine::PhysicsEventType::TriggerEnter:   typeStr = "TriggerEnter";   break;
-        case VansEngine::PhysicsEventType::TriggerExit:    typeStr = "TriggerExit";    break;
-        }
-        VANS_LOG("[PhysX Dispatch] Event: type=" << typeStr
-                 << " A='" << event.nameA << "' (tid=" << event.transformID_A << ")"
-                 << " B='" << event.nameB << "' (tid=" << event.transformID_B << ")");
-
         // 对 A 方分发（other = B）
         DispatchEventToObject(event, event.transformID_A, event.transformID_B,
                               event.nameB, event.contactPoint,
@@ -1263,59 +1537,32 @@ void VansScriptContext::DispatchEventToObject(
     const std::string& otherName,
     const glm::vec3& contactPoint, const glm::vec3& contactNormal, float impulse)
 {
-    bool foundObj = false;
-    bool foundPyComp = false;
+    auto subscriberIt = m_EventSubscribers.find(selfTransformID);
+    if (subscriberIt == m_EventSubscribers.end())
+        return;
 
-    for (auto* obj : m_Scene->GetSceneObjects())
+    PhysicsEventInfo info;
+    info.otherName        = otherName;
+    info.otherTransformID = otherTransformID;
+    info.contactPoint     = PyVec3(contactPoint.x, contactPoint.y, contactPoint.z);
+    info.contactNormal    = PyVec3(contactNormal.x, contactNormal.y, contactNormal.z);
+    info.impulse          = impulse;
+
+    for (auto* component : subscriberIt->second)
     {
-        if (obj->m_TransformID != selfTransformID) continue;
-        foundObj = true;
-
-        // VANS_LOG("[PhysX Dispatch] Found SceneObject for tid=" << selfTransformID
-        //          << " name='" << obj->m_ObjectName << "' components=" << obj->m_Components.size());
-
-        // 构建 Python 侧的 PhysicsEventInfo
-        PhysicsEventInfo info;
-        info.otherName          = otherName;
-        info.otherTransformID   = otherTransformID;
-        info.contactPoint       = PyVec3(contactPoint.x, contactPoint.y, contactPoint.z);
-        info.contactNormal      = PyVec3(contactNormal.x, contactNormal.y, contactNormal.z);
-        info.impulse            = impulse;
-
-        // 遍历该对象上的所有 PyScript 组件并调度事件
-        for (auto* comp : obj->m_Components)
+        if (!component)
+            continue;
+        switch (event.type)
         {
-            auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
-            if (!pyComp) continue;
-            foundPyComp = true;
-
-            VANS_LOG("[PhysX Dispatch] Calling callback on PyComp script='" << pyComp->m_ScriptPath
-                     << "' class='" << pyComp->m_ScriptClassName
-                     << "' valid=" << pyComp->m_IsValid << " enabled=" << pyComp->m_Enabled);
-
-            switch (event.type)
-            {
-            case VansEngine::PhysicsEventType::CollisionEnter:
-                pyComp->CallOnCollisionEnter(info); break;
-            case VansEngine::PhysicsEventType::CollisionExit:
-                pyComp->CallOnCollisionExit(info); break;
-            case VansEngine::PhysicsEventType::TriggerEnter:
-                pyComp->CallOnTriggerEnter(info); break;
-            case VansEngine::PhysicsEventType::TriggerExit:
-                pyComp->CallOnTriggerExit(info); break;
-            }
+        case VansEngine::PhysicsEventType::CollisionEnter:
+            component->CallOnCollisionEnter(info); break;
+        case VansEngine::PhysicsEventType::CollisionExit:
+            component->CallOnCollisionExit(info); break;
+        case VansEngine::PhysicsEventType::TriggerEnter:
+            component->CallOnTriggerEnter(info); break;
+        case VansEngine::PhysicsEventType::TriggerExit:
+            component->CallOnTriggerExit(info); break;
         }
-        break; // 每个 transformID 只对应一个 ScriptObject
     }
-
-    // if (!foundObj)
-    // {
-    //     VANS_LOG_WARN("[PhysX Dispatch] No SceneObject found for selfTransformID=" << selfTransformID);
-    // }
-    // else if (!foundPyComp)
-    // {
-    //     VANS_LOG_WARN("[PhysX Dispatch] SceneObject tid=" << selfTransformID
-    //                   << " has no VanPyScriptComponent");
-    // }
 }
 

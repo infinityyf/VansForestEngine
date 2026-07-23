@@ -27,9 +27,6 @@ layout(set = 0, binding = 8, std430) buffer hitAlbedoRoughnessBuffer
 layout(push_constant) uniform PushConstants
 {
     vec4 gridParams;     // xyz = probe spacing, w = max ray distance
-    vec4 cameraDir;
-    vec4 cameraUp;
-    vec4 cameraRight;
     vec4 dispatchParams; // xyz = probe counts, w = rays per probe
     vec4 frameParams;
     vec4 regionParams;

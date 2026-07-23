@@ -124,6 +124,8 @@ namespace VansGraphics
 
 		//dispatch
 		void DispatchCompute(VansComputeShader& shader, uint32_t x_size, uint32_t y_size, uint32_t z_size, const std::vector<VkDescriptorSet>& descriptor_sets);
+		void DispatchCompute(VansComputeShader& shader, uint32_t x_size, uint32_t y_size, uint32_t z_size,
+			const std::vector<VkDescriptorSet>& descriptor_sets, const void* pushConstantData, uint32_t pushConstantSize);
 
 		//blit
 		void BlitImage(VansVKImage& source, int source_mip, VansVKImage& target, int target_mip);

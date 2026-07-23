@@ -1,4 +1,6 @@
 #include "VansAssetDatabase.h"
+#include "Importers/VansTextureCooker.h"
+#include "../Util/VansLog.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -16,8 +18,13 @@ std::wstring LowerExtension(const std::filesystem::path& path)
 }
 }
 
-VansAssetDatabase::VansAssetDatabase(std::filesystem::path assetsRoot)
+VansAssetDatabase::VansAssetDatabase(
+    std::filesystem::path assetsRoot,
+    std::filesystem::path artifactRoot)
     : m_AssetsRoot(std::filesystem::absolute(std::move(assetsRoot)).lexically_normal())
+    , m_ArtifactRoot(artifactRoot.empty()
+        ? std::filesystem::path{}
+        : std::filesystem::absolute(std::move(artifactRoot)).lexically_normal())
 {
 }
 
@@ -106,6 +113,23 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
         return false;
     }
 
+    VansTextureCookResult textureCook;
+    if (type == VansAssetType::Texture)
+    {
+        textureCook = VansTextureCooker::CookIfNeeded(
+            normalized, metaPath, meta, m_ArtifactRoot);
+        if (textureCook.status == VansTextureCookStatus::Cooked)
+        {
+            VANS_LOG("[TextureCooker] Cooked " << normalized.string()
+                << " -> " << textureCook.artifactPath.string());
+        }
+        else if (textureCook.status == VansTextureCookStatus::Failed)
+        {
+            VANS_LOG_WARN("[TextureCooker] " << textureCook.error
+                << "; runtime source fallback remains enabled");
+        }
+    }
+
     std::unique_lock lock(m_Mutex);
     const std::wstring key = PathKey(normalized);
     if (const auto existing = m_ByGuid.find(meta.guid); existing != m_ByGuid.end() &&
@@ -125,9 +149,12 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
     record.type = type;
     record.sourcePath = normalized;
     record.metaPath = metaPath;
-    record.state = VansAssetState::Discovered;
+    record.artifactPath = textureCook.artifactPath;
+    record.state = record.artifactPath.empty()
+        ? VansAssetState::Discovered
+        : VansAssetState::CpuReady;
     ++record.generation;
-    record.error.clear();
+    record.error = textureCook.error;
     m_ByPath[key] = meta.guid;
     return true;
 }

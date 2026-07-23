@@ -14,12 +14,13 @@ namespace VansGraphics
 		const Skeleton&               skeleton,
 		const IKChainDefinition&      chain,
 		const IKTarget&               target,
-		float                         deltaTime)
+		const IKSolveContext&         context)
 	{
 		IKSolveResult result;
 
 		const int N = static_cast<int>(chain.bones.size());
-		if (N < 2)
+		if (N < 2 || localTransforms.size() != skeleton.bones.size() ||
+		    !IK_ValidateChain(skeleton, chain, false))
 			return result;
 
 		// 全局变换的可写副本（求解过程中需要不断更新）
@@ -31,14 +32,39 @@ namespace VansGraphics
 		if (effectorIdx < 0 || effectorIdx >= static_cast<int>(skeleton.bones.size()))
 			return result;
 
-		IKTarget effectiveTarget = target;
-		const float positionWeight = glm::clamp(target.positionWeight, 0.0f, 1.0f);
+		const IKTarget modelTarget = IK_ResolveTargetToModelSpace(target, context, globals, skeleton);
+		IKTarget effectiveTarget = modelTarget;
+		const float positionWeight = glm::clamp(modelTarget.positionWeight, 0.0f, 1.0f);
+		const float rotationWeight = glm::clamp(modelTarget.rotationWeight, 0.0f, 1.0f);
+		if (positionWeight < 1e-4f && rotationWeight < 1e-4f)
+		{
+			result.status = IKSolveStatus::NoEffect;
+			result.converged = true;
+			return result;
+		}
 		glm::vec3 effectorPos = IK_ExtractTranslation(globals[effectorIdx]);
-		effectiveTarget.position = glm::mix(effectorPos, target.position, positionWeight);
+		effectiveTarget.position = glm::mix(effectorPos, modelTarget.position, positionWeight);
 		effectiveTarget.positionWeight = positionWeight;
+		float maximumReach = 0.0f;
+		for (int linkIndex = 1; linkIndex < N; ++linkIndex)
+		{
+			const int previousBone = chain.bones[linkIndex - 1].boneIndex;
+			int boneIndex = chain.bones[linkIndex].boneIndex;
+			while (boneIndex != previousBone && boneIndex >= 0)
+			{
+				const int parentIndex = skeleton.bones[boneIndex].parentIndex;
+				if (parentIndex < 0) break;
+				maximumReach += glm::distance(
+					IK_ExtractTranslation(globals[boneIndex]), IK_ExtractTranslation(globals[parentIndex]));
+				boneIndex = parentIndex;
+			}
+		}
+		const float rootTargetDistance = glm::distance(
+			IK_ExtractTranslation(globals[chain.bones.front().boneIndex]), effectiveTarget.position);
+		result.positionLimited = positionWeight > 1e-4f &&
+			rootTargetDistance > maximumReach + std::max(chain.positionTolerance, 1e-5f);
 
 		// 迭代直到收敛
-		float lastError = 1e9f;
 		for (int it = 0; it < chain.maxIterations; ++it)
 		{
 			float err = PerformIteration(chain, effectiveTarget, localTransforms, globals, skeleton);
@@ -50,19 +76,27 @@ namespace VansGraphics
 				result.converged = true;
 				break;
 			}
-			// 防止震荡：若误差停滞则退出
-			if (std::abs(err - lastError) < 1e-6f)
-				break;
-			lastError = err;
 		}
 
 		// 极向量修正（仅在三关节链且权重 > 0 时有效）
 		if (positionWeight > 1e-4f && chain.poleWeight > 1e-4f && N >= 3)
 		{
-			ApplyPoleVector(chain, localTransforms, globals, skeleton);
+			const glm::vec3 polePoint = IK_ResolvePointToModelSpace(
+				chain.poleVector, chain.poleSpace, chain.poleReferenceBoneIndex,
+				chain.poleReferenceBoneName, context, globals, skeleton);
+			ApplyPoleVector(chain, polePoint, localTransforms, globals, skeleton);
 		}
 
-		IK_ApplyEffectorRotationTarget(localTransforms, globals, skeleton, effectorIdx, target);
+		IK_ApplyEffectorRotationTarget(localTransforms, globals, skeleton, effectorIdx, modelTarget);
+		result.finalPosError = glm::distance(IK_ExtractTranslation(globals[effectorIdx]), effectiveTarget.position);
+		if (rotationWeight > 1e-4f)
+			result.finalRotError = IK_QuaternionAngularErrorDeg(
+				IK_ExtractRotation(globals[effectorIdx]), modelTarget.rotation);
+		const bool positionConverged = positionWeight < 1e-4f || result.finalPosError <= chain.positionTolerance;
+		const bool rotationConverged = rotationWeight < 1e-4f || result.finalRotError <= chain.rotationTolerance;
+		result.converged = positionConverged && rotationConverged;
+		result.status = result.converged ? IKSolveStatus::Solved
+			: (result.positionLimited ? IKSolveStatus::Unreachable : IKSolveStatus::ReachedLimit);
 
 		return result;
 	}
@@ -101,13 +135,20 @@ namespace VansGraphics
 			toTar /= lenT;
 
 			float d = glm::clamp(glm::dot(toEff, toTar), -1.0f, 1.0f);
-			if (d > 0.99999f) continue;
-
-			float angle = std::acos(d) * link.stiffnessWeight;
 			glm::vec3 axis = glm::cross(toEff, toTar);
 			float axisLen = glm::length(axis);
-			if (axisLen < 1e-6f) continue;
-			axis /= axisLen;
+			if (axisLen < 1e-6f)
+			{
+				if (d >= 0.0f) continue;
+				const glm::vec3 reference = std::abs(toEff.y) < 0.75f
+					? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+				axis = glm::normalize(glm::cross(toEff, reference));
+			}
+			else
+			{
+				axis /= axisLen;
+			}
+			const float angle = std::atan2(axisLen, d) * glm::clamp(link.stiffnessWeight, 0.0f, 1.0f);
 
 			glm::quat worldDelta = glm::angleAxis(angle, axis);
 
@@ -140,6 +181,7 @@ namespace VansGraphics
 
 	void VansCCDSolver::ApplyPoleVector(
 		const IKChainDefinition&      chain,
+		const glm::vec3&              polePointModel,
 		std::vector<glm::mat4>&       localTransforms,
 		std::vector<glm::mat4>&       globals,
 		const Skeleton&               skeleton)
@@ -169,23 +211,19 @@ namespace VansGraphics
 		midOffset /= midLen;
 
 		// pole 在垂直于 axis 平面上的方向
-		glm::vec3 poleOffset = chain.poleVector - rootPos;
+		glm::vec3 poleOffset = polePointModel - rootPos;
 		poleOffset = poleOffset - axis * glm::dot(poleOffset, axis);
 		float poleLen = glm::length(poleOffset);
 		if (poleLen < 1e-6f) return;
 		poleOffset /= poleLen;
 
-		float d = glm::clamp(glm::dot(midOffset, poleOffset), -1.0f, 1.0f);
-		if (d > 0.99999f) return;
-		float angle = std::acos(d) * chain.poleWeight;
-
-		glm::vec3 rotAxis = glm::cross(midOffset, poleOffset);
-		float al = glm::length(rotAxis);
-		if (al < 1e-6f) return;
-		rotAxis /= al;
+		const float cosine = glm::clamp(glm::dot(midOffset, poleOffset), -1.0f, 1.0f);
+		const float sine = glm::dot(axis, glm::cross(midOffset, poleOffset));
+		const float angle = std::atan2(sine, cosine) * glm::clamp(chain.poleWeight, 0.0f, 1.0f);
+		if (std::abs(angle) < 1e-6f) return;
 
 		// 这个旋转只能加在 root 关节上（绕 root-tip 轴）
-		glm::quat worldDelta = glm::angleAxis(angle, rotAxis);
+		glm::quat worldDelta = glm::angleAxis(angle, axis);
 		const BoneInfo& bone = skeleton.bones[rootIdx];
 		glm::quat parentRot = (bone.parentIndex >= 0)
 			? IK_ExtractRotation(globals[bone.parentIndex])
@@ -194,6 +232,7 @@ namespace VansGraphics
 		glm::quat localDelta = IK_WorldDeltaToLocal(parentRot, worldDelta);
 		glm::quat curLocalRot = IK_ExtractRotation(localTransforms[rootIdx]);
 		glm::quat newLocalRot = glm::normalize(localDelta * curLocalRot);
+		newLocalRot = IK_ApplyJointConstraint(newLocalRot, chain.bones.front().constraint);
 
 		IK_SetRotation(localTransforms[rootIdx], newLocalRot);
 		IK_UpdateGlobalsForSubtree(rootIdx, localTransforms, globals, skeleton);

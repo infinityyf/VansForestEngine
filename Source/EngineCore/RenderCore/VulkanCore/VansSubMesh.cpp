@@ -206,7 +206,9 @@ static void CollectAiMeshes(aiNode* node, const aiScene* scene, const aiMatrix4x
 
 void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queue,
 	VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent,
-	bool supportRayTracing, bool needCPUData, float scaleFactor)
+	bool supportRayTracing, bool needCPUData, float scaleFactor,
+	bool rebuildIdentityBoneOffsetsFromHierarchy,
+	bool remapWeaponAttachmentBonesToHands)
 {
 	m_IsMultiMesh = true;
 	m_SupportRayTracing = false;
@@ -250,7 +252,8 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		for (uint32_t m = 0; m < scene->mNumMeshes; m++)
 			totalVertices += scene->mMeshes[m]->mNumVertices;
 
-		VansSkinnedMeshLoader::ProcessAnimatedMesh(scene, file_name, totalVertices, m_AnimImportResult);
+		VansSkinnedMeshLoader::ProcessAnimatedMesh(scene, file_name, totalVertices, m_AnimImportResult,
+			rebuildIdentityBoneOffsetsFromHierarchy, remapWeaponAttachmentBonesToHands);
 
 		if (m_AnimImportResult.hasAnimation)
 		{

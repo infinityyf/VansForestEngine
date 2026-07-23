@@ -32,6 +32,7 @@ namespace VansGraphics
 		struct TextureLoadDesc
 		{
 			std::string path;
+			std::string cookedPath;
 			bool isSRGB = true;
 			bool useCompress = false;
 			bool needMip = false;
@@ -234,6 +235,7 @@ namespace VansGraphics
 
 		// 上传路径
 		bool UploadTexture(VansVKCommandBuffer& command_buffer, const TextureUploadRequest& request);
+		bool LoadCookedTexture(VansVKCommandBuffer& command_buffer, const TextureLoadDesc& loadDesc);
 		bool UploadCompressedTexture(VansVKCommandBuffer& command_buffer, const uint8_t* srcData, int width, int height, const TextureUploadPlan& uploadPlan, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
 		bool UploadUncompressedTexture(VansVKCommandBuffer& command_buffer, const void* data, size_t dataSize, int width, int height, const TextureUploadPlan& uploadPlan, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
 

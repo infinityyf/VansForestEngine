@@ -10,8 +10,6 @@ layout(set = 4, binding = 8) uniform HairParamsBlock
     vec4 shiftParams;
     vec4 coverageParams;
 } hairParams;
-layout(location = 0) out vec4 outPut;
-
 void main()
 {
     float shadowCutoff = hairParams.coverageParams.z;
@@ -20,5 +18,4 @@ void main()
     float coverage = clamp((alpha - shadowCutoff) * coverageScale, 0.0, 1.0);
     if (coverage <= 0.0001)
         discard;
-    outPut = vec4(gl_FragCoord.z);
 }

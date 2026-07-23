@@ -47,6 +47,7 @@ namespace VansGraphics
 	class VansReflectionProbeWindow;
 	class VansGIWindow;
 	class VansPostProcessWindow;
+	class VansShadowDebuggerWindow;
 
 	/// 编辑器运行控制状态
 	enum class VansEditorPlayState
@@ -77,6 +78,7 @@ namespace VansGraphics
 		static bool m_ReflectionProbeWindowOpen;
 		static bool m_GIWindowOpen;
 		static bool m_PostProcessWindowOpen;
+		static bool m_ShadowDebuggerWindowOpen;
 
 		static bool m_WireframeMode;
 		static bool m_VehicleDebugGizmos;
@@ -97,6 +99,9 @@ namespace VansGraphics
 		static Vans::VansSceneEditService* GetSceneEditService();
 		static Vans::EditorAPI::IEngineEditorAPI* GetEditorAPI();
 		static void ReloadCurrentSceneForEditing();
+		// Automation-only entry point. Normal editor startup is unchanged unless
+		// the application explicitly queues a project path.
+		static void QueueProjectOpenForAutomation(const std::string& projectPath);
 
 	private:
 
@@ -107,6 +112,9 @@ namespace VansGraphics
 
 		/// Register camera input listeners with VansInputManager
 		static void RegisterCameraInputListeners();
+
+		/// Update editor camera movement from held key state
+		static void UpdateEditorCameraMovement();
 
 		/// Unregister camera input listeners
 		static void UnregisterCameraInputListeners();
@@ -172,6 +180,8 @@ namespace VansGraphics
 		static VansGIWindow* m_GIWindow;
 
 		static VansPostProcessWindow* m_PostProcessWindow;
+
+		static VansShadowDebuggerWindow* m_ShadowDebuggerWindow;
 
 	private:
 

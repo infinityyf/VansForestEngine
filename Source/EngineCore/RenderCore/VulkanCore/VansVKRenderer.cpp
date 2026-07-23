@@ -507,9 +507,10 @@ namespace VansGraphics
 				// ★ TileLight Build（依赖相机矩阵 + 光源 SSBO，在 UpdateHZB 前完成）
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::TileLightBuild, [&]() { BuildTileLightLists(m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::HZB, [&]() { UpdateHZB(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::PunctualShadowDebug, [&]() { UpdatePunctualShadowDebugPreview(renderPassManager, m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(m_VansVKCommandBuffer); });
-				// RayTracing/GIPointLight/GISHUpdate 写入 probe SH；SSGI 随后读取当帧可用的分帧结果。
+				// GIPointLight writes the current probe SH before SSGI consumes it.
 				{
 					VkMemoryBarrier giProbeToSSGIBarrier = {};
 					giProbeToSSGIBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -924,9 +925,10 @@ namespace VansGraphics
 				// CB2 通过 m_AsyncComputeDoneSemaphore 等待其完成，
 				// Tile 光源缓冲区的写入可见性由信号量保证。
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::HZB, [&]() { UpdateHZB(renderPassManager, m_VansVKCommandBuffer); });
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::PunctualShadowDebug, [&]() { UpdatePunctualShadowDebugPreview(renderPassManager, m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(m_VansVKCommandBuffer); });
-				// RayTracing/GIPointLight/GISHUpdate 写入 probe SH；SSGI 随后读取当帧可用的分帧结果。
+				// GIPointLight writes the current probe SH before SSGI consumes it.
 				{
 					VkMemoryBarrier giProbeToSSGIBarrier = {};
 					giProbeToSSGIBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -1206,7 +1208,7 @@ namespace VansGraphics
 			//               async compute done (BuildTileLightLists on compute queue).
 			std::vector<WaitSemaphoreInfo> wait_semaphore_infos = {
 				{ m_CurrentFrameContext.imageAcquiredSemaphore,       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT },
-				{ m_CurrentFrameContext.shadowFinishedSemaphore,      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT         },
+				{ m_CurrentFrameContext.shadowFinishedSemaphore,      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT },
 				{ m_CurrentFrameContext.gbufferFinishedSemaphore,     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT          },
 				{ m_CurrentFrameContext.asyncComputeFinishedSemaphore,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT          },
 			};
@@ -1334,42 +1336,44 @@ namespace VansGraphics
 
 	void VansVKDevice::DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
 	{
+		VANS_PROFILE_SCOPE("RenderRecord::CascadeShadow", Vans::ProfileCategory::CommandRecord);
 		m_Scene->DrawShadowNodes();
 		m_Scene->DrawTerrainNode(true);
 	}
 
 	void VansVKDevice::DrawMotionVectorPass(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
 	{
+		VANS_PROFILE_SCOPE("RenderRecord::MotionVector", Vans::ProfileCategory::CommandRecord);
 		m_Scene->DrawMotionVectorNodes();
 		m_Scene->DrawTerrainNode(false, true);
 	}
 
 	void VansVKDevice::DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd)
 	{
+		VANS_PROFILE_SCOPE("RenderRecord::PunctualShadow", Vans::ProfileCategory::CommandRecord);
 		VansLightManager* lightManager = m_Scene->GetLightManager();
+		if (lightManager == nullptr || m_pActiveCommandBuffer == nullptr)
+			return;
 
-		auto& pointLights = lightManager->GetPointLights();
-		int pointLightCount = static_cast<int>(std::min<size_t>(pointLights.size(), lightManager->GetMaxPointLightCount()));
-		for (int lightIndex = 0; lightIndex < pointLightCount; lightIndex++)
-		{
-			if (pointLights[lightIndex].m_ShadowIndex < 0.0f) continue;
-			m_Scene->DrawPointShadow(lightIndex);
-		}
+		VkClearAttachment clearAttachment{};
+		clearAttachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		clearAttachment.clearValue.depthStencil = { 1.0f, 0 };
+		std::vector<VkClearAttachment> clearAttachments = { clearAttachment };
 
-		auto& spotLights = lightManager->GetSpotLight();
-		int spotLightCount = static_cast<int>(std::min<size_t>(spotLights.size(), lightManager->GetMaxSpotLightCount()));
-		for (int lightIndex = 0; lightIndex < spotLightCount; lightIndex++)
+		const auto& jobs = lightManager->GetPunctualShadowManager().GetRenderJobs();
+		for (const VansPunctualShadowRenderJob& job : jobs)
 		{
-			if (spotLights[lightIndex].m_ShadowIndex < 0.0f) continue;
-			m_Scene->DrawSpotShadow(pointLightCount, lightIndex);
-		}
-
-		auto& rectLights = lightManager->GetRectLights();
-		int rectLightCount = static_cast<int>(std::min<size_t>(rectLights.size(), lightManager->GetMaxRectLightCount()));
-		for (int lightIndex = 0; lightIndex < rectLightCount; lightIndex++)
-		{
-			if (rectLights[lightIndex].m_ShadowIndex < 0.0f) continue;
-			m_Scene->DrawRectShadow(pointLightCount, spotLightCount, lightIndex);
+			VkClearRect clearRect{};
+			clearRect.rect.offset = {
+				static_cast<int32_t>(job.atlasRect.x),
+				static_cast<int32_t>(job.atlasRect.y)
+			};
+			clearRect.rect.extent = { job.atlasRect.width, job.atlasRect.height };
+			clearRect.baseArrayLayer = 0;
+			clearRect.layerCount = 1;
+			std::vector<VkClearRect> clearRects = { clearRect };
+			m_pActiveCommandBuffer->ClearAttachment(clearAttachments, clearRects);
+			m_Scene->DrawPunctualShadowJob(job);
 		}
 	}
 
@@ -1383,6 +1387,7 @@ namespace VansGraphics
 
 	void VansVKDevice::DrawSceneGBuffer(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
+		VANS_PROFILE_SCOPE("RenderRecord::GBuffer", Vans::ProfileCategory::CommandRecord);
 		m_Scene->DrawOpaqueNodes();
 		m_Scene->DrawTerrainNode();
 		m_Scene->DrawVegetationNode();

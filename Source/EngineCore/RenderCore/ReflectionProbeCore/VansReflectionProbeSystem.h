@@ -19,6 +19,15 @@ namespace VansGraphics
 	class VansReflectionProbeSystem
 	{
 	public:
+		struct PrefilterPushConstants
+		{
+			float roughness;
+			uint32_t outputSize;
+			uint32_t cubeCount;
+			uint32_t sampleCount;
+			uint32_t baseCube;
+		};
+
 		VansReflectionProbeSystem() = default;
 		~VansReflectionProbeSystem();
 

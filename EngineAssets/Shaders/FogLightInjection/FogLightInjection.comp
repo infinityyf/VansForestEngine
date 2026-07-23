@@ -17,6 +17,7 @@
 #include "../Common/CameraData.glsl"
 #include "../Common/TileLightData.glsl"
 #include "../Common/FogVolumeCommon.glsl"
+#define PUNCTUAL_SHADOW_CONSUMER_FOG 1
 #include "../Lights/LightsData.glsl"
 
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
@@ -43,7 +44,7 @@ layout(set = 1, binding = 2) uniform FogVolumeParams
 } uVolume;
 
 layout(set = 1, binding = 3) uniform sampler3D s_History;
-layout(set = 1, binding = 4) uniform sampler2D punctualShadowMap;
+layout(set = 1, binding = 4) uniform sampler2DShadow punctualShadowMap;
 
 // ---------------------------------------------------------------------------
 // Smooth edge fade for shadow map — avoids hard clamp line at UV boundaries
@@ -288,7 +289,7 @@ void main()
             float invR2       = 1.0 / max(range * range, 1e-6);
             vec3  Wo          = normalize(cameraPosition.xyz - worldPos);
             vec3  lightColor  = rl.color_twoSided.rgb * rl.up_intensity.w;
-            int   shadowIdx   = int(rl.shadowParams.x);
+            uint  shadowIdx   = rl.shadowMetaIndex;
 
             // 粗筛：体素超出矩形包围球时直接跳过
             float centerDist = length(center - worldPos);
@@ -327,7 +328,7 @@ void main()
                     float atten   = facingTerm * window / max(dist * dist, 1e-4);
 
                     float shadow = 1.0;
-                    if (shadowIdx >= 0)
+            if (shadowIdx != INVALID_SHADOW_INDEX)
                         shadow = SampleRectShadowMap(worldPos, punctualShadowMap, int(rcIdx));
 
                     float cosTheta = dot(Wo, -sampleDir);

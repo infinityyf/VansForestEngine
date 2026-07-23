@@ -476,8 +476,8 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                     }
 
                     // clip 名标签
-                    char lbl[64];
-                    snprintf(lbl, sizeof(lbl), "%s", visual.activeClip.c_str());
+                    char lbl[96];
+                    snprintf(lbl, sizeof(lbl), "%s  x%.2f", visual.activeClip.c_str(), visual.playbackRate);
                     dl->AddText(ImVec2(rootScr.x + 8, rootScr.y - 16),
                                 IM_COL32(255, 255, 180, 230), lbl);
                 }
@@ -519,33 +519,21 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                     auto toGlm = [](const Vans::EditorAPI::Vec3& value) { return glm::vec3(value.x, value.y, value.z); };
                     ImVec2 hip = projectWorld(toGlm(leg.hip));
                     ImVec2 knee = projectWorld(toGlm(leg.knee));
-                    ImVec2 foot = projectWorld(toGlm(leg.foot));
+                    ImVec2 foot = projectWorld(toGlm(leg.solvedFoot));
                     dl->AddLine(hip, knee, chainColor, 2.0f);
                     dl->AddLine(knee, foot, chainColor, 2.0f);
                     dl->AddCircleFilled(hip, 3.5f, IM_COL32(80, 180, 255, 230));
                     dl->AddCircleFilled(knee, 3.5f, IM_COL32(80, 180, 255, 230));
                     dl->AddCircleFilled(foot, 4.0f, IM_COL32(255, 255, 255, 240));
-                    if (leg.hasOverlap)
-                    {
-                        drawCross(toGlm(leg.overlapCenter), IM_COL32(80, 255, 255, 255), 9.0f);
-                        ImVec2 oc = projectWorld(toGlm(leg.overlapCenter));
-                        char overlapLabel[96];
-                        snprintf(overlapLabel, sizeof(overlapLabel), "OVERLAP L%u %s",
-                                 leg.overlapLayer,
-                                 leg.overlapActorName.c_str());
-                        dl->AddText(ImVec2(oc.x + 8, oc.y - 24), IM_COL32(160, 255, 255, 240), overlapLabel);
-                    }
+					drawCross(toGlm(leg.animatedFoot), IM_COL32(120, 180, 255, 180), 5.0f);
 
-                    int filteredHits = 0;
-                    int rawHits = 0;
+                    int hits = 0;
                     int acceptedHits = 0;
                     const Vans::EditorAPI::FootIKDebugSampleSnapshot* firstInterestingSample = nullptr;
                     for (const auto& sample : leg.samples)
                     {
                         if (sample.hasHit)
-                            ++filteredHits;
-                        if (sample.hasRawHit)
-                            ++rawHits;
+							++hits;
                         if (sample.accepted)
                             ++acceptedHits;
                         if (!firstInterestingSample && !sample.status.empty())
@@ -561,11 +549,6 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                         {
                             ImVec2 h = projectWorld(toGlm(sample.hitPosition));
                             dl->AddCircleFilled(h, sample.accepted ? 4.0f : 2.5f, rayColor);
-                        }
-                        else if (sample.hasRawHit)
-                        {
-                            ImVec2 h = projectWorld(toGlm(sample.rawHitPosition));
-                            dl->AddCircleFilled(h, 3.0f, IM_COL32(160, 160, 160, 180));
                         }
                     }
 
@@ -590,29 +573,27 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                     char statusLabel[192];
                     if (!leg.hasContact)
                     {
-                        snprintf(statusLabel, sizeof(statusLabel), "%s NO CONTACT hit:%d raw:%d overlap:%d %s",
+						snprintf(statusLabel, sizeof(statusLabel), "%s NO CONTACT hit:%d %s",
                                  label,
-                                 filteredHits,
-                                 rawHits,
-                                 leg.hasOverlap ? 1 : 0,
+								 hits,
                                  firstInterestingSample ? firstInterestingSample->status.c_str() : "");
                     }
                     else if (!leg.hasTarget)
                     {
-                        snprintf(statusLabel, sizeof(statusLabel), "%s NO TARGET hit:%d overlap:%d weight:%.2f",
+						snprintf(statusLabel, sizeof(statusLabel), "%s NO TARGET hit:%d weight:%.2f dy:%.3f",
                                  label,
-                                 filteredHits,
-                                 leg.hasOverlap ? 1 : 0,
-                                 leg.targetWeight);
+								 hits,
+								 leg.targetWeight,
+								 leg.verticalOffset);
                     }
                     else
                     {
-                        snprintf(statusLabel, sizeof(statusLabel), "%s TARGET hit:%d accepted:%d overlap:%d weight:%.2f",
+						snprintf(statusLabel, sizeof(statusLabel), "%s TARGET hit:%d accepted:%d weight:%.2f dy:%.3f",
                                  label,
-                                 filteredHits,
+								 hits,
                                  acceptedHits,
-                                 leg.hasOverlap ? 1 : 0,
-                                 leg.targetWeight);
+								 leg.targetWeight,
+								 leg.verticalOffset);
                     }
                     dl->AddText(ImVec2(foot.x + 8, foot.y + 8),
                                 leg.hasTarget ? IM_COL32(210, 255, 210, 240) : IM_COL32(255, 110, 110, 240),

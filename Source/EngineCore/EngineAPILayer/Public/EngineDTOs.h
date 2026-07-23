@@ -259,6 +259,89 @@ namespace Vans::EditorAPI
 		std::uint32_t height = 0;
 	};
 
+	enum class PunctualShadowLightKind : std::uint8_t
+	{
+		Point,
+		Spot,
+		Rect
+	};
+
+	enum class PunctualShadowDisplayMode : std::uint8_t
+	{
+		Disabled,
+		HeroAtlas,
+		CachedAtlas,
+		AtlasTransition,
+		ScreenSpaceFallback,
+		Unshadowed
+	};
+
+	struct PunctualShadowAtlasViewSnapshot
+	{
+		std::uint32_t faceIndex = 0;
+		std::uint32_t x = 0;
+		std::uint32_t y = 0;
+		std::uint32_t resolution = 0;
+		std::uint32_t gutter = 0;
+		std::uint32_t generation = 0;
+	};
+
+	struct PunctualShadowLightDebugSnapshot
+	{
+		std::uint32_t stableLightId = 0;
+		std::uint32_t gpuLightIndex = 0;
+		PunctualShadowLightKind lightKind = PunctualShadowLightKind::Point;
+		PunctualShadowDisplayMode displayMode = PunctualShadowDisplayMode::Disabled;
+		std::string runtimeState;
+		std::string policy;
+		std::uint32_t priority = 0;
+		std::uint32_t activeResolution = 0;
+		std::uint32_t targetResolution = 0;
+		std::uint32_t dirtyFaceMask = 0;
+		std::uint32_t validFaceMask = 0;
+		float importance = 0.0f;
+		float coverage = 0.0f;
+		float cameraDistance = 0.0f;
+		float distancePriority = 0.0f;
+		float atlasWeight = 0.0f;
+		std::uint32_t residencyFrames = 0;
+		std::uint32_t staleFrames = 0;
+		std::uint64_t lastRenderedFrame = 0;
+		bool affectsFog = false;
+		bool affectsGI = false;
+		std::vector<PunctualShadowAtlasViewSnapshot> atlasViews;
+	};
+
+	struct PunctualScreenSpaceShadowSettingsSnapshot
+	{
+		float maxTraceDistance = 12.0f;
+		float thickness = 0.10f;
+		float normalBias = 0.020f;
+		std::uint32_t maxSteps = 64;
+		float strength = 0.95f;
+	};
+
+	struct PunctualShadowDebugSnapshot
+	{
+		bool available = false;
+		std::uint64_t frameIndex = 0;
+		std::uint32_t atlasSize = 0;
+		std::uint32_t basePageSize = 0;
+		std::uint32_t gutter = 0;
+		std::uint32_t totalPages = 0;
+		std::uint32_t usedPages = 0;
+		std::uint32_t residentLights = 0;
+		std::uint32_t residentViews = 0;
+		std::uint32_t renderedViewsThisFrame = 0;
+		std::uint32_t fallbackLights = 0;
+		std::uint32_t allocationFailures = 0;
+		std::uint64_t dirtyTexelsThisFrame = 0;
+		RenderTexturePreview atlasPreview;
+		RenderTexturePreview screenSpacePreview;
+		PunctualScreenSpaceShadowSettingsSnapshot screenSpaceSettings;
+		std::vector<PunctualShadowLightDebugSnapshot> lights;
+	};
+
 	struct RenderBackendDiagnostics
 	{
 		bool available = false;
@@ -380,9 +463,7 @@ namespace Vans::EditorAPI
 		Vec3 regionCenter = { 0.0f, 6.0f, 0.0f };
 		Vec3 volumeMin;
 		Vec3 volumeMax;
-		std::uint32_t gridSize = 0;
 		Vec3 gridDimensions;
-		float probeSpacing = 0.0f;
 		Vec3 probeSpacingAxes;
 		float normalBias = 0.0f;
 		float maxRayDistance = 0.0f;
@@ -411,7 +492,6 @@ namespace Vans::EditorAPI
 	struct GIProbeDebugSnapshot
 	{
 		bool available = false;
-		std::uint32_t gridSize = 0;
 		Vec3 gridDimensions;
 		std::uint32_t stride = 1;
 		float exposure = 1.0f;
@@ -585,6 +665,7 @@ namespace Vans::EditorAPI
 		Vec3 rootPosition;
 		Vec3 velocity;
 		std::string activeClip;
+		float playbackRate = 1.0f;
 	};
 
 	struct MotionMatchingDebugSnapshot
@@ -599,15 +680,10 @@ namespace Vans::EditorAPI
 		Vec3 rayEnd;
 		Vec3 hitPosition;
 		Vec3 hitNormal = { 0.0f, 1.0f, 0.0f };
-		Vec3 rawHitPosition;
 		bool hasHit = false;
-		bool hasRawHit = false;
 		bool accepted = false;
-		float quality = 0.0f;
 		std::uint32_t hitLayer = 0;
-		std::uint32_t rawHitLayer = 0;
 		std::string hitActorName;
-		std::string rawHitActorName;
 		std::string status;
 	};
 
@@ -615,19 +691,16 @@ namespace Vans::EditorAPI
 	{
 		Vec3 hip;
 		Vec3 knee;
-		Vec3 foot;
+		Vec3 animatedFoot;
+		Vec3 solvedFoot;
 		Vec3 target;
 		Vec3 contact;
 		Vec3 normal = { 0.0f, 1.0f, 0.0f };
-		Vec3 overlapCenter;
-		Vec3 overlapHalfExtents;
 		std::vector<FootIKDebugSampleSnapshot> samples;
 		bool hasContact = false;
 		bool hasTarget = false;
-		bool hasOverlap = false;
 		float targetWeight = 0.0f;
-		std::uint32_t overlapLayer = 0;
-		std::string overlapActorName;
+		float verticalOffset = 0.0f;
 	};
 
 	struct FootIKDebugSnapshot
@@ -692,10 +765,28 @@ namespace Vans::EditorAPI
 
 	struct PointLightSettings
 	{
+		struct PunctualShadowSettings
+		{
+			bool castShadows = true;
+			int policy = 1;       // Disabled=0, Auto=1, Hero=2, DistanceDynamic=3
+			int priority = 128;
+			int resolution = 0;   // Auto=0, otherwise 128/256/512/1024
+			int updateMode = 1;   // EveryFrame=0, OnChange=1, Budgeted=2
+			int fallback = 1;     // None=0, ScreenSpace=1
+			float maxDistance = 30.0f;
+			float nearPlane = 0.0f;
+			float depthBiasTexels = 1.0f;
+			float normalBiasTexels = 1.0f;
+			float sourceRadius = 0.02f;
+			bool affectsFog = true;
+			bool affectsGI = true;
+		};
+
 		Vec3 position;
 		Vec3 color = { 1.0f, 1.0f, 1.0f };
 		float intensity = 1.0f;
 		float radius = 1.0f;
+		PunctualShadowSettings shadow;
 	};
 
 	struct SpotLightSettings
@@ -707,6 +798,20 @@ namespace Vans::EditorAPI
 		float radius = 1.0f;
 		float innerCutoffRadians = 0.0f;
 		float outerCutoffRadians = 0.0f;
+		PointLightSettings::PunctualShadowSettings shadow;
+	};
+
+	struct RectLightSettings
+	{
+		Vec3 position;
+		Vec3 normal = { 0.0f, 0.0f, 1.0f };
+		Vec3 color = { 1.0f, 1.0f, 1.0f };
+		float intensity = 1.0f;
+		float width = 1.0f;
+		float height = 1.0f;
+		float range = 10.0f;
+		bool twoSided = false;
+		PointLightSettings::PunctualShadowSettings shadow;
 	};
 
 	struct LightingSettingsSnapshot
@@ -714,6 +819,7 @@ namespace Vans::EditorAPI
 		std::vector<DirectionalLightSettings> directionalLights;
 		std::vector<PointLightSettings> pointLights;
 		std::vector<SpotLightSettings> spotLights;
+		std::vector<RectLightSettings> rectLights;
 	};
 
 	struct PostProcessSettingsSnapshot
@@ -795,6 +901,43 @@ namespace Vans::EditorAPI
 		float detailErosionHigh = 0.810f;
 		float detailEdgeStrength = 0.270f;
 		float shadowDensityScale = 0.870f;
+	};
+
+	struct ShaderStageSourceSnapshot
+	{
+		std::string stage;
+		std::string sourcePath;
+		std::string entryPoint = "main";
+	};
+
+	struct ShaderProgramSourceSnapshot
+	{
+		std::string programId;
+		std::string sourceFolder;
+		bool rayTracing = false;
+		std::vector<ShaderStageSourceSnapshot> stages;
+	};
+
+	struct ShaderCompiledStagePackage
+	{
+		std::string stage;
+		std::string entryPoint = "main";
+		std::vector<std::uint32_t> spirv;
+	};
+
+	struct ShaderCandidatePackage
+	{
+		std::string programId;
+		std::uint64_t sourceRevision = 0;
+		std::vector<ShaderCompiledStagePackage> stages;
+	};
+
+	struct ShaderCandidateApplyResult
+	{
+		bool applied = false;
+		std::string programId;
+		std::uint64_t sourceRevision = 0;
+		std::string error;
 	};
 
 	enum class EnginePlayState

@@ -20,7 +20,7 @@ namespace VansGraphics
 			const Skeleton&               skeleton,
 			const IKChainDefinition&      chain,
 			const IKTarget&               target,
-			float                         deltaTime) override;
+			const IKSolveContext&         context) override;
 	};
 
 }  // namespace VansGraphics

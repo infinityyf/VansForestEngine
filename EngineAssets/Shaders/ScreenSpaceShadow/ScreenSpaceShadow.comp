@@ -15,8 +15,8 @@ layout(set = 1, binding = 3, rgba16f) uniform image2D outShadow;
 layout(std140, set = 1, binding = 4) uniform ScreenSpaceShadowParamsUBO
 {
     vec4 screenSize;
-    vec4 halfSize;
-    vec4 rayParams;
+    vec4 punctualRayParams;
+    vec4 directionalRayParams;
     vec4 fadeParams;
 } uSSS;
 
@@ -31,15 +31,12 @@ float TraceDirectionalScreenShadow(vec3 originWS, vec3 normalWS, float receiverD
 {
     vec3 lightDirWS = normalize(uDirectionLight.direction.xyz);
     float ndotl = dot(normalWS, lightDirWS);
-    float normalFade = mix(
-        clamp(uSSS.fadeParams.w, 0.0, 1.0),
-        1.0,
-        smoothstep(-0.08, 0.18, ndotl));
+    float normalFade = smoothstep(-0.08, 0.18, ndotl);
 
-    float maxDistance = uSSS.rayParams.x;
-    float thickness = uSSS.rayParams.y;
-    float normalBias = uSSS.rayParams.z;
-    int maxSteps = int(uSSS.rayParams.w);
+    float maxDistance = uSSS.directionalRayParams.x;
+    float thickness = uSSS.directionalRayParams.y;
+    float normalBias = uSSS.directionalRayParams.z;
+    int maxSteps = max(int(uSSS.directionalRayParams.w), 1);
 
     vec3 rayOrigin = originWS + normalWS * normalBias;
     vec3 rayEnd = rayOrigin + lightDirWS * maxDistance;
@@ -83,7 +80,9 @@ float TraceDirectionalScreenShadow(vec3 originWS, vec3 normalWS, float receiverD
         if (travel < minTravel)
             continue;
 
-        float sceneDepth = textureLod(hizDepth, uv, 0.0).r;
+        ivec2 hizSize = textureSize(hizDepth, 0);
+        ivec2 hizTexel = clamp(ivec2(uv * vec2(hizSize)), ivec2(0), hizSize - ivec2(1));
+        float sceneDepth = texelFetch(hizDepth, hizTexel, 0).r;
         if (sceneDepth <= 0.0 || sceneDepth >= 99999.0)
             continue;
 

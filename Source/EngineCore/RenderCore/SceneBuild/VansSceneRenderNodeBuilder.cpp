@@ -37,6 +37,9 @@ static VansGraphics::RenderNodeType ResolveMaterialRenderNodeType(
     if (!material || material->m_MaterialType != VansGraphics::VansMaterialType::VAN_CUSTOM_SHADER)
         return serializedType;
 
+    if (material->HasPass(VansGraphics::VansPass::GBUFFER))
+        return VansGraphics::RenderNodeType::OPAQUE_NODE;
+
     return material->m_CustomShaderDepthWrite
         ? VansGraphics::RenderNodeType::FORWARD_OPAQUE_AFTER_DEFERRED_NODE
         : VansGraphics::RenderNodeType::TRANSPARENT_NODE;
@@ -319,7 +322,8 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(VansScene& scen
 
 		VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(scene,
 			device, mesh, parentName, sceneRenderNode.value("entityGuid", ""),
-            position, rotation, scale, supportShadow, material);
+			position, rotation, scale, supportShadow, material,
+			sceneRenderNode.value("submeshMaterialOverrides", json::object()));
 
         // 不从 m_Meshes 中移除父级 multi-mesh，场景切换时仍需通过名称找到它。
         // 子网格会在 ExpandMultiMeshToRenderNodes 内部被添加到 m_Meshes，
@@ -444,9 +448,10 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
     const std::string& parentEntityGuid,
     const glm::vec3& position,
     const glm::vec3& rotation,
-    const glm::vec3& scale,
+	const glm::vec3& scale,
 	bool supportShadow,
-	VansMaterial* materialOverride)
+	VansMaterial* materialOverride,
+	const json& submeshMaterialOverrides)
 {
     if (!multiMesh || !multiMesh->m_IsMultiMesh)
         return;
@@ -510,8 +515,24 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
         std::string matKey = MakeUniqueMaterialName(scene, materialBaseName);
 
 		VansMaterial* material = materialOverride;
-		if (materialOverride)
-			matType = materialOverride->m_MaterialType;
+		const std::string submeshKey = std::to_string(i);
+		if (submeshMaterialOverrides.contains(submeshKey))
+		{
+			const json& binding = submeshMaterialOverrides[submeshKey];
+			const std::string materialGuid = binding.is_object()
+				? binding.value("guid", "")
+				: (binding.is_string() ? binding.get<std::string>() : std::string{});
+			if (!materialGuid.empty())
+			{
+				if (auto* resolved = static_cast<VansMaterial*>(scene.FindMaterialAsset(materialGuid)))
+					material = resolved;
+				else
+					VANS_LOG_WARN("[ExpandMultiMesh] Submesh[" << i
+						<< "] material override not found: " << materialGuid);
+			}
+		}
+		if (material)
+			matType = material->m_MaterialType;
 		else
         {
             material = VansSceneMaterialBuilder::CreateMaterialForType(matType);
@@ -566,10 +587,12 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
         }
 
         // ── Create render node for this submesh ──────────────────────────
-        RenderNodeType nodeType = (matType == VansMaterialType::VAN_TRANSPARENT ||
-            matType == VansMaterialType::VAN_PBR_TRANSMISSION)
-            ? RenderNodeType::TRANSPARENT_NODE
-            : RenderNodeType::OPAQUE_NODE;
+		RenderNodeType nodeType = (matType == VansMaterialType::VAN_TRANSPARENT ||
+			matType == VansMaterialType::VAN_PBR_TRANSMISSION)
+			? RenderNodeType::TRANSPARENT_NODE
+			: RenderNodeType::OPAQUE_NODE;
+		if (!submeshMaterialOverrides.empty() && matType == VansMaterialType::VAN_HAIR)
+			nodeType = RenderNodeType::HAIR_NODE;
 		nodeType = ResolveMaterialRenderNodeType(material, nodeType);
 
         VansRenderNode* renderNode = nullptr;
@@ -577,7 +600,8 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
         // are not created with the required RT flags.  Force RT off.
         subMesh->m_SupportRayTracing = false;
 
-        if (nodeType == RenderNodeType::OPAQUE_NODE ||
+		if (nodeType == RenderNodeType::OPAQUE_NODE ||
+			nodeType == RenderNodeType::HAIR_NODE ||
 			nodeType == RenderNodeType::FORWARD_OPAQUE_AFTER_DEFERRED_NODE)
         {
             auto* opaque = new VansCommonRenderNode(device, nodeType);
@@ -625,8 +649,11 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
         // Shadow nodes are no longer created here — shadow passes now iterate
         // opaque nodes and use material->GetPassShader(VansPass::SHADOW).
 
-        VANS_LOG("[ExpandMultiMesh] Created render node: " << renderNodeName
-                 << " (type=" << (nodeType == OPAQUE_NODE ? "OPAQUE" : "TRANSPARENT") << ")");
+		const char* nodeTypeName = nodeType == OPAQUE_NODE ? "OPAQUE"
+			: (nodeType == HAIR_NODE ? "HAIR"
+			: (nodeType == FORWARD_OPAQUE_AFTER_DEFERRED_NODE ? "FORWARD_OPAQUE" : "TRANSPARENT"));
+		VANS_LOG("[ExpandMultiMesh] Created render node: " << renderNodeName
+				 << " (type=" << nodeTypeName << ")");
     }
 
     // ExpandMultiMesh 仅负责几何体 → 渲染节点的展开，动画由 animation component 创建。

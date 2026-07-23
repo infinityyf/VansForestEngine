@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "../VulkanCore/VansVKBuffer.h"
+#include "../ShadowCore/VansPunctualShadowManager.h"
 #include <vector>
 using namespace VansGraphics;
 
@@ -47,11 +48,8 @@ namespace VansGraphics
 		alignas(16) glm::vec3	m_Color;
 		alignas(16) float		m_Intensity;
 		float					m_Radius;
-		float					m_ShadowIndex;
-		// 原 padding 字段改名：-1 = 无 IES，>=0 = IES Texture2DArray 层索引
+		uint32_t			m_ShadowMetaIndex;
 		float					m_IESProfileIndex;
-		glm::mat4				m_PointShadowMatrix[6];
-		// sizeof = 432，与修改前一致，GPU buffer 布局无需重建
 	};
 
 	struct alignas(16) VansSpotLight
@@ -63,18 +61,15 @@ namespace VansGraphics
 		float					m_Radius;
 		float					m_InnerCutOff;
 		float					m_OuterCutOff;
-		glm::mat4				m_SpotShadowMatrix;
-		float					m_ShadowIndex;       // offset=128
-		// 将末尾 12 字节隐式 padding 显式化为 IES 字段，结构体大小不变（144 字节）
-		float					m_IESProfileIndex;   // offset=132，-1=无IES，>=0=Atlas 层索引
-		float					m_IESIntensityScale; // offset=136，IES 强度缩放（默认 1.0）
-		float					m_pad0;              // offset=140，对齐保留
+		uint32_t			m_ShadowMetaIndex;
+		float					m_IESProfileIndex;
+		float					m_IESIntensityScale;
+		float					m_pad0;
 	};
 
 	// ── RectLight (area light, evaluated via LTC) ────────────────────────────
 	// 矩形面光源。Position 为矩形中心，(Right,Up) 在矩形所在平面，Normal 为光线传播方向。
-	// 与 Spot 一致：m_ShadowIndex < 0 表示无阴影；阴影矩阵布局与 Spot 兼容（单 VP），
-	// 写入 punctual atlas 的 RectLight 段（base slot = 128，详见 plan §3A.4）。
+	// 阴影设置与运行时分配由 VansPunctualShadowManager 管理；本结构只保留 GPU 光照参数。
 	struct alignas(16) VansRectLight
 	{
 		glm::vec3				m_Position;       // 矩形中心世界坐标
@@ -87,11 +82,20 @@ namespace VansGraphics
 		float					m_Intensity;
 		glm::vec3				m_Color;
 		float					m_TwoSided;       // 0/1
-		glm::mat4				m_ShadowMatrix;   // VP，阴影 atlas 采样使用
-		float					m_ShadowIndex;    // -1 = 无阴影，否则为 RectLight 段内索引
+		uint32_t			m_ShadowMetaIndex;
 		float					m_AttenuationExp; // 距离衰减指数（默认 2.0）
 		float					m_TextureSlot;    // -1 = 无发光贴图；>=0 = rectLightEmissive 层索引
 		float					m_TexLodBias;     // 发光贴图 LOD 偏移量（默认 0.0）
+	};
+
+	static_assert(sizeof(VansPointLight) == 48, "VansPointLight must match GLSL std430 layout");
+	static_assert(sizeof(VansSpotLight) == 80, "VansSpotLight must match GLSL std430 layout");
+	static_assert(sizeof(VansRectLight) == 96, "VansRectLight must match GLSL std430 layout");
+
+	struct VansPunctualShadowRegistration
+	{
+		uint32_t stableLightId = 0;
+		VansPunctualShadowSettings settings;
 	};
 
 	class VansLightManager
@@ -102,6 +106,12 @@ namespace VansGraphics
 		std::vector<VansPointLight> m_PointLights;
 		std::vector<VansSpotLight> m_SpotLights;
 		std::vector<VansRectLight> m_RectLights;
+		std::vector<VansPunctualShadowRegistration> m_PointShadowRegistrations;
+		std::vector<VansPunctualShadowRegistration> m_SpotShadowRegistrations;
+		std::vector<VansPunctualShadowRegistration> m_RectShadowRegistrations;
+		VansPunctualShadowManager m_PunctualShadowManager;
+		uint32_t m_NextStableLightId = 1;
+		uint64_t m_ShadowFrameIndex = 0;
 
 		uint32_t m_LightCounts[4];
 		float m_SoftShadowParams[4];
@@ -112,10 +122,6 @@ namespace VansGraphics
 		const uint32_t m_MaxPointLightCount = 64;
 		const uint32_t m_MaxSpotLightCount = 64;
 		const uint32_t m_MaxRectLightCount = 32;
-		// Punctual shadow atlas is 8x8 tiles. Point lights consume six tiles,
-		// spot/rect lights consume one tile each.
-		const uint32_t m_MaxPunctualShadowAtlasSlots = 64;
-
 	public:
 
 		//Descriptor set layout
@@ -127,11 +133,17 @@ namespace VansGraphics
 
 		void AddDirectionalLight(const VansDirectionalLight& light);
 
-		void AddPointLight(const VansPointLight& light);
+		void AddPointLight(const VansPointLight& light, const VansPunctualShadowSettings& shadowSettings = {});
 
-		void AddSpotLight(const VansSpotLight& light);
+		void AddSpotLight(const VansSpotLight& light, const VansPunctualShadowSettings& shadowSettings = {});
 
-		void AddRectLight(const VansRectLight& light);
+		void AddRectLight(const VansRectLight& light, const VansPunctualShadowSettings& shadowSettings = {});
+
+		bool RemovePointLight(uint32_t index);
+
+		bool RemoveSpotLight(uint32_t index);
+
+		bool RemoveRectLight(uint32_t index);
 
 		void UpdateLightShadowMatrixData(const VansCascadeCameraData& cameraData);
 
@@ -158,6 +170,16 @@ namespace VansGraphics
 		std::vector<VansSpotLight>& GetSpotLight() { return m_SpotLights; }
 
 		std::vector<VansRectLight>& GetRectLights() { return m_RectLights; }
+
+		std::vector<VansPunctualShadowRegistration>& GetPointShadowRegistrations() { return m_PointShadowRegistrations; }
+
+		std::vector<VansPunctualShadowRegistration>& GetSpotShadowRegistrations() { return m_SpotShadowRegistrations; }
+
+		std::vector<VansPunctualShadowRegistration>& GetRectShadowRegistrations() { return m_RectShadowRegistrations; }
+
+		VansPunctualShadowManager& GetPunctualShadowManager() { return m_PunctualShadowManager; }
+
+		const VansPunctualShadowManager& GetPunctualShadowManager() const { return m_PunctualShadowManager; }
 
 		uint32_t GetMaxPointLightCount() const { return m_MaxPointLightCount; }
 

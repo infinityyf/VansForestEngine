@@ -116,8 +116,6 @@ namespace VansGraphics
 
 		VansVKImage m_PunctualShadowMapImage;
 
-		VansVKImage m_PunctualShadowMapDepthImage;
-
 
 		VansVKImage m_NormalImage;
 

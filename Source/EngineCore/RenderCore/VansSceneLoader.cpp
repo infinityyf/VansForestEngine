@@ -50,7 +50,6 @@
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
 #include "../AnimationCore/FootPlacement/VansFootPlacementTypes.h"
 
-#include "../Interfaces/IShaderHotReloadService.h"
 #include "../Util/VansLog.h"
 #include "../RuntimeCore/VansThreadContract.h"
 #include <iostream>

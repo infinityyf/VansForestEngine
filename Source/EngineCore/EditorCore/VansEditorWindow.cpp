@@ -21,6 +21,7 @@
 #include "Windows/VansReflectionProbeWindow.h"
 #include "Windows/VansGIWindow.h"
 #include "Windows/VansPostProcessWindow.h"
+#include "Windows/VansShadowDebuggerWindow.h"
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
@@ -37,6 +38,7 @@
 #include "VansEditorAssetSaveService.h"
 #include "VansSceneEditService.h"
 #include "VansEditorSelection.h"
+#include "ShaderHotReload/VansEditorShaderHotReloadController.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
@@ -211,6 +213,7 @@ bool VansGraphics::VansEditorWindow::m_TerrainWindowOpen = true;
 bool VansGraphics::VansEditorWindow::m_ReflectionProbeWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_GIWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_PostProcessWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_ShadowDebuggerWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
 bool VansGraphics::VansEditorWindow::m_VehicleDebugGizmos = false;
@@ -254,6 +257,7 @@ VansGraphics::VansTerrainWindow* VansGraphics::VansEditorWindow::m_TerrainWindow
 VansGraphics::VansReflectionProbeWindow* VansGraphics::VansEditorWindow::m_ReflectionProbeWindow;
 VansGraphics::VansGIWindow* VansGraphics::VansEditorWindow::m_GIWindow;
 VansGraphics::VansPostProcessWindow* VansGraphics::VansEditorWindow::m_PostProcessWindow;
+VansGraphics::VansShadowDebuggerWindow* VansGraphics::VansEditorWindow::m_ShadowDebuggerWindow;
 
 // Project selector overlay
 std::unique_ptr<Vans::VansProjectSelector> VansGraphics::VansEditorWindow::m_ProjectSelector;
@@ -764,22 +768,13 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_PostProcessWindow = AddEditorWindowComponent<VansPostProcessWindow>(m_Windows);
 
+    m_ShadowDebuggerWindow = AddEditorWindowComponent<VansShadowDebuggerWindow>(m_Windows);
+
 }
 
 void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
 {
     Vans::VansInputManager& input = Vans::VansInputManager::Get();
-
-    // Forward keyboard events to all cameras
-    input.AddKeyListener("EditorCamera_Key", [](int key, int scancode, int action, int mods) {
-        if (action == GLFW_PRESS || action == GLFW_REPEAT)
-        {
-            for (auto camera : m_Cameras)
-            {
-                camera->HandleKeyboardInput(key, scancode, action, mods, VansGraphics::VansTimer::GetEditorDeltaTime());
-            }
-        }
-    });
 
     // Forward mouse move deltas to all cameras
     input.AddMouseMoveListener("EditorCamera_Move", [](double x, double y) {
@@ -793,16 +788,42 @@ void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
 
     // Forward mouse button events to cameras (right-click for look)
     input.AddMouseClickListener("EditorCamera_Click", [](int button, int action, int mods) {
-        bool isDown = (action == GLFW_PRESS);
+        if (button != GLFW_MOUSE_BUTTON_RIGHT)
+            return;
+
+        const bool isDown = (action == GLFW_PRESS);
         for (auto camera : m_Cameras)
         {
-            camera->SetRightMouseDown(false);
-            if (button == GLFW_MOUSE_BUTTON_RIGHT)
-            {
-                camera->SetRightMouseDown(isDown);
-            }
+            camera->SetRightMouseDown(isDown);
         }
     });
+}
+
+void VansGraphics::VansEditorWindow::UpdateEditorCameraMovement()
+{
+    if (m_PlayState != VansEditorPlayState::Editing)
+        return;
+
+    Vans::VansInputManager& input = Vans::VansInputManager::Get();
+
+    const float forwardAxis =
+        (input.IsKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f) -
+        (input.IsKeyDown(GLFW_KEY_S) ? 1.0f : 0.0f);
+    const float rightAxis =
+        (input.IsKeyDown(GLFW_KEY_D) ? 1.0f : 0.0f) -
+        (input.IsKeyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
+    const float upAxis =
+        (input.IsKeyDown(GLFW_KEY_E) ? 1.0f : 0.0f) -
+        (input.IsKeyDown(GLFW_KEY_Q) ? 1.0f : 0.0f);
+
+    if (forwardAxis == 0.0f && rightAxis == 0.0f && upAxis == 0.0f)
+        return;
+
+    const float deltaTime = static_cast<float>(VansGraphics::VansTimer::GetEditorDeltaTime());
+    for (auto camera : m_Cameras)
+    {
+        camera->HandleKeyboardMovement(forwardAxis, rightAxis, upAxis, deltaTime);
+    }
 }
 
 void VansGraphics::VansEditorWindow::UnregisterCameraInputListeners()
@@ -985,6 +1006,18 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
             VANS_LOG_WARN("[Editor] Default scene not found on disk: " << absScenePath);
         }
     }
+}
+
+void VansGraphics::VansEditorWindow::QueueProjectOpenForAutomation(const std::string& projectPath)
+{
+    if (projectPath.empty())
+        return;
+
+    m_PendingProjectLoad = {};
+    m_PendingProjectLoad.m_Requested = true;
+    m_PendingProjectLoad.m_CreateNew = false;
+    m_PendingProjectLoad.m_ProjectPath = projectPath;
+    VANS_LOG("[Editor] Automation queued project open: " << projectPath);
 }
 
 void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
@@ -1268,6 +1301,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
                 }
                 ImGui::Separator();
                 ImGui::MenuItem("GBuffer Visualization", nullptr, &m_GBufferWindowOpen);
+                ImGui::MenuItem("Shadow Debugger", nullptr, &m_ShadowDebuggerWindowOpen);
                 ImGui::MenuItem("Water GBuffer Visualization", nullptr, &m_WaterGBufferWindowOpen);
                 ImGui::MenuItem("Render Debug", nullptr, &m_RenderDebugWindowOpen);
                 ImGui::MenuItem("Hair Debug", nullptr, &m_HairDebugWindowOpen);
@@ -1519,8 +1553,10 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
     //初始化脚本环境
     auto& startupEditorAPI = GetMutableEditorAPI();
-    startupEditorAPI.BindGlobalRuntime(m_GraphicsDevice);
-    startupEditorAPI.InitializeRuntimeScripts();
+	startupEditorAPI.BindGlobalRuntime(m_GraphicsDevice);
+	startupEditorAPI.InitializeRuntimeScripts();
+	Vans::VansEditorShaderHotReloadController shaderHotReloadController;
+	shaderHotReloadController.Initialize(startupEditorAPI);
 
     // Main loop
     while (!glfwWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle))
@@ -1577,6 +1613,10 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         {
             VANS_PROFILE_SCOPE("Frame::TimerUpdate", Vans::ProfileCategory::Frame);
             VansGraphics::VansTimer::Update();
+        }
+        {
+            VANS_PROFILE_SCOPE("Editor::CameraMovement", Vans::ProfileCategory::Editor);
+            UpdateEditorCameraMovement();
         }
 
         auto& editorAPI = GetMutableEditorAPI();
@@ -1640,6 +1680,10 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         {
             VANS_PROFILE_SCOPE("Editor::ProcessRuntimeMultiMeshExpansion", Vans::ProfileCategory::IO);
             ProcessRuntimeMultiMeshHierarchyExpansion();
+        }
+        {
+            VANS_PROFILE_SCOPE("Editor::ShaderHotReload", Vans::ProfileCategory::IO);
+            shaderHotReloadController.TickAndApply(editorAPI);
         }
         // Rendering, 这里会结束renderpass
         {
@@ -1714,6 +1758,7 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     m_ReflectionProbeWindow = nullptr;
     m_GIWindow = nullptr;
     m_PostProcessWindow = nullptr;
+    m_ShadowDebuggerWindow = nullptr;
 
     // Destroy GPU profiler
 #if VANS_PROFILER_ENABLED

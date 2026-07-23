@@ -80,7 +80,7 @@ float SubsurfaceTransmissionShadow(float shadowValue, float NoL, SubsurfaceParam
 
 void CalculateDirectLight_Subsurface(BRDFData brdfData, SubsurfaceParams sss,
                                      sampler2DArray cascadeShadowMap, float viewDepth,
-                                     sampler2D punctualShadowMap,
+                                     sampler2DShadow punctualShadowMap,
                                      float screenSpaceShadow,
                                      inout LightResult lightResult)
 {
@@ -119,6 +119,13 @@ void CalculateDirectLight_Subsurface(BRDFData brdfData, SubsurfaceParams sss,
         float attenuation = 1.0 - (distance / pointLight.radius);
         attenuation *= attenuation;
         float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, L, punctualShadowMap, int(i));
+        if (IsPointShadowFallbackSelected(GetFragTileLightHeader(), i))
+        {
+            shadowValue = BlendPunctualShadowFallback(
+                shadowValue,
+                SamplePunctualScreenSpaceShadow(brdfData.positionWS, brdfData.normal, L, distance),
+                0u, int(i));
+        }
 
         vec3 dR = vec3(0.0);
         vec3 sR = vec3(0.0);
@@ -151,6 +158,13 @@ void CalculateDirectLight_Subsurface(BRDFData brdfData, SubsurfaceParams sss,
         float outerConeAngle = cos(spotLight.outerConeAngle);
         float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
         float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, L, punctualShadowMap, int(i));
+        if (IsSpotShadowFallbackSelected(GetFragTileLightHeader(), i))
+        {
+            shadowValue = BlendPunctualShadowFallback(
+                shadowValue,
+                SamplePunctualScreenSpaceShadow(brdfData.positionWS, brdfData.normal, L, distance),
+                1u, int(i));
+        }
 
         vec3 dR = vec3(0.0);
         vec3 sR = vec3(0.0);

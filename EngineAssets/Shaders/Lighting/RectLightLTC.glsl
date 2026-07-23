@@ -268,7 +268,7 @@ void EvaluateRectLightLTC(
     float invR2     = 1.0 / max(range * range, 1e-6);
     float wf        = distSq * invR2;
     float window    = clamp(1.0 - wf * wf, 0.0, 1.0);
-    window          = window * window * pow(window * window, max(rl.shadowParams.y - 2.0, 0.0));
+    window          = window * window * pow(window * window, max(rl.attenuationExp - 2.0, 0.0));
     float atten     = window / max(softDistSq, 1e-4);
     vec3 baseTint = rl.color_twoSided.rgb * rl.up_intensity.w * atten;
 
@@ -279,7 +279,7 @@ void EvaluateRectLightLTC(
 #ifdef RECT_LIGHT_EMISSIVE_ENABLED
     // Diffuse 用辐照度向量 UV（能量加权，与视角无关）
     // Specular 用镜面反射方向 UV（低粗糙度时正确反映贴图细节），按粗糙度^2 混合回辐照度 UV
-    int texSlot = int(rl.shadowParams.z);
+    int texSlot = int(rl.textureSlot);
     if (texSlot >= 0)
     {
         float solidAngle;
@@ -288,9 +288,9 @@ void EvaluateRectLightLTC(
         float maxMip = float(textureQueryLevels(rectLightEmissive) - 1);
         // Diffuse LOD：只由立体角（距离/尺寸）决定，diffuse 是视角无关积分，与粗糙度无关。
         float baseLod  = max(0.0, 0.5 * log2(max(3.14159 / max(solidAngle, 1e-6), 1.0)));
-        float diffLod  = clamp(baseLod + rl.shadowParams.w, 0.0, maxMip);
+        float diffLod  = clamp(baseLod + rl.texLodBias, 0.0, maxMip);
         // Specular LOD：在 baseLod 基础上叠加粗糙度偏移（粗糙度越高 → mip 越高 → 越模糊）
-        float specLod  = clamp(baseLod + roughness * maxMip * 0.5 + rl.shadowParams.w, 0.0, maxMip);
+        float specLod  = clamp(baseLod + roughness * maxMip * 0.5 + rl.texLodBias, 0.0, maxMip);
 
         // Specular UV：镜面反射方向与光源平面求交
         // 粗糙度低（< 0.5）且交点有效时用反射 UV，否则回退到辐照度 UV。

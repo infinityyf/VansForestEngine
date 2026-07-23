@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <cstdint>
 #include <vector>
 #if defined _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -63,12 +64,12 @@ namespace VansGraphics
 		bool InitShader(VkDevice& logic_device, const std::string& shader_folder);
 		bool InitShader(VkDevice& logic_device, const std::string& shader_folder, const std::map<VkShaderStageFlagBits, std::string>& stageFiles);
 
-		bool RefreshShaderMoudle();
+		bool ReplaceShaderModulesFromSPIRV(
+			const std::map<VkShaderStageFlagBits, std::vector<std::uint32_t>>& stageSpirv,
+			std::string& error);
 
 		bool InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder);
 		bool InitRayTracingShader(VkDevice& logic_device, const std::string& shader_folder, const std::map<VkShaderStageFlagBits, std::string>& stageFiles);
-
-		bool CheckRefreshShader(VkDevice& logic_device);
 
 		void SetPushConstant(int size) { m_PushConstantSize = size; m_PipelineProgramDesc.pushConstantSize = size; }
 
@@ -80,9 +81,16 @@ namespace VansGraphics
 
 		std::string GetShaderFolder() { return m_ShaderFolder; }
 
-		void SetPipelineProgramDesc(const VansPipelineProgramDesc& desc) { m_PipelineProgramDesc = desc; }
+		void SetPipelineProgramDesc(const VansPipelineProgramDesc& desc)
+		{
+			const std::uint64_t activeBinaryHash = m_PipelineProgramDesc.shaderBinaryHash;
+			m_PipelineProgramDesc = desc;
+			if (m_PipelineProgramDesc.shaderBinaryHash == 0)
+				m_PipelineProgramDesc.shaderBinaryHash = activeBinaryHash;
+		}
 
 		const VansPipelineProgramDesc& GetPipelineProgramDesc() const { return m_PipelineProgramDesc; }
+		std::uint64_t GetShaderBinaryHash() const { return m_PipelineProgramDesc.shaderBinaryHash; }
 
 		std::map<VkShaderStageFlagBits, ShaderModuleData> m_ShaderModuleDataMap;
 
@@ -91,10 +99,6 @@ namespace VansGraphics
 			DestroyShaderMoulde();
 		}
 	private:
-		bool CreateShaderModule(VkDevice& logic_device);
-
-		bool TranslateToSPIRV(const std::string& shader_folder, ShaderType shaderType = ShaderType::Normal);
-
 		std::string m_ShaderFolder;
 		std::map<VkShaderStageFlagBits, std::string> m_ExplicitStageFiles;
 		ShaderType m_ShaderType = ShaderType::Normal;
@@ -123,6 +127,8 @@ namespace VansGraphics
 		void TriggerReCreateComputePipeline()
 		{
 			m_ComputePipeline.reset();
+			m_LastComputePipelineVariant = nullptr;
+			m_ComputePipelineVariants.clear();
 		}
 
 		VansComputeShader()
@@ -133,10 +139,17 @@ namespace VansGraphics
 		~VansComputeShader() = default;
 
 	private:
+		struct ComputePipelineVariantEntry
+		{
+			VansPipelineVariantIdentity identity;
+			std::shared_ptr<VansVKComputePipeline> pipeline;
+		};
 
 		VkPipelineShaderStageCreateInfo m_ComputeShaderStageCreateInfo;
 
 		std::shared_ptr<VansVKComputePipeline> m_ComputePipeline;
+		std::unordered_multimap<uint64_t, ComputePipelineVariantEntry> m_ComputePipelineVariants;
+		const ComputePipelineVariantEntry* m_LastComputePipelineVariant = nullptr;
 
 		bool CreateComputePipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 
@@ -190,10 +203,18 @@ namespace VansGraphics
 		int m_ColorAttachmentCount = -1;
 
 	private:
+		struct GraphicsPipelineVariantEntry
+		{
+			VansPipelineVariantIdentity identity;
+			std::shared_ptr<VansVKGraphicsPipeline> pipeline;
+		};
+
 		//之后graphics shader才有效
 		GraphicsPipeCreateInfo m_GraphicsPipelineCreateInfo;
 
 		std::shared_ptr<VansVKGraphicsPipeline> m_GraphicsPipeline;
+		std::unordered_multimap<uint64_t, GraphicsPipelineVariantEntry> m_GraphicsPipelineVariants;
+		const GraphicsPipelineVariantEntry* m_LastGraphicsPipelineVariant = nullptr;
 
 		VkGraphicsPipelineCreateInfo m_VkGraphicsPipelineCreateInfo;
 

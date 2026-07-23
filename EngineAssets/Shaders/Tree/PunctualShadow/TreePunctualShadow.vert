@@ -34,7 +34,7 @@ layout(std430, set = 3, binding = 1) readonly buffer TreeVisibleIndices
 layout(push_constant) uniform TreePunctualShadowPC
 {
     int lightIndex;
-    int shadowIndex;
+    int shadowFaceIndex;
     int materialIndex;
     int objectIndex;
     uint visibleOffset;
@@ -51,21 +51,24 @@ void main()
     int spotLightCount = int(uSpotLightCount);
     int rectLightStart = pointLightCount + spotLightCount;
 
-    mat4 shadowMatrix;
+    uint metaIndex;
     if (pc.lightIndex < pointLightCount)
     {
-        shadowMatrix = uPointLights[pc.lightIndex].shadowMatrix[pc.shadowIndex];
+        metaIndex = uPointLights[pc.lightIndex].shadowMetaIndex;
     }
     else if (pc.lightIndex < rectLightStart)
     {
         int spotLightIndex = pc.lightIndex - pointLightCount;
-        shadowMatrix = uSpotLights[spotLightIndex].shadowMatrix;
+        metaIndex = uSpotLights[spotLightIndex].shadowMetaIndex;
     }
     else
     {
         int rectLightIndex = pc.lightIndex - rectLightStart;
-        shadowMatrix = uRectLights[rectLightIndex].shadowMatrix;
+        metaIndex = uRectLights[rectLightIndex].shadowMetaIndex;
     }
+
+    PunctualShadowData shadow = uPunctualShadows[metaIndex];
+    mat4 shadowMatrix = uPunctualShadowViews[shadow.firstView + uint(pc.shadowFaceIndex)].worldToShadow;
 
     vec4 clipCoord = shadowMatrix * model * position;
     clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;

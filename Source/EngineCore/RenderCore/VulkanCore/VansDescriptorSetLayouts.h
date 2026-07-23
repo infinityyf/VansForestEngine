@@ -38,6 +38,7 @@ namespace VansGraphics
 		GLOBAL_BINDING_REFLECTION_PROBE_SPECULAR = 13, // Prefiltered samplerCubeArray
 		GLOBAL_BINDING_REFLECTION_PROBE_BUFFER   = 14, // Reflection probe metadata SSBO
 		GLOBAL_BINDING_CUSTOM_MATERIAL_SSBO      = 15, // Custom shader material vec4s + texture indices
+		GLOBAL_BINDING_CLOTH_MATERIAL_SSBO       = 16, // Cloth model/color/anisotropy/transmission payloads
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -223,6 +224,8 @@ namespace VansGraphics
 		DEFERRED_BINDING_SCREEN_SPACE_SHADOW = 14,
 		DEFERRED_BINDING_RECT_LIGHT_EMISSIVE = 15, // 面光源发光贴图数组 (sampler2DArray)
 		DEFERRED_BINDING_IES_PROFILES        = 16, // IES profile 纹理数组 (sampler2DArray, R16F)
+		DEFERRED_BINDING_SCREEN_SPACE_SHADOW_HIZ = 17, // HZB depth for per-light screen-space contact shadows
+		DEFERRED_BINDING_SCREEN_SPACE_SHADOW_PARAMS = 18,
 	};
 
 	// --- SkyBox Pass ---
@@ -456,15 +459,6 @@ namespace VansGraphics
 		DECAL_PASS_BINDING_GBUFFER2 = 0,  // GBuffer2 采样器，用于重建世界坐标
 	};
 
-	// --- GI SH Update Compute Pass ---
-	enum GISHUpdatePassBinding : uint32_t
-	{
-		GISH_BINDING_DIRECT_LIGHT  = 0,
-		GISH_BINDING_RESULT_R      = 2,
-		GISH_BINDING_RESULT_G      = 3,
-		GISH_BINDING_RESULT_B      = 4,
-	};
-
 	// --- GI ray-tracing intermediate preview (Set 0) ---
 	enum GIRTPreviewPassBinding : uint32_t
 	{
@@ -479,12 +473,19 @@ namespace VansGraphics
 		GI_RT_PREVIEW_BINDING_OUTPUT = 8,
 	};
 
+	// --- Punctual Shadow Atlas diagnostic resolve (Set 0) ---
+	enum PunctualShadowDebugPassBinding : uint32_t
+	{
+		PUNCTUAL_SHADOW_DEBUG_BINDING_ATLAS = 0,
+		PUNCTUAL_SHADOW_DEBUG_BINDING_RESULT = 1,
+	};
+
 	// --- GI Point Light Compute Pass ---
 	enum GIPointLightPassBinding : uint32_t
 	{
 		GIPL_BINDING_HIT_POSITION     = 0,
 		GIPL_BINDING_HIT_NORMAL       = 1,
-		GIPL_BINDING_DIRECT_LIGHT     = 2,
+		GIPL_BINDING_RADIANCE         = 2,
 		GIPL_BINDING_ENVIRONMENT_MAP  = 4,
 		GIPL_BINDING_SH_R             = 5,
 		GIPL_BINDING_SH_G             = 6,
@@ -493,6 +494,10 @@ namespace VansGraphics
 		GIPL_BINDING_PUNCTUAL_SHADOW  = 9,
 		GIPL_BINDING_PBR_DATA         = 10,
 		GIPL_BINDING_GI_VISIBILITY    = 11,
+		GIPL_BINDING_DIRECT_CACHE     = 13,
+		GIPL_BINDING_RESULT_R         = 14,
+		GIPL_BINDING_RESULT_G         = 15,
+		GIPL_BINDING_RESULT_B         = 16,
 	};
 
 	// --- GI Visibility Atlas Update Compute Pass ---
@@ -790,7 +795,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_BilateralFilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 3);
 		static void CreateAndAllocate_HIZ(std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount);
 		static void CreateAndAllocate_HIZSeed(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_GISHUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GIRTPreview(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GIPointLight(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GIVisibilityUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -806,6 +810,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_VegetationTreeDraw(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VegetationTreeCull(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_TileLightBuild(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_PunctualShadowDebug(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// 贴花 Pass Set 1：仅绑定 GBuffer2 用于世界坐标重建
 		static void CreateAndAllocate_DecalPass(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 

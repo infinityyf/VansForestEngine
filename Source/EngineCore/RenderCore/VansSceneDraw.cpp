@@ -12,6 +12,87 @@
 #include "../VansTimer.h"
 #include "../RuntimeCore/VansFramePhase.h"
 #include <algorithm>
+#include <cmath>
+
+namespace
+{
+    bool TryGetStaticNodeWorldBounds(
+        VansGraphics::VansRenderNode* node,
+        VansGraphics::VansShadowAABB& bounds)
+    {
+        // Bind-pose mesh bounds are not conservative for animated vertices.
+        // Keep skinned nodes visible until animation supplies dynamic bounds.
+        if (node == nullptr || node->m_Mesh == nullptr || node->m_HasSkeletonBone ||
+            !node->m_Mesh->HasLocalBounds())
+        {
+            return false;
+        }
+
+        const glm::vec3 localMin = node->m_Mesh->GetLocalBoundsMin();
+        const glm::vec3 localMax = node->m_Mesh->GetLocalBoundsMax();
+        const glm::vec3 localCenter = (localMin + localMax) * 0.5f;
+        const glm::vec3 localExtent = (localMax - localMin) * 0.5f;
+        const glm::mat4 transform = node->GetTransformMatrix();
+
+        const glm::vec3 worldCenter = glm::vec3(transform * glm::vec4(localCenter, 1.0f));
+        const glm::vec3 worldExtent(
+            std::abs(transform[0][0]) * localExtent.x +
+                std::abs(transform[1][0]) * localExtent.y +
+                std::abs(transform[2][0]) * localExtent.z,
+            std::abs(transform[0][1]) * localExtent.x +
+                std::abs(transform[1][1]) * localExtent.y +
+                std::abs(transform[2][1]) * localExtent.z,
+            std::abs(transform[0][2]) * localExtent.x +
+                std::abs(transform[1][2]) * localExtent.y +
+                std::abs(transform[2][2]) * localExtent.z);
+
+        bounds.min = worldCenter - worldExtent;
+        bounds.max = worldCenter + worldExtent;
+        return bounds.IsValid();
+    }
+
+    bool BoundsIntersectsClipFrustum(
+        const VansGraphics::VansShadowAABB& bounds,
+        const glm::mat4& worldToClip)
+    {
+        const glm::vec3 center = (bounds.min + bounds.max) * 0.5f;
+        const glm::vec3 extent = (bounds.max - bounds.min) * 0.5f;
+
+        const glm::vec4 row0(worldToClip[0][0], worldToClip[1][0], worldToClip[2][0], worldToClip[3][0]);
+        const glm::vec4 row1(worldToClip[0][1], worldToClip[1][1], worldToClip[2][1], worldToClip[3][1]);
+        const glm::vec4 row2(worldToClip[0][2], worldToClip[1][2], worldToClip[2][2], worldToClip[3][2]);
+        const glm::vec4 row3(worldToClip[0][3], worldToClip[1][3], worldToClip[2][3], worldToClip[3][3]);
+        const glm::vec4 planes[6] = {
+            row3 + row0,
+            row3 - row0,
+            row3 + row1,
+            row3 - row1,
+            row3 + row2,
+            row3 - row2
+        };
+
+        for (const glm::vec4& plane : planes)
+        {
+            const glm::vec3 normal(plane);
+            const float distance = glm::dot(normal, center) + plane.w;
+            const float projectedExtent = glm::dot(glm::abs(normal), extent);
+            if (distance + projectedExtent < 0.0f)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool IsNodeVisibleInFrustum(
+        VansGraphics::VansRenderNode* node,
+        const glm::mat4& worldToClip)
+    {
+        VansGraphics::VansShadowAABB bounds;
+        return !TryGetStaticNodeWorldBounds(node, bounds) ||
+            BoundsIntersectsClipFrustum(bounds, worldToClip);
+    }
+}
 
 // ===========================================================================
 // Draw commands — one per render pass type
@@ -25,6 +106,15 @@ void VansGraphics::VansScene::DrawShadowNodes()
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
 
+    const glm::mat4* cascadeWorldToClip = nullptr;
+    const auto& directionLights = m_LightManager.GetDirectionLights();
+    if (!directionLights.empty() &&
+        globalStateData.cascadeIndex >= 0 &&
+        globalStateData.cascadeIndex < 4)
+    {
+        cascadeWorldToClip = &directionLights[0].m_ShadowMatrix[globalStateData.cascadeIndex];
+    }
+
     // Iterate opaque nodes instead of dedicated shadow node list
     for (auto& node : m_OpaqueRenderNodes)
     {
@@ -33,6 +123,13 @@ void VansGraphics::VansScene::DrawShadowNodes()
         // Check support_shadow flag on the node
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
         if (!opaque->m_SupportShadow) continue;
+		if (cascadeWorldToClip != nullptr && !IsNodeVisibleInFrustum(node, *cascadeWorldToClip)) continue;
+		if (!node->m_Material)
+		{
+			VANS_LOG_ERROR("[VansScene] Skipping cascade shadow for node '" << node->m_NodeName
+				<< "': material is not resolved.");
+			continue;
+		}
 
         // Check if the material has a shadow pass shader
         VansGraphicsShader* shadowShader = node->m_Material->GetPassShader(VansPass::SHADOW);
@@ -48,6 +145,13 @@ void VansGraphics::VansScene::DrawShadowNodes()
 		if (node == nullptr || !node->IsEnabled()) continue;
 		auto* hairNode = static_cast<VansCommonRenderNode*>(node);
 		if (!hairNode->m_SupportShadow) continue;
+		if (cascadeWorldToClip != nullptr && !IsNodeVisibleInFrustum(node, *cascadeWorldToClip)) continue;
+		if (!node->m_Material)
+		{
+			VANS_LOG_ERROR("[VansScene] Skipping hair shadow for node '" << node->m_NodeName
+				<< "': material is not resolved.");
+			continue;
+		}
 		VansGraphicsShader* hairShadowShader = node->m_Material->GetPassShader(VansPass::SHADOW);
 		if (!hairShadowShader)
 			hairShadowShader = node->m_Material->GetPassShader(VansPass::HAIR_SHADOW);
@@ -65,10 +169,14 @@ void VansGraphics::VansScene::DrawMotionVectorNodes()
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    const glm::mat4 viewProjection = m_Camera
+        ? m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix()
+        : glm::mat4(1.0f);
 
     for (auto& node : m_OpaqueRenderNodes)
     {
         if (node == nullptr || !node->IsEnabled()) continue;
+		if (m_Camera != nullptr && !IsNodeVisibleInFrustum(node, viewProjection)) continue;
 
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
 
@@ -82,101 +190,47 @@ void VansGraphics::VansScene::DrawMotionVectorNodes()
     }
 }
 
-void VansGraphics::VansScene::DrawPointShadow(int lightIndex)
+void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRenderJob& job)
 {
-    auto vansConfigration = VansConfigration::GetInstance();
-    float punctualShadowSize = vansConfigration->GetPunctualShadowMapWidth();
-    float patchShadowSize = punctualShadowSize / 8;
-
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+	if (vkDevice == nullptr)
+		return;
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    for (int shadowDirection = 0; shadowDirection < 6; shadowDirection++)
-    {
-        int atlasSlot = static_cast<int>(m_LightManager.GetPointLights()[lightIndex].m_ShadowIndex) + shadowDirection;
-        float regionOffsetX = atlasSlot % 8 * patchShadowSize;
-        float regionOffsetY = atlasSlot / 8 * patchShadowSize;
-
-        VkViewport viewPort = {};
-        viewPort.x = regionOffsetX;
-        viewPort.y = regionOffsetY;
-        viewPort.width = patchShadowSize;
-        viewPort.height = patchShadowSize;
-        viewPort.minDepth = 0.0f;
-        viewPort.maxDepth = 1.0f;
-
-        VkRect2D scissor = {};
-        scissor.offset = { (int)(regionOffsetX), (int)(regionOffsetY) };
-        scissor.extent = { (uint32_t)(patchShadowSize), (uint32_t)(patchShadowSize) };
-
-        cmd.SetViewport(0, { viewPort });
-        cmd.SetScissor(0, { scissor });
-
-        for (auto& node : m_OpaqueRenderNodes)
-        {
-            if (node == nullptr || !node->IsEnabled()) continue;
-
-            auto* opaque = static_cast<VansCommonRenderNode*>(node);
-            if (!opaque->m_SupportShadow) continue;
-
-            VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
-            if (!shader) continue;
-
-        node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
-                                                    opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
-                                                    lightIndex, shadowDirection);
-        }
-
-		for (auto& node : m_HairRenderNodes)
-		{
-			if (node == nullptr || !node->IsEnabled()) continue;
-			auto* hairNode = static_cast<VansCommonRenderNode*>(node);
-			if (!hairNode->m_SupportShadow) continue;
-			VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
-			if (!shader) continue;
-			node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
-				hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts,
-				lightIndex, shadowDirection);
-		}
-
-        if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
-            static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
-                cmd, globalStateData, lightIndex, shadowDirection);
-    }
-}
-
-void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
-{
-    auto vansConfigration = VansConfigration::GetInstance();
-    float punctualShadowSize = vansConfigration->GetPunctualShadowMapWidth();
-    float patchShadowSize = punctualShadowSize / 8;
-
-    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-
-    int atlasSlot = static_cast<int>(m_LightManager.GetSpotLight()[lightIndex].m_ShadowIndex);
-    float regionOffsetX = atlasSlot % 8 * patchShadowSize;
-    float regionOffsetY = atlasSlot / 8 * patchShadowSize;
 
     VkViewport viewPort = {};
-    viewPort.x = regionOffsetX;
-    viewPort.y = regionOffsetY;
-    viewPort.width = patchShadowSize;
-    viewPort.height = patchShadowSize;
+	viewPort.x = static_cast<float>(job.atlasRect.x);
+	viewPort.y = static_cast<float>(job.atlasRect.y);
+	viewPort.width = static_cast<float>(job.atlasRect.width);
+	viewPort.height = static_cast<float>(job.atlasRect.height);
     viewPort.minDepth = 0.0f;
     viewPort.maxDepth = 1.0f;
 
     VkRect2D scissor = {};
-    scissor.offset = { (int)(regionOffsetX), (int)(regionOffsetY) };
-    scissor.extent = { (uint32_t)(patchShadowSize), (uint32_t)(patchShadowSize) };
+	scissor.offset = { static_cast<int32_t>(job.atlasRect.x), static_cast<int32_t>(job.atlasRect.y) };
+	scissor.extent = { job.atlasRect.width, job.atlasRect.height };
 
     cmd.SetViewport(0, { viewPort });
     cmd.SetScissor(0, { scissor });
 
+	const int pointCount = static_cast<int>((std::min)(m_LightManager.GetPointLights().size(), static_cast<size_t>(m_LightManager.GetMaxPointLightCount())));
+	const int spotCount = static_cast<int>((std::min)(m_LightManager.GetSpotLight().size(), static_cast<size_t>(m_LightManager.GetMaxSpotLightCount())));
+	int shaderLightIndex = static_cast<int>(job.gpuLightIndex);
+	if (job.lightType == VansPunctualShadowLightType::Spot)
+		shaderLightIndex += pointCount;
+	else if (job.lightType == VansPunctualShadowLightType::Rect)
+		shaderLightIndex += pointCount + spotCount;
+
+	const auto isSelectedCaster = [&](const VansRenderNode* node)
+	{
+		const uint64_t casterId = reinterpret_cast<uint64_t>(node);
+		return std::find(job.casterIds.begin(), job.casterIds.end(), casterId) != job.casterIds.end();
+	};
+
     for (auto& node : m_OpaqueRenderNodes)
     {
         if (node == nullptr || !node->IsEnabled()) continue;
+		if (!isSelectedCaster(node)) continue;
 
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
         if (!opaque->m_SupportShadow) continue;
@@ -186,88 +240,25 @@ void VansGraphics::VansScene::DrawSpotShadow(int pointCount, int lightIndex)
 
         node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
                                                 opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
-                                                pointCount + lightIndex, 0);
+											shaderLightIndex, static_cast<int>(job.faceIndex));
     }
 
 	for (auto& node : m_HairRenderNodes)
 	{
 		if (node == nullptr || !node->IsEnabled()) continue;
+		if (!isSelectedCaster(node)) continue;
 		auto* hairNode = static_cast<VansCommonRenderNode*>(node);
 		if (!hairNode->m_SupportShadow) continue;
 		VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
 		if (!shader) continue;
 		node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
 			hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts,
-			pointCount + lightIndex, 0);
+			shaderLightIndex, static_cast<int>(job.faceIndex));
 	}
 
     if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
         static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
-            cmd, globalStateData, pointCount + lightIndex, 0);
-}
-
-void VansGraphics::VansScene::DrawRectShadow(int pointCount, int spotCount, int lightIndex)
-{
-    auto vansConfigration = VansConfigration::GetInstance();
-    float punctualShadowSize = vansConfigration->GetPunctualShadowMapWidth();
-    float patchShadowSize = punctualShadowSize / 8;
-
-    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-
-    int slotIndex = static_cast<int>(m_LightManager.GetRectLights()[lightIndex].m_ShadowIndex);
-    float regionOffsetX = (slotIndex % 8) * patchShadowSize;
-    float regionOffsetY = (slotIndex / 8) * patchShadowSize;
-
-    VkViewport viewPort = {};
-    viewPort.x = regionOffsetX;
-    viewPort.y = regionOffsetY;
-    viewPort.width = patchShadowSize;
-    viewPort.height = patchShadowSize;
-    viewPort.minDepth = 0.0f;
-    viewPort.maxDepth = 1.0f;
-
-    VkRect2D scissor = {};
-    scissor.offset = { (int)(regionOffsetX), (int)(regionOffsetY) };
-    scissor.extent = { (uint32_t)(patchShadowSize), (uint32_t)(patchShadowSize) };
-
-    cmd.SetViewport(0, { viewPort });
-    cmd.SetScissor(0, { scissor });
-
-    // Encode logical lightIndex passed to shader as (pointCount + spotCount + lightIndex)
-    // so PunctualShadow.vert can pick the rect branch via uPointLightCount + uSpotLightCount.
-    int shaderLightIndex = pointCount + spotCount + lightIndex;
-    for (auto& node : m_OpaqueRenderNodes)
-    {
-        if (node == nullptr || !node->IsEnabled()) continue;
-
-        auto* opaque = static_cast<VansCommonRenderNode*>(node);
-        if (!opaque->m_SupportShadow) continue;
-
-        VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
-        if (!shader) continue;
-
-        node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
-                                                opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
-                                                shaderLightIndex, 0);
-    }
-
-	for (auto& node : m_HairRenderNodes)
-	{
-		if (node == nullptr || !node->IsEnabled()) continue;
-		auto* hairNode = static_cast<VansCommonRenderNode*>(node);
-		if (!hairNode->m_SupportShadow) continue;
-		VansGraphicsShader* shader = node->m_Material->GetPassShader(VansPass::PUNCTUAL_SHADOW);
-		if (!shader) continue;
-		node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
-			hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts,
-			shaderLightIndex, 0);
-	}
-
-    if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
-        static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
-            cmd, globalStateData, shaderLightIndex, 0);
+			cmd, globalStateData, shaderLightIndex, static_cast<int>(job.faceIndex));
 }
 
 void VansGraphics::VansScene::DrawSkyBoxNode()
@@ -289,9 +280,16 @@ void VansGraphics::VansScene::DrawOpaqueNodes()
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    const glm::mat4 viewProjection = m_Camera
+        ? m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix()
+        : glm::mat4(1.0f);
     for (auto& node : m_OpaqueRenderNodes)
     {
         if (node == nullptr || !node->IsEnabled())
+        {
+            continue;
+        }
+        if (m_Camera != nullptr && !IsNodeVisibleInFrustum(node, viewProjection))
         {
             continue;
         }

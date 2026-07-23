@@ -4,6 +4,7 @@
 // TileLight：先引入 CameraData（提供 ScreenParams），再定义 TILE_LIGHT，再引入 TileLightData
 #include "../Common/CameraData.glsl"
 #define TILE_LIGHT
+#define SCREEN_SPACE_PUNCTUAL_SHADOW
 #include "../Common/TileLightData.glsl"
 
 #include "../Lights/LightsData.glsl"
@@ -65,7 +66,7 @@ layout(set = 1, binding = 5, rgba32f ) uniform image2D ssao;
 layout(set = 1, binding = 6) uniform sampler2D ssgi;
 layout(set = 1, binding = 7, rgba32f ) uniform image2D ssr;
 layout(set = 1, binding = 8) uniform sampler2DArray cascadeShadowMap;
-layout(set = 1, binding = 9) uniform sampler2D punctualShadowMap;
+layout(set = 1, binding = 9) uniform sampler2DShadow punctualShadowMap;
 layout( set = 1, binding = 13 ) uniform sampler2D fogResult;
 layout( set = 1, binding = 14 ) uniform sampler2D screenSpaceShadow;
 
@@ -143,14 +144,19 @@ void main()
     else if (matID == MATERIAL_ID_CLOTH)
     {
         // --- Cloth BRDF path ---
-        // brdfData.roughness holds sheenRoughness (written into outGBuffer0.w by Cloth.frag)
-        // brdfData.metallic holds sheenStrength and fresnel0.r holds thin-cloth translucency.
+        // Cloth.frag stores the global material index in GBuffer1.w and the
+        // tangent angle in normal.w. The extension payload uses the same index
+        // as the existing PBR payload, so RenderNode binding remains unchanged.
+        int clothMaterialIndex = int(round(gbufferData1.w));
+        ClothMaterialPayload cloth = GetClothMaterialPayload(clothMaterialIndex);
+        vec3 clothTangent;
+        vec3 clothBitangent;
+        DecodeClothTangentFrame(normal, normalData.w, clothTangent, clothBitangent);
         brdfData.ao = clamp(min(ao, ssaoValue), 0.0, 1.0);
-        brdfData.fresnel0 = vec3(clamp(gbufferData1.w, 0.0, 1.0));
-        // Direct lighting uses the per-light cloth light loop
-        CalculateDirectLight_Cloth(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
-        // Ambient: ClothBRDFLUT drives the cloth split-sum sheen energy.
-        AmbientBRDF_Cloth(brdfData, viewDirection,
+        CalculateDirectLight_Cloth(brdfData, cloth, clothTangent,
+                                   cascadeShadowMap, linearDepth, punctualShadowMap,
+                                   sssShadow, lightResult);
+        AmbientBRDF_Cloth(brdfData, cloth, clothTangent, viewDirection,
                           lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else if (matID == MATERIAL_ID_SUBSURFACE)
@@ -267,6 +273,6 @@ void main()
     float fogOpacity = fogData.a;
     outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
     //outColor.rgb = vec3(brdfData.ao,brdfData.ao,brdfData.ao);
-    //outColor.rgb = lightResult.ambientSpecular;
+    //outColor.rgb = lightResult.ambientDiffuse;
     outColor.a = 1;
 }

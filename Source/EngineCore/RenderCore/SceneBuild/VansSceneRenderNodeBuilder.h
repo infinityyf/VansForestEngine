@@ -21,6 +21,7 @@ namespace VansGraphics
 			const glm::vec3& rotation,
 			const glm::vec3& scale,
 			bool supportShadow,
-			VansMaterial* materialOverride = nullptr);
+			VansMaterial* materialOverride = nullptr,
+			const json& submeshMaterialOverrides = json::object());
 	};
 }

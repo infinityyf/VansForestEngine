@@ -22,12 +22,15 @@ namespace Vans
 		bool needCpuData = false;
 		float scaleFactor = 1.0f;
 		bool loadMultiMesh = false;
+		bool rebuildIdentityBoneOffsetsFromHierarchy = false;
+		bool remapWeaponAttachmentBonesToHands = false;
 	};
 
 	struct VansSceneTextureResourceRequest
 	{
 		std::string name;
 		std::string path;
+		std::string artifactPath;
 		int textureType = 0;
 		bool srgb = true;
 		bool useCompress = true;

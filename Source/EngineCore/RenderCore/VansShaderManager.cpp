@@ -1,5 +1,5 @@
 #include "VansShaderManager.h"
-#include "../Interfaces/IShaderHotReloadService.h"
+#include "../AssetCore/Importers/Shader/VansShaderArtifactCache.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
@@ -153,6 +153,12 @@ bool VansShaderManager::LoadShaderRecord(VansShaderRecord& record, const std::st
         break;
     }
 
+	// Establish the stable program id before artifact lookup. Direct subsystem
+	// shaders still fall back to their folder identity, while managed shaders and
+	// Editor hot reload now address the same artifact namespace.
+	shader->SetName(record.entry.name);
+	shader->SetPipelineProgramDesc(record.pipelineDesc);
+
     bool loaded = false;
     if (record.entry.kind == VansManagedShaderKind::RayTracing)
         loaded = shader->InitRayTracingShader(device, fullPath, record.entry.explicitStageFiles);
@@ -169,6 +175,7 @@ bool VansShaderManager::LoadShaderRecord(VansShaderRecord& record, const std::st
 
     shader->SetName(record.entry.name);
     shader->SetPipelineProgramDesc(record.pipelineDesc);
+	record.pipelineDesc.shaderBinaryHash = shader->GetShaderBinaryHash();
     if (record.entry.pushConstantSize > 0)
         shader->SetPushConstant(record.entry.pushConstantSize);
     if (auto* graphics = dynamic_cast<VansGraphicsShader*>(shader.get()))
@@ -265,20 +272,26 @@ bool VansShaderManager::ConfigureGraphicsShader(
     return true;
 }
 
-bool VansShaderManager::ReloadShader(const std::string& shaderName)
+bool VansShaderManager::ApplyCompiledShaderCandidate(
+    const std::string& shaderName,
+    const std::map<VkShaderStageFlagBits, std::vector<std::uint32_t>>& stageSpirv,
+    std::string& error)
 {
     auto it = m_Shaders.find(shaderName);
     if (it == m_Shaders.end() || !it->second.shader)
-        return false;
-
-    VansShaderRecord& record = it->second;
-    if (!record.shader->RefreshShaderMoudle())
     {
-        record.status = VansShaderStatus::Fallback;
-        record.lastError = "reload failed, keeping last valid shader: " + shaderName;
-        VANS_LOG_ERROR("[VansShaderManager] " << record.lastError);
+        error = "shader program is not loaded: " + shaderName;
         return false;
     }
+
+    VansShaderRecord& record = it->second;
+    if (!record.shader->ReplaceShaderModulesFromSPIRV(stageSpirv, error))
+    {
+        record.status = VansShaderStatus::Fallback;
+        record.lastError = error;
+        return false;
+    }
+	record.pipelineDesc.shaderBinaryHash = record.shader->GetShaderBinaryHash();
 
     if (auto* graphics = dynamic_cast<VansGraphicsShader*>(record.shader.get()))
         graphics->TriggerReCreateGraphicsPipeline();
@@ -289,17 +302,8 @@ bool VansShaderManager::ReloadShader(const std::string& shaderName)
 
     record.status = VansShaderStatus::Valid;
     record.lastError.clear();
+    error.clear();
     return true;
-}
-
-void VansShaderManager::ReloadUpdatedShaders(IShaderHotReloadService& hotReload)
-{
-    for (auto& pair : m_Shaders)
-    {
-        VansShaderRecord& record = pair.second;
-        if (record.shader && hotReload.ConsumeUpdatedShaderFolder(record.shader->GetShaderFolder()))
-            ReloadShader(record.entry.name);
-    }
 }
 
 void VansShaderManager::ForEachShader(const std::function<void(const VansShaderRecord&)>& fn) const
@@ -320,6 +324,28 @@ std::vector<VansShader*> VansShaderManager::GetLoadedShaderAssets() const
     return result;
 }
 
+bool VansShaderManager::ExportCookedShaderArtifacts(
+	const std::string& destinationRoot,
+	std::string& error) const
+{
+	std::vector<Vans::VansShaderCookProgram> programs;
+	for (const auto& pair : m_Shaders)
+	{
+		const VansShaderRecord& record = pair.second;
+		if (!record.shader || record.status != VansShaderStatus::Valid)
+			continue;
+		Vans::VansShaderCompileRequest request;
+		request.programId = record.entry.name;
+		request.sourceFolder = record.shader->GetShaderFolder();
+		programs.push_back({
+			record.entry.name,
+			Vans::VansShaderArtifactCache::ResolveArtifactRoot(request)
+		});
+	}
+	return Vans::VansShaderArtifactCache::Get().ExportCookedArtifacts(
+		programs, destinationRoot, error);
+}
+
 void VansShaderManager::ReleaseLoadedShaderAssets()
 {
     for (auto& pair : m_Shaders)
@@ -333,6 +359,11 @@ void VansShaderManager::ReleaseLoadedShaderAssets()
 
 void VansShaderManager::Clear()
 {
+	const Vans::VansShaderArtifactCacheStats stats = Vans::VansShaderArtifactCache::Get().GetStats();
+	VANS_LOG("[ShaderArtifact] Session stats: hits=" << stats.hits
+		<< " misses=" << stats.misses
+		<< " compiles=" << stats.compiles
+		<< " failures=" << stats.compileFailures);
     m_Shaders.clear();
     m_MaterialPasses.clear();
 }

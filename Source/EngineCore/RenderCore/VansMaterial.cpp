@@ -31,6 +31,19 @@ bool ReadMaterialFloat(const nlohmann::ordered_json& value, float& out)
 	return true;
 }
 
+bool ReadMaterialString(const nlohmann::ordered_json& value, std::string& out)
+{
+	const nlohmann::ordered_json* scalarValue = &value;
+	if (value.is_object())
+	{
+		if (value.contains("value")) scalarValue = &value["value"];
+		else if (value.contains("default")) scalarValue = &value["default"];
+	}
+	if (!scalarValue->is_string()) return false;
+	out = scalarValue->get<std::string>();
+	return true;
+}
+
 glm::vec4 ReadMaterialVec4Value(const nlohmann::ordered_json& value)
 {
 	if (value.is_number())
@@ -92,6 +105,23 @@ VansGraphics::VansClothMaterial::~VansClothMaterial()
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_ClothOwnedDescSets);
 	descMgr->DestroyDescriptorSetLayout(m_ClothOwnedLayout);
+}
+
+VansGraphics::VansClothGPUParam VansGraphics::VansClothMaterial::BuildGPUParam() const
+{
+	VansClothGPUParam payload;
+	payload.sheenColorWeight = glm::vec4(
+		glm::max(m_SheenColor, glm::vec3(0.0f)),
+		std::clamp(m_SheenStrength, 0.0f, 1.0f));
+	payload.transmissionColorStrength = glm::vec4(
+		glm::max(m_TransmissionColor, glm::vec3(0.0f)),
+		std::clamp(m_Translucency, 0.0f, 1.0f));
+	payload.controls = glm::vec4(
+		static_cast<float>(m_ClothModel),
+		std::clamp(m_Anisotropy, -0.95f, 0.95f),
+		std::clamp(m_Thickness, 0.0f, 1.0f),
+		static_cast<float>(m_ClothFlags));
+	return payload;
 }
 
 VansGraphics::VansHairMaterial::~VansHairMaterial()
@@ -174,11 +204,13 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	// 清空 CPU �?PBR 数组（指针不拥有所有权，material �?VansScene 管理�?
 	m_GlobalPBRMaterial.clear();
 	m_GlobalPBRParamData.clear();
+	m_GlobalClothParamData.clear();
 	m_GlobalCustomMaterialParamData.clear();
 	m_GlobalPBRTextures.clear();
 
 	// 销�?GPU buffer
 	m_GlobalPBRDataBuffer.DestroyVulkanBuffer(device);
+	m_GlobalClothDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalCustomMaterialDataBuffer.DestroyVulkanBuffer(device);
 
 	// 释放 descriptor set �?layout
@@ -235,7 +267,17 @@ bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& mater
 	if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&material))
 		return flushPbrPayload(sss->m_BasePBRParam);
 	if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
-		return flushPbrPayload(cloth->m_BasePBRParam);
+	{
+		const bool pbrUpdated = flushPbrPayload(cloth->m_BasePBRParam);
+		if (m_GlobalClothDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+			return false;
+		const VansClothGPUParam clothPayload = cloth->BuildGPUParam();
+		if (index < static_cast<int>(m_GlobalClothParamData.size()))
+			m_GlobalClothParamData[index] = clothPayload;
+		const VkDeviceSize clothOffset = sizeof(VansClothGPUParam) * static_cast<VkDeviceSize>(index);
+		m_GlobalClothDataBuffer.SetBufferData(&clothPayload, clothOffset, sizeof(VansClothGPUParam));
+		return pbrUpdated;
+	}
 
 	if (m_GlobalCustomMaterialDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
 		return false;
@@ -503,15 +545,54 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 		}
 		if (key == "sheenStrength" && ReadMaterialFloat(value, scalar))
 		{
-			cloth->m_BasePBRParam.padding = std::clamp(scalar, 0.0f, 1.0f);
+			cloth->m_SheenStrength = std::clamp(scalar, 0.0f, 1.0f);
+			cloth->m_BasePBRParam.padding = cloth->m_SheenStrength;
 			FlushMaterialPayload(material);
 			return true;
 		}
 		if (key == "translucency" && ReadMaterialFloat(value, scalar))
 		{
-			cloth->m_BasePBRParam.m_metallic = std::clamp(scalar, 0.0f, 1.0f);
+			cloth->m_Translucency = std::clamp(scalar, 0.0f, 1.0f);
+			cloth->m_BasePBRParam.m_metallic = cloth->m_Translucency;
 			FlushMaterialPayload(material);
 			return true;
+		}
+		if (key == "anisotropy" && ReadMaterialFloat(value, scalar))
+		{
+			cloth->m_Anisotropy = std::clamp(scalar, -0.95f, 0.95f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "thickness" && ReadMaterialFloat(value, scalar))
+		{
+			cloth->m_Thickness = std::clamp(scalar, 0.0f, 1.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "sheenColor" && ReadMaterialVec3(value, color))
+		{
+			cloth->m_SheenColor = glm::max(color, glm::vec3(0.0f));
+			cloth->m_ClothFlags &= ~VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "transmissionColor" && ReadMaterialVec3(value, color))
+		{
+			cloth->m_TransmissionColor = glm::max(color, glm::vec3(0.0f));
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "clothModel")
+		{
+			std::string model;
+			if (ReadMaterialString(value, model))
+			{
+				if (model == "silk" || model == "satin") cloth->m_ClothModel = VansClothModel::Silk;
+				else if (model == "thin") cloth->m_ClothModel = VansClothModel::Thin;
+				else cloth->m_ClothModel = VansClothModel::Fuzz;
+				FlushMaterialPayload(material);
+				return true;
+			}
 		}
 		if (key == "ao" && ReadMaterialFloat(value, scalar))
 		{
@@ -546,6 +627,56 @@ void VansGraphics::VansMaterialManager::ApplyFogVolumeSettings(const VansFogVolu
 		&m_FogVolumeSettings,
 		0,
 		sizeof(VansFogVolumeSettings));
+}
+
+VansGraphics::VansScreenSpacePunctualShadowSettings
+VansGraphics::VansMaterialManager::GetScreenSpacePunctualShadowSettings() const
+{
+	VansScreenSpacePunctualShadowSettings settings;
+	settings.maxTraceDistance = m_ScreenSpaceShadowParams.punctualRayParams.x;
+	settings.thickness = m_ScreenSpaceShadowParams.punctualRayParams.y;
+	settings.normalBias = m_ScreenSpaceShadowParams.punctualRayParams.z;
+	settings.maxSteps = static_cast<uint32_t>((std::max)(m_ScreenSpaceShadowParams.punctualRayParams.w, 1.0f));
+	settings.strength = m_ScreenSpaceShadowParams.fadeParams.w;
+	return settings;
+}
+
+void VansGraphics::VansMaterialManager::ApplyScreenSpacePunctualShadowSettings(
+	const VansScreenSpacePunctualShadowSettings& settings)
+{
+	m_ScreenSpaceShadowParams.punctualRayParams = glm::vec4(
+		glm::clamp(settings.maxTraceDistance, 0.25f, 50.0f),
+		glm::clamp(settings.thickness, 0.005f, 1.0f),
+		glm::clamp(settings.normalBias, 0.001f, 0.25f),
+		static_cast<float>(glm::clamp(settings.maxSteps, 8u, 128u)));
+	m_ScreenSpaceShadowParams.fadeParams.w = glm::clamp(settings.strength, 0.0f, 1.0f);
+
+	if (m_ScreenSpaceShadowParamsCBBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
+	{
+		m_ScreenSpaceShadowParamsCBBuffer.SetBufferData(
+			&m_ScreenSpaceShadowParams,
+			0,
+			sizeof(m_ScreenSpaceShadowParams));
+	}
+}
+
+void VansGraphics::VansMaterialManager::SetScreenSpaceShadowExtent(uint32_t width, uint32_t height)
+{
+	width = (std::max)(width, 1u);
+	height = (std::max)(height, 1u);
+	m_ScreenSpaceShadowParams.screenSize = glm::vec4(
+		static_cast<float>(width),
+		static_cast<float>(height),
+		1.0f / static_cast<float>(width),
+		1.0f / static_cast<float>(height));
+
+	if (m_ScreenSpaceShadowParamsCBBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
+	{
+		m_ScreenSpaceShadowParamsCBBuffer.SetBufferData(
+			&m_ScreenSpaceShadowParams,
+			0,
+			sizeof(m_ScreenSpaceShadowParams));
+	}
 }
 
 void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()

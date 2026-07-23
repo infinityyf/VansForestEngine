@@ -143,6 +143,40 @@ namespace
         constexpr float DEG_TO_RAD = 0.017453292519943295f;
         return degrees * DEG_TO_RAD;
     }
+
+    bool EditPunctualShadow(Vans::EditorAPI::PointLightSettings::PunctualShadowSettings& shadow)
+    {
+        bool changed = false;
+        changed |= ImGui::Checkbox("Cast Shadows", &shadow.castShadows);
+        const char* policies[] = { "Disabled", "Auto", "Hero", "Distance Dynamic" };
+        changed |= ImGui::Combo("Shadow Policy", &shadow.policy, policies, 4);
+        if (shadow.policy == 3)
+            ImGui::TextDisabled("Near lights win; Max Distance controls the smooth priority falloff.");
+        changed |= ImGui::SliderInt("Shadow Priority", &shadow.priority, 0, 255);
+
+        int resolutionIndex = shadow.resolution == 128 ? 1 : shadow.resolution == 256 ? 2 :
+            shadow.resolution == 512 ? 3 : shadow.resolution == 1024 ? 4 : 0;
+        const char* resolutions[] = { "Auto", "128", "256", "512", "1024" };
+        if (ImGui::Combo("Shadow Resolution", &resolutionIndex, resolutions, 5))
+        {
+            const int values[] = { 0, 128, 256, 512, 1024 };
+            shadow.resolution = values[resolutionIndex];
+            changed = true;
+        }
+        const char* updateModes[] = { "Every Frame", "On Change", "Budgeted" };
+        changed |= ImGui::Combo("Shadow Update", &shadow.updateMode, updateModes, 3);
+        const char* fallbacks[] = { "None", "Screen Space" };
+        changed |= ImGui::Combo("Shadow Fallback", &shadow.fallback, fallbacks, 2);
+        changed |= DragFloatTracked("Shadow Max Distance", &shadow.maxDistance, 0.25f, 0.01f, 10000.0f, "%.2f");
+        changed |= DragFloatTracked("Shadow Near Plane", &shadow.nearPlane, 0.005f, 0.0f, 10.0f, "%.3f");
+        changed |= DragFloatTracked("Depth Bias (texels)", &shadow.depthBiasTexels, 0.02f, 0.0f, 16.0f, "%.2f");
+        changed |= DragFloatTracked("Normal Bias (texels)", &shadow.normalBiasTexels, 0.02f, 0.0f, 16.0f, "%.2f");
+        changed |= DragFloatTracked("Source Radius", &shadow.sourceRadius, 0.002f, 0.0f, 10.0f, "%.3f");
+        changed |= ImGui::Checkbox("Affects Volumetric Fog", &shadow.affectsFog);
+        changed |= ImGui::Checkbox("Affects GI", &shadow.affectsGI);
+        TrackCommandMergeBoundary();
+        return changed;
+    }
 }
 
 void VansGraphics::VansLightWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
@@ -159,6 +193,7 @@ void VansGraphics::VansLightWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
     lightChanged |= DrawDirectionalLights(lightingSettings.directionalLights);
     lightChanged |= DrawPointLights(lightingSettings.pointLights);
     lightChanged |= DrawSpotLights(lightingSettings.spotLights);
+    lightChanged |= DrawRectLights(lightingSettings.rectLights);
 
     if (lightChanged)
     {
@@ -222,6 +257,7 @@ bool VansGraphics::VansLightWindow::DrawPointLights(std::vector<Vans::EditorAPI:
             changed |= DragFloatTracked("Intensity", &pointLights[lightIndex].intensity, 0.1f, 0.0f, 1000.0f, "%.2f");
             changed |= DragFloatTracked("Radius", &pointLights[lightIndex].radius, 0.1f, 0.01f, 10000.0f, "%.2f");
             pointLights[lightIndex].radius = std::max(pointLights[lightIndex].radius, 0.01f);
+            changed |= EditPunctualShadow(pointLights[lightIndex].shadow);
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -265,11 +301,41 @@ bool VansGraphics::VansLightWindow::DrawSpotLights(std::vector<Vans::EditorAPI::
             }
 
             spotLights[lightIndex].radius = std::max(spotLights[lightIndex].radius, 0.01f);
+            changed |= EditPunctualShadow(spotLights[lightIndex].shadow);
             ImGui::TreePop();
         }
         ImGui::PopID();
     }
 
+    return changed;
+}
+
+bool VansGraphics::VansLightWindow::DrawRectLights(std::vector<Vans::EditorAPI::RectLightSettings>& rectLights)
+{
+    if (!ImGui::CollapsingHeader("Rect Lights", ImGuiTreeNodeFlags_DefaultOpen))
+        return false;
+
+    bool changed = false;
+    for (int lightIndex = 0; lightIndex < static_cast<int>(rectLights.size()); ++lightIndex)
+    {
+        ImGui::PushID(lightIndex);
+        const std::string treeLabel = "Rect Light " + std::to_string(lightIndex);
+        if (ImGui::TreeNode(treeLabel.c_str()))
+        {
+            auto& light = rectLights[lightIndex];
+            changed |= EditFloat3("Position", light.position, 0.05f, -10000.0f, 10000.0f, "%.3f");
+            changed |= EditDirection3("Normal", light.normal);
+            changed |= EditColor3("Color", light.color);
+            changed |= DragFloatTracked("Intensity", &light.intensity, 0.1f, 0.0f, 1000.0f, "%.2f");
+            changed |= DragFloatTracked("Width", &light.width, 0.02f, 0.01f, 10000.0f, "%.2f");
+            changed |= DragFloatTracked("Height", &light.height, 0.02f, 0.01f, 10000.0f, "%.2f");
+            changed |= DragFloatTracked("Range", &light.range, 0.1f, 0.01f, 10000.0f, "%.2f");
+            changed |= ImGui::Checkbox("Two Sided", &light.twoSided);
+            changed |= EditPunctualShadow(light.shadow);
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
     return changed;
 }
 

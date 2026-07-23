@@ -24,19 +24,16 @@ namespace VansGraphics
 	struct alignas(16) RayTracingPushConstant
 	{
 		glm::vec4 gridParams;
-		glm::vec4 cameraDir;
-		glm::vec4 cameraUp;
-		glm::vec4 cameraRight;
 		glm::vec4 dispatchParams;
 		glm::vec4 frameParams;
 		glm::vec4 regionParams;
 		glm::vec4 lightingParams;
 	};
-	static_assert(sizeof(RayTracingPushConstant) == 128, "GI push constant layout must match GLSL");
+	static_assert(sizeof(RayTracingPushConstant) == 80, "GI push constant layout must match GLSL");
 	static_assert(alignof(RayTracingPushConstant) == 16, "GI push constant alignment must match GLSL vec4");
 	static_assert(offsetof(RayTracingPushConstant, gridParams) == 0, "GI grid parameters must occupy GLSL slot 0");
-	static_assert(offsetof(RayTracingPushConstant, dispatchParams) == 64, "GI dispatch parameters must occupy GLSL slot 4");
-	static_assert(offsetof(RayTracingPushConstant, lightingParams) == 112, "GI lighting parameters must occupy GLSL slot 7");
+	static_assert(offsetof(RayTracingPushConstant, dispatchParams) == 16, "GI dispatch parameters must occupy GLSL slot 1");
+	static_assert(offsetof(RayTracingPushConstant, lightingParams) == 64, "GI lighting parameters must occupy GLSL slot 4");
 
 	struct alignas(16) GIRTPreviewPushConstant
 	{
@@ -81,8 +78,6 @@ namespace VansGraphics
 
 		void CreateGIPointLightDescriptorSets(VansVKDevice* device);
 
-		void CreateGISHUpdateDescriptorSets(VansVKDevice* device);
-
 		void CreateGIVisibilityUpdateDescriptorSets(VansVKDevice* device);
 
 		void CreateGIRTPreviewDescriptorSets(VansVKDevice* device);
@@ -92,8 +87,6 @@ namespace VansGraphics
 		void BindRayTracingData(VansVKDevice* device, VansScene* scene);
 
 		void BindGIPointLightData();
-
-		void BindGISHData(VansMaterialManager* materialManager);
 
 		void BindGIVisibilityData(VansMaterialManager* materialManager);
 
@@ -110,8 +103,6 @@ namespace VansGraphics
 
 		bool m_GIPointLightDescriptorSetIsDirty = true;
 
-		bool m_GISHUpdateDesctiproeSetIsDirty = true;
-
 		bool m_GIVisibilityDescriptorSetIsDirty = true;
 
 
@@ -125,7 +116,7 @@ namespace VansGraphics
 		VansTexture* m_GIRTPreviewTexture = nullptr;
 
 		
-		VansRayTracingShader m_VansRayTracingShader;
+		VansRayTracingShader* m_VansRayTracingShader = nullptr;
 
 		VkDescriptorSetLayout m_RayTracingSetLayout;
 		std::vector<VkDescriptorSet> m_RayTracingDescriptorSets;
@@ -134,10 +125,6 @@ namespace VansGraphics
 		//GI采样点着色
 		VkDescriptorSetLayout m_GISamplePositionLightSetLayout;
 		std::vector<VkDescriptorSet> m_GISamplePositionLightDescriptorSets;
-
-		//GI积分着色
-		VkDescriptorSetLayout m_GISHUpdateSetLayout;
-		std::vector<VkDescriptorSet> m_GISHUpdateDescriptorSets;
 
 		VkDescriptorSetLayout m_GIVisibilityUpdateSetLayout;
 		std::vector<VkDescriptorSet> m_GIVisibilityUpdateDescriptorSets;
@@ -163,8 +150,6 @@ namespace VansGraphics
 
 		VansComputeShader* m_RayTracingPointLighting = nullptr;
 
-		VansComputeShader* m_GISHUpdateShader = nullptr;
-
 		VansComputeShader* m_GIVisibilityUpdateShader = nullptr;
 
 		VansComputeShader* m_GIRTPreviewShader = nullptr;
@@ -177,7 +162,8 @@ namespace VansGraphics
 		//GI 可见度计算
 
 		//记录命中点的光照信息
-		VansVKBuffer m_HitPointLightBuffer;
+		VansVKBuffer m_HitRadianceBuffer;
+		VansVKBuffer m_HitDirectDiffuseBuffer;
 
 		bool m_HitPositionCalculateDone = false;
 

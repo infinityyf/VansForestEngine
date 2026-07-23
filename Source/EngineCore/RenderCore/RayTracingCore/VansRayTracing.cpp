@@ -10,6 +10,7 @@
 #include "../../RenderCore/VansScene.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../RenderCore//VansMaterial.h"
+#include "../../RenderCore/VansShaderManager.h"
 #include "../../Util/VansLog.h"
 
 #include <algorithm>
@@ -35,9 +36,6 @@ void VansGraphics::VansRayTracing::CleanupSceneResources(VkDevice device)
 	descMgr->DestroyDescriptorSet(m_GISamplePositionLightDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_GISamplePositionLightSetLayout);
 
-	descMgr->DestroyDescriptorSet(m_GISHUpdateDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_GISHUpdateSetLayout);
-
 	descMgr->DestroyDescriptorSet(m_GIVisibilityUpdateDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_GIVisibilityUpdateSetLayout);
 
@@ -50,7 +48,8 @@ void VansGraphics::VansRayTracing::CleanupSceneResources(VkDevice device)
 	m_RayTracingHitAlbedoRoughnessResult.DestroyVulkanBuffer(device);
 	m_BLASInstanceBuffer.DestroyVulkanBuffer(device);
 	m_TLASInstanceTextureIndexBuffer.DestroyVulkanBuffer(device);
-	m_HitPointLightBuffer.DestroyVulkanBuffer(device);
+	m_HitRadianceBuffer.DestroyVulkanBuffer(device);
+	m_HitDirectDiffuseBuffer.DestroyVulkanBuffer(device);
 
 	// 释放场景加载时 new 出来的 RT 渲染资源，防止切换场景时泄漏
 	delete m_RayTracingResult;
@@ -68,25 +67,20 @@ void VansGraphics::VansRayTracing::CleanupSceneResources(VkDevice device)
 	delete m_GIRTPreviewTexture;
 	m_GIRTPreviewTexture = nullptr;
 
-	delete m_RayTracingPointLighting;
 	m_RayTracingPointLighting = nullptr;
 
-	delete m_GISHUpdateShader;
-	m_GISHUpdateShader = nullptr;
-
-	delete m_GIVisibilityUpdateShader;
 	m_GIVisibilityUpdateShader = nullptr;
 
-	delete m_GIRTPreviewShader;
 	m_GIRTPreviewShader = nullptr;
 
 	// 重置 RT 着色器的 pipeline / SBT，下次 CreateRayTracingResource 将重建
-	m_VansRayTracingShader.CleanupPipeline();
+	if (m_VansRayTracingShader)
+		m_VansRayTracingShader->TriggerReCreateRayTracingPipeline();
+	m_VansRayTracingShader = nullptr;
 
 	// 标记脏以便下次 CreateRayTracingResource 重新绑定
 	m_RayTracingDescriptorSetIsDirty = true;
 	m_GIPointLightDescriptorSetIsDirty = true;
-	m_GISHUpdateDesctiproeSetIsDirty = true;
 	m_GIVisibilityDescriptorSetIsDirty = true;
 	m_GIRTPreviewDescriptorSetIsDirty = true;
 	m_GIRTPreviewRequestFrames = 0;
@@ -141,11 +135,14 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
         << " probes=" << (gi.gridDimensions.x * gi.gridDimensions.y * gi.gridDimensions.z)
         << " pushConstants=" << sizeof(m_RayTracingConstant) << " bytes");
 
-    auto vansConfigration = VansConfigration::GetInstance();
-    std::string projectRoot = vansConfigration->GetProjectRootPath();
-    m_VansRayTracingShader.InitRayTracingShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/RayTracingTest").c_str());
-    m_VansRayTracingShader.SetPushConstant(sizeof(m_RayTracingConstant));
-    m_VansRayTracingShader.SetPushConstantData(&(m_RayTracingConstant));
+    auto& shaderManager = VansShaderManager::Get();
+    m_VansRayTracingShader = shaderManager.FindRayTracingShader("RayTracingTest");
+    if (!m_VansRayTracingShader)
+    {
+        VANS_LOG_ERROR("[CreateRayTracingResource] Managed RayTracingTest shader is unavailable");
+        m_RTResourcesReady = false;
+        return;
+    }
     
     m_RayTracingResult = new VansTexture();
     m_RayTracingResult->InitTextureWithoutData(*commandBuffer, m_RayTracingGridDimensions.x, m_RayTracingGridDimensions.y, m_RayTracingGridDimensions.z, 4, false, false, true, HDR_PRES_16);
@@ -203,7 +200,7 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
 
     //提前生成pipeline
     CreateRayTraceDescriptorSets(device, blasMeshCount);
-    m_VansRayTracingShader.GetRayTracingPipeline(device, { m_RayTracingSetLayout });
+    m_VansRayTracingShader->GetRayTracingPipeline(device, { m_RayTracingSetLayout });
 
     //创建instance data的buffer
     m_BLASInstanceBuffer.CreatVulkanBuffer(device->GetLogicDevice(), 
@@ -225,6 +222,8 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
 
     const VkDeviceSize giHitBufferSize = static_cast<VkDeviceSize>(gi.raysPerProbe) *
         gi.gridDimensions.x * gi.gridDimensions.y * gi.gridDimensions.z * sizeof(uint16_t) * 4;
+    const VkDeviceSize giDirectCacheBufferSize = static_cast<VkDeviceSize>(gi.raysPerProbe) *
+        gi.gridDimensions.x * gi.gridDimensions.y * gi.gridDimensions.z * sizeof(uint32_t);
 
     //命中点法线和位置
     m_RayTracingHitPositionResult.CreatVulkanBuffer(device->GetLogicDevice(),
@@ -248,9 +247,16 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
     );
 
-    m_HitPointLightBuffer.CreatVulkanBuffer(device->GetLogicDevice(),
+    m_HitRadianceBuffer.CreatVulkanBuffer(device->GetLogicDevice(),
         giHitBufferSize,
         VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+    );
+
+    m_HitDirectDiffuseBuffer.CreatVulkanBuffer(device->GetLogicDevice(),
+        giDirectCacheBufferSize,
+        VK_FORMAT_R32_UINT,
         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
     );
@@ -259,7 +265,8 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
     // 显式清零所有反馈资源，保证未写入 slice 的 radiance 为 0，而不是未定义显存。
     if (commandBuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
     {
-        commandBuffer->FillBuffer(m_HitPointLightBuffer.GetNativeBuffer(), 0, m_HitPointLightBuffer.GetBufferSize(), 0u);
+        commandBuffer->FillBuffer(m_HitRadianceBuffer.GetNativeBuffer(), 0, m_HitRadianceBuffer.GetBufferSize(), 0u);
+        commandBuffer->FillBuffer(m_HitDirectDiffuseBuffer.GetNativeBuffer(), 0, m_HitDirectDiffuseBuffer.GetBufferSize(), 0u);
 
         VkClearColorValue clearSH{};
         commandBuffer->ClearColorImage(shRResult->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
@@ -298,33 +305,32 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
         VANS_LOG_ERROR("[CreateRayTracingResource] Failed to begin initial GI resource clear command buffer.");
     }
 
-    m_RayTracingPointLighting = new VansComputeShader();
-    m_RayTracingPointLighting->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/GIPointLight").c_str());
-    m_RayTracingPointLighting->SetPushConstant(sizeof(m_RayTracingConstant));
-    m_RayTracingPointLighting->SetPushConstantData(&(m_RayTracingConstant));
+    m_RayTracingPointLighting = shaderManager.FindComputeShader("GIPointLight");
+    if (!m_RayTracingPointLighting)
+    {
+        VANS_LOG_ERROR("[CreateRayTracingResource] Managed GIPointLight shader is unavailable");
+        return;
+    }
 
 
     //创建cs的set
     CreateGIPointLightDescriptorSets(device);
 
-    m_GISHUpdateShader = new VansComputeShader();
-    m_GISHUpdateShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/GISHUpdate").c_str());
-    m_GISHUpdateShader->SetPushConstant(sizeof(m_RayTracingConstant));
-    m_GISHUpdateShader->SetPushConstantData(&(m_RayTracingConstant));
-
-    CreateGISHUpdateDescriptorSets(device);
-
-    m_GIVisibilityUpdateShader = new VansComputeShader();
-    m_GIVisibilityUpdateShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/GIVisibilityUpdate").c_str());
-    m_GIVisibilityUpdateShader->SetPushConstant(sizeof(m_RayTracingConstant));
-    m_GIVisibilityUpdateShader->SetPushConstantData(&(m_RayTracingConstant));
+    m_GIVisibilityUpdateShader = shaderManager.FindComputeShader("GIVisibilityUpdate");
+    if (!m_GIVisibilityUpdateShader)
+    {
+        VANS_LOG_ERROR("[CreateRayTracingResource] Managed GIVisibilityUpdate shader is unavailable");
+        return;
+    }
 
     CreateGIVisibilityUpdateDescriptorSets(device);
 
-	m_GIRTPreviewShader = new VansComputeShader();
-	m_GIRTPreviewShader->InitShader(device->GetLogicDevice(), (projectRoot + "EngineAssets/Shaders/GIRTPreview").c_str());
-	m_GIRTPreviewShader->SetPushConstant(sizeof(m_GIRTPreviewConstant));
-	m_GIRTPreviewShader->SetPushConstantData(&m_GIRTPreviewConstant);
+	m_GIRTPreviewShader = shaderManager.FindComputeShader("GIRTPreview");
+	if (!m_GIRTPreviewShader)
+	{
+		VANS_LOG_ERROR("[CreateRayTracingResource] One or more managed GI compute shaders are unavailable");
+		return;
+	}
 	CreateGIRTPreviewDescriptorSets(device);
 
     m_HitPositionCalculateDone = false;
@@ -411,7 +417,8 @@ bool VansGraphics::VansRayTracing::UpdateLightingResponseState(VansLightManager*
         lightColor = glm::vec4(effectiveColor, 0.0f);
     }
 
-    bool changed = !m_HasLastGIMainLight;
+    const bool initializing = !m_HasLastGIMainLight;
+    bool changed = initializing;
     if (!changed)
     {
         const float directionDelta = glm::length(glm::vec3(directionIntensity) - glm::vec3(m_LastGIMainLightDirectionIntensity));
@@ -426,9 +433,12 @@ bool VansGraphics::VansRayTracing::UpdateLightingResponseState(VansLightManager*
         const uint32_t responseDivisor = std::min(configuredDivisor, 2u);
         const uint32_t spatialPhaseCount = responseDivisor * responseDivisor * responseDivisor;
 
-        // 主光变化会影响所有方向的 miss sky 和命中点 direct lighting。
-        // 响应窗口内每个空间 slice 都刷新全方向，两轮覆盖可以降低 trilinear 插值下的局部跳变。
-        m_GILightingResponseFramesRemaining = std::max(m_GILightingResponseFramesRemaining, spatialPhaseCount * 2u);
+        // Cold start performs four full spatial sweeps so local static lights can
+        // seed several diffuse bounces. Later main-light changes need two sweeps.
+        const uint32_t sweepCount = initializing ? 4u : 2u;
+        m_GILightingResponseFramesRemaining = std::max(
+            m_GILightingResponseFramesRemaining,
+            spatialPhaseCount * sweepCount);
     }
 
     m_LastGIMainLightDirectionIntensity = directionIntensity;
@@ -450,12 +460,11 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCom
 
     BindGIPointLightData();
 
-    BindGISHData(materialManager);
-
     m_RayTracingConstant.frameParams.x = static_cast<float>(m_GIUpdateFrameIndex++);
 
     const float configuredUpdateDivisor = m_RayTracingConstant.frameParams.y;
     const float configuredDirectionSlices = m_RayTracingConstant.frameParams.z;
+    m_RayTracingConstant.lightingParams.w = m_GILightingResponseFramesRemaining > 0 ? 1.0f : 0.0f;
     if (m_GILightingResponseFramesRemaining > 0)
     {
         m_RayTracingConstant.frameParams.y = static_cast<float>(std::min(std::max(1u, static_cast<uint32_t>(configuredUpdateDivisor)), 2u));
@@ -484,28 +493,8 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCom
         groupCount.x,
         groupCount.y,
         groupCount.z,
-        { m_Scene->GetGlobalDescriptorSet(), m_GISamplePositionLightDescriptorSets[0]});
-
-    // GIPointLight 写入 m_HitPointLightBuffer，GISHUpdate 将读取该缓冲区。
-    // 插入 compute→compute 内存屏障防止 RAW 冒险。
-    {
-        VkMemoryBarrier computeBarrier{};
-        computeBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        computeBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        computeBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        commandBuffer->PipelineBarrier(
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            { computeBarrier });
-    }
-
-    commandBuffer->EnsureComputeShader(*m_GISHUpdateShader, { m_Scene->GetGlobalDescriptorSetLayout(), m_GISHUpdateSetLayout});
-    commandBuffer->DispatchCompute(
-        *m_GISHUpdateShader,
-        groupCount.x,
-        groupCount.y,
-        groupCount.z,
-        { m_Scene->GetGlobalDescriptorSet(), m_GISHUpdateDescriptorSets[0] });
+        { m_Scene->GetGlobalDescriptorSet(), m_GISamplePositionLightDescriptorSets[0]},
+        &m_RayTracingConstant, sizeof(m_RayTracingConstant));
 
     CopyCurrentSHToFeedback(commandBuffer, materialManager);
 
@@ -624,7 +613,11 @@ void VansGraphics::VansRayTracing::BindGIPointLightData()
         return;
     }
     auto* visibilityAtlas = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
-    if (visibilityAtlas == nullptr)
+    auto* rCoeffTexture = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
+    auto* gCoeffTexture = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
+    auto* bCoeffTexture = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
+    if (visibilityAtlas == nullptr || rCoeffTexture == nullptr ||
+        gCoeffTexture == nullptr || bCoeffTexture == nullptr)
     {
         return;
     }
@@ -652,12 +645,12 @@ void VansGraphics::VansRayTracing::BindGIPointLightData()
 
     descManager->WriteBufferDescriptor(
         m_GISamplePositionLightDescriptorSets[0],
-        GIPL_BINDING_DIRECT_LIGHT,
+        GIPL_BINDING_RADIANCE,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
-            m_HitPointLightBuffer.GetNativeBuffer(),
+            m_HitRadianceBuffer.GetNativeBuffer(),
             0,
-            m_HitPointLightBuffer.GetBufferSize()
+            m_HitRadianceBuffer.GetBufferSize()
         }});
 
     descManager->WriteBufferDescriptor(
@@ -691,6 +684,16 @@ void VansGraphics::VansRayTracing::BindGIPointLightData()
             m_SHFeedbackR->GetImage().GetSampler(),
             m_SHFeedbackR->GetImage().GetImageView(),
             VK_IMAGE_LAYOUT_GENERAL
+        }});
+
+    descManager->WriteBufferDescriptor(
+        m_GISamplePositionLightDescriptorSets[0],
+        GIPL_BINDING_DIRECT_CACHE,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{
+            m_HitDirectDiffuseBuffer.GetNativeBuffer(),
+            0,
+            m_HitDirectDiffuseBuffer.GetBufferSize()
         }});
     descManager->WriteImageDescriptor(
         m_GISamplePositionLightDescriptorSets[0],
@@ -737,66 +740,24 @@ void VansGraphics::VansRayTracing::BindGIPointLightData()
             visibilityAtlas->GetImage().GetImageView(),
             VK_IMAGE_LAYOUT_GENERAL
         }});
+    descManager->WriteImageDescriptor(
+        m_GISamplePositionLightDescriptorSets[0],
+        GIPL_BINDING_RESULT_R,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        {{ rCoeffTexture->GetImage().GetSampler(), rCoeffTexture->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+    descManager->WriteImageDescriptor(
+        m_GISamplePositionLightDescriptorSets[0],
+        GIPL_BINDING_RESULT_G,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        {{ gCoeffTexture->GetImage().GetSampler(), gCoeffTexture->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+    descManager->WriteImageDescriptor(
+        m_GISamplePositionLightDescriptorSets[0],
+        GIPL_BINDING_RESULT_B,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        {{ bCoeffTexture->GetImage().GetSampler(), bCoeffTexture->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 
     descManager->CommitDescriptorUpdates();
     m_GIPointLightDescriptorSetIsDirty = false;
-}
-
-void VansGraphics::VansRayTracing::BindGISHData(VansMaterialManager* materialManager)
-{
-    if (!m_GISHUpdateDesctiproeSetIsDirty)
-    {
-        return;
-    }
-
-    auto* rCoeffTexture = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
-    auto* gCoeffTexture = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
-    auto* bCoeffTexture = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
-    if (rCoeffTexture == nullptr || gCoeffTexture == nullptr || bCoeffTexture == nullptr)
-    {
-        return;
-    }
-
-    auto* descManager = VansVKDescriptorManager::GetInstance();
-    descManager->BeginDescriptorUpdate();
-    descManager->WriteBufferDescriptor(
-        m_GISHUpdateDescriptorSets[0],
-        GISH_BINDING_DIRECT_LIGHT,
-        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        {{
-            m_HitPointLightBuffer.GetNativeBuffer(),
-            0,
-            m_HitPointLightBuffer.GetBufferSize()
-        }});
-    descManager->WriteImageDescriptor(
-        m_GISHUpdateDescriptorSets[0],
-        GISH_BINDING_RESULT_R,
-        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        {{
-            rCoeffTexture->GetImage().GetSampler(),
-            rCoeffTexture->GetImage().GetImageView(),
-            VK_IMAGE_LAYOUT_GENERAL
-        }});
-    descManager->WriteImageDescriptor(
-        m_GISHUpdateDescriptorSets[0],
-        GISH_BINDING_RESULT_G,
-        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        {{
-            gCoeffTexture->GetImage().GetSampler(),
-            gCoeffTexture->GetImage().GetImageView(),
-            VK_IMAGE_LAYOUT_GENERAL
-        }});
-    descManager->WriteImageDescriptor(
-        m_GISHUpdateDescriptorSets[0],
-        GISH_BINDING_RESULT_B,
-        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        {{
-            bCoeffTexture->GetImage().GetSampler(),
-            bCoeffTexture->GetImage().GetImageView(),
-            VK_IMAGE_LAYOUT_GENERAL
-        }});
-    descManager->CommitDescriptorUpdates();
-    m_GISHUpdateDesctiproeSetIsDirty = false;
 }
 
 void VansGraphics::VansRayTracing::BindGIVisibilityData(VansMaterialManager* materialManager)
@@ -888,7 +849,7 @@ void VansGraphics::VansRayTracing::BindGIRTPreviewData(VansMaterialManager* mate
     writeBuffer(GI_RT_PREVIEW_BINDING_HIT_POSITION, m_RayTracingHitPositionResult);
     writeBuffer(GI_RT_PREVIEW_BINDING_HIT_NORMAL, m_RayTracingHitNormalResult);
     writeBuffer(GI_RT_PREVIEW_BINDING_HIT_PBR, m_RayTracingHitAlbedoRoughnessResult);
-    writeBuffer(GI_RT_PREVIEW_BINDING_DIRECT_LIGHT, m_HitPointLightBuffer);
+    writeBuffer(GI_RT_PREVIEW_BINDING_DIRECT_LIGHT, m_HitRadianceBuffer);
     writeImage(GI_RT_PREVIEW_BINDING_RAY_SUMMARY, m_RayTracingResult);
     writeImage(GI_RT_PREVIEW_BINDING_SH_R, shR);
     writeImage(GI_RT_PREVIEW_BINDING_SH_G, shG);
@@ -930,7 +891,8 @@ void VansGraphics::VansRayTracing::DispatchGIRTPreview(
         (m_RayTracingGridDimensions.x + 7u) / 8u,
         (m_RayTracingGridDimensions.y + 7u) / 8u,
         1u,
-        { m_GIRTPreviewDescriptorSets[0] });
+        { m_GIRTPreviewDescriptorSets[0] },
+        &m_GIRTPreviewConstant, sizeof(m_GIRTPreviewConstant));
 
     VkMemoryBarrier previewBarrier{};
     previewBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -971,7 +933,7 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
 
     BindRayTracingData(device, scene);
 
-    VansVKRayTracingPipeline* vansPipeline = m_VansRayTracingShader.GetRayTracingPipeline(device, { m_RayTracingSetLayout });
+    VansVKRayTracingPipeline* vansPipeline = m_VansRayTracingShader->GetRayTracingPipeline(device, { m_RayTracingSetLayout });
 
     // Make prior AS build/updates visible to RT stage (use a memory barrier)
     {
@@ -992,8 +954,8 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
         *vansPipeline,
         VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR,
         0, 
-        m_VansRayTracingShader.GetPushConstantSize(),
-        m_VansRayTracingShader.GetPushConstantData());
+        m_VansRayTracingShader->GetPushConstantSize(),
+        &m_RayTracingConstant);
 
     commandBuffer->TraceRays(
         *vansPipeline,
@@ -1028,7 +990,8 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
             (atlasWidth + 7u) / 8u,
             (atlasHeight + 7u) / 8u,
             1,
-            { m_GIVisibilityUpdateDescriptorSets[0] });
+            { m_GIVisibilityUpdateDescriptorSets[0] },
+            &m_RayTracingConstant, sizeof(m_RayTracingConstant));
 
         m_GIVisibilityCalculateDone = true;
 
@@ -1167,15 +1130,6 @@ void VansGraphics::VansRayTracing::CreateGIPointLightDescriptorSets(VansVKDevice
         m_GISamplePositionLightDescriptorSets);
 
     m_GIPointLightDescriptorSetIsDirty = true;
-}
-
-void VansGraphics::VansRayTracing::CreateGISHUpdateDescriptorSets(VansVKDevice* device)
-{
-    VansDescriptorSetLayoutFactory::CreateAndAllocate_GISHUpdate(
-        m_GISHUpdateSetLayout,
-        m_GISHUpdateDescriptorSets);
-
-    m_GISHUpdateDesctiproeSetIsDirty = true;
 }
 
 void VansGraphics::VansRayTracing::BindRayTracingData(VansVKDevice* device, VansScene* scene)

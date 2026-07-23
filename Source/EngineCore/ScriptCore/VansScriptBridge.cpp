@@ -137,6 +137,9 @@ static VansGraphics::VansPostProcessProfile* GetPPProfile()
 // ---------------------------------------------------------------------------
 void VansInitEngineBridge()
 {
+	s_EngineBridge = {};
+	s_EngineBridge.structSize = sizeof(VansEngineBridge);
+
 	// ── Transform ────────────────────────────────────────────────────────
 	s_EngineBridge.transformGetPosition = [](uint32_t id, float& x, float& y, float& z)
 	{
@@ -1878,6 +1881,9 @@ static VansInputBridge s_InputBridge;
 
 void VansInitInputBridge()
 {
+	s_InputBridge = {};
+	s_InputBridge.structSize = sizeof(VansInputBridge);
+
 	auto& input = Vans::VansInputManager::Get();
 
 	// ── 键盘 ─────────────────────────────────────────────────────────────

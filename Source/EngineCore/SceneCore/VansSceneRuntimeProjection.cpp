@@ -358,7 +358,6 @@ bool VansSceneRuntimeProjection::BuildRuntimeScene(json& sceneData)
 		{
 			if (record.type != VansAssetType::Material || record.state == VansAssetState::Missing)
 				continue;
-
 			json material = RuntimeMaterialFromAsset(record);
 			if (!material.empty())
 				projected["material"].push_back(std::move(material));
@@ -454,6 +453,16 @@ bool VansSceneRuntimeProjection::BuildRuntimeScene(json& sceneData)
 				{ "type", data.value("renderType", "opaque") },
 				{ "support_shadow", data.value("castShadows", true) }
 			};
+
+			// Optional, explicitly indexed material bindings for multi-mesh assets.
+			// Keep the legacy materialOverrides resolution above for every existing
+			// project; only assets that opt in with this field use per-submesh
+			// materials at runtime.
+			if (data.contains("submeshMaterialOverrides") &&
+				data["submeshMaterialOverrides"].is_object())
+			{
+				runtimeRender["submeshMaterialOverrides"] = data["submeshMaterialOverrides"];
+			}
 
 			if (data.contains("submesh") && data["submesh"].is_object())
 			{

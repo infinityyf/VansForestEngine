@@ -181,11 +181,14 @@
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectManager.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProjectSelector.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\ShaderHotReload\VansEditorShaderHotReloadController.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetGuid.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetMeta.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDatabase.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDocument.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansClothProfile.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderCompiler.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderArtifactCache.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansAssetDocumentEditService.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansAssetDocumentRegistry.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansAssetReferenceSlotRegistry.h" />
@@ -193,6 +196,7 @@
     <ClInclude Include="Source\EngineCore\EditorCore\VansSceneAssetPlacementService.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansModelAsset.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansTextureCooker.h" />
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDiagnostics.h" />
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDocument.h" />
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDocumentLoader.h" />
@@ -220,6 +224,7 @@
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansGIWindow.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansPostProcessWindow.h" />
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansShadowDebuggerWindow.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUISystem.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIDocument.h" />
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUIElementHandle.h" />
@@ -255,6 +260,7 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansCCDSolver.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansFABRIKSolver.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansLookAtSolver.h" />
+    <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansTwoBoneIKSolver.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKChainBuilder.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootPlacementTypes.h" />
     <ClInclude Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootGroundProbe.h" />
@@ -277,6 +283,9 @@
     <ClInclude Include="Source\EngineCore\RuntimeCore\VansFramePhase.h" />
     <ClInclude Include="Source\EngineCore\RuntimeCore\VansThreadContract.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansLight.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\ShadowCore\VansPunctualShadowTypes.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\ShadowCore\VansShadowAtlasAllocator.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\ShadowCore\VansPunctualShadowManager.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansIESProfile.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansPBR.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.h" />
@@ -326,6 +335,7 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansSubMesh.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.h" />
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineCacheService.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineDescriptor.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineRegistry.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderDocCapture.h" />
@@ -354,7 +364,6 @@
     <ClInclude Include="Source\EngineCore\Util\VansLog.h" />
     <ClInclude Include="Source\EngineCore\Util\VansProfiler.h" />
     <ClInclude Include="Source\EngineCore\Interfaces\INativeWindowProvider.h" />
-    <ClInclude Include="Source\EngineCore\Interfaces\IShaderHotReloadService.h" />
     <ClInclude Include="Source\EngineCore\EngineAPILayer\Public\EngineDTOs.h" />
     <ClInclude Include="Source\EngineCore\EngineAPILayer\Public\EngineIds.h" />
     <ClInclude Include="Source\EngineCore\EngineAPILayer\Public\IEngineCommand.h" />
@@ -392,6 +401,7 @@
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorAssetSaveService.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansSceneAssetPlacementService.cpp" />
     <ClCompile Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.cpp" />
+    <ClCompile Include="Source\EngineCore\AssetCore\Importers\VansTextureCooker.cpp" />
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneSchema.cpp" />
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneDocument.cpp" />
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneDocumentLoader.cpp" />
@@ -451,6 +461,10 @@
     <ClCompile Include="External\GUI\ImGuizmo\ImGuizmo.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansGizmos.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\ShaderHotReload\VansEditorShaderHotReloadController.cpp" />
+    <ClCompile Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderCompiler.cpp" />
+    <ClCompile Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderArtifactCache.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansGBufferWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansRenderDebugWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansHierachyWindow.cpp" />
@@ -469,6 +483,7 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansGIWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansPostProcessWindow.cpp" />
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansShadowDebuggerWindow.cpp" />
     <ClCompile Include="Source\EngineCore\EngineAPILayer\Private\EngineAPIImpl.cpp" />
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUISystem.cpp" />
     <ClCompile Include="Source\EngineCore\RuntimeUI\VansUIScreenManager.cpp" />
@@ -497,6 +512,7 @@
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansCCDSolver.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansFABRIKSolver.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansLookAtSolver.cpp" />
+    <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansTwoBoneIKSolver.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansIKChainBuilder.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootGroundProbe.cpp" />
     <ClCompile Include="Source\EngineCore\AnimationCore\FootPlacement\VansFootPlacementSolver.cpp" />
@@ -514,6 +530,8 @@
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothNode.cpp" />
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansClothProfilePhysicsBinding.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansLight.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\ShadowCore\VansShadowAtlasAllocator.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\ShadowCore\VansPunctualShadowManager.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansIESProfile.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\FidelityFXCore\VansFSR.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\RayTracingCore\VansRayTracing.cpp" />
@@ -559,6 +577,7 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansMesh.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansSubMesh.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.cpp" />
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineCacheService.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineDescriptor.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineRegistry.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansRenderDocCapture.cpp" />

@@ -21,6 +21,99 @@ namespace VansEngine
     // Helper: Convert PxQuat to glm
     inline glm::quat ToGlmQuat(const PxQuat& q) { return glm::quat(q.w, q.x, q.y, q.z); }
 
+    size_t GetRawPositionStrideFloats(VansGraphics::VansMesh* mesh)
+    {
+        if (!mesh || mesh->GetMeshVertexCount() <= 0)
+            return 0;
+
+        const size_t vertexCount = static_cast<size_t>(mesh->GetMeshVertexCount());
+        const size_t rawFloatCount = mesh->GetMeshRawPositionData().size();
+        if (rawFloatCount >= vertexCount * 8)
+            return 8;
+        if (rawFloatCount >= vertexCount * 4)
+            return 4;
+        if (rawFloatCount >= vertexCount * 3)
+            return 3;
+        return 0;
+    }
+
+    bool AppendMeshCollisionData(
+        VansGraphics::VansMesh* mesh,
+        std::vector<PxVec3>& outVertices,
+        std::vector<PxU32>& outIndices,
+        const std::string& ownerName)
+    {
+        if (!mesh)
+            return false;
+
+        const size_t vertexCount = static_cast<size_t>(mesh->GetMeshVertexCount());
+        const size_t stride = GetRawPositionStrideFloats(mesh);
+        const auto& rawPositions = mesh->GetMeshRawPositionData();
+        const auto& rawIndices = mesh->GetMeshTriangleIndex();
+
+        if (vertexCount == 0 || stride == 0 || rawIndices.size() < 3)
+        {
+            VANS_LOG_WARN("[PhysX] Mesh collider source '" << mesh->m_AssetName
+                << "' for node '" << ownerName << "' has no usable CPU collision data"
+                << " (vertices=" << vertexCount
+                << ", rawFloats=" << rawPositions.size()
+                << ", indices=" << rawIndices.size() << ")");
+            return false;
+        }
+
+        const size_t originalVertexCount = outVertices.size();
+        const size_t originalIndexCount = outIndices.size();
+        const PxU32 vertexOffset = static_cast<PxU32>(outVertices.size());
+        outVertices.reserve(outVertices.size() + vertexCount);
+        for (size_t i = 0; i < vertexCount; ++i)
+        {
+            const size_t base = i * stride;
+            outVertices.emplace_back(
+                rawPositions[base + 0],
+                rawPositions[base + 1],
+                rawPositions[base + 2]);
+        }
+
+        const size_t triangleCount = rawIndices.size() / 3;
+        outIndices.reserve(outIndices.size() + triangleCount * 3);
+        for (size_t i = 0; i < triangleCount * 3; ++i)
+        {
+            const int index = rawIndices[i];
+            if (index < 0 || static_cast<size_t>(index) >= vertexCount)
+            {
+                outVertices.resize(originalVertexCount);
+                outIndices.resize(originalIndexCount);
+                VANS_LOG_WARN("[PhysX] Mesh collider source '" << mesh->m_AssetName
+                    << "' for node '" << ownerName << "' has out-of-range index "
+                    << index << " (vertexCount=" << vertexCount << ")");
+                return false;
+            }
+            outIndices.push_back(vertexOffset + static_cast<PxU32>(index));
+        }
+
+        return true;
+    }
+
+    bool BuildTriangleCollisionData(
+        VansGraphics::VansMesh* mesh,
+        std::vector<PxVec3>& outVertices,
+        std::vector<PxU32>& outIndices,
+        const std::string& ownerName)
+    {
+        if (!mesh)
+            return false;
+
+        if (mesh->m_IsMultiMesh)
+        {
+            bool appendedAny = false;
+            for (auto* subMesh : mesh->m_SubMeshes)
+                appendedAny = AppendMeshCollisionData(subMesh, outVertices, outIndices, ownerName) || appendedAny;
+            return appendedAny && outVertices.size() >= 3 && outIndices.size() >= 3;
+        }
+
+        return AppendMeshCollisionData(mesh, outVertices, outIndices, ownerName);
+    }
+
     VansPhysicsNode::VansPhysicsNode()
         : m_TransformID(0)
         , m_Mesh(nullptr)
@@ -294,18 +387,28 @@ namespace VansEngine
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
         PxPhysics* physics = physicsSystem.GetPhysics();
 
+        std::vector<PxVec3> vertices;
+        std::vector<PxU32> indices;
+        if (!BuildTriangleCollisionData(m_Mesh, vertices, indices, m_Name))
+        {
+            VANS_LOG_ERROR("[PhysX] Mesh collider requested but CPU mesh data is invalid, falling back to box");
+            return CreateBoxShape();
+        }
+
         // Build triangle mesh from VansMesh
         PxTriangleMeshDesc meshDesc;
-        meshDesc.points.count = m_Mesh->GetMeshVertexCount();
-        // GetMeshRawPositionData() is a tightly-packed xyz array.  Using the
-        // render vertex stride here makes PhysX skip five floats per vertex
-        // and produces invalid triangle/convex cooking for project assets.
-        meshDesc.points.stride = sizeof(float) * 3;
-        meshDesc.points.data = m_Mesh->GetMeshRawPositionData().data();
+        meshDesc.points.count = static_cast<PxU32>(vertices.size());
+        meshDesc.points.stride = sizeof(PxVec3);
+        meshDesc.points.data = vertices.data();
 
-        meshDesc.triangles.count = static_cast<PxU32>(m_Mesh->GetMeshTriangleIndex().size() / 3);
-        meshDesc.triangles.stride = 3 * sizeof(int);
-        meshDesc.triangles.data = m_Mesh->GetMeshTriangleIndex().data();
+        meshDesc.triangles.count = static_cast<PxU32>(indices.size() / 3);
+        meshDesc.triangles.stride = 3 * sizeof(PxU32);
+        meshDesc.triangles.data = indices.data();
+
+        VANS_LOG("[PhysX] Cooking mesh collider for node '" << m_Name
+            << "' vertices=" << vertices.size()
+            << " triangles=" << meshDesc.triangles.count
+            << " sourceMultiMesh=" << (m_Mesh->m_IsMultiMesh ? 1 : 0));
 
         // Cook the triangle mesh
         m_TriangleMesh = physicsSystem.CookTriangleMesh(meshDesc);
@@ -335,13 +438,25 @@ namespace VansEngine
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
         PxPhysics* physics = physicsSystem.GetPhysics();
 
+        std::vector<PxVec3> vertices;
+        std::vector<PxU32> indices;
+        if (!BuildTriangleCollisionData(m_Mesh, vertices, indices, m_Name))
+        {
+            VANS_LOG_ERROR("[PhysX] Convex mesh collider requested but CPU mesh data is invalid, falling back to box");
+            return CreateBoxShape();
+        }
+
         // Build convex mesh from VansMesh
         PxConvexMeshDesc convexDesc;
-        convexDesc.points.count = m_Mesh->GetMeshVertexCount();
-        convexDesc.points.stride = sizeof(float) * 3;
-        convexDesc.points.data = m_Mesh->GetMeshRawPositionData().data();
+        convexDesc.points.count = static_cast<PxU32>(vertices.size());
+        convexDesc.points.stride = sizeof(PxVec3);
+        convexDesc.points.data = vertices.data();
         convexDesc.flags = PxConvexFlag::eCOMPUTE_CONVEX;
         convexDesc.vertexLimit = 255;
+
+        VANS_LOG("[PhysX] Cooking convex mesh collider for node '" << m_Name
+            << "' vertices=" << vertices.size()
+            << " sourceMultiMesh=" << (m_Mesh->m_IsMultiMesh ? 1 : 0));
         
         // Cook the convex mesh
         m_ConvexMesh = physicsSystem.CookConvexMesh(convexDesc);

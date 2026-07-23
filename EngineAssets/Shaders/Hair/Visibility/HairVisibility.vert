@@ -3,6 +3,7 @@
 
 #include "../../Common/CameraData.glsl"
 #include "../../Common/ModelData.glsl"
+#include "../../Common/AnimationSkinning.glsl"
 
 layout(location = 0) in vec4 position;
 layout(location = 1) in vec2 uv;
@@ -29,13 +30,20 @@ void main()
     mat4 modelMatrix = ModelBuffer.transforms[materialConst.objectIndex].ModelMatrix;
     mat4 normalMatrix = ModelBuffer.transforms[materialConst.objectIndex].NormalMatrix;
 
-    vec4 worldPos = modelMatrix * position;
+    vec4 skinnedPosition = position;
+    vec3 skinnedNormal = normal;
+    vec3 skinnedTangent = tangent;
+    vec3 skinnedBitangent = bitangent;
+    if (materialConst.animationEnabled != 0)
+        VansApplyAnimationSkinning(skinnedPosition, skinnedNormal, skinnedTangent, skinnedBitangent);
+
+    vec4 worldPos = modelMatrix * skinnedPosition;
     gl_Position = VPMatrix * worldPos;
 
     mat3 nrm = mat3(normalMatrix);
-    normalWS = normalize(nrm * normal);
-    tangentWS = normalize(nrm * tangent);
-    bitangentWS = normalize(nrm * bitangent);
+    normalWS = normalize(nrm * skinnedNormal);
+    tangentWS = normalize(nrm * skinnedTangent);
+    bitangentWS = normalize(nrm * skinnedBitangent);
     positionWS = worldPos.xyz;
     fragUV = uv;
 }

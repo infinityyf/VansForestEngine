@@ -375,6 +375,20 @@ void VansGraphics::VansVKCommandBuffer::EnsureComputeShader(VansComputeShader& s
 }
 
 void VansGraphics::VansVKCommandBuffer::DispatchCompute(VansComputeShader& shader, uint32_t x_size, uint32_t y_size, uint32_t z_size, const std::vector<VkDescriptorSet>& descriptor_sets)
+
+{
+	DispatchCompute(shader, x_size, y_size, z_size, descriptor_sets,
+		shader.GetPushConstantData(), static_cast<uint32_t>(std::max(0, shader.GetPushConstantSize())));
+}
+
+void VansGraphics::VansVKCommandBuffer::DispatchCompute(
+	VansComputeShader& shader,
+	uint32_t x_size,
+	uint32_t y_size,
+	uint32_t z_size,
+	const std::vector<VkDescriptorSet>& descriptor_sets,
+	const void* pushConstantData,
+	uint32_t pushConstantSize)
 {
 	VansVKComputePipeline* pipeline = shader.GetComputePipeline();
 	if (pipeline == nullptr)
@@ -404,8 +418,12 @@ void VansGraphics::VansVKCommandBuffer::DispatchCompute(VansComputeShader& shade
 		0,
 		nullptr);
 
-	int pushConstantSize = shader.GetPushConstantSize();
-	void* pushConstantData = shader.GetPushConstantData();
+	const uint32_t declaredPushConstantSize = static_cast<uint32_t>(std::max(0, shader.GetPushConstantSize()));
+	if (pushConstantSize > declaredPushConstantSize)
+	{
+		VANS_LOG_ERROR("dispatch skipped because push constant payload exceeds the shader interface");
+		return;
+	}
 	if (pushConstantSize > 0 && pushConstantData != nullptr)
 	{
 		VansGraphics::vkCmdPushConstants(m_VansVKCommandBuffer, pipeline->m_VansPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,

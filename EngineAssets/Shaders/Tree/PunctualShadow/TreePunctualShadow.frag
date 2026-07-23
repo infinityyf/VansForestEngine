@@ -11,14 +11,12 @@ layout(set = 0, binding = 50) uniform sampler2D globalPBRTextures[];
 layout(push_constant) uniform TreePunctualShadowPC
 {
     int lightIndex;
-    int shadowIndex;
+    int shadowFaceIndex;
     int materialIndex;
     int objectIndex;
     uint visibleOffset;
     uint alphaTestEnabled;
 } pc;
-
-layout(location = 0) out vec4 outPut;
 
 void main()
 {
@@ -26,5 +24,4 @@ void main()
     if (pc.alphaTestEnabled != 0u && texture(globalPBRTextures[materialIndex * 5 + 0], frag_uv).a < 0.5)
         discard;
 
-    outPut = vec4(gl_FragCoord.z);
 }

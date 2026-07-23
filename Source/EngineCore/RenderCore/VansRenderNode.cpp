@@ -2,7 +2,6 @@
 #include "VansPostProcessProfile.h"
 #include "VansCamera.h"
 #include "VansScene.h"
-#include "../Interfaces/IShaderHotReloadService.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
@@ -53,19 +52,6 @@ bool VansGraphics::VansRenderNode::CheckRenderNodeState()
 	{
 		VANS_LOG_ERROR("[VansRenderNode] Skipping draw for node '" << m_NodeName << "': missing material.");
 		return false;
-	}
-
-	// Check all pass shaders for hot-reload (file watcher)
-	for (auto& [passName, shader] : m_Material->m_PassShaders)
-	{
-		auto* hotReload = m_Scene ? m_Scene->GetShaderHotReloadService() : nullptr;
-		if (shader != nullptr && hotReload && hotReload->ConsumeUpdatedShaderFolder(shader->GetShaderFolder()))
-		{
-			VANS_LOG("pipe update (" << passName << "): " << shader->GetShaderFolder());
-			shader->RefreshShaderMoudle();
-			shader->TriggerReCreateGraphicsPipeline();
-			return false;
-		}
 	}
 
 	return true;
@@ -295,7 +281,7 @@ void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKComman
                                                                       VansGraphicsShader* passShader,
                                                                       const std::vector<VkDescriptorSet>& descSets,
                                                                       const std::vector<VkDescriptorSetLayout>& descSetLayouts,
-                                                                      int lightIndex, int shadowIndex)
+                                                                      int lightIndex, int shadowFaceIndex)
 {
 	if (!passShader) return;
 
@@ -309,8 +295,8 @@ void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKComman
 
 	cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
 
-	// PunctualShadow shader expects: { lightIndex, shadowIndex, materialIndex, objectIndex, animationEnabled }
-	int data[5] = { lightIndex, shadowIndex, 0, m_TransfromIndex, m_AnimationEnabled ? 1 : 0 };
+	// PunctualShadow shader expects: { lightIndex, shadowFaceIndex, materialIndex, objectIndex, animationEnabled }
+	int data[5] = { lightIndex, shadowFaceIndex, 0, m_TransfromIndex, m_AnimationEnabled ? 1 : 0 };
 	cmd.UpdatePushConstants(*passShader->GetGraphicsPipeline(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		0, passShader->GetPushConstantSize(), data);
 
@@ -542,6 +528,13 @@ void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, Va
 			&cloth->m_BasePBRParam,
 			sizeof(VansBasePBRParam) * idx,
 			sizeof(VansBasePBRParam));
+		const VansClothGPUParam clothPayload = cloth->BuildGPUParam();
+		materialManager.m_GlobalClothDataBuffer.UpdateMapped(
+			&clothPayload,
+			sizeof(VansClothGPUParam) * idx,
+			sizeof(VansClothGPUParam));
+		if (idx < static_cast<int>(materialManager.m_GlobalClothParamData.size()))
+			materialManager.m_GlobalClothParamData[idx] = clothPayload;
 	}
 	else if (mat->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
 	{
@@ -851,15 +844,12 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	VansTexture* shBResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
 	VansTexture* volumetricFogResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
 	VansTexture* screenSpaceShadow = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
-	if (screenSpaceShadow == nullptr)
-	{
-		screenSpaceShadow = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_FILTER_RESULT);
-	}
+	VansTexture* screenSpaceShadowHZB = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
 	VansTexture* rectLightEmissive = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
 
 	if (ssaoFilterResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
 		shRResult == nullptr || shGResult == nullptr || shBResult == nullptr || volumetricFogResult == nullptr ||
-		screenSpaceShadow == nullptr || rectLightEmissive == nullptr ||
+		screenSpaceShadow == nullptr || screenSpaceShadowHZB == nullptr || rectLightEmissive == nullptr ||
 		!m_Scene->GetIESProfileManager()->IsGPUResourcesCreated())
 	{
 		// 不清除 dirty 标记，下帧重试（运行时纹理尚未就绪）
@@ -905,6 +895,10 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 		{ { rectLightEmissive->GetImage().GetSampler(), rectLightEmissive->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_IES_PROFILES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetSampler(), m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_HIZ, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { screenSpaceShadowHZB->GetImage().GetSampler(), screenSpaceShadowHZB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		{ { materialManager.m_ScreenSpaceShadowParamsCBBuffer.GetNativeBuffer(), 0, materialManager.m_ScreenSpaceShadowParamsCBBuffer.GetBufferSize() } });
 	descMgr->CommitDescriptorUpdates();
 	m_DescriptorsetsDirty = false;
 }
@@ -1206,13 +1200,13 @@ void VansGraphics::VansVegetationRenderNode::DrawShadow(VansVKCommandBuffer& cmd
 		m_TransfromIndex);
 }
 
-void VansGraphics::VansVegetationRenderNode::DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex)
+void VansGraphics::VansVegetationRenderNode::DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowFaceIndex)
 {
 	if (!m_VegetationSystem)
 		return;
 	m_VegetationSystem->DrawTreePunctualShadow(cmd, global_state,
 		m_UsedDescSetLayouts, m_UsedDescSets,
-		m_TransfromIndex, lightIndex, shadowIndex);
+		m_TransfromIndex, lightIndex, shadowFaceIndex);
 }
 
 // ── VansDecalRenderNode ────────────────────────────────────────────────────

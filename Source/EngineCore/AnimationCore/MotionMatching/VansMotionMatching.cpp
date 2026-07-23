@@ -16,6 +16,69 @@ using namespace VansGraphics;
 namespace
 {
 	constexpr float kEpsilon = 0.0001f;
+	constexpr float kLn2 = 0.6931471805599453f;
+
+	void DecomposeTransform(const glm::mat4& transform,
+	                        glm::vec3& position,
+	                        glm::quat& rotation,
+	                        glm::vec3& scale)
+	{
+		glm::vec3 skew;
+		glm::vec4 perspective;
+		if (!glm::decompose(transform, scale, rotation, position, skew, perspective))
+		{
+			position = glm::vec3(transform[3]);
+			rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+			scale = glm::vec3(1.0f);
+		}
+		rotation = glm::normalize(rotation);
+	}
+
+	glm::vec3 QuaternionLogVector(glm::quat rotation)
+	{
+		rotation = glm::normalize(rotation);
+		if (rotation.w < 0.0f)
+			rotation = -rotation;
+		const float sinHalf = glm::length(glm::vec3(rotation.x, rotation.y, rotation.z));
+		if (sinHalf <= kEpsilon)
+			return glm::vec3(0.0f);
+		const float angle = 2.0f * std::atan2(sinHalf, glm::clamp(rotation.w, -1.0f, 1.0f));
+		return glm::vec3(rotation.x, rotation.y, rotation.z) * (angle / sinHalf);
+	}
+
+	glm::quat QuaternionExpVector(const glm::vec3& vector)
+	{
+		const float angle = glm::length(vector);
+		if (angle <= kEpsilon)
+			return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		return glm::angleAxis(angle, vector / angle);
+	}
+
+	void DecayCriticalSpring(glm::vec3& value, glm::vec3& velocity, float halfLife, float deltaTime)
+	{
+		if (deltaTime <= 0.0f)
+			return;
+		if (halfLife <= kEpsilon)
+		{
+			value = glm::vec3(0.0f);
+			velocity = glm::vec3(0.0f);
+			return;
+		}
+		const float damping = 4.0f * kLn2 / halfLife;
+		const glm::vec3 initial = value;
+		const glm::vec3 linear = velocity + initial * damping;
+		const float decay = std::exp(-damping * deltaTime);
+		value = (initial + linear * deltaTime) * decay;
+		velocity = (velocity - linear * damping * deltaTime) * decay;
+	}
+
+	float SmoothStep(float edge0, float edge1, float value)
+	{
+		if (edge1 <= edge0 + kEpsilon)
+			return value >= edge1 ? 1.0f : 0.0f;
+		const float x = glm::clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+		return x * x * (3.0f - 2.0f * x);
+	}
 
 	std::string ToLower(std::string value)
 	{
@@ -338,12 +401,25 @@ void VansMotionMatchingRuntime::MarkDatabaseDirty()
 	m_DebugData.databaseReady = false;
 	m_PreviousQueryModelPose.clear();
 	m_LastOutputLocalPose.clear();
+	m_PreviousOutputLocalPose.clear();
+	m_InertialState.clear();
+	m_Blending = false;
 	m_CurrentLeftFootVelocity = glm::vec3(0.0f);
 	m_CurrentRightFootVelocity = glm::vec3(0.0f);
 	m_CurrentPelvisVelocity = glm::vec3(0.0f);
 	m_HasQueryVelocity = false;
 	m_HasLastSearchContext = false;
 	m_DirectionChangedForSearch = false;
+	m_CurrentPlaybackRate = 1.0f;
+	m_CurrentTrajectoryVelocityRoot = glm::vec3(0.0f);
+	m_LeftFootPlantWeight = 0.0f;
+	m_RightFootPlantWeight = 0.0f;
+	m_LeftContactOffset = 0.0f;
+	m_RightContactOffset = 0.0f;
+	m_ContactTransitionActive = false;
+	m_OwnerTransformInitialized = false;
+	m_ActualOwnerVelocityRoot = glm::vec3(0.0f);
+	m_HasActualOwnerVelocity = false;
 }
 
 bool VansMotionMatchingRuntime::ShouldIncludeClip(const std::string& clipName) const
@@ -404,6 +480,14 @@ bool VansMotionMatchingRuntime::IsMovingState(int state) const
 	       m_Settings.states.movingStates.end();
 }
 
+bool VansMotionMatchingRuntime::IsMovingPlaybackSample(const Sample& sample) const
+{
+	// A transition to a moving state is already moving playback. Treating pace
+	// transitions as idle makes the next search enter a Start clip instead of the
+	// target locomotion loop, adding an entire extra stride behind actor motion.
+	return !sample.idleLike && !sample.stopLike && IsMovingState(sample.targetMoveState);
+}
+
 bool VansMotionMatchingRuntime::IsPaceTransitionState(int state) const
 {
 	return std::find(m_Settings.states.paceTransitionStates.begin(), m_Settings.states.paceTransitionStates.end(), state) !=
@@ -430,6 +514,8 @@ bool VansMotionMatchingRuntime::SearchGroupAllowsSample(
 	const Sample& sample,
 	const std::unordered_map<std::string, AnimatorParameter>& parameters) const
 {
+	if (m_Settings.externallyDriven && sample.transitionLike)
+		return false;
 	if (m_Settings.searchGroups.empty())
 		return true;
 
@@ -442,11 +528,7 @@ bool VansMotionMatchingRuntime::SearchGroupAllowsSample(
 	const bool currentValid = m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size());
 	const Sample* currentSample = currentValid ? &m_Samples[m_CurrentSample] : nullptr;
 	const int currentMoveState = currentSample ? currentSample->targetMoveState : 0;
-	const bool currentMoving =
-		currentSample &&
-		!currentSample->idleLike &&
-		(currentSample->loopLike || currentSample->startLike || currentSample->turnLike) &&
-		IsMovingState(currentMoveState);
+	const bool currentMoving = currentSample && IsMovingPlaybackSample(*currentSample);
 	const bool startingFromIdle = !currentMoving && desiredMoving;
 	const bool stoppingToIdle = currentMoving && !desiredMoving;
 	const bool changingPace =
@@ -721,6 +803,92 @@ void VansMotionMatchingRuntime::WriteVec3(FeatureVector& feature, int& offset, c
 	feature[offset++] = value.z;
 }
 
+bool VansMotionMatchingRuntime::SampleContactWeights(int sampleIndex,
+	                                                  float time,
+	                                                  float& outLeft,
+	                                                  float& outRight) const
+{
+	outLeft = 0.0f;
+	outRight = 0.0f;
+	if (sampleIndex < 0 || sampleIndex >= static_cast<int>(m_Samples.size()))
+		return false;
+	const Sample& active = m_Samples[sampleIndex];
+	const auto sampleIt = m_ClipSampleIndices.find(active.clipName);
+	if (sampleIt == m_ClipSampleIndices.end() || sampleIt->second.empty())
+		return false;
+
+	const std::vector<int>& clipSamples = sampleIt->second;
+	const float samplePosition = (std::max)(0.0f, time * m_Settings.sampleRate);
+	const size_t lower = (std::min)(clipSamples.size() - 1,
+		static_cast<size_t>(std::floor(samplePosition)));
+	size_t upper = lower + 1;
+	if (upper >= clipSamples.size())
+		upper = active.loopLike ? 0 : lower;
+	const float alpha = upper == lower ? 0.0f : samplePosition - std::floor(samplePosition);
+	outLeft = glm::clamp(glm::mix(
+		m_Samples[clipSamples[lower]].rawFeature[kContactBegin],
+		m_Samples[clipSamples[upper]].rawFeature[kContactBegin], alpha), 0.0f, 1.0f);
+	outRight = glm::clamp(glm::mix(
+		m_Samples[clipSamples[lower]].rawFeature[kContactBegin + 1],
+		m_Samples[clipSamples[upper]].rawFeature[kContactBegin + 1], alpha), 0.0f, 1.0f);
+	return true;
+}
+
+void VansMotionMatchingRuntime::AdvanceContactWeights(float deltaTime,
+	                                                   float targetLeft,
+	                                                   float targetRight)
+{
+	if (m_ContactTransitionActive)
+	{
+		const float halfLife = (std::max)(m_Settings.inertializationHalfLife, 0.001f);
+		const float decay = std::exp(-0.69314718056f * (std::max)(deltaTime, 0.0f) / halfLife);
+		m_LeftContactOffset *= decay;
+		m_RightContactOffset *= decay;
+		if ((std::max)(std::abs(m_LeftContactOffset), std::abs(m_RightContactOffset)) < 0.001f)
+		{
+			m_LeftContactOffset = 0.0f;
+			m_RightContactOffset = 0.0f;
+			m_ContactTransitionActive = false;
+		}
+	}
+	m_LeftFootPlantWeight = glm::clamp(targetLeft + m_LeftContactOffset, 0.0f, 1.0f);
+	m_RightFootPlantWeight = glm::clamp(targetRight + m_RightContactOffset, 0.0f, 1.0f);
+}
+
+void VansMotionMatchingRuntime::BeginContactTransition(float sourceLeft,
+	                                                    float sourceRight,
+	                                                    float targetLeft,
+	                                                    float targetRight)
+{
+	m_LeftContactOffset = glm::clamp(sourceLeft, 0.0f, 1.0f) - glm::clamp(targetLeft, 0.0f, 1.0f);
+	m_RightContactOffset = glm::clamp(sourceRight, 0.0f, 1.0f) - glm::clamp(targetRight, 0.0f, 1.0f);
+	m_ContactTransitionActive = std::abs(m_LeftContactOffset) > 0.001f ||
+	                            std::abs(m_RightContactOffset) > 0.001f;
+	m_LeftFootPlantWeight = glm::clamp(targetLeft + m_LeftContactOffset, 0.0f, 1.0f);
+	m_RightFootPlantWeight = glm::clamp(targetRight + m_RightContactOffset, 0.0f, 1.0f);
+}
+
+void VansMotionMatchingRuntime::UpdateActualOwnerVelocity(float deltaTime,
+	                                                       const glm::mat4& ownerWorldTransform)
+{
+	const glm::vec3 ownerWorldPosition = ExtractTranslation(ownerWorldTransform);
+	m_HasActualOwnerVelocity = false;
+	if (m_OwnerTransformInitialized && deltaTime > kEpsilon)
+	{
+		const glm::vec3 worldVelocity = (ownerWorldPosition - m_PreviousOwnerWorldPosition) / deltaTime;
+		const glm::vec3 rootVelocity = glm::vec3(glm::inverse(ownerWorldTransform) * glm::vec4(worldVelocity, 0.0f));
+		const float sanityLimit = (std::max)(m_Settings.desiredSpeedScale * 4.0f, 100.0f);
+		if (std::isfinite(rootVelocity.x) && std::isfinite(rootVelocity.y) && std::isfinite(rootVelocity.z) &&
+		    glm::length(rootVelocity) <= sanityLimit)
+		{
+			m_ActualOwnerVelocityRoot = rootVelocity;
+			m_HasActualOwnerVelocity = true;
+		}
+	}
+	m_PreviousOwnerWorldPosition = ownerWorldPosition;
+	m_OwnerTransformInitialized = true;
+}
+
 VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatabaseFeature(
 	const VansAnimationClip& clip,
 	float time,
@@ -833,6 +1001,11 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 		(ExtractTranslation(modelNext[rig.rightFoot]) - ExtractTranslation(modelPrev[rig.rightFoot])) / (2.0f * velocityDt));
 	const glm::vec3 pelvisVel = TransformVectorToRootSpace(rootModel0,
 		(ExtractTranslation(modelNext[rig.pelvis]) - ExtractTranslation(modelPrev[rig.pelvis])) / (2.0f * velocityDt));
+	const float legScale = (std::max)(
+		0.01f,
+		0.5f * (glm::distance(pelvis0, leftFoot0) + glm::distance(pelvis0, rightFoot0)));
+	const float contactReleaseSpeed = legScale * 0.65f;
+	const float contactPlantSpeed = legScale * 0.15f;
 
 	WriteVec3(f, offset, leftFootRel);
 	WriteVec3(f, offset, rightFootRel);
@@ -840,7 +1013,69 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	WriteVec3(f, offset, rightFootVel);
 	WriteVec3(f, offset, pelvisVel);
 	f[offset++] = head0.z - pelvis0.z;
+	f[offset++] = 1.0f - SmoothStep(contactPlantSpeed, contactReleaseSpeed, glm::length(leftFootVel));
+	f[offset++] = 1.0f - SmoothStep(contactPlantSpeed, contactReleaseSpeed, glm::length(rightFootVel));
 	return f;
+}
+
+void VansMotionMatchingRuntime::BuildFootContactPhases(const std::vector<int>& clipSampleIndices)
+{
+	if (clipSampleIndices.empty())
+		return;
+
+	const Sample& firstSample = m_Samples[clipSampleIndices.front()];
+	if (firstSample.idleLike)
+	{
+		// Idle clips are a stable two-foot support pose.  Treating tiny mocap
+		// noise as a gait phase makes one foot randomly unlock while standing.
+		for (const int sampleIndex : clipSampleIndices)
+		{
+			Sample& sample = m_Samples[sampleIndex];
+			sample.rawFeature[kContactBegin] = 1.0f;
+			sample.rawFeature[kContactBegin + 1] = 1.0f;
+			sample.feature = sample.rawFeature;
+		}
+		return;
+	}
+
+	const float fullFraction = glm::clamp(m_Settings.contactHeightFullFraction, 0.0f, 0.95f);
+	const float fadeFraction = glm::clamp(
+		(std::max)(m_Settings.contactHeightFadeFraction, fullFraction + 0.01f),
+		fullFraction + 0.01f,
+		1.0f);
+	const float velocityFloor = glm::clamp(m_Settings.contactVelocityConfidenceFloor, 0.55f, 1.0f);
+
+	const auto buildFootPhase = [&](int heightChannel, int contactChannel)
+	{
+		float minHeight = std::numeric_limits<float>::max();
+		float maxHeight = std::numeric_limits<float>::lowest();
+		for (const int sampleIndex : clipSampleIndices)
+		{
+			const float height = m_Samples[sampleIndex].rawFeature[heightChannel];
+			minHeight = (std::min)(minHeight, height);
+			maxHeight = (std::max)(maxHeight, height);
+		}
+
+		const float heightSpan = (std::max)(maxHeight - minHeight, kEpsilon);
+		const float fullHeight = minHeight + heightSpan * fullFraction;
+		const float fadeHeight = minHeight + heightSpan * fadeFraction;
+		for (const int sampleIndex : clipSampleIndices)
+		{
+			Sample& sample = m_Samples[sampleIndex];
+			const float heightWeight = 1.0f - SmoothStep(
+				fullHeight, fadeHeight, sample.rawFeature[heightChannel]);
+			const float velocityConfidence = glm::clamp(
+				sample.rawFeature[contactChannel], 0.0f, 1.0f);
+			// Height defines the gait phase.  Velocity can strengthen confidence,
+			// but cannot erase an otherwise valid low-foot contact.
+			sample.rawFeature[contactChannel] = heightWeight * glm::mix(
+				velocityFloor, 1.0f, velocityConfidence);
+			sample.feature = sample.rawFeature;
+		}
+	};
+
+	buildFootPhase(kPoseBegin + 2, kContactBegin);
+	buildFootPhase(kPoseBegin + 5, kContactBegin + 1);
 }
 
 VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFeature(
@@ -866,11 +1101,18 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFe
 		? std::atan2(desiredVelRoot.x, desiredVelRoot.y)
 		: currentFacing;
 	const float blendHorizon = (std::max)(m_Settings.schema.futureTimes.back(), kEpsilon);
+	const float response = (std::max)(m_Settings.trajectoryResponsiveness, kEpsilon);
+	const glm::vec3 currentTrajectoryVelocity = m_CurrentTrajectoryVelocityRoot;
 
 	int offset = 0;
 	for (float futureTime : m_Settings.schema.futureTimes)
 	{
-		const glm::vec3 deltaRoot = desiredVelRoot * futureTime;
+		// Integrate a velocity that exponentially converges from the currently
+		// playing motion to the desired controller velocity.  Linear extrapolation
+		// produces impossible starts/stops and is a common source of MM jitter.
+		const float responseIntegral = (1.0f - std::exp(-response * futureTime)) / response;
+		const glm::vec3 deltaRoot = desiredVelRoot * futureTime +
+			(currentTrajectoryVelocity - desiredVelRoot) * responseIntegral;
 		f[offset++] = deltaRoot.x;
 		f[offset++] = deltaRoot.y;
 	}
@@ -900,6 +1142,11 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFe
 	const glm::vec3 pelvis = ExtractTranslation(currentModel[rig.pelvis]);
 	const glm::vec3 head = rig.head >= 0 ? ExtractTranslation(currentModel[rig.head]) : pelvis;
 	f[offset++] = head.z - pelvis.z;
+	// The current database phase is authoritative during inertialization.  A
+	// finite-difference contact test here would see the intentional pose offset
+	// decay as foot motion and destabilize the next search.
+	f[offset++] = m_LeftFootPlantWeight;
+	f[offset++] = m_RightFootPlantWeight;
 	return f;
 }
 
@@ -907,6 +1154,7 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
                                               const Skeleton& skeleton)
 {
 	m_Samples.clear();
+	m_ClipSampleIndices.clear();
 	m_DebugData.topCandidates.clear();
 	m_DebugData.databaseReady = false;
 	m_DebugData.rigReady = false;
@@ -946,6 +1194,9 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 			sample.time = t;
 			sample.rawFeature = ExtractDatabaseFeature(clip, t, loopLike, skeleton, m_Rig);
 			sample.feature = sample.rawFeature;
+			const float speedHorizon = m_Settings.schema.futureTimes[0];
+			if (speedHorizon > kEpsilon)
+				sample.trajectorySpeed = glm::length(glm::vec2(sample.rawFeature[0], sample.rawFeature[1])) / speedHorizon;
 			sample.loopLike = loopLike;
 			sample.idleLike = metadata && metadata->hasIdleLike
 				? metadata->idleLike
@@ -990,8 +1241,11 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 			sample.directionBucketFromName = metadata && metadata->hasDirectionBucket
 				? metadata->directionBucket
 				: DirectionBucketFromName(lowered);
+			const int sampleIndex = static_cast<int>(m_Samples.size());
 			m_Samples.push_back(sample);
+			m_ClipSampleIndices[name].push_back(sampleIndex);
 		}
+		BuildFootContactPhases(m_ClipSampleIndices[name]);
 	}
 
 	if (m_Samples.size() < 2)
@@ -1035,6 +1289,15 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 		}
 	}
 	m_CurrentTime = m_Samples[m_CurrentSample].time;
+	m_InertialState.clear();
+	m_LastOutputLocalPose.clear();
+	m_PreviousOutputLocalPose.clear();
+	m_CurrentTrajectoryVelocityRoot = glm::vec3(0.0f);
+	m_LeftFootPlantWeight = 0.0f;
+	m_RightFootPlantWeight = 0.0f;
+	m_LeftContactOffset = 0.0f;
+	m_RightContactOffset = 0.0f;
+	m_ContactTransitionActive = false;
 	m_CurrentCost = std::numeric_limits<float>::max();
 	m_TimeSinceSearch = m_Settings.searchThrottle;
 	m_TimeSinceSwitch = m_Settings.minSwitchInterval;
@@ -1044,6 +1307,7 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 	m_CurrentRightFootVelocity = glm::vec3(0.0f);
 	m_CurrentPelvisVelocity = glm::vec3(0.0f);
 	m_HasQueryVelocity = false;
+	m_CurrentPlaybackRate = 1.0f;
 	m_DebugData.sampleCount = static_cast<int>(m_Samples.size());
 	m_DebugData.clipCount = includedClipCount;
 	m_DebugData.databaseReady = true;
@@ -1060,7 +1324,8 @@ void VansMotionMatchingRuntime::NormalizeFeature(FeatureVector& feature) const
 float VansMotionMatchingRuntime::ComputeCost(const FeatureVector& query,
                                              const FeatureVector& candidate,
                                              float& outTrajectory,
-                                             float& outPose) const
+	                                             float& outPose,
+	                                             float& outContact) const
 {
 	outTrajectory = 0.0f;
 	outPose = 0.0f;
@@ -1076,18 +1341,14 @@ float VansMotionMatchingRuntime::ComputeCost(const FeatureVector& query,
 	}
 	outTrajectory *= m_Settings.trajectoryWeight;
 	outPose *= m_Settings.poseWeight;
-	return outTrajectory + outPose;
-}
-
-bool VansMotionMatchingRuntime::IsSamePlaybackNeighborhood(const Sample& sample) const
-{
-	if (m_CurrentSample < 0 || m_CurrentSample >= static_cast<int>(m_Samples.size()))
-		return false;
-	const Sample& current = m_Samples[m_CurrentSample];
-	const float throttleWindow = m_Settings.searchThrottle * 1.5f;
-	const float frameWindow = 2.0f / (std::max)(1.0f, m_Settings.sampleRate);
-	const float neighborhoodWindow = (std::max)(0.10f, (std::max)(throttleWindow, frameWindow));
-	return sample.clipName == current.clipName && std::abs(sample.time - m_CurrentTime) < neighborhoodWindow;
+	outContact = 0.0f;
+	for (int d = kContactBegin; d < kContactEnd; ++d)
+	{
+		const float diff = query[d] - candidate[d];
+		outContact += diff * diff;
+	}
+	outContact *= m_Settings.contactWeight;
+	return outTrajectory + outPose + outContact;
 }
 
 bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
@@ -1104,11 +1365,7 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 	const Sample* currentSample = currentValid ? &m_Samples[m_CurrentSample] : nullptr;
 	const int currentMoveState = currentSample ? currentSample->targetMoveState : 0;
 	const int desiredMoveState = ResolveDesiredMoveState(parameters);
-	const bool currentMoving =
-		currentSample &&
-		!currentSample->idleLike &&
-		(currentSample->loopLike || currentSample->startLike || currentSample->turnLike) &&
-		IsMovingState(currentMoveState);
+	const bool currentMoving = currentSample && IsMovingPlaybackSample(*currentSample);
 	const bool desiredMoving = !wantsIdle;
 	const bool startingFromIdle = !currentMoving && desiredMoving;
 	const bool stoppingToIdle = currentMoving && !desiredMoving;
@@ -1149,13 +1406,14 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 		const float sampleDirLen = glm::length(sampleDir);
 		if (sampleDirLen <= kEpsilon)
 			return true;
-		return directionBucket(desiredDir) == directionBucket(sampleDir);
+		const int delta = std::abs(SignedBucketDelta(directionBucket(desiredDir), directionBucket(sampleDir)));
+		return delta <= 1;
 	};
 	auto sampleNameMatchesDesiredDirection = [&]() -> bool
 	{
 		if (sample.directionBucketFromName < 0 || desiredDirLen <= kEpsilon)
 			return sampleMatchesDesiredDirection();
-		return sample.directionBucketFromName == directionBucket(desiredDir);
+		return std::abs(SignedBucketDelta(directionBucket(desiredDir), sample.directionBucketFromName)) <= 1;
 	};
 	auto sampleNameMatchesCurrentDirection = [&]() -> bool
 	{
@@ -1168,6 +1426,18 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 			return true;
 		return sample.directionBucketFromName == directionBucket(currentDir);
 	};
+
+	if (m_Settings.externallyDriven)
+	{
+		// Gameplay already applied the complete owner displacement for this
+		// frame. Start/stop/turn clips carry an acceleration/rotation trajectory
+		// that will not be consumed, so select the desired idle/loop slice and let
+		// inertialization provide visual continuity.
+		if (!sample.loopLike || sample.transitionLike)
+			return false;
+		return sample.targetMoveState == desiredMoveState &&
+		       (desiredMoving ? sampleMatchesDesiredDirection() : sample.idleLike);
+	}
 
 	if (sample.transitionLike)
 	{
@@ -1214,8 +1484,7 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 
 VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 	const FeatureVector& query,
-	const std::unordered_map<std::string, AnimatorParameter>& parameters,
-	const std::unordered_map<std::string, VansAnimationClip>& clips)
+	const std::unordered_map<std::string, AnimatorParameter>& parameters)
 {
 	MatchResult best;
 	best.totalCost = std::numeric_limits<float>::max();
@@ -1226,31 +1495,28 @@ VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 		const Sample& sample = m_Samples[i];
 		if (!ShouldConsiderSampleForParameters(sample, parameters))
 			continue;
-		if (IsSamePlaybackNeighborhood(sample))
+
+		// Continuing the active slice is evaluated explicitly from m_CurrentTime in
+		// Update().  Searching another frame of the same clip would be a time
+		// teleport, not continuation, and produces the characteristic loop jitter
+		// when that frame wins again at the next search tick.
+		if (m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size()) &&
+		    sample.clipName == m_Samples[m_CurrentSample].clipName)
 			continue;
 
 		float trajectory = 0.0f;
 		float pose = 0.0f;
-		float total = ComputeCost(query, sample.feature, trajectory, pose);
+		float contact = 0.0f;
+		float total = ComputeCost(query, sample.feature, trajectory, pose, contact);
 
 		float bias = 0.0f;
 		if (m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size()))
 		{
 			const Sample& current = m_Samples[m_CurrentSample];
-			bool isContinuation = sample.clipName == current.clipName && sample.time >= m_CurrentTime;
-			if (!isContinuation && sample.clipName == current.clipName && sample.loopLike && current.loopLike)
-			{
-				auto clipIt = clips.find(current.clipName);
-				const float wrapWindow = (std::max)(m_Settings.searchThrottle, 2.0f / (std::max)(1.0f, m_Settings.sampleRate));
-				if (clipIt != clips.end() && clipIt->second.duration > wrapWindow)
-				{
-					isContinuation = sample.time < wrapWindow &&
-					                 m_CurrentTime > clipIt->second.duration - wrapWindow;
-				}
-			}
-			if (isContinuation)
-				bias -= m_Settings.continuationBias;
-			if (sample.loopLike && current.loopLike)
+			// A loop is useful as the destination of a completed authored transition.
+			// Do not reward loop-to-loop switching: that defeats continuation-first
+			// playback and causes unnecessary clip churn under a stable query.
+			if (sample.loopLike && !current.loopLike)
 				bias -= m_Settings.loopBias;
 			if (sample.transitionLike && !current.transitionLike)
 				bias -= m_Settings.transitionBias;
@@ -1260,6 +1526,7 @@ VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 		result.sampleIndex = i;
 		result.trajectoryCost = trajectory;
 		result.poseCost = pose;
+		result.contactCost = contact;
 		result.biasCost = bias;
 		result.totalCost = total + bias;
 		PushCandidateDebug(result);
@@ -1282,6 +1549,7 @@ void VansMotionMatchingRuntime::PushCandidateDebug(const MatchResult& result)
 	item.totalCost = result.totalCost;
 	item.trajectoryCost = result.trajectoryCost;
 	item.poseCost = result.poseCost;
+	item.contactCost = result.contactCost;
 	item.biasCost = result.biasCost;
 
 	auto& list = m_DebugData.topCandidates;
@@ -1292,29 +1560,96 @@ void VansMotionMatchingRuntime::PushCandidateDebug(const MatchResult& result)
 		list.resize(static_cast<size_t>(limit));
 }
 
-void VansMotionMatchingRuntime::BlendPose(const std::vector<glm::mat4>& from,
-                                          const std::vector<glm::mat4>& to,
-                                          float alpha,
-                                          std::vector<glm::mat4>& out) const
+void VansMotionMatchingRuntime::BeginInertialTransition(
+	const std::vector<glm::mat4>& target,
+	const std::vector<glm::mat4>& targetFuture,
+	float velocityDeltaTime)
 {
-	const size_t count = (std::min)(from.size(), to.size());
-	out.resize(count);
-	for (size_t i = 0; i < count; ++i)
+	if (target.empty() || targetFuture.size() != target.size() ||
+	    m_LastOutputLocalPose.size() != target.size())
 	{
-		glm::vec3 scaleA, posA, skewA;
-		glm::quat rotA;
-		glm::vec4 perspA;
-		glm::decompose(from[i], scaleA, rotA, posA, skewA, perspA);
+		m_InertialState.clear();
+		m_Blending = false;
+		return;
+	}
 
-		glm::vec3 scaleB, posB, skewB;
-		glm::quat rotB;
-		glm::vec4 perspB;
-		glm::decompose(to[i], scaleB, rotB, posB, skewB, perspB);
+	const float invDt = velocityDeltaTime > kEpsilon ? 1.0f / velocityDeltaTime : 0.0f;
+	const bool hasPrevious = m_PreviousOutputLocalPose.size() == target.size() && invDt > 0.0f;
+	m_InertialState.assign(target.size(), InertialBoneState{});
+	bool hasMeaningfulOffset = false;
 
-		const glm::vec3 pos = glm::mix(posA, posB, alpha);
-		const glm::quat rot = glm::normalize(glm::slerp(rotA, rotB, alpha));
-		const glm::vec3 scale = glm::mix(scaleA, scaleB, alpha);
-		out[i] = glm::translate(glm::mat4(1.0f), pos) * glm::toMat4(rot) * glm::scale(glm::mat4(1.0f), scale);
+	for (size_t i = 0; i < target.size(); ++i)
+	{
+		glm::vec3 sourcePos, sourceScale;
+		glm::quat sourceRot;
+		DecomposeTransform(m_LastOutputLocalPose[i], sourcePos, sourceRot, sourceScale);
+		glm::vec3 previousPos = sourcePos, previousScale;
+		glm::quat previousRot = sourceRot;
+		if (hasPrevious)
+			DecomposeTransform(m_PreviousOutputLocalPose[i], previousPos, previousRot, previousScale);
+
+		glm::vec3 targetPos, targetScale;
+		glm::quat targetRot;
+		DecomposeTransform(target[i], targetPos, targetRot, targetScale);
+		glm::vec3 futurePos, futureScale;
+		glm::quat futureRot;
+		DecomposeTransform(targetFuture[i], futurePos, futureRot, futureScale);
+
+		InertialBoneState& state = m_InertialState[i];
+		state.positionOffset = sourcePos - targetPos;
+		state.positionVelocity = (sourcePos - previousPos) * invDt - (futurePos - targetPos) * invDt;
+		state.rotationOffset = QuaternionLogVector(sourceRot * glm::conjugate(targetRot));
+		const glm::vec3 sourceAngular = hasPrevious
+			? QuaternionLogVector(sourceRot * glm::conjugate(previousRot)) * invDt
+			: glm::vec3(0.0f);
+		const glm::vec3 targetAngular = QuaternionLogVector(futureRot * glm::conjugate(targetRot)) * invDt;
+		state.angularVelocity = sourceAngular - targetAngular;
+		hasMeaningfulOffset |= glm::dot(state.positionOffset, state.positionOffset) > 1e-8f ||
+		                       glm::dot(state.rotationOffset, state.rotationOffset) > 1e-8f;
+	}
+
+	m_Blending = hasMeaningfulOffset && m_Settings.inertializationHalfLife > kEpsilon;
+	m_BlendElapsed = 0.0f;
+}
+
+void VansMotionMatchingRuntime::ApplyInertialization(
+	float deltaTime,
+	const std::vector<glm::mat4>& target,
+	std::vector<glm::mat4>& out)
+{
+	if (!m_Blending || m_InertialState.size() != target.size())
+	{
+		out = target;
+		return;
+	}
+
+	out.resize(target.size());
+	float maximumResidual = 0.0f;
+	const float halfLife = (std::max)(m_Settings.inertializationHalfLife, kEpsilon);
+	m_BlendElapsed += (std::max)(deltaTime, 0.0f);
+
+	for (size_t i = 0; i < target.size(); ++i)
+	{
+		InertialBoneState& state = m_InertialState[i];
+		DecayCriticalSpring(state.positionOffset, state.positionVelocity, halfLife, deltaTime);
+		DecayCriticalSpring(state.rotationOffset, state.angularVelocity, halfLife, deltaTime);
+
+		glm::vec3 targetPos, targetScale;
+		glm::quat targetRot;
+		DecomposeTransform(target[i], targetPos, targetRot, targetScale);
+		const glm::vec3 position = targetPos + state.positionOffset;
+		const glm::quat rotation = glm::normalize(QuaternionExpVector(state.rotationOffset) * targetRot);
+		out[i] = glm::translate(glm::mat4(1.0f), position) * glm::toMat4(rotation) *
+		         glm::scale(glm::mat4(1.0f), targetScale);
+		maximumResidual = (std::max)(maximumResidual,
+			glm::length(state.positionOffset) + glm::length(state.rotationOffset));
+	}
+
+	if (m_BlendElapsed >= (std::max)(m_Settings.inertializationMaxDuration, halfLife) ||
+	    maximumResidual < 1e-4f)
+	{
+		m_Blending = false;
+		m_InertialState.clear();
 	}
 }
 
@@ -1322,10 +1657,13 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
                                        const Skeleton& skeleton,
                                        const std::unordered_map<std::string, VansAnimationClip>& clips,
                                        const std::unordered_map<std::string, AnimatorParameter>& parameters,
+	                                   const glm::mat4& ownerWorldTransform,
                                        std::vector<glm::mat4>& outLocalTransforms)
 {
 	m_DebugData.enabled = m_Settings.enabled;
 	m_DebugData.usedThisFrame = false;
+	if (m_Settings.externallyDriven)
+		UpdateActualOwnerVelocity(deltaTime, ownerWorldTransform);
 	if (!m_Settings.enabled)
 		return false;
 
@@ -1354,12 +1692,88 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		return false;
 	}
 
+	float wantedPlaybackRate = 1.0f;
+	if (m_Settings.enableSpeedMatching)
+	{
+		const float desiredSpeed = m_Settings.externallyDriven && m_HasActualOwnerVelocity
+			? glm::length(glm::vec2(m_ActualOwnerVelocityRoot))
+			: glm::length(glm::vec2(BuildDesiredVelocityRoot(parameters, m_Rig)));
+		if (desiredSpeed > kEpsilon && activeSample->trajectorySpeed > kEpsilon)
+		{
+			const float minRate = std::max(0.01f, std::min(m_Settings.minPlaybackRate, m_Settings.maxPlaybackRate));
+			const float maxRate = std::max(minRate, std::max(m_Settings.minPlaybackRate, m_Settings.maxPlaybackRate));
+			wantedPlaybackRate = glm::clamp(desiredSpeed / activeSample->trajectorySpeed, minRate, maxRate);
+		}
+	}
+	const float rateAlpha = m_Settings.playbackRateSmoothing <= 0.0f
+		? 1.0f
+		: glm::clamp(1.0f - std::exp(-m_Settings.playbackRateSmoothing * std::max(deltaTime, 0.0f)), 0.0f, 1.0f);
+	m_CurrentPlaybackRate = glm::mix(m_CurrentPlaybackRate, wantedPlaybackRate, rateAlpha);
+	m_DebugData.playbackRate = m_CurrentPlaybackRate;
+	const float playbackDelta = deltaTime * m_CurrentPlaybackRate;
+	const float previousPlaybackTime = m_CurrentTime;
+	bool loopWrapped = false;
 	if (activeSample->loopLike)
-		m_CurrentTime = WrapClipTime(activeClipIt->second, m_CurrentTime + deltaTime);
+	{
+		m_CurrentTime = WrapClipTime(activeClipIt->second, m_CurrentTime + playbackDelta);
+		loopWrapped = activeClipIt->second.duration > kEpsilon &&
+		              m_CurrentTime + kEpsilon < previousPlaybackTime;
+	}
 	else
-		m_CurrentTime = glm::clamp(m_CurrentTime + deltaTime, 0.0f, (std::max)(0.0f, activeClipIt->second.duration));
+		m_CurrentTime = glm::clamp(m_CurrentTime + playbackDelta, 0.0f, (std::max)(0.0f, activeClipIt->second.duration));
+	const float outgoingLeftContact = m_LeftFootPlantWeight;
+	const float outgoingRightContact = m_RightFootPlantWeight;
+	// Keep the logical current sample synchronized with playback.  Holding the
+	// sample index at the original transition frame makes continuation, contact
+	// phase and current-cost comparisons stale after the first frame.
+	if (const auto sampleIt = m_ClipSampleIndices.find(activeSample->clipName);
+	    sampleIt != m_ClipSampleIndices.end() && !sampleIt->second.empty())
+	{
+		const std::vector<int>& clipSamples = sampleIt->second;
+		const float samplePosition = (std::max)(0.0f, m_CurrentTime * m_Settings.sampleRate);
+		const size_t lower = (std::min)(
+			clipSamples.size() - 1,
+			static_cast<size_t>(std::floor(samplePosition)));
+		size_t upper = lower + 1;
+		if (upper >= clipSamples.size())
+			upper = activeSample->loopLike ? 0 : lower;
+		const float phaseAlpha = upper == lower ? 0.0f : samplePosition - std::floor(samplePosition);
+		const size_t nearest = phaseAlpha < 0.5f ? lower : upper;
+		m_CurrentSample = sampleIt->second[nearest];
+		activeSample = &m_Samples[m_CurrentSample];
+	}
+	float targetLeftContact = 0.0f;
+	float targetRightContact = 0.0f;
+	SampleContactWeights(m_CurrentSample, m_CurrentTime, targetLeftContact, targetRightContact);
+	if (loopWrapped)
+		BeginContactTransition(outgoingLeftContact, outgoingRightContact, targetLeftContact, targetRightContact);
+	else
+		AdvanceContactWeights(deltaTime, targetLeftContact, targetRightContact);
+	const float trajectoryHorizon = (std::max)(m_Settings.schema.futureTimes[0], kEpsilon);
+	const glm::vec3 sampledTrajectoryVelocity(
+		activeSample->rawFeature[0] / trajectoryHorizon,
+		activeSample->rawFeature[1] / trajectoryHorizon,
+		0.0f);
+	const float trajectoryAlpha = 1.0f - std::exp(
+		-(std::max)(m_Settings.trajectoryResponsiveness, 0.0f) * (std::max)(deltaTime, 0.0f));
+	m_CurrentTrajectoryVelocityRoot = m_Settings.externallyDriven && m_HasActualOwnerVelocity
+		? m_ActualOwnerVelocityRoot
+		: glm::mix(m_CurrentTrajectoryVelocityRoot, sampledTrajectoryVelocity, trajectoryAlpha);
 	std::vector<glm::mat4> currentLocal;
 	SamplePose(activeClipIt->second, m_CurrentTime, skeleton, currentLocal);
+	if (loopWrapped)
+	{
+		// Crossing an authored loop seam is still continuous playback, not an MM
+		// switch.  Preserve the outgoing pose and velocity while the first frames
+		// of the new cycle settle, which hides small non-seamless authoring errors.
+		std::vector<glm::mat4> seamFuture;
+		const float velocityDt = 1.0f / (std::max)(m_Settings.sampleRate, 1.0f);
+		SamplePose(activeClipIt->second,
+		           ResolveClipTime(activeClipIt->second, m_CurrentTime + velocityDt, true),
+		           skeleton,
+		           seamFuture);
+		BeginInertialTransition(currentLocal, seamFuture, velocityDt);
+	}
 
 	const std::vector<glm::mat4>& queryLocal =
 		(m_LastOutputLocalPose.size() == skeleton.bones.size()) ? m_LastOutputLocalPose : currentLocal;
@@ -1436,39 +1850,29 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		m_TimeSinceSearch = 0.0f;
 
 		FeatureVector currentFeature = ExtractDatabaseFeature(activeClipIt->second, m_CurrentTime, activeSample->loopLike, skeleton, m_Rig);
+		// Runtime phase is interpolated from the database contact curves.  Keep
+		// current-cost comparison in the same feature domain as the candidates.
+		currentFeature[kContactBegin] = m_LeftFootPlantWeight;
+		currentFeature[kContactBegin + 1] = m_RightFootPlantWeight;
 		NormalizeFeature(currentFeature);
 		float currentTrajectory = 0.0f;
 		float currentPose = 0.0f;
-		const float currentCost = ComputeCost(query, currentFeature, currentTrajectory, currentPose);
+		float currentContact = 0.0f;
+		const float currentCost = ComputeCost(query, currentFeature, currentTrajectory, currentPose, currentContact);
 		const float transitionCompletionWindow = 2.0f / (std::max)(1.0f, m_Settings.sampleRate);
 		const bool activeTransitionComplete =
 			!activeSample->loopLike &&
 			m_CurrentTime >= (std::max)(0.0f, activeClipIt->second.duration - transitionCompletionWindow);
 
-		MatchResult best = FindBestMatch(query, parameters, clips);
-		const bool bestIsCurrentClip =
-			best.sampleIndex >= 0 &&
-			m_CurrentSample >= 0 &&
-			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
-			m_Samples[best.sampleIndex].clipName == m_Samples[m_CurrentSample].clipName;
+		MatchResult best = FindBestMatch(query, parameters);
 		const bool bestIsTargetLoop =
 			best.sampleIndex >= 0 &&
 			m_CurrentSample >= 0 &&
 			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
 			m_Samples[best.sampleIndex].loopLike &&
 			m_Samples[best.sampleIndex].targetMoveState == m_Samples[m_CurrentSample].targetMoveState;
-		const bool bestIsSameLoopClip =
-			bestIsCurrentClip &&
-			m_CurrentSample >= 0 &&
-			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
-			m_Samples[m_CurrentSample].loopLike &&
-			m_Samples[best.sampleIndex].loopLike;
 		const bool shouldExitFinishedTransition = activeTransitionComplete && bestIsTargetLoop;
-		const bool activeMovingSample =
-			activeSample &&
-			!activeSample->idleLike &&
-			(activeSample->loopLike || activeSample->startLike || activeSample->turnLike) &&
-			IsMovingState(activeSample->targetMoveState);
+		const bool activeMovingSample = activeSample && IsMovingPlaybackSample(*activeSample);
 		const bool shouldEnterStartTransition =
 			searchContextChanged &&
 			best.sampleIndex >= 0 &&
@@ -1520,11 +1924,17 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		float requiredImprovement = searchContextChanged
 			? m_Settings.minSwitchCostImprovement * 0.5f
 			: m_Settings.minSwitchCostImprovement;
-		if (bestIsCurrentClip)
-			requiredImprovement = (std::max)(requiredImprovement, m_Settings.minSwitchCostImprovement * 2.0f);
+		const float continuationCost = (std::max)(
+			0.0f, currentCost - (std::max)(0.0f, m_Settings.continuationBias));
+		if (!searchContextChanged)
+		{
+			const float relativeImprovement = continuationCost *
+				glm::clamp(m_Settings.minSwitchCostRatio, 0.0f, 0.95f);
+			requiredImprovement = (std::max)(requiredImprovement, relativeImprovement);
+		}
 		const bool improvesEnough =
 			best.sampleIndex >= 0 &&
-			(best.totalCost + requiredImprovement < currentCost ||
+			(best.totalCost + requiredImprovement < continuationCost ||
 			 shouldEnterContextTransition ||
 			 shouldExitFinishedTransition ||
 			 m_CurrentSample < 0);
@@ -1532,7 +1942,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			!m_Blending ||
 			shouldEnterContextTransition ||
 			shouldExitFinishedTransition ||
-			m_BlendElapsed >= m_Settings.blendDuration * glm::clamp(m_Settings.blendInterruptFraction, 0.0f, 1.0f);
+			m_BlendElapsed >= m_Settings.inertializationMaxDuration *
+				glm::clamp(m_Settings.blendInterruptFraction, 0.0f, 1.0f);
 		const bool switchIntervalReady =
 			searchContextChanged ||
 			shouldEnterContextTransition ||
@@ -1540,19 +1951,17 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			m_TimeSinceSwitch >= m_Settings.minSwitchInterval;
 		const bool canSwitchNow =
 			best.sampleIndex >= 0 &&
-			!bestIsSameLoopClip &&
 			improvesEnough &&
 			canInterruptBlend &&
 			switchIntervalReady;
 		if (best.sampleIndex >= 0 &&
 		    canSwitchNow)
 		{
-			m_BlendSource = (m_LastOutputLocalPose.size() == skeleton.bones.size()) ? m_LastOutputLocalPose : currentLocal;
+			const float sourceLeftContact = m_LeftFootPlantWeight;
+			const float sourceRightContact = m_RightFootPlantWeight;
 			m_CurrentSample = best.sampleIndex;
 			m_CurrentTime = m_Samples[m_CurrentSample].time;
 			m_CurrentCost = best.totalCost;
-			m_Blending = !m_BlendSource.empty() && m_Settings.blendDuration > kEpsilon;
-			m_BlendElapsed = 0.0f;
 			m_TimeSinceSwitch = 0.0f;
 			m_PreviousQueryModelPose.clear();
 			m_CurrentLeftFootVelocity = glm::vec3(0.0f);
@@ -1569,15 +1978,28 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 				return false;
 			}
 			SamplePose(activeClipIt->second, m_CurrentTime, skeleton, currentLocal);
+			std::vector<glm::mat4> targetFuture;
+			const float velocityDt = 1.0f / (std::max)(m_Settings.sampleRate, 1.0f);
+			SamplePose(activeClipIt->second,
+			           ResolveClipTime(activeClipIt->second, m_CurrentTime + velocityDt, activeSample->loopLike),
+			           skeleton,
+			           targetFuture);
+			BeginInertialTransition(currentLocal, targetFuture, velocityDt);
+			float switchedLeftContact = 0.0f;
+			float switchedRightContact = 0.0f;
+			SampleContactWeights(m_CurrentSample, m_CurrentTime, switchedLeftContact, switchedRightContact);
+			BeginContactTransition(sourceLeftContact, sourceRightContact,
+			                       switchedLeftContact, switchedRightContact);
 		}
 		else
 		{
-			m_CurrentCost = bestIsCurrentClip && best.sampleIndex >= 0 ? best.totalCost : currentCost;
+			m_CurrentCost = currentCost;
 		}
 
 		m_DebugData.currentCost = currentCost;
 		m_DebugData.trajectoryCost = currentTrajectory;
 		m_DebugData.poseCost = currentPose;
+		m_DebugData.contactCost = currentContact;
 		m_DebugData.biasCost = 0.0f;
 		if (best.sampleIndex >= 0)
 		{
@@ -1601,22 +2023,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 
 	std::vector<glm::mat4> target;
 	SamplePose(activeClipIt->second, m_CurrentTime, skeleton, target);
-	if (m_Blending)
-	{
-		m_BlendElapsed += deltaTime;
-		const float t = glm::clamp(m_BlendElapsed / (std::max)(m_Settings.blendDuration, kEpsilon), 0.0f, 1.0f);
-		const float alpha = 1.0f - std::pow(1.0f - t, 3.0f);
-		BlendPose(m_BlendSource, target, alpha, outLocalTransforms);
-		if (t >= 1.0f)
-		{
-			m_Blending = false;
-			m_BlendSource.clear();
-		}
-	}
-	else
-	{
-		outLocalTransforms = std::move(target);
-	}
+	ApplyInertialization(deltaTime, target, outLocalTransforms);
+	m_PreviousOutputLocalPose = m_LastOutputLocalPose;
 	m_LastOutputLocalPose = outLocalTransforms;
 
 	m_DebugData.usedThisFrame = true;

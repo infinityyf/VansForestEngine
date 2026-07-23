@@ -7,6 +7,7 @@
 #include "VansVKCommandBuffer.h"
 #include "VansRenderGraph.h"
 #include "VansRenderGraphVulkanSync.h"
+#include "VansPipelineCacheService.h"
 #include "VansShader.h"
 #include "../RayTracingCore/VansRayTracing.h"
 #include <vector>
@@ -43,6 +44,12 @@ namespace VansGraphics
 
 		bool SetDeviceImageData(VansVKImage& dest_image, VansVKCommandBuffer& cmd, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level);
 		bool SetDeviceImageData(VansVKImage& dest_image, VansVKCommandBuffer& cmd, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level, VkImageLayout finalLayout);
+		bool SetDeviceImageMipChainData(VansVKImage& destImage,
+			VansVKCommandBuffer& cmd,
+			const void* data,
+			int dataSize,
+			const std::vector<VkBufferImageCopy>& regions,
+			VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 		// 每帧开始时重置临时上传分配器。该接口只重置 CPU 侧 offset，调用前必须确保上一帧图形提交已完成。
 		void ResetFrameStageUploadAllocator();
@@ -122,7 +129,11 @@ namespace VansGraphics
 
 		//初始化被渲染的数据
 		void BeforeRendering() override;
-		void PrepareRenderingFrame() override { ProcessPendingFSRConfig(); }
+		void PrepareRenderingFrame() override
+		{
+			ProcessPendingFSRConfig();
+			m_PipelineCacheService.TickPersistence();
+		}
 
 		void Rendering() override;
 
@@ -161,6 +172,7 @@ namespace VansGraphics
 
 		//获取logic device
 		VkDevice& GetLogicDevice() { return m_VansVKLogicDevice; }
+		VansPipelineCacheService& GetPipelineCacheService() { return m_PipelineCacheService; }
 
 		VkInstance GetInstance() { return m_VansVKInstance; }
 
@@ -265,6 +277,8 @@ namespace VansGraphics
 		void UpdateSSR(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		void UpdateScreenSpaceShadow(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+
+		void UpdatePunctualShadowDebugPreview(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		void UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
@@ -393,6 +407,8 @@ namespace VansGraphics
 
 		void PrepareScreenSpaceShadowRenderData();
 
+		void PreparePunctualShadowDebugRenderData();
+
 		void PrepareSSRRenderData();
 
 		void PrepareVolumetricData();
@@ -461,6 +477,7 @@ namespace VansGraphics
 		VkPhysicalDevice m_VansVKPhysicalDevice;
 
 		VkDevice m_VansVKLogicDevice;
+		VansPipelineCacheService m_PipelineCacheService;
 
 		//queues
 		VkQueue m_VansVKGraphicsQueue;

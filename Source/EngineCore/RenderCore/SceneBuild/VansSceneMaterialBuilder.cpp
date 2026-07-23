@@ -4,6 +4,8 @@
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../Util/VansLog.h"
 
+#include <algorithm>
+
 namespace VansGraphics
 {
 	namespace
@@ -50,6 +52,15 @@ namespace VansGraphics
 				return fallback;
 			const json& raw = UnwrapMaterialValue(*found);
 			return raw.is_number() ? raw.get<float>() : fallback;
+		}
+
+		std::string ReadMaterialStringField(const json& object, const char* key, const std::string& fallback)
+		{
+			const json* found = FindMaterialField(object, key);
+			if (!found)
+				return fallback;
+			const json& raw = UnwrapMaterialValue(*found);
+			return raw.is_string() ? raw.get<std::string>() : fallback;
 		}
 
 		glm::vec3 ReadMaterialVec3Field(const json& object, const char* key, const glm::vec3& fallback)
@@ -150,6 +161,16 @@ namespace VansGraphics
 
 			const VansShaderEntry* entry = VansShaderManager::Get().FindShaderEntry(shaderName);
 			material->m_CustomShaderDepthWrite = entry == nullptr || entry->depthWrite == VK_TRUE;
+			const bool declaresGBuffer = entry &&
+				std::find(entry->materialPasses.begin(), entry->materialPasses.end(), VansPass::GBUFFER) !=
+				entry->materialPasses.end();
+			if (declaresGBuffer)
+			{
+				material->m_PassShaders[VansPass::GBUFFER] = shader;
+				VANS_LOG("[LoadMaterials] Custom material '" << material->m_AssetName
+					<< "' routed to '" << VansPass::GBUFFER << "' from declared shader pass");
+				return;
+			}
 			const char* automaticPass = material->m_CustomShaderDepthWrite
 				? VansPass::FORWARD_OPAQUE_AFTER_DEFERRED
 				: VansPass::FORWARD_TRANSPARENT;
@@ -206,6 +227,7 @@ namespace VansGraphics
 			material->m_PassShaders[passName] = passShader;
 			bindAutomaticCustomPass(shaderName, passShader);
 		}
+
 	}
 
 VansTexture* VansSceneMaterialBuilder::ResolveMaterialTexture(VansScene& scene, const json& sceneMaterial, const char* key)
@@ -428,15 +450,49 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         cloth->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
         cloth->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
         cloth->m_AoTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "ao_texture", "defaultAo");
-        cloth->m_SheenRoughness = ReadMaterialFloatField(sceneMaterial, "sheenRoughness", 0.5f);
+        cloth->m_SheenRoughness = std::clamp(ReadMaterialFloatField(sceneMaterial, "sheenRoughness", 0.5f), 0.045f, 1.0f);
         glm::vec3 clothColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
         clothColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", clothColor);
         clothColor = ReadMaterialVec3Field(sceneMaterial, "baseColor", clothColor);
         cloth->m_BasePBRParam.m_albedo = ReadMaterialVec3Field(sceneMaterial, "albedo", clothColor);
         cloth->m_BasePBRParam.m_roughness = cloth->m_SheenRoughness;
-        cloth->m_BasePBRParam.m_metallic = ReadMaterialFloatField(sceneMaterial, "translucency", 0.35f);
+        cloth->m_SheenStrength = std::clamp(ReadMaterialFloatField(sceneMaterial, "sheenStrength", 0.5f), 0.0f, 1.0f);
+        cloth->m_Translucency = std::clamp(ReadMaterialFloatField(sceneMaterial, "translucency", 0.35f), 0.0f, 1.0f);
+        cloth->m_Anisotropy = std::clamp(ReadMaterialFloatField(sceneMaterial, "anisotropy", 0.0f), -0.95f, 0.95f);
+        cloth->m_Thickness = std::clamp(ReadMaterialFloatField(sceneMaterial, "thickness", 1.0f), 0.0f, 1.0f);
+        cloth->m_TransmissionColor = glm::max(
+            ReadMaterialVec3Field(sceneMaterial, "transmissionColor", glm::vec3(1.0f)), glm::vec3(0.0f));
+
+        if (FindMaterialField(sceneMaterial, "sheenColor"))
+        {
+            cloth->m_SheenColor = glm::max(
+                ReadMaterialVec3Field(sceneMaterial, "sheenColor", glm::vec3(1.0f)), glm::vec3(0.0f));
+            cloth->m_ClothFlags &= ~VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT;
+        }
+        else
+        {
+            cloth->m_SheenColor = glm::vec3(1.0f);
+            cloth->m_ClothFlags |= VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT;
+        }
+
+        const std::string clothModel = ReadMaterialStringField(sceneMaterial, "clothModel", "fuzz");
+        if (clothModel == "silk" || clothModel == "satin")
+            cloth->m_ClothModel = VansClothModel::Silk;
+        else if (clothModel == "thin")
+            cloth->m_ClothModel = VansClothModel::Thin;
+        else
+        {
+            cloth->m_ClothModel = VansClothModel::Fuzz;
+            if (clothModel != "fuzz" && clothModel != "cotton" && clothModel != "wool" && clothModel != "velvet")
+            {
+                VANS_LOG_WARN("[LoadMaterials] Cloth material '" << material->m_AssetName
+                    << "': unknown clothModel '" << clothModel << "', falling back to fuzz.");
+            }
+        }
+
+        cloth->m_BasePBRParam.m_metallic = cloth->m_Translucency;
         cloth->m_BasePBRParam.m_ao = ReadMaterialFloatField(sceneMaterial, "ao", 1.0f);
-        cloth->m_BasePBRParam.padding = ReadMaterialFloatField(sceneMaterial, "sheenStrength", 0.5f);
+        cloth->m_BasePBRParam.padding = cloth->m_SheenStrength;
         break;
     }
     case VansMaterialType::VAN_SKIN:

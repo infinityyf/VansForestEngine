@@ -17,6 +17,8 @@ void VansSceneScriptComponentBuilder::BuildPythonScripts(VansScriptObject& objec
 		pyComp->m_ScriptClassName = scriptEntry["class"].get<std::string>();
 		pyComp->m_OwnerObject = &object;
 		object.AddComponent(pyComp);
+		if (auto* scriptContext = VansScriptContext::GetInstance())
+			scriptContext->RegisterScriptComponent(&object, pyComp);
 	}
 }
 }

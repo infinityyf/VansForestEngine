@@ -46,7 +46,14 @@ namespace Vans::EditorAPI
 		virtual void SetFSRSettings(FSRUpscaleMode mode, float sharpness) = 0;
 		virtual void SetSceneViewportExtent(std::uint32_t width, std::uint32_t height) = 0;
 		virtual std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const = 0;
+		virtual void RequestPunctualShadowDebugPreview() = 0;
+		virtual PunctualShadowDebugSnapshot GetPunctualShadowDebugSnapshot() const = 0;
+		virtual void ApplyPunctualScreenSpaceShadowSettings(
+			const PunctualScreenSpaceShadowSettingsSnapshot& settings) = 0;
 		virtual RenderBackendDiagnostics GetRenderBackendDiagnostics() const = 0;
+		virtual std::vector<ShaderProgramSourceSnapshot> QueryShaderProgramSources() const = 0;
+		virtual ShaderCandidateApplyResult ApplyShaderCandidateAtRenderSafePoint(
+			const ShaderCandidatePackage& package) = 0;
 		virtual void RebuildReflectionProbeResources() = 0;
 		virtual void BakeQueuedReflectionProbesNow() = 0;
 		virtual ReflectionProbeSettingsSnapshot GetReflectionProbeSettings() const = 0;

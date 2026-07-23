@@ -9,7 +9,7 @@
 layout(push_constant) uniform LightShadowIndex 
 {
     int lightIndex;
-    int shadowIndex;
+    int shadowFaceIndex;
     int materialIndex;
     int objectIndex;
     int animationEnabled;
@@ -71,30 +71,17 @@ void main()
     int spotLightCount  = int(uSpotLightCount);
     int rectLightStart  = pointLightCount + spotLightCount;
 
+    uint metaIndex;
     if (lightIndex < pointLightCount)
-    {
-        // 点光源：lightIndex = 点光源下标，shadowIndex = 立方体面下标
-        mat4x4 shadowMatrix = uPointLights[lightIndex].shadowMatrix[shadowIndex];
-        vec4 clipCoord = shadowMatrix * ModelMatrix * pos;
-        clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
-        gl_Position = clipCoord;
-    }
+        metaIndex = uPointLights[lightIndex].shadowMetaIndex;
     else if (lightIndex < rectLightStart)
-    {
-        // 聚光灯
-        int spotLightIndex = lightIndex - pointLightCount;
-        mat4x4 shadowMatrix = uSpotLights[spotLightIndex].shadowMatrix;
-        vec4 clipCoord = shadowMatrix * ModelMatrix * pos;
-        clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
-        gl_Position = clipCoord;
-    }
+        metaIndex = uSpotLights[lightIndex - pointLightCount].shadowMetaIndex;
     else
-    {
-        // 面光源 (Rect light)
-        int rectLightIndex = lightIndex - rectLightStart;
-        mat4x4 shadowMatrix = uRectLights[rectLightIndex].shadowMatrix;
-        vec4 clipCoord = shadowMatrix * ModelMatrix * pos;
-        clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
-        gl_Position = clipCoord;
-    }
+        metaIndex = uRectLights[lightIndex - rectLightStart].shadowMetaIndex;
+
+    PunctualShadowData shadow = uPunctualShadows[metaIndex];
+    uint viewIndex = shadow.firstView + uint(shadowFaceIndex);
+    vec4 clipCoord = uPunctualShadowViews[viewIndex].worldToShadow * ModelMatrix * pos;
+    clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
+    gl_Position = clipCoord;
 }

@@ -120,17 +120,26 @@ namespace VansGraphics
 
 	{
 
-		glm::vec4 screenSize;
+		glm::vec4 screenSize = glm::vec4(0.0f);
 
-		glm::vec4 halfSize;
+		glm::vec4 punctualRayParams = glm::vec4(12.0f, 0.10f, 0.020f, 64.0f); // x=max distance, y=thickness, z=normal bias, w=max steps
 
-		glm::vec4 rayParams;
+		glm::vec4 directionalRayParams = glm::vec4(1.75f, 0.080f, 0.020f, 48.0f); // x=max distance, y=thickness, z=normal bias, w=max steps
 
-		glm::vec4 fadeParams;
+		glm::vec4 fadeParams = glm::vec4(32.0f, 70.0f, 1.0f, 0.95f); // x=edge fade pixels, y=directional depth fade, z=directional strength, w=punctual strength
 
 	};
 
 	static_assert(sizeof(ScreenSpaceShadowParamsGPU) == 64, "Screen-space shadow parameter layout must match GLSL");
+
+	struct VansScreenSpacePunctualShadowSettings
+	{
+		float maxTraceDistance = 12.0f;
+		float thickness = 0.10f;
+		float normalBias = 0.020f;
+		uint32_t maxSteps = 64;
+		float strength = 0.95f;
+	};
 
 
 
@@ -193,6 +202,7 @@ namespace VansGraphics
 	class VansSkinMaterial;
 
 	class VansClothMaterial;
+	struct VansClothGPUParam;
 
 	class VansHairMaterial;
 
@@ -398,7 +408,7 @@ namespace VansGraphics
 
 		static constexpr const char* RT_SCREEN_SPACE_SHADOW_RESULT = "Runtime.ScreenSpaceShadow.Result";
 
-		static constexpr const char* RT_SCREEN_SPACE_SHADOW_FILTER_RESULT = "Runtime.ScreenSpaceShadow.FilterResult";
+		static constexpr const char* RT_PUNCTUAL_SHADOW_DEBUG_PREVIEW = "Runtime.PunctualShadow.DebugPreview";
 
 		static constexpr const char* RT_SSR_HIT_INFO = "Runtime.SSR.HitInfo";
 
@@ -530,6 +540,12 @@ namespace VansGraphics
 
 		void ApplyFogVolumeSettings(const VansFogVolumeSettings& settings);
 
+		VansScreenSpacePunctualShadowSettings GetScreenSpacePunctualShadowSettings() const;
+
+		void ApplyScreenSpacePunctualShadowSettings(const VansScreenSpacePunctualShadowSettings& settings);
+
+		void SetScreenSpaceShadowExtent(uint32_t width, uint32_t height);
+
 
 
 		VkDescriptorSetLayout m_MaterialAtmosphereDataLayout = VK_NULL_HANDLE;
@@ -574,6 +590,8 @@ namespace VansGraphics
 		std::vector<VkDescriptorSet> m_ScreenSpaceShadowDescriptorSets;
 
 		VansVKBuffer m_ScreenSpaceShadowParamsCBBuffer;
+
+		ScreenSpaceShadowParamsGPU m_ScreenSpaceShadowParams;
 
 
 
@@ -634,12 +652,14 @@ namespace VansGraphics
 
 
 		VansVKBuffer m_GlobalPBRDataBuffer;
+		VansVKBuffer m_GlobalClothDataBuffer;
 
 		VansVKBuffer m_GlobalCustomMaterialDataBuffer;
 
 		std::vector<VansPBRMaterial*> m_GlobalPBRMaterial;
 
 		std::vector<VansBasePBRParam> m_GlobalPBRParamData;
+		std::vector<VansClothGPUParam> m_GlobalClothParamData;
 
 		std::vector<VansCustomMaterialPayload> m_GlobalCustomMaterialParamData;
 
@@ -849,6 +869,11 @@ namespace VansGraphics
 		uint32_t m_TileLightGridX = 0;
 
 		uint32_t m_TileLightGridY = 0;
+
+		// ---- Punctual Shadow diagnostic resolve ----
+		VkDescriptorSetLayout m_PunctualShadowDebugSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_PunctualShadowDebugDescriptorSets;
+		VansComputeShader* m_PunctualShadowDebugShader = nullptr;
 
 
 
@@ -1280,6 +1305,26 @@ namespace VansGraphics
 
 	// ============================================================
 
+	enum class VansClothModel : uint32_t
+	{
+		Fuzz = 0,
+		Silk = 1,
+		Thin = 2,
+	};
+
+	static constexpr uint32_t VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT = 1u << 0;
+
+	struct alignas(16) VansClothGPUParam
+	{
+		glm::vec4 sheenColorWeight = glm::vec4(1.0f, 1.0f, 1.0f, 0.5f);
+		glm::vec4 transmissionColorStrength = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+		glm::vec4 controls = glm::vec4(
+			static_cast<float>(VansClothModel::Fuzz), 0.0f, 1.0f,
+			static_cast<float>(VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT));
+	};
+
+	static_assert(sizeof(VansClothGPUParam) == 48, "VansClothGPUParam must match the GLSL std430 payload");
+
 	class VansClothMaterial : public VansMaterial
 
 	{
@@ -1300,7 +1345,15 @@ namespace VansGraphics
 
 
 
-		float        m_SheenRoughness    = 0.5f;   // 0 = silk, 1 = rough fabric
+		float        m_SheenRoughness    = 0.5f;
+		VansClothModel m_ClothModel      = VansClothModel::Fuzz;
+		glm::vec3    m_SheenColor        = glm::vec3(1.0f);
+		float        m_SheenStrength     = 0.5f;
+		float        m_Anisotropy        = 0.0f;
+		glm::vec3    m_TransmissionColor = glm::vec3(1.0f);
+		float        m_Translucency      = 0.35f;
+		float        m_Thickness         = 1.0f;
+		uint32_t     m_ClothFlags        = VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT;
 
 		VansBasePBRParam m_BasePBRParam{ glm::vec3(1.0f), 0.5f, 0.35f, 1.0f, 0.5f };
 
@@ -1313,6 +1366,7 @@ namespace VansGraphics
 
 
 		void BuildClothTextureDescriptors();
+		VansClothGPUParam BuildGPUParam() const;
 
 	};
 

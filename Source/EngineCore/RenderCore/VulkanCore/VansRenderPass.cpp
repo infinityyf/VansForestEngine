@@ -976,31 +976,20 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 	{
 		{
 			0,
-			VK_FORMAT_R32_SFLOAT,
+			VK_FORMAT_D32_SFLOAT,
 			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_LOAD_OP_LOAD,
 			VK_ATTACHMENT_STORE_OP_STORE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL, //render passbegin的layout
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, //这里的final layout会自动切换,render pass结束后的layout
-		},
-		{
-			0,
-			VK_FORMAT_D32_SFLOAT,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
 		},
 	};
 
 	VkAttachmentReference depth_stencil_attachment =
 	{
-		 1,
+		 0,
 		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 	};
 
@@ -1011,56 +1000,62 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 		{
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			{},
-			{
-				{
-					0,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				}
-			},
+			{},
 			{},
 			&depth_stencil_attachment,
 			{}
 		},
 	};
 
-	//shadow 默认1
-	m_VansPunctualShadowPass.m_ClearValues =
-	{
-		{ 1.0f, 1.0f, 1.0f, 1.0f },
-		{ 1.0f, 0 },
-	};
+	m_VansPunctualShadowPass.m_ClearValues = {};
 
-	//不切换subpass
-	std::vector<VkSubpassDependency> subpass_dependencies;
+	// The atlas is sampled by both graphics and compute consumers between updates.
+	// External dependencies make the cached read -> partial depth write -> cached
+	// read ownership explicit without transitioning the atlas through GENERAL.
+	std::vector<VkSubpassDependency> subpass_dependencies =
+	{
+		{
+			VK_SUBPASS_EXTERNAL,
+			0,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT,
+		},
+		{
+			0,
+			VK_SUBPASS_EXTERNAL,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT,
+		},
+	};
 
 	auto vansConfigration = VansConfigration::GetInstance();
 	VkExtent2D resolution = { vansConfigration->GetPunctualShadowMapWidth(), vansConfigration->GetPunctualShadowMapHeight() };
 
 	m_VansPunctualShadowPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
 
-	//创建color,depth
+	// Persistent sampled depth atlas. Dirty blocks are cleared explicitly inside
+	// the render pass; LOAD/STORE preserves every clean cached block.
 	m_PunctualShadowMapImage.CreateVulkanImage(
-		logic_device,
-		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_R32_SFLOAT,
-		1,
-		1,
-		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT,
-		false,
-		false,
-		true
-	);
-	m_PunctualShadowMapDepthImage.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
 		VK_FORMAT_D32_SFLOAT,
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true,
+		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		true,
+		VK_COMPARE_OP_LESS_OR_EQUAL
 	);
 
 #ifdef _DEBUG
@@ -1068,46 +1063,43 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 	nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
 	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_PunctualShadowMapImage.GetImage());
-	nameInfo.pObjectName = "PunctualShadowMap";
-	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
-
-	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_PunctualShadowMapDepthImage.GetImage());
-	nameInfo.pObjectName = "PunctualShadowMapDepth";
+	nameInfo.pObjectName = "PunctualShadowDepthAtlas";
 	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 #endif
 
 	m_VansPunctualShadowPass.m_FrameBuffers.resize(1);
-	std::vector<VkImageView> image_views = {
-			m_PunctualShadowMapImage.GetImageView(),
-			m_PunctualShadowMapDepthImage.GetImageView() };
+	std::vector<VkImageView> image_views = { m_PunctualShadowMapImage.GetImageView() };
 	m_VansPunctualShadowPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansPunctualShadowPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
 
 	m_LogicDevice = logic_device;
 
-	//record command buffer
+	// Initialize the persistent atlas exactly once. A LOAD render pass may not
+	// consume undefined contents on its first frame.
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	//设置colordepoth的layout
-	m_PunctualShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_PunctualShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 		{
 			m_PunctualShadowMapImage.m_VansVKImage,
 			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
+			VK_ACCESS_TRANSFER_WRITE_BIT,
 			m_PunctualShadowMapImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_PunctualShadowMapImage.m_ImageAspect
 		});
-	m_PunctualShadowMapDepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	command_buffer.ClearDepthStencil(m_PunctualShadowMapImage, { 1.0f, 0 });
+	m_PunctualShadowMapImage.SetImageMemoryBarrier(
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 		{
-			m_PunctualShadowMapDepthImage.m_VansVKImage,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			m_PunctualShadowMapDepthImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			m_PunctualShadowMapImage.m_VansVKImage,
+			VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			m_PunctualShadowMapImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
-			m_PunctualShadowMapDepthImage.m_ImageAspect
+			m_PunctualShadowMapImage.m_ImageAspect
 		});
 
 	EndSubmitAndResetOneTimeCommand(command_buffer, queue, logic_device, "SetupVansPunctualShadowRenderPass");
@@ -1923,7 +1915,6 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_CascadeShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_PunctualShadowMapImage.DestroyVulkanImage(m_LogicDevice);
-	m_PunctualShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_NormalImage.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage0.DestroyVulkanImage(m_LogicDevice);
@@ -2086,18 +2077,6 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_CascadeShadowMapImage.m_ImageAspect
-		});
-
-	m_PunctualShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		{
-			m_PunctualShadowMapImage.m_VansVKImage,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_PunctualShadowMapImage.m_ImageAspect
 		});
 
 	//end record

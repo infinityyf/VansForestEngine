@@ -1,5 +1,6 @@
 ﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansPipeline.h"
+#include "VansPipelineCacheService.h"
 #include "VansVKDescriptorManager.h"
 #include "../../Util/VansLog.h"
 #include <iostream>
@@ -12,7 +13,7 @@ bool VansGraphics::VansVKGraphicsPipeline::CreateGraphicsPipelineInfo(VkDevice& 
 	const uint32_t vertexAttributeCount = global_state_data.vertexInputAttributeDescriptions
 		? static_cast<uint32_t>(global_state_data.vertexInputAttributeDescriptions->size())
 		: 0;
-	const VansPipelineRuntimeDesc runtimeDesc = VansPipelineDescriptorBuilder::BuildRuntimeDesc(
+	VansPipelineRuntimeDesc runtimeDesc = VansPipelineDescriptorBuilder::BuildRuntimeDesc(
 		global_state_data.currentRenderPass,
 		global_state_data.currentSubpass,
 		create_info.descriptorset_layouts,
@@ -21,6 +22,10 @@ bool VansGraphics::VansVKGraphicsPipeline::CreateGraphicsPipelineInfo(VkDevice& 
 		vertexAttributeCount,
 		global_state_data.rasterizationSamples,
 		global_state_data.sampleShadingEnable);
+	if (global_state_data.vertexInputBindingDescriptions)
+		runtimeDesc.vertexBindings = *global_state_data.vertexInputBindingDescriptions;
+	if (global_state_data.vertexInputAttributeDescriptions)
+		runtimeDesc.vertexAttributes = *global_state_data.vertexInputAttributeDescriptions;
 	m_DescriptorKey = VansPipelineDescriptorBuilder::BuildPipelineKey(
 		create_info.pipeline_program_desc,
 		runtimeDesc);
@@ -271,16 +276,11 @@ VkSampleMask实质上就是uint32_t。Sample mask的比特与采样点一一对�
 bool VansGraphics::VansVKGraphicsPipeline::CreateGraphicsPipeline(VkDevice& logic_device, const VkGraphicsPipelineCreateInfo& create_info)
 {
 	m_Device = logic_device;
-	/*
-	创建一个没有初始数据的VkPipelineCache，在创建管线时传入其handle，Vulkan的实现会向其写入管线的缓存信息。
-	如果想在下一次启动时加快创建管线的速度，那么将缓存信息存到文件，在下次启动时读取。
-	缓存信息的头部信息（前32位）用于验证管线缓存是否满足显卡驱动的要求，以应对多显卡PC
-	所以create的时候传入一个cache，会进行写入操作，也会读取这里里面的数据，进行加速（前提是之前已经初始化过）
-	*/
+	auto cacheAccess = VansPipelineCacheService::AcquireForDevice(logic_device);
 
 	VkResult result = VansGraphics::vkCreateGraphicsPipelines(
 		logic_device, 
-		m_PipelineCache,
+		cacheAccess.GetHandle(),
 		1,
 		&create_info, nullptr, &m_GraphicsPipeline);
 	if (VK_SUCCESS != result) 
@@ -288,51 +288,7 @@ bool VansGraphics::VansVKGraphicsPipeline::CreateGraphicsPipeline(VkDevice& logi
 		VANS_LOG_ERROR("Could not create a graphics pipeline.");
 		return false;
 	}
-	return true;
-}
-
-bool VansGraphics::VansVKGraphicsPipeline::CreatePipelineCache(VkDevice& logic_device)
-{
-	std::vector<unsigned char>  cache_data;
-
-	//创建pipeline cache避免重复创建
-	VkPipelineCacheCreateInfo pipeline_cache_create_info =
-	{
-		 VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
-		 nullptr,
-		 0,
-		 cache_data.size(),
-		 cache_data.data()
-	};
-
-	VkResult result = VansGraphics::vkCreatePipelineCache(logic_device, &pipeline_cache_create_info, nullptr, &m_PipelineCache);
-	if (VK_SUCCESS != result) 
-	{
-		VANS_LOG_ERROR("Could not create pipeline cache.");
-		return false;
-	}
-	return true;
-}
-
-bool VansGraphics::VansVKGraphicsPipeline::GetPipelineCacheData(VkDevice& logic_device)
-{
-	std::vector<unsigned char> pipeline_cache_data;
-	size_t data_size = 0;
-	VkResult result = VK_SUCCESS;
-	result = VansGraphics::vkGetPipelineCacheData(logic_device, m_PipelineCache, &data_size, nullptr);
-	if ((VK_SUCCESS != result) ||(0 == data_size)) 
-	{
-		VANS_LOG_ERROR("Could not get the size of the pipeline cache.");
-		return false;
-	}
-	pipeline_cache_data.resize(data_size);
-
-	result = VansGraphics::vkGetPipelineCacheData(logic_device, m_PipelineCache, &data_size, pipeline_cache_data.data());
-	if ((VK_SUCCESS != result) || (0 == data_size)) 
-	{
-		VANS_LOG_ERROR("Could not acquire pipeline cache data.");
-		return false;
-	}
+	cacheAccess.NotifyPipelineCreated(VansPipelineCachePipelineKind::Graphics);
 	return true;
 }
 
@@ -350,15 +306,6 @@ void VansGraphics::VansVKGraphicsPipeline::DestroyPipeline(VkDevice& logic_devic
 	}
 }
 
-void VansGraphics::VansVKGraphicsPipeline::DestroyPipelineCache(VkDevice& logic_device)
-{
-	if (VK_NULL_HANDLE != m_PipelineCache)
-	{
-		VansGraphics::vkDestroyPipelineCache(logic_device, m_PipelineCache, nullptr);
-		m_PipelineCache = VK_NULL_HANDLE;
-	}
-}
-
 void VansGraphics::VansVKGraphicsPipeline::DestroyPipelineLayout(VkDevice& logic_device)
 {
 	if (VK_NULL_HANDLE != m_VansPipelineLayout)
@@ -368,18 +315,7 @@ void VansGraphics::VansVKGraphicsPipeline::DestroyPipelineLayout(VkDevice& logic
 	}
 }
 
-bool VansGraphics::VansVKGraphicsPipeline::MergePipelineCache(VkDevice& logic_device, std::vector<VkPipelineCache>& source_pipeline_caches, VkPipelineCache& merged_cache)
-{
-	VkResult result = VansGraphics::vkMergePipelineCaches(logic_device, merged_cache, static_cast<uint32_t>(source_pipeline_caches.size()), source_pipeline_caches.data());
-	if (VK_SUCCESS != result) 
-	{
-		VANS_LOG_ERROR("Could not merge pipeline cache objects.");
-		return false;
-	}
-	return true;
-}
-
-bool VansGraphics::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount, VkPushConstantRange* pushConstRange, const VansPipelineProgramDesc* programDesc)
+bool VansGraphics::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_device, VkPipelineShaderStageCreateInfo& compute_shader_stage, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount, VkPushConstantRange* pushConstRange, const VansPipelineProgramDesc* programDesc)
 {
 	m_Device = logic_device;
 	if (programDesc != nullptr)
@@ -423,12 +359,14 @@ bool VansGraphics::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_
 		 VK_NULL_HANDLE,
 		 -1
 	};
-	result = VansGraphics::vkCreateComputePipelines(logic_device, pipeline_cache,1, &compute_pipeline_create_info, nullptr, &m_ComputePipeline);
+	auto cacheAccess = VansPipelineCacheService::AcquireForDevice(logic_device);
+	result = VansGraphics::vkCreateComputePipelines(logic_device, cacheAccess.GetHandle(), 1, &compute_pipeline_create_info, nullptr, &m_ComputePipeline);
 	if (VK_SUCCESS != result) 
 	{
 		VANS_LOG_ERROR("Could not create compute pipeline.");
 		return false;
 	}
+	cacheAccess.NotifyPipelineCreated(VansPipelineCachePipelineKind::Compute);
 	return true;
 }
 
@@ -460,8 +398,9 @@ void VansGraphics::VansVKComputePipeline::DispatchCompute(VkCommandBuffer& comma
 	VansGraphics::vkCmdDispatch(command_buffer, x, y, z);
 }
 
-bool VansGraphics::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& logic_device, std::vector<VkRayTracingShaderGroupCreateInfoKHR>& shaderGroupCreateInfo, std::vector<VkPipelineShaderStageCreateInfo>& shaderStageCreateInfo, const VkPipelineCache& pipeline_cache, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount, VkPushConstantRange* pushConstRange, const VansPipelineProgramDesc* programDesc)
+bool VansGraphics::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& logic_device, std::vector<VkRayTracingShaderGroupCreateInfoKHR>& shaderGroupCreateInfo, std::vector<VkPipelineShaderStageCreateInfo>& shaderStageCreateInfo, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts, int pushConstRangeCount, VkPushConstantRange* pushConstRange, const VansPipelineProgramDesc* programDesc)
 {
+	m_Device = logic_device;
 	if (programDesc != nullptr)
 	{
 		const uint32_t pushConstantSize = pushConstRangeCount > 0 && pushConstRange != nullptr
@@ -503,7 +442,8 @@ bool VansGraphics::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& 
 	pipelineInfo.maxPipelineRayRecursionDepth = 1;
 	pipelineInfo.layout = m_RayTracingLayout;
 
-	VkResult result = VansGraphics::vkCreateRayTracingPipelinesKHR(logic_device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_RayTracingPipeline);
+	auto cacheAccess = VansPipelineCacheService::AcquireForDevice(logic_device);
+	VkResult result = VansGraphics::vkCreateRayTracingPipelinesKHR(logic_device, VK_NULL_HANDLE, cacheAccess.GetHandle(), 1, &pipelineInfo, nullptr, &m_RayTracingPipeline);
 	if (VK_SUCCESS != result)
 	{
 		VANS_LOG_ERROR("Could not create ray tracing pipeline. VkResult: " << result
@@ -511,6 +451,7 @@ bool VansGraphics::VansVKRayTracingPipeline::CreateRayTracingPipeline(VkDevice& 
 			<< " groupCount=" << pipelineInfo.groupCount);
 		return false;
 	}
+	cacheAccess.NotifyPipelineCreated(VansPipelineCachePipelineKind::RayTracing);
 	return true;
 }
 

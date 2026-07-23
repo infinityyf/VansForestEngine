@@ -202,7 +202,9 @@ namespace VansGraphics
 		// Also populates m_SubmeshMaterialInfos with texture paths and material metadata.
 		void LoadMultiMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
 			const std::string& file_name, bool import_tangent = false,
-			bool supportRayTracing = false, bool needCPUData = false, float scaleFactor = 1.0f);
+			bool supportRayTracing = false, bool needCPUData = false, float scaleFactor = 1.0f,
+			bool rebuildIdentityBoneOffsetsFromHierarchy = false,
+			bool remapWeaponAttachmentBonesToHands = false);
 
 		// Static helper: extract FBXSubmeshMaterialInfo for each submesh from a file without GPU upload.
 		static std::vector<FBXSubmeshMaterialInfo> GetSubmeshMaterialInfos(const std::string& file_name);

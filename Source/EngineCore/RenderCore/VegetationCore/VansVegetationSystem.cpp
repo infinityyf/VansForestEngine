@@ -412,16 +412,13 @@ void VansVegetationSystem::CreateCullBuffers(VkDevice device)
 // ============================================================================
 void VansVegetationSystem::LoadComputeShaders(VkDevice device)
 {
-	std::string projectRoot = VansConfigration::GetInstance()->GetProjectRootPath();
-
-	m_BoneSimShader = new VansComputeShader();
-	m_BoneSimShader->InitShader(device, (projectRoot + "EngineAssets/Shaders/GrassBoneSim").c_str());
-	m_BoneSimShader->SetPushConstant(sizeof(GrassSimPushConstants));
-
-	// P0: 加载 GPU 剔除 compute shader
-	m_CullShader = new VansComputeShader();
-	m_CullShader->InitShader(device, (projectRoot + "EngineAssets/Shaders/GrassCull").c_str());
-	m_CullShader->SetPushConstant(sizeof(GrassCullPushConstants));
+	(void)device;
+	m_BoneSimShader = VansShaderManager::Get().FindComputeShader("GrassBoneSim");
+	m_CullShader = VansShaderManager::Get().FindComputeShader("GrassCull");
+	if (!m_BoneSimShader)
+		VANS_LOG_WARN("[VegetationSystem] GrassBoneSim shader not found.");
+	if (!m_CullShader)
+		VANS_LOG_WARN("[VegetationSystem] GrassCull shader not found.");
 }
 
 void VansVegetationSystem::LoadTreeShaders(VkDevice device)
@@ -704,13 +701,12 @@ void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 	cullPC.hizMipCount       = static_cast<int>(m_HiZMipCount);
 	cullPC.hizEnabled        = (m_HiZEnabled && m_HiZView != VK_NULL_HANDLE) ? 1 : 0;
 
-	m_CullShader->SetPushConstantData(&cullPC);
-
 	// ── Ensure pipeline + dispatch ──────────────────────────────────
 	computeCmd.EnsureComputeShader(*m_CullShader, { m_GlobalDescSetLayout, m_CullLayout });
 
 	uint32_t cullGroupsX = (m_InstanceCount + 63) / 64;
-	computeCmd.DispatchCompute(*m_CullShader, cullGroupsX, 1, 1, { m_GlobalDescSet, m_CullDescSets[0] });
+	computeCmd.DispatchCompute(*m_CullShader, cullGroupsX, 1, 1,
+		{ m_GlobalDescSet, m_CullDescSets[0] }, &cullPC, sizeof(cullPC));
 
 	if (singleConfigFastPath)
 	{
@@ -787,11 +783,10 @@ void VansVegetationSystem::DispatchTreeCullPass(VansVKCommandBuffer& computeCmd)
 	pc.hizEnabled = (m_TreeConfig.hizEnabled && m_HiZEnabled && m_HiZView != VK_NULL_HANDLE) ? 1u : 0u;
 	pc.hizSampleBias = m_HiZSampleBias;
 	pc.hizMipCount = static_cast<int>(m_HiZMipCount);
-	m_TreeCullShader->SetPushConstantData(&pc);
-
 	computeCmd.EnsureComputeShader(*m_TreeCullShader, { m_GlobalDescSetLayout, m_TreeCullLayout });
 	uint32_t groupsX = (pc.instanceCount + 63u) / 64u;
-	computeCmd.DispatchCompute(*m_TreeCullShader, groupsX, 1, 1, { m_GlobalDescSet, m_TreeCullDescSets[0] });
+	computeCmd.DispatchCompute(*m_TreeCullShader, groupsX, 1, 1,
+		{ m_GlobalDescSet, m_TreeCullDescSets[0] }, &pc, sizeof(pc));
 
 	VkMemoryBarrier computeToTransfer = {};
 	computeToTransfer.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -860,12 +855,11 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 	simPC.grassHeight        = m_BladeHeight;
 	simPC.boneCount          = m_BoneCountPerInstance;
 
-	m_BoneSimShader->SetPushConstantData(&simPC);
-
 	computeCmd.EnsureComputeShader(*m_BoneSimShader, { m_GlobalDescSetLayout, m_BoneSimLayout });
 
 	uint32_t simGroupsX = (m_InstanceCount + 63) / 64;
-	computeCmd.DispatchCompute(*m_BoneSimShader, simGroupsX, 1, 1, { m_GlobalDescSet, m_BoneSimDescSets[0] });
+	computeCmd.DispatchCompute(*m_BoneSimShader, simGroupsX, 1, 1,
+		{ m_GlobalDescSet, m_BoneSimDescSets[0] }, &simPC, sizeof(simPC));
 
 	// ── Barrier: bone sim compute write → vertex shader read ────────
 	VkMemoryBarrier simToDrawBarrier = {};
@@ -1080,7 +1074,7 @@ void VansVegetationSystem::DrawTreePunctualShadow(VansVKCommandBuffer& graphicsC
                                                   const std::vector<VkDescriptorSet>& baseDescSets,
                                                   int pushConstantTransformIndex,
                                                   int lightIndex,
-                                                  int shadowIndex)
+                                                  int shadowFaceIndex)
 {
 	if (!m_TreeEnabled || !m_TreePunctualShadowShader || m_TreeDrawConfigsGPU.empty())
 		return;
@@ -1118,7 +1112,7 @@ void VansVegetationSystem::DrawTreePunctualShadow(VansVKCommandBuffer& graphicsC
 
 		TreePunctualShadowPushConstants pc = {};
 		pc.lightIndex = lightIndex;
-		pc.shadowIndex = shadowIndex;
+		pc.shadowFaceIndex = shadowFaceIndex;
 		pc.materialIndex = materialIndex;
 		pc.objectIndex = pushConstantTransformIndex;
 		pc.visibleOffset = cfg.visibleOffset;
@@ -1174,16 +1168,14 @@ void VansVegetationSystem::Cleanup(VkDevice device)
 	m_TreeInstancesCPU.clear();
 	m_TreeSpeciesInfosCPU.clear();
 
-	if (m_BoneSimShader)
-	{
-		delete m_BoneSimShader;
-		m_BoneSimShader = nullptr;
-	}
-	if (m_CullShader)
-	{
-		delete m_CullShader;
-		m_CullShader = nullptr;
-	}
+	// Shader programs are owned by VansShaderManager and survive scene/system
+	// resource rebuilds. Only release this subsystem's non-owning references.
+	m_BoneSimShader = nullptr;
+	m_CullShader = nullptr;
+	m_TreeGBufferShader = nullptr;
+	m_TreeShadowShader = nullptr;
+	m_TreePunctualShadowShader = nullptr;
+	m_TreeCullShader = nullptr;
 }
 
 // ============================================================================

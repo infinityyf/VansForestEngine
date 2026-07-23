@@ -39,9 +39,8 @@ struct PointLightData
     vec4 color;
     float intensity;
     float radius;
-    float shadowIndex;
+    uint shadowMetaIndex;
     float iesProfileIndex;
-    mat4 shadowMatrix[6];
 };
 
 struct SpotLightData
@@ -53,8 +52,7 @@ struct SpotLightData
     float radius;
     float innerConeAngle;
     float outerConeAngle;
-    mat4 shadowMatrix;
-    float shadowIndex;
+    uint shadowMetaIndex;
     float iesProfileIndex;
     float iesIntensityScale;
     float pad0;

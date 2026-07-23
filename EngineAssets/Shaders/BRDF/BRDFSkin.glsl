@@ -273,7 +273,7 @@ void AmbientBRDF_Skin(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, ino
 // ---------------------------------------------------------------------------
 // Cascade shadow map version of skin lighting
 void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
-                               sampler2DArray cascadeShadowMap, float viewDepth, sampler2D punctualShadowMap,
+                               sampler2DArray cascadeShadowMap, float viewDepth, sampler2DShadow punctualShadowMap,
                                float screenSpaceShadow,
                                inout LightResult lightResult)
 {
@@ -314,6 +314,13 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
         attenuation *= attenuation;
 
         float pShadow = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
+        if (IsPointShadowFallbackSelected(GetFragTileLightHeader(), i))
+        {
+            pShadow = BlendPunctualShadowFallback(
+                pShadow,
+                SamplePunctualScreenSpaceShadow(brdfData.positionWS, brdfData.normal, lightDirection, distance),
+                0u, int(i));
+        }
         float litAttenuation = attenuation * pShadow;
         float transmissionAttenuation = attenuation *
             SkinTransmissionShadow(pShadow, dot(brdfData.normal, lightDirection), curvature);
@@ -343,14 +350,20 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
 
-        float sShadow = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
-
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
         if (coneAngle < cos(spotLight.outerConeAngle)) continue;
 
         float innerConeAngle = cos(spotLight.innerConeAngle);
         float outerConeAngle = cos(spotLight.outerConeAngle);
         float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
+        float sShadow = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
+        if (IsSpotShadowFallbackSelected(GetFragTileLightHeader(), i))
+        {
+            sShadow = BlendPunctualShadowFallback(
+                sShadow,
+                SamplePunctualScreenSpaceShadow(brdfData.positionWS, brdfData.normal, lightDirection, distance),
+                1u, int(i));
+        }
         float litAttenuation = attenuation * sShadow * coneAttenuation;
         float transmissionAttenuation = attenuation *
             SkinTransmissionShadow(sShadow, dot(brdfData.normal, lightDirection), curvature) *

@@ -130,7 +130,9 @@ bool VansProjectManager::OpenProject(const std::string& projectRootPath)
 	m_SceneManager.SetDefaultScene(m_Config.defaultScene);
 	m_SceneManager.DiscoverScenes(root + "Scenes");
 
-	m_AssetDatabase = std::make_unique<VansAssetDatabase>(fs::path(root) / m_Config.assetsRoot);
+	m_AssetDatabase = std::make_unique<VansAssetDatabase>(
+		fs::path(root) / m_Config.assetsRoot,
+		fs::path(root) / m_Config.importedArtifactRoot);
 	const VansAssetScanResult assetScan = m_AssetDatabase->Scan();
 	for (const std::string& error : assetScan.errors)
 		VANS_LOG_ERROR("[AssetDatabase] " << error);

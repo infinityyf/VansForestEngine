@@ -9,13 +9,12 @@
 #include "VansMaterial.h"
 
 #include <functional>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#include "../Interfaces/IShaderHotReloadService.h"
 
 namespace VansGraphics
 {
@@ -87,12 +86,15 @@ namespace VansGraphics
         void RegisterMaterialPasses(VansMaterialType type, std::unordered_map<std::string, std::string> passMap);
         const std::unordered_map<std::string, std::string>& GetMaterialPassMap(VansMaterialType type) const;
 
-        bool LoadAll(const std::string& pathPrefix, VkDevice& device);
-        bool ReloadShader(const std::string& shaderName);
-        void ReloadUpdatedShaders(IShaderHotReloadService& hotReload);
+		bool LoadAll(const std::string& pathPrefix, VkDevice& device);
+		bool ApplyCompiledShaderCandidate(
+			const std::string& shaderName,
+			const std::map<VkShaderStageFlagBits, std::vector<std::uint32_t>>& stageSpirv,
+			std::string& error);
 
         void ForEachShader(const std::function<void(const VansShaderRecord&)>& fn) const;
         std::vector<VansShader*> GetLoadedShaderAssets() const;
+		bool ExportCookedShaderArtifacts(const std::string& destinationRoot, std::string& error) const;
         bool ConfigureGraphicsShader(VansGraphicsShader& shader, const std::string& shaderName, const std::string& fullPath) const;
         bool ConfigureGraphicsShader(VansGraphicsShader& shader, const VansShaderEntry& entry, const std::string& fullPath) const;
 

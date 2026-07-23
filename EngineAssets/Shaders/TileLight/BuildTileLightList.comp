@@ -31,8 +31,10 @@ struct TileLightHeaderOut
     uint spotCount;
     uint rectOffset;
     uint rectCount;
-    uint pad0;
-    uint pad1;
+    uint fallbackPoint0;
+    uint fallbackPoint1;
+    uint fallbackSpot;
+    uint fallbackRect;
 };
 
 layout(set = 1, binding = 0, std430) buffer OutTileLightGrid
@@ -111,6 +113,21 @@ bool SphereTileIntersects(vec3 worldPos, float radius, uint tx, uint ty)
            (ndcY + halfY >= tileMinY) && (ndcY - halfY <= tileMaxY);
 }
 
+bool IsFallbackCandidate(uint metaIndex)
+{
+    if (metaIndex == INVALID_SHADOW_INDEX || metaIndex >= uint(MAX_PUNCTUAL_SHADOWS))
+        return false;
+    PunctualShadowData shadow = uPunctualShadows[metaIndex];
+    bool hasAtlas = HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_HAS_ATLAS);
+    return HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_FALLBACK_ELIGIBLE) &&
+        (!hasAtlas || shadow.atlasWeight < 0.999);
+}
+
+float FallbackImportance(uint metaIndex)
+{
+    return IsFallbackCandidate(metaIndex) ? uPunctualShadows[metaIndex].importance : -1.0;
+}
+
 // ---------------------------------------------------------------------------
 void main()
 {
@@ -134,6 +151,14 @@ void main()
     uint ptCount = 0u;
     uint spCount = 0u;
     uint rcCount = 0u;
+    uint fallbackPoint0 = INVALID_SHADOW_INDEX;
+    uint fallbackPoint1 = INVALID_SHADOW_INDEX;
+    uint fallbackSpot = INVALID_SHADOW_INDEX;
+    uint fallbackRect = INVALID_SHADOW_INDEX;
+    float fallbackPointScore0 = -1.0;
+    float fallbackPointScore1 = -1.0;
+    float fallbackSpotScore = -1.0;
+    float fallbackRectScore = -1.0;
 
     // --- 点光源 ---
     for (uint i = 0u; i < uPointLightCount && i < uint(MAX_POINT_LIGHTS); ++i)
@@ -145,6 +170,19 @@ void main()
             {
                 outTileLightIndices[ptOffset + ptCount] = i;
                 ptCount++;
+            }
+            float fallbackScore = FallbackImportance(pl.shadowMetaIndex);
+            if (fallbackScore > fallbackPointScore0)
+            {
+                fallbackPointScore1 = fallbackPointScore0;
+                fallbackPoint1 = fallbackPoint0;
+                fallbackPointScore0 = fallbackScore;
+                fallbackPoint0 = i;
+            }
+            else if (fallbackScore > fallbackPointScore1)
+            {
+                fallbackPointScore1 = fallbackScore;
+                fallbackPoint1 = i;
             }
         }
     }
@@ -159,6 +197,12 @@ void main()
             {
                 outTileLightIndices[spOffset + spCount] = i;
                 spCount++;
+            }
+            float fallbackScore = FallbackImportance(sl.shadowMetaIndex);
+            if (fallbackScore > fallbackSpotScore)
+            {
+                fallbackSpotScore = fallbackScore;
+                fallbackSpot = i;
             }
         }
     }
@@ -177,6 +221,12 @@ void main()
                 outTileLightIndices[rcOffset + rcCount] = i;
                 rcCount++;
             }
+            float fallbackScore = FallbackImportance(rl.shadowMetaIndex);
+            if (fallbackScore > fallbackRectScore)
+            {
+                fallbackRectScore = fallbackScore;
+                fallbackRect = i;
+            }
         }
     }
 
@@ -187,6 +237,8 @@ void main()
     outTileLightHeaders[tileIdx].spotCount   = spCount;
     outTileLightHeaders[tileIdx].rectOffset  = rcOffset;
     outTileLightHeaders[tileIdx].rectCount   = rcCount;
-    outTileLightHeaders[tileIdx].pad0        = 0u;
-    outTileLightHeaders[tileIdx].pad1        = 0u;
+    outTileLightHeaders[tileIdx].fallbackPoint0 = fallbackPoint0;
+    outTileLightHeaders[tileIdx].fallbackPoint1 = fallbackPoint1;
+    outTileLightHeaders[tileIdx].fallbackSpot   = fallbackSpot;
+    outTileLightHeaders[tileIdx].fallbackRect   = fallbackRect;
 }

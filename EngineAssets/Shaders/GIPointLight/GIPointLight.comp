@@ -3,6 +3,7 @@
 
 #include "../Common/Common.glsl"
 #include "../GI/GIProbeCommon.glsl"
+#define PUNCTUAL_SHADOW_CONSUMER_GI 1
 #include "../Lights/LightsData.glsl"
 
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
@@ -17,35 +18,57 @@ layout(set = 1, binding = 1, std430) buffer hitNormalBuffer
     f16vec4 hitNormal[];
 } hitNormalInfoBuffer;
 
-layout(set = 1, binding = 2, std430) buffer directLightResult
+layout(set = 1, binding = 2, std430) buffer rayRadianceBuffer
 {
-    f16vec4 directLight[];
-} directLightBuffer;
+    f16vec4 radiance[];
+} rayRadiance;
 
 layout(set = 1, binding = 4) uniform samplerCube environmentMap;
-layout(set = 1, binding = 5) uniform sampler3D SHRCoeff;
-layout(set = 1, binding = 6) uniform sampler3D SHGCoeff;
-layout(set = 1, binding = 7) uniform sampler3D SHBCoeff;
+layout(set = 1, binding = 5) uniform sampler3D previousSHR;
+layout(set = 1, binding = 6) uniform sampler3D previousSHG;
+layout(set = 1, binding = 7) uniform sampler3D previousSHB;
 layout(set = 1, binding = 8) uniform sampler2D shadowMap;
-layout(set = 1, binding = 9) uniform sampler2D punctualShadowMap;
-layout(set = 1, binding = 11) uniform sampler2D giVisibilityAtlas;
-
+layout(set = 1, binding = 9) uniform sampler2DShadow punctualShadowMap;
 layout(set = 1, binding = 10, std430) buffer pbrDataBuffer
 {
     f16vec4 albedoRoughness[];
 } pbrInfo;
+layout(set = 1, binding = 11) uniform sampler2D giVisibilityAtlas;
+layout(set = 1, binding = 13, std430) buffer staticDirectDiffuseBuffer
+{
+    uint packedDirectDiffuse[];
+} directDiffuseCache;
+layout(set = 1, binding = 14, rgba32f) uniform image3D resultRImage;
+layout(set = 1, binding = 15, rgba32f) uniform image3D resultGImage;
+layout(set = 1, binding = 16, rgba32f) uniform image3D resultBImage;
 
 layout(push_constant) uniform PushConstants
 {
     vec4 gridParams;     // xyz = probe spacing, w = max ray distance
-    vec4 cameraDir;
-    vec4 cameraUp;
-    vec4 cameraRight;
     vec4 dispatchParams; // xyz = probe counts, w = rays per probe
     vec4 frameParams;    // x = frame index, y = spatial update divisor, z = direction update slices
     vec4 regionParams;   // xyz = volume center, w = normal bias
-    vec4 lightingParams; // x = sky intensity, y = max indirect radiance, z = max SH L0
+    vec4 lightingParams; // x = sky intensity, y = max indirect radiance, z = max SH L0, w = refresh direct cache
 } pushConstants;
+
+const float DIRECT_CACHE_MAX = 64.0;
+
+uint PackDirectDiffuse(vec3 radiance)
+{
+    vec3 encoded = sqrt(clamp(radiance / DIRECT_CACHE_MAX, vec3(0.0), vec3(1.0)));
+    uvec3 quantized = uvec3(round(encoded * vec3(2047.0, 2047.0, 1023.0)));
+    return quantized.x | (quantized.y << 11u) | (quantized.z << 22u);
+}
+
+vec3 UnpackDirectDiffuse(uint packedRadiance)
+{
+    uvec3 quantized = uvec3(
+        packedRadiance & 0x7ffu,
+        (packedRadiance >> 11u) & 0x7ffu,
+        (packedRadiance >> 22u) & 0x3ffu);
+    vec3 encoded = vec3(quantized) / vec3(2047.0, 2047.0, 1023.0);
+    return encoded * encoded * DIRECT_CACHE_MAX;
+}
 
 vec3 EvaluateGIMissSkyRadiance(vec3 rayDirection)
 {
@@ -66,15 +89,12 @@ vec3 EvaluateGIMissSkyRadiance(vec3 rayDirection)
     float forwardScatter = pow(max(dot(rayDirection, sunDirection), 0.0), 8.0);
     float sunDisk = pow(max(dot(rayDirection, sunDirection), 0.0), 512.0);
 
+    // The environment cubemap is static, so gate it and the analytic sky by sun height.
     vec3 baseSky = texture(environmentMap, rayDirection).rgb *
         pushConstants.lightingParams.x *
         mix(0.015, 1.0, dayVisibility);
-
     vec3 sunsetTint = vec3(1.0, 0.46, 0.18);
     vec3 scatterColor = mix(sunRadiance, sunRadiance * sunsetTint, lowSun * horizon);
-
-    // miss ray 需要方向 radiance。当前绑定的 environmentMap 是静态 diffuse 预卷积结果，
-    // 必须按太阳高度衰减，否则夜晚或背向太阳时 probe 仍会从旧天空拿到过亮能量。
     vec3 analyticSky = scatterColor * dayVisibility *
         (0.015 * horizon + 0.045 * lowSun * horizon + 0.035 * forwardScatter);
     vec3 analyticSun = sunRadiance * dayVisibility * sunDisk * 0.12;
@@ -101,65 +121,96 @@ void main()
 
     vec3 originSize = vec3(originCount) * originStride;
     vec3 volumeMin = pushConstants.regionParams.xyz - originSize * 0.5;
-
-    int bufferIndex = probeIndex.z * (originCount.x * originCount.y) + probeIndex.y * originCount.x + probeIndex.x;
+    int bufferIndex = probeIndex.z * (originCount.x * originCount.y) +
+        probeIndex.y * originCount.x + probeIndex.x;
     int bufferOffset = bufferIndex * sampleCount;
 
-    float solidAngle = FOUR_PI / float(sampleCount);
-    vec3 probeWorld = volumeMin + vec3(originStride * 0.5) + vec3(probeIndex) * originStride;
-
     int directionSlices = max(int(pushConstants.frameParams.z), 1);
-    int dirSliceIndex = (int(pushConstants.frameParams.x) / spatialPhaseCount) % directionSlices;
-    int startSample = (sampleCount * dirSliceIndex) / directionSlices;
-    int endSample = (sampleCount * (dirSliceIndex + 1)) / directionSlices;
+    int directionSlice = (int(pushConstants.frameParams.x) / spatialPhaseCount) % directionSlices;
+    int raysPerSlice = (sampleCount + directionSlices - 1) / directionSlices;
+    float shWeight = FOUR_PI / float(sampleCount);
+    vec4 rCurrent = texelFetch(previousSHR, probeIndex, 0);
+    vec4 gCurrent = texelFetch(previousSHG, probeIndex, 0);
+    vec4 bCurrent = texelFetch(previousSHB, probeIndex, 0);
 
-    for (int hitIndex = startSample; hitIndex < endSample; ++hitIndex)
+    // Interleave indices because SampleSphere is ordered from +Y to -Y.
+    for (int localIndex = 0; localIndex < raysPerSlice; ++localIndex)
     {
-        vec3 rayDirection = SampleSphere(hitIndex, sampleCount);
-        int resultIndex = bufferOffset + hitIndex;
+        int rayIndex = localIndex * directionSlices + directionSlice;
+        if (rayIndex >= sampleCount)
+            continue;
 
+        vec3 rayDirection = SampleSphere(rayIndex, sampleCount);
+        int resultIndex = bufferOffset + rayIndex;
         vec4 hitPos = hitPositionInfoBuffer.hitPosition[resultIndex];
         vec4 hitNrm = hitNormalInfoBuffer.hitNormal[resultIndex];
+        vec3 oldRadiance = rayRadiance.radiance[resultIndex].rgb;
+        vec3 newRadiance;
 
         if (hitPos.w < 0.5)
         {
-            directLightBuffer.directLight[resultIndex] = f16vec4(EvaluateGIMissSkyRadiance(rayDirection), 1.0);
-            continue;
+            newRadiance = EvaluateGIMissSkyRadiance(rayDirection);
+        }
+        else
+        {
+            vec3 hitNormal = normalize(hitNrm.xyz);
+            vec4 albedoRoughness = pbrInfo.albedoRoughness[resultIndex];
+            vec3 hitAlbedo = clamp(albedoRoughness.rgb, vec3(0.0), vec3(1.0));
+
+            vec3 directDiffuse = UnpackDirectDiffuse(directDiffuseCache.packedDirectDiffuse[resultIndex]);
+            if (pushConstants.lightingParams.w > 0.5)
+            {
+                directDiffuse = vec3(0.0);
+                CalculateDirectDiffuse(
+                    hitPos.xyz,
+                    hitNormal,
+                    shadowMap,
+                    punctualShadowMap,
+                    albedoRoughness,
+                    directDiffuse);
+                directDiffuseCache.packedDirectDiffuse[resultIndex] = PackDirectDiffuse(directDiffuse);
+            }
+
+            vec3 indirectDiffuse = GI_SampleProbeDiffuseLightingL1Visible(
+                previousSHR,
+                previousSHG,
+                previousSHB,
+                giVisibilityAtlas,
+                hitPos.xyz,
+                hitNormal,
+                volumeMin,
+                originSize,
+                pushConstants.regionParams.w,
+                min(min(originStride.x, originStride.y), originStride.z) * 2.0);
+
+            // Outgoing bounced radiance is incoming probe irradiance modulated by albedo.
+            indirectDiffuse = min(indirectDiffuse * hitAlbedo, vec3(pushConstants.lightingParams.y));
+            newRadiance = directDiffuse + indirectDiffuse;
         }
 
-        vec3 hitNormal = normalize(hitNrm.xyz);
-        vec4 albedoRoughness = pbrInfo.albedoRoughness[resultIndex];
-        vec3 hitAlbedo = clamp(albedoRoughness.rgb, vec3(0.0), vec3(1.0));
-
-        float hitDistance = length(hitPos.xyz - probeWorld);
-        float radius = hitDistance * solidAngle;
-
-        vec3 directDiffuse = vec3(0.0);
-        CalculateDirectDiffuse(
-            hitPos.xyz,
-            hitNormal,
-            shadowMap,
-            punctualShadowMap,
-            radius,
-            albedoRoughness,
-            directDiffuse);
-
-        vec3 indirectDiffuse = GI_SampleProbeDiffuseLightingL1Visible(
-            SHRCoeff,
-            SHGCoeff,
-            SHBCoeff,
-            giVisibilityAtlas,
-            hitPos.xyz,
-            hitNormal,
-            volumeMin,
-            originSize,
-            pushConstants.regionParams.w,
-            min(min(originStride.x, originStride.y), originStride.z) * 2.0);
-
-        // 多次反弹反馈读取的是命中点接收到的 diffuse lighting。
-        // 命中点向外反射时需要乘本表面 albedo，避免暗材质反弹过多能量。
-        indirectDiffuse = min(indirectDiffuse * hitAlbedo, vec3(pushConstants.lightingParams.y));
-
-        directLightBuffer.directLight[resultIndex] = f16vec4(directDiffuse + indirectDiffuse, 1.0);
+        f16vec4 storedRadiance = f16vec4(newRadiance, 1.0);
+        rayRadiance.radiance[resultIndex] = storedRadiance;
+        vec3 radianceDelta = vec3(storedRadiance.xyz) - oldRadiance;
+        for (int coefficient = 0; coefficient < 4; ++coefficient)
+        {
+            float basis = SHBasis(coefficient, rayDirection);
+            float window = coefficient == 0 ? 1.0 : 0.85;
+            float weightedBasis = basis * shWeight * window;
+            rCurrent[coefficient] += radianceDelta.r * weightedBasis;
+            gCurrent[coefficient] += radianceDelta.g * weightedBasis;
+            bCurrent[coefficient] += radianceDelta.b * weightedBasis;
+        }
     }
+
+    float maxL0 = max(pushConstants.lightingParams.z, 0.0);
+    if (maxL0 > 0.0)
+    {
+        rCurrent[0] = clamp(rCurrent[0], -maxL0, maxL0);
+        gCurrent[0] = clamp(gCurrent[0], -maxL0, maxL0);
+        bCurrent[0] = clamp(bCurrent[0], -maxL0, maxL0);
+    }
+
+    imageStore(resultRImage, probeIndex, rCurrent);
+    imageStore(resultGImage, probeIndex, gCurrent);
+    imageStore(resultBImage, probeIndex, bCurrent);
 }

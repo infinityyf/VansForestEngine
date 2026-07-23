@@ -16,9 +16,6 @@ layout(set = 0, binding = 1, rgba32f) uniform image2D visibilityAtlas;
 layout(push_constant) uniform PushConstants
 {
     vec4 gridParams;     // xyz = probe spacing, w = max ray distance
-    vec4 cameraDir;
-    vec4 cameraUp;
-    vec4 cameraRight;
     vec4 dispatchParams; // xyz = probe counts, w = rays per probe
     vec4 frameParams;    // x = frame index, y = spatial update divisor, z = direction update slices
     vec4 regionParams;   // xyz = volume center, w = normal bias

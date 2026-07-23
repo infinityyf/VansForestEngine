@@ -12,7 +12,7 @@
 layout(set = 1, binding = 0) uniform sampler2D opaqueSceneColor;
 layout(set = 1, binding = 2) uniform sampler2D opaqueDepth;
 layout(set = 1, binding = 3) uniform sampler2DArray cascadeShadowMap;
-layout(set = 1, binding = 4) uniform sampler2D punctualShadowMap;
+layout(set = 1, binding = 4) uniform sampler2DShadow punctualShadowMap;
 layout(set = 0, binding = 50) uniform sampler2D globalPBRTextures[];
 
 layout(location = 0) in vec2 fragUV;
@@ -296,8 +296,8 @@ void EvaluateDirectLighting(BRDFData brdf, float transmission, out vec3 diffuse,
         L /= distanceToLight;
         float attenuation = 1.0 - distanceToLight / max(light.radius, 1e-4);
         attenuation *= attenuation;
-        int shadowIndex = int(light.shadowIndex);
-        float visibility = shadowIndex >= 0
+        uint shadowIndex = light.shadowMetaIndex;
+        float visibility = shadowIndex != INVALID_SHADOW_INDEX
             ? SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, L, punctualShadowMap, int(lightIndex))
             : 1.0;
         AccumulatePunctualBRDF(brdf, L, light.color.rgb * light.intensity * attenuation,
@@ -319,8 +319,8 @@ void EvaluateDirectLighting(BRDFData brdf, float transmission, out vec3 diffuse,
         float coneAttenuation = clamp((coneAngle - outerCone) / max(innerCone - outerCone, 1e-4), 0.0, 1.0);
         float attenuation = 1.0 - distanceToLight / max(light.radius, 1e-4);
         attenuation *= attenuation;
-        int shadowIndex = int(light.shadowIndex);
-        float visibility = shadowIndex >= 0
+        uint shadowIndex = light.shadowMetaIndex;
+        float visibility = shadowIndex != INVALID_SHADOW_INDEX
             ? SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, L, punctualShadowMap, int(lightIndex))
             : 1.0;
         AccumulatePunctualBRDF(brdf, L,
@@ -337,9 +337,9 @@ void EvaluateDirectLighting(BRDFData brdf, float transmission, out vec3 diffuse,
         EvaluateRectLightLTC(light, brdf.normal, brdf.viewDirection, brdf.positionWS,
             brdf.roughness, brdf.albedo * (1.0 - transmission), brdf.fresnel0,
             rectDiffuse, rectSpecular);
-        int shadowIndex = int(light.shadowParams.x);
+        uint shadowIndex = light.shadowMetaIndex;
         float visibility = 1.0;
-        if (shadowIndex >= 0)
+        if (shadowIndex != INVALID_SHADOW_INDEX)
         {
             vec3 L = normalize(light.position_halfW.xyz - brdf.positionWS);
             visibility = SampleRectShadowMapBRDF(

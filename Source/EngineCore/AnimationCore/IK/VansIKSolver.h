@@ -14,6 +14,12 @@
 
 namespace VansGraphics
 {
+	struct IKSolveContext
+	{
+		float deltaTime = 0.0f;
+		glm::mat4 ownerWorldTransform = glm::mat4(1.0f);
+	};
+
 	class VansIKSolver
 	{
 	public:
@@ -25,14 +31,14 @@ namespace VansGraphics
 		//   skeleton        : 骨架信息
 		//   chain           : 链定义
 		//   target          : 目标位置/旋转
-		//   deltaTime       : 帧时间（用于平滑）
+		//   context         : 帧时间与角色世界变换（坐标空间解析）
 		virtual IKSolveResult Solve(
 			std::vector<glm::mat4>&       localTransforms,
 			const std::vector<glm::mat4>& globalTransforms,
 			const Skeleton&               skeleton,
 			const IKChainDefinition&      chain,
 			const IKTarget&               target,
-			float                         deltaTime) = 0;
+			const IKSolveContext&         context) = 0;
 	};
 
 	// ─── 公共工具 ────────────────────────────────────────────────
@@ -51,6 +57,33 @@ namespace VansGraphics
 
 	// 仅替换矩阵的旋转部分（保留 scale 和 translation）
 	void IK_SetRotation(glm::mat4& m, const glm::quat& r);
+
+	std::vector<glm::mat4> IK_BuildModelSpaceTransforms(
+		const Skeleton& skeleton,
+		const std::vector<glm::mat4>& localTransforms);
+
+	bool IK_ValidateChain(
+		const Skeleton& skeleton,
+		const IKChainDefinition& chain,
+		bool requireDirectParenting,
+		std::string* outError = nullptr);
+
+	IKTarget IK_ResolveTargetToModelSpace(
+		const IKTarget& target,
+		const IKSolveContext& context,
+		const std::vector<glm::mat4>& modelTransforms,
+		const Skeleton& skeleton);
+
+	glm::vec3 IK_ResolvePointToModelSpace(
+		const glm::vec3& point,
+		IKCoordinateSpace space,
+		int referenceBoneIndex,
+		const std::string& referenceBoneName,
+		const IKSolveContext& context,
+		const std::vector<glm::mat4>& modelTransforms,
+		const Skeleton& skeleton);
+
+	float IK_QuaternionAngularErrorDeg(const glm::quat& a, const glm::quat& b);
 
 	void IK_ApplyEffectorRotationTarget(
 		std::vector<glm::mat4>& localTransforms,

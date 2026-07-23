@@ -2,6 +2,7 @@
 #include "VansTexture.h"
 #include "VansVKDevice.h"
 #include "VansVKCommandBuffer.h"
+#include "../../AssetCore/Importers/VansTextureCooker.h"
 #include "../../Util/VansJobSystem.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
@@ -12,12 +13,11 @@
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <utility>
 
-#define STB_IMAGE_IMPLEMENTATION
 #include <../../STBImge/stb_image.h>
 
-#define STB_DXT_IMPLEMENTATION
 #include <../../STBImge/stb_dxt.h>
 
 namespace VansGraphics
@@ -785,6 +785,9 @@ namespace VansGraphics
 
 	void VansTexture::LoadTexture(VansVKCommandBuffer& command_buffer, const TextureLoadDesc& loadDesc)
 	{
+		if (!loadDesc.cookedPath.empty() && LoadCookedTexture(command_buffer, loadDesc))
+			return;
+
 		// 1. 读取文件
 		int width = 0, height = 0, num_components = 0, bytes_per_channel = 1;
 		void* pixel_data = ReadTextureFile(
@@ -823,6 +826,89 @@ namespace VansGraphics
 		}
 
 		stbi_image_free(pixel_data);
+	}
+
+	bool VansTexture::LoadCookedTexture(VansVKCommandBuffer& command_buffer, const TextureLoadDesc& loadDesc)
+	{
+		Vans::VansCookedTextureData cooked;
+		std::string error;
+		if (!Vans::VansTextureCooker::LoadArtifact(loadDesc.cookedPath, cooked, error))
+		{
+			VANS_LOG_WARN("[VansTexture] Cooked texture unavailable, falling back to source: "
+				<< error);
+			return false;
+		}
+		if (cooked.format != Vans::VansCookedTextureFormat::BC3 ||
+			cooked.width == 0 || cooked.height == 0 || cooked.mips.empty() || cooked.data.empty() ||
+			cooked.data.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+		{
+			VANS_LOG_WARN("[VansTexture] Unsupported cooked texture payload: " << loadDesc.cookedPath);
+			return false;
+		}
+
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+		if (!vkDevice)
+			return false;
+		VkDevice device = vkDevice->GetLogicDevice();
+		const VkFormat format = loadDesc.isSRGB
+			? VK_FORMAT_BC3_SRGB_BLOCK
+			: VK_FORMAT_BC3_UNORM_BLOCK;
+		const VkExtent3D extent = { cooked.width, cooked.height, 1 };
+		if (!m_Image.CreateVulkanImage(
+			device,
+			extent,
+			format,
+			static_cast<uint32_t>(cooked.mips.size()),
+			1,
+			VK_IMAGE_TYPE_2D,
+			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			VK_SAMPLE_COUNT_1_BIT,
+			false,
+			true,
+			true,
+			loadDesc.addressMode))
+		{
+			VANS_LOG_WARN("[VansTexture] Failed to create image for cooked texture: " << loadDesc.cookedPath);
+			return false;
+		}
+
+		std::vector<VkBufferImageCopy> regions;
+		regions.reserve(cooked.mips.size());
+		for (std::size_t mipIndex = 0; mipIndex < cooked.mips.size(); ++mipIndex)
+		{
+			const Vans::VansCookedTextureMip& mip = cooked.mips[mipIndex];
+			VkBufferImageCopy region{};
+			region.bufferOffset = static_cast<VkDeviceSize>(mip.offset);
+			region.bufferRowLength = 0;
+			region.bufferImageHeight = 0;
+			region.imageSubresource = {
+				VK_IMAGE_ASPECT_COLOR_BIT,
+				static_cast<uint32_t>(mipIndex),
+				0,
+				1
+			};
+			region.imageOffset = { 0, 0, 0 };
+			region.imageExtent = { mip.width, mip.height, 1 };
+			regions.push_back(region);
+		}
+
+		if (!vkDevice->SetDeviceImageMipChainData(
+			m_Image,
+			command_buffer,
+			cooked.data.data(),
+			static_cast<int>(cooked.data.size()),
+			regions))
+		{
+			m_Image.DestroyVulkanImage(device);
+			VANS_LOG_WARN("[VansTexture] Cooked texture upload failed, falling back to source: "
+				<< loadDesc.cookedPath);
+			return false;
+		}
+
+		m_TextureWidth = static_cast<int>(cooked.width);
+		m_TextureHeight = static_cast<int>(cooked.height);
+		VANS_LOG("[VansTexture] Loaded cooked texture: " << loadDesc.cookedPath);
+		return true;
 	}
 
 	void VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_parent_path, bool isSRGB)

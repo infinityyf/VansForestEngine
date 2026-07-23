@@ -29,10 +29,12 @@ namespace VansGraphics
 		           std::vector<glm::mat4>& localTransforms);
 
 	private:
-		struct LegSolve
+		struct LegTarget
 		{
-			SurfaceContact contact;
-			IKTarget target;
+			FootPlacementContact contact;
+			IKTarget ikTarget;
+			glm::vec3 animatedFootWorld = glm::vec3(0.0f);
+			glm::vec3 targetWorld = glm::vec3(0.0f);
 			bool valid = false;
 		};
 
@@ -42,9 +44,9 @@ namespace VansGraphics
 		FootPlacementFootState m_RightState;
 		FootPlacementDebugData m_DebugData;
 		VansFootGroundProbe m_GroundProbe;
-
 		IKChainDefinition m_LeftLegChain;
 		IKChainDefinition m_RightLegChain;
+
 		int m_PelvisIndex = -1;
 		int m_LeftHipIndex = -1;
 		int m_LeftKneeIndex = -1;
@@ -52,54 +54,49 @@ namespace VansGraphics
 		int m_RightHipIndex = -1;
 		int m_RightKneeIndex = -1;
 		int m_RightFootIndex = -1;
+		glm::vec3 m_LeftFootLocalUp = glm::vec3(0.0f, 1.0f, 0.0f);
+		glm::vec3 m_RightFootLocalUp = glm::vec3(0.0f, 1.0f, 0.0f);
 
-		float m_CurrentWeight = 0.0f;
-		float m_PelvisOffsetModel = 0.0f;
+		float m_GlobalWeight = 0.0f;
+		float m_GlobalWeightVelocity = 0.0f;
+		float m_PelvisOffsetWorld = 0.0f;
+		float m_PelvisVelocity = 0.0f;
 		bool m_Configured = false;
 
-		SurfaceContact ProbeFoot(const glm::mat4& ownerWorldTransform,
-		                         const std::vector<glm::mat4>& modelTransforms,
-		                         int hipIndex,
-		                         int footIndex,
-		                         float legLength,
-		                         FootPlacementDebugLeg* debugLeg) const;
+		FootPlacementContact ProbeFoot(const glm::mat4& ownerWorldTransform,
+		                                   const std::vector<glm::mat4>& modelTransforms,
+		                                   int footIndex,
+		                                   FootPlacementDebugLeg* debugLeg) const;
 
-		LegSolve BuildLegSolve(float deltaTime,
-		                        const glm::mat4& ownerWorldTransform,
-		                        const std::vector<glm::mat4>& modelTransforms,
-		                        int footIndex,
-		                        FootPlacementFootState& state,
-		                        const SurfaceContact& contact) const;
+		LegTarget UpdateLegTarget(float deltaTime,
+		                          const glm::mat4& ownerWorldTransform,
+		                          const std::vector<glm::mat4>& modelTransforms,
+		                          int footIndex,
+		                          const glm::vec3& footLocalUp,
+		                          FootPlacementFootState& state,
+		                          const FootPlacementContact& contact) const;
 
 		void ApplyPelvisOffset(float deltaTime,
 		                       const Skeleton& skeleton,
 		                       const glm::mat4& ownerWorldTransform,
-		                       const std::vector<glm::mat4>& modelTransforms,
-		                       const LegSolve& left,
-		                       const LegSolve& right,
+		                       const LegTarget& left,
+		                       const LegTarget& right,
 		                       std::vector<glm::mat4>& localTransforms);
 
 		void SolveLeg(float deltaTime,
 		              const Skeleton& skeleton,
 		              const IKChainDefinition& chain,
-		              const IKTarget& target,
+		              const LegTarget& legTarget,
 		              FootPlacementFootState& state,
 		              std::vector<glm::mat4>& localTransforms,
 		              std::vector<glm::mat4>& modelTransforms);
 
-		static std::vector<glm::mat4> BuildModelSpaceTransforms(const Skeleton& skeleton,
-		                                                        const std::vector<glm::mat4>& localTransforms);
-		static float EvaluateContactQuality(const FootPlacementSettings& settings, const SurfaceContact& contact);
-		static float LegLength(const std::vector<glm::mat4>& modelTransforms, int hipIndex, int kneeIndex, int footIndex);
 		static void PopulateLegDebug(FootPlacementDebugLeg& debugLeg,
 		                             const glm::mat4& ownerWorldTransform,
 		                             const std::vector<glm::mat4>& modelTransforms,
 		                             int hipIndex,
 		                             int kneeIndex,
 		                             int footIndex,
-		                             const LegSolve& solve);
-		static glm::quat BuildFootRotation(const glm::mat4& ownerWorldTransform,
-		                                  const glm::mat4& currentFootModel,
-		                                  const glm::vec3& worldNormal);
+		                             const LegTarget& target);
 	};
 }

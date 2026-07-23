@@ -147,10 +147,6 @@ void VansSceneContentBuildExecutor::ApplyGISettings(VansScene& scene, const json
 	if (sceneData.contains("globalIllumination") && sceneData["globalIllumination"].is_object())
 	{
 		const json& gi = sceneData["globalIllumination"];
-		giSettings.gridSize = std::clamp(gi.value("gridSize", giSettings.gridSize), 1u, 256u);
-		giSettings.probeSpacing = std::max(gi.value("probeSpacing", giSettings.probeSpacing), 0.001f);
-		giSettings.gridDimensions = glm::uvec3(giSettings.gridSize);
-		giSettings.probeSpacingAxes = glm::vec3(giSettings.probeSpacing);
 		if (gi.contains("gridDimensions") && gi["gridDimensions"].is_array() && gi["gridDimensions"].size() == 3)
 		{
 			giSettings.gridDimensions = glm::uvec3(

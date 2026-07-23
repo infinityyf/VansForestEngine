@@ -20,9 +20,8 @@ struct PointLightData
     vec4 color;
     float intensity;
     float radius;
-    float shadowIndex;
-    float iesProfileIndex;  // IES profile 层索引（-1 = 无 IES），与 VansPointLight::m_IESProfileIndex 对应
-    mat4x4 shadowMatrix[6];
+    uint shadowMetaIndex;
+    float iesProfileIndex;
 };
 
 struct SpotLightData
@@ -34,22 +33,20 @@ struct SpotLightData
     float radius;
     float innerConeAngle;
     float outerConeAngle;
-    mat4x4 shadowMatrix;
-    float shadowIndex;
-    float iesProfileIndex;    // IES profile 层索引（-1 = 无 IES），与 VansSpotLight::m_IESProfileIndex 对应
-    float iesIntensityScale;  // IES profile 强度缩放（默认 1.0）
-    float pad0;               // 填充至 144 字节（与 VansSpotLight::m_pad0 对应）
+    uint shadowMetaIndex;
+    float iesProfileIndex;
+    float iesIntensityScale;
+    float pad0;
 };
 
 // ── RectLight (area light, evaluated via LTC) ─────────────────────────────
-// Layout strictly mirrors VansRectLight (160 bytes, std430-compatible).
+// Layout strictly mirrors the compact 96-byte VansRectLight record.
 //   position_halfW  : xyz = world-space center,         w = half width  (along Right)
 //   normal_halfH    : xyz = light forward (radiates +Z),w = half height (along Up)
 //   right_range     : xyz = world Right basis,          w = influence range
 //   up_intensity    : xyz = world Up basis,             w = intensity
 //   color_twoSided  : rgb = colour,                     w = 0 or 1 (two-sided)
-//   shadowMatrix    : VP matrix shared with PunctualShadow atlas (Phase 3)
-//   shadowParams    : x = shadowIndex (-1 => no shadow), y = attenuation exponent
+//   shadowMetaIndex : indirection into the cached punctual-shadow metadata.
 //                     z = emissiveTextureSlot (-1 => no texture, >=0 => rectLightEmissive 层索引)
 //                     w = texLodBias (发光贴图 LOD 偏移，默认 0.0)
 struct RectLightData
@@ -59,8 +56,30 @@ struct RectLightData
     vec4 right_range;
     vec4 up_intensity;
     vec4 color_twoSided;
-    mat4 shadowMatrix;
-    vec4 shadowParams;
+    uint shadowMetaIndex;
+    float attenuationExp;
+    float textureSlot;
+    float texLodBias;
+};
+
+struct PunctualShadowData
+{
+    uint firstView;
+    uint viewCount;
+    uint flags;
+    uint generation;
+    float atlasWeight;
+    float sourceRadius;
+    float maxShadowDistance;
+    float importance;
+};
+
+struct PunctualShadowViewData
+{
+    mat4 worldToShadow;
+    vec4 atlasScaleBias;
+    vec4 atlasClamp;
+    vec4 texelBiasParams;
 };
 
 struct LightResult
@@ -75,6 +94,15 @@ struct LightResult
 #define MAX_POINT_LIGHTS 64
 #define MAX_SPOT_LIGHTS  64
 #define MAX_RECT_LIGHTS  32
+#define MAX_PUNCTUAL_SHADOWS 160
+#define MAX_PUNCTUAL_SHADOW_VIEWS 480
+
+#define INVALID_SHADOW_INDEX 0xffffffffu
+#define PUNCTUAL_SHADOW_HAS_ATLAS          (1u << 0u)
+#define PUNCTUAL_SHADOW_FALLBACK_ELIGIBLE  (1u << 1u)
+#define PUNCTUAL_SHADOW_HERO               (1u << 2u)
+#define PUNCTUAL_SHADOW_AFFECTS_FOG        (1u << 3u)
+#define PUNCTUAL_SHADOW_AFFECTS_GI         (1u << 4u)
 
 #if !defined(LightCBBind)
     #define LightCBBind 0
@@ -87,13 +115,123 @@ layout(set=LightCBBind, binding=LightBinding, std430) readonly buffer LightsData
     uint uPointLightCount;
     uint uSpotLightCount;
     uint uShadowAtlasSize;
-    uint uShadowAtlasCount;
+    uint uPunctualShadowViewCount;
     vec4 softShadowParams;
     DirectionLightData uDirectionLight;
     PointLightData uPointLights[MAX_POINT_LIGHTS];
     SpotLightData uSpotLights[MAX_SPOT_LIGHTS];
     RectLightData uRectLights[MAX_RECT_LIGHTS];
+    PunctualShadowData uPunctualShadows[MAX_PUNCTUAL_SHADOWS];
+    PunctualShadowViewData uPunctualShadowViews[MAX_PUNCTUAL_SHADOW_VIEWS];
 };
+
+#ifdef SCREEN_SPACE_PUNCTUAL_SHADOW
+layout(set = 1, binding = 17) uniform sampler2D screenSpaceShadowHZB;
+
+layout(std140, set = 1, binding = 18) uniform ScreenSpaceShadowParamsUBO
+{
+    vec4 screenSize;
+    vec4 punctualRayParams;
+    vec4 directionalRayParams;
+    vec4 fadeParams;
+} uSSS;
+
+float ScreenSpaceContactEdgeFade(vec2 uv)
+{
+    vec2 pixel = uv * uSSS.screenSize.xy;
+    vec2 edge = min(pixel, uSSS.screenSize.xy - pixel);
+    return clamp(min(edge.x, edge.y) / max(uSSS.fadeParams.x, 1.0), 0.0, 1.0);
+}
+
+float TraceScreenSpaceContactShadow(
+    vec3 positionWS,
+    vec3 normalWS,
+    vec3 lightDirectionWS,
+    float maxTraceDistance)
+{
+    float ndotl = dot(normalize(normalWS), normalize(lightDirectionWS));
+    float normalFade = smoothstep(-0.05, 0.20, ndotl);
+    if (normalFade <= 0.0 || maxTraceDistance <= 0.02)
+        return 1.0;
+
+    float traceDistance = min(maxTraceDistance, uSSS.punctualRayParams.x);
+    float thickness = uSSS.punctualRayParams.y;
+    float normalBias = uSSS.punctualRayParams.z;
+    int maxSteps = max(int(uSSS.punctualRayParams.w), 1);
+
+    vec3 rayOrigin = positionWS + normalWS * normalBias;
+    vec3 rayEnd = rayOrigin + normalize(lightDirectionWS) * traceDistance;
+
+    vec3 startSS;
+    vec3 endSS;
+    if (!HiZ_ProjectToScreenChecked(ViewMatrix, ProjectionMatrix, rayOrigin, startSS))
+        return 1.0;
+    if (any(lessThan(startSS.xy, vec2(0.0))) || any(greaterThan(startSS.xy, vec2(1.0))))
+        return 1.0;
+    bool hasEndProjection = HiZ_ProjectToScreenChecked(ViewMatrix, ProjectionMatrix, rayEnd, endSS);
+    if (!hasEndProjection)
+        return 1.0;
+
+    vec2 rayUV = endSS.xy - startSS.xy;
+    float pixelSpan = length(rayUV * uSSS.screenSize.xy);
+    // A sub-pixel ray cannot produce a stable contact shadow. Reject it before
+    // entering the hierarchy instead of spending the full iteration budget.
+    if (pixelSpan < 1.5)
+        return 1.0;
+
+    float minTravel = max(normalBias * 1.5, 0.03);
+    float localThickness = thickness * (1.0 + startSS.z * 0.01);
+    HiZTraceResult trace = TraceHiZ_UV_Bounded(
+        screenSpaceShadowHZB,
+        ViewMatrix,
+        ProjectionMatrix,
+        rayOrigin,
+        normalize(lightDirectionWS),
+        traceDistance,
+        1.0,
+        localThickness,
+        maxSteps);
+
+    float shadow = 1.0;
+    if (trace.hit)
+    {
+        float rayUvLengthSq = max(dot(rayUV, rayUV), 1e-8);
+        float hitT = clamp(dot(trace.uv - startSS.xy, rayUV) / rayUvLengthSq, 0.0, 1.0);
+        float travel = hitT * traceDistance;
+        float receiverSeparation = abs(trace.depth - startSS.z);
+        if (travel >= minTravel && receiverSeparation > normalBias * 0.3)
+        {
+            float distanceFade = 1.0 - smoothstep(0.65, 1.0, hitT);
+            shadow = 1.0 - 0.92 * distanceFade;
+        }
+    }
+
+    float fade = ScreenSpaceContactEdgeFade(startSS.xy) * normalFade;
+    return mix(1.0, shadow, fade * clamp(uSSS.fadeParams.w, 0.0, 1.0));
+}
+
+float SamplePunctualScreenSpaceShadow(
+    vec3 positionWS,
+    vec3 normalWS,
+    vec3 lightDirectionWS,
+    float distanceToLight)
+{
+    return TraceScreenSpaceContactShadow(
+        positionWS,
+        normalWS,
+        lightDirectionWS,
+        distanceToLight);
+}
+#else
+float SamplePunctualScreenSpaceShadow(
+    vec3 positionWS,
+    vec3 normalWS,
+    vec3 lightDirectionWS,
+    float distanceToLight)
+{
+    return 1.0;
+}
+#endif
 
 PointLightData GetPointLight(int index)
 {
@@ -149,99 +287,161 @@ int GetCubemapFaceIndex(vec3 dir)
     return face;
 }
 
-
-
-
-float SamplePointShadowMap(vec3 position_world, sampler2D shadowMap, int lightIndex)
+uint GetPunctualShadowMetaIndex(uint lightType, int lightIndex)
 {
-    PointLightData light = uPointLights[lightIndex];
-    int shadowBaseSlot = int(light.shadowIndex);
-    if (shadowBaseSlot < 0)
-        return 1.0;
-    vec3 direction = position_world - light.position.xyz;
-
-    //获取采样的方向
-    int shadowDirectionIndex = GetCubemapFaceIndex(direction);
-
-    int atlasSlot = shadowBaseSlot + shadowDirectionIndex;
-    ivec2 shadowOffset = ivec2(atlasSlot % uShadowAtlasCount, atlasSlot / uShadowAtlasCount);
-    shadowOffset *= int(uShadowAtlasSize);
-
-    mat4x4 shadowMatrix = light.shadowMatrix[shadowDirectionIndex];
-    vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
-    if (clipCoord.w <= 1e-6)
-        return 1.0;
-    clipCoord /= clipCoord.w;
-    clipCoord.z = clipCoord.z * 0.5 + 0.5;
-    clipCoord.xy  = clipCoord.xy * 0.5 + 0.5;
-
-    if (any(lessThanEqual(clipCoord.xy, vec2(0.0))) ||
-        any(greaterThanEqual(clipCoord.xy, vec2(1.0))) ||
-        clipCoord.z <= 0.0 || clipCoord.z >= 1.0)
-        return 1.0;
-
-    ivec2 shadowUV = ivec2(clipCoord.xy * uShadowAtlasSize);
-
-    float shadowMapDepth = texelFetch(shadowMap, shadowUV + shadowOffset,0).r;
-
-    return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
+    if (lightIndex < 0)
+        return INVALID_SHADOW_INDEX;
+    if (lightType == 0u)
+        return uPointLights[lightIndex].shadowMetaIndex;
+    if (lightType == 1u)
+        return uSpotLights[lightIndex].shadowMetaIndex;
+    return uRectLights[lightIndex].shadowMetaIndex;
 }
 
-float SampleSpotShadowMap(vec3 position_world, sampler2D shadowMap, int lightIndex)
+float GetPunctualLightRange(uint lightType, int lightIndex)
 {
-    SpotLightData light = uSpotLights[lightIndex];
-    int atlasSlot = int(light.shadowIndex);
-    if (atlasSlot < 0)
+    if (lightType == 0u)
+        return uPointLights[lightIndex].radius;
+    if (lightType == 1u)
+        return uSpotLights[lightIndex].radius;
+    return uRectLights[lightIndex].right_range.w;
+}
+
+bool HasPunctualShadowFlag(uint flags, uint flag)
+{
+    return (flags & flag) != 0u;
+}
+
+int GetPunctualShadowQuality(uint metaIndex)
+{
+    if (metaIndex == INVALID_SHADOW_INDEX || metaIndex >= uint(MAX_PUNCTUAL_SHADOWS))
+        return 0;
+    PunctualShadowData shadow = uPunctualShadows[metaIndex];
+    if (!HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_HAS_ATLAS) ||
+        shadow.firstView == INVALID_SHADOW_INDEX || shadow.firstView >= uPunctualShadowViewCount)
+        return 0;
+    if (HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_HERO))
+        return 3;
+    return uPunctualShadowViews[shadow.firstView].texelBiasParams.w <= 128.0 ? 1 : 2;
+}
+
+// Unified cached-atlas sampler. qualityProfile: 0=hard, 1=4 tap,
+// 2=8 tap, 3=12 tap. Hardware comparison filtering supplies bilinear PCF
+// for every tap, so this replaces the legacy four-fetch manual comparison.
+float SamplePunctualShadowAtlas(
+    vec3 positionWS,
+    vec3 normalWS,
+    vec3 lightDirectionWS,
+    sampler2DShadow shadowMap,
+    uint lightType,
+    int lightIndex,
+    int qualityProfile)
+{
+    uint metaIndex = GetPunctualShadowMetaIndex(lightType, lightIndex);
+    if (metaIndex == INVALID_SHADOW_INDEX || metaIndex >= uint(MAX_PUNCTUAL_SHADOWS))
         return 1.0;
-    ivec2 shadowOffset = ivec2(atlasSlot % uShadowAtlasCount, atlasSlot / uShadowAtlasCount);
-    shadowOffset *= int(uShadowAtlasSize);
 
-    mat4x4 shadowMatrix = light.shadowMatrix;
-    vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
-    if (clipCoord.w <= 1e-6)
+    PunctualShadowData shadow = uPunctualShadows[metaIndex];
+    if (!HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_HAS_ATLAS) ||
+        shadow.firstView == INVALID_SHADOW_INDEX || shadow.viewCount == 0u)
         return 1.0;
-    clipCoord /= clipCoord.w;
-    clipCoord.z = clipCoord.z * 0.5 + 0.5;
-    clipCoord.xy  = clipCoord.xy * 0.5 + 0.5;
+#ifdef PUNCTUAL_SHADOW_CONSUMER_FOG
+    if (!HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_AFFECTS_FOG))
+        return 1.0;
+#endif
+#ifdef PUNCTUAL_SHADOW_CONSUMER_GI
+    if (!HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_AFFECTS_GI))
+        return 1.0;
+#endif
 
-    if (any(lessThanEqual(clipCoord.xy, vec2(0.0))) ||
-        any(greaterThanEqual(clipCoord.xy, vec2(1.0))) ||
-        clipCoord.z <= 0.0 || clipCoord.z >= 1.0)
+    uint face = 0u;
+    if (lightType == 0u)
+    {
+        face = uint(GetCubemapFaceIndex(positionWS - uPointLights[lightIndex].position.xyz));
+    }
+    if (face >= shadow.viewCount || shadow.firstView + face >= uPunctualShadowViewCount)
         return 1.0;
 
-    ivec2 shadowUV = ivec2(clipCoord.xy * uShadowAtlasSize);
+    PunctualShadowViewData shadowView = uPunctualShadowViews[shadow.firstView + face];
+    float lightRange = max(GetPunctualLightRange(lightType, lightIndex), 0.001);
+    float normalSlope = 1.0 - clamp(dot(normalize(normalWS), normalize(lightDirectionWS)), 0.0, 1.0);
+    float worldTexel = lightRange / max(shadowView.texelBiasParams.w, 1.0);
+    vec3 biasedPosition = positionWS + normalize(normalWS) *
+        worldTexel * shadowView.texelBiasParams.z * (1.0 + normalSlope * 2.0);
 
-    float shadowMapDepth = texelFetch(shadowMap, shadowUV + shadowOffset,0).r;
+    vec4 clip = shadowView.worldToShadow * vec4(biasedPosition, 1.0);
+    if (clip.w <= 1e-6)
+        return 1.0;
+    vec3 ndc = clip.xyz / clip.w;
+    vec2 localUV = ndc.xy * 0.5 + 0.5;
+    float receiverDepth = ndc.z * 0.5 + 0.5;
+    if (any(lessThanEqual(localUV, vec2(0.0))) ||
+        any(greaterThanEqual(localUV, vec2(1.0))) ||
+        receiverDepth <= 0.0 || receiverDepth >= 1.0)
+        return 1.0;
 
-    return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
+    vec2 atlasUV = localUV * shadowView.atlasScaleBias.xy + shadowView.atlasScaleBias.zw;
+    atlasUV = clamp(atlasUV, shadowView.atlasClamp.xy, shadowView.atlasClamp.zw);
+    float depthReference = receiverDepth - shadowView.texelBiasParams.y * shadowView.texelBiasParams.x;
+
+    int tapCount = qualityProfile <= 0 ? 1 : (qualityProfile == 1 ? 4 : (qualityProfile == 2 ? 8 : 12));
+    float distanceToLight = lightRange;
+    if (lightType == 0u)
+        distanceToLight = length(uPointLights[lightIndex].position.xyz - positionWS);
+    else if (lightType == 1u)
+        distanceToLight = length(uSpotLights[lightIndex].position.xyz - positionWS);
+    else
+        distanceToLight = length(uRectLights[lightIndex].position_halfW.xyz - positionWS);
+
+    float penumbraTexels = clamp(
+        0.75 + shadow.sourceRadius * (distanceToLight / lightRange) * 12.0,
+        0.75,
+        qualityProfile >= 3 ? 5.0 : 3.5);
+    vec2 atlasTexel = vec2(1.0 / max(float(uShadowAtlasSize), 1.0));
+    float stableAngle = RandomInterLeaved(floor(atlasUV * float(uShadowAtlasSize) / 8.0)) * TWO_PI;
+    vec2 rotation = vec2(cos(stableAngle), sin(stableAngle));
+
+    float visibility = 0.0;
+    for (int tap = 0; tap < 12; ++tap)
+    {
+        if (tap >= tapCount)
+            break;
+        vec2 kernel = tapCount == 1 ? vec2(0.0) : fibonacciSpiralDirection[tap];
+        kernel = vec2(kernel.x * rotation.x - kernel.y * rotation.y,
+                      kernel.x * rotation.y + kernel.y * rotation.x);
+        vec2 sampleUV = clamp(
+            atlasUV + kernel * penumbraTexels * atlasTexel,
+            shadowView.atlasClamp.xy,
+            shadowView.atlasClamp.zw);
+        visibility += texture(shadowMap, vec3(sampleUV, depthReference));
+    }
+    visibility /= float(tapCount);
+    return mix(1.0, visibility, clamp(shadow.atlasWeight, 0.0, 1.0));
+}
+
+
+
+
+float SamplePointShadowMap(vec3 position_world, sampler2DShadow shadowMap, int lightIndex)
+{
+    return SamplePunctualShadowAtlas(position_world, normalize(uPointLights[lightIndex].position.xyz - position_world),
+        normalize(uPointLights[lightIndex].position.xyz - position_world),
+        shadowMap, 0u, lightIndex, 0);
+}
+
+float SampleSpotShadowMap(vec3 position_world, sampler2DShadow shadowMap, int lightIndex)
+{
+    return SamplePunctualShadowAtlas(position_world, normalize(uSpotLights[lightIndex].position.xyz - position_world),
+        normalize(uSpotLights[lightIndex].position.xyz - position_world),
+        shadowMap, 1u, lightIndex, 0);
 }
 
 // Hard rect-shadow sampling for volumetric fog (Phase 4).
-float SampleRectShadowMap(vec3 position_world, sampler2D shadowMap, int lightIndex)
+float SampleRectShadowMap(vec3 position_world, sampler2DShadow shadowMap, int lightIndex)
 {
-    RectLightData light = uRectLights[lightIndex];
-    int slotIndex = int(light.shadowParams.x);
-    if (slotIndex < 0)
-        return 1.0;
-    ivec2 shadowOffset = ivec2(slotIndex % uShadowAtlasCount, slotIndex / uShadowAtlasCount);
-    shadowOffset *= int(uShadowAtlasSize);
-
-    mat4x4 shadowMatrix = light.shadowMatrix;
-    vec4 clipCoord = shadowMatrix * vec4(position_world, 1.0);
-    if (clipCoord.w <= 1e-6)
-        return 1.0;
-    clipCoord /= clipCoord.w;
-    clipCoord.z = clipCoord.z * 0.5 + 0.5;
-    clipCoord.xy = clipCoord.xy * 0.5 + 0.5;
-
-    if (clipCoord.x <= 0.0 || clipCoord.x >= 1.0 ||
-        clipCoord.y <= 0.0 || clipCoord.y >= 1.0 ||
-        clipCoord.z <= 0.0 || clipCoord.z >= 1.0)
-        return 1.0;
-
-    ivec2 shadowUV = ivec2(clipCoord.xy * uShadowAtlasSize);
-    float shadowMapDepth = texelFetch(shadowMap, shadowUV + shadowOffset, 0).r;
-    return shadowMapDepth < clipCoord.z ? 0.0 : 1.0;
+    return SamplePunctualShadowAtlas(position_world, normalize(uRectLights[lightIndex].position_halfW.xyz - position_world),
+        normalize(uRectLights[lightIndex].position_halfW.xyz - position_world),
+        shadowMap, 2u, lightIndex, 0);
 }
 
 // 计算世界空间法线偏置量（米）。
@@ -249,174 +449,47 @@ float SampleRectShadowMap(vec3 position_world, sampler2D shadowMap, int lightInd
 //   tan(θ) 在 grazing 时正确趋向无穷（被 max 限制），在正向光照时为 0。
 // 调用方在投影前将 position_world += normalWS * normalOffset 然后投影，
 // 避免 NDC 空间固定偏置因透视压缩在中等距离（2–5m）产生数十厘米的 peter-panning。
-float ComputePunctualNormalOffset(vec3 normalWS, vec3 lightDirectionWS)
+float SamplePointShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DShadow shadowMap, int lightIndex)
 {
-    float ndl = clamp(dot(normalize(normalWS), normalize(lightDirectionWS)), 0.0, 1.0);
-    // tan(θ) = sqrt(1 - NdL²) / NdL，限制上界防止 grazing 发散
-    float slope = min(sqrt(max(0.0, 1.0 - ndl * ndl)) / max(ndl, 0.001), PUNCTUAL_SLOPE_BIAS_MAX);
-    return PUNCTUAL_NORMAL_OFFSET_BASE * (1.0 + slope * PUNCTUAL_SLOPE_BIAS_SCALE);
+    uint metaIndex = uPointLights[lightIndex].shadowMetaIndex;
+    int quality = GetPunctualShadowQuality(metaIndex);
+    return SamplePunctualShadowAtlas(position_world, normalWS, lightDirectionWS, shadowMap, 0u, lightIndex, quality);
 }
 
-float ComputePunctualSoftShadowRadius(float distanceToLight, float lightRadius)
+float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DShadow shadowMap, int lightIndex)
 {
-    float safeRadius = max(lightRadius, 1e-4);
-    float distanceRatio = clamp(distanceToLight / safeRadius, 0.0, 1.0);
-    float softnessScale = max(0.75, softShadowParams.y * 6.0);
-    return mix(1.5, 4.5, distanceRatio) * softnessScale;
+    uint metaIndex = uSpotLights[lightIndex].shadowMetaIndex;
+    int quality = GetPunctualShadowQuality(metaIndex);
+    return SamplePunctualShadowAtlas(position_world, normalWS, lightDirectionWS, shadowMap, 1u, lightIndex, quality);
 }
 
-float FetchPunctualShadowDepth(
-    sampler2D shadowMap,
-    ivec2 texel,
-    ivec2 atlasMin,
-    ivec2 atlasMax)
+// RectLight uses the same metadata/view indirection as point and spot lights.
+float SampleRectShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DShadow shadowMap, int lightIndex)
 {
-    return texelFetch(shadowMap, clamp(texel, atlasMin, atlasMax), 0).r;
+    uint metaIndex = uRectLights[lightIndex].shadowMetaIndex;
+    int quality = GetPunctualShadowQuality(metaIndex);
+    return SamplePunctualShadowAtlas(position_world, normalWS, lightDirectionWS, shadowMap, 2u, lightIndex, quality);
 }
 
-float ComparePunctualShadowBilinear(
-    sampler2D shadowMap,
-    vec2 atlasTexelPosition,
-    ivec2 atlasMin,
-    ivec2 atlasMax,
-    float receiverDepth)
+// SamplePunctualShadowAtlas already resolves Atlas against unshadowed visibility:
+//   atlasResolved = mix(1, atlasVisibility, atlasWeight).
+// Replacing the unshadowed endpoint with a selected screen-space fallback can
+// therefore be done exactly without sampling the Atlas a second time.
+float BlendPunctualShadowFallback(
+    float atlasResolved,
+    float fallbackVisibility,
+    uint lightType,
+    int lightIndex)
 {
-    ivec2 base = ivec2(floor(atlasTexelPosition));
-    vec2 f = fract(atlasTexelPosition);
-    float c00 = FetchPunctualShadowDepth(shadowMap, base, atlasMin, atlasMax) < receiverDepth ? 0.0 : 1.0;
-    float c10 = FetchPunctualShadowDepth(shadowMap, base + ivec2(1, 0), atlasMin, atlasMax) < receiverDepth ? 0.0 : 1.0;
-    float c01 = FetchPunctualShadowDepth(shadowMap, base + ivec2(0, 1), atlasMin, atlasMax) < receiverDepth ? 0.0 : 1.0;
-    float c11 = FetchPunctualShadowDepth(shadowMap, base + ivec2(1, 1), atlasMin, atlasMax) < receiverDepth ? 0.0 : 1.0;
-    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
-}
-
-float SamplePunctualShadowAtlasSoft(
-    sampler2D shadowMap,
-    ivec2 atlasOffset,
-    vec2 localShadowUV,
-    float receiverDepth,
-    float filterRadiusTexels)
-{
-    if (receiverDepth <= 0.0 || receiverDepth >= 1.0)
-        return 1.0;
-
-    if (localShadowUV.x <= 0.0 || localShadowUV.x >= 1.0 ||
-        localShadowUV.y <= 0.0 || localShadowUV.y >= 1.0)
-        return 1.0;
-
-    const int PUNCTUAL_SOFT_SAMPLE_COUNT = 24;
-    float sampleCountInverse = 1.0 / float(PUNCTUAL_SOFT_SAMPLE_COUNT);
-
-    ivec2 atlasMin = atlasOffset;
-    ivec2 atlasMax = atlasOffset + ivec2(int(uShadowAtlasSize) - 1);
-
-    vec2 localTexelPosition = localShadowUV * float(uShadowAtlasSize) - 0.5;
-    float jitterAngle = RandomInterLeaved(floor(localTexelPosition / 8.0) + vec2(atlasOffset)) * TWO_PI;
-    vec2 jitter = vec2(sin(jitterAngle), cos(jitterAngle));
-
-    float visibility = 0.0;
-    for (int i = 0; i < PUNCTUAL_SOFT_SAMPLE_COUNT; ++i)
+    uint metaIndex = GetPunctualShadowMetaIndex(lightType, lightIndex);
+    float atlasWeight = 0.0;
+    if (metaIndex != INVALID_SHADOW_INDEX && metaIndex < uint(MAX_PUNCTUAL_SHADOWS))
     {
-        float sampleDistNorm = sqrt((float(i) + 0.5) * sampleCountInverse);
-        vec2 offset = fibonacciSpiralDirection[i] * sampleDistNorm;
-        offset = vec2(offset.x * jitter.y + offset.y * jitter.x,
-                      offset.x * -jitter.x + offset.y * jitter.y);
-
-        vec2 atlasTexelPosition = vec2(atlasOffset) + localTexelPosition
-            + offset * filterRadiusTexels;
-        visibility += ComparePunctualShadowBilinear(
-            shadowMap, atlasTexelPosition, atlasMin, atlasMax, receiverDepth);
+        PunctualShadowData shadow = uPunctualShadows[metaIndex];
+        if (HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_HAS_ATLAS))
+            atlasWeight = clamp(shadow.atlasWeight, 0.0, 1.0);
     }
-
-    return visibility * sampleCountInverse;
-}
-
-float SamplePointShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int lightIndex)
-{
-    PointLightData light = uPointLights[lightIndex];
-    int shadowBaseSlot = int(light.shadowIndex);
-    if (shadowBaseSlot < 0)
-        return 1.0;
-    vec3 toLight = position_world - light.position.xyz;
-    int shadowDirectionIndex = GetCubemapFaceIndex(toLight);
-
-    int atlasSlot = shadowBaseSlot + shadowDirectionIndex;
-    ivec2 shadowOffset = ivec2(atlasSlot % uShadowAtlasCount,
-                               atlasSlot / uShadowAtlasCount);
-    shadowOffset *= int(uShadowAtlasSize);
-
-    // 在世界空间沿法线偏置接收点，再投影；避免 NDC 固定 bias 的透视放大问题
-    float normalOffset = ComputePunctualNormalOffset(normalWS, lightDirectionWS);
-    vec3 biasedPos = position_world + normalWS * normalOffset;
-
-    mat4x4 shadowMatrix = light.shadowMatrix[shadowDirectionIndex];
-    vec4 clipCoord = shadowMatrix * vec4(biasedPos, 1.0);
-    if (clipCoord.w <= 1e-6)
-        return 1.0;
-    clipCoord /= clipCoord.w;
-
-    float receiverDepth = clipCoord.z * 0.5 + 0.5;
-    vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
-
-    float filterRadiusTexels = ComputePunctualSoftShadowRadius(length(toLight), light.radius);
-    return SamplePunctualShadowAtlasSoft(shadowMap, shadowOffset, localShadowUV, receiverDepth, filterRadiusTexels);
-}
-
-float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int lightIndex)
-{
-    SpotLightData light = uSpotLights[lightIndex];
-    int atlasSlot = int(light.shadowIndex);
-    if (atlasSlot < 0)
-        return 1.0;
-    ivec2 shadowOffset = ivec2(atlasSlot % uShadowAtlasCount,
-                               atlasSlot / uShadowAtlasCount);
-    shadowOffset *= int(uShadowAtlasSize);
-
-    // 在世界空间沿法线偏置接收点，再投影；避免 NDC 固定 bias 的透视放大问题
-    float normalOffset = ComputePunctualNormalOffset(normalWS, lightDirectionWS);
-    vec3 biasedPos = position_world + normalWS * normalOffset;
-
-    mat4x4 shadowMatrix = light.shadowMatrix;
-    vec4 clipCoord = shadowMatrix * vec4(biasedPos, 1.0);
-    if (clipCoord.w <= 1e-6)
-        return 1.0;
-    clipCoord /= clipCoord.w;
-
-    float receiverDepth = clipCoord.z * 0.5 + 0.5;
-    vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
-
-    float distanceToLight = length(light.position.xyz - position_world);
-    float filterRadiusTexels = ComputePunctualSoftShadowRadius(distanceToLight, light.radius);
-    return SamplePunctualShadowAtlasSoft(shadowMap, shadowOffset, localShadowUV, receiverDepth, filterRadiusTexels);
-}
-
-// RectLight shadow sampling — Phase 3.
-// Atlas slot:  pointCount*6 + spotCount + shadowIndex   (mirrors VansScene::DrawRectShadow).
-float SampleRectShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2D shadowMap, int lightIndex)
-{
-    RectLightData light = uRectLights[lightIndex];
-    int slotIndex = int(light.shadowParams.x);
-    if (slotIndex < 0)
-        return 1.0;
-    ivec2 shadowOffset = ivec2(slotIndex % uShadowAtlasCount,
-                               slotIndex / uShadowAtlasCount);
-    shadowOffset *= int(uShadowAtlasSize);
-
-    float normalOffset = ComputePunctualNormalOffset(normalWS, lightDirectionWS);
-    vec3 biasedPos = position_world + normalWS * normalOffset;
-
-    mat4x4 shadowMatrix = light.shadowMatrix;
-    vec4 clipCoord = shadowMatrix * vec4(biasedPos, 1.0);
-    if (clipCoord.w <= 1e-6)
-        return 1.0;
-    clipCoord /= clipCoord.w;
-
-    float receiverDepth = clipCoord.z * 0.5 + 0.5;
-    vec2 localShadowUV = clipCoord.xy * 0.5 + 0.5;
-
-    float distanceToLight = length(light.position_halfW.xyz - position_world);
-    float filterRadiusTexels = ComputePunctualSoftShadowRadius(distanceToLight, light.right_range.w);
-    return SamplePunctualShadowAtlasSoft(shadowMap, shadowOffset, localShadowUV, receiverDepth, filterRadiusTexels);
+    return clamp(atlasResolved + (fallbackVisibility - 1.0) * (1.0 - atlasWeight), 0.0, 1.0);
 }
 
 // ============================================================================
@@ -791,75 +864,61 @@ float SampleGICascadeShadow(vec3 positionWS, vec3 normalWS, sampler2D shadowMap)
     return mix(1.0, visibility / float(sampleCount), confidence);
 }
 
-void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2D punctualShadowMap, float sampleRadius, vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
+void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2DShadow punctualShadowMap, vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
 {
     diffuseResult = vec3(0.0);
-
-    vec3 T, B;
-    BuildTBN(normalWS, T, B);
-
-    const int sampleCount = 4;
-    uint n = uint(sampleCount);
-    float invN = 1.0 / float(sampleCount);
-    float radius = min(sampleRadius, 10.0);
     vec3 albedo = clamp(surfaceAlbedoRoughness.rgb, vec3(0.0), vec3(1.0));
+    vec3 samplePos = positionWS;
 
-    for (uint diskIndex = 0u; diskIndex < n; ++diskIndex)
+    // GI stores outgoing diffuse radiance, including the Lambert albedo / PI term.
+    float dirNoL = max(dot(normalWS, uDirectionLight.direction.xyz), 0.0);
+    float dirShadow = SampleGICascadeShadow(samplePos, normalWS, shadowMap);
+    diffuseResult += dirNoL * uDirectionLight.color.rgb * uDirectionLight.intensity * dirShadow * albedo * INV_PI;
+
+    for (uint lightIndex = 0u; lightIndex < uPointLightCount; ++lightIndex)
     {
-        vec2 d2 = DiskSample(diskIndex, n);
-        vec3 samplePos = positionWS + (T * d2.x + B * d2.y) * radius;
+        PointLightData pointLight = GetPointLight(int(lightIndex));
+        vec3 lightDirection = pointLight.position.xyz - samplePos;
+        float distance = length(lightDirection);
+        if (pointLight.radius <= 1e-5 || distance >= pointLight.radius)
+            continue;
 
-        // GI probe 缓存 hit 点向外反射的 diffuse radiance；Lambert BRDF 为 albedo / PI。
-        float dirNoL = max(dot(normalWS, uDirectionLight.direction.xyz), 0.0);
-        float dirShadow = SampleGICascadeShadow(samplePos, normalWS, shadowMap);
-        diffuseResult += dirNoL * uDirectionLight.color.rgb * uDirectionLight.intensity * dirShadow * albedo * INV_PI;
+        lightDirection /= max(distance, 1e-5);
+        float attenuation = 1.0 - (distance / pointLight.radius);
+        attenuation *= attenuation;
+        attenuation *= SamplePointShadowMapBRDF(
+            samplePos, normalWS, lightDirection, punctualShadowMap, int(lightIndex));
 
-        for (uint lightIndex = 0u; lightIndex < uPointLightCount; ++lightIndex)
-        {
-            PointLightData pointLight = GetPointLight(int(lightIndex));
-            vec3 lightDirection = pointLight.position.xyz - samplePos;
-            float distance = length(lightDirection);
-            if (distance > pointLight.radius)
-                continue;
-
-            lightDirection /= distance;
-            float attenuation = 1.0 - (distance / pointLight.radius);
-            attenuation *= attenuation;
-            attenuation = min(attenuation, SamplePointShadowMap(
-                samplePos, punctualShadowMap, int(lightIndex)));
-
-            float noL = max(dot(normalWS, lightDirection), 0.0);
-            diffuseResult += noL * pointLight.color.rgb * pointLight.intensity * attenuation * albedo * INV_PI;
-        }
-
-        for (uint lightIndex = 0u; lightIndex < uSpotLightCount; ++lightIndex)
-        {
-            SpotLightData spotLight = GetSpotLight(int(lightIndex));
-            vec3 lightDirection = spotLight.position.xyz - samplePos;
-            float distance = length(lightDirection);
-            if (distance > spotLight.radius)
-                continue;
-
-            lightDirection /= distance;
-            float attenuation = 1.0 - (distance / spotLight.radius);
-            attenuation *= attenuation;
-            attenuation = min(attenuation, SampleSpotShadowMap(
-                samplePos, punctualShadowMap, int(lightIndex)));
-
-            float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
-            if (coneAngle < cos(spotLight.outerConeAngle))
-                continue;
-
-            float innerConeAngle = cos(spotLight.innerConeAngle);
-            float outerConeAngle = cos(spotLight.outerConeAngle);
-            float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
-
-            float noL = max(dot(normalWS, lightDirection), 0.0);
-            diffuseResult += noL * spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation * albedo * INV_PI;
-        }
+        float noL = max(dot(normalWS, lightDirection), 0.0);
+        diffuseResult += noL * pointLight.color.rgb * pointLight.intensity * attenuation * albedo * INV_PI;
     }
 
-    diffuseResult *= invN;
+    for (uint lightIndex = 0u; lightIndex < uSpotLightCount; ++lightIndex)
+    {
+        SpotLightData spotLight = GetSpotLight(int(lightIndex));
+        vec3 lightDirection = spotLight.position.xyz - samplePos;
+        float distance = length(lightDirection);
+        if (spotLight.radius <= 1e-5 || distance >= spotLight.radius)
+            continue;
+
+        lightDirection /= max(distance, 1e-5);
+        float attenuation = 1.0 - (distance / spotLight.radius);
+        attenuation *= attenuation;
+
+        float coneAngle = dot(normalize(spotLight.direction.xyz), lightDirection);
+        if (coneAngle < cos(spotLight.outerConeAngle))
+            continue;
+
+        attenuation *= SampleSpotShadowMapBRDF(
+            samplePos, normalWS, lightDirection, punctualShadowMap, int(lightIndex));
+
+        float innerConeAngle = cos(spotLight.innerConeAngle);
+        float outerConeAngle = cos(spotLight.outerConeAngle);
+        float coneAttenuation = clamp((coneAngle - outerConeAngle) / max(innerConeAngle - outerConeAngle, 1e-5), 0.0, 1.0);
+
+        float noL = max(dot(normalWS, lightDirection), 0.0);
+        diffuseResult += noL * spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation * albedo * INV_PI;
+    }
 }
 // Cascade shadow map version of CalculateDirectLight
 // Forward declaration: EvaluateRectLightLTC is defined in Lighting/RectLightLTC.glsl,
@@ -877,7 +936,7 @@ void EvaluateRectLightLTC(
 // profileIndex = -1 means "no IES", in which case callers should skip the call.
 float SampleIESProfile(int profileIndex, vec3 lightDir, vec3 nadirDir);
 
-void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, float viewDepth, sampler2D punctualShadowMap, float screenSpaceShadow, inout LightResult lightResult)
+void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, float viewDepth, sampler2DShadow punctualShadowMap, float screenSpaceShadow, inout LightResult lightResult)
 {
     lightResult.directDiffuse = vec3(0);
     lightResult.directSpecular = vec3(0);
@@ -912,7 +971,14 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         attenuation *= attenuation;
 
         float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
-        attenuation = min(attenuation, shadowValue);
+        if (IsPointShadowFallbackSelected(_tileLightHdr, i))
+        {
+            shadowValue = BlendPunctualShadowFallback(
+                shadowValue,
+                SamplePunctualScreenSpaceShadow(brdfData.positionWS, brdfData.normal, lightDirection, distance),
+                0u, int(i));
+        }
+        attenuation *= shadowValue;
 
 #ifdef IES_PROFILE_ENABLED
         int ptIESIdx = int(pointLight.iesProfileIndex);
@@ -946,15 +1012,22 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
 
-        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
-        attenuation = min(attenuation, shadowValue);
-
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
         if (coneAngle < cos(spotLight.outerConeAngle)) continue;
 
         float innerConeAngle  = cos(spotLight.innerConeAngle);
         float outerConeAngle  = cos(spotLight.outerConeAngle);
         float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
+
+        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
+        if (IsSpotShadowFallbackSelected(_tileLightHdr, i))
+        {
+            shadowValue = BlendPunctualShadowFallback(
+                shadowValue,
+                SamplePunctualScreenSpaceShadow(brdfData.positionWS, brdfData.normal, lightDirection, distance),
+                1u, int(i));
+        }
+        attenuation *= shadowValue;
 
 #ifdef IES_PROFILE_ENABLED
         int spIESIdx = int(spotLight.iesProfileIndex);
@@ -992,11 +1065,19 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
                 brdfData.normal, brdfData.viewDirection, brdfData.positionWS,
                 brdfData.roughness, ltcDiffColor_t, ltcF0_t,
                 rectD, rectS);
-            int shadowIdx = int(rl.shadowParams.x);
-            if (shadowIdx >= 0)
+            uint shadowMetaIndex = rl.shadowMetaIndex;
+            if (shadowMetaIndex != INVALID_SHADOW_INDEX)
             {
                 vec3 lightDirRect = normalize(rl.position_halfW.xyz - brdfData.positionWS);
                 float shadowVal = SampleRectShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirRect, punctualShadowMap, int(i));
+                if (IsRectShadowFallbackSelected(_tileLightHdr, i))
+                {
+                    float rectDistance = length(rl.position_halfW.xyz - brdfData.positionWS);
+                    shadowVal = BlendPunctualShadowFallback(
+                        shadowVal,
+                        SamplePunctualScreenSpaceShadow(brdfData.positionWS, brdfData.normal, lightDirRect, rectDistance),
+                        2u, int(i));
+                }
                 rectD *= shadowVal;
                 rectS *= shadowVal;
             }
@@ -1019,7 +1100,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         attenuation *= attenuation;
 
         float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
-        attenuation = min(attenuation, shadowValue);
+        attenuation *= shadowValue;
 
 #ifdef IES_PROFILE_ENABLED
         int ptIESIdx = int(pointLight.iesProfileIndex);
@@ -1051,15 +1132,15 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
         float attenuation = 1.0 - (distance / spotLight.radius);
         attenuation *= attenuation;
 
-        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
-        attenuation = min(attenuation, shadowValue);
-
         float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(lightDirection));
         if (coneAngle < cos(spotLight.outerConeAngle)) continue;
 
         float innerConeAngle = cos(spotLight.innerConeAngle);
         float outerConeAngle = cos(spotLight.outerConeAngle);
         float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
+
+        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
+        attenuation *= shadowValue;
 
 #ifdef IES_PROFILE_ENABLED
         int spIESIdx = int(spotLight.iesProfileIndex);
@@ -1100,8 +1181,8 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
                     brdfData.normal, brdfData.viewDirection, brdfData.positionWS,
                     brdfData.roughness, ltcDiffColor, ltcF0,
                     rectD, rectS);
-                int shadowIdx = int(rl.shadowParams.x);
-                if (shadowIdx >= 0)
+                uint shadowMetaIndex = rl.shadowMetaIndex;
+                if (shadowMetaIndex != INVALID_SHADOW_INDEX)
                 {
                     vec3 lightDirRect = normalize(rl.position_halfW.xyz - brdfData.positionWS);
                     float shadowVal = SampleRectShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirRect, punctualShadowMap, int(i));

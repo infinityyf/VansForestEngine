@@ -41,7 +41,9 @@ bool VansNoesisRenderDevice::Initialize(bool sRGB)
     info.instance           = m_VKDevice->GetInstance();
     info.physicalDevice     = m_VKDevice->GetPhysicalDevice();
     info.device             = m_VKDevice->GetLogicDevice();
-    info.pipelineCache      = VK_NULL_HANDLE;  // optional — no cache at startup
+    // Noesis creates pipelines internally. Give it an isolated cache seeded from
+    // the engine cache; the device cache service merges it during shutdown.
+    info.pipelineCache      = m_VKDevice->GetPipelineCacheService().GetOrCreateChildCache("Noesis");
     info.queueFamilyIndex   = m_VKDevice->GetGraphicsQueueFamilyIndex();
 
     // Use the project's dynamically loaded vkGetInstanceProcAddr function pointer

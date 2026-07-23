@@ -5,8 +5,9 @@
 #include "../VulkanCore/VansMesh.h"
 #include "../VulkanCore/VansTexture.h"
 #include "../VulkanCore/VansVKDevice.h"
-#include "../../Interfaces/IShaderHotReloadService.h"
 #include "../../Util/VansLog.h"
+#include "../../AssetCore/VansAssetDatabase.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -57,10 +58,12 @@ VansTexture::TextureLoadDesc BuildTextureLoadDesc(
     bool needMip = true,
     const std::string& precision = "low8",
     int importChannel = 4,
-    const std::string& addressMode = "repeat")
+    const std::string& addressMode = "repeat",
+    const std::string& cookedPath = {})
 {
     VansTexture::TextureLoadDesc desc{};
     desc.path = path;
+    desc.cookedPath = cookedPath;
     desc.isSRGB = isSRGB;
     desc.useCompress = useCompress;
     desc.needMip = needMip;
@@ -264,7 +267,10 @@ void VansSceneProjectResourceBuilder::LoadMeshes(VansScene& scene,
 
             // 动画配置由 object.components.animation 统一处理。
 
-            mesh->LoadMultiMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath, import_tangent, generate_as, needCpuData, scaleFactor);
+            mesh->LoadMultiMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath,
+                import_tangent, generate_as, needCpuData, scaleFactor,
+                sceneMesh.rebuildIdentityBoneOffsetsFromHierarchy,
+                sceneMesh.remapWeaponAttachmentBonesToHands);
             mesh->SetName(sceneMesh.name);
             scene.AddMeshAsset(mesh);
         }
@@ -299,6 +305,10 @@ void VansSceneProjectResourceBuilder::LoadMeshesFromJson(VansScene& scene,
         request.needCpuData = sceneMesh.value("need_cpu_data", false);
         request.scaleFactor = sceneMesh.value("scale_factor", sceneMesh.value("scaleFactor", 1.0f));
         request.loadMultiMesh = sceneMesh.value("load_multi_mesh", false);
+        request.rebuildIdentityBoneOffsetsFromHierarchy = sceneMesh.value(
+            "rebuild_identity_bone_offsets_from_hierarchy", false);
+        request.remapWeaponAttachmentBonesToHands = sceneMesh.value(
+            "remap_weapon_attachment_bones_to_hands", false);
         meshes.push_back(std::move(request));
     }
     LoadMeshes(scene, meshes, pathPrefix, device, vkDevice);
@@ -319,12 +329,6 @@ void VansSceneProjectResourceBuilder::LoadShadersFromRegistry(VansScene& scene,
     // Populate VansScene shader assets for backward compatibility with
     // scene shader lookups used by material-pass binding.
     scene.SyncShaderAssetsFromShaderManager();
-    for (VansShader* shader : manager.GetLoadedShaderAssets())
-    {
-        // Set up file watching for hot-reload
-        if (auto* hotReload = scene.GetShaderHotReloadService())
-            hotReload->WatchFolder(shader->GetShaderFolder());
-    }
 }
 
 void VansSceneProjectResourceBuilder::RegisterShadersFromJson(VansScene& scene,
@@ -458,11 +462,6 @@ void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
 
     manager.LoadAll("", device);
     scene.SyncShaderAssetsFromShaderManager();
-    for (VansShader* shader : manager.GetLoadedShaderAssets())
-    {
-        if (auto* hotReload = scene.GetShaderHotReloadService())
-            hotReload->WatchFolder(shader->GetShaderFolder());
-    }
 }
 
 void VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
@@ -488,7 +487,8 @@ void VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
                 sceneTexture.needMip,
                 sceneTexture.precision,
                 sceneTexture.importChannel,
-                sceneTexture.addressMode);
+                sceneTexture.addressMode,
+                sceneTexture.artifactPath);
             LoadTexture2DFromDesc(*texture, *vkDevice, desc);
             break;
         }
@@ -576,7 +576,14 @@ VansTexture* VansSceneProjectResourceBuilder::LoadOrGetTexture(VansScene& scene,
 
     VansTexture* texture = new VansTexture();
     texture->m_TextureType = TEXTURE_2D;
-    LoadTexture2DFromDesc(*texture, *vkDevice, BuildTextureLoadDesc(absPath, isSRGB));
+    std::string cookedPath;
+    if (Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase())
+    {
+        if (const auto record = database->Find(std::filesystem::path(absPath)))
+            cookedPath = record->artifactPath.string();
+    }
+    LoadTexture2DFromDesc(*texture, *vkDevice,
+        BuildTextureLoadDesc(absPath, isSRGB, true, true, "low8", 4, "repeat", cookedPath));
     texture->SetName(texName);
     scene.AddTextureAsset(texture);
 
@@ -594,8 +601,6 @@ void VansSceneProjectResourceBuilder::LoadShaderFromEntry(VansScene& scene,
 
     std::string fullPath = pathPrefix + entry.relativePath;
     VansGraphicsShader* shader = new VansGraphicsShader();
-    if (auto* hotReload = scene.GetShaderHotReloadService())
-        hotReload->WatchFolder(fullPath);
     shader->InitShader(device, fullPath);
     VansShaderManager::Get().ConfigureGraphicsShader(*shader, entry, fullPath);
     scene.AddShaderAsset(shader);

@@ -3,65 +3,124 @@
 
 #include "../Common/Common.glsl"
 #include "BRDFData.glsl"
+#include "ClothData.glsl"
 
 // =============================================================================
-// Cloth BRDF (Material ID = MATERIAL_ID_CLOTH)
-//
-// Direct light:
-//   - Charlie NDF for fabric sheen
-//   - Neubelt visibility term for cloth
-//   - albedo-derived sheen tint with independent material strength
-//
-// GBuffer convention for cloth in Deferred.frag:
-//   brdf.roughness = effective sheen roughness
-//   brdf.metallic  = sheen strength, not metallic
-//   brdf.fresnel0.r = thin-cloth translucency
+// Cloth BRDF families (Material ID = MATERIAL_ID_CLOTH):
+//   Fuzz: fitted Charlie sheen layered over diffuse.
+//   Silk: anisotropic dielectric GGX with an optional Charlie fiber layer.
+//   Thin: Fuzz plus energy-bounded direct back transmission.
 // =============================================================================
 
 float D_Charlie(float roughness, float NoH)
 {
     float alpha = max(roughness * roughness, 1e-4);
     float invAlpha = 1.0 / alpha;
-    float sin2h = max(1.0 - NoH * NoH, 0.0078125);
+    float sin2h = max(1.0 - NoH * NoH, 1e-6);
     return (2.0 + invAlpha) * pow(sin2h, invAlpha * 0.5) / (2.0 * PI);
 }
 
-float V_Cloth(float NoV, float NoL)
+float CharlieLambdaFit(float x, float alphaG)
 {
-    float denom = 4.0 * (NoL + NoV - NoL * NoV);
-    return 1.0 / max(denom, 1e-5);
+    float oneMinusAlphaSq = (1.0 - alphaG) * (1.0 - alphaG);
+    float a = mix(21.5473, 25.3245, oneMinusAlphaSq);
+    float b = mix(3.82987, 3.32435, oneMinusAlphaSq);
+    float c = mix(0.19823, 0.16801, oneMinusAlphaSq);
+    float d = mix(-1.97760, -1.27393, oneMinusAlphaSq);
+    float e = mix(-4.32054, -4.85967, oneMinusAlphaSq);
+    return a / (1.0 + b * pow(max(x, 1e-4), c)) + d * x + e;
 }
 
-float Max3(vec3 v)
+float CharlieLambda(float cosTheta, float alphaG)
+{
+    float x = clamp(abs(cosTheta), 1e-4, 1.0);
+    return x < 0.5
+        ? exp(CharlieLambdaFit(x, alphaG))
+        : exp(2.0 * CharlieLambdaFit(0.5, alphaG) - CharlieLambdaFit(1.0 - x, alphaG));
+}
+
+float V_Charlie(float roughness, float NoV, float NoL)
+{
+    float alphaG = max(roughness * roughness, 1e-4);
+    float denominator = (1.0 + CharlieLambda(NoV, alphaG) + CharlieLambda(NoL, alphaG))
+        * (4.0 * max(NoV, 1e-4) * max(NoL, 1e-4));
+    return 1.0 / max(denominator, 1e-5);
+}
+
+float Max3Cloth(vec3 v)
 {
     return max(max(v.x, v.y), v.z);
 }
 
-vec3 ClothSheenTint(vec3 albedo)
+vec3 ClothAlbedoTint(vec3 albedo)
 {
     vec3 safeAlbedo = max(albedo, vec3(0.0));
     float luma = max(Luminance(safeAlbedo), 1e-4);
-    vec3 tint = safeAlbedo / luma;
-    return clamp(mix(vec3(1.0), tint, 0.5), vec3(0.0), vec3(4.0));
+    return clamp(safeAlbedo / luma, vec3(0.0), vec3(1.0));
 }
 
-vec3 ClothSheenColor(BRDFData brdf)
+vec3 ClothSheenColor(BRDFData brdf, ClothMaterialPayload cloth)
 {
-    float strength = clamp(brdf.metallic, 0.0, 1.0);
-    return ClothSheenTint(brdf.albedo) * (0.24 * strength);
+    vec3 color = max(cloth.sheenColorWeight.rgb, vec3(0.0));
+    if ((ClothFlags(cloth) & CLOTH_FLAG_ALBEDO_SHEEN_TINT) != 0u)
+        color *= ClothAlbedoTint(brdf.albedo) * 0.24;
+    return clamp(color * clamp(cloth.sheenColorWeight.a, 0.0, 1.0), vec3(0.0), vec3(1.0));
 }
 
-float ClothTranslucency(BRDFData brdf)
+float ClothDirectionalAlbedo(float NoX, float sheenRoughness)
 {
-    return clamp(brdf.fresnel0.r, 0.0, 1.0);
+    return clamp(texture(ClothBRDFLUT,
+        vec2(clamp(NoX, 0.0, 1.0), clamp(sheenRoughness, 0.0, 1.0))).b, 0.0, 1.0);
 }
 
-vec3 SampleClothDFG(float NoV, float sheenRoughness)
+float ClothEnergyNormalization(float NoX, float sheenRoughness)
 {
-    return texture(ClothBRDFLUT, vec2(clamp(NoV, 0.0, 1.0), clamp(sheenRoughness, 0.0, 1.0))).rgb;
+    return clamp(texture(ClothBRDFLUT,
+        vec2(clamp(NoX, 0.0, 1.0), clamp(sheenRoughness, 0.0, 1.0))).r, 0.0, 1.0);
 }
 
-void DirectBRDF_Cloth(BRDFData brdf, vec3 lightDirection,
+float ClothBaseLayerScale(vec3 sheenColor, float roughness, float NoV, float NoL)
+{
+    float sheenMax = Max3Cloth(sheenColor);
+    float viewScale = 1.0 - sheenMax * ClothDirectionalAlbedo(NoV, roughness);
+    float lightScale = 1.0 - sheenMax * ClothDirectionalAlbedo(NoL, roughness);
+    return clamp(min(viewScale, lightScale), 0.0, 1.0);
+}
+
+float D_AnisotropicGGX(vec3 N, vec3 T, vec3 B, vec3 H, float alphaT, float alphaB)
+{
+    float ToH = dot(T, H);
+    float BoH = dot(B, H);
+    float NoH = max(dot(N, H), 0.0);
+    float d = ToH * ToH / max(alphaT * alphaT, 1e-6)
+            + BoH * BoH / max(alphaB * alphaB, 1e-6)
+            + NoH * NoH;
+    return 1.0 / max(PI * alphaT * alphaB * d * d, 1e-6);
+}
+
+float V_AnisotropicGGXCorrelated(vec3 N, vec3 T, vec3 B, vec3 V, vec3 L,
+                                 float alphaT, float alphaB)
+{
+    float NoV = max(dot(N, V), 1e-4);
+    float NoL = max(dot(N, L), 1e-4);
+    float lambdaV = NoL * length(vec3(alphaT * dot(T, V), alphaB * dot(B, V), NoV));
+    float lambdaL = NoV * length(vec3(alphaT * dot(T, L), alphaB * dot(B, L), NoL));
+    return 0.5 / max(lambdaV + lambdaL, 1e-5);
+}
+
+void ClothAnisotropicRoughness(float roughness, float anisotropy,
+                               out float alphaT, out float alphaB)
+{
+    float alpha = max(roughness * roughness, 0.002);
+    float aspect = sqrt(max(1.0 - 0.9 * abs(anisotropy), 0.1));
+    float along = max(alpha / aspect, 0.002);
+    float across = max(alpha * aspect, 0.002);
+    alphaT = anisotropy >= 0.0 ? along : across;
+    alphaB = anisotropy >= 0.0 ? across : along;
+}
+
+void DirectBRDF_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
+                      vec3 clothTangent, vec3 lightDirection,
                       inout vec3 diffuse, inout vec3 specular)
 {
     diffuse = vec3(0.0);
@@ -70,47 +129,77 @@ void DirectBRDF_Cloth(BRDFData brdf, vec3 lightDirection,
     vec3 N = normalize(brdf.normal);
     vec3 V = normalize(brdf.viewDirection);
     vec3 L = normalize(lightDirection);
-
     if (dot(N, V) < 0.0)
         N = -N;
+
+    vec3 T = clothTangent - N * dot(N, clothTangent);
+    if (dot(T, T) <= 1e-8)
+    {
+        vec3 fallbackB;
+        BuildStableClothFrame(N, T, fallbackB);
+    }
+    else
+        T = normalize(T);
+    vec3 B = normalize(cross(N, T));
 
     float NoV = max(dot(N, V), 1e-4);
     float signedNoL = dot(N, L);
     float frontNoL = max(signedNoL, 0.0);
     float backNoL = max(-signedNoL, 0.0);
-    float twoSidedNoL = max(frontNoL, backNoL);
-    if (twoSidedNoL <= 0.0)
-        return;
-
     float roughness = clamp(brdf.roughness, 0.045, 1.0);
-    float translucency = ClothTranslucency(brdf);
-    vec3 sheenColor = ClothSheenColor(brdf);
+    vec3 sheenColor = ClothSheenColor(brdf, cloth);
+    int model = ClothModel(cloth);
 
-    vec3 F = vec3(0.0);
-    vec3 sheen = vec3(0.0);
     if (frontNoL > 0.0)
     {
-        vec3 H = normalize(L + V);
+        vec3 halfSum = L + V;
+        if (dot(halfSum, halfSum) <= 1e-8)
+            return;
+        vec3 H = normalize(halfSum);
         float NoH = clamp(dot(N, H), 0.0, 1.0);
         float VoH = clamp(dot(V, H), 0.0, 1.0);
 
-        float D = D_Charlie(roughness, NoH);
-        float Vis = V_Cloth(NoV, frontNoL);
+        float sheenD = D_Charlie(roughness, NoH);
+        float sheenV = V_Charlie(roughness, NoV, frontNoL);
+        float sheenNormalization = min(ClothEnergyNormalization(NoV, roughness),
+                                       ClothEnergyNormalization(frontNoL, roughness));
+        vec3 sheen = sheenColor * sheenD * sheenV * sheenNormalization;
+        float baseScale = ClothBaseLayerScale(sheenColor, roughness, NoV, frontNoL);
 
-        float grazing = pow(1.0 - VoH, 5.0);
-        F = sheenColor * mix(0.25, 1.0, grazing);
-        sheen = D * Vis * F * frontNoL;
+        if (model == CLOTH_MODEL_SILK)
+        {
+            float alphaT;
+            float alphaB;
+            ClothAnisotropicRoughness(roughness, clamp(cloth.controls.y, -0.95, 0.95), alphaT, alphaB);
+            float D = D_AnisotropicGGX(N, T, B, H, alphaT, alphaB);
+            float Vis = V_AnisotropicGGXCorrelated(N, T, B, V, L, alphaT, alphaB);
+            vec3 F = FresnelSchlick(VoH, vec3(0.04));
+            vec3 Fv = FresnelSchlick(NoV, vec3(0.04));
+            vec3 Fl = FresnelSchlick(frontNoL, vec3(0.04));
+            vec3 baseDiffuse = (vec3(1.0) - Fv) * (vec3(1.0) - Fl) * brdf.albedo / PI;
+            diffuse = baseDiffuse * baseScale * frontNoL;
+            specular = (D * Vis * F * baseScale + sheen) * frontNoL;
+        }
+        else
+        {
+            diffuse = brdf.albedo * (baseScale / PI) * frontNoL;
+            specular = sheen * frontNoL;
+        }
     }
 
-    float diffuseEnergy = clamp(1.0 - Max3(F) * 0.75, 0.0, 1.0);
-    float transmittedNoL = backNoL * mix(0.15, 0.75, translucency);
-    float diffuseNoL = frontNoL + transmittedNoL;
-
-    diffuse = (brdf.albedo * diffuseEnergy / PI) * diffuseNoL;
-    specular = sheen;
+    if (model != CLOTH_MODEL_SILK && backNoL > 0.0)
+    {
+        float transmissionStrength = clamp(cloth.transmissionColorStrength.a, 0.0, 1.0);
+        float thickness = clamp(cloth.controls.z, 0.0, 1.0);
+        float thicknessAttenuation = mix(1.0, 0.15, thickness);
+        vec3 transmissionColor = clamp(cloth.transmissionColorStrength.rgb, vec3(0.0), vec3(1.0));
+        float transmissionWeight = transmissionStrength * thicknessAttenuation;
+        diffuse += brdf.albedo * transmissionColor * (transmissionWeight / PI) * backNoL;
+    }
 }
 
-void AmbientBRDF_Cloth(BRDFData brdf, vec3 viewDirection,
+void AmbientBRDF_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
+                       vec3 clothTangent, vec3 viewDirection,
                        inout vec3 diffuse, inout vec3 specular)
 {
     vec3 N = normalize(brdf.normal);
@@ -121,11 +210,8 @@ void AmbientBRDF_Cloth(BRDFData brdf, vec3 viewDirection,
     float NoV = clamp(dot(N, V), 0.0, 1.0);
     float roughness = clamp(brdf.roughness, 0.045, 1.0);
 
-    vec3 lut = SampleClothDFG(NoV, roughness);
-    vec3 sheenColor = ClothSheenColor(brdf);
-    vec3 sheenEnergy = mix(lut.rrr, lut.ggg, clamp(sheenColor, vec3(0.0), vec3(1.0)));
-    sheenEnergy *= mix(vec3(1.0), vec3(lut.b), 0.5);
-    sheenEnergy = clamp(sheenEnergy, vec3(0.0), vec3(0.95));
+    vec3 sheenColor = ClothSheenColor(brdf, cloth);
+    vec3 sheenEnergy = sheenColor * ClothDirectionalAlbedo(NoV, roughness);
 
     vec3 R = reflect(-V, N);
     float lod = GetMipLevelFromRoughness(roughness);
@@ -137,14 +223,27 @@ void AmbientBRDF_Cloth(BRDFData brdf, vec3 viewDirection,
     float ssrMask = clamp(brdf.indirectSpecular.a * ssrFade, 0.0, 1.0);
     vec3 specLighting = mix(iblSpec, brdf.indirectSpecular.rgb, ssrMask);
 
-    float diffuseEnergy = clamp(1.0 - Max3(sheenEnergy), 0.0, 1.0);
-    diffuse = brdf.albedo * brdf.indirectDiffuse * diffuseEnergy * brdf.ao;
-    specular = specLighting * sheenEnergy * brdf.ao;
+    float baseScale = clamp(1.0 - Max3Cloth(sheenEnergy), 0.0, 1.0);
+    if (ClothModel(cloth) == CLOTH_MODEL_SILK)
+    {
+        vec3 F = fresnelSchlickRoughness(NoV, vec3(0.04), roughness);
+        vec2 environmentBRDF = texture(BRDFLUT, vec2(NoV, 1.0 - roughness)).rg;
+        diffuse = brdf.albedo * brdf.indirectDiffuse * (vec3(1.0) - F) * (vec3(1.0) - F)
+                  * baseScale * brdf.ao;
+        specular = specLighting * ((F * environmentBRDF.x + environmentBRDF.y) * baseScale
+                   + sheenEnergy) * brdf.ao;
+    }
+    else
+    {
+        diffuse = brdf.albedo * brdf.indirectDiffuse * baseScale * brdf.ao;
+        specular = specLighting * sheenEnergy * brdf.ao;
+    }
 }
 
-void CalculateDirectLight_Cloth(BRDFData brdf,
+void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
+                                vec3 clothTangent,
                                 sampler2DArray cascadeShadowMap, float viewDepth,
-                                sampler2D punctualShadowMap,
+                                sampler2DShadow punctualShadowMap,
                                 float screenSpaceShadow,
                                 inout LightResult lightResult)
 {
@@ -154,7 +253,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
     {
         vec3 dR = vec3(0.0);
         vec3 sR = vec3(0.0);
-        DirectBRDF_Cloth(brdf, uDirectionLight.direction.rgb, dR, sR);
+        DirectBRDF_Cloth(brdf, cloth, clothTangent, uDirectionLight.direction.rgb, dR, sR);
 
         float shadow = min(SampleCascadeShadow(brdf.positionWS, brdf.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
         lightResult.directDiffuse += dR * uDirectionLight.color.rgb * uDirectionLight.intensity * shadow;
@@ -175,7 +274,15 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         float attenuation = 1.0 - (dist / pl.radius);
         attenuation *= attenuation;
-        attenuation = min(attenuation, SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i)));
+        float shadowValue = SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i));
+        if (IsPointShadowFallbackSelected(tileLightHdr, i))
+        {
+            shadowValue = BlendPunctualShadowFallback(
+                shadowValue,
+                SamplePunctualScreenSpaceShadow(brdf.positionWS, brdf.normal, lightDir, dist),
+                0u, int(i));
+        }
+        attenuation *= shadowValue;
 
 #ifdef IES_PROFILE_ENABLED
         int iesIdx = int(pl.iesProfileIndex);
@@ -185,7 +292,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         vec3 dR = vec3(0.0);
         vec3 sR = vec3(0.0);
-        DirectBRDF_Cloth(brdf, lightDir, dR, sR);
+        DirectBRDF_Cloth(brdf, cloth, clothTangent, lightDir, dR, sR);
         lightResult.directDiffuse += dR * pl.color.rgb * pl.intensity * attenuation;
         lightResult.directSpecular += sR * pl.color.rgb * pl.intensity * attenuation;
     }
@@ -201,7 +308,6 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         float attenuation = 1.0 - (dist / sl.radius);
         attenuation *= attenuation;
-        attenuation = min(attenuation, SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i)));
 
         float coneAngle = dot(normalize(sl.direction.xyz), lightDir);
         if (coneAngle < cos(sl.outerConeAngle)) continue;
@@ -209,6 +315,16 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
         float innerCone = cos(sl.innerConeAngle);
         float outerCone = cos(sl.outerConeAngle);
         float coneAtten = clamp((coneAngle - outerCone) / max(innerCone - outerCone, 1e-4), 0.0, 1.0);
+
+        float shadowValue = SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i));
+        if (IsSpotShadowFallbackSelected(tileLightHdr, i))
+        {
+            shadowValue = BlendPunctualShadowFallback(
+                shadowValue,
+                SamplePunctualScreenSpaceShadow(brdf.positionWS, brdf.normal, lightDir, dist),
+                1u, int(i));
+        }
+        attenuation *= shadowValue;
 
 #ifdef IES_PROFILE_ENABLED
         int iesIdx = int(sl.iesProfileIndex);
@@ -218,7 +334,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         vec3 dR = vec3(0.0);
         vec3 sR = vec3(0.0);
-        DirectBRDF_Cloth(brdf, lightDir, dR, sR);
+        DirectBRDF_Cloth(brdf, cloth, clothTangent, lightDir, dR, sR);
         lightResult.directDiffuse += dR * sl.color.rgb * sl.intensity * attenuation * coneAtten;
         lightResult.directSpecular += sR * sl.color.rgb * sl.intensity * attenuation * coneAtten;
     }
@@ -233,7 +349,8 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         float attenuation = 1.0 - (dist / pl.radius);
         attenuation *= attenuation;
-        attenuation = min(attenuation, SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i)));
+        float shadowValue = SamplePointShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i));
+        attenuation *= shadowValue;
 
 #ifdef IES_PROFILE_ENABLED
         int iesIdx = int(pl.iesProfileIndex);
@@ -243,7 +360,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         vec3 dR = vec3(0.0);
         vec3 sR = vec3(0.0);
-        DirectBRDF_Cloth(brdf, lightDir, dR, sR);
+        DirectBRDF_Cloth(brdf, cloth, clothTangent, lightDir, dR, sR);
         lightResult.directDiffuse += dR * pl.color.rgb * pl.intensity * attenuation;
         lightResult.directSpecular += sR * pl.color.rgb * pl.intensity * attenuation;
     }
@@ -258,7 +375,6 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         float attenuation = 1.0 - (dist / sl.radius);
         attenuation *= attenuation;
-        attenuation = min(attenuation, SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i)));
 
         float coneAngle = dot(normalize(sl.direction.xyz), lightDir);
         if (coneAngle < cos(sl.outerConeAngle)) continue;
@@ -266,6 +382,9 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
         float innerCone = cos(sl.innerConeAngle);
         float outerCone = cos(sl.outerConeAngle);
         float coneAtten = clamp((coneAngle - outerCone) / max(innerCone - outerCone, 1e-4), 0.0, 1.0);
+
+        float shadowValue = SampleSpotShadowMapBRDF(brdf.positionWS, brdf.normal, lightDir, punctualShadowMap, int(i));
+        attenuation *= shadowValue;
 
 #ifdef IES_PROFILE_ENABLED
         int iesIdx = int(sl.iesProfileIndex);
@@ -275,7 +394,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf,
 
         vec3 dR = vec3(0.0);
         vec3 sR = vec3(0.0);
-        DirectBRDF_Cloth(brdf, lightDir, dR, sR);
+        DirectBRDF_Cloth(brdf, cloth, clothTangent, lightDir, dR, sR);
         lightResult.directDiffuse += dR * sl.color.rgb * sl.intensity * attenuation * coneAtten;
         lightResult.directSpecular += sR * sl.color.rgb * sl.intensity * attenuation * coneAtten;
     }

@@ -5,6 +5,7 @@
 #include "../VulkanCore/VansShader.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../VulkanCore/VansDescriptorSetLayouts.h"
+#include "../VansShaderManager.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -34,17 +35,6 @@ namespace
         glm::vec4 spectralOptions;          // x=capillary coefficient
     };
 
-    struct alignas(16) FFTIterPC
-    {
-        int stage;
-        int direction;
-        int inverse;
-        int resolution;
-        int normalize;
-        int fieldCount;
-        int cascadeCount;
-        int pad0;
-    };
 }
 
 bool VansWaterFFT::Initialize(VansVKDevice* device, const std::string& shaderRoot,
@@ -64,25 +54,18 @@ bool VansWaterFFT::Initialize(VansVKDevice* device, const std::string& shaderRoo
     VkDevice logicDev = device->GetLogicDevice();
     const uint32_t N = FFT_RESOLUTION;
 
-    m_InitSpectrumShader = new VansComputeShader();
-    if (!m_InitSpectrumShader->InitShader(logicDev, shaderRoot + "EngineAssets/Shaders/Water/FFT/Init"))
+    (void)shaderRoot;
+    auto& shaderManager = VansShaderManager::Get();
+    m_InitSpectrumShader = shaderManager.FindComputeShader("WaterFFTInit");
+    m_TimeEvolveShader = shaderManager.FindComputeShader("WaterFFTEvolve");
+    m_FFTIterShader = shaderManager.FindComputeShader("WaterFFTIter");
+    m_DisplacementExtractShader = shaderManager.FindComputeShader(
+        m_OutputMode == OutputMode::SpectralSlope ? "WaterFFTExtractSlope" : "WaterFFTExtract");
+    if (!m_InitSpectrumShader || !m_TimeEvolveShader || !m_FFTIterShader || !m_DisplacementExtractShader)
+    {
+        VANS_LOG_ERROR("[VansWaterFFT] One or more managed FFT shaders are unavailable");
         return false;
-
-    m_TimeEvolveShader = new VansComputeShader();
-    if (!m_TimeEvolveShader->InitShader(logicDev, shaderRoot + "EngineAssets/Shaders/Water/FFT/Evolve"))
-        return false;
-
-    m_FFTIterShader = new VansComputeShader();
-    if (!m_FFTIterShader->InitShader(logicDev, shaderRoot + "EngineAssets/Shaders/Water/FFT/Iter"))
-        return false;
-    m_FFTIterShader->SetPushConstant(sizeof(FFTIterPC));
-
-    m_DisplacementExtractShader = new VansComputeShader();
-    const std::string extractPath = m_OutputMode == OutputMode::SpectralSlope
-        ? "EngineAssets/Shaders/Water/FFT/ExtractSlope"
-        : "EngineAssets/Shaders/Water/FFT/Extract";
-    if (!m_DisplacementExtractShader->InitShader(logicDev, shaderRoot + extractPath))
-        return false;
+    }
 
     auto createFFTImage = [&](VansVKImage& image, uint32_t layers)
     {
@@ -224,10 +207,10 @@ void VansWaterFFT::Shutdown(VkDevice logicDevice)
     m_PingPong[0].DestroyVulkanImage(logicDevice);
     m_PingPong[1].DestroyVulkanImage(logicDevice);
 
-    delete m_InitSpectrumShader; m_InitSpectrumShader = nullptr;
-    delete m_TimeEvolveShader; m_TimeEvolveShader = nullptr;
-    delete m_FFTIterShader; m_FFTIterShader = nullptr;
-    delete m_DisplacementExtractShader; m_DisplacementExtractShader = nullptr;
+    m_InitSpectrumShader = nullptr;
+    m_TimeEvolveShader = nullptr;
+    m_FFTIterShader = nullptr;
+    m_DisplacementExtractShader = nullptr;
 
     m_InitSet = VK_NULL_HANDLE;
     m_EvolveSet = VK_NULL_HANDLE;
@@ -391,7 +374,7 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, fieldLayers);
 
-        FFTIterPC pc = {};
+        IterPushConstants pc = {};
         pc.stage = stage;
         pc.direction = 0;
         pc.inverse = 1;
@@ -399,8 +382,8 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
         pc.normalize = 0;
         pc.fieldCount = int(activeFieldCount);
         pc.cascadeCount = int(m_Params.cascadeCount);
-        m_FFTIterShader->SetPushConstantData(&pc);
-        cmd.DispatchCompute(*m_FFTIterShader, groups, groups, activeFieldLayers, { m_IterSet[src] });
+        cmd.DispatchCompute(*m_FFTIterShader, groups, groups, activeFieldLayers,
+            { m_IterSet[src] }, &pc, sizeof(pc));
         BarrierImage(cmd, m_PingPong[dst], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, fieldLayers);
@@ -413,7 +396,7 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, fieldLayers);
 
-        FFTIterPC pc = {};
+        IterPushConstants pc = {};
         pc.stage = stage;
         pc.direction = 1;
         pc.inverse = 1;
@@ -421,8 +404,8 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
         pc.normalize = 0; // spectral coefficients use the unnormalised inverse DFT sum
         pc.fieldCount = int(activeFieldCount);
         pc.cascadeCount = int(m_Params.cascadeCount);
-        m_FFTIterShader->SetPushConstantData(&pc);
-        cmd.DispatchCompute(*m_FFTIterShader, groups, groups, activeFieldLayers, { m_IterSet[src] });
+        cmd.DispatchCompute(*m_FFTIterShader, groups, groups, activeFieldLayers,
+            { m_IterSet[src] }, &pc, sizeof(pc));
         BarrierImage(cmd, m_PingPong[dst], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, fieldLayers);

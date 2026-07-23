@@ -15,7 +15,10 @@ namespace VansGraphics
 {
 	// ─── Constants ───
 
-	constexpr uint32_t MAX_BONES          = 128;
+	// Paragon rigs commonly contain more than 128 deformation/helper bones.
+	// Keep this in sync with the GPU bone-matrix storage capacity; the shaders
+	// use a runtime-sized SSBO, so raising the CPU-side allocation is sufficient.
+	constexpr uint32_t MAX_BONES          = 256;
 	constexpr uint32_t MAX_BONE_INFLUENCE = 4;
 	constexpr uint32_t VCLIP_VERSION      = 1;
 	constexpr char     VCLIP_MAGIC[]      = "VCLIP";

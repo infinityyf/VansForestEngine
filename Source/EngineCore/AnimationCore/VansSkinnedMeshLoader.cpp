@@ -12,6 +12,7 @@
 #include <../../GLM/gtc/type_ptr.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <functional>
 #include <set>
@@ -50,7 +51,9 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 	const aiScene* scene,
 	const std::string& fbxFilePath,
 	uint32_t totalVertexCount,
-	VansAnimationImportResult& outResult)
+	VansAnimationImportResult& outResult,
+	bool rebuildIdentityBoneOffsetsFromHierarchy,
+	bool remapWeaponAttachmentBonesToHands)
 {
 	if (!scene)
 	{
@@ -79,7 +82,8 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 	             : " (bind-pose only, no animation clips)"));
 
 	// Step 2: Extract skeleton
-	ExtractSkeleton(scene, outResult.skeleton);
+	ExtractSkeleton(scene, outResult.skeleton, rebuildIdentityBoneOffsetsFromHierarchy,
+		remapWeaponAttachmentBonesToHands);
 
 	if (outResult.skeleton.bones.empty())
 	{
@@ -93,7 +97,8 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 	outResult.hasAnimation = true;
 
 	// Step 3: Extract bone weights per vertex
-	ExtractVertexBoneData(scene, outResult.skeleton, totalVertexCount, outResult.vertexBoneData);
+	ExtractVertexBoneData(scene, outResult.skeleton, totalVertexCount, outResult.vertexBoneData,
+		remapWeaponAttachmentBonesToHands);
 
 	// Step 4: For each animation clip, check cache or extract
 	std::string clipDir  = GetParentDirectory(fbxFilePath);
@@ -208,8 +213,70 @@ static glm::mat4 ComputeOffsetMatrixFromNode(const aiNode* node)
 	return glm::inverse(modelSpaceTransform);
 }
 
+static bool IsNearlyIdentity(const glm::mat4& matrix, float epsilon = 1.0e-4f)
+{
+	for (int column = 0; column < 4; ++column)
+	{
+		for (int row = 0; row < 4; ++row)
+		{
+			const float expected = column == row ? 1.0f : 0.0f;
+			if (std::abs(matrix[column][row] - expected) > epsilon)
+				return false;
+		}
+	}
+	return true;
+}
+
+static bool HasGrossBindTranslationError(const glm::mat4& importedOffset,
+	const glm::mat4& hierarchyOffset)
+{
+	// A valid inverse-bind cancels the node's accumulated bind transform. Some
+	// UE-exported rigid attachment bones retain rotation but lose that inverse
+	// translation, so they are not close to identity yet still place geometry
+	// tens of units away from the socket. Keep the threshold deliberately large
+	// and gate this behind the per-model import option.
+	const glm::mat4 bindResidual = glm::inverse(hierarchyOffset) * importedOffset;
+	return glm::length(glm::vec3(bindResidual[3])) > 1.0f;
+}
+
+static bool ComputeRelativeTransformToNamedAncestor(const aiNode* node,
+	const char* ancestorName, glm::mat4& outRelativeTransform)
+{
+	std::vector<const aiNode*> chain;
+	const aiNode* current = node;
+	while (current && std::string(current->mName.C_Str()) != ancestorName)
+	{
+		chain.push_back(current);
+		current = current->mParent;
+	}
+	if (!current)
+		return false;
+
+	outRelativeTransform = glm::mat4(1.0f);
+	for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+		outRelativeTransform = outRelativeTransform * ConvertMat4((*it)->mTransformation);
+	return true;
+}
+
+static const char* FindWeaponAttachmentHand(const aiNode* node)
+{
+	for (const aiNode* current = node; current; current = current->mParent)
+	{
+		const std::string nodeName = current->mName.C_Str();
+		if (nodeName.rfind("weapon_", 0) != 0 && nodeName.rfind("ult_weapon_", 0) != 0)
+			continue;
+		if (nodeName.size() >= 2 && nodeName.compare(nodeName.size() - 2, 2, "_l") == 0)
+			return "hand_l";
+		if (nodeName.size() >= 2 && nodeName.compare(nodeName.size() - 2, 2, "_r") == 0)
+			return "hand_r";
+	}
+	return nullptr;
+}
+
 void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
-                                                           Skeleton& outSkeleton)
+                                                           Skeleton& outSkeleton,
+                                                           bool rebuildIdentityBoneOffsetsFromHierarchy,
+                                                           bool remapWeaponAttachmentBonesToHands)
 {
 	outSkeleton.bones.clear();
 	outSkeleton.boneNameToIndex.clear();
@@ -287,6 +354,33 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 		if (wbIt != weightedBones.end())
 		{
 			info.offsetMatrix = ConvertMat4(wbIt->second->mOffsetMatrix);
+			const aiNode* weightedNode = FindAiNodeByName(scene->mRootNode, name);
+			if (rebuildIdentityBoneOffsetsFromHierarchy && weightedNode)
+			{
+				const glm::mat4 hierarchyOffset = ComputeOffsetMatrixFromNode(weightedNode);
+				if (!IsNearlyIdentity(hierarchyOffset) &&
+					(IsNearlyIdentity(info.offsetMatrix) ||
+					 HasGrossBindTranslationError(info.offsetMatrix, hierarchyOffset)))
+				{
+					info.offsetMatrix = hierarchyOffset;
+					VANS_LOG("[VansSkinnedMeshLoader] Rebuilt invalid inverse-bind from hierarchy for bone: \""
+						<< name << "\"");
+				}
+			}
+
+			if (remapWeaponAttachmentBonesToHands && weightedNode)
+			{
+				const char* handName = FindWeaponAttachmentHand(weightedNode);
+				glm::mat4 handRelativeTransform(1.0f);
+				if (handName && ComputeRelativeTransformToNamedAncestor(
+					weightedNode, handName, handRelativeTransform))
+				{
+					// UE rigid weapon parts are authored in bone-local space. Their FBX
+					// inverse-binds can otherwise preserve a model-space delta and leave
+					// the parts near the feet when an external clip drives the hands.
+					info.offsetMatrix = glm::inverse(handRelativeTransform);
+				}
+			}
 		}
 		else
 		{
@@ -450,7 +544,8 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 	const aiScene* scene,
 	const Skeleton& skeleton,
 	uint32_t totalVertexCount,
-	std::vector<VertexBoneData>& outData)
+	std::vector<VertexBoneData>& outData,
+	bool remapWeaponAttachmentBonesToHands)
 {
 	outData.clear();
 	outData.resize(totalVertexCount);
@@ -478,7 +573,12 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 				continue;
 
 			int boneID = it->second;
-
+			if (remapWeaponAttachmentBonesToHands && boneName.rfind("grenade", 0) == 0)
+			{
+				const auto weaponIt = skeleton.boneNameToIndex.find("weapon_r");
+				if (weaponIt != skeleton.boneNameToIndex.end())
+					boneID = weaponIt->second;
+			}
 			// FBX files commonly emit bone entries for the full skeleton in every
 			// sub-mesh, even when a bone has zero influence on that mesh's vertices.
 			// Skip silently — this is expected Assimp behaviour, not an error.

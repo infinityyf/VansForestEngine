@@ -52,6 +52,9 @@
     <Filter Include="EngineCore\RenderCore">
       <UniqueIdentifier>{A9001FAA-9FA8-5B37-8F27-0F9997F413E0}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\RenderCore\ShadowCore">
+      <UniqueIdentifier>{F82D1AE6-386C-4C60-A374-BC5EF8B35068}</UniqueIdentifier>
+    </Filter>
     <Filter Include="EngineCore\RuntimeCore">
       <UniqueIdentifier>{787AB163-94DD-5485-B56D-DC12FA38E623}</UniqueIdentifier>
     </Filter>
@@ -279,6 +282,15 @@
     <ClInclude Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.h">
       <Filter>EngineCore\EditorCore\AssetsSystem</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\ShaderHotReload\VansEditorShaderHotReloadController.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderCompiler.h">
+      <Filter>EngineCore\AssetCore\Importers</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderArtifactCache.h">
+      <Filter>EngineCore\AssetCore\Importers</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetGuid.h">
       <Filter>EngineCore\AssetCore</Filter>
     </ClInclude>
@@ -313,6 +325,9 @@
       <Filter>EngineCore\AssetCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.h">
+      <Filter>EngineCore\AssetCore\Importers</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansTextureCooker.h">
       <Filter>EngineCore\AssetCore\Importers</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneDiagnostics.h">
@@ -394,6 +409,9 @@
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansPostProcessWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansShadowDebuggerWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RuntimeUI\Public\VansUISystem.h">
@@ -501,6 +519,9 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansLookAtSolver.h">
       <Filter>EngineCore\AnimationCore\IK</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansTwoBoneIKSolver.h">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\IK\VansIKChainBuilder.h">
       <Filter>EngineCore\AnimationCore\IK</Filter>
     </ClInclude>
@@ -566,6 +587,15 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansLight.h">
       <Filter>EngineCore\RenderCore\BRDFData</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\ShadowCore\VansPunctualShadowTypes.h">
+      <Filter>EngineCore\RenderCore\ShadowCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\ShadowCore\VansShadowAtlasAllocator.h">
+      <Filter>EngineCore\RenderCore\ShadowCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\ShadowCore\VansPunctualShadowManager.h">
+      <Filter>EngineCore\RenderCore\ShadowCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\BRDFData\VansIESProfile.h">
       <Filter>EngineCore\RenderCore\BRDFData</Filter>
@@ -714,6 +744,9 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineCacheService.h">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineDescriptor.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
@@ -796,9 +829,6 @@
       <Filter>EngineCore\Util</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\Interfaces\INativeWindowProvider.h">
-      <Filter>EngineCore\Interfaces</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\EngineCore\Interfaces\IShaderHotReloadService.h">
       <Filter>EngineCore\Interfaces</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EngineAPILayer\Public\EngineDTOs.h">
@@ -906,6 +936,9 @@
       <Filter>EngineCore\EditorCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.cpp">
+      <Filter>EngineCore\AssetCore\Importers</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Importers\VansTextureCooker.cpp">
       <Filter>EngineCore\AssetCore\Importers</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneSchema.cpp">
@@ -1091,6 +1124,21 @@
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansPostProcessWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansShadowDebuggerWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.cpp">
+      <Filter>EngineCore\EditorCore\AssetsSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\ShaderHotReload\VansEditorShaderHotReloadController.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderCompiler.cpp">
+      <Filter>EngineCore\AssetCore\Importers</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderArtifactCache.cpp">
+      <Filter>EngineCore\AssetCore\Importers</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\EngineAPILayer\Private\EngineAPIImpl.cpp">
       <Filter>EngineCore\EngineAPILayer\Private</Filter>
     </ClCompile>
@@ -1175,6 +1223,9 @@
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansLookAtSolver.cpp">
       <Filter>EngineCore\AnimationCore\IK</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansTwoBoneIKSolver.cpp">
+      <Filter>EngineCore\AnimationCore\IK</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\AnimationCore\IK\VansIKChainBuilder.cpp">
       <Filter>EngineCore\AnimationCore\IK</Filter>
     </ClCompile>
@@ -1225,6 +1276,12 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansLight.cpp">
       <Filter>EngineCore\RenderCore\BRDFData</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\ShadowCore\VansShadowAtlasAllocator.cpp">
+      <Filter>EngineCore\RenderCore\ShadowCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\ShadowCore\VansPunctualShadowManager.cpp">
+      <Filter>EngineCore\RenderCore\ShadowCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\BRDFData\VansIESProfile.cpp">
       <Filter>EngineCore\RenderCore\BRDFData</Filter>
@@ -1359,6 +1416,9 @@
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipeline.cpp">
+      <Filter>EngineCore\RenderCore\VulkanCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineCacheService.cpp">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansPipelineDescriptor.cpp">

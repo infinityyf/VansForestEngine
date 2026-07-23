@@ -9,7 +9,6 @@
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneProjectResourceBuilder.h"
 
 #include "../EngineCore/Configration/VansConfigration.h"
-#include "../EngineCore/EditorCore/AssetsSystem/VansAssetsFileWatcher.h"
 #include "../EngineCore/Util/VansJobSystem.h"
 #include "../EngineCore/PhysicsCore/VansPhysics.h"
 #include "../EngineCore/Util/VansLog.h"
@@ -17,15 +16,13 @@
 #include "../EngineCore/AudioCore/VansAudioSystem.h"
 #include "../EngineCore/RuntimeUI/Public/VansUISystem.h"
 #include "../EngineCore/RenderCore/VansShaderManager.h"
+#include <cstdlib>
 
 // ????
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
 
 using namespace VansGraphics;
 using namespace VansEngine;
-
-static VansAssetsFileWatcher* g_EditorAssetFileWatcher = nullptr;
-
 
 // ????
 bool InitializeEngineCore();
@@ -71,6 +68,13 @@ bool InitializeGraphicsSystem()
 	}
 	VANS_LOG("[ForestEngine] Editor window created");
 
+	// Optional diagnostic automation hook. It is intentionally opt-in so
+	// interactive startup and every other project retain their existing flow.
+	if (const char* autoProject = std::getenv("FORESTENGINE_AUTOPEN_PROJECT"))
+	{
+		VansEditorWindow::QueueProjectOpenForAutomation(autoProject);
+	}
+
 	// Setup vulkan backend
 	auto* vkDevice = new VansVKDevice({ 1280, 720 }, &VansEditorWindow::m_VansEditorWindow);
 	if (!vkDevice->IsInitialized())
@@ -87,15 +91,6 @@ bool InitializeGraphicsSystem()
 	m_Scene = new VansScene();
 	VANS_LOG("[ForestEngine] Scene system initialized");
 
-	// Setup file watcher
-	g_EditorAssetFileWatcher = new VansAssetsFileWatcher();
-	m_Scene->SetShaderHotReloadService(g_EditorAssetFileWatcher);
-	g_EditorAssetFileWatcher->Start([](const std::string& folder, const std::string& filename)
-	{
-		VANS_LOG("[FileWatcher] File changed: " << folder + "\\" + filename);
-	});
-	VANS_LOG("[ForestEngine] Asset file watcher started");
-
 	// Register and load all built-in engine shaders early, before
 	// BeforeRendering() triggers PrepareRenderingData() which relies on
 	// compute shaders (PreConDiffuseEnvironment, etc.) already being loaded.
@@ -105,6 +100,17 @@ bool InitializeGraphicsSystem()
 	    VansConfigration::GetInstance()->GetProjectRootPath(),
 	    vkDevice->GetLogicDevice());
 	VANS_LOG("[ForestEngine] Engine shaders registered and loaded");
+
+	if (const char* cookedOutput = std::getenv("FORESTENGINE_COOKED_SHADER_OUTPUT"))
+	{
+		std::string error;
+		if (!VansShaderManager::Get().ExportCookedShaderArtifacts(cookedOutput, error))
+		{
+			VANS_LOG_ERROR("[ShaderCook] " << error);
+			return false;
+		}
+		VANS_LOG("[ShaderCook] Exported active shader artifacts to " << cookedOutput);
+	}
 
 	return true;
 }
@@ -197,14 +203,6 @@ void ShutdownEngine()
 	VansEngine::VansAudioSystem::GetInstance().Shutdown();
 	VANS_LOG("[ForestEngine] Audio system shutdown complete");
 
-	// Cleanup components
-	if (g_EditorAssetFileWatcher)
-	{
-		delete g_EditorAssetFileWatcher;
-		g_EditorAssetFileWatcher = nullptr;
-		VANS_LOG("[ForestEngine] File watcher stopped");
-	}
-
 	if (m_GUIBackEnd)
 	{
 		m_GUIBackEnd->ShutdownBackEnd();
@@ -268,6 +266,11 @@ public:
 	{
 		if (!m_Initialized)
 			return;
+		if (std::getenv("FORESTENGINE_COOK_SHADERS_AND_EXIT") != nullptr)
+		{
+			VANS_LOG("[ShaderCook] Cook-only launch completed; skipping main loop");
+			return;
+		}
 
 		// Create camera for the scene (parameters will be applied from Scene.json in LoadSceneContent)
 		VansCamera camera(m_GraphicsDevice);
@@ -304,5 +307,10 @@ int main()
 	runtime.Shutdown();
 
 	VANS_LOG("=== ForestEngine Exited ===");
+	// The dedicated cook path has already performed the full explicit engine
+	// shutdown. Avoid unrelated process-global third-party destructors running a
+	// second shutdown pass after all cooked output has been committed.
+	if (std::getenv("FORESTENGINE_COOK_SHADERS_AND_EXIT") != nullptr)
+		std::_Exit(0);
 	return 0;
 }

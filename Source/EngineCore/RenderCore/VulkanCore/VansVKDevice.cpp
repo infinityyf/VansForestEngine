@@ -259,6 +259,10 @@ namespace VansGraphics
 		//set the feature we need for create device
 		VansGraphics::vkGetPhysicalDeviceFeatures2(device, &m_DeviceFeatures2);
 		VansGraphics::vkGetPhysicalDeviceProperties2(device, &m_DeviceProperties2);
+		// Keep the legacy core-properties accessor in sync with the Properties2 query.
+		// Several systems use GetDeviceProperties() for Vulkan limits such as buffer
+		// alignment and cubemap-array capacity.
+		m_DeviceProperties = m_DeviceProperties2.properties;
 		return true;
 	}
 
@@ -824,10 +828,13 @@ namespace VansGraphics
 		if (m_VansVKLogicDevice != VK_NULL_HANDLE)
 		{
 			WaitForDevice();
+			// Persist cache entries before shader-owned pipeline objects are released.
+			m_PipelineCacheService.Flush(VansPipelineCacheFlushReason::Shutdown);
 		}
 
 		VansShaderManager::Get().ReleaseLoadedShaderAssets();
 		VansPipelineRegistry::Get().Clear();
+		m_PipelineCacheService.Shutdown();
 
 		VansVKDescriptorManager::GetInstance()->DestroyDescriptorPool();
 
@@ -968,6 +975,13 @@ namespace VansGraphics
 		if (!LoadVulkanDeviceLevelFunctionFromExtension(m_VansVKLogicDevice, desired_device_extrensions))
 		{
 			return false;
+		}
+
+		// Pipeline cache persistence is an optional optimization. Failure must not
+		// prevent the editor or a packaged build from starting.
+		if (!m_PipelineCacheService.Initialize(m_VansVKPhysicalDevice, m_VansVKLogicDevice))
+		{
+			VANS_LOG_WARN("[PipelineCache] Persistent cache disabled for this run");
 		}
 
 		if (!m_VansVKSurface.CreateVulkanSwapChain(m_VansVKPhysicalDevice, m_VansVKLogicDevice))

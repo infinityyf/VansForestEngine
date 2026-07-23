@@ -363,6 +363,12 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::Loa
     {
         std::string meshName = physicsNodeJson["mesh"];
         mesh = static_cast<VansMesh*>(scene.FindMeshAsset(meshName));
+        if (!mesh)
+        {
+            VANS_LOG_ERROR("[VansScene] Mesh collider source not found for physics node '"
+                << physicsNodeJson.value("name", std::string{})
+                << "': mesh='" << meshName << "'");
+        }
     }
 
     VansPhysicsNode* physicsNode = new VansPhysicsNode();

@@ -14,6 +14,7 @@
 #include "VansAnimationTypes.h"
 #include "VansAnimationController.h"
 #include "IK/VansIKTypes.h"
+#include "FootPlacement/VansFootPlacementTypes.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -48,7 +49,8 @@ namespace VansGraphics
 		MotionMatching,  // Motion Matching pose source with fallback input
 		IK,              // 通用 IK 节点（CCD/FABRIK 求解人体或非关节链）
 		TwoBoneIK,       // 双骨骼 IK 节点（人体四肢快捷配置）
-		LookAt           // 朝向/瞄准节点
+		LookAt,          // 朝向/瞄准节点
+		FootPlacement    // 足部贴地后处理请求（在 Root Motion 之后执行）
 	};
 
 	// ─────────────────────────────────────────────────────────────
@@ -101,6 +103,7 @@ namespace VansGraphics
 		const std::unordered_map<std::string, AnimatorParameter>*  parameters = nullptr;
 		const std::unordered_map<std::string, VansAnimationClip>*  clips      = nullptr;
 		VansMotionMatchingRuntime*                                 motionMatching = nullptr;
+		glm::mat4                                                  ownerWorldTransform = glm::mat4(1.0f);
 	};
 
 	// ─────────────────────────────────────────────────────────────
@@ -111,6 +114,9 @@ namespace VansGraphics
 	{
 		std::vector<glm::mat4> localTransforms;   // 每根骨骼的局部变换
 		bool                   valid = false;
+		bool                   hasFootPlacement = false;
+		int                    footPlacementNodeId = -1;
+		FootPlacementSettings  footPlacementSettings;
 	};
 
 	// ─────────────────────────────────────────────────────────────
@@ -420,6 +426,9 @@ namespace VansGraphics
 		glm::vec3   m_FixedTargetPos = glm::vec3(0.0f);
 		glm::quat   m_FixedTargetRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 		float       m_FixedWeight    = 1.0f;
+		IKCoordinateSpace m_TargetPositionSpace = IKCoordinateSpace::Model;
+		IKCoordinateSpace m_TargetRotationSpace = IKCoordinateSpace::Model;
+		std::string m_TargetReferenceBoneName;
 
 	private:
 		std::unique_ptr<VansIKSolver> m_Solver;
@@ -464,14 +473,16 @@ namespace VansGraphics
 		float       m_FixedWeight    = 1.0f;
 		bool        m_EnableRotationTarget = false;
 		float       m_RotationWeight = 1.0f;
+		IKCoordinateSpace m_TargetPositionSpace = IKCoordinateSpace::Model;
+		IKCoordinateSpace m_TargetRotationSpace = IKCoordinateSpace::Model;
+		std::string m_TargetReferenceBoneName;
+		IKCoordinateSpace m_PoleSpace = IKCoordinateSpace::Model;
+		std::string m_PoleReferenceBoneName;
+		bool        m_MaintainEffectorGlobalRotation = false;
+		bool        m_AllowStretch = false;
+		float       m_StartStretchRatio = 1.0f;
+		float       m_MaxStretchScale = 1.2f;
 
-	private:
-		IKChainDefinition             m_CachedChain;
-		bool                          m_ChainBuilt = false;
-		size_t                        m_CachedSkeletonSignature = 0;
-
-		void BuildChain(const Skeleton& skeleton);
-		bool NeedsRebuild(const Skeleton& skeleton) const;
 	};
 
 	// ─── LookAtNode ─────────────────────────────────────────────
@@ -493,21 +504,32 @@ namespace VansGraphics
 		glm::vec3                m_ForwardAxis = glm::vec3(0.0f, 0.0f, -1.0f);
 		// 角色 root-local 参考前向；非零时优先于 m_ForwardAxis（按绑定姿态自动推导每骨 local 轴）
 		glm::vec3                m_WorldForward = glm::vec3(0.0f);
+		glm::vec3                m_ModelUp = glm::vec3(0.0f, 1.0f, 0.0f);
+		float                    m_UpWeight = 1.0f;
 
 		std::string m_TargetPosParamName;
 		std::string m_WeightParamName;
 		bool        m_UseFixedTarget = false;
 		glm::vec3   m_FixedTargetPos = glm::vec3(0.0f);
 		float       m_FixedWeight    = 1.0f;
+		IKCoordinateSpace m_TargetPositionSpace = IKCoordinateSpace::Model;
+		std::string m_TargetReferenceBoneName;
 
-	private:
-		std::unique_ptr<VansIKSolver> m_Solver;
-		IKChainDefinition             m_CachedChain;
-		bool                          m_ChainBuilt = false;
-		size_t                        m_CachedSkeletonSignature = 0;
+	};
 
-		void BuildChain(const Skeleton& skeleton);
-		bool NeedsRebuild(const Skeleton& skeleton) const;
+	// ─── FootPlacementNode ───────────────────────────────────────
+	//  声明一个延迟执行的足部放置后处理。节点本身不进行物理查询；Controller
+	//  会在骨骼覆盖、Root Motion 提取/归一化之后执行请求，保证管线顺序正确。
+
+	class AnimGraphFootPlacementNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphFootPlacementNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraph& graph) override;
+
+		FootPlacementSettings m_Settings;
 	};
 
 	// ═════════════════════════════════════════════════════════════

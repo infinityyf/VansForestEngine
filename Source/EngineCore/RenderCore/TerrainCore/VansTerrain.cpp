@@ -27,10 +27,11 @@ namespace VansGraphics
                 if(m_LayerRoughness[i])  delete m_LayerRoughness[i];
             }
         }
-        if(m_TerrainShader) delete m_TerrainShader;
-        if(m_TerrainShadowShader) delete m_TerrainShadowShader;
-        if(m_TerrainMotionVectorShader) delete m_TerrainMotionVectorShader;
-        if(m_TerrainTessShader) delete m_TerrainTessShader;
+		// Shader programs are owned by VansShaderManager.
+		m_TerrainShader = nullptr;
+		m_TerrainShadowShader = nullptr;
+		m_TerrainMotionVectorShader = nullptr;
+		m_TerrainTessShader = nullptr;
         m_ParamsUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_InstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_NearInstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
@@ -196,30 +197,23 @@ namespace VansGraphics
         m_ParamsUBO.SetBufferData(&params, 0, sizeof(TerrainParamsGPU));
 
         // -------------------------------------------------------
-        // 7. 编译着色器
+        // 7. 获取统一管理的着色器程序
         // -------------------------------------------------------
-        m_TerrainShader = new VansGraphicsShader();
-        const std::string terrainDeferredShaderPath = projectRoot + "EngineAssets/Shaders/Terrain/Deferred";
-        m_TerrainShader->InitShader(device->GetLogicDevice(), terrainDeferredShaderPath.c_str());
-        VansShaderManager::Get().ConfigureGraphicsShader(*m_TerrainShader, "Terrain", terrainDeferredShaderPath);
-        m_TerrainShadowShader = new VansGraphicsShader();
-        const std::string terrainShadowShaderPath = projectRoot + "EngineAssets/Shaders/Terrain/Shadow";
-        m_TerrainShadowShader->InitShader(device->GetLogicDevice(), terrainShadowShaderPath.c_str());
-        VansShaderManager::Get().ConfigureGraphicsShader(*m_TerrainShadowShader, "TerrainShadow", terrainShadowShaderPath);
-        m_TerrainShadowShader->SetPushConstant(sizeof(int)); // 阴影级联索引
-
-        m_TerrainMotionVectorShader = new VansGraphicsShader();
-        const std::string terrainMotionVectorShaderPath = projectRoot + "EngineAssets/Shaders/Terrain/MotionVector";
-        m_TerrainMotionVectorShader->InitShader(device->GetLogicDevice(), terrainMotionVectorShaderPath.c_str());
-        VansShaderManager::Get().ConfigureGraphicsShader(*m_TerrainMotionVectorShader, "TerrainMotionVector", terrainMotionVectorShaderPath);
+        auto& shaderManager = VansShaderManager::Get();
+        m_TerrainShader = shaderManager.FindGraphicsShader("Terrain");
+        m_TerrainShadowShader = shaderManager.FindGraphicsShader("TerrainShadow");
+        m_TerrainMotionVectorShader = shaderManager.FindGraphicsShader("TerrainMotionVector");
 
         // -------------------------------------------------------
         // 7b. 创建细分地形着色器
         // -------------------------------------------------------
-        m_TerrainTessShader = new VansGraphicsShader();
-        const std::string terrainTessShaderPath = projectRoot + "EngineAssets/Shaders/Terrain/DeferredTess";
-        m_TerrainTessShader->InitShader(device->GetLogicDevice(), terrainTessShaderPath.c_str());
-        VansShaderManager::Get().ConfigureGraphicsShader(*m_TerrainTessShader, "TerrainTess", terrainTessShaderPath);
+        m_TerrainTessShader = shaderManager.FindGraphicsShader("TerrainTess");
+        if (!m_TerrainShader || !m_TerrainShadowShader ||
+            !m_TerrainMotionVectorShader || !m_TerrainTessShader)
+        {
+            VANS_LOG_ERROR("[Terrain] One or more managed terrain shaders are unavailable");
+            return;
+        }
 
         // -------------------------------------------------------
         // 7c. 创建细分参数 UBO（binding 7）

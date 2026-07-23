@@ -99,6 +99,9 @@ const FootPlacementDebugData* VansAnimationController::GetFootPlacementDebugData
 
 void VansAnimationController::ConfigureFootPlacement(const FootPlacementSettings& settings, const Skeleton& skeleton)
 {
+	m_ExternalFootPlacementSettings = settings;
+	m_HasExternalFootPlacementSettings = true;
+	m_FootPlacementSourceNodeId = -1;
 	m_FootPlacementSettings = settings;
 	if (!m_FootPlacement)
 		m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
@@ -111,6 +114,7 @@ void VansAnimationController::ConfigureFootPlacement(const FootPlacementSettings
 
 void VansAnimationController::SetFootPlacementEnabled(bool enabled)
 {
+	m_ExternalFootPlacementSettings.enabled = enabled;
 	m_FootPlacementSettings.enabled = enabled;
 	if (m_FootPlacement)
 		m_FootPlacement->SetEnabled(enabled);
@@ -118,6 +122,7 @@ void VansAnimationController::SetFootPlacementEnabled(bool enabled)
 
 void VansAnimationController::SetFootPlacementDebugVisualization(bool enabled)
 {
+	m_ExternalFootPlacementSettings.debugVisualization = enabled;
 	m_FootPlacementSettings.debugVisualization = enabled;
 	if (m_FootPlacement)
 		m_FootPlacement->SetDebugVisualization(enabled);
@@ -585,6 +590,7 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 		ctx.parameters = &m_Parameters;
 		ctx.clips      = &m_Clips;
 		ctx.motionMatching = m_MotionMatching.get();
+		ctx.ownerWorldTransform = m_OwnerWorldTransform;
 
 		// pull 求值: Output → 上游节点递归采样
 		AnimGraphPose pose = m_Graph->Evaluate(ctx);
@@ -609,6 +615,38 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 			NormalizeRootTransform(localTransforms, skeleton);
 		}
 
+		if (pose.hasFootPlacement)
+		{
+			if (m_FootPlacementSourceNodeId != pose.footPlacementNodeId)
+			{
+				m_FootPlacementSettings = pose.footPlacementSettings;
+				if (!m_FootPlacement)
+					m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
+				if (!m_FootPlacement->Configure(m_FootPlacementSettings, skeleton))
+				{
+					VANS_LOG_WARN("FootPlacement node configure failed for controller '" << m_Name << "': missing configured bones");
+					m_FootPlacement.reset();
+				}
+				m_FootPlacementSourceNodeId = pose.footPlacementNodeId;
+			}
+		}
+		else if (m_FootPlacementSourceNodeId >= 0)
+		{
+			m_FootPlacementSourceNodeId = -1;
+			if (m_HasExternalFootPlacementSettings)
+			{
+				m_FootPlacementSettings = m_ExternalFootPlacementSettings;
+				if (!m_FootPlacement)
+					m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
+				if (!m_FootPlacement->Configure(m_FootPlacementSettings, skeleton))
+					m_FootPlacement.reset();
+			}
+			else
+			{
+				m_FootPlacement.reset();
+			}
+		}
+
 		ApplyFootPlacement(deltaTime, skeleton, localTransforms);
 		UpdateHierarchy(localTransforms, skeleton);
 		BuildFinalMatrices(localTransforms, skeleton);
@@ -618,7 +656,8 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 	if (m_MotionMatching)
 	{
 		std::vector<glm::mat4> localTransforms;
-		if (m_MotionMatching->Update(deltaTime, skeleton, m_Clips, m_Parameters, localTransforms))
+		if (m_MotionMatching->Update(deltaTime, skeleton, m_Clips, m_Parameters,
+		                             m_OwnerWorldTransform, localTransforms))
 		{
 			ApplyBoneOverrides(localTransforms, skeleton);
 
@@ -917,53 +956,24 @@ void VansAnimationController::ApplyFootPlacement(float deltaTime,
 		return;
 
 	FootPlacementRuntimeState state = m_FootPlacementState;
-	auto airborneIt = m_Parameters.find("IsAirborne");
-	if (airborneIt != m_Parameters.end())
+	auto findParameter = [this](const std::string& name) -> const AnimatorParameter*
 	{
-		const AnimatorParameter& param = airborneIt->second;
+		if (name.empty())
+			return nullptr;
+		const auto it = m_Parameters.find(name);
+		return it != m_Parameters.end() ? &it->second : nullptr;
+	};
+	const AnimatorParameter* airborneParameter = findParameter(m_FootPlacementSettings.airborneParameter);
+	if (airborneParameter)
+	{
+		const AnimatorParameter& param = *airborneParameter;
 		if (param.type == AnimatorParamType::Bool)
 			state.airborne = param.boolVal;
 		else if (param.type == AnimatorParamType::Float)
 			state.airborne = param.floatVal > 0.5f;
-	}
-
-	auto crouchIt = m_Parameters.find("IsCrouching");
-	if (crouchIt != m_Parameters.end())
-	{
-		const AnimatorParameter& param = crouchIt->second;
-		if (param.type == AnimatorParamType::Bool)
-			state.crouching = param.boolVal;
-		else if (param.type == AnimatorParamType::Float)
-			state.crouching = param.floatVal > 0.5f;
 		else if (param.type == AnimatorParamType::Int)
-			state.crouching = param.intVal != 0;
+			state.airborne = param.intVal != 0;
 	}
-	auto moveStateIt = m_Parameters.find("MoveState");
-	if (moveStateIt != m_Parameters.end() &&
-	    moveStateIt->second.type == AnimatorParamType::Int &&
-	    moveStateIt->second.intVal == 4)
-	{
-		state.crouching = true;
-	}
-
-	if (!m_HasFootPlacementStanceState)
-	{
-		m_HasFootPlacementStanceState = true;
-		m_LastFootPlacementCrouching = state.crouching;
-	}
-	else if (m_LastFootPlacementCrouching != state.crouching)
-	{
-		m_LastFootPlacementCrouching = state.crouching;
-		m_FootPlacementStanceSuppressTimer = std::max(m_FootPlacementStanceSuppressTimer,
-		                                              m_FootPlacementSettings.stanceChangeSuppressionTime);
-		m_FootPlacement->ResetTransientState();
-	}
-	if (m_FootPlacementStanceSuppressTimer > 0.0f)
-	{
-		m_FootPlacementStanceSuppressTimer = std::max(0.0f, m_FootPlacementStanceSuppressTimer - std::max(deltaTime, 0.0f));
-		state.stanceChanging = true;
-	}
-
 	m_FootPlacement->SetRuntimeState(state);
 	m_FootPlacement->Solve(deltaTime, skeleton, m_OwnerWorldTransform, localTransforms);
 }
@@ -986,7 +996,10 @@ void VansAnimationController::NormalizeRootTransform(std::vector<glm::mat4>& loc
 	               bindScale, bindRot, bindPos, bindSkew, bindPerspective);
 
 	glm::mat4 T = glm::translate(glm::mat4(1.0f), bindPos);
-	glm::mat4 R = glm::toMat4(rot);
+	// In-place/external locomotion owns both translation and facing. Preserving
+	// sampled root rotation here double-applies authored turns on top of the CCT
+	// owner rotation and drags the feet around the character.
+	glm::mat4 R = glm::toMat4(glm::normalize(bindRot));
 	glm::mat4 S = glm::scale(glm::mat4(1.0f), scale);
 	localTransforms[m_RootBoneIndex] = T * R * S;
 }

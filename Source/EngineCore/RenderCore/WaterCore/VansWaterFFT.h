@@ -27,6 +27,18 @@ namespace VansGraphics
             SpectralSlope = 1,
         };
 
+        struct alignas(16) IterPushConstants
+        {
+            int stage;
+            int direction;
+            int inverse;
+            int resolution;
+            int normalize;
+            int fieldCount;
+            int cascadeCount;
+            int pad0;
+        };
+
         struct Params
         {
             uint32_t resolution = FFT_RESOLUTION;

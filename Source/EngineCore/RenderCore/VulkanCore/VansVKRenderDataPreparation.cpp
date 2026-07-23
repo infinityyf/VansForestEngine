@@ -30,6 +30,7 @@ namespace VansGraphics
 			VansTexture* texture = nullptr;
 		};
 		std::vector<PendingCustomTexture> pendingCustomTextures;
+		const VansClothGPUParam defaultClothPayload{};
 		auto appendCustomMaterialData = [&](VansMaterial* material)
 		{
 			const int payloadIndex = static_cast<int>(materialManager->m_GlobalCustomMaterialParamData.size());
@@ -59,6 +60,7 @@ namespace VansGraphics
 				pbr->m_MaterialIndex = index;
 				materialManager->m_GlobalPBRMaterial.push_back(pbr);
 				materialManager->m_GlobalPBRParamData.push_back(pbr->m_BasePBRParam);
+				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_BaseColorTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_NormalTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_MetalTexture->GetImage()));
@@ -70,6 +72,7 @@ namespace VansGraphics
 				VansEmissiveMaterial* emissive = static_cast<VansEmissiveMaterial*>(material);
 				emissive->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(emissive->m_BasePBRParam);
+				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 
 				// Slots 1-4: not used by Emissive.frag but must be present to keep the 5-slot stride intact
 				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
@@ -83,6 +86,7 @@ namespace VansGraphics
 				VansDecalMaterial* decal = static_cast<VansDecalMaterial*>(material);
 				decal->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(decal->m_BasePBRParam);
+				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_BaseColorTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_NormalTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_MetalTexture->GetImage()));
@@ -100,6 +104,7 @@ namespace VansGraphics
 				sss->m_BasePBRParam.padding = sss->m_CurvatureInfluence;
 
 				materialManager->m_GlobalPBRParamData.push_back(sss->m_BasePBRParam);
+				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_NormalTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
@@ -111,6 +116,7 @@ namespace VansGraphics
 				VansClothMaterial* cloth = static_cast<VansClothMaterial*>(material);
 				cloth->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(cloth->m_BasePBRParam);
+				materialManager->m_GlobalClothParamData.push_back(cloth->BuildGPUParam());
 				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_BaseColorTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_NormalTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_BaseColorTexture->GetImage()));
@@ -147,7 +153,25 @@ namespace VansGraphics
 			materialManager->m_GlobalPBRTextures.push_back(&(pendingTexture.texture->GetImage()));
 		}
 
+		if (materialManager->m_GlobalClothParamData.size() != materialManager->m_GlobalPBRParamData.size())
+		{
+			VANS_LOG_ERROR("[PreparePBRMaterialData] GlobalClothData index alignment is broken: clothPayloads="
+				<< materialManager->m_GlobalClothParamData.size() << ", pbrPayloads="
+				<< materialManager->m_GlobalPBRParamData.size());
+		}
+		if (pbrMaterialIndex > 2048)
+		{
+			VANS_LOG_ERROR("[PreparePBRMaterialData] " << pbrMaterialIndex
+				<< " material payloads exceed the exact R16F Cloth materialIndex limit (2048).");
+		}
+		VANS_LOG("[PreparePBRMaterialData] assets=" << materialCount
+			<< ", pbrPayloads=" << materialManager->m_GlobalPBRParamData.size()
+			<< ", bindlessTextures=" << materialManager->m_GlobalPBRTextures.size()
+			<< ", customPayloads=" << materialManager->m_GlobalCustomMaterialParamData.size());
+
 		const VkDeviceSize materialDataSize = sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRParamData.size();
+		const VkDeviceSize clothMaterialDataSize =
+			sizeof(VansClothGPUParam) * materialManager->m_GlobalClothParamData.size();
 		const VkDeviceSize customMaterialDataSize =
 			sizeof(VansCustomMaterialPayload) * materialManager->m_GlobalCustomMaterialParamData.size();
 		materialManager->m_GlobalPBRDataBuffer.CreatVulkanBuffer(
@@ -155,6 +179,12 @@ namespace VansGraphics
 			std::max<VkDeviceSize>(materialDataSize, sizeof(VansBasePBRParam)),
 			VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		materialManager->m_GlobalClothDataBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			std::max<VkDeviceSize>(clothMaterialDataSize, sizeof(VansClothGPUParam)),
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 		materialManager->m_GlobalCustomMaterialDataBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
@@ -168,6 +198,11 @@ namespace VansGraphics
 			materialManager->m_GlobalPBRDataBuffer.SetBufferData(
 				materialManager->m_GlobalPBRParamData.data(), 0, static_cast<int>(materialDataSize));
 		}
+		if (clothMaterialDataSize > 0)
+		{
+			materialManager->m_GlobalClothDataBuffer.SetBufferData(
+				materialManager->m_GlobalClothParamData.data(), 0, static_cast<int>(clothMaterialDataSize));
+		}
 		if (customMaterialDataSize > 0)
 		{
 			materialManager->m_GlobalCustomMaterialDataBuffer.SetBufferData(
@@ -176,6 +211,7 @@ namespace VansGraphics
 
 		// Keep the PBR material buffer persistently mapped for fast per-frame CPU writes
 		materialManager->m_GlobalPBRDataBuffer.PersistentMap();
+		materialManager->m_GlobalClothDataBuffer.PersistentMap();
 		materialManager->m_GlobalCustomMaterialDataBuffer.PersistentMap();
 
 		VkDescriptorSetLayoutBinding globalPBRMaterialBufferBinding =
@@ -721,22 +757,8 @@ namespace VansGraphics
 			1, 4, false, false, true, MID_PRES_16);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT, sssResult);
 
-		VansTexture* sssFilterResult = new VansTexture();
-		sssFilterResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer,
-			m_RenderWidth, m_RenderHeight,
-			1, 4, false, false, true, MID_PRES_16);
-		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_FILTER_RESULT, sssFilterResult);
-
-		ScreenSpaceShadowParamsGPU data{};
-		data.screenSize = glm::vec4(
-			static_cast<float>(m_RenderWidth), static_cast<float>(m_RenderHeight),
-			1.0f / static_cast<float>(m_RenderWidth), 1.0f / static_cast<float>(m_RenderHeight));
-		data.halfSize = glm::vec4(
-			static_cast<float>(m_RenderWidth), static_cast<float>(m_RenderHeight),
-			1.0f / static_cast<float>(m_RenderWidth), 1.0f / static_cast<float>(m_RenderHeight));
-		data.rayParams = glm::vec4(0.75f, 0.065f, 0.018f, 40.0f);
-		data.fadeParams = glm::vec4(32.0f, 45.0f, 1.0f, 0.25f);
+		manager->SetScreenSpaceShadowExtent(m_RenderWidth, m_RenderHeight);
+		const ScreenSpaceShadowParamsGPU& data = manager->m_ScreenSpaceShadowParams;
 
 		manager->m_ScreenSpaceShadowParamsCBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
@@ -750,6 +772,39 @@ namespace VansGraphics
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_ScreenSpaceShadow(
 			manager->m_ScreenSpaceShadowSetLayout,
 			manager->m_ScreenSpaceShadowDescriptorSets);
+	}
+
+	void VansVKDevice::PreparePunctualShadowDebugRenderData()
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager == nullptr)
+			return;
+
+		// The diagnostic image is intentionally smaller than the 4096² runtime
+		// Atlas. It is refreshed only on request/Atlas updates and is never used by
+		// lighting, so debug visualization cannot expand the production footprint.
+		constexpr int kPreviewResolution = 512;
+		VansTexture* preview = new VansTexture();
+		preview->InitTextureWithoutData(
+			m_VansVKCommandBuffer,
+			kPreviewResolution,
+			kPreviewResolution,
+			1,
+			4,
+			false,
+			false,
+			true,
+			LOW_PRES_8,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		manager->RegisterRuntimeRenderTexture(
+			VansMaterialManager::RT_PUNCTUAL_SHADOW_DEBUG_PREVIEW,
+			preview);
+
+		manager->m_PunctualShadowDebugShader =
+			VansGraphics::VansShaderManager::Get().FindComputeShader("PunctualShadowDebug");
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_PunctualShadowDebug(
+			manager->m_PunctualShadowDebugSetLayout,
+			manager->m_PunctualShadowDebugDescriptorSets);
 	}
 
 	void VansVKDevice::PrepareSSRRenderData()
@@ -966,6 +1021,7 @@ namespace VansGraphics
 		PrepareBilaterFilterData();
 		PrepareHZBRenderData();
 		PrepareScreenSpaceShadowRenderData();
+		PreparePunctualShadowDebugRenderData();
 		PrepareSSRRenderData();
 		PrepareVolumetricData();
 		PrepareCloudRenderData();
@@ -1165,8 +1221,9 @@ namespace VansGraphics
 		manager->m_TileLightGridX = gridX;
 		manager->m_TileLightGridY = gridY;
 
-		// --- TileLight Header SSBO: 1 × TileLightHeader per tile (8 × uint32 = 32 bytes) ---
-		const uint32_t kHeaderStride = 8 * sizeof(uint32_t); // { pointOffset, pointCount, spotOffset, spotCount, rectOffset, rectCount, pad0, pad1 }
+		// Offsets/counts plus Point Top-2, Spot Top-1 and Rect Top-1
+		// atlasless screen-space fallback selections.
+		const uint32_t kHeaderStride = 10 * sizeof(uint32_t);
 		manager->m_TileLightHeaderBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
 			static_cast<uint32_t>(totalTiles * kHeaderStride),

@@ -22,7 +22,7 @@ namespace VansGraphics
 			const Skeleton&               skeleton,
 			const IKChainDefinition&      chain,
 			const IKTarget&               target,
-			float                         deltaTime) override;
+			const IKSolveContext&         context) override;
 
 	private:
 		// 单次 CCD 扫描（末端 → 根，不含 root 的 effector 自身）
@@ -37,6 +37,7 @@ namespace VansGraphics
 		// 应用极向量约束（仅 chain.poleWeight > 0 时调用）
 		void ApplyPoleVector(
 			const IKChainDefinition&      chain,
+			const glm::vec3&              polePointModel,
 			std::vector<glm::mat4>&       localTransforms,
 			std::vector<glm::mat4>&       globalTransforms,
 			const Skeleton&               skeleton);

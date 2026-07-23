@@ -109,7 +109,7 @@ namespace VansGraphics
         return aspect;
     }
 
-    bool VansVKImage::CreateVulkanImage(VkDevice& logical_device, VkExtent3D size, VkFormat format, uint32_t mip_num, uint32_t layer_num, VkImageType type, VkImageUsageFlags usage, VkSampleCountFlagBits samples, bool isCube, bool need_raw_Data, bool combined_sampler, VkSamplerAddressMode addressMode)
+    bool VansVKImage::CreateVulkanImage(VkDevice& logical_device, VkExtent3D size, VkFormat format, uint32_t mip_num, uint32_t layer_num, VkImageType type, VkImageUsageFlags usage, VkSampleCountFlagBits samples, bool isCube, bool need_raw_Data, bool combined_sampler, VkSamplerAddressMode addressMode, bool comparisonSampler, VkCompareOp comparisonOp)
     {
         m_ImageDimention = size;
         //VK_IMAGE_TILING_OPTIMAL : 贴图在内存里的排布往往不是线性的，需要适配硬件快速采样，一般linear的tiling用于直接从COU上初始化或读取
@@ -280,8 +280,8 @@ namespace VansGraphics
                 0.0f,
                 VK_FALSE,
                 0.0f,
-                VK_FALSE,
-                VK_COMPARE_OP_NEVER,
+                comparisonSampler ? VK_TRUE : VK_FALSE,
+				comparisonSampler ? comparisonOp : VK_COMPARE_OP_NEVER,
                 0.0f,
                 mip_num - 1,
                 VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK,

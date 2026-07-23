@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <unordered_map>
 #include <memory>
+#include <thread>
 #include <pybind11/embed.h>
 #include "../PhysicsCore/VansPhysicsEvents.h"
 #include "../PhysicsCore/VansRagdollSystem.h"
@@ -23,6 +24,9 @@
 #include "../ParticleCore/VansParticleAsset.h"
 #include "../ParticleCore/VansParticleRuntime.h"
 namespace py = pybind11;
+
+class VansScriptObject;
+class VanPyScriptComponent;
 
 // Forward declarations for Component sub-classes
 namespace VansGraphics { class VansRenderNode; class VansScene; class VansAnimationNode; class VansLightManager; class VansCamera; class VansVideoTexture; class VansVideoManager; class VansMaterialManager; class VansParticleRenderNode; }
@@ -37,14 +41,27 @@ private:
 	// Track last-write-time for each imported .py file (keyed by script path)
 	struct PyModuleInfo {
 		py::module   module;
+		std::string  scriptPath;
 		std::string  moduleName;   // Python module name registered in sys.modules
 		std::filesystem::file_time_type lastWriteTime;
 		std::filesystem::path           filePath;     // absolute file path
+		std::unordered_map<std::string, py::object> classes;
+		bool loadFailed = false;
 	};
-	std::unordered_map<std::string, PyModuleInfo> m_TrackedPyModules;  // key = script path
+	std::unordered_map<std::string, PyModuleInfo> m_TrackedPyModules;  // key = canonical absolute path
 
-	// Counter for unique temp .pyd file names during copy-based reload
-	int m_PydReloadCounter = 0;
+	struct ScheduledScript {
+		VansScriptObject* owner = nullptr;
+		VanPyScriptComponent* component = nullptr;
+		bool cameraScript = false;
+	};
+	std::vector<ScheduledScript> m_ScheduledScripts;
+	std::unordered_map<uint32_t, std::vector<VanPyScriptComponent*>> m_EventSubscribers;
+
+	std::unique_ptr<py::scoped_interpreter> m_Interpreter;
+	std::thread::id m_PythonThreadId;
+	std::vector<std::string> m_ProjectPythonPaths;
+	std::string m_ActiveProjectRoot;
 
 	// Accumulator so we don't stat the filesystem every single frame
 	float m_FileCheckAccumulator = 0.0f;
@@ -54,9 +71,11 @@ private:
 	void CheckAndReloadPyScripts();
 	void VansScriptPreUpdate();
 	void UpdateScriptComponents(bool cameraScriptsOnly, bool skipCameraScripts);
-
-	// Called after a .py module is hot-reloaded to re-instantiate script components
-	void OnPyModuleReloaded(const std::string& scriptPath);
+	bool ReloadPyModule(PyModuleInfo& moduleInfo);
+	void RebuildScriptSchedule();
+	void AssertPythonThread() const;
+	static std::string CanonicalScriptKey(const std::filesystem::path& path);
+	static std::string MakeScriptModuleName(const std::string& canonicalPath);
 
 	// ── 物理事件调度 ─────────────────────────────────────────────────
 	void DispatchPhysicsEvents();
@@ -70,10 +89,17 @@ private:
 	VansGraphics::VansScene* m_Scene = nullptr;
 
 public:
+	VansScriptContext() = default;
+	~VansScriptContext();
+	VansScriptContext(const VansScriptContext&) = delete;
+	VansScriptContext& operator=(const VansScriptContext&) = delete;
 
-	// Register a Python module for hot-reload file-watching.
-	// Called from VanPyScriptComponent::Instantiate() and internally.
-	void TrackPyModule(const std::string& scriptPath, const std::string& moduleName, py::module mod, const std::filesystem::path& absPath);
+	bool ResolveScriptClass(const std::string& scriptPath,
+		const std::string& className,
+		const std::filesystem::path& absPath,
+		std::string& moduleName,
+		py::object& scriptClass);
+	void ConfigureProjectPythonPaths(const std::string& projectRoot);
 
 	void VansScriptSetup();
 
@@ -82,7 +108,9 @@ public:
 	void VansScriptUpdateCameraScripts();
 
 	// Set the active scene so the update loop can iterate objects
-	void SetScene(VansGraphics::VansScene* scene) { m_Scene = scene; }
+	void SetScene(VansGraphics::VansScene* scene);
+	void RegisterScriptComponent(VansScriptObject* owner, VanPyScriptComponent* component);
+	void UnregisterScriptComponent(VanPyScriptComponent* component);
 
 	// Read the active scene pointer (used by bridge lambdas)
 	VansGraphics::VansScene* GetScene() const { return m_Scene; }
@@ -90,16 +118,18 @@ public:
 	// ── 场景切换时清空已跟踪的 Python 模块 ─────────────────────────
 	// 释放 py::module 引用，清空 m_TrackedPyModules，防止跨场景累积。
 	void ClearTrackedModules();
+	void ShutdownPython();
 
 	// Explicit reload called from editor UI
 	void ReloadAllPyScripts();
 
-	// Reload the .pyd C++ extension module (copy-based hot-reload on Windows)
+	// Native extension modules cannot be unloaded safely from the embedded interpreter.
+	// This entry point remains for the editor action and reports that a restart is required.
 	void ReloadPydModule(const std::string& moduleName = "vanscomponent");
 
 	// ── 项目 Python 虚拟环境管理 ─────────────────────────────────────
-	// 为指定项目目录创建/更新 .venv 并安装 requirements.txt 中的依赖。
-	// 在解释器启动后调用（VansScriptSetup 内部或项目打开后由编辑器调用）。
+	// 将项目 requirements.txt 同步到项目私有的 .vans/python/site-packages。
+	// 仅由显式编辑器操作调用，运行时启动路径不会自动执行 pip。
 	void SetupProjectVenv(const std::string& projectRoot);
 
 	// Access from editor windows
@@ -533,10 +563,21 @@ public:
 
 // ── Python Script Component ─────────────────────────────────────────────────
 // Holds a reference to a Python script instance bound to this object.
+enum class VansPythonScriptState : uint8_t
+{
+	Unloaded,
+	Loading,
+	Active,
+	Disabled,
+	Faulted,
+	Destroyed
+};
+
 class VanPyScriptComponent : public VansScriptComponent
 {
 public:
 	VanPyScriptComponent() { m_Enabled = false; }  // Python 脚本默认 disabled
+	~VanPyScriptComponent() override;
 
 	// Path to the .py file (relative to project root), e.g. "Scripts/my_rotator.py"
 	std::string m_ScriptPath;
@@ -545,23 +586,33 @@ public:
 	// Derived module name (computed from m_ScriptPath during Instantiate)
 	std::string m_ScriptModuleName;
 
-	// The live Python instance (py::object wrapping a vanspyscript subclass).
-	// When no script is assigned this is py::none().
-	py::object  m_PyInstance = py::none();
+	// Python objects use empty handles until the interpreter is running. This
+	// avoids creating py::none() during static engine-object construction.
+	py::object m_PyInstance;
+	py::object m_OnEnableCallback;
+	py::object m_OnDisableCallback;
+	py::object m_UpdateCallback;
+	py::object m_CollisionEnterCallback;
+	py::object m_CollisionExitCallback;
+	py::object m_TriggerEnterCallback;
+	py::object m_TriggerExitCallback;
 
 	// Back-pointer to the owning VansScriptObject (non-owning, set on AddComponent).
 	VansScriptObject* m_OwnerObject = nullptr;
 
-	// Runtime state
-	// [m_IsEnabled removed — unified with VansScriptComponent::m_Enabled]
-	bool m_IsValid    = false;   // true after successful instantiation
+	// Runtime state. m_IsValid is kept as the bridge-facing validity flag while
+	// the enum is the authoritative lifecycle state.
+	bool m_IsValid = false;
+	bool m_EnableRequested = false;
+	VansPythonScriptState m_State = VansPythonScriptState::Unloaded;
 
 	// ── Lifecycle helpers (called from VansScriptContext) ─────────────
-	void Instantiate();   // import module, create class instance, bind owner
-	void Enable()  { SetEnabled(true);  }   // → OnEnable  → Python on_enable()
+	bool Instantiate();   // resolve cached module/class, create instance, bind owner
+	void Enable();        // → OnEnable  → cached Python on_enable()
 	void CallUpdate();    // call Python update()
-	void Disable() { SetEnabled(false); }   // → OnDisable → Python on_disable()
+	void Disable();       // → OnDisable → cached Python on_disable()
 	void Teardown();      // release py::object, reset state
+	VansPythonScriptState GetState() const { return m_State; }
 
 protected:
 	void OnEnable()  override;  // calls Python on_enable()
@@ -573,4 +624,12 @@ protected:
 	void CallOnCollisionExit(const PhysicsEventInfo& info);
 	void CallOnTriggerEnter(const PhysicsEventInfo& info);
 	void CallOnTriggerExit(const PhysicsEventInfo& info);
+
+private:
+	friend class VansScriptContext;
+	bool BuildPythonInstance(const py::object& scriptClass, py::object& instance, std::string& error) const;
+	void CommitPythonInstance(py::object instance);
+	void CacheCallbacks();
+	void ResetPythonObjects();
+	void EnterFaultedState(const char* phase, const std::string& error);
 };

@@ -96,7 +96,6 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& mesh
 	{
 		aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
 		int baseVertex = vertexCount;
-		baseVertex = 0;
 		for (uint32_t i = 0; i < mesh->mNumVertices; i++)
 		{
 			aiVector3D vertex = mesh->mVertices[i];

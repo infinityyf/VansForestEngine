@@ -9,6 +9,7 @@ namespace VansGraphics
 	enum class VansRenderPassCondition
 	{
 		Always,
+		HasPunctualShadowJobs,
 		HasWater,
 		HasDecal,
 		HasForwardOpaqueAfterDeferred
@@ -29,6 +30,7 @@ namespace VansGraphics
 		constexpr const char* Decal = "Decal";
 		constexpr const char* TileLightBuild = "Tile Light Build";
 		constexpr const char* HZB = "HZB";
+		constexpr const char* PunctualShadowDebug = "Punctual Shadow Debug Preview";
 		constexpr const char* ScreenSpaceShadow = "Screen Space Shadow";
 		constexpr const char* GIData = "GI Data";
 		constexpr const char* SSR = "SSR";

@@ -20,7 +20,7 @@ namespace VansGraphics
 			const Skeleton&               skeleton,
 			const IKChainDefinition&      chain,
 			const IKTarget&               target,
-			float                         deltaTime) override;
+			const IKSolveContext&         context) override;
 
 		// 局部空间的"前向"轴，用于决定骨骼朝向哪条轴瞄准目标。
 		// 默认 -Z（OpenGL 习惯）。
@@ -31,6 +31,12 @@ namespace VansGraphics
 		// 改为用每根骨骼的绑定姿态把这个方向映射回该骨骼的 local 空间。
 		// 这样无论各 spine 骨骼的绑定朝向如何，求解器都能稳定瞄准。
 		glm::vec3 m_WorldForward = glm::vec3(0.0f);
+
+		// Model-space up reference used to remove the unresolved roll degree of freedom.
+		// Set to zero to disable roll stabilization. It is converted through each bone's
+		// bind rotation in the same way as m_WorldForward.
+		glm::vec3 m_ModelUp = glm::vec3(0.0f, 1.0f, 0.0f);
+		float m_UpWeight = 1.0f;
 
 		// 单骨骼最大旋转角度（度）。<=0 表示无限制。
 		float     m_MaxAnglePerBoneDeg = 80.0f;

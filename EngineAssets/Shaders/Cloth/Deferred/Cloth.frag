@@ -4,6 +4,7 @@ layout(early_fragment_tests) in;
 #include "../../Common/CameraData.glsl"
 #include "../../Common/Common.glsl"
 #include "../../BRDF/BRDFData.glsl"
+#include "../../BRDF/ClothData.glsl"
 
 layout( location = 0 ) in vec2 frag_uv;
 layout( location = 1 ) in vec3 normal_ws;
@@ -25,9 +26,9 @@ layout( push_constant ) uniform MaterialPushConsts
 } materialConst;
 
 // G-Buffer MRT outputs
-layout (location = 0) out vec4 outNormal;   // .xyz = world normal,  .w = sheenRoughness
-layout (location = 1) out vec4 outGBuffer0; // .rgb = albedo,        .w = sheenRoughness (mirror)
-layout (location = 2) out vec4 outGBuffer1; // .x = sheenStrength, .y = ao, .z = MATERIAL_ID_CLOTH, .w = translucency
+layout (location = 0) out vec4 outNormal;   // .xyz = world normal, .w = tangent angle / PI
+layout (location = 1) out vec4 outGBuffer0; // .rgb = albedo, .w = effective roughness
+layout (location = 2) out vec4 outGBuffer1; // .x = fallback sheen weight, .y = ao, .z = material ID, .w = materialIndex
 layout (location = 3) out vec4 outGBuffer2; // .xyz = world pos,     .w = linear depth
 
 void main()
@@ -39,18 +40,27 @@ void main()
     float sheenRoughness = clamp(mat.roughness * texture(clothRoughness, frag_uv, MaterialMipBias).r, 0.045, 1.0);
     float ao             = clamp(mat.ao * texture(clothAO, frag_uv, MaterialMipBias).r, 0.0, 1.0);
     float sheenStrength  = clamp(mat.padding, 0.0, 1.0);
-    float translucency   = clamp(mat.metallic, 0.0, 1.0);
 
-    // Normal mapping
-    vec3 normal_sample = textureLod(clothNormal, frag_uv, 0.0).rgb;
+    // Two-sided, orthonormal TBN. Keep the original tangent direction so silk
+    // anisotropy remains stable when the geometric normal is flipped.
+    vec3 geometricNormal = normalize(normal_ws);
+    if (!gl_FrontFacing)
+        geometricNormal = -geometricNormal;
+    vec3 tangent = normalize(tangent_ws - geometricNormal * dot(geometricNormal, tangent_ws));
+    float handedness = dot(cross(normalize(normal_ws), normalize(tangent_ws)), normalize(bitangent_ws)) < 0.0
+        ? -1.0 : 1.0;
+    vec3 bitangent = normalize(cross(geometricNormal, tangent)) * handedness;
+
+    vec3 normal_sample = texture(clothNormal, frag_uv, MaterialMipBias).rgb;
     normal_sample = normal_sample * 2.0 - 1.0;
-    mat3 TBN           = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
+    mat3 TBN           = mat3(tangent, bitangent, geometricNormal);
     vec3 normal        = normalize(TBN * normal_sample);
+    float tangentAngle = EncodeClothTangentAngle(normal, tangent);
 
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
 
-    outNormal   = vec4(normal, sheenRoughness);
+    outNormal   = vec4(normal, tangentAngle);
     outGBuffer0 = vec4(albedo, sheenRoughness);
-    outGBuffer1 = vec4(sheenStrength, ao, float(MATERIAL_ID_CLOTH), translucency);
+    outGBuffer1 = vec4(sheenStrength, ao, float(MATERIAL_ID_CLOTH), float(mi));
     outGBuffer2 = vec4(position_world, -linearDepth);
 }

@@ -33,16 +33,21 @@ namespace VansGraphics
 		static bool ProcessAnimatedMesh(const aiScene* scene,
 		                                const std::string& fbxFilePath,
 		                                uint32_t totalVertexCount,
-		                                VansAnimationImportResult& outResult);
+		                                VansAnimationImportResult& outResult,
+		                                bool rebuildIdentityBoneOffsetsFromHierarchy = false,
+		                                bool remapWeaponAttachmentBonesToHands = false);
 
 		// Extract skeleton from the aiScene (bone hierarchy, offset matrices, parent-child).
-		static void ExtractSkeleton(const aiScene* scene, Skeleton& outSkeleton);
+		static void ExtractSkeleton(const aiScene* scene, Skeleton& outSkeleton,
+		                            bool rebuildIdentityBoneOffsetsFromHierarchy = false,
+		                            bool remapWeaponAttachmentBonesToHands = false);
 
 		// Extract per-vertex bone data (IDs + weights) from all meshes in the scene.
 		static void ExtractVertexBoneData(const aiScene* scene,
 		                                  const Skeleton& skeleton,
 		                                  uint32_t totalVertexCount,
-		                                  std::vector<VertexBoneData>& outData);
+		                                  std::vector<VertexBoneData>& outData,
+		                                  bool remapWeaponAttachmentBonesToHands = false);
 
 		// Extract a single animation clip from an aiAnimation.
 		static void ExtractClipFromAssimp(const aiAnimation* anim,

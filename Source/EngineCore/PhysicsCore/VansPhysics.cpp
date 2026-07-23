@@ -133,8 +133,7 @@ namespace VansEngine
 			return false;
 		}
 
-#ifdef _DEBUG
-		// Create PVD (PhysX Visual Debugger) - Only in Debug mode
+		// Create PVD (PhysX Visual Debugger)
 		m_Pvd = PxCreatePvd(*m_Foundation);
 		if (m_Pvd)
 		{
@@ -163,10 +162,6 @@ namespace VansEngine
 		{
 				VANS_LOG_ERROR("[PhysX PVD] Failed to create PVD instance");
 		}
-#else
-		m_Pvd = nullptr;
-		VANS_LOG("[PhysX] PVD disabled in Release mode");
-#endif
 
 		// Create Physics
 		m_Physics = PxCreatePhysics(PX_PHYSICS_VERSION, *m_Foundation, PxTolerancesScale(), true, m_Pvd);

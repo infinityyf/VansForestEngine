@@ -1416,6 +1416,52 @@ namespace VansGraphics
 		computeCmd.DispatchCompute(*manager->m_ScreenSpaceShadowShader, (dispatchW + 7) / 8, (dispatchH + 7) / 8, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_ScreenSpaceShadowDescriptorSets[0] });
 	}
 
+	void VansVKDevice::UpdatePunctualShadowDebugPreview(
+		VansRenderPassManager* renderPassManager,
+		VansVKCommandBuffer& computeCmd)
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		VansLightManager* lightManager = m_Scene->GetLightManager();
+		if (manager == nullptr || lightManager == nullptr || renderPassManager == nullptr)
+			return;
+
+		if (!lightManager->GetPunctualShadowManager().ConsumeDebugPreviewRefreshRequest())
+			return;
+
+		VansTexture* preview = manager->GetRuntimeRenderTexture(
+			VansMaterialManager::RT_PUNCTUAL_SHADOW_DEBUG_PREVIEW);
+		if (preview == nullptr || manager->m_PunctualShadowDebugShader == nullptr ||
+			manager->m_PunctualShadowDebugDescriptorSets.empty())
+			return;
+
+		auto& atlas = renderPassManager->GetPunctualShadowMap();
+		auto* desc = VansVKDescriptorManager::GetInstance();
+		desc->BeginDescriptorUpdate();
+		// Use a non-comparison sampler. Comparison samplers are reserved for the
+		// production shadow test and cannot expose raw D32 values to this resolve.
+		desc->WriteImageDescriptor(
+			manager->m_PunctualShadowDebugDescriptorSets[0],
+			PUNCTUAL_SHADOW_DEBUG_BINDING_ATLAS,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ renderPassManager->GetCascadeShadowSampler(), atlas.GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
+		desc->WriteImageDescriptor(
+			manager->m_PunctualShadowDebugDescriptorSets[0],
+			PUNCTUAL_SHADOW_DEBUG_BINDING_RESULT,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ preview->GetImage().GetSampler(), preview->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		desc->CommitDescriptorUpdates();
+
+		computeCmd.EnsureComputeShader(
+			*manager->m_PunctualShadowDebugShader,
+			{ manager->m_PunctualShadowDebugSetLayout });
+		computeCmd.DispatchCompute(
+			*manager->m_PunctualShadowDebugShader,
+			(static_cast<uint32_t>(preview->GetWidth()) + 7u) / 8u,
+			(static_cast<uint32_t>(preview->GetHeight()) + 7u) / 8u,
+			1,
+			{ manager->m_PunctualShadowDebugDescriptorSets[0] });
+	}
+
 	void VansVKDevice::UpdateSSR(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
 		UpdateSSRDescriptorSets(renderPassManager);

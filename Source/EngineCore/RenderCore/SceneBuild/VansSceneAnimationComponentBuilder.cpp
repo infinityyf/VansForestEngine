@@ -219,18 +219,35 @@ VansAnimationNode* VansSceneAnimationComponentBuilder::LoadAnimationComponent(
         MotionMatchingSettings mmSettings;
         mmSettings.enabled = mmJson.value("enabled", false);
         mmSettings.autoBuild = mmJson.value("auto_build", true);
+		mmSettings.externallyDriven = mmJson.value("externally_driven", false);
         mmSettings.sampleRate = mmJson.value("sample_rate", 30.0f);
         mmSettings.searchThrottle = mmJson.value("search_throttle", 0.15f);
-        mmSettings.blendDuration = mmJson.value("blend_duration", 0.18f);
+		const float legacyBlendDuration = mmJson.value("blend_duration", 0.18f);
         mmSettings.minSwitchCostImprovement = mmJson.value("min_switch_cost_improvement", 0.02f);
+		mmSettings.minSwitchCostRatio = mmJson.value("min_switch_cost_ratio", mmSettings.minSwitchCostRatio);
         mmSettings.minSwitchInterval = mmJson.value("min_switch_interval", 0.25f);
         mmSettings.blendInterruptFraction = mmJson.value("blend_interrupt_fraction", 0.75f);
         mmSettings.continuationBias = mmJson.value("continuation_bias", 0.10f);
         mmSettings.loopBias = mmJson.value("loop_bias", 0.04f);
         mmSettings.transitionBias = mmJson.value("transition_bias", 0.08f);
         mmSettings.desiredSpeedScale = mmJson.value("desired_speed_scale", 650.0f);
+        mmSettings.enableSpeedMatching = mmJson.value("speed_matching_enabled", true);
+        mmSettings.minPlaybackRate = mmJson.value("min_playback_rate", 0.75f);
+        mmSettings.maxPlaybackRate = mmJson.value("max_playback_rate", 1.25f);
+        mmSettings.playbackRateSmoothing = mmJson.value("playback_rate_smoothing", 12.0f);
+		mmSettings.trajectoryResponsiveness = mmJson.value("trajectory_responsiveness", mmSettings.trajectoryResponsiveness);
+		mmSettings.inertializationHalfLife = mmJson.value(
+			"inertialization_half_life", (std::max)(0.01f, legacyBlendDuration * 0.55f));
+		mmSettings.inertializationMaxDuration = mmJson.value("inertialization_max_duration", mmSettings.inertializationMaxDuration);
         mmSettings.trajectoryWeight = mmJson.value("trajectory_weight", 1.0f);
         mmSettings.poseWeight = mmJson.value("pose_weight", 0.7f);
+		mmSettings.contactWeight = mmJson.value("contact_weight", mmSettings.contactWeight);
+		mmSettings.contactHeightFullFraction = mmJson.value(
+			"contact_height_full_fraction", mmSettings.contactHeightFullFraction);
+		mmSettings.contactHeightFadeFraction = mmJson.value(
+			"contact_height_fade_fraction", mmSettings.contactHeightFadeFraction);
+		mmSettings.contactVelocityConfidenceFloor = mmJson.value(
+			"contact_velocity_confidence_floor", mmSettings.contactVelocityConfidenceFloor);
         mmSettings.topCandidateCount = mmJson.value("top_candidates", 8);
         mmSettings.allowLegacyBoneDetection = mmJson.value("allow_legacy_bone_detection", true);
 
@@ -439,6 +456,9 @@ VansAnimationNode* VansSceneAnimationComponentBuilder::LoadAnimationComponent(
                  << "' enabled=" << mmSettings.enabled
                  << " sampleRate=" << mmSettings.sampleRate
                  << " searchThrottle=" << mmSettings.searchThrottle
+                 << " speedScale=" << mmSettings.desiredSpeedScale
+                 << " speedMatching=" << mmSettings.enableSpeedMatching
+                 << " playbackRate=[" << mmSettings.minPlaybackRate << "," << mmSettings.maxPlaybackRate << "]"
                  << " searchGroups=" << mmSettings.searchGroups.size());
     }
 
@@ -447,49 +467,27 @@ VansAnimationNode* VansSceneAnimationComponentBuilder::LoadAnimationComponent(
         const auto& fpJson = animJson["foot_placement"];
         FootPlacementSettings fpSettings;
         fpSettings.enabled = fpJson.value("enabled", false);
-        fpSettings.probeHeightAbove = fpJson.value("probe_height_above", fpSettings.probeHeightAbove);
-        fpSettings.probeDistanceBelow = fpJson.value("probe_distance_below", fpSettings.probeDistanceBelow);
-        fpSettings.probeFootRadius = fpJson.value("probe_foot_radius", fpSettings.probeFootRadius);
-        fpSettings.probeFootForwardExtent = fpJson.value("probe_foot_forward_extent", fpSettings.probeFootForwardExtent);
-        fpSettings.probeFootBackwardExtent = fpJson.value("probe_foot_backward_extent", fpSettings.probeFootBackwardExtent);
-        fpSettings.probeFootSideExtent = fpJson.value("probe_foot_side_extent", fpSettings.probeFootSideExtent);
-        fpSettings.footGroundOffset = fpJson.value("foot_ground_offset", fpSettings.footGroundOffset);
-        fpSettings.maxSurfaceAngleDeg = fpJson.value("max_surface_angle_deg", fpSettings.maxSurfaceAngleDeg);
-        fpSettings.maxVerticalCorrectionUp = fpJson.value("max_vertical_correction_up", fpSettings.maxVerticalCorrectionUp);
-        fpSettings.maxVerticalCorrectionDown = fpJson.value("max_vertical_correction_down", fpSettings.maxVerticalCorrectionDown);
-        fpSettings.maxHorizontalFootError = fpJson.value("max_horizontal_foot_error", fpSettings.maxHorizontalFootError);
-        fpSettings.minContactQuality = fpJson.value("min_contact_quality", fpSettings.minContactQuality);
-        fpSettings.pelvisMaxDown = fpJson.value("pelvis_max_down", fpSettings.pelvisMaxDown);
-        fpSettings.pelvisMaxUp = fpJson.value("pelvis_max_up", fpSettings.pelvisMaxUp);
-        fpSettings.pelvisInterpSpeed = fpJson.value("pelvis_interp_speed", fpSettings.pelvisInterpSpeed);
-        fpSettings.ikWeight = fpJson.value("ik_weight", fpSettings.ikWeight);
-        fpSettings.ikWeightSpeed = fpJson.value("ik_weight_speed", fpSettings.ikWeightSpeed);
-        fpSettings.crouchWeightScale = fpJson.value("crouch_weight_scale", fpSettings.crouchWeightScale);
-        fpSettings.stanceChangeSuppressionTime = fpJson.value("stance_change_suppression_time", fpSettings.stanceChangeSuppressionTime);
-        fpSettings.footLockInterpSpeed = fpJson.value("foot_lock_interp_speed", fpSettings.footLockInterpSpeed);
-        fpSettings.normalInterpSpeed = fpJson.value("normal_interp_speed", fpSettings.normalInterpSpeed);
-        fpSettings.groundHeightInterpSpeed = fpJson.value("ground_height_interp_speed", fpSettings.groundHeightInterpSpeed);
-        fpSettings.footPlantFullHeight = fpJson.value("foot_plant_full_height", fpSettings.footPlantFullHeight);
-        fpSettings.footPlantFadeHeight = fpJson.value("foot_plant_fade_height", fpSettings.footPlantFadeHeight);
-        fpSettings.poleInterpSpeed = fpJson.value("pole_interp_speed", fpSettings.poleInterpSpeed);
-        if (animJson.contains("motion_matching") &&
-            animJson["motion_matching"].is_object() &&
-            animJson["motion_matching"].contains("rig") &&
-            animJson["motion_matching"]["rig"].is_object())
-        {
-            const auto& rigJson = animJson["motion_matching"]["rig"];
-            if (rigJson.contains("forward_axis") &&
-                rigJson["forward_axis"].is_array() &&
-                rigJson["forward_axis"].size() >= 3)
-            {
-                fpSettings.kneePoleModelDir = glm::vec3(
-                    rigJson["forward_axis"][0].get<float>(),
-                    rigJson["forward_axis"][1].get<float>(),
-                    rigJson["forward_axis"][2].get<float>());
-                fpSettings.kneePoleModelWeight = 0.85f;
-            }
-        }
-        fpSettings.kneePoleModelWeight = fpJson.value("knee_pole_model_weight", fpSettings.kneePoleModelWeight);
+		fpSettings.probeOriginHeight = fpJson.value("probe_origin_height", fpSettings.probeOriginHeight);
+		fpSettings.probeLength = fpJson.value("probe_length", fpSettings.probeLength);
+		fpSettings.footHalfLength = fpJson.value("foot_half_length", fpSettings.footHalfLength);
+		fpSettings.footHalfWidth = fpJson.value("foot_half_width", fpSettings.footHalfWidth);
+		fpSettings.ankleHeight = fpJson.value("ankle_height", fpSettings.ankleHeight);
+		fpSettings.fullContactHeight = fpJson.value("full_contact_height", fpSettings.fullContactHeight);
+		fpSettings.contactFadeHeight = fpJson.value("contact_fade_height", fpSettings.contactFadeHeight);
+		fpSettings.maxStepUp = fpJson.value("max_step_up", fpSettings.maxStepUp);
+		fpSettings.maxStepDown = fpJson.value("max_step_down", fpSettings.maxStepDown);
+		fpSettings.maxSlopeDeg = fpJson.value("max_slope_deg", fpSettings.maxSlopeDeg);
+		fpSettings.pelvisMaxDrop = fpJson.value("pelvis_max_drop", fpSettings.pelvisMaxDrop);
+		fpSettings.pelvisSmoothTime = fpJson.value("pelvis_smooth_time", fpSettings.pelvisSmoothTime);
+		fpSettings.offsetSmoothTime = fpJson.value("offset_smooth_time", fpSettings.offsetSmoothTime);
+		fpSettings.normalSmoothTime = fpJson.value("normal_smooth_time", fpSettings.normalSmoothTime);
+		fpSettings.weightSmoothTime = fpJson.value("weight_smooth_time", fpSettings.weightSmoothTime);
+		fpSettings.globalWeightSmoothTime = fpJson.value("global_weight_smooth_time", fpSettings.globalWeightSmoothTime);
+		fpSettings.ikWeight = fpJson.value("ik_weight", fpSettings.ikWeight);
+		fpSettings.rotationWeight = fpJson.value("rotation_weight", fpSettings.rotationWeight);
+		fpSettings.maxLegExtensionRatio = fpJson.value("max_leg_extension_ratio", fpSettings.maxLegExtensionRatio);
+		fpSettings.poleSmoothTime = fpJson.value("pole_smooth_time", fpSettings.poleSmoothTime);
+		fpSettings.kneePoleModelWeight = fpJson.value("knee_pole_model_weight", fpSettings.kneePoleModelWeight);
         if (fpJson.contains("knee_pole_model_dir") &&
             fpJson["knee_pole_model_dir"].is_array() &&
             fpJson["knee_pole_model_dir"].size() >= 3)
@@ -499,9 +497,7 @@ VansAnimationNode* VansSceneAnimationComponentBuilder::LoadAnimationComponent(
                 fpJson["knee_pole_model_dir"][1].get<float>(),
                 fpJson["knee_pole_model_dir"][2].get<float>());
         }
-        fpSettings.enableFootRotation = fpJson.value("enable_foot_rotation", fpSettings.enableFootRotation);
-        fpSettings.footRotationWeight = fpJson.value("foot_rotation_weight", fpSettings.footRotationWeight);
-        fpSettings.ankleHeightOffset = fpJson.value("ankle_height_offset", fpSettings.ankleHeightOffset);
+		fpSettings.airborneParameter = fpJson.value("airborne_parameter", fpSettings.airborneParameter);
         fpSettings.debugVisualization = fpJson.value("debug_visualization", fpSettings.debugVisualization);
         fpSettings.collisionMask = fpJson.value("collision_mask", fpSettings.collisionMask);
 
@@ -521,7 +517,9 @@ VansAnimationNode* VansSceneAnimationComponentBuilder::LoadAnimationComponent(
         controller->SetFootPlacementEnabled(fpSettings.enabled);
         VANS_LOG("[LoadAnimComp] FootPlacement configured for '" << objectName
                  << "' enabled=" << fpSettings.enabled
-                 << " probe=(" << fpSettings.probeHeightAbove << "+" << fpSettings.probeDistanceBelow << ")");
+                 << " poseRelative=true"
+                 << " probeHeight=" << fpSettings.probeOriginHeight
+                 << " probeLength=" << fpSettings.probeLength);
     }
 
     VansAnimationNode* animNode = new VansAnimationNode(nodeName);

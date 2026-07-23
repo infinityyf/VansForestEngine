@@ -100,12 +100,6 @@ namespace VansGraphics
 
 {
 
-	class IShaderHotReloadService;
-
-
-
-
-
 	enum class VansSceneState
 
 	{
@@ -146,11 +140,7 @@ namespace VansGraphics
 
 	{
 
-		uint32_t gridSize = 80;
-
 		glm::uvec3 gridDimensions = glm::uvec3(80u);
-
-		float probeSpacing = 0.5f;
 
 		glm::vec3 probeSpacingAxes = glm::vec3(0.5f);
 
@@ -244,7 +234,17 @@ namespace VansGraphics
 
 
 
-		VansLightManager m_LightManager;
+	VansLightManager m_LightManager;
+
+	struct PunctualShadowCasterRecord
+	{
+		VansShadowAABB bounds;
+		bool dynamic = false;
+		bool hasBounds = false;
+	};
+	std::unordered_map<uint64_t, PunctualShadowCasterRecord> m_PunctualShadowCasters;
+	void UpdatePunctualShadowCasterCache();
+	void BuildPunctualShadowCasterLists();
 
 
 
@@ -980,15 +980,7 @@ namespace VansGraphics
 
 
 
-		void DrawPointShadow(int lightIndex);
-
-
-
-		void DrawSpotShadow(int pointCount, int lightIndex);
-
-
-
-		void DrawRectShadow(int pointCount, int spotCount, int lightIndex);
+		void DrawPunctualShadowJob(const VansPunctualShadowRenderJob& job);
 
 
 
@@ -1104,6 +1096,11 @@ namespace VansGraphics
 
 
 		VansLightManager* GetLightManager() { return &m_LightManager; }
+		const VansLightManager* GetLightManager() const { return &m_LightManager; }
+		bool HasPunctualShadowJobs() const
+		{
+			return !m_LightManager.GetPunctualShadowManager().GetRenderJobs().empty();
+		}
 
 
 
@@ -1126,14 +1123,6 @@ namespace VansGraphics
 		VansEngine::VansAudioManager* GetAudioManager() { return &m_AudioManager; }
 
 		const VansEngine::VansAudioManager* GetAudioManager() const { return &m_AudioManager; }
-
-
-
-		void SetShaderHotReloadService(IShaderHotReloadService* service) { m_ShaderHotReloadService = service; }
-
-		IShaderHotReloadService* GetShaderHotReloadService() const { return m_ShaderHotReloadService; }
-
-
 
 
 
@@ -1280,8 +1269,6 @@ namespace VansGraphics
 		VansGISettings m_GISettings;
 		bool m_GIProbeResourcesDirty = false;
 		bool m_GIParametersDirty = false;
-
-		IShaderHotReloadService* m_ShaderHotReloadService = nullptr;
 
 	};
 

@@ -141,6 +141,13 @@ void VansGraphics::VansVKBuffer::SetBufferMemoryBarrier(VkPipelineStageFlags gen
 
 bool VansGraphics::VansVKBuffer::SetBufferData(const void* data, VkDeviceSize offset, VkDeviceSize size)
 {
+	if (!data || offset > m_BufferSize || size > m_BufferSize - offset)
+	{
+		VANS_LOG_ERROR("VansVKBuffer::SetBufferData rejected out-of-bounds write: offset="
+			<< offset << ", size=" << size << ", bufferSize=" << m_BufferSize);
+		return false;
+	}
+
 	// Fast path: persistent mapping was set up at creation time.
 	if (m_MappedPtr)
 	{
@@ -187,6 +194,12 @@ void VansGraphics::VansVKBuffer::UpdateMapped(const void* data, VkDeviceSize off
 {
 	if (!m_MappedPtr)
 		return;
+	if (!data || offset > m_BufferSize || size > m_BufferSize - offset)
+	{
+		VANS_LOG_ERROR("VansVKBuffer::UpdateMapped rejected out-of-bounds write: offset="
+			<< offset << ", size=" << size << ", bufferSize=" << m_BufferSize);
+		return;
+	}
 	std::memcpy(static_cast<char*>(m_MappedPtr) + offset, data, size);
 	VansVKMemoryAllocator::Get().FlushAllocation(m_VansVKBufferAllocation, offset, size);
 }

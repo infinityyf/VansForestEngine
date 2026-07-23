@@ -192,7 +192,7 @@ namespace VansGraphics
 		                                      VansGraphicsShader* passShader,
 		                                      const std::vector<VkDescriptorSet>& descSets,
 		                                      const std::vector<VkDescriptorSetLayout>& descSetLayouts,
-		                                      int lightIndex, int shadowIndex);
+		                                      int lightIndex, int shadowFaceIndex);
 
 		//void DrawWithMaterial(VansMaterial* material ,VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
@@ -353,7 +353,7 @@ namespace VansGraphics
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
 		void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
-		void DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowIndex);
+		void DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowFaceIndex);
 	};
 
 	// ── Water render node — flat grid plane at waterLevel, driven by VansWaterConfig ──

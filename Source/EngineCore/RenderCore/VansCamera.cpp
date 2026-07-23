@@ -4,7 +4,14 @@
 #include "../VansTimer.h"
 #include "../Util/VansLog.h"
 
+#include <algorithm>
 #include <iostream>
+
+namespace
+{
+    constexpr float kEditorCameraMoveSpeed = 12.0f;
+    constexpr float kEditorCameraMaxMoveDeltaTime = 1.0f / 30.0f;
+}
 
 VansGraphics::VansCamera::VansCamera(VansGraphicsDevice* device)
     : m_RenderDevice(device)
@@ -131,7 +138,35 @@ void VansGraphics::VansCamera::HandleKeyboardInput(int key, int scancode, int ac
 {
     if (!m_IsRightMouseDown) return;
 
-    const float speed = 200.0f * deltaTime;
+    float forwardAxis = 0.0f;
+    float rightAxis = 0.0f;
+    float upAxis = 0.0f;
+    switch (key)
+    {
+    case GLFW_KEY_W: forwardAxis =  1.0f; break;
+    case GLFW_KEY_S: forwardAxis = -1.0f; break;
+    case GLFW_KEY_A: rightAxis   = -1.0f; break;
+    case GLFW_KEY_D: rightAxis   =  1.0f; break;
+    case GLFW_KEY_Q: upAxis      = -1.0f; break;
+    case GLFW_KEY_E: upAxis      =  1.0f; break;
+    default: return;
+    }
+
+    HandleKeyboardMovement(forwardAxis, rightAxis, upAxis, deltaTime);
+}
+
+void VansGraphics::VansCamera::HandleKeyboardMovement(float forwardAxis, float rightAxis, float upAxis, float deltaTime)
+{
+    if (!m_IsRightMouseDown) return;
+
+    glm::vec3 localMove(rightAxis, upAxis, forwardAxis);
+    if (glm::dot(localMove, localMove) <= 0.0f)
+        return;
+
+    localMove = glm::normalize(localMove);
+
+    const float clampedDeltaTime = std::clamp(deltaTime, 0.0f, kEditorCameraMaxMoveDeltaTime);
+    const float speed = kEditorCameraMoveSpeed * clampedDeltaTime;
 
     // 从当前 pitch/yaw 计算 front/right/up（与 GetViewMatrix 保持一致）
     glm::vec3 front;
@@ -143,17 +178,7 @@ void VansGraphics::VansCamera::HandleKeyboardInput(int key, int scancode, int ac
     const glm::vec3 right = glm::normalize(glm::cross(front, glm::vec3(0.0f, 1.0f, 0.0f)));
     const glm::vec3 up    = glm::normalize(glm::cross(right, front));
 
-    glm::vec3 delta(0.0f);
-    switch (key)
-    {
-    case GLFW_KEY_W: delta =  front * speed; break;
-    case GLFW_KEY_S: delta = -front * speed; break;
-    case GLFW_KEY_A: delta = -right * speed; break;
-    case GLFW_KEY_D: delta =  right * speed; break;
-    case GLFW_KEY_Q: delta = -up    * speed; break;
-    case GLFW_KEY_E: delta =  up    * speed; break;
-    default: return;
-    }
+    const glm::vec3 delta = (front * localMove.z + right * localMove.x + up * localMove.y) * speed;
 
     if (m_TransformID != UINT32_MAX)
     {

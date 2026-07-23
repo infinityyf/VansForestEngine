@@ -1,148 +1,94 @@
 #include "VansFootPlacementSolver.h"
+#include "../IK/VansIKChainBuilder.h"
 #include "../IK/VansIKConstraint.h"
-#include "../IK/VansIKSolver.h"
+#include "../IK/VansTwoBoneIKSolver.h"
 
-#include <../../GLM/gtc/matrix_transform.hpp>
-#include <../../GLM/gtc/constants.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <../../GLM/gtx/quaternion.hpp>
 
 #include <algorithm>
 #include <cmath>
-#include <vector>
+#include <unordered_map>
 
 namespace VansGraphics
 {
 	namespace
 	{
 		constexpr float kEpsilon = 1e-5f;
+		const glm::vec3 kWorldUp(0.0f, 1.0f, 0.0f);
 
 		int FindBoneIndex(const Skeleton& skeleton, const std::string& name)
 		{
-			auto it = skeleton.boneNameToIndex.find(name);
+			const auto it = skeleton.boneNameToIndex.find(name);
 			return it != skeleton.boneNameToIndex.end() ? it->second : -1;
 		}
 
-		IKBoneLink MakeFootPlacementLink(int boneIndex, const std::string& boneName, bool isEffector)
-		{
-			IKBoneLink link;
-			link.boneIndex = boneIndex;
-			link.boneName = boneName;
-			link.constraint.type = JointConstraintType::None;
-			link.stiffnessWeight = 1.0f;
-			link.isEffector = isEffector;
-			return link;
-		}
-
-		IKChainDefinition BuildFootPlacementLegChain(const std::string& chainName,
-		                                             int hipIndex,
-		                                             const std::string& hipName,
-		                                             int kneeIndex,
-		                                             const std::string& kneeName,
-		                                             int footIndex,
-		                                             const std::string& footName,
-		                                             const FootPlacementSettings& settings)
-		{
-			IKChainDefinition chain;
-			chain.chainName = chainName;
-			chain.profileType = IKProfileType::Custom;
-			chain.solverType = IKSolverType::FABRIK;
-			chain.bones.push_back(MakeFootPlacementLink(hipIndex, hipName, false));
-			chain.bones.push_back(MakeFootPlacementLink(kneeIndex, kneeName, false));
-			chain.bones.push_back(MakeFootPlacementLink(footIndex, footName, true));
-			chain.maxIterations = 1;
-			chain.positionTolerance = 0.0005f;
-			chain.enableRotationTarget = settings.enableFootRotation;
-			chain.rotationWeight = settings.footRotationWeight;
-			return chain;
-		}
-
-		float SmoothStep01(float x)
-		{
-			x = glm::clamp(x, 0.0f, 1.0f);
-			return x * x * (3.0f - 2.0f * x);
-		}
-
-		float ExpAlpha(float speed, float deltaTime)
-		{
-			if (speed <= 0.0f)
-				return 1.0f;
-			return glm::clamp(1.0f - std::exp(-speed * std::max(deltaTime, 0.0f)), 0.0f, 1.0f);
-		}
-
-		glm::vec3 SafeNormalize(const glm::vec3& value, const glm::vec3& fallback)
-		{
-			const float len = glm::length(value);
-			return len > kEpsilon ? value / len : fallback;
-		}
-
-		bool IsValidBoneIndex(int index, size_t count)
+		bool IsValidBone(int index, size_t count)
 		{
 			return index >= 0 && index < static_cast<int>(count);
 		}
 
-		glm::vec3 BuildOrthogonalDirection(const glm::vec3& direction)
+		glm::vec3 SafeNormalize(const glm::vec3& value, const glm::vec3& fallback)
 		{
-			const glm::vec3 n = SafeNormalize(direction, glm::vec3(0.0f, 1.0f, 0.0f));
-			const glm::vec3 axis = std::abs(n.y) < 0.75f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
-			return SafeNormalize(glm::cross(axis, n), glm::vec3(0.0f, 0.0f, 1.0f));
+			const float length = glm::length(value);
+			return length > kEpsilon ? value / length : fallback;
 		}
 
-		glm::vec3 HorizontalDirection(const glm::vec3& value, const glm::vec3& fallback)
+		glm::vec3 HorizontalDirection(const glm::vec3& direction, const glm::vec3& fallback)
 		{
-			const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
-			const glm::vec3 projected = value - worldUp * glm::dot(value, worldUp);
-			const glm::vec3 projectedFallback = fallback - worldUp * glm::dot(fallback, worldUp);
-			return SafeNormalize(projected, SafeNormalize(projectedFallback, glm::vec3(0.0f, 0.0f, 1.0f)));
+			const glm::vec3 projected = direction - kWorldUp * glm::dot(direction, kWorldUp);
+			const glm::vec3 fallbackProjected = fallback - kWorldUp * glm::dot(fallback, kWorldUp);
+			return SafeNormalize(projected, SafeNormalize(fallbackProjected, glm::vec3(0.0f, 0.0f, 1.0f)));
 		}
 
-		glm::quat SafeRotationBetween(const glm::vec3& from, const glm::vec3& to)
+		float DecayAlpha(float smoothTime, float deltaTime)
 		{
-			const float fromLen = glm::length(from);
-			const float toLen = glm::length(to);
-			if (fromLen <= kEpsilon || toLen <= kEpsilon)
-				return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-
-			const glm::vec3 fromDir = from / fromLen;
-			const glm::vec3 toDir = to / toLen;
-			const float dotValue = glm::clamp(glm::dot(fromDir, toDir), -1.0f, 1.0f);
-			if (dotValue > 1.0f - 1e-5f)
-				return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-			if (dotValue < -1.0f + 1e-5f)
-				return glm::angleAxis(glm::pi<float>(), BuildOrthogonalDirection(fromDir));
-			return glm::rotation(fromDir, toDir);
+			if (smoothTime <= kEpsilon)
+				return 1.0f;
+			return glm::clamp(1.0f - std::exp(-std::max(deltaTime, 0.0f) / smoothTime), 0.0f, 1.0f);
 		}
 
-		void ApplyModelSpaceAimRotation(int boneIndex,
-		                                const glm::vec3& currentDirection,
-		                                const glm::vec3& desiredDirection,
-		                                const Skeleton& skeleton,
-		                                std::vector<glm::mat4>& localTransforms,
-		                                std::vector<glm::mat4>& modelTransforms)
+		float SmoothDamp(float current,
+		                 float target,
+		                 float& velocity,
+		                 float smoothTime,
+		                 float deltaTime)
 		{
-			if (!IsValidBoneIndex(boneIndex, skeleton.bones.size()) ||
-			    !IsValidBoneIndex(boneIndex, localTransforms.size()) ||
-			    !IsValidBoneIndex(boneIndex, modelTransforms.size()))
-				return;
+			const float dt = std::max(deltaTime, 0.0f);
+			if (smoothTime <= kEpsilon || dt <= 0.0f)
+			{
+				velocity = 0.0f;
+				return target;
+			}
+			const float omega = 2.0f / smoothTime;
+			const float x = omega * dt;
+			const float decay = 1.0f / (1.0f + x + 0.48f * x * x + 0.235f * x * x * x);
+			const float change = current - target;
+			const float temporary = (velocity + omega * change) * dt;
+			velocity = (velocity - omega * temporary) * decay;
+			return target + (change + temporary) * decay;
+		}
 
-			const glm::quat modelDelta = SafeRotationBetween(currentDirection, desiredDirection);
-			if (std::abs(modelDelta.w) > 1.0f - 1e-6f &&
-			    std::abs(modelDelta.x) < 1e-6f &&
-			    std::abs(modelDelta.y) < 1e-6f &&
-			    std::abs(modelDelta.z) < 1e-6f)
-				return;
+		glm::vec3 BuildOrthogonal(const glm::vec3& direction)
+		{
+			const glm::vec3 n = SafeNormalize(direction, glm::vec3(0.0f, 0.0f, 1.0f));
+			const glm::vec3 axis = std::abs(n.y) < 0.75f
+				? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+			return SafeNormalize(glm::cross(axis, n), glm::vec3(1.0f, 0.0f, 0.0f));
+		}
 
-			const BoneInfo& bone = skeleton.bones[boneIndex];
-			const glm::quat parentRot =
-				IsValidBoneIndex(bone.parentIndex, modelTransforms.size())
-					? IK_ExtractRotation(modelTransforms[bone.parentIndex])
-					: glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-
-			const glm::quat localDelta = IK_WorldDeltaToLocal(parentRot, modelDelta);
-			const glm::quat currentLocal = IK_ExtractRotation(localTransforms[boneIndex]);
-			IK_SetRotation(localTransforms[boneIndex], glm::normalize(localDelta * currentLocal));
-			IK_UpdateGlobalsForSubtree(boneIndex, localTransforms, modelTransforms, skeleton);
+		glm::quat BuildFootRotation(const glm::mat4& ownerWorldTransform,
+		                            const glm::mat4& currentFootModel,
+		                            const glm::vec3& worldNormal,
+		                            const glm::vec3& footLocalUp)
+		{
+			const glm::vec3 modelNormal = SafeNormalize(
+				glm::transpose(glm::mat3(ownerWorldTransform)) * worldNormal,
+				glm::vec3(0.0f, 1.0f, 0.0f));
+			const glm::quat currentRotation = IK_ExtractRotation(currentFootModel);
+			const glm::vec3 currentUp = SafeNormalize(currentRotation * footLocalUp, glm::vec3(0.0f, 1.0f, 0.0f));
+			return glm::normalize(glm::rotation(currentUp, modelNormal) * currentRotation);
 		}
 	}
 
@@ -156,30 +102,40 @@ namespace VansGraphics
 		m_RightHipIndex = FindBoneIndex(skeleton, settings.bones.rightHip);
 		m_RightKneeIndex = FindBoneIndex(skeleton, settings.bones.rightKnee);
 		m_RightFootIndex = FindBoneIndex(skeleton, settings.bones.rightFoot);
-
-		m_Configured = m_PelvisIndex >= 0 &&
-		               m_LeftHipIndex >= 0 && m_LeftKneeIndex >= 0 && m_LeftFootIndex >= 0 &&
-		               m_RightHipIndex >= 0 && m_RightKneeIndex >= 0 && m_RightFootIndex >= 0;
+		m_Configured = IsValidBone(m_PelvisIndex, skeleton.bones.size()) &&
+			IsValidBone(m_LeftHipIndex, skeleton.bones.size()) &&
+			IsValidBone(m_LeftKneeIndex, skeleton.bones.size()) &&
+			IsValidBone(m_LeftFootIndex, skeleton.bones.size()) &&
+			IsValidBone(m_RightHipIndex, skeleton.bones.size()) &&
+			IsValidBone(m_RightKneeIndex, skeleton.bones.size()) &&
+			IsValidBone(m_RightFootIndex, skeleton.bones.size());
 		if (!m_Configured)
 			return false;
 
-		m_LeftLegChain = BuildFootPlacementLegChain(
-			"FootPlacement_LeftLeg",
-			m_LeftHipIndex, settings.bones.leftHip,
-			m_LeftKneeIndex, settings.bones.leftKnee,
-			m_LeftFootIndex, settings.bones.leftFoot,
-			settings);
-		m_RightLegChain = BuildFootPlacementLegChain(
-			"FootPlacement_RightLeg",
-			m_RightHipIndex, settings.bones.rightHip,
-			m_RightKneeIndex, settings.bones.rightKnee,
-			m_RightFootIndex, settings.bones.rightFoot,
-			settings);
+		m_LeftFootLocalUp = SafeNormalize(
+			glm::conjugate(IK_ExtractRotation(glm::inverse(skeleton.bones[m_LeftFootIndex].offsetMatrix))) * kWorldUp,
+			kWorldUp);
+		m_RightFootLocalUp = SafeNormalize(
+			glm::conjugate(IK_ExtractRotation(glm::inverse(skeleton.bones[m_RightFootIndex].offsetMatrix))) * kWorldUp,
+			kWorldUp);
 
-		m_CurrentWeight = 0.0f;
-		m_PelvisOffsetModel = 0.0f;
-		m_LeftState = FootPlacementFootState();
-		m_RightState = FootPlacementFootState();
+		m_LeftLegChain = VansIKChainBuilder::BuildHumanoidLeg(
+			skeleton, settings.bones.leftHip, settings.bones.leftKnee, settings.bones.leftFoot, false);
+		m_RightLegChain = VansIKChainBuilder::BuildHumanoidLeg(
+			skeleton, settings.bones.rightHip, settings.bones.rightKnee, settings.bones.rightFoot, true);
+		for (IKChainDefinition* chain : { &m_LeftLegChain, &m_RightLegChain })
+		{
+			chain->solverType = IKSolverType::TwoBone;
+			chain->chainName = chain == &m_LeftLegChain ? "FootPlacement_Left" : "FootPlacement_Right";
+			chain->enableRotationTarget = settings.rotationWeight > 0.0f;
+			chain->rotationWeight = settings.rotationWeight;
+			if (chain->bones.size() >= 2)
+			{
+				chain->bones[0].constraint.type = JointConstraintType::None;
+				chain->bones[1].constraint.type = JointConstraintType::None;
+			}
+		}
+		ResetTransientState();
 		return true;
 	}
 
@@ -187,8 +143,11 @@ namespace VansGraphics
 	{
 		m_LeftState = FootPlacementFootState();
 		m_RightState = FootPlacementFootState();
-		m_CurrentWeight = 0.0f;
-		m_PelvisOffsetModel = 0.0f;
+		m_GlobalWeight = 0.0f;
+		m_GlobalWeightVelocity = 0.0f;
+		m_PelvisOffsetWorld = 0.0f;
+		m_PelvisVelocity = 0.0f;
+		m_DebugData = FootPlacementDebugData();
 	}
 
 	void VansFootPlacementSolver::Solve(float deltaTime,
@@ -199,606 +158,390 @@ namespace VansGraphics
 		if (!m_Configured || localTransforms.size() != skeleton.bones.size())
 			return;
 
-		const bool active = m_Settings.enabled &&
-		                    !m_RuntimeState.forceDisabled &&
-		                    !m_RuntimeState.airborne &&
-		                    !m_RuntimeState.stanceChanging;
-		float runtimeWeight = m_RuntimeState.externalWeight;
-		if (m_RuntimeState.crouching)
-			runtimeWeight *= glm::clamp(m_Settings.crouchWeightScale, 0.0f, 1.0f);
-		const float wantedWeight = active ? glm::clamp(m_Settings.ikWeight * runtimeWeight, 0.0f, 1.0f) : 0.0f;
-		m_CurrentWeight = glm::mix(m_CurrentWeight, wantedWeight, ExpAlpha(m_Settings.ikWeightSpeed, deltaTime));
+		const bool active = m_Settings.enabled && !m_RuntimeState.forceDisabled && !m_RuntimeState.airborne;
+		const float wantedGlobalWeight = active
+			? glm::clamp(m_Settings.ikWeight * m_RuntimeState.externalWeight, 0.0f, 1.0f) : 0.0f;
+		m_GlobalWeight = glm::clamp(SmoothDamp(m_GlobalWeight,
+			wantedGlobalWeight,
+			m_GlobalWeightVelocity,
+			m_Settings.globalWeightSmoothTime,
+			deltaTime), 0.0f, 1.0f);
 
-		if (m_CurrentWeight <= 0.001f && !active)
-		{
-			m_DebugData.enabled = false;
-			return;
-		}
-
-		std::vector<glm::mat4> modelTransforms = BuildModelSpaceTransforms(skeleton, localTransforms);
+		std::vector<glm::mat4> modelTransforms = IK_BuildModelSpaceTransforms(skeleton, localTransforms);
 		if (modelTransforms.empty())
 			return;
 
-		const float leftLegLength = LegLength(modelTransforms, m_LeftHipIndex, m_LeftKneeIndex, m_LeftFootIndex);
-		const float rightLegLength = LegLength(modelTransforms, m_RightHipIndex, m_RightKneeIndex, m_RightFootIndex);
-
 		m_DebugData = FootPlacementDebugData();
 		m_DebugData.enabled = m_Settings.debugVisualization;
-		m_DebugData.currentWeight = m_CurrentWeight;
+		m_DebugData.currentWeight = m_GlobalWeight;
 
-		SurfaceContact leftContact = ProbeFoot(ownerWorldTransform, modelTransforms, m_LeftHipIndex, m_LeftFootIndex, leftLegLength,
-		                                       m_DebugData.enabled ? &m_DebugData.left : nullptr);
-		SurfaceContact rightContact = ProbeFoot(ownerWorldTransform, modelTransforms, m_RightHipIndex, m_RightFootIndex, rightLegLength,
-		                                        m_DebugData.enabled ? &m_DebugData.right : nullptr);
+		FootPlacementContact leftContact;
+		FootPlacementContact rightContact;
+		if (active)
+		{
+			leftContact = ProbeFoot(ownerWorldTransform, modelTransforms, m_LeftFootIndex,
+				m_DebugData.enabled ? &m_DebugData.left : nullptr);
+			rightContact = ProbeFoot(ownerWorldTransform, modelTransforms, m_RightFootIndex,
+				m_DebugData.enabled ? &m_DebugData.right : nullptr);
+		}
 
-		LegSolve left = BuildLegSolve(deltaTime, ownerWorldTransform, modelTransforms, m_LeftFootIndex, m_LeftState, leftContact);
-		LegSolve right = BuildLegSolve(deltaTime, ownerWorldTransform, modelTransforms, m_RightFootIndex, m_RightState, rightContact);
+		LegTarget left = UpdateLegTarget(deltaTime, ownerWorldTransform, modelTransforms,
+			m_LeftFootIndex, m_LeftFootLocalUp, m_LeftState, leftContact);
+		LegTarget right = UpdateLegTarget(deltaTime, ownerWorldTransform, modelTransforms,
+			m_RightFootIndex, m_RightFootLocalUp, m_RightState, rightContact);
 
-		ApplyPelvisOffset(deltaTime, skeleton, ownerWorldTransform, modelTransforms, left, right, localTransforms);
-		modelTransforms = BuildModelSpaceTransforms(skeleton, localTransforms);
-
-		if (!left.valid)
-			m_LeftState.poleInitialized = false;
-		if (!right.valid)
-			m_RightState.poleInitialized = false;
-
-		SolveLeg(deltaTime, skeleton, m_LeftLegChain, left.target, m_LeftState, localTransforms, modelTransforms);
-		SolveLeg(deltaTime, skeleton, m_RightLegChain, right.target, m_RightState, localTransforms, modelTransforms);
+		ApplyPelvisOffset(deltaTime, skeleton, ownerWorldTransform, left, right, localTransforms);
+		modelTransforms = IK_BuildModelSpaceTransforms(skeleton, localTransforms);
+		SolveLeg(deltaTime, skeleton, m_LeftLegChain, left, m_LeftState, localTransforms, modelTransforms);
+		SolveLeg(deltaTime, skeleton, m_RightLegChain, right, m_RightState, localTransforms, modelTransforms);
 
 		if (m_DebugData.enabled)
 		{
-			PopulateLegDebug(m_DebugData.left, ownerWorldTransform, modelTransforms, m_LeftHipIndex, m_LeftKneeIndex, m_LeftFootIndex, left);
-			PopulateLegDebug(m_DebugData.right, ownerWorldTransform, modelTransforms, m_RightHipIndex, m_RightKneeIndex, m_RightFootIndex, right);
-			m_DebugData.pelvisOffset = m_PelvisOffsetModel;
+			PopulateLegDebug(m_DebugData.left, ownerWorldTransform, modelTransforms,
+				m_LeftHipIndex, m_LeftKneeIndex, m_LeftFootIndex, left);
+			PopulateLegDebug(m_DebugData.right, ownerWorldTransform, modelTransforms,
+				m_RightHipIndex, m_RightKneeIndex, m_RightFootIndex, right);
+			m_DebugData.pelvisOffset = m_PelvisOffsetWorld;
 		}
 	}
 
-	SurfaceContact VansFootPlacementSolver::ProbeFoot(const glm::mat4& ownerWorldTransform,
-	                                                  const std::vector<glm::mat4>& modelTransforms,
-	                                                  int hipIndex,
-	                                                  int footIndex,
-	                                                  float legLength,
-	                                                  FootPlacementDebugLeg* debugLeg) const
+	FootPlacementContact VansFootPlacementSolver::ProbeFoot(
+		const glm::mat4& ownerWorldTransform,
+		const std::vector<glm::mat4>& modelTransforms,
+		int footIndex,
+		FootPlacementDebugLeg* debugLeg) const
 	{
-		SurfaceContact contact;
-		if (hipIndex < 0 || footIndex < 0 ||
-		    hipIndex >= static_cast<int>(modelTransforms.size()) ||
-		    footIndex >= static_cast<int>(modelTransforms.size()))
+		FootPlacementContact contact;
+		if (!IsValidBone(footIndex, modelTransforms.size()))
 			return contact;
 
-		const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
-		const glm::vec3 footModel = IK_ExtractTranslation(modelTransforms[footIndex]);
-		const glm::vec3 hipModel = IK_ExtractTranslation(modelTransforms[hipIndex]);
-		const glm::vec3 footWorld = glm::vec3(ownerWorldTransform * glm::vec4(footModel, 1.0f));
-		const glm::vec3 hipWorld = glm::vec3(ownerWorldTransform * glm::vec4(hipModel, 1.0f));
-
 		const glm::mat4 footWorldTransform = ownerWorldTransform * modelTransforms[footIndex];
-		const glm::vec3 ownerRight = SafeNormalize(glm::vec3(ownerWorldTransform[0]), glm::vec3(1.0f, 0.0f, 0.0f));
-		const glm::vec3 ownerForward = SafeNormalize(glm::vec3(ownerWorldTransform[2]), glm::vec3(0.0f, 0.0f, 1.0f));
-		const glm::vec3 footRight = HorizontalDirection(glm::vec3(footWorldTransform[0]), ownerRight);
+		const glm::vec3 footWorld = IK_ExtractTranslation(footWorldTransform);
+		const glm::vec3 ownerForward = HorizontalDirection(glm::vec3(ownerWorldTransform[2]), glm::vec3(0.0f, 0.0f, 1.0f));
+		const glm::vec3 ownerRight = HorizontalDirection(glm::vec3(ownerWorldTransform[0]), glm::vec3(1.0f, 0.0f, 0.0f));
 		const glm::vec3 footForward = HorizontalDirection(glm::vec3(footWorldTransform[2]), ownerForward);
-		const float probeRadius = std::max(0.0f, m_Settings.probeFootRadius);
-		const float forwardExtent = std::max(probeRadius, m_Settings.probeFootForwardExtent);
-		const float backwardExtent = std::max(probeRadius, m_Settings.probeFootBackwardExtent);
-		const float sideExtent = std::max(probeRadius, m_Settings.probeFootSideExtent);
-		const float longitudinalExtent = std::max(forwardExtent, backwardExtent);
-		const float probeDistance = m_Settings.probeHeightAbove + m_Settings.probeDistanceBelow;
-		std::vector<glm::vec3> sampleOffsets;
-		sampleOffsets.reserve(9);
-		sampleOffsets.push_back(glm::vec3(0.0f));
-		sampleOffsets.push_back(footRight * sideExtent);
-		sampleOffsets.push_back(-footRight * sideExtent);
-		sampleOffsets.push_back(footForward * longitudinalExtent);
-		sampleOffsets.push_back(-footForward * longitudinalExtent);
-		sampleOffsets.push_back(footForward * longitudinalExtent + footRight * sideExtent);
-		sampleOffsets.push_back(footForward * longitudinalExtent - footRight * sideExtent);
-		sampleOffsets.push_back(-footForward * longitudinalExtent + footRight * sideExtent);
-		sampleOffsets.push_back(-footForward * longitudinalExtent - footRight * sideExtent);
+		const glm::vec3 footRight = HorizontalDirection(glm::vec3(footWorldTransform[0]), ownerRight);
+		const float halfLength = std::max(0.0f, m_Settings.footHalfLength);
+		const float halfWidth = std::max(0.0f, m_Settings.footHalfWidth);
+		const std::vector<glm::vec3> offsets = {
+			glm::vec3(0.0f), footForward * halfLength, -footForward * halfLength,
+			footRight * halfWidth, -footRight * halfWidth
+		};
 
-		FootOverlapHit overlap;
-		bool footOverlapsGround = false;
-		const float lengthExtent = std::max(0.05f, longitudinalExtent);
-		const float heightExtent = std::max(0.05f, m_Settings.footGroundOffset + m_Settings.ankleHeightOffset);
-		const glm::vec3 overlapCenter = footWorld + worldUp * heightExtent;
-		const glm::vec3 overlapHalfExtents(std::max(0.05f, sideExtent), heightExtent, lengthExtent);
-		overlap = m_GroundProbe.OverlapBox(overlapCenter,
-		                                   overlapHalfExtents,
-		                                   glm::normalize(IK_ExtractRotation(footWorldTransform)),
-		                                   m_Settings.collisionMask);
-		footOverlapsGround = overlap.hasHit;
-		if (debugLeg)
+		std::vector<FootGroundRayRequest> requests;
+		requests.reserve(offsets.size());
+		for (const glm::vec3& offset : offsets)
 		{
-			debugLeg->overlapCenter = overlapCenter;
-			debugLeg->overlapHalfExtents = overlapHalfExtents;
-			debugLeg->hasOverlap = overlap.hasHit;
-			debugLeg->overlapLayer = overlap.layerIndex;
-			debugLeg->overlapActorName = overlap.actorName;
+			requests.push_back(FootGroundRayRequest{
+				footWorld + offset + kWorldUp * std::max(0.0f, m_Settings.probeOriginHeight),
+				-kWorldUp,
+				std::max(0.0f, m_Settings.probeLength)
+			});
 		}
+		const std::vector<FootGroundHit> hits = m_GroundProbe.RaycastBatch(requests, m_Settings.collisionMask);
 
-		for (const glm::vec3& sampleOffset : sampleOffsets)
+		struct AcceptedHit
 		{
-			const glm::vec3 probeOrigin = footWorld + sampleOffset + worldUp * m_Settings.probeHeightAbove;
-			FootGroundHit hit = m_GroundProbe.Raycast(probeOrigin, -worldUp, probeDistance, m_Settings.collisionMask);
-			FootPlacementDebugSample debugSample;
-			debugSample.rayStart = probeOrigin;
-			debugSample.rayEnd = probeOrigin - worldUp * probeDistance;
-			debugSample.hasHit = hit.hasHit;
-			if (hit.hasHit)
-			{
-				debugSample.hitPosition = hit.position;
-				debugSample.hitNormal = SafeNormalize(hit.normal, worldUp);
-				debugSample.hitLayer = hit.layerIndex;
-				debugSample.hitActorName = hit.actorName;
-			}
+			const FootGroundHit* hit = nullptr;
+			glm::vec3 centerGroundPoint = glm::vec3(0.0f);
+			float verticalOffset = 0.0f;
+			float weight = 1.0f;
+		};
+		std::vector<AcceptedHit> accepted;
+		accepted.reserve(hits.size());
+		const glm::vec3 horizontalCenter = footWorld - kWorldUp * glm::dot(footWorld, kWorldUp);
+		const float maxSlopeCos = std::cos(glm::radians(glm::clamp(m_Settings.maxSlopeDeg, 0.0f, 89.0f)));
+
+		for (size_t index = 0; index < hits.size(); ++index)
+		{
+			const FootGroundHit& hit = hits[index];
+			FootPlacementDebugSample sample;
+			sample.rayStart = requests[index].origin;
+			sample.rayEnd = requests[index].origin - kWorldUp * requests[index].distance;
+			sample.hasHit = hit.hasHit;
 			if (!hit.hasHit)
 			{
-				if (debugLeg)
-				{
-					FootGroundHit rawHit = m_GroundProbe.Raycast(probeOrigin, -worldUp, probeDistance, 0xffffffffu);
-					debugSample.hasRawHit = rawHit.hasHit;
-					if (rawHit.hasHit)
-					{
-						debugSample.rawHitPosition = rawHit.position;
-						debugSample.rawHitLayer = rawHit.layerIndex;
-						debugSample.rawHitActorName = rawHit.actorName;
-						debugSample.status = "filtered no hit; raw hit layer " + std::to_string(rawHit.layerIndex);
-					}
-					else
-					{
-						debugSample.status = "no physics hit";
-					}
-				}
-				if (debugLeg)
-					debugLeg->samples.push_back(debugSample);
+				sample.status = "no hit";
+				if (debugLeg) debugLeg->samples.push_back(sample);
 				continue;
 			}
 
-			const glm::vec3 footToHit = hit.position - footWorld;
-			const float verticalDelta = glm::dot(footToHit, worldUp);
-			const glm::vec3 supportPosition = footWorld + worldUp * verticalDelta;
-			SurfaceContact candidate;
-			candidate.hasHit = true;
-			candidate.worldPosition = supportPosition;
-			candidate.worldNormal = SafeNormalize(hit.normal, worldUp);
-			candidate.verticalDelta = verticalDelta;
-			candidate.horizontalError = glm::length(sampleOffset);
-			candidate.surfaceAngleDeg = glm::degrees(std::acos(glm::clamp(glm::dot(candidate.worldNormal, worldUp), -1.0f, 1.0f)));
-
-			const glm::vec3 targetWorld = candidate.worldPosition + candidate.worldNormal * (m_Settings.footGroundOffset + m_Settings.ankleHeightOffset);
-			const float reach = glm::distance(hipWorld, targetWorld);
-			if (legLength > kEpsilon && reach > legLength * 1.12f)
+			sample.hitPosition = hit.position;
+			sample.hitNormal = SafeNormalize(hit.normal, kWorldUp);
+			sample.hitLayer = hit.layerIndex;
+			sample.hitActorName = hit.actorName;
+			const float upDot = glm::dot(sample.hitNormal, kWorldUp);
+			if (upDot < maxSlopeCos || upDot <= kEpsilon)
 			{
-				candidate.quality = 0.0f;
-				debugSample.status = "rejected: reach";
-			}
-			else
-			{
-				candidate.quality = EvaluateContactQuality(m_Settings, candidate);
-				if (candidate.surfaceAngleDeg > m_Settings.maxSurfaceAngleDeg)
-					debugSample.status = "rejected: slope";
-				else if (candidate.verticalDelta > m_Settings.maxVerticalCorrectionUp)
-					debugSample.status = "rejected: up limit";
-				else if (candidate.verticalDelta < -m_Settings.maxVerticalCorrectionDown)
-					debugSample.status = "rejected: down limit";
-				else if (candidate.horizontalError > m_Settings.maxHorizontalFootError)
-					debugSample.status = "rejected: foot area";
-				else if (candidate.quality <= 0.0f)
-					debugSample.status = "rejected: quality";
-				else
-					debugSample.status = "candidate";
-			}
-
-			if (candidate.quality <= 0.0f)
-			{
-				debugSample.quality = candidate.quality;
-				if (debugLeg)
-					debugLeg->samples.push_back(debugSample);
+				sample.status = "slope rejected";
+				if (debugLeg) debugLeg->samples.push_back(sample);
 				continue;
 			}
-			if (!contact.hasHit ||
-			    candidate.worldPosition.y > contact.worldPosition.y + 0.005f ||
-			    (std::abs(candidate.worldPosition.y - contact.worldPosition.y) <= 0.005f && candidate.quality > contact.quality))
+
+			const float centerHeight = glm::dot(sample.hitNormal, hit.position - horizontalCenter) / upDot;
+			const glm::vec3 centerGroundPoint = horizontalCenter + kWorldUp * centerHeight;
+			const glm::vec3 target = FootPlacementBuildTarget(footWorld, centerGroundPoint, m_Settings.ankleHeight);
+			const float verticalOffset = glm::dot(target - footWorld, kWorldUp);
+			if (verticalOffset > std::max(0.0f, m_Settings.maxStepUp) ||
+			    verticalOffset < -std::max(0.0f, m_Settings.maxStepDown))
 			{
-				contact = candidate;
-				contact.hasOverlap = footOverlapsGround;
-				debugSample.accepted = true;
+				sample.status = "step limit rejected";
+				if (debugLeg) debugLeg->samples.push_back(sample);
+				continue;
 			}
-			debugSample.quality = candidate.quality;
-			if (debugLeg)
-				debugLeg->samples.push_back(debugSample);
+
+			sample.accepted = true;
+			sample.status = "accepted";
+			accepted.push_back(AcceptedHit{ &hit, centerGroundPoint, verticalOffset, index == 0 ? 2.0f : 1.0f });
+			if (debugLeg) debugLeg->samples.push_back(sample);
 		}
 
-		if (overlap.hasHit && overlap.hasBounds)
+		if (accepted.empty())
+			return contact;
+
+		std::unordered_map<uintptr_t, float> actorScores;
+		for (const AcceptedHit& item : accepted)
+			actorScores[item.hit->actorId] += item.weight;
+		uintptr_t dominantActor = accepted.front().hit->actorId;
+		float dominantScore = -1.0f;
+		for (const auto& [actor, score] : actorScores)
 		{
-			const float topY = overlap.boundsMax.y;
-			const glm::vec3 clampedFootXZ(
-				glm::clamp(footWorld.x, overlap.boundsMin.x, overlap.boundsMax.x),
-				footWorld.y,
-				glm::clamp(footWorld.z, overlap.boundsMin.z, overlap.boundsMax.z));
-			const float horizontalError = glm::length(glm::vec2(footWorld.x - clampedFootXZ.x,
-			                                                   footWorld.z - clampedFootXZ.z));
-			SurfaceContact overlapCandidate;
-			overlapCandidate.hasHit = true;
-			overlapCandidate.hasOverlap = true;
-			overlapCandidate.worldPosition = glm::vec3(footWorld.x, topY, footWorld.z);
-			overlapCandidate.worldNormal = worldUp;
-			overlapCandidate.verticalDelta = topY - footWorld.y;
-			overlapCandidate.horizontalError = horizontalError;
-			overlapCandidate.surfaceAngleDeg = 0.0f;
-
-			const glm::vec3 targetWorld = overlapCandidate.worldPosition + worldUp * (m_Settings.footGroundOffset + m_Settings.ankleHeightOffset);
-			const float reach = glm::distance(hipWorld, targetWorld);
-			const bool withinReach = legLength <= kEpsilon || reach <= legLength * 1.12f;
-			const bool withinVerticalRange =
-				overlapCandidate.verticalDelta <= m_Settings.maxVerticalCorrectionUp &&
-				overlapCandidate.verticalDelta >= -m_Settings.maxVerticalCorrectionDown;
-			const bool closeEnough = horizontalError <= m_Settings.maxHorizontalFootError;
-			if (withinReach && withinVerticalRange && closeEnough)
-				overlapCandidate.quality = EvaluateContactQuality(m_Settings, overlapCandidate);
-
-			if (overlapCandidate.quality > 0.0f &&
-			    (!contact.hasHit ||
-			     overlapCandidate.worldPosition.y > contact.worldPosition.y + 0.005f ||
-			     (std::abs(overlapCandidate.worldPosition.y - contact.worldPosition.y) <= 0.005f &&
-			      overlapCandidate.quality > contact.quality)))
+			if (score > dominantScore)
 			{
-				contact = overlapCandidate;
+				dominantActor = actor;
+				dominantScore = score;
 			}
 		}
 
-		if (contact.hasHit)
-			contact.hasOverlap = footOverlapsGround;
+		glm::vec3 pointSum(0.0f);
+		glm::vec3 normalSum(0.0f);
+		float weightSum = 0.0f;
+		const FootGroundHit* representative = nullptr;
+		for (const AcceptedHit& item : accepted)
+		{
+			if (item.hit->actorId != dominantActor)
+				continue;
+			pointSum += item.centerGroundPoint * item.weight;
+			normalSum += SafeNormalize(item.hit->normal, kWorldUp) * item.weight;
+			weightSum += item.weight;
+			if (!representative || item.weight > 1.0f)
+				representative = item.hit;
+		}
+		if (weightSum <= kEpsilon || !representative)
+			return contact;
+
+		contact.valid = true;
+		contact.groundPointWorld = pointSum / weightSum;
+		contact.groundNormalWorld = SafeNormalize(normalSum, kWorldUp);
+		const glm::vec3 target = FootPlacementBuildTarget(
+			footWorld, contact.groundPointWorld, m_Settings.ankleHeight);
+		contact.verticalOffset = glm::dot(target - footWorld, kWorldUp);
+		contact.soleClearance = -contact.verticalOffset;
+		contact.slopeDeg = glm::degrees(std::acos(glm::clamp(glm::dot(contact.groundNormalWorld, kWorldUp), -1.0f, 1.0f)));
+		contact.layer = representative->layerIndex;
+		contact.actorId = representative->actorId;
+		contact.actorName = representative->actorName;
 		return contact;
 	}
 
-	VansFootPlacementSolver::LegSolve VansFootPlacementSolver::BuildLegSolve(
+	VansFootPlacementSolver::LegTarget VansFootPlacementSolver::UpdateLegTarget(
 		float deltaTime,
 		const glm::mat4& ownerWorldTransform,
 		const std::vector<glm::mat4>& modelTransforms,
 		int footIndex,
+		const glm::vec3& footLocalUp,
 		FootPlacementFootState& state,
-		const SurfaceContact& contact) const
+		const FootPlacementContact& contact) const
 	{
-		LegSolve solve;
-		solve.contact = contact;
-		if (footIndex < 0 || footIndex >= static_cast<int>(modelTransforms.size()))
-			return solve;
+		LegTarget result;
+		result.contact = contact;
+		if (!IsValidBone(footIndex, modelTransforms.size()))
+			return result;
 
-		const glm::vec3 footModel = IK_ExtractTranslation(modelTransforms[footIndex]);
-		const glm::vec3 footWorld = glm::vec3(ownerWorldTransform * glm::vec4(footModel, 1.0f));
-		IKTarget target;
-		target.position = footModel;
-		target.rotation = IK_ExtractRotation(modelTransforms[footIndex]);
-		target.positionWeight = 0.0f;
-		target.rotationWeight = 0.0f;
-
-		float contactHeightWeight = 0.0f;
-		if (contact.hasHit)
-		{
-			contactHeightWeight = 1.0f;
-			if (contact.hasOverlap)
-			{
-				contactHeightWeight = 1.0f;
-			}
-			else if (contact.verticalDelta < 0.0f)
-			{
-				const float footHeightAboveGround = -contact.verticalDelta;
-				const float fullHeight = std::max(0.0f, m_Settings.footPlantFullHeight);
-				const float fadeHeight = std::max(fullHeight + 0.001f, m_Settings.footPlantFadeHeight);
-				contactHeightWeight = 1.0f - SmoothStep01((footHeightAboveGround - fullHeight) / (fadeHeight - fullHeight));
-			}
-		}
-		const float wantedContactWeight = contact.hasHit ? glm::clamp(contact.quality * contactHeightWeight, 0.0f, 1.0f) : 0.0f;
-		const float weightAlpha = ExpAlpha(m_Settings.footLockInterpSpeed, deltaTime);
-		const float normalAlpha = ExpAlpha(m_Settings.normalInterpSpeed, deltaTime);
-		const float groundHeightAlpha = ExpAlpha(m_Settings.groundHeightInterpSpeed, deltaTime);
+		result.animatedFootWorld = glm::vec3(ownerWorldTransform *
+			glm::vec4(IK_ExtractTranslation(modelTransforms[footIndex]), 1.0f));
+		const float wantedOffset = contact.valid ? contact.verticalOffset : 0.0f;
+		const float wantedWeight = contact.valid
+			? FootPlacementClearanceWeight(contact.soleClearance,
+				m_Settings.fullContactHeight, m_Settings.contactFadeHeight) : 0.0f;
+		const glm::vec3 wantedNormal = contact.valid ? contact.groundNormalWorld : kWorldUp;
 
 		if (!state.initialized)
 		{
 			state.initialized = true;
-			state.smoothedWorldPosition = contact.hasHit ? contact.worldPosition : footWorld;
-			state.smoothedWorldNormal = contact.hasHit ? contact.worldNormal : glm::vec3(0.0f, 1.0f, 0.0f);
-			state.smoothedGroundHeight = glm::dot(state.smoothedWorldPosition, glm::vec3(0.0f, 1.0f, 0.0f));
-			state.groundHeightInitialized = contact.hasHit;
+			state.verticalOffset = wantedOffset;
+			state.groundNormalWorld = wantedNormal;
 		}
+		state.verticalOffset = SmoothDamp(state.verticalOffset,
+			wantedOffset, state.verticalVelocity, m_Settings.offsetSmoothTime, deltaTime);
+		state.weight = glm::clamp(SmoothDamp(state.weight,
+			wantedWeight, state.weightVelocity, m_Settings.weightSmoothTime, deltaTime), 0.0f, 1.0f);
+		state.groundNormalWorld = SafeNormalize(glm::mix(state.groundNormalWorld,
+			wantedNormal, DecayAlpha(m_Settings.normalSmoothTime, deltaTime)), wantedNormal);
 
-		if (contact.hasHit)
-		{
-			const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
-			const float contactGroundHeight = glm::dot(contact.worldPosition, worldUp);
-			if (!state.groundHeightInitialized)
-			{
-				state.groundHeightInitialized = true;
-				state.smoothedGroundHeight = contactGroundHeight;
-			}
-			else
-			{
-				state.smoothedGroundHeight = glm::mix(state.smoothedGroundHeight, contactGroundHeight, groundHeightAlpha);
-			}
-			const float footHeight = glm::dot(footWorld, worldUp);
-			state.smoothedWorldPosition = footWorld + worldUp * (state.smoothedGroundHeight - footHeight);
-			state.smoothedWorldNormal = SafeNormalize(glm::mix(state.smoothedWorldNormal, contact.worldNormal, normalAlpha), glm::vec3(0.0f, 1.0f, 0.0f));
-		}
-		else
-		{
-			state.smoothedWorldPosition = footWorld;
-			state.groundHeightInitialized = false;
-		}
-		state.smoothedWeight = contact.hasOverlap
-			? std::max(state.smoothedWeight, wantedContactWeight)
-			: glm::mix(state.smoothedWeight, wantedContactWeight, weightAlpha);
-
-		if (contact.hasHit && state.smoothedWeight >= m_Settings.minContactQuality)
-		{
-			const glm::mat4 inverseOwner = glm::inverse(ownerWorldTransform);
-			const glm::vec3 targetWorld = state.smoothedWorldPosition + state.smoothedWorldNormal * (m_Settings.footGroundOffset + m_Settings.ankleHeightOffset);
-			target.position = glm::vec3(inverseOwner * glm::vec4(targetWorld, 1.0f));
-			target.positionWeight = glm::clamp(m_CurrentWeight * state.smoothedWeight, 0.0f, 1.0f);
-			if (m_Settings.enableFootRotation)
-			{
-				target.rotation = BuildFootRotation(ownerWorldTransform, modelTransforms[footIndex], state.smoothedWorldNormal);
-				target.rotationWeight = target.positionWeight * glm::clamp(m_Settings.footRotationWeight, 0.0f, 1.0f);
-			}
-			solve.valid = target.positionWeight > 0.001f;
-		}
-
-		solve.target = target;
-		return solve;
+		// This is the core invariant: XZ always comes from this frame's animation.
+		result.targetWorld = result.animatedFootWorld + kWorldUp * state.verticalOffset;
+		result.ikTarget.position = glm::vec3(glm::inverse(ownerWorldTransform) * glm::vec4(result.targetWorld, 1.0f));
+		result.ikTarget.rotation = BuildFootRotation(ownerWorldTransform,
+			modelTransforms[footIndex], state.groundNormalWorld, footLocalUp);
+		result.ikTarget.positionWeight = glm::clamp(m_GlobalWeight * state.weight, 0.0f, 1.0f);
+		result.ikTarget.rotationWeight = result.ikTarget.positionWeight *
+			glm::clamp(m_Settings.rotationWeight, 0.0f, 1.0f);
+		result.valid = result.ikTarget.positionWeight > 0.001f;
+		return result;
 	}
 
-	void VansFootPlacementSolver::ApplyPelvisOffset(float deltaTime,
-	                                                const Skeleton& skeleton,
-	                                                const glm::mat4& ownerWorldTransform,
-	                                                const std::vector<glm::mat4>& modelTransforms,
-	                                                const LegSolve& left,
-	                                                const LegSolve& right,
-	                                                std::vector<glm::mat4>& localTransforms)
+	void VansFootPlacementSolver::ApplyPelvisOffset(
+		float deltaTime,
+		const Skeleton& skeleton,
+		const glm::mat4& ownerWorldTransform,
+		const LegTarget& left,
+		const LegTarget& right,
+		std::vector<glm::mat4>& localTransforms)
 	{
-		if (m_PelvisIndex < 0 || m_PelvisIndex >= static_cast<int>(localTransforms.size()) ||
-		    m_LeftFootIndex < 0 || m_RightFootIndex < 0)
+		float wantedOffset = 0.0f;
+		if (left.valid)
+			wantedOffset = std::min(wantedOffset,
+				glm::dot(left.targetWorld - left.animatedFootWorld, kWorldUp) * left.ikTarget.positionWeight);
+		if (right.valid)
+			wantedOffset = std::min(wantedOffset,
+				glm::dot(right.targetWorld - right.animatedFootWorld, kWorldUp) * right.ikTarget.positionWeight);
+		wantedOffset = glm::clamp(wantedOffset, -std::max(0.0f, m_Settings.pelvisMaxDrop), 0.0f);
+		m_PelvisOffsetWorld = SmoothDamp(m_PelvisOffsetWorld,
+			wantedOffset, m_PelvisVelocity, m_Settings.pelvisSmoothTime, deltaTime);
+		if (!IsValidBone(m_PelvisIndex, localTransforms.size()) || std::abs(m_PelvisOffsetWorld) <= kEpsilon)
 			return;
 
-		const glm::mat4 inverseOwner = glm::inverse(ownerWorldTransform);
-		const glm::vec3 modelUp = SafeNormalize(glm::mat3(inverseOwner) * glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-		const float modelUnitsPerWorldMeter = glm::length(glm::mat3(inverseOwner) * glm::vec3(0.0f, 1.0f, 0.0f));
-		const float maxDown = std::max(0.0f, m_Settings.pelvisMaxDown * modelUnitsPerWorldMeter);
-		const float maxUp = std::max(0.0f, m_Settings.pelvisMaxUp * modelUnitsPerWorldMeter);
-
-		bool hasOffset = false;
-		float wantedOffset = 0.0f;
-		if (left.valid && m_LeftFootIndex < static_cast<int>(modelTransforms.size()))
+		const glm::vec3 modelOffset = glm::vec3(glm::inverse(ownerWorldTransform) *
+			glm::vec4(kWorldUp * m_PelvisOffsetWorld, 0.0f));
+		glm::vec3 localOffset = modelOffset;
+		const int parent = skeleton.bones[m_PelvisIndex].parentIndex;
+		if (IsValidBone(parent, localTransforms.size()))
 		{
-			const float delta = glm::dot(left.target.position - IK_ExtractTranslation(modelTransforms[m_LeftFootIndex]), modelUp);
-			wantedOffset = delta;
-			hasOffset = true;
+			const std::vector<glm::mat4> modelTransforms = IK_BuildModelSpaceTransforms(skeleton, localTransforms);
+			localOffset = glm::vec3(glm::inverse(modelTransforms[parent]) * glm::vec4(modelOffset, 0.0f));
 		}
-		if (right.valid && m_RightFootIndex < static_cast<int>(modelTransforms.size()))
-		{
-			const float delta = glm::dot(right.target.position - IK_ExtractTranslation(modelTransforms[m_RightFootIndex]), modelUp);
-			wantedOffset = hasOffset ? std::min(wantedOffset, delta) : delta;
-			hasOffset = true;
-		}
-
-		if (!hasOffset)
-			wantedOffset = 0.0f;
-
-		wantedOffset = glm::clamp(wantedOffset, -maxDown, maxUp);
-		m_PelvisOffsetModel = glm::mix(m_PelvisOffsetModel, wantedOffset * m_CurrentWeight, ExpAlpha(m_Settings.pelvisInterpSpeed, deltaTime));
-
-		const BoneInfo& pelvis = skeleton.bones[m_PelvisIndex];
-		glm::vec3 parentModelUp = modelUp;
-		if (pelvis.parentIndex >= 0 && pelvis.parentIndex < static_cast<int>(modelTransforms.size()))
-		{
-			const glm::quat parentRot = IK_ExtractRotation(modelTransforms[pelvis.parentIndex]);
-			parentModelUp = SafeNormalize(glm::inverse(parentRot) * modelUp, glm::vec3(0.0f, 1.0f, 0.0f));
-		}
-		localTransforms[m_PelvisIndex][3] += glm::vec4(parentModelUp * m_PelvisOffsetModel, 0.0f);
+		localTransforms[m_PelvisIndex][3] += glm::vec4(localOffset, 0.0f);
 	}
 
 	void VansFootPlacementSolver::SolveLeg(float deltaTime,
 	                                       const Skeleton& skeleton,
 	                                       const IKChainDefinition& chain,
-	                                       const IKTarget& target,
+	                                       const LegTarget& legTarget,
 	                                       FootPlacementFootState& state,
 	                                       std::vector<glm::mat4>& localTransforms,
 	                                       std::vector<glm::mat4>& modelTransforms)
 	{
-		if (target.positionWeight <= 0.001f)
+		if (!legTarget.valid || chain.bones.size() < 3)
+		{
+			state.poleInitialized = false;
 			return;
-		if (chain.bones.size() < 3)
-			return;
-
+		}
 		const int hipIndex = chain.bones[0].boneIndex;
 		const int kneeIndex = chain.bones[1].boneIndex;
 		const int footIndex = chain.bones[2].boneIndex;
-		if (!IsValidBoneIndex(hipIndex, skeleton.bones.size()) ||
-		    !IsValidBoneIndex(kneeIndex, skeleton.bones.size()) ||
-		    !IsValidBoneIndex(footIndex, skeleton.bones.size()) ||
-		    !IsValidBoneIndex(hipIndex, modelTransforms.size()) ||
-		    !IsValidBoneIndex(kneeIndex, modelTransforms.size()) ||
-		    !IsValidBoneIndex(footIndex, modelTransforms.size()))
+		if (!IsValidBone(hipIndex, modelTransforms.size()) ||
+		    !IsValidBone(kneeIndex, modelTransforms.size()) ||
+		    !IsValidBone(footIndex, modelTransforms.size()))
 			return;
 
 		const glm::vec3 hip = IK_ExtractTranslation(modelTransforms[hipIndex]);
 		const glm::vec3 knee = IK_ExtractTranslation(modelTransforms[kneeIndex]);
 		const glm::vec3 foot = IK_ExtractTranslation(modelTransforms[footIndex]);
-		const float upperLen = glm::distance(hip, knee);
-		const float lowerLen = glm::distance(knee, foot);
-		if (upperLen <= kEpsilon || lowerLen <= kEpsilon)
+		const float upperLength = glm::distance(hip, knee);
+		const float lowerLength = glm::distance(knee, foot);
+		if (upperLength <= kEpsilon || lowerLength <= kEpsilon)
 			return;
 
-		const float weight = glm::clamp(target.positionWeight, 0.0f, 1.0f);
-		glm::vec3 desiredFoot = glm::mix(foot, target.position, weight);
-		glm::vec3 hipToTarget = desiredFoot - hip;
-		const glm::vec3 currentHipToFoot = foot - hip;
-		const glm::vec3 reachFallback = SafeNormalize(currentHipToFoot, BuildOrthogonalDirection(knee - hip));
-		glm::vec3 targetDir = SafeNormalize(hipToTarget, reachFallback);
-
-		const float maxReach = std::max(upperLen + lowerLen - 1e-4f, kEpsilon);
-		const float minReach = std::max(std::abs(upperLen - lowerLen) + 1e-4f, kEpsilon);
-		float targetDistance = glm::length(hipToTarget);
-		targetDistance = glm::clamp(targetDistance, minReach, maxReach);
-		desiredFoot = hip + targetDir * targetDistance;
-
-		glm::vec3 currentPole = knee - hip - targetDir * glm::dot(knee - hip, targetDir);
-		if (glm::length(currentPole) <= kEpsilon)
+		IKTarget target = legTarget.ikTarget;
+		glm::vec3 targetDelta = target.position - hip;
+		float targetDistance = glm::length(targetDelta);
+		const float maxReach = (upperLength + lowerLength) *
+			glm::clamp(m_Settings.maxLegExtensionRatio, 0.80f, 1.0f);
+		if (targetDistance > maxReach && targetDistance > kEpsilon)
 		{
-			const glm::vec3 currentDir = SafeNormalize(currentHipToFoot, targetDir);
-			currentPole = knee - hip - currentDir * glm::dot(knee - hip, currentDir);
+			target.position = hip + targetDelta * (maxReach / targetDistance);
+			targetDelta = target.position - hip;
+			targetDistance = maxReach;
 		}
-		glm::vec3 poleDir = SafeNormalize(currentPole, BuildOrthogonalDirection(targetDir));
-		const float stablePoleWeight = glm::clamp(m_Settings.kneePoleModelWeight, 0.0f, 1.0f);
-		if (stablePoleWeight > 0.001f)
+
+		const glm::vec3 targetDirection = SafeNormalize(targetDelta, SafeNormalize(foot - hip, glm::vec3(0.0f, 0.0f, 1.0f)));
+		const glm::vec3 bend = knee - hip;
+		glm::vec3 pole = bend - targetDirection * glm::dot(bend, targetDirection);
+		pole = SafeNormalize(pole, BuildOrthogonal(targetDirection));
+		const float authoredPoleWeight = glm::clamp(m_Settings.kneePoleModelWeight, 0.0f, 1.0f);
+		if (authoredPoleWeight > 0.0f)
 		{
-			const glm::vec3 stablePoleModelDir = SafeNormalize(m_Settings.kneePoleModelDir, poleDir);
-			const glm::vec3 stablePole =
-				stablePoleModelDir - targetDir * glm::dot(stablePoleModelDir, targetDir);
-			const glm::vec3 stablePoleDir = SafeNormalize(stablePole, poleDir);
-			const float poleDot = glm::dot(poleDir, stablePoleDir);
-			poleDir = poleDot < -0.2f
-				? stablePoleDir
-				: SafeNormalize(glm::mix(poleDir, stablePoleDir, stablePoleWeight), stablePoleDir);
+			glm::vec3 authored = m_Settings.kneePoleModelDir -
+				targetDirection * glm::dot(m_Settings.kneePoleModelDir, targetDirection);
+			authored = SafeNormalize(authored, pole);
+			if (glm::dot(authored, pole) < 0.0f)
+				authored = -authored;
+			pole = SafeNormalize(glm::mix(pole, authored, authoredPoleWeight), pole);
 		}
 		if (!state.poleInitialized)
 		{
 			state.poleInitialized = true;
-			state.smoothedPoleModelDir = poleDir;
+			state.poleModelDir = pole;
 		}
 		else
 		{
-			state.smoothedPoleModelDir = SafeNormalize(
-				glm::mix(state.smoothedPoleModelDir, poleDir, ExpAlpha(m_Settings.poleInterpSpeed, deltaTime)),
-				poleDir);
-			poleDir = SafeNormalize(
-				state.smoothedPoleModelDir - targetDir * glm::dot(state.smoothedPoleModelDir, targetDir),
-				poleDir);
+			state.poleModelDir = SafeNormalize(glm::mix(state.poleModelDir, pole,
+				DecayAlpha(m_Settings.poleSmoothTime, deltaTime)), pole);
 		}
 
-		const float distanceSq = targetDistance * targetDistance;
-		const float kneeAlongTarget = glm::clamp(
-			(upperLen * upperLen + distanceSq - lowerLen * lowerLen) / (2.0f * std::max(targetDistance, kEpsilon)),
-			0.0f,
-			upperLen);
-		const float kneeSide = std::sqrt(std::max(upperLen * upperLen - kneeAlongTarget * kneeAlongTarget, 0.0f));
-		const glm::vec3 desiredKnee = hip + targetDir * kneeAlongTarget + poleDir * kneeSide;
+		IKChainDefinition solveChain = chain;
+		solveChain.poleVector = hip + state.poleModelDir * std::max(upperLength + lowerLength, 1.0f);
+		solveChain.poleWeight = 1.0f;
+		solveChain.poleSpace = IKCoordinateSpace::Model;
+		const glm::mat4 originalHip = localTransforms[hipIndex];
+		const glm::mat4 originalKnee = localTransforms[kneeIndex];
+		const glm::mat4 originalFoot = localTransforms[footIndex];
 
-		ApplyModelSpaceAimRotation(hipIndex, knee - hip, desiredKnee - hip, skeleton, localTransforms, modelTransforms);
-
-		const glm::vec3 solvedKnee = IK_ExtractTranslation(modelTransforms[kneeIndex]);
+		VansTwoBoneIKSolver solver;
+		IKSolveContext context;
+		context.deltaTime = deltaTime;
+		const IKSolveResult solveResult = solver.Solve(
+			localTransforms, modelTransforms, skeleton, solveChain, target, context);
+		modelTransforms = IK_BuildModelSpaceTransforms(skeleton, localTransforms);
 		const glm::vec3 solvedFoot = IK_ExtractTranslation(modelTransforms[footIndex]);
-		ApplyModelSpaceAimRotation(kneeIndex, solvedFoot - solvedKnee, desiredFoot - solvedKnee, skeleton, localTransforms, modelTransforms);
-
-		if (target.rotationWeight > 0.001f)
-			IK_ApplyEffectorRotationTarget(localTransforms, modelTransforms, skeleton, footIndex, target);
-	}
-
-	std::vector<glm::mat4> VansFootPlacementSolver::BuildModelSpaceTransforms(
-		const Skeleton& skeleton,
-		const std::vector<glm::mat4>& localTransforms)
-	{
-		if (localTransforms.size() != skeleton.bones.size())
-			return {};
-
-		std::vector<glm::mat4> modelTransforms = localTransforms;
-		if (!skeleton.topologicalOrder.empty())
+		const bool finite = std::isfinite(solvedFoot.x) && std::isfinite(solvedFoot.y) && std::isfinite(solvedFoot.z);
+		if (solveResult.status == IKSolveStatus::InvalidInput ||
+		    !FootPlacementSolveResultIsUsable(solveResult.finalPosError, upperLength + lowerLength, finite))
 		{
-			for (int idx : skeleton.topologicalOrder)
-			{
-				if (idx < 0 || idx >= static_cast<int>(skeleton.bones.size()))
-					continue;
-				const int parent = skeleton.bones[idx].parentIndex;
-				if (parent >= 0 && parent < static_cast<int>(skeleton.bones.size()) && parent != idx)
-					modelTransforms[idx] = modelTransforms[parent] * localTransforms[idx];
-				else
-					modelTransforms[idx] = localTransforms[idx];
-			}
-			return modelTransforms;
+			localTransforms[hipIndex] = originalHip;
+			localTransforms[kneeIndex] = originalKnee;
+			localTransforms[footIndex] = originalFoot;
+			modelTransforms = IK_BuildModelSpaceTransforms(skeleton, localTransforms);
+			state.poleInitialized = false;
 		}
+	}
 
-		for (int i = 0; i < static_cast<int>(skeleton.bones.size()); ++i)
+	void VansFootPlacementSolver::PopulateLegDebug(
+		FootPlacementDebugLeg& debugLeg,
+		const glm::mat4& ownerWorldTransform,
+		const std::vector<glm::mat4>& modelTransforms,
+		int hipIndex,
+		int kneeIndex,
+		int footIndex,
+		const LegTarget& target)
+	{
+		auto worldPosition = [&](int index)
 		{
-			const int parent = skeleton.bones[i].parentIndex;
-			if (parent >= 0 && parent < i)
-				modelTransforms[i] = modelTransforms[parent] * localTransforms[i];
-			else
-				modelTransforms[i] = localTransforms[i];
-		}
-		return modelTransforms;
-	}
-
-	float VansFootPlacementSolver::EvaluateContactQuality(const FootPlacementSettings& settings, const SurfaceContact& contact)
-	{
-		if (!contact.hasHit)
-			return 0.0f;
-		if (contact.surfaceAngleDeg > settings.maxSurfaceAngleDeg)
-			return 0.0f;
-		if (contact.verticalDelta > settings.maxVerticalCorrectionUp ||
-		    contact.verticalDelta < -settings.maxVerticalCorrectionDown)
-			return 0.0f;
-		if (contact.horizontalError > settings.maxHorizontalFootError)
-			return 0.0f;
-
-		const float slopeQuality = 1.0f - SmoothStep01(contact.surfaceAngleDeg / std::max(settings.maxSurfaceAngleDeg, 0.001f));
-		const float upDenom = std::max(settings.maxVerticalCorrectionUp, 0.001f);
-		const float downDenom = std::max(settings.maxVerticalCorrectionDown, 0.001f);
-		const float verticalLimit = contact.verticalDelta >= 0.0f ? upDenom : downDenom;
-		const float verticalQuality = 1.0f - SmoothStep01(std::abs(contact.verticalDelta) / verticalLimit);
-		const float horizontalQuality = 1.0f - SmoothStep01(contact.horizontalError / std::max(settings.maxHorizontalFootError, 0.001f));
-		return glm::clamp(slopeQuality * 0.35f + verticalQuality * 0.45f + horizontalQuality * 0.20f, 0.0f, 1.0f);
-	}
-
-	float VansFootPlacementSolver::LegLength(const std::vector<glm::mat4>& modelTransforms,
-	                                         int hipIndex,
-	                                         int kneeIndex,
-	                                         int footIndex)
-	{
-		if (hipIndex < 0 || kneeIndex < 0 || footIndex < 0 ||
-		    hipIndex >= static_cast<int>(modelTransforms.size()) ||
-		    kneeIndex >= static_cast<int>(modelTransforms.size()) ||
-		    footIndex >= static_cast<int>(modelTransforms.size()))
-			return 0.0f;
-
-		const glm::vec3 hip = IK_ExtractTranslation(modelTransforms[hipIndex]);
-		const glm::vec3 knee = IK_ExtractTranslation(modelTransforms[kneeIndex]);
-		const glm::vec3 foot = IK_ExtractTranslation(modelTransforms[footIndex]);
-		return glm::distance(hip, knee) + glm::distance(knee, foot);
-	}
-
-	void VansFootPlacementSolver::PopulateLegDebug(FootPlacementDebugLeg& debugLeg,
-	                                               const glm::mat4& ownerWorldTransform,
-	                                               const std::vector<glm::mat4>& modelTransforms,
-	                                               int hipIndex,
-	                                               int kneeIndex,
-	                                               int footIndex,
-	                                               const LegSolve& solve)
-	{
-		auto worldPoint = [&](int boneIndex) -> glm::vec3
-		{
-			if (boneIndex < 0 || boneIndex >= static_cast<int>(modelTransforms.size()))
-				return glm::vec3(0.0f);
-			return glm::vec3(ownerWorldTransform * glm::vec4(IK_ExtractTranslation(modelTransforms[boneIndex]), 1.0f));
+			return IsValidBone(index, modelTransforms.size())
+				? glm::vec3(ownerWorldTransform * glm::vec4(IK_ExtractTranslation(modelTransforms[index]), 1.0f))
+				: glm::vec3(0.0f);
 		};
-
-		debugLeg.hip = worldPoint(hipIndex);
-		debugLeg.knee = worldPoint(kneeIndex);
-		debugLeg.foot = worldPoint(footIndex);
-		debugLeg.hasContact = solve.contact.hasHit;
-		debugLeg.contact = solve.contact.worldPosition;
-		debugLeg.normal = solve.contact.worldNormal;
-		debugLeg.hasTarget = solve.valid;
-		debugLeg.targetWeight = solve.target.positionWeight;
-		debugLeg.target = glm::vec3(ownerWorldTransform * glm::vec4(solve.target.position, 1.0f));
-	}
-
-	glm::quat VansFootPlacementSolver::BuildFootRotation(const glm::mat4& ownerWorldTransform,
-	                                                     const glm::mat4& currentFootModel,
-	                                                     const glm::vec3& worldNormal)
-	{
-		const glm::mat4 inverseOwner = glm::inverse(ownerWorldTransform);
-		const glm::vec3 modelNormal = SafeNormalize(glm::mat3(inverseOwner) * worldNormal, glm::vec3(0.0f, 1.0f, 0.0f));
-		const glm::quat currentRot = IK_ExtractRotation(currentFootModel);
-		const glm::vec3 currentUp = SafeNormalize(currentRot * glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-		const glm::quat align = glm::rotation(currentUp, modelNormal);
-		return glm::normalize(align * currentRot);
+		debugLeg.hip = worldPosition(hipIndex);
+		debugLeg.knee = worldPosition(kneeIndex);
+		debugLeg.animatedFoot = target.animatedFootWorld;
+		debugLeg.solvedFoot = worldPosition(footIndex);
+		debugLeg.target = target.targetWorld;
+		debugLeg.contact = target.contact.groundPointWorld;
+		debugLeg.normal = target.contact.groundNormalWorld;
+		debugLeg.hasContact = target.contact.valid;
+		debugLeg.hasTarget = target.valid;
+		debugLeg.targetWeight = target.ikTarget.positionWeight;
+		debugLeg.verticalOffset = glm::dot(target.targetWorld - target.animatedFootWorld, kWorldUp);
 	}
 }

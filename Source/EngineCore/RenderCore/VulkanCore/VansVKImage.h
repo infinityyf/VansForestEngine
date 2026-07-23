@@ -76,7 +76,7 @@ namespace VansGraphics
 		std::vector<VkImageMemoryBarrier> m_ImageMemoryBarriers;
 
 	public:
-		bool CreateVulkanImage(VkDevice& logical_device, VkExtent3D size, VkFormat format, uint32_t mip_num, uint32_t layer_num, VkImageType type, VkImageUsageFlags usage, VkSampleCountFlagBits samples, bool isCube = false, bool need_raw_Data = false, bool combined_sampler = false, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
+		bool CreateVulkanImage(VkDevice& logical_device, VkExtent3D size, VkFormat format, uint32_t mip_num, uint32_t layer_num, VkImageType type, VkImageUsageFlags usage, VkSampleCountFlagBits samples, bool isCube = false, bool need_raw_Data = false, bool combined_sampler = false, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, bool comparisonSampler = false, VkCompareOp comparisonOp = VK_COMPARE_OP_LESS_OR_EQUAL);
 
 		void DestroyVulkanImage(VkDevice& logical_device);
 

@@ -18,9 +18,29 @@ namespace VansGraphics
 
 	enum class IKSolverType
 	{
+		TwoBone,
 		CCD,     // 人体关节链（精确旋转约束）
 		FABRIK,  // 非关节链（自然位置投影）
 		LookAt   // 朝向/瞄准
+	};
+
+	// Public inputs can be authored in several spaces. Every solver resolves
+	// them to skeleton/model space before doing any IK math.
+	enum class IKCoordinateSpace
+	{
+		Model,
+		World,
+		Bone,
+		ParentBone
+	};
+
+	enum class IKSolveStatus
+	{
+		InvalidInput,
+		NoEffect,
+		Solved,
+		ReachedLimit,
+		Unreachable
 	};
 
 	// ─── 预置 Profile 类型 ────────────────────────────────────────
@@ -101,13 +121,21 @@ namespace VansGraphics
 		float   positionTolerance = 0.0005f;
 		float   rotationTolerance = 0.01f;
 
-		// 极向量（仅 CCD 有效，世界空间）
+		// 极向量/极点（CCD 与 TwoBone 使用；坐标空间由 poleSpace 指定）
 		glm::vec3 poleVector = glm::vec3(0.0f, 0.0f, -1.0f);
 		float     poleWeight = 0.0f;   // 0.0 = 关闭极向量
+		IKCoordinateSpace poleSpace = IKCoordinateSpace::Model;
+		int         poleReferenceBoneIndex = -1;
+		std::string poleReferenceBoneName;
 
 		// 是否同时约束末端旋转
 		bool  enableRotationTarget = false;
 		float rotationWeight       = 0.0f;
+		bool  maintainEffectorGlobalRotation = false;
+
+		bool  allowStretch      = false;
+		float startStretchRatio = 1.0f;
+		float maxStretchScale   = 1.2f;
 
 		// 仅供全身 IK 排序使用
 		int   solvePriority = 0;
@@ -121,16 +149,23 @@ namespace VansGraphics
 		glm::quat rotation       = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 		float     positionWeight = 1.0f;
 		float     rotationWeight = 0.0f;
+		IKCoordinateSpace positionSpace = IKCoordinateSpace::Model;
+		IKCoordinateSpace rotationSpace = IKCoordinateSpace::Model;
+		int         referenceBoneIndex = -1;
+		std::string referenceBoneName;
 	};
 
 	// ─── 求解结果 ────────────────────────────────────────────────
 
 	struct IKSolveResult
 	{
+		IKSolveStatus status       = IKSolveStatus::InvalidInput;
 		bool  converged      = false;
 		int   iterationsUsed = 0;
 		float finalPosError  = 0.0f;   // 末端到目标的距离
 		float finalRotError  = 0.0f;   // 末端旋转差异（度）
+		bool  positionLimited = false;
+		bool  rotationLimited = false;
 	};
 
 }  // namespace VansGraphics

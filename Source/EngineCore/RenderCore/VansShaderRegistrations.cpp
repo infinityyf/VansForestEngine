@@ -2,6 +2,9 @@
 #include "VansMaterial.h"
 #include "VegetationCore/VansVegetationSystem.h"
 #include "WaterCore/VansWaterGeometryClipmap.h"
+#include "WaterCore/VansWaterFFT.h"
+#include "ReflectionProbeCore/VansReflectionProbeSystem.h"
+#include "RayTracingCore/VansRayTracing.h"
 
 // ---------------------------------------------------------------------------
 // RegisterEngineShaders declares every built-in engine shader in one place.
@@ -305,16 +308,17 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("FogRayMarch", "EngineAssets/Shaders/FogRayMarch");
     reg.RegisterComputeShader("CloudRayMarch", "EngineAssets/Shaders/Cloud");
     reg.RegisterComputeShader("TileLightBuild", "EngineAssets/Shaders/TileLight");
+    reg.RegisterComputeShader("PunctualShadowDebug", "EngineAssets/Shaders/PunctualShadowDebug");
     reg.RegisterComputeShader("ExposureLuminance", "EngineAssets/Shaders/PostProcess/ExposureLuminance");
     reg.RegisterComputeShader("ExposureAdapt", "EngineAssets/Shaders/PostProcess/ExposureAdapt");
     reg.RegisterComputeShader("BloomPrefilter", "EngineAssets/Shaders/PostProcess/BloomPrefilter");
     reg.RegisterComputeShader("BloomDownsample", "EngineAssets/Shaders/PostProcess/BloomDownsample");
     reg.RegisterComputeShader("BloomUpsample", "EngineAssets/Shaders/PostProcess/BloomUpsample");
-    reg.RegisterComputeShader("GIPointLight", "EngineAssets/Shaders/GIPointLight");
-    reg.RegisterComputeShader("GISHUpdate", "EngineAssets/Shaders/GISHUpdate");
-    reg.RegisterComputeShader("GIVisibilityUpdate", "EngineAssets/Shaders/GIVisibilityUpdate");
-    reg.RegisterComputeShader("ReflectionProbePrefilter", "EngineAssets/Shaders/ReflectionProbePrefilter");
-    reg.RegisterComputeShader("GrassBoneSim", "EngineAssets/Shaders/GrassBoneSim");
+    reg.RegisterComputeShader("GIPointLight", "EngineAssets/Shaders/GIPointLight", sizeof(VansGraphics::RayTracingPushConstant));
+    reg.RegisterComputeShader("GIVisibilityUpdate", "EngineAssets/Shaders/GIVisibilityUpdate", sizeof(VansGraphics::RayTracingPushConstant));
+    reg.RegisterComputeShader("GIRTPreview", "EngineAssets/Shaders/GIRTPreview", sizeof(VansGraphics::GIRTPreviewPushConstant));
+    reg.RegisterComputeShader("ReflectionProbePrefilter", "EngineAssets/Shaders/ReflectionProbePrefilter", sizeof(VansGraphics::VansReflectionProbeSystem::PrefilterPushConstants));
+    reg.RegisterComputeShader("GrassBoneSim", "EngineAssets/Shaders/GrassBoneSim", sizeof(VansGraphics::GrassSimPushConstants));
     reg.RegisterComputeShader("GrassCull", "EngineAssets/Shaders/GrassCull", sizeof(VansGraphics::GrassCullPushConstants));
     reg.RegisterComputeShader("TreeCull", "EngineAssets/Shaders/TreeCull", sizeof(VansGraphics::TreeCullPushConstants));
     reg.RegisterComputeShader("WaterWave", "EngineAssets/Shaders/Water/WaterWave");
@@ -323,7 +327,12 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("WaterCaustics", "EngineAssets/Shaders/Water/Caustics");
     reg.RegisterComputeShader("WaterThickness", "EngineAssets/Shaders/Water/SSS");
     reg.RegisterComputeShader("WaterSSSScatter", "EngineAssets/Shaders/Water/SSSScatter");
-    reg.RegisterRayTracingShader("RayTracingTest", "EngineAssets/Shaders/RayTracingTest");
+    reg.RegisterComputeShader("WaterFFTInit", "EngineAssets/Shaders/Water/FFT/Init");
+    reg.RegisterComputeShader("WaterFFTEvolve", "EngineAssets/Shaders/Water/FFT/Evolve");
+    reg.RegisterComputeShader("WaterFFTIter", "EngineAssets/Shaders/Water/FFT/Iter", sizeof(VansGraphics::VansWaterFFT::IterPushConstants));
+    reg.RegisterComputeShader("WaterFFTExtract", "EngineAssets/Shaders/Water/FFT/Extract");
+    reg.RegisterComputeShader("WaterFFTExtractSlope", "EngineAssets/Shaders/Water/FFT/ExtractSlope");
+    reg.RegisterRayTracingShader("RayTracingTest", "EngineAssets/Shaders/RayTracingTest", sizeof(VansGraphics::RayTracingPushConstant));
 
     // Step 2: Register material type to { pass name, shader name } mappings.
 

@@ -62,7 +62,9 @@ struct VansAssetScanResult
 class VansAssetDatabase
 {
 public:
-    explicit VansAssetDatabase(std::filesystem::path assetsRoot);
+    explicit VansAssetDatabase(
+        std::filesystem::path assetsRoot,
+        std::filesystem::path artifactRoot = {});
 
     VansAssetScanResult Scan();
     bool RegisterOrRefresh(const std::filesystem::path& sourcePath, bool createMeta, std::string& error);
@@ -80,6 +82,7 @@ private:
     static std::wstring PathKey(const std::filesystem::path& path);
 
     std::filesystem::path m_AssetsRoot;
+    std::filesystem::path m_ArtifactRoot;
     mutable std::shared_mutex m_Mutex;
     std::unordered_map<VansAssetGuid, VansAssetRecord> m_ByGuid;
     std::unordered_map<std::wstring, VansAssetGuid> m_ByPath;

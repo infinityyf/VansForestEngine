@@ -10,6 +10,8 @@
 #include "../VulkanCore/VansVKDevice.h"
 #include "../VulkanCore/VansVideoTexture.h"
 
+#include <algorithm>
+
 namespace VansGraphics
 {
 namespace
@@ -24,6 +26,77 @@ glm::vec3 ReadColorOrWhite(const json& lightJson)
 			lightJson["color"][2].get<float>());
 	}
 	return glm::vec3(1.0f);
+}
+
+VansShadowPolicy ReadShadowPolicy(const json& lightJson)
+{
+	const std::string value = lightJson.value("shadowPolicy", "Auto");
+	if (value == "Disabled" || value == "disabled") return VansShadowPolicy::Disabled;
+	if (value == "Hero" || value == "hero") return VansShadowPolicy::Hero;
+	if (value == "DistanceDynamic" || value == "Distance Dynamic" || value == "distance_dynamic")
+		return VansShadowPolicy::DistanceDynamic;
+	return VansShadowPolicy::Auto;
+}
+
+VansShadowResolution ReadShadowResolution(const json& lightJson)
+{
+	if (!lightJson.contains("shadowResolution"))
+		return VansShadowResolution::Auto;
+	const json& value = lightJson["shadowResolution"];
+	if (value.is_number_integer())
+	{
+		switch (value.get<int>())
+		{
+		case 128: return VansShadowResolution::R128;
+		case 256: return VansShadowResolution::R256;
+		case 512: return VansShadowResolution::R512;
+		case 1024: return VansShadowResolution::R1024;
+		default: return VansShadowResolution::Auto;
+		}
+	}
+	if (value.is_string())
+	{
+		const std::string text = value.get<std::string>();
+		if (text == "128" || text == "R128") return VansShadowResolution::R128;
+		if (text == "256" || text == "R256") return VansShadowResolution::R256;
+		if (text == "512" || text == "R512") return VansShadowResolution::R512;
+		if (text == "1024" || text == "R1024") return VansShadowResolution::R1024;
+	}
+	return VansShadowResolution::Auto;
+}
+
+VansShadowUpdateMode ReadShadowUpdateMode(const json& lightJson)
+{
+	const std::string value = lightJson.value("shadowUpdateMode", "OnChange");
+	if (value == "EveryFrame" || value == "every_frame") return VansShadowUpdateMode::EveryFrame;
+	if (value == "Budgeted" || value == "budgeted") return VansShadowUpdateMode::Budgeted;
+	return VansShadowUpdateMode::OnChange;
+}
+
+VansShadowFallback ReadShadowFallback(const json& lightJson)
+{
+	const std::string value = lightJson.value("shadowFallback", "ScreenSpace");
+	if (value == "None" || value == "none") return VansShadowFallback::None;
+	return VansShadowFallback::ScreenSpace;
+}
+
+VansPunctualShadowSettings ReadShadowSettings(const json& lightJson, bool defaultCastShadows)
+{
+	VansPunctualShadowSettings settings;
+	settings.castShadows = lightJson.value("castShadows", defaultCastShadows);
+	settings.policy = ReadShadowPolicy(lightJson);
+	settings.priority = static_cast<uint8_t>(std::clamp(lightJson.value("shadowPriority", 128), 0, 255));
+	settings.resolution = ReadShadowResolution(lightJson);
+	settings.updateMode = ReadShadowUpdateMode(lightJson);
+	settings.fallback = ReadShadowFallback(lightJson);
+	settings.maxShadowDistance = (std::max)(lightJson.value("shadowMaxDistance", 30.0f), 0.01f);
+	settings.nearPlaneOverride = (std::max)(lightJson.value("shadowNearPlane", 0.0f), 0.0f);
+	settings.depthBiasTexels = (std::max)(lightJson.value("shadowDepthBiasTexels", 1.0f), 0.0f);
+	settings.normalBiasTexels = (std::max)(lightJson.value("shadowNormalBiasTexels", 1.0f), 0.0f);
+	settings.sourceRadius = (std::max)(lightJson.value("shadowSourceRadius", 0.02f), 0.0f);
+	settings.affectsVolumetricFog = lightJson.value("shadowAffectsFog", true);
+	settings.affectsGI = lightJson.value("shadowAffectsGI", true);
+	return settings;
 }
 
 void WriteWhiteRectLightEmissiveFallback(VansMaterialManager& materialManager, int layer)
@@ -125,8 +198,9 @@ void VansSceneLightComponentBuilder::BuildLights(
 		pointLight.m_Intensity = plJson.value("intensity", 1.0f);
 		pointLight.m_Radius = plJson.value("radius", 10.0f);
 		pointLight.m_IESProfileIndex = -1.0f;
-		pointLight.m_ShadowIndex = plJson.value("castShadows", true) ? 0.0f : -1.0f;
+		pointLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 		pointLight.m_Position = glm::vec3(0.0f);
+		const VansPunctualShadowSettings shadowSettings = ReadShadowSettings(plJson, true);
 
 		if (plJson.contains("ies_profile") && plJson["ies_profile"].is_string())
 		{
@@ -139,7 +213,7 @@ void VansSceneLightComponentBuilder::BuildLights(
 		}
 
 		int idx = static_cast<int>(lightManager.GetPointLights().size());
-		lightManager.AddPointLight(pointLight);
+		lightManager.AddPointLight(pointLight, shadowSettings);
 
 		auto* plComp = new VansScriptPointLightComponent();
 		plComp->m_LightManager = &lightManager;
@@ -160,10 +234,11 @@ void VansSceneLightComponentBuilder::BuildLights(
 		spotLight.m_OuterCutOff = glm::radians(slJson.value("outerCutoff", 45.0f));
 		spotLight.m_IESProfileIndex = -1.0f;
 		spotLight.m_IESIntensityScale = slJson.value("ies_intensity_scale", 1.0f);
-		spotLight.m_ShadowIndex = slJson.value("castShadows", true) ? 0.0f : -1.0f;
+		spotLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 		spotLight.m_pad0 = 0.0f;
 		spotLight.m_Position = glm::vec3(0.0f);
 		spotLight.m_Direction = glm::vec3(0.0f, 1.0f, 0.0f);
+		const VansPunctualShadowSettings shadowSettings = ReadShadowSettings(slJson, true);
 
 		if (slJson.contains("ies_profile") && slJson["ies_profile"].is_string())
 		{
@@ -176,7 +251,7 @@ void VansSceneLightComponentBuilder::BuildLights(
 		}
 
 		int idx = static_cast<int>(lightManager.GetSpotLight().size());
-		lightManager.AddSpotLight(spotLight);
+		lightManager.AddSpotLight(spotLight, shadowSettings);
 
 		auto* slComp = new VansScriptSpotLightComponent();
 		slComp->m_LightManager = &lightManager;
@@ -197,13 +272,14 @@ void VansSceneLightComponentBuilder::BuildLights(
 		rectLight.m_Range = rlJson.value("range", 10.0f);
 		rectLight.m_TwoSided = rlJson.value("two_sided", false) ? 1.0f : 0.0f;
 		rectLight.m_AttenuationExp = rlJson.value("attenuation_exp", 2.0f);
-		rectLight.m_ShadowIndex = rlJson.value("shadow", false) ? 0.0f : -1.0f;
+		rectLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 		rectLight.m_Position = glm::vec3(0.0f);
 		rectLight.m_Normal = glm::vec3(0.0f, 0.0f, 1.0f);
 		rectLight.m_Right = glm::vec3(1.0f, 0.0f, 0.0f);
 		rectLight.m_Up = glm::vec3(0.0f, 1.0f, 0.0f);
 		rectLight.m_TextureSlot = -1.0f;
 		rectLight.m_TexLodBias = rlJson.value("texture_lod_bias", 0.0f);
+		VansPunctualShadowSettings shadowSettings = ReadShadowSettings(rlJson, rlJson.value("shadow", false));
 
 		std::string emissiveTexPath;
 		std::string emissiveVideoName;
@@ -213,7 +289,7 @@ void VansSceneLightComponentBuilder::BuildLights(
 			emissiveVideoName = rlJson["emissive_video"].get<std::string>();
 
 		int idx = static_cast<int>(lightManager.GetRectLights().size());
-		lightManager.AddRectLight(rectLight);
+		lightManager.AddRectLight(rectLight, shadowSettings);
 
 		auto* rlComp = new VansScriptRectLightComponent();
 		rlComp->m_LightManager = &lightManager;

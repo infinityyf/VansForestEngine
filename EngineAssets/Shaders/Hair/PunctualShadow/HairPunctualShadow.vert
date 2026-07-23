@@ -3,11 +3,12 @@
 
 #include "../../Common/ModelData.glsl"
 #include "../../Lights/LightsData.glsl"
+#include "../../Common/AnimationSkinning.glsl"
 
 layout(push_constant) uniform LightShadowIndex
 {
     int lightIndex;
-    int shadowIndex;
+    int shadowFaceIndex;
     int materialIndex;
     int objectIndex;
     int animationEnabled;
@@ -24,15 +25,21 @@ void main()
     int spotLightCount = int(uSpotLightCount);
     int rectLightStart = pointLightCount + spotLightCount;
 
-    mat4 shadowMatrix;
+    uint metaIndex;
     if (lightIndex < pointLightCount)
-        shadowMatrix = uPointLights[lightIndex].shadowMatrix[shadowIndex];
+        metaIndex = uPointLights[lightIndex].shadowMetaIndex;
     else if (lightIndex < rectLightStart)
-        shadowMatrix = uSpotLights[lightIndex - pointLightCount].shadowMatrix;
+        metaIndex = uSpotLights[lightIndex - pointLightCount].shadowMetaIndex;
     else
-        shadowMatrix = uRectLights[lightIndex - rectLightStart].shadowMatrix;
+        metaIndex = uRectLights[lightIndex - rectLightStart].shadowMetaIndex;
 
-    vec4 clipCoord = shadowMatrix * modelMatrix * position;
+    PunctualShadowData shadow = uPunctualShadows[metaIndex];
+    mat4 shadowMatrix = uPunctualShadowViews[shadow.firstView + uint(shadowFaceIndex)].worldToShadow;
+
+    vec4 skinnedPosition = position;
+    if (animationEnabled != 0)
+        VansApplyAnimationSkinningPosition(skinnedPosition);
+    vec4 clipCoord = shadowMatrix * modelMatrix * skinnedPosition;
     clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
     gl_Position = clipCoord;
 

@@ -70,6 +70,9 @@ namespace VansGraphics
 		VansGraphicsPipelineStateDesc graphicsState;
 		int pushConstantSize = 0;
 		std::vector<std::string> materialPasses;
+		// Hash of the currently active stage SPIR-V payloads. It changes only
+		// after a candidate has been successfully applied to Vulkan modules.
+		std::uint64_t shaderBinaryHash = 0;
 
 		void Clear()
 		{
@@ -80,6 +83,7 @@ namespace VansGraphics
 			graphicsState = {};
 			pushConstantSize = 0;
 			materialPasses.clear();
+			shaderBinaryHash = 0;
 		}
 	};
 
@@ -92,6 +96,8 @@ namespace VansGraphics
 		uint32_t pushConstantSize = 0;
 		uint32_t vertexBindingCount = 0;
 		uint32_t vertexAttributeCount = 0;
+		std::vector<VkVertexInputBindingDescription> vertexBindings;
+		std::vector<VkVertexInputAttributeDescription> vertexAttributes;
 		VkSampleCountFlagBits rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 		VkBool32 sampleShadingEnable = VK_FALSE;
 	};
@@ -102,6 +108,18 @@ namespace VansGraphics
 		uint64_t hash = 0;
 
 		bool IsValid() const { return hash != 0 && !text.empty(); }
+	};
+
+	// Compact, allocation-free lookup identity used by a shader's local pipeline
+	// variant cache. The canonical text descriptor remains the authoritative key
+	// for the global registry and is only built on a local-cache miss.
+	struct VansPipelineVariantIdentity
+	{
+		uint64_t hash = 0;
+		uint64_t shaderBinaryHash = 0;
+		int pushConstantSize = 0;
+		VansGraphicsPipelineStateDesc graphicsState;
+		VansPipelineRuntimeDesc runtimeDesc;
 	};
 
 	class VansPipelineDescriptorBuilder
@@ -115,6 +133,33 @@ namespace VansGraphics
 		static VansPipelineDescriptorKey BuildPipelineKey(
 			const VansPipelineProgramDesc& programDesc,
 			const VansPipelineRuntimeDesc& runtimeDesc);
+
+		// Builds the hot-path hash directly from the current Vulkan state without
+		// constructing strings or copying any vectors.
+		static uint64_t BuildVariantHash(
+			const VansPipelineProgramDesc& programDesc,
+			VkRenderPass renderPass,
+			uint32_t subpass,
+			const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts,
+			uint32_t pushConstantSize,
+			const std::vector<VkVertexInputBindingDescription>* vertexBindings,
+			const std::vector<VkVertexInputAttributeDescription>* vertexAttributes,
+			VkSampleCountFlagBits rasterizationSamples,
+			VkBool32 sampleShadingEnable);
+
+		// Performs collision-safe equality against a stored identity without
+		// allocating a temporary runtime descriptor.
+		static bool MatchesVariant(
+			const VansPipelineVariantIdentity& identity,
+			const VansPipelineProgramDesc& programDesc,
+			VkRenderPass renderPass,
+			uint32_t subpass,
+			const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts,
+			uint32_t pushConstantSize,
+			const std::vector<VkVertexInputBindingDescription>* vertexBindings,
+			const std::vector<VkVertexInputAttributeDescription>* vertexAttributes,
+			VkSampleCountFlagBits rasterizationSamples,
+			VkBool32 sampleShadingEnable);
 
 		static VansPipelineRuntimeDesc BuildRuntimeDesc(
 			const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts,

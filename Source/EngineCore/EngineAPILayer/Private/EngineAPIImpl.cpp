@@ -13,6 +13,7 @@
 #include "../../RenderCore/ReflectionProbeCore/VansReflectionProbeSystem.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../RenderCore/VansRenderNode.h"
+#include "../../RenderCore/VansShaderManager.h"
 #include "../../RenderCore/TerrainCore/VansTerrain.h"
 #include "../../RenderCore/WaterCore/VansWaterFFT.h"
 #include "../../RenderCore/WaterCore/VansWaterSystem.h"
@@ -188,14 +189,15 @@ namespace Vans::EditorAPI
 			RenderTextureId id,
 			const char* name,
 			VansGraphics::VansVKImage& image,
-			VkImageLayout layout)
+			VkImageLayout layout,
+			VkSampler samplerOverride = VK_NULL_HANDLE)
 		{
 			RenderTexturePreview preview;
 			preview.id = id;
 			preview.name = name ? name : "";
 
 			VkImageView imageView = image.GetImageView();
-			VkSampler sampler = image.GetSampler();
+			VkSampler sampler = samplerOverride != VK_NULL_HANDLE ? samplerOverride : image.GetSampler();
 			if (imageView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE)
 				return preview;
 
@@ -807,7 +809,11 @@ namespace Vans::EditorAPI
 				if (patch.writeRectTwoSided)
 					light.m_TwoSided = patch.rectTwoSided;
 				if (patch.writeRectShadow)
-					light.m_ShadowIndex = patch.rectShadowIndex;
+				{
+					auto& registrations = binding.manager->GetRectShadowRegistrations();
+					if (static_cast<std::size_t>(binding.index) < registrations.size())
+						registrations[static_cast<std::size_t>(binding.index)].settings.castShadows = patch.rectShadowIndex >= 0.0f;
+				}
 				return true;
 			}
 			}
@@ -844,22 +850,46 @@ namespace Vans::EditorAPI
 				snapshot.directionalLights.push_back(light);
 			}
 
-			const auto& pointLights = lightManager->GetPointLights();
-			snapshot.pointLights.reserve(pointLights.size());
-			for (const auto& source : pointLights)
+			auto captureShadow = [](const VansGraphics::VansPunctualShadowSettings& source,
+				PointLightSettings::PunctualShadowSettings& target)
 			{
+				target.castShadows = source.castShadows;
+				target.policy = static_cast<int>(source.policy);
+				target.priority = source.priority;
+				target.resolution = static_cast<int>(source.resolution);
+				target.updateMode = static_cast<int>(source.updateMode);
+				target.fallback = static_cast<int>(source.fallback);
+				target.maxDistance = source.maxShadowDistance;
+				target.nearPlane = source.nearPlaneOverride;
+				target.depthBiasTexels = source.depthBiasTexels;
+				target.normalBiasTexels = source.normalBiasTexels;
+				target.sourceRadius = source.sourceRadius;
+				target.affectsFog = source.affectsVolumetricFog;
+				target.affectsGI = source.affectsGI;
+			};
+
+			const auto& pointLights = lightManager->GetPointLights();
+			const auto& pointRegistrations = lightManager->GetPointShadowRegistrations();
+			snapshot.pointLights.reserve(pointLights.size());
+			for (std::size_t index = 0; index < pointLights.size(); ++index)
+			{
+				const auto& source = pointLights[index];
 				PointLightSettings light;
 				light.position = ToEditorVec3(source.m_Position);
 				light.color = ToEditorVec3(source.m_Color);
 				light.intensity = source.m_Intensity;
 				light.radius = source.m_Radius;
+				if (index < pointRegistrations.size())
+					captureShadow(pointRegistrations[index].settings, light.shadow);
 				snapshot.pointLights.push_back(light);
 			}
 
 			const auto& spotLights = lightManager->GetSpotLight();
+			const auto& spotRegistrations = lightManager->GetSpotShadowRegistrations();
 			snapshot.spotLights.reserve(spotLights.size());
-			for (const auto& source : spotLights)
+			for (std::size_t index = 0; index < spotLights.size(); ++index)
 			{
+				const auto& source = spotLights[index];
 				SpotLightSettings light;
 				light.position = ToEditorVec3(source.m_Position);
 				light.direction = ToEditorVec3(source.m_Direction);
@@ -868,7 +898,29 @@ namespace Vans::EditorAPI
 				light.radius = source.m_Radius;
 				light.innerCutoffRadians = source.m_InnerCutOff;
 				light.outerCutoffRadians = source.m_OuterCutOff;
+				if (index < spotRegistrations.size())
+					captureShadow(spotRegistrations[index].settings, light.shadow);
 				snapshot.spotLights.push_back(light);
+			}
+
+			const auto& rectLights = lightManager->GetRectLights();
+			const auto& rectRegistrations = lightManager->GetRectShadowRegistrations();
+			snapshot.rectLights.reserve(rectLights.size());
+			for (std::size_t index = 0; index < rectLights.size(); ++index)
+			{
+				const auto& source = rectLights[index];
+				RectLightSettings light;
+				light.position = ToEditorVec3(source.m_Position);
+				light.normal = ToEditorVec3(source.m_Normal);
+				light.color = ToEditorVec3(source.m_Color);
+				light.intensity = source.m_Intensity;
+				light.width = source.m_HalfWidth * 2.0f;
+				light.height = source.m_HalfHeight * 2.0f;
+				light.range = source.m_Range;
+				light.twoSided = source.m_TwoSided > 0.5f;
+				if (index < rectRegistrations.size())
+					captureShadow(rectRegistrations[index].settings, light.shadow);
+				snapshot.rectLights.push_back(light);
 			}
 
 			return snapshot;
@@ -891,7 +943,33 @@ namespace Vans::EditorAPI
 				directionalLights[i].m_Intensity = source.intensity;
 			}
 
+			auto applyShadow = [](const PointLightSettings::PunctualShadowSettings& source,
+				VansGraphics::VansPunctualShadowSettings& target)
+			{
+				target.castShadows = source.castShadows;
+				target.policy = static_cast<VansGraphics::VansShadowPolicy>(std::clamp(source.policy, 0, 3));
+				target.priority = static_cast<uint8_t>(std::clamp(source.priority, 0, 255));
+				switch (source.resolution)
+				{
+				case 128: target.resolution = VansGraphics::VansShadowResolution::R128; break;
+				case 256: target.resolution = VansGraphics::VansShadowResolution::R256; break;
+				case 512: target.resolution = VansGraphics::VansShadowResolution::R512; break;
+				case 1024: target.resolution = VansGraphics::VansShadowResolution::R1024; break;
+				default: target.resolution = VansGraphics::VansShadowResolution::Auto; break;
+				}
+				target.updateMode = static_cast<VansGraphics::VansShadowUpdateMode>(std::clamp(source.updateMode, 0, 2));
+				target.fallback = static_cast<VansGraphics::VansShadowFallback>(std::clamp(source.fallback, 0, 1));
+				target.maxShadowDistance = std::max(source.maxDistance, 0.01f);
+				target.nearPlaneOverride = std::max(source.nearPlane, 0.0f);
+				target.depthBiasTexels = std::max(source.depthBiasTexels, 0.0f);
+				target.normalBiasTexels = std::max(source.normalBiasTexels, 0.0f);
+				target.sourceRadius = std::max(source.sourceRadius, 0.0f);
+				target.affectsVolumetricFog = source.affectsFog;
+				target.affectsGI = source.affectsGI;
+			};
+
 			auto& pointLights = lightManager->GetPointLights();
+			auto& pointRegistrations = lightManager->GetPointShadowRegistrations();
 			const std::size_t pointCount = std::min(pointLights.size(), settings.pointLights.size());
 			for (std::size_t i = 0; i < pointCount; ++i)
 			{
@@ -900,9 +978,12 @@ namespace Vans::EditorAPI
 				pointLights[i].m_Color = ToRuntimeVec3(source.color);
 				pointLights[i].m_Intensity = source.intensity;
 				pointLights[i].m_Radius = source.radius;
+				if (i < pointRegistrations.size())
+					applyShadow(source.shadow, pointRegistrations[i].settings);
 			}
 
 			auto& spotLights = lightManager->GetSpotLight();
+			auto& spotRegistrations = lightManager->GetSpotShadowRegistrations();
 			const std::size_t spotCount = std::min(spotLights.size(), settings.spotLights.size());
 			for (std::size_t i = 0; i < spotCount; ++i)
 			{
@@ -914,6 +995,26 @@ namespace Vans::EditorAPI
 				spotLights[i].m_Radius = source.radius;
 				spotLights[i].m_InnerCutOff = source.innerCutoffRadians;
 				spotLights[i].m_OuterCutOff = source.outerCutoffRadians;
+				if (i < spotRegistrations.size())
+					applyShadow(source.shadow, spotRegistrations[i].settings);
+			}
+
+			auto& rectLights = lightManager->GetRectLights();
+			auto& rectRegistrations = lightManager->GetRectShadowRegistrations();
+			const std::size_t rectCount = std::min(rectLights.size(), settings.rectLights.size());
+			for (std::size_t i = 0; i < rectCount; ++i)
+			{
+				const RectLightSettings& source = settings.rectLights[i];
+				rectLights[i].m_Position = ToRuntimeVec3(source.position);
+				rectLights[i].m_Normal = ToRuntimeVec3(source.normal);
+				rectLights[i].m_Color = ToRuntimeVec3(source.color);
+				rectLights[i].m_Intensity = source.intensity;
+				rectLights[i].m_HalfWidth = std::max(source.width * 0.5f, 0.001f);
+				rectLights[i].m_HalfHeight = std::max(source.height * 0.5f, 0.001f);
+				rectLights[i].m_Range = std::max(source.range, 0.01f);
+				rectLights[i].m_TwoSided = source.twoSided ? 1.0f : 0.0f;
+				if (i < rectRegistrations.size())
+					applyShadow(source.shadow, rectRegistrations[i].settings);
 			}
 		}
 
@@ -1367,6 +1468,35 @@ namespace Vans::EditorAPI
 				return json;
 			}
 
+			if (auto* cloth = dynamic_cast<VansGraphics::VansClothMaterial*>(material))
+			{
+				const char* clothModel = "fuzz";
+				if (cloth->m_ClothModel == VansGraphics::VansClothModel::Silk) clothModel = "silk";
+				else if (cloth->m_ClothModel == VansGraphics::VansClothModel::Thin) clothModel = "thin";
+
+				json["materialType"] = "cloth";
+				json["parameters"] = {
+					{ "albedo", Vec3Json(cloth->m_BasePBRParam.m_albedo) },
+					{ "clothModel", clothModel },
+					{ "sheenRoughness", cloth->m_SheenRoughness },
+					{ "sheenStrength", cloth->m_SheenStrength },
+					{ "anisotropy", cloth->m_Anisotropy },
+					{ "transmissionColor", Vec3Json(cloth->m_TransmissionColor) },
+					{ "translucency", cloth->m_Translucency },
+					{ "thickness", cloth->m_Thickness },
+					{ "ao", cloth->m_BasePBRParam.m_ao }
+				};
+				if ((cloth->m_ClothFlags & VansGraphics::VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT) == 0u)
+					json["parameters"]["sheenColor"] = Vec3Json(cloth->m_SheenColor);
+				Vans::SceneJson textures = Vans::SceneJson::object();
+				AddTextureRefIfResolvable(textures, "basecolor", cloth->m_BaseColorTexture, database, rootName);
+				AddTextureRefIfResolvable(textures, "normal", cloth->m_NormalTexture, database, rootName);
+				AddTextureRefIfResolvable(textures, "roughness", cloth->m_RoughnessTexture, database, rootName);
+				AddTextureRefIfResolvable(textures, "ao", cloth->m_AoTexture, database, rootName);
+				json["textures"] = std::move(textures);
+				return json;
+			}
+
 			if (auto* transparent = dynamic_cast<VansGraphics::VansTransparentMaterial*>(material))
 			{
 				json["materialType"] = "transparent";
@@ -1615,15 +1745,10 @@ namespace Vans::EditorAPI
 			sample.rayEnd = ToEditorVec3(source.rayEnd);
 			sample.hitPosition = ToEditorVec3(source.hitPosition);
 			sample.hitNormal = ToEditorVec3(source.hitNormal);
-			sample.rawHitPosition = ToEditorVec3(source.rawHitPosition);
 			sample.hasHit = source.hasHit;
-			sample.hasRawHit = source.hasRawHit;
 			sample.accepted = source.accepted;
-			sample.quality = source.quality;
 			sample.hitLayer = source.hitLayer;
-			sample.rawHitLayer = source.rawHitLayer;
 			sample.hitActorName = source.hitActorName;
-			sample.rawHitActorName = source.rawHitActorName;
 			sample.status = source.status;
 			return sample;
 		}
@@ -1633,18 +1758,15 @@ namespace Vans::EditorAPI
 			FootIKDebugLegSnapshot leg;
 			leg.hip = ToEditorVec3(source.hip);
 			leg.knee = ToEditorVec3(source.knee);
-			leg.foot = ToEditorVec3(source.foot);
+			leg.animatedFoot = ToEditorVec3(source.animatedFoot);
+			leg.solvedFoot = ToEditorVec3(source.solvedFoot);
 			leg.target = ToEditorVec3(source.target);
 			leg.contact = ToEditorVec3(source.contact);
 			leg.normal = ToEditorVec3(source.normal);
-			leg.overlapCenter = ToEditorVec3(source.overlapCenter);
-			leg.overlapHalfExtents = ToEditorVec3(source.overlapHalfExtents);
 			leg.hasContact = source.hasContact;
 			leg.hasTarget = source.hasTarget;
-			leg.hasOverlap = source.hasOverlap;
 			leg.targetWeight = source.targetWeight;
-			leg.overlapLayer = source.overlapLayer;
-			leg.overlapActorName = source.overlapActorName;
+			leg.verticalOffset = source.verticalOffset;
 			leg.samples.reserve(source.samples.size());
 			for (const auto& sample : source.samples)
 				leg.samples.push_back(ToFootIKDebugSample(sample));
@@ -2784,6 +2906,272 @@ namespace Vans::EditorAPI
 		return previews;
 	}
 
+	void EngineAPIImpl::RequestPunctualShadowDebugPreview()
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* lightManager = scene ? scene->GetLightManager() : nullptr;
+		if (lightManager != nullptr)
+			lightManager->GetPunctualShadowManager().RequestDebugPreview();
+	}
+
+	PunctualShadowDebugSnapshot EngineAPIImpl::GetPunctualShadowDebugSnapshot() const
+	{
+		PunctualShadowDebugSnapshot snapshot;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene)
+			return snapshot;
+
+		auto* lightManager = scene->GetLightManager();
+		auto* materialManager = scene->GetMaterialManager();
+		if (!lightManager || !materialManager)
+			return snapshot;
+
+		const VansGraphics::VansPunctualShadowDebugSnapshot runtime =
+			lightManager->GetPunctualShadowManager().CaptureDebugSnapshot();
+		snapshot.available = true;
+		snapshot.frameIndex = runtime.frameIndex;
+		snapshot.atlasSize = runtime.atlasSize;
+		snapshot.basePageSize = runtime.basePageSize;
+		snapshot.gutter = runtime.gutter;
+		snapshot.totalPages = lightManager->GetPunctualShadowManager().GetAtlasAllocator().GetTotalPages();
+		snapshot.usedPages = runtime.statistics.usedAtlasPages;
+		snapshot.residentLights = runtime.statistics.residentLights;
+		snapshot.residentViews = runtime.statistics.residentViews;
+		snapshot.renderedViewsThisFrame = runtime.statistics.renderedViews;
+		snapshot.fallbackLights = runtime.statistics.fallbackLights;
+		snapshot.allocationFailures = runtime.statistics.allocationFailures;
+		snapshot.dirtyTexelsThisFrame = runtime.statistics.dirtyTexels;
+
+		const VansGraphics::VansScreenSpacePunctualShadowSettings screenSettings =
+			materialManager->GetScreenSpacePunctualShadowSettings();
+		snapshot.screenSpaceSettings.maxTraceDistance = screenSettings.maxTraceDistance;
+		snapshot.screenSpaceSettings.thickness = screenSettings.thickness;
+		snapshot.screenSpaceSettings.normalBias = screenSettings.normalBias;
+		snapshot.screenSpaceSettings.maxSteps = screenSettings.maxSteps;
+		snapshot.screenSpaceSettings.strength = screenSettings.strength;
+
+		auto runtimeStateName = [](VansGraphics::VansShadowRuntimeState state) -> const char*
+		{
+			switch (state)
+			{
+			case VansGraphics::VansShadowRuntimeState::Disabled: return "Disabled";
+			case VansGraphics::VansShadowRuntimeState::Candidate: return "Candidate";
+			case VansGraphics::VansShadowRuntimeState::PendingAllocation: return "PendingAllocation";
+			case VansGraphics::VansShadowRuntimeState::PendingRender: return "PendingRender";
+			case VansGraphics::VansShadowRuntimeState::ResidentDirty: return "ResidentDirty";
+			case VansGraphics::VansShadowRuntimeState::ResidentClean: return "ResidentClean";
+			case VansGraphics::VansShadowRuntimeState::FallbackScreenSpace: return "FallbackScreenSpace";
+			case VansGraphics::VansShadowRuntimeState::FallbackNone: return "FallbackNone";
+			case VansGraphics::VansShadowRuntimeState::Evicting: return "Evicting";
+			default: return "Unknown";
+			}
+		};
+
+		auto policyName = [](VansGraphics::VansShadowPolicy policy) -> const char*
+		{
+			switch (policy)
+			{
+			case VansGraphics::VansShadowPolicy::Disabled: return "Disabled";
+			case VansGraphics::VansShadowPolicy::Auto: return "Auto";
+			case VansGraphics::VansShadowPolicy::Hero: return "Hero";
+			case VansGraphics::VansShadowPolicy::DistanceDynamic: return "DistanceDynamic";
+			default: return "Unknown";
+			}
+		};
+
+		snapshot.lights.reserve(runtime.lights.size());
+		for (const VansGraphics::VansPunctualShadowRuntimeDebug& source : runtime.lights)
+		{
+			PunctualShadowLightDebugSnapshot destination;
+			destination.stableLightId = source.stableLightId;
+			destination.gpuLightIndex = source.gpuLightIndex;
+			destination.lightKind = source.lightType == VansGraphics::VansPunctualShadowLightType::Point
+				? PunctualShadowLightKind::Point
+				: (source.lightType == VansGraphics::VansPunctualShadowLightType::Spot
+					? PunctualShadowLightKind::Spot
+					: PunctualShadowLightKind::Rect);
+			destination.runtimeState = runtimeStateName(source.runtimeState);
+			destination.policy = policyName(source.policy);
+			destination.priority = source.priority;
+			destination.activeResolution = source.activeResolution;
+			destination.targetResolution = source.targetResolution;
+			destination.dirtyFaceMask = source.dirtyFaceMask;
+			destination.validFaceMask = source.validFaceMask;
+			destination.importance = source.importance;
+			destination.coverage = source.coverage;
+			destination.cameraDistance = source.cameraDistance;
+			destination.distancePriority = source.distancePriority;
+			destination.atlasWeight = source.atlasWeight;
+			destination.residencyFrames = source.residencyFrames;
+			destination.staleFrames = source.staleFrames;
+			destination.lastRenderedFrame = source.lastRenderedFrame;
+			destination.affectsFog = source.affectsVolumetricFog;
+			destination.affectsGI = source.affectsGI;
+
+			const bool hasValidAtlas = source.activeResolution != 0 &&
+				source.validFaceMask != 0 && source.atlasWeight > 0.0f;
+			if (!source.castShadows || source.policy == VansGraphics::VansShadowPolicy::Disabled)
+				destination.displayMode = PunctualShadowDisplayMode::Disabled;
+			else if (hasValidAtlas && source.atlasWeight < 0.999f)
+				destination.displayMode = PunctualShadowDisplayMode::AtlasTransition;
+			else if (hasValidAtlas && source.policy == VansGraphics::VansShadowPolicy::Hero)
+				destination.displayMode = PunctualShadowDisplayMode::HeroAtlas;
+			else if (hasValidAtlas)
+				destination.displayMode = PunctualShadowDisplayMode::CachedAtlas;
+			else if (source.runtimeState == VansGraphics::VansShadowRuntimeState::FallbackScreenSpace ||
+				source.fallback == VansGraphics::VansShadowFallback::ScreenSpace)
+				destination.displayMode = PunctualShadowDisplayMode::ScreenSpaceFallback;
+			else
+				destination.displayMode = PunctualShadowDisplayMode::Unshadowed;
+
+			for (uint32_t face = 0; face < source.activeBlocks.size(); ++face)
+			{
+				const VansGraphics::VansShadowAtlasBlock& block = source.activeBlocks[face];
+				if (!block.IsValid())
+					continue;
+				PunctualShadowAtlasViewSnapshot view;
+				view.faceIndex = face;
+				view.x = block.x;
+				view.y = block.y;
+				view.resolution = block.resolution;
+				view.gutter = block.gutter;
+				view.generation = block.generation;
+				destination.atlasViews.push_back(view);
+			}
+			snapshot.lights.push_back(std::move(destination));
+		}
+
+		if (auto* texture = materialManager->GetRuntimeRenderTexture(
+			VansGraphics::VansMaterialManager::RT_PUNCTUAL_SHADOW_DEBUG_PREVIEW))
+		{
+			snapshot.atlasPreview = BuildImagePreview(
+				190,
+				"Punctual Shadow Atlas",
+				texture->GetImage(),
+				VK_IMAGE_LAYOUT_GENERAL);
+		}
+
+		if (auto* texture = materialManager->GetRuntimeRenderTexture(
+			VansGraphics::VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT))
+		{
+			snapshot.screenSpacePreview = BuildImagePreview(
+				191,
+				"Screen-space Shadow Result",
+				texture->GetImage(),
+				VK_IMAGE_LAYOUT_GENERAL);
+		}
+		return snapshot;
+	}
+
+	void EngineAPIImpl::ApplyPunctualScreenSpaceShadowSettings(
+		const PunctualScreenSpaceShadowSettingsSnapshot& settings)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
+		if (!materialManager)
+			return;
+
+		VansGraphics::VansScreenSpacePunctualShadowSettings runtime;
+		runtime.maxTraceDistance = settings.maxTraceDistance;
+		runtime.thickness = settings.thickness;
+		runtime.normalBias = settings.normalBias;
+		runtime.maxSteps = settings.maxSteps;
+		runtime.strength = settings.strength;
+		materialManager->ApplyScreenSpacePunctualShadowSettings(runtime);
+	}
+
+	std::vector<ShaderProgramSourceSnapshot> EngineAPIImpl::QueryShaderProgramSources() const
+	{
+		std::vector<ShaderProgramSourceSnapshot> snapshots;
+		VansGraphics::VansShaderManager::Get().ForEachShader(
+			[&snapshots](const VansGraphics::VansShaderRecord& record)
+			{
+				if (!record.shader)
+					return;
+
+				ShaderProgramSourceSnapshot snapshot;
+				snapshot.programId = record.entry.name;
+				snapshot.sourceFolder = record.shader->GetShaderFolder();
+				snapshot.rayTracing = record.entry.kind == VansGraphics::VansManagedShaderKind::RayTracing;
+				for (const auto& [stage, moduleData] : record.shader->m_ShaderModuleDataMap)
+				{
+					(void)stage;
+					if (moduleData.m_ShaderTextResourceFileName.empty() || moduleData.m_ShaderType.empty())
+						continue;
+
+					ShaderStageSourceSnapshot stageSnapshot;
+					stageSnapshot.stage = moduleData.m_ShaderType;
+					stageSnapshot.sourcePath = moduleData.m_ShaderTextResourceFileName;
+					snapshot.stages.emplace_back(std::move(stageSnapshot));
+				}
+
+				if (!snapshot.programId.empty() && !snapshot.stages.empty())
+					snapshots.emplace_back(std::move(snapshot));
+			});
+
+		std::sort(snapshots.begin(), snapshots.end(), [](const auto& lhs, const auto& rhs)
+		{
+			return lhs.programId < rhs.programId;
+		});
+		return snapshots;
+	}
+
+	ShaderCandidateApplyResult EngineAPIImpl::ApplyShaderCandidateAtRenderSafePoint(
+		const ShaderCandidatePackage& package)
+	{
+		ShaderCandidateApplyResult result;
+		result.programId = package.programId;
+		result.sourceRevision = package.sourceRevision;
+		if (package.programId.empty() || package.stages.empty())
+		{
+			result.error = "shader candidate is missing program id or stages";
+			return result;
+		}
+
+		std::map<VkShaderStageFlagBits, std::vector<std::uint32_t>> stageSpirv;
+		for (const ShaderCompiledStagePackage& compiledStage : package.stages)
+		{
+			VkShaderStageFlagBits stage = static_cast<VkShaderStageFlagBits>(0);
+			const auto graphicsIt = VansGraphics::m_ShaderTypeMap.find(compiledStage.stage);
+			if (graphicsIt != VansGraphics::m_ShaderTypeMap.end())
+			{
+				stage = graphicsIt->second;
+			}
+			else
+			{
+				const auto rayTracingIt = VansGraphics::m_RayTracingShaderTypeMap.find(compiledStage.stage);
+				if (rayTracingIt != VansGraphics::m_RayTracingShaderTypeMap.end())
+					stage = rayTracingIt->second;
+			}
+
+			if (stage == 0 || compiledStage.spirv.empty())
+			{
+				result.error = "shader candidate contains an invalid stage: " + compiledStage.stage;
+				return result;
+			}
+			if (!stageSpirv.emplace(stage, compiledStage.spirv).second)
+			{
+				result.error = "shader candidate contains duplicate stage: " + compiledStage.stage;
+				return result;
+			}
+		}
+
+		// Transitional Phase-1 safety barrier. The final implementation replaces
+		// this stall with versioned pipelines and fence-bound retirement.
+		auto* device = static_cast<VansGraphics::VansGraphicsDevice*>(m_Device);
+		if (!device || !device->WaitForIdle())
+		{
+			result.error = "render device is unavailable or failed to become idle";
+			return result;
+		}
+
+		result.applied = VansGraphics::VansShaderManager::Get().ApplyCompiledShaderCandidate(
+			package.programId,
+			stageSpirv,
+			result.error);
+		return result;
+	}
+
 	RenderBackendDiagnostics EngineAPIImpl::GetRenderBackendDiagnostics() const
 	{
 		RenderBackendDiagnostics diagnostics{};
@@ -2960,12 +3348,10 @@ namespace Vans::EditorAPI
 		settings.regionCenter = ToEditorVec3(gi.regionCenter);
 		settings.volumeMin = ToEditorVec3(volumeMin);
 		settings.volumeMax = ToEditorVec3(volumeMax);
-		settings.gridSize = gi.gridDimensions.x;
 		settings.gridDimensions = {
 			static_cast<float>(gi.gridDimensions.x),
 			static_cast<float>(gi.gridDimensions.y),
 			static_cast<float>(gi.gridDimensions.z) };
-		settings.probeSpacing = gi.probeSpacingAxes.x;
 		settings.probeSpacingAxes = ToEditorVec3(gi.probeSpacingAxes);
 		settings.normalBias = gi.normalBias;
 		settings.maxRayDistance = gi.maxRayDistance;
@@ -2993,32 +3379,24 @@ namespace Vans::EditorAPI
 			return;
 
 		VansGraphics::VansGISettings gi = scene->GetGISettings();
-		const std::uint32_t legacyGridSize = std::clamp(
-			settings.gridSize > 0u ? settings.gridSize : gi.gridSize, 1u, 256u);
-		const float legacyProbeSpacing =
-			std::isfinite(settings.probeSpacing) && settings.probeSpacing > 0.0f
-			? settings.probeSpacing
-			: std::max(gi.probeSpacing, 0.001f);
-		auto clampDimension = [legacyGridSize](float value) {
+		auto clampDimension = [](float value, std::uint32_t fallback) {
 			if (!std::isfinite(value) || value < 1.0f)
-				return legacyGridSize;
+				return fallback;
 			return std::clamp(static_cast<std::uint32_t>(std::lround(value)), 1u, 256u);
 		};
-		auto clampSpacing = [legacyProbeSpacing](float value) {
+		auto clampSpacing = [](float value, float fallback) {
 			return std::isfinite(value) && value > 0.0f
 				? std::max(value, 0.001f)
-				: legacyProbeSpacing;
+				: std::max(fallback, 0.001f);
 		};
 		gi.gridDimensions = glm::uvec3(
-			clampDimension(settings.gridDimensions.x),
-			clampDimension(settings.gridDimensions.y),
-			clampDimension(settings.gridDimensions.z));
+			clampDimension(settings.gridDimensions.x, gi.gridDimensions.x),
+			clampDimension(settings.gridDimensions.y, gi.gridDimensions.y),
+			clampDimension(settings.gridDimensions.z, gi.gridDimensions.z));
 		gi.probeSpacingAxes = glm::vec3(
-			clampSpacing(settings.probeSpacingAxes.x),
-			clampSpacing(settings.probeSpacingAxes.y),
-			clampSpacing(settings.probeSpacingAxes.z));
-		gi.gridSize = gi.gridDimensions.x;
-		gi.probeSpacing = gi.probeSpacingAxes.x;
+			clampSpacing(settings.probeSpacingAxes.x, gi.probeSpacingAxes.x),
+			clampSpacing(settings.probeSpacingAxes.y, gi.probeSpacingAxes.y),
+			clampSpacing(settings.probeSpacingAxes.z, gi.probeSpacingAxes.z));
 		gi.regionCenter = glm::vec3(settings.regionCenter.x, settings.regionCenter.y, settings.regionCenter.z);
 		gi.raysPerProbe = std::clamp(settings.raysPerProbe, 1u, 4096u);
 		gi.spatialUpdateDivisor = std::clamp(
@@ -3206,7 +3584,6 @@ namespace Vans::EditorAPI
 		const glm::vec3 volumeSize = glm::vec3(gridDimensions) * gi.probeSpacingAxes;
 		const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
 		m_GIProbeDebugSnapshot.available = true;
-		m_GIProbeDebugSnapshot.gridSize = gridDimensions.x;
 		m_GIProbeDebugSnapshot.gridDimensions = {
 			static_cast<float>(gridDimensions.x),
 			static_cast<float>(gridDimensions.y),
@@ -3839,6 +4216,7 @@ namespace Vans::EditorAPI
 			visual.rootPosition = ToEditorVec3(rootWorld);
 			visual.velocity = ToEditorVec3(worldVelocity);
 			visual.activeClip = motionMatching->activeClip;
+			visual.playbackRate = motionMatching->playbackRate;
 			snapshot.visuals.push_back(visual);
 		}
 
