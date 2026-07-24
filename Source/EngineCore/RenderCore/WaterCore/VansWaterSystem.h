@@ -44,6 +44,13 @@ namespace VansGraphics
         float padding1;
     };
 
+    struct alignas(16) WaveParticleGPU
+    {
+        glm::vec4 positionRadius; // xy=normalized domain position, z=base radius, w=amplitude
+        glm::vec4 directionPhase; // xy=direction, z=phase, w=world speed
+        glm::vec4 lifetimeSeed;   // x=lifetime, y=age offset, z=random seed, w=reserved
+    };
+
     // ── WaterGBufferParams GPU struct（对应 water_prepass.vert set=1 binding=0）
     // W-04: wave0-3 + waveSpeedSteepness01/23 字段已移除，改为 SSBO 管理
     struct alignas(16) WaterGBufferParamsGPU
@@ -55,9 +62,14 @@ namespace VansGraphics
         glm::vec4 geometryScale;   // x=basePatchSize, y=morphStart, z=maxDisplacement, w=lodRatio
         glm::vec4 spectrumScale;   // x=baseCoverage, y=cascadeScale, z=time, w=normalStrength
         glm::vec4 windAndChop;     // xy=windDirection, z=windSpeed, w=choppiness
-        glm::ivec4 simulationParams; // x=gerstnerCount, y=microSlopeFieldCount, z=microEnabled, w=hybridAdd
-        glm::vec4 microSlopeParams;  // x=intensity, y=min wavelength, z=band split, w=macro split
-        glm::vec4 microDomainParams; // x=primary coverage, y=secondary coverage, z=rotation radians
+        glm::ivec4 simulationParams; // x=gerstnerCount, y=particleCount, z=particleOctaves, w=reserved
+        glm::vec4 waveParticleParams0; // x=domainSize, y=amplitude, z=minRadius, w=maxRadius
+        glm::vec4 waveParticleParams1; // x=phaseVelocity, y=damping, z=directionSpread, w=profile
+        glm::vec4 waveParticleParams2; // x=lacunarity, y=persistence, z=radiusFalloff, w=profileSharpness
+        glm::vec4 waveParticleParams3; // x=foamThreshold, y=foamSoftness, z=lifetime, w=randomSeed
+        glm::vec4 flowMapWorld;        // xy=world origin, zw=world size
+        glm::vec4 flowMapParams;       // x=enabled, y=strength, z=speed, w=phaseLength
+        glm::vec4 flowMapFallback;     // xy=fallback direction, z=noiseAmount, w=reserved
     };
 
     // ── WaterCompositeParams GPU struct（对应 water_composite.frag set=1 binding=2）
@@ -164,15 +176,16 @@ namespace VansGraphics
 
         // W-04: 运行时更新波分量 SSBO（editor 修改参数后调用）
         void UpdateWaveSSBO();
+        void UpdateWaveParticleSSBO();
 
         // 纹理访问器（供 Editor 纹理预览，W-17）
         VansVKImage& GetDisplacementImage()      { return m_WaveDisplacementImage; }
         VansVKImage& GetDerivativeImage()        { return m_WaveDerivativeImage; }
+        VansVKImage& GetFlowMapImage()           { return m_FlowMapImage; }
         VansVKImage& GetReflectionImage()        { return m_WaterReflectionImage; }
         VansVKImage& GetRefractionImage()        { return m_WaterRefractionImage; }
         VansVKImage& GetCausticsImage()          { return m_WaterCausticsImage; }
         VansVKImage& GetThicknessImage()         { return m_WaterThicknessImage; }
-        VansVKImage& GetMicroSlopeImage()        { return m_MicroSlopeImage; }
         VansVKImage& GetSSSScatterImage()         { return m_WaterSSSScatterImage; }  // W-16
 
     private:
@@ -197,7 +210,6 @@ namespace VansGraphics
         // ── 拆分类（设计文档 W-02, W-03, W-09）───────────────────
         VansWaterGeometryClipmap* m_GeometryClipmap = nullptr;
         VansWaterFFT*        m_WaterFFT  = nullptr;  // Tessendorf FFT ocean
-        VansWaterFFT*        m_MicroFFT  = nullptr;  // short-wave spectral slope FFT
 
         // ── 着色器 ───────────────────────────────────────────────
         VansGraphicsShader* m_WaterGBufferShader   = nullptr;  // water_prepass.vert/.frag
@@ -208,6 +220,8 @@ namespace VansGraphics
         VansComputeShader*  m_WaterCausticsShader   = nullptr;  // water_caustics.comp (W-14)
         VansComputeShader*  m_WaterThicknessShader  = nullptr;  // water_thickness.comp (W-16)
         VansComputeShader*  m_WaterSSSScatterShader = nullptr;  // water_sss_scatter.comp (W-16)
+        VansComputeShader*  m_WaveParticleShader    = nullptr;  // water_wave_particle.comp
+        VansComputeShader*  m_FlowMapShader         = nullptr;  // water_flowmap.comp
 
         // ── Descriptor Sets：Water GBuffer Pass（Set 1）──────────
         VkDescriptorSetLayout m_GBufPassLayout = VK_NULL_HANDLE;
@@ -216,6 +230,10 @@ namespace VansGraphics
         // ── Descriptor Sets：Water Wave Compute（Set 0）──────────
         VkDescriptorSetLayout m_WaveSimLayout  = VK_NULL_HANDLE;
         VkDescriptorSet       m_WaveSimSet     = VK_NULL_HANDLE;
+        VkDescriptorSetLayout m_WaveParticleLayout = VK_NULL_HANDLE;
+        VkDescriptorSet       m_WaveParticleSet    = VK_NULL_HANDLE;
+        VkDescriptorSetLayout m_FlowMapLayout      = VK_NULL_HANDLE;
+        VkDescriptorSet       m_FlowMapSet         = VK_NULL_HANDLE;
 
         // ── Descriptor Sets：Water SSR Compute（Set 0, W-12）─────
         VkDescriptorSetLayout m_SSRLayout      = VK_NULL_HANDLE;
@@ -263,6 +281,8 @@ namespace VansGraphics
         bool        m_WaveDisplacementReady = false;
         VansVKImage m_WaveDerivativeImage;
         bool        m_WaveDerivativeReady = false;
+        VansVKImage m_FlowMapImage;
+        bool        m_FlowMapReady = false;
 
         // ── 水体效果贴图：Pre-Water Compute 输出，Composite 采样 ───
         VansVKImage m_WaterReflectionImage;
@@ -276,15 +296,12 @@ namespace VansGraphics
         bool        m_ThicknessOutputReady = false;
         bool        m_SSSOutputReady = false;
 
-        // Two wavelength bands, each with two decorrelated periodic fields.
-        // RG stores exact spectral dh/dx and dh/dz.
-        VansVKImage m_MicroSlopeImage;
-        bool        m_MicroSlopeReady = false;
-
         // ── SSBO：Gerstner 波分量（W-04）───────────────────────────
         VansVKBuffer   m_WaveSSBO;
         bool           m_WaveSSBOCreated = false;
         static constexpr uint32_t MAX_WAVE_COUNT = 64;
+        VansVKBuffer   m_WaveParticleSSBO;
+        bool           m_WaveParticleSSBOCreated = false;
 
         // 全局 descriptor set（从 VansScene 传入，不拥有）
         VkDescriptorSetLayout m_GlobalLayout = VK_NULL_HANDLE;

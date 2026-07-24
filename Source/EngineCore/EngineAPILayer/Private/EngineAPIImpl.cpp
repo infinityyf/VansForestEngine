@@ -1808,13 +1808,35 @@ namespace Vans::EditorAPI
 			settings.spectrum.windDependency = source.m_Spectrum.m_WindDependency;
 			settings.spectrum.depth = source.m_Spectrum.m_Depth;
 			settings.spectrum.repeatPeriod = source.m_Spectrum.m_RepeatPeriod;
+			settings.spectrum.randomSeed = source.m_Spectrum.m_RandomSeed;
 
-			settings.microSlope.enabled = source.m_MicroSlope.m_Enabled;
-			settings.microSlope.intensity = source.m_MicroSlope.m_Intensity;
-			settings.microSlope.minWavelength = source.m_MicroSlope.m_MinWavelength;
-			settings.microSlope.primaryCoverage = source.m_MicroSlope.m_PrimaryCoverage;
-			settings.microSlope.secondaryCoverage = source.m_MicroSlope.m_SecondaryCoverage;
-			settings.microSlope.rotationDegrees = source.m_MicroSlope.m_RotationDegrees;
+			settings.waveParticle.particleCount = source.m_WaveParticle.m_ParticleCount;
+			settings.waveParticle.octaveCount = source.m_WaveParticle.m_OctaveCount;
+			settings.waveParticle.profile = source.m_WaveParticle.m_Profile;
+			settings.waveParticle.domainSize = source.m_WaveParticle.m_DomainSize;
+			settings.waveParticle.amplitude = source.m_WaveParticle.m_Amplitude;
+			settings.waveParticle.minRadius = source.m_WaveParticle.m_MinRadius;
+			settings.waveParticle.maxRadius = source.m_WaveParticle.m_MaxRadius;
+			settings.waveParticle.phaseVelocity = source.m_WaveParticle.m_PhaseVelocity;
+			settings.waveParticle.damping = source.m_WaveParticle.m_Damping;
+			settings.waveParticle.directionSpread = source.m_WaveParticle.m_DirectionSpread;
+			settings.waveParticle.lacunarity = source.m_WaveParticle.m_Lacunarity;
+			settings.waveParticle.persistence = source.m_WaveParticle.m_Persistence;
+			settings.waveParticle.radiusFalloff = source.m_WaveParticle.m_RadiusFalloff;
+			settings.waveParticle.profileSharpness = source.m_WaveParticle.m_ProfileSharpness;
+			settings.waveParticle.foamThreshold = source.m_WaveParticle.m_FoamThreshold;
+			settings.waveParticle.foamSoftness = source.m_WaveParticle.m_FoamSoftness;
+			settings.waveParticle.lifetime = source.m_WaveParticle.m_Lifetime;
+			settings.waveParticle.randomSeed = source.m_WaveParticle.m_RandomSeed;
+
+			settings.flowMap.enabled = source.m_FlowMap.m_Enabled;
+			settings.flowMap.strength = source.m_FlowMap.m_Strength;
+			settings.flowMap.speed = source.m_FlowMap.m_Speed;
+			settings.flowMap.phaseLength = source.m_FlowMap.m_PhaseLength;
+			settings.flowMap.noiseAmount = source.m_FlowMap.m_NoiseAmount;
+			settings.flowMap.worldOrigin = ToEditorVec2(source.m_FlowMap.m_WorldOrigin);
+			settings.flowMap.worldSize = ToEditorVec2(source.m_FlowMap.m_WorldSize);
+			settings.flowMap.fallbackDirection = ToEditorVec2(source.m_FlowMap.m_FallbackDirection);
 
 			settings.sssEnabled = source.m_SSS.m_Enabled;
 			settings.maxThicknessDistance = source.m_SSS.m_MaxThicknessDistance;
@@ -1863,13 +1885,35 @@ namespace Vans::EditorAPI
 			destination.m_Spectrum.m_WindDependency = settings.spectrum.windDependency;
 			destination.m_Spectrum.m_Depth = settings.spectrum.depth;
 			destination.m_Spectrum.m_RepeatPeriod = settings.spectrum.repeatPeriod;
+			destination.m_Spectrum.m_RandomSeed = settings.spectrum.randomSeed;
 
-			destination.m_MicroSlope.m_Enabled = settings.microSlope.enabled;
-			destination.m_MicroSlope.m_Intensity = settings.microSlope.intensity;
-			destination.m_MicroSlope.m_MinWavelength = settings.microSlope.minWavelength;
-			destination.m_MicroSlope.m_PrimaryCoverage = settings.microSlope.primaryCoverage;
-			destination.m_MicroSlope.m_SecondaryCoverage = settings.microSlope.secondaryCoverage;
-			destination.m_MicroSlope.m_RotationDegrees = settings.microSlope.rotationDegrees;
+			destination.m_WaveParticle.m_ParticleCount = settings.waveParticle.particleCount;
+			destination.m_WaveParticle.m_OctaveCount = settings.waveParticle.octaveCount;
+			destination.m_WaveParticle.m_Profile = settings.waveParticle.profile;
+			destination.m_WaveParticle.m_DomainSize = settings.waveParticle.domainSize;
+			destination.m_WaveParticle.m_Amplitude = settings.waveParticle.amplitude;
+			destination.m_WaveParticle.m_MinRadius = settings.waveParticle.minRadius;
+			destination.m_WaveParticle.m_MaxRadius = settings.waveParticle.maxRadius;
+			destination.m_WaveParticle.m_PhaseVelocity = settings.waveParticle.phaseVelocity;
+			destination.m_WaveParticle.m_Damping = settings.waveParticle.damping;
+			destination.m_WaveParticle.m_DirectionSpread = settings.waveParticle.directionSpread;
+			destination.m_WaveParticle.m_Lacunarity = settings.waveParticle.lacunarity;
+			destination.m_WaveParticle.m_Persistence = settings.waveParticle.persistence;
+			destination.m_WaveParticle.m_RadiusFalloff = settings.waveParticle.radiusFalloff;
+			destination.m_WaveParticle.m_ProfileSharpness = settings.waveParticle.profileSharpness;
+			destination.m_WaveParticle.m_FoamThreshold = settings.waveParticle.foamThreshold;
+			destination.m_WaveParticle.m_FoamSoftness = settings.waveParticle.foamSoftness;
+			destination.m_WaveParticle.m_Lifetime = settings.waveParticle.lifetime;
+			destination.m_WaveParticle.m_RandomSeed = settings.waveParticle.randomSeed;
+
+			destination.m_FlowMap.m_Enabled = settings.flowMap.enabled;
+			destination.m_FlowMap.m_Strength = settings.flowMap.strength;
+			destination.m_FlowMap.m_Speed = settings.flowMap.speed;
+			destination.m_FlowMap.m_PhaseLength = settings.flowMap.phaseLength;
+			destination.m_FlowMap.m_NoiseAmount = settings.flowMap.noiseAmount;
+			destination.m_FlowMap.m_WorldOrigin = ToRuntimeVec2(settings.flowMap.worldOrigin);
+			destination.m_FlowMap.m_WorldSize = ToRuntimeVec2(settings.flowMap.worldSize);
+			destination.m_FlowMap.m_FallbackDirection = ToRuntimeVec2(settings.flowMap.fallbackDirection);
 
 			destination.m_SSS.m_Enabled = settings.sssEnabled;
 			destination.m_SSS.m_MaxThicknessDistance = settings.maxThicknessDistance;
@@ -1910,6 +1954,31 @@ namespace Vans::EditorAPI
 				|| previous.m_Spectrum.m_WindDirection != current.m_Spectrum.m_WindDirection
 				|| previous.m_Spectrum.m_WindSpeed != current.m_Spectrum.m_WindSpeed
 				|| previous.m_Spectrum.m_SwellAmplitude != current.m_Spectrum.m_SwellAmplitude;
+		}
+
+		bool ShouldRegenerateWaveParticleSpectrum(
+			const VansGraphics::VansWaterConfig& previous,
+			const VansGraphics::VansWaterConfig& current)
+		{
+			return previous.m_Spectrum.m_WindDirection != current.m_Spectrum.m_WindDirection
+				|| previous.m_WaveParticle.m_ParticleCount != current.m_WaveParticle.m_ParticleCount
+				|| previous.m_WaveParticle.m_OctaveCount != current.m_WaveParticle.m_OctaveCount
+				|| previous.m_WaveParticle.m_Profile != current.m_WaveParticle.m_Profile
+				|| previous.m_WaveParticle.m_DomainSize != current.m_WaveParticle.m_DomainSize
+				|| previous.m_WaveParticle.m_Amplitude != current.m_WaveParticle.m_Amplitude
+				|| previous.m_WaveParticle.m_MinRadius != current.m_WaveParticle.m_MinRadius
+				|| previous.m_WaveParticle.m_MaxRadius != current.m_WaveParticle.m_MaxRadius
+				|| previous.m_WaveParticle.m_PhaseVelocity != current.m_WaveParticle.m_PhaseVelocity
+				|| previous.m_WaveParticle.m_Damping != current.m_WaveParticle.m_Damping
+				|| previous.m_WaveParticle.m_DirectionSpread != current.m_WaveParticle.m_DirectionSpread
+				|| previous.m_WaveParticle.m_Lacunarity != current.m_WaveParticle.m_Lacunarity
+				|| previous.m_WaveParticle.m_Persistence != current.m_WaveParticle.m_Persistence
+				|| previous.m_WaveParticle.m_RadiusFalloff != current.m_WaveParticle.m_RadiusFalloff
+				|| previous.m_WaveParticle.m_ProfileSharpness != current.m_WaveParticle.m_ProfileSharpness
+				|| previous.m_WaveParticle.m_FoamThreshold != current.m_WaveParticle.m_FoamThreshold
+				|| previous.m_WaveParticle.m_FoamSoftness != current.m_WaveParticle.m_FoamSoftness
+				|| previous.m_WaveParticle.m_Lifetime != current.m_WaveParticle.m_Lifetime
+				|| previous.m_WaveParticle.m_RandomSeed != current.m_WaveParticle.m_RandomSeed;
 		}
 
 		ReflectionProbeSettingsSnapshot ToReflectionProbeSettings(VansGraphics::VansReflectionProbeSystem& source)
@@ -3750,8 +3819,8 @@ namespace Vans::EditorAPI
 			return build(200, "Water Displacement", waterSystem->GetDisplacementImage(), filter.layer);
 		if (textureName == "derivative")
 			return build(201, "Water Derivative / FFT Normal Source", waterSystem->GetDerivativeImage(), filter.layer);
-		if (textureName == "micro_normal")
-			return build(202, "Micro FFT Slope", waterSystem->GetMicroSlopeImage(), filter.layer);
+		if (textureName == "flow_map")
+			return build(202, "Water Flow Map", waterSystem->GetFlowMapImage(), 0u);
 		if (textureName == "reflection")
 			return build(203, "Reflection", waterSystem->GetReflectionImage(), 0u);
 		if (textureName == "refraction")
@@ -3801,6 +3870,8 @@ namespace Vans::EditorAPI
 			waterSystem->SetWaterLevel(config.m_WaterLevel);
 			if (ShouldRegenerateGerstnerSpectrum(previousConfig, config))
 				waterSystem->UpdateWaveSSBO();
+			if (ShouldRegenerateWaveParticleSpectrum(previousConfig, config))
+				waterSystem->UpdateWaveParticleSSBO();
 			if (ShouldReinitializeWaterFFT(previousConfig, config))
 			{
 				if (auto* fft = waterSystem->GetFFT())
@@ -4432,6 +4503,20 @@ namespace Vans::EditorAPI
 		SubmitCommand(std::make_unique<SetFogSettingsCommand>(settings));
 	}
 
+	void EngineAPIImpl::CommitHeightFogSettings()
+	{
+		const FogSettings settings = GetFogSettings();
+		Vans::SceneJson value = {
+			{ "fogDensity", settings.fogDensity },
+			{ "heightFalloff", settings.heightFalloff },
+			{ "sunScatterScale", settings.sunScatterScale },
+			{ "ambientScale", settings.ambientScale },
+			{ "fogMinHeight", settings.fogMinHeight },
+			{ "skyFogDistance", settings.skyFogDistance }
+		};
+		m_PendingScenePropertyEdits.push_back({ "/settings/heightFog", value.dump() });
+	}
+
 	FogSettings EngineAPIImpl::GetFogSettings() const
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
@@ -4445,6 +4530,23 @@ namespace Vans::EditorAPI
 	void EngineAPIImpl::ApplyFogVolumeSettings(const FogVolumeSettings& settings)
 	{
 		SubmitCommand(std::make_unique<SetFogVolumeSettingsCommand>(settings));
+	}
+
+	void EngineAPIImpl::CommitVolumetricFogSettings()
+	{
+		const FogVolumeSettings settings = GetFogVolumeSettings();
+		Vans::SceneJson value = {
+			{ "density", settings.density },
+			{ "anisotropy", settings.anisotropy },
+			{ "scatterScale", settings.scatterScale },
+			{ "ambientScale", settings.ambientScale },
+			{ "volumeNear", settings.volumeNear },
+			{ "volumeFar", settings.volumeFar },
+			{ "slicePower", settings.slicePower },
+			{ "fogBoxMin", Vans::SceneJson::array({ settings.fogBoxMin[0], settings.fogBoxMin[1], settings.fogBoxMin[2] }) },
+			{ "fogBoxMax", Vans::SceneJson::array({ settings.fogBoxMax[0], settings.fogBoxMax[1], settings.fogBoxMax[2] }) }
+		};
+		m_PendingScenePropertyEdits.push_back({ "/settings/volumetricFog", value.dump() });
 	}
 
 	FogVolumeSettings EngineAPIImpl::GetFogVolumeSettings() const
@@ -4484,7 +4586,43 @@ namespace Vans::EditorAPI
 		if (!scene || !scene->GetMaterialManager())
 			return;
 
-		scene->GetMaterialManager()->UploadCloudParamsToGPU();
+		auto* materialManager = scene->GetMaterialManager();
+		materialManager->UploadCloudParamsToGPU();
+		const CloudSettings settings = ToCloudSettings(materialManager->m_CloudParams);
+		Vans::SceneJson value = {
+			{ "planetRadius", settings.planetRadius },
+			{ "seaLevel", settings.seaLevel },
+			{ "cloudBaseHeight", settings.cloudMinHeight },
+			{ "cloudThickness", std::max(settings.cloudMaxHeight - settings.cloudMinHeight, 100.0f) },
+			{ "density", settings.density },
+			{ "coverage", settings.coverage },
+			{ "sunBrightness", settings.sunBrightness },
+			{ "phaseG", settings.phaseG },
+			{ "mainTileMeters", settings.mainTileMeters },
+			{ "detailTileMeters", settings.detailTileMeters },
+			{ "mainHeightScale", settings.mainHeightScale },
+			{ "detailHeightScale", settings.detailHeightScale },
+			{ "thresholdLowCoverage", settings.thresholdLowCoverage },
+			{ "thresholdHighCoverage", settings.thresholdHighCoverage },
+			{ "densityRemapLow", settings.densityRemapLow },
+			{ "densityRemapHigh", settings.densityRemapHigh },
+			{ "mainErosionStrength", settings.mainErosionStrength },
+			{ "detailErosionStrength", settings.detailErosionStrength },
+			{ "edgeErosionStrength", settings.edgeErosionStrength },
+			{ "verticalShapePower", settings.verticalShapePower },
+			{ "detailErosionLow", settings.detailErosionLow },
+			{ "detailErosionHigh", settings.detailErosionHigh },
+			{ "detailEdgeStrength", settings.detailEdgeStrength },
+			{ "shadowDensityScale", settings.shadowDensityScale }
+		};
+		m_PendingScenePropertyEdits.push_back({ "/settings/volumetricClouds", value.dump() });
+	}
+
+	std::vector<ScenePropertyEdit> EngineAPIImpl::ConsumeScenePropertyEdits()
+	{
+		std::vector<ScenePropertyEdit> edits = std::move(m_PendingScenePropertyEdits);
+		m_PendingScenePropertyEdits.clear();
+		return edits;
 	}
 
 	EnginePlayState EngineAPIImpl::GetPlayState() const

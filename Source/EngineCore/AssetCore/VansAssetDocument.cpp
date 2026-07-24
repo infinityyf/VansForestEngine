@@ -124,10 +124,31 @@ bool VansAssetDocument::Save(std::string& error)
         const Json verification = Json::parse(verificationInput);
         if (!verificationInput || verification != m_Root)
             throw std::runtime_error("Asset document verification failed");
+        // std::ifstream does not share FILE_SHARE_DELETE on Windows. Keeping
+        // this handle open makes MoveFileExW fail while trying to rename the
+        // very temporary file we just verified.
+        verificationInput.close();
 #ifdef _WIN32
-        if (MoveFileExW(temporary.c_str(), m_Path.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
-            throw std::runtime_error("Cannot atomically replace asset document");
+        DWORD win32Error = ERROR_SUCCESS;
+        bool published = false;
+        for (int attempt = 0; attempt < 5; ++attempt)
+        {
+            if (MoveFileExW(temporary.c_str(), m_Path.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE)
+            {
+                published = true;
+                break;
+            }
+            win32Error = GetLastError();
+            if (win32Error != ERROR_SHARING_VIOLATION && win32Error != ERROR_ACCESS_DENIED)
+                break;
+            Sleep(static_cast<DWORD>(10 * (attempt + 1)));
+        }
+        if (!published)
+        {
+            throw std::runtime_error("Cannot atomically replace asset document (Win32 error " +
+                std::to_string(static_cast<unsigned long>(win32Error)) + ")");
+        }
 #else
         std::error_code ec;
         std::filesystem::rename(temporary, m_Path, ec);

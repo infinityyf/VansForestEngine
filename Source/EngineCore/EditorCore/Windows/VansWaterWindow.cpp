@@ -180,7 +180,7 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 
             if (ImGui::CollapsingHeader("Waves"))
             {
-                const char* modeNames[] = { "Gerstner", "FFT", "Hybrid" };
+                const char* modeNames[] = { "Gerstner", "FFT", "Wave Particle" };
                 int modeIndex = std::clamp(settings.spectrum.mode, 0, 2);
                 if (ImGui::Combo("Wave Mode", &modeIndex, modeNames, 3))
                 {
@@ -194,11 +194,16 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 ImGui::TextDisabled("FFT resolution: 256 (runtime invariant)");
                 changed |= EditVec2("Wind Dir (XZ)", settings.spectrum.windDirection, 0.01f, -1.0f, 1.0f, "%.3f");
                 changed |= ImGui::DragFloat("Wind Speed", &settings.spectrum.windSpeed, 0.1f, 0.0f, 100.0f, "%.2f");
-                changed |= ImGui::DragFloat("Swell Amplitude", &settings.spectrum.swellAmplitude, 0.01f, 0.0f, 20.0f, "%.3f");
                 changed |= ImGui::DragFloat("Choppiness", &settings.spectrum.choppiness, 0.01f, 0.0f, 3.0f, "%.3f");
-                changed |= ImGui::SliderInt("Gerstner Components", &settings.spectrum.gerstnerWaveCount, 0, 64);
 
-                if (settings.spectrum.mode == 1 || settings.spectrum.mode == 2)
+                if (settings.spectrum.mode == 0)
+                {
+                    ImGui::SeparatorText("Gerstner");
+                    changed |= ImGui::DragFloat("Swell Amplitude", &settings.spectrum.swellAmplitude, 0.01f, 0.0f, 20.0f, "%.3f");
+                    changed |= ImGui::SliderInt("Gerstner Components", &settings.spectrum.gerstnerWaveCount, 0, 64);
+                }
+
+                if (settings.spectrum.mode == 1)
                 {
                     ImGui::SeparatorText("Tessendorf Spectrum");
                     changed |= ImGui::DragFloat("Spectrum Amplitude", &settings.spectrum.spectrumAmplitude, 0.00005f, 0.0f, 0.02f, "%.6f");
@@ -207,6 +212,46 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                     changed |= ImGui::DragFloat("Wind Dependency", &settings.spectrum.windDependency, 0.01f, 0.0f, 1.0f, "%.3f");
                     changed |= ImGui::DragFloat("Water Depth", &settings.spectrum.depth, 1.0f, 0.1f, 10000.0f, "%.1f");
                     changed |= ImGui::DragFloat("Repeat Period", &settings.spectrum.repeatPeriod, 1.0f, 0.0f, 600.0f, "%.1f");
+                    int spectrumSeed = static_cast<int>(settings.spectrum.randomSeed);
+                    if (ImGui::DragInt("FFT Seed", &spectrumSeed, 1.0f, 0, 0x7fffffff))
+                    {
+                        settings.spectrum.randomSeed = static_cast<std::uint32_t>((std::max)(spectrumSeed, 0));
+                        changed = true;
+                    }
+                }
+
+                if (settings.spectrum.mode == 2)
+                {
+                    ImGui::SeparatorText("Wave Particle");
+                    const char* profileNames[] = { "Gaussian", "Compact Ripple", "Sharp Crest" };
+                    int profileIndex = std::clamp(settings.waveParticle.profile, 0, 2);
+                    if (ImGui::Combo("Wave Profile", &profileIndex, profileNames, 3))
+                    {
+                        settings.waveParticle.profile = profileIndex;
+                        changed = true;
+                    }
+                    changed |= ImGui::SliderInt("Particle Count", &settings.waveParticle.particleCount, 0, 1024);
+                    changed |= ImGui::SliderInt("Octave Layers", &settings.waveParticle.octaveCount, 1, 8);
+                    changed |= ImGui::DragFloat("Particle Domain (m)", &settings.waveParticle.domainSize, 1.0f, 16.0f, 4096.0f, "%.1f");
+                    changed |= ImGui::DragFloat("Particle Amplitude", &settings.waveParticle.amplitude, 0.005f, 0.0f, 10.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Min Radius (m)", &settings.waveParticle.minRadius, 0.05f, 0.05f, 512.0f, "%.2f");
+                    changed |= ImGui::DragFloat("Max Radius (m)", &settings.waveParticle.maxRadius, 0.1f, 0.05f, 4096.0f, "%.2f");
+                    changed |= ImGui::DragFloat("Phase Velocity", &settings.waveParticle.phaseVelocity, 0.01f, 0.0f, 10.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Damping", &settings.waveParticle.damping, 0.001f, 0.0f, 2.0f, "%.4f");
+                    changed |= ImGui::DragFloat("Direction Spread", &settings.waveParticle.directionSpread, 0.01f, 0.0f, 3.1416f, "%.3f rad");
+                    changed |= ImGui::DragFloat("Lacunarity", &settings.waveParticle.lacunarity, 0.01f, 1.01f, 4.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Persistence", &settings.waveParticle.persistence, 0.01f, 0.0f, 1.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Radius Falloff", &settings.waveParticle.radiusFalloff, 0.01f, 0.1f, 1.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Profile Sharpness", &settings.waveParticle.profileSharpness, 0.01f, 0.25f, 8.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Foam Threshold", &settings.waveParticle.foamThreshold, 0.01f, 0.0f, 2.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Foam Softness", &settings.waveParticle.foamSoftness, 0.01f, 0.01f, 2.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Particle Lifetime", &settings.waveParticle.lifetime, 0.1f, 0.1f, 600.0f, "%.1f s");
+                    int particleSeed = static_cast<int>(settings.waveParticle.randomSeed);
+                    if (ImGui::DragInt("Particle Seed", &particleSeed, 1.0f, 0, 0x7fffffff))
+                    {
+                        settings.waveParticle.randomSeed = static_cast<std::uint32_t>((std::max)(particleSeed, 0));
+                        changed = true;
+                    }
                 }
             }
 
@@ -218,15 +263,16 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 ImGui::TextDisabled("Topology ratio: 2:1; mesh: immutable after initialization");
             }
 
-            if (ImGui::CollapsingHeader("Spectral Micro Slopes"))
+            if (ImGui::CollapsingHeader("Flow Map"))
             {
-                changed |= ImGui::Checkbox("Enable##MicroSlope", &settings.microSlope.enabled);
-                changed |= ImGui::DragFloat("Intensity##MicroSlope", &settings.microSlope.intensity, 0.01f, 0.0f, 3.0f, "%.3f");
-                changed |= ImGui::DragFloat("Min Wavelength##MicroSlope", &settings.microSlope.minWavelength, 0.005f, 0.02f, 1.0f, "%.3f m");
-                changed |= ImGui::DragFloat("Primary Torus", &settings.microSlope.primaryCoverage, 0.1f, 2.0f, 64.0f, "%.2f m");
-                changed |= ImGui::DragFloat("Secondary Torus", &settings.microSlope.secondaryCoverage, 0.1f, 2.0f, 64.0f, "%.2f m");
-                changed |= ImGui::DragFloat("Decorrelation Rotation", &settings.microSlope.rotationDegrees, 0.25f, 0.0f, 89.0f, "%.2f deg");
-                ImGui::TextDisabled("Upper bound = Macro Min Wavelength; two FFT slope fields, world anchored.");
+                changed |= ImGui::Checkbox("Enable##FlowMap", &settings.flowMap.enabled);
+                changed |= ImGui::DragFloat("Strength (m)", &settings.flowMap.strength, 0.1f, 0.0f, 256.0f, "%.2f");
+                changed |= ImGui::DragFloat("Speed", &settings.flowMap.speed, 0.01f, 0.0f, 16.0f, "%.3f");
+                changed |= ImGui::DragFloat("Phase Length", &settings.flowMap.phaseLength, 0.01f, 0.05f, 32.0f, "%.3f");
+                changed |= ImGui::DragFloat("Noise Amount", &settings.flowMap.noiseAmount, 0.01f, 0.0f, 2.0f, "%.3f");
+                changed |= EditVec2("World Origin", settings.flowMap.worldOrigin, 0.5f, -100000.0f, 100000.0f, "%.1f");
+                changed |= EditVec2("World Size", settings.flowMap.worldSize, 1.0f, 1.0f, 100000.0f, "%.1f");
+                changed |= EditVec2("Fallback Direction", settings.flowMap.fallbackDirection, 0.01f, -1.0f, 1.0f, "%.3f");
             }
 
             if (ImGui::CollapsingHeader("SSS (Subsurface Scattering)"))
@@ -317,10 +363,7 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 DisplayWaterTexture(editorAPI, "Surface dPdx", "derivative", static_cast<std::uint32_t>(waterLayer * 2));
 
                 ImGui::Separator();
-                static int microBand = 0;
-                microBand = std::clamp(microBand, 0, 2);
-                ImGui::SliderInt("Micro Normal Band", &microBand, 0, 2);
-                DisplayWaterTexture(editorAPI, "Micro Normal", "micro_normal", static_cast<std::uint32_t>(microBand));
+                DisplayWaterTexture(editorAPI, "Flow Map", "flow_map");
 
                 if (stats.fftAvailable)
                 {

@@ -9,14 +9,34 @@
 
 namespace
 {
+    enum class SceneSettingsGroup : uint32_t
+    {
+        None = 0,
+        HeightFog = 1u << 0,
+        VolumetricFog = 1u << 1,
+        Clouds = 1u << 2
+    };
+
     bool g_CommandMergeBoundaryReached = false;
+    SceneSettingsGroup g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
+    uint32_t g_SceneSettingsCommitMask = 0;
 
     void TrackCommandMergeBoundary()
     {
         if (ImGui::IsItemDeactivatedAfterEdit())
         {
             g_CommandMergeBoundaryReached = true;
+            g_SceneSettingsCommitMask |= static_cast<uint32_t>(g_ActiveSceneSettingsGroup);
         }
+    }
+
+    bool ConsumeSceneSettingsCommit(SceneSettingsGroup group)
+    {
+        const uint32_t bit = static_cast<uint32_t>(group);
+        if ((g_SceneSettingsCommitMask & bit) == 0)
+            return false;
+        g_SceneSettingsCommitMask &= ~bit;
+        return true;
     }
 
     bool DragFloatTracked(
@@ -185,6 +205,8 @@ void VansGraphics::VansLightWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
         return;
 
     g_CommandMergeBoundaryReached = false;
+    g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
+    g_SceneSettingsCommitMask = 0;
     ImGui::Begin("Light Info");
 
     Vans::EditorAPI::LightingSettingsSnapshot lightingSettings = editorAPI.GetLightingSettings();
@@ -341,11 +363,12 @@ bool VansGraphics::VansLightWindow::DrawRectLights(std::vector<Vans::EditorAPI::
 
 void VansGraphics::VansLightWindow::DrawFogParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-    if (!ImGui::CollapsingHeader("Volumetric Fog"))
+    if (!ImGui::CollapsingHeader("Height Fog"))
         return;
 
     Vans::EditorAPI::FogSettings fogParams = editorAPI.GetFogSettings();
     bool changed = false;
+    g_ActiveSceneSettingsGroup = SceneSettingsGroup::HeightFog;
 
     changed |= DragFloatTracked("Fog Density",        &fogParams.fogDensity,      0.0001f, 0.0f,    0.1f,    "%.5f");
     changed |= DragFloatTracked("Height Falloff",     &fogParams.heightFalloff,   0.001f,  0.0f,    1.0f,    "%.4f");
@@ -353,11 +376,14 @@ void VansGraphics::VansLightWindow::DrawFogParameters(Vans::EditorAPI::IEngineEd
     changed |= DragFloatTracked("Ambient Scale",      &fogParams.ambientScale,    0.01f,   0.0f,    5.0f,    "%.3f");
     changed |= DragFloatTracked("Fog Min Height",     &fogParams.fogMinHeight,    1.0f,   -10000.0f, 10000.0f, "%.1f");
     changed |= InputFloatTracked("Sky Fog Distance",  &fogParams.skyFogDistance);
+    g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
 
     if (changed)
     {
         editorAPI.ApplyFogSettings(fogParams);
     }
+    if (ConsumeSceneSettingsCommit(SceneSettingsGroup::HeightFog))
+        editorAPI.CommitHeightFogSettings();
 }
 
 void VansGraphics::VansLightWindow::DrawFogVolumeParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
@@ -367,6 +393,7 @@ void VansGraphics::VansLightWindow::DrawFogVolumeParameters(Vans::EditorAPI::IEn
 
     Vans::EditorAPI::FogVolumeSettings fogVolumeParams = editorAPI.GetFogVolumeSettings();
     bool changed = false;
+    g_ActiveSceneSettingsGroup = SceneSettingsGroup::VolumetricFog;
 
     changed |= DragFloatTracked("Volume Density",      &fogVolumeParams.density,      0.01f,  0.0f,  10.0f,  "%.3f");
     changed |= DragFloatTracked("Anisotropy (g)",      &fogVolumeParams.anisotropy,   0.01f, -1.0f,   1.0f,  "%.3f");
@@ -379,11 +406,14 @@ void VansGraphics::VansLightWindow::DrawFogVolumeParameters(Vans::EditorAPI::IEn
     ImGui::Separator();
     changed |= DragFloat3Tracked("Fog Box Min", fogVolumeParams.fogBoxMin, 0.5f, -10000.0f, 10000.0f, "%.1f");
     changed |= DragFloat3Tracked("Fog Box Max", fogVolumeParams.fogBoxMax, 0.5f, -10000.0f, 10000.0f, "%.1f");
+    g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
 
     if (changed)
     {
         editorAPI.ApplyFogVolumeSettings(fogVolumeParams);
     }
+    if (ConsumeSceneSettingsCommit(SceneSettingsGroup::VolumetricFog))
+        editorAPI.CommitVolumetricFogSettings();
 }
 
 void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
@@ -395,6 +425,7 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngine
 
     Vans::EditorAPI::CloudSettings cloudParams = editorAPI.GetCloudSettings();
     bool changed = false;
+    g_ActiveSceneSettingsGroup = SceneSettingsGroup::Clouds;
 
     float cloudBaseHeight = cloudParams.cloudMinHeight;
     float cloudThickness = std::max(cloudParams.cloudMaxHeight - cloudParams.cloudMinHeight, 100.0f);
@@ -436,10 +467,12 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngine
     changed |= DragFloatTracked("Detail Erosion High", &cloudParams.detailErosionHigh, 0.005f, 0.01f, 1.0f, "%.3f");
     changed |= DragFloatTracked("Detail Edge Strength", &cloudParams.detailEdgeStrength, 0.01f, 0.0f, 3.0f, "%.3f");
     changed |= DragFloatTracked("Shadow Density", &cloudParams.shadowDensityScale, 0.01f, 0.0f, 5.0f, "%.3f");
+    g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
 
     if (ImGui::Button("Reset Cloud Defaults"))
     {
         editorAPI.ResetCloudSettings();
+        editorAPI.CommitCloudSettings();
         editorAPI.BreakCommandMergeGroup();
         return;
     }
@@ -453,4 +486,6 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngine
     {
         editorAPI.ApplyCloudSettings(cloudParams);
     }
+    if (ConsumeSceneSettingsCommit(SceneSettingsGroup::Clouds))
+        editorAPI.CommitCloudSettings();
 }

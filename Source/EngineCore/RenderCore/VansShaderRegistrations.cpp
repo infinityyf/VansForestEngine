@@ -256,6 +256,13 @@ void RegisterEngineShaders()
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         0, false, false, 4
     });
+
+    reg.RegisterGraphicsShader("PBREmissive", {
+        "PBREmissive",
+        "EngineAssets/Shaders/Emissive/Deferred",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
+    });
     reg.RegisterGraphicsShader("TerrainShadow", {
         "TerrainShadow", "EngineAssets/Shaders/Terrain/Shadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
@@ -322,6 +329,8 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("GrassCull", "EngineAssets/Shaders/GrassCull", sizeof(VansGraphics::GrassCullPushConstants));
     reg.RegisterComputeShader("TreeCull", "EngineAssets/Shaders/TreeCull", sizeof(VansGraphics::TreeCullPushConstants));
     reg.RegisterComputeShader("WaterWave", "EngineAssets/Shaders/Water/WaterWave");
+    reg.RegisterComputeShader("WaterWaveParticle", "EngineAssets/Shaders/Water/WaveParticle");
+    reg.RegisterComputeShader("WaterFlowMap", "EngineAssets/Shaders/Water/FlowMap");
     reg.RegisterComputeShader("WaterSSR", "EngineAssets/Shaders/Water/SSR");
     reg.RegisterComputeShader("WaterRefraction", "EngineAssets/Shaders/Water/Refraction");
     reg.RegisterComputeShader("WaterCaustics", "EngineAssets/Shaders/Water/Caustics");
@@ -409,6 +418,13 @@ void RegisterEngineShaders()
     // Emissive: only participates in GBuffer, without shadow or velocity passes.
     reg.RegisterMaterialPasses(VansGraphics::VAN_EMISSIVE, {
         { VansGraphics::VansPass::GBUFFER,          "Emissive"       },
+    });
+
+    reg.RegisterMaterialPasses(VansGraphics::VAN_PBR_EMISSIVE, {
+        { VansGraphics::VansPass::GBUFFER,          "PBREmissive"    },
+        { VansGraphics::VansPass::SHADOW,           "Shadow"         },
+        { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
+        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     // Decal: only participates in DecalGBuffer, without shadow or depth writes.

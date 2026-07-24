@@ -1,0 +1,79 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform WaterSurfaceParams
+{
+    mat4 VPMatrix;
+    mat4 ViewMatrix;
+    vec4 cameraPosition;
+    ivec4 geometryParams;
+    vec4 geometryScale;
+    vec4 spectrumScale;
+    vec4 windAndChop;
+    ivec4 simulationParams;
+    vec4 waveParticleParams0;
+    vec4 waveParticleParams1;
+    vec4 waveParticleParams2;
+    vec4 waveParticleParams3;
+    vec4 flowMapWorld;
+    vec4 flowMapParams;
+    vec4 flowMapFallback;
+} params;
+
+layout(set = 0, binding = 1, rgba16f) uniform image2D outFlowMap;
+
+const float PI = 3.14159265358979323846;
+
+float HashNoise(vec2 p)
+{
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+float ValueNoise(vec2 p)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = HashNoise(i);
+    float b = HashNoise(i + vec2(1.0, 0.0));
+    float c = HashNoise(i + vec2(0.0, 1.0));
+    float d = HashNoise(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outFlowMap);
+    if (any(greaterThanEqual(pixel, size)))
+        return;
+
+    if (params.flowMapParams.x <= 0.0)
+    {
+        imageStore(outFlowMap, pixel, vec4(0.5, 0.5, 1.0, 0.0));
+        return;
+    }
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 fallback = params.flowMapFallback.xy;
+    fallback = dot(fallback, fallback) < 1e-5 ? vec2(1.0, 0.0) : normalize(fallback);
+
+    vec2 centered = uv * 2.0 - 1.0;
+    vec2 tangent = dot(centered, centered) < 1e-5
+        ? vec2(-fallback.y, fallback.x)
+        : normalize(vec2(-centered.y, centered.x));
+
+    float noiseAmount = params.flowMapFallback.z;
+    float n0 = ValueNoise(uv * 6.0 + params.waveParticleParams3.w * 0.013);
+    float n1 = ValueNoise(uv * 13.0 + vec2(19.1, 7.3));
+    float angle = (n0 * 2.0 - 1.0) * noiseAmount * PI * 0.35;
+    float c = cos(angle);
+    float s = sin(angle);
+    vec2 rotated = vec2(c * fallback.x - s * fallback.y,
+                        s * fallback.x + c * fallback.y);
+    float swirlWeight = clamp(noiseAmount * (0.15 + 0.35 * n1), 0.0, 0.65);
+    vec2 flow = normalize(mix(rotated, tangent, swirlWeight));
+
+    imageStore(outFlowMap, pixel, vec4(flow * 0.5 + 0.5, length(flow), 1.0));
+}

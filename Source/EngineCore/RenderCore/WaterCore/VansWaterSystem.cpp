@@ -67,6 +67,65 @@ namespace
         }
     }
 
+    std::uint32_t HashU32(std::uint32_t value)
+    {
+        value ^= value >> 16;
+        value *= 0x7feb352du;
+        value ^= value >> 15;
+        value *= 0x846ca68bu;
+        value ^= value >> 16;
+        return value;
+    }
+
+    float Hash01(std::uint32_t seed, std::uint32_t channel)
+    {
+        const std::uint32_t h = HashU32(seed ^ (channel * 0x9e3779b9u));
+        return float(h & 0x00ffffffu) / float(0x01000000u);
+    }
+
+    void AutoGenerateWaveParticles(std::vector<WaveParticleGPU>& particles,
+                                   const VansWaterConfig& config)
+    {
+        const auto& wp = config.m_WaveParticle;
+        const auto& spectrum = config.m_Spectrum;
+        const int count = std::clamp(wp.m_ParticleCount, 0, int(VansWaterConfig::MAX_WAVE_PARTICLE_COUNT));
+        particles.clear();
+        particles.reserve(count);
+
+        glm::vec2 windDir = spectrum.m_WindDirection;
+        if (glm::length(windDir) < 0.001f)
+            windDir = glm::vec2(1.0f, 0.0f);
+        else
+            windDir = glm::normalize(windDir);
+
+        const float PI = 3.14159265358979323846f;
+        const float baseAngle = std::atan2f(windDir.y, windDir.x);
+        const float radiusRatio = wp.m_MinRadius / (std::max)(wp.m_MaxRadius, wp.m_MinRadius + 0.001f);
+        const float amplitudeNorm = 2.0f / std::sqrt((std::max)(count, 1));
+        for (int i = 0; i < count; ++i)
+        {
+            const std::uint32_t seed = wp.m_RandomSeed ^ HashU32(std::uint32_t(i) * 747796405u + 2891336453u);
+            const float px = Hash01(seed, 1);
+            const float pz = Hash01(seed, 2);
+            const float rt = Hash01(seed, 3);
+            const float radius = wp.m_MaxRadius * std::pow(radiusRatio, rt);
+            const float angle = baseAngle + (Hash01(seed, 4) * 2.0f - 1.0f) * wp.m_DirectionSpread;
+            const glm::vec2 dir = glm::normalize(glm::vec2(std::cosf(angle), std::sinf(angle)));
+            const float phase = Hash01(seed, 5) * 2.0f * PI;
+            const float speed = wp.m_PhaseVelocity * std::sqrtf(9.81f * radius / PI);
+            const float amplitude = std::pow(radius / (std::max)(wp.m_MaxRadius, 0.001f), 0.65f)
+                * (0.65f + 0.7f * Hash01(seed, 6))
+                * amplitudeNorm;
+            const float ageOffset = Hash01(seed, 7) * wp.m_Lifetime;
+
+            WaveParticleGPU particle = {};
+            particle.positionRadius = glm::vec4(px, pz, radius, amplitude);
+            particle.directionPhase = glm::vec4(dir.x, dir.y, phase, speed);
+            particle.lifetimeSeed = glm::vec4(wp.m_Lifetime, ageOffset, float(seed & 0xffffu), 0.0f);
+            particles.push_back(particle);
+        }
+    }
+
     struct WaterSSRParamsGPU
     {
         glm::vec4 cameraPosition;
@@ -108,12 +167,14 @@ namespace
         "WaterCausticsParamsGPU size must match std140 shader layout");
     static_assert(offsetof(WaterGBufferParamsGPU, geometryParams) == 144,
         "WaterGBufferParamsGPU geometry offset must match std140 shader layout");
-    static_assert(offsetof(WaterGBufferParamsGPU, microSlopeParams) == 224,
-        "WaterGBufferParamsGPU micro slope offset must match std140 shader layout");
-    static_assert(offsetof(WaterGBufferParamsGPU, microDomainParams) == 240,
-        "WaterGBufferParamsGPU micro domain offset must match std140 shader layout");
-    static_assert(sizeof(WaterGBufferParamsGPU) == 256,
+    static_assert(offsetof(WaterGBufferParamsGPU, waveParticleParams0) == 224,
+        "WaterGBufferParamsGPU wave particle offset must match std140 shader layout");
+    static_assert(offsetof(WaterGBufferParamsGPU, flowMapParams) == 304,
+        "WaterGBufferParamsGPU flow map offset must match std140 shader layout");
+    static_assert(sizeof(WaterGBufferParamsGPU) == 336,
         "WaterGBufferParamsGPU size must match std140 shader layout");
+    static_assert(sizeof(WaveParticleGPU) == 48,
+        "WaveParticleGPU must match std430 shader layout");
 
     constexpr VkDeviceSize SSR_PARAMS_BUFFER_SIZE = 256;
     constexpr VkDeviceSize SSS_PARAMS_DESCRIPTOR_SIZE = sizeof(float) * 16;
@@ -185,6 +246,8 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
 
     // Wave compute shader锛圵-01: Texture2DArray + SSBO + Nyquist锛?
     m_WaveSimShader = shaderManager.FindComputeShader("WaterWave");
+    m_WaveParticleShader = shaderManager.FindComputeShader("WaterWaveParticle");
+    m_FlowMapShader = shaderManager.FindComputeShader("WaterFlowMap");
     m_WaterSSRShader = shaderManager.FindComputeShader("WaterSSR");
     m_WaterRefractionShader = shaderManager.FindComputeShader("WaterRefraction");
     m_WaterCausticsShader = shaderManager.FindComputeShader("WaterCaustics");
@@ -193,6 +256,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     m_WaterCompositeShader = shaderManager.FindGraphicsShader("WaterComposite");
 
     if (!m_WaterGBufferShader || !m_WaterCompositeShader || !m_WaveSimShader ||
+        !m_WaveParticleShader || !m_FlowMapShader ||
         !m_WaterSSRShader || !m_WaterRefractionShader || !m_WaterCausticsShader ||
         !m_WaterThicknessShader || !m_WaterSSSScatterShader)
     {
@@ -204,17 +268,63 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         sizeof(WaterGBufferParamsGPU),
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
+    VansWaterConfig initialConfig;
+    if (m_WaterMaterial)
+        initialConfig = m_WaterMaterial->m_Config;
+    initialConfig.Validate();
+
     WaterGBufferParamsGPU gbufParams = {};
     gbufParams.VPMatrix       = glm::mat4(1.0f);
     gbufParams.ViewMatrix     = glm::mat4(1.0f);
     gbufParams.cameraPosition = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-    gbufParams.geometryParams = glm::ivec4(geometryConfig.m_LodCount, geometryConfig.m_MeshDim, 4, 0);
+    gbufParams.geometryParams = glm::ivec4(
+        geometryConfig.m_LodCount, geometryConfig.m_MeshDim,
+        initialConfig.m_Spectrum.m_CascadeCount, int(initialConfig.m_Spectrum.m_Mode));
     gbufParams.geometryScale = glm::vec4(geometryConfig.m_BasePatchSize, geometryConfig.m_MorphStartRatio, 1.0f, 2.0f);
-    gbufParams.spectrumScale = glm::vec4(64.0f, 4.0f, 0.0f, 1.0f);
-    gbufParams.windAndChop = glm::vec4(0.7071f, 0.7071f, 12.0f, 1.0f);
-    gbufParams.simulationParams = glm::ivec4(32, VansWaterConfig::MICRO_SLOPE_LAYER_COUNT, 1, 0);
-    gbufParams.microSlopeParams = glm::vec4(0.35f, 0.09f, std::sqrt(0.09f * 0.5f), 0.5f);
-    gbufParams.microDomainParams = glm::vec4(8.0f, 11.313708f, glm::radians(31.0f), 0.0f);
+    gbufParams.spectrumScale = glm::vec4(
+        initialConfig.m_Spectrum.m_BaseCoverage,
+        initialConfig.m_Spectrum.m_CascadeScale, 0.0f, 1.0f);
+    gbufParams.windAndChop = glm::vec4(
+        initialConfig.m_Spectrum.m_WindDirection,
+        initialConfig.m_Spectrum.m_WindSpeed,
+        initialConfig.m_Spectrum.m_Choppiness);
+    gbufParams.simulationParams = glm::ivec4(
+        initialConfig.m_Spectrum.m_GerstnerWaveCount,
+        initialConfig.m_WaveParticle.m_ParticleCount,
+        initialConfig.m_WaveParticle.m_OctaveCount,
+        0);
+    gbufParams.waveParticleParams0 = glm::vec4(
+        initialConfig.m_WaveParticle.m_DomainSize,
+        initialConfig.m_WaveParticle.m_Amplitude,
+        initialConfig.m_WaveParticle.m_MinRadius,
+        initialConfig.m_WaveParticle.m_MaxRadius);
+    gbufParams.waveParticleParams1 = glm::vec4(
+        initialConfig.m_WaveParticle.m_PhaseVelocity,
+        initialConfig.m_WaveParticle.m_Damping,
+        initialConfig.m_WaveParticle.m_DirectionSpread,
+        float(initialConfig.m_WaveParticle.m_Profile));
+    gbufParams.waveParticleParams2 = glm::vec4(
+        initialConfig.m_WaveParticle.m_Lacunarity,
+        initialConfig.m_WaveParticle.m_Persistence,
+        initialConfig.m_WaveParticle.m_RadiusFalloff,
+        initialConfig.m_WaveParticle.m_ProfileSharpness);
+    gbufParams.waveParticleParams3 = glm::vec4(
+        initialConfig.m_WaveParticle.m_FoamThreshold,
+        initialConfig.m_WaveParticle.m_FoamSoftness,
+        initialConfig.m_WaveParticle.m_Lifetime,
+        float(initialConfig.m_WaveParticle.m_RandomSeed & 0xffffu));
+    gbufParams.flowMapWorld = glm::vec4(
+        initialConfig.m_FlowMap.m_WorldOrigin,
+        initialConfig.m_FlowMap.m_WorldSize);
+    gbufParams.flowMapParams = glm::vec4(
+        initialConfig.m_FlowMap.m_Enabled ? 1.0f : 0.0f,
+        initialConfig.m_FlowMap.m_Strength,
+        initialConfig.m_FlowMap.m_Speed,
+        initialConfig.m_FlowMap.m_PhaseLength);
+    gbufParams.flowMapFallback = glm::vec4(
+        initialConfig.m_FlowMap.m_FallbackDirection,
+        initialConfig.m_FlowMap.m_NoiseAmount,
+        0.0f);
     m_GBufParamsCache = gbufParams;
     if (m_GBufParamsBufferCreated)
         m_GBufParamsBuffer.SetBufferData(&m_GBufParamsCache, 0, sizeof(WaterGBufferParamsGPU));
@@ -233,7 +343,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         false, false, true,
         VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
-    // Tessendorf FFT derivative map: R=slopeX, G=slopeZ, B=foam/fold, A=reserved.
+    // Surface derivative map: layers are paired as dPdx/dPdz per cascade.
     m_WaveDerivativeImage.CreateVulkanImage(
         logicDev,
         { WAVE_TEXTURE_SIZE, WAVE_TEXTURE_SIZE, 1 },
@@ -253,27 +363,16 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         m_WaterFFT = nullptr;
     }
 
-    // Exact short-wave FFT slopes.  Two spectral bands are each represented
-    // by two decorrelated toroidal domains (four layers total).
-    m_MicroSlopeImage.CreateVulkanImage(
+    m_FlowMapImage.CreateVulkanImage(
         logicDev,
-        { DETAIL_TEXTURE_SIZE, DETAIL_TEXTURE_SIZE, 1 },
+        { VansWaterConfig::FLOW_MAP_TEXTURE_SIZE, VansWaterConfig::FLOW_MAP_TEXTURE_SIZE, 1 },
         VK_FORMAT_R16G16B16A16_SFLOAT,
-        1, VansWaterConfig::MICRO_SLOPE_LAYER_COUNT,
+        1, 1,
         VK_IMAGE_TYPE_2D,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_SAMPLE_COUNT_1_BIT,
         false, false, true,
         VK_SAMPLER_ADDRESS_MODE_REPEAT);
-
-    m_MicroFFT = new VansWaterFFT();
-    if (!m_MicroFFT->Initialize(device, projectRoot, &m_MicroSlopeImage, nullptr,
-        VansWaterFFT::OutputMode::SpectralSlope))
-    {
-        VANS_LOG_WARN("[VansWaterSystem] micro slope FFT initialization failed; micro slopes disabled");
-        delete m_MicroFFT;
-        m_MicroFFT = nullptr;
-    }
 
     // 鈹€鈹€ 5. 鍒涘缓姘翠綋鏁堟灉璐村浘锛圕LAMP_TO_EDGE 闃叉杈圭紭骞抽摵浼奖锛夆攢鈹€
     auto createEffectImage = [&](VansVKImage& image)
@@ -390,6 +489,24 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         VANS_LOG("[VansWaterSystem] Wave SSBO: " << activeCount << " active waves, " << ssboSize << " bytes");
     }
 
+    {
+        VkDeviceSize ssboSize = VansWaterConfig::MAX_WAVE_PARTICLE_COUNT * sizeof(WaveParticleGPU);
+        CreateWaterBuffer(m_WaveParticleSSBO, m_WaveParticleSSBOCreated,
+            ssboSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+        std::vector<WaveParticleGPU> particles;
+        AutoGenerateWaveParticles(particles, initialConfig);
+        const std::size_t activeCount = particles.size();
+        particles.resize(VansWaterConfig::MAX_WAVE_PARTICLE_COUNT, WaveParticleGPU{});
+        if (m_WaveParticleSSBOCreated)
+            m_WaveParticleSSBO.SetBufferData(
+                particles.data(), 0, particles.size() * sizeof(WaveParticleGPU));
+
+        VANS_LOG("[VansWaterSystem] WaveParticle SSBO: " << activeCount
+            << " active particles, " << ssboSize << " bytes");
+    }
+
     m_Initialized = true;
     VANS_LOG("[VansWaterSystem] Initialize: " << renderWidth << "x" << renderHeight
              << " waterLevel=" << m_WaterLevel
@@ -458,17 +575,6 @@ void VansWaterSystem::SetupDescriptors(
                 VK_IMAGE_LAYOUT_GENERAL
             } });
 
-        // binding 3: band-limited micro normal Texture2DArray
-        descMgr->WriteImageDescriptor(
-            m_GBufPassSet,
-            WATER_GBUF_BINDING_MICRO_SLOPE,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { {
-                m_MicroSlopeImage.GetSampler(),
-                m_MicroSlopeImage.GetImageView(),
-                VK_IMAGE_LAYOUT_GENERAL
-            } });
-
         // binding 4: FFT derivative Texture2DArray 鈥?vertex shader reads slope normal.
         descMgr->WriteImageDescriptor(
             m_GBufPassSet,
@@ -477,6 +583,16 @@ void VansWaterSystem::SetupDescriptors(
             { {
                 m_WaveDerivativeImage.GetSampler(),
                 m_WaveDerivativeImage.GetImageView(),
+                VK_IMAGE_LAYOUT_GENERAL
+            } });
+
+        descMgr->WriteImageDescriptor(
+            m_GBufPassSet,
+            WATER_GBUF_BINDING_FLOW_MAP,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { {
+                m_FlowMapImage.GetSampler(),
+                m_FlowMapImage.GetImageView(),
                 VK_IMAGE_LAYOUT_GENERAL
             } });
 
@@ -516,6 +632,63 @@ void VansWaterSystem::SetupDescriptors(
             WATER_WAVE_BINDING_DERIVATIVE,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaveDerivativeImage.GetSampler(), m_WaveDerivativeImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+
+        descMgr->CommitDescriptorUpdates();
+    }
+
+    {
+        std::vector<VkDescriptorSet> sets;
+        VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterWaveCompute(
+            m_WaveParticleLayout, sets, 1);
+        m_WaveParticleSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
+
+        descMgr->WriteBufferDescriptor(
+            m_WaveParticleSet,
+            WATER_WAVE_BINDING_PARAMS,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
+        descMgr->WriteImageDescriptor(
+            m_WaveParticleSet,
+            WATER_WAVE_BINDING_DISPLACEMENT,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            { {
+                m_WaveDisplacementImage.GetSampler(),
+                m_WaveDisplacementImage.GetImageView(),
+                VK_IMAGE_LAYOUT_GENERAL
+            } });
+        descMgr->WriteBufferDescriptor(
+            m_WaveParticleSet,
+            WATER_WAVE_BINDING_WAVE_SSBO,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            { { GetNativeBuffer(m_WaveParticleSSBO, m_WaveParticleSSBOCreated), 0,
+                VansWaterConfig::MAX_WAVE_PARTICLE_COUNT * sizeof(WaveParticleGPU) } });
+        descMgr->WriteImageDescriptor(
+            m_WaveParticleSet,
+            WATER_WAVE_BINDING_DERIVATIVE,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            { { m_WaveDerivativeImage.GetSampler(), m_WaveDerivativeImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+
+        descMgr->CommitDescriptorUpdates();
+    }
+
+    {
+        std::vector<VkDescriptorSet> sets;
+        VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterFlowMapCompute(
+            m_FlowMapLayout, sets, 1);
+        m_FlowMapSet = sets[0];
+        descMgr->BeginDescriptorUpdate();
+
+        descMgr->WriteBufferDescriptor(
+            m_FlowMapSet,
+            WATER_FLOW_BINDING_PARAMS,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
+        descMgr->WriteImageDescriptor(
+            m_FlowMapSet,
+            WATER_FLOW_BINDING_OUTPUT,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            { { m_FlowMapImage.GetSampler(), m_FlowMapImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 
         descMgr->CommitDescriptorUpdates();
     }
@@ -750,16 +923,11 @@ void VansWaterSystem::Shutdown()
         m_WaterFFT = nullptr;
     }
 
-    if (m_MicroFFT)
-    {
-        m_MicroFFT->Shutdown(dev);
-        delete m_MicroFFT;
-        m_MicroFFT = nullptr;
-    }
-
     if (m_GBufPassLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_GBufPassLayout); m_GBufPassLayout = VK_NULL_HANDLE; }
     if (m_CompPassLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_CompPassLayout); m_CompPassLayout = VK_NULL_HANDLE; }
     if (m_WaveSimLayout != VK_NULL_HANDLE)    { descMgr->DestroyDescriptorSetLayout(m_WaveSimLayout);  m_WaveSimLayout  = VK_NULL_HANDLE; }
+    if (m_WaveParticleLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_WaveParticleLayout); m_WaveParticleLayout = VK_NULL_HANDLE; }
+    if (m_FlowMapLayout != VK_NULL_HANDLE)    { descMgr->DestroyDescriptorSetLayout(m_FlowMapLayout);  m_FlowMapLayout  = VK_NULL_HANDLE; }
     if (m_SSRLayout != VK_NULL_HANDLE)        { descMgr->DestroyDescriptorSetLayout(m_SSRLayout);      m_SSRLayout      = VK_NULL_HANDLE; }
     if (m_RefractionLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_RefractionLayout); m_RefractionLayout = VK_NULL_HANDLE; }
     if (m_ThicknessLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_ThicknessLayout); m_ThicknessLayout = VK_NULL_HANDLE; }
@@ -773,19 +941,20 @@ void VansWaterSystem::Shutdown()
     DestroyWaterBuffer(m_ThicknessParamsBuffer, m_ThicknessParamsBufferCreated, dev);
     DestroyWaterBuffer(m_SSSParamsBuffer, m_SSSParamsBufferCreated, dev);
     DestroyWaterBuffer(m_WaveSSBO, m_WaveSSBOCreated, dev);
+    DestroyWaterBuffer(m_WaveParticleSSBO, m_WaveParticleSSBOCreated, dev);
     m_GBufParamsCache = {};
 
     m_WaveDisplacementImage.DestroyVulkanImage(dev);
     m_WaveDisplacementReady = false;
     m_WaveDerivativeImage.DestroyVulkanImage(dev);
     m_WaveDerivativeReady = false;
+    m_FlowMapImage.DestroyVulkanImage(dev);
+    m_FlowMapReady = false;
     m_WaterReflectionImage.DestroyVulkanImage(dev);
     m_WaterRefractionImage.DestroyVulkanImage(dev);
     m_WaterCausticsImage.DestroyVulkanImage(dev);
     m_WaterThicknessImage.DestroyVulkanImage(dev);
     m_WaterSSSScatterImage.DestroyVulkanImage(dev);
-    m_MicroSlopeImage.DestroyVulkanImage(dev);
-    m_MicroSlopeReady = false;
     m_ReflectionOutputReady = false;
     m_RefractionOutputReady = false;
     m_CausticsOutputReady = false;
@@ -796,6 +965,8 @@ void VansWaterSystem::Shutdown()
     m_WaterGBufferShader = nullptr;
     m_WaterCompositeShader = nullptr;
     m_WaveSimShader = nullptr;
+    m_WaveParticleShader = nullptr;
+    m_FlowMapShader = nullptr;
     m_WaterSSRShader = nullptr;
     m_WaterRefractionShader = nullptr;
     m_WaterCausticsShader = nullptr;
@@ -832,6 +1003,22 @@ void VansWaterSystem::UpdateWaveSSBO()
     VANS_LOG("[VansWaterSystem] Gerstner spectrum regenerated: " << activeCount << " active waves");
 }
 
+void VansWaterSystem::UpdateWaveParticleSSBO()
+{
+    if (!m_Initialized || !m_WaveParticleSSBOCreated || !m_WaterMaterial)
+        return;
+
+    VansWaterConfig config = m_WaterMaterial->m_Config;
+    config.Validate();
+    std::vector<WaveParticleGPU> particles;
+    AutoGenerateWaveParticles(particles, config);
+    const std::size_t activeCount = particles.size();
+    particles.resize(VansWaterConfig::MAX_WAVE_PARTICLE_COUNT, WaveParticleGPU{});
+    m_WaveParticleSSBO.SetBufferData(
+        particles.data(), 0, particles.size() * sizeof(WaveParticleGPU));
+    VANS_LOG("[VansWaterSystem] WaveParticle spectrum regenerated: " << activeCount << " active particles");
+}
+
 // ============================================================
 // Update 鈥?姣忓抚 CPU 绔姸鎬佹洿鏂?
 // ============================================================
@@ -850,13 +1037,17 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     }
     const auto& geometry = config.m_Geometry;
     const auto& spectrum = config.m_Spectrum;
-    const auto& micro = config.m_MicroSlope;
+    const auto& particle = config.m_WaveParticle;
+    const auto& flowMap = config.m_FlowMap;
     m_WaterLevel = config.m_WaterLevel;
 
     const float windLength = spectrum.m_WindSpeed * spectrum.m_WindSpeed / 9.81f;
     const float spectralFourSigma = 5.5f * windLength
         * std::sqrt((std::max)(spectrum.m_SpectrumAmplitude, 0.0f));
-    const float displacementBound = spectrum.m_SwellAmplitude * 2.0f + spectralFourSigma;
+    const float particleBound = spectrum.m_Mode == VansWaveMode::WaveParticle
+        ? particle.m_Amplitude * 3.0f : 0.0f;
+    const float displacementBound = spectrum.m_SwellAmplitude * 2.0f
+        + spectralFourSigma + particleBound;
     if (m_GeometryClipmap)
     {
         m_GeometryClipmap->ApplyConfig(geometry);
@@ -878,15 +1069,30 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     gbufParams.windAndChop = glm::vec4(
         spectrum.m_WindDirection, spectrum.m_WindSpeed, spectrum.m_Choppiness);
     gbufParams.simulationParams = glm::ivec4(
-        spectrum.m_GerstnerWaveCount, VansWaterConfig::MICRO_SLOPE_LAYER_COUNT,
-        micro.m_Enabled && m_MicroFFT && m_MicroFFT->IsReady() ? 1 : 0,
-        spectrum.m_Mode == VansWaveMode::Hybrid && m_WaterFFT && m_WaterFFT->IsReady() ? 1 : 0);
-    const float microBandSplit = std::sqrt(micro.m_MinWavelength * spectrum.m_MinWavelength);
-    gbufParams.microSlopeParams = glm::vec4(
-        micro.m_Intensity, micro.m_MinWavelength, microBandSplit, spectrum.m_MinWavelength);
-    gbufParams.microDomainParams = glm::vec4(
-        micro.m_PrimaryCoverage, micro.m_SecondaryCoverage,
-        glm::radians(micro.m_RotationDegrees), 0.0f);
+        spectrum.m_GerstnerWaveCount, particle.m_ParticleCount,
+        particle.m_OctaveCount, 0);
+    gbufParams.waveParticleParams0 = glm::vec4(
+        particle.m_DomainSize, particle.m_Amplitude,
+        particle.m_MinRadius, particle.m_MaxRadius);
+    gbufParams.waveParticleParams1 = glm::vec4(
+        particle.m_PhaseVelocity, particle.m_Damping,
+        particle.m_DirectionSpread, float(particle.m_Profile));
+    gbufParams.waveParticleParams2 = glm::vec4(
+        particle.m_Lacunarity, particle.m_Persistence,
+        particle.m_RadiusFalloff, particle.m_ProfileSharpness);
+    gbufParams.waveParticleParams3 = glm::vec4(
+        particle.m_FoamThreshold, particle.m_FoamSoftness,
+        particle.m_Lifetime, float(particle.m_RandomSeed & 0xffffu));
+    gbufParams.flowMapWorld = glm::vec4(flowMap.m_WorldOrigin, flowMap.m_WorldSize);
+    gbufParams.flowMapParams = glm::vec4(
+        flowMap.m_Enabled ? 1.0f : 0.0f,
+        flowMap.m_Strength,
+        flowMap.m_Speed,
+        flowMap.m_PhaseLength);
+    gbufParams.flowMapFallback = glm::vec4(
+        flowMap.m_FallbackDirection,
+        flowMap.m_NoiseAmount,
+        0.0f);
 
     if (m_WaterFFT)
     {
@@ -915,33 +1121,6 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
             previousCoverage = coverage;
         }
         m_WaterFFT->SetParams(fp);
-    }
-
-    if (m_MicroFFT)
-    {
-        VansWaterFFT::Params fp;
-        fp.resolution = VansWaterFFT::FFT_RESOLUTION;
-        fp.cascadeCount = VansWaterFFT::MAX_CASCADE_COUNT;
-        fp.windDirection = spectrum.m_WindDirection;
-        fp.windSpeed = spectrum.m_WindSpeed;
-        fp.spectrumAmplitude = spectrum.m_SpectrumAmplitude;
-        fp.choppiness = 0.0f;
-        fp.smallWaveDamping = spectrum.m_SmallWaveDamping;
-        fp.windDependency = spectrum.m_WindDependency;
-        fp.depth = spectrum.m_Depth;
-        fp.repeatPeriod = spectrum.m_RepeatPeriod;
-        fp.randomSeed = spectrum.m_RandomSeed ^ 0x9e3779b9u;
-        fp.capillaryCoefficient = 0.000074f;
-        fp.domainCoverage = {
-            micro.m_PrimaryCoverage, micro.m_SecondaryCoverage,
-            micro.m_PrimaryCoverage, micro.m_SecondaryCoverage };
-        fp.minWavelength = {
-            micro.m_MinWavelength, micro.m_MinWavelength,
-            microBandSplit, microBandSplit };
-        fp.maxWavelength = {
-            microBandSplit, microBandSplit,
-            spectrum.m_MinWavelength, spectrum.m_MinWavelength };
-        m_MicroFFT->SetParams(fp);
     }
 
     m_GBufParamsCache = gbufParams;
@@ -1049,9 +1228,52 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
     const VansWaveMode mode = config.m_Spectrum.m_Mode;
     const int cascadeCount = config.m_Spectrum.m_CascadeCount;
 
-    auto runGerstner = [&]()
+    auto runFlowMap = [&]()
     {
-        if (m_WaveSimShader == nullptr || m_WaveSimSet == VK_NULL_HANDLE)
+        if (m_FlowMapShader == nullptr || m_FlowMapSet == VK_NULL_HANDLE)
+            return;
+
+        VkImageMemoryBarrier beforeCompute = {};
+        beforeCompute.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        beforeCompute.srcAccessMask = m_FlowMapReady
+            ? VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT : 0;
+        beforeCompute.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        beforeCompute.oldLayout = m_FlowMapReady ? VK_IMAGE_LAYOUT_GENERAL : m_FlowMapImage.GetImageLayout();
+        beforeCompute.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        beforeCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        beforeCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        beforeCompute.image = m_FlowMapImage.GetImage();
+        beforeCompute.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        cmd.PipelineBarrier(
+            m_FlowMapReady ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            {}, {}, { beforeCompute });
+        m_FlowMapImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+
+        cmd.EnsureComputeShader(*m_FlowMapShader, { m_FlowMapLayout });
+        const uint32_t groups = (VansWaterConfig::FLOW_MAP_TEXTURE_SIZE + 7u) / 8u;
+        cmd.DispatchCompute(*m_FlowMapShader, groups, groups, 1, { m_FlowMapSet });
+
+        VkImageMemoryBarrier afterCompute = {};
+        afterCompute.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        afterCompute.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        afterCompute.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        afterCompute.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        afterCompute.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        afterCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        afterCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        afterCompute.image = m_FlowMapImage.GetImage();
+        afterCompute.subresourceRange = beforeCompute.subresourceRange;
+        cmd.PipelineBarrier(
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+            {}, {}, { afterCompute });
+        m_FlowMapReady = true;
+    };
+
+    auto runSurfaceCompute = [&](VansComputeShader* shader, VkDescriptorSetLayout layout, VkDescriptorSet set)
+    {
+        if (shader == nullptr || layout == VK_NULL_HANDLE || set == VK_NULL_HANDLE)
             return;
 
         const VkImageLayout currentLayout = m_WaveDisplacementReady
@@ -1083,9 +1305,9 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
         m_WaveDisplacementImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
         m_WaveDerivativeImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
 
-        cmd.EnsureComputeShader(*m_WaveSimShader, { m_WaveSimLayout });
+        cmd.EnsureComputeShader(*shader, { layout });
         const uint32_t groups = (WAVE_TEXTURE_SIZE + 7u) / 8u;
-        cmd.DispatchCompute(*m_WaveSimShader, groups, groups, uint32_t(cascadeCount), { m_WaveSimSet });
+        cmd.DispatchCompute(*shader, groups, groups, uint32_t(cascadeCount), { set });
 
         VkImageMemoryBarrier afterCompute = {};
         afterCompute.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1109,8 +1331,20 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
         m_WaveDerivativeReady = true;
     };
 
+    auto runGerstner = [&]()
+    {
+        runSurfaceCompute(m_WaveSimShader, m_WaveSimLayout, m_WaveSimSet);
+    };
+
+    auto runWaveParticle = [&]()
+    {
+        runSurfaceCompute(m_WaveParticleShader, m_WaveParticleLayout, m_WaveParticleSet);
+    };
+
+    runFlowMap();
+
     bool fftReady = false;
-    if ((mode == VansWaveMode::FFT || mode == VansWaveMode::Hybrid) && m_WaterFFT && m_WaterFFT->IsReady())
+    if (mode == VansWaveMode::FFT && m_WaterFFT && m_WaterFFT->IsReady())
     {
         m_WaterFFT->UpdateFFT(cmd, m_Time);
         m_WaveDisplacementReady = true;
@@ -1128,17 +1362,22 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
         }
         runGerstner();
     }
-    else if (mode == VansWaveMode::Gerstner || mode == VansWaveMode::Hybrid)
+    else if (mode == VansWaveMode::Gerstner)
         runGerstner();
-
-    // Short-wave detail is part of the same spectral simulation stage.  Run
-    // once even when disabled so the statically bound sampled image has a
-    // valid layout; subsequent disabled frames skip the work.
-    if (m_MicroFFT && m_MicroFFT->IsReady() &&
-        (config.m_MicroSlope.m_Enabled || !m_MicroSlopeReady))
+    else if (mode == VansWaveMode::WaveParticle)
     {
-        m_MicroFFT->UpdateFFT(cmd, m_Time);
-        m_MicroSlopeReady = true;
+        if (m_WaveParticleShader && m_WaveParticleSet != VK_NULL_HANDLE)
+            runWaveParticle();
+        else
+        {
+            static bool s_WaveParticleFallbackLogged = false;
+            if (!s_WaveParticleFallbackLogged)
+            {
+                VANS_LOG_WARN("[VansWaterSystem] WaveParticle requested but not ready; falling back to Gerstner");
+                s_WaveParticleFallbackLogged = true;
+            }
+            runGerstner();
+        }
     }
 }
 

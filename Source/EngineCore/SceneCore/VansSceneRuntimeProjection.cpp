@@ -451,6 +451,7 @@ bool VansSceneRuntimeProjection::BuildRuntimeScene(json& sceneData)
 				{ "mesh", modelGuid },
 				{ "material", materialGuid },
 				{ "type", data.value("renderType", "opaque") },
+				{ "rayTracingMode", data.value("rayTracingMode", "auto") },
 				{ "support_shadow", data.value("castShadows", true) }
 			};
 

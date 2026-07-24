@@ -12,7 +12,7 @@ namespace VansGraphics
     {
         Gerstner = 0,
         FFT = 1,
-        Hybrid = 2, // FFT spectrum plus authored Gerstner components at every cascade.
+        WaveParticle = 2,
     };
 
     struct VansWaterMediumConfig
@@ -39,7 +39,7 @@ namespace VansGraphics
     // Band-limited spectral cascades. Resolution is a runtime invariant in V2.
     struct VansWaterSpectrumConfig
     {
-        VansWaveMode m_Mode = VansWaveMode::Hybrid;
+        VansWaveMode m_Mode = VansWaveMode::WaveParticle;
         int m_CascadeCount = 4;
         float m_BaseCoverage = 64.0f;
         float m_CascadeScale = 4.0f;
@@ -51,8 +51,8 @@ namespace VansGraphics
         int m_GerstnerWaveCount = 32;
 
         float m_SpectrumAmplitude = 0.001f;
-        // Shorter wavelengths are owned exclusively by the spectral slope
-        // fields.  This is a power-spectrum split, not a geometry LOD knob.
+        // The low wavelength clamp is a spectral quality control, not a
+        // geometry LOD knob.
         float m_MinWavelength = 0.5f;
         float m_SmallWaveDamping = 0.003f;
         float m_WindDependency = 0.07f;
@@ -61,18 +61,38 @@ namespace VansGraphics
         std::uint32_t m_RandomSeed = 1337;
     };
 
-    // Two decorrelated, world-anchored FFT slope fields cover the same short-
-    // wave spectrum.  Different torus periods and rotations make the combined
-    // repetition period large while every source field remains four-edge
-    // periodic.  Their upper wavelength is m_Spectrum.m_MinWavelength.
-    struct VansWaterMicroSlopeConfig
+    struct VansWaterWaveParticleConfig
     {
-        bool m_Enabled = true;
-        float m_Intensity = 0.35f;
-        float m_MinWavelength = 0.09f;
-        float m_PrimaryCoverage = 8.0f;
-        float m_SecondaryCoverage = 11.313708f;
-        float m_RotationDegrees = 31.0f;
+        int m_ParticleCount = 256;
+        int m_OctaveCount = 4;
+        int m_Profile = 1; // 0=Gaussian, 1=Compact ripple, 2=Sharp crest.
+        float m_DomainSize = 256.0f;
+        float m_Amplitude = 0.16f;
+        float m_MinRadius = 2.0f;
+        float m_MaxRadius = 64.0f;
+        float m_PhaseVelocity = 1.0f;
+        float m_Damping = 0.05f;
+        float m_DirectionSpread = 0.45f;
+        float m_Lacunarity = 2.0f;
+        float m_Persistence = 0.52f;
+        float m_RadiusFalloff = 0.55f;
+        float m_ProfileSharpness = 2.0f;
+        float m_FoamThreshold = 0.55f;
+        float m_FoamSoftness = 0.35f;
+        float m_Lifetime = 18.0f;
+        std::uint32_t m_RandomSeed = 20260724u;
+    };
+
+    struct VansWaterFlowMapConfig
+    {
+        bool m_Enabled = false;
+        float m_Strength = 6.0f;
+        float m_Speed = 0.45f;
+        float m_PhaseLength = 1.0f;
+        float m_NoiseAmount = 0.35f;
+        glm::vec2 m_WorldOrigin = { -256.0f, -256.0f };
+        glm::vec2 m_WorldSize = { 512.0f, 512.0f };
+        glm::vec2 m_FallbackDirection = { 1.0f, 0.0f };
     };
 
     struct VansWaterCausticsConfig
@@ -105,14 +125,13 @@ namespace VansGraphics
 
     struct VansWaterConfig
     {
-        static constexpr std::uint32_t SCHEMA_VERSION = 3;
+        static constexpr std::uint32_t SCHEMA_VERSION = 4;
         static constexpr int SPECTRUM_RESOLUTION = 256;
         static constexpr int MAX_GEOMETRY_LODS = 10;
         static constexpr int MAX_SPECTRUM_CASCADES = 4;
-        static constexpr int MICRO_SLOPE_BAND_COUNT = 2;
-        static constexpr int MICRO_SLOPE_DOMAIN_COUNT = 2;
-        static constexpr int MICRO_SLOPE_LAYER_COUNT =
-            MICRO_SLOPE_BAND_COUNT * MICRO_SLOPE_DOMAIN_COUNT;
+        static constexpr int FLOW_MAP_TEXTURE_SIZE = 256;
+        static constexpr int MAX_WAVE_PARTICLE_COUNT = 1024;
+        static constexpr int MAX_WAVE_PARTICLE_OCTAVES = 8;
         static constexpr float GEOMETRY_LOD_RATIO = 2.0f;
 
         std::uint32_t m_SchemaVersion = SCHEMA_VERSION;
@@ -122,7 +141,8 @@ namespace VansGraphics
         VansWaterMediumConfig m_Medium;
         VansWaterGeometryConfig m_Geometry;
         VansWaterSpectrumConfig m_Spectrum;
-        VansWaterMicroSlopeConfig m_MicroSlope;
+        VansWaterWaveParticleConfig m_WaveParticle;
+        VansWaterFlowMapConfig m_FlowMap;
         VansWaterCausticsConfig m_Caustics;
         VansWaterRefractionConfig m_Refraction;
         VansWaterSSRConfig m_SSR;
@@ -158,22 +178,38 @@ namespace VansGraphics
             else
                 m_Spectrum.m_WindDirection = glm::normalize(m_Spectrum.m_WindDirection);
 
-            const float maxMicroCoverage = (std::max)(2.0f,
-                m_Spectrum.m_MinWavelength * 0.95f * float(SPECTRUM_RESOLUTION) * 0.5f);
-            m_MicroSlope.m_PrimaryCoverage = std::clamp(
-                m_MicroSlope.m_PrimaryCoverage, 2.0f, (std::min)(64.0f, maxMicroCoverage));
-            m_MicroSlope.m_SecondaryCoverage = std::clamp(
-                m_MicroSlope.m_SecondaryCoverage, 2.0f, (std::min)(64.0f, maxMicroCoverage));
-            const float microNyquist = 2.0f * (std::max)(
-                m_MicroSlope.m_PrimaryCoverage, m_MicroSlope.m_SecondaryCoverage)
-                / float(SPECTRUM_RESOLUTION);
-            m_MicroSlope.m_MinWavelength = std::clamp(
-                m_MicroSlope.m_MinWavelength,
-                microNyquist,
-                m_Spectrum.m_MinWavelength * 0.95f);
-            m_MicroSlope.m_Intensity = std::clamp(m_MicroSlope.m_Intensity, 0.0f, 3.0f);
-            m_MicroSlope.m_RotationDegrees = std::clamp(
-                m_MicroSlope.m_RotationDegrees, 0.0f, 89.0f);
+            m_WaveParticle.m_ParticleCount = std::clamp(
+                m_WaveParticle.m_ParticleCount, 0, MAX_WAVE_PARTICLE_COUNT);
+            m_WaveParticle.m_OctaveCount = std::clamp(
+                m_WaveParticle.m_OctaveCount, 1, MAX_WAVE_PARTICLE_OCTAVES);
+            m_WaveParticle.m_Profile = std::clamp(m_WaveParticle.m_Profile, 0, 2);
+            m_WaveParticle.m_DomainSize = (std::max)(m_WaveParticle.m_DomainSize, 16.0f);
+            m_WaveParticle.m_Amplitude = std::clamp(m_WaveParticle.m_Amplitude, 0.0f, 10.0f);
+            m_WaveParticle.m_MinRadius = std::clamp(m_WaveParticle.m_MinRadius, 0.05f, m_WaveParticle.m_DomainSize);
+            m_WaveParticle.m_MaxRadius = std::clamp(
+                m_WaveParticle.m_MaxRadius, m_WaveParticle.m_MinRadius, m_WaveParticle.m_DomainSize);
+            m_WaveParticle.m_PhaseVelocity = std::clamp(m_WaveParticle.m_PhaseVelocity, 0.0f, 10.0f);
+            m_WaveParticle.m_Damping = std::clamp(m_WaveParticle.m_Damping, 0.0f, 2.0f);
+            m_WaveParticle.m_DirectionSpread = std::clamp(m_WaveParticle.m_DirectionSpread, 0.0f, 3.14159265f);
+            m_WaveParticle.m_Lacunarity = std::clamp(m_WaveParticle.m_Lacunarity, 1.01f, 4.0f);
+            m_WaveParticle.m_Persistence = std::clamp(m_WaveParticle.m_Persistence, 0.0f, 1.0f);
+            m_WaveParticle.m_RadiusFalloff = std::clamp(m_WaveParticle.m_RadiusFalloff, 0.1f, 1.0f);
+            m_WaveParticle.m_ProfileSharpness = std::clamp(m_WaveParticle.m_ProfileSharpness, 0.25f, 8.0f);
+            m_WaveParticle.m_FoamThreshold = std::clamp(m_WaveParticle.m_FoamThreshold, 0.0f, 2.0f);
+            m_WaveParticle.m_FoamSoftness = std::clamp(m_WaveParticle.m_FoamSoftness, 0.01f, 2.0f);
+            m_WaveParticle.m_Lifetime = std::clamp(m_WaveParticle.m_Lifetime, 0.1f, 600.0f);
+
+            m_FlowMap.m_Strength = std::clamp(m_FlowMap.m_Strength, 0.0f, 256.0f);
+            m_FlowMap.m_Speed = std::clamp(m_FlowMap.m_Speed, 0.0f, 16.0f);
+            m_FlowMap.m_PhaseLength = std::clamp(m_FlowMap.m_PhaseLength, 0.05f, 32.0f);
+            m_FlowMap.m_NoiseAmount = std::clamp(m_FlowMap.m_NoiseAmount, 0.0f, 2.0f);
+            m_FlowMap.m_WorldSize.x = (std::max)(m_FlowMap.m_WorldSize.x, 1.0f);
+            m_FlowMap.m_WorldSize.y = (std::max)(m_FlowMap.m_WorldSize.y, 1.0f);
+            if (glm::length(m_FlowMap.m_FallbackDirection) < 0.001f)
+                m_FlowMap.m_FallbackDirection = { 1.0f, 0.0f };
+            else
+                m_FlowMap.m_FallbackDirection = glm::normalize(m_FlowMap.m_FallbackDirection);
+
             m_Refraction.m_DistortionStrength = std::clamp(
                 m_Refraction.m_DistortionStrength, 0.0f, 0.1f);
         }

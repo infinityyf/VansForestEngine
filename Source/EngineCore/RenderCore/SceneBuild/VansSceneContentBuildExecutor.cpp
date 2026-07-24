@@ -21,6 +21,20 @@ float ReadFloatField(const json& object, const char* key, float fallback)
 	const auto found = object.find(key);
 	return found != object.end() && found->is_number() ? found->get<float>() : fallback;
 }
+
+void ReadFloat3Field(const json& object, const char* key, float destination[4])
+{
+	if (!object.is_object())
+		return;
+	const auto found = object.find(key);
+	if (found == object.end() || !found->is_array() || found->size() < 3)
+		return;
+	for (size_t index = 0; index < 3; ++index)
+	{
+		if ((*found)[index].is_number())
+			destination[index] = (*found)[index].get<float>();
+	}
+}
 }
 
 bool VansSceneContentBuildExecutor::BuildFromFile(VansScene& scene, const char* path)
@@ -42,6 +56,8 @@ bool VansSceneContentBuildExecutor::BuildFromFile(VansScene& scene, const char* 
 		return false;
 	}
 
+	ApplyHeightFogSettings(*scene.GetMaterialManager(), sceneData);
+	ApplyVolumetricFogSettings(*scene.GetMaterialManager(), sceneData);
 	ApplyVolumetricCloudSettings(*scene.GetMaterialManager(), sceneData);
 	scene.GetReflectionProbeSystem()->LoadFromSceneJson(sceneData, path);
 	ApplyGISettings(scene, sceneData);
@@ -88,6 +104,43 @@ bool VansSceneContentBuildExecutor::BuildFromFile(VansScene& scene, const char* 
 
 	VANS_LOG("[VansScene] Scene content loaded from: " << path);
 	return true;
+}
+
+void VansSceneContentBuildExecutor::ApplyHeightFogSettings(VansMaterialManager& materialManager, const json& sceneData)
+{
+	const auto fogIt = sceneData.find("heightFog");
+	if (fogIt == sceneData.end() || !fogIt->is_object())
+		return;
+
+	const json& fog = *fogIt;
+	VansFogSettings settings = materialManager.GetFogSettings();
+	settings.fogDensity = ReadFloatField(fog, "fogDensity", settings.fogDensity);
+	settings.heightFalloff = ReadFloatField(fog, "heightFalloff", settings.heightFalloff);
+	settings.sunScatterScale = ReadFloatField(fog, "sunScatterScale", settings.sunScatterScale);
+	settings.ambientScale = ReadFloatField(fog, "ambientScale", settings.ambientScale);
+	settings.fogMinHeight = ReadFloatField(fog, "fogMinHeight", settings.fogMinHeight);
+	settings.skyFogDistance = ReadFloatField(fog, "skyFogDistance", settings.skyFogDistance);
+	materialManager.ApplyFogSettings(settings);
+}
+
+void VansSceneContentBuildExecutor::ApplyVolumetricFogSettings(VansMaterialManager& materialManager, const json& sceneData)
+{
+	const auto fogIt = sceneData.find("volumetricFog");
+	if (fogIt == sceneData.end() || !fogIt->is_object())
+		return;
+
+	const json& fog = *fogIt;
+	VansFogVolumeSettings settings = materialManager.GetFogVolumeSettings();
+	settings.density = ReadFloatField(fog, "density", settings.density);
+	settings.anisotropy = ReadFloatField(fog, "anisotropy", settings.anisotropy);
+	settings.scatterScale = ReadFloatField(fog, "scatterScale", settings.scatterScale);
+	settings.ambientScale = ReadFloatField(fog, "ambientScale", settings.ambientScale);
+	settings.volumeNear = ReadFloatField(fog, "volumeNear", settings.volumeNear);
+	settings.volumeFar = ReadFloatField(fog, "volumeFar", settings.volumeFar);
+	settings.slicePower = ReadFloatField(fog, "slicePower", settings.slicePower);
+	ReadFloat3Field(fog, "fogBoxMin", settings.fogBoxMin);
+	ReadFloat3Field(fog, "fogBoxMax", settings.fogBoxMax);
+	materialManager.ApplyFogVolumeSettings(settings);
 }
 
 void VansSceneContentBuildExecutor::ApplyVolumetricCloudSettings(VansMaterialManager& materialManager, const json& sceneData)

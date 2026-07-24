@@ -98,6 +98,7 @@ namespace VansGraphics
 			if (type == "subsurface") return VansMaterialType::VAN_SUBSURFACE;
 			if (type == "grass") return VansMaterialType::VAN_GRASS;
 			if (type == "emissive") return VansMaterialType::VAN_EMISSIVE;
+			if (type == "pbr_emissive" || type == "pbrEmissive") return VansMaterialType::VAN_PBR_EMISSIVE;
 			if (type == "decal") return VansMaterialType::VAN_DECAL;
 			if (type == "customShader" || type == "custom") return VansMaterialType::VAN_CUSTOM_SHADER;
 			VANS_LOG_WARN("[ParseMaterialType] Material '" << materialName
@@ -123,7 +124,8 @@ namespace VansGraphics
 		case VansMaterialType::VAN_HAIR: return new VansHairMaterial();
 		case VansMaterialType::VAN_SUBSURFACE: return new VansSubsurfaceMaterial();
 		case VansMaterialType::VAN_GRASS: return new VansGrassMaterial();
-		case VansMaterialType::VAN_EMISSIVE: return new VansEmissiveMaterial();
+		case VansMaterialType::VAN_EMISSIVE:
+		case VansMaterialType::VAN_PBR_EMISSIVE: return new VansEmissiveMaterial();
 		case VansMaterialType::VAN_DECAL: return new VansDecalMaterial();
 		case VansMaterialType::VAN_CUSTOM_SHADER: return new VansMaterial();
 		default: return new VansMaterial();
@@ -249,7 +251,8 @@ VansTexture* VansSceneMaterialBuilder::ResolveMaterialTexture(VansScene& scene, 
                     const std::string keyName = key ? std::string(key) : std::string{};
                     const bool isSRGB = keyName == "basecolor_texture" ||
                         keyName == "diffuse_texture" ||
-                        keyName == "albedo_texture";
+                        keyName == "albedo_texture" ||
+						keyName == "emissive_texture";
                     texture = scene.FindOrLoadTexture(record->sourcePath.string(), isSRGB);
                 }
             }
@@ -431,7 +434,10 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         auto* pbr = static_cast<VansPBRMaterial*>(material);
         pbr->m_BaseColorTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
         pbr->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        pbr->m_MetalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "metal_texture", "defaultMetal");
+        pbr->m_MetalTexture = ResolveMaterialTexture(scene, sceneMaterial, "metallic_texture");
+        if (pbr->m_MetalTexture == nullptr)
+            pbr->m_MetalTexture = ResolveMaterialTexture(scene, sceneMaterial, "metal_texture");
+        pbr->m_MetalTexture = scene.ResolveTextureAssetOrDefault(pbr->m_MetalTexture, "defaultMetal");
         pbr->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
         pbr->m_AoTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "ao_texture", "defaultAo");
         glm::vec3 pbrColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
@@ -536,12 +542,16 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         auto* sss = static_cast<VansSubsurfaceMaterial*>(material);
         sss->m_BaseColorTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
         sss->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        sss->m_ThicknessTexture = ResolveMaterialTexture(scene, sceneMaterial, "thickness_texture");
+        sss->m_ThicknessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "thickness_texture", "defaultAo");
         sss->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
-        sss->m_SubsurfacePower = ReadMaterialFloatField(sceneMaterial, "subsurfacePower", 12.234f);
-        sss->m_Thickness = ReadMaterialFloatField(sceneMaterial, "thickness", 0.5f);
-        sss->m_SubsurfaceAmount = ReadMaterialFloatField(sceneMaterial, "subsurfaceAmount", 1.0f);
+        sss->m_SubsurfacePower = std::max(
+            ReadMaterialFloatField(sceneMaterial, "scatteringDistance",
+                ReadMaterialFloatField(sceneMaterial, "subsurfacePower", 12.0f)), 0.01f);
+        sss->m_Thickness = std::max(ReadMaterialFloatField(sceneMaterial, "thickness", 5.0f), 0.0f);
+        sss->m_SubsurfaceAmount = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "subsurfaceAmount", 1.0f), 0.0f, 1.0f);
         sss->m_CurvatureInfluence = ReadMaterialFloatField(sceneMaterial, "curvatureInfluence", 0.35f);
+        sss->m_IOR = std::clamp(ReadMaterialFloatField(sceneMaterial, "ior", 1.4f), 1.0f, 2.5f);
         glm::vec3 sssColor = ReadMaterialVec3Field(sceneMaterial, "albedo", sss->m_SubsurfaceColor);
         sssColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", sssColor);
         sssColor = ReadMaterialVec3Field(sceneMaterial, "baseColor", sssColor);
@@ -551,7 +561,7 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
         sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
         sss->m_BasePBRParam.m_ao = sss->m_SubsurfaceAmount;
-        sss->m_BasePBRParam.padding = sss->m_CurvatureInfluence;
+        sss->m_BasePBRParam.padding = sss->m_IOR;
         break;
     }
     case VansMaterialType::VAN_TRANSPARENT:
@@ -665,6 +675,7 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         emissive->m_BasePBRParam.m_roughness = ReadMaterialFloatField(sceneMaterial, "emissive_intensity", emissiveIntensity);
         emissive->m_BasePBRParam.m_metallic = 0.0f;
         emissive->m_BasePBRParam.m_ao = 1.0f;
+        emissive->m_BasePBRParam.padding = -1.0f - std::max(emissive->m_BasePBRParam.m_roughness, 0.0f);
         emissive->m_EmissiveTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "emissive_texture", "defaultAlbedo");
 
         if (sceneMaterial.contains("emissive_video"))
@@ -682,6 +693,29 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
                 VANS_LOG_WARN("[VansScene] emissive_video 未找到或未就绪: " << videoName);
             }
         }
+        break;
+    }
+    case VansMaterialType::VAN_PBR_EMISSIVE:
+    {
+        auto* emissive = static_cast<VansEmissiveMaterial*>(material);
+        emissive->m_BaseColorTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        emissive->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
+        emissive->m_MetalTexture = ResolveMaterialTexture(scene, sceneMaterial, "metallic_texture");
+        if (emissive->m_MetalTexture == nullptr)
+            emissive->m_MetalTexture = ResolveMaterialTexture(scene, sceneMaterial, "metal_texture");
+        emissive->m_MetalTexture = scene.ResolveTextureAssetOrDefault(emissive->m_MetalTexture, "defaultMetal");
+        emissive->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
+        emissive->m_EmissiveTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "emissive_texture", "defaultMetal");
+
+        glm::vec3 pbrColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
+        pbrColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", pbrColor);
+        pbrColor = ReadMaterialVec3Field(sceneMaterial, "baseColor", pbrColor);
+        emissive->m_BasePBRParam.m_albedo = ReadMaterialVec3Field(sceneMaterial, "albedo", pbrColor);
+        emissive->m_BasePBRParam.m_metallic = ReadMaterialFloatField(sceneMaterial, "metallic", 1.0f);
+        emissive->m_BasePBRParam.m_roughness = ReadMaterialFloatField(sceneMaterial, "roughness", 1.0f);
+        emissive->m_BasePBRParam.m_ao = ReadMaterialFloatField(sceneMaterial, "ao", 1.0f);
+        emissive->m_BasePBRParam.padding = std::max(
+            ReadMaterialFloatField(sceneMaterial, "emissive_intensity", 1.0f), 0.0f);
         break;
     }
     case VansMaterialType::VAN_DECAL:

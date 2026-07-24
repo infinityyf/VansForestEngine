@@ -34,6 +34,7 @@
 #include <fstream>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <filesystem>
 
 #ifdef _DEBUG
@@ -1524,8 +1525,8 @@ void VansGraphics::VansScene::RecordVideoUploads(VansVKCommandBuffer& cmd)
 // ============================================================
 // SyncLightTransforms — 将 ScriptObject 的 Transform 同步到灯光数据
 // 每帧在 UpdateLightShadowMatrixData 前调用。
-// 约定：Transform 旋转 ZYX 顺序，Z 轴方向为灯光正向（光线传播方向）。
-//        m_Direction 存储朝向光源方向（与正向相反），与原有阴影矩阵代码保持一致。
+// 约定：Transform 旋转 ZYX 顺序。方向光保持原有约定；SpotLight 的 GPU
+//        m_Direction 存储“受光点指向灯”的方向，实际光线沿对象本地 -Z 传播。
 // ============================================================
 void VansGraphics::VansScene::SyncLightTransforms()
 {
@@ -1577,8 +1578,11 @@ void VansGraphics::VansScene::SyncLightTransforms()
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-                glm::vec3 forward = glm::normalize(glm::vec3(rotMat[2]));
-                lights[spotComp->m_LightIndex].m_Direction = -forward;
+                // Spot shaders compare against the surface-to-light vector.
+                // Unity-authored spotlights emit along local -Z, so local +Z is
+                // the GPU cone axis used for lighting, shadows, fog, and IES.
+                glm::vec3 towardLight = glm::normalize(glm::vec3(rotMat[2]));
+                lights[spotComp->m_LightIndex].m_Direction = towardLight;
             }
         }
 
@@ -1704,11 +1708,33 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
 void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansVKCommandBuffer* vans_commandBuffer)
 {
     VkDevice device = vans_device->GetLogicDevice();
+
+	// BLAS is mesh-scoped, but GI participation is instance/material-scoped.
+	// Only build a BLAS when at least one static, opaque, RT-enabled instance
+	// can actually enter the TLAS. This keeps glass and other transparent-only
+	// meshes out of both acceleration structures and GI hit generation.
+	std::unordered_set<VansMesh*> giEligibleMeshes;
+	for (VansRenderNode* node : m_OpaqueRenderNodes)
+	{
+		if (!node || !node->IsEnabled() || !node->m_RayTracingEnabled ||
+			node->m_HasSkeletonBone || node->m_AnimOwner || !node->m_Mesh ||
+			!node->m_Mesh->m_SupportRayTracing)
+			continue;
+		if (node->m_Material &&
+			(node->m_Material->m_MaterialType == VAN_TRANSPARENT ||
+			 node->m_Material->m_MaterialType == VAN_PBR_TRANSMISSION))
+			continue;
+		giEligibleMeshes.insert(node->m_Mesh);
+	}
+
+	uint32_t skippedUnusedOrTransparentMeshes = 0;
     for (const auto& meshAsset : m_AssetRegistry.GetMeshes())
     {
         VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
-        if (!mesh->m_SupportRayTracing)
+		mesh->SetBLASIndex(-1);
+		if (!mesh->m_SupportRayTracing || giEligibleMeshes.find(mesh) == giEligibleMeshes.end())
         {
+			++skippedUnusedOrTransparentMeshes;
             continue;
         }
 
@@ -1721,14 +1747,24 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 
     }
 
-    VANS_LOG("[BuildRayTracingAS] BLAS build complete, collecting TLAS instances (opaqueNodes=" << m_OpaqueRenderNodes.size() << ")");
+	VANS_LOG("[BuildRayTracingAS] BLAS build complete, collecting TLAS instances (opaqueNodes="
+		<< m_OpaqueRenderNodes.size() << ", eligibleMeshes=" << giEligibleMeshes.size()
+		<< ", skippedUnusedOrTransparentMeshes=" << skippedUnusedOrTransparentMeshes << ")");
 
     int nodeIdx = 0;
     uint32_t skippedAnimated = 0;
+	uint32_t skippedDisabled = 0;
     uint32_t skippedMissingMesh = 0;
     uint32_t skippedNoRayTracing = 0;
+	uint32_t skippedTransparentMaterial = 0;
     for (auto& node : m_OpaqueRenderNodes)
     {
+		if (!node || !node->IsEnabled())
+		{
+			++skippedDisabled;
+			++nodeIdx;
+			continue;
+		}
         // 跳过骨骼动画节点（不参与光线追踪）
         if (node->m_HasSkeletonBone || node->m_AnimOwner)
         {
@@ -1743,12 +1779,21 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
             ++nodeIdx;
             continue;
         }
-        if (!node->m_Mesh->m_SupportRayTracing)
+		if (!node->m_RayTracingEnabled || !node->m_Mesh->m_SupportRayTracing ||
+			node->m_Mesh->GetBLASIndex() < 0 || node->m_Mesh->GetBLAS() == VK_NULL_HANDLE)
         {
             ++skippedNoRayTracing;
             ++nodeIdx;
             continue;
         }
+		if (node->m_Material &&
+			(node->m_Material->m_MaterialType == VAN_TRANSPARENT ||
+			 node->m_Material->m_MaterialType == VAN_PBR_TRANSMISSION))
+		{
+			++skippedTransparentMaterial;
+			++nodeIdx;
+			continue;
+		}
 
         auto transformMatrix = node->GetTransformMatrix();
 
@@ -1820,9 +1865,11 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     uint32_t countInstance = static_cast<uint32_t>(m_TlasInstancesInfos.size());
 
     VANS_LOG("[BuildRayTracingAS] TLAS instance collection complete (instances=" << countInstance
-        << ", skippedAnimated=" << skippedAnimated
+		<< ", skippedDisabled=" << skippedDisabled
+		<< ", skippedAnimated=" << skippedAnimated
         << ", skippedMissingMesh=" << skippedMissingMesh
-        << ", skippedNoRayTracing=" << skippedNoRayTracing << ")");
+		<< ", skippedNoRayTracing=" << skippedNoRayTracing
+		<< ", skippedTransparentMaterial=" << skippedTransparentMaterial << ")");
 
     // No RT instances to build — skip TLAS entirely
     if (countInstance == 0)

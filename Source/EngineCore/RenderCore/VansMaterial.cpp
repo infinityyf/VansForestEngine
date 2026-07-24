@@ -450,23 +450,23 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 			return true;
 		}
 		float scalar = 0.0f;
-		if (key == "subsurfacePower" && ReadMaterialFloat(value, scalar))
+		if ((key == "subsurfacePower" || key == "scatteringDistance") && ReadMaterialFloat(value, scalar))
 		{
-			sss->m_SubsurfacePower = scalar;
+			sss->m_SubsurfacePower = std::max(scalar, 0.01f);
 			sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
 			FlushMaterialPayload(material);
 			return true;
 		}
 		if (key == "thickness" && ReadMaterialFloat(value, scalar))
 		{
-			sss->m_Thickness = scalar;
+			sss->m_Thickness = std::max(scalar, 0.0f);
 			sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
 			FlushMaterialPayload(material);
 			return true;
 		}
 		if (key == "subsurfaceAmount" && ReadMaterialFloat(value, scalar))
 		{
-			sss->m_SubsurfaceAmount = scalar;
+			sss->m_SubsurfaceAmount = std::clamp(scalar, 0.0f, 1.0f);
 			sss->m_BasePBRParam.m_ao = sss->m_SubsurfaceAmount;
 			FlushMaterialPayload(material);
 			return true;
@@ -474,7 +474,14 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 		if (key == "curvatureInfluence" && ReadMaterialFloat(value, scalar))
 		{
 			sss->m_CurvatureInfluence = scalar;
-			sss->m_BasePBRParam.padding = sss->m_CurvatureInfluence;
+			// Retained as a no-op legacy parameter. Curvature is not thickness
+			// and must not alter the physical diffusion profile or IOR payload.
+			return true;
+		}
+		if (key == "ior" && ReadMaterialFloat(value, scalar))
+		{
+			sss->m_IOR = std::clamp(scalar, 1.0f, 2.5f);
+			sss->m_BasePBRParam.padding = sss->m_IOR;
 			FlushMaterialPayload(material);
 			return true;
 		}
@@ -511,17 +518,48 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 	else if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(&material))
 	{
 		glm::vec3 color;
-		if ((key == "albedo" || key == "emissive" || key == "emissive_color" || key == "color") && ReadMaterialVec3(value, color))
+		if ((key == "albedo" || key == "color") && ReadMaterialVec3(value, color))
+		{
+			emissive->m_BasePBRParam.m_albedo = color;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "emissive" || key == "emissive_color") && ReadMaterialVec3(value, color) &&
+			material.m_MaterialType == VansMaterialType::VAN_EMISSIVE)
 		{
 			emissive->m_BasePBRParam.m_albedo = color;
 			FlushMaterialPayload(material);
 			return true;
 		}
 		float scalar = 0.0f;
-		if ((key == "intensity" || key == "emissiveIntensity" || key == "emissive_intensity" || key == "roughness") &&
+		if ((key == "intensity" || key == "emissiveIntensity" || key == "emissive_intensity") &&
 			ReadMaterialFloat(value, scalar))
 		{
+			if (material.m_MaterialType == VansMaterialType::VAN_PBR_EMISSIVE)
+				emissive->m_BasePBRParam.padding = std::max(scalar, 0.0f);
+			else
+			{
+				emissive->m_BasePBRParam.m_roughness = scalar;
+				emissive->m_BasePBRParam.padding = -1.0f - std::max(scalar, 0.0f);
+			}
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "roughness" && ReadMaterialFloat(value, scalar))
+		{
 			emissive->m_BasePBRParam.m_roughness = scalar;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "metallic" && ReadMaterialFloat(value, scalar))
+		{
+			emissive->m_BasePBRParam.m_metallic = scalar;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "ao" && ReadMaterialFloat(value, scalar))
+		{
+			emissive->m_BasePBRParam.m_ao = scalar;
 			FlushMaterialPayload(material);
 			return true;
 		}

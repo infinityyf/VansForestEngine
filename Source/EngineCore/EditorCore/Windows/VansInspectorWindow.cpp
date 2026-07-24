@@ -102,7 +102,7 @@ const std::vector<const char*>* EnumOptions(const std::string& key)
     static const std::vector<const char*> renderType{ "opaque", "transparent", "decal" };
     static const std::vector<const char*> rayTracingMode{ "auto", "enabled", "disabled" };
     static const std::vector<const char*> materialType{
-        "pbr", "coat", "transparent", "pbr_transmission", "skin", "cloth", "hair", "subsurface", "grass", "emissive", "decal" };
+        "pbr", "pbr_emissive", "coat", "transparent", "pbr_transmission", "skin", "cloth", "hair", "subsurface", "grass", "emissive", "decal" };
     static const std::vector<const char*> colorSpace{ "sRGB", "linear" };
     static const std::vector<const char*> playMode{ "static", "streaming" };
     static const std::vector<const char*> normals{ "ifMissing", "always", "never" };
@@ -181,7 +181,39 @@ bool IsNormalizedField(const std::string& key)
     const std::string field = Lower(key);
     return field == "metallic" || field == "roughness" || field == "ao" ||
         field == "opacity" || field == "alpha" || field == "alphacoverage" ||
-        field == "transmission" || field.find("blend") != std::string::npos;
+        field == "transmission" || field == "subsurfaceamount" ||
+        field.find("blend") != std::string::npos;
+}
+
+bool MaterialScalarLimits(const std::string& label, const std::string& parentKey,
+    float& minValue, float& maxValue, float& speed)
+{
+    if (Lower(parentKey).find("parameters") == std::string::npos)
+        return false;
+
+    const std::string field = Lower(label);
+    if (field == "ior")
+    {
+        minValue = 1.0f;
+        maxValue = 2.5f;
+        speed = 0.01f;
+        return true;
+    }
+    if (field == "scatteringdistance" || field == "subsurfacepower")
+    {
+        minValue = 0.01f;
+        maxValue = 100.0f;
+        speed = 0.1f;
+        return true;
+    }
+    if (field == "thickness")
+    {
+        minValue = 0.0f;
+        maxValue = 100.0f;
+        speed = 0.1f;
+        return true;
+    }
+    return false;
 }
 
 bool ShouldUseFloatControl(const std::string& label, const std::string& parentKey)
@@ -590,6 +622,9 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
     else if (value.is_number_integer() || value.is_number_unsigned())
     {
         std::int64_t edited = value.get<std::int64_t>();
+        float minValue = 0.0f;
+        float maxValue = 0.0f;
+        float speed = 0.05f;
         BeginProperty(label);
         if (readOnly) ImGui::TextDisabled("%lld", static_cast<long long>(edited));
         else if (IsNormalizedField(label))
@@ -598,6 +633,15 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
             if (ImGui::SliderFloat("##value", &normalized, 0.0f, 1.0f, "%.3f"))
             {
                 value = normalized;
+                changed = true;
+            }
+        }
+        else if (MaterialScalarLimits(label, parentKey, minValue, maxValue, speed))
+        {
+            float numeric = static_cast<float>(edited);
+            if (ImGui::DragFloat("##value", &numeric, speed, minValue, maxValue, "%.3f"))
+            {
+                value = std::clamp(numeric, minValue, maxValue);
                 changed = true;
             }
         }
@@ -636,6 +680,14 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
         else if (IsNormalizedField(label))
         {
             if (ImGui::SliderFloat("##value", &edited, 0.0f, 1.0f, "%.3f")) { value = edited; changed = true; }
+        }
+        else if (MaterialScalarLimits(label, parentKey, minValue, maxValue, speed))
+        {
+            if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
+            {
+                value = std::clamp(edited, minValue, maxValue);
+                changed = true;
+            }
         }
         else if (ImGui::DragFloat("##value", &edited, 0.05f, 0.0f, 0.0f, "%.3f"))
         { value = edited; changed = true; }

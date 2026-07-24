@@ -78,6 +78,148 @@ float SampleScreenSpaceShadow(vec2 uv)
     return clamp(texture(screenSpaceShadow, uv).r, 0.0, 1.0);
 }
 
+float DielectricF0FromIOR(float ior)
+{
+    float ratio = (ior - 1.0) / (ior + 1.0);
+    return ratio * ratio;
+}
+
+bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
+                                  sampler2DArray directionalShadows,
+                                  sampler2DShadow punctualShadows,
+                                  out vec3 diffuseSource,
+                                  out vec3 samplePosition,
+                                  out vec3 sampleNormal)
+{
+    vec4 sampleNormalData = texture(normalInput, uv);
+    vec4 sampleGBuffer0 = texture(gbufferInput0, uv);
+    vec4 sampleGBuffer1 = texture(gbufferInput1, uv);
+    vec4 sampleGBuffer2 = texture(gbufferInput2, uv);
+
+    int sampleMaterialID = int(round(sampleGBuffer1.z));
+    int sampleMaterialIndex = int(round(sampleGBuffer1.w));
+    if (sampleMaterialID != MATERIAL_ID_SUBSURFACE ||
+        sampleMaterialIndex != centerMaterialIndex)
+        return false;
+
+    MaterialPayload sampleMaterial =
+        materialDataBuffer.materials[sampleMaterialIndex];
+    float sampleIOR = clamp(sampleMaterial.padding, 1.0, 2.5);
+
+    ivec2 aoSize = imageSize(ssao);
+    ivec2 aoCoord = clamp(ivec2(uv * vec2(aoSize)), ivec2(0), aoSize - 1);
+    float sampleAO = min(sampleGBuffer1.y, imageLoad(ssao, aoCoord).r);
+
+    BRDFData sampleBRDF;
+    // Pre-and-post scatter texturing: half of the apparent albedo is applied
+    // before diffusion and half after it. This prevents texture detail from
+    // being blurred twice while retaining wavelength-dependent color bleed.
+    sampleBRDF.albedo = sqrt(max(sampleGBuffer0.rgb, vec3(0.0)));
+    sampleBRDF.normal = normalize(sampleNormalData.xyz);
+    sampleBRDF.roughness = clamp(sampleGBuffer0.w, 0.045, 1.0);
+    sampleBRDF.metallic = 0.0;
+    sampleBRDF.ao = pow(clamp(sampleAO, 0.0, 1.0), 2.0);
+    sampleBRDF.fresnel0 = vec3(DielectricF0FromIOR(sampleIOR));
+    sampleBRDF.positionWS = sampleGBuffer2.xyz;
+    sampleBRDF.viewDirection = normalize(cameraPosition.xyz - sampleBRDF.positionWS);
+    sampleBRDF.indirectDiffuse = texture(ssgi, uv).rgb;
+    sampleBRDF.indirectSpecular = vec4(0.0);
+
+    LightResult sampleLighting;
+    CalculateDirectLight(sampleBRDF, directionalShadows, sampleGBuffer2.w,
+                         punctualShadows, SampleScreenSpaceShadow(uv),
+                         sampleLighting);
+
+    float NoV = max(dot(sampleBRDF.normal, sampleBRDF.viewDirection), 0.0);
+    vec3 F = fresnelSchlickRoughness(
+        NoV, sampleBRDF.fresnel0, sampleBRDF.roughness);
+    vec3 ambientDiffuse = sampleBRDF.indirectDiffuse * sampleBRDF.ao *
+                          (vec3(1.0) - F) * sampleBRDF.albedo;
+
+    diffuseSource = sampleLighting.directDiffuse + ambientDiffuse;
+    samplePosition = sampleBRDF.positionWS;
+    sampleNormal = sampleBRDF.normal;
+    return true;
+}
+
+vec3 EvaluateScreenSpaceBurleyDiffusion(
+    BRDFData centerBRDF, SubsurfaceParams sss, int materialIndex,
+    vec2 centerUV, vec3 localDiffuse,
+    sampler2DArray directionalShadows, sampler2DShadow punctualShadows)
+{
+    float amount = clamp(sss.subsurfaceAmount, 0.0, 1.0);
+    vec3 distance = max(sss.scatteringDistance, vec3(5e-5));
+    float maxDistance = max(max(distance.r, distance.g), distance.b);
+    float viewDepth = max((ViewMatrix * vec4(centerBRDF.positionWS, 1.0)).z * -1.0, 1e-3);
+    vec2 uvPerMetre = 0.5 * vec2(abs(ProjectionMatrix[0][0]),
+                                 abs(ProjectionMatrix[1][1])) / viewDepth;
+    // Burley normalized diffusion has a sharp peak and a long tail.  Testing
+    // only the characteristic distance incorrectly disabled SSS even when the
+    // full kernel covered several pixels.  Eight scattering distances contain
+    // practically all of the profile energy and are used as the pixel-footprint
+    // criterion, matching the diffuse-BRDF limit only when the entire kernel is
+    // genuinely sub-pixel.
+    const float burleySupportRadius = 8.0;
+    float projectedSupportPixels = burleySupportRadius * maxDistance *
+                                   uvPerMetre.y * ScreenParams.y;
+    if (amount <= 0.0 || projectedSupportPixels < 0.5)
+        return localDiffuse;
+
+    vec3 shape = 1.0 / distance;
+    float referenceShape = 1.0 / maxDistance;
+    vec3 postScatterAlbedo = sqrt(max(centerBRDF.albedo, vec3(0.0)));
+    vec3 fallbackSource = localDiffuse /
+                          max(postScatterAlbedo, vec3(1e-3));
+
+    const int sampleCount = 13;
+    const float goldenAngle = 2.39996323;
+    float rotation = TWO_PI * fract(sin(dot(gl_FragCoord.xy,
+        vec2(12.9898, 78.233))) * 43758.5453);
+    vec3 accumulated = vec3(0.0);
+    vec3 accumulatedWeight = vec3(0.0);
+
+    for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+    {
+        float u = (float(sampleIndex) + 0.5) / float(sampleCount);
+        float radius = SampleBurleyRadius(u, maxDistance);
+        float angle = rotation + goldenAngle * float(sampleIndex);
+        vec2 direction = vec2(cos(angle), sin(angle));
+        vec2 sampleUV = centerUV + direction * radius * uvPerMetre;
+
+        vec3 source = fallbackSource;
+        vec3 samplePosition = centerBRDF.positionWS;
+        vec3 sampleNormal = centerBRDF.normal;
+        bool insideViewport = all(greaterThanEqual(sampleUV, vec2(0.0))) &&
+                              all(lessThanEqual(sampleUV, vec2(1.0)));
+        bool valid = insideViewport && EvaluateSubsurfaceSourceAtUV(
+            sampleUV, materialIndex, directionalShadows, punctualShadows,
+            source, samplePosition, sampleNormal);
+
+        // Screen-space diffusion must not cross silhouettes, disconnected
+        // objects that share a material, or strongly folded backfaces.
+        float surfaceSeparation = length(samplePosition - centerBRDF.positionWS);
+        valid = valid && surfaceSeparation <= max(radius * 2.5, 0.001) &&
+                dot(sampleNormal, centerBRDF.normal) > -0.25;
+        if (!valid)
+        {
+            source = fallbackSource;
+            surfaceSeparation = radius;
+        }
+
+        vec3 profileWeight = BurleyProfileImportanceWeight(
+            radius, surfaceSeparation, shape, referenceShape);
+        accumulated += source * profileWeight;
+        accumulatedWeight += profileWeight;
+    }
+
+    // Normalize the finite deterministic sample set per channel. This makes
+    // the constant-radiance response exactly energy preserving even with only
+    // nine samples.
+    vec3 diffused = postScatterAlbedo * accumulated /
+                    max(accumulatedWeight, vec3(1e-5));
+    return mix(localDiffuse, diffused, amount);
+}
+
 void main() 
 {
     vec4 normalData = texture(normalInput, fragTexCoord);
@@ -161,20 +303,41 @@ void main()
     }
     else if (matID == MATERIAL_ID_SUBSURFACE)
     {
-        // --- Subsurface Scattering BRDF path ---
+        // --- Opaque dielectric BSSRDF path (not skin and not glass) ---
         int mi = int(round(gbufferData1.w));
         MaterialPayload mat = materialDataBuffer.materials[mi];
 
         SubsurfaceParams sss;
-        sss.thickness      = clamp(normalData.w, 0.0, 1.0);
-        sss.subsurfaceColor = max(mat.albedo.rgb, vec3(0.0));
-        sss.subsurfacePower = clamp(mat.roughness, 1.0, 64.0);
+        // Material distances and thickness are authored in millimetres and
+        // converted once here to the engine's metre world units.
+        sss.scatteringDistance = max(mat.albedo.rgb, vec3(0.005)) *
+                                 max(mat.roughness, 0.01) * 0.001;
+        sss.thickness = max(normalData.w, 0.0) * 0.001;
         sss.subsurfaceAmount = clamp(gbufferData1.x, 0.0, 1.0);
-        sss.backlightShadowRelax = 0.25;
 
-        CalculateDirectLight_Subsurface(brdfData, sss, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
-        AmbientBRDF_Subsurface(brdfData, sss, viewDirection,
-                               lightResult.ambientDiffuse, lightResult.ambientSpecular);
+        // SSS is a dielectric. GBuffer1.x carries the SSS mask, not metalness.
+        brdfData.metallic = 0.0;
+        float ior = clamp(mat.padding, 1.0, 2.5);
+        brdfData.fresnel0 = vec3(DielectricF0FromIOR(ior));
+
+        CalculateDirectLight(brdfData, cascadeShadowMap, linearDepth,
+                             punctualShadowMap, sssShadow, lightResult);
+        AmbientBRDF(brdfData, viewDirection,
+                    lightResult.ambientDiffuse, lightResult.ambientSpecular);
+
+        vec3 localDiffuse = lightResult.directDiffuse +
+                            lightResult.ambientDiffuse;
+        vec3 diffused = EvaluateScreenSpaceBurleyDiffusion(
+            brdfData, sss, mi, fragTexCoord, localDiffuse,
+            cascadeShadowMap, punctualShadowMap);
+
+        vec3 transmission = vec3(0.0);
+        CalculateDirectTransmission_Subsurface(
+            brdfData, sss, cascadeShadowMap, linearDepth,
+            punctualShadowMap, sssShadow, transmission);
+
+        lightResult.directDiffuse = diffused + transmission;
+        lightResult.ambientDiffuse = vec3(0.0);
     }
     else if (matID == MATERIAL_ID_GRASS)
     {

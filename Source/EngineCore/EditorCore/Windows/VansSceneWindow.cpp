@@ -520,12 +520,22 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                     ImVec2 hip = projectWorld(toGlm(leg.hip));
                     ImVec2 knee = projectWorld(toGlm(leg.knee));
                     ImVec2 foot = projectWorld(toGlm(leg.solvedFoot));
+					const glm::vec3 animatedFootWorld = toGlm(leg.animatedFoot);
+					const glm::vec3 solvedFootWorld = toGlm(leg.solvedFoot);
+					const glm::vec2 horizontalCorrection(
+						solvedFootWorld.x - animatedFootWorld.x,
+						solvedFootWorld.z - animatedFootWorld.z);
+					const float horizontalCorrectionLength = glm::length(horizontalCorrection);
                     dl->AddLine(hip, knee, chainColor, 2.0f);
                     dl->AddLine(knee, foot, chainColor, 2.0f);
                     dl->AddCircleFilled(hip, 3.5f, IM_COL32(80, 180, 255, 230));
                     dl->AddCircleFilled(knee, 3.5f, IM_COL32(80, 180, 255, 230));
                     dl->AddCircleFilled(foot, 4.0f, IM_COL32(255, 255, 255, 240));
-					drawCross(toGlm(leg.animatedFoot), IM_COL32(120, 180, 255, 180), 5.0f);
+					drawCross(animatedFootWorld, IM_COL32(120, 180, 255, 180), 5.0f);
+					dl->AddLine(projectWorld(animatedFootWorld), foot,
+						horizontalCorrectionLength <= 0.005f
+							? IM_COL32(80, 220, 255, 130)
+							: IM_COL32(255, 64, 64, 230), 2.0f);
 
                     int hits = 0;
                     int acceptedHits = 0;
@@ -573,27 +583,30 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                     char statusLabel[192];
                     if (!leg.hasContact)
                     {
-						snprintf(statusLabel, sizeof(statusLabel), "%s NO CONTACT hit:%d %s",
+						snprintf(statusLabel, sizeof(statusLabel), "%s NO CONTACT hit:%d dxz:%.3f %s",
                                  label,
-								 hits,
+							 hits,
+							 horizontalCorrectionLength,
                                  firstInterestingSample ? firstInterestingSample->status.c_str() : "");
                     }
                     else if (!leg.hasTarget)
                     {
-						snprintf(statusLabel, sizeof(statusLabel), "%s NO TARGET hit:%d weight:%.2f dy:%.3f",
+						snprintf(statusLabel, sizeof(statusLabel), "%s NO TARGET hit:%d weight:%.2f dy:%.3f dxz:%.3f",
                                  label,
-								 hits,
-								 leg.targetWeight,
-								 leg.verticalOffset);
+							 hits,
+							 leg.targetWeight,
+							 leg.verticalOffset,
+							 horizontalCorrectionLength);
                     }
                     else
                     {
-						snprintf(statusLabel, sizeof(statusLabel), "%s TARGET hit:%d accepted:%d weight:%.2f dy:%.3f",
+						snprintf(statusLabel, sizeof(statusLabel), "%s TARGET hit:%d accepted:%d weight:%.2f dy:%.3f dxz:%.3f",
                                  label,
-								 hits,
+							 hits,
                                  acceptedHits,
-								 leg.targetWeight,
-								 leg.verticalOffset);
+							 leg.targetWeight,
+							 leg.verticalOffset,
+							 horizontalCorrectionLength);
                     }
                     dl->AddText(ImVec2(foot.x + 8, foot.y + 8),
                                 leg.hasTarget ? IM_COL32(210, 255, 210, 240) : IM_COL32(255, 110, 110, 240),

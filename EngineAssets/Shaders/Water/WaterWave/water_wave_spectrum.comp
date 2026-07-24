@@ -12,8 +12,13 @@ layout(set = 0, binding = 0) uniform WaterSurfaceParams
     vec4 spectrumScale;
     vec4 windAndChop;
     ivec4 simulationParams;
-    vec4 microSlopeParams;
-    vec4 microDomainParams;
+    vec4 waveParticleParams0;
+    vec4 waveParticleParams1;
+    vec4 waveParticleParams2;
+    vec4 waveParticleParams3;
+    vec4 flowMapWorld;
+    vec4 flowMapParams;
+    vec4 flowMapFallback;
 } params;
 
 layout(set = 0, binding = 1, rgba16f) uniform image2DArray outDisplacement;
@@ -84,14 +89,6 @@ void main()
                                    -direction.y * horizontalAmplitude * sinePhase);
         dPdx += phaseDerivative * k.x;
         dPdz += phaseDerivative * k.y;
-    }
-
-    bool additive = params.simulationParams.w != 0;
-    if (additive)
-    {
-        displacement += imageLoad(outDisplacement, ivec3(pixel, cascade)).xyz;
-        dPdx += imageLoad(outDerivative, ivec3(pixel, cascade * 2)).xyz - vec3(1.0, 0.0, 0.0);
-        dPdz += imageLoad(outDerivative, ivec3(pixel, cascade * 2 + 1)).xyz - vec3(0.0, 0.0, 1.0);
     }
 
     float jacobian = dPdx.x * dPdz.z - dPdx.z * dPdz.x;

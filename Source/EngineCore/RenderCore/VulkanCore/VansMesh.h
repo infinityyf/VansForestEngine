@@ -237,7 +237,7 @@ namespace VansGraphics
 		VansVKBuffer m_BLASScratchBuffer;
 
 		//用于记录这个blas在整体中的索引
-		int m_BLASIndex;
+		int m_BLASIndex = -1;
 
 		void ResetLocalBounds();
 		void ExpandLocalBounds(const glm::vec3& point);

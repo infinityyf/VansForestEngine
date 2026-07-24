@@ -260,6 +260,11 @@ namespace VansGraphics
 
 		VAN_PBR_TRANSMISSION = 18,
 
+		// Opaque PBR surface with a texture-masked emissive region.  This is
+		// distinct from VAN_EMISSIVE: non-emitting texels still receive normal
+		// PBR lighting, shadows, GI and reflection-probe specular.
+		VAN_PBR_EMISSIVE = 19,
+
 	};
 
 
@@ -1100,6 +1105,13 @@ namespace VansGraphics
 
 
 
+		// VAN_EMISSIVE uses only m_EmissiveTexture.  VAN_PBR_EMISSIVE uses the
+		// complete five-slot payload below (AO is implicitly one because the
+		// fifth bindless slot is occupied by the emission mask).
+		VansTexture* m_BaseColorTexture = nullptr;
+		VansTexture* m_NormalTexture = nullptr;
+		VansTexture* m_MetalTexture = nullptr;
+		VansTexture* m_RoughnessTexture = nullptr;
 		VansTexture* m_EmissiveTexture = nullptr;
 
 
@@ -1470,15 +1482,22 @@ namespace VansGraphics
 
 
 
-		float        m_SubsurfacePower   = 12.234f;  // forward-scatter sharpness
+		// Legacy asset key: "subsurfacePower".  The value is now the maximum
+		// Burley diffusion distance in millimetres; keeping the member/key avoids
+		// invalidating existing material assets.
+		float        m_SubsurfacePower   = 12.0f;
 
-		float        m_Thickness         = 0.5f;      // default constant thickness
+		float        m_Thickness         = 5.0f;      // thickness-map scale (mm)
 
-		glm::vec3    m_SubsurfaceColor   = glm::vec3(1.0f, 0.2f, 0.1f); // scatter tint
+		// RGB relative scattering distances.  The largest channel travels
+		// m_SubsurfacePower millimetres; shorter channels are absorbed sooner.
+		glm::vec3    m_SubsurfaceColor   = glm::vec3(1.0f, 0.35f, 0.2f);
 
 		float        m_SubsurfaceAmount  = 1.0f;
 
 		float        m_CurvatureInfluence = 0.35f;
+
+		float        m_IOR = 1.4f;
 
 
 

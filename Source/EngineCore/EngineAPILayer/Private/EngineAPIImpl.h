@@ -121,12 +121,15 @@ namespace Vans::EditorAPI
 		void ApplyPostProcessSettings(const PostProcessSettingsSnapshot& settings) override;
 		FogSettings GetFogSettings() const override;
 		void ApplyFogSettings(const FogSettings& settings) override;
+		void CommitHeightFogSettings() override;
 		FogVolumeSettings GetFogVolumeSettings() const override;
 		void ApplyFogVolumeSettings(const FogVolumeSettings& settings) override;
+		void CommitVolumetricFogSettings() override;
 		CloudSettings GetCloudSettings() const override;
 		void ApplyCloudSettings(const CloudSettings& settings) override;
 		void ResetCloudSettings() override;
 		void CommitCloudSettings() override;
+		std::vector<ScenePropertyEdit> ConsumeScenePropertyEdits() override;
 
 		EnginePlayState GetPlayState() const override;
 		void SetPlayState(EnginePlayState state) override;
@@ -173,6 +176,7 @@ namespace Vans::EditorAPI
 		std::vector<IEngineEventListener*> m_Listeners;
 		std::vector<std::unique_ptr<IEngineCommand>> m_UndoStack;
 		std::vector<std::unique_ptr<IEngineCommand>> m_RedoStack;
+		std::vector<ScenePropertyEdit> m_PendingScenePropertyEdits;
 		bool m_AllowNextCommandMerge = true;
 		GIProbeDebugSnapshot m_GIProbeDebugSnapshot;
 	};

@@ -135,6 +135,10 @@ namespace VansGraphics
 		float loopBias = 0.04f;
 		float transitionBias = 0.08f;
 		float desiredSpeedScale = 650.0f;
+		// Owner/world transforms use metres while imported character animation
+		// tracks use centimetres.  Convert measured gameplay velocity into the
+		// animation feature domain before trajectory matching or speed matching.
+		float worldToAnimationScale = 1.0f;
 		bool enableSpeedMatching = true;
 		float minPlaybackRate = 0.75f;
 		float maxPlaybackRate = 1.25f;

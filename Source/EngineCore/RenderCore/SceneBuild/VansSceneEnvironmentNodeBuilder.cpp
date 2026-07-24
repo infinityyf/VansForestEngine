@@ -16,6 +16,7 @@
 #include "../../Util/VansLog.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -32,6 +33,39 @@ std::string ReadStringField(const json& object, const char* key)
         return {};
     const auto found = object.find(key);
     return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
+}
+
+glm::vec2 ReadVec2Field(const json& object, const char* key, glm::vec2 fallback)
+{
+    if (!object.is_object() || !object.contains(key))
+        return fallback;
+
+    const auto& value = object[key];
+    if (value.is_array() && value.size() >= 2)
+        return { value[0].get<float>(), value[1].get<float>() };
+    if (value.is_object())
+        return {
+            value.value("x", fallback.x),
+            value.value("y", fallback.y)
+        };
+    return fallback;
+}
+
+VansWaveMode ReadWaterWaveMode(const json& object, const char* key, VansWaveMode fallback)
+{
+    std::string modeStr = ReadStringField(object, key);
+    std::transform(modeStr.begin(), modeStr.end(), modeStr.begin(),
+        [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    if (modeStr == "fft") return VansWaveMode::FFT;
+    if (modeStr == "gerstner") return VansWaveMode::Gerstner;
+    if (modeStr == "waveparticle" || modeStr == "wave_particle" || modeStr == "particle")
+        return VansWaveMode::WaveParticle;
+    if (modeStr == "hybrid")
+    {
+        VANS_LOG_WARN("[AddWaterNode] Deprecated water wave mode 'hybrid' mapped to FFT.");
+        return VansWaveMode::FFT;
+    }
+    return fallback;
 }
 
 std::string ReadVegetationConfigPath(const json& vegetationData)
@@ -250,7 +284,7 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
     VansWaterConfig config;
     const std::uint32_t schemaVersion = waterData.value("schemaVersion", 0u);
     if (schemaVersion != VansWaterConfig::SCHEMA_VERSION)
-        VANS_LOG_WARN("[AddWaterNode] Water data is not schema V3; deprecated fields are ignored.");
+        VANS_LOG_WARN("[AddWaterNode] Water data is not schema V4; deprecated fields are read through compatibility paths.");
 
     config.m_WaterLevel        = waterData.value("level", 3.4f);
     config.m_SpecularIntensity = waterData.value("specularIntensity", 1.0f);
@@ -312,10 +346,7 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
     {
         auto& w = waterData["spectrum"];
 
-        const std::string modeStr = w.value("mode", "hybrid");
-        if (modeStr == "fft") config.m_Spectrum.m_Mode = VansWaveMode::FFT;
-        else if (modeStr == "gerstner") config.m_Spectrum.m_Mode = VansWaveMode::Gerstner;
-        else config.m_Spectrum.m_Mode = VansWaveMode::Hybrid;
+        config.m_Spectrum.m_Mode = ReadWaterWaveMode(w, "mode", config.m_Spectrum.m_Mode);
         config.m_Spectrum.m_BaseCoverage = w.value("baseCoverage", config.m_Spectrum.m_BaseCoverage);
         config.m_Spectrum.m_CascadeScale = w.value("cascadeScale", config.m_Spectrum.m_CascadeScale);
         config.m_Spectrum.m_CascadeCount = w.value("cascadeCount", config.m_Spectrum.m_CascadeCount);
@@ -324,15 +355,8 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
         config.m_Spectrum.m_Choppiness = w.value("choppiness", config.m_Spectrum.m_Choppiness);
         config.m_Spectrum.m_GerstnerWaveCount = w.value("gerstnerWaveCount", config.m_Spectrum.m_GerstnerWaveCount);
 
-        if (w.contains("windDirection"))
-        {
-            auto& d = w["windDirection"];
-            if (d.is_array() && d.size() >= 2)
-                config.m_Spectrum.m_WindDirection = {d[0], d[1]};
-            else if (d.is_object())
-                config.m_Spectrum.m_WindDirection = {
-                    d.value("x", 0.7071f), d.value("y", 0.7071f)};
-        }
+        config.m_Spectrum.m_WindDirection = ReadVec2Field(
+            w, "windDirection", config.m_Spectrum.m_WindDirection);
 
         config.m_Spectrum.m_SpectrumAmplitude = w.value("spectrumAmplitude", config.m_Spectrum.m_SpectrumAmplitude);
         config.m_Spectrum.m_MinWavelength = w.value("minWavelength", config.m_Spectrum.m_MinWavelength);
@@ -343,15 +367,103 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
         config.m_Spectrum.m_RandomSeed = w.value("randomSeed", config.m_Spectrum.m_RandomSeed);
     }
 
-    if (waterData.contains("microSlope") && waterData["microSlope"].is_object())
+    if (waterData.contains("waves") && waterData["waves"].is_object())
     {
-        auto& micro = waterData["microSlope"];
-        config.m_MicroSlope.m_Enabled = micro.value("enabled", config.m_MicroSlope.m_Enabled);
-        config.m_MicroSlope.m_Intensity = micro.value("intensity", config.m_MicroSlope.m_Intensity);
-        config.m_MicroSlope.m_MinWavelength = micro.value("minWavelength", config.m_MicroSlope.m_MinWavelength);
-        config.m_MicroSlope.m_PrimaryCoverage = micro.value("primaryCoverage", config.m_MicroSlope.m_PrimaryCoverage);
-        config.m_MicroSlope.m_SecondaryCoverage = micro.value("secondaryCoverage", config.m_MicroSlope.m_SecondaryCoverage);
-        config.m_MicroSlope.m_RotationDegrees = micro.value("rotationDegrees", config.m_MicroSlope.m_RotationDegrees);
+        auto& w = waterData["waves"];
+        config.m_Spectrum.m_Mode = ReadWaterWaveMode(w, "mode", config.m_Spectrum.m_Mode);
+        config.m_Spectrum.m_CascadeCount = w.value("cascadeCount", config.m_Spectrum.m_CascadeCount);
+        config.m_Spectrum.m_BaseCoverage = w.value("baseCoverage", config.m_Spectrum.m_BaseCoverage);
+        config.m_Spectrum.m_CascadeScale = w.value("cascadeScale", config.m_Spectrum.m_CascadeScale);
+        config.m_Spectrum.m_WindDirection = ReadVec2Field(
+            w, "windDirection", config.m_Spectrum.m_WindDirection);
+        config.m_Spectrum.m_WindSpeed = w.value("windSpeed", config.m_Spectrum.m_WindSpeed);
+        config.m_Spectrum.m_Choppiness = w.value("choppiness", config.m_Spectrum.m_Choppiness);
+
+        if (w.contains("gerstner") && w["gerstner"].is_object())
+        {
+            auto& g = w["gerstner"];
+            config.m_Spectrum.m_SwellAmplitude = g.value(
+                "swellAmplitude", config.m_Spectrum.m_SwellAmplitude);
+            config.m_Spectrum.m_GerstnerWaveCount = g.value(
+                "waveCount", config.m_Spectrum.m_GerstnerWaveCount);
+            config.m_Spectrum.m_GerstnerWaveCount = g.value(
+                "gerstnerWaveCount", config.m_Spectrum.m_GerstnerWaveCount);
+        }
+
+        if (w.contains("fft") && w["fft"].is_object())
+        {
+            auto& f = w["fft"];
+            config.m_Spectrum.m_SpectrumAmplitude = f.value(
+                "spectrumAmplitude", config.m_Spectrum.m_SpectrumAmplitude);
+            config.m_Spectrum.m_MinWavelength = f.value(
+                "minWavelength", config.m_Spectrum.m_MinWavelength);
+            config.m_Spectrum.m_SmallWaveDamping = f.value(
+                "smallWaveDamping", config.m_Spectrum.m_SmallWaveDamping);
+            config.m_Spectrum.m_WindDependency = f.value(
+                "windDependency", config.m_Spectrum.m_WindDependency);
+            config.m_Spectrum.m_Depth = f.value("depth", config.m_Spectrum.m_Depth);
+            config.m_Spectrum.m_RepeatPeriod = f.value(
+                "repeatPeriod", config.m_Spectrum.m_RepeatPeriod);
+            config.m_Spectrum.m_RandomSeed = f.value(
+                "randomSeed", config.m_Spectrum.m_RandomSeed);
+        }
+
+        if (w.contains("waveParticle") && w["waveParticle"].is_object())
+        {
+            auto& p = w["waveParticle"];
+            config.m_WaveParticle.m_ParticleCount = p.value(
+                "particleCount", config.m_WaveParticle.m_ParticleCount);
+            config.m_WaveParticle.m_OctaveCount = p.value(
+                "octaveCount", config.m_WaveParticle.m_OctaveCount);
+            config.m_WaveParticle.m_Profile = p.value(
+                "profile", config.m_WaveParticle.m_Profile);
+            config.m_WaveParticle.m_DomainSize = p.value(
+                "domainSize", config.m_WaveParticle.m_DomainSize);
+            config.m_WaveParticle.m_Amplitude = p.value(
+                "amplitude", config.m_WaveParticle.m_Amplitude);
+            config.m_WaveParticle.m_MinRadius = p.value(
+                "minRadius", config.m_WaveParticle.m_MinRadius);
+            config.m_WaveParticle.m_MaxRadius = p.value(
+                "maxRadius", config.m_WaveParticle.m_MaxRadius);
+            config.m_WaveParticle.m_PhaseVelocity = p.value(
+                "phaseVelocity", config.m_WaveParticle.m_PhaseVelocity);
+            config.m_WaveParticle.m_Damping = p.value(
+                "damping", config.m_WaveParticle.m_Damping);
+            config.m_WaveParticle.m_DirectionSpread = p.value(
+                "directionSpread", config.m_WaveParticle.m_DirectionSpread);
+            config.m_WaveParticle.m_Lacunarity = p.value(
+                "lacunarity", config.m_WaveParticle.m_Lacunarity);
+            config.m_WaveParticle.m_Persistence = p.value(
+                "persistence", config.m_WaveParticle.m_Persistence);
+            config.m_WaveParticle.m_RadiusFalloff = p.value(
+                "radiusFalloff", config.m_WaveParticle.m_RadiusFalloff);
+            config.m_WaveParticle.m_ProfileSharpness = p.value(
+                "profileSharpness", config.m_WaveParticle.m_ProfileSharpness);
+            config.m_WaveParticle.m_FoamThreshold = p.value(
+                "foamThreshold", config.m_WaveParticle.m_FoamThreshold);
+            config.m_WaveParticle.m_FoamSoftness = p.value(
+                "foamSoftness", config.m_WaveParticle.m_FoamSoftness);
+            config.m_WaveParticle.m_Lifetime = p.value(
+                "lifetime", config.m_WaveParticle.m_Lifetime);
+            config.m_WaveParticle.m_RandomSeed = p.value(
+                "randomSeed", config.m_WaveParticle.m_RandomSeed);
+        }
+    }
+
+    if (waterData.contains("flowMap") && waterData["flowMap"].is_object())
+    {
+        auto& f = waterData["flowMap"];
+        config.m_FlowMap.m_Enabled = f.value("enabled", config.m_FlowMap.m_Enabled);
+        config.m_FlowMap.m_Strength = f.value("strength", config.m_FlowMap.m_Strength);
+        config.m_FlowMap.m_Speed = f.value("speed", config.m_FlowMap.m_Speed);
+        config.m_FlowMap.m_PhaseLength = f.value("phaseLength", config.m_FlowMap.m_PhaseLength);
+        config.m_FlowMap.m_NoiseAmount = f.value("noiseAmount", config.m_FlowMap.m_NoiseAmount);
+        config.m_FlowMap.m_WorldOrigin = ReadVec2Field(
+            f, "worldOrigin", config.m_FlowMap.m_WorldOrigin);
+        config.m_FlowMap.m_WorldSize = ReadVec2Field(
+            f, "worldSize", config.m_FlowMap.m_WorldSize);
+        config.m_FlowMap.m_FallbackDirection = ReadVec2Field(
+            f, "fallbackDirection", config.m_FlowMap.m_FallbackDirection);
     }
 
     // ── caustics 块 ────────────────────────────────────────────────────────

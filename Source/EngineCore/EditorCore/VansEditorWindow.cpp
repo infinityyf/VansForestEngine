@@ -1351,6 +1351,21 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
             window->ShowWindow(editorAPI);
         }
 
+		for (const Vans::EditorAPI::ScenePropertyEdit& edit : editorAPI.ConsumeScenePropertyEdits())
+		{
+			if (!editingMode || !m_SceneEditService)
+				continue;
+			Vans::SceneJson value = Vans::SceneJson::parse(edit.valueJson, nullptr, false);
+			if (value.is_discarded())
+			{
+				VANS_LOG_ERROR("[SceneSettings] Invalid queued JSON for " << edit.jsonPointer);
+				continue;
+			}
+			const Vans::SceneEditResult result = m_SceneEditService->Set(edit.jsonPointer, std::move(value));
+			if (!result && result.message != "Scene property is unchanged")
+				VANS_LOG_ERROR("[SceneSettings] " << result.message);
+		}
+
         ImGui::End();
     }
 

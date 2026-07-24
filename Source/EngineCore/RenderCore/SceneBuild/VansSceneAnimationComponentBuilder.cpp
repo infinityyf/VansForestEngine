@@ -229,9 +229,10 @@ VansAnimationNode* VansSceneAnimationComponentBuilder::LoadAnimationComponent(
         mmSettings.blendInterruptFraction = mmJson.value("blend_interrupt_fraction", 0.75f);
         mmSettings.continuationBias = mmJson.value("continuation_bias", 0.10f);
         mmSettings.loopBias = mmJson.value("loop_bias", 0.04f);
-        mmSettings.transitionBias = mmJson.value("transition_bias", 0.08f);
-        mmSettings.desiredSpeedScale = mmJson.value("desired_speed_scale", 650.0f);
-        mmSettings.enableSpeedMatching = mmJson.value("speed_matching_enabled", true);
+		mmSettings.transitionBias = mmJson.value("transition_bias", 0.08f);
+		mmSettings.desiredSpeedScale = mmJson.value("desired_speed_scale", 650.0f);
+		mmSettings.worldToAnimationScale = mmJson.value("world_to_animation_scale", 1.0f);
+		mmSettings.enableSpeedMatching = mmJson.value("speed_matching_enabled", true);
         mmSettings.minPlaybackRate = mmJson.value("min_playback_rate", 0.75f);
         mmSettings.maxPlaybackRate = mmJson.value("max_playback_rate", 1.25f);
         mmSettings.playbackRateSmoothing = mmJson.value("playback_rate_smoothing", 12.0f);
@@ -454,6 +455,7 @@ VansAnimationNode* VansSceneAnimationComponentBuilder::LoadAnimationComponent(
         controller->ConfigureMotionMatching(mmSettings);
         VANS_LOG("[LoadAnimComp] Motion Matching configured for '" << objectName
                  << "' enabled=" << mmSettings.enabled
+				 << " externallyDriven=" << mmSettings.externallyDriven
                  << " sampleRate=" << mmSettings.sampleRate
                  << " searchThrottle=" << mmSettings.searchThrottle
                  << " speedScale=" << mmSettings.desiredSpeedScale

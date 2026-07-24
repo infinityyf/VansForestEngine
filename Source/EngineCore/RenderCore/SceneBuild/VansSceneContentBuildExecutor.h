@@ -10,6 +10,8 @@ namespace VansGraphics
 		static bool BuildFromFile(VansScene& scene, const char* path);
 
 	private:
+		static void ApplyHeightFogSettings(VansMaterialManager& materialManager, const json& sceneData);
+		static void ApplyVolumetricFogSettings(VansMaterialManager& materialManager, const json& sceneData);
 		static void ApplyVolumetricCloudSettings(VansMaterialManager& materialManager, const json& sceneData);
 		static void ApplyGISettings(VansScene& scene, const json& sceneData);
 		static std::string ResolveProjectRootFromScenePath(const char* path);

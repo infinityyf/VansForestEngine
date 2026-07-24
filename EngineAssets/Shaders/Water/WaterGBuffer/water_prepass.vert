@@ -21,11 +21,17 @@ layout(set = 1, binding = 0) uniform WaterSurfaceParams
     vec4 spectrumScale;
     vec4 windAndChop;
     ivec4 simulationParams;
-    vec4 microSlopeParams;
-    vec4 microDomainParams;
+    vec4 waveParticleParams0;
+    vec4 waveParticleParams1;
+    vec4 waveParticleParams2;
+    vec4 waveParticleParams3;
+    vec4 flowMapWorld;
+    vec4 flowMapParams;
+    vec4 flowMapFallback;
 } params;
 layout(set = 1, binding = 1) uniform sampler2DArray displacementMap;
 layout(set = 1, binding = 4) uniform sampler2DArray derivativeMap;
+layout(set = 1, binding = 5) uniform sampler2D flowMap;
 
 const uint EDGE_LEFT = 1u;
 const uint EDGE_RIGHT = 2u;
@@ -40,6 +46,13 @@ struct SurfaceData
     float foam;
 };
 
+struct CascadeSample
+{
+    vec4 displacement;
+    vec3 dPdx;
+    vec3 dPdz;
+};
+
 float EdgeMorph(vec2 uv)
 {
     float width = clamp(1.0 - params.geometryScale.y, 0.05, 0.95);
@@ -49,6 +62,56 @@ float EdgeMorph(vec2 uv)
     if ((pc.outerEdgeMask & EDGE_DOWN) != 0u)  morph = max(morph, 1.0 - smoothstep(0.0, width, uv.y));
     if ((pc.outerEdgeMask & EDGE_UP) != 0u)    morph = max(morph, smoothstep(1.0 - width, 1.0, uv.y));
     return morph;
+}
+
+vec2 SampleFlowVector(vec2 worldXZ)
+{
+    if (params.flowMapParams.x <= 0.0)
+        return vec2(0.0);
+
+    vec2 flowSize = max(params.flowMapWorld.zw, vec2(0.001));
+    vec2 flowUV = (worldXZ - params.flowMapWorld.xy) / flowSize;
+    vec4 encoded = textureLod(flowMap, flowUV, 0.0);
+    vec2 flow = encoded.xy * 2.0 - 1.0;
+    if (dot(flow, flow) < 1e-5)
+    {
+        vec2 fallback = params.flowMapFallback.xy;
+        flow = dot(fallback, fallback) < 1e-5 ? vec2(1.0, 0.0) : normalize(fallback);
+    }
+    return flow * params.flowMapParams.y;
+}
+
+CascadeSample SampleCascadeMaps(vec2 worldXZ, float coverage, int cascade)
+{
+    CascadeSample result;
+    vec2 baseUV = fract(worldXZ / coverage);
+    if (params.flowMapParams.x <= 0.0 || params.flowMapParams.y <= 0.0)
+    {
+        result.displacement = textureLod(displacementMap, vec3(baseUV, float(cascade)), 0.0);
+        result.dPdx = textureLod(derivativeMap, vec3(baseUV, float(cascade * 2)), 0.0).xyz;
+        result.dPdz = textureLod(derivativeMap, vec3(baseUV, float(cascade * 2 + 1)), 0.0).xyz;
+        return result;
+    }
+
+    vec2 flow = SampleFlowVector(worldXZ);
+    float cycleLength = max(params.flowMapParams.w, 0.05);
+    float phase0 = fract(params.spectrumScale.z * params.flowMapParams.z / cycleLength);
+    float phase1 = fract(phase0 + 0.5);
+    float blend = abs(phase0 * 2.0 - 1.0);
+    vec2 uv0 = fract((worldXZ - flow * phase0 * cycleLength) / coverage);
+    vec2 uv1 = fract((worldXZ - flow * phase1 * cycleLength) / coverage);
+
+    vec4 disp0 = textureLod(displacementMap, vec3(uv0, float(cascade)), 0.0);
+    vec4 disp1 = textureLod(displacementMap, vec3(uv1, float(cascade)), 0.0);
+    vec3 dx0 = textureLod(derivativeMap, vec3(uv0, float(cascade * 2)), 0.0).xyz;
+    vec3 dx1 = textureLod(derivativeMap, vec3(uv1, float(cascade * 2)), 0.0).xyz;
+    vec3 dz0 = textureLod(derivativeMap, vec3(uv0, float(cascade * 2 + 1)), 0.0).xyz;
+    vec3 dz1 = textureLod(derivativeMap, vec3(uv1, float(cascade * 2 + 1)), 0.0).xyz;
+
+    result.displacement = mix(disp0, disp1, blend);
+    result.dPdx = mix(dx0, dx1, blend);
+    result.dPdz = mix(dz0, dz1, blend);
+    return result;
 }
 
 SurfaceData SampleSurface(vec2 worldXZ, float geometryPatchSize)
@@ -67,14 +130,11 @@ SurfaceData SampleSurface(vec2 worldXZ, float geometryPatchSize)
             ? 2.0 * coverage / float(textureSize(displacementMap, 0).x)
             : coverage / params.spectrumScale.y;
         float frequencyWeight = smoothstep(0.5, 1.0, lowerWavelength / max(2.0 * geometryFootprint, 1e-4));
-        vec2 uv = fract(worldXZ / coverage);
-        vec4 displacement = textureLod(displacementMap, vec3(uv, float(cascade)), 0.0);
-        vec3 dPdx = textureLod(derivativeMap, vec3(uv, float(cascade * 2)), 0.0).xyz;
-        vec3 dPdz = textureLod(derivativeMap, vec3(uv, float(cascade * 2 + 1)), 0.0).xyz;
-        result.displacement += displacement.xyz * frequencyWeight;
-        result.dPdx += (dPdx - vec3(1.0, 0.0, 0.0)) * frequencyWeight;
-        result.dPdz += (dPdz - vec3(0.0, 0.0, 1.0)) * frequencyWeight;
-        result.foam = max(result.foam, displacement.w * frequencyWeight);
+        CascadeSample cascadeSample = SampleCascadeMaps(worldXZ, coverage, cascade);
+        result.displacement += cascadeSample.displacement.xyz * frequencyWeight;
+        result.dPdx += (cascadeSample.dPdx - vec3(1.0, 0.0, 0.0)) * frequencyWeight;
+        result.dPdz += (cascadeSample.dPdz - vec3(0.0, 0.0, 1.0)) * frequencyWeight;
+        result.foam = max(result.foam, cascadeSample.displacement.w * frequencyWeight);
     }
     return result;
 }

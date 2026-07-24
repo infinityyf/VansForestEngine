@@ -513,8 +513,8 @@ namespace VansGraphics
 	{
 		WATER_GBUF_BINDING_PARAMS        = 0,   // Geometry clipmap + spectral cascade UBO
 		WATER_GBUF_BINDING_DISPLACEMENT  = 1,   // Compute 输出的水面位移贴图 Texture2DArray（Vertex 采样）
-		WATER_GBUF_BINDING_MICRO_SLOPE   = 3,   // FFT height-gradient Texture2DArray
 		WATER_GBUF_BINDING_DERIVATIVE    = 4,   // dPdx/dPdz Texture2DArray
+		WATER_GBUF_BINDING_FLOW_MAP      = 5,   // Generated flow map sampler
 	};
 
 	// --- Water Wave Compute Pass（Set 0）---
@@ -525,6 +525,12 @@ namespace VansGraphics
 		WATER_WAVE_BINDING_DISPLACEMENT  = 1,   // RGBA16F Storage ImageArray，输出 xyz 位移 + w 坡度（W-01）
 		WATER_WAVE_BINDING_WAVE_SSBO     = 2,   // GerstnerWaveGPU SSBO 输入（W-04）
 		WATER_WAVE_BINDING_DERIVATIVE    = 3,   // dPdx/dPdz Texture2DArray output
+	};
+
+	enum WaterFlowMapComputeBinding : uint32_t
+	{
+		WATER_FLOW_BINDING_PARAMS = 0,
+		WATER_FLOW_BINDING_OUTPUT = 1,
 	};
 
 	// --- Water Composite Pass（Set 1）---
@@ -819,6 +825,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_WaterGBuffer(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Water Wave Compute Set 0：WaterGBufferParams UBO + 位移 Storage Image
 		static void CreateAndAllocate_WaterWaveCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_WaterFlowMapCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Water Composite Pass Set 1：WaterGBuf_Normal + WaterGBuf_LinearDepth + Params UBO
 		static void CreateAndAllocate_WaterComposite(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Hair Composite Pass Set 1：HairVis0(albedo + coverage)

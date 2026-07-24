@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
@@ -876,12 +877,22 @@ void VansMotionMatchingRuntime::UpdateActualOwnerVelocity(float deltaTime,
 	if (m_OwnerTransformInitialized && deltaTime > kEpsilon)
 	{
 		const glm::vec3 worldVelocity = (ownerWorldPosition - m_PreviousOwnerWorldPosition) / deltaTime;
-		const glm::vec3 rootVelocity = glm::vec3(glm::inverse(ownerWorldTransform) * glm::vec4(worldVelocity, 0.0f));
+		// A direction must not be transformed by the owner's inverse scale.  The
+		// character objects are scaled to 0.01 to render centimetre-authored rigs in
+		// a metre world; using the full inverse matrix here made that render scale an
+		// accidental unit conversion.  Rotate into owner space, then convert units
+		// explicitly so speed matching remains correct for any render scale.
+		glm::vec3 ownerPosition, ownerScale;
+		glm::quat ownerRotation;
+		DecomposeTransform(ownerWorldTransform, ownerPosition, ownerRotation, ownerScale);
+		const glm::vec3 rootVelocity = glm::conjugate(ownerRotation) * worldVelocity;
+		const glm::vec3 animationVelocity = rootVelocity *
+			(std::max)(m_Settings.worldToAnimationScale, kEpsilon);
 		const float sanityLimit = (std::max)(m_Settings.desiredSpeedScale * 4.0f, 100.0f);
-		if (std::isfinite(rootVelocity.x) && std::isfinite(rootVelocity.y) && std::isfinite(rootVelocity.z) &&
-		    glm::length(rootVelocity) <= sanityLimit)
+		if (std::isfinite(animationVelocity.x) && std::isfinite(animationVelocity.y) &&
+		    std::isfinite(animationVelocity.z) && glm::length(animationVelocity) <= sanityLimit)
 		{
-			m_ActualOwnerVelocityRoot = rootVelocity;
+			m_ActualOwnerVelocityRoot = animationVelocity;
 			m_HasActualOwnerVelocity = true;
 		}
 	}
@@ -1153,6 +1164,7 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFe
 bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::string, VansAnimationClip>& clips,
                                               const Skeleton& skeleton)
 {
+	const auto buildStarted = std::chrono::steady_clock::now();
 	m_Samples.clear();
 	m_ClipSampleIndices.clear();
 	m_DebugData.topCandidates.clear();
@@ -1183,10 +1195,20 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 		if (!metadata && !IsMotionSearchClipName(name))
 			continue;
 
-		++includedClipCount;
 		const std::string lowered = ToLower(name);
 		const bool legacyLoopLike = IsLoopSearchClipName(name);
 		const bool loopLike = metadata && metadata->hasLoopLike ? metadata->loopLike : legacyLoopLike;
+		const bool transitionLike = metadata && metadata->hasTransitionLike
+			? metadata->transitionLike
+			: !loopLike;
+		// Externally-driven locomotion rejects authored transition clips at query
+		// time because gameplay already moved the owner.  Do the same filtering
+		// before feature extraction; building thousands of samples that can never
+		// be selected was the source of the long synchronous scene load.
+		if (m_Settings.externallyDriven && (!loopLike || transitionLike))
+			continue;
+
+		++includedClipCount;
 		for (float t = 0.0f; t < clip.duration; t += sampleStep)
 		{
 			Sample sample;
@@ -1201,9 +1223,7 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 			sample.idleLike = metadata && metadata->hasIdleLike
 				? metadata->idleLike
 				: sample.loopLike && lowered.find("idle") != std::string::npos;
-			sample.transitionLike = metadata && metadata->hasTransitionLike
-				? metadata->transitionLike
-				: !loopLike;
+			sample.transitionLike = transitionLike;
 			sample.startLike = metadata && metadata->hasStartLike
 				? metadata->startLike
 				: sample.transitionLike && lowered.find("start") != std::string::npos;
@@ -1311,7 +1331,10 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 	m_DebugData.sampleCount = static_cast<int>(m_Samples.size());
 	m_DebugData.clipCount = includedClipCount;
 	m_DebugData.databaseReady = true;
-	VANS_LOG("[MotionMatching] Built database: samples=" << m_Samples.size() << " clips=" << includedClipCount);
+	const auto buildMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - buildStarted).count();
+	VANS_LOG("[MotionMatching] Built database: samples=" << m_Samples.size()
+	         << " clips=" << includedClipCount << " timeMs=" << buildMilliseconds);
 	return true;
 }
 
@@ -1426,6 +1449,12 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 			return true;
 		return sample.directionBucketFromName == directionBucket(currentDir);
 	};
+	auto sampleExactlyMatchesDesiredDirection = [&]() -> bool
+	{
+		if (sample.directionBucketFromName < 0 || desiredDirLen <= kEpsilon)
+			return sampleMatchesDesiredDirection();
+		return sample.directionBucketFromName == directionBucket(desiredDir);
+	};
 
 	if (m_Settings.externallyDriven)
 	{
@@ -1436,7 +1465,7 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 		if (!sample.loopLike || sample.transitionLike)
 			return false;
 		return sample.targetMoveState == desiredMoveState &&
-		       (desiredMoving ? sampleMatchesDesiredDirection() : sample.idleLike);
+		       (desiredMoving ? sampleExactlyMatchesDesiredDirection() : sample.idleLike);
 	}
 
 	if (sample.transitionLike)

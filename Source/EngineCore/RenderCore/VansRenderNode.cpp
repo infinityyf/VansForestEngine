@@ -199,6 +199,7 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 			pc.materialIndex = static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex;
 			break;
 		case VansMaterialType::VAN_EMISSIVE:
+		case VansMaterialType::VAN_PBR_EMISSIVE:
 			pc.materialIndex = static_cast<VansEmissiveMaterial*>(m_Material)->m_MaterialIndex;
 			break;
 		case VansMaterialType::VAN_DECAL:
@@ -266,7 +267,8 @@ void VansGraphics::VansRenderNode::DrawCascadeShadowWithPassShader(VansVKCommand
 		int matIdx = -1;
 		if (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
 			matIdx = static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex;
-		else if (m_Material->m_MaterialType == VansMaterialType::VAN_EMISSIVE)
+		else if (m_Material->m_MaterialType == VansMaterialType::VAN_EMISSIVE ||
+			m_Material->m_MaterialType == VansMaterialType::VAN_PBR_EMISSIVE)
 			matIdx = static_cast<VansEmissiveMaterial*>(m_Material)->m_MaterialIndex;
 		int pushData[4] = { matIdx, m_TransfromIndex, global_state.cascadeIndex, m_AnimationEnabled ? 1 : 0 };
 		cmd.UpdatePushConstants(*passShader->GetGraphicsPipeline(),
@@ -496,7 +498,8 @@ void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, Va
 			sizeof(VansBasePBRParam) * idx,
 			sizeof(VansBasePBRParam));
 	}
-	else if (mat->m_MaterialType == VansMaterialType::VAN_EMISSIVE)
+	else if (mat->m_MaterialType == VansMaterialType::VAN_EMISSIVE ||
+		mat->m_MaterialType == VansMaterialType::VAN_PBR_EMISSIVE)
 	{
 		VansEmissiveMaterial* emissive = static_cast<VansEmissiveMaterial*>(mat);
 		int idx = emissive->m_MaterialIndex;
@@ -513,7 +516,7 @@ void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, Va
 		sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
 		sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
 		sss->m_BasePBRParam.m_ao = sss->m_SubsurfaceAmount;
-		sss->m_BasePBRParam.padding = sss->m_CurvatureInfluence;
+		sss->m_BasePBRParam.padding = sss->m_IOR;
 		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
 			&sss->m_BasePBRParam,
 			sizeof(VansBasePBRParam) * idx,

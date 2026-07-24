@@ -938,12 +938,12 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterGBuffer(
 		// binding 1: Wave displacement Texture2DArray（W-01）
 		{WATER_GBUF_BINDING_DISPLACEMENT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-		// binding 3: band-limited micro normal array
-		{WATER_GBUF_BINDING_MICRO_SLOPE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// binding 4: macro surface derivatives
 		{WATER_GBUF_BINDING_DERIVATIVE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 5: generated flow map sampled by the water vertex shader.
+		{WATER_GBUF_BINDING_FLOW_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -964,6 +964,21 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterWaveCompute(
 		{WATER_WAVE_BINDING_WAVE_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_WAVE_BINDING_DERIVATIVE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+// ============================================================
+// Water FlowMap Compute Set 0
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterFlowMapCompute(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{WATER_FLOW_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_FLOW_BINDING_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);

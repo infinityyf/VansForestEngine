@@ -4,180 +4,151 @@
 #include "../Common/Common.glsl"
 #include "BRDFData.glsl"
 
+// Opaque diffuse BSSRDF parameters. Distances are in world metres. The
+// material remains an opaque dielectric: this is deliberately independent of
+// the glass/refraction path.
 struct SubsurfaceParams
 {
+    vec3  scatteringDistance;
     float thickness;
-    float subsurfacePower;
     float subsurfaceAmount;
-    float backlightShadowRelax;
-    vec3  subsurfaceColor;
 };
 
-void DirectBRDF_Subsurface(BRDFData brdf, vec3 lightDirection, SubsurfaceParams sss,
-                           inout vec3 diffuse, inout vec3 specular,
-                           inout vec3 subsurfaceTransmission)
+// Disney/Burley normalized-diffusion transmittance integrated over the plane:
+// T(d) = A/4 * (exp(-s*d) + 3*exp(-s*d/3)).
+vec3 BurleyTransmittance(vec3 scatteringDistance, vec3 diffuseReflectance,
+                         float thickness)
 {
-    vec3 V = brdf.viewDirection;
+    vec3 shape = 1.0 / max(scatteringDistance, vec3(1e-5));
+    vec3 expOneThird = exp(-shape * max(thickness, 0.0) / 3.0);
+    return clamp(0.25 * clamp(diffuseReflectance, 0.0, 1.0) *
+                 expOneThird * (expOneThird * expOneThird + 3.0),
+                 vec3(0.0), vec3(1.0));
+}
+
+// Exact inverse CDF of Burley's normalized diffusion profile.  The input is
+// the regular CDF in [0, 1), and scatteringDistance is 1 / shape.  This is the
+// analytic form described by Golubev; unlike the older fitted inverse it does
+// not shrink the long tail of the kernel.
+float SampleBurleyRadius(float u, float scatteringDistance)
+{
+    float ccdf = 1.0 - clamp(u, 0.0, 1.0 - 1e-5);
+    float fourU = 4.0 * ccdf;
+    float g = 1.0 + fourU *
+              (2.0 * ccdf + sqrt(1.0 + fourU * ccdf));
+    float n = pow(g, -1.0 / 3.0);
+    float p = g * n * n;
+    float c = 1.0 + p + n;
+    float x = 3.0 * log(c / max(fourU, 1e-6));
+    return max(x, 0.0) * scatteringDistance;
+}
+
+// Importance weight for a screen-space disk sample. Samples are distributed
+// using the reference channel at sampledRadius, then the profile is evaluated
+// at the actual Euclidean distance between the entry and exit surface points.
+// The radial Jacobian cancels the 1/r term in R(r), so the expression remains
+// finite at the origin. Normalization of the finite sample set is performed by
+// the caller to preserve energy exactly.
+vec3 BurleyProfileImportanceWeight(float sampledRadius, float actualRadius,
+                                   vec3 shape, float referenceShape)
+{
+    vec3 channelExp = exp(-shape * max(actualRadius, 0.0) / 3.0);
+    float referenceExp = exp(-referenceShape * max(sampledRadius, 0.0) / 3.0);
+    vec3 numerator = shape * channelExp * (1.0 + channelExp * channelExp);
+    float denominator = referenceShape * referenceExp *
+                        (1.0 + referenceExp * referenceExp);
+    return numerator / max(denominator, 1e-8);
+}
+
+vec3 DirectBurleyTransmission(BRDFData brdf, vec3 lightDirection,
+                              SubsurfaceParams sss)
+{
     vec3 N = brdf.normal;
+    vec3 V = brdf.viewDirection;
     vec3 L = lightDirection;
-    vec3 H = normalize(V + L);
 
-    float NoL = dot(N, L);
-    float NoH = clamp(dot(N, H), 0.0, 1.0);
-    float LoH = clamp(dot(L, H), 0.0, 1.0);
-    float NoV = max(dot(N, V), 0.001);
-    float NoLClamped = max(NoL, 0.0);
+    float backNoL = max(dot(-N, L), 0.0);
+    float NoV = max(dot(N, V), 0.0);
+    if (backNoL <= 0.0 || NoV <= 0.0 || sss.subsurfaceAmount <= 0.0)
+        return vec3(0.0);
 
-    float thickness = clamp(sss.thickness, 0.0, 1.0);
-    float thinness = 1.0 - thickness;
-    float amount = clamp(sss.subsurfaceAmount, 0.0, 1.0);
+    // The thickness map stores normal thickness. Oblique incidence increases
+    // the optical path through the slab.
+    float opticalPath = sss.thickness / max(backNoL, 0.2);
+    vec3 transmittance = BurleyTransmittance(
+        sss.scatteringDistance, brdf.albedo, opticalPath);
 
-    vec3 Fr = vec3(0.0);
-    if (NoL > 0.0)
-    {
-        vec3 F0 = mix(brdf.fresnel0, brdf.albedo, brdf.metallic);
-        float D = DistributionTrowbridgeReitzGGX(N, H, brdf.roughness);
-        float G = GeometrySmith(N, V, L, brdf.roughness);
-        vec3 F = FresnelSchlick(LoH, F0);
-        float denom = 4.0 * max(NoL, 0.001) * NoV;
-        Fr = (D * G * F) / denom;
-    }
+    vec3 entryF = FresnelSchlick(backNoL, brdf.fresnel0);
+    vec3 exitF = FresnelSchlick(NoV, brdf.fresnel0);
+    vec3 interfaceTransmission = (vec3(1.0) - entryF) * (vec3(1.0) - exitF);
 
-    vec3 F0Diff = mix(brdf.fresnel0, brdf.albedo, brdf.metallic);
-    vec3 kS = FresnelSchlick(NoH, F0Diff);
-    vec3 kD = (vec3(1.0) - kS) * (1.0 - brdf.metallic);
-
-    diffuse = brdf.albedo * kD *
-              (1.0 - amount * thinness) *
-              NoLClamped / PI;
-    specular = Fr * NoLClamped;
-
-    float scatterFacing = exp2(sss.subsurfacePower * (dot(V, -L) - 1.0));
-    float backWrap = clamp(NoL * thickness + thinness, 0.0, 1.0);
-    float transmissionShape = mix(backWrap * 0.5, 1.0, scatterFacing);
-
-    vec3 transmissionTint = brdf.albedo * max(sss.subsurfaceColor, vec3(0.0));
-    subsurfaceTransmission = transmissionTint * transmissionShape *
-                             thinness * amount / PI;
+    return transmittance * interfaceTransmission *
+           (backNoL / PI) * clamp(sss.subsurfaceAmount, 0.0, 1.0);
 }
 
-void AmbientBRDF_Subsurface(BRDFData brdf, SubsurfaceParams sss, vec3 viewDirection,
-                            inout vec3 diffuse, inout vec3 specular)
+// Transmission is evaluated separately from the reflected GGX/SSS result so
+// that front lighting and back lighting never spend the same energy twice.
+void CalculateDirectTransmission_Subsurface(
+    BRDFData brdfData, SubsurfaceParams sss,
+    sampler2DArray cascadeShadowMap, float viewDepth,
+    sampler2DShadow punctualShadowMap, float screenSpaceShadow,
+    inout vec3 transmission)
 {
-    AmbientBRDF(brdf, viewDirection, diffuse, specular);
+    transmission = vec3(0.0);
 
-    float thinness = 1.0 - clamp(sss.thickness, 0.0, 1.0);
-    diffuse += brdf.indirectDiffuse * brdf.albedo * max(sss.subsurfaceColor, vec3(0.0)) *
-               thinness * clamp(sss.subsurfaceAmount, 0.0, 1.0) * brdf.ao * 0.25;
-}
-
-float SubsurfaceTransmissionShadow(float shadowValue, float NoL, SubsurfaceParams sss)
-{
-    float thinness = 1.0 - clamp(sss.thickness, 0.0, 1.0);
-    float backFacing = 1.0 - step(0.0, NoL);
-    return mix(shadowValue, 1.0, backFacing * thinness * sss.backlightShadowRelax);
-}
-
-void CalculateDirectLight_Subsurface(BRDFData brdfData, SubsurfaceParams sss,
-                                     sampler2DArray cascadeShadowMap, float viewDepth,
-                                     sampler2DShadow punctualShadowMap,
-                                     float screenSpaceShadow,
-                                     inout LightResult lightResult)
-{
-    lightResult.directDiffuse = vec3(0.0);
-    lightResult.directSpecular = vec3(0.0);
-
-    {
-        vec3 dR = vec3(0.0);
-        vec3 sR = vec3(0.0);
-        vec3 tR = vec3(0.0);
-        vec3 L = uDirectionLight.direction.rgb;
-        DirectBRDF_Subsurface(brdfData, L, sss, dR, sR, tR);
-
-        vec3 lightEnergy = uDirectionLight.color.rgb * uDirectionLight.intensity;
-        dR *= lightEnergy;
-        sR *= lightEnergy;
-        tR *= lightEnergy;
-
-        float shadowValue = min(SampleCascadeShadow(brdfData.positionWS, brdfData.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
-        dR *= shadowValue;
-        sR *= shadowValue;
-        tR *= SubsurfaceTransmissionShadow(shadowValue, dot(brdfData.normal, L), sss);
-
-        lightResult.directDiffuse += dR + tR;
-        lightResult.directSpecular += sR;
-    }
+    vec3 L = uDirectionLight.direction.rgb;
+    vec3 directionalTerm = DirectBurleyTransmission(brdfData, L, sss);
+    float directionalShadow = min(
+        SampleCascadeShadow(brdfData.positionWS, brdfData.normal,
+                            cascadeShadowMap, viewDepth),
+        screenSpaceShadow);
+    transmission += directionalTerm * uDirectionLight.color.rgb *
+                    uDirectionLight.intensity * directionalShadow;
 
     for (uint i = 0; i < uPointLightCount; ++i)
     {
         PointLightData pointLight = GetPointLight(int(i));
-        vec3 L = pointLight.position.xyz - brdfData.positionWS;
-        float distance = length(L);
-        if (distance > pointLight.radius) continue;
+        vec3 toLight = pointLight.position.xyz - brdfData.positionWS;
+        float distanceToLight = length(toLight);
+        if (distanceToLight <= 1e-4 || distanceToLight > pointLight.radius)
+            continue;
 
-        L /= distance;
-        float attenuation = 1.0 - (distance / pointLight.radius);
+        L = toLight / distanceToLight;
+        float attenuation = 1.0 - distanceToLight / pointLight.radius;
         attenuation *= attenuation;
-        float shadowValue = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, L, punctualShadowMap, int(i));
-        if (IsPointShadowFallbackSelected(GetFragTileLightHeader(), i))
-        {
-            shadowValue = BlendPunctualShadowFallback(
-                shadowValue,
-                SamplePunctualScreenSpaceShadow(brdfData.positionWS, brdfData.normal, L, distance),
-                0u, int(i));
-        }
-
-        vec3 dR = vec3(0.0);
-        vec3 sR = vec3(0.0);
-        vec3 tR = vec3(0.0);
-        DirectBRDF_Subsurface(brdfData, L, sss, dR, sR, tR);
-
-        vec3 lightEnergy = pointLight.color.rgb * pointLight.intensity * attenuation;
-        dR *= lightEnergy * shadowValue;
-        sR *= lightEnergy * shadowValue;
-        tR *= lightEnergy * SubsurfaceTransmissionShadow(shadowValue, dot(brdfData.normal, L), sss);
-
-        lightResult.directDiffuse += dR + tR;
-        lightResult.directSpecular += sR;
+        float shadow = SamplePointShadowMapBRDF(
+            brdfData.positionWS, brdfData.normal, L,
+            punctualShadowMap, int(i));
+        transmission += DirectBurleyTransmission(brdfData, L, sss) *
+                        pointLight.color.rgb * pointLight.intensity *
+                        attenuation * shadow;
     }
 
     for (uint i = 0; i < uSpotLightCount; ++i)
     {
         SpotLightData spotLight = GetSpotLight(int(i));
-        vec3 L = spotLight.position.xyz - brdfData.positionWS;
-        float distance = length(L);
-        if (distance > spotLight.radius) continue;
+        vec3 toLight = spotLight.position.xyz - brdfData.positionWS;
+        float distanceToLight = length(toLight);
+        if (distanceToLight <= 1e-4 || distanceToLight > spotLight.radius)
+            continue;
 
-        L /= distance;
-        float coneAngle = dot(normalize(spotLight.direction.xyz), normalize(L));
-        if (coneAngle < cos(spotLight.outerConeAngle)) continue;
+        L = toLight / distanceToLight;
+        float cone = dot(normalize(spotLight.direction.xyz), L);
+        float outer = cos(spotLight.outerConeAngle);
+        if (cone < outer)
+            continue;
 
-        float attenuation = 1.0 - (distance / spotLight.radius);
+        float inner = cos(spotLight.innerConeAngle);
+        float coneAttenuation = clamp(
+            (cone - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
+        float attenuation = 1.0 - distanceToLight / spotLight.radius;
         attenuation *= attenuation;
-        float innerConeAngle = cos(spotLight.innerConeAngle);
-        float outerConeAngle = cos(spotLight.outerConeAngle);
-        float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
-        float shadowValue = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, L, punctualShadowMap, int(i));
-        if (IsSpotShadowFallbackSelected(GetFragTileLightHeader(), i))
-        {
-            shadowValue = BlendPunctualShadowFallback(
-                shadowValue,
-                SamplePunctualScreenSpaceShadow(brdfData.positionWS, brdfData.normal, L, distance),
-                1u, int(i));
-        }
-
-        vec3 dR = vec3(0.0);
-        vec3 sR = vec3(0.0);
-        vec3 tR = vec3(0.0);
-        DirectBRDF_Subsurface(brdfData, L, sss, dR, sR, tR);
-
-        vec3 lightEnergy = spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation;
-        dR *= lightEnergy * shadowValue;
-        sR *= lightEnergy * shadowValue;
-        tR *= lightEnergy * SubsurfaceTransmissionShadow(shadowValue, dot(brdfData.normal, L), sss);
-
-        lightResult.directDiffuse += dR + tR;
-        lightResult.directSpecular += sR;
+        float shadow = SampleSpotShadowMapBRDF(
+            brdfData.positionWS, brdfData.normal, L,
+            punctualShadowMap, int(i));
+        transmission += DirectBurleyTransmission(brdfData, L, sss) *
+                        spotLight.color.rgb * spotLight.intensity *
+                        attenuation * coneAttenuation * shadow;
     }
 }
 

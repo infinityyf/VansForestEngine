@@ -395,6 +395,11 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(VansScene& scen
     renderNode->m_EntityGuid = sceneRenderNode.value("entityGuid", "");
     renderNode->m_ParentEntityGuid = sceneRenderNode.value("parentEntityGuid", "");
     renderNode->m_Material = material;
+	const std::string rayTracingMode = sceneRenderNode.value("rayTracingMode", "auto");
+	const bool transparentForGI = material &&
+		(material->m_MaterialType == VansMaterialType::VAN_TRANSPARENT ||
+		 material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION);
+	renderNode->m_RayTracingEnabled = rayTracingMode != "disabled" && !transparentForGI;
     renderNode->SetName(sceneRenderNode["name"]);
 
     scene.RegistRenderNode(renderNode, type);

@@ -66,6 +66,10 @@ namespace VansGraphics
 
 			VansMaterial* m_Material = nullptr;
 
+			// Per-instance GI ray-tracing participation. Transparent/transmission
+			// materials are always disabled even when the serialized mode is "auto".
+			bool m_RayTracingEnabled = true;
+
 			// ── Animation support ───────────────────────────────────────────────
 			// True when this node's mesh has a skeleton (bones), regardless of whether
 			// any animation clips are currently playing.  Controls whether the real

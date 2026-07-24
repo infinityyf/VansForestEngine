@@ -81,6 +81,18 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
 			}
+			else if (material->m_MaterialType == VansMaterialType::VAN_PBR_EMISSIVE)
+			{
+				VansEmissiveMaterial* emissive = static_cast<VansEmissiveMaterial*>(material);
+				emissive->m_MaterialIndex = pbrMaterialIndex++;
+				materialManager->m_GlobalPBRParamData.push_back(emissive->m_BasePBRParam);
+				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
+				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_NormalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_MetalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_RoughnessTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
+			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_DECAL)
 			{
 				VansDecalMaterial* decal = static_cast<VansDecalMaterial*>(material);
@@ -101,13 +113,13 @@ namespace VansGraphics
 				sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
 				sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
 				sss->m_BasePBRParam.m_ao = sss->m_SubsurfaceAmount;
-				sss->m_BasePBRParam.padding = sss->m_CurvatureInfluence;
+				sss->m_BasePBRParam.padding = sss->m_IOR;
 
 				materialManager->m_GlobalPBRParamData.push_back(sss->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_NormalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_ThicknessTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_RoughnessTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
 			}

@@ -511,16 +511,6 @@ namespace Vans::EditorAPI
 		Vec4 shallowColor = { 0.05f, 0.18f, 0.55f, 1.0f };
 	};
 
-	struct WaterMicroSlopeSettings
-	{
-		bool enabled = true;
-		float intensity = 0.35f;
-		float minWavelength = 0.09f;
-		float primaryCoverage = 8.0f;
-		float secondaryCoverage = 11.313708f;
-		float rotationDegrees = 31.0f;
-	};
-
 	struct WaterSpectrumSettings
 	{
 		int mode = 2;
@@ -538,6 +528,41 @@ namespace Vans::EditorAPI
 		float windDependency = 0.07f;
 		float depth = 10000.0f;
 		float repeatPeriod = 0.0f;
+		std::uint32_t randomSeed = 1337u;
+	};
+
+	struct WaterWaveParticleSettings
+	{
+		int particleCount = 256;
+		int octaveCount = 4;
+		int profile = 1;
+		float domainSize = 256.0f;
+		float amplitude = 0.16f;
+		float minRadius = 2.0f;
+		float maxRadius = 64.0f;
+		float phaseVelocity = 1.0f;
+		float damping = 0.05f;
+		float directionSpread = 0.45f;
+		float lacunarity = 2.0f;
+		float persistence = 0.52f;
+		float radiusFalloff = 0.55f;
+		float profileSharpness = 2.0f;
+		float foamThreshold = 0.55f;
+		float foamSoftness = 0.35f;
+		float lifetime = 18.0f;
+		std::uint32_t randomSeed = 20260724u;
+	};
+
+	struct WaterFlowMapSettings
+	{
+		bool enabled = false;
+		float strength = 6.0f;
+		float speed = 0.45f;
+		float phaseLength = 1.0f;
+		float noiseAmount = 0.35f;
+		Vec2 worldOrigin = { -256.0f, -256.0f };
+		Vec2 worldSize = { 512.0f, 512.0f };
+		Vec2 fallbackDirection = { 1.0f, 0.0f };
 	};
 
 	struct WaterGeometrySettings
@@ -555,7 +580,8 @@ namespace Vans::EditorAPI
 		WaterMediumSettings medium;
 		WaterGeometrySettings geometry;
 		WaterSpectrumSettings spectrum;
-		WaterMicroSlopeSettings microSlope;
+		WaterWaveParticleSettings waveParticle;
+		WaterFlowMapSettings flowMap;
 		bool sssEnabled = true;
 		float maxThicknessDistance = 15.0f;
 		float deepWaterThicknessFallback = 0.8f;
@@ -859,6 +885,12 @@ namespace Vans::EditorAPI
 		float ambientScale = 0.5f;
 		float fogMinHeight = -100.0f;
 		float skyFogDistance = 3000000.0f;
+	};
+
+	struct ScenePropertyEdit
+	{
+		std::string jsonPointer;
+		std::string valueJson;
 	};
 
 	struct FogVolumeSettings

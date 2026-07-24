@@ -26,6 +26,7 @@ namespace
 		case VansMaterialType::VAN_PBR:
 			return static_cast<VansPBRMaterial*>(material)->m_MaterialIndex;
 		case VansMaterialType::VAN_EMISSIVE:
+		case VansMaterialType::VAN_PBR_EMISSIVE:
 			return static_cast<VansEmissiveMaterial*>(material)->m_MaterialIndex;
 		case VansMaterialType::VAN_DECAL:
 			return static_cast<VansDecalMaterial*>(material)->m_MaterialIndex;
