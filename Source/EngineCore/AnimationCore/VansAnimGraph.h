@@ -13,14 +13,13 @@
 
 #include "VansAnimationTypes.h"
 #include "VansAnimationController.h"
+#include "VansAnimGraphJson.h"
 #include "IK/VansIKTypes.h"
 #include "FootPlacement/VansFootPlacementTypes.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <memory>
-
-#include <nlohmann/json_fwd.hpp>
 
 namespace VansGraphics
 {
@@ -575,12 +574,9 @@ namespace VansGraphics
 		}
 
 		// ─── 序列化 ─────────────────────────────────────────────
-		std::string SerializeToJson() const;
-		static std::unique_ptr<VansAnimGraph> DeserializeFromJson(const std::string& jsonStr);
-
-		// 直接操作 nlohmann::json 的版本（供 VansAnimatorIO 使用）
-		void SerializeToJsonObject(nlohmann::json& outJson) const;
-		static std::unique_ptr<VansAnimGraph> DeserializeFromJsonObject(const nlohmann::json& j);
+		// Legacy JSON adapter used by VansAnimatorIO.
+		void SerializeToJsonObject(AnimGraphJson& outJson) const;
+		static std::unique_ptr<VansAnimGraph> DeserializeFromJsonObject(const AnimGraphJson& j);
 
 		// ─── 工厂辅助 ───────────────────────────────────────────
 		// 根据类型名创建空节点实例

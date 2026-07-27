@@ -6,7 +6,6 @@
 #include "VansVKDevice.h"
 
 #include "../../AssetCore/Importers/Shader/VansShaderArtifactCache.h"
-#include "../../Util/VansFileUtil.h"
 #include "../../Util/VansLog.h"
 //#include "spirv_cross/spirv_cross.hpp"
 //#include "spirv_cross/spirv_glsl.hpp"
@@ -16,6 +15,8 @@
 #include <cctype>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
+#include <vector>
 
 namespace
 {
@@ -34,6 +35,35 @@ std::filesystem::path FindShaderRoot(const std::filesystem::path& sourceFolder)
 		current = current.parent_path();
 	}
 	return sourceFolder;
+}
+
+std::vector<std::string> GetShaderFilesInFolder(const std::string& directory)
+{
+	std::vector<std::string> files;
+	std::error_code ec;
+	for (const auto& entry : std::filesystem::directory_iterator(directory, ec))
+	{
+		if (ec)
+			break;
+		if (entry.is_regular_file(ec) && !ec)
+			files.push_back(entry.path().filename().string());
+		ec.clear();
+	}
+	if (ec)
+		VANS_LOG_WARN("failed to enumerate shader folder: " << directory << " (" << ec.message() << ")");
+	return files;
+}
+
+std::string GetFileExtensionWithoutDot(const std::filesystem::path& path)
+{
+	std::string extension = path.extension().string();
+	if (!extension.empty() && extension.front() == '.')
+		extension.erase(extension.begin());
+	std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c)
+	{
+		return static_cast<char>(std::tolower(c));
+	});
+	return extension;
 }
 
 std::string BuildStableUnmanagedProgramId(const std::string& shaderFolder)
@@ -68,7 +98,7 @@ bool CompileShaderModuleData(
 {
 	if (explicitStageFiles.empty())
 	{
-		std::vector<std::string> shader_files = GetFilesInFolder(shader_folder);
+		std::vector<std::string> shader_files = GetShaderFilesInFolder(shader_folder);
 		if (shader_files.empty())
 		{
 			VANS_LOG_WARN("no shader files found:" << shader_folder);
@@ -77,7 +107,7 @@ bool CompileShaderModuleData(
 		outModuleData.clear();
 		for (auto& shader_file : shader_files)
 		{
-			std::string shader_type = GetFileExtension(shader_file);
+			std::string shader_type = GetFileExtensionWithoutDot(shader_file);
 			if (shader_type == "spv")
 				continue;
 
@@ -118,7 +148,7 @@ bool CompileShaderModuleData(
 				continue;
 
 			VansGraphics::ShaderModuleData shader_module_data;
-			shader_module_data.m_ShaderType = GetFileExtension(shader_file);
+			shader_module_data.m_ShaderType = GetFileExtensionWithoutDot(shader_file);
 			std::filesystem::path filePath(shader_file);
 			if (filePath.is_relative())
 				filePath = std::filesystem::path(shader_folder) / filePath;

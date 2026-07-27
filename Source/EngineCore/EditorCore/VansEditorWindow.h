@@ -48,6 +48,7 @@ namespace VansGraphics
 	class VansGIWindow;
 	class VansPostProcessWindow;
 	class VansShadowDebuggerWindow;
+	class VansPcgWindow;
 
 	/// 编辑器运行控制状态
 	enum class VansEditorPlayState
@@ -79,6 +80,7 @@ namespace VansGraphics
 		static bool m_GIWindowOpen;
 		static bool m_PostProcessWindowOpen;
 		static bool m_ShadowDebuggerWindowOpen;
+		static bool m_PcgWindowOpen;
 
 		static bool m_WireframeMode;
 		static bool m_VehicleDebugGizmos;
@@ -182,6 +184,8 @@ namespace VansGraphics
 		static VansPostProcessWindow* m_PostProcessWindow;
 
 		static VansShadowDebuggerWindow* m_ShadowDebuggerWindow;
+
+		static VansPcgWindow* m_PcgWindow;
 
 	private:
 

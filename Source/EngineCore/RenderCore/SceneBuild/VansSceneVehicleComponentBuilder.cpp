@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cfloat>
+#include <optional>
 
 namespace VansGraphics
 {
@@ -26,56 +27,65 @@ uint32_t GetObjectTransformID(VansScriptObject* sceneObject)
 	return sceneObject->m_TransformID;
 }
 
-void ReadPxVec3(const json& j, PxVec3& out)
+PxVec3 ToPxVec3(const std::array<float, 3>& value)
 {
-	if (!j.is_array() || j.size() < 3)
-		return;
-	out = PxVec3(j[0].get<float>(), j[1].get<float>(), j[2].get<float>());
+	return PxVec3(value[0], value[1], value[2]);
 }
 
-void ReadPxTransformPosition(const json& j, PxTransform& out)
+void ApplyPxVec3(const std::optional<std::array<float, 3>>& value, PxVec3& out)
 {
-	if (!j.is_array() || j.size() < 3)
-		return;
-	PxVec3 p = out.p;
-	ReadPxVec3(j, p);
-	out.p = p;
+	if (value)
+		out = ToPxVec3(*value);
 }
 
-void ReadFloatArray4(const json& j, std::array<PxReal, 4>& out)
+void ApplyPxTransformPosition(const std::optional<std::array<float, 3>>& value, PxTransform& out)
 {
-	if (!j.is_array())
-		return;
-	const size_t count = std::min<size_t>(j.size(), out.size());
-	for (size_t i = 0; i < count; ++i)
-		out[i] = j[i].get<float>();
+	if (value)
+		out.p = ToPxVec3(*value);
 }
 
-void ReadVec3Array4(const json& j, std::array<PxVec3, 4>& out)
+void ApplyFloatArray4(const std::optional<std::array<float, 4>>& value, std::array<PxReal, 4>& out)
 {
-	if (!j.is_array())
+	if (!value)
 		return;
-	const size_t count = std::min<size_t>(j.size(), out.size());
-	for (size_t i = 0; i < count; ++i)
-		ReadPxVec3(j[i], out[i]);
+	for (size_t i = 0; i < out.size(); ++i)
+		out[i] = (*value)[i];
 }
 
-PxVehicleAxes::Enum ParseVehicleAxis(const json& value, PxVehicleAxes::Enum fallback)
+void ApplyVec3Array4(
+	const std::optional<std::array<std::array<float, 3>, 4>>& value,
+	std::array<PxVec3, 4>& out)
 {
-	if (value.is_number_integer())
+	if (!value)
+		return;
+	for (size_t i = 0; i < out.size(); ++i)
+		out[i] = ToPxVec3((*value)[i]);
+}
+
+std::string NormalizeToken(std::string token)
+{
+	std::transform(token.begin(), token.end(), token.begin(), [](unsigned char c) {
+		return static_cast<char>(std::tolower(c));
+	});
+	token.erase(std::remove_if(token.begin(), token.end(), [](unsigned char c) {
+		return c == '_' || c == '-' || c == ' ';
+	}), token.end());
+	return token;
+}
+
+PxVehicleAxes::Enum ParseVehicleAxis(const Vans::VansSceneVehicleTokenConfig& value, PxVehicleAxes::Enum fallback)
+{
+	if (value.index)
 	{
-		const int axis = value.get<int>();
+		const int axis = *value.index;
 		if (axis >= 0 && axis < static_cast<int>(PxVehicleAxes::eMAX_NB_AXES))
 			return static_cast<PxVehicleAxes::Enum>(axis);
 		return fallback;
 	}
-	if (!value.is_string())
+	if (!value.name)
 		return fallback;
 
-	std::string axis = value.get<std::string>();
-	std::transform(axis.begin(), axis.end(), axis.begin(), [](unsigned char c) {
-		return static_cast<char>(std::tolower(c));
-	});
+	std::string axis = NormalizeToken(*value.name);
 	if (axis == "posx" || axis == "+x" || axis == "x") return PxVehicleAxes::ePosX;
 	if (axis == "negx" || axis == "-x") return PxVehicleAxes::eNegX;
 	if (axis == "posy" || axis == "+y" || axis == "y") return PxVehicleAxes::ePosY;
@@ -207,50 +217,42 @@ float VehicleAxisExtent(const PxVec3& boundsMin, const PxVec3& boundsMax, PxVehi
 	}
 }
 
-VansEngine::VansVehicleTuning ParseVehicleTuning(const json& vehJson)
+VansEngine::VansVehicleTuning ParseVehicleTuning(const Vans::VansSceneVehicleComponentConfig& vehicleConfig)
 {
 	VansEngine::VansVehicleTuning tuning;
-	const json& t = vehJson.contains("tuning") && vehJson["tuning"].is_object()
-		? vehJson["tuning"]
-		: vehJson;
+	const Vans::VansSceneVehicleTuningConfig& t = vehicleConfig.tuning;
 
-	if (t.contains("bodyMass")) tuning.bodyMass = t["bodyMass"].get<float>();
-	if (t.contains("bodyMoi")) ReadPxVec3(t["bodyMoi"], tuning.bodyMoi);
-	if (t.contains("centerOfMass")) ReadPxTransformPosition(t["centerOfMass"], tuning.centerOfMassLocalPose);
-	if (t.contains("bodyBoxHalfExtents")) ReadPxVec3(t["bodyBoxHalfExtents"], tuning.bodyBoxHalfExtents);
-	if (t.contains("bodyBoxLocalPosition")) ReadPxTransformPosition(t["bodyBoxLocalPosition"], tuning.bodyBoxLocalPose);
-	if (t.contains("autoBodyGeometry")) tuning.autoBodyGeometry = t["autoBodyGeometry"].get<bool>();
-	if (t.contains("bodyGeometryPadding")) ReadPxVec3(t["bodyGeometryPadding"], tuning.bodyGeometryPadding);
-	if (t.contains("bodyGeometryHalfExtentsScale")) ReadPxVec3(t["bodyGeometryHalfExtentsScale"], tuning.bodyGeometryHalfExtentsScale);
-	if (t.contains("bodyGeometryCenterOffset")) ReadPxVec3(t["bodyGeometryCenterOffset"], tuning.bodyGeometryCenterOffset);
-	if (t.contains("longitudinalAxis")) tuning.longitudinalAxis = ParseVehicleAxis(t["longitudinalAxis"], tuning.longitudinalAxis);
-	if (t.contains("forwardAxis")) tuning.longitudinalAxis = ParseVehicleAxis(t["forwardAxis"], tuning.longitudinalAxis);
-	if (t.contains("lateralAxis")) tuning.lateralAxis = ParseVehicleAxis(t["lateralAxis"], tuning.lateralAxis);
-	if (t.contains("verticalAxis")) tuning.verticalAxis = ParseVehicleAxis(t["verticalAxis"], tuning.verticalAxis);
+	if (t.bodyMass) tuning.bodyMass = *t.bodyMass;
+	ApplyPxVec3(t.bodyMoi, tuning.bodyMoi);
+	ApplyPxTransformPosition(t.centerOfMass, tuning.centerOfMassLocalPose);
+	ApplyPxVec3(t.bodyBoxHalfExtents, tuning.bodyBoxHalfExtents);
+	ApplyPxTransformPosition(t.bodyBoxLocalPosition, tuning.bodyBoxLocalPose);
+	if (t.autoBodyGeometry) tuning.autoBodyGeometry = *t.autoBodyGeometry;
+	ApplyPxVec3(t.bodyGeometryPadding, tuning.bodyGeometryPadding);
+	ApplyPxVec3(t.bodyGeometryHalfExtentsScale, tuning.bodyGeometryHalfExtentsScale);
+	ApplyPxVec3(t.bodyGeometryCenterOffset, tuning.bodyGeometryCenterOffset);
+	if (t.longitudinalAxis) tuning.longitudinalAxis = ParseVehicleAxis(*t.longitudinalAxis, tuning.longitudinalAxis);
+	if (t.forwardAxis) tuning.longitudinalAxis = ParseVehicleAxis(*t.forwardAxis, tuning.longitudinalAxis);
+	if (t.lateralAxis) tuning.lateralAxis = ParseVehicleAxis(*t.lateralAxis, tuning.lateralAxis);
+	if (t.verticalAxis) tuning.verticalAxis = ParseVehicleAxis(*t.verticalAxis, tuning.verticalAxis);
 
-	if (t.contains("wheelRadius")) tuning.wheelRadius = t["wheelRadius"].get<float>();
-	if (t.contains("wheelHalfWidth")) tuning.wheelHalfWidth = t["wheelHalfWidth"].get<float>();
+	if (t.wheelRadius) tuning.wheelRadius = *t.wheelRadius;
+	if (t.wheelHalfWidth) tuning.wheelHalfWidth = *t.wheelHalfWidth;
 	tuning.wheelRadius = std::clamp(tuning.wheelRadius, 0.01f, 2.0f);
 	tuning.wheelHalfWidth = std::clamp(tuning.wheelHalfWidth, 0.01f, 2.0f);
-	if (t.contains("wheelMass")) tuning.wheelMass = t["wheelMass"].get<float>();
-	if (t.contains("wheelMoi")) tuning.wheelMoi = t["wheelMoi"].get<float>();
-	if (t.contains("wheelDampingRate")) tuning.wheelDampingRate = t["wheelDampingRate"].get<float>();
-	if (t.contains("visualWheelRollSign")) tuning.visualWheelRollSign = t["visualWheelRollSign"].get<float>();
-	if (t.contains("wheelVisualGroundClearance")) tuning.wheelVisualGroundClearance = t["wheelVisualGroundClearance"].get<float>();
-	if (t.contains("enableWheelSimulationCollision")) tuning.enableWheelSimulationCollision = t["enableWheelSimulationCollision"].get<bool>();
-	if (t.contains("collisionLayer") && t["collisionLayer"].is_string()) tuning.collisionLayerName = t["collisionLayer"].get<std::string>();
-	if (t.contains("layer") && t["layer"].is_string()) tuning.collisionLayerName = t["layer"].get<std::string>();
-	if (t.contains("useRoadQueryLayerFilter")) tuning.useRoadQueryLayerFilter = t["useRoadQueryLayerFilter"].get<bool>();
-	if (t.contains("roadQueryLayerFilter")) tuning.useRoadQueryLayerFilter = t["roadQueryLayerFilter"].get<bool>();
-	if (t.contains("physxActorUpdateMode") && t["physxActorUpdateMode"].is_string())
+	if (t.wheelMass) tuning.wheelMass = *t.wheelMass;
+	if (t.wheelMoi) tuning.wheelMoi = *t.wheelMoi;
+	if (t.wheelDampingRate) tuning.wheelDampingRate = *t.wheelDampingRate;
+	if (t.visualWheelRollSign) tuning.visualWheelRollSign = *t.visualWheelRollSign;
+	if (t.wheelVisualGroundClearance) tuning.wheelVisualGroundClearance = *t.wheelVisualGroundClearance;
+	if (t.enableWheelSimulationCollision) tuning.enableWheelSimulationCollision = *t.enableWheelSimulationCollision;
+	if (t.collisionLayer) tuning.collisionLayerName = *t.collisionLayer;
+	if (t.layer) tuning.collisionLayerName = *t.layer;
+	if (t.useRoadQueryLayerFilter) tuning.useRoadQueryLayerFilter = *t.useRoadQueryLayerFilter;
+	if (t.roadQueryLayerFilter) tuning.useRoadQueryLayerFilter = *t.roadQueryLayerFilter;
+	if (t.physxActorUpdateMode)
 	{
-		std::string mode = t["physxActorUpdateMode"].get<std::string>();
-		std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
-			return static_cast<char>(std::tolower(c));
-		});
-		mode.erase(std::remove_if(mode.begin(), mode.end(), [](unsigned char c) {
-			return c == '_' || c == '-' || c == ' ';
-		}), mode.end());
+		std::string mode = NormalizeToken(*t.physxActorUpdateMode);
 		if (mode == "acceleration" || mode == "applyacceleration")
 			tuning.physxActorUpdateMode = PxVehiclePhysXActorUpdateMode::eAPPLY_ACCELERATION;
 		else if (mode == "velocity" || mode == "applyvelocity")
@@ -258,20 +260,18 @@ VansEngine::VansVehicleTuning ParseVehicleTuning(const json& vehJson)
 		else
 			VANS_LOG_WARN("[VehicleTuning] Unknown physxActorUpdateMode '" << mode << "'; using default velocity mode.");
 	}
-	if (t.contains("roadQueryMask") && t["roadQueryMask"].is_number_unsigned())
+	if (t.roadQueryMask)
 	{
-		tuning.roadQueryMask = t["roadQueryMask"].get<PxU32>();
+		tuning.roadQueryMask = *t.roadQueryMask;
 		tuning.useCustomRoadQueryMask = true;
 	}
-	if (t.contains("roadQueryLayers") && t["roadQueryLayers"].is_array())
+	if (!t.roadQueryLayers.empty())
 	{
 		PxU32 roadMask = 0u;
 		auto& layerMgr = VansEngine::VansCollisionLayerManager::Get();
-		for (const auto& layerNameJson : t["roadQueryLayers"])
+		for (const std::string& layerName : t.roadQueryLayers)
 		{
-			if (!layerNameJson.is_string())
-				continue;
-			const int layerIndex = layerMgr.GetLayerIndex(layerNameJson.get<std::string>());
+			const int layerIndex = layerMgr.GetLayerIndex(layerName);
 			if (layerIndex >= 0 && layerIndex < 32)
 				roadMask |= (1u << static_cast<PxU32>(layerIndex));
 		}
@@ -285,90 +285,54 @@ VansEngine::VansVehicleTuning ParseVehicleTuning(const json& vehJson)
 			VANS_LOG_WARN("[VehicleTuning] roadQueryLayers resolved to an empty mask; using the collision layer mask.");
 		}
 	}
-	if (t.contains("autoAlignToGround")) tuning.autoAlignToGround = t["autoAlignToGround"].get<bool>();
-	if (t.contains("groundHeight")) tuning.groundHeight = t["groundHeight"].get<float>();
-	if (t.contains("groundClearance")) tuning.groundClearance = t["groundClearance"].get<float>();
+	if (t.autoAlignToGround) tuning.autoAlignToGround = *t.autoAlignToGround;
+	if (t.groundHeight) tuning.groundHeight = *t.groundHeight;
+	if (t.groundClearance) tuning.groundClearance = *t.groundClearance;
 	tuning.groundClearance = std::clamp(tuning.groundClearance, -0.5f, 1.0f);
-	if (t.contains("startHeightOffset")) tuning.startHeightOffset = t["startHeightOffset"].get<float>();
-	if (t.contains("wheelCollisionMode") && t["wheelCollisionMode"].is_string())
+	if (t.startHeightOffset) tuning.startHeightOffset = *t.startHeightOffset;
+	if (t.wheelCollisionMode)
 	{
-		std::string mode = t["wheelCollisionMode"].get<std::string>();
-		std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
-			return static_cast<char>(std::tolower(c));
-		});
+		std::string mode = NormalizeToken(*t.wheelCollisionMode);
 		tuning.enableWheelSimulationCollision =
 			(mode == "simulation" || mode == "simulationandquery" ||
 			 mode == "simulation_and_query" || mode == "collider");
 	}
 
-	if (t.contains("suspensionAttachmentPositions")) ReadVec3Array4(t["suspensionAttachmentPositions"], tuning.suspensionAttachmentPositions);
-	if (t.contains("suspensionTravelDist")) tuning.suspensionTravelDist = t["suspensionTravelDist"].get<float>();
-	if (t.contains("suspensionStiffness")) ReadFloatArray4(t["suspensionStiffness"], tuning.suspensionStiffness);
-	if (t.contains("suspensionDamping")) ReadFloatArray4(t["suspensionDamping"], tuning.suspensionDamping);
-	if (t.contains("sprungMass")) ReadFloatArray4(t["sprungMass"], tuning.sprungMass);
+	ApplyVec3Array4(t.suspensionAttachmentPositions, tuning.suspensionAttachmentPositions);
+	if (t.suspensionTravelDist) tuning.suspensionTravelDist = *t.suspensionTravelDist;
+	ApplyFloatArray4(t.suspensionStiffness, tuning.suspensionStiffness);
+	ApplyFloatArray4(t.suspensionDamping, tuning.suspensionDamping);
+	ApplyFloatArray4(t.sprungMass, tuning.sprungMass);
 
-	if (t.contains("brakeMaxTorque")) tuning.brakeMaxTorque = t["brakeMaxTorque"].get<float>();
-	if (t.contains("handbrakeMaxTorque")) tuning.handbrakeMaxTorque = t["handbrakeMaxTorque"].get<float>();
-	if (t.contains("maxSteerAngleDeg")) tuning.maxSteerAngleRad = glm::radians(t["maxSteerAngleDeg"].get<float>());
-	if (t.contains("maxSteerAngleRad")) tuning.maxSteerAngleRad = t["maxSteerAngleRad"].get<float>();
-	if (t.contains("ackermannWheelBase")) tuning.ackermannWheelBase = t["ackermannWheelBase"].get<float>();
-	if (t.contains("ackermannTrackWidth")) tuning.ackermannTrackWidth = t["ackermannTrackWidth"].get<float>();
-	if (t.contains("ackermannStrength")) tuning.ackermannStrength = t["ackermannStrength"].get<float>();
+	if (t.brakeMaxTorque) tuning.brakeMaxTorque = *t.brakeMaxTorque;
+	if (t.handbrakeMaxTorque) tuning.handbrakeMaxTorque = *t.handbrakeMaxTorque;
+	if (t.maxSteerAngleDeg) tuning.maxSteerAngleRad = glm::radians(*t.maxSteerAngleDeg);
+	if (t.maxSteerAngleRad) tuning.maxSteerAngleRad = *t.maxSteerAngleRad;
+	if (t.ackermannWheelBase) tuning.ackermannWheelBase = *t.ackermannWheelBase;
+	if (t.ackermannTrackWidth) tuning.ackermannTrackWidth = *t.ackermannTrackWidth;
+	if (t.ackermannStrength) tuning.ackermannStrength = *t.ackermannStrength;
 
-	if (t.contains("enginePeakTorque")) tuning.enginePeakTorque = t["enginePeakTorque"].get<float>();
-	if (t.contains("engineMaxOmega")) tuning.engineMaxOmega = t["engineMaxOmega"].get<float>();
-	if (t.contains("gearboxFinalRatio")) tuning.gearboxFinalRatio = t["gearboxFinalRatio"].get<float>();
-	if (t.contains("gearboxSwitchTime")) tuning.gearboxSwitchTime = t["gearboxSwitchTime"].get<float>();
-	if (t.contains("autoboxLatency")) tuning.autoboxLatency = t["autoboxLatency"].get<float>();
-	if (t.contains("clutchStrength")) tuning.clutchStrength = t["clutchStrength"].get<float>();
+	if (t.enginePeakTorque) tuning.enginePeakTorque = *t.enginePeakTorque;
+	if (t.engineMaxOmega) tuning.engineMaxOmega = *t.engineMaxOmega;
+	if (t.gearboxFinalRatio) tuning.gearboxFinalRatio = *t.gearboxFinalRatio;
+	if (t.gearboxSwitchTime) tuning.gearboxSwitchTime = *t.gearboxSwitchTime;
+	if (t.autoboxLatency) tuning.autoboxLatency = *t.autoboxLatency;
+	if (t.clutchStrength) tuning.clutchStrength = *t.clutchStrength;
 
 	return tuning;
 }
 
-std::vector<std::string> CollectVehicleObjectNames(const json& tireJson)
+int ParseWheelSlot(const Vans::VansSceneVehicleTokenConfig& value)
 {
-	std::vector<std::string> names;
-	if (tireJson.is_string())
+	if (value.index)
 	{
-		names.push_back(tireJson.get<std::string>());
-	}
-	else if (tireJson.is_array())
-	{
-		for (const auto& item : tireJson)
-			if (item.is_string())
-				names.push_back(item.get<std::string>());
-	}
-	else if (tireJson.is_object())
-	{
-		if (tireJson.contains("object") && tireJson["object"].is_string())
-			names.push_back(tireJson["object"].get<std::string>());
-		if (tireJson.contains("objects") && tireJson["objects"].is_array())
-		{
-			for (const auto& item : tireJson["objects"])
-				if (item.is_string())
-					names.push_back(item.get<std::string>());
-		}
-	}
-	return names;
-}
-
-int ParseWheelSlot(const json& value)
-{
-	if (value.is_number_integer())
-	{
-		const int slot = value.get<int>();
+		const int slot = *value.index;
 		return (slot >= 0 && slot < 4) ? slot : -1;
 	}
-	if (!value.is_string())
+	if (!value.name)
 		return -1;
 
-	std::string slot = value.get<std::string>();
-	std::transform(slot.begin(), slot.end(), slot.begin(), [](unsigned char c) {
-		return static_cast<char>(std::tolower(c));
-	});
-	slot.erase(std::remove_if(slot.begin(), slot.end(), [](unsigned char c) {
-		return c == '_' || c == '-' || c == ' ';
-	}), slot.end());
+	std::string slot = NormalizeToken(*value.name);
 
 	if (slot == "frontleft" || slot == "leftfront" || slot == "fl" || slot == "lf") return 0;
 	if (slot == "frontright" || slot == "rightfront" || slot == "fr" || slot == "rf") return 1;
@@ -379,13 +343,16 @@ int ParseWheelSlot(const json& value)
 	return -1;
 }
 
-bool ParseConfiguredWheelOrder(const json& source, const std::string& objectName, size_t wheelCount, std::vector<size_t>& outOrder)
+bool ParseConfiguredWheelOrder(
+	const std::optional<std::array<Vans::VansSceneVehicleTokenConfig, 4>>& configuredOrder,
+	const std::string& objectName,
+	size_t wheelCount,
+	std::vector<size_t>& outOrder)
 {
-	if (!source.contains("wheelOrder") || !source["wheelOrder"].is_array())
+	if (!configuredOrder)
 		return false;
 
-	const json& orderJson = source["wheelOrder"];
-	if (orderJson.size() < 4)
+	if (configuredOrder->size() < 4)
 	{
 		VANS_LOG_WARN("[VehicleWheelOrder] object='" << objectName
 			<< "' wheelOrder must contain four wheel slots; keeping tireObjects order.");
@@ -397,9 +364,9 @@ bool ParseConfiguredWheelOrder(const json& source, const std::string& objectName
 		outOrder[i] = i;
 
 	std::array<bool, 4> seen = { false, false, false, false };
-	for (size_t sourceIndex = 0; sourceIndex < std::min<size_t>(4, orderJson.size()); ++sourceIndex)
+	for (size_t sourceIndex = 0; sourceIndex < configuredOrder->size(); ++sourceIndex)
 	{
-		const int slot = ParseWheelSlot(orderJson[sourceIndex]);
+		const int slot = ParseWheelSlot((*configuredOrder)[sourceIndex]);
 		if (slot < 0 || seen[slot])
 		{
 			VANS_LOG_WARN("[VehicleWheelOrder] object='" << objectName
@@ -415,11 +382,12 @@ bool ParseConfiguredWheelOrder(const json& source, const std::string& objectName
 }
 }
 
-void VansSceneVehicleComponentBuilder::AddVehiclePlaceholder(VansScriptObject& object, const json& components)
+void VansSceneVehicleComponentBuilder::AddVehiclePlaceholder(
+	VansScriptObject& object,
+	const Vans::VansSceneVehicleObjectConfig& objectConfig)
 {
-	if (!components.contains("vehicle"))
+	if (!objectConfig.vehicle)
 		return;
-
 	auto* vehicleComp = new VansScriptVehicleComponent();
 	vehicleComp->m_ComponentName = "vehicle";
 	vehicleComp->m_Vehicle = nullptr;
@@ -428,27 +396,26 @@ void VansSceneVehicleComponentBuilder::AddVehiclePlaceholder(VansScriptObject& o
 
 std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 	VansScene& scene,
-	const json& objectsArray)
+	const Vans::VansSceneVehicleObjectConfigs& objectConfigs)
 {
 	std::unordered_set<uint32_t> vehicleDrivenTransformIDs;
 	const auto& sceneObjects = scene.GetSceneObjects();
 	int objIndex = 0;
-	for (const auto& objJson : objectsArray)
+	for (const Vans::VansSceneVehicleObjectConfig& objectConfig : objectConfigs)
 	{
-		const auto& components = objJson["components"];
-		if (components.contains("vehicle"))
+		if (objectConfig.vehicle)
 		{
-			const auto& vehJson = components["vehicle"];
-			VansScriptObject* obj = sceneObjects[sceneObjects.size() - objectsArray.size() + objIndex];
+			const Vans::VansSceneVehicleComponentConfig& vehicleConfig = *objectConfig.vehicle;
+			VansScriptObject* obj = sceneObjects[sceneObjects.size() - objectConfigs.size() + objIndex];
 			auto* vc = obj->GetComponent<VansScriptVehicleComponent>();
 
 			std::string bodyNodeName;
 			uint32_t bodyTransformID = UINT32_MAX;
 			VansScriptObject* bodyObj = nullptr;
 			std::vector<VansRenderNode*> bodyRenderNodesForBounds;
-			if (vehJson.contains("bodyObject"))
+			if (vehicleConfig.bodyObject)
 			{
-				std::string bodyObjName = vehJson["bodyObject"].get<std::string>();
+				std::string bodyObjName = *vehicleConfig.bodyObject;
 				bodyObj = scene.FindSceneObjectByName(bodyObjName);
 				if (bodyObj)
 				{
@@ -489,11 +456,11 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 			std::vector<PxVec3> wheelGroupBoundsMin;
 			std::vector<PxVec3> wheelGroupBoundsMax;
 			std::unordered_set<VansRenderNode*> tireRenderNodesForBodyExclusion;
-			if (vehJson.contains("tireObjects"))
+			if (!vehicleConfig.tireObjects.empty())
 			{
-				for (const auto& tireJson : vehJson["tireObjects"])
+				for (const Vans::VansSceneVehicleTireGroupConfig& tireConfig : vehicleConfig.tireObjects)
 				{
-					std::vector<std::string> groupObjectNames = CollectVehicleObjectNames(tireJson);
+					const std::vector<std::string>& groupObjectNames = tireConfig.objectNames;
 					if (groupObjectNames.empty())
 						continue;
 
@@ -537,21 +504,16 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 					PxVec3 groupBoundsMin, groupBoundsMax;
 					const bool hasGroupBounds = CalculateBoundsFromRenderNodes(renderNodesForPivot, groupBoundsMin, groupBoundsMax);
 					PxVec3 groupPivot = hasGroupBounds ? (groupBoundsMin + groupBoundsMax) * 0.5f : PxVec3(0.0f);
-					if (tireJson.is_object() && tireJson.contains("pivot"))
-						ReadPxVec3(tireJson["pivot"], groupPivot);
+					ApplyPxVec3(tireConfig.pivot, groupPivot);
 
 					PxVec3 visualPivot = groupPivot;
-					if (tireJson.is_object() && tireJson.contains("visualPivot"))
-						ReadPxVec3(tireJson["visualPivot"], visualPivot);
+					ApplyPxVec3(tireConfig.visualPivot, visualPivot);
 
 					PxVec3 wheelCenter = groupPivot;
-					if (tireJson.is_object())
-					{
-						if (tireJson.contains("wheelCenter"))
-							ReadPxVec3(tireJson["wheelCenter"], wheelCenter);
-						else if (tireJson.contains("suspensionPivot"))
-							ReadPxVec3(tireJson["suspensionPivot"], wheelCenter);
-					}
+					if (tireConfig.wheelCenter)
+						wheelCenter = ToPxVec3(*tireConfig.wheelCenter);
+					else if (tireConfig.suspensionPivot)
+						wheelCenter = ToPxVec3(*tireConfig.suspensionPivot);
 
 					wheelGroupPivots.push_back(wheelCenter);
 					wheelGroupBoundsMin.push_back(hasGroupBounds ? groupBoundsMin : groupPivot);
@@ -574,10 +536,12 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 			}
 
 			glm::vec3 spawnPos(0.0f, 5.0f, 0.0f);
-			if (vehJson.contains("position"))
+			if (vehicleConfig.position)
 			{
-				auto& p = vehJson["position"];
-				spawnPos = glm::vec3(p[0].get<float>(), p[1].get<float>(), p[2].get<float>());
+				spawnPos = glm::vec3(
+					(*vehicleConfig.position)[0],
+					(*vehicleConfig.position)[1],
+					(*vehicleConfig.position)[2]);
 			}
 			else if (bodyTransformID != UINT32_MAX &&
 					 bodyTransformID < static_cast<uint32_t>(VansTransformStore::GlobalTransforms.size()))
@@ -585,15 +549,12 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 				spawnPos = VansTransformStore::GetTransform(bodyTransformID).m_Position;
 			}
 
-			VansEngine::VansVehicleTuning tuning = ParseVehicleTuning(vehJson);
-			const json& tuningJson = vehJson.contains("tuning") && vehJson["tuning"].is_object()
-				? vehJson["tuning"]
-				: vehJson;
+			VansEngine::VansVehicleTuning tuning = ParseVehicleTuning(vehicleConfig);
 
 			std::vector<size_t> wheelOrder;
 			if (wheelGroupPivots.size() >= 4 &&
-				(ParseConfiguredWheelOrder(vehJson, obj->m_ObjectName, wheelGroupPivots.size(), wheelOrder) ||
-				 ParseConfiguredWheelOrder(tuningJson, obj->m_ObjectName, wheelGroupPivots.size(), wheelOrder)))
+				(ParseConfiguredWheelOrder(vehicleConfig.wheelOrder, obj->m_ObjectName, wheelGroupPivots.size(), wheelOrder) ||
+				 ParseConfiguredWheelOrder(vehicleConfig.tuning.wheelOrder, obj->m_ObjectName, wheelGroupPivots.size(), wheelOrder)))
 			{
 				auto applyWheelOrder = [&](auto& values)
 				{
@@ -622,14 +583,12 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 					<< wheelGroupPivots[3].y << ", " << wheelGroupPivots[3].z << ")");
 			}
 
-			const bool autoWheelGeometry = tuningJson.value("autoWheelGeometry", false);
-			if (tuningJson.contains("bodyGeometryExcludeObjects") && tuningJson["bodyGeometryExcludeObjects"].is_array())
+			const bool autoWheelGeometry = vehicleConfig.tuning.autoWheelGeometry.value_or(false);
+			if (!vehicleConfig.tuning.bodyGeometryExcludeObjects.empty())
 			{
-				for (const auto& excludeNameJson : tuningJson["bodyGeometryExcludeObjects"])
+				for (const std::string& excludeName : vehicleConfig.tuning.bodyGeometryExcludeObjects)
 				{
-					if (!excludeNameJson.is_string())
-						continue;
-					VansScriptObject* excludedObj = scene.FindSceneObjectByName(excludeNameJson.get<std::string>());
+					VansScriptObject* excludedObj = scene.FindSceneObjectByName(excludeName);
 					auto* rc = excludedObj ? excludedObj->GetComponent<VansScriptRenderComponent>() : nullptr;
 					if (rc && rc->m_RenderNode)
 						tireRenderNodesForBodyExclusion.insert(rc->m_RenderNode);
@@ -701,7 +660,7 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 					<< "' final wheelRadius=" << tuning.wheelRadius
 					<< " wheelHalfWidth=" << tuning.wheelHalfWidth);
 			}
-			if (!tuningJson.contains("suspensionAttachmentPositions") && wheelGroupPivots.size() >= 4)
+			if (!vehicleConfig.tuning.suspensionAttachmentPositions && wheelGroupPivots.size() >= 4)
 			{
 				const PxVec3 upAxis = VehicleAxisToVec3(tuning.verticalAxis);
 				constexpr float kGravityMagnitude = 9.81f;

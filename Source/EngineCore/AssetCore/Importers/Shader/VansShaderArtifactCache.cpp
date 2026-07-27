@@ -1,5 +1,7 @@
 #include "VansShaderArtifactCache.h"
 
+#include "../../Storage/VansFileStorage.h"
+#include "../../Storage/VansJsonFileStorage.h"
 #include "../../../Util/VansLog.h"
 
 #include <nlohmann/json.hpp>
@@ -9,7 +11,6 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
-#include <fstream>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
@@ -90,15 +91,14 @@ namespace Vans
 		bool ReadBinary(const std::filesystem::path& path, std::vector<std::uint8_t>& bytes)
 		{
 			bytes.clear();
-			std::ifstream input(path, std::ios::binary | std::ios::ate);
-			if (!input)
+			std::string content;
+			std::string error;
+			if (!VansFileStorage::ReadAllBytes(path, content, error))
 				return false;
-			const std::streamsize size = input.tellg();
-			if (size <= 0 || static_cast<std::uint64_t>(size) > kMaxStageBytes)
+			if (content.empty() || static_cast<std::uint64_t>(content.size()) > kMaxStageBytes)
 				return false;
-			input.seekg(0, std::ios::beg);
-			bytes.resize(static_cast<std::size_t>(size));
-			return !!input.read(reinterpret_cast<char*>(bytes.data()), size);
+			bytes.assign(content.begin(), content.end());
+			return true;
 		}
 
 		bool ReadSpirv(const std::filesystem::path& path, std::vector<std::uint32_t>& words)
@@ -113,39 +113,23 @@ namespace Vans
 
 		bool WriteBinary(const std::filesystem::path& path, const void* data, std::size_t size)
 		{
-			std::ofstream output(path, std::ios::binary | std::ios::trunc);
-			if (!output)
-				return false;
-			output.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
-			output.flush();
-			return output.good();
+			std::string error;
+			return VansFileStorage::WriteAtomicBytes(
+				path,
+				std::string(reinterpret_cast<const char*>(data), size),
+				error);
 		}
 
-		bool AtomicReplaceText(const std::filesystem::path& path, const std::string& text)
+		bool ReadJsonFile(const std::filesystem::path& path, json& root)
 		{
-			std::error_code ec;
-			std::filesystem::create_directories(path.parent_path(), ec);
-			if (ec)
-				return false;
-#if defined(_WIN32)
-			const std::filesystem::path temporary = path.wstring() + L".tmp." + std::to_wstring(GetCurrentProcessId());
-#else
-			const std::filesystem::path temporary = path.string() + ".tmp";
-#endif
-			if (!WriteBinary(temporary, text.data(), text.size()))
-				return false;
-#if defined(_WIN32)
-			if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-			{
-				std::filesystem::remove(temporary, ec);
-				return false;
-			}
-#else
-			std::filesystem::rename(temporary, path, ec);
-			if (ec)
-				return false;
-#endif
-			return true;
+			std::string error;
+			return VansJsonFileStorage::Read(path, root, error);
+		}
+
+		bool WriteJsonFile(const std::filesystem::path& path, const json& root)
+		{
+			std::string error;
+			return VansJsonFileStorage::WriteAtomic(path, root, error);
 		}
 
 		std::string ProgramDirectoryName(const std::string& programId)
@@ -350,13 +334,9 @@ namespace Vans
 		if (artifactKey.empty())
 			return false;
 		const std::filesystem::path objectRoot = ProgramRoot(root, request.programId) / "Objects" / artifactKey;
-		std::ifstream input(objectRoot / "manifest.json", std::ios::binary);
-		if (!input)
-			return false;
-
 		json manifest;
-		try { input >> manifest; }
-		catch (...) { return false; }
+		if (!ReadJsonFile(objectRoot / "manifest.json", manifest))
+			return false;
 		if (manifest.value("schema", 0u) != kArtifactSchemaVersion ||
 			manifest.value("programId", std::string{}) != request.programId ||
 			manifest.value("artifactKey", std::string{}) != artifactKey ||
@@ -403,12 +383,9 @@ namespace Vans
 		const std::filesystem::path& root,
 		VansShaderArtifactPrepareResult& outResult) const
 	{
-		std::ifstream input(ProgramRoot(root, request.programId) / "active.json", std::ios::binary);
-		if (!input)
-			return false;
 		json active;
-		try { input >> active; }
-		catch (...) { return false; }
+		if (!ReadJsonFile(ProgramRoot(root, request.programId) / "active.json", active))
+			return false;
 		if (active.value("schema", 0u) != kArtifactSchemaVersion ||
 			active.value("programId", std::string{}) != request.programId)
 			return false;
@@ -460,7 +437,7 @@ namespace Vans
 		manifest["dependencies"] = json::array();
 		for (const auto& dependency : compileResult.dependencies.resolvedDependencies)
 			manifest["dependencies"].push_back(NormalizePath(dependency).generic_u8string());
-		return AtomicReplaceText(objectRoot / "manifest.json", manifest.dump(2));
+		return WriteJsonFile(objectRoot / "manifest.json", manifest);
 	}
 
 	bool VansShaderArtifactCache::CommitActive(const VansShaderArtifactPrepareResult& prepared)
@@ -484,7 +461,7 @@ namespace Vans
 			{ "artifactKey", prepared.artifactKey },
 			{ "binaryHash", prepared.binaryHash }
 		};
-		return AtomicReplaceText(programRoot / "active.json", active.dump(2));
+		return WriteJsonFile(programRoot / "active.json", active);
 	}
 
 	bool VansShaderArtifactCache::ExportCookedArtifacts(
@@ -514,10 +491,8 @@ namespace Vans
 		for (const VansShaderCookProgram& program : programs)
 		{
 			const std::filesystem::path sourceProgramRoot = ProgramRoot(program.artifactRoot, program.programId);
-			std::ifstream activeInput(sourceProgramRoot / "active.json", std::ios::binary);
 			json active;
-			try { activeInput >> active; }
-			catch (...)
+			if (!ReadJsonFile(sourceProgramRoot / "active.json", active))
 			{
 				error = "Missing or invalid active shader artifact for '" + program.programId + "'";
 				return false;
@@ -532,10 +507,8 @@ namespace Vans
 			}
 
 			const std::filesystem::path sourceObjectRoot = sourceProgramRoot / "Objects" / artifactKey;
-			std::ifstream manifestInput(sourceObjectRoot / "manifest.json", std::ios::binary);
 			json objectManifest;
-			try { manifestInput >> objectManifest; }
-			catch (...)
+			if (!ReadJsonFile(sourceObjectRoot / "manifest.json", objectManifest))
 			{
 				error = "Missing shader object manifest for '" + program.programId + "'";
 				return false;
@@ -567,7 +540,7 @@ namespace Vans
 					return false;
 				}
 			}
-			if (!AtomicReplaceText(destinationProgramRoot / "active.json", active.dump(2)))
+			if (!WriteJsonFile(destinationProgramRoot / "active.json", active))
 			{
 				error = "Failed publishing cooked active manifest for '" + program.programId + "'";
 				return false;
@@ -577,7 +550,7 @@ namespace Vans
 			});
 		}
 
-		if (!AtomicReplaceText(destinationRoot / "cooked-shader-manifest.json", cookedManifest.dump(2)))
+		if (!WriteJsonFile(destinationRoot / "cooked-shader-manifest.json", cookedManifest))
 		{
 			error = "Failed publishing cooked shader root manifest";
 			return false;

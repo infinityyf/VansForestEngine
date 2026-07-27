@@ -1705,7 +1705,7 @@ namespace VansGraphics
 		}
 	}
 
-	void VansAnimGraph::SerializeToJsonObject(nlohmann::json& outJson) const
+	void VansAnimGraph::SerializeToJsonObject(AnimGraphJson& outJson) const
 	{
 		// 节点数组
 		nlohmann::json nodesJson = nlohmann::json::array();
@@ -1737,14 +1737,7 @@ namespace VansGraphics
 		outJson["links"] = linksJson;
 	}
 
-	std::string VansAnimGraph::SerializeToJson() const
-	{
-		nlohmann::json j;
-		SerializeToJsonObject(j);
-		return j.dump(4);
-	}
-
-	std::unique_ptr<VansAnimGraph> VansAnimGraph::DeserializeFromJsonObject(const nlohmann::json& j)
+	std::unique_ptr<VansAnimGraph> VansAnimGraph::DeserializeFromJsonObject(const AnimGraphJson& j)
 	{
 		auto graph = std::make_unique<VansAnimGraph>();
 
@@ -1799,19 +1792,6 @@ namespace VansGraphics
 		graph->m_NextLinkId = maxLinkId + 1;
 
 		return graph;
-	}
-
-	std::unique_ptr<VansAnimGraph> VansAnimGraph::DeserializeFromJson(const std::string& jsonStr)
-	{
-		try
-		{
-			nlohmann::json j = nlohmann::json::parse(jsonStr);
-			return DeserializeFromJsonObject(j);
-		}
-		catch (...)
-		{
-			return std::make_unique<VansAnimGraph>();
-		}
 	}
 
 	// ═════════════════════════════════════════════════════════════

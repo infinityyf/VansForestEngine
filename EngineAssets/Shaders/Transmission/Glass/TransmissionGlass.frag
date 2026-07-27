@@ -75,7 +75,7 @@ vec3 EvaluateEnvironmentReflection(vec3 P, vec3 N, vec3 V, vec3 F0, float roughn
     float lod = GetMipLevelFromRoughness(roughness);
 
     ReflectionProbeSample probe = SampleReflectionProbes(P, N, R, roughness);
-    vec3 sky = textureLod(PreConvSpecularEnvironment, R, lod).rgb * reflectionProbeLightingParams.z;
+    vec3 sky = SampleSkySpecularCube(PreConvSpecularEnvironment, R, lod);
     vec3 prefiltered = mix(sky, probe.specular, probe.coverage);
     vec2 envBRDF = texture(BRDFLUT, vec2(NoV, 1.0 - roughness)).rg;
     return prefiltered * (F * envBRDF.x + envBRDF.y);
@@ -98,7 +98,7 @@ vec3 SampleTransmissionFallback(vec3 P, vec3 N, vec3 V, float ior, float roughne
 
     float lod = GetMipLevelFromRoughness(roughness);
     ReflectionProbeSample probe = SampleReflectionProbes(P, N, rayDirection, roughness);
-    vec3 sky = textureLod(PreConvSpecularEnvironment, rayDirection, lod).rgb * reflectionProbeLightingParams.z;
+    vec3 sky = SampleSkySpecularCube(PreConvSpecularEnvironment, rayDirection, lod);
     return mix(sky, probe.specular, probe.coverage);
 }
 
@@ -258,7 +258,7 @@ void EvaluateMedium(
     transmittance = exp(-sigmaT * max(opticalPath, 0.0));
 
     vec3 singleScatteringAlbedo = sigmaS / max(sigmaT, vec3(1e-5));
-    vec3 incident = texture(PreConvDiffuseEnvironment, -incidentDirection).rgb * reflectionProbeLightingParams.z;
+    vec3 incident = SampleSkyDiffuseCube(PreConvDiffuseEnvironment, -incidentDirection);
     inScattering = incident * (vec3(1.0) - transmittance) * singleScatteringAlbedo;
 }
 
@@ -407,7 +407,7 @@ void main()
         scatteringStrength, opticalPath, refractedDirection,
         mediumTransmittance, inScattering);
 
-    vec3 environmentDiffuse = texture(PreConvDiffuseEnvironment, N).rgb * baseColor * diffuseFraction;
+    vec3 environmentDiffuse = SampleSkyDiffuseCube(PreConvDiffuseEnvironment, N) * baseColor * diffuseFraction;
     vec3 transmissionColor = (refracted * baseColor * mediumTransmittance + inScattering) * transmittedFraction;
 
     BRDFData brdf;

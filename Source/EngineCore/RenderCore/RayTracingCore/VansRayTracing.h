@@ -173,6 +173,7 @@ namespace VansGraphics
 
 		glm::vec4 m_LastGIMainLightDirectionIntensity = glm::vec4(0.0f);
 		glm::vec4 m_LastGIMainLightColor = glm::vec4(0.0f);
+		float m_BaseGIEnvironmentIntensity = 1.0f;
 		bool m_HasLastGIMainLight = false;
 		uint32_t m_GILightingResponseFramesRemaining = 0;
 

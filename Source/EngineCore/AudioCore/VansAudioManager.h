@@ -4,13 +4,11 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <nlohmann/json.hpp>
-
-using json = nlohmann::json;
 
 namespace Vans
 {
     struct VansSceneAudioResourceRequest;
+    struct VansSceneAudioRuntimeOverride;
 }
 
 namespace VansEngine
@@ -25,9 +23,9 @@ namespace VansEngine
     //   VansScene 内嵌一个 VansAudioManager 成员，无需 new/delete。
     //
     // 两阶段加载（对应 AudioSystem.md Section 10.2）：
-    //   1. LoadFromJson()    — consumes the generated AssetDatabase audio batch.
+    //   1. Load()             — consumes the typed resource audio batch.
     //                          逐条创建 VansAudioNode，并调用 Open() 加载解码。
-    //   2. ApplySceneConfig() — 场景级调用（LoadSceneObjects 中）：按 scene["audio_sources"]
+    //   2. ApplySceneConfig() — 场景级调用：按 typed runtime overrides
     //                          调整单条节点的空间化、音量、自动播放等运行时参数，
     //                          并触发 AutoPlay。
     //
@@ -50,12 +48,10 @@ namespace VansEngine
         // audioArray: generated descriptors containing name/path/play_mode/loop/auto_play.
         // assetPrefix  : VansProjectManager::GetProjectRootPath()，用于拼接完整路径
         void Load(const std::vector<Vans::VansSceneAudioResourceRequest>& audios, const std::string& assetPrefix);
-        void LoadFromJson(const json& audioArray, const std::string& assetPrefix);
 
         // ── 场景级配置（LoadSceneObjects / LoadSceneContent 中调用） ────────
-        // audioSourcesArray : scene.json["audio_sources"] 数组
         // Each record contains a resolved asset runtime name and optional overrides.
-        void ApplySceneConfig(const json& audioSourcesArray);
+        void ApplySceneConfig(const std::vector<Vans::VansSceneAudioRuntimeOverride>& audioSources);
 
         // ── 按名称查找，未找到返回 nullptr ───────────────────────────────────
         VansAudioNode* Get(const std::string& name) const;

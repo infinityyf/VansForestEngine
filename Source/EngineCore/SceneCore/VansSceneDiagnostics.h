@@ -14,7 +14,7 @@ enum class SceneDiagnosticSeverity
 struct SceneDiagnostic
 {
     SceneDiagnosticSeverity severity = SceneDiagnosticSeverity::Error;
-    std::string jsonPointer;
+    std::string propertyPointer;
     std::string message;
 };
 

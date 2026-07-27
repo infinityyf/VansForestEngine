@@ -1,12 +1,16 @@
 ﻿#include "VansScriptContext.h"
 #include "../RuntimeCore/VansFramePhase.h"
 #include "../RuntimeCore/VansThreadContract.h"
+#include "../AssetCore/Storage/VansFileStorage.h"
 #include "../Configration/VansConfigration.h"
 #include "../ProjectSystem/VansProjectManager.h"
+#include "../ProjectSystem/Storage/VansProjectScaffoldStorage.h"
 #include "../Util/VansLog.h"
 #include "../VansTimer.h"
 #include "../RenderCore/VansScene.h"
 #include "../RenderCore/VansCamera.h"
+#include "../ParticleCore/Storage/VansParticleAssetStorage.h"
+#include "VansPythonScriptFieldSchema.h"
 #include "VansTransform.h"
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
@@ -17,11 +21,12 @@
 #include "../RenderCore/VansVideoManager.h"
 #include "../Util/VansProfiler.h"
 #include "../RenderCore/VulkanCore/VansVKDescriptorManager.h"
+#include "VansPythonSerializedFieldInjector.h"
 #include <cstdlib>
-#include <fstream>
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <utility>
 #include <glm/glm.hpp>
 #include "../../../../ForestExporter/VansEngineBridge.h"
 #include "../../../../ForestExporter/VansInputBridge.h"
@@ -80,6 +85,157 @@ py::module LoadScriptModuleFromFile(
         throw;
     }
 }
+
+std::string NormalizeComponentType(std::string value)
+{
+    const std::string canonical = Vans::CanonicalPythonInspectorComponentTypeName(value);
+    if (!canonical.empty())
+        value = canonical;
+    else if (Vans::IsPythonSceneComponentReferenceAnnotation(value))
+        return {};
+
+    const std::string normalized = Vans::NormalizePythonInspectorIdentifier(value);
+    if (normalized == "modelrenderer") return "render";
+    if (normalized == "charcontroller") return "charactercontroller";
+    return normalized;
+}
+
+const char* PythonComponentClassName(const std::string& componentType)
+{
+    const std::string type = NormalizeComponentType(componentType);
+    if (type == "render") return "vansrendercomp";
+    if (type == "animation") return "vansanimcomp";
+    if (type == "ragdoll") return "vansragdollcomp";
+    if (type == "charactercontroller") return "vanscctcomp";
+    if (type == "vehicle") return "vansvehiclecomp";
+    if (type == "directionallight") return "vansdirlightcomp";
+    if (type == "pointlight") return "vanspointlightcomp";
+    if (type == "spotlight") return "vansspotlightcomp";
+    if (type == "camera") return "vanscameracomp";
+    if (type == "rectlight") return "vansrectlightcomp";
+    if (type == "audio") return "vansaudiocomp";
+    if (type == "particle") return "vansparticlecomp";
+    if (type == "video") return "vansvideocomp";
+    return "vanscomponent";
+}
+
+VansScriptComponent* FindScriptComponent(
+    VansScriptObject& object,
+    const std::string& componentGuid,
+    const std::string& componentType)
+{
+    const std::string expectedType = NormalizeComponentType(componentType);
+    for (VansScriptComponent* component : object.m_Components)
+    {
+        if (!component)
+            continue;
+        if (!componentGuid.empty() && component->m_ComponentGuid == componentGuid)
+            return component;
+        if (!expectedType.empty() && NormalizeComponentType(component->m_ComponentName) == expectedType)
+            return component;
+    }
+    return nullptr;
+}
+
+VansScriptComponent* FindScriptComponentInScene(
+    const std::string& entityGuid,
+    const std::string& componentGuid,
+    const std::string& componentType)
+{
+    auto* context = VansScriptContext::GetInstance();
+    VansGraphics::VansScene* scene = context ? context->GetScene() : nullptr;
+    if (!scene)
+        return nullptr;
+
+    if (!entityGuid.empty())
+    {
+        if (VansScriptObject* object = scene->FindObjectByGuid(entityGuid))
+            return FindScriptComponent(*object, componentGuid, componentType);
+        return nullptr;
+    }
+
+    for (VansScriptObject* object : scene->GetSceneObjects())
+    {
+        if (!object)
+            continue;
+        if (VansScriptComponent* component = FindScriptComponent(*object, componentGuid, componentType))
+            return component;
+    }
+    return nullptr;
+}
+
+py::object BuildPythonObjectProxy(VansScriptObject* object)
+{
+    if (!object)
+        return py::none();
+
+    py::module componentModule = py::module::import("vanscomponent");
+    py::object proxy = componentModule.attr("vansobject")();
+    proxy.attr("bindNativePtr")(reinterpret_cast<uintptr_t>(object));
+    return proxy;
+}
+
+py::object BuildPythonComponentProxy(
+    VansScriptComponent* component,
+    const std::string& componentType)
+{
+    if (!component)
+        return py::none();
+
+    py::module componentModule = py::module::import("vanscomponent");
+    py::object proxy = componentModule.attr(PythonComponentClassName(
+        !componentType.empty() ? componentType : component->m_ComponentName))();
+    proxy.attr("bindNativePtr")(reinterpret_cast<uintptr_t>(component));
+    return proxy;
+}
+
+py::object ResolvePythonObjectReference(const VansPythonSerializedObjectReference& reference)
+{
+    const std::string domain = reference.domain;
+    if (domain == "ProjectAsset")
+    {
+        py::dict asset;
+        asset["domain"] = reference.domain;
+        asset["guid"] = reference.guid;
+        asset["asset_type"] = reference.assetType;
+        return std::move(asset);
+    }
+
+    auto* context = VansScriptContext::GetInstance();
+    VansGraphics::VansScene* scene = context ? context->GetScene() : nullptr;
+    if (!scene)
+        return py::none();
+
+    if (domain == "SceneEntity")
+    {
+        VansScriptObject* object = scene->FindObjectByGuid(
+            !reference.entityGuid.empty() ? reference.entityGuid : reference.guid);
+        if (!reference.componentType.empty())
+            return BuildPythonComponentProxy(
+                object ? FindScriptComponent(*object, {}, reference.componentType) : nullptr,
+                reference.componentType);
+        return BuildPythonObjectProxy(object);
+    }
+
+    if (domain == "SceneComponent")
+    {
+        return BuildPythonComponentProxy(
+            FindScriptComponentInScene(reference.entityGuid,
+                !reference.componentGuid.empty() ? reference.componentGuid : reference.guid,
+                reference.componentType),
+            reference.componentType);
+    }
+
+    py::dict fallback;
+    fallback["domain"] = reference.domain;
+    fallback["guid"] = reference.guid;
+    fallback["asset_type"] = reference.assetType;
+    fallback["entity_guid"] = reference.entityGuid;
+    fallback["component_guid"] = reference.componentGuid;
+    fallback["component_type"] = reference.componentType;
+    return std::move(fallback);
+}
+
 }
 
 VansScriptContext::~VansScriptContext()
@@ -404,7 +560,8 @@ void VansScriptParticleComponent::ClearWorldPositionOverride()
 bool VansScriptParticleComponent::LoadAsset(const std::string& path)
 {
 	auto newAsset = std::make_unique<VansGraphics::VansParticleAsset>();
-	if (!newAsset->LoadFromFile(path))
+	std::string error;
+	if (!VansGraphics::VansParticleAssetStorage::Load(path, *newAsset, error))
 		return false;
 
 	m_ParticleAssetPath = path;
@@ -749,39 +906,52 @@ void VansScriptContext::SetupProjectVenv(const std::string& projectRoot)
 			"[PyDeps] Checking requirements: " + requirementsPath);
 
 		// ── 1. 若 requirements.txt 不存在，生成默认模板 ───────────────
-		if (!std::filesystem::exists(requirementsPath))
+		bool createdRequirements = false;
+		std::string requirementsError;
+		if (!Vans::VansProjectScaffoldStorage::EnsureDefaultPythonRequirementsFile(
+			requirementsPath,
+			createdRequirements,
+			requirementsError))
 		{
-			std::ofstream reqFile(requirementsPath);
-			if (reqFile.is_open())
-			{
-				reqFile << "# 在此处列出项目依赖的 Python 第三方库，每行一个\n";
-				reqFile << "# 示例:\n";
-				reqFile << "# matplotlib\n";
-				reqFile << "# numpy\n";
-				reqFile.close();
-				VANS_LOG_PYTHON(
-					"[PyDeps] Created default requirements.txt: " + requirementsPath);
-			}
-			else
-			{
-				VANS_LOG_WARN("[PyDeps] Cannot create requirements.txt at: " << requirementsPath);
-			}
+			VANS_LOG_WARN("[PyDeps] Cannot create requirements.txt at: "
+				<< requirementsPath << " (" << requirementsError << ")");
+			return; // 模板刚创建，无内容可安装
+		}
+		if (createdRequirements)
+		{
+			VANS_LOG_PYTHON(
+				"[PyDeps] Created default requirements.txt: " + requirementsPath);
 			return; // 模板刚创建，无内容可安装
 		}
 
 		// ── 2. 读取 requirements.txt，跳过注释和空行 ───────────────
 		{
 			bool hasRequirements = false;
-			std::ifstream reqIn(requirementsPath);
-			std::string   line;
-			while (std::getline(reqIn, line))
+			std::string requirementsText;
+			std::string readRequirementsError;
+			if (!Vans::VansFileStorage::ReadAllBytes(requirementsPath, requirementsText, readRequirementsError))
 			{
+				VANS_LOG_WARN("[PyDeps] Cannot read requirements.txt at: "
+					<< requirementsPath << " (" << readRequirementsError << ")");
+				return;
+			}
+
+			size_t lineStart = 0;
+			while (lineStart <= requirementsText.size())
+			{
+				const size_t lineEnd = requirementsText.find('\n', lineStart);
+				const std::string line = requirementsText.substr(
+					lineStart,
+					lineEnd == std::string::npos ? std::string::npos : lineEnd - lineStart);
 				auto first = line.find_first_not_of(" \t\r\n");
 				if (first != std::string::npos && line[first] != '#')
 				{
 					hasRequirements = true;
 					break;
 				}
+				if (lineEnd == std::string::npos)
+					break;
+				lineStart = lineEnd + 1;
 			}
 
 			if (!hasRequirements)
@@ -1293,6 +1463,10 @@ bool VanPyScriptComponent::BuildPythonInstance(
             instance.attr("_bind_native_object")(
                 reinterpret_cast<uintptr_t>(m_OwnerObject));
         }
+        Vans::ApplyPythonSerializedFields(
+            m_SerializedFields,
+            instance,
+            ResolvePythonObjectReference);
         return true;
     }
     catch (const py::error_already_set& e)

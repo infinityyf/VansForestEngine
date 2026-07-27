@@ -1,12 +1,14 @@
 #include "VansShaderCompiler.h"
 
+#include "../../Storage/VansFileStorage.h"
+
 #include <windows.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstring>
 #include <cwctype>
-#include <fstream>
 #include <functional>
 #include <regex>
 #include <sstream>
@@ -80,12 +82,11 @@ namespace Vans
 
 		std::string ReadTextFile(const std::filesystem::path& path)
 		{
-			std::ifstream input(path, std::ios::binary);
-			if (!input)
+			std::string content;
+			std::string error;
+			if (!VansFileStorage::ReadAllBytes(path, content, error))
 				return {};
-			std::ostringstream stream;
-			stream << input.rdbuf();
-			return stream.str();
+			return content;
 		}
 
 		bool RunCompilerProcess(
@@ -163,27 +164,24 @@ namespace Vans
 
 		bool ReadSpirv(const std::filesystem::path& path, std::vector<std::uint32_t>& words, std::string& error)
 		{
-			std::ifstream input(path, std::ios::binary | std::ios::ate);
-			if (!input)
+			std::string bytes;
+			std::string readError;
+			if (!VansFileStorage::ReadAllBytes(path, bytes, readError))
 			{
 				error = "Cannot read compiler output: " + path.string();
+				if (!readError.empty())
+					error += " (" + readError + ")";
 				return false;
 			}
 
-			const std::streamsize size = input.tellg();
-			if (size <= 0 || size % static_cast<std::streamsize>(sizeof(std::uint32_t)) != 0)
+			if (bytes.empty() || bytes.size() % sizeof(std::uint32_t) != 0)
 			{
 				error = "Invalid SPIR-V byte size: " + path.string();
 				return false;
 			}
 
-			input.seekg(0, std::ios::beg);
-			words.resize(static_cast<std::size_t>(size) / sizeof(std::uint32_t));
-			if (!input.read(reinterpret_cast<char*>(words.data()), size))
-			{
-				error = "Failed to read SPIR-V payload: " + path.string();
-				return false;
-			}
+			words.resize(bytes.size() / sizeof(std::uint32_t));
+			std::memcpy(words.data(), bytes.data(), bytes.size());
 
 			if (words.empty() || words.front() != 0x07230203u)
 			{
@@ -243,14 +241,16 @@ namespace Vans
 			if (!visited.emplace(key).second)
 				return;
 
-			std::ifstream input(path);
-			if (!input)
+			std::string source;
+			std::string readError;
+			if (!VansFileStorage::ReadAllBytes(path, source, readError))
 			{
 				if (unresolved.emplace(key).second)
 					result.unresolvedDependencies.push_back(path);
 				return;
 			}
 
+			std::istringstream input(source);
 			std::string line;
 			while (std::getline(input, line))
 			{

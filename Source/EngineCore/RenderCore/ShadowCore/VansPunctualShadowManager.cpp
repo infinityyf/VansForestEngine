@@ -566,6 +566,8 @@ namespace VansGraphics
 		if (input.type == VansPunctualShadowLightType::Rect &&
 			(!NearlyEqual(previous.halfWidth, input.halfWidth) || !NearlyEqual(previous.halfHeight, input.halfHeight)))
 			return true;
+		if (previous.settings.shadowCasterMask != input.settings.shadowCasterMask)
+			return true;
 		return !NearlyEqual(previous.settings.nearPlaneOverride, input.settings.nearPlaneOverride);
 	}
 
@@ -670,6 +672,7 @@ namespace VansGraphics
 						job.lightType = runtime->input.type;
 						job.faceIndex = static_cast<uint8_t>(face);
 						job.resolution = runtime->pendingResolution;
+						job.shadowCasterMask = runtime->input.settings.shadowCasterMask;
 						job.atlasRect = { block.x, block.y, block.resolution, block.resolution };
 						job.worldToShadow = BuildShadowMatrix(*runtime, face, block);
 						m_RenderJobs.push_back(std::move(job));
@@ -711,6 +714,7 @@ namespace VansGraphics
 				job.lightType = runtime->input.type;
 				job.faceIndex = static_cast<uint8_t>(face);
 				job.resolution = runtime->activeResolution;
+				job.shadowCasterMask = runtime->input.settings.shadowCasterMask;
 				job.atlasRect = { block.x, block.y, block.resolution, block.resolution };
 				job.worldToShadow = BuildShadowMatrix(*runtime, face, block);
 				m_RenderJobs.push_back(std::move(job));

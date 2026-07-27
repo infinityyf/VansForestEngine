@@ -2,6 +2,8 @@
 
 #include "EngineCommandContext.h"
 #include "ModelAssetPlacementPreparationService.h"
+#include "RuntimeGeneratedMaterialAssetService.h"
+#include "ScenePropertyValueBuilders.h"
 #include "VansMaterialLiveEditService.h"
 #include "VansEditorTextureBridge.h"
 #include "../../AssetCore/VansAssetDatabase.h"
@@ -45,10 +47,8 @@
 #include <cctype>
 #include <cfloat>
 #include <cmath>
-#include <fstream>
 #include <filesystem>
 #include <mutex>
-#include <nlohmann/json.hpp>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -358,231 +358,14 @@ namespace Vans::EditorAPI
 			}
 		}
 
-		const nlohmann::ordered_json* FindRuntimePatchComponent(
-			const nlohmann::ordered_json& entity,
-			const std::string& type)
-		{
-			if (!entity.contains("components") || !entity["components"].is_array())
-				return nullptr;
-
-			for (const nlohmann::ordered_json& component : entity["components"])
-			{
-				if (component.value("type", "") == type)
-					return &component;
-			}
-			return nullptr;
-		}
-
-		bool ReadJsonVec3(const nlohmann::ordered_json& value, Vec3& out)
-		{
-			if (!value.is_array() || value.size() < 3)
-				return false;
-
-			out = {
-				value[0].get<float>(),
-				value[1].get<float>(),
-				value[2].get<float>()
-			};
-			return true;
-		}
-
-		bool ReadJsonRotationEuler(const nlohmann::ordered_json& value, Vec3& out)
-		{
-			if (!value.is_array())
-				return false;
-
-			if (value.size() == 4)
-			{
-				const glm::quat q(
-					value[3].get<float>(),
-					value[0].get<float>(),
-					value[1].get<float>(),
-					value[2].get<float>());
-				out = ToEditorVec3(glm::degrees(glm::eulerAngles(q)));
-				return true;
-			}
-
-			return ReadJsonVec3(value, out);
-		}
-
-		bool BuildRuntimeTransformEditFromPatch(
-			const nlohmann::ordered_json& entity,
-			RuntimeTransformEdit& edit)
-		{
-			const std::string entityGuid = entity.value("id", "");
-			if (entityGuid.empty())
-				return false;
-
-			const nlohmann::ordered_json* transformComponent =
-				FindRuntimePatchComponent(entity, "Transform");
-			if (!transformComponent || !transformComponent->value("enabled", true) ||
-				!transformComponent->contains("data"))
-			{
-				return false;
-			}
-
-			const nlohmann::ordered_json& data = (*transformComponent)["data"];
-			edit = {};
-			edit.entityGuid = entityGuid;
-			edit.writePosition = false;
-			edit.writeRotation = false;
-			edit.writeScale = false;
-
-			if (data.contains("position") && ReadJsonVec3(data["position"], edit.position))
-				edit.writePosition = true;
-			if (data.contains("rotation") && ReadJsonRotationEuler(data["rotation"], edit.rotationDegrees))
-				edit.writeRotation = true;
-			if (data.contains("scale") && ReadJsonVec3(data["scale"], edit.scale))
-				edit.writeScale = true;
-
-			return edit.writePosition || edit.writeRotation || edit.writeScale;
-		}
-
-		enum class RuntimeLightPatchType
-		{
-			Directional,
-			Point,
-			Spot,
-			Rect
-		};
-
-		struct RuntimeLightPatch
-		{
-			RuntimeLightPatchType type = RuntimeLightPatchType::Directional;
-			std::string entityGuid;
-			bool writeColor = false;
-			bool writeIntensity = false;
-			bool writeRadius = false;
-			bool writeInnerCutoff = false;
-			bool writeOuterCutoff = false;
-			bool writeRectWidth = false;
-			bool writeRectHeight = false;
-			bool writeRectRange = false;
-			bool writeRectTwoSided = false;
-			bool writeRectShadow = false;
-			Vec3 color;
-			float intensity = 0.0f;
-			float radius = 0.0f;
-			float innerCutoffRadians = 0.0f;
-			float outerCutoffRadians = 0.0f;
-			float rectWidth = 0.0f;
-			float rectHeight = 0.0f;
-			float rectRange = 0.0f;
-			float rectTwoSided = 0.0f;
-			float rectShadowIndex = -1.0f;
-		};
+		using RuntimeLightPatch = RuntimeLightEdit;
+		using RuntimeLightPatchType = RuntimePreviewLightType;
 
 		struct RuntimeLightBinding
 		{
 			VansGraphics::VansLightManager* manager = nullptr;
 			int index = -1;
 		};
-
-		bool ReadPatchColor(const nlohmann::ordered_json& data, Vec3& out)
-		{
-			const auto it = data.find("color");
-			return it != data.end() && ReadJsonVec3(*it, out);
-		}
-
-		bool AppendLightPatchFromComponent(
-			const nlohmann::ordered_json& entity,
-			const char* componentType,
-			RuntimeLightPatchType patchType,
-			std::vector<RuntimeLightPatch>& patches)
-		{
-			const nlohmann::ordered_json* component =
-				FindRuntimePatchComponent(entity, componentType);
-			if (!component || !component->value("enabled", true) || !component->contains("data"))
-				return false;
-
-			const nlohmann::ordered_json& data = (*component)["data"];
-			RuntimeLightPatch patch;
-			patch.type = patchType;
-			patch.entityGuid = entity.value("id", "");
-			if (patch.entityGuid.empty())
-				return false;
-
-			if (ReadPatchColor(data, patch.color))
-				patch.writeColor = true;
-			if (data.contains("intensity"))
-			{
-				patch.intensity = data.value("intensity", 0.0f);
-				patch.writeIntensity = true;
-			}
-
-			if (patchType == RuntimeLightPatchType::Point || patchType == RuntimeLightPatchType::Spot)
-			{
-				if (data.contains("radius"))
-				{
-					patch.radius = data.value("radius", 0.0f);
-					patch.writeRadius = true;
-				}
-			}
-
-			if (patchType == RuntimeLightPatchType::Spot)
-			{
-				if (data.contains("innercutoff"))
-				{
-					patch.innerCutoffRadians = glm::radians(data.value("innercutoff", 0.0f));
-					patch.writeInnerCutoff = true;
-				}
-				if (data.contains("outerCutoff"))
-				{
-					patch.outerCutoffRadians = glm::radians(data.value("outerCutoff", 0.0f));
-					patch.writeOuterCutoff = true;
-				}
-			}
-
-			if (patchType == RuntimeLightPatchType::Rect)
-			{
-				if (data.contains("width"))
-				{
-					patch.rectWidth = data.value("width", 0.0f);
-					patch.writeRectWidth = true;
-				}
-				if (data.contains("height"))
-				{
-					patch.rectHeight = data.value("height", 0.0f);
-					patch.writeRectHeight = true;
-				}
-				if (data.contains("range"))
-				{
-					patch.rectRange = data.value("range", 0.0f);
-					patch.writeRectRange = true;
-				}
-				if (data.contains("two_sided"))
-				{
-					patch.rectTwoSided = data.value("two_sided", false) ? 1.0f : 0.0f;
-					patch.writeRectTwoSided = true;
-				}
-				if (data.contains("shadow"))
-				{
-					patch.rectShadowIndex = data.value("shadow", false) ? 0.0f : -1.0f;
-					patch.writeRectShadow = true;
-				}
-			}
-
-			if (patch.writeColor || patch.writeIntensity || patch.writeRadius ||
-				patch.writeInnerCutoff || patch.writeOuterCutoff ||
-				patch.writeRectWidth || patch.writeRectHeight || patch.writeRectRange ||
-				patch.writeRectTwoSided || patch.writeRectShadow)
-			{
-				patches.push_back(patch);
-				return true;
-			}
-			return false;
-		}
-
-		std::vector<RuntimeLightPatch> BuildRuntimeLightPatchesFromPatch(
-			const nlohmann::ordered_json& entity)
-		{
-			std::vector<RuntimeLightPatch> patches;
-			AppendLightPatchFromComponent(entity, "DirectionalLight", RuntimeLightPatchType::Directional, patches);
-			AppendLightPatchFromComponent(entity, "PointLight", RuntimeLightPatchType::Point, patches);
-			AppendLightPatchFromComponent(entity, "SpotLight", RuntimeLightPatchType::Spot, patches);
-			AppendLightPatchFromComponent(entity, "RectLight", RuntimeLightPatchType::Rect, patches);
-			return patches;
-		}
 
 		std::uint32_t ResolveRuntimeTransformId(
 			VansGraphics::VansScene* scene,
@@ -866,6 +649,7 @@ namespace Vans::EditorAPI
 				target.sourceRadius = source.sourceRadius;
 				target.affectsFog = source.affectsVolumetricFog;
 				target.affectsGI = source.affectsGI;
+				target.shadowCasterMask = source.shadowCasterMask;
 			};
 
 			const auto& pointLights = lightManager->GetPointLights();
@@ -966,6 +750,7 @@ namespace Vans::EditorAPI
 				target.sourceRadius = std::max(source.sourceRadius, 0.0f);
 				target.affectsVolumetricFog = source.affectsFog;
 				target.affectsGI = source.affectsGI;
+				target.shadowCasterMask = source.shadowCasterMask;
 			};
 
 			auto& pointLights = lightManager->GetPointLights();
@@ -1241,465 +1026,6 @@ namespace Vans::EditorAPI
 			LightingSettingsSnapshot m_Before;
 			bool m_HasBefore = false;
 		};
-
-		std::string SafeRuntimeAssetName(std::string value)
-		{
-			if (value.empty())
-				value = "Unnamed";
-			for (char& c : value)
-			{
-				const unsigned char uc = static_cast<unsigned char>(c);
-				if (!std::isalnum(uc) && c != '_' && c != '-')
-					c = '_';
-			}
-			while (!value.empty() && value.front() == '_') value.erase(value.begin());
-			while (!value.empty() && value.back() == '_') value.pop_back();
-			if (value.empty())
-				value = "Unnamed";
-			if (value.size() > 96)
-				value.resize(96);
-			return value;
-		}
-
-		std::string SanitizeRuntimeJsonText(std::string value)
-		{
-			for (char& c : value)
-			{
-				const unsigned char uc = static_cast<unsigned char>(c);
-				if (uc < 0x20 || uc >= 0x7f)
-					c = '_';
-			}
-			return value;
-		}
-
-		Vans::SceneJson Vec3Json(const glm::vec3& value)
-		{
-			return Vans::SceneJson::array({ value.x, value.y, value.z });
-		}
-
-		Vans::VansAssetGuid ReadOrCreateMetaGuid(const std::filesystem::path& metaPath)
-		{
-			std::ifstream input(metaPath);
-			if (input)
-			{
-				const auto meta = Vans::SceneJson::parse(input, nullptr, false);
-				if (!meta.is_discarded() && meta.is_object() && meta.contains("guid") && meta["guid"].is_string())
-				{
-					Vans::VansAssetGuid parsed;
-					if (Vans::VansAssetGuid::TryParse(meta["guid"].get<std::string>(), parsed))
-						return parsed;
-				}
-			}
-			return Vans::VansAssetGuid::New();
-		}
-
-		bool WriteJsonFile(const std::filesystem::path& path, const Vans::SceneJson& json)
-		{
-			std::error_code ec;
-			std::filesystem::create_directories(path.parent_path(), ec);
-			std::ofstream output(path, std::ios::binary | std::ios::trunc);
-			if (!output)
-				return false;
-			output << json.dump(4);
-			return static_cast<bool>(output);
-		}
-
-		bool IsGuidString(const std::string& value)
-		{
-			Vans::VansAssetGuid parsed;
-			return Vans::VansAssetGuid::TryParse(value, parsed);
-		}
-
-		std::string LowerAscii(std::string value)
-		{
-			std::transform(value.begin(), value.end(), value.begin(),
-				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-			return value;
-		}
-
-		std::string ResolveRuntimeTextureGuid(
-			const std::string& textureName,
-			Vans::VansAssetDatabase* database,
-			const std::string& rootName)
-		{
-			if (textureName.empty())
-				return {};
-			if (IsGuidString(textureName))
-				return textureName;
-			if (database == nullptr)
-				return {};
-
-			const std::string wanted = LowerAscii(std::filesystem::path(textureName).stem().string());
-			const std::string rootToken = LowerAscii(SafeRuntimeAssetName(rootName));
-			std::string fallbackGuid;
-			for (const Vans::VansAssetRecord& record : database->All())
-			{
-				if (record.type != Vans::VansAssetType::Texture || record.state == Vans::VansAssetState::Missing)
-					continue;
-				const std::string recordStem = LowerAscii(record.sourcePath.stem().string());
-				const std::string recordFile = LowerAscii(record.sourcePath.filename().string());
-				if (recordStem != wanted && recordFile != LowerAscii(textureName))
-					continue;
-
-				if (fallbackGuid.empty())
-					fallbackGuid = record.guid.ToString();
-				const std::string recordPath = LowerAscii(record.sourcePath.generic_string());
-				if (!rootToken.empty() && recordPath.find(rootToken) != std::string::npos)
-					return record.guid.ToString();
-			}
-			return fallbackGuid;
-		}
-
-		std::string ResolveRuntimeTextureGuid(
-			VansGraphics::VansTexture* texture,
-			Vans::VansAssetDatabase* database,
-			const std::string& rootName)
-		{
-			return texture ? ResolveRuntimeTextureGuid(texture->m_AssetName, database, rootName) : std::string{};
-		}
-
-		bool IsDefaultRuntimeTextureName(const std::string& textureName)
-		{
-			const std::string lowered = LowerAscii(std::filesystem::path(textureName).stem().string());
-			return lowered == "defaultalbedo" ||
-				   lowered == "defaultnormal" ||
-				   lowered == "defaultmetal" ||
-				   lowered == "defaultroughness" ||
-				   lowered == "defaultao";
-		}
-
-		void AddTextureRefIfResolvable(
-			Vans::SceneJson& textures,
-			const char* slot,
-			VansGraphics::VansTexture* texture,
-			Vans::VansAssetDatabase* database,
-			const std::string& rootName)
-		{
-			const std::string textureGuid = ResolveRuntimeTextureGuid(texture, database, rootName);
-			if (!textureGuid.empty())
-				textures[slot] = { { "guid", textureGuid } };
-		}
-
-		void AddTextureRefFromPathIfResolvable(
-			Vans::SceneJson& textures,
-			const char* slot,
-			const std::string& texturePath,
-			Vans::VansAssetDatabase* database,
-			const std::string& rootName)
-		{
-			const std::string textureGuid = ResolveRuntimeTextureGuid(texturePath, database, rootName);
-			if (!textureGuid.empty())
-				textures[slot] = { { "guid", textureGuid } };
-		}
-
-		Vans::SceneJson SerializeFbxMaterialInfo(
-			const VansGraphics::FBXSubmeshMaterialInfo& fbxInfo,
-			Vans::VansAssetDatabase* database,
-			const std::string& rootName)
-		{
-			Vans::SceneJson json;
-
-			if (fbxInfo.IsTransparent())
-			{
-				json["materialType"] = "transparent";
-				json["parameters"] = Vans::SceneJson::object();
-				json["textures"] = Vans::SceneJson::array();
-
-				auto addTransparentTexture = [&](const char* slot, const std::string& texturePath)
-				{
-					const std::string textureGuid = ResolveRuntimeTextureGuid(texturePath, database, rootName);
-					if (textureGuid.empty())
-						return;
-					json["textures"].push_back({
-						{ "slot", slot },
-						{ "texture", { { "guid", textureGuid } } }
-					});
-				};
-
-				addTransparentTexture("diffuse", fbxInfo.diffuseTexPath);
-				addTransparentTexture("opacity", fbxInfo.opacityTexPath);
-				return json;
-			}
-
-			json["materialType"] = "pbr";
-			json["parameters"] = {
-				{ "albedo", Vans::SceneJson::array({
-					fbxInfo.diffuseColor[0],
-					fbxInfo.diffuseColor[1],
-					fbxInfo.diffuseColor[2] }) },
-				{ "metallic", fbxInfo.metallic },
-				{ "roughness", fbxInfo.roughness },
-				{ "ao", 1.0f }
-			};
-
-			Vans::SceneJson textures = Vans::SceneJson::object();
-			AddTextureRefFromPathIfResolvable(textures, "basecolor", fbxInfo.diffuseTexPath, database, rootName);
-			AddTextureRefFromPathIfResolvable(textures, "normal", fbxInfo.normalTexPath, database, rootName);
-			AddTextureRefFromPathIfResolvable(textures, "metal", fbxInfo.metallicTexPath, database, rootName);
-			AddTextureRefFromPathIfResolvable(textures, "roughness", fbxInfo.roughnessTexPath, database, rootName);
-			AddTextureRefFromPathIfResolvable(textures, "ao", fbxInfo.aoTexPath, database, rootName);
-			json["textures"] = std::move(textures);
-			return json;
-		}
-
-		Vans::SceneJson SerializeRuntimeMaterial(
-			VansGraphics::VansMaterial* material,
-			Vans::VansAssetDatabase* database,
-			const std::string& rootName)
-		{
-			Vans::SceneJson json;
-
-			if (auto* pbr = dynamic_cast<VansGraphics::VansPBRMaterial*>(material))
-			{
-				json["materialType"] = "pbr";
-				json["parameters"] = {
-					{ "albedo", Vec3Json(pbr->m_BasePBRParam.m_albedo) },
-					{ "metallic", pbr->m_BasePBRParam.m_metallic },
-					{ "roughness", pbr->m_BasePBRParam.m_roughness },
-					{ "ao", pbr->m_BasePBRParam.m_ao }
-				};
-				Vans::SceneJson textures = Vans::SceneJson::object();
-				AddTextureRefIfResolvable(textures, "basecolor", pbr->m_BaseColorTexture, database, rootName);
-				AddTextureRefIfResolvable(textures, "normal", pbr->m_NormalTexture, database, rootName);
-				AddTextureRefIfResolvable(textures, "metal", pbr->m_MetalTexture, database, rootName);
-				AddTextureRefIfResolvable(textures, "roughness", pbr->m_RoughnessTexture, database, rootName);
-				AddTextureRefIfResolvable(textures, "ao", pbr->m_AoTexture, database, rootName);
-				json["textures"] = std::move(textures);
-				return json;
-			}
-
-			if (auto* cloth = dynamic_cast<VansGraphics::VansClothMaterial*>(material))
-			{
-				const char* clothModel = "fuzz";
-				if (cloth->m_ClothModel == VansGraphics::VansClothModel::Silk) clothModel = "silk";
-				else if (cloth->m_ClothModel == VansGraphics::VansClothModel::Thin) clothModel = "thin";
-
-				json["materialType"] = "cloth";
-				json["parameters"] = {
-					{ "albedo", Vec3Json(cloth->m_BasePBRParam.m_albedo) },
-					{ "clothModel", clothModel },
-					{ "sheenRoughness", cloth->m_SheenRoughness },
-					{ "sheenStrength", cloth->m_SheenStrength },
-					{ "anisotropy", cloth->m_Anisotropy },
-					{ "transmissionColor", Vec3Json(cloth->m_TransmissionColor) },
-					{ "translucency", cloth->m_Translucency },
-					{ "thickness", cloth->m_Thickness },
-					{ "ao", cloth->m_BasePBRParam.m_ao }
-				};
-				if ((cloth->m_ClothFlags & VansGraphics::VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT) == 0u)
-					json["parameters"]["sheenColor"] = Vec3Json(cloth->m_SheenColor);
-				Vans::SceneJson textures = Vans::SceneJson::object();
-				AddTextureRefIfResolvable(textures, "basecolor", cloth->m_BaseColorTexture, database, rootName);
-				AddTextureRefIfResolvable(textures, "normal", cloth->m_NormalTexture, database, rootName);
-				AddTextureRefIfResolvable(textures, "roughness", cloth->m_RoughnessTexture, database, rootName);
-				AddTextureRefIfResolvable(textures, "ao", cloth->m_AoTexture, database, rootName);
-				json["textures"] = std::move(textures);
-				return json;
-			}
-
-			if (auto* transparent = dynamic_cast<VansGraphics::VansTransparentMaterial*>(material))
-			{
-				json["materialType"] = "transparent";
-				json["parameters"] = Vans::SceneJson::object();
-				json["textures"] = Vans::SceneJson::array();
-				const size_t textureCount = std::max(
-					transparent->m_TransparentTextures.size(),
-					transparent->m_TransparentTextureMap.size());
-				for (size_t index = 0; index < textureCount; ++index)
-				{
-					const std::string slot = index < transparent->m_TransparentTextureMap.size()
-						? transparent->m_TransparentTextureMap[index].first
-						: "texture_" + std::to_string(index);
-					std::string textureName = index < transparent->m_TransparentTextureMap.size()
-						? transparent->m_TransparentTextureMap[index].second
-						: std::string{};
-					if (textureName.empty() && index < transparent->m_TransparentTextures.size()
-						&& transparent->m_TransparentTextures[index] != nullptr)
-					{
-						textureName = transparent->m_TransparentTextures[index]->m_AssetName;
-					}
-					if (textureName.empty())
-						continue;
-
-					Vans::SceneJson textureEntry = { { "slot", slot } };
-					const std::string textureGuid = ResolveRuntimeTextureGuid(textureName, database, rootName);
-					if (!textureGuid.empty())
-					{
-						textureEntry["texture"] = { { "guid", textureGuid } };
-						json["textures"].push_back(std::move(textureEntry));
-					}
-				}
-				return json;
-			}
-
-			json["materialType"] = "pbr";
-			json["parameters"] = {
-				{ "albedo", Vans::SceneJson::array({ 1.0f, 1.0f, 1.0f }) },
-				{ "metallic", 0.0f },
-				{ "roughness", 0.5f },
-				{ "ao", 1.0f }
-			};
-			json["textures"] = Vans::SceneJson::object();
-			return json;
-		}
-
-		bool HasTextureSlot(const Vans::SceneJson& materialJson, const std::string& slot)
-		{
-			const auto texturesIt = materialJson.find("textures");
-			if (texturesIt == materialJson.end())
-				return false;
-
-			if (texturesIt->is_object())
-				return texturesIt->contains(slot);
-
-			if (texturesIt->is_array())
-			{
-				for (const auto& entry : *texturesIt)
-				{
-					if (entry.is_object() && entry.value("slot", "") == slot)
-						return true;
-				}
-			}
-
-			return false;
-		}
-
-		void AddRuntimeBaseColorFallback(
-			Vans::SceneJson& materialJson,
-			VansGraphics::VansMaterial* material,
-			Vans::VansAssetDatabase* database,
-			const std::string& rootName)
-		{
-			if (material == nullptr || database == nullptr)
-				return;
-
-			const std::string materialType = materialJson.value("materialType", "pbr");
-			if (materialType == "transparent")
-			{
-				if (HasTextureSlot(materialJson, "diffuse"))
-					return;
-
-				auto* transparent = dynamic_cast<VansGraphics::VansTransparentMaterial*>(material);
-				if (transparent == nullptr)
-					return;
-
-				std::string textureName;
-				for (const auto& [slot, name] : transparent->m_TransparentTextureMap)
-				{
-					if (slot == "diffuse" || slot == "basecolor" || slot == "baseColor")
-					{
-						textureName = name;
-						break;
-					}
-				}
-				if (textureName.empty() && !transparent->m_TransparentTextures.empty()
-					&& transparent->m_TransparentTextures[0] != nullptr)
-				{
-					textureName = transparent->m_TransparentTextures[0]->m_AssetName;
-				}
-				if (IsDefaultRuntimeTextureName(textureName))
-				{
-					return;
-				}
-
-				const std::string textureGuid = ResolveRuntimeTextureGuid(textureName, database, rootName);
-				if (!textureGuid.empty())
-				{
-					if (!materialJson["textures"].is_array())
-						materialJson["textures"] = Vans::SceneJson::array();
-					materialJson["textures"].push_back({
-						{ "slot", "diffuse" },
-						{ "texture", { { "guid", textureGuid } } }
-					});
-				}
-				return;
-			}
-
-			if (HasTextureSlot(materialJson, "basecolor"))
-				return;
-
-			auto* pbr = dynamic_cast<VansGraphics::VansPBRMaterial*>(material);
-			if (pbr == nullptr || pbr->m_BaseColorTexture == nullptr)
-				return;
-
-			const std::string runtimeTextureName = pbr->m_BaseColorTexture->m_AssetName;
-			if (IsDefaultRuntimeTextureName(runtimeTextureName))
-			{
-				return;
-			}
-
-			const std::string textureGuid = ResolveRuntimeTextureGuid(pbr->m_BaseColorTexture, database, rootName);
-			if (!textureGuid.empty())
-			{
-				if (!materialJson["textures"].is_object())
-					materialJson["textures"] = Vans::SceneJson::object();
-				materialJson["textures"]["basecolor"] = { { "guid", textureGuid } };
-			}
-			else
-			{
-				VANS_LOG_WARN("[MultiMeshMaterialGen] Runtime basecolor fallback unresolved for "
-					<< rootName << " material=" << material->m_AssetName
-					<< " texture=" << runtimeTextureName);
-			}
-		}
-
-		std::string EnsureRuntimeGeneratedMaterialAsset(
-			const std::string& rootName,
-			VansGraphics::VansRenderNode* node,
-			const std::filesystem::path& assetsRoot)
-		{
-			if (node == nullptr || node->m_Material == nullptr)
-				return {};
-
-			const std::string materialName = SafeRuntimeAssetName(
-				rootName + "_" + node->m_Material->m_AssetName + "_" + std::to_string(node->m_SubmeshIndex));
-			const std::filesystem::path materialDir = assetsRoot / "Generated" / "MultiMeshMaterials" / SafeRuntimeAssetName(rootName);
-			const std::filesystem::path materialPath = materialDir / (materialName + ".mat");
-			const std::filesystem::path metaPath = materialPath.string() + ".meta";
-			const Vans::VansAssetGuid guid = ReadOrCreateMetaGuid(metaPath);
-
-			Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
-			Vans::SceneJson materialJson;
-			if (node->m_SourceMesh != nullptr &&
-				node->m_SubmeshIndex != UINT32_MAX &&
-				!node->m_SourceMesh->m_SubmeshMaterialInfos.empty())
-			{
-				const auto& materialInfos = node->m_SourceMesh->m_SubmeshMaterialInfos;
-				const VansGraphics::FBXSubmeshMaterialInfo& fbxInfo =
-					node->m_SubmeshIndex < materialInfos.size() ? materialInfos[node->m_SubmeshIndex] : materialInfos[0];
-				materialJson = SerializeFbxMaterialInfo(fbxInfo, database, rootName);
-				AddRuntimeBaseColorFallback(materialJson, node->m_Material, database, rootName);
-			}
-			else
-			{
-				materialJson = SerializeRuntimeMaterial(node->m_Material, database, rootName);
-			}
-			materialJson["guid"] = guid.ToString();
-			materialJson["importSource"] = {
-				{ "model", rootName },
-				{ "sourceNode", SanitizeRuntimeJsonText(node->m_Mesh ? node->m_Mesh->m_SourceNodeName : std::string{}) },
-				{ "sourceMaterial", SanitizeRuntimeJsonText(node->m_Material->m_AssetName) },
-				{ "submeshIndex", node->m_SubmeshIndex },
-				{ "generatedFor", "runtimeMultiMeshExpansion" }
-			};
-			if (!WriteJsonFile(materialPath, materialJson))
-				return {};
-
-			Vans::SceneJson metaJson = {
-				{ "guid", guid.ToString() },
-				{ "importer", "MaterialImporter" },
-				{ "version", 1u },
-				{ "settings", {
-					{ "generatedFrom", rootName },
-					{ "generatedFor", "runtimeMultiMeshExpansion" }
-				} },
-				{ "subAssets", Vans::SceneJson::object() }
-			};
-			if (!WriteJsonFile(metaPath, metaJson))
-				return {};
-
-			return guid.ToString();
-		}
 
 		float RaySphereIntersect(const glm::vec3& rayOrigin,
 			const glm::vec3& rayDirection,
@@ -2043,6 +1369,105 @@ namespace Vans::EditorAPI
 
 			settings.validationErrors = source.ValidatePlacement();
 			return settings;
+		}
+
+		ScenePropertyValue Vec3ScenePropertyValue(const glm::vec3& value)
+		{
+			return ScenePropertyValues::Array({
+				ScenePropertyValues::Float(value.x),
+				ScenePropertyValues::Float(value.y),
+				ScenePropertyValues::Float(value.z)
+			});
+		}
+
+		const char* ReflectionProbeTypeName(VansGraphics::ReflectionProbeType type)
+		{
+			switch (type)
+			{
+			case VansGraphics::ReflectionProbeType::Realtime: return "realtime";
+			case VansGraphics::ReflectionProbeType::Sky: return "sky";
+			default: return "baked";
+			}
+		}
+
+		const char* ReflectionProbeRefreshModeName(VansGraphics::ReflectionProbeRefreshMode mode)
+		{
+			switch (mode)
+			{
+			case VansGraphics::ReflectionProbeRefreshMode::EveryFrame: return "every_frame";
+			case VansGraphics::ReflectionProbeRefreshMode::TimeSliced: return "time_sliced";
+			case VansGraphics::ReflectionProbeRefreshMode::OnDemand: return "on_demand";
+			default: return "on_load";
+			}
+		}
+
+		ScenePropertyValue ReflectionProbePropertyValue(const VansGraphics::VansReflectionProbeDesc& probe)
+		{
+			return ScenePropertyValues::Object({
+				{ "name", ScenePropertyValues::String(probe.name) },
+				{ "type", ScenePropertyValues::String(ReflectionProbeTypeName(probe.type)) },
+				{ "shape", ScenePropertyValues::String(
+					probe.shape == VansGraphics::ReflectionProbeShape::Sphere ? "sphere" : "box") },
+				{ "refreshMode", ScenePropertyValues::String(ReflectionProbeRefreshModeName(probe.refreshMode)) },
+				{ "position", Vec3ScenePropertyValue(probe.position) },
+				{ "capturePosition", Vec3ScenePropertyValue(probe.capturePosition) },
+				{ "boxMin", Vec3ScenePropertyValue(probe.boxMin) },
+				{ "boxMax", Vec3ScenePropertyValue(probe.boxMax) },
+				{ "radius", ScenePropertyValues::Float(probe.radius) },
+				{ "blendDistance", ScenePropertyValues::Float(probe.blendDistance) },
+				{ "priority", ScenePropertyValues::Float(probe.priority) },
+				{ "intensity", ScenePropertyValues::Float(probe.intensity) },
+				{ "specularIntensity", ScenePropertyValues::Float(probe.specularIntensity) },
+				{ "nearPlane", ScenePropertyValues::Float(probe.nearPlane) },
+				{ "farPlane", ScenePropertyValues::Float(probe.farPlane) },
+				{ "resolution", ScenePropertyValues::Int(static_cast<std::int64_t>(probe.resolution)) },
+				{ "cullingMask", ScenePropertyValues::Int(static_cast<std::int64_t>(probe.cullingMask)) },
+				{ "regionId", ScenePropertyValues::Int(static_cast<std::int64_t>(probe.regionId)) },
+				{ "facesPerFrame", ScenePropertyValues::Int(static_cast<std::int64_t>(probe.realtimeFacesPerFrame)) },
+				{ "enabled", ScenePropertyValues::Bool(probe.enabled) },
+				{ "boxProjection", ScenePropertyValues::Bool(probe.boxProjection) },
+				{ "autoGenerated", ScenePropertyValues::Bool(probe.autoGenerated) },
+				{ "portal", ScenePropertyValues::Bool(probe.portal) },
+				{ "cachePath", ScenePropertyValues::String(probe.cachePath) }
+			});
+		}
+
+		ScenePropertyValue ReflectionProbeScenePropertyValue(
+			const VansGraphics::VansReflectionProbeSystem& source)
+		{
+			const auto& lighting = source.GetLightingSettings();
+			const auto& placement = source.GetPlacementSettings();
+			std::vector<ScenePropertyValue> probes;
+			probes.reserve(source.GetProbes().size());
+			for (const VansGraphics::VansReflectionProbeDesc& probe : source.GetProbes())
+				probes.push_back(ReflectionProbePropertyValue(probe));
+
+			return ScenePropertyValues::Object({
+				{ "lighting", ScenePropertyValues::Object({
+					{ "maxBlendCount", ScenePropertyValues::Int(static_cast<std::int64_t>(lighting.maxBlendCount)) },
+					{ "ssrRoughnessFadeStart", ScenePropertyValues::Float(lighting.ssrRoughnessFadeStart) },
+					{ "ssrRoughnessFadeEnd", ScenePropertyValues::Float(lighting.ssrRoughnessFadeEnd) },
+					{ "skyIntensity", ScenePropertyValues::Float(lighting.skyIntensity) }
+				}) },
+				{ "placement", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(placement.enabled) },
+					{ "geometryOnly", ScenePropertyValues::Bool(true) },
+					{ "volumeMin", Vec3ScenePropertyValue(placement.volumeMin) },
+					{ "volumeMax", Vec3ScenePropertyValue(placement.volumeMax) },
+					{ "cellSize", ScenePropertyValues::Float(placement.cellSize) },
+					{ "indoorSpacing", ScenePropertyValues::Float(placement.indoorSpacing) },
+					{ "corridorSpacing", ScenePropertyValues::Float(placement.corridorSpacing) },
+					{ "outdoorSpacing", ScenePropertyValues::Float(placement.outdoorSpacing) },
+					{ "solidThreshold", ScenePropertyValues::Float(placement.solidThreshold) },
+					{ "refinementThreshold", ScenePropertyValues::Float(placement.refinementThreshold) },
+					{ "maxProbeCount", ScenePropertyValues::Int(static_cast<std::int64_t>(placement.maxProbeCount)) },
+					{ "uniformSpacing", ScenePropertyValues::Float(placement.uniformSpacing) },
+					{ "uniformBoxSizeScale", ScenePropertyValues::Float(placement.uniformBoxSizeScale) },
+					{ "uniformProbeResolution",
+						ScenePropertyValues::Int(static_cast<std::int64_t>(placement.uniformProbeResolution)) }
+				}) },
+				{ "probes", ScenePropertyValues::Array(std::move(probes)) }
+			});
 		}
 
 		void ApplyReflectionProbeSettingsToSystem(
@@ -2675,6 +2100,9 @@ namespace Vans::EditorAPI
 		{
 			payload.available = true;
 			payload.guid = record->guid.ToString();
+			payload.sourcePath = record->sourcePath.string();
+			payload.displayName = record->sourcePath.filename().string();
+			payload.assetType = ToEditorAssetType(record->type);
 		}
 		else
 		{
@@ -3780,8 +3208,13 @@ namespace Vans::EditorAPI
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		auto* probes = scene ? scene->GetReflectionProbeSystem() : nullptr;
-		if (probes)
-			probes->SaveConfiguration();
+		if (!probes)
+			return;
+
+		m_PendingScenePropertyEdits.push_back({
+			"/reflectionProbes",
+			ReflectionProbeScenePropertyValue(*probes)
+		});
 	}
 
 	void EngineAPIImpl::ConvertReflectionProbeToManual(std::uint32_t probeIndex)
@@ -4386,22 +3819,27 @@ namespace Vans::EditorAPI
 		terrain->SetLodDistanceRatio(settings.lodDistanceRatio);
 	}
 
-	void EngineAPIImpl::ApplyRuntimeEntityPatchJson(const std::string& entityJson)
+	void EngineAPIImpl::ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change)
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		if (!scene || entityJson.empty())
+		if (!scene || change.Empty())
 			return;
 
-		auto entity = nlohmann::ordered_json::parse(entityJson, nullptr, false);
-		if (!entity.is_object())
-			return;
+		for (const RuntimeComponentEnabledEdit& componentEdit : change.componentEnabled)
+			SetRuntimeComponentEnabled(componentEdit.entityGuid, componentEdit.componentType, componentEdit.enabled);
 
-		RuntimeTransformEdit transformEdit;
-		if (BuildRuntimeTransformEditFromPatch(entity, transformEdit))
-			ApplyRuntimeTransform(transformEdit);
+		if (change.hasTransform)
+			ApplyRuntimeTransform(change.transform);
 
-		for (RuntimeLightPatch& lightPatch : BuildRuntimeLightPatchesFromPatch(entity))
-			SubmitCommand(std::make_unique<SetRuntimeLightPropertiesCommand>(std::move(lightPatch)));
+		for (RuntimeLightEdit lightEdit : change.lights)
+			SubmitCommand(std::make_unique<SetRuntimeLightPropertiesCommand>(std::move(lightEdit)));
+
+		if (!change.materialOverrides.empty())
+		{
+			VansGraphics::VansMaterialLiveEditService liveEdit;
+			for (const RuntimeRendererMaterialOverrideEdit& edit : change.materialOverrides)
+				liveEdit.ApplyRendererMaterialOverride(scene, edit);
+		}
 	}
 
 	void EngineAPIImpl::SetRuntimeComponentEnabled(
@@ -4443,25 +3881,18 @@ namespace Vans::EditorAPI
 		}
 	}
 
-	bool EngineAPIImpl::ApplyRuntimeMaterialAssetPatch(
-		const std::string& assetPath,
-		const std::string& assetRootJson,
-		const std::string& changedPointer)
+	bool EngineAPIImpl::ApplyRuntimeMaterialPreviewChange(const RuntimeMaterialPreviewChange& change)
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		if (!scene || assetPath.empty() || assetRootJson.empty())
-			return false;
-
-		auto assetRoot = nlohmann::ordered_json::parse(assetRootJson, nullptr, false);
-		if (!assetRoot.is_object())
+		if (!scene || change.Empty())
 			return false;
 
 		VansGraphics::VansMaterialLiveEditService liveEdit;
-		return liveEdit.ApplyMaterialAssetPatch(
+		return liveEdit.ApplyMaterialPreviewChange(
 			scene,
-			std::filesystem::path(assetPath),
-			assetRoot,
-			changedPointer);
+			std::filesystem::path(change.assetPath),
+			change.parameters,
+			change.textures);
 	}
 
 	void EngineAPIImpl::CommitLightingChanges()
@@ -4506,15 +3937,14 @@ namespace Vans::EditorAPI
 	void EngineAPIImpl::CommitHeightFogSettings()
 	{
 		const FogSettings settings = GetFogSettings();
-		Vans::SceneJson value = {
-			{ "fogDensity", settings.fogDensity },
-			{ "heightFalloff", settings.heightFalloff },
-			{ "sunScatterScale", settings.sunScatterScale },
-			{ "ambientScale", settings.ambientScale },
-			{ "fogMinHeight", settings.fogMinHeight },
-			{ "skyFogDistance", settings.skyFogDistance }
-		};
-		m_PendingScenePropertyEdits.push_back({ "/settings/heightFog", value.dump() });
+		m_PendingScenePropertyEdits.push_back({ "/settings/heightFog", ScenePropertyValues::Object({
+			{ "fogDensity", ScenePropertyValues::Float(settings.fogDensity) },
+			{ "heightFalloff", ScenePropertyValues::Float(settings.heightFalloff) },
+			{ "sunScatterScale", ScenePropertyValues::Float(settings.sunScatterScale) },
+			{ "ambientScale", ScenePropertyValues::Float(settings.ambientScale) },
+			{ "fogMinHeight", ScenePropertyValues::Float(settings.fogMinHeight) },
+			{ "skyFogDistance", ScenePropertyValues::Float(settings.skyFogDistance) }
+		}) });
 	}
 
 	FogSettings EngineAPIImpl::GetFogSettings() const
@@ -4535,18 +3965,25 @@ namespace Vans::EditorAPI
 	void EngineAPIImpl::CommitVolumetricFogSettings()
 	{
 		const FogVolumeSettings settings = GetFogVolumeSettings();
-		Vans::SceneJson value = {
-			{ "density", settings.density },
-			{ "anisotropy", settings.anisotropy },
-			{ "scatterScale", settings.scatterScale },
-			{ "ambientScale", settings.ambientScale },
-			{ "volumeNear", settings.volumeNear },
-			{ "volumeFar", settings.volumeFar },
-			{ "slicePower", settings.slicePower },
-			{ "fogBoxMin", Vans::SceneJson::array({ settings.fogBoxMin[0], settings.fogBoxMin[1], settings.fogBoxMin[2] }) },
-			{ "fogBoxMax", Vans::SceneJson::array({ settings.fogBoxMax[0], settings.fogBoxMax[1], settings.fogBoxMax[2] }) }
-		};
-		m_PendingScenePropertyEdits.push_back({ "/settings/volumetricFog", value.dump() });
+		m_PendingScenePropertyEdits.push_back({ "/settings/volumetricFog", ScenePropertyValues::Object({
+			{ "density", ScenePropertyValues::Float(settings.density) },
+			{ "anisotropy", ScenePropertyValues::Float(settings.anisotropy) },
+			{ "scatterScale", ScenePropertyValues::Float(settings.scatterScale) },
+			{ "ambientScale", ScenePropertyValues::Float(settings.ambientScale) },
+			{ "volumeNear", ScenePropertyValues::Float(settings.volumeNear) },
+			{ "volumeFar", ScenePropertyValues::Float(settings.volumeFar) },
+			{ "slicePower", ScenePropertyValues::Float(settings.slicePower) },
+			{ "fogBoxMin", ScenePropertyValues::Array({
+				ScenePropertyValues::Float(settings.fogBoxMin[0]),
+				ScenePropertyValues::Float(settings.fogBoxMin[1]),
+				ScenePropertyValues::Float(settings.fogBoxMin[2])
+			}) },
+			{ "fogBoxMax", ScenePropertyValues::Array({
+				ScenePropertyValues::Float(settings.fogBoxMax[0]),
+				ScenePropertyValues::Float(settings.fogBoxMax[1]),
+				ScenePropertyValues::Float(settings.fogBoxMax[2])
+			}) }
+		}) });
 	}
 
 	FogVolumeSettings EngineAPIImpl::GetFogVolumeSettings() const
@@ -4589,33 +4026,32 @@ namespace Vans::EditorAPI
 		auto* materialManager = scene->GetMaterialManager();
 		materialManager->UploadCloudParamsToGPU();
 		const CloudSettings settings = ToCloudSettings(materialManager->m_CloudParams);
-		Vans::SceneJson value = {
-			{ "planetRadius", settings.planetRadius },
-			{ "seaLevel", settings.seaLevel },
-			{ "cloudBaseHeight", settings.cloudMinHeight },
-			{ "cloudThickness", std::max(settings.cloudMaxHeight - settings.cloudMinHeight, 100.0f) },
-			{ "density", settings.density },
-			{ "coverage", settings.coverage },
-			{ "sunBrightness", settings.sunBrightness },
-			{ "phaseG", settings.phaseG },
-			{ "mainTileMeters", settings.mainTileMeters },
-			{ "detailTileMeters", settings.detailTileMeters },
-			{ "mainHeightScale", settings.mainHeightScale },
-			{ "detailHeightScale", settings.detailHeightScale },
-			{ "thresholdLowCoverage", settings.thresholdLowCoverage },
-			{ "thresholdHighCoverage", settings.thresholdHighCoverage },
-			{ "densityRemapLow", settings.densityRemapLow },
-			{ "densityRemapHigh", settings.densityRemapHigh },
-			{ "mainErosionStrength", settings.mainErosionStrength },
-			{ "detailErosionStrength", settings.detailErosionStrength },
-			{ "edgeErosionStrength", settings.edgeErosionStrength },
-			{ "verticalShapePower", settings.verticalShapePower },
-			{ "detailErosionLow", settings.detailErosionLow },
-			{ "detailErosionHigh", settings.detailErosionHigh },
-			{ "detailEdgeStrength", settings.detailEdgeStrength },
-			{ "shadowDensityScale", settings.shadowDensityScale }
-		};
-		m_PendingScenePropertyEdits.push_back({ "/settings/volumetricClouds", value.dump() });
+		m_PendingScenePropertyEdits.push_back({ "/settings/volumetricClouds", ScenePropertyValues::Object({
+			{ "planetRadius", ScenePropertyValues::Float(settings.planetRadius) },
+			{ "seaLevel", ScenePropertyValues::Float(settings.seaLevel) },
+			{ "cloudBaseHeight", ScenePropertyValues::Float(settings.cloudMinHeight) },
+			{ "cloudThickness", ScenePropertyValues::Float(std::max(settings.cloudMaxHeight - settings.cloudMinHeight, 100.0f)) },
+			{ "density", ScenePropertyValues::Float(settings.density) },
+			{ "coverage", ScenePropertyValues::Float(settings.coverage) },
+			{ "sunBrightness", ScenePropertyValues::Float(settings.sunBrightness) },
+			{ "phaseG", ScenePropertyValues::Float(settings.phaseG) },
+			{ "mainTileMeters", ScenePropertyValues::Float(settings.mainTileMeters) },
+			{ "detailTileMeters", ScenePropertyValues::Float(settings.detailTileMeters) },
+			{ "mainHeightScale", ScenePropertyValues::Float(settings.mainHeightScale) },
+			{ "detailHeightScale", ScenePropertyValues::Float(settings.detailHeightScale) },
+			{ "thresholdLowCoverage", ScenePropertyValues::Float(settings.thresholdLowCoverage) },
+			{ "thresholdHighCoverage", ScenePropertyValues::Float(settings.thresholdHighCoverage) },
+			{ "densityRemapLow", ScenePropertyValues::Float(settings.densityRemapLow) },
+			{ "densityRemapHigh", ScenePropertyValues::Float(settings.densityRemapHigh) },
+			{ "mainErosionStrength", ScenePropertyValues::Float(settings.mainErosionStrength) },
+			{ "detailErosionStrength", ScenePropertyValues::Float(settings.detailErosionStrength) },
+			{ "edgeErosionStrength", ScenePropertyValues::Float(settings.edgeErosionStrength) },
+			{ "verticalShapePower", ScenePropertyValues::Float(settings.verticalShapePower) },
+			{ "detailErosionLow", ScenePropertyValues::Float(settings.detailErosionLow) },
+			{ "detailErosionHigh", ScenePropertyValues::Float(settings.detailErosionHigh) },
+			{ "detailEdgeStrength", ScenePropertyValues::Float(settings.detailEdgeStrength) },
+			{ "shadowDensityScale", ScenePropertyValues::Float(settings.shadowDensityScale) }
+		}) });
 	}
 
 	std::vector<ScenePropertyEdit> EngineAPIImpl::ConsumeScenePropertyEdits()
@@ -4772,8 +4208,8 @@ namespace Vans::EditorAPI
 
 				RuntimeMultiMeshChildSnapshot child;
 				child.submeshIndex = childNode->m_SubmeshIndex;
-				child.sourceNode = SanitizeRuntimeJsonText(childNode->m_Mesh ? childNode->m_Mesh->m_SourceNodeName : std::string{});
-				child.sourceMaterial = SanitizeRuntimeJsonText(childNode->m_Material ? childNode->m_Material->m_AssetName : std::string{});
+				child.sourceNode = SanitizeRuntimeGeneratedMaterialText(childNode->m_Mesh ? childNode->m_Mesh->m_SourceNodeName : std::string{});
+				child.sourceMaterial = SanitizeRuntimeGeneratedMaterialText(childNode->m_Material ? childNode->m_Material->m_AssetName : std::string{});
 				child.materialGuid = EnsureRuntimeGeneratedMaterialAsset(parentName, childNode, database->AssetsRoot());
 				if (!child.materialGuid.empty())
 					snapshot.children.push_back(std::move(child));

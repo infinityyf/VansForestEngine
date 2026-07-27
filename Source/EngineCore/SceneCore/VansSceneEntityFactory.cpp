@@ -3,14 +3,68 @@
 #include "../AssetCore/VansAssetGuid.h"
 
 #include <unordered_set>
+#include <utility>
 
 namespace Vans
 {
 namespace
 {
+using SerializedField = std::pair<std::string, VansSerializedValue>;
+
 std::string NewGuidString()
 {
     return VansAssetGuid::New().ToString();
+}
+
+VansSerializedValue Object(std::initializer_list<SerializedField> fields)
+{
+    return VansSerializedValue::Object(std::vector<SerializedField>(fields));
+}
+
+VansSerializedValue String(const std::string& value)
+{
+    return VansSerializedValue::String(value);
+}
+
+VansSerializedValue Int(std::int64_t value)
+{
+    return VansSerializedValue::Int(value);
+}
+
+VansSerializedValue Bool(bool value)
+{
+    return VansSerializedValue::Bool(value);
+}
+
+VansSerializedValue FloatArray(
+    float x,
+    float y,
+    float z)
+{
+    return VansSerializedValue::Array({
+        VansSerializedValue::Float(x),
+        VansSerializedValue::Float(y),
+        VansSerializedValue::Float(z)
+    });
+}
+
+VansSerializedValue FloatArray(
+    float x,
+    float y,
+    float z,
+    float w)
+{
+    return VansSerializedValue::Array({
+        VansSerializedValue::Float(x),
+        VansSerializedValue::Float(y),
+        VansSerializedValue::Float(z),
+        VansSerializedValue::Float(w)
+    });
+}
+
+VansSerializedValue GuidReference(const std::string& guid)
+{
+    return Object({ { "guid", String(guid) } });
 }
 
 std::string MakeSubmeshSlotName(
@@ -32,30 +86,48 @@ std::string MakeSubmeshSlotName(
     return candidate;
 }
 
-SceneJson BuildMaterialOverrides(const std::string& materialGuid)
+VansSerializedValue BuildMaterialOverrides(const std::string& materialGuid)
 {
     if (materialGuid.empty())
-        return SceneJson::object();
-    return SceneJson{ { "default", SceneJson{ { "guid", materialGuid } } } };
-}
+        return VansSerializedValue::Object({});
+    return Object({ { "default", GuidReference(materialGuid) } });
 }
 
-SceneJson VansSceneEntityFactory::BuildTransformComponent(
+VansSerializedValue BuildTransformComponent(
     const std::array<float, 3>& position,
     const std::array<float, 4>& rotation,
     const std::array<float, 3>& scale)
 {
-    SceneJson transformComp;
-    transformComp["id"] = NewGuidString();
-    transformComp["type"] = "Transform";
-    transformComp["version"] = 1u;
-    transformComp["enabled"] = true;
-    transformComp["data"] = {
-        { "position", { position[0], position[1], position[2] } },
-        { "rotation", { rotation[0], rotation[1], rotation[2], rotation[3] } },
-        { "scale", { scale[0], scale[1], scale[2] } }
-    };
-    return transformComp;
+    return Object({
+        { "id", String(NewGuidString()) },
+        { "type", String("Transform") },
+        { "version", Int(1) },
+        { "enabled", Bool(true) },
+        { "data", Object({
+            { "position", FloatArray(position[0], position[1], position[2]) },
+            { "rotation", FloatArray(rotation[0], rotation[1], rotation[2], rotation[3]) },
+            { "scale", FloatArray(scale[0], scale[1], scale[2]) }
+        }) }
+    });
+}
+
+VansSerializedValue BuildModelRendererComponent(VansSerializedValue data)
+{
+    return Object({
+        { "id", String(NewGuidString()) },
+        { "type", String("ModelRenderer") },
+        { "version", Int(1) },
+        { "enabled", Bool(true) },
+        { "data", std::move(data) }
+    });
+}
+
+void AppendSceneEntity(
+    SceneModelEntityFactoryResult& result,
+    VansSerializedValue entity)
+{
+    result.entities.push_back(std::move(entity));
+}
 }
 
 SceneModelEntityFactoryResult VansSceneEntityFactory::BuildSingleModelEntity(
@@ -65,27 +137,28 @@ SceneModelEntityFactoryResult VansSceneEntityFactory::BuildSingleModelEntity(
     SceneModelEntityFactoryResult result;
     result.rootEntityId = entityId.empty() ? NewGuidString() : entityId;
 
-    SceneJson modelData;
-    modelData["model"] = { { "guid", request.modelGuid } };
-    modelData["materialOverrides"] = BuildMaterialOverrides(request.defaultMaterialGuid);
-
-    SceneJson rendererComp;
-    rendererComp["id"] = NewGuidString();
-    rendererComp["type"] = "ModelRenderer";
-    rendererComp["version"] = 1u;
-    rendererComp["enabled"] = true;
-    rendererComp["data"] = std::move(modelData);
-
-    SceneJson entity;
-    entity["id"] = result.rootEntityId;
-    entity["name"] = request.entityName;
-    entity["parent"] = nullptr;
-    entity["components"] = SceneJson::array({
-        BuildTransformComponent(request.position, request.rotation, request.scale),
-        std::move(rendererComp)
+    VansSerializedValue modelData = Object({
+        { "model", GuidReference(request.modelGuid) },
+        { "castShadows", Bool(true) },
+        { "receiveShadows", Bool(true) },
+        { "rayTracingMode", String("auto") },
+        { "visibilityMask", Int(0xffffffffll) },
+        { "shadowCasterMask", Int(0xffffffffll) },
+        { "materialOverrides", BuildMaterialOverrides(request.defaultMaterialGuid) },
+        { "orphanOverrides", VansSerializedValue::Object({}) }
     });
 
-    result.entities.push_back(std::move(entity));
+    VansSerializedValue entity = Object({
+        { "id", String(result.rootEntityId) },
+        { "name", String(request.entityName) },
+        { "parent", VansSerializedValue::Null() },
+        { "components", VansSerializedValue::Array({
+        BuildTransformComponent(request.position, request.rotation, request.scale),
+        BuildModelRendererComponent(std::move(modelData))
+        }) }
+    });
+
+    AppendSceneEntity(result, std::move(entity));
     return result;
 }
 
@@ -96,26 +169,28 @@ SceneModelEntityFactoryResult VansSceneEntityFactory::BuildMultiMeshEntityHierar
     SceneModelEntityFactoryResult result;
     result.rootEntityId = rootEntityId.empty() ? NewGuidString() : rootEntityId;
 
-    SceneJson rootComp;
-    rootComp["id"] = NewGuidString();
-    rootComp["type"] = "MultiMeshRoot";
-    rootComp["version"] = 1u;
-    rootComp["enabled"] = true;
-    rootComp["data"] = {
-        { "model", { { "guid", request.modelGuid } } },
-        { "submeshCount", static_cast<std::uint32_t>(request.submeshes.size()) },
-        { "generation", "object-hierarchy" }
-    };
+    VansSerializedValue rootComp = Object({
+        { "id", String(NewGuidString()) },
+        { "type", String("MultiMeshRoot") },
+        { "version", Int(1) },
+        { "enabled", Bool(true) },
+        { "data", Object({
+            { "model", GuidReference(request.modelGuid) },
+            { "submeshCount", Int(static_cast<std::int64_t>(request.submeshes.size())) },
+            { "generation", String("object-hierarchy") }
+        }) }
+    });
 
-    SceneJson parentEntity;
-    parentEntity["id"] = result.rootEntityId;
-    parentEntity["name"] = request.entityName;
-    parentEntity["parent"] = nullptr;
-    parentEntity["components"] = SceneJson::array({
+    VansSerializedValue parentEntity = Object({
+        { "id", String(result.rootEntityId) },
+        { "name", String(request.entityName) },
+        { "parent", VansSerializedValue::Null() },
+        { "components", VansSerializedValue::Array({
         BuildTransformComponent(request.position, request.rotation, request.scale),
         std::move(rootComp)
+        }) }
     });
-    result.entities.push_back(std::move(parentEntity));
+    AppendSceneEntity(result, std::move(parentEntity));
 
     std::unordered_set<std::string> usedSlots;
     for (std::uint32_t index = 0; index < request.submeshes.size(); ++index)
@@ -130,44 +205,40 @@ SceneModelEntityFactoryResult VansSceneEntityFactory::BuildMultiMeshEntityHierar
             index,
             usedSlots);
 
-        SceneJson modelData;
-        modelData["model"] = { { "guid", request.modelGuid } };
-        modelData["submesh"] = {
-            { "index", index },
-            { "sourceNode", submesh.sourceNodeName },
-            { "sourceMaterial", submesh.materialName },
-            { "slotName", slotName }
-        };
-        modelData["castShadows"] = true;
-        modelData["receiveShadows"] = true;
-        modelData["rayTracingMode"] = "auto";
-        modelData["visibilityMask"] = 0xffffffffu;
-        modelData["materialOverrides"] = BuildMaterialOverrides(submesh.materialGuid);
-        modelData["orphanOverrides"] = SceneJson::object();
-
-        SceneJson rendererComp;
-        rendererComp["id"] = NewGuidString();
-        rendererComp["type"] = "ModelRenderer";
-        rendererComp["version"] = 1u;
-        rendererComp["enabled"] = true;
-        rendererComp["data"] = std::move(modelData);
+        VansSerializedValue modelData = Object({
+            { "model", GuidReference(request.modelGuid) },
+            { "submesh", Object({
+                { "index", Int(index) },
+                { "sourceNode", String(submesh.sourceNodeName) },
+                { "sourceMaterial", String(submesh.materialName) },
+                { "slotName", String(slotName) }
+            }) },
+            { "castShadows", Bool(true) },
+            { "receiveShadows", Bool(true) },
+            { "rayTracingMode", String("auto") },
+            { "visibilityMask", Int(0xffffffffll) },
+            { "shadowCasterMask", Int(0xffffffffll) },
+            { "materialOverrides", BuildMaterialOverrides(submesh.materialGuid) },
+            { "orphanOverrides", VansSerializedValue::Object({}) }
+        });
 
         const std::string childName = request.entityName + "_" +
             (!submesh.sourceNodeName.empty()
                 ? submesh.sourceNodeName
                 : ("Submesh_" + std::to_string(index)));
 
-        SceneJson childEntity;
-        childEntity["id"] = NewGuidString();
-        childEntity["name"] = childName;
-        childEntity["parent"] = result.rootEntityId;
-        childEntity["components"] = SceneJson::array({
+        VansSerializedValue childEntity = Object({
+            { "id", String(NewGuidString()) },
+            { "name", String(childName) },
+            { "parent", String(result.rootEntityId) },
+            { "components", VansSerializedValue::Array({
             BuildTransformComponent({ 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f, 1.0f },
                 { 1.0f, 1.0f, 1.0f }),
-            std::move(rendererComp)
+            BuildModelRendererComponent(std::move(modelData))
+            }) }
         });
-        result.entities.push_back(std::move(childEntity));
+        AppendSceneEntity(result, std::move(childEntity));
     }
 
     return result;

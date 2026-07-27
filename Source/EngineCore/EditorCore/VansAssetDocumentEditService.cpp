@@ -1,6 +1,7 @@
 #include "VansAssetDocumentEditService.h"
 
-#include "../AssetCore/VansAssetGuid.h"
+#include "../AssetCore/VansAssetDocument.h"
+#include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 
 #include <exception>
 #include <memory>
@@ -12,8 +13,6 @@ namespace Vans
 {
 namespace
 {
-using JsonPointer = VansAssetDocument::Json::json_pointer;
-
 std::wstring HistoryKey(const VansAssetDocument& document)
 {
     return document.Path().generic_wstring();
@@ -23,83 +22,59 @@ AssetDocumentEditResult ValidatePointer(const std::string& path)
 {
     if (path.empty() || path.front() != '/')
         return { false, "Asset property address must be a non-root JSON Pointer" };
-    try
+    for (std::size_t index = 0; index < path.size(); ++index)
     {
-        JsonPointer pointer(path);
-        (void)pointer;
-    }
-    catch (const VansAssetDocument::Json::exception& error)
-    {
-        return { false, error.what() };
+        if (path[index] == '~' &&
+            (index + 1 >= path.size() || (path[index + 1] != '0' && path[index + 1] != '1')))
+        {
+            return { false, "Asset property address contains an invalid JSON Pointer escape" };
+        }
     }
     return { true, {} };
 }
 
-VansAssetDocument::Json BuildReferenceValue(const std::string& assetGuid, bool writeObjectReference)
+AssetDocumentEditResult ValidateAssetDocumentPath(const DocumentPropertyPath& path)
 {
-    if (writeObjectReference)
-        return VansAssetDocument::Json{ { "guid", assetGuid } };
-    return assetGuid;
+    if (path.space != DocumentPropertySpace::AssetSource &&
+        path.space != DocumentPropertySpace::AssetMeta)
+    {
+        return { false, "Asset edit target is not an asset document path" };
+    }
+    std::string error;
+    if (!ValidateDocumentPropertyPath(path, &error))
+        return { false, error };
+    return { true, {} };
 }
 
-bool TryRead(const VansAssetDocument::Json& root, const JsonPointer& pointer, VansAssetDocument::Json& value)
+bool TryRead(
+    const VansSerializedValue& root,
+    const std::string& pointer,
+    VansSerializedValue& value)
 {
-    try
-    {
-        value = root.at(pointer);
-        return true;
-    }
-    catch (const VansAssetDocument::Json::out_of_range&)
-    {
+    const VansSerializedValue* found = FindSerializedPointer(root, pointer);
+    if (!found)
         return false;
-    }
+    value = *found;
+    return true;
 }
 
-AssetDocumentEditResult RemoveAt(VansAssetDocument::Json& root, const JsonPointer& pointer)
+AssetDocumentEditResult RemoveAt(VansSerializedValue& root, const std::string& pointer)
 {
-    const JsonPointer parent = pointer.parent_pointer();
-    const std::string token = pointer.back();
-    try
-    {
-        VansAssetDocument::Json& container = root.at(parent);
-        if (container.is_object())
-        {
-            if (container.erase(token) == 0)
-                return { false, "Asset property does not exist" };
-            return { true, {} };
-        }
-        if (container.is_array())
-        {
-            std::size_t consumed = 0;
-            const std::size_t index = std::stoull(token, &consumed);
-            if (consumed != token.size() || index >= container.size())
-                return { false, "Invalid asset array index" };
-            container.erase(container.begin() + static_cast<VansAssetDocument::Json::difference_type>(index));
-            return { true, {} };
-        }
-        return { false, "Asset property parent is not a container" };
-    }
-    catch (const std::exception& error)
-    {
-        return { false, error.what() };
-    }
+    std::string error;
+    if (EraseSerializedPointer(root, pointer, &error))
+        return { true, {} };
+    return { false, error.empty() ? "Asset property does not exist" : error };
 }
 
 AssetDocumentEditResult WriteAt(
-    VansAssetDocument& document,
-    const JsonPointer& pointer,
-    const VansAssetDocument::Json& value)
+    VansSerializedValue& root,
+    const std::string& pointer,
+    VansSerializedValue value)
 {
-    try
-    {
-        document.Root()[pointer] = value;
-        document.MarkDirty();
+    std::string error;
+    if (SetSerializedPointer(root, pointer, std::move(value), &error))
         return { true, {} };
-    }
-    catch (const VansAssetDocument::Json::exception& error)
-    {
-        return { false, error.what() };
-    }
+    return { false, error };
 }
 
 class AssetDocumentEditCommand
@@ -110,14 +85,16 @@ public:
     virtual AssetDocumentEditResult Undo(VansAssetDocument& document) = 0;
     virtual AssetDocumentEditResult Redo(VansAssetDocument& document) = 0;
 };
+}
 
-class SetAssetReferenceCommand final : public AssetDocumentEditCommand
+namespace EditorInternal
+{
+class SetAssetPropertyCommand final : public AssetDocumentEditCommand
 {
 public:
-    SetAssetReferenceCommand(std::string jsonPointer, std::string assetGuid, bool writeObjectReference)
-        : m_JsonPointer(std::move(jsonPointer))
-        , m_AssetGuid(std::move(assetGuid))
-        , m_WriteObjectReference(writeObjectReference)
+    SetAssetPropertyCommand(std::string propertyPointer, VansSerializedValue value)
+        : m_PropertyPointer(std::move(propertyPointer))
+        , m_NewValue(std::move(value))
     {
     }
 
@@ -125,53 +102,56 @@ public:
     {
         if (!document.IsLoaded())
             return { false, "Asset document is not loaded" };
-        if (auto validation = ValidatePointer(m_JsonPointer); !validation)
+        if (auto validation = ValidatePointer(m_PropertyPointer); !validation)
             return validation;
-        if (!m_AssetGuid.empty())
-        {
-            VansAssetGuid parsedGuid;
-            if (!VansAssetGuid::TryParse(m_AssetGuid, parsedGuid))
-                return { false, "Asset reference value is not a valid asset GUID" };
-        }
 
-        const JsonPointer pointer(m_JsonPointer);
-        m_NewValue = BuildReferenceValue(m_AssetGuid, m_WriteObjectReference);
-        m_HadOldValue = TryRead(document.Root(), pointer, m_OldValue);
-        if (m_HadOldValue && m_OldValue == m_NewValue)
-            return { false, "Asset reference is unchanged" };
-        return WriteAt(document, pointer, m_NewValue);
+        VansSerializedValue candidate = document.SerializedRootSnapshot();
+        VansSerializedValue oldValue;
+        m_HadOldValue = TryRead(candidate, m_PropertyPointer, oldValue);
+        m_BeforeState = document.CurrentStateId();
+        if (m_HadOldValue && SerializedValuesEqual(oldValue, m_NewValue))
+            return { false, "Asset property is unchanged" };
+        if (m_HadOldValue)
+            m_OldValue = std::move(oldValue);
+
+        if (AssetDocumentEditResult result = WriteAt(candidate, m_PropertyPointer, m_NewValue); !result)
+            return result;
+        m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
+        return { true, {} };
     }
 
     AssetDocumentEditResult Undo(VansAssetDocument& document) override
     {
-        const JsonPointer pointer(m_JsonPointer);
-        if (m_HadOldValue)
-            return WriteAt(document, pointer, m_OldValue);
-
-        VansAssetDocument::Json candidate = document.Root();
-        AssetDocumentEditResult result = RemoveAt(candidate, pointer);
+        VansSerializedValue candidate = document.SerializedRootSnapshot();
+        AssetDocumentEditResult result = m_HadOldValue
+            ? WriteAt(candidate, m_PropertyPointer, m_OldValue)
+            : RemoveAt(candidate, m_PropertyPointer);
         if (result)
-        {
-            document.Root().swap(candidate);
-            document.MarkDirty();
-        }
+            document.RestoreEditedSerializedRoot(std::move(candidate), m_BeforeState);
         return result;
     }
 
     AssetDocumentEditResult Redo(VansAssetDocument& document) override
     {
-        return WriteAt(document, JsonPointer(m_JsonPointer), m_NewValue);
+        VansSerializedValue candidate = document.SerializedRootSnapshot();
+        AssetDocumentEditResult result = WriteAt(candidate, m_PropertyPointer, m_NewValue);
+        if (result)
+            document.RestoreEditedSerializedRoot(std::move(candidate), m_AfterState);
+        return result;
     }
 
 private:
-    std::string m_JsonPointer;
-    std::string m_AssetGuid;
-    bool m_WriteObjectReference = true;
-    VansAssetDocument::Json m_NewValue;
-    VansAssetDocument::Json m_OldValue;
+    std::string m_PropertyPointer;
+    VansSerializedValue m_NewValue;
+    VansSerializedValue m_OldValue;
     bool m_HadOldValue = false;
+    VansAssetDocumentStateId m_BeforeState = 0;
+    VansAssetDocumentStateId m_AfterState = 0;
 };
+}
 
+namespace
+{
 struct AssetDocumentEditHistory
 {
     std::vector<std::unique_ptr<AssetDocumentEditCommand>> undo;
@@ -201,14 +181,75 @@ AssetDocumentEditResult ExecuteCommand(
 }
 }
 
-AssetDocumentEditResult VansAssetDocumentEditService::SetAssetReference(
+AssetDocumentEditResult VansAssetDocumentEditService::Set(
     VansAssetDocument& document,
-    const std::string& jsonPointer,
-    const std::string& assetGuid,
-    bool writeObjectReference)
+    const std::string& propertyPointer,
+    VansSerializedValue value)
 {
-    return ExecuteCommand(document, std::make_unique<SetAssetReferenceCommand>(
-        jsonPointer, assetGuid, writeObjectReference));
+    return ExecuteCommand(document, std::make_unique<EditorInternal::SetAssetPropertyCommand>(
+        propertyPointer, std::move(value)));
+}
+
+AssetDocumentEditResult VansAssetDocumentEditService::Set(
+    VansAssetDocument& document,
+    const DocumentPropertyPath& path,
+    VansSerializedValue value)
+{
+    if (AssetDocumentEditResult validation = ValidateAssetDocumentPath(path); !validation)
+        return validation;
+    return Set(document, ToDocumentPropertyPointer(path), std::move(value));
+}
+
+AssetDocumentEditResult VansAssetDocumentEditService::SetAndAssignObjectReference(
+    VansAssetDocument& document,
+    const DocumentPropertyPath& path,
+    VansSerializedValue value,
+    const ObjectReferenceAssignment& assignment)
+{
+    if (AssetDocumentEditResult validation = ValidateAssetDocumentPath(path); !validation)
+        return validation;
+    if (AssetDocumentEditResult validation = ValidateAssetDocumentPath(assignment.targetPath); !validation)
+        return validation;
+    if (path.space != assignment.targetPath.space)
+        return { false, "Asset object reference transaction targets must be in the same document" };
+
+    VansSerializedValue referenceValue;
+    std::string assignmentError;
+    if (!TryEncodeProjectAssetReferenceAssignment(assignment, referenceValue, &assignmentError))
+        return { false, assignmentError };
+
+    std::string pathError;
+    std::string relativePointer;
+    if (!TryMakeRelativeDocumentPropertyPointer(path, assignment.targetPath, relativePointer, &pathError))
+        return { false, pathError };
+
+    if (relativePointer.empty())
+    {
+        value = std::move(referenceValue);
+    }
+    else if (!SetSerializedPointer(value, relativePointer, std::move(referenceValue), &pathError))
+    {
+        return { false, pathError };
+    }
+
+    return ExecuteCommand(document, std::make_unique<EditorInternal::SetAssetPropertyCommand>(
+        ToDocumentPropertyPointer(path), std::move(value)));
+}
+
+AssetDocumentEditResult VansAssetDocumentEditService::AssignObjectReference(
+    VansAssetDocument& document,
+    const ObjectReferenceAssignment& assignment)
+{
+    if (AssetDocumentEditResult validation = ValidateAssetDocumentPath(assignment.targetPath); !validation)
+        return validation;
+
+    VansSerializedValue referenceValue;
+    std::string assignmentError;
+    if (!TryEncodeProjectAssetReferenceAssignment(assignment, referenceValue, &assignmentError))
+        return { false, assignmentError };
+    return ExecuteCommand(document, std::make_unique<EditorInternal::SetAssetPropertyCommand>(
+        ToDocumentPropertyPointer(assignment.targetPath),
+        std::move(referenceValue)));
 }
 
 bool VansAssetDocumentEditService::CanUndo(const VansAssetDocument& document)

@@ -1,0 +1,88 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <optional>
+
+namespace Vans
+{
+struct VansSceneHeightFogSettingsConfig
+{
+	std::optional<float> fogDensity;
+	std::optional<float> heightFalloff;
+	std::optional<float> sunScatterScale;
+	std::optional<float> ambientScale;
+	std::optional<float> fogMinHeight;
+	std::optional<float> skyFogDistance;
+};
+
+struct VansSceneVolumetricFogSettingsConfig
+{
+	std::optional<float> density;
+	std::optional<float> anisotropy;
+	std::optional<float> scatterScale;
+	std::optional<float> ambientScale;
+	std::optional<float> volumeNear;
+	std::optional<float> volumeFar;
+	std::optional<float> slicePower;
+	std::optional<std::array<float, 3>> fogBoxMin;
+	std::optional<std::array<float, 3>> fogBoxMax;
+};
+
+struct VansSceneVolumetricCloudSettingsConfig
+{
+	std::optional<float> planetRadius;
+	std::optional<float> seaLevel;
+	std::optional<float> cloudBaseHeight;
+	std::optional<float> cloudMinHeight;
+	std::optional<float> cloudThickness;
+	std::optional<float> cloudMaxHeight;
+	std::optional<float> density;
+	std::optional<float> coverage;
+	std::optional<float> sunBrightness;
+	std::optional<float> phaseG;
+	std::optional<float> mainTileMeters;
+	std::optional<float> detailTileMeters;
+	std::optional<float> mainHeightScale;
+	std::optional<float> detailHeightScale;
+	std::optional<float> thresholdLowCoverage;
+	std::optional<float> thresholdHighCoverage;
+	std::optional<float> densityRemapLow;
+	std::optional<float> densityRemapHigh;
+	std::optional<float> mainErosionStrength;
+	std::optional<float> detailErosionStrength;
+	std::optional<float> edgeErosionStrength;
+	std::optional<float> verticalShapePower;
+	std::optional<float> detailErosionLow;
+	std::optional<float> detailErosionHigh;
+	std::optional<float> detailEdgeStrength;
+	std::optional<float> shadowDensityScale;
+};
+
+struct VansSceneGISettingsConfig
+{
+	std::optional<std::array<uint32_t, 3>> gridDimensions;
+	std::optional<std::array<float, 3>> probeSpacingAxes;
+	std::optional<std::array<float, 3>> regionCenter;
+	std::optional<uint32_t> raysPerProbe;
+	std::optional<uint32_t> spatialUpdateDivisor;
+	std::optional<uint32_t> directionUpdateSlices;
+	std::optional<float> maxRayDistance;
+	std::optional<float> normalBias;
+	std::optional<float> environmentIntensity;
+	std::optional<float> maxIndirectRadiance;
+	std::optional<float> maxSHL0;
+	std::optional<float> volumeFadeDistance;
+	std::optional<bool> showProbeGizmos;
+	std::optional<bool> showProbeVolume;
+	std::optional<uint32_t> gizmoStride;
+};
+
+struct VansSceneRenderSettingsConfig
+{
+	std::optional<VansSceneHeightFogSettingsConfig> heightFog;
+	std::optional<VansSceneVolumetricFogSettingsConfig> volumetricFog;
+	std::optional<VansSceneVolumetricCloudSettingsConfig> volumetricClouds;
+	std::optional<VansSceneGISettingsConfig> globalIllumination;
+};
+}

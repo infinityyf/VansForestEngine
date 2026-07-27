@@ -53,9 +53,9 @@ namespace VansGraphics
 
 		float GetAspectRatio();
 
-		float GetNativeRenderWidth() { return m_RenderWidth; }
+		float GetNativeRenderWidth() { return static_cast<float>(m_RenderWidth); }
 
-		float GetNativeRenderHeight() { return m_RenderHeight; }
+		float GetNativeRenderHeight() { return static_cast<float>(m_RenderHeight); }
 
 		// 查询 FSR 内置抖动偏移（像素空间），子类实现后返回 true；默认返回 false 表示使用 Halton 回退
 		virtual bool GetFSRJitterOffset(uint32_t frameIndex, float& outPixelX, float& outPixelY) { return false; }

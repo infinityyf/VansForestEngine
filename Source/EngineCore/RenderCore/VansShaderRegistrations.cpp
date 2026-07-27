@@ -35,12 +35,18 @@ void RegisterEngineShaders()
         sizeof(VansGraphics::VansDrawPushConstant), false
     });
 
-    reg.RegisterGraphicsShader("PunctualShadow", {
+    VansGraphics::VansShaderEntry punctualShadow = {
         "PunctualShadow",
         "EngineAssets/Shaders/PunctualShadow",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
         sizeof(int) * 5, false
-    });
+    };
+    // 点光/聚光阴影图集的 tile 使用正高度 viewport，保持与采样端的图集 UV
+    // 布局一致。这个 viewport 约定会让 winding 相对引擎其它 Y 翻转 pass 反向；
+    // 因此这里把正面定义为顺时针，让 CullBack 能正确剔除位于模型内部的点光/
+    // 聚光灯所看到的内侧背面，避免这些背面写入 shadowmap。
+    punctualShadow.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    reg.RegisterGraphicsShader("PunctualShadow", std::move(punctualShadow));
 
     reg.RegisterGraphicsShader("Skin", {
         "Skin",

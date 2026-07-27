@@ -19,26 +19,6 @@ namespace VansGraphics
         }
     }
 
-    nlohmann::json VansUpdateGravityModule::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"]  = "UpdateGravity";
-        j["gravity"] = { m_Gravity.x, m_Gravity.y, m_Gravity.z };
-        return j;
-    }
-
-    void VansUpdateGravityModule::Deserialize(const nlohmann::json& j)
-    {
-        if (j.contains("gravity") && j["gravity"].is_array() && j["gravity"].size() >= 3)
-        {
-            m_Gravity = glm::vec3(
-                j["gravity"][0].get<float>(),
-                j["gravity"][1].get<float>(),
-                j["gravity"][2].get<float>()
-            );
-        }
-    }
-
     // ──────────────────────────────────────────────────────────────────────
     // VansUpdateColorOverLifetime
     // ──────────────────────────────────────────────────────────────────────
@@ -50,20 +30,6 @@ namespace VansGraphics
         {
             pool.m_Color[i] = m_Gradient.Evaluate(pool.m_NormalizedAge[i]);
         }
-    }
-
-    nlohmann::json VansUpdateColorOverLifetime::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"]   = "UpdateColorOverLifetime";
-        j["gradient"] = m_Gradient.Serialize();
-        return j;
-    }
-
-    void VansUpdateColorOverLifetime::Deserialize(const nlohmann::json& j)
-    {
-        if (j.contains("gradient"))
-            m_Gradient.Deserialize(j["gradient"]);
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -100,27 +66,6 @@ namespace VansGraphics
             float initSize   = pool.m_Size[i];
             float multiplier = EvalCurve(pool.m_NormalizedAge[i]);
             pool.m_Size[i]   = initSize * multiplier;
-        }
-    }
-
-    nlohmann::json VansUpdateSizeOverLifetime::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"] = "UpdateSizeOverLifetime";
-        auto curve = nlohmann::json::array();
-        for (auto& k : m_Curve)
-            curve.push_back({ {"t", k.t}, {"value", k.value} });
-        j["curve"] = curve;
-        return j;
-    }
-
-    void VansUpdateSizeOverLifetime::Deserialize(const nlohmann::json& j)
-    {
-        m_Curve.clear();
-        if (j.contains("curve"))
-        {
-            for (auto& k : j["curve"])
-                m_Curve.push_back({ k.value("t", 0.f), k.value("value", 1.f) });
         }
     }
 
@@ -161,33 +106,6 @@ namespace VansGraphics
             // 用更新后的速度推进位置（若 Gravity 模块未处理位置，则此处处理）
             // 注意：若同时存在 Gravity 模块，应避免重复积分位置。
             // 设计约定：Gravity 模块负责位置积分；此模块仅修改速度。
-        }
-    }
-
-    nlohmann::json VansUpdateVelocityOverLifetime::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"] = "UpdateVelocityOverLifetime";
-        j["drag"]   = m_Drag;
-        j["turbulence"] = {
-            {"enabled",     m_TurbulenceEnabled},
-            {"strength",    m_TurbulenceStrength},
-            {"frequency",   m_TurbulenceFrequency},
-            {"scrollSpeed", m_TurbulenceScrollSpeed}
-        };
-        return j;
-    }
-
-    void VansUpdateVelocityOverLifetime::Deserialize(const nlohmann::json& j)
-    {
-        m_Drag = j.value("drag", 0.1f);
-        if (j.contains("turbulence"))
-        {
-            auto& t = j["turbulence"];
-            m_TurbulenceEnabled      = t.value("enabled",     false);
-            m_TurbulenceStrength     = t.value("strength",    0.5f);
-            m_TurbulenceFrequency    = t.value("frequency",   1.f);
-            m_TurbulenceScrollSpeed  = t.value("scrollSpeed", 0.2f);
         }
     }
 
@@ -235,20 +153,6 @@ namespace VansGraphics
         }
     }
 
-    nlohmann::json VansUpdateRotationOverLifetime::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"]          = "UpdateRotationOverLifetime";
-        j["angularVelocity"] = m_AngularVelocity.Serialize();
-        return j;
-    }
-
-    void VansUpdateRotationOverLifetime::Deserialize(const nlohmann::json& j)
-    {
-        if (j.contains("angularVelocity"))
-            m_AngularVelocity.Deserialize(j["angularVelocity"]);
-    }
-
     // ──────────────────────────────────────────────────────────────────────
     // VansUpdateSpriteAnimModule
     // ──────────────────────────────────────────────────────────────────────
@@ -292,23 +196,6 @@ namespace VansGraphics
                                                   static_cast<float>(totalFrames));
             }
         }
-    }
-
-    nlohmann::json VansUpdateSpriteAnimModule::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"]  = "UpdateSpriteAnim";
-        j["columns"] = m_Columns;
-        j["rows"]    = m_Rows;
-        j["fps"]     = m_FPS;
-        return j;
-    }
-
-    void VansUpdateSpriteAnimModule::Deserialize(const nlohmann::json& j)
-    {
-        m_Columns = j.value("columns", 4);
-        m_Rows    = j.value("rows",    4);
-        m_FPS     = j.value("fps",     0.f);
     }
 
 } // namespace VansGraphics

@@ -46,30 +46,26 @@ VansGraphics::VansCamera::VansCamera(VansGraphicsDevice* device)
     m_IsRightMouseDown = false;
 }
 
-void VansGraphics::VansCamera::ApplyCameraSettings(const json& cameraNode)
+void VansGraphics::VansCamera::ApplyCameraSettings(
+    const Vans::VansSceneCameraSettingsConfig& cameraSettings)
 {
-    if (cameraNode.contains("position"))
+    if (cameraSettings.position)
     {
-        const auto& pos = cameraNode["position"];
-        m_Position = glm::vec3(pos[0].get<float>(), pos[1].get<float>(), pos[2].get<float>());
+        const auto& pos = *cameraSettings.position;
+        m_Position = glm::vec3(pos[0], pos[1], pos[2]);
     }
 
-    if (cameraNode.contains("rotation"))
+    if (cameraSettings.rotation)
     {
-        const auto& rot = cameraNode["rotation"];
-        m_Rotation = glm::vec3(rot[0].get<float>(), rot[1].get<float>(), rot[2].get<float>());
+        const auto& rot = *cameraSettings.rotation;
+        m_Rotation = glm::vec3(rot[0], rot[1], rot[2]);
     }
 
-    if (cameraNode.contains("fov"))
-        m_Fov = cameraNode["fov"].get<float>();
+    if (cameraSettings.fov) m_Fov = *cameraSettings.fov;
+    if (cameraSettings.nearClip) m_NearClip = *cameraSettings.nearClip;
+    if (cameraSettings.farClip) m_FarClip = *cameraSettings.farClip;
 
-    if (cameraNode.contains("nearClip"))
-        m_NearClip = cameraNode["nearClip"].get<float>();
-
-    if (cameraNode.contains("farClip"))
-        m_FarClip = cameraNode["farClip"].get<float>();
-
-    VANS_LOG("[VansCamera] Camera settings applied from scene JSON: pos=("
+    VANS_LOG("[VansCamera] Camera settings applied: pos=("
         << m_Position.x << ", " << m_Position.y << ", " << m_Position.z
         << ") rot=(" << m_Rotation.x << ", " << m_Rotation.y << ", " << m_Rotation.z
         << ") fov=" << m_Fov);

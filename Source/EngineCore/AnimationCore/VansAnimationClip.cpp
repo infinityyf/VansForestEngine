@@ -1,9 +1,11 @@
 #include "VansAnimationClip.h"
+#include "../AssetCore/Storage/VansFileStorage.h"
 #include "../Util/VansLog.h"
 
 #include <nlohmann/json.hpp>
-#include <fstream>
 #include <cstring>
+#include <limits>
+#include <sstream>
 
 using json = nlohmann::json;
 using namespace VansGraphics;
@@ -23,7 +25,7 @@ static constexpr size_t BYTES_PER_KEYFRAME  = sizeof(float) + sizeof(glm::vec3) 
 
 // ─── Helper: write one keyframe to binary stream ───
 
-static void WriteKeyframe(std::ofstream& out, const BoneKeyframe& kf)
+static void WriteKeyframe(std::ostream& out, const BoneKeyframe& kf)
 {
 	out.write(reinterpret_cast<const char*>(&kf.time),     sizeof(float));
 	out.write(reinterpret_cast<const char*>(&kf.position), sizeof(glm::vec3));
@@ -33,12 +35,103 @@ static void WriteKeyframe(std::ofstream& out, const BoneKeyframe& kf)
 
 // ─── Helper: read one keyframe from binary stream ───
 
-static void ReadKeyframe(std::ifstream& in, BoneKeyframe& kf)
+class BinarySpanReader
 {
-	in.read(reinterpret_cast<char*>(&kf.time),     sizeof(float));
-	in.read(reinterpret_cast<char*>(&kf.position), sizeof(glm::vec3));
-	in.read(reinterpret_cast<char*>(&kf.rotation), sizeof(glm::quat));
-	in.read(reinterpret_cast<char*>(&kf.scale),    sizeof(glm::vec3));
+public:
+	BinarySpanReader() = default;
+	BinarySpanReader(const char* data, size_t size)
+		: m_Data(data), m_Size(size)
+	{}
+
+	bool ReadBytes(void* destination, size_t size)
+	{
+		if (destination == nullptr || size > Remaining())
+			return false;
+		std::memcpy(destination, m_Data + m_Offset, size);
+		m_Offset += size;
+		return true;
+	}
+
+	bool ReadString(size_t size, std::string& out)
+	{
+		if (size > Remaining())
+			return false;
+		out.assign(m_Data + m_Offset, size);
+		m_Offset += size;
+		return true;
+	}
+
+	size_t Remaining() const
+	{
+		return m_Size - m_Offset;
+	}
+
+private:
+	const char* m_Data = nullptr;
+	size_t m_Size = 0;
+	size_t m_Offset = 0;
+};
+
+static bool ReadKeyframe(BinarySpanReader& reader, BoneKeyframe& kf)
+{
+	return reader.ReadBytes(&kf.time, sizeof(float)) &&
+		reader.ReadBytes(&kf.position, sizeof(glm::vec3)) &&
+		reader.ReadBytes(&kf.rotation, sizeof(glm::quat)) &&
+		reader.ReadBytes(&kf.scale, sizeof(glm::vec3));
+}
+
+static bool ReadClipEnvelope(
+	const std::string& filePath,
+	std::string& bytes,
+	uint32_t& version,
+	std::string& headerStr,
+	BinarySpanReader& payloadReader,
+	bool logFailures)
+{
+	std::string error;
+	if (!Vans::VansFileStorage::ReadAllBytes(filePath, bytes, error))
+	{
+		if (logFailures)
+			VANS_LOG_ERROR("[VansAnimationClipIO] Failed to open for reading: " << filePath);
+		return false;
+	}
+
+	BinarySpanReader reader(bytes.data(), bytes.size());
+	char magic[MAGIC_SIZE];
+	if (!reader.ReadBytes(magic, MAGIC_SIZE) || std::memcmp(magic, VCLIP_MAGIC, MAGIC_SIZE) != 0)
+	{
+		if (logFailures)
+			VANS_LOG_ERROR("[VansAnimationClipIO] Invalid magic in: " << filePath);
+		return false;
+	}
+
+	if (!reader.ReadBytes(&version, sizeof(uint32_t)))
+	{
+		if (logFailures)
+			VANS_LOG_ERROR("[VansAnimationClipIO] Truncated version in: " << filePath);
+		return false;
+	}
+
+	uint32_t headerSize = 0;
+	uint64_t payloadSize = 0;
+	if (!reader.ReadBytes(&headerSize, sizeof(uint32_t)) ||
+		!reader.ReadBytes(&payloadSize, sizeof(uint64_t)) ||
+		!reader.ReadString(headerSize, headerStr))
+	{
+		if (logFailures)
+			VANS_LOG_ERROR("[VansAnimationClipIO] Truncated header in: " << filePath);
+		return false;
+	}
+
+	if (payloadSize > reader.Remaining() || payloadSize > static_cast<uint64_t>((std::numeric_limits<size_t>::max)()))
+	{
+		if (logFailures)
+			VANS_LOG_ERROR("[VansAnimationClipIO] Truncated payload in: " << filePath);
+		return false;
+	}
+
+	payloadReader = BinarySpanReader(bytes.data() + (bytes.size() - reader.Remaining()), static_cast<size_t>(payloadSize));
+	return true;
 }
 
 // ─── Helper: mat4 → json array of 16 floats (column-major) ───
@@ -108,12 +201,7 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 	uint64_t payloadSize  = totalKeyframes * BYTES_PER_KEYFRAME;
 
 	// ── Write file ──
-	std::ofstream file(filePath, std::ios::binary);
-	if (!file.is_open())
-	{
-		VANS_LOG_ERROR("[VansAnimationClipIO] Failed to open for writing: " << filePath);
-		return false;
-	}
+	std::ostringstream file(std::ios::binary);
 
 	// Binary header
 	file.write(VCLIP_MAGIC, MAGIC_SIZE);
@@ -136,7 +224,19 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 		}
 	}
 
-	file.close();
+	if (!file)
+	{
+		VANS_LOG_ERROR("[VansAnimationClipIO] Failed to serialize clip bytes: " << filePath);
+		return false;
+	}
+
+	std::string error;
+	if (!Vans::VansFileStorage::WriteAtomicBytes(filePath, file.str(), error))
+	{
+		VANS_LOG_ERROR("[VansAnimationClipIO] Failed to save: " << filePath << " (" << error << ")");
+		return false;
+	}
+
 	VANS_LOG("[VansAnimationClipIO] Saved: " << filePath
 	         << " (" << skeleton.bones.size() << " bones, " << totalKeyframes << " keyframes)");
 	return true;
@@ -150,39 +250,21 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
                                               VansAnimationClip& outClip,
                                               Skeleton& outSkeleton)
 {
-	std::ifstream file(filePath, std::ios::binary);
-	if (!file.is_open())
-	{
-		VANS_LOG_ERROR("[VansAnimationClipIO] Failed to open for reading: " << filePath);
+	std::string bytes;
+	std::string headerStr;
+	uint32_t version = 0;
+	BinarySpanReader payloadReader;
+	if (!ReadClipEnvelope(filePath, bytes, version, headerStr, payloadReader, true))
 		return false;
-	}
 
 	// ── Read binary header ──
-	char magic[MAGIC_SIZE];
-	file.read(magic, MAGIC_SIZE);
-	if (std::memcmp(magic, VCLIP_MAGIC, MAGIC_SIZE) != 0)
-	{
-		VANS_LOG_ERROR("[VansAnimationClipIO] Invalid magic in: " << filePath);
-		return false;
-	}
-
-	uint32_t version = 0;
-	file.read(reinterpret_cast<char*>(&version), sizeof(uint32_t));
 	if (version > VCLIP_VERSION)
 	{
 		VANS_LOG_WARN("[VansAnimationClipIO] File version " << version
 		             << " is newer than supported " << VCLIP_VERSION << ", attempting load anyway.");
 	}
 
-	uint32_t headerSize = 0;
-	uint64_t payloadSize = 0;
-	file.read(reinterpret_cast<char*>(&headerSize),  sizeof(uint32_t));
-	file.read(reinterpret_cast<char*>(&payloadSize), sizeof(uint64_t));
-
 	// ── Read JSON header ──
-	std::string headerStr(headerSize, '\0');
-	file.read(&headerStr[0], headerSize);
-
 	json header;
 	try
 	{
@@ -240,11 +322,13 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 		outClip.boneKeyframes[b].resize(kfCount);
 		for (uint32_t k = 0; k < kfCount; k++)
 		{
-			ReadKeyframe(file, outClip.boneKeyframes[b][k]);
+			if (!ReadKeyframe(payloadReader, outClip.boneKeyframes[b][k]))
+			{
+				VANS_LOG_ERROR("[VansAnimationClipIO] Truncated keyframe payload in: " << filePath);
+				return false;
+			}
 		}
 	}
-
-	file.close();
 
 	// 从 .vclip 还原的骨架也需要拓扑排序
 	outSkeleton.BuildTopologicalOrder();
@@ -259,24 +343,11 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 bool VansGraphics::VansAnimationClipIO::Peek(const std::string& filePath,
                                               VansAnimationClipInfo& outInfo)
 {
-	std::ifstream file(filePath, std::ios::binary);
-	if (!file.is_open())
+	std::string bytes;
+	std::string headerStr;
+	BinarySpanReader payloadReader;
+	if (!ReadClipEnvelope(filePath, bytes, outInfo.version, headerStr, payloadReader, false))
 		return false;
-
-	char magic[MAGIC_SIZE];
-	file.read(magic, MAGIC_SIZE);
-	if (std::memcmp(magic, VCLIP_MAGIC, MAGIC_SIZE) != 0)
-		return false;
-
-	file.read(reinterpret_cast<char*>(&outInfo.version), sizeof(uint32_t));
-
-	uint32_t headerSize = 0;
-	uint64_t payloadSize = 0;
-	file.read(reinterpret_cast<char*>(&headerSize),  sizeof(uint32_t));
-	file.read(reinterpret_cast<char*>(&payloadSize), sizeof(uint64_t));
-
-	std::string headerStr(headerSize, '\0');
-	file.read(&headerStr[0], headerSize);
 
 	try
 	{

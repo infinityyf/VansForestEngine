@@ -1,13 +1,23 @@
 #include "VansAnimatorIO.h"
+#include "../AssetCore/Storage/VansJsonFileStorage.h"
 #include "../Util/VansLog.h"
 
 #include <nlohmann/json.hpp>
-#include <fstream>
-#include <filesystem>
 #include <memory>
 
 using json = nlohmann::json;
 using namespace VansGraphics;
+
+static bool ReadAnimatorJson(const std::string& filePath, json& root)
+{
+	std::string error;
+	if (!Vans::VansJsonFileStorage::Read(filePath, root, error))
+	{
+		VANS_LOG_WARN("[VansAnimatorIO] Cannot read .vanimator file: " << filePath << " (" << error << ")");
+		return false;
+	}
+	return true;
+}
 
 // ════════════════════════════════════════════════════════════════
 //  辅助函数: 参数类型字符串转换
@@ -303,21 +313,14 @@ bool VansAnimatorIO::Save(const std::string& filePath,
 	}
 
 	// ── 确保目录存在 ──
-	std::filesystem::path dirPath = std::filesystem::path(filePath).parent_path();
-	if (!dirPath.empty())
-		std::filesystem::create_directories(dirPath);
-
-	// ── 写文件 ──
-	std::ofstream outFile(filePath);
-	if (!outFile.is_open())
+	std::string error;
+	if (!Vans::VansJsonFileStorage::WriteAtomic(filePath, root, error))
 	{
-		VANS_LOG_ERROR("[VansAnimatorIO] Cannot open file for writing: " << filePath);
+		VANS_LOG_ERROR("[VansAnimatorIO] Cannot save .vanimator file: " << filePath << " (" << error << ")");
 		return false;
 	}
 
-	outFile << root.dump(4);
-	outFile.close();
-
+	// ── 写文件 ──
 	VANS_LOG("[VansAnimatorIO] Saved .vanimator: " << filePath);
 	return true;
 }
@@ -328,25 +331,10 @@ bool VansAnimatorIO::Save(const std::string& filePath,
 
 bool VansAnimatorIO::Load(const std::string& filePath, AnimatorAssetData& outData)
 {
-	std::ifstream inFile(filePath);
-	if (!inFile.is_open())
-	{
-		VANS_LOG_WARN("[VansAnimatorIO] Cannot open .vanimator file: " << filePath);
-		return false;
-	}
-
 	json root;
-	try
-	{
-		root = json::parse(inFile);
-	}
-	catch (const json::parse_error& e)
-	{
-		VANS_LOG_ERROR("[VansAnimatorIO] JSON parse error in " << filePath << ": " << e.what());
+	if (!ReadAnimatorJson(filePath, root))
 		return false;
-	}
 
-	// ── 校验 magic ──
 	if (!root.contains("magic") || root["magic"].get<std::string>() != VANIMATOR_MAGIC)
 	{
 		VANS_LOG_ERROR("[VansAnimatorIO] Invalid magic in: " << filePath);
@@ -444,19 +432,9 @@ bool VansAnimatorIO::Peek(const std::string& filePath,
                            uint32_t& outStateCount,
                            uint32_t& outParamCount)
 {
-	std::ifstream inFile(filePath);
-	if (!inFile.is_open())
-		return false;
-
 	json root;
-	try
-	{
-		root = json::parse(inFile);
-	}
-	catch (const json::parse_error&)
-	{
+	if (!ReadAnimatorJson(filePath, root))
 		return false;
-	}
 
 	if (!root.contains("magic") || root["magic"].get<std::string>() != VANIMATOR_MAGIC)
 		return false;

@@ -1,11 +1,10 @@
 #include "VansScriptorWindow.h"
 #include "../VansEditorWindow.h"
+#include "../../AssetCore/Storage/VansFileStorage.h"
 #include "../../Util/VansInputManager.h"
 #include "VansConsole.h"
 #include "imgui.h"
 
-#include <fstream>
-#include <sstream>
 #include <algorithm>
 
 std::filesystem::path VansGraphics::VansScriptorWindow::m_SelectedScript = "";
@@ -233,12 +232,15 @@ void VansGraphics::VansScriptorWindow::LoadSelectedFile()
     m_Dirty = false;
     m_LoadedPath = m_SelectedScript;
 
-    std::ifstream ifs(m_SelectedScript, std::ios::binary);
-    if (ifs.is_open())
+    std::string contents;
+    std::string error;
+    if (Vans::VansFileStorage::ReadAllBytes(m_SelectedScript, contents, error))
     {
-        std::ostringstream ss;
-        ss << ifs.rdbuf();
-        m_EditBuffer = ss.str();
+        m_EditBuffer = std::move(contents);
+    }
+    else
+    {
+        VansConsole::Get().LogPython("[Script] Failed to load " + m_SelectedScript.string() + " (" + error + ")");
     }
 
     // Resize to fit EDIT_BUF_SIZE so ImGui has room for edits
@@ -252,11 +254,10 @@ void VansGraphics::VansScriptorWindow::SaveCurrentFile(Vans::EditorAPI::IEngineE
     // Find the actual string length (buffer is zero-padded)
     size_t len = strlen(m_EditBuffer.c_str());
 
-    std::ofstream ofs(m_LoadedPath, std::ios::binary | std::ios::trunc);
-    if (ofs.is_open())
+    std::string error;
+    const std::string contents(m_EditBuffer.c_str(), len);
+    if (Vans::VansFileStorage::WriteAtomicBytes(m_LoadedPath, contents, error))
     {
-        ofs.write(m_EditBuffer.c_str(), len);
-        ofs.close();
         m_Dirty = false;
         VansConsole::Get().LogPython("[Script] Saved " + m_LoadedPath.filename().string());
 
@@ -265,6 +266,6 @@ void VansGraphics::VansScriptorWindow::SaveCurrentFile(Vans::EditorAPI::IEngineE
     }
     else
     {
-        VansConsole::Get().LogPython("[Script] Failed to save " + m_LoadedPath.string());
+        VansConsole::Get().LogPython("[Script] Failed to save " + m_LoadedPath.string() + " (" + error + ")");
     }
 }

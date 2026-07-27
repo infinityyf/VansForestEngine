@@ -1,6 +1,7 @@
 #include "VansClothProfileEditorWindow.h"
 
 #include "../../AssetCore/VansClothProfile.h"
+#include "../../AssetCore/Storage/VansClothProfileStorage.h"
 
 #include "../../Util/VansLog.h"
 
@@ -438,7 +439,8 @@ namespace VansGraphics
 
 
 
-        if (m_Profile->LoadFromFile(profilePath))
+        std::string loadError;
+        if (VansEngine::VansClothProfileStorage::Load(profilePath, *m_Profile, loadError))
 
         {
 
@@ -458,7 +460,7 @@ namespace VansGraphics
 
         {
 
-            VANS_LOG_WARN("[VansClothProfileEditor] ?? Profile ??: " << profilePath);
+            VANS_LOG_WARN("[VansClothProfileEditor] ?? Profile ??: " << profilePath << " (" << loadError << ")");
 
         }
 
@@ -1244,7 +1246,8 @@ namespace VansGraphics
 
         }
 
-        if (m_Profile->SaveToFile(m_CurrentProfilePath))
+        std::string saveError;
+        if (VansEngine::VansClothProfileStorage::SaveAtomic(m_CurrentProfilePath, *m_Profile, saveError))
 
         {
 
@@ -1258,7 +1261,7 @@ namespace VansGraphics
 
         {
 
-            VANS_LOG_ERROR("[VansClothProfileEditor] Profile ????: " << m_CurrentProfilePath);
+            VANS_LOG_ERROR("[VansClothProfileEditor] Profile ????: " << m_CurrentProfilePath << " (" << saveError << ")");
 
         }
 

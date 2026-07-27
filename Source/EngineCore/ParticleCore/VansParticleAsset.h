@@ -1,6 +1,5 @@
 #pragma once
 #include "VansParticleEmitter.h"
-#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 #include <memory>
@@ -30,19 +29,6 @@ namespace VansGraphics
         // ── Emitter 列表 ─────────────────────────────────────────
         std::vector<std::unique_ptr<VansParticleEmitter>> m_Emitters;
 
-        // ── 接口 ─────────────────────────────────────────────────
-
-        // 从文件加载：失败返回 false
-        bool LoadFromFile(const std::string& filePath);
-
-        // 序列化到文件：失败返回 false
-        bool SaveToFile(const std::string& filePath) const;
-
-        // 序列化到 JSON 对象
-        nlohmann::json Serialize() const;
-
-        // 从 JSON 对象反序列化（会清空现有数据）
-        void Deserialize(const nlohmann::json& j);
     };
 
 } // namespace VansGraphics

@@ -107,6 +107,27 @@ void VansGraphics::VansRenderNode::DestroyDescriptorSets()
 
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(frameBufferInputLayout);
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(frameBufferInputDescriptorSets);
+
+	modelBufferLayout = VK_NULL_HANDLE;
+	textureResourceLayout = VK_NULL_HANDLE;
+	frameBufferInputLayout = VK_NULL_HANDLE;
+	modelBufferDescriptorSets.clear();
+	textureResourceDescriptorSets.clear();
+	frameBufferInputDescriptorSets.clear();
+	m_UsedDescSetLayouts.clear();
+	m_UsedDescSets.clear();
+	m_DescriptorsetsDirty = true;
+	m_DescriptorsetsSetDone = false;
+}
+
+void VansGraphics::VansRenderNode::RecreateDescriptorSets(
+	VansCamera* camera,
+	VansLightManager& lightManager,
+	VansMaterialManager& materialManager)
+{
+	DestroyDescriptorSets();
+	CreateDescriptorSets(camera, lightManager, materialManager);
+	m_DescriptorsetsDirty = true;
 }
 
 void VansGraphics::VansRenderNode::ComputeModelDataFromTransform()
@@ -209,6 +230,9 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 			pc.materialIndex = static_cast<VansSubsurfaceMaterial*>(m_Material)->m_MaterialIndex;
 			break;
 		case VansMaterialType::VAN_CLOTH:
+			pc.materialIndex = m_Material->m_MaterialIndex;
+			break;
+		case VansMaterialType::VAN_SKIN:
 			pc.materialIndex = m_Material->m_MaterialIndex;
 			break;
 		case VansMaterialType::VAN_CUSTOM_SHADER:

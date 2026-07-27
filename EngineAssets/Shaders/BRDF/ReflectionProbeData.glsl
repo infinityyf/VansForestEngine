@@ -39,6 +39,26 @@ struct ReflectionProbeSample
     vec3 parallaxDelta;
 };
 
+float GetSkyDiffuseCubeIntensity()
+{
+    return max(reflectionProbeLightingParams.w, 0.0);
+}
+
+float GetSkySpecularCubeIntensity()
+{
+    return max(reflectionProbeLightingParams.z, 0.0);
+}
+
+vec3 SampleSkyDiffuseCube(samplerCube skyDiffuse, vec3 direction)
+{
+    return texture(skyDiffuse, normalize(direction)).rgb * GetSkyDiffuseCubeIntensity();
+}
+
+vec3 SampleSkySpecularCube(samplerCube skySpecular, vec3 direction, float lod)
+{
+    return textureLod(skySpecular, normalize(direction), lod).rgb * GetSkySpecularCubeIntensity();
+}
+
 bool ReflectionProbeContainsBox(vec3 P, ReflectionProbeGPU probe)
 {
     return all(greaterThanEqual(P, probe.boxMinAndType.xyz)) &&

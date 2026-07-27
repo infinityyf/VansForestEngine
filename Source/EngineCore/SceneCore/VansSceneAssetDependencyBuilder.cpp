@@ -1,13 +1,21 @@
 #include "VansSceneAssetDependencyBuilder.h"
 
+#include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
 #include "../AssetCore/VansAssetMeta.h"
+#include "../AssetCore/VansMaterialAuthoringAsset.h"
+#include "../AssetCore/VansShaderAuthoringAsset.h"
+#include "../AssetCore/Storage/VansAssetMetaStorage.h"
+#include "../AssetCore/Storage/VansJsonFileStorage.h"
+#include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
+#include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSchema.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
 #include <cctype>
-#include <fstream>
-#include <functional>
+#include <nlohmann/json.hpp>
 #include <unordered_map>
 #include <vector>
 
@@ -18,77 +26,91 @@ namespace
 	constexpr int SceneTexture2D = 0;
 	constexpr int SceneTextureCube = 2;
 
-	std::string ReadStringField(const nlohmann::json& object, const char* key)
+	VansSerializedValue EmptyObject()
 	{
-		if (!object.is_object())
-			return {};
-		const auto found = object.find(key);
-		return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
+		return VansSerializedValue::Object({});
 	}
 
-	bool ReadBoolField(const nlohmann::json& object, const char* key, bool fallback)
+	VansSerializedValue LoadSerializedJsonFileOrEmpty(const std::filesystem::path& path, const char* context)
 	{
-		if (!object.is_object())
-			return fallback;
-		const auto found = object.find(key);
-		return found != object.end() && found->is_boolean() ? found->get<bool>() : fallback;
+		nlohmann::json root;
+		std::string error;
+		if (!VansJsonFileStorage::Read(path, root, error))
+		{
+			VANS_LOG_ERROR("[" << context << "] Cannot read JSON file: " << path.string() << " (" << error << ")");
+			return EmptyObject();
+		}
+		if (!root.is_object())
+			return EmptyObject();
+		return DecodeSerializedValueLegacyJson(root);
 	}
 
-	float ReadFloatField(const nlohmann::json& object, const char* key, float fallback)
+	VansSerializedValue LoadSceneDocumentOrEmpty(const std::filesystem::path& path)
 	{
-		if (!object.is_object())
-			return fallback;
-		const auto found = object.find(key);
-		return found != object.end() && found->is_number() ? found->get<float>() : fallback;
+		SceneDocumentLoadResult loadResult = VansSceneDocumentLoader::Load(path);
+		if (!loadResult)
+		{
+			VANS_LOG_ERROR("[AssetDatabase] Cannot read Scene document: " << path.string());
+			for (const SceneDiagnostic& diagnostic : loadResult.diagnostics)
+			{
+				if (!diagnostic.message.empty())
+					VANS_LOG_ERROR("[AssetDatabase] " << diagnostic.message);
+			}
+			return EmptyObject();
+		}
+		return loadResult.document->SerializedRootSnapshot();
 	}
 
-	const nlohmann::json* ReadObjectField(const nlohmann::json& object, const char* key)
+	const VansSerializedValue* ReadSerializedObjectField(const VansSerializedValue& object, const char* key)
 	{
-		if (!object.is_object())
-			return nullptr;
-		const auto found = object.find(key);
-		return found != object.end() && found->is_object() ? &(*found) : nullptr;
+		const VansSerializedValue* field = FindObjectField(object, key);
+		return field != nullptr && field->kind == VansSerializedValue::Kind::Object ? field : nullptr;
 	}
 
-	const nlohmann::json* ReadArrayField(const nlohmann::json& object, const char* key)
+	const VansSerializedValue* ReadSerializedArrayField(const VansSerializedValue& object, const char* key)
 	{
-		if (!object.is_object())
-			return nullptr;
-		const auto found = object.find(key);
-		return found != object.end() && found->is_array() ? &(*found) : nullptr;
+		const VansSerializedValue* field = FindObjectField(object, key);
+		return field != nullptr && field->kind == VansSerializedValue::Kind::Array ? field : nullptr;
 	}
 
-	std::vector<std::string> ReadShaderMaterialPasses(const nlohmann::json& shader)
+	std::string ReadAssetGuidReference(const VansSerializedValue& value)
+	{
+		if (value.kind == VansSerializedValue::Kind::String)
+			return value.stringValue;
+		if (value.kind == VansSerializedValue::Kind::Object)
+			return ReadSerializedStringField(value, "guid");
+		return {};
+	}
+
+	std::vector<std::string> ReadShaderMaterialPasses(const VansSerializedValue& shader)
 	{
 		std::vector<std::string> passes;
-		const nlohmann::json* passValue = nullptr;
-		if (shader.contains("passes"))
-			passValue = &shader["passes"];
-		else if (shader.contains("materialPasses"))
-			passValue = &shader["materialPasses"];
-		else if (shader.contains("pass"))
-			passValue = &shader["pass"];
+		const VansSerializedValue* passValue = FindObjectField(shader, "passes");
+		if (passValue == nullptr)
+			passValue = FindObjectField(shader, "materialPasses");
+		if (passValue == nullptr)
+			passValue = FindObjectField(shader, "pass");
 
 		if (passValue == nullptr)
 			return passes;
 
-		if (passValue->is_string())
+		if (passValue->kind == VansSerializedValue::Kind::String)
 		{
-			passes.push_back(passValue->get<std::string>());
+			passes.push_back(passValue->stringValue);
 		}
-		else if (passValue->is_array())
+		else if (passValue->kind == VansSerializedValue::Kind::Array)
 		{
-			for (const auto& passName : *passValue)
+			for (const VansSerializedValue& passName : passValue->arrayItems)
 			{
-				if (passName.is_string())
-					passes.push_back(passName.get<std::string>());
+				if (passName.kind == VansSerializedValue::Kind::String)
+					passes.push_back(passName.stringValue);
 			}
 		}
-		else if (passValue->is_object())
+		else if (passValue->kind == VansSerializedValue::Kind::Object)
 		{
-			for (const auto& [passName, enabled] : passValue->items())
+			for (const auto& [passName, enabled] : passValue->objectFields)
 			{
-				if (!enabled.is_boolean() || enabled.get<bool>())
+				if (enabled.kind != VansSerializedValue::Kind::Bool || enabled.boolValue)
 					passes.push_back(passName);
 			}
 		}
@@ -97,13 +119,17 @@ namespace
 	}
 
 	VansSceneShaderResourceRequest BuildShaderResourceRequest(
-		const nlohmann::json& shader,
+		const VansShaderAuthoringAsset& shader,
 		const VansAssetRecord& record,
 		const std::filesystem::path& projectRoot)
 	{
+		const VansSerializedValue& root = shader.root;
+
 		VansSceneShaderResourceRequest request;
-		request.name = shader.value("name", record.guid.ToString());
-		request.source = shader.value("source", shader.value("path", std::string{}));
+		request.name = shader.name.empty() ? record.guid.ToString() : shader.name;
+		request.source = ReadSerializedStringField(root, "source");
+		if (request.source.empty())
+			request.source = ReadSerializedStringField(root, "path");
 		if (request.source.empty())
 		{
 			std::error_code relErr;
@@ -112,38 +138,40 @@ namespace
 				request.source = record.sourcePath.parent_path().string();
 		}
 
-		request.kind = shader.value("kind", shader.value("type", std::string("graphics")));
-		if (shader.contains("pushConstantSize") && shader["pushConstantSize"].is_number_integer())
-			request.pushConstantSize = shader["pushConstantSize"].get<int>();
-		request.depthTest = shader.value("depthTest", true);
-		request.depthWrite = shader.value("depthWrite", true);
-		request.depthCompare = shader.value("depthCompare", std::string("lessOrEqual"));
-		request.cull = shader.value("cull", std::string("back"));
-		request.alphaBlend = shader.value("alphaBlend", false);
-		request.decalBlend = shader.value("decalBlend", false);
-		request.additiveBlend = shader.value("additiveBlend", false);
-		request.additiveBlendAttachmentMask = shader.value("additiveBlendAttachmentMask", 0u);
-		request.premultipliedAlphaBlend = shader.value("premultipliedAlphaBlend", false);
-		request.colorAttachmentCount = shader.value("colorAttachmentCount", -1);
-		request.polygonMode = shader.value("polygonMode", std::string("fill"));
-		request.frontFace = shader.value("frontFace", std::string("counterClockwise"));
-		request.primitiveTopology = shader.value("primitiveTopology", std::string("triangleList"));
-		request.patchControlPoints = shader.value("patchControlPoints", 1u);
-		request.renderPath = shader.value("renderPath", std::string{});
-		request.materialPasses = ReadShaderMaterialPasses(shader);
+		request.kind = ReadSerializedStringField(root, "kind", ReadSerializedStringField(root, "type", "graphics"));
+		if (const VansSerializedValue* pushConstantSize = FindObjectField(root, "pushConstantSize"))
+			request.pushConstantSize = static_cast<int>(ReadSerializedInt(*pushConstantSize, request.pushConstantSize));
+		request.depthTest = ReadSerializedBoolField(root, "depthTest", true);
+		request.depthWrite = ReadSerializedBoolField(root, "depthWrite", true);
+		request.depthCompare = ReadSerializedStringField(root, "depthCompare", "lessOrEqual");
+		request.cull = ReadSerializedStringField(root, "cull", "back");
+		request.alphaBlend = ReadSerializedBoolField(root, "alphaBlend", false);
+		request.decalBlend = ReadSerializedBoolField(root, "decalBlend", false);
+		request.additiveBlend = ReadSerializedBoolField(root, "additiveBlend", false);
+		request.additiveBlendAttachmentMask = static_cast<unsigned int>(
+			ReadSerializedIntField(root, "additiveBlendAttachmentMask", 0));
+		request.premultipliedAlphaBlend = ReadSerializedBoolField(root, "premultipliedAlphaBlend", false);
+		request.colorAttachmentCount = static_cast<int>(ReadSerializedIntField(root, "colorAttachmentCount", -1));
+		request.polygonMode = ReadSerializedStringField(root, "polygonMode", "fill");
+		request.frontFace = ReadSerializedStringField(root, "frontFace", "counterClockwise");
+		request.primitiveTopology = ReadSerializedStringField(root, "primitiveTopology", "triangleList");
+		request.patchControlPoints = static_cast<unsigned int>(ReadSerializedIntField(root, "patchControlPoints", 1));
+		request.renderPath = ReadSerializedStringField(root, "renderPath");
+		request.materialPasses = ReadShaderMaterialPasses(root);
 
-		if (const nlohmann::json* stages = ReadObjectField(shader, "stages"))
+		if (const VansSerializedValue* stages = FindObjectField(root, "stages");
+			stages != nullptr && stages->kind == VansSerializedValue::Kind::Object)
 		{
-			for (const auto& [stageName, stageFile] : stages->items())
+			for (const auto& [stageName, stageFile] : stages->objectFields)
 			{
-				if (stageFile.is_string())
-					request.stages[stageName] = stageFile.get<std::string>();
+				if (stageFile.kind == VansSerializedValue::Kind::String)
+					request.stages[stageName] = stageFile.stringValue;
 			}
 		}
 
 		auto readStageFile = [&](const char* key)
 		{
-			const std::string file = ReadStringField(shader, key);
+			const std::string file = ReadSerializedStringField(root, key);
 			if (!file.empty())
 				request.stages[key] = file;
 		};
@@ -157,33 +185,31 @@ namespace
 		return request;
 	}
 
-	const nlohmann::json* ReadVegetationField(const nlohmann::json& sceneDocument)
+	const VansSerializedValue* ReadVegetationField(const VansSerializedValue& sceneDocument)
 	{
-		if (!sceneDocument.is_object())
+		if (sceneDocument.kind != VansSerializedValue::Kind::Object)
 			return nullptr;
-		auto found = sceneDocument.find("vegetation");
-		if (found != sceneDocument.end())
-			return &(*found);
-		const nlohmann::json* settings = ReadObjectField(sceneDocument, "settings");
+		if (const VansSerializedValue* vegetation = FindObjectField(sceneDocument, "vegetation"))
+			return vegetation;
+		const VansSerializedValue* settings = ReadSerializedObjectField(sceneDocument, "settings");
 		if (settings == nullptr)
 			return nullptr;
-		found = settings->find("vegetation");
-		return found != settings->end() ? &(*found) : nullptr;
+		return FindObjectField(*settings, "vegetation");
 	}
 
-	std::string ReadVegetationConfigPath(const nlohmann::json& vegetationData)
+	std::string ReadVegetationConfigPath(const VansSerializedValue& vegetationData)
 	{
-		if (vegetationData.is_string())
-			return vegetationData.get<std::string>();
-		if (!vegetationData.is_object())
+		if (vegetationData.kind == VansSerializedValue::Kind::String)
+			return vegetationData.stringValue;
+		if (vegetationData.kind != VansSerializedValue::Kind::Object)
 			return {};
-		std::string path = ReadStringField(vegetationData, "config");
-		if (path.empty()) path = ReadStringField(vegetationData, "configPath");
-		if (path.empty()) path = ReadStringField(vegetationData, "path");
+		std::string path = ReadSerializedStringField(vegetationData, "config");
+		if (path.empty()) path = ReadSerializedStringField(vegetationData, "configPath");
+		if (path.empty()) path = ReadSerializedStringField(vegetationData, "path");
 		return path;
 	}
 
-	nlohmann::json LoadVegetationConfigFromReference(const nlohmann::json& vegetationData, const std::string& projectRoot)
+	VansSerializedValue LoadVegetationConfigFromReference(const VansSerializedValue& vegetationData, const std::string& projectRoot)
 	{
 		const std::string configPath = ReadVegetationConfigPath(vegetationData);
 		if (configPath.empty())
@@ -193,28 +219,21 @@ namespace
 		if (resolved.is_relative())
 			resolved = std::filesystem::path(projectRoot) / resolved;
 
-		std::ifstream input(resolved);
-		if (!input)
-		{
-			VANS_LOG_ERROR("[VegetationConfig] Cannot open config file: " << resolved.string());
-			return nlohmann::json::object();
-		}
-
-		nlohmann::json loaded = nlohmann::json::parse(input, nullptr, false);
-		if (loaded.is_discarded() || !loaded.is_object())
+		VansSerializedValue loaded = LoadSerializedJsonFileOrEmpty(resolved, "VegetationConfig");
+		if (loaded.kind != VansSerializedValue::Kind::Object)
 		{
 			VANS_LOG_ERROR("[VegetationConfig] Invalid JSON config file: " << resolved.string());
-			return nlohmann::json::object();
+			return EmptyObject();
 		}
 		VANS_LOG("[VegetationConfig] Loaded config file: " << resolved.string());
 
-		if (vegetationData.is_object())
+		if (vegetationData.kind == VansSerializedValue::Kind::Object)
 		{
-			for (const auto& [key, value] : vegetationData.items())
+			for (const auto& [key, value] : vegetationData.objectFields)
 			{
 				if (key == "config" || key == "configPath" || key == "path")
 					continue;
-				loaded[key] = value;
+				SetSerializedObjectField(loaded, key, value);
 			}
 		}
 		return loaded;
@@ -260,56 +279,94 @@ namespace
 		return fallbackGuid;
 	}
 
+	void CollectSerializedAssetReferences(
+		const VansSerializedValue& value,
+		const std::unordered_map<std::string, VansAssetType>& assetTypesByGuid,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (value.kind == VansSerializedValue::Kind::String)
+		{
+			const auto found = assetTypesByGuid.find(value.stringValue);
+			if (found == assetTypesByGuid.end()) return;
+			switch (found->second)
+			{
+			case VansAssetType::Model: result.requiredModels.insert(found->first); break;
+			case VansAssetType::Texture: result.requiredTextures.insert(found->first); break;
+			case VansAssetType::Material: result.requiredMaterials.insert(found->first); break;
+			case VansAssetType::Shader: result.requiredShaders.insert(found->first); break;
+			default: break;
+			}
+			return;
+		}
+
+		if (value.kind == VansSerializedValue::Kind::Array)
+		{
+			for (const VansSerializedValue& item : value.arrayItems)
+				CollectSerializedAssetReferences(item, assetTypesByGuid, result);
+			return;
+		}
+
+		if (value.kind == VansSerializedValue::Kind::Object)
+		{
+			for (const auto& [key, item] : value.objectFields)
+				CollectSerializedAssetReferences(item, assetTypesByGuid, result);
+		}
+	}
+
 	void CollectMaterialTextureDependencies(
 		VansAssetDatabase& database,
-		const nlohmann::json& material,
+		const VansMaterialAuthoringAsset& material,
 		std::unordered_set<std::string>& requiredTextures)
 	{
-		const std::string preferredRoot = material.value("importSource", nlohmann::json::object()).value("model", "");
-		if (const nlohmann::json* texturesObject = ReadObjectField(material, "textures"))
+		const std::string preferredRoot = material.preferredImportModel;
+		const std::string generatedFor = ReadSerializedStringField(material.importSource, "generatedFor");
+		auto logTexture = [&](const std::string& slot, const std::string& textureGuid)
 		{
-			for (const auto& [slot, texture] : texturesObject->items())
+			if (preferredRoot == "BMW_M4" || generatedFor == "runtimeMultiMeshExpansion")
+			{
+				VANS_LOG("[MaterialDeps] material=" << material.guid
+					<< " slot=" << slot
+					<< " textureGuid=" << textureGuid
+					<< " preferredRoot=" << preferredRoot);
+			}
+		};
+
+		if (material.textures.kind == VansSerializedValue::Kind::Object)
+		{
+			for (const auto& [slot, texture] : material.textures.objectFields)
 			{
 				std::string textureGuid;
-				if (texture.is_object())
-					textureGuid = ReadStringField(texture, "guid");
-				else if (texture.is_string())
-					textureGuid = ResolveTextureGuidFromAlias(database, texture.get<std::string>(), preferredRoot);
+				if (texture.kind == VansSerializedValue::Kind::Object)
+					textureGuid = ReadSerializedStringField(texture, "guid");
+				else if (texture.kind == VansSerializedValue::Kind::String)
+					textureGuid = ResolveTextureGuidFromAlias(database, texture.stringValue, preferredRoot);
 				if (!textureGuid.empty())
 				{
-					if (preferredRoot == "BMW_M4" || material.value("importSource", nlohmann::json::object()).value("generatedFor", "") == "runtimeMultiMeshExpansion")
-					{
-						VANS_LOG("[MaterialDeps] material=" << material.value("guid", std::string{})
-							<< " slot=" << slot
-							<< " textureGuid=" << textureGuid
-							<< " preferredRoot=" << preferredRoot);
-					}
+					logTexture(slot, textureGuid);
 					requiredTextures.insert(textureGuid);
 				}
 			}
 			return;
 		}
-		if (material.contains("textures") && material["textures"].is_array())
+
+		if (material.textures.kind == VansSerializedValue::Kind::Array)
 		{
-			for (const auto& entry : material["textures"])
+			for (const VansSerializedValue& entry : material.textures.arrayItems)
 			{
-				if (!entry.is_object() || !entry.contains("texture"))
+				if (entry.kind != VansSerializedValue::Kind::Object)
 					continue;
-				const nlohmann::json& texture = entry["texture"];
+				const VansSerializedValue* texture = FindObjectField(entry, "texture");
+				if (texture == nullptr)
+					continue;
+
 				std::string textureGuid;
-				if (texture.is_object())
-					textureGuid = ReadStringField(texture, "guid");
-				else if (texture.is_string())
-					textureGuid = ResolveTextureGuidFromAlias(database, texture.get<std::string>(), preferredRoot);
+				if (texture->kind == VansSerializedValue::Kind::Object)
+					textureGuid = ReadSerializedStringField(*texture, "guid");
+				else if (texture->kind == VansSerializedValue::Kind::String)
+					textureGuid = ResolveTextureGuidFromAlias(database, texture->stringValue, preferredRoot);
 				if (!textureGuid.empty())
 				{
-					if (preferredRoot == "BMW_M4" || material.value("importSource", nlohmann::json::object()).value("generatedFor", "") == "runtimeMultiMeshExpansion")
-					{
-						VANS_LOG("[MaterialDeps] material=" << material.value("guid", std::string{})
-							<< " slot=" << entry.value("slot", std::string{})
-							<< " textureGuid=" << textureGuid
-							<< " preferredRoot=" << preferredRoot);
-					}
+					logTexture(ReadSerializedStringField(entry, "slot"), textureGuid);
 					requiredTextures.insert(textureGuid);
 				}
 			}
@@ -317,38 +374,38 @@ namespace
 	}
 
 	void CollectSceneModelRendererDependencies(
-		const nlohmann::json& sceneDocument,
+		const VansSerializedValue& sceneDocument,
 		std::unordered_set<std::string>& requiredModels,
 		std::unordered_set<std::string>& requiredMaterials)
 	{
-		const nlohmann::json* entities = ReadArrayField(sceneDocument, "entities");
+		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
 		if (entities == nullptr)
 			return;
 
-		for (const nlohmann::json& entity : *entities)
+		for (const VansSerializedValue& entity : entities->arrayItems)
 		{
-			const nlohmann::json* components = ReadArrayField(entity, "components");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
 			if (components == nullptr)
 				continue;
-			for (const nlohmann::json& component : *components)
+			for (const VansSerializedValue& component : components->arrayItems)
 			{
-				const std::string componentType = ReadStringField(component, "type");
+				const std::string componentType = ReadSerializedStringField(component, "type");
 				if (componentType != "ModelRenderer" && componentType != "MultiMeshRoot")
 					continue;
-				const nlohmann::json* data = ReadObjectField(component, "data");
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
 				if (data == nullptr)
 					continue;
-				const nlohmann::json* modelReference = ReadObjectField(*data, "model");
-				const std::string model = modelReference ? ReadStringField(*modelReference, "guid") : std::string{};
+				const VansSerializedValue* modelReference = FindObjectField(*data, "model");
+				const std::string model = modelReference ? ReadAssetGuidReference(*modelReference) : std::string{};
 				if (!model.empty()) requiredModels.insert(model);
 				if (componentType != "ModelRenderer")
 					continue;
-				const nlohmann::json* overrides = ReadObjectField(*data, "materialOverrides");
+				const VansSerializedValue* overrides = ReadSerializedObjectField(*data, "materialOverrides");
 				if (overrides == nullptr)
 					continue;
-				for (const auto& [slot, material] : overrides->items())
+				for (const auto& [slot, material] : overrides->objectFields)
 				{
-					const std::string materialGuid = ReadStringField(material, "guid");
+					const std::string materialGuid = ReadAssetGuidReference(material);
 					if (!materialGuid.empty()) requiredMaterials.insert(materialGuid);
 				}
 			}
@@ -356,31 +413,31 @@ namespace
 	}
 
 	void CollectScenePhysicsMeshColliderDependencies(
-		const nlohmann::json& sceneDocument,
+		const VansSerializedValue& sceneDocument,
 		std::unordered_set<std::string>& meshColliderModels)
 	{
-		const nlohmann::json* entities = ReadArrayField(sceneDocument, "entities");
+		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
 		if (entities == nullptr)
 			return;
 
-		for (const nlohmann::json& entity : *entities)
+		for (const VansSerializedValue& entity : entities->arrayItems)
 		{
-			const nlohmann::json* components = ReadArrayField(entity, "components");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
 			if (components == nullptr)
 				continue;
-			for (const nlohmann::json& component : *components)
+			for (const VansSerializedValue& component : components->arrayItems)
 			{
-				if (ReadStringField(component, "type") != "Physics")
+				if (ReadSerializedStringField(component, "type") != "Physics")
 					continue;
-				const nlohmann::json* data = ReadObjectField(component, "data");
-				if (data == nullptr || !ReadBoolField(*data, "useMeshCollider", false))
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				if (data == nullptr || !ReadSerializedBoolField(*data, "useMeshCollider", false))
 					continue;
 
-				const std::string colliderType = ReadStringField(*data, "colliderType");
+				const std::string colliderType = ReadSerializedStringField(*data, "colliderType");
 				if (colliderType != "mesh" && colliderType != "convex")
 					continue;
 
-				const std::string meshGuid = ReadStringField(*data, "mesh");
+				const std::string meshGuid = ReadSerializedStringField(*data, "mesh");
 				if (!meshGuid.empty())
 					meshColliderModels.insert(meshGuid);
 			}
@@ -402,16 +459,16 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			result.requiredModels.insert(guid);
 	}
 
-	std::ifstream sceneInput(scenePath);
-	nlohmann::json sceneDocument = sceneInput ? nlohmann::json::parse(sceneInput, nullptr, false) : nlohmann::json();
-	if (!sceneDocument.is_object() || sceneDocument.value("schemaVersion", 0u) != VansSceneSchemaVersion)
+	VansSerializedValue sceneDocument = LoadSceneDocumentOrEmpty(scenePath);
+	if (sceneDocument.kind != VansSerializedValue::Kind::Object ||
+		ReadSerializedIntField(sceneDocument, "schemaVersion", 0) != VansSceneSchemaVersion)
 	{
 		VANS_LOG_ERROR("[AssetDatabase] Cannot collect Scene dependencies from " << scenePath.string());
 		return result;
 	}
 
 	VANS_LOG("[AssetDatabase] Collecting dependencies from " << scenePath.string());
-	const nlohmann::json* entities = ReadArrayField(sceneDocument, "entities");
+	const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
 	if (entities == nullptr)
 	{
 		VANS_LOG_ERROR("[AssetDatabase] Scene entities must be an array");
@@ -428,35 +485,13 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	for (const VansAssetRecord& record : allRecords)
 		assetTypesByGuid.emplace(record.guid.ToString(), record.type);
 
-	std::function<void(const nlohmann::json&)> collectAssetReferences = [&](const nlohmann::json& value)
+	CollectSerializedAssetReferences(sceneDocument, assetTypesByGuid, result);
+	if (const VansSerializedValue* vegetationConfig = ReadVegetationField(sceneDocument))
 	{
-		if (value.is_string())
+		VansSerializedValue externalVegetationConfig = LoadVegetationConfigFromReference(*vegetationConfig, projectRoot.string());
+		if (externalVegetationConfig.kind == VansSerializedValue::Kind::Object)
 		{
-			const auto found = assetTypesByGuid.find(value.get<std::string>());
-			if (found == assetTypesByGuid.end()) return;
-			switch (found->second)
-			{
-			case VansAssetType::Model: result.requiredModels.insert(found->first); break;
-			case VansAssetType::Texture: result.requiredTextures.insert(found->first); break;
-			case VansAssetType::Material: result.requiredMaterials.insert(found->first); break;
-			case VansAssetType::Shader: result.requiredShaders.insert(found->first); break;
-			default: break;
-			}
-			return;
-		}
-		if (value.is_array())
-			for (const nlohmann::json& item : value) collectAssetReferences(item);
-		else if (value.is_object())
-			for (const auto& [key, item] : value.items()) collectAssetReferences(item);
-	};
-
-	collectAssetReferences(sceneDocument);
-	if (const nlohmann::json* vegetationConfig = ReadVegetationField(sceneDocument))
-	{
-		nlohmann::json externalVegetationConfig = LoadVegetationConfigFromReference(*vegetationConfig, projectRoot.string());
-		if (externalVegetationConfig.is_object())
-		{
-			collectAssetReferences(externalVegetationConfig);
+			CollectSerializedAssetReferences(externalVegetationConfig, assetTypesByGuid, result);
 			VANS_LOG("[AssetDatabase] Collected vegetation dependencies: "
 				<< result.requiredModels.size() << " models, "
 				<< result.requiredMaterials.size() << " materials, "
@@ -469,14 +504,17 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		if (record.type != VansAssetType::Material ||
 			result.requiredMaterials.find(record.guid.ToString()) == result.requiredMaterials.end())
 			continue;
-		std::ifstream materialInput(record.sourcePath);
-		const nlohmann::json material = materialInput ? nlohmann::json::parse(materialInput, nullptr, false) : nlohmann::json();
-		if (!material.is_object())
+
+		VansMaterialAuthoringAsset material;
+		std::string materialError;
+		if (!VansMaterialAuthoringAssetStorage::Load(record.sourcePath, material, materialError))
 		{
-			VANS_LOG_ERROR("[AssetDatabase] Cannot read material dependency data: " << record.sourcePath.string());
+			VANS_LOG_ERROR("[AssetDatabase] Cannot read material dependency data: "
+				<< record.sourcePath.string() << " (" << materialError << ")");
 			continue;
 		}
-		collectAssetReferences(material);
+
+		CollectSerializedAssetReferences(WriteMaterialAuthoringAssetRoot(material), assetTypesByGuid, result);
 		CollectMaterialTextureDependencies(database, material, result.requiredTextures);
 	}
 
@@ -487,12 +525,12 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 
 		VansAssetMeta meta;
 		std::string metaError;
-		if (!VansAssetMeta::Load(record.metaPath, meta, metaError))
+		if (!VansAssetMetaStorage::Load(record.metaPath, meta, metaError))
 		{
 			VANS_LOG_ERROR("[AssetDatabase] " << metaError);
 			continue;
 		}
-		if (!meta.settings.is_object())
+		if (!meta.HasObjectSettings())
 		{
 			VANS_LOG_ERROR("[AssetDatabase] Asset settings must be an object: " << record.metaPath.string());
 			continue;
@@ -515,17 +553,16 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			VansSceneMeshResourceRequest request;
 			request.name = record.guid.ToString();
 			request.path = relativePath;
-			request.needTangent = ReadBoolField(meta.settings, "generateTangents", true);
-			request.supportRayTracing = ReadBoolField(meta.settings, "buildRayTracingData", true);
-			request.needCpuData = ReadBoolField(meta.settings, "keepCpuMeshData", false) ||
+			request.needTangent = meta.ReadBoolSetting("generateTangents", true);
+			request.supportRayTracing = meta.ReadBoolSetting("buildRayTracingData", true);
+			request.needCpuData = meta.ReadBoolSetting("keepCpuMeshData", false) ||
 				meshColliderModels.find(record.guid.ToString()) != meshColliderModels.end();
-			request.scaleFactor = ReadFloatField(meta.settings, "scaleFactor",
-				ReadFloatField(meta.settings, "scale", 1.0f));
-			request.loadMultiMesh = ReadBoolField(meta.settings, "loadMultiMesh", isFbx);
-			request.rebuildIdentityBoneOffsetsFromHierarchy = ReadBoolField(
-				meta.settings, "rebuildIdentityBoneOffsetsFromHierarchy", false);
-			request.remapWeaponAttachmentBonesToHands = ReadBoolField(
-				meta.settings, "remapWeaponAttachmentBonesToHands", false);
+			request.scaleFactor = meta.ReadFloatSetting("scaleFactor", "scale", 1.0f);
+			request.loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", isFbx);
+			request.rebuildIdentityBoneOffsetsFromHierarchy = meta.ReadBoolSetting(
+				"rebuildIdentityBoneOffsetsFromHierarchy", false);
+			request.remapWeaponAttachmentBonesToHands = meta.ReadBoolSetting(
+				"remapWeaponAttachmentBonesToHands", false);
 			result.resourcePlan.meshes.push_back(std::move(request));
 		}
 		else if (record.type == VansAssetType::Texture)
@@ -534,26 +571,23 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				continue;
 			const bool isCubemap = record.sourcePath.extension() == ".cubemap";
 			const std::string texturePath = isCubemap
-				? ReadStringField(meta.settings, "sourcePath") : relativePath;
+				? meta.ReadStringSetting("sourcePath") : relativePath;
 			VansSceneTextureResourceRequest request;
 			request.name = record.guid.ToString();
 			request.path = texturePath;
 			request.artifactPath = record.artifactPath.string();
 			request.textureType = isCubemap ? SceneTextureCube : SceneTexture2D;
-			const std::string colorSpace = ReadStringField(meta.settings, "colorSpace");
+			const std::string colorSpace = meta.ReadStringSetting("colorSpace");
 			request.srgb = colorSpace.empty()
-				? ReadBoolField(meta.settings, "sRGB", true)
+				? meta.ReadBoolSetting("sRGB", true)
 				: colorSpace != "linear";
-			request.useCompress = ReadBoolField(meta.settings, "useCompress",
-				ReadBoolField(meta.settings, "compress", true));
-			request.needMip = ReadBoolField(meta.settings, "needMip",
-				ReadBoolField(meta.settings, "generateMip", true));
-			const std::string precision = ReadStringField(meta.settings, "precision");
+			request.useCompress = meta.ReadBoolSetting("useCompress", "compress", true);
+			request.needMip = meta.ReadBoolSetting("needMip", "generateMip", true);
+			const std::string precision = meta.ReadStringSetting("precision");
 			if (!precision.empty())
 				request.precision = precision;
-			if (meta.settings.contains("importChannel") && meta.settings["importChannel"].is_number_integer())
-				request.importChannel = meta.settings["importChannel"].get<int>();
-			const std::string addressMode = ReadStringField(meta.settings, "addressMode");
+			request.importChannel = meta.ReadIntSetting("importChannel", request.importChannel);
+			const std::string addressMode = meta.ReadStringSetting("addressMode");
 			if (!addressMode.empty())
 				request.addressMode = addressMode;
 			result.resourcePlan.textures.push_back(std::move(request));
@@ -562,41 +596,44 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		{
 			if (result.requiredShaders.find(record.guid.ToString()) == result.requiredShaders.end())
 				continue;
-			std::ifstream shaderInput(record.sourcePath);
-			nlohmann::json shader = shaderInput ? nlohmann::json::parse(shaderInput, nullptr, false) : nlohmann::json();
-			if (!shader.is_object())
+
+			VansShaderAuthoringAsset shader;
+			std::string shaderError;
+			if (!VansShaderAuthoringAssetStorage::Load(record.sourcePath, shader, shaderError))
 			{
-				VANS_LOG_ERROR("[AssetDatabase] Cannot read shader asset: " << record.sourcePath.string());
+				VANS_LOG_ERROR("[AssetDatabase] Cannot read shader asset: "
+					<< record.sourcePath.string() << " (" << shaderError << ")");
 				continue;
 			}
 			result.resourcePlan.shaders.push_back(BuildShaderResourceRequest(shader, record, projectRoot));
 		}
 		else if (record.type == VansAssetType::Audio)
 		{
-			const std::string runtimeName = ReadStringField(meta.settings, "runtimeName");
+			const std::string runtimeName = meta.ReadStringSetting("runtimeName");
 			VansSceneAudioResourceRequest request;
 			request.name = runtimeName.empty() ? record.guid.ToString() : runtimeName;
 			request.path = relativePath;
-			request.playMode = ReadStringField(meta.settings, "playMode").empty() ? "static" : ReadStringField(meta.settings, "playMode");
-			request.loop = ReadBoolField(meta.settings, "loop", false);
-			request.autoPlay = ReadBoolField(meta.settings, "autoPlay", false);
-			request.volume = meta.settings.value("volume", 1.0f);
-			request.pitch = meta.settings.value("pitch", 1.0f);
-			request.spatial = ReadBoolField(meta.settings, "spatial", false);
-			request.referenceDistance = meta.settings.value("referenceDistance", 1.0f);
-			request.maxDistance = meta.settings.value("maxDistance", 100.0f);
-			request.rolloff = meta.settings.value("rolloff", 1.0f);
+			const std::string playMode = meta.ReadStringSetting("playMode");
+			request.playMode = playMode.empty() ? "static" : playMode;
+			request.loop = meta.ReadBoolSetting("loop", false);
+			request.autoPlay = meta.ReadBoolSetting("autoPlay", false);
+			request.volume = meta.ReadFloatSetting("volume", 1.0f);
+			request.pitch = meta.ReadFloatSetting("pitch", 1.0f);
+			request.spatial = meta.ReadBoolSetting("spatial", false);
+			request.referenceDistance = meta.ReadFloatSetting("referenceDistance", 1.0f);
+			request.maxDistance = meta.ReadFloatSetting("maxDistance", 100.0f);
+			request.rolloff = meta.ReadFloatSetting("rolloff", 1.0f);
 			result.resourcePlan.audios.push_back(std::move(request));
 		}
 		else if (record.type == VansAssetType::Video)
 		{
-			const std::string runtimeName = ReadStringField(meta.settings, "runtimeName");
+			const std::string runtimeName = meta.ReadStringSetting("runtimeName");
 			VansSceneVideoResourceRequest request;
 			request.name = runtimeName.empty() ? record.guid.ToString() : runtimeName;
 			request.path = relativePath;
-			request.loop = ReadBoolField(meta.settings, "loop", true);
-			request.autoplay = ReadBoolField(meta.settings, "autoPlay", false);
-			request.srgb = ReadBoolField(meta.settings, "sRGB", true);
+			request.loop = meta.ReadBoolSetting("loop", true);
+			request.autoplay = meta.ReadBoolSetting("autoPlay", false);
+			request.srgb = meta.ReadBoolSetting("sRGB", true);
 			result.resourcePlan.videos.push_back(std::move(request));
 		}
 	}

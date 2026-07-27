@@ -216,7 +216,7 @@ void AmbientBRDF_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
     vec3 R = reflect(-V, N);
     float lod = GetMipLevelFromRoughness(roughness);
     ReflectionProbeSample probeSample = SampleReflectionProbes(brdf.positionWS, N, R, roughness);
-    vec3 skySpec = textureLod(PreConvSpecularEnvironment, R, lod).rgb * reflectionProbeLightingParams.z;
+    vec3 skySpec = SampleSkySpecularCube(PreConvSpecularEnvironment, R, lod);
     vec3 iblSpec = mix(skySpec, probeSample.specular, probeSample.coverage);
 
     float ssrFade = 1.0 - smoothstep(reflectionProbeLightingParams.x, reflectionProbeLightingParams.y, roughness);

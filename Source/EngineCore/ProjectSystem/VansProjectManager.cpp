@@ -2,9 +2,9 @@
 #include "../Util/VansLog.h"
 #include "../Configration/VansConfigration.h"
 #include "../AssetCore/VansAssetDatabase.h"
+#include "Storage/VansProjectScaffoldStorage.h"
 
 #include <filesystem>
-#include <fstream>
 #include <algorithm>
 #include <chrono>
 #include <ctime>
@@ -258,20 +258,21 @@ void VansProjectManager::CreateDefaultDirectories(const std::string& rootPath)
 		}
 	}
 
-	// 为新项目创建默认 requirements.txt（若不存在），放在 Scripts/ 目录下
+	// Create the default Python requirements template for new projects when missing.
 	fs::path reqPath = fs::path(rootPath) / "Scripts" / "requirements.txt";
-	if (!fs::exists(reqPath))
+	bool createdRequirements = false;
+	std::string requirementsError;
+	if (!VansProjectScaffoldStorage::EnsureDefaultPythonRequirementsFile(
+		reqPath,
+		createdRequirements,
+		requirementsError))
 	{
-		std::ofstream reqFile(reqPath);
-		if (reqFile.is_open())
-		{
-			reqFile << "# 在此处列出项目依赖的 Python 第三方库，每行一个\n";
-			reqFile << "# 示例:\n";
-			reqFile << "# matplotlib\n";
-			reqFile << "# numpy\n";
-			reqFile.close();
-			VANS_LOG("[ProjectManager] Created default requirements.txt");
-		}
+		VANS_LOG_WARN("[ProjectManager] Cannot create requirements.txt at: "
+			<< reqPath.string() << " (" << requirementsError << ")");
+	}
+	else if (createdRequirements)
+	{
+		VANS_LOG("[ProjectManager] Created default requirements.txt");
 	}
 }
 

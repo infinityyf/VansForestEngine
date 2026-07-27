@@ -1,9 +1,8 @@
 #include "VansSceneManager.h"
 #include "../Util/VansLog.h"
-#include "../SceneCore/VansSceneSchema.h"
+#include "../SceneCore/Storage/VansSceneFileStorage.h"
 
 #include <filesystem>
-#include <fstream>
 #include <algorithm>
 
 namespace fs = std::filesystem;
@@ -93,18 +92,12 @@ std::string VansSceneManager::CreateEmptyScene(const std::string& sceneName,
 	fs::path p(absPath);
 	fs::create_directories(p.parent_path());
 
-	VansSceneData sceneData;
-	sceneData.sceneGuid = VansAssetGuid::New();
-	const auto scene = VansSceneSchema::Serialize(sceneData);
-
-	std::ofstream ofs(absPath);
-	if (!ofs.is_open())
+	std::string error;
+	if (!VansSceneFileStorage::CreateEmptySceneDocument(absPath, error))
 	{
-		VANS_LOG_ERROR("[SceneManager] Cannot create scene file: " << absPath);
+		VANS_LOG_ERROR("[SceneManager] Cannot create scene file: " << absPath << " (" << error << ")");
 		return {};
 	}
-
-	ofs << scene.dump(4);
 	VANS_LOG("[SceneManager] Created empty scene: " << relPath);
 
 	// Add to available list

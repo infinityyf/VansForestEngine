@@ -23,6 +23,7 @@ namespace VansGraphics { class VansMesh; }
 namespace VansGraphics { class VansTexture; }
 
 namespace Vans { struct VansSceneAudioResourceRequest; struct VansSceneVideoResourceRequest; }
+namespace Vans { struct VansSceneObjectBuildPlan; }
 
 namespace VansGraphics { class VansCamera; }
 
@@ -60,12 +61,6 @@ class VansScriptObject;
 #include <set>
 
 #include <unordered_map>
-
-
-
-#include <nlohmann/json.hpp>
-
-using json = nlohmann::json;
 
 
 
@@ -239,6 +234,7 @@ namespace VansGraphics
 	struct PunctualShadowCasterRecord
 	{
 		VansShadowAABB bounds;
+		uint32_t shadowCasterMask = 0xffffffffu;
 		bool dynamic = false;
 		bool hasBounds = false;
 	};
@@ -315,10 +311,6 @@ namespace VansGraphics
 		void LoadProjectAudioResources(const std::vector<Vans::VansSceneAudioResourceRequest>& audios, const std::string& assetPrefix);
 
 		void LoadProjectVideoResources(const std::vector<Vans::VansSceneVideoResourceRequest>& videos, const std::string& assetPrefix);
-
-		void LoadProjectAudioResourcesFromJson(const json& audioData, const std::string& assetPrefix);
-
-		void LoadProjectVideoResourcesFromJson(const json& videoData, const std::string& assetPrefix);
 
 		void SyncShaderAssetsFromShaderManager();
 
@@ -720,21 +712,9 @@ namespace VansGraphics
 
 
 
-		/// Load only project-wide resources (mesh, texture, shaders) from a
-
-		/// parsed resource JSON. Compatibility wrapper around the legacy
-
-		/// resource batch executor.
-
-		void LoadResources(json& resourceData);
-
-
-
 		/// Load scene content (materials, nodes, terrain, vegetation, etc.)
 
 		/// from a scene file.  Assumes resources are already loaded via
-
-		/// LoadResources().
 
 		bool LoadSceneContent(const char* path);
 
@@ -742,11 +722,8 @@ namespace VansGraphics
 
 
 
-		// Parses the "objects" array from scene JSON: creates VansScriptObjects
-
-		// with render / physics / cloth / vehicle / animation components.
-
-		void LoadSceneObjects(VkDevice& device, json& objectsArray, const std::string& projectRoot);
+		// Creates VansScriptObjects from a typed scene object build plan.
+		void LoadSceneObjects(VkDevice& device, const Vans::VansSceneObjectBuildPlan& objectBuildPlan, const std::string& projectRoot);
 
 
 

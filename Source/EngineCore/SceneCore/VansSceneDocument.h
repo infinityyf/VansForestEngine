@@ -1,15 +1,15 @@
 #pragma once
 
+#include "../AssetCore/Serialization/VansSerializedValue.h"
 #include "VansSceneDiagnostics.h"
 
-#include <nlohmann/json.hpp>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 
 namespace Vans
 {
-using SceneJson = nlohmann::ordered_json;
 using SceneStateId = std::uint64_t;
 
 struct SceneFileFingerprint
@@ -25,23 +25,46 @@ struct SceneFileFingerprint
 
 struct SceneDocumentSnapshot
 {
-    SceneJson root;
+    SceneDocumentSnapshot();
+    SceneDocumentSnapshot(
+        std::shared_ptr<const VansSerializedValue> root,
+        std::filesystem::path sourcePath,
+        SceneFileFingerprint sourceFingerprint,
+        SceneStateId stateId);
+    ~SceneDocumentSnapshot();
+
+    SceneDocumentSnapshot(const SceneDocumentSnapshot&) = default;
+    SceneDocumentSnapshot& operator=(const SceneDocumentSnapshot&) = default;
+    SceneDocumentSnapshot(SceneDocumentSnapshot&&) noexcept = default;
+    SceneDocumentSnapshot& operator=(SceneDocumentSnapshot&&) noexcept = default;
+
+    VansSerializedValue SerializedRootSnapshot() const;
+    bool HasRoot() const { return static_cast<bool>(m_Root); }
+
     std::filesystem::path sourcePath;
     SceneFileFingerprint sourceFingerprint;
     SceneStateId stateId = 0;
+
+private:
+    std::shared_ptr<const VansSerializedValue> m_Root;
 };
 
 class VansSceneEditService;
 class VansSceneSaveService;
 class VansSetScenePropertyCommand;
 class VansRemoveScenePropertyCommand;
-class VansAssignAssetReferenceCommand;
 class VansAppendSceneEntitiesCommand;
 
 class VansSceneDocument
 {
 public:
-    const SceneJson& Root() const { return m_Root; }
+    VansSceneDocument();
+    ~VansSceneDocument();
+
+    VansSceneDocument(const VansSceneDocument&) = delete;
+    VansSceneDocument& operator=(const VansSceneDocument&) = delete;
+
+    VansSerializedValue SerializedRootSnapshot() const;
     const std::filesystem::path& SourcePath() const { return m_SourcePath; }
     const SceneDiagnostics& Diagnostics() const { return m_Diagnostics; }
     SceneStateId CurrentStateId() const { return m_CurrentStateId; }
@@ -56,14 +79,15 @@ private:
     friend class VansSceneSaveService;
     friend class VansSetScenePropertyCommand;
     friend class VansRemoveScenePropertyCommand;
-    friend class VansAssignAssetReferenceCommand;
     friend class VansAppendSceneEntitiesCommand;
 
     SceneStateId AllocateStateId();
+    SceneStateId ApplyEditedSerializedRoot(VansSerializedValue root);
+    void RestoreEditedSerializedRoot(VansSerializedValue root, SceneStateId stateId);
     void MarkSaved(const std::filesystem::path& path,
         const SceneFileFingerprint& fingerprint, SceneStateId savedStateId);
 
-    SceneJson m_Root;
+    std::unique_ptr<VansSerializedValue> m_Root;
     std::filesystem::path m_SourcePath;
     SceneFileFingerprint m_LoadedFingerprint;
     SceneDiagnostics m_Diagnostics;

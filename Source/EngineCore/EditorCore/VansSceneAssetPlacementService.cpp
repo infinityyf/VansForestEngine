@@ -1,7 +1,7 @@
 #include "VansSceneAssetPlacementService.h"
 
 #include "VansSceneEditService.h"
-#include "../SceneCore/VansSceneDocument.h"
+#include "VansScenePropertyValueAdapter.h"
 
 #include <utility>
 #include <vector>
@@ -23,13 +23,13 @@ VansSceneAssetPlacementService::Result VansSceneAssetPlacementService::PlaceMode
     if (!payload.prepared)
         return { false, payload.message };
 
-    std::vector<Vans::SceneJson> entities;
-    entities.reserve(payload.sceneEntityJsons.size());
-    for (const std::string& entityJson : payload.sceneEntityJsons)
+    std::vector<Vans::VansSerializedValue> entities;
+    entities.reserve(payload.sceneEntities.size());
+    for (const Vans::EditorAPI::ScenePropertyValue& entityValue : payload.sceneEntities)
     {
-        Vans::SceneJson entity = Vans::SceneJson::parse(entityJson, nullptr, false);
-        if (entity.is_discarded() || !entity.is_object())
-            return { false, "Prepared model placement payload contains invalid scene entity JSON" };
+        Vans::VansSerializedValue entity = Vans::ToSerializedValue(entityValue);
+        if (entity.kind != Vans::VansSerializedValue::Kind::Object)
+            return { false, "Prepared model placement payload contains invalid scene entity" };
         entities.push_back(std::move(entity));
     }
 

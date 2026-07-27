@@ -1,7 +1,6 @@
 #pragma once
 
 #include "VansBoneColliderBindingTypes.h"
-#include <nlohmann/json.hpp>
 
 #include <vector>
 
@@ -30,7 +29,6 @@ namespace VansEngine
 
 		// ── 调试 / 序列化接口 ────────────────────────────────────────
 		void DrawDebugGizmos(bool enabledOnly = true);
-		nlohmann::json SerializeBindingSet(const BoneColliderBindingSet& set) const;
 
 	private:
 		VansBoneAttachmentSystem() = default;

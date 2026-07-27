@@ -194,6 +194,7 @@ namespace
         changed |= DragFloatTracked("Source Radius", &shadow.sourceRadius, 0.002f, 0.0f, 10.0f, "%.3f");
         changed |= ImGui::Checkbox("Affects Volumetric Fog", &shadow.affectsFog);
         changed |= ImGui::Checkbox("Affects GI", &shadow.affectsGI);
+        changed |= ImGui::InputScalar("Shadow Caster Mask", ImGuiDataType_U32, &shadow.shadowCasterMask, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
         TrackCommandMergeBoundary();
         return changed;
     }

@@ -1,8 +1,8 @@
 #pragma once
 #include "../VansParticleData.h"
-#include <nlohmann/json.hpp>
 #include <glm/glm.hpp>
 #include <string>
+#include <vector>
 
 namespace VansGraphics
 {
@@ -37,8 +37,6 @@ namespace VansGraphics
             (void)pool; (void)startIndex; (void)endIndex; (void)localToWorld;
         }
 
-        virtual nlohmann::json Serialize() const   = 0;
-        virtual void Deserialize(const nlohmann::json& j) = 0;
     };
 
     // ── 公用 Curve 辅助结构 ────────────────────────────────────────────────
@@ -73,8 +71,6 @@ namespace VansGraphics
         // 根据 normalizedT[0,1] 和随机数 r[0,1] 求值
         float Evaluate(float normalizedT, float r = 0.f) const;
 
-        nlohmann::json Serialize() const;
-        void Deserialize(const nlohmann::json& j);
     };
 
     // ── Color Gradient Key ─────────────────────────────────────────────────
@@ -92,8 +88,6 @@ namespace VansGraphics
         // 根据 normalizedT[0,1] 线性插值颜色
         glm::vec4 Evaluate(float normalizedT) const;
 
-        nlohmann::json Serialize() const;
-        void Deserialize(const nlohmann::json& j);
     };
 
     // ── 随机数工具：基于 xorshift32 ────────────────────────────────────────

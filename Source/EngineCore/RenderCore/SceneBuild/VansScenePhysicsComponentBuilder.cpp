@@ -8,12 +8,12 @@ namespace VansGraphics
 void VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
 	VansScene& scene,
 	VansScriptObject& object,
-	const json& components,
+	const Vans::VansScenePhysicsComponentsConfig& components,
 	const std::string& projectRoot,
 	bool hasObjectTransform,
 	const std::function<void()>& ensureObjectTransform)
 {
-	if (components.contains("physics"))
+	if (components.physics)
 	{
 		auto* renderComp = object.GetComponent<VansScriptRenderComponent>();
 		VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
@@ -22,14 +22,14 @@ void VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
 
 		const uint32_t standaloneTransformID = object.m_OwnsTransform ? object.m_TransformID : UINT32_MAX;
 		VansEngine::VansPhysicsNode* physicsNode =
-			LoadPhysicsNode(scene, components["physics"], associatedNode, standaloneTransformID);
+			LoadPhysicsNode(scene, *components.physics, associatedNode, standaloneTransformID);
 		if (physicsNode)
 		{
 			auto* physicsComp = new VansScriptPhysicsComponent();
 			physicsComp->m_ComponentName = "physics";
 			physicsComp->m_PhysicsNode = physicsNode;
 
-			const bool enabled = components["physics"].value("enabled", true);
+			const bool enabled = components.physics->enabled.value_or(true);
 			if (!enabled && physicsComp->m_PhysicsNode)
 				physicsComp->m_PhysicsNode->SetEnabled(false);
 			physicsComp->m_Enabled = enabled;
@@ -38,19 +38,18 @@ void VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
 		}
 	}
 
-	if (components.contains("cloth"))
+	if (components.cloth)
 	{
 		auto* renderComp = object.GetComponent<VansScriptRenderComponent>();
 		VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
 		std::string profilePath;
-		json clothJson = components["cloth"];
-		if (clothJson.contains("profilePath") && !projectRoot.empty())
+		Vans::VansSceneClothNodeConfig clothConfig = *components.cloth;
+		if (clothConfig.profilePath && !projectRoot.empty())
 		{
-			const std::string relPath = clothJson["profilePath"].get<std::string>();
-			clothJson["profilePath"] = projectRoot + relPath;
+			clothConfig.profilePath = projectRoot + *clothConfig.profilePath;
 		}
 
-		VansEngine::VansClothNode* clothNode = LoadClothNode(scene, clothJson, associatedNode, &profilePath);
+		VansEngine::VansClothNode* clothNode = LoadClothNode(scene, clothConfig, associatedNode, &profilePath);
 		if (clothNode)
 		{
 			auto* clothComp = new VansScriptClothComponent();
@@ -61,7 +60,7 @@ void VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
 		}
 	}
 
-	if (components.contains("charController"))
+	if (components.characterController)
 	{
 		auto* renderComp = object.GetComponent<VansScriptRenderComponent>();
 		VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
@@ -72,7 +71,7 @@ void VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
 			? object.m_TransformID
 			: UINT32_MAX;
 		VansEngine::VansCharacterControllerNode* controllerNode =
-			LoadCharacterControllerNode(scene, components["charController"], associatedNode, standaloneTransformID);
+			LoadCharacterControllerNode(scene, *components.characterController, associatedNode, standaloneTransformID);
 		if (controllerNode)
 		{
 			auto* controllerComp = new VansScriptCharacterControllerComponent();

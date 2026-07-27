@@ -5,11 +5,10 @@
 #include "VansGraphicsDevice.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
-#include <nlohmann/json.hpp>
+#include "../SceneCore/VansSceneCameraSettingsConfig.h"
 #include <vector>
 #include <climits>
 using namespace VansGraphics;
-using json = nlohmann::json;
 namespace VansGraphics
 {
     struct alignas(16) CameraDataStruct
@@ -114,7 +113,7 @@ namespace VansGraphics
 
         glm::mat4 GetProjectiveMatrix();
 
-        void ApplyCameraSettings(const json& cameraNode);
+        void ApplyCameraSettings(const Vans::VansSceneCameraSettingsConfig& cameraSettings);
 
         void ResetToDefaults();
 

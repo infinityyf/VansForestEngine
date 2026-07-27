@@ -22,6 +22,7 @@
 #include "Windows/VansGIWindow.h"
 #include "Windows/VansPostProcessWindow.h"
 #include "Windows/VansShadowDebuggerWindow.h"
+#include "Windows/VansPcgWindow.h"
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
@@ -30,13 +31,16 @@
 #include "../RuntimeCore/VansFramePhase.h"
 
 #include "../AssetCore/VansAssetGuid.h"
+#include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "Windows/VansProjectSelector.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSaveService.h"
 #include "VansAssetDocumentRegistry.h"
 #include "VansEditorAssetSaveService.h"
+#include "VansEditorRuntimePreviewProjector.h"
 #include "VansSceneEditService.h"
+#include "VansScenePropertyValueAdapter.h"
 #include "VansEditorSelection.h"
 #include "ShaderHotReload/VansEditorShaderHotReloadController.h"
 
@@ -44,6 +48,8 @@
 #include "backends/imgui_impl_glfw.h"
 
 #include <iostream>
+#include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <filesystem>
 #include <algorithm>
@@ -102,31 +108,80 @@ namespace
         return value;
     }
 
-    const Vans::SceneJson* FindComponent(const Vans::SceneJson& entity, const std::string& type)
+    Vans::VansSerializedValue SerializedObject(
+        std::initializer_list<std::pair<std::string, Vans::VansSerializedValue>> fields)
     {
-        if (!entity.contains("components") || !entity["components"].is_array())
+        return Vans::VansSerializedValue::Object(
+            std::vector<std::pair<std::string, Vans::VansSerializedValue>>(fields));
+    }
+
+    Vans::VansSerializedValue SerializedArray(
+        std::initializer_list<Vans::VansSerializedValue> items)
+    {
+        return Vans::VansSerializedValue::Array(std::vector<Vans::VansSerializedValue>(items));
+    }
+
+    Vans::VansSerializedValue DefaultTransformComponent()
+    {
+        return SerializedObject({
+            { "id", Vans::VansSerializedValue::String(Vans::VansAssetGuid::New().ToString()) },
+            { "type", Vans::VansSerializedValue::String("Transform") },
+            { "version", Vans::VansSerializedValue::Int(1) },
+            { "enabled", Vans::VansSerializedValue::Bool(true) },
+            { "data", SerializedObject({
+                { "position", SerializedArray({
+                    Vans::VansSerializedValue::Float(0.0),
+                    Vans::VansSerializedValue::Float(0.0),
+                    Vans::VansSerializedValue::Float(0.0)
+                }) },
+                { "rotation", SerializedArray({
+                    Vans::VansSerializedValue::Float(0.0),
+                    Vans::VansSerializedValue::Float(0.0),
+                    Vans::VansSerializedValue::Float(0.0),
+                    Vans::VansSerializedValue::Float(1.0)
+                }) },
+                { "scale", SerializedArray({
+                    Vans::VansSerializedValue::Float(1.0),
+                    Vans::VansSerializedValue::Float(1.0),
+                    Vans::VansSerializedValue::Float(1.0)
+                }) }
+            }) }
+        });
+    }
+
+    Vans::VansSerializedValue MaterialOverride(const std::string& materialGuid)
+    {
+        return SerializedObject({
+            { "default", SerializedObject({
+                { "guid", Vans::VansSerializedValue::String(materialGuid) }
+            }) }
+        });
+    }
+
+    const Vans::VansSerializedValue* FindComponent(
+        const Vans::VansSerializedValue& entity,
+        const std::string& type)
+    {
+        const Vans::VansSerializedValue* components = Vans::FindObjectField(entity, "components");
+        if (!components || components->kind != Vans::VansSerializedValue::Kind::Array)
             return nullptr;
-        for (const auto& component : entity["components"])
-        {
-            if (component.is_object() && component.value("type", "") == type)
+        for (const Vans::VansSerializedValue& component : components->arrayItems)
+            if (Vans::ReadSerializedStringField(component, "type") == type)
                 return &component;
-        }
         return nullptr;
     }
 
-    std::unordered_set<std::string> CollectParentEntityIds(const Vans::SceneJson& root)
+    std::unordered_set<std::string> CollectParentEntityIds(
+        const Vans::VansSerializedValue& entities)
     {
         std::unordered_set<std::string> parentIds;
-        if (!root.contains("entities") || !root["entities"].is_array())
+        if (entities.kind != Vans::VansSerializedValue::Kind::Array)
             return parentIds;
 
-        parentIds.reserve(root["entities"].size());
-        for (const auto& entity : root["entities"])
+        parentIds.reserve(entities.arrayItems.size());
+        for (const Vans::VansSerializedValue& entity : entities.arrayItems)
         {
-            if (!entity.is_object() || !entity.contains("parent") || !entity["parent"].is_string())
-                continue;
-
-            const std::string parentId = entity["parent"].get<std::string>();
+            const std::string parentId = Vans::ReadSerializedStringField(entity, "parent");
             if (!parentId.empty())
                 parentIds.insert(parentId);
         }
@@ -134,41 +189,125 @@ namespace
     }
 
     bool HasRuntimeMultiMeshExpansionCandidates(
-        const Vans::SceneJson& root,
+        const Vans::VansSerializedValue& entities,
         const std::unordered_set<std::string>& parentEntityIds)
     {
-        if (!root.contains("entities") || !root["entities"].is_array())
+        if (entities.kind != Vans::VansSerializedValue::Kind::Array)
             return false;
 
-        for (const auto& entity : root["entities"])
+        for (const Vans::VansSerializedValue& entity : entities.arrayItems)
         {
-            if (!entity.is_object())
+            if (entity.kind != Vans::VansSerializedValue::Kind::Object)
                 continue;
 
-            const std::string entityId = entity.value("id", "");
+            const std::string entityId = Vans::ReadSerializedStringField(entity, "id");
             if (entityId.empty())
                 continue;
 
             if (FindComponent(entity, "MultiMeshRoot") != nullptr)
                 continue;
 
-            const Vans::SceneJson* renderer = FindComponent(entity, "ModelRenderer");
-            if (renderer == nullptr || !renderer->value("enabled", true) || !renderer->contains("data"))
+            const Vans::VansSerializedValue* renderer = FindComponent(entity, "ModelRenderer");
+            if (!renderer || !Vans::ReadSerializedBoolField(*renderer, "enabled", true))
                 continue;
 
-            const Vans::SceneJson& rendererData = (*renderer)["data"];
-            if (!rendererData.value("autoExpandSubmeshes", false))
+            const Vans::VansSerializedValue* rendererData = Vans::FindObjectField(*renderer, "data");
+            if (!rendererData || !Vans::ReadSerializedBoolField(*rendererData, "autoExpandSubmeshes"))
                 continue;
 
             if (parentEntityIds.find(entityId) != parentEntityIds.end())
                 continue;
 
-            const std::string modelGuid = rendererData.value("model", Vans::SceneJson::object()).value("guid", "");
+            const Vans::VansSerializedValue* model = Vans::FindObjectField(*rendererData, "model");
+            const std::string modelGuid =
+                model ? Vans::ReadSerializedStringField(*model, "guid") : std::string{};
             if (!modelGuid.empty())
                 return true;
         }
 
         return false;
+    }
+
+    Vans::VansSerializedValue BuildRuntimeExpandedModelRendererComponent(
+        const Vans::VansSerializedValue& sourceRendererData,
+        const std::string& modelGuid,
+        const Vans::EditorAPI::RuntimeMultiMeshChildSnapshot& childSnapshot,
+        const std::string& slotName)
+    {
+        return SerializedObject({
+            { "id", Vans::VansSerializedValue::String(Vans::VansAssetGuid::New().ToString()) },
+            { "type", Vans::VansSerializedValue::String("ModelRenderer") },
+            { "version", Vans::VansSerializedValue::Int(1) },
+            { "enabled", Vans::VansSerializedValue::Bool(true) },
+            { "data", SerializedObject({
+                { "model", SerializedObject({
+                    { "guid", Vans::VansSerializedValue::String(modelGuid) }
+                }) },
+                { "submesh", SerializedObject({
+                    { "index", Vans::VansSerializedValue::Int(childSnapshot.submeshIndex) },
+                    { "sourceNode", Vans::VansSerializedValue::String(childSnapshot.sourceNode) },
+                    { "sourceMaterial", Vans::VansSerializedValue::String(childSnapshot.sourceMaterial) },
+                    { "slotName", Vans::VansSerializedValue::String(slotName) }
+                }) },
+                { "castShadows", Vans::VansSerializedValue::Bool(
+                    Vans::ReadSerializedBoolField(sourceRendererData, "castShadows", true)) },
+                { "receiveShadows", Vans::VansSerializedValue::Bool(
+                    Vans::ReadSerializedBoolField(sourceRendererData, "receiveShadows", true)) },
+                { "rayTracingMode", Vans::VansSerializedValue::String(
+                    Vans::ReadSerializedStringField(sourceRendererData, "rayTracingMode", "auto")) },
+                { "visibilityMask", Vans::VansSerializedValue::Int(
+                    Vans::ReadSerializedIntField(sourceRendererData, "visibilityMask", 0xffffffffll)) },
+                { "shadowCasterMask", Vans::VansSerializedValue::Int(
+                    Vans::ReadSerializedIntField(sourceRendererData, "shadowCasterMask", 0xffffffffll)) },
+                { "materialOverrides", MaterialOverride(childSnapshot.materialGuid) },
+                { "orphanOverrides", Vans::VansSerializedValue::Object({}) },
+                { "renderType", Vans::VansSerializedValue::String(
+                    Vans::ReadSerializedStringField(sourceRendererData, "renderType", "opaque")) }
+            }) }
+        });
+    }
+
+    Vans::VansSerializedValue BuildRuntimeExpandedMultiMeshRootComponent(
+        const std::string& modelGuid,
+        std::size_t submeshCount)
+    {
+        return SerializedObject({
+            { "id", Vans::VansSerializedValue::String(Vans::VansAssetGuid::New().ToString()) },
+            { "type", Vans::VansSerializedValue::String("MultiMeshRoot") },
+            { "version", Vans::VansSerializedValue::Int(1) },
+            { "enabled", Vans::VansSerializedValue::Bool(true) },
+            { "data", SerializedObject({
+                { "model", SerializedObject({
+                    { "guid", Vans::VansSerializedValue::String(modelGuid) }
+                }) },
+                { "submeshCount", Vans::VansSerializedValue::Int(
+                    static_cast<std::int64_t>(submeshCount)) },
+                { "generation", Vans::VansSerializedValue::String("runtime-object-hierarchy") }
+            }) }
+        });
+    }
+
+    Vans::VansSerializedValue BuildRuntimeExpandedChildEntity(
+        const std::string& parentEntityId,
+        const std::string& childName,
+        const std::string& modelGuid,
+        const Vans::VansSerializedValue& sourceRendererData,
+        const Vans::EditorAPI::RuntimeMultiMeshChildSnapshot& childSnapshot,
+        const std::string& slotName)
+    {
+        return SerializedObject({
+            { "id", Vans::VansSerializedValue::String(Vans::VansAssetGuid::New().ToString()) },
+            { "name", Vans::VansSerializedValue::String(childName) },
+            { "parent", Vans::VansSerializedValue::String(parentEntityId) },
+            { "components", SerializedArray({
+                DefaultTransformComponent(),
+                BuildRuntimeExpandedModelRendererComponent(
+                    sourceRendererData,
+                    modelGuid,
+                    childSnapshot,
+                    slotName)
+            }) }
+        });
     }
 }
 
@@ -214,6 +353,7 @@ bool VansGraphics::VansEditorWindow::m_ReflectionProbeWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_GIWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_PostProcessWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_ShadowDebuggerWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_PcgWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
 bool VansGraphics::VansEditorWindow::m_VehicleDebugGizmos = false;
@@ -258,6 +398,7 @@ VansGraphics::VansReflectionProbeWindow* VansGraphics::VansEditorWindow::m_Refle
 VansGraphics::VansGIWindow* VansGraphics::VansEditorWindow::m_GIWindow;
 VansGraphics::VansPostProcessWindow* VansGraphics::VansEditorWindow::m_PostProcessWindow;
 VansGraphics::VansShadowDebuggerWindow* VansGraphics::VansEditorWindow::m_ShadowDebuggerWindow;
+VansGraphics::VansPcgWindow* VansGraphics::VansEditorWindow::m_PcgWindow;
 
 // Project selector overlay
 std::unique_ptr<Vans::VansProjectSelector> VansGraphics::VansEditorWindow::m_ProjectSelector;
@@ -307,20 +448,22 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
     auto& editorAPI = GetMutableEditorAPI();
     if (!editorAPI.IsRuntimeSceneReady() || !m_SceneDocument || !m_SceneEditService || !m_SceneSaveService)
         return;
-    const Vans::SceneJson& root = m_SceneDocument->Root();
-    if (!root.contains("entities") || !root["entities"].is_array())
+    const Vans::VansSerializedValue root = m_SceneDocument->SerializedRootSnapshot();
+    const Vans::VansSerializedValue* sourceEntities = Vans::FindObjectField(root, "entities");
+    if (!sourceEntities || sourceEntities->kind != Vans::VansSerializedValue::Kind::Array)
         return;
 
     const std::uint64_t documentStateId = m_SceneDocument->CurrentStateId();
     if (m_RuntimeMultiMeshExpansionScannedStateId == documentStateId)
         return;
 
-    const std::unordered_set<std::string> parentEntityIds = CollectParentEntityIds(root);
+    const std::unordered_set<std::string> parentEntityIds = CollectParentEntityIds(*sourceEntities);
     m_RuntimeMultiMeshExpansionScannedStateId = documentStateId;
-    if (!HasRuntimeMultiMeshExpansionCandidates(root, parentEntityIds))
+    if (!HasRuntimeMultiMeshExpansionCandidates(*sourceEntities, parentEntityIds))
         return;
 
-    Vans::SceneJson newEntities = root["entities"];
+    Vans::VansSerializedValue newEntities = *sourceEntities;
+    std::vector<Vans::VansSerializedValue> pendingChildEntities;
     bool changed = false;
     const auto groups = editorAPI.BuildRuntimeMultiMeshExpansionSnapshot();
     std::unordered_map<std::string, const Vans::EditorAPI::RuntimeMultiMeshGroupSnapshot*> groupsByName;
@@ -328,12 +471,12 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
     for (const auto& group : groups)
         groupsByName[group.parentName] = &group;
 
-    for (auto& entity : newEntities)
+    for (Vans::VansSerializedValue& entity : newEntities.arrayItems)
     {
-        if (!entity.is_object())
+        if (entity.kind != Vans::VansSerializedValue::Kind::Object)
             continue;
-        const std::string entityId = entity.value("id", "");
-        const std::string entityName = entity.value("name", "");
+        const std::string entityId = Vans::ReadSerializedStringField(entity, "id");
+        const std::string entityName = Vans::ReadSerializedStringField(entity, "name");
         if (entityId.empty() || entityName.empty())
             continue;
         if (parentEntityIds.find(entityId) != parentEntityIds.end())
@@ -341,16 +484,18 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
         if (FindComponent(entity, "MultiMeshRoot") != nullptr)
             continue;
 
-        const Vans::SceneJson* renderer = FindComponent(entity, "ModelRenderer");
-        const Vans::SceneJson* transform = FindComponent(entity, "Transform");
-        if (renderer == nullptr || !renderer->value("enabled", true) || !renderer->contains("data"))
+        const Vans::VansSerializedValue* renderer = FindComponent(entity, "ModelRenderer");
+        const Vans::VansSerializedValue* transform = FindComponent(entity, "Transform");
+        if (!renderer || !Vans::ReadSerializedBoolField(*renderer, "enabled", true))
             continue;
 
-        const Vans::SceneJson& rendererData = (*renderer)["data"];
-        if (!rendererData.value("autoExpandSubmeshes", false))
+        const Vans::VansSerializedValue* rendererData = Vans::FindObjectField(*renderer, "data");
+        if (!rendererData || !Vans::ReadSerializedBoolField(*rendererData, "autoExpandSubmeshes"))
             continue;
 
-        const std::string modelGuid = rendererData.value("model", Vans::SceneJson::object()).value("guid", "");
+        const Vans::VansSerializedValue* model = Vans::FindObjectField(*rendererData, "model");
+        const std::string modelGuid =
+            model ? Vans::ReadSerializedStringField(*model, "guid") : std::string{};
         if (modelGuid.empty())
             continue;
 
@@ -361,7 +506,7 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
         if (group.children.empty())
             continue;
 
-        Vans::SceneJson childEntities = Vans::SceneJson::array();
+        std::vector<Vans::VansSerializedValue> childEntities;
         std::unordered_set<std::string> usedSlotNames;
         for (const auto& childSnapshot : group.children)
         {
@@ -384,84 +529,31 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
                 ? "Submesh_" + std::to_string(childSnapshot.submeshIndex)
                 : sourceNode) + "_" + std::to_string(childSnapshot.submeshIndex);
 
-            Vans::SceneJson child = {
-                { "id", Vans::VansAssetGuid::New().ToString() },
-                { "name", childName },
-                { "parent", entityId },
-                { "components", Vans::SceneJson::array({
-                    {
-                        { "id", Vans::VansAssetGuid::New().ToString() },
-                        { "type", "Transform" },
-                        { "version", 1u },
-                        { "enabled", true },
-                        { "data", {
-                            { "position", Vans::SceneJson::array({ 0.0f, 0.0f, 0.0f }) },
-                            { "rotation", Vans::SceneJson::array({ 0.0f, 0.0f, 0.0f, 1.0f }) },
-                            { "scale", Vans::SceneJson::array({ 1.0f, 1.0f, 1.0f }) }
-                        } }
-                    },
-                    {
-                        { "id", Vans::VansAssetGuid::New().ToString() },
-                        { "type", "ModelRenderer" },
-                        { "version", 1u },
-                        { "enabled", true },
-                        { "data", {
-                            { "model", { { "guid", modelGuid } } },
-                            { "submesh", {
-                                { "index", childSnapshot.submeshIndex },
-                                { "sourceNode", sourceNode },
-                                { "sourceMaterial", sourceMaterial },
-                                { "slotName", slotName }
-                            } },
-                            { "castShadows", rendererData.value("castShadows", true) },
-                            { "receiveShadows", rendererData.value("receiveShadows", true) },
-                            { "rayTracingMode", rendererData.value("rayTracingMode", "auto") },
-                            { "visibilityMask", rendererData.value("visibilityMask", 0xffffffffu) },
-                            { "materialOverrides", { { "default", { { "guid", childSnapshot.materialGuid } } } } },
-                            { "orphanOverrides", Vans::SceneJson::object() },
-                            { "renderType", rendererData.value("renderType", "opaque") }
-                        } }
-                    }
-                }) }
-            };
-            childEntities.push_back(std::move(child));
+            childEntities.push_back(BuildRuntimeExpandedChildEntity(
+                entityId,
+                childName,
+                modelGuid,
+                *rendererData,
+                childSnapshot,
+                slotName));
         }
 
         if (childEntities.empty())
             continue;
 
-        Vans::SceneJson components = Vans::SceneJson::array();
+        std::vector<Vans::VansSerializedValue> components;
         if (transform != nullptr)
             components.push_back(*transform);
         else
-        {
-            components.push_back({
-                { "id", Vans::VansAssetGuid::New().ToString() },
-                { "type", "Transform" },
-                { "version", 1u },
-                { "enabled", true },
-                { "data", {
-                    { "position", Vans::SceneJson::array({ 0.0f, 0.0f, 0.0f }) },
-                    { "rotation", Vans::SceneJson::array({ 0.0f, 0.0f, 0.0f, 1.0f }) },
-                    { "scale", Vans::SceneJson::array({ 1.0f, 1.0f, 1.0f }) }
-                } }
-            });
-        }
-        components.push_back({
-            { "id", Vans::VansAssetGuid::New().ToString() },
-            { "type", "MultiMeshRoot" },
-            { "version", 1u },
-            { "enabled", true },
-            { "data", {
-                { "model", { { "guid", modelGuid } } },
-                { "submeshCount", static_cast<uint32_t>(childEntities.size()) },
-                { "generation", "runtime-object-hierarchy" }
-            } }
-        });
-        entity["components"] = std::move(components);
+            components.push_back(DefaultTransformComponent());
+        components.push_back(BuildRuntimeExpandedMultiMeshRootComponent(
+            modelGuid,
+            childEntities.size()));
+        Vans::SetSerializedObjectField(entity, "components",
+            Vans::VansSerializedValue::Array(std::move(components)));
 
         for (auto& childEntity : childEntities)
-            newEntities.push_back(std::move(childEntity));
+            pendingChildEntities.push_back(std::move(childEntity));
 
         changed = true;
     }
@@ -469,7 +561,12 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
     if (!changed)
         return;
 
-    const Vans::SceneEditResult editResult = m_SceneEditService->Set("/entities", std::move(newEntities));
+    for (auto& childEntity : pendingChildEntities)
+        newEntities.arrayItems.push_back(std::move(childEntity));
+
+    const Vans::SceneEditResult editResult = m_SceneEditService->Set(
+        Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::Scene, "/entities"),
+        std::move(newEntities));
     if (!editResult)
     {
         VANS_LOG_ERROR("[MultiMeshHierarchy] Failed to update scene document: " << editResult.message);
@@ -770,6 +867,8 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_ShadowDebuggerWindow = AddEditorWindowComponent<VansShadowDebuggerWindow>(m_Windows);
 
+    m_PcgWindow = AddEditorWindowComponent<VansPcgWindow>(m_Windows);
+
 }
 
 void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
@@ -882,7 +981,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 			m_SceneEditService.reset();
 			m_SceneDocument.reset();
 			for (const auto& diagnostic : loadResult.diagnostics)
-				VANS_LOG_ERROR("[SceneDocument] " << diagnostic.jsonPointer << " " << diagnostic.message);
+				VANS_LOG_ERROR("[SceneDocument] " << diagnostic.propertyPointer << " " << diagnostic.message);
 		}
 
         // Editor 模式：注册相机控制，冻结时间，回到 Editing 状态
@@ -1141,10 +1240,10 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 		{
 			if (!selectedAssetDocument || !selectedAssetDocument->sourceDocument.IsLoaded())
 				return;
-			editorAPI.ApplyRuntimeMaterialAssetPatch(
-				selectedAssetDocument->sourcePath.string(),
-				selectedAssetDocument->sourceDocument.Root().dump(),
-				{});
+			editorAPI.ApplyRuntimeMaterialPreviewChange(
+				Vans::BuildRuntimeMaterialPreviewChange(
+					selectedAssetDocument->sourcePath,
+					selectedAssetDocument->sourceDocument.SerializedRootSnapshot()));
 		};
 		auto undoEditorChange = [&]()
 		{
@@ -1307,6 +1406,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
                 ImGui::MenuItem("Hair Debug", nullptr, &m_HairDebugWindowOpen);
                 ImGui::MenuItem("Water", nullptr, &m_WaterWindowOpen);
                 ImGui::MenuItem("Terrain", nullptr, &m_TerrainWindowOpen);
+                ImGui::MenuItem("PCG", nullptr, &m_PcgWindowOpen);
                 ImGui::MenuItem("Post Process", nullptr, &m_PostProcessWindowOpen);
                 if (m_ReflectionProbeWindow)
                 {
@@ -1355,13 +1455,9 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 		{
 			if (!editingMode || !m_SceneEditService)
 				continue;
-			Vans::SceneJson value = Vans::SceneJson::parse(edit.valueJson, nullptr, false);
-			if (value.is_discarded())
-			{
-				VANS_LOG_ERROR("[SceneSettings] Invalid queued JSON for " << edit.jsonPointer);
-				continue;
-			}
-			const Vans::SceneEditResult result = m_SceneEditService->Set(edit.jsonPointer, std::move(value));
+			const Vans::SceneEditResult result = m_SceneEditService->Set(
+				Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::Scene, edit.propertyPointer),
+				Vans::ToSerializedValue(edit.value));
 			if (!result && result.message != "Scene property is unchanged")
 				VANS_LOG_ERROR("[SceneSettings] " << result.message);
 		}
@@ -1774,6 +1870,7 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     m_GIWindow = nullptr;
     m_PostProcessWindow = nullptr;
     m_ShadowDebuggerWindow = nullptr;
+    m_PcgWindow = nullptr;
 
     // Destroy GPU profiler
 #if VANS_PROFILER_ENABLED

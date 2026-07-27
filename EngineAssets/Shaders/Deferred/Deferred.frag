@@ -280,8 +280,13 @@ void main()
         // --- Skin BRDF path ---
         // Curvature was stored in normalInput.w by UnlitSkin.frag
         float curvature = normalData.w;
-        CalculateDirectLight_Skin(brdfData, curvature, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
-        AmbientBRDF_Skin(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+        int skinMaterialIndex = int(round(gbufferData1.w));
+        SkinMaterialParams skin = DecodeSkinMaterialParams(skinMaterialIndex);
+        brdfData.fresnel0 = ComputeSkinF0(brdfData.albedo);
+        brdfData.metallic = 0.0;
+        brdfData.roughness = clamp(brdfData.roughness, 0.045, 1.0);
+        CalculateDirectLight_Skin(brdfData, curvature, skin, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
+        AmbientBRDF_Skin(brdfData, skin, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else if (matID == MATERIAL_ID_CLOTH)
     {

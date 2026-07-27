@@ -3,13 +3,13 @@
 
 #include "../../../ProjectSystem/VansProjectManager.h"
 #include "../../../ProjectSystem/VansPathResolver.h"
+#include "../../../AssetCore/Storage/VansFileStorage.h"
 #include "../../../Util/VansLog.h"
 
 #include <NsGui/Uri.h>
 #include <NsGui/MemoryStream.h>
 #include <NsRender/RenderDevice.h>
 
-#include <fstream>
 #include <filesystem>
 #include <vector>
 #include <algorithm>
@@ -112,16 +112,11 @@ std::string ResolveUIPath(
 
 static std::vector<uint8_t> ReadFileToBuffer(const std::string& fullPath)
 {
-    std::ifstream file(fullPath, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-    {
+    std::string bytes;
+    std::string error;
+    if (!Vans::VansFileStorage::ReadAllBytes(fullPath, bytes, error) || bytes.empty())
         return {};
-    }
-    const auto size = static_cast<size_t>(file.tellg());
-    file.seekg(0);
-    std::vector<uint8_t> buffer(size);
-    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(size));
-    return buffer;
+    return std::vector<uint8_t>(bytes.begin(), bytes.end());
 }
 
 // ── VansNoesisXamlProvider ───────────────────────────────────────────

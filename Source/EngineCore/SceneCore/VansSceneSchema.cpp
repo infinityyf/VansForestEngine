@@ -1,5 +1,10 @@
 #include "VansSceneSchema.h"
 
+#include "../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+
+#include <cstdint>
+#include <initializer_list>
+#include <nlohmann/json.hpp>
 #include <unordered_set>
 #include <unordered_map>
 
@@ -8,6 +13,7 @@ namespace Vans
 namespace
 {
 using Json = nlohmann::ordered_json;
+using SerializedField = std::pair<std::string, VansSerializedValue>;
 
 void Error(SceneDiagnostics& diagnostics, std::string pointer, std::string message)
 {
@@ -19,13 +25,32 @@ bool ReadGuid(const Json& value, VansAssetGuid& guid)
     return value.is_string() && VansAssetGuid::TryParse(value.get<std::string>(), guid);
 }
 
+bool IsNonNegativeInteger(const Json& value)
+{
+    if (value.is_number_unsigned())
+        return true;
+    if (!value.is_number_integer())
+        return false;
+    return value.get<std::int64_t>() >= 0;
+}
+
 Json GuidJson(const VansAssetGuid& guid)
 {
     return guid.ToString();
 }
+
+VansSerializedValue SerializedArray(std::initializer_list<VansSerializedValue> items)
+{
+    return VansSerializedValue::Array(std::vector<VansSerializedValue>(items));
 }
 
-SceneDiagnostics VansSceneSchema::Validate(const Json& root)
+VansSerializedValue SerializedObject(std::initializer_list<SerializedField> fields)
+{
+    return VansSerializedValue::Object(std::vector<SerializedField>(fields));
+}
+}
+
+SceneDiagnostics VansSceneSchema::ValidateLegacyJson(const Json& root)
 {
     SceneDiagnostics diagnostics;
     if (!root.is_object())
@@ -104,7 +129,7 @@ SceneDiagnostics VansSceneSchema::Validate(const Json& root)
             const std::string type = component.value("type", "");
             if (type.empty())
                 Error(diagnostics, componentPointer + "/type", "Component requires a type");
-            if (!component.contains("version") || !component["version"].is_number_unsigned())
+            if (!component.contains("version") || !IsNonNegativeInteger(component["version"]))
                 Error(diagnostics, componentPointer + "/version", "Component requires an unsigned version");
             if (!component.contains("enabled") || !component["enabled"].is_boolean())
                 Error(diagnostics, componentPointer + "/enabled", "Component requires enabled state");
@@ -126,7 +151,7 @@ SceneDiagnostics VansSceneSchema::Validate(const Json& root)
                     }
                     else
                     {
-                        if (!submesh.contains("index") || !submesh["index"].is_number_unsigned())
+                        if (!submesh.contains("index") || !IsNonNegativeInteger(submesh["index"]))
                             Error(diagnostics, componentPointer + "/data/submesh/index", "ModelRenderer submesh.index must be an unsigned integer");
                         const char* stringFields[] = { "sourceNode", "sourceMaterial", "slotName" };
                         for (const char* field : stringFields)
@@ -144,7 +169,7 @@ SceneDiagnostics VansSceneSchema::Validate(const Json& root)
                 if (!data.contains("model") || !data["model"].is_object() || !data["model"].contains("guid") ||
                     !ReadGuid(data["model"]["guid"], model))
                     Error(diagnostics, componentPointer + "/data/model/guid", "MultiMeshRoot requires a valid model asset guid");
-                if (data.contains("submeshCount") && !data["submeshCount"].is_number_unsigned())
+                if (data.contains("submeshCount") && !IsNonNegativeInteger(data["submeshCount"]))
                     Error(diagnostics, componentPointer + "/data/submeshCount", "MultiMeshRoot submeshCount must be an unsigned integer");
             }
             if ((type == "Transform" || type == "ModelRenderer" || type == "Physics" || type == "MultiMeshRoot") && !singletonTypes.insert(type).second)
@@ -176,15 +201,15 @@ SceneDiagnostics VansSceneSchema::Validate(const Json& root)
     return diagnostics;
 }
 
-bool VansSceneSchema::Deserialize(const Json& root, VansSceneData& scene, SceneDiagnostics& diagnostics)
+bool VansSceneSchema::DeserializeLegacyJson(const Json& root, VansSceneData& scene, SceneDiagnostics& diagnostics)
 {
-    diagnostics = Validate(root);
+    diagnostics = ValidateLegacyJson(root);
     if (!diagnostics.empty())
         return false;
 
     scene = {};
     ReadGuid(root["sceneGuid"], scene.sceneGuid);
-    scene.settings = root.value("settings", Json::object());
+    scene.settings = DecodeSerializedValueLegacyJson(root.value("settings", Json::object()));
     for (const Json& entityJson : root["entities"])
     {
         VansSceneEntityData entity;
@@ -203,7 +228,7 @@ bool VansSceneSchema::Deserialize(const Json& root, VansSceneData& scene, SceneD
             component.type = componentJson["type"].get<std::string>();
             component.version = componentJson["version"].get<std::uint32_t>();
             component.enabled = componentJson["enabled"].get<bool>();
-            component.data = componentJson["data"];
+            component.data = DecodeSerializedValueLegacyJson(componentJson["data"]);
             entity.components.push_back(std::move(component));
         }
         scene.entities.push_back(std::move(entity));
@@ -211,13 +236,13 @@ bool VansSceneSchema::Deserialize(const Json& root, VansSceneData& scene, SceneD
     return true;
 }
 
-Json VansSceneSchema::Serialize(const VansSceneData& scene)
+Json VansSceneSchema::SerializeLegacyJson(const VansSceneData& scene)
 {
     Json root = {
         { "schemaVersion", VansSceneSchemaVersion },
         { "sceneGuid", GuidJson(scene.sceneGuid) },
         { "entities", Json::array() },
-        { "settings", scene.settings }
+        { "settings", EncodeSerializedValueLegacyJson<Json>(scene.settings) }
     };
     for (const VansSceneEntityData& entity : scene.entities)
     {
@@ -234,7 +259,7 @@ Json VansSceneSchema::Serialize(const VansSceneData& scene)
                 { "type", component.type },
                 { "version", component.version },
                 { "enabled", component.enabled },
-                { "data", component.data }
+                { "data", EncodeSerializedValueLegacyJson<Json>(component.data) }
             });
         }
         root["entities"].push_back(std::move(entityJson));
@@ -247,11 +272,24 @@ VansSceneComponentData VansSceneSchema::MakeTransform(const VansSceneTransform& 
     VansSceneComponentData result;
     result.id = VansComponentGuid::New();
     result.type = "Transform";
-    result.data = {
-        { "position", transform.position },
-        { "rotation", transform.rotation },
-        { "scale", transform.scale }
-    };
+    result.data = SerializedObject({
+        { "position", SerializedArray({
+            VansSerializedValue::Float(transform.position[0]),
+            VansSerializedValue::Float(transform.position[1]),
+            VansSerializedValue::Float(transform.position[2])
+        }) },
+        { "rotation", SerializedArray({
+            VansSerializedValue::Float(transform.rotation[0]),
+            VansSerializedValue::Float(transform.rotation[1]),
+            VansSerializedValue::Float(transform.rotation[2]),
+            VansSerializedValue::Float(transform.rotation[3])
+        }) },
+        { "scale", SerializedArray({
+            VansSerializedValue::Float(transform.scale[0]),
+            VansSerializedValue::Float(transform.scale[1]),
+            VansSerializedValue::Float(transform.scale[2])
+        }) }
+    });
     return result;
 }
 
@@ -260,15 +298,18 @@ VansSceneComponentData VansSceneSchema::MakeModelRenderer(VansAssetGuid model)
     VansSceneComponentData result;
     result.id = VansComponentGuid::New();
     result.type = "ModelRenderer";
-    result.data = {
-        { "model", { { "guid", model.ToString() } } },
-        { "castShadows", true },
-        { "receiveShadows", true },
-        { "rayTracingMode", "auto" },
-        { "visibilityMask", 0xffffffffu },
-        { "materialOverrides", Json::object() },
-        { "orphanOverrides", Json::object() }
-    };
+    result.data = SerializedObject({
+        { "model", SerializedObject({
+            { "guid", VansSerializedValue::String(model.ToString()) }
+        }) },
+        { "castShadows", VansSerializedValue::Bool(true) },
+        { "receiveShadows", VansSerializedValue::Bool(true) },
+        { "rayTracingMode", VansSerializedValue::String("auto") },
+        { "visibilityMask", VansSerializedValue::Int(0xffffffffll) },
+        { "shadowCasterMask", VansSerializedValue::Int(0xffffffffll) },
+        { "materialOverrides", VansSerializedValue::Object({}) },
+        { "orphanOverrides", VansSerializedValue::Object({}) }
+    });
     return result;
 }
 
@@ -279,15 +320,26 @@ VansSceneComponentData VansSceneSchema::MakeSubmeshModelRenderer(VansAssetGuid m
     const std::string& slotName)
 {
     VansSceneComponentData result = MakeModelRenderer(model);
-    result.data["submesh"] = {
-        { "index", submeshIndex },
-        { "sourceNode", sourceNode },
-        { "sourceMaterial", sourceMaterial },
-        { "slotName", slotName }
-    };
-    result.data["materialOverrides"] = {
-        { "default", nlohmann::ordered_json::object() }
-    };
+    result.data = SerializedObject({
+        { "model", SerializedObject({
+            { "guid", VansSerializedValue::String(model.ToString()) }
+        }) },
+        { "castShadows", VansSerializedValue::Bool(true) },
+        { "receiveShadows", VansSerializedValue::Bool(true) },
+        { "rayTracingMode", VansSerializedValue::String("auto") },
+        { "visibilityMask", VansSerializedValue::Int(0xffffffffll) },
+        { "shadowCasterMask", VansSerializedValue::Int(0xffffffffll) },
+        { "materialOverrides", SerializedObject({
+            { "default", VansSerializedValue::Object({}) }
+        }) },
+        { "orphanOverrides", VansSerializedValue::Object({}) },
+        { "submesh", SerializedObject({
+            { "index", VansSerializedValue::Int(submeshIndex) },
+            { "sourceNode", VansSerializedValue::String(sourceNode) },
+            { "sourceMaterial", VansSerializedValue::String(sourceMaterial) },
+            { "slotName", VansSerializedValue::String(slotName) }
+        }) }
+    });
     return result;
 }
 
@@ -296,11 +348,13 @@ VansSceneComponentData VansSceneSchema::MakeMultiMeshRoot(VansAssetGuid model, s
     VansSceneComponentData result;
     result.id = VansComponentGuid::New();
     result.type = "MultiMeshRoot";
-    result.data = {
-        { "model", { { "guid", model.ToString() } } },
-        { "submeshCount", submeshCount },
-        { "generation", "object-hierarchy" }
-    };
+    result.data = SerializedObject({
+        { "model", SerializedObject({
+            { "guid", VansSerializedValue::String(model.ToString()) }
+        }) },
+        { "submeshCount", VansSerializedValue::Int(submeshCount) },
+        { "generation", VansSerializedValue::String("object-hierarchy") }
+    });
     return result;
 }
 }

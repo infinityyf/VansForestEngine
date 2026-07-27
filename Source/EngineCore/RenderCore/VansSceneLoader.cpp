@@ -53,7 +53,6 @@
 #include "../Util/VansLog.h"
 #include "../RuntimeCore/VansThreadContract.h"
 #include <iostream>
-#include <fstream>
 #include <algorithm>
 #include <array>
 #include <cfloat>
@@ -188,11 +187,6 @@ void VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
 // ===========================================================================
 // Resource loading (meshes, shaders, textures, materials)
 // ===========================================================================
-
-void VansGraphics::VansScene::LoadResources(json& resourceData)
-{
-    VansSceneResourceBatchExecutor::Execute(*this, resourceData);
-}
 
 bool VansGraphics::VansScene::LoadSceneContent(const char* path)
 {

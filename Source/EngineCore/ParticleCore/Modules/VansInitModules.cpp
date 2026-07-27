@@ -30,20 +30,6 @@ namespace VansGraphics
         }
     }
 
-    nlohmann::json VansInitLifetimeModule::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"]   = "InitLifetime";
-        j["lifetime"] = m_Lifetime.Serialize();
-        return j;
-    }
-
-    void VansInitLifetimeModule::Deserialize(const nlohmann::json& j)
-    {
-        if (j.contains("lifetime"))
-            m_Lifetime.Deserialize(j["lifetime"]);
-    }
-
     // ──────────────────────────────────────────────────────────────────────
     // VansInitVelocityModule
     // ──────────────────────────────────────────────────────────────────────
@@ -106,25 +92,6 @@ namespace VansGraphics
         }
     }
 
-    nlohmann::json VansInitVelocityModule::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"]    = "InitVelocity";
-        j["mode"]      = (m_VelocityMode == VansInitVelocityMode::Cone) ? "Cone" : "Random";
-        j["angle"]     = m_ConeAngle;
-        j["speed"]     = m_Speed;
-        return j;
-    }
-
-    void VansInitVelocityModule::Deserialize(const nlohmann::json& j)
-    {
-        std::string mode = j.value("mode", "Cone");
-        m_VelocityMode = (mode == "Random") ? VansInitVelocityMode::Random
-                                            : VansInitVelocityMode::Cone;
-        m_ConeAngle = j.value("angle", 25.f);
-        m_Speed     = j.value("speed", 2.f);
-    }
-
     // ──────────────────────────────────────────────────────────────────────
     // VansInitSizeModule
     // ──────────────────────────────────────────────────────────────────────
@@ -141,20 +108,6 @@ namespace VansGraphics
         }
     }
 
-    nlohmann::json VansInitSizeModule::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"] = "InitSize";
-        j["size"]   = m_Size.Serialize();
-        return j;
-    }
-
-    void VansInitSizeModule::Deserialize(const nlohmann::json& j)
-    {
-        if (j.contains("size"))
-            m_Size.Deserialize(j["size"]);
-    }
-
     // ──────────────────────────────────────────────────────────────────────
     // VansInitColorModule
     // ──────────────────────────────────────────────────────────────────────
@@ -166,27 +119,6 @@ namespace VansGraphics
     {
         for (uint32_t i = startIndex; i < endIndex; ++i)
             pool.m_Color[i] = m_Color;
-    }
-
-    nlohmann::json VansInitColorModule::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"] = "InitColor";
-        j["color"]  = { m_Color.r, m_Color.g, m_Color.b, m_Color.a };
-        return j;
-    }
-
-    void VansInitColorModule::Deserialize(const nlohmann::json& j)
-    {
-        if (j.contains("color") && j["color"].is_array() && j["color"].size() >= 4)
-        {
-            m_Color = glm::vec4(
-                j["color"][0].get<float>(),
-                j["color"][1].get<float>(),
-                j["color"][2].get<float>(),
-                j["color"][3].get<float>()
-            );
-        }
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -203,20 +135,6 @@ namespace VansGraphics
             float r              = RandFloat(s_GlobalSeed);
             pool.m_Rotation[i]   = m_Angle.Evaluate(0.f, r);
         }
-    }
-
-    nlohmann::json VansInitRotationModule::Serialize() const
-    {
-        nlohmann::json j;
-        j["module"] = "InitRotation";
-        j["angle"]  = m_Angle.Serialize();
-        return j;
-    }
-
-    void VansInitRotationModule::Deserialize(const nlohmann::json& j)
-    {
-        if (j.contains("angle"))
-            m_Angle.Deserialize(j["angle"]);
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -278,40 +196,6 @@ namespace VansGraphics
             // 将局部位置变换到世界空间
             pool.m_Position[i] = glm::vec3(localToWorld * glm::vec4(localPos, 1.f));
         }
-    }
-
-    nlohmann::json VansInitPositionModule::Serialize() const
-    {
-        auto shapeToStr = [](VansEmitterShape s) -> std::string {
-            switch (s)
-            {
-            case VansEmitterShape::Sphere: return "Sphere";
-            case VansEmitterShape::Box:    return "Box";
-            case VansEmitterShape::Cone:   return "Cone";
-            case VansEmitterShape::Disk:   return "Disk";
-            case VansEmitterShape::Edge:   return "Edge";
-            default:                       return "Cone";
-            }
-        };
-        nlohmann::json j;
-        j["module"] = "InitPositionShape";
-        j["shape"]  = shapeToStr(m_Shape);
-        j["radius"] = m_Radius;
-        j["arc"]    = m_Arc;
-        return j;
-    }
-
-    void VansInitPositionModule::Deserialize(const nlohmann::json& j)
-    {
-        std::string shapeStr = j.value("shape", "Cone");
-        if      (shapeStr == "Sphere") m_Shape = VansEmitterShape::Sphere;
-        else if (shapeStr == "Box")    m_Shape = VansEmitterShape::Box;
-        else if (shapeStr == "Disk")   m_Shape = VansEmitterShape::Disk;
-        else if (shapeStr == "Edge")   m_Shape = VansEmitterShape::Edge;
-        else                           m_Shape = VansEmitterShape::Cone;
-
-        m_Radius = j.value("radius", 0.2f);
-        m_Arc    = j.value("arc", 360.f);
     }
 
 } // namespace VansGraphics

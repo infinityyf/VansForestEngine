@@ -46,9 +46,9 @@ namespace VansGraphics
 
     struct alignas(16) WaveParticleGPU
     {
-        glm::vec4 positionRadius; // xy=normalized domain position, z=base radius, w=amplitude
-        glm::vec4 directionPhase; // xy=direction, z=phase, w=world speed
-        glm::vec4 lifetimeSeed;   // x=lifetime, y=age offset, z=random seed, w=reserved
+        glm::vec4 positionRadius; // xy=normalized solve-tile position, z=world radius, w=amplitude
+        glm::vec4 directionPhase; // xy=direction, z=phase, w=phase speed
+        glm::vec4 lifetimeSeed;   // x=lifetime, y=reserved, z=random seed, w=reserved
     };
 
     // ── WaterGBufferParams GPU struct（对应 water_prepass.vert set=1 binding=0）

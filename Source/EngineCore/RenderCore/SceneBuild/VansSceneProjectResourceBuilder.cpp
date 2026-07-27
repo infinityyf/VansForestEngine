@@ -17,22 +17,6 @@ namespace VansGraphics
 {
 namespace
 {
-std::string ReadStringField(const json& object, const char* key)
-{
-    if (!object.is_object())
-        return {};
-    const auto found = object.find(key);
-    return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
-}
-
-bool ReadBoolField(const json& object, const char* key, bool fallback)
-{
-    if (!object.is_object())
-        return fallback;
-    const auto found = object.find(key);
-    return found != object.end() && found->is_boolean() ? found->get<bool>() : fallback;
-}
-
 TexturePrecision ParseTexturePrecision(const std::string& value, TexturePrecision fallback)
 {
     if (value == "low8" || value == "8" || value == "rgba8") return LOW_PRES_8;
@@ -116,16 +100,6 @@ VkShaderStageFlagBits ParseShaderStageName(const std::string& stageName)
     return it != stages.end() ? it->second : static_cast<VkShaderStageFlagBits>(0);
 }
 
-VansManagedShaderKind ParseShaderKind(const json& shaderJson)
-{
-    std::string kind = shaderJson.value("kind", shaderJson.value("type", "graphics"));
-    if (kind == "compute")
-        return VansManagedShaderKind::Compute;
-    if (kind == "rayTracing" || kind == "raytracing")
-        return VansManagedShaderKind::RayTracing;
-    return VansManagedShaderKind::Graphics;
-}
-
 VkCompareOp ParseCompareOp(const std::string& value, VkCompareOp fallback)
 {
     static const std::unordered_map<std::string, VkCompareOp> ops = {
@@ -185,61 +159,6 @@ VkPrimitiveTopology ParsePrimitiveTopology(const std::string& value, VkPrimitive
     return it != topologies.end() ? it->second : fallback;
 }
 
-void ReadShaderStageFile(
-    const json& shaderJson,
-    const char* key,
-    VkShaderStageFlagBits stage,
-    std::map<VkShaderStageFlagBits, std::string>& stageFiles)
-{
-    const std::string file = ReadStringField(shaderJson, key);
-    if (!file.empty())
-        stageFiles[stage] = file;
-}
-
-std::vector<std::string> ReadShaderMaterialPasses(const json& shaderJson)
-{
-    std::vector<std::string> passes;
-    const json* passValue = nullptr;
-    if (shaderJson.contains("passes"))
-        passValue = &shaderJson["passes"];
-    else if (shaderJson.contains("materialPasses"))
-        passValue = &shaderJson["materialPasses"];
-    else if (shaderJson.contains("pass"))
-        passValue = &shaderJson["pass"];
-
-    if (!passValue)
-        return passes;
-
-    if (passValue->is_string())
-    {
-        passes.push_back(passValue->get<std::string>());
-    }
-    else if (passValue->is_array())
-    {
-        for (const json& passName : *passValue)
-            if (passName.is_string())
-                passes.push_back(passName.get<std::string>());
-    }
-    else if (passValue->is_object())
-    {
-        for (const auto& [passName, enabled] : passValue->items())
-            if (!enabled.is_boolean() || enabled.get<bool>())
-                passes.push_back(passName);
-    }
-
-    return passes;
-}
-
-const json* ReadObjectField(const json& object, const char* key)
-{
-    if (!object.is_object())
-        return nullptr;
-    const auto found = object.find(key);
-    return found != object.end() && found->is_object() ? &(*found) : nullptr;
-}
-
-
-
 }
 
 }
@@ -287,33 +206,6 @@ void VansSceneProjectResourceBuilder::LoadMeshes(VansScene& scene,
     }
 }
 
-void VansSceneProjectResourceBuilder::LoadMeshesFromJson(VansScene& scene,
-    const json& meshData,
-    const std::string& pathPrefix,
-    VkDevice& device,
-    VansVKDevice* vkDevice)
-{
-    std::vector<Vans::VansSceneMeshResourceRequest> meshes;
-    meshes.reserve(meshData.is_array() ? meshData.size() : 0);
-    for (const auto& sceneMesh : meshData)
-    {
-        Vans::VansSceneMeshResourceRequest request;
-        request.name = sceneMesh.value("name", std::string{});
-        request.path = sceneMesh.value("path", std::string{});
-        request.needTangent = sceneMesh.value("need_tangent", false);
-        request.supportRayTracing = sceneMesh.value("support_raytracing", false);
-        request.needCpuData = sceneMesh.value("need_cpu_data", false);
-        request.scaleFactor = sceneMesh.value("scale_factor", sceneMesh.value("scaleFactor", 1.0f));
-        request.loadMultiMesh = sceneMesh.value("load_multi_mesh", false);
-        request.rebuildIdentityBoneOffsetsFromHierarchy = sceneMesh.value(
-            "rebuild_identity_bone_offsets_from_hierarchy", false);
-        request.remapWeaponAttachmentBonesToHands = sceneMesh.value(
-            "remap_weapon_attachment_bones_to_hands", false);
-        meshes.push_back(std::move(request));
-    }
-    LoadMeshes(scene, meshes, pathPrefix, device, vkDevice);
-}
-
 void VansSceneProjectResourceBuilder::LoadShadersFromRegistry(VansScene& scene,
     const std::string& pathPrefix,
     VkDevice& device)
@@ -331,73 +223,11 @@ void VansSceneProjectResourceBuilder::LoadShadersFromRegistry(VansScene& scene,
     scene.SyncShaderAssetsFromShaderManager();
 }
 
-void VansSceneProjectResourceBuilder::RegisterShadersFromJson(VansScene& scene,
-    const json& shaderData,
-    const std::string& pathPrefix,
-    VkDevice& device)
-{
-    std::vector<Vans::VansSceneShaderResourceRequest> shaders;
-    shaders.reserve(shaderData.is_array() ? shaderData.size() : 0);
-    for (const json& shaderJson : shaderData)
-    {
-        if (!shaderJson.is_object())
-            continue;
-
-        Vans::VansSceneShaderResourceRequest request;
-        request.name = shaderJson.value("name", std::string{});
-        request.source = shaderJson.value("source", shaderJson.value("path", std::string{}));
-        request.kind = shaderJson.value("kind", shaderJson.value("type", std::string("graphics")));
-        if (shaderJson.contains("pushConstantSize") && shaderJson["pushConstantSize"].is_number_integer())
-            request.pushConstantSize = shaderJson["pushConstantSize"].get<int>();
-        request.depthTest = shaderJson.value("depthTest", true);
-        request.depthWrite = shaderJson.value("depthWrite", true);
-        request.depthCompare = shaderJson.value("depthCompare", std::string("lessOrEqual"));
-        request.cull = shaderJson.value("cull", std::string("back"));
-        request.alphaBlend = shaderJson.value("alphaBlend", false);
-        request.decalBlend = shaderJson.value("decalBlend", false);
-        request.additiveBlend = shaderJson.value("additiveBlend", false);
-        request.additiveBlendAttachmentMask = shaderJson.value("additiveBlendAttachmentMask", 0u);
-        request.premultipliedAlphaBlend = shaderJson.value("premultipliedAlphaBlend", false);
-        request.colorAttachmentCount = shaderJson.value("colorAttachmentCount", -1);
-        request.polygonMode = shaderJson.value("polygonMode", std::string("fill"));
-        request.frontFace = shaderJson.value("frontFace", std::string("counterClockwise"));
-        request.primitiveTopology = shaderJson.value("primitiveTopology", std::string("triangleList"));
-        request.patchControlPoints = shaderJson.value("patchControlPoints", 1u);
-        request.renderPath = shaderJson.value("renderPath", std::string{});
-        request.materialPasses = ReadShaderMaterialPasses(shaderJson);
-
-        if (const json* stages = ReadObjectField(shaderJson, "stages"))
-        {
-            for (const auto& [stageName, stageFile] : stages->items())
-            {
-                if (stageFile.is_string())
-                    request.stages[stageName] = stageFile.get<std::string>();
-            }
-        }
-
-        auto readStageFile = [&](const char* key)
-        {
-            const std::string file = ReadStringField(shaderJson, key);
-            if (!file.empty())
-                request.stages[key] = file;
-        };
-        readStageFile("vertex");
-        readStageFile("fragment");
-        readStageFile("compute");
-        readStageFile("geometry");
-        readStageFile("tessControl");
-        readStageFile("tessEval");
-
-        shaders.push_back(std::move(request));
-    }
-
-    RegisterShaders(scene, shaders, pathPrefix, device);
-}
-
 void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
     const std::vector<Vans::VansSceneShaderResourceRequest>& shaders,
     const std::string& pathPrefix,
-    VkDevice& device)
+    VkDevice& device,
+    bool loadRegisteredShaders)
 {
     auto& manager = VansGraphics::VansShaderManager::Get();
 
@@ -460,7 +290,8 @@ void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
         manager.RegisterShader(std::move(entry));
     }
 
-    manager.LoadAll("", device);
+    if (loadRegisteredShaders)
+        manager.LoadAll("", device);
     scene.SyncShaderAssetsFromShaderManager();
 }
 
@@ -468,7 +299,8 @@ void VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
     const std::vector<Vans::VansSceneTextureResourceRequest>& textures,
     const std::string& pathPrefix,
     const std::string& enginePrefix,
-    VansVKDevice* vkDevice)
+    VansVKDevice* vkDevice,
+    bool includeDefaultTextureSet)
 {
     for (const auto& sceneTexture : textures)
     {
@@ -502,37 +334,15 @@ void VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
         scene.AddTextureAsset(texture);
     }
 
-    // Default textures are always loaded from the engine's EngineAssets directory
-    VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultAlbedo.png",    "defaultAlbedo",    vkDevice, false);
-    VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultMetal.png",     "defaultMetal",     vkDevice, false);
-    VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultRoughness.png", "defaultRoughness", vkDevice, false);
-    VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultAo.png",        "defaultAo",        vkDevice, false);
-    VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultNormal.png",    "defaultNormal",    vkDevice, false);
-}
-
-void VansSceneProjectResourceBuilder::LoadTexturesFromJson(VansScene& scene,
-    const json& textureData,
-    const std::string& pathPrefix,
-    const std::string& enginePrefix,
-    VansVKDevice* vkDevice)
-{
-    std::vector<Vans::VansSceneTextureResourceRequest> textures;
-    textures.reserve(textureData.is_array() ? textureData.size() : 0);
-    for (const auto& sceneTexture : textureData)
+    if (includeDefaultTextureSet)
     {
-        Vans::VansSceneTextureResourceRequest request;
-        request.name = sceneTexture.value("name", std::string{});
-        request.path = sceneTexture.value("path", std::string{});
-        request.textureType = sceneTexture.value("textureType", sceneTexture.value("type", 0));
-        request.srgb = sceneTexture.value("sRGB", true);
-        request.useCompress = sceneTexture.value("useCompress", sceneTexture.value("compress", true));
-        request.needMip = sceneTexture.value("needMip", sceneTexture.value("generateMip", true));
-        request.precision = sceneTexture.value("precision", std::string("low8"));
-        request.importChannel = sceneTexture.value("importChannel", 4);
-        request.addressMode = sceneTexture.value("addressMode", std::string("repeat"));
-        textures.push_back(std::move(request));
+        // Default textures are always loaded from the engine's EngineAssets directory.
+        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultAlbedo.png",    "defaultAlbedo",    vkDevice, false);
+        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultMetal.png",     "defaultMetal",     vkDevice, false);
+        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultRoughness.png", "defaultRoughness", vkDevice, false);
+        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultAo.png",        "defaultAo",        vkDevice, false);
+        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultNormal.png",    "defaultNormal",    vkDevice, false);
     }
-    LoadTextures(scene, textures, pathPrefix, enginePrefix, vkDevice);
 }
 
 void VansSceneProjectResourceBuilder::ImportDefaultTexture(VansScene& scene, const std::string& path, const std::string& name, VansVKDevice* vkDevice, bool isSRGB)

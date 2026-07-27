@@ -1,13 +1,38 @@
 #include "VansSceneDocumentLoader.h"
 #include "VansSceneSchema.h"
 
-#include <fstream>
-#include <iterator>
+#include "../AssetCore/Serialization/VansJsonDocumentCodec.h"
+#include "../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../AssetCore/Storage/VansFileStorage.h"
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <cwctype>
 
 namespace Vans
 {
 namespace
 {
+std::wstring LowerExtension(const std::filesystem::path& path)
+{
+    std::wstring extension = path.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+        [](wchar_t ch)
+        {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+    return extension;
+}
+
+bool HasSceneDocumentExtension(const std::filesystem::path& path)
+{
+    const std::wstring extension = LowerExtension(path);
+    return extension == L".json" ||
+        extension == L".scene" ||
+        extension == L".vscene";
+}
+
 std::uint64_t HashBytes(const std::string& bytes)
 {
     constexpr std::uint64_t offset = 14695981039346656037ull;
@@ -21,22 +46,42 @@ std::uint64_t HashBytes(const std::string& bytes)
     return result;
 }
 
-bool ReadFile(const std::filesystem::path& path, std::string& bytes, std::string& error)
+}
+
+bool VansSceneDocumentLoader::IsSceneDocumentFile(const std::filesystem::path& path, std::string* error)
 {
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
+    if (!HasSceneDocumentExtension(path))
+        return false;
+
+    std::string bytes;
+    std::string localError;
+    if (!VansFileStorage::ReadAllBytes(path, bytes, localError))
     {
-        error = "Cannot open scene document: " + path.string();
+        if (error) *error = localError;
         return false;
     }
-    bytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
-    if (input.bad())
+
+    SceneJson parsedRoot;
+    if (!VansJsonDocumentCodec::Parse(bytes, parsedRoot, localError))
     {
-        error = "Failed while reading scene document: " + path.string();
+        if (error) *error = localError;
+        return false;
+    }
+
+    const SceneDiagnostics diagnostics = VansSceneSchema::ValidateLegacyJson(parsedRoot);
+    const bool hasSchemaError = std::any_of(
+        diagnostics.begin(),
+        diagnostics.end(),
+        [](const SceneDiagnostic& diagnostic)
+        {
+            return diagnostic.severity == SceneDiagnosticSeverity::Error;
+        });
+    if (hasSchemaError)
+    {
+        if (error) *error = "File is not a valid Forest scene document";
         return false;
     }
     return true;
-}
 }
 
 SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::path& path)
@@ -44,7 +89,7 @@ SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::pat
     SceneDocumentLoadResult result;
     std::string bytes;
     std::string error;
-    if (!ReadFile(path, bytes, error))
+    if (!VansFileStorage::ReadAllBytes(path, bytes, error))
     {
         result.diagnostics.push_back({ SceneDiagnosticSeverity::Error, "", error });
         return result;
@@ -53,11 +98,17 @@ SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::pat
     try
     {
         auto document = std::make_unique<VansSceneDocument>();
-        document->m_Root = SceneJson::parse(bytes);
+        SceneJson parsedRoot;
+        if (!VansJsonDocumentCodec::Parse(bytes, parsedRoot, error))
+        {
+            result.diagnostics.push_back({ SceneDiagnosticSeverity::Error, "", error });
+            return result;
+        }
+        document->m_Diagnostics = VansSceneSchema::ValidateLegacyJson(parsedRoot);
+        document->m_Root = std::make_unique<VansSerializedValue>(
+            DecodeSerializedValueLegacyJson(parsedRoot));
         document->m_SourcePath = std::filesystem::absolute(path).lexically_normal();
         document->m_LoadedFingerprint = Fingerprint(document->m_SourcePath, &error);
-
-        document->m_Diagnostics = VansSceneSchema::Validate(document->m_Root);
 
         if (!document->m_LoadedFingerprint.valid)
             document->m_Diagnostics.push_back({ SceneDiagnosticSeverity::Error, "", error });
@@ -65,7 +116,7 @@ SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::pat
         result.diagnostics = document->m_Diagnostics;
         result.document = std::move(document);
     }
-    catch (const SceneJson::parse_error& parseError)
+    catch (const std::exception& parseError)
     {
         result.diagnostics.push_back({ SceneDiagnosticSeverity::Error, "", parseError.what() });
     }
@@ -78,7 +129,7 @@ SceneFileFingerprint VansSceneDocumentLoader::Fingerprint(const std::filesystem:
     std::string bytes;
     std::string localError;
     std::error_code ec;
-    if (!ReadFile(path, bytes, localError))
+    if (!VansFileStorage::ReadAllBytes(path, bytes, localError))
     {
         if (error) *error = localError;
         return result;

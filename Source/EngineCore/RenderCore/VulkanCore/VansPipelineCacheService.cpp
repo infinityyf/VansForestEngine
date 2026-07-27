@@ -1,14 +1,15 @@
 #include "VansPipelineCacheService.h"
 
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../AssetCore/Storage/VansFileStorage.h"
 #include "../../Util/VansLog.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <iomanip>
 #include <sstream>
 
@@ -321,22 +322,20 @@ namespace VansGraphics
 	bool VansPipelineCacheService::ReadCacheFile(std::vector<uint8_t>& outPayload, bool logFailures) const
 	{
 		outPayload.clear();
-		std::ifstream input(m_CacheFilePath, std::ios::binary | std::ios::ate);
-		if (!input)
+		std::string bytes;
+		std::string readError;
+		if (!Vans::VansFileStorage::ReadAllBytes(m_CacheFilePath, bytes, readError))
 			return false;
 
-		const std::streamsize totalSize = input.tellg();
-		if (totalSize < static_cast<std::streamsize>(sizeof(CacheFileHeader)) ||
-			totalSize > static_cast<std::streamsize>(sizeof(CacheFileHeader) + kMaxPayloadSize))
+		if (bytes.size() < sizeof(CacheFileHeader) ||
+			bytes.size() > sizeof(CacheFileHeader) + static_cast<size_t>(kMaxPayloadSize))
 		{
 			if (logFailures) VANS_LOG_WARN("[PipelineCache] Invalid cache file size");
 			return false;
 		}
 
-		input.seekg(0, std::ios::beg);
 		CacheFileHeader header{};
-		if (!input.read(reinterpret_cast<char*>(&header), sizeof(header)))
-			return false;
+		std::memcpy(&header, bytes.data(), sizeof(header));
 
 		const bool headerValid =
 			std::memcmp(header.magic, kCacheMagic.data(), kCacheMagic.size()) == 0 &&
@@ -349,19 +348,15 @@ namespace VansGraphics
 			header.pipelineAbiVersion == kPipelineAbiVersion &&
 			header.buildConfiguration == CurrentBuildConfiguration() &&
 			std::memcmp(header.pipelineCacheUUID, m_Identity.pipelineCacheUUID, VK_UUID_SIZE) == 0 &&
-			static_cast<uint64_t>(totalSize) == sizeof(CacheFileHeader) + header.payloadSize;
+			static_cast<uint64_t>(bytes.size()) == sizeof(CacheFileHeader) + header.payloadSize;
 		if (!headerValid)
 		{
 			if (logFailures) VANS_LOG_WARN("[PipelineCache] Cache identity/header validation failed");
 			return false;
 		}
 
-		outPayload.resize(static_cast<size_t>(header.payloadSize));
-		if (!input.read(reinterpret_cast<char*>(outPayload.data()), static_cast<std::streamsize>(outPayload.size())))
-		{
-			outPayload.clear();
-			return false;
-		}
+		const auto payloadBegin = bytes.begin() + static_cast<std::ptrdiff_t>(sizeof(CacheFileHeader));
+		outPayload.assign(payloadBegin, bytes.end());
 
 		if (HashBytes(outPayload.data(), outPayload.size()) != header.payloadHash || !ValidateVulkanPayload(outPayload))
 		{
@@ -490,38 +485,16 @@ namespace VansGraphics
 		header.buildConfiguration = CurrentBuildConfiguration();
 		std::memcpy(header.pipelineCacheUUID, m_Identity.pipelineCacheUUID, VK_UUID_SIZE);
 
-#if defined(_WIN32)
-		const std::filesystem::path temporaryPath =
-			m_CacheFilePath.wstring() + L".tmp." + std::to_wstring(GetCurrentProcessId());
-#else
-		const std::filesystem::path temporaryPath = m_CacheFilePath.string() + ".tmp";
-#endif
+		std::string bytes;
+		bytes.reserve(sizeof(header) + payload.size());
+		bytes.append(reinterpret_cast<const char*>(&header), sizeof(header));
+		bytes.append(reinterpret_cast<const char*>(payload.data()), payload.size());
+		std::string writeError;
+		if (!Vans::VansFileStorage::WriteAtomicBytes(m_CacheFilePath, bytes, writeError))
 		{
-			std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
-			if (!output)
-				return false;
-			output.write(reinterpret_cast<const char*>(&header), sizeof(header));
-			output.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
-			output.flush();
-			if (!output.good())
-				return false;
-		}
-
-#if defined(_WIN32)
-		if (!MoveFileExW(
-			temporaryPath.c_str(),
-			m_CacheFilePath.c_str(),
-			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-		{
-			std::filesystem::remove(temporaryPath, ec);
-			VANS_LOG_WARN("[PipelineCache] Atomic cache replacement failed. Win32=" << GetLastError());
+			VANS_LOG_WARN("[PipelineCache] Atomic cache replacement failed: " << writeError);
 			return false;
 		}
-#else
-		std::filesystem::rename(temporaryPath, m_CacheFilePath, ec);
-		if (ec)
-			return false;
-#endif
 
 		m_LastDiskPayloadHash = header.payloadHash;
 		m_Dirty = false;

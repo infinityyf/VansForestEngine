@@ -5,11 +5,13 @@
 #include "../VulkanCore/VansShader.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../VulkanCore/VansDescriptorSetLayouts.h"
+#include "../PcgCore/VansPcgMask.h"
 #include <glm/glm.hpp>
 #include <vector>
 #include <string>
 #include <cstdint>
 #include <algorithm>
+#include <functional>
 
 namespace VansGraphics
 {
@@ -364,6 +366,8 @@ namespace VansGraphics
 			m_GrassScaleMax = std::max(m_GrassScaleMin, std::max(minScale, maxScale));
 		}
 
+		void SetPlacementMask(const PcgPlacementMask& mask) { m_PlacementMask = mask; }
+
 		// ── Runtime simulation parameters (updated from JSON at load time) ─────
 		void SetSimParams(glm::vec2 windDir, float windStrength, float windFrequency,
 		                  float windSpeed, float windBendMult,
@@ -465,6 +469,8 @@ namespace VansGraphics
 		void WriteTreeCullDescriptors();
 		void WriteTreeDrawDescriptors(TreeDrawConfigGPU& cfg);
 		void LoadTreeShaders(VkDevice device);
+		float SamplePlacementMask(const glm::vec2& worldXZ) const;
+		bool AcceptPlacementMask(const glm::vec2& worldXZ, float randomValue) const;
 
 		// ── Configuration ───────────────────────────────────────────────
 		uint32_t m_InstanceCount        = 0;
@@ -485,6 +491,8 @@ namespace VansGraphics
 		glm::vec2 m_PlacementMaxXZ      = glm::vec2( 100.0f,  100.0f);
 		float     m_GrassScaleMin       = 0.4f;
 		float     m_GrassScaleMax       = 1.5f;
+		PcgPlacementMask m_PlacementMask;
+		std::vector<GrassInstance> m_GrassInstancesCPU;
 
 		// ── Per-frame simulation parameters ─────────────────────────────
 		glm::vec2 m_SimWindDirection  = glm::vec2(1.0f, 0.0f);

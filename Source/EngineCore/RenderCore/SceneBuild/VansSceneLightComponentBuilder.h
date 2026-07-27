@@ -3,6 +3,7 @@
 #include "../VansScene.h"
 
 #include <functional>
+#include "../../SceneCore/VansSceneLightComponentConfig.h"
 
 namespace VansGraphics
 {
@@ -12,7 +13,7 @@ namespace VansGraphics
 		static void BuildLights(
 			VansScene& scene,
 			VansScriptObject& object,
-			const json& components,
+			const Vans::VansSceneLightComponentConfig& config,
 			const std::string& projectRoot,
 			const std::function<void()>& ensureObjectTransform);
 

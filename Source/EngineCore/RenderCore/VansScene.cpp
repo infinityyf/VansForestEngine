@@ -1,5 +1,7 @@
 ﻿#include "VansScene.h"
+
 #include "../RuntimeCore/VansFramePhase.h"
+
 #include "../RuntimeCore/VansThreadContract.h"
 #include "VansShaderManager.h"
 #include "BRDFData/VansLight.h"
@@ -31,7 +33,6 @@
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
 #include <iostream>
-#include <fstream>
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
@@ -245,20 +246,6 @@ void VansGraphics::VansScene::LoadProjectVideoResources(
 	const std::string& assetPrefix)
 {
 	m_VideoManager.Load(videos, assetPrefix, m_RuntimeResourceDevice);
-}
-
-void VansGraphics::VansScene::LoadProjectAudioResourcesFromJson(
-	const json& audioData,
-	const std::string& assetPrefix)
-{
-	m_AudioManager.LoadFromJson(audioData, assetPrefix);
-}
-
-void VansGraphics::VansScene::LoadProjectVideoResourcesFromJson(
-	const json& videoData,
-	const std::string& assetPrefix)
-{
-	m_VideoManager.LoadFromJson(videoData, assetPrefix, m_RuntimeResourceDevice);
 }
 
 void VansGraphics::VansScene::SyncShaderAssetsFromShaderManager()
@@ -780,6 +767,7 @@ void VansGraphics::VansScene::UpdatePunctualShadowCasterCache()
 
 		const uint64_t casterId = reinterpret_cast<uint64_t>(node);
 		PunctualShadowCasterRecord record;
+		record.shadowCasterMask = common->m_ShadowCasterMask;
 		record.dynamic = node->m_AnimationEnabled || node->m_HasSkeletonBone;
 		record.hasBounds = node->m_Mesh != nullptr && node->m_Mesh->HasLocalBounds();
 		if (record.hasBounds)
@@ -805,6 +793,10 @@ void VansGraphics::VansScene::UpdatePunctualShadowCasterCache()
 				previous->second.bounds,
 				record.bounds,
 				record.dynamic ? VansShadowDirty_DynamicCaster : VansShadowDirty_CasterTransform);
+		}
+		else if (previous->second.shadowCasterMask != record.shadowCasterMask)
+		{
+			shadowManager.InvalidateCastersInBounds(record.bounds, record.bounds, VansShadowDirty_CasterMaterial);
 		}
 		current.emplace(casterId, record);
 	};
@@ -838,6 +830,8 @@ void VansGraphics::VansScene::BuildPunctualShadowCasterLists()
 		job.casterIds.reserve(m_PunctualShadowCasters.size());
 		for (const auto& caster : m_PunctualShadowCasters)
 		{
+			if ((caster.second.shadowCasterMask & job.shadowCasterMask) == 0u)
+				continue;
 			if (!caster.second.hasBounds || BoundsIntersectsShadowFrustum(caster.second.bounds, job.worldToShadow))
 				job.casterIds.push_back(caster.first);
 		}
@@ -1386,6 +1380,9 @@ void VansGraphics::VansScene::UpdateSceneData()
     {
         VANS_PROFILE_SCOPE("Light::UpdateCPUData", Vans::ProfileCategory::RenderPrepare);
         m_LightManager.UpdateLightCPUData();
+        m_ReflectionProbeSystem.SetRuntimeSkyCubeScales(
+            m_LightManager.GetSkyDiffuseScale(),
+            m_LightManager.GetSkySpecularScale());
     }
 
     // Advance cloth simulation and write results to staging buffers
@@ -1578,9 +1575,9 @@ void VansGraphics::VansScene::SyncLightTransforms()
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-                // Spot shaders compare against the surface-to-light vector.
-                // Unity-authored spotlights emit along local -Z, so local +Z is
-                // the GPU cone axis used for lighting, shadows, fog, and IES.
+                // 聚光灯 shader 使用“受光点指向灯”的方向做比较。
+                // Unity 中的聚光灯沿本地 -Z 发光，因此本地 +Z 是 GPU 侧用于
+                // 光照、阴影、体积雾和 IES 的锥体轴方向。
                 glm::vec3 towardLight = glm::normalize(glm::vec3(rotMat[2]));
                 lights[spotComp->m_LightIndex].m_Direction = towardLight;
             }

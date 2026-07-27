@@ -5,9 +5,6 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json.hpp>
-using json = nlohmann::json;
-
 namespace Vans
 {
     struct VansSceneVideoResourceRequest;
@@ -19,7 +16,7 @@ namespace VansGraphics
     // VansVideoManager — 管理场景内所有视频纹理的生命周期
     //
     // 设计原则：
-    //   - 每条视频纹理以 name 为键唯一标识，name 来自 JSON 中 video_textures 数组。
+    //   - 每条视频纹理以 name 为键唯一标识，name 来自 typed video resource batch。
     //   - 视频纹理由 unique_ptr 持有，生命周期与当前场景绑定。
     //   - VansScene 内嵌一个 VansVideoManager 成员，无需 new/delete。
     //   - TickAll() 每帧调用，推进所有视频的播放并上传就绪帧到 GPU。
@@ -38,7 +35,7 @@ namespace VansGraphics
         VansVideoManager& operator=(VansVideoManager&&)      = default;
 
         // ── 批量加载 ─────────────────────────────────────────────────────────
-        // 解析 scene JSON 中的 "video_textures" 数组。
+        // 加载 typed scene video resource batch。
         // 每条记录格式：
         //   {
         //     "name"     : "MyVideo",        // 引擎内唯一标识（材质引用时使用）
@@ -50,10 +47,6 @@ namespace VansGraphics
         void Load(const std::vector<Vans::VansSceneVideoResourceRequest>& videos,
                   const std::string& projectRoot,
                   VansVKDevice* device);
-
-        void LoadFromJson(const json& videoArray,
-                          const std::string& projectRoot,
-                          VansVKDevice* device);
 
         // ── 单条查找 ──────────────────────────────────────────────────────────
         // 按名称查找视频纹理，找不到返回 nullptr。

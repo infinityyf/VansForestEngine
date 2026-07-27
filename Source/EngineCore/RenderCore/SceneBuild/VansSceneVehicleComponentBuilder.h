@@ -2,6 +2,7 @@
 
 #include "../VansScene.h"
 
+#include "../../SceneCore/VansSceneVehicleComponentConfig.h"
 #include <unordered_set>
 
 namespace VansGraphics
@@ -9,10 +10,10 @@ namespace VansGraphics
 	class VansSceneVehicleComponentBuilder
 	{
 	public:
-		static void AddVehiclePlaceholder(VansScriptObject& object, const json& components);
+		static void AddVehiclePlaceholder(VansScriptObject& object, const Vans::VansSceneVehicleObjectConfig& objectConfig);
 
 		static std::unordered_set<uint32_t> ResolveVehicles(
 			VansScene& scene,
-			const json& objectsArray);
+			const Vans::VansSceneVehicleObjectConfigs& objectConfigs);
 	};
 }

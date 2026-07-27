@@ -1,5 +1,5 @@
 #include "VansVideoManager.h"
-#include "../SceneCore/VansSceneAssetDependencyBuilder.h"
+#include "../SceneCore/VansSceneResourcePlan.h"
 #include "../Util/VansLog.h"
 #include <filesystem>
 
@@ -53,67 +53,6 @@ void VansVideoManager::Load(const std::vector<Vans::VansSceneVideoResourceReques
         }
 
         VANS_LOG("[VansVideoManager] Loaded video texture: name=" << name << " path=" << absPath);
-        m_Videos.emplace(name, std::move(videoTex));
-    }
-}
-
-// ===========================================================================
-// LoadFromJson — 解析 JSON video_textures 数组并批量打开视频
-// ===========================================================================
-void VansVideoManager::LoadFromJson(const json& videoArray,
-                                    const std::string& projectRoot,
-                                    VansVKDevice* device)
-{
-    if (!device)
-    {
-        VANS_LOG_ERROR("[VansVideoManager] LoadFromJson 失败：device 为空");
-        return;
-    }
-
-    for (const auto& entry : videoArray)
-    {
-        if (!entry.contains("name") || !entry.contains("path"))
-        {
-            VANS_LOG_WARN("[VansVideoManager] video_textures 条目缺少 name 或 path 字段，已跳过");
-            continue;
-        }
-
-        const std::string name     = entry["name"];
-        const std::string relPath  = entry["path"];
-        const bool        loop     = entry.value("loop",     true);
-        const bool        autoplay = entry.value("autoplay", true);
-        const bool        srgb     = entry.value("srgb",     true);
-
-        if (name.empty() || relPath.empty())
-        {
-            VANS_LOG_WARN("[VansVideoManager] name 或 path 为空，已跳过");
-            continue;
-        }
-
-        // 拼接绝对路径
-        const std::string absPath = projectRoot + relPath;
-
-        if (!std::filesystem::exists(absPath))
-        {
-            VANS_LOG_ERROR("[VansVideoManager] 视频文件不存在: " << absPath);
-            continue;
-        }
-
-        // 检查是否重名
-        if (m_Videos.count(name) > 0)
-        {
-            VANS_LOG_WARN("[VansVideoManager] 视频名称重复，将覆盖: " << name);
-            m_Videos[name]->Close();
-        }
-
-        auto videoTex = std::make_unique<VansVideoTexture>();
-        if (!videoTex->Open(device, absPath, loop, autoplay, srgb))
-        {
-            VANS_LOG_ERROR("[VansVideoManager] 打开视频失败: " << absPath);
-            continue;
-        }
-
-        VANS_LOG("[VansVideoManager] 加载视频纹理: name=" << name << " path=" << absPath);
         m_Videos.emplace(name, std::move(videoTex));
     }
 }

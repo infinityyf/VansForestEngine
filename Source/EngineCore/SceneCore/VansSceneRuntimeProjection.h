@@ -1,12 +1,19 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
+#include <string>
 
 namespace Vans
 {
+	struct VansSerializedValue;
+	struct VansSceneContentBuildPlan;
+
 	class VansSceneRuntimeProjection
 	{
 	public:
-		static bool BuildRuntimeScene(nlohmann::json& sceneData);
+		static bool BuildRuntimeSceneContentPlan(
+			const VansSerializedValue& sceneRoot,
+			const std::string& projectRoot,
+			VansSceneContentBuildPlan& outPlan,
+			std::string& outError);
 	};
 }

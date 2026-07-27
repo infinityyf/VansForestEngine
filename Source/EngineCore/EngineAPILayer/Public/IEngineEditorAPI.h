@@ -101,12 +101,8 @@ namespace Vans::EditorAPI
 		virtual FootIKDebugSnapshot GetFootIKDebugSnapshot() const = 0;
 		virtual TerrainSettingsSnapshot GetTerrainSettings() const = 0;
 		virtual void ApplyTerrainSettings(const TerrainSettingsSnapshot& settings) = 0;
-		virtual void ApplyRuntimeEntityPatchJson(const std::string& entityJson) = 0;
-		virtual void SetRuntimeComponentEnabled(const std::string& entityGuid, const std::string& componentType, bool enabled) = 0;
-		virtual bool ApplyRuntimeMaterialAssetPatch(
-			const std::string& assetPath,
-			const std::string& assetRootJson,
-			const std::string& changedPointer) = 0;
+		virtual void ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change) = 0;
+		virtual bool ApplyRuntimeMaterialPreviewChange(const RuntimeMaterialPreviewChange& change) = 0;
 
 		virtual void CommitLightingChanges() = 0;
 		virtual LightingSettingsSnapshot GetLightingSettings() const = 0;

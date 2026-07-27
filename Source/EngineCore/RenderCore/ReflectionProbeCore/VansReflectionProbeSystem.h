@@ -4,7 +4,7 @@
 #include "../VulkanCore/VansRenderPass.h"
 #include "../VulkanCore/VansVKBuffer.h"
 #include "../VulkanCore/VansVKImage.h"
-#include <nlohmann/json.hpp>
+#include "../../SceneCore/VansSceneReflectionProbeConfig.h"
 #include <memory>
 
 namespace VansGraphics
@@ -31,9 +31,7 @@ namespace VansGraphics
 		VansReflectionProbeSystem() = default;
 		~VansReflectionProbeSystem();
 
-		void LoadFromSceneJson(const nlohmann::json& sceneRoot, const std::string& scenePath);
-		void SaveToSceneJson(nlohmann::json& sceneRoot) const;
-		bool SaveConfiguration() const;
+		void LoadFromSceneConfig(const Vans::VansSceneReflectionProbeConfig& config, const std::string& scenePath);
 		void Clear(VkDevice device);
 
 		void GenerateAutoProbes(const VansScene& scene, bool replaceExisting);
@@ -44,6 +42,7 @@ namespace VansGraphics
 		void CreateGPUResources(VansVKDevice& device, VansVKCommandBuffer& commandBuffer);
 		void UpdateGlobalDescriptors(VkDescriptorSet globalSet);
 		void UploadMetadata();
+		void SetRuntimeSkyCubeScales(float diffuseScale, float specularScale);
 		void UpdateRealtimeProbes(uint32_t frameIndex);
 		void ProcessBakeQueue(VansScene& scene, VansVKDevice& device, VansVKCommandBuffer& commandBuffer,
 			uint32_t frameIndex, bool updateRealtime = true);
@@ -84,6 +83,7 @@ namespace VansGraphics
 		void BuildAutoProbesFromRegions();
 		void EvaluateCoverage();
 		void BuildGPUData();
+		void RefreshLightingParams();
 		bool LoadCachedProbe(VansVKCommandBuffer& commandBuffer, size_t probeIndex);
 		bool EnsureCaptureResources(VansScene& scene, VansVKDevice& device);
 		void DestroyCaptureResources();
@@ -94,15 +94,14 @@ namespace VansGraphics
 		void CreatePrefilterResources(VansVKDevice& device);
 		void PrefilterAll(VansVKDevice& device, VansVKCommandBuffer& commandBuffer);
 		void PrefilterProbe(VansVKDevice& device, VansVKCommandBuffer& commandBuffer, uint32_t probeIndex);
-		static VansReflectionProbeDesc ParseProbe(const nlohmann::json& value);
-		static nlohmann::json SerializeProbe(const VansReflectionProbeDesc& probe);
-
 		std::vector<VansReflectionProbeDesc> m_Probes;
 		std::vector<VansReflectionProbeGPU> m_GPUProbes;
 		std::vector<ReflectionProbeBakeResult> m_BakeResults;
 		std::vector<size_t> m_BakeQueue;
 		ReflectionProbePlacementSettings m_PlacementSettings;
 		ReflectionProbeLightingSettings m_LightingSettings;
+		float m_RuntimeSkyDiffuseScale = 1.0f;
+		float m_RuntimeSkySpecularScale = 1.0f;
 		ReflectionProbeEditorState m_EditorState;
 		ReflectionProbePlacementGrid m_PlacementGrid;
 		std::vector<GeometryRegion> m_Regions;

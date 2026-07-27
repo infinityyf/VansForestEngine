@@ -83,6 +83,11 @@ namespace
         return float(h & 0x00ffffffu) / float(0x01000000u);
     }
 
+    float Fract01(float value)
+    {
+        return value - std::floor(value);
+    }
+
     void AutoGenerateWaveParticles(std::vector<WaveParticleGPU>& particles,
                                    const VansWaterConfig& config)
     {
@@ -102,12 +107,18 @@ namespace
         const float baseAngle = std::atan2f(windDir.y, windDir.x);
         const float radiusRatio = wp.m_MinRadius / (std::max)(wp.m_MaxRadius, wp.m_MinRadius + 0.001f);
         const float amplitudeNorm = 2.0f / std::sqrt((std::max)(count, 1));
+        const float seedOffsetX = Hash01(wp.m_RandomSeed, 101);
+        const float seedOffsetZ = Hash01(wp.m_RandomSeed, 102);
+        const float seedOffsetR = Hash01(wp.m_RandomSeed, 103);
         for (int i = 0; i < count; ++i)
         {
             const std::uint32_t seed = wp.m_RandomSeed ^ HashU32(std::uint32_t(i) * 747796405u + 2891336453u);
-            const float px = Hash01(seed, 1);
-            const float pz = Hash01(seed, 2);
-            const float rt = Hash01(seed, 3);
+            // Low-discrepancy placement avoids random clumps that leave
+            // compact particle kernels uncovered elsewhere in the solve tile.
+            const float index = float(i) + 0.5f;
+            const float px = Fract01(seedOffsetX + index * 0.754877666f);
+            const float pz = Fract01(seedOffsetZ + index * 0.569840291f);
+            const float rt = Fract01(seedOffsetR + index * 0.381966011f);
             const float radius = wp.m_MaxRadius * std::pow(radiusRatio, rt);
             const float angle = baseAngle + (Hash01(seed, 4) * 2.0f - 1.0f) * wp.m_DirectionSpread;
             const glm::vec2 dir = glm::normalize(glm::vec2(std::cosf(angle), std::sinf(angle)));
@@ -116,12 +127,11 @@ namespace
             const float amplitude = std::pow(radius / (std::max)(wp.m_MaxRadius, 0.001f), 0.65f)
                 * (0.65f + 0.7f * Hash01(seed, 6))
                 * amplitudeNorm;
-            const float ageOffset = Hash01(seed, 7) * wp.m_Lifetime;
 
             WaveParticleGPU particle = {};
             particle.positionRadius = glm::vec4(px, pz, radius, amplitude);
             particle.directionPhase = glm::vec4(dir.x, dir.y, phase, speed);
-            particle.lifetimeSeed = glm::vec4(wp.m_Lifetime, ageOffset, float(seed & 0xffffu), 0.0f);
+            particle.lifetimeSeed = glm::vec4(wp.m_Lifetime, 0.0f, float(seed & 0xffffu), 0.0f);
             particles.push_back(particle);
         }
     }

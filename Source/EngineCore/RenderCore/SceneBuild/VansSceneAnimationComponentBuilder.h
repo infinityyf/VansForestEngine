@@ -2,6 +2,8 @@
 
 #include "../VansScene.h"
 
+#include <memory>
+#include "../../SceneCore/VansSceneAnimationComponentConfig.h"
 #include <vector>
 
 class VansScriptAnimationComponent;
@@ -15,13 +17,13 @@ namespace VansGraphics
 		{
 			VansScriptObject* obj = nullptr;
 			VansScriptAnimationComponent* component = nullptr;
-			json animJson;
+			std::shared_ptr<Vans::VansSceneAnimationComponentConfig> animationConfig;
 			std::string objectName;
 		};
 
 		static void AddAnimationPlaceholder(
 			VansScriptObject& object,
-			const json& components,
+			const Vans::VansSceneAnimationComponentConfig& animationConfig,
 			std::vector<PendingAnimationComponent>& pendingAnimations);
 
 		static void ResolveAnimations(
@@ -31,7 +33,7 @@ namespace VansGraphics
 
 		static VansAnimationNode* LoadAnimationComponent(
 			VansScene& scene,
-			const json& animJson,
+			const Vans::VansSceneAnimationComponentConfig& animationConfig,
 			const std::string& objectName,
 			const std::string& projectRoot);
 
@@ -39,7 +41,7 @@ namespace VansGraphics
 			VansScene& scene,
 			VansScriptObject* obj,
 			VansAnimationNode* animNode,
-			const json& ragdollJson,
+			const Vans::VansSceneRagdollComponentConfig& ragdollConfig,
 			const std::string& projectRoot);
 	};
 }

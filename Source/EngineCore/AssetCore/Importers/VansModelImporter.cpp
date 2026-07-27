@@ -1,5 +1,8 @@
 #include "VansModelImporter.h"
 
+#include "VansModelImportReport.h"
+#include "../Storage/VansAssetMetaStorage.h"
+
 #include <assimp/Importer.hpp>
 #include <assimp/material.h>
 #include <assimp/postprocess.h>
@@ -142,41 +145,6 @@ VansImportedMaterialSlot ParseMaterialSlot(const aiMaterial* material, unsigned 
     slot.baseColor[3] = slot.opacity;
     slot.transparent = slot.opacity < 0.99f || material->GetTextureCount(aiTextureType_OPACITY) > 0;
     return slot;
-}
-
-nlohmann::ordered_json MaterialReportJson(const VansModelAsset& asset)
-{
-    nlohmann::ordered_json report;
-    report["materials"] = nlohmann::ordered_json::array();
-    for (const VansImportedMaterialSlot& slot : asset.materialSlots)
-    {
-        report["materials"].push_back({
-            { "id", slot.id.ToString() },
-            { "name", slot.name },
-            { "baseColor", slot.baseColor },
-            { "specularColor", slot.specularColor },
-            { "emissiveColor", slot.emissiveColor },
-            { "opacity", slot.opacity },
-            { "metallic", slot.metallic },
-            { "roughness", slot.roughness },
-            { "specularFactor", slot.specularFactor },
-            { "shininess", slot.shininess },
-            { "reflectionFactor", slot.reflectionFactor },
-            { "transparent", slot.transparent }
-        });
-    }
-    report["textures"] = nlohmann::ordered_json::array();
-    for (const VansImportedTextureRef& ref : asset.textureReferences)
-    {
-        report["textures"].push_back({
-            { "materialSlotId", ref.materialSlotId.ToString() },
-            { "materialName", ref.materialName },
-            { "semantic", ref.semantic },
-            { "sourcePath", ref.sourcePath.string() },
-            { "srgb", ref.srgb }
-        });
-    }
-    return report;
 }
 
 void CollectNodes(const aiNode* source, std::int32_t parent, const std::string& parentPath,
@@ -346,23 +314,9 @@ VansModelImportResult VansModelImporter::Import(const std::filesystem::path& sou
 
     meta.importer = "ModelImporter";
     meta.version = Version;
-    meta.settings = {
-        { "scaleFactor", settings.scaleFactor },
-        { "generateNormals", settings.generateNormalsIfMissing ? "ifMissing" : "never" },
-        { "generateTangents", settings.generateTangents },
-        { "flipUV", settings.flipUV },
-        { "importMaterials", settings.importMaterials },
-        { "materialMode", settings.materialMode },
-        { "textureRedirection", settings.textureRedirection },
-        { "defaultShader", settings.defaultShader },
-        { "redirectTextures", settings.redirectTextures },
-        { "importAnimations", settings.importAnimations },
-        { "keepCpuMeshData", settings.keepCpuMeshData },
-        { "buildRayTracingData", settings.buildRayTracingData },
-        { "importReport", MaterialReportJson(result.asset) }
-    };
+    WriteModelImportMetaSettings(meta, settings, result.asset);
     std::string metaError;
-    if (!meta.SaveAtomic(VansAssetMeta::MetaPathFor(sourcePath), metaError))
+    if (!VansAssetMetaStorage::SaveAtomic(VansAssetMeta::MetaPathFor(sourcePath), meta, metaError))
         result.messages.push_back({ VansImportMessageSeverity::Error, sourcePath.string(), "Failed to publish import metadata: " + metaError });
     return result;
 }

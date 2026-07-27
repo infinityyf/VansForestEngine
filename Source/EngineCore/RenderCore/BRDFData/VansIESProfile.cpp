@@ -1,8 +1,8 @@
 #include "VansIESProfile.h"
 #include "../VulkanCore/VansVKDevice.h"
 #include "../VulkanCore/VansVKCommandBuffer.h"
+#include "../../AssetCore/Storage/VansFileStorage.h"
 #include "../../Util/VansLog.h"
-#include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <cmath>
@@ -312,15 +312,14 @@ namespace VansGraphics
             return false;
         }
 
-        std::ifstream file(filePath);
-        if (!file.is_open())
+        std::string text;
+        std::string error;
+        if (!Vans::VansFileStorage::ReadAllBytes(filePath, text, error))
         {
             VANS_LOG_WARN("[VansIESProfileManager] 无法打开文件: " << filePath);
             return false;
         }
 
-        std::string text((std::istreambuf_iterator<char>(file)),
-                          std::istreambuf_iterator<char>());
         return LoadIESFromMemory(text.c_str(), text.size(), outProfileIndex);
     }
 

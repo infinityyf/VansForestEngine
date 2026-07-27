@@ -1,9 +1,13 @@
 #pragma once
 
-#include "VansSceneDocument.h"
+#include <filesystem>
+#include <string>
 
 namespace Vans
 {
+class VansSceneDocument;
+struct SceneDocumentSnapshot;
+
 enum class SceneSaveError
 {
     None,
@@ -12,7 +16,6 @@ enum class SceneSaveError
     InvalidTarget,
     ExternalConflict,
     WriteFailed,
-    FlushFailed,
     ReplaceFailed
 };
 

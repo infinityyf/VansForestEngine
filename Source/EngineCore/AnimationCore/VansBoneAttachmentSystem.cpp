@@ -124,30 +124,6 @@ void VansBoneAttachmentSystem::DrawDebugGizmos(bool enabledOnly)
 	(void)enabledOnly;
 }
 
-nlohmann::json VansBoneAttachmentSystem::SerializeBindingSet(const BoneColliderBindingSet& set) const
-{
-	nlohmann::json root = nlohmann::json::array();
-
-	for (const auto& binding : set.bindings)
-	{
-		nlohmann::json item;
-		item["bone_name"]       = binding.boneName;
-		item["physics_object"]  = binding.physicsObjectName;
-		item["offset_position"] = { binding.offsetPosition.x, binding.offsetPosition.y, binding.offsetPosition.z };
-		item["offset_rotation"] = { binding.offsetRotation.x, binding.offsetRotation.y, binding.offsetRotation.z };
-		item["offset_scale"]    = { binding.offsetScale.x, binding.offsetScale.y, binding.offsetScale.z };
-		item["sync_rotation"]   = binding.syncRotation;
-		item["sync_scale"]      = binding.syncScale;
-		item["layer"]           = binding.layerName;
-		item["is_trigger"]      = binding.isTrigger;
-		item["enabled"]         = binding.enabled;
-		item["auto_create_node"] = binding.autoCreateNode;
-		root.push_back(item);
-	}
-
-	return root;
-}
-
 void VansBoneAttachmentSystem::SyncBinding(BoneColliderBinding& binding,
                                             VansAnimationNode* animNode)
 {

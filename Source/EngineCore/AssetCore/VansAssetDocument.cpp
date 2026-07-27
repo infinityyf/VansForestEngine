@@ -1,17 +1,28 @@
 #include "VansAssetDocument.h"
 
-#include <chrono>
-#include <fstream>
-#include <stdexcept>
-#include <system_error>
+#include "Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "Storage/VansFileStorage.h"
+#include "Storage/VansJsonFileStorage.h"
+#include "VansAssetDocumentJson.h"
 
-#ifdef _WIN32
-#define NOMINMAX
-#include <Windows.h>
-#endif
+#include <nlohmann/json.hpp>
+#include <system_error>
+#include <utility>
 
 namespace Vans
 {
+VansAssetDocument::VansAssetDocument()
+    : m_Root(std::make_unique<VansSerializedValue>(VansSerializedValue::Object({})))
+{
+}
+
+VansAssetDocument::~VansAssetDocument() = default;
+
+VansSerializedValue VansAssetDocument::SerializedRootSnapshot() const
+{
+    return *m_Root;
+}
+
 VansAssetFileFingerprint VansAssetDocument::Fingerprint(const std::filesystem::path& path, std::string& error)
 {
     VansAssetFileFingerprint fingerprint;
@@ -38,23 +49,15 @@ VansAssetFileFingerprint VansAssetDocument::Fingerprint(const std::filesystem::p
         return {};
     }
 
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-    {
-        error = "Cannot open file for fingerprint: " + path.string();
+    std::string bytes;
+    if (!VansFileStorage::ReadAllBytes(path, bytes, error))
         return {};
-    }
 
     std::uint64_t hash = 14695981039346656037ull;
-    char buffer[4096];
-    while (input.read(buffer, sizeof(buffer)) || input.gcount() > 0)
+    for (const unsigned char value : bytes)
     {
-        const std::streamsize count = input.gcount();
-        for (std::streamsize index = 0; index < count; ++index)
-        {
-            hash ^= static_cast<unsigned char>(buffer[index]);
-            hash *= 1099511628211ull;
-        }
+        hash ^= value;
+        hash *= 1099511628211ull;
     }
     fingerprint.contentHash = hash;
     return fingerprint;
@@ -63,10 +66,12 @@ VansAssetFileFingerprint VansAssetDocument::Fingerprint(const std::filesystem::p
 void VansAssetDocument::Reset()
 {
     m_Path.clear();
-    m_Root = Json();
+    *m_Root = VansSerializedValue::Object({});
     m_LoadedFingerprint = {};
     m_Loaded = false;
-    m_Dirty = false;
+    m_CurrentStateId = 1;
+    m_SavedStateId = 1;
+    m_NextStateId = 2;
 }
 
 bool VansAssetDocument::Load(const std::filesystem::path& path, std::string& error)
@@ -74,19 +79,23 @@ bool VansAssetDocument::Load(const std::filesystem::path& path, std::string& err
     Reset();
     try
     {
-        std::ifstream input(path, std::ios::binary);
-        if (!input) return false;
-        m_Root = Json::parse(input);
-        if (!m_Root.is_object())
+        AssetDocumentJson root;
+        if (!VansJsonFileStorage::Read(path, root, error))
+            return false;
+        if (!root.is_object())
         {
             error = "Asset document root must be an object: " + path.string();
             return false;
         }
+        *m_Root = DecodeSerializedValueLegacyJson(root);
         m_Path = std::filesystem::absolute(path).lexically_normal();
         m_LoadedFingerprint = Fingerprint(m_Path, error);
         if (!m_LoadedFingerprint.exists)
             return false;
         m_Loaded = true;
+        m_CurrentStateId = 1;
+        m_SavedStateId = 1;
+        m_NextStateId = 2;
         return true;
     }
     catch (const std::exception& exception)
@@ -96,9 +105,34 @@ bool VansAssetDocument::Load(const std::filesystem::path& path, std::string& err
     }
 }
 
-bool VansAssetDocument::Save(std::string& error)
+VansAssetDocumentStateId VansAssetDocument::AllocateStateId()
 {
-    if (!m_Loaded || !m_Dirty) return true;
+    return m_NextStateId++;
+}
+
+VansAssetDocumentStateId VansAssetDocument::ApplyEditedSerializedRoot(VansSerializedValue root)
+{
+    if (!m_Loaded)
+        return m_CurrentStateId;
+    *m_Root = std::move(root);
+    m_CurrentStateId = AllocateStateId();
+    return m_CurrentStateId;
+}
+
+void VansAssetDocument::RestoreEditedSerializedRoot(VansSerializedValue root, VansAssetDocumentStateId stateId)
+{
+    if (!m_Loaded)
+        return;
+    *m_Root = std::move(root);
+    m_CurrentStateId = stateId;
+    if (m_CurrentStateId >= m_NextStateId)
+        m_NextStateId = m_CurrentStateId + 1;
+}
+
+bool VansAssetDocument::StageSave(VansAssetDocumentSaveStage& stage, std::string& error) const
+{
+    stage = {};
+    if (!m_Loaded || !IsDirty()) return true;
     const VansAssetFileFingerprint currentFingerprint = Fingerprint(m_Path, error);
     if (!error.empty())
         return false;
@@ -108,64 +142,38 @@ bool VansAssetDocument::Save(std::string& error)
         return false;
     }
 
-    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    const std::filesystem::path temporary = m_Path.parent_path() /
-        (m_Path.filename().string() + ".tmp." + std::to_string(nonce));
-    try
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) throw std::runtime_error("Cannot create temporary asset document");
-        output << m_Root.dump(4) << '\n';
-        output.flush();
-        if (!output) throw std::runtime_error("Cannot write temporary asset document");
-        output.close();
+    stage.targetPath = m_Path;
+    stage.stateId = m_CurrentStateId;
 
-        std::ifstream verificationInput(temporary, std::ios::binary);
-        const Json verification = Json::parse(verificationInput);
-        if (!verificationInput || verification != m_Root)
-            throw std::runtime_error("Asset document verification failed");
-        // std::ifstream does not share FILE_SHARE_DELETE on Windows. Keeping
-        // this handle open makes MoveFileExW fail while trying to rename the
-        // very temporary file we just verified.
-        verificationInput.close();
-#ifdef _WIN32
-        DWORD win32Error = ERROR_SUCCESS;
-        bool published = false;
-        for (int attempt = 0; attempt < 5; ++attempt)
-        {
-            if (MoveFileExW(temporary.c_str(), m_Path.c_str(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE)
-            {
-                published = true;
-                break;
-            }
-            win32Error = GetLastError();
-            if (win32Error != ERROR_SHARING_VIOLATION && win32Error != ERROR_ACCESS_DENIED)
-                break;
-            Sleep(static_cast<DWORD>(10 * (attempt + 1)));
-        }
-        if (!published)
-        {
-            throw std::runtime_error("Cannot atomically replace asset document (Win32 error " +
-                std::to_string(static_cast<unsigned long>(win32Error)) + ")");
-        }
-#else
-        std::error_code ec;
-        std::filesystem::rename(temporary, m_Path, ec);
-        if (ec) throw std::runtime_error(ec.message());
-#endif
-        m_LoadedFingerprint = Fingerprint(m_Path, error);
-        if (!error.empty())
-            return false;
-        m_Dirty = false;
-        return true;
-    }
-    catch (const std::exception& exception)
+    AssetDocumentJson root = EncodeSerializedValueLegacyJson<AssetDocumentJson>(*m_Root);
+    VansStagedFile fileStage;
+    if (!VansJsonFileStorage::StageWrite(m_Path, root, fileStage, error))
     {
-        std::error_code ignored;
-        std::filesystem::remove(temporary, ignored);
-        error = exception.what();
+        stage = {};
         return false;
     }
+    stage.temporaryPath = std::move(fileStage.temporaryPath);
+    return true;
+}
+
+bool VansAssetDocument::AdoptStagedSave(const VansAssetDocumentSaveStage& stage, std::string& error)
+{
+    if (!m_Loaded)
+        return true;
+    if (!stage.targetPath.empty() && stage.targetPath != m_Path)
+    {
+        error = "Asset document save stage target mismatch: " + stage.targetPath.string();
+        return false;
+    }
+    m_LoadedFingerprint = Fingerprint(m_Path, error);
+    if (!error.empty())
+        return false;
+    if (!m_LoadedFingerprint.exists)
+    {
+        error = "Saved asset document is missing: " + m_Path.string();
+        return false;
+    }
+    m_SavedStateId = stage.stateId != 0 ? stage.stateId : m_CurrentStateId;
+    return true;
 }
 }

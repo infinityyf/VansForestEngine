@@ -49,7 +49,7 @@ VansVegetationSystem::~VansVegetationSystem()
 }
 
 // ============================================================================
-// Init — creates all GPU resources for the vegetation system
+// Init  - creates all GPU resources for the vegetation system
 // ============================================================================
 void VansVegetationSystem::Init(VkDevice device, uint32_t instanceCount, uint32_t boneCountPerInstance)
 {
@@ -73,7 +73,7 @@ void VansVegetationSystem::Init(VkDevice device, uint32_t instanceCount, uint32_
 }
 
 // ============================================================================
-// CreateTemplateMesh — grass blade quad-strip
+// CreateTemplateMesh  - grass blade quad-strip
 //
 // With default 6 bones (5 segments), we subdivide each segment into
 // SUB_DIVS rows so that bone weight interpolation is smooth everywhere.
@@ -81,12 +81,12 @@ void VansVegetationSystem::Init(VkDevice device, uint32_t instanceCount, uint32_
 //
 //        Tip
 //         /\
-//        /  \         ← tip triangle
-//      ──────         ← sub-row N  (t close to 1.0)
+//        /  \          - tip triangle
+//      ──────          - sub-row N  (t close to 1.0)
 //      |      |
 //      ──────         ...intermediate sub-rows...
 //      |      |
-//      v0────v1       ← sub-row 0 (root, t = 0)
+//      v0────v1        - sub-row 0 (root, t = 0)
 // ============================================================================
 void VansVegetationSystem::CreateTemplateMesh(VkDevice device)
 {
@@ -181,44 +181,73 @@ void VansVegetationSystem::CreateTemplateMesh(VkDevice device)
 }
 
 // ============================================================================
-// CreateInstanceBuffer — random grass positions in [-10, 10] XZ
+// CreateInstanceBuffer  - random grass positions in [-10, 10] XZ
 // ============================================================================
+float VansVegetationSystem::SamplePlacementMask(const glm::vec2& worldXZ) const
+{
+	return VansPcgMaskSampler::Sample(m_PlacementMask, worldXZ);
+}
+
+bool VansVegetationSystem::AcceptPlacementMask(const glm::vec2& worldXZ, float randomValue) const
+{
+	return VansPcgMaskSampler::Accept(m_PlacementMask, worldXZ, randomValue);
+}
 void VansVegetationSystem::CreateInstanceBuffer(VkDevice device)
 {
-	std::vector<GrassInstance> instances(m_InstanceCount);
+	std::vector<GrassInstance> instances;
+	instances.reserve(m_InstanceCount);
 	std::mt19937 rng(42);
 	std::uniform_real_distribution<float> posXDist(m_PlacementMinXZ.x, m_PlacementMaxXZ.x);
 	std::uniform_real_distribution<float> posZDist(m_PlacementMinXZ.y, m_PlacementMaxXZ.y);
 	std::uniform_real_distribution<float> scaleDist(m_GrassScaleMin, m_GrassScaleMax);
 	std::uniform_real_distribution<float> rotDist(0.0f, 6.28318530718f);
+	std::uniform_real_distribution<float> acceptDist(0.0f, 1.0f);
 
-	for (uint32_t i = 0; i < m_InstanceCount; ++i)
+	const uint32_t requestedCount = m_InstanceCount;
+	const uint32_t maxAttempts = m_PlacementMask.enabled
+		? std::max(requestedCount * 32u, requestedCount)
+		: requestedCount;
+
+	for (uint32_t attempt = 0; attempt < maxAttempts && instances.size() < requestedCount; ++attempt)
 	{
-		// Explicit sequential draws — C++ does not guarantee evaluation order of
-		// function arguments, so glm::vec3(posDist(rng),0,posDist(rng)) produces
-		// unspecified X/Z mapping.  Sequential statements give a defined draw order
-		// that must match CreateBoneBuffer and CreateSubBladeRootsBuffer exactly.
+		// Keep the legacy deterministic draw order for unmasked placement.
 		float px               = posXDist(rng);
 		float pz               = posZDist(rng);
-		instances[i].position  = glm::vec3(px, 0.0f, pz);
-		instances[i].scale     = scaleDist(rng);
-		// P4 优化: 预计算 sin/cos 并存入实例数据，GPU 端直接读取
+		float scale            = scaleDist(rng);
+		// P4 优化: 预计 - sin/cos 并存入实例数据，GPU 端直接读 - 
 		float rot              = rotDist(rng);
-		instances[i].cosR      = cosf(rot);
-		instances[i].sinR      = sinf(rot);
-		instances[i].padding[0] = 0;
-		instances[i].padding[1] = 0;
+		if (m_PlacementMask.enabled && !AcceptPlacementMask(glm::vec2(px, pz), acceptDist(rng)))
+			continue;
+
+		GrassInstance instance = {};
+		instance.position  = glm::vec3(px, 0.0f, pz);
+		instance.scale     = scale;
+		instance.cosR      = cosf(rot);
+		instance.sinR      = sinf(rot);
+		instance.padding[0] = 0;
+		instance.padding[1] = 0;
+		instances.push_back(instance);
 	}
 
-	VkDeviceSize bufferSize = sizeof(GrassInstance) * m_InstanceCount;
+	if (m_PlacementMask.enabled && instances.size() < requestedCount)
+	{
+		VANS_LOG_WARN("[VegetationSystem] PCG grass mask '" << m_PlacementMask.name
+			<< "' produced " << instances.size() << "/" << requestedCount
+			<< " requested instances after rejection sampling.");
+	}
+
+	m_InstanceCount = static_cast<uint32_t>(instances.size());
+	m_GrassInstancesCPU = instances;
+	VkDeviceSize bufferSize = sizeof(GrassInstance) * std::max(m_InstanceCount, 1u);
 	m_InstanceBuffer.CreatVulkanBuffer(device, bufferSize, VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_InstanceBuffer.SetBufferData(instances.data(), 0, static_cast<int>(bufferSize));
+	if (m_InstanceCount > 0)
+		m_InstanceBuffer.SetBufferData(m_GrassInstancesCPU.data(), 0, static_cast<int>(sizeof(GrassInstance) * m_InstanceCount));
 }
 
 // ============================================================================
-// CreateBoneBuffer — initialise rest-pose bones for all instances
+// CreateBoneBuffer  - initialise rest-pose bones for all instances
 // ============================================================================
 void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 {
@@ -230,32 +259,22 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 	// Maximum tilt angle at the tip (radians). ~45° gives a natural relaxed arc.
 	const float maxTiltRad = glm::radians(45.0f);
 
-	// Read back instance data for root positions
-	// (we just generated it in-line, so regenerate with same seed)
-	std::mt19937 rng(42);
-	std::uniform_real_distribution<float> posXDist(m_PlacementMinXZ.x, m_PlacementMaxXZ.x);
-	std::uniform_real_distribution<float> posZDist(m_PlacementMinXZ.y, m_PlacementMaxXZ.y);
-	std::uniform_real_distribution<float> scaleDist(m_GrassScaleMin, m_GrassScaleMax);
-	std::uniform_real_distribution<float> rotDist(0.0f, 6.28318530718f);
-	// Per-blade lean deviation: random angle within ±m_InitLeanDeviation around wind direction
-	// NOTE: do NOT add an extra rng draw here — it would break sync with CreateInstanceBuffer
-	//  (both functions use the same seed-42 sequence: posX, posZ, scale, rot per instance).
-	//  Instead we remap rot ∈ [0,2π] → lean deviation ∈ [-initLeanDeviation, +initLeanDeviation].
+	// Bone roots come directly from the generated instances so mask rejection stays in sync.
 	const float windAngle = atan2f(m_InitWindDir.y, m_InitWindDir.x);
 	const float twoPi     = 6.28318530718f;
 
 	for (uint32_t i = 0; i < m_InstanceCount; ++i)
 	{
-		// Explicit sequential draws — must match CreateInstanceBuffer and
-		// CreateSubBladeRootsBuffer exactly (draw1 → X, draw2 → Z).
-		float bpx = posXDist(rng);
-		float bpz = posZDist(rng);
-		glm::vec3 pos(bpx, 0.0f, bpz);
-		float scale = scaleDist(rng);
-		float rot   = rotDist(rng);   // same draw as CreateInstanceBuffer — RNG stays in sync
+		// Reuse the accepted grass instance for the corresponding bone chain.
+		const GrassInstance& instance = m_GrassInstancesCPU[i];
+		glm::vec3 pos = instance.position;
+		float scale = instance.scale;
+		float rot = atan2f(instance.sinR, instance.cosR);
+		if (rot < 0.0f)
+			rot += twoPi;
 
-		// Map rot uniformly over [0,2π] → deviation ∈ [-m_InitLeanDeviation, +m_InitLeanDeviation].
-		// (rot/twoPi) ∈ [0,1), remapped to [-1,+1] then scaled by the deviation limit.
+		// Map rot uniformly over [0,2π]  - deviation  - [-m_InitLeanDeviation, +m_InitLeanDeviation].
+		// (rot/twoPi)  - [0,1), remapped to [-1,+1] then scaled by the deviation limit.
 		float deviation = (rot / twoPi * 2.0f - 1.0f) * m_InitLeanDeviation;
 		float leanAngle = windAngle + deviation;
 		glm::vec3 leanDir = glm::normalize(glm::vec3(cosf(leanAngle), 0.0f, sinf(leanAngle)));
@@ -301,20 +320,21 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 		}
 	}
 
-	VkDeviceSize bufferSize = sizeof(GrassBone) * totalBones;
+	VkDeviceSize bufferSize = sizeof(GrassBone) * std::max(totalBones, 1u);
 	m_BoneBuffer.CreatVulkanBuffer(device, bufferSize, VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_BoneBuffer.SetBufferData(bones.data(), 0, static_cast<int>(bufferSize));
+	if (totalBones > 0)
+		m_BoneBuffer.SetBufferData(bones.data(), 0, static_cast<int>(sizeof(GrassBone) * totalBones));
 }
 
 // ============================================================================
-// CreateBoneMatrixBuffer — uninitialized, written by compute
+// CreateBoneMatrixBuffer  - uninitialized, written by compute
 // ============================================================================
 void VansVegetationSystem::CreateBoneMatrixBuffer(VkDevice device)
 {
 	uint32_t totalMatrices = m_InstanceCount * m_BoneCountPerInstance;
-	VkDeviceSize bufferSize = sizeof(glm::mat4) * totalMatrices;
+	VkDeviceSize bufferSize = sizeof(glm::mat4) * std::max(totalMatrices, 1u);
 
 	// Pre-fill with identity matrices so that the first rendered frame (before the
 	// first compute dispatch) shows blades in rest-pose instead of at position (0,0,0).
@@ -323,18 +343,19 @@ void VansVegetationSystem::CreateBoneMatrixBuffer(VkDevice device)
 	m_BoneMatrixBuffer.CreatVulkanBuffer(device, bufferSize, VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_BoneMatrixBuffer.SetBufferData(identities.data(), 0, static_cast<int>(bufferSize));
+	if (totalMatrices > 0)
+		m_BoneMatrixBuffer.SetBufferData(identities.data(), 0, static_cast<int>(sizeof(glm::mat4) * totalMatrices));
 }
 
-// (CreateSkinnedBuffers and CreateIndirectDrawBuffer removed — skinning
+// (CreateSkinnedBuffers and CreateIndirectDrawBuffer removed  - skinning
 //  moved to vertex shader; indirect draw buffers are per-config now.)
 
 // ============================================================================
-// CreateLodFactorsBuffer — one float per instance, written by bone sim
+// CreateLodFactorsBuffer  - one float per instance, written by bone sim
 // ============================================================================
 void VansVegetationSystem::CreateLodFactorsBuffer(VkDevice device)
 {
-	VkDeviceSize bufferSize = sizeof(float) * m_InstanceCount;
+	VkDeviceSize bufferSize = sizeof(float) * std::max(m_InstanceCount, 1u);
 	m_LodFactorsBuffer.CreatVulkanBuffer(device, bufferSize, VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -343,14 +364,14 @@ void VansVegetationSystem::CreateLodFactorsBuffer(VkDevice device)
 // ============================================================================
 // CreateScatterOffsetUBO
 //
-// P6a 优化: 仅存储 m_SubBladeCount 个共享散布偏移 (vec4)，所有实例复用。
-// Sub-blade 0 = 零偏移（主根）, 1..N-1 = 随机 XZ 散布。
-// 相比原来 2M×10×16B = 320 MB 的 SubBladeRoots SSBO，此 UBO 仅 ~160 字节。
-// Terrain Y 的采样移到了顶点着色器中执行。
+// P6a 优化: 仅存 - m_SubBladeCount 个共享散布偏 - (vec4)，所有实例复用 - 
+// Sub-blade 0 = 零偏移（主根 -  1..N-1 = 随机 XZ 散布 - 
+// 相比原来 2M×10×16B = 320 MB  - SubBladeRoots SSBO，此 UBO  - ~160 字节 - 
+// Terrain Y 的采样移到了顶点着色器中执行 - 
 // ============================================================================
 void VansVegetationSystem::CreateScatterOffsetUBO(VkDevice device)
 {
-	// 每个散布偏移为 vec4(dx, 0, dz, 0)，sub-blade 0 = (0,0,0,0)
+	// 每个散布偏移 - vec4(dx, 0, dz, 0)，sub-blade 0 = (0,0,0,0)
 	std::vector<glm::vec4> offsets(m_SubBladeCount, glm::vec4(0.0f));
 
 	std::mt19937 rngTuft(137);
@@ -375,7 +396,7 @@ void VansVegetationSystem::CreateScatterOffsetUBO(VkDevice device)
 }
 
 // ============================================================================
-// CreateCullBuffers — P0: GPU frustum + distance cull buffers
+// CreateCullBuffers  - P0: GPU frustum + distance cull buffers
 //
 // VisibilityBuffer    : uint per instance (1=visible, 0=culled), device local
 // VisibleCountBuffer  : single uint (atomic counter), host visible for CPU reset
@@ -383,14 +404,14 @@ void VansVegetationSystem::CreateScatterOffsetUBO(VkDevice device)
 // ============================================================================
 void VansVegetationSystem::CreateCullBuffers(VkDevice device)
 {
-	// Visibility flags — one uint per instance
-	VkDeviceSize visFlagSize = sizeof(uint32_t) * m_InstanceCount;
+	// Visibility flags  - one uint per instance
+	VkDeviceSize visFlagSize = sizeof(uint32_t) * std::max(m_InstanceCount, 1u);
 	m_VisibilityBuffer.CreatVulkanBuffer(device, visFlagSize, VK_FORMAT_R32_UINT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-	// Visible count — single uint, host-visible so CPU can reset to 0 each frame
-	// TRANSFER_SRC 用于 GPU 端 CopyBuffer → indirect draw buffer 的 instanceCount 字段
+	// Visible count  - single uint, host-visible so CPU can reset to 0 each frame
+	// TRANSFER_SRC 用于 GPU  - CopyBuffer  - indirect draw buffer  - instanceCount 字段
 	VkDeviceSize countSize = sizeof(uint32_t);
 	m_VisibleCountBuffer.CreatVulkanBuffer(device, countSize, VK_FORMAT_R32_UINT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -398,8 +419,8 @@ void VansVegetationSystem::CreateCullBuffers(VkDevice device)
 	uint32_t zero = 0;
 	m_VisibleCountBuffer.SetBufferData(&zero, 0, sizeof(uint32_t));
 
-	// Visible index list — uint per instance (worst case all visible)
-	VkDeviceSize idxSize = sizeof(uint32_t) * m_InstanceCount;
+	// Visible index list  - uint per instance (worst case all visible)
+	VkDeviceSize idxSize = sizeof(uint32_t) * std::max(m_InstanceCount, 1u);
 	m_VisibleIndexBuffer.CreatVulkanBuffer(device, idxSize, VK_FORMAT_R32_UINT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -486,7 +507,7 @@ void VansVegetationSystem::WriteBoneSimDescriptors()
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		{{ m_BoneMatrixBuffer.GetNativeBuffer(), 0, m_BoneMatrixBuffer.GetBufferSize() }});
 
-	// Terrain heightmap (binding 3) — always write a valid descriptor
+	// Terrain heightmap (binding 3)  - always write a valid descriptor
 	if (m_TerrainEnabled && m_TerrainHeightmapView != VK_NULL_HANDLE && m_TerrainHeightmapSampler != VK_NULL_HANDLE)
 	{
 		descMgr->WriteImageDescriptor(m_BoneSimDescSets[0], VEG_SIM_BINDING_TERRAIN_HEIGHTMAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
@@ -495,14 +516,14 @@ void VansVegetationSystem::WriteBoneSimDescriptors()
 	// LOD factors buffer (binding 4)
 	descMgr->WriteBufferDescriptor(m_BoneSimDescSets[0], VEG_SIM_BINDING_LOD_FACTORS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_LodFactorsBuffer.GetNativeBuffer(), 0, m_LodFactorsBuffer.GetBufferSize() }});
 
-	// P6a: Scatter offset UBO (binding 5) — 仅 subBladeCount 个共享散布偏移
+	// P6a: Scatter offset UBO (binding 5)  -  - subBladeCount 个共享散布偏 - 
 	descMgr->WriteBufferDescriptor(m_BoneSimDescSets[0], VEG_SIM_BINDING_SCATTER_OFFSETS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ m_ScatterOffsetUBO.GetNativeBuffer(), 0, m_ScatterOffsetUBO.GetBufferSize() }});
 
 	descMgr->CommitDescriptorUpdates();
 }
 
 // ============================================================================
-// WriteCullDescriptors — P0: bind cull buffers to cull descriptor set
+// WriteCullDescriptors  - P0: bind cull buffers to cull descriptor set
 // ============================================================================
 void VansVegetationSystem::WriteCullDescriptors()
 {
@@ -535,7 +556,7 @@ void VansVegetationSystem::WriteCullDescriptors()
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		{{ m_VisibleIndexBuffer.GetNativeBuffer(), 0, m_VisibleIndexBuffer.GetBufferSize() }});
 
-	// Binding 4: Terrain heightmap — 用于采样实例的实际地面高度，修正包围球 Y 位置
+	// Binding 4: Terrain heightmap  - 用于采样实例的实际地面高度，修正包围 - Y 位置
 	if (m_TerrainEnabled && m_TerrainHeightmapView != VK_NULL_HANDLE && m_TerrainHeightmapSampler != VK_NULL_HANDLE)
 	{
 		descMgr->WriteImageDescriptor(
@@ -544,9 +565,9 @@ void VansVegetationSystem::WriteCullDescriptors()
 			{{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 	}
 
-	// Binding 5: Hi-Z depth pyramid — 用于保守遮挡剔除，判断实例是否被地形或建筑物遮挡
-	// 注意: HZB 全程保持 VK_IMAGE_LAYOUT_GENERAL (被 HIZ compute 以 STORAGE_IMAGE 写入)，
-	//       必须与此处 descriptor 声明的 layout 一致，否则 Vulkan 采样结果未定义。
+	// Binding 5: Hi-Z depth pyramid  - 用于保守遮挡剔除，判断实例是否被地形或建筑物遮挡
+	// 注意: HZB 全程保持 VK_IMAGE_LAYOUT_GENERAL ( - HIZ compute  - STORAGE_IMAGE 写入) - 
+	//       必须与此 - descriptor 声明 - layout 一致，否则 Vulkan 采样结果未定义 - 
 	if (m_HiZEnabled && m_HiZView != VK_NULL_HANDLE && m_HiZSampler != VK_NULL_HANDLE)
 	{
 		descMgr->WriteImageDescriptor(
@@ -558,7 +579,7 @@ void VansVegetationSystem::WriteCullDescriptors()
 	descMgr->CommitDescriptorUpdates();
 }
 
-// (WriteSkinningDescriptors removed — skinning moved to vertex shader)
+// (WriteSkinningDescriptors removed  - skinning moved to vertex shader)
 
 void VansVegetationSystem::WriteDrawDescriptors(GrassRenderConfigGPU& cfg)
 {
@@ -572,13 +593,13 @@ void VansVegetationSystem::WriteDrawDescriptors(GrassRenderConfigGPU& cfg)
 	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_BONE_WEIGHTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ cfg.boneWeightBuffer.GetNativeBuffer(), 0, cfg.boneWeightBuffer.GetBufferSize() }});
 
 	// Binding 2: Instance remap (uint indices into global instance/bone arrays)
-	// 单配置快速路径: 使用 GPU cull 输出的 visibleIndices 替代静态 remap，
-	// 这样 indirect draw 只启动可见实例的 VS，配合 CopyBuffer 更新 instanceCount
+	// 单配置快速路 -  使用 GPU cull 输出 - visibleIndices 替代静 - remap - 
+	// 这样 indirect draw 只启动可见实例的 VS，配 - CopyBuffer 更新 instanceCount
 	bool singleConfigFastPath = (m_RenderConfigsGPU.size() == 1);
 	VansVKBuffer& remapBuffer = singleConfigFastPath ? m_VisibleIndexBuffer : cfg.instanceRemapBuffer;
 	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_INSTANCE_REMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ remapBuffer.GetNativeBuffer(), 0, remapBuffer.GetBufferSize() }});
 
-	// Binding 3: P6a — Scatter offset UBO (shared sub-blade XZ offsets)
+	// Binding 3: P6a  - Scatter offset UBO (shared sub-blade XZ offsets)
 	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_SCATTER_OFFSETS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ m_ScatterOffsetUBO.GetNativeBuffer(), 0, m_ScatterOffsetUBO.GetBufferSize() }});
 
 	// Binding 4: LOD factors
@@ -587,13 +608,13 @@ void VansVegetationSystem::WriteDrawDescriptors(GrassRenderConfigGPU& cfg)
 	// Binding 5: Instance data (positions, rotations, etc.)
 	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_INSTANCE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_InstanceBuffer.GetNativeBuffer(), 0, m_InstanceBuffer.GetBufferSize() }});
 
-	// Binding 6: P6a — Terrain heightmap for VS sub-blade Y sampling
+	// Binding 6: P6a  - Terrain heightmap for VS sub-blade Y sampling
 	if (m_TerrainEnabled && m_TerrainHeightmapView != VK_NULL_HANDLE && m_TerrainHeightmapSampler != VK_NULL_HANDLE)
 	{
 		descMgr->WriteImageDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_TERRAIN_HEIGHTMAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 	}
 
-	// Binding 7: P0 — Per-instance visibility flags from GPU cull
+	// Binding 7: P0  - Per-instance visibility flags from GPU cull
 	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_VISIBILITY_FLAGS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_VisibilityBuffer.GetNativeBuffer(), 0, m_VisibilityBuffer.GetBufferSize() }});
 
 	descMgr->CommitDescriptorUpdates();
@@ -653,20 +674,20 @@ void VansVegetationSystem::WriteTreeDrawDescriptors(TreeDrawConfigGPU& cfg)
 }
 
 // ============================================================================
-// DispatchCullPass — P0: GPU frustum + distance culling
+// DispatchCullPass  - P0: GPU frustum + distance culling
 //
-// 1. 将 visibleCount 重置为 0
-// 2. Dispatch GrassCull.comp — 每线程判断一个实例是否可见
-//    每个可见实例 atomicAdd(visibleCount, subBladeCount)，结果即为 indirect instanceCount
-// 3. Barrier: compute → transfer
-// 4. CopyBuffer: visibleCount → 每个 config 的 indirect draw buffer instanceCount 字段
-// 5. Barrier: transfer → draw indirect + vertex shader read
+// 1.  - visibleCount 重置 - 0
+// 2. Dispatch GrassCull.comp  - 每线程判断一个实例是否可 - 
+//    每个可见实例 atomicAdd(visibleCount, subBladeCount)，结果即 - indirect instanceCount
+// 3. Barrier: compute  - transfer
+// 4. CopyBuffer: visibleCount  - 每个 config  - indirect draw buffer instanceCount 字段
+// 5. Barrier: transfer  - draw indirect + vertex shader read
 // ============================================================================
 void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance)
 {
 	if (!m_CullShader || m_CullDescSets.empty())
 	{
-		VANS_LOG_WARN("[VegetationSystem] CullPass skipped — cull shader or descriptor sets not ready.");
+		VANS_LOG_WARN("[VegetationSystem] CullPass skipped: cull shader or descriptor sets not ready.");
 		return;
 	}
 
@@ -695,7 +716,7 @@ void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 	cullPC.terrainMaxHeight  = m_TerrainMaxHeight;
 	cullPC.terrainHeightOffset = m_TerrainHeightOffset;
 	cullPC.terrainEnabled    = m_TerrainEnabled ? 1 : 0;
-	// 每个可见实例 atomicAdd 此值，使 visibleCount = 可见实例数 × subBladeCount
+	// 每个可见实例 atomicAdd 此值， - visibleCount = 可见实例 - × subBladeCount
 	cullPC.subBladeCount     = singleConfigFastPath ? m_SubBladeCount : 1;
 	// Hi-Z 遮挡剔除参数
 	cullPC.hizSampleBias     = m_HiZSampleBias;
@@ -711,7 +732,7 @@ void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 
 	if (singleConfigFastPath)
 	{
-		// ── Barrier: compute write → transfer read (CopyBuffer source) + VS read ─
+		// ── Barrier: compute write  - transfer read (CopyBuffer source) + VS read ─
 		VkMemoryBarrier computeToTransfer = {};
 		computeToTransfer.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 		computeToTransfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -721,8 +742,8 @@ void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 			VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 			{ computeToTransfer });
 
-		// ── CopyBuffer: visibleCount → indirect buffer instanceCount (offset 4) ─
-		// VkDrawIndexedIndirectCommand.instanceCount 位于结构体偏移 4 字节处
+		// ── CopyBuffer: visibleCount  - indirect buffer instanceCount (offset 4) ─
+		// VkDrawIndexedIndirectCommand.instanceCount 位于结构体偏 - 4 字节 - 
 		for (auto& cfg : m_RenderConfigsGPU)
 		{
 			computeCmd.CopyBuffer(
@@ -733,7 +754,7 @@ void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 				sizeof(uint32_t));
 		}
 
-		// ── Barrier: transfer write → indirect command read ─────────
+		// ── Barrier: transfer write  - indirect command read ─────────
 		VkMemoryBarrier transferToIndirect = {};
 		transferToIndirect.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 		transferToIndirect.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -745,7 +766,7 @@ void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 	}
 	else
 	{
-		// ── 多 config 回退路径: 仅 barrier compute → VS (VS 内 early-exit 剔除) ─
+		// ──  - config 回退路径:  - barrier compute  - VS (VS  - early-exit 剔除) ─
 		VkMemoryBarrier cullBarrier = {};
 		cullBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 		cullBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -819,7 +840,7 @@ void VansVegetationSystem::DispatchTreeCullPass(VansVKCommandBuffer& computeCmd)
 }
 
 // ============================================================================
-// Update — dispatches bone sim compute pass (skinning now in vertex shader)
+// Update  - dispatches bone sim compute pass (skinning now in vertex shader)
 // ============================================================================
 void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTime, float time,
                                    const glm::vec2& windDirection, float windStrength,
@@ -829,7 +850,7 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 {
 	if (!m_BoneSimShader || m_BoneSimDescSets.empty())
 	{
-		VANS_LOG_WARN("[VegetationSystem] Update skipped — shaders or descriptor sets not ready.");
+		VANS_LOG_WARN("[VegetationSystem] Update skipped: shaders or descriptor sets not ready.");
 		return;
 	}
 
@@ -862,7 +883,7 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 	computeCmd.DispatchCompute(*m_BoneSimShader, simGroupsX, 1, 1,
 		{ m_GlobalDescSet, m_BoneSimDescSets[0] }, &simPC, sizeof(simPC));
 
-	// ── Barrier: bone sim compute write → vertex shader read ────────
+	// ── Barrier: bone sim compute write  - vertex shader read ────────
 	VkMemoryBarrier simToDrawBarrier = {};
 	simToDrawBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 	simToDrawBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -874,7 +895,7 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 }
 
 // ============================================================================
-// Draw — issues one indirect indexed draw call per render config
+// Draw  - issues one indirect indexed draw call per render config
 // ============================================================================
 void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsShader& shader,
                                  GlobalStateData& globalState,
@@ -933,12 +954,12 @@ void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsSh
 			pc.boneCount        = m_BoneCountPerInstance;
 			pc.subBladeCount    = m_SubBladeCount;
 			pc.grassHeight      = m_BladeHeight;
-			// P6a: 传递 terrain 参数给 VS 用于子叶片地形采样
+			// P6a: 传 - terrain 参数 - VS 用于子叶片地形采 - 
 			pc.terrainSize          = m_TerrainSize;
 			pc.terrainMaxHeight     = m_TerrainMaxHeight;
 			pc.terrainHeightOffset  = m_TerrainHeightOffset;
 			pc.terrainEnabled       = m_TerrainEnabled ? 1 : 0;
-			// P1: 子叶片距离 LOD 阈值
+			// P1: 子叶片距 - LOD 阈 - 
 			pc.lodMidDist           = m_SubBladeLodMidDist;
 			pc.lodFarDist           = m_SubBladeLodFarDist;
 			graphicsCmd.UpdatePushConstants(*shader.GetGraphicsPipeline(),
@@ -1180,7 +1201,7 @@ void VansVegetationSystem::Cleanup(VkDevice device)
 }
 
 // ============================================================================
-// BuildRenderConfigs — partition instances across configs, create GPU resources
+// BuildRenderConfigs  - partition instances across configs, create GPU resources
 // ============================================================================
 void VansVegetationSystem::BuildRenderConfigs(
 	std::function<VansMesh*(const std::string&)> meshLookup,
@@ -1567,7 +1588,7 @@ void VansVegetationSystem::BuildTreeResources(
 }
 
 // ============================================================================
-// GenerateBoneWeights — for external meshes: map vertex Y → dual-bone weights
+// GenerateBoneWeights  - for external meshes: map vertex Y  - dual-bone weights
 //
 // Each vertex gets: vec4(boneIdx0, boneIdx1, weight0, weight1)
 // Y is normalised to [0..1] over the mesh AABB, then mapped to bone segments.
@@ -1630,7 +1651,7 @@ void VansVegetationSystem::GenerateBoneWeights(GrassRenderConfigGPU& cfg, VansMe
 }
 
 // ============================================================================
-// SetTerrainHeightmap — connects terrain height data for ground placement
+// SetTerrainHeightmap  - connects terrain height data for ground placement
 // ============================================================================
 void VansVegetationSystem::SetTerrainHeightmap(VkImageView imageView, VkSampler sampler,
                                                 float terrainSize, float maxHeight, float heightOffset)
@@ -1659,10 +1680,10 @@ void VansVegetationSystem::SetTerrainHeightmap(VkImageView imageView, VkSampler 
 }
 
 // ============================================================================
-// SetHiZDepth — 将 Hi-Z depth pyramid 连接到植被剪除逻辑
-// 通常在 HZB 初始化后调用一次（HZB 畴病表不变，只需写一次 descriptor）
-// • mipCount: manager->m_HIZMipCount
-// • sampleBias: 防止边界错剪的保守偏差，单位为米（默认 0.2）
+// SetHiZDepth  -  - Hi-Z depth pyramid 连接到植被剪除逻辑
+// 通常 - HZB 初始化后调用一次（HZB 畴病表不变，只需写一 - descriptor - 
+//  - mipCount: manager->m_HIZMipCount
+//  - sampleBias: 防止边界错剪的保守偏差，单位为米（默 - 0.2 - 
 // ============================================================================
 void VansVegetationSystem::SetHiZDepth(VkImageView imageView, VkSampler sampler,
                                         uint32_t mipCount, float sampleBias)
@@ -1673,7 +1694,7 @@ void VansVegetationSystem::SetHiZDepth(VkImageView imageView, VkSampler sampler,
 	m_HiZSampleBias  = sampleBias;
 	m_HiZEnabled     = (imageView != VK_NULL_HANDLE && sampler != VK_NULL_HANDLE && mipCount > 0);
 
-	// 重写剪除 descriptor set 以包含 Hi-Z
+	// 重写剪除 descriptor set 以包 - Hi-Z
 	if (m_HiZEnabled && !m_CullDescSets.empty())
 	{
 		WriteCullDescriptors();

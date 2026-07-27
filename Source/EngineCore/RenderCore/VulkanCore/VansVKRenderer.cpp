@@ -17,7 +17,6 @@
 #include "../../RuntimeUI/Public/VansUISystem.h"
 #include <algorithm>
 #include <iostream>
-#include <fstream>
 #include <utility>
 
 namespace VansGraphics
@@ -585,8 +584,9 @@ namespace VansGraphics
 					auto& dirLights = m_Scene->GetLightManager()->GetDirectionLights();
 					if (!dirLights.empty())
 					{
-						mainLightDir = glm::normalize(dirLights[0].m_Direction);
-						mainLightColor = dirLights[0].m_Color * dirLights[0].m_Intensity;
+						const auto celestialState = VansLightManager::ComputeCelestialLightingState(dirLights[0]);
+						mainLightDir = glm::normalize(celestialState.direction);
+						mainLightColor = celestialState.color * celestialState.intensity;
 					}
 					waterSys->Update(static_cast<float>(VansTimer::GetDeltaTime()), camPos, viewMatrix,
 						vpMatrix, mainLightDir, mainLightColor);
@@ -994,8 +994,9 @@ namespace VansGraphics
 					auto& dirLights = m_Scene->GetLightManager()->GetDirectionLights();
 					if (!dirLights.empty())
 					{
-						mainLightDir = glm::normalize(dirLights[0].m_Direction);
-						mainLightColor = dirLights[0].m_Color * dirLights[0].m_Intensity;
+						const auto celestialState = VansLightManager::ComputeCelestialLightingState(dirLights[0]);
+						mainLightDir = glm::normalize(celestialState.direction);
+						mainLightColor = celestialState.color * celestialState.intensity;
 					}
 					waterSys->Update(static_cast<float>(VansTimer::GetDeltaTime()), camPos, viewMatrix,
 						vpMatrix, mainLightDir, mainLightColor);

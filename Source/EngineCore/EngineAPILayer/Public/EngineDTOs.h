@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -56,6 +57,71 @@ namespace Vans::EditorAPI
 		bool writePosition = true;
 		bool writeRotation = true;
 		bool writeScale = true;
+	};
+
+	enum class RuntimePreviewLightType
+	{
+		Directional,
+		Point,
+		Spot,
+		Rect
+	};
+
+	struct RuntimeLightEdit
+	{
+		RuntimePreviewLightType type = RuntimePreviewLightType::Directional;
+		std::string entityGuid;
+		bool writeColor = false;
+		bool writeIntensity = false;
+		bool writeRadius = false;
+		bool writeInnerCutoff = false;
+		bool writeOuterCutoff = false;
+		bool writeRectWidth = false;
+		bool writeRectHeight = false;
+		bool writeRectRange = false;
+		bool writeRectTwoSided = false;
+		bool writeRectShadow = false;
+		Vec3 color;
+		float intensity = 0.0f;
+		float radius = 0.0f;
+		float innerCutoffRadians = 0.0f;
+		float outerCutoffRadians = 0.0f;
+		float rectWidth = 0.0f;
+		float rectHeight = 0.0f;
+		float rectRange = 0.0f;
+		float rectTwoSided = 0.0f;
+		float rectShadowIndex = -1.0f;
+	};
+
+	struct RuntimeComponentEnabledEdit
+	{
+		std::string entityGuid;
+		std::string componentType;
+		bool enabled = true;
+	};
+
+	struct RuntimeRendererMaterialOverrideEdit
+	{
+		std::string entityGuid;
+		std::string slot;
+		std::string materialGuid;
+	};
+
+	struct RuntimeEntityPreviewChange
+	{
+		bool hasTransform = false;
+		RuntimeTransformEdit transform;
+		std::vector<RuntimeLightEdit> lights;
+		std::vector<RuntimeComponentEnabledEdit> componentEnabled;
+		std::vector<RuntimeRendererMaterialOverrideEdit> materialOverrides;
+
+		bool Empty() const
+		{
+			return !hasTransform &&
+				lights.empty() &&
+				componentEnabled.empty() &&
+				materialOverrides.empty();
+		}
 	};
 
 	struct RuntimeMultiMeshChildSnapshot
@@ -111,6 +177,27 @@ namespace Vans::EditorAPI
 		PropertyValue value;
 		bool isReadOnly = false;
 		std::vector<std::string> enumOptions;
+	};
+
+	struct RuntimeMaterialParameterEdit
+	{
+		std::string parameterPath;
+		PropertyValue value;
+	};
+
+	struct RuntimeMaterialTextureEdit
+	{
+		std::string slot;
+		std::string textureGuid;
+	};
+
+	struct RuntimeMaterialPreviewChange
+	{
+		std::string assetPath;
+		std::vector<RuntimeMaterialParameterEdit> parameters;
+		std::vector<RuntimeMaterialTextureEdit> textures;
+
+		bool Empty() const { return assetPath.empty() || (parameters.empty() && textures.empty()); }
 	};
 
 	struct ComponentEntry
@@ -201,6 +288,9 @@ namespace Vans::EditorAPI
 	{
 		bool available = false;
 		std::string guid;
+		std::string sourcePath;
+		std::string displayName;
+		AssetType assetType = AssetType::Unknown;
 		std::string error;
 	};
 
@@ -518,9 +608,9 @@ namespace Vans::EditorAPI
 		float baseCoverage = 64.0f;
 		float cascadeScale = 4.0f;
 		Vec2 windDirection = { 0.7071f, 0.7071f };
-		float windSpeed = 12.0f;
-		float swellAmplitude = 0.2f;
-		float choppiness = 1.0f;
+		float windSpeed = 16.0f;
+		float swellAmplitude = 0.35f;
+		float choppiness = 1.65f;
 		int gerstnerWaveCount = 32;
 		float spectrumAmplitude = 0.001f;
 		float minWavelength = 0.5f;
@@ -533,33 +623,33 @@ namespace Vans::EditorAPI
 
 	struct WaterWaveParticleSettings
 	{
-		int particleCount = 256;
-		int octaveCount = 4;
+		int particleCount = 192;
+		int octaveCount = 5;
 		int profile = 1;
-		float domainSize = 256.0f;
-		float amplitude = 0.16f;
-		float minRadius = 2.0f;
-		float maxRadius = 64.0f;
-		float phaseVelocity = 1.0f;
-		float damping = 0.05f;
-		float directionSpread = 0.45f;
+		float domainSize = 1024.0f;
+		float amplitude = 2.75f;
+		float minRadius = 6.0f;
+		float maxRadius = 384.0f;
+		float phaseVelocity = 0.45f;
+		float damping = 0.018f;
+		float directionSpread = 0.7f;
 		float lacunarity = 2.0f;
-		float persistence = 0.52f;
-		float radiusFalloff = 0.55f;
-		float profileSharpness = 2.0f;
-		float foamThreshold = 0.55f;
-		float foamSoftness = 0.35f;
-		float lifetime = 18.0f;
+		float persistence = 0.6f;
+		float radiusFalloff = 0.58f;
+		float profileSharpness = 1.45f;
+		float foamThreshold = 0.28f;
+		float foamSoftness = 0.25f;
+		float lifetime = 24.0f;
 		std::uint32_t randomSeed = 20260724u;
 	};
 
 	struct WaterFlowMapSettings
 	{
 		bool enabled = false;
-		float strength = 6.0f;
-		float speed = 0.45f;
+		float strength = 10.0f;
+		float speed = 0.65f;
 		float phaseLength = 1.0f;
-		float noiseAmount = 0.35f;
+		float noiseAmount = 0.5f;
 		Vec2 worldOrigin = { -256.0f, -256.0f };
 		Vec2 worldSize = { 512.0f, 512.0f };
 		Vec2 fallbackDirection = { 1.0f, 0.0f };
@@ -644,6 +734,76 @@ namespace Vans::EditorAPI
 		std::string meshName;
 	};
 
+	struct ScenePropertyValue
+	{
+		enum class Kind
+		{
+			Null,
+			Bool,
+			Int,
+			Float,
+			String,
+			Array,
+			Object
+		};
+
+		Kind kind = Kind::Null;
+		bool boolValue = false;
+		std::int64_t intValue = 0;
+		double floatValue = 0.0;
+		std::string stringValue;
+		std::vector<ScenePropertyValue> arrayItems;
+		std::vector<std::pair<std::string, ScenePropertyValue>> objectFields;
+
+		static ScenePropertyValue Bool(bool value)
+		{
+			ScenePropertyValue result;
+			result.kind = Kind::Bool;
+			result.boolValue = value;
+			return result;
+		}
+
+		static ScenePropertyValue Int(std::int64_t value)
+		{
+			ScenePropertyValue result;
+			result.kind = Kind::Int;
+			result.intValue = value;
+			return result;
+		}
+
+		static ScenePropertyValue Float(double value)
+		{
+			ScenePropertyValue result;
+			result.kind = Kind::Float;
+			result.floatValue = value;
+			return result;
+		}
+
+		static ScenePropertyValue String(std::string value)
+		{
+			ScenePropertyValue result;
+			result.kind = Kind::String;
+			result.stringValue = std::move(value);
+			return result;
+		}
+
+		static ScenePropertyValue Array(std::vector<ScenePropertyValue> items)
+		{
+			ScenePropertyValue result;
+			result.kind = Kind::Array;
+			result.arrayItems = std::move(items);
+			return result;
+		}
+
+		static ScenePropertyValue Object(std::vector<std::pair<std::string, ScenePropertyValue>> fields)
+		{
+			ScenePropertyValue result;
+			result.kind = Kind::Object;
+			result.objectFields = std::move(fields);
+			return result;
+		}
+	};
+
 	struct ModelAssetPlacementRequest
 	{
 		std::string assetGuid;
@@ -654,7 +814,7 @@ namespace Vans::EditorAPI
 	{
 		bool prepared = false;
 		std::string message;
-		std::vector<std::string> sceneEntityJsons;
+		std::vector<ScenePropertyValue> sceneEntities;
 		std::string runtimeEntityGuid;
 	};
 
@@ -806,6 +966,7 @@ namespace Vans::EditorAPI
 			float sourceRadius = 0.02f;
 			bool affectsFog = true;
 			bool affectsGI = true;
+			std::uint32_t shadowCasterMask = 0xffffffffu;
 		};
 
 		Vec3 position;
@@ -889,8 +1050,8 @@ namespace Vans::EditorAPI
 
 	struct ScenePropertyEdit
 	{
-		std::string jsonPointer;
-		std::string valueJson;
+		std::string propertyPointer;
+		ScenePropertyValue value;
 	};
 
 	struct FogVolumeSettings

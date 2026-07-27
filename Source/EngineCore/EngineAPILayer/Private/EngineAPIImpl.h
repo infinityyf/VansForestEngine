@@ -107,12 +107,8 @@ namespace Vans::EditorAPI
 		FootIKDebugSnapshot GetFootIKDebugSnapshot() const override;
 		TerrainSettingsSnapshot GetTerrainSettings() const override;
 		void ApplyTerrainSettings(const TerrainSettingsSnapshot& settings) override;
-		void ApplyRuntimeEntityPatchJson(const std::string& entityJson) override;
-		void SetRuntimeComponentEnabled(const std::string& entityGuid, const std::string& componentType, bool enabled) override;
-		bool ApplyRuntimeMaterialAssetPatch(
-			const std::string& assetPath,
-			const std::string& assetRootJson,
-			const std::string& changedPointer) override;
+		void ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change) override;
+		bool ApplyRuntimeMaterialPreviewChange(const RuntimeMaterialPreviewChange& change) override;
 
 		void CommitLightingChanges() override;
 		LightingSettingsSnapshot GetLightingSettings() const override;
@@ -168,6 +164,7 @@ namespace Vans::EditorAPI
 	private:
 		RenderTexturePreview BuildReflectionProbePreview(RenderTextureFilter filter) const;
 		RenderTexturePreview BuildWaterTexturePreview(RenderTextureFilter filter) const;
+		void SetRuntimeComponentEnabled(const std::string& entityGuid, const std::string& componentType, bool enabled);
 
 		RuntimeSceneHandle m_Scene = nullptr;
 		RuntimeRenderDeviceHandle m_Device = nullptr;

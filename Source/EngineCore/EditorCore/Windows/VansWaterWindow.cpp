@@ -233,9 +233,9 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                     changed |= ImGui::SliderInt("Particle Count", &settings.waveParticle.particleCount, 0, 1024);
                     changed |= ImGui::SliderInt("Octave Layers", &settings.waveParticle.octaveCount, 1, 8);
                     changed |= ImGui::DragFloat("Particle Domain (m)", &settings.waveParticle.domainSize, 1.0f, 16.0f, 4096.0f, "%.1f");
-                    changed |= ImGui::DragFloat("Particle Amplitude", &settings.waveParticle.amplitude, 0.005f, 0.0f, 10.0f, "%.3f");
-                    changed |= ImGui::DragFloat("Min Radius (m)", &settings.waveParticle.minRadius, 0.05f, 0.05f, 512.0f, "%.2f");
-                    changed |= ImGui::DragFloat("Max Radius (m)", &settings.waveParticle.maxRadius, 0.1f, 0.05f, 4096.0f, "%.2f");
+                    changed |= ImGui::DragFloat("Particle Amplitude", &settings.waveParticle.amplitude, 0.05f, 0.0f, 10.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Min Radius (m)", &settings.waveParticle.minRadius, 0.25f, 0.05f, 512.0f, "%.2f");
+                    changed |= ImGui::DragFloat("Max Radius (m)", &settings.waveParticle.maxRadius, 0.5f, 0.05f, 4096.0f, "%.2f");
                     changed |= ImGui::DragFloat("Phase Velocity", &settings.waveParticle.phaseVelocity, 0.01f, 0.0f, 10.0f, "%.3f");
                     changed |= ImGui::DragFloat("Damping", &settings.waveParticle.damping, 0.001f, 0.0f, 2.0f, "%.4f");
                     changed |= ImGui::DragFloat("Direction Spread", &settings.waveParticle.directionSpread, 0.01f, 0.0f, 3.1416f, "%.3f rad");

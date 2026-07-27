@@ -5,6 +5,7 @@
 #include "VansTransform.h"
 #include "../RenderCore/VansCamera.h"
 #include "../RenderCore/VansRenderNode.h"
+#include "../RenderCore/Storage/VansPostProcessProfileStorage.h"
 #include "../RenderCore/BRDFData/VansLight.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansAnimationController.h"
@@ -20,8 +21,9 @@
 #include "../RuntimeUI/Public/VansUIScreenManager.h"
 #include "../../../../ForestExporter/VansEngineBridge.h"
 #include "../../../../ForestExporter/VansInputBridge.h"
-#include <unordered_map>
 #include <memory>
+#include <string>
+#include <unordered_map>
 
 
 
@@ -1820,14 +1822,17 @@ void VansInitEngineBridge()
 	s_EngineBridge.ppSaveToFile = [](const char* path) -> bool
 	{
 		auto* pp = GetPPProfile();
-		return (pp && path) ? pp->SaveToFile(std::string(path)) : false;
+		if (!pp || !path) return false;
+		std::string error;
+		return VansGraphics::VansPostProcessProfileStorage::SaveAtomic(path, *pp, error);
 	};
 
 	s_EngineBridge.ppLoadFromFile = [](const char* path) -> bool
 	{
 		auto* pp = GetPPProfile();
 		if (!pp || !path) return false;
-		bool ok = pp->LoadFromFile(std::string(path));
+		std::string error;
+		bool ok = VansGraphics::VansPostProcessProfileStorage::Load(path, *pp, error);
 		if (ok) pp->m_IsDirty = true;
 		return ok;
 	};

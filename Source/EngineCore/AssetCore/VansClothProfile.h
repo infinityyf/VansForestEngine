@@ -89,8 +89,6 @@ namespace VansEngine
         glm::mat4 GetSkeletonOffsetMatrix() const;
 
         // ── 序列化 / 反序列化 ───────────────────────────────────────────────
-        bool SaveToFile(const std::string& filePath) const;
-        bool LoadFromFile(const std::string& filePath);
         void ResetToDefaults();
 
         // ── 运行时辅助：将局部坐标与网格顶点匹配，返回原始顶点索引列表 ────
@@ -107,4 +105,5 @@ namespace VansEngine
         std::vector<ClothNodePinSkinData> ResolveBoneBindings(
             const VansGraphics::Skeleton& skeleton) const;
     };
+
 }

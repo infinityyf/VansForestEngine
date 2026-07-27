@@ -24,6 +24,29 @@ vec3 SampleSSSLUT(float NdotL, float curvature)
     return texture(SkinPreIntegratedLUT, vec2(u, v)).rgb;
 }
 
+struct SkinMaterialParams
+{
+    vec3 subsurfaceColor;
+    float subsurfaceAmount;
+    float specularScale;
+};
+
+SkinMaterialParams DecodeSkinMaterialParams(int materialIndex)
+{
+    SkinMaterialParams skin;
+    skin.subsurfaceColor = vec3(1.0, 0.34, 0.22);
+    skin.subsurfaceAmount = 0.65;
+    skin.specularScale = 1.0;
+    if (materialIndex >= 0)
+    {
+        MaterialPayload payload = materialDataBuffer.materials[materialIndex];
+        skin.subsurfaceColor = max(payload.albedo.rgb, vec3(0.0));
+        skin.subsurfaceAmount = clamp(payload.ao, 0.0, 1.0);
+        skin.specularScale = clamp(payload.padding, 0.0, 4.0);
+    }
+    return skin;
+}
+
 // ---------------------------------------------------------------------------
 // Subsurface scattering tint based on surface curvature.
 // Thin areas (high curvature: ears, nostrils, fingers) are tinted by
@@ -47,8 +70,9 @@ vec3 ComputeSkinSSSColor(float curvature, vec3 sssColor, float sssScale)
 // ---------------------------------------------------------------------------
 vec3 ComputeSkinF0(vec3 albedo)
 {
-    vec3 F0 = vec3(0.028);              // Base skin specular reflectance
-    return mix(F0, albedo, 0.2);        // Slight tint from skin color
+    const vec3 baseF0 = vec3(0.028);    // IOR ~= 1.4, skin/oil dielectric layer
+    vec3 tint = albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 1e-3);
+    return baseF0 * mix(vec3(1.0), clamp(tint, vec3(0.0), vec3(1.0)), 0.10);
 }
 
 float SkinThinnessFromCurvature(float curvature)
@@ -142,27 +166,61 @@ vec3 ComputeSkinTransmission(float thickness, vec3 albedo)
     return exp(-sigma * thickness * scale) * albedo;
 }
 
-vec3 ComputeSkinBackTransmission(BRDFData brdf, vec3 lightDirection, float curvature)
+vec3 ComputeSkinBackTransmission(BRDFData brdf, vec3 lightDirection, float curvature,
+                                 SkinMaterialParams skin)
 {
     float NoL = dot(brdf.normal, lightDirection);
     float backFacing = smoothstep(0.0, 0.85, -NoL);
-    if (backFacing <= 0.0)
+    if (backFacing <= 0.0 || skin.subsurfaceAmount <= 0.0)
         return vec3(0.0);
 
     float thinness = SkinThinnessFromCurvature(curvature);
     float thickness = SkinOpticalThickness(curvature);
     float forwardScatter = pow(max(dot(brdf.viewDirection, -lightDirection), 0.0), 2.0);
-    vec3 bloodTint = vec3(1.0, 0.22, 0.12);
-    vec3 transmission = ComputeSkinTransmission(thickness, brdf.albedo) * bloodTint;
+    vec3 transmission = ComputeSkinTransmission(thickness, brdf.albedo) * skin.subsurfaceColor;
 
-    return transmission * thinness * backFacing * mix(0.35, 1.0, forwardScatter) / PI;
+    return transmission * thinness * backFacing *
+           mix(0.35, 1.0, forwardScatter) *
+           skin.subsurfaceAmount / PI;
 }
 
-float SkinTransmissionShadow(float shadowValue, float NoL, float curvature)
+float SkinTransmissionShadow(float shadowValue, float NoL, float curvature, float subsurfaceAmount)
 {
     float thinness = SkinThinnessFromCurvature(curvature);
     float backFacing = smoothstep(0.0, 0.85, -NoL);
-    return mix(shadowValue, max(shadowValue, 0.35), thinness * backFacing);
+    return mix(shadowValue, max(shadowValue, 0.35),
+               thinness * backFacing * clamp(subsurfaceAmount, 0.0, 1.0));
+}
+
+vec3 SkinGGXLobe(BRDFData brdf, vec3 lightDirection, float roughness)
+{
+    vec3 viewDirection = brdf.viewDirection;
+    float NdotL = max(dot(brdf.normal, lightDirection), 0.0);
+    float NdotV = max(dot(brdf.normal, viewDirection), 0.0);
+    if (NdotL <= 0.0 || NdotV <= 0.0)
+        return vec3(0.0);
+
+    vec3 halfVectorRaw = lightDirection + viewDirection;
+    float halfLenSq = dot(halfVectorRaw, halfVectorRaw);
+    if (halfLenSq < 1e-6)
+        return vec3(0.0);
+    vec3 halfVector = halfVectorRaw * inversesqrt(halfLenSq);
+    float VdotH = max(dot(viewDirection, halfVector), 0.0);
+
+    roughness = clamp(roughness, 0.045, 1.0);
+    vec3 F = FresnelSchlick(VdotH, brdf.fresnel0);
+    float D = DistributionTrowbridgeReitzGGX(brdf.normal, halfVector, roughness);
+    float G = GeometrySmith(brdf.normal, viewDirection, lightDirection, roughness);
+
+    return (D * G * F / (4.0 * max(NdotL, 0.001) * max(NdotV, 0.001))) * NdotL;
+}
+
+vec3 DualLobeSkinSpecular(BRDFData brdf, vec3 lightDirection, SkinMaterialParams skin)
+{
+    float baseRoughness = clamp(brdf.roughness, 0.045, 1.0);
+    vec3 primary = SkinGGXLobe(brdf, lightDirection, baseRoughness * 0.75);
+    vec3 broad = SkinGGXLobe(brdf, lightDirection, clamp(baseRoughness * 1.75, 0.08, 1.0));
+    return (primary * 0.72 + broad * 0.28) * skin.specularScale;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,39 +228,41 @@ float SkinTransmissionShadow(float shadowValue, float NoL, float curvature)
 // Specular uses Kelemen/Szirmay-Kalos model with runtime Beckmann NDF.
 // ---------------------------------------------------------------------------
 void DirectBRDF_Skin(BRDFData brdf, vec3 lightDirection, float curvature,
+                     SkinMaterialParams skin,
                      inout vec3 diffuse, inout vec3 specular,
                      inout vec3 transmission)
 {
     vec3  viewDirection = brdf.viewDirection;
     float NdotL = dot(brdf.normal, lightDirection);       // may be negative
-    float NdotV = max(dot(brdf.normal, viewDirection), 0.0);
+    vec3 halfVector = lightDirection + viewDirection;
+    float halfLenSq = dot(halfVector, halfVector);
+    float VdotH = halfLenSq > 1e-6
+        ? max(dot(viewDirection, halfVector * inversesqrt(halfLenSq)), 0.0)
+        : 0.0;
 
     // --- Pre-integrated skin diffuse (wraps NdotL via LUT) ---
+    float sssAmount = clamp(skin.subsurfaceAmount, 0.0, 1.0);
+    vec3 lambert = vec3(max(NdotL, 0.0));
     vec3 skinScatter = SampleSSSLUT(NdotL, curvature);
+    skinScatter = mix(lambert, skinScatter, sssAmount);
 
     // Curvature-only SSS tint: thin areas (ears, nose) get reddish blood-vessel color
-    vec3 sssTint = ComputeSkinSSSColor(curvature, vec3(1.0, 0.2, 0.1), 1.0);
+    vec3 sssTint = ComputeSkinSSSColor(curvature, skin.subsurfaceColor, sssAmount);
 
-    vec3 F0 = ComputeSkinF0(brdf.albedo);
-    vec3 F = fresnelSchlickRoughness(NdotV, F0, brdf.roughness);
+    vec3 F = FresnelSchlick(VdotH, brdf.fresnel0);
     vec3 kD = (vec3(1.0) - F) * (1.0 - brdf.metallic);
     diffuse = skinScatter * brdf.albedo * sssTint * kD / PI;
 
-    // --- Kelemen/Szirmay-Kalos skin specular (runtime Beckmann NDF) ---
-    // Reference: Kelemen & Szirmay-Kalos, "A Microfacet Based Coupled
-    //            Specular-Matte BRDF Model with Importance Sampling", EG 2001.
-    // rho_s = 1.0 (specular brightness); light intensity applied externally.
-    float ksSpec = KS_Skin_Specular(brdf.normal, lightDirection, viewDirection,
-                                     brdf.roughness, 1.0);
-    specular = vec3(ksSpec);
-    transmission = ComputeSkinBackTransmission(brdf, lightDirection, curvature);
+    specular = DualLobeSkinSpecular(brdf, lightDirection, skin);
+    transmission = ComputeSkinBackTransmission(brdf, lightDirection, curvature, skin);
 }
 
 void DirectBRDF_Skin(BRDFData brdf, vec3 lightDirection, float curvature,
+                     SkinMaterialParams skin,
                      inout vec3 diffuse, inout vec3 specular)
 {
     vec3 transmission = vec3(0.0);
-    DirectBRDF_Skin(brdf, lightDirection, curvature, diffuse, specular, transmission);
+    DirectBRDF_Skin(brdf, lightDirection, curvature, skin, diffuse, specular, transmission);
 }
 
 // ---------------------------------------------------------------------------
@@ -256,14 +316,17 @@ void DirectBRDF_Skin_DualLobe(BRDFData brdf, vec3 lightDirection, float curvatur
 // ---------------------------------------------------------------------------
 // Ambient for skin – standard PBR fallback (SSS mainly affects direct light).
 // ---------------------------------------------------------------------------
-void AmbientBRDF_Skin(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
+void AmbientBRDF_Skin(BRDFData brdf, SkinMaterialParams skin,
+                      vec3 viewDirection, inout vec3 diffuse, inout vec3 specular)
 {
     AmbientBRDF(brdf, viewDirection, diffuse, specular);
 
     float NoV = max(dot(brdf.normal, viewDirection), 0.0);
     float grazingScatter = pow(1.0 - NoV, 2.0);
-    vec3 ambientTint = ComputeSkinSSSColor(grazingScatter, vec3(1.0, 0.32, 0.18), 0.45);
-    diffuse += brdf.indirectDiffuse * brdf.albedo * ambientTint * brdf.ao * 0.18;
+    float sssAmount = clamp(skin.subsurfaceAmount, 0.0, 1.0);
+    vec3 ambientTint = ComputeSkinSSSColor(
+        grazingScatter, skin.subsurfaceColor, 0.45 * sssAmount);
+    diffuse *= mix(vec3(1.0), ambientTint, 0.35 * sssAmount);
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +336,7 @@ void AmbientBRDF_Skin(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, ino
 // ---------------------------------------------------------------------------
 // Cascade shadow map version of skin lighting
 void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
+                               SkinMaterialParams skin,
                                sampler2DArray cascadeShadowMap, float viewDepth, sampler2DShadow punctualShadowMap,
                                float screenSpaceShadow,
                                inout LightResult lightResult)
@@ -285,14 +349,14 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     vec3 specularResult = vec3(0);
     vec3 transmissionResult = vec3(0);
     float NdotL_dir = dot(brdfData.normal, uDirectionLight.direction.rgb);
-    DirectBRDF_Skin(brdfData, uDirectionLight.direction.rgb, curvature,
+    DirectBRDF_Skin(brdfData, uDirectionLight.direction.rgb, curvature, skin,
                     diffuseResult, specularResult, transmissionResult);
     diffuseResult  *= uDirectionLight.color.rgb * uDirectionLight.intensity;
     specularResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
     transmissionResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
 
     float shadowValue = min(SampleCascadeShadow(brdfData.positionWS, brdfData.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
-    float transmissionShadow = SkinTransmissionShadow(shadowValue, NdotL_dir, curvature);
+    float transmissionShadow = SkinTransmissionShadow(shadowValue, NdotL_dir, curvature, skin.subsurfaceAmount);
 
     diffuseResult  *= shadowValue;
     specularResult *= shadowValue;
@@ -323,12 +387,12 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
         }
         float litAttenuation = attenuation * pShadow;
         float transmissionAttenuation = attenuation *
-            SkinTransmissionShadow(pShadow, dot(brdfData.normal, lightDirection), curvature);
+            SkinTransmissionShadow(pShadow, dot(brdfData.normal, lightDirection), curvature, skin.subsurfaceAmount);
 
         vec3 dR = vec3(0);
         vec3 sR = vec3(0);
         vec3 tR = vec3(0);
-        DirectBRDF_Skin(brdfData, lightDirection, curvature, dR, sR, tR);
+        DirectBRDF_Skin(brdfData, lightDirection, curvature, skin, dR, sR, tR);
         vec3 pointEnergy = pointLight.color.rgb * pointLight.intensity;
         dR *= pointEnergy * litAttenuation;
         sR *= pointEnergy * litAttenuation;
@@ -366,13 +430,13 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
         }
         float litAttenuation = attenuation * sShadow * coneAttenuation;
         float transmissionAttenuation = attenuation *
-            SkinTransmissionShadow(sShadow, dot(brdfData.normal, lightDirection), curvature) *
+            SkinTransmissionShadow(sShadow, dot(brdfData.normal, lightDirection), curvature, skin.subsurfaceAmount) *
             coneAttenuation;
 
         vec3 dR = vec3(0);
         vec3 sR = vec3(0);
         vec3 tR = vec3(0);
-        DirectBRDF_Skin(brdfData, lightDirection, curvature, dR, sR, tR);
+        DirectBRDF_Skin(brdfData, lightDirection, curvature, skin, dR, sR, tR);
         vec3 spotEnergy = spotLight.color.rgb * spotLight.intensity;
         dR *= spotEnergy * litAttenuation;
         sR *= spotEnergy * litAttenuation;

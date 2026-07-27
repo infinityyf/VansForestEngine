@@ -22,13 +22,17 @@
 
 #include "VansPostProcessProfile.h"
 
-#include <nlohmann/json.hpp>
-
 #include <vector>
 
 #include <unordered_map>
 
 #include <string>
+
+#include <cstddef>
+
+#include <cstdint>
+
+#include <variant>
 
 
 
@@ -96,7 +100,7 @@ namespace VansGraphics
 
 		glm::vec4 giVolumeSizeAndBias;
 
-		glm::vec4 traceParams; // x=max trace distance, y=fade start ratio, z=probe volume fade distance
+		glm::vec4 traceParams; // x=max trace distance, y=fade start ratio, z=probe volume fade distance, w=reserved
 
 	};
 
@@ -157,9 +161,9 @@ namespace VansGraphics
 
 		static constexpr const char* GBUFFER          = "gbuffer";          // opaque GBuffer fill
 
-		static constexpr const char* SHADOW           = "shadow";           // cascade shadow map
+		static constexpr const char* SHADOW           = "shadow";           // 级联阴影图
 
-		static constexpr const char* PUNCTUAL_SHADOW  = "punctualShadow";   // point/spot shadow
+		static constexpr const char* PUNCTUAL_SHADOW  = "punctualShadow";   // 点光/聚光阴影
 
 		static constexpr const char* FORWARD_OPAQUE_AFTER_DEFERRED = "forwardOpaqueAfterDeferred";
 
@@ -294,6 +298,17 @@ namespace VansGraphics
 	static constexpr int VANS_CUSTOM_MATERIAL_VEC4_COUNT = 8;
 
 	static constexpr int VANS_CUSTOM_MATERIAL_TEXTURE_COUNT = 5;
+
+	using VansMaterialParameterValue = std::variant<
+		std::monostate,
+		bool,
+		std::int32_t,
+		std::uint32_t,
+		float,
+		glm::vec2,
+		glm::vec3,
+		glm::vec4,
+		std::string>;
 
 
 
@@ -535,7 +550,15 @@ namespace VansGraphics
 
 			const std::string& parameterPath,
 
-			const nlohmann::ordered_json& value);
+			const VansMaterialParameterValue& value);
+
+		bool ReplaceGlobalBindlessTexture(
+			std::size_t textureIndex,
+			VansTexture* texture,
+			VkDescriptorSet sceneGlobalDescriptorSet = VK_NULL_HANDLE);
+
+		bool RewriteGlobalBindlessTextureDescriptors(
+			VkDescriptorSet sceneGlobalDescriptorSet = VK_NULL_HANDLE);
 
 		const VansFogSettings& GetFogSettings() const { return m_FogSettings; }
 
@@ -1299,6 +1322,11 @@ namespace VansGraphics
 		VansTexture* m_BaseColorTexture = nullptr;
 
 		VansTexture* m_NormalTexture    = nullptr;
+
+		// Skin reuses the global MaterialPayload:
+		// albedo = subsurface tint, roughness = specular roughness,
+		// metallic = normal strength, ao = SSS amount, padding = specular scale.
+		VansBasePBRParam m_BasePBRParam;
 
 
 

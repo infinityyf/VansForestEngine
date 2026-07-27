@@ -1,12 +1,11 @@
 #pragma once
+#include "VansCollisionLayerConfig.h"
 #include <string>
 #include <array>
 #include <cstdint>
 
 namespace VansEngine
 {
-	static constexpr int MAX_PHYSICS_LAYERS = 32;
-
 	// ── 碰撞层管理器 ─────────────────────────────────────────────────
 	// 从 Project 配置里指定的 collisionLayerSettings 文件加载 Layer 定义和碰撞矩阵。
 	// 如果文件不存在则使用内置默认值（仅 "Default" layer，全碰撞）。
@@ -48,6 +47,7 @@ namespace VansEngine
 
 	private:
 		VansCollisionLayerManager();
+		void ApplyConfig(const VansCollisionLayerConfig& config);
 
 		std::array<std::string, MAX_PHYSICS_LAYERS> m_LayerNames;
 		std::array<uint32_t, MAX_PHYSICS_LAYERS>    m_CollisionMasks;

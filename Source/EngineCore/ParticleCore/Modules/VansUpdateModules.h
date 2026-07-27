@@ -21,8 +21,6 @@ namespace VansGraphics
 
         void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) override {}
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
     };
 
     // ── UpdateColorOverLifetime — 颜色随生命周期变化 ───────────────────────
@@ -45,8 +43,6 @@ namespace VansGraphics
 
         void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) override {}
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
     };
 
     // ── UpdateSizeOverLifetime — 大小随生命周期变化 ────────────────────────
@@ -67,8 +63,6 @@ namespace VansGraphics
 
         void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) override {}
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
 
     private:
         float EvalCurve(float t) const;
@@ -91,8 +85,6 @@ namespace VansGraphics
 
         void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) override {}
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
 
     private:
         // 简单的 3D 值噪波（基于正弦叠加）
@@ -118,8 +110,6 @@ namespace VansGraphics
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
                          uint32_t endIndex, const glm::mat4&) override;
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
     };
 
     // ── UpdateSpriteAnim — Sprite Sheet 帧动画 ─────────────────────────────
@@ -136,8 +126,6 @@ namespace VansGraphics
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
                          uint32_t endIndex, const glm::mat4&) override;
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
     };
 
 } // namespace VansGraphics

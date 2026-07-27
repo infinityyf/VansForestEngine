@@ -30,8 +30,6 @@ namespace VansGraphics
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
                          uint32_t endIndex, const glm::mat4&) override;
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
     };
 
     // ── InitVelocity — 初始化粒子初速度 ───────────────────────────────────
@@ -50,8 +48,6 @@ namespace VansGraphics
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
                          uint32_t endIndex, const glm::mat4& localToWorld) override;
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
     };
 
     // ── InitSize — 初始化粒子大小 ──────────────────────────────────────────
@@ -72,8 +68,6 @@ namespace VansGraphics
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
                          uint32_t endIndex, const glm::mat4&) override;
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
     };
 
     // ── InitColor — 初始化粒子颜色 ─────────────────────────────────────────
@@ -87,8 +81,6 @@ namespace VansGraphics
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
                          uint32_t endIndex, const glm::mat4&) override;
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
     };
 
     // ── InitRotation — 初始化粒子旋转角 ───────────────────────────────────
@@ -109,8 +101,6 @@ namespace VansGraphics
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
                          uint32_t endIndex, const glm::mat4&) override;
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
     };
 
     // ── InitPositionShape — 形状发射器（位置初始化）────────────────────────
@@ -128,8 +118,6 @@ namespace VansGraphics
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
                          uint32_t endIndex, const glm::mat4& localToWorld) override;
 
-        nlohmann::json Serialize() const override;
-        void Deserialize(const nlohmann::json& j) override;
     };
 
 } // namespace VansGraphics

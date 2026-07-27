@@ -1,16 +1,11 @@
 #include "VansProjectSettings.h"
 #include "VansProjectConfig.h"
+#include "VansProjectSettingsData.h"
+#include "Storage/VansProjectSettingsStorage.h"
 #include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../Util/VansLog.h"
 
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
-#include <filesystem>
-#include <fstream>
-
-using json = nlohmann::json;
-namespace fs = std::filesystem;
 
 namespace Vans
 {
@@ -28,18 +23,6 @@ namespace Vans
 			}
 		}
 
-		VansProjectFSRMode ParseFSRMode(const std::string& value)
-		{
-			if (value == "NativeAA") return VansProjectFSRMode::NativeAA;
-			if (value == "Quality") return VansProjectFSRMode::Quality;
-			if (value == "Performance") return VansProjectFSRMode::Performance;
-			if (value != "MatchViewport")
-			{
-				VANS_LOG_WARN("[ProjectSettings] Unknown FSR mode '" << value
-					<< "', fallback to MatchViewport");
-			}
-			return VansProjectFSRMode::MatchViewport;
-		}
 	}
 
 	void VansProjectSettings::SetDefaults()
@@ -84,13 +67,40 @@ namespace Vans
 		if (!projectConfig.renderSettings.empty())
 		{
 			const std::string renderSettingsPath = projectRootPath + projectConfig.renderSettings;
-			loadedAnySettings = LoadRenderSettingsFromFile(renderSettingsPath) || loadedAnySettings;
+			VansProjectRenderSettingsData renderSettings;
+			std::vector<std::string> warnings;
+			std::string error;
+			if (VansProjectSettingsStorage::LoadRenderSettings(renderSettingsPath, renderSettings, warnings, error))
+			{
+				for (const std::string& warning : warnings)
+					VANS_LOG_WARN("[ProjectSettings] " << warning);
+				SetFSRSettings(renderSettings.fsrSettings.mode, renderSettings.fsrSettings.sharpness);
+				VANS_LOG("[ProjectSettings] Loaded render settings: " << renderSettingsPath
+					<< ", fsr.mode=" << ToString(m_FSRSettings.mode)
+					<< ", fsr.sharpness=" << m_FSRSettings.sharpness);
+				loadedAnySettings = true;
+			}
+			else
+			{
+				VANS_LOG_WARN("[ProjectSettings] Cannot read render settings: " << renderSettingsPath << " (" << error << ")");
+			}
 		}
 
 		if (!projectConfig.physicsSettings.empty())
 		{
 			const std::string physicsSettingsPath = projectRootPath + projectConfig.physicsSettings;
-			loadedAnySettings = LoadPhysicsSettingsFromFile(physicsSettingsPath) || loadedAnySettings;
+			VansProjectPhysicsSettingsData physicsSettings;
+			std::string error;
+			if (VansProjectSettingsStorage::LoadPhysicsSettings(physicsSettingsPath, physicsSettings, error))
+			{
+				SetFixedTimeStep(physicsSettings.fixedTimeStep);
+				VANS_LOG("[ProjectSettings] Loaded physics settings: " << physicsSettingsPath << ", fixedTimeStep=" << m_FixedTimeStep);
+				loadedAnySettings = true;
+			}
+			else
+			{
+				VANS_LOG_WARN("[ProjectSettings] Cannot read physics settings: " << physicsSettingsPath << " (" << error << ")");
+			}
 		}
 
 		if (!projectConfig.collisionLayerSettings.empty())
@@ -109,107 +119,38 @@ namespace Vans
 		if (!projectConfig.renderSettings.empty())
 		{
 			const std::string renderSettingsPath = projectRootPath + projectConfig.renderSettings;
-			savedAnySettings = SaveRenderSettingsToFile(renderSettingsPath) || savedAnySettings;
+			VansProjectRenderSettingsData renderSettings;
+			renderSettings.fsrSettings = m_FSRSettings;
+			std::string error;
+			if (VansProjectSettingsStorage::SaveRenderSettings(renderSettingsPath, renderSettings, error))
+			{
+				VANS_LOG("[ProjectSettings] Saved render settings: " << renderSettingsPath);
+				savedAnySettings = true;
+			}
+			else
+			{
+				VANS_LOG_ERROR("[ProjectSettings] Cannot write render settings: " << renderSettingsPath << " (" << error << ")");
+			}
 		}
 
 		if (!projectConfig.physicsSettings.empty())
 		{
 			const std::string physicsSettingsPath = projectRootPath + projectConfig.physicsSettings;
-			savedAnySettings = SavePhysicsSettingsToFile(physicsSettingsPath) || savedAnySettings;
+			VansProjectPhysicsSettingsData physicsSettings;
+			physicsSettings.fixedTimeStep = m_FixedTimeStep;
+			std::string error;
+			if (VansProjectSettingsStorage::SavePhysicsSettings(physicsSettingsPath, physicsSettings, error))
+			{
+				VANS_LOG("[ProjectSettings] Saved physics settings: " << physicsSettingsPath);
+				savedAnySettings = true;
+			}
+			else
+			{
+				VANS_LOG_ERROR("[ProjectSettings] Cannot write physics settings: " << physicsSettingsPath << " (" << error << ")");
+			}
 		}
 
 		return savedAnySettings;
-	}
-
-	bool VansProjectSettings::LoadRenderSettingsFromFile(const std::string& filePath)
-	{
-		std::ifstream inputFile(filePath);
-		if (!inputFile.is_open())
-		{
-			VANS_LOG_WARN("[ProjectSettings] Cannot open render settings: " << filePath);
-			return false;
-		}
-
-		try
-		{
-			const json config = json::parse(inputFile);
-			const std::uint32_t schemaVersion = config.value("schemaVersion", 1u);
-			if (schemaVersion != 1u)
-			{
-				VANS_LOG_WARN("[ProjectSettings] Unsupported render settings schemaVersion="
-					<< schemaVersion << ", reading known fields only");
-			}
-
-			if (config.contains("fsr") && config["fsr"].is_object())
-			{
-				const json& fsr = config["fsr"];
-				SetFSRSettings(
-					ParseFSRMode(fsr.value("mode", std::string("MatchViewport"))),
-					fsr.value("sharpness", 0.35f));
-			}
-		}
-		catch (const json::exception& exception)
-		{
-			VANS_LOG_ERROR("[ProjectSettings] Render settings JSON parse error: " << exception.what());
-			return false;
-		}
-
-		VANS_LOG("[ProjectSettings] Loaded render settings: " << filePath
-			<< ", fsr.mode=" << ToString(m_FSRSettings.mode)
-			<< ", fsr.sharpness=" << m_FSRSettings.sharpness);
-		return true;
-	}
-
-	bool VansProjectSettings::SaveRenderSettingsToFile(const std::string& filePath) const
-	{
-		json config;
-		config["schemaVersion"] = 1;
-		config["fsr"] = {
-			{ "mode", ToString(m_FSRSettings.mode) },
-			{ "sharpness", m_FSRSettings.sharpness }
-		};
-
-		fs::path outputPath(filePath);
-		if (outputPath.has_parent_path())
-		{
-			fs::create_directories(outputPath.parent_path());
-		}
-
-		std::ofstream outputFile(filePath);
-		if (!outputFile.is_open())
-		{
-			VANS_LOG_ERROR("[ProjectSettings] Cannot write render settings: " << filePath);
-			return false;
-		}
-
-		outputFile << config.dump(4);
-		VANS_LOG("[ProjectSettings] Saved render settings: " << filePath);
-		return true;
-	}
-
-	bool VansProjectSettings::LoadPhysicsSettingsFromFile(const std::string& filePath)
-	{
-		std::ifstream inputFile(filePath);
-		if (!inputFile.is_open())
-		{
-			VANS_LOG_WARN("[ProjectSettings] Cannot open physics settings: " << filePath);
-			return false;
-		}
-
-		try
-		{
-			const json config = json::parse(inputFile);
-			SetFixedTimeStep(config.value("fixedTimeStep",
-				config.value("physicsDeltaTime", 1.0f / 60.0f)));
-		}
-		catch (const json::exception& exception)
-		{
-			VANS_LOG_ERROR("[ProjectSettings] Physics settings JSON parse error: " << exception.what());
-			return false;
-		}
-
-		VANS_LOG("[ProjectSettings] Loaded physics settings: " << filePath << ", fixedTimeStep=" << m_FixedTimeStep);
-		return true;
 	}
 
 	bool VansProjectSettings::LoadCollisionLayerSettingsFromFile(const std::string& filePath)
@@ -217,26 +158,4 @@ namespace Vans
 		return VansEngine::VansCollisionLayerManager::Get().LoadFromFile(filePath);
 	}
 
-	bool VansProjectSettings::SavePhysicsSettingsToFile(const std::string& filePath) const
-	{
-		json config;
-		config["fixedTimeStep"] = m_FixedTimeStep;
-
-		fs::path outputPath(filePath);
-		if (outputPath.has_parent_path())
-		{
-			fs::create_directories(outputPath.parent_path());
-		}
-
-		std::ofstream outputFile(filePath);
-		if (!outputFile.is_open())
-		{
-			VANS_LOG_ERROR("[ProjectSettings] Cannot write physics settings: " << filePath);
-			return false;
-		}
-
-		outputFile << config.dump(4);
-		VANS_LOG("[ProjectSettings] Saved physics settings: " << filePath);
-		return true;
-	}
 }

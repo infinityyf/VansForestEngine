@@ -145,7 +145,7 @@ vec4 ShadeHairNode(HairOITNode node, float surfaceVisibility, float sharedHairOp
 
     vec3 direct = (lobes.diffuse + lobes.R + lobes.TT * transmittance + lobes.TRT * transmittance)
         * lightColor * surfaceVisibility * ao;
-    vec3 indirect = texture(PreConvDiffuseEnvironment, normalWS).rgb * albedo * ao;
+    vec3 indirect = SampleSkyDiffuseCube(PreConvDiffuseEnvironment, normalWS) * albedo * ao;
 
     float opacity = clamp(node.coverage, 0.0, 1.0);
     return vec4(max(direct + indirect, vec3(0.0)) * opacity, opacity);

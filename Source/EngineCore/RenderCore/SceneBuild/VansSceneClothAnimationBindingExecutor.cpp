@@ -2,6 +2,7 @@
 
 #include "../../PhysicsCore/VansClothNode.h"
 #include "../../AssetCore/VansClothProfile.h"
+#include "../../AssetCore/Storage/VansClothProfileStorage.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansLog.h"
 #include "../../AnimationCore/VansAnimationNode.h"
@@ -146,7 +147,8 @@ namespace
 			VANS_LOG("[Pass5] 匹配成功：AnimNode='" << foundAnimationNode->GetName() << "'");
 
 			VansEngine::VansClothProfile profile;
-			if (profile.LoadFromFile(clothComponent->m_ProfilePath))
+			std::string profileError;
+			if (VansEngine::VansClothProfileStorage::Load(clothComponent->m_ProfilePath, profile, profileError))
 			{
 				clothNode->LateBindBonesFromProfile(profile, foundAnimationNode);
 				VANS_LOG("[Pass5] 骨骼绑定完成：Cloth '" << clothNode->GetName()
@@ -154,7 +156,7 @@ namespace
 			}
 			else
 			{
-				VANS_LOG_ERROR("[Pass5] 无法加载 profile '" << clothComponent->m_ProfilePath << "'");
+				VANS_LOG_ERROR("[Pass5] 无法加载 profile '" << clothComponent->m_ProfilePath << "' (" << profileError << ")");
 			}
 		}
 	}

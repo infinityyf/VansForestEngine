@@ -1,5 +1,6 @@
 #include "VansAssetDatabase.h"
 #include "Importers/VansTextureCooker.h"
+#include "Storage/VansAssetMetaStorage.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
@@ -92,7 +93,7 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
     VansAssetMeta meta;
     if (std::filesystem::exists(metaPath, ec))
     {
-        if (!VansAssetMeta::Load(metaPath, meta, error))
+        if (!VansAssetMetaStorage::Load(metaPath, meta, error))
             return false;
     }
     else
@@ -104,7 +105,7 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
         }
         meta.guid = VansAssetGuid::New();
         meta.importer = ImporterFor(type);
-        if (!meta.SaveAtomic(metaPath, error))
+        if (!VansAssetMetaStorage::SaveAtomic(metaPath, meta, error))
             return false;
     }
     if (meta.importer != ImporterFor(type))

@@ -3,6 +3,7 @@
 #include "../VansScene.h"
 
 #include <functional>
+#include "../../SceneCore/VansSceneCameraMediaComponentConfig.h"
 
 namespace VansGraphics
 {
@@ -12,7 +13,8 @@ namespace VansGraphics
 		static void BuildCameraAudioVideo(
 			VansScene& scene,
 			VansScriptObject& object,
-			const json& components,
+			const Vans::VansSceneCameraMediaComponentConfig& components,
 			const std::function<void()>& ensureObjectTransform);
+
 	};
 }

@@ -23,6 +23,7 @@
 #include "../../../../ForestExporter/VansPhysicsEventInfo.h"
 #include "../ParticleCore/VansParticleAsset.h"
 #include "../ParticleCore/VansParticleRuntime.h"
+#include "VansPythonSerializedField.h"
 namespace py = pybind11;
 
 class VansScriptObject;
@@ -143,6 +144,7 @@ class VansScriptComponent
 {
 public:
 	std::string m_ComponentName;
+	std::string m_ComponentGuid;
 	bool m_Enabled = true;
 
 	virtual ~VansScriptComponent() = default;
@@ -585,6 +587,7 @@ public:
 	std::string m_ScriptClassName;
 	// Derived module name (computed from m_ScriptPath during Instantiate)
 	std::string m_ScriptModuleName;
+	std::unordered_map<std::string, VansPythonSerializedFieldValue> m_SerializedFields;
 
 	// Python objects use empty handles until the interpreter is running. This
 	// avoids creating py::none() during static engine-object construction.

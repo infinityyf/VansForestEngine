@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <fstream>
 #include <vector>
 
 using namespace physx;
@@ -26,17 +25,6 @@ using namespace VansGraphics;
 
 namespace
 {
-	glm::vec3 ReadVec3(const nlohmann::json& source, const char* key, const glm::vec3& defaultValue)
-	{
-		if (!source.contains(key) || !source[key].is_array() || source[key].size() < 3)
-			return defaultValue;
-
-		return glm::vec3(
-			source[key][0].get<float>(),
-			source[key][1].get<float>(),
-			source[key][2].get<float>());
-	}
-
 	PxVec3 ToPxVec3(const glm::vec3& v)
 	{
 		return PxVec3(v.x, v.y, v.z);
@@ -218,102 +206,6 @@ namespace
 			}
 		}
 	}
-}
-
-bool RagdollProfile::LoadFromFile(const std::string& filePath, RagdollProfile& out)
-{
-	std::ifstream file(filePath);
-	if (!file.is_open())
-	{
-		VANS_LOG_WARN("[RagdollProfile] 无法打开文件: " << filePath);
-		return false;
-	}
-
-	nlohmann::json root;
-	try
-	{
-		file >> root;
-	}
-	catch (const std::exception& e)
-	{
-		VANS_LOG_WARN("[RagdollProfile] JSON 解析失败: " << filePath << " error=" << e.what());
-		return false;
-	}
-
-	return LoadFromJson(root, out);
-}
-
-bool RagdollProfile::LoadFromJson(const nlohmann::json& j, RagdollProfile& out)
-{
-	if (!j.is_object())
-		return false;
-
-	RagdollProfile profile;
-	profile.name = j.value("name", "RagdollProfile");
-
-	if (j.contains("bodies") && j["bodies"].is_array())
-	{
-		for (const auto& item : j["bodies"])
-		{
-			RagdollBodyConfig body;
-			body.boneName = item.value("bone_name", item.value("boneName", ""));
-			body.shapeType = item.value("shape_type", item.value("shapeType", "capsule"));
-			body.capsuleRadius = item.value("capsule_radius", item.value("capsuleRadius", body.capsuleRadius));
-			body.capsuleHalfHeight = item.value("capsule_half_height", item.value("capsuleHalfHeight", body.capsuleHalfHeight));
-			body.boxExtents = ReadVec3(item, "box_extents", ReadVec3(item, "boxExtents", body.boxExtents));
-			body.sphereRadius = item.value("sphere_radius", item.value("sphereRadius", body.sphereRadius));
-			body.mass = item.value("mass", body.mass);
-			body.staticFriction = item.value("static_friction", item.value("staticFriction", body.staticFriction));
-			body.dynamicFriction = item.value("dynamic_friction", item.value("dynamicFriction", body.dynamicFriction));
-			body.restitution = item.value("restitution", body.restitution);
-			body.offsetPosition = ReadVec3(item, "offset_position", ReadVec3(item, "offsetPosition", body.offsetPosition));
-			body.offsetRotation = ReadVec3(item, "offset_rotation", ReadVec3(item, "offsetRotation", body.offsetRotation));
-			body.layerName = item.value("layer", item.value("layerName", body.layerName));
-
-			if (body.boneName.empty())
-			{
-				VANS_LOG_WARN("[RagdollProfile] 跳过缺少 bone_name 的 body 配置");
-				continue;
-			}
-			profile.bodies.push_back(std::move(body));
-		}
-	}
-
-	if (j.contains("joints") && j["joints"].is_array())
-	{
-		for (const auto& item : j["joints"])
-		{
-			RagdollJointConfig joint;
-			joint.childBoneName = item.value("child_bone_name", item.value("child_bone", item.value("childBoneName", "")));
-			joint.swingYLimit = item.value("swing_y_limit", item.value("swingYLimit", joint.swingYLimit));
-			joint.swingZLimit = item.value("swing_z_limit", item.value("swingZLimit", joint.swingZLimit));
-			joint.twistLowLimit = item.value("twist_low_limit", item.value("twistLowLimit", joint.twistLowLimit));
-			joint.twistHighLimit = item.value("twist_high_limit", item.value("twistHighLimit", joint.twistHighLimit));
-			joint.limitStiffness = item.value("limit_stiffness", item.value("limitStiffness", joint.limitStiffness));
-			joint.limitDamping = item.value("limit_damping", item.value("limitDamping", joint.limitDamping));
-			joint.projectionTolerance = item.value("projection_tolerance", item.value("projectionTolerance", joint.projectionTolerance));
-			joint.enableDrive = item.value("enable_drive", item.value("enableDrive", joint.enableDrive));
-			joint.driveStiffness = item.value("drive_stiffness", item.value("driveStiffness", joint.driveStiffness));
-			joint.driveDamping = item.value("drive_damping", item.value("driveDamping", joint.driveDamping));
-			joint.driveForceLimit = item.value("drive_force_limit", item.value("driveForceLimit", joint.driveForceLimit));
-
-			if (joint.childBoneName.empty())
-			{
-				VANS_LOG_WARN("[RagdollProfile] 跳过缺少 child_bone 的 joint 配置");
-				continue;
-			}
-			profile.joints.push_back(std::move(joint));
-		}
-	}
-
-	if (profile.bodies.empty())
-	{
-		VANS_LOG_WARN("[RagdollProfile] profile '" << profile.name << "' 没有有效 body");
-		return false;
-	}
-
-	out = std::move(profile);
-	return true;
 }
 
 VansRagdollSystem& VansRagdollSystem::GetInstance()

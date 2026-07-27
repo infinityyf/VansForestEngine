@@ -55,6 +55,9 @@
     <Filter Include="EngineCore\RenderCore\ShadowCore">
       <UniqueIdentifier>{F82D1AE6-386C-4C60-A374-BC5EF8B35068}</UniqueIdentifier>
     </Filter>
+    <Filter Include="EngineCore\RenderCore\PcgCore">
+      <UniqueIdentifier>{45A1B327-4C57-5A64-A337-90B66DB84D0E}</UniqueIdentifier>
+    </Filter>
     <Filter Include="EngineCore\RuntimeCore">
       <UniqueIdentifier>{787AB163-94DD-5485-B56D-DC12FA38E623}</UniqueIdentifier>
     </Filter>
@@ -267,6 +270,9 @@
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectSettings.h">
       <Filter>EngineCore\ProjectSystem</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectSettingsData.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansPathResolver.h">
       <Filter>EngineCore\ProjectSystem</Filter>
     </ClInclude>
@@ -275,6 +281,33 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\ProjectSystem\VansProjectManager.h">
       <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\Serialization\VansProjectConfigLegacyJsonCodec.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\Serialization\VansProjectSettingsLegacyJsonCodec.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\Storage\VansProjectConfigStorage.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\Storage\VansProjectScaffoldStorage.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ProjectSystem\Storage\VansProjectSettingsStorage.h">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EngineAPILayer\Private\ScenePropertyValueBuilders.h">
+      <Filter>EngineCore\EngineAPILayer\Private</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EngineAPILayer\Private\RuntimeGeneratedMaterialAssetService.h">
+      <Filter>EngineCore\EngineAPILayer\Private</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptInspectorService.h">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptFieldSchema.h">
+      <Filter>EngineCore\ScriptCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProjectSelector.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
@@ -306,13 +339,79 @@
     <ClInclude Include="Source\EngineCore\AssetCore\VansClothProfile.h">
       <Filter>EngineCore\AssetCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\VansClothProfileJson.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\VansMaterialAuthoringAsset.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\VansShaderAuthoringAsset.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansAssetMetaStorage.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansClothProfileStorage.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansMaterialAuthoringAssetStorage.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansShaderAuthoringAssetStorage.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansJsonFileStorage.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansFileStorage.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansStagedFileTransaction.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansAssetMetaLegacyJsonCodec.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansClothProfileLegacyJsonCodec.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansJsonDocumentCodec.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedObjectReference.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedValue.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedValueAccess.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedValueLegacyJsonAdapter.h">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\VansAssetDocumentEditService.h">
       <Filter>EngineCore\EditorCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\VansAssetDocumentRegistry.h">
       <Filter>EngineCore\EditorCore</Filter>
     </ClInclude>
-    <ClInclude Include="Source\EngineCore\EditorCore\VansAssetReferenceSlotRegistry.h">
+    <ClInclude Include="Source\EngineCore\EditorCore\VansAnimGraphEditorLayoutStorage.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansPcgDebugDataService.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansEditorPropertyDescriptorRegistry.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansEditorMaterialSchemaService.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansEditorObjectReference.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansEditorRuntimePreviewProjector.h">
       <Filter>EngineCore\EditorCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\VansEditorAssetSaveService.h">
@@ -321,10 +420,22 @@
     <ClInclude Include="Source\EngineCore\EditorCore\VansSceneAssetPlacementService.h">
       <Filter>EngineCore\EditorCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansSceneObjectReferenceResolver.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansSceneObjectReferenceRemapper.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\VansScenePropertyValueAdapter.h">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\AssetCore\VansModelAsset.h">
       <Filter>EngineCore\AssetCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.h">
+      <Filter>EngineCore\AssetCore\Importers</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansModelImportReport.h">
       <Filter>EngineCore\AssetCore\Importers</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\AssetCore\Importers\VansTextureCooker.h">
@@ -342,6 +453,78 @@
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneAssetDependencyBuilder.h">
       <Filter>EngineCore\SceneCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneAudioRuntimeConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneCameraMediaComponentConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneCameraMediaComponentReader.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneCameraSettingsConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneContentBuildPlan.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneEnvironmentNodeConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneEnvironmentNodeConfigReader.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneLightComponentConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneLightComponentReader.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneMaterialConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneParticleComponentConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneParticleComponentReader.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansScenePhysicsComponentConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansScenePhysicsComponentReader.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneRenderNodeConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneRenderSettingsConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneRenderSettingsConfigReader.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneResourcePlan.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneObjectBuildPlan.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneReflectionProbeConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneReflectionProbeConfigReader.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneRuntimeComponentKey.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneVehicleComponentConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneVehicleComponentReader.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneRuntimeProjection.h">
       <Filter>EngineCore\SceneCore</Filter>
     </ClInclude>
@@ -352,6 +535,9 @@
       <Filter>EngineCore\SceneCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\SceneCore\VansSceneEntityFactory.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\Storage\VansSceneFileStorage.h">
       <Filter>EngineCore\SceneCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\VansSceneEditService.h">
@@ -400,6 +586,9 @@
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansTerrainWindow.h">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansPcgWindow.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.h">
@@ -498,6 +687,9 @@
     <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimGraph.h">
       <Filter>EngineCore\AnimationCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\AnimationCore\VansAnimGraphJson.h">
+      <Filter>EngineCore\AnimationCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\AnimationCore\MotionMatching\VansMotionMatching.h">
       <Filter>EngineCore\AnimationCore\MotionMatching</Filter>
     </ClInclude>
@@ -561,6 +753,24 @@
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansRagdollTypes.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansRagdollJson.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\VansCollisionLayerConfig.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\Serialization\VansCollisionLayerLegacyJsonCodec.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\Serialization\VansRagdollProfileLegacyJsonCodec.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\Storage\VansCollisionLayerStorage.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\PhysicsCore\Storage\VansRagdollProfileStorage.h">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\PhysicsCore\VansRagdollSystem.h">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClInclude>
@@ -618,6 +828,12 @@
     <ClInclude Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.h">
       <Filter>EngineCore\RenderCore\TerrainCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\PcgCore\VansPcgMask.h">
+      <Filter>EngineCore\RenderCore\PcgCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\PcgCore\VansPcgSceneConfigAdapter.h">
+      <Filter>EngineCore\RenderCore\PcgCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\VegetationCore\VansVegetationSystem.h">
       <Filter>EngineCore\RenderCore\VegetationCore</Filter>
     </ClInclude>
@@ -657,6 +873,15 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VansPostProcessProfile.h">
       <Filter>EngineCore\RenderCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\VansPostProcessProfileJson.h">
+      <Filter>EngineCore\RenderCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\Serialization\VansPostProcessProfileLegacyJsonCodec.h">
+      <Filter>EngineCore\RenderCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\RenderCore\Storage\VansPostProcessProfileStorage.h">
+      <Filter>EngineCore\RenderCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\LTC\LTCData.h">
       <Filter>EngineCore\RenderCore\LTC</Filter>
     </ClInclude>
@@ -674,6 +899,12 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneAnimationComponentBuilder.h">
       <Filter>EngineCore\RenderCore\SceneBuild</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneAnimationComponentConfig.h">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\SceneCore\VansSceneAnimationComponentReader.h">
+      <Filter>EngineCore\SceneCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\RenderCore\SceneBuild\VansSceneCameraMediaComponentBuilder.h">
       <Filter>EngineCore\RenderCore\SceneBuild</Filter>
@@ -807,11 +1038,20 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h">
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptComponentDescriptor.h">
       <Filter>EngineCore\ScriptCore</Filter>
     </ClInclude>
-    <ClInclude Include="Source\EngineCore\Util\VansFileUtil.h">
-      <Filter>EngineCore\Util</Filter>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptComponentReader.h">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonSerializedFieldInjector.h">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonSerializedField.h">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h">
+      <Filter>EngineCore\ScriptCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\Util\ILogSink.h">
       <Filter>EngineCore\Util</Filter>
@@ -870,10 +1110,22 @@
     <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleInstanceData.h">
       <Filter>EngineCore\ParticleCore</Filter>
     </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleJson.h">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClInclude>
     <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleEmitter.h">
       <Filter>EngineCore\ParticleCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleAsset.h">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\Serialization\VansParticleAssetLegacyJsonCodec.h">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\Serialization\VansParticleEmitterLegacyJsonCodec.h">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ParticleCore\Storage\VansParticleAssetStorage.h">
       <Filter>EngineCore\ParticleCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\ParticleCore\VansParticleRuntime.h">
@@ -920,13 +1172,73 @@
     <ClCompile Include="Source\EngineCore\AssetCore\VansClothProfile.cpp">
       <Filter>EngineCore\AssetCore</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Storage\VansAssetMetaStorage.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Storage\VansClothProfileStorage.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Storage\VansJsonFileStorage.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Storage\VansFileStorage.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Storage\VansStagedFileTransaction.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Serialization\VansAssetMetaLegacyJsonCodec.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Serialization\VansClothProfileLegacyJsonCodec.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Serialization\VansJsonDocumentCodec.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Serialization\VansSerializedObjectReference.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\VansMaterialAuthoringAsset.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\VansShaderAuthoringAsset.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Storage\VansMaterialAuthoringAssetStorage.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Storage\VansShaderAuthoringAssetStorage.cpp">
+      <Filter>EngineCore\AssetCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonScriptInspectorService.cpp">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonScriptFieldSchema.cpp">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\VansAssetDocumentEditService.cpp">
       <Filter>EngineCore\EditorCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\VansAssetDocumentRegistry.cpp">
       <Filter>EngineCore\EditorCore</Filter>
     </ClCompile>
-    <ClCompile Include="Source\EngineCore\EditorCore\VansAssetReferenceSlotRegistry.cpp">
+    <ClCompile Include="Source\EngineCore\EditorCore\VansAnimGraphEditorLayoutStorage.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansPcgDebugDataService.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansEditorPropertyDescriptorRegistry.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansEditorMaterialSchemaService.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansEditorObjectReference.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansEditorRuntimePreviewProjector.cpp">
       <Filter>EngineCore\EditorCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\VansEditorAssetSaveService.cpp">
@@ -935,7 +1247,19 @@
     <ClCompile Include="Source\EngineCore\EditorCore\VansSceneAssetPlacementService.cpp">
       <Filter>EngineCore\EditorCore</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansSceneObjectReferenceResolver.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansSceneObjectReferenceRemapper.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\VansScenePropertyValueAdapter.cpp">
+      <Filter>EngineCore\EditorCore</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\AssetCore\Importers\VansModelImporter.cpp">
+      <Filter>EngineCore\AssetCore\Importers</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\AssetCore\Importers\VansModelImportReport.cpp">
       <Filter>EngineCore\AssetCore\Importers</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AssetCore\Importers\VansTextureCooker.cpp">
@@ -953,6 +1277,33 @@
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneAssetDependencyBuilder.cpp">
       <Filter>EngineCore\SceneCore</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneAnimationComponentReader.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneCameraMediaComponentReader.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneEnvironmentNodeConfigReader.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneLightComponentReader.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneParticleComponentReader.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansScenePhysicsComponentReader.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneRenderSettingsConfigReader.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneReflectionProbeConfigReader.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\VansSceneVehicleComponentReader.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneRuntimeProjection.cpp">
       <Filter>EngineCore\SceneCore</Filter>
     </ClCompile>
@@ -960,6 +1311,9 @@
       <Filter>EngineCore\SceneCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\SceneCore\VansSceneEntityFactory.cpp">
+      <Filter>EngineCore\SceneCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\SceneCore\Storage\VansSceneFileStorage.cpp">
       <Filter>EngineCore\SceneCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\VansSceneEditService.cpp">
@@ -1046,6 +1400,21 @@
     <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectConfig.cpp">
       <Filter>EngineCore\ProjectSystem</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\Serialization\VansProjectConfigLegacyJsonCodec.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\Serialization\VansProjectSettingsLegacyJsonCodec.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\Storage\VansProjectConfigStorage.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\Storage\VansProjectScaffoldStorage.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ProjectSystem\Storage\VansProjectSettingsStorage.cpp">
+      <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectSettings.cpp">
       <Filter>EngineCore\ProjectSystem</Filter>
     </ClCompile>
@@ -1057,6 +1426,9 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\ProjectSystem\VansProjectManager.cpp">
       <Filter>EngineCore\ProjectSystem</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EngineAPILayer\Private\RuntimeGeneratedMaterialAssetService.cpp">
+      <Filter>EngineCore\EngineAPILayer\Private</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansProjectSelector.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
@@ -1113,6 +1485,9 @@
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansTerrainWindow.cpp">
+      <Filter>EngineCore\EditorCore\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansPcgWindow.cpp">
       <Filter>EngineCore\EditorCore\Windows</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\Windows\VansReflectionProbeWindow.cpp">
@@ -1253,6 +1628,18 @@
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansRagdollSystem.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\Serialization\VansCollisionLayerLegacyJsonCodec.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\Serialization\VansRagdollProfileLegacyJsonCodec.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\Storage\VansCollisionLayerStorage.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\PhysicsCore\Storage\VansRagdollProfileStorage.cpp">
+      <Filter>EngineCore\PhysicsCore</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\PhysicsCore\VansCollisionLayerManager.cpp">
       <Filter>EngineCore\PhysicsCore</Filter>
     </ClCompile>
@@ -1298,6 +1685,9 @@
     <ClCompile Include="Source\EngineCore\RenderCore\TerrainCore\VansTerrain.cpp">
       <Filter>EngineCore\RenderCore\TerrainCore</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\PcgCore\VansPcgMask.cpp">
+      <Filter>EngineCore\RenderCore\PcgCore</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VegetationCore\VansVegetationSystem.cpp">
       <Filter>EngineCore\RenderCore\VegetationCore</Filter>
     </ClCompile>
@@ -1320,6 +1710,12 @@
       <Filter>EngineCore\RenderCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\VansPostProcessProfile.cpp">
+      <Filter>EngineCore\RenderCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\Serialization\VansPostProcessProfileLegacyJsonCodec.cpp">
+      <Filter>EngineCore\RenderCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\RenderCore\Storage\VansPostProcessProfileStorage.cpp">
       <Filter>EngineCore\RenderCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\RenderCore\LTC\LTCData.cpp">
@@ -1496,6 +1892,12 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.cpp">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonScriptComponentReader.cpp">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonSerializedFieldInjector.cpp">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClCompile>
     <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp">
       <Filter>EngineCore\ScriptCore</Filter>
     </ClCompile>
@@ -1533,6 +1935,15 @@
       <Filter>EngineCore\ParticleCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\ParticleCore\VansParticleAsset.cpp">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\Serialization\VansParticleAssetLegacyJsonCodec.cpp">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\Serialization\VansParticleEmitterLegacyJsonCodec.cpp">
+      <Filter>EngineCore\ParticleCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ParticleCore\Storage\VansParticleAssetStorage.cpp">
       <Filter>EngineCore\ParticleCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\ParticleCore\VansParticleRuntime.cpp">

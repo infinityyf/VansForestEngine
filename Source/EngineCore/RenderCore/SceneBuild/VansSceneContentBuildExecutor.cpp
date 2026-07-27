@@ -1,5 +1,6 @@
 #include "VansSceneContentBuildExecutor.h"
 
+#include "../../SceneCore/VansSceneDocumentLoader.h"
 #include "../../SceneCore/VansSceneRuntimeProjection.h"
 #include "../../Util/VansLog.h"
 #include "VansSceneEnvironmentNodeBuilder.h"
@@ -8,31 +9,55 @@
 #include "../VulkanCore/VansVKDevice.h"
 
 #include <algorithm>
-#include <fstream>
 
 namespace VansGraphics
 {
 namespace
 {
-float ReadFloatField(const json& object, const char* key, float fallback)
+template <typename T>
+void ApplyOptionalValue(const std::optional<T>& source, T& destination)
 {
-	if (!object.is_object())
-		return fallback;
-	const auto found = object.find(key);
-	return found != object.end() && found->is_number() ? found->get<float>() : fallback;
+	if (source.has_value())
+	{
+		destination = *source;
+	}
 }
 
-void ReadFloat3Field(const json& object, const char* key, float destination[4])
+void ApplyOptionalFloat3(const std::optional<std::array<float, 3>>& source, float destination[4])
 {
-	if (!object.is_object())
+	if (!source.has_value())
+	{
 		return;
-	const auto found = object.find(key);
-	if (found == object.end() || !found->is_array() || found->size() < 3)
-		return;
+	}
+
 	for (size_t index = 0; index < 3; ++index)
 	{
-		if ((*found)[index].is_number())
-			destination[index] = (*found)[index].get<float>();
+		destination[index] = (*source)[index];
+	}
+}
+
+float ResolveOptionalFloat(const std::optional<float>& source, float fallback)
+{
+	return source.has_value() ? *source : fallback;
+}
+
+void LogSceneDocumentLoadDiagnostics(
+	const char* path,
+	const Vans::SceneDiagnostics& diagnostics)
+{
+	if (diagnostics.empty())
+	{
+		VANS_LOG_ERROR("[VansScene] Cannot load scene document: " << path);
+		return;
+	}
+
+	for (const Vans::SceneDiagnostic& diagnostic : diagnostics)
+	{
+		const char* severity = diagnostic.severity == Vans::SceneDiagnosticSeverity::Error
+			? "error"
+			: "warning";
+		VANS_LOG_ERROR("[VansScene] Scene document " << severity << " "
+			<< diagnostic.propertyPointer << ": " << diagnostic.message);
 	}
 }
 }
@@ -42,62 +67,62 @@ bool VansSceneContentBuildExecutor::BuildFromFile(VansScene& scene, const char* 
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevice->GetLogicDevice();
 
-	std::ifstream jsonFile(path);
-	if (!jsonFile.is_open())
+	Vans::SceneDocumentLoadResult loadResult = Vans::VansSceneDocumentLoader::Load(path);
+	if (!loadResult)
 	{
-		VANS_LOG_ERROR("[VansScene] Cannot open scene file: " << path);
+		LogSceneDocumentLoadDiagnostics(path, loadResult.diagnostics);
 		return false;
 	}
-
-	json sceneData = json::parse(jsonFile);
-	if (!Vans::VansSceneRuntimeProjection::BuildRuntimeScene(sceneData))
-	{
-		VANS_LOG_ERROR("[VansScene] Invalid Scene document: " << path);
-		return false;
-	}
-
-	ApplyHeightFogSettings(*scene.GetMaterialManager(), sceneData);
-	ApplyVolumetricFogSettings(*scene.GetMaterialManager(), sceneData);
-	ApplyVolumetricCloudSettings(*scene.GetMaterialManager(), sceneData);
-	scene.GetReflectionProbeSystem()->LoadFromSceneJson(sceneData, path);
-	ApplyGISettings(scene, sceneData);
 
 	const std::string projectRoot = ResolveProjectRootFromScenePath(path);
-
-	if (sceneData.contains("material") && sceneData["material"].is_array())
-		VansSceneMaterialBuilder::LoadMaterialsFromJson(scene, sceneData["material"]);
-
-	if (!sceneData.contains("scene") || !sceneData["scene"].is_array() || sceneData["scene"].empty())
+	Vans::VansSceneContentBuildPlan buildPlan;
+	std::string planError;
+	if (!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+		loadResult.document->SerializedRootSnapshot(),
+		projectRoot,
+		buildPlan,
+		planError))
 	{
-		VANS_LOG_ERROR("[VansScene] Scene file has no valid scene array: " << path);
+		VANS_LOG_ERROR("[VansScene] " << planError << ": " << path);
 		return false;
 	}
 
-	json& sceneNode = sceneData["scene"][0];
-	if (!sceneNode.contains("objects") || !sceneNode["objects"].is_array())
-	{
-		VANS_LOG_ERROR("[VansScene] Scene file must contain scene[0].objects array: " << path);
-		return false;
-	}
+	return BuildFromPlan(scene, nativeDevice, vkDevice, buildPlan, path, projectRoot);
+}
 
-	scene.LoadSceneObjects(nativeDevice, sceneNode["objects"], projectRoot);
+bool VansSceneContentBuildExecutor::BuildFromPlan(
+	VansScene& scene,
+	VkDevice& nativeDevice,
+	VansVKDevice* vkDevice,
+	const Vans::VansSceneContentBuildPlan& buildPlan,
+	const char* path,
+	const std::string& projectRoot)
+{
+	const Vans::VansSceneRenderSettingsConfig& renderSettings = buildPlan.renderSettings;
+	ApplyHeightFogSettings(*scene.GetMaterialManager(), renderSettings.heightFog);
+	ApplyVolumetricFogSettings(*scene.GetMaterialManager(), renderSettings.volumetricFog);
+	ApplyVolumetricCloudSettings(*scene.GetMaterialManager(), renderSettings.volumetricClouds);
+	scene.GetReflectionProbeSystem()->LoadFromSceneConfig(buildPlan.reflectionProbes, path);
+	ApplyGISettings(scene, renderSettings.globalIllumination);
 
-	if (sceneNode.contains("rendernode") && sceneNode["rendernode"].is_array() &&
-		!sceneNode["rendernode"].empty())
-	{
-		VansSceneRenderNodeBuilder::LoadRenderNodes(scene, nativeDevice, sceneNode["rendernode"]);
-	}
+	if (!buildPlan.materials.empty())
+		VansSceneMaterialBuilder::LoadMaterials(scene, buildPlan.materials);
+
+	scene.LoadSceneObjects(nativeDevice, buildPlan.objects, projectRoot);
+
+	if (!buildPlan.renderNodes.empty())
+		VansSceneRenderNodeBuilder::LoadRenderNodes(scene, nativeDevice, buildPlan.renderNodes);
 
 	scene.GetLightManager()->CreateLightUniformData(nativeDevice);
 
-	if (sceneData.contains("terrain"))
-		VansSceneEnvironmentNodeBuilder::AddTerrainNode(scene, vkDevice, sceneData["terrain"]);
+	if (buildPlan.terrain)
+		VansSceneEnvironmentNodeBuilder::AddTerrainNode(scene, vkDevice, *buildPlan.terrain);
 
-	if (sceneData.contains("vegetation"))
-		VansSceneEnvironmentNodeBuilder::AddVegetationNode(scene, nativeDevice, sceneData["vegetation"], projectRoot);
+	if (buildPlan.vegetation)
+		VansSceneEnvironmentNodeBuilder::AddVegetationNode(scene, nativeDevice, *buildPlan.vegetation, projectRoot);
 
-	if (sceneData.contains("water"))
-		VansSceneEnvironmentNodeBuilder::AddWaterNode(scene, nativeDevice, sceneData["water"]);
+	if (buildPlan.water)
+		VansSceneEnvironmentNodeBuilder::AddWaterNode(scene, nativeDevice, *buildPlan.water);
 
 	VansSceneRenderNodeBuilder::AddDeferredNode(scene, nativeDevice);
 	VansSceneRenderNodeBuilder::AddScreenSpaceFeatureNode(scene, nativeDevice);
@@ -106,86 +131,92 @@ bool VansSceneContentBuildExecutor::BuildFromFile(VansScene& scene, const char* 
 	return true;
 }
 
-void VansSceneContentBuildExecutor::ApplyHeightFogSettings(VansMaterialManager& materialManager, const json& sceneData)
+void VansSceneContentBuildExecutor::ApplyHeightFogSettings(
+	VansMaterialManager& materialManager,
+	const std::optional<Vans::VansSceneHeightFogSettingsConfig>& config)
 {
-	const auto fogIt = sceneData.find("heightFog");
-	if (fogIt == sceneData.end() || !fogIt->is_object())
+	if (!config.has_value())
+	{
 		return;
+	}
 
-	const json& fog = *fogIt;
 	VansFogSettings settings = materialManager.GetFogSettings();
-	settings.fogDensity = ReadFloatField(fog, "fogDensity", settings.fogDensity);
-	settings.heightFalloff = ReadFloatField(fog, "heightFalloff", settings.heightFalloff);
-	settings.sunScatterScale = ReadFloatField(fog, "sunScatterScale", settings.sunScatterScale);
-	settings.ambientScale = ReadFloatField(fog, "ambientScale", settings.ambientScale);
-	settings.fogMinHeight = ReadFloatField(fog, "fogMinHeight", settings.fogMinHeight);
-	settings.skyFogDistance = ReadFloatField(fog, "skyFogDistance", settings.skyFogDistance);
+	ApplyOptionalValue(config->fogDensity, settings.fogDensity);
+	ApplyOptionalValue(config->heightFalloff, settings.heightFalloff);
+	ApplyOptionalValue(config->sunScatterScale, settings.sunScatterScale);
+	ApplyOptionalValue(config->ambientScale, settings.ambientScale);
+	ApplyOptionalValue(config->fogMinHeight, settings.fogMinHeight);
+	ApplyOptionalValue(config->skyFogDistance, settings.skyFogDistance);
 	materialManager.ApplyFogSettings(settings);
 }
 
-void VansSceneContentBuildExecutor::ApplyVolumetricFogSettings(VansMaterialManager& materialManager, const json& sceneData)
+void VansSceneContentBuildExecutor::ApplyVolumetricFogSettings(
+	VansMaterialManager& materialManager,
+	const std::optional<Vans::VansSceneVolumetricFogSettingsConfig>& config)
 {
-	const auto fogIt = sceneData.find("volumetricFog");
-	if (fogIt == sceneData.end() || !fogIt->is_object())
+	if (!config.has_value())
+	{
 		return;
+	}
 
-	const json& fog = *fogIt;
 	VansFogVolumeSettings settings = materialManager.GetFogVolumeSettings();
-	settings.density = ReadFloatField(fog, "density", settings.density);
-	settings.anisotropy = ReadFloatField(fog, "anisotropy", settings.anisotropy);
-	settings.scatterScale = ReadFloatField(fog, "scatterScale", settings.scatterScale);
-	settings.ambientScale = ReadFloatField(fog, "ambientScale", settings.ambientScale);
-	settings.volumeNear = ReadFloatField(fog, "volumeNear", settings.volumeNear);
-	settings.volumeFar = ReadFloatField(fog, "volumeFar", settings.volumeFar);
-	settings.slicePower = ReadFloatField(fog, "slicePower", settings.slicePower);
-	ReadFloat3Field(fog, "fogBoxMin", settings.fogBoxMin);
-	ReadFloat3Field(fog, "fogBoxMax", settings.fogBoxMax);
+	ApplyOptionalValue(config->density, settings.density);
+	ApplyOptionalValue(config->anisotropy, settings.anisotropy);
+	ApplyOptionalValue(config->scatterScale, settings.scatterScale);
+	ApplyOptionalValue(config->ambientScale, settings.ambientScale);
+	ApplyOptionalValue(config->volumeNear, settings.volumeNear);
+	ApplyOptionalValue(config->volumeFar, settings.volumeFar);
+	ApplyOptionalValue(config->slicePower, settings.slicePower);
+	ApplyOptionalFloat3(config->fogBoxMin, settings.fogBoxMin);
+	ApplyOptionalFloat3(config->fogBoxMax, settings.fogBoxMax);
 	materialManager.ApplyFogVolumeSettings(settings);
 }
 
-void VansSceneContentBuildExecutor::ApplyVolumetricCloudSettings(VansMaterialManager& materialManager, const json& sceneData)
+void VansSceneContentBuildExecutor::ApplyVolumetricCloudSettings(
+	VansMaterialManager& materialManager,
+	const std::optional<Vans::VansSceneVolumetricCloudSettingsConfig>& config)
 {
-	const auto cloudIt = sceneData.find("volumetricClouds");
-	if (cloudIt == sceneData.end() || !cloudIt->is_object())
+	if (!config.has_value())
+	{
 		return;
+	}
 
-	const json& cloud = *cloudIt;
 	VansCloudParamsGPU& params = materialManager.m_CloudParams;
 
-	params.planetRadius = ReadFloatField(cloud, "planetRadius", params.planetRadius);
-	params.seaLevel = ReadFloatField(cloud, "seaLevel", params.seaLevel);
+	ApplyOptionalValue(config->planetRadius, params.planetRadius);
+	ApplyOptionalValue(config->seaLevel, params.seaLevel);
 
-	const float baseHeight = ReadFloatField(cloud, "cloudBaseHeight",
-		ReadFloatField(cloud, "cloudMinHeight", params.cloudMinHeight));
-	const float thickness = ReadFloatField(cloud, "cloudThickness",
-		ReadFloatField(cloud, "cloudMaxHeight", params.cloudMaxHeight) - baseHeight);
+	const float baseHeight = ResolveOptionalFloat(config->cloudBaseHeight,
+		ResolveOptionalFloat(config->cloudMinHeight, params.cloudMinHeight));
+	const float thickness = ResolveOptionalFloat(config->cloudThickness,
+		ResolveOptionalFloat(config->cloudMaxHeight, params.cloudMaxHeight) - baseHeight);
 	params.cloudMinHeight = baseHeight;
 	params.cloudMaxHeight = baseHeight + std::max(thickness, 100.0f);
 
-	params.density = ReadFloatField(cloud, "density", params.density);
-	params.coverage = ReadFloatField(cloud, "coverage", params.coverage);
-	params.sunBrightness = ReadFloatField(cloud, "sunBrightness", params.sunBrightness);
-	params.phaseG = ReadFloatField(cloud, "phaseG", params.phaseG);
+	ApplyOptionalValue(config->density, params.density);
+	ApplyOptionalValue(config->coverage, params.coverage);
+	ApplyOptionalValue(config->sunBrightness, params.sunBrightness);
+	ApplyOptionalValue(config->phaseG, params.phaseG);
 
-	params.mainTileMeters = ReadFloatField(cloud, "mainTileMeters", params.mainTileMeters);
-	params.detailTileMeters = ReadFloatField(cloud, "detailTileMeters", params.detailTileMeters);
-	params.mainHeightScale = ReadFloatField(cloud, "mainHeightScale", params.mainHeightScale);
-	params.detailHeightScale = ReadFloatField(cloud, "detailHeightScale", params.detailHeightScale);
+	ApplyOptionalValue(config->mainTileMeters, params.mainTileMeters);
+	ApplyOptionalValue(config->detailTileMeters, params.detailTileMeters);
+	ApplyOptionalValue(config->mainHeightScale, params.mainHeightScale);
+	ApplyOptionalValue(config->detailHeightScale, params.detailHeightScale);
 
-	params.thresholdLowCoverage = ReadFloatField(cloud, "thresholdLowCoverage", params.thresholdLowCoverage);
-	params.thresholdHighCoverage = ReadFloatField(cloud, "thresholdHighCoverage", params.thresholdHighCoverage);
-	params.densityRemapLow = ReadFloatField(cloud, "densityRemapLow", params.densityRemapLow);
-	params.densityRemapHigh = ReadFloatField(cloud, "densityRemapHigh", params.densityRemapHigh);
+	ApplyOptionalValue(config->thresholdLowCoverage, params.thresholdLowCoverage);
+	ApplyOptionalValue(config->thresholdHighCoverage, params.thresholdHighCoverage);
+	ApplyOptionalValue(config->densityRemapLow, params.densityRemapLow);
+	ApplyOptionalValue(config->densityRemapHigh, params.densityRemapHigh);
 
-	params.mainErosionStrength = ReadFloatField(cloud, "mainErosionStrength", params.mainErosionStrength);
-	params.detailErosionStrength = ReadFloatField(cloud, "detailErosionStrength", params.detailErosionStrength);
-	params.edgeErosionStrength = ReadFloatField(cloud, "edgeErosionStrength", params.edgeErosionStrength);
-	params.verticalShapePower = ReadFloatField(cloud, "verticalShapePower", params.verticalShapePower);
+	ApplyOptionalValue(config->mainErosionStrength, params.mainErosionStrength);
+	ApplyOptionalValue(config->detailErosionStrength, params.detailErosionStrength);
+	ApplyOptionalValue(config->edgeErosionStrength, params.edgeErosionStrength);
+	ApplyOptionalValue(config->verticalShapePower, params.verticalShapePower);
 
-	params.detailErosionLow = ReadFloatField(cloud, "detailErosionLow", params.detailErosionLow);
-	params.detailErosionHigh = ReadFloatField(cloud, "detailErosionHigh", params.detailErosionHigh);
-	params.detailEdgeStrength = ReadFloatField(cloud, "detailEdgeStrength", params.detailEdgeStrength);
-	params.shadowDensityScale = ReadFloatField(cloud, "shadowDensityScale", params.shadowDensityScale);
+	ApplyOptionalValue(config->detailErosionLow, params.detailErosionLow);
+	ApplyOptionalValue(config->detailErosionHigh, params.detailErosionHigh);
+	ApplyOptionalValue(config->detailEdgeStrength, params.detailEdgeStrength);
+	ApplyOptionalValue(config->shadowDensityScale, params.shadowDensityScale);
 
 	params.mainTileMeters = std::max(params.mainTileMeters, 1000.0f);
 	params.detailTileMeters = std::max(params.detailTileMeters, 500.0f);
@@ -194,50 +225,81 @@ void VansSceneContentBuildExecutor::ApplyVolumetricCloudSettings(VansMaterialMan
 	materialManager.UploadCloudParamsToGPU();
 }
 
-void VansSceneContentBuildExecutor::ApplyGISettings(VansScene& scene, const json& sceneData)
+void VansSceneContentBuildExecutor::ApplyGISettings(
+	VansScene& scene,
+	const std::optional<Vans::VansSceneGISettingsConfig>& config)
 {
 	VansGISettings giSettings{};
-	if (sceneData.contains("globalIllumination") && sceneData["globalIllumination"].is_object())
+	if (config.has_value())
 	{
-		const json& gi = sceneData["globalIllumination"];
-		if (gi.contains("gridDimensions") && gi["gridDimensions"].is_array() && gi["gridDimensions"].size() == 3)
+		if (config->gridDimensions.has_value())
 		{
 			giSettings.gridDimensions = glm::uvec3(
-				std::clamp(gi["gridDimensions"][0].get<uint32_t>(), 1u, 256u),
-				std::clamp(gi["gridDimensions"][1].get<uint32_t>(), 1u, 256u),
-				std::clamp(gi["gridDimensions"][2].get<uint32_t>(), 1u, 256u));
+				std::clamp((*config->gridDimensions)[0], 1u, 256u),
+				std::clamp((*config->gridDimensions)[1], 1u, 256u),
+				std::clamp((*config->gridDimensions)[2], 1u, 256u));
 		}
-		if (gi.contains("probeSpacingAxes") && gi["probeSpacingAxes"].is_array() && gi["probeSpacingAxes"].size() == 3)
+		if (config->probeSpacingAxes.has_value())
 		{
 			giSettings.probeSpacingAxes = glm::vec3(
-				std::max(gi["probeSpacingAxes"][0].get<float>(), 0.001f),
-				std::max(gi["probeSpacingAxes"][1].get<float>(), 0.001f),
-				std::max(gi["probeSpacingAxes"][2].get<float>(), 0.001f));
+				std::max((*config->probeSpacingAxes)[0], 0.001f),
+				std::max((*config->probeSpacingAxes)[1], 0.001f),
+				std::max((*config->probeSpacingAxes)[2], 0.001f));
 		}
-		giSettings.raysPerProbe = std::clamp(gi.value("raysPerProbe", giSettings.raysPerProbe), 1u, 4096u);
-		giSettings.spatialUpdateDivisor = std::clamp(
-			gi.value("spatialUpdateDivisor", giSettings.spatialUpdateDivisor), 1u,
-			std::min({ giSettings.gridDimensions.x, giSettings.gridDimensions.y, giSettings.gridDimensions.z }));
-		giSettings.directionUpdateSlices = std::clamp(
-			gi.value("directionUpdateSlices", giSettings.directionUpdateSlices), 1u, giSettings.raysPerProbe);
-		giSettings.maxRayDistance = std::max(gi.value("maxRayDistance", giSettings.maxRayDistance), 0.001f);
-		giSettings.normalBias = std::max(gi.value("normalBias", giSettings.normalBias), 0.0f);
-		giSettings.environmentIntensity = std::max(gi.value("environmentIntensity", giSettings.environmentIntensity), 0.0f);
-		giSettings.maxIndirectRadiance = std::max(gi.value("maxIndirectRadiance", giSettings.maxIndirectRadiance), 0.0f);
-		giSettings.maxSHL0 = std::max(gi.value("maxSHL0", giSettings.maxSHL0), 0.0f);
-		giSettings.volumeFadeDistance = std::max(gi.value("volumeFadeDistance", giSettings.volumeFadeDistance), 0.0f);
-		giSettings.gizmoStride = std::clamp(
-			gi.value("gizmoStride", giSettings.gizmoStride), 1u,
-			std::max({ giSettings.gridDimensions.x, giSettings.gridDimensions.y, giSettings.gridDimensions.z }));
-		giSettings.showProbeGizmos = gi.value("showProbeGizmos", giSettings.showProbeGizmos);
-		giSettings.showProbeVolume = gi.value("showProbeVolume", giSettings.showProbeVolume);
+		if (config->raysPerProbe.has_value())
+		{
+			giSettings.raysPerProbe = std::clamp(*config->raysPerProbe, 1u, 4096u);
+		}
+		if (config->spatialUpdateDivisor.has_value())
+		{
+			giSettings.spatialUpdateDivisor = std::clamp(
+				*config->spatialUpdateDivisor, 1u,
+				std::min({ giSettings.gridDimensions.x, giSettings.gridDimensions.y, giSettings.gridDimensions.z }));
+		}
+		if (config->directionUpdateSlices.has_value())
+		{
+			giSettings.directionUpdateSlices = std::clamp(
+				*config->directionUpdateSlices, 1u, giSettings.raysPerProbe);
+		}
+		if (config->maxRayDistance.has_value())
+		{
+			giSettings.maxRayDistance = std::max(*config->maxRayDistance, 0.001f);
+		}
+		if (config->normalBias.has_value())
+		{
+			giSettings.normalBias = std::max(*config->normalBias, 0.0f);
+		}
+		if (config->environmentIntensity.has_value())
+		{
+			giSettings.environmentIntensity = std::max(*config->environmentIntensity, 0.0f);
+		}
+		if (config->maxIndirectRadiance.has_value())
+		{
+			giSettings.maxIndirectRadiance = std::max(*config->maxIndirectRadiance, 0.0f);
+		}
+		if (config->maxSHL0.has_value())
+		{
+			giSettings.maxSHL0 = std::max(*config->maxSHL0, 0.0f);
+		}
+		if (config->volumeFadeDistance.has_value())
+		{
+			giSettings.volumeFadeDistance = std::max(*config->volumeFadeDistance, 0.0f);
+		}
+		if (config->gizmoStride.has_value())
+		{
+			giSettings.gizmoStride = std::clamp(
+				*config->gizmoStride, 1u,
+				std::max({ giSettings.gridDimensions.x, giSettings.gridDimensions.y, giSettings.gridDimensions.z }));
+		}
+		ApplyOptionalValue(config->showProbeGizmos, giSettings.showProbeGizmos);
+		ApplyOptionalValue(config->showProbeVolume, giSettings.showProbeVolume);
 
-		if (gi.contains("regionCenter") && gi["regionCenter"].is_array() && gi["regionCenter"].size() == 3)
+		if (config->regionCenter.has_value())
 		{
 			giSettings.regionCenter = glm::vec3(
-				gi["regionCenter"][0].get<float>(),
-				gi["regionCenter"][1].get<float>(),
-				gi["regionCenter"][2].get<float>());
+				(*config->regionCenter)[0],
+				(*config->regionCenter)[1],
+				(*config->regionCenter)[2]);
 		}
 	}
 

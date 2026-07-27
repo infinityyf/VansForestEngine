@@ -2,14 +2,19 @@
 
 #include "../VansEditorSelection.h"
 #include "../VansEditorWindow.h"
+#include "../VansEditorObjectReference.h"
 #include "../VansSceneEditService.h"
+#include "../VansSceneObjectReferenceRemapper.h"
+#include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../SceneCore/VansSceneDocument.h"
+#include "../../Util/VansLog.h"
 
 #include "imgui.h"
 
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace VansGraphics
@@ -19,25 +24,25 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
     ImGui::Begin("Hierarchy");
 
     const Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
-    if (!document || !document->Root().contains("entities") || !document->Root()["entities"].is_array())
+    const Vans::VansSerializedValue sceneRoot =
+        document ? document->SerializedRootSnapshot() : Vans::VansSerializedValue::Null();
+    const Vans::VansSerializedValue* entities = Vans::FindObjectField(sceneRoot, "entities");
+    if (!entities || entities->kind != Vans::VansSerializedValue::Kind::Array)
     {
         ImGui::TextDisabled("No Scene document loaded");
         ImGui::End();
         return;
     }
 
-    const auto& entities = document->Root()["entities"];
     if (ImGui::Selectable("Scene Settings", Vans::VansEditorSelection::IsSceneSelected()))
         Vans::VansEditorSelection::SelectScene();
     ImGui::Separator();
 
     std::unordered_map<std::string, std::vector<std::size_t>> children;
-    for (std::size_t index = 0; index < entities.size(); ++index)
+    for (std::size_t index = 0; index < entities->arrayItems.size(); ++index)
     {
-        const auto& entity = entities[index];
-        const std::string parent = entity.contains("parent") && entity["parent"].is_string()
-            ? entity["parent"].get<std::string>()
-            : std::string{};
+        const Vans::VansSerializedValue& entity = entities->arrayItems[index];
+        const std::string parent = Vans::ReadSerializedStringField(entity, "parent");
         children[parent].push_back(index);
     }
 
@@ -49,9 +54,10 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 
         for (const std::size_t index : found->second)
         {
-            const auto& entity = entities[index];
-            const std::string id = entity.value("id", "");
-            const std::string name = entity.value("name", "Unnamed Entity");
+            const Vans::VansSerializedValue& entity = entities->arrayItems[index];
+            const std::string id = Vans::ReadSerializedStringField(entity, "id");
+            const std::string name =
+                Vans::ReadSerializedStringField(entity, "name", "Unnamed Entity");
             const bool hasChildren = children.find(id) != children.end();
 
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
@@ -64,16 +70,36 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
             if (ImGui::IsItemClicked())
                 Vans::VansEditorSelection::SelectEntity(id);
 
-            auto deleteEntity = [&editorAPI, &entities, &id, &name]()
+            if (!id.empty() && ImGui::BeginDragDropSource())
+            {
+                Vans::EditorObjectHandle handle;
+                handle.domain = Vans::EditorObjectDomain::SceneEntity;
+                handle.guid = id;
+                handle.entityGuid = id;
+                handle.displayName = name;
+                const std::string payload = Vans::SerializeEditorObjectHandle(handle);
+                ImGui::SetDragDropPayload(Vans::VansObjectReferenceDragPayloadType,
+                    payload.c_str(),
+                    payload.size() + 1);
+                ImGui::TextUnformatted(name.c_str());
+                ImGui::EndDragDropSource();
+            }
+
+            auto deleteEntity = [&editorAPI, entities, &id, &name]()
             {
                 if (!id.empty())
                 {
-                    for (int i = 0; i < static_cast<int>(entities.size()); ++i)
+                    for (std::size_t i = 0; i < entities->arrayItems.size(); ++i)
                     {
-                        if (entities[i].value("id", "") == id)
+                        const Vans::VansSerializedValue& entity = entities->arrayItems[i];
+                        if (Vans::ReadSerializedStringField(entity, "id") == id)
                         {
                             if (auto* editService = VansEditorWindow::GetSceneEditService())
-                                editService->Remove("/entities/" + std::to_string(i));
+                            {
+                                editService->Remove(Vans::MakeDocumentPropertyPath(
+                                    Vans::DocumentPropertySpace::Scene,
+                                    "/entities/" + std::to_string(i)));
+                            }
                             break;
                         }
                     }
@@ -84,9 +110,46 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 editorAPI.DestroyRuntimeEntityByName(request);
             };
 
+            auto duplicateEntity = [&document, &id]()
+            {
+                if (id.empty())
+                    return;
+                auto* editService = VansEditorWindow::GetSceneEditService();
+                if (!editService)
+                    return;
+
+                Vans::SceneEntityDuplicateResult duplicate =
+                    Vans::DuplicateSceneEntitySubtree(*document, id);
+                if (!duplicate)
+                {
+                    VANS_LOG_ERROR("[Hierarchy] Duplicate failed: " << duplicate.message);
+                    return;
+                }
+
+                const std::string duplicatedRootGuid = duplicate.duplicatedRootGuid;
+                Vans::SceneEditResult editResult =
+                    editService->AppendEntities(std::move(duplicate.entities));
+                if (!editResult)
+                {
+                    VANS_LOG_ERROR("[Hierarchy] Duplicate failed: " << editResult.message);
+                    return;
+                }
+                if (!duplicatedRootGuid.empty())
+                    Vans::VansEditorSelection::SelectEntity(duplicatedRootGuid);
+            };
+
             const bool isSelected = (Vans::VansEditorSelection::EntityGuid() == id);
             if (ImGui::BeginPopupContextItem(id.c_str()))
             {
+                if (ImGui::MenuItem("Duplicate"))
+                {
+                    duplicateEntity();
+                    ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                    if (open && hasChildren)
+                        ImGui::TreePop();
+                    return;
+                }
                 if (ImGui::MenuItem("Delete"))
                 {
                     deleteEntity();

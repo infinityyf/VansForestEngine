@@ -4,7 +4,6 @@
 #include "Modules/VansInitModules.h"
 #include "Modules/VansUpdateModules.h"
 #include <glm/glm.hpp>
-#include <nlohmann/json.hpp>
 #include <vector>
 #include <memory>
 #include <string>
@@ -40,8 +39,6 @@ namespace VansGraphics
         float               m_Rate = 30.f;               // 每秒发射数
         std::vector<BurstConfig> m_Bursts;
 
-        nlohmann::json Serialize() const;
-        void Deserialize(const nlohmann::json& j);
     };
 
     // ============================================================
@@ -70,8 +67,6 @@ namespace VansGraphics
         float       m_LightmapRemapMin      = 0.f;
         float       m_LightmapRemapMax      = 1.f;
 
-        nlohmann::json Serialize() const;
-        void Deserialize(const nlohmann::json& j);
     };
 
     struct VansParticleRendererConfig
@@ -91,8 +86,6 @@ namespace VansGraphics
         bool m_CastShadows    = false;
         bool m_ReceiveShadows = false;
 
-        nlohmann::json Serialize() const;
-        void Deserialize(const nlohmann::json& j);
     };
 
     // ============================================================
@@ -131,17 +124,9 @@ namespace VansGraphics
         // 将存活粒子写入 GPU 实例数据缓冲
         void FillInstanceData(std::vector<VansParticleInstanceData>& outBuffer) const;
 
-        // 序列化
-        nlohmann::json Serialize() const;
-        void Deserialize(const nlohmann::json& j);
-
     private:
         // 发射新粒子并执行 Init 模块
         void SpawnParticles(uint32_t count, const glm::mat4& localToWorld);
-
-        // 从 JSON 模块名反序列化单个模块
-        static std::unique_ptr<VansParticleModule> CreateModuleFromJson(
-            const nlohmann::json& j);
     };
 
 } // namespace VansGraphics

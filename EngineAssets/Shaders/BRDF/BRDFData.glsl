@@ -234,7 +234,7 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
 
     //reflection specular lod level
     float lod = GetMipLevelFromRoughness(brdf.roughness);
-    vec3 skySpecular = textureLod(PreConvSpecularEnvironment, reflection, lod).rgb * reflectionProbeLightingParams.z;
+    vec3 skySpecular = SampleSkySpecularCube(PreConvSpecularEnvironment, reflection, lod);
     vec3 prefilteredColor = mix(skySpecular, probeSample.specular, probeSample.coverage);
     // Roughness fade: SSR quality degrades on rough surfaces — smoothly
     // fall back to the pre-filtered cubemap which is always correct.

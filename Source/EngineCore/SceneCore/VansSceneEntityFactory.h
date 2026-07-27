@@ -1,6 +1,6 @@
 #pragma once
 
-#include "VansSceneDocument.h"
+#include "../AssetCore/Serialization/VansSerializedValue.h"
 
 #include <array>
 #include <cstdint>
@@ -32,7 +32,7 @@ struct SceneModelEntityFactoryRequest
 struct SceneModelEntityFactoryResult
 {
     std::string rootEntityId;
-    std::vector<SceneJson> entities;
+    std::vector<VansSerializedValue> entities;
 };
 
 class VansSceneEntityFactory
@@ -45,11 +45,5 @@ public:
     static SceneModelEntityFactoryResult BuildMultiMeshEntityHierarchy(
         const SceneModelEntityFactoryRequest& request,
         const std::string& rootEntityId = {});
-
-private:
-    static SceneJson BuildTransformComponent(
-        const std::array<float, 3>& position,
-        const std::array<float, 4>& rotation,
-        const std::array<float, 3>& scale);
 };
 }

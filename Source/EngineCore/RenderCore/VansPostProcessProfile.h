@@ -137,10 +137,6 @@ namespace VansGraphics
 		VansExposureAdaptParamsGPU ToExposureAdaptParams(float deltaTime) const;
 		VansBloomParamsGPU ToBloomParams() const;
 
-		// 序列化 / 反序列化（JSON，参考 VansProjectSettings 模式）
-		bool SaveToFile(const std::string& filePath) const;
-		bool LoadFromFile(const std::string& filePath);
-
 		// 重置为出厂默认值
 		void ResetToDefaults();
 

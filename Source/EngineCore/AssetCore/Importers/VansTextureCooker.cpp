@@ -1,19 +1,15 @@
 #include "VansTextureCooker.h"
 
+#include "../Storage/VansFileStorage.h"
+
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cwctype>
 #include <cstring>
-#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
-
-#ifdef _WIN32
-#define NOMINMAX
-#include <Windows.h>
-#endif
+#include <utility>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -82,30 +78,6 @@ bool GetFileStamp(const std::filesystem::path& path, FileStamp& result, std::str
     result.size = static_cast<std::uint64_t>(size);
     result.writeTime = static_cast<std::int64_t>(writeTime.time_since_epoch().count());
     return true;
-}
-
-bool ReadBoolSetting(const nlohmann::ordered_json& settings, const char* primary, const char* legacy, bool fallback)
-{
-    if (const auto it = settings.find(primary); it != settings.end() && it->is_boolean())
-        return it->get<bool>();
-    if (legacy)
-    {
-        if (const auto it = settings.find(legacy); it != settings.end() && it->is_boolean())
-            return it->get<bool>();
-    }
-    return fallback;
-}
-
-std::string ReadStringSetting(const nlohmann::ordered_json& settings, const char* key, const std::string& fallback)
-{
-    const auto it = settings.find(key);
-    return it != settings.end() && it->is_string() ? it->get<std::string>() : fallback;
-}
-
-int ReadIntSetting(const nlohmann::ordered_json& settings, const char* key, int fallback)
-{
-    const auto it = settings.find(key);
-    return it != settings.end() && it->is_number_integer() ? it->get<int>() : fallback;
 }
 
 std::wstring LowerExtension(const std::filesystem::path& path)
@@ -201,15 +173,15 @@ bool ReadHeaderAndTable(
     std::vector<TextureArtifactMip>& mips,
     std::string& error)
 {
-    std::ifstream input(artifactPath, std::ios::binary);
-    if (!input)
+    std::string headerBytes;
+    if (!VansFileStorage::ReadByteRange(artifactPath, 0, sizeof(header), headerBytes, error))
     {
         error = "Cannot open cooked texture: " + artifactPath.string();
         return false;
     }
 
-    input.read(reinterpret_cast<char*>(&header), sizeof(header));
-    if (!input || std::memcmp(header.magic, kArtifactMagic.data(), kArtifactMagic.size()) != 0)
+    std::memcpy(&header, headerBytes.data(), sizeof(header));
+    if (std::memcmp(header.magic, kArtifactMagic.data(), kArtifactMagic.size()) != 0)
     {
         error = "Cooked texture has an invalid header: " + artifactPath.string();
         return false;
@@ -238,14 +210,15 @@ bool ReadHeaderAndTable(
         return false;
     }
 
-    input.seekg(static_cast<std::streamoff>(header.tableOffset), std::ios::beg);
-    mips.resize(header.mipCount);
-    input.read(reinterpret_cast<char*>(mips.data()), static_cast<std::streamsize>(expectedTableSize));
-    if (!input)
+    std::string tableBytes;
+    if (!VansFileStorage::ReadByteRange(artifactPath, header.tableOffset, expectedTableSize, tableBytes, error))
     {
         error = "Cannot read cooked texture mip table: " + artifactPath.string();
         return false;
     }
+
+    mips.resize(header.mipCount);
+    std::memcpy(mips.data(), tableBytes.data(), static_cast<std::size_t>(expectedTableSize));
 
     std::uint32_t expectedWidth = header.width;
     std::uint32_t expectedHeight = header.height;
@@ -296,6 +269,42 @@ bool IsArtifactCurrent(
         header.metaWriteTime == metaStamp.writeTime;
 }
 
+bool HeaderMatches(const TextureArtifactHeader& actual, const TextureArtifactHeader& expected)
+{
+    return std::memcmp(actual.magic, expected.magic, sizeof(actual.magic)) == 0 &&
+        actual.version == expected.version &&
+        actual.format == expected.format &&
+        actual.width == expected.width &&
+        actual.height == expected.height &&
+        actual.mipCount == expected.mipCount &&
+        actual.sourceSize == expected.sourceSize &&
+        actual.sourceWriteTime == expected.sourceWriteTime &&
+        actual.metaSize == expected.metaSize &&
+        actual.metaWriteTime == expected.metaWriteTime &&
+        actual.tableOffset == expected.tableOffset &&
+        actual.dataOffset == expected.dataOffset &&
+        actual.dataSize == expected.dataSize;
+}
+
+bool MipTableMatches(
+    const std::vector<TextureArtifactMip>& actual,
+    const std::vector<TextureArtifactMip>& expected)
+{
+    if (actual.size() != expected.size())
+        return false;
+    for (std::size_t index = 0; index < actual.size(); ++index)
+    {
+        if (actual[index].width != expected[index].width ||
+            actual[index].height != expected[index].height ||
+            actual[index].offset != expected[index].offset ||
+            actual[index].size != expected[index].size)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool PublishArtifact(
     const std::filesystem::path& artifactPath,
     const TextureArtifactHeader& header,
@@ -303,62 +312,45 @@ bool PublishArtifact(
     const std::vector<std::uint8_t>& data,
     std::string& error)
 {
-    std::error_code ec;
-    std::filesystem::create_directories(artifactPath.parent_path(), ec);
-    if (ec)
-    {
-        error = "Cannot create texture artifact directory: " + ec.message();
-        return false;
-    }
-
-    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-#ifdef _WIN32
-    const std::filesystem::path temporary(artifactPath.native() + L".tmp." + std::to_wstring(nonce));
-#else
-    const std::filesystem::path temporary(artifactPath.native() + ".tmp." + std::to_string(nonce));
-#endif
-
     try
     {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output)
-            throw std::runtime_error("Cannot create texture artifact temporary file");
-        output.write(reinterpret_cast<const char*>(&header), sizeof(header));
-        output.write(reinterpret_cast<const char*>(mips.data()),
-            static_cast<std::streamsize>(mips.size() * sizeof(TextureArtifactMip)));
-        output.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-        output.flush();
-        if (!output)
-            throw std::runtime_error("Failed writing texture artifact");
-        output.close();
+        std::string bytes;
+        bytes.reserve(sizeof(header) + mips.size() * sizeof(TextureArtifactMip) + data.size());
+        bytes.append(reinterpret_cast<const char*>(&header), sizeof(header));
+        if (!mips.empty())
+            bytes.append(reinterpret_cast<const char*>(mips.data()), mips.size() * sizeof(TextureArtifactMip));
+        if (!data.empty())
+            bytes.append(reinterpret_cast<const char*>(data.data()), data.size());
+
+        VansStagedFile stage;
+        if (!VansFileStorage::StageWriteBytes(artifactPath, bytes, stage, error))
+            return false;
+        const std::filesystem::path stagedPath = stage.temporaryPath;
+
+        VansStagedFileTransaction transaction;
+        transaction.Add(std::move(stage));
 
         TextureArtifactHeader verification{};
         std::vector<TextureArtifactMip> verificationMips;
-        if (!ReadHeaderAndTable(temporary, verification, verificationMips, error))
+        if (!ReadHeaderAndTable(stagedPath, verification, verificationMips, error))
         {
-            std::filesystem::remove(temporary, ec);
+            return false;
+        }
+        if (!HeaderMatches(verification, header) || !MipTableMatches(verificationMips, mips))
+        {
+            error = "Cooked texture staged verification did not match source data: " + artifactPath.string();
             return false;
         }
 
-        bool published = false;
-#ifdef _WIN32
-        published = MoveFileExW(temporary.c_str(), artifactPath.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
-#else
-        std::filesystem::rename(temporary, artifactPath, ec);
-        published = !ec;
-#endif
-        if (!published)
+        if (!transaction.Publish(error))
         {
-            std::filesystem::remove(temporary, ec);
-            error = "Failed atomically publishing cooked texture: " + artifactPath.string();
+            error = "Failed atomically publishing cooked texture: " + artifactPath.string() + " (" + error + ")";
             return false;
         }
         return true;
     }
     catch (const std::exception& exception)
     {
-        std::filesystem::remove(temporary, ec);
         error = exception.what();
         return false;
     }
@@ -370,12 +362,12 @@ bool VansTextureCooker::IsEligible(const std::filesystem::path& sourcePath, cons
     const std::wstring extension = LowerExtension(sourcePath);
     if (extension != L".png" && extension != L".jpg" && extension != L".jpeg" && extension != L".tga")
         return false;
-    if (!ReadBoolSetting(meta.settings, "useCompress", "compress", true))
+    if (!meta.ReadBoolSetting("useCompress", "compress", true))
         return false;
-    const std::string precision = ReadStringSetting(meta.settings, "precision", "low8");
+    const std::string precision = meta.ReadStringSetting("precision", "low8");
     if (precision != "low8" && precision != "8" && precision != "rgba8")
         return false;
-    return ReadIntSetting(meta.settings, "importChannel", 4) == 4;
+    return meta.ReadIntSetting("importChannel", 4) == 4;
 }
 
 VansTextureCookResult VansTextureCooker::CookIfNeeded(
@@ -492,25 +484,18 @@ bool VansTextureCooker::LoadArtifact(
     if (!ReadHeaderAndTable(artifactPath, header, artifactMips, error))
         return false;
 
-    std::ifstream input(artifactPath, std::ios::binary);
-    if (!input)
-    {
-        error = "Cannot reopen cooked texture: " + artifactPath.string();
-        return false;
-    }
-    input.seekg(static_cast<std::streamoff>(header.dataOffset), std::ios::beg);
-
     VansCookedTextureData loaded;
     loaded.format = static_cast<VansCookedTextureFormat>(header.format);
     loaded.width = header.width;
     loaded.height = header.height;
-    loaded.data.resize(static_cast<std::size_t>(header.dataSize));
-    input.read(reinterpret_cast<char*>(loaded.data.data()), static_cast<std::streamsize>(loaded.data.size()));
-    if (!input)
+    std::string payloadBytes;
+    if (!VansFileStorage::ReadByteRange(artifactPath, header.dataOffset, header.dataSize, payloadBytes, error))
     {
         error = "Cannot read cooked texture payload: " + artifactPath.string();
         return false;
     }
+    loaded.data.resize(payloadBytes.size());
+    std::memcpy(loaded.data.data(), payloadBytes.data(), payloadBytes.size());
     loaded.mips.reserve(artifactMips.size());
     for (const TextureArtifactMip& mip : artifactMips)
         loaded.mips.push_back({ mip.width, mip.height, mip.offset, mip.size });

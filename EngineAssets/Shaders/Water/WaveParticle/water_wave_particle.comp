@@ -81,7 +81,6 @@ void main()
 
     int particleCount = clamp(params.simulationParams.y, 0, particleSSBO.particles.length());
     int octaveCount = clamp(params.simulationParams.z, 1, 8);
-    float domainSize = max(params.waveParticleParams0.x, 1.0);
     float globalAmplitude = params.waveParticleParams0.y;
     float phaseVelocity = params.waveParticleParams1.x;
     float damping = params.waveParticleParams1.y;
@@ -90,8 +89,6 @@ void main()
     float persistence = clamp(params.waveParticleParams2.y, 0.0, 1.0);
     float radiusFalloff = clamp(params.waveParticleParams2.z, 0.1, 1.0);
     float sharpness = max(params.waveParticleParams2.w, 0.25);
-    float lifetime = max(params.waveParticleParams3.z, 0.1);
-    float coverageScale = coverage / domainSize;
 
     for (int i = 0; i < particleCount; ++i)
     {
@@ -101,36 +98,32 @@ void main()
             continue;
         direction = normalize(direction);
 
-        float age = fract((params.spectrumScale.z + particle.lifetimeSeed.y) / max(particle.lifetimeSeed.x, lifetime));
-        float fade = pow(max(sin(PI * age), 0.0), 0.5);
-        vec2 particleCenter = fract(
-            particle.positionRadius.xy + direction * (params.spectrumScale.z * particle.directionPhase.w / max(coverage, 1.0)))
-            * coverage;
+        vec2 particleCenter = fract(particle.positionRadius.xy) * coverage;
         vec2 rel = worldXZ - particleCenter;
         rel -= coverage * round(rel / coverage);
         float dist = length(rel);
         vec2 radialDir = dist > 1e-5 ? rel / dist : vec2(0.0);
 
-        float octaveRadius = particle.positionRadius.z * coverageScale;
-        float octaveAmplitude = particle.positionRadius.w * globalAmplitude * sqrt(max(coverageScale, 0.125));
+        float octaveRadius = particle.positionRadius.z;
+        float octaveAmplitude = particle.positionRadius.w * globalAmplitude;
         float octaveFrequencyScale = 1.0;
         for (int octave = 0; octave < octaveCount; ++octave)
         {
             float radius = max(octaveRadius, 0.05);
-            float wavelength = 2.0 * radius;
+            float frequency = PI * octaveFrequencyScale / radius;
+            float wavelength = 2.0 * PI / max(frequency, 1e-4);
             if (wavelength >= lowerWavelength && wavelength < upperWavelength)
             {
                 float x = dist / radius;
                 vec2 env = EnvelopeAndDerivative(x, sharpness, profile);
                 if (env.x > 0.0)
                 {
-                    float frequency = PI * octaveFrequencyScale / radius;
                     float phase = dot(rel, direction) * frequency
                         - params.spectrumScale.z * particle.directionPhase.w * phaseVelocity * frequency
                         + particle.directionPhase.z + float(octave) * 1.61803398875;
                     float s = sin(phase);
                     float c = cos(phase);
-                    float dampedAmplitude = octaveAmplitude * fade * exp(-damping * x);
+                    float dampedAmplitude = octaveAmplitude * exp(-damping * x);
                     float height = dampedAmplitude * env.x * s;
                     vec2 gradient = dampedAmplitude * (
                         env.y * s * radialDir / radius

@@ -6,6 +6,8 @@
 #include "../VulkanCore/VansRenderPass.h"
 #include "../TerrainCore/VansTerrain.h"
 #include "../VegetationCore/VansVegetationSystem.h"
+#include "../PcgCore/VansPcgMask.h"
+#include "../PcgCore/VansPcgSceneConfigAdapter.h"
 #include "../WaterCore/VansWaterMaterial.h"
 #include "../WaterCore/VansWaterSystem.h"
 #include "../VansGraphicsDevice.h"
@@ -16,10 +18,7 @@
 #include "../../Util/VansLog.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
-#include <filesystem>
-#include <fstream>
 #include <mutex>
 #include <random>
 
@@ -27,98 +26,27 @@ namespace VansGraphics
 {
 namespace
 {
-std::string ReadStringField(const json& object, const char* key)
+glm::vec3 ToVec3(const Vans::VansSceneFloat3& value)
 {
-    if (!object.is_object())
-        return {};
-    const auto found = object.find(key);
-    return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
+    return glm::vec3(value[0], value[1], value[2]);
 }
 
-glm::vec2 ReadVec2Field(const json& object, const char* key, glm::vec2 fallback)
+TreePartType ToTreePartType(Vans::VansSceneVegetationTreePartType type)
 {
-    if (!object.is_object() || !object.contains(key))
-        return fallback;
-
-    const auto& value = object[key];
-    if (value.is_array() && value.size() >= 2)
-        return { value[0].get<float>(), value[1].get<float>() };
-    if (value.is_object())
-        return {
-            value.value("x", fallback.x),
-            value.value("y", fallback.y)
-        };
-    return fallback;
-}
-
-VansWaveMode ReadWaterWaveMode(const json& object, const char* key, VansWaveMode fallback)
-{
-    std::string modeStr = ReadStringField(object, key);
-    std::transform(modeStr.begin(), modeStr.end(), modeStr.begin(),
-        [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
-    if (modeStr == "fft") return VansWaveMode::FFT;
-    if (modeStr == "gerstner") return VansWaveMode::Gerstner;
-    if (modeStr == "waveparticle" || modeStr == "wave_particle" || modeStr == "particle")
-        return VansWaveMode::WaveParticle;
-    if (modeStr == "hybrid")
+    switch (type)
     {
-        VANS_LOG_WARN("[AddWaterNode] Deprecated water wave mode 'hybrid' mapped to FFT.");
-        return VansWaveMode::FFT;
+    case Vans::VansSceneVegetationTreePartType::Trunk: return TreePartType::Trunk;
+    case Vans::VansSceneVegetationTreePartType::Leaves: return TreePartType::Leaves;
+    case Vans::VansSceneVegetationTreePartType::Custom: return TreePartType::Custom;
     }
-    return fallback;
-}
-
-std::string ReadVegetationConfigPath(const json& vegetationData)
-{
-    if (vegetationData.is_string())
-        return vegetationData.get<std::string>();
-    if (!vegetationData.is_object())
-        return {};
-    std::string path = ReadStringField(vegetationData, "config");
-    if (path.empty()) path = ReadStringField(vegetationData, "configPath");
-    if (path.empty()) path = ReadStringField(vegetationData, "path");
-    return path;
-}
-
-json LoadVegetationConfigFromReference(const json& vegetationData, const std::string& projectRoot)
-{
-    const std::string configPath = ReadVegetationConfigPath(vegetationData);
-    if (configPath.empty())
-        return vegetationData;
-
-    std::filesystem::path resolved = std::filesystem::path(configPath);
-    if (resolved.is_relative())
-        resolved = std::filesystem::path(projectRoot) / resolved;
-
-    std::ifstream input(resolved);
-    if (!input)
-    {
-        VANS_LOG_ERROR("[VegetationConfig] Cannot open config file: " << resolved.string());
-        return json::object();
-    }
-
-    json loaded = json::parse(input, nullptr, false);
-    if (loaded.is_discarded() || !loaded.is_object())
-    {
-        VANS_LOG_ERROR("[VegetationConfig] Invalid JSON config file: " << resolved.string());
-        return json::object();
-    }
-    VANS_LOG("[VegetationConfig] Loaded config file: " << resolved.string());
-
-    if (vegetationData.is_object())
-    {
-        for (const auto& [key, value] : vegetationData.items())
-        {
-            if (key == "config" || key == "configPath" || key == "path")
-                continue;
-            loaded[key] = value;
-        }
-    }
-    return loaded;
+    return TreePartType::Custom;
 }
 }
 
-void VansSceneEnvironmentNodeBuilder::AddTerrainNode(VansScene& scene, VansVKDevice* device, json& terrainData)
+void VansSceneEnvironmentNodeBuilder::AddTerrainNode(
+    VansScene& scene,
+    VansVKDevice* device,
+    const Vans::VansSceneTerrainNodeConfig& terrainData)
 {
     auto vansConfigration = VansConfigration::GetInstance();
     auto& projectMgr = Vans::VansProjectManager::Get();
@@ -129,135 +57,99 @@ void VansSceneEnvironmentNodeBuilder::AddTerrainNode(VansScene& scene, VansVKDev
     TerrainConfig config;
 
     // Heightmap (required)
-    config.heightmapPath = projectRoot + terrainData["heightmap"].get<std::string>();
-    config.terrainSize = terrainData.value("terrainSize", config.terrainSize);
-    config.maxHeight = terrainData.value("maxHeight", config.maxHeight);
-    config.heightOffset = terrainData.value("heightOffset", config.heightOffset);
-    config.splitDistMult = terrainData.value("splitDistMult", config.splitDistMult);
-    config.lodDistanceRatio = terrainData.value("lodDistanceRatio", config.lodDistanceRatio);
-    config.morphStartRatio = terrainData.value("morphStartRatio", config.morphStartRatio);
-    config.maxPatchInstances = terrainData.value("maxPatchInstances", config.maxPatchInstances);
+    if (terrainData.heightmap)
+        config.heightmapPath = projectRoot + *terrainData.heightmap;
+    if (terrainData.terrainSize) config.terrainSize = *terrainData.terrainSize;
+    if (terrainData.maxHeight) config.maxHeight = *terrainData.maxHeight;
+    if (terrainData.heightOffset) config.heightOffset = *terrainData.heightOffset;
+    if (terrainData.splitDistMult) config.splitDistMult = *terrainData.splitDistMult;
+    if (terrainData.lodDistanceRatio) config.lodDistanceRatio = *terrainData.lodDistanceRatio;
+    if (terrainData.morphStartRatio) config.morphStartRatio = *terrainData.morphStartRatio;
+    if (terrainData.maxPatchInstances) config.maxPatchInstances = *terrainData.maxPatchInstances;
 
     // Tessellation (optional, defaults from TerrainConfig)
-    if (terrainData.contains("tessellation") && terrainData["tessellation"].is_object())
-    {
-        auto& tessJson = terrainData["tessellation"];
-        config.enableTessellation   = tessJson.value("enabled",  config.enableTessellation);
-        config.tessellationDistance = tessJson.value("distance", config.tessellationDistance);
-        config.maxTessellationLevel = tessJson.value("maxLevel", config.maxTessellationLevel);
-        config.tessellationPower        = tessJson.value("power",               config.tessellationPower);
-        config.tessLodBias              = tessJson.value("lodBias",             config.tessLodBias);
-        config.tessDisplacementStrength = tessJson.value("displacementStrength", config.tessDisplacementStrength);
+    const Vans::VansSceneTerrainTessellationConfig& tess = terrainData.tessellation;
+    if (tess.enabled) config.enableTessellation = *tess.enabled;
+    if (tess.distance) config.tessellationDistance = *tess.distance;
+    if (tess.maxLevel) config.maxTessellationLevel = *tess.maxLevel;
+    if (tess.power) config.tessellationPower = *tess.power;
+    if (tess.lodBias) config.tessLodBias = *tess.lodBias;
+    if (tess.displacementStrength) config.tessDisplacementStrength = *tess.displacementStrength;
 
-        // 程序化噪声细节（替代 displacementStrength）
-        if (tessJson.contains("noiseDetail") && tessJson["noiseDetail"].is_object())
-        {
-            auto& noiseJson = tessJson["noiseDetail"];
-            config.enableNoiseDetail = noiseJson.value("enabled",       config.enableNoiseDetail);
-            config.noiseStrength     = noiseJson.value("strength",      config.noiseStrength);
-            config.noiseFrequency    = noiseJson.value("frequency",     config.noiseFrequency);
-            config.noiseLacunarity   = noiseJson.value("lacunarity",    config.noiseLacunarity);
-            config.noiseGain         = noiseJson.value("gain",          config.noiseGain);
-            config.noiseOctaves      = noiseJson.value("octaves",       config.noiseOctaves);
-            config.noiseWarpStrength = noiseJson.value("warpStrength",  config.noiseWarpStrength);
-            config.noiseFadeStart    = noiseJson.value("fadeStart",     config.noiseFadeStart);
-        }
-    }
+    // 程序化噪声细节（替代 displacementStrength）
+    const Vans::VansSceneTerrainNoiseDetailConfig& noise = tess.noiseDetail;
+    if (noise.enabled) config.enableNoiseDetail = *noise.enabled;
+    if (noise.strength) config.noiseStrength = *noise.strength;
+    if (noise.frequency) config.noiseFrequency = *noise.frequency;
+    if (noise.lacunarity) config.noiseLacunarity = *noise.lacunarity;
+    if (noise.gain) config.noiseGain = *noise.gain;
+    if (noise.octaves) config.noiseOctaves = *noise.octaves;
+    if (noise.warpStrength) config.noiseWarpStrength = *noise.warpStrength;
+    if (noise.fadeStart) config.noiseFadeStart = *noise.fadeStart;
 
     // Splatmaps (required, array of 2)
-    if (terrainData.contains("splatmaps") && terrainData["splatmaps"].is_array())
-    {
-        auto& splatmaps = terrainData["splatmaps"];
-        if (splatmaps.size() >= 1)
-            config.splatmap0Path = projectRoot + splatmaps[0].get<std::string>();
-        if (splatmaps.size() >= 2)
-            config.splatmap1Path = projectRoot + splatmaps[1].get<std::string>();
-    }
+    if (terrainData.splatmaps.size() >= 1)
+        config.splatmap0Path = projectRoot + terrainData.splatmaps[0];
+    if (terrainData.splatmaps.size() >= 2)
+        config.splatmap1Path = projectRoot + terrainData.splatmaps[1];
 
     // Layers (up to 8)
-    if (terrainData.contains("layers") && terrainData["layers"].is_array())
+    for (const Vans::VansSceneTerrainLayerConfig& layerConfig : terrainData.layers)
     {
-        for (auto& layerJson : terrainData["layers"])
-        {
-            TerrainLayerConfig layer;
+        TerrainLayerConfig layer;
 
-            // Support texture name references (look up from scene texture manager)
-            if (layerJson.contains("albedo_texture"))
-            {
-                std::string texName = layerJson["albedo_texture"].get<std::string>();
-                layer.albedoTex = static_cast<VansTexture*>(scene.GetTextureAsset(texName));
-            }
-            else if (layerJson.contains("albedo"))
-                layer.albedoPath = projectRoot + layerJson["albedo"].get<std::string>();
+        // Support texture name references (look up from scene texture manager)
+        if (layerConfig.albedoTexture)
+            layer.albedoTex = static_cast<VansTexture*>(scene.GetTextureAsset(*layerConfig.albedoTexture));
+        else if (layerConfig.albedoPath)
+            layer.albedoPath = projectRoot + *layerConfig.albedoPath;
 
-            if (layerJson.contains("normal_texture"))
-            {
-                std::string texName = layerJson["normal_texture"].get<std::string>();
-                layer.normalTex = static_cast<VansTexture*>(scene.GetTextureAsset(texName));
-            }
-            else if (layerJson.contains("normal"))
-                layer.normalPath = projectRoot + layerJson["normal"].get<std::string>();
+        if (layerConfig.normalTexture)
+            layer.normalTex = static_cast<VansTexture*>(scene.GetTextureAsset(*layerConfig.normalTexture));
+        else if (layerConfig.normalPath)
+            layer.normalPath = projectRoot + *layerConfig.normalPath;
 
-            if (layerJson.contains("roughness_texture"))
-            {
-                std::string texName = layerJson["roughness_texture"].get<std::string>();
-                layer.roughnessTex = static_cast<VansTexture*>(scene.GetTextureAsset(texName));
-            }
-            else if (layerJson.contains("roughness"))
-                layer.roughnessPath = projectRoot + layerJson["roughness"].get<std::string>();
+        if (layerConfig.roughnessTexture)
+            layer.roughnessTex = static_cast<VansTexture*>(scene.GetTextureAsset(*layerConfig.roughnessTexture));
+        else if (layerConfig.roughnessPath)
+            layer.roughnessPath = projectRoot + *layerConfig.roughnessPath;
 
-            if (layerJson.contains("tiling"))
-                layer.tiling = layerJson["tiling"].get<float>();
-            config.layers.push_back(layer);
-        }
+        if (layerConfig.tiling)
+            layer.tiling = *layerConfig.tiling;
+        config.layers.push_back(layer);
     }
 
     RenderNodeType type = RenderNodeType::TERRAIN_NODE;
     VansRenderNode* renderNode = new VansTerrainRenderNode(device, config, type);
 
     // Read optional name
-    std::string name = "TerrainNode";
-    if (terrainData.contains("name"))
-    {
-        name = terrainData["name"].get<std::string>();
-    }
+    std::string name = terrainData.name.value_or("TerrainNode");
     renderNode->SetName(name);
     scene.RegistRenderNode(renderNode, type);
 
     // Terrain 物理碰撞是可选项，只由 terrain.collision.enabled 控制。
-    if (terrainData.contains("collision") && terrainData["collision"].is_object())
+    if (terrainData.collision)
     {
-        auto& collisionJson = terrainData["collision"];
+        const Vans::VansSceneTerrainCollisionConfig& collision = *terrainData.collision;
         VansEngine::TerrainPhysicsProperties terrainPhysicsProps;
-        terrainPhysicsProps.enabled = collisionJson.value("enabled", false);
+        terrainPhysicsProps.enabled = collision.enabled.value_or(false);
         terrainPhysicsProps.heightmapPath = config.heightmapPath;
         terrainPhysicsProps.terrainSize = config.terrainSize;
         terrainPhysicsProps.maxHeight = config.maxHeight;
         terrainPhysicsProps.heightOffset = config.heightOffset;
 
-        if (collisionJson.contains("terrainSize"))
-            terrainPhysicsProps.terrainSize = collisionJson["terrainSize"].get<float>();
-        if (collisionJson.contains("maxHeight"))
-            terrainPhysicsProps.maxHeight = collisionJson["maxHeight"].get<float>();
-        if (collisionJson.contains("heightOffset"))
-            terrainPhysicsProps.heightOffset = collisionJson["heightOffset"].get<float>();
-        if (collisionJson.contains("layer"))
-            terrainPhysicsProps.layerName = collisionJson["layer"].get<std::string>();
-        if (collisionJson.contains("flipX"))
-            terrainPhysicsProps.flipX = collisionJson["flipX"].get<bool>();
-        if (collisionJson.contains("flipZ"))
-            terrainPhysicsProps.flipZ = collisionJson["flipZ"].get<bool>();
-
-        if (collisionJson.contains("material") && collisionJson["material"].is_object())
-        {
-            auto& materialJson = collisionJson["material"];
-            if (materialJson.contains("staticFriction"))
-                terrainPhysicsProps.material.staticFriction = materialJson["staticFriction"].get<float>();
-            if (materialJson.contains("dynamicFriction"))
-                terrainPhysicsProps.material.dynamicFriction = materialJson["dynamicFriction"].get<float>();
-            if (materialJson.contains("restitution"))
-                terrainPhysicsProps.material.restitution = materialJson["restitution"].get<float>();
-        }
+        if (collision.terrainSize) terrainPhysicsProps.terrainSize = *collision.terrainSize;
+        if (collision.maxHeight) terrainPhysicsProps.maxHeight = *collision.maxHeight;
+        if (collision.heightOffset) terrainPhysicsProps.heightOffset = *collision.heightOffset;
+        if (collision.layer) terrainPhysicsProps.layerName = *collision.layer;
+        if (collision.flipX) terrainPhysicsProps.flipX = *collision.flipX;
+        if (collision.flipZ) terrainPhysicsProps.flipZ = *collision.flipZ;
+        if (collision.material.staticFriction)
+            terrainPhysicsProps.material.staticFriction = *collision.material.staticFriction;
+        if (collision.material.dynamicFriction)
+            terrainPhysicsProps.material.dynamicFriction = *collision.material.dynamicFriction;
+        if (collision.material.restitution)
+            terrainPhysicsProps.material.restitution = *collision.material.restitution;
 
         if (terrainPhysicsProps.enabled)
         {
@@ -279,237 +171,119 @@ void VansSceneEnvironmentNodeBuilder::AddTerrainNode(VansScene& scene, VansVKDev
     }
 }
 
-void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& device, json& waterData)
+void VansSceneEnvironmentNodeBuilder::AddWaterNode(
+    VansScene& scene,
+    VkDevice& device,
+    const Vans::VansSceneWaterNodeConfig& waterData)
 {
+    auto toVec2 = [](const Vans::VansSceneFloat2& value) {
+        return glm::vec2(value[0], value[1]);
+    };
+    auto toVec3 = [](const Vans::VansSceneFloat3& value) {
+        return glm::vec3(value[0], value[1], value[2]);
+    };
+    auto toVec4 = [](const Vans::VansSceneFloat4& value) {
+        return glm::vec4(value[0], value[1], value[2], value[3]);
+    };
+    auto toWaveMode = [](Vans::VansSceneWaterWaveMode value) {
+        switch (value)
+        {
+        case Vans::VansSceneWaterWaveMode::Gerstner: return VansWaveMode::Gerstner;
+        case Vans::VansSceneWaterWaveMode::FFT: return VansWaveMode::FFT;
+        case Vans::VansSceneWaterWaveMode::WaveParticle: return VansWaveMode::WaveParticle;
+        }
+        return VansWaveMode::WaveParticle;
+    };
+
     VansWaterConfig config;
-    const std::uint32_t schemaVersion = waterData.value("schemaVersion", 0u);
-    if (schemaVersion != VansWaterConfig::SCHEMA_VERSION)
+    if (waterData.schemaVersion.value_or(0u) != VansWaterConfig::SCHEMA_VERSION)
         VANS_LOG_WARN("[AddWaterNode] Water data is not schema V4; deprecated fields are read through compatibility paths.");
 
-    config.m_WaterLevel        = waterData.value("level", 3.4f);
-    config.m_SpecularIntensity = waterData.value("specularIntensity", 1.0f);
+    if (waterData.level) config.m_WaterLevel = *waterData.level;
+    if (waterData.specularIntensity) config.m_SpecularIntensity = *waterData.specularIntensity;
 
-    // ── medium 块 ──────────────────────────────────────────────────────────
-    if (waterData.contains("medium") && waterData["medium"].is_object())
-    {
-        auto& m = waterData["medium"];
+    const Vans::VansSceneWaterMediumConfig& medium = waterData.medium;
+    if (medium.absorptionCoeff) config.m_Medium.m_AbsorptionCoeff = toVec3(*medium.absorptionCoeff);
+    if (medium.scatteringCoeff) config.m_Medium.m_ScatteringCoeff = toVec3(*medium.scatteringCoeff);
+    if (medium.ior) config.m_Medium.m_IOR = *medium.ior;
+    if (medium.fresnelPower) config.m_Medium.m_FresnelPower = *medium.fresnelPower;
+    if (medium.anisotropy) config.m_Medium.m_Anisotropy = *medium.anisotropy;
+    if (medium.waterRoughness) config.m_Medium.m_WaterRoughness = *medium.waterRoughness;
+    if (medium.deepColor) config.m_Medium.m_DeepColor = toVec4(*medium.deepColor);
+    if (medium.shallowColor) config.m_Medium.m_ShallowColor = toVec4(*medium.shallowColor);
 
-        // absorption — 支持数组 [r,g,b] 或对象 {r,g,b}
-        if (m.contains("absorption"))
-        {
-            auto& a = m["absorption"];
-            if (a.is_array() && a.size() >= 3)
-                config.m_Medium.m_AbsorptionCoeff = {a[0], a[1], a[2]};
-            else if (a.is_object())
-                config.m_Medium.m_AbsorptionCoeff = {
-                    a.value("r", 0.05f), a.value("g", 0.08f), a.value("b", 0.20f)};
-        }
+    const Vans::VansSceneWaterSpectrumConfig& spectrum = waterData.spectrum;
+    if (spectrum.mode) config.m_Spectrum.m_Mode = toWaveMode(*spectrum.mode);
+    if (spectrum.baseCoverage) config.m_Spectrum.m_BaseCoverage = *spectrum.baseCoverage;
+    if (spectrum.cascadeScale) config.m_Spectrum.m_CascadeScale = *spectrum.cascadeScale;
+    if (spectrum.cascadeCount) config.m_Spectrum.m_CascadeCount = *spectrum.cascadeCount;
+    if (spectrum.windSpeed) config.m_Spectrum.m_WindSpeed = *spectrum.windSpeed;
+    if (spectrum.swellAmplitude) config.m_Spectrum.m_SwellAmplitude = *spectrum.swellAmplitude;
+    if (spectrum.choppiness) config.m_Spectrum.m_Choppiness = *spectrum.choppiness;
+    if (spectrum.gerstnerWaveCount) config.m_Spectrum.m_GerstnerWaveCount = *spectrum.gerstnerWaveCount;
+    if (spectrum.windDirection) config.m_Spectrum.m_WindDirection = toVec2(*spectrum.windDirection);
+    if (spectrum.spectrumAmplitude) config.m_Spectrum.m_SpectrumAmplitude = *spectrum.spectrumAmplitude;
+    if (spectrum.minWavelength) config.m_Spectrum.m_MinWavelength = *spectrum.minWavelength;
+    if (spectrum.smallWaveDamping) config.m_Spectrum.m_SmallWaveDamping = *spectrum.smallWaveDamping;
+    if (spectrum.windDependency) config.m_Spectrum.m_WindDependency = *spectrum.windDependency;
+    if (spectrum.depth) config.m_Spectrum.m_Depth = *spectrum.depth;
+    if (spectrum.repeatPeriod) config.m_Spectrum.m_RepeatPeriod = *spectrum.repeatPeriod;
+    if (spectrum.randomSeed) config.m_Spectrum.m_RandomSeed = *spectrum.randomSeed;
 
-        if (m.contains("scattering"))
-        {
-            auto& s = m["scattering"];
-            if (s.is_array() && s.size() >= 3)
-                config.m_Medium.m_ScatteringCoeff = {s[0], s[1], s[2]};
-            else if (s.is_object())
-                config.m_Medium.m_ScatteringCoeff = {
-                    s.value("r", 0.03f), s.value("g", 0.05f), s.value("b", 0.08f)};
-        }
+    const Vans::VansSceneWaterWaveParticleConfig& waveParticle = waterData.waveParticle;
+    if (waveParticle.particleCount) config.m_WaveParticle.m_ParticleCount = *waveParticle.particleCount;
+    if (waveParticle.octaveCount) config.m_WaveParticle.m_OctaveCount = *waveParticle.octaveCount;
+    if (waveParticle.profile) config.m_WaveParticle.m_Profile = *waveParticle.profile;
+    if (waveParticle.domainSize) config.m_WaveParticle.m_DomainSize = *waveParticle.domainSize;
+    if (waveParticle.amplitude) config.m_WaveParticle.m_Amplitude = *waveParticle.amplitude;
+    if (waveParticle.minRadius) config.m_WaveParticle.m_MinRadius = *waveParticle.minRadius;
+    if (waveParticle.maxRadius) config.m_WaveParticle.m_MaxRadius = *waveParticle.maxRadius;
+    if (waveParticle.phaseVelocity) config.m_WaveParticle.m_PhaseVelocity = *waveParticle.phaseVelocity;
+    if (waveParticle.damping) config.m_WaveParticle.m_Damping = *waveParticle.damping;
+    if (waveParticle.directionSpread) config.m_WaveParticle.m_DirectionSpread = *waveParticle.directionSpread;
+    if (waveParticle.lacunarity) config.m_WaveParticle.m_Lacunarity = *waveParticle.lacunarity;
+    if (waveParticle.persistence) config.m_WaveParticle.m_Persistence = *waveParticle.persistence;
+    if (waveParticle.radiusFalloff) config.m_WaveParticle.m_RadiusFalloff = *waveParticle.radiusFalloff;
+    if (waveParticle.profileSharpness) config.m_WaveParticle.m_ProfileSharpness = *waveParticle.profileSharpness;
+    if (waveParticle.foamThreshold) config.m_WaveParticle.m_FoamThreshold = *waveParticle.foamThreshold;
+    if (waveParticle.foamSoftness) config.m_WaveParticle.m_FoamSoftness = *waveParticle.foamSoftness;
+    if (waveParticle.lifetime) config.m_WaveParticle.m_Lifetime = *waveParticle.lifetime;
+    if (waveParticle.randomSeed) config.m_WaveParticle.m_RandomSeed = *waveParticle.randomSeed;
 
-        config.m_Medium.m_IOR          = m.value("ior",          config.m_Medium.m_IOR);
-        config.m_Medium.m_FresnelPower = m.value("fresnelPower",  config.m_Medium.m_FresnelPower);
-        config.m_Medium.m_Anisotropy   = m.value("anisotropy",   config.m_Medium.m_Anisotropy);
-        config.m_Medium.m_WaterRoughness = m.value("roughness",  config.m_Medium.m_WaterRoughness);
+    const Vans::VansSceneWaterFlowMapConfig& flowMap = waterData.flowMap;
+    if (flowMap.enabled) config.m_FlowMap.m_Enabled = *flowMap.enabled;
+    if (flowMap.strength) config.m_FlowMap.m_Strength = *flowMap.strength;
+    if (flowMap.speed) config.m_FlowMap.m_Speed = *flowMap.speed;
+    if (flowMap.phaseLength) config.m_FlowMap.m_PhaseLength = *flowMap.phaseLength;
+    if (flowMap.noiseAmount) config.m_FlowMap.m_NoiseAmount = *flowMap.noiseAmount;
+    if (flowMap.worldOrigin) config.m_FlowMap.m_WorldOrigin = toVec2(*flowMap.worldOrigin);
+    if (flowMap.worldSize) config.m_FlowMap.m_WorldSize = toVec2(*flowMap.worldSize);
+    if (flowMap.fallbackDirection) config.m_FlowMap.m_FallbackDirection = toVec2(*flowMap.fallbackDirection);
 
-        if (m.contains("deepColor"))
-        {
-            auto& d = m["deepColor"];
-            if (d.is_array() && d.size() >= 3)
-                config.m_Medium.m_DeepColor = {d[0], d[1], d[2], 1.0f};
-            else if (d.is_object())
-                config.m_Medium.m_DeepColor = {
-                    d.value("r", 0.0f), d.value("g", 0.05f), d.value("b", 0.2f), 1.0f};
-        }
+    const Vans::VansSceneWaterCausticsConfig& caustics = waterData.caustics;
+    if (caustics.enabled) config.m_Caustics.m_Enabled = *caustics.enabled;
+    if (caustics.intensity) config.m_Caustics.m_Intensity = *caustics.intensity;
+    if (caustics.scale) config.m_Caustics.m_Scale = *caustics.scale;
 
-        if (m.contains("shallowColor"))
-        {
-            auto& s = m["shallowColor"];
-            if (s.is_array() && s.size() >= 3)
-                config.m_Medium.m_ShallowColor = {s[0], s[1], s[2], 1.0f};
-            else if (s.is_object())
-                config.m_Medium.m_ShallowColor = {
-                    s.value("r", 0.1f), s.value("g", 0.3f), s.value("b", 0.4f), 1.0f};
-        }
-    }
+    const Vans::VansSceneWaterRefractionConfig& refraction = waterData.refraction;
+    if (refraction.enabled) config.m_Refraction.m_Enabled = *refraction.enabled;
+    if (refraction.distortionStrength) config.m_Refraction.m_DistortionStrength = *refraction.distortionStrength;
 
-    // V2 spectral cascades are independent of geometry clipmap LODs.
-    if (waterData.contains("spectrum") && waterData["spectrum"].is_object())
-    {
-        auto& w = waterData["spectrum"];
+    const Vans::VansSceneWaterSSRConfig& ssr = waterData.ssr;
+    if (ssr.enabled) config.m_SSR.m_Enabled = *ssr.enabled;
+    if (ssr.maxDistance) config.m_SSR.m_MaxDistance = *ssr.maxDistance;
+    if (ssr.maxRoughness) config.m_SSR.m_MaxRoughness = *ssr.maxRoughness;
 
-        config.m_Spectrum.m_Mode = ReadWaterWaveMode(w, "mode", config.m_Spectrum.m_Mode);
-        config.m_Spectrum.m_BaseCoverage = w.value("baseCoverage", config.m_Spectrum.m_BaseCoverage);
-        config.m_Spectrum.m_CascadeScale = w.value("cascadeScale", config.m_Spectrum.m_CascadeScale);
-        config.m_Spectrum.m_CascadeCount = w.value("cascadeCount", config.m_Spectrum.m_CascadeCount);
-        config.m_Spectrum.m_WindSpeed = w.value("windSpeed", config.m_Spectrum.m_WindSpeed);
-        config.m_Spectrum.m_SwellAmplitude = w.value("swellAmplitude", config.m_Spectrum.m_SwellAmplitude);
-        config.m_Spectrum.m_Choppiness = w.value("choppiness", config.m_Spectrum.m_Choppiness);
-        config.m_Spectrum.m_GerstnerWaveCount = w.value("gerstnerWaveCount", config.m_Spectrum.m_GerstnerWaveCount);
+    const Vans::VansSceneWaterSSSConfig& sss = waterData.sss;
+    if (sss.enabled) config.m_SSS.m_Enabled = *sss.enabled;
+    if (sss.maxThickness) config.m_SSS.m_MaxThicknessDistance = *sss.maxThickness;
+    if (sss.deepFallback) config.m_SSS.m_DeepWaterThicknessFallback = *sss.deepFallback;
 
-        config.m_Spectrum.m_WindDirection = ReadVec2Field(
-            w, "windDirection", config.m_Spectrum.m_WindDirection);
-
-        config.m_Spectrum.m_SpectrumAmplitude = w.value("spectrumAmplitude", config.m_Spectrum.m_SpectrumAmplitude);
-        config.m_Spectrum.m_MinWavelength = w.value("minWavelength", config.m_Spectrum.m_MinWavelength);
-        config.m_Spectrum.m_SmallWaveDamping = w.value("smallWaveDamping", config.m_Spectrum.m_SmallWaveDamping);
-        config.m_Spectrum.m_WindDependency = w.value("windDependency", config.m_Spectrum.m_WindDependency);
-        config.m_Spectrum.m_Depth = w.value("depth", config.m_Spectrum.m_Depth);
-        config.m_Spectrum.m_RepeatPeriod = w.value("repeatPeriod", config.m_Spectrum.m_RepeatPeriod);
-        config.m_Spectrum.m_RandomSeed = w.value("randomSeed", config.m_Spectrum.m_RandomSeed);
-    }
-
-    if (waterData.contains("waves") && waterData["waves"].is_object())
-    {
-        auto& w = waterData["waves"];
-        config.m_Spectrum.m_Mode = ReadWaterWaveMode(w, "mode", config.m_Spectrum.m_Mode);
-        config.m_Spectrum.m_CascadeCount = w.value("cascadeCount", config.m_Spectrum.m_CascadeCount);
-        config.m_Spectrum.m_BaseCoverage = w.value("baseCoverage", config.m_Spectrum.m_BaseCoverage);
-        config.m_Spectrum.m_CascadeScale = w.value("cascadeScale", config.m_Spectrum.m_CascadeScale);
-        config.m_Spectrum.m_WindDirection = ReadVec2Field(
-            w, "windDirection", config.m_Spectrum.m_WindDirection);
-        config.m_Spectrum.m_WindSpeed = w.value("windSpeed", config.m_Spectrum.m_WindSpeed);
-        config.m_Spectrum.m_Choppiness = w.value("choppiness", config.m_Spectrum.m_Choppiness);
-
-        if (w.contains("gerstner") && w["gerstner"].is_object())
-        {
-            auto& g = w["gerstner"];
-            config.m_Spectrum.m_SwellAmplitude = g.value(
-                "swellAmplitude", config.m_Spectrum.m_SwellAmplitude);
-            config.m_Spectrum.m_GerstnerWaveCount = g.value(
-                "waveCount", config.m_Spectrum.m_GerstnerWaveCount);
-            config.m_Spectrum.m_GerstnerWaveCount = g.value(
-                "gerstnerWaveCount", config.m_Spectrum.m_GerstnerWaveCount);
-        }
-
-        if (w.contains("fft") && w["fft"].is_object())
-        {
-            auto& f = w["fft"];
-            config.m_Spectrum.m_SpectrumAmplitude = f.value(
-                "spectrumAmplitude", config.m_Spectrum.m_SpectrumAmplitude);
-            config.m_Spectrum.m_MinWavelength = f.value(
-                "minWavelength", config.m_Spectrum.m_MinWavelength);
-            config.m_Spectrum.m_SmallWaveDamping = f.value(
-                "smallWaveDamping", config.m_Spectrum.m_SmallWaveDamping);
-            config.m_Spectrum.m_WindDependency = f.value(
-                "windDependency", config.m_Spectrum.m_WindDependency);
-            config.m_Spectrum.m_Depth = f.value("depth", config.m_Spectrum.m_Depth);
-            config.m_Spectrum.m_RepeatPeriod = f.value(
-                "repeatPeriod", config.m_Spectrum.m_RepeatPeriod);
-            config.m_Spectrum.m_RandomSeed = f.value(
-                "randomSeed", config.m_Spectrum.m_RandomSeed);
-        }
-
-        if (w.contains("waveParticle") && w["waveParticle"].is_object())
-        {
-            auto& p = w["waveParticle"];
-            config.m_WaveParticle.m_ParticleCount = p.value(
-                "particleCount", config.m_WaveParticle.m_ParticleCount);
-            config.m_WaveParticle.m_OctaveCount = p.value(
-                "octaveCount", config.m_WaveParticle.m_OctaveCount);
-            config.m_WaveParticle.m_Profile = p.value(
-                "profile", config.m_WaveParticle.m_Profile);
-            config.m_WaveParticle.m_DomainSize = p.value(
-                "domainSize", config.m_WaveParticle.m_DomainSize);
-            config.m_WaveParticle.m_Amplitude = p.value(
-                "amplitude", config.m_WaveParticle.m_Amplitude);
-            config.m_WaveParticle.m_MinRadius = p.value(
-                "minRadius", config.m_WaveParticle.m_MinRadius);
-            config.m_WaveParticle.m_MaxRadius = p.value(
-                "maxRadius", config.m_WaveParticle.m_MaxRadius);
-            config.m_WaveParticle.m_PhaseVelocity = p.value(
-                "phaseVelocity", config.m_WaveParticle.m_PhaseVelocity);
-            config.m_WaveParticle.m_Damping = p.value(
-                "damping", config.m_WaveParticle.m_Damping);
-            config.m_WaveParticle.m_DirectionSpread = p.value(
-                "directionSpread", config.m_WaveParticle.m_DirectionSpread);
-            config.m_WaveParticle.m_Lacunarity = p.value(
-                "lacunarity", config.m_WaveParticle.m_Lacunarity);
-            config.m_WaveParticle.m_Persistence = p.value(
-                "persistence", config.m_WaveParticle.m_Persistence);
-            config.m_WaveParticle.m_RadiusFalloff = p.value(
-                "radiusFalloff", config.m_WaveParticle.m_RadiusFalloff);
-            config.m_WaveParticle.m_ProfileSharpness = p.value(
-                "profileSharpness", config.m_WaveParticle.m_ProfileSharpness);
-            config.m_WaveParticle.m_FoamThreshold = p.value(
-                "foamThreshold", config.m_WaveParticle.m_FoamThreshold);
-            config.m_WaveParticle.m_FoamSoftness = p.value(
-                "foamSoftness", config.m_WaveParticle.m_FoamSoftness);
-            config.m_WaveParticle.m_Lifetime = p.value(
-                "lifetime", config.m_WaveParticle.m_Lifetime);
-            config.m_WaveParticle.m_RandomSeed = p.value(
-                "randomSeed", config.m_WaveParticle.m_RandomSeed);
-        }
-    }
-
-    if (waterData.contains("flowMap") && waterData["flowMap"].is_object())
-    {
-        auto& f = waterData["flowMap"];
-        config.m_FlowMap.m_Enabled = f.value("enabled", config.m_FlowMap.m_Enabled);
-        config.m_FlowMap.m_Strength = f.value("strength", config.m_FlowMap.m_Strength);
-        config.m_FlowMap.m_Speed = f.value("speed", config.m_FlowMap.m_Speed);
-        config.m_FlowMap.m_PhaseLength = f.value("phaseLength", config.m_FlowMap.m_PhaseLength);
-        config.m_FlowMap.m_NoiseAmount = f.value("noiseAmount", config.m_FlowMap.m_NoiseAmount);
-        config.m_FlowMap.m_WorldOrigin = ReadVec2Field(
-            f, "worldOrigin", config.m_FlowMap.m_WorldOrigin);
-        config.m_FlowMap.m_WorldSize = ReadVec2Field(
-            f, "worldSize", config.m_FlowMap.m_WorldSize);
-        config.m_FlowMap.m_FallbackDirection = ReadVec2Field(
-            f, "fallbackDirection", config.m_FlowMap.m_FallbackDirection);
-    }
-
-    // ── caustics 块 ────────────────────────────────────────────────────────
-    if (waterData.contains("caustics") && waterData["caustics"].is_object())
-    {
-        auto& c = waterData["caustics"];
-        config.m_Caustics.m_Enabled   = c.value("enabled", config.m_Caustics.m_Enabled);
-        config.m_Caustics.m_Intensity = c.value("intensity", 1.0f);
-        config.m_Caustics.m_Scale     = c.value("scale",     0.5f);
-    }
-
-    // ── refraction 块 ─────────────────────────────────────────────────────
-    if (waterData.contains("refraction") && waterData["refraction"].is_object())
-    {
-        auto& r = waterData["refraction"];
-        config.m_Refraction.m_Enabled     = r.value("enabled",     true);
-        config.m_Refraction.m_DistortionStrength = r.value(
-            "distortionStrength", config.m_Refraction.m_DistortionStrength);
-    }
-
-    // ── ssr 块 ────────────────────────────────────────────────────────────
-    if (waterData.contains("ssr") && waterData["ssr"].is_object())
-    {
-        auto& s = waterData["ssr"];
-        config.m_SSR.m_Enabled      = s.value("enabled",      true);
-        config.m_SSR.m_MaxDistance   = s.value("maxDistance",  500.0f);
-        config.m_SSR.m_MaxRoughness  = s.value("maxRoughness", 0.3f);
-    }
-
-    // ── sss 块（W-16: 次表面散射）─────────────────────────────────────────
-    if (waterData.contains("sss") && waterData["sss"].is_object())
-    {
-        auto& s = waterData["sss"];
-        config.m_SSS.m_Enabled                   = s.value("enabled",        true);
-        config.m_SSS.m_MaxThicknessDistance       = s.value("maxThickness",  15.0f);
-        config.m_SSS.m_DeepWaterThicknessFallback = s.value("deepFallback",  0.8f);
-    }
-
-    if (waterData.contains("geometry") && waterData["geometry"].is_object())
-    {
-        auto& l = waterData["geometry"];
-        config.m_Geometry.m_LodCount = l.value("lodCount", config.m_Geometry.m_LodCount);
-        config.m_Geometry.m_BasePatchSize = l.value("basePatchSize", config.m_Geometry.m_BasePatchSize);
-        config.m_Geometry.m_MeshDim = l.value("meshDim", config.m_Geometry.m_MeshDim);
-        config.m_Geometry.m_MorphStartRatio = l.value("morphStartRatio", config.m_Geometry.m_MorphStartRatio);
-    }
+    const Vans::VansSceneWaterGeometryConfig& geometry = waterData.geometry;
+    if (geometry.lodCount) config.m_Geometry.m_LodCount = *geometry.lodCount;
+    if (geometry.basePatchSize) config.m_Geometry.m_BasePatchSize = *geometry.basePatchSize;
+    if (geometry.meshDim) config.m_Geometry.m_MeshDim = *geometry.meshDim;
+    if (geometry.morphStartRatio) config.m_Geometry.m_MorphStartRatio = *geometry.morphStartRatio;
 
     config.Validate();
     // ── 创建只持有单一 V2 配置的 WaterMaterial ─────────────────────────────
@@ -518,7 +292,7 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
     mat->m_Config       = config;
 
     // ── 注册到场景 ─────────────────────────────────────────────────────────
-    mat->SetName(waterData.value("name", "WaterMaterial"));
+    mat->SetName(waterData.name.value_or("WaterMaterial"));
     scene.AddMaterialAsset(mat);
 
     // 记录完整配置供 VansWaterSystem 初始化时读取
@@ -546,7 +320,7 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
                 glm::vec3(terrainHalfSize, terrainHalfSize, 1.0f) // 缩放铺满地形
             );
 
-            const std::string nodeName = waterData.value("name", "WaterNode");
+            const std::string nodeName = waterData.name.value_or("WaterNode");
             waterNode->SetName(nodeName);
             scene.RegistRenderNode(waterNode, WATER_NODE);
         }
@@ -587,57 +361,62 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(VansScene& scene, VkDevice& d
     }
 }
 
-void VansSceneEnvironmentNodeBuilder::AddVegetationNode(VansScene& scene, VkDevice& device, json& vegetationData, const std::string& projectRoot)
+void VansSceneEnvironmentNodeBuilder::AddVegetationNode(
+    VansScene& scene,
+    VkDevice& device,
+    const Vans::VansSceneVegetationNodeConfig& vegetationData,
+    const std::string& projectRoot)
 {
-    json resolvedVegetationData = LoadVegetationConfigFromReference(vegetationData, projectRoot);
-    if (!resolvedVegetationData.is_object())
+    if (!vegetationData.valid)
     {
-        VANS_LOG_ERROR("[SceneLoader] Vegetation config must be an object or config path.");
         return;
     }
-    vegetationData = resolvedVegetationData;
 
-    // Read optional parameters from JSON
-    uint32_t instanceCount = vegetationData.value("instanceCount", 2000000u);
-    uint32_t boneCount     = vegetationData.value("boneCount", 6u);
-    float    bladeHeight   = vegetationData.value("bladeHeight", 0.5f);
-    float    windDirX      = vegetationData.value("windDirX", 1.0f);
-    float    windDirZ      = vegetationData.value("windDirZ", 0.0f);
-    float    leanDeviation = vegetationData.value("leanDeviation", 35.0f);  // degrees
-    std::string materialName = vegetationData.value("material", "grassMaterial");
-    std::string name         = vegetationData.value("name", "VegetationNode");
+    const uint32_t instanceCount = vegetationData.instanceCount.value_or(2000000u);
+    const uint32_t boneCount = vegetationData.boneCount.value_or(6u);
+    const float bladeHeight = vegetationData.bladeHeight.value_or(0.5f);
+    const float windDirX = vegetationData.windDirX.value_or(1.0f);
+    const float windDirZ = vegetationData.windDirZ.value_or(0.0f);
+    const float leanDeviation = vegetationData.leanDeviation.value_or(35.0f);
+    const std::string materialName = vegetationData.material.value_or("grassMaterial");
+    const std::string name = vegetationData.name.value_or("VegetationNode");
 
-    // Read per-frame simulation parameters (all configurable from JSON)
-    uint32_t subBladeCount           = vegetationData.value("subBladeCount",          10u);
-    float    subBladeScatterRadiusMin = vegetationData.value("subBladeScatterRadiusMin", 0.15f);
-    float    subBladeScatterRadiusMax = vegetationData.value("subBladeScatterRadiusMax", 0.45f);
-    float windStrength  = vegetationData.value("windStrength",  4.0f);   // overall wind force
-    float windFrequency = vegetationData.value("windFrequency", 0.5f);   // spatial noise frequency
-    float windSpeed     = vegetationData.value("windSpeed",     1.5f);   // noise scroll rate (animation speed)
-    float windBendMult  = vegetationData.value("windBendMult",  5.0f);   // bend amplification
-    float stiffness     = vegetationData.value("stiffness",    15.0f);
-    float damping       = vegetationData.value("damping",       0.92f);
-    float softness      = vegetationData.value("softness",      0.2f);
-    float lodFullDist   = vegetationData.value("lodFullDist",  15.0f);
-    float lodFadeDist   = vegetationData.value("lodFadeDist",  20.0f);
+    const uint32_t subBladeCount = vegetationData.subBladeCount.value_or(10u);
+    const float subBladeScatterRadiusMin = vegetationData.subBladeScatterRadiusMin.value_or(0.15f);
+    const float subBladeScatterRadiusMax = vegetationData.subBladeScatterRadiusMax.value_or(0.45f);
+    const float windStrength = vegetationData.windStrength.value_or(4.0f);
+    const float windFrequency = vegetationData.windFrequency.value_or(0.5f);
+    const float windSpeed = vegetationData.windSpeed.value_or(1.5f);
+    const float windBendMult = vegetationData.windBendMult.value_or(5.0f);
+    const float stiffness = vegetationData.stiffness.value_or(15.0f);
+    const float damping = vegetationData.damping.value_or(0.92f);
+    const float softness = vegetationData.softness.value_or(0.2f);
+    const float lodFullDist = vegetationData.lodFullDist.value_or(15.0f);
+    const float lodFadeDist = vegetationData.lodFadeDist.value_or(20.0f);
 
     glm::vec2 placementMinXZ(-100.0f, -100.0f);
-    glm::vec2 placementMaxXZ( 100.0f,  100.0f);
-    float grassScaleMin = vegetationData.value("grassScaleMin", 0.4f);
-    float grassScaleMax = vegetationData.value("grassScaleMax", 1.5f);
-    auto readVec2FromJson = [](const json& value, const glm::vec2& fallback) -> glm::vec2
+    glm::vec2 placementMaxXZ(100.0f, 100.0f);
+    float grassScaleMin = vegetationData.grassScaleMin.value_or(0.4f);
+    float grassScaleMax = vegetationData.grassScaleMax.value_or(1.5f);
+    if (vegetationData.placement)
     {
-        if (value.is_array() && value.size() >= 2)
-            return glm::vec2(value[0].get<float>(), value[1].get<float>());
-        return fallback;
-    };
-    if (vegetationData.contains("placement") && vegetationData["placement"].is_object())
+        const Vans::VansSceneVegetationPlacementConfig& placement = *vegetationData.placement;
+        if (placement.boundsMin) placementMinXZ = ToPcgVec2(*placement.boundsMin);
+        if (placement.boundsMax) placementMaxXZ = ToPcgVec2(*placement.boundsMax);
+        if (placement.grassScaleMin) grassScaleMin = *placement.grassScaleMin;
+        if (placement.grassScaleMax) grassScaleMax = *placement.grassScaleMax;
+    }
+
+    VansPcgSystem pcgSystem;
+    pcgSystem.Configure(ToPcgMaskConfigs(vegetationData.pcgMasks), projectRoot, placementMinXZ, placementMaxXZ);
+    PcgPlacementMask grassMask;
+    if (vegetationData.placement && vegetationData.placement->mask)
     {
-        const json& placementJson = vegetationData["placement"];
-        placementMinXZ = readVec2FromJson(placementJson.value("boundsMin", json::array()), placementMinXZ);
-        placementMaxXZ = readVec2FromJson(placementJson.value("boundsMax", json::array()), placementMaxXZ);
-        grassScaleMin = placementJson.value("grassScaleMin", grassScaleMin);
-        grassScaleMax = placementJson.value("grassScaleMax", grassScaleMax);
+        grassMask = pcgSystem.ResolvePlacementMask(
+            ToPcgMaskReference(*vegetationData.placement->mask),
+            "grass",
+            placementMinXZ,
+            placementMaxXZ);
     }
 
     // Create the vegetation system
@@ -648,85 +427,56 @@ void VansSceneEnvironmentNodeBuilder::AddVegetationNode(VansScene& scene, VkDevi
     vegetationSystem->SetSubBladeParams(subBladeCount, subBladeScatterRadiusMin, subBladeScatterRadiusMax);  // must be set before Init()
     vegetationSystem->SetPlacementBounds(placementMinXZ, placementMaxXZ);
     vegetationSystem->SetGrassScaleRange(grassScaleMin, grassScaleMax);
+    vegetationSystem->SetPlacementMask(grassMask);
 
-    if (vegetationData.contains("trees") && vegetationData["trees"].is_object())
+    if (vegetationData.trees)
     {
-        const json& treesJson = vegetationData["trees"];
+        const Vans::VansSceneVegetationTreesConfig& treesConfig = *vegetationData.trees;
         TreeVegetationConfig treeConfig;
-        treeConfig.enabled = treesJson.value("enabled", false);
-        treeConfig.cullDistance = treesJson.value("cullDistance", 800.0f);
-        treeConfig.cullEnabled = treesJson.value("cullEnabled", true);
-        treeConfig.hizEnabled = treesJson.value("hizEnabled", true);
+        treeConfig.enabled = treesConfig.enabled.value_or(false);
+        treeConfig.cullDistance = treesConfig.cullDistance.value_or(800.0f);
+        treeConfig.cullEnabled = treesConfig.cullEnabled.value_or(true);
+        treeConfig.hizEnabled = treesConfig.hizEnabled.value_or(true);
 
-        auto parsePartType = [](const std::string& type) -> TreePartType {
-            if (type == "trunk") return TreePartType::Trunk;
-            if (type == "leaves" || type == "leaf") return TreePartType::Leaves;
-            return TreePartType::Custom;
-        };
-        auto readSubmeshIndex = [](const json& value) -> int32_t {
-            if (value.contains("submeshIndex") && value["submeshIndex"].is_number_integer())
-                return value["submeshIndex"].get<int32_t>();
-            if (value.contains("submesh") && value["submesh"].is_number_integer())
-                return value["submesh"].get<int32_t>();
-            if (value.contains("submesh") && value["submesh"].is_object() &&
-                value["submesh"].contains("index") && value["submesh"]["index"].is_number_integer())
-            {
-                return value["submesh"]["index"].get<int32_t>();
-            }
-            return -1;
-        };
-
-        if (treesJson.contains("species") && treesJson["species"].is_array())
+        for (const Vans::VansSceneVegetationTreeSpeciesConfig& speciesConfig : treesConfig.species)
         {
-            for (const auto& spJson : treesJson["species"])
+            TreeSpeciesConfig species;
+            species.name = speciesConfig.name.empty() ? std::string("TreeSpecies") : speciesConfig.name;
+            species.boundsRadius = speciesConfig.boundsRadius.value_or(1.0f);
+            for (const Vans::VansSceneVegetationTreePartConfig& partConfig : speciesConfig.parts)
             {
-                TreeSpeciesConfig species;
-                species.name = spJson.value("name", std::string("TreeSpecies"));
-                species.boundsRadius = spJson.value("boundsRadius", 1.0f);
-                if (spJson.contains("parts") && spJson["parts"].is_array())
-                {
-                    for (const auto& partJson : spJson["parts"])
-                    {
-                        TreePartConfig part;
-                        part.type = parsePartType(partJson.value("type", std::string("custom")));
-                        part.meshName = partJson.value("mesh", std::string(""));
-                        part.materialName = partJson.value("material", std::string(""));
-                        part.submeshIndex = readSubmeshIndex(partJson);
-                        species.parts.push_back(part);
-                    }
-                }
-                treeConfig.species.push_back(species);
+                TreePartConfig part;
+                part.type = ToTreePartType(partConfig.type);
+                part.meshName = partConfig.mesh;
+                part.materialName = partConfig.material;
+                part.submeshIndex = partConfig.submeshIndex.value_or(-1);
+                species.parts.push_back(part);
             }
+            treeConfig.species.push_back(species);
         }
 
-        if (treesJson.contains("instances") && treesJson["instances"].is_array())
+        if (!treesConfig.instances.empty())
         {
-            for (const auto& instJson : treesJson["instances"])
+            for (const Vans::VansSceneVegetationTreeInstanceConfig& instanceConfig : treesConfig.instances)
             {
                 TreeInstanceConfig inst;
-                inst.speciesName = instJson.value("species", treeConfig.species.empty() ? std::string("") : treeConfig.species[0].name);
-                if (instJson.contains("position") && instJson["position"].is_array() && instJson["position"].size() >= 3)
-                {
-                    inst.position = glm::vec3(
-                        instJson["position"][0].get<float>(),
-                        instJson["position"][1].get<float>(),
-                        instJson["position"][2].get<float>());
-                }
-                inst.yawDeg = instJson.value("yaw", 0.0f);
-                inst.scale = instJson.value("scale", 1.0f);
-                inst.submeshIndex = readSubmeshIndex(instJson);
+                inst.speciesName = instanceConfig.species.value_or(treeConfig.species.empty() ? std::string("") : treeConfig.species[0].name);
+                if (instanceConfig.position) inst.position = ToVec3(*instanceConfig.position);
+                inst.yawDeg = instanceConfig.yaw.value_or(0.0f);
+                inst.scale = instanceConfig.scale.value_or(1.0f);
+                inst.submeshIndex = instanceConfig.submeshIndex.value_or(-1);
                 treeConfig.instances.push_back(inst);
             }
         }
-        else if (treesJson.contains("randomInstances") && treesJson["randomInstances"].is_object() && !treeConfig.species.empty())
+        else if (treesConfig.randomInstances && !treeConfig.species.empty())
         {
-            const json& randomJson = treesJson["randomInstances"];
-            uint32_t treeCount = randomJson.value("count", 80u);
-            uint32_t seed = randomJson.value("seed", 1337u);
-            float scaleMin = randomJson.value("scaleMin", 0.9f);
-            float scaleMax = randomJson.value("scaleMax", 1.15f);
-            glm::vec2 treeMinXZ = readVec2FromJson(randomJson.value("boundsMin", json::array()), placementMinXZ);
-            glm::vec2 treeMaxXZ = readVec2FromJson(randomJson.value("boundsMax", json::array()), placementMaxXZ);
+            const Vans::VansSceneVegetationRandomTreeConfig& randomConfig = *treesConfig.randomInstances;
+            uint32_t treeCount = randomConfig.count.value_or(80u);
+            uint32_t seed = randomConfig.seed.value_or(1337u);
+            float scaleMin = randomConfig.scaleMin.value_or(0.9f);
+            float scaleMax = randomConfig.scaleMax.value_or(1.15f);
+            glm::vec2 treeMinXZ = randomConfig.boundsMin ? ToPcgVec2(*randomConfig.boundsMin) : placementMinXZ;
+            glm::vec2 treeMaxXZ = randomConfig.boundsMax ? ToPcgVec2(*randomConfig.boundsMax) : placementMaxXZ;
             const glm::vec2 normalizedMinXZ = glm::min(treeMinXZ, treeMaxXZ);
             const glm::vec2 normalizedMaxXZ = glm::max(treeMinXZ, treeMaxXZ);
             treeMinXZ = normalizedMinXZ;
@@ -736,30 +486,51 @@ void VansSceneEnvironmentNodeBuilder::AddVegetationNode(VansScene& scene, VkDevi
             std::uniform_real_distribution<float> zDist(treeMinXZ.y, treeMaxXZ.y);
             std::uniform_real_distribution<float> yawDist(0.0f, 360.0f);
             std::uniform_real_distribution<float> scaleDist(std::min(scaleMin, scaleMax), std::max(scaleMin, scaleMax));
-
-            for (uint32_t i = 0; i < treeCount; ++i)
+            std::uniform_real_distribution<float> acceptDist(0.0f, 1.0f);
+            PcgPlacementMask treeMask;
+            if (randomConfig.mask)
             {
+                treeMask = pcgSystem.ResolvePlacementMask(
+                    ToPcgMaskReference(*randomConfig.mask),
+                    "tree",
+                    treeMinXZ,
+                    treeMaxXZ);
+            }
+            const uint32_t maxAttempts = treeMask.enabled
+                ? std::max(treeCount * 32u, treeCount)
+                : treeCount;
+            const size_t startInstanceCount = treeConfig.instances.size();
+
+            for (uint32_t attempt = 0;
+                 attempt < maxAttempts && (treeConfig.instances.size() - startInstanceCount) < treeCount;
+                 ++attempt)
+            {
+                const float px = xDist(rng);
+                const float pz = zDist(rng);
+                if (treeMask.enabled && !pcgSystem.AcceptMask(treeMask, glm::vec2(px, pz), acceptDist(rng)))
+                    continue;
+
                 TreeInstanceConfig inst;
-                inst.speciesName = randomJson.value("species", treeConfig.species[0].name);
-                inst.position = glm::vec3(xDist(rng), 0.0f, zDist(rng));
+                inst.speciesName = randomConfig.species.value_or(treeConfig.species[0].name);
+                inst.position = glm::vec3(px, 0.0f, pz);
                 inst.yawDeg = yawDist(rng);
                 inst.scale = scaleDist(rng);
-                inst.submeshIndex = readSubmeshIndex(randomJson);
+                inst.submeshIndex = randomConfig.submeshIndex.value_or(-1);
                 treeConfig.instances.push_back(inst);
+            }
+
+            if (treeMask.enabled && (treeConfig.instances.size() - startInstanceCount) < treeCount)
+            {
+                VANS_LOG_WARN("[PCG] Tree mask '" << treeMask.name << "' produced "
+                    << (treeConfig.instances.size() - startInstanceCount) << "/" << treeCount
+                    << " requested random tree instances.");
             }
         }
         else if (!treeConfig.species.empty())
         {
-            uint32_t treeCount = treesJson.value("count", 10u);
-            float radius = treesJson.value("placementRadius", 12.0f);
-            glm::vec3 center(0.0f);
-            if (treesJson.contains("center") && treesJson["center"].is_array() && treesJson["center"].size() >= 3)
-            {
-                center = glm::vec3(
-                    treesJson["center"][0].get<float>(),
-                    treesJson["center"][1].get<float>(),
-                    treesJson["center"][2].get<float>());
-            }
+            uint32_t treeCount = treesConfig.fallbackCount.value_or(10u);
+            float radius = treesConfig.placementRadius.value_or(12.0f);
+            glm::vec3 center = treesConfig.center ? ToVec3(*treesConfig.center) : glm::vec3(0.0f);
             for (uint32_t i = 0; i < treeCount; ++i)
             {
                 float angle = (static_cast<float>(i) / std::max(1u, treeCount)) * 6.28318530718f;
@@ -777,15 +548,16 @@ void VansSceneEnvironmentNodeBuilder::AddVegetationNode(VansScene& scene, VkDevi
     }
 
     // ── Parse render configs (multi-mesh/material support) ─────────────────
-    if (vegetationData.contains("renderConfigs") && vegetationData["renderConfigs"].is_array())
+    if (!vegetationData.renderConfigs.empty())
     {
         std::vector<GrassRenderConfig> configs;
-        for (auto& rc : vegetationData["renderConfigs"])
+        configs.reserve(vegetationData.renderConfigs.size());
+        for (const Vans::VansSceneVegetationRenderConfig& renderConfig : vegetationData.renderConfigs)
         {
             GrassRenderConfig cfg;
-            cfg.meshName     = rc.value("mesh", std::string(""));
-            cfg.materialName = rc.value("material", materialName);
-            cfg.percent      = rc.value("percent", 1.0f);
+            cfg.meshName = renderConfig.mesh.value_or(std::string());
+            cfg.materialName = renderConfig.material.value_or(materialName);
+            cfg.percent = renderConfig.percent.value_or(1.0f);
             configs.push_back(cfg);
         }
         vegetationSystem->SetRenderConfigs(configs);
@@ -820,8 +592,8 @@ void VansSceneEnvironmentNodeBuilder::AddVegetationNode(VansScene& scene, VkDevi
             if (heightMap)
             {
                 // 读取植被覆盖参数；未配置时复用 terrain 运行时参数，避免高度不一致
-                float terrainMaxHeight = vegetationData.value("terrainMaxHeight", terrain->GetMaxHeight());
-                float terrainHeightOffset = vegetationData.value("terrainHeightOffset", terrain->GetHeightOffset());
+                float terrainMaxHeight = vegetationData.terrainMaxHeight.value_or(terrain->GetMaxHeight());
+                float terrainHeightOffset = vegetationData.terrainHeightOffset.value_or(terrain->GetHeightOffset());
 
                 vegetationSystem->SetTerrainHeightmap(
                     heightMap->GetImage().GetImageView(),
@@ -840,7 +612,7 @@ void VansSceneEnvironmentNodeBuilder::AddVegetationNode(VansScene& scene, VkDevi
             VansMaterialManager::RT_HZB_RESULT);
         if (hzbTexture != nullptr)
         {
-            float hizSampleBias = vegetationData.value("hizSampleBias", 0.2f);
+            float hizSampleBias = vegetationData.hizSampleBias.value_or(0.2f);
             vegetationSystem->SetHiZDepth(
                 hzbTexture->GetImage().GetImageView(),
                 hzbTexture->GetImage().GetSampler(),

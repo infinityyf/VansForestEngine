@@ -1,11 +1,12 @@
 #pragma once
 
+#include "../AssetCore/Serialization/VansSerializedValue.h"
 #include "../AssetCore/VansAssetGuid.h"
 #include "VansSceneDiagnostics.h"
+#include "VansSceneJson.h"
 
 #include <array>
 #include <cstdint>
-#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <vector>
@@ -27,7 +28,7 @@ struct VansSceneComponentData
     std::string type;
     std::uint32_t version = 1;
     bool enabled = true;
-    nlohmann::ordered_json data = nlohmann::ordered_json::object();
+    VansSerializedValue data = VansSerializedValue::Object({});
 };
 
 struct VansSceneEntityData
@@ -42,15 +43,15 @@ struct VansSceneData
 {
     VansAssetGuid sceneGuid;
     std::vector<VansSceneEntityData> entities;
-    nlohmann::ordered_json settings = nlohmann::ordered_json::object();
+    VansSerializedValue settings = VansSerializedValue::Object({});
 };
 
 class VansSceneSchema
 {
 public:
-    static SceneDiagnostics Validate(const nlohmann::ordered_json& root);
-    static bool Deserialize(const nlohmann::ordered_json& root, VansSceneData& scene, SceneDiagnostics& diagnostics);
-    static nlohmann::ordered_json Serialize(const VansSceneData& scene);
+    static SceneDiagnostics ValidateLegacyJson(const SceneJson& root);
+    static bool DeserializeLegacyJson(const SceneJson& root, VansSceneData& scene, SceneDiagnostics& diagnostics);
+    static SceneJson SerializeLegacyJson(const VansSceneData& scene);
 
     static VansSceneComponentData MakeTransform(const VansSceneTransform& transform = {});
     static VansSceneComponentData MakeModelRenderer(VansAssetGuid model);

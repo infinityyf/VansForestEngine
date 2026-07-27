@@ -3,6 +3,7 @@
 layout(early_fragment_tests) in;
 #include "../../Common/CameraData.glsl"
 #include "../../Common/Common.glsl"
+#include "../../BRDF/BRDFData.glsl"
 
 layout( location = 0 ) in vec2 frag_uv;
 layout( location = 1 ) in vec3 normal_ws;
@@ -29,17 +30,22 @@ layout (location = 3) out vec4 outGBuffer2;
 
 void main() 
 { 
-    // Skin uses dedicated textures, no material index needed
-    float roughness = 0.9;
-    float metallic  = 0.0;
-    float ao        = 1.0;
+    float roughness = 0.62;
+    float normalStrength = 0.35;
+    float ao = 1.0;
+    if (materialConst.materialIndex >= 0)
+    {
+        MaterialPayload skinMaterial = materialDataBuffer.materials[materialConst.materialIndex];
+        roughness = clamp(skinMaterial.roughness, 0.045, 1.0);
+        normalStrength = clamp(skinMaterial.metallic, 0.0, 2.0);
+    }
 
     // Sample dedicated skin textures
     vec3 albedo        = texture(skinAlbedoTexture, frag_uv).rgb;
     vec3 normal_sample = textureLod(skinNormalTexture, frag_uv, 0.0).rgb;
 
     normal_sample = normal_sample * 2.0 - 1.0;
-    normal_sample.rg *= 0.2;  // Scale normal strength down
+    normal_sample.rg *= normalStrength;
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);
 
@@ -68,8 +74,7 @@ void main()
     // Store curvature in normal.w for the deferred skin BRDF
     outNormal = vec4(normal, curvature);
     outGBuffer0 = vec4(albedo, roughness);
-    // Mark material ID as MATERIAL_ID_SKIN (3) in GBuffer1.z
-    outGBuffer1 = vec4(metallic, ao, float(MATERIAL_ID_SKIN), 1.0);
+    outGBuffer1 = vec4(0.0, ao, float(MATERIAL_ID_SKIN), float(materialConst.materialIndex));
 
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
     outGBuffer2 = vec4(position_world, -linearDepth);

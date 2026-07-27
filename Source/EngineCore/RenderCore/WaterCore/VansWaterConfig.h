@@ -45,9 +45,9 @@ namespace VansGraphics
         float m_CascadeScale = 4.0f;
 
         glm::vec2 m_WindDirection = { 0.7071f, 0.7071f };
-        float m_WindSpeed = 12.0f;
-        float m_SwellAmplitude = 0.2f;
-        float m_Choppiness = 1.0f;
+        float m_WindSpeed = 16.0f;
+        float m_SwellAmplitude = 0.35f;
+        float m_Choppiness = 1.65f;
         int m_GerstnerWaveCount = 32;
 
         float m_SpectrumAmplitude = 0.001f;
@@ -63,33 +63,33 @@ namespace VansGraphics
 
     struct VansWaterWaveParticleConfig
     {
-        int m_ParticleCount = 256;
-        int m_OctaveCount = 4;
+        int m_ParticleCount = 192;
+        int m_OctaveCount = 5;
         int m_Profile = 1; // 0=Gaussian, 1=Compact ripple, 2=Sharp crest.
-        float m_DomainSize = 256.0f;
-        float m_Amplitude = 0.16f;
-        float m_MinRadius = 2.0f;
-        float m_MaxRadius = 64.0f;
-        float m_PhaseVelocity = 1.0f;
-        float m_Damping = 0.05f;
-        float m_DirectionSpread = 0.45f;
+        float m_DomainSize = 1024.0f;
+        float m_Amplitude = 2.75f;
+        float m_MinRadius = 6.0f;
+        float m_MaxRadius = 384.0f;
+        float m_PhaseVelocity = 0.45f;
+        float m_Damping = 0.018f;
+        float m_DirectionSpread = 0.7f;
         float m_Lacunarity = 2.0f;
-        float m_Persistence = 0.52f;
-        float m_RadiusFalloff = 0.55f;
-        float m_ProfileSharpness = 2.0f;
-        float m_FoamThreshold = 0.55f;
-        float m_FoamSoftness = 0.35f;
-        float m_Lifetime = 18.0f;
+        float m_Persistence = 0.6f;
+        float m_RadiusFalloff = 0.58f;
+        float m_ProfileSharpness = 1.45f;
+        float m_FoamThreshold = 0.28f;
+        float m_FoamSoftness = 0.25f;
+        float m_Lifetime = 24.0f;
         std::uint32_t m_RandomSeed = 20260724u;
     };
 
     struct VansWaterFlowMapConfig
     {
         bool m_Enabled = false;
-        float m_Strength = 6.0f;
-        float m_Speed = 0.45f;
+        float m_Strength = 10.0f;
+        float m_Speed = 0.65f;
         float m_PhaseLength = 1.0f;
-        float m_NoiseAmount = 0.35f;
+        float m_NoiseAmount = 0.5f;
         glm::vec2 m_WorldOrigin = { -256.0f, -256.0f };
         glm::vec2 m_WorldSize = { 512.0f, 512.0f };
         glm::vec2 m_FallbackDirection = { 1.0f, 0.0f };

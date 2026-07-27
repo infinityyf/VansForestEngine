@@ -43,6 +43,12 @@ namespace
 		return glm::vec3(0.0f, -1.0f, 0.0f);
 	}
 
+	float SmoothStep01(float edge0, float edge1, float value)
+	{
+		const float t = glm::clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+		return t * t * (3.0f - 2.0f * t);
+	}
+
 	// 为 glm::lookAt 选取与 forward 不共线的稳定 up 向量。
 	// 修复：原来硬切阈值 0.99f（约 8°），在临界角度附近会引发每帧反复跳变。
 	// 现改为从三个世界轴候选中选取与 forward 点积绝对值最小（最垂直）的轴，
@@ -359,6 +365,38 @@ glm::vec3 VansGraphics::VansLightManager::ComputeAtmosphereSunColor(
 	return baseColor * attenuation;
 }
 
+VansGraphics::VansCelestialLightingState VansGraphics::VansLightManager::ComputeCelestialLightingState(
+	const VansDirectionalLight& light)
+{
+	VansCelestialLightingState state{};
+	const glm::vec3 sunDir = NormalizeLightDirectionSafe(light.m_Direction, glm::vec3(0.0f, 1.0f, 0.0f));
+	const glm::vec3 moonDir = -sunDir;
+	const float sunElevation = sunDir.y;
+	const float nightBlend = 1.0f - SmoothStep01(-0.08f, 0.12f, sunElevation);
+	const bool useMoonKey = nightBlend > 0.5f;
+
+	const glm::vec3 moonTint = glm::vec3(0.42f, 0.48f, 0.70f);
+	const float moonKeyIntensityScale = 0.035f;
+	state.sunDirection = sunDir;
+	state.moonDirection = moonDir;
+	state.direction = useMoonKey ? moonDir : sunDir;
+	state.color = useMoonKey
+		? glm::vec3(
+			(std::max)(light.m_Color.x * moonTint.x, 0.0f),
+			(std::max)(light.m_Color.y * moonTint.y, 0.0f),
+			(std::max)(light.m_Color.z * moonTint.z, 0.0f))
+		: ComputeAtmosphereSunColor(sunDir, light.m_Color);
+	state.intensity = (std::max)(light.m_Intensity * (useMoonKey ? moonKeyIntensityScale : 1.0f), 0.0f);
+	state.moonBlend = nightBlend;
+
+	const float moonElevation = SmoothStep01(-0.06f, 0.24f, moonDir.y);
+	const float nightDiffuseScale = glm::mix(0.018f, 0.065f, moonElevation);
+	const float nightSpecularScale = glm::mix(0.025f, 0.085f, moonElevation);
+	state.skyDiffuseScale = glm::mix(1.0f, nightDiffuseScale, nightBlend);
+	state.skySpecularScale = glm::mix(1.0f, nightSpecularScale, nightBlend);
+	return state;
+}
+
 void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCascadeCameraData& cameraData)
 {
 	auto vansConfig = VansConfigration::GetInstance();
@@ -367,10 +405,15 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCasca
 	int cascadeMapSize = vansConfig->GetCascadeShadowMapSize();
 
 	int directionLightCount = static_cast<int>(m_DirectionalLights.size());
+	if (directionLightCount <= 0)
+		m_MainCelestialLightingState = VansCelestialLightingState{};
 	for (int dirLightIndex = 0; dirLightIndex < directionLightCount; dirLightIndex++)
 	{
 		auto& dirLight = m_DirectionalLights[dirLightIndex];
-		auto lightDir = NormalizeLightDirectionSafe(dirLight.m_Direction, glm::vec3(0.0f, -1.0f, 0.0f));
+		const VansCelestialLightingState celestialState = ComputeCelestialLightingState(dirLight);
+		if (dirLightIndex == 0)
+			m_MainCelestialLightingState = celestialState;
+		auto lightDir = NormalizeLightDirectionSafe(celestialState.direction, glm::vec3(0.0f, -1.0f, 0.0f));
 
 		dirLight.m_CascadeSplits = glm::vec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]);
 
@@ -513,10 +556,17 @@ void VansGraphics::VansLightManager::UpdateLightCPUData()
 		// m_Color 保持为美术原始值；GPU buffer 中的 color 是最终有效光照颜色
 		// 所有 include LightsData.glsl 的 shader 均通过 uDirectionLight.color 取到统一来源
 		auto dirLightsForUpload = m_DirectionalLights;
-		for (auto& dl : dirLightsForUpload)
+		if (dirLightsForUpload.empty())
+			m_MainCelestialLightingState = VansCelestialLightingState{};
+		for (size_t lightIndex = 0; lightIndex < dirLightsForUpload.size(); ++lightIndex)
 		{
-			if (glm::dot(dl.m_Direction, dl.m_Direction) > 1e-6f)
-				dl.m_Color = ComputeAtmosphereSunColor(dl.m_Direction, dl.m_Color);
+			auto& dl = dirLightsForUpload[lightIndex];
+			const VansCelestialLightingState celestialState = ComputeCelestialLightingState(dl);
+			if (lightIndex == 0)
+				m_MainCelestialLightingState = celestialState;
+			dl.m_Direction = celestialState.direction;
+			dl.m_Color = celestialState.color;
+			dl.m_Intensity = celestialState.intensity;
 		}
 		UploadPaddedLightData(m_LightBuffer, offset, m_MaxDirectionLightCount, dirLightsForUpload);
 	}

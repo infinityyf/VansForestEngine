@@ -1,11 +1,14 @@
 #include "VansScene.h"
+
 #include "SceneBuild/VansScenePhysicsComponentBuilder.h"
+
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansClothSystem.h"
 #include "../AssetCore/VansClothProfile.h"
+#include "../AssetCore/Storage/VansClothProfileStorage.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../Configration/VansConfigration.h"
@@ -18,7 +21,40 @@
 #include "VulkanCore/VansVKDevice.h"
 #include "../Util/VansLog.h"
 #include <algorithm>
+#include <array>
 #include <cstring>
+
+namespace
+{
+glm::vec3 ToVec3(const std::array<float, 3>& value)
+{
+    return glm::vec3(value[0], value[1], value[2]);
+}
+
+void ApplyBodyType(const std::string& bodyType, VansEngine::PhysicsNodeProperties& properties)
+{
+    if (bodyType == "static")
+        properties.bodyType = VansEngine::PhysicsBodyType::Static;
+    else if (bodyType == "dynamic")
+        properties.bodyType = VansEngine::PhysicsBodyType::Dynamic;
+    else if (bodyType == "kinematic")
+        properties.bodyType = VansEngine::PhysicsBodyType::Kinematic;
+}
+
+void ApplyColliderType(const std::string& colliderType, VansEngine::PhysicsNodeProperties& properties)
+{
+    if (colliderType == "box")
+        properties.colliderType = VansEngine::PhysicsColliderType::Box;
+    else if (colliderType == "sphere")
+        properties.colliderType = VansEngine::PhysicsColliderType::Sphere;
+    else if (colliderType == "capsule")
+        properties.colliderType = VansEngine::PhysicsColliderType::Capsule;
+    else if (colliderType == "mesh")
+        properties.colliderType = VansEngine::PhysicsColliderType::Mesh;
+    else if (colliderType == "convex")
+        properties.colliderType = VansEngine::PhysicsColliderType::ConvexMesh;
+}
+}
 
 // ===========================================================================
 // Vehicle initialization
@@ -108,7 +144,7 @@ void VansGraphics::VansScene::RegisterCharacterControllerNode(VansEngine::VansCh
 }
 
 // ===========================================================================
-// Physics node loading from JSON
+// Physics node loading from typed scene component config
 // ===========================================================================
 
 // ===========================================================================
@@ -117,7 +153,7 @@ void VansGraphics::VansScene::RegisterCharacterControllerNode(VansEngine::VansCh
 
 VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadClothNode(
     VansScene& scene,
-    const json& clothNodeJson,
+    const Vans::VansSceneClothNodeConfig& config,
     VansRenderNode* associatedRenderNode,
     std::string* outProfilePath)
 {
@@ -134,15 +170,16 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
     ClothNodeProperties clothProps;
 
     // ── 新格式：通过 profilePath 从 .clothprofile 文件加载配置 ──────────────
-    if (clothNodeJson.contains("profilePath"))
+    if (config.profilePath)
     {
-        std::string profilePath = clothNodeJson["profilePath"].get<std::string>();
+        std::string profilePath = *config.profilePath;
 
         VansClothProfile profile;
-        if (!profile.LoadFromFile(profilePath))
+        std::string profileError;
+        if (!VansEngine::VansClothProfileStorage::Load(profilePath, profile, profileError))
         {
             VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: 加载 Profile 失败: " << profilePath
-                           << "，回退为默认参数。");
+                           << " (" << profileError << ")，回退为默认参数。");
         }
         else
         {
@@ -176,42 +213,34 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
     }
     else
     {
-        // ── 旧格式（向后兼容）：直接从 JSON 内联解析 ───────────────────────
+        // ── Inline legacy component values（向后兼容）───────────────────────
         clothProps.enabled = true;
-        if (clothNodeJson.contains("stiffness"))     clothProps.stiffness     = clothNodeJson["stiffness"].get<float>();
-        if (clothNodeJson.contains("damping"))       clothProps.damping       = clothNodeJson["damping"].get<float>();
-        if (clothNodeJson.contains("friction"))      clothProps.friction      = clothNodeJson["friction"].get<float>();
-        if (clothNodeJson.contains("selfCollision")) clothProps.selfCollision = clothNodeJson["selfCollision"].get<bool>();
-        if (clothNodeJson.contains("gravity"))
-        {
-            auto& g = clothNodeJson["gravity"];
-            clothProps.gravity = g[1].get<float>();
-        }
-        if (clothNodeJson.contains("pinnedParticles"))
-        {
-            for (const auto& idx : clothNodeJson["pinnedParticles"])
-                clothProps.pinnedParticleIndices.push_back(idx.get<uint32_t>());
-        }
+        if (config.stiffness)     clothProps.stiffness     = *config.stiffness;
+        if (config.damping)       clothProps.damping       = *config.damping;
+        if (config.friction)      clothProps.friction      = *config.friction;
+        if (config.selfCollision) clothProps.selfCollision = *config.selfCollision;
+        if (config.gravity)       clothProps.gravity       = (*config.gravity)[1];
+        clothProps.pinnedParticleIndices = config.pinnedParticles;
     }
 
     // 解析 physicsAttachOffsetY — 无论使用 profilePath 还是旧格式均适用
     // 用于将布料固定点从颈部/领口向下对准角色肩膀位置（单位：米）
-    if (clothNodeJson.contains("physicsAttachOffsetY"))
-        clothProps.attachOffsetY = clothNodeJson["physicsAttachOffsetY"].get<float>();
+    if (config.physicsAttachOffsetY)
+        clothProps.attachOffsetY = *config.physicsAttachOffsetY;
 
     // 通过 objectRef 解析碰撞球引用。
     // 三种解析路径（优先级递减）：
     // 1. 对象有 render 组件 → 存 renderNodeName，运行时 FindRenderNodeByName 查找
     // 2. 对象无 render 但有有效 m_TransformID → 存 transformID
     // 3. 对象为纯物理骨骼绑定体（骨骼绑定在第四 pass 才加载）→ 存 sceneObjectName，运行时通过 BoneAttachmentSystem 延迟解析
-    if (clothNodeJson.contains("collisionSpheres"))
+    if (!config.collisionSpheres.empty())
     {
-        for (const auto& csJson : clothNodeJson["collisionSpheres"])
+        for (const auto& collisionSphere : config.collisionSpheres)
         {
             ClothNodeProperties::CollisionSphereRef ref;
-            if (csJson.contains("objectRef"))
+            if (!collisionSphere.objectRef.empty())
             {
-                std::string objectName = csJson["objectRef"].get<std::string>();
+                std::string objectName = collisionSphere.objectRef;
                 ref.sceneObjectName = objectName;  // 始终保存原始名称，供延迟解析使用
 
                 VansScriptObject* refObj = scene.FindSceneObjectByName(objectName);
@@ -230,8 +259,8 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
                     // 否则保持未解析状态，第一帧通过 BoneAttachmentSystem 延迟查找
                 }
             }
-            if (csJson.contains("radius"))
-                ref.radius = csJson["radius"].get<float>();
+            if (collisionSphere.radius)
+                ref.radius = *collisionSphere.radius;
             // 三种解析路径任意满足其一即加入列表
             if (!ref.renderNodeName.empty() || ref.transformID != UINT32_MAX || !ref.sceneObjectName.empty())
                 clothProps.collisionSphereRefs.push_back(ref);
@@ -255,99 +284,63 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
 
 VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadPhysicsNode(
     VansScene& scene,
-	const json& physicsNodeJson,
+	const Vans::VansScenePhysicsNodeConfig& config,
     VansRenderNode* associatedRenderNode,
     uint32_t standaloneTransformID)
 {
     using namespace VansEngine;
 
-    // Parse physics properties from JSON
     PhysicsNodeProperties properties;
 
-    if (physicsNodeJson.contains("enabled"))
-        properties.enabled = physicsNodeJson["enabled"];
+    if (config.enabled)
+        properties.enabled = *config.enabled;
     
     if (!properties.enabled)
         return nullptr;
 
-    // Body type: "static", "dynamic", "kinematic"
-    if (physicsNodeJson.contains("bodyType"))
+    if (config.bodyType)
+        ApplyBodyType(*config.bodyType, properties);
+    if (config.colliderType)
+        ApplyColliderType(*config.colliderType, properties);
+
+    if (config.mass)
+        properties.mass = *config.mass;
+    if (config.useMeshCollider)
+        properties.useMeshCollider = *config.useMeshCollider;
+    if (config.useConvexDecomposition)
+        properties.useConvexDecomposition = *config.useConvexDecomposition;
+
+    if (config.material)
     {
-        std::string bodyTypeStr = physicsNodeJson["bodyType"];
-        if (bodyTypeStr == "static")
-            properties.bodyType = PhysicsBodyType::Static;
-        else if (bodyTypeStr == "dynamic")
-            properties.bodyType = PhysicsBodyType::Dynamic;
-        else if (bodyTypeStr == "kinematic")
-            properties.bodyType = PhysicsBodyType::Kinematic;
+        if (config.material->staticFriction)
+            properties.material.staticFriction = *config.material->staticFriction;
+        if (config.material->dynamicFriction)
+            properties.material.dynamicFriction = *config.material->dynamicFriction;
+        if (config.material->restitution)
+            properties.material.restitution = *config.material->restitution;
     }
 
-    // Collider type
-    if (physicsNodeJson.contains("colliderType"))
-    {
-        std::string colliderTypeStr = physicsNodeJson["colliderType"];
-        if (colliderTypeStr == "box")
-            properties.colliderType = PhysicsColliderType::Box;
-        else if (colliderTypeStr == "sphere")
-            properties.colliderType = PhysicsColliderType::Sphere;
-        else if (colliderTypeStr == "capsule")
-            properties.colliderType = PhysicsColliderType::Capsule;
-        else if (colliderTypeStr == "mesh")
-            properties.colliderType = PhysicsColliderType::Mesh;
-        else if (colliderTypeStr == "convex")
-            properties.colliderType = PhysicsColliderType::ConvexMesh;
-    }
-
-    if (physicsNodeJson.contains("mass"))
-        properties.mass = physicsNodeJson["mass"];
-    if (physicsNodeJson.contains("useMeshCollider"))
-        properties.useMeshCollider = physicsNodeJson["useMeshCollider"];
-    if (physicsNodeJson.contains("useConvexDecomposition"))
-        properties.useConvexDecomposition = physicsNodeJson["useConvexDecomposition"];
-
-    if (physicsNodeJson.contains("material"))
-    {
-        auto& materialJson = physicsNodeJson["material"];
-        if (materialJson.contains("staticFriction"))
-            properties.material.staticFriction = materialJson["staticFriction"];
-        if (materialJson.contains("dynamicFriction"))
-            properties.material.dynamicFriction = materialJson["dynamicFriction"];
-        if (materialJson.contains("restitution"))
-            properties.material.restitution = materialJson["restitution"];
-    }
-
-    if (physicsNodeJson.contains("boxExtents"))
-    {
-        auto& extents = physicsNodeJson["boxExtents"];
-        properties.boxExtents = glm::vec3(extents[0], extents[1], extents[2]);
-    }
-    if (physicsNodeJson.contains("shapeOffset"))
-    {
-        auto& offset = physicsNodeJson["shapeOffset"];
-        if (offset.is_array() && offset.size() >= 3)
-            properties.shapeOffset = glm::vec3(offset[0], offset[1], offset[2]);
-    }
-    if (physicsNodeJson.contains("colliderOffset"))
-    {
-        auto& offset = physicsNodeJson["colliderOffset"];
-        if (offset.is_array() && offset.size() >= 3)
-            properties.shapeOffset = glm::vec3(offset[0], offset[1], offset[2]);
-    }
-    if (physicsNodeJson.contains("sphereRadius"))
-        properties.sphereRadius = physicsNodeJson["sphereRadius"];
-    if (physicsNodeJson.contains("capsuleRadius"))
-        properties.capsuleRadius = physicsNodeJson["capsuleRadius"];
-    if (physicsNodeJson.contains("capsuleHalfHeight"))
-        properties.capsuleHalfHeight = physicsNodeJson["capsuleHalfHeight"];
+    if (config.boxExtents)
+        properties.boxExtents = ToVec3(*config.boxExtents);
+    if (config.shapeOffset)
+        properties.shapeOffset = ToVec3(*config.shapeOffset);
+    if (config.colliderOffset)
+        properties.shapeOffset = ToVec3(*config.colliderOffset);
+    if (config.sphereRadius)
+        properties.sphereRadius = *config.sphereRadius;
+    if (config.capsuleRadius)
+        properties.capsuleRadius = *config.capsuleRadius;
+    if (config.capsuleHalfHeight)
+        properties.capsuleHalfHeight = *config.capsuleHalfHeight;
 
     // 解析碰撞 Layer
-    if (physicsNodeJson.contains("layer"))
-        properties.layerName = physicsNodeJson["layer"].get<std::string>();
+    if (config.layer)
+        properties.layerName = *config.layer;
     properties.layerIndex = VansEngine::VansCollisionLayerManager::Get().GetLayerIndex(properties.layerName);
 
     // 解析 Trigger 标志
-    if (physicsNodeJson.contains("isTrigger"))
-        properties.isTrigger = physicsNodeJson["isTrigger"].get<bool>();
+    if (config.isTrigger)
+        properties.isTrigger = *config.isTrigger;
 
 	if (associatedRenderNode == nullptr && standaloneTransformID == UINT32_MAX)
     {
@@ -359,21 +352,21 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::Loa
 
     // Get mesh reference if needed
     VansMesh* mesh = nullptr;
-    if (properties.useMeshCollider && physicsNodeJson.contains("mesh"))
+    if (properties.useMeshCollider && config.mesh)
     {
-        std::string meshName = physicsNodeJson["mesh"];
+        std::string meshName = *config.mesh;
         mesh = static_cast<VansMesh*>(scene.FindMeshAsset(meshName));
         if (!mesh)
         {
             VANS_LOG_ERROR("[VansScene] Mesh collider source not found for physics node '"
-                << physicsNodeJson.value("name", std::string{})
+                << config.name.value_or(std::string{})
                 << "': mesh='" << meshName << "'");
         }
     }
 
     VansPhysicsNode* physicsNode = new VansPhysicsNode();
-	if (physicsNodeJson.contains("name"))
-		physicsNode->SetName(physicsNodeJson["name"]);
+	if (config.name)
+		physicsNode->SetName(*config.name);
     physicsNode->Initialize(properties, transformID, mesh);
 	if (!physicsNode->IsEnabled() || physicsNode->GetActor() == nullptr)
 	{
@@ -560,13 +553,13 @@ void VansGraphics::VansScene::UpdateCharControllerTransforms()
 }
 
 // ===========================================================================
-// Load a single CharacterController from JSON
+// Load a single CharacterController from typed scene component config
 // ===========================================================================
 
 VansEngine::VansCharacterControllerNode*
 VansGraphics::VansScenePhysicsComponentBuilder::LoadCharacterControllerNode(
     VansScene& scene,
-    const json& charCtrlJson,
+    const Vans::VansSceneCharacterControllerConfig& config,
     VansRenderNode* associatedRenderNode,
     uint32_t standaloneTransformID)
 {
@@ -574,35 +567,31 @@ VansGraphics::VansScenePhysicsComponentBuilder::LoadCharacterControllerNode(
 
     CharControllerProperties props;
 
-    if (charCtrlJson.contains("radius"))
-        props.m_Radius = charCtrlJson["radius"].get<float>();
-    if (charCtrlJson.contains("height"))
-        props.m_Height = charCtrlJson["height"].get<float>();
-    if (charCtrlJson.contains("slopeLimit"))
-        props.m_SlopeLimit = charCtrlJson["slopeLimit"].get<float>();
-    if (charCtrlJson.contains("stepOffset"))
-        props.m_StepOffset = charCtrlJson["stepOffset"].get<float>();
-    if (charCtrlJson.contains("contactOffset"))
-        props.m_ContactOffset = charCtrlJson["contactOffset"].get<float>();
-    if (charCtrlJson.contains("layer"))
+    if (config.radius)
+        props.m_Radius = *config.radius;
+    if (config.height)
+        props.m_Height = *config.height;
+    if (config.slopeLimit)
+        props.m_SlopeLimit = *config.slopeLimit;
+    if (config.stepOffset)
+        props.m_StepOffset = *config.stepOffset;
+    if (config.contactOffset)
+        props.m_ContactOffset = *config.contactOffset;
+    if (config.layer)
     {
-        props.m_LayerName  = charCtrlJson["layer"].get<std::string>();
+        props.m_LayerName  = *config.layer;
         props.m_LayerIndex = VansCollisionLayerManager::Get()
                                  .GetLayerIndex(props.m_LayerName);
     }
-    if (charCtrlJson.contains("climbingMode"))
+    if (config.climbingMode)
     {
-        std::string cm = charCtrlJson["climbingMode"].get<std::string>();
+        std::string cm = *config.climbingMode;
         props.m_ClimbingMode = (cm == "constrained")
             ? PxCapsuleClimbingMode::eCONSTRAINED
             : PxCapsuleClimbingMode::eEASY;
     }
-    if (charCtrlJson.contains("positionOffset"))
-    {
-        const auto& o = charCtrlJson["positionOffset"];
-        props.m_PositionOffset = glm::vec3(
-            o[0].get<float>(), o[1].get<float>(), o[2].get<float>());
-    }
+    if (config.positionOffset)
+        props.m_PositionOffset = ToVec3(*config.positionOffset);
 
     // 解析初始位置
     uint32_t transformID = 0;
@@ -637,11 +626,9 @@ VansGraphics::VansScenePhysicsComponentBuilder::LoadCharacterControllerNode(
     }
 
     // ── 延迟绑定标志：ragdoll 在第二阶段加载，先记录意图 ──────────────
-    if (charCtrlJson.contains("followRagdoll") && charCtrlJson["followRagdoll"].get<bool>())
+    if (config.followRagdoll.value_or(false))
     {
-        std::string bone = "pelvis";
-        if (charCtrlJson.contains("followRagdollBone"))
-            bone = charCtrlJson["followRagdollBone"].get<std::string>();
+        std::string bone = config.followRagdollBone.value_or("pelvis");
         node->SetPendingFollowRagdoll(true, bone);
     }
 

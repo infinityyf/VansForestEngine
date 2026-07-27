@@ -43,8 +43,15 @@ void main()
     vec3 albedo = albedoParam * albedoSample.rgb;
     vec3 normalSample = texture(globalPBRTextures[materialIndex * 5 + 1], frag_uv, MaterialMipBias).rgb * 2.0 - 1.0;
     float metallic = metallicParam * texture(globalPBRTextures[materialIndex * 5 + 2], frag_uv, MaterialMipBias).r;
-    float roughness = roughnessParam * texture(globalPBRTextures[materialIndex * 5 + 3], frag_uv, MaterialMipBias).r;
-    float ao = aoParam * texture(globalPBRTextures[materialIndex * 5 + 4], frag_uv, MaterialMipBias).r;
+
+    vec4 roughnessSample = texture(globalPBRTextures[materialIndex * 5 + 3], frag_uv, MaterialMipBias);
+    vec4 aoSample = texture(globalPBRTextures[materialIndex * 5 + 4], frag_uv, MaterialMipBias);
+    bool packedMaskMap = roughnessSample.r < 0.02 && aoSample.r < 0.02 &&
+        max(roughnessSample.g, aoSample.g) > 0.02;
+    float roughnessTex = packedMaskMap ? (1.0 - roughnessSample.a) : roughnessSample.r;
+    float aoTex = packedMaskMap ? aoSample.g : aoSample.r;
+    float roughness = roughnessParam * roughnessTex;
+    float ao = aoParam * aoTex;
 
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 n = normalize(TBN * normalSample);

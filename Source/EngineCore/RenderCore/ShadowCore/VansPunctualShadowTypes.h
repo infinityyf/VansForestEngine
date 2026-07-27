@@ -103,6 +103,7 @@ namespace VansGraphics
 
 		bool affectsVolumetricFog = true;
 		bool affectsGI = true;
+		uint32_t shadowCasterMask = 0xffffffffu;
 	};
 
 	struct VansShadowAtlasBlock
@@ -209,6 +210,7 @@ namespace VansGraphics
 		VansPunctualShadowLightType lightType = VansPunctualShadowLightType::Point;
 		uint8_t faceIndex = 0;
 		uint16_t resolution = 0;
+		uint32_t shadowCasterMask = 0xffffffffu;
 		VansShadowRect atlasRect;
 		glm::mat4 worldToShadow = glm::mat4(1.0f);
 		std::vector<uint64_t> casterIds;

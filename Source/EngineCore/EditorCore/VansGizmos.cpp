@@ -4,8 +4,10 @@
 #include "VansEditorSelection.h"
 #include "VansSceneEditService.h"
 #include "imgui.h"
+#include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../SceneCore/VansSceneDocument.h"
 #include "../Util/VansInputManager.h"
+
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
@@ -39,32 +41,50 @@ void VansGizmos::SyncTransformToSceneDocument(const std::string& entityGuid,
     Vans::VansSceneEditService* editService = VansEditorWindow::GetSceneEditService();
     if (!document || !editService) return;
 
-    const auto& root = document->Root();
-    if (!root.contains("entities") || !root["entities"].is_array()) return;
+    const Vans::VansSerializedValue root = document->SerializedRootSnapshot();
+    const Vans::VansSerializedValue* entities = Vans::FindObjectField(root, "entities");
+    if (!entities || entities->kind != Vans::VansSerializedValue::Kind::Array) return;
 
-    for (std::size_t entityIndex = 0; entityIndex < root["entities"].size(); ++entityIndex)
+    for (std::size_t entityIndex = 0; entityIndex < entities->arrayItems.size(); ++entityIndex)
     {
-        const auto& entity = root["entities"][entityIndex];
-        if (entity.value("id", "") != entityGuid)
+        const Vans::VansSerializedValue& entity = entities->arrayItems[entityIndex];
+        if (Vans::ReadSerializedStringField(entity, "id") != entityGuid)
             continue;
-        if (!entity.contains("components") || !entity["components"].is_array())
+        const Vans::VansSerializedValue* components = Vans::FindObjectField(entity, "components");
+        if (!components || components->kind != Vans::VansSerializedValue::Kind::Array)
             return;
 
-        for (std::size_t componentIndex = 0; componentIndex < entity["components"].size(); ++componentIndex)
+        for (std::size_t componentIndex = 0;
+            componentIndex < components->arrayItems.size();
+            ++componentIndex)
         {
-            const auto& component = entity["components"][componentIndex];
-            if (component.value("type", "") != "Transform")
+            const Vans::VansSerializedValue& component = components->arrayItems[componentIndex];
+            if (Vans::ReadSerializedStringField(component, "type") != "Transform")
                 continue;
 
-            Vans::SceneJson data = {
-                { "position", { transform.position.x, transform.position.y, transform.position.z } },
-                { "rotation", { transform.rotationDegrees.x, transform.rotationDegrees.y, transform.rotationDegrees.z } },
-                { "scale",    { transform.scale.x,    transform.scale.y,    transform.scale.z    } }
-            };
+            Vans::VansSerializedValue data = Vans::VansSerializedValue::Object({
+                { "position", Vans::VansSerializedValue::Array({
+                    Vans::VansSerializedValue::Float(transform.position.x),
+                    Vans::VansSerializedValue::Float(transform.position.y),
+                    Vans::VansSerializedValue::Float(transform.position.z)
+                }) },
+                { "rotation", Vans::VansSerializedValue::Array({
+                    Vans::VansSerializedValue::Float(transform.rotationDegrees.x),
+                    Vans::VansSerializedValue::Float(transform.rotationDegrees.y),
+                    Vans::VansSerializedValue::Float(transform.rotationDegrees.z)
+                }) },
+                { "scale", Vans::VansSerializedValue::Array({
+                    Vans::VansSerializedValue::Float(transform.scale.x),
+                    Vans::VansSerializedValue::Float(transform.scale.y),
+                    Vans::VansSerializedValue::Float(transform.scale.z)
+                }) }
+            });
 
             const std::string pointer = "/entities/" + std::to_string(entityIndex) +
                 "/components/" + std::to_string(componentIndex) + "/data";
-            editService->Set(pointer, std::move(data));
+            editService->Set(
+                Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::Scene, pointer),
+                std::move(data));
             return;
         }
         return;

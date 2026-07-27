@@ -1,7 +1,7 @@
-﻿#pragma once
+#pragma once
 
 #include "../VansScene.h"
-#include "../../SceneCore/VansSceneAssetDependencyBuilder.h"
+#include "../../SceneCore/VansSceneResourcePlan.h"
 
 namespace VansGraphics
 {
@@ -15,13 +15,6 @@ namespace VansGraphics
 			VkDevice& device,
 			VansVKDevice* vkDevice);
 
-		static void LoadMeshesFromJson(
-			VansScene& scene,
-			const json& meshData,
-			const std::string& pathPrefix,
-			VkDevice& device,
-			VansVKDevice* vkDevice);
-
 		static void LoadShadersFromRegistry(
 			VansScene& scene,
 			const std::string& pathPrefix,
@@ -31,27 +24,16 @@ namespace VansGraphics
 			VansScene& scene,
 			const std::vector<Vans::VansSceneShaderResourceRequest>& shaders,
 			const std::string& pathPrefix,
-			VkDevice& device);
-
-		static void RegisterShadersFromJson(
-			VansScene& scene,
-			const json& shaderData,
-			const std::string& pathPrefix,
-			VkDevice& device);
+			VkDevice& device,
+			bool loadRegisteredShaders = true);
 
 		static void LoadTextures(
 			VansScene& scene,
 			const std::vector<Vans::VansSceneTextureResourceRequest>& textures,
 			const std::string& pathPrefix,
 			const std::string& enginePrefix,
-			VansVKDevice* vkDevice);
-
-		static void LoadTexturesFromJson(
-			VansScene& scene,
-			const json& textureData,
-			const std::string& pathPrefix,
-			const std::string& enginePrefix,
-			VansVKDevice* vkDevice);
+			VansVKDevice* vkDevice,
+			bool includeDefaultTextureSet = true);
 
 		static void ImportDefaultTexture(
 			VansScene& scene,

@@ -4,14 +4,12 @@
 #include "../../AnimationCore/VansAnimatorIO.h"
 #include "../../AnimationCore/VansAnimGraph.h"
 #include "../../AnimationCore/MotionMatching/VansMotionMatching.h"
+#include "../VansAnimGraphEditorLayoutStorage.h"
 #include "../../Util/VansLog.h"
 #include <imgui.h>
 #include <../../GLM/gtc/quaternion.hpp>
-#include <nlohmann/json.hpp>
-#include <fstream>
 #include <algorithm>
 #include <cstring>
-using json = nlohmann::json;
 using namespace VansGraphics;
 namespace ne = ax::NodeEditor;
 namespace VansGraphics
@@ -790,40 +788,22 @@ void VansAnimGraphEditorWindow::Save()
 }
 // ============================================================================
 // ============================================================================
-namespace
-{
-	void SaveEditorLayoutImpl(const std::string& filePath,
-	                          const std::vector<AnimGraphNodeLayout>& layouts)
-	{
-		// ============================================================================
-		// ???? JSON
-		std::ifstream inFile(filePath);
-		if (!inFile.is_open()) return;
-		json root;
-		try { root = json::parse(inFile); }
-		catch (const json::parse_error&) { return; }
-		inFile.close();
-		json editorObj;
-		json layoutArray = json::array();
-		for (auto& layout : layouts)
-		{
-			json item;
-			item["state"] = layout.stateName;
-			item["x"]     = layout.position.x;
-			item["y"]     = layout.position.y;
-			layoutArray.push_back(item);
-		}
-		editorObj["nodeLayouts"] = layoutArray;
-		root["editor"] = editorObj;
-		std::ofstream outFile(filePath);
-		if (outFile.is_open())
-		{
-			outFile << root.dump(4);
-			outFile.close();
-		}
-	}
-}
 void VansAnimGraphEditorWindow::SaveEditorLayout(const std::string& filePath)
 {
-	SaveEditorLayoutImpl(filePath, m_EditState->nodeLayouts);
+	std::vector<Vans::AnimGraphEditorNodeLayout> layouts;
+	layouts.reserve(m_EditState->nodeLayouts.size());
+	for (const AnimGraphNodeLayout& layout : m_EditState->nodeLayouts)
+	{
+		layouts.push_back({
+			layout.stateName,
+			layout.position.x,
+			layout.position.y
+		});
+	}
+
+	std::string error;
+	if (!Vans::VansAnimGraphEditorLayoutStorage::Save(filePath, layouts, error))
+	{
+		VANS_LOG_ERROR("[AnimGraphEditor] Failed to save editor layout: " << filePath << " (" << error << ")");
+	}
 }

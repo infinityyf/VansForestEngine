@@ -6,7 +6,6 @@
 
 #include <PxPhysicsAPI.h>
 #include <extensions/PxD6Joint.h>
-#include <nlohmann/json.hpp>
 #include <../../GLM/glm.hpp>
 
 #include <string>
@@ -78,9 +77,6 @@ namespace VansEngine
 		std::string name;
 		std::vector<RagdollBodyConfig> bodies;
 		std::vector<RagdollJointConfig> joints;
-
-		static bool LoadFromFile(const std::string& filePath, RagdollProfile& out);
-		static bool LoadFromJson(const nlohmann::json& j, RagdollProfile& out);
 	};
 
 	// ── 运行时骨骼条目 ───────────────────────────────────────────────

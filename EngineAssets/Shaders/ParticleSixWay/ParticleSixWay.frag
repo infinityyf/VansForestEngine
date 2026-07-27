@@ -107,7 +107,7 @@ vec3 ParticleShadowNormal(vec3 lightDir)
 vec3 EvalEnvironmentGI(SixWaySample s)
 {
     float ambientSixWay = (s.right + s.top + s.back + s.left + s.bottom + s.front) / 6.0;
-    vec3 skyDiffuse = texture(PreConvDiffuseEnvironment, normalize(fragBillboardUp)).rgb;
+    vec3 skyDiffuse = SampleSkyDiffuseCube(PreConvDiffuseEnvironment, fragBillboardUp);
     vec3 shAmbient = vec3(shCoefficients[0], shCoefficients[9], shCoefficients[18]) * 0.282095;
     return max(skyDiffuse + shAmbient, vec3(0.0)) * ambientSixWay * pushConst.sixWayParams0.y;
 }

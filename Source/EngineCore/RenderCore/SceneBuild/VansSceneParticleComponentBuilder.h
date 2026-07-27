@@ -2,6 +2,8 @@
 
 #include "../VansScene.h"
 
+#include "../../SceneCore/VansSceneParticleComponentConfig.h"
+
 namespace VansGraphics
 {
 	class VansSceneParticleComponentBuilder
@@ -11,11 +13,12 @@ namespace VansGraphics
 			VansScene& scene,
 			VkDevice& device,
 			VansScriptObject& object,
-			const json& components,
+			const Vans::VansSceneParticleComponentConfig& particleConfig,
 			const std::string& projectRoot,
 			bool hasObjectTransform,
 			const glm::vec3& objectPosition,
 			const glm::vec3& objectRotation,
 			const glm::vec3& objectScale);
+
 	};
 }

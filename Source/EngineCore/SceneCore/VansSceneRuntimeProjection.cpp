@@ -2,47 +2,42 @@
 
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/VansAssetMeta.h"
+#include "../AssetCore/VansMaterialAuthoringAsset.h"
+#include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../AssetCore/Storage/VansAssetMetaStorage.h"
+#include "../AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
+#include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../Util/VansLog.h"
+#include "../ScriptCore/VansPythonScriptComponentReader.h"
+#include "VansSceneAnimationComponentReader.h"
+#include "VansSceneCameraMediaComponentReader.h"
+#include "VansSceneContentBuildPlan.h"
+#include "VansSceneEnvironmentNodeConfigReader.h"
+#include "VansSceneLightComponentReader.h"
+#include "VansSceneParticleComponentReader.h"
+#include "VansScenePhysicsComponentReader.h"
+#include "VansSceneReflectionProbeConfigReader.h"
+#include "VansSceneRenderSettingsConfigReader.h"
+#include "VansSceneRuntimeComponentKey.h"
 #include "VansSceneSchema.h"
+#include "VansSceneVehicleComponentReader.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <optional>
+#include <system_error>
 #include <unordered_map>
 
 namespace Vans
 {
 namespace
 {
-using json = nlohmann::json;
-
-const json* FindComponent(const json& entity, const char* type)
-{
-	if (!entity.contains("components") || !entity["components"].is_array())
-		return nullptr;
-
-	for (const json& component : entity["components"])
-	{
-		if (component.value("type", "") == type)
-			return &component;
-	}
-	return nullptr;
-}
-
-std::string ReadStringField(const json& object, const char* key)
-{
-	if (!object.is_object())
-		return {};
-
-	const auto found = object.find(key);
-	return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
-}
-
 std::string LowerAsciiCopy(std::string value)
 {
 	std::transform(value.begin(), value.end(), value.begin(),
@@ -87,14 +82,8 @@ std::string ResolveTextureGuidFromAlias(const std::string& textureName, const st
 	return fallbackGuid;
 }
 
-std::string RuntimeAssetNameFromReference(const json& reference)
+std::string RuntimeAssetNameFromGuid(const std::string& guid)
 {
-	if (reference.is_string())
-		return reference.get<std::string>();
-	if (!reference.is_object())
-		return {};
-
-	const std::string guid = ReadStringField(reference, "guid");
 	if (guid.empty())
 		return {};
 
@@ -109,215 +98,339 @@ std::string RuntimeAssetNameFromReference(const json& reference)
 
 		VansAssetMeta meta;
 		std::string error;
-		if (VansAssetMeta::Load(record.metaPath, meta, error) && meta.settings.is_object())
+		if (VansAssetMetaStorage::Load(record.metaPath, meta, error) && meta.HasObjectSettings())
 		{
-			const std::string runtimeName = ReadStringField(meta.settings, "runtimeName");
+			const std::string runtimeName = meta.ReadStringSetting("runtimeName");
 			if (!runtimeName.empty())
 				return runtimeName;
 		}
 
 		if (record.type == VansAssetType::Shader)
 		{
-			std::ifstream shaderInput(record.sourcePath);
-			const json shader = shaderInput ? json::parse(shaderInput, nullptr, false) : json();
-			const std::string shaderName = ReadStringField(shader, "name");
-			if (!shaderName.empty())
-				return shaderName;
+			VansShaderAuthoringAsset shader;
+			if (VansShaderAuthoringAssetStorage::Load(record.sourcePath, shader, error) && !shader.name.empty())
+				return shader.name;
 		}
 		return guid;
 	}
 	return guid;
 }
 
-json RuntimeShaderAssetFromReference(const json& reference)
+std::string ProjectRelativeAssetPathFromGuid(
+	const std::string& guidText,
+	VansAssetType expectedType,
+	const std::string& projectRoot,
+	bool leadingSlash)
 {
-	if (!reference.is_object())
-		return json::object();
-
-	const std::string guidText = ReadStringField(reference, "guid");
 	if (guidText.empty())
-		return json::object();
+		return {};
 
 	VansAssetGuid guid;
 	if (!VansAssetGuid::TryParse(guidText, guid))
-		return json::object();
+		return guidText;
+
+	VansAssetDatabase* database = VansProjectManager::Get().GetAssetDatabase();
+	if (!database)
+		return guidText;
+
+	std::optional<VansAssetRecord> record = database->Find(guid);
+	if (!record || record->type != expectedType || record->state == VansAssetState::Missing)
+		return guidText;
+
+	if (projectRoot.empty())
+		return record->sourcePath.generic_string();
+
+	std::error_code ec;
+	std::filesystem::path relative = std::filesystem::relative(
+		record->sourcePath,
+		std::filesystem::path(projectRoot),
+		ec);
+	if (ec || relative.empty())
+		return record->sourcePath.generic_string();
+
+	std::string result = relative.generic_string();
+	if (leadingSlash && !result.empty() && result.front() != '/')
+		result.insert(result.begin(), '/');
+	return result;
+}
+
+std::string RuntimeAssetNameFromReference(const VansSerializedValue& reference)
+{
+	if (reference.kind == VansSerializedValue::Kind::String)
+		return reference.stringValue;
+	if (reference.kind != VansSerializedValue::Kind::Object)
+		return {};
+
+	const std::string guid = ReadSerializedStringField(reference, "guid");
+	return RuntimeAssetNameFromGuid(guid);
+}
+
+VansSerializedValue RuntimeShaderAssetFromReference(const VansSerializedValue& reference)
+{
+	if (reference.kind != VansSerializedValue::Kind::Object)
+		return VansSerializedValue::Object({});
+
+	const std::string guidText = ReadSerializedStringField(reference, "guid");
+	if (guidText.empty())
+		return VansSerializedValue::Object({});
+
+	VansAssetGuid guid;
+	if (!VansAssetGuid::TryParse(guidText, guid))
+		return VansSerializedValue::Object({});
 
 	auto* database = VansProjectManager::Get().GetAssetDatabase();
 	if (!database)
-		return json::object();
+		return VansSerializedValue::Object({});
 
 	std::optional<VansAssetRecord> record = database->Find(guid);
 	if (!record || record->type != VansAssetType::Shader)
-		return json::object();
+		return VansSerializedValue::Object({});
 
-	std::ifstream shaderInput(record->sourcePath);
-	json shader = shaderInput ? json::parse(shaderInput, nullptr, false) : json();
-	return shader.is_object() ? shader : json::object();
+	VansShaderAuthoringAsset shader;
+	std::string error;
+	if (!VansShaderAuthoringAssetStorage::Load(record->sourcePath, shader, error))
+	{
+		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read shader asset: " << record->sourcePath.string() << " (" << error << ")");
+		return VansSerializedValue::Object({});
+	}
+	return shader.root.kind == VansSerializedValue::Kind::Object
+		? shader.root
+		: VansSerializedValue::Object({});
 }
 
-json MergeShaderParameterDefaults(const json& shader, const json& materialParameters)
+VansSerializedValue SerializedObjectOrEmpty(const VansSerializedValue& value)
 {
-	json merged = shader.contains("parameters") && shader["parameters"].is_object()
-		? shader["parameters"]
-		: json::object();
+	return value.kind == VansSerializedValue::Kind::Object
+		? value
+		: VansSerializedValue::Object({});
+}
 
-	if (materialParameters.is_object())
+VansSerializedValue MergeShaderParameterDefaults(
+	const VansSerializedValue& shader,
+	const VansSerializedValue& materialParameters)
+{
+	VansSerializedValue merged = VansSerializedValue::Object({});
+	if (const VansSerializedValue* parameters = FindObjectField(shader, "parameters");
+		parameters && parameters->kind == VansSerializedValue::Kind::Object)
 	{
-		for (const auto& [name, value] : materialParameters.items())
+		merged = *parameters;
+	}
+
+	if (materialParameters.kind == VansSerializedValue::Kind::Object)
+	{
+		for (const auto& [name, value] : materialParameters.objectFields)
 		{
-			if (merged.contains(name) && merged[name].is_object() && value.is_object())
+			VansSerializedValue* existing = FindObjectField(merged, name);
+			if (existing && existing->kind == VansSerializedValue::Kind::Object &&
+				value.kind == VansSerializedValue::Kind::Object)
 			{
-				for (const auto& [field, overrideValue] : value.items())
-					merged[name][field] = overrideValue;
+				for (const auto& [field, overrideValue] : value.objectFields)
+					SetSerializedObjectField(*existing, field, overrideValue);
 			}
 			else
 			{
-				merged[name] = value;
+				SetSerializedObjectField(merged, name, value);
 			}
 		}
 	}
 	return merged;
 }
 
-json MergeShaderTextureDefaults(const json& shader, const json& materialTextures)
+VansSerializedValue MergeShaderTextureDefaults(
+	const VansSerializedValue& shader,
+	const VansSerializedValue& materialTextures)
 {
-	json merged = shader.contains("textures") && shader["textures"].is_object()
-		? shader["textures"]
-		: json::object();
-
-	if (materialTextures.is_object())
+	VansSerializedValue merged = VansSerializedValue::Object({});
+	if (const VansSerializedValue* textures = FindObjectField(shader, "textures");
+		textures && textures->kind == VansSerializedValue::Kind::Object)
 	{
-		for (const auto& [name, value] : materialTextures.items())
-		{
-			if (!merged.contains(name) || !merged[name].is_object())
-				merged[name] = json::object();
+		merged = *textures;
+	}
 
-			if (value.is_string())
-				merged[name]["value"] = value;
-			else if (value.is_object() && value.contains("guid"))
-				merged[name]["value"] = RuntimeAssetNameFromReference(value);
-			else if (value.is_object())
+	if (materialTextures.kind == VansSerializedValue::Kind::Object)
+	{
+		for (const auto& [name, value] : materialTextures.objectFields)
+		{
+			VansSerializedValue* existing = FindObjectField(merged, name);
+			if (!existing || existing->kind != VansSerializedValue::Kind::Object)
 			{
-				for (const auto& [field, overrideValue] : value.items())
-					merged[name][field] = overrideValue;
+				SetSerializedObjectField(merged, name, VansSerializedValue::Object({}));
+				existing = FindObjectField(merged, name);
+			}
+			if (!existing)
+				continue;
+
+			if (value.kind == VansSerializedValue::Kind::String)
+			{
+				SetSerializedObjectField(*existing, "value", value);
+			}
+			else if (value.kind == VansSerializedValue::Kind::Object && FindObjectField(value, "guid"))
+			{
+				SetSerializedObjectField(
+					*existing,
+					"value",
+					VansSerializedValue::String(RuntimeAssetNameFromReference(value)));
+			}
+			else if (value.kind == VansSerializedValue::Kind::Object)
+			{
+				for (const auto& [field, overrideValue] : value.objectFields)
+					SetSerializedObjectField(*existing, field, overrideValue);
 			}
 		}
 	}
 	return merged;
 }
 
-std::string RuntimeTextureNameFromAssetReference(const json& reference, const std::string& preferredRoot)
+std::string RuntimeTextureNameFromAssetReference(const VansSerializedValue& reference, const std::string& preferredRoot)
 {
-	if (reference.is_object() && reference.contains("guid"))
+	if (reference.kind == VansSerializedValue::Kind::Object && FindObjectField(reference, "guid"))
 		return RuntimeAssetNameFromReference(reference);
 
-	if (reference.is_string())
+	if (reference.kind == VansSerializedValue::Kind::String)
 	{
-		const std::string textureName = reference.get<std::string>();
+		const std::string& textureName = reference.stringValue;
 		const std::string resolvedGuid = ResolveTextureGuidFromAlias(textureName, preferredRoot);
 		return resolvedGuid.empty() ? textureName : resolvedGuid;
 	}
 	return {};
 }
 
-json RuntimeMaterialFromAsset(const VansAssetRecord& record)
+VansSerializedValue RuntimeMaterialShaderValue(const VansSerializedValue& shader)
 {
-	std::ifstream input(record.sourcePath);
-	if (!input)
-		return {};
+	if (shader.kind == VansSerializedValue::Kind::String)
+		return shader;
+	if (shader.kind == VansSerializedValue::Kind::Object && FindObjectField(shader, "guid"))
+		return VansSerializedValue::String(RuntimeAssetNameFromReference(shader));
+	if (shader.kind == VansSerializedValue::Kind::Object)
+		return shader;
+	return VansSerializedValue::Null();
+}
 
-	const json asset = json::parse(input, nullptr, false);
-	if (asset.is_discarded() || !asset.is_object())
-		return {};
-
-	const std::string materialType = asset.value("materialType", "pbr");
-	const std::string preferredRoot = asset.value("importSource", json::object()).value("model", "");
-	const bool customShaderMaterial = materialType == "customShader" || materialType == "custom";
-	const json shaderAsset = asset.contains("shader") ? RuntimeShaderAssetFromReference(asset["shader"]) : json::object();
-	json material = customShaderMaterial ? json::object() : asset.value("parameters", json::object());
-	material["name"] = record.guid.ToString();
-	material["type"] = materialType;
-
-	if (asset.contains("shader"))
+std::optional<VansSceneMaterialConfig> RuntimeMaterialConfigFromAsset(const VansAssetRecord& record)
+{
+	VansMaterialAuthoringAsset asset;
+	std::string error;
+	if (!VansMaterialAuthoringAssetStorage::Load(record.sourcePath, asset, error))
 	{
-		if (asset["shader"].is_string())
-			material["shader"] = asset["shader"];
-		else if (asset["shader"].is_object() && asset["shader"].contains("guid"))
-			material["shader"] = RuntimeAssetNameFromReference(asset["shader"]);
-		else if (asset["shader"].is_object())
-			material["shader"] = asset["shader"];
+		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read material asset: " << record.sourcePath.string() << " (" << error << ")");
+		return std::nullopt;
 	}
 
-	if (asset.contains("shaderPasses") && asset["shaderPasses"].is_object())
+	const std::string materialType = MaterialAuthoringTypeOrDefault(asset.materialType);
+	const std::string preferredRoot = asset.preferredImportModel;
+	const bool customShaderMaterial = IsCustomShaderMaterialAuthoringType(materialType);
+	const VansSerializedValue shaderAsset = asset.shader.IsNull()
+		? VansSerializedValue::Object({})
+		: RuntimeShaderAssetFromReference(asset.shader);
+	VansSerializedValue material = customShaderMaterial
+		? VansSerializedValue::Object({})
+		: SerializedObjectOrEmpty(asset.parameters);
+	SetSerializedObjectField(material, "name", VansSerializedValue::String(record.guid.ToString()));
+	SetSerializedObjectField(material, "type", VansSerializedValue::String(materialType));
+
+	if (!asset.shader.IsNull())
 	{
-		material["shaderPasses"] = json::object();
-		for (const auto& [passName, shaderRef] : asset["shaderPasses"].items())
+		VansSerializedValue shaderValue = RuntimeMaterialShaderValue(asset.shader);
+		if (!shaderValue.IsNull())
+			SetSerializedObjectField(material, "shader", std::move(shaderValue));
+	}
+
+	if (asset.shaderPasses.kind == VansSerializedValue::Kind::Object)
+	{
+		VansSerializedValue shaderPasses = VansSerializedValue::Object({});
+		for (const auto& [passName, shaderRef] : asset.shaderPasses.objectFields)
 		{
-			if (shaderRef.is_string())
-				material["shaderPasses"][passName] = shaderRef;
-			else if (shaderRef.is_object() && shaderRef.contains("guid"))
-				material["shaderPasses"][passName] = RuntimeAssetNameFromReference(shaderRef);
+			if (shaderRef.kind == VansSerializedValue::Kind::String)
+				SetSerializedObjectField(shaderPasses, passName, shaderRef);
+			else if (shaderRef.kind == VansSerializedValue::Kind::Object && FindObjectField(shaderRef, "guid"))
+				SetSerializedObjectField(
+					shaderPasses,
+					passName,
+					VansSerializedValue::String(RuntimeAssetNameFromReference(shaderRef)));
 		}
+		SetSerializedObjectField(material, "shaderPasses", std::move(shaderPasses));
 	}
 
-	if (materialType == "transparent" && asset.contains("textures") && asset["textures"].is_array())
+	if (IsTransparentMaterialAuthoringType(materialType) && asset.textures.kind == VansSerializedValue::Kind::Array)
 	{
-		material["textures"] = json::array();
-		for (const auto& entry : asset["textures"])
+		std::vector<VansSerializedValue> runtimeTextures;
+		for (const VansSerializedValue& entry : asset.textures.arrayItems)
 		{
-			if (!entry.is_object())
+			if (entry.kind != VansSerializedValue::Kind::Object)
 				continue;
 
-			json runtimeEntry;
-			runtimeEntry["slot"] = entry.value("slot", "");
-			if (entry.contains("texture"))
-				runtimeEntry["texture"] = RuntimeTextureNameFromAssetReference(entry["texture"], preferredRoot);
-			if (!runtimeEntry.value("slot", "").empty() && runtimeEntry.contains("texture"))
-				material["textures"].push_back(std::move(runtimeEntry));
+			const std::string slot = ReadSerializedStringField(entry, "slot");
+			std::string textureName;
+			if (const VansSerializedValue* texture = FindObjectField(entry, "texture"))
+				textureName = RuntimeTextureNameFromAssetReference(*texture, preferredRoot);
+			if (!slot.empty() && !textureName.empty())
+			{
+				runtimeTextures.push_back(VansSerializedValue::Object({
+					{ "slot", VansSerializedValue::String(slot) },
+					{ "texture", VansSerializedValue::String(textureName) }
+				}));
+			}
 		}
+		SetSerializedObjectField(material, "textures", VansSerializedValue::Array(std::move(runtimeTextures)));
 	}
-	else if (asset.contains("textures") && asset["textures"].is_object())
+	else if (asset.textures.kind == VansSerializedValue::Kind::Object)
 	{
 		if (customShaderMaterial)
 		{
-			material["customTextures"] = MergeShaderTextureDefaults(shaderAsset, asset["textures"]);
+			SetSerializedObjectField(
+				material,
+				"customTextures",
+				MergeShaderTextureDefaults(shaderAsset, asset.textures));
 		}
 		else
 		{
-			for (const auto& [slot, reference] : asset["textures"].items())
+			for (const auto& [slot, reference] : asset.textures.objectFields)
 			{
 				const std::string textureName = RuntimeTextureNameFromAssetReference(reference, preferredRoot);
 				if (!textureName.empty())
-					material[slot + "_texture"] = textureName;
+					SetSerializedObjectField(
+						material,
+						slot + "_texture",
+						VansSerializedValue::String(textureName));
 			}
 		}
 	}
 
 	if (customShaderMaterial)
 	{
-		material["customParameters"] = MergeShaderParameterDefaults(
-			shaderAsset,
-			asset.contains("parameters") ? asset["parameters"] : json::object());
+		SetSerializedObjectField(
+			material,
+			"customParameters",
+			MergeShaderParameterDefaults(shaderAsset, asset.parameters));
 	}
-	else if (asset.contains("customParameters") && asset["customParameters"].is_object())
+	else if (asset.customParameters.kind == VansSerializedValue::Kind::Object)
 	{
-		material["customParameters"] = asset["customParameters"];
+		SetSerializedObjectField(material, "customParameters", asset.customParameters);
 	}
 
-	if (asset.contains("customTextures") && asset["customTextures"].is_object())
+	if (asset.customTextures.kind == VansSerializedValue::Kind::Object)
 	{
-		if (!material.contains("customTextures") || !material["customTextures"].is_object())
-			material["customTextures"] = json::object();
+		VansSerializedValue& customTextures = EnsureSerializedObjectField(material, "customTextures");
 
-		for (const auto& [slot, reference] : asset["customTextures"].items())
+		for (const auto& [slot, reference] : asset.customTextures.objectFields)
 		{
-			if (reference.is_string())
-				material["customTextures"][slot] = reference;
-			else if (reference.is_object() && reference.contains("guid"))
-				material["customTextures"][slot] = RuntimeAssetNameFromReference(reference);
+			if (reference.kind == VansSerializedValue::Kind::String)
+			{
+				SetSerializedObjectField(customTextures, slot, reference);
+			}
+			else if (reference.kind == VansSerializedValue::Kind::Object && FindObjectField(reference, "guid"))
+			{
+				SetSerializedObjectField(
+					customTextures,
+					slot,
+					VansSerializedValue::String(RuntimeAssetNameFromReference(reference)));
+			}
 		}
 	}
-	return material;
+
+	VansSceneMaterialConfig config;
+	config.root = std::move(material);
+	return config;
 }
 
 std::string RuntimeComponentKey(const std::string& type)
@@ -341,191 +454,538 @@ std::string RuntimeComponentKey(const std::string& type)
 	result.front() = static_cast<char>(std::tolower(static_cast<unsigned char>(result.front())));
 	return result;
 }
+
+bool IsLightComponentType(const std::string& type)
+{
+	return type == "DirectionalLight" ||
+		type == "PointLight" ||
+		type == "SpotLight" ||
+		type == "RectLight";
 }
 
-bool VansSceneRuntimeProjection::BuildRuntimeScene(json& sceneData)
+bool IsCameraMediaComponentType(const std::string& type)
 {
-	if (sceneData.value("schemaVersion", 0u) != VansSceneSchemaVersion)
-		return false;
-	if (!sceneData.contains("entities") || !sceneData["entities"].is_array())
+	return type == "Camera" || type == "Audio" || type == "Video";
+}
+
+bool IsParticleComponentType(const std::string& type)
+{
+	return type == "Particle";
+}
+
+bool IsMultiMeshRootComponentType(const std::string& type)
+{
+	return type == "MultiMeshRoot";
+}
+
+bool IsPhysicsComponentType(const std::string& type)
+{
+	return type == "Physics" || type == "Cloth" || type == "CharacterController";
+}
+
+bool IsVehicleComponentType(const std::string& type)
+{
+	return type == "Vehicle";
+}
+
+bool IsAnimationComponentType(const std::string& type)
+{
+	return type == "Animation";
+}
+
+const VansSerializedValue* FindSerializedObjectField(const VansSerializedValue& object, const char* key)
+{
+	const VansSerializedValue* field = FindObjectField(object, key);
+	return field && field->kind == VansSerializedValue::Kind::Object ? field : nullptr;
+}
+
+const VansSerializedValue* FindSerializedArrayField(const VansSerializedValue& object, const char* key)
+{
+	const VansSerializedValue* field = FindObjectField(object, key);
+	return field && field->kind == VansSerializedValue::Kind::Array ? field : nullptr;
+}
+
+const VansSerializedValue* FindComponent(const VansSerializedValue& entity, const char* type)
+{
+	const VansSerializedValue* components = FindSerializedArrayField(entity, "components");
+	if (!components)
+		return nullptr;
+
+	for (const VansSerializedValue& component : components->arrayItems)
+	{
+		if (ReadSerializedStringField(component, "type") == type)
+			return &component;
+	}
+	return nullptr;
+}
+
+std::optional<std::uint32_t> ReadSerializedUInt32Field(const VansSerializedValue& object, const char* key)
+{
+	const VansSerializedValue* field = FindObjectField(object, key);
+	if (!field)
+		return std::nullopt;
+
+	if (field->kind == VansSerializedValue::Kind::Int && field->intValue >= 0)
+		return static_cast<std::uint32_t>(field->intValue);
+	if (field->kind == VansSerializedValue::Kind::Float && field->floatValue >= 0.0)
+		return static_cast<std::uint32_t>(field->floatValue);
+	return std::nullopt;
+}
+
+std::array<float, 3> ReadSerializedFloat3ArrayField(
+	const VansSerializedValue& object,
+	const char* key,
+	const std::array<float, 3>& fallback)
+{
+	const VansSerializedValue* value = FindObjectField(object, key);
+	if (!value || value->kind != VansSerializedValue::Kind::Array || value->arrayItems.size() < 3)
+		return fallback;
+
+	return std::array<float, 3>{
+		static_cast<float>(ReadSerializedNumber(value->arrayItems[0], fallback[0])),
+		static_cast<float>(ReadSerializedNumber(value->arrayItems[1], fallback[1])),
+		static_cast<float>(ReadSerializedNumber(value->arrayItems[2], fallback[2]))
+	};
+}
+
+VansSceneTransformConfig BuildAuthoringObjectTransform(const VansSerializedValue* transformComponent)
+{
+	VansSceneTransformConfig transform;
+	if (!transformComponent || !ReadSerializedBoolField(*transformComponent, "enabled", true))
+		return transform;
+
+	const VansSerializedValue* data = FindSerializedObjectField(*transformComponent, "data");
+	if (!data)
+		return transform;
+
+	transform.position = ReadSerializedFloat3ArrayField(*data, "position", transform.position);
+	transform.scale = ReadSerializedFloat3ArrayField(*data, "scale", transform.scale);
+
+	const VansSerializedValue* rotation = FindObjectField(*data, "rotation");
+	if (rotation && rotation->kind == VansSerializedValue::Kind::Array && rotation->arrayItems.size() == 4)
+	{
+		const glm::quat quatRotation(
+			static_cast<float>(ReadSerializedNumber(rotation->arrayItems[3], 1.0)),
+			static_cast<float>(ReadSerializedNumber(rotation->arrayItems[0], 0.0)),
+			static_cast<float>(ReadSerializedNumber(rotation->arrayItems[1], 0.0)),
+			static_cast<float>(ReadSerializedNumber(rotation->arrayItems[2], 0.0)));
+		const glm::vec3 euler = glm::degrees(glm::eulerAngles(quatRotation));
+		transform.rotation = { euler.x, euler.y, euler.z };
+	}
+
+	return transform;
+}
+
+std::string ReadObjectReferenceGuid(const VansSerializedValue& reference)
+{
+	if (reference.kind == VansSerializedValue::Kind::String)
+		return reference.stringValue;
+	return ReadSerializedStringField(reference, "guid");
+}
+
+std::string ResolveMaterialOverride(const VansSerializedValue& data)
+{
+	const VansSerializedValue* overrides = FindSerializedObjectField(data, "materialOverrides");
+	if (!overrides)
+		return {};
+
+	auto readGuid = [&](const std::string& key) -> std::string
+	{
+		const VansSerializedValue* binding = FindObjectField(*overrides, key);
+		return binding && binding->kind == VansSerializedValue::Kind::Object
+			? ReadSerializedStringField(*binding, "guid")
+			: std::string{};
+	};
+
+	std::string materialGuid = readGuid("default");
+	if (!materialGuid.empty())
+		return materialGuid;
+
+	materialGuid = readGuid("0");
+	if (!materialGuid.empty())
+		return materialGuid;
+
+	if (const VansSerializedValue* submesh = FindSerializedObjectField(data, "submesh"))
+	{
+		const std::string slotName = ReadSerializedStringField(*submesh, "slotName");
+		if (!slotName.empty())
+		{
+			materialGuid = readGuid(slotName);
+			if (!materialGuid.empty())
+				return materialGuid;
+		}
+	}
+
+	if (!overrides->objectFields.empty())
+	{
+		const VansSerializedValue& binding = overrides->objectFields.front().second;
+		if (binding.kind == VansSerializedValue::Kind::Object)
+			return ReadSerializedStringField(binding, "guid");
+	}
+	return {};
+}
+
+std::unordered_map<std::string, std::string> DecodeSubmeshMaterialOverrides(const VansSerializedValue& data)
+{
+	std::unordered_map<std::string, std::string> overrides;
+	const VansSerializedValue* overrideValue = FindSerializedObjectField(data, "submeshMaterialOverrides");
+	if (!overrideValue)
+		return overrides;
+
+	for (const auto& [slot, reference] : overrideValue->objectFields)
+	{
+		const std::string materialGuid = ReadObjectReferenceGuid(reference);
+		if (!materialGuid.empty())
+			overrides[slot] = materialGuid;
+	}
+	return overrides;
+}
+
+bool TryBuildAuthoringRenderNode(
+	const VansSerializedValue& entity,
+	const VansSerializedValue* rendererComponent,
+	const VansSerializedValue* animationComponent,
+	const std::string& entityGuid,
+	const std::string& parentEntityGuid,
+	VansSceneRenderNodeConfig& outRender,
+	bool& outSpecialRenderNode)
+{
+	outRender = {};
+	outSpecialRenderNode = false;
+
+	if (!rendererComponent || !ReadSerializedBoolField(*rendererComponent, "enabled", true))
 		return false;
 
-	json projected = sceneData.value("settings", json::object());
-	projected["material"] = json::array();
+	const VansSerializedValue* data = FindSerializedObjectField(*rendererComponent, "data");
+	if (!data)
+		return false;
+
+	const VansSerializedValue* model = FindSerializedObjectField(*data, "model");
+	const VansSerializedValue* animationData =
+		animationComponent && ReadSerializedBoolField(*animationComponent, "enabled", true)
+		? FindSerializedObjectField(*animationComponent, "data")
+		: nullptr;
+
+	outRender.entityGuid = entityGuid;
+	outRender.parentEntityGuid = parentEntityGuid;
+	outRender.name = animationData
+		? ReadSerializedStringField(*animationData, "name", ReadSerializedStringField(entity, "name"))
+		: ReadSerializedStringField(entity, "name");
+	outRender.mesh = model ? ReadSerializedStringField(*model, "guid") : std::string{};
+	outRender.material = ResolveMaterialOverride(*data);
+	outRender.type = ReadSerializedStringField(*data, "renderType", "opaque");
+	outRender.rayTracingMode = ReadSerializedStringField(*data, "rayTracingMode", "auto");
+	outRender.supportShadow = ReadSerializedBoolField(*data, "castShadows", true);
+	outRender.shadowCasterMask = ReadSerializedUInt32Field(*data, "shadowCasterMask").value_or(0xffffffffu);
+	outRender.submeshMaterialOverrides = DecodeSubmeshMaterialOverrides(*data);
+
+	if (const VansSerializedValue* submesh = FindSerializedObjectField(*data, "submesh"))
+	{
+		outRender.submesh = ReadSerializedUInt32Field(*submesh, "index").value_or(0u);
+		outRender.submeshSlotName = ReadSerializedStringField(*submesh, "slotName");
+	}
+	outRender.parent = ReadSerializedStringField(*data, "sourceNode");
+
+	const VansSerializedValue* renderRole = FindObjectField(*data, "renderRole");
+	outSpecialRenderNode = renderRole && renderRole->kind == VansSerializedValue::Kind::String;
+	return true;
+}
+
+void CollectAuthoringRuntimeComponentMetadata(
+	const VansSerializedValue& entity,
+	VansPythonScriptComponentDescriptors& outPythonScripts,
+	std::unordered_map<std::string, std::string>& outComponentGuids)
+{
+	outPythonScripts.clear();
+
+	const VansSerializedValue* authoringComponents = FindSerializedArrayField(entity, "components");
+	if (!authoringComponents)
+		return;
+
+	for (const VansSerializedValue& component : authoringComponents->arrayItems)
+	{
+		const std::string type = ReadSerializedStringField(component, "type");
+		if (type == "Transform" || type == "ModelRenderer")
+			continue;
+
+		const bool enabled = ReadSerializedBoolField(component, "enabled", true);
+		const VansSerializedValue* dataValue = FindObjectField(component, "data");
+		const std::string componentGuid = ReadSerializedStringField(component, "id");
+
+		if (type == "Script")
+		{
+			if (enabled && dataValue)
+			{
+				VansPythonScriptComponentDescriptor descriptor;
+				if (VansPythonScriptComponentReader::TryReadScriptComponent(
+					*dataValue,
+					componentGuid,
+					descriptor))
+				{
+					outPythonScripts.push_back(std::move(descriptor));
+				}
+			}
+			continue;
+		}
+
+		const std::string runtimeKey = RuntimeComponentKey(type);
+		if (!componentGuid.empty())
+			outComponentGuids[CanonicalRuntimeComponentKeyForName(runtimeKey)] = componentGuid;
+	}
+}
+
+VansSceneLightComponentConfig ReadAuthoringLightComponents(const VansSerializedValue& entity)
+{
+	VansSceneLightComponentConfig config;
+	const VansSerializedValue* authoringComponents = FindSerializedArrayField(entity, "components");
+	if (!authoringComponents)
+		return config;
+
+	for (const VansSerializedValue& component : authoringComponents->arrayItems)
+	{
+		const std::string type = ReadSerializedStringField(component, "type");
+		if (!IsLightComponentType(type))
+			continue;
+
+		VansSerializedValue emptyData = VansSerializedValue::Object({});
+		const VansSerializedValue* data = FindSerializedObjectField(component, "data");
+		const VansSerializedValue& lightData = data ? *data : emptyData;
+		if (type == "DirectionalLight")
+			config.directionalLight = VansSceneLightComponentReader::ReadDirectionalLight(lightData);
+		else if (type == "PointLight")
+			config.pointLight = VansSceneLightComponentReader::ReadPointLight(lightData);
+		else if (type == "SpotLight")
+			config.spotLight = VansSceneLightComponentReader::ReadSpotLight(lightData);
+		else if (type == "RectLight")
+			config.rectLight = VansSceneLightComponentReader::ReadRectLight(lightData);
+	}
+	return config;
+}
+
+std::optional<VansSceneParticleComponentConfig> ReadAuthoringParticleComponent(
+	const VansSerializedValue& entity)
+{
+	const VansSerializedValue* particleComponent = FindComponent(entity, "Particle");
+	if (!particleComponent)
+		return std::nullopt;
+
+	VansSerializedValue emptyData = VansSerializedValue::Object({});
+	const VansSerializedValue* data = FindSerializedObjectField(*particleComponent, "data");
+	return VansSceneParticleComponentReader::ReadParticle(data ? *data : emptyData);
+}
+
+VansSceneCameraMediaComponentConfig ReadAuthoringCameraMediaComponents(const VansSerializedValue& entity)
+{
+	VansSceneCameraMediaComponentConfig config;
+	const VansSerializedValue* authoringComponents = FindSerializedArrayField(entity, "components");
+	if (!authoringComponents)
+		return config;
+
+	for (const VansSerializedValue& component : authoringComponents->arrayItems)
+	{
+		const std::string type = ReadSerializedStringField(component, "type");
+		if (!IsCameraMediaComponentType(type))
+			continue;
+
+		VansSerializedValue emptyData = VansSerializedValue::Object({});
+		const VansSerializedValue* data = FindSerializedObjectField(component, "data");
+		const VansSerializedValue& componentData = data ? *data : emptyData;
+		if (type == "Camera")
+		{
+			config.camera = VansSceneCameraMediaComponentReader::ReadCamera(componentData);
+		}
+		else if (type == "Audio")
+		{
+			config.audio = VansSceneCameraMediaComponentReader::ReadAudio(
+				componentData,
+				[](const VansSerializedValue& source) { return RuntimeAssetNameFromReference(source); });
+		}
+		else if (type == "Video")
+		{
+			config.video = VansSceneCameraMediaComponentReader::ReadVideo(
+				componentData,
+				[](const VansSerializedValue& source) { return RuntimeAssetNameFromReference(source); });
+		}
+	}
+	return config;
+}
+
+std::optional<VansSceneMultiMeshRootConfig> ReadAuthoringMultiMeshRootComponent(
+	const VansSerializedValue& entity)
+{
+	const VansSerializedValue* rootComponent = FindComponent(entity, "MultiMeshRoot");
+	if (!rootComponent)
+		return std::nullopt;
+
+	VansSceneMultiMeshRootConfig config;
+	if (const VansSerializedValue* data = FindSerializedObjectField(*rootComponent, "data"))
+	{
+		if (const VansSerializedValue* model = FindSerializedObjectField(*data, "model"))
+			config.modelGuid = ReadSerializedStringField(*model, "guid");
+	}
+	return config;
+}
+
+bool AppendAuthoringEntityToContentPlan(
+	const VansSerializedValue& entity,
+	VansSceneContentBuildPlan& plan,
+	const std::string& projectRoot)
+{
+	if (entity.kind != VansSerializedValue::Kind::Object)
+		return true;
+
+	const VansSerializedValue* transformComponent = FindComponent(entity, "Transform");
+	const VansSerializedValue* rendererComponent = FindComponent(entity, "ModelRenderer");
+	const VansSerializedValue* animationComponent = FindComponent(entity, "Animation");
+	const std::string entityGuid = ReadSerializedStringField(entity, "id");
+	const VansSerializedValue* parent = FindObjectField(entity, "parent");
+	const std::string parentEntityGuid = parent && parent->kind == VansSerializedValue::Kind::String
+		? parent->stringValue
+		: std::string{};
+
+	VansSceneRenderNodeConfig render;
+	bool specialRenderNode = false;
+	const bool hasRender = TryBuildAuthoringRenderNode(
+		entity,
+		rendererComponent,
+		animationComponent,
+		entityGuid,
+		parentEntityGuid,
+		render,
+		specialRenderNode);
+
+	if (specialRenderNode)
+	{
+		plan.renderNodes.push_back(std::move(render));
+		return true;
+	}
+
+	VansSceneObjectBuildConfig objectConfig;
+	objectConfig.entityGuid = entityGuid;
+	objectConfig.name = ReadSerializedStringField(entity, "name");
+	objectConfig.transform = BuildAuthoringObjectTransform(transformComponent);
+	if (hasRender)
+	{
+		objectConfig.render = std::move(render);
+		const std::string renderGuid = rendererComponent
+			? ReadSerializedStringField(*rendererComponent, "id")
+			: std::string{};
+		if (!renderGuid.empty())
+			objectConfig.componentGuids[CanonicalRuntimeComponentKeyForName("render")] = renderGuid;
+	}
+
+	VansPythonScriptComponentDescriptors pythonScripts;
+	CollectAuthoringRuntimeComponentMetadata(
+		entity,
+		pythonScripts,
+		objectConfig.componentGuids);
+	objectConfig.multiMeshRoot = ReadAuthoringMultiMeshRootComponent(entity);
+	objectConfig.physicsComponents = VansScenePhysicsComponentReader::ReadAuthoringComponents(entity);
+	if (objectConfig.physicsComponents.cloth && objectConfig.physicsComponents.cloth->profilePath)
+	{
+		objectConfig.physicsComponents.cloth->profilePath = ProjectRelativeAssetPathFromGuid(
+			*objectConfig.physicsComponents.cloth->profilePath,
+			VansAssetType::ClothProfile,
+			projectRoot,
+			true);
+	}
+	objectConfig.vehicleObject = VansSceneVehicleComponentReader::ReadAuthoringComponents(entity);
+	objectConfig.lightComponents = ReadAuthoringLightComponents(entity);
+	objectConfig.cameraMediaComponents = ReadAuthoringCameraMediaComponents(entity);
+	objectConfig.animation = VansSceneAnimationComponentReader::ReadFromAuthoringEntity(entity);
+	if (objectConfig.animation)
+	{
+		objectConfig.animation->animator = ProjectRelativeAssetPathFromGuid(
+			objectConfig.animation->animator,
+			VansAssetType::AnimatorController,
+			projectRoot,
+			true);
+		if (objectConfig.animation->ragdoll)
+		{
+			objectConfig.animation->ragdoll->profile = ProjectRelativeAssetPathFromGuid(
+				objectConfig.animation->ragdoll->profile,
+				VansAssetType::RagdollProfile,
+				projectRoot,
+				true);
+		}
+	}
+	objectConfig.particle = ReadAuthoringParticleComponent(entity);
+	if (objectConfig.particle)
+	{
+		objectConfig.particle->assetPath = ProjectRelativeAssetPathFromGuid(
+			objectConfig.particle->assetPath,
+			VansAssetType::Particle,
+			projectRoot,
+			false);
+	}
+	objectConfig.pythonScripts = std::move(pythonScripts);
+
+	plan.objects.objects.push_back(std::move(objectConfig));
+	return true;
+}
+}
+
+bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+	const VansSerializedValue& sceneRoot,
+	const std::string& projectRoot,
+	VansSceneContentBuildPlan& outPlan,
+	std::string& outError)
+{
+	outPlan = {};
+	outError.clear();
+
+	const VansSerializedValue* entities = FindSerializedArrayField(sceneRoot, "entities");
+	if (ReadSerializedIntField(sceneRoot, "schemaVersion", 0) != VansSceneSchemaVersion || !entities)
+	{
+		outError = "Invalid Scene document";
+		return false;
+	}
+
+	const VansSerializedValue* settings = FindSerializedObjectField(sceneRoot, "settings");
+	if (settings)
+	{
+		outPlan.renderSettings = VansSceneRenderSettingsConfigReader::Read(*settings);
+		outPlan.reflectionProbes = VansSceneReflectionProbeConfigReader::Read(*settings);
+	}
+
 	if (VansAssetDatabase* database = VansProjectManager::Get().GetAssetDatabase())
 	{
 		for (const VansAssetRecord& record : database->All())
 		{
 			if (record.type != VansAssetType::Material || record.state == VansAssetState::Missing)
 				continue;
-			json material = RuntimeMaterialFromAsset(record);
-			if (!material.empty())
-				projected["material"].push_back(std::move(material));
+
+			std::optional<VansSceneMaterialConfig> material = RuntimeMaterialConfigFromAsset(record);
+			if (!material)
+				continue;
+
+			outPlan.materials.push_back(std::move(*material));
 		}
 	}
 
-	json objects = json::array();
-	json renderNodes = json::array();
-	auto resolveMaterialOverride = [](const json& data) -> std::string
+	outPlan.objects.objects.reserve(entities->arrayItems.size());
+	for (const VansSerializedValue& entity : entities->arrayItems)
 	{
-		if (!data.contains("materialOverrides") || !data["materialOverrides"].is_object())
-			return {};
-
-		const json& overrides = data["materialOverrides"];
-		auto readGuid = [&](const std::string& key) -> std::string
+		if (!AppendAuthoringEntityToContentPlan(entity, outPlan, projectRoot))
 		{
-			if (!overrides.contains(key) || !overrides[key].is_object())
-				return {};
-			return overrides[key].value("guid", "");
-		};
-
-		std::string materialGuid = readGuid("default");
-		if (!materialGuid.empty())
-			return materialGuid;
-
-		materialGuid = readGuid("0");
-		if (!materialGuid.empty())
-			return materialGuid;
-
-		if (data.contains("submesh") && data["submesh"].is_object())
-		{
-			const std::string slotName = data["submesh"].value("slotName", "");
-			if (!slotName.empty())
-			{
-				materialGuid = readGuid(slotName);
-				if (!materialGuid.empty())
-					return materialGuid;
-			}
+			outError = "Invalid Scene entity";
+			outPlan = {};
+			return false;
 		}
-
-		if (!overrides.empty())
-			return overrides.begin().value().value("guid", "");
-		return {};
-	};
-
-	for (const json& entity : sceneData["entities"])
-	{
-		const json* transformComponent = FindComponent(entity, "Transform");
-		const json* rendererComponent = FindComponent(entity, "ModelRenderer");
-		const json* animationComponent = FindComponent(entity, "Animation");
-		const std::string entityGuid = entity.value("id", "");
-		const std::string parentEntityGuid = entity.contains("parent") && entity["parent"].is_string()
-			? entity["parent"].get<std::string>()
-			: std::string{};
-
-		json transform = {
-			{ "position", { 0.0f, 0.0f, 0.0f } },
-			{ "rotation", { 0.0f, 0.0f, 0.0f } },
-			{ "scale", { 1.0f, 1.0f, 1.0f } }
-		};
-		if (transformComponent && transformComponent->value("enabled", true) && transformComponent->contains("data"))
-		{
-			const json& data = (*transformComponent)["data"];
-			transform["position"] = data.value("position", transform["position"]);
-			transform["scale"] = data.value("scale", transform["scale"]);
-			if (data.contains("rotation") && data["rotation"].is_array() && data["rotation"].size() == 4)
-			{
-				const glm::quat rotation(
-					data["rotation"][3].get<float>(),
-					data["rotation"][0].get<float>(),
-					data["rotation"][1].get<float>(),
-					data["rotation"][2].get<float>());
-				const glm::vec3 euler = glm::degrees(glm::eulerAngles(rotation));
-				transform["rotation"] = { euler.x, euler.y, euler.z };
-			}
-		}
-
-		json runtimeRender;
-		bool specialRenderNode = false;
-		if (rendererComponent && rendererComponent->value("enabled", true) && rendererComponent->contains("data"))
-		{
-			const json& data = (*rendererComponent)["data"];
-			const std::string modelGuid = data.value("model", json::object()).value("guid", "");
-			std::string materialGuid = resolveMaterialOverride(data);
-			runtimeRender = {
-				{ "entityGuid", entityGuid },
-				{ "parentEntityGuid", parentEntityGuid },
-				{ "name", animationComponent && animationComponent->value("enabled", true)
-					? (*animationComponent)["data"].value("name", entity.value("name", ""))
-					: entity.value("name", "") },
-				{ "mesh", modelGuid },
-				{ "material", materialGuid },
-				{ "type", data.value("renderType", "opaque") },
-				{ "rayTracingMode", data.value("rayTracingMode", "auto") },
-				{ "support_shadow", data.value("castShadows", true) }
-			};
-
-			// Optional, explicitly indexed material bindings for multi-mesh assets.
-			// Keep the legacy materialOverrides resolution above for every existing
-			// project; only assets that opt in with this field use per-submesh
-			// materials at runtime.
-			if (data.contains("submeshMaterialOverrides") &&
-				data["submeshMaterialOverrides"].is_object())
-			{
-				runtimeRender["submeshMaterialOverrides"] = data["submeshMaterialOverrides"];
-			}
-
-			if (data.contains("submesh") && data["submesh"].is_object())
-			{
-				const json& submesh = data["submesh"];
-				runtimeRender["submesh"] = submesh.value("index", 0u);
-				runtimeRender["submeshSlotName"] = submesh.value("slotName", "");
-				runtimeRender["submeshSourceNode"] = submesh.value("sourceNode", "");
-				runtimeRender["submeshSourceMaterial"] = submesh.value("sourceMaterial", "");
-			}
-			if (data.contains("sourceNode") && data["sourceNode"].is_string())
-				runtimeRender["parent"] = data["sourceNode"];
-			specialRenderNode = data.contains("renderRole") && data["renderRole"].is_string();
-		}
-
-		if (specialRenderNode)
-		{
-			renderNodes.push_back(std::move(runtimeRender));
-			continue;
-		}
-
-		json object = {
-			{ "entityGuid", entityGuid },
-			{ "parentEntityGuid", parentEntityGuid },
-			{ "name", entity.value("name", "") },
-			{ "transform", std::move(transform) },
-			{ "components", json::object() }
-		};
-		if (!runtimeRender.empty())
-			object["components"]["render"] = std::move(runtimeRender);
-		object["pyScripts"] = json::array();
-
-		for (const json& component : entity["components"])
-		{
-			const std::string type = component.value("type", "");
-			if (type == "Transform" || type == "ModelRenderer")
-				continue;
-
-			if (type == "Script")
-			{
-				if (component.value("enabled", true))
-					object["pyScripts"].push_back(component.value("data", json::object()));
-				continue;
-			}
-
-			json data = component.value("data", json::object());
-			if ((type == "Audio" || type == "Video") && data.contains("source"))
-				data["source"] = RuntimeAssetNameFromReference(data["source"]);
-
-			data["enabled"] = component.value("enabled", true);
-			object["components"][RuntimeComponentKey(type)] = std::move(data);
-		}
-
-		if (object["pyScripts"].empty())
-			object.erase("pyScripts");
-		objects.push_back(std::move(object));
 	}
 
-	projected["scene"] = json::array({ {
-		{ "objects", std::move(objects) },
-		{ "rendernode", std::move(renderNodes) }
-	} });
-	sceneData = std::move(projected);
+	if (settings)
+	{
+		if (const VansSerializedValue* terrain = FindSerializedObjectField(*settings, "terrain"))
+			outPlan.terrain = VansSceneEnvironmentNodeConfigReader::ReadTerrain(*terrain);
+		if (const VansSerializedValue* vegetation = FindSerializedObjectField(*settings, "vegetation"))
+			outPlan.vegetation = VansSceneEnvironmentNodeConfigReader::ReadVegetation(*vegetation, projectRoot);
+		if (const VansSerializedValue* water = FindSerializedObjectField(*settings, "water"))
+			outPlan.water = VansSceneEnvironmentNodeConfigReader::ReadWater(*water);
+	}
+
+	outPlan.valid = true;
 	return true;
 }
+
 }

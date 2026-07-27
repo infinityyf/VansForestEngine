@@ -117,6 +117,7 @@ namespace VansGraphics
 		}
 
 		RenderNodeType GetNodeType() const { return m_NodeType; }
+		void SetNodeType(RenderNodeType type) { m_NodeType = type; }
 
 	protected:
 
@@ -164,6 +165,13 @@ namespace VansGraphics
 		virtual void RefreshAnimationDescriptorSet() {}
 
 		virtual void MarkAnimationDescriptorDirty() {}
+
+		void MarkDescriptorSetsDirty() { m_DescriptorsetsDirty = true; }
+
+		void RecreateDescriptorSets(
+			VansCamera* camera,
+			VansLightManager& lightManager,
+			VansMaterialManager& materialManager);
 
 		static std::uint64_t GetDescriptorValidationFailureCount();
 		static void ResetDescriptorValidationFailureCount();
@@ -243,8 +251,10 @@ namespace VansGraphics
 	{
 	public:
 		bool m_SupportShadow;
+		uint32_t m_ShadowCasterMask;
 
-		VansCommonRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type), m_SupportShadow(false) {}
+		VansCommonRenderNode(VkDevice& device, RenderNodeType type)
+			: VansRenderNode(device, type), m_SupportShadow(false), m_ShadowCasterMask(0xffffffffu) {}
 
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 

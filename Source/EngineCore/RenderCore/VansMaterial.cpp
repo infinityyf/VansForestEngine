@@ -1,70 +1,95 @@
 #include "VansMaterial.h"
 #include <algorithm>
 #include <cmath>
+#include <type_traits>
 using namespace VansGraphics;
 
 namespace
 {
-bool ReadMaterialVec3(const nlohmann::ordered_json& value, glm::vec3& out)
+constexpr float kLegacyMoonDiskRadianceScale = 0.00008f;
+
+glm::vec3 NormalizeMaterialDirectionSafe(const glm::vec3& direction, const glm::vec3& fallbackDirection)
 {
-	const nlohmann::ordered_json* scalarValue = &value;
-	if (value.is_object())
+	if (std::isfinite(direction.x) && std::isfinite(direction.y) && std::isfinite(direction.z) &&
+		glm::dot(direction, direction) > 1e-6f)
 	{
-		if (value.contains("value")) scalarValue = &value["value"];
-		else if (value.contains("default")) scalarValue = &value["default"];
+		return glm::normalize(direction);
 	}
-	if (!scalarValue->is_array() || scalarValue->size() < 3) return false;
-	out = glm::vec3((*scalarValue)[0].get<float>(), (*scalarValue)[1].get<float>(), (*scalarValue)[2].get<float>());
-	return true;
+	return glm::normalize(fallbackDirection);
 }
 
-bool ReadMaterialFloat(const nlohmann::ordered_json& value, float& out)
+bool ReadMaterialVec3(const VansMaterialParameterValue& value, glm::vec3& out)
 {
-	const nlohmann::ordered_json* scalarValue = &value;
-	if (value.is_object())
-	{
-		if (value.contains("value")) scalarValue = &value["value"];
-		else if (value.contains("default")) scalarValue = &value["default"];
-	}
-	if (!scalarValue->is_number()) return false;
-	out = scalarValue->get<float>();
-	return true;
+	return std::visit([&](const auto& typedValue) -> bool
+		{
+			using T = std::decay_t<decltype(typedValue)>;
+			if constexpr (std::is_same_v<T, glm::vec3>)
+			{
+				out = typedValue;
+				return true;
+			}
+			else if constexpr (std::is_same_v<T, glm::vec4>)
+			{
+				out = glm::vec3(typedValue);
+				return true;
+			}
+			else
+			{
+				return false;
+			}
+		}, value);
 }
 
-bool ReadMaterialString(const nlohmann::ordered_json& value, std::string& out)
+bool ReadMaterialFloat(const VansMaterialParameterValue& value, float& out)
 {
-	const nlohmann::ordered_json* scalarValue = &value;
-	if (value.is_object())
-	{
-		if (value.contains("value")) scalarValue = &value["value"];
-		else if (value.contains("default")) scalarValue = &value["default"];
-	}
-	if (!scalarValue->is_string()) return false;
-	out = scalarValue->get<std::string>();
-	return true;
+	return std::visit([&](const auto& typedValue) -> bool
+		{
+			using T = std::decay_t<decltype(typedValue)>;
+			if constexpr (std::is_same_v<T, float>)
+			{
+				out = typedValue;
+				return true;
+			}
+			else if constexpr (std::is_same_v<T, std::int32_t> || std::is_same_v<T, std::uint32_t>)
+			{
+				out = static_cast<float>(typedValue);
+				return true;
+			}
+			else
+			{
+				return false;
+			}
+		}, value);
 }
 
-glm::vec4 ReadMaterialVec4Value(const nlohmann::ordered_json& value)
+bool ReadMaterialString(const VansMaterialParameterValue& value, std::string& out)
 {
-	if (value.is_number())
-		return glm::vec4(value.get<float>(), 0.0f, 0.0f, 0.0f);
-	if (value.is_array())
+	if (const auto* text = std::get_if<std::string>(&value))
 	{
-		glm::vec4 result(0.0f);
-		const std::size_t count = std::min<std::size_t>(value.size(), 4);
-		for (std::size_t i = 0; i < count; ++i)
-			if (value[i].is_number())
-				result[static_cast<int>(i)] = value[i].get<float>();
-		return result;
+		out = *text;
+		return true;
 	}
-	if (value.is_object())
-	{
-		if (value.contains("value"))
-			return ReadMaterialVec4Value(value["value"]);
-		if (value.contains("default"))
-			return ReadMaterialVec4Value(value["default"]);
-	}
-	return glm::vec4(0.0f);
+	return false;
+}
+
+glm::vec4 ReadMaterialVec4Value(const VansMaterialParameterValue& value)
+{
+	return std::visit([](const auto& typedValue) -> glm::vec4
+		{
+			using T = std::decay_t<decltype(typedValue)>;
+			if constexpr (std::is_same_v<T, float>)
+				return glm::vec4(typedValue, 0.0f, 0.0f, 0.0f);
+			else if constexpr (std::is_same_v<T, std::int32_t> || std::is_same_v<T, std::uint32_t>)
+				return glm::vec4(static_cast<float>(typedValue), 0.0f, 0.0f, 0.0f);
+			else if constexpr (std::is_same_v<T, glm::vec2>)
+				return glm::vec4(typedValue, 0.0f, 0.0f);
+			else if constexpr (std::is_same_v<T, glm::vec3>)
+				return glm::vec4(typedValue, 0.0f);
+			else if constexpr (std::is_same_v<T, glm::vec4>)
+				return typedValue;
+			else
+				return glm::vec4(0.0f);
+		}, value);
 }
 }
 
@@ -199,6 +224,60 @@ void VansGraphics::VansMaterialManager::ClearRuntimeRenderTextures()
 	m_SSGITemporalFrame = 0;
 }
 
+bool VansGraphics::VansMaterialManager::RewriteGlobalBindlessTextureDescriptors(
+	VkDescriptorSet sceneGlobalDescriptorSet)
+{
+	if (m_GlobalPBRTextures.empty())
+		return false;
+
+	std::vector<VkDescriptorImageInfo> infos;
+	infos.reserve(m_GlobalPBRTextures.size());
+	for (VansVKImage* image : m_GlobalPBRTextures)
+	{
+		if (!image)
+			return false;
+		infos.push_back({
+			image->GetSampler(),
+			image->GetImageView(),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		});
+	}
+
+	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	descMgr->BeginDescriptorUpdate();
+	if (sceneGlobalDescriptorSet != VK_NULL_HANDLE)
+	{
+		descMgr->WriteImageDescriptor(
+			sceneGlobalDescriptorSet,
+			GLOBAL_BINDING_BINDLESS_TEXTURES,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			infos);
+	}
+	if (!m_GlobalPBRTexDescriptorSets.empty() &&
+		m_GlobalPBRTexDescriptorSets[0] != VK_NULL_HANDLE)
+	{
+		descMgr->WriteImageDescriptor(
+			m_GlobalPBRTexDescriptorSets[0],
+			GLOBAL_BINDING_BINDLESS_TEXTURES,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			infos);
+	}
+	descMgr->CommitDescriptorUpdates();
+	return true;
+}
+
+bool VansGraphics::VansMaterialManager::ReplaceGlobalBindlessTexture(
+	std::size_t textureIndex,
+	VansTexture* texture,
+	VkDescriptorSet sceneGlobalDescriptorSet)
+{
+	if (!texture || textureIndex >= m_GlobalPBRTextures.size())
+		return false;
+
+	m_GlobalPBRTextures[textureIndex] = &texture->GetImage();
+	return RewriteGlobalBindlessTextureDescriptors(sceneGlobalDescriptorSet);
+}
+
 void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 {
 	// 清空 CPU �?PBR 数组（指针不拥有所有权，material �?VansScene 管理�?
@@ -235,6 +314,8 @@ bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& mater
 			return sss->m_MaterialIndex;
 		if (auto* cloth = dynamic_cast<VansClothMaterial*>(&source))
 			return cloth->m_MaterialIndex;
+		if (auto* skin = dynamic_cast<VansSkinMaterial*>(&source))
+			return skin->m_MaterialIndex;
 		if (source.m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER ||
 			source.m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
 		{
@@ -266,6 +347,8 @@ bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& mater
 		return flushPbrPayload(decal->m_BasePBRParam);
 	if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&material))
 		return flushPbrPayload(sss->m_BasePBRParam);
+	if (auto* skin = dynamic_cast<VansSkinMaterial*>(&material))
+		return flushPbrPayload(skin->m_BasePBRParam);
 	if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
 	{
 		const bool pbrUpdated = flushPbrPayload(cloth->m_BasePBRParam);
@@ -294,7 +377,7 @@ bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& mater
 bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 	VansMaterial& material,
 	const std::string& parameterPath,
-	const nlohmann::ordered_json& value)
+	const VansMaterialParameterValue& value)
 {
 	const std::string key = parameterPath;
 	if (key.rfind("customParameters/", 0) == 0)
@@ -434,6 +517,41 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 		if (key == "ao" && ReadMaterialFloat(value, scalar))
 		{
 			pbr->m_BasePBRParam.m_ao = scalar;
+			FlushMaterialPayload(material);
+			return true;
+		}
+	}
+	else if (auto* skin = dynamic_cast<VansSkinMaterial*>(&material))
+	{
+		glm::vec3 color;
+		if ((key == "subsurfaceColor" || key == "sssColor") && ReadMaterialVec3(value, color))
+		{
+			skin->m_BasePBRParam.m_albedo = glm::max(color, glm::vec3(0.0f));
+			FlushMaterialPayload(material);
+			return true;
+		}
+		float scalar = 0.0f;
+		if (key == "roughness" && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_BasePBRParam.m_roughness = std::clamp(scalar, 0.045f, 1.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "normalStrength" && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_BasePBRParam.m_metallic = std::clamp(scalar, 0.0f, 2.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "subsurfaceAmount" || key == "sssAmount") && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_BasePBRParam.m_ao = std::clamp(scalar, 0.0f, 1.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "specularScale" && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_BasePBRParam.padding = std::clamp(scalar, 0.0f, 4.0f);
 			FlushMaterialPayload(material);
 			return true;
 		}
@@ -892,26 +1010,34 @@ void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterial
 	uint32_t offset = 0;
 	uint32_t size = sizeof(VansAtmospherePBRParam);
 	const auto& dirLight = lightManager.GetDirectionLights()[0];
-	glm::vec3 sunDirection = glm::normalize(dirLight.m_Direction);
+	const VansCelestialLightingState celestialState = VansLightManager::ComputeCelestialLightingState(dirLight);
+	const glm::vec3 sunDirection = NormalizeMaterialDirectionSafe(celestialState.sunDirection, glm::vec3(0.0f, 1.0f, 0.0f));
+	const glm::vec3 moonDirection = NormalizeMaterialDirectionSafe(celestialState.moonDirection, -sunDirection);
+	const glm::vec3 mainCelestialDirection = NormalizeMaterialDirectionSafe(celestialState.direction, sunDirection);
+	const float moonBlend = glm::clamp(celestialState.moonBlend, 0.0f, 1.0f);
+	const float sunDiskVisibility = m_SunDiskEnabled ? (1.0f - moonBlend) : 0.0f;
+	const float moonDiskVisibility = m_MoonDiskEnabled ? moonBlend : 0.0f;
 	m_AtmospherePBRParam.m_SunDirection = sunDirection;
 	// CPU 预计算大气衰减后的太阳颜色，写入 AtmosphereUBO
 	// 供无法直接读 LightsData.glsl �?shader（如 VolumeCloud.frag）使�?
-	m_AtmospherePBRParam.m_EffectiveSunColor = VansLightManager::ComputeAtmosphereSunColor(
-		dirLight.m_Direction, dirLight.m_Color);
-	const glm::vec3 moonDirection = -sunDirection;
-	const float moonPhase = std::clamp(0.5f * (1.0f - glm::dot(sunDirection, moonDirection)), 0.0f, 1.0f);
+	m_AtmospherePBRParam.m_EffectiveSunColor = celestialState.color;
+	const float moonPhase = 1.0f;
 	const glm::vec3 sunRadiance = glm::max(
-		dirLight.m_Color * dirLight.m_Intensity * m_AtmospherePBRParam.m_SunLuminance,
+		VansLightManager::ComputeAtmosphereSunColor(sunDirection, dirLight.m_Color) *
+			dirLight.m_Intensity * m_AtmospherePBRParam.m_SunLuminance,
 		glm::vec3(0.0f));
-	const glm::vec3 moonRadiance = sunRadiance * m_MoonDiskRadianceScale * glm::vec3(0.82f, 0.86f, 1.0f);
+	const float moonRadianceScale = (std::max)(m_MoonDiskRadianceScale / kLegacyMoonDiskRadianceScale, 0.0f);
+	const glm::vec3 moonRadiance = glm::max(
+		celestialState.color * celestialState.intensity * m_AtmospherePBRParam.m_SunLuminance,
+		glm::vec3(0.0f)) * moonRadianceScale * glm::vec3(0.82f, 0.86f, 1.0f);
 
 	m_AtmospherePBRParam.m_SunDiskDirectionAngularRadius = glm::vec4(sunDirection, m_SunDiskAngularRadius);
-	m_AtmospherePBRParam.m_SunDiskRadianceEnabled = glm::vec4(sunRadiance * m_SunDiskRadianceScale, m_SunDiskEnabled ? 1.0f : 0.0f);
+	m_AtmospherePBRParam.m_SunDiskRadianceEnabled = glm::vec4(sunRadiance * m_SunDiskRadianceScale, sunDiskVisibility);
 	m_AtmospherePBRParam.m_SunDiskParams = glm::vec4(m_SunDiskFeather, 1.0f, m_SunDiskOcclusionStrength, 0.0f);
 	m_AtmospherePBRParam.m_MoonDiskDirectionAngularRadius = glm::vec4(moonDirection, m_MoonDiskAngularRadius);
-	m_AtmospherePBRParam.m_MoonDiskRadianceEnabled = glm::vec4(moonRadiance, m_MoonDiskEnabled ? 1.0f : 0.0f);
+	m_AtmospherePBRParam.m_MoonDiskRadianceEnabled = glm::vec4(moonRadiance, moonDiskVisibility);
 	m_AtmospherePBRParam.m_MoonDiskParams = glm::vec4(m_MoonDiskFeather, moonPhase, m_MoonDiskOcclusionStrength, 0.0f);
-	m_AtmospherePBRParam.m_MainCelestialLightInfo = glm::vec4(sunDirection, 0.0f);
+	m_AtmospherePBRParam.m_MainCelestialLightInfo = glm::vec4(mainCelestialDirection, moonBlend);
 	materialManager.m_AtmospherePBRDataBuffer.SetBufferData(&m_AtmospherePBRParam, offset, size);
 }
 

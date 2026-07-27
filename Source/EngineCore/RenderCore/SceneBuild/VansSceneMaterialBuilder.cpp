@@ -1,6 +1,7 @@
 #include "VansSceneMaterialBuilder.h"
 
 #include "../../AssetCore/VansAssetDatabase.h"
+#include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../Util/VansLog.h"
 
@@ -10,100 +11,129 @@ namespace VansGraphics
 {
 	namespace
 	{
-		const json& UnwrapMaterialValue(const json& value)
+		const Vans::VansSerializedValue& UnwrapMaterialValue(const Vans::VansSerializedValue& value)
 		{
-			if (value.is_object())
+			if (value.kind == Vans::VansSerializedValue::Kind::Object)
 			{
-				const auto valueIt = value.find("value");
-				if (valueIt != value.end())
-					return *valueIt;
+				if (const auto* valueField = Vans::FindObjectField(value, "value"))
+					return *valueField;
 
-				const auto defaultIt = value.find("default");
-				if (defaultIt != value.end())
-					return *defaultIt;
+				if (const auto* defaultField = Vans::FindObjectField(value, "default"))
+					return *defaultField;
 			}
 			return value;
 		}
 
-		const json* FindMaterialField(const json& object, const char* key)
+		const Vans::VansSerializedValue* FindMaterialField(const Vans::VansSceneMaterialConfig& material, const char* key)
 		{
-			if (!object.is_object())
+			if (material.root.kind != Vans::VansSerializedValue::Kind::Object)
 				return nullptr;
 
-			const auto direct = object.find(key);
-			if (direct != object.end())
-				return &(*direct);
+			if (const auto* direct = Vans::FindObjectField(material.root, key))
+				return direct;
 
-			const auto params = object.find("parameters");
-			if (params != object.end() && params->is_object())
+			if (const auto* params = Vans::FindObjectField(material.root, "parameters"))
 			{
-				const auto parameter = params->find(key);
-				if (parameter != params->end())
-					return &(*parameter);
+				if (const auto* parameter = Vans::FindObjectField(*params, key))
+					return parameter;
 			}
 
 			return nullptr;
 		}
 
-		float ReadMaterialFloatField(const json& object, const char* key, float fallback)
+		const Vans::VansSerializedValue* FindDirectMaterialField(const Vans::VansSceneMaterialConfig& material, const char* key)
 		{
-			const json* found = FindMaterialField(object, key);
-			if (!found)
-				return fallback;
-			const json& raw = UnwrapMaterialValue(*found);
-			return raw.is_number() ? raw.get<float>() : fallback;
+			return Vans::FindObjectField(material.root, key);
 		}
 
-		std::string ReadMaterialStringField(const json& object, const char* key, const std::string& fallback)
+		bool HasMaterialField(const Vans::VansSceneMaterialConfig& material, const char* key)
 		{
-			const json* found = FindMaterialField(object, key);
-			if (!found)
-				return fallback;
-			const json& raw = UnwrapMaterialValue(*found);
-			return raw.is_string() ? raw.get<std::string>() : fallback;
+			return FindMaterialField(material, key) != nullptr;
 		}
 
-		glm::vec3 ReadMaterialVec3Field(const json& object, const char* key, const glm::vec3& fallback)
+		float ReadMaterialFloatField(const Vans::VansSceneMaterialConfig& material, const char* key, float fallback)
 		{
-			const json* found = FindMaterialField(object, key);
+			const Vans::VansSerializedValue* found = FindMaterialField(material, key);
 			if (!found)
 				return fallback;
-			const json& raw = UnwrapMaterialValue(*found);
-			if (!raw.is_array() || raw.size() < 3 ||
-				!raw[0].is_number() || !raw[1].is_number() || !raw[2].is_number())
+			const Vans::VansSerializedValue& raw = UnwrapMaterialValue(*found);
+			return static_cast<float>(Vans::ReadSerializedNumber(raw, fallback));
+		}
+
+		std::string ReadMaterialStringField(const Vans::VansSceneMaterialConfig& material, const char* key, const std::string& fallback)
+		{
+			const Vans::VansSerializedValue* found = FindMaterialField(material, key);
+			if (!found)
 				return fallback;
-			return glm::vec3(raw[0].get<float>(), raw[1].get<float>(), raw[2].get<float>());
+			const Vans::VansSerializedValue& raw = UnwrapMaterialValue(*found);
+			return Vans::ReadSerializedString(raw, fallback);
+		}
+
+		std::string ReadDirectStringField(const Vans::VansSceneMaterialConfig& material, const char* key, const std::string& fallback = {})
+		{
+			const Vans::VansSerializedValue* found = FindDirectMaterialField(material, key);
+			return found ? Vans::ReadSerializedString(*found, fallback) : fallback;
+		}
+
+		glm::vec3 ReadMaterialVec3Field(const Vans::VansSceneMaterialConfig& material, const char* key, const glm::vec3& fallback)
+		{
+			const Vans::VansSerializedValue* found = FindMaterialField(material, key);
+			if (!found)
+				return fallback;
+			const Vans::VansSerializedValue& raw = UnwrapMaterialValue(*found);
+			if (raw.kind != Vans::VansSerializedValue::Kind::Array || raw.arrayItems.size() < 3)
+				return fallback;
+			return glm::vec3(
+				static_cast<float>(Vans::ReadSerializedNumber(raw.arrayItems[0], fallback.x)),
+				static_cast<float>(Vans::ReadSerializedNumber(raw.arrayItems[1], fallback.y)),
+				static_cast<float>(Vans::ReadSerializedNumber(raw.arrayItems[2], fallback.z)));
+		}
+
+		void ApplySkyDiskConfig(
+			const Vans::VansSerializedValue& disk,
+			bool& enabled,
+			float& angularRadius,
+			float& feather,
+			float& radianceScale,
+			float& occlusionStrength)
+		{
+			enabled = Vans::ReadSerializedBoolField(disk, "enabled", enabled);
+			if (const auto* value = Vans::FindObjectField(disk, "angularRadius"))
+				angularRadius = static_cast<float>(Vans::ReadSerializedNumber(*value, angularRadius));
+			if (const auto* value = Vans::FindObjectField(disk, "feather"))
+				feather = static_cast<float>(Vans::ReadSerializedNumber(*value, feather));
+			if (const auto* value = Vans::FindObjectField(disk, "radianceScale"))
+				radianceScale = static_cast<float>(Vans::ReadSerializedNumber(*value, radianceScale));
+			if (const auto* value = Vans::FindObjectField(disk, "occlusionStrength"))
+				occlusionStrength = static_cast<float>(Vans::ReadSerializedNumber(*value, occlusionStrength));
 		}
 	}
 
 	VansMaterialType VansSceneMaterialBuilder::ParseMaterialType(
-		const json& typeValue,
+		const std::string& type,
 		const std::string& materialName)
 	{
-		if (typeValue.is_string())
-		{
-			const std::string type = typeValue.get<std::string>();
-			if (type == "pbr") return VansMaterialType::VAN_PBR;
-			if (type == "tree") return VansMaterialType::VAN_PBR;
-			if (type == "coat") return VansMaterialType::VAN_COAT;
-			if (type == "transparent") return VansMaterialType::VAN_TRANSPARENT;
-			if (type == "glass" || type == "transmission" || type == "pbr_transmission") return VansMaterialType::VAN_PBR_TRANSMISSION;
-			if (type == "post_process") return VansMaterialType::VAN_POST_PROCESS;
-			if (type == "sky_box") return VansMaterialType::VAN_SKY_BOX;
-			if (type == "deferred") return VansMaterialType::VAN_DEFERRED;
-			if (type == "ssao") return VansMaterialType::VAN_SCREEN_SPACE_AO;
-			if (type == "skin") return VansMaterialType::VAN_SKIN;
-			if (type == "cloth") return VansMaterialType::VAN_CLOTH;
-			if (type == "hair") return VansMaterialType::VAN_HAIR;
-			if (type == "subsurface") return VansMaterialType::VAN_SUBSURFACE;
-			if (type == "grass") return VansMaterialType::VAN_GRASS;
-			if (type == "emissive") return VansMaterialType::VAN_EMISSIVE;
-			if (type == "pbr_emissive" || type == "pbrEmissive") return VansMaterialType::VAN_PBR_EMISSIVE;
-			if (type == "decal") return VansMaterialType::VAN_DECAL;
-			if (type == "customShader" || type == "custom") return VansMaterialType::VAN_CUSTOM_SHADER;
+		if (type == "pbr") return VansMaterialType::VAN_PBR;
+		if (type == "tree") return VansMaterialType::VAN_PBR;
+		if (type == "coat") return VansMaterialType::VAN_COAT;
+		if (type == "transparent") return VansMaterialType::VAN_TRANSPARENT;
+		if (type == "glass" || type == "transmission" || type == "pbr_transmission") return VansMaterialType::VAN_PBR_TRANSMISSION;
+		if (type == "post_process") return VansMaterialType::VAN_POST_PROCESS;
+		if (type == "sky_box") return VansMaterialType::VAN_SKY_BOX;
+		if (type == "deferred") return VansMaterialType::VAN_DEFERRED;
+		if (type == "ssao") return VansMaterialType::VAN_SCREEN_SPACE_AO;
+		if (type == "skin") return VansMaterialType::VAN_SKIN;
+		if (type == "cloth") return VansMaterialType::VAN_CLOTH;
+		if (type == "hair") return VansMaterialType::VAN_HAIR;
+		if (type == "subsurface") return VansMaterialType::VAN_SUBSURFACE;
+		if (type == "grass") return VansMaterialType::VAN_GRASS;
+		if (type == "emissive") return VansMaterialType::VAN_EMISSIVE;
+		if (type == "pbr_emissive" || type == "pbrEmissive") return VansMaterialType::VAN_PBR_EMISSIVE;
+		if (type == "decal") return VansMaterialType::VAN_DECAL;
+		if (type == "customShader" || type == "custom") return VansMaterialType::VAN_CUSTOM_SHADER;
+		if (!type.empty())
 			VANS_LOG_WARN("[ParseMaterialType] Material '" << materialName
 				<< "': unknown type string '" << type << "', defaulting to pbr.");
-		}
 		return VansMaterialType::VAN_PBR;
 	}
 
@@ -232,11 +262,15 @@ namespace VansGraphics
 
 	}
 
-VansTexture* VansSceneMaterialBuilder::ResolveMaterialTexture(VansScene& scene, const json& sceneMaterial, const char* key)
+VansTexture* VansSceneMaterialBuilder::ResolveMaterialTexture(
+	VansScene& scene,
+	const Vans::VansSceneMaterialConfig& sceneMaterial,
+	const char* key)
 {
-    if (sceneMaterial.contains(key) && sceneMaterial[key].is_string())
+	const Vans::VansSerializedValue* textureField = FindDirectMaterialField(sceneMaterial, key);
+    if (textureField && textureField->kind == Vans::VansSerializedValue::Kind::String)
     {
-        const std::string textureName = sceneMaterial[key].get<std::string>();
+        const std::string textureName = textureField->stringValue;
         VansTexture* texture = static_cast<VansTexture*>(scene.GetTextureAsset(textureName));
         if (!texture)
         {
@@ -258,10 +292,10 @@ VansTexture* VansSceneMaterialBuilder::ResolveMaterialTexture(VansScene& scene, 
             }
         }
         if (std::string(key) == "basecolor_texture" ||
-            sceneMaterial.value("generatedFor", std::string{}) == "runtimeMultiMeshExpansion")
+            ReadDirectStringField(sceneMaterial, "generatedFor") == "runtimeMultiMeshExpansion")
         {
             VANS_LOG("[LoadMaterials] Resolve texture material="
-                << sceneMaterial.value("name", std::string{"<unnamed>"})
+                << ReadDirectStringField(sceneMaterial, "name", "<unnamed>")
                 << " key=" << key
                 << " request=" << textureName
                 << " result=" << (texture ? texture->m_AssetName : std::string{"<missing>"}));
@@ -273,7 +307,7 @@ VansTexture* VansSceneMaterialBuilder::ResolveMaterialTexture(VansScene& scene, 
 
 VansTexture* VansSceneMaterialBuilder::ResolveMaterialTextureWithFallback(
     VansScene& scene,
-    const json& sceneMaterial,
+    const Vans::VansSceneMaterialConfig& sceneMaterial,
     const char* key,
     const char* fallback)
 {
@@ -282,7 +316,7 @@ VansTexture* VansSceneMaterialBuilder::ResolveMaterialTextureWithFallback(
 
 VansTexture* VansSceneMaterialBuilder::ResolveMaterialTextureOrDefault(
     VansScene& scene,
-    const json& sceneMaterial,
+    const Vans::VansSceneMaterialConfig& sceneMaterial,
     const char* key,
     const char* fallback)
 {
@@ -291,30 +325,33 @@ VansTexture* VansSceneMaterialBuilder::ResolveMaterialTextureOrDefault(
 
 namespace
 {
-glm::vec4 ReadCustomMaterialVec4(const json& value)
+glm::vec4 ReadCustomMaterialVec4(const Vans::VansSerializedValue& value)
 {
-    if (value.is_number())
-        return glm::vec4(value.get<float>(), 0.0f, 0.0f, 0.0f);
-    if (value.is_array())
+    if (value.kind == Vans::VansSerializedValue::Kind::Float ||
+		value.kind == Vans::VansSerializedValue::Kind::Int)
+        return glm::vec4(static_cast<float>(Vans::ReadSerializedNumber(value)), 0.0f, 0.0f, 0.0f);
+    if (value.kind == Vans::VansSerializedValue::Kind::Array)
     {
         glm::vec4 result(0.0f);
-        const std::size_t count = std::min<std::size_t>(value.size(), 4);
+        const std::size_t count = std::min<std::size_t>(value.arrayItems.size(), 4);
         for (std::size_t i = 0; i < count; ++i)
-            if (value[i].is_number())
-                result[static_cast<int>(i)] = value[i].get<float>();
+            result[static_cast<int>(i)] = static_cast<float>(Vans::ReadSerializedNumber(value.arrayItems[i], result[static_cast<int>(i)]));
         return result;
     }
-    if (value.is_object())
+    if (value.kind == Vans::VansSerializedValue::Kind::Object)
     {
-        if (value.contains("value"))
-            return ReadCustomMaterialVec4(value["value"]);
-        if (value.contains("default"))
-            return ReadCustomMaterialVec4(value["default"]);
+        if (const auto* unwrapped = Vans::FindObjectField(value, "value"))
+            return ReadCustomMaterialVec4(*unwrapped);
+        if (const auto* unwrapped = Vans::FindObjectField(value, "default"))
+            return ReadCustomMaterialVec4(*unwrapped);
     }
     return glm::vec4(0.0f);
 }
 
-void PopulateCustomMaterialData(VansGraphics::VansScene& scene, VansGraphics::VansMaterial* material, const json& sceneMaterial)
+void PopulateCustomMaterialData(
+	VansGraphics::VansScene& scene,
+	VansGraphics::VansMaterial* material,
+	const Vans::VansSceneMaterialConfig& sceneMaterial)
 {
     if (!material)
         return;
@@ -324,14 +361,15 @@ void PopulateCustomMaterialData(VansGraphics::VansScene& scene, VansGraphics::Va
     material->m_CustomTextures.clear();
     material->m_CustomMaterialPayload = VansGraphics::VansCustomMaterialPayload{};
 
-    if (sceneMaterial.contains("customParameters") && sceneMaterial["customParameters"].is_object())
+    const Vans::VansSerializedValue* customParameters = FindDirectMaterialField(sceneMaterial, "customParameters");
+    if (customParameters && customParameters->kind == Vans::VansSerializedValue::Kind::Object)
     {
         int nextSlot = 0;
-        for (const auto& [name, parameter] : sceneMaterial["customParameters"].items())
+        for (const auto& [name, parameter] : customParameters->objectFields)
         {
             int slot = nextSlot;
-            if (parameter.is_object() && parameter.contains("slot") && parameter["slot"].is_number_integer())
-                slot = parameter["slot"].get<int>();
+            if (const auto* slotValue = Vans::FindObjectField(parameter, "slot"))
+                slot = static_cast<int>(Vans::ReadSerializedInt(*slotValue, slot));
             if (slot >= VansGraphics::VANS_CUSTOM_MATERIAL_VEC4_COUNT)
             {
                 VANS_LOG_WARN("[LoadMaterials] Custom material parameter limit reached; skipping '" << name << "'");
@@ -345,28 +383,29 @@ void PopulateCustomMaterialData(VansGraphics::VansScene& scene, VansGraphics::Va
         }
     }
 
-    if (sceneMaterial.contains("customTextures") && sceneMaterial["customTextures"].is_object())
+    const Vans::VansSerializedValue* customTextures = FindDirectMaterialField(sceneMaterial, "customTextures");
+    if (customTextures && customTextures->kind == Vans::VansSerializedValue::Kind::Object)
     {
         int nextSlot = 0;
-        for (const auto& [name, textureNameJson] : sceneMaterial["customTextures"].items())
+        for (const auto& [name, textureNameValue] : customTextures->objectFields)
         {
             int slot = nextSlot;
-            const json* textureReference = &textureNameJson;
-            if (textureNameJson.is_object())
+            const Vans::VansSerializedValue* textureReference = &textureNameValue;
+            if (textureNameValue.kind == Vans::VansSerializedValue::Kind::Object)
             {
-                if (textureNameJson.contains("slot") && textureNameJson["slot"].is_number_integer())
-                    slot = textureNameJson["slot"].get<int>();
-                if (textureNameJson.contains("value"))
-                    textureReference = &textureNameJson["value"];
+                if (const auto* slotValue = Vans::FindObjectField(textureNameValue, "slot"))
+                    slot = static_cast<int>(Vans::ReadSerializedInt(*slotValue, slot));
+                if (const auto* value = Vans::FindObjectField(textureNameValue, "value"))
+                    textureReference = value;
             }
             if (slot >= VansGraphics::VANS_CUSTOM_MATERIAL_TEXTURE_COUNT)
             {
                 VANS_LOG_WARN("[LoadMaterials] Custom material texture limit reached; skipping '" << name << "'");
                 continue;
             }
-            if (slot < 0 || !textureReference->is_string())
+            if (slot < 0 || textureReference->kind != Vans::VansSerializedValue::Kind::String)
                 continue;
-            const std::string textureName = textureReference->get<std::string>();
+            const std::string textureName = textureReference->stringValue;
             VansGraphics::VansTexture* texture = static_cast<VansGraphics::VansTexture*>(scene.GetTextureAsset(textureName));
             if (!texture)
             {
@@ -381,11 +420,11 @@ void PopulateCustomMaterialData(VansGraphics::VansScene& scene, VansGraphics::Va
 }
 }
 
-void VansSceneMaterialBuilder::PopulateMaterialFromJson(
+void VansSceneMaterialBuilder::PopulateMaterial(
     VansScene& scene,
     VansMaterial* material,
     VansMaterialType matType,
-    const json& sceneMaterial)
+    const Vans::VansSceneMaterialConfig& sceneMaterial)
 {
     if (!material)
         return;
@@ -393,14 +432,13 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
     if (matType == VansMaterialType::VAN_CUSTOM_SHADER)
         PopulateCustomMaterialData(scene, material, sceneMaterial);
 
-    if (sceneMaterial.contains("shader"))
+    if (const Vans::VansSerializedValue* shaderOverride = FindDirectMaterialField(sceneMaterial, "shader"))
     {
-        const json& shaderOverride = sceneMaterial["shader"];
-        if (shaderOverride.is_string())
+        if (shaderOverride->kind == Vans::VansSerializedValue::Kind::String)
         {
             if (matType == VansMaterialType::VAN_CUSTOM_SHADER)
             {
-                material->m_PassShaderOverrides["*"] = shaderOverride.get<std::string>();
+                material->m_PassShaderOverrides["*"] = shaderOverride->stringValue;
             }
             else
             {
@@ -408,22 +446,23 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
                     << "' ignored string shader override on non-custom material. Use shaderPasses for explicit pass overrides.");
             }
         }
-        else if (shaderOverride.is_object())
+        else if (shaderOverride->kind == Vans::VansSerializedValue::Kind::Object)
         {
-            for (const auto& [passName, shaderName] : shaderOverride.items())
+            for (const auto& [passName, shaderName] : shaderOverride->objectFields)
             {
-                if (shaderName.is_string())
-                    material->m_PassShaderOverrides[passName] = shaderName.get<std::string>();
+                if (shaderName.kind == Vans::VansSerializedValue::Kind::String)
+                    material->m_PassShaderOverrides[passName] = shaderName.stringValue;
             }
         }
     }
 
-    if (sceneMaterial.contains("shaderPasses") && sceneMaterial["shaderPasses"].is_object())
+    if (const Vans::VansSerializedValue* shaderPasses = FindDirectMaterialField(sceneMaterial, "shaderPasses");
+		shaderPasses && shaderPasses->kind == Vans::VansSerializedValue::Kind::Object)
     {
-        for (const auto& [passName, shaderName] : sceneMaterial["shaderPasses"].items())
+        for (const auto& [passName, shaderName] : shaderPasses->objectFields)
         {
-            if (shaderName.is_string())
-                material->m_PassShaderOverrides[passName] = shaderName.get<std::string>();
+            if (shaderName.kind == Vans::VansSerializedValue::Kind::String)
+                material->m_PassShaderOverrides[passName] = shaderName.stringValue;
         }
     }
 
@@ -469,7 +508,7 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         cloth->m_TransmissionColor = glm::max(
             ReadMaterialVec3Field(sceneMaterial, "transmissionColor", glm::vec3(1.0f)), glm::vec3(0.0f));
 
-        if (FindMaterialField(sceneMaterial, "sheenColor"))
+        if (HasMaterialField(sceneMaterial, "sheenColor"))
         {
             cloth->m_SheenColor = glm::max(
                 ReadMaterialVec3Field(sceneMaterial, "sheenColor", glm::vec3(1.0f)), glm::vec3(0.0f));
@@ -506,6 +545,18 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         auto* skin = static_cast<VansSkinMaterial*>(material);
         skin->m_BaseColorTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
         skin->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
+        glm::vec3 sssColor = ReadMaterialVec3Field(sceneMaterial, "subsurfaceColor", glm::vec3(1.0f, 0.34f, 0.22f));
+        sssColor = ReadMaterialVec3Field(sceneMaterial, "sssColor", sssColor);
+        skin->m_BasePBRParam.m_albedo = glm::max(sssColor, glm::vec3(0.0f));
+        skin->m_BasePBRParam.m_roughness = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "roughness", 0.62f), 0.045f, 1.0f);
+        skin->m_BasePBRParam.m_metallic = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "normalStrength", 0.35f), 0.0f, 2.0f);
+        skin->m_BasePBRParam.m_ao = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "subsurfaceAmount",
+                ReadMaterialFloatField(sceneMaterial, "sssAmount", 0.65f)), 0.0f, 1.0f);
+        skin->m_BasePBRParam.padding = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "specularScale", 1.0f), 0.0f, 4.0f);
         break;
     }
     case VansMaterialType::VAN_HAIR:
@@ -522,18 +573,23 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         hair->m_ShiftTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "shift_texture", "defaultRoughness");
         hair->m_FlowTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "flow_texture", "defaultAlbedo");
         hair->m_IDTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "id_texture", "defaultAlbedo");
-		if (sceneMaterial.contains("params") && sceneMaterial["params"].is_object())
+		if (const Vans::VansSerializedValue* params = FindDirectMaterialField(sceneMaterial, "params");
+			params && params->kind == Vans::VansSerializedValue::Kind::Object)
 		{
-			const auto& params = sceneMaterial["params"];
-			auto readVec4 = [](const json& obj, const char* key, glm::vec4 fallback) {
-				if (!obj.contains(key) || !obj[key].is_array() || obj[key].size() < 4)
+			auto readVec4 = [](const Vans::VansSerializedValue& obj, const char* key, glm::vec4 fallback) {
+				const Vans::VansSerializedValue* value = Vans::FindObjectField(obj, key);
+				if (!value || value->kind != Vans::VansSerializedValue::Kind::Array || value->arrayItems.size() < 4)
 					return fallback;
-				return glm::vec4(obj[key][0], obj[key][1], obj[key][2], obj[key][3]);
+				return glm::vec4(
+					static_cast<float>(Vans::ReadSerializedNumber(value->arrayItems[0], fallback.x)),
+					static_cast<float>(Vans::ReadSerializedNumber(value->arrayItems[1], fallback.y)),
+					static_cast<float>(Vans::ReadSerializedNumber(value->arrayItems[2], fallback.z)),
+					static_cast<float>(Vans::ReadSerializedNumber(value->arrayItems[3], fallback.w)));
 			};
-			hair->m_Params.absorption = readVec4(params, "absorption", hair->m_Params.absorption);
-			hair->m_Params.roughnessScale = readVec4(params, "roughness_scale", hair->m_Params.roughnessScale);
-			hair->m_Params.shiftParams = readVec4(params, "shift_params", hair->m_Params.shiftParams);
-			hair->m_Params.coverageParams = readVec4(params, "coverage_params", hair->m_Params.coverageParams);
+			hair->m_Params.absorption = readVec4(*params, "absorption", hair->m_Params.absorption);
+			hair->m_Params.roughnessScale = readVec4(*params, "roughness_scale", hair->m_Params.roughnessScale);
+			hair->m_Params.shiftParams = readVec4(*params, "shift_params", hair->m_Params.shiftParams);
+			hair->m_Params.coverageParams = readVec4(*params, "coverage_params", hair->m_Params.coverageParams);
 		}
         break;
     }
@@ -567,12 +623,13 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
     case VansMaterialType::VAN_TRANSPARENT:
     {
         auto* trans = static_cast<VansTransparentMaterial*>(material);
-        if (sceneMaterial.contains("textures") && sceneMaterial["textures"].is_array())
+        if (const Vans::VansSerializedValue* textures = FindDirectMaterialField(sceneMaterial, "textures");
+			textures && textures->kind == Vans::VansSerializedValue::Kind::Array)
         {
-            for (const auto& entry : sceneMaterial["textures"])
+            for (const auto& entry : textures->arrayItems)
             {
-                std::string slotName = entry.value("slot", "");
-                std::string textureName = entry.value("texture", "");
+                std::string slotName = Vans::ReadSerializedStringField(entry, "slot", "");
+                std::string textureName = Vans::ReadSerializedStringField(entry, "texture", "");
                 VansTexture* tex = nullptr;
                 if (!textureName.empty())
                 {
@@ -594,7 +651,7 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
                     }
                 }
                 if (tex == nullptr)
-                    VANS_LOG_WARN("[LoadMaterials] Transparent material '" << sceneMaterial.value("name", "<unnamed>") << "': could not resolve texture for slot '" << slotName << "'");
+                    VANS_LOG_WARN("[LoadMaterials] Transparent material '" << ReadDirectStringField(sceneMaterial, "name", "<unnamed>") << "': could not resolve texture for slot '" << slotName << "'");
                 trans->m_TransparentTextureMap.push_back({ slotName, textureName });
                 trans->m_TransparentTextures.push_back(tex);
             }
@@ -678,9 +735,9 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         emissive->m_BasePBRParam.padding = -1.0f - std::max(emissive->m_BasePBRParam.m_roughness, 0.0f);
         emissive->m_EmissiveTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "emissive_texture", "defaultAlbedo");
 
-        if (sceneMaterial.contains("emissive_video"))
+        const std::string videoName = ReadDirectStringField(sceneMaterial, "emissive_video");
+        if (!videoName.empty())
         {
-            const std::string videoName = sceneMaterial["emissive_video"];
             VansVideoTexture* videoTex = scene.GetVideoManager()->Get(videoName);
             if (videoTex && videoTex->IsReady())
             {
@@ -747,26 +804,30 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
         sky->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25000;
         sky->m_AtmospherePBRParam.m_OzoneLevelWidth = 15000;
         sky->m_AtmospherePBRParam.m_SunLuminance = 10;
-        if (sceneMaterial.contains("celestial") && sceneMaterial["celestial"].is_object())
+        if (const auto* celestial = FindDirectMaterialField(sceneMaterial, "celestial");
+			celestial && celestial->kind == Vans::VansSerializedValue::Kind::Object)
         {
-            const auto& celestial = sceneMaterial["celestial"];
-            if (celestial.contains("sun") && celestial["sun"].is_object())
+            if (const auto* sun = Vans::FindObjectField(*celestial, "sun");
+				sun && sun->kind == Vans::VansSerializedValue::Kind::Object)
             {
-                const auto& sun = celestial["sun"];
-                sky->m_SunDiskEnabled = sun.value("enabled", sky->m_SunDiskEnabled);
-                sky->m_SunDiskAngularRadius = sun.value("angularRadius", sky->m_SunDiskAngularRadius);
-                sky->m_SunDiskFeather = sun.value("feather", sky->m_SunDiskFeather);
-                sky->m_SunDiskRadianceScale = sun.value("radianceScale", sky->m_SunDiskRadianceScale);
-                sky->m_SunDiskOcclusionStrength = sun.value("occlusionStrength", sky->m_SunDiskOcclusionStrength);
+				ApplySkyDiskConfig(
+					*sun,
+					sky->m_SunDiskEnabled,
+					sky->m_SunDiskAngularRadius,
+					sky->m_SunDiskFeather,
+					sky->m_SunDiskRadianceScale,
+					sky->m_SunDiskOcclusionStrength);
             }
-            if (celestial.contains("moon") && celestial["moon"].is_object())
+            if (const auto* moon = Vans::FindObjectField(*celestial, "moon");
+				moon && moon->kind == Vans::VansSerializedValue::Kind::Object)
             {
-                const auto& moon = celestial["moon"];
-                sky->m_MoonDiskEnabled = moon.value("enabled", sky->m_MoonDiskEnabled);
-                sky->m_MoonDiskAngularRadius = moon.value("angularRadius", sky->m_MoonDiskAngularRadius);
-                sky->m_MoonDiskFeather = moon.value("feather", sky->m_MoonDiskFeather);
-                sky->m_MoonDiskRadianceScale = moon.value("radianceScale", sky->m_MoonDiskRadianceScale);
-                sky->m_MoonDiskOcclusionStrength = moon.value("occlusionStrength", sky->m_MoonDiskOcclusionStrength);
+				ApplySkyDiskConfig(
+					*moon,
+					sky->m_MoonDiskEnabled,
+					sky->m_MoonDiskAngularRadius,
+					sky->m_MoonDiskFeather,
+					sky->m_MoonDiskRadianceScale,
+					sky->m_MoonDiskOcclusionStrength);
             }
         }
         break;
@@ -776,20 +837,22 @@ void VansSceneMaterialBuilder::PopulateMaterialFromJson(
     }
 }
 
-	void VansSceneMaterialBuilder::LoadMaterialsFromJson(VansScene& scene, const json& materialData)
+	void VansSceneMaterialBuilder::LoadMaterials(VansScene& scene, const Vans::VansSceneMaterialConfigs& materialData)
 	{
-		for (const auto& sceneMaterial : materialData)
+		for (const Vans::VansSceneMaterialConfig& sceneMaterial : materialData)
 		{
+			const std::string materialName = ReadDirectStringField(sceneMaterial, "name", "<unnamed>");
 			VansMaterialType materialType = ParseMaterialType(
-				sceneMaterial["type"],
-				sceneMaterial.value("name", "<unnamed>"));
+				ReadDirectStringField(sceneMaterial, "type"),
+				materialName);
 			VansMaterial* material = CreateMaterialForType(materialType);
 			material->m_MaterialType = materialType;
 			PopulateMaterialPassShaders(scene, material, materialType);
-			PopulateMaterialFromJson(scene, material, materialType, sceneMaterial);
-			material->SetName(sceneMaterial["name"]);
+			PopulateMaterial(scene, material, materialType, sceneMaterial);
+			material->SetName(materialName);
 			ApplyMaterialShaderOverrides(scene, material);
 			scene.AddMaterialAsset(material);
 		}
 	}
+
 }

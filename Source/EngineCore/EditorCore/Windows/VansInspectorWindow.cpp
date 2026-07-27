@@ -1,13 +1,20 @@
 #include "VansInspectorWindow.h"
 
 #include "../VansAssetDocumentEditService.h"
+#include "../VansAssetDocumentRegistry.h"
 #include "../VansEditorAssetSaveService.h"
-#include "../VansAssetReferenceSlotRegistry.h"
+#include "../VansEditorMaterialSchemaService.h"
+#include "../VansEditorObjectReference.h"
+#include "../VansEditorPropertyDescriptorRegistry.h"
 #include "../VansEditorSelection.h"
+#include "../VansEditorRuntimePreviewProjector.h"
 #include "../VansEditorWindow.h"
 #include "../VansSceneEditService.h"
+#include "../VansSceneObjectReferenceResolver.h"
 #include "../../AssetCore/VansAssetGuid.h"
+#include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../SceneCore/VansSceneDocument.h"
+#include "../../ScriptCore/VansPythonScriptInspectorService.h"
 #include "../../Util/VansLog.h"
 
 #include "imgui.h"
@@ -21,7 +28,8 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
+#include <filesystem>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -31,8 +39,6 @@ namespace VansGraphics
 {
 namespace
 {
-using Json = nlohmann::ordered_json;
-
 std::string EscapePointerToken(const std::string& token)
 {
     std::string result;
@@ -90,11 +96,6 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
     }
 }
 
-Vans::EditorAPI::AssetType ToEditorAssetType(int value)
-{
-    return static_cast<Vans::EditorAPI::AssetType>(value);
-}
-
 const std::vector<const char*>* EnumOptions(const std::string& key)
 {
     static const std::vector<const char*> bodyType{ "static", "dynamic", "kinematic" };
@@ -126,47 +127,162 @@ const std::vector<const char*>* EnumOptions(const std::string& key)
     return nullptr;
 }
 
-Json DefaultComponentData(const std::string& type)
+Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type)
 {
-    if (type == "ModelRenderer") return { { "model", { { "guid", "" } } }, { "castShadows", true },
-        { "receiveShadows", true }, { "rayTracingMode", "auto" }, { "visibilityMask", 0xffffffffu },
-        { "materialOverrides", Json::object() }, { "orphanOverrides", Json::object() }, { "renderType", "opaque" } };
-    if (type == "Physics") return { { "name", "Physics" }, { "bodyType", "static" },
-        { "colliderType", "box" }, { "boxExtents", { 0.5f, 0.5f, 0.5f } }, { "mass", 1.0f },
-        { "layer", "Default" }, { "isTrigger", false },
-        { "material", { { "staticFriction", 0.5f }, { "dynamicFriction", 0.5f }, { "restitution", 0.0f } } } };
-    if (type == "Camera") return { { "fov", 60.0f }, { "nearClip", 0.1f }, { "farClip", 1000.0f } };
-    if (type == "CharacterController") return { { "radius", 0.5f }, { "height", 1.8f },
-        { "slopeLimit", 0.707f }, { "stepOffset", 0.3f }, { "contactOffset", 0.08f },
-        { "climbingMode", "easy" }, { "layer", "Default" }, { "positionOffset", { 0.0f, 0.9f, 0.0f } } };
-    if (type == "DirectionalLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f } };
-    if (type == "PointLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
-        { "radius", 10.0f }, { "castShadows", true }, { "shadowPolicy", "Auto" },
-        { "shadowPriority", 128 }, { "shadowResolution", "Auto" }, { "shadowUpdateMode", "OnChange" },
-        { "shadowFallback", "ScreenSpace" }, { "shadowMaxDistance", 30.0f }, { "shadowNearPlane", 0.0f },
-        { "shadowDepthBiasTexels", 1.0f }, { "shadowNormalBiasTexels", 1.0f },
-        { "shadowSourceRadius", 0.02f }, { "shadowAffectsFog", true }, { "shadowAffectsGI", true } };
-    if (type == "SpotLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
-        { "radius", 10.0f }, { "innercutoff", 15.0f }, { "outerCutoff", 30.0f },
-        { "castShadows", true }, { "shadowPolicy", "Auto" }, { "shadowPriority", 128 },
-        { "shadowResolution", "Auto" }, { "shadowUpdateMode", "OnChange" }, { "shadowFallback", "ScreenSpace" },
-        { "shadowMaxDistance", 30.0f }, { "shadowNearPlane", 0.0f }, { "shadowDepthBiasTexels", 1.0f },
-        { "shadowNormalBiasTexels", 1.0f }, { "shadowSourceRadius", 0.02f },
-        { "shadowAffectsFog", true }, { "shadowAffectsGI", true } };
-    if (type == "RectLight") return { { "color", { 1.0f, 1.0f, 1.0f } }, { "intensity", 1.0f },
-        { "width", 1.0f }, { "height", 1.0f }, { "range", 10.0f }, { "two_sided", false },
-        { "castShadows", false }, { "shadowPolicy", "Auto" }, { "shadowPriority", 128 },
-        { "shadowResolution", "Auto" }, { "shadowUpdateMode", "OnChange" }, { "shadowFallback", "ScreenSpace" },
-        { "shadowMaxDistance", 30.0f }, { "shadowNearPlane", 0.0f }, { "shadowDepthBiasTexels", 1.0f },
-        { "shadowNormalBiasTexels", 1.0f }, { "shadowSourceRadius", 0.02f },
-        { "shadowAffectsFog", true }, { "shadowAffectsGI", true } };
-    if (type == "Audio" || type == "Video") return { { "source", { { "guid", "" } } } };
-    if (type == "Particle") return { { "asset", "" }, { "play_on_awake", true } };
-    if (type == "Script") return { { "path", "Scripts/" }, { "class", "" } };
-    if (type == "Animation") return { { "name", "Animation" }, { "root_motion", false }, { "animator", "" } };
-    if (type == "Cloth") return { { "profilePath", "" }, { "physicsAttachOffsetY", 0.0f } };
-    if (type == "Vehicle") return { { "bodyObject", "" }, { "tireObjects", Json::array() } };
-    return Json::object();
+    using Value = Vans::VansSerializedValue;
+    auto guidReference = []()
+    {
+        return Value::Object({ { "guid", Value::String("") } });
+    };
+    auto vec3 = [](double x, double y, double z)
+    {
+        return Value::Array({ Value::Float(x), Value::Float(y), Value::Float(z) });
+    };
+    auto shadowFields = []()
+    {
+        return std::vector<std::pair<std::string, Value>>{
+            { "castShadows", Value::Bool(true) },
+            { "shadowPolicy", Value::String("Auto") },
+            { "shadowPriority", Value::Int(128) },
+            { "shadowResolution", Value::String("Auto") },
+            { "shadowUpdateMode", Value::String("OnChange") },
+            { "shadowFallback", Value::String("ScreenSpace") },
+            { "shadowMaxDistance", Value::Float(30.0) },
+            { "shadowNearPlane", Value::Float(0.0) },
+            { "shadowDepthBiasTexels", Value::Float(1.0) },
+            { "shadowNormalBiasTexels", Value::Float(1.0) },
+            { "shadowSourceRadius", Value::Float(0.02) },
+            { "shadowAffectsFog", Value::Bool(true) },
+            { "shadowAffectsGI", Value::Bool(true) },
+            { "shadowCasterMask", Value::Int(0xffffffff) }
+        };
+    };
+
+    if (type == "ModelRenderer")
+        return Value::Object({
+            { "model", guidReference() },
+            { "castShadows", Value::Bool(true) },
+            { "receiveShadows", Value::Bool(true) },
+            { "rayTracingMode", Value::String("auto") },
+            { "visibilityMask", Value::Int(0xffffffff) },
+            { "shadowCasterMask", Value::Int(0xffffffff) },
+            { "materialOverrides", Value::Object({}) },
+            { "orphanOverrides", Value::Object({}) },
+            { "renderType", Value::String("opaque") }
+        });
+    if (type == "Physics")
+        return Value::Object({
+            { "name", Value::String("Physics") },
+            { "bodyType", Value::String("static") },
+            { "colliderType", Value::String("box") },
+            { "boxExtents", vec3(0.5, 0.5, 0.5) },
+            { "mass", Value::Float(1.0) },
+            { "layer", Value::String("Default") },
+            { "isTrigger", Value::Bool(false) },
+            { "material", Value::Object({
+                { "staticFriction", Value::Float(0.5) },
+                { "dynamicFriction", Value::Float(0.5) },
+                { "restitution", Value::Float(0.0) }
+            }) }
+        });
+    if (type == "Camera")
+        return Value::Object({
+            { "fov", Value::Float(60.0) },
+            { "nearClip", Value::Float(0.1) },
+            { "farClip", Value::Float(1000.0) }
+        });
+    if (type == "CharacterController")
+        return Value::Object({
+            { "radius", Value::Float(0.5) },
+            { "height", Value::Float(1.8) },
+            { "slopeLimit", Value::Float(0.707) },
+            { "stepOffset", Value::Float(0.3) },
+            { "contactOffset", Value::Float(0.08) },
+            { "climbingMode", Value::String("easy") },
+            { "layer", Value::String("Default") },
+            { "positionOffset", vec3(0.0, 0.9, 0.0) }
+        });
+    if (type == "DirectionalLight")
+        return Value::Object({
+            { "color", vec3(1.0, 1.0, 1.0) },
+            { "intensity", Value::Float(1.0) }
+        });
+    if (type == "PointLight" || type == "SpotLight")
+    {
+        std::vector<std::pair<std::string, Value>> fields{
+            { "color", vec3(1.0, 1.0, 1.0) },
+            { "intensity", Value::Float(1.0) },
+            { "radius", Value::Float(10.0) }
+        };
+        if (type == "SpotLight")
+        {
+            fields.emplace_back("innercutoff", Value::Float(15.0));
+            fields.emplace_back("outerCutoff", Value::Float(30.0));
+        }
+        std::vector<std::pair<std::string, Value>> shadows = shadowFields();
+        fields.insert(fields.end(), shadows.begin(), shadows.end());
+        return Value::Object(std::move(fields));
+    }
+    if (type == "RectLight")
+    {
+        std::vector<std::pair<std::string, Value>> fields{
+            { "color", vec3(1.0, 1.0, 1.0) },
+            { "intensity", Value::Float(1.0) },
+            { "width", Value::Float(1.0) },
+            { "height", Value::Float(1.0) },
+            { "range", Value::Float(10.0) },
+            { "two_sided", Value::Bool(false) }
+        };
+        std::vector<std::pair<std::string, Value>> shadows = shadowFields();
+        for (auto& [fieldName, fieldValue] : shadows)
+        {
+            if (fieldName == "castShadows")
+                fieldValue = Value::Bool(false);
+        }
+        fields.insert(fields.end(), shadows.begin(), shadows.end());
+        return Value::Object(std::move(fields));
+    }
+    if (type == "Audio" || type == "Video")
+        return Value::Object({ { "source", guidReference() } });
+    if (type == "Particle")
+        return Value::Object({
+            { "asset", Value::String("") },
+            { "play_on_awake", Value::Bool(true) }
+        });
+    if (type == "Script")
+        return Value::Object({
+            { "path", Value::String("Scripts/") },
+            { "class", Value::String("") },
+            { "fields", Value::Object({}) }
+        });
+    if (type == "Animation")
+        return Value::Object({
+            { "name", Value::String("Animation") },
+            { "root_motion", Value::Bool(false) },
+            { "animator", Value::String("") }
+        });
+    if (type == "Cloth")
+        return Value::Object({
+            { "profilePath", Value::String("") },
+            { "physicsAttachOffsetY", Value::Float(0.0) }
+        });
+    if (type == "Vehicle")
+        return Value::Object({
+            { "bodyObject", Value::String("") },
+            { "tireObjects", Value::Array({}) }
+        });
+    return Value::Object({});
+}
+
+Vans::VansSerializedValue MakeSerializedComponent(const std::string& type)
+{
+    return Vans::VansSerializedValue::Object({
+        { "id", Vans::VansSerializedValue::String(Vans::VansComponentGuid::New().ToString()) },
+        { "type", Vans::VansSerializedValue::String(type) },
+        { "version", Vans::VansSerializedValue::Int(1) },
+        { "enabled", Vans::VansSerializedValue::Bool(true) },
+        { "data", DefaultSerializedComponentData(type) }
+    });
 }
 
 bool IsColorField(const std::string& key)
@@ -258,140 +374,173 @@ bool VehicleScalarLimits(const std::string& label, const std::string& componentT
 
 void BeginProperty(const std::string& label);
 
-Json LoadShaderAssetFromMaterial(Vans::EditorAPI::IEngineEditorAPI& api, const Json& materialRoot)
+float ReadSerializedFloatOr(const Vans::VansSerializedValue* value, float fallback)
 {
-    if (!materialRoot.is_object() || Lower(materialRoot.value("materialType", "")) != "customshader")
-        return Json::object();
-    if (!materialRoot.contains("shader") || !materialRoot["shader"].is_object())
-        return Json::object();
-
-    const std::string shaderGuidText = materialRoot["shader"].value("guid", "");
-    const Vans::EditorAPI::AssetGuidResolution shaderAsset = api.ResolveAssetGuid(shaderGuidText);
-    if (!shaderAsset.found || shaderAsset.asset.type != Vans::EditorAPI::AssetType::Shader)
-        return Json::object();
-
-    std::ifstream shaderInput(shaderAsset.sourcePath);
-    Json shader = shaderInput ? Json::parse(shaderInput, nullptr, false) : Json();
-    return shader.is_object() ? shader : Json::object();
+    return value && (value->kind == Vans::VansSerializedValue::Kind::Int ||
+        value->kind == Vans::VansSerializedValue::Kind::Float)
+        ? static_cast<float>(Vans::ReadSerializedNumber(*value))
+        : fallback;
 }
 
-void MergeCustomShaderParameterSchema(Vans::EditorAPI::IEngineEditorAPI& api, Json& materialRoot)
+bool IsSerializedNumericVector(const Vans::VansSerializedValue& value, std::size_t minimum, std::size_t maximum)
 {
-    Json shader = LoadShaderAssetFromMaterial(api, materialRoot);
-    if (!shader.contains("parameters") || !shader["parameters"].is_object())
-        return;
+    return value.kind == Vans::VansSerializedValue::Kind::Array &&
+        value.arrayItems.size() >= minimum &&
+        value.arrayItems.size() <= maximum &&
+        std::all_of(value.arrayItems.begin(), value.arrayItems.end(),
+            [](const Vans::VansSerializedValue& item)
+            {
+                return item.kind == Vans::VansSerializedValue::Kind::Int ||
+                    item.kind == Vans::VansSerializedValue::Kind::Float;
+            });
+}
 
-    if (!materialRoot.contains("parameters") || !materialRoot["parameters"].is_object())
-        materialRoot["parameters"] = Json::object();
-
-    for (const auto& [name, schema] : shader["parameters"].items())
+std::string SerializedValueDisplayString(const Vans::VansSerializedValue& value)
+{
+    switch (value.kind)
     {
-        if (!schema.is_object())
-            continue;
-
-        Json& materialParameter = materialRoot["parameters"][name];
-        if (!materialParameter.is_object())
+    case Vans::VansSerializedValue::Kind::Null:
+        return "None";
+    case Vans::VansSerializedValue::Kind::Bool:
+        return value.boolValue ? "true" : "false";
+    case Vans::VansSerializedValue::Kind::Int:
+        return std::to_string(value.intValue);
+    case Vans::VansSerializedValue::Kind::Float:
+        return std::to_string(value.floatValue);
+    case Vans::VansSerializedValue::Kind::String:
+        return value.stringValue;
+    case Vans::VansSerializedValue::Kind::Array:
+    {
+        std::string result = "[";
+        for (std::size_t index = 0; index < value.arrayItems.size(); ++index)
         {
-            Json value = materialParameter;
-            materialParameter = Json::object({ { "value", value } });
+            if (index > 0)
+                result += ", ";
+            result += SerializedValueDisplayString(value.arrayItems[index]);
         }
-
-        for (const auto& [field, schemaValue] : schema.items())
-        {
-            if (!materialParameter.contains(field))
-                materialParameter[field] = schemaValue;
-        }
-        if (!materialParameter.contains("value") && schema.contains("default"))
-            materialParameter["value"] = schema["default"];
+        result += "]";
+        return result;
     }
+    case Vans::VansSerializedValue::Kind::Object:
+        return "{...}";
+    }
+    return {};
 }
 
-float ReadFloatOr(const Json& value, float fallback)
+bool DrawSerializedMaterialParameter(
+    const std::string& label,
+    Vans::VansSerializedValue& parameter,
+    bool readOnly)
 {
-    return value.is_number() ? value.get<float>() : fallback;
-}
-
-bool DrawTypedMaterialParameter(const std::string& label, Json& parameter, bool readOnly)
-{
-    if (!parameter.is_object())
+    if (parameter.kind != Vans::VansSerializedValue::Kind::Object)
         return false;
 
-    if (!parameter.contains("value"))
+    Vans::VansSerializedValue* value = Vans::FindObjectField(parameter, "value");
+    if (!value)
     {
-        if (parameter.contains("default"))
-            parameter["value"] = parameter["default"];
-        else
+        if (const Vans::VansSerializedValue* defaultValue = Vans::FindObjectField(parameter, "default"))
+        {
+            Vans::SetSerializedObjectField(parameter, "value", *defaultValue);
+            value = Vans::FindObjectField(parameter, "value");
+        }
+        if (!value)
             return false;
     }
 
-    Json& value = parameter["value"];
-    const std::string type = Lower(parameter.value("type", ""));
+    const std::string type = Lower(Vans::ReadSerializedStringField(parameter, "type"));
     bool changed = false;
     BeginProperty(label);
 
     if (readOnly)
     {
-        ImGui::TextDisabled("%s", value.dump().c_str());
+        const std::string display = SerializedValueDisplayString(*value);
+        ImGui::TextDisabled("%s", display.c_str());
         return false;
     }
 
     if ((type == "color" || (IsColorField(label) && (type == "vec3" || type == "vec4" || type.empty()))) &&
-        value.is_array() && (value.size() == 3 || value.size() == 4))
+        IsSerializedNumericVector(*value, 3, 4))
     {
         std::array<float, 4> color{};
-        for (std::size_t i = 0; i < value.size(); ++i) color[i] = value[i].get<float>();
-        const bool edited = value.size() == 3
-            ? ImGui::ColorEdit3("##value", color.data()) : ImGui::ColorEdit4("##value", color.data());
+        for (std::size_t i = 0; i < value->arrayItems.size(); ++i)
+            color[i] = static_cast<float>(Vans::ReadSerializedNumber(value->arrayItems[i]));
+        const bool edited = value->arrayItems.size() == 3
+            ? ImGui::ColorEdit3("##value", color.data())
+            : ImGui::ColorEdit4("##value", color.data());
         if (edited)
         {
-            for (std::size_t i = 0; i < value.size(); ++i) value[i] = color[i];
+            for (std::size_t i = 0; i < value->arrayItems.size(); ++i)
+                value->arrayItems[i] = Vans::VansSerializedValue::Float(color[i]);
             changed = true;
         }
     }
-    else if (((type == "vec2" || type == "vec3" || type == "vec4") && value.is_array()) ||
-        (type.empty() && value.is_array() && value.size() >= 2 && value.size() <= 4 &&
-            std::all_of(value.begin(), value.end(), [](const Json& item) { return item.is_number(); })))
+    else if (((type == "vec2" || type == "vec3" || type == "vec4") &&
+        value->kind == Vans::VansSerializedValue::Kind::Array) ||
+        (type.empty() && IsSerializedNumericVector(*value, 2, 4)))
     {
         std::array<float, 4> values{};
-        const int count = type == "vec2" ? 2 : (type == "vec3" ? 3 : (type == "vec4" ? 4 : static_cast<int>(value.size())));
-        while (value.size() < static_cast<std::size_t>(count)) value.push_back(0.0f);
-        for (int i = 0; i < count; ++i) values[i] = value[i].get<float>();
+        const int count = type == "vec2" ? 2 :
+            (type == "vec3" ? 3 :
+                (type == "vec4" ? 4 : static_cast<int>(value->arrayItems.size())));
+        while (value->arrayItems.size() < static_cast<std::size_t>(count))
+            value->arrayItems.push_back(Vans::VansSerializedValue::Float(0.0));
+        for (int i = 0; i < count; ++i)
+            values[i] = static_cast<float>(Vans::ReadSerializedNumber(value->arrayItems[i]));
         bool edited = false;
         if (count == 2) edited = ImGui::DragFloat2("##value", values.data(), 0.01f);
         if (count == 3) edited = ImGui::DragFloat3("##value", values.data(), 0.01f);
         if (count == 4) edited = ImGui::DragFloat4("##value", values.data(), 0.01f);
         if (edited)
         {
-            for (int i = 0; i < count; ++i) value[i] = values[i];
+            for (int i = 0; i < count; ++i)
+                value->arrayItems[i] = Vans::VansSerializedValue::Float(values[i]);
             changed = true;
         }
     }
-    else if (type == "bool" && value.is_boolean())
+    else if (type == "bool" && value->kind == Vans::VansSerializedValue::Kind::Bool)
     {
-        bool edited = value.get<bool>();
-        if (ImGui::Checkbox("##value", &edited)) { value = edited; changed = true; }
+        bool edited = value->boolValue;
+        if (ImGui::Checkbox("##value", &edited))
+        {
+            *value = Vans::VansSerializedValue::Bool(edited);
+            changed = true;
+        }
     }
-    else if ((type == "int" || type == "uint") && value.is_number_integer())
+    else if ((type == "int" || type == "uint") && value->kind == Vans::VansSerializedValue::Kind::Int)
     {
-        int edited = value.get<int>();
-        if (ImGui::InputInt("##value", &edited)) { value = edited; changed = true; }
+        int edited = static_cast<int>(value->intValue);
+        if (ImGui::InputInt("##value", &edited))
+        {
+            *value = Vans::VansSerializedValue::Int(edited);
+            changed = true;
+        }
     }
-    else if (value.is_number())
+    else if (value->kind == Vans::VansSerializedValue::Kind::Int ||
+        value->kind == Vans::VansSerializedValue::Kind::Float)
     {
-        float edited = value.get<float>();
-        const float minValue = ReadFloatOr(parameter.contains("min") ? parameter["min"] : Json(), 0.0f);
-        const float maxValue = ReadFloatOr(parameter.contains("max") ? parameter["max"] : Json(), IsNormalizedField(label) ? 1.0f : 0.0f);
+        float edited = static_cast<float>(Vans::ReadSerializedNumber(*value));
+        const float minValue = ReadSerializedFloatOr(Vans::FindObjectField(parameter, "min"), 0.0f);
+        const float maxValue = ReadSerializedFloatOr(
+            Vans::FindObjectField(parameter, "max"),
+            IsNormalizedField(label) ? 1.0f : 0.0f);
         if (maxValue > minValue)
         {
             if (ImGui::SliderFloat("##value", &edited, minValue, maxValue, "%.3f"))
-            { value = edited; changed = true; }
+            {
+                *value = Vans::VansSerializedValue::Float(edited);
+                changed = true;
+            }
         }
         else if (ImGui::DragFloat("##value", &edited, 0.01f, 0.0f, 0.0f, "%.3f"))
-        { value = edited; changed = true; }
+        {
+            *value = Vans::VansSerializedValue::Float(edited);
+            changed = true;
+        }
     }
     else
     {
-        ImGui::TextDisabled("%s", value.dump().c_str());
+        const std::string display = SerializedValueDisplayString(*value);
+        ImGui::TextDisabled("%s", display.c_str());
     }
     return changed;
 }
@@ -404,42 +553,575 @@ void BeginProperty(const std::string& label)
     ImGui::SetNextItemWidth(-1.0f);
 }
 
-Json* FindComponent(Json& entity, const std::string& type)
+void CopyToImGuiBuffer(char* destination, std::size_t destinationSize, const std::string& source)
 {
-    if (!entity.contains("components") || !entity["components"].is_array()) return nullptr;
-    for (Json& component : entity["components"])
-        if (component.value("type", "") == type) return &component;
-    return nullptr;
+    if (!destination || destinationSize == 0)
+        return;
+    const std::size_t copied = std::min(destinationSize - 1, source.size());
+    std::memcpy(destination, source.data(), copied);
+    destination[copied] = '\0';
 }
 
-const Json* FindComponent(const Json& entity, const std::string& type)
+bool MergePythonScriptFieldDefaults(
+    Vans::VansSerializedValue& data,
+    Vans::EditorAPI::IEngineEditorAPI& api,
+    std::vector<Vans::PythonScriptFieldDescriptor>* descriptors)
 {
-    if (!entity.contains("components") || !entity["components"].is_array()) return nullptr;
-    for (const Json& component : entity["components"])
-        if (component.value("type", "") == type) return &component;
-    return nullptr;
-}
+    if (data.kind != Vans::VansSerializedValue::Kind::Object)
+        data = Vans::VansSerializedValue::Object({});
 
-}
+    const std::string scriptPath = Vans::ReadSerializedStringField(data, "path");
+    const std::string className = Vans::ReadSerializedStringField(data, "class");
+    if (scriptPath.empty() || className.empty())
+        return false;
 
-bool VansInspectorWindow::DrawAssetReference(const std::string& label, Json& reference,
-    const std::string& pointer, int expectedAssetTypeValue, bool writeObjectReference)
-{
-    const auto expectedType = ToEditorAssetType(expectedAssetTypeValue);
-    if (!m_ActiveAPI || !reference.is_object()) return false;
-
-    auto assignGuid = [&](std::string guid)
+    Vans::VansSerializedValue* scriptFields = Vans::FindObjectField(data, "fields");
+    if (!scriptFields || scriptFields->kind != Vans::VansSerializedValue::Kind::Object)
     {
-        reference["guid"] = guid;
-        m_PendingAssetReferenceEdit = PendingAssetReferenceEdit{
-            pointer,
-            std::move(guid),
-            expectedAssetTypeValue,
-            writeObjectReference
-        };
+        Vans::SetSerializedObjectField(data, "fields", Vans::VansSerializedValue::Object({}));
+        scriptFields = Vans::FindObjectField(data, "fields");
+    }
+
+    struct PythonFieldSchemaCacheEntry
+    {
+        Vans::VansSerializedValue fields = Vans::VansSerializedValue::Object({});
+        std::vector<Vans::PythonScriptFieldDescriptor> descriptors;
     };
 
-    std::string guidText = reference.value("guid", "");
+    static std::unordered_map<std::string, PythonFieldSchemaCacheEntry> fieldDefaultsCache;
+    const Vans::EditorAPI::ProjectBrowserRootSnapshot projectRoot = api.GetProjectBrowserRoot();
+    std::filesystem::path absoluteScriptPath(scriptPath);
+    if (!absoluteScriptPath.is_absolute())
+        absoluteScriptPath = std::filesystem::path(projectRoot.rootPath) / scriptPath;
+    absoluteScriptPath = absoluteScriptPath.lexically_normal();
+
+    std::error_code timeError;
+    const auto lastWrite = std::filesystem::last_write_time(absoluteScriptPath, timeError);
+    std::error_code sizeError;
+    const auto fileSize = std::filesystem::file_size(absoluteScriptPath, sizeError);
+    const std::string key = projectRoot.rootPath + "|" + scriptPath + "|" + className + "|" +
+        absoluteScriptPath.generic_string() + "|" +
+        (timeError ? std::string("missing") : std::to_string(lastWrite.time_since_epoch().count())) + "|" +
+        (sizeError ? std::string("nosize") : std::to_string(fileSize));
+    auto found = fieldDefaultsCache.find(key);
+    if (found == fieldDefaultsCache.end())
+    {
+        const Vans::PythonScriptFieldDefaultsResult result =
+            Vans::VansPythonScriptInspectorService::BuildDefaultFieldData(
+                projectRoot.rootPath, scriptPath, className);
+        PythonFieldSchemaCacheEntry entry;
+        if (result)
+        {
+            entry.fields = Vans::VansSerializedValue::Object({});
+            for (const auto& [name, value] : result.fields)
+                if (!name.empty() && !value.IsNull())
+                    Vans::SetSerializedObjectField(entry.fields, name, value);
+            entry.descriptors = result.descriptors;
+        }
+        found = fieldDefaultsCache.emplace(key, std::move(entry)).first;
+        if (!result && !result.message.empty())
+            VANS_LOG_WARN("[Inspector] Python script field discovery failed: " << result.message);
+    }
+
+    if (descriptors)
+        *descriptors = found->second.descriptors;
+
+    bool changed = false;
+    if (!scriptFields || scriptFields->kind != Vans::VansSerializedValue::Kind::Object)
+        return changed;
+
+    for (const auto& [fieldName, fieldValue] : found->second.fields.objectFields)
+    {
+        if (!Vans::FindObjectField(*scriptFields, fieldName))
+        {
+            Vans::SetSerializedObjectField(*scriptFields, fieldName, fieldValue);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+bool TryDrawSerializedPythonNumericField(
+    const std::string& label,
+    Vans::VansSerializedValue& value,
+    const Vans::PythonScriptFieldDescriptor& descriptor,
+    bool& changed)
+{
+    const bool hasNumericMetadata =
+        descriptor.hasMinValue || descriptor.hasMaxValue || descriptor.hasSpeed;
+    if (!hasNumericMetadata)
+        return false;
+
+    const float speed = static_cast<float>(descriptor.speed > 0.0 ? descriptor.speed : 0.05);
+    BeginProperty(label);
+
+    if (descriptor.kind == Vans::PythonScriptInspectableFieldKind::Int)
+    {
+        std::int64_t edited = value.kind == Vans::VansSerializedValue::Kind::Int
+            ? value.intValue
+            : static_cast<std::int64_t>(Vans::ReadSerializedNumber(value));
+        if (ImGui::DragScalar("##value", ImGuiDataType_S64, &edited, speed))
+        {
+            if (descriptor.hasMinValue)
+                edited = (std::max)(edited, static_cast<std::int64_t>(descriptor.minValue));
+            if (descriptor.hasMaxValue)
+                edited = (std::min)(edited, static_cast<std::int64_t>(descriptor.maxValue));
+            value = Vans::VansSerializedValue::Int(edited);
+            changed = true;
+        }
+        return true;
+    }
+
+    if (descriptor.kind == Vans::PythonScriptInspectableFieldKind::Float)
+    {
+        float edited = static_cast<float>(Vans::ReadSerializedNumber(value));
+        const bool bounded = descriptor.hasMinValue && descriptor.hasMaxValue &&
+            descriptor.maxValue > descriptor.minValue;
+        const float minValue = bounded ? static_cast<float>(descriptor.minValue) : 0.0f;
+        const float maxValue = bounded ? static_cast<float>(descriptor.maxValue) : 0.0f;
+        if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
+        {
+            if (descriptor.hasMinValue)
+                edited = (std::max)(edited, static_cast<float>(descriptor.minValue));
+            if (descriptor.hasMaxValue)
+                edited = (std::min)(edited, static_cast<float>(descriptor.maxValue));
+            value = Vans::VansSerializedValue::Float(edited);
+            changed = true;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+const Vans::VansSerializedValue* FindSerializedComponent(
+    const Vans::VansSerializedValue& entity,
+    const std::string& type)
+{
+    const Vans::VansSerializedValue* components = Vans::FindObjectField(entity, "components");
+    if (!components || components->kind != Vans::VansSerializedValue::Kind::Array)
+        return nullptr;
+    for (const Vans::VansSerializedValue& component : components->arrayItems)
+        if (Vans::ReadSerializedStringField(component, "type") == type)
+            return &component;
+    return nullptr;
+}
+
+bool ReadPreviewVec3(const Vans::VansSerializedValue& value, Vans::EditorAPI::Vec3& out)
+{
+    if (value.kind != Vans::VansSerializedValue::Kind::Array || value.arrayItems.size() < 3)
+        return false;
+    out = {
+        static_cast<float>(Vans::ReadSerializedNumber(value.arrayItems[0])),
+        static_cast<float>(Vans::ReadSerializedNumber(value.arrayItems[1])),
+        static_cast<float>(Vans::ReadSerializedNumber(value.arrayItems[2]))
+    };
+    return true;
+}
+
+bool ReadPreviewRotationEuler(const Vans::VansSerializedValue& value, Vans::EditorAPI::Vec3& out)
+{
+    if (value.kind != Vans::VansSerializedValue::Kind::Array)
+        return false;
+
+    if (value.arrayItems.size() == 4)
+    {
+        const glm::quat quaternion(
+            static_cast<float>(Vans::ReadSerializedNumber(value.arrayItems[3])),
+            static_cast<float>(Vans::ReadSerializedNumber(value.arrayItems[0])),
+            static_cast<float>(Vans::ReadSerializedNumber(value.arrayItems[1])),
+            static_cast<float>(Vans::ReadSerializedNumber(value.arrayItems[2])));
+        const glm::vec3 euler = glm::degrees(glm::eulerAngles(quaternion));
+        out = { euler.x, euler.y, euler.z };
+        return true;
+    }
+
+    return ReadPreviewVec3(value, out);
+}
+
+bool BuildRuntimeTransformPreview(
+    const Vans::VansSerializedValue& entity,
+    Vans::EditorAPI::RuntimeTransformEdit& edit)
+{
+    const std::string entityGuid = Vans::ReadSerializedStringField(entity, "id");
+    if (entityGuid.empty())
+        return false;
+
+    const Vans::VansSerializedValue* transformComponent = FindSerializedComponent(entity, "Transform");
+    if (!transformComponent || !Vans::ReadSerializedBoolField(*transformComponent, "enabled", true))
+    {
+        return false;
+    }
+
+    const Vans::VansSerializedValue* data = Vans::FindObjectField(*transformComponent, "data");
+    if (!data)
+        return false;
+
+    edit = {};
+    edit.entityGuid = entityGuid;
+    edit.writePosition = false;
+    edit.writeRotation = false;
+    edit.writeScale = false;
+
+    if (const Vans::VansSerializedValue* position = Vans::FindObjectField(*data, "position");
+        position && ReadPreviewVec3(*position, edit.position))
+    {
+        edit.writePosition = true;
+    }
+    if (const Vans::VansSerializedValue* rotation = Vans::FindObjectField(*data, "rotation");
+        rotation && ReadPreviewRotationEuler(*rotation, edit.rotationDegrees))
+    {
+        edit.writeRotation = true;
+    }
+    if (const Vans::VansSerializedValue* scale = Vans::FindObjectField(*data, "scale");
+        scale && ReadPreviewVec3(*scale, edit.scale))
+    {
+        edit.writeScale = true;
+    }
+
+    return edit.writePosition || edit.writeRotation || edit.writeScale;
+}
+
+bool ReadPreviewColor(const Vans::VansSerializedValue& data, Vans::EditorAPI::Vec3& out)
+{
+    const Vans::VansSerializedValue* color = Vans::FindObjectField(data, "color");
+    return color && ReadPreviewVec3(*color, out);
+}
+
+bool AppendRuntimeLightPreview(
+    const Vans::VansSerializedValue& entity,
+    const char* componentType,
+    Vans::EditorAPI::RuntimePreviewLightType lightType,
+    std::vector<Vans::EditorAPI::RuntimeLightEdit>& edits)
+{
+    const Vans::VansSerializedValue* component = FindSerializedComponent(entity, componentType);
+    if (!component || !Vans::ReadSerializedBoolField(*component, "enabled", true))
+        return false;
+
+    const Vans::VansSerializedValue* data = Vans::FindObjectField(*component, "data");
+    if (!data)
+        return false;
+
+    Vans::EditorAPI::RuntimeLightEdit edit;
+    edit.type = lightType;
+    edit.entityGuid = Vans::ReadSerializedStringField(entity, "id");
+    if (edit.entityGuid.empty())
+        return false;
+
+    if (ReadPreviewColor(*data, edit.color))
+        edit.writeColor = true;
+    if (const Vans::VansSerializedValue* intensity = Vans::FindObjectField(*data, "intensity"))
+    {
+        edit.intensity = static_cast<float>(Vans::ReadSerializedNumber(*intensity));
+        edit.writeIntensity = true;
+    }
+
+    if (lightType == Vans::EditorAPI::RuntimePreviewLightType::Point ||
+        lightType == Vans::EditorAPI::RuntimePreviewLightType::Spot)
+    {
+        if (const Vans::VansSerializedValue* radius = Vans::FindObjectField(*data, "radius"))
+        {
+            edit.radius = static_cast<float>(Vans::ReadSerializedNumber(*radius));
+            edit.writeRadius = true;
+        }
+    }
+
+    if (lightType == Vans::EditorAPI::RuntimePreviewLightType::Spot)
+    {
+        if (const Vans::VansSerializedValue* innerCutoff = Vans::FindObjectField(*data, "innercutoff"))
+        {
+            edit.innerCutoffRadians = glm::radians(static_cast<float>(Vans::ReadSerializedNumber(*innerCutoff)));
+            edit.writeInnerCutoff = true;
+        }
+        if (const Vans::VansSerializedValue* outerCutoff = Vans::FindObjectField(*data, "outerCutoff"))
+        {
+            edit.outerCutoffRadians = glm::radians(static_cast<float>(Vans::ReadSerializedNumber(*outerCutoff)));
+            edit.writeOuterCutoff = true;
+        }
+    }
+
+    if (lightType == Vans::EditorAPI::RuntimePreviewLightType::Rect)
+    {
+        if (const Vans::VansSerializedValue* width = Vans::FindObjectField(*data, "width"))
+        {
+            edit.rectWidth = static_cast<float>(Vans::ReadSerializedNumber(*width));
+            edit.writeRectWidth = true;
+        }
+        if (const Vans::VansSerializedValue* height = Vans::FindObjectField(*data, "height"))
+        {
+            edit.rectHeight = static_cast<float>(Vans::ReadSerializedNumber(*height));
+            edit.writeRectHeight = true;
+        }
+        if (const Vans::VansSerializedValue* range = Vans::FindObjectField(*data, "range"))
+        {
+            edit.rectRange = static_cast<float>(Vans::ReadSerializedNumber(*range));
+            edit.writeRectRange = true;
+        }
+        if (const Vans::VansSerializedValue* twoSided = Vans::FindObjectField(*data, "two_sided"))
+        {
+            edit.rectTwoSided = Vans::ReadSerializedBool(*twoSided) ? 1.0f : 0.0f;
+            edit.writeRectTwoSided = true;
+        }
+        if (const Vans::VansSerializedValue* shadow = Vans::FindObjectField(*data, "shadow"))
+        {
+            edit.rectShadowIndex = Vans::ReadSerializedBool(*shadow) ? 0.0f : -1.0f;
+            edit.writeRectShadow = true;
+        }
+    }
+
+    if (edit.writeColor || edit.writeIntensity || edit.writeRadius ||
+        edit.writeInnerCutoff || edit.writeOuterCutoff ||
+        edit.writeRectWidth || edit.writeRectHeight || edit.writeRectRange ||
+        edit.writeRectTwoSided || edit.writeRectShadow)
+    {
+        edits.push_back(edit);
+        return true;
+    }
+    return false;
+}
+
+std::string ReadPreviewAssetGuid(const Vans::VansSerializedValue& reference)
+{
+    if (reference.kind == Vans::VansSerializedValue::Kind::String)
+        return reference.stringValue;
+    if (reference.kind == Vans::VansSerializedValue::Kind::Object)
+        return Vans::ReadSerializedStringField(reference, "guid");
+    return {};
+}
+
+void AppendRuntimeMaterialOverridePreviews(
+    const Vans::VansSerializedValue& entity,
+    std::vector<Vans::EditorAPI::RuntimeRendererMaterialOverrideEdit>& edits)
+{
+    const std::string entityGuid = Vans::ReadSerializedStringField(entity, "id");
+    if (entityGuid.empty())
+        return;
+
+    const Vans::VansSerializedValue* renderer = FindSerializedComponent(entity, "ModelRenderer");
+    if (!renderer || !Vans::ReadSerializedBoolField(*renderer, "enabled", true))
+        return;
+
+    const Vans::VansSerializedValue* data = Vans::FindObjectField(*renderer, "data");
+    if (!data || data->kind != Vans::VansSerializedValue::Kind::Object)
+        return;
+
+    const auto appendOverrides = [&](const Vans::VansSerializedValue* overrides)
+    {
+        if (!overrides || overrides->kind != Vans::VansSerializedValue::Kind::Object)
+            return;
+        for (const auto& [slot, reference] : overrides->objectFields)
+        {
+            const std::string materialGuid = ReadPreviewAssetGuid(reference);
+            if (materialGuid.empty())
+                continue;
+            edits.push_back({
+                entityGuid,
+                slot,
+                materialGuid
+            });
+        }
+    };
+
+    appendOverrides(Vans::FindObjectField(*data, "materialOverrides"));
+    appendOverrides(Vans::FindObjectField(*data, "submeshMaterialOverrides"));
+}
+
+Vans::EditorAPI::RuntimeEntityPreviewChange BuildRuntimeEntityPreviewChange(
+    const Vans::VansSerializedValue& entity)
+{
+    Vans::EditorAPI::RuntimeEntityPreviewChange change;
+    const std::string entityGuid = Vans::ReadSerializedStringField(entity, "id");
+    const Vans::VansSerializedValue* components = Vans::FindObjectField(entity, "components");
+    if (components && components->kind == Vans::VansSerializedValue::Kind::Array)
+    {
+        for (const Vans::VansSerializedValue& component : components->arrayItems)
+        {
+            const std::string componentType = Vans::ReadSerializedStringField(component, "type");
+            if (entityGuid.empty() || componentType.empty())
+                continue;
+            change.componentEnabled.push_back({
+                entityGuid,
+                componentType,
+                Vans::ReadSerializedBoolField(component, "enabled", true)
+            });
+        }
+    }
+    change.hasTransform = BuildRuntimeTransformPreview(entity, change.transform);
+    AppendRuntimeLightPreview(entity, "DirectionalLight",
+        Vans::EditorAPI::RuntimePreviewLightType::Directional, change.lights);
+    AppendRuntimeLightPreview(entity, "PointLight",
+        Vans::EditorAPI::RuntimePreviewLightType::Point, change.lights);
+    AppendRuntimeLightPreview(entity, "SpotLight",
+        Vans::EditorAPI::RuntimePreviewLightType::Spot, change.lights);
+    AppendRuntimeLightPreview(entity, "RectLight",
+        Vans::EditorAPI::RuntimePreviewLightType::Rect, change.lights);
+    AppendRuntimeMaterialOverridePreviews(entity, change.materialOverrides);
+    return change;
+}
+
+}
+
+struct VansInspectorWindow::Impl
+{
+    void ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api);
+    void DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api);
+    void DrawSceneSettings();
+    void DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api);
+    bool DrawSerializedValue(const std::string& label, Vans::VansSerializedValue& value,
+        const std::string& pointer, bool readOnly = false,
+        const std::string& componentType = {}, const std::string& parentKey = {});
+    bool DrawSerializedAssetReference(const std::string& label, Vans::VansSerializedValue& reference,
+        const std::string& pointer, const Vans::ObjectReferenceSlotDescriptor& slot);
+    bool DrawSerializedEditorObjectReference(const std::string& label, Vans::VansSerializedValue& reference,
+        const std::string& pointer,
+        const Vans::ObjectReferenceSlotDescriptor* declaredSlot = nullptr);
+    bool DrawSerializedPythonScriptFields(Vans::VansSerializedValue& fields,
+        const std::vector<Vans::PythonScriptFieldDescriptor>& descriptors,
+        const std::string& pointer);
+    bool DrawComponent(Vans::EditorAPI::IEngineEditorAPI& api, Vans::VansSerializedValue& component,
+        const std::string& pointer, bool& removeRequested);
+    bool LoadAssetDocuments(const std::filesystem::path& sourcePath);
+    bool SaveAssetDocuments(bool reloadSceneOnSuccess = true);
+
+    std::filesystem::path m_AssetPath;
+    std::shared_ptr<Vans::VansOpenAssetDocument> m_AssetDocuments;
+    std::string m_Error;
+    std::vector<std::string> m_CollisionLayerNames;
+    Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
+    bool m_PendingVehicleRebuild = false;
+    std::optional<Vans::ObjectReferenceAssignment> m_PendingObjectReferenceEdit;
+};
+
+VansInspectorWindow::VansInspectorWindow()
+    : m_Impl(std::make_unique<Impl>())
+{
+}
+
+VansInspectorWindow::~VansInspectorWindow() = default;
+
+void VansInspectorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
+{
+    m_Impl->ShowWindow(api);
+}
+
+bool VansInspectorWindow::Impl::DrawSerializedPythonScriptFields(
+    Vans::VansSerializedValue& fields,
+    const std::vector<Vans::PythonScriptFieldDescriptor>& descriptors,
+    const std::string& pointer)
+{
+    if (fields.kind != Vans::VansSerializedValue::Kind::Object)
+        fields = Vans::VansSerializedValue::Object({});
+
+    bool changed = false;
+    std::vector<std::string> rendered;
+    rendered.reserve(descriptors.size());
+    for (const Vans::PythonScriptFieldDescriptor& descriptor : descriptors)
+    {
+        if (descriptor.name.empty())
+            continue;
+
+        Vans::VansSerializedValue* field = Vans::FindObjectField(fields, descriptor.name);
+        if (!field && Vans::HasPythonScriptFieldDefault(descriptor))
+        {
+            Vans::SetSerializedObjectField(fields, descriptor.name, descriptor.defaultValue);
+            field = Vans::FindObjectField(fields, descriptor.name);
+            changed = true;
+        }
+        if (!field)
+            continue;
+
+        changed |= Vans::NormalizePythonScriptFieldValue(*field, descriptor);
+        rendered.push_back(descriptor.name);
+        const std::string fieldPointer = pointer + "/" + EscapePointerToken(descriptor.name);
+        Vans::ObjectReferenceSlotDescriptor objectReferenceSlot;
+        if (Vans::VansEditorPropertyDescriptorRegistry::TryResolvePythonScriptFieldObjectReferenceSlot(
+            descriptor,
+            objectReferenceSlot))
+        {
+            if (objectReferenceSlot.expectedDomain == Vans::EditorObjectDomain::ProjectAsset)
+            {
+                changed |= DrawSerializedAssetReference(
+                    descriptor.name,
+                    *field,
+                    fieldPointer,
+                    objectReferenceSlot);
+            }
+            else
+            {
+                changed |= DrawSerializedEditorObjectReference(
+                    descriptor.name,
+                    *field,
+                    fieldPointer,
+                    &objectReferenceSlot);
+            }
+            continue;
+        }
+        if (!TryDrawSerializedPythonNumericField(descriptor.name, *field, descriptor, changed))
+        {
+            changed |= DrawSerializedValue(
+                descriptor.name,
+                *field,
+                fieldPointer,
+                false,
+                "Script",
+                "fields");
+        }
+    }
+
+    for (auto& [fieldName, fieldValue] : fields.objectFields)
+    {
+        if (std::find(rendered.begin(), rendered.end(), fieldName) != rendered.end())
+            continue;
+        changed |= DrawSerializedValue(
+            fieldName,
+            fieldValue,
+            pointer + "/" + EscapePointerToken(fieldName),
+            false,
+            "Script",
+            "fields");
+    }
+    return changed;
+}
+
+bool VansInspectorWindow::Impl::DrawSerializedAssetReference(
+    const std::string& label,
+    Vans::VansSerializedValue& reference,
+    const std::string& pointer,
+    const Vans::ObjectReferenceSlotDescriptor& objectSlot)
+{
+    if (!m_ActiveAPI)
+        return false;
+
+    const Vans::EditorAPI::AssetType expectedType = objectSlot.expectedAssetType;
+    const auto assignReferenceHandle = [&](Vans::EditorObjectHandle handle)
+    {
+        if (handle.assetType == Vans::EditorAPI::AssetType::Unknown)
+            handle.assetType = expectedType;
+
+        Vans::ObjectReferenceAssignment assignment = Vans::MakeObjectReferenceAssignment(
+            Vans::MakeInspectorDocumentPropertyPath(pointer),
+            objectSlot,
+            std::move(handle));
+
+        Vans::VansSerializedValue encodedReference;
+        if (!Vans::TryEncodeProjectAssetReferenceAssignment(assignment, encodedReference))
+            return false;
+        reference = std::move(encodedReference);
+        return true;
+    };
+    const auto assignReference = [&](std::string guid, Vans::EditorAPI::AssetType assetType)
+    {
+        Vans::EditorObjectHandle handle;
+        handle.domain = Vans::EditorObjectDomain::ProjectAsset;
+        handle.guid = std::move(guid);
+        handle.assetType = assetType;
+        return assignReferenceHandle(std::move(handle));
+    };
+
+    const Vans::EditorObjectHandle currentHandle =
+        Vans::ReadObjectReferenceSlotHandle(reference, objectSlot);
+    const std::string guidText = currentHandle.guid;
+
     std::string preview = "None (" + std::string(AssetTypeName(expectedType)) + ")";
     bool missing = false;
     if (!guidText.empty())
@@ -457,7 +1139,8 @@ bool VansInspectorWindow::DrawAssetReference(const std::string& label, Json& ref
     BeginProperty(label);
     bool changed = false;
     ImGui::PushID(pointer.c_str());
-    if (missing) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.3f, 1.0f));
+    if (missing)
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.3f, 1.0f));
     if (ImGui::BeginCombo("##asset", preview.c_str()))
     {
         static char search[128]{};
@@ -466,38 +1149,40 @@ bool VansInspectorWindow::DrawAssetReference(const std::string& label, Json& ref
         const std::string filter = Lower(search);
         if (ImGui::Selectable("None", guidText.empty()))
         {
-            assignGuid("");
-            changed = true;
+            changed |= assignReference("", expectedType);
         }
         Vans::EditorAPI::AssetTypeFilter assetFilter;
         assetFilter.type = expectedType;
+        assetFilter.includeUnknown = expectedType == Vans::EditorAPI::AssetType::Unknown;
         for (const Vans::EditorAPI::AssetEntry& asset : m_ActiveAPI->QueryAssets(assetFilter))
         {
-            if (!filter.empty() && Lower(asset.name).find(filter) == std::string::npos) continue;
+            if (!filter.empty() && Lower(asset.name).find(filter) == std::string::npos)
+                continue;
             const std::string candidateGuid = asset.guid;
-            if (candidateGuid.empty()) continue;
+            if (candidateGuid.empty())
+                continue;
             const std::string itemLabel = asset.name + "##" + candidateGuid;
             const bool selected = candidateGuid == guidText;
             if (ImGui::Selectable(itemLabel.c_str(), selected))
             {
-                assignGuid(candidateGuid);
-                changed = true;
+                changed |= assignReference(candidateGuid, asset.type);
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", asset.relativePath.c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", asset.relativePath.c_str());
         }
         ImGui::EndCombo();
     }
-    if (missing) ImGui::PopStyleColor();
+    if (missing)
+        ImGui::PopStyleColor();
     if (ImGui::BeginDragDropTarget())
     {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("VANS_ASSET_GUID"))
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(Vans::VansObjectReferenceDragPayloadType))
         {
-            const std::string dropped(static_cast<const char*>(payload->Data));
-            const Vans::EditorAPI::AssetGuidResolution resolved = m_ActiveAPI->ResolveAssetGuid(dropped);
-            if (resolved.found && resolved.asset.type == expectedType)
+            Vans::EditorObjectHandle droppedHandle;
+            if (Vans::TryDeserializeEditorObjectHandle(payload->Data,
+                static_cast<std::size_t>(payload->DataSize), droppedHandle))
             {
-                assignGuid(dropped);
-                changed = true;
+                changed |= assignReferenceHandle(std::move(droppedHandle));
             }
         }
         ImGui::EndDragDropTarget();
@@ -506,133 +1191,341 @@ bool VansInspectorWindow::DrawAssetReference(const std::string& label, Json& ref
     return changed;
 }
 
-bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
-    const std::string& pointer, bool readOnly, const std::string& componentType, const std::string& parentKey)
+bool VansInspectorWindow::Impl::DrawSerializedEditorObjectReference(
+    const std::string& label,
+    Vans::VansSerializedValue& reference,
+    const std::string& pointer,
+    const Vans::ObjectReferenceSlotDescriptor* declaredSlot)
+{
+    bool changed = false;
+    const Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
+    if (declaredSlot &&
+        (declaredSlot->expectedDomain == Vans::EditorObjectDomain::SceneEntity ||
+            declaredSlot->expectedDomain == Vans::EditorObjectDomain::SceneComponent))
+    {
+        changed |= Vans::NormalizeObjectReferenceSlotValue(reference, *declaredSlot);
+    }
+    else if (reference.kind != Vans::VansSerializedValue::Kind::Object)
+    {
+        return false;
+    }
+
+    Vans::ObjectReferenceSlotDescriptor slot;
+    if (declaredSlot)
+        slot = *declaredSlot;
+    else
+        slot.storagePolicy = Vans::ObjectReferenceStoragePolicy::EditorObjectReference;
+
+    const Vans::EditorObjectHandle storedHandle =
+        Vans::ReadObjectReferenceSlotHandle(reference, slot);
+    const Vans::EditorObjectDomain expectedDomain =
+        declaredSlot && declaredSlot->expectedDomain != Vans::EditorObjectDomain::Unknown
+            ? declaredSlot->expectedDomain
+            : storedHandle.domain;
+    if (expectedDomain != Vans::EditorObjectDomain::SceneEntity &&
+        expectedDomain != Vans::EditorObjectDomain::SceneComponent)
+    {
+        return false;
+    }
+
+    const std::string entityGuid =
+        storedHandle.entityGuid.empty() ? storedHandle.guid : storedHandle.entityGuid;
+    const std::string componentType = declaredSlot && !declaredSlot->expectedComponentType.empty()
+        ? declaredSlot->expectedComponentType
+        : storedHandle.componentType;
+
+    slot.expectedDomain = expectedDomain;
+    if (!componentType.empty())
+        slot.expectedComponentType = componentType;
+
+    auto tryAssignSceneReference = [&](const Vans::EditorObjectHandle& handle)
+    {
+        const Vans::DocumentPropertyPath targetPath = Vans::MakeInspectorDocumentPropertyPath(pointer);
+        Vans::ObjectReferenceAssignment assignment =
+            Vans::MakeObjectReferenceAssignment(targetPath, slot, handle);
+
+        Vans::VansSerializedValue encodedReference;
+        if (!document ||
+            !Vans::TryEncodeSceneDocumentObjectReferenceAssignment(
+                *document,
+                assignment,
+                encodedReference))
+        {
+            return false;
+        }
+
+        reference = std::move(encodedReference);
+        if (targetPath.space == Vans::DocumentPropertySpace::Scene)
+        {
+            m_PendingObjectReferenceEdit = std::move(assignment);
+        }
+
+        return true;
+    };
+
+    std::string preview = "None";
+    if (document && !entityGuid.empty())
+    {
+        const Vans::SceneObjectReferenceResolution resolved =
+            Vans::ResolveSceneObjectReference(*document, slot, storedHandle);
+        if (resolved)
+        {
+            preview = resolved.entityDisplayName.empty()
+                ? entityGuid.substr(0, 8)
+                : resolved.entityDisplayName;
+            if (expectedDomain == Vans::EditorObjectDomain::SceneComponent)
+                preview += " / " + (!resolved.componentDisplayType.empty()
+                    ? resolved.componentDisplayType
+                    : componentType);
+        }
+        else if (expectedDomain == Vans::EditorObjectDomain::SceneComponent &&
+            !resolved.entityDisplayName.empty())
+        {
+            preview = resolved.entityDisplayName;
+            if (!componentType.empty())
+                preview += " / Missing " + componentType;
+        }
+        else
+        {
+            preview = "Missing: " + entityGuid.substr(0, 8);
+        }
+    }
+
+    BeginProperty(label);
+    ImGui::PushID(pointer.c_str());
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float clearWidth = ImGui::CalcTextSize("Clear").x + style.FramePadding.x * 2.0f;
+    const float previewWidth = std::max(1.0f,
+        ImGui::GetContentRegionAvail().x - clearWidth - style.ItemInnerSpacing.x);
+    ImGui::Button(preview.c_str(), ImVec2(previewWidth, 0.0f));
+    if (ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(Vans::VansObjectReferenceDragPayloadType))
+        {
+            Vans::EditorObjectHandle handle;
+            if (Vans::TryDeserializeEditorObjectHandle(payload->Data,
+                static_cast<std::size_t>(payload->DataSize), handle) &&
+                tryAssignSceneReference(handle))
+            {
+                changed = true;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear") && document)
+    {
+        Vans::EditorObjectHandle clearedHandle;
+        clearedHandle.domain = expectedDomain;
+        clearedHandle.componentType = slot.expectedComponentType;
+        changed |= tryAssignSceneReference(clearedHandle);
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+bool VansInspectorWindow::Impl::DrawSerializedValue(
+    const std::string& label,
+    Vans::VansSerializedValue& value,
+    const std::string& pointer,
+    bool readOnly,
+    const std::string& componentType,
+    const std::string& parentKey)
 {
     ImGui::PushID(pointer.c_str());
     bool changed = false;
-    const Vans::AssetReferenceSlotDescriptor slotDescriptor =
-        Vans::VansAssetReferenceSlotRegistry::Resolve(componentType, parentKey, label);
-    const Vans::EditorAPI::AssetType assetType = slotDescriptor.expectedType;
-    const std::string* stringValue = value.is_string() ? &value.get_ref<const std::string&>() : nullptr;
-    const bool isEmptyOrKnownGuid = stringValue &&
-        (stringValue->empty() || (m_ActiveAPI && m_ActiveAPI->ResolveAssetGuid(*stringValue).found));
-    if (value.is_string() && assetType != Vans::EditorAPI::AssetType::Unknown &&
-        isEmptyOrKnownGuid)
-    {
-        Json reference = { { "guid", value.get<std::string>() } };
-        ImGui::PopID();
-        if (DrawAssetReference(label, reference, pointer, static_cast<int>(assetType), false))
-        { value = reference.value("guid", ""); return true; }
-        return false;
-    }
-    if (value.is_object() && value.contains("guid") && value["guid"].is_string() &&
+    const Vans::EditorPropertyDescriptor propertyDescriptor =
+        Vans::VansEditorPropertyDescriptorRegistry::Resolve(componentType, parentKey, label);
+    const Vans::ObjectReferenceSlotDescriptor* objectReferenceSlot =
+        propertyDescriptor.IsObjectReference() ? &propertyDescriptor.objectReferenceSlot : nullptr;
+    const Vans::EditorAPI::AssetType assetType = objectReferenceSlot
+        ? objectReferenceSlot->expectedAssetType
+        : Vans::EditorAPI::AssetType::Unknown;
+    const bool allowProjectAssetSlot =
+        objectReferenceSlot &&
+        objectReferenceSlot->expectedDomain == Vans::EditorObjectDomain::ProjectAsset &&
+        assetType != Vans::EditorAPI::AssetType::Unknown &&
+        propertyDescriptor.IsDeclared();
+    if (objectReferenceSlot && objectReferenceSlot->expectedDomain == Vans::EditorObjectDomain::ProjectAsset &&
         assetType != Vans::EditorAPI::AssetType::Unknown)
     {
-        ImGui::PopID();
-        return DrawAssetReference(label, value, pointer, static_cast<int>(assetType));
+        const bool normalizedProjectAssetReference =
+            Vans::NormalizeObjectReferenceSlotValue(value, *objectReferenceSlot);
+        if (value.kind == Vans::VansSerializedValue::Kind::String)
+        {
+            const bool isEmptyOrKnownGuid = value.stringValue.empty() ||
+                (m_ActiveAPI && m_ActiveAPI->ResolveAssetGuid(value.stringValue).found);
+            if (allowProjectAssetSlot ||
+                (!value.stringValue.empty() && isEmptyOrKnownGuid))
+            {
+                ImGui::PopID();
+                Vans::ObjectReferenceSlotDescriptor stringReferenceSlot = *objectReferenceSlot;
+                stringReferenceSlot.storagePolicy = Vans::ObjectReferenceStoragePolicy::GuidString;
+                const bool slotEdited = DrawSerializedAssetReference(label, value, pointer, stringReferenceSlot);
+                return normalizedProjectAssetReference || slotEdited;
+            }
+        }
+        else if (value.kind == Vans::VansSerializedValue::Kind::Object &&
+            Vans::FindObjectField(value, "guid") != nullptr)
+        {
+            ImGui::PopID();
+            const bool slotEdited = DrawSerializedAssetReference(label, value, pointer, *objectReferenceSlot);
+            return normalizedProjectAssetReference || slotEdited;
+        }
     }
-
-    const std::string loweredParentKey = Lower(parentKey);
-    if (value.is_object() && loweredParentKey.find("parameters") != std::string::npos &&
-        (value.contains("value") || value.contains("default")))
+    if (value.kind == Vans::VansSerializedValue::Kind::Object &&
+        Vans::FindObjectField(value, "domain") != nullptr)
     {
-        changed = DrawTypedMaterialParameter(label, value, readOnly);
         ImGui::PopID();
-        return changed;
+        return DrawSerializedEditorObjectReference(label, value, pointer, objectReferenceSlot);
+    }
+    const std::string loweredParentKey = Lower(parentKey);
+    if (value.kind == Vans::VansSerializedValue::Kind::Object &&
+        loweredParentKey.find("parameters") != std::string::npos &&
+        (Vans::FindObjectField(value, "value") || Vans::FindObjectField(value, "default")))
+    {
+        ImGui::PopID();
+        return DrawSerializedMaterialParameter(label, value, readOnly);
     }
 
-    if (value.is_object())
+    switch (value.kind)
+    {
+    case Vans::VansSerializedValue::Kind::Object:
     {
         const ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed |
             ImGuiTreeNodeFlags_SpanAvailWidth;
         if (ImGui::TreeNodeEx(FriendlyLabel(label).c_str(), flags))
         {
-            for (auto iterator = value.begin(); iterator != value.end(); ++iterator)
+            for (auto& [fieldName, fieldValue] : value.objectFields)
             {
-                const std::string childPointer = pointer + "/" + EscapePointerToken(iterator.key());
-                const bool identity = iterator.key() == "id" || iterator.key() == "guid" ||
-                    iterator.key() == "sceneGuid" || iterator.key() == "schemaVersion" ||
-                    iterator.key() == "version" || iterator.key() == "importer";
-                changed |= DrawJsonValue(iterator.key(), iterator.value(), childPointer,
-                    readOnly || identity, componentType, label);
+                const std::string childPointer = pointer + "/" + EscapePointerToken(fieldName);
+                const bool identity = fieldName == "id" || fieldName == "guid" ||
+                    fieldName == "sceneGuid" || fieldName == "schemaVersion" ||
+                    fieldName == "version" || fieldName == "importer";
+                changed |= DrawSerializedValue(
+                    fieldName,
+                    fieldValue,
+                    childPointer,
+                    readOnly || identity,
+                    componentType,
+                    label);
             }
             ImGui::TreePop();
         }
+        break;
     }
-    else if (value.is_array() && value.size() >= 2 && value.size() <= 4 &&
-        std::all_of(value.begin(), value.end(), [](const Json& item) { return item.is_number(); }))
+    case Vans::VansSerializedValue::Kind::Array:
     {
-        std::array<float, 4> values{};
-        for (std::size_t i = 0; i < value.size(); ++i) values[i] = value[i].get<float>();
+        const bool numericVector = value.arrayItems.size() >= 2 && value.arrayItems.size() <= 4 &&
+            std::all_of(value.arrayItems.begin(), value.arrayItems.end(),
+                [](const Vans::VansSerializedValue& item)
+                {
+                    return item.kind == Vans::VansSerializedValue::Kind::Int ||
+                        item.kind == Vans::VansSerializedValue::Kind::Float;
+                });
+        if (numericVector)
+        {
+            std::array<float, 4> values{};
+            for (std::size_t i = 0; i < value.arrayItems.size(); ++i)
+                values[i] = static_cast<float>(Vans::ReadSerializedNumber(value.arrayItems[i]));
+
+            BeginProperty(label);
+            if (readOnly)
+            {
+                std::string display = "[";
+                for (std::size_t i = 0; i < value.arrayItems.size(); ++i)
+                {
+                    if (i > 0)
+                        display += ", ";
+                    display += std::to_string(values[i]);
+                }
+                display += "]";
+                ImGui::TextDisabled("%s", display.c_str());
+            }
+            else if (Lower(label) == "rotation" && value.arrayItems.size() == 4)
+            {
+                const glm::quat quaternion(values[3], values[0], values[1], values[2]);
+                glm::vec3 euler = glm::degrees(glm::eulerAngles(quaternion));
+                if (ImGui::DragFloat3("##value", &euler.x, 0.25f, -360.0f, 360.0f, "%.2f"))
+                {
+                    const glm::quat edited = glm::quat(glm::radians(euler));
+                    value.arrayItems[0] = Vans::VansSerializedValue::Float(edited.x);
+                    value.arrayItems[1] = Vans::VansSerializedValue::Float(edited.y);
+                    value.arrayItems[2] = Vans::VansSerializedValue::Float(edited.z);
+                    value.arrayItems[3] = Vans::VansSerializedValue::Float(edited.w);
+                    changed = true;
+                }
+            }
+            else if (IsColorField(label) && (value.arrayItems.size() == 3 || value.arrayItems.size() == 4))
+            {
+                const bool edited = value.arrayItems.size() == 3
+                    ? ImGui::ColorEdit3("##value", values.data())
+                    : ImGui::ColorEdit4("##value", values.data());
+                if (edited)
+                {
+                    for (std::size_t i = 0; i < value.arrayItems.size(); ++i)
+                        value.arrayItems[i] = Vans::VansSerializedValue::Float(values[i]);
+                    changed = true;
+                }
+            }
+            else
+            {
+                bool edited = false;
+                if (value.arrayItems.size() == 2) edited = ImGui::DragFloat2("##value", values.data(), 0.05f);
+                if (value.arrayItems.size() == 3) edited = ImGui::DragFloat3("##value", values.data(), 0.05f);
+                if (value.arrayItems.size() == 4) edited = ImGui::DragFloat4("##value", values.data(), 0.05f);
+                if (edited)
+                {
+                    for (std::size_t i = 0; i < value.arrayItems.size(); ++i)
+                        value.arrayItems[i] = Vans::VansSerializedValue::Float(values[i]);
+                    changed = true;
+                }
+            }
+        }
+        else if (ImGui::TreeNodeEx(FriendlyLabel(label).c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            for (std::size_t index = 0; index < value.arrayItems.size(); ++index)
+                changed |= DrawSerializedValue(
+                    "Element " + std::to_string(index),
+                    value.arrayItems[index],
+                    pointer + "/" + std::to_string(index),
+                    readOnly,
+                    componentType,
+                    label);
+            ImGui::TreePop();
+        }
+        break;
+    }
+    case Vans::VansSerializedValue::Kind::Bool:
+    {
+        bool edited = value.boolValue;
         BeginProperty(label);
         if (readOnly)
-            ImGui::TextDisabled("%s", value.dump().c_str());
-        else if (Lower(label) == "rotation" && value.size() == 4)
+            ImGui::TextDisabled(edited ? "Enabled" : "Disabled");
+        else if (ImGui::Checkbox("##value", &edited))
         {
-            const glm::quat quaternion(values[3], values[0], values[1], values[2]);
-            glm::vec3 euler = glm::degrees(glm::eulerAngles(quaternion));
-            if (ImGui::DragFloat3("##value", &euler.x, 0.25f, -360.0f, 360.0f, "%.2f"))
-            {
-                const glm::quat edited = glm::quat(glm::radians(euler));
-                value = Json::array({ edited.x, edited.y, edited.z, edited.w });
-                changed = true;
-            }
+            value = Vans::VansSerializedValue::Bool(edited);
+            changed = true;
         }
-        else if (IsColorField(label) && (value.size() == 3 || value.size() == 4))
-        {
-            const bool edited = value.size() == 3
-                ? ImGui::ColorEdit3("##value", values.data()) : ImGui::ColorEdit4("##value", values.data());
-            if (edited)
-            {
-                for (std::size_t i = 0; i < value.size(); ++i) value[i] = values[i];
-                changed = true;
-            }
-        }
-        else
-        {
-            bool edited = false;
-            if (value.size() == 2) edited = ImGui::DragFloat2("##value", values.data(), 0.05f);
-            if (value.size() == 3) edited = ImGui::DragFloat3("##value", values.data(), 0.05f);
-            if (value.size() == 4) edited = ImGui::DragFloat4("##value", values.data(), 0.05f);
-            if (edited)
-            {
-                for (std::size_t i = 0; i < value.size(); ++i) value[i] = values[i];
-                changed = true;
-            }
-        }
+        break;
     }
-    else if (value.is_array())
+    case Vans::VansSerializedValue::Kind::Int:
     {
-        if (ImGui::TreeNodeEx(FriendlyLabel(label).c_str(), ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            for (std::size_t index = 0; index < value.size(); ++index)
-                changed |= DrawJsonValue("Element " + std::to_string(index), value[index],
-                    pointer + "/" + std::to_string(index), readOnly, componentType, label);
-            ImGui::TreePop();
-        }
-    }
-    else if (value.is_boolean())
-    {
-        bool edited = value.get<bool>();
-        BeginProperty(label);
-        if (readOnly) ImGui::TextDisabled(edited ? "Enabled" : "Disabled");
-        else if (ImGui::Checkbox("##value", &edited)) { value = edited; changed = true; }
-    }
-    else if (value.is_number_integer() || value.is_number_unsigned())
-    {
-        std::int64_t edited = value.get<std::int64_t>();
+        std::int64_t edited = value.intValue;
         float minValue = 0.0f;
         float maxValue = 0.0f;
         float speed = 0.05f;
         BeginProperty(label);
-        if (readOnly) ImGui::TextDisabled("%lld", static_cast<long long>(edited));
+        if (readOnly)
+        {
+            ImGui::TextDisabled("%lld", static_cast<long long>(edited));
+        }
         else if (IsNormalizedField(label))
         {
             float normalized = static_cast<float>(edited);
             if (ImGui::SliderFloat("##value", &normalized, 0.0f, 1.0f, "%.3f"))
             {
-                value = normalized;
+                value = Vans::VansSerializedValue::Float(normalized);
                 changed = true;
             }
         }
@@ -641,7 +1534,7 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
             float numeric = static_cast<float>(edited);
             if (ImGui::DragFloat("##value", &numeric, speed, minValue, maxValue, "%.3f"))
             {
-                value = std::clamp(numeric, minValue, maxValue);
+                value = Vans::VansSerializedValue::Float(std::clamp(numeric, minValue, maxValue));
                 changed = true;
             }
         }
@@ -650,60 +1543,80 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
             float numeric = static_cast<float>(edited);
             if (ImGui::DragFloat("##value", &numeric, 0.05f, 0.0f, 0.0f, "%.3f"))
             {
-                value = numeric;
+                value = Vans::VansSerializedValue::Float(numeric);
                 changed = true;
             }
         }
         else
         {
             const std::int64_t step = 1;
-            if (ImGui::InputScalar("##value", ImGuiDataType_S64, &edited, &step)) { value = edited; changed = true; }
+            if (ImGui::InputScalar("##value", ImGuiDataType_S64, &edited, &step))
+            {
+                value = Vans::VansSerializedValue::Int(edited);
+                changed = true;
+            }
         }
+        break;
     }
-    else if (value.is_number_float())
+    case Vans::VansSerializedValue::Kind::Float:
     {
-        float edited = value.get<float>();
+        float edited = static_cast<float>(value.floatValue);
         float minValue = 0.0f;
         float maxValue = 0.0f;
         float speed = 0.05f;
         BeginProperty(label);
-        if (readOnly) ImGui::TextDisabled("%.4f", edited);
+        if (readOnly)
+            ImGui::TextDisabled("%.4f", edited);
         else if (VehicleScalarLimits(label, componentType, minValue, maxValue, speed))
         {
             if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
             {
-                edited = std::clamp(edited, minValue, maxValue);
-                value = edited;
+                value = Vans::VansSerializedValue::Float(std::clamp(edited, minValue, maxValue));
                 changed = true;
             }
         }
         else if (IsNormalizedField(label))
         {
-            if (ImGui::SliderFloat("##value", &edited, 0.0f, 1.0f, "%.3f")) { value = edited; changed = true; }
+            if (ImGui::SliderFloat("##value", &edited, 0.0f, 1.0f, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(edited);
+                changed = true;
+            }
         }
         else if (MaterialScalarLimits(label, parentKey, minValue, maxValue, speed))
         {
             if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
             {
-                value = std::clamp(edited, minValue, maxValue);
+                value = Vans::VansSerializedValue::Float(std::clamp(edited, minValue, maxValue));
                 changed = true;
             }
         }
         else if (ImGui::DragFloat("##value", &edited, 0.05f, 0.0f, 0.0f, "%.3f"))
-        { value = edited; changed = true; }
+        {
+            value = Vans::VansSerializedValue::Float(edited);
+            changed = true;
+        }
+        break;
     }
-    else if (value.is_string())
+    case Vans::VansSerializedValue::Kind::String:
     {
-        const std::string current = value.get<std::string>();
+        const std::string current = value.stringValue;
         BeginProperty(label);
-        if (readOnly) ImGui::TextDisabled("%s", current.c_str());
+        if (readOnly)
+        {
+            ImGui::TextDisabled("%s", current.c_str());
+        }
         else if (Lower(label) == "layer")
         {
             if (ImGui::BeginCombo("##value", current.c_str()))
             {
                 for (const std::string& option : m_CollisionLayerNames)
                 {
-                    if (ImGui::Selectable(option.c_str(), current == option)) { value = option; changed = true; }
+                    if (ImGui::Selectable(option.c_str(), current == option))
+                    {
+                        value = Vans::VansSerializedValue::String(option);
+                        changed = true;
+                    }
                 }
                 ImGui::EndCombo();
             }
@@ -713,84 +1626,172 @@ bool VansInspectorWindow::DrawJsonValue(const std::string& label, Json& value,
             if (ImGui::BeginCombo("##value", current.c_str()))
             {
                 for (const char* option : *options)
-                    if (ImGui::Selectable(option, current == option)) { value = option; changed = true; }
+                {
+                    if (ImGui::Selectable(option, current == option))
+                    {
+                        value = Vans::VansSerializedValue::String(option);
+                        changed = true;
+                    }
+                }
                 ImGui::EndCombo();
             }
         }
         else
         {
             char buffer[1024]{};
-            std::strncpy(buffer, current.c_str(), sizeof(buffer) - 1);
+            CopyToImGuiBuffer(buffer, sizeof(buffer), current);
             if (ImGui::InputText("##value", buffer, sizeof(buffer)))
-            { value = std::string(buffer); changed = true; }
+            {
+                value = Vans::VansSerializedValue::String(buffer);
+                changed = true;
+            }
         }
+        break;
     }
-    else if (value.is_null())
-    {
+    case Vans::VansSerializedValue::Kind::Null:
+    default:
         BeginProperty(label);
         ImGui::TextDisabled("None");
+        break;
     }
     ImGui::PopID();
     return changed;
 }
 
-bool VansInspectorWindow::DrawComponent(Vans::EditorAPI::IEngineEditorAPI& api, Json& component,
+bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI& api,
+    Vans::VansSerializedValue& component,
     const std::string& pointer, bool& removeRequested)
 {
-    const std::string type = component.value("type", "Component");
+    if (component.kind != Vans::VansSerializedValue::Kind::Object)
+        component = Vans::VansSerializedValue::Object({});
+
+    const std::string type = Vans::ReadSerializedStringField(component, "type", "Component");
     ImGui::PushID(pointer.c_str());
-    bool enabled = component.value("enabled", true);
+    bool enabled = Vans::ReadSerializedBoolField(component, "enabled", true);
     bool changed = false;
     if (ImGui::Checkbox("##enabled", &enabled))
     {
-        if (enabled != component.value("enabled", true))
+        if (enabled != Vans::ReadSerializedBoolField(component, "enabled", true))
         {
-            component["enabled"] = enabled;
+            Vans::SetSerializedObjectField(component, "enabled", Vans::VansSerializedValue::Bool(enabled));
             changed = true;
-
-            // 连线到运行时：将 enabled 状态同步到 VansScriptComponent → VansNode
-            ApplyComponentEnabled(api, type, enabled);
         }
     }
     ImGui::SameLine();
     const bool open = ImGui::CollapsingHeader(type.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+    if (ImGui::BeginDragDropSource())
+    {
+        Vans::EditorObjectHandle handle;
+        handle.domain = Vans::EditorObjectDomain::SceneComponent;
+        handle.guid = Vans::ReadSerializedStringField(component, "id");
+        handle.entityGuid = Vans::VansEditorSelection::EntityGuid();
+        handle.componentGuid = handle.guid;
+        handle.componentType = type;
+        handle.displayName = type;
+        const std::string payload = Vans::SerializeEditorObjectHandle(handle);
+        ImGui::SetDragDropPayload(Vans::VansObjectReferenceDragPayloadType,
+            payload.c_str(),
+            payload.size() + 1);
+        ImGui::TextUnformatted(type.c_str());
+        ImGui::EndDragDropSource();
+    }
     if (ImGui::BeginPopupContextItem("ComponentMenu"))
     {
         if (type != "Transform" && ImGui::MenuItem("Remove Component")) removeRequested = true;
-        ImGui::TextDisabled("ID: %s", component.value("id", "").c_str());
+        ImGui::TextDisabled("ID: %s", Vans::ReadSerializedStringField(component, "id").c_str());
         ImGui::EndPopup();
     }
     if (open)
     {
         ImGui::Indent(8.0f);
-        if (!component.contains("data") || !component["data"].is_object()) component["data"] = Json::object();
-        Json& data = component["data"];
-        for (auto iterator = data.begin(); iterator != data.end(); ++iterator)
+        Vans::VansSerializedValue* data = Vans::FindObjectField(component, "data");
+        if (!data || data->kind != Vans::VansSerializedValue::Kind::Object)
         {
-            if (iterator.key() == "materialOverrides" && iterator.value().is_object())
-            {
-                Json& overrides = iterator.value();
-                if (overrides.empty())
-                {
-                    Json reference = { { "guid", "" } };
-                    if (DrawAssetReference("Material 0", reference, pointer + "/data/materialOverrides/default",
-                        static_cast<int>(Vans::EditorAPI::AssetType::Material)) && !reference.value("guid", "").empty())
-                    { overrides["default"] = std::move(reference); changed = true; }
-                }
-                else
-                {
-                    std::size_t slotIndex = 0;
-                    for (auto slot = overrides.begin(); slot != overrides.end(); ++slot, ++slotIndex)
-                        changed |= DrawAssetReference("Material " + std::to_string(slotIndex), slot.value(),
-                            pointer + "/data/materialOverrides/" + EscapePointerToken(slot.key()),
-                            static_cast<int>(Vans::EditorAPI::AssetType::Material));
-                }
-                continue;
-            }
-            changed |= DrawJsonValue(iterator.key(), iterator.value(), pointer + "/data/" + EscapePointerToken(iterator.key()),
-                false, type, "data");
+            Vans::SetSerializedObjectField(component, "data", Vans::VansSerializedValue::Object({}));
+            data = Vans::FindObjectField(component, "data");
         }
-        if (data.empty()) ImGui::TextDisabled("No properties");
+
+        std::vector<Vans::PythonScriptFieldDescriptor> scriptFieldDescriptors;
+        if (type == "Script")
+        {
+            changed |= MergePythonScriptFieldDefaults(
+                *data,
+                api,
+                &scriptFieldDescriptors);
+        }
+
+        if (data && data->kind == Vans::VansSerializedValue::Kind::Object)
+        {
+            for (auto& [fieldName, fieldValue] : data->objectFields)
+            {
+                if (type == "Script" &&
+                    fieldName == "fields" &&
+                    fieldValue.kind == Vans::VansSerializedValue::Kind::Object)
+                {
+                    if (ImGui::TreeNodeEx("Fields", ImGuiTreeNodeFlags_DefaultOpen))
+                    {
+                        changed |= DrawSerializedPythonScriptFields(
+                            fieldValue,
+                            scriptFieldDescriptors,
+                            pointer + "/data/fields");
+                        ImGui::TreePop();
+                    }
+                    continue;
+                }
+
+                if (fieldName == "materialOverrides" &&
+                    fieldValue.kind == Vans::VansSerializedValue::Kind::Object)
+                {
+                    const Vans::ObjectReferenceSlotDescriptor materialSlot =
+                        Vans::VansEditorPropertyDescriptorRegistry::ProjectAssetReferenceSlot(
+                            Vans::EditorAPI::AssetType::Material);
+                    bool overridesChanged = false;
+                    if (fieldValue.objectFields.empty())
+                    {
+                        Vans::VansSerializedValue reference;
+                        Vans::NormalizeObjectReferenceSlotValue(
+                            reference,
+                            materialSlot);
+                        if (DrawSerializedAssetReference(
+                            "Material 0",
+                            reference,
+                            pointer + "/data/materialOverrides/default",
+                            materialSlot) &&
+                            !Vans::ReadObjectReferenceSlotHandle(
+                                reference,
+                                materialSlot).guid.empty())
+                        {
+                            Vans::SetSerializedObjectField(fieldValue, "default", std::move(reference));
+                            overridesChanged = true;
+                        }
+                    }
+                    else
+                    {
+                        std::size_t slotIndex = 0;
+                        for (auto& [slotName, slotValue] : fieldValue.objectFields)
+                        {
+                            overridesChanged |= DrawSerializedAssetReference(
+                                "Material " + std::to_string(slotIndex),
+                                slotValue,
+                                pointer + "/data/materialOverrides/" + EscapePointerToken(slotName),
+                                materialSlot);
+                            ++slotIndex;
+                        }
+                    }
+                    changed |= overridesChanged;
+                    continue;
+                }
+
+                changed |= DrawSerializedValue(
+                    fieldName,
+                    fieldValue,
+                    pointer + "/data/" + EscapePointerToken(fieldName),
+                    false,
+                    type,
+                    "data");
+            }
+            if (data->objectFields.empty()) ImGui::TextDisabled("No properties");
+        }
         ImGui::Unindent(8.0f);
     }
     if (type == "Vehicle" && changed)
@@ -799,37 +1800,59 @@ bool VansInspectorWindow::DrawComponent(Vans::EditorAPI::IEngineEditorAPI& api, 
     return changed;
 }
 
-void VansInspectorWindow::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api)
+void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api)
 {
     Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
     Vans::VansSceneEditService* editor = VansEditorWindow::GetSceneEditService();
     if (!document || !editor) return;
     const std::string& selected = Vans::VansEditorSelection::EntityGuid();
-    const auto& entities = document->Root()["entities"];
-    for (std::size_t index = 0; index < entities.size(); ++index)
+    const Vans::VansSerializedValue sceneRoot = document->SerializedRootSnapshot();
+    const Vans::VansSerializedValue* entities = Vans::FindObjectField(sceneRoot, "entities");
+    if (!entities || entities->kind != Vans::VansSerializedValue::Kind::Array)
     {
-        if (entities[index].value("id", "") != selected) continue;
-        m_PendingAssetReferenceEdit.reset();
-        Json edited = entities[index];
+        ImGui::TextDisabled("Scene document has no entities");
+        return;
+    }
+
+    for (std::size_t index = 0; index < entities->arrayItems.size(); ++index)
+    {
+        const Vans::VansSerializedValue& selectedEntity = entities->arrayItems[index];
+        if (Vans::ReadSerializedStringField(selectedEntity, "id") != selected) continue;
+        m_PendingObjectReferenceEdit.reset();
+        Vans::VansSerializedValue editedEntity = selectedEntity;
         const std::string pointer = "/entities/" + std::to_string(index);
         bool changed = false;
 
         char name[256]{};
-        std::strncpy(name, edited.value("name", "Entity").c_str(), sizeof(name) - 1);
+        CopyToImGuiBuffer(name, sizeof(name),
+            Vans::ReadSerializedStringField(editedEntity, "name", "Entity"));
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::InputText("##EntityName", name, sizeof(name)))
-        { edited["name"] = std::string(name); changed = true; }
+        {
+            Vans::SetSerializedObjectField(
+                editedEntity,
+                "name",
+                Vans::VansSerializedValue::String(name));
+            changed = true;
+        }
         ImGui::TextDisabled("Entity %s", selected.substr(0, 8).c_str());
         ImGui::Separator();
 
-        if (edited.contains("components") && edited["components"].is_array())
+        Vans::VansSerializedValue* editedComponents =
+            Vans::FindObjectField(editedEntity, "components");
+        if (editedComponents && editedComponents->kind == Vans::VansSerializedValue::Kind::Array)
         {
-            for (std::size_t componentIndex = 0; componentIndex < edited["components"].size();)
+            for (std::size_t componentIndex = 0; componentIndex < editedComponents->arrayItems.size();)
             {
                 bool remove = false;
-                changed |= DrawComponent(api, edited["components"][componentIndex],
+                changed |= DrawComponent(api, editedComponents->arrayItems[componentIndex],
                     pointer + "/components/" + std::to_string(componentIndex), remove);
-                if (remove) { edited["components"].erase(edited["components"].begin() + componentIndex); changed = true; }
+                if (remove)
+                {
+                    editedComponents->arrayItems.erase(
+                        editedComponents->arrayItems.begin() + componentIndex);
+                    changed = true;
+                }
                 else ++componentIndex;
             }
         }
@@ -845,15 +1868,33 @@ void VansInspectorWindow::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api
                 const bool singleton = std::strcmp(type, "ModelRenderer") == 0 || std::strcmp(type, "Physics") == 0;
                 bool alreadyPresent = false;
                 if (singleton)
-                    for (const Json& component : edited["components"])
-                        if (component.value("type", "") == type) { alreadyPresent = true; break; }
+                {
+                    if (editedComponents && editedComponents->kind == Vans::VansSerializedValue::Kind::Array)
+                    {
+                        for (const Vans::VansSerializedValue& component : editedComponents->arrayItems)
+                        {
+                            if (Vans::ReadSerializedStringField(component, "type") == type)
+                            {
+                                alreadyPresent = true;
+                                break;
+                            }
+                        }
+                    }
+                }
                 if (alreadyPresent) ImGui::BeginDisabled();
                 const bool selectedType = ImGui::Selectable(type);
                 if (alreadyPresent) ImGui::EndDisabled();
                 if (!selectedType || alreadyPresent) continue;
-                Json data = DefaultComponentData(type);
-                edited["components"].push_back({ { "id", Vans::VansComponentGuid::New().ToString() },
-                    { "type", type }, { "version", 1u }, { "enabled", true }, { "data", std::move(data) } });
+                if (!editedComponents || editedComponents->kind != Vans::VansSerializedValue::Kind::Array)
+                {
+                    Vans::SetSerializedObjectField(
+                        editedEntity,
+                        "components",
+                        Vans::VansSerializedValue::Array({}));
+                    editedComponents = Vans::FindObjectField(editedEntity, "components");
+                }
+                if (editedComponents)
+                    editedComponents->arrayItems.push_back(MakeSerializedComponent(type));
                 changed = true;
                 ImGui::CloseCurrentPopup();
             }
@@ -861,43 +1902,55 @@ void VansInspectorWindow::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api
         }
         if (changed)
         {
-            Json runtimeEdited = edited;
             Vans::SceneEditResult result;
-            if (m_PendingAssetReferenceEdit)
+            if (m_PendingObjectReferenceEdit)
             {
-                const PendingAssetReferenceEdit edit = *m_PendingAssetReferenceEdit;
-                result = editor->AssignAssetReference(edit.pointer,
-                    edit.guid,
-                    static_cast<Vans::EditorAPI::AssetType>(edit.expectedAssetType),
-                    edit.writeObjectReference);
-                m_PendingAssetReferenceEdit.reset();
+                const Vans::ObjectReferenceAssignment edit = *m_PendingObjectReferenceEdit;
+                result = editor->SetAndAssignObjectReference(
+                    Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::Scene, pointer),
+                    editedEntity,
+                    edit);
+                m_PendingObjectReferenceEdit.reset();
             }
             else
             {
-                result = editor->Set(pointer, std::move(edited));
+                result = editor->Set(
+                    Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::Scene, pointer),
+                    editedEntity);
             }
             if (!result) VANS_LOG_ERROR("[Inspector] " << result.message);
-            else api.ApplyRuntimeEntityPatchJson(runtimeEdited.dump());
+            else
+            {
+                const Vans::EditorAPI::RuntimeEntityPreviewChange previewChange =
+                    BuildRuntimeEntityPreviewChange(editedEntity);
+                api.ApplyRuntimeEntityPreviewChange(previewChange);
+            }
         }
         return;
     }
     ImGui::TextDisabled("Selected entity no longer exists");
 }
 
-void VansInspectorWindow::DrawSceneSettings()
+void VansInspectorWindow::Impl::DrawSceneSettings()
 {
     Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
     Vans::VansSceneEditService* editor = VansEditorWindow::GetSceneEditService();
     if (!document || !editor) return;
-    Json settings = document->Root().value("settings", Json::object());
-    if (DrawJsonValue("Scene Settings", settings, "/settings"))
+    const Vans::VansSerializedValue sceneRoot = document->SerializedRootSnapshot();
+    const Vans::VansSerializedValue* settingsValue = Vans::FindObjectField(sceneRoot, "settings");
+    Vans::VansSerializedValue settings = settingsValue
+        ? *settingsValue
+        : Vans::VansSerializedValue::Object({});
+    if (DrawSerializedValue("Scene Settings", settings, "/settings"))
     {
-        const Vans::SceneEditResult result = editor->Set("/settings", std::move(settings));
+        const Vans::SceneEditResult result = editor->Set(
+            Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::Scene, "/settings"),
+            std::move(settings));
         if (!result) VANS_LOG_ERROR("[Inspector] " << result.message);
     }
 }
 
-bool VansInspectorWindow::LoadAssetDocuments(const std::filesystem::path& sourcePath)
+bool VansInspectorWindow::Impl::LoadAssetDocuments(const std::filesystem::path& sourcePath)
 {
     m_AssetPath = sourcePath;
     m_AssetDocuments = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(sourcePath);
@@ -906,7 +1959,7 @@ bool VansInspectorWindow::LoadAssetDocuments(const std::filesystem::path& source
         (m_AssetDocuments->sourceDocument.IsLoaded() || m_AssetDocuments->metaDocument.IsLoaded());
 }
 
-bool VansInspectorWindow::SaveAssetDocuments(bool reloadSceneOnSuccess)
+bool VansInspectorWindow::Impl::SaveAssetDocuments(bool reloadSceneOnSuccess)
 {
     m_Error.clear();
     if (!m_ActiveAPI)
@@ -929,7 +1982,7 @@ bool VansInspectorWindow::SaveAssetDocuments(bool reloadSceneOnSuccess)
     return true;
 }
 
-void VansInspectorWindow::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api)
+void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api)
 {
     const std::filesystem::path& selected = Vans::VansEditorSelection::AssetPath();
     if (selected != m_AssetPath) LoadAssetDocuments(selected);
@@ -945,47 +1998,51 @@ void VansInspectorWindow::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api)
 
     if (m_AssetDocuments && m_AssetDocuments->sourceDocument.IsLoaded())
     {
-        Json& root = m_AssetDocuments->sourceDocument.Root();
-        MergeCustomShaderParameterSchema(api, root);
-        for (auto iterator = root.begin(); iterator != root.end(); ++iterator)
+        Vans::VansSerializedValue displayRootValue =
+            m_AssetDocuments->sourceDocument.SerializedRootSnapshot();
+        if (displayRootValue.kind != Vans::VansSerializedValue::Kind::Object)
+            displayRootValue = Vans::VansSerializedValue::Object({});
+        Vans::MergeMaterialAuthoringSchema(api, displayRootValue);
+        for (auto& [propertyKey, propertyValue] : displayRootValue.objectFields)
         {
-            const std::string propertyKey = iterator.key();
             const std::string propertyPointer = "/asset/" + EscapePointerToken(propertyKey);
             const bool identity = propertyKey == "schemaVersion" || propertyKey == "guid";
-            const Json beforeEditRoot = root;
-            if (DrawJsonValue(propertyKey, iterator.value(), propertyPointer, identity))
+            if (DrawSerializedValue(propertyKey, propertyValue, propertyPointer, identity))
             {
                 bool editApplied = false;
-                bool rootRestored = false;
-                if (m_PendingAssetReferenceEdit)
+                if (m_PendingObjectReferenceEdit)
                 {
-                    const PendingAssetReferenceEdit edit = *m_PendingAssetReferenceEdit;
-                    root = beforeEditRoot;
-                    rootRestored = true;
+                    const Vans::ObjectReferenceAssignment edit = *m_PendingObjectReferenceEdit;
                     const Vans::AssetDocumentEditResult result =
-                        Vans::VansAssetDocumentEditService::SetAssetReference(
+                        Vans::VansAssetDocumentEditService::SetAndAssignObjectReference(
                             m_AssetDocuments->sourceDocument,
-                            edit.pointer,
-                            edit.guid,
-                            edit.writeObjectReference);
+                            Vans::MakeInspectorDocumentPropertyPath(propertyPointer),
+                            propertyValue,
+                            edit);
                     if (!result)
                         VANS_LOG_ERROR("[Inspector] " << result.message);
                     editApplied = static_cast<bool>(result);
-                    m_PendingAssetReferenceEdit.reset();
+                    m_PendingObjectReferenceEdit.reset();
                 }
                 else
                 {
-                    m_AssetDocuments->sourceDocument.MarkDirty();
-                    editApplied = true;
+                    const Vans::AssetDocumentEditResult result =
+                        Vans::VansAssetDocumentEditService::Set(
+                            m_AssetDocuments->sourceDocument,
+                            Vans::MakeInspectorDocumentPropertyPath(propertyPointer),
+                            propertyValue);
+                    if (!result)
+                        VANS_LOG_ERROR("[Inspector] " << result.message);
+                    editApplied = static_cast<bool>(result);
                 }
 
                 if (editApplied)
-                    api.ApplyRuntimeMaterialAssetPatch(
-                        selected.string(),
-                        root.dump(),
-                        propertyPointer);
-                if (rootRestored)
-                    break;
+                    api.ApplyRuntimeMaterialPreviewChange(
+                        Vans::BuildRuntimeMaterialPreviewChange(
+                            selected,
+                            m_AssetDocuments->sourceDocument.SerializedRootSnapshot(),
+                            propertyPointer));
+                break;
             }
         }
     }
@@ -993,13 +2050,33 @@ void VansInspectorWindow::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api)
 
     if (m_AssetDocuments && m_AssetDocuments->metaDocument.IsLoaded())
     {
-        Json& meta = m_AssetDocuments->metaDocument.Root();
-        if (meta.contains("settings") && DrawJsonValue("Import Settings", meta["settings"], "/meta/settings"))
-            m_AssetDocuments->metaDocument.MarkDirty();
+        const Vans::VansSerializedValue metaRoot = m_AssetDocuments->metaDocument.SerializedRootSnapshot();
+        if (const Vans::VansSerializedValue* settingsValue = Vans::FindObjectField(metaRoot, "settings"))
+        {
+            Vans::VansSerializedValue editedSettings = *settingsValue;
+            if (DrawSerializedValue("Import Settings", editedSettings, "/meta/settings"))
+            {
+                const Vans::AssetDocumentEditResult result =
+                    Vans::VansAssetDocumentEditService::Set(
+                        m_AssetDocuments->metaDocument,
+                        Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::AssetMeta, "/settings"),
+                        std::move(editedSettings));
+                if (!result)
+                    VANS_LOG_ERROR("[Inspector] " << result.message);
+            }
+        }
         if (ImGui::TreeNode("Asset Identity"))
         {
-            if (meta.contains("guid")) DrawJsonValue("GUID", meta["guid"], "/meta/guid", true);
-            if (meta.contains("importer")) DrawJsonValue("Importer", meta["importer"], "/meta/importer", true);
+            if (const Vans::VansSerializedValue* guid = Vans::FindObjectField(metaRoot, "guid"))
+            {
+                Vans::VansSerializedValue displayGuid = *guid;
+                DrawSerializedValue("GUID", displayGuid, "/meta/guid", true);
+            }
+            if (const Vans::VansSerializedValue* importer = Vans::FindObjectField(metaRoot, "importer"))
+            {
+                Vans::VansSerializedValue displayImporter = *importer;
+                DrawSerializedValue("Importer", displayImporter, "/meta/importer", true);
+            }
             ImGui::TreePop();
         }
     }
@@ -1012,19 +2089,12 @@ void VansInspectorWindow::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api)
     if (!dirty) ImGui::EndDisabled();
 }
 
-void VansInspectorWindow::ApplyComponentEnabled(
-    Vans::EditorAPI::IEngineEditorAPI& api, const std::string& componentType, bool enabled)
-{
-    const std::string& selectedGuid = Vans::VansEditorSelection::EntityGuid();
-    api.SetRuntimeComponentEnabled(selectedGuid, componentType, enabled);
-}
-
-void VansInspectorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
+void VansInspectorWindow::Impl::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
 {
     ImGui::Begin("Inspector");
     m_ActiveAPI = &api;
     m_CollisionLayerNames = api.GetRuntimeCollisionLayerNames();
-    m_PendingAssetReferenceEdit.reset();
+    m_PendingObjectReferenceEdit.reset();
     if (Vans::VansEditorSelection::IsSceneSelected()) DrawSceneSettings();
     else if (!Vans::VansEditorSelection::EntityGuid().empty()) DrawSceneEntity(api);
     else if (!Vans::VansEditorSelection::AssetPath().empty()) DrawAsset(api);

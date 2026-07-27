@@ -135,6 +135,21 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_RoughnessTexture->GetImage()));
 				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_AoTexture->GetImage()));
 			}
+			else if (material->m_MaterialType == VansMaterialType::VAN_SKIN)
+			{
+				VansSkinMaterial* skin = static_cast<VansSkinMaterial*>(material);
+				skin->m_MaterialIndex = pbrMaterialIndex++;
+				materialManager->m_GlobalPBRParamData.push_back(skin->m_BasePBRParam);
+				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
+
+				// Skin samples its dedicated Set 4 textures, but still reserves the
+				// standard 5 bindless slots so later materialIndex * 5 lookups stay aligned.
+				materialManager->m_GlobalPBRTextures.push_back(&(skin->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(skin->m_NormalTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(skin->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(skin->m_BaseColorTexture->GetImage()));
+				materialManager->m_GlobalPBRTextures.push_back(&(skin->m_BaseColorTexture->GetImage()));
+			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
 			{
 				appendCustomMaterialData(material);

@@ -42,6 +42,18 @@ namespace VansGraphics
 		float farPlane;
 	};
 
+	struct VansCelestialLightingState
+	{
+		glm::vec3 sunDirection = glm::vec3(0.0f, 1.0f, 0.0f);
+		glm::vec3 moonDirection = glm::vec3(0.0f, -1.0f, 0.0f);
+		glm::vec3 direction = glm::vec3(0.0f, 1.0f, 0.0f);
+		glm::vec3 color = glm::vec3(1.0f);
+		float intensity = 1.0f;
+		float skyDiffuseScale = 1.0f;
+		float skySpecularScale = 1.0f;
+		float moonBlend = 0.0f;
+	};
+
 	struct alignas(16) VansPointLight
 	{
 		glm::vec3				m_Position;
@@ -110,6 +122,7 @@ namespace VansGraphics
 		std::vector<VansPunctualShadowRegistration> m_SpotShadowRegistrations;
 		std::vector<VansPunctualShadowRegistration> m_RectShadowRegistrations;
 		VansPunctualShadowManager m_PunctualShadowManager;
+		VansCelestialLightingState m_MainCelestialLightingState;
 		uint32_t m_NextStableLightId = 1;
 		uint64_t m_ShadowFrameIndex = 0;
 
@@ -159,6 +172,11 @@ namespace VansGraphics
 		// 公式与 VolumetricFog.comp AtmSunColor / CloudCommon CalcCloudSunAbsorbLight 保持一致
 		// sunDir 可以未归一化；baseColor 为美术设置的原始颜色
 		static glm::vec3 ComputeAtmosphereSunColor(const glm::vec3& sunDir, const glm::vec3& baseColor);
+
+		static VansCelestialLightingState ComputeCelestialLightingState(const VansDirectionalLight& light);
+		const VansCelestialLightingState& GetMainCelestialLightingState() const { return m_MainCelestialLightingState; }
+		float GetSkyDiffuseScale() const { return m_MainCelestialLightingState.skyDiffuseScale; }
+		float GetSkySpecularScale() const { return m_MainCelestialLightingState.skySpecularScale; }
 
 		//Create light gpu data
 		void CreateLightUniformData(VkDevice& logic_device);

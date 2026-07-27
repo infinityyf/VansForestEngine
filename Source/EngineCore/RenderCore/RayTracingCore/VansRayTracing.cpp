@@ -122,8 +122,9 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
         0.0f, static_cast<float>(gi.spatialUpdateDivisor),
         static_cast<float>(gi.directionUpdateSlices), 0.0f);
     m_RayTracingConstant.regionParams = glm::vec4(gi.regionCenter, gi.normalBias);
+    m_BaseGIEnvironmentIntensity = std::max(gi.environmentIntensity, 0.0f);
     m_RayTracingConstant.lightingParams = glm::vec4(
-        gi.environmentIntensity, gi.maxIndirectRadiance, gi.maxSHL0, 0.0f);
+        m_BaseGIEnvironmentIntensity, gi.maxIndirectRadiance, gi.maxSHL0, 0.0f);
 
     VANS_LOG("[CreateRayTracingResource] GI grid="
         << gi.gridDimensions.x << "x"
@@ -355,8 +356,9 @@ void VansGraphics::VansRayTracing::UpdateGISettings(const VansGISettings& settin
     m_RayTracingConstant.frameParams.y = static_cast<float>(settings.spatialUpdateDivisor);
     m_RayTracingConstant.frameParams.z = static_cast<float>(settings.directionUpdateSlices);
     m_RayTracingConstant.regionParams = glm::vec4(settings.regionCenter, settings.normalBias);
+    m_BaseGIEnvironmentIntensity = std::max(settings.environmentIntensity, 0.0f);
     m_RayTracingConstant.lightingParams = glm::vec4(
-        settings.environmentIntensity,
+        m_BaseGIEnvironmentIntensity,
         settings.maxIndirectRadiance,
         settings.maxSHL0,
         0.0f);
@@ -402,19 +404,21 @@ bool VansGraphics::VansRayTracing::UpdateLightingResponseState(VansLightManager*
     glm::vec4 lightColor(0.0f);
 
     auto& directionLights = lightManager->GetDirectionLights();
+    m_RayTracingConstant.lightingParams.x = m_BaseGIEnvironmentIntensity;
     if (!directionLights.empty())
     {
-        const VansDirectionalLight& mainLight = directionLights[0];
-        glm::vec3 direction = mainLight.m_Direction;
+        const VansCelestialLightingState celestialState =
+            VansLightManager::ComputeCelestialLightingState(directionLights[0]);
+        m_RayTracingConstant.lightingParams.x =
+            m_BaseGIEnvironmentIntensity * std::max(celestialState.skyDiffuseScale, 0.0f);
+        glm::vec3 direction = celestialState.direction;
         if (glm::dot(direction, direction) > 1e-6f)
             direction = glm::normalize(direction);
         else
             direction = glm::vec3(0.0f, 1.0f, 0.0f);
 
-        // 与上传到 LightsData.glsl 的主光颜色保持一致，让 GI 响应大气仰角衰减后的太阳颜色。
-        glm::vec3 effectiveColor = VansLightManager::ComputeAtmosphereSunColor(direction, mainLight.m_Color);
-        directionIntensity = glm::vec4(direction, mainLight.m_Intensity);
-        lightColor = glm::vec4(effectiveColor, 0.0f);
+        directionIntensity = glm::vec4(direction, celestialState.intensity);
+        lightColor = glm::vec4(celestialState.color, 0.0f);
     }
 
     const bool initializing = !m_HasLastGIMainLight;

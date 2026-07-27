@@ -125,8 +125,7 @@ void main()
     vec3 R = reflect(-V, N);
     float lod = p.waterRoughness * 9.0;
     ReflectionProbeSample probe = SampleReflectionProbes(W, N, R, p.waterRoughness);
-    vec3 sky = textureLod(PreConvSpecularEnvironment, R, lod).rgb *
-               reflectionProbeLightingParams.z;
+    vec3 sky = SampleSkySpecularCube(PreConvSpecularEnvironment, R, lod);
     vec3 reflectedRadiance = mix(sky, probe.specular, probe.coverage);
     float roughnessFade = 1.0 - smoothstep(reflectionProbeLightingParams.x,
                                            reflectionProbeLightingParams.y,

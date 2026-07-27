@@ -11,6 +11,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include "../VansEditorSelection.h"
+#include "../VansEditorObjectReference.h"
 #include "../VansSceneAssetPlacementService.h"
 #include "../VansEditorWindow.h"
 #include "../VansSceneEditService.h"
@@ -192,56 +193,64 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             if (ImGui::BeginDragDropTarget())
             {
                 if (const ImGuiPayload* payload =
-                    ImGui::AcceptDragDropPayload("VANS_ASSET_GUID"))
+                    ImGui::AcceptDragDropPayload(Vans::VansObjectReferenceDragPayloadType))
                 {
                     if (payload->DataSize > 0 && payload->Data)
                     {
-                        std::string guidStr(static_cast<const char*>(payload->Data));
-
-                        // Screen -> world: ray-ground plane intersection.
-                        float ndcX = 2.0f * (ImGui::GetMousePos().x - imageScreenPos.x) / drawSize.x - 1.0f;
-                        float ndcY = 1.0f - 2.0f * (ImGui::GetMousePos().y - imageScreenPos.y) / drawSize.y;
-
-                        glm::vec3 rayOrigin(0.0f), rayDir(0.0f, -1.0f, 0.0f);
-                        if (m_Camera)
+                        Vans::EditorObjectHandle droppedHandle;
+                        const bool validModelDrop = Vans::TryDeserializeEditorObjectHandle(
+                            payload->Data,
+                            static_cast<std::size_t>(payload->DataSize),
+                            droppedHandle) &&
+                            droppedHandle.domain == Vans::EditorObjectDomain::ProjectAsset &&
+                            droppedHandle.assetType == Vans::EditorAPI::AssetType::Model;
+                        if (validModelDrop)
                         {
-                            glm::mat4 view = m_Camera->GetViewMatrix();
-                            glm::mat4 proj = m_Camera->GetProjectiveMatrix();
-                            glm::mat4 invPV = glm::inverse(proj * view);
-                            glm::vec4 nearPt = invPV * glm::vec4(ndcX, ndcY, 0.0f, 1.0f);
-                            glm::vec4 farPt = invPV * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
-                            nearPt /= nearPt.w;
-                            farPt /= farPt.w;
-                            rayOrigin = glm::vec3(nearPt);
-                            rayDir = glm::normalize(glm::vec3(farPt) - rayOrigin);
-                        }
+                            // Screen -> world: ray-ground plane intersection.
+                            float ndcX = 2.0f * (ImGui::GetMousePos().x - imageScreenPos.x) / drawSize.x - 1.0f;
+                            float ndcY = 1.0f - 2.0f * (ImGui::GetMousePos().y - imageScreenPos.y) / drawSize.y;
 
-                        glm::vec3 worldPos(0.0f);
-                        if (std::abs(rayDir.y) > 0.0001f)
-                        {
-                            float t = -rayOrigin.y / rayDir.y;
-                            worldPos = (t > 0.0f) ? rayOrigin + rayDir * t
-                                : rayOrigin + rayDir * 5.0f;
-                        }
-                        else
-                        {
-                            glm::vec4 fwd4 = m_Camera ? m_Camera->GetForward() : glm::vec4(0, 0, -1, 0);
-                            glm::vec3 fwd = glm::vec3(fwd4); fwd.y = 0.0f;
-                            float len = glm::length(fwd);
-                            worldPos = rayOrigin + (len > 0.0001f ? glm::normalize(fwd) : glm::vec3(0, 0, -1)) * 5.0f;
-                        }
+                            glm::vec3 rayOrigin(0.0f), rayDir(0.0f, -1.0f, 0.0f);
+                            if (m_Camera)
+                            {
+                                glm::mat4 view = m_Camera->GetViewMatrix();
+                                glm::mat4 proj = m_Camera->GetProjectiveMatrix();
+                                glm::mat4 invPV = glm::inverse(proj * view);
+                                glm::vec4 nearPt = invPV * glm::vec4(ndcX, ndcY, 0.0f, 1.0f);
+                                glm::vec4 farPt = invPV * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+                                nearPt /= nearPt.w;
+                                farPt /= farPt.w;
+                                rayOrigin = glm::vec3(nearPt);
+                                rayDir = glm::normalize(glm::vec3(farPt) - rayOrigin);
+                            }
 
-                        auto* editService = VansEditorWindow::GetSceneEditService();
-                        if (editService)
-                        {
-                            const VansSceneAssetPlacementService::Result result =
-                                VansSceneAssetPlacementService::PlaceModelAsset(
-                                    editorAPI,
-                                    *editService,
-                                    guidStr,
-                                    { worldPos.x, worldPos.y, worldPos.z });
-                            if (!result)
-                                VANS_LOG_ERROR("[SceneWindow] Asset placement failed: " << result.message);
+                            glm::vec3 worldPos(0.0f);
+                            if (std::abs(rayDir.y) > 0.0001f)
+                            {
+                                float t = -rayOrigin.y / rayDir.y;
+                                worldPos = (t > 0.0f) ? rayOrigin + rayDir * t
+                                    : rayOrigin + rayDir * 5.0f;
+                            }
+                            else
+                            {
+                                glm::vec4 fwd4 = m_Camera ? m_Camera->GetForward() : glm::vec4(0, 0, -1, 0);
+                                glm::vec3 fwd = glm::vec3(fwd4); fwd.y = 0.0f;
+                                float len = glm::length(fwd);
+                                worldPos = rayOrigin + (len > 0.0001f ? glm::normalize(fwd) : glm::vec3(0, 0, -1)) * 5.0f;
+                            }
+
+                            auto* editService = VansEditorWindow::GetSceneEditService();
+                            if (editService)
+                            {
+                                const VansSceneAssetPlacementService::Result result =
+                                    VansSceneAssetPlacementService::PlaceModelAsset(
+                                        editorAPI,
+                                        *editService,
+                                        droppedHandle.guid,
+                                        { worldPos.x, worldPos.y, worldPos.z });
+                                if (!result)
+                                    VANS_LOG_ERROR("[SceneWindow] Asset placement failed: " << result.message);
+                            }
                         }
                     }
                 }

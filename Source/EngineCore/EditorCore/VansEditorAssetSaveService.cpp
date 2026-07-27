@@ -1,11 +1,20 @@
 #include "VansEditorAssetSaveService.h"
 
+#include "../AssetCore/Storage/VansStagedFileTransaction.h"
 #include "../EngineAPILayer/Public/IEngineEditorAPI.h"
+
+#include <utility>
 
 namespace Vans
 {
 namespace
 {
+struct StagedAssetDocument
+{
+    VansAssetDocument* document = nullptr;
+    VansAssetDocumentSaveStage stage;
+};
+
 void AppendError(VansAssetSaveResult& result, const std::filesystem::path& path, const std::string& error)
 {
     result.ok = false;
@@ -44,22 +53,49 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
     const bool sourceDirty = document->sourceDocument.IsDirty();
     const bool metaDirty = document->metaDocument.IsDirty();
 
+    std::vector<StagedAssetDocument> staged;
+    VansStagedFileTransaction transaction;
     if (sourceDirty)
     {
-        if (!document->sourceDocument.Save(document->lastError))
+        StagedAssetDocument item;
+        item.document = &document->sourceDocument;
+        if (!document->sourceDocument.StageSave(item.stage, document->lastError))
         {
             AppendError(result, document->sourcePath, document->lastError);
             return result;
         }
-        result.wroteFile = true;
+        transaction.Add({ item.stage.targetPath, item.stage.temporaryPath });
+        staged.push_back(std::move(item));
     }
 
     if (metaDirty)
     {
-        if (!document->metaDocument.Save(document->lastError))
+        StagedAssetDocument item;
+        item.document = &document->metaDocument;
+        if (!document->metaDocument.StageSave(item.stage, document->lastError))
         {
             AppendError(result, document->metaPath, document->lastError);
             return result;
+        }
+        transaction.Add({ item.stage.targetPath, item.stage.temporaryPath });
+        staged.push_back(std::move(item));
+    }
+
+    if (!transaction.Empty())
+    {
+        if (!transaction.Publish(document->lastError))
+        {
+            AppendError(result, document->sourcePath, document->lastError);
+            return result;
+        }
+
+        for (StagedAssetDocument& item : staged)
+        {
+            if (item.document && !item.document->AdoptStagedSave(item.stage, document->lastError))
+            {
+                AppendError(result, item.stage.targetPath, document->lastError);
+                return result;
+            }
         }
         result.wroteFile = true;
     }

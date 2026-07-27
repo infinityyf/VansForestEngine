@@ -1,7 +1,11 @@
 #include "ModelAssetPlacementPreparationService.h"
 
+#include "ScenePropertyValueBuilders.h"
+#include "../../AssetCore/Importers/VansModelImportReport.h"
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansAssetGuid.h"
+#include "../../AssetCore/VansAssetMeta.h"
+#include "../../AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RenderCore/VansMaterial.h"
 #include "../../RenderCore/VansScene.h"
@@ -17,7 +21,6 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
-#include <fstream>
 #include <unordered_map>
 #include <utility>
 
@@ -60,57 +63,31 @@ GeneratedMaterialLookup BuildGeneratedMaterialLookup(const std::string& modelGui
     if (!record || record->metaPath.empty())
         return lookup;
 
-    std::ifstream input(record->metaPath);
-    if (!input)
+    Vans::VansAssetMeta meta;
+    std::string metaError;
+    if (!Vans::VansAssetMetaStorage::Load(record->metaPath, meta, metaError))
         return lookup;
 
-    const auto meta = Vans::SceneJson::parse(input, nullptr, false);
-    if (meta.is_discarded() || !meta.is_object())
-        return lookup;
-
-    const auto settingsIt = meta.find("settings");
-    if (settingsIt == meta.end() || !settingsIt->is_object())
-        return lookup;
-    const auto reportIt = settingsIt->find("importReport");
-    if (reportIt == settingsIt->end() || !reportIt->is_object())
-        return lookup;
-
+    const Vans::VansModelImportReport report = Vans::ReadModelImportReport(meta);
     std::unordered_map<std::string, std::string> textureGuidToName;
-    const auto texturesIt = reportIt->find("textures");
-    if (texturesIt != reportIt->end() && texturesIt->is_array())
+    for (const Vans::VansModelImportReportTexture& texture : report.textures)
     {
-        for (const auto& texture : *texturesIt)
-        {
-            if (!texture.is_object())
-                continue;
-            const std::string guid = texture.value("guid", "");
-            std::string name = texture.value("name", "");
-            if (name.empty())
-                name = TextureFileKey(texture.value("path", ""));
-            else
-                name = TextureFileKey(name);
-            if (!guid.empty() && !name.empty())
-                textureGuidToName[guid] = name;
-        }
+        std::string name = texture.name.empty()
+            ? TextureFileKey(texture.path)
+            : TextureFileKey(texture.name);
+        if (!texture.guid.empty() && !name.empty())
+            textureGuidToName[texture.guid] = name;
     }
 
-    const auto matsIt = reportIt->find("generatedMaterials");
-    if (matsIt != reportIt->end() && matsIt->is_array())
+    for (const Vans::VansModelImportReportGeneratedMaterial& material : report.generatedMaterials)
     {
-        for (const auto& material : *matsIt)
-        {
-            if (!material.is_object())
-                continue;
-            const std::string matGuid = material.value("guid", "");
-            if (matGuid.empty())
-                continue;
+        if (material.guid.empty())
+            continue;
 
-            lookup.byIndex.push_back(matGuid);
-            const std::string textureGuid = material.value("texture", "");
-            const auto texIt = textureGuidToName.find(textureGuid);
-            if (texIt != textureGuidToName.end())
-                lookup.byTextureName[texIt->second] = matGuid;
-        }
+        lookup.byIndex.push_back(material.guid);
+        const auto texIt = textureGuidToName.find(material.textureGuid);
+        if (texIt != textureGuidToName.end())
+            lookup.byTextureName[texIt->second] = material.guid;
     }
 
     return lookup;
@@ -359,10 +336,10 @@ ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
         payload.runtimeEntityGuid = createResult.entityGuid;
     }
 
-    payload.sceneEntityJsons.reserve(sceneEntities.entities.size());
-    for (const Vans::SceneJson& entity : sceneEntities.entities)
-        payload.sceneEntityJsons.push_back(entity.dump());
-    payload.prepared = !payload.sceneEntityJsons.empty();
+    payload.sceneEntities.reserve(sceneEntities.entities.size());
+    for (const Vans::VansSerializedValue& entity : sceneEntities.entities)
+        payload.sceneEntities.push_back(ScenePropertyValues::FromSerializedValue(entity));
+    payload.prepared = !payload.sceneEntities.empty();
     if (!payload.prepared)
         payload.message = "Model asset placement produced no scene entities";
     return payload;

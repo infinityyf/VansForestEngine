@@ -1,12 +1,11 @@
 ﻿#include "VansProjectWindow.h"
 #include "../VansEditorWindow.h"
-#include "../../SceneCore/VansSceneSchema.h"
+#include "../VansEditorObjectReference.h"
+#include "../../SceneCore/VansSceneDocumentLoader.h"
 #include "../../Util/VansLog.h"
 #include "../VansEditorSelection.h"
 #include "imgui.h"
-#include <nlohmann/json.hpp>
 #include <filesystem>
-#include <fstream>
 #include <functional>
 #include <string>
 
@@ -91,8 +90,6 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
                         ImGui::PushID(entry.path().string().c_str());
 
                         std::string filename = entry.path().filename().string();
-                        const bool isSceneCandidate = entry.path().extension() == ".json";
-
                         if (ImGui::Button(filename.c_str(), ImVec2(thumbnailSize, thumbnailSize))) {
                             Vans::VansEditorSelection::SelectAsset(entry.path());
                         }
@@ -103,9 +100,20 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
                                 editorAPI.CreateAssetDragPayload(entry.path().string());
                             if (payload.available)
                             {
-                                ImGui::SetDragDropPayload("VANS_ASSET_GUID",
-                                    payload.guid.c_str(),
-                                    payload.guid.size() + 1);
+                                Vans::EditorObjectHandle handle;
+                                handle.domain = Vans::EditorObjectDomain::ProjectAsset;
+                                handle.guid = payload.guid;
+                                handle.path = payload.sourcePath.empty()
+                                    ? entry.path().string()
+                                    : payload.sourcePath;
+                                handle.displayName = payload.displayName.empty()
+                                    ? filename
+                                    : payload.displayName;
+                                handle.assetType = payload.assetType;
+                                const std::string objectRefPayload = Vans::SerializeEditorObjectHandle(handle);
+                                ImGui::SetDragDropPayload(Vans::VansObjectReferenceDragPayloadType,
+                                    objectRefPayload.c_str(),
+                                    objectRefPayload.size() + 1);
                                 ImGui::TextUnformatted(filename.c_str());
                             }
                             else if (!payload.error.empty())
@@ -113,11 +121,10 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
                             ImGui::EndDragDropSource();
                         }
 
-                        if (isSceneCandidate && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
                         {
-							std::ifstream input(entry.path());
-							nlohmann::json document = nlohmann::json::parse(input, nullptr, false);
-							if (document.is_object() && document.value("schemaVersion", 0u) == Vans::VansSceneSchemaVersion)
+							std::string readError;
+							if (Vans::VansSceneDocumentLoader::IsSceneDocumentFile(entry.path(), &readError))
 							{
 								std::string scenePath = entry.path().string();
 								VANS_LOG("[Project] Deferring Scene load: " << scenePath);

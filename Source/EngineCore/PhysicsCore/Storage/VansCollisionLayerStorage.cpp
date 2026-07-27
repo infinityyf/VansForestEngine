@@ -1,0 +1,32 @@
+#include "VansCollisionLayerStorage.h"
+
+#include "../Serialization/VansCollisionLayerLegacyJsonCodec.h"
+#include "../VansCollisionLayerConfig.h"
+#include "../../AssetCore/Storage/VansJsonFileStorage.h"
+
+#include <filesystem>
+#include <nlohmann/json.hpp>
+
+namespace VansEngine
+{
+	VansCollisionLayerLoadStatus VansCollisionLayerStorage::Load(
+		const std::string& path,
+		VansCollisionLayerConfig& config,
+		std::string& error)
+	{
+		if (!std::filesystem::exists(path))
+			return VansCollisionLayerLoadStatus::Missing;
+
+		nlohmann::json root;
+		if (!Vans::VansJsonFileStorage::Read(path, root, error))
+			return VansCollisionLayerLoadStatus::ReadFailed;
+
+		if (!VansCollisionLayerLegacyJsonCodec::Decode(root, config))
+		{
+			error = "Invalid collision layer settings JSON";
+			return VansCollisionLayerLoadStatus::DecodeFailed;
+		}
+
+		return VansCollisionLayerLoadStatus::Loaded;
+	}
+}
