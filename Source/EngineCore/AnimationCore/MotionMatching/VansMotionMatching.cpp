@@ -88,16 +88,6 @@ namespace
 		return value;
 	}
 
-	bool ContainsToken(const std::string& loweredName, const std::vector<std::string>& tokens)
-	{
-		for (const std::string& token : tokens)
-		{
-			if (!token.empty() && loweredName.find(ToLower(token)) != std::string::npos)
-				return true;
-		}
-		return false;
-	}
-
 	float NormalizeAngle(float angle)
 	{
 		constexpr float kPi = 3.14159265358979323846f;
@@ -111,150 +101,6 @@ namespace
 	float LerpAngle(float from, float to, float t)
 	{
 		return from + NormalizeAngle(to - from) * glm::clamp(t, 0.0f, 1.0f);
-	}
-
-	bool IsLoopSearchClipName(const std::string& clipName)
-	{
-		const std::string lowered = ToLower(clipName);
-		if (lowered.find("start") != std::string::npos ||
-		    lowered.find("stop") != std::string::npos ||
-		    lowered.find("transition") != std::string::npos ||
-		    lowered.find("towalk") != std::string::npos ||
-		    lowered.find("torun") != std::string::npos ||
-		    lowered.find("tosprint") != std::string::npos ||
-		    lowered.find("tocrouch") != std::string::npos ||
-		    lowered.find("tostand") != std::string::npos ||
-		    lowered.find("turn") != std::string::npos ||
-		    lowered.find("break") != std::string::npos ||
-		    lowered.find("jump") != std::string::npos ||
-		    lowered.find("land") != std::string::npos ||
-		    lowered.find("fall") != std::string::npos)
-		{
-			return false;
-		}
-		return lowered.find("idle") != std::string::npos ||
-		       lowered.find("walk") != std::string::npos ||
-		       lowered.find("run") != std::string::npos ||
-		       lowered.find("sprint") != std::string::npos ||
-		       lowered.find("crouch") != std::string::npos ||
-		       lowered.find("loop") != std::string::npos;
-	}
-
-	bool IsTransitionSearchClipName(const std::string& clipName)
-	{
-		const std::string lowered = ToLower(clipName);
-		if (lowered.find("jump") != std::string::npos ||
-		    lowered.find("land") != std::string::npos ||
-		    lowered.find("fall") != std::string::npos ||
-		    lowered.find("break") != std::string::npos)
-			return false;
-		return lowered.find("start") != std::string::npos ||
-		       lowered.find("stop") != std::string::npos ||
-		       lowered.find("transition") != std::string::npos ||
-		       lowered.find("towalk") != std::string::npos ||
-		       lowered.find("torun") != std::string::npos ||
-		       lowered.find("tosprint") != std::string::npos ||
-		       lowered.find("tocrouch") != std::string::npos ||
-		       lowered.find("tostand") != std::string::npos ||
-		       lowered.find("turn") != std::string::npos;
-	}
-
-	bool IsMotionSearchClipName(const std::string& clipName)
-	{
-		return IsLoopSearchClipName(clipName) || IsTransitionSearchClipName(clipName);
-	}
-
-	int MoveStateFromFamilyName(const std::string& lowered)
-	{
-		if (lowered.find("crouch") != std::string::npos)
-			return 4;
-		if (lowered.find("sprint") != std::string::npos)
-			return 3;
-		if (lowered.find("run") != std::string::npos)
-			return 2;
-		if (lowered.find("walk") != std::string::npos)
-			return 1;
-		return 0;
-	}
-
-	int TransitionTargetMoveStateFromName(const std::string& lowered)
-	{
-		if (lowered.find("tocrouch") != std::string::npos)
-			return 4;
-		if (lowered.find("tostand") != std::string::npos)
-			return 0;
-		if (lowered.find("towalk") != std::string::npos)
-			return 1;
-		if (lowered.find("torun") != std::string::npos)
-			return 2;
-		if (lowered.find("tosprint") != std::string::npos)
-			return 3;
-		if (lowered.find("stop") != std::string::npos)
-			return lowered.find("crouch") != std::string::npos ? 4 : 0;
-		return MoveStateFromFamilyName(lowered);
-	}
-
-	int TransitionSourceMoveStateFromName(const std::string& lowered)
-	{
-		const size_t toPos = lowered.find("to");
-		if (toPos != std::string::npos)
-			return MoveStateFromFamilyName(lowered.substr(0, toPos));
-		if (lowered.find("start") != std::string::npos)
-			return 0;
-		return MoveStateFromFamilyName(lowered);
-	}
-
-	int TurnDirectionSignFromName(const std::string& lowered)
-	{
-		if (lowered.find("turn_l") != std::string::npos ||
-		    lowered.find("turnleft") != std::string::npos ||
-		    lowered.find("_l_") != std::string::npos)
-			return 1;
-		if (lowered.find("turn_r") != std::string::npos ||
-		    lowered.find("turnright") != std::string::npos ||
-		    lowered.find("_r_") != std::string::npos)
-			return -1;
-		return 0;
-	}
-
-	int TurnBucketDeltaFromName(const std::string& lowered)
-	{
-		if (lowered.find("045") != std::string::npos)
-			return 1;
-		if (lowered.find("090") != std::string::npos)
-			return 2;
-		if (lowered.find("135") != std::string::npos)
-			return 3;
-		if (lowered.find("180") != std::string::npos)
-			return 4;
-		return 0;
-	}
-
-	bool ContainsDirectionToken(const std::string& lowered, const char* token)
-	{
-		const std::string needle = std::string("_") + token;
-		size_t pos = lowered.find(needle);
-		while (pos != std::string::npos)
-		{
-			const size_t end = pos + needle.size();
-			if (end == lowered.size() || lowered[end] == '_' || std::isdigit(static_cast<unsigned char>(lowered[end])))
-				return true;
-			pos = lowered.find(needle, pos + 1);
-		}
-		return false;
-	}
-
-	int DirectionBucketFromName(const std::string& lowered)
-	{
-		if (ContainsDirectionToken(lowered, "fl")) return 1;
-		if (ContainsDirectionToken(lowered, "bl")) return 3;
-		if (ContainsDirectionToken(lowered, "br")) return 5;
-		if (ContainsDirectionToken(lowered, "fr")) return 7;
-		if (ContainsDirectionToken(lowered, "ll") || ContainsDirectionToken(lowered, "l")) return 2;
-		if (ContainsDirectionToken(lowered, "rr") || ContainsDirectionToken(lowered, "r")) return 6;
-		if (ContainsDirectionToken(lowered, "b")) return 4;
-		if (ContainsDirectionToken(lowered, "f")) return 0;
-		return -1;
 	}
 
 	int SignedBucketDelta(int fromBucket, int toBucket)
@@ -421,31 +267,7 @@ void VansMotionMatchingRuntime::MarkDatabaseDirty()
 	m_OwnerTransformInitialized = false;
 	m_ActualOwnerVelocityRoot = glm::vec3(0.0f);
 	m_HasActualOwnerVelocity = false;
-}
-
-bool VansMotionMatchingRuntime::ShouldIncludeClip(const std::string& clipName) const
-{
-	const std::string lowered = ToLower(clipName);
-	if (!m_Settings.includeClipNameTokens.empty() &&
-	    !ContainsToken(lowered, m_Settings.includeClipNameTokens))
-		return false;
-	if (!m_Settings.excludeClipNameTokens.empty() &&
-	    ContainsToken(lowered, m_Settings.excludeClipNameTokens))
-		return false;
-	return true;
-}
-
-const MotionMatchingClipMetadata* VansMotionMatchingRuntime::FindClipMetadata(const std::string& clipName) const
-{
-	const std::string lowered = ToLower(clipName);
-	for (const MotionMatchingClipMetadata& metadata : m_Settings.clipMetadata)
-	{
-		if (!metadata.name.empty() && ToLower(metadata.name) == lowered)
-			return &metadata;
-		if (!metadata.matchTokens.empty() && ContainsToken(lowered, metadata.matchTokens))
-			return &metadata;
-	}
-	return nullptr;
+	m_ActiveDatabaseIndices.clear();
 }
 
 float VansMotionMatchingRuntime::ReadSpeedParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const
@@ -511,15 +333,9 @@ int VansMotionMatchingRuntime::ResolveDesiredMoveState(const std::unordered_map<
 	return wantsIdle ? m_Settings.states.idleState : moveState;
 }
 
-bool VansMotionMatchingRuntime::SearchGroupAllowsSample(
-	const Sample& sample,
-	const std::unordered_map<std::string, AnimatorParameter>& parameters) const
+void VansMotionMatchingRuntime::ResolveActiveDatabases(
+	const std::unordered_map<std::string, AnimatorParameter>& parameters)
 {
-	if (m_Settings.externallyDriven && sample.transitionLike)
-		return false;
-	if (m_Settings.searchGroups.empty())
-		return true;
-
 	const int moveState = ReadMoveStateParam(parameters);
 	const float speed01 = ReadSpeedParam(parameters);
 	const bool wantsIdle = speed01 < m_Settings.states.idleSpeedThreshold || moveState == m_Settings.states.idleState;
@@ -540,68 +356,62 @@ bool VansMotionMatchingRuntime::SearchGroupAllowsSample(
 		IsStanceState(currentMoveState) &&
 		IsStanceState(desiredMoveState) &&
 		currentMoveState != desiredMoveState;
-
-	const std::string loweredClip = ToLower(sample.clipName);
 	const bool desiredCrouchStance = desiredMoveState == m_Settings.states.crouchState;
+	const std::string desiredStance = desiredCrouchStance ? "crouch" : "stand";
+	std::string desiredPhase = "Move";
+	if (startingFromIdle)
+		desiredPhase = "Start";
+	else if (stoppingToIdle)
+		desiredPhase = "Stop";
+	else if (changingPace || changingStance)
+		desiredPhase = "Transition";
+	else if (m_DirectionChangedForSearch && currentMoveState == desiredMoveState)
+		desiredPhase = "Turn";
+	else if (!desiredMoving)
+		desiredPhase = "Idle";
 
-	for (const MotionMatchingSearchGroup& group : m_Settings.searchGroups)
+	m_ActiveDatabaseIndices.clear();
+	for (const MotionMatchingSelectorRow& row : m_Settings.selectorRows)
 	{
-		const std::string stance = ToLower(group.stance);
-		if (stance == "crouch" && !desiredCrouchStance)
+		const std::string stance = ToLower(row.stance);
+		if (!stance.empty() && stance != "any" && stance != "*" && stance != desiredStance)
 			continue;
-		if ((stance == "stand" || stance == "standing") && desiredCrouchStance)
+		const std::string phase = ToLower(row.phase);
+		if (!phase.empty() && phase != "any" && phase != "*" && phase != ToLower(desiredPhase))
 			continue;
-
-		const std::string phase = ToLower(group.phase);
-		bool queryPhaseMatches = false;
-		if (phase.empty() || phase == "any" || phase == "*")
-			queryPhaseMatches = true;
-		else if (phase == "idle")
-			queryPhaseMatches = !desiredMoving;
-		else if (phase == "move" || phase == "moving" || phase == "locomotion")
-			queryPhaseMatches = desiredMoving;
-		else if (phase == "start")
-			queryPhaseMatches = startingFromIdle;
-		else if (phase == "stop")
-			queryPhaseMatches = stoppingToIdle;
-		else if (phase == "transition")
-			queryPhaseMatches = changingPace || changingStance;
-		else if (phase == "turn")
-			queryPhaseMatches = m_DirectionChangedForSearch && currentMoveState == desiredMoveState;
-		if (!queryPhaseMatches)
+		if (!row.moveStates.empty() &&
+		    std::find(row.moveStates.begin(), row.moveStates.end(), desiredMoveState) == row.moveStates.end())
 			continue;
 
-		bool samplePhaseMatches = false;
-		if (phase.empty() || phase == "any" || phase == "*")
-			samplePhaseMatches = true;
-		else if (phase == "idle")
-			samplePhaseMatches = sample.idleLike;
-		else if (phase == "move" || phase == "moving" || phase == "locomotion")
-			samplePhaseMatches = sample.loopLike && !sample.idleLike;
-		else if (phase == "start")
-			samplePhaseMatches = sample.startLike;
-		else if (phase == "stop")
-			samplePhaseMatches = sample.stopLike;
-		else if (phase == "transition")
-			samplePhaseMatches = sample.paceTransitionLike;
-		else if (phase == "turn")
-			samplePhaseMatches = sample.turnLike;
-		if (!samplePhaseMatches)
-			continue;
-
-		if (!group.moveStates.empty() &&
-		    std::find(group.moveStates.begin(), group.moveStates.end(), sample.targetMoveState) == group.moveStates.end())
-			continue;
-		if (!group.includeClipNameTokens.empty() &&
-		    !ContainsToken(loweredClip, group.includeClipNameTokens))
-			continue;
-		if (!group.excludeClipNameTokens.empty() &&
-		    ContainsToken(loweredClip, group.excludeClipNameTokens))
-			continue;
-		return true;
+		for (const std::string& databaseName : row.databases)
+		{
+			const std::string loweredDatabaseName = ToLower(databaseName);
+			for (int i = 0; i < static_cast<int>(m_Settings.databases.size()); ++i)
+			{
+				const MotionMatchingDatabase& database = m_Settings.databases[i];
+				if (database.enabled && ToLower(database.name) == loweredDatabaseName)
+					m_ActiveDatabaseIndices.push_back(i);
+			}
+		}
 	}
 
-	return false;
+	if (m_ActiveDatabaseIndices.empty())
+	{
+		for (int i = 0; i < static_cast<int>(m_Settings.databases.size()); ++i)
+		{
+			const MotionMatchingDatabase& database = m_Settings.databases[i];
+			if (!database.enabled)
+				continue;
+			if (ToLower(database.stance) != desiredStance)
+				continue;
+			if (ToLower(database.phase) != ToLower(desiredPhase))
+				continue;
+			if (!database.moveStates.empty() &&
+			    std::find(database.moveStates.begin(), database.moveStates.end(), desiredMoveState) == database.moveStates.end())
+				continue;
+			m_ActiveDatabaseIndices.push_back(i);
+		}
+	}
 }
 
 int VansMotionMatchingRuntime::ResolveBoneIndex(const Skeleton& skeleton, const std::string& name) const
@@ -631,53 +441,8 @@ MotionMatchingResolvedRig VansMotionMatchingRuntime::ResolveRig(const Skeleton& 
 		return rig;
 	}
 
-	if (m_Settings.allowLegacyBoneDetection)
-	{
-		m_DebugData.rigStatus = "legacy fallback";
-		VANS_LOG_WARN("[MotionMatching] No explicit rig map configured; using legacy bone detection.");
-		return DetectLegacyRig(skeleton);
-	}
-
 	m_DebugData.rigStatus = "missing explicit rig";
 	return MotionMatchingResolvedRig{};
-}
-
-MotionMatchingResolvedRig VansMotionMatchingRuntime::DetectLegacyRig(const Skeleton& skeleton) const
-{
-	MotionMatchingResolvedRig rig;
-	rig.forwardAxis = m_Settings.rig.forwardAxis;
-	for (int i = 0; i < static_cast<int>(skeleton.bones.size()); ++i)
-	{
-		const std::string n = ToLower(skeleton.bones[i].name);
-		if (rig.root < 0 && (n == "root" || n.find("root") != std::string::npos || n == "bip01"))
-			rig.root = i;
-		if (rig.pelvis < 0 && (n.find("pelvis") != std::string::npos || n.find("hips") != std::string::npos))
-			rig.pelvis = i;
-		if (rig.leftFoot < 0 && (n.find("foot_l") != std::string::npos || n.find("l foot") != std::string::npos ||
-		                         n.find("l_foot") != std::string::npos || n.find("leftfoot") != std::string::npos))
-			rig.leftFoot = i;
-		if (rig.rightFoot < 0 && (n.find("foot_r") != std::string::npos || n.find("r foot") != std::string::npos ||
-		                          n.find("r_foot") != std::string::npos || n.find("rightfoot") != std::string::npos))
-			rig.rightFoot = i;
-		if (rig.head < 0 && n.find("head") != std::string::npos)
-			rig.head = i;
-	}
-
-	if (rig.root < 0)
-	{
-		for (int i = 0; i < static_cast<int>(skeleton.bones.size()); ++i)
-		{
-			if (skeleton.bones[i].parentIndex < 0)
-			{
-				rig.root = i;
-				break;
-			}
-		}
-	}
-	if (rig.pelvis < 0)
-		rig.pelvis = rig.root;
-	rig.trajectoryRoot = rig.root;
-	return rig;
 }
 
 bool VansMotionMatchingRuntime::ValidateRig(const MotionMatchingResolvedRig& rig, std::string& outReason) const
@@ -1184,88 +949,68 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 	if (m_Rig.head < 0)
 		VANS_LOG_WARN("[MotionMatching] Head bone not found; height feature will be 0.");
 	m_DebugData.rigReady = true;
+	if (m_Settings.databases.empty())
+	{
+		VANS_LOG_WARN("[MotionMatching] Cannot build database: no explicit PoseSearch databases configured.");
+		return false;
+	}
 
 	int includedClipCount = 0;
 	const float sampleStep = 1.0f / (std::max)(1.0f, m_Settings.sampleRate);
-	for (const auto& [name, clip] : clips)
+	for (int databaseIndex = 0; databaseIndex < static_cast<int>(m_Settings.databases.size()); ++databaseIndex)
 	{
-		if (!ShouldIncludeClip(name) || clip.duration <= kEpsilon)
+		const MotionMatchingDatabase& database = m_Settings.databases[databaseIndex];
+		if (!database.enabled)
 			continue;
-		const MotionMatchingClipMetadata* metadata = FindClipMetadata(name);
-		if (!metadata && !IsMotionSearchClipName(name))
-			continue;
-
-		const std::string lowered = ToLower(name);
-		const bool legacyLoopLike = IsLoopSearchClipName(name);
-		const bool loopLike = metadata && metadata->hasLoopLike ? metadata->loopLike : legacyLoopLike;
-		const bool transitionLike = metadata && metadata->hasTransitionLike
-			? metadata->transitionLike
-			: !loopLike;
-		// Externally-driven locomotion rejects authored transition clips at query
-		// time because gameplay already moved the owner.  Do the same filtering
-		// before feature extraction; building thousands of samples that can never
-		// be selected was the source of the long synchronous scene load.
-		if (m_Settings.externallyDriven && (!loopLike || transitionLike))
-			continue;
-
-		++includedClipCount;
-		for (float t = 0.0f; t < clip.duration; t += sampleStep)
+		for (const MotionMatchingDatabaseClip& databaseClip : database.clips)
 		{
-			Sample sample;
-			sample.clipName = name;
-			sample.time = t;
-			sample.rawFeature = ExtractDatabaseFeature(clip, t, loopLike, skeleton, m_Rig);
-			sample.feature = sample.rawFeature;
-			const float speedHorizon = m_Settings.schema.futureTimes[0];
-			if (speedHorizon > kEpsilon)
-				sample.trajectorySpeed = glm::length(glm::vec2(sample.rawFeature[0], sample.rawFeature[1])) / speedHorizon;
-			sample.loopLike = loopLike;
-			sample.idleLike = metadata && metadata->hasIdleLike
-				? metadata->idleLike
-				: sample.loopLike && lowered.find("idle") != std::string::npos;
-			sample.transitionLike = transitionLike;
-			sample.startLike = metadata && metadata->hasStartLike
-				? metadata->startLike
-				: sample.transitionLike && lowered.find("start") != std::string::npos;
-			sample.stopLike = metadata && metadata->hasStopLike
-				? metadata->stopLike
-				: sample.transitionLike && lowered.find("stop") != std::string::npos;
-			sample.turnLike = metadata && metadata->hasTurnLike
-				? metadata->turnLike
-				: sample.transitionLike && lowered.find("turn") != std::string::npos;
-			sample.turnDirectionSign = metadata && metadata->hasTurnDirectionSign
-				? metadata->turnDirectionSign
-				: (sample.turnLike ? TurnDirectionSignFromName(lowered) : 0);
-			sample.turnBucketDelta = metadata && metadata->hasTurnBucketDelta
-				? metadata->turnBucketDelta
-				: (sample.turnLike ? TurnBucketDeltaFromName(lowered) : 0);
-			sample.paceTransitionLike = metadata && metadata->hasPaceTransitionLike
-				? metadata->paceTransitionLike
-				: sample.transitionLike &&
-				(lowered.find("transition") != std::string::npos ||
-				 lowered.find("towalk") != std::string::npos ||
-				 lowered.find("torun") != std::string::npos ||
-				 lowered.find("tosprint") != std::string::npos ||
-				 lowered.find("tocrouch") != std::string::npos ||
-				 lowered.find("tostand") != std::string::npos);
-			sample.sourceMoveState = metadata && metadata->hasSourceMoveState
-				? metadata->sourceMoveState
-				: (sample.transitionLike
-				? TransitionSourceMoveStateFromName(lowered)
-				: MoveStateFromFamilyName(lowered));
-			sample.targetMoveState = metadata && metadata->hasTargetMoveState
-				? metadata->targetMoveState
-				: (sample.transitionLike
-				? TransitionTargetMoveStateFromName(lowered)
-				: MoveStateFromFamilyName(lowered));
-			sample.directionBucketFromName = metadata && metadata->hasDirectionBucket
-				? metadata->directionBucket
-				: DirectionBucketFromName(lowered);
-			const int sampleIndex = static_cast<int>(m_Samples.size());
-			m_Samples.push_back(sample);
-			m_ClipSampleIndices[name].push_back(sampleIndex);
+			auto clipIt = clips.find(databaseClip.name);
+			if (clipIt == clips.end() || clipIt->second.duration <= kEpsilon)
+				continue;
+
+			const VansAnimationClip& clip = clipIt->second;
+			const float samplingStart = glm::clamp(databaseClip.samplingStart, 0.0f, clip.duration);
+			const float samplingEnd = databaseClip.samplingEnd > samplingStart
+				? glm::clamp(databaseClip.samplingEnd, samplingStart, clip.duration)
+				: clip.duration;
+			bool contributedSamples = false;
+			for (float t = samplingStart; t < samplingEnd; t += sampleStep)
+			{
+				Sample sample;
+				sample.clipName = databaseClip.name;
+				sample.time = t;
+				sample.rawFeature = ExtractDatabaseFeature(clip, t, databaseClip.loop, skeleton, m_Rig);
+				sample.feature = sample.rawFeature;
+				const float speedHorizon = m_Settings.schema.futureTimes[0];
+				if (speedHorizon > kEpsilon)
+					sample.trajectorySpeed = glm::length(glm::vec2(sample.rawFeature[0], sample.rawFeature[1])) / speedHorizon;
+				const std::string phase = ToLower(databaseClip.phase.empty() ? database.phase : databaseClip.phase);
+				sample.loopLike = databaseClip.loop;
+				sample.idleLike = phase == "idle";
+				sample.startLike = phase == "start";
+				sample.stopLike = phase == "stop";
+				sample.turnLike = phase == "turn";
+				sample.paceTransitionLike = phase == "transition";
+				sample.transitionLike = sample.startLike || sample.stopLike ||
+				                        sample.turnLike || sample.paceTransitionLike;
+				sample.sourceMoveState = databaseClip.sourceMoveState;
+				sample.targetMoveState = databaseClip.targetMoveState;
+				sample.directionBucketFromName = databaseClip.directionBucket;
+				sample.turnDirectionSign = databaseClip.turnDirectionSign;
+				sample.turnBucketDelta = databaseClip.turnBucketDelta;
+				sample.databaseIndex = databaseIndex;
+				sample.disableReselection = databaseClip.disableReselection;
+				const int sampleIndex = static_cast<int>(m_Samples.size());
+				m_Samples.push_back(sample);
+				m_ClipSampleIndices[databaseClip.name].push_back(sampleIndex);
+				contributedSamples = true;
+			}
+			if (contributedSamples)
+			{
+				++includedClipCount;
+				BuildFootContactPhases(m_ClipSampleIndices[databaseClip.name]);
+			}
 		}
-		BuildFootContactPhases(m_ClipSampleIndices[name]);
 	}
 
 	if (m_Samples.size() < 2)
@@ -1378,7 +1123,9 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 	const Sample& sample,
 	const std::unordered_map<std::string, AnimatorParameter>& parameters) const
 {
-	if (!SearchGroupAllowsSample(sample, parameters))
+	if (!m_ActiveDatabaseIndices.empty() &&
+	    std::find(m_ActiveDatabaseIndices.begin(), m_ActiveDatabaseIndices.end(), sample.databaseIndex) ==
+	    m_ActiveDatabaseIndices.end())
 		return false;
 
 	const int moveState = ReadMoveStateParam(parameters);
@@ -1455,18 +1202,6 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 			return sampleMatchesDesiredDirection();
 		return sample.directionBucketFromName == directionBucket(desiredDir);
 	};
-
-	if (m_Settings.externallyDriven)
-	{
-		// Gameplay already applied the complete owner displacement for this
-		// frame. Start/stop/turn clips carry an acceleration/rotation trajectory
-		// that will not be consumed, so select the desired idle/loop slice and let
-		// inertialization provide visual continuity.
-		if (!sample.loopLike || sample.transitionLike)
-			return false;
-		return sample.targetMoveState == desiredMoveState &&
-		       (desiredMoving ? sampleExactlyMatchesDesiredDirection() : sample.idleLike);
-	}
 
 	if (sample.transitionLike)
 	{
@@ -1868,6 +1603,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_LastAirborne = isAirborne;
 	m_LastMoving = isMoving;
 	m_DirectionChangedForSearch = directionChanged;
+	ResolveActiveDatabases(parameters);
 	m_DebugData.querySpeed = speed01 * m_Settings.desiredSpeedScale;
 	m_DebugData.queryDirection = direction;
 	NormalizeFeature(query);
@@ -1928,28 +1664,13 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			 m_Samples[best.sampleIndex].stopLike != m_Samples[m_CurrentSample].stopLike ||
 			 m_Samples[best.sampleIndex].idleLike != m_Samples[m_CurrentSample].idleLike ||
 			 m_Samples[best.sampleIndex].loopLike != m_Samples[m_CurrentSample].loopLike);
-		const bool legacyShouldEnterContextTransition =
-			shouldEnterStartTransition ||
-			(searchContextChanged &&
-			 best.sampleIndex >= 0 &&
-			 m_CurrentSample >= 0 &&
-			 m_CurrentSample < static_cast<int>(m_Samples.size()) &&
-			 m_Samples[best.sampleIndex].transitionLike &&
-			 (m_Samples[best.sampleIndex].startLike ||
-			  m_Samples[best.sampleIndex].stopLike ||
-			  m_Samples[best.sampleIndex].paceTransitionLike) &&
-			 (m_Samples[best.sampleIndex].sourceMoveState == m_Samples[m_CurrentSample].targetMoveState ||
-			  m_Samples[m_CurrentSample].idleLike) &&
-			 m_Samples[best.sampleIndex].targetMoveState != m_Samples[m_CurrentSample].targetMoveState);
-		const bool groupedShouldEnterContextTransition =
+		const bool shouldEnterSelectedContextTransition =
 			shouldEnterStartTransition ||
 			(searchContextChanged &&
 			 contextTransitionHasValidSource &&
 			 (m_Samples[best.sampleIndex].targetMoveState != m_Samples[m_CurrentSample].targetMoveState ||
 			  contextTransitionChangesRole));
-		const bool shouldEnterContextTransition = m_Settings.searchGroups.empty()
-			? legacyShouldEnterContextTransition
-			: groupedShouldEnterContextTransition;
+		const bool shouldEnterContextTransition = shouldEnterSelectedContextTransition;
 		float requiredImprovement = searchContextChanged
 			? m_Settings.minSwitchCostImprovement * 0.5f
 			: m_Settings.minSwitchCostImprovement;

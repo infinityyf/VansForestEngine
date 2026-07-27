@@ -228,7 +228,8 @@ namespace VansGraphics
 				<< " speedScale=" << mmSettings.desiredSpeedScale
 				<< " speedMatching=" << mmSettings.enableSpeedMatching
 				<< " playbackRate=[" << mmSettings.minPlaybackRate << "," << mmSettings.maxPlaybackRate << "]"
-				<< " searchGroups=" << mmSettings.searchGroups.size());
+				<< " databases=" << mmSettings.databases.size()
+				<< " selectorRows=" << mmSettings.selectorRows.size());
 		}
 
 		if (animConfig.footPlacement)

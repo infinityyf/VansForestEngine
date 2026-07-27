@@ -10,8 +10,9 @@ namespace Vans
 namespace
 {
 using VansGraphics::FootPlacementSettings;
-using VansGraphics::MotionMatchingClipMetadata;
-using VansGraphics::MotionMatchingSearchGroup;
+using VansGraphics::MotionMatchingDatabase;
+using VansGraphics::MotionMatchingDatabaseClip;
+using VansGraphics::MotionMatchingSelectorRow;
 using VansGraphics::MotionMatchingSettings;
 
 const VansSerializedValue* ReadObjectField(const VansSerializedValue& object, const char* key)
@@ -156,55 +157,73 @@ void ReadOptionalInt(const VansSerializedValue& object, const char* key, bool& h
 	}
 }
 
-MotionMatchingSearchGroup DecodeSearchGroup(const VansSerializedValue& groupJson)
+MotionMatchingDatabaseClip DecodeMotionDatabaseClip(const VansSerializedValue& clipJson, const std::string& databasePhase)
 {
-	MotionMatchingSearchGroup group;
-	group.name = ReadSerializedStringField(groupJson, "name", "");
-	group.stance = ReadSerializedStringField(groupJson, "stance", group.stance);
-	group.phase = ReadSerializedStringField(groupJson, "phase", group.phase);
-	ReadIntArray(groupJson, "move_states", group.moveStates);
-	ReadIntArray(groupJson, "moveStates", group.moveStates);
-	ReadStringArray(groupJson, "include", group.includeClipNameTokens);
-	ReadStringArray(groupJson, "include_tokens", group.includeClipNameTokens);
-	ReadStringArray(groupJson, "include_clip_tokens", group.includeClipNameTokens);
-	ReadStringArray(groupJson, "exclude", group.excludeClipNameTokens);
-	ReadStringArray(groupJson, "exclude_tokens", group.excludeClipNameTokens);
-	ReadStringArray(groupJson, "exclude_clip_tokens", group.excludeClipNameTokens);
-	return group;
+	MotionMatchingDatabaseClip clip;
+	clip.phase = databasePhase.empty() ? clip.phase : databasePhase;
+	if (clipJson.kind == VansSerializedValue::Kind::String)
+	{
+		clip.name = clipJson.stringValue;
+		return clip;
+	}
+	if (clipJson.kind != VansSerializedValue::Kind::Object)
+		return clip;
+	clip.name = ReadSerializedStringField(clipJson, "name", "");
+	clip.loop = ReadBoolField(clipJson, "loop", clip.loop);
+	clip.disableReselection = ReadBoolField(clipJson, "disable_reselection", clip.disableReselection);
+	clip.disableReselection = ReadBoolField(clipJson, "disableReselection", clip.disableReselection);
+	clip.phase = ReadSerializedStringField(clipJson, "phase", clip.phase);
+	clip.sourceMoveState = ReadIntField(clipJson, "source_move_state", clip.sourceMoveState);
+	clip.sourceMoveState = ReadIntField(clipJson, "sourceMoveState", clip.sourceMoveState);
+	clip.targetMoveState = ReadIntField(clipJson, "target_move_state", clip.targetMoveState);
+	clip.targetMoveState = ReadIntField(clipJson, "targetMoveState", clip.targetMoveState);
+	clip.directionBucket = ReadIntField(clipJson, "direction_bucket", clip.directionBucket);
+	clip.directionBucket = ReadIntField(clipJson, "directionBucket", clip.directionBucket);
+	clip.turnDirectionSign = ReadIntField(clipJson, "turn_direction_sign", clip.turnDirectionSign);
+	clip.turnDirectionSign = ReadIntField(clipJson, "turnDirectionSign", clip.turnDirectionSign);
+	clip.turnBucketDelta = ReadIntField(clipJson, "turn_bucket_delta", clip.turnBucketDelta);
+	clip.turnBucketDelta = ReadIntField(clipJson, "turnBucketDelta", clip.turnBucketDelta);
+	clip.samplingStart = ReadFloatField(clipJson, "sampling_start", clip.samplingStart);
+	clip.samplingStart = ReadFloatField(clipJson, "samplingStart", clip.samplingStart);
+	clip.samplingEnd = ReadFloatField(clipJson, "sampling_end", clip.samplingEnd);
+	clip.samplingEnd = ReadFloatField(clipJson, "samplingEnd", clip.samplingEnd);
+	return clip;
 }
 
-MotionMatchingClipMetadata DecodeClipMetadata(const VansSerializedValue& itemJson)
+MotionMatchingDatabase DecodeMotionDatabase(const VansSerializedValue& databaseJson)
 {
-	MotionMatchingClipMetadata metadata;
-	metadata.name = ReadSerializedStringField(itemJson, "name", "");
-	ReadStringArray(itemJson, "match", metadata.matchTokens);
-	ReadStringArray(itemJson, "match_tokens", metadata.matchTokens);
-	ReadStringArray(itemJson, "matchTokens", metadata.matchTokens);
-	ReadOptionalBool(itemJson, "loop", metadata.hasLoopLike, metadata.loopLike);
-	ReadOptionalBool(itemJson, "loop_like", metadata.hasLoopLike, metadata.loopLike);
-	ReadOptionalBool(itemJson, "idle", metadata.hasIdleLike, metadata.idleLike);
-	ReadOptionalBool(itemJson, "idle_like", metadata.hasIdleLike, metadata.idleLike);
-	ReadOptionalBool(itemJson, "transition", metadata.hasTransitionLike, metadata.transitionLike);
-	ReadOptionalBool(itemJson, "transition_like", metadata.hasTransitionLike, metadata.transitionLike);
-	ReadOptionalBool(itemJson, "start", metadata.hasStartLike, metadata.startLike);
-	ReadOptionalBool(itemJson, "start_like", metadata.hasStartLike, metadata.startLike);
-	ReadOptionalBool(itemJson, "stop", metadata.hasStopLike, metadata.stopLike);
-	ReadOptionalBool(itemJson, "stop_like", metadata.hasStopLike, metadata.stopLike);
-	ReadOptionalBool(itemJson, "turn", metadata.hasTurnLike, metadata.turnLike);
-	ReadOptionalBool(itemJson, "turn_like", metadata.hasTurnLike, metadata.turnLike);
-	ReadOptionalBool(itemJson, "pace_transition", metadata.hasPaceTransitionLike, metadata.paceTransitionLike);
-	ReadOptionalBool(itemJson, "pace_transition_like", metadata.hasPaceTransitionLike, metadata.paceTransitionLike);
-	ReadOptionalInt(itemJson, "source_move_state", metadata.hasSourceMoveState, metadata.sourceMoveState);
-	ReadOptionalInt(itemJson, "sourceMoveState", metadata.hasSourceMoveState, metadata.sourceMoveState);
-	ReadOptionalInt(itemJson, "target_move_state", metadata.hasTargetMoveState, metadata.targetMoveState);
-	ReadOptionalInt(itemJson, "targetMoveState", metadata.hasTargetMoveState, metadata.targetMoveState);
-	ReadOptionalInt(itemJson, "direction_bucket", metadata.hasDirectionBucket, metadata.directionBucket);
-	ReadOptionalInt(itemJson, "directionBucket", metadata.hasDirectionBucket, metadata.directionBucket);
-	ReadOptionalInt(itemJson, "turn_direction_sign", metadata.hasTurnDirectionSign, metadata.turnDirectionSign);
-	ReadOptionalInt(itemJson, "turnDirectionSign", metadata.hasTurnDirectionSign, metadata.turnDirectionSign);
-	ReadOptionalInt(itemJson, "turn_bucket_delta", metadata.hasTurnBucketDelta, metadata.turnBucketDelta);
-	ReadOptionalInt(itemJson, "turnBucketDelta", metadata.hasTurnBucketDelta, metadata.turnBucketDelta);
-	return metadata;
+	MotionMatchingDatabase database;
+	database.name = ReadSerializedStringField(databaseJson, "name", "");
+	database.schema = ReadSerializedStringField(databaseJson, "schema", database.schema);
+	database.normalizationSet = ReadSerializedStringField(databaseJson, "normalization_set", database.normalizationSet);
+	database.normalizationSet = ReadSerializedStringField(databaseJson, "normalizationSet", database.normalizationSet);
+	database.stance = ReadSerializedStringField(databaseJson, "stance", database.stance);
+	database.phase = ReadSerializedStringField(databaseJson, "phase", database.phase);
+	database.enabled = ReadBoolField(databaseJson, "enabled", database.enabled);
+	ReadIntArray(databaseJson, "move_states", database.moveStates);
+	ReadIntArray(databaseJson, "moveStates", database.moveStates);
+	if (const VansSerializedValue* clipsJson = ReadArrayField(databaseJson, "clips"))
+	{
+		for (const VansSerializedValue& clipJson : clipsJson->arrayItems)
+		{
+			MotionMatchingDatabaseClip clip = DecodeMotionDatabaseClip(clipJson, database.phase);
+			if (!clip.name.empty())
+				database.clips.push_back(std::move(clip));
+		}
+	}
+	return database;
+}
+
+MotionMatchingSelectorRow DecodeMotionSelectorRow(const VansSerializedValue& rowJson)
+{
+	MotionMatchingSelectorRow row;
+	row.name = ReadSerializedStringField(rowJson, "name", "");
+	row.stance = ReadSerializedStringField(rowJson, "stance", row.stance);
+	row.phase = ReadSerializedStringField(rowJson, "phase", row.phase);
+	ReadIntArray(rowJson, "move_states", row.moveStates);
+	ReadIntArray(rowJson, "moveStates", row.moveStates);
+	ReadStringArray(rowJson, "databases", row.databases);
+	return row;
 }
 
 MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
@@ -215,7 +234,6 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 	settings.externallyDriven = ReadBoolField(mmJson, "externally_driven", false);
 	settings.sampleRate = ReadFloatField(mmJson, "sample_rate", 30.0f);
 	settings.searchThrottle = ReadFloatField(mmJson, "search_throttle", 0.15f);
-	const float legacyBlendDuration = ReadFloatField(mmJson, "blend_duration", 0.18f);
 	settings.minSwitchCostImprovement = ReadFloatField(mmJson, "min_switch_cost_improvement", 0.02f);
 	settings.minSwitchCostRatio = ReadFloatField(mmJson, "min_switch_cost_ratio", settings.minSwitchCostRatio);
 	settings.minSwitchInterval = ReadFloatField(mmJson, "min_switch_interval", 0.25f);
@@ -233,7 +251,7 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 	settings.inertializationHalfLife = ReadFloatField(
 		mmJson,
 		"inertialization_half_life",
-		(std::max)(0.01f, legacyBlendDuration * 0.55f));
+		settings.inertializationHalfLife);
 	settings.inertializationMaxDuration = ReadFloatField(
 		mmJson,
 		"inertialization_max_duration",
@@ -254,7 +272,6 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 		"contact_velocity_confidence_floor",
 		settings.contactVelocityConfidenceFloor);
 	settings.topCandidateCount = ReadIntField(mmJson, "top_candidates", 8);
-	settings.allowLegacyBoneDetection = ReadBoolField(mmJson, "allow_legacy_bone_detection", true);
 
 	if (const VansSerializedValue* paramsJson = ReadObjectField(mmJson, "parameters"))
 	{
@@ -293,9 +310,6 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 		}
 	}
 
-	ReadStringArray(mmJson, "include_clip_tokens", settings.includeClipNameTokens);
-	ReadStringArray(mmJson, "exclude_clip_tokens", settings.excludeClipNameTokens);
-
 	if (const VansSerializedValue* statesJson = ReadObjectField(mmJson, "states"))
 	{
 		settings.states.idleState = ReadIntField(*statesJson, "idle", settings.states.idleState);
@@ -314,36 +328,32 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 		ReadReplacingIntArray(*statesJson, "stance_states", settings.states.stanceStates);
 	}
 
-	const VansSerializedValue* searchGroupsJson = ReadArrayField(mmJson, "search_groups");
-	if (!searchGroupsJson)
-		searchGroupsJson = ReadArrayField(mmJson, "searchGroups");
-	if (searchGroupsJson)
+	if (const VansSerializedValue* databasesJson = ReadArrayField(mmJson, "databases"))
 	{
-		for (const VansSerializedValue& groupJson : searchGroupsJson->arrayItems)
+		for (const VansSerializedValue& databaseJson : databasesJson->arrayItems)
 		{
-			if (groupJson.kind != VansSerializedValue::Kind::Object)
+			if (databaseJson.kind != VansSerializedValue::Kind::Object)
 				continue;
-			MotionMatchingSearchGroup group = DecodeSearchGroup(groupJson);
-			if (!group.name.empty() || !group.includeClipNameTokens.empty() ||
-				!group.excludeClipNameTokens.empty() || !group.moveStates.empty())
-			{
-				settings.searchGroups.push_back(std::move(group));
-			}
+			MotionMatchingDatabase database = DecodeMotionDatabase(databaseJson);
+			if (!database.name.empty() && !database.clips.empty())
+				settings.databases.push_back(std::move(database));
 		}
 	}
 
-	const VansSerializedValue* clipMetadataJson = ReadArrayField(mmJson, "clip_metadata");
-	if (!clipMetadataJson)
-		clipMetadataJson = ReadArrayField(mmJson, "clipMetadata");
-	if (clipMetadataJson)
+	const VansSerializedValue* selectorJson = ReadArrayField(mmJson, "selector");
+	if (!selectorJson)
+		selectorJson = ReadArrayField(mmJson, "selector_rows");
+	if (!selectorJson)
+		selectorJson = ReadArrayField(mmJson, "selectorRows");
+	if (selectorJson)
 	{
-		for (const VansSerializedValue& itemJson : clipMetadataJson->arrayItems)
+		for (const VansSerializedValue& rowJson : selectorJson->arrayItems)
 		{
-			if (itemJson.kind != VansSerializedValue::Kind::Object)
+			if (rowJson.kind != VansSerializedValue::Kind::Object)
 				continue;
-			MotionMatchingClipMetadata metadata = DecodeClipMetadata(itemJson);
-			if (!metadata.name.empty() || !metadata.matchTokens.empty())
-				settings.clipMetadata.push_back(std::move(metadata));
+			MotionMatchingSelectorRow row = DecodeMotionSelectorRow(rowJson);
+			if (!row.databases.empty())
+				settings.selectorRows.push_back(std::move(row));
 		}
 	}
 

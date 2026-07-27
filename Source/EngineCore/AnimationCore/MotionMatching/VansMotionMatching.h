@@ -57,16 +57,6 @@ namespace VansGraphics
 		std::array<float, FutureTimeCount> futureTimes = { 0.25f, 0.50f, 1.00f };
 	};
 
-	struct MotionMatchingSearchGroup
-	{
-		std::string name;
-		std::string stance = "Any";
-		std::string phase = "Any";
-		std::vector<int> moveStates;
-		std::vector<std::string> includeClipNameTokens;
-		std::vector<std::string> excludeClipNameTokens;
-	};
-
 	struct MotionMatchingParameterMap
 	{
 		std::string enabled = "UseMotionMatching";
@@ -87,34 +77,40 @@ namespace VansGraphics
 		std::vector<int> stanceStates = { 0, 4 };
 	};
 
-	struct MotionMatchingClipMetadata
+	struct MotionMatchingDatabaseClip
 	{
 		std::string name;
-		std::vector<std::string> matchTokens;
-		bool hasLoopLike = false;
-		bool loopLike = false;
-		bool hasIdleLike = false;
-		bool idleLike = false;
-		bool hasTransitionLike = false;
-		bool transitionLike = false;
-		bool hasStartLike = false;
-		bool startLike = false;
-		bool hasStopLike = false;
-		bool stopLike = false;
-		bool hasTurnLike = false;
-		bool turnLike = false;
-		bool hasPaceTransitionLike = false;
-		bool paceTransitionLike = false;
-		bool hasSourceMoveState = false;
+		bool loop = false;
+		bool disableReselection = false;
+		std::string phase = "Move";
 		int sourceMoveState = 0;
-		bool hasTargetMoveState = false;
 		int targetMoveState = 0;
-		bool hasDirectionBucket = false;
 		int directionBucket = -1;
-		bool hasTurnDirectionSign = false;
 		int turnDirectionSign = 0;
-		bool hasTurnBucketDelta = false;
 		int turnBucketDelta = 0;
+		float samplingStart = 0.0f;
+		float samplingEnd = -1.0f;
+	};
+
+	struct MotionMatchingDatabase
+	{
+		std::string name;
+		std::string schema = "Default";
+		std::string normalizationSet = "Locomotion";
+		std::string stance = "Stand";
+		std::string phase = "Move";
+		bool enabled = true;
+		std::vector<int> moveStates;
+		std::vector<MotionMatchingDatabaseClip> clips;
+	};
+
+	struct MotionMatchingSelectorRow
+	{
+		std::string name;
+		std::string stance = "Any";
+		std::string phase = "Any";
+		std::vector<int> moveStates;
+		std::vector<std::string> databases;
 	};
 
 	struct MotionMatchingSettings
@@ -158,14 +154,11 @@ namespace VansGraphics
 		float contactVelocityConfidenceFloor = 0.75f;
 		int topCandidateCount = 8;
 		MotionMatchingRigMap rig;
-		bool allowLegacyBoneDetection = true;
 		MotionFeatureSchema schema;
 		MotionMatchingParameterMap parameters;
 		MotionMatchingStateSemantics states;
-		std::vector<std::string> includeClipNameTokens;
-		std::vector<std::string> excludeClipNameTokens;
-		std::vector<MotionMatchingSearchGroup> searchGroups;
-		std::vector<MotionMatchingClipMetadata> clipMetadata;
+		std::vector<MotionMatchingDatabase> databases;
+		std::vector<MotionMatchingSelectorRow> selectorRows;
 	};
 
 	struct MotionMatchingCandidateDebug
@@ -257,6 +250,8 @@ namespace VansGraphics
 			int turnDirectionSign = 0;
 			int turnBucketDelta = 0;
 			float trajectorySpeed = 0.0f;
+			int databaseIndex = -1;
+			bool disableReselection = false;
 		};
 
 		struct MatchResult
@@ -293,6 +288,7 @@ namespace VansGraphics
 		bool m_LastCrouching = false;
 		bool m_LastAirborne = false;
 		bool m_LastMoving = false;
+		std::vector<int> m_ActiveDatabaseIndices;
 
 		bool m_Blending = false;
 		float m_BlendElapsed = 0.0f;
@@ -323,11 +319,8 @@ namespace VansGraphics
 		glm::vec3 m_ActualOwnerVelocityRoot = glm::vec3(0.0f);
 		bool m_HasActualOwnerVelocity = false;
 
-		bool ShouldIncludeClip(const std::string& clipName) const;
-		const MotionMatchingClipMetadata* FindClipMetadata(const std::string& clipName) const;
 		void BuildFootContactPhases(const std::vector<int>& clipSampleIndices);
-		bool SearchGroupAllowsSample(const Sample& sample,
-		                             const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
+		void ResolveActiveDatabases(const std::unordered_map<std::string, AnimatorParameter>& parameters);
 		float ReadSpeedParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
 		float ReadDirectionParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
 		bool ReadCrouchingParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
@@ -340,7 +333,6 @@ namespace VansGraphics
 		bool IsStanceState(int state) const;
 		int ResolveBoneIndex(const Skeleton& skeleton, const std::string& name) const;
 		MotionMatchingResolvedRig ResolveRig(const Skeleton& skeleton);
-		MotionMatchingResolvedRig DetectLegacyRig(const Skeleton& skeleton) const;
 		bool ValidateRig(const MotionMatchingResolvedRig& rig, std::string& outReason) const;
 		FeatureVector ExtractDatabaseFeature(const VansAnimationClip& clip,
 		                                     float time,

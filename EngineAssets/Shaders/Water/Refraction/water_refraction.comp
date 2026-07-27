@@ -30,6 +30,7 @@ layout(set = 0, binding = 4) uniform WaterCompositeParams
     vec4  cameraPosition;
     mat4  invViewProjMatrix;
     vec4  mainLightDir;
+    vec4  mainLightColor;
     mat4  viewMatrix;
     mat4  projMatrix;
     ivec4 effectFlags;
@@ -83,8 +84,11 @@ void main()
     vec3 sigmaT = sigmaA + sigmaS;
     vec3 transmittance = exp(-sigmaT * opticalDistance);
     vec3 scatteringAlbedo = sigmaS / max(sigmaT, vec3(1e-5));
+    vec3 L = normalize(params.mainLightDir.xyz);
+    vec3 incidentLight = max(params.mainLightColor.rgb, vec3(0.0)) *
+        pow(max(dot(worldNormal, L), 0.0), 1.35);
     vec3 inScattering = scatteringAlbedo * (vec3(1.0) - transmittance)
-        * params.shallowWaterColor.rgb;
+        * params.shallowWaterColor.rgb * incidentLight;
     vec3 result = background * transmittance + inScattering;
 
     if (params.effectFlags.y == 0)

@@ -51,60 +51,61 @@ namespace VansGraphics
         glm::vec4 lifetimeSeed;   // x=lifetime, y=reserved, z=random seed, w=reserved
     };
 
-    // ── WaterGBufferParams GPU struct（对应 water_prepass.vert set=1 binding=0）
-    // W-04: wave0-3 + waveSpeedSteepness01/23 字段已移除，改为 SSBO 管理
+    // WaterGBufferParams GPU struct. Matches water_prepass.vert set=1 binding=0.
+    // Wave data is stored in SSBOs; this UBO contains matrices and simulation controls.
     struct alignas(16) WaterGBufferParamsGPU
     {
-        glm::mat4 VPMatrix;       // 水面专用 VP 矩阵
-        glm::mat4 ViewMatrix;     // 水面专用 View 矩阵，用于计算线性深度
-        glm::vec4 cameraPosition; // 水面专用相机位置
-        glm::ivec4 geometryParams; // x=lodCount, y=meshDim, z=cascadeCount, w=waveMode
-        glm::vec4 geometryScale;   // x=basePatchSize, y=morphStart, z=maxDisplacement, w=lodRatio
-        glm::vec4 spectrumScale;   // x=baseCoverage, y=cascadeScale, z=time, w=normalStrength
-        glm::vec4 windAndChop;     // xy=windDirection, z=windSpeed, w=choppiness
-        glm::ivec4 simulationParams; // x=gerstnerCount, y=particleCount, z=particleOctaves, w=reserved
-        glm::vec4 waveParticleParams0; // x=domainSize, y=amplitude, z=minRadius, w=maxRadius
-        glm::vec4 waveParticleParams1; // x=phaseVelocity, y=damping, z=directionSpread, w=profile
-        glm::vec4 waveParticleParams2; // x=lacunarity, y=persistence, z=radiusFalloff, w=profileSharpness
-        glm::vec4 waveParticleParams3; // x=foamThreshold, y=foamSoftness, z=lifetime, w=randomSeed
-        glm::vec4 flowMapWorld;        // xy=world origin, zw=world size
-        glm::vec4 flowMapParams;       // x=enabled, y=strength, z=speed, w=phaseLength
-        glm::vec4 flowMapFallback;     // xy=fallback direction, z=noiseAmount, w=reserved
+        glm::mat4 VPMatrix;
+        glm::mat4 ViewMatrix;
+        glm::vec4 cameraPosition;
+        glm::ivec4 geometryParams;
+        glm::vec4 geometryScale;
+        glm::vec4 spectrumScale;
+        glm::vec4 windAndChop;
+        glm::ivec4 simulationParams;
+        glm::vec4 waveParticleParams0;
+        glm::vec4 waveParticleParams1;
+        glm::vec4 waveParticleParams2;
+        glm::vec4 waveParticleParams3;
+        glm::vec4 flowMapWorld;
+        glm::vec4 flowMapParams;
+        glm::vec4 flowMapFallback;
     };
 
-    // ── WaterCompositeParams GPU struct（对应 water_composite.frag set=1 binding=2）
+    // WaterCompositeParams GPU struct. Matches water_composite.frag set=1 binding=2.
     struct alignas(16) WaterCompositeParamsGPU
     {
-        glm::vec4 deepWaterColor;      // 深水颜色
-        glm::vec4 shallowWaterColor;   // 浅水颜色
-        float     fresnelPower;        // Fresnel 指数
-        float     waterLevel;          // 水面 Y 高度
-        float     specularIntensity;   // 高光强度
+        glm::vec4 deepWaterColor;
+        glm::vec4 shallowWaterColor;
+        float     fresnelPower;
+        float     waterLevel;
+        float     specularIntensity;
         float     refractionStrength;   // screen-height UV displacement at thickness=1
-        glm::vec4 absorptionCoeff;     // W-16: 吸收系数 (RGB)
-        glm::vec4 scatteringCoeff;     // W-16: 散射系数 (RGB)
-        float     sssAnisotropy;       // W-16: 各向异性 g
-        float     waterRoughness;      // 水面微面元粗糙度（0=镜面, 1=漫反射）
-        float     waterIOR;            // Inspector optimization: IOR → GPU，动态计算 F0
+        glm::vec4 absorptionCoeff;
+        glm::vec4 scatteringCoeff;
+        float     sssAnisotropy;
+        float     waterRoughness;
+        float     waterIOR;
         float     maxOpticalDepth;      // normalized thickness -> metres
-        glm::vec4 cameraPosition;       // offset  96: 相机世界位置
-        glm::mat4 invViewProjMatrix;    // offset 112: 逆 VP 矩阵
-        glm::vec4 mainLightDir;         // offset 176: 主光方向
-        glm::mat4 viewMatrix;           // offset 192: 视图矩阵（SSR HZB 追踪）
-        glm::mat4 projMatrix;           // offset 256: 投影矩阵（SSR HZB 追踪）
-        glm::ivec4 effectFlags;         // offset 320: SSR/refraction/caustics/SSS enabled
+        glm::vec4 cameraPosition;       // offset  96: camera world position
+        glm::mat4 invViewProjMatrix;    // offset 112: inverse view-projection matrix
+        glm::vec4 mainLightDir;         // offset 176: main light direction
+        glm::vec4 mainLightColor;       // offset 192: rgb = color * intensity
+        glm::mat4 viewMatrix;           // offset 208: view matrix
+        glm::mat4 projMatrix;           // offset 272: projection matrix
+        glm::ivec4 effectFlags;         // offset 336: SSR/refraction/caustics/SSS enabled
     };
 
-    // ── WaterCausticsParams GPU struct（对应 water_caustics.comp set=0 binding=3, W-14）
+    // WaterCausticsParams GPU struct. Matches water_caustics.comp set=0 binding=3.
     struct alignas(16) WaterCausticsParamsGPU
     {
-        glm::vec4 sunDirection;       // offset  0: xyz=归一化太阳方向, w=unused
-        glm::vec4 mainLightColor;     // offset 16: rgb=颜色, a=强度乘数
-        glm::vec4 extinctionCoeff;    // offset 32: rgb=消光系数 (m⁻¹), a=unused
-        float     causticsIntensity;  // offset 48: 焦散强度 [0, 2]
-        float     causticsScale;      // offset 52: 焦散缩放
-        float     shoreFadeStart;     // offset 56: normalized thickness
-        float     maxDepth;           // offset 60: 最大深度 (m)
+        glm::vec4 sunDirection;
+        glm::vec4 mainLightColor;     // rgb = color, a = intensity multiplier
+        glm::vec4 extinctionCoeff;
+        float     causticsIntensity;
+        float     causticsScale;
+        float     shoreFadeStart;
+        float     maxDepth;
         glm::vec4 opticalParams;      // offset 64: x=water IOR
     };
 
@@ -166,15 +167,15 @@ namespace VansGraphics
         void RenderWaterComposite(VansVKCommandBuffer& cmd, GlobalStateData& globalState);
 
         // ── 参数 ─────────────────────────────────────────────────
-        void SetWaterLevel(float y)                        { m_WaterLevel = y; }
+        float GetWaterLevel() const { return m_WaterLevel; }
         void SetWaterMaterial(VansWaterMaterial* mat)      { m_WaterMaterial = mat; }
-        float GetWaterLevel() const                        { return m_WaterLevel; }
+        void SetWaterLevel(float waterLevel) { m_WaterLevel = waterLevel; }
         bool  IsInitialized() const                        { return m_Initialized; }
         bool  IsDescriptorsReady() const                   { return m_DescriptorsReady; }
         VansWaterGeometryClipmap* GetGeometryClipmap() const { return m_GeometryClipmap; }
         VansWaterFFT* GetFFT() const                       { return m_WaterFFT; }
 
-        // W-04: 运行时更新波分量 SSBO（editor 修改参数后调用）
+    // Wave data is stored in SSBOs; this UBO contains matrices and simulation controls.
         void UpdateWaveSSBO();
         void UpdateWaveParticleSSBO();
 
@@ -199,7 +200,7 @@ namespace VansGraphics
         VansVKDevice*      m_Device        = nullptr;
         VansWaterMaterial* m_WaterMaterial = nullptr;
 
-        float m_WaterLevel       = 3.4f;
+        float m_WaterLevel       = 0.0f;
         float m_Time             = 0.0f;
         bool  m_Initialized      = false;
         bool  m_DescriptorsReady = false;

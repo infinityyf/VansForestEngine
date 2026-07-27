@@ -1,4 +1,4 @@
-﻿#include "VansWaterSystem.h"
+#include "VansWaterSystem.h"
 #include "VansWaterFFT.h"
 #include "../../Util/VansLog.h"
 #include "../../Configration/VansConfigration.h"
@@ -167,9 +167,9 @@ namespace
         float pad1;
     };
 
-    static_assert(offsetof(WaterCompositeParamsGPU, effectFlags) == 320,
+    static_assert(offsetof(WaterCompositeParamsGPU, effectFlags) == 336,
         "WaterCompositeParamsGPU must match std140 shader layout");
-    static_assert(sizeof(WaterCompositeParamsGPU) == 336,
+    static_assert(sizeof(WaterCompositeParamsGPU) == 352,
         "WaterCompositeParamsGPU size must match std140 shader layout");
     static_assert(offsetof(WaterCausticsParamsGPU, opticalParams) == 64,
         "WaterCausticsParamsGPU must match std140 shader layout");
@@ -433,6 +433,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     compParams.scatteringCoeff   = glm::vec4(0.02f, 0.04f, 0.06f, 1.0f);  // B>G>R, 钃濆厜绌块€忔渶娣?
     compParams.sssAnisotropy     = 0.85f;
     compParams.waterRoughness    = 0.02f;
+    compParams.mainLightColor    = glm::vec4(1.0f);
     compParams.waterIOR          = 1.33f;
     compParams.maxOpticalDepth   = 15.0f;
     compParams.cameraPosition    = glm::vec4(0.0f, 10.0f, 0.0f, 1.0f);
@@ -1157,6 +1158,7 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         compParams.cameraPosition  = glm::vec4(cameraPos, 1.0f);
         compParams.invViewProjMatrix = glm::inverse(vpMatrix);
         compParams.mainLightDir    = glm::vec4(glm::normalize(mainLightDir), 0.0f);
+        compParams.mainLightColor  = glm::vec4(glm::max(mainLightColor, glm::vec3(0.0f)), 1.0f);
         compParams.viewMatrix      = viewMatrix;
         compParams.projMatrix      = vpMatrix * glm::inverse(viewMatrix);  // proj = VP * inv(View)
         compParams.effectFlags = glm::ivec4(

@@ -38,6 +38,7 @@ layout(set = 1, binding = 2) uniform WaterCompositeParams
     vec4  cameraPosition;
     mat4  invViewProjMatrix;
     vec4  mainLightDir;
+    vec4  mainLightColor;
     mat4  viewMatrix;
     mat4  projMatrix;
     ivec4 effectFlags; // x=SSR, y=refraction, z=caustics, w=SSS
@@ -151,14 +152,15 @@ void main()
     // additive white radiance; this prevents shallow bright terrain from
     // being illuminated twice.
     vec3 transmitted = transmissionWeight * refracted * (vec3(1.0) + caustics);
-    vec3 direct = EvaluateDirectSpecular(N, V, L, F0);
+    vec3 mainLightRadiance = max(p.mainLightColor.rgb, vec3(0.0));
+    vec3 direct = EvaluateDirectSpecular(N, V, L, F0) * mainLightRadiance;
 
     vec3 sss = vec3(0.0);
     if (p.effectFlags.w != 0)
     {
         vec3 scatter = texelFetch(waterSSSScatter, pixel, 0).rgb;
         float phase = SchlickPhase(dot(V, L), p.sssAnisotropy);
-        sss = transmissionWeight * scatter * phase * max(dot(N, L), 0.0);
+        sss = transmissionWeight * scatter * phase * max(dot(N, L), 0.0) * mainLightRadiance;
     }
 
     vec3 color = max(reflected + transmitted + direct + sss, vec3(0.0));

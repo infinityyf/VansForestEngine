@@ -653,6 +653,7 @@ bool TryDrawSerializedPythonNumericField(
         return false;
 
     const float speed = static_cast<float>(descriptor.speed > 0.0 ? descriptor.speed : 0.05);
+    ImGui::PushID(label.c_str());
     BeginProperty(label);
 
     if (descriptor.kind == Vans::PythonScriptInspectableFieldKind::Int)
@@ -669,6 +670,7 @@ bool TryDrawSerializedPythonNumericField(
             value = Vans::VansSerializedValue::Int(edited);
             changed = true;
         }
+        ImGui::PopID();
         return true;
     }
 
@@ -688,9 +690,11 @@ bool TryDrawSerializedPythonNumericField(
             value = Vans::VansSerializedValue::Float(edited);
             changed = true;
         }
+        ImGui::PopID();
         return true;
     }
 
+    ImGui::PopID();
     return false;
 }
 
