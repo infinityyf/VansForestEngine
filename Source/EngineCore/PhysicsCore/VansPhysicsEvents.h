@@ -16,7 +16,7 @@ namespace VansEngine
 		TriggerExit
 	};
 
-	// 碰撞事件数据（存储在主线程队列中供 Python 脚本消费）
+	// 碰撞事件数据（存储在主线程队列中供 Lua 脚本消费）
 	struct PhysicsEventData
 	{
 		PhysicsEventType type;
@@ -30,7 +30,7 @@ namespace VansEngine
 		glm::vec3 contactNormal = glm::vec3(0.0f);
 		float     impulse       = 0.0f;
 
-		// 被碰撞物体的名称（方便 Python 侧快速判断）
+		// 被碰撞物体的名称（方便 Lua 侧快速判断）
 		std::string nameA;
 		std::string nameB;
 	};

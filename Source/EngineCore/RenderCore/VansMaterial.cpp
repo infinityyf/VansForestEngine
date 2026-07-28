@@ -280,17 +280,47 @@ bool VansGraphics::VansMaterialManager::ReplaceGlobalBindlessTexture(
 
 void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 {
+	auto deleteTexture = [](VansTexture*& texture)
+	{
+		delete texture;
+		texture = nullptr;
+	};
+
 	// 清空 CPU �?PBR 数组（指针不拥有所有权，material �?VansScene 管理�?
 	m_GlobalPBRMaterial.clear();
 	m_GlobalPBRParamData.clear();
 	m_GlobalClothParamData.clear();
 	m_GlobalCustomMaterialParamData.clear();
 	m_GlobalPBRTextures.clear();
+	ClearRuntimeRenderTextures();
+	m_RectLightEmissiveArray = nullptr;
+	deleteTexture(m_PreConvDiffuse);
+	deleteTexture(m_PreConvSpecular);
+	deleteTexture(m_BRDFIntegralLUT);
+	deleteTexture(m_SkinBSDFLUT);
+	deleteTexture(m_ClothBRDFLUT);
+	deleteTexture(m_MoonAlbedoTexture);
+	deleteTexture(m_LTC1);
+	deleteTexture(m_LTC2);
 
 	// 销�?GPU buffer
 	m_GlobalPBRDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalClothDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalCustomMaterialDataBuffer.DestroyVulkanBuffer(device);
+	m_ScreenSpaceShadowParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_FogParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_FogVolumeParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_SSGITemporalCBBuffer.DestroyVulkanBuffer(device);
+	m_SSGICBBuffer.DestroyVulkanBuffer(device);
+	m_SkySHResultBuffer.DestroyVulkanBuffer(device);
+	m_CloudParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_TileLightHeaderBuffer.DestroyVulkanBuffer(device);
+	m_TileLightIndexBuffer.DestroyVulkanBuffer(device);
+	m_TileLightBuildParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_PostProcessParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_ExposureAdaptParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_BloomParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_AtmospherePBRDataBuffer.DestroyVulkanBuffer(device);
 
 	// 释放 descriptor set �?layout
 	auto descMgr = VansVKDescriptorManager::GetInstance();
@@ -298,6 +328,52 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRDataSetLayout);
 	descMgr->DestroyDescriptorSet(m_GlobalPBRTexDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRTexSetLayout);
+	descMgr->DestroyDescriptorSet(m_MaterialAtmosphereDataDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_MaterialAtmosphereDataLayout);
+	descMgr->DestroyDescriptorSet(m_BRDFInterationTextDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_BRDFInterationTexSetLayout);
+	descMgr->DestroyDescriptorSet(m_SSGIDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_SSGITexSetLayout);
+	for (VkDescriptorSetLayout& layout : m_HZBTexSetLayouts)
+		descMgr->DestroyDescriptorSetLayout(layout);
+	m_HZBTexSetLayouts.clear();
+	descMgr->DestroyDescriptorSet(m_HZBDescriptorSets);
+	descMgr->DestroyDescriptorSet(m_SSRTraceDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_SSRTraceSetLayout);
+	descMgr->DestroyDescriptorSet(m_ScreenSpaceShadowDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_ScreenSpaceShadowSetLayout);
+	descMgr->DestroyDescriptorSet(m_SSRResolveDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_SSRResolveSetLayout);
+	descMgr->DestroyDescriptorSet(m_SSRAADescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_SSRAASetLayout);
+	descMgr->DestroyDescriptorSet(m_BilateralFilterDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_BilateralFilterSetLayout);
+	descMgr->DestroyDescriptorSet(m_VolumetricFogDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_VolumetricFogSetLayout);
+	descMgr->DestroyDescriptorSet(m_FogLightInjectionDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_FogLightInjectionSetLayout);
+	descMgr->DestroyDescriptorSet(m_FogRayMarchDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_FogRayMarchSetLayout);
+	descMgr->DestroyDescriptorSet(m_SSGITemporalDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_SSGITemporalSetLayout);
+	descMgr->DestroyDescriptorSet(m_HIZSeedDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_HIZSeedSetLayout);
+	descMgr->DestroyDescriptorSet(m_CloudRayMarchDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_CloudRayMarchSetLayout);
+	descMgr->DestroyDescriptorSet(m_TileLightBuildDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_TileLightBuildSetLayout);
+	descMgr->DestroyDescriptorSet(m_PunctualShadowDebugDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_PunctualShadowDebugSetLayout);
+	descMgr->DestroyDescriptorSet(m_ExposureLuminanceDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_ExposureLuminanceSetLayout);
+	descMgr->DestroyDescriptorSet(m_ExposureAdaptDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_ExposureAdaptSetLayout);
+	descMgr->DestroyDescriptorSet(m_BloomPrefilterDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_BloomPrefilterSetLayout);
+	descMgr->DestroyDescriptorSet(m_BloomDownsampleDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_BloomDownsampleSetLayout);
+	descMgr->DestroyDescriptorSet(m_BloomUpsampleDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_BloomUpsampleSetLayout);
 }
 
 bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& material)

@@ -42,6 +42,7 @@ public:
 	bool GetSupportRayTracing() { return SupportRayTracing; }
 
 	const std::string& GetProjectRootPath() { return ProjectRootPath; }
+	void SetProjectRootPath(const std::string& rootPath);
 
 	int GetCascadeShadowMapSize() { return CascadeShadowMapSize; }
 

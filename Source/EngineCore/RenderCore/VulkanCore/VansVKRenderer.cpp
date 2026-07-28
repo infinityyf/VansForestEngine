@@ -1123,6 +1123,10 @@ namespace VansGraphics
 			VansRuntime::VansUISystem::Get().RenderDocuments(
 				static_cast<void*>(GetSceneUIRenderPassHandle()), 1);
 			EndSceneUIRenderPass();
+			fsrOut.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+			if (m_PresentFSROutputToSwapchain)
+				RecordFSROutputToSwapchain();
 			// 此时 FSR 图像已处于 SHADER_READ_ONLY_OPTIMAL，ImGui 场景窗口可直接采样
 		});
 	}

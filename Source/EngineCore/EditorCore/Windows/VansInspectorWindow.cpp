@@ -14,7 +14,7 @@
 #include "../../AssetCore/VansAssetGuid.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../SceneCore/VansSceneDocument.h"
-#include "../../ScriptCore/VansPythonScriptInspectorService.h"
+#include "../../ScriptCore/VansLuaScriptInspectorService.h"
 #include "../../Util/VansLog.h"
 
 #include "imgui.h"
@@ -251,8 +251,9 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
         });
     if (type == "Script")
         return Value::Object({
+            { "language", Value::String("lua") },
             { "path", Value::String("Scripts/") },
-            { "class", Value::String("") },
+            { "entry", Value::String("") },
             { "fields", Value::Object({}) }
         });
     if (type == "Animation")
@@ -562,17 +563,19 @@ void CopyToImGuiBuffer(char* destination, std::size_t destinationSize, const std
     destination[copied] = '\0';
 }
 
-bool MergePythonScriptFieldDefaults(
+bool MergeLuaScriptFieldDefaults(
     Vans::VansSerializedValue& data,
     Vans::EditorAPI::IEngineEditorAPI& api,
-    std::vector<Vans::PythonScriptFieldDescriptor>* descriptors)
+    std::vector<Vans::LuaScriptFieldDescriptor>* descriptors)
 {
     if (data.kind != Vans::VansSerializedValue::Kind::Object)
         data = Vans::VansSerializedValue::Object({});
 
     const std::string scriptPath = Vans::ReadSerializedStringField(data, "path");
-    const std::string className = Vans::ReadSerializedStringField(data, "class");
-    if (scriptPath.empty() || className.empty())
+    std::string entryName = Vans::ReadSerializedStringField(data, "entry");
+    if (entryName.empty())
+        entryName = Vans::ReadSerializedStringField(data, "class");
+    if (scriptPath.empty())
         return false;
 
     Vans::VansSerializedValue* scriptFields = Vans::FindObjectField(data, "fields");
@@ -582,13 +585,13 @@ bool MergePythonScriptFieldDefaults(
         scriptFields = Vans::FindObjectField(data, "fields");
     }
 
-    struct PythonFieldSchemaCacheEntry
+    struct LuaFieldSchemaCacheEntry
     {
         Vans::VansSerializedValue fields = Vans::VansSerializedValue::Object({});
-        std::vector<Vans::PythonScriptFieldDescriptor> descriptors;
+        std::vector<Vans::LuaScriptFieldDescriptor> descriptors;
     };
 
-    static std::unordered_map<std::string, PythonFieldSchemaCacheEntry> fieldDefaultsCache;
+    static std::unordered_map<std::string, LuaFieldSchemaCacheEntry> fieldDefaultsCache;
     const Vans::EditorAPI::ProjectBrowserRootSnapshot projectRoot = api.GetProjectBrowserRoot();
     std::filesystem::path absoluteScriptPath(scriptPath);
     if (!absoluteScriptPath.is_absolute())
@@ -599,17 +602,17 @@ bool MergePythonScriptFieldDefaults(
     const auto lastWrite = std::filesystem::last_write_time(absoluteScriptPath, timeError);
     std::error_code sizeError;
     const auto fileSize = std::filesystem::file_size(absoluteScriptPath, sizeError);
-    const std::string key = projectRoot.rootPath + "|" + scriptPath + "|" + className + "|" +
+    const std::string key = projectRoot.rootPath + "|" + scriptPath + "|" + entryName + "|" +
         absoluteScriptPath.generic_string() + "|" +
         (timeError ? std::string("missing") : std::to_string(lastWrite.time_since_epoch().count())) + "|" +
         (sizeError ? std::string("nosize") : std::to_string(fileSize));
     auto found = fieldDefaultsCache.find(key);
     if (found == fieldDefaultsCache.end())
     {
-        const Vans::PythonScriptFieldDefaultsResult result =
-            Vans::VansPythonScriptInspectorService::BuildDefaultFieldData(
-                projectRoot.rootPath, scriptPath, className);
-        PythonFieldSchemaCacheEntry entry;
+        const Vans::LuaScriptFieldDefaultsResult result =
+            Vans::VansLuaScriptInspectorService::BuildDefaultFieldData(
+                projectRoot.rootPath, scriptPath, entryName);
+        LuaFieldSchemaCacheEntry entry;
         if (result)
         {
             entry.fields = Vans::VansSerializedValue::Object({});
@@ -620,7 +623,7 @@ bool MergePythonScriptFieldDefaults(
         }
         found = fieldDefaultsCache.emplace(key, std::move(entry)).first;
         if (!result && !result.message.empty())
-            VANS_LOG_WARN("[Inspector] Python script field discovery failed: " << result.message);
+            VANS_LOG_WARN("[Inspector] Lua script field discovery failed: " << result.message);
     }
 
     if (descriptors)
@@ -641,10 +644,10 @@ bool MergePythonScriptFieldDefaults(
     return changed;
 }
 
-bool TryDrawSerializedPythonNumericField(
+bool TryDrawSerializedLuaNumericField(
     const std::string& label,
     Vans::VansSerializedValue& value,
-    const Vans::PythonScriptFieldDescriptor& descriptor,
+    const Vans::LuaScriptFieldDescriptor& descriptor,
     bool& changed)
 {
     const bool hasNumericMetadata =
@@ -656,7 +659,7 @@ bool TryDrawSerializedPythonNumericField(
     ImGui::PushID(label.c_str());
     BeginProperty(label);
 
-    if (descriptor.kind == Vans::PythonScriptInspectableFieldKind::Int)
+    if (descriptor.kind == Vans::LuaScriptInspectableFieldKind::Int)
     {
         std::int64_t edited = value.kind == Vans::VansSerializedValue::Kind::Int
             ? value.intValue
@@ -674,7 +677,7 @@ bool TryDrawSerializedPythonNumericField(
         return true;
     }
 
-    if (descriptor.kind == Vans::PythonScriptInspectableFieldKind::Float)
+    if (descriptor.kind == Vans::LuaScriptInspectableFieldKind::Float)
     {
         float edited = static_cast<float>(Vans::ReadSerializedNumber(value));
         const bool bounded = descriptor.hasMinValue && descriptor.hasMaxValue &&
@@ -979,8 +982,8 @@ struct VansInspectorWindow::Impl
     bool DrawSerializedEditorObjectReference(const std::string& label, Vans::VansSerializedValue& reference,
         const std::string& pointer,
         const Vans::ObjectReferenceSlotDescriptor* declaredSlot = nullptr);
-    bool DrawSerializedPythonScriptFields(Vans::VansSerializedValue& fields,
-        const std::vector<Vans::PythonScriptFieldDescriptor>& descriptors,
+    bool DrawSerializedLuaScriptFields(Vans::VansSerializedValue& fields,
+        const std::vector<Vans::LuaScriptFieldDescriptor>& descriptors,
         const std::string& pointer);
     bool DrawComponent(Vans::EditorAPI::IEngineEditorAPI& api, Vans::VansSerializedValue& component,
         const std::string& pointer, bool& removeRequested);
@@ -1008,9 +1011,9 @@ void VansInspectorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
     m_Impl->ShowWindow(api);
 }
 
-bool VansInspectorWindow::Impl::DrawSerializedPythonScriptFields(
+bool VansInspectorWindow::Impl::DrawSerializedLuaScriptFields(
     Vans::VansSerializedValue& fields,
-    const std::vector<Vans::PythonScriptFieldDescriptor>& descriptors,
+    const std::vector<Vans::LuaScriptFieldDescriptor>& descriptors,
     const std::string& pointer)
 {
     if (fields.kind != Vans::VansSerializedValue::Kind::Object)
@@ -1019,13 +1022,13 @@ bool VansInspectorWindow::Impl::DrawSerializedPythonScriptFields(
     bool changed = false;
     std::vector<std::string> rendered;
     rendered.reserve(descriptors.size());
-    for (const Vans::PythonScriptFieldDescriptor& descriptor : descriptors)
+    for (const Vans::LuaScriptFieldDescriptor& descriptor : descriptors)
     {
         if (descriptor.name.empty())
             continue;
 
         Vans::VansSerializedValue* field = Vans::FindObjectField(fields, descriptor.name);
-        if (!field && Vans::HasPythonScriptFieldDefault(descriptor))
+        if (!field && Vans::HasLuaScriptFieldDefault(descriptor))
         {
             Vans::SetSerializedObjectField(fields, descriptor.name, descriptor.defaultValue);
             field = Vans::FindObjectField(fields, descriptor.name);
@@ -1034,11 +1037,11 @@ bool VansInspectorWindow::Impl::DrawSerializedPythonScriptFields(
         if (!field)
             continue;
 
-        changed |= Vans::NormalizePythonScriptFieldValue(*field, descriptor);
+        changed |= Vans::NormalizeLuaScriptFieldValue(*field, descriptor);
         rendered.push_back(descriptor.name);
         const std::string fieldPointer = pointer + "/" + EscapePointerToken(descriptor.name);
         Vans::ObjectReferenceSlotDescriptor objectReferenceSlot;
-        if (Vans::VansEditorPropertyDescriptorRegistry::TryResolvePythonScriptFieldObjectReferenceSlot(
+        if (Vans::VansEditorPropertyDescriptorRegistry::TryResolveLuaScriptFieldObjectReferenceSlot(
             descriptor,
             objectReferenceSlot))
         {
@@ -1060,7 +1063,7 @@ bool VansInspectorWindow::Impl::DrawSerializedPythonScriptFields(
             }
             continue;
         }
-        if (!TryDrawSerializedPythonNumericField(descriptor.name, *field, descriptor, changed))
+        if (!TryDrawSerializedLuaNumericField(descriptor.name, *field, descriptor, changed))
         {
             changed |= DrawSerializedValue(
                 descriptor.name,
@@ -1715,10 +1718,10 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
             data = Vans::FindObjectField(component, "data");
         }
 
-        std::vector<Vans::PythonScriptFieldDescriptor> scriptFieldDescriptors;
+        std::vector<Vans::LuaScriptFieldDescriptor> scriptFieldDescriptors;
         if (type == "Script")
         {
-            changed |= MergePythonScriptFieldDefaults(
+            changed |= MergeLuaScriptFieldDefaults(
                 *data,
                 api,
                 &scriptFieldDescriptors);
@@ -1734,7 +1737,7 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
                 {
                     if (ImGui::TreeNodeEx("Fields", ImGuiTreeNodeFlags_DefaultOpen))
                     {
-                        changed |= DrawSerializedPythonScriptFields(
+                        changed |= DrawSerializedLuaScriptFields(
                             fieldValue,
                             scriptFieldDescriptors,
                             pointer + "/data/fields");

@@ -1,5 +1,7 @@
 #include "VansInputManager.h"
+#include "VansInputEvents.h"
 #include "VansLog.h"
+#include "../EventCore/VansEventBus.h"
 #include "GLFW/glfw3.h"
 
 #include <iostream>
@@ -33,10 +35,6 @@ namespace Vans
         m_Initialized = true;
         m_FirstMouseUpdate = true;
 
-        // Store "this" in window user pointer so static callbacks can reach us.
-        // NOTE: if other systems also need the user pointer consider a wrapper struct.
-        glfwSetWindowUserPointer(window, this);
-
         // Install GLFW callbacks
         glfwSetKeyCallback(window, GLFWKeyCallback);
         glfwSetCursorPosCallback(window, GLFWMousePosCallback);
@@ -57,17 +55,12 @@ namespace Vans
             glfwSetCursorPosCallback(m_Window, nullptr);
             glfwSetMouseButtonCallback(m_Window, nullptr);
             glfwSetScrollCallback(m_Window, nullptr);
-            glfwSetWindowUserPointer(m_Window, nullptr);
         }
 
         m_KeyStates.clear();
         m_MouseButtonStates.clear();
         m_ActionBindings.clear();
         m_AxisBindings.clear();
-        m_KeyListeners.clear();
-        m_MouseMoveListeners.clear();
-        m_MouseClickListeners.clear();
-        m_ScrollListeners.clear();
         m_Window = nullptr;
         m_Initialized = false;
 
@@ -79,6 +72,9 @@ namespace Vans
     // -------------------------------------------------------------------------
     void VansInputManager::Update()
     {
+        if (!m_Initialized || !m_Window)
+            return;
+
         // Carry forward: for keys NOT updated this frame, copy isDown -> wasDown
         for (auto& [key, state] : m_KeyStates)
         {
@@ -92,10 +88,33 @@ namespace Vans
         m_KeysUpdatedThisFrame.clear();
         m_MouseButtonsUpdatedThisFrame.clear();
 
+        RefreshPolledState();
+    }
+
+    void VansInputManager::RefreshPolledState()
+    {
+        if (!m_Initialized || !m_Window)
+            return;
+
+        // GLFW callbacks are still the event source for listeners, but polling keeps
+        // gameplay input robust if a held key starts before a callback is observed.
+        for (int key = GLFW_KEY_SPACE; key <= GLFW_KEY_LAST; ++key)
+        {
+            const int state = glfwGetKey(m_Window, key);
+            if (state == GLFW_PRESS || state == GLFW_RELEASE)
+                m_KeyStates[key].isDown = (state == GLFW_PRESS);
+        }
+        for (int button = GLFW_MOUSE_BUTTON_1; button <= GLFW_MOUSE_BUTTON_LAST; ++button)
+        {
+            const int state = glfwGetMouseButton(m_Window, button);
+            if (state == GLFW_PRESS || state == GLFW_RELEASE)
+                m_MouseButtonStates[button].isDown = (state == GLFW_PRESS);
+        }
+
         // Mouse delta
+        glfwGetCursorPos(m_Window, &m_MouseX, &m_MouseY);
         if (m_FirstMouseUpdate)
         {
-            glfwGetCursorPos(m_Window, &m_MouseX, &m_MouseY);
             m_LastMouseX = m_MouseX;
             m_LastMouseY = m_MouseY;
             m_MouseDeltaX = 0.0;
@@ -248,49 +267,6 @@ namespace Vans
     }
 
     // -------------------------------------------------------------------------
-    // Callback Registration
-    // -------------------------------------------------------------------------
-    void VansInputManager::AddKeyListener(const std::string& id, KeyCallback callback)
-    {
-        m_KeyListeners[id] = std::move(callback);
-    }
-
-    void VansInputManager::RemoveKeyListener(const std::string& id)
-    {
-        m_KeyListeners.erase(id);
-    }
-
-    void VansInputManager::AddMouseMoveListener(const std::string& id, MouseCallback callback)
-    {
-        m_MouseMoveListeners[id] = std::move(callback);
-    }
-
-    void VansInputManager::RemoveMouseMoveListener(const std::string& id)
-    {
-        m_MouseMoveListeners.erase(id);
-    }
-
-    void VansInputManager::AddMouseClickListener(const std::string& id, ClickCallback callback)
-    {
-        m_MouseClickListeners[id] = std::move(callback);
-    }
-
-    void VansInputManager::RemoveMouseClickListener(const std::string& id)
-    {
-        m_MouseClickListeners.erase(id);
-    }
-
-    void VansInputManager::AddScrollListener(const std::string& id, ScrollCallback callback)
-    {
-        m_ScrollListeners[id] = std::move(callback);
-    }
-
-    void VansInputManager::RemoveScrollListener(const std::string& id)
-    {
-        m_ScrollListeners.erase(id);
-    }
-
-    // -------------------------------------------------------------------------
     // GLFW Callback Trampolines
     // -------------------------------------------------------------------------
     void VansInputManager::GLFWKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -298,8 +274,8 @@ namespace Vans
         // Let ImGui process the event first
         // (ImGui backend hooks are installed separately via ImGui_ImplGlfw_InitForVulkan)
 
-        VansInputManager* self = static_cast<VansInputManager*>(glfwGetWindowUserPointer(window));
-        if (!self) return;
+        VansInputManager* self = &VansInputManager::Get();
+        if (!self->m_Initialized || self->m_Window != window) return;
 
         // Update key state
         auto& state = self->m_KeyStates[key];
@@ -315,57 +291,48 @@ namespace Vans
 
         self->m_KeysUpdatedThisFrame.insert(key);
 
-        // Notify listeners
-        for (auto& [id, cb] : self->m_KeyListeners)
-        {
-            cb(key, scancode, action, mods);
-        }
+        VansEventBus::Get().PublishNow(VansKeyEvent{ key, scancode, action, mods });
     }
 
     void VansInputManager::GLFWMousePosCallback(GLFWwindow* window, double xpos, double ypos)
     {
-        VansInputManager* self = static_cast<VansInputManager*>(glfwGetWindowUserPointer(window));
-        if (!self) return;
+        VansInputManager* self = &VansInputManager::Get();
+        if (!self->m_Initialized || self->m_Window != window) return;
 
+        const double previousX = self->m_MouseX;
+        const double previousY = self->m_MouseY;
         self->m_MouseX = xpos;
         self->m_MouseY = ypos;
 
-        // Notify listeners
-        for (auto& [id, cb] : self->m_MouseMoveListeners)
-        {
-            cb(xpos, ypos);
-        }
+        VansEventBus::Get().PublishNow(VansMouseMoveEvent{
+            xpos,
+            ypos,
+            xpos - previousX,
+            ypos - previousY
+        });
     }
 
     void VansInputManager::GLFWMouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
     {
-        VansInputManager* self = static_cast<VansInputManager*>(glfwGetWindowUserPointer(window));
-        if (!self) return;
+        VansInputManager* self = &VansInputManager::Get();
+        if (!self->m_Initialized || self->m_Window != window) return;
 
         auto& state = self->m_MouseButtonStates[button];
         state.isDown = (action == GLFW_PRESS);
 
         self->m_MouseButtonsUpdatedThisFrame.insert(button);
 
-        // Notify listeners
-        for (auto& [id, cb] : self->m_MouseClickListeners)
-        {
-            cb(button, action, mods);
-        }
+        VansEventBus::Get().PublishNow(VansMouseButtonEvent{ button, action, mods });
     }
 
     void VansInputManager::GLFWScrollCallback(GLFWwindow* window, double xoffset, double yoffset)
     {
-        VansInputManager* self = static_cast<VansInputManager*>(glfwGetWindowUserPointer(window));
-        if (!self) return;
+        VansInputManager* self = &VansInputManager::Get();
+        if (!self->m_Initialized || self->m_Window != window) return;
 
         self->m_ScrollAccumX += xoffset;
         self->m_ScrollAccumY += yoffset;
 
-        // Notify listeners
-        for (auto& [id, cb] : self->m_ScrollListeners)
-        {
-            cb(xoffset, yoffset);
-        }
+        VansEventBus::Get().PublishNow(VansMouseScrollEvent{ xoffset, yoffset });
     }
 }

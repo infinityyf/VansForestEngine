@@ -23,6 +23,14 @@ namespace Vans {
 
 class VansAssetDatabase;
 
+struct VansProjectOpenOptions
+{
+	bool updateLastOpenedAt = true;
+	bool updateRecentProjects = true;
+	bool loadProjectSettings = true;
+	bool scanAssets = true;
+};
+
 class VansProjectManager
 {
 public:
@@ -38,6 +46,7 @@ public:
 	/// Open an existing project.  `projectRootPath` must contain
 	/// a ForestProject.json file.
 	bool OpenProject(const std::string& projectRootPath);
+	bool OpenProject(const std::string& projectRootPath, const VansProjectOpenOptions& options);
 
 	/// Close the currently loaded project (clear all state).
 	void CloseProject();

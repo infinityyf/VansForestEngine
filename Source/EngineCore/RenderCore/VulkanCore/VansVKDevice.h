@@ -85,10 +85,12 @@ namespace VansGraphics
 		VansFSRMode m_FSRMode = VansFSRMode::MatchViewport;
 		VkExtent2D m_RequestedSceneViewportExtent{ 0, 0 };
 		bool m_FSRConfigDirty = false;
+		bool m_PresentFSROutputToSwapchain = false;
 
 		void PrepareFSRDispatchInputData(float fovy, float nearPlane, float farPlane);
 
 		void DispatchFSRUpscale();
+		void RecordFSROutputToSwapchain();
 
 		void InitializeFSR();
 
@@ -118,6 +120,7 @@ namespace VansGraphics
 		float GetUpscaleMipBias() const override;
 
 		void RequestFSRConfig(VansFSRMode mode, uint32_t viewportWidth, uint32_t viewportHeight, float sharpness);
+		void SetRuntimeSwapchainPresentationEnabled(bool enabled) { m_PresentFSROutputToSwapchain = enabled; }
 		VansFSRMode GetFSRMode() const { return m_FSRMode; }
 		float GetFSRSharpness() const { return m_FSRController.GetSharpness(); }
 		VkExtent2D GetRequestedSceneViewportExtent() const { return m_RequestedSceneViewportExtent; }

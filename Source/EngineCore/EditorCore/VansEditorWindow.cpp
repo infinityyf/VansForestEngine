@@ -26,13 +26,17 @@
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
+#include "../EventCore/VansEventBus.h"
+#include "../Util/VansInputEvents.h"
 #include "../Util/VansInputManager.h"
 #include "../Util/VansLog.h"
 #include "../RuntimeCore/VansFramePhase.h"
+#include "../Configration/VansConfigration.h"
 
 #include "../AssetCore/VansAssetGuid.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AnimationCore/VansAnimationNode.h"
+#include "Packaging/VansGamePackageBuilder.h"
 #include "Windows/VansProjectSelector.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSaveService.h"
@@ -56,7 +60,6 @@
 #include <cctype>
 #include <unordered_map>
 #include <unordered_set>
-
 
 namespace
 {
@@ -87,6 +90,17 @@ namespace
     {
         static Vans::EditorAPI::EngineAPIImpl editorAPI;
         return editorAPI;
+    }
+
+    std::string GetEditorPackageEngineRoot()
+    {
+#ifdef FOREST_ENGINE_SOURCE_ROOT
+        return FOREST_ENGINE_SOURCE_ROOT;
+#else
+        if (VansConfigration* configuration = VansConfigration::GetInstance())
+            return configuration->GetProjectRootPath();
+        return {};
+#endif
     }
 
     std::string SafeAssetName(std::string value)
@@ -361,6 +375,7 @@ bool VansGraphics::VansEditorWindow::m_VehicleDebugGizmos = false;
 VansGraphics::VansBasicWindow VansGraphics::VansEditorWindow::m_VansEditorWindow;
 //支持多个相机
 std::vector<VansGraphics::VansCamera*> VansGraphics::VansEditorWindow::m_Cameras;
+Vans::VansScopedEventConnections VansGraphics::VansEditorWindow::m_CameraInputConnections;
 
 //支持多个窗口
 std::vector<std::unique_ptr<VansGraphics::VansBaseWindowComponent>> VansGraphics::VansEditorWindow::m_Windows;
@@ -822,6 +837,108 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
     ImGui::PopStyleVar(); // ItemSpacing
 }
 
+void VansGraphics::VansEditorWindow::DrawBuildMenu()
+{
+    static Vans::VansGamePackagePlatform selectedPlatform = Vans::VansGamePackagePlatform::Windows;
+    static std::string lastPackageStatus;
+    static std::string lastPackageOutputPath;
+    static bool lastPackageSucceeded = false;
+
+    auto& editorAPI = GetMutableEditorAPI();
+
+    if (!ImGui::BeginMenu("Build"))
+        return;
+
+    if (ImGui::BeginMenu("Platform"))
+    {
+        const bool windowsSelected = selectedPlatform == Vans::VansGamePackagePlatform::Windows;
+        if (ImGui::MenuItem("Windows", nullptr, windowsSelected))
+            selectedPlatform = Vans::VansGamePackagePlatform::Windows;
+
+        ImGui::BeginDisabled();
+        const bool androidSelected = selectedPlatform == Vans::VansGamePackagePlatform::Android;
+        ImGui::MenuItem("Android", nullptr, androidSelected);
+        ImGui::EndDisabled();
+
+        ImGui::EndMenu();
+    }
+
+    const std::string projectRootPath = editorAPI.GetProjectRootPath();
+    const bool hasProject = !projectRootPath.empty();
+    const bool hasScene = !m_CurrentLoadedScenePath.empty();
+    const bool platformImplemented = selectedPlatform == Vans::VansGamePackagePlatform::Windows;
+    const std::string sceneLabel = hasScene
+        ? std::filesystem::path(m_CurrentLoadedScenePath).filename().string()
+        : std::string("<none>");
+
+    ImGui::Separator();
+    ImGui::Text("Platform: %s", Vans::ToString(selectedPlatform));
+    ImGui::Text("Scene: %s", sceneLabel.c_str());
+
+    const bool canPackage = hasProject && hasScene && platformImplemented;
+    if (!canPackage)
+        ImGui::BeginDisabled();
+
+    if (ImGui::MenuItem("Package Current Scene"))
+    {
+        if (m_SceneDocument && m_SceneDocument->IsDirty())
+        {
+            lastPackageSucceeded = false;
+            lastPackageStatus = "Save the current scene before packaging";
+            lastPackageOutputPath.clear();
+            VANS_LOG_WARN("[Package] " << lastPackageStatus);
+        }
+        else if (Vans::VansAssetDocumentRegistry::Get().HasDirtyDocuments())
+        {
+            lastPackageSucceeded = false;
+            lastPackageStatus = "Save dirty assets before packaging";
+            lastPackageOutputPath.clear();
+            VANS_LOG_WARN("[Package] " << lastPackageStatus);
+        }
+        else
+        {
+            Vans::VansGamePackageRequest request;
+            request.platform = selectedPlatform;
+            request.projectRootPath = projectRootPath;
+            request.engineRootPath = GetEditorPackageEngineRoot();
+            request.scenePath = m_CurrentLoadedScenePath;
+
+            const Vans::VansGamePackageResult result = Vans::VansGamePackageBuilder::Build(request);
+            lastPackageSucceeded = result.success;
+            lastPackageStatus = result.message;
+            lastPackageOutputPath = result.outputPath;
+            if (!result)
+            {
+                VANS_LOG_ERROR("[Package] " << result.message);
+                return;
+            }
+        }
+    }
+
+    if (!canPackage)
+        ImGui::EndDisabled();
+
+    if (!platformImplemented)
+        ImGui::TextDisabled("Android packaging is reserved for a future toolchain.");
+    else if (!hasProject)
+        ImGui::TextDisabled("Open a project before packaging.");
+    else if (!hasScene)
+        ImGui::TextDisabled("Load a scene before packaging.");
+
+    if (!lastPackageStatus.empty())
+    {
+        ImGui::Separator();
+        if (lastPackageSucceeded)
+            ImGui::Text("Last package: %s", lastPackageStatus.c_str());
+        else
+            ImGui::TextDisabled("Last package: %s", lastPackageStatus.c_str());
+        if (!lastPackageOutputPath.empty())
+            ImGui::TextWrapped("%s", lastPackageOutputPath.c_str());
+    }
+
+    ImGui::EndMenu();
+}
+
 void VansGraphics::VansEditorWindow::CreateWindowComponents()
 {
     m_Windows.clear();
@@ -873,29 +990,37 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
 void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
 {
-    Vans::VansInputManager& input = Vans::VansInputManager::Get();
+    m_CameraInputConnections.DisconnectAll();
 
-    // Forward mouse move deltas to all cameras
-    input.AddMouseMoveListener("EditorCamera_Move", [](double x, double y) {
-        double dx, dy;
-        Vans::VansInputManager::Get().GetMouseDelta(dx, dy);
+    m_CameraInputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansMouseMoveEvent>(
+        [](const Vans::VansMouseMoveEvent& event)
+        {
         for (auto camera : m_Cameras)
         {
-            camera->HandleMouseMovement(static_cast<float>(dx), static_cast<float>(dy));
+                camera->HandleMouseMovement(
+                    static_cast<float>(event.dx),
+                    static_cast<float>(event.dy));
         }
-    });
+        },
+        Vans::VansEventLane::Input,
+        0,
+        "EditorCamera::MouseMove"));
 
-    // Forward mouse button events to cameras (right-click for look)
-    input.AddMouseClickListener("EditorCamera_Click", [](int button, int action, int mods) {
-        if (button != GLFW_MOUSE_BUTTON_RIGHT)
+    m_CameraInputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansMouseButtonEvent>(
+        [](const Vans::VansMouseButtonEvent& event)
+        {
+        if (event.button != GLFW_MOUSE_BUTTON_RIGHT)
             return;
 
-        const bool isDown = (action == GLFW_PRESS);
+            const bool isDown = (event.action == GLFW_PRESS);
         for (auto camera : m_Cameras)
         {
             camera->SetRightMouseDown(isDown);
         }
-    });
+        },
+        Vans::VansEventLane::Input,
+        0,
+        "EditorCamera::MouseButton"));
 }
 
 void VansGraphics::VansEditorWindow::UpdateEditorCameraMovement()
@@ -927,10 +1052,7 @@ void VansGraphics::VansEditorWindow::UpdateEditorCameraMovement()
 
 void VansGraphics::VansEditorWindow::UnregisterCameraInputListeners()
 {
-    Vans::VansInputManager& input = Vans::VansInputManager::Get();
-    input.RemoveKeyListener("EditorCamera_Key");
-    input.RemoveMouseMoveListener("EditorCamera_Move");
-    input.RemoveMouseClickListener("EditorCamera_Click");
+    m_CameraInputConnections.DisconnectAll();
 }
 
 // ============================================================================
@@ -993,7 +1115,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
     else
     {
         // Runtime 模式：解冻时间，启动物理，进入 Playing 状态
-        // Play 模式下相机由 Python 脚本接管，注销 Editor 相机控制监听器
+        // Play 模式下相机由 Lua 脚本接管，注销 Editor 相机控制监听器
         UnregisterCameraInputListeners();
         VansTimer::SetTimePaused(false);
         GetMutableEditorAPI().StartRuntimePhysicsIfNeeded();
@@ -1364,6 +1486,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
                 }
                 ImGui::EndMenu();
             }
+            DrawBuildMenu();
             if (ImGui::BeginMenu("Edit"))
             {
 				if (ImGui::MenuItem("Undo", "Ctrl+Z", false,
@@ -1690,6 +1813,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         {
             VANS_PROFILE_SCOPE("Frame::PollEvents", Vans::ProfileCategory::Frame);
             glfwPollEvents();
+            Vans::VansInputManager::Get().RefreshPolledState();
         }
 
         // Resize swap chain?

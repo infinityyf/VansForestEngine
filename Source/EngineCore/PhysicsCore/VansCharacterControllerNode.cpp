@@ -226,7 +226,7 @@ namespace VansEngine
 
     bool VansCharacterControllerNode::IsGrounded() const
     {
-        return (m_LastCollisionFlags & PxControllerCollisionFlag::eCOLLISION_DOWN) != 0;
+        return m_LastCollisionFlags.isSet(PxControllerCollisionFlag::eCOLLISION_DOWN);
     }
 
     void VansCharacterControllerNode::SyncControllerFromTransform()

@@ -368,7 +368,8 @@ namespace VansGraphics
 		m_VansSwapChainCreateParams.desired_image_transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 		m_VansSwapChainCreateParams.desired_present_mode = VK_PRESENT_MODE_MAILBOX_KHR;// VK_PRESENT_MODE_FIFO_KHR;
 		m_VansSwapChainCreateParams.desired_surface_format = { VK_FORMAT_R8G8B8A8_SRGB ,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
-		m_VansSwapChainCreateParams.desired_image_usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		m_VansSwapChainCreateParams.desired_image_usage =
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	}
 
 	bool VansVKSurface::CreateVulkanPresentSurface(VkInstance& instance, GLFWwindow* window)

@@ -8,15 +8,15 @@
 #include "../../Util/VansLog.h"
 
 // -----------------------------------------------------------------------
-// VansConsole  –  A thread-safe, singleton ring-buffer log shared by
-//                 the engine (C++) side and the embedded Python side.
+// VansConsole  ? A thread-safe, singleton ring-buffer log shared by
+//                 the engine (C++) side and the scripting runtime.
 //                 The Console *Window* reads from here.
 // -----------------------------------------------------------------------
 
 enum class VansConsoleLogType
 {
     Engine,
-    Python
+    Script
 };
 
 enum class VansConsoleSeverity
@@ -59,16 +59,16 @@ public:
         Push(VansConsoleLogType::Engine, sev, msg);
     }
 
-    void LogPython(const std::string& msg)
+    void LogScript(const std::string& msg)
     {
-        Push(VansConsoleLogType::Python, VansConsoleSeverity::Info, msg);
+        Push(VansConsoleLogType::Script, VansConsoleSeverity::Info, msg);
     }
 
     void OnLog(VansLogChannel channel, VansLogLevel level, const std::string& msg) override
     {
         VansConsoleSeverity sev = static_cast<VansConsoleSeverity>(static_cast<int>(level));
-        const VansConsoleLogType type = channel == VansLogChannel::Python
-            ? VansConsoleLogType::Python
+        const VansConsoleLogType type = channel == VansLogChannel::Script
+            ? VansConsoleLogType::Script
             : VansConsoleLogType::Engine;
         Push(type, sev, msg);
     }

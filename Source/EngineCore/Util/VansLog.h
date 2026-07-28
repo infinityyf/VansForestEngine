@@ -81,9 +81,9 @@ private:
         VansLog::Get().Log(VansLogLevel::Error, _vans_oss.str());   \
     } while (0)
 
-#define VANS_LOG_PYTHON(msg)                                                       \
+#define VANS_LOG_SCRIPT(msg)                                                       \
     do {                                                                           \
         std::ostringstream _vans_oss;                                              \
         _vans_oss << msg;                                                          \
-        VansLog::Get().Log(VansLogChannel::Python, VansLogLevel::Info, _vans_oss.str()); \
+        VansLog::Get().Log(VansLogChannel::Script, VansLogLevel::Info, _vans_oss.str()); \
     } while (0)

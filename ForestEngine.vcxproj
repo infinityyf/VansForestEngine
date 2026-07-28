@@ -74,7 +74,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;LUA_COMPAT_5_3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
       <AdditionalOptions>/GR /utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -90,7 +90,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;LUA_COMPAT_5_3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
       <AdditionalOptions>/GR /utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -106,10 +106,10 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;LUA_COMPAT_5_3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
-      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\GUI\ImGuizmo;$(SolutionDir)\ForestEngine\External\GUI\ImGuiNode;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\NvCloth\include;$(SolutionDir)\ForestEngine\External\NvCloth\extensions\include;$(SolutionDir)\ForestEngine\External\NvCloth\PxShared\include;$(SolutionDir)\ForestEngine\External\;$(SolutionDir)\ForestEngine\External\NoesisGUI\Include;$(SolutionDir)\ForestEngine\External\NoesisGUI\Src\Packages\Render\VKRenderDevice\Include;$(SolutionDir)\ForestEngine\External\NoesisGUI\Src\Packages\App\Providers\Include;$(SolutionDir)\ForestEngine\External\VMA;$(SolutionDir)\ForestEngine\External\ffmpeg\include;$(SolutionDir)\ForestEngine\External\openal\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\Lua\lua-5.4.8\src;$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\GUI\ImGuizmo;$(SolutionDir)\ForestEngine\External\GUI\ImGuiNode;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\NvCloth\include;$(SolutionDir)\ForestEngine\External\NvCloth\extensions\include;$(SolutionDir)\ForestEngine\External\NvCloth\PxShared\include;$(SolutionDir)\ForestEngine\External\;$(SolutionDir)\ForestEngine\External\NoesisGUI\Include;$(SolutionDir)\ForestEngine\External\NoesisGUI\Src\Packages\Render\VKRenderDevice\Include;$(SolutionDir)\ForestEngine\External\NoesisGUI\Src\Packages\App\Providers\Include;$(SolutionDir)\ForestEngine\External\VMA;$(SolutionDir)\ForestEngine\External\ffmpeg\include;$(SolutionDir)\ForestEngine\External\openal\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -118,8 +118,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>avformat.lib;avcodec.lib;avutil.lib;swscale.lib;swresample.lib;PhysXFoundation_64.lib;PhysXCommon_64.lib;PhysX_64.lib;PhysXCooking_64.lib;PhysXExtensions_static_64.lib;PhysXCharacterKinematic_static_64.lib;PhysXPvdSDK_static_64.lib;PhysXVehicle2_static_64.lib;NvClothDEBUG_x64.lib;glfw3.lib;assimp-vc143-mt.lib;amd_fidelityfx_vkd.lib;python313_d.lib;Noesis.lib;OpenAL32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(SolutionDir)\ForestEngine\External\PhysX\lib\debug;$(SolutionDir)\ForestEngine\External\NvCloth\lib;$(SolutionDir)\ForestEngine\External\FidelityFX\PrebuiltSignedDLL;$(SolutionDir)\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);$(SolutionDir)\ForestEngine\External\Python-3.13.3\PCbuild\amd64;$(SolutionDir)\ForestEngine\External\NoesisGUI\Lib\windows_x86_64;$(SolutionDir)\ForestEngine\External\ffmpeg\lib;$(SolutionDir)\ForestEngine\External\openal\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>avformat.lib;avcodec.lib;avutil.lib;swscale.lib;swresample.lib;PhysXFoundation_64.lib;PhysXCommon_64.lib;PhysX_64.lib;PhysXCooking_64.lib;PhysXExtensions_static_64.lib;PhysXCharacterKinematic_static_64.lib;PhysXPvdSDK_static_64.lib;PhysXVehicle2_static_64.lib;NvClothDEBUG_x64.lib;glfw3.lib;assimp-vc143-mt.lib;amd_fidelityfx_vkd.lib;Noesis.lib;OpenAL32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)\ForestEngine\External\PhysX\lib\debug;$(SolutionDir)\ForestEngine\External\NvCloth\lib;$(SolutionDir)\ForestEngine\External\FidelityFX\PrebuiltSignedDLL;$(SolutionDir)\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);$(SolutionDir)\ForestEngine\External\NoesisGUI\Lib\windows_x86_64;$(SolutionDir)\ForestEngine\External\ffmpeg\lib;$(SolutionDir)\ForestEngine\External\openal\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -128,10 +128,10 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;LUA_COMPAT_5_3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
-      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\GUI\ImGuizmo;$(SolutionDir)\ForestEngine\External\GUI\ImGuiNode;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Include;$(SolutionDir)\ForestEngine\External\Python-3.13.3\Lib\site-packages\pybind11\include;$(SolutionDir)\ForestEngine\External\NvCloth\include;$(SolutionDir)\ForestEngine\External\NvCloth\extensions\include;$(SolutionDir)\ForestEngine\External\NvCloth\PxShared\include;$(SolutionDir)\ForestEngine\External\;$(SolutionDir)\ForestEngine\External\NoesisGUI\Include;$(SolutionDir)\ForestEngine\External\NoesisGUI\Src\Packages\Render\VKRenderDevice\Include;$(SolutionDir)\ForestEngine\External\NoesisGUI\Src\Packages\App\Providers\Include;$(SolutionDir)\ForestEngine\External\VMA;$(SolutionDir)\ForestEngine\External\ffmpeg\include;$(SolutionDir)\ForestEngine\External\openal\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\ForestEngine\External\Lua\lua-5.4.8\src;$(SolutionDir)\ForestEngine\External\PhysX\include;$(SolutionDir)\ForestEngine\External\FidelityFX\ffx_api\include;$(SolutionDir)\ForestEngine\External\assimp\include;$(SolutionDir)\ForestEngine\External\json\include;$(SolutionDir)\ForestEngine\External\STBImge;$(SolutionDir)\ForestEngine\External\tinygltf;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\include;$(SolutionDir)\ForestEngine\External\GUI\imgui-1.90.2;$(SolutionDir)\ForestEngine\External\GUI\ImGuizmo;$(SolutionDir)\ForestEngine\External\GUI\ImGuiNode;$(SolutionDir)\ForestEngine\External\Graphics\Vulkan\1.4.321.1\Include;$(SolutionDir)\ForestEngine\External\NvCloth\include;$(SolutionDir)\ForestEngine\External\NvCloth\extensions\include;$(SolutionDir)\ForestEngine\External\NvCloth\PxShared\include;$(SolutionDir)\ForestEngine\External\;$(SolutionDir)\ForestEngine\External\NoesisGUI\Include;$(SolutionDir)\ForestEngine\External\NoesisGUI\Src\Packages\Render\VKRenderDevice\Include;$(SolutionDir)\ForestEngine\External\NoesisGUI\Src\Packages\App\Providers\Include;$(SolutionDir)\ForestEngine\External\VMA;$(SolutionDir)\ForestEngine\External\ffmpeg\include;$(SolutionDir)\ForestEngine\External\openal\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion)_tmp.pdb</ProgramDataBaseFileName>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalOptions>/GR /utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -141,8 +141,8 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>avformat.lib;avcodec.lib;avutil.lib;swscale.lib;swresample.lib;PhysXFoundation_64.lib;PhysXCommon_64.lib;PhysX_64.lib;PhysXCooking_64.lib;PhysXExtensions_static_64.lib;PhysXCharacterKinematic_static_64.lib;PhysXPvdSDK_static_64.lib;PhysXVehicle2_static_64.lib;NvCloth_x64.lib;glfw3.lib;assimp-vc143-mt.lib;amd_fidelityfx_vk.lib;python313.lib;Noesis.lib;OpenAL32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(SolutionDir)\ForestEngine\External\PhysX\lib\release;$(SolutionDir)\ForestEngine\External\NvCloth\lib;$(SolutionDir)\ForestEngine\External\FidelityFX\PrebuiltSignedDLL;$(SolutionDir)\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);$(SolutionDir)\ForestEngine\External\Python-3.13.3\PCbuild\amd64;$(SolutionDir)\ForestEngine\External\NoesisGUI\Lib\windows_x86_64;$(SolutionDir)\ForestEngine\External\ffmpeg\lib;$(SolutionDir)\ForestEngine\External\openal\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>avformat.lib;avcodec.lib;avutil.lib;swscale.lib;swresample.lib;PhysXFoundation_64.lib;PhysXCommon_64.lib;PhysX_64.lib;PhysXCooking_64.lib;PhysXExtensions_static_64.lib;PhysXCharacterKinematic_static_64.lib;PhysXPvdSDK_static_64.lib;PhysXVehicle2_static_64.lib;NvCloth_x64.lib;glfw3.lib;assimp-vc143-mt.lib;amd_fidelityfx_vk.lib;Noesis.lib;OpenAL32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)\ForestEngine\External\PhysX\lib\release;$(SolutionDir)\ForestEngine\External\NvCloth\lib;$(SolutionDir)\ForestEngine\External\FidelityFX\PrebuiltSignedDLL;$(SolutionDir)\ForestEngine\External\assimp\build\lib\Release;$(SolutionDir)\ForestEngine\External\GUI\glfw-3.3.9\build\src\$(Configuration);$(SolutionDir)\ForestEngine\External\NoesisGUI\Lib\windows_x86_64;$(SolutionDir)\ForestEngine\External\ffmpeg\lib;$(SolutionDir)\ForestEngine\External\openal\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -187,11 +187,9 @@
     <ClInclude Include="Source\EngineCore\ProjectSystem\Storage\VansProjectSettingsStorage.h" />
     <ClInclude Include="Source\EngineCore\EngineAPILayer\Private\ScenePropertyValueBuilders.h" />
     <ClInclude Include="Source\EngineCore\EngineAPILayer\Private\RuntimeGeneratedMaterialAssetService.h" />
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptInspectorService.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProjectSelector.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\AssetsSystem\VansAssetsFileWatcher.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\ShaderHotReload\VansEditorShaderHotReloadController.h" />
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptFieldSchema.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetGuid.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetMeta.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\VansAssetDatabase.h" />
@@ -205,16 +203,16 @@
     <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansMaterialAuthoringAssetStorage.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansShaderAuthoringAssetStorage.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansJsonFileStorage.h" />
-      <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansFileStorage.h" />
-      <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansStagedFileTransaction.h" />
-      <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansAssetMetaLegacyJsonCodec.h" />
-      <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansClothProfileLegacyJsonCodec.h" />
-      <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansJsonDocumentCodec.h" />
-      <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedObjectReference.h" />
-      <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedValue.h" />
-      <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedValueAccess.h" />
-      <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedValueLegacyJsonAdapter.h" />
-      <ClInclude Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderCompiler.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansFileStorage.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Storage\VansStagedFileTransaction.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansAssetMetaLegacyJsonCodec.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansClothProfileLegacyJsonCodec.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansJsonDocumentCodec.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedObjectReference.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedValue.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedValueAccess.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Serialization\VansSerializedValueLegacyJsonAdapter.h" />
+    <ClInclude Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderCompiler.h" />
     <ClInclude Include="Source\EngineCore\AssetCore\Importers\Shader\VansShaderArtifactCache.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansAssetDocumentEditService.h" />
     <ClInclude Include="Source\EngineCore\EditorCore\VansAssetDocumentRegistry.h" />
@@ -432,10 +430,6 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKMemoryAllocator.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSampler.h" />
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.h" />
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptComponentDescriptor.h" />
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptComponentReader.h" />
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonSerializedFieldInjector.h" />
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonSerializedField.h" />
     <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h" />
     <ClInclude Include="Source\EngineCore\Util\ILogSink.h" />
     <ClInclude Include="Source\EngineCore\Util\VansInputManager.h" />
@@ -491,8 +485,6 @@
     <ClCompile Include="Source\EngineCore\AssetCore\VansShaderAuthoringAsset.cpp" />
     <ClCompile Include="Source\EngineCore\AssetCore\Storage\VansMaterialAuthoringAssetStorage.cpp" />
     <ClCompile Include="Source\EngineCore\AssetCore\Storage\VansShaderAuthoringAssetStorage.cpp" />
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonScriptFieldSchema.cpp" />
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonScriptInspectorService.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansAssetDocumentEditService.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansAssetDocumentRegistry.cpp" />
     <ClCompile Include="Source\EngineCore\EditorCore\VansAnimGraphEditorLayoutStorage.cpp" />
@@ -541,13 +533,13 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="External\NoesisGUI\Src\Packages\Render\VKRenderDevice\Src\Render.VKRenderDevice.cpp">
-      <PreprocessorDefinitions>NS_RENDER_VKRENDERDEVICE_API=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NS_RENDER_VKRENDERDEVICE_API=;LUA_COMPAT_5_3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="External\NoesisGUI\Src\Packages\Render\VKRenderDevice\Src\VKRenderDevice.cpp">
-      <PreprocessorDefinitions>NS_RENDER_VKRENDERDEVICE_API=;NS_APP_PROVIDERS_API=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NS_RENDER_VKRENDERDEVICE_API=;NS_APP_PROVIDERS_API=;LUA_COMPAT_5_3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="External\NoesisGUI\Src\Packages\App\Providers\Src\FastLZ.cpp">
-      <PreprocessorDefinitions>NS_APP_PROVIDERS_API=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NS_APP_PROVIDERS_API=;LUA_COMPAT_5_3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="External\GUI\imgui-1.90.2\backends\imgui_impl_glfw.cpp" />
     <ClCompile Include="External\GUI\imgui-1.90.2\backends\imgui_impl_vulkan.cpp" />
@@ -734,10 +726,6 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKResourceUpload.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSampler.cpp" />
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.cpp" />
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonScriptComponentReader.cpp" />
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonSerializedFieldInjector.cpp" />
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp" />
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptBridge.cpp" />
     <ClCompile Include="Source\EngineCore\Util\VansInputManager.cpp" />
     <ClCompile Include="Source\EngineCore\Util\VansJobSystem.cpp" />
     <ClCompile Include="Source\EngineCore\Util\VansLog.cpp" />
@@ -786,7 +774,79 @@ xcopy /y /d "$(SolutionDir)\ForestEngine\External\openal\bin\OpenAL32.dll" "$(Ou
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
   </ItemDefinitionGroup>
+  <ItemGroup>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <ItemGroup>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lapi.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lauxlib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lbaselib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lcode.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lcorolib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lctype.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ldblib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ldebug.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ldo.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ldump.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lfunc.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lgc.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\linit.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\liolib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\llex.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lmathlib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lmem.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\loadlib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lobject.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lopcodes.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\loslib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lparser.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lstate.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lstring.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lstrlib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ltable.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ltablib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ltm.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lundump.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lutf8lib.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lvm.c" />
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lzio.c" />
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansLuaScriptInspectorService.cpp" />
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptComponentReader.cpp" />
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContextRuntime.cpp" />
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansLuaScriptInspectorService.h" />
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptComponentReader.h" />
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptTypes.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lapi.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lauxlib.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lcode.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lctype.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\ldebug.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\ldo.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lfunc.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lgc.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\ljumptab.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\llex.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\llimits.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lmem.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lobject.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lopcodes.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lopnames.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lparser.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lprefix.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lstate.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lstring.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\ltable.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\ltm.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lua.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lua.hpp" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\luaconf.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lualib.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lundump.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lvm.h" />
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lzio.h" />
+  </ItemGroup>
 </Project>

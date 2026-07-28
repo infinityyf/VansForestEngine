@@ -6,7 +6,7 @@
 
 namespace Vans
 {
-struct PythonScriptFieldDescriptor;
+struct LuaScriptFieldDescriptor;
 
 enum class EditorPropertyKind
 {
@@ -42,8 +42,8 @@ public:
         EditorAPI::AssetType expectedType,
         ObjectReferenceStoragePolicy storagePolicy = ObjectReferenceStoragePolicy::GuidObject);
 
-    static bool TryResolvePythonScriptFieldObjectReferenceSlot(
-        const PythonScriptFieldDescriptor& descriptor,
+    static bool TryResolveLuaScriptFieldObjectReferenceSlot(
+        const LuaScriptFieldDescriptor& descriptor,
         ObjectReferenceSlotDescriptor& slot);
 };
 }

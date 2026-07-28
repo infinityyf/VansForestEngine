@@ -7,7 +7,7 @@
 #include "VansScenePhysicsComponentConfig.h"
 #include "VansSceneRenderNodeConfig.h"
 #include "VansSceneVehicleComponentConfig.h"
-#include "../ScriptCore/VansPythonScriptComponentDescriptor.h"
+#include "../ScriptCore/VansScriptTypes.h"
 
 #include <optional>
 #include <string>
@@ -35,7 +35,7 @@ struct VansSceneObjectBuildConfig
 	VansSceneCameraMediaComponentConfig cameraMediaComponents;
 	std::optional<VansSceneAnimationComponentConfig> animation;
 	std::optional<VansSceneParticleComponentConfig> particle;
-	VansPythonScriptComponentDescriptors pythonScripts;
+	VansScriptComponentDescriptors scriptComponents;
 	std::unordered_map<std::string, std::string> componentGuids;
 };
 

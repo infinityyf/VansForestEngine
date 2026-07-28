@@ -104,13 +104,6 @@ void RegisterEngineShaders()
         0, false, false, -1, false, 0, true
     });
 
-    reg.RegisterGraphicsShader("Coat", {
-        "Coat",
-        "EngineAssets/Shaders/Coat",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(VansGraphics::VansDrawPushConstant), false
-    });
-
     reg.RegisterGraphicsShader("TransparentSimpleColor", {
         "TransparentSimpleColor",
         "EngineAssets/Shaders/UnlitTransparent/SimpleColor",
@@ -360,7 +353,7 @@ void RegisterEngineShaders()
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_COAT, {
-        { VansGraphics::VansPass::GBUFFER,          "Coat"           },
+        { VansGraphics::VansPass::GBUFFER,          "Unlit"          },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
         { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },

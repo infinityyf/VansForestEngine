@@ -1,6 +1,7 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKDevice.h"
 #include "VansRenderPass.h"
+#include "VansRenderGraphVulkanSync.h"
 #include "../VansScene.h"
 #include "../VansCamera.h"
 #include "../../Util/VansLog.h"
@@ -99,6 +100,93 @@ namespace VansGraphics
 		{
 			VANS_LOG_ERROR("[VansVKDevice] FSR output blit submit failed.");
 		}
+	}
+
+	void VansVKDevice::RecordFSROutputToSwapchain()
+	{
+		VansVKImage& fsrOut = m_FSRController.GetTempFSRImage();
+		const VkImageLayout previousFSRLayout = fsrOut.GetImageLayout();
+
+		VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
+			fsrOut,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_TRANSFER_READ_BIT,
+			previousFSRLayout,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		m_VansVKSurface.SetSwapChainImageBarrier(
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			{
+				m_VansVKSurface.GetSwapChainImage(m_SwapChainImageIndex),
+				VK_ACCESS_NONE,
+				VK_ACCESS_TRANSFER_WRITE_BIT,
+				VK_IMAGE_LAYOUT_UNDEFINED,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_IMAGE_ASPECT_COLOR_BIT
+			},
+			m_SwapChainImageIndex);
+
+		const VkExtent2D swapchainExtent = m_VansVKSurface.m_VansVKSwapChainImageExtent;
+		const VkExtent3D fsrExtent = fsrOut.GetImageDimension();
+		VkImageBlit blitRegion{};
+		blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blitRegion.srcSubresource.mipLevel = 0;
+		blitRegion.srcSubresource.baseArrayLayer = 0;
+		blitRegion.srcSubresource.layerCount = 1;
+		blitRegion.srcOffsets[0] = { 0, 0, 0 };
+		blitRegion.srcOffsets[1] = {
+			static_cast<int32_t>(fsrExtent.width),
+			static_cast<int32_t>(fsrExtent.height),
+			1
+		};
+
+		blitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blitRegion.dstSubresource.mipLevel = 0;
+		blitRegion.dstSubresource.baseArrayLayer = 0;
+		blitRegion.dstSubresource.layerCount = 1;
+		blitRegion.dstOffsets[0] = { 0, 0, 0 };
+		blitRegion.dstOffsets[1] = {
+			static_cast<int32_t>(swapchainExtent.width),
+			static_cast<int32_t>(swapchainExtent.height),
+			1
+		};
+
+		m_VansVKCommandBuffer.BlitImageRegions(
+			fsrOut.GetImage(),
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			m_VansVKSurface.GetSwapChainImage(m_SwapChainImageIndex),
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			{ blitRegion },
+			VK_FILTER_LINEAR);
+
+		m_VansVKSurface.SetSwapChainImageBarrier(
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			{
+				m_VansVKSurface.GetSwapChainImage(m_SwapChainImageIndex),
+				VK_ACCESS_TRANSFER_WRITE_BIT,
+				VK_ACCESS_NONE,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_IMAGE_ASPECT_COLOR_BIT
+			},
+			m_SwapChainImageIndex);
+
+		VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
+			fsrOut,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_TRANSFER_READ_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	}
 
 	void VansVKDevice::InitializeFSR()

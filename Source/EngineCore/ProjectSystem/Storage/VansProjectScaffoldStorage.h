@@ -8,7 +8,7 @@ namespace Vans
 class VansProjectScaffoldStorage
 {
 public:
-	static bool EnsureDefaultPythonRequirementsFile(
+	static bool EnsureDefaultLuaScriptFile(
 		const std::filesystem::path& path,
 		bool& created,
 		std::string& error);

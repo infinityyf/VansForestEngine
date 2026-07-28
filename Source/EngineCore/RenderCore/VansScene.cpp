@@ -927,16 +927,14 @@ void VansGraphics::VansScene::UnLoadScene()
 	VANS_LOG("[VansScene] Step 1: scene runtime textures cleared; screen-space textures retained");
 
 	// ── 2. 清理脚本对象（仅释放 wrapper，不释放底层 Node）─────────────────
-	// 先 Teardown 所有 VanPyScriptComponent，安全释放 py::object。
-	// 再删除 VansScriptObject（此时 m_PyInstance 已为 py::none()）。
     VANS_UNLOAD_STEP(2, "Clear script objects and script modules");
 	for (auto* obj : m_SceneObjects)
 	{
 		if (!obj) continue;
 		for (auto* comp : obj->m_Components)
 		{
-			auto* pyComp = dynamic_cast<VanPyScriptComponent*>(comp);
-			if (pyComp) pyComp->Teardown();
+			auto* luaComp = dynamic_cast<VansLuaScriptComponent*>(comp);
+			if (luaComp) luaComp->Teardown();
 
             auto* particleComp = dynamic_cast<VansScriptParticleComponent*>(comp);
             if (particleComp && particleComp->m_Runtime)
@@ -2505,9 +2503,8 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
             particleRN = pt->m_RenderNode;
         }
 
-        // ── Python：Teardown 释放 py::object（析构前必须调用）──────────────
-        if (auto* py = dynamic_cast<VanPyScriptComponent*>(comp))
-            py->Teardown();
+        if (auto* luaScript = dynamic_cast<VansLuaScriptComponent*>(comp))
+            luaScript->Teardown();
 
         // ── Audio：停止播放（项目级资源，不 delete）────────────────────────
         if (auto* au = dynamic_cast<VansScriptAudioComponent*>(comp))

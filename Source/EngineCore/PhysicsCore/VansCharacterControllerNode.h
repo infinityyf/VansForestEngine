@@ -71,7 +71,7 @@ namespace VansEngine
                         const glm::vec3& spawnPos);
         void Release();
 
-        // ── 位移队列（供 Python/C++ 脚本调用）──────────────────────────────
+        // ── 位移队列（供 Lua/C++ 脚本调用）──────────────────────────────
         // 将本帧期望的位移加入缓冲区，UpdateCharControllerTransforms() 会在
         // SimulationMutex 锁内统一提交 PxController::move()。
         // displacement : 本帧期望的世界坐标偏移（已包含重力分量）

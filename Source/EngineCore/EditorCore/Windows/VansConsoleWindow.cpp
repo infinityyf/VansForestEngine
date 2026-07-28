@@ -17,7 +17,7 @@ void VansGraphics::VansConsoleWindow::DrawConsoleContents()
     // ---- Toolbar row ----
     {
         // Filter combo
-        const char* filterLabels[] = { "All", "Engine", "Python" };
+        const char* filterLabels[] = { "All", "Engine", "Script" };
         ImGui::SetNextItemWidth(120.0f);
         ImGui::Combo("##ConsoleFilter", &m_FilterMode, filterLabels, IM_ARRAYSIZE(filterLabels));
         ImGui::SameLine();
@@ -47,10 +47,10 @@ void VansGraphics::VansConsoleWindow::DrawConsoleContents()
         // Filter
         if (m_FilterMode == 1 && entry.type != VansConsoleLogType::Engine)
             continue;
-        if (m_FilterMode == 2 && entry.type != VansConsoleLogType::Python)
+        if (m_FilterMode == 2 && entry.type != VansConsoleLogType::Script)
             continue;
 
-        // Tag color  (source: Engine / Python)
+        // Tag color  (source: Engine / Script)
         ImVec4 tagColor;
         const char* tag;
         switch (entry.type)
@@ -59,9 +59,9 @@ void VansGraphics::VansConsoleWindow::DrawConsoleContents()
             tagColor = ImVec4(0.4f, 0.8f, 0.4f, 1.0f);   // green
             tag = "[Engine]";
             break;
-        case VansConsoleLogType::Python:
+        case VansConsoleLogType::Script:
             tagColor = ImVec4(0.3f, 0.6f, 1.0f, 1.0f);    // blue
-            tag = "[Python]";
+            tag = "[Script]";
             break;
         default:
             tagColor = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);

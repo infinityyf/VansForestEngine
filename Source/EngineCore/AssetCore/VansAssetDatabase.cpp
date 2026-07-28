@@ -1,5 +1,7 @@
 #include "VansAssetDatabase.h"
+#if !defined(FOREST_RUNTIME_CORE)
 #include "Importers/VansTextureCooker.h"
+#endif
 #include "Storage/VansAssetMetaStorage.h"
 #include "../Util/VansLog.h"
 
@@ -114,11 +116,16 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
         return false;
     }
 
+    std::filesystem::path cookedArtifactPath;
+    std::string textureCookError;
+#if !defined(FOREST_RUNTIME_CORE)
     VansTextureCookResult textureCook;
     if (type == VansAssetType::Texture)
     {
         textureCook = VansTextureCooker::CookIfNeeded(
             normalized, metaPath, meta, m_ArtifactRoot);
+        cookedArtifactPath = textureCook.artifactPath;
+        textureCookError = textureCook.error;
         if (textureCook.status == VansTextureCookStatus::Cooked)
         {
             VANS_LOG("[TextureCooker] Cooked " << normalized.string()
@@ -130,6 +137,7 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
                 << "; runtime source fallback remains enabled");
         }
     }
+#endif
 
     std::unique_lock lock(m_Mutex);
     const std::wstring key = PathKey(normalized);
@@ -150,12 +158,12 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
     record.type = type;
     record.sourcePath = normalized;
     record.metaPath = metaPath;
-    record.artifactPath = textureCook.artifactPath;
+    record.artifactPath = cookedArtifactPath;
     record.state = record.artifactPath.empty()
         ? VansAssetState::Discovered
         : VansAssetState::CpuReady;
     ++record.generation;
-    record.error = textureCook.error;
+    record.error = textureCookError;
     m_ByPath[key] = meta.guid;
     return true;
 }

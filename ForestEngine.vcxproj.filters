@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
   <ItemGroup>
     <Filter Include="Application">
@@ -178,6 +178,15 @@
     <Filter Include="Assets\Engine\Shaders\PostProcess\ExposureLuminance">
       <UniqueIdentifier>{7B03A49C-B7D4-519E-8E11-79CE37B9E7B8}</UniqueIdentifier>
     </Filter>
+    <Filter Include="External\Lua">
+      <UniqueIdentifier>{E482D8AE-DE2B-48FC-84A1-CE98603033C3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="External\Lua\lua-5.4.8">
+      <UniqueIdentifier>{AC1D37F1-3D8C-452A-AA8B-274EF7CA5FDE}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="External\Lua\lua-5.4.8\src">
+      <UniqueIdentifier>{7E3D5BEA-8ADE-471F-93CB-9AEB91C4E471}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="External\GUI\glfw-3.3.9\include\GLFW\glfw3.h">
@@ -302,12 +311,6 @@
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EngineAPILayer\Private\RuntimeGeneratedMaterialAssetService.h">
       <Filter>EngineCore\EngineAPILayer\Private</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptInspectorService.h">
-      <Filter>EngineCore\ScriptCore</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptFieldSchema.h">
-      <Filter>EngineCore\ScriptCore</Filter>
     </ClInclude>
     <ClInclude Include="Source\EngineCore\EditorCore\Windows\VansProjectSelector.h">
       <Filter>EngineCore\EditorCore\Windows</Filter>
@@ -1038,18 +1041,6 @@
     <ClInclude Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.h">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClInclude>
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptComponentDescriptor.h">
-      <Filter>EngineCore\ScriptCore</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonScriptComponentReader.h">
-      <Filter>EngineCore\ScriptCore</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonSerializedFieldInjector.h">
-      <Filter>EngineCore\ScriptCore</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\EngineCore\ScriptCore\VansPythonSerializedField.h">
-      <Filter>EngineCore\ScriptCore</Filter>
-    </ClInclude>
     <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptContext.h">
       <Filter>EngineCore\ScriptCore</Filter>
     </ClInclude>
@@ -1210,12 +1201,6 @@
     </ClCompile>
     <ClCompile Include="Source\EngineCore\AssetCore\Storage\VansShaderAuthoringAssetStorage.cpp">
       <Filter>EngineCore\AssetCore</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonScriptInspectorService.cpp">
-      <Filter>EngineCore\ScriptCore</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonScriptFieldSchema.cpp">
-      <Filter>EngineCore\ScriptCore</Filter>
     </ClCompile>
     <ClCompile Include="Source\EngineCore\EditorCore\VansAssetDocumentEditService.cpp">
       <Filter>EngineCore\EditorCore</Filter>
@@ -1892,18 +1877,6 @@
     <ClCompile Include="Source\EngineCore\RenderCore\VulkanCore\VansVKSurface.cpp">
       <Filter>EngineCore\RenderCore\VulkanCore</Filter>
     </ClCompile>
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonScriptComponentReader.cpp">
-      <Filter>EngineCore\ScriptCore</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansPythonSerializedFieldInjector.cpp">
-      <Filter>EngineCore\ScriptCore</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContext.cpp">
-      <Filter>EngineCore\ScriptCore</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptBridge.cpp">
-      <Filter>EngineCore\ScriptCore</Filter>
-    </ClCompile>
     <ClCompile Include="Source\EngineCore\Util\VansInputManager.cpp">
       <Filter>EngineCore\Util</Filter>
     </ClCompile>
@@ -1999,5 +1972,283 @@
     <None Include="EngineAssets\Shaders\PostProcess\BloomUpsample\BloomUpsample.comp">
       <Filter>Assets\Engine\Shaders\PostProcess\BloomUpsample</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lapi.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lauxlib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lbaselib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lcode.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lcorolib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lctype.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ldblib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ldebug.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ldo.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ldump.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lfunc.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lgc.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\linit.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\liolib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\llex.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lmathlib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lmem.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\loadlib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lobject.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lopcodes.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\loslib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lparser.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lstate.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lstring.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lstrlib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ltable.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ltablib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\ltm.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lundump.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lutf8lib.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lvm.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="External\Lua\lua-5.4.8\src\lzio.c">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansLuaScriptInspectorService.cpp">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptComponentReader.cpp">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\EngineCore\ScriptCore\VansScriptContextRuntime.cpp">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClCompile>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansLuaScriptInspectorService.h">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptComponentReader.h">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\EngineCore\ScriptCore\VansScriptTypes.h">
+      <Filter>EngineCore\ScriptCore</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lapi.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lauxlib.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lcode.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lctype.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\ldebug.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\ldo.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lfunc.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lgc.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\ljumptab.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\llex.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\llimits.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lmem.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lobject.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lopcodes.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lopnames.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lparser.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lprefix.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lstate.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lstring.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\ltable.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\ltm.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lua.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lua.hpp">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\luaconf.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lualib.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lundump.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lvm.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
+    <ClInclude Include="External\Lua\lua-5.4.8\src\lzio.h">
+      <Filter>External\Lua\lua-5.4.8\src</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

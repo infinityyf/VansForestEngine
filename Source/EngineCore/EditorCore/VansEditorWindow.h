@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "../RenderCore/VansCamera.h"
 #include "../RenderCore/VansGraphicsDevice.h"
+#include "../EventCore/VansEventConnection.h"
 #include "../../Application/VansBasicWindow.h"
 #include "Windows/VansBaseWindowComponent.h"
 #include <cstdint>
@@ -130,6 +131,7 @@ namespace VansGraphics
 
 		/// 绘制顶部运行控制工具栏（Play / Pause / Resume / Stop）
 		static void DrawPlayControlToolbar();
+		static void DrawBuildMenu();
 
 		/// 运行控制动作
 		static void OnPlay();
@@ -142,6 +144,7 @@ namespace VansGraphics
 		static bool IsEditing() { return m_PlayState == VansEditorPlayState::Editing; }
 
 		static std::vector<VansGraphics::VansCamera*> m_Cameras;
+		static Vans::VansScopedEventConnections m_CameraInputConnections;
 
 	public:
 

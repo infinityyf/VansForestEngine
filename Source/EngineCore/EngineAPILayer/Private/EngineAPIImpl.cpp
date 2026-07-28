@@ -4341,21 +4341,19 @@ namespace Vans::EditorAPI
 
 	void EngineAPIImpl::SetupRuntimeScriptProjectVenv(const std::string& projectRootPath)
 	{
-		if (!m_ScriptContext)
-			m_ScriptContext = &GetDefaultScriptContext();
-		m_ScriptContext->SetupProjectVenv(projectRootPath);
+		(void)projectRootPath;
 	}
 
 	void EngineAPIImpl::ReloadRuntimeScripts()
 	{
 		if (m_ScriptContext)
-			m_ScriptContext->ReloadAllPyScripts();
+			m_ScriptContext->ReloadAllLuaScripts();
 	}
 
 	void EngineAPIImpl::ReloadRuntimeScriptModule()
 	{
 		if (m_ScriptContext)
-			m_ScriptContext->ReloadPydModule();
+			m_ScriptContext->ReloadAllLuaScripts();
 	}
 
 	bool EngineAPIImpl::CanUndo() const

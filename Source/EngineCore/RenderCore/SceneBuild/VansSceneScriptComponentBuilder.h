@@ -2,15 +2,15 @@
 
 #include "../VansScene.h"
 
-#include "../../ScriptCore/VansPythonScriptComponentDescriptor.h"
+#include "../../ScriptCore/VansScriptTypes.h"
 
 namespace VansGraphics
 {
 	class VansSceneScriptComponentBuilder
 	{
 	public:
-		static void BuildPythonScripts(
+		static void BuildScripts(
 			VansScriptObject& object,
-			const VansPythonScriptComponentDescriptors& scriptComponents);
+			const VansScriptComponentDescriptors& scriptComponents);
 	};
 }

@@ -5,7 +5,7 @@
 namespace VansGraphics
 {
     // -----------------------------------------------------------------------
-    // Console output window – switchable between Engine / Python output.
+    // Console output window ?switchable between Engine / Script output.
     // -----------------------------------------------------------------------
     class VansConsoleWindow : public VansBaseWindowComponent
     {
@@ -15,7 +15,7 @@ namespace VansGraphics
     private:
         void DrawConsoleContents();
 
-        // 0 = All, 1 = Engine only, 2 = Python only
+        // 0 = All, 1 = Engine only, 2 = Script only
         int m_FilterMode = 0;
 
         // Auto-scroll

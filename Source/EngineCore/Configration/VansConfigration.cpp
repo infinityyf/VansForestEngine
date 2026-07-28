@@ -1,5 +1,6 @@
 #include "VansConfigration.h"
 #include <Windows.h>
+#include <algorithm>
 #include <filesystem>
 
 VansConfigration*  VansConfigration::instance = nullptr;
@@ -42,4 +43,12 @@ VansConfigration* VansConfigration::GetInstance()
 		instance = new VansConfigration();
 	}
 	return instance;
+}
+
+void VansConfigration::SetProjectRootPath(const std::string& rootPath)
+{
+	ProjectRootPath = rootPath;
+	std::replace(ProjectRootPath.begin(), ProjectRootPath.end(), '\\', '/');
+	if (!ProjectRootPath.empty() && ProjectRootPath.back() != '/')
+		ProjectRootPath += '/';
 }

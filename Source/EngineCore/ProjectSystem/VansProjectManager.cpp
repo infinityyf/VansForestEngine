@@ -77,6 +77,11 @@ bool VansProjectManager::CreateProject(const std::string& folderPath,
 // -----------------------------------------------------------------------
 bool VansProjectManager::OpenProject(const std::string& projectRootPath)
 {
+	return OpenProject(projectRootPath, VansProjectOpenOptions{});
+}
+
+bool VansProjectManager::OpenProject(const std::string& projectRootPath, const VansProjectOpenOptions& options)
+{
 	std::string root = projectRootPath;
 	std::replace(root.begin(), root.end(), '\\', '/');
 	if (!root.empty() && root.back() != '/')
@@ -104,43 +109,56 @@ bool VansProjectManager::OpenProject(const std::string& projectRootPath)
 	m_Loaded = true;
 	m_ProjectSettings.SetDefaults();
 
-	if (!LoadProjectSettings())
+	if (options.loadProjectSettings && !LoadProjectSettings())
 	{
 		VANS_LOG_WARN("[ProjectManager] Falling back to default project settings");
 	}
 
-	// Update last-opened timestamp and persist
-	m_Config.lastOpenedAt = []() {
-		auto now = std::chrono::system_clock::now();
-		std::time_t t = std::chrono::system_clock::to_time_t(now);
-		std::tm tm{};
+	if (options.updateLastOpenedAt)
+	{
+		// Update last-opened timestamp and persist
+		m_Config.lastOpenedAt = []() {
+			auto now = std::chrono::system_clock::now();
+			std::time_t t = std::chrono::system_clock::to_time_t(now);
+			std::tm tm{};
 #ifdef _WIN32
-		localtime_s(&tm, &t);
+			localtime_s(&tm, &t);
 #else
-		localtime_r(&t, &tm);
+			localtime_r(&t, &tm);
 #endif
-		char buf[64];
-		std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
-		return std::string(buf);
-	}();
-	m_Config.SaveToFile(configPath);
+			char buf[64];
+			std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
+			return std::string(buf);
+		}();
+		m_Config.SaveToFile(configPath);
+	}
 
 	// Discover scenes
 	m_SceneManager.Clear();
 	m_SceneManager.SetDefaultScene(m_Config.defaultScene);
 	m_SceneManager.DiscoverScenes(root + "Scenes");
 
-	m_AssetDatabase = std::make_unique<VansAssetDatabase>(
-		fs::path(root) / m_Config.assetsRoot,
-		fs::path(root) / m_Config.importedArtifactRoot);
-	const VansAssetScanResult assetScan = m_AssetDatabase->Scan();
-	for (const std::string& error : assetScan.errors)
-		VANS_LOG_ERROR("[AssetDatabase] " << error);
-	VANS_LOG("[AssetDatabase] Registered " << assetScan.registered
-		<< " assets, generated " << assetScan.generatedMeta << " meta files");
+	if (options.scanAssets)
+	{
+		m_AssetDatabase = std::make_unique<VansAssetDatabase>(
+			fs::path(root) / m_Config.assetsRoot,
+			fs::path(root) / m_Config.importedArtifactRoot);
+		const VansAssetScanResult assetScan = m_AssetDatabase->Scan();
+		for (const std::string& error : assetScan.errors)
+			VANS_LOG_ERROR("[AssetDatabase] " << error);
+		VANS_LOG("[AssetDatabase] Registered " << assetScan.registered
+			<< " assets, generated " << assetScan.generatedMeta << " meta files");
+	}
+	else
+	{
+		m_AssetDatabase.reset();
+	}
 
-	// Update recent list
-	RecentProjects::AddOrUpdate(m_Config.projectName, root, m_Config.engineVersion);
+	if (options.updateRecentProjects)
+	{
+		// Update recent list
+		RecentProjects::AddOrUpdate(m_Config.projectName, root, m_Config.engineVersion);
+	}
 
 	VANS_LOG("[ProjectManager] Project '" << m_Config.projectName << "' loaded successfully");
 	return true;
@@ -258,21 +276,20 @@ void VansProjectManager::CreateDefaultDirectories(const std::string& rootPath)
 		}
 	}
 
-	// Create the default Python requirements template for new projects when missing.
-	fs::path reqPath = fs::path(rootPath) / "Scripts" / "requirements.txt";
-	bool createdRequirements = false;
-	std::string requirementsError;
-	if (!VansProjectScaffoldStorage::EnsureDefaultPythonRequirementsFile(
-		reqPath,
-		createdRequirements,
-		requirementsError))
+	fs::path defaultScriptPath = fs::path(rootPath) / "Scripts" / "default.lua";
+	bool createdDefaultScript = false;
+	std::string scriptError;
+	if (!VansProjectScaffoldStorage::EnsureDefaultLuaScriptFile(
+		defaultScriptPath,
+		createdDefaultScript,
+		scriptError))
 	{
-		VANS_LOG_WARN("[ProjectManager] Cannot create requirements.txt at: "
-			<< reqPath.string() << " (" << requirementsError << ")");
+		VANS_LOG_WARN("[ProjectManager] Cannot create default.lua at: "
+			<< defaultScriptPath.string() << " (" << scriptError << ")");
 	}
-	else if (createdRequirements)
+	else if (createdDefaultScript)
 	{
-		VANS_LOG("[ProjectManager] Created default requirements.txt");
+		VANS_LOG("[ProjectManager] Created default Lua script");
 	}
 }
 

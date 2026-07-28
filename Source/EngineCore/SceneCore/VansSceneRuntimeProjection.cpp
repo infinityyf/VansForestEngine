@@ -9,7 +9,7 @@
 #include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../Util/VansLog.h"
-#include "../ScriptCore/VansPythonScriptComponentReader.h"
+#include "../ScriptCore/VansScriptComponentReader.h"
 #include "VansSceneAnimationComponentReader.h"
 #include "VansSceneCameraMediaComponentReader.h"
 #include "VansSceneContentBuildPlan.h"
@@ -693,10 +693,10 @@ bool TryBuildAuthoringRenderNode(
 
 void CollectAuthoringRuntimeComponentMetadata(
 	const VansSerializedValue& entity,
-	VansPythonScriptComponentDescriptors& outPythonScripts,
+	VansScriptComponentDescriptors& outScriptComponents,
 	std::unordered_map<std::string, std::string>& outComponentGuids)
 {
-	outPythonScripts.clear();
+	outScriptComponents.clear();
 
 	const VansSerializedValue* authoringComponents = FindSerializedArrayField(entity, "components");
 	if (!authoringComponents)
@@ -716,13 +716,14 @@ void CollectAuthoringRuntimeComponentMetadata(
 		{
 			if (enabled && dataValue)
 			{
-				VansPythonScriptComponentDescriptor descriptor;
-				if (VansPythonScriptComponentReader::TryReadScriptComponent(
+				VansScriptComponentDescriptor descriptor;
+				if (VansScriptComponentReader::TryReadScriptComponent(
 					*dataValue,
 					componentGuid,
+					enabled,
 					descriptor))
 				{
-					outPythonScripts.push_back(std::move(descriptor));
+					outScriptComponents.push_back(std::move(descriptor));
 				}
 			}
 			continue;
@@ -874,10 +875,10 @@ bool AppendAuthoringEntityToContentPlan(
 			objectConfig.componentGuids[CanonicalRuntimeComponentKeyForName("render")] = renderGuid;
 	}
 
-	VansPythonScriptComponentDescriptors pythonScripts;
+	VansScriptComponentDescriptors scriptComponents;
 	CollectAuthoringRuntimeComponentMetadata(
 		entity,
-		pythonScripts,
+		scriptComponents,
 		objectConfig.componentGuids);
 	objectConfig.multiMeshRoot = ReadAuthoringMultiMeshRootComponent(entity);
 	objectConfig.physicsComponents = VansScenePhysicsComponentReader::ReadAuthoringComponents(entity);
@@ -918,7 +919,7 @@ bool AppendAuthoringEntityToContentPlan(
 			projectRoot,
 			false);
 	}
-	objectConfig.pythonScripts = std::move(pythonScripts);
+	objectConfig.scriptComponents = std::move(scriptComponents);
 
 	plan.objects.objects.push_back(std::move(objectConfig));
 	return true;

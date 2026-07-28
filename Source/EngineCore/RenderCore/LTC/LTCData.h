@@ -14,7 +14,7 @@
 // LTC2   : amplitude, GGX Fresnel/horizon term, sphere-clip threshold, padding
 //
 // Data definitions live in the generated LTCData.generated.inl, produced by:
-//      python Source/EngineCore/RenderCore/LTC/generate_ltc_data.py
+//      Rebuild the generated LTC table with the offline LUT generator.
 // The generator downloads ltc.js once, parses the two arrays, and emits the
 // .inl file with two `static constexpr float` arrays of 16384 floats each
 // (no binary asset is committed to the repo).

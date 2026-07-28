@@ -685,7 +685,9 @@ namespace VansGraphics
 			VANS_LOG_ERROR("[VansVKDevice] PBR prefilter command submit failed.");
 		}
 
+		WaitForDevice();
 		prefilterCBBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
+		delete texture;
 	}
 
 	void VansVKDevice::PrepareSSAORenderData()

@@ -14,15 +14,14 @@ VansGraphics::VansScriptorWindow::VansScriptorWindow()
     RefreshFileList();
 }
 
-// 递归收集当前项目 Scripts/ 目录下的所有 .py 文件
 void VansGraphics::VansScriptorWindow::RefreshFileList()
 {
-    m_PythonFiles.clear();
+    m_LuaFiles.clear();
 
     if (m_ProjectRootPath.empty())
         return;
 
-    // 当前项目根路径下的 Scripts/ 目录
+    // ?Scripts/ 
     std::string scriptsDir = m_ProjectRootPath + "Scripts";
 
     if (!std::filesystem::exists(scriptsDir))
@@ -30,14 +29,14 @@ void VansGraphics::VansScriptorWindow::RefreshFileList()
 
     for (auto& entry : std::filesystem::recursive_directory_iterator(scriptsDir))
     {
-        if (entry.is_regular_file() && entry.path().extension() == ".py")
+        if (entry.is_regular_file() && entry.path().extension() == ".lua")
         {
-            m_PythonFiles.push_back(std::filesystem::canonical(entry.path()));
+            m_LuaFiles.push_back(std::filesystem::canonical(entry.path()));
         }
     }
 
     // Sort alphabetically by filename
-    std::sort(m_PythonFiles.begin(), m_PythonFiles.end(),
+    std::sort(m_LuaFiles.begin(), m_LuaFiles.end(),
         [](const std::filesystem::path& a, const std::filesystem::path& b) {
             return a.filename().string() < b.filename().string();
         });
@@ -69,24 +68,15 @@ void VansGraphics::VansScriptorWindow::DrawScriptorContents(Vans::EditorAPI::IEn
         m_NeedsRefresh = true;
 
     ImGui::SameLine();
-    if (ImGui::Button("Reload .py"))
+    if (ImGui::Button("Reload Lua"))
     {
         editorAPI.ReloadRuntimeScripts();
         m_NeedsRefresh = true;
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Force-reload all tracked Python scripts");
+        ImGui::SetTooltip("Force-reload all tracked Lua scripts");
 
-    ImGui::SameLine();
-    if (ImGui::Button("Reload .pyd"))
-    {
-        editorAPI.ReloadRuntimeScriptModule();
-        m_NeedsRefresh = true;
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Rebuild vanscomponent, then click here to hot-reload the C++ .pyd module");
-
-    // ── Font scale controls ──────────────────────────────────────────
+    //  Font scale controls 
     ImGui::SameLine();
     ImGui::Text("|");
     ImGui::SameLine();
@@ -95,7 +85,7 @@ void VansGraphics::VansScriptorWindow::DrawScriptorContents(Vans::EditorAPI::IEn
     ImGui::SameLine();
     ImGui::SetNextItemWidth(80.0f);
     ImGui::SliderFloat("##fontscale", &m_EditorFontScale, FONT_SCALE_MIN, FONT_SCALE_MAX, "%.0f%%");
-    // Display as percentage: remap the raw 0.5–3.0 value to 50–300 for display
+    // Display as percentage: remap the raw 0.5?.0 value to 50?00 for display
     // SliderFloat already shows the raw value; override with a centered label
     m_EditorFontScale = std::clamp(m_EditorFontScale, FONT_SCALE_MIN, FONT_SCALE_MAX);
     ImGui::SameLine();
@@ -116,9 +106,9 @@ void VansGraphics::VansScriptorWindow::DrawScriptorContents(Vans::EditorAPI::IEn
 
     // File list panel
     ImGui::BeginChild("ScriptList", ImVec2(listWidth, 0), true);
-    for (size_t i = 0; i < m_PythonFiles.size(); ++i)
+    for (size_t i = 0; i < m_LuaFiles.size(); ++i)
     {
-        const auto& path = m_PythonFiles[i];
+        const auto& path = m_LuaFiles[i];
         std::string label = path.filename().string();
 
         // Mark dirty files with an asterisk
@@ -145,7 +135,7 @@ void VansGraphics::VansScriptorWindow::DrawScriptorContents(Vans::EditorAPI::IEn
 
     ImGui::SameLine();
 
-    // Editor panel – editable text view of the selected file
+    // Editor panel ?editable text view of the selected file
     ImGui::BeginChild("ScriptEditor", ImVec2(0, 0), true);
 
     // Ctrl+Scroll wheel to adjust font scale while hovering the editor
@@ -240,7 +230,7 @@ void VansGraphics::VansScriptorWindow::LoadSelectedFile()
     }
     else
     {
-        VansConsole::Get().LogPython("[Script] Failed to load " + m_SelectedScript.string() + " (" + error + ")");
+        VansConsole::Get().LogScript("[Script] Failed to load " + m_SelectedScript.string() + " (" + error + ")");
     }
 
     // Resize to fit EDIT_BUF_SIZE so ImGui has room for edits
@@ -259,13 +249,13 @@ void VansGraphics::VansScriptorWindow::SaveCurrentFile(Vans::EditorAPI::IEngineE
     if (Vans::VansFileStorage::WriteAtomicBytes(m_LoadedPath, contents, error))
     {
         m_Dirty = false;
-        VansConsole::Get().LogPython("[Script] Saved " + m_LoadedPath.filename().string());
+        VansConsole::Get().LogScript("[Script] Saved " + m_LoadedPath.filename().string());
 
-        // Auto-reload the saved script in the Python interpreter
+        // Auto-reload the saved script in the Lua runtime
         editorAPI.ReloadRuntimeScripts();
     }
     else
     {
-        VansConsole::Get().LogPython("[Script] Failed to save " + m_LoadedPath.string() + " (" + error + ")");
+        VansConsole::Get().LogScript("[Script] Failed to save " + m_LoadedPath.string() + " (" + error + ")");
     }
 }

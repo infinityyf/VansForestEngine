@@ -7,7 +7,7 @@
 namespace VansGraphics
 {
     // -----------------------------------------------------------------------
-    // Script browser window – lists all .py files found under the current
+    // Script browser window - lists all .lua files found under the current
     // project's Scripts/ directory and allows selecting / editing them.
     // -----------------------------------------------------------------------
     class VansScriptorWindow : public VansBaseWindowComponent
@@ -16,7 +16,7 @@ namespace VansGraphics
         VansScriptorWindow();
         void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 
-        // The currently selected .py file (absolute path)
+        // The currently selected .lua file (absolute path)
         static std::filesystem::path m_SelectedScript;
 
     private:
@@ -25,7 +25,7 @@ namespace VansGraphics
         void LoadSelectedFile();
         void SaveCurrentFile(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 
-        std::vector<std::filesystem::path> m_PythonFiles;
+        std::vector<std::filesystem::path> m_LuaFiles;
         bool m_NeedsRefresh = true;
         std::string m_ProjectRootPath;
 

@@ -1,12 +1,13 @@
 #include "VansNoesisInputAdapter.h"
 
+#include "../../../EventCore/VansEventBus.h"
+#include "../../../Util/VansInputEvents.h"
 #include "../../../Util/VansInputManager.h"
 #include "../../../Util/VansLog.h"
 
 #include <NsGui/IView.h>
 #include <NsGui/InputEnums.h>
 #include <GLFW/glfw3.h>
-#include "imgui.h"
 
 namespace VansRuntime
 {
@@ -26,35 +27,42 @@ void VansNoesisInputAdapter::Initialize()
 
     auto& input = Vans::VansInputManager::Get();
 
-    // Key events
-    input.AddKeyListener(k_KeyListenerID,
-        [this](int key, int scancode, int action, int mods)
+    m_InputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansKeyEvent>(
+        [this](const Vans::VansKeyEvent& event)
         {
-            OnKeyEvent(key, scancode, action, mods);
-        });
+            OnKeyEvent(event.key, event.scancode, event.action, event.mods);
+        },
+        Vans::VansEventLane::Input,
+        0,
+        "VansNoesisInputAdapter::Key"));
 
-    // Mouse move
-    input.AddMouseMoveListener(k_MouseMoveListenerID,
-        [this](double x, double y)
+    m_InputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansMouseMoveEvent>(
+        [this](const Vans::VansMouseMoveEvent& event)
         {
-            OnMouseMove(x, y);
-        });
+            OnMouseMove(event.x, event.y);
+        },
+        Vans::VansEventLane::Input,
+        0,
+        "VansNoesisInputAdapter::MouseMove"));
 
-    // Mouse button clicks
-    input.AddMouseClickListener(k_MouseClickListenerID,
-        [this](int button, int action, int mods)
+    m_InputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansMouseButtonEvent>(
+        [this](const Vans::VansMouseButtonEvent& event)
         {
-            OnMouseClick(button, action, mods);
-        });
+            OnMouseClick(event.button, event.action, event.mods);
+        },
+        Vans::VansEventLane::Input,
+        0,
+        "VansNoesisInputAdapter::MouseButton"));
 
-    // Scroll
-    input.AddScrollListener(k_ScrollListenerID,
-        [this](double xOffset, double yOffset)
+    m_InputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansMouseScrollEvent>(
+        [this](const Vans::VansMouseScrollEvent& event)
         {
-            // Accumulate for the Update() flush
-            m_ScrollAccumX += xOffset;
-            m_ScrollAccumY += yOffset;
-        });
+            m_ScrollAccumX += event.xOffset;
+            m_ScrollAccumY += event.yOffset;
+        },
+        Vans::VansEventLane::Input,
+        0,
+        "VansNoesisInputAdapter::MouseScroll"));
 
     // Cache initial mouse position
     double mx = 0.0, my = 0.0;
@@ -69,11 +77,7 @@ void VansNoesisInputAdapter::Shutdown()
 {
     if (!m_Initialized) return;
 
-    auto& input = Vans::VansInputManager::Get();
-    input.RemoveKeyListener(k_KeyListenerID);
-    input.RemoveMouseMoveListener(k_MouseMoveListenerID);
-    input.RemoveMouseClickListener(k_MouseClickListenerID);
-    input.RemoveScrollListener(k_ScrollListenerID);
+    m_InputConnections.DisconnectAll();
 
     m_Views.clear();
     m_Initialized = false;
@@ -90,11 +94,8 @@ void VansNoesisInputAdapter::Update()
 
     if (m_ScrollAccumY != 0.0 || m_ScrollAccumX != 0.0)
     {
-        // 使用 ImGui 鼠标坐标，与 SetSceneViewport 的坐标系一致
-        ImVec2 imPos = ImGui::GetMousePos();
-        double mx = imPos.x, my = imPos.y;
         int ix = 0, iy = 0;
-        TransformMouse(mx, my, ix, iy);
+        TransformMouse(m_LastMouseX, m_LastMouseY, ix, iy);
 
         // Noesis uses 120 units per scroll notch (same as Windows WHEEL_DELTA)
         const int rotationY = static_cast<int>(m_ScrollAccumY * 120.0);
@@ -184,15 +185,13 @@ void VansNoesisInputAdapter::OnKeyEvent(int glfwKey, int /*scancode*/, int actio
     }
 }
 
-void VansNoesisInputAdapter::OnMouseMove(double /*x*/, double /*y*/)
+void VansNoesisInputAdapter::OnMouseMove(double x, double y)
 {
-    // 使用 ImGui 鼠标坐标，与 SetSceneViewport 传入的 GetItemRectMin() 坐标系一致
-    ImVec2 imPos = ImGui::GetMousePos();
-    m_LastMouseX = imPos.x;
-    m_LastMouseY = imPos.y;
+    m_LastMouseX = x;
+    m_LastMouseY = y;
 
     int ix = 0, iy = 0;
-    TransformMouse(imPos.x, imPos.y, ix, iy);
+    TransformMouse(x, y, ix, iy);
 
     for (auto* view : m_Views)
     {
@@ -205,12 +204,8 @@ void VansNoesisInputAdapter::OnMouseClick(int glfwButton, int action, int /*mods
 {
     const Noesis::MouseButton noesisButton = ConvertGLFWMouseButton(glfwButton);
 
-    // 使用 ImGui 鼠标坐标，与 SetSceneViewport 传入的 GetItemRectMin() 坐标系一致
-    ImVec2 imPos = ImGui::GetMousePos();
-    double mx = imPos.x;
-    double my = imPos.y;
     int ix = 0, iy = 0;
-    TransformMouse(mx, my, ix, iy);
+    TransformMouse(m_LastMouseX, m_LastMouseY, ix, iy);
 
     for (auto* view : m_Views)
     {

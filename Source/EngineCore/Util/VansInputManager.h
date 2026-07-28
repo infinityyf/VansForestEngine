@@ -2,7 +2,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
-#include <functional>
 #include <vector>
 #include <mutex>
 
@@ -67,6 +66,7 @@ namespace Vans
 
         // Call once per frame at the start of the update loop
         void Update();
+        void RefreshPolledState();
 
         // -------- Raw Key Queries --------
 
@@ -125,29 +125,6 @@ namespace Vans
         /// Get axis value: -1.0, 0.0, or 1.0
         float GetAxis(const std::string& name) const;
 
-        // -------- Callback Registration --------
-
-        using KeyCallback   = std::function<void(int key, int scancode, int action, int mods)>;
-        using MouseCallback = std::function<void(double x, double y)>;
-        using ClickCallback = std::function<void(int button, int action, int mods)>;
-        using ScrollCallback = std::function<void(double xOffset, double yOffset)>;
-
-        /// Add a listener that receives raw key events (GLFW-style)
-        void AddKeyListener(const std::string& id, KeyCallback callback);
-        void RemoveKeyListener(const std::string& id);
-
-        /// Add a listener that receives raw mouse move events
-        void AddMouseMoveListener(const std::string& id, MouseCallback callback);
-        void RemoveMouseMoveListener(const std::string& id);
-
-        /// Add a listener for mouse button clicks
-        void AddMouseClickListener(const std::string& id, ClickCallback callback);
-        void RemoveMouseClickListener(const std::string& id);
-
-        /// Add a listener for scroll events
-        void AddScrollListener(const std::string& id, ScrollCallback callback);
-        void RemoveScrollListener(const std::string& id);
-
         // -------- Utility --------
 
         GLFWwindow* GetWindow() const { return m_Window; }
@@ -158,6 +135,8 @@ namespace Vans
 
         VansInputManager(const VansInputManager&) = delete;
         VansInputManager& operator=(const VansInputManager&) = delete;
+
+        void RefreshPolledState();
 
         // GLFW callback trampolines (static)
         static void GLFWKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
@@ -200,10 +179,5 @@ namespace Vans
         // Axis bindings
         std::unordered_map<std::string, InputAxis> m_AxisBindings;
 
-        // Listeners
-        std::unordered_map<std::string, KeyCallback>    m_KeyListeners;
-        std::unordered_map<std::string, MouseCallback>  m_MouseMoveListeners;
-        std::unordered_map<std::string, ClickCallback>  m_MouseClickListeners;
-        std::unordered_map<std::string, ScrollCallback> m_ScrollListeners;
     };
 }

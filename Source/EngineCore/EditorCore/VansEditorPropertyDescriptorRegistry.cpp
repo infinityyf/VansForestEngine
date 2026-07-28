@@ -1,7 +1,6 @@
 #include "VansEditorPropertyDescriptorRegistry.h"
 
-#include "../ScriptCore/VansPythonScriptFieldSchema.h"
-#include "../ScriptCore/VansPythonScriptInspectorService.h"
+#include "../ScriptCore/VansLuaScriptInspectorService.h"
 
 #include <algorithm>
 #include <cctype>
@@ -87,21 +86,21 @@ ObjectReferenceSlotDescriptor VansEditorPropertyDescriptorRegistry::ProjectAsset
     return descriptor;
 }
 
-bool VansEditorPropertyDescriptorRegistry::TryResolvePythonScriptFieldObjectReferenceSlot(
-    const PythonScriptFieldDescriptor& descriptor,
+bool VansEditorPropertyDescriptorRegistry::TryResolveLuaScriptFieldObjectReferenceSlot(
+    const LuaScriptFieldDescriptor& descriptor,
     ObjectReferenceSlotDescriptor& slot)
 {
     ObjectReferenceSlotDescriptor resolvedSlot;
     resolvedSlot.storagePolicy = ObjectReferenceStoragePolicy::EditorObjectReference;
 
-    if (descriptor.kind == PythonScriptInspectableFieldKind::SceneEntityReference)
+    if (descriptor.kind == LuaScriptInspectableFieldKind::SceneEntityReference)
     {
         resolvedSlot.expectedDomain = EditorObjectDomain::SceneEntity;
         slot = std::move(resolvedSlot);
         return true;
     }
 
-    if (descriptor.kind == PythonScriptInspectableFieldKind::SceneComponentReference)
+    if (descriptor.kind == LuaScriptInspectableFieldKind::SceneComponentReference)
     {
         resolvedSlot.expectedDomain = EditorObjectDomain::SceneComponent;
         resolvedSlot.expectedComponentType = descriptor.componentType;
@@ -109,10 +108,10 @@ bool VansEditorPropertyDescriptorRegistry::TryResolvePythonScriptFieldObjectRefe
         return true;
     }
 
-    if (descriptor.kind == PythonScriptInspectableFieldKind::ProjectAssetReference)
+    if (descriptor.kind == LuaScriptInspectableFieldKind::ProjectAssetReference)
     {
         slot = ProjectAssetReferenceSlot(
-            EditorAssetTypeFromString(CanonicalPythonInspectorAssetTypeName(descriptor.assetType)),
+            EditorAssetTypeFromString(descriptor.assetType),
             ObjectReferenceStoragePolicy::EditorObjectReference);
         return true;
     }

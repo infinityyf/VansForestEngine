@@ -1,6 +1,7 @@
 #pragma once
 
 #include <NsGui/IView.h>
+#include "../../../EventCore/VansEventConnection.h"
 #include <vector>
 #include <string>
 
@@ -24,7 +25,7 @@ namespace VansRuntime
 ///   4. Call Shutdown() on teardown.
 ///
 /// Convention: All input MUST go through VansInputManager::Get().
-///             Never read glfwGetKey or ImGui IO directly.
+///             Never read platform input APIs or editor UI state directly.
 /// ─────────────────────────────────────────────────────────────────────────────
 class VansNoesisInputAdapter
 {
@@ -49,16 +50,16 @@ public:
     /// Returns true if Noesis consumed keyboard input this frame (any view handled it)
     bool WantsKeyboard() const { return m_WantsKeyboard; }
 
-    /// Set the screen-space rect occupied by the scene image (ImGui viewport coordinates)
-    /// and the Noesis view dimensions, so that raw GLFW cursor coords are transformed
+    /// Set the screen-space rect occupied by the scene image
+    /// and the Noesis view dimensions, so that raw cursor coords are transformed
     /// into Noesis view-local coordinates before being sent to IView::MouseMove / MouseButtonDown.
-    /// Call every frame from VansSceneWindow after ImGui::Image().
+    /// Call every frame after the host has resolved the scene viewport rectangle.
     void SetSceneViewport(float screenX, float screenY,
                           float screenW, float screenH,
                           float noesisW, float noesisH);
 
 private:
-    // Transform a raw GLFW cursor position to Noesis view-local integer coords
+    // Transform a raw cursor position to Noesis view-local integer coords
     void TransformMouse(double rawX, double rawY, int& outX, int& outY) const;
     // Internal event handlers registered with VansInputManager
     void OnKeyEvent(int key, int scancode, int action, int mods);
@@ -66,10 +67,10 @@ private:
     void OnMouseClick(int button, int action, int mods);
     void OnScroll(double xOffset, double yOffset);
 
-    // GLFW key → Noesis Key conversion
+    // GLFW key to Noesis Key conversion
     static Noesis::Key ConvertGLFWKey(int glfwKey);
 
-    // GLFW mouse button index → Noesis MouseButton
+    // GLFW mouse button index to Noesis MouseButton
     static Noesis::MouseButton ConvertGLFWMouseButton(int glfwButton);
 
 private:
@@ -81,7 +82,7 @@ private:
     double m_LastMouseX = 0.0;
     double m_LastMouseY = 0.0;
 
-    // Scene-image viewport in screen (GLFW window) coords
+    // Scene-image viewport in screen coords
     float m_ViewportX  = 0.0f;
     float m_ViewportY  = 0.0f;
     float m_ViewportW  = 1.0f;
@@ -94,11 +95,7 @@ private:
     double m_ScrollAccumX = 0.0;
     double m_ScrollAccumY = 0.0;
 
-    // Listener IDs registered with VansInputManager
-    static constexpr const char* k_KeyListenerID        = "VansNoesisInputAdapter_Key";
-    static constexpr const char* k_MouseMoveListenerID  = "VansNoesisInputAdapter_MouseMove";
-    static constexpr const char* k_MouseClickListenerID = "VansNoesisInputAdapter_MouseClick";
-    static constexpr const char* k_ScrollListenerID     = "VansNoesisInputAdapter_Scroll";
+    Vans::VansScopedEventConnections m_InputConnections;
 };
 
 } // namespace VansRuntime

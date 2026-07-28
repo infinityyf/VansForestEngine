@@ -40,7 +40,7 @@ struct VansProjectConfig
 	// Logical directory names (relative to project root)
 	std::unordered_map<std::string, std::string> assetDirectories;
 
-	// Directories added to Python sys.path
+	// Logical script search paths relative to the project root.
 	std::vector<std::string> scriptSearchPaths;
 
 	std::string renderSettings;

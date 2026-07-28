@@ -209,7 +209,7 @@ void VansGraphics::VansScene::LoadSceneObjects(
 				objScl);
 		}
 
-		VansSceneScriptComponentBuilder::BuildPythonScripts(*obj, objectConfig.pythonScripts);
+		VansSceneScriptComponentBuilder::BuildScripts(*obj, objectConfig.scriptComponents);
 		VansSceneLightComponentBuilder::BindExplicitVideoComponentToRectLight(*this, *obj);
 		ApplyRuntimeComponentGuids(*obj, objectConfig.componentGuids);
 

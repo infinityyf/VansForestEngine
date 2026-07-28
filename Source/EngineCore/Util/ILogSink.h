@@ -7,7 +7,7 @@ enum class VansLogLevel;
 enum class VansLogChannel
 {
 	Engine,
-	Python
+	Script
 };
 
 class ILogSink
