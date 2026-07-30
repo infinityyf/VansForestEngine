@@ -519,6 +519,9 @@ void VansVegetationSystem::WriteBoneSimDescriptors()
 	// P6a: Scatter offset UBO (binding 5)  -  - subBladeCount 个共享散布偏 - 
 	descMgr->WriteBufferDescriptor(m_BoneSimDescSets[0], VEG_SIM_BINDING_SCATTER_OFFSETS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ m_ScatterOffsetUBO.GetNativeBuffer(), 0, m_ScatterOffsetUBO.GetBufferSize() }});
 
+	// Binding 6：读取本帧 cull 输出的可见性标记，用于跳过不可见草实例的模拟。
+	descMgr->WriteBufferDescriptor(m_BoneSimDescSets[0], VEG_SIM_BINDING_VISIBILITY_FLAGS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_VisibilityBuffer.GetNativeBuffer(), 0, m_VisibilityBuffer.GetBufferSize() }});
+
 	descMgr->CommitDescriptorUpdates();
 }
 
@@ -683,13 +686,15 @@ void VansVegetationSystem::WriteTreeDrawDescriptors(TreeDrawConfigGPU& cfg)
 // 4. CopyBuffer: visibleCount  - 每个 config  - indirect draw buffer instanceCount 字段
 // 5. Barrier: transfer  - draw indirect + vertex shader read
 // ============================================================================
-void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance)
+bool VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance)
 {
 	if (!m_CullShader || m_CullDescSets.empty())
 	{
 		VANS_LOG_WARN("[VegetationSystem] CullPass skipped: cull shader or descriptor sets not ready.");
-		return;
+		return false;
 	}
+	if (m_InstanceCount == 0)
+		return false;
 
 	bool singleConfigFastPath = (m_RenderConfigsGPU.size() == 1);
 
@@ -739,7 +744,7 @@ void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 		computeToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
 		computeCmd.PipelineBarrier(
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 			{ computeToTransfer });
 
 		// ── CopyBuffer: visibleCount  - indirect buffer instanceCount (offset 4) ─
@@ -773,9 +778,10 @@ void VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 		cullBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		computeCmd.PipelineBarrier(
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 			{ cullBarrier });
 	}
+	return true;
 }
 
 void VansVegetationSystem::DispatchTreeCullPass(VansVKCommandBuffer& computeCmd)
@@ -785,9 +791,9 @@ void VansVegetationSystem::DispatchTreeCullPass(VansVKCommandBuffer& computeCmd)
 	if (!m_TreeConfig.cullEnabled)
 		return;
 
-	std::vector<uint32_t> zeroCounts(m_TreeSpeciesInfosCPU.size(), 0);
-	if (!zeroCounts.empty())
-		m_TreeVisibleCountsBuffer.SetBufferData(zeroCounts.data(), 0, static_cast<int>(sizeof(uint32_t) * zeroCounts.size()));
+	m_TreeVisibleCountsZeroScratch.assign(m_TreeSpeciesInfosCPU.size(), 0u);
+	if (!m_TreeVisibleCountsZeroScratch.empty())
+		m_TreeVisibleCountsBuffer.SetBufferData(m_TreeVisibleCountsZeroScratch.data(), 0, static_cast<int>(sizeof(uint32_t) * m_TreeVisibleCountsZeroScratch.size()));
 
 	VkMemoryBarrier hostToCompute = {};
 	hostToCompute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -846,13 +852,16 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
                                    const glm::vec2& windDirection, float windStrength,
                                    float windFrequency, float windSpeed, float windBendMult,
                                    float stiffness, float damping,
-                                   float softness, float lodFullDist, float lodFadeDist)
+                                   float softness, float lodFullDist, float lodFadeDist,
+                                   bool useCullVisibilityMask)
 {
 	if (!m_BoneSimShader || m_BoneSimDescSets.empty())
 	{
 		VANS_LOG_WARN("[VegetationSystem] Update skipped: shaders or descriptor sets not ready.");
 		return;
 	}
+	if (m_InstanceCount == 0)
+		return;
 
 	// ── Pass 1: Bone Simulation ─────────────────────────────────────
 	GrassSimPushConstants simPC = {};
@@ -875,6 +884,7 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 	simPC.lodFadeDist        = lodFadeDist;
 	simPC.subBladeCount      = static_cast<int>(m_SubBladeCount);
 	simPC.grassHeight        = m_BladeHeight;
+	simPC.cullVisibilityEnabled = useCullVisibilityMask ? 1u : 0u;
 	simPC.boneCount          = m_BoneCountPerInstance;
 
 	computeCmd.EnsureComputeShader(*m_BoneSimShader, { m_GlobalDescSetLayout, m_BoneSimLayout });

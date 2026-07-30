@@ -74,6 +74,7 @@ namespace VansGraphics
         // Returns origin (camera position) and normalised direction.
         static void UnprojectRay(VansCamera* camera,
                                  float ndcX, float ndcY,
+                                 float viewportAspect,
                                  glm::vec3& outOrigin,
                                  glm::vec3& outDir);
 

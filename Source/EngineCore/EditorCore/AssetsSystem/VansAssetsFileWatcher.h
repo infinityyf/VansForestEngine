@@ -29,6 +29,11 @@ namespace Vans
 		std::chrono::steady_clock::time_point observedAt;
 	};
 
+	struct VansAssetFileChangedEvent
+	{
+		VansFileChange change;
+	};
+
 	// Editor-owned recursive file event source. It intentionally has no
 	// dependency on RenderCore and carries no shader-specific policy.
 	class VansAssetsFileWatcher
@@ -45,7 +50,6 @@ namespace Vans
 		void Start(std::chrono::milliseconds pollInterval = std::chrono::milliseconds(200));
 		void Stop();
 
-		std::vector<VansFileChange> DrainChanges();
 		bool IsWatching() const { return m_Watching.load(std::memory_order_acquire); }
 
 	private:
@@ -62,7 +66,6 @@ namespace Vans
 		std::mutex m_Mutex;
 		std::vector<std::filesystem::path> m_Roots;
 		std::unordered_map<std::wstring, Snapshot> m_Snapshots;
-		std::vector<VansFileChange> m_Changes;
 		std::thread m_WatchThread;
 		std::atomic<bool> m_Watching{ false };
 		std::atomic<std::uint64_t> m_NextSequence{ 1 };

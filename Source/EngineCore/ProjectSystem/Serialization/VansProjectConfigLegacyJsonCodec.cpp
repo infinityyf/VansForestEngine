@@ -1,7 +1,6 @@
 #include "VansProjectConfigLegacyJsonCodec.h"
 
 #include "../VansProjectConfig.h"
-#include "../../SceneCore/VansSceneSchema.h"
 
 #include <nlohmann/json.hpp>
 
@@ -20,14 +19,7 @@ namespace Vans
 			config.projectName = root.value("projectName", "");
 			config.engineVersion = root.value("engineVersion", "0.1.0");
 			config.createdAt = root.value("createdAt", "");
-			config.lastOpenedAt = root.value("lastOpenedAt", "");
 			config.defaultScene = root.value("defaultScene", "Scenes/MainScene.json");
-			config.sceneSchemaVersion = root.value("sceneSchemaVersion", VansSceneSchemaVersion);
-			if (config.sceneSchemaVersion != VansSceneSchemaVersion)
-			{
-				error = "Unsupported Scene schema version";
-				return false;
-			}
 
 			config.assetsRoot = "Assets";
 			config.importedArtifactRoot = "Library/Artifacts";
@@ -83,9 +75,7 @@ namespace Vans
 		root["projectName"] = config.projectName;
 		root["engineVersion"] = config.engineVersion;
 		root["createdAt"] = config.createdAt;
-		root["lastOpenedAt"] = config.lastOpenedAt;
 		root["defaultScene"] = config.defaultScene;
-		root["sceneSchemaVersion"] = VansSceneSchemaVersion;
 		root["assetDatabase"] = {
 			{ "assetsRoot", config.assetsRoot },
 			{ "importedArtifactRoot", config.importedArtifactRoot },

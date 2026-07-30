@@ -426,6 +426,8 @@ namespace VansGraphics
 
 		static constexpr const char* RT_HZB_RESULT = "Runtime.HZB.Result";
 
+		static constexpr const char* RT_HZB_OCCLUSION_RESULT = "Runtime.HZB.OcclusionResult";
+
 		static constexpr const char* RT_SCREEN_SPACE_SHADOW_RESULT = "Runtime.ScreenSpaceShadow.Result";
 
 		static constexpr const char* RT_PUNCTUAL_SHADOW_DEBUG_PREVIEW = "Runtime.PunctualShadow.DebugPreview";
@@ -603,6 +605,10 @@ namespace VansGraphics
 
 		std::vector<VkDescriptorSet> m_HZBDescriptorSets;
 
+		std::vector<VkDescriptorSetLayout> m_OcclusionHZBTexSetLayouts;
+
+		std::vector<VkDescriptorSet> m_OcclusionHZBDescriptorSets;
+
 
 
 		//SSR
@@ -620,6 +626,10 @@ namespace VansGraphics
 		VansVKBuffer m_ScreenSpaceShadowParamsCBBuffer;
 
 		ScreenSpaceShadowParamsGPU m_ScreenSpaceShadowParams;
+
+		VkDescriptorSetLayout m_MainCameraHiZCullSetLayout = VK_NULL_HANDLE;
+
+		std::vector<VkDescriptorSet> m_MainCameraHiZCullDescriptorSets;
 
 
 
@@ -806,15 +816,23 @@ namespace VansGraphics
 
 		VansComputeShader* m_HZBShader;
 
+		VansComputeShader* m_OcclusionHZBShader = nullptr;
+
 
 
 
 
 		VansComputeShader* m_HIZSeedShader;
 
+		VansComputeShader* m_OcclusionHIZSeedShader = nullptr;
+
 		VkDescriptorSetLayout m_HIZSeedSetLayout = VK_NULL_HANDLE;
 
 		std::vector<VkDescriptorSet> m_HIZSeedDescriptorSets;
+
+		VkDescriptorSetLayout m_OcclusionHIZSeedSetLayout = VK_NULL_HANDLE;
+
+		std::vector<VkDescriptorSet> m_OcclusionHIZSeedDescriptorSets;
 
 
 
@@ -823,6 +841,8 @@ namespace VansGraphics
 
 
 		VansComputeShader* m_ScreenSpaceShadowShader = nullptr;
+
+		VansComputeShader* m_MainCameraHiZCullShader = nullptr;
 
 
 

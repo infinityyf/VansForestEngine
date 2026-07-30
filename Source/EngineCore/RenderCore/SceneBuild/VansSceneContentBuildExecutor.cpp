@@ -2,6 +2,7 @@
 
 #include "../../SceneCore/VansSceneDocumentLoader.h"
 #include "../../SceneCore/VansSceneRuntimeProjection.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 #include "../../Util/VansLog.h"
 #include "VansSceneEnvironmentNodeBuilder.h"
 #include "VansSceneMaterialBuilder.h"
@@ -102,6 +103,13 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 	ApplyHeightFogSettings(*scene.GetMaterialManager(), renderSettings.heightFog);
 	ApplyVolumetricFogSettings(*scene.GetMaterialManager(), renderSettings.volumetricFog);
 	ApplyVolumetricCloudSettings(*scene.GetMaterialManager(), renderSettings.volumetricClouds);
+	ApplyMainCameraHiZCullSettings(scene, renderSettings.mainCameraHiZCulling);
+	if (Vans::VansProjectManager::Get().IsProjectLoaded())
+	{
+		ApplyProjectMainCameraHiZCullSettings(
+			scene,
+			Vans::VansProjectManager::Get().GetProjectSettings().GetMainCameraHiZCullSettings());
+	}
 	scene.GetReflectionProbeSystem()->LoadFromSceneConfig(buildPlan.reflectionProbes, path);
 	ApplyGISettings(scene, renderSettings.globalIllumination);
 
@@ -327,6 +335,56 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 	if (materialManager->m_SSGICBBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
 		materialManager->m_SSGICBBuffer.SetBufferData(
 			&volumeData.giVolumeMin, sizeof(glm::vec4), sizeof(glm::vec4) * 3);
+}
+
+void VansSceneContentBuildExecutor::ApplyMainCameraHiZCullSettings(
+	VansScene& scene,
+	const std::optional<Vans::VansSceneMainCameraHiZCullSettingsConfig>& config)
+{
+	VansMainCameraHiZCullSettings settings = scene.GetMainCameraHiZCullSettings();
+	if (config.has_value())
+	{
+		ApplyOptionalValue(config->enabled, settings.enabled);
+		ApplyOptionalValue(config->enableOpaque, settings.enableOpaque);
+		ApplyOptionalValue(config->enableHair, settings.enableHair);
+		ApplyOptionalValue(config->enableTransparent, settings.enableTransparent);
+		ApplyOptionalValue(config->enableDecal, settings.enableDecal);
+		ApplyOptionalValue(config->enableForwardOpaqueAfterDeferred, settings.enableForwardOpaqueAfterDeferred);
+		ApplyOptionalValue(config->depthBiasMeters, settings.depthBiasMeters);
+		ApplyOptionalValue(config->cameraMotionDisableDistance, settings.cameraMotionDisableDistance);
+		ApplyOptionalValue(config->cameraMotionDisableAngleRadians, settings.cameraMotionDisableAngleRadians);
+		ApplyOptionalValue(config->forceVisibleFramesAfterChange, settings.forceVisibleFramesAfterChange);
+		ApplyOptionalValue(config->refreshCulledEveryNFrames, settings.refreshCulledEveryNFrames);
+		ApplyOptionalValue(config->maxScreenCoverageForCull, settings.maxScreenCoverageForCull);
+	}
+
+	settings.depthBiasMeters = std::max(settings.depthBiasMeters, 0.0f);
+	settings.cameraMotionDisableDistance = std::max(settings.cameraMotionDisableDistance, 0.0f);
+	settings.cameraMotionDisableAngleRadians = std::max(settings.cameraMotionDisableAngleRadians, 0.0f);
+	settings.forceVisibleFramesAfterChange = std::max(settings.forceVisibleFramesAfterChange, 1u);
+	settings.refreshCulledEveryNFrames = std::max(settings.refreshCulledEveryNFrames, 1u);
+	settings.maxScreenCoverageForCull = std::clamp(settings.maxScreenCoverageForCull, 0.05f, 1.0f);
+	scene.SetMainCameraHiZCullSettings(settings);
+}
+
+void VansSceneContentBuildExecutor::ApplyProjectMainCameraHiZCullSettings(
+	VansScene& scene,
+	const Vans::VansProjectMainCameraHiZCullSettings& projectSettings)
+{
+	VansMainCameraHiZCullSettings settings = scene.GetMainCameraHiZCullSettings();
+	settings.enabled = projectSettings.enabled;
+	settings.enableOpaque = projectSettings.enableOpaque;
+	settings.enableHair = projectSettings.enableHair;
+	settings.enableTransparent = projectSettings.enableTransparent;
+	settings.enableDecal = projectSettings.enableDecal;
+	settings.enableForwardOpaqueAfterDeferred = projectSettings.enableForwardOpaqueAfterDeferred;
+	settings.depthBiasMeters = projectSettings.depthBiasMeters;
+	settings.cameraMotionDisableDistance = projectSettings.cameraMotionDisableDistance;
+	settings.cameraMotionDisableAngleRadians = projectSettings.cameraMotionDisableAngleRadians;
+	settings.forceVisibleFramesAfterChange = projectSettings.forceVisibleFramesAfterChange;
+	settings.refreshCulledEveryNFrames = projectSettings.refreshCulledEveryNFrames;
+	settings.maxScreenCoverageForCull = projectSettings.maxScreenCoverageForCull;
+	scene.SetMainCameraHiZCullSettings(settings);
 }
 
 std::string VansSceneContentBuildExecutor::ResolveProjectRootFromScenePath(const char* path)

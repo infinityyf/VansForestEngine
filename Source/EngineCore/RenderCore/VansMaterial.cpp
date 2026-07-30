@@ -338,10 +338,16 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 		descMgr->DestroyDescriptorSetLayout(layout);
 	m_HZBTexSetLayouts.clear();
 	descMgr->DestroyDescriptorSet(m_HZBDescriptorSets);
+	for (VkDescriptorSetLayout& layout : m_OcclusionHZBTexSetLayouts)
+		descMgr->DestroyDescriptorSetLayout(layout);
+	m_OcclusionHZBTexSetLayouts.clear();
+	descMgr->DestroyDescriptorSet(m_OcclusionHZBDescriptorSets);
 	descMgr->DestroyDescriptorSet(m_SSRTraceDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_SSRTraceSetLayout);
 	descMgr->DestroyDescriptorSet(m_ScreenSpaceShadowDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_ScreenSpaceShadowSetLayout);
+	descMgr->DestroyDescriptorSet(m_MainCameraHiZCullDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_MainCameraHiZCullSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSRResolveDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_SSRResolveSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSRAADescriptorSets);
@@ -358,6 +364,8 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	descMgr->DestroyDescriptorSetLayout(m_SSGITemporalSetLayout);
 	descMgr->DestroyDescriptorSet(m_HIZSeedDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_HIZSeedSetLayout);
+	descMgr->DestroyDescriptorSet(m_OcclusionHIZSeedDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_OcclusionHIZSeedSetLayout);
 	descMgr->DestroyDescriptorSet(m_CloudRayMarchDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_CloudRayMarchSetLayout);
 	descMgr->DestroyDescriptorSet(m_TileLightBuildDescriptorSets);

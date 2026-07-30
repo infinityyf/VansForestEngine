@@ -78,70 +78,14 @@ namespace
 			lookup[asset->m_AssetName] = asset;
 	}
 
-	VansGraphics::VansShadowAABB TransformBounds(
-		const glm::vec3& localMin,
-		const glm::vec3& localMax,
-		const glm::mat4& transform)
+	VansGraphics::VansShadowAABB ToShadowAABB(const VansGraphics::VansRenderAABB& bounds)
 	{
-		VansGraphics::VansShadowAABB result;
-		for (uint32_t corner = 0; corner < 8; ++corner)
-		{
-			const glm::vec3 local(
-				(corner & 1u) ? localMax.x : localMin.x,
-				(corner & 2u) ? localMax.y : localMin.y,
-				(corner & 4u) ? localMax.z : localMin.z);
-			const glm::vec3 world = glm::vec3(transform * glm::vec4(local, 1.0f));
-			result.min = glm::min(result.min, world);
-			result.max = glm::max(result.max, world);
-		}
-		return result;
+		VansGraphics::VansShadowAABB shadowBounds;
+		shadowBounds.min = bounds.min;
+		shadowBounds.max = bounds.max;
+		return shadowBounds;
 	}
 
-	bool BoundsChanged(
-		const VansGraphics::VansShadowAABB& a,
-		const VansGraphics::VansShadowAABB& b)
-	{
-		if (a.IsValid() != b.IsValid())
-			return true;
-		if (!a.IsValid())
-			return false;
-		const glm::vec3 deltaMin = glm::abs(a.min - b.min);
-		const glm::vec3 deltaMax = glm::abs(a.max - b.max);
-		return glm::any(glm::greaterThan(deltaMin, glm::vec3(1e-4f))) ||
-			glm::any(glm::greaterThan(deltaMax, glm::vec3(1e-4f)));
-	}
-
-	bool BoundsIntersectsShadowFrustum(
-		const VansGraphics::VansShadowAABB& bounds,
-		const glm::mat4& worldToShadow)
-	{
-		if (!bounds.IsValid())
-			return true;
-
-		glm::vec4 clipCorners[8];
-		for (uint32_t corner = 0; corner < 8; ++corner)
-		{
-			const glm::vec3 world(
-				(corner & 1u) ? bounds.max.x : bounds.min.x,
-				(corner & 2u) ? bounds.max.y : bounds.min.y,
-				(corner & 4u) ? bounds.max.z : bounds.min.z);
-			clipCorners[corner] = worldToShadow * glm::vec4(world, 1.0f);
-		}
-
-		auto allOutside = [&](auto predicate)
-		{
-			for (const glm::vec4& clip : clipCorners)
-				if (!predicate(clip))
-					return false;
-			return true;
-		};
-		return !allOutside([](const glm::vec4& p) { return p.x < -p.w; }) &&
-			!allOutside([](const glm::vec4& p) { return p.x > p.w; }) &&
-			!allOutside([](const glm::vec4& p) { return p.y < -p.w; }) &&
-			!allOutside([](const glm::vec4& p) { return p.y > p.w; }) &&
-			!allOutside([](const glm::vec4& p) { return p.z < -p.w; }) &&
-			!allOutside([](const glm::vec4& p) { return p.z > p.w; });
-	}
 }
 
 
@@ -769,14 +713,10 @@ void VansGraphics::VansScene::UpdatePunctualShadowCasterCache()
 		PunctualShadowCasterRecord record;
 		record.shadowCasterMask = common->m_ShadowCasterMask;
 		record.dynamic = node->m_AnimationEnabled || node->m_HasSkeletonBone;
-		record.hasBounds = node->m_Mesh != nullptr && node->m_Mesh->HasLocalBounds();
+		node->UpdateWorldBoundsFromTransform();
+		record.hasBounds = node->HasWorldBounds();
 		if (record.hasBounds)
-		{
-			record.bounds = TransformBounds(
-				node->m_Mesh->GetLocalBoundsMin(),
-				node->m_Mesh->GetLocalBoundsMax(),
-				node->GetTransformMatrix());
-		}
+			record.bounds = node->GetWorldBounds();
 
 		const auto previous = m_PunctualShadowCasters.find(casterId);
 		if (!record.hasBounds)
@@ -785,18 +725,19 @@ void VansGraphics::VansScene::UpdatePunctualShadowCasterCache()
 		}
 		else if (previous == m_PunctualShadowCasters.end())
 		{
-			shadowManager.InvalidateCastersInBounds({}, record.bounds, VansShadowDirty_CasterGeometry);
+			shadowManager.InvalidateCastersInBounds({}, ToShadowAABB(record.bounds.aabb), VansShadowDirty_CasterGeometry);
 		}
-		else if (record.dynamic || BoundsChanged(previous->second.bounds, record.bounds))
+		else if (record.dynamic || RenderBoundsChanged(previous->second.bounds, record.bounds))
 		{
 			shadowManager.InvalidateCastersInBounds(
-				previous->second.bounds,
-				record.bounds,
+				ToShadowAABB(previous->second.bounds.aabb),
+				ToShadowAABB(record.bounds.aabb),
 				record.dynamic ? VansShadowDirty_DynamicCaster : VansShadowDirty_CasterTransform);
 		}
 		else if (previous->second.shadowCasterMask != record.shadowCasterMask)
 		{
-			shadowManager.InvalidateCastersInBounds(record.bounds, record.bounds, VansShadowDirty_CasterMaterial);
+			const VansGraphics::VansShadowAABB shadowBounds = ToShadowAABB(record.bounds.aabb);
+			shadowManager.InvalidateCastersInBounds(shadowBounds, shadowBounds, VansShadowDirty_CasterMaterial);
 		}
 		current.emplace(casterId, record);
 	};
@@ -811,7 +752,7 @@ void VansGraphics::VansScene::UpdatePunctualShadowCasterCache()
 		if (current.find(previous.first) == current.end())
 		{
 			if (previous.second.hasBounds)
-				shadowManager.InvalidateCastersInBounds(previous.second.bounds, {}, VansShadowDirty_CasterGeometry);
+				shadowManager.InvalidateCastersInBounds(ToShadowAABB(previous.second.bounds.aabb), {}, VansShadowDirty_CasterGeometry);
 			else
 				requiresGlobalInvalidation = true;
 		}
@@ -832,7 +773,7 @@ void VansGraphics::VansScene::BuildPunctualShadowCasterLists()
 		{
 			if ((caster.second.shadowCasterMask & job.shadowCasterMask) == 0u)
 				continue;
-			if (!caster.second.hasBounds || BoundsIntersectsShadowFrustum(caster.second.bounds, job.worldToShadow))
+			if (!caster.second.hasBounds || RenderBoundsIntersectsClipFrustum(caster.second.bounds, job.worldToShadow))
 				job.casterIds.push_back(caster.first);
 		}
 	}
@@ -900,6 +841,9 @@ void VansGraphics::VansScene::UnLoadScene()
 
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
+	ResetMainCameraHiZVisibility();
+	if (nativeDevice != VK_NULL_HANDLE)
+		ReleaseMainCameraHiZGpuResources(nativeDevice);
 	if (nativeDevice != VK_NULL_HANDLE)
 		m_ReflectionProbeSystem.Clear(nativeDevice);
 
@@ -1486,6 +1430,15 @@ void VansGraphics::VansScene::UpdateSceneData()
     {
         VANS_PROFILE_SCOPE("RenderData::UpdateNodesBeforeRecord", Vans::ProfileCategory::RenderPrepare);
         UpdateRenderNodesDataBeforeRecord();
+    }
+
+    {
+        VANS_PROFILE_SCOPE("MainCameraHiZ::BuildCandidates", Vans::ProfileCategory::RenderPrepare);
+        VkExtent2D extent{
+            vkDevice ? vkDevice->GetRenderWidth() : 0u,
+            vkDevice ? vkDevice->GetRenderHeight() : 0u
+        };
+        BuildMainCameraCullCandidates(extent);
     }
 }
 

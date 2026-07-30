@@ -652,7 +652,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	//record command buffer
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 	//设置colordepoth的layout
-	m_ColorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_ColorImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_ColorImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -664,7 +664,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			m_ColorImage.m_ImageAspect
 		});
 
-	m_NormalImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_NormalImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_NormalImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -676,7 +676,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			m_NormalImage.m_ImageAspect
 		});
 
-	m_MotionVectorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_MotionVectorImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_MotionVectorImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -688,7 +688,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			m_MotionVectorImage.m_ImageAspect
 		});
 
-	m_ColorAfterPostProcessImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_ColorAfterPostProcessImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_ColorAfterPostProcessImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -700,7 +700,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			m_ColorAfterPostProcessImage.m_ImageAspect
 		});
 
-	m_GBufferImage0.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_GBufferImage0.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_GBufferImage0.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -712,7 +712,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			m_GBufferImage0.m_ImageAspect
 		});
 
-	m_GBufferImage1.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_GBufferImage1.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_GBufferImage1.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -724,7 +724,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			m_GBufferImage1.m_ImageAspect
 		});
 
-	m_GBufferImage2.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_GBufferImage2.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_GBufferImage2.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -736,7 +736,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			m_GBufferImage2.m_ImageAspect
 		});
 
-	m_DepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_DepthImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_DepthImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -944,7 +944,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 
 	// Transition cascade images to initial layouts
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	m_CascadeShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_CascadeShadowMapImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_CascadeShadowMapImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -955,7 +955,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 			VK_QUEUE_FAMILY_IGNORED,
 			m_CascadeShadowMapImage.m_ImageAspect
 		});
-	m_CascadeShadowMapDepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_CascadeShadowMapDepthImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_CascadeShadowMapDepthImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -1076,7 +1076,7 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 	// Initialize the persistent atlas exactly once. A LOAD render pass may not
 	// consume undefined contents on its first frame.
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	m_PunctualShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+	m_PunctualShadowMapImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 		{
 			m_PunctualShadowMapImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -1088,7 +1088,7 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 			m_PunctualShadowMapImage.m_ImageAspect
 		});
 	command_buffer.ClearDepthStencil(m_PunctualShadowMapImage, { 1.0f, 0 });
-	m_PunctualShadowMapImage.SetImageMemoryBarrier(
+	m_PunctualShadowMapImage.SetImageMemoryBarrier(command_buffer,
 		VK_PIPELINE_STAGE_TRANSFER_BIT,
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 		{
@@ -1219,7 +1219,7 @@ void VansGraphics::VansRenderPassManager::SetupVansMotionVectorRenderPass(VkDevi
 
 	// Transition the dedicated depth image to its initial layout
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	m_MotionVectorDepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_MotionVectorDepthImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_MotionVectorDepthImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -1458,6 +1458,58 @@ void VansGraphics::VansRenderPassManager::SetupVansDecalRenderPass(
 		{ renderResolution.width, renderResolution.height, 1 });
 }
 
+void VansGraphics::VansRenderPassManager::SetupVansScreenSpaceEffectsPass(
+	VkDevice& logic_device, const VkExtent2D& renderResolution)
+{
+	m_LogicDevice = logic_device;
+
+	const VkExtent2D halfResolution =
+	{
+		(std::max)(1u, renderResolution.width / 2u),
+		(std::max)(1u, renderResolution.height / 2u)
+	};
+
+	std::vector<VkAttachmentDescription> attachments;
+	std::vector<SubpassParameters> subpassParams =
+	{
+		{
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			{},
+			{},
+			{},
+			nullptr,
+			{}
+		}
+	};
+
+	std::vector<VkSubpassDependency> dependencies =
+	{
+		{
+			VK_SUBPASS_EXTERNAL, 0,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		},
+		{
+			0, VK_SUBPASS_EXTERNAL,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_SHADER_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		}
+	};
+
+	m_VansScreenSpaceEffectsPass.m_ClearValues = {};
+	m_VansScreenSpaceEffectsPass.CreateRenderPass(logic_device, attachments, subpassParams, dependencies, halfResolution);
+	m_VansScreenSpaceEffectsPass.m_FrameBuffers.resize(1);
+	m_VansScreenSpaceEffectsPass.m_FrameBuffers[0].CreateFrameBuffer(
+		logic_device, m_VansScreenSpaceEffectsPass.m_RenderPass, {},
+		{ halfResolution.width, halfResolution.height, 1 });
+}
+
 // ============================================================
 // SetupVansWaterGBufferPass — 水面 GBuffer render pass 初始化
 //
@@ -1671,7 +1723,27 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 	m_WaterGBufNormalImage.CreateVulkanImage(
 		logic_device,
 		{ renderResolution.width, renderResolution.height, 1 },
-		VK_FORMAT_R16G16B16A16_SFLOAT,   // RG16F 存储 oct-encoded 水面法线（BA 通道留用）
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		1, 1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false, false, true);
+
+	m_WaterGBufScatterImage.CreateVulkanImage(
+		logic_device,
+		{ renderResolution.width, renderResolution.height, 1 },
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		1, 1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false, false, true);
+
+	m_WaterGBufAbsorptionImage.CreateVulkanImage(
+		logic_device,
+		{ renderResolution.width, renderResolution.height, 1 },
+		VK_FORMAT_R16G16B16A16_SFLOAT,
 		1, 1,
 		VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
@@ -1698,14 +1770,28 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
 			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		},
-		// Attachment 1：WaterGBuf_WorldPosDepth（RGBA32F，每帧 CLEAR）
+		// Attachment 1：WaterGBuf_ScatterThickness（RGBA16F，每帧 CLEAR）
+		{
+			0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,  VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		},
+		// Attachment 2：WaterGBuf_AbsorptionFoam（RGBA16F，每帧 CLEAR）
+		{
+			0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+			VK_ATTACHMENT_LOAD_OP_CLEAR,  VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		},
+		// Attachment 3：WaterGBuf_WorldPosDepth（RGBA32F，每帧 CLEAR）
 		{
 			0, VK_FORMAT_R32G32B32A32_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,  VK_ATTACHMENT_STORE_OP_STORE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
 			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		},
-		// Attachment 2：主场景深度（LOAD + 只读）。Forward custom opaque 已在此之前写入。
+		// Attachment 4：主场景深度（LOAD + 只读）。Forward custom opaque 已在此之前写入。
 		{
 			0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_LOAD,    VK_ATTACHMENT_STORE_OP_STORE,
@@ -1715,7 +1801,7 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 	};
 
 	// 只读取主深度；WaterGBuffer pipeline 的 depthWriteEnable 必须为 VK_FALSE。
-	VkAttachmentReference depthRef = { 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+	VkAttachmentReference depthRef = { 4, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
 	std::vector<SubpassParameters> subpassParams =
 	{
 		{
@@ -1723,7 +1809,9 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 			{},
 			{
 				{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
-				{ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
+				{ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+				{ 2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+				{ 3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
 			},
 			{},
 			&depthRef,
@@ -1756,6 +1844,8 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 	m_VansWaterGBufferPass.m_ClearValues =
 	{
 		{ 0.0f, 0.0f, 0.0f, 0.0f },   // WaterGBuf_Normal：清空为零
+		{ 0.02f, 0.04f, 0.06f, 0.0f },
+		{ 0.25f, 0.08f, 0.02f, 0.0f },
 		{ 1e4f, 1e4f, 1e4f, 1e4f },   // WaterGBuf_WorldPosDepth：全部 1e4 = 无水面
 	};
 
@@ -1765,6 +1855,8 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 	std::vector<VkImageView> fbViews =
 	{
 		m_WaterGBufNormalImage.GetImageView(),
+		m_WaterGBufScatterImage.GetImageView(),
+		m_WaterGBufAbsorptionImage.GetImageView(),
 		m_WaterGBufLinearDepthImage.GetImageView(),
 		m_DepthImage.GetDepthStencilView(),         // 主场景深度，只读测试
 	};
@@ -1773,7 +1865,26 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 		{ renderResolution.width, renderResolution.height, 1 });
 }
 
+VansGraphics::VansRenderPassRuntimeInfo VansGraphics::VansRenderPassManager::GetRenderPassRuntimeInfo(VansVKRenderPass& renderPass, int swap_chain_index, uint32_t subpass)
+{
+	VansRenderPassRuntimeInfo info = {};
+	info.renderPass = renderPass.m_RenderPass;
+	info.subpass = subpass;
+	info.viewport = renderPass.m_RenderPassViewport;
+	info.scissor = renderPass.m_RenderPassScissor;
+	if (swap_chain_index >= 0 && swap_chain_index < static_cast<int>(renderPass.m_FrameBuffers.size()))
+	{
+		info.framebuffer = renderPass.m_FrameBuffers[swap_chain_index].m_FrameBuffer;
+	}
+	return info;
+}
+
 void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, int swap_chain_index)
+{
+	BeginRenderPass(renderPass, command_buffer, global_state_data, swap_chain_index, VK_SUBPASS_CONTENTS_INLINE);
+}
+
+void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& renderPass,VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, int swap_chain_index, VkSubpassContents contents)
 {
 	//将当前render pass 记录到globaldata中
 	global_state_data.currentRenderPass = renderPass.m_RenderPass;
@@ -1794,17 +1905,25 @@ void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& rend
 		 renderPass.m_ClearValues.data()
 	};
 
-	command_buffer.BeginRenderPass(render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+	command_buffer.BeginRenderPass(render_pass_begin_info, contents);
 
-	//begin的时候设置viewport和sissor
-	command_buffer.SetViewport(0, { renderPass.m_RenderPassViewport });
-	command_buffer.SetScissor(0, { renderPass.m_RenderPassScissor });
+	if (contents == VK_SUBPASS_CONTENTS_INLINE)
+	{
+		//begin的时候设置viewport和sissor
+		command_buffer.SetViewport(0, { renderPass.m_RenderPassViewport });
+		command_buffer.SetScissor(0, { renderPass.m_RenderPassScissor });
+	}
 }
 
 void VansGraphics::VansRenderPassManager::NextSubPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data)
 {
+	NextSubPass(command_buffer, global_state_data, VK_SUBPASS_CONTENTS_INLINE);
+}
+
+void VansGraphics::VansRenderPassManager::NextSubPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, VkSubpassContents contents)
+{
 	global_state_data.currentSubpass++;
-	command_buffer.NextSubpass(VK_SUBPASS_CONTENTS_INLINE);
+	command_buffer.NextSubpass(contents);
 }
 
 void VansGraphics::VansRenderPassManager::EndRenderPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data)
@@ -1829,7 +1948,8 @@ void VansGraphics::VansRenderPassManager::BlitToSwapChainImage(VansVKCommandBuff
     command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
     // Destination: swapchain image (assumed GENERAL or PRESENT). Force to TRANSFER_DST_OPTIMAL.
-    surface.SetSwapChainImageBarrier(
+    surface.RecordSwapChainImageBarrier(
+        command_buffer,
         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         {
@@ -1841,8 +1961,7 @@ void VansGraphics::VansRenderPassManager::BlitToSwapChainImage(VansVKCommandBuff
             VK_QUEUE_FAMILY_IGNORED,
             VK_QUEUE_FAMILY_IGNORED,
             VK_IMAGE_ASPECT_COLOR_BIT
-        },
-        swapChainIndex);
+        });
 
     // Blit region (entire image)
     VkImageBlit blitRegion{};
@@ -1869,7 +1988,8 @@ void VansGraphics::VansRenderPassManager::BlitToSwapChainImage(VansVKCommandBuff
         VK_FILTER_LINEAR);
 
     // Transition swapchain image to PRESENT_SRC_KHR for presentation
-    surface.SetSwapChainImageBarrier(
+    surface.RecordSwapChainImageBarrier(
+        command_buffer,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         {
@@ -1881,8 +2001,7 @@ void VansGraphics::VansRenderPassManager::BlitToSwapChainImage(VansVKCommandBuff
             VK_QUEUE_FAMILY_IGNORED,
             VK_QUEUE_FAMILY_IGNORED,
             VK_IMAGE_ASPECT_COLOR_BIT
-        },
-        swapChainIndex);
+        });
 
     command_buffer.EndCommandBufferRecord();
 }
@@ -1928,11 +2047,14 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 
 	// 销毁水面 GBuffer 纹理
 	m_WaterGBufNormalImage.DestroyVulkanImage(m_LogicDevice);
+	m_WaterGBufScatterImage.DestroyVulkanImage(m_LogicDevice);
+	m_WaterGBufAbsorptionImage.DestroyVulkanImage(m_LogicDevice);
 	m_WaterGBufLinearDepthImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_VansGBufferPass.DestroyRenderPass(m_LogicDevice);
 	m_VansRenderPass.DestroyRenderPass(m_LogicDevice);
 	m_VansDeferredSkyboxPass.DestroyRenderPass(m_LogicDevice);
+	m_VansScreenSpaceEffectsPass.DestroyRenderPass(m_LogicDevice);
 	m_VansForwardOpaqueAfterDeferredPass.DestroyRenderPass(m_LogicDevice);
 	m_VansHairVisibilityPass.DestroyRenderPass(m_LogicDevice);
 	m_VansHairLightingPass.DestroyRenderPass(m_LogicDevice);
@@ -1961,12 +2083,13 @@ void VansGraphics::VansRenderPassManager::RecreateUIRenderPass(VansVKCommandBuff
 	SetupVansUIRenderPass(m_LogicDevice, command_buffer, queue, surface, renderResolution);
 }
 
-void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex)
+void VansGraphics::VansRenderPassManager::RecordFrameBufferImageLayoutReset(VansVKCommandBuffer& command_buffer)
 {
-	//record command buffer
-	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	//设置colordepoth的layout
-	m_ColorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	// These transitions belong to the frame that consumed the attachments.
+	// Recording them before that frame is submitted preserves ordering without
+	// a second queue submission. The swapchain image is intentionally excluded:
+	// ownership ends when it reaches PRESENT_SRC_KHR.
+	m_ColorImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_ColorImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -1978,7 +2101,7 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			m_ColorImage.m_ImageAspect
 		});
 
-	m_NormalImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_NormalImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_NormalImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -1990,7 +2113,7 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			m_NormalImage.m_ImageAspect
 		});
 
-	m_GBufferImage0.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_GBufferImage0.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_GBufferImage0.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -2002,7 +2125,7 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			m_GBufferImage0.m_ImageAspect
 		});
 
-	m_GBufferImage1.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_GBufferImage1.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_GBufferImage1.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -2014,7 +2137,7 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			m_GBufferImage1.m_ImageAspect
 		});
 
-	m_GBufferImage2.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_GBufferImage2.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_GBufferImage2.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -2025,11 +2148,11 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			VK_QUEUE_FAMILY_IGNORED,
 			m_GBufferImage2.m_ImageAspect
 		});
-	m_HairColorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_HairColorImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{ m_HairColorImage.m_VansVKImage, VK_ACCESS_NONE, VK_ACCESS_NONE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_HairColorImage.m_ImageAspect });
-	m_HairDeepOpacityImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_HairDeepOpacityImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{ m_HairDeepOpacityImage.m_VansVKImage, VK_ACCESS_NONE, VK_ACCESS_NONE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_HairDeepOpacityImage.m_ImageAspect });
-	m_DepthImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_DepthImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_DepthImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -2043,7 +2166,7 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 
 	// Reset motion-vector color image from SHADER_READ_ONLY back to GENERAL
 	// so the next frame's motion-vector pass can begin with LOAD_OP_CLEAR.
-	m_MotionVectorImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_MotionVectorImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_MotionVectorImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -2055,19 +2178,7 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			m_MotionVectorImage.m_ImageAspect
 		});
 
-	surface.SetSwapChainImageBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		{
-			VK_NULL_HANDLE,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_IMAGE_ASPECT_COLOR_BIT
-		}, swapChainIndex);
-
-	m_CascadeShadowMapImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+	m_CascadeShadowMapImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_CascadeShadowMapImage.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -2079,6 +2190,4 @@ void VansGraphics::VansRenderPassManager::ResetFrameBufferImageLayout(VansVKComm
 			m_CascadeShadowMapImage.m_ImageAspect
 		});
 
-	//end record
-	command_buffer.EndCommandBufferRecord();
 }

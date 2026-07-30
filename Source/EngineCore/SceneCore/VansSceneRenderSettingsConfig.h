@@ -78,11 +78,28 @@ struct VansSceneGISettingsConfig
 	std::optional<uint32_t> gizmoStride;
 };
 
+struct VansSceneMainCameraHiZCullSettingsConfig
+{
+	std::optional<bool> enabled;
+	std::optional<bool> enableOpaque;
+	std::optional<bool> enableHair;
+	std::optional<bool> enableTransparent;
+	std::optional<bool> enableDecal;
+	std::optional<bool> enableForwardOpaqueAfterDeferred;
+	std::optional<float> depthBiasMeters;
+	std::optional<float> cameraMotionDisableDistance;
+	std::optional<float> cameraMotionDisableAngleRadians;
+	std::optional<uint32_t> forceVisibleFramesAfterChange;
+	std::optional<uint32_t> refreshCulledEveryNFrames;
+	std::optional<float> maxScreenCoverageForCull;
+};
+
 struct VansSceneRenderSettingsConfig
 {
 	std::optional<VansSceneHeightFogSettingsConfig> heightFog;
 	std::optional<VansSceneVolumetricFogSettingsConfig> volumetricFog;
 	std::optional<VansSceneVolumetricCloudSettingsConfig> volumetricClouds;
 	std::optional<VansSceneGISettingsConfig> globalIllumination;
+	std::optional<VansSceneMainCameraHiZCullSettingsConfig> mainCameraHiZCulling;
 };
 }

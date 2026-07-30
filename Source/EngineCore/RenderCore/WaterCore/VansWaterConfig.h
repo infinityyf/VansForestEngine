@@ -20,11 +20,8 @@ namespace VansGraphics
         glm::vec3 m_AbsorptionCoeff = { 0.25f, 0.08f, 0.02f };
         glm::vec3 m_ScatteringCoeff = { 0.02f, 0.04f, 0.06f };
         float m_IOR = 1.33f;
-        float m_FresnelPower = 5.0f;
         float m_Anisotropy = 0.85f;
         float m_WaterRoughness = 0.02f;
-        glm::vec4 m_DeepColor = { 0.01f, 0.04f, 0.18f, 1.0f };
-        glm::vec4 m_ShallowColor = { 0.05f, 0.18f, 0.55f, 1.0f };
     };
 
     // Fixed 2:1 geometry clipmap. A mesh rebuild is a frame-boundary operation.
@@ -109,6 +106,27 @@ namespace VansGraphics
         float m_DistortionStrength = 0.025f;
     };
 
+    struct VansWaterOpticsConfig
+    {
+        float m_MaxCrossDistance = 40.0f;
+        float m_MaxRefractionCrossDistance = 20.0f;
+        float m_MultiScatterScale = 1.0f;
+        float m_WaterDispersionStrength = 0.2f;
+        float m_SSSPathScale = 20.0f;
+        float m_SSSNonlinearStrength = 0.5f;
+        float m_SSSScatterBoost = 2.0f;
+        float m_BacklitPathScale = 20.0f;
+        float m_BacklitPhaseG = 0.9998f;
+    };
+
+    struct VansWaterVolumeConfig
+    {
+        float m_ResolutionScale = 0.5f;
+        int m_SampleCount = 12;
+        int m_SpatialFilterIterations = 2;
+        float m_SpatialDepthSensitivity = 2.0f;
+    };
+
     struct VansWaterSSRConfig
     {
         bool m_Enabled = true;
@@ -145,6 +163,8 @@ namespace VansGraphics
         VansWaterFlowMapConfig m_FlowMap;
         VansWaterCausticsConfig m_Caustics;
         VansWaterRefractionConfig m_Refraction;
+        VansWaterOpticsConfig m_Optics;
+        VansWaterVolumeConfig m_Volume;
         VansWaterSSRConfig m_SSR;
         VansWaterSSSConfig m_SSS;
 
@@ -212,6 +232,31 @@ namespace VansGraphics
 
             m_Refraction.m_DistortionStrength = std::clamp(
                 m_Refraction.m_DistortionStrength, 0.0f, 0.1f);
+
+            m_Medium.m_IOR = std::clamp(m_Medium.m_IOR, 1.01f, 2.0f);
+            m_Medium.m_Anisotropy = std::clamp(m_Medium.m_Anisotropy, -0.95f, 0.98f);
+            m_Medium.m_WaterRoughness = std::clamp(m_Medium.m_WaterRoughness, 0.002f, 0.3f);
+            m_Medium.m_AbsorptionCoeff = glm::max(m_Medium.m_AbsorptionCoeff, glm::vec3(0.0f));
+            m_Medium.m_ScatteringCoeff = glm::max(m_Medium.m_ScatteringCoeff, glm::vec3(0.0f));
+
+            m_Optics.m_MaxCrossDistance = std::clamp(m_Optics.m_MaxCrossDistance, 1.0f, 200.0f);
+            m_Optics.m_MaxRefractionCrossDistance =
+                std::clamp(m_Optics.m_MaxRefractionCrossDistance, 1.0f, 200.0f);
+            m_Optics.m_MultiScatterScale = std::clamp(m_Optics.m_MultiScatterScale, 0.0f, 8.0f);
+            m_Optics.m_WaterDispersionStrength =
+                std::clamp(m_Optics.m_WaterDispersionStrength, 0.0f, 2.0f);
+            m_Optics.m_SSSPathScale = std::clamp(m_Optics.m_SSSPathScale, 0.1f, 200.0f);
+            m_Optics.m_SSSNonlinearStrength =
+                std::clamp(m_Optics.m_SSSNonlinearStrength, 0.0f, 4.0f);
+            m_Optics.m_SSSScatterBoost = std::clamp(m_Optics.m_SSSScatterBoost, 0.0f, 16.0f);
+            m_Optics.m_BacklitPathScale = std::clamp(m_Optics.m_BacklitPathScale, 0.1f, 200.0f);
+            m_Optics.m_BacklitPhaseG = std::clamp(m_Optics.m_BacklitPhaseG, 0.0f, 0.9999f);
+
+            m_Volume.m_ResolutionScale = std::clamp(m_Volume.m_ResolutionScale, 0.25f, 1.0f);
+            m_Volume.m_SampleCount = std::clamp(m_Volume.m_SampleCount, 1, 64);
+            m_Volume.m_SpatialFilterIterations = std::clamp(m_Volume.m_SpatialFilterIterations, 0, 4);
+            m_Volume.m_SpatialDepthSensitivity =
+                std::clamp(m_Volume.m_SpatialDepthSensitivity, 0.0f, 32.0f);
         }
     };
 }

@@ -11,6 +11,72 @@
 namespace Vans::EditorAPI
 {
 	using EditorTextureHandle = void*;
+	using UIDocumentId = std::uint64_t;
+	using UIPreviewId = std::uint64_t;
+
+	struct UIDocumentOpenResult
+	{
+		bool success = false;
+		UIDocumentId documentId = 0;
+		std::string sourcePath;
+		std::string error;
+	};
+
+	struct UIScreenEventSummary
+	{
+		std::string source;
+		std::string eventName;
+		std::string action;
+	};
+
+	struct UIScreenPerformanceBudgetSummary
+	{
+		std::uint32_t maxDrawCalls = 0;
+		std::uint32_t maxTextureMemoryMB = 0;
+		double maxLayoutMs = 0.0;
+		std::uint32_t maxBindingUpdatesPerFrame = 0;
+		std::uint32_t maxAnimations = 0;
+	};
+
+	struct UIDocumentSnapshot
+	{
+		bool valid = false;
+		UIDocumentId documentId = 0;
+		std::string sourcePath;
+		bool visible = false;
+		std::string assetKind;
+		std::string name;
+		std::string xamlPath;
+		std::string layer;
+		std::int32_t zOrder = 0;
+		std::vector<std::string> themes;
+		std::vector<std::string> tokens;
+		std::vector<std::string> localization;
+		std::vector<std::string> dependencies;
+		std::vector<UIScreenEventSummary> events;
+		UIScreenPerformanceBudgetSummary performanceBudget;
+	};
+
+	struct UIDiagnosticsSnapshot
+	{
+		bool available = false;
+		std::vector<std::string> messages;
+	};
+
+	struct UIPreviewRequest
+	{
+		UIDocumentId documentId = 0;
+		std::uint32_t width = 1280;
+		std::uint32_t height = 720;
+	};
+
+	struct UIPreviewResult
+	{
+		bool success = false;
+		UIPreviewId previewId = 0;
+		EditorTextureHandle texture = nullptr;
+		std::string message;
+	};
 
 	struct Vec2
 	{
@@ -323,6 +389,63 @@ namespace Vans::EditorAPI
 		std::string message;
 	};
 
+	struct KeyValueString
+	{
+		std::string key;
+		std::string value;
+	};
+
+	enum class ProjectConfigDiagnosticSeverity
+	{
+		Info,
+		Warning,
+		Error
+	};
+
+	struct ProjectConfigDiagnostic
+	{
+		ProjectConfigDiagnosticSeverity severity = ProjectConfigDiagnosticSeverity::Info;
+		std::string propertyPointer;
+		std::string message;
+	};
+
+	enum class ProjectPathField
+	{
+		DefaultScene,
+		AssetsRoot,
+		ImportedArtifactRoot,
+		RenderSettings,
+		PhysicsSettings,
+		CollisionLayerSettings
+	};
+
+	struct ProjectConfigSnapshot
+	{
+		bool projectLoaded = false;
+		std::string projectRootPath;
+		std::string projectName;
+		std::string engineVersion;
+		std::string createdAt;
+		std::string defaultScene;
+		std::string assetsRoot;
+		std::string importedArtifactRoot;
+		std::string metaExtension;
+		std::vector<KeyValueString> runtimeAssetBindings;
+		std::vector<KeyValueString> assetDirectories;
+		std::vector<std::string> scriptSearchPaths;
+		std::string renderSettingsPath;
+		std::string physicsSettingsPath;
+		std::string collisionLayerSettingsPath;
+		std::vector<ProjectConfigDiagnostic> diagnostics;
+	};
+
+	struct ProjectConfigEditResult
+	{
+		bool success = false;
+		std::string message;
+		std::vector<ProjectConfigDiagnostic> diagnostics;
+	};
+
 	struct RecentProjectEntry
 	{
 		std::string name;
@@ -444,6 +567,9 @@ namespace Vans::EditorAPI
 		std::uint32_t framePlanPassCount = 0;
 		std::uint32_t compiledResourceCount = 0;
 		std::uint32_t barrierDependencyCount = 0;
+		std::uint64_t renderGraphTopologyRevision = 0;
+		std::uint64_t renderGraphTopologyHash = 0;
+		std::uint64_t renderGraphCompiledFrameNumber = 0;
 		std::uint32_t descriptorStandardPoolCount = 0;
 		std::uint32_t descriptorUpdateAfterBindPoolCount = 0;
 		std::uint32_t descriptorTrackedSetCount = 0;
@@ -461,6 +587,38 @@ namespace Vans::EditorAPI
 		std::uint64_t frameNumber = 0;
 		std::uint32_t swapchainImageIndex = 0;
 		std::string renderGraphSummary;
+	};
+
+	struct PipelineRegistryMapStatsSnapshot
+	{
+		std::uint64_t bucketCount = 0;
+		std::uint64_t activeCount = 0;
+		std::uint64_t expiredCount = 0;
+	};
+
+	struct PipelineRegistryStatsSnapshot
+	{
+		PipelineRegistryMapStatsSnapshot graphics;
+		PipelineRegistryMapStatsSnapshot compute;
+		PipelineRegistryMapStatsSnapshot rayTracing;
+		std::uint64_t totalActiveCount = 0;
+		std::uint64_t totalExpiredCount = 0;
+	};
+
+	struct RenderDocStatusSnapshot
+	{
+		bool available = false;
+		bool targetControlConnected = false;
+		bool frameCapturing = false;
+		bool apiValidationEnabled = false;
+		bool referenceAllResources = false;
+		int apiMajor = 0;
+		int apiMinor = 0;
+		int apiPatch = 0;
+		std::uint32_t captureCount = 0;
+		std::string capturePathTemplate;
+		std::string lastCapturePath;
+		std::string message;
 	};
 
 	struct ReflectionProbeEditorSettings
@@ -547,6 +705,11 @@ namespace Vans::EditorAPI
 		std::uint32_t outputHeight = 0;
 	};
 
+	struct CommandRecordingSettingsSnapshot
+	{
+		bool parallelEnabled = true;
+	};
+
 	struct GIInspectorSettingsSnapshot
 	{
 		bool available = false;
@@ -589,16 +752,35 @@ namespace Vans::EditorAPI
 		std::string status;
 	};
 
+	struct MainCameraHiZCulledNodeSnapshot
+	{
+		std::string name;
+		std::string cullClass;
+		Vec3 center;
+		Vec3 axisXHalf;
+		Vec3 axisYHalf;
+		Vec3 axisZHalf;
+	};
+
+	struct MainCameraHiZCullDebugSnapshot
+	{
+		bool available = false;
+		bool enabled = false;
+		bool historyValid = false;
+		std::uint32_t candidateCount = 0;
+		std::uint32_t frustumVisibleCount = 0;
+		std::uint32_t hizCulledCount = 0;
+		std::uint32_t forcedVisibleCount = 0;
+		std::vector<MainCameraHiZCulledNodeSnapshot> culledNodes;
+	};
+
 	struct WaterMediumSettings
 	{
 		Vec3 absorptionCoeff = { 0.25f, 0.08f, 0.02f };
 		Vec3 scatteringCoeff = { 0.02f, 0.04f, 0.06f };
 		float ior = 1.33f;
-		float fresnelPower = 5.0f;
 		float anisotropy = 0.85f;
 		float waterRoughness = 0.02f;
-		Vec4 deepColor = { 0.01f, 0.04f, 0.18f, 1.0f };
-		Vec4 shallowColor = { 0.05f, 0.18f, 0.55f, 1.0f };
 	};
 
 	struct WaterSpectrumSettings
@@ -662,6 +844,27 @@ namespace Vans::EditorAPI
 		float morphStartRatio = 0.5f;
 	};
 
+	struct WaterOpticsSettings
+	{
+		float maxCrossDistance = 40.0f;
+		float maxRefractionCrossDistance = 20.0f;
+		float multiScatterScale = 1.0f;
+		float waterDispersionStrength = 0.2f;
+		float sssPathScale = 20.0f;
+		float sssNonlinearStrength = 0.5f;
+		float sssScatterBoost = 2.0f;
+		float backlitPathScale = 20.0f;
+		float backlitPhaseG = 0.9998f;
+	};
+
+	struct WaterVolumeSettings
+	{
+		float resolutionScale = 0.5f;
+		int sampleCount = 12;
+		int spatialFilterIterations = 2;
+		float spatialDepthSensitivity = 2.0f;
+	};
+
 	struct WaterSettingsSnapshot
 	{
 		bool available = false;
@@ -672,7 +875,9 @@ namespace Vans::EditorAPI
 		WaterSpectrumSettings spectrum;
 		WaterWaveParticleSettings waveParticle;
 		WaterFlowMapSettings flowMap;
-		bool sssEnabled = true;
+		WaterOpticsSettings optics;
+		WaterVolumeSettings volume;
+		bool thinSSSEnabled = true;
 		float maxThicknessDistance = 15.0f;
 		float deepWaterThicknessFallback = 0.8f;
 		bool causticsEnabled = false;
@@ -919,6 +1124,18 @@ namespace Vans::EditorAPI
 	struct RuntimeEntityDestroyResult
 	{
 		bool destroyed = false;
+	};
+
+	struct RuntimeEntityReparentRequest
+	{
+		std::string childEntityGuid;
+		std::string newParentEntityGuid;
+	};
+
+	struct RuntimeEntityReparentResult
+	{
+		bool applied = false;
+		std::string message;
 	};
 
 	struct TerrainSettingsSnapshot

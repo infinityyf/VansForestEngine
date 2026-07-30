@@ -21,6 +21,27 @@ namespace Vans
 		float sharpness = 0.35f;
 	};
 
+	struct VansProjectCommandRecordingSettings
+	{
+		bool parallelEnabled = true;
+	};
+
+	struct VansProjectMainCameraHiZCullSettings
+	{
+		bool enabled = true;
+		bool enableOpaque = true;
+		bool enableHair = true;
+		bool enableTransparent = false;
+		bool enableDecal = true;
+		bool enableForwardOpaqueAfterDeferred = true;
+		float depthBiasMeters = 0.35f;
+		float cameraMotionDisableDistance = 1.0f;
+		float cameraMotionDisableAngleRadians = 0.13962634f;
+		std::uint32_t forceVisibleFramesAfterChange = 1;
+		std::uint32_t refreshCulledEveryNFrames = 30;
+		float maxScreenCoverageForCull = 0.65f;
+	};
+
 	class VansProjectSettings
 	{
 	public:
@@ -32,11 +53,17 @@ namespace Vans
 		void SetFixedTimeStep(float fixedTimeStep);
 		const VansProjectFSRSettings& GetFSRSettings() const { return m_FSRSettings; }
 		void SetFSRSettings(VansProjectFSRMode mode, float sharpness);
+		const VansProjectCommandRecordingSettings& GetCommandRecordingSettings() const { return m_CommandRecordingSettings; }
+		void SetCommandRecordingSettings(bool parallelEnabled);
+		const VansProjectMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
+		void SetMainCameraHiZCullSettings(const VansProjectMainCameraHiZCullSettings& settings);
 
 private:
 		bool LoadCollisionLayerSettingsFromFile(const std::string& filePath);
 
 		float m_FixedTimeStep = 1.0f / 60.0f;
 		VansProjectFSRSettings m_FSRSettings;
+		VansProjectCommandRecordingSettings m_CommandRecordingSettings;
+		VansProjectMainCameraHiZCullSettings m_MainCameraHiZCullSettings;
 	};
 }

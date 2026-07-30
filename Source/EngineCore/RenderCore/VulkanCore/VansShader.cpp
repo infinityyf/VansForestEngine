@@ -497,6 +497,7 @@ void VansGraphics::VansShader::DestroyShaderMoulde()
 
 VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data,const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
+	std::lock_guard<std::mutex> lock(m_GraphicsPipelineMutex);
 	m_PipelineProgramDesc.kind = VansPipelineProgramKind::Graphics;
 	m_PipelineProgramDesc.pushConstantSize = m_PushConstantSize;
 	const uint32_t pushConstantSize = m_PushConstantSize > 0
@@ -963,6 +964,7 @@ bool VansGraphics::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_de
 
 void VansGraphics::VansGraphicsShader::TriggerReCreateGraphicsPipeline()
 {
+	std::lock_guard<std::mutex> lock(m_GraphicsPipelineMutex);
 	m_GraphicsPipeline.reset();
 	m_LastGraphicsPipelineVariant = nullptr;
 	m_GraphicsPipelineVariants.clear();

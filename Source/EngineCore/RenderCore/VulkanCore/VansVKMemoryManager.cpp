@@ -10,11 +10,10 @@
 
 VansGraphics::VansVKMemoryManager* VansGraphics::VansVKMemoryManager::instance = nullptr;
 
-void VansGraphics::VansVKMemoryManager::BindDevice(VkCommandBuffer& commandBuffer, VansVKDevice& device)
+void VansGraphics::VansVKMemoryManager::BindDevice(VansVKDevice& device)
 {
 	m_PhysicalDevice = device.GetPhysicalDevice();
 	m_LogicalDevice = device.GetLogicDevice();
-	m_CommandBuffer = commandBuffer;
 	m_DeviceProperties = device.GetDeviceProperties();
 	m_Device = &device;
 	VansGraphics::vkGetPhysicalDeviceMemoryProperties(m_PhysicalDevice, &m_MemoryProperties);
@@ -23,39 +22,6 @@ void VansGraphics::VansVKMemoryManager::BindDevice(VkCommandBuffer& commandBuffe
 const std::vector<uint32_t>& VansGraphics::VansVKMemoryManager::GetSharingQueueFamilyIndices() const
 {
 	return m_Device->GetSharingQueueFamilyIndices();
-}
-
-//内存barrier详解 https://zhuanlan.zhihu.com/p/161619652
-//vkCmdpipelineBarrier只是提供了一个显式的依赖执行的约束，而memory的依赖需要memory barrier，传给vkCmdpipelineBarrier
-//否则不能解决缓存可见性问题
-//内存管理（layout比较直观的讲解）https://zhuanlan.zhihu.com/p/166387973
-void VansGraphics::VansVKMemoryManager::SetBufferMemoryBarrier(
-	std::vector<VkBufferMemoryBarrier>& bufferMemoryBarriers, 
-	VkPipelineStageFlags generating_stages,
-	VkPipelineStageFlags consuming_stages)
-{
-	if (bufferMemoryBarriers.size() > 0)
-	{
-		VansGraphics::vkCmdPipelineBarrier(m_CommandBuffer, generating_stages,
-			consuming_stages, 0, 0, nullptr,
-			static_cast<uint32_t>(bufferMemoryBarriers.size()),
-			&bufferMemoryBarriers[0], 0, nullptr);
-	}
-}
-
-void VansGraphics::VansVKMemoryManager::SetImageMemoryBarrier(
-	std::vector<VkImageMemoryBarrier>& imageMemoryBarriers,
-	VkPipelineStageFlags generating_stages,
-	VkPipelineStageFlags consuming_stages)
-{
-	if (imageMemoryBarriers.size() > 0)
-	{
-		VansGraphics::vkCmdPipelineBarrier(m_CommandBuffer, generating_stages,
-			consuming_stages, 0, 0, nullptr,
-			0, nullptr,
-			static_cast<uint32_t>(imageMemoryBarriers.size()),
-			&imageMemoryBarriers[0]);
-	}
 }
 
 VansGraphics::VansVKMemoryManager::VansVKMemoryManager()

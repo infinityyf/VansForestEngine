@@ -16,9 +16,13 @@
 #include <cstring>
 #include <unordered_map>
 
+#include <stb_image.h>
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
@@ -97,17 +101,26 @@ std::string ResolveUIPath(
 
     // 项目相对路径 → [ProjectRoot]/Assets/UI/...
     // 先从 assetDirectories["ui"] 中获取 UI 根路径
+    std::string normalized = uriStr;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+    if (normalized.rfind("Assets/", 0) == 0)
+        return pathResolver->Resolve(normalized);
+
     const auto& dirs = projectManager->GetConfig().assetDirectories;
     auto it = dirs.find("ui");
     if (it != dirs.end())
     {
-        return pathResolver->Resolve(it->second + "/" + uriStr);
+        std::string uiRoot = it->second;
+        std::replace(uiRoot.begin(), uiRoot.end(), '\\', '/');
+        while (!uiRoot.empty() && uiRoot.back() == '/')
+            uiRoot.pop_back();
+        if (normalized.rfind("UI/", 0) == 0)
+            return pathResolver->Resolve(uiRoot + "/" + normalized.substr(3));
+        return pathResolver->Resolve(uiRoot + "/" + normalized);
     }
 
-    // fallback：直接用 assetPath 解析
-    return pathResolver->Resolve(uriStr);
+    return pathResolver->Resolve(normalized);
 }
-
 // ── 文件读取辅助 ──────────────────────────────────────────────────────
 
 static std::vector<uint8_t> ReadFileToBuffer(const std::string& fullPath)
@@ -151,39 +164,146 @@ VansNoesisTextureProvider::VansNoesisTextureProvider(
     VansNoesisRenderDevice*         renderDevice)
     : m_ProjectManager(projectManager)
     , m_PathResolver(pathResolver)
-    , m_RenderDevice(renderDevice)
-{}
+{
+    (void)renderDevice;
+}
 
 Noesis::TextureInfo VansNoesisTextureProvider::GetTextureInfo(const Noesis::Uri& uri)
 {
     const std::string fullPath = ResolveUIPath(
         uri.Str(), m_ProjectManager, m_PathResolver);
 
-    Noesis::TextureInfo info {};
-
-    // 读取图片尺寸（不加载像素数据）
-    // TODO: 接入 VansTexture 的元数据读取接口
-    // 当前 MVP：返回默认值（Noesis 会在 LoadTexture 加载完整数据后校正）
-    if (std::filesystem::exists(fullPath))
+    auto buffer = ReadFileToBuffer(fullPath);
+    if (buffer.empty())
     {
-        info.width    = 1;
-        info.height   = 1;
-        info.dpiScale = 1.0f;
+        VANS_LOG_ERROR("[NoesisTextureProvider] Texture not found: uri='" << uri.Str()
+            << "' resolved='" << fullPath << "'");
+        return {};
     }
 
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    if (!stbi_info_from_memory(buffer.data(), static_cast<int>(buffer.size()), &width, &height, &channels))
+    {
+        VANS_LOG_ERROR("[NoesisTextureProvider] Cannot read texture info: uri='" << uri.Str()
+            << "' resolved='" << fullPath << "'");
+        return {};
+    }
+
+    Noesis::TextureInfo info{};
+    info.width = static_cast<uint32_t>(width);
+    info.height = static_cast<uint32_t>(height);
+    info.dpiScale = 1.0f;
     return info;
 }
 
 Noesis::Ptr<Noesis::Texture> VansNoesisTextureProvider::LoadTexture(
-    const Noesis::Uri& uri, Noesis::RenderDevice* /*device*/)
+    const Noesis::Uri& uri, Noesis::RenderDevice* device)
 {
+    if (!device)
+        return nullptr;
+
     const std::string fullPath = ResolveUIPath(
         uri.Str(), m_ProjectManager, m_PathResolver);
 
-    // TODO: 通过 VansTexture 加载图片并包装为 Noesis::Texture
-    // MVP 阶段：返回 nullptr，Noesis 会显示粉色占位纹理
-    (void)fullPath;
-    return nullptr;
+    auto buffer = ReadFileToBuffer(fullPath);
+    if (buffer.empty())
+    {
+        VANS_LOG_ERROR("[NoesisTextureProvider] Texture not found: uri='" << uri.Str()
+            << "' resolved='" << fullPath << "'");
+        return nullptr;
+    }
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc* image = stbi_load_from_memory(
+        buffer.data(), static_cast<int>(buffer.size()), &width, &height, &channels, 4);
+    if (!image || width <= 0 || height <= 0)
+    {
+        VANS_LOG_ERROR("[NoesisTextureProvider] Cannot decode texture: uri='" << uri.Str()
+            << "' resolved='" << fullPath << "'");
+        if (image)
+            stbi_image_free(image);
+        return nullptr;
+    }
+
+    const bool hasAlpha = channels == 2 || channels == 4;
+    if (hasAlpha)
+    {
+        for (int i = 0; i < width * height; ++i)
+        {
+            stbi_uc* pixel = image + i * 4;
+            const unsigned alpha = pixel[3];
+            pixel[0] = static_cast<stbi_uc>((static_cast<unsigned>(pixel[0]) * alpha) / 255u);
+            pixel[1] = static_cast<stbi_uc>((static_cast<unsigned>(pixel[1]) * alpha) / 255u);
+            pixel[2] = static_cast<stbi_uc>((static_cast<unsigned>(pixel[2]) * alpha) / 255u);
+        }
+    }
+
+    std::vector<std::vector<stbi_uc>> mipStorage;
+    std::vector<const void*> mipData;
+    mipData.push_back(image);
+
+    int mipWidth = width;
+    int mipHeight = height;
+    while (mipWidth > 1 || mipHeight > 1)
+    {
+        const stbi_uc* source = mipStorage.empty() ? image : mipStorage.back().data();
+        const int nextWidth = std::max(1, mipWidth / 2);
+        const int nextHeight = std::max(1, mipHeight / 2);
+        std::vector<stbi_uc> next(static_cast<size_t>(nextWidth) * nextHeight * 4u);
+
+        for (int y = 0; y < nextHeight; ++y)
+        {
+            for (int x = 0; x < nextWidth; ++x)
+            {
+                unsigned rgba[4] = {};
+                int samples = 0;
+                for (int oy = 0; oy < 2; ++oy)
+                {
+                    for (int ox = 0; ox < 2; ++ox)
+                    {
+                        const int sx = std::min(mipWidth - 1, x * 2 + ox);
+                        const int sy = std::min(mipHeight - 1, y * 2 + oy);
+                        const stbi_uc* pixel = source + (static_cast<size_t>(sy) * mipWidth + sx) * 4u;
+                        rgba[0] += pixel[0];
+                        rgba[1] += pixel[1];
+                        rgba[2] += pixel[2];
+                        rgba[3] += pixel[3];
+                        ++samples;
+                    }
+                }
+
+                stbi_uc* out = next.data() + (static_cast<size_t>(y) * nextWidth + x) * 4u;
+                out[0] = static_cast<stbi_uc>(rgba[0] / samples);
+                out[1] = static_cast<stbi_uc>(rgba[1] / samples);
+                out[2] = static_cast<stbi_uc>(rgba[2] / samples);
+                out[3] = static_cast<stbi_uc>(rgba[3] / samples);
+            }
+        }
+
+        mipStorage.push_back(std::move(next));
+        mipData.push_back(mipStorage.back().data());
+        mipWidth = nextWidth;
+        mipHeight = nextHeight;
+    }
+
+    const size_t labelOffset = fullPath.find_last_of("/\\");
+    const std::string label = labelOffset == std::string::npos
+        ? fullPath
+        : fullPath.substr(labelOffset + 1);
+    Noesis::Ptr<Noesis::Texture> texture = device->CreateTexture(
+        label.c_str(),
+        static_cast<uint32_t>(width),
+        static_cast<uint32_t>(height),
+        static_cast<uint32_t>(mipData.size()),
+        hasAlpha ? Noesis::TextureFormat::RGBA8 : Noesis::TextureFormat::RGBX8,
+        mipData.data());
+
+    stbi_image_free(image);
+    return texture;
 }
 
 // ── VansNoesisFontProvider ────────────────────────────────────────────

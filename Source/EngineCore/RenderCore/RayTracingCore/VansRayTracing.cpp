@@ -146,19 +146,51 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
     }
     
     m_RayTracingResult = new VansTexture();
-    m_RayTracingResult->InitTextureWithoutData(*commandBuffer, m_RayTracingGridDimensions.x, m_RayTracingGridDimensions.y, m_RayTracingGridDimensions.z, 4, false, false, true, HDR_PRES_16);
+    m_RayTracingResult->InitTextureWithoutData(
+        *commandBuffer,
+        m_RayTracingGridDimensions.x,
+        m_RayTracingGridDimensions.y,
+        m_RayTracingGridDimensions.z,
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        false,
+        false,
+        true);
    
     VansMaterialManager* materialManager = scene->GetMaterialManager();
     VansTexture* shRResult = new VansTexture();
-    shRResult->InitTextureWithoutData(*commandBuffer, m_RayTracingGridDimensions.x, m_RayTracingGridDimensions.y, m_RayTracingGridDimensions.z, 4, false, false, true, HIGH_PRES_32);
+    shRResult->InitTextureWithoutData(
+        *commandBuffer,
+        m_RayTracingGridDimensions.x,
+        m_RayTracingGridDimensions.y,
+        m_RayTracingGridDimensions.z,
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        false,
+        false,
+        true);
     materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT, shRResult);
 
     VansTexture* shGResult = new VansTexture();
-    shGResult->InitTextureWithoutData(*commandBuffer, m_RayTracingGridDimensions.x, m_RayTracingGridDimensions.y, m_RayTracingGridDimensions.z, 4, false, false, true, HIGH_PRES_32);
+    shGResult->InitTextureWithoutData(
+        *commandBuffer,
+        m_RayTracingGridDimensions.x,
+        m_RayTracingGridDimensions.y,
+        m_RayTracingGridDimensions.z,
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        false,
+        false,
+        true);
     materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT, shGResult);
 
     VansTexture* shBResult = new VansTexture();
-    shBResult->InitTextureWithoutData(*commandBuffer, m_RayTracingGridDimensions.x, m_RayTracingGridDimensions.y, m_RayTracingGridDimensions.z, 4, false, false, true, HIGH_PRES_32);
+    shBResult->InitTextureWithoutData(
+        *commandBuffer,
+        m_RayTracingGridDimensions.x,
+        m_RayTracingGridDimensions.y,
+        m_RayTracingGridDimensions.z,
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        false,
+        false,
+        true);
     materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT, shBResult);
 
     const int totalProbeCount = static_cast<int>(m_RayTracingGridDimensions.x * m_RayTracingGridDimensions.y * m_RayTracingGridDimensions.z);
@@ -171,29 +203,52 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
         probesPerAtlasRow * kGIVisibilityOctaRes,
         probesPerAtlasColumn * kGIVisibilityOctaRes,
         1,
-        4,
+        VK_FORMAT_R32G32B32A32_SFLOAT,
         false,
         false,
         true,
-        HIGH_PRES_32,
         VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
     materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS, giVisibilityAtlas);
 
     m_SHFeedbackR = new VansTexture();
-    m_SHFeedbackR->InitTextureWithoutData(*commandBuffer, m_RayTracingGridDimensions.x, m_RayTracingGridDimensions.y, m_RayTracingGridDimensions.z, 4, false, false, true, HIGH_PRES_32);
+    m_SHFeedbackR->InitTextureWithoutData(
+        *commandBuffer,
+        m_RayTracingGridDimensions.x,
+        m_RayTracingGridDimensions.y,
+        m_RayTracingGridDimensions.z,
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        false,
+        false,
+        true);
 
     m_SHFeedbackG = new VansTexture();
-    m_SHFeedbackG->InitTextureWithoutData(*commandBuffer, m_RayTracingGridDimensions.x, m_RayTracingGridDimensions.y, m_RayTracingGridDimensions.z, 4, false, false, true, HIGH_PRES_32);
+    m_SHFeedbackG->InitTextureWithoutData(
+        *commandBuffer,
+        m_RayTracingGridDimensions.x,
+        m_RayTracingGridDimensions.y,
+        m_RayTracingGridDimensions.z,
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        false,
+        false,
+        true);
 
     m_SHFeedbackB = new VansTexture();
-    m_SHFeedbackB->InitTextureWithoutData(*commandBuffer, m_RayTracingGridDimensions.x, m_RayTracingGridDimensions.y, m_RayTracingGridDimensions.z, 4, false, false, true, HIGH_PRES_32);
+    m_SHFeedbackB->InitTextureWithoutData(
+        *commandBuffer,
+        m_RayTracingGridDimensions.x,
+        m_RayTracingGridDimensions.y,
+        m_RayTracingGridDimensions.z,
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        false,
+        false,
+        true);
 
 	m_GIRTPreviewTexture = new VansTexture();
 	m_GIRTPreviewTexture->InitTextureWithoutData(
 		*commandBuffer,
 		static_cast<int>(m_RayTracingGridDimensions.x),
 		static_cast<int>(m_RayTracingGridDimensions.y),
-		1, 4, false, false, true, HIGH_PRES_32,
+		1, VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true,
 		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 	m_GIRTPreviewStorageBufferAlignment = std::max<VkDeviceSize>(
 		device->GetDeviceProperties().limits.minStorageBufferOffsetAlignment,

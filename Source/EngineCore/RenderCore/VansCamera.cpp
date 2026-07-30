@@ -86,6 +86,12 @@ void VansGraphics::VansCamera::SetRightMouseDown(bool down)
     m_IsRightMouseDown = down; 
 }
 
+void VansGraphics::VansCamera::DetachTransformPreservingPose()
+{
+    SyncFromTransform();
+    m_TransformID = UINT32_MAX;
+}
+
 // 从绑定的 Transform 同步 position 和 rotation(pitch/yaw) 到相机成员。
 // roll(z) 不影响相机（GetViewMatrix 固定使用世界上方 (0,1,0)）。
 void VansGraphics::VansCamera::SyncFromTransform()

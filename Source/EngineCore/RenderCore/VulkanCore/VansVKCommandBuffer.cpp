@@ -282,6 +282,18 @@ void VansGraphics::VansVKCommandBuffer::DrawMesh(VansMesh& mesh, VansGraphicsSha
 		0);
 }
 
+void VansGraphics::VansVKCommandBuffer::DrawMesh(VansMesh& mesh, VansVKGraphicsPipeline& pipeline, uint32_t instance_count)
+{
+	BindGraphicsPipeline(pipeline);
+	VansGraphics::vkCmdDrawIndexed(
+		m_VansVKCommandBuffer,
+		mesh.GetIndexCount(),
+		instance_count,
+		0,
+		0,
+		0);
+}
+
 void VansGraphics::VansVKCommandBuffer::DrawIndexedIndirect(VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)
 {
 	VansGraphics::vkCmdDrawIndexedIndirect(m_VansVKCommandBuffer, buffer, offset, drawCount, stride);
@@ -343,19 +355,20 @@ void VansGraphics::VansVKCommandBuffer::BuildAccelerationStructures(VkAccelerati
 	VansGraphics::vkCmdBuildAccelerationStructuresKHR(m_VansVKCommandBuffer, 1, buildInfo, rangeInfos);
 }
 
-void VansGraphics::VansVKCommandBuffer::EnsureGraphicsShader(VansGraphicsShader& shader, GlobalStateData& global_state_data, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
+VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansVKCommandBuffer::EnsureGraphicsShader(VansGraphicsShader& shader, GlobalStateData& global_state_data, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
 {
 	if (!ValidateDescriptorSetLayouts(descriptorset_layouts, "graphics pipeline ensure"))
 	{
-		return;
+		return nullptr;
 	}
 
 	VansVKGraphicsPipeline* pipeline = shader.GetGraphicsPipeline(m_VansVKDevice, global_state_data, descriptorset_layouts);
 	if (pipeline == nullptr)
 	{
 		VANS_LOG_ERROR("pipe get failed");
-		return;
+		return nullptr;
 	}
+	return pipeline;
 }
 
 void VansGraphics::VansVKCommandBuffer::EnsureComputeShader(VansComputeShader& shader, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
@@ -462,7 +475,7 @@ void VansGraphics::VansVKCommandBuffer::BlitImage(VansVKImage& source, int sourc
 	);
 
 	// Restore the source image layout after copying.
-	source.SetImageMemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+	source.SetImageMemoryBarrier(*this, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		{
 			source.m_VansVKImage,
 			VK_ACCESS_NONE,
@@ -543,6 +556,33 @@ void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
 		m_VansVKCommandBuffer,
 		pipeline_type,
 		pipeline->m_VansPipelineLayout,
+		index_for_first_set,
+		static_cast<uint32_t>(descriptor_sets.size()),
+		descriptor_sets.data(),
+		static_cast<uint32_t>(dynamic_offsets.size()),
+		dynamic_offsets.data());
+}
+
+void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
+	VkPipelineBindPoint pipeline_type,
+	VansVKGraphicsPipeline& pipeline,
+	int index_for_first_set,
+	const std::vector<VkDescriptorSet>& descriptor_sets,
+	const std::vector<uint32_t>& dynamic_offsets)
+{
+	if (pipeline.m_VansPipelineLayout == VK_NULL_HANDLE)
+	{
+		VANS_LOG_ERROR("descriptor bind skipped because graphics pipeline layout is null");
+		return;
+	}
+	if (!ValidateDescriptorSets(descriptor_sets, "descriptor bind"))
+	{
+		return;
+	}
+	VansGraphics::vkCmdBindDescriptorSets(
+		m_VansVKCommandBuffer,
+		pipeline_type,
+		pipeline.m_VansPipelineLayout,
 		index_for_first_set,
 		static_cast<uint32_t>(descriptor_sets.size()),
 		descriptor_sets.data(),
@@ -672,6 +712,38 @@ bool VansGraphics::VansVKCommandBuffer::BeginCommandBufferRecord(VkCommandBuffer
 	if (VK_SUCCESS != result)
 	{
 		VANS_LOG_ERROR("Could not begin command buffer.");
+		return false;
+	}
+	m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+	m_BoundComputePipeline = VK_NULL_HANDLE;
+	m_BoundRayTracingPipeline = VK_NULL_HANDLE;
+	return true;
+}
+
+bool VansGraphics::VansVKCommandBuffer::BeginSecondaryCommandBufferRecord(
+	VkCommandBufferUsageFlags commandBufferUsage,
+	const CommandBufferInheritanceInfo& inheritanceInfo)
+{
+	VkCommandBufferInheritanceInfo vkInheritanceInfo = {};
+	vkInheritanceInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+	vkInheritanceInfo.renderPass = inheritanceInfo.renderPass;
+	vkInheritanceInfo.subpass = inheritanceInfo.subpass;
+	vkInheritanceInfo.framebuffer = inheritanceInfo.framebuffer;
+	vkInheritanceInfo.occlusionQueryEnable = inheritanceInfo.occlusionQueryEnable;
+	vkInheritanceInfo.queryFlags = inheritanceInfo.queryFlags;
+	vkInheritanceInfo.pipelineStatistics = inheritanceInfo.pipelineStatistics;
+
+	VkCommandBufferBeginInfo commandBufferBeginInfo =
+	{
+		VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		nullptr,
+		commandBufferUsage | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
+		&vkInheritanceInfo
+	};
+	VkResult result = VansGraphics::vkBeginCommandBuffer(m_VansVKCommandBuffer, &commandBufferBeginInfo);
+	if (VK_SUCCESS != result)
+	{
+		VANS_LOG_ERROR("Could not begin secondary command buffer.");
 		return false;
 	}
 	m_BoundGraphicsPipeline = VK_NULL_HANDLE;

@@ -191,7 +191,7 @@ namespace VansEngine
 		VANS_LOG("[PhysX] Scene pair filtering enabled: kineKine=eKEEP, staticKine=eKEEP");
 
 		// 注册碰撞 / 触发事件回调
-		m_EventCallback = new VansPhysicsEventCallback(&m_EventQueue);
+		m_EventCallback = new VansPhysicsEventCallback();
 		sceneDesc.simulationEventCallback = m_EventCallback;
 		
 		m_Scene = m_Physics->createScene(sceneDesc);

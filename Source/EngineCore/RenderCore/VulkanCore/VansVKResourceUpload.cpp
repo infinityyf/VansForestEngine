@@ -202,7 +202,7 @@ namespace VansGraphics
 			return false;
 		}
 
-		dest_buffer.SetBufferMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		dest_buffer.SetBufferMemoryBarrier(m_VansVKCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				dest_buffer.m_VansVKBuffer,
 				VK_ACCESS_TRANSFER_READ_BIT,
@@ -214,7 +214,7 @@ namespace VansGraphics
 
 		VansVKMemoryManager::CopyBufferData(m_VansVKCommandBuffer, m_StageBuffer, dest_buffer, { { VkDeviceSize(0),buffer_offset, buffer_size } });
 
-		dest_buffer.SetBufferMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		dest_buffer.SetBufferMemoryBarrier(m_VansVKCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				dest_buffer.m_VansVKBuffer,
 				VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -277,7 +277,7 @@ namespace VansGraphics
 			? 0
 			: VK_ACCESS_SHADER_READ_BIT;
 
-		dest_image.SetImageMemoryBarrier(beforeStage, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		dest_image.SetImageMemoryBarrier(cmd, beforeStage, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				dest_image.m_VansVKImage,
 				beforeAccess,
@@ -312,7 +312,7 @@ namespace VansGraphics
 
 		if (finalLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
 		{
-			dest_image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			dest_image.SetImageMemoryBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 				{
 					dest_image.m_VansVKImage,
 					VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -363,7 +363,7 @@ namespace VansGraphics
 		const VkAccessFlags beforeAccess = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
 			? 0
 			: VK_ACCESS_SHADER_READ_BIT;
-		destImage.SetImageMemoryBarrier(beforeStage, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		destImage.SetImageMemoryBarrier(cmd, beforeStage, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				destImage.m_VansVKImage,
 				beforeAccess,
@@ -380,7 +380,7 @@ namespace VansGraphics
 
 		if (finalLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
 		{
-			destImage.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			destImage.SetImageMemoryBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 				{
 					destImage.m_VansVKImage,
 					VK_ACCESS_TRANSFER_WRITE_BIT,

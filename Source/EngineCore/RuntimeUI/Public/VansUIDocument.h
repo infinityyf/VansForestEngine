@@ -38,6 +38,11 @@ namespace VansRuntime
 
         // 返回加载时使用的 XAML 路径（用于调试和热重载）
         virtual const std::string& GetSourcePath() const = 0;
+
+        // Renderer-facing hooks used by RuntimeUI and editor preview targets.
+        virtual void Update(double totalTimeSeconds) = 0;
+        virtual void RenderOffscreen() = 0;
+        virtual void Render() = 0;
     };
 
 } // namespace VansRuntime

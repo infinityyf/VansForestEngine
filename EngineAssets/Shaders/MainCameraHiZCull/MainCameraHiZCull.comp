@@ -1,0 +1,163 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/CameraData.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+const uint CULL_FORCE_VISIBLE = 1u << 0u;
+
+struct MainCameraCullObject
+{
+    vec4 center;
+    vec4 axisXHalf;
+    vec4 axisYHalf;
+    vec4 axisZHalf;
+    uint nodeIndex;
+    uint flags;
+    uint padding0;
+    uint padding1;
+};
+
+layout(std430, set = 1, binding = 0) readonly buffer ObjectBuffer
+{
+    MainCameraCullObject objects[];
+};
+
+layout(std430, set = 1, binding = 1) buffer VisibilityBuffer
+{
+    uint visibility[];
+};
+
+layout(set = 1, binding = 2) uniform sampler2D hizDepth;
+
+layout(push_constant) uniform MainCameraHiZCullPC
+{
+    uint objectCount;
+    uint hizMipCount;
+    uint hizEnabled;
+    uint frameIndex;
+    float depthBiasMeters;
+    float maxScreenCoverageForCull;
+    float padding0;
+    float padding1;
+} pc;
+
+float sampleHiZCell(ivec2 cell, int mipLevel)
+{
+    int mipMaxIndex = int(max(pc.hizMipCount, 1u)) - 1;
+    int lod = clamp(mipLevel, 0, mipMaxIndex);
+    ivec2 mipSize = textureSize(hizDepth, lod);
+    return texelFetch(hizDepth, clamp(cell, ivec2(0), mipSize - 1), lod).r;
+}
+
+bool occlusionCellFullyInFront(ivec2 cell, int mipLevel, float objectNearDepth)
+{
+    float sceneMaxDepth = sampleHiZCell(cell, mipLevel);
+    if (sceneMaxDepth >= 1e4)
+        return false;
+
+    return objectNearDepth > sceneMaxDepth + pc.depthBiasMeters;
+}
+
+bool projectOBB(
+    MainCameraCullObject objectData,
+    out vec2 uvMin,
+    out vec2 uvMax,
+    out float objectNearestDepth)
+{
+    vec3 center = objectData.center.xyz;
+    vec3 axisX = objectData.axisXHalf.xyz;
+    vec3 axisY = objectData.axisYHalf.xyz;
+    vec3 axisZ = objectData.axisZHalf.xyz;
+
+    uvMin = vec2(1.0);
+    uvMax = vec2(0.0);
+    objectNearestDepth = 1e20;
+
+    for (uint corner = 0u; corner < 8u; ++corner)
+    {
+        vec3 worldCorner = center
+            + ((corner & 1u) != 0u ? axisX : -axisX)
+            + ((corner & 2u) != 0u ? axisY : -axisY)
+            + ((corner & 4u) != 0u ? axisZ : -axisZ);
+
+        vec4 viewCorner = ViewMatrix * vec4(worldCorner, 1.0);
+        float linearDepth = -viewCorner.z;
+        if (linearDepth <= max(NearPlane, 0.001))
+            return false;
+
+        vec4 clipCorner = ProjectionMatrix * viewCorner;
+        if (clipCorner.w <= 0.0001)
+            return false;
+
+        vec3 ndc = clipCorner.xyz / clipCorner.w;
+        vec2 uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+        uvMin = min(uvMin, uv);
+        uvMax = max(uvMax, uv);
+        objectNearestDepth = min(objectNearestDepth, linearDepth);
+    }
+
+    if (uvMax.x < 0.0 || uvMin.x > 1.0 || uvMax.y < 0.0 || uvMin.y > 1.0)
+        return false;
+
+    uvMin = clamp(uvMin, vec2(0.0), vec2(1.0));
+    uvMax = clamp(uvMax, vec2(0.0), vec2(1.0));
+    return uvMax.x >= uvMin.x && uvMax.y >= uvMin.y;
+}
+
+bool conservativeHiZOccluded(MainCameraCullObject objectData)
+{
+    vec2 uvMin;
+    vec2 uvMax;
+    float objectNearestDepth;
+    if (!projectOBB(objectData, uvMin, uvMax, objectNearestDepth))
+        return false;
+
+    vec2 rectPixels = max((uvMax - uvMin) * ScreenParams.xy, vec2(0.0));
+    float maxRectPixels = max(rectPixels.x, rectPixels.y);
+    if (maxRectPixels <= 0.5)
+        return false;
+
+    vec2 coverage = (uvMax - uvMin);
+    if (max(coverage.x, coverage.y) > pc.maxScreenCoverageForCull)
+        return false;
+
+    int mipMaxIndex = int(max(pc.hizMipCount, 1u)) - 1;
+    int mipLevel = clamp(int(floor(log2(max(maxRectPixels, 1.0)))), 0, mipMaxIndex);
+    ivec2 mipSize = textureSize(hizDepth, mipLevel);
+    ivec2 minCell = clamp(ivec2(floor(uvMin * vec2(mipSize))), ivec2(0), mipSize - 1);
+    ivec2 maxCell = clamp(ivec2(ceil(uvMax * vec2(mipSize))) - ivec2(1), ivec2(0), mipSize - 1);
+    ivec2 cellCount = maxCell - minCell + ivec2(1);
+    int sampleCount = cellCount.x * cellCount.y;
+    if (sampleCount <= 0 || sampleCount > 64)
+        return false;
+
+    for (int y = minCell.y; y <= maxCell.y; ++y)
+    {
+        for (int x = minCell.x; x <= maxCell.x; ++x)
+        {
+            if (!occlusionCellFullyInFront(ivec2(x, y), mipLevel, objectNearestDepth))
+                return false;
+        }
+    }
+    return true;
+}
+
+void main()
+{
+    uint objectId = gl_GlobalInvocationID.x;
+    if (objectId >= pc.objectCount)
+        return;
+
+    MainCameraCullObject objectData = objects[objectId];
+    uint outIndex = objectData.nodeIndex;
+
+    if ((objectData.flags & CULL_FORCE_VISIBLE) != 0u || pc.hizEnabled == 0u)
+    {
+        visibility[outIndex] = 1u;
+        return;
+    }
+
+    visibility[outIndex] = conservativeHiZOccluded(objectData) ? 0u : 1u;
+}

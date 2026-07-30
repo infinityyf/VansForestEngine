@@ -2,7 +2,6 @@
 
 #include "EngineDTOs.h"
 #include "IEngineCommand.h"
-#include "IEngineEventListener.h"
 
 #include <memory>
 #include <string>
@@ -36,7 +35,14 @@ namespace Vans::EditorAPI
 		virtual std::vector<RecentProjectEntry> GetRecentProjects() const = 0;
 		virtual ProjectOpenResult OpenProject(const ProjectOpenRequest& request) = 0;
 		virtual void CloseProject() = 0;
+		virtual ProjectConfigSnapshot GetProjectConfigSnapshot() const = 0;
+		virtual ProjectConfigEditResult SetProjectDefaultScene(const std::string& sceneRelativePath) = 0;
+		virtual ProjectConfigEditResult SetProjectPathField(ProjectPathField field, const std::string& relativePath) = 0;
+		virtual ProjectConfigEditResult SetProjectScriptSearchPaths(const std::vector<std::string>& paths) = 0;
+		virtual ProjectConfigEditResult SetProjectAssetDirectory(const std::string& key, const std::string& relativePath) = 0;
+		virtual ProjectConfigEditResult SaveProjectConfig() = 0;
 		virtual float GetProjectPhysicsFixedTimeStep() const = 0;
+		virtual ProjectConfigEditResult SetProjectPhysicsFixedTimeStep(float fixedTimeStep) = 0;
 		virtual bool SetCurrentProjectScenePath(const std::string& scenePath) = 0;
 		virtual void ScanProjectAssets() = 0;
 
@@ -44,13 +50,28 @@ namespace Vans::EditorAPI
 		virtual RenderTexturePreview GetViewportPreview(ViewportId id) const = 0;
 		virtual FSRSettingsSnapshot GetFSRSettings() const = 0;
 		virtual void SetFSRSettings(FSRUpscaleMode mode, float sharpness) = 0;
+		virtual CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const = 0;
+		virtual void SetCommandRecordingSettings(bool parallelEnabled) = 0;
 		virtual void SetSceneViewportExtent(std::uint32_t width, std::uint32_t height) = 0;
 		virtual std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const = 0;
 		virtual void RequestPunctualShadowDebugPreview() = 0;
 		virtual PunctualShadowDebugSnapshot GetPunctualShadowDebugSnapshot() const = 0;
 		virtual void ApplyPunctualScreenSpaceShadowSettings(
 			const PunctualScreenSpaceShadowSettingsSnapshot& settings) = 0;
-		virtual RenderBackendDiagnostics GetRenderBackendDiagnostics() const = 0;
+		virtual RenderBackendDiagnostics GetRenderBackendDiagnostics(bool includeRenderGraphSummary = false) const = 0;
+		virtual PipelineRegistryStatsSnapshot GetPipelineRegistryStats() const = 0;
+		virtual RenderDocStatusSnapshot GetRenderDocStatus() const = 0;
+		virtual void SetRenderDocAPIValidationEnabled(bool enabled) = 0;
+		virtual void SetRenderDocReferenceAllResources(bool enabled) = 0;
+		virtual void CaptureNextRenderDocFrame() = 0;
+		virtual void OpenRenderDocUI() = 0;
+		virtual UIDocumentOpenResult OpenUIDocument(const std::string& path) = 0;
+		virtual void CloseUIDocument(UIDocumentId documentId) = 0;
+		virtual void SetUIDocumentVisible(UIDocumentId documentId, bool visible) = 0;
+		virtual UIDocumentSnapshot GetUIDocumentSnapshot(UIDocumentId documentId) const = 0;
+		virtual UIDiagnosticsSnapshot GetUIDiagnostics(UIDocumentId documentId) const = 0;
+		virtual UIPreviewResult RequestUIPreview(const UIPreviewRequest& request) = 0;
+		virtual EditorTextureHandle GetUIPreviewTexture(UIPreviewId id) const = 0;
 		virtual std::vector<ShaderProgramSourceSnapshot> QueryShaderProgramSources() const = 0;
 		virtual ShaderCandidateApplyResult ApplyShaderCandidateAtRenderSafePoint(
 			const ShaderCandidatePackage& package) = 0;
@@ -62,6 +83,7 @@ namespace Vans::EditorAPI
 		virtual void ApplyGISettings(const GIInspectorSettingsSnapshot& settings) = 0;
 		virtual GIProbeDebugSnapshot CaptureGIProbeDebugSnapshot(std::uint32_t stride, float exposure) = 0;
 		virtual GIProbeDebugSnapshot GetGIProbeDebugSnapshot() const = 0;
+		virtual MainCameraHiZCullDebugSnapshot GetMainCameraHiZCullDebugSnapshot() const = 0;
 		virtual RenderTexturePreview RequestGIRTPreview(
 			std::uint32_t mode,
 			std::uint32_t zSlice,
@@ -84,6 +106,7 @@ namespace Vans::EditorAPI
 		virtual RuntimeModelEntityCreateResult CreateRuntimeModelEntity(const RuntimeModelEntityCreateRequest& request) = 0;
 		virtual ModelAssetPlacementPayload PrepareModelAssetPlacement(const ModelAssetPlacementRequest& request) = 0;
 		virtual RuntimeEntityDestroyResult DestroyRuntimeEntityByName(const RuntimeEntityDestroyRequest& request) = 0;
+		virtual RuntimeEntityReparentResult ReparentRuntimeEntity(const RuntimeEntityReparentRequest& request) = 0;
 		virtual std::string MakeUniqueRuntimeEntityName(const std::string& baseName) const = 0;
 		virtual std::string GetProjectRootPath() const = 0;
 		virtual bool IsRuntimeSceneReady() const = 0;
@@ -152,7 +175,5 @@ namespace Vans::EditorAPI
 		virtual void Undo() = 0;
 		virtual void Redo() = 0;
 
-		virtual void Subscribe(IEngineEventListener* listener) = 0;
-		virtual void Unsubscribe(IEngineEventListener* listener) = 0;
 	};
 }

@@ -1,43 +1,30 @@
 #pragma once
-#include "VansBaseWindowComponent.h"
-#include <string>
-#include <memory>
 
-namespace VansRuntime
-{
-    class VansUIDocument;
-}
+#include "VansBaseWindowComponent.h"
+
+#include "../../EngineAPILayer/Public/EngineDTOs.h"
+
+#include <string>
 
 namespace VansGraphics
 {
-    // -----------------------------------------------------------------------
-    // UI Editor Window — XAML 预览 / 热重载面板
-    //
-    // 功能：
-    //   1. XAML 路径输入框（支持 engine:// 协议和项目相对路径）
-    //   2. Load Preview 按钮 — 调用 VansUISystem::LoadDocument()
-    //   3. Reload (F5) — 热重载当前加载的 XAML 文件
-    //   4. 元数据显示：当前 source path、文档可视状态
-    //   5. 备注：Noesis IView 渲染结果目前无法作为 ImGui Image 显示，
-    //            预览视口以占位文本代替（后续集成 Off-screen Render Target）
-    // -----------------------------------------------------------------------
     class VansUIEditorWindow : public VansBaseWindowComponent
     {
     public:
         VansUIEditorWindow();
-        void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
+        void ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api) override;
 
     private:
-        void DrawUIEditorContents();
-        void LoadPreview();
-        void UnloadPreview();
-        void DrawMetaPanel();
-        void DrawPreviewViewport();
+        void DrawUIEditorContents(Vans::EditorAPI::IEngineEditorAPI& api);
+        void LoadPreview(Vans::EditorAPI::IEngineEditorAPI& api);
+        void UnloadPreview(Vans::EditorAPI::IEngineEditorAPI& api);
+        void DrawMetaPanel(Vans::EditorAPI::IEngineEditorAPI& api);
+        void DrawPreviewViewport(Vans::EditorAPI::IEngineEditorAPI& api);
 
-        char   m_XamlPathBuf[512] = {};
-        std::shared_ptr<VansRuntime::VansUIDocument> m_PreviewDocument;
-
-        // 上一帧 F5 按下状态（防止持续触发）
+        char m_XamlPathBuf[512] = {};
+        Vans::EditorAPI::UIDocumentId m_PreviewDocumentId = 0;
+        Vans::EditorAPI::UIPreviewId m_PreviewId = 0;
+        std::string m_LastStatus;
         bool m_ReloadKeyWasDown = false;
     };
 }

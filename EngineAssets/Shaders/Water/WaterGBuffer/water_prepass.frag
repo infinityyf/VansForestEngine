@@ -26,16 +26,23 @@ layout(set = 1, binding = 0) uniform WaterSurfaceParams
     vec4 flowMapWorld;
     vec4 flowMapParams;
     vec4 flowMapFallback;
+    vec4 surfaceOptics;
+    vec4 scatteringCoeff;
+    vec4 absorptionCoeff;
 } params;
 
 layout(location = 0) out vec4 outWaterNormal;
-layout(location = 1) out vec4 outWaterPosDepth;
+layout(location = 1) out vec4 outWaterScatterThickness;
+layout(location = 2) out vec4 outWaterAbsorptionFoam;
+layout(location = 3) out vec4 outWaterPosDepth;
 
 void main()
 {
     vec3 finalNormal = normalize(inWorldNormal);
-    // Alpha is an explicit, unfiltered coverage bit.  The optical passes use
-    // it together with the depth sentinel to classify shoreline pixels.
-    outWaterNormal = vec4(finalNormal, 1.0);
+    float roughness = clamp(params.surfaceOptics.x, 0.002, 0.3);
+    float foam = 0.0;
+    outWaterNormal = vec4(finalNormal, roughness);
+    outWaterScatterThickness = vec4(max(params.scatteringCoeff.rgb, vec3(0.0)), 0.0);
+    outWaterAbsorptionFoam = vec4(max(params.absorptionCoeff.rgb, vec3(0.0)), foam);
     outWaterPosDepth = vec4(inWorldPos, inLinearDepth);
 }

@@ -15,6 +15,7 @@ typedef struct VmaAllocation_T* VmaAllocation;
 
 namespace VansGraphics
 {
+	class VansVKCommandBuffer;
 	struct ImageTransition 
 	{
 		VkImage Image;
@@ -83,7 +84,7 @@ namespace VansGraphics
 		void SetRawImageData(VkDevice& logical_device, void* data, int size);
 		
 		//设置image memory barrier
-		void SetImageMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, ImageTransition bufferTransition);
+		void SetImageMemoryBarrier(VansVKCommandBuffer& commandBuffer, VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, ImageTransition imageTransition);
 
 		VkImageView GetImageView();
 

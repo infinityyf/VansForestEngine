@@ -1,6 +1,7 @@
 #include "VansEditorShaderHotReloadController.h"
 
 #include "../../AssetCore/Importers/Shader/VansShaderArtifactCache.h"
+#include "../../EventCore/VansEventBus.h"
 #include "../../Util/VansLog.h"
 
 #include <algorithm>
@@ -59,6 +60,14 @@ namespace Vans
 			return;
 
 		m_Initialized = true;
+		m_EventConnections.Add(VansEventBus::Get().Subscribe<VansAssetFileChangedEvent>(
+			[this](const VansAssetFileChangedEvent& event)
+			{
+				HandleFileChangedEvent(event);
+			},
+			VansEventLane::Editor,
+			0,
+			"VansEditorShaderHotReloadController.FileChanged"));
 		RefreshProgramRegistry(engineAPI);
 		m_FileWatcher.Start();
 		VANS_LOG("[ShaderHotReload] Editor shader watcher initialized for " << m_Programs.size() << " programs");
@@ -70,6 +79,7 @@ namespace Vans
 			return;
 
 		m_FileWatcher.Stop();
+		m_EventConnections.DisconnectAll();
 		m_FileWatcher.ClearWatches();
 		m_Programs.clear();
 		m_FileDependents.clear();
@@ -193,16 +203,6 @@ namespace Vans
 			Initialize(engineAPI);
 
 		RefreshProgramRegistry(engineAPI);
-		for (const VansFileChange& change : m_FileWatcher.DrainChanges())
-		{
-			if (!VansShaderCompiler::IsShaderSourceExtension(change.path))
-				continue;
-
-			const std::wstring key = PathKey(change.path);
-			PendingFile& pending = m_PendingFiles[key];
-			pending.path = change.path;
-			pending.lastObserved = change.observedAt;
-		}
 
 		const auto now = std::chrono::steady_clock::now();
 		std::unordered_set<std::string> affectedPrograms;
@@ -224,6 +224,18 @@ namespace Vans
 		std::sort(orderedPrograms.begin(), orderedPrograms.end());
 		for (const std::string& programId : orderedPrograms)
 			BuildProgram(programId, engineAPI);
+	}
+
+	void VansEditorShaderHotReloadController::HandleFileChangedEvent(const VansAssetFileChangedEvent& event)
+	{
+		const VansFileChange& change = event.change;
+		if (!VansShaderCompiler::IsShaderSourceExtension(change.path))
+			return;
+
+		const std::wstring key = PathKey(change.path);
+		PendingFile& pending = m_PendingFiles[key];
+		pending.path = change.path;
+		pending.lastObserved = change.observedAt;
 	}
 
 	void VansEditorShaderHotReloadController::BuildProgram(

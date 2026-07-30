@@ -2,6 +2,7 @@
 
 #include "../EngineCore/AudioCore/VansAudioSystem.h"
 #include "../EngineCore/Configration/VansConfigration.h"
+#include "../EngineCore/EventCore/VansEventBus.h"
 #include "../EngineCore/PhysicsCore/VansPhysics.h"
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneProjectResourceBuilder.h"
@@ -328,6 +329,8 @@ FOREST_RUNTIME_API int ForestRuntime_CreateWindow(ForestRuntimeHandle* runtime, 
 		return 0;
 	}
 	Vans::VansInputManager::Get().Initialize(runtime->window->GetGLFWWindow());
+	Vans::VansInputManager::Get().SetCursorCaptureAllowed(true);
+	Vans::VansInputManager::Get().SetCursorCaptureEnabled(true);
 
 	auto device = std::make_unique<VansGraphics::VansVKDevice>(
 		VkExtent2D{
@@ -427,22 +430,26 @@ FOREST_RUNTIME_API int ForestRuntime_Tick(ForestRuntimeHandle* runtime, float)
 	}
 
 	Vans::VansJobSystem::Get().ProcessMainThreadJobs();
+	Vans::VansEventBus::Get().Flush(Vans::VansEventLane::MainThread);
 	VansGraphics::VansTimer::Update();
 	if (runtime->graphicsInitialized && runtime->window)
 	{
 		Vans::VansInputManager::Get().Update();
 		runtime->window->PollEvents();
 		Vans::VansInputManager::Get().RefreshPolledState();
+		Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Input);
 	}
 	if (runtime->sceneLoaded && runtime->scene && runtime->scene->IsSceneReady())
 	{
 		VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
+		Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Physics);
 
 		if (VansEngine::VansPhysicsSystem::GetInstance().IsSimulationRunning())
 			runtime->scene->UpdatePhysicsTransforms();
 
 		if (runtime->scriptContext)
 		{
+			Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Script);
 			runtime->scriptContext->SetScene(runtime->scene.get());
 			runtime->scriptContext->VansScriptUpdateNonCameraScripts();
 		}
@@ -475,6 +482,7 @@ FOREST_RUNTIME_API int ForestRuntime_RenderFrame(ForestRuntimeHandle* runtime)
 			runtime->device->OnWindowResize(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
 	}
 
+	Vans::VansEventBus::Get().Flush(Vans::VansEventLane::RenderPrep);
 	runtime->camera->Rendering();
 	runtime->camera->Present();
 	return 1;

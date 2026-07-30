@@ -70,6 +70,7 @@ namespace VansGraphics
 		float lodFadeDist;
 		int   subBladeCount;   // number of sub-blades per main instance (matches m_SubBladeCount)
 		float grassHeight;     // blade height in world units (controls segment length)
+		uint32_t cullVisibilityEnabled; // Grass cull 已产生本帧可见性掩码时为 1
 		uint32_t boneCount;    // bones per instance — must match m_BoneCountPerInstance
 	};
 
@@ -302,10 +303,11 @@ namespace VansGraphics
 		            float windSpeed = 1.5f, float windBendMult = 5.0f,
 		            float stiffness = 15.0f, float damping = 0.92f,
 		            float softness = 0.2f,
-		            float lodFullDist = 15.0f, float lodFadeDist = 20.0f);
+		            float lodFullDist = 15.0f, float lodFadeDist = 20.0f,
+		            bool useCullVisibilityMask = false);
 
 		// ── P0: GPU frustum + distance cull — dispatch before Draw() ────
-		void DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance);
+		bool DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance);
 		void DispatchTreeCullPass(VansVKCommandBuffer& computeCmd);
 
 		// ── Draw: issues one indirect indexed draw per render config ───
@@ -516,6 +518,7 @@ namespace VansGraphics
 		std::vector<TreeInstanceGPU> m_TreeInstancesCPU;
 		std::vector<TreeSpeciesCullInfo> m_TreeSpeciesInfosCPU;
 		std::vector<TreeDrawConfigGPU> m_TreeDrawConfigsGPU;
+		std::vector<uint32_t> m_TreeVisibleCountsZeroScratch; // 复用清零数据，避免每帧分配临时数组
 		VansVKBuffer m_TreeInstanceBuffer;
 		VansVKBuffer m_TreeVisibleCountsBuffer;
 		VansVKBuffer m_TreeVisibleIndexBuffer;

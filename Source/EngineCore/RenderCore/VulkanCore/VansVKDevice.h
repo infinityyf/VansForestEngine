@@ -5,6 +5,7 @@
 #include "VansVKBuffer.h"
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
+#include "VansVKSecondaryCommandContext.h"
 #include "VansRenderGraph.h"
 #include "VansRenderGraphVulkanSync.h"
 #include "VansPipelineCacheService.h"
@@ -16,6 +17,7 @@
 #include "../FidelityFXCore/VansFSR.h"
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 namespace VansGraphics
 {
@@ -105,6 +107,8 @@ namespace VansGraphics
 
 		void EndUIRenderPass() override;
 
+		bool CanRecordCurrentFrame() const override { return m_CurrentFrameContext.frameSubmitSucceeded; }
+
 		/// 运行时 UI pass（Noesis → FSR 输出图像）
 		void BeginSceneUIRenderPass();
 		void EndSceneUIRenderPass();
@@ -123,6 +127,8 @@ namespace VansGraphics
 		void SetRuntimeSwapchainPresentationEnabled(bool enabled) { m_PresentFSROutputToSwapchain = enabled; }
 		VansFSRMode GetFSRMode() const { return m_FSRMode; }
 		float GetFSRSharpness() const { return m_FSRController.GetSharpness(); }
+		bool IsParallelCommandRecordingEnabled() const { return m_EnableParallelCommandRecording; }
+		void SetParallelCommandRecordingEnabled(bool enabled) { m_EnableParallelCommandRecording = enabled; }
 		VkExtent2D GetRequestedSceneViewportExtent() const { return m_RequestedSceneViewportExtent; }
 
 		// 窗口大小改变时重建交换链和UI渲染pass
@@ -146,7 +152,8 @@ namespace VansGraphics
 
 		bool WaitForIdle() override { return WaitForDevice(); }
 
-		const std::string& GetCurrentRenderGraphDebugSummary() const { return m_CurrentRenderGraphDebugSummary; }
+		const VansRenderGraphDiagnosticsSnapshot& GetCurrentRenderGraphDiagnostics() const { return m_CurrentRenderGraphDiagnostics; }
+		const std::string& GetCurrentRenderGraphDebugSummary() const;
 		const VansFrameContext& GetCurrentFrameContext() const { return m_CurrentFrameContext; }
 		void EnqueueDeferredDelete(std::function<void()> destroy);
 
@@ -217,10 +224,14 @@ namespace VansGraphics
 		void DrawMotionVectorPass(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
 		void DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
+		bool RecordShadowMapParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex);
 
 		void DrawSceneForward(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 
 		void DrawSceneGBuffer(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		bool RecordSceneGBufferParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
+		bool RecordMotionVectorPassParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
+		bool RecordDecalPassParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
 
 		// 拆分后的渲染 pass：
 		//   DrawSceneDeferredSkybox  — ScreenSpaceFeature + Deferred + SkyBox（写入 SceneColor）
@@ -277,6 +288,8 @@ namespace VansGraphics
 
 		void UpdateHZB(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
+		void UpdateMainCameraHiZCull(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+
 		void UpdateSSR(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		void UpdateScreenSpaceShadow(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
@@ -308,6 +321,9 @@ namespace VansGraphics
 		uint64_t m_GIDataDescSetGeneration = 0;
 		uint64_t m_HZBDescSetGeneration = 0;
 		uint64_t m_HIZSeedDescSetGeneration = 0;
+		uint64_t m_OcclusionHZBDescSetGeneration = 0;
+		uint64_t m_OcclusionHIZSeedDescSetGeneration = 0;
+		uint64_t m_MainCameraHiZCullDescSetGeneration = 0;
 		uint64_t m_SSRDescSetGeneration = 0;
 		uint64_t m_VolumetricFogDescSetGeneration = 0;
 		uint64_t m_FogLightInjectionDescSetGeneration = 0;
@@ -361,6 +377,12 @@ namespace VansGraphics
 		void UpdateHIZSeedDescriptorSet(VansRenderPassManager* renderPassManager);
 
 		void UpdateHZBDescriptorSets(VansRenderPassManager* renderPassManager);
+
+		void UpdateOcclusionHIZSeedDescriptorSet(VansRenderPassManager* renderPassManager);
+
+		void UpdateOcclusionHZBDescriptorSets(VansRenderPassManager* renderPassManager);
+
+		void UpdateMainCameraHiZCullDescriptorSets(VansRenderPassManager* renderPassManager);
 
 		void UpdateSSRDescriptorSets(VansRenderPassManager* renderPassManager);
 
@@ -448,6 +470,13 @@ namespace VansGraphics
 
 		// Set to true to enable shadow-parallel async path.
 		bool m_UseAsyncCompute = false;
+		bool m_EnableParallelCommandRecording = true;
+		bool m_ShadowSecondaryCommandBuffersNeedReset = false;
+		bool m_MotionVectorSecondaryCommandBuffersNeedReset = false;
+		bool m_GBufferSecondaryCommandBuffersNeedReset = false;
+		bool m_DecalSecondaryCommandBuffersNeedReset = false;
+		uint32_t m_ParallelRecordThreadCount = 4;
+		uint32_t m_MinDrawsPerSecondary = 32;
 
 		// True when a second Graphics Queue was successfully acquired for shadow rendering.
 		bool m_HasDedicatedShadowQueue = false;
@@ -508,10 +537,19 @@ namespace VansGraphics
 		VansRenderGraphBarrierPlan m_CurrentBarrierPlan;
 		VansVulkanRenderGraphSyncPlan m_CurrentVulkanSyncPlan;
 		VansRenderFeatureAuditResult m_CurrentFeatureAudit;
-		std::string m_CurrentRenderGraphDebugSummary;
+		VansRenderGraphDiagnosticsSnapshot m_CurrentRenderGraphDiagnostics;
+		uint64_t m_CurrentRenderGraphTopologyHash = 0;
+		uint64_t m_CurrentRenderGraphTopologyRevision = 0;
+		bool m_HasCompiledRenderGraphTopology = false;
+		mutable std::string m_CurrentRenderGraphDebugSummary;
+		mutable uint64_t m_CurrentRenderGraphDebugSummaryRevision = 0;
 		VansRayTracing rayTracingContext;
 		
 		VansVKCommandBuffer m_ImmediateGraphicsCommandBuffer;
+		std::unique_ptr<VansVKSecondaryCommandContext> m_ShadowSecondaryCommandContext;
+		std::unique_ptr<VansVKSecondaryCommandContext> m_MotionVectorSecondaryCommandContext;
+		std::unique_ptr<VansVKSecondaryCommandContext> m_SecondaryCommandContext;
+		std::unique_ptr<VansVKSecondaryCommandContext> m_DecalSecondaryCommandContext;
 
 		INativeWindowProvider* m_NativeWindowProvider = nullptr;
 		bool m_VulkanInitialized = false;
@@ -586,6 +624,9 @@ namespace VansGraphics
 		void BuildCurrentRenderFramePlan(VansRenderPassManager* renderPassManager);
 		void BindCurrentFrameSyncResources();
 		void FlushCurrentFrameDeferredDeletes();
+		bool InitializeParallelCommandRecording();
+		void DestroyParallelCommandRecording();
+		bool ResetGBufferSecondaryCommandBuffersIfNeeded();
 	public:
 		VansVKDevice(VkExtent2D resolution, INativeWindowProvider* nativeWindowProvider = nullptr)
 		{

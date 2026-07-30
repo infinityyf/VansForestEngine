@@ -53,10 +53,13 @@ void VansGraphics::VansGraphicsGUIBackEnd::InitBackEnd(VansGraphicsDevice& devic
 	VansGraphics::vkCreateDescriptorPool(m_Device, &pool_info, nullptr, &m_ImGUIPool);
 
 
-	// 2: initialize imgui library
-
-	//this initializes the core structures of imgui
-	ImGui::CreateContext();
+	// ImGui Context 由 Editor 层统一创建和配置，后端只绑定平台/渲染实现。
+	// 这里不能再次 CreateContext，否则会丢失 Editor 已设置的 IO/style/font 状态。
+	IM_ASSERT(ImGui::GetCurrentContext() != nullptr);
+	if (ImGui::GetCurrentContext() == nullptr)
+	{
+		return;
+	}
 
 	ImGui_ImplGlfw_InitForVulkan(window,true);
 

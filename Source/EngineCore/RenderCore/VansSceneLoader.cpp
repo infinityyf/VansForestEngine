@@ -144,6 +144,7 @@ void VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
     VANS_LOG("[VansScene] LoadSceneForRendering: " << scenePath);
     m_RuntimeResourceDevice = device;
 
+    bool rebuildRenderingDataAfterUnload = false;
     if (m_SceneState == VansSceneState::Ready)
     {
         m_SceneState = VansSceneState::Unloading;
@@ -154,6 +155,7 @@ void VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
 
         m_SceneState = VansSceneState::Empty;
         VANS_LOG("[VansScene] Previous scene unloaded");
+        rebuildRenderingDataAfterUnload = true;
     }
 
     if (!m_ResourcesLoaded)
@@ -164,6 +166,12 @@ void VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
 
     m_SceneState = VansSceneState::Loading;
     VANS_LOG("[VansScene] Loading scene: " << scenePath);
+
+    if (rebuildRenderingDataAfterUnload)
+    {
+        VANS_LOG("[VansScene] Rebuilding renderer data after scene unload");
+        device->PrepareRenderingData();
+    }
 
     if (!VansSceneContentBuildExecutor::BuildFromFile(*this, scenePath))
     {

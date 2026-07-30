@@ -1,209 +1,240 @@
 #include "VansUIEditorWindow.h"
+
 #include "../VansEditorWindow.h"
-#include "../../../EngineCore/RuntimeUI/Public/VansUISystem.h"
-#include "../../../EngineCore/RuntimeUI/Public/VansUIDocument.h"
-#include "../../Util/VansInputManager.h"
 #include "../../Util/VansLog.h"
+
 #include "imgui.h"
+
+#include <algorithm>
 #include <cstring>
+#include <string>
 
 using namespace VansGraphics;
 
 VansUIEditorWindow::VansUIEditorWindow()
 {
-    std::strncpy(m_XamlPathBuf, "UI/Views/HUD.xaml", sizeof(m_XamlPathBuf) - 1);
+    std::strncpy(m_XamlPathBuf, "UI/Screens/HUD_Main.vui.json", sizeof(m_XamlPathBuf) - 1);
 }
 
-// ─── ShowWindow ─────────────────────────────────────────────────────────────
-
-void VansUIEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI&)
+void VansUIEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
 {
-    DrawUIEditorContents();
+    DrawUIEditorContents(api);
 }
 
-void VansUIEditorWindow::DrawUIEditorContents()
+void VansUIEditorWindow::DrawUIEditorContents(Vans::EditorAPI::IEngineEditorAPI& api)
 {
     if (!VansEditorWindow::m_UIEditorWindowOpen)
         return;
 
-    ImGui::SetNextWindowSize(ImVec2(620.0f, 480.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(720.0f, 520.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("UI Editor");
 
-    // ─── Toolbar row ────────────────────────────────────────────────────────
-    ImGui::Text("XAML Path:");
+    ImGui::Text("UI Document:");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 160.0f);
-    ImGui::InputText("##xamlpath", m_XamlPathBuf, sizeof(m_XamlPathBuf));
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 180.0f);
+    ImGui::InputText("##uipath", m_XamlPathBuf, sizeof(m_XamlPathBuf));
 
     ImGui::SameLine();
-    if (ImGui::Button("Load Preview", ImVec2(100.0f, 0.0f)))
-    {
-        LoadPreview();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Unload", ImVec2(50.0f, 0.0f)))
-    {
-        UnloadPreview();
-    }
+    if (ImGui::Button("Load", ImVec2(72.0f, 0.0f)))
+        LoadPreview(api);
 
-    // ── F5 热重载 ───────────────────────────────────────────────────────────
-    // 仅在 ImGui frame 内通过 ImGui::IsKeyPressed 检测，不走 VansInputManager，
-    // 符合编辑器窗口输入规范。
+    ImGui::SameLine();
+    if (ImGui::Button("Unload", ImVec2(72.0f, 0.0f)))
+        UnloadPreview(api);
+
+    const bool reloadKeyDown = ImGui::IsKeyDown(ImGuiKey_F5);
+    if (reloadKeyDown && !m_ReloadKeyWasDown && m_PreviewDocumentId != 0)
     {
-        bool reloadKeyDown = ImGui::IsKeyDown(ImGuiKey_F5);
-        if (reloadKeyDown && !m_ReloadKeyWasDown && m_PreviewDocument)
-        {
-            const std::string prevPath = m_PreviewDocument->GetSourcePath();
-            UnloadPreview();
-            std::strncpy(m_XamlPathBuf, prevPath.c_str(), sizeof(m_XamlPathBuf) - 1);
-            LoadPreview();
-        }
-        m_ReloadKeyWasDown = reloadKeyDown;
+        const Vans::EditorAPI::UIDocumentSnapshot snapshot =
+            api.GetUIDocumentSnapshot(m_PreviewDocumentId);
+        const std::string reloadPath = snapshot.valid ? snapshot.sourcePath : std::string(m_XamlPathBuf);
+        UnloadPreview(api);
+        std::strncpy(m_XamlPathBuf, reloadPath.c_str(), sizeof(m_XamlPathBuf) - 1);
+        m_XamlPathBuf[sizeof(m_XamlPathBuf) - 1] = '\0';
+        LoadPreview(api);
+    }
+    m_ReloadKeyWasDown = reloadKeyDown;
+
+    if (!m_LastStatus.empty())
+    {
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", m_LastStatus.c_str());
     }
 
     ImGui::Separator();
 
-    // ─── Left: Metadata panel ───────────────────────────────────────────────
-    float leftW = 220.0f;
-    ImGui::BeginChild("UIEdMeta", ImVec2(leftW, 0.0f), true);
-    DrawMetaPanel();
+    ImGui::BeginChild("UIEdMeta", ImVec2(260.0f, 0.0f), true);
+    DrawMetaPanel(api);
     ImGui::EndChild();
 
     ImGui::SameLine();
 
-    // ─── Right: Preview viewport ────────────────────────────────────────────
     ImGui::BeginChild("UIEdPreview", ImVec2(0.0f, 0.0f), true);
-    DrawPreviewViewport();
+    DrawPreviewViewport(api);
     ImGui::EndChild();
 
     ImGui::End();
 }
 
-// ─── LoadPreview ────────────────────────────────────────────────────────────
-
-void VansUIEditorWindow::LoadPreview()
+void VansUIEditorWindow::LoadPreview(Vans::EditorAPI::IEngineEditorAPI& api)
 {
-    UnloadPreview();
-
-    if (m_XamlPathBuf[0] == '\0')
-    {
-        VANS_LOG_WARN("[UIEditor] XAML path is empty, skipping load.");
-        return;
-    }
-
-    if (!VansRuntime::VansUISystem::Get().IsInitialized())
-    {
-        VANS_LOG_WARN("[UIEditor] VansUISystem is not initialized. Cannot load XAML preview.");
-        return;
-    }
+    UnloadPreview(api);
 
     const std::string path(m_XamlPathBuf);
-    m_PreviewDocument = VansRuntime::VansUISystem::Get().LoadDocument(path);
-
-    if (!m_PreviewDocument)
+    Vans::EditorAPI::UIDocumentOpenResult result = api.OpenUIDocument(path);
+    if (!result.success)
     {
-        VANS_LOG_ERROR("[UIEditor] Failed to load XAML: " << path);
+        m_LastStatus = result.error.empty() ? "Failed to load UI document." : result.error;
+        VANS_LOG_WARN("[UIEditor] " << m_LastStatus);
         return;
     }
 
-    m_PreviewDocument->Show();
-    VANS_LOG("[UIEditor] Loaded XAML preview: " << path);
+    m_PreviewDocumentId = result.documentId;
+    Vans::EditorAPI::UIPreviewRequest previewRequest{};
+    previewRequest.documentId = m_PreviewDocumentId;
+    const Vans::EditorAPI::UIPreviewResult preview = api.RequestUIPreview(previewRequest);
+    m_PreviewId = preview.previewId;
+    m_LastStatus = preview.message.empty()
+        ? "UI document loaded."
+        : "UI document loaded. " + preview.message;
 }
 
-// ─── UnloadPreview ──────────────────────────────────────────────────────────
-
-void VansUIEditorWindow::UnloadPreview()
+void VansUIEditorWindow::UnloadPreview(Vans::EditorAPI::IEngineEditorAPI& api)
 {
-    if (!m_PreviewDocument)
+    if (m_PreviewDocumentId == 0)
         return;
 
-    VansRuntime::VansUISystem::Get().UnloadDocument(m_PreviewDocument);
-    m_PreviewDocument.reset();
+    api.CloseUIDocument(m_PreviewDocumentId);
+    m_PreviewDocumentId = 0;
+    m_PreviewId = 0;
+    m_LastStatus = "UI document unloaded.";
 }
 
-// ─── DrawMetaPanel ──────────────────────────────────────────────────────────
-
-void VansUIEditorWindow::DrawMetaPanel()
+void VansUIEditorWindow::DrawMetaPanel(Vans::EditorAPI::IEngineEditorAPI& api)
 {
-    ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.3f, 1.0f), "Document Info");
+    ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.3f, 1.0f), "Document");
     ImGui::Separator();
 
-    if (!m_PreviewDocument)
+    const Vans::EditorAPI::UIDocumentSnapshot snapshot =
+        api.GetUIDocumentSnapshot(m_PreviewDocumentId);
+    if (!snapshot.valid)
     {
         ImGui::TextDisabled("No document loaded.");
         return;
     }
 
-    const std::string& srcPath = m_PreviewDocument->GetSourcePath();
     ImGui::Text("Source:");
-    ImGui::TextWrapped("%s", srcPath.c_str());
+    ImGui::TextWrapped("%s", snapshot.sourcePath.c_str());
     ImGui::Spacing();
+    ImGui::Text("Visible: %s", snapshot.visible ? "Yes" : "No");
 
-    const bool visible = m_PreviewDocument->IsVisible();
-    ImGui::Text("Visible: %s", visible ? "Yes" : "No");
-    ImGui::Spacing();
-
-    // Visibility toggle
-    if (visible)
+    if (snapshot.visible)
     {
         if (ImGui::Button("Hide"))
-            m_PreviewDocument->Hide();
+            api.SetUIDocumentVisible(snapshot.documentId, false);
     }
     else
     {
         if (ImGui::Button("Show"))
-            m_PreviewDocument->Show();
+            api.SetUIDocumentVisible(snapshot.documentId, true);
+    }
+
+    if (!snapshot.assetKind.empty())
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "Screen");
+        ImGui::Text("Name: %s", snapshot.name.c_str());
+        ImGui::TextWrapped("XAML: %s", snapshot.xamlPath.c_str());
+        ImGui::Text("Layer: %s", snapshot.layer.c_str());
+        ImGui::Text("Z Order: %d", snapshot.zOrder);
+
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.5f, 1.0f), "Events");
+        if (snapshot.events.empty())
+        {
+            ImGui::TextDisabled("No declared events.");
+        }
+        else
+        {
+            for (const Vans::EditorAPI::UIScreenEventSummary& event : snapshot.events)
+            {
+                ImGui::BulletText("%s.%s -> %s",
+                    event.source.c_str(),
+                    event.eventName.c_str(),
+                    event.action.c_str());
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.8f, 0.7f, 1.0f, 1.0f), "Resources");
+        for (const std::string& theme : snapshot.themes)
+            ImGui::BulletText("Theme: %s", theme.c_str());
+        for (const std::string& token : snapshot.tokens)
+            ImGui::BulletText("Tokens: %s", token.c_str());
+        for (const std::string& loc : snapshot.localization)
+            ImGui::BulletText("Localization: %s", loc.c_str());
+        for (const std::string& dependency : snapshot.dependencies)
+            ImGui::BulletText("Dependency: %s", dependency.c_str());
+        if (snapshot.themes.empty() && snapshot.tokens.empty() &&
+            snapshot.localization.empty() && snapshot.dependencies.empty())
+        {
+            ImGui::TextDisabled("No resources declared.");
+        }
+
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.5f, 0.9f, 1.0f, 1.0f), "Budget");
+        ImGui::Text("Draw Calls <= %u", snapshot.performanceBudget.maxDrawCalls);
+        ImGui::Text("Texture MB <= %u", snapshot.performanceBudget.maxTextureMemoryMB);
+        ImGui::Text("Layout <= %.2f ms", snapshot.performanceBudget.maxLayoutMs);
+        ImGui::Text("Binding Updates <= %u", snapshot.performanceBudget.maxBindingUpdatesPerFrame);
+        ImGui::Text("Animations <= %u", snapshot.performanceBudget.maxAnimations);
     }
 
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextDisabled("F5 — Hot Reload");
+    ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Diagnostics");
+    const Vans::EditorAPI::UIDiagnosticsSnapshot diagnostics =
+        api.GetUIDiagnostics(snapshot.documentId);
+    for (const std::string& message : diagnostics.messages)
+        ImGui::BulletText("%s", message.c_str());
 }
 
-// ─── DrawPreviewViewport ─────────────────────────────────────────────────────
-
-void VansUIEditorWindow::DrawPreviewViewport()
+void VansUIEditorWindow::DrawPreviewViewport(Vans::EditorAPI::IEngineEditorAPI& api)
 {
-    if (!m_PreviewDocument)
-    {
-        ImVec2 avail = ImGui::GetContentRegionAvail();
-        ImVec2 cursor = ImGui::GetCursorScreenPos();
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(cursor,
-                          ImVec2(cursor.x + avail.x, cursor.y + avail.y),
-                          IM_COL32(20, 20, 20, 255));
-        ImGui::Dummy(avail);
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImVec2 cursor = ImGui::GetCursorScreenPos();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(
+        cursor,
+        ImVec2(cursor.x + avail.x, cursor.y + avail.y),
+        IM_COL32(15, 15, 30, 255));
 
-        // Centered hint text
-        ImVec2 textSize = ImGui::CalcTextSize("No XAML loaded");
+    Vans::EditorAPI::EditorTextureHandle texture = nullptr;
+    if (m_PreviewId != 0)
+        texture = api.GetUIPreviewTexture(m_PreviewId);
+
+    ImGui::Dummy(avail);
+    if (texture)
+    {
+        const float targetAspect = 1280.0f / 720.0f;
+        ImVec2 imageSize = avail;
+        if (imageSize.x / std::max(1.0f, imageSize.y) > targetAspect)
+            imageSize.x = imageSize.y * targetAspect;
+        else
+            imageSize.y = imageSize.x / targetAspect;
+
         ImGui::SetCursorScreenPos(ImVec2(
-            cursor.x + (avail.x - textSize.x) * 0.5f,
-            cursor.y + (avail.y - textSize.y) * 0.5f));
-        ImGui::TextDisabled("No XAML loaded");
+            cursor.x + (avail.x - imageSize.x) * 0.5f,
+            cursor.y + (avail.y - imageSize.y) * 0.5f));
+        ImGui::Image(texture, imageSize);
         return;
     }
 
-    // NOTE: Noesis IView rendering results are currently not exposed as a
-    // Vulkan image that can be sampled as an ImGui texture (the Noesis
-    // Vulkan render device draws directly into the active swapchain render
-    // pass, not into an off-screen texture).
-    // The runtime document IS active and rendered each frame via the
-    // normal VansUISystem render pipeline. This viewport shows metadata
-    // only; a full off-screen preview requires a dedicated render target
-    // integration (future work, see EngineDoc/NoesisGUI_Integration_Guide.md).
-    ImVec2 avail = ImGui::GetContentRegionAvail();
-    ImVec2 cursor = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(cursor,
-                      ImVec2(cursor.x + avail.x, cursor.y + avail.y),
-                      IM_COL32(15, 15, 30, 255));
-    ImGui::Dummy(avail);
-
-    // Centered status text
-    const char* msg = "Document active — see game viewport for live preview";
-    ImVec2 textSize = ImGui::CalcTextSize(msg);
+    const char* message = "Preview texture is not available.";
+    const ImVec2 textSize = ImGui::CalcTextSize(message);
     ImGui::SetCursorScreenPos(ImVec2(
         cursor.x + (avail.x - textSize.x) * 0.5f,
         cursor.y + (avail.y - textSize.y) * 0.5f));
-    ImGui::Text("%s", msg);
+    ImGui::Text("%s", message);
 }

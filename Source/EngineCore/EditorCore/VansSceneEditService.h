@@ -42,6 +42,12 @@ public:
         VansSerializedValue value,
         const ObjectReferenceAssignment& assignment);
     SceneEditResult AssignObjectReference(const ObjectReferenceAssignment& assignment);
+    SceneEditResult ReparentEntity(
+        const std::string& childEntityGuid,
+        const std::string& newParentEntityGuid);
+    SceneEditResult SetEntityTransform(
+        const std::string& entityGuid,
+        const EditorAPI::RuntimeTransformSnapshot& transform);
     SceneEditResult AppendEntities(std::vector<VansSerializedValue> entities,
         SceneEditLifecycleHooks hooks = {});
     SceneEditResult Remove(const DocumentPropertyPath& path);

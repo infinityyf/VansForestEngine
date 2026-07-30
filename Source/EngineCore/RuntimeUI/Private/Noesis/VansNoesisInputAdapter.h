@@ -58,6 +58,10 @@ public:
                           float screenW, float screenH,
                           float noesisW, float noesisH);
 
+    void TransformMouseToView(double rawX, double rawY,
+                              double& outX, double& outY) const;
+    void GetViewSize(double& outW, double& outH) const;
+
 private:
     // Transform a raw cursor position to Noesis view-local integer coords
     void TransformMouse(double rawX, double rawY, int& outX, int& outY) const;

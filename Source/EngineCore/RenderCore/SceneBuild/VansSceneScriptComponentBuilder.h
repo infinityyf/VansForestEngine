@@ -12,5 +12,8 @@ namespace VansGraphics
 		static void BuildScripts(
 			VansScriptObject& object,
 			const VansScriptComponentDescriptors& scriptComponents);
+		static void BuildUIControllers(
+			VansScriptObject& object,
+			const VansScriptUIComponentDescriptors& uiComponents);
 	};
 }

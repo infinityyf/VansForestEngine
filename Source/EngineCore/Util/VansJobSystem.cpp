@@ -1,5 +1,6 @@
 #include "VansJobSystem.h"
 #include "VansProfiler.h"
+#include <exception>
 
 namespace Vans
 {
@@ -12,6 +13,52 @@ namespace Vans
             s_Instance = new VansJobSystem();
         }
         return *s_Instance;
+    }
+
+    VansJobGroup::VansJobGroup(uint32_t jobCount)
+        : m_Remaining(jobCount)
+    {
+    }
+
+    void VansJobGroup::Done()
+    {
+        const uint32_t previous = m_Remaining.fetch_sub(1, std::memory_order_acq_rel);
+        if (previous == 1)
+        {
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            m_Condition.notify_all();
+        }
+    }
+
+    void VansJobGroup::Wait()
+    {
+        std::unique_lock<std::mutex> lock(m_Mutex);
+        m_Condition.wait(lock, [this]
+        {
+            return m_Remaining.load(std::memory_order_acquire) == 0;
+        });
+    }
+
+    void VansJobGroup::SetError(const std::string& error)
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        if (!m_HasError)
+        {
+            m_HasError = true;
+            m_Error = error;
+        }
+    }
+
+    bool VansJobGroup::HasErrors() const
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        return m_HasError;
+    }
+
+    std::string VansJobGroup::GetError() const
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        return m_Error;
     }
 
     VansJobSystem::VansJobSystem()
@@ -67,6 +114,63 @@ namespace Vans
             m_WorkerQueue.push(job);
         }
         m_WorkerCondition.notify_one();
+    }
+
+    std::shared_ptr<VansJobGroup> VansJobSystem::QueueJobGroup(const std::vector<Job>& jobs)
+    {
+        auto group = std::make_shared<VansJobGroup>(static_cast<uint32_t>(jobs.size()));
+        if (jobs.empty())
+        {
+            return group;
+        }
+
+        if (!m_Running || m_Workers.empty())
+        {
+            for (const Job& job : jobs)
+            {
+                try
+                {
+                    if (job)
+                    {
+                        job();
+                    }
+                }
+                catch (const std::exception& e)
+                {
+                    group->SetError(e.what());
+                }
+                catch (...)
+                {
+                    group->SetError("unknown worker exception");
+                }
+                group->Done();
+            }
+            return group;
+        }
+
+        for (const Job& job : jobs)
+        {
+            QueueJob([job, group]()
+            {
+                try
+                {
+                    if (job)
+                    {
+                        job();
+                    }
+                }
+                catch (const std::exception& e)
+                {
+                    group->SetError(e.what());
+                }
+                catch (...)
+                {
+                    group->SetError("unknown worker exception");
+                }
+                group->Done();
+            });
+        }
+        return group;
     }
 
     void VansJobSystem::QueueMainThreadJob(Job job)

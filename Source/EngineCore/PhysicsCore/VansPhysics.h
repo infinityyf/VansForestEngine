@@ -71,9 +71,6 @@ namespace VansEngine
 		PxControllerManager* GetControllerManager() { return m_ControllerManager; }
 		PxMaterial* GetDefaultMaterial() { return m_DefaultMaterial; }
 		
-		// Event queue access (for VansScriptContext to dispatch events)
-		VansPhysicsEventQueue& GetEventQueue() { return m_EventQueue; }
-		
 		// Gravity
 		void SetGravity(const PxVec3& gravity);
 		PxVec3 GetGravity() const;
@@ -124,7 +121,6 @@ namespace VansEngine
 		VansPhysicsErrorCallback m_ErrorCallback;
 		VansPhysicsAllocator m_Allocator;
 		VansPhysicsEventCallback* m_EventCallback = nullptr;
-		VansPhysicsEventQueue     m_EventQueue;
 		
 		// Threading
 		std::thread m_SimulationThread;

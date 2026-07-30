@@ -4,6 +4,7 @@
   #define VANS_PROFILER_ENABLED 1
 #endif
 
+#include <atomic>
 #include <cstdint>
 
 namespace Vans
@@ -204,6 +205,8 @@ namespace Vans
 
         void BeginFrame();
         void EndFrame(void* device);
+        void SetCaptureEnabled(bool enabled);
+        bool IsCaptureEnabled() const;
         void RegisterCurrentThread(const char* name, uint32_t color = 0xff62c96bu);
         const ProfileFrame& GetTimeline() const { return m_Frame; }
         void PrintTimeline() const;
@@ -213,6 +216,7 @@ namespace Vans
         ProfileFrame m_Frame = {};
         uint64_t     m_FrameIndex = 0;
         int64_t      m_FrameStartNs = 0;
+        std::atomic_bool m_CaptureEnabled = false;
     };
 }
 

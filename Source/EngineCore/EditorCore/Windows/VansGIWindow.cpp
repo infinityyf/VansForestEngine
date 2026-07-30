@@ -129,7 +129,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 		ImGui::Separator();
 		if (ImGui::Button("Capture Probe SH"))
 		{
-			editorAPI.CaptureGIProbeDebugSnapshot(settings.gizmoStride, settings.debugExposure);
+			editorAPI.CaptureGIProbeDebugSnapshot(draftSettings.gizmoStride, draftSettings.debugExposure);
 		}
 		const Vans::EditorAPI::GIProbeDebugSnapshot debugSnapshot = editorAPI.GetGIProbeDebugSnapshot();
 		ImGui::Text("Captured Probes: %u", static_cast<unsigned>(debugSnapshot.probes.size()));
@@ -144,8 +144,14 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 		static int rayIndex = 0;
 		static float previewExposure = 1.0f;
 		static float positionScale = 0.05f;
-		static bool livePreview = true;
+		static bool livePreview = false;
 		static Vans::EditorAPI::RenderTexturePreview preview;
+		static double lastPreviewRequestTime = -1.0;
+		static int lastPreviewMode = -1;
+		static int lastZSlice = -1;
+		static int lastRayIndex = -1;
+		static float lastPreviewExposure = -1.0f;
+		static float lastPositionScale = -1.0f;
 
 		static constexpr const char* previewModes[] = {
 			"RT Miss Ratio",
@@ -178,7 +184,17 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 		ImGui::Checkbox("Live RT Preview", &livePreview);
 		ImGui::SameLine();
 		const bool refreshRequested = ImGui::Button("Refresh RT Preview");
-		if (livePreview || refreshRequested)
+		const bool previewParamsChanged =
+			lastPreviewMode != previewMode ||
+			lastZSlice != zSlice ||
+			lastRayIndex != rayIndex ||
+			lastPreviewExposure != previewExposure ||
+			lastPositionScale != positionScale;
+		const double now = ImGui::GetTime();
+		const bool livePreviewDue =
+			livePreview &&
+			(previewParamsChanged || !preview.texture || lastPreviewRequestTime < 0.0 || (now - lastPreviewRequestTime) >= 0.25);
+		if (refreshRequested || livePreviewDue)
 		{
 			preview = editorAPI.RequestGIRTPreview(
 				static_cast<std::uint32_t>(previewMode),
@@ -186,6 +202,12 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 				static_cast<std::uint32_t>(rayIndex),
 				previewExposure,
 				positionScale);
+			lastPreviewRequestTime = now;
+			lastPreviewMode = previewMode;
+			lastZSlice = zSlice;
+			lastRayIndex = rayIndex;
+			lastPreviewExposure = previewExposure;
+			lastPositionScale = positionScale;
 		}
 
 		ImGui::Text("Grid slice: %u x %u, Z=%d/%d",

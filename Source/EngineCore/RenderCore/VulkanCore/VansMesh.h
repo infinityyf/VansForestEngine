@@ -12,6 +12,7 @@
 #include "VansVKBuffer.h"
 #include "../../AnimationCore/VansAnimationTypes.h"
 #include "VansSubMesh.h"
+#include <array>
 #include <GLM/glm.hpp>
 #include <string>
 #include <vector>
@@ -24,6 +25,23 @@ namespace VansGraphics { class VansVKDevice; class VansVKCommandBuffer; }
 
 namespace VansGraphics
 {
+	struct VansMeshLocalOBB
+	{
+		glm::vec3 center = glm::vec3(0.0f);
+		std::array<glm::vec3, 3> axes = {
+			glm::vec3(1.0f, 0.0f, 0.0f),
+			glm::vec3(0.0f, 1.0f, 0.0f),
+			glm::vec3(0.0f, 0.0f, 1.0f)
+		};
+		glm::vec3 halfExtent = glm::vec3(0.0f);
+		bool valid = false;
+
+		bool IsValid() const
+		{
+			return valid && glm::all(glm::greaterThanEqual(halfExtent, glm::vec3(0.0f)));
+		}
+	};
+
 	struct IndexBufferParameters
 	{
 		VkBuffer Buffer;
@@ -81,6 +99,8 @@ namespace VansGraphics
 		bool HasLocalBounds() const { return m_HasLocalBounds; }
 		glm::vec3 GetLocalBoundsMin() const { return m_LocalBoundsMin; }
 		glm::vec3 GetLocalBoundsMax() const { return m_LocalBoundsMax; }
+		bool HasLocalOBB() const { return m_LocalOBB.IsValid(); }
+		const VansMeshLocalOBB& GetLocalOBB() const { return m_LocalOBB; }
 		bool HasCPUPlacementData() const
 		{
 			return m_MeshRawPositionDataEnableCPURead && m_MeshRawPositionData.size() >= 24;
@@ -129,6 +149,7 @@ namespace VansGraphics
 		bool m_HasLocalBounds = false;
 		glm::vec3 m_LocalBoundsMin = glm::vec3(0.0f);
 		glm::vec3 m_LocalBoundsMax = glm::vec3(0.0f);
+		VansMeshLocalOBB m_LocalOBB;
 
 		//标记CPU数据释放生效
 		bool m_MeshRawDataCPULoaded;
@@ -242,5 +263,6 @@ namespace VansGraphics
 		void ResetLocalBounds();
 		void ExpandLocalBounds(const glm::vec3& point);
 		void RebuildLocalBoundsFromRawPositions();
+		void RebuildLocalOBBFromPositions(const std::vector<glm::vec3>& positions);
 	};
 }

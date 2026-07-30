@@ -91,10 +91,12 @@ namespace VansGraphics
 			const std::vector<VansVulkanSyncDependency>& dependencies);
 
 		static VansVulkanSyncRecordResult RecordImageTransition(
+			VansVKCommandBuffer& commandBuffer,
 			VansVKImage& image,
 			const VansVulkanSyncDependency& dependency);
 
 		static VansVulkanSyncRecordResult RecordImageTransition(
+			VansVKCommandBuffer& commandBuffer,
 			VansVKImage& image,
 			VkPipelineStageFlags srcStageMask,
 			VkPipelineStageFlags dstStageMask,

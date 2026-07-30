@@ -11,6 +11,7 @@
 // -----------------------------------------------------------------------
 
 #include "VansProjectConfig.h"
+#include "VansProjectConfigValidator.h"
 #include "VansProjectSettings.h"
 #include "VansPathResolver.h"
 #include "VansSceneManager.h"
@@ -25,7 +26,7 @@ class VansAssetDatabase;
 
 struct VansProjectOpenOptions
 {
-	bool updateLastOpenedAt = true;
+	bool updateLastOpenedAt = false;
 	bool updateRecentProjects = true;
 	bool loadProjectSettings = true;
 	bool scanAssets = true;
@@ -72,6 +73,12 @@ public:
 	VansAssetDatabase*       GetAssetDatabase()          { return m_AssetDatabase.get(); }
 	const VansAssetDatabase* GetAssetDatabase() const    { return m_AssetDatabase.get(); }
 	bool SaveProjectSettings() const;
+	VansProjectConfigDiagnostics GetProjectConfigDiagnostics() const;
+	bool SetProjectDefaultScene(const std::string& sceneRelativePath, std::string& error);
+	bool SetProjectPathField(VansProjectConfigPathField field, const std::string& relativePath, std::string& error);
+	bool SetProjectScriptSearchPaths(std::vector<std::string> paths, std::string& error);
+	bool SetProjectAssetDirectory(const std::string& key, const std::string& relativePath, std::string& error);
+	bool SaveProjectConfig(std::string& error) const;
 
 	// ── Recent projects (delegates to RecentProjects namespace) ───
 

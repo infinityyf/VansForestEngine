@@ -94,11 +94,8 @@ struct VansSceneWaterMediumConfig
 	std::optional<VansSceneFloat3> absorptionCoeff;
 	std::optional<VansSceneFloat3> scatteringCoeff;
 	std::optional<float> ior;
-	std::optional<float> fresnelPower;
 	std::optional<float> anisotropy;
 	std::optional<float> waterRoughness;
-	std::optional<VansSceneFloat4> deepColor;
-	std::optional<VansSceneFloat4> shallowColor;
 };
 
 struct VansSceneWaterSpectrumConfig
@@ -182,6 +179,27 @@ struct VansSceneWaterSSSConfig
 	std::optional<float> deepFallback;
 };
 
+struct VansSceneWaterOpticsConfig
+{
+	std::optional<float> maxCrossDistance;
+	std::optional<float> maxRefractionCrossDistance;
+	std::optional<float> multiScatterScale;
+	std::optional<float> waterDispersionStrength;
+	std::optional<float> sssPathScale;
+	std::optional<float> sssNonlinearStrength;
+	std::optional<float> sssScatterBoost;
+	std::optional<float> backlitPathScale;
+	std::optional<float> backlitPhaseG;
+};
+
+struct VansSceneWaterVolumeConfig
+{
+	std::optional<float> resolutionScale;
+	std::optional<int> sampleCount;
+	std::optional<int> spatialFilterIterations;
+	std::optional<float> spatialDepthSensitivity;
+};
+
 struct VansSceneWaterGeometryConfig
 {
 	std::optional<int> lodCount;
@@ -204,6 +222,8 @@ struct VansSceneWaterNodeConfig
 	VansSceneWaterRefractionConfig refraction;
 	VansSceneWaterSSRConfig ssr;
 	VansSceneWaterSSSConfig sss;
+	VansSceneWaterOpticsConfig optics;
+	VansSceneWaterVolumeConfig volume;
 	VansSceneWaterGeometryConfig geometry;
 };
 

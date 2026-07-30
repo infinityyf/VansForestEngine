@@ -48,6 +48,8 @@ namespace Vans
     {
         if (!m_Initialized) return;
 
+        SetCursorCaptureEnabled(false);
+
         // Remove callbacks
         if (m_Window)
         {
@@ -63,8 +65,56 @@ namespace Vans
         m_AxisBindings.clear();
         m_Window = nullptr;
         m_Initialized = false;
+        m_CursorCaptureAllowed = false;
+        m_CursorCaptureRequested = false;
+        m_CursorCaptureEnabled = false;
 
         VANS_LOG("[VansInputManager] Shutdown.");
+    }
+
+    void VansInputManager::SetCursorCaptureAllowed(bool allowed)
+    {
+        m_CursorCaptureAllowed = allowed;
+        SetCursorCaptureEnabled(m_CursorCaptureRequested);
+    }
+
+    void VansInputManager::SetCursorCaptureEnabled(bool enabled)
+    {
+        m_CursorCaptureRequested = enabled;
+
+        if (!m_Initialized || !m_Window)
+        {
+            m_CursorCaptureEnabled = false;
+            return;
+        }
+
+        const bool effectiveEnabled = enabled && m_CursorCaptureAllowed;
+        if (m_CursorCaptureEnabled == effectiveEnabled)
+            return;
+
+        m_CursorCaptureEnabled = effectiveEnabled;
+        glfwSetInputMode(
+            m_Window,
+            GLFW_CURSOR,
+            effectiveEnabled ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+
+        if (glfwRawMouseMotionSupported())
+        {
+            glfwSetInputMode(
+                m_Window,
+                GLFW_RAW_MOUSE_MOTION,
+                effectiveEnabled ? GLFW_TRUE : GLFW_FALSE);
+        }
+
+        glfwGetCursorPos(m_Window, &m_MouseX, &m_MouseY);
+        m_LastMouseX = m_MouseX;
+        m_LastMouseY = m_MouseY;
+        m_MouseDeltaX = 0.0;
+        m_MouseDeltaY = 0.0;
+        m_FirstMouseUpdate = true;
+
+        VANS_LOG("[VansInputManager] Cursor capture "
+            << (effectiveEnabled ? "enabled" : "disabled"));
     }
 
     // -------------------------------------------------------------------------

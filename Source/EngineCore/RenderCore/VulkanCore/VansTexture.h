@@ -61,7 +61,10 @@ namespace VansGraphics
 		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
 
 		//直接创建一个GPU上的texture
-		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision = LOW_PRES_8, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
+		// Runtime render/storage resources must declare their exact Vulkan format.
+		// TexturePrecision remains an import policy only and must never be used as
+		// a proxy for a shader storage-image format.
+		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
 		// 从按 Z 轴编号导出的 PNG 切片组装 3D 纹理。
 		// slicePathFormat 需要包含一个整数格式占位符，例如 "Slice_Z_%03d.png"。

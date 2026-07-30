@@ -1,5 +1,6 @@
 #include "VansShaderManager.h"
 #include "VansMaterial.h"
+#include "VansMainCameraVisibility.h"
 #include "VegetationCore/VansVegetationSystem.h"
 #include "WaterCore/VansWaterGeometryClipmap.h"
 #include "WaterCore/VansWaterFFT.h"
@@ -240,7 +241,7 @@ void RegisterEngineShaders()
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         sizeof(VansGraphics::WaterPatchPushConstant), false
     };
-    waterGBufferShader.colorAttachmentCount = 2;
+    waterGBufferShader.colorAttachmentCount = 4;
     reg.RegisterGraphicsShader("WaterGBuffer", std::move(waterGBufferShader));
 
     VansGraphics::VansShaderEntry waterCompositeShader{
@@ -304,6 +305,9 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("SSGITemporal", "EngineAssets/Shaders/SSGITemporal");
     reg.RegisterComputeShader("HIZ", "EngineAssets/Shaders/HIZ");
     reg.RegisterComputeShader("HIZSeed", "EngineAssets/Shaders/HIZ_SEED");
+    reg.RegisterComputeShader("OcclusionHIZ", "EngineAssets/Shaders/HIZ_OCCLUSION");
+    reg.RegisterComputeShader("OcclusionHIZSeed", "EngineAssets/Shaders/HIZ_OCCLUSION_SEED");
+    reg.RegisterComputeShader("MainCameraHiZCull", "EngineAssets/Shaders/MainCameraHiZCull", sizeof(VansGraphics::VansMainCameraHiZCullPushConstants));
     reg.RegisterComputeShader("ScreenSpaceShadow", "EngineAssets/Shaders/ScreenSpaceShadow");
     reg.RegisterComputeShader("SSRTrace", "EngineAssets/Shaders/SSR_TRACE");
     reg.RegisterComputeShader("SSRResolve", "EngineAssets/Shaders/SSR_RESOLVE");
@@ -334,7 +338,8 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("WaterRefraction", "EngineAssets/Shaders/Water/Refraction");
     reg.RegisterComputeShader("WaterCaustics", "EngineAssets/Shaders/Water/Caustics");
     reg.RegisterComputeShader("WaterThickness", "EngineAssets/Shaders/Water/SSS");
-    reg.RegisterComputeShader("WaterSSSScatter", "EngineAssets/Shaders/Water/SSSScatter");
+    reg.RegisterComputeShader("WaterVolume", "EngineAssets/Shaders/Water/Volume");
+    reg.RegisterComputeShader("WaterVolumeFilter", "EngineAssets/Shaders/Water/VolumeFilter");
     reg.RegisterComputeShader("WaterFFTInit", "EngineAssets/Shaders/Water/FFT/Init");
     reg.RegisterComputeShader("WaterFFTEvolve", "EngineAssets/Shaders/Water/FFT/Evolve");
     reg.RegisterComputeShader("WaterFFTIter", "EngineAssets/Shaders/Water/FFT/Iter", sizeof(VansGraphics::VansWaterFFT::IterPushConstants));

@@ -466,6 +466,16 @@ void VansGraphics::VansVKDescriptorManager::CommitDescriptorUpdates()
 void VansGraphics::VansVKDescriptorManager::UpdateDescriptorSets()
 {
 	std::vector<VkWriteDescriptorSet> write_descriptors;
+	std::vector<VkWriteDescriptorSetAccelerationStructureKHR> acceleration_structure_writes;
+	write_descriptors.reserve(
+		m_ImageDescInfos.size()
+		+ m_BufferDescInfos.size()
+		+ m_TexelBufferDescInfos.size()
+		+ m_RayTraceASInfos.size());
+	// VkWriteDescriptorSet::pNext must remain valid until vkUpdateDescriptorSets
+	// consumes the complete batch. Keep every AS extension structure in stable
+	// storage instead of pointing at a loop-local temporary.
+	acceleration_structure_writes.reserve(m_RayTraceASInfos.size());
 	//TargetArrayElement is the starting element in that array.
 	//If the descriptor binding identified by dstSet and dstBinding has a descriptor type of 
 	//VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK then dstArrayElement specifies the starting byte offset within the binding.
@@ -519,7 +529,8 @@ void VansGraphics::VansVKDescriptorManager::UpdateDescriptorSets()
 	}
 	for (auto& as_descriptor : m_RayTraceASInfos)
 	{
-		VkWriteDescriptorSetAccelerationStructureKHR tlasWrite{};
+		acceleration_structure_writes.push_back({});
+		auto& tlasWrite = acceleration_structure_writes.back();
 		tlasWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
 		tlasWrite.accelerationStructureCount = 1;
 		tlasWrite.pAccelerationStructures = &as_descriptor.TargetAS;
@@ -527,7 +538,7 @@ void VansGraphics::VansVKDescriptorManager::UpdateDescriptorSets()
 		write_descriptors.push_back(
 			{
 				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				& tlasWrite,
+				&tlasWrite,
 				as_descriptor.TargetDescriptorSet,
 				as_descriptor.TargetDescriptorBinding,
 				as_descriptor.TargetArrayElement,

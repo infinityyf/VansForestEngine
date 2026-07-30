@@ -76,11 +76,13 @@ Plane extractPlane(mat4 m, int row, float sign)
     return p;
 }
 
-bool sphereInsideFrustum(vec3 center, float radius, Plane planes[6])
+shared Plane sharedFrustum[6];
+
+bool sphereInsideFrustum(vec3 center, float radius)
 {
     for (int i = 0; i < 6; ++i)
     {
-        if (dot(planes[i].normal, center) + planes[i].d + radius < 0.0)
+        if (dot(sharedFrustum[i].normal, center) + sharedFrustum[i].d + radius < 0.0)
             return false;
     }
     return true;
@@ -146,6 +148,18 @@ bool conservativeHiZOccluded(vec3 center, float radius)
 
 void main()
 {
+    // VPMatrix 在同一 workgroup 内相同，6 个视锥面只需提取一次。
+    if (gl_LocalInvocationIndex < 6u)
+    {
+        if (gl_LocalInvocationIndex == 0u) sharedFrustum[0] = extractPlane(VPMatrix, 0,  1.0);
+        if (gl_LocalInvocationIndex == 1u) sharedFrustum[1] = extractPlane(VPMatrix, 0, -1.0);
+        if (gl_LocalInvocationIndex == 2u) sharedFrustum[2] = extractPlane(VPMatrix, 1,  1.0);
+        if (gl_LocalInvocationIndex == 3u) sharedFrustum[3] = extractPlane(VPMatrix, 1, -1.0);
+        if (gl_LocalInvocationIndex == 4u) sharedFrustum[4] = extractPlane(VPMatrix, 2,  1.0);
+        if (gl_LocalInvocationIndex == 5u) sharedFrustum[5] = extractPlane(VPMatrix, 2, -1.0);
+    }
+    barrier();
+
     uint instanceID = gl_GlobalInvocationID.x;
     if (instanceID >= pc.instanceCount)
         return;
@@ -161,14 +175,7 @@ void main()
     if (distance(center, cameraPosition.xyz) > pc.cullDistance + radius)
         return;
 
-    Plane frustum[6];
-    frustum[0] = extractPlane(VPMatrix, 0,  1.0);
-    frustum[1] = extractPlane(VPMatrix, 0, -1.0);
-    frustum[2] = extractPlane(VPMatrix, 1,  1.0);
-    frustum[3] = extractPlane(VPMatrix, 1, -1.0);
-    frustum[4] = extractPlane(VPMatrix, 2,  1.0);
-    frustum[5] = extractPlane(VPMatrix, 2, -1.0);
-    if (!sphereInsideFrustum(center, radius, frustum))
+    if (!sphereInsideFrustum(center, radius))
         return;
 
     if (pc.hizEnabled != 0 && conservativeHiZOccluded(center, radius))

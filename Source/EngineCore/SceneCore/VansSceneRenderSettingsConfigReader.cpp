@@ -198,6 +198,31 @@ std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedVa
 	config.gizmoStride = ReadOptionalUIntField(*gi, "gizmoStride");
 	return config;
 }
+
+std::optional<VansSceneMainCameraHiZCullSettingsConfig> DecodeMainCameraHiZCulling(
+	const VansSerializedValue& sceneSettings)
+{
+	const VansSerializedValue* hiz = ReadObjectField(sceneSettings, "mainCameraHiZCulling");
+	if (!hiz)
+	{
+		return std::nullopt;
+	}
+
+	VansSceneMainCameraHiZCullSettingsConfig config;
+	config.enabled = ReadOptionalBoolField(*hiz, "enabled");
+	config.enableOpaque = ReadOptionalBoolField(*hiz, "enableOpaque");
+	config.enableHair = ReadOptionalBoolField(*hiz, "enableHair");
+	config.enableTransparent = ReadOptionalBoolField(*hiz, "enableTransparent");
+	config.enableDecal = ReadOptionalBoolField(*hiz, "enableDecal");
+	config.enableForwardOpaqueAfterDeferred = ReadOptionalBoolField(*hiz, "enableForwardOpaqueAfterDeferred");
+	config.depthBiasMeters = ReadOptionalFloatField(*hiz, "depthBiasMeters");
+	config.cameraMotionDisableDistance = ReadOptionalFloatField(*hiz, "cameraMotionDisableDistance");
+	config.cameraMotionDisableAngleRadians = ReadOptionalFloatField(*hiz, "cameraMotionDisableAngleRadians");
+	config.forceVisibleFramesAfterChange = ReadOptionalUIntField(*hiz, "forceVisibleFramesAfterChange");
+	config.refreshCulledEveryNFrames = ReadOptionalUIntField(*hiz, "refreshCulledEveryNFrames");
+	config.maxScreenCoverageForCull = ReadOptionalFloatField(*hiz, "maxScreenCoverageForCull");
+	return config;
+}
 }
 
 VansSceneRenderSettingsConfig VansSceneRenderSettingsConfigReader::Read(
@@ -213,6 +238,7 @@ VansSceneRenderSettingsConfig VansSceneRenderSettingsConfigReader::Read(
 	config.volumetricFog = DecodeVolumetricFog(sceneSettings);
 	config.volumetricClouds = DecodeVolumetricClouds(sceneSettings);
 	config.globalIllumination = DecodeGISettings(sceneSettings);
+	config.mainCameraHiZCulling = DecodeMainCameraHiZCulling(sceneSettings);
 	return config;
 }
 }

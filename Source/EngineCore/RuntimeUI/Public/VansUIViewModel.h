@@ -1,40 +1,54 @@
 #pragma once
-#include <string>
+
+#include "VansUIVariant.h"
+
+#include <cstdint>
 #include <functional>
+#include <string>
+#include <unordered_map>
 
 namespace VansRuntime
 {
-    // 项目层所有 ViewModel 的基类
-    // 底层由 VansNoesisDocument::SetDataContext 时注入 Noesis 反射适配体
-    // 不直接暴露任何 Noesis 类型
     class VansUIViewModel
     {
     public:
+        using CommandHandler = std::function<void()>;
+        using CommandWithParamHandler = std::function<void(const std::string&)>;
+        using PropertyChangedHandler = std::function<void(const std::string&)>;
+
         virtual ~VansUIViewModel() = default;
 
-        // ── 属性通知 ──────────────────────────────────────────────
+        void SetBool(const std::string& name, bool value);
+        void SetInt(const std::string& name, std::int64_t value);
+        void SetFloat(const std::string& name, double value);
+        void SetString(const std::string& name, std::string value);
+        void SetObject(const std::string& name, VansUIVariantMap value);
+        void SetArray(const std::string& name, VansUIVariantArray value);
+        void SetValue(const std::string& name, VansUIVariant value);
 
-        // 派生类在属性值更改后调用，触发 XAML {Binding PropertyName} 刷新
-        // propertyName 须与 XAML Binding 路径名及 Noesis Reflection 注册名一致
+        bool HasValue(const std::string& name) const;
+        const VansUIVariant* GetValue(const std::string& name) const;
+        const VansUIVariantMap& GetValues() const { return m_Values; }
+
+        std::uint64_t AddPropertyChangedHandler(PropertyChangedHandler handler);
+        void RemovePropertyChangedHandler(std::uint64_t token);
         void NotifyPropertyChanged(const std::string& propertyName);
 
-        // ── Command 绑定 ──────────────────────────────────────────
+        void BindCommand(const std::string& commandName, CommandHandler handler);
+        void BindCommandWithParam(const std::string& commandName, CommandWithParamHandler handler);
+        bool HasCommand(const std::string& commandName) const;
+        void SetCommandCanExecute(const std::string& commandName, bool canExecute);
+        bool CanExecuteCommand(const std::string& commandName) const;
+        bool ExecuteCommand(const std::string& commandName) const;
+        bool ExecuteCommandWithParam(const std::string& commandName,
+                                     const std::string& parameter) const;
 
-        // 无参 Command，对应 XAML：Command="{Binding CommandName}"
-        void BindCommand(const std::string& commandName,
-                         std::function<void()> handler);
-
-        // 带字符串参数 Command，对应 XAML：CommandParameter="{Binding ...}"
-        void BindCommandWithParam(const std::string& commandName,
-                                  std::function<void(const std::string&)> handler);
-
-    protected:
-        // 由 VansNoesisDocument 在 SetDataContext 时注入适配体指针
-        // 项目层不应直接访问此成员
-        struct Impl;
-        Impl* m_Impl = nullptr;
-
-        friend class VansNoesisDocument;
+    private:
+        VansUIVariantMap m_Values;
+        std::unordered_map<std::string, CommandHandler> m_Commands;
+        std::unordered_map<std::string, CommandWithParamHandler> m_ParameterizedCommands;
+        std::unordered_map<std::string, bool> m_CommandCanExecute;
+        std::unordered_map<std::uint64_t, PropertyChangedHandler> m_PropertyChangedHandlers;
+        std::uint64_t m_NextPropertyChangedToken = 1;
     };
-
-} // namespace VansRuntime
+}

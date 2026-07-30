@@ -23,6 +23,16 @@ namespace VansGraphics
 		VkPipelineStageFlags waiting_stage;
 	};
 
+	struct CommandBufferInheritanceInfo
+	{
+		VkRenderPass renderPass = VK_NULL_HANDLE;
+		uint32_t subpass = 0;
+		VkFramebuffer framebuffer = VK_NULL_HANDLE;
+		VkBool32 occlusionQueryEnable = VK_FALSE;
+		VkQueryControlFlags queryFlags = 0;
+		VkQueryPipelineStatisticFlags pipelineStatistics = 0;
+	};
+
 	//用于多线程record commandbuffer
 	struct BufferTransition;
 	struct ImageTransition;
@@ -48,6 +58,10 @@ namespace VansGraphics
 		void DestroyVulkanCommandBuffer(VkDevice& logical_device);
 
 		bool BeginCommandBufferRecord(VkCommandBufferUsageFlags commandBufferUsage);
+
+		bool BeginSecondaryCommandBufferRecord(
+			VkCommandBufferUsageFlags commandBufferUsage,
+			const CommandBufferInheritanceInfo& inheritanceInfo);
 
 		bool EndCommandBufferRecord();
 
@@ -90,7 +104,7 @@ namespace VansGraphics
 		void BindMesh(VansMesh& mesh, uint32_t fist_bind, GlobalStateData& global_state_data);
 
 		//确保pipeLine已经创建
-		void EnsureGraphicsShader(VansGraphicsShader& shader, GlobalStateData& global_state_data,const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
+		VansVKGraphicsPipeline* EnsureGraphicsShader(VansGraphicsShader& shader, GlobalStateData& global_state_data,const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 
 		void EnsureComputeShader(VansComputeShader& shader, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 
@@ -121,6 +135,7 @@ namespace VansGraphics
 
 		//绘制
 		void DrawMesh(VansMesh& mesh, VansGraphicsShader& shader, uint32_t instance_count);
+		void DrawMesh(VansMesh& mesh, VansVKGraphicsPipeline& pipeline, uint32_t instance_count);
 
 		//dispatch
 		void DispatchCompute(VansComputeShader& shader, uint32_t x_size, uint32_t y_size, uint32_t z_size, const std::vector<VkDescriptorSet>& descriptor_sets);
@@ -177,6 +192,12 @@ namespace VansGraphics
 
 		void BindDescriptorSets(VkPipelineBindPoint pipeline_type,
 			VansGraphicsShader& shader,
+			int index_for_first_set,
+			const std::vector<VkDescriptorSet>& descriptor_sets,
+			const std::vector<uint32_t>& dynamic_offsets);
+
+		void BindDescriptorSets(VkPipelineBindPoint pipeline_type,
+			VansVKGraphicsPipeline& pipeline,
 			int index_for_first_set,
 			const std::vector<VkDescriptorSet>& descriptor_sets,
 			const std::vector<uint32_t>& dynamic_offsets);

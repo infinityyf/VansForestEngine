@@ -3,6 +3,7 @@
 #include "../AssetsSystem/VansAssetsFileWatcher.h"
 #include "../../AssetCore/Importers/Shader/VansShaderCompiler.h"
 #include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../../EventCore/VansEventConnection.h"
 
 #include <chrono>
 #include <filesystem>
@@ -48,9 +49,11 @@ namespace Vans
 		void RefreshProgramRegistry(EditorAPI::IEngineEditorAPI& engineAPI);
 		void RebuildDependencyIndex();
 		void AddDependencyWatches(const ProgramState& program);
+		void HandleFileChangedEvent(const VansAssetFileChangedEvent& event);
 		void BuildProgram(const std::string& programId, EditorAPI::IEngineEditorAPI& engineAPI);
 
 		VansAssetsFileWatcher m_FileWatcher;
+		VansScopedEventConnections m_EventConnections;
 		VansShaderCompiler m_Compiler;
 		std::unordered_map<std::string, ProgramState> m_Programs;
 		std::unordered_map<std::wstring, std::unordered_set<std::string>> m_FileDependents;

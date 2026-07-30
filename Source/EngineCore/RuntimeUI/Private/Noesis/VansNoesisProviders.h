@@ -63,7 +63,6 @@ namespace VansRuntime
     private:
         const Vans::VansProjectManager* m_ProjectManager;
         const Vans::VansPathResolver*   m_PathResolver;
-        VansNoesisRenderDevice*         m_RenderDevice;
     };
 
     // ── VansNoesisFontProvider ─────────────────────────────────────

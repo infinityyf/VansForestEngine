@@ -152,6 +152,19 @@ void VansNoesisInputAdapter::SetSceneViewport(float screenX, float screenY,
     m_NoesisH   = noesisH  > 0.0f ? noesisH  : 1.0f;
 }
 
+void VansNoesisInputAdapter::TransformMouseToView(double rawX, double rawY,
+                                                   double& outX, double& outY) const
+{
+    outX = (static_cast<float>(rawX) - m_ViewportX) * (m_NoesisW / m_ViewportW);
+    outY = (static_cast<float>(rawY) - m_ViewportY) * (m_NoesisH / m_ViewportH);
+}
+
+void VansNoesisInputAdapter::GetViewSize(double& outW, double& outH) const
+{
+    outW = m_NoesisW;
+    outH = m_NoesisH;
+}
+
 void VansNoesisInputAdapter::TransformMouse(double rawX, double rawY,
                                              int& outX, int& outY) const
 {
@@ -162,8 +175,12 @@ void VansNoesisInputAdapter::TransformMouse(double rawX, double rawY,
     // 配合 SceneUI pass 的标准正向 viewport，UI 方向正确；鼠标 Y 无需额外翻转。
     const float ny = (static_cast<float>(rawY) - m_ViewportY) * (m_NoesisH / m_ViewportH);
 
-    outX = static_cast<int>(nx);
-    outY = static_cast<int>(ny);
+    double viewX = 0.0;
+    double viewY = 0.0;
+    TransformMouseToView(rawX, rawY, viewX, viewY);
+
+    outX = static_cast<int>(viewX);
+    outY = static_cast<int>(viewY);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -203,6 +220,8 @@ void VansNoesisInputAdapter::OnMouseMove(double x, double y)
 void VansNoesisInputAdapter::OnMouseClick(int glfwButton, int action, int /*mods*/)
 {
     const Noesis::MouseButton noesisButton = ConvertGLFWMouseButton(glfwButton);
+
+    Vans::VansInputManager::Get().GetMousePosition(m_LastMouseX, m_LastMouseY);
 
     int ix = 0, iy = 0;
     TransformMouse(m_LastMouseX, m_LastMouseY, ix, iy);

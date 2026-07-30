@@ -45,3 +45,13 @@ struct VansScriptComponentDescriptor
 };
 
 using VansScriptComponentDescriptors = std::vector<VansScriptComponentDescriptor>;
+
+struct VansScriptUIComponentDescriptor
+{
+	std::string componentGuid;
+	bool enabled = true;
+	std::vector<std::string> autoOpenScreens;
+	std::vector<std::string> preloadScreens;
+};
+
+using VansScriptUIComponentDescriptors = std::vector<VansScriptUIComponentDescriptor>;

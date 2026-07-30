@@ -29,6 +29,8 @@ namespace Vans
 	{
 		m_FixedTimeStep = 1.0f / 60.0f;
 		m_FSRSettings = {};
+		m_CommandRecordingSettings = {};
+		m_MainCameraHiZCullSettings = {};
 	}
 
 	void VansProjectSettings::SetFixedTimeStep(float fixedTimeStep)
@@ -60,6 +62,27 @@ namespace Vans
 		m_FSRSettings.sharpness = std::clamp(sharpness, 0.0f, 1.0f);
 	}
 
+	void VansProjectSettings::SetCommandRecordingSettings(bool parallelEnabled)
+	{
+		m_CommandRecordingSettings.parallelEnabled = parallelEnabled;
+	}
+
+	void VansProjectSettings::SetMainCameraHiZCullSettings(const VansProjectMainCameraHiZCullSettings& settings)
+	{
+		m_MainCameraHiZCullSettings = settings;
+		m_MainCameraHiZCullSettings.depthBiasMeters = std::max(m_MainCameraHiZCullSettings.depthBiasMeters, 0.0f);
+		m_MainCameraHiZCullSettings.cameraMotionDisableDistance =
+			std::max(m_MainCameraHiZCullSettings.cameraMotionDisableDistance, 0.0f);
+		m_MainCameraHiZCullSettings.cameraMotionDisableAngleRadians =
+			std::max(m_MainCameraHiZCullSettings.cameraMotionDisableAngleRadians, 0.0f);
+		m_MainCameraHiZCullSettings.forceVisibleFramesAfterChange =
+			std::max(m_MainCameraHiZCullSettings.forceVisibleFramesAfterChange, 1u);
+		m_MainCameraHiZCullSettings.refreshCulledEveryNFrames =
+			std::max(m_MainCameraHiZCullSettings.refreshCulledEveryNFrames, 1u);
+		m_MainCameraHiZCullSettings.maxScreenCoverageForCull =
+			std::clamp(m_MainCameraHiZCullSettings.maxScreenCoverageForCull, 0.05f, 1.0f);
+	}
+
 	bool VansProjectSettings::LoadFromProjectFiles(const std::string& projectRootPath, const VansProjectConfig& projectConfig)
 	{
 		bool loadedAnySettings = false;
@@ -75,9 +98,13 @@ namespace Vans
 				for (const std::string& warning : warnings)
 					VANS_LOG_WARN("[ProjectSettings] " << warning);
 				SetFSRSettings(renderSettings.fsrSettings.mode, renderSettings.fsrSettings.sharpness);
+				SetCommandRecordingSettings(renderSettings.commandRecordingSettings.parallelEnabled);
+				SetMainCameraHiZCullSettings(renderSettings.mainCameraHiZCullSettings);
 				VANS_LOG("[ProjectSettings] Loaded render settings: " << renderSettingsPath
 					<< ", fsr.mode=" << ToString(m_FSRSettings.mode)
-					<< ", fsr.sharpness=" << m_FSRSettings.sharpness);
+					<< ", fsr.sharpness=" << m_FSRSettings.sharpness
+					<< ", commandRecording.parallelEnabled=" << m_CommandRecordingSettings.parallelEnabled
+					<< ", mainCameraHiZCulling.enabled=" << m_MainCameraHiZCullSettings.enabled);
 				loadedAnySettings = true;
 			}
 			else
@@ -121,6 +148,8 @@ namespace Vans
 			const std::string renderSettingsPath = projectRootPath + projectConfig.renderSettings;
 			VansProjectRenderSettingsData renderSettings;
 			renderSettings.fsrSettings = m_FSRSettings;
+			renderSettings.commandRecordingSettings = m_CommandRecordingSettings;
+			renderSettings.mainCameraHiZCullSettings = m_MainCameraHiZCullSettings;
 			std::string error;
 			if (VansProjectSettingsStorage::SaveRenderSettings(renderSettingsPath, renderSettings, error))
 			{

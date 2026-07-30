@@ -11,6 +11,114 @@
 #include <assimp/material.h>
 #include <GLM/glm.hpp>
 #include <GLM/gtc/packing.hpp>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+
+namespace
+{
+	glm::vec3 NormalizeOrFallback(const glm::vec3& value, const glm::vec3& fallback)
+	{
+		const float len = glm::length(value);
+		return len > 1.0e-6f ? value / len : fallback;
+	}
+
+	glm::vec3 PickLeastParallelAxis(const glm::vec3& axis)
+	{
+		const glm::vec3 absAxis = glm::abs(axis);
+		if (absAxis.x <= absAxis.y && absAxis.x <= absAxis.z)
+			return glm::vec3(1.0f, 0.0f, 0.0f);
+		if (absAxis.y <= absAxis.z)
+			return glm::vec3(0.0f, 1.0f, 0.0f);
+		return glm::vec3(0.0f, 0.0f, 1.0f);
+	}
+
+	glm::vec3 OrthogonalFallback(const glm::vec3& axis)
+	{
+		const glm::vec3 ref = PickLeastParallelAxis(axis);
+		return NormalizeOrFallback(glm::cross(axis, ref), glm::vec3(0.0f, 1.0f, 0.0f));
+	}
+
+	glm::vec3 PowerIterateSymmetric(const glm::mat3& matrix, const glm::vec3& seed)
+	{
+		glm::vec3 axis = NormalizeOrFallback(seed, glm::vec3(1.0f, 0.0f, 0.0f));
+		for (uint32_t i = 0; i < 18; ++i)
+		{
+			const glm::vec3 next = matrix * axis;
+			const float len = glm::length(next);
+			if (len <= 1.0e-8f)
+				break;
+			axis = next / len;
+		}
+		return axis;
+	}
+
+	glm::vec3 MaxDiagonalAxis(const glm::mat3& matrix)
+	{
+		if (matrix[1][1] >= matrix[0][0] && matrix[1][1] >= matrix[2][2])
+			return glm::vec3(0.0f, 1.0f, 0.0f);
+		if (matrix[2][2] >= matrix[0][0])
+			return glm::vec3(0.0f, 0.0f, 1.0f);
+		return glm::vec3(1.0f, 0.0f, 0.0f);
+	}
+
+	glm::mat3 DeflateSymmetric(const glm::mat3& matrix, const glm::vec3& axis, float eigenValue)
+	{
+		glm::mat3 result = matrix;
+		for (int c = 0; c < 3; ++c)
+		{
+			for (int r = 0; r < 3; ++r)
+			{
+				result[c][r] -= eigenValue * axis[c] * axis[r];
+			}
+		}
+		return result;
+	}
+
+	std::array<glm::vec3, 3> MakeOrthonormalBasis(glm::vec3 axis0, glm::vec3 axis1)
+	{
+		axis0 = NormalizeOrFallback(axis0, glm::vec3(1.0f, 0.0f, 0.0f));
+		axis1 = axis1 - axis0 * glm::dot(axis1, axis0);
+		axis1 = NormalizeOrFallback(axis1, OrthogonalFallback(axis0));
+		glm::vec3 axis2 = NormalizeOrFallback(glm::cross(axis0, axis1), glm::vec3(0.0f, 0.0f, 1.0f));
+		axis1 = NormalizeOrFallback(glm::cross(axis2, axis0), axis1);
+		return { axis0, axis1, axis2 };
+	}
+
+	VansGraphics::VansMeshLocalOBB BuildOBBForBasis(
+		const std::vector<glm::vec3>& positions,
+		const std::array<glm::vec3, 3>& axes)
+	{
+		VansGraphics::VansMeshLocalOBB obb;
+		if (positions.empty())
+			return obb;
+
+		glm::vec3 minProj((std::numeric_limits<float>::max)());
+		glm::vec3 maxProj(-(std::numeric_limits<float>::max)());
+		for (const glm::vec3& p : positions)
+		{
+			const glm::vec3 proj(glm::dot(p, axes[0]), glm::dot(p, axes[1]), glm::dot(p, axes[2]));
+			minProj = glm::min(minProj, proj);
+			maxProj = glm::max(maxProj, proj);
+		}
+
+		const glm::vec3 centerProj = (minProj + maxProj) * 0.5f;
+		obb.center = axes[0] * centerProj.x + axes[1] * centerProj.y + axes[2] * centerProj.z;
+		obb.axes = axes;
+		obb.halfExtent = glm::max((maxProj - minProj) * 0.5f, glm::vec3(0.0f));
+		obb.valid = true;
+		return obb;
+	}
+
+	float OBBVolumeScore(const VansGraphics::VansMeshLocalOBB& obb)
+	{
+		if (!obb.IsValid())
+			return (std::numeric_limits<float>::max)();
+		const glm::vec3 e = glm::max(obb.halfExtent, glm::vec3(1.0e-5f));
+		return e.x * e.y * e.z;
+	}
+}
 
 VansGraphics::VertexBufferParameters VansGraphics::VansMesh::GetVertexBufferParameter()
 {
@@ -39,6 +147,7 @@ void VansGraphics::VansMesh::ResetLocalBounds()
 	m_HasLocalBounds = false;
 	m_LocalBoundsMin = glm::vec3(0.0f);
 	m_LocalBoundsMax = glm::vec3(0.0f);
+	m_LocalOBB = VansMeshLocalOBB{};
 }
 
 void VansGraphics::VansMesh::ExpandLocalBounds(const glm::vec3& point)
@@ -74,14 +183,81 @@ void VansGraphics::VansMesh::RebuildLocalBoundsFromRawPositions()
 	else
 		return;
 
+	std::vector<glm::vec3> positions;
+	positions.reserve(vertexCount);
 	for (size_t i = 0; i < vertexCount; ++i)
 	{
 		const size_t offset = i * stride;
-		ExpandLocalBounds(glm::vec3(
+		const glm::vec3 position(
 			m_MeshRawPositionData[offset + 0],
 			m_MeshRawPositionData[offset + 1],
-			m_MeshRawPositionData[offset + 2]));
+			m_MeshRawPositionData[offset + 2]);
+		ExpandLocalBounds(position);
+		positions.push_back(position);
 	}
+	RebuildLocalOBBFromPositions(positions);
+}
+
+void VansGraphics::VansMesh::RebuildLocalOBBFromPositions(const std::vector<glm::vec3>& positions)
+{
+	m_LocalOBB = VansMeshLocalOBB{};
+	if (positions.empty())
+		return;
+
+	glm::vec3 mean(0.0f);
+	for (const glm::vec3& p : positions)
+		mean += p;
+	mean /= static_cast<float>(positions.size());
+
+	glm::mat3 covariance(0.0f);
+	for (const glm::vec3& p : positions)
+	{
+		const glm::vec3 d = p - mean;
+		covariance[0][0] += d.x * d.x;
+		covariance[0][1] += d.x * d.y;
+		covariance[0][2] += d.x * d.z;
+		covariance[1][0] += d.y * d.x;
+		covariance[1][1] += d.y * d.y;
+		covariance[1][2] += d.y * d.z;
+		covariance[2][0] += d.z * d.x;
+		covariance[2][1] += d.z * d.y;
+		covariance[2][2] += d.z * d.z;
+	}
+	covariance /= static_cast<float>(positions.size());
+
+	std::array<std::array<glm::vec3, 3>, 2> candidateAxes = {
+		std::array<glm::vec3, 3>{
+			glm::vec3(1.0f, 0.0f, 0.0f),
+			glm::vec3(0.0f, 1.0f, 0.0f),
+			glm::vec3(0.0f, 0.0f, 1.0f)
+		},
+		std::array<glm::vec3, 3>{
+			glm::vec3(1.0f, 0.0f, 0.0f),
+			glm::vec3(0.0f, 1.0f, 0.0f),
+			glm::vec3(0.0f, 0.0f, 1.0f)
+		}
+	};
+
+	const glm::vec3 axis0 = PowerIterateSymmetric(covariance, MaxDiagonalAxis(covariance));
+	const float eigen0 = glm::dot(axis0, covariance * axis0);
+	const glm::mat3 deflated = DeflateSymmetric(covariance, axis0, eigen0);
+	const glm::vec3 axis1Seed = OrthogonalFallback(axis0);
+	const glm::vec3 axis1 = PowerIterateSymmetric(deflated, axis1Seed);
+	candidateAxes[1] = MakeOrthonormalBasis(axis0, axis1);
+
+	VansMeshLocalOBB best;
+	float bestScore = (std::numeric_limits<float>::max)();
+	for (const auto& axes : candidateAxes)
+	{
+		VansMeshLocalOBB candidate = BuildOBBForBasis(positions, axes);
+		const float score = OBBVolumeScore(candidate);
+		if (score < bestScore)
+		{
+			best = candidate;
+			bestScore = score;
+		}
+	}
+	m_LocalOBB = best;
 }
 
 uint16_t FloatToHalf(float f) 
@@ -115,7 +291,7 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& mesh
 			meshRawPositionData.emplace_back(vertex.x);
 			meshRawPositionData.emplace_back(vertex.y);
 			meshRawPositionData.emplace_back(vertex.z);
-			meshRawPositionData.emplace_back(0.0);
+			meshRawPositionData.emplace_back(0.0f);
 
 			meshRawTexCoordData.emplace_back(texCoord.x);
 			meshRawTexCoordData.emplace_back(texCoord.y);
@@ -129,7 +305,7 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& mesh
 			meshRawPositionData.emplace_back(normal.x);
 			meshRawPositionData.emplace_back(normal.y);
 			meshRawPositionData.emplace_back(normal.z);
-			meshRawPositionData.emplace_back(0.0);
+			meshRawPositionData.emplace_back(0.0f);
 
 			if (import_tangent)
 			{

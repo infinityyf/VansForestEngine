@@ -56,6 +56,9 @@ namespace VansRuntime
         // 每帧由 VansSceneWindow 更新场景图像的屏幕位置与尺寸，
         // 以便 InputAdapter 将原始 GLFW 坐标变换为 Noesis View 局部坐标
         void SetSceneViewport(float screenX, float screenY, float screenW, float screenH);
+        bool TransformMouseToView(double rawX, double rawY,
+                                  double& outX, double& outY) const;
+        bool GetViewSize(double& outW, double& outH) const;
 
         // 获取 RenderDevice（供 VansUIRenderPass 使用）
         VansNoesisRenderDevice* GetRenderDevice() const { return m_RenderDevice.get(); }
@@ -69,6 +72,12 @@ namespace VansRuntime
         // renderPass：激活的 VkRenderPass 句柄（供 Noesis 懒编译 PSO 用）
         // sampleCount：MSAA 采样数，无 MSAA 时传 1
         void RenderDocumentsPass(VkRenderPass renderPass, uint32_t sampleCount);
+        bool PrepareDocumentPreview(const std::shared_ptr<VansUIDocument>& document,
+                                    VkCommandBuffer cmd,
+                                    double totalTimeSeconds);
+        bool RenderDocumentPreviewPass(const std::shared_ptr<VansUIDocument>& document,
+                                       VkRenderPass renderPass,
+                                       uint32_t sampleCount);
 
     private:
         void SetupLogHandler();

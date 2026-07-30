@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <exception>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -77,8 +79,52 @@ private:
     SceneStateId m_AfterState = 0;
 };
 
+class VansReparentSceneEntityCommand final : public VansSceneEditCommand
+{
+public:
+    VansReparentSceneEntityCommand(std::string childEntityGuid, std::string newParentEntityGuid);
+
+private:
+    SceneEditResult Execute(VansSceneDocument& document) override;
+    SceneEditResult Undo(VansSceneDocument& document) override;
+    SceneEditResult Redo(VansSceneDocument& document) override;
+
+    std::string m_ChildEntityGuid;
+    std::string m_NewParentEntityGuid;
+    VansSerializedValue m_BeforeRoot;
+    VansSerializedValue m_AfterRoot;
+    SceneStateId m_BeforeState = 0;
+    SceneStateId m_AfterState = 0;
+};
+
+class VansSetSceneEntityTransformCommand final : public VansSceneEditCommand
+{
+public:
+    VansSetSceneEntityTransformCommand(
+        std::string entityGuid,
+        EditorAPI::RuntimeTransformSnapshot transform);
+
+private:
+    SceneEditResult Execute(VansSceneDocument& document) override;
+    SceneEditResult Undo(VansSceneDocument& document) override;
+    SceneEditResult Redo(VansSceneDocument& document) override;
+
+    std::string m_EntityGuid;
+    EditorAPI::RuntimeTransformSnapshot m_Transform;
+    VansSerializedValue m_BeforeRoot;
+    VansSerializedValue m_AfterRoot;
+    SceneStateId m_BeforeState = 0;
+    SceneStateId m_AfterState = 0;
+};
+
 namespace
 {
+struct EntityHierarchyRecord
+{
+    std::size_t index = 0;
+    std::string parent;
+};
+
 SceneEditResult ValidatePointer(const std::string& path)
 {
     if (path.empty() || path.front() != '/')
@@ -123,6 +169,160 @@ SceneEditResult WriteAt(
     if (SetSerializedPointer(root, pointer, std::move(value), &error))
         return { true, {} };
     return { false, error };
+}
+
+bool TryBuildEntityHierarchy(
+    const VansSerializedValue& root,
+    std::unordered_map<std::string, EntityHierarchyRecord>& outEntities,
+    std::string& error)
+{
+    const VansSerializedValue* entities = FindObjectField(root, "entities");
+    if (!entities || entities->kind != VansSerializedValue::Kind::Array)
+    {
+        error = "Scene document has no entities array";
+        return false;
+    }
+
+    for (std::size_t index = 0; index < entities->arrayItems.size(); ++index)
+    {
+        const VansSerializedValue& entity = entities->arrayItems[index];
+        if (entity.kind != VansSerializedValue::Kind::Object)
+        {
+            error = "Scene entity is not an object";
+            return false;
+        }
+
+        const std::string entityId = ReadSerializedStringField(entity, "id");
+        if (entityId.empty())
+        {
+            error = "Scene entity is missing an id";
+            return false;
+        }
+
+        const VansSerializedValue* parentField = FindObjectField(entity, "parent");
+        EntityHierarchyRecord record;
+        record.index = index;
+        record.parent = parentField && parentField->kind == VansSerializedValue::Kind::String
+            ? parentField->stringValue
+            : std::string{};
+        outEntities[entityId] = std::move(record);
+    }
+
+    return true;
+}
+
+bool IsDescendantOf(
+    const std::unordered_map<std::string, EntityHierarchyRecord>& entities,
+    const std::string& candidateChild,
+    const std::string& candidateAncestor)
+{
+    std::string cursor = candidateChild;
+    for (;;)
+    {
+        const auto found = entities.find(cursor);
+        if (found == entities.end() || found->second.parent.empty())
+            return false;
+        if (found->second.parent == candidateAncestor)
+            return true;
+        cursor = found->second.parent;
+    }
+}
+
+VansSerializedValue TransformVec3(float x, float y, float z)
+{
+    return VansSerializedValue::Array({
+        VansSerializedValue::Float(x),
+        VansSerializedValue::Float(y),
+        VansSerializedValue::Float(z)
+    });
+}
+
+SceneEditResult ApplyEntityParent(
+    VansSerializedValue& root,
+    const std::string& childEntityGuid,
+    const std::string& newParentEntityGuid)
+{
+    if (childEntityGuid.empty())
+        return { false, "Child entity id must not be empty" };
+    if (childEntityGuid == newParentEntityGuid)
+        return { false, "An entity cannot be parented to itself" };
+
+    std::unordered_map<std::string, EntityHierarchyRecord> entitiesById;
+    std::string error;
+    if (!TryBuildEntityHierarchy(root, entitiesById, error))
+        return { false, error };
+
+    const auto child = entitiesById.find(childEntityGuid);
+    if (child == entitiesById.end())
+        return { false, "Child entity does not exist" };
+    if (!newParentEntityGuid.empty() && entitiesById.find(newParentEntityGuid) == entitiesById.end())
+        return { false, "Parent entity does not exist" };
+    if (!newParentEntityGuid.empty() &&
+        IsDescendantOf(entitiesById, newParentEntityGuid, childEntityGuid))
+    {
+        return { false, "Cannot parent an entity to one of its descendants" };
+    }
+    if (child->second.parent == newParentEntityGuid)
+        return { false, "Scene entity parent is unchanged" };
+
+    VansSerializedValue* entities = FindObjectField(root, "entities");
+    VansSerializedValue& childEntity = entities->arrayItems[child->second.index];
+    SetSerializedObjectField(
+        childEntity,
+        "parent",
+        newParentEntityGuid.empty()
+            ? VansSerializedValue::Null()
+            : VansSerializedValue::String(newParentEntityGuid));
+    return { true, {} };
+}
+
+SceneEditResult ApplyEntityTransform(
+    VansSerializedValue& root,
+    const std::string& entityGuid,
+    const EditorAPI::RuntimeTransformSnapshot& transform)
+{
+    if (entityGuid.empty())
+        return { false, "Scene entity id must not be empty" };
+
+    VansSerializedValue* entities = FindObjectField(root, "entities");
+    if (!entities || entities->kind != VansSerializedValue::Kind::Array)
+        return { false, "Scene document has no entities array" };
+
+    for (VansSerializedValue& entity : entities->arrayItems)
+    {
+        if (ReadSerializedStringField(entity, "id") != entityGuid)
+            continue;
+
+        VansSerializedValue* components = FindObjectField(entity, "components");
+        if (!components || components->kind != VansSerializedValue::Kind::Array)
+            return { false, "Scene entity has no components array" };
+
+        for (VansSerializedValue& component : components->arrayItems)
+        {
+            if (ReadSerializedStringField(component, "type") != "Transform")
+                continue;
+
+            VansSerializedValue* data = FindObjectField(component, "data");
+            if (!data || data->kind != VansSerializedValue::Kind::Object)
+            {
+                SetSerializedObjectField(component, "data", VansSerializedValue::Object({}));
+                data = FindObjectField(component, "data");
+            }
+            if (!data)
+                return { false, "Could not create Transform component data" };
+
+            SetSerializedObjectField(*data, "position",
+                TransformVec3(transform.position.x, transform.position.y, transform.position.z));
+            SetSerializedObjectField(*data, "rotation",
+                TransformVec3(transform.rotationDegrees.x, transform.rotationDegrees.y, transform.rotationDegrees.z));
+            SetSerializedObjectField(*data, "scale",
+                TransformVec3(transform.scale.x, transform.scale.y, transform.scale.z));
+            return { true, {} };
+        }
+        return { false, "Scene entity has no Transform component" };
+    }
+
+    return { false, "Scene entity does not exist" };
 }
 
 }
@@ -288,6 +488,81 @@ SceneEditResult VansAppendSceneEntitiesCommand::Redo(VansSceneDocument& document
     return { true, {} };
 }
 
+VansReparentSceneEntityCommand::VansReparentSceneEntityCommand(
+    std::string childEntityGuid,
+    std::string newParentEntityGuid)
+    : m_ChildEntityGuid(std::move(childEntityGuid))
+    , m_NewParentEntityGuid(std::move(newParentEntityGuid))
+{
+}
+
+SceneEditResult VansReparentSceneEntityCommand::Execute(VansSceneDocument& document)
+{
+    VansSerializedValue candidate = document.SerializedRootSnapshot();
+    m_BeforeRoot = candidate;
+    m_BeforeState = document.m_CurrentStateId;
+
+    if (SceneEditResult result = ApplyEntityParent(
+        candidate,
+        m_ChildEntityGuid,
+        m_NewParentEntityGuid); !result)
+    {
+        return result;
+    }
+
+    m_AfterRoot = candidate;
+    m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
+    return { true, {} };
+}
+
+SceneEditResult VansReparentSceneEntityCommand::Undo(VansSceneDocument& document)
+{
+    document.RestoreEditedSerializedRoot(m_BeforeRoot, m_BeforeState);
+    return { true, {} };
+}
+
+SceneEditResult VansReparentSceneEntityCommand::Redo(VansSceneDocument& document)
+{
+    document.RestoreEditedSerializedRoot(m_AfterRoot, m_AfterState);
+    return { true, {} };
+}
+
+VansSetSceneEntityTransformCommand::VansSetSceneEntityTransformCommand(
+    std::string entityGuid,
+    EditorAPI::RuntimeTransformSnapshot transform)
+    : m_EntityGuid(std::move(entityGuid))
+    , m_Transform(std::move(transform))
+{
+}
+
+SceneEditResult VansSetSceneEntityTransformCommand::Execute(VansSceneDocument& document)
+{
+    VansSerializedValue candidate = document.SerializedRootSnapshot();
+    m_BeforeRoot = candidate;
+    m_BeforeState = document.m_CurrentStateId;
+
+    if (SceneEditResult result = ApplyEntityTransform(candidate, m_EntityGuid, m_Transform); !result)
+        return result;
+    if (SerializedValuesEqual(candidate, m_BeforeRoot))
+        return { false, "Scene entity transform is unchanged" };
+
+    m_AfterRoot = candidate;
+    m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
+    return { true, {} };
+}
+
+SceneEditResult VansSetSceneEntityTransformCommand::Undo(VansSceneDocument& document)
+{
+    document.RestoreEditedSerializedRoot(m_BeforeRoot, m_BeforeState);
+    return { true, {} };
+}
+
+SceneEditResult VansSetSceneEntityTransformCommand::Redo(VansSceneDocument& document)
+{
+    document.RestoreEditedSerializedRoot(m_AfterRoot, m_AfterState);
+    return { true, {} };
+}
+
 SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditCommand> command)
 {
     if (!command)
@@ -382,6 +657,24 @@ SceneEditResult VansSceneEditService::AssignObjectReference(const ObjectReferenc
     }
 
     return Set(propertyPointer, std::move(referenceValue));
+}
+
+SceneEditResult VansSceneEditService::ReparentEntity(
+    const std::string& childEntityGuid,
+    const std::string& newParentEntityGuid)
+{
+    return Execute(std::make_unique<VansReparentSceneEntityCommand>(
+        childEntityGuid,
+        newParentEntityGuid));
+}
+
+SceneEditResult VansSceneEditService::SetEntityTransform(
+    const std::string& entityGuid,
+    const EditorAPI::RuntimeTransformSnapshot& transform)
+{
+    return Execute(std::make_unique<VansSetSceneEntityTransformCommand>(
+        entityGuid,
+        transform));
 }
 
 SceneEditResult VansSceneEditService::AppendEntities(std::vector<VansSerializedValue> entities,

@@ -9,12 +9,9 @@ namespace VansGraphics
     {
         const char* name;
         const char* description;
-        Vans::EditorAPI::Vec4 deepColor;
-        Vans::EditorAPI::Vec4 shallowColor;
         Vans::EditorAPI::Vec3 absorption;
         Vans::EditorAPI::Vec3 scattering;
         float ior;
-        float fresnelPower;
         float specularIntensity;
     };
 

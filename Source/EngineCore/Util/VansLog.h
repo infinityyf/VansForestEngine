@@ -16,15 +16,18 @@
 #include <fstream>
 #include <mutex>
 #include <sstream>
-#include <vector>
-
-#include "ILogSink.h"
 
 enum class VansLogLevel
 {
     Info,
     Warning,
     Error
+};
+
+enum class VansLogChannel
+{
+    Engine,
+    Script
 };
 
 class VansLog
@@ -42,8 +45,6 @@ public:
     /// Core logging function.
     void Log(VansLogLevel level, const std::string& msg);
     void Log(VansLogChannel channel, VansLogLevel level, const std::string& msg);
-    void RegisterSink(ILogSink* sink);
-    void UnregisterSink(ILogSink* sink);
 
 private:
     VansLog() = default;
@@ -54,7 +55,6 @@ private:
     std::mutex  m_Mutex;
     std::ofstream m_File;
     bool m_Initialized = false;
-    std::vector<ILogSink*> m_Sinks;
 };
 
 // -----------------------------------------------------------------------

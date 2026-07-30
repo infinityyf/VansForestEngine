@@ -15,6 +15,8 @@
 
 namespace VansGraphics
 {
+	class VansVKCommandBuffer;
+
 	struct VansSwapChainCreateParams
 	{
 		VkPresentModeKHR desired_present_mode;
@@ -61,9 +63,15 @@ namespace VansGraphics
 
 		bool CreateVulkanSwapChain(VkPhysicalDevice& physical_device, VkDevice& logical_device);
 
-		bool AcquireVulkanSwapChainImages(VkDevice& logical_device,  uint32_t& image_index, VkSemaphore& aquire_image_semaphore);
+		VkResult AcquireVulkanSwapChainImage(VkDevice& logical_device, uint32_t& image_index, VkSemaphore& acquire_image_semaphore);
 
-		bool PresentImage(VkDevice& logical_device, VkQueue& queue, const std::vector<VkSemaphore>& rendering_semaphores, uint32_t image_index);
+		VkResult PresentImage(VkQueue& queue, const std::vector<VkSemaphore>& rendering_semaphores, uint32_t image_index);
+
+		void RecordSwapChainImageBarrier(
+			VansVKCommandBuffer& command_buffer,
+			VkPipelineStageFlags src_stage,
+			VkPipelineStageFlags dst_stage,
+			const ImageTransition& transition);
 
 		bool DestroyVulkanSwapChain(VkDevice& logical_device);
 
@@ -71,8 +79,6 @@ namespace VansGraphics
 		bool RecreateSwapChain(VkPhysicalDevice& physical_device, VkDevice& logical_device);
 
 		bool DestroyVulkanPresentSurface(VkInstance& instance);
-
-		void SetSwapChainImageBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, ImageTransition transition, int swap_chain_index = -1);
 
 		VkImage GetSwapChainImage(uint32_t index){return m_VansVKSwapChainImages[index]; }
 
@@ -109,6 +115,5 @@ namespace VansGraphics
 
 		std::vector<VkImageView> m_VansVKSwapChainImageViews;
 
-		std::vector<VkImageMemoryBarrier> m_SwapChainImageMemoryBarriers;
 	};
 }

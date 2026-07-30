@@ -1,5 +1,6 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKBuffer.h"
+#include "VansVKCommandBuffer.h"
 #include "VansVKMemoryManager.h"
 #include "VansVKMemoryAllocator.h"
 #include "../../Util/VansLog.h"
@@ -131,10 +132,10 @@ void VansGraphics::VansVKBuffer::AddTransitionBufferAccess(BufferTransition& tra
 	);
 }
 
-void VansGraphics::VansVKBuffer::SetBufferMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition)
+void VansGraphics::VansVKBuffer::SetBufferMemoryBarrier(VansVKCommandBuffer& commandBuffer, VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition)
 {
 	this->AddTransitionBufferAccess(bufferTransition);
-	VansVKMemoryManager::GetInstance()->SetBufferMemoryBarrier(m_BufferMemoryBarriers, generating_stages, consuming_stages);
+	commandBuffer.PipelineBarrier(generating_stages, consuming_stages, {}, m_BufferMemoryBarriers, {});
 	m_BufferMemoryBarriers.clear();
 
 }

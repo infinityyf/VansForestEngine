@@ -41,7 +41,8 @@ namespace VansGraphics
 
 		VkExtent2D swapchainExtent = m_VansVKSurface.m_VansVKSwapChainImageExtent;
 		VkExtent2D fsrTempImageExtent = m_FSRController.GetDisplayExtent();
-		m_VansVKSurface.SetSwapChainImageBarrier(
+		m_VansVKSurface.RecordSwapChainImageBarrier(
+			m_VansVKCommandBuffer,
 			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
@@ -53,8 +54,7 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_IMAGE_ASPECT_COLOR_BIT
-			},
-			m_SwapChainImageIndex);
+			});
 
 		VkImageBlit blitRegion{};
 		blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -79,7 +79,8 @@ namespace VansGraphics
 			{ blitRegion },
 			VK_FILTER_LINEAR);
 
-		m_VansVKSurface.SetSwapChainImageBarrier(
+		m_VansVKSurface.RecordSwapChainImageBarrier(
+			m_VansVKCommandBuffer,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{
@@ -91,8 +92,7 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_IMAGE_ASPECT_COLOR_BIT
-			},
-			m_SwapChainImageIndex);
+			});
 
 		if (!m_VansVKCommandBuffer.EndCommandBufferRecord()
 			|| !VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence)
@@ -108,6 +108,7 @@ namespace VansGraphics
 		const VkImageLayout previousFSRLayout = fsrOut.GetImageLayout();
 
 		VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
+			m_VansVKCommandBuffer,
 			fsrOut,
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -116,7 +117,8 @@ namespace VansGraphics
 			previousFSRLayout,
 			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
-		m_VansVKSurface.SetSwapChainImageBarrier(
+		m_VansVKSurface.RecordSwapChainImageBarrier(
+			m_VansVKCommandBuffer,
 			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
@@ -128,8 +130,7 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_IMAGE_ASPECT_COLOR_BIT
-			},
-			m_SwapChainImageIndex);
+			});
 
 		const VkExtent2D swapchainExtent = m_VansVKSurface.m_VansVKSwapChainImageExtent;
 		const VkExtent3D fsrExtent = fsrOut.GetImageDimension();
@@ -164,7 +165,8 @@ namespace VansGraphics
 			{ blitRegion },
 			VK_FILTER_LINEAR);
 
-		m_VansVKSurface.SetSwapChainImageBarrier(
+		m_VansVKSurface.RecordSwapChainImageBarrier(
+			m_VansVKCommandBuffer,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{
@@ -176,10 +178,10 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_IMAGE_ASPECT_COLOR_BIT
-			},
-			m_SwapChainImageIndex);
+			});
 
 		VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
+			m_VansVKCommandBuffer,
 			fsrOut,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,

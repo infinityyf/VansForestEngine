@@ -803,7 +803,7 @@ namespace VansGraphics
 		CreateVKFence(false, m_ImmediateGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
 
 
-		VansVKMemoryManager::GetInstance()->BindDevice(m_VansVKCommandBuffer.GetVKCommandBuffer(), *this);
+		VansVKMemoryManager::GetInstance()->BindDevice(*this);
 		// Bring up the VMA allocator before any buffer/image is created.
 		if (!VansVKMemoryAllocator::Get().Initialize(*this, VK_API_VERSION_1_2))
 		{

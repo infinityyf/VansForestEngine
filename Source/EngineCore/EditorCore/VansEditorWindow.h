@@ -1,7 +1,6 @@
 ﻿#pragma once
 #include "../RenderCore/VansCamera.h"
 #include "../RenderCore/VansGraphicsDevice.h"
-#include "../EventCore/VansEventConnection.h"
 #include "../../Application/VansBasicWindow.h"
 #include "Windows/VansBaseWindowComponent.h"
 #include <cstdint>
@@ -35,6 +34,7 @@ namespace VansGraphics
 	class VansHierachuWindow;
 	class VansLightWindow;
 	class VansProjectWindow;
+	class VansProjectSettingsWindow;
 	class VansSceneWindow;
 	class VansInspectorWindow;
 	class VansGBufferWindow;
@@ -50,6 +50,7 @@ namespace VansGraphics
 	class VansPostProcessWindow;
 	class VansShadowDebuggerWindow;
 	class VansPcgWindow;
+	class VansHiZCullWindow;
 
 	/// 编辑器运行控制状态
 	enum class VansEditorPlayState
@@ -82,9 +83,12 @@ namespace VansGraphics
 		static bool m_PostProcessWindowOpen;
 		static bool m_ShadowDebuggerWindowOpen;
 		static bool m_PcgWindowOpen;
+		static bool m_HiZCullWindowOpen;
+		static bool m_ProjectSettingsWindowOpen;
 
 		static bool m_WireframeMode;
 		static bool m_VehicleDebugGizmos;
+		static bool m_HiZCullDebugVisualization;
 
 	public: 
 		static VansBasicWindow m_VansEditorWindow;
@@ -113,18 +117,10 @@ namespace VansGraphics
 		/// Setup ImGui fonts, style, and color theme
 		static void SetupImGuiStyle();
 
-		/// Register camera input listeners with VansInputManager
-		static void RegisterCameraInputListeners();
-
-		/// Update editor camera movement from held key state
-		static void UpdateEditorCameraMovement();
-
-		/// Unregister camera input listeners
-		static void UnregisterCameraInputListeners();
-
 		/// 处理延迟场景加载（从主循环中提取）
 		static void ProcessPendingSceneLoad();
 		static void ProcessRuntimeMultiMeshHierarchyExpansion();
+		static void DetachEditorViewportCamerasFromSceneTransforms();
 
 		/// 处理延迟项目加载，确保项目切换只发生在主循环安全点
 		static void ProcessPendingProjectLoad();
@@ -144,7 +140,6 @@ namespace VansGraphics
 		static bool IsEditing() { return m_PlayState == VansEditorPlayState::Editing; }
 
 		static std::vector<VansGraphics::VansCamera*> m_Cameras;
-		static Vans::VansScopedEventConnections m_CameraInputConnections;
 
 	public:
 
@@ -155,6 +150,8 @@ namespace VansGraphics
 		static VansLightWindow* m_LightWindow;
 
 		static VansProjectWindow* m_ProjectWindow;
+
+		static VansProjectSettingsWindow* m_ProjectSettingsWindow;
 
 		static VansSceneWindow* m_SceneWindow;
 
@@ -189,6 +186,8 @@ namespace VansGraphics
 		static VansShadowDebuggerWindow* m_ShadowDebuggerWindow;
 
 		static VansPcgWindow* m_PcgWindow;
+
+		static VansHiZCullWindow* m_HiZCullWindow;
 
 	private:
 

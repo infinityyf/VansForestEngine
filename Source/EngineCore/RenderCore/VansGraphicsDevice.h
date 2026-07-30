@@ -28,6 +28,10 @@ namespace VansGraphics
 		virtual void PrepareRenderingFrame() {}
 
 		virtual void Rendering() = 0;
+		// True only while the current frame owns a valid presentation image and
+		// accepts GPU command recording. CPU-side UI construction may continue
+		// when false, but no commands may be appended to the frame.
+		virtual bool CanRecordCurrentFrame() const { return true; }
 
 		virtual void Present() = 0;
 

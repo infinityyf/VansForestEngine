@@ -70,30 +70,29 @@ namespace VansGraphics
         glm::vec4 flowMapWorld;
         glm::vec4 flowMapParams;
         glm::vec4 flowMapFallback;
+        glm::vec4 surfaceOptics;     // x=roughness, y=IOR, z=F0, w=specular intensity
+        glm::vec4 scatteringCoeff;   // rgb=sigma_s
+        glm::vec4 absorptionCoeff;   // rgb=sigma_a
     };
 
-    // WaterCompositeParams GPU struct. Matches water_composite.frag set=1 binding=2.
-    struct alignas(16) WaterCompositeParamsGPU
+    // PBRWaterParams GPU struct. Matches PBRWater surface/refraction/volume/composite shaders.
+    struct alignas(16) PBRWaterParamsGPU
     {
-        glm::vec4 deepWaterColor;
-        glm::vec4 shallowWaterColor;
-        float     fresnelPower;
-        float     waterLevel;
-        float     specularIntensity;
-        float     refractionStrength;   // screen-height UV displacement at thickness=1
         glm::vec4 absorptionCoeff;
         glm::vec4 scatteringCoeff;
-        float     sssAnisotropy;
-        float     waterRoughness;
-        float     waterIOR;
-        float     maxOpticalDepth;      // normalized thickness -> metres
-        glm::vec4 cameraPosition;       // offset  96: camera world position
-        glm::mat4 invViewProjMatrix;    // offset 112: inverse view-projection matrix
-        glm::vec4 mainLightDir;         // offset 176: main light direction
-        glm::vec4 mainLightColor;       // offset 192: rgb = color * intensity
-        glm::mat4 viewMatrix;           // offset 208: view matrix
-        glm::mat4 projMatrix;           // offset 272: projection matrix
-        glm::ivec4 effectFlags;         // offset 336: SSR/refraction/caustics/SSS enabled
+        glm::vec4 cameraPosition;
+        glm::vec4 mainLightDir;
+        glm::vec4 mainLightColor;
+        glm::vec4 surfaceParams;      // x=roughness, y=IOR, z=F0, w=specular intensity
+        glm::vec4 refractionParams;   // x=strength, y=max distance, z=dispersion, w=edge fade
+        glm::vec4 volumeParams;       // x=max distance, y=sample count, z=resolution scale, w=multi scatter
+        glm::vec4 thinSSSParams;      // x=path scale, y=nonlinear strength, z=scatter boost, w=phase g
+        glm::vec4 backlitParams;      // x=path scale, y=phase g, zw=padding
+        glm::vec4 filterParams;       // x=spatial depth sensitivity, y=filter iterations, zw=padding
+        glm::ivec4 effectFlags;       // x=SSR, y=refraction, z=caustics, w=thin SSS
+        glm::mat4 invViewProjMatrix;
+        glm::mat4 viewMatrix;
+        glm::mat4 projMatrix;
     };
 
     // WaterCausticsParams GPU struct. Matches water_caustics.comp set=0 binding=3.
@@ -152,8 +151,9 @@ namespace VansGraphics
         void RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateData& globalState);
 
         // ── Pre-Water Compute（Pass 8）───────────────────────────
-        void DispatchWaterThicknessCS(VansVKCommandBuffer& cmd);   // W-16: 阶段1 厚度图
-        void DispatchWaterSSSScatterCS(VansVKCommandBuffer& cmd);  // W-16: 阶段2 SSS 散射
+        void DispatchWaterThicknessCS(VansVKCommandBuffer& cmd);   // W-16: thickness/cross distance
+        void DispatchWaterVolumeCS(VansVKCommandBuffer& cmd);
+        void DispatchWaterVolumeFilterCS(VansVKCommandBuffer& cmd);
         void DispatchWaterSSR(VansVKCommandBuffer& cmd);
         void DispatchRefractionCS(VansVKCommandBuffer& cmd);
         void DispatchCausticsCS(VansVKCommandBuffer& cmd);
@@ -187,7 +187,9 @@ namespace VansGraphics
         VansVKImage& GetRefractionImage()        { return m_WaterRefractionImage; }
         VansVKImage& GetCausticsImage()          { return m_WaterCausticsImage; }
         VansVKImage& GetThicknessImage()         { return m_WaterThicknessImage; }
-        VansVKImage& GetSSSScatterImage()         { return m_WaterSSSScatterImage; }  // W-16
+        VansVKImage& GetVolumeColorImage()       { return m_WaterVolumeColorImage; }
+        VansVKImage& GetVolumeTransmittanceImage() { return m_WaterVolumeTransmittanceImage; }
+        VansVKImage& GetVolumeDepthImage()       { return m_WaterVolumeDepthImage; }
 
     private:
         // ── 原始 Vulkan 缓冲分配 ────────────────────────────────
@@ -220,7 +222,8 @@ namespace VansGraphics
         VansComputeShader*  m_WaterRefractionShader = nullptr;  // water_refraction.comp
         VansComputeShader*  m_WaterCausticsShader   = nullptr;  // water_caustics.comp (W-14)
         VansComputeShader*  m_WaterThicknessShader  = nullptr;  // water_thickness.comp (W-16)
-        VansComputeShader*  m_WaterSSSScatterShader = nullptr;  // water_sss_scatter.comp (W-16)
+        VansComputeShader*  m_WaterVolumeShader     = nullptr;  // water_volume.comp
+        VansComputeShader*  m_WaterVolumeFilterShader = nullptr; // water_volume_filter.comp
         VansComputeShader*  m_WaveParticleShader    = nullptr;  // water_wave_particle.comp
         VansComputeShader*  m_FlowMapShader         = nullptr;  // water_flowmap.comp
 
@@ -251,9 +254,11 @@ namespace VansGraphics
         VkDescriptorSetLayout m_ThicknessLayout = VK_NULL_HANDLE;
         VkDescriptorSet       m_ThicknessSet    = VK_NULL_HANDLE;
 
-        // ── W-16: SSS Scatter Compute ──────────────────────────────
-        VkDescriptorSetLayout m_SSSScatterLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_SSSScatterSet    = VK_NULL_HANDLE;
+        // ── PBRWater Volume Compute ──────────────────────────────
+        VkDescriptorSetLayout m_VolumeLayout = VK_NULL_HANDLE;
+        VkDescriptorSet       m_VolumeSet    = VK_NULL_HANDLE;
+        VkDescriptorSetLayout m_VolumeFilterLayout = VK_NULL_HANDLE;
+        VkDescriptorSet       m_VolumeFilterSet    = VK_NULL_HANDLE;
 
         // ── N-01: Detail Normal compute ───────────────────────────
 
@@ -267,14 +272,14 @@ namespace VansGraphics
         VansVKBuffer m_SSRParamsBuffer;
         VansVKBuffer m_CausticsParamsBuffer;
         VansVKBuffer m_ThicknessParamsBuffer;   // W-16: 厚度图参数 UBO
-        VansVKBuffer m_SSSParamsBuffer;         // W-16: SSS 散射参数 UBO
         bool m_GBufParamsBufferCreated = false;
         bool m_CompParamsBufferCreated = false;
         bool m_SSRParamsBufferCreated = false;
         bool m_CausticsParamsBufferCreated = false;
         bool m_ThicknessParamsBufferCreated = false;
-        bool m_SSSParamsBufferCreated = false;
         WaterGBufferParamsGPU m_GBufParamsCache = {};
+        uint32_t m_VolumeWidth = 1;
+        uint32_t m_VolumeHeight = 1;
 
         // ── 波形贴图：Compute 写入，WaterGBuffer 顶点采样 ─────────
         // Macro displacement cascades: Texture2DArray 256² × MAX_SPECTRUM_CASCADES.
@@ -290,12 +295,18 @@ namespace VansGraphics
         VansVKImage m_WaterRefractionImage;
         VansVKImage m_WaterCausticsImage;
         VansVKImage m_WaterThicknessImage;    // W-16: SSS 厚度图
-        VansVKImage m_WaterSSSScatterImage;   // W-16: SSS 散射输出
+        VansVKImage m_WaterVolumeRawColorImage;
+        VansVKImage m_WaterVolumeRawTransmittanceImage;
+        VansVKImage m_WaterVolumeRawDepthImage;
+        VansVKImage m_WaterVolumeColorImage;
+        VansVKImage m_WaterVolumeTransmittanceImage;
+        VansVKImage m_WaterVolumeDepthImage;
         bool        m_ReflectionOutputReady = false;
         bool        m_RefractionOutputReady = false;
         bool        m_CausticsOutputReady = false;
         bool        m_ThicknessOutputReady = false;
-        bool        m_SSSOutputReady = false;
+        bool        m_VolumeOutputReady = false;
+        bool        m_VolumeFilterOutputReady = false;
 
         // ── SSBO：Gerstner 波分量（W-04）───────────────────────────
         VansVKBuffer   m_WaveSSBO;

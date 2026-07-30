@@ -775,6 +775,165 @@ namespace VansGraphics
 
 	}
 
+	void VansVKDevice::UpdateOcclusionHIZSeedDescriptorSet(VansRenderPassManager* renderPassManager)
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (IsFeatureDescriptorCurrent(m_OcclusionHIZSeedDescSetGeneration))
+			return;
+
+		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_OCCLUSION_RESULT);
+		if (hzbResult == nullptr || manager->m_OcclusionHIZSeedDescriptorSets.empty())
+			return;
+
+		MarkFeatureDescriptorCurrent(m_OcclusionHIZSeedDescSetGeneration);
+		auto& position = renderPassManager->GetGbuffer2();
+
+		VansVKDescriptorManager::GetInstance()->BeginDescriptorUpdate();
+		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+			manager->m_OcclusionHIZSeedDescriptorSets[0],
+			HIZ_SEED_BINDING_POSITION,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ position.GetSampler(), position.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }},
+			0);
+		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+			manager->m_OcclusionHIZSeedDescriptorSets[0],
+			HIZ_SEED_BINDING_HIZ_MIP0,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ hzbResult->GetImage().GetSampler(), hzbResult->GetImage().GetImageMipView(0), VK_IMAGE_LAYOUT_GENERAL }},
+			0);
+		VansVKDescriptorManager::GetInstance()->CommitDescriptorUpdates();
+	}
+
+	void VansVKDevice::UpdateOcclusionHZBDescriptorSets(VansRenderPassManager* renderPassManager)
+	{
+		(void)renderPassManager;
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (IsFeatureDescriptorCurrent(m_OcclusionHZBDescSetGeneration))
+			return;
+
+		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_OCCLUSION_RESULT);
+		if (hzbResult == nullptr)
+			return;
+		if (manager->m_OcclusionHZBDescriptorSets.size() < static_cast<size_t>(manager->m_HIZMipCount - 1))
+			return;
+
+		MarkFeatureDescriptorCurrent(m_OcclusionHZBDescSetGeneration);
+		for (uint32_t mipIndex = 1; mipIndex < manager->m_HIZMipCount; ++mipIndex)
+		{
+			VansVKDescriptorManager::GetInstance()->BeginDescriptorUpdate();
+			VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+				manager->m_OcclusionHZBDescriptorSets[mipIndex - 1],
+				PassBinding::UAV_IMAGE,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{{ hzbResult->GetImage().GetSampler(), hzbResult->GetImage().GetImageMipView(mipIndex - 1), VK_IMAGE_LAYOUT_GENERAL }},
+				0);
+			VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+				manager->m_OcclusionHZBDescriptorSets[mipIndex - 1],
+				PassBinding::UAV_IMAGE_0,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{{ hzbResult->GetImage().GetSampler(), hzbResult->GetImage().GetImageMipView(mipIndex), VK_IMAGE_LAYOUT_GENERAL }},
+				0);
+			VansVKDescriptorManager::GetInstance()->CommitDescriptorUpdates();
+		}
+	}
+
+
+	void VansVKDevice::UpdateMainCameraHiZCullDescriptorSets(VansRenderPassManager* renderPassManager)
+
+	{
+		(void)renderPassManager;
+		VansMaterialManager* manager = m_Scene ? m_Scene->GetMaterialManager() : nullptr;
+		if (manager == nullptr || manager->m_MainCameraHiZCullDescriptorSets.empty())
+			return;
+
+		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_OCCLUSION_RESULT);
+		if (hzbResult == nullptr)
+			return;
+
+		VansVKBuffer& objectBuffer = m_Scene->GetMainCameraCullObjectBuffer();
+		VansVKBuffer& visibilityBuffer = m_Scene->GetMainCameraVisibilityBuffer();
+		if (objectBuffer.GetNativeBuffer() == VK_NULL_HANDLE || visibilityBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+			return;
+
+		VansVKDescriptorManager::GetInstance()->BeginDescriptorUpdate();
+		VansVKDescriptorManager::GetInstance()->WriteBufferDescriptor(
+			manager->m_MainCameraHiZCullDescriptorSets[0],
+			MAIN_CAMERA_HIZ_CULL_BINDING_OBJECTS,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ objectBuffer.GetNativeBuffer(), 0, objectBuffer.GetBufferSize() }});
+		VansVKDescriptorManager::GetInstance()->WriteBufferDescriptor(
+			manager->m_MainCameraHiZCullDescriptorSets[0],
+			MAIN_CAMERA_HIZ_CULL_BINDING_VISIBILITY,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ visibilityBuffer.GetNativeBuffer(), 0, visibilityBuffer.GetBufferSize() }});
+		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+			manager->m_MainCameraHiZCullDescriptorSets[0],
+			MAIN_CAMERA_HIZ_CULL_BINDING_HIZ,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ hzbResult->GetImage().GetSampler(), hzbResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		VansVKDescriptorManager::GetInstance()->CommitDescriptorUpdates();
+		MarkFeatureDescriptorCurrent(m_MainCameraHiZCullDescSetGeneration);
+	}
+
+	void VansVKDevice::UpdateMainCameraHiZCull(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
+
+	{
+		if (m_Scene == nullptr || !m_Scene->HasMainCameraHiZCullCandidates())
+			return;
+
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager == nullptr || manager->m_MainCameraHiZCullShader == nullptr ||
+			manager->m_MainCameraHiZCullSetLayout == VK_NULL_HANDLE ||
+			manager->m_MainCameraHiZCullDescriptorSets.empty())
+		{
+			return;
+		}
+		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_OCCLUSION_RESULT);
+		if (hzbResult == nullptr)
+			return;
+		if (!m_Scene->UploadMainCameraCullCandidates(*this))
+			return;
+
+		UpdateMainCameraHiZCullDescriptorSets(renderPassManager);
+
+		VkMemoryBarrier hostToCompute = {};
+		hostToCompute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		hostToCompute.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+		hostToCompute.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		computeCmd.PipelineBarrier(
+			VK_PIPELINE_STAGE_HOST_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			{ hostToCompute });
+
+		VansMainCameraHiZCullPushConstants pc{};
+		pc.objectCount = m_Scene->GetMainCameraHiZCullCandidateCount();
+		pc.hizMipCount = manager->m_HIZMipCount;
+		pc.hizEnabled = 1;
+		pc.frameIndex = static_cast<uint32_t>(m_RenderFrameNumber);
+		pc.depthBiasMeters = m_Scene->GetMainCameraHiZCullSettings().depthBiasMeters;
+		pc.maxScreenCoverageForCull = m_Scene->GetMainCameraHiZCullSettings().maxScreenCoverageForCull;
+
+		const uint32_t groups = (pc.objectCount + 63u) / 64u;
+		computeCmd.EnsureComputeShader(*manager->m_MainCameraHiZCullShader,
+			{ m_Scene->GetGlobalDescriptorSetLayout(), manager->m_MainCameraHiZCullSetLayout });
+		computeCmd.DispatchCompute(*manager->m_MainCameraHiZCullShader,
+			groups, 1, 1,
+			{ m_Scene->GetGlobalDescriptorSet(), manager->m_MainCameraHiZCullDescriptorSets[0] },
+			&pc,
+			sizeof(pc));
+
+		VkMemoryBarrier computeToHost = {};
+		computeToHost.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		computeToHost.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		computeToHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+		computeCmd.PipelineBarrier(
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_HOST_BIT,
+			{ computeToHost });
+
+		m_Scene->MarkMainCameraHiZCullDispatched();
+	}
+
 
 
 	void VansVKDevice::UpdateSSRDescriptorSets(VansRenderPassManager* renderPassManager)
@@ -1296,14 +1455,22 @@ namespace VansGraphics
 		UpdateHIZSeedDescriptorSet(renderPassManager);
 
 		UpdateHZBDescriptorSets(renderPassManager);
+		UpdateOcclusionHIZSeedDescriptorSet(renderPassManager);
+		UpdateOcclusionHZBDescriptorSets(renderPassManager);
 
 
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
 		VansTexture* hzbResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
+		VansTexture* occlusionHZBResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_OCCLUSION_RESULT);
 
-		if (hzbResult == nullptr)
+		if (hzbResult == nullptr || occlusionHZBResult == nullptr ||
+			manager->m_HIZSeedShader == nullptr || manager->m_HZBShader == nullptr ||
+			manager->m_OcclusionHIZSeedShader == nullptr || manager->m_OcclusionHZBShader == nullptr ||
+			manager->m_HIZSeedDescriptorSets.empty() || manager->m_OcclusionHIZSeedDescriptorSets.empty() ||
+			manager->m_HZBDescriptorSets.size() < static_cast<size_t>(manager->m_HIZMipCount - 1) ||
+			manager->m_OcclusionHZBDescriptorSets.size() < static_cast<size_t>(manager->m_HIZMipCount - 1))
 
 		{
 
@@ -1322,6 +1489,10 @@ namespace VansGraphics
 		computeCmd.DispatchCompute(*manager->m_HIZSeedShader, seedGroupsX, seedGroupsY, 1,
 
 			{ m_Scene->GetGlobalDescriptorSet(), manager->m_HIZSeedDescriptorSets[0] });
+		computeCmd.EnsureComputeShader(*manager->m_OcclusionHIZSeedShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_OcclusionHIZSeedSetLayout });
+		computeCmd.DispatchCompute(*manager->m_OcclusionHIZSeedShader, seedGroupsX, seedGroupsY, 1,
+
+			{ m_Scene->GetGlobalDescriptorSet(), manager->m_OcclusionHIZSeedDescriptorSets[0] });
 
 
 
@@ -1347,9 +1518,11 @@ namespace VansGraphics
 
 		{
 
-			int threadGroupSizeX = (int)std::ceilf((m_RenderWidth  >> mipIndex) / 16.0f);
+			const uint32_t mipWidth = std::max(1u, m_RenderWidth >> mipIndex);
+			const uint32_t mipHeight = std::max(1u, m_RenderHeight >> mipIndex);
+			int threadGroupSizeX = (int)std::ceilf(mipWidth / 16.0f);
 
-			int threadGroupSizeY = (int)std::ceilf((m_RenderHeight >> mipIndex) / 16.0f);
+			int threadGroupSizeY = (int)std::ceilf(mipHeight / 16.0f);
 
 
 
@@ -1358,6 +1531,11 @@ namespace VansGraphics
 			computeCmd.DispatchCompute(*manager->m_HZBShader, threadGroupSizeX, threadGroupSizeY, 1,
 
 				{ m_Scene->GetGlobalDescriptorSet(), manager->m_HZBDescriptorSets[mipIndex - 1] });
+			computeCmd.EnsureComputeShader(*manager->m_OcclusionHZBShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_OcclusionHZBTexSetLayouts[mipIndex - 1] });
+
+			computeCmd.DispatchCompute(*manager->m_OcclusionHZBShader, threadGroupSizeX, threadGroupSizeY, 1,
+
+				{ m_Scene->GetGlobalDescriptorSet(), manager->m_OcclusionHZBDescriptorSets[mipIndex - 1] });
 
 
 

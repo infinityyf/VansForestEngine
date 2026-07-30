@@ -1,6 +1,7 @@
 ﻿#include "EngineAPIImpl.h"
 
 #include "EngineCommandContext.h"
+#include "../Public/EngineEvents.h"
 #include "ModelAssetPlacementPreparationService.h"
 #include "RuntimeGeneratedMaterialAssetService.h"
 #include "ScenePropertyValueBuilders.h"
@@ -24,6 +25,8 @@
 #include "../../RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include "../../RenderCore/VulkanCore/VansVKImage.h"
 #include "../../RenderCore/VulkanCore/VansVKMemoryManager.h"
+#include "../../RenderCore/VulkanCore/VansPipelineRegistry.h"
+#include "../../RenderCore/VulkanCore/VansRenderDocCapture.h"
 #include "../../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../../RenderCore/VulkanCore/VansTexture.h"
 #include "../../PhysicsCore/VansCollisionLayerManager.h"
@@ -31,12 +34,22 @@
 #include "../../PhysicsCore/VansPhysicsVehicle.h"
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../SceneCore/VansSceneEntityFactory.h"
+#include "../../RuntimeUI/Public/VansUIDocument.h"
+#include "../../RuntimeUI/Public/VansUIScreen.h"
+#include "../../RuntimeUI/Public/VansUISystem.h"
+#include "../../RuntimeUI/Serialization/VansUIDocumentLoader.h"
+#include "../../RuntimeUI/Serialization/VansUIDocumentMigrator.h"
+#include "../../RuntimeUI/Serialization/VansUIDocumentValidator.h"
+#include "../../RuntimeUI/Serialization/VansUIScreenConfigReader.h"
 #include "../../AnimationCore/VansAnimationNode.h"
 #include "../../AnimationCore/VansAnimationController.h"
+#include "../../EventCore/VansEventBus.h"
 #include "../../AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../ScriptCore/VansTransform.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 
+#include "../../Util/VansInputManager.h"
 #include "../../Util/VansLog.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -44,7 +57,6 @@
 #include <../../GLM/gtx/quaternion.hpp>
 
 #include <algorithm>
-#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <filesystem>
@@ -107,85 +119,250 @@ namespace Vans::EditorAPI
 			return cache;
 		}
 
-		std::uint32_t ExtractSummaryCount(const std::string& summary, const std::string& key)
+		void RetireEditorTexture(VansGraphics::VansVKDevice* device, EditorTextureHandle texture)
 		{
-			const size_t keyPos = summary.find(key);
-			if (keyPos == std::string::npos)
-				return 0;
+			if (!texture)
+				return;
 
-			size_t valuePos = keyPos + key.size();
-			while (valuePos < summary.size() && std::isspace(static_cast<unsigned char>(summary[valuePos])))
-				++valuePos;
-
-			std::uint32_t value = 0;
-			while (valuePos < summary.size() && std::isdigit(static_cast<unsigned char>(summary[valuePos])))
+			if (device)
 			{
-				value = value * 10u + static_cast<std::uint32_t>(summary[valuePos] - '0');
-				++valuePos;
+				device->EnqueueDeferredDelete([texture]()
+				{
+					Vans::Editor::VansEditorTextureBridge::RemoveTexture(texture);
+				});
+				return;
 			}
-			return value;
+
+			Vans::Editor::VansEditorTextureBridge::RemoveTexture(texture);
 		}
 
-		std::uint32_t ExtractSummaryCountAfter(
-			const std::string& summary,
-			const std::string& anchor,
-			const std::string& key)
+		void RetireImageView(VansGraphics::VansVKDevice* device, VkDevice logicalDevice, VkImageView view)
 		{
-			const size_t anchorPos = summary.find(anchor);
-			if (anchorPos == std::string::npos)
-				return 0;
+			if (view == VK_NULL_HANDLE || logicalDevice == VK_NULL_HANDLE)
+				return;
 
-			const size_t keyPos = summary.find(key, anchorPos);
-			if (keyPos == std::string::npos)
-				return 0;
-
-			size_t valuePos = keyPos + key.size();
-			while (valuePos < summary.size() && std::isspace(static_cast<unsigned char>(summary[valuePos])))
-				++valuePos;
-
-			std::uint32_t value = 0;
-			while (valuePos < summary.size() && std::isdigit(static_cast<unsigned char>(summary[valuePos])))
+			if (device)
 			{
-				value = value * 10u + static_cast<std::uint32_t>(summary[valuePos] - '0');
-				++valuePos;
+				device->EnqueueDeferredDelete([logicalDevice, view]() mutable
+				{
+					VansGraphics::VansVKImage::DestroyImageView(logicalDevice, view);
+				});
+				return;
 			}
-			return value;
+
+			VansGraphics::VansVKImage::DestroyImageView(logicalDevice, view);
 		}
 
-		bool SummaryContainsFlag(const std::string& summary, const std::string& key, bool expected)
+		std::filesystem::path ResolveEditorUIAssetPath(const std::string& path)
 		{
-			const std::string pattern = key + (expected ? "true" : "false");
-			return summary.find(pattern) != std::string::npos;
+			std::filesystem::path candidate(path);
+			if (candidate.is_absolute())
+				return candidate;
+
+			auto& projectManager = Vans::VansProjectManager::Get();
+			if (projectManager.IsProjectLoaded())
+				return std::filesystem::path(projectManager.ResolveAssetPath(path));
+
+			if (auto* configuration = VansConfigration::GetInstance())
+				return std::filesystem::path(configuration->GetProjectRootPath()) / path;
+
+			return candidate;
 		}
 
-		void ClearEditorRenderTexturePreviewCaches(VkDevice device)
+		const char* UIScreenLayerToString(VansRuntime::VansUIScreenLayer layer)
 		{
+			switch (layer)
+			{
+			case VansRuntime::VansUIScreenLayer::WorldSpaceUI: return "WorldSpaceUI";
+			case VansRuntime::VansUIScreenLayer::HUD: return "HUD";
+			case VansRuntime::VansUIScreenLayer::Screen: return "Screen";
+			case VansRuntime::VansUIScreenLayer::ModalDim: return "ModalDim";
+			case VansRuntime::VansUIScreenLayer::Modal: return "Modal";
+			case VansRuntime::VansUIScreenLayer::Tooltip: return "Tooltip";
+			case VansRuntime::VansUIScreenLayer::Toast: return "Toast";
+			case VansRuntime::VansUIScreenLayer::DebugUI: return "DebugUI";
+			default: return "Screen";
+			}
+		}
+
+		void RecordPreviewImageBarrier(
+			VkCommandBuffer cmd,
+			VkImage image,
+			VkImageLayout oldLayout,
+			VkImageLayout newLayout,
+			VkAccessFlags srcAccess,
+			VkAccessFlags dstAccess,
+			VkPipelineStageFlags srcStage,
+			VkPipelineStageFlags dstStage)
+		{
+			VkImageMemoryBarrier barrier{};
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.srcAccessMask = srcAccess;
+			barrier.dstAccessMask = dstAccess;
+			barrier.oldLayout = oldLayout;
+			barrier.newLayout = newLayout;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = image;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barrier.subresourceRange.baseMipLevel = 0;
+			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.baseArrayLayer = 0;
+			barrier.subresourceRange.layerCount = 1;
+			VansGraphics::vkCmdPipelineBarrier(
+				cmd,
+				srcStage,
+				dstStage,
+				0,
+				0,
+				nullptr,
+				0,
+				nullptr,
+				1,
+				&barrier);
+		}
+
+		bool CreateUIPreviewRenderPass(
+			VkDevice device,
+			VkFormat format,
+			VkRenderPass& renderPass,
+			std::string& error)
+		{
+			VkAttachmentDescription colorAttachment{};
+			colorAttachment.format = format;
+			colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+			colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+			colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+			colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			colorAttachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+			VkAttachmentReference colorReference{};
+			colorReference.attachment = 0;
+			colorReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+			VkSubpassDescription subpass{};
+			subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+			subpass.colorAttachmentCount = 1;
+			subpass.pColorAttachments = &colorReference;
+
+			VkSubpassDependency dependencies[2]{};
+			dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+			dependencies[0].dstSubpass = 0;
+			dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dependencies[0].srcAccessMask = 0;
+			dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			dependencies[1].srcSubpass = 0;
+			dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+			dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+			VkRenderPassCreateInfo createInfo{};
+			createInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+			createInfo.attachmentCount = 1;
+			createInfo.pAttachments = &colorAttachment;
+			createInfo.subpassCount = 1;
+			createInfo.pSubpasses = &subpass;
+			createInfo.dependencyCount = 2;
+			createInfo.pDependencies = dependencies;
+
+			const VkResult result = VansGraphics::vkCreateRenderPass(
+				device,
+				&createInfo,
+				nullptr,
+				&renderPass);
+			if (result != VK_SUCCESS)
+			{
+				error = "Failed to create UI preview render pass.";
+				return false;
+			}
+			return true;
+		}
+
+		bool ReadEditorUIScreenConfig(const std::string& path,
+		                              VansRuntime::VansUIScreenConfig& config,
+		                              std::vector<std::string>& diagnostics)
+		{
+			if (path.find(".vui.") == std::string::npos)
+				return false;
+
+			VansRuntime::VansUIAssetDocument document;
+			std::string error;
+			if (!VansRuntime::VansUIDocumentLoader::Load(ResolveEditorUIAssetPath(path), document, error))
+			{
+				diagnostics.push_back("Config: failed to read " + path + " (" + error + ")");
+				return false;
+			}
+
+			if (!VansRuntime::VansUIDocumentMigrator::MigrateToCurrent(
+				document,
+				VansRuntime::VansUIDocumentKind::Screen,
+				diagnostics))
+				return false;
+
+			return VansRuntime::VansUIScreenConfigReader::Read(
+				document.root,
+				config,
+				diagnostics) &&
+				VansRuntime::VansUIDocumentValidator::ValidateScreenConfig(config, diagnostics);
+		}
+
+		void AppendScreenConfigDiagnostics(const std::string& path, UIDiagnosticsSnapshot& diagnostics)
+		{
+			if (path.find(".vui.") == std::string::npos)
+				return;
+
+			VansRuntime::VansUIScreenConfig config;
+			std::vector<std::string> configDiagnostics;
+			const bool configOk = ReadEditorUIScreenConfig(path, config, configDiagnostics);
+
+			diagnostics.messages.push_back(configOk ? "Config: valid screen asset." : "Config: invalid screen asset.");
+			for (const std::string& message : configDiagnostics)
+				diagnostics.messages.push_back(message);
+
+			diagnostics.messages.push_back("XAML: " + config.xamlPath);
+			diagnostics.messages.push_back("Budget: drawCalls <= " + std::to_string(config.performanceBudget.maxDrawCalls)
+				+ ", textureMB <= " + std::to_string(config.performanceBudget.maxTextureMemoryMB)
+				+ ", layoutMs <= " + std::to_string(config.performanceBudget.maxLayoutMs));
+			for (const std::string& tokenPath : config.tokens)
+				diagnostics.messages.push_back("Tokens: " + tokenPath);
+			for (const std::string& localizationPath : config.localization)
+				diagnostics.messages.push_back("Localization: " + localizationPath);
+		}
+
+		void ClearEditorRenderTexturePreviewCaches(VansGraphics::VansVKDevice* device)
+		{
+			const VkDevice logicalDevice = device ? device->GetLogicDevice() : VK_NULL_HANDLE;
 			for (auto& cache : GetImagePreviewCaches())
 			{
-				Vans::Editor::VansEditorTextureBridge::RemoveTexture(cache.texture);
+				RetireEditorTexture(device, cache.texture);
 				cache = {};
 			}
 			GetImagePreviewCaches().clear();
 
 			for (auto& cache : GetLayerPreviewCaches())
 			{
-				Vans::Editor::VansEditorTextureBridge::RemoveTexture(cache.texture);
-				if (device != VK_NULL_HANDLE)
-					VansGraphics::VansVKImage::DestroyImageView(device, cache.view);
+				RetireEditorTexture(device, cache.texture);
+				RetireImageView(device, logicalDevice, cache.view);
 				cache = {};
 			}
 			GetLayerPreviewCaches().clear();
 
 			auto& viewportCache = GetViewportPreviewCache();
-			Vans::Editor::VansEditorTextureBridge::RemoveTexture(viewportCache.texture);
+			RetireEditorTexture(device, viewportCache.texture);
 			viewportCache = {};
 
 			auto& reflectionCache = GetReflectionProbePreviewCache();
-			Vans::Editor::VansEditorTextureBridge::RemoveTexture(reflectionCache.texture);
+			RetireEditorTexture(device, reflectionCache.texture);
 			reflectionCache = {};
 		}
 
 		RenderTexturePreview BuildImagePreview(
+			VansGraphics::VansVKDevice* device,
 			RenderTextureId id,
 			const char* name,
 			VansGraphics::VansVKImage& image,
@@ -212,7 +389,7 @@ namespace Vans::EditorAPI
 
 			if (!it->texture || it->imageView != imageView || it->sampler != sampler || it->layout != layout)
 			{
-				Vans::Editor::VansEditorTextureBridge::RemoveTexture(it->texture);
+				RetireEditorTexture(device, it->texture);
 				it->imageView = imageView;
 				it->sampler = sampler;
 				it->layout = layout;
@@ -230,7 +407,7 @@ namespace Vans::EditorAPI
 		}
 
 		RenderTexturePreview BuildLayerImagePreview(
-			VkDevice device,
+			VansGraphics::VansVKDevice* renderDevice,
 			RenderTextureId id,
 			const char* name,
 			VansGraphics::VansVKImage& image,
@@ -241,7 +418,8 @@ namespace Vans::EditorAPI
 			preview.id = id;
 			preview.name = name ? name : "";
 
-			if (device == VK_NULL_HANDLE || image.GetImage() == VK_NULL_HANDLE || image.GetSampler() == VK_NULL_HANDLE)
+			const VkDevice logicalDevice = renderDevice ? renderDevice->GetLogicDevice() : VK_NULL_HANDLE;
+			if (logicalDevice == VK_NULL_HANDLE || image.GetImage() == VK_NULL_HANDLE || image.GetSampler() == VK_NULL_HANDLE)
 				return preview;
 
 			const uint32_t layerCount = std::max(image.GetImageCreateInfo().arrayLayers, 1u);
@@ -259,15 +437,15 @@ namespace Vans::EditorAPI
 
 			if (!it->texture || it->image != image.GetImage() || it->layer != layer)
 			{
-				Vans::Editor::VansEditorTextureBridge::RemoveTexture(it->texture);
+				RetireEditorTexture(renderDevice, it->texture);
 				it->texture = nullptr;
 				if (it->view != VK_NULL_HANDLE)
 				{
-					VansGraphics::VansVKImage::DestroyImageView(device, it->view);
+					RetireImageView(renderDevice, logicalDevice, it->view);
 					it->view = VK_NULL_HANDLE;
 				}
 
-				it->view = image.CreateLayerMipView(device, layer, 0);
+				it->view = image.CreateLayerMipView(logicalDevice, layer, 0);
 				it->image = image.GetImage();
 				it->layer = layer;
 				if (it->view != VK_NULL_HANDLE)
@@ -325,6 +503,25 @@ namespace Vans::EditorAPI
 		Vec4 ToEditorVec4(const glm::vec4& value)
 		{
 			return { value.x, value.y, value.z, value.w };
+		}
+
+		const char* ToMainCameraCullClassLabel(VansGraphics::VansMainCameraCullClass cullClass)
+		{
+			switch (cullClass)
+			{
+			case VansGraphics::VansMainCameraCullClass::Opaque:
+				return "Opaque";
+			case VansGraphics::VansMainCameraCullClass::Hair:
+				return "Hair";
+			case VansGraphics::VansMainCameraCullClass::Transparent:
+				return "Transparent";
+			case VansGraphics::VansMainCameraCullClass::ForwardOpaqueAfterDeferred:
+				return "Forward Opaque";
+			case VansGraphics::VansMainCameraCullClass::Decal:
+				return "Decal";
+			default:
+				return "Unknown";
+			}
 		}
 
 		glm::vec2 ToRuntimeVec2(const Vec2& value)
@@ -1109,11 +1306,8 @@ namespace Vans::EditorAPI
 			settings.medium.absorptionCoeff = ToEditorVec3(source.m_Medium.m_AbsorptionCoeff);
 			settings.medium.scatteringCoeff = ToEditorVec3(source.m_Medium.m_ScatteringCoeff);
 			settings.medium.ior = source.m_Medium.m_IOR;
-			settings.medium.fresnelPower = source.m_Medium.m_FresnelPower;
 			settings.medium.anisotropy = source.m_Medium.m_Anisotropy;
 			settings.medium.waterRoughness = source.m_Medium.m_WaterRoughness;
-			settings.medium.deepColor = ToEditorVec4(source.m_Medium.m_DeepColor);
-			settings.medium.shallowColor = ToEditorVec4(source.m_Medium.m_ShallowColor);
 
 			settings.geometry.lodCount = source.m_Geometry.m_LodCount;
 			settings.geometry.basePatchSize = source.m_Geometry.m_BasePatchSize;
@@ -1164,7 +1358,22 @@ namespace Vans::EditorAPI
 			settings.flowMap.worldSize = ToEditorVec2(source.m_FlowMap.m_WorldSize);
 			settings.flowMap.fallbackDirection = ToEditorVec2(source.m_FlowMap.m_FallbackDirection);
 
-			settings.sssEnabled = source.m_SSS.m_Enabled;
+			settings.optics.maxCrossDistance = source.m_Optics.m_MaxCrossDistance;
+			settings.optics.maxRefractionCrossDistance = source.m_Optics.m_MaxRefractionCrossDistance;
+			settings.optics.multiScatterScale = source.m_Optics.m_MultiScatterScale;
+			settings.optics.waterDispersionStrength = source.m_Optics.m_WaterDispersionStrength;
+			settings.optics.sssPathScale = source.m_Optics.m_SSSPathScale;
+			settings.optics.sssNonlinearStrength = source.m_Optics.m_SSSNonlinearStrength;
+			settings.optics.sssScatterBoost = source.m_Optics.m_SSSScatterBoost;
+			settings.optics.backlitPathScale = source.m_Optics.m_BacklitPathScale;
+			settings.optics.backlitPhaseG = source.m_Optics.m_BacklitPhaseG;
+
+			settings.volume.resolutionScale = source.m_Volume.m_ResolutionScale;
+			settings.volume.sampleCount = source.m_Volume.m_SampleCount;
+			settings.volume.spatialFilterIterations = source.m_Volume.m_SpatialFilterIterations;
+			settings.volume.spatialDepthSensitivity = source.m_Volume.m_SpatialDepthSensitivity;
+
+			settings.thinSSSEnabled = source.m_SSS.m_Enabled;
 			settings.maxThicknessDistance = source.m_SSS.m_MaxThicknessDistance;
 			settings.deepWaterThicknessFallback = source.m_SSS.m_DeepWaterThicknessFallback;
 			settings.causticsEnabled = source.m_Caustics.m_Enabled;
@@ -1186,11 +1395,8 @@ namespace Vans::EditorAPI
 			destination.m_Medium.m_AbsorptionCoeff = ToRuntimeVec3(settings.medium.absorptionCoeff);
 			destination.m_Medium.m_ScatteringCoeff = ToRuntimeVec3(settings.medium.scatteringCoeff);
 			destination.m_Medium.m_IOR = settings.medium.ior;
-			destination.m_Medium.m_FresnelPower = settings.medium.fresnelPower;
 			destination.m_Medium.m_Anisotropy = settings.medium.anisotropy;
 			destination.m_Medium.m_WaterRoughness = settings.medium.waterRoughness;
-			destination.m_Medium.m_DeepColor = ToRuntimeVec4(settings.medium.deepColor);
-			destination.m_Medium.m_ShallowColor = ToRuntimeVec4(settings.medium.shallowColor);
 
 			destination.m_Geometry.m_LodCount = settings.geometry.lodCount;
 			destination.m_Geometry.m_BasePatchSize = settings.geometry.basePatchSize;
@@ -1241,7 +1447,22 @@ namespace Vans::EditorAPI
 			destination.m_FlowMap.m_WorldSize = ToRuntimeVec2(settings.flowMap.worldSize);
 			destination.m_FlowMap.m_FallbackDirection = ToRuntimeVec2(settings.flowMap.fallbackDirection);
 
-			destination.m_SSS.m_Enabled = settings.sssEnabled;
+			destination.m_Optics.m_MaxCrossDistance = settings.optics.maxCrossDistance;
+			destination.m_Optics.m_MaxRefractionCrossDistance = settings.optics.maxRefractionCrossDistance;
+			destination.m_Optics.m_MultiScatterScale = settings.optics.multiScatterScale;
+			destination.m_Optics.m_WaterDispersionStrength = settings.optics.waterDispersionStrength;
+			destination.m_Optics.m_SSSPathScale = settings.optics.sssPathScale;
+			destination.m_Optics.m_SSSNonlinearStrength = settings.optics.sssNonlinearStrength;
+			destination.m_Optics.m_SSSScatterBoost = settings.optics.sssScatterBoost;
+			destination.m_Optics.m_BacklitPathScale = settings.optics.backlitPathScale;
+			destination.m_Optics.m_BacklitPhaseG = settings.optics.backlitPhaseG;
+
+			destination.m_Volume.m_ResolutionScale = settings.volume.resolutionScale;
+			destination.m_Volume.m_SampleCount = settings.volume.sampleCount;
+			destination.m_Volume.m_SpatialFilterIterations = settings.volume.spatialFilterIterations;
+			destination.m_Volume.m_SpatialDepthSensitivity = settings.volume.spatialDepthSensitivity;
+
+			destination.m_SSS.m_Enabled = settings.thinSSSEnabled;
 			destination.m_SSS.m_MaxThicknessDistance = settings.maxThicknessDistance;
 			destination.m_SSS.m_DeepWaterThicknessFallback = settings.deepWaterThicknessFallback;
 			destination.m_Caustics.m_Enabled = settings.causticsEnabled;
@@ -2170,9 +2391,75 @@ namespace Vans::EditorAPI
 		return entries;
 	}
 
+	namespace
+	{
+		ProjectConfigDiagnosticSeverity ToEditorProjectConfigSeverity(
+			VansProjectConfigDiagnosticSeverity severity)
+		{
+			switch (severity)
+			{
+			case VansProjectConfigDiagnosticSeverity::Warning:
+				return ProjectConfigDiagnosticSeverity::Warning;
+			case VansProjectConfigDiagnosticSeverity::Error:
+				return ProjectConfigDiagnosticSeverity::Error;
+			case VansProjectConfigDiagnosticSeverity::Info:
+			default:
+				return ProjectConfigDiagnosticSeverity::Info;
+			}
+		}
+
+		std::vector<ProjectConfigDiagnostic> ToEditorProjectConfigDiagnostics(
+			const VansProjectConfigDiagnostics& diagnostics)
+		{
+			std::vector<ProjectConfigDiagnostic> result;
+			result.reserve(diagnostics.size());
+			for (const VansProjectConfigDiagnostic& diagnostic : diagnostics)
+			{
+				ProjectConfigDiagnostic converted;
+				converted.severity = ToEditorProjectConfigSeverity(diagnostic.severity);
+				converted.propertyPointer = diagnostic.propertyPointer;
+				converted.message = diagnostic.message;
+				result.push_back(std::move(converted));
+			}
+			return result;
+		}
+
+		VansProjectConfigPathField ToProjectConfigPathField(ProjectPathField field)
+		{
+			switch (field)
+			{
+			case ProjectPathField::AssetsRoot:
+				return VansProjectConfigPathField::AssetsRoot;
+			case ProjectPathField::ImportedArtifactRoot:
+				return VansProjectConfigPathField::ImportedArtifactRoot;
+			case ProjectPathField::RenderSettings:
+				return VansProjectConfigPathField::RenderSettings;
+			case ProjectPathField::PhysicsSettings:
+				return VansProjectConfigPathField::PhysicsSettings;
+			case ProjectPathField::CollisionLayerSettings:
+				return VansProjectConfigPathField::CollisionLayerSettings;
+			case ProjectPathField::DefaultScene:
+			default:
+				return VansProjectConfigPathField::DefaultScene;
+			}
+		}
+
+		ProjectConfigEditResult BuildProjectConfigEditResult(bool success, std::string message)
+		{
+			ProjectConfigEditResult result;
+			result.success = success;
+			result.message = std::move(message);
+			result.diagnostics = ToEditorProjectConfigDiagnostics(
+				VansProjectManager::Get().GetProjectConfigDiagnostics());
+			return result;
+		}
+	}
+
 	ProjectOpenResult EngineAPIImpl::OpenProject(const ProjectOpenRequest& request)
 	{
 		ProjectOpenResult result;
+		CloseAllUIDocuments();
+
 		auto& projectManager = Vans::VansProjectManager::Get();
 		result.success = request.createNew
 			? projectManager.CreateProject(request.projectPath, request.projectName)
@@ -2200,15 +2487,104 @@ namespace Vans::EditorAPI
 				viewportExtent.width,
 				viewportExtent.height,
 				fsrSettings.sharpness);
+
+			const Vans::VansProjectCommandRecordingSettings& commandRecordingSettings =
+				projectManager.GetProjectSettings().GetCommandRecordingSettings();
+			device->SetParallelCommandRecordingEnabled(commandRecordingSettings.parallelEnabled);
 		}
 		return result;
 	}
 
 	void EngineAPIImpl::CloseProject()
 	{
+		CloseAllUIDocuments();
+
 		auto& projectManager = Vans::VansProjectManager::Get();
 		if (projectManager.IsProjectLoaded())
 			projectManager.CloseProject();
+	}
+
+	ProjectConfigSnapshot EngineAPIImpl::GetProjectConfigSnapshot() const
+	{
+		ProjectConfigSnapshot snapshot;
+		const auto& projectManager = Vans::VansProjectManager::Get();
+		snapshot.projectLoaded = projectManager.IsProjectLoaded();
+		if (!snapshot.projectLoaded)
+			return snapshot;
+
+		const VansProjectConfig& config = projectManager.GetConfig();
+		snapshot.projectRootPath = projectManager.GetProjectRootPath();
+		snapshot.projectName = config.projectName;
+		snapshot.engineVersion = config.engineVersion;
+		snapshot.createdAt = config.createdAt;
+		snapshot.defaultScene = config.defaultScene;
+		snapshot.assetsRoot = config.assetsRoot;
+		snapshot.importedArtifactRoot = config.importedArtifactRoot;
+		snapshot.metaExtension = config.metaExtension;
+		snapshot.renderSettingsPath = config.renderSettings;
+		snapshot.physicsSettingsPath = config.physicsSettings;
+		snapshot.collisionLayerSettingsPath = config.collisionLayerSettings;
+
+		snapshot.runtimeAssetBindings.reserve(config.runtimeAssetBindings.size());
+		for (const auto& item : config.runtimeAssetBindings)
+			snapshot.runtimeAssetBindings.push_back({ item.first, item.second });
+
+		snapshot.assetDirectories.reserve(config.assetDirectories.size());
+		for (const auto& item : config.assetDirectories)
+			snapshot.assetDirectories.push_back({ item.first, item.second });
+
+		snapshot.scriptSearchPaths = config.scriptSearchPaths;
+		snapshot.diagnostics = ToEditorProjectConfigDiagnostics(
+			projectManager.GetProjectConfigDiagnostics());
+		return snapshot;
+	}
+
+	ProjectConfigEditResult EngineAPIImpl::SetProjectDefaultScene(const std::string& sceneRelativePath)
+	{
+		std::string error;
+		const bool success =
+			Vans::VansProjectManager::Get().SetProjectDefaultScene(sceneRelativePath, error);
+		return BuildProjectConfigEditResult(success, success ? "Default scene updated" : error);
+	}
+
+	ProjectConfigEditResult EngineAPIImpl::SetProjectPathField(
+		ProjectPathField field,
+		const std::string& relativePath)
+	{
+		std::string error;
+		const bool success = Vans::VansProjectManager::Get().SetProjectPathField(
+			ToProjectConfigPathField(field),
+			relativePath,
+			error);
+		return BuildProjectConfigEditResult(success, success ? "Project path updated" : error);
+	}
+
+	ProjectConfigEditResult EngineAPIImpl::SetProjectScriptSearchPaths(
+		const std::vector<std::string>& paths)
+	{
+		std::string error;
+		const bool success =
+			Vans::VansProjectManager::Get().SetProjectScriptSearchPaths(paths, error);
+		return BuildProjectConfigEditResult(success, success ? "Script search paths updated" : error);
+	}
+
+	ProjectConfigEditResult EngineAPIImpl::SetProjectAssetDirectory(
+		const std::string& key,
+		const std::string& relativePath)
+	{
+		std::string error;
+		const bool success = Vans::VansProjectManager::Get().SetProjectAssetDirectory(
+			key,
+			relativePath,
+			error);
+		return BuildProjectConfigEditResult(success, success ? "Asset directory updated" : error);
+	}
+
+	ProjectConfigEditResult EngineAPIImpl::SaveProjectConfig()
+	{
+		std::string error;
+		const bool success = Vans::VansProjectManager::Get().SaveProjectConfig(error);
+		return BuildProjectConfigEditResult(success, success ? "Project config saved" : error);
 	}
 
 	float EngineAPIImpl::GetProjectPhysicsFixedTimeStep() const
@@ -2217,6 +2593,23 @@ namespace Vans::EditorAPI
 		if (!projectManager.IsProjectLoaded())
 			return 0.0f;
 		return projectManager.GetProjectSettings().GetFixedTimeStep();
+	}
+
+	ProjectConfigEditResult EngineAPIImpl::SetProjectPhysicsFixedTimeStep(float fixedTimeStep)
+	{
+		if (fixedTimeStep <= 0.0f)
+			return BuildProjectConfigEditResult(false, "Physics fixed timestep must be greater than zero");
+
+		auto& projectManager = Vans::VansProjectManager::Get();
+		if (!projectManager.IsProjectLoaded())
+			return BuildProjectConfigEditResult(false, "No project loaded");
+
+		projectManager.GetProjectSettings().SetFixedTimeStep(fixedTimeStep);
+		if (!projectManager.SaveProjectSettings())
+			return BuildProjectConfigEditResult(false, "Failed to save project physics settings");
+
+		SetRuntimePhysicsFixedTimeStep(fixedTimeStep);
+		return BuildProjectConfigEditResult(true, "Project physics settings saved");
 	}
 
 	bool EngineAPIImpl::SetCurrentProjectScenePath(const std::string& scenePath)
@@ -2264,7 +2657,7 @@ namespace Vans::EditorAPI
 
 		if (!cache.texture || cache.imageView != imageView || cache.sampler != sampler)
 		{
-			Vans::Editor::VansEditorTextureBridge::RemoveTexture(cache.texture);
+			RetireEditorTexture(device, cache.texture);
 			cache.imageView = imageView;
 			cache.sampler = sampler;
 			cache.texture = Vans::Editor::VansEditorTextureBridge::RegisterTexture(
@@ -2322,6 +2715,34 @@ namespace Vans::EditorAPI
 		}
 	}
 
+	CommandRecordingSettingsSnapshot EngineAPIImpl::GetCommandRecordingSettings() const
+	{
+		CommandRecordingSettingsSnapshot settings;
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (!device)
+			return settings;
+
+		settings.parallelEnabled = device->IsParallelCommandRecordingEnabled();
+		return settings;
+	}
+
+	void EngineAPIImpl::SetCommandRecordingSettings(bool parallelEnabled)
+	{
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (device)
+			device->SetParallelCommandRecordingEnabled(parallelEnabled);
+
+		auto& projectManager = Vans::VansProjectManager::Get();
+		if (projectManager.IsProjectLoaded())
+		{
+			projectManager.GetProjectSettings().SetCommandRecordingSettings(parallelEnabled);
+			if (!projectManager.SaveProjectSettings())
+			{
+				VANS_LOG_WARN("[EngineAPI] Failed to persist command recording project settings");
+			}
+		}
+	}
+
 	void EngineAPIImpl::SetSceneViewportExtent(std::uint32_t width, std::uint32_t height)
 	{
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
@@ -2337,6 +2758,7 @@ namespace Vans::EditorAPI
 	std::vector<RenderTexturePreview> EngineAPIImpl::QueryRenderTexturePreviews(RenderTextureFilter filter) const
 	{
 		std::vector<RenderTexturePreview> previews;
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
 		if (filter.category == "water")
 		{
 			RenderTexturePreview preview = BuildWaterTexturePreview(filter);
@@ -2359,44 +2781,44 @@ namespace Vans::EditorAPI
 
 		if (filter.category == "gbuffer")
 		{
-			previews.push_back(BuildImagePreview(100, "GBuffer 0 (Albedo + Roughness)", renderPassManager->GetGbuffer0(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-			previews.push_back(BuildImagePreview(101, "GBuffer 1 (Metallic + AO + MatID)", renderPassManager->GetGbuffer1(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-			previews.push_back(BuildImagePreview(102, "GBuffer 2 (WorldPos + LinearDepth)", renderPassManager->GetGbuffer2(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-			previews.push_back(BuildImagePreview(103, "Normal", renderPassManager->GetNormal(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			previews.push_back(BuildImagePreview(device, 100, "GBuffer 0 (Albedo + Roughness)", renderPassManager->GetGbuffer0(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			previews.push_back(BuildImagePreview(device, 101, "GBuffer 1 (Metallic + AO + MatID)", renderPassManager->GetGbuffer1(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			previews.push_back(BuildImagePreview(device, 102, "GBuffer 2 (WorldPos + LinearDepth)", renderPassManager->GetGbuffer2(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			previews.push_back(BuildImagePreview(device, 103, "Normal", renderPassManager->GetNormal(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
 			return previews;
 		}
 
 		if (filter.category == "water_gbuffer")
 		{
-			previews.push_back(BuildImagePreview(120, "WaterGBuf Normal", renderPassManager->GetWaterGBufNormal(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-			previews.push_back(BuildImagePreview(121, "WaterGBuf WorldPos+Depth (RGBA16F)", renderPassManager->GetWaterGBufLinearDepth(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			previews.push_back(BuildImagePreview(device, 120, "WaterGBuf Normal", renderPassManager->GetWaterGBufNormal(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			previews.push_back(BuildImagePreview(device, 121, "WaterGBuf WorldPos+Depth (RGBA16F)", renderPassManager->GetWaterGBufLinearDepth(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
 			return previews;
 		}
 
 		if (filter.category == "render_debug")
 		{
-			previews.push_back(BuildImagePreview(140, "Motion Vector", renderPassManager->GetMotionVector(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			previews.push_back(BuildImagePreview(device, 140, "Motion Vector", renderPassManager->GetMotionVector(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
 
 			auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 			auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
 			if (materialManager)
 			{
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSR_RESULT))
-					previews.push_back(BuildImagePreview(141, "SSR Resolve Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+					previews.push_back(BuildImagePreview(device, 141, "SSR Resolve Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSGI_RESULT))
-					previews.push_back(BuildImagePreview(142, "SSGI Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+					previews.push_back(BuildImagePreview(device, 142, "SSGI Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT))
-					previews.push_back(BuildImagePreview(143, "Fog Blend Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+					previews.push_back(BuildImagePreview(device, 143, "Fog Blend Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT))
-					previews.push_back(BuildImagePreview(144, "Screen Space Shadow", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+					previews.push_back(BuildImagePreview(device, 144, "Screen Space Shadow", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 			}
 			return previews;
 		}
 
 		if (filter.category == "hair_debug")
 		{
-			previews.push_back(BuildImagePreview(160, "Hair Color", renderPassManager->GetHairColor(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-			previews.push_back(BuildImagePreview(161, "Hair Deep Opacity", renderPassManager->GetHairDeepOpacity(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			previews.push_back(BuildImagePreview(device, 160, "Hair Color", renderPassManager->GetHairColor(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			previews.push_back(BuildImagePreview(device, 161, "Hair Deep Opacity", renderPassManager->GetHairDeepOpacity(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
 			return previews;
 		}
 
@@ -2414,6 +2836,7 @@ namespace Vans::EditorAPI
 	PunctualShadowDebugSnapshot EngineAPIImpl::GetPunctualShadowDebugSnapshot() const
 	{
 		PunctualShadowDebugSnapshot snapshot;
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		if (!scene)
 			return snapshot;
@@ -2542,6 +2965,7 @@ namespace Vans::EditorAPI
 			VansGraphics::VansMaterialManager::RT_PUNCTUAL_SHADOW_DEBUG_PREVIEW))
 		{
 			snapshot.atlasPreview = BuildImagePreview(
+				device,
 				190,
 				"Punctual Shadow Atlas",
 				texture->GetImage(),
@@ -2552,6 +2976,7 @@ namespace Vans::EditorAPI
 			VansGraphics::VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT))
 		{
 			snapshot.screenSpacePreview = BuildImagePreview(
+				device,
 				191,
 				"Screen-space Shadow Result",
 				texture->GetImage(),
@@ -2669,7 +3094,7 @@ namespace Vans::EditorAPI
 		return result;
 	}
 
-	RenderBackendDiagnostics EngineAPIImpl::GetRenderBackendDiagnostics() const
+	RenderBackendDiagnostics EngineAPIImpl::GetRenderBackendDiagnostics(bool includeRenderGraphSummary) const
 	{
 		RenderBackendDiagnostics diagnostics{};
 
@@ -2704,23 +3129,465 @@ namespace Vans::EditorAPI
 		diagnostics.textureUploadFailureCount =
 			VansGraphics::VansTexture::GetUploadFailureCount();
 
-		diagnostics.renderGraphSummary = device->GetCurrentRenderGraphDebugSummary();
-		diagnostics.available = !diagnostics.renderGraphSummary.empty();
-		if (!diagnostics.available)
-			return diagnostics;
-
-		diagnostics.compiledGraphValid =
-			diagnostics.renderGraphSummary.find("CompiledRenderGraph") != std::string::npos
-			&& ExtractSummaryCount(diagnostics.renderGraphSummary, "errors=") == 0;
-		diagnostics.featureAuditPassed =
-			SummaryContainsFlag(diagnostics.renderGraphSummary, "passed=", true);
-		diagnostics.framePlanPassCount =
-			ExtractSummaryCountAfter(diagnostics.renderGraphSummary, "RenderFramePlan", "passes=");
-		diagnostics.compiledResourceCount =
-			ExtractSummaryCountAfter(diagnostics.renderGraphSummary, "CompiledRenderGraph", "resources=");
-		diagnostics.barrierDependencyCount =
-			ExtractSummaryCountAfter(diagnostics.renderGraphSummary, "RenderGraphBarrierPlan", "dependencies=");
+		const VansGraphics::VansRenderGraphDiagnosticsSnapshot& graphDiagnostics =
+			device->GetCurrentRenderGraphDiagnostics();
+		diagnostics.available = graphDiagnostics.available;
+		diagnostics.compiledGraphValid = graphDiagnostics.compiledGraphValid;
+		diagnostics.featureAuditPassed = graphDiagnostics.featureAuditPassed;
+		diagnostics.framePlanPassCount = graphDiagnostics.framePlanPassCount;
+		diagnostics.compiledResourceCount = graphDiagnostics.compiledResourceCount;
+		diagnostics.barrierDependencyCount = graphDiagnostics.barrierDependencyCount;
+		diagnostics.renderGraphTopologyRevision = graphDiagnostics.topologyRevision;
+		diagnostics.renderGraphTopologyHash = graphDiagnostics.topologyHash;
+		diagnostics.renderGraphCompiledFrameNumber = graphDiagnostics.compiledFrameNumber;
+		if (includeRenderGraphSummary && diagnostics.available)
+		{
+			diagnostics.renderGraphSummary = device->GetCurrentRenderGraphDebugSummary();
+		}
 		return diagnostics;
+	}
+
+	PipelineRegistryStatsSnapshot EngineAPIImpl::GetPipelineRegistryStats() const
+	{
+		const VansGraphics::VansPipelineRegistryStats runtimeStats =
+			VansGraphics::VansPipelineRegistry::Get().GetStats();
+
+		auto convertMap = [](const VansGraphics::VansPipelineRegistryMapStats& stats)
+		{
+			PipelineRegistryMapStatsSnapshot snapshot{};
+			snapshot.bucketCount = static_cast<std::uint64_t>(stats.bucketCount);
+			snapshot.activeCount = static_cast<std::uint64_t>(stats.activeCount);
+			snapshot.expiredCount = static_cast<std::uint64_t>(stats.expiredCount);
+			return snapshot;
+		};
+
+		PipelineRegistryStatsSnapshot snapshot{};
+		snapshot.graphics = convertMap(runtimeStats.graphics);
+		snapshot.compute = convertMap(runtimeStats.compute);
+		snapshot.rayTracing = convertMap(runtimeStats.rayTracing);
+		snapshot.totalActiveCount = static_cast<std::uint64_t>(runtimeStats.GetTotalActiveCount());
+		snapshot.totalExpiredCount = static_cast<std::uint64_t>(runtimeStats.GetTotalExpiredCount());
+		return snapshot;
+	}
+
+	RenderDocStatusSnapshot EngineAPIImpl::GetRenderDocStatus() const
+	{
+		const VansGraphics::VansRenderDocStatus runtimeStatus =
+			VansGraphics::VansRenderDocCapture::Get().QueryStatus();
+
+		RenderDocStatusSnapshot snapshot{};
+		snapshot.available = runtimeStatus.available;
+		snapshot.targetControlConnected = runtimeStatus.targetControlConnected;
+		snapshot.frameCapturing = runtimeStatus.frameCapturing;
+		snapshot.apiValidationEnabled = runtimeStatus.apiValidationEnabled;
+		snapshot.referenceAllResources = runtimeStatus.referenceAllResources;
+		snapshot.apiMajor = runtimeStatus.apiMajor;
+		snapshot.apiMinor = runtimeStatus.apiMinor;
+		snapshot.apiPatch = runtimeStatus.apiPatch;
+		snapshot.captureCount = runtimeStatus.captureCount;
+		snapshot.capturePathTemplate = runtimeStatus.capturePathTemplate;
+		snapshot.lastCapturePath = runtimeStatus.lastCapturePath;
+		snapshot.message = runtimeStatus.message;
+		return snapshot;
+	}
+
+	void EngineAPIImpl::SetRenderDocAPIValidationEnabled(bool enabled)
+	{
+		VansGraphics::VansRenderDocCapture::Get().SetAPIValidationEnabled(enabled);
+	}
+
+	void EngineAPIImpl::SetRenderDocReferenceAllResources(bool enabled)
+	{
+		VansGraphics::VansRenderDocCapture::Get().SetReferenceAllResources(enabled);
+	}
+
+	void EngineAPIImpl::CaptureNextRenderDocFrame()
+	{
+		VansGraphics::VansRenderDocCapture::Get().CaptureNextFrame();
+	}
+
+	void EngineAPIImpl::OpenRenderDocUI()
+	{
+		VansGraphics::VansRenderDocCapture::Get().OpenReplayUI();
+	}
+
+	UIDocumentOpenResult EngineAPIImpl::OpenUIDocument(const std::string& path)
+	{
+		UIDocumentOpenResult result{};
+		result.sourcePath = path;
+		if (path.empty())
+		{
+			result.error = "UI document path is empty.";
+			return result;
+		}
+		if (!VansRuntime::VansUISystem::Get().IsInitialized())
+		{
+			result.error = "Runtime UI system is not initialized.";
+			return result;
+		}
+
+		std::shared_ptr<VansRuntime::VansUIDocument> document;
+		VansRuntime::VansUIHandleId screenHandle = VansRuntime::kInvalidUIHandle;
+		const std::filesystem::path sourcePath(path);
+		if (sourcePath.extension() == ".json" && path.find(".vui.") != std::string::npos)
+		{
+			auto screen = VansRuntime::VansUISystem::Get().LoadScreen(path);
+			if (screen)
+			{
+				screenHandle = screen->GetHandleId();
+				document = screen->GetDocument();
+			}
+		}
+		else
+		{
+			document = VansRuntime::VansUISystem::Get().LoadDocument(path);
+		}
+		if (!document)
+		{
+			result.error = "Failed to load UI document: " + path;
+			return result;
+		}
+
+		document->Show();
+		result.documentId = m_NextUIDocumentId++;
+		result.sourcePath = path;
+		result.success = true;
+		m_UIDocuments[result.documentId] = std::move(document);
+		m_UIDocumentSourcePaths[result.documentId] = path;
+		if (screenHandle != VansRuntime::kInvalidUIHandle)
+			m_UIScreenPreviewHandles[result.documentId] = screenHandle;
+		return result;
+	}
+
+	void EngineAPIImpl::CloseUIDocument(UIDocumentId documentId)
+	{
+		DestroyUIPreviewsForDocument(documentId);
+
+		const auto it = m_UIDocuments.find(documentId);
+		if (it == m_UIDocuments.end())
+			return;
+		const auto screenIt = m_UIScreenPreviewHandles.find(documentId);
+		if (screenIt != m_UIScreenPreviewHandles.end())
+		{
+			VansRuntime::VansUISystem::Get().CloseScreen(screenIt->second);
+			m_UIScreenPreviewHandles.erase(screenIt);
+		}
+		else if (it->second)
+		{
+			VansRuntime::VansUISystem::Get().UnloadDocument(it->second);
+		}
+		m_UIDocuments.erase(it);
+		m_UIDocumentSourcePaths.erase(documentId);
+	}
+
+	void EngineAPIImpl::SetUIDocumentVisible(UIDocumentId documentId, bool visible)
+	{
+		const auto it = m_UIDocuments.find(documentId);
+		if (it == m_UIDocuments.end() || !it->second)
+			return;
+		if (visible)
+			it->second->Show();
+		else
+			it->second->Hide();
+	}
+
+	UIDocumentSnapshot EngineAPIImpl::GetUIDocumentSnapshot(UIDocumentId documentId) const
+	{
+		UIDocumentSnapshot snapshot{};
+		const auto it = m_UIDocuments.find(documentId);
+		if (it == m_UIDocuments.end() || !it->second)
+			return snapshot;
+
+		snapshot.valid = true;
+		snapshot.documentId = documentId;
+		const auto sourceIt = m_UIDocumentSourcePaths.find(documentId);
+		snapshot.sourcePath = sourceIt != m_UIDocumentSourcePaths.end()
+			? sourceIt->second
+			: it->second->GetSourcePath();
+		snapshot.visible = it->second->IsVisible();
+		if (snapshot.sourcePath.find(".vui.") != std::string::npos)
+		{
+			VansRuntime::VansUIScreenConfig config;
+			std::vector<std::string> diagnostics;
+			if (ReadEditorUIScreenConfig(snapshot.sourcePath, config, diagnostics))
+			{
+				snapshot.assetKind = "Screen";
+				snapshot.name = config.name;
+				snapshot.xamlPath = config.xamlPath;
+				snapshot.layer = UIScreenLayerToString(config.layer);
+				snapshot.zOrder = config.zOrder;
+				snapshot.themes = config.themes;
+				snapshot.tokens = config.tokens;
+				snapshot.localization = config.localization;
+				snapshot.dependencies = config.dependencies;
+				snapshot.performanceBudget.maxDrawCalls = config.performanceBudget.maxDrawCalls;
+				snapshot.performanceBudget.maxTextureMemoryMB = config.performanceBudget.maxTextureMemoryMB;
+				snapshot.performanceBudget.maxLayoutMs = config.performanceBudget.maxLayoutMs;
+				snapshot.performanceBudget.maxBindingUpdatesPerFrame =
+					config.performanceBudget.maxBindingUpdatesPerFrame;
+				snapshot.performanceBudget.maxAnimations = config.performanceBudget.maxAnimations;
+				for (const VansRuntime::VansUIScreenEventBindingConfig& event : config.events)
+				{
+					snapshot.events.push_back(UIScreenEventSummary{
+						event.source,
+						event.eventName,
+						event.action
+					});
+				}
+			}
+		}
+		return snapshot;
+	}
+
+	UIDiagnosticsSnapshot EngineAPIImpl::GetUIDiagnostics(UIDocumentId documentId) const
+	{
+		UIDiagnosticsSnapshot diagnostics{};
+		diagnostics.available = true;
+
+		const UIDocumentSnapshot snapshot = GetUIDocumentSnapshot(documentId);
+		if (!snapshot.valid)
+		{
+			diagnostics.messages.push_back("No UI document is loaded.");
+			return diagnostics;
+		}
+
+		diagnostics.messages.push_back("Document: " + snapshot.sourcePath);
+		diagnostics.messages.push_back(snapshot.visible ? "Visibility: visible" : "Visibility: hidden");
+		diagnostics.messages.push_back("Preview texture: offscreen render target available.");
+		AppendScreenConfigDiagnostics(snapshot.sourcePath, diagnostics);
+		return diagnostics;
+	}
+
+	void EngineAPIImpl::DestroyUIPreviewResource(UIPreviewGpuResource& resource)
+	{
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		VkDevice logicalDevice = device ? device->GetLogicDevice() : VK_NULL_HANDLE;
+
+		RetireEditorTexture(device, resource.texture);
+		resource.texture = nullptr;
+
+		if (logicalDevice != VK_NULL_HANDLE)
+		{
+			if (resource.framebuffer != VK_NULL_HANDLE)
+			{
+				VansGraphics::vkDestroyFramebuffer(logicalDevice, resource.framebuffer, nullptr);
+				resource.framebuffer = VK_NULL_HANDLE;
+			}
+			if (resource.renderPass != VK_NULL_HANDLE)
+			{
+				VansGraphics::vkDestroyRenderPass(logicalDevice, resource.renderPass, nullptr);
+				resource.renderPass = VK_NULL_HANDLE;
+			}
+			resource.colorImage.DestroyVulkanImage(logicalDevice);
+		}
+	}
+
+	void EngineAPIImpl::DestroyUIPreviewsForDocument(UIDocumentId documentId)
+	{
+		for (auto it = m_UIPreviewResources.begin(); it != m_UIPreviewResources.end();)
+		{
+			if (it->second.documentId == documentId)
+			{
+				DestroyUIPreviewResource(it->second);
+				it = m_UIPreviewResources.erase(it);
+			}
+			else
+			{
+				++it;
+			}
+		}
+	}
+
+	void EngineAPIImpl::DestroyAllUIPreviewResources()
+	{
+		for (auto& preview : m_UIPreviewResources)
+			DestroyUIPreviewResource(preview.second);
+		m_UIPreviewResources.clear();
+	}
+
+	void EngineAPIImpl::CloseAllUIDocuments()
+	{
+		std::vector<UIDocumentId> documentIds;
+		documentIds.reserve(m_UIDocuments.size());
+		for (const auto& document : m_UIDocuments)
+			documentIds.push_back(document.first);
+
+		for (UIDocumentId documentId : documentIds)
+			CloseUIDocument(documentId);
+
+		DestroyAllUIPreviewResources();
+		m_UIDocuments.clear();
+		m_UIDocumentSourcePaths.clear();
+		m_UIScreenPreviewHandles.clear();
+	}
+
+	UIPreviewResult EngineAPIImpl::RequestUIPreview(const UIPreviewRequest& request)
+	{
+		UIPreviewResult result{};
+		const UIDocumentSnapshot snapshot = GetUIDocumentSnapshot(request.documentId);
+		if (!snapshot.valid)
+		{
+			result.message = "No valid UI document for preview request.";
+			return result;
+		}
+
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (!device)
+		{
+			result.message = "Runtime render device is not available.";
+			return result;
+		}
+
+		const auto docIt = m_UIDocuments.find(request.documentId);
+		if (docIt == m_UIDocuments.end() || !docIt->second)
+		{
+			result.message = "UI document handle is no longer valid.";
+			return result;
+		}
+
+		const std::uint32_t width = std::max<std::uint32_t>(1, request.width);
+		const std::uint32_t height = std::max<std::uint32_t>(1, request.height);
+		const VkFormat previewFormat = VK_FORMAT_R8G8B8A8_UNORM;
+
+		UIPreviewGpuResource resource{};
+		resource.documentId = request.documentId;
+		resource.width = width;
+		resource.height = height;
+
+		VkDevice logicalDevice = device->GetLogicDevice();
+		VkExtent3D extent{ width, height, 1 };
+		if (!resource.colorImage.CreateVulkanImage(
+			logicalDevice,
+			extent,
+			previewFormat,
+			1,
+			1,
+			VK_IMAGE_TYPE_2D,
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			VK_SAMPLE_COUNT_1_BIT,
+			false,
+			false,
+			true,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE))
+		{
+			result.message = "Failed to create UI preview color target.";
+			return result;
+		}
+
+		std::string error;
+		if (!CreateUIPreviewRenderPass(logicalDevice, previewFormat, resource.renderPass, error))
+		{
+			DestroyUIPreviewResource(resource);
+			result.message = error;
+			return result;
+		}
+
+		VkImageView attachment = resource.colorImage.GetImageView();
+		VkFramebufferCreateInfo framebufferInfo{};
+		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+		framebufferInfo.renderPass = resource.renderPass;
+		framebufferInfo.attachmentCount = 1;
+		framebufferInfo.pAttachments = &attachment;
+		framebufferInfo.width = width;
+		framebufferInfo.height = height;
+		framebufferInfo.layers = 1;
+		if (VansGraphics::vkCreateFramebuffer(logicalDevice, &framebufferInfo, nullptr, &resource.framebuffer) != VK_SUCCESS)
+		{
+			DestroyUIPreviewResource(resource);
+			result.message = "Failed to create UI preview framebuffer.";
+			return result;
+		}
+
+		auto& commandBuffer = device->GetImmediateGraphicsCommandBuffer();
+		commandBuffer.ResetCommandBuffer(false);
+		if (!commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			DestroyUIPreviewResource(resource);
+			result.message = "Failed to begin UI preview command buffer.";
+			return result;
+		}
+
+		VkCommandBuffer rawCmd = commandBuffer.GetVKCommandBuffer();
+		RecordPreviewImageBarrier(
+			rawCmd,
+			resource.colorImage.GetImage(),
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			0,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+		resource.colorImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+		docIt->second->SetSize(width, height);
+		VansRuntime::VansUISystem::Get().PrepareDocumentPreview(
+			docIt->second,
+			rawCmd,
+			0.0);
+
+		VkClearValue clearValue{};
+		clearValue.color = { { 0.02f, 0.02f, 0.035f, 1.0f } };
+		VkRenderPassBeginInfo beginInfo{};
+		beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		beginInfo.renderPass = resource.renderPass;
+		beginInfo.framebuffer = resource.framebuffer;
+		beginInfo.renderArea.offset = { 0, 0 };
+		beginInfo.renderArea.extent = { width, height };
+		beginInfo.clearValueCount = 1;
+		beginInfo.pClearValues = &clearValue;
+		commandBuffer.BeginRenderPass(beginInfo);
+		VansRuntime::VansUISystem::Get().RenderDocumentPreviewPass(
+			docIt->second,
+			resource.renderPass,
+			1);
+		commandBuffer.EndRenderPass();
+		resource.colorImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+		if (!commandBuffer.EndCommandBufferRecord())
+		{
+			DestroyUIPreviewResource(resource);
+			result.message = "Failed to record UI preview command buffer.";
+			return result;
+		}
+
+		VkQueue queue = device->GetGraphicsQueue();
+		const bool submitted = VansGraphics::VansVKCommandBuffer::SubmitCommands(
+			queue,
+			logicalDevice,
+			{ rawCmd },
+			{},
+			{},
+			commandBuffer.m_CommandBufferFinishSubmitFence);
+		if (!submitted)
+		{
+			DestroyUIPreviewResource(resource);
+			result.message = "Failed to submit UI preview command buffer.";
+			return result;
+		}
+
+		resource.texture = Vans::Editor::VansEditorTextureBridge::RegisterTexture(
+			resource.colorImage.GetSampler(),
+			resource.colorImage.GetImageView(),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		if (!resource.texture)
+		{
+			DestroyUIPreviewResource(resource);
+			result.message = "Failed to register UI preview texture for editor.";
+			return result;
+		}
+
+		result.previewId = m_NextUIPreviewId++;
+		result.texture = resource.texture;
+		result.success = true;
+		result.message = "Offscreen UI preview rendered.";
+		m_UIPreviewResources.emplace(result.previewId, std::move(resource));
+		return result;
+	}
+
+	EditorTextureHandle EngineAPIImpl::GetUIPreviewTexture(UIPreviewId id) const
+	{
+		const auto it = m_UIPreviewResources.find(id);
+		return it != m_UIPreviewResources.end() ? it->second.texture : nullptr;
 	}
 
 	void EngineAPIImpl::RebuildReflectionProbeResources()
@@ -2758,6 +3625,7 @@ namespace Vans::EditorAPI
 		preview.name = "Reflection Probe";
 
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
 		if (!scene)
 			return preview;
 
@@ -2783,7 +3651,7 @@ namespace Vans::EditorAPI
 		VkSampler sampler = texture->GetImage().GetSampler();
 		if (!cache.texture || cache.sourceTexture != texture || cache.imageView != imageView || cache.sampler != sampler)
 		{
-			Vans::Editor::VansEditorTextureBridge::RemoveTexture(cache.texture);
+			RetireEditorTexture(device, cache.texture);
 			cache.sourceTexture = texture;
 			cache.imageView = imageView;
 			cache.sampler = sampler;
@@ -2965,8 +3833,22 @@ namespace Vans::EditorAPI
 		stride = std::clamp(stride, 1u, maxGridDimension);
 		exposure = std::max(exposure, 0.001f);
 
-		const VkDeviceSize textureBytes =
-			static_cast<VkDeviceSize>(gridDimensions.x) * gridDimensions.y * gridDimensions.z * 4u * sizeof(float);
+		struct GISampleCoord
+		{
+			std::uint32_t x = 0;
+			std::uint32_t y = 0;
+			std::uint32_t z = 0;
+		};
+		std::vector<GISampleCoord> sampleCoords;
+		for (std::uint32_t z = 0; z < gridDimensions.z; z += stride)
+		for (std::uint32_t y = 0; y < gridDimensions.y; y += stride)
+		for (std::uint32_t x = 0; x < gridDimensions.x; x += stride)
+			sampleCoords.push_back({ x, y, z });
+
+		const VkDeviceSize sampleBytes = 4u * sizeof(float);
+		const VkDeviceSize readbackBytes = std::max<VkDeviceSize>(
+			1,
+			static_cast<VkDeviceSize>(sampleCoords.size()) * sampleBytes);
 		VansGraphics::VansVKBuffer readR;
 		VansGraphics::VansVKBuffer readG;
 		VansGraphics::VansVKBuffer readB;
@@ -2982,9 +3864,9 @@ namespace Vans::EditorAPI
 
 		const VkBufferUsageFlags readUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 		const VkMemoryPropertyFlags readMemory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-		if (!readR.CreatVulkanBuffer(device->GetLogicDevice(), textureBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
-			!readG.CreatVulkanBuffer(device->GetLogicDevice(), textureBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
-			!readB.CreatVulkanBuffer(device->GetLogicDevice(), textureBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
+		if (!readR.CreatVulkanBuffer(device->GetLogicDevice(), readbackBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
+			!readG.CreatVulkanBuffer(device->GetLogicDevice(), readbackBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
+			!readB.CreatVulkanBuffer(device->GetLogicDevice(), readbackBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
 			!readR.PersistentMap() || !readG.PersistentMap() || !readB.PersistentMap())
 		{
 			m_GIProbeDebugSnapshot.status = "Failed to allocate GI SH readback buffers.";
@@ -2992,10 +3874,23 @@ namespace Vans::EditorAPI
 			return m_GIProbeDebugSnapshot;
 		}
 
-		std::vector<VkBufferImageCopy> regions(1);
-		regions[0].bufferOffset = 0;
-		regions[0].imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-		regions[0].imageExtent = { gridDimensions.x, gridDimensions.y, gridDimensions.z };
+		std::vector<VkBufferImageCopy> regions;
+		regions.reserve(sampleCoords.size());
+		for (std::size_t i = 0; i < sampleCoords.size(); ++i)
+		{
+			const GISampleCoord& sample = sampleCoords[i];
+			VkBufferImageCopy region{};
+			region.bufferOffset = static_cast<VkDeviceSize>(i) * sampleBytes;
+			region.bufferRowLength = 0;
+			region.bufferImageHeight = 0;
+			region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			region.imageOffset = {
+				static_cast<int32_t>(sample.x),
+				static_cast<int32_t>(sample.y),
+				static_cast<int32_t>(sample.z) };
+			region.imageExtent = { 1, 1, 1 };
+			regions.push_back(region);
+		}
 
 		VansGraphics::VansVKCommandBuffer& commandBuffer = device->GetImmediateGraphicsCommandBuffer();
 		if (!commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
@@ -3064,9 +3959,9 @@ namespace Vans::EditorAPI
 			return m_GIProbeDebugSnapshot;
 		}
 
-		readR.InvalidateMappedRange(0, textureBytes);
-		readG.InvalidateMappedRange(0, textureBytes);
-		readB.InvalidateMappedRange(0, textureBytes);
+		readR.InvalidateMappedRange(0, readbackBytes);
+		readG.InvalidateMappedRange(0, readbackBytes);
+		readB.InvalidateMappedRange(0, readbackBytes);
 
 		const float* rData = static_cast<const float*>(readR.GetMappedPtr());
 		const float* gData = static_cast<const float*>(readG.GetMappedPtr());
@@ -3090,12 +3985,11 @@ namespace Vans::EditorAPI
 		m_GIProbeDebugSnapshot.status = "Captured GI probe SH.";
 		m_GIProbeDebugSnapshot.probes.clear();
 
-		for (std::uint32_t z = 0; z < gridDimensions.z; z += stride)
-		for (std::uint32_t y = 0; y < gridDimensions.y; y += stride)
-		for (std::uint32_t x = 0; x < gridDimensions.x; x += stride)
+		m_GIProbeDebugSnapshot.probes.reserve(sampleCoords.size());
+		for (std::size_t i = 0; i < sampleCoords.size(); ++i)
 		{
-			const std::size_t texel = (static_cast<std::size_t>(z) * gridDimensions.x * gridDimensions.y +
-				static_cast<std::size_t>(y) * gridDimensions.x + x) * 4u;
+			const GISampleCoord& sample = sampleCoords[i];
+			const std::size_t texel = i * 4u;
 			const glm::vec3 l0(std::max(rData[texel + 0], 0.0f), std::max(gData[texel + 0], 0.0f), std::max(bData[texel + 0], 0.0f));
 			const glm::vec3 l1(
 				std::abs(rData[texel + 1]) + std::abs(rData[texel + 2]) + std::abs(rData[texel + 3]),
@@ -3105,7 +3999,7 @@ namespace Vans::EditorAPI
 			const float l1Energy = std::max({ l1.r, l1.g, l1.b });
 			GIProbeDebugEntrySnapshot entry;
 			entry.position = ToEditorVec3(
-				volumeMin + (glm::vec3(x, y, z) + glm::vec3(0.5f)) * gi.probeSpacingAxes);
+				volumeMin + (glm::vec3(sample.x, sample.y, sample.z) + glm::vec3(0.5f)) * gi.probeSpacingAxes);
 			entry.l0Diffuse = ToEditorVec3(l0 * 0.28209479f * exposure);
 			entry.l1Ratio = std::clamp(l1Energy / l0Energy, 0.0f, 1.0f);
 			m_GIProbeDebugSnapshot.probes.push_back(entry);
@@ -3118,6 +4012,42 @@ namespace Vans::EditorAPI
 	GIProbeDebugSnapshot EngineAPIImpl::GetGIProbeDebugSnapshot() const
 	{
 		return m_GIProbeDebugSnapshot;
+	}
+
+	MainCameraHiZCullDebugSnapshot EngineAPIImpl::GetMainCameraHiZCullDebugSnapshot() const
+	{
+		MainCameraHiZCullDebugSnapshot snapshot;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene)
+			return snapshot;
+
+		const VansGraphics::VansMainCameraVisibilityStats& stats = scene->GetMainCameraVisibilityStats();
+		snapshot.available = true;
+		snapshot.enabled = stats.enabled;
+		snapshot.historyValid = stats.historyValid;
+		snapshot.candidateCount = stats.candidateCount;
+		snapshot.frustumVisibleCount = stats.frustumVisibleCount;
+		snapshot.hizCulledCount = stats.hizCulledCount;
+		snapshot.forcedVisibleCount = stats.forcedVisibleCount;
+
+		const auto& culledNodes = scene->GetMainCameraHiZCulledDebugNodes();
+		snapshot.culledNodes.reserve(culledNodes.size());
+		for (const VansGraphics::VansMainCameraHiZCulledNodeDebug& source : culledNodes)
+		{
+			if (!source.bounds.IsValid())
+				continue;
+
+			MainCameraHiZCulledNodeSnapshot node;
+			node.name = source.nodeName.empty() ? std::string("<unnamed>") : source.nodeName;
+			node.cullClass = ToMainCameraCullClassLabel(source.cullClass);
+			node.center = ToEditorVec3(source.bounds.obb.center);
+			node.axisXHalf = ToEditorVec3(source.bounds.obb.axisX * source.bounds.obb.halfExtent.x);
+			node.axisYHalf = ToEditorVec3(source.bounds.obb.axisY * source.bounds.obb.halfExtent.y);
+			node.axisZHalf = ToEditorVec3(source.bounds.obb.axisZ * source.bounds.obb.halfExtent.z);
+			snapshot.culledNodes.push_back(std::move(node));
+		}
+
+		return snapshot;
 	}
 
 	RenderTexturePreview EngineAPIImpl::RequestGIRTPreview(
@@ -3153,6 +4083,7 @@ namespace Vans::EditorAPI
 		};
 		const std::uint32_t safeMode = std::min<std::uint32_t>(mode, 11u);
 		return BuildImagePreview(
+			device,
 			180,
 			kPreviewNames[safeMode],
 			texture->GetImage(),
@@ -3239,7 +4170,7 @@ namespace Vans::EditorAPI
 		auto build = [&](RenderTextureId id, const char* name, VansGraphics::VansVKImage& image, std::uint32_t layer)
 		{
 			return BuildLayerImagePreview(
-				device->GetLogicDevice(),
+				device,
 				id,
 				name,
 				image,
@@ -3493,6 +4424,56 @@ namespace Vans::EditorAPI
 		return result;
 	}
 
+	RuntimeEntityReparentResult EngineAPIImpl::ReparentRuntimeEntity(const RuntimeEntityReparentRequest& request)
+	{
+		RuntimeEntityReparentResult result;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene)
+		{
+			result.message = "Runtime scene is not available";
+			return result;
+		}
+		if (request.childEntityGuid.empty())
+		{
+			result.message = "Child entity id is empty";
+			return result;
+		}
+		if (request.childEntityGuid == request.newParentEntityGuid)
+		{
+			result.message = "An entity cannot be parented to itself";
+			return result;
+		}
+
+		const std::uint32_t childTransformId = ResolveRuntimeTransformId(scene, request.childEntityGuid);
+		if (childTransformId == UINT32_MAX)
+		{
+			result.message = "Child runtime transform was not found";
+			return result;
+		}
+
+		if (request.newParentEntityGuid.empty())
+		{
+			scene->ClearTransformParentID(childTransformId);
+			VansGraphics::VansTransformStore::TransformIDToTransformDirty[childTransformId] = true;
+			result.applied = true;
+			result.message = "Runtime entity parent cleared";
+			return result;
+		}
+
+		const std::uint32_t parentTransformId = ResolveRuntimeTransformId(scene, request.newParentEntityGuid);
+		if (parentTransformId == UINT32_MAX)
+		{
+			result.message = "Parent runtime transform was not found";
+			return result;
+		}
+
+		scene->SetTransformParentID(childTransformId, parentTransformId);
+		VansGraphics::VansTransformStore::TransformIDToTransformDirty[childTransformId] = true;
+		result.applied = true;
+		result.message = "Runtime entity reparented";
+		return result;
+	}
+
 	std::string EngineAPIImpl::MakeUniqueRuntimeEntityName(const std::string& baseName) const
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
@@ -3533,7 +4514,7 @@ namespace Vans::EditorAPI
 		if (scene->IsSceneReady() || scene->IsSceneSwitching())
 		{
 			device->WaitForDevice();
-			ClearEditorRenderTexturePreviewCaches(device->GetLogicDevice());
+			ClearEditorRenderTexturePreviewCaches(device);
 		}
 
 		const VansGraphics::VansSceneLoadMode runtimeMode =
@@ -3553,7 +4534,7 @@ namespace Vans::EditorAPI
 		if (auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device))
 		{
 			device->WaitForDevice();
-			ClearEditorRenderTexturePreviewCaches(device->GetLogicDevice());
+			ClearEditorRenderTexturePreviewCaches(device);
 		}
 
 		if (scene->IsSceneReady() || scene->IsSceneSwitching())
@@ -4071,12 +5052,11 @@ namespace Vans::EditorAPI
 		if (m_PlayState == state)
 			return;
 
+		const EnginePlayState previousState = m_PlayState;
 		m_PlayState = state;
-		for (IEngineEventListener* listener : m_Listeners)
-		{
-			if (listener)
-				listener->OnPlayStateChanged(state);
-		}
+		Vans::VansInputManager::Get().SetCursorCaptureAllowed(state == EnginePlayState::Play);
+		Vans::VansEventBus::Get().PublishNow(
+			VansEditorPlayStateChangedEvent{ previousState, state });
 	}
 
 	EntityId EngineAPIImpl::RaycastScene(const Ray&) const
@@ -4135,9 +5115,7 @@ namespace Vans::EditorAPI
 			}
 		};
 
-		for (auto* node : scene->GetOpaqueRenderNodes())
-			testNode(node);
-		for (auto* node : scene->GetTransparentRenderNodes())
+		for (auto* node : scene->CollectSSBOManagedRenderNodes())
 			testNode(node);
 
 		if (!bestNode)
@@ -4145,6 +5123,8 @@ namespace Vans::EditorAPI
 
 		if (!bestNode->m_EntityGuid.empty())
 			return bestNode->m_EntityGuid;
+		if (!bestNode->m_ParentEntityGuid.empty())
+			return bestNode->m_ParentEntityGuid;
 
 		for (VansScriptObject* obj : scene->GetSceneObjects())
 		{
@@ -4341,7 +5321,9 @@ namespace Vans::EditorAPI
 
 	void EngineAPIImpl::SetupRuntimeScriptProjectVenv(const std::string& projectRootPath)
 	{
-		(void)projectRootPath;
+		if (!m_ScriptContext)
+			m_ScriptContext = &GetDefaultScriptContext();
+		m_ScriptContext->SetActiveProjectRoot(projectRootPath);
 	}
 
 	void EngineAPIImpl::ReloadRuntimeScripts()
@@ -4392,20 +5374,5 @@ namespace Vans::EditorAPI
 		m_AllowNextCommandMerge = false;
 	}
 
-	void EngineAPIImpl::Subscribe(IEngineEventListener* listener)
-	{
-		if (!listener)
-			return;
-
-		if (std::find(m_Listeners.begin(), m_Listeners.end(), listener) == m_Listeners.end())
-			m_Listeners.push_back(listener);
-	}
-
-	void EngineAPIImpl::Unsubscribe(IEngineEventListener* listener)
-	{
-		m_Listeners.erase(
-			std::remove(m_Listeners.begin(), m_Listeners.end(), listener),
-			m_Listeners.end());
-	}
 }
 

@@ -1,5 +1,6 @@
 ﻿#include "VansVKSurface.h"
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "VansVKCommandBuffer.h"
 #include "VansVKMemoryManager.h"
 #include "../../Util/VansLog.h"
 #include <iostream>
@@ -212,23 +213,20 @@ namespace VansGraphics
 		return true;
 	}
 
-	bool VansVKSurface::AcquireVulkanSwapChainImages(VkDevice& logical_device, uint32_t& image_index, VkSemaphore& image_acquired_semaphore)
+	VkResult VansVKSurface::AcquireVulkanSwapChainImage(VkDevice& logical_device, uint32_t& image_index, VkSemaphore& image_acquired_semaphore)
 	{
-		//it may not reture immediately , set time out to 2s
-		//We need to wait for all previously submitted operations that referenced this image to finish
-		//用于在GPU上同步，image是否quri完成
-		VkResult result = VansGraphics::vkAcquireNextImageKHR(logical_device, m_VansVKSwapChain, 2000000000, image_acquired_semaphore, VK_NULL_HANDLE, &image_index);
-		switch (result) 
-		{
-		case VK_SUCCESS:
-		case VK_SUBOPTIMAL_KHR:
-			return true;
-		default:
-			return false;
-		}
+		// Return the exact Vulkan result. The caller may wait on the acquire
+		// semaphore only when this call actually acquired an image.
+		return VansGraphics::vkAcquireNextImageKHR(
+			logical_device,
+			m_VansVKSwapChain,
+			2000000000,
+			image_acquired_semaphore,
+			VK_NULL_HANDLE,
+			&image_index);
 	}
 
-	bool VansVKSurface::PresentImage(VkDevice& logical_device,VkQueue& queue, const std::vector<VkSemaphore>& rendering_semaphores, uint32_t image_index)
+	VkResult VansVKSurface::PresentImage(VkQueue& queue, const std::vector<VkSemaphore>& rendering_semaphores, uint32_t image_index)
 	{
 
 		VkPresentInfoKHR present_info =
@@ -243,15 +241,34 @@ namespace VansGraphics
 			 nullptr
 		};
 
-		VkResult result = VansGraphics::vkQueuePresentKHR(queue, &present_info);
-		switch (result) {
-		case VK_SUCCESS:
-			return true;
-		default:
-			return false;
-		}
+		return VansGraphics::vkQueuePresentKHR(queue, &present_info);
+	}
 
-		return true;
+	void VansVKSurface::RecordSwapChainImageBarrier(
+		VansVKCommandBuffer& command_buffer,
+		VkPipelineStageFlags src_stage,
+		VkPipelineStageFlags dst_stage,
+		const ImageTransition& transition)
+	{
+		VkImageMemoryBarrier image_memory_barrier = {};
+		image_memory_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		image_memory_barrier.srcAccessMask = transition.CurrentAccess;
+		image_memory_barrier.dstAccessMask = transition.NewAccess;
+		image_memory_barrier.oldLayout = transition.CurrentLayout;
+		image_memory_barrier.newLayout = transition.NewLayout;
+		image_memory_barrier.srcQueueFamilyIndex = transition.CurrentQueueFamily;
+		image_memory_barrier.dstQueueFamilyIndex = transition.NewQueueFamily;
+		image_memory_barrier.image = transition.Image;
+		image_memory_barrier.subresourceRange =
+		{
+			transition.Aspect,
+			0,
+			1,
+			0,
+			1
+		};
+
+		command_buffer.PipelineBarrier(src_stage, dst_stage, {}, {}, { image_memory_barrier });
 	}
 
 	bool VansVKSurface::DestroyVulkanSwapChain(VkDevice& logical_device)
@@ -306,61 +323,6 @@ namespace VansGraphics
 			m_VansVKPresentSurface = VK_NULL_HANDLE;
 		}
 		return true;
-	}
-
-	void VansVKSurface::SetSwapChainImageBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, ImageTransition transition,int swap_chain_index)
-	{
-		m_SwapChainImageMemoryBarriers.clear();
-		if (swap_chain_index >= 0)
-		{
-			m_SwapChainImageMemoryBarriers.push_back(
-				{
-					VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-					nullptr,
-					transition.CurrentAccess,
-					transition.NewAccess,
-					transition.CurrentLayout,
-					transition.NewLayout,
-					transition.CurrentQueueFamily,
-					transition.NewQueueFamily,
-					m_VansVKSwapChainImages[swap_chain_index],
-					{
-						transition.Aspect,
-						0,
-						VK_REMAINING_MIP_LEVELS,
-						0,
-						VK_REMAINING_ARRAY_LAYERS
-					}
-				});
-		}
-		else
-		{
-			for (VkImage image : m_VansVKSwapChainImages)
-			{
-				m_SwapChainImageMemoryBarriers.push_back(
-					{
-						VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-						nullptr,
-						transition.CurrentAccess,
-						transition.NewAccess,
-						transition.CurrentLayout,
-						transition.NewLayout,
-						transition.CurrentQueueFamily,
-						transition.NewQueueFamily,
-						image,
-						{
-							transition.Aspect,
-							0,
-							VK_REMAINING_MIP_LEVELS,
-							0,
-							VK_REMAINING_ARRAY_LAYERS
-						}
-					});
-			}
-		}
-
-		VansVKMemoryManager::GetInstance()->SetImageMemoryBarrier(m_SwapChainImageMemoryBarriers, generating_stages, consuming_stages);
-		
 	}
 
 	void VansVKSurface::CreateSwapChainCreateParams()

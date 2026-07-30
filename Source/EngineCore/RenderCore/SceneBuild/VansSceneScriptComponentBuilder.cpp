@@ -5,6 +5,24 @@
 namespace VansGraphics
 {
 
+void VansSceneScriptComponentBuilder::BuildUIControllers(
+	VansScriptObject& object,
+	const VansScriptUIComponentDescriptors& uiComponents)
+{
+	for (const VansScriptUIComponentDescriptor& descriptor : uiComponents)
+	{
+		auto* uiComp = new VansScriptUIComponent();
+		uiComp->m_ComponentGuid = descriptor.componentGuid;
+		uiComp->m_AutoOpenScreens = descriptor.autoOpenScreens;
+		uiComp->m_PreloadScreens = descriptor.preloadScreens;
+		uiComp->m_Enabled = false;
+
+		object.AddComponent(uiComp);
+		if (descriptor.enabled)
+			uiComp->SetEnabled(true);
+	}
+}
+
 void VansSceneScriptComponentBuilder::BuildScripts(
 	VansScriptObject& object,
 	const VansScriptComponentDescriptors& scriptComponents)

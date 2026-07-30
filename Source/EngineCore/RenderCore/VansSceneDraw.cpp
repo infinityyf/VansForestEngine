@@ -1,6 +1,7 @@
 #include "VansScene.h"
 #include "../Configration/VansConfigration.h"
 
+#include "VansMainCameraVisibility.h"
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "TerrainCore/VansTerrain.h"
@@ -14,86 +15,6 @@
 #include <algorithm>
 #include <cmath>
 
-namespace
-{
-    bool TryGetStaticNodeWorldBounds(
-        VansGraphics::VansRenderNode* node,
-        VansGraphics::VansShadowAABB& bounds)
-    {
-        // Bind-pose mesh bounds are not conservative for animated vertices.
-        // Keep skinned nodes visible until animation supplies dynamic bounds.
-        if (node == nullptr || node->m_Mesh == nullptr || node->m_HasSkeletonBone ||
-            !node->m_Mesh->HasLocalBounds())
-        {
-            return false;
-        }
-
-        const glm::vec3 localMin = node->m_Mesh->GetLocalBoundsMin();
-        const glm::vec3 localMax = node->m_Mesh->GetLocalBoundsMax();
-        const glm::vec3 localCenter = (localMin + localMax) * 0.5f;
-        const glm::vec3 localExtent = (localMax - localMin) * 0.5f;
-        const glm::mat4 transform = node->GetTransformMatrix();
-
-        const glm::vec3 worldCenter = glm::vec3(transform * glm::vec4(localCenter, 1.0f));
-        const glm::vec3 worldExtent(
-            std::abs(transform[0][0]) * localExtent.x +
-                std::abs(transform[1][0]) * localExtent.y +
-                std::abs(transform[2][0]) * localExtent.z,
-            std::abs(transform[0][1]) * localExtent.x +
-                std::abs(transform[1][1]) * localExtent.y +
-                std::abs(transform[2][1]) * localExtent.z,
-            std::abs(transform[0][2]) * localExtent.x +
-                std::abs(transform[1][2]) * localExtent.y +
-                std::abs(transform[2][2]) * localExtent.z);
-
-        bounds.min = worldCenter - worldExtent;
-        bounds.max = worldCenter + worldExtent;
-        return bounds.IsValid();
-    }
-
-    bool BoundsIntersectsClipFrustum(
-        const VansGraphics::VansShadowAABB& bounds,
-        const glm::mat4& worldToClip)
-    {
-        const glm::vec3 center = (bounds.min + bounds.max) * 0.5f;
-        const glm::vec3 extent = (bounds.max - bounds.min) * 0.5f;
-
-        const glm::vec4 row0(worldToClip[0][0], worldToClip[1][0], worldToClip[2][0], worldToClip[3][0]);
-        const glm::vec4 row1(worldToClip[0][1], worldToClip[1][1], worldToClip[2][1], worldToClip[3][1]);
-        const glm::vec4 row2(worldToClip[0][2], worldToClip[1][2], worldToClip[2][2], worldToClip[3][2]);
-        const glm::vec4 row3(worldToClip[0][3], worldToClip[1][3], worldToClip[2][3], worldToClip[3][3]);
-        const glm::vec4 planes[6] = {
-            row3 + row0,
-            row3 - row0,
-            row3 + row1,
-            row3 - row1,
-            row3 + row2,
-            row3 - row2
-        };
-
-        for (const glm::vec4& plane : planes)
-        {
-            const glm::vec3 normal(plane);
-            const float distance = glm::dot(normal, center) + plane.w;
-            const float projectedExtent = glm::dot(glm::abs(normal), extent);
-            if (distance + projectedExtent < 0.0f)
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    bool IsNodeVisibleInFrustum(
-        VansGraphics::VansRenderNode* node,
-        const glm::mat4& worldToClip)
-    {
-        VansGraphics::VansShadowAABB bounds;
-        return !TryGetStaticNodeWorldBounds(node, bounds) ||
-            BoundsIntersectsClipFrustum(bounds, worldToClip);
-    }
-}
-
 // ===========================================================================
 // Draw commands — one per render pass type
 // ===========================================================================
@@ -103,8 +24,19 @@ void VansGraphics::VansScene::DrawShadowNodes()
     VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
 
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    DrawShadowNodes(vkDevice->GetCommandBuffer(), vkDevice->GetGlobalRenderStateData());
+}
+
+void VansGraphics::VansScene::DrawShadowNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData)
+{
+    DrawShadowNodeRange(cmd, globalStateData, 0, m_OpaqueRenderNodes.size());
+    DrawHairShadowNodes(cmd, globalStateData);
+    DrawVegetationShadowNode(cmd, globalStateData);
+}
+
+void VansGraphics::VansScene::DrawShadowNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end)
+{
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
 
     const glm::mat4* cascadeWorldToClip = nullptr;
     const auto& directionLights = m_LightManager.GetDirectionLights();
@@ -116,8 +48,10 @@ void VansGraphics::VansScene::DrawShadowNodes()
     }
 
     // Iterate opaque nodes instead of dedicated shadow node list
-    for (auto& node : m_OpaqueRenderNodes)
+    const size_t clampedEnd = (std::min)(end, m_OpaqueRenderNodes.size());
+    for (size_t nodeIndex = begin; nodeIndex < clampedEnd; ++nodeIndex)
     {
+        auto& node = m_OpaqueRenderNodes[nodeIndex];
         if (node == nullptr || !node->IsEnabled()) continue;
 
         // Check support_shadow flag on the node
@@ -139,6 +73,18 @@ void VansGraphics::VansScene::DrawShadowNodes()
         node->DrawCascadeShadowWithPassShader(cmd, globalStateData, shadowShader,
                                                opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts);
     }
+}
+
+void VansGraphics::VansScene::DrawHairShadowNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData)
+{
+    const glm::mat4* cascadeWorldToClip = nullptr;
+    const auto& directionLights = m_LightManager.GetDirectionLights();
+    if (!directionLights.empty() &&
+        globalStateData.cascadeIndex >= 0 &&
+        globalStateData.cascadeIndex < 4)
+    {
+        cascadeWorldToClip = &directionLights[0].m_ShadowMatrix[globalStateData.cascadeIndex];
+    }
 
 	for (auto& node : m_HairRenderNodes)
 	{
@@ -159,7 +105,10 @@ void VansGraphics::VansScene::DrawShadowNodes()
 		node->DrawCascadeShadowWithPassShader(cmd, globalStateData, hairShadowShader,
 			hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts);
 	}
+}
 
+void VansGraphics::VansScene::DrawVegetationShadowNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData)
+{
     if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
         static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawShadow(cmd, globalStateData);
 }
@@ -167,16 +116,27 @@ void VansGraphics::VansScene::DrawShadowNodes()
 void VansGraphics::VansScene::DrawMotionVectorNodes()
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    DrawMotionVectorNodes(vkDevice->GetCommandBuffer(), vkDevice->GetGlobalRenderStateData());
+}
+
+void VansGraphics::VansScene::DrawMotionVectorNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData)
+{
+    DrawMotionVectorNodeRange(cmd, globalStateData, 0, m_OpaqueRenderNodes.size());
+}
+
+void VansGraphics::VansScene::DrawMotionVectorNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end)
+{
     const glm::mat4 viewProjection = m_Camera
         ? m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix()
         : glm::mat4(1.0f);
 
-    for (auto& node : m_OpaqueRenderNodes)
+    const size_t clampedEnd = (std::min)(end, m_OpaqueRenderNodes.size());
+    for (size_t nodeIndex = begin; nodeIndex < clampedEnd; ++nodeIndex)
     {
+        auto& node = m_OpaqueRenderNodes[nodeIndex];
         if (node == nullptr || !node->IsEnabled()) continue;
 		if (m_Camera != nullptr && !IsNodeVisibleInFrustum(node, viewProjection)) continue;
+		if (!IsMainCameraNodeVisible(node)) continue;
 
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
 
@@ -278,18 +238,34 @@ void VansGraphics::VansScene::DrawOpaqueNodes()
     VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
 
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    DrawOpaqueNodes(vkDevice->GetCommandBuffer(), vkDevice->GetGlobalRenderStateData());
+}
+
+void VansGraphics::VansScene::DrawOpaqueNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData)
+{
+    DrawOpaqueNodeRange(cmd, globalStateData, 0, m_OpaqueRenderNodes.size());
+}
+
+void VansGraphics::VansScene::DrawOpaqueNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end)
+{
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
+
     const glm::mat4 viewProjection = m_Camera
         ? m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix()
         : glm::mat4(1.0f);
-    for (auto& node : m_OpaqueRenderNodes)
+    const size_t clampedEnd = (std::min)(end, m_OpaqueRenderNodes.size());
+    for (size_t nodeIndex = begin; nodeIndex < clampedEnd; ++nodeIndex)
     {
+        auto& node = m_OpaqueRenderNodes[nodeIndex];
         if (node == nullptr || !node->IsEnabled())
         {
             continue;
         }
         if (m_Camera != nullptr && !IsNodeVisibleInFrustum(node, viewProjection))
+        {
+            continue;
+        }
+        if (!IsMainCameraNodeVisible(node))
         {
             continue;
         }
@@ -304,8 +280,15 @@ void VansGraphics::VansScene::DrawTerrainNode(bool shadowPass, bool motionVector
         return;
 	}
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    DrawTerrainNode(vkDevice->GetCommandBuffer(), vkDevice->GetGlobalRenderStateData(), shadowPass, motionVectorPass);
+}
+
+void VansGraphics::VansScene::DrawTerrainNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, bool shadowPass, bool motionVectorPass)
+{
+    if (m_TerrainRenderNode == nullptr)
+    {
+        return;
+    }
     if (shadowPass)
     {
         static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode)->DrawShadow(cmd, globalStateData);
@@ -328,8 +311,15 @@ void VansGraphics::VansScene::DrawVegetationNode()
         return;
     }
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
+    DrawVegetationNode(vkDevice->GetCommandBuffer(), vkDevice->GetGlobalRenderStateData());
+}
+
+void VansGraphics::VansScene::DrawVegetationNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData)
+{
+    if (m_VegetationRenderNode == nullptr)
+    {
+        return;
+    }
     m_VegetationRenderNode->Draw(cmd, globalStateData);
 }
 
@@ -392,6 +382,10 @@ void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
     float deltaTime = static_cast<float>(VansTimer::GetLastFrameDelta());
     float time      = static_cast<float>(VansTimer::GetFrameTime());
 
+    // 先生成本帧可见性，再让 Grass 模拟跳过不可见实例，避免 cull 前模拟全量草实例。
+    const bool grassCullReady = m_VegetationSystem->DispatchCullPass(cmd, m_VegetationSystem->GetCullDistance());
+    m_VegetationSystem->DispatchTreeCullPass(cmd);
+
     // Camera position is read directly in the shader via the global CameraData UBO (set=0)
     // All simulation params are stored on the system (loaded from scene JSON via SetSimParams).
     m_VegetationSystem->Update(cmd, deltaTime, time,
@@ -404,11 +398,9 @@ void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
         m_VegetationSystem->GetDamping(),
         m_VegetationSystem->GetSoftness(),
         m_VegetationSystem->GetLodFullDist(),
-        m_VegetationSystem->GetLodFadeDist());
+        m_VegetationSystem->GetLodFadeDist(),
+        grassCullReady);
 
-    // P0: GPU 视锥 + 距离剔除 — 写入每实例的可见性标志，绘制时 VS 早退出不可见实例
-    m_VegetationSystem->DispatchCullPass(cmd, m_VegetationSystem->GetCullDistance());
-    m_VegetationSystem->DispatchTreeCullPass(cmd);
     }
 
 void VansGraphics::VansScene::DrawTransParentNodes()
@@ -453,6 +445,8 @@ void VansGraphics::VansScene::DrawTransParentNodes()
 
     for (auto* node : sortedNodes)
     {
+        if (!IsMainCameraNodeVisible(node))
+            continue;
         node->Draw(cmd, globalStateData);
     }
 }
@@ -467,6 +461,8 @@ void VansGraphics::VansScene::DrawHairVisibilityNodes()
 	for (auto& node : m_HairRenderNodes)
 	{
 		if (node == nullptr || !node->IsEnabled())
+			continue;
+		if (!IsMainCameraNodeVisible(node))
 			continue;
 		if (oitLayout != VK_NULL_HANDLE && oitSet != VK_NULL_HANDLE)
 		{
@@ -506,6 +502,10 @@ void VansGraphics::VansScene::DrawForwardOpaqueAfterDeferredNodes()
         {
             continue;
         }
+        if (!IsMainCameraNodeVisible(node))
+        {
+            continue;
+        }
         node->Draw(cmd, globalStateData);
     }
 }
@@ -542,11 +542,22 @@ void VansGraphics::VansScene::DrawScreenSpaceFeatureNode()
 void VansGraphics::VansScene::DrawDecalNodes()
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    for (auto& node : m_DecalRenderNodes)
+    DrawDecalNodes(vkDevice->GetCommandBuffer(), vkDevice->GetGlobalRenderStateData());
+}
+
+void VansGraphics::VansScene::DrawDecalNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData)
+{
+    DrawDecalNodeRange(cmd, globalStateData, 0, m_DecalRenderNodes.size());
+}
+
+void VansGraphics::VansScene::DrawDecalNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end)
+{
+    const size_t clampedEnd = (std::min)(end, m_DecalRenderNodes.size());
+    for (size_t nodeIndex = begin; nodeIndex < clampedEnd; ++nodeIndex)
     {
-        if (!node->IsEnabled()) continue;
+        auto& node = m_DecalRenderNodes[nodeIndex];
+        if (node == nullptr || !node->IsEnabled()) continue;
+        if (!IsMainCameraNodeVisible(node)) continue;
         node->Draw(cmd, globalStateData);
     }
 }

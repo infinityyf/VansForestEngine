@@ -1,7 +1,6 @@
 #include "VansProjectConfig.h"
 
 #include "Storage/VansProjectConfigStorage.h"
-#include "../SceneCore/VansSceneSchema.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
@@ -43,9 +42,7 @@ void VansProjectConfig::SetDefaults(const std::string& name)
 	projectName = name;
 	engineVersion = "0.1.0";
 	createdAt = NowISO8601();
-	lastOpenedAt = createdAt;
 	defaultScene = "Scenes/MainScene.json";
-	sceneSchemaVersion = VansSceneSchemaVersion;
 	assetsRoot = "Assets";
 	importedArtifactRoot = "Library/Artifacts";
 	metaExtension = ".meta";

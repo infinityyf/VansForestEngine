@@ -1,5 +1,7 @@
 #include "VansAssetsFileWatcher.h"
 
+#include "../../EventCore/VansEventBus.h"
+
 #include <algorithm>
 #include <cwctype>
 #include <system_error>
@@ -123,7 +125,6 @@ namespace Vans
 		std::lock_guard<std::mutex> lock(m_Mutex);
 		m_Roots.clear();
 		m_Snapshots.clear();
-		m_Changes.clear();
 	}
 
 	void VansAssetsFileWatcher::Start(std::chrono::milliseconds pollInterval)
@@ -147,14 +148,6 @@ namespace Vans
 		m_Watching.store(false, std::memory_order_release);
 		if (m_WatchThread.joinable())
 			m_WatchThread.join();
-	}
-
-	std::vector<VansFileChange> VansAssetsFileWatcher::DrainChanges()
-	{
-		std::lock_guard<std::mutex> lock(m_Mutex);
-		std::vector<VansFileChange> result;
-		result.swap(m_Changes);
-		return result;
 	}
 
 	void VansAssetsFileWatcher::PollOnce()
@@ -193,6 +186,8 @@ namespace Vans
 		change.kind = kind;
 		change.sequence = m_NextSequence.fetch_add(1, std::memory_order_relaxed);
 		change.observedAt = std::chrono::steady_clock::now();
-		m_Changes.emplace_back(std::move(change));
+		VansEventBus::Get().Enqueue(
+			VansAssetFileChangedEvent{ std::move(change) },
+			VansEventLane::Editor);
 	}
 }

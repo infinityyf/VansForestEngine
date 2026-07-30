@@ -13,13 +13,13 @@ namespace VansGraphics
         void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 
     private:
-        // ── 帧历史 ─────────────────────────────────────────────────────
+        // 帧历史
         static constexpr int FPS_HISTORY_SIZE = 256;
         float  m_FpsHistory[FPS_HISTORY_SIZE] = {};
         float  m_FrameTimeHistory[FPS_HISTORY_SIZE] = {};
         int    m_FpsHistoryOffset = 0;
 
-        // ── Timeline 状态 ──────────────────────────────────────────────
+        // Timeline 状态
         double m_ViewStartUs = 0.0;
         double m_ViewEndUs = 16667.0;
         int    m_SelectedEventId = -1;

@@ -6,8 +6,6 @@
 
 #include <filesystem>
 #include <algorithm>
-#include <chrono>
-#include <ctime>
 
 namespace fs = std::filesystem;
 
@@ -104,6 +102,22 @@ bool VansProjectManager::OpenProject(const std::string& projectRootPath, const V
 		return false;
 	}
 
+	const VansProjectConfigDiagnostics diagnostics =
+		VansProjectConfigValidator::Validate(m_Config);
+	for (const VansProjectConfigDiagnostic& diagnostic : diagnostics)
+	{
+		const char* severity = diagnostic.severity == VansProjectConfigDiagnosticSeverity::Error
+			? "Error"
+			: (diagnostic.severity == VansProjectConfigDiagnosticSeverity::Warning ? "Warning" : "Info");
+		VANS_LOG("[ProjectConfig][" << severity << "] "
+			<< diagnostic.propertyPointer << " " << diagnostic.message);
+	}
+	if (VansProjectConfigValidator::HasErrors(diagnostics))
+	{
+		VANS_LOG_ERROR("[ProjectManager] ForestProject.json failed validation");
+		return false;
+	}
+
 	m_ProjectRootPath = root;
 	m_PathResolver.SetProjectRoot(root);
 	m_Loaded = true;
@@ -115,23 +129,7 @@ bool VansProjectManager::OpenProject(const std::string& projectRootPath, const V
 	}
 
 	if (options.updateLastOpenedAt)
-	{
-		// Update last-opened timestamp and persist
-		m_Config.lastOpenedAt = []() {
-			auto now = std::chrono::system_clock::now();
-			std::time_t t = std::chrono::system_clock::to_time_t(now);
-			std::tm tm{};
-#ifdef _WIN32
-			localtime_s(&tm, &t);
-#else
-			localtime_r(&t, &tm);
-#endif
-			char buf[64];
-			std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
-			return std::string(buf);
-		}();
-		m_Config.SaveToFile(configPath);
-	}
+		VANS_LOG("[ProjectManager] lastOpenedAt is stored in RecentProjects, not ForestProject.json");
 
 	// Discover scenes
 	m_SceneManager.Clear();
@@ -190,6 +188,128 @@ bool VansProjectManager::SaveProjectSettings() const
 	}
 
 	return m_ProjectSettings.SaveToProjectFiles(m_ProjectRootPath, m_Config);
+}
+
+VansProjectConfigDiagnostics VansProjectManager::GetProjectConfigDiagnostics() const
+{
+	return VansProjectConfigValidator::Validate(m_Config);
+}
+
+bool VansProjectManager::SetProjectDefaultScene(const std::string& sceneRelativePath, std::string& error)
+{
+	return SetProjectPathField(VansProjectConfigPathField::DefaultScene, sceneRelativePath, error);
+}
+
+bool VansProjectManager::SetProjectPathField(
+	VansProjectConfigPathField field,
+	const std::string& relativePath,
+	std::string& error)
+{
+	if (!m_Loaded)
+	{
+		error = "No project is loaded";
+		return false;
+	}
+
+	const std::string normalized =
+		VansProjectConfigValidator::NormalizeProjectRelativePath(relativePath);
+	if (!VansProjectConfigValidator::IsSafeProjectRelativePath(normalized))
+	{
+		error = "Invalid project-relative path: " + relativePath;
+		return false;
+	}
+
+	switch (field)
+	{
+	case VansProjectConfigPathField::DefaultScene:
+		m_Config.defaultScene = normalized;
+		m_SceneManager.SetDefaultScene(m_Config.defaultScene);
+		return true;
+	case VansProjectConfigPathField::AssetsRoot:
+		m_Config.assetsRoot = normalized;
+		return true;
+	case VansProjectConfigPathField::ImportedArtifactRoot:
+		m_Config.importedArtifactRoot = normalized;
+		return true;
+	case VansProjectConfigPathField::RenderSettings:
+		m_Config.renderSettings = normalized;
+		return true;
+	case VansProjectConfigPathField::PhysicsSettings:
+		m_Config.physicsSettings = normalized;
+		return true;
+	case VansProjectConfigPathField::CollisionLayerSettings:
+		m_Config.collisionLayerSettings = normalized;
+		return true;
+	default:
+		error = "Unsupported project config path field";
+		return false;
+	}
+}
+
+bool VansProjectManager::SetProjectScriptSearchPaths(std::vector<std::string> paths, std::string& error)
+{
+	if (!m_Loaded)
+	{
+		error = "No project is loaded";
+		return false;
+	}
+
+	for (std::string& path : paths)
+	{
+		path = VansProjectConfigValidator::NormalizeProjectRelativePath(path);
+		if (!VansProjectConfigValidator::IsSafeProjectRelativePath(path))
+		{
+			error = "Invalid script search path: " + path;
+			return false;
+		}
+	}
+
+	m_Config.scriptSearchPaths = std::move(paths);
+	return true;
+}
+
+bool VansProjectManager::SetProjectAssetDirectory(
+	const std::string& key,
+	const std::string& relativePath,
+	std::string& error)
+{
+	if (!m_Loaded)
+	{
+		error = "No project is loaded";
+		return false;
+	}
+
+	if (key.empty())
+	{
+		error = "Asset directory key must not be empty";
+		return false;
+	}
+
+	const std::string normalized =
+		VansProjectConfigValidator::NormalizeProjectRelativePath(relativePath);
+	if (!VansProjectConfigValidator::IsSafeProjectRelativePath(normalized))
+	{
+		error = "Invalid asset directory path: " + relativePath;
+		return false;
+	}
+
+	m_Config.assetDirectories[key] = normalized;
+	return true;
+}
+
+bool VansProjectManager::SaveProjectConfig(std::string& error) const
+{
+	if (m_ProjectRootPath.empty())
+	{
+		error = "Cannot save project config without a loaded project";
+		return false;
+	}
+
+	VansProjectConfigDiagnostics diagnostics;
+	if (!VansProjectConfigValidator::ValidateForSave(m_Config, diagnostics, error))
+		return false;
+
+	return m_Config.SaveToFile(m_ProjectRootPath + "ForestProject.json");
 }
 
 bool VansProjectManager::LoadProjectSettings()

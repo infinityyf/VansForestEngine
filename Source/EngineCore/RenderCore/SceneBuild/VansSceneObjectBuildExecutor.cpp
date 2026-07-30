@@ -146,14 +146,6 @@ void VansGraphics::VansScene::LoadSceneObjects(
 					parentLinks.push_back(std::move(link));
 				}
 
-				if (!renderConfig.parentEntityGuid.empty())
-				{
-					ParentEntityLink link;
-					link.childTransformID = rn->m_TransformID;
-					link.childName = renderConfig.name;
-					link.parentEntityGuid = renderConfig.parentEntityGuid;
-					parentEntityLinks.push_back(std::move(link));
-				}
 			}
 		}
 
@@ -209,9 +201,23 @@ void VansGraphics::VansScene::LoadSceneObjects(
 				objScl);
 		}
 
+		VansSceneScriptComponentBuilder::BuildUIControllers(*obj, objectConfig.uiComponents);
 		VansSceneScriptComponentBuilder::BuildScripts(*obj, objectConfig.scriptComponents);
 		VansSceneLightComponentBuilder::BindExplicitVideoComponentToRectLight(*this, *obj);
 		ApplyRuntimeComponentGuids(*obj, objectConfig.componentGuids);
+
+		if (!objectConfig.parentEntityGuid.empty())
+		{
+			ensureObjectTransform();
+			if (obj->m_TransformID != UINT32_MAX)
+			{
+				ParentEntityLink link;
+				link.childTransformID = obj->m_TransformID;
+				link.childName = obj->m_ObjectName;
+				link.parentEntityGuid = objectConfig.parentEntityGuid;
+				parentEntityLinks.push_back(std::move(link));
+			}
+		}
 
 		m_SceneObjects.push_back(obj);
 	}

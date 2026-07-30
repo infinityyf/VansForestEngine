@@ -5,6 +5,11 @@
 #include "../../SceneCore/VansSceneContentBuildPlan.h"
 #include "../../SceneCore/VansSceneRenderSettingsConfig.h"
 
+namespace Vans
+{
+	struct VansProjectMainCameraHiZCullSettings;
+}
+
 namespace VansGraphics
 {
 	class VansVKDevice;
@@ -32,6 +37,12 @@ namespace VansGraphics
 		static void ApplyVolumetricCloudSettings(
 			VansMaterialManager& materialManager,
 			const std::optional<Vans::VansSceneVolumetricCloudSettingsConfig>& config);
+		static void ApplyMainCameraHiZCullSettings(
+			VansScene& scene,
+			const std::optional<Vans::VansSceneMainCameraHiZCullSettingsConfig>& config);
+		static void ApplyProjectMainCameraHiZCullSettings(
+			VansScene& scene,
+			const Vans::VansProjectMainCameraHiZCullSettings& projectSettings);
 		static void ApplyGISettings(
 			VansScene& scene,
 			const std::optional<Vans::VansSceneGISettingsConfig>& config);

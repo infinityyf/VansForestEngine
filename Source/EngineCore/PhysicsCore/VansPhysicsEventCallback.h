@@ -16,7 +16,7 @@ namespace VansEngine
 	class VansPhysicsEventCallback : public PxSimulationEventCallback
 	{
 	public:
-		VansPhysicsEventCallback(VansPhysicsEventQueue* eventQueue);
+		VansPhysicsEventCallback() = default;
 
 		// ── PxSimulationEventCallback 接口 ─────────────────────────
 		void onContact(const PxContactPairHeader& pairHeader,
@@ -32,8 +32,6 @@ namespace VansEngine
 		               const PxTransform* poseBuffer, const PxU32 count) override {}
 
 	private:
-		VansPhysicsEventQueue* m_EventQueue = nullptr;
-
 		// 从 PxActor::userData 获取 VansPhysicsNode 的辅助方法
 		static VansPhysicsNode* GetPhysicsNode(PxActor* actor);
 	};

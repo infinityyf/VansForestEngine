@@ -16,6 +16,7 @@ typedef struct VmaAllocation_T* VmaAllocation;
 using namespace VansGraphics;
 namespace VansGraphics
 {
+	class VansVKCommandBuffer;
 	struct BufferTransition
 	{
 		VkBuffer Buffer;
@@ -65,7 +66,7 @@ namespace VansGraphics
 		void DestroyVulkanBuffer(VkDevice& logical_device);
 
 		//设置buffer memory barrier
-		void SetBufferMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition);
+		void SetBufferMemoryBarrier(VansVKCommandBuffer& commandBuffer, VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition);
 
 		bool SetBufferData(const void* data, VkDeviceSize offset, VkDeviceSize size);
 

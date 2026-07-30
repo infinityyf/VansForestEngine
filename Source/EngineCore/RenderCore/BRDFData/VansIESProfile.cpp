@@ -417,8 +417,9 @@ namespace VansGraphics
         // 与 VansTexture::InitTextureArray 相同模式，确保 SetDeviceImageData 中
         // originalLayout = SHADER_READ_ONLY_OPTIMAL，避免 undefined-layout 往返
         cmd.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-        m_IESTextureArray.SetImageMemoryBarrier(
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		m_IESTextureArray.SetImageMemoryBarrier(
+			cmd,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             {
                 m_IESTextureArray.GetImage(),

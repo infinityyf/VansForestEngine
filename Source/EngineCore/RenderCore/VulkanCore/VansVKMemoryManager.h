@@ -33,7 +33,7 @@ namespace VansGraphics
 			return instance;
 		}
 
-		void BindDevice(VkCommandBuffer& commandBuffer, VansVKDevice& device);
+		void BindDevice(VansVKDevice& device);
 
 		const std::vector<uint32_t>& GetSharingQueueFamilyIndices() const;
 
@@ -41,14 +41,6 @@ namespace VansGraphics
 		{
 			return (value + alignment - 1) & ~(alignment - 1);
 		}
-
-		void SetBufferMemoryBarrier(std::vector<VkBufferMemoryBarrier>& bufferMemoryBarriers,
-			VkPipelineStageFlags generating_stages,
-			VkPipelineStageFlags consuming_stages);
-
-		void SetImageMemoryBarrier(std::vector<VkImageMemoryBarrier>& imageMemoryBarriers,
-			VkPipelineStageFlags generating_stages,
-			VkPipelineStageFlags consuming_stages);
 
 	public:
 		//copy date between buffers
@@ -68,8 +60,6 @@ namespace VansGraphics
 		VkPhysicalDevice m_PhysicalDevice;
 
 		VkDevice m_LogicalDevice;
-
-		VkCommandBuffer m_CommandBuffer;
 
 		VkPhysicalDeviceProperties m_DeviceProperties;
 

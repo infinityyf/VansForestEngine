@@ -6,10 +6,12 @@
 
 #include "VansScriptTypes.h"
 
+#include "../EventCore/VansEventConnection.h"
 #include "../PhysicsCore/VansPhysicsEvents.h"
 #include "../PhysicsCore/VansRagdollSystem.h"
 #include "../ParticleCore/VansParticleAsset.h"
 #include "../ParticleCore/VansParticleRuntime.h"
+#include "../RuntimeUI/Public/VansUIRuntimeHandles.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -350,6 +352,27 @@ private:
 	void EnterFaultedState(const char* phase, const std::string& error);
 };
 
+class VansScriptUIComponent : public VansScriptComponent
+{
+public:
+	VansScriptUIComponent() { m_ComponentName = "UIController"; }
+	~VansScriptUIComponent() override;
+
+	std::vector<std::string> m_AutoOpenScreens;
+	std::vector<std::string> m_PreloadScreens;
+	std::vector<VansRuntime::VansUIHandleId> m_OpenScreens;
+
+	void Preload();
+	void ReleasePreloaded();
+	void OpenConfiguredScreens();
+	void CloseOpenedScreens();
+
+protected:
+	void OnEnable() override;
+	void OnDisable() override;
+	void OnDestroy() override;
+};
+
 class VansScriptContext
 {
 public:
@@ -374,6 +397,7 @@ public:
 	void ReloadAllLuaScripts();
 	lua_State* GetLuaState() const { return m_LuaState; }
 	const std::string& GetActiveProjectRoot() const { return m_ActiveProjectRoot; }
+	void SetActiveProjectRoot(const std::string& projectRoot);
 
 	static VansScriptContext* GetInstance() { return s_Instance; }
 
@@ -391,13 +415,14 @@ private:
 	std::string m_ActiveProjectRoot;
 	std::vector<ScheduledScript> m_ScheduledScripts;
 	std::unordered_map<std::uint32_t, std::vector<VansLuaScriptComponent*>> m_EventSubscribers;
+	Vans::VansScopedEventConnections m_EventConnections;
 
 	void VansScriptPreUpdate();
 	void UpdateScriptComponents(bool cameraScriptsOnly, bool skipCameraScripts);
 	void RebuildScriptSchedule();
-	void DispatchPhysicsEvents();
+	void HandlePhysicsContactEvent(const VansEngine::VansPhysicsContactEvent& event);
 	void DispatchEventToObject(
-		const VansEngine::PhysicsEventData& event,
+		const VansEngine::VansPhysicsContactEvent& event,
 		std::uint32_t selfTransformID,
 		std::uint32_t otherTransformID,
 		const std::string& otherName,
@@ -407,6 +432,7 @@ private:
 	void AssertLuaThread() const;
 	void RegisterLuaBindings();
 	void InstallLuaSearchPath();
+	void RefreshActiveProjectRoot();
 
 	static VansScriptContext* s_Instance;
 };

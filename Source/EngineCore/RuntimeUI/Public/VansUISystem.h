@@ -2,6 +2,8 @@
 #include <string>
 #include <memory>
 
+#include "VansUIRuntimeHandles.h"
+
 namespace VansGraphics
 {
     class VansVKDevice;
@@ -10,6 +12,7 @@ namespace VansGraphics
 namespace VansRuntime
 {
     class VansUIDocument;
+    class VansUIScreen;
     class VansUIViewModel;
     class VansUIScreenManager;
 
@@ -57,6 +60,15 @@ namespace VansRuntime
         // xamlPath：项目相对路径（如 "UI/Views/HUD.xaml"）
         //           或引擎协议路径（如 "engine://UI/...xaml"）
         std::shared_ptr<VansUIDocument> LoadDocument(const std::string& xamlPath);
+        std::shared_ptr<VansUIScreen> LoadScreen(const std::string& configPath);
+        std::shared_ptr<VansUIScreen> LoadScreen(const std::string& configPath,
+                                                 std::shared_ptr<VansUIViewModel> vm);
+        bool PreloadScreen(const std::string& configPath);
+        void ReleaseScreen(const std::string& configPath);
+        std::shared_ptr<VansUIScreen> ReloadScreen(const std::string& configPath,
+                                                   std::shared_ptr<VansUIViewModel> vm = nullptr);
+        void CloseScreen(VansUIHandleId screenId);
+        void CloseScreenByName(const std::string& name);
 
         void UnloadDocument(const std::shared_ptr<VansUIDocument>& document);
 
@@ -68,6 +80,9 @@ namespace VansRuntime
         // 每帧由 SceneWindow 调用，告知场景图像在屏幕空间的位置和尺寸，
         // 供 InputAdapter 将原始 GLFW 坐标映射到 Noesis View 局部坐标
         void SetSceneViewport(float screenX, float screenY, float screenW, float screenH);
+        bool TransformMouseToView(double rawX, double rawY,
+                                  double& outX, double& outY) const;
+        bool GetViewSize(double& outW, double& outH) const;
 
         // ── ScreenManager ─────────────────────────────────────────
 
@@ -92,6 +107,16 @@ namespace VansRuntime
         // nativeRenderPass：VkRenderPass 句柄（供 Noesis 懒编译 PSO 使用）
         // sampleCount：MSAA 采样数，无 MSAA 传 1
         void RenderDocuments(void* nativeRenderPass, uint32_t sampleCount);
+
+        // Editor/runtime tool rendering for one document into an already-created
+        // render target. nativeCmdBuffer is a VkCommandBuffer and nativeRenderPass
+        // is the active-compatible VkRenderPass.
+        bool PrepareDocumentPreview(const std::shared_ptr<VansUIDocument>& document,
+                                    void* nativeCmdBuffer,
+                                    double totalTimeSeconds);
+        bool RenderDocumentPreviewPass(const std::shared_ptr<VansUIDocument>& document,
+                                       void* nativeRenderPass,
+                                       uint32_t sampleCount);
 
     private:
         VansUISystem() = default;

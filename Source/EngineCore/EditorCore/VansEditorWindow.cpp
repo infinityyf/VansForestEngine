@@ -6,6 +6,7 @@
 #include "Windows/VansHierachyWindow.h"
 #include "Windows/VansLightWindow.h"
 #include "Windows/VansProjectWindow.h"
+#include "Windows/VansProjectSettingsWindow.h"
 #include "Windows/VansSceneWindow.h"
 #include "Windows/VansInspectorWindow.h"
 #include "Windows/VansGBufferWindow.h"
@@ -23,11 +24,11 @@
 #include "Windows/VansPostProcessWindow.h"
 #include "Windows/VansShadowDebuggerWindow.h"
 #include "Windows/VansPcgWindow.h"
+#include "Windows/VansHiZCullWindow.h"
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
 #include "../EventCore/VansEventBus.h"
-#include "../Util/VansInputEvents.h"
 #include "../Util/VansInputManager.h"
 #include "../Util/VansLog.h"
 #include "../RuntimeCore/VansFramePhase.h"
@@ -359,7 +360,7 @@ bool VansGraphics::VansEditorWindow::m_HairDebugWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_LightWindowOpen = true;
 bool VansGraphics::VansEditorWindow::m_ScriptorWindowOpen = true;
 bool VansGraphics::VansEditorWindow::m_ConsoleWindowOpen = true;
-bool VansGraphics::VansEditorWindow::m_ProfilerWindowOpen = true;
+bool VansGraphics::VansEditorWindow::m_ProfilerWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_UIEditorWindowOpen = true;
 bool VansGraphics::VansEditorWindow::m_WaterWindowOpen = true;
 bool VansGraphics::VansEditorWindow::m_TerrainWindowOpen = true;
@@ -368,14 +369,16 @@ bool VansGraphics::VansEditorWindow::m_GIWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_PostProcessWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_ShadowDebuggerWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_PcgWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_HiZCullWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_ProjectSettingsWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
 bool VansGraphics::VansEditorWindow::m_VehicleDebugGizmos = false;
+bool VansGraphics::VansEditorWindow::m_HiZCullDebugVisualization = false;
 
 VansGraphics::VansBasicWindow VansGraphics::VansEditorWindow::m_VansEditorWindow;
 //支持多个相机
 std::vector<VansGraphics::VansCamera*> VansGraphics::VansEditorWindow::m_Cameras;
-Vans::VansScopedEventConnections VansGraphics::VansEditorWindow::m_CameraInputConnections;
 
 //支持多个窗口
 std::vector<std::unique_ptr<VansGraphics::VansBaseWindowComponent>> VansGraphics::VansEditorWindow::m_Windows;
@@ -385,6 +388,8 @@ VansGraphics::VansHierachuWindow* VansGraphics::VansEditorWindow::m_HierachyWind
 VansGraphics::VansLightWindow* VansGraphics::VansEditorWindow::m_LightWindow;
 
 VansGraphics::VansProjectWindow* VansGraphics::VansEditorWindow::m_ProjectWindow;
+
+VansGraphics::VansProjectSettingsWindow* VansGraphics::VansEditorWindow::m_ProjectSettingsWindow;
 
 VansGraphics::VansSceneWindow* VansGraphics::VansEditorWindow::m_SceneWindow;
 
@@ -414,6 +419,7 @@ VansGraphics::VansGIWindow* VansGraphics::VansEditorWindow::m_GIWindow;
 VansGraphics::VansPostProcessWindow* VansGraphics::VansEditorWindow::m_PostProcessWindow;
 VansGraphics::VansShadowDebuggerWindow* VansGraphics::VansEditorWindow::m_ShadowDebuggerWindow;
 VansGraphics::VansPcgWindow* VansGraphics::VansEditorWindow::m_PcgWindow;
+VansGraphics::VansHiZCullWindow* VansGraphics::VansEditorWindow::m_HiZCullWindow;
 
 // Project selector overlay
 std::unique_ptr<Vans::VansProjectSelector> VansGraphics::VansEditorWindow::m_ProjectSelector;
@@ -603,7 +609,7 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
 
 bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int height, GRAPHICS_API api)
 {
-    VansLog::Get().RegisterSink(&VansConsole::Get());
+    VansConsole::Get().InitializeEventSubscription();
 
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
@@ -952,6 +958,8 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_ProjectWindow = AddEditorWindowComponent<VansProjectWindow>(m_Windows);
 
+    m_ProjectSettingsWindow = AddEditorWindowComponent<VansProjectSettingsWindow>(m_Windows);
+
     m_SceneWindow = AddEditorWindowComponent<VansSceneWindow>(m_Windows);
 
     m_InspectorWindow = AddEditorWindowComponent<VansInspectorWindow>(m_Windows);
@@ -986,78 +994,25 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_PcgWindow = AddEditorWindowComponent<VansPcgWindow>(m_Windows);
 
-}
+    m_HiZCullWindow = AddEditorWindowComponent<VansHiZCullWindow>(m_Windows);
 
-void VansGraphics::VansEditorWindow::RegisterCameraInputListeners()
-{
-    m_CameraInputConnections.DisconnectAll();
-
-    m_CameraInputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansMouseMoveEvent>(
-        [](const Vans::VansMouseMoveEvent& event)
-        {
-        for (auto camera : m_Cameras)
-        {
-                camera->HandleMouseMovement(
-                    static_cast<float>(event.dx),
-                    static_cast<float>(event.dy));
-        }
-        },
-        Vans::VansEventLane::Input,
-        0,
-        "EditorCamera::MouseMove"));
-
-    m_CameraInputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansMouseButtonEvent>(
-        [](const Vans::VansMouseButtonEvent& event)
-        {
-        if (event.button != GLFW_MOUSE_BUTTON_RIGHT)
-            return;
-
-            const bool isDown = (event.action == GLFW_PRESS);
-        for (auto camera : m_Cameras)
-        {
-            camera->SetRightMouseDown(isDown);
-        }
-        },
-        Vans::VansEventLane::Input,
-        0,
-        "EditorCamera::MouseButton"));
-}
-
-void VansGraphics::VansEditorWindow::UpdateEditorCameraMovement()
-{
-    if (m_PlayState != VansEditorPlayState::Editing)
-        return;
-
-    Vans::VansInputManager& input = Vans::VansInputManager::Get();
-
-    const float forwardAxis =
-        (input.IsKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f) -
-        (input.IsKeyDown(GLFW_KEY_S) ? 1.0f : 0.0f);
-    const float rightAxis =
-        (input.IsKeyDown(GLFW_KEY_D) ? 1.0f : 0.0f) -
-        (input.IsKeyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
-    const float upAxis =
-        (input.IsKeyDown(GLFW_KEY_E) ? 1.0f : 0.0f) -
-        (input.IsKeyDown(GLFW_KEY_Q) ? 1.0f : 0.0f);
-
-    if (forwardAxis == 0.0f && rightAxis == 0.0f && upAxis == 0.0f)
-        return;
-
-    const float deltaTime = static_cast<float>(VansGraphics::VansTimer::GetEditorDeltaTime());
-    for (auto camera : m_Cameras)
-    {
-        camera->HandleKeyboardMovement(forwardAxis, rightAxis, upAxis, deltaTime);
-    }
-}
-
-void VansGraphics::VansEditorWindow::UnregisterCameraInputListeners()
-{
-    m_CameraInputConnections.DisconnectAll();
 }
 
 // ============================================================================
 // 延迟场景加载处理
 // ============================================================================
+
+void VansGraphics::VansEditorWindow::DetachEditorViewportCamerasFromSceneTransforms()
+{
+    for (auto* camera : m_Cameras)
+    {
+        if (!camera)
+            continue;
+
+        camera->DetachTransformPreservingPose();
+        camera->SetRightMouseDown(false);
+    }
+}
 
 void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 {
@@ -1106,17 +1061,17 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 				VANS_LOG_ERROR("[SceneDocument] " << diagnostic.propertyPointer << " " << diagnostic.message);
 		}
 
-        // Editor 模式：注册相机控制，冻结时间，回到 Editing 状态
-        RegisterCameraInputListeners();
+        // Editor 模式：冻结时间，Scene 视口控制器负责编辑器相机漫游。
+        // 保留场景 Camera component 的初始姿态，但不让预览相机继续受场景 Transform 约束。
+        DetachEditorViewportCamerasFromSceneTransforms();
         VansTimer::SetTimePaused(true);
         m_PlayState = VansEditorPlayState::Editing;
         editorAPI.SetPlayState(Vans::EditorAPI::EnginePlayState::Edit);
     }
     else
     {
-        // Runtime 模式：解冻时间，启动物理，进入 Playing 状态
-        // Play 模式下相机由 Lua 脚本接管，注销 Editor 相机控制监听器
-        UnregisterCameraInputListeners();
+        // Runtime 模式：解冻时间，启动物理，进入 Playing 状态。
+        // Play 模式下相机由脚本接管，Scene 视口控制器会拒绝编辑器漫游输入。
         VansTimer::SetTimePaused(false);
         GetMutableEditorAPI().StartRuntimePhysicsIfNeeded();
         m_PlayState = VansEditorPlayState::Playing;
@@ -1156,7 +1111,6 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
 
     VansTimer::SetTimePaused(true);
     GetMutableEditorAPI().PauseRuntimePhysics();
-    UnregisterCameraInputListeners();
 
     if (m_GraphicsDevice)
     {
@@ -1288,9 +1242,12 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
         // Render the ImGui frame (project selector only)
         ImGui::Render();
         ImDrawData* draw_data = ImGui::GetDrawData();
-        device.BeginUIRenderPass();
-        m_GUIBackEnd->RenderDrawData(device, draw_data);
-        device.EndUIRenderPass();
+		if (device.CanRecordCurrentFrame())
+		{
+			device.BeginUIRenderPass();
+			m_GUIBackEnd->RenderDrawData(device, draw_data);
+			device.EndUIRenderPass();
+		}
         return;
     }
 
@@ -1507,6 +1464,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
                 ImGui::MenuItem("Scripts", nullptr, &m_ScriptorWindowOpen);
                 ImGui::MenuItem("Console", nullptr, &m_ConsoleWindowOpen);
                 ImGui::MenuItem("Profiler", nullptr, &m_ProfilerWindowOpen);
+                ImGui::MenuItem("Project Settings", nullptr, &m_ProjectSettingsWindowOpen);
                 ImGui::MenuItem("UI Editor", nullptr, &m_UIEditorWindowOpen);
                 ImGui::Separator();
                 if (ImGui::BeginMenu("Animation"))
@@ -1526,6 +1484,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
                 ImGui::MenuItem("Shadow Debugger", nullptr, &m_ShadowDebuggerWindowOpen);
                 ImGui::MenuItem("Water GBuffer Visualization", nullptr, &m_WaterGBufferWindowOpen);
                 ImGui::MenuItem("Render Debug", nullptr, &m_RenderDebugWindowOpen);
+                ImGui::MenuItem("HiZ Occlusion Culling", nullptr, &m_HiZCullWindowOpen);
                 ImGui::MenuItem("Hair Debug", nullptr, &m_HairDebugWindowOpen);
                 ImGui::MenuItem("Water", nullptr, &m_WaterWindowOpen);
                 ImGui::MenuItem("Terrain", nullptr, &m_TerrainWindowOpen);
@@ -1596,9 +1555,12 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
     ImDrawData* draw_data = ImGui::GetDrawData();
 
     // ImGui 编辑器覆盖层渲染到 swapchain
-    device.BeginUIRenderPass();
-    m_GUIBackEnd->RenderDrawData(device, draw_data);
-    device.EndUIRenderPass();
+	if (device.CanRecordCurrentFrame())
+	{
+		device.BeginUIRenderPass();
+		m_GUIBackEnd->RenderDrawData(device, draw_data);
+		device.EndUIRenderPass();
+	}
 }
 
 void VansGraphics::VansEditorWindow::SetupImGuiStyle()
@@ -1797,8 +1759,11 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
     { 
         VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
 
-        // 项目选择界面阶段没有完整场景帧，Profiler 从项目加载后的下一帧开始记录。
+        // 项目选择界面阶段没有完整场景帧；Profiler 窗口关闭时只保留轻量帧计数，不采集 scope/GPU timestamp。
         const bool profilerFrameActive = m_ProjectLoaded;
+#if VANS_PROFILER_ENABLED
+        Vans::VansProfiler::Get().SetCaptureEnabled(profilerFrameActive && VansEditorWindow::m_ProfilerWindowOpen);
+#endif
         if (profilerFrameActive)
             VANS_PROFILER_BEGIN_FRAME();
 
@@ -1815,6 +1780,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             glfwPollEvents();
             Vans::VansInputManager::Get().RefreshPolledState();
         }
+        Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Input);
 
         // Resize swap chain?
         if (m_VansEditorWindow.m_WindowStatus.swapChainRebuild)
@@ -1843,15 +1809,12 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             VANS_PROFILE_SCOPE("JobSystem::ProcessMainThreadJobs", Vans::ProfileCategory::JobSystem);
             Vans::VansJobSystem::Get().ProcessMainThreadJobs();
         }
+        Vans::VansEventBus::Get().Flush(Vans::VansEventLane::MainThread);
 
         //更新时间
         {
             VANS_PROFILE_SCOPE("Frame::TimerUpdate", Vans::ProfileCategory::Frame);
             VansGraphics::VansTimer::Update();
-        }
-        {
-            VANS_PROFILE_SCOPE("Editor::CameraMovement", Vans::ProfileCategory::Editor);
-            UpdateEditorCameraMovement();
         }
 
         auto& editorAPI = GetMutableEditorAPI();
@@ -1862,6 +1825,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // with the background physics simulation thread.
         if (editorAPI.IsRuntimePhysicsRunning() && editorAPI.IsRuntimeSceneReady())
         {
+            Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Physics);
             VANS_PROFILE_SCOPE("Physics::SyncRigidBodies", Vans::ProfileCategory::Physics);
             editorAPI.SyncRuntimePhysicsTransforms();
         }
@@ -1879,6 +1843,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         //   ⑤ camera.Rendering         — render with up-to-date positions
         if (editorAPI.IsRuntimeSceneReady() && m_PlayState == VansEditorPlayState::Playing)
         {
+            Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Script);
             VANS_PROFILE_SCOPE("Script::Update", Vans::ProfileCategory::Script);
             editorAPI.UpdateRuntimeNonCameraScripts();
         }
@@ -1916,10 +1881,13 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             VANS_PROFILE_SCOPE("Editor::ProcessRuntimeMultiMeshExpansion", Vans::ProfileCategory::IO);
             ProcessRuntimeMultiMeshHierarchyExpansion();
         }
+        Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Editor);
         {
             VANS_PROFILE_SCOPE("Editor::ShaderHotReload", Vans::ProfileCategory::IO);
             shaderHotReloadController.TickAndApply(editorAPI);
         }
+        Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Diagnostics);
+        Vans::VansEventBus::Get().Flush(Vans::VansEventLane::RenderPrep);
         // Rendering, 这里会结束renderpass
         {
             VANS_PROFILE_SCOPE("Render::CameraRendering", Vans::ProfileCategory::CommandRecord);
@@ -1961,16 +1929,13 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         }
     }
 
-    // Unregister camera input listeners
-    UnregisterCameraInputListeners();
-
     m_Cameras.clear();
 
 }
 
 void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
 {
-    VansLog::Get().UnregisterSink(&VansConsole::Get());
+    VansConsole::Get().ShutdownEventSubscription();
 
     m_ProjectSelector.reset();
     m_Windows.clear();
@@ -1978,6 +1943,7 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     m_HierachyWindow = nullptr;
     m_LightWindow = nullptr;
     m_ProjectWindow = nullptr;
+    m_ProjectSettingsWindow = nullptr;
     m_SceneWindow = nullptr;
     m_InspectorWindow = nullptr;
     m_GBufferWindow = nullptr;

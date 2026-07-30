@@ -25,6 +25,7 @@ struct VansSceneObjectBuildConfig
 {
 	std::string entityGuid;
 	std::string name;
+	std::string parentEntityGuid;
 	std::optional<VansSceneTransformConfig> transform;
 	std::optional<VansSceneRenderNodeConfig> render;
 	bool renderEnabled = true;
@@ -36,6 +37,7 @@ struct VansSceneObjectBuildConfig
 	std::optional<VansSceneAnimationComponentConfig> animation;
 	std::optional<VansSceneParticleComponentConfig> particle;
 	VansScriptComponentDescriptors scriptComponents;
+	VansScriptUIComponentDescriptors uiComponents;
 	std::unordered_map<std::string, std::string> componentGuids;
 };
 

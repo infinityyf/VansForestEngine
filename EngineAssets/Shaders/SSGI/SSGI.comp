@@ -1,4 +1,4 @@
-﻿#version 450
+#version 450
 #extension GL_GOOGLE_include_directive : require
 
 #include "../Common/Common.glsl"
@@ -56,7 +56,8 @@ vec3 EvaluateSSGIFallback(vec3 worldPos, vec3 normal, float vegetationTranslucen
         ? GI_VolumeFade(worldPos, giVolumeMin.xyz, giVolumeSizeAndBias.xyz, volumeFadeDistance)
         : 0.0;
 
-    // probe SH 瀛樺偍鍏ュ皠 radiance锛涙帴鏀剁鎸夊綋鍓嶈〃闈㈡硶绾垮仛 Lambert diffuse convolution銆?    // SSGI fallback 鍦ㄥ灞傜敤 probeWeight 涓庡ぉ绌烘贩鍚堬紝鍥犳杩欓噷鍏抽棴閲囨牱鍑芥暟鍐呴儴鐨勪綋绉竟缂?fade锛岄伩鍏嶅弻閲嶈“鍑忋€?    vec3 probeIrradiance = GI_SampleProbeDiffuseLightingL1Visible(
+    // Probe SH stores incoming radiance; the receiver applies diffuse convolution here.
+    // Volume-edge fading is owned by this fallback blend, avoiding double fade.
     vec3 probeIrradiance = GI_SampleProbeDiffuseLightingL1Visible(
         SHRCoeff,
         SHGCoeff,
@@ -88,7 +89,7 @@ vec3 EvaluateSSGIFallback(vec3 worldPos, vec3 normal, float vegetationTranslucen
         0.0);
     vec3 backIrradiance = mix(backSkyIrradiance, backProbeIrradiance, probeWeight);
 
-    // 钖勭墖妞嶈鎺ユ敹 GI 鏃惰繎浼间负鍙岄潰锛岃儗渚х幆澧冨厜鍙互閫忚繃鍙剁墖鍙備笌鏆楅儴鐓ф槑銆?    // 杩欓噷鍙敼鍙樺綋鍓嶅儚绱犵殑 GI 鎺ユ敹锛屼笉鎶婃琚啓鍏?probe SH銆?    float backWeight = clamp(vegetationTranslucency * 0.7, 0.0, 0.7);
+    // Thin vegetation can receive some back-side GI without writing different probe data.
     float backWeight = clamp(vegetationTranslucency * 0.7, 0.0, 0.7);
     return mix(frontIrradiance, max(frontIrradiance, backIrradiance), backWeight);
 }
@@ -159,7 +160,8 @@ void main()
 
         if (facingRay)
         {
-            // 褰撳墠浠嶄娇鐢ㄤ笂涓€甯?scene color 浣滀负灞忓箷绌洪棿鍛戒腑璐＄尞銆?            // 璇ユ潵婧愬寘鍚?specular銆乫og銆佸凡鏈?GI 鍜屽巻鍙茶竟缂橈紝蹇呴』鐢ㄧ疆淇″害闄愬埗銆?            vec3 hitWorldPos = texture(inputPosition, hitUV).xyz;
+            // The hit color comes from the previous scene color and may already include fog/specular/history.
+            // Keep screen-space hits confidence-limited so probe lighting remains a stable floor.
             vec3 hitWorldPos = texture(inputPosition, hitUV).xyz;
             vec4 lastClip = LastProjectionMatrix * LastViewMatrix * vec4(hitWorldPos, 1.0);
             lastClip /= lastClip.w;
@@ -173,7 +175,7 @@ void main()
                 float hitDistance = length(hitWorldPos - startPosition);
                 float screenTraceWeight = 1.0 - smoothstep(maxTraceDist * fadeStartRatio, maxTraceDist, hitDistance);
 
-                // 濡傛灉 fallback 鏈夋槑鏄捐兘閲忥紝鑰屽睆骞曞懡涓嵈鎺ヨ繎榛戣壊锛岄€氬父鏄竟缂?閬尅/鍘嗗彶棰滆壊涓嶇ǔ瀹氥€?                // 闄嶄綆杩欑鍛戒腑鐨勬潈閲嶏紝璁?probe field 淇濇寔鏆楅儴鍩虹鐓ф槑銆?                float fallbackLum = Luminance(fallbackIrradiance);
+                // If fallback is bright but the screen hit is nearly black, trust the hit less.
                 float fallbackLum = Luminance(fallbackIrradiance);
                 float screenLum = Luminance(screenIrradiance);
                 float darkHitConfidence = smoothstep(0.12, 0.55, screenLum / max(fallbackLum, 1e-3));

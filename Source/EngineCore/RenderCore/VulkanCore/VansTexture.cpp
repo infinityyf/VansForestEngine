@@ -696,7 +696,7 @@ namespace VansGraphics
 			VANS_LOG_ERROR("Failed to begin compressed texture final layout command buffer.");
 			return false;
 		}
-		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 			{
 				m_Image.GetImage(),
 				VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -969,7 +969,7 @@ namespace VansGraphics
 			VANS_LOG_ERROR("Cube texture final layout command buffer begin failed: " << texture_parent_path);
 			return;
 		}
-		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{
 				m_Image.GetImage(),
 				VK_ACCESS_NONE,
@@ -1040,7 +1040,7 @@ namespace VansGraphics
 			VANS_LOG_ERROR("Texture array initial layout command buffer begin failed.");
 			return;
 		}
-		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 			{
 				m_Image.GetImage(),
 				VK_ACCESS_NONE,
@@ -1318,7 +1318,7 @@ namespace VansGraphics
 		return true;
 	}
 
-	void VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, int num_components, bool isCube, bool generateMip, bool enabeRandonWrite, TexturePrecision texture_precision, VkSamplerAddressMode addressMode)
+	void VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode)
 	{
 		m_TextureWidth = width;
 		m_TextureHeight = height;
@@ -1329,7 +1329,6 @@ namespace VansGraphics
 		VkQueue queue = vkDevice->GetGraphicsQueue();
 
 		bool is3D = slice > 1;
-		VkFormat format = ChooseFormat(num_components, texture_precision);
 		int mipLevels = CalculateMipLevels(width, height, generateMip);
 
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, (uint32_t)slice };
@@ -1338,7 +1337,7 @@ namespace VansGraphics
 			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 			VK_SAMPLE_COUNT_1_BIT, isCube, true, true, addressMode);
 
-		VkImageLayout targetLayout = enabeRandonWrite ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		VkImageLayout targetLayout = enableRandomWrite ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
@@ -1346,7 +1345,7 @@ namespace VansGraphics
 			VANS_LOG_ERROR("InitTextureWithoutData: initial layout command buffer begin failed.");
 			return;
 		}
-		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{
 				m_Image.GetImage(),
 				VK_ACCESS_NONE,
@@ -1498,7 +1497,7 @@ namespace VansGraphics
 			VANS_LOG_ERROR("Cube texture array initial layout command buffer begin failed.");
 			return;
 		}
-		m_Image.SetImageMemoryBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{ m_Image.GetImage(), VK_ACCESS_NONE, VK_ACCESS_NONE,
 			  m_Image.GetImageLayout(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1549,7 +1548,7 @@ namespace VansGraphics
 
 		VANS_LOG("Load 3D Texture Slices: " << slicePathFormat << ", size=" << width << "x" << height << "x" << sliceCount);
 		InitTextureWithoutData(command_buffer, width, height, sliceCount,
-			importChannel, false, false, false, LOW_PRES_8, addressMode);
+			ChooseFormat(importChannel, LOW_PRES_8), false, false, false, addressMode);
 
 		auto uploadSlice = [&](const stbi_uc* pixels, int sliceIndex) -> bool
 		{

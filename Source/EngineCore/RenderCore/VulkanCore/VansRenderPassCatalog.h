@@ -23,6 +23,7 @@ namespace VansGraphics
 		constexpr const char* CascadeShadow = "Cascade Shadow";
 		constexpr const char* PunctualShadow = "Punctual Shadow";
 		constexpr const char* HairDeepOpacity = "Hair Deep Opacity";
+		constexpr const char* MainCameraHiZCull = "Main Camera HiZ Cull";
 		constexpr const char* MotionVector = "Motion Vector";
 		constexpr const char* GBuffer = "GBuffer";
 		constexpr const char* WaterWaveCompute = "Water Wave Compute";
@@ -32,6 +33,7 @@ namespace VansGraphics
 		constexpr const char* HZB = "HZB";
 		constexpr const char* PunctualShadowDebug = "Punctual Shadow Debug Preview";
 		constexpr const char* ScreenSpaceShadow = "Screen Space Shadow";
+		constexpr const char* ScreenSpaceEffects = "Screen Space Effects";
 		constexpr const char* GIData = "GI Data";
 		constexpr const char* SSR = "SSR";
 		constexpr const char* RayTracing = "Ray Tracing";

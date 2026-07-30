@@ -63,6 +63,37 @@ bool VansProjectSettingsLegacyJsonCodec::DecodeRenderSettings(
 				0.0f,
 				1.0f);
 		}
+
+		if (root.contains("commandRecording") && root["commandRecording"].is_object())
+		{
+			const nlohmann::json& commandRecording = root["commandRecording"];
+			settings.commandRecordingSettings.parallelEnabled =
+				commandRecording.value("parallelEnabled", true);
+		}
+
+		if (root.contains("mainCameraHiZCulling") && root["mainCameraHiZCulling"].is_object())
+		{
+			const nlohmann::json& hiz = root["mainCameraHiZCulling"];
+			settings.mainCameraHiZCullSettings.enabled = hiz.value("enabled", true);
+			settings.mainCameraHiZCullSettings.enableOpaque = hiz.value("enableOpaque", true);
+			settings.mainCameraHiZCullSettings.enableHair = hiz.value("enableHair", true);
+			settings.mainCameraHiZCullSettings.enableTransparent = hiz.value("enableTransparent", false);
+			settings.mainCameraHiZCullSettings.enableDecal = hiz.value("enableDecal", true);
+			settings.mainCameraHiZCullSettings.enableForwardOpaqueAfterDeferred =
+				hiz.value("enableForwardOpaqueAfterDeferred", true);
+			settings.mainCameraHiZCullSettings.depthBiasMeters =
+				std::max(hiz.value("depthBiasMeters", 0.35f), 0.0f);
+			settings.mainCameraHiZCullSettings.cameraMotionDisableDistance =
+				std::max(hiz.value("cameraMotionDisableDistance", 1.0f), 0.0f);
+			settings.mainCameraHiZCullSettings.cameraMotionDisableAngleRadians =
+				std::max(hiz.value("cameraMotionDisableAngleRadians", 0.13962634f), 0.0f);
+			settings.mainCameraHiZCullSettings.forceVisibleFramesAfterChange =
+				std::max(hiz.value("forceVisibleFramesAfterChange", 1u), 1u);
+			settings.mainCameraHiZCullSettings.refreshCulledEveryNFrames =
+				std::max(hiz.value("refreshCulledEveryNFrames", 30u), 1u);
+			settings.mainCameraHiZCullSettings.maxScreenCoverageForCull =
+				std::clamp(hiz.value("maxScreenCoverageForCull", 0.65f), 0.05f, 1.0f);
+		}
 	}
 	catch (const nlohmann::json::exception& exception)
 	{
@@ -80,6 +111,23 @@ nlohmann::json VansProjectSettingsLegacyJsonCodec::EncodeRenderSettings(
 	root["fsr"] = {
 		{ "mode", ToString(settings.fsrSettings.mode) },
 		{ "sharpness", settings.fsrSettings.sharpness }
+	};
+	root["commandRecording"] = {
+		{ "parallelEnabled", settings.commandRecordingSettings.parallelEnabled }
+	};
+	root["mainCameraHiZCulling"] = {
+		{ "enabled", settings.mainCameraHiZCullSettings.enabled },
+		{ "enableOpaque", settings.mainCameraHiZCullSettings.enableOpaque },
+		{ "enableHair", settings.mainCameraHiZCullSettings.enableHair },
+		{ "enableTransparent", settings.mainCameraHiZCullSettings.enableTransparent },
+		{ "enableDecal", settings.mainCameraHiZCullSettings.enableDecal },
+		{ "enableForwardOpaqueAfterDeferred", settings.mainCameraHiZCullSettings.enableForwardOpaqueAfterDeferred },
+		{ "depthBiasMeters", settings.mainCameraHiZCullSettings.depthBiasMeters },
+		{ "cameraMotionDisableDistance", settings.mainCameraHiZCullSettings.cameraMotionDisableDistance },
+		{ "cameraMotionDisableAngleRadians", settings.mainCameraHiZCullSettings.cameraMotionDisableAngleRadians },
+		{ "forceVisibleFramesAfterChange", settings.mainCameraHiZCullSettings.forceVisibleFramesAfterChange },
+		{ "refreshCulledEveryNFrames", settings.mainCameraHiZCullSettings.refreshCulledEveryNFrames },
+		{ "maxScreenCoverageForCull", settings.mainCameraHiZCullSettings.maxScreenCoverageForCull }
 	};
 	return root;
 }

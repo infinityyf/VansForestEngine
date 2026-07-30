@@ -214,6 +214,9 @@ void Vans::VansCpuProfiler::AddEvent(const ProfileEvent& event)
 
 bool Vans::VansCpuProfiler::Push(const char* name, ProfileCategory category, uint16_t flags)
 {
+    if (!VansProfiler::Get().IsCaptureEnabled())
+        return false;
+
     ThreadContext& context = GetThreadContext();
     if (context.trackId == 0)
         RegisterCurrentThread("Thread");
@@ -244,6 +247,9 @@ bool Vans::VansCpuProfiler::Push(const char* name, ProfileCategory category, uin
 
 void Vans::VansCpuProfiler::Pop()
 {
+    if (!VansProfiler::Get().IsCaptureEnabled())
+        return;
+
     ThreadContext& context = GetThreadContext();
     if (context.depth == 0)
         return;
@@ -356,6 +362,9 @@ void Vans::VansGpuProfiler::Destroy()
 
 void Vans::VansGpuProfiler::BeginFrame(void* cmd)
 {
+    if (!VansProfiler::Get().IsCaptureEnabled())
+        return;
+
     if (cmd == nullptr || m_Pools[0] == nullptr || m_Pools[1] == nullptr)
         return;
 
@@ -372,6 +381,9 @@ void Vans::VansGpuProfiler::BeginFrame(void* cmd)
 
 void Vans::VansGpuProfiler::Push(void* cmd, const char* name)
 {
+    if (!VansProfiler::Get().IsCaptureEnabled())
+        return;
+
     if (cmd == nullptr || m_Pools[0] == nullptr || m_Pools[1] == nullptr)
         return;
 
@@ -405,6 +417,9 @@ void Vans::VansGpuProfiler::Push(void* cmd, const char* name)
 
 void Vans::VansGpuProfiler::Pop(void* cmd)
 {
+    if (!VansProfiler::Get().IsCaptureEnabled())
+        return;
+
     if (cmd == nullptr || m_Pools[0] == nullptr || m_Pools[1] == nullptr)
         return;
 
@@ -434,6 +449,18 @@ void Vans::VansGpuProfiler::Resolve(void* device)
 {
     uint32_t prev = m_WriteIdx ^ 1;
     m_EventCount = 0;
+
+    if (!VansProfiler::Get().IsCaptureEnabled())
+    {
+        m_HasPreviousFrame = false;
+        m_WriteIdx = 0;
+        m_SlotCount[0] = 0;
+        m_SlotCount[1] = 0;
+        m_NextQuery[0] = 0;
+        m_NextQuery[1] = 0;
+        m_StackDepth = 0;
+        return;
+    }
 
     if (!m_HasPreviousFrame || m_Pools[prev] == nullptr || m_SlotCount[prev] == 0)
     {
@@ -521,7 +548,7 @@ void Vans::VansGpuProfiler::CollectInto(ProfileFrame& frame) const
 Vans::VansGpuScopeQuery::VansGpuScopeQuery(void* cmd, const char* name)
     : m_Cmd(cmd)
 {
-    if (cmd != nullptr && VansGpuProfiler::Get().IsInitialized())
+    if (VansProfiler::Get().IsCaptureEnabled() && cmd != nullptr && VansGpuProfiler::Get().IsInitialized())
     {
         VansGpuProfiler::Get().Push(cmd, name);
         m_Active = true;
@@ -543,18 +570,31 @@ Vans::VansProfiler& Vans::VansProfiler::Get()
 void Vans::VansProfiler::BeginFrame()
 {
     m_FrameStartNs = NowNs();
+    if (!IsCaptureEnabled())
+        return;
+
     RegisterCurrentThread("Main Thread", 0xff62c96bu);
     VansCpuProfiler::Get().BeginFrame(m_FrameIndex, m_FrameStartNs);
 }
 
 void Vans::VansProfiler::EndFrame(void* device)
 {
-    VansGpuProfiler::Get().Resolve(device);
-
     int64_t frameEndNs = NowNs();
     double frameDurationUs = NsToUs(frameEndNs - m_FrameStartNs);
 
     std::memset(&m_Frame, 0, sizeof(m_Frame));
+    m_Frame.frameIndex = m_FrameIndex;
+    m_Frame.frameDurationUs = frameDurationUs;
+    m_Frame.fps = frameDurationUs > 0.0 ? 1000000.0 / frameDurationUs : 0.0;
+
+    if (!IsCaptureEnabled())
+    {
+        VansGpuProfiler::Get().Resolve(device);
+        ++m_FrameIndex;
+        return;
+    }
+
+    VansGpuProfiler::Get().Resolve(device);
     VansCpuProfiler::Get().EndFrame(m_Frame, frameDurationUs);
     VansGpuProfiler::Get().CollectInto(m_Frame);
 
@@ -571,8 +611,21 @@ void Vans::VansProfiler::EndFrame(void* device)
     ++m_FrameIndex;
 }
 
+void Vans::VansProfiler::SetCaptureEnabled(bool enabled)
+{
+    m_CaptureEnabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool Vans::VansProfiler::IsCaptureEnabled() const
+{
+    return m_CaptureEnabled.load(std::memory_order_relaxed);
+}
+
 void Vans::VansProfiler::RegisterCurrentThread(const char* name, uint32_t color)
 {
+    if (!IsCaptureEnabled())
+        return;
+
     VansCpuProfiler::Get().RegisterCurrentThread(name, color);
 }
 

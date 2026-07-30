@@ -1,10 +1,11 @@
 #include "VansLog.h"
+#include "VansLogEvents.h"
+#include "../EventCore/VansEventBus.h"
 
 #include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <filesystem>
-#include <algorithm>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -135,23 +136,7 @@ void VansLog::Log(VansLogChannel channel, VansLogLevel level, const std::string&
     // Also print to stdout for debug
     std::cout << line << std::endl;
 
-    for (ILogSink* sink : m_Sinks)
-    {
-        if (sink)
-            sink->OnLog(channel, level, msg);
-    }
-}
-
-void VansLog::RegisterSink(ILogSink* sink)
-{
-    if (!sink) return;
-    std::lock_guard<std::mutex> lock(m_Mutex);
-    if (std::find(m_Sinks.begin(), m_Sinks.end(), sink) == m_Sinks.end())
-        m_Sinks.push_back(sink);
-}
-
-void VansLog::UnregisterSink(ILogSink* sink)
-{
-    std::lock_guard<std::mutex> lock(m_Mutex);
-    m_Sinks.erase(std::remove(m_Sinks.begin(), m_Sinks.end(), sink), m_Sinks.end());
+    Vans::VansEventBus::Get().Enqueue(
+        Vans::VansLogEvent{ channel, level, msg, timestamp },
+        Vans::VansEventLane::Diagnostics);
 }

@@ -2,6 +2,7 @@
 #include "VansPostProcessProfile.h"
 #include "VansCamera.h"
 #include "VansScene.h"
+#include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
@@ -152,9 +153,42 @@ void VansGraphics::VansRenderNode::ComputeModelDataFromTransform()
 	m_ModelData.Scale = glm::vec4(transform.m_Scale, 1.0f);
 }
 
+void VansGraphics::VansRenderNode::UpdateWorldBoundsFromModelData()
+{
+	m_HasWorldBounds = false;
+	m_WorldBounds = VansRenderBounds{};
+	if (m_Mesh == nullptr || !m_Mesh->HasLocalOBB() || m_HasSkeletonBone)
+		return;
+
+	const VansMeshLocalOBB& localOBB = m_Mesh->GetLocalOBB();
+	m_WorldBounds = MakeRenderBoundsFromLocalOBB(
+		localOBB.center,
+		localOBB.axes,
+		localOBB.halfExtent,
+		m_ModelData.ModelMatrix);
+	m_HasWorldBounds = m_WorldBounds.IsValid();
+}
+
+void VansGraphics::VansRenderNode::UpdateWorldBoundsFromTransform()
+{
+	m_HasWorldBounds = false;
+	m_WorldBounds = VansRenderBounds{};
+	if (m_Mesh == nullptr || !m_Mesh->HasLocalOBB() || m_HasSkeletonBone)
+		return;
+
+	const VansMeshLocalOBB& localOBB = m_Mesh->GetLocalOBB();
+	m_WorldBounds = MakeRenderBoundsFromLocalOBB(
+		localOBB.center,
+		localOBB.axes,
+		localOBB.halfExtent,
+		GetTransformMatrix());
+	m_HasWorldBounds = m_WorldBounds.IsValid();
+}
+
 void VansGraphics::VansRenderNode::BeforeDrawCall()
 {
 	ComputeModelDataFromTransform();
+	UpdateWorldBoundsFromModelData();
 	// Initialize PrevModelMatrix to current so first frame has zero motion
 	m_ModelData.PrevModelMatrix = m_ModelData.ModelMatrix;
 }
@@ -165,6 +199,7 @@ void VansGraphics::VansRenderNode::UpdateModelData()
 	m_ModelData.PrevModelMatrix = m_ModelData.ModelMatrix;
 
 	ComputeModelDataFromTransform();
+	UpdateWorldBoundsFromModelData();
 	
 	// Push updated data to GPU using the persistently mapped instance buffer in VansScene
 	// Update at the offset specified by m_TransfromIndex
@@ -207,9 +242,11 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 
 	cmd.BindMesh(*m_Mesh, 0, globalStateData);
 
-	cmd.EnsureGraphicsShader(*shader, globalStateData, m_UsedDescSetLayouts);
+	VansVKGraphicsPipeline* pipeline = cmd.EnsureGraphicsShader(*shader, globalStateData, m_UsedDescSetLayouts);
+	if (pipeline == nullptr)
+		return;
 
-	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, m_UsedDescSets, {});
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline, 0, m_UsedDescSets, {});
 
 	if (shader->GetPushConstantSize() > 0)
 	{
@@ -259,11 +296,43 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 		}
 		pc.transformIndex   = m_TransfromIndex;
 		pc.animationEnabled = m_AnimationEnabled ? 1 : 0;
-		cmd.UpdatePushConstants(*shader->GetGraphicsPipeline(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		cmd.UpdatePushConstants(*pipeline, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			0, shader->GetPushConstantSize(), &pc);
 	}
 
-	cmd.DrawMesh(*m_Mesh, *shader, 1);
+	cmd.DrawMesh(*m_Mesh, *pipeline, 1);
+}
+
+bool VansGraphics::VansRenderNode::PreparePipelineForDraw(VkDevice& device, GlobalStateData global_state)
+{
+	if (m_Mesh == nullptr || m_Material == nullptr)
+		return true;
+
+	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType));
+	return PreparePipelineForShader(device, global_state, shader, m_UsedDescSetLayouts, m_UsedDescSets);
+}
+
+bool VansGraphics::VansRenderNode::PreparePipelineForShader(
+	VkDevice& device,
+	GlobalStateData global_state,
+	VansGraphicsShader* shader,
+	const std::vector<VkDescriptorSetLayout>& layouts,
+	const std::vector<VkDescriptorSet>& sets)
+{
+	if (m_Mesh == nullptr || shader == nullptr)
+		return true;
+
+	if (layouts.size() != sets.size())
+		return true;
+	for (size_t i = 0; i < layouts.size(); ++i)
+	{
+		if (layouts[i] == VK_NULL_HANDLE || sets[i] == VK_NULL_HANDLE)
+			return true;
+	}
+
+	global_state.vertexInputAttributeDescriptions = &m_Mesh->m_VertexInputAttributeDescriptions;
+	global_state.vertexInputBindingDescriptions = &m_Mesh->m_VertexInputBindingDescriptions;
+	return shader->GetGraphicsPipeline(device, global_state, layouts) != nullptr;
 }
 
 void VansGraphics::VansRenderNode::DrawCascadeShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
@@ -281,9 +350,11 @@ void VansGraphics::VansRenderNode::DrawCascadeShadowWithPassShader(VansVKCommand
 
 	cmd.BindMesh(*m_Mesh, 0, global_state);
 
-	cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
+	VansVKGraphicsPipeline* pipeline = cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
+	if (pipeline == nullptr)
+		return;
 
-	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *passShader, 0, descSets, {});
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline, 0, descSets, {});
 
 	if (passShader->GetPushConstantSize() > 0)
 	{
@@ -295,12 +366,12 @@ void VansGraphics::VansRenderNode::DrawCascadeShadowWithPassShader(VansVKCommand
 			m_Material->m_MaterialType == VansMaterialType::VAN_PBR_EMISSIVE)
 			matIdx = static_cast<VansEmissiveMaterial*>(m_Material)->m_MaterialIndex;
 		int pushData[4] = { matIdx, m_TransfromIndex, global_state.cascadeIndex, m_AnimationEnabled ? 1 : 0 };
-		cmd.UpdatePushConstants(*passShader->GetGraphicsPipeline(),
+		cmd.UpdatePushConstants(*pipeline,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			0, passShader->GetPushConstantSize(), pushData);
 	}
 
-	cmd.DrawMesh(*m_Mesh, *passShader, 1);
+	cmd.DrawMesh(*m_Mesh, *pipeline, 1);
 }
 
 void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
@@ -319,16 +390,18 @@ void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKComman
 
 	cmd.BindMesh(*m_Mesh, 0, global_state);
 
-	cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
+	VansVKGraphicsPipeline* pipeline = cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
+	if (pipeline == nullptr)
+		return;
 
 	// PunctualShadow shader expects: { lightIndex, shadowFaceIndex, materialIndex, objectIndex, animationEnabled }
 	int data[5] = { lightIndex, shadowFaceIndex, 0, m_TransfromIndex, m_AnimationEnabled ? 1 : 0 };
-	cmd.UpdatePushConstants(*passShader->GetGraphicsPipeline(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+	cmd.UpdatePushConstants(*pipeline, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		0, passShader->GetPushConstantSize(), data);
 
-	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *passShader, 0, descSets, {});
+	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline, 0, descSets, {});
 
-	cmd.DrawMesh(*m_Mesh, *passShader, 1);
+	cmd.DrawMesh(*m_Mesh, *pipeline, 1);
 }
 
 //void VansGraphics::VansRenderNode::DrawWithMaterial(VansMaterial* material, VansVKCommandBuffer& cmd, GlobalStateData& global_state)

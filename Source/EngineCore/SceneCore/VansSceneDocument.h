@@ -54,6 +54,8 @@ class VansSceneSaveService;
 class VansSetScenePropertyCommand;
 class VansRemoveScenePropertyCommand;
 class VansAppendSceneEntitiesCommand;
+class VansReparentSceneEntityCommand;
+class VansSetSceneEntityTransformCommand;
 
 class VansSceneDocument
 {
@@ -80,6 +82,8 @@ private:
     friend class VansSetScenePropertyCommand;
     friend class VansRemoveScenePropertyCommand;
     friend class VansAppendSceneEntitiesCommand;
+    friend class VansReparentSceneEntityCommand;
+    friend class VansSetSceneEntityTransformCommand;
 
     SceneStateId AllocateStateId();
     SceneStateId ApplyEditedSerializedRoot(VansSerializedValue root);

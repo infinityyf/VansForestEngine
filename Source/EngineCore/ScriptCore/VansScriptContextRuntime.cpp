@@ -10,12 +10,14 @@
 
 #include "VansScriptContext.h"
 
+#include "VansLuaUIBridge.h"
 #include "VansTransform.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../AudioCore/VansAudioNode.h"
 #include "../Configration/VansConfigration.h"
+#include "../EventCore/VansEventBus.h"
 #include "../ParticleCore/Storage/VansParticleAssetStorage.h"
 #include "../ParticleCore/VansParticleManager.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
@@ -32,6 +34,8 @@
 #include "../RenderCore/VulkanCore/VansVideoTexture.h"
 #include "../RuntimeCore/VansFramePhase.h"
 #include "../RuntimeCore/VansThreadContract.h"
+#include "../RuntimeUI/Public/VansUIScreen.h"
+#include "../RuntimeUI/Public/VansUISystem.h"
 #include "../SceneCore/VansSceneRuntimeComponentKey.h"
 #include "../Util/VansInputManager.h"
 #include "../Util/VansLog.h"
@@ -90,6 +94,10 @@ std::filesystem::path ResolveScriptPath(const std::string& scriptPath)
 		return path;
 
 	auto* context = Context();
+	auto& projectManager = Vans::VansProjectManager::Get();
+	if (projectManager.IsProjectLoaded() && !projectManager.GetProjectRootPath().empty())
+		return std::filesystem::path(projectManager.GetProjectRootPath()) / path;
+
 	if (context && !context->GetActiveProjectRoot().empty())
 		return std::filesystem::path(context->GetActiveProjectRoot()) / path;
 
@@ -416,6 +424,49 @@ int LuaComponentRestart(lua_State* L)
 		particle->Restart();
 	else
 		LuaComponentResume(L);
+	return 0;
+}
+
+int LuaComponentUIOpenScreen(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* ui = dynamic_cast<VansScriptUIComponent*>(component);
+	const char* path = luaL_checkstring(L, 2);
+	if (ui && path && VansRuntime::VansUISystem::Get().IsInitialized())
+	{
+		auto screen = VansRuntime::VansUISystem::Get().LoadScreen(path);
+		if (screen)
+			ui->m_OpenScreens.push_back(screen->GetHandleId());
+	}
+	return 0;
+}
+
+int LuaComponentUICloseAllOwned(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	if (auto* ui = dynamic_cast<VansScriptUIComponent*>(component))
+		ui->CloseOpenedScreens();
+	return 0;
+}
+
+int LuaComponentUIPreload(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* ui = dynamic_cast<VansScriptUIComponent*>(component);
+	const char* path = luaL_checkstring(L, 2);
+	if (ui && path && VansRuntime::VansUISystem::Get().IsInitialized())
+	{
+		ui->m_PreloadScreens.push_back(path);
+		VansRuntime::VansUISystem::Get().PreloadScreen(path);
+	}
+	return 0;
+}
+
+int LuaComponentUIReleasePreloaded(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	if (auto* ui = dynamic_cast<VansScriptUIComponent*>(component))
+		ui->ReleasePreloaded();
 	return 0;
 }
 
@@ -1527,6 +1578,63 @@ int LuaInputGetMouseDelta(lua_State* L)
 	return 2;
 }
 
+int LuaInputGetMousePosition(lua_State* L)
+{
+	double x = 0.0;
+	double y = 0.0;
+	Vans::VansInputManager::Get().GetMousePosition(x, y);
+	lua_pushnumber(L, x);
+	lua_pushnumber(L, y);
+	return 2;
+}
+
+int LuaInputGetUIMousePosition(lua_State* L)
+{
+	double rawX = 0.0;
+	double rawY = 0.0;
+	Vans::VansInputManager::Get().GetMousePosition(rawX, rawY);
+
+	double uiX = rawX;
+	double uiY = rawY;
+	VansRuntime::VansUISystem::Get().TransformMouseToView(rawX, rawY, uiX, uiY);
+
+	lua_pushnumber(L, uiX);
+	lua_pushnumber(L, uiY);
+	return 2;
+}
+
+int LuaInputGetWindowSize(lua_State* L)
+{
+	int width = 0;
+	int height = 0;
+	if (GLFWwindow* window = Vans::VansInputManager::Get().GetWindow())
+		glfwGetWindowSize(window, &width, &height);
+	lua_pushinteger(L, width);
+	lua_pushinteger(L, height);
+	return 2;
+}
+
+int LuaInputGetUIViewSize(lua_State* L)
+{
+	double width = 0.0;
+	double height = 0.0;
+	if (!VansRuntime::VansUISystem::Get().GetViewSize(width, height))
+	{
+		if (GLFWwindow* window = Vans::VansInputManager::Get().GetWindow())
+		{
+			int windowWidth = 0;
+			int windowHeight = 0;
+			glfwGetWindowSize(window, &windowWidth, &windowHeight);
+			width = static_cast<double>(windowWidth);
+			height = static_cast<double>(windowHeight);
+		}
+	}
+
+	lua_pushnumber(L, width);
+	lua_pushnumber(L, height);
+	return 2;
+}
+
 int LuaInputIsMouseButtonDown(lua_State* L)
 {
 	lua_pushboolean(L, Vans::VansInputManager::Get().IsMouseButtonDown(MouseButtonFromLua(L, 1)));
@@ -1542,6 +1650,39 @@ int LuaInputIsMouseButtonPressed(lua_State* L)
 int LuaInputIsMouseButtonReleased(lua_State* L)
 {
 	lua_pushboolean(L, Vans::VansInputManager::Get().IsMouseButtonReleased(MouseButtonFromLua(L, 1)));
+	return 1;
+}
+
+int LuaInputSetMouseCapture(lua_State* L)
+{
+	Vans::VansInputManager::Get().SetCursorCaptureEnabled(lua_toboolean(L, 1) != 0);
+	return 0;
+}
+
+int LuaInputSetCursorMode(lua_State* L)
+{
+	const char* modeText = luaL_checkstring(L, 1);
+	std::string mode = modeText ? modeText : "";
+	std::transform(mode.begin(), mode.end(), mode.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+	if (mode == "game" || mode == "captured" || mode == "capture" || mode == "locked" || mode == "lock")
+	{
+		Vans::VansInputManager::Get().SetCursorCaptureEnabled(true);
+		return 0;
+	}
+	if (mode == "ui" || mode == "menu" || mode == "normal" || mode == "visible" || mode == "free")
+	{
+		Vans::VansInputManager::Get().SetCursorCaptureEnabled(false);
+		return 0;
+	}
+
+	return luaL_error(L, "unknown cursor mode '%s'", modeText);
+}
+
+int LuaInputIsMouseCaptured(lua_State* L)
+{
+	lua_pushboolean(L, Vans::VansInputManager::Get().IsCursorCaptureEnabled());
 	return 1;
 }
 
@@ -1726,6 +1867,71 @@ void VansScriptAudioComponent::OnEnable() { if (m_AudioNode) m_AudioNode->SetEna
 void VansScriptAudioComponent::OnDisable() { if (m_AudioNode) m_AudioNode->SetEnabled(false); }
 void VansScriptParticleComponent::OnEnable() { Play(); }
 void VansScriptParticleComponent::OnDisable() { Pause(); }
+
+VansScriptUIComponent::~VansScriptUIComponent()
+{
+	CloseOpenedScreens();
+	ReleasePreloaded();
+}
+
+void VansScriptUIComponent::Preload()
+{
+	if (!VansRuntime::VansUISystem::Get().IsInitialized())
+		return;
+	for (const std::string& screenPath : m_PreloadScreens)
+		VansRuntime::VansUISystem::Get().PreloadScreen(screenPath);
+}
+
+void VansScriptUIComponent::ReleasePreloaded()
+{
+	if (!VansRuntime::VansUISystem::Get().IsInitialized())
+		return;
+	for (const std::string& screenPath : m_PreloadScreens)
+		VansRuntime::VansUISystem::Get().ReleaseScreen(screenPath);
+}
+
+void VansScriptUIComponent::OpenConfiguredScreens()
+{
+	if (!VansRuntime::VansUISystem::Get().IsInitialized())
+		return;
+
+	for (const std::string& screenPath : m_AutoOpenScreens)
+	{
+		auto screen = VansRuntime::VansUISystem::Get().LoadScreen(screenPath);
+		if (screen)
+			m_OpenScreens.push_back(screen->GetHandleId());
+	}
+}
+
+void VansScriptUIComponent::CloseOpenedScreens()
+{
+	if (!VansRuntime::VansUISystem::Get().IsInitialized())
+	{
+		m_OpenScreens.clear();
+		return;
+	}
+
+	for (VansRuntime::VansUIHandleId screenId : m_OpenScreens)
+		VansRuntime::VansUISystem::Get().CloseScreen(screenId);
+	m_OpenScreens.clear();
+}
+
+void VansScriptUIComponent::OnEnable()
+{
+	Preload();
+	OpenConfiguredScreens();
+}
+
+void VansScriptUIComponent::OnDisable()
+{
+	CloseOpenedScreens();
+	ReleasePreloaded();
+}
+
+void VansScriptUIComponent::OnDestroy()
+{
+	OnDisable();
+}
 
 VansScriptRagdollComponent::VansScriptRagdollComponent() { m_ComponentName = "Ragdoll"; }
 VansScriptCharacterControllerComponent::VansScriptCharacterControllerComponent() { m_ComponentName = "CharacterController"; }
@@ -2151,15 +2357,16 @@ void VansScriptContext::AssertLuaThread() const
 void VansScriptContext::VansScriptSetup()
 {
 	VANS_ASSERT_MAIN_THREAD();
-	if (m_LuaState) return;
+	if (m_LuaState)
+	{
+		RefreshActiveProjectRoot();
+		InstallLuaSearchPath();
+		return;
+	}
 	s_Instance = this;
 	m_LuaThreadId = std::this_thread::get_id();
 
-	auto& projectManager = Vans::VansProjectManager::Get();
-	if (projectManager.IsProjectLoaded())
-		m_ActiveProjectRoot = projectManager.GetProjectRootPath();
-	else
-		m_ActiveProjectRoot = VansConfigration::GetInstance()->GetProjectRootPath();
+	RefreshActiveProjectRoot();
 
 	m_LuaState = luaL_newstate();
 	if (!m_LuaState)
@@ -2167,8 +2374,33 @@ void VansScriptContext::VansScriptSetup()
 	luaL_openlibs(m_LuaState);
 	RegisterLuaBindings();
 	InstallLuaSearchPath();
+	m_EventConnections.Add(Vans::VansEventBus::Get().Subscribe<VansEngine::VansPhysicsContactEvent>(
+		[this](const VansEngine::VansPhysicsContactEvent& event)
+		{
+			HandlePhysicsContactEvent(event);
+		},
+		Vans::VansEventLane::Physics,
+		0,
+		"VansScriptContext.PhysicsContact"));
 	RebuildScriptSchedule();
 	VANS_LOG("[LuaScript] Lua runtime initialized");
+}
+
+void VansScriptContext::RefreshActiveProjectRoot()
+{
+	auto& projectManager = Vans::VansProjectManager::Get();
+	if (projectManager.IsProjectLoaded() && !projectManager.GetProjectRootPath().empty())
+		m_ActiveProjectRoot = projectManager.GetProjectRootPath();
+	else if (m_ActiveProjectRoot.empty())
+		m_ActiveProjectRoot = VansConfigration::GetInstance()->GetProjectRootPath();
+}
+
+void VansScriptContext::SetActiveProjectRoot(const std::string& projectRoot)
+{
+	if (!projectRoot.empty())
+		m_ActiveProjectRoot = projectRoot;
+	if (m_LuaState)
+		InstallLuaSearchPath();
 }
 
 void VansScriptContext::InstallLuaSearchPath()
@@ -2181,7 +2413,11 @@ void VansScriptContext::InstallLuaSearchPath()
 	std::filesystem::path root(m_ActiveProjectRoot);
 	std::string scriptPattern = (root / "Scripts" / "?.lua").generic_string();
 	std::string rootPattern = (root / "?.lua").generic_string();
-	lua_pushstring(m_LuaState, (scriptPattern + ";" + rootPattern + ";" + current).c_str());
+	if (current.find(scriptPattern) == std::string::npos)
+		current = scriptPattern + ";" + current;
+	if (current.find(rootPattern) == std::string::npos)
+		current = rootPattern + ";" + current;
+	lua_pushstring(m_LuaState, current.c_str());
 	lua_setfield(m_LuaState, -2, "path");
 	lua_pop(m_LuaState, 1);
 }
@@ -2243,6 +2479,8 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "getVideoComp", PushObjectComponent<VansScriptVideoComponent> },
 		{ "get_particle_comp", PushObjectComponent<VansScriptParticleComponent> },
 		{ "getParticleComp", PushObjectComponent<VansScriptParticleComponent> },
+		{ "get_ui_comp", PushObjectComponent<VansScriptUIComponent> },
+		{ "getUIComp", PushObjectComponent<VansScriptUIComponent> },
 		{ nullptr, nullptr }
 	};
 	RegisterMethods(L, "Vans.Object", objectMethods);
@@ -2260,6 +2498,10 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "stop", LuaComponentStop },
 		{ "resume", LuaComponentResume },
 		{ "restart", LuaComponentRestart },
+		{ "open_screen", LuaComponentUIOpenScreen },
+		{ "close_all_owned", LuaComponentUICloseAllOwned },
+		{ "preload_screen", LuaComponentUIPreload },
+		{ "release_preloaded", LuaComponentUIReleasePreloaded },
 		{ "switch_source", LuaComponentSwitchSource },
 		{ "is_playing", LuaComponentIsPlaying },
 		{ "is_paused", LuaComponentIsPaused },
@@ -2343,11 +2585,19 @@ void VansScriptContext::RegisterLuaBindings()
 	lua_pushcfunction(L, LuaInputIsKeyPressed); lua_setfield(L, -2, "is_key_pressed");
 	lua_pushcfunction(L, LuaInputIsKeyReleased); lua_setfield(L, -2, "is_key_released");
 	lua_pushcfunction(L, LuaInputGetMouseDelta); lua_setfield(L, -2, "get_mouse_delta");
+	lua_pushcfunction(L, LuaInputGetMousePosition); lua_setfield(L, -2, "get_mouse_position");
+	lua_pushcfunction(L, LuaInputGetUIMousePosition); lua_setfield(L, -2, "get_ui_mouse_position");
+	lua_pushcfunction(L, LuaInputGetWindowSize); lua_setfield(L, -2, "get_window_size");
+	lua_pushcfunction(L, LuaInputGetUIViewSize); lua_setfield(L, -2, "get_ui_view_size");
 	lua_pushcfunction(L, LuaInputIsMouseButtonDown); lua_setfield(L, -2, "is_mouse_button_down");
 	lua_pushcfunction(L, LuaInputIsMouseButtonPressed); lua_setfield(L, -2, "is_mouse_button_pressed");
 	lua_pushcfunction(L, LuaInputIsMouseButtonReleased); lua_setfield(L, -2, "is_mouse_button_released");
+	lua_pushcfunction(L, LuaInputSetCursorMode); lua_setfield(L, -2, "set_cursor_mode");
+	lua_pushcfunction(L, LuaInputSetMouseCapture); lua_setfield(L, -2, "set_mouse_capture");
+	lua_pushcfunction(L, LuaInputIsMouseCaptured); lua_setfield(L, -2, "is_mouse_captured");
 	lua_setfield(L, -2, "input");
 
+	VansRuntime::VansLuaUIBridge::Register(L);
 	lua_setglobal(L, "vans");
 
 	lua_newtable(L);
@@ -2379,6 +2629,8 @@ void VansScriptContext::RegisterLuaBindings()
 	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptVideoComponent>); lua_setfield(L, -2, "getVideoComp");
 	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptParticleComponent>); lua_setfield(L, -2, "get_particle_comp");
 	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptParticleComponent>); lua_setfield(L, -2, "getParticleComp");
+	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptUIComponent>); lua_setfield(L, -2, "get_ui_comp");
+	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptUIComponent>); lua_setfield(L, -2, "getUIComp");
 	lua_setglobal(L, "__vans_script_instance_methods");
 }
 
@@ -2386,6 +2638,8 @@ void VansScriptContext::ShutdownLua()
 {
 	if (!m_LuaState) return;
 	AssertLuaThread();
+	m_EventConnections.DisconnectAll();
+	VansRuntime::VansLuaUIBridge::Shutdown(m_LuaState);
 	ClearTrackedModules();
 	s_Instance = nullptr;
 	lua_close(m_LuaState);
@@ -2495,7 +2749,7 @@ void VansScriptContext::VansScriptUpdateCameraScripts()
 void VansScriptContext::VansScriptPreUpdate()
 {
 	if (!m_Scene) return;
-	DispatchPhysicsEvents();
+	Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Physics);
 }
 
 void VansScriptContext::UpdateScriptComponents(bool cameraScriptsOnly, bool skipCameraScripts)
@@ -2520,27 +2774,21 @@ void VansScriptContext::UpdateScriptComponents(bool cameraScriptsOnly, bool skip
 	}
 }
 
-void VansScriptContext::DispatchPhysicsEvents()
+void VansScriptContext::HandlePhysicsContactEvent(const VansEngine::VansPhysicsContactEvent& event)
 {
 	if (!m_Scene) return;
-	auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
-	std::vector<VansEngine::PhysicsEventData> events;
-	physics.GetEventQueue().SwapEvents(events);
-	for (const auto& event : events)
+	DispatchEventToObject(event, event.transformID_A, event.transformID_B,
+		event.nameB, event.contactPoint, event.contactNormal, event.impulse);
+	if (event.type == VansEngine::VansPhysicsContactEventType::CollisionEnter ||
+		event.type == VansEngine::VansPhysicsContactEventType::CollisionExit)
 	{
-		DispatchEventToObject(event, event.transformID_A, event.transformID_B,
-			event.nameB, event.contactPoint, event.contactNormal, event.impulse);
-		if (event.type == VansEngine::PhysicsEventType::CollisionEnter ||
-			event.type == VansEngine::PhysicsEventType::CollisionExit)
-		{
-			DispatchEventToObject(event, event.transformID_B, event.transformID_A,
-				event.nameA, event.contactPoint, -event.contactNormal, event.impulse);
-		}
+		DispatchEventToObject(event, event.transformID_B, event.transformID_A,
+			event.nameA, event.contactPoint, -event.contactNormal, event.impulse);
 	}
 }
 
 void VansScriptContext::DispatchEventToObject(
-	const VansEngine::PhysicsEventData& event,
+	const VansEngine::VansPhysicsContactEvent& event,
 	std::uint32_t selfTransformID,
 	std::uint32_t otherTransformID,
 	const std::string& otherName,
@@ -2568,13 +2816,13 @@ void VansScriptContext::DispatchEventToObject(
 		if (!component) continue;
 		switch (event.type)
 		{
-		case VansEngine::PhysicsEventType::CollisionEnter:
+		case VansEngine::VansPhysicsContactEventType::CollisionEnter:
 			component->CallOnCollisionEnter(info); break;
-		case VansEngine::PhysicsEventType::CollisionExit:
+		case VansEngine::VansPhysicsContactEventType::CollisionExit:
 			component->CallOnCollisionExit(info); break;
-		case VansEngine::PhysicsEventType::TriggerEnter:
+		case VansEngine::VansPhysicsContactEventType::TriggerEnter:
 			component->CallOnTriggerEnter(info); break;
-		case VansEngine::PhysicsEventType::TriggerExit:
+		case VansEngine::VansPhysicsContactEventType::TriggerExit:
 			component->CallOnTriggerExit(info); break;
 		}
 	}

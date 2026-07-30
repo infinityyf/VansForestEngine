@@ -3,96 +3,73 @@
 
 #include "../water_screen_common.glsl"
 
-// Stable screen-space refraction.  No receiver trace is performed: the
-// current water thickness and view-space surface normal define one continuous
-// UV displacement, which is then used to sample the opaque scene color.
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D waterGBufNormal;
 layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;
-layout(set = 0, binding = 2) uniform sampler2D sceneColor;
+layout(set = 0, binding = 2) uniform sampler2D sceneGBuf2;
 layout(set = 0, binding = 3) uniform sampler2D thicknessMap;
 
-layout(set = 0, binding = 4) uniform WaterCompositeParams
+layout(set = 0, binding = 4) uniform PBRWaterParams
 {
-    vec4  deepWaterColor;
-    vec4  shallowWaterColor;
-    float fresnelPower;
-    float waterLevel;
-    float specularIntensity;
-    float refractionStrength;
-    vec4  absorptionCoeff;
-    vec4  scatteringCoeff;
-    float sssAnisotropy;
-    float waterRoughness;
-    float waterIOR;
-    float maxOpticalDepth;
-    vec4  cameraPosition;
-    mat4  invViewProjMatrix;
-    vec4  mainLightDir;
-    vec4  mainLightColor;
-    mat4  viewMatrix;
-    mat4  projMatrix;
+    vec4 absorptionCoeff;
+    vec4 scatteringCoeff;
+    vec4 cameraPosition;
+    vec4 mainLightDir;
+    vec4 mainLightColor;
+    vec4 surfaceParams;
+    vec4 refractionParams;
+    vec4 volumeParams;
+    vec4 thinSSSParams;
+    vec4 backlitParams;
+    vec4 filterParams;
     ivec4 effectFlags;
+    mat4 invViewProjMatrix;
+    mat4 viewMatrix;
+    mat4 projMatrix;
 } params;
 
-layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D refractionOut;
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D refractionDataOut;
 
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(refractionOut);
+    ivec2 size = imageSize(refractionDataOut);
     if (any(greaterThanEqual(pixel, size)))
         return;
 
-    vec4 normalCoverage = texelFetch(waterGBufNormal, pixel, 0);
+    vec4 normalRoughness = texelFetch(waterGBufNormal, pixel, 0);
     vec4 surface = texelFetch(waterGBufPosDepth, pixel, 0);
-    if (!WaterSurfaceValid(normalCoverage, surface))
+    if (!WaterSurfaceValid(normalRoughness, surface))
     {
-        imageStore(refractionOut, pixel, vec4(0.0));
+        imageStore(refractionDataOut, pixel, vec4(0.0));
         return;
     }
 
-    float normalizedThickness = clamp(texelFetch(thicknessMap, pixel, 0).r, 0.0, 1.0);
-    float thicknessWeight = pow(normalizedThickness, 0.65);
-
-    vec3 worldNormal = normalize(normalCoverage.xyz);
+    float thickness01 = clamp(texelFetch(thicknessMap, pixel, 0).r, 0.0, 1.0);
+    vec3 worldNormal = normalize(normalRoughness.xyz);
     vec3 viewNormal = normalize(mat3(params.viewMatrix) * worldNormal);
     vec3 flatViewNormal = normalize(mat3(params.viewMatrix) * vec3(0.0, 1.0, 0.0));
-    // Attachment UV has +Y downward while view space has +Y upward.
-    // Subtract the projected flat-water normal: otherwise even a perfectly
-    // flat surface receives a large camera-pitch-dependent uniform offset.
     vec2 normalDeviation = viewNormal.xy - flatViewNormal.xy;
     vec2 screenNormal = vec2(normalDeviation.x, -normalDeviation.y);
 
     float aspect = float(size.x) / max(float(size.y), 1.0);
-    vec2 uvOffset = screenNormal * params.refractionStrength * thicknessWeight;
+    vec2 uvOffset = screenNormal * params.refractionParams.x * pow(thickness01, 0.65);
     uvOffset.x /= max(aspect, 1e-5);
 
     vec2 baseUV = WaterPixelUV(pixel, size);
-    float edgeDistance = min(min(baseUV.x, 1.0 - baseUV.x),
-                             min(baseUV.y, 1.0 - baseUV.y));
+    float edgeDistance = min(min(baseUV.x, 1.0 - baseUV.x), min(baseUV.y, 1.0 - baseUV.y));
     float edgeFade = smoothstep(0.0,
-        max(params.refractionStrength * 1.5, 1.0 / float(size.y)),
+        max(params.refractionParams.x * params.refractionParams.w, 1.0 / float(size.y)),
         edgeDistance);
-    vec2 sampleUV = clamp(baseUV + uvOffset * edgeFade, vec2(0.001), vec2(0.999));
-    vec3 background = textureLod(sceneColor, sampleUV, 0.0).rgb;
+    vec2 refractedUV = clamp(baseUV + uvOffset * edgeFade, vec2(0.001), vec2(0.999));
+    ivec2 refractedPixel = WaterUVToPixel(refractedUV, textureSize(sceneGBuf2, 0));
+    float refractedDepth = texelFetch(sceneGBuf2, refractedPixel, 0).w;
 
-    float opticalDistance = normalizedThickness * max(params.maxOpticalDepth, 0.01);
-    vec3 sigmaA = max(params.absorptionCoeff.rgb, vec3(0.0));
-    vec3 sigmaS = max(params.scatteringCoeff.rgb, vec3(0.0));
-    vec3 sigmaT = sigmaA + sigmaS;
-    vec3 transmittance = exp(-sigmaT * opticalDistance);
-    vec3 scatteringAlbedo = sigmaS / max(sigmaT, vec3(1e-5));
-    vec3 L = normalize(params.mainLightDir.xyz);
-    vec3 incidentLight = max(params.mainLightColor.rgb, vec3(0.0)) *
-        pow(max(dot(worldNormal, L), 0.0), 1.35);
-    vec3 inScattering = scatteringAlbedo * (vec3(1.0) - transmittance)
-        * params.shallowWaterColor.rgb * incidentLight;
-    vec3 result = background * transmittance + inScattering;
+    float maxCrossDistance = max(params.refractionParams.y, 0.01);
+    float expectedDepth = surface.w + thickness01 * maxCrossDistance;
+    if (!SceneDepthValid(refractedDepth) || refractedDepth <= surface.w + WaterDepthEpsilon(surface.w))
+        refractedDepth = expectedDepth;
 
-    if (params.effectFlags.y == 0)
-        result = params.shallowWaterColor.rgb;
-
-    imageStore(refractionOut, pixel, vec4(max(result, vec3(0.0)), 1.0));
+    imageStore(refractionDataOut, pixel, vec4(refractedUV - baseUV, refractedDepth, 1.0));
 }

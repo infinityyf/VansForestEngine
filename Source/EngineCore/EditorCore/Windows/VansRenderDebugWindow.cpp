@@ -1,7 +1,5 @@
 #include "VansRenderDebugWindow.h"
 #include "../VansEditorWindow.h"
-#include "../../RenderCore/VulkanCore/VansPipelineRegistry.h"
-#include "../../RenderCore/VulkanCore/VansRenderDocCapture.h"
 #include "imgui.h"
 
 #include <cfloat>
@@ -11,7 +9,7 @@
 
 namespace
 {
-	unsigned long long ToImGuiCount(size_t value)
+	unsigned long long ToImGuiCount(std::uint64_t value)
 	{
 		return static_cast<unsigned long long>(value);
 	}
@@ -48,7 +46,7 @@ namespace
 
 	void DrawPipelineRegistryRow(
 		const char* label,
-		const VansGraphics::VansPipelineRegistryMapStats& stats)
+		const Vans::EditorAPI::PipelineRegistryMapStatsSnapshot& stats)
 	{
 		ImGui::TableNextRow();
 		ImGui::TableNextColumn();
@@ -61,18 +59,18 @@ namespace
 		ImGui::Text("%llu", ToImGuiCount(stats.expiredCount));
 	}
 
-	void DrawPipelineRegistryStats()
+	void DrawPipelineRegistryStats(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	{
-		const VansGraphics::VansPipelineRegistryStats stats =
-			VansGraphics::VansPipelineRegistry::Get().GetStats();
-
 		if (!ImGui::CollapsingHeader("Pipeline Registry", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			return;
 		}
 
-		ImGui::Text("Total Active: %llu", ToImGuiCount(stats.GetTotalActiveCount()));
-		ImGui::Text("Total Expired: %llu", ToImGuiCount(stats.GetTotalExpiredCount()));
+		const Vans::EditorAPI::PipelineRegistryStatsSnapshot stats =
+			editorAPI.GetPipelineRegistryStats();
+
+		ImGui::Text("Total Active: %llu", ToImGuiCount(stats.totalActiveCount));
+		ImGui::Text("Total Expired: %llu", ToImGuiCount(stats.totalExpiredCount));
 
 		if (ImGui::BeginTable("PipelineRegistryStatsTable", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
 		{
@@ -89,15 +87,14 @@ namespace
 		}
 	}
 
-	void DrawRenderDocControls()
+	void DrawRenderDocControls(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	{
 		if (!ImGui::CollapsingHeader("RenderDoc Capture", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			return;
 		}
 
-		auto& capture = VansGraphics::VansRenderDocCapture::Get();
-		VansGraphics::VansRenderDocStatus status = capture.QueryStatus();
+		Vans::EditorAPI::RenderDocStatusSnapshot status = editorAPI.GetRenderDocStatus();
 		const ImVec4 statusColor = status.available
 			? ImVec4(0.30f, 0.85f, 0.45f, 1.0f)
 			: ImVec4(0.95f, 0.65f, 0.20f, 1.0f);
@@ -122,13 +119,13 @@ namespace
 		bool apiValidation = status.apiValidationEnabled;
 		if (ImGui::Checkbox("Capture API validation messages", &apiValidation))
 		{
-			capture.SetAPIValidationEnabled(apiValidation);
+			editorAPI.SetRenderDocAPIValidationEnabled(apiValidation);
 		}
 
 		bool referenceAllResources = status.referenceAllResources;
 		if (ImGui::Checkbox("Reference all live resources (larger capture)", &referenceAllResources))
 		{
-			capture.SetReferenceAllResources(referenceAllResources);
+			editorAPI.SetRenderDocReferenceAllResources(referenceAllResources);
 		}
 
 		if (status.frameCapturing)
@@ -137,13 +134,13 @@ namespace
 		}
 		else if (ImGui::Button("Capture Next Frame"))
 		{
-			capture.CaptureNextFrame();
+			editorAPI.CaptureNextRenderDocFrame();
 		}
 
 		ImGui::SameLine();
 		if (ImGui::Button("Open RenderDoc UI"))
 		{
-			capture.OpenReplayUI();
+			editorAPI.OpenRenderDocUI();
 		}
 	}
 
@@ -155,7 +152,7 @@ namespace
 		}
 
 		const Vans::EditorAPI::RenderBackendDiagnostics diagnostics =
-			editorAPI.GetRenderBackendDiagnostics();
+			editorAPI.GetRenderBackendDiagnostics(false);
 
 		if (ImGui::BeginTable("RenderBackendDiagnosticsTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
 		{
@@ -219,12 +216,17 @@ namespace
 			drawCountRow("Frame Passes", diagnostics.framePlanPassCount);
 			drawCountRow("Compiled Resources", diagnostics.compiledResourceCount);
 			drawCountRow("Barrier Dependencies", diagnostics.barrierDependencyCount);
+			drawCount64Row("Graph Topology Revision", diagnostics.renderGraphTopologyRevision);
+			drawCount64Row("Graph Topology Hash", diagnostics.renderGraphTopologyHash);
+			drawCount64Row("Graph Compiled Frame", diagnostics.renderGraphCompiledFrameNumber);
 			ImGui::EndTable();
 		}
 
 		if (ImGui::CollapsingHeader("RenderGraph Summary"))
 		{
-			if (!diagnostics.available)
+			const Vans::EditorAPI::RenderBackendDiagnostics summaryDiagnostics =
+				editorAPI.GetRenderBackendDiagnostics(true);
+			if (!summaryDiagnostics.available)
 			{
 				ImGui::TextDisabled("No render graph diagnostics are available yet.");
 			}
@@ -236,7 +238,7 @@ namespace
 					true,
 					ImGuiWindowFlags_HorizontalScrollbar))
 				{
-					ImGui::TextUnformatted(diagnostics.renderGraphSummary.c_str());
+					ImGui::TextUnformatted(summaryDiagnostics.renderGraphSummary.c_str());
 				}
 				ImGui::EndChild();
 			}
@@ -259,11 +261,11 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(Vans::EditorAPI::IEngineEdi
 		filter.category = "render_debug";
 		DrawPreviewTable("RenderDebugTable", editorAPI.QueryRenderTexturePreviews(filter));
 		ImGui::Separator();
-		DrawRenderDocControls();
+		DrawRenderDocControls(editorAPI);
 		ImGui::Separator();
 		DrawRenderBackendDiagnostics(editorAPI);
 		ImGui::Separator();
-		DrawPipelineRegistryStats();
+		DrawPipelineRegistryStats(editorAPI);
 		ImGui::End();
 	}
 

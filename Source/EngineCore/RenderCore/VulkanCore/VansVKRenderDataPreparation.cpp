@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <vector>
 #include <cstdint>
+#include <unordered_set>
 
 namespace VansGraphics
 {
@@ -31,6 +32,65 @@ namespace VansGraphics
 		};
 		std::vector<PendingCustomTexture> pendingCustomTextures;
 		const VansClothGPUParam defaultClothPayload{};
+		std::unordered_set<VansTexture*> sceneTextures;
+		sceneTextures.reserve(m_Scene->GetTextureAssets().size());
+		for (auto* textureAsset : m_Scene->GetTextureAssets())
+		{
+			if (auto* texture = static_cast<VansTexture*>(textureAsset))
+				sceneTextures.insert(texture);
+		}
+		auto isSceneTexture = [&](VansTexture* texture)
+		{
+			return texture && sceneTextures.find(texture) != sceneTextures.end();
+		};
+		auto isUsableImage = [](VansVKImage* image)
+		{
+			return image &&
+				image->GetSampler() != VK_NULL_HANDLE &&
+				image->GetImageView() != VK_NULL_HANDLE;
+		};
+		auto findFallbackTexture = [&](const char* fallbackName)
+		{
+			if (fallbackName && fallbackName[0] != '\0')
+			{
+				if (auto* fallback = static_cast<VansTexture*>(m_Scene->GetTextureAsset(fallbackName));
+					isSceneTexture(fallback) && isUsableImage(&fallback->GetImage()))
+				{
+					return fallback;
+				}
+			}
+			for (VansTexture* texture : sceneTextures)
+			{
+				if (isUsableImage(&texture->GetImage()))
+					return texture;
+			}
+			return static_cast<VansTexture*>(nullptr);
+		};
+		auto appendTextureSlot = [&](VansMaterial* material, const char* slotName, VansTexture* texture, const char* fallbackName)
+		{
+			VansTexture* resolvedTexture = texture;
+			if (!isSceneTexture(resolvedTexture) || !isUsableImage(&resolvedTexture->GetImage()))
+			{
+				resolvedTexture = findFallbackTexture(fallbackName);
+				VANS_LOG_WARN("[PreparePBRMaterialData] Material '"
+					<< (material ? material->m_AssetName : std::string("<null>"))
+					<< "' slot '" << (slotName ? slotName : "<unnamed>")
+					<< "' had no current GPU texture; using fallback '"
+					<< (fallbackName ? fallbackName : "<none>") << "'.");
+			}
+
+			if (!resolvedTexture)
+			{
+				VANS_LOG_ERROR("[PreparePBRMaterialData] Material '"
+					<< (material ? material->m_AssetName : std::string("<null>"))
+					<< "' slot '" << (slotName ? slotName : "<unnamed>")
+					<< "' could not resolve any bindless texture.");
+				materialManager->m_GlobalPBRTextures.push_back(nullptr);
+				return;
+			}
+
+			materialManager->m_GlobalPBRTextures.push_back(&resolvedTexture->GetImage());
+		};
 		auto appendCustomMaterialData = [&](VansMaterial* material)
 		{
 			const int payloadIndex = static_cast<int>(materialManager->m_GlobalCustomMaterialParamData.size());
@@ -61,11 +121,11 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRMaterial.push_back(pbr);
 				materialManager->m_GlobalPBRParamData.push_back(pbr->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
-				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_BaseColorTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_NormalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_MetalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_RoughnessTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(pbr->m_AoTexture->GetImage()));
+				appendTextureSlot(material, "baseColor", pbr->m_BaseColorTexture, "defaultAlbedo");
+				appendTextureSlot(material, "normal", pbr->m_NormalTexture, "defaultNormal");
+				appendTextureSlot(material, "metal", pbr->m_MetalTexture, "defaultMetal");
+				appendTextureSlot(material, "roughness", pbr->m_RoughnessTexture, "defaultRoughness");
+				appendTextureSlot(material, "ao", pbr->m_AoTexture, "defaultAo");
 			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_EMISSIVE)
 			{
@@ -75,11 +135,11 @@ namespace VansGraphics
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 
 				// Slots 1-4: not used by Emissive.frag but must be present to keep the 5-slot stride intact
-				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
+				appendTextureSlot(material, "emissive", emissive->m_EmissiveTexture, "defaultAlbedo");
+				appendTextureSlot(material, "emissive", emissive->m_EmissiveTexture, "defaultAlbedo");
+				appendTextureSlot(material, "emissive", emissive->m_EmissiveTexture, "defaultAlbedo");
+				appendTextureSlot(material, "emissive", emissive->m_EmissiveTexture, "defaultAlbedo");
+				appendTextureSlot(material, "emissive", emissive->m_EmissiveTexture, "defaultAlbedo");
 			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_PBR_EMISSIVE)
 			{
@@ -87,11 +147,11 @@ namespace VansGraphics
 				emissive->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(emissive->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
-				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_BaseColorTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_NormalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_MetalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_RoughnessTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(emissive->m_EmissiveTexture->GetImage()));
+				appendTextureSlot(material, "baseColor", emissive->m_BaseColorTexture, "defaultAlbedo");
+				appendTextureSlot(material, "normal", emissive->m_NormalTexture, "defaultNormal");
+				appendTextureSlot(material, "metal", emissive->m_MetalTexture, "defaultMetal");
+				appendTextureSlot(material, "roughness", emissive->m_RoughnessTexture, "defaultRoughness");
+				appendTextureSlot(material, "emissive", emissive->m_EmissiveTexture, "defaultAlbedo");
 			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_DECAL)
 			{
@@ -99,11 +159,11 @@ namespace VansGraphics
 				decal->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(decal->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
-				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_BaseColorTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_NormalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_MetalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_RoughnessTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(decal->m_AoTexture->GetImage()));
+				appendTextureSlot(material, "baseColor", decal->m_BaseColorTexture, "defaultAlbedo");
+				appendTextureSlot(material, "normal", decal->m_NormalTexture, "defaultNormal");
+				appendTextureSlot(material, "metal", decal->m_MetalTexture, "defaultMetal");
+				appendTextureSlot(material, "roughness", decal->m_RoughnessTexture, "defaultRoughness");
+				appendTextureSlot(material, "ao", decal->m_AoTexture, "defaultAo");
 			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_SUBSURFACE)
 			{
@@ -117,11 +177,11 @@ namespace VansGraphics
 
 				materialManager->m_GlobalPBRParamData.push_back(sss->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
-				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_NormalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_ThicknessTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_RoughnessTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(sss->m_BaseColorTexture->GetImage()));
+				appendTextureSlot(material, "baseColor", sss->m_BaseColorTexture, "defaultAlbedo");
+				appendTextureSlot(material, "normal", sss->m_NormalTexture, "defaultNormal");
+				appendTextureSlot(material, "thickness", sss->m_ThicknessTexture, "defaultAo");
+				appendTextureSlot(material, "roughness", sss->m_RoughnessTexture, "defaultRoughness");
+				appendTextureSlot(material, "baseColor", sss->m_BaseColorTexture, "defaultAlbedo");
 			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_CLOTH)
 			{
@@ -129,11 +189,11 @@ namespace VansGraphics
 				cloth->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(cloth->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(cloth->BuildGPUParam());
-				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_BaseColorTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_NormalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_BaseColorTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_RoughnessTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(cloth->m_AoTexture->GetImage()));
+				appendTextureSlot(material, "baseColor", cloth->m_BaseColorTexture, "defaultAlbedo");
+				appendTextureSlot(material, "normal", cloth->m_NormalTexture, "defaultNormal");
+				appendTextureSlot(material, "baseColor", cloth->m_BaseColorTexture, "defaultAlbedo");
+				appendTextureSlot(material, "roughness", cloth->m_RoughnessTexture, "defaultRoughness");
+				appendTextureSlot(material, "ao", cloth->m_AoTexture, "defaultAo");
 			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_SKIN)
 			{
@@ -144,11 +204,11 @@ namespace VansGraphics
 
 				// Skin samples its dedicated Set 4 textures, but still reserves the
 				// standard 5 bindless slots so later materialIndex * 5 lookups stay aligned.
-				materialManager->m_GlobalPBRTextures.push_back(&(skin->m_BaseColorTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(skin->m_NormalTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(skin->m_BaseColorTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(skin->m_BaseColorTexture->GetImage()));
-				materialManager->m_GlobalPBRTextures.push_back(&(skin->m_BaseColorTexture->GetImage()));
+				appendTextureSlot(material, "baseColor", skin->m_BaseColorTexture, "defaultAlbedo");
+				appendTextureSlot(material, "normal", skin->m_NormalTexture, "defaultNormal");
+				appendTextureSlot(material, "baseColor", skin->m_BaseColorTexture, "defaultAlbedo");
+				appendTextureSlot(material, "baseColor", skin->m_BaseColorTexture, "defaultAlbedo");
+				appendTextureSlot(material, "baseColor", skin->m_BaseColorTexture, "defaultAlbedo");
 			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
 			{
@@ -177,7 +237,7 @@ namespace VansGraphics
 				payload.textureIndices[pendingTexture.textureSlot] = globalTextureIndex;
 			else
 				payload.values[5][pendingTexture.textureSlot - 4] = static_cast<float>(globalTextureIndex);
-			materialManager->m_GlobalPBRTextures.push_back(&(pendingTexture.texture->GetImage()));
+			appendTextureSlot(nullptr, "custom", pendingTexture.texture, "defaultAlbedo");
 		}
 
 		if (materialManager->m_GlobalClothParamData.size() != materialManager->m_GlobalPBRParamData.size())
@@ -285,6 +345,16 @@ namespace VansGraphics
 		std::vector<VkDescriptorImageInfo> bindlessTextureInfos;
 		for (size_t i = 0; i < bindlessTextures.size(); i++)
 		{
+			if (!isUsableImage(bindlessTextures[i]))
+			{
+				if (VansTexture* fallback = findFallbackTexture("defaultAlbedo"))
+					bindlessTextures[i] = &fallback->GetImage();
+			}
+			if (!isUsableImage(bindlessTextures[i]))
+			{
+				VANS_LOG_ERROR("[PreparePBRMaterialData] Bindless texture " << i << " is invalid.");
+				continue;
+			}
 			bindlessTextureInfos.push_back(
 				{
 					bindlessTextures[i]->GetSampler(),
@@ -352,10 +422,14 @@ namespace VansGraphics
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_PreConvDiffuse = new VansTexture();
-		manager->m_PreConvDiffuse->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 1, 4, true, false, true);
+		manager->m_PreConvDiffuse->InitTextureWithoutData(
+			m_VansVKCommandBuffer, 512, 512, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, true, false, true);
 
 		manager->m_PreConvSpecular = new VansTexture();
-		manager->m_PreConvSpecular->InitTextureWithoutData(m_VansVKCommandBuffer, 512, 512, 1, 4, true, true, true);
+		manager->m_PreConvSpecular->InitTextureWithoutData(
+			m_VansVKCommandBuffer, 512, 512, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, true, true, true);
 
 		auto loadEngineTexture = [&](VansTexture* texture,
 			const std::string& path,
@@ -655,7 +729,7 @@ namespace VansGraphics
 		manager->UpdatePBRLutDescriptorSets();
 		manager->UpdateAtmosphereDescriptorSets();
 
-		manager->m_PreConvSpecular->GetImage().SetImageMemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		manager->m_PreConvSpecular->GetImage().SetImageMemoryBarrier(m_VansVKCommandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			{
 				manager->m_PreConvSpecular->GetImage().m_VansVKImage,
 				VK_ACCESS_NONE,
@@ -666,7 +740,7 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED,
 				manager->m_PreConvSpecular->GetImage().m_ImageAspect
 			});
-		manager->m_PreConvDiffuse->GetImage().SetImageMemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		manager->m_PreConvDiffuse->GetImage().SetImageMemoryBarrier(m_VansVKCommandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			{
 				manager->m_PreConvDiffuse->GetImage().m_VansVKImage,
 				VK_ACCESS_NONE,
@@ -694,7 +768,9 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		VansTexture* ssaoResult = new VansTexture();
-		ssaoResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true);
+		ssaoResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSAO_RESULT, ssaoResult);
 	}
 
@@ -702,19 +778,27 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		VansTexture* ssgiResult = new VansTexture();
-		ssgiResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true);
+		ssgiResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT, ssgiResult);
 
 		VansTexture* ssgiFilterResult = new VansTexture();
-		ssgiFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true);
+		ssgiFilterResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT, ssgiFilterResult);
 
 		VansTexture* ssgiTemporalA = new VansTexture();
-		ssgiTemporalA->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true);
+		ssgiTemporalA->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_A, ssgiTemporalA);
 
 		VansTexture* ssgiTemporalB = new VansTexture();
-		ssgiTemporalB->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true);
+		ssgiTemporalB->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_B, ssgiTemporalB);
 		manager->m_SSGITemporalFrame = 0;
 
@@ -758,21 +842,42 @@ namespace VansGraphics
 
 	// HIZ stores positive linear view-space depth in meters.
 		VansTexture* hzbResult = new VansTexture();
-		hzbResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 1, false, true, true, HIGH_PRES_32);
+		hzbResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32_SFLOAT, false, true, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT, hzbResult);
+
+		VansTexture* occlusionHZBResult = new VansTexture();
+		occlusionHZBResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32_SFLOAT, false, true, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_HZB_OCCLUSION_RESULT, occlusionHZBResult);
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
 
 		manager->m_HZBShader = VansGraphics::VansShaderManager::Get().FindComputeShader("HIZ");
+		manager->m_OcclusionHZBShader = VansGraphics::VansShaderManager::Get().FindComputeShader("OcclusionHIZ");
 
 		// HIZ_SEED shader: GBuffer position.w -> HIZ mip 0.
 		manager->m_HIZSeedShader = VansGraphics::VansShaderManager::Get().FindComputeShader("HIZSeed");
+		manager->m_OcclusionHIZSeedShader = VansGraphics::VansShaderManager::Get().FindComputeShader("OcclusionHIZSeed");
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZSeed(
 			manager->m_HIZSeedSetLayout, manager->m_HIZSeedDescriptorSets, 1);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZSeed(
+			manager->m_OcclusionHIZSeedSetLayout, manager->m_OcclusionHIZSeedDescriptorSets, 1);
+		manager->m_MainCameraHiZCullShader = VansGraphics::VansShaderManager::Get().FindComputeShader("MainCameraHiZCull");
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_MainCameraHiZCull(
+			manager->m_MainCameraHiZCullSetLayout,
+			manager->m_MainCameraHiZCullDescriptorSets,
+			1);
 
 		manager->m_HIZMipCount = 1 + (int)std::floor(std::log2(std::min(m_RenderWidth, m_RenderHeight)));
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZ(manager->m_HZBTexSetLayouts, manager->m_HZBDescriptorSets, manager->m_HIZMipCount - 1);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZ(
+			manager->m_OcclusionHZBTexSetLayouts,
+			manager->m_OcclusionHZBDescriptorSets,
+			manager->m_HIZMipCount - 1);
 	}
 
 	void VansVKDevice::PrepareScreenSpaceShadowRenderData()
@@ -783,7 +888,7 @@ namespace VansGraphics
 		sssResult->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
 			m_RenderWidth, m_RenderHeight,
-			1, 4, false, false, true, MID_PRES_16);
+			1, VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT, sssResult);
 
 		manager->SetScreenSpaceShadowExtent(m_RenderWidth, m_RenderHeight);
@@ -819,11 +924,10 @@ namespace VansGraphics
 			kPreviewResolution,
 			kPreviewResolution,
 			1,
-			4,
+			VK_FORMAT_R8G8B8A8_UNORM,
 			false,
 			false,
 			true,
-			LOW_PRES_8,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(
 			VansMaterialManager::RT_PUNCTUAL_SHADOW_DEBUG_PREVIEW,
@@ -841,27 +945,39 @@ namespace VansGraphics
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 
 		VansTexture* ssrHitInfo = new VansTexture();
-		ssrHitInfo->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, MID_PRES_16);
+		ssrHitInfo->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_HIT_INFO, ssrHitInfo);
 
 		VansTexture* ssrRayPdf = new VansTexture();
-		ssrRayPdf->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrRayPdf->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RAY_PDF, ssrRayPdf);
 
 		VansTexture* ssrResult = new VansTexture();
-		ssrResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT, ssrResult);
 
 		VansTexture* ssrAaResultA = new VansTexture();
-		ssrAaResultA->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrAaResultA->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT_A, ssrAaResultA);
 
 		VansTexture* ssrAaResultB = new VansTexture();
-		ssrAaResultB->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrAaResultB->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT_B, ssrAaResultB);
 
 		VansTexture* ssrAaResult = new VansTexture();
-		ssrAaResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1, 4, false, false, true, HIGH_PRES_32);
+		ssrAaResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT, ssrAaResult);
 
 		auto vansConfigration = VansConfigration::GetInstance();
@@ -881,7 +997,9 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		VansTexture* volumetricFogResult = new VansTexture();
-		volumetricFogResult->InitTextureWithoutData(m_VansVKCommandBuffer, (m_RenderWidth + 1) / 2, (m_RenderHeight + 1) / 2, 1, 4, false, false, true, HIGH_PRES_32, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		volumetricFogResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer, (m_RenderWidth + 1) / 2, (m_RenderHeight + 1) / 2, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT, volumetricFogResult);
 		
 		// ================================================================
@@ -898,7 +1016,7 @@ namespace VansGraphics
 		fogVoxelInjection->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
 			gridX, gridY, VOXEL_GRID_Z,
-			4, false, false, true, MID_PRES_16, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION, fogVoxelInjection);
 
 		// History texture for temporal reprojection (ping-pong with injection)
@@ -906,14 +1024,14 @@ namespace VansGraphics
 		fogVoxelInjectionHistory->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
 			gridX, gridY, VOXEL_GRID_Z,
-			4, false, false, true, MID_PRES_16, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_INJECTION_HISTORY, fogVoxelInjectionHistory);
 
 		VansTexture* fogVoxelRayMarch = new VansTexture();
 		fogVoxelRayMarch->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
 			gridX, gridY, VOXEL_GRID_Z,
-			4, false, false, true, MID_PRES_16, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FOG_VOXEL_RAYMARCH, fogVoxelRayMarch);
 
 		auto vansConfigration = VansConfigration::GetInstance();
@@ -963,7 +1081,7 @@ namespace VansGraphics
 		cloudBuffer->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
 			cloudW, cloudH, 1,
-			4, false, false, true, MID_PRES_16);
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_CLOUD_BUFFER, cloudBuffer);
 
 		manager->m_CloudParamsCBBuffer.CreatVulkanBuffer(
@@ -1015,7 +1133,9 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		VansTexture* ssaoFilterResult = new VansTexture();
-		ssaoFilterResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		ssaoFilterResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT, ssaoFilterResult);
 
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_BilateralFilter(manager->m_BilateralFilterSetLayout, manager->m_BilateralFilterDescriptorSets, 3);
@@ -1130,35 +1250,51 @@ namespace VansGraphics
 		const std::string projectRoot = config->GetProjectRootPath();
 
 		VansTexture* exposureLum = new VansTexture();
-		exposureLum->InitTextureWithoutData(m_VansVKCommandBuffer, 64, 64, 1, 1, false, false, true, MID_PRES_16);
+		exposureLum->InitTextureWithoutData(
+			m_VansVKCommandBuffer, 64, 64, 1,
+			VK_FORMAT_R16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_LUMINANCE, exposureLum);
 
 		VansTexture* exposureCurrent = new VansTexture();
-		exposureCurrent->InitTextureWithoutData(m_VansVKCommandBuffer, 1, 1, 1, 1, false, false, true, MID_PRES_16);
+		exposureCurrent->InitTextureWithoutData(
+			m_VansVKCommandBuffer, 1, 1, 1,
+			VK_FORMAT_R16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT, exposureCurrent);
 
 		VansTexture* bloomPrefilter = new VansTexture();
-		bloomPrefilter->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		bloomPrefilter->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1,
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_PREFILTER, bloomPrefilter);
 
 		VansTexture* bloomMip0 = new VansTexture();
-		bloomMip0->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		bloomMip0->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1,
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP0, bloomMip0);
 
 		VansTexture* bloomMip1 = new VansTexture();
-		bloomMip1->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 4, m_RenderHeight / 4, 1, 4, false, false, true, MID_PRES_16);
+		bloomMip1->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth / 4, m_RenderHeight / 4, 1,
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP1, bloomMip1);
 
 		VansTexture* bloomMip2 = new VansTexture();
-		bloomMip2->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 8, m_RenderHeight / 8, 1, 4, false, false, true, MID_PRES_16);
+		bloomMip2->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth / 8, m_RenderHeight / 8, 1,
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP2, bloomMip2);
 
 		VansTexture* bloomMip3 = new VansTexture();
-		bloomMip3->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 16, m_RenderHeight / 16, 1, 4, false, false, true, MID_PRES_16);
+		bloomMip3->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth / 16, m_RenderHeight / 16, 1,
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP3, bloomMip3);
 
 		VansTexture* bloomResult = new VansTexture();
-		bloomResult->InitTextureWithoutData(m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1, 4, false, false, true, MID_PRES_16);
+		bloomResult->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1,
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_RESULT, bloomResult);
 
 		// ---- Shader 创建 ----

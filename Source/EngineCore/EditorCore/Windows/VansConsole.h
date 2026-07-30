@@ -5,7 +5,10 @@
 #include <ctime>
 #include <sstream>
 #include <iomanip>
+#include "../../EventCore/VansEventBus.h"
+#include "../../EventCore/VansEventConnection.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansLogEvents.h"
 
 // -----------------------------------------------------------------------
 // VansConsole  ? A thread-safe, singleton ring-buffer log shared by
@@ -34,7 +37,7 @@ struct VansConsoleEntry
     std::string         timestamp;  // HH:MM:SS
 };
 
-class VansConsole : public ILogSink
+class VansConsole
 {
 public:
     static VansConsole& Get()
@@ -64,7 +67,25 @@ public:
         Push(VansConsoleLogType::Script, VansConsoleSeverity::Info, msg);
     }
 
-    void OnLog(VansLogChannel channel, VansLogLevel level, const std::string& msg) override
+    void InitializeEventSubscription()
+    {
+        m_LogConnections.DisconnectAll();
+        m_LogConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansLogEvent>(
+            [this](const Vans::VansLogEvent& event)
+            {
+                OnLog(event.channel, event.level, event.message);
+            },
+            Vans::VansEventLane::Diagnostics,
+            0,
+            "VansConsole::Log"));
+    }
+
+    void ShutdownEventSubscription()
+    {
+        m_LogConnections.DisconnectAll();
+    }
+
+    void OnLog(VansLogChannel channel, VansLogLevel level, const std::string& msg)
     {
         VansConsoleSeverity sev = static_cast<VansConsoleSeverity>(static_cast<int>(level));
         const VansConsoleLogType type = channel == VansLogChannel::Script
@@ -123,5 +144,6 @@ private:
 
     mutable std::mutex          m_Mutex;
     std::vector<VansConsoleEntry> m_Entries;
+    Vans::VansScopedEventConnections m_LogConnections;
     static constexpr size_t     MaxEntries = 2048;
 };

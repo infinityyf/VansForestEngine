@@ -15,6 +15,7 @@
 #include <string>
 #include <map>
 #include <unordered_map>
+#include <mutex>
 using namespace VansGraphics;
 
 namespace VansGraphics
@@ -215,6 +216,7 @@ namespace VansGraphics
 		std::shared_ptr<VansVKGraphicsPipeline> m_GraphicsPipeline;
 		std::unordered_multimap<uint64_t, GraphicsPipelineVariantEntry> m_GraphicsPipelineVariants;
 		const GraphicsPipelineVariantEntry* m_LastGraphicsPipelineVariant = nullptr;
+		mutable std::mutex m_GraphicsPipelineMutex;
 
 		VkGraphicsPipelineCreateInfo m_VkGraphicsPipelineCreateInfo;
 

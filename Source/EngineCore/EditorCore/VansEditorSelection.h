@@ -1,5 +1,7 @@
 #pragma once
 
+#include "VansEditorSelectionService.h"
+
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -11,39 +13,26 @@ class VansEditorSelection
 public:
     static void SelectEntity(std::string entityGuid)
     {
-        s_EntityGuid = std::move(entityGuid);
-        s_AssetPath.clear();
-		s_SceneSelected = false;
+        VansEditorSelectionService::Get().SelectEntity(std::move(entityGuid), "LegacyFacade");
     }
 
 	static void SelectScene()
 	{
-		s_EntityGuid.clear();
-		s_AssetPath.clear();
-		s_SceneSelected = true;
+		VansEditorSelectionService::Get().SelectScene("LegacyFacade");
 	}
 
     static void SelectAsset(std::filesystem::path assetPath)
     {
-        s_AssetPath = std::move(assetPath);
-        s_EntityGuid.clear();
-		s_SceneSelected = false;
+        VansEditorSelectionService::Get().SelectAsset(std::move(assetPath), "LegacyFacade");
     }
 
     static void Clear()
     {
-        s_EntityGuid.clear();
-        s_AssetPath.clear();
-		s_SceneSelected = false;
+        VansEditorSelectionService::Get().Clear("LegacyFacade");
     }
 
-    static const std::string& EntityGuid() { return s_EntityGuid; }
-    static const std::filesystem::path& AssetPath() { return s_AssetPath; }
-	static bool IsSceneSelected() { return s_SceneSelected; }
-
-private:
-    inline static std::string s_EntityGuid;
-    inline static std::filesystem::path s_AssetPath;
-	inline static bool s_SceneSelected = false;
+    static const std::string& EntityGuid() { return VansEditorSelectionService::Get().EntityGuid(); }
+    static const std::filesystem::path& AssetPath() { return VansEditorSelectionService::Get().AssetPath(); }
+	static bool IsSceneSelected() { return VansEditorSelectionService::Get().IsSceneSelected(); }
 };
 }

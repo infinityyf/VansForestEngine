@@ -1,5 +1,6 @@
 ﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKImage.h"
+#include "VansVKCommandBuffer.h"
 #include "VansVKMemoryManager.h"
 #include "VansVKMemoryAllocator.h"
 #include "VansVKSampler.h"
@@ -361,10 +362,10 @@ namespace VansGraphics
     }
 
 
-    void VansVKImage::SetImageMemoryBarrier(VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, ImageTransition imageTransition)
+    void VansVKImage::SetImageMemoryBarrier(VansVKCommandBuffer& commandBuffer, VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, ImageTransition imageTransition)
     {
         this->AddTransitionImageAccess(imageTransition);
-        VansVKMemoryManager::GetInstance()->SetImageMemoryBarrier(m_ImageMemoryBarriers, generating_stages, consuming_stages);
+        commandBuffer.PipelineBarrier(generating_stages, consuming_stages, {}, {}, m_ImageMemoryBarriers);
         m_ImageMemoryBarriers.clear();
         //更新下新layout
         m_ImageLayout = imageTransition.NewLayout;

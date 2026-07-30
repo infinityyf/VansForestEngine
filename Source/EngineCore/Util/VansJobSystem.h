@@ -6,9 +6,30 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <memory>
+#include <string>
 
 namespace Vans
 {
+    class VansJobGroup
+    {
+    public:
+        explicit VansJobGroup(uint32_t jobCount);
+
+        void Done();
+        void Wait();
+        void SetError(const std::string& error);
+        bool HasErrors() const;
+        std::string GetError() const;
+
+    private:
+        std::atomic<uint32_t> m_Remaining;
+        mutable std::mutex m_Mutex;
+        std::condition_variable m_Condition;
+        bool m_HasError = false;
+        std::string m_Error;
+    };
+
     class VansJobSystem
     {
     public:
@@ -23,6 +44,7 @@ namespace Vans
 
         // Add a job to run on a background worker thread
         void QueueJob(Job job);
+        std::shared_ptr<VansJobGroup> QueueJobGroup(const std::vector<Job>& jobs);
 
         // Add a job to run on the main thread (thread safe)
         void QueueMainThreadJob(Job job);

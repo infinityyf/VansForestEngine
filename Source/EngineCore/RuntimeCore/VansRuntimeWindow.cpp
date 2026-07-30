@@ -41,9 +41,6 @@ namespace Vans
 
 		glfwSetWindowUserPointer(m_Window, this);
 		glfwSetFramebufferSizeCallback(m_Window, FramebufferResizeCallback);
-		glfwSetInputMode(m_Window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-		if (glfwRawMouseMotionSupported())
-			glfwSetInputMode(m_Window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
 		return true;
 	}
 

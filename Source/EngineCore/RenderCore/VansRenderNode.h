@@ -3,6 +3,7 @@
 //#include "VulkanCore/VansMesh.h"
 #include "../VansNode.h"
 #include "VansMaterial.h"
+#include "VansRenderBounds.h"
 #include "../ScriptCore/VansTransform.h"
 #include "BRDFData/VansLight.h"
 #include <cstdint>
@@ -92,6 +93,8 @@ namespace VansGraphics
 
 		//GPU 数据
 		ModelDataStruct m_ModelData;
+		VansRenderBounds m_WorldBounds;
+		bool m_HasWorldBounds = false;
 
 		// 共享 Transform SSBO 中的槽位索引。默认 -1 表示"未分配槽位"：
 		// PrepareInstanceTransformData 仅为 Opaque/Transparent/Decal 节点分配真实索引，
@@ -154,6 +157,7 @@ namespace VansGraphics
 
 		// Helper function to compute model matrix from transform
 		void ComputeModelDataFromTransform();
+		void UpdateWorldBoundsFromModelData();
 
 	public:
 		void virtual CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) {};
@@ -187,10 +191,21 @@ namespace VansGraphics
 
 		// New function for updating model data from logic code
 		void UpdateModelData();
+		void UpdateWorldBoundsFromTransform();
+		bool HasWorldBounds() const { return m_HasWorldBounds && m_WorldBounds.IsValid(); }
+		const VansRenderBounds& GetWorldBounds() const { return m_WorldBounds; }
 
 		void BeforeDrawCall();
 
 		virtual void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
+
+		bool PreparePipelineForDraw(VkDevice& device, GlobalStateData global_state);
+		bool PreparePipelineForShader(
+			VkDevice& device,
+			GlobalStateData global_state,
+			VansGraphicsShader* shader,
+			const std::vector<VkDescriptorSetLayout>& layouts,
+			const std::vector<VkDescriptorSet>& sets);
 
 
 

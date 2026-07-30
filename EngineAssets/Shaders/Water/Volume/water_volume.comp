@@ -1,0 +1,110 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../water_screen_common.glsl"
+#include "../PBRWater/pbr_water_bsdf.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D waterGBufNormal;
+layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;
+layout(set = 0, binding = 2) uniform sampler2D waterGBufScatter;
+layout(set = 0, binding = 3) uniform sampler2D waterGBufAbsorption;
+layout(set = 0, binding = 4) uniform sampler2D thicknessMap;
+layout(set = 0, binding = 5) uniform sampler2D sceneGBuf2;
+layout(set = 0, binding = 6) uniform sampler2D refractionData;
+
+layout(set = 0, binding = 7) uniform PBRWaterParams
+{
+    vec4 absorptionCoeff;
+    vec4 scatteringCoeff;
+    vec4 cameraPosition;
+    vec4 mainLightDir;
+    vec4 mainLightColor;
+    vec4 surfaceParams;
+    vec4 refractionParams;
+    vec4 volumeParams;
+    vec4 thinSSSParams;
+    vec4 backlitParams;
+    vec4 filterParams;
+    ivec4 effectFlags;
+    mat4 invViewProjMatrix;
+    mat4 viewMatrix;
+    mat4 projMatrix;
+} params;
+
+layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D volumeColorOut;
+layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D volumeTransmittanceOut;
+layout(set = 0, binding = 10, r16f) uniform writeonly image2D volumeDepthOut;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outSize = imageSize(volumeColorOut);
+    if (any(greaterThanEqual(pixel, outSize)))
+        return;
+
+    vec2 uv = WaterPixelUV(pixel, outSize);
+    ivec2 fullPixel = WaterUVToPixel(uv, textureSize(waterGBufPosDepth, 0));
+    vec4 normalRoughness = texelFetch(waterGBufNormal, fullPixel, 0);
+    vec4 surface = texelFetch(waterGBufPosDepth, fullPixel, 0);
+    if (!WaterSurfaceValid(normalRoughness, surface))
+    {
+        imageStore(volumeColorOut, pixel, vec4(0.0));
+        imageStore(volumeTransmittanceOut, pixel, vec4(1.0));
+        imageStore(volumeDepthOut, pixel, vec4(WATER_INVALID_DEPTH));
+        return;
+    }
+
+    vec3 N = normalize(normalRoughness.xyz);
+    vec3 V = normalize(params.cameraPosition.xyz - surface.xyz);
+    vec3 L = normalize(params.mainLightDir.xyz);
+    vec3 Li = max(params.mainLightColor.rgb, vec3(0.0));
+    vec3 sigmaS = max(texelFetch(waterGBufScatter, fullPixel, 0).rgb, vec3(0.0));
+    vec3 sigmaA = max(texelFetch(waterGBufAbsorption, fullPixel, 0).rgb, vec3(0.0));
+    vec3 sigmaT = sigmaA + sigmaS;
+    float thickness01 = clamp(texelFetch(thicknessMap, fullPixel, 0).r, 0.0, 1.0);
+    vec4 refr = texelFetch(refractionData, fullPixel, 0);
+    float pathLength = clamp(max(refr.z - surface.w, 0.0), 0.0, params.volumeParams.x);
+    pathLength = max(pathLength, thickness01 * params.volumeParams.x);
+
+    int sampleCount = clamp(int(params.volumeParams.y + 0.5), 1, 64);
+    float jitter = PBRW_IGN(pixel, 0u);
+    float phaseVolume = mix(
+        PBRW_HenyeyGreenstein(dot(L, V), 0.0),
+        PBRW_HenyeyGreenstein(dot(L, V), clamp(params.thinSSSParams.w, -0.95, 0.98)),
+        0.95);
+    vec3 volumeScatter = vec3(0.0);
+    for (int i = 0; i < sampleCount; ++i)
+    {
+        float t = (float(i) + jitter) / float(sampleCount);
+        float d = PBRW_ExponentialStep(t) * pathLength;
+        vec3 stepT = PBRW_BeerLambert(sigmaT, d);
+        volumeScatter += Li * (vec3(1.0) - stepT) * (sigmaS / max(sigmaT, vec3(1e-5))) * phaseVolume;
+    }
+    volumeScatter = volumeScatter / float(sampleCount) * params.volumeParams.w;
+
+    vec3 F0 = vec3(params.surfaceParams.z);
+    float Tentry = 1.0 - PBRW_FresnelSchlick(F0, max(dot(N, L), 0.0)).r;
+    float Texit = 1.0 - PBRW_FresnelSchlick(F0, max(dot(N, V), 0.0)).r;
+    float Gentry = max(dot(N, L), 0.0);
+    float Gsss = 1.0 - Gentry;
+    vec3 thinSSS = vec3(0.0);
+    if (params.effectFlags.w != 0)
+    {
+        thinSSS = PBRW_EvaluateThinSSS(
+            Li, sigmaA, sigmaS, thickness01,
+            params.thinSSSParams.x, params.thinSSSParams.y,
+            params.thinSSSParams.z, PBRW_HenyeyGreenstein(dot(L, V), params.thinSSSParams.w)) * Gsss;
+    }
+    vec3 backlit = PBRW_EvaluateBacklit(
+        Li, sigmaT, thickness01,
+        params.backlitParams.x, dot(V, -L), params.backlitParams.y) * max(-dot(N, L), 0.0);
+
+    vec3 diffuse = (Gentry * Tentry * volumeScatter + thinSSS + backlit) * Texit;
+    vec3 transmittance = PBRW_BeerLambert(sigmaT, pathLength);
+
+    imageStore(volumeColorOut, pixel, vec4(max(diffuse, vec3(0.0)), 1.0));
+    imageStore(volumeTransmittanceOut, pixel, vec4(PBRW_Saturate(transmittance), 1.0));
+    imageStore(volumeDepthOut, pixel, vec4(surface.w));
+}

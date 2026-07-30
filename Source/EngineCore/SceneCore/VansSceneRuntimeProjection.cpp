@@ -10,6 +10,7 @@
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../Util/VansLog.h"
 #include "../ScriptCore/VansScriptComponentReader.h"
+#include "../ScriptCore/VansScriptUIComponentReader.h"
 #include "VansSceneAnimationComponentReader.h"
 #include "VansSceneCameraMediaComponentReader.h"
 #include "VansSceneContentBuildPlan.h"
@@ -694,9 +695,11 @@ bool TryBuildAuthoringRenderNode(
 void CollectAuthoringRuntimeComponentMetadata(
 	const VansSerializedValue& entity,
 	VansScriptComponentDescriptors& outScriptComponents,
+	VansScriptUIComponentDescriptors& outUIComponents,
 	std::unordered_map<std::string, std::string>& outComponentGuids)
 {
 	outScriptComponents.clear();
+	outUIComponents.clear();
 
 	const VansSerializedValue* authoringComponents = FindSerializedArrayField(entity, "components");
 	if (!authoringComponents)
@@ -726,6 +729,25 @@ void CollectAuthoringRuntimeComponentMetadata(
 					outScriptComponents.push_back(std::move(descriptor));
 				}
 			}
+			continue;
+		}
+
+		if (type == "UIController")
+		{
+			if (enabled && dataValue)
+			{
+				VansScriptUIComponentDescriptor descriptor;
+				if (VansScriptUIComponentReader::TryReadUIComponent(
+					*dataValue,
+					componentGuid,
+					enabled,
+					descriptor))
+				{
+					outUIComponents.push_back(std::move(descriptor));
+				}
+			}
+			if (!componentGuid.empty())
+				outComponentGuids[CanonicalRuntimeComponentKeyForName("UIController")] = componentGuid;
 			continue;
 		}
 
@@ -864,6 +886,7 @@ bool AppendAuthoringEntityToContentPlan(
 	VansSceneObjectBuildConfig objectConfig;
 	objectConfig.entityGuid = entityGuid;
 	objectConfig.name = ReadSerializedStringField(entity, "name");
+	objectConfig.parentEntityGuid = parentEntityGuid;
 	objectConfig.transform = BuildAuthoringObjectTransform(transformComponent);
 	if (hasRender)
 	{
@@ -876,10 +899,13 @@ bool AppendAuthoringEntityToContentPlan(
 	}
 
 	VansScriptComponentDescriptors scriptComponents;
+	VansScriptUIComponentDescriptors uiComponents;
 	CollectAuthoringRuntimeComponentMetadata(
 		entity,
 		scriptComponents,
+		uiComponents,
 		objectConfig.componentGuids);
+	objectConfig.uiComponents = std::move(uiComponents);
 	objectConfig.multiMeshRoot = ReadAuthoringMultiMeshRootComponent(entity);
 	objectConfig.physicsComponents = VansScenePhysicsComponentReader::ReadAuthoringComponents(entity);
 	if (objectConfig.physicsComponents.cloth && objectConfig.physicsComponents.cloth->profilePath)

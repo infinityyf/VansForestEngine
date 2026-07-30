@@ -104,6 +104,7 @@ namespace VansGraphics
         void     SetTransformID(uint32_t id) { m_TransformID = id; }
         uint32_t GetTransformID()      const { return m_TransformID; }
         bool     HasTransform()        const { return m_TransformID != UINT32_MAX; }
+        void     DetachTransformPreservingPose();
 
         // 从绑定的 Transform 读取 position 和 rotation(pitch/yaw) 写入相机成员。
         // 每帧在 Rendering() 最前端调用，确保视图矩阵使用最新 transform 数据。

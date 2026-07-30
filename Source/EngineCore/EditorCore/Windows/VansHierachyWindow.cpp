@@ -3,6 +3,7 @@
 #include "../VansEditorSelection.h"
 #include "../VansEditorWindow.h"
 #include "../VansEditorObjectReference.h"
+#include "../VansSceneHierarchyService.h"
 #include "../VansSceneEditService.h"
 #include "../VansSceneObjectReferenceRemapper.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
@@ -19,6 +20,67 @@
 
 namespace VansGraphics
 {
+namespace
+{
+bool AcceptSceneEntityDrop(std::string& entityGuid)
+{
+    const ImGuiPayload* payload =
+        ImGui::AcceptDragDropPayload(Vans::VansObjectReferenceDragPayloadType);
+    if (!payload || payload->DataSize <= 0 || !payload->Data)
+        return false;
+
+    Vans::EditorObjectHandle handle;
+    if (!Vans::TryDeserializeEditorObjectHandle(
+        payload->Data,
+        static_cast<std::size_t>(payload->DataSize),
+        handle))
+    {
+        return false;
+    }
+
+    if (handle.domain != Vans::EditorObjectDomain::SceneEntity)
+        return false;
+
+    entityGuid = handle.entityGuid.empty() ? handle.guid : handle.entityGuid;
+    return !entityGuid.empty();
+}
+
+void ReparentDroppedEntity(
+    Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+    const std::string& childGuid,
+    const std::string& parentGuid)
+{
+    Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
+    Vans::VansSceneEditService* editService = VansEditorWindow::GetSceneEditService();
+    if (!document || !editService)
+        return;
+
+    Vans::SceneReparentRequest request;
+    request.childEntityGuid = childGuid;
+    request.newParentEntityGuid = parentGuid;
+    request.transformPolicy = Vans::ReparentTransformPolicy::KeepWorld;
+    const Vans::SceneHierarchyEditResult result =
+        Vans::VansSceneHierarchyService::Reparent(*document, *editService, request);
+    if (!result)
+    {
+        VANS_LOG_WARN("[Hierarchy] Reparent failed: " << result.message);
+        return;
+    }
+    if (result.changed)
+    {
+        Vans::EditorAPI::RuntimeEntityReparentRequest runtimeRequest;
+        runtimeRequest.childEntityGuid = childGuid;
+        runtimeRequest.newParentEntityGuid = parentGuid;
+        const Vans::EditorAPI::RuntimeEntityReparentResult runtimeResult =
+            editorAPI.ReparentRuntimeEntity(runtimeRequest);
+        if (!runtimeResult.applied)
+            VANS_LOG_WARN("[Hierarchy] Runtime reparent preview failed: " << runtimeResult.message);
+
+        Vans::VansEditorSelection::SelectEntity(childGuid);
+    }
+}
+}
+
 void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
     ImGui::Begin("Hierarchy");
@@ -36,6 +98,13 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 
     if (ImGui::Selectable("Scene Settings", Vans::VansEditorSelection::IsSceneSelected()))
         Vans::VansEditorSelection::SelectScene();
+    if (ImGui::BeginDragDropTarget())
+    {
+        std::string droppedEntityGuid;
+        if (AcceptSceneEntityDrop(droppedEntityGuid))
+            ReparentDroppedEntity(editorAPI, droppedEntityGuid, {});
+        ImGui::EndDragDropTarget();
+    }
     ImGui::Separator();
 
     std::unordered_map<std::string, std::vector<std::size_t>> children;
@@ -83,6 +152,13 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                     payload.size() + 1);
                 ImGui::TextUnformatted(name.c_str());
                 ImGui::EndDragDropSource();
+            }
+            if (!id.empty() && ImGui::BeginDragDropTarget())
+            {
+                std::string droppedEntityGuid;
+                if (AcceptSceneEntityDrop(droppedEntityGuid))
+                    ReparentDroppedEntity(editorAPI, droppedEntityGuid, id);
+                ImGui::EndDragDropTarget();
             }
 
             auto deleteEntity = [&editorAPI, entities, &id, &name]()

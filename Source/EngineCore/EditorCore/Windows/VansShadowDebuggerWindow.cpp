@@ -168,9 +168,21 @@ void VansGraphics::VansShadowDebuggerWindow::ShowWindow(Vans::EditorAPI::IEngine
 		return;
 	}
 
-	editorAPI.RequestPunctualShadowDebugPreview();
-	const Vans::EditorAPI::PunctualShadowDebugSnapshot snapshot =
-		editorAPI.GetPunctualShadowDebugSnapshot();
+	const double now = ImGui::GetTime();
+	const bool refreshSnapshot =
+		!m_HasCachedSnapshot ||
+		m_LastSnapshotTime < 0.0 ||
+		(now - m_LastSnapshotTime) >= 0.10;
+	if (refreshSnapshot)
+	{
+		if (m_RequestPreviewNextFrame)
+			editorAPI.RequestPunctualShadowDebugPreview();
+		m_CachedSnapshot = editorAPI.GetPunctualShadowDebugSnapshot();
+		m_HasCachedSnapshot = true;
+		m_LastSnapshotTime = now;
+	}
+	m_RequestPreviewNextFrame = false;
+	const Vans::EditorAPI::PunctualShadowDebugSnapshot& snapshot = m_CachedSnapshot;
 	if (!snapshot.available)
 	{
 		m_DraftInitialized = false;
@@ -202,6 +214,7 @@ void VansGraphics::VansShadowDebuggerWindow::ShowWindow(Vans::EditorAPI::IEngine
 	{
 		if (ImGui::BeginTabItem("Atlas"))
 		{
+			m_RequestPreviewNextFrame = true;
 			ImGui::Checkbox("Overlay light/face labels", &m_ShowAtlasLabels);
 			DrawAtlas(snapshot, m_SelectedLight, m_ShowAtlasLabels);
 			ImGui::Separator();
@@ -267,6 +280,7 @@ void VansGraphics::VansShadowDebuggerWindow::ShowWindow(Vans::EditorAPI::IEngine
 
 		if (ImGui::BeginTabItem("Screen-space Fallback"))
 		{
+			m_RequestPreviewNextFrame = true;
 			ImGui::TextWrapped(
 				"Punctual fallback has no explicit camera-distance cutoff. The maximum distance below is the world-space ray length from a receiver toward its light. Camera distance still changes projected sampling density and screen visibility; the shader now preserves a world-space step floor to reduce distance-dependent disappearance.");
 			ImGui::Separator();
@@ -279,7 +293,10 @@ void VansGraphics::VansShadowDebuggerWindow::ShowWindow(Vans::EditorAPI::IEngine
 			ImGui::SliderFloat("Strength", &m_DraftSettings.strength, 0.0f, 1.0f, "%.2f");
 
 			if (ImGui::Button("Apply"))
+			{
 				editorAPI.ApplyPunctualScreenSpaceShadowSettings(m_DraftSettings);
+				m_LastSnapshotTime = -1.0;
+			}
 			ImGui::SameLine();
 			if (ImGui::Button("Long-range preset (20 / 96)"))
 			{
@@ -289,6 +306,7 @@ void VansGraphics::VansShadowDebuggerWindow::ShowWindow(Vans::EditorAPI::IEngine
 				m_DraftSettings.maxSteps = 96;
 				m_DraftSettings.strength = 1.0f;
 				editorAPI.ApplyPunctualScreenSpaceShadowSettings(m_DraftSettings);
+				m_LastSnapshotTime = -1.0;
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Use runtime values"))

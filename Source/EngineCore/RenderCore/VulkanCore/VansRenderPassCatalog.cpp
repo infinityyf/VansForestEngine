@@ -1,4 +1,4 @@
-#include "VansRenderPassCatalog.h"
+﻿#include "VansRenderPassCatalog.h"
 
 #include "../VansScene.h"
 #include <cstring>
@@ -44,12 +44,21 @@ namespace VansGraphics
 		{
 			VansRenderPassNodeDesc desc{};
 			desc.name = entry.name;
+			desc.passId = VansRenderGraphIntern::InternName(entry.name);
 			desc.queue = entry.queue;
 			desc.resizeDependent = entry.resizeDependent;
 			desc.allowAsyncCompute = entry.allowAsyncCompute;
 			desc.enabled = VansRenderPassCatalog::IsPassEnabled(entry.condition, scene);
 			desc.reads = entry.reads;
 			desc.writes = entry.writes;
+			for (auto& read : desc.reads)
+			{
+				read.resourceId = VansRenderGraphIntern::InternName(read.name);
+			}
+			for (auto& write : desc.writes)
+			{
+				write.resourceId = VansRenderGraphIntern::InternName(write.name);
+			}
 			for (const auto& feature : entry.preservedFeatures)
 			{
 				if (VansRenderPassCatalog::IsPassEnabled(feature.condition, scene))
@@ -88,6 +97,11 @@ namespace VansGraphics
 					{ { "HairGeometry", VansRenderResourceUsage::SampledRead } },
 					{ { "HairDeepOpacity", VansRenderResourceUsage::ColorAttachmentWrite } },
 					{ "Hair deep opacity" } },
+				{ VansRenderPassNames::MainCameraHiZCull, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
+					{ { "OcclusionHZB", VansRenderResourceUsage::SampledRead },
+					  { "SceneGeometry", VansRenderResourceUsage::StorageRead } },
+					{ { "MainCameraVisibility", VansRenderResourceUsage::StorageWrite } },
+					{ "Main camera HiZ occlusion culling" } },
 				{ VansRenderPassNames::MotionVector, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead } },
 					{ { "MotionVectors", VansRenderResourceUsage::ColorAttachmentWrite } },
@@ -111,7 +125,8 @@ namespace VansGraphics
 					{ "Deferred lighting tiled light build" } },
 				{ VansRenderPassNames::HZB, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "Depth", VansRenderResourceUsage::SampledRead } },
-					{ { "HZB", VansRenderResourceUsage::StorageWrite } },
+					{ { "HZB", VansRenderResourceUsage::StorageWrite },
+					  { "OcclusionHZB", VansRenderResourceUsage::StorageWrite } },
 					{ "HZB" } },
 				{ VansRenderPassNames::PunctualShadowDebug, VansRenderQueueClass::Compute, false, false, VansRenderPassCondition::Always,
 					{ { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead } },
@@ -122,6 +137,12 @@ namespace VansGraphics
 					  { "CascadeShadowDepth", VansRenderResourceUsage::SampledRead } },
 					{ { "ScreenSpaceShadow", VansRenderResourceUsage::StorageWrite } },
 					{ "Screen-space shadows" } },
+				{ VansRenderPassNames::ScreenSpaceEffects, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
+					{ { "Normal", VansRenderResourceUsage::SampledRead },
+					  { "GBuffer", VansRenderResourceUsage::SampledRead },
+					  { "Depth", VansRenderResourceUsage::SampledRead } },
+					{ { "SSAO", VansRenderResourceUsage::StorageWrite } },
+					{ "SSAO raw" } },
 				{ VansRenderPassNames::RayTracing, VansRenderQueueClass::Compute, false, false, VansRenderPassCondition::Always,
 					{ { "TLAS", VansRenderResourceUsage::AccelerationStructureBuildRead },
 					  { "GBuffer", VansRenderResourceUsage::SampledRead } },
@@ -190,8 +211,10 @@ namespace VansGraphics
 					  { "WaterGBuffer", VansRenderResourceUsage::SampledRead } },
 					{ { "WaterThickness", VansRenderResourceUsage::StorageWrite },
 					  { "WaterSSR", VansRenderResourceUsage::StorageWrite },
-					  { "WaterRefraction", VansRenderResourceUsage::StorageWrite } },
-					{ "Water SSR/composite/precompute" } },
+					  { "WaterRefractionData", VansRenderResourceUsage::StorageWrite },
+					  { "WaterVolumeRaw", VansRenderResourceUsage::StorageWrite },
+					  { "WaterVolumeFiltered", VansRenderResourceUsage::StorageWrite } },
+					{ "PBRWater refraction data, volume integration/filter, SSR and caustics" } },
 				{ VansRenderPassNames::HairVisibility, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "HairGeometry", VansRenderResourceUsage::SampledRead } },
 					{ { "HairOIT", VansRenderResourceUsage::StorageWrite } },

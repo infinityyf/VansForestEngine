@@ -2,10 +2,9 @@
 #include "VansGizmos.h"
 #include "VansEditorWindow.h"
 #include "VansEditorSelection.h"
+#include "VansScenePickingService.h"
 #include "VansSceneEditService.h"
 #include "imgui.h"
-#include "../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../SceneCore/VansSceneDocument.h"
 #include "../Util/VansInputManager.h"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -37,58 +36,9 @@ void VansGizmos::SyncTransformToSceneDocument(const std::string& entityGuid,
 {
     if (entityGuid.empty()) return;
 
-    Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
     Vans::VansSceneEditService* editService = VansEditorWindow::GetSceneEditService();
-    if (!document || !editService) return;
-
-    const Vans::VansSerializedValue root = document->SerializedRootSnapshot();
-    const Vans::VansSerializedValue* entities = Vans::FindObjectField(root, "entities");
-    if (!entities || entities->kind != Vans::VansSerializedValue::Kind::Array) return;
-
-    for (std::size_t entityIndex = 0; entityIndex < entities->arrayItems.size(); ++entityIndex)
-    {
-        const Vans::VansSerializedValue& entity = entities->arrayItems[entityIndex];
-        if (Vans::ReadSerializedStringField(entity, "id") != entityGuid)
-            continue;
-        const Vans::VansSerializedValue* components = Vans::FindObjectField(entity, "components");
-        if (!components || components->kind != Vans::VansSerializedValue::Kind::Array)
-            return;
-
-        for (std::size_t componentIndex = 0;
-            componentIndex < components->arrayItems.size();
-            ++componentIndex)
-        {
-            const Vans::VansSerializedValue& component = components->arrayItems[componentIndex];
-            if (Vans::ReadSerializedStringField(component, "type") != "Transform")
-                continue;
-
-            Vans::VansSerializedValue data = Vans::VansSerializedValue::Object({
-                { "position", Vans::VansSerializedValue::Array({
-                    Vans::VansSerializedValue::Float(transform.position.x),
-                    Vans::VansSerializedValue::Float(transform.position.y),
-                    Vans::VansSerializedValue::Float(transform.position.z)
-                }) },
-                { "rotation", Vans::VansSerializedValue::Array({
-                    Vans::VansSerializedValue::Float(transform.rotationDegrees.x),
-                    Vans::VansSerializedValue::Float(transform.rotationDegrees.y),
-                    Vans::VansSerializedValue::Float(transform.rotationDegrees.z)
-                }) },
-                { "scale", Vans::VansSerializedValue::Array({
-                    Vans::VansSerializedValue::Float(transform.scale.x),
-                    Vans::VansSerializedValue::Float(transform.scale.y),
-                    Vans::VansSerializedValue::Float(transform.scale.z)
-                }) }
-            });
-
-            const std::string pointer = "/entities/" + std::to_string(entityIndex) +
-                "/components/" + std::to_string(componentIndex) + "/data";
-            editService->Set(
-                Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::Scene, pointer),
-                std::move(data));
-            return;
-        }
-        return;
-    }
+    if (!editService) return;
+    editService->SetEntityTransform(entityGuid, transform);
 }
 
 glm::vec3 ToGlm(const Vans::EditorAPI::Vec3& value)
@@ -118,23 +68,23 @@ glm::mat4 BuildModelMatrix(const Vans::EditorAPI::RuntimeTransformSnapshot& tran
 void VansGizmos::UnprojectRay(VansCamera*  camera,
                                float        ndcX,
                                float        ndcY,
+                               float        viewportAspect,
                                glm::vec3&   outOrigin,
                                glm::vec3&   outDir)
 {
-    glm::mat4 view = camera->GetViewMatrix();
-    glm::mat4 proj = camera->GetProjectiveMatrix();
+    const glm::mat4 invView = glm::inverse(camera->GetViewMatrix());
+    const glm::vec3 cameraPosition = glm::vec3(camera->GetPosition());
+    const glm::vec3 right = glm::normalize(glm::vec3(invView[0]));
+    const glm::vec3 up = glm::normalize(glm::vec3(invView[1]));
+    const glm::vec3 forward = glm::normalize(-glm::vec3(invView[2]));
+    const float aspect = viewportAspect > 0.0f ? viewportAspect : camera->GetAspectRatio();
+    const float tanHalfFov = std::tan(glm::radians(camera->GetFov()) * 0.5f);
 
-    // GetProjectiveMatrix returns GLM clip coordinates with +Y up.
-    glm::mat4 invPV = glm::inverse(proj * view);
-
-    // Vulkan depth range is [0, 1]
-    glm::vec4 nearPt = invPV * glm::vec4(ndcX, ndcY, 0.0f, 1.0f);
-    glm::vec4 farPt  = invPV * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
-    nearPt /= nearPt.w;
-    farPt  /= farPt.w;
-
-    outOrigin = glm::vec3(nearPt);
-    outDir    = glm::normalize(glm::vec3(farPt) - glm::vec3(nearPt));
+    outOrigin = cameraPosition;
+    outDir = glm::normalize(
+        forward +
+        right * (ndcX * tanHalfFov * aspect) +
+        up * (ndcY * tanHalfFov));
 }
 
 
@@ -151,164 +101,225 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(windowPos.x, windowPos.y, windowSize.x, windowSize.y);
 
-    const auto probeSettings = api.GetReflectionProbeSettings();
-    if (probeSettings.available && probeSettings.editor.showProbeGizmos)
+    // 反射探针 gizmo 只由 Reflection Probe 窗口驱动，窗口关闭时不拉取整份探针 DTO。
+    if (VansEditorWindow::m_ReflectionProbeWindowOpen)
     {
-        const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
-        ImDrawList* drawList = ImGui::GetWindowDrawList();
-        auto project = [&](const glm::vec3& world, ImVec2& screen) -> bool
+        const auto probeSettings = api.GetReflectionProbeSettings();
+        if (probeSettings.available && probeSettings.editor.showProbeGizmos)
         {
-            glm::vec4 clip = viewProjection * glm::vec4(world, 1.0f);
-            if (clip.w <= 1e-4f) return false;
-            glm::vec3 ndc = glm::vec3(clip) / clip.w;
-            screen = ImVec2(windowPos.x + (ndc.x * 0.5f + 0.5f) * windowSize.x,
-                windowPos.y + (-ndc.y * 0.5f + 0.5f) * windowSize.y);
-            return ndc.z >= 0.0f && ndc.z <= 1.0f;
-        };
-        auto drawBox = [&](const glm::vec3& bmin, const glm::vec3& bmax, ImU32 color, float thickness)
-        {
-            glm::vec3 corners[8] = {
-                {bmin.x,bmin.y,bmin.z},{bmax.x,bmin.y,bmin.z},{bmax.x,bmax.y,bmin.z},{bmin.x,bmax.y,bmin.z},
-                {bmin.x,bmin.y,bmax.z},{bmax.x,bmin.y,bmax.z},{bmax.x,bmax.y,bmax.z},{bmin.x,bmax.y,bmax.z} };
-            const int edges[12][2] = { {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7} };
-            for (const auto& edge : edges)
+            const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            auto project = [&](const glm::vec3& world, ImVec2& screen) -> bool
             {
-                ImVec2 a, b;
-                if (project(corners[edge[0]], a) && project(corners[edge[1]], b)) drawList->AddLine(a, b, color, thickness);
-            }
-        };
-        const auto& probes = probeSettings.probes;
-        const auto& editor = probeSettings.editor;
-        const glm::vec3 cameraRight = glm::normalize(glm::vec3(glm::inverse(camera->GetViewMatrix())[0]));
-        for (int i = 0; i < (int)probes.size(); ++i)
-        {
-            const auto& probe = probes[i];
-            if (!probe.enabled || probe.type == 2) continue;
-            ImU32 color = probe.type == 1 ? IM_COL32(255,40,220,220) :
-                (probe.shape == 1 ? IM_COL32(30,220,255,220) : IM_COL32(40,255,100,220));
-            const bool selected = editor.selectedProbeIndex == i;
-            if (selected) color = IM_COL32(255,255,255,255);
-            const float thickness = selected ? 2.5f : 1.5f;
-            const glm::vec3 boxMin = ToGlm(probe.boxMin);
-            const glm::vec3 boxMax = ToGlm(probe.boxMax);
-            const glm::vec3 position = ToGlm(probe.position);
-            const glm::vec3 capturePosition = ToGlm(probe.capturePosition);
-            if (probe.shape == 1)
+                glm::vec4 clip = viewProjection * glm::vec4(world, 1.0f);
+                if (clip.w <= 1e-4f) return false;
+                glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                screen = ImVec2(windowPos.x + (ndc.x * 0.5f + 0.5f) * windowSize.x,
+                    windowPos.y + (-ndc.y * 0.5f + 0.5f) * windowSize.y);
+                return ndc.z >= 0.0f && ndc.z <= 1.0f;
+            };
+            auto drawBox = [&](const glm::vec3& bmin, const glm::vec3& bmax, ImU32 color, float thickness)
             {
-                if (editor.showInfluenceVolumes)
-                    drawBox(boxMin, boxMax, color, thickness);
-                if (editor.showBlendVolumes)
-                    drawBox(boxMin + glm::vec3(probe.blendDistance), boxMax - glm::vec3(probe.blendDistance), color, 1.0f);
-            }
-            else
-            {
-                ImVec2 center, edge;
-                if (project(position, center) && project(position + cameraRight * probe.radius, edge))
+                glm::vec3 corners[8] = {
+                    {bmin.x,bmin.y,bmin.z},{bmax.x,bmin.y,bmin.z},{bmax.x,bmax.y,bmin.z},{bmin.x,bmax.y,bmin.z},
+                    {bmin.x,bmin.y,bmax.z},{bmax.x,bmin.y,bmax.z},{bmax.x,bmax.y,bmax.z},{bmin.x,bmax.y,bmax.z} };
+                const int edges[12][2] = { {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7} };
+                for (const auto& edge : edges)
                 {
-                    const float dx = edge.x - center.x;
-                    const float dy = edge.y - center.y;
-                    const float radius = std::sqrt(dx * dx + dy * dy);
-                    if (editor.showInfluenceVolumes)
-                        drawList->AddCircle(center, radius, color, 48, thickness);
-                    if (editor.showBlendVolumes)
-                        drawList->AddCircle(center, radius * std::max(0.0f, 1.0f - probe.blendDistance / std::max(probe.radius, 0.001f)), color, 48, 1.0f);
+                    ImVec2 a, b;
+                    if (project(corners[edge[0]], a) && project(corners[edge[1]], b)) drawList->AddLine(a, b, color, thickness);
                 }
-            }
-            ImVec2 capture;
-            if (project(capturePosition, capture))
+            };
+            const auto& probes = probeSettings.probes;
+            const auto& editor = probeSettings.editor;
+            const glm::vec3 cameraRight = glm::normalize(glm::vec3(glm::inverse(camera->GetViewMatrix())[0]));
+            for (int i = 0; i < (int)probes.size(); ++i)
             {
-                drawList->AddCircleFilled(capture, selected ? 5.0f : 3.5f, color);
-                drawList->AddLine(ImVec2(capture.x - 7, capture.y), ImVec2(capture.x + 7, capture.y), color, 1.0f);
-                drawList->AddLine(ImVec2(capture.x, capture.y - 7), ImVec2(capture.x, capture.y + 7), color, 1.0f);
+                const auto& probe = probes[i];
+                if (!probe.enabled || probe.type == 2) continue;
+                ImU32 color = probe.type == 1 ? IM_COL32(255,40,220,220) :
+                    (probe.shape == 1 ? IM_COL32(30,220,255,220) : IM_COL32(40,255,100,220));
+                const bool selected = editor.selectedProbeIndex == i;
+                if (selected) color = IM_COL32(255,255,255,255);
+                const float thickness = selected ? 2.5f : 1.5f;
+                const glm::vec3 boxMin = ToGlm(probe.boxMin);
+                const glm::vec3 boxMax = ToGlm(probe.boxMax);
+                const glm::vec3 position = ToGlm(probe.position);
+                const glm::vec3 capturePosition = ToGlm(probe.capturePosition);
+                if (probe.shape == 1)
+                {
+                    if (editor.showInfluenceVolumes)
+                        drawBox(boxMin, boxMax, color, thickness);
+                    if (editor.showBlendVolumes)
+                        drawBox(boxMin + glm::vec3(probe.blendDistance), boxMax - glm::vec3(probe.blendDistance), color, 1.0f);
+                }
+                else
+                {
+                    ImVec2 center, edge;
+                    if (project(position, center) && project(position + cameraRight * probe.radius, edge))
+                    {
+                        const float dx = edge.x - center.x;
+                        const float dy = edge.y - center.y;
+                        const float radius = std::sqrt(dx * dx + dy * dy);
+                        if (editor.showInfluenceVolumes)
+                            drawList->AddCircle(center, radius, color, 48, thickness);
+                        if (editor.showBlendVolumes)
+                            drawList->AddCircle(center, radius * std::max(0.0f, 1.0f - probe.blendDistance / std::max(probe.radius, 0.001f)), color, 48, 1.0f);
+                    }
+                }
+                ImVec2 capture;
+                if (project(capturePosition, capture))
+                {
+                    drawList->AddCircleFilled(capture, selected ? 5.0f : 3.5f, color);
+                    drawList->AddLine(ImVec2(capture.x - 7, capture.y), ImVec2(capture.x + 7, capture.y), color, 1.0f);
+                    drawList->AddLine(ImVec2(capture.x, capture.y - 7), ImVec2(capture.x, capture.y + 7), color, 1.0f);
+                }
             }
         }
     }
 
-    const auto giSettings = api.GetGISettings();
-    if (giSettings.available && (giSettings.showProbeGizmos || giSettings.showProbeVolume))
+    // GI gizmo 同样由 GI Inspector 窗口驱动，避免 Scene 视口常驻复制 GI 调试数据。
+    if (VansEditorWindow::m_GIWindowOpen)
     {
-        const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
-        ImDrawList* drawList = ImGui::GetWindowDrawList();
-        auto project = [&](const glm::vec3& world, ImVec2& screen) -> bool
+        const auto giSettings = api.GetGISettings();
+        if (giSettings.available && (giSettings.showProbeGizmos || giSettings.showProbeVolume))
         {
-            glm::vec4 clip = viewProjection * glm::vec4(world, 1.0f);
-            if (clip.w <= 1e-4f) return false;
-            glm::vec3 ndc = glm::vec3(clip) / clip.w;
-            screen = ImVec2(windowPos.x + (ndc.x * 0.5f + 0.5f) * windowSize.x,
-                windowPos.y + (-ndc.y * 0.5f + 0.5f) * windowSize.y);
-            return ndc.z >= 0.0f && ndc.z <= 1.0f;
-        };
-        auto drawBox = [&](const glm::vec3& bmin, const glm::vec3& bmax, ImU32 color, float thickness)
-        {
-            glm::vec3 corners[8] = {
-                {bmin.x,bmin.y,bmin.z},{bmax.x,bmin.y,bmin.z},{bmax.x,bmax.y,bmin.z},{bmin.x,bmax.y,bmin.z},
-                {bmin.x,bmin.y,bmax.z},{bmax.x,bmin.y,bmax.z},{bmax.x,bmax.y,bmax.z},{bmin.x,bmax.y,bmax.z} };
-            const int edges[12][2] = { {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7} };
-            for (const auto& edge : edges)
+            const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            auto project = [&](const glm::vec3& world, ImVec2& screen) -> bool
             {
-                ImVec2 a, b;
-                if (project(corners[edge[0]], a) && project(corners[edge[1]], b))
-                    drawList->AddLine(a, b, color, thickness);
+                glm::vec4 clip = viewProjection * glm::vec4(world, 1.0f);
+                if (clip.w <= 1e-4f) return false;
+                glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                screen = ImVec2(windowPos.x + (ndc.x * 0.5f + 0.5f) * windowSize.x,
+                    windowPos.y + (-ndc.y * 0.5f + 0.5f) * windowSize.y);
+                return ndc.z >= 0.0f && ndc.z <= 1.0f;
+            };
+            auto drawBox = [&](const glm::vec3& bmin, const glm::vec3& bmax, ImU32 color, float thickness)
+            {
+                glm::vec3 corners[8] = {
+                    {bmin.x,bmin.y,bmin.z},{bmax.x,bmin.y,bmin.z},{bmax.x,bmax.y,bmin.z},{bmin.x,bmax.y,bmin.z},
+                    {bmin.x,bmin.y,bmax.z},{bmax.x,bmin.y,bmax.z},{bmax.x,bmax.y,bmax.z},{bmin.x,bmax.y,bmax.z} };
+                const int edges[12][2] = { {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7} };
+                for (const auto& edge : edges)
+                {
+                    ImVec2 a, b;
+                    if (project(corners[edge[0]], a) && project(corners[edge[1]], b))
+                        drawList->AddLine(a, b, color, thickness);
+                }
+            };
+
+            const glm::vec3 volumeMin = ToGlm(giSettings.volumeMin);
+            const glm::vec3 volumeMax = ToGlm(giSettings.volumeMax);
+            if (giSettings.showProbeVolume)
+                drawBox(volumeMin, volumeMax, IM_COL32(255, 180, 40, 220), 1.5f);
+
+            Vans::EditorAPI::GIProbeDebugSnapshot giProbeDebug;
+            if (giSettings.showProbeGizmos)
+                giProbeDebug = api.GetGIProbeDebugSnapshot();
+            if (giSettings.showProbeGizmos && giProbeDebug.available && !giProbeDebug.probes.empty())
+            {
+                for (const auto& probe : giProbeDebug.probes)
+                {
+                    ImVec2 screen;
+                    if (!project(ToGlm(probe.position), screen))
+                        continue;
+
+                    const float r = std::clamp(probe.l0Diffuse.x, 0.0f, 1.0f);
+                    const float g = std::clamp(probe.l0Diffuse.y, 0.0f, 1.0f);
+                    const float b = std::clamp(probe.l0Diffuse.z, 0.0f, 1.0f);
+                    const ImU32 fillColor = IM_COL32(
+                        static_cast<int>(r * 255.0f),
+                        static_cast<int>(g * 255.0f),
+                        static_cast<int>(b * 255.0f),
+                        230);
+                    const float radius = 2.0f + std::clamp(probe.l1Ratio, 0.0f, 1.0f) * 3.0f;
+                    drawList->AddCircleFilled(screen, radius, fillColor, 12);
+                    drawList->AddCircle(screen, radius + 1.0f, IM_COL32(255, 255, 255, 120), 12, 1.0f);
+                }
             }
-        };
-
-        const glm::vec3 volumeMin = ToGlm(giSettings.volumeMin);
-        const glm::vec3 volumeMax = ToGlm(giSettings.volumeMax);
-        if (giSettings.showProbeVolume)
-            drawBox(volumeMin, volumeMax, IM_COL32(255, 180, 40, 220), 1.5f);
-
-        const auto giProbeDebug = api.GetGIProbeDebugSnapshot();
-        if (giSettings.showProbeGizmos && giProbeDebug.available && !giProbeDebug.probes.empty())
-        {
-            for (const auto& probe : giProbeDebug.probes)
+            else if (giSettings.showProbeGizmos &&
+                     giSettings.gridDimensions.x > 0.0f && giSettings.gridDimensions.y > 0.0f && giSettings.gridDimensions.z > 0.0f &&
+                     giSettings.probeSpacingAxes.x > 0.0f && giSettings.probeSpacingAxes.y > 0.0f && giSettings.probeSpacingAxes.z > 0.0f)
             {
-                ImVec2 screen;
-                if (!project(ToGlm(probe.position), screen))
-                    continue;
+                const uint32_t stride = std::max(1u, giSettings.gizmoStride);
+                const glm::uvec3 gridDimensions(
+                    static_cast<uint32_t>(giSettings.gridDimensions.x),
+                    static_cast<uint32_t>(giSettings.gridDimensions.y),
+                    static_cast<uint32_t>(giSettings.gridDimensions.z));
+                const glm::vec3 spacing(
+                    giSettings.probeSpacingAxes.x,
+                    giSettings.probeSpacingAxes.y,
+                    giSettings.probeSpacingAxes.z);
+                const ImU32 baseColor = IM_COL32(255, 210, 80, 220);
+                const ImU32 axisColor = IM_COL32(80, 220, 255, 240);
 
-                const float r = std::clamp(probe.l0Diffuse.x, 0.0f, 1.0f);
-                const float g = std::clamp(probe.l0Diffuse.y, 0.0f, 1.0f);
-                const float b = std::clamp(probe.l0Diffuse.z, 0.0f, 1.0f);
-                const ImU32 fillColor = IM_COL32(
-                    static_cast<int>(r * 255.0f),
-                    static_cast<int>(g * 255.0f),
-                    static_cast<int>(b * 255.0f),
-                    230);
-                const float radius = 2.0f + std::clamp(probe.l1Ratio, 0.0f, 1.0f) * 3.0f;
-                drawList->AddCircleFilled(screen, radius, fillColor, 12);
-                drawList->AddCircle(screen, radius + 1.0f, IM_COL32(255, 255, 255, 120), 12, 1.0f);
+                for (uint32_t z = 0; z < gridDimensions.z; z += stride)
+                for (uint32_t y = 0; y < gridDimensions.y; y += stride)
+                for (uint32_t x = 0; x < gridDimensions.x; x += stride)
+                {
+                    const glm::vec3 probePos = volumeMin + (glm::vec3(x, y, z) + glm::vec3(0.5f)) * spacing;
+                    ImVec2 screen;
+                    if (!project(probePos, screen))
+                        continue;
+
+                    const bool axisProbe = x == 0 || y == 0 || z == 0;
+                    const float radius = axisProbe ? 3.0f : 2.0f;
+                    const ImU32 color = axisProbe ? axisColor : baseColor;
+                    drawList->AddCircleFilled(screen, radius, color, 10);
+                }
             }
         }
-        else if (giSettings.showProbeGizmos &&
-                 giSettings.gridDimensions.x > 0.0f && giSettings.gridDimensions.y > 0.0f && giSettings.gridDimensions.z > 0.0f &&
-                 giSettings.probeSpacingAxes.x > 0.0f && giSettings.probeSpacingAxes.y > 0.0f && giSettings.probeSpacingAxes.z > 0.0f)
+    }
+
+    if (VansEditorWindow::m_HiZCullDebugVisualization)
+    {
+        const auto hizSnapshot = api.GetMainCameraHiZCullDebugSnapshot();
+        if (hizSnapshot.available && hizSnapshot.enabled && !hizSnapshot.culledNodes.empty())
         {
-            const uint32_t stride = std::max(1u, giSettings.gizmoStride);
-            const glm::uvec3 gridDimensions(
-                static_cast<uint32_t>(giSettings.gridDimensions.x),
-                static_cast<uint32_t>(giSettings.gridDimensions.y),
-                static_cast<uint32_t>(giSettings.gridDimensions.z));
-            const glm::vec3 spacing(
-                giSettings.probeSpacingAxes.x,
-                giSettings.probeSpacingAxes.y,
-                giSettings.probeSpacingAxes.z);
-            const ImU32 baseColor = IM_COL32(255, 210, 80, 220);
-            const ImU32 axisColor = IM_COL32(80, 220, 255, 240);
-
-            for (uint32_t z = 0; z < gridDimensions.z; z += stride)
-            for (uint32_t y = 0; y < gridDimensions.y; y += stride)
-            for (uint32_t x = 0; x < gridDimensions.x; x += stride)
+            const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            auto project = [&](const glm::vec3& world, ImVec2& screen) -> bool
             {
-                const glm::vec3 probePos = volumeMin + (glm::vec3(x, y, z) + glm::vec3(0.5f)) * spacing;
-                ImVec2 screen;
-                if (!project(probePos, screen))
-                    continue;
+                glm::vec4 clip = viewProjection * glm::vec4(world, 1.0f);
+                if (clip.w <= 1e-4f) return false;
+                glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                screen = ImVec2(windowPos.x + (ndc.x * 0.5f + 0.5f) * windowSize.x,
+                    windowPos.y + (-ndc.y * 0.5f + 0.5f) * windowSize.y);
+                return ndc.z >= 0.0f && ndc.z <= 1.0f;
+            };
+            auto drawObb = [&](const Vans::EditorAPI::MainCameraHiZCulledNodeSnapshot& node)
+            {
+                const glm::vec3 center = ToGlm(node.center);
+                const glm::vec3 axisX = ToGlm(node.axisXHalf);
+                const glm::vec3 axisY = ToGlm(node.axisYHalf);
+                const glm::vec3 axisZ = ToGlm(node.axisZHalf);
+                const glm::vec3 corners[8] = {
+                    center - axisX - axisY - axisZ,
+                    center + axisX - axisY - axisZ,
+                    center + axisX + axisY - axisZ,
+                    center - axisX + axisY - axisZ,
+                    center - axisX - axisY + axisZ,
+                    center + axisX - axisY + axisZ,
+                    center + axisX + axisY + axisZ,
+                    center - axisX + axisY + axisZ,
+                };
+                const int edges[12][2] = {
+                    {0,1},{1,2},{2,3},{3,0},
+                    {4,5},{5,6},{6,7},{7,4},
+                    {0,4},{1,5},{2,6},{3,7}
+                };
+                constexpr ImU32 kCulledColor = IM_COL32(255, 80, 40, 230);
+                for (const auto& edge : edges)
+                {
+                    ImVec2 a, b;
+                    if (project(corners[edge[0]], a) && project(corners[edge[1]], b))
+                        drawList->AddLine(a, b, kCulledColor, 1.8f);
+                }
+            };
 
-                const bool axisProbe = x == 0 || y == 0 || z == 0;
-                const float radius = axisProbe ? 3.0f : 2.0f;
-                const ImU32 color = axisProbe ? axisColor : baseColor;
-                drawList->AddCircleFilled(screen, radius, color, 10);
-            }
+            for (const auto& node : hizSnapshot.culledNodes)
+                drawObb(node);
         }
     }
 
@@ -424,14 +435,13 @@ void VansGizmos::TryPickObject(Vans::EditorAPI::IEngineEditorAPI& api,
     float ndcY = 1.0f - 2.0f * (mousePos.y - windowPos.y) / windowSize.y;
 
     glm::vec3 rayOrigin, rayDir;
-    UnprojectRay(camera, ndcX, ndcY, rayOrigin, rayDir);
+    const float viewportAspect = windowSize.x / windowSize.y;
+    UnprojectRay(camera, ndcX, ndcY, viewportAspect, rayOrigin, rayDir);
 
     Vans::EditorAPI::Ray ray;
     ray.origin = ToEditorVec3(rayOrigin);
     ray.direction = ToEditorVec3(rayDir);
-    const std::string entityGuid = api.PickRuntimeEntity(ray);
-    if (!entityGuid.empty())
-        Vans::VansEditorSelection::SelectEntity(entityGuid);
+    Vans::VansScenePickingService::PickRuntimeEntity(api, ray, "SceneViewport");
 }
 
 

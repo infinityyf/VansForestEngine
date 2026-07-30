@@ -182,9 +182,6 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     auto toVec3 = [](const Vans::VansSceneFloat3& value) {
         return glm::vec3(value[0], value[1], value[2]);
     };
-    auto toVec4 = [](const Vans::VansSceneFloat4& value) {
-        return glm::vec4(value[0], value[1], value[2], value[3]);
-    };
     auto toWaveMode = [](Vans::VansSceneWaterWaveMode value) {
         switch (value)
         {
@@ -206,11 +203,8 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     if (medium.absorptionCoeff) config.m_Medium.m_AbsorptionCoeff = toVec3(*medium.absorptionCoeff);
     if (medium.scatteringCoeff) config.m_Medium.m_ScatteringCoeff = toVec3(*medium.scatteringCoeff);
     if (medium.ior) config.m_Medium.m_IOR = *medium.ior;
-    if (medium.fresnelPower) config.m_Medium.m_FresnelPower = *medium.fresnelPower;
     if (medium.anisotropy) config.m_Medium.m_Anisotropy = *medium.anisotropy;
     if (medium.waterRoughness) config.m_Medium.m_WaterRoughness = *medium.waterRoughness;
-    if (medium.deepColor) config.m_Medium.m_DeepColor = toVec4(*medium.deepColor);
-    if (medium.shallowColor) config.m_Medium.m_ShallowColor = toVec4(*medium.shallowColor);
 
     const Vans::VansSceneWaterSpectrumConfig& spectrum = waterData.spectrum;
     if (spectrum.mode) config.m_Spectrum.m_Mode = toWaveMode(*spectrum.mode);
@@ -278,6 +272,28 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     if (sss.enabled) config.m_SSS.m_Enabled = *sss.enabled;
     if (sss.maxThickness) config.m_SSS.m_MaxThicknessDistance = *sss.maxThickness;
     if (sss.deepFallback) config.m_SSS.m_DeepWaterThicknessFallback = *sss.deepFallback;
+
+    const Vans::VansSceneWaterOpticsConfig& optics = waterData.optics;
+    if (optics.maxCrossDistance) config.m_Optics.m_MaxCrossDistance = *optics.maxCrossDistance;
+    if (optics.maxRefractionCrossDistance)
+        config.m_Optics.m_MaxRefractionCrossDistance = *optics.maxRefractionCrossDistance;
+    if (optics.multiScatterScale) config.m_Optics.m_MultiScatterScale = *optics.multiScatterScale;
+    if (optics.waterDispersionStrength)
+        config.m_Optics.m_WaterDispersionStrength = *optics.waterDispersionStrength;
+    if (optics.sssPathScale) config.m_Optics.m_SSSPathScale = *optics.sssPathScale;
+    if (optics.sssNonlinearStrength)
+        config.m_Optics.m_SSSNonlinearStrength = *optics.sssNonlinearStrength;
+    if (optics.sssScatterBoost) config.m_Optics.m_SSSScatterBoost = *optics.sssScatterBoost;
+    if (optics.backlitPathScale) config.m_Optics.m_BacklitPathScale = *optics.backlitPathScale;
+    if (optics.backlitPhaseG) config.m_Optics.m_BacklitPhaseG = *optics.backlitPhaseG;
+
+    const Vans::VansSceneWaterVolumeConfig& volume = waterData.volume;
+    if (volume.resolutionScale) config.m_Volume.m_ResolutionScale = *volume.resolutionScale;
+    if (volume.sampleCount) config.m_Volume.m_SampleCount = *volume.sampleCount;
+    if (volume.spatialFilterIterations)
+        config.m_Volume.m_SpatialFilterIterations = *volume.spatialFilterIterations;
+    if (volume.spatialDepthSensitivity)
+        config.m_Volume.m_SpatialDepthSensitivity = *volume.spatialDepthSensitivity;
 
     const Vans::VansSceneWaterGeometryConfig& geometry = waterData.geometry;
     if (geometry.lodCount) config.m_Geometry.m_LodCount = *geometry.lodCount;

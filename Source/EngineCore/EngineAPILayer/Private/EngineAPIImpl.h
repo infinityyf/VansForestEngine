@@ -3,8 +3,11 @@
 #include "EngineCommandContext.h"
 
 #include "../Public/IEngineEditorAPI.h"
+#include "../../RuntimeUI/Public/VansUIRuntimeHandles.h"
+#include "../../RenderCore/VulkanCore/VansVKImage.h"
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace Vans::EditorAPI
@@ -13,6 +16,10 @@ namespace Vans::EditorAPI
 }
 
 class VansScriptContext;
+namespace VansRuntime
+{
+	class VansUIDocument;
+}
 
 namespace Vans::EditorAPI
 {
@@ -42,7 +49,14 @@ namespace Vans::EditorAPI
 		std::vector<RecentProjectEntry> GetRecentProjects() const override;
 		ProjectOpenResult OpenProject(const ProjectOpenRequest& request) override;
 		void CloseProject() override;
+		ProjectConfigSnapshot GetProjectConfigSnapshot() const override;
+		ProjectConfigEditResult SetProjectDefaultScene(const std::string& sceneRelativePath) override;
+		ProjectConfigEditResult SetProjectPathField(ProjectPathField field, const std::string& relativePath) override;
+		ProjectConfigEditResult SetProjectScriptSearchPaths(const std::vector<std::string>& paths) override;
+		ProjectConfigEditResult SetProjectAssetDirectory(const std::string& key, const std::string& relativePath) override;
+		ProjectConfigEditResult SaveProjectConfig() override;
 		float GetProjectPhysicsFixedTimeStep() const override;
+		ProjectConfigEditResult SetProjectPhysicsFixedTimeStep(float fixedTimeStep) override;
 		bool SetCurrentProjectScenePath(const std::string& scenePath) override;
 		void ScanProjectAssets() override;
 
@@ -50,13 +64,28 @@ namespace Vans::EditorAPI
 		RenderTexturePreview GetViewportPreview(ViewportId id) const override;
 		FSRSettingsSnapshot GetFSRSettings() const override;
 		void SetFSRSettings(FSRUpscaleMode mode, float sharpness) override;
+		CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const override;
+		void SetCommandRecordingSettings(bool parallelEnabled) override;
 		void SetSceneViewportExtent(std::uint32_t width, std::uint32_t height) override;
 		std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const override;
 		void RequestPunctualShadowDebugPreview() override;
 		PunctualShadowDebugSnapshot GetPunctualShadowDebugSnapshot() const override;
 		void ApplyPunctualScreenSpaceShadowSettings(
 			const PunctualScreenSpaceShadowSettingsSnapshot& settings) override;
-		RenderBackendDiagnostics GetRenderBackendDiagnostics() const override;
+		RenderBackendDiagnostics GetRenderBackendDiagnostics(bool includeRenderGraphSummary = false) const override;
+		PipelineRegistryStatsSnapshot GetPipelineRegistryStats() const override;
+		RenderDocStatusSnapshot GetRenderDocStatus() const override;
+		void SetRenderDocAPIValidationEnabled(bool enabled) override;
+		void SetRenderDocReferenceAllResources(bool enabled) override;
+		void CaptureNextRenderDocFrame() override;
+		void OpenRenderDocUI() override;
+		UIDocumentOpenResult OpenUIDocument(const std::string& path) override;
+		void CloseUIDocument(UIDocumentId documentId) override;
+		void SetUIDocumentVisible(UIDocumentId documentId, bool visible) override;
+		UIDocumentSnapshot GetUIDocumentSnapshot(UIDocumentId documentId) const override;
+		UIDiagnosticsSnapshot GetUIDiagnostics(UIDocumentId documentId) const override;
+		UIPreviewResult RequestUIPreview(const UIPreviewRequest& request) override;
+		EditorTextureHandle GetUIPreviewTexture(UIPreviewId id) const override;
 		std::vector<ShaderProgramSourceSnapshot> QueryShaderProgramSources() const override;
 		ShaderCandidateApplyResult ApplyShaderCandidateAtRenderSafePoint(
 			const ShaderCandidatePackage& package) override;
@@ -68,6 +97,7 @@ namespace Vans::EditorAPI
 		void ApplyGISettings(const GIInspectorSettingsSnapshot& settings) override;
 		GIProbeDebugSnapshot CaptureGIProbeDebugSnapshot(std::uint32_t stride, float exposure) override;
 		GIProbeDebugSnapshot GetGIProbeDebugSnapshot() const override;
+		MainCameraHiZCullDebugSnapshot GetMainCameraHiZCullDebugSnapshot() const override;
 		RenderTexturePreview RequestGIRTPreview(
 			std::uint32_t mode,
 			std::uint32_t zSlice,
@@ -90,6 +120,7 @@ namespace Vans::EditorAPI
 		RuntimeModelEntityCreateResult CreateRuntimeModelEntity(const RuntimeModelEntityCreateRequest& request) override;
 		ModelAssetPlacementPayload PrepareModelAssetPlacement(const ModelAssetPlacementRequest& request) override;
 		RuntimeEntityDestroyResult DestroyRuntimeEntityByName(const RuntimeEntityDestroyRequest& request) override;
+		RuntimeEntityReparentResult ReparentRuntimeEntity(const RuntimeEntityReparentRequest& request) override;
 		std::string MakeUniqueRuntimeEntityName(const std::string& baseName) const override;
 		std::string GetProjectRootPath() const override;
 		bool IsRuntimeSceneReady() const override;
@@ -158,9 +189,6 @@ namespace Vans::EditorAPI
 		void Undo() override;
 		void Redo() override;
 
-		void Subscribe(IEngineEventListener* listener) override;
-		void Unsubscribe(IEngineEventListener* listener) override;
-
 	private:
 		RenderTexturePreview BuildReflectionProbePreview(RenderTextureFilter filter) const;
 		RenderTexturePreview BuildWaterTexturePreview(RenderTextureFilter filter) const;
@@ -170,11 +198,33 @@ namespace Vans::EditorAPI
 		RuntimeRenderDeviceHandle m_Device = nullptr;
 		VansScriptContext* m_ScriptContext = nullptr;
 		EnginePlayState m_PlayState = EnginePlayState::Edit;
-		std::vector<IEngineEventListener*> m_Listeners;
 		std::vector<std::unique_ptr<IEngineCommand>> m_UndoStack;
 		std::vector<std::unique_ptr<IEngineCommand>> m_RedoStack;
 		std::vector<ScenePropertyEdit> m_PendingScenePropertyEdits;
 		bool m_AllowNextCommandMerge = true;
 		GIProbeDebugSnapshot m_GIProbeDebugSnapshot;
+		UIDocumentId m_NextUIDocumentId = 1;
+		UIPreviewId m_NextUIPreviewId = 1;
+		std::unordered_map<UIDocumentId, std::shared_ptr<VansRuntime::VansUIDocument>> m_UIDocuments;
+		std::unordered_map<UIDocumentId, std::string> m_UIDocumentSourcePaths;
+		std::unordered_map<UIDocumentId, VansRuntime::VansUIHandleId> m_UIScreenPreviewHandles;
+
+		struct UIPreviewGpuResource
+		{
+			UIDocumentId documentId = 0;
+			std::uint32_t width = 0;
+			std::uint32_t height = 0;
+			VansGraphics::VansVKImage colorImage;
+			VkRenderPass renderPass = VK_NULL_HANDLE;
+			VkFramebuffer framebuffer = VK_NULL_HANDLE;
+			EditorTextureHandle texture = nullptr;
+		};
+
+		std::unordered_map<UIPreviewId, UIPreviewGpuResource> m_UIPreviewResources;
+
+		void DestroyUIPreviewResource(UIPreviewGpuResource& resource);
+		void DestroyUIPreviewsForDocument(UIDocumentId documentId);
+		void DestroyAllUIPreviewResources();
+		void CloseAllUIDocuments();
 	};
 }

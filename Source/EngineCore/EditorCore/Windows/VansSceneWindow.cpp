@@ -16,6 +16,7 @@
 #include "../VansEditorWindow.h"
 #include "../VansSceneEditService.h"
 #include "../../RuntimeUI/Public/VansUISystem.h"
+#include "../../VansTimer.h"
 #include "../../Util/VansLog.h"
 #include "VansHierachyWindow.h"
 
@@ -257,10 +258,17 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                 ImGui::EndDragDropTarget();
             }
 
-            // Inform the Noesis input adapter of the scene image's screen rect so
-            // that raw GLFW cursor coordinates are mapped to Noesis view space.
+            const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+            const ImVec2 mainViewportPos = mainViewport ? mainViewport->Pos : ImVec2(0.0f, 0.0f);
+            const ImVec2 sceneInputPos(
+                imageScreenPos.x - mainViewportPos.x,
+                imageScreenPos.y - mainViewportPos.y);
+
+            // VansInputManager reports GLFW client-area coordinates. ImGui item
+            // rects are absolute when multi-viewport is enabled, so normalize the
+            // scene image rect back to the main GLFW window before routing to UI.
             VansRuntime::VansUISystem::Get().SetSceneViewport(
-                imageScreenPos.x, imageScreenPos.y, drawSize.x, drawSize.y);
+                sceneInputPos.x, sceneInputPos.y, drawSize.x, drawSize.y);
 
             // ── Coordinate diagnostic (one-time log per session) ──────────────
             {
@@ -273,6 +281,8 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                     // GLFW cursor via ImGui's GLFW backend
                     ImGuiIO& io = ImGui::GetIO();
                     VANS_LOG("[SceneWindow] imageScreenPos=(" << (int)imageScreenPos.x << "," << (int)imageScreenPos.y
+                        << ") sceneInputPos=(" << (int)sceneInputPos.x << "," << (int)sceneInputPos.y
+                        << ") mainViewportPos=(" << (int)mainViewportPos.x << "," << (int)mainViewportPos.y
                         << ") drawSize=(" << (int)drawSize.x << "x" << (int)drawSize.y << ")"
                         << " imguiMouse=(" << (int)imguiMouse.x << "," << (int)imguiMouse.y << ")"
                         << " DisplaySize=(" << (int)io.DisplaySize.x << "x" << (int)io.DisplaySize.y << ")"
@@ -283,13 +293,12 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             m_Gizmos.HandleHotkeys();
             m_Gizmos.Draw(editorAPI, m_Camera, imageScreenPos, drawSize);
 
-            const Vans::EditorAPI::VehicleDebugSnapshot vehicleDebug = editorAPI.GetVehicleDebugSnapshot();
-
             // ── Vehicle physics debug visualization ───────────────────────
-            if (vehicleDebug.available)
-            {
-                ImGui::Checkbox("Vehicle Debug", &VansEditorWindow::m_VehicleDebugGizmos);
-            }
+            ImGui::Checkbox("Vehicle Debug", &VansEditorWindow::m_VehicleDebugGizmos);
+            Vans::EditorAPI::VehicleDebugSnapshot vehicleDebug;
+            if (VansEditorWindow::m_VehicleDebugGizmos)
+                vehicleDebug = editorAPI.GetVehicleDebugSnapshot();
+
             if (VansEditorWindow::m_VehicleDebugGizmos && vehicleDebug.available)
             {
                 const glm::mat4 view = m_Camera->GetViewMatrix();
@@ -629,11 +638,41 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             }
 
             // ── Object picking: LMB click when gizmo is not being dragged ─────
-            if (ImGui::IsWindowHovered()
+            const ImVec2 mousePos = ImGui::GetMousePos();
+            const bool mouseInsideSceneImage =
+                mousePos.x >= imageScreenPos.x &&
+                mousePos.y >= imageScreenPos.y &&
+                mousePos.x <= imageScreenPos.x + drawSize.x &&
+                mousePos.y <= imageScreenPos.y + drawSize.y;
+
+            if (m_Camera)
+            {
+                const ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
+                VansEditorCameraInputState cameraInput;
+                cameraInput.editMode = editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
+                cameraInput.viewportHovered = mouseInsideSceneImage;
+                cameraInput.rightMouseClicked = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+                cameraInput.rightMouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                cameraInput.mouseDeltaX = mouseDelta.x;
+                cameraInput.mouseDeltaY = mouseDelta.y;
+                cameraInput.forwardAxis =
+                    (ImGui::IsKeyDown(ImGuiKey_W) ? 1.0f : 0.0f) -
+                    (ImGui::IsKeyDown(ImGuiKey_S) ? 1.0f : 0.0f);
+                cameraInput.rightAxis =
+                    (ImGui::IsKeyDown(ImGuiKey_D) ? 1.0f : 0.0f) -
+                    (ImGui::IsKeyDown(ImGuiKey_A) ? 1.0f : 0.0f);
+                cameraInput.upAxis =
+                    (ImGui::IsKeyDown(ImGuiKey_E) ? 1.0f : 0.0f) -
+                    (ImGui::IsKeyDown(ImGuiKey_Q) ? 1.0f : 0.0f);
+                cameraInput.deltaTime = static_cast<float>(VansTimer::GetEditorDeltaTime());
+                m_CameraController.Update(m_Camera, cameraInput);
+            }
+
+            if (mouseInsideSceneImage
                 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
                 && !ImGuizmo::IsOver())
             {
-                m_Gizmos.TryPickObject(editorAPI, m_Camera, ImGui::GetMousePos(), imageScreenPos, drawSize);
+                m_Gizmos.TryPickObject(editorAPI, m_Camera, mousePos, imageScreenPos, drawSize);
             }
         }
 

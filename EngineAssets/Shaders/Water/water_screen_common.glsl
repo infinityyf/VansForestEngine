@@ -8,7 +8,7 @@ const float WATER_INVALID_DEPTH = 9999.0;
 
 bool WaterSurfaceValid(vec4 normalCoverage, vec4 positionDepth)
 {
-    return normalCoverage.a > 0.5 &&
+    return dot(normalCoverage.xyz, normalCoverage.xyz) > 0.25 &&
            positionDepth.a > 0.0 && positionDepth.a < WATER_INVALID_DEPTH;
 }
 

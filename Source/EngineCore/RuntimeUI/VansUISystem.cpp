@@ -1,5 +1,8 @@
 #include "Public/VansUISystem.h"
 #include "Public/VansUIDocument.h"
+#include "Public/VansUIComponentRegistry.h"
+#include "Public/VansUIResourceRegistry.h"
+#include "Public/VansUIScreen.h"
 #include "Public/VansUIScreenManager.h"
 
 #include "Private/Noesis/VansNoesisUISystem.h"
@@ -11,6 +14,7 @@
 
 #include <cassert>
 #include <memory>
+#include <utility>
 
 namespace VansRuntime
 {
@@ -85,6 +89,9 @@ void VansUISystem::Shutdown()
 {
     if (!m_Impl) return;
 
+    VansUIComponentRegistry::Get().CloseAll();
+    VansUIResourceRegistry::Get().Clear();
+
     if (m_Impl->m_NoesisSystem)
     {
         m_Impl->m_NoesisSystem->Shutdown();
@@ -113,6 +120,52 @@ std::shared_ptr<VansUIDocument> VansUISystem::LoadDocument(const std::string& xa
 {
     if (!m_Impl || !m_Impl->m_NoesisSystem) return nullptr;
     return m_Impl->m_NoesisSystem->LoadDocument(xamlPath);
+}
+
+std::shared_ptr<VansUIScreen> VansUISystem::LoadScreen(const std::string& configPath)
+{
+    if (!m_Impl || !m_Impl->m_ScreenManager) return nullptr;
+    return m_Impl->m_ScreenManager->LoadScreen(configPath);
+}
+
+std::shared_ptr<VansUIScreen> VansUISystem::LoadScreen(
+    const std::string& configPath,
+    std::shared_ptr<VansUIViewModel> vm)
+{
+    if (!m_Impl || !m_Impl->m_ScreenManager) return nullptr;
+    return m_Impl->m_ScreenManager->LoadScreen(configPath, std::move(vm));
+}
+
+bool VansUISystem::PreloadScreen(const std::string& configPath)
+{
+    if (!m_Impl || !m_Impl->m_ScreenManager) return false;
+    return m_Impl->m_ScreenManager->PreloadScreen(configPath);
+}
+
+void VansUISystem::ReleaseScreen(const std::string& configPath)
+{
+    if (!m_Impl || !m_Impl->m_ScreenManager) return;
+    m_Impl->m_ScreenManager->ReleaseScreen(configPath);
+}
+
+std::shared_ptr<VansUIScreen> VansUISystem::ReloadScreen(
+    const std::string& configPath,
+    std::shared_ptr<VansUIViewModel> vm)
+{
+    if (!m_Impl || !m_Impl->m_ScreenManager) return nullptr;
+    return m_Impl->m_ScreenManager->ReloadScreen(configPath, std::move(vm));
+}
+
+void VansUISystem::CloseScreen(VansUIHandleId screenId)
+{
+    if (!m_Impl || !m_Impl->m_ScreenManager) return;
+    m_Impl->m_ScreenManager->CloseScreen(screenId);
+}
+
+void VansUISystem::CloseScreenByName(const std::string& name)
+{
+    if (!m_Impl || !m_Impl->m_ScreenManager) return;
+    m_Impl->m_ScreenManager->CloseScreenByName(name);
 }
 
 void VansUISystem::UnloadDocument(const std::shared_ptr<VansUIDocument>& document)
@@ -148,6 +201,21 @@ void VansUISystem::SetSceneViewport(float screenX, float screenY,
 // ─────────────────────────────────────────────────────────────────────────────
 // ScreenManager
 // ─────────────────────────────────────────────────────────────────────────────
+
+bool VansUISystem::TransformMouseToView(double rawX, double rawY,
+                                         double& outX, double& outY) const
+{
+    if (!m_Impl || !m_Impl->m_NoesisSystem)
+        return false;
+    return m_Impl->m_NoesisSystem->TransformMouseToView(rawX, rawY, outX, outY);
+}
+
+bool VansUISystem::GetViewSize(double& outW, double& outH) const
+{
+    if (!m_Impl || !m_Impl->m_NoesisSystem)
+        return false;
+    return m_Impl->m_NoesisSystem->GetViewSize(outW, outH);
+}
 
 VansUIScreenManager& VansUISystem::GetScreenManager()
 {
@@ -197,6 +265,34 @@ void VansUISystem::RenderDocuments(void* nativeRenderPass, uint32_t sampleCount)
     if (!m_Impl || !m_Impl->m_NoesisSystem) return;
     m_Impl->m_NoesisSystem->RenderDocumentsPass(
         static_cast<VkRenderPass>(nativeRenderPass), sampleCount);
+}
+
+bool VansUISystem::PrepareDocumentPreview(
+    const std::shared_ptr<VansUIDocument>& document,
+    void* nativeCmdBuffer,
+    double totalTimeSeconds)
+{
+    if (!m_Impl || !m_Impl->m_NoesisSystem || !document)
+        return false;
+
+    return m_Impl->m_NoesisSystem->PrepareDocumentPreview(
+        document,
+        static_cast<VkCommandBuffer>(nativeCmdBuffer),
+        totalTimeSeconds);
+}
+
+bool VansUISystem::RenderDocumentPreviewPass(
+    const std::shared_ptr<VansUIDocument>& document,
+    void* nativeRenderPass,
+    uint32_t sampleCount)
+{
+    if (!m_Impl || !m_Impl->m_NoesisSystem || !document)
+        return false;
+
+    return m_Impl->m_NoesisSystem->RenderDocumentPreviewPass(
+        document,
+        static_cast<VkRenderPass>(nativeRenderPass),
+        sampleCount);
 }
 
 } // namespace VansRuntime

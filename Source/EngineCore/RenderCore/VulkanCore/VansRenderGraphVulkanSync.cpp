@@ -231,6 +231,7 @@ namespace VansGraphics
 	}
 
 	VansVulkanSyncRecordResult VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
+		VansVKCommandBuffer& commandBuffer,
 		VansVKImage& image,
 		const VansVulkanSyncDependency& dependency)
 	{
@@ -245,6 +246,7 @@ namespace VansGraphics
 		}
 
 		return RecordImageTransition(
+			commandBuffer,
 			image,
 			dependency.srcStageMask,
 			dependency.dstStageMask,
@@ -255,6 +257,7 @@ namespace VansGraphics
 	}
 
 	VansVulkanSyncRecordResult VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
+		VansVKCommandBuffer& commandBuffer,
 		VansVKImage& image,
 		VkPipelineStageFlags srcStageMask,
 		VkPipelineStageFlags dstStageMask,
@@ -266,6 +269,7 @@ namespace VansGraphics
 		VansVulkanSyncRecordResult result{};
 
 		image.SetImageMemoryBarrier(
+			commandBuffer,
 			srcStageMask,
 			dstStageMask,
 			{

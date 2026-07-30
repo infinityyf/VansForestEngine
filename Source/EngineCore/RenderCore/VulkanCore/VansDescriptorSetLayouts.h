@@ -142,6 +142,7 @@ namespace VansGraphics
 		VEG_SIM_BINDING_TERRAIN_HEIGHTMAP = 3, // COMBINED_IMAGE_SAMPLER — terrain heightmap for ground placement
 		VEG_SIM_BINDING_LOD_FACTORS      = 4,  // SSBO (write) — per-instance LOD factor (1=full sim, 0=skip)
 		VEG_SIM_BINDING_SCATTER_OFFSETS  = 5,  // UBO (read) — shared sub-blade scatter offsets (P6a)
+		VEG_SIM_BINDING_VISIBILITY_FLAGS = 6,  // SSBO（读）— cull 结果，用于跳过不可见实例模拟
 	};
 
 	// ====================================================================
@@ -452,6 +453,13 @@ namespace VansGraphics
 		HIZ_SEED_BINDING_HIZ_MIP0 = 1,   // HIZ mip 0 输出 (STORAGE_IMAGE, r32f)
 	};
 
+	enum MainCameraHiZCullPassBinding : uint32_t
+	{
+		MAIN_CAMERA_HIZ_CULL_BINDING_OBJECTS = 0,
+		MAIN_CAMERA_HIZ_CULL_BINDING_VISIBILITY = 1,
+		MAIN_CAMERA_HIZ_CULL_BINDING_HIZ = 2,
+	};
+
 	// --- Decal Pass (Set 1) ---
 	// 贴花节点 Pass-level 描述符集：GBuffer2（世界坐标重建）
 	enum DecalPassBinding : uint32_t
@@ -539,13 +547,17 @@ namespace VansGraphics
 	{
 		WATER_COMP_BINDING_GBUF_NORMAL   = 0,   // WaterGBuf_Normal  (sampler2D)
 		WATER_COMP_BINDING_GBUF_DEPTH    = 1,   // WaterGBuf_LinearDepth (sampler2D)
-		WATER_COMP_BINDING_PARAMS        = 2,   // WaterCompositeParams UBO
+		WATER_COMP_BINDING_PARAMS        = 2,   // PBRWaterParams UBO
 		WATER_COMP_BINDING_SCENE_GBUF2   = 3,   // 主场景 GBuffer2（worldPos.xyz + linearDepth.w）
 		WATER_COMP_BINDING_REFLECTION    = 4,   // WaterSSR/反射结果
-		WATER_COMP_BINDING_REFRACTION    = 5,   // 折射颜色结果
+		WATER_COMP_BINDING_REFRACTION_DATA = 5, // xy=uvOffset, z=refracted depth, w=isWater
 		WATER_COMP_BINDING_CAUSTICS      = 6,   // 焦散结果
-		WATER_COMP_BINDING_THICKNESS     = 8,   // W-16: 厚度图
-		WATER_COMP_BINDING_SSS_SCATTER  = 9,   // W-16: SSS 散射输出
+		WATER_COMP_BINDING_GBUF_SCATTER  = 7,
+		WATER_COMP_BINDING_GBUF_ABSORPTION = 8,
+		WATER_COMP_BINDING_VOLUME_COLOR  = 9,
+		WATER_COMP_BINDING_VOLUME_TRANSMITTANCE = 10,
+		WATER_COMP_BINDING_VOLUME_DEPTH  = 11,
+		WATER_COMP_BINDING_SCENE_COLOR   = 12,
 	};
 
 	// --- Hair Composite Pass（Set 1）---
@@ -591,10 +603,10 @@ namespace VansGraphics
 	{
 		WATER_REFRACTION_BINDING_GBUF_NORMAL  = 0,
 		WATER_REFRACTION_BINDING_GBUF_DEPTH   = 1,
-		WATER_REFRACTION_BINDING_SCENE_COLOR  = 2,
+		WATER_REFRACTION_BINDING_SCENE_GBUF2  = 2,
 		WATER_REFRACTION_BINDING_THICKNESS    = 3,
 		WATER_REFRACTION_BINDING_PARAMS       = 4,
-		WATER_REFRACTION_BINDING_REFRACTION_OUT = 5,
+		WATER_REFRACTION_BINDING_REFRACTION_DATA_OUT = 5,
 	};
 
 	// --- Water Caustics Compute（Set 0）- W-14 ---
@@ -616,15 +628,31 @@ namespace VansGraphics
 		WATER_THICKNESS_BINDING_THICKNESS_OUT = 3,
 	};
 
-	// --- Water SSS Scatter Compute（Set 0）- W-16 Phase 2 ---
-	enum WaterSSSScatterComputeBinding : uint32_t
+	enum WaterVolumeComputeBinding : uint32_t
 	{
-		WATER_SSS_SCATTER_BINDING_GBUF_NORMAL   = 0,
-		WATER_SSS_SCATTER_BINDING_GBUF_DEPTH    = 1,
-		WATER_SSS_SCATTER_BINDING_THICKNESS_MAP = 2,
-		WATER_SSS_SCATTER_BINDING_SCENE_GBUF2   = 3,
-		WATER_SSS_SCATTER_BINDING_PARAMS        = 4,
-		WATER_SSS_SCATTER_BINDING_SCATTER_OUT   = 5,
+		WATER_VOLUME_BINDING_GBUF_NORMAL = 0,
+		WATER_VOLUME_BINDING_GBUF_DEPTH = 1,
+		WATER_VOLUME_BINDING_GBUF_SCATTER = 2,
+		WATER_VOLUME_BINDING_GBUF_ABSORPTION = 3,
+		WATER_VOLUME_BINDING_THICKNESS = 4,
+		WATER_VOLUME_BINDING_SCENE_GBUF2 = 5,
+		WATER_VOLUME_BINDING_REFRACTION_DATA = 6,
+		WATER_VOLUME_BINDING_PARAMS = 7,
+		WATER_VOLUME_BINDING_COLOR_OUT = 8,
+		WATER_VOLUME_BINDING_TRANSMITTANCE_OUT = 9,
+		WATER_VOLUME_BINDING_DEPTH_OUT = 10,
+	};
+
+	enum WaterVolumeFilterComputeBinding : uint32_t
+	{
+		WATER_VOLUME_FILTER_BINDING_GBUF_DEPTH = 0,
+		WATER_VOLUME_FILTER_BINDING_RAW_COLOR = 1,
+		WATER_VOLUME_FILTER_BINDING_RAW_TRANSMITTANCE = 2,
+		WATER_VOLUME_FILTER_BINDING_RAW_DEPTH = 3,
+		WATER_VOLUME_FILTER_BINDING_PARAMS = 4,
+		WATER_VOLUME_FILTER_BINDING_COLOR_OUT = 5,
+		WATER_VOLUME_FILTER_BINDING_TRANSMITTANCE_OUT = 6,
+		WATER_VOLUME_FILTER_BINDING_DEPTH_OUT = 7,
 	};
 
 	// --- Ray Tracing Pass ---
@@ -801,6 +829,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_BilateralFilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 3);
 		static void CreateAndAllocate_HIZ(std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount);
 		static void CreateAndAllocate_HIZSeed(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_MainCameraHiZCull(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GIRTPreview(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GIPointLight(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_GIVisibilityUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -839,8 +868,8 @@ namespace VansGraphics
 		static void CreateAndAllocate_WaterRefractionCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterCausticsCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterThicknessCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		// W-16 Phase 2: Water SSS Scatter Compute (water_sss_scatter.comp)
-		static void CreateAndAllocate_WaterSSSScatterCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_WaterVolumeCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_WaterVolumeFilterCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 
 		// --- 后处理 Compute Pass Layouts ---
 		static void CreateAndAllocate_ExposureLuminance(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

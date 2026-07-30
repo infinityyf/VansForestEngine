@@ -81,6 +81,15 @@ namespace VansGraphics
 
 	class VansVKCommandBuffer;
 	class VansVKSurface;
+	struct VansRenderPassRuntimeInfo
+	{
+		VkRenderPass renderPass = VK_NULL_HANDLE;
+		VkFramebuffer framebuffer = VK_NULL_HANDLE;
+		VkViewport viewport = {};
+		VkRect2D scissor = {};
+		uint32_t subpass = 0;
+	};
+
 	class VansRenderPassManager
 	{
 		friend class VansVKDevice;
@@ -164,17 +173,22 @@ namespace VansGraphics
 
 		// ── 水面 GBuffer pass ─────────────────────────────────────────────
 		// 设计文档 Pass 7：在 Deferred 之后、Transparent 之前执行
-		// 输出：WaterGBuf_Normal（RGBA16F）+ WaterGBuf_WorldPosDepth（RGBA16F）
-		// RGB=世界空间法线/位置, A=预留/线性深度
+		// 输出：normal/roughness, scatter/thickness, absorption/foam, world position/depth.
 		// 复用主场景深度（只读）：opaque custom 先写入，水面覆盖率随后接受硬件深度测试。
 		VansVKRenderPass m_VansWaterGBufferPass;
-		VansVKImage m_WaterGBufNormalImage;       // 世界空间法线 XYZ + 预留 A（RGBA16F）
-		VansVKImage m_WaterGBufLinearDepthImage;  // 世界空间位置 RGB + 线性深度 A（RGBA16F）
+		VansVKImage m_WaterGBufNormalImage;
+		VansVKImage m_WaterGBufScatterImage;
+		VansVKImage m_WaterGBufAbsorptionImage;
+		VansVKImage m_WaterGBufLinearDepthImage;
 
 		// ── Deferred + SkyBox 专用 pass（从 m_VansRenderPass 中拆出）──────
 		// m_VansRenderPass 拆分后仅保留 Transparent + PostProcess；
-		// 此 pass 执行 ScreenSpaceFeature + DeferredLighting + SkyBox
+		// 此 pass 执行 DeferredLighting + SkyBox
 		VansVKRenderPass m_VansDeferredSkyboxPass;
+
+		// Screen-space raw feature pass. Currently runs SSAO at half resolution
+		// and writes only storage images, so it has no framebuffer attachments.
+		VansVKRenderPass m_VansScreenSpaceEffectsPass;
 
 		// Forward opaque pass after deferred lighting and before transparent.
 		VansVKRenderPass m_VansForwardOpaqueAfterDeferredPass;
@@ -219,16 +233,20 @@ namespace VansGraphics
 		// ── 水面 GBuffer pass ──────────────────────────────────────────────
 		// 须在 SetupVansDeferredRenderPass 之后调用（依赖已创建的 m_DepthImage）
 		void SetupVansWaterGBufferPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
+		void SetupVansScreenSpaceEffectsPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
 		void SetupVansHairVisibilityPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
 		void SetupVansHairLightingPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
 		void SetupVansHairDeepOpacityPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
 
 		// 水面 GBuffer 纹理访问器（供 VansWaterSystem / 描述符写入使用）
 		VansVKImage& GetWaterGBufNormal()      { return m_WaterGBufNormalImage; }
+		VansVKImage& GetWaterGBufScatter()     { return m_WaterGBufScatterImage; }
+		VansVKImage& GetWaterGBufAbsorption()  { return m_WaterGBufAbsorptionImage; }
 		VansVKImage& GetWaterGBufLinearDepth() { return m_WaterGBufLinearDepthImage; }
 
 		// Deferred + SkyBox pass 访问器
 		VansVKRenderPass& GetVansDeferredSkyboxPass() { return m_VansDeferredSkyboxPass; }
+		VansVKRenderPass& GetVansScreenSpaceEffectsPass() { return m_VansScreenSpaceEffectsPass; }
 
 		VansVKRenderPass& GetVansForwardOpaqueAfterDeferredPass() { return m_VansForwardOpaqueAfterDeferredPass; }
 		VansVKRenderPass& GetVansHairVisibilityPass() { return m_VansHairVisibilityPass; }
@@ -257,9 +275,13 @@ namespace VansGraphics
 		void RecreateUIRenderPass(VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);
 
 		//渲染区域大小
+		VansRenderPassRuntimeInfo GetRenderPassRuntimeInfo(VansVKRenderPass& renderPass, int swap_chain_index = 0, uint32_t subpass = 0);
+
 		void BeginRenderPass(VansVKRenderPass& renderPass, VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, int swap_chain_index = 0);
+		void BeginRenderPass(VansVKRenderPass& renderPass, VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, int swap_chain_index, VkSubpassContents contents);
 
 		void NextSubPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data);
+		void NextSubPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, VkSubpassContents contents);
 
 		void EndRenderPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data);
 
@@ -267,7 +289,7 @@ namespace VansGraphics
 
 		void DestroyRenderPass();
 
-		void ResetFrameBufferImageLayout(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex);
+		void RecordFrameBufferImageLayoutReset(VansVKCommandBuffer& command_buffer);
 
 		VansVKRenderPass& GetVansRenderPass() { return m_VansRenderPass; }
 

@@ -97,11 +97,13 @@ Plane extractPlane(mat4 m, int row, float sign)
     return p;
 }
 
-bool sphereInsideFrustum(vec3 center, float radius, Plane planes[6])
+shared Plane sharedFrustum[6];
+
+bool sphereInsideFrustum(vec3 center, float radius)
 {
     for (int i = 0; i < 6; ++i)
     {
-        if (dot(planes[i].normal, center) + planes[i].d + radius < 0.0)
+        if (dot(sharedFrustum[i].normal, center) + sharedFrustum[i].d + radius < 0.0)
             return false;
     }
     return true;
@@ -129,6 +131,18 @@ bool isHiZOccludedSample(vec2 uv, int mipLevel, int mipMaxIndex, float sphereNea
 
 void main()
 {
+    // VPMatrix 在同一 workgroup 内相同，6 个视锥面只需提取一次。
+    if (gl_LocalInvocationIndex < 6u)
+    {
+        if (gl_LocalInvocationIndex == 0u) sharedFrustum[0] = extractPlane(VPMatrix, 0,  1.0);
+        if (gl_LocalInvocationIndex == 1u) sharedFrustum[1] = extractPlane(VPMatrix, 0, -1.0);
+        if (gl_LocalInvocationIndex == 2u) sharedFrustum[2] = extractPlane(VPMatrix, 1,  1.0);
+        if (gl_LocalInvocationIndex == 3u) sharedFrustum[3] = extractPlane(VPMatrix, 1, -1.0);
+        if (gl_LocalInvocationIndex == 4u) sharedFrustum[4] = extractPlane(VPMatrix, 2,  1.0);
+        if (gl_LocalInvocationIndex == 5u) sharedFrustum[5] = extractPlane(VPMatrix, 2, -1.0);
+    }
+    barrier();
+
     uint instanceID = gl_GlobalInvocationID.x;
     if (instanceID >= pc.instanceCount)
         return;
@@ -163,16 +177,7 @@ void main()
     float sphereRadius = bladeExtent + pc.scatterRadiusMax;
     vec3 sphereCenter = correctedPos + vec3(0.0, bladeExtent * 0.5, 0.0);
 
-    // 从 VP 矩阵提取 6 个裁剪平面
-    Plane frustum[6];
-    frustum[0] = extractPlane(VPMatrix, 0,  1.0); // left
-    frustum[1] = extractPlane(VPMatrix, 0, -1.0); // right
-    frustum[2] = extractPlane(VPMatrix, 1,  1.0); // bottom
-    frustum[3] = extractPlane(VPMatrix, 1, -1.0); // top
-    frustum[4] = extractPlane(VPMatrix, 2,  1.0); // near
-    frustum[5] = extractPlane(VPMatrix, 2, -1.0); // far
-
-    if (!sphereInsideFrustum(sphereCenter, sphereRadius, frustum))
+    if (!sphereInsideFrustum(sphereCenter, sphereRadius))
     {
         visibilityFlags[instanceID] = 0;
         return;

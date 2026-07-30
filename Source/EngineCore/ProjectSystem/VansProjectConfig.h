@@ -5,10 +5,7 @@
 // In-memory project settings used by the current Scene Schema.
 // -----------------------------------------------------------------------
 
-#include "../SceneCore/VansSceneSchema.h"
-
 #include <string>
-#include <cstdint>
 #include <vector>
 #include <unordered_map>
 
@@ -29,9 +26,7 @@ struct VansProjectConfig
 	std::string projectName;
 	std::string engineVersion;
 	std::string createdAt;      // ISO 8601
-	std::string lastOpenedAt;   // ISO 8601
 	std::string defaultScene;   // e.g. "Scenes/MainScene.json"
-	std::uint32_t sceneSchemaVersion = VansSceneSchemaVersion;
 	std::string assetsRoot = "Assets";
 	std::string importedArtifactRoot = "Library/Artifacts";
 	std::string metaExtension = ".meta";

@@ -83,39 +83,32 @@ namespace
 const WaterPreset kWaterPresets[] = {
     {
         "Tropical Ocean", "Warm clear ocean",
-        { 0.0f, 0.08f, 0.28f, 1.0f }, { 0.05f, 0.35f, 0.55f, 1.0f },
         { 0.35f, 0.12f, 0.03f }, { 0.02f, 0.05f, 0.08f },
-        1.33f, 5.5f, 1.2f
+        1.33f, 1.2f
     },
     {
         "Temperate Lake", "Calm inland water",
-        { 0.02f, 0.05f, 0.10f, 1.0f }, { 0.08f, 0.25f, 0.35f, 1.0f },
         { 0.20f, 0.10f, 0.04f }, { 0.03f, 0.05f, 0.07f },
-        1.34f, 4.5f, 0.7f
+        1.34f, 0.7f
     },
     {
         "Arctic Sea", "Cold bright water",
-        { 0.0f, 0.03f, 0.08f, 1.0f }, { 0.12f, 0.45f, 0.60f, 1.0f },
         { 0.30f, 0.08f, 0.02f }, { 0.01f, 0.02f, 0.04f },
-        1.33f, 6.0f, 1.5f
+        1.33f, 1.5f
     },
     {
         "Muddy River", "Sediment-heavy river",
-        { 0.08f, 0.06f, 0.02f, 1.0f }, { 0.15f, 0.12f, 0.06f, 1.0f },
         { 0.10f, 0.08f, 0.22f }, { 0.08f, 0.06f, 0.02f },
-        1.34f, 3.0f, 0.3f
+        1.34f, 0.3f
     }
 };
 const int kWaterPresetCount = 4;
 
 void VansWaterWindow::ApplyPreset(Vans::EditorAPI::WaterSettingsSnapshot& settings, const WaterPreset& preset)
 {
-    settings.medium.deepColor = preset.deepColor;
-    settings.medium.shallowColor = preset.shallowColor;
     settings.medium.absorptionCoeff = preset.absorption;
     settings.medium.scatteringCoeff = preset.scattering;
     settings.medium.ior = preset.ior;
-    settings.medium.fresnelPower = preset.fresnelPower;
     settings.specularIntensity = preset.specularIntensity;
 }
 
@@ -172,10 +165,7 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 changed |= EditVec3("Absorption (RGB)", settings.medium.absorptionCoeff, 0.001f, 0.0f, 10.0f, "%.4f");
                 changed |= EditVec3("Scattering (RGB)", settings.medium.scatteringCoeff, 0.001f, 0.0f, 10.0f, "%.4f");
                 changed |= ImGui::DragFloat("IOR", &settings.medium.ior, 0.001f, 1.0f, 3.0f, "%.4f");
-                changed |= ImGui::DragFloat("Fresnel Power", &settings.medium.fresnelPower, 0.1f, 0.1f, 20.0f, "%.2f");
-                changed |= ImGui::DragFloat("Anisotropy", &settings.medium.anisotropy, 0.01f, 0.0f, 1.0f, "%.3f");
-                changed |= EditColor4("Deep Color", settings.medium.deepColor);
-                changed |= EditColor4("Shallow Color", settings.medium.shallowColor);
+                changed |= ImGui::DragFloat("Anisotropy", &settings.medium.anisotropy, 0.01f, -0.95f, 0.98f, "%.3f");
             }
 
             if (ImGui::CollapsingHeader("Waves"))
@@ -275,22 +265,31 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 changed |= EditVec2("Fallback Direction", settings.flowMap.fallbackDirection, 0.01f, -1.0f, 1.0f, "%.3f");
             }
 
-            if (ImGui::CollapsingHeader("SSS (Subsurface Scattering)"))
+            if (ImGui::CollapsingHeader("PBRWater Optics", ImGuiTreeNodeFlags_DefaultOpen))
             {
-                changed |= ImGui::Checkbox("Enable##SSS", &settings.sssEnabled);
+                changed |= ImGui::Checkbox("Enable Thin SSS", &settings.thinSSSEnabled);
+                changed |= ImGui::DragFloat("Max Cross Distance", &settings.optics.maxCrossDistance, 0.5f, 1.0f, 200.0f, "%.1f m");
+                changed |= ImGui::DragFloat("Max Refraction Cross Distance", &settings.optics.maxRefractionCrossDistance, 0.5f, 1.0f, 200.0f, "%.1f m");
+                changed |= ImGui::DragFloat("Refraction Strength", &settings.refractionDistortionStrength, 0.0005f, 0.0f, 0.1f, "%.4f");
+                changed |= ImGui::DragFloat("Dispersion Strength", &settings.optics.waterDispersionStrength, 0.01f, 0.0f, 2.0f, "%.3f");
+                changed |= ImGui::DragFloat("Multi Scatter Scale", &settings.optics.multiScatterScale, 0.01f, 0.0f, 8.0f, "%.3f");
+                ImGui::SeparatorText("Thin Layer SSS");
                 changed |= ImGui::DragFloat("Max Thickness (m)", &settings.maxThicknessDistance, 0.1f, 1.0f, 50.0f, "%.1f");
                 changed |= ImGui::DragFloat("Deep Water Fallback", &settings.deepWaterThicknessFallback, 0.01f, 0.0f, 1.0f, "%.2f");
-                ImGui::Separator();
-                ImGui::TextDisabled("Scattering params are shared with Medium.");
-                ImGui::Text("Anisotropy: %.3f", settings.medium.anisotropy);
-                ImGui::Text("Absorption: R=%.3f G=%.3f B=%.3f",
-                    settings.medium.absorptionCoeff.x,
-                    settings.medium.absorptionCoeff.y,
-                    settings.medium.absorptionCoeff.z);
-                ImGui::Text("Scattering: R=%.3f G=%.3f B=%.3f",
-                    settings.medium.scatteringCoeff.x,
-                    settings.medium.scatteringCoeff.y,
-                    settings.medium.scatteringCoeff.z);
+                changed |= ImGui::DragFloat("SSS Path Scale", &settings.optics.sssPathScale, 0.25f, 0.1f, 200.0f, "%.2f");
+                changed |= ImGui::DragFloat("SSS Nonlinear Strength", &settings.optics.sssNonlinearStrength, 0.01f, 0.0f, 4.0f, "%.3f");
+                changed |= ImGui::DragFloat("SSS Scatter Boost", &settings.optics.sssScatterBoost, 0.01f, 0.0f, 16.0f, "%.3f");
+                ImGui::SeparatorText("Backlit Transmission");
+                changed |= ImGui::DragFloat("Backlit Path Scale", &settings.optics.backlitPathScale, 0.25f, 0.1f, 200.0f, "%.2f");
+                changed |= ImGui::DragFloat("Backlit Phase G", &settings.optics.backlitPhaseG, 0.0001f, 0.0f, 0.9999f, "%.4f");
+            }
+
+            if (ImGui::CollapsingHeader("PBRWater Volume"))
+            {
+                changed |= ImGui::DragFloat("Resolution Scale", &settings.volume.resolutionScale, 0.01f, 0.25f, 1.0f, "%.2f");
+                changed |= ImGui::SliderInt("Sample Count", &settings.volume.sampleCount, 1, 64);
+                changed |= ImGui::SliderInt("Spatial Filter Iterations", &settings.volume.spatialFilterIterations, 0, 4);
+                changed |= ImGui::DragFloat("Spatial Depth Sensitivity", &settings.volume.spatialDepthSensitivity, 0.01f, 0.0f, 32.0f, "%.2f");
             }
 
             if (ImGui::CollapsingHeader("Caustics"))
@@ -303,9 +302,7 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
             if (ImGui::CollapsingHeader("Refraction"))
             {
                 changed |= ImGui::Checkbox("Enable##Refraction", &settings.refractionEnabled);
-                changed |= ImGui::DragFloat("UV Distortion", &settings.refractionDistortionStrength,
-                    0.0005f, 0.0f, 0.1f, "%.4f");
-                ImGui::TextDisabled("Continuous view-normal offset scaled by water thickness.");
+                ImGui::TextDisabled("Refraction strength and dispersion live in PBRWater Optics.");
             }
 
             if (ImGui::CollapsingHeader("Screen-Space Reflection"))

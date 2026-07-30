@@ -1,12 +1,18 @@
 #include "VansPhysicsEventCallback.h"
 #include "VansPhysicsNode.h"
+#include "../EventCore/VansEventBus.h"
 #include "../Util/VansLog.h"
+
+#include <utility>
 
 namespace VansEngine
 {
-	VansPhysicsEventCallback::VansPhysicsEventCallback(VansPhysicsEventQueue* eventQueue)
-		: m_EventQueue(eventQueue)
+	namespace
 	{
+		void EnqueuePhysicsContactEvent(VansPhysicsContactEvent event)
+		{
+			Vans::VansEventBus::Get().Enqueue(std::move(event), Vans::VansEventLane::Physics);
+		}
 	}
 
 	// ===========================================================================
@@ -18,12 +24,6 @@ namespace VansEngine
 		const PxContactPair* pairs, PxU32 nbPairs)
 	{
 		VANS_LOG("[PhysX Callback] onContact called, nbPairs=" << nbPairs);
-
-		if (!m_EventQueue)
-		{
-			VANS_LOG_WARN("[PhysX Callback] onContact: m_EventQueue is null!");
-			return;
-		}
 
 		// 跳过已被删除的 actor
 		if (pairHeader.flags & PxContactPairHeaderFlag::eREMOVED_ACTOR_0 ||
@@ -49,7 +49,7 @@ namespace VansEngine
 			         << " events=0x" << std::hex << cp.events.operator unsigned int() << std::dec);
 			if (!nodeA || !nodeB) continue;
 
-			PhysicsEventData event;
+			VansPhysicsContactEvent event;
 			event.transformID_A = nodeA->GetTransformID();
 			event.transformID_B = nodeB->GetTransformID();
 			event.nameA = nodeA->GetName();
@@ -74,14 +74,14 @@ namespace VansEngine
 
 			if (cp.events & PxPairFlag::eNOTIFY_TOUCH_FOUND)
 			{
-				event.type = PhysicsEventType::CollisionEnter;
-				m_EventQueue->PushEvent(event);
+				event.type = VansPhysicsContactEventType::CollisionEnter;
+				EnqueuePhysicsContactEvent(event);
 				VANS_LOG("[PhysX Callback] CollisionEnter: '" << event.nameA << "' <-> '" << event.nameB << "'");
 			}
 			if (cp.events & PxPairFlag::eNOTIFY_TOUCH_LOST)
 			{
-				event.type = PhysicsEventType::CollisionExit;
-				m_EventQueue->PushEvent(event);
+				event.type = VansPhysicsContactEventType::CollisionExit;
+				EnqueuePhysicsContactEvent(event);
 				VANS_LOG("[PhysX Callback] CollisionExit: '" << event.nameA << "' <-> '" << event.nameB << "'");
 			}
 		}
@@ -94,12 +94,6 @@ namespace VansEngine
 	void VansPhysicsEventCallback::onTrigger(PxTriggerPair* pairs, PxU32 count)
 	{
 		VANS_LOG("[PhysX Callback] onTrigger called, count=" << count);
-
-		if (!m_EventQueue)
-		{
-			VANS_LOG_WARN("[PhysX Callback] onTrigger: m_EventQueue is null!");
-			return;
-		}
 
 		for (PxU32 i = 0; i < count; ++i)
 		{
@@ -125,7 +119,7 @@ namespace VansEngine
 			         << " status=0x" << std::hex << static_cast<PxU32>(tp.status) << std::dec);
 			if (!triggerNode || !otherNode) continue;
 
-			PhysicsEventData event;
+			VansPhysicsContactEvent event;
 			event.transformID_A = triggerNode->GetTransformID();
 			event.transformID_B = otherNode->GetTransformID();
 			event.nameA = triggerNode->GetName();
@@ -133,14 +127,14 @@ namespace VansEngine
 
 			if (tp.status == PxPairFlag::eNOTIFY_TOUCH_FOUND)
 			{
-				event.type = PhysicsEventType::TriggerEnter;
-				m_EventQueue->PushEvent(event);
+				event.type = VansPhysicsContactEventType::TriggerEnter;
+				EnqueuePhysicsContactEvent(event);
 				VANS_LOG("[PhysX Callback] TriggerEnter: trigger='" << event.nameA << "' other='" << event.nameB << "'");
 			}
 			else if (tp.status == PxPairFlag::eNOTIFY_TOUCH_LOST)
 			{
-				event.type = PhysicsEventType::TriggerExit;
-				m_EventQueue->PushEvent(event);
+				event.type = VansPhysicsContactEventType::TriggerExit;
+				EnqueuePhysicsContactEvent(event);
 				VANS_LOG("[PhysX Callback] TriggerExit: trigger='" << event.nameA << "' other='" << event.nameB << "'");
 			}
 		}

@@ -285,11 +285,33 @@ VansSceneWaterMediumConfig DecodeWaterMedium(const VansSerializedValue& mediumNo
 	config.absorptionCoeff = ReadOptionalColor3Field(mediumNode, "absorption", { 0.05f, 0.08f, 0.20f });
 	config.scatteringCoeff = ReadOptionalColor3Field(mediumNode, "scattering", { 0.03f, 0.05f, 0.08f });
 	config.ior = ReadOptionalFloatField(mediumNode, "ior");
-	config.fresnelPower = ReadOptionalFloatField(mediumNode, "fresnelPower");
 	config.anisotropy = ReadOptionalFloatField(mediumNode, "anisotropy");
 	config.waterRoughness = ReadOptionalFloatField(mediumNode, "roughness");
-	config.deepColor = ReadOptionalColor4Field(mediumNode, "deepColor", { 0.0f, 0.05f, 0.2f });
-	config.shallowColor = ReadOptionalColor4Field(mediumNode, "shallowColor", { 0.1f, 0.3f, 0.4f });
+	return config;
+}
+
+VansSceneWaterOpticsConfig DecodeWaterOptics(const VansSerializedValue& opticsNode)
+{
+	VansSceneWaterOpticsConfig config;
+	config.maxCrossDistance = ReadOptionalFloatField(opticsNode, "maxCrossDistance");
+	config.maxRefractionCrossDistance = ReadOptionalFloatField(opticsNode, "maxRefractionCrossDistance");
+	config.multiScatterScale = ReadOptionalFloatField(opticsNode, "multiScatterScale");
+	config.waterDispersionStrength = ReadOptionalFloatField(opticsNode, "waterDispersionStrength");
+	config.sssPathScale = ReadOptionalFloatField(opticsNode, "sssPathScale");
+	config.sssNonlinearStrength = ReadOptionalFloatField(opticsNode, "sssNonlinearStrength");
+	config.sssScatterBoost = ReadOptionalFloatField(opticsNode, "sssScatterBoost");
+	config.backlitPathScale = ReadOptionalFloatField(opticsNode, "backlitPathScale");
+	config.backlitPhaseG = ReadOptionalFloatField(opticsNode, "backlitPhaseG");
+	return config;
+}
+
+VansSceneWaterVolumeConfig DecodeWaterVolume(const VansSerializedValue& volumeNode)
+{
+	VansSceneWaterVolumeConfig config;
+	config.resolutionScale = ReadOptionalFloatField(volumeNode, "resolutionScale");
+	config.sampleCount = ReadOptionalIntField(volumeNode, "sampleCount");
+	config.spatialFilterIterations = ReadOptionalIntField(volumeNode, "spatialFilterIterations");
+	config.spatialDepthSensitivity = ReadOptionalFloatField(volumeNode, "spatialDepthSensitivity");
 	return config;
 }
 
@@ -857,6 +879,10 @@ VansSceneWaterNodeConfig VansSceneEnvironmentNodeConfigReader::ReadWater(
 		config.ssr = DecodeWaterSSR(*ssr);
 	if (const VansSerializedValue* sss = ReadObjectField(waterNode, "sss"))
 		config.sss = DecodeWaterSSS(*sss);
+	if (const VansSerializedValue* optics = ReadObjectField(waterNode, "optics"))
+		config.optics = DecodeWaterOptics(*optics);
+	if (const VansSerializedValue* volume = ReadObjectField(waterNode, "volume"))
+		config.volume = DecodeWaterVolume(*volume);
 	if (const VansSerializedValue* geometry = ReadObjectField(waterNode, "geometry"))
 		config.geometry = DecodeWaterGeometry(*geometry);
 	return config;

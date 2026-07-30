@@ -64,6 +64,13 @@ namespace Vans
         void Initialize(GLFWwindow* window);
         void Shutdown();
 
+        // Cursor capture is allowed for standalone runtime windows. The editor
+        // keeps this disabled so gameplay scripts cannot lock the whole editor UI.
+        void SetCursorCaptureAllowed(bool allowed);
+        bool IsCursorCaptureAllowed() const { return m_CursorCaptureAllowed; }
+        void SetCursorCaptureEnabled(bool enabled);
+        bool IsCursorCaptureEnabled() const { return m_CursorCaptureEnabled; }
+
         // Call once per frame at the start of the update loop
         void Update();
         void RefreshPolledState();
@@ -136,8 +143,6 @@ namespace Vans
         VansInputManager(const VansInputManager&) = delete;
         VansInputManager& operator=(const VansInputManager&) = delete;
 
-        void RefreshPolledState();
-
         // GLFW callback trampolines (static)
         static void GLFWKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
         static void GLFWMousePosCallback(GLFWwindow* window, double xpos, double ypos);
@@ -162,6 +167,9 @@ namespace Vans
         double m_MouseDeltaX = 0.0;
         double m_MouseDeltaY = 0.0;
         bool   m_FirstMouseUpdate = true;
+        bool   m_CursorCaptureAllowed = false;
+        bool   m_CursorCaptureRequested = false;
+        bool   m_CursorCaptureEnabled = false;
 
         // Scroll
         double m_ScrollDeltaX = 0.0;

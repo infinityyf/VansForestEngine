@@ -99,6 +99,25 @@ void VansNoesisUISystem::SetSceneViewport(float screenX, float screenY,
     }
 }
 
+bool VansNoesisUISystem::TransformMouseToView(double rawX, double rawY,
+                                               double& outX, double& outY) const
+{
+    if (!m_InputAdapter)
+        return false;
+
+    m_InputAdapter->TransformMouseToView(rawX, rawY, outX, outY);
+    return true;
+}
+
+bool VansNoesisUISystem::GetViewSize(double& outW, double& outH) const
+{
+    if (!m_InputAdapter)
+        return false;
+
+    m_InputAdapter->GetViewSize(outW, outH);
+    return true;
+}
+
 void VansNoesisUISystem::Shutdown()
 {
     if (!m_Initialized)
@@ -196,6 +215,38 @@ void VansNoesisUISystem::RenderDocumentsPass(VkRenderPass renderPass, uint32_t s
             doc->Render();
         }
     }
+}
+
+bool VansNoesisUISystem::PrepareDocumentPreview(
+    const std::shared_ptr<VansUIDocument>& document,
+    VkCommandBuffer cmd,
+    double totalTimeSeconds)
+{
+    if (!m_Initialized || !document || cmd == VK_NULL_HANDLE)
+        return false;
+
+    ++m_FrameNumber;
+    const uint64_t safeFrame = (m_FrameNumber > k_MaxFramesInFlight)
+        ? (m_FrameNumber - k_MaxFramesInFlight)
+        : 0;
+    m_RenderDevice->SetActiveCommandBuffer(cmd, m_FrameNumber, safeFrame);
+
+    document->Update(totalTimeSeconds);
+    document->RenderOffscreen();
+    return true;
+}
+
+bool VansNoesisUISystem::RenderDocumentPreviewPass(
+    const std::shared_ptr<VansUIDocument>& document,
+    VkRenderPass renderPass,
+    uint32_t sampleCount)
+{
+    if (!m_Initialized || !document || renderPass == VK_NULL_HANDLE)
+        return false;
+
+    m_RenderDevice->SetActiveRenderPass(renderPass, sampleCount);
+    document->Render();
+    return true;
 }
 
 void VansNoesisUISystem::SetScreenSize(uint32_t width, uint32_t height)

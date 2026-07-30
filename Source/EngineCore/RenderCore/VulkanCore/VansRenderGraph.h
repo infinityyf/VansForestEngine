@@ -40,15 +40,57 @@ namespace VansGraphics
 		Present
 	};
 
+	class VansRenderGraphIntern
+	{
+	public:
+		static uint64_t InternName(const char* name)
+		{
+			if (name == nullptr || name[0] == '\0')
+			{
+				return 0;
+			}
+
+			uint64_t hash = 14695981039346656037ull;
+			while (*name != '\0')
+			{
+				hash ^= static_cast<uint8_t>(*name);
+				hash *= 1099511628211ull;
+				++name;
+			}
+			return hash != 0 ? hash : 1;
+		}
+
+		static uint64_t InternName(const std::string& name)
+		{
+			return InternName(name.c_str());
+		}
+	};
+
 	struct VansRenderResourceAccess
 	{
+		VansRenderResourceAccess() = default;
+		VansRenderResourceAccess(const char* resourceName, VansRenderResourceUsage resourceUsage)
+			: name(resourceName != nullptr ? resourceName : "")
+			, resourceId(VansRenderGraphIntern::InternName(resourceName))
+			, usage(resourceUsage)
+		{
+		}
+		VansRenderResourceAccess(std::string resourceName, VansRenderResourceUsage resourceUsage)
+			: name(std::move(resourceName))
+			, resourceId(VansRenderGraphIntern::InternName(name))
+			, usage(resourceUsage)
+		{
+		}
+
 		std::string name;
+		uint64_t resourceId = 0;
 		VansRenderResourceUsage usage = VansRenderResourceUsage::SampledRead;
 	};
 
 	struct VansRenderPassNodeDesc
 	{
 		std::string name;
+		uint64_t passId = 0;
 		VansRenderQueueClass queue = VansRenderQueueClass::Graphics;
 		bool resizeDependent = false;
 		bool allowAsyncCompute = false;
@@ -62,6 +104,7 @@ namespace VansGraphics
 	struct VansCompiledRenderResourceState
 	{
 		std::string name;
+		uint64_t resourceId = 0;
 		VansRenderResourceUsage firstUsage = VansRenderResourceUsage::SampledRead;
 		VansRenderResourceUsage lastUsage = VansRenderResourceUsage::SampledRead;
 		uint32_t firstPassIndex = 0;
@@ -109,10 +152,13 @@ namespace VansGraphics
 	struct VansRenderGraphDependency
 	{
 		std::string resourceName;
+		uint64_t resourceId = 0;
 		uint32_t srcPassIndex = 0;
 		uint32_t dstPassIndex = 0;
 		std::string srcPassName;
 		std::string dstPassName;
+		uint64_t srcPassId = 0;
+		uint64_t dstPassId = 0;
 		VansRenderResourceUsage srcUsage = VansRenderResourceUsage::SampledRead;
 		VansRenderResourceUsage dstUsage = VansRenderResourceUsage::SampledRead;
 		VansRenderQueueClass srcQueue = VansRenderQueueClass::Graphics;
@@ -124,6 +170,7 @@ namespace VansGraphics
 	{
 		uint32_t passIndex = 0;
 		std::string passName;
+		uint64_t passId = 0;
 		std::vector<VansRenderGraphDependency> incomingDependencies;
 	};
 
@@ -159,6 +206,19 @@ namespace VansGraphics
 		}
 
 		bool Passed() const { return missingFeatures.empty(); }
+	};
+
+	struct VansRenderGraphDiagnosticsSnapshot
+	{
+		bool available = false;
+		bool compiledGraphValid = false;
+		bool featureAuditPassed = false;
+		uint32_t framePlanPassCount = 0;
+		uint32_t compiledResourceCount = 0;
+		uint32_t barrierDependencyCount = 0;
+		uint64_t topologyRevision = 0;
+		uint64_t topologyHash = 0;
+		uint64_t compiledFrameNumber = 0;
 	};
 
 	class VansRenderFramePlan
@@ -244,7 +304,7 @@ namespace VansGraphics
 			graph.frameNumber = framePlan.GetFrameNumber();
 
 			std::set<std::string> passNames;
-			std::map<std::string, VansCompiledRenderResourceState> resourceStates;
+			std::map<uint64_t, VansCompiledRenderResourceState> resourceStates;
 
 			const auto& passes = framePlan.GetPasses();
 			graph.passes.reserve(passes.size());
@@ -299,7 +359,7 @@ namespace VansGraphics
 
 	private:
 		static void RecordResourceUsage(
-			std::map<std::string, VansCompiledRenderResourceState>& resourceStates,
+			std::map<uint64_t, VansCompiledRenderResourceState>& resourceStates,
 			VansCompiledRenderPassNode& compiledPass,
 			const VansRenderResourceAccess& access,
 			uint32_t passIndex,
@@ -310,11 +370,14 @@ namespace VansGraphics
 				return;
 			}
 
-			auto iter = resourceStates.find(access.name);
+			const uint64_t resourceId =
+				access.resourceId != 0 ? access.resourceId : VansRenderGraphIntern::InternName(access.name);
+			auto iter = resourceStates.find(resourceId);
 			if (iter == resourceStates.end())
 			{
 				VansCompiledRenderResourceState state{};
 				state.name = access.name;
+				state.resourceId = resourceId;
 				state.firstUsage = access.usage;
 				state.lastUsage = access.usage;
 				state.firstPassIndex = passIndex;
@@ -326,7 +389,7 @@ namespace VansGraphics
 					compiledPass.externalInputs.emplace_back(access.name);
 				}
 
-				resourceStates.emplace(access.name, std::move(state));
+				resourceStates.emplace(resourceId, std::move(state));
 				return;
 			}
 
@@ -348,6 +411,7 @@ namespace VansGraphics
 		{
 			uint32_t passIndex = 0;
 			std::string passName;
+			uint64_t passId = 0;
 			VansRenderQueueClass queue = VansRenderQueueClass::Graphics;
 			VansRenderResourceUsage usage = VansRenderResourceUsage::SampledRead;
 			bool write = false;
@@ -360,7 +424,7 @@ namespace VansGraphics
 			barrierPlan.frameNumber = graph.frameNumber;
 			barrierPlan.passPlans.reserve(graph.passes.size());
 
-			std::map<std::string, VansLastResourceAccess> lastAccesses;
+			std::map<uint64_t, VansLastResourceAccess> lastAccesses;
 			std::set<std::string> externalInputs;
 
 			for (const auto& pass : graph.passes)
@@ -368,6 +432,7 @@ namespace VansGraphics
 				VansRenderPassBarrierPlan passPlan{};
 				passPlan.passIndex = pass.index;
 				passPlan.passName = pass.desc ? pass.desc->name : std::string{};
+				passPlan.passId = pass.desc ? pass.desc->passId : 0;
 
 				if (!pass.desc)
 				{
@@ -409,7 +474,7 @@ namespace VansGraphics
 			VansRenderPassBarrierPlan& passPlan,
 			VansRenderGraphBarrierPlan& barrierPlan,
 			std::set<std::string>& externalInputs,
-			std::map<std::string, VansLastResourceAccess>& lastAccesses)
+			std::map<uint64_t, VansLastResourceAccess>& lastAccesses)
 		{
 			const auto& accesses = writes ? pass.writes : pass.reads;
 			for (const auto& access : accesses)
@@ -420,7 +485,9 @@ namespace VansGraphics
 				}
 
 				const bool currentWrite = VansRenderGraphCompiler::IsWriteUsage(access.usage);
-				auto iter = lastAccesses.find(access.name);
+				const uint64_t resourceId =
+					access.resourceId != 0 ? access.resourceId : VansRenderGraphIntern::InternName(access.name);
+				auto iter = lastAccesses.find(resourceId);
 				if (iter == lastAccesses.end())
 				{
 					if (!currentWrite)
@@ -429,8 +496,8 @@ namespace VansGraphics
 					}
 
 					lastAccesses.emplace(
-						access.name,
-						VansLastResourceAccess{ passIndex, pass.name, pass.queue, access.usage, currentWrite });
+						resourceId,
+						VansLastResourceAccess{ passIndex, pass.name, pass.passId, pass.queue, access.usage, currentWrite });
 					continue;
 				}
 
@@ -439,10 +506,13 @@ namespace VansGraphics
 				{
 					VansRenderGraphDependency dependency{};
 					dependency.resourceName = access.name;
+					dependency.resourceId = resourceId;
 					dependency.srcPassIndex = previous.passIndex;
 					dependency.dstPassIndex = passIndex;
 					dependency.srcPassName = previous.passName;
 					dependency.dstPassName = pass.name;
+					dependency.srcPassId = previous.passId;
+					dependency.dstPassId = pass.passId;
 					dependency.srcUsage = previous.usage;
 					dependency.dstUsage = access.usage;
 					dependency.srcQueue = previous.queue;
@@ -453,7 +523,7 @@ namespace VansGraphics
 					barrierPlan.dependencies.emplace_back(std::move(dependency));
 				}
 
-				iter->second = VansLastResourceAccess{ passIndex, pass.name, pass.queue, access.usage, currentWrite };
+				iter->second = VansLastResourceAccess{ passIndex, pass.name, pass.passId, pass.queue, access.usage, currentWrite };
 			}
 		}
 
@@ -749,7 +819,6 @@ namespace VansGraphics
 		uint64_t lastDeferredDeleteFlushCount = 0;
 		uint64_t pendingDeferredDeleteCount = 0;
 
-		VansRenderFramePlan framePlan;
 		VansDeferredDeleteQueue deferredDeletes;
 	};
 }

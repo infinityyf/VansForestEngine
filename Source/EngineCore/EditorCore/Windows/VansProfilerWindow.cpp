@@ -5,7 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <cstring>
+#include <string>
 #include <unordered_map>
 
 namespace
@@ -346,28 +346,27 @@ void VansGraphics::VansProfilerWindow::DrawHierarchy()
 
     Row rows[512] = {};
     uint32_t rowCount = 0;
+    std::unordered_map<std::string, uint32_t> rowLookup;
+    rowLookup.reserve(std::min<uint32_t>(frame.eventCount, 512u));
     for (uint32_t i = 0; i < frame.eventCount; ++i)
     {
         const Vans::ProfileEvent& event = frame.events[i];
         if (!IsCategoryVisible(event.category) || !PassSearch(event))
             continue;
 
-        uint32_t rowIndex = rowCount;
-        for (uint32_t r = 0; r < rowCount; ++r)
-        {
-            if (rows[r].category == event.category && std::strcmp(rows[r].name, event.name) == 0)
-            {
-                rowIndex = r;
-                break;
-            }
-        }
+        const std::string key = std::to_string(static_cast<uint32_t>(event.category)) + ":" + event.name;
+        auto lookupIt = rowLookup.find(key);
+        uint32_t rowIndex = lookupIt != rowLookup.end() ? lookupIt->second : rowCount;
 
         if (rowIndex == rowCount && rowCount < 512)
         {
             rows[rowIndex].category = event.category;
             std::snprintf(rows[rowIndex].name, sizeof(rows[rowIndex].name), "%s", event.name);
+            rowLookup.emplace(key, rowIndex);
             ++rowCount;
         }
+        if (rowIndex >= rowCount)
+            continue;
 
         double durationUs = std::max(0.0, event.endUs - event.startUs);
         rows[rowIndex].totalUs += durationUs;

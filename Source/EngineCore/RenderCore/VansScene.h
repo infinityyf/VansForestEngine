@@ -6,6 +6,8 @@
 
 #include "VansSceneAssetRegistry.h"
 
+#include "VansMainCameraVisibility.h"
+
 #include "WaterCore/VansWaterConfig.h"
 
 
@@ -233,7 +235,7 @@ namespace VansGraphics
 
 	struct PunctualShadowCasterRecord
 	{
-		VansShadowAABB bounds;
+		VansRenderBounds bounds;
 		uint32_t shadowCasterMask = 0xffffffffu;
 		bool dynamic = false;
 		bool hasBounds = false;
@@ -368,6 +370,22 @@ namespace VansGraphics
 		std::unordered_map<std::string, MultiMeshGroup> m_MultiMeshGroups;
 		std::vector<VansAnimationNode*> m_AnimationNodes;
 		std::vector<VansAnimationController*> m_AnimationControllers;
+		VansMainCameraHiZCullSettings m_MainCameraHiZCullSettings;
+		VansMainCameraHiZHistoryState m_MainCameraHiZHistory;
+		VansMainCameraVisibilityStats m_MainCameraVisibilityStats;
+		std::vector<VansMainCameraCullCandidate> m_MainCameraCullCandidates;
+		std::vector<VansMainCameraHiZCulledNodeDebug> m_MainCameraHiZCulledDebugNodes;
+		std::vector<VansMainCameraCullObjectGPU> m_MainCameraCullObjectsGPU;
+		std::vector<uint64_t> m_MainCameraLastDispatchedNodeIds;
+		std::unordered_map<uint64_t, uint32_t> m_MainCameraCullIndexByNodeId;
+		std::unordered_map<uint64_t, bool> m_MainCameraDrawVisibilityByNodeId;
+		std::unordered_map<uint64_t, VansRenderBounds> m_MainCameraPreviousCullBounds;
+		std::unordered_map<uint64_t, uint32_t> m_MainCameraForceVisibleFramesByNodeId;
+		VansVKBuffer m_MainCameraCullObjectBuffer;
+		VansVKBuffer m_MainCameraVisibilityBuffer;
+		uint32_t m_MainCameraCullBufferCapacity = 0;
+		uint32_t m_MainCameraFrameIndex = 0;
+		bool m_MainCameraHasPendingVisibilityReadback = false;
 		VansVKBuffer m_DummyBoneIDBuffer;
 		VansVKBuffer m_DummyBoneBuffer;
 		VansVKBuffer m_DummyWeightBuffer;
@@ -437,6 +455,8 @@ namespace VansGraphics
 		uint32_t GetParentTransformID(uint32_t childTransformID) const { return m_TransformParentSystem.GetParent(childTransformID); }
 
 		void SetTransformParentID(uint32_t childTransformID, uint32_t parentTransformID) { m_TransformParentSystem.SetParent(childTransformID, parentTransformID); }
+
+		void ClearTransformParentID(uint32_t childTransformID) { m_TransformParentSystem.ClearParent(childTransformID); }
 
 
 
@@ -857,6 +877,30 @@ namespace VansGraphics
 
 		void UpdateRenderNodesDataBeforeRecord();
 
+		void SetMainCameraHiZCullSettings(const VansMainCameraHiZCullSettings& settings);
+		const VansMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
+		const VansMainCameraVisibilityStats& GetMainCameraVisibilityStats() const { return m_MainCameraVisibilityStats; }
+		const std::vector<VansMainCameraHiZCulledNodeDebug>& GetMainCameraHiZCulledDebugNodes() const { return m_MainCameraHiZCulledDebugNodes; }
+		void BuildMainCameraCullCandidates(VkExtent2D extent);
+		bool UploadMainCameraCullCandidates(VansVKDevice& device);
+		bool IsMainCameraNodeVisible(VansRenderNode* node) const;
+		bool HasMainCameraHiZCullCandidates() const { return !m_MainCameraCullCandidates.empty(); }
+		uint32_t GetMainCameraHiZCullCandidateCount() const { return static_cast<uint32_t>(m_MainCameraCullCandidates.size()); }
+		VansVKBuffer& GetMainCameraCullObjectBuffer() { return m_MainCameraCullObjectBuffer; }
+		VansVKBuffer& GetMainCameraVisibilityBuffer() { return m_MainCameraVisibilityBuffer; }
+		void MarkMainCameraHiZCullDispatched();
+		void ResetMainCameraHiZVisibility();
+		void ReleaseMainCameraHiZGpuResources(VkDevice device);
+
+	private:
+		bool EnsureMainCameraHiZGpuResources(VansVKDevice& device, uint32_t candidateCount);
+		void ConsumeMainCameraHiZReadback();
+		void UpdateMainCameraHiZHistory(VkExtent2D extent);
+		bool ShouldMainCameraCullClassRunHiZ(VansMainCameraCullClass cullClass) const;
+		void AppendMainCameraCullCandidate(VansRenderNode* node, VansMainCameraCullClass cullClass, const glm::mat4& viewProjection);
+
+	public:
+
 
 
 
@@ -950,10 +994,16 @@ namespace VansGraphics
 
 
 		void DrawShadowNodes();
+		void DrawShadowNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
+		void DrawShadowNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end);
+		void DrawHairShadowNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
+		void DrawVegetationShadowNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
 
 
 
 		void DrawMotionVectorNodes();
+		void DrawMotionVectorNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
+		void DrawMotionVectorNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end);
 
 
 
@@ -966,6 +1016,8 @@ namespace VansGraphics
 
 
 		void DrawOpaqueNodes();
+		void DrawOpaqueNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
+		void DrawOpaqueNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end);
 
 		void DrawHairVisibilityNodes();
 
@@ -974,6 +1026,7 @@ namespace VansGraphics
 
 
 		void DrawTerrainNode(bool shadowPass = false, bool motionVectorPass = false);
+		void DrawTerrainNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, bool shadowPass = false, bool motionVectorPass = false);
 
 
 
@@ -994,6 +1047,7 @@ namespace VansGraphics
 
 
 		void DrawVegetationNode();
+		void DrawVegetationNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
 
 
 
@@ -1021,6 +1075,8 @@ namespace VansGraphics
 
 
 		void DrawDecalNodes();
+		void DrawDecalNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
+		void DrawDecalNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end);
 
 
 

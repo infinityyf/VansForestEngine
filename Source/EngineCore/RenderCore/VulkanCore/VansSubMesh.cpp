@@ -496,6 +496,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 		}
 	}
 	m_VertexCount = mesh->mNumVertices;
+	RebuildLocalBoundsFromRawPositions();
 
 	for (uint32_t i = 0; i < mesh->mNumFaces; i++)
 	{

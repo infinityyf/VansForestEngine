@@ -65,6 +65,12 @@ layout(std140, set = 1, binding = 5) uniform ScatterOffsetUBO
 {
     vec4 scatterOffsets[32]; // 最多 32 个子叶片，实际使用 pc.subBladeCount 个
 };
+
+// 本帧 GrassCull 输出的可见性标记。只有 pc.cullVisibilityEnabled != 0 时读取。
+layout(std430, set = 1, binding = 6) readonly buffer VisibilityBuffer
+{
+    uint visibilityFlags[];
+};
 // ── Push constants ─────────────────────────────────────────────────────────
 layout(push_constant) uniform PushConstants
 {
@@ -88,6 +94,7 @@ layout(push_constant) uniform PushConstants
     float lodFadeDist;        // fade zone end; skip entirely beyond this
     int   subBladeCount;      // number of sub-blades per instance (must match CPU m_SubBladeCount)
     float grassHeight;         // blade height in world units — controls segment length
+    uint  cullVisibilityEnabled; // GrassCull 已在本帧写入 visibilityFlags 时为 1
     uint  boneCount;          // number of bones per instance (must match CPU m_BoneCountPerInstance)
 } pc;
 
@@ -176,6 +183,11 @@ void main()
 {
     uint instanceID = gl_GlobalInvocationID.x;
     if (instanceID >= instances.length())
+        return;
+
+    // cull 已判定不可见的实例不再执行 terrain / LOD / wind / Verlet / matrix 写入。
+    // 当前绘制路径会通过 visibilityFlags 或 compact visibleIndices 跳过它，保留旧矩阵是安全的。
+    if (pc.cullVisibilityEnabled != 0 && visibilityFlags[instanceID] == 0u)
         return;
 
     GrassInstance inst = instances[instanceID];
